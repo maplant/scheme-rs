@@ -1,8 +1,14 @@
-use std::{sync::Arc, collections::HashMap, future::Future};
+use crate::{
+    ast::{self, Body},
+    builtin::Builtin,
+    gc::{Gc, Trace},
+    num::Number,
+};
 use async_trait::async_trait;
 use futures::future::BoxFuture;
-use crate::{ast::{self, Body}, gc::{Gc, Trace}, num::Number};
+use std::{collections::HashMap, future::Future, sync::Arc};
 
+#[derive(Debug)]
 pub enum Value {
     Boolean(bool),
     Number(Number),
@@ -31,6 +37,7 @@ impl From<ExternalFn> for Value {
 
 impl Trace for Value {}
 
+#[derive(Debug)]
 pub struct Env {
     up: Option<Gc<Env>>,
     // TODO: This can, and should, be optimized into a symtab of offsets and a
@@ -48,6 +55,20 @@ impl Trace for Env {
 }
 
 impl Env {
+    pub fn base() -> Self {
+        let mut base = Self {
+            up: None,
+            defs: HashMap::default(),
+        };
+
+        for builtin in inventory::iter::<Builtin> {
+            println!("installing builtin: {}", builtin.name);
+            builtin.install(&mut base);
+        }
+
+        base
+    }
+
     pub async fn fetch(&self, var: &str) -> Option<Gc<Value>> {
         if let Some(val) = self.defs.get(var) {
             return Some(val.clone());
@@ -67,7 +88,9 @@ impl Env {
     }
 }
 
+#[derive(Debug)]
 pub enum RuntimeError {
+    UndefinedVariable(String),
     InvalidOperator(Gc<Value>),
 }
 
@@ -76,7 +99,8 @@ pub trait Eval {
     async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError>;
 }
 
-struct Procedure {
+#[derive(Debug)]
+pub struct Procedure {
     up: Gc<Env>,
     args: Vec<String>,
     body: Arc<Body>,
@@ -90,23 +114,34 @@ impl Procedure {
     }
 }
 
+#[derive(Debug)]
 pub struct ExternalFn {
     pub num_args: usize,
     pub variadic: bool,
-    pub func: fn(&Gc<Env>, &[Gc<Value>]) -> BoxFuture<'static, Result<Gc<Value>, RuntimeError>>
+    pub func: fn(Gc<Env>, Vec<Gc<Value>>) -> BoxFuture<'static, Result<Gc<Value>, RuntimeError>>,
 }
 
 impl ExternalFn {
-    async fn call(&self, env: &Gc<Env>, args: &[Gc<Value>]) -> Result<Gc<Value>, RuntimeError> {
+    async fn call(&self, env: &Gc<Env>, args: Vec<Gc<Value>>) -> Result<Gc<Value>, RuntimeError> {
         // TODO: check arguments
-        (self.func)(env, args).await
+        (self.func)(env.clone(), args).await
     }
 }
 
 #[async_trait]
 impl Eval for ast::Expression {
     async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
-        todo!()
+        match self {
+            Self::Literal(ast::Literal::Number(n)) => Ok(Gc::new(Value::Number(n.clone()))),
+            Self::VariableRef(ast::Ident(var)) => Ok(env
+                .read()
+                .await
+                .fetch(&var)
+                .await
+                .ok_or_else(|| RuntimeError::UndefinedVariable(var.clone()))?),
+            Self::Call(call) => call.eval(env).await,
+            _ => todo!(),
+        }
     }
 }
 
@@ -126,7 +161,7 @@ impl Eval for ast::Call {
         }
         // Call the operator with the arguments
         match &*read_op {
-            Value::ExternalFn(extern_fn) => extern_fn.call(env, args.as_slice()).await,
+            Value::ExternalFn(extern_fn) => extern_fn.call(env, args).await,
             Value::Procedure(proc) => proc.call(args.as_slice()).await,
             _ => unreachable!(),
         }

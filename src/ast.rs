@@ -1,5 +1,6 @@
-use crate::lex::Lexeme;
+use crate::{lex::Lexeme, num::Number};
 
+#[derive(Debug)]
 pub struct Ident(pub String);
 
 impl Ident {
@@ -14,10 +15,10 @@ impl PartialEq<str> for Ident {
     }
 }
 
-pub enum Number {}
+#[derive(Debug)]
+pub struct ByteVector(pub Vec<u8>);
 
-struct ByteVector(pub Vec<u8>);
-
+#[derive(Debug)]
 pub enum Literal {
     Number(Number),
     Boolean(bool),
@@ -26,11 +27,13 @@ pub enum Literal {
     ByteVector(ByteVector),
 }
 
+#[derive(Debug)]
 pub struct Call {
     pub operator: Expression,
     pub args: Vec<Expression>,
 }
 
+#[derive(Debug)]
 pub enum Expression {
     Literal(Literal),
     VariableRef(Ident),
@@ -49,11 +52,13 @@ pub struct DefineVar {
     pub val: Expression,
 }
 
+#[derive(Debug)]
 pub struct Lambda {
     pub args: Formals,
     pub body: Body,
 }
 
+#[derive(Debug)]
 pub enum Formals {
     FixedArgs(Vec<Ident>),
     VarArgs(Ident),
@@ -63,6 +68,7 @@ pub enum Formals {
     },
 }
 
+#[derive(Debug)]
 pub struct Body {
     exprs: Vec<Expression>,
 }

@@ -1,6 +1,7 @@
 use crate::{
-    ast::{Body, Call, DefineFunc, DefineVar, Expression, Formals, Ident, Lambda, Literal, Number},
+    ast::{Body, Call, DefineFunc, DefineVar, Expression, Formals, Ident, Lambda, Literal},
     lex::{Fragment, Lexeme},
+    num::Number,
 };
 use nom::{
     branch::alt,
@@ -9,6 +10,7 @@ use nom::{
     sequence::{delimited, preceded, tuple},
     IResult,
 };
+use rug::Integer;
 
 macro_rules! ident {
     ( $s:literal ) => {
@@ -81,8 +83,11 @@ pub fn expression<'a>(i: &'a [Lexeme<'a>]) -> IResult<&'a [Lexeme<'a>], Expressi
 
 fn number(i: &Lexeme<'_>) -> Result<Expression, ParseError> {
     let number = i.to_number();
+    let number: Integer = number.parse().unwrap();
     // TODO: Parse
-    Ok(Expression::Literal(Literal::Number(todo!())))
+    Ok(Expression::Literal(Literal::Number(Number::Integer(
+        number,
+    ))))
 }
 
 fn boolean(i: &Lexeme<'_>) -> Result<Expression, ParseError> {
@@ -165,11 +170,15 @@ fn call<'a>(i: &'a [Lexeme<'a>]) -> IResult<&'a [Lexeme<'a>], Box<Call>> {
     )(i)
 }
 
+use nom::error::Error;
+use nom::error::ErrorKind;
+use nom::Err;
+
 pub fn satisfy(
     cond: impl Fn(&Lexeme<'_>) -> bool,
 ) -> impl for<'a> Fn(&'a [Lexeme<'a>]) -> IResult<&'a [Lexeme<'a>], &'a Lexeme<'a>> {
     move |i: &[Lexeme<'_>]| match i.iter().next().map(|t| (cond(t), t)) {
         Some((true, t)) => Ok((&i[1..], t)),
-        _ => Err(todo!()),
+        _ => Err(Err::Error(Error::new(i, ErrorKind::Satisfy))),
     }
 }

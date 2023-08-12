@@ -12,3 +12,4 @@ rug = "1"
 thiserror = "1"
 tokio = { version = "1", features = ["full"] }
 unicode_categories = "0.1"
+proc-macros = { path = "proc-macros" }

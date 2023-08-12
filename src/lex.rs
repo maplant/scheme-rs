@@ -1,7 +1,10 @@
 use nom::{
     branch::alt,
     bytes::complete::{is_not, tag, tag_no_case, take_while1},
-    character::{complete::{char as match_char, hex_digit1, one_of, satisfy}, streaming::anychar},
+    character::{
+        complete::{char as match_char, hex_digit1, one_of, satisfy},
+        streaming::anychar,
+    },
     combinator::{map, opt, value, verify},
     multi::{fold_many0, many0},
     sequence::{delimited, preceded, tuple},

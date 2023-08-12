@@ -1,5 +1,11 @@
+use crate::{
+    eval::{Env, RuntimeError, Value},
+    gc::Gc,
+};
+use proc_macros::builtin;
 use rug::{Complete, Complex, Float, Integer, Rational};
 
+#[derive(Debug, Clone)]
 pub enum Number {
     Integer(Integer),
     Rational(Rational),
@@ -31,9 +37,13 @@ impl From<Complex> for Number {
     }
 }
 
-pub fn add(l: &Number, r: &Number) -> Number {
-    match (l, r) {
-        (Number::Integer(l), Number::Integer(r)) => Number::from((l + r).complete()),
+#[builtin(+)]
+pub async fn add(_env: &Gc<Env>, l: &Gc<Value>, r: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> {
+    let (l, r) = (l.read().await, r.read().await);
+    match (&*l, &*r) {
+        (Value::Number(Number::Integer(l)), Value::Number(Number::Integer(r))) => {
+            Ok(Gc::new(Value::Number(Number::from((l + r).complete()))))
+        }
         _ => todo!(),
     }
 }

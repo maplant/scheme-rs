@@ -99,6 +99,7 @@ impl<'a, T: ?Sized + Trace> Drop for GcWriteGuard<'a, T> {
     }
 }
 
+#[derive(Debug)]
 pub struct Gc<T: ?Sized> {
     ptr: NonNull<GcInner<T>>,
     marker: PhantomData<Arc<RwLock<T>>>,

@@ -6,10 +6,10 @@ use crate::{
 };
 
 pub struct Builtin {
-    name: &'static str,
+    pub name: &'static str,
     num_args: usize,
     variadic: bool,
-    wrapper: fn(&Gc<Env>, &[Gc<Value>]) -> BoxFuture<'static, Result<Gc<Value>, RuntimeError>>,
+    wrapper: fn(Gc<Env>, Vec<Gc<Value>>) -> BoxFuture<'static, Result<Gc<Value>, RuntimeError>>,
 }
 
 impl Builtin {
@@ -17,7 +17,7 @@ impl Builtin {
         name: &'static str,
         num_args: usize,
         variadic: bool,
-        wrapper: fn(&Gc<Env>, &[Gc<Value>]) -> BoxFuture<'static, Result<Gc<Value>, RuntimeError>>,
+        wrapper: fn(Gc<Env>, Vec<Gc<Value>>) -> BoxFuture<'static, Result<Gc<Value>, RuntimeError>>,
     ) -> Self {
         Self {
             name,
@@ -27,15 +27,15 @@ impl Builtin {
         }
     }
 
-    pub async fn install(&self, into: &Gc<Env>) {
-        into.write().await.define(
+    pub fn install(&self, into: &mut Env) {
+        into.define(
             self.name,
             Gc::new(Value::from(ExternalFn {
                 num_args: self.num_args,
                 variadic: self.variadic,
                 func: self.wrapper,
-            }))
-        )
+            })),
+        );
     }
 }
 
