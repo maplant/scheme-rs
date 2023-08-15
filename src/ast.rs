@@ -40,9 +40,12 @@ pub enum Expression {
     Call(Box<Call>),
     DefVar(Box<DefineVar>),
     DefFunc(DefineFunc),
+    And(And),
+    Or(Or),
     If(Box<If>),
     Body(Body),
     Lambda(Lambda),
+    Let(Let),
 }
 
 #[derive(Debug, Clone)]
@@ -93,10 +96,38 @@ impl Body {
 }
 
 #[derive(Debug, Clone)]
+pub struct Let {
+    pub bindings: Vec<(Ident, Expression)>,
+    pub body: Body,
+}
+
+#[derive(Debug, Clone)]
 pub struct If {
     pub cond: Expression,
     pub success: Expression,
     pub failure: Expression,
+}
+
+#[derive(Debug, Clone)]
+pub struct And {
+    pub args: Vec<Expression>,
+}
+
+impl And {
+    pub fn new(args: Vec<Expression>) -> Self {
+        Self { args }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Or {
+    pub args: Vec<Expression>,
+}
+
+impl Or {
+    pub fn new(args: Vec<Expression>) -> Self {
+        Self { args }
+    }
 }
 
 struct Export {}

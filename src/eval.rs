@@ -42,15 +42,18 @@ impl Value {
         }
     }
 
-    pub async fn to_string(&self) -> String {
-        match self {
-            Self::Boolean(true) => "#t".to_string(),
-            Self::Boolean(false) => "#f".to_string(),
-            Self::Number(number) => number.to_string(),
-            Self::String(string) => string.clone(),
-            Self::Nil => "()".to_string(),
-            _ => todo!(),
-        }
+    pub fn fmt(&self) -> BoxFuture<'_, String> {
+        Box::pin(async move {
+            match self {
+                Self::Boolean(true) => "#t".to_string(),
+                Self::Boolean(false) => "#f".to_string(),
+                Self::Number(number) => number.to_string(),
+                Self::String(string) => string.clone(),
+                Self::Pair(car, cdr) => crate::lists::fmt_list(car, cdr).await,
+                Self::Nil => "()".to_string(),
+                _ => todo!(),
+            }
+        })
     }
 }
 
@@ -142,9 +145,24 @@ pub enum ValueOrPreparedCall {
     PreparedCall(PreparedCall),
 }
 
+impl ValueOrPreparedCall {
+    async fn eval(self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
+        match self {
+            Self::Value(val) => Ok(val),
+            Self::PreparedCall(prepared_call) => prepared_call.eval(env).await,
+        }
+    }
+}
+
+/// Core evaulation trait for expressions
+///
+/// Any struct implementing this trait must either implement `eval`, `tail_eval`, or
+/// both, even though both methods are provided.
 #[async_trait]
 pub trait Eval {
-    async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError>;
+    async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
+        self.tail_eval(env).await?.eval(env).await
+    }
 
     /// Evaluate the expression in a tail environment
     async fn tail_eval(&self, env: &Gc<Env>) -> Result<ValueOrPreparedCall, RuntimeError> {
@@ -240,8 +258,11 @@ impl Eval for ast::Expression {
                 .ok_or_else(|| RuntimeError::UndefinedVariable(var.clone()))?),
             Self::DefFunc(def_func) => def_func.eval(env).await,
             Self::DefVar(def_var) => def_var.eval(env).await,
+            Self::And(and) => and.eval(env).await,
+            Self::Or(or) => or.eval(env).await,
             Self::Call(call) => call.eval(env).await,
             Self::Lambda(lambda) => lambda.eval(env).await,
+            Self::Let(let_expr) => let_expr.eval(env).await,
             Self::If(if_expr) => if_expr.eval(env).await,
             _ => todo!(),
         }
@@ -252,6 +273,9 @@ impl Eval for ast::Expression {
             Self::If(if_expr) => if_expr.tail_eval(env).await,
             Self::Body(body) => body.tail_eval(env).await,
             Self::Call(call) => call.tail_eval(env).await,
+            Self::And(and) => and.tail_eval(env).await,
+            Self::Or(or) => or.tail_eval(env).await,
+            Self::Let(let_expr) => let_expr.tail_eval(env).await,
             _ => Ok(ValueOrPreparedCall::Value(self.eval(env).await?)),
         }
     }
@@ -259,18 +283,6 @@ impl Eval for ast::Expression {
 
 #[async_trait]
 impl Eval for ast::Body {
-    async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
-        let Some((last, body)) = self.exprs.split_last() else {
-            return Ok(Gc::new(Value::Nil));
-        };
-        for expr in body {
-            // Discard values that aren't returned
-            expr.eval(env).await?;
-        }
-        // Return the last value
-        last.eval(env).await
-    }
-
     async fn tail_eval(&self, env: &Gc<Env>) -> Result<ValueOrPreparedCall, RuntimeError> {
         let Some((last, body)) = self.exprs.split_last() else {
             return Ok(ValueOrPreparedCall::Value(Gc::new(Value::Nil)));
@@ -290,6 +302,16 @@ pub struct PreparedCall {
 }
 
 impl PreparedCall {
+    async fn eval(self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
+        let read_op = self.operator.read().await;
+        // Call the operator with the arguments
+        match &*read_op {
+            Value::ExternalFn(extern_fn) => extern_fn.call(env, self.args).await,
+            Value::Procedure(proc) => proc.call(self.args).await,
+            _ => unreachable!(),
+        }
+    }
+
     async fn prepare(call: &ast::Call, env: &Gc<Env>) -> Result<Self, RuntimeError> {
         // Collect the operator
         let operator = call.operator.eval(env).await?;
@@ -326,17 +348,6 @@ impl PreparedCall {
 
 #[async_trait]
 impl Eval for ast::Call {
-    async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
-        let PreparedCall { operator, args } = PreparedCall::prepare(self, env).await?;
-        let read_op = operator.read().await;
-        // Call the operator with the arguments
-        match &*read_op {
-            Value::ExternalFn(extern_fn) => extern_fn.call(env, args).await,
-            Value::Procedure(proc) => proc.call(args).await,
-            _ => unreachable!(),
-        }
-    }
-
     async fn tail_eval(&self, env: &Gc<Env>) -> Result<ValueOrPreparedCall, RuntimeError> {
         // TODO: if external fn, call it and return the value
         Ok(ValueOrPreparedCall::PreparedCall(
@@ -361,15 +372,18 @@ impl Eval for ast::Lambda {
 }
 
 #[async_trait]
-impl Eval for ast::If {
-    async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
-        if self.cond.eval(env).await?.read().await.is_true() {
-            self.success.eval(env).await
-        } else {
-            self.failure.eval(env).await
+impl Eval for ast::Let {
+    async fn tail_eval(&self, env: &Gc<Env>) -> Result<ValueOrPreparedCall, RuntimeError> {
+        let mut new_scope = Env::new(env);
+        for (ast::Ident(ref var), expr) in &self.bindings {
+            new_scope.define(var, expr.eval(env).await?);
         }
+        self.body.tail_eval(&Gc::new(new_scope)).await
     }
+}
 
+#[async_trait]
+impl Eval for ast::If {
     async fn tail_eval(&self, env: &Gc<Env>) -> Result<ValueOrPreparedCall, RuntimeError> {
         if self.cond.eval(env).await?.read().await.is_true() {
             self.success.tail_eval(env).await
@@ -400,5 +414,40 @@ impl Eval for ast::DefineVar {
         let val = self.val.eval(env).await?;
         env.write().await.define(&self.name.0, val);
         Ok(Gc::new(Value::Nil))
+    }
+}
+
+#[async_trait]
+impl Eval for ast::And {
+    async fn tail_eval(&self, env: &Gc<Env>) -> Result<ValueOrPreparedCall, RuntimeError> {
+        let Some((last, args)) = self.args.split_last() else {
+            return Ok(ValueOrPreparedCall::Value(Gc::new(Value::Boolean(true))));
+        };
+        for arg in args {
+            // If one of the arguments does not evaluate to true, then the result
+            // is false
+            if !arg.eval(env).await?.read().await.is_true() {
+                return Ok(ValueOrPreparedCall::Value(Gc::new(Value::Boolean(false))));
+            }
+        }
+        // If all of the other arguments are true, then the result is the last expression
+        last.tail_eval(env).await
+    }
+}
+
+#[async_trait]
+impl Eval for ast::Or {
+    async fn tail_eval(&self, env: &Gc<Env>) -> Result<ValueOrPreparedCall, RuntimeError> {
+        let Some((last, args)) = self.args.split_last() else {
+            return Ok(ValueOrPreparedCall::Value(Gc::new(Value::Boolean(false))));
+        };
+        for arg in args {
+            // If one of the arguments evaluates to true, then the result is true
+            if arg.eval(env).await?.read().await.is_true() {
+                return Ok(ValueOrPreparedCall::Value(Gc::new(Value::Boolean(true))));
+            }
+        }
+        // If all of the other arguments are false, then the result is the last expression
+        last.tail_eval(env).await
     }
 }

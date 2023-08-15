@@ -1,5 +1,8 @@
 use crate::{
-    ast::{Body, Call, DefineFunc, DefineVar, Expression, Formals, Ident, If, Lambda, Literal},
+    ast::{
+        And, Body, Call, DefineFunc, DefineVar, Expression, Formals, Ident, If, Lambda, Let,
+        Literal, Or,
+    },
     lex::{Fragment, Lexeme},
     num::Number,
 };
@@ -27,6 +30,75 @@ macro_rules! token {
 enum ParseError {
     ParseNumberError,
     InvalidHexValue(String),
+}
+
+pub fn expression<'a>(i: &'a [Lexeme<'a>]) -> IResult<&'a [Lexeme<'a>], Expression> {
+    println!("expression: {i:#?}");
+    alt((
+        map_res(token!(Lexeme::Number(_)), number),
+        map_res(token!(Lexeme::Boolean(_)), boolean),
+        map_res(token!(Lexeme::String(_)), string),
+        map_res(token!(Lexeme::Identifier(_)), variable_ref),
+        map(lambda, Expression::Lambda),
+        map(let_expr, Expression::Let),
+        map(define_var, Expression::DefVar),
+        map(define_func, Expression::DefFunc),
+        map(if_expr, Expression::If),
+        map(body, Expression::Body),
+        map(and, Expression::And),
+        map(or, Expression::Or),
+        map(call, Expression::Call),
+    ))(i)
+}
+
+fn number(i: &Lexeme<'_>) -> Result<Expression, ParseError> {
+    let number = i.to_number();
+    // TODO: Parse correctly
+    let number: Integer = number.parse().unwrap();
+    Ok(Expression::Literal(Literal::Number(Number::Integer(
+        number,
+    ))))
+}
+
+fn boolean(i: &Lexeme<'_>) -> Result<Expression, ParseError> {
+    Ok(Expression::Literal(Literal::Boolean(i.to_boolean())))
+}
+
+fn string(i: &Lexeme<'_>) -> Result<Expression, ParseError> {
+    let fragments = i.to_string();
+    let mut output = String::new();
+    for fragment in fragments {
+        match fragment {
+            Fragment::Escaped(c) => output.push(*c),
+            Fragment::Unescaped(s) => output.push_str(s),
+            Fragment::HexValue(hex) => {
+                let Ok(hex_value) = u32::from_str_radix(hex, 16) else {
+                    return Err(ParseError::InvalidHexValue(hex.to_string()));
+                };
+                let Some(c) = char::from_u32(hex_value) else {
+                    return Err(ParseError::InvalidHexValue(hex.to_string()));
+                };
+                output.push(c);
+            }
+        }
+    }
+    Ok(Expression::Literal(Literal::String(output)))
+}
+
+fn character(i: &Lexeme<'_>) -> Result<Expression, ParseError> {
+    todo!()
+}
+
+fn variable_ref(i: &Lexeme<'_>) -> Result<Expression, ParseError> {
+    Ok(Expression::VariableRef(Ident::from_lexeme(i)))
+}
+
+fn body<'a>(i: &'a [Lexeme<'a>]) -> IResult<&'a [Lexeme<'a>], Body> {
+    delimited(
+        token!(Lexeme::LParen),
+        preceded(ident!("begin"), map(many0(expression), Body::new)),
+        token!(Lexeme::RParen),
+    )(i)
 }
 
 pub fn define_func<'a>(i: &'a [Lexeme<'a>]) -> IResult<&'a [Lexeme<'a>], DefineFunc> {
@@ -74,63 +146,6 @@ pub fn define_var<'a>(i: &'a [Lexeme<'a>]) -> IResult<&'a [Lexeme<'a>], Box<Defi
     )(i)
 }
 
-pub fn expression<'a>(i: &'a [Lexeme<'a>]) -> IResult<&'a [Lexeme<'a>], Expression> {
-    println!("expression: {i:#?}");
-    alt((
-        map_res(token!(Lexeme::Number(_)), number),
-        map_res(token!(Lexeme::Boolean(_)), boolean),
-        map_res(token!(Lexeme::String(_)), string),
-        map_res(token!(Lexeme::Identifier(_)), variable_ref),
-        map(lambda, Expression::Lambda),
-        map(define_var, Expression::DefVar),
-        map(define_func, Expression::DefFunc),
-        map(if_expr, Expression::If),
-        map(call, Expression::Call),
-    ))(i)
-}
-
-fn number(i: &Lexeme<'_>) -> Result<Expression, ParseError> {
-    let number = i.to_number();
-    // TODO: Parse correctly
-    let number: Integer = number.parse().unwrap();
-    Ok(Expression::Literal(Literal::Number(Number::Integer(
-        number,
-    ))))
-}
-
-fn boolean(i: &Lexeme<'_>) -> Result<Expression, ParseError> {
-    Ok(Expression::Literal(Literal::Boolean(i.to_boolean())))
-}
-
-fn string(i: &Lexeme<'_>) -> Result<Expression, ParseError> {
-    let fragments = i.to_string();
-    let mut output = String::new();
-    for fragment in fragments {
-        match fragment {
-            Fragment::Escaped(c) => output.push(*c),
-            Fragment::Unescaped(s) => output.push_str(s),
-            Fragment::HexValue(hex) => {
-                let Ok(hex_value) = u32::from_str_radix(hex, 16) else {
-                    return Err(ParseError::InvalidHexValue(hex.to_string()));
-                };
-                let Some(c) = char::from_u32(hex_value) else {
-                    return Err(ParseError::InvalidHexValue(hex.to_string()));
-                };
-                output.push(c);
-            }
-        }
-    }
-    Ok(Expression::Literal(Literal::String(output)))
-}
-
-fn character(i: &Lexeme<'_>) -> Result<Expression, ParseError> {
-    todo!()
-}
-
-fn variable_ref(i: &Lexeme<'_>) -> Result<Expression, ParseError> {
-    Ok(Expression::VariableRef(Ident::from_lexeme(i)))
-}
-
 fn lambda<'a>(i: &'a [Lexeme<'a>]) -> IResult<&'a [Lexeme<'a>], Lambda> {
     println!("lambda: {i:#?}");
     map(
@@ -174,6 +189,37 @@ fn args_to_formals(args: Vec<Ident>) -> Formals {
     }
 }
 
+fn let_expr<'a>(i: &'a [Lexeme<'a>]) -> IResult<&'a [Lexeme<'a>], Let> {
+    map(
+        delimited(
+            token!(Lexeme::LParen),
+            preceded(
+                ident!("let"),
+                tuple((
+                    delimited(
+                        token!(Lexeme::LParen),
+                        many0(delimited(
+                            token!(Lexeme::LParen),
+                            tuple((
+                                map(token!(Lexeme::Identifier(_)), Ident::from_lexeme),
+                                expression,
+                            )),
+                            token!(Lexeme::RParen),
+                        )),
+                        token!(Lexeme::RParen),
+                    ),
+                    many0(expression),
+                )),
+            ),
+            token!(Lexeme::RParen),
+        ),
+        |(bindings, body)| Let {
+            bindings,
+            body: Body::new(body),
+        },
+    )(i)
+}
+
 fn if_expr<'a>(i: &'a [Lexeme<'a>]) -> IResult<&'a [Lexeme<'a>], Box<If>> {
     map(
         delimited(
@@ -188,6 +234,22 @@ fn if_expr<'a>(i: &'a [Lexeme<'a>]) -> IResult<&'a [Lexeme<'a>], Box<If>> {
                 failure,
             })
         },
+    )(i)
+}
+
+fn and<'a>(i: &'a [Lexeme<'a>]) -> IResult<&'a [Lexeme<'a>], And> {
+    delimited(
+        token!(Lexeme::LParen),
+        preceded(ident!("and"), map(many0(expression), And::new)),
+        token!(Lexeme::RParen),
+    )(i)
+}
+
+fn or<'a>(i: &'a [Lexeme<'a>]) -> IResult<&'a [Lexeme<'a>], Or> {
+    delimited(
+        token!(Lexeme::LParen),
+        preceded(ident!("or"), map(many0(expression), Or::new)),
+        token!(Lexeme::RParen),
     )(i)
 }
 
