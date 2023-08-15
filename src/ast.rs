@@ -1,6 +1,6 @@
 use crate::{lex::Lexeme, num::Number};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Ident(pub String);
 
 impl Ident {
@@ -9,16 +9,16 @@ impl Ident {
     }
 }
 
-impl PartialEq<str> for Ident {
-    fn eq(&self, rhs: &str) -> bool {
-        self.0 == rhs
+impl PartialEq<&'_ str> for Ident {
+    fn eq(&self, rhs: &&str) -> bool {
+        self.0 == *rhs
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ByteVector(pub Vec<u8>);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Literal {
     Number(Number),
     Boolean(bool),
@@ -27,56 +27,76 @@ pub enum Literal {
     ByteVector(ByteVector),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Call {
     pub operator: Expression,
     pub args: Vec<Expression>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Expression {
     Literal(Literal),
     VariableRef(Ident),
     Call(Box<Call>),
+    DefVar(Box<DefineVar>),
+    DefFunc(DefineFunc),
+    If(Box<If>),
+    Body(Body),
     Lambda(Lambda),
 }
 
+#[derive(Debug, Clone)]
 pub struct DefineFunc {
     pub name: Ident,
-    pub args: Vec<Ident>,
+    pub args: Formals,
     pub body: Body,
 }
 
+#[derive(Debug, Clone)]
 pub struct DefineVar {
     pub name: Ident,
     pub val: Expression,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Lambda {
     pub args: Formals,
     pub body: Body,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Formals {
     FixedArgs(Vec<Ident>),
     VarArgs(Ident),
-    AtleastN {
-        fixed: Vec<Ident>,
-        remaining: Vec<Ident>,
-    },
+    AtLeastN { fixed: Vec<Ident>, remaining: Ident },
 }
 
-#[derive(Debug)]
+impl Formals {
+    pub fn to_args_and_remaining(&self) -> (Vec<Ident>, Option<Ident>) {
+        match self {
+            Self::AtLeastN { fixed, remaining } => (fixed.clone(), Some(remaining.clone())),
+            Self::VarArgs(name) => (Vec::new(), Some(name.clone())),
+            Self::FixedArgs(args) => (args.clone(), None),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Body {
-    exprs: Vec<Expression>,
+    pub exprs: Vec<Expression>,
 }
 
 impl Body {
     pub fn new(exprs: Vec<Expression>) -> Self {
         Self { exprs }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct If {
+    pub cond: Expression,
+    pub success: Expression,
+    pub failure: Expression,
 }
 
 struct Export {}

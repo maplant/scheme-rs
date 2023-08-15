@@ -1,5 +1,5 @@
 use crate::{
-    ast::{Body, Call, DefineFunc, DefineVar, Expression, Formals, Ident, Lambda, Literal},
+    ast::{Body, Call, DefineFunc, DefineVar, Expression, Formals, Ident, If, Lambda, Literal},
     lex::{Fragment, Lexeme},
     num::Number,
 };
@@ -14,7 +14,7 @@ use rug::Integer;
 
 macro_rules! ident {
     ( $s:literal ) => {
-        token!(Lexeme::Identifier(std::borrow::Cow::Borrowed($s)))
+        $crate::parse::satisfy(|lex| lex == &Lexeme::Identifier(std::borrow::Cow::Borrowed($s)))
     };
 }
 
@@ -40,7 +40,10 @@ pub fn define_func<'a>(i: &'a [Lexeme<'a>]) -> IResult<&'a [Lexeme<'a>], DefineF
                         token!(Lexeme::LParen),
                         tuple((
                             map(token!(Lexeme::Identifier(_)), Ident::from_lexeme),
-                            many0(map(token!(Lexeme::Identifier(_)), Ident::from_lexeme)),
+                            map(
+                                many0(map(token!(Lexeme::Identifier(_)), Ident::from_lexeme)),
+                                args_to_formals,
+                            ),
                         )),
                         token!(Lexeme::RParen),
                     ),
@@ -53,7 +56,8 @@ pub fn define_func<'a>(i: &'a [Lexeme<'a>]) -> IResult<&'a [Lexeme<'a>], DefineF
     )(i)
 }
 
-pub fn define_var<'a>(i: &'a [Lexeme<'a>]) -> IResult<&'a [Lexeme<'a>], DefineVar> {
+pub fn define_var<'a>(i: &'a [Lexeme<'a>]) -> IResult<&'a [Lexeme<'a>], Box<DefineVar>> {
+    println!("define_var: {i:#?}");
     map(
         delimited(
             token!(Lexeme::LParen),
@@ -66,25 +70,29 @@ pub fn define_var<'a>(i: &'a [Lexeme<'a>]) -> IResult<&'a [Lexeme<'a>], DefineVa
             ),
             token!(Lexeme::RParen),
         ),
-        |(name, val)| DefineVar { name, val },
+        |(name, val)| Box::new(DefineVar { name, val }),
     )(i)
 }
 
 pub fn expression<'a>(i: &'a [Lexeme<'a>]) -> IResult<&'a [Lexeme<'a>], Expression> {
+    println!("expression: {i:#?}");
     alt((
         map_res(token!(Lexeme::Number(_)), number),
         map_res(token!(Lexeme::Boolean(_)), boolean),
         map_res(token!(Lexeme::String(_)), string),
         map_res(token!(Lexeme::Identifier(_)), variable_ref),
         map(lambda, Expression::Lambda),
+        map(define_var, Expression::DefVar),
+        map(define_func, Expression::DefFunc),
+        map(if_expr, Expression::If),
         map(call, Expression::Call),
     ))(i)
 }
 
 fn number(i: &Lexeme<'_>) -> Result<Expression, ParseError> {
     let number = i.to_number();
+    // TODO: Parse correctly
     let number: Integer = number.parse().unwrap();
-    // TODO: Parse
     Ok(Expression::Literal(Literal::Number(Number::Integer(
         number,
     ))))
@@ -124,6 +132,7 @@ fn variable_ref(i: &Lexeme<'_>) -> Result<Expression, ParseError> {
 }
 
 fn lambda<'a>(i: &'a [Lexeme<'a>]) -> IResult<&'a [Lexeme<'a>], Lambda> {
+    println!("lambda: {i:#?}");
     map(
         delimited(
             token!(Lexeme::LParen),
@@ -137,11 +146,7 @@ fn lambda<'a>(i: &'a [Lexeme<'a>]) -> IResult<&'a [Lexeme<'a>], Lambda> {
                                 many0(map(token!(Lexeme::Identifier(_)), Ident::from_lexeme)),
                                 token!(Lexeme::RParen),
                             ),
-                            |args| {
-                                //                        if args.len() > 2 && args[args.len() - 2] == "." {
-                                //                            let fixed = args[..args.len() - 2].iter().cloned
-                                Formals::FixedArgs(todo!())
-                            },
+                            args_to_formals,
                         ),
                         map(token!(Lexeme::Identifier(_)), |ident| {
                             Formals::VarArgs(Ident::from_lexeme(ident))
@@ -155,6 +160,33 @@ fn lambda<'a>(i: &'a [Lexeme<'a>]) -> IResult<&'a [Lexeme<'a>], Lambda> {
         |(args, exprs)| Lambda {
             args,
             body: Body::new(exprs),
+        },
+    )(i)
+}
+
+fn args_to_formals(args: Vec<Ident>) -> Formals {
+    if args.len() > 2 && args[args.len() - 2] == "." {
+        let fixed: Vec<_> = args[..args.len() - 2].iter().cloned().collect();
+        let remaining = args.last().unwrap().clone();
+        Formals::AtLeastN { fixed, remaining }
+    } else {
+        Formals::FixedArgs(args)
+    }
+}
+
+fn if_expr<'a>(i: &'a [Lexeme<'a>]) -> IResult<&'a [Lexeme<'a>], Box<If>> {
+    map(
+        delimited(
+            token!(Lexeme::LParen),
+            preceded(ident!("if"), tuple((expression, expression, expression))),
+            token!(Lexeme::RParen),
+        ),
+        |(cond, success, failure)| {
+            Box::new(If {
+                cond,
+                success,
+                failure,
+            })
         },
     )(i)
 }

@@ -6,11 +6,26 @@ use scheme_rs::{
 
 #[tokio::main]
 async fn main() {
-    let tokens = lex::lex("(+ 3 4)").unwrap();
+    let tokens = lex::lex(
+        r#"
+        (define (fact x acc)
+          (if (= x 0)
+              acc
+              (fact (- x 1) (* x acc))))
+        "#,
+    )
+    .unwrap();
     println!("tokens: {tokens:#?}");
     let (_, expression) = parse::expression(&tokens).unwrap();
     println!("ast: {expression:#?}");
     let base = Gc::new(eval::Env::base());
     let result = expression.eval(&base).await.unwrap();
-    println!("result = {:#?}", *result.read().await);
+    println!("result = {}", result.read().await.to_string().await);
+    // 2:
+    let tokens = lex::lex("(fact 200 1)").unwrap();
+    println!("tokens: {tokens:#?}");
+    let (_, expression) = parse::expression(&tokens).unwrap();
+    println!("ast: {expression:#?}");
+    let result = expression.eval(&base).await.unwrap();
+    println!("result = {}", result.read().await.to_string().await);
 }

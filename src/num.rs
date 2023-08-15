@@ -4,6 +4,7 @@ use crate::{
 };
 use proc_macros::builtin;
 use rug::{Complete, Complex, Float, Integer, Rational};
+use std::fmt;
 
 #[derive(Debug, Clone)]
 pub enum Number {
@@ -11,6 +12,15 @@ pub enum Number {
     Rational(Rational),
     Real(Float),
     Complex(Complex),
+}
+
+impl fmt::Display for Number {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::Integer(i) => write!(f, "{}", i),
+            _ => todo!(),
+        }
+    }
 }
 
 impl From<Integer> for Number {
@@ -43,6 +53,39 @@ pub async fn add(_env: &Gc<Env>, l: &Gc<Value>, r: &Gc<Value>) -> Result<Gc<Valu
     match (&*l, &*r) {
         (Value::Number(Number::Integer(l)), Value::Number(Number::Integer(r))) => {
             Ok(Gc::new(Value::Number(Number::from((l + r).complete()))))
+        }
+        _ => todo!(),
+    }
+}
+
+#[builtin(-)]
+pub async fn sub(_env: &Gc<Env>, l: &Gc<Value>, r: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> {
+    let (l, r) = (l.read().await, r.read().await);
+    match (&*l, &*r) {
+        (Value::Number(Number::Integer(l)), Value::Number(Number::Integer(r))) => {
+            Ok(Gc::new(Value::Number(Number::from((l - r).complete()))))
+        }
+        _ => todo!(),
+    }
+}
+
+#[builtin(*)]
+pub async fn mult(_env: &Gc<Env>, l: &Gc<Value>, r: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> {
+    let (l, r) = (l.read().await, r.read().await);
+    match (&*l, &*r) {
+        (Value::Number(Number::Integer(l)), Value::Number(Number::Integer(r))) => {
+            Ok(Gc::new(Value::Number(Number::from((l * r).complete()))))
+        }
+        _ => todo!(),
+    }
+}
+
+#[builtin(=)]
+pub async fn eq(_env: &Gc<Env>, l: &Gc<Value>, r: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> {
+    let (l, r) = (l.read().await, r.read().await);
+    match (&*l, &*r) {
+        (Value::Number(Number::Integer(l)), Value::Number(Number::Integer(r))) => {
+            Ok(Gc::new(Value::Boolean(l == r)))
         }
         _ => todo!(),
     }

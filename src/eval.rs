@@ -6,9 +6,8 @@ use crate::{
 };
 use async_trait::async_trait;
 use futures::future::BoxFuture;
-use std::{collections::HashMap, future::Future, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, fmt, future::Future, sync::Arc};
 
-#[derive(Debug)]
 pub enum Value {
     Boolean(bool),
     Number(Number),
@@ -27,6 +26,32 @@ impl Value {
     pub fn is_callable(&self) -> bool {
         matches!(self, Self::Procedure(_) | Self::ExternalFn(_))
     }
+
+    /// #f is false, everything else is true
+    pub fn is_true(&self) -> bool {
+        match self {
+            Self::Boolean(x) if !x => false,
+            _ => true,
+        }
+    }
+
+    pub fn as_proc(&self) -> Option<&Procedure> {
+        match self {
+            Self::Procedure(ref proc) => Some(proc),
+            _ => None,
+        }
+    }
+
+    pub async fn to_string(&self) -> String {
+        match self {
+            Self::Boolean(true) => "#t".to_string(),
+            Self::Boolean(false) => "#f".to_string(),
+            Self::Number(number) => number.to_string(),
+            Self::String(string) => string.clone(),
+            Self::Nil => "()".to_string(),
+            _ => todo!(),
+        }
+    }
 }
 
 impl From<ExternalFn> for Value {
@@ -37,7 +62,6 @@ impl From<ExternalFn> for Value {
 
 impl Trace for Value {}
 
-#[derive(Debug)]
 pub struct Env {
     up: Option<Gc<Env>>,
     // TODO: This can, and should, be optimized into a symtab of offsets and a
@@ -55,6 +79,13 @@ impl Trace for Env {
 }
 
 impl Env {
+    pub fn new(up: &Gc<Env>) -> Self {
+        Self {
+            up: Some(up.clone()),
+            defs: HashMap::new(),
+        }
+    }
+
     pub fn base() -> Self {
         let mut base = Self {
             up: None,
@@ -88,29 +119,89 @@ impl Env {
     }
 }
 
-#[derive(Debug)]
 pub enum RuntimeError {
     UndefinedVariable(String),
     InvalidOperator(Gc<Value>),
+    TooFewArguments,
+    TooManyArguments,
+}
+
+impl fmt::Debug for RuntimeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UndefinedVariable(var) => write!(f, "UndefinedVariable({var})"),
+            Self::InvalidOperator(_) => write!(f, "InvalidOperation(<Gc>)"),
+            Self::TooFewArguments => write!(f, "TooFewArguments"),
+            Self::TooManyArguments => write!(f, "TooManyArguments"),
+        }
+    }
+}
+
+pub enum ValueOrPreparedCall {
+    Value(Gc<Value>),
+    PreparedCall(PreparedCall),
 }
 
 #[async_trait]
 pub trait Eval {
     async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError>;
+
+    /// Evaluate the expression in a tail environment
+    async fn tail_eval(&self, env: &Gc<Env>) -> Result<ValueOrPreparedCall, RuntimeError> {
+        Ok(ValueOrPreparedCall::Value(self.eval(env).await?))
+    }
 }
 
-#[derive(Debug)]
+#[derive(Clone)]
 pub struct Procedure {
     up: Gc<Env>,
-    args: Vec<String>,
-    body: Arc<Body>,
+    args: Vec<ast::Ident>,
+    remaining: Option<ast::Ident>,
+    body: Body,
 }
 
 impl Procedure {
-    async fn call(&self, args: &[Gc<Value>]) -> Result<Gc<Value>, RuntimeError> {
-        // TODO: Construct a new environment with the new arguments
-        // TODO: Evaluate the function body
-        todo!()
+    fn min_args(&self) -> usize {
+        self.args.len()
+    }
+
+    fn max_args(&self) -> Option<usize> {
+        self.remaining.is_none().then(|| self.args.len())
+    }
+
+    async fn call(&self, mut args: Vec<Gc<Value>>) -> Result<Gc<Value>, RuntimeError> {
+        let env = Gc::new(Env::new(&self.up));
+        let mut proc = Cow::Borrowed(self);
+        loop {
+            let mut args_iter = args.iter().peekable();
+            {
+                let mut env = env.write().await;
+                for ast::Ident(ref required) in &proc.args {
+                    // We shouldn't ever need to check this, but probably safer to put
+                    // this call here as well.
+                    let Some(value) = args_iter.next().cloned() else {
+                return Err(RuntimeError::TooFewArguments);
+            };
+                    env.define(required, value);
+                }
+            }
+            if let Some(ref remaining) = self.remaining {
+                todo!()
+            } else if args_iter.peek().is_some() {
+                return Err(RuntimeError::TooManyArguments);
+            }
+
+            let ret = self.body.tail_eval(&env).await?;
+            match ret {
+                ValueOrPreparedCall::Value(value) => return Ok(value),
+                ValueOrPreparedCall::PreparedCall(prepared) => {
+                    proc = Cow::Owned(prepared.operator.read().await.as_proc().unwrap().clone());
+                    args = prepared.args;
+                    println!("We are tail calling!");
+                    // Continue
+                }
+            }
+        }
     }
 }
 
@@ -122,6 +213,14 @@ pub struct ExternalFn {
 }
 
 impl ExternalFn {
+    fn min_args(&self) -> usize {
+        self.num_args
+    }
+
+    fn max_args(&self) -> Option<usize> {
+        (!self.variadic).then(|| self.num_args)
+    }
+
     async fn call(&self, env: &Gc<Env>, args: Vec<Gc<Value>>) -> Result<Gc<Value>, RuntimeError> {
         // TODO: check arguments
         (self.func)(env.clone(), args).await
@@ -139,31 +238,167 @@ impl Eval for ast::Expression {
                 .fetch(&var)
                 .await
                 .ok_or_else(|| RuntimeError::UndefinedVariable(var.clone()))?),
+            Self::DefFunc(def_func) => def_func.eval(env).await,
+            Self::DefVar(def_var) => def_var.eval(env).await,
             Self::Call(call) => call.eval(env).await,
+            Self::Lambda(lambda) => lambda.eval(env).await,
+            Self::If(if_expr) => if_expr.eval(env).await,
             _ => todo!(),
         }
+    }
+
+    async fn tail_eval(&self, env: &Gc<Env>) -> Result<ValueOrPreparedCall, RuntimeError> {
+        match self {
+            Self::If(if_expr) => if_expr.tail_eval(env).await,
+            Self::Body(body) => body.tail_eval(env).await,
+            Self::Call(call) => call.tail_eval(env).await,
+            _ => Ok(ValueOrPreparedCall::Value(self.eval(env).await?)),
+        }
+    }
+}
+
+#[async_trait]
+impl Eval for ast::Body {
+    async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
+        let Some((last, body)) = self.exprs.split_last() else {
+            return Ok(Gc::new(Value::Nil));
+        };
+        for expr in body {
+            // Discard values that aren't returned
+            expr.eval(env).await?;
+        }
+        // Return the last value
+        last.eval(env).await
+    }
+
+    async fn tail_eval(&self, env: &Gc<Env>) -> Result<ValueOrPreparedCall, RuntimeError> {
+        let Some((last, body)) = self.exprs.split_last() else {
+            return Ok(ValueOrPreparedCall::Value(Gc::new(Value::Nil)));
+        };
+        for expr in body {
+            // Discard values that aren't returned
+            expr.eval(env).await?;
+        }
+        // Return the last value
+        last.tail_eval(env).await
+    }
+}
+
+pub struct PreparedCall {
+    operator: Gc<Value>,
+    args: Vec<Gc<Value>>,
+}
+
+impl PreparedCall {
+    async fn prepare(call: &ast::Call, env: &Gc<Env>) -> Result<Self, RuntimeError> {
+        // Collect the operator
+        let operator = call.operator.eval(env).await?;
+        let args = {
+            let read_op = operator.read().await;
+            if !read_op.is_callable() {
+                return Err(RuntimeError::InvalidOperator(operator.clone()));
+            }
+            // Check the number of arguments provided
+            let (min_args, max_args) = match &*read_op {
+                Value::ExternalFn(extern_fn) => (extern_fn.min_args(), extern_fn.max_args()),
+                Value::Procedure(proc) => (proc.min_args(), proc.max_args()),
+                _ => unreachable!(),
+            };
+            if call.args.len() < min_args {
+                return Err(RuntimeError::TooFewArguments);
+            }
+            if let Some(max_args) = max_args {
+                if call.args.len() > max_args {
+                    return Err(RuntimeError::TooManyArguments);
+                }
+            }
+            // Collect the arguments
+            let mut args = Vec::new();
+            for arg in &call.args {
+                args.push(arg.eval(env).await?);
+            }
+            args
+        };
+
+        Ok(Self { operator, args })
     }
 }
 
 #[async_trait]
 impl Eval for ast::Call {
     async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
-        // Collect the operator
-        let op = self.operator.eval(env).await?;
-        let read_op = op.read().await;
-        if !read_op.is_callable() {
-            return Err(RuntimeError::InvalidOperator(op.clone()));
-        }
-        // Collect the arguments
-        let mut args = Vec::new();
-        for arg in &self.args {
-            args.push(arg.eval(env).await?);
-        }
+        let PreparedCall { operator, args } = PreparedCall::prepare(self, env).await?;
+        let read_op = operator.read().await;
         // Call the operator with the arguments
         match &*read_op {
             Value::ExternalFn(extern_fn) => extern_fn.call(env, args).await,
-            Value::Procedure(proc) => proc.call(args.as_slice()).await,
+            Value::Procedure(proc) => proc.call(args).await,
             _ => unreachable!(),
         }
+    }
+
+    async fn tail_eval(&self, env: &Gc<Env>) -> Result<ValueOrPreparedCall, RuntimeError> {
+        // TODO: if external fn, call it and return the value
+        Ok(ValueOrPreparedCall::PreparedCall(
+            PreparedCall::prepare(self, env).await?,
+        ))
+    }
+}
+
+#[async_trait]
+impl Eval for ast::Lambda {
+    async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
+        // TODO: Optimize the AST with smart pointers to prevent constantly
+        // cloning.
+        let (args, remaining) = self.args.to_args_and_remaining();
+        Ok(Gc::new(Value::Procedure(Procedure {
+            up: env.clone(),
+            args,
+            remaining,
+            body: self.body.clone(),
+        })))
+    }
+}
+
+#[async_trait]
+impl Eval for ast::If {
+    async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
+        if self.cond.eval(env).await?.read().await.is_true() {
+            self.success.eval(env).await
+        } else {
+            self.failure.eval(env).await
+        }
+    }
+
+    async fn tail_eval(&self, env: &Gc<Env>) -> Result<ValueOrPreparedCall, RuntimeError> {
+        if self.cond.eval(env).await?.read().await.is_true() {
+            self.success.tail_eval(env).await
+        } else {
+            self.failure.tail_eval(env).await
+        }
+    }
+}
+
+#[async_trait]
+impl Eval for ast::DefineFunc {
+    async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
+        let (args, remaining) = self.args.to_args_and_remaining();
+        let func = Gc::new(Value::Procedure(Procedure {
+            up: env.clone(),
+            args,
+            remaining,
+            body: self.body.clone(),
+        }));
+        env.write().await.define(&self.name.0, func);
+        Ok(Gc::new(Value::Nil))
+    }
+}
+
+#[async_trait]
+impl Eval for ast::DefineVar {
+    async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
+        let val = self.val.eval(env).await?;
+        env.write().await.define(&self.name.0, val);
+        Ok(Gc::new(Value::Nil))
     }
 }
