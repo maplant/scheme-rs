@@ -20,6 +20,7 @@ pub enum Value {
     ByteVector(Vec<u8>),
     Procedure(Procedure),
     ExternalFn(ExternalFn),
+    Transformer(crate::expand::Transformer),
 }
 
 impl Value {

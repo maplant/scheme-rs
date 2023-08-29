@@ -6,3 +6,4 @@ pub mod lex;
 pub mod lists;
 pub mod num;
 pub mod parse;
+pub mod expand;
