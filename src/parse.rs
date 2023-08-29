@@ -1,10 +1,6 @@
 use crate::{
-    ast::{
-        And, Body, Call, DefineFunc, DefineVar, Expression, Formals, Ident, If, Lambda, Let,
-        Literal, Or,
-    },
     lex::{Fragment, Lexeme},
-    num::Number,
+    sexpr::SExpr,
 };
 use nom::{
     branch::alt,
@@ -15,6 +11,11 @@ use nom::{
 };
 use rug::Integer;
 
+pub fn expression<'a>(i: &'a [Lexeme<'a>]) -> IResult<&'a [Lexeme<'a>], SExpr> {
+    todo!()
+}
+
+/*
 macro_rules! ident {
     ( $s:literal ) => {
         $crate::parse::satisfy(|lex| lex == &Lexeme::Identifier(std::borrow::Cow::Borrowed($s)))
@@ -276,3 +277,4 @@ pub fn satisfy(
         _ => Err(Err::Error(Error::new(i, ErrorKind::Satisfy))),
     }
 }
+*/

@@ -106,7 +106,7 @@ pub struct Gc<T: ?Sized> {
 
 impl<T: ?Sized> Gc<T> {
     pub fn as_ptr(&self) -> *const GcInner<T> {
-        self.ptr.as_ptr() 
+        self.ptr.as_ptr()
     }
 }
 

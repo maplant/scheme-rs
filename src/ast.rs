@@ -15,10 +15,10 @@ impl PartialEq<&'_ str> for Ident {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ByteVector(pub Vec<u8>);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
     Number(Number),
     Boolean(bool),

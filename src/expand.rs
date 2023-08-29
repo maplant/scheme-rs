@@ -1,153 +1,14 @@
+use crate::{
+    ast::Literal,
+    eval::{Env, Eval, Value},
+    gc::Gc,
+    sexpr::{Ident, SExpr},
+};
+use futures::future::BoxFuture;
 use std::{
     collections::{HashMap, HashSet},
     hash::{Hash, Hasher},
 };
-
-use futures::future::BoxFuture;
-
-use crate::{
-    eval::{Env, Eval, Value},
-    gc::Gc,
-};
-
-#[derive(Clone)]
-struct Ident {
-    macro_env: Option<Gc<Env>>,
-    sym: String,
-}
-
-impl Ident {
-    pub fn new_free(sym: String) -> Self {
-        Self {
-            macro_env: None,
-            sym,
-        }
-    }
-
-    pub fn new_macro(sym: &str, macro_env: &Gc<Env>) -> Self {
-        Self {
-            macro_env: Some(macro_env.clone()),
-            sym: sym.to_string(),
-        }
-    }
-
-    pub async fn lookup(&self, env: &Gc<Env>) -> Gc<Value> {
-        // If macro env is set, use that. Otherwise, use env.
-        todo!()
-    }
-}
-
-impl Hash for Ident {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.macro_env.as_ref().map(Gc::as_ptr).hash(state);
-        self.sym.hash(state);
-    }
-}
-
-impl PartialEq for Ident {
-    fn eq(&self, rhs: &Ident) -> bool {
-        self.macro_env.as_ref().map(Gc::as_ptr) == rhs.macro_env.as_ref().map(Gc::as_ptr)
-            && self.sym == rhs.sym
-    }
-}
-
-impl Eq for Ident {}
-
-#[derive(Clone)]
-enum SExpr {
-    Nil,
-    List(Vec<SExpr>),
-    Vector(Vec<SExpr>),
-    Literal(Literal),
-    Identifier(Ident),
-}
-
-impl SExpr {
-    fn expand<'a>(self, env: &'a Gc<Env>, binds: &'a Binds<'_>) -> BoxFuture<'a, SExpr> {
-        Box::pin(async move {
-            match self {
-                Self::List(mut list) => {
-                    let (head, tail) = list.split_first().unwrap();
-                    let head = match head.clone() {
-                        list @ Self::List(_) => list.expand(env, binds).await,
-                        x => x,
-                    };
-                    if !matches!(head, Self::Identifier(_)) {
-                        let mut output = vec![head];
-                        for item in tail {
-                            output.push(item.clone().expand(env, binds).await);
-                        }
-                        return SExpr::List(output);
-                    };
-                    let mut list = vec![head];
-                    list.extend(tail.iter().cloned());
-                    let mut list = SExpr::List(list);
-                    // Check if current ident is a macro
-                    while let Value::Transformer(transformer) = todo!() {
-                        list = transformer.expand(&list, binds).unwrap();
-                    }
-                    // TODO: Check if lambda, define or let
-                    let list: Vec<_> = todo!();
-                    let mut output = Vec::<SExpr>::new();
-                    let mut items = list.into_iter();
-                    output.push(items.next().unwrap());
-                    for item in items {
-                        output.push(item.expand(env, binds).await)
-                    }
-                    Self::List(output)
-                }
-                x => x,
-            }
-        })
-    }
-}
-
-/*
-impl SExpr {
-    async fn expand_list(self, tail: Vec<SExpr>, env: &Gc<Env>, binds: &Binds<'_>) -> Self {
-        /*
-        let head = match self {
-            Self::List { head, tail } => {
-                head.expand_list(tail, env);
-            },
-            Self::Symbol(ident) => ident,
-        };
-         */
-
-        let is_transformer: bool = todo!();
-        if !is_transformer {
-            // Check if its a let or lambda
-
-            let mut new_tail = Vec::new();
-            for expr in tail.into_iter() {
-                expr.expand(env, binds);
-            }
-
-            return SExpr::List { head: Box::new(self), tail: new_tail };
-        }
-
-        let head: Ident = todo!();
-        let transformer: Transformer = todo!();
-
-        let new = transformer.expand(&head, &tail, binds).unwrap();
-
-        todo!()
-    }
-
-    async fn expand(self, gc: &Gc<Env>, binds: &Binds<'_>) -> Self {
-        todo!()
-    }
-
-    async fn compile(self, env: &Gc<Env>) -> Box<dyn Eval> {
-        // Expand self
-        // if let, bind
-        todo!()
-    }
-}
-*/
-
-#[derive(Clone)]
-struct Literal;
 
 pub struct Transformer {
     env: Gc<Env>,
@@ -155,7 +16,7 @@ pub struct Transformer {
 }
 
 impl Transformer {
-    fn expand(&self, expr: &SExpr, binds: &Binds<'_>) -> Option<SExpr> {
+    pub fn expand(&self, expr: &SExpr, binds: &Binds<'_>) -> Option<SExpr> {
         for rule in &self.rules {
             if let Some(expansion) = rule.expand(expr, binds, &self.env) {
                 return Some(expansion);
@@ -304,9 +165,18 @@ fn execute_slice(
     output
 }
 
-struct Binds<'a> {
+pub struct Binds<'a> {
     up: Option<&'a Binds<'a>>,
     binds: HashSet<String>,
+}
+
+impl Binds<'static> {
+    pub async fn new(env: &Gc<Env>) -> Self {
+        Self {
+            up: None,
+            binds: todo!("Need to fetch binds from current environment"),
+        }
+    }
 }
 
 impl Binds<'_> {

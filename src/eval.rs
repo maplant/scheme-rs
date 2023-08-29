@@ -160,7 +160,7 @@ impl ValueOrPreparedCall {
 /// Any struct implementing this trait must either implement `eval`, `tail_eval`, or
 /// both, even though both methods are provided.
 #[async_trait]
-pub trait Eval {
+pub trait Eval: Send + Sync {
     async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
         self.tail_eval(env).await?.eval(env).await
     }
@@ -199,8 +199,8 @@ impl Procedure {
                     // We shouldn't ever need to check this, but probably safer to put
                     // this call here as well.
                     let Some(value) = args_iter.next().cloned() else {
-                return Err(RuntimeError::TooFewArguments);
-            };
+                        return Err(RuntimeError::TooFewArguments);
+                    };
                     env.define(required, value);
                 }
             }
@@ -450,5 +450,15 @@ impl Eval for ast::Or {
         }
         // If all of the other arguments are false, then the result is the last expression
         last.tail_eval(env).await
+    }
+}
+
+#[async_trait]
+impl Eval for ast::Literal {
+    async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
+        Ok(Gc::new(match self {
+            ast::Literal::Boolean(b) => Value::Boolean(*b),
+            _ => todo!("Literal evaluation not implemented"),
+        }))
     }
 }

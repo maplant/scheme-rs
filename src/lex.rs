@@ -53,27 +53,37 @@ impl Lexeme<'static> {
 
 impl<'a> Lexeme<'a> {
     pub fn to_number(&self) -> &str {
-        let Lexeme::Number(num) = self else { panic!("not a number"); };
+        let Lexeme::Number(num) = self else {
+            panic!("not a number");
+        };
         num.as_ref()
     }
 
     pub fn to_boolean(&self) -> bool {
-        let Lexeme::Boolean(b) = self else { panic!("not a boolean"); };
+        let Lexeme::Boolean(b) = self else {
+            panic!("not a boolean");
+        };
         *b
     }
 
     pub fn to_ident(&self) -> &str {
-        let Lexeme::Identifier(i) = self else { panic!("not an ident"); };
+        let Lexeme::Identifier(i) = self else {
+            panic!("not an ident");
+        };
         i.as_ref()
     }
 
     pub fn to_char(&self) -> &str {
-        let Lexeme::Character(c) = self else { panic!("not a character"); };
+        let Lexeme::Character(c) = self else {
+            panic!("not a character");
+        };
         c.as_ref()
     }
 
     pub fn to_string(&self) -> &[Fragment<'a>] {
-        let Lexeme::String(s) = self else { panic!("not a string"); };
+        let Lexeme::String(s) = self else {
+            panic!("not a string");
+        };
         s.as_slice()
     }
 
