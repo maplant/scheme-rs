@@ -7,13 +7,14 @@ use scheme_rs::{
 
 async fn run(code: &str, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
     let tokens = lex::lex(code).unwrap();
-    let sexpr = SExpr::parse(&tokens);
+    let sexpr = dbg!(SExpr::parse(&tokens));
     sexpr.compile(env).await.eval(env).await
 }
 
 #[tokio::main]
 async fn main() {
     let base = Gc::new(Env::base());
+    let result = run("(5 . 5)", &base).await.unwrap();
     // 1:
     let result = run(
         r#"
@@ -26,7 +27,7 @@ async fn main() {
     )
     .await
     .unwrap();
-    println!("result = {}", result.read().await.fmt().await);
+//    println!("result = {}", result.read().await.fmt().await);
     // 2:
     let result = run(
         r#"
@@ -36,5 +37,5 @@ async fn main() {
     )
     .await
     .unwrap();
-    println!("result = {}", result.read().await.fmt().await);
+//    println!("result = {}", result.read().await.fmt().await);
 }

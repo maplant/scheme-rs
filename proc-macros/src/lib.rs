@@ -1,7 +1,7 @@
 use proc_macro::{self, TokenStream};
 use proc_macro2::Span;
 use quote::quote;
-use syn::{parse_macro_input, parse_quote, FnArg, Ident, ItemFn, PatType, Path, PathSegment, Type};
+use syn::{parse_macro_input, parse_quote, FnArg, Ident, ItemFn, PatType, Type};
 
 #[proc_macro_attribute]
 pub fn builtin(attr: TokenStream, item: TokenStream) -> TokenStream {

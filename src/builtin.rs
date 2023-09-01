@@ -2,7 +2,7 @@ use futures::future::BoxFuture;
 
 use crate::{
     eval::{Env, ExternalFn, RuntimeError, Value},
-    gc::Gc,
+    gc::Gc, ast::Ident,
 };
 
 pub struct Builtin {
@@ -29,7 +29,7 @@ impl Builtin {
 
     pub fn install(&self, into: &mut Env) {
         into.define(
-            self.name,
+            &Ident::new_free(self.name),
             Gc::new(Value::from(ExternalFn {
                 num_args: self.num_args,
                 variadic: self.variadic,

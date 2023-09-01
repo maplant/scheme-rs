@@ -1,8 +1,9 @@
 use crate::{
-    ast::Literal,
+    ast::{Ident, Literal},
     eval::{Env, Eval, Value},
     gc::Gc,
-    sexpr::{Ident, SExpr},
+    lex::Span,
+    sexpr::SExpr,
 };
 use futures::future::BoxFuture;
 use std::{
@@ -16,7 +17,7 @@ pub struct Transformer {
 }
 
 impl Transformer {
-    pub fn expand(&self, expr: &SExpr, binds: &Binds<'_>) -> Option<SExpr> {
+    pub fn expand<'a>(&self, expr: &SExpr<'a>, binds: &Binds<'a>) -> Option<SExpr<'a>> {
         for rule in &self.rules {
             if let Some(expansion) = rule.expand(expr, binds, &self.env) {
                 return Some(expansion);
@@ -32,11 +33,12 @@ struct SyntaxRule {
 }
 
 impl SyntaxRule {
-    fn expand(&self, expr: &SExpr, binds: &Binds<'_>, env: &Gc<Env>) -> Option<SExpr> {
+    fn expand<'a>(&self, expr: &SExpr<'a>, binds: &Binds<'_>, env: &Gc<Env>) -> Option<SExpr<'a>> {
         let mut var_binds = HashMap::new();
+        let curr_span = expr.span().clone();
         self.pattern
             .matches(expr, binds, &mut var_binds)
-            .then(|| self.template.execute(&env, &var_binds))
+            .then(|| self.template.execute(&env, &var_binds, curr_span))
     }
 }
 
@@ -51,17 +53,17 @@ enum Pattern {
     Literal(Literal),
 }
 
-enum SExprOrMany {
-    SExpr(SExpr),
-    Many(Vec<SExpr>),
+enum SExprOrMany<'a> {
+    SExpr(SExpr<'a>),
+    Many(Vec<SExpr<'a>>),
 }
 
 impl Pattern {
-    fn matches(
+    fn matches<'a>(
         &self,
-        expr: &SExpr,
+        expr: &SExpr<'a>,
         binds: &Binds<'_>,
-        var_binds: &mut HashMap<String, SExprOrMany>,
+        var_binds: &mut HashMap<String, SExprOrMany<'a>>,
     ) -> bool {
         match self {
             Self::Underscore => true,
@@ -70,26 +72,28 @@ impl Pattern {
                 true
             }
             Self::Identifier(ref lhs) => match expr {
-                SExpr::Identifier(rhs) if lhs == &rhs.sym && !binds.is_bound(&rhs.sym) => true,
+                SExpr::Identifier {
+                    ident: rhs, ..
+                } if lhs == &rhs.sym && !binds.is_bound(&rhs.sym) => true,
                 _ => false,
             },
             Self::List(list) => match_slices(&list, expr, binds, var_binds),
             Self::Vector(vec) => match_slices(&vec, expr, binds, var_binds),
             // We shouldn't ever see this outside of lists
-            Self::Nil => matches!(expr, SExpr::Nil),
+            Self::Nil => expr.is_nil(),
             _ => todo!(),
         }
     }
 }
 
-fn match_slices(
+fn match_slices<'a>(
     pattern: &[Pattern],
-    expr: &SExpr,
+    expr: &SExpr<'a>,
     binds: &Binds<'_>,
-    var_binds: &mut HashMap<String, SExprOrMany>,
+    var_binds: &mut HashMap<String, SExprOrMany<'a>>,
 ) -> bool {
     let mut expr_iter = match expr {
-        SExpr::List(list) => list.iter().peekable(),
+        SExpr::List { list, .. } => list.iter().peekable(),
         _ => return false,
     };
     let mut pattern_iter = pattern.iter().peekable();
@@ -135,23 +139,37 @@ enum Template {
 }
 
 impl Template {
-    fn execute(&self, macro_env: &Gc<Env>, var_binds: &HashMap<String, SExprOrMany>) -> SExpr {
+    fn execute<'a>(
+        &self,
+        macro_env: &Gc<Env>,
+        var_binds: &HashMap<String, SExprOrMany<'a>>,
+        curr_span: Span<'a>,
+    ) -> SExpr<'a> {
         match self {
-            Self::Nil => SExpr::Nil,
-            Self::List(list) => SExpr::List(execute_slice(list, macro_env, var_binds)),
-            Self::Vector(vec) => SExpr::Vector(execute_slice(vec, macro_env, var_binds)),
-            Self::Identifier(ident) => SExpr::Identifier(Ident::new_macro(ident, macro_env)),
-            Self::Literal(literal) => SExpr::Literal(literal.clone()),
+            Self::Nil => SExpr::new_nil(curr_span),
+            Self::List(list) => SExpr::new_list(
+                execute_slice(list, macro_env, var_binds, curr_span.clone()),
+                curr_span,
+            ),
+            Self::Vector(vec) => SExpr::new_vector(
+                execute_slice(vec, macro_env, var_binds, curr_span.clone()),
+                curr_span,
+            ),
+            Self::Identifier(ident) => {
+                SExpr::new_identifier(Ident::new_macro(ident, macro_env), curr_span)
+            }
+            Self::Literal(literal) => SExpr::new_literal(literal.clone(), curr_span),
             _ => unreachable!(),
         }
     }
 }
 
-fn execute_slice(
+fn execute_slice<'a>(
     items: &[Template],
     macro_env: &Gc<Env>,
-    var_binds: &HashMap<String, SExprOrMany>,
-) -> Vec<SExpr> {
+    var_binds: &HashMap<String, SExprOrMany<'a>>,
+    curr_span: Span<'a>,
+) -> Vec<SExpr<'a>> {
     let mut output = Vec::new();
     for item in items {
         match item {
@@ -159,7 +177,7 @@ fn execute_slice(
                 SExprOrMany::SExpr(expr) => output.push(expr.clone()),
                 SExprOrMany::Many(exprs) => output.extend(exprs.clone()),
             },
-            _ => output.push(item.execute(macro_env, var_binds)),
+            _ => output.push(item.execute(macro_env, var_binds, curr_span.clone())),
         }
     }
     output
@@ -171,7 +189,7 @@ pub struct Binds<'a> {
 }
 
 impl Binds<'static> {
-    pub async fn new(env: &Gc<Env>) -> Self {
+    pub async fn from_global(env: &Gc<Env>) -> Self {
         Self {
             up: None,
             binds: todo!("Need to fetch binds from current environment"),
@@ -179,8 +197,27 @@ impl Binds<'static> {
     }
 }
 
+impl<'a> Binds<'a> {
+    pub fn new_local(up: &'a Binds<'a>) -> Self {
+        Self {
+            up: Some(up),
+            binds: HashSet::default(),
+        }
+    }
+}
+
 impl Binds<'_> {
-    fn is_bound(&self, name: &str) -> bool {
-        todo!()
+    pub fn is_bound(&self, name: &str) -> bool {
+        if self.binds.contains(name) {
+            true
+        } else if let Some(up) = self.up {
+            up.is_bound(name)
+        } else {
+            false
+        }
+    }
+
+    pub fn bind(&mut self, name: &str) {
+        self.binds.insert(name.to_string());
     }
 }

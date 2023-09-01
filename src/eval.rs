@@ -1,5 +1,5 @@
 use crate::{
-    ast::{self, Body},
+    ast::{self, Body, Ident},
     builtin::Builtin,
     gc::{Gc, Trace},
     num::Number,
@@ -43,6 +43,7 @@ impl Value {
         }
     }
 
+    /*
     pub fn fmt(&self) -> BoxFuture<'_, String> {
         Box::pin(async move {
             match self {
@@ -56,6 +57,7 @@ impl Value {
             }
         })
     }
+    */
 }
 
 impl From<ExternalFn> for Value {
@@ -70,7 +72,7 @@ pub struct Env {
     up: Option<Gc<Env>>,
     // TODO: This can, and should, be optimized into a symtab of offsets and a
     // Vector.
-    defs: HashMap<String, Gc<Value>>,
+    defs: HashMap<Ident, Gc<Value>>,
 }
 
 impl Trace for Env {
@@ -104,7 +106,7 @@ impl Env {
         base
     }
 
-    pub async fn fetch(&self, var: &str) -> Option<Gc<Value>> {
+    pub async fn fetch(&self, var: &Ident) -> Option<Gc<Value>> {
         if let Some(val) = self.defs.get(var) {
             return Some(val.clone());
         }
@@ -118,13 +120,13 @@ impl Env {
         None
     }
 
-    pub fn define(&mut self, var: &str, val: Gc<Value>) {
-        self.defs.insert(var.to_string(), val);
+    pub fn define(&mut self, var: &Ident, val: Gc<Value>) {
+        self.defs.insert(var.clone(), val);
     }
 }
 
 pub enum RuntimeError {
-    UndefinedVariable(String),
+    UndefinedVariable(Ident),
     InvalidOperator(Gc<Value>),
     TooFewArguments,
     TooManyArguments,
@@ -133,7 +135,7 @@ pub enum RuntimeError {
 impl fmt::Debug for RuntimeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UndefinedVariable(var) => write!(f, "UndefinedVariable({var})"),
+            Self::UndefinedVariable(var) => write!(f, "UndefinedVariable({var:?})"),
             Self::InvalidOperator(_) => write!(f, "InvalidOperation(<Gc>)"),
             Self::TooFewArguments => write!(f, "TooFewArguments"),
             Self::TooManyArguments => write!(f, "TooManyArguments"),
@@ -160,7 +162,7 @@ impl ValueOrPreparedCall {
 /// Any struct implementing this trait must either implement `eval`, `tail_eval`, or
 /// both, even though both methods are provided.
 #[async_trait]
-pub trait Eval: Send + Sync {
+pub trait Eval: dyn_clone::DynClone + Send + Sync {
     async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
         self.tail_eval(env).await?.eval(env).await
     }
@@ -170,6 +172,8 @@ pub trait Eval: Send + Sync {
         Ok(ValueOrPreparedCall::Value(self.eval(env).await?))
     }
 }
+
+dyn_clone::clone_trait_object!(Eval);
 
 #[derive(Clone)]
 pub struct Procedure {
@@ -195,7 +199,7 @@ impl Procedure {
             let mut args_iter = args.iter().peekable();
             {
                 let mut env = env.write().await;
-                for ast::Ident(ref required) in &proc.args {
+                for required in &proc.args {
                     // We shouldn't ever need to check this, but probably safer to put
                     // this call here as well.
                     let Some(value) = args_iter.next().cloned() else {
@@ -246,12 +250,13 @@ impl ExternalFn {
     }
 }
 
+/*
 #[async_trait]
 impl Eval for ast::Expression {
     async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
         match self {
             Self::Literal(ast::Literal::Number(n)) => Ok(Gc::new(Value::Number(n.clone()))),
-            Self::VariableRef(ast::Ident(var)) => Ok(env
+            Self::VariableRef(var) => Ok(env
                 .read()
                 .await
                 .fetch(&var)
@@ -281,6 +286,7 @@ impl Eval for ast::Expression {
         }
     }
 }
+*/
 
 #[async_trait]
 impl Eval for ast::Body {
@@ -376,8 +382,8 @@ impl Eval for ast::Lambda {
 impl Eval for ast::Let {
     async fn tail_eval(&self, env: &Gc<Env>) -> Result<ValueOrPreparedCall, RuntimeError> {
         let mut new_scope = Env::new(env);
-        for (ast::Ident(ref var), expr) in &self.bindings {
-            new_scope.define(var, expr.eval(env).await?);
+        for (ident, expr) in &self.bindings {
+            new_scope.define(ident, expr.eval(env).await?);
         }
         self.body.tail_eval(&Gc::new(new_scope)).await
     }
@@ -388,8 +394,10 @@ impl Eval for ast::If {
     async fn tail_eval(&self, env: &Gc<Env>) -> Result<ValueOrPreparedCall, RuntimeError> {
         if self.cond.eval(env).await?.read().await.is_true() {
             self.success.tail_eval(env).await
+        } else if let Some(ref failure) = self.failure {
+            failure.tail_eval(env).await
         } else {
-            self.failure.tail_eval(env).await
+            Ok(ValueOrPreparedCall::Value(Gc::new(Value::Nil)))
         }
     }
 }
@@ -404,7 +412,7 @@ impl Eval for ast::DefineFunc {
             remaining,
             body: self.body.clone(),
         }));
-        env.write().await.define(&self.name.0, func);
+        env.write().await.define(&self.name, func);
         Ok(Gc::new(Value::Nil))
     }
 }
@@ -413,8 +421,18 @@ impl Eval for ast::DefineFunc {
 impl Eval for ast::DefineVar {
     async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
         let val = self.val.eval(env).await?;
-        env.write().await.define(&self.name.0, val);
+        env.write().await.define(&self.name, val);
         Ok(Gc::new(Value::Nil))
+    }
+}
+
+#[async_trait]
+impl Eval for ast::Define {
+    async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
+        match self {
+            ast::Define::DefineFunc(define_func) => define_func.eval(env).await,
+            ast::Define::DefineVar(define_var) => define_var.eval(env).await,
+        }
     }
 }
 
