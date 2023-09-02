@@ -40,7 +40,7 @@ impl SyntaxRule {
         let curr_span = expr.span().clone();
         self.pattern
             .matches(expr, binds, &mut var_binds)
-            .then(|| self.template.execute(&env, &dbg!(var_binds), curr_span))
+            .then(|| self.template.execute(&env, &var_binds, curr_span))
     }
 }
 

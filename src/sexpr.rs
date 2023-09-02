@@ -157,7 +157,7 @@ impl<'a> SExpr<'a> {
         binds: &'a Binds<'_>,
     ) -> BoxFuture<'a, Box<dyn Eval>> {
         Box::pin(async move {
-            let expr = dbg!(self.expand(env, binds).await);
+            let expr = self.expand(env, binds).await;
             match &*expr {
                 Self::List { list, span } => match &list[..] {
                     [Self::Identifier { ident: op, span }, tail @ ..] if op.sym == "define" => {
@@ -188,7 +188,6 @@ impl<'a> SExpr<'a> {
                             .await
                             .unwrap(),
                     ) as Box<dyn Eval>,
-                    _ => todo!(),
                 },
                 Self::Literal { literal, .. } => Box::new(literal.clone()) as Box<dyn Eval>,
                 Self::Identifier { ident, .. } => {
