@@ -1,7 +1,7 @@
 use crate::{
     eval::{Env, Eval, Value},
+    expand::SyntaxRule,
     gc::Gc,
-    lex::Lexeme,
     num::Number,
 };
 use std::{
@@ -57,6 +57,11 @@ impl PartialEq for Ident {
 
 impl Eq for Ident {}
 
+#[derive(Clone)]
+pub struct Ref {
+    pub val: Gc<Value>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ByteVector(pub Vec<u8>);
 
@@ -92,6 +97,12 @@ pub struct DefineVar {
 pub enum Define {
     DefineVar(DefineVar),
     DefineFunc(DefineFunc),
+}
+
+#[derive(Clone)]
+pub struct DefineSyntax {
+    pub name: Ident,
+    pub rules: Vec<SyntaxRule>,
 }
 
 #[derive(Clone)]

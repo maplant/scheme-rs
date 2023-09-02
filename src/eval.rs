@@ -6,7 +6,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use futures::future::BoxFuture;
-use std::{borrow::Cow, collections::HashMap, fmt, future::Future, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, fmt, future::Future, result, sync::Arc};
 
 pub enum Value {
     Boolean(bool),
@@ -251,11 +251,31 @@ impl ExternalFn {
 #[async_trait]
 impl Eval for ast::Ident {
     async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
-        env.read()
-            .await
-            .fetch(self)
-            .await
-            .ok_or_else(|| RuntimeError::UndefinedVariable(self.clone()))
+        let result = env.read().await.fetch(self).await;
+        // This should very rarely occur, but it is possible in certain circumstances
+        if result.is_none() && self.macro_env.is_some() {
+            let new_ident = Ident {
+                sym: self.sym.clone(),
+                macro_env: None,
+            };
+            self.macro_env
+                .as_ref()
+                .unwrap()
+                .read()
+                .await
+                .fetch(&new_ident)
+                .await
+        } else {
+            result
+        }
+        .ok_or_else(|| RuntimeError::UndefinedVariable(self.clone()))
+    }
+}
+
+#[async_trait]
+impl Eval for ast::Ref {
+    async fn eval(&self, _env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
+        Ok(self.val.clone())
     }
 }
 
@@ -404,6 +424,21 @@ impl Eval for ast::Define {
             ast::Define::DefineFunc(define_func) => define_func.eval(env).await,
             ast::Define::DefineVar(define_var) => define_var.eval(env).await,
         }
+    }
+}
+
+#[async_trait]
+impl Eval for ast::DefineSyntax {
+    async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
+        let macro_env = Gc::new(Env::new(env));
+        env.write().await.define(
+            &self.name,
+            Gc::new(Value::Transformer(crate::expand::Transformer {
+                env: macro_env,
+                rules: self.rules.clone(),
+            })),
+        );
+        Ok(Gc::new(Value::Nil))
     }
 }
 

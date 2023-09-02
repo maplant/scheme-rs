@@ -75,6 +75,9 @@ pub fn expression<'a>(i: &'a [Token<'a>]) -> Result<(&'a [Token<'a>], SExpr), Pa
             SExpr::new_identifier(Ident::new_free(i.lexeme.to_ident()), i.span.clone()),
         )),
         // Lists:
+        [n @ token!(Lexeme::LParen), token!(Lexeme::RParen), tail @ ..] => {
+            Ok((tail, SExpr::new_nil(n.span.clone())))
+        }
         [p @ token!(Lexeme::LParen), tail @ ..] => match list(tail, p.span.clone()) {
             Err(ParseListError::UnclosedParen) => Err(ParseError::unclosed_paren(p)),
             Err(ParseListError::ParseError(err)) => Err(err),

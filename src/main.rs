@@ -42,4 +42,28 @@ async fn main() {
     .await
     .unwrap();
     //    println!("result = {}", result.read().await.fmt().await);
+    // 3:
+    run(
+        r#"
+(define-syntax test
+  (syntax-rules ()
+     ((test x) (+ x 5))))
+        "#,
+        &base,
+    )
+    .await
+    .unwrap();
+    // 4:
+    run("(test 10)", &base).await.unwrap();
+    run(
+        r#"
+(define-syntax test2
+  (syntax-rules ()
+    ((test2 a b _ x ...) (list a b x ...))))
+"#,
+        &base,
+    )
+    .await
+    .unwrap();
+    run("(test2 1 2 3 4 5)", &base).await.unwrap();
 }

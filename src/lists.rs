@@ -5,8 +5,6 @@ use crate::{
 use proc_macros::builtin;
 
 pub async fn fmt_list(car: &Gc<Value>, cdr: &Gc<Value>) -> String {
-    todo!()
-    /*
     let mut output = String::from("(");
     output.push_str(&car.read().await.fmt().await);
 
@@ -33,7 +31,6 @@ pub async fn fmt_list(car: &Gc<Value>, cdr: &Gc<Value>) -> String {
 
     output.push(')');
     output
-     */
 }
 
 #[builtin(list)]

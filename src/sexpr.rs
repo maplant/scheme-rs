@@ -157,12 +157,21 @@ impl<'a> SExpr<'a> {
         binds: &'a Binds<'_>,
     ) -> BoxFuture<'a, Box<dyn Eval>> {
         Box::pin(async move {
-            let expr = self.expand(env, binds).await;
+            let expr = dbg!(self.expand(env, binds).await);
             match &*expr {
                 Self::List { list, span } => match &list[..] {
                     [Self::Identifier { ident: op, span }, tail @ ..] if op.sym == "define" => {
                         Box::new(
                             crate::compile::compile_define(tail, env, binds, span)
+                                .await
+                                .unwrap(),
+                        ) as Box<dyn Eval>
+                    }
+                    [Self::Identifier { ident: op, span }, tail @ ..]
+                        if op.sym == "define-syntax" =>
+                    {
+                        Box::new(
+                            crate::compile::compile_define_syntax(tail, env, binds, span)
                                 .await
                                 .unwrap(),
                         ) as Box<dyn Eval>
@@ -182,7 +191,24 @@ impl<'a> SExpr<'a> {
                     _ => todo!(),
                 },
                 Self::Literal { literal, .. } => Box::new(literal.clone()) as Box<dyn Eval>,
-                Self::Identifier { ident, .. } => Box::new(ident.clone()) as Box<dyn Eval>,
+                Self::Identifier { ident, .. } => {
+                    // If the identifier has a macro environment and has not been bound we
+                    // can attempt to look it up in order to properly scope it
+                    match ident.macro_env {
+                        Some(ref macro_env) if !binds.is_bound(&ident.sym) => {
+                            let ident = Ident {
+                                sym: ident.sym.clone(),
+                                macro_env: None,
+                            };
+                            if let Some(val) = macro_env.read().await.fetch(&ident).await {
+                                return Box::new(crate::ast::Ref { val: val.clone() })
+                                    as Box<dyn Eval>;
+                            }
+                        }
+                        _ => (),
+                    }
+                    Box::new(ident.clone()) as Box<dyn Eval>
+                }
                 x => todo!("expr: {x:#?}"),
             }
         })

@@ -1,12 +1,12 @@
 use crate::{
     ast::{self, Ident},
     eval::{Env, Eval},
-    expand::Binds,
+    expand::{Binds, Pattern, SyntaxRule, Template},
     gc::Gc,
     lex::Span,
     sexpr::SExpr,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 // TODO: Put all of these functions in a trait? I kind of like them as free
 // standing functions.
@@ -292,5 +292,71 @@ impl<'a> LetBinding<'a> {
             },
             expr => Err(CompileLetBindingError::BadForm(expr.span().clone())),
         }
+    }
+}
+
+#[derive(Debug)]
+pub enum CompileDefineSyntaxError<'a> {
+    BadForm(Span<'a>),
+}
+
+pub async fn compile_define_syntax<'a>(
+    expr: &[SExpr<'a>],
+    _env: &Gc<Env>,
+    _binds: &Binds<'_>,
+    span: &Span<'a>,
+) -> Result<ast::DefineSyntax, CompileDefineSyntaxError<'a>> {
+    match expr {
+        [SExpr::Identifier {
+            ident: macro_name, ..
+        }, SExpr::List {
+            list: syntax_rules, ..
+        }, SExpr::Nil { .. }] => {
+            let (mut keywords, mut rules) = match &syntax_rules[..] {
+                [SExpr::Identifier { ident, .. }, SExpr::List {
+                    list: keywords_list,
+                    ..
+                }, SExpr::List { list: rules, .. }, SExpr::Nil { .. }]
+                    if ident.sym == "syntax-rules" =>
+                {
+                    let mut keywords = HashSet::default();
+                    // TODO: ensure keywords_list is proper
+                    for keyword in &keywords_list[..keywords_list.len() - 1] {
+                        if let SExpr::Identifier { ident, .. } = keyword {
+                            keywords.insert(ident.sym.clone());
+                        } else {
+                            return Err(CompileDefineSyntaxError::BadForm(keyword.span().clone()));
+                        }
+                    }
+                    (keywords, &rules[..])
+                }
+                [SExpr::Identifier { ident, .. }, SExpr::Nil { .. }, SExpr::List { list: rules, .. }, SExpr::Nil { .. }]
+                    if ident.sym == "syntax-rules" =>
+                {
+                    (HashSet::default(), &rules[..])
+                }
+                _ => return Err(CompileDefineSyntaxError::BadForm(span.clone())),
+            };
+            keywords.insert(macro_name.sym.clone());
+            let mut syntax_rules = Vec::new();
+            loop {
+                match rules {
+                    [SExpr::Nil { .. }] => break,
+                    [pattern, template, tail @ ..] => {
+                        syntax_rules.push(SyntaxRule {
+                            pattern: Pattern::compile(&pattern, &keywords),
+                            template: Template::compile(&template),
+                        });
+                        rules = tail;
+                    }
+                    _ => return Err(CompileDefineSyntaxError::BadForm(span.clone())),
+                }
+            }
+            Ok(ast::DefineSyntax {
+                name: macro_name.clone(),
+                rules: syntax_rules,
+            })
+        }
+        _ => Err(CompileDefineSyntaxError::BadForm(span.clone())),
     }
 }

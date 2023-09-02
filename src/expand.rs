@@ -11,9 +11,10 @@ use std::{
     hash::{Hash, Hasher},
 };
 
+#[derive(Clone)]
 pub struct Transformer {
-    env: Gc<Env>,
-    rules: Vec<SyntaxRule>,
+    pub env: Gc<Env>,
+    pub rules: Vec<SyntaxRule>,
 }
 
 impl Transformer {
@@ -27,9 +28,10 @@ impl Transformer {
     }
 }
 
-struct SyntaxRule {
-    pattern: Pattern,
-    template: Template,
+#[derive(Clone)]
+pub struct SyntaxRule {
+    pub pattern: Pattern,
+    pub template: Template,
 }
 
 impl SyntaxRule {
@@ -38,27 +40,65 @@ impl SyntaxRule {
         let curr_span = expr.span().clone();
         self.pattern
             .matches(expr, binds, &mut var_binds)
-            .then(|| self.template.execute(&env, &var_binds, curr_span))
+            .then(|| self.template.execute(&env, &dbg!(var_binds), curr_span))
     }
 }
 
-enum Pattern {
+#[derive(Clone)]
+pub enum Pattern {
     Nil,
     Underscore,
     Ellipsis(String),
     List(Vec<Pattern>),
     Vector(Vec<Pattern>),
     Variable(String),
-    Identifier(String),
+    Keyword(String),
     Literal(Literal),
 }
 
+#[derive(Debug)]
 enum SExprOrMany<'a> {
     SExpr(SExpr<'a>),
     Many(Vec<SExpr<'a>>),
 }
 
 impl Pattern {
+    pub fn compile(expr: &SExpr, keywords: &HashSet<String>) -> Self {
+        match expr {
+            SExpr::Nil { .. } => Self::Nil,
+            SExpr::Identifier { ident, .. } if ident.sym == "_" => Self::Underscore,
+            SExpr::Identifier { ident, .. } if keywords.contains(&ident.sym) => {
+                Self::Keyword(ident.sym.clone())
+            }
+            SExpr::Identifier { ident, .. } => Self::Variable(ident.sym.clone()),
+            SExpr::List { list, .. } => Self::List(Self::compile_slice(&list, keywords)),
+            SExpr::Vector { vector, .. } => Self::Vector(Self::compile_slice(&vector, keywords)),
+            SExpr::Literal { literal, .. } => Self::Literal(literal.clone()),
+        }
+    }
+
+    fn compile_slice(mut expr: &[SExpr<'_>], keywords: &HashSet<String>) -> Vec<Self> {
+        let mut output = Vec::new();
+        loop {
+            match expr {
+                [] => break,
+                [SExpr::Identifier { ident: var, .. }, SExpr::Identifier {
+                    ident: ellipsis, ..
+                }, tail @ ..]
+                    if ellipsis.sym == "..." =>
+                {
+                    output.push(Self::Ellipsis(var.sym.clone()));
+                    expr = tail;
+                }
+                [head, tail @ ..] => {
+                    output.push(Self::compile(head, keywords));
+                    expr = tail;
+                }
+            }
+        }
+        output
+    }
+
     fn matches<'a>(
         &self,
         expr: &SExpr<'a>,
@@ -66,12 +106,12 @@ impl Pattern {
         var_binds: &mut HashMap<String, SExprOrMany<'a>>,
     ) -> bool {
         match self {
-            Self::Underscore => true,
+            Self::Underscore => !expr.is_nil(),
             Self::Variable(ref name) => {
                 var_binds.insert(name.clone(), SExprOrMany::SExpr(expr.clone()));
                 true
             }
-            Self::Identifier(ref lhs) => match expr {
+            Self::Keyword(ref lhs) => match expr {
                 SExpr::Identifier { ident: rhs, .. }
                     if lhs == &rhs.sym && !binds.is_bound(&rhs.sym) =>
                 {
@@ -79,8 +119,8 @@ impl Pattern {
                 }
                 _ => false,
             },
-            Self::List(list) => match_slices(&list, expr, binds, var_binds),
-            Self::Vector(vec) => match_slices(&vec, expr, binds, var_binds),
+            Self::List(list) => match_slice(&list, expr, binds, var_binds),
+            Self::Vector(vec) => match_slice(&vec, expr, binds, var_binds),
             // We shouldn't ever see this outside of lists
             Self::Nil => expr.is_nil(),
             _ => todo!(),
@@ -88,7 +128,7 @@ impl Pattern {
     }
 }
 
-fn match_slices<'a>(
+fn match_slice<'a>(
     pattern: &[Pattern],
     expr: &SExpr<'a>,
     binds: &Binds<'_>,
@@ -131,7 +171,8 @@ fn match_slices<'a>(
     expr_iter.peek().is_none()
 }
 
-enum Template {
+#[derive(Clone, Debug)]
+pub enum Template {
     Nil,
     Ellipsis(String),
     List(Vec<Template>),
@@ -141,6 +182,38 @@ enum Template {
 }
 
 impl Template {
+    pub fn compile(expr: &SExpr) -> Self {
+        match expr {
+            SExpr::Nil { .. } => Self::Nil,
+            SExpr::List { list, .. } => Self::List(Self::compile_slice(&list)),
+            SExpr::Vector { vector, .. } => Self::Vector(Self::compile_slice(&vector)),
+            SExpr::Literal { literal, .. } => Self::Literal(literal.clone()),
+            SExpr::Identifier { ident, .. } => Self::Identifier(ident.sym.clone()),
+        }
+    }
+
+    fn compile_slice(mut expr: &[SExpr<'_>]) -> Vec<Self> {
+        let mut output = Vec::new();
+        loop {
+            match expr {
+                [] => break,
+                [SExpr::Identifier { ident: var, .. }, SExpr::Identifier {
+                    ident: ellipsis, ..
+                }, tail @ ..]
+                    if ellipsis.sym == "..." =>
+                {
+                    output.push(Self::Ellipsis(var.sym.clone()));
+                    expr = tail;
+                }
+                [head, tail @ ..] => {
+                    output.push(Self::compile(head));
+                    expr = tail;
+                }
+            }
+        }
+        output
+    }
+
     fn execute<'a>(
         &self,
         macro_env: &Gc<Env>,
@@ -157,9 +230,11 @@ impl Template {
                 execute_slice(vec, macro_env, var_binds, curr_span.clone()),
                 curr_span,
             ),
-            Self::Identifier(ident) => {
-                SExpr::new_identifier(Ident::new_macro(ident, macro_env), curr_span)
-            }
+            Self::Identifier(ident) => match var_binds.get(ident) {
+                Some(SExprOrMany::SExpr(expr)) => expr.clone(),
+                Some(SExprOrMany::Many(exprs)) => SExpr::new_list(exprs.clone(), curr_span),
+                None => SExpr::new_identifier(Ident::new_macro(ident, macro_env), curr_span),
+            },
             Self::Literal(literal) => SExpr::new_literal(literal.clone(), curr_span),
             _ => unreachable!(),
         }
@@ -174,7 +249,7 @@ fn execute_slice<'a>(
 ) -> Vec<SExpr<'a>> {
     let mut output = Vec::new();
     for item in items {
-        match item {
+        match dbg!(item) {
             Template::Ellipsis(name) => match var_binds.get(name).unwrap() {
                 SExprOrMany::SExpr(expr) => output.push(expr.clone()),
                 SExprOrMany::Many(exprs) => output.extend(exprs.clone()),
