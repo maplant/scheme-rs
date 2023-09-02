@@ -72,9 +72,11 @@ impl Pattern {
                 true
             }
             Self::Identifier(ref lhs) => match expr {
-                SExpr::Identifier {
-                    ident: rhs, ..
-                } if lhs == &rhs.sym && !binds.is_bound(&rhs.sym) => true,
+                SExpr::Identifier { ident: rhs, .. }
+                    if lhs == &rhs.sym && !binds.is_bound(&rhs.sym) =>
+                {
+                    true
+                }
                 _ => false,
             },
             Self::List(list) => match_slices(&list, expr, binds, var_binds),
@@ -192,7 +194,7 @@ impl Binds<'static> {
     pub async fn from_global(env: &Gc<Env>) -> Self {
         Self {
             up: None,
-            binds: todo!("Need to fetch binds from current environment"),
+            binds: HashSet::default(), // todo!("Need to fetch binds from current environment"),
         }
     }
 }

@@ -43,7 +43,6 @@ impl Value {
         }
     }
 
-    /*
     pub fn fmt(&self) -> BoxFuture<'_, String> {
         Box::pin(async move {
             match self {
@@ -57,7 +56,6 @@ impl Value {
             }
         })
     }
-    */
 }
 
 impl From<ExternalFn> for Value {
@@ -220,7 +218,6 @@ impl Procedure {
                 ValueOrPreparedCall::PreparedCall(prepared) => {
                     proc = Cow::Owned(prepared.operator.read().await.as_proc().unwrap().clone());
                     args = prepared.args;
-                    println!("We are tail calling!");
                     // Continue
                 }
             }
@@ -250,43 +247,17 @@ impl ExternalFn {
     }
 }
 
-/*
+// TODO: Get rid of this implementation and use one that has a location
 #[async_trait]
-impl Eval for ast::Expression {
+impl Eval for ast::Ident {
     async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
-        match self {
-            Self::Literal(ast::Literal::Number(n)) => Ok(Gc::new(Value::Number(n.clone()))),
-            Self::VariableRef(var) => Ok(env
-                .read()
-                .await
-                .fetch(&var)
-                .await
-                .ok_or_else(|| RuntimeError::UndefinedVariable(var.clone()))?),
-            Self::DefFunc(def_func) => def_func.eval(env).await,
-            Self::DefVar(def_var) => def_var.eval(env).await,
-            Self::And(and) => and.eval(env).await,
-            Self::Or(or) => or.eval(env).await,
-            Self::Call(call) => call.eval(env).await,
-            Self::Lambda(lambda) => lambda.eval(env).await,
-            Self::Let(let_expr) => let_expr.eval(env).await,
-            Self::If(if_expr) => if_expr.eval(env).await,
-            _ => todo!(),
-        }
-    }
-
-    async fn tail_eval(&self, env: &Gc<Env>) -> Result<ValueOrPreparedCall, RuntimeError> {
-        match self {
-            Self::If(if_expr) => if_expr.tail_eval(env).await,
-            Self::Body(body) => body.tail_eval(env).await,
-            Self::Call(call) => call.tail_eval(env).await,
-            Self::And(and) => and.tail_eval(env).await,
-            Self::Or(or) => or.tail_eval(env).await,
-            Self::Let(let_expr) => let_expr.tail_eval(env).await,
-            _ => Ok(ValueOrPreparedCall::Value(self.eval(env).await?)),
-        }
+        env.read()
+            .await
+            .fetch(self)
+            .await
+            .ok_or_else(|| RuntimeError::UndefinedVariable(self.clone()))
     }
 }
-*/
 
 #[async_trait]
 impl Eval for ast::Body {
@@ -475,6 +446,7 @@ impl Eval for ast::Or {
 impl Eval for ast::Literal {
     async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
         Ok(Gc::new(match self {
+            ast::Literal::Number(n) => Value::Number(n.clone()),
             ast::Literal::Boolean(b) => Value::Boolean(*b),
             _ => todo!("Literal evaluation not implemented"),
         }))

@@ -119,7 +119,7 @@ fn lexeme(i: Span) -> IResult<Span, Lexeme<'static>> {
         map(boolean, Lexeme::Boolean),
         map(string, Lexeme::string_owned),
         map(number, Lexeme::number_owned),
-        map(doc_comment, Lexeme::DocComment),
+        //        map(doc_comment, Lexeme::DocComment),
         map(match_char('.'), |_| Lexeme::Period),
         map(match_char('('), |_| Lexeme::LParen),
         map(match_char(')'), |_| Lexeme::RParen),
@@ -298,6 +298,7 @@ fn doc_comment(i: Span) -> IResult<Span, String> {
     todo!()
 }
 
+#[derive(Debug)]
 pub struct Token<'a> {
     pub lexeme: Lexeme<'static>,
     pub span: Span<'a>,
@@ -311,6 +312,9 @@ impl<'a> Token<'a> {
         let mut output = Vec::new();
         while !span.is_empty() {
             let (remaining, ()) = interlexeme_space(span)?;
+            if remaining.is_empty() {
+                break;
+            }
             let (remaining, curr_span) = position(remaining)?;
             let (remaining, lexeme) = lexeme(remaining)?;
             output.push(Token {

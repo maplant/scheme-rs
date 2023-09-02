@@ -1,22 +1,26 @@
 use scheme_rs::{
     eval::{Env, Eval, RuntimeError, Value},
     gc::Gc,
-    lex,
-    sexpr::SExpr,
+    lex::Token,
+    sexpr::ParsedSExpr,
 };
 
-async fn run(code: &str, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
-    let tokens = lex::lex(code).unwrap();
-    let sexpr = dbg!(SExpr::parse(&tokens));
-    sexpr.compile(env).await.eval(env).await
+async fn run(code: &str, env: &Gc<Env>) -> Result<(), RuntimeError> {
+    let tokens = Token::tokenize_str(code).unwrap();
+    let sexprs = dbg!(ParsedSExpr::parse(&tokens).unwrap());
+    for sexpr in sexprs {
+        let result = dbg!(sexpr).compile(env).await.eval(env).await?;
+        println!("result = {}", result.read().await.fmt().await);
+    }
+    Ok(())
 }
 
 #[tokio::main]
 async fn main() {
     let base = Gc::new(Env::base());
-    let result = run("(5 . 5)", &base).await.unwrap();
+    //    let result = run("(5 . 5)", &base).await.unwrap();
     // 1:
-    let result = run(
+    run(
         r#"
         (define (fact x acc)
           (if (= x 0)
@@ -27,15 +31,15 @@ async fn main() {
     )
     .await
     .unwrap();
-//    println!("result = {}", result.read().await.fmt().await);
+    //    println!("result = {}", result.read().await.fmt().await);
     // 2:
-    let result = run(
+    run(
         r#"
-        (list 1 2 3 4 5)
+        (fact 150 1)
         "#,
         &base,
     )
     .await
     .unwrap();
-//    println!("result = {}", result.read().await.fmt().await);
+    //    println!("result = {}", result.read().await.fmt().await);
 }

@@ -11,6 +11,35 @@ use std::collections::HashMap;
 // TODO: Put all of these functions in a trait? I kind of like them as free
 // standing functions.
 
+#[derive(Debug)]
+pub enum CompileFuncCallError<'a> {
+    EmptyFunctionCall(Span<'a>),
+}
+
+pub async fn compile_func_call<'a>(
+    exprs: &[SExpr<'a>],
+    env: &Gc<Env>,
+    binds: &Binds<'_>,
+    span: &Span<'a>,
+) -> Result<ast::Call, CompileFuncCallError<'a>> {
+    match exprs {
+        [operator, args @ ..] => {
+            let operator = operator.compile(env, binds).await;
+            let mut compiled_args = Vec::new();
+            for arg in &args[..args.len() - 1] {
+                compiled_args.push(arg.compile(env, binds).await);
+            }
+            // TODO: what if it's not a proper list?
+            Ok(ast::Call {
+                operator,
+                args: compiled_args,
+            })
+        }
+        [] => Err(CompileFuncCallError::EmptyFunctionCall(span.clone())),
+    }
+}
+
+#[derive(Debug)]
 pub enum CompileDefineError<'a> {
     ParameterDefinedMultipleTimes {
         ident: Ident,
@@ -19,7 +48,7 @@ pub enum CompileDefineError<'a> {
     },
     ExpectedIdentifier(Span<'a>),
     CompileBodyError(CompileBodyError<'a>),
-    BadForm(Span<'a>)
+    BadForm(Span<'a>),
 }
 
 pub async fn compile_define<'a>(
@@ -41,11 +70,12 @@ pub async fn compile_define<'a>(
                     span: func_span,
                 }, args @ ..] => {
                     let mut scope = Binds::new_local(binds);
-                    let mut fixed = HashMap::<Ident, Span<'_>>::new();
+                    let mut bound = HashMap::<Ident, Span<'_>>::new();
+                    let mut fixed = Vec::new();
                     for arg in &args[..args.len() - 1] {
                         match arg {
                             SExpr::Identifier { ident, span } => {
-                                if let Some(prev_span) = fixed.get(&ident) {
+                                if let Some(prev_span) = bound.get(&ident) {
                                     return Err(
                                         CompileDefineError::ParameterDefinedMultipleTimes {
                                             ident: ident.clone(),
@@ -55,7 +85,8 @@ pub async fn compile_define<'a>(
                                     );
                                 }
                                 scope.bind(&ident.sym);
-                                fixed.insert(ident.clone(), span.clone());
+                                bound.insert(ident.clone(), span.clone());
+                                fixed.push(ident.clone());
                             }
                             x => {
                                 return Err(CompileDefineError::ExpectedIdentifier(
@@ -68,10 +99,10 @@ pub async fn compile_define<'a>(
                     let args = if let Some(last) = args.last() {
                         match last {
                             SExpr::Nil { .. } => {
-                                ast::Formals::FixedArgs(fixed.into_keys().collect())
+                                ast::Formals::FixedArgs(fixed.into_iter().collect())
                             }
                             SExpr::Identifier { ident, span } => {
-                                if let Some(prev_span) = fixed.get(&ident) {
+                                if let Some(prev_span) = bound.get(&ident) {
                                     return Err(
                                         CompileDefineError::ParameterDefinedMultipleTimes {
                                             ident: ident.clone(),
@@ -82,7 +113,7 @@ pub async fn compile_define<'a>(
                                 }
                                 scope.bind(&ident.sym);
                                 ast::Formals::VarArgs {
-                                    fixed: fixed.into_keys().collect(),
+                                    fixed: fixed.into_iter().collect(),
                                     remaining: ident.clone(),
                                 }
                             }
@@ -106,14 +137,15 @@ pub async fn compile_define<'a>(
                         args,
                         body,
                     }))
-                },
-                [ x, .. ] => Err(CompileDefineError::BadForm(x.span().clone()))
+                }
+                [x, ..] => Err(CompileDefineError::BadForm(x.span().clone())),
             }
-        },
+        }
         _ => Err(CompileDefineError::BadForm(span.clone())),
     }
 }
 
+#[derive(Debug)]
 pub enum CompileIfError<'a> {
     ExpectedConditional(Span<'a>),
     ExpectedArgumentAfterConditional(Span<'a>),
@@ -127,12 +159,12 @@ pub async fn compile_if<'a>(
     span: &Span<'a>,
 ) -> Result<ast::If, CompileIfError<'a>> {
     match exprs {
-        [cond, success] => Ok(ast::If {
+        [cond, success, SExpr::Nil { .. }] => Ok(ast::If {
             cond: cond.compile(env, binds).await,
             success: success.compile(env, binds).await,
             failure: None,
         }),
-        [cond, success, failure] => Ok(ast::If {
+        [cond, success, failure, SExpr::Nil { .. }] => Ok(ast::If {
             cond: cond.compile(env, binds).await,
             success: success.compile(env, binds).await,
             failure: Some(failure.compile(env, binds).await),
@@ -144,9 +176,11 @@ pub async fn compile_if<'a>(
         [_, _, _, unexpected, ..] => Err(CompileIfError::UnexpectedArgument(
             unexpected.span().clone(),
         )),
+        _ => unreachable!(),
     }
 }
 
+#[derive(Debug)]
 pub enum CompileBodyError<'a> {
     EmptyBody(Span<'a>),
 }
@@ -161,10 +195,11 @@ pub async fn compile_body<'a>(
         return Err(CompileBodyError::EmptyBody(span.clone()));
     }
     let mut output = Vec::new();
-    for expr in exprs {
+    for expr in &exprs[..exprs.len() - 1] {
         let expr = expr.compile(env, binds).await;
         output.push(expr);
     }
+    // TODO: what if the body isn't a proper list?
     Ok(ast::Body::new(output))
 }
 

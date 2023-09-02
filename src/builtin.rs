@@ -1,8 +1,9 @@
 use futures::future::BoxFuture;
 
 use crate::{
+    ast::Ident,
     eval::{Env, ExternalFn, RuntimeError, Value},
-    gc::Gc, ast::Ident,
+    gc::Gc,
 };
 
 pub struct Builtin {

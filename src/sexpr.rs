@@ -3,7 +3,7 @@ use crate::{
     eval::{Env, Eval, Value},
     expand::Binds,
     gc::Gc,
-    lex::{Lexeme, Span},
+    lex::{Lexeme, Span, Token},
 };
 use futures::future::BoxFuture;
 use std::borrow::Cow;
@@ -158,30 +158,59 @@ impl<'a> SExpr<'a> {
     ) -> BoxFuture<'a, Box<dyn Eval>> {
         Box::pin(async move {
             let expr = self.expand(env, binds).await;
-            todo!()
+            match &*expr {
+                Self::List { list, span } => match &list[..] {
+                    [Self::Identifier { ident: op, span }, tail @ ..] if op.sym == "define" => {
+                        Box::new(
+                            crate::compile::compile_define(tail, env, binds, span)
+                                .await
+                                .unwrap(),
+                        ) as Box<dyn Eval>
+                    }
+                    [Self::Identifier { ident: op, span }, tail @ ..] if op.sym == "if" => {
+                        Box::new(
+                            crate::compile::compile_if(tail, env, binds, span)
+                                .await
+                                .unwrap(),
+                        ) as Box<dyn Eval>
+                    }
+                    exprs => Box::new(
+                        crate::compile::compile_func_call(exprs, env, binds, span)
+                            .await
+                            .unwrap(),
+                    ) as Box<dyn Eval>,
+                    _ => todo!(),
+                },
+                Self::Literal { literal, .. } => Box::new(literal.clone()) as Box<dyn Eval>,
+                Self::Identifier { ident, .. } => Box::new(ident.clone()) as Box<dyn Eval>,
+                x => todo!("expr: {x:#?}"),
+            }
         })
     }
 }
 
+#[derive(Debug)]
 pub struct ParsedSExpr<'a> {
     doc_comment: Option<String>,
     sexpr: SExpr<'a>,
 }
 
 impl<'a> ParsedSExpr<'a> {
-    fn parse_fragment(i: &'a [Lexeme<'a>]) -> Result<(&'a [Lexeme<'a>], Self), ()> {
-        todo!()
-        /*
-        let (doc_comment, remaining) = match i[0] {
-            Lexeme::DocComment(ref doc_comment) => (Some(doc_comment.clone()), &i[1..]),
-            _ => (None, i),
+    fn parse_fragment(i: &'a [Token<'a>]) -> Result<(&'a [Token<'a>], Self), ()> {
+        let (doc_comment, remaining) = if let Token {
+            lexeme: Lexeme::DocComment(ref doc_comment),
+            ..
+        } = i[0]
+        {
+            (Some(doc_comment.clone()), &i[1..])
+        } else {
+            (None, i)
         };
         let (remaining, sexpr) = crate::parse::expression(remaining).unwrap();
         Ok((remaining, Self { doc_comment, sexpr }))
-        */
     }
 
-    pub fn parse(mut i: &'a [Lexeme<'a>]) -> Result<Vec<Self>, ()> {
+    pub fn parse(mut i: &'a [Token<'a>]) -> Result<Vec<Self>, ()> {
         let mut output = Vec::new();
         while !i.is_empty() {
             let (remaining, expr) = Self::parse_fragment(i)?;

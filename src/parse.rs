@@ -69,6 +69,11 @@ pub fn expression<'a>(i: &'a [Token<'a>]) -> Result<(&'a [Token<'a>], SExpr), Pa
         [s @ token!(Lexeme::String(_)), tail @ ..] => {
             Ok((tail, SExpr::new_literal(string(s)?, s.span.clone())))
         }
+        // Identifiers:
+        [i @ token!(Lexeme::Identifier(_)), tail @ ..] => Ok((
+            tail,
+            SExpr::new_identifier(Ident::new_free(i.lexeme.to_ident()), i.span.clone()),
+        )),
         // Lists:
         [p @ token!(Lexeme::LParen), tail @ ..] => match list(tail, p.span.clone()) {
             Err(ParseListError::UnclosedParen) => Err(ParseError::unclosed_paren(p)),
@@ -78,7 +83,7 @@ pub fn expression<'a>(i: &'a [Token<'a>]) -> Result<(&'a [Token<'a>], SExpr), Pa
         // Invalid locations:
         [d @ token!(Lexeme::Period), ..] => Err(ParseError::invalid_period(d)),
         [d @ token!(Lexeme::DocComment(_)), ..] => Err(ParseError::invalid_doc_comment(d)),
-        _ => todo!(),
+        x => todo!("Not implemented: {x:#?}"),
     }
 }
 
@@ -109,7 +114,7 @@ fn list<'a>(
         output.push(expr);
 
         match remaining {
-            [end @ token!(Lexeme::LParen), tail @ ..]
+            [end @ token!(Lexeme::RParen), tail @ ..]
             | [token!(Lexeme::Period), end @ token!(Lexeme::LParen), token!(Lexeme::RParen), token!(Lexeme::RParen), tail @ ..] =>
             {
                 // Proper list
@@ -122,7 +127,9 @@ fn list<'a>(
                 output.push(expr);
                 return match remaining {
                     [] => Err(ParseListError::ParseError(ParseError::UnexpectedEndOfFile)),
-                    [token!(Lexeme::RParen), tail @ ..] => Ok((tail, SExpr::new_list(output, span))),
+                    [token!(Lexeme::RParen), tail @ ..] => {
+                        Ok((tail, SExpr::new_list(output, span)))
+                    }
                     [unexpected, ..] => Err(ParseListError::ParseError(
                         ParseError::ExpectedClosingParen {
                             span: unexpected.span.clone(),

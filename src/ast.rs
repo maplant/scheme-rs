@@ -1,9 +1,17 @@
-use crate::{lex::Lexeme, num::Number, gc::Gc, eval::{Value, Env, Eval}};
-use std::{fmt, hash::{Hash, Hasher}};
+use crate::{
+    eval::{Env, Eval, Value},
+    gc::Gc,
+    lex::Lexeme,
+    num::Number,
+};
+use std::{
+    fmt,
+    hash::{Hash, Hasher},
+};
 
 #[derive(Clone)]
 pub struct Ident {
-    macro_env: Option<Gc<Env>>,
+    pub macro_env: Option<Gc<Env>>,
     pub sym: String,
 }
 
@@ -20,11 +28,6 @@ impl Ident {
             macro_env: Some(macro_env.clone()),
             sym: sym.to_string(),
         }
-    }
-
-    pub async fn lookup(&self, env: &Gc<Env>) -> Gc<Value> {
-        // If macro env is set, use that. Otherwise, use env.
-        todo!()
     }
 }
 
@@ -53,7 +56,6 @@ impl PartialEq for Ident {
 }
 
 impl Eq for Ident {}
-
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ByteVector(pub Vec<u8>);
