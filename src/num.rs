@@ -15,7 +15,7 @@ pub enum Number {
 }
 
 impl PartialEq for Number {
-    fn eq(&self, rhs: &Self) -> bool {
+    fn eq(&self, _rhs: &Self) -> bool {
         todo!()
     }
 }

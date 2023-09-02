@@ -1,7 +1,6 @@
 use std::{
     cell::UnsafeCell,
     collections::HashMap,
-    future::Future,
     marker::PhantomData,
     ops::{Deref, DerefMut},
     ptr::NonNull,
@@ -30,10 +29,10 @@ impl<T: ?Sized> GcInner<T> {
     }
 
     async fn read(&self) -> GcReadGuard<'_, T> {
-        let permit = self.semaphore.acquire().await.unwrap();
+        let _permit = self.semaphore.acquire().await.unwrap();
         let data = self.data.get() as *const T;
         GcReadGuard {
-            permit,
+            _permit,
             data,
             marker: PhantomData,
         }
@@ -42,11 +41,11 @@ impl<T: ?Sized> GcInner<T> {
 
 impl<T: ?Sized + Trace> GcInner<T> {
     async fn write(&self) -> GcWriteGuard<'_, T> {
-        unsafe { (&*self.data.get()).root() }
-        let permit = self.semaphore.acquire_many(MAX_READS).await.unwrap();
+        unsafe { (*self.data.get()).root() }
+        let _permit = self.semaphore.acquire_many(MAX_READS).await.unwrap();
         let data = self.data.get();
         GcWriteGuard {
-            permit,
+            _permit,
             data,
             marker: PhantomData,
         }
@@ -57,7 +56,7 @@ unsafe impl<T: ?Sized + Send + Sync> Send for GcInner<T> {}
 unsafe impl<T: ?Sized + Send + Sync> Sync for GcInner<T> {}
 
 pub struct GcReadGuard<'a, T: ?Sized> {
-    permit: SemaphorePermit<'a>,
+    _permit: SemaphorePermit<'a>,
     data: *const T,
     marker: PhantomData<&'a T>,
 }
@@ -74,7 +73,7 @@ unsafe impl<T: ?Sized + Send + Sync> Send for GcReadGuard<'_, T> {}
 unsafe impl<T: ?Sized + Send + Sync> Sync for GcReadGuard<'_, T> {}
 
 pub struct GcWriteGuard<'a, T: ?Sized + Trace> {
-    permit: SemaphorePermit<'a>,
+    _permit: SemaphorePermit<'a>,
     data: *mut T,
     marker: PhantomData<&'a mut T>,
 }
@@ -95,7 +94,7 @@ impl<'a, T: ?Sized + Trace> DerefMut for GcWriteGuard<'a, T> {
 
 impl<'a, T: ?Sized + Trace> Drop for GcWriteGuard<'a, T> {
     fn drop(&mut self) {
-        unsafe { (&*self.data).unroot() }
+        unsafe { (*self.data).unroot() }
     }
 }
 
@@ -163,7 +162,7 @@ pub trait Trace {
 
     fn unroot(&self) {}
 
-    async fn visit_children(&self, visitor: fn(Gc<&dyn Trace>) -> Box<dyn Future<Output = ()>>) {}
+    // async fn visit_children(&self, visitor: fn(Gc<&dyn Trace>) -> Box<dyn Future<Output = ()>>) {}
 }
 
 impl<K, T: Trace> Trace for HashMap<K, T> {

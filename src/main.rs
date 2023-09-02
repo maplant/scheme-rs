@@ -1,5 +1,5 @@
 use scheme_rs::{
-    eval::{Env, Eval, RuntimeError, Value},
+    eval::{Env, RuntimeError},
     gc::Gc,
     lex::Token,
     sexpr::ParsedSExpr,

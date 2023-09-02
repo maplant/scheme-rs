@@ -8,10 +8,10 @@ use nom::{
     combinator::{map, opt, value, verify},
     multi::{fold_many0, many0},
     sequence::{delimited, preceded, tuple},
-    Finish, IResult,
+    IResult,
 };
 use nom_locate::{position, LocatedSpan};
-use std::{borrow::Cow, fmt, sync::Arc};
+use std::{borrow::Cow, sync::Arc};
 use unicode_categories::UnicodeCategories;
 
 pub type Span<'a> = LocatedSpan<&'a str, Arc<String>>;
@@ -91,27 +91,10 @@ impl<'a> Lexeme<'a> {
         s.as_slice()
     }
 
-    fn string(v: Vec<Fragment<'a>>) -> Self {
+    pub fn string(v: Vec<Fragment<'a>>) -> Self {
         Self::String(v)
     }
 }
-
-/*
-pub fn lex(i: &str) -> Result<Vec<Lexeme<'static>>, LexError<'_>> {
-    let (remaining, output) = many0(map(tuple((interlexeme_space, lexeme)), |(_, lexeme)| {
-        lexeme
-    }))(i)
-    .finish()
-    .map_err(LexError::NomError)?;
-    let (remaining, _) = interlexeme_space(remaining)
-        .finish()
-        .map_err(LexError::NomError)?;
-    if !remaining.is_empty() {
-        return Err(LexError::InputRemaining);
-    }
-    Ok(output)
-}
-*/
 
 fn lexeme(i: Span) -> IResult<Span, Lexeme<'static>> {
     alt((
@@ -128,9 +111,11 @@ fn lexeme(i: Span) -> IResult<Span, Lexeme<'static>> {
     ))(i)
 }
 
-fn comment(i: Span) -> IResult<Span, ()> {
+/*
+fn comment(_i: Span) -> IResult<Span, ()> {
     todo!()
 }
+*/
 
 fn whitespace(i: Span) -> IResult<Span, ()> {
     map(
@@ -213,10 +198,6 @@ fn hex_scalar_value(i: Span) -> IResult<Span, Span> {
     hex_digit1(i)
 }
 
-fn is_letter(c: char) -> bool {
-    c.is_ascii_alphabetic()
-}
-
 fn is_constituent(c: char) -> bool {
     c.is_ascii_alphabetic()
         || (c as u32 > 127
@@ -232,10 +213,10 @@ fn is_constituent(c: char) -> bool {
 }
 
 fn is_special_initial(c: char) -> bool {
-    match c {
-        '!' | '$' | '%' | '&' | '*' | '/' | ':' | '<' | '=' | '>' | '?' | '^' | '_' | '~' => true,
-        _ => false,
-    }
+    matches!(
+        c,
+        '!' | '$' | '%' | '&' | '*' | '/' | ':' | '<' | '=' | '>' | '?' | '^' | '_' | '~'
+    )
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -294,9 +275,11 @@ fn number(i: Span) -> IResult<Span, String> {
     )(i)
 }
 
-fn doc_comment(i: Span) -> IResult<Span, String> {
+/*
+fn doc_comment(_i: Span) -> IResult<Span, String> {
     todo!()
 }
+*/
 
 #[derive(Debug)]
 pub struct Token<'a> {

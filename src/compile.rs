@@ -75,7 +75,7 @@ pub async fn compile_define<'a>(
                     for arg in &args[..args.len() - 1] {
                         match arg {
                             SExpr::Identifier { ident, span } => {
-                                if let Some(prev_span) = bound.get(&ident) {
+                                if let Some(prev_span) = bound.get(ident) {
                                     return Err(
                                         CompileDefineError::ParameterDefinedMultipleTimes {
                                             ident: ident.clone(),
@@ -102,7 +102,7 @@ pub async fn compile_define<'a>(
                                 ast::Formals::FixedArgs(fixed.into_iter().collect())
                             }
                             SExpr::Identifier { ident, span } => {
-                                if let Some(prev_span) = bound.get(&ident) {
+                                if let Some(prev_span) = bound.get(ident) {
                                     return Err(
                                         CompileDefineError::ParameterDefinedMultipleTimes {
                                             ident: ident.clone(),
@@ -344,8 +344,8 @@ pub async fn compile_define_syntax<'a>(
                     [SExpr::Nil { .. }] => break,
                     [pattern, template, tail @ ..] => {
                         syntax_rules.push(SyntaxRule {
-                            pattern: Pattern::compile(&pattern, &keywords),
-                            template: Template::compile(&template),
+                            pattern: Pattern::compile(pattern, &keywords),
+                            template: Template::compile(template),
                         });
                         rules = tail;
                     }

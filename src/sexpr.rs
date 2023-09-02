@@ -4,6 +4,7 @@ use crate::{
     expand::Binds,
     gc::Gc,
     lex::{Lexeme, Span, Token},
+    parse::ParseError,
 };
 use futures::future::BoxFuture;
 use std::borrow::Cow;
@@ -86,66 +87,55 @@ impl<'a> SExpr<'a> {
         binds: &'a Binds<'_>,
     ) -> BoxFuture<'a, Cow<'b, SExpr<'a>>> {
         Box::pin(async move {
-            match self {
-                Self::List { list, span } => {
-                    let (head, tail) = list.split_first().unwrap();
-                    let head = match head {
-                        list @ Self::List { .. } => list.expand(env, binds).await,
-                        x => Cow::Borrowed(x),
-                    };
-                    let ident = match head.as_ref() {
-                        Self::Identifier { ident, .. } => ident,
-                        _ => {
-                            let mut borrowed = matches!(head, Cow::Borrowed(_));
-                            let mut output = vec![head];
-                            for item in tail {
-                                let item = item.expand(env, binds).await;
-                                borrowed &= matches!(item, Cow::Borrowed(_));
-                                output.push(item);
-                            }
-                            // If every item is borrowed, nothing has changed, and we
-                            // can return the expression as is.
-                            if borrowed {
-                                return Cow::Borrowed(self);
-                            } else {
-                                let output: Vec<_> =
-                                    output.into_iter().map(Cow::into_owned).collect();
-                                return Cow::Owned(Self::new_list(output, span.clone()));
-                            }
+            if let Self::List { list, span } = self {
+                let (head, tail) = list.split_first().unwrap();
+                let head = match head {
+                    list @ Self::List { .. } => list.expand(env, binds).await,
+                    x => Cow::Borrowed(x),
+                };
+                let ident = match head.as_ref() {
+                    Self::Identifier { ident, .. } => ident,
+                    _ => {
+                        let mut borrowed = matches!(head, Cow::Borrowed(_));
+                        let mut output = vec![head];
+                        for item in tail {
+                            let item = item.expand(env, binds).await;
+                            borrowed &= matches!(item, Cow::Borrowed(_));
+                            output.push(item);
                         }
-                    };
-                    if let Some(head_value) = env.read().await.fetch(&ident).await {
-                        if let Value::Transformer(transformer) = &*head_value.read().await {
-                            let mut list = vec![head.into_owned()];
-                            list.extend(tail.iter().cloned());
-                            let mut expanded = transformer
-                                .expand(&SExpr::new_list(list, span.clone()), binds)
-                                .unwrap();
-                            loop {
-                                match expanded {
-                                    ref expr @ SExpr::List { ref list, .. } => match &list[..] {
-                                        [SExpr::Identifier { ident, .. }, ..] => {
-                                            if let Some(head) = env.read().await.fetch(&ident).await
-                                            {
-                                                if let Value::Transformer(transformer) =
-                                                    &*head.read().await
-                                                {
-                                                    expanded =
-                                                        transformer.expand(&expr, binds).unwrap();
-                                                    continue;
-                                                }
-                                            }
+                        // If every item is borrowed, nothing has changed, and we
+                        // can return the expression as is.
+                        if borrowed {
+                            return Cow::Borrowed(self);
+                        } else {
+                            let output: Vec<_> = output.into_iter().map(Cow::into_owned).collect();
+                            return Cow::Owned(Self::new_list(output, span.clone()));
+                        }
+                    }
+                };
+                if let Some(head_value) = env.read().await.fetch(ident).await {
+                    if let Value::Transformer(transformer) = &*head_value.read().await {
+                        let mut list = vec![head.into_owned()];
+                        list.extend(tail.iter().cloned());
+                        let mut expanded = transformer
+                            .expand(&SExpr::new_list(list, span.clone()), binds)
+                            .unwrap();
+                        loop {
+                            if let ref expr @ SExpr::List { ref list, .. } = expanded {
+                                if let [SExpr::Identifier { ident, .. }, ..] = &list[..] {
+                                    if let Some(head) = env.read().await.fetch(ident).await {
+                                        if let Value::Transformer(transformer) = &*head.read().await
+                                        {
+                                            expanded = transformer.expand(expr, binds).unwrap();
+                                            continue;
                                         }
-                                        _ => (),
-                                    },
-                                    _ => (),
+                                    }
                                 }
-                                return Cow::Owned(expanded);
                             }
+                            return Cow::Owned(expanded);
                         }
                     }
                 }
-                _ => (),
             }
             Cow::Borrowed(self)
         })
@@ -216,12 +206,12 @@ impl<'a> SExpr<'a> {
 
 #[derive(Debug)]
 pub struct ParsedSExpr<'a> {
-    doc_comment: Option<String>,
+    pub doc_comment: Option<String>,
     sexpr: SExpr<'a>,
 }
 
 impl<'a> ParsedSExpr<'a> {
-    fn parse_fragment(i: &'a [Token<'a>]) -> Result<(&'a [Token<'a>], Self), ()> {
+    fn parse_fragment(i: &'a [Token<'a>]) -> Result<(&'a [Token<'a>], Self), ParseError<'a>> {
         let (doc_comment, remaining) = if let Token {
             lexeme: Lexeme::DocComment(ref doc_comment),
             ..
@@ -231,11 +221,11 @@ impl<'a> ParsedSExpr<'a> {
         } else {
             (None, i)
         };
-        let (remaining, sexpr) = crate::parse::expression(remaining).unwrap();
+        let (remaining, sexpr) = crate::parse::expression(remaining)?;
         Ok((remaining, Self { doc_comment, sexpr }))
     }
 
-    pub fn parse(mut i: &'a [Token<'a>]) -> Result<Vec<Self>, ()> {
+    pub fn parse(mut i: &'a [Token<'a>]) -> Result<Vec<Self>, ParseError<'a>> {
         let mut output = Vec::new();
         while !i.is_empty() {
             let (remaining, expr) = Self::parse_fragment(i)?;

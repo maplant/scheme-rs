@@ -6,11 +6,13 @@ use crate::{
     gc::Gc,
 };
 
+type ExprFuture = BoxFuture<'static, Result<Gc<Value>, RuntimeError>>;
+
 pub struct Builtin {
     pub name: &'static str,
     num_args: usize,
     variadic: bool,
-    wrapper: fn(Gc<Env>, Vec<Gc<Value>>) -> BoxFuture<'static, Result<Gc<Value>, RuntimeError>>,
+    wrapper: fn(Gc<Env>, Vec<Gc<Value>>) -> ExprFuture,
 }
 
 impl Builtin {
@@ -18,7 +20,7 @@ impl Builtin {
         name: &'static str,
         num_args: usize,
         variadic: bool,
-        wrapper: fn(Gc<Env>, Vec<Gc<Value>>) -> BoxFuture<'static, Result<Gc<Value>, RuntimeError>>,
+        wrapper: fn(Gc<Env>, Vec<Gc<Value>>) -> ExprFuture,
     ) -> Self {
         Self {
             name,

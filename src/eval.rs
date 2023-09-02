@@ -6,7 +6,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use futures::future::BoxFuture;
-use std::{borrow::Cow, collections::HashMap, fmt, future::Future, result, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, fmt};
 
 pub enum Value {
     Boolean(bool),
@@ -30,10 +30,7 @@ impl Value {
 
     /// #f is false, everything else is true
     pub fn is_true(&self) -> bool {
-        match self {
-            Self::Boolean(x) if !x => false,
-            _ => true,
-        }
+        !matches!(self, Self::Boolean(x) if !x)
     }
 
     pub fn as_proc(&self) -> Option<&Procedure> {
@@ -187,7 +184,7 @@ impl Procedure {
     }
 
     fn max_args(&self) -> Option<usize> {
-        self.remaining.is_none().then(|| self.args.len())
+        self.remaining.is_none().then_some(self.args.len())
     }
 
     async fn call(&self, mut args: Vec<Gc<Value>>) -> Result<Gc<Value>, RuntimeError> {
@@ -206,7 +203,7 @@ impl Procedure {
                     env.define(required, value);
                 }
             }
-            if let Some(ref remaining) = self.remaining {
+            if let Some(ref _remaining) = self.remaining {
                 todo!()
             } else if args_iter.peek().is_some() {
                 return Err(RuntimeError::TooManyArguments);
@@ -225,11 +222,13 @@ impl Procedure {
     }
 }
 
+pub type ExprFuture = BoxFuture<'static, Result<Gc<Value>, RuntimeError>>;
+
 #[derive(Debug)]
 pub struct ExternalFn {
     pub num_args: usize,
     pub variadic: bool,
-    pub func: fn(Gc<Env>, Vec<Gc<Value>>) -> BoxFuture<'static, Result<Gc<Value>, RuntimeError>>,
+    pub func: fn(Gc<Env>, Vec<Gc<Value>>) -> ExprFuture,
 }
 
 impl ExternalFn {
@@ -238,7 +237,7 @@ impl ExternalFn {
     }
 
     fn max_args(&self) -> Option<usize> {
-        (!self.variadic).then(|| self.num_args)
+        (!self.variadic).then_some(self.num_args)
     }
 
     async fn call(&self, env: &Gc<Env>, args: Vec<Gc<Value>>) -> Result<Gc<Value>, RuntimeError> {
@@ -479,7 +478,7 @@ impl Eval for ast::Or {
 
 #[async_trait]
 impl Eval for ast::Literal {
-    async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
+    async fn eval(&self, _env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
         Ok(Gc::new(match self {
             ast::Literal::Number(n) => Value::Number(n.clone()),
             ast::Literal::Boolean(b) => Value::Boolean(*b),

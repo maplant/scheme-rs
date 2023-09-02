@@ -1,15 +1,11 @@
 use crate::{
     ast::{Ident, Literal},
-    eval::{Env, Eval, Value},
+    eval::Env,
     gc::Gc,
     lex::Span,
     sexpr::SExpr,
 };
-use futures::future::BoxFuture;
-use std::{
-    collections::{HashMap, HashSet},
-    hash::{Hash, Hasher},
-};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone)]
 pub struct Transformer {
@@ -40,7 +36,7 @@ impl SyntaxRule {
         let curr_span = expr.span().clone();
         self.pattern
             .matches(expr, binds, &mut var_binds)
-            .then(|| self.template.execute(&env, &var_binds, curr_span))
+            .then(|| self.template.execute(env, &var_binds, curr_span))
     }
 }
 
@@ -71,8 +67,8 @@ impl Pattern {
                 Self::Keyword(ident.sym.clone())
             }
             SExpr::Identifier { ident, .. } => Self::Variable(ident.sym.clone()),
-            SExpr::List { list, .. } => Self::List(Self::compile_slice(&list, keywords)),
-            SExpr::Vector { vector, .. } => Self::Vector(Self::compile_slice(&vector, keywords)),
+            SExpr::List { list, .. } => Self::List(Self::compile_slice(list, keywords)),
+            SExpr::Vector { vector, .. } => Self::Vector(Self::compile_slice(vector, keywords)),
             SExpr::Literal { literal, .. } => Self::Literal(literal.clone()),
         }
     }
@@ -111,16 +107,11 @@ impl Pattern {
                 var_binds.insert(name.clone(), SExprOrMany::SExpr(expr.clone()));
                 true
             }
-            Self::Keyword(ref lhs) => match expr {
-                SExpr::Identifier { ident: rhs, .. }
-                    if lhs == &rhs.sym && !binds.is_bound(&rhs.sym) =>
-                {
-                    true
-                }
-                _ => false,
-            },
-            Self::List(list) => match_slice(&list, expr, binds, var_binds),
-            Self::Vector(vec) => match_slice(&vec, expr, binds, var_binds),
+            Self::Keyword(ref lhs) => {
+                matches!(expr, SExpr::Identifier { ident: rhs, .. } if lhs == &rhs.sym && !binds.is_bound(&rhs.sym))
+            }
+            Self::List(list) => match_slice(list, expr, binds, var_binds),
+            Self::Vector(vec) => match_slice(vec, expr, binds, var_binds),
             // We shouldn't ever see this outside of lists
             Self::Nil => expr.is_nil(),
             _ => todo!(),
@@ -144,8 +135,8 @@ fn match_slice<'a>(
             let exprs = if matches!(pattern_iter.peek(), Some(Pattern::Nil)) {
                 // Match backwards
                 let mut rev_expr_iter = expr_iter.rev();
-                let mut rev_pattern_iter = pattern_iter.rev();
-                while let Some(pattern) = rev_pattern_iter.next() {
+                let rev_pattern_iter = pattern_iter.rev();
+                for pattern in rev_pattern_iter {
                     if let Some(expr) = rev_expr_iter.next() {
                         if !pattern.matches(expr, binds, var_binds) {
                             return false;
@@ -185,8 +176,8 @@ impl Template {
     pub fn compile(expr: &SExpr) -> Self {
         match expr {
             SExpr::Nil { .. } => Self::Nil,
-            SExpr::List { list, .. } => Self::List(Self::compile_slice(&list)),
-            SExpr::Vector { vector, .. } => Self::Vector(Self::compile_slice(&vector)),
+            SExpr::List { list, .. } => Self::List(Self::compile_slice(list)),
+            SExpr::Vector { vector, .. } => Self::Vector(Self::compile_slice(vector)),
             SExpr::Literal { literal, .. } => Self::Literal(literal.clone()),
             SExpr::Identifier { ident, .. } => Self::Identifier(ident.sym.clone()),
         }
@@ -266,7 +257,7 @@ pub struct Binds<'a> {
 }
 
 impl Binds<'static> {
-    pub async fn from_global(env: &Gc<Env>) -> Self {
+    pub async fn from_global(_env: &Gc<Env>) -> Self {
         Self {
             up: None,
             binds: HashSet::default(), // todo!("Need to fetch binds from current environment"),
