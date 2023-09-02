@@ -10,8 +10,11 @@ use nom::{
     sequence::{delimited, preceded, tuple},
     Finish, IResult,
 };
-use std::borrow::Cow;
+use nom_locate::{position, LocatedSpan};
+use std::{borrow::Cow, fmt, sync::Arc};
 use unicode_categories::UnicodeCategories;
+
+pub type Span<'a> = LocatedSpan<&'a str, Arc<String>>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Lexeme<'a> {
@@ -35,6 +38,7 @@ pub enum Lexeme<'a> {
     HashTick,
     HashComma,
     HashCommaAt,
+    DocComment(String),
 }
 
 impl Lexeme<'static> {
@@ -53,27 +57,37 @@ impl Lexeme<'static> {
 
 impl<'a> Lexeme<'a> {
     pub fn to_number(&self) -> &str {
-        let Lexeme::Number(num) = self else { panic!("not a number"); };
+        let Lexeme::Number(num) = self else {
+            panic!("not a number");
+        };
         num.as_ref()
     }
 
     pub fn to_boolean(&self) -> bool {
-        let Lexeme::Boolean(b) = self else { panic!("not a boolean"); };
+        let Lexeme::Boolean(b) = self else {
+            panic!("not a boolean");
+        };
         *b
     }
 
     pub fn to_ident(&self) -> &str {
-        let Lexeme::Identifier(i) = self else { panic!("not an ident"); };
+        let Lexeme::Identifier(i) = self else {
+            panic!("not an ident");
+        };
         i.as_ref()
     }
 
     pub fn to_char(&self) -> &str {
-        let Lexeme::Character(c) = self else { panic!("not a character"); };
+        let Lexeme::Character(c) = self else {
+            panic!("not a character");
+        };
         c.as_ref()
     }
 
     pub fn to_string(&self) -> &[Fragment<'a>] {
-        let Lexeme::String(s) = self else { panic!("not a string"); };
+        let Lexeme::String(s) = self else {
+            panic!("not a string");
+        };
         s.as_slice()
     }
 
@@ -82,14 +96,7 @@ impl<'a> Lexeme<'a> {
     }
 }
 
-#[derive(thiserror::Error, Debug)]
-pub enum LexError<'a> {
-    #[error("Input remaining after completing lex")]
-    InputRemaining,
-    #[error("Error lexing: {0}")]
-    NomError(nom::error::Error<&'a str>),
-}
-
+/*
 pub fn lex(i: &str) -> Result<Vec<Lexeme<'static>>, LexError<'_>> {
     let (remaining, output) = many0(map(tuple((interlexeme_space, lexeme)), |(_, lexeme)| {
         lexeme
@@ -104,13 +111,16 @@ pub fn lex(i: &str) -> Result<Vec<Lexeme<'static>>, LexError<'_>> {
     }
     Ok(output)
 }
+*/
 
-fn lexeme(i: &str) -> IResult<&str, Lexeme<'static>> {
+fn lexeme(i: Span) -> IResult<Span, Lexeme<'static>> {
     alt((
         map(identifier, Lexeme::identifier_owned),
         map(boolean, Lexeme::Boolean),
         map(string, Lexeme::string_owned),
         map(number, Lexeme::number_owned),
+        //        map(doc_comment, Lexeme::DocComment),
+        map(match_char('.'), |_| Lexeme::Period),
         map(match_char('('), |_| Lexeme::LParen),
         map(match_char(')'), |_| Lexeme::RParen),
         map(match_char('['), |_| Lexeme::LBracket),
@@ -118,26 +128,26 @@ fn lexeme(i: &str) -> IResult<&str, Lexeme<'static>> {
     ))(i)
 }
 
-fn comment(i: &str) -> IResult<&str, ()> {
+fn comment(i: Span) -> IResult<Span, ()> {
     todo!()
 }
 
-fn whitespace(i: &str) -> IResult<&str, ()> {
+fn whitespace(i: Span) -> IResult<Span, ()> {
     map(
         alt((satisfy(UnicodeCategories::is_separator), match_char('\n'))),
         |_| (),
     )(i)
 }
 
-fn atmosphere(i: &str) -> IResult<&str, ()> {
+fn atmosphere(i: Span) -> IResult<Span, ()> {
     map(tuple((whitespace,)), |_| ())(i)
 }
 
-fn interlexeme_space(i: &str) -> IResult<&str, ()> {
+fn interlexeme_space(i: Span) -> IResult<Span, ()> {
     dbg!(fold_many0(atmosphere, || (), |_, _| ())(i))
 }
 
-fn identifier(i: &str) -> IResult<&str, String> {
+fn identifier(i: Span) -> IResult<Span, String> {
     alt((
         map(tuple((initial, many0(subsequent))), |(i, s)| {
             format!("{i}{}", s.join(""))
@@ -146,14 +156,14 @@ fn identifier(i: &str) -> IResult<&str, String> {
     ))(i)
 }
 
-fn boolean(i: &str) -> IResult<&str, bool> {
+fn boolean(i: Span) -> IResult<Span, bool> {
     alt((
         map(tag_no_case("#t"), |_| true),
         map(tag_no_case("#f"), |_| false),
     ))(i)
 }
 
-fn initial(i: &str) -> IResult<&str, String> {
+fn initial(i: Span) -> IResult<Span, String> {
     alt((
         map(satisfy(is_constituent), String::from),
         map(satisfy(is_special_initial), String::from),
@@ -161,7 +171,7 @@ fn initial(i: &str) -> IResult<&str, String> {
     ))(i)
 }
 
-fn subsequent(i: &str) -> IResult<&str, String> {
+fn subsequent(i: Span) -> IResult<Span, String> {
     alt((
         initial,
         map(satisfy(|c| c.is_ascii_digit()), String::from),
@@ -177,29 +187,29 @@ fn subsequent(i: &str) -> IResult<&str, String> {
     ))(i)
 }
 
-fn special_subsequent(i: &str) -> IResult<&str, char> {
+fn special_subsequent(i: Span) -> IResult<Span, char> {
     one_of("+-.@")(i)
 }
 
-fn peculiar_identifier(i: &str) -> IResult<&str, String> {
+fn peculiar_identifier(i: Span) -> IResult<Span, String> {
     alt((
-        map(match_char('+'), String::from),
-        map(match_char('-'), String::from),
-        map(tag("..."), String::from),
+        map(match_char('+'), |_| String::from("+")),
+        map(match_char('-'), |_| String::from("-")),
+        map(tag("..."), |_| String::from("...")),
         map(tuple((tag("->"), many0(subsequent))), |(_, subseq)| {
             format!("->{}", subseq.join(""))
         }),
     ))(i)
 }
 
-fn inline_hex_escape(i: &str) -> IResult<&str, String> {
+fn inline_hex_escape(i: Span) -> IResult<Span, String> {
     map(
         tuple((tag("\\x"), hex_scalar_value, match_char(';'))),
         |(_, value, _)| format!("\\x{value};"),
     )(i)
 }
 
-fn hex_scalar_value(i: &str) -> IResult<&str, &str> {
+fn hex_scalar_value(i: Span) -> IResult<Span, Span> {
     hex_digit1(i)
 }
 
@@ -235,7 +245,7 @@ pub enum Fragment<'a> {
     Unescaped(Cow<'a, str>),
 }
 
-fn string(i: &str) -> IResult<&str, Vec<Fragment<'static>>> {
+fn string(i: Span) -> IResult<Span, Vec<Fragment<'static>>> {
     delimited(
         match_char('"'),
         many0(alt((
@@ -259,15 +269,15 @@ fn string(i: &str) -> IResult<&str, Vec<Fragment<'static>>> {
                 )),
             ),
             map(
-                verify(is_not("\"\\"), |s: &str| !s.is_empty()),
-                |s: &str| Fragment::Unescaped(Cow::Owned(s.to_string())),
+                verify(is_not("\"\\"), |s: &Span| !s.fragment().is_empty()),
+                |s: Span| Fragment::Unescaped(Cow::Owned(s.fragment().to_string())),
             ),
         ))),
         match_char('"'),
     )(i)
 }
 
-fn number(i: &str) -> IResult<&str, String> {
+fn number(i: Span) -> IResult<Span, String> {
     map(
         tuple((
             opt(alt((
@@ -278,28 +288,45 @@ fn number(i: &str) -> IResult<&str, String> {
             ))),
             take_while1(|c: char| c.is_ascii_hexdigit()),
         )),
-        |(radix, real)| format!("{}{real}", radix.unwrap_or("")),
+        |(radix, real): (Option<Span>, Span)| {
+            format!("{}{real}", radix.map(|s| *s.fragment()).unwrap_or(""))
+        },
     )(i)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+fn doc_comment(i: Span) -> IResult<Span, String> {
+    todo!()
+}
 
-    #[test]
-    fn print_out_shit() {
-        panic!(
-            "{:#?}",
-            lex(r#"
-(library (hello)
-(export hello-world)
-(import (rnrs base)
-(rnrs io simple))
-(define (hello-world)
-(display "Hello\n\"World\x0b;")
-(newline)))
-"#)
-            .unwrap()
-        );
+#[derive(Debug)]
+pub struct Token<'a> {
+    pub lexeme: Lexeme<'static>,
+    pub span: Span<'a>,
+}
+
+pub type LexError<'a> = nom::Err<nom::error::Error<Span<'a>>>;
+
+impl<'a> Token<'a> {
+    pub fn tokenize_file(s: &'a str, filename: &str) -> Result<Vec<Self>, LexError<'a>> {
+        let mut span = Span::new_extra(s, Arc::new(filename.to_string()));
+        let mut output = Vec::new();
+        while !span.is_empty() {
+            let (remaining, ()) = interlexeme_space(span)?;
+            if remaining.is_empty() {
+                break;
+            }
+            let (remaining, curr_span) = position(remaining)?;
+            let (remaining, lexeme) = lexeme(remaining)?;
+            output.push(Token {
+                lexeme,
+                span: curr_span,
+            });
+            span = remaining;
+        }
+        Ok(output)
+    }
+
+    pub fn tokenize_str(s: &'a str) -> Result<Vec<Self>, LexError<'a>> {
+        Self::tokenize_file(s, "<stdin>")
     }
 }

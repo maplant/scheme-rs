@@ -1,6 +1,7 @@
 use futures::future::BoxFuture;
 
 use crate::{
+    ast::Ident,
     eval::{Env, ExternalFn, RuntimeError, Value},
     gc::Gc,
 };
@@ -29,7 +30,7 @@ impl Builtin {
 
     pub fn install(&self, into: &mut Env) {
         into.define(
-            self.name,
+            &Ident::new_free(self.name),
             Gc::new(Value::from(ExternalFn {
                 num_args: self.num_args,
                 variadic: self.variadic,

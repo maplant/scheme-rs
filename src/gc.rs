@@ -14,7 +14,7 @@ use tokio::sync::{RwLock, Semaphore, SemaphorePermit};
 
 const MAX_READS: u32 = std::u32::MAX >> 3;
 
-struct GcInner<T: ?Sized> {
+pub struct GcInner<T: ?Sized> {
     roots: atomic::AtomicUsize,
     semaphore: Semaphore,
     data: UnsafeCell<T>,
@@ -102,6 +102,12 @@ impl<'a, T: ?Sized + Trace> Drop for GcWriteGuard<'a, T> {
 pub struct Gc<T: ?Sized> {
     ptr: NonNull<GcInner<T>>,
     marker: PhantomData<Arc<RwLock<T>>>,
+}
+
+impl<T: ?Sized> Gc<T> {
+    pub fn as_ptr(&self) -> *const GcInner<T> {
+        self.ptr.as_ptr()
+    }
 }
 
 impl<T: Trace> Gc<T> {

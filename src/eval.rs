@@ -1,12 +1,12 @@
 use crate::{
-    ast::{self, Body},
+    ast::{self, Body, Ident},
     builtin::Builtin,
     gc::{Gc, Trace},
     num::Number,
 };
 use async_trait::async_trait;
 use futures::future::BoxFuture;
-use std::{borrow::Cow, collections::HashMap, fmt, future::Future, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, fmt, future::Future, result, sync::Arc};
 
 pub enum Value {
     Boolean(bool),
@@ -20,6 +20,7 @@ pub enum Value {
     ByteVector(Vec<u8>),
     Procedure(Procedure),
     ExternalFn(ExternalFn),
+    Transformer(crate::expand::Transformer),
 }
 
 impl Value {
@@ -69,7 +70,7 @@ pub struct Env {
     up: Option<Gc<Env>>,
     // TODO: This can, and should, be optimized into a symtab of offsets and a
     // Vector.
-    defs: HashMap<String, Gc<Value>>,
+    defs: HashMap<Ident, Gc<Value>>,
 }
 
 impl Trace for Env {
@@ -103,7 +104,7 @@ impl Env {
         base
     }
 
-    pub async fn fetch(&self, var: &str) -> Option<Gc<Value>> {
+    pub async fn fetch(&self, var: &Ident) -> Option<Gc<Value>> {
         if let Some(val) = self.defs.get(var) {
             return Some(val.clone());
         }
@@ -117,13 +118,13 @@ impl Env {
         None
     }
 
-    pub fn define(&mut self, var: &str, val: Gc<Value>) {
-        self.defs.insert(var.to_string(), val);
+    pub fn define(&mut self, var: &Ident, val: Gc<Value>) {
+        self.defs.insert(var.clone(), val);
     }
 }
 
 pub enum RuntimeError {
-    UndefinedVariable(String),
+    UndefinedVariable(Ident),
     InvalidOperator(Gc<Value>),
     TooFewArguments,
     TooManyArguments,
@@ -132,7 +133,7 @@ pub enum RuntimeError {
 impl fmt::Debug for RuntimeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UndefinedVariable(var) => write!(f, "UndefinedVariable({var})"),
+            Self::UndefinedVariable(var) => write!(f, "UndefinedVariable({var:?})"),
             Self::InvalidOperator(_) => write!(f, "InvalidOperation(<Gc>)"),
             Self::TooFewArguments => write!(f, "TooFewArguments"),
             Self::TooManyArguments => write!(f, "TooManyArguments"),
@@ -159,7 +160,7 @@ impl ValueOrPreparedCall {
 /// Any struct implementing this trait must either implement `eval`, `tail_eval`, or
 /// both, even though both methods are provided.
 #[async_trait]
-pub trait Eval {
+pub trait Eval: dyn_clone::DynClone + Send + Sync {
     async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
         self.tail_eval(env).await?.eval(env).await
     }
@@ -169,6 +170,8 @@ pub trait Eval {
         Ok(ValueOrPreparedCall::Value(self.eval(env).await?))
     }
 }
+
+dyn_clone::clone_trait_object!(Eval);
 
 #[derive(Clone)]
 pub struct Procedure {
@@ -194,12 +197,12 @@ impl Procedure {
             let mut args_iter = args.iter().peekable();
             {
                 let mut env = env.write().await;
-                for ast::Ident(ref required) in &proc.args {
+                for required in &proc.args {
                     // We shouldn't ever need to check this, but probably safer to put
                     // this call here as well.
                     let Some(value) = args_iter.next().cloned() else {
-                return Err(RuntimeError::TooFewArguments);
-            };
+                        return Err(RuntimeError::TooFewArguments);
+                    };
                     env.define(required, value);
                 }
             }
@@ -215,7 +218,6 @@ impl Procedure {
                 ValueOrPreparedCall::PreparedCall(prepared) => {
                     proc = Cow::Owned(prepared.operator.read().await.as_proc().unwrap().clone());
                     args = prepared.args;
-                    println!("We are tail calling!");
                     // Continue
                 }
             }
@@ -245,39 +247,35 @@ impl ExternalFn {
     }
 }
 
+// TODO: Get rid of this implementation and use one that has a location
 #[async_trait]
-impl Eval for ast::Expression {
+impl Eval for ast::Ident {
     async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
-        match self {
-            Self::Literal(ast::Literal::Number(n)) => Ok(Gc::new(Value::Number(n.clone()))),
-            Self::VariableRef(ast::Ident(var)) => Ok(env
+        let result = env.read().await.fetch(self).await;
+        // This should very rarely occur, but it is possible in certain circumstances
+        if result.is_none() && self.macro_env.is_some() {
+            let new_ident = Ident {
+                sym: self.sym.clone(),
+                macro_env: None,
+            };
+            self.macro_env
+                .as_ref()
+                .unwrap()
                 .read()
                 .await
-                .fetch(&var)
+                .fetch(&new_ident)
                 .await
-                .ok_or_else(|| RuntimeError::UndefinedVariable(var.clone()))?),
-            Self::DefFunc(def_func) => def_func.eval(env).await,
-            Self::DefVar(def_var) => def_var.eval(env).await,
-            Self::And(and) => and.eval(env).await,
-            Self::Or(or) => or.eval(env).await,
-            Self::Call(call) => call.eval(env).await,
-            Self::Lambda(lambda) => lambda.eval(env).await,
-            Self::Let(let_expr) => let_expr.eval(env).await,
-            Self::If(if_expr) => if_expr.eval(env).await,
-            _ => todo!(),
+        } else {
+            result
         }
+        .ok_or_else(|| RuntimeError::UndefinedVariable(self.clone()))
     }
+}
 
-    async fn tail_eval(&self, env: &Gc<Env>) -> Result<ValueOrPreparedCall, RuntimeError> {
-        match self {
-            Self::If(if_expr) => if_expr.tail_eval(env).await,
-            Self::Body(body) => body.tail_eval(env).await,
-            Self::Call(call) => call.tail_eval(env).await,
-            Self::And(and) => and.tail_eval(env).await,
-            Self::Or(or) => or.tail_eval(env).await,
-            Self::Let(let_expr) => let_expr.tail_eval(env).await,
-            _ => Ok(ValueOrPreparedCall::Value(self.eval(env).await?)),
-        }
+#[async_trait]
+impl Eval for ast::Ref {
+    async fn eval(&self, _env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
+        Ok(self.val.clone())
     }
 }
 
@@ -375,8 +373,8 @@ impl Eval for ast::Lambda {
 impl Eval for ast::Let {
     async fn tail_eval(&self, env: &Gc<Env>) -> Result<ValueOrPreparedCall, RuntimeError> {
         let mut new_scope = Env::new(env);
-        for (ast::Ident(ref var), expr) in &self.bindings {
-            new_scope.define(var, expr.eval(env).await?);
+        for (ident, expr) in &self.bindings {
+            new_scope.define(ident, expr.eval(env).await?);
         }
         self.body.tail_eval(&Gc::new(new_scope)).await
     }
@@ -387,8 +385,10 @@ impl Eval for ast::If {
     async fn tail_eval(&self, env: &Gc<Env>) -> Result<ValueOrPreparedCall, RuntimeError> {
         if self.cond.eval(env).await?.read().await.is_true() {
             self.success.tail_eval(env).await
+        } else if let Some(ref failure) = self.failure {
+            failure.tail_eval(env).await
         } else {
-            self.failure.tail_eval(env).await
+            Ok(ValueOrPreparedCall::Value(Gc::new(Value::Nil)))
         }
     }
 }
@@ -403,7 +403,7 @@ impl Eval for ast::DefineFunc {
             remaining,
             body: self.body.clone(),
         }));
-        env.write().await.define(&self.name.0, func);
+        env.write().await.define(&self.name, func);
         Ok(Gc::new(Value::Nil))
     }
 }
@@ -412,7 +412,32 @@ impl Eval for ast::DefineFunc {
 impl Eval for ast::DefineVar {
     async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
         let val = self.val.eval(env).await?;
-        env.write().await.define(&self.name.0, val);
+        env.write().await.define(&self.name, val);
+        Ok(Gc::new(Value::Nil))
+    }
+}
+
+#[async_trait]
+impl Eval for ast::Define {
+    async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
+        match self {
+            ast::Define::DefineFunc(define_func) => define_func.eval(env).await,
+            ast::Define::DefineVar(define_var) => define_var.eval(env).await,
+        }
+    }
+}
+
+#[async_trait]
+impl Eval for ast::DefineSyntax {
+    async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
+        let macro_env = Gc::new(Env::new(env));
+        env.write().await.define(
+            &self.name,
+            Gc::new(Value::Transformer(crate::expand::Transformer {
+                env: macro_env,
+                rules: self.rules.clone(),
+            })),
+        );
         Ok(Gc::new(Value::Nil))
     }
 }
@@ -449,5 +474,16 @@ impl Eval for ast::Or {
         }
         // If all of the other arguments are false, then the result is the last expression
         last.tail_eval(env).await
+    }
+}
+
+#[async_trait]
+impl Eval for ast::Literal {
+    async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
+        Ok(Gc::new(match self {
+            ast::Literal::Number(n) => Value::Number(n.clone()),
+            ast::Literal::Boolean(b) => Value::Boolean(*b),
+            _ => todo!("Literal evaluation not implemented"),
+        }))
     }
 }
