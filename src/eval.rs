@@ -3,11 +3,13 @@ use crate::{
     builtin::Builtin,
     gc::{Gc, Trace},
     num::Number,
+    sexpr::SExpr,
 };
 use async_trait::async_trait;
 use futures::future::BoxFuture;
 use std::{borrow::Cow, collections::HashMap, fmt};
 
+#[derive(Clone)]
 pub enum Value {
     Nil,
     Boolean(bool),
@@ -46,7 +48,8 @@ impl Value {
                 Self::Boolean(true) => "#t".to_string(),
                 Self::Boolean(false) => "#f".to_string(),
                 Self::Number(number) => number.to_string(),
-                Self::String(string) => string.clone(),
+                Self::String(string) => format!("\"{string}\""),
+                Self::Symbol(symbol) => symbol.clone(),
                 Self::Pair(car, cdr) => crate::lists::fmt_list(car, cdr).await,
                 Self::Nil => "()".to_string(),
                 _ => todo!(),
@@ -54,14 +57,32 @@ impl Value {
         })
     }
 
-    /*
-    pub fn from_sexpr(sexpr: &SExpr) -> Self {
-        match sexpr {
-            SExpr::Nil { .. } => Self::Nil,
-            SExpr::List
+    pub fn from_literal(literal: &ast::Literal) -> Self {
+        match literal {
+            ast::Literal::Number(n) => Value::Number(n.clone()),
+            ast::Literal::Boolean(b) => Value::Boolean(*b),
+            ast::Literal::String(s) => Value::String(s.clone()),
+            _ => todo!("Literal evaluation not implemented"),
         }
     }
-    */
+
+    pub fn from_sexpr(sexpr: &SExpr<'_>) -> Self {
+        match sexpr {
+            SExpr::Nil { .. } => Self::Nil,
+            SExpr::List { list, .. } => {
+                let mut curr = Self::from_sexpr(list.last().unwrap());
+                for item in list[..list.len() - 1].iter().rev() {
+                    curr = Self::Pair(Gc::new(Self::from_sexpr(item)), Gc::new(curr));
+                }
+                curr
+            }
+            SExpr::Vector { vector, .. } => {
+                Self::Vector(vector.iter().map(Self::from_sexpr).collect())
+            }
+            SExpr::Literal { literal, .. } => Self::from_literal(literal),
+            SExpr::Identifier { ident, .. } => Self::Symbol(ident.sym.clone()),
+        }
+    }
 }
 
 impl From<ExternalFn> for Value {
@@ -233,7 +254,7 @@ impl Procedure {
 
 pub type ExprFuture = BoxFuture<'static, Result<Gc<Value>, RuntimeError>>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ExternalFn {
     pub num_args: usize,
     pub variadic: bool,
@@ -489,10 +510,13 @@ impl Eval for ast::Or {
 #[async_trait]
 impl Eval for ast::Literal {
     async fn eval(&self, _env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
-        Ok(Gc::new(match self {
-            ast::Literal::Number(n) => Value::Number(n.clone()),
-            ast::Literal::Boolean(b) => Value::Boolean(*b),
-            _ => todo!("Literal evaluation not implemented"),
-        }))
+        Ok(Gc::new(Value::from_literal(self)))
+    }
+}
+
+#[async_trait]
+impl Eval for ast::Quote {
+    async fn eval(&self, _env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
+        Ok(Gc::new(self.val.clone()))
     }
 }

@@ -66,4 +66,10 @@ async fn main() {
     .await
     .unwrap();
     run("(test2 1 2 3 4 5 6 7 8 9 10)", &base).await.unwrap();
+    run("(quote (a b c d (+ g b)))", &base).await.unwrap();
+    // ( a . (b . (c . ((d . (+ . (g . (b . ())))) . ()))))
+    run("(quote ((+ g b c 5 10 \"hello!!!\") . a))", &base)
+        .await
+        .unwrap();
+    run("(quote (a . ()))", &base).await.unwrap();
 }

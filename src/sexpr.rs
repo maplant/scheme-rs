@@ -234,6 +234,7 @@ macro_rules! special_forms {
 }
 
 special_forms! {
+    "quote" => ast::Quote,
     "and" => ast::And,
     "or" => ast::Or,
     "begin" => ast::Body,

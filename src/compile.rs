@@ -1,6 +1,6 @@
 use crate::{
     ast::{self, Ident},
-    eval::{Env, Eval},
+    eval::{Env, Eval, Value},
     expand::{Binds, Pattern, SyntaxRule, Template},
     gc::Gc,
     lex::Span,
@@ -22,6 +22,7 @@ pub enum CompileError<'a> {
     CompileLetError(CompileLetError<'a>),
     CompileDefineSyntaxError(CompileDefineSyntaxError<'a>),
     CompileBodyError(CompileBodyError<'a>),
+    CompileQuoteError(CompileQuoteError<'a>),
 }
 
 macro_rules! impl_from_compile_error {
@@ -496,5 +497,33 @@ impl Compile for ast::Or {
             output.push(expr);
         }
         Ok(Self::new(output))
+    }
+}
+
+#[derive(Debug)]
+pub enum CompileQuoteError<'a> {
+    ExpectedArgument(Span<'a>),
+    UnexpectedArgument(Span<'a>),
+    BadForm(Span<'a>),
+}
+
+#[async_trait]
+impl Compile for ast::Quote {
+    type Error<'a> = CompileQuoteError<'a>;
+
+    async fn compile<'a>(
+        exprs: &[SExpr<'a>],
+        _env: &Gc<Env>,
+        _binds: Arc<Binds>,
+        span: &Span<'a>,
+    ) -> Result<Self, CompileQuoteError<'a>> {
+        match exprs {
+            [] => Err(CompileQuoteError::ExpectedArgument(span.clone())),
+            [expr, SExpr::Nil { .. }] => Ok(ast::Quote {
+                val: Value::from_sexpr(expr),
+            }),
+            [_, arg, ..] => Err(CompileQuoteError::UnexpectedArgument(arg.span().clone())),
+            _ => Err(CompileQuoteError::BadForm(span.clone())),
+        }
     }
 }

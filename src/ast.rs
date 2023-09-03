@@ -75,6 +75,11 @@ pub enum Literal {
 }
 
 #[derive(Clone)]
+pub struct Quote {
+    pub val: Value,
+}
+
+#[derive(Clone)]
 pub struct Call {
     pub operator: Box<dyn Eval>,
     pub args: Vec<Box<dyn Eval>>,
