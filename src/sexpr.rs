@@ -1,5 +1,6 @@
 use crate::{
-    ast::{Ident, Literal},
+    ast::{self, Ident, Literal},
+    compile::{Compile, CompileError},
     eval::{Env, Eval, Value},
     expand::Binds,
     gc::Gc,
@@ -7,7 +8,7 @@ use crate::{
     parse::ParseError,
 };
 use futures::future::BoxFuture;
-use std::borrow::Cow;
+use std::{borrow::Cow, collections::HashMap, pin::Pin, sync::Arc};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SExpr<'a> {
@@ -69,8 +70,16 @@ impl<'a> SExpr<'a> {
         Self::Vector { vector, span }
     }
 
+    pub fn is_vector(&self) -> bool {
+        matches!(self, Self::Vector { .. })
+    }
+
     pub fn new_literal(literal: Literal, span: Span<'a>) -> Self {
         Self::Literal { literal, span }
+    }
+
+    pub fn is_literal(&self) -> bool {
+        matches!(self, Self::Literal { .. })
     }
 
     pub fn new_identifier(ident: Ident, span: Span<'a>) -> Self {
@@ -81,16 +90,16 @@ impl<'a> SExpr<'a> {
         matches!(self, Self::Identifier { .. })
     }
 
-    fn expand<'b: 'a>(
+    fn expand<'b>(
         &'b self,
-        env: &'a Gc<Env>,
-        binds: &'a Binds<'_>,
-    ) -> BoxFuture<'a, Cow<'b, SExpr<'a>>> {
+        env: &'b Gc<Env>,
+        binds: Arc<Binds>,
+    ) -> BoxFuture<'b, Cow<'b, SExpr<'a>>> {
         Box::pin(async move {
             if let Self::List { list, span } = self {
                 let (head, tail) = list.split_first().unwrap();
                 let head = match head {
-                    list @ Self::List { .. } => list.expand(env, binds).await,
+                    list @ Self::List { .. } => list.expand(env, binds.clone()).await,
                     x => Cow::Borrowed(x),
                 };
                 let ident = match head.as_ref() {
@@ -99,7 +108,7 @@ impl<'a> SExpr<'a> {
                         let mut borrowed = matches!(head, Cow::Borrowed(_));
                         let mut output = vec![head];
                         for item in tail {
-                            let item = item.expand(env, binds).await;
+                            let item = item.expand(env, binds.clone()).await;
                             borrowed &= matches!(item, Cow::Borrowed(_));
                             output.push(item);
                         }
@@ -118,7 +127,7 @@ impl<'a> SExpr<'a> {
                         let mut list = vec![head.into_owned()];
                         list.extend(tail.iter().cloned());
                         let mut expanded = transformer
-                            .expand(&SExpr::new_list(list, span.clone()), binds)
+                            .expand(&SExpr::new_list(list, span.clone()), binds.clone())
                             .unwrap();
                         loop {
                             if let ref expr @ SExpr::List { ref list, .. } = expanded {
@@ -126,7 +135,8 @@ impl<'a> SExpr<'a> {
                                     if let Some(head) = env.read().await.fetch(ident).await {
                                         if let Value::Transformer(transformer) = &*head.read().await
                                         {
-                                            expanded = transformer.expand(expr, binds).unwrap();
+                                            expanded =
+                                                transformer.expand(expr, binds.clone()).unwrap();
                                             continue;
                                         }
                                     }
@@ -141,45 +151,24 @@ impl<'a> SExpr<'a> {
         })
     }
 
-    pub fn compile<'b: 'a>(
+    pub fn compile<'b>(
         &'b self,
-        env: &'a Gc<Env>,
-        binds: &'a Binds<'_>,
-    ) -> BoxFuture<'a, Box<dyn Eval>> {
+        env: &'b Gc<Env>,
+        binds: Arc<Binds>,
+    ) -> BoxFuture<'b, Result<Box<dyn Eval>, CompileError<'a>>> {
         Box::pin(async move {
-            let expr = self.expand(env, binds).await;
+            let expr = self.expand(env, binds.clone()).await;
             match &*expr {
-                Self::List { list, span } => match &list[..] {
-                    [Self::Identifier { ident: op, span }, tail @ ..] if op.sym == "define" => {
-                        Box::new(
-                            crate::compile::compile_define(tail, env, binds, span)
-                                .await
-                                .unwrap(),
-                        ) as Box<dyn Eval>
+                Self::Nil { span } => Err(CompileError::UnexpectedEmptyList(span.clone())),
+                Self::List { list: exprs, span } => {
+                    if let [Self::Identifier { ident: op, span }, tail @ ..] = &exprs[..] {
+                        if let Some(special_form) = SPECIAL_FORMS.get(&op.sym) {
+                            return (special_form)(tail, env, binds.clone(), span).await;
+                        }
                     }
-                    [Self::Identifier { ident: op, span }, tail @ ..]
-                        if op.sym == "define-syntax" =>
-                    {
-                        Box::new(
-                            crate::compile::compile_define_syntax(tail, env, binds, span)
-                                .await
-                                .unwrap(),
-                        ) as Box<dyn Eval>
-                    }
-                    [Self::Identifier { ident: op, span }, tail @ ..] if op.sym == "if" => {
-                        Box::new(
-                            crate::compile::compile_if(tail, env, binds, span)
-                                .await
-                                .unwrap(),
-                        ) as Box<dyn Eval>
-                    }
-                    exprs => Box::new(
-                        crate::compile::compile_func_call(exprs, env, binds, span)
-                            .await
-                            .unwrap(),
-                    ) as Box<dyn Eval>,
-                },
-                Self::Literal { literal, .. } => Box::new(literal.clone()) as Box<dyn Eval>,
+                    ast::Call::compile_to_expr(exprs, env, binds.clone(), span).await
+                }
+                Self::Literal { literal, .. } => Ok(Box::new(literal.clone()) as Box<dyn Eval>),
                 Self::Identifier { ident, .. } => {
                     // If the identifier has a macro environment and has not been bound we
                     // can attempt to look it up in order to properly scope it
@@ -190,18 +179,68 @@ impl<'a> SExpr<'a> {
                                 macro_env: None,
                             };
                             if let Some(val) = macro_env.read().await.fetch(&ident).await {
-                                return Box::new(crate::ast::Ref { val: val.clone() })
-                                    as Box<dyn Eval>;
+                                return Ok(Box::new(ast::Ref { val: val.clone() }));
                             }
                         }
                         _ => (),
                     }
-                    Box::new(ident.clone()) as Box<dyn Eval>
+                    Ok(Box::new(ident.clone()) as Box<dyn Eval>)
                 }
                 x => todo!("expr: {x:#?}"),
             }
         })
     }
+}
+
+type CompilationResult<'b> = Result<Box<(dyn Eval + 'static)>, CompileError<'b>>;
+
+type SpecialFormCompilationFuture<'a, 'b> =
+    Pin<Box<dyn futures::Future<Output = CompilationResult<'b>> + Send + 'a>>;
+
+type SpecialFormCompilation = for<'a, 'b> fn(
+    &'a [SExpr<'b>],
+    &'a Gc<Env>,
+    Arc<Binds>,
+    &'a Span<'b>,
+) -> SpecialFormCompilationFuture<'a, 'b>;
+
+fn call_compilation<'a, 'b, C: Compile>(
+    exprs: &'a [SExpr<'b>],
+    env: &'a Gc<Env>,
+    binds: Arc<Binds>,
+    span: &'a Span<'b>,
+) -> SpecialFormCompilationFuture<'a, 'b>
+where
+    for<'c> CompileError<'c>: From<C::Error<'c>>,
+{
+    C::compile_to_expr(exprs, env, binds, span)
+}
+
+macro_rules! special_forms {
+    ( $( $name:literal => $node:ty ),+ ) => {
+        lazy_static::lazy_static! {
+            static ref SPECIAL_FORMS: HashMap<String, SpecialFormCompilation> = {
+                let mut special_forms = HashMap::new();
+                $(
+                    special_forms.insert(
+                        $name.to_string(),
+                        call_compilation::<$node> as SpecialFormCompilation
+                    );
+                )+
+                special_forms
+            };
+        }
+    };
+}
+
+special_forms! {
+    "and" => ast::And,
+    "or" => ast::Or,
+    "begin" => ast::Body,
+    "if" => ast::If,
+    "let" => ast::Let,
+    "define" => ast::Define,
+    "define-syntax" => ast::DefineSyntax
 }
 
 #[derive(Debug)]
@@ -235,10 +274,8 @@ impl<'a> ParsedSExpr<'a> {
         Ok(output)
     }
 
-    pub fn compile(self, env: &'a Gc<Env>) -> BoxFuture<'a, Box<dyn Eval>> {
-        Box::pin(async move {
-            let binds = Binds::from_global(env).await;
-            self.sexpr.compile(env, &binds).await
-        })
+    pub async fn compile(&'a self, env: &'a Gc<Env>) -> Result<Box<dyn Eval>, CompileError<'a>> {
+        let binds = Binds::from_global(env).await;
+        self.sexpr.compile(env, binds).await
     }
 }

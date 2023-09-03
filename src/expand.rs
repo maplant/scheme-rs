@@ -5,7 +5,10 @@ use crate::{
     lex::Span,
     sexpr::SExpr,
 };
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 #[derive(Clone)]
 pub struct Transformer {
@@ -14,9 +17,9 @@ pub struct Transformer {
 }
 
 impl Transformer {
-    pub fn expand<'a>(&self, expr: &SExpr<'a>, binds: &Binds<'a>) -> Option<SExpr<'a>> {
+    pub fn expand<'a>(&self, expr: &SExpr<'a>, binds: Arc<Binds>) -> Option<SExpr<'a>> {
         for rule in &self.rules {
-            if let Some(expansion) = rule.expand(expr, binds, &self.env) {
+            if let Some(expansion) = rule.expand(expr, binds.clone(), &self.env) {
                 return Some(expansion);
             }
         }
@@ -31,7 +34,7 @@ pub struct SyntaxRule {
 }
 
 impl SyntaxRule {
-    fn expand<'a>(&self, expr: &SExpr<'a>, binds: &Binds<'_>, env: &Gc<Env>) -> Option<SExpr<'a>> {
+    fn expand<'a>(&self, expr: &SExpr<'a>, binds: Arc<Binds>, env: &Gc<Env>) -> Option<SExpr<'a>> {
         let mut var_binds = HashMap::new();
         let curr_span = expr.span().clone();
         self.pattern
@@ -98,7 +101,7 @@ impl Pattern {
     fn matches<'a>(
         &self,
         expr: &SExpr<'a>,
-        binds: &Binds<'_>,
+        binds: Arc<Binds>,
         var_binds: &mut HashMap<String, SExprOrMany<'a>>,
     ) -> bool {
         match self {
@@ -122,7 +125,7 @@ impl Pattern {
 fn match_slice<'a>(
     pattern: &[Pattern],
     expr: &SExpr<'a>,
-    binds: &Binds<'_>,
+    binds: Arc<Binds>,
     var_binds: &mut HashMap<String, SExprOrMany<'a>>,
 ) -> bool {
     let mut expr_iter = match expr {
@@ -132,13 +135,13 @@ fn match_slice<'a>(
     let mut pattern_iter = pattern.iter().peekable();
     while let Some(item) = pattern_iter.next() {
         if let Pattern::Ellipsis(ref name) = item {
-            let exprs = if matches!(pattern_iter.peek(), Some(Pattern::Nil)) {
+            let exprs = if !matches!(pattern_iter.peek(), Some(Pattern::Nil)) {
                 // Match backwards
                 let mut rev_expr_iter = expr_iter.rev();
                 let rev_pattern_iter = pattern_iter.rev();
                 for pattern in rev_pattern_iter {
                     if let Some(expr) = rev_expr_iter.next() {
-                        if !pattern.matches(expr, binds, var_binds) {
+                        if !pattern.matches(expr, binds.clone(), var_binds) {
                             return false;
                         }
                     }
@@ -151,7 +154,7 @@ fn match_slice<'a>(
             var_binds.insert(name.clone(), SExprOrMany::Many(exprs));
             return true;
         } else if let Some(next_expr) = expr_iter.next() {
-            if !item.matches(next_expr, binds, var_binds) {
+            if !item.matches(next_expr, binds.clone(), var_binds) {
                 return false;
             }
         } else {
@@ -251,34 +254,32 @@ fn execute_slice<'a>(
     output
 }
 
-pub struct Binds<'a> {
-    up: Option<&'a Binds<'a>>,
+pub struct Binds {
+    up: Option<Arc<Binds>>,
     binds: HashSet<String>,
 }
 
-impl Binds<'static> {
-    pub async fn from_global(_env: &Gc<Env>) -> Self {
-        Self {
+impl Binds {
+    pub async fn from_global(_env: &Gc<Env>) -> Arc<Self> {
+        Arc::new(Self {
             up: None,
             binds: HashSet::default(), // todo!("Need to fetch binds from current environment"),
-        }
+        })
     }
-}
 
-impl<'a> Binds<'a> {
-    pub fn new_local(up: &'a Binds<'a>) -> Self {
+    pub fn new_local(up: &Arc<Binds>) -> Self {
         Self {
-            up: Some(up),
+            up: Some(up.clone()),
             binds: HashSet::default(),
         }
     }
 }
 
-impl Binds<'_> {
+impl Binds {
     pub fn is_bound(&self, name: &str) -> bool {
         if self.binds.contains(name) {
             true
-        } else if let Some(up) = self.up {
+        } else if let Some(ref up) = self.up {
             up.is_bound(name)
         } else {
             false

@@ -9,7 +9,7 @@ async fn run(code: &str, env: &Gc<Env>) -> Result<(), RuntimeError> {
     let tokens = Token::tokenize_str(code).unwrap();
     let sexprs = dbg!(ParsedSExpr::parse(&tokens).unwrap());
     for sexpr in sexprs {
-        let result = dbg!(sexpr).compile(env).await.eval(env).await?;
+        let result = dbg!(sexpr).compile(env).await.unwrap().eval(env).await?;
         println!("result = {}", result.read().await.fmt().await);
     }
     Ok(())
@@ -59,11 +59,11 @@ async fn main() {
         r#"
 (define-syntax test2
   (syntax-rules ()
-    ((test2 a b _ x ...) (list a b x ...))))
+    ((test2 a b c d ... e f g) (list e f g a b c d ...))))
 "#,
         &base,
     )
     .await
     .unwrap();
-    run("(test2 1 2 3 4 5)", &base).await.unwrap();
+    run("(test2 1 2 3 4 5 6 7 8 9 10)", &base).await.unwrap();
 }

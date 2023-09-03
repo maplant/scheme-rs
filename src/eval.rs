@@ -9,12 +9,12 @@ use futures::future::BoxFuture;
 use std::{borrow::Cow, collections::HashMap, fmt};
 
 pub enum Value {
+    Nil,
     Boolean(bool),
     Number(Number),
     Character(char),
     String(String),
-    Symbol(usize),
-    Nil,
+    Symbol(String),
     Pair(Gc<Value>, Gc<Value>),
     Vector(Vec<Value>),
     ByteVector(Vec<u8>),
@@ -53,6 +53,15 @@ impl Value {
             }
         })
     }
+
+    /*
+    pub fn from_sexpr(sexpr: &SExpr) -> Self {
+        match sexpr {
+            SExpr::Nil { .. } => Self::Nil,
+            SExpr::List
+        }
+    }
+    */
 }
 
 impl From<ExternalFn> for Value {
@@ -252,6 +261,7 @@ impl Eval for ast::Ident {
     async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
         let result = env.read().await.fetch(self).await;
         // This should very rarely occur, but it is possible in certain circumstances
+        // where macros refer to items in the global scope that have yet to be defined
         if result.is_none() && self.macro_env.is_some() {
             let new_ident = Ident {
                 sym: self.sym.clone(),
