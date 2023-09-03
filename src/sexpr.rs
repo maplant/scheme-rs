@@ -8,7 +8,7 @@ use crate::{
     parse::ParseError,
 };
 use futures::future::BoxFuture;
-use std::{borrow::Cow, collections::HashMap, pin::Pin, sync::Arc};
+use std::{borrow::Cow, sync::Arc};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SExpr<'a> {
@@ -160,14 +160,35 @@ impl<'a> SExpr<'a> {
             let expr = self.expand(env, binds.clone()).await;
             match &*expr {
                 Self::Nil { span } => Err(CompileError::UnexpectedEmptyList(span.clone())),
-                Self::List { list: exprs, span } => {
-                    if let [Self::Identifier { ident: op, span }, tail @ ..] = &exprs[..] {
-                        if let Some(special_form) = SPECIAL_FORMS.get(&op.sym) {
-                            return (special_form)(tail, env, binds.clone(), span).await;
-                        }
+                Self::List { list: exprs, span } => match &exprs[..] {
+                    // Special forms:
+                    [Self::Identifier { ident, span }, tail @ ..] if ident == "quote" => {
+                        ast::Quote::compile_to_expr(tail, env, binds, span).await
                     }
-                    ast::Call::compile_to_expr(exprs, env, binds.clone(), span).await
-                }
+                    [Self::Identifier { ident, span }, tail @ ..] if ident == "and" => {
+                        ast::And::compile_to_expr(tail, env, binds, span).await
+                    }
+                    [Self::Identifier { ident, span }, tail @ ..] if ident == "or" => {
+                        ast::Or::compile_to_expr(tail, env, binds, span).await
+                    }
+                    [Self::Identifier { ident, span }, tail @ ..] if ident == "begin" => {
+                        ast::Body::compile_to_expr(tail, env, binds, span).await
+                    }
+                    [Self::Identifier { ident, span }, tail @ ..] if ident == "if" => {
+                        ast::If::compile_to_expr(tail, env, binds, span).await
+                    }
+                    [Self::Identifier { ident, span }, tail @ ..] if ident == "let" => {
+                        ast::Let::compile_to_expr(tail, env, binds, span).await
+                    }
+                    [Self::Identifier { ident, span }, tail @ ..] if ident == "define" => {
+                        ast::Define::compile_to_expr(tail, env, binds, span).await
+                    }
+                    [Self::Identifier { ident, span }, tail @ ..] if ident == "define-syntax" => {
+                        ast::DefineSyntax::compile_to_expr(tail, env, binds, span).await
+                    }
+                    // Function call:
+                    exprs => ast::Call::compile_to_expr(exprs, env, binds.clone(), span).await,
+                },
                 Self::Literal { literal, .. } => Ok(Box::new(literal.clone()) as Box<dyn Eval>),
                 Self::Identifier { ident, .. } => {
                     // If the identifier has a macro environment and has not been bound we
@@ -179,7 +200,7 @@ impl<'a> SExpr<'a> {
                                 macro_env: None,
                             };
                             if let Some(val) = macro_env.read().await.fetch(&ident).await {
-                                return Ok(Box::new(ast::Ref { val: val.clone() }));
+                                return Ok(Box::new(ast::Ref { val: val.clone() }) as Box<dyn Eval>);
                             }
                         }
                         _ => (),
@@ -190,58 +211,6 @@ impl<'a> SExpr<'a> {
             }
         })
     }
-}
-
-type CompilationResult<'b> = Result<Box<(dyn Eval + 'static)>, CompileError<'b>>;
-
-type SpecialFormCompilationFuture<'a, 'b> =
-    Pin<Box<dyn futures::Future<Output = CompilationResult<'b>> + Send + 'a>>;
-
-type SpecialFormCompilation = for<'a, 'b> fn(
-    &'a [SExpr<'b>],
-    &'a Gc<Env>,
-    Arc<Binds>,
-    &'a Span<'b>,
-) -> SpecialFormCompilationFuture<'a, 'b>;
-
-fn call_compilation<'a, 'b, C: Compile>(
-    exprs: &'a [SExpr<'b>],
-    env: &'a Gc<Env>,
-    binds: Arc<Binds>,
-    span: &'a Span<'b>,
-) -> SpecialFormCompilationFuture<'a, 'b>
-where
-    for<'c> CompileError<'c>: From<C::Error<'c>>,
-{
-    C::compile_to_expr(exprs, env, binds, span)
-}
-
-macro_rules! special_forms {
-    ( $( $name:literal => $node:ty ),+ ) => {
-        lazy_static::lazy_static! {
-            static ref SPECIAL_FORMS: HashMap<String, SpecialFormCompilation> = {
-                let mut special_forms = HashMap::new();
-                $(
-                    special_forms.insert(
-                        $name.to_string(),
-                        call_compilation::<$node> as SpecialFormCompilation
-                    );
-                )+
-                special_forms
-            };
-        }
-    };
-}
-
-special_forms! {
-    "quote" => ast::Quote,
-    "and" => ast::And,
-    "or" => ast::Or,
-    "begin" => ast::Body,
-    "if" => ast::If,
-    "let" => ast::Let,
-    "define" => ast::Define,
-    "define-syntax" => ast::DefineSyntax
 }
 
 #[derive(Debug)]

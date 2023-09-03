@@ -55,6 +55,12 @@ impl PartialEq for Ident {
     }
 }
 
+impl PartialEq<str> for Ident {
+    fn eq(&self, rhs: &str) -> bool {
+        self.sym == rhs
+    }
+}
+
 impl Eq for Ident {}
 
 #[derive(Clone)]

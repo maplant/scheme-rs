@@ -7,9 +7,9 @@ use scheme_rs::{
 
 async fn run(code: &str, env: &Gc<Env>) -> Result<(), RuntimeError> {
     let tokens = Token::tokenize_str(code).unwrap();
-    let sexprs = dbg!(ParsedSExpr::parse(&tokens).unwrap());
+    let sexprs = ParsedSExpr::parse(&tokens).unwrap();
     for sexpr in sexprs {
-        let result = dbg!(sexpr).compile(env).await.unwrap().eval(env).await?;
+        let result = sexpr.compile(env).await.unwrap().eval(env).await?;
         println!("result = {}", result.read().await.fmt().await);
     }
     Ok(())
@@ -65,6 +65,22 @@ async fn main() {
     )
     .await
     .unwrap();
+    run(
+        r#"
+(define-syntax kwote
+  (syntax-rules ()
+    ((kwote exp) (quote exp))))
+"#,
+        &base,
+    )
+    .await
+    .unwrap();
+    run(
+        "(kwote (hello my honey (hello my lady (hello my rag-time-gal))))",
+        &base,
+    )
+    .await
+    .unwrap();
     run("(test2 1 2 3 4 5 6 7 8 9 10)", &base).await.unwrap();
     run("(quote (a b c d (+ g b)))", &base).await.unwrap();
     // ( a . (b . (c . ((d . (+ . (g . (b . ())))) . ()))))
@@ -72,4 +88,5 @@ async fn main() {
         .await
         .unwrap();
     run("(quote (a . ()))", &base).await.unwrap();
+    run("(+ 5 5 5 ())", &base).await.unwrap();
 }

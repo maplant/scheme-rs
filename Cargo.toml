@@ -9,7 +9,6 @@ derive_more = "0.99"
 dyn-clone = "1.0.13"
 futures = "0.3"
 inventory = "0.3"
-lazy_static = "1.4.0"
 nom = "7"
 nom_locate = "4"
 proc-macros = { path = "proc-macros" }
