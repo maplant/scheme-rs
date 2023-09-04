@@ -155,6 +155,12 @@ pub struct Let {
 }
 
 #[derive(Clone)]
+pub struct Set {
+    pub var: Ident,
+    pub val: Box<dyn Eval>,
+}
+
+#[derive(Clone)]
 pub struct If {
     pub cond: Box<dyn Eval>,
     pub success: Box<dyn Eval>,

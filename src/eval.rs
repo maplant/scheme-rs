@@ -411,6 +411,21 @@ impl Eval for ast::Let {
 }
 
 #[async_trait]
+impl Eval for ast::Set {
+    async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
+        // TODO: Add try_unwrap to GC to avoid the clone of the inner value
+        *env.read()
+            .await
+            .fetch(&self.var)
+            .await
+            .ok_or_else(|| RuntimeError::UndefinedVariable(self.var.clone()))?
+            .write()
+            .await = self.val.eval(env).await?.read().await.clone();
+        Ok(Gc::new(Value::Nil))
+    }
+}
+
+#[async_trait]
 impl Eval for ast::If {
     async fn tail_eval(&self, env: &Gc<Env>) -> Result<ValueOrPreparedCall, RuntimeError> {
         if self.cond.eval(env).await?.read().await.is_true() {

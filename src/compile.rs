@@ -23,6 +23,7 @@ pub enum CompileError<'a> {
     CompileDefineSyntaxError(CompileDefineSyntaxError<'a>),
     CompileBodyError(CompileBodyError<'a>),
     CompileQuoteError(CompileQuoteError<'a>),
+    CompileSetError(CompileSetError<'a>),
 }
 
 macro_rules! impl_from_compile_error {
@@ -373,7 +374,7 @@ impl<'a> LetBinding<'a> {
                         });
                     }
 
-                    let expr = expr.clone().compile(env, binds).await?;
+                    let expr = expr.compile(env, binds).await?;
 
                     Ok(LetBinding {
                         ident,
@@ -524,6 +525,42 @@ impl Compile for ast::Quote {
             }),
             [_, arg, ..] => Err(CompileQuoteError::UnexpectedArgument(arg.span().clone())),
             _ => Err(CompileQuoteError::BadForm(span.clone())),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum CompileSetError<'a> {
+    ExpectedArgument(Span<'a>),
+    ExpectedIdent(Span<'a>),
+    UnexpectedArgument(Span<'a>),
+    BadForm(Span<'a>),
+    CompileError(Box<CompileError<'a>>),
+}
+
+impl_from_compile_error!(CompileSetError);
+
+#[async_trait]
+impl Compile for ast::Set {
+    type Error<'a> = CompileSetError<'a>;
+
+    async fn compile<'a>(
+        exprs: &[SExpr<'a>],
+        env: &Gc<Env>,
+        binds: Arc<Binds>,
+        span: &Span<'a>,
+    ) -> Result<Self, CompileSetError<'a>> {
+        match exprs {
+            [] => Err(CompileSetError::ExpectedArgument(span.clone())),
+            [SExpr::Identifier { ident, .. }, expr, SExpr::Nil { .. }] => Ok(ast::Set {
+                var: ident.clone(),
+                val: expr.compile(env, binds.clone()).await?,
+            }),
+            [arg1, _, SExpr::Nil { .. }] => {
+                Err(CompileSetError::ExpectedIdent(arg1.span().clone()))
+            }
+            [_, _, arg3, ..] => Err(CompileSetError::UnexpectedArgument(arg3.span().clone())),
+            _ => Err(CompileSetError::BadForm(span.clone())),
         }
     }
 }
