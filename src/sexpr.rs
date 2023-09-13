@@ -207,7 +207,16 @@ impl<'a> SExpr<'a> {
                     }
                     Ok(Box::new(ident.clone()) as Box<dyn Eval>)
                 }
-                x => todo!("expr: {x:#?}"),
+                Self::Vector { vector, .. } => {
+                    let mut vals = Vec::new();
+                    for item in vector {
+                        match item {
+                            Self::Nil { .. } => vals.push(Box::new(ast::Nil) as Box<dyn Eval>),
+                            item => vals.push(item.compile(env, binds.clone()).await?),
+                        }
+                    }
+                    Ok(Box::new(ast::Vector { vals }) as Box<dyn Eval>)
+                }
             }
         })
     }

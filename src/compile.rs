@@ -24,6 +24,7 @@ pub enum CompileError<'a> {
     CompileBodyError(CompileBodyError<'a>),
     CompileQuoteError(CompileQuoteError<'a>),
     CompileSetError(CompileSetError<'a>),
+    CompileLambdaError(CompileLambdaError<'a>),
 }
 
 macro_rules! impl_from_compile_error {
@@ -561,6 +562,88 @@ impl Compile for ast::Set {
             }
             [_, _, arg3, ..] => Err(CompileSetError::UnexpectedArgument(arg3.span().clone())),
             _ => Err(CompileSetError::BadForm(span.clone())),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum CompileLambdaError<'a> {
+    ExpectedList(Span<'a>),
+    ExpectedIdentifier(Span<'a>),
+    CompileBodyError(CompileBodyError<'a>),
+    ParameterDefinedMultipleTimes {
+        ident: Ident,
+        first: Span<'a>,
+        second: Span<'a>,
+    },
+}
+
+#[async_trait]
+impl Compile for ast::Lambda {
+    type Error<'a> = CompileLambdaError<'a>;
+
+    async fn compile<'a>(
+        exprs: &[SExpr<'a>],
+        env: &Gc<Env>,
+        binds: Arc<Binds>,
+        span: &Span<'a>,
+    ) -> Result<Self, CompileLambdaError<'a>> {
+        match exprs {
+            [SExpr::List {
+                list: args,
+                span: args_span,
+            }, body @ ..] => {
+                let mut scope = Binds::new_local(&binds);
+                let mut bound = HashMap::<Ident, Span<'_>>::new();
+                let mut fixed = Vec::new();
+                for arg in &args[..args.len() - 1] {
+                    match arg {
+                        SExpr::Identifier { ident, span } => {
+                            if let Some(prev_span) = bound.get(ident) {
+                                return Err(CompileLambdaError::ParameterDefinedMultipleTimes {
+                                    ident: ident.clone(),
+                                    first: prev_span.clone(),
+                                    second: span.clone(),
+                                });
+                            }
+                            scope.bind(&ident.sym);
+                            bound.insert(ident.clone(), span.clone());
+                            fixed.push(ident.clone());
+                        }
+                        x => return Err(CompileLambdaError::ExpectedIdentifier(x.span().clone())),
+                    }
+                }
+
+                let args = if let Some(last) = args.last() {
+                    match last {
+                        SExpr::Nil { .. } => ast::Formals::FixedArgs(fixed.into_iter().collect()),
+                        SExpr::Identifier { ident, span } => {
+                            if let Some(prev_span) = bound.get(ident) {
+                                return Err(CompileLambdaError::ParameterDefinedMultipleTimes {
+                                    ident: ident.clone(),
+                                    first: prev_span.clone(),
+                                    second: span.clone(),
+                                });
+                            }
+                            scope.bind(&ident.sym);
+                            ast::Formals::VarArgs {
+                                fixed: fixed.into_iter().collect(),
+                                remaining: ident.clone(),
+                            }
+                        }
+                        x => return Err(CompileLambdaError::ExpectedIdentifier(x.span().clone())),
+                    }
+                } else {
+                    // If there is no last argument, there are no arguments
+                    ast::Formals::FixedArgs(Vec::new())
+                };
+
+                let body = ast::Body::compile(body, env, Arc::new(scope), span)
+                    .await
+                    .map_err(CompileLambdaError::CompileBodyError)?;
+                Ok(ast::Lambda { args, body })
+            }
+            _ => todo!(),
         }
     }
 }

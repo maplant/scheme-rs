@@ -6,8 +6,8 @@ use scheme_rs::{
 };
 
 async fn run(code: &str, env: &Gc<Env>) -> Result<(), RuntimeError> {
-    let tokens = Token::tokenize_str(code).unwrap();
-    let sexprs = ParsedSExpr::parse(&tokens).unwrap();
+    let tokens = dbg!(Token::tokenize_str(code).unwrap());
+    let sexprs = dbg!(ParsedSExpr::parse(&tokens)).unwrap();
     for sexpr in sexprs {
         let result = sexpr.compile(env).await.unwrap().eval(env).await?;
         println!("result = {}", result.read().await.fmt().await);
@@ -87,6 +87,6 @@ async fn main() {
     run("(quote ((+ g b c 5 10 \"hello!!!\") . a))", &base)
         .await
         .unwrap();
-    run("(quote (a . ()))", &base).await.unwrap();
-    run("(+ 5 5 5 ())", &base).await.unwrap();
+    run("'(a . ())", &base).await.unwrap();
+    run("#(5 5 5 ())", &base).await.unwrap();
 }

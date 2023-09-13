@@ -1,12 +1,12 @@
 use nom::{
     branch::alt,
-    bytes::complete::{is_not, tag, tag_no_case, take_while1},
+    bytes::complete::{is_not, tag, tag_no_case, take_until, take_while1},
     character::{
         complete::{char as match_char, hex_digit1, one_of, satisfy},
         streaming::anychar,
     },
     combinator::{map, opt, value, verify},
-    multi::{fold_many0, many0},
+    multi::{fold_many0, fold_many1, many0},
     sequence::{delimited, preceded, tuple},
     IResult,
 };
@@ -102,12 +102,14 @@ fn lexeme(i: Span) -> IResult<Span, Lexeme<'static>> {
         map(boolean, Lexeme::Boolean),
         map(string, Lexeme::string_owned),
         map(number, Lexeme::number_owned),
-        //        map(doc_comment, Lexeme::DocComment),
+        map(doc_comment, Lexeme::DocComment),
         map(match_char('.'), |_| Lexeme::Period),
+        map(match_char('\''), |_| Lexeme::Quote),
         map(match_char('('), |_| Lexeme::LParen),
         map(match_char(')'), |_| Lexeme::RParen),
         map(match_char('['), |_| Lexeme::LBracket),
         map(match_char(']'), |_| Lexeme::RBracket),
+        map(tag("#("), |_| Lexeme::HashParen),
     ))(i)
 }
 
@@ -275,11 +277,17 @@ fn number(i: Span) -> IResult<Span, String> {
     )(i)
 }
 
-/*
-fn doc_comment(_i: Span) -> IResult<Span, String> {
-    todo!()
+fn doc_comment(i: Span) -> IResult<Span, String> {
+    fold_many1(
+        delimited(tag(";;"), take_until("\n"), many0(whitespace)),
+        String::new,
+        |mut comment, line| {
+            comment.push_str(&line);
+            comment.push('\n');
+            comment
+        },
+    )(i)
 }
-*/
 
 #[derive(Debug)]
 pub struct Token<'a> {

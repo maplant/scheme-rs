@@ -189,6 +189,14 @@ impl Or {
     }
 }
 
+#[derive(Clone)]
+pub struct Vector {
+    pub vals: Vec<Box<dyn Eval>>,
+}
+
+#[derive(Clone)]
+pub struct Nil;
+
 /*
 struct Export {}
 

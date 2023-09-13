@@ -71,11 +71,47 @@ pub fn expression<'a>(i: &'a [Token<'a>]) -> Result<(&'a [Token<'a>], SExpr), Pa
         [n @ token!(Lexeme::LParen), token!(Lexeme::RParen), tail @ ..] => {
             Ok((tail, SExpr::new_nil(n.span.clone())))
         }
-        [p @ token!(Lexeme::LParen), tail @ ..] => match list(tail, p.span.clone()) {
+        [n @ token!(Lexeme::LBracket), token!(Lexeme::RBracket), tail @ ..] => {
+            Ok((tail, SExpr::new_nil(n.span.clone())))
+        }
+        [p @ token!(Lexeme::LParen), tail @ ..] => match list(tail, p.span.clone(), Lexeme::RParen)
+        {
             Err(ParseListError::UnclosedParen) => Err(ParseError::unclosed_paren(p)),
             Err(ParseListError::ParseError(err)) => Err(err),
             Ok(ok) => Ok(ok),
         },
+        [p @ token!(Lexeme::LBracket), tail @ ..] => {
+            match list(tail, p.span.clone(), Lexeme::RBracket) {
+                Err(ParseListError::UnclosedParen) => Err(ParseError::unclosed_paren(p)),
+                Err(ParseListError::ParseError(err)) => Err(err),
+                Ok(ok) => Ok(ok),
+            }
+        }
+        // Vectors:
+        [v @ token!(Lexeme::HashParen), tail @ ..] => match vector(tail, v.span.clone()) {
+            Err(ParseVectorError::UnclosedParen) => Err(ParseError::unclosed_paren(v)),
+            Err(ParseVectorError::ParseError(err)) => Err(err),
+            Ok(ok) => Ok(ok),
+        },
+        // Quote:
+        [q @ token!(Lexeme::Quote), tail @ ..] => {
+            let (tail, expr) = expression(tail)?;
+            let expr_span = expr.span().clone();
+            Ok((
+                tail,
+                SExpr::new_list(
+                    vec![
+                        SExpr::Identifier {
+                            ident: Ident::new_free("quote"),
+                            span: q.span.clone(),
+                        },
+                        expr,
+                        SExpr::Nil { span: expr_span },
+                    ],
+                    q.span.clone(),
+                ),
+            ))
+        }
         // Invalid locations:
         [d @ token!(Lexeme::Period), ..] => Err(ParseError::invalid_period(d)),
         [d @ token!(Lexeme::DocComment(_)), ..] => Err(ParseError::invalid_doc_comment(d)),
@@ -98,6 +134,7 @@ impl<'a> From<ParseError<'a>> for ParseListError<'a> {
 fn list<'a>(
     mut i: &'a [Token<'a>],
     span: Span<'a>,
+    closing: Lexeme<'static>,
 ) -> Result<(&'a [Token<'a>], SExpr<'a>), ParseListError<'a>> {
     let mut output = Vec::new();
     loop {
@@ -106,19 +143,23 @@ fn list<'a>(
         }
 
         let (remaining, expr) = expression(i)?;
-
         output.push(expr);
 
         match remaining {
-            [end @ token!(Lexeme::RParen), tail @ ..]
-            | [token!(Lexeme::Period), end @ token!(Lexeme::LParen), token!(Lexeme::RParen), token!(Lexeme::RParen), tail @ ..] =>
-            {
-                // Proper list
+            // Proper lists:
+            [end @ token!(Lexeme::RParen), tail @ ..] => {
                 output.push(SExpr::new_nil(end.span.clone()));
                 return Ok((tail, SExpr::new_list(output, span)));
             }
+            [token!(Lexeme::Period), end @ token!(Lexeme::LParen), token!(Lexeme::RParen), token, tail @ ..]
+            | [token!(Lexeme::Period), end @ token!(Lexeme::LBracket), token!(Lexeme::RBracket), token, tail @ ..]
+                if token.lexeme == closing =>
+            {
+                output.push(SExpr::new_nil(end.span.clone()));
+                return Ok((tail, SExpr::new_list(output, span)));
+            }
+            // Improper lists:
             [token!(Lexeme::Period), tail @ ..] => {
-                // Improper list
                 let (remaining, expr) = expression(tail)?;
                 output.push(expr);
                 return match remaining {
@@ -135,6 +176,38 @@ fn list<'a>(
             }
             _ => (),
         }
+        i = remaining;
+    }
+}
+
+#[derive(Debug)]
+enum ParseVectorError<'a> {
+    UnclosedParen,
+    ParseError(ParseError<'a>),
+}
+
+impl<'a> From<ParseError<'a>> for ParseVectorError<'a> {
+    fn from(pe: ParseError<'a>) -> Self {
+        Self::ParseError(pe)
+    }
+}
+
+fn vector<'a>(
+    mut i: &'a [Token<'a>],
+    span: Span<'a>,
+) -> Result<(&'a [Token<'a>], SExpr<'a>), ParseVectorError<'a>> {
+    let mut output = Vec::new();
+    loop {
+        match i {
+            [] => return Err(ParseVectorError::UnclosedParen),
+            [end @ token!(Lexeme::RParen), tail @ ..] => {
+                return Ok((tail, SExpr::new_vector(output, span)))
+            }
+            _ => (),
+        }
+
+        let (remaining, expr) = expression(i)?;
+        output.push(expr);
         i = remaining;
     }
 }

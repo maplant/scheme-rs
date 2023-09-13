@@ -18,7 +18,7 @@ pub enum Value {
     String(String),
     Symbol(String),
     Pair(Gc<Value>, Gc<Value>),
-    Vector(Vec<Value>),
+    Vector(Vec<Gc<Value>>),
     ByteVector(Vec<u8>),
     Procedure(Procedure),
     ExternalFn(ExternalFn),
@@ -51,6 +51,18 @@ impl Value {
                 Self::String(string) => format!("\"{string}\""),
                 Self::Symbol(symbol) => symbol.clone(),
                 Self::Pair(car, cdr) => crate::lists::fmt_list(car, cdr).await,
+                Self::Vector(vec) => {
+                    let mut iter = vec.iter().peekable();
+                    let mut output = String::from("#(");
+                    while let Some(item) = iter.next() {
+                        output.push_str(&item.read().await.fmt().await);
+                        if iter.peek().is_some() {
+                            output.push(' ');
+                        }
+                    }
+                    output.push(')');
+                    output
+                }
                 Self::Nil => "()".to_string(),
                 _ => todo!(),
             }
@@ -77,7 +89,7 @@ impl Value {
                 curr
             }
             SExpr::Vector { vector, .. } => {
-                Self::Vector(vector.iter().map(Self::from_sexpr).collect())
+                Self::Vector(vector.iter().map(Self::from_sexpr).map(Gc::new).collect())
             }
             SExpr::Literal { literal, .. } => Self::from_literal(literal),
             SExpr::Identifier { ident, .. } => Self::Symbol(ident.sym.clone()),
@@ -199,6 +211,13 @@ pub trait Eval: dyn_clone::DynClone + Send + Sync {
 }
 
 dyn_clone::clone_trait_object!(Eval);
+
+#[async_trait]
+impl Eval for Gc<Value> {
+    async fn eval(&self, _env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
+        Ok(self.clone())
+    }
+}
 
 #[derive(Clone)]
 pub struct Procedure {
@@ -533,5 +552,23 @@ impl Eval for ast::Literal {
 impl Eval for ast::Quote {
     async fn eval(&self, _env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
         Ok(Gc::new(self.val.clone()))
+    }
+}
+
+#[async_trait]
+impl Eval for ast::Vector {
+    async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
+        let mut output = Vec::new();
+        for item in &self.vals {
+            output.push(item.eval(env).await?);
+        }
+        Ok(Gc::new(Value::Vector(output)))
+    }
+}
+
+#[async_trait]
+impl Eval for ast::Nil {
+    async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
+        Ok(Gc::new(Value::Nil))
     }
 }
