@@ -14,7 +14,7 @@ use nom_locate::{position, LocatedSpan};
 use std::{borrow::Cow, sync::Arc};
 use unicode_categories::UnicodeCategories;
 
-pub type Span<'a> = LocatedSpan<&'a str, Arc<String>>;
+pub type InputSpan<'a> = LocatedSpan<&'a str, Arc<String>>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Lexeme<'a> {
@@ -96,7 +96,7 @@ impl<'a> Lexeme<'a> {
     }
 }
 
-fn lexeme(i: Span) -> IResult<Span, Lexeme<'static>> {
+fn lexeme(i: InputSpan) -> IResult<InputSpan, Lexeme<'static>> {
     alt((
         map(identifier, Lexeme::identifier_owned),
         map(boolean, Lexeme::Boolean),
@@ -114,27 +114,27 @@ fn lexeme(i: Span) -> IResult<Span, Lexeme<'static>> {
 }
 
 /*
-fn comment(_i: Span) -> IResult<Span, ()> {
+fn comment(_i: InputSpan) -> IResult<InputSpan, ()> {
     todo!()
 }
 */
 
-fn whitespace(i: Span) -> IResult<Span, ()> {
+fn whitespace(i: InputSpan) -> IResult<InputSpan, ()> {
     map(
         alt((satisfy(UnicodeCategories::is_separator), match_char('\n'))),
         |_| (),
     )(i)
 }
 
-fn atmosphere(i: Span) -> IResult<Span, ()> {
+fn atmosphere(i: InputSpan) -> IResult<InputSpan, ()> {
     map(tuple((whitespace,)), |_| ())(i)
 }
 
-fn interlexeme_space(i: Span) -> IResult<Span, ()> {
+fn interlexeme_space(i: InputSpan) -> IResult<InputSpan, ()> {
     fold_many0(atmosphere, || (), |_, _| ())(i)
 }
 
-fn identifier(i: Span) -> IResult<Span, String> {
+fn identifier(i: InputSpan) -> IResult<InputSpan, String> {
     alt((
         map(tuple((initial, many0(subsequent))), |(i, s)| {
             format!("{i}{}", s.join(""))
@@ -143,14 +143,14 @@ fn identifier(i: Span) -> IResult<Span, String> {
     ))(i)
 }
 
-fn boolean(i: Span) -> IResult<Span, bool> {
+fn boolean(i: InputSpan) -> IResult<InputSpan, bool> {
     alt((
         map(tag_no_case("#t"), |_| true),
         map(tag_no_case("#f"), |_| false),
     ))(i)
 }
 
-fn initial(i: Span) -> IResult<Span, String> {
+fn initial(i: InputSpan) -> IResult<InputSpan, String> {
     alt((
         map(satisfy(is_constituent), String::from),
         map(satisfy(is_special_initial), String::from),
@@ -158,7 +158,7 @@ fn initial(i: Span) -> IResult<Span, String> {
     ))(i)
 }
 
-fn subsequent(i: Span) -> IResult<Span, String> {
+fn subsequent(i: InputSpan) -> IResult<InputSpan, String> {
     alt((
         initial,
         map(satisfy(|c| c.is_ascii_digit()), String::from),
@@ -174,11 +174,11 @@ fn subsequent(i: Span) -> IResult<Span, String> {
     ))(i)
 }
 
-fn special_subsequent(i: Span) -> IResult<Span, char> {
+fn special_subsequent(i: InputSpan) -> IResult<InputSpan, char> {
     one_of("+-.@")(i)
 }
 
-fn peculiar_identifier(i: Span) -> IResult<Span, String> {
+fn peculiar_identifier(i: InputSpan) -> IResult<InputSpan, String> {
     alt((
         map(match_char('+'), |_| String::from("+")),
         map(match_char('-'), |_| String::from("-")),
@@ -189,14 +189,14 @@ fn peculiar_identifier(i: Span) -> IResult<Span, String> {
     ))(i)
 }
 
-fn inline_hex_escape(i: Span) -> IResult<Span, String> {
+fn inline_hex_escape(i: InputSpan) -> IResult<InputSpan, String> {
     map(
         tuple((tag("\\x"), hex_scalar_value, match_char(';'))),
         |(_, value, _)| format!("\\x{value};"),
     )(i)
 }
 
-fn hex_scalar_value(i: Span) -> IResult<Span, Span> {
+fn hex_scalar_value(i: InputSpan) -> IResult<InputSpan, InputSpan> {
     hex_digit1(i)
 }
 
@@ -228,7 +228,7 @@ pub enum Fragment<'a> {
     Unescaped(Cow<'a, str>),
 }
 
-fn string(i: Span) -> IResult<Span, Vec<Fragment<'static>>> {
+fn string(i: InputSpan) -> IResult<InputSpan, Vec<Fragment<'static>>> {
     delimited(
         match_char('"'),
         many0(alt((
@@ -252,15 +252,15 @@ fn string(i: Span) -> IResult<Span, Vec<Fragment<'static>>> {
                 )),
             ),
             map(
-                verify(is_not("\"\\"), |s: &Span| !s.fragment().is_empty()),
-                |s: Span| Fragment::Unescaped(Cow::Owned(s.fragment().to_string())),
+                verify(is_not("\"\\"), |s: &InputSpan| !s.fragment().is_empty()),
+                |s: InputSpan| Fragment::Unescaped(Cow::Owned(s.fragment().to_string())),
             ),
         ))),
         match_char('"'),
     )(i)
 }
 
-fn number(i: Span) -> IResult<Span, String> {
+fn number(i: InputSpan) -> IResult<InputSpan, String> {
     map(
         tuple((
             opt(alt((
@@ -271,13 +271,13 @@ fn number(i: Span) -> IResult<Span, String> {
             ))),
             take_while1(|c: char| c.is_ascii_hexdigit()),
         )),
-        |(radix, real): (Option<Span>, Span)| {
+        |(radix, real): (Option<InputSpan>, InputSpan)| {
             format!("{}{real}", radix.map(|s| *s.fragment()).unwrap_or(""))
         },
     )(i)
 }
 
-fn doc_comment(i: Span) -> IResult<Span, String> {
+fn doc_comment(i: InputSpan) -> IResult<InputSpan, String> {
     fold_many1(
         delimited(tag(";;"), take_until("\n"), many0(whitespace)),
         String::new,
@@ -292,14 +292,14 @@ fn doc_comment(i: Span) -> IResult<Span, String> {
 #[derive(Debug)]
 pub struct Token<'a> {
     pub lexeme: Lexeme<'static>,
-    pub span: Span<'a>,
+    pub span: InputSpan<'a>,
 }
 
-pub type LexError<'a> = nom::Err<nom::error::Error<Span<'a>>>;
+pub type LexError<'a> = nom::Err<nom::error::Error<InputSpan<'a>>>;
 
 impl<'a> Token<'a> {
     pub fn tokenize_file(s: &'a str, filename: &str) -> Result<Vec<Self>, LexError<'a>> {
-        let mut span = Span::new_extra(s, Arc::new(filename.to_string()));
+        let mut span = InputSpan::new_extra(s, Arc::new(filename.to_string()));
         let mut output = Vec::new();
         while !span.is_empty() {
             let (remaining, ()) = interlexeme_space(span)?;

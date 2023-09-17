@@ -3,10 +3,10 @@ use crate::{
     builtin::Builtin,
     gc::{Gc, Trace},
     num::Number,
-    sexpr::SExpr,
+    syntax::Syntax,
 };
 use async_trait::async_trait;
-use futures::future::BoxFuture;
+use futures::future::{Shared, BoxFuture};
 use std::{borrow::Cow, collections::HashMap, fmt};
 
 #[derive(Clone)]
@@ -20,8 +20,10 @@ pub enum Value {
     Pair(Gc<Value>, Gc<Value>),
     Vector(Vec<Gc<Value>>),
     ByteVector(Vec<u8>),
+    Syntax(Syntax),
     Procedure(Procedure),
     ExternalFn(ExternalFn),
+    Future(Shared<BoxFuture<'static, Value>>),
     Transformer(crate::expand::Transformer),
 }
 
@@ -78,21 +80,21 @@ impl Value {
         }
     }
 
-    pub fn from_sexpr(sexpr: &SExpr<'_>) -> Self {
-        match sexpr {
-            SExpr::Nil { .. } => Self::Nil,
-            SExpr::List { list, .. } => {
-                let mut curr = Self::from_sexpr(list.last().unwrap());
+    pub fn from_syntax(syntax: &Syntax) -> Self {
+        match syntax {
+            Syntax::Nil { .. } => Self::Nil,
+            Syntax::List { list, .. } => {
+                let mut curr = Self::from_syntax(list.last().unwrap());
                 for item in list[..list.len() - 1].iter().rev() {
-                    curr = Self::Pair(Gc::new(Self::from_sexpr(item)), Gc::new(curr));
+                    curr = Self::Pair(Gc::new(Self::from_syntax(item)), Gc::new(curr));
                 }
                 curr
             }
-            SExpr::Vector { vector, .. } => {
-                Self::Vector(vector.iter().map(Self::from_sexpr).map(Gc::new).collect())
+            Syntax::Vector { vector, .. } => {
+                Self::Vector(vector.iter().map(Self::from_syntax).map(Gc::new).collect())
             }
-            SExpr::Literal { literal, .. } => Self::from_literal(literal),
-            SExpr::Identifier { ident, .. } => Self::Symbol(ident.sym.clone()),
+            Syntax::Literal { literal, .. } => Self::from_literal(literal),
+            Syntax::Identifier { ident, .. } => Self::Symbol(ident.sym.clone()),
         }
     }
 }
@@ -194,7 +196,7 @@ impl ValueOrPreparedCall {
     }
 }
 
-/// Core evaulation trait for expressions
+/// Core evaulation trait for expressions.
 ///
 /// Any struct implementing this trait must either implement `eval`, `tail_eval`, or
 /// both, even though both methods are provided.
@@ -568,7 +570,7 @@ impl Eval for ast::Vector {
 
 #[async_trait]
 impl Eval for ast::Nil {
-    async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
+    async fn eval(&self, _env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
         Ok(Gc::new(Value::Nil))
     }
 }

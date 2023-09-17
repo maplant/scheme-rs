@@ -3,8 +3,7 @@ use crate::{
     eval::{Env, Eval, Value},
     expand::{Binds, Pattern, SyntaxRule, Template},
     gc::Gc,
-    lex::Span,
-    sexpr::SExpr,
+    syntax::{Syntax, Span},
 };
 use async_trait::async_trait;
 use derive_more::From;
@@ -14,23 +13,23 @@ use std::{
 };
 
 #[derive(From, Debug)]
-pub enum CompileError<'a> {
-    UnexpectedEmptyList(Span<'a>),
-    CompileFuncCallError(CompileFuncCallError<'a>),
-    CompileDefineError(CompileDefineError<'a>),
-    CompileIfError(CompileIfError<'a>),
-    CompileLetError(CompileLetError<'a>),
-    CompileDefineSyntaxError(CompileDefineSyntaxError<'a>),
-    CompileBodyError(CompileBodyError<'a>),
-    CompileQuoteError(CompileQuoteError<'a>),
-    CompileSetError(CompileSetError<'a>),
-    CompileLambdaError(CompileLambdaError<'a>),
+pub enum CompileError {
+    UnexpectedEmptyList(Span),
+    CompileFuncCallError(CompileFuncCallError),
+    CompileDefineError(CompileDefineError),
+    CompileIfError(CompileIfError),
+    CompileLetError(CompileLetError),
+    CompileDefineSyntaxError(CompileDefineSyntaxError),
+    CompileBodyError(CompileBodyError),
+    CompileQuoteError(CompileQuoteError),
+    CompileSetError(CompileSetError),
+    CompileLambdaError(CompileLambdaError),
 }
 
 macro_rules! impl_from_compile_error {
     ( $error:ident ) => {
-        impl<'a> From<CompileError<'a>> for $error<'a> {
-            fn from(ce: CompileError<'a>) -> Self {
+        impl From<CompileError> for $error {
+            fn from(ce: CompileError) -> Self {
                 Self::CompileError(Box::new(ce))
             }
         }
@@ -40,45 +39,45 @@ macro_rules! impl_from_compile_error {
 #[async_trait]
 pub trait Compile: Eval + Sized + 'static
 where
-    for<'a> CompileError<'a>: From<Self::Error<'a>>,
+    CompileError: From<Self::Error>,
 {
-    type Error<'a>;
+    type Error;
 
-    async fn compile<'a>(
-        exprs: &[SExpr<'a>],
+    async fn compile(
+        exprs: &[Syntax],
         env: &Gc<Env>,
         binds: Arc<Binds>,
-        span: &Span<'a>,
-    ) -> Result<Self, Self::Error<'a>>;
+        span: &Span,
+    ) -> Result<Self, Self::Error>;
 
-    async fn compile_to_expr<'a>(
-        exprs: &[SExpr<'a>],
+    async fn compile_to_expr(
+        exprs: &[Syntax],
         env: &Gc<Env>,
         binds: Arc<Binds>,
-        span: &Span<'a>,
-    ) -> Result<Box<dyn Eval>, CompileError<'a>> {
+        span: &Span,
+    ) -> Result<Box<dyn Eval>, CompileError> {
         Ok(Box::new(Self::compile(exprs, env, binds, span).await?))
     }
 }
 
 #[derive(From, Debug)]
-pub enum CompileFuncCallError<'a> {
-    EmptyFunctionCall(Span<'a>),
-    CompileError(Box<CompileError<'a>>),
+pub enum CompileFuncCallError {
+    EmptyFunctionCall(Span),
+    CompileError(Box<CompileError>),
 }
 
 impl_from_compile_error!(CompileFuncCallError);
 
 #[async_trait]
 impl Compile for ast::Call {
-    type Error<'a> = CompileFuncCallError<'a>;
+    type Error = CompileFuncCallError;
 
-    async fn compile<'a>(
-        exprs: &[SExpr<'a>],
+    async fn compile(
+        exprs: &[Syntax],
         env: &Gc<Env>,
         binds: Arc<Binds>,
-        span: &Span<'a>,
-    ) -> Result<ast::Call, CompileFuncCallError<'a>> {
+        span: &Span,
+    ) -> Result<ast::Call, CompileFuncCallError> {
         match exprs {
             [operator, args @ ..] => {
                 let operator = operator.compile(env, binds.clone()).await?;
@@ -98,48 +97,48 @@ impl Compile for ast::Call {
 }
 
 #[derive(Debug)]
-pub enum CompileDefineError<'a> {
+pub enum CompileDefineError {
     ParameterDefinedMultipleTimes {
         ident: Ident,
-        first: Span<'a>,
-        second: Span<'a>,
+        first: Span,
+        second: Span,
     },
-    ExpectedIdentifier(Span<'a>),
-    CompileBodyError(CompileBodyError<'a>),
-    BadForm(Span<'a>),
-    CompileError(Box<CompileError<'a>>),
+    ExpectedIdentifier(Span),
+    CompileBodyError(CompileBodyError),
+    BadForm(Span),
+    CompileError(Box<CompileError>),
 }
 
 impl_from_compile_error!(CompileDefineError);
 
 #[async_trait]
 impl Compile for ast::Define {
-    type Error<'a> = CompileDefineError<'a>;
+    type Error = CompileDefineError;
 
-    async fn compile<'a>(
-        exprs: &[SExpr<'a>],
+    async fn compile(
+        exprs: &[Syntax],
         env: &Gc<Env>,
         binds: Arc<Binds>,
-        span: &Span<'a>,
-    ) -> Result<Self, Self::Error<'a>> {
+        span: &Span,
+    ) -> Result<Self, Self::Error> {
         match exprs {
-            [SExpr::Identifier { ident, .. }, expr] => Ok(ast::Define::DefineVar(ast::DefineVar {
+            [Syntax::Identifier { ident, .. }, expr] => Ok(ast::Define::DefineVar(ast::DefineVar {
                 name: ident.clone(),
                 val: expr.compile(env, binds).await?,
             })),
-            [SExpr::List { list, span }, body @ ..] => {
+            [Syntax::List { list, span }, body @ ..] => {
                 match &list[..] {
                     [] => Err(CompileDefineError::ExpectedIdentifier(span.clone())),
-                    [SExpr::Identifier {
+                    [Syntax::Identifier {
                         ident: func_name,
                         span: func_span,
                     }, args @ ..] => {
                         let mut scope = Binds::new_local(&binds);
-                        let mut bound = HashMap::<Ident, Span<'_>>::new();
+                        let mut bound = HashMap::<Ident, Span>::new();
                         let mut fixed = Vec::new();
                         for arg in &args[..args.len() - 1] {
                             match arg {
-                                SExpr::Identifier { ident, span } => {
+                                Syntax::Identifier { ident, span } => {
                                     if let Some(prev_span) = bound.get(ident) {
                                         return Err(
                                             CompileDefineError::ParameterDefinedMultipleTimes {
@@ -163,10 +162,10 @@ impl Compile for ast::Define {
 
                         let args = if let Some(last) = args.last() {
                             match last {
-                                SExpr::Nil { .. } => {
+                                Syntax::Nil { .. } => {
                                     ast::Formals::FixedArgs(fixed.into_iter().collect())
                                 }
-                                SExpr::Identifier { ident, span } => {
+                                Syntax::Identifier { ident, span } => {
                                     if let Some(prev_span) = bound.get(ident) {
                                         return Err(
                                             CompileDefineError::ParameterDefinedMultipleTimes {
@@ -212,32 +211,32 @@ impl Compile for ast::Define {
 }
 
 #[derive(Debug)]
-pub enum CompileIfError<'a> {
-    ExpectedConditional(Span<'a>),
-    ExpectedArgumentAfterConditional(Span<'a>),
-    UnexpectedArgument(Span<'a>),
-    CompileError(Box<CompileError<'a>>),
+pub enum CompileIfError {
+    ExpectedConditional(Span),
+    ExpectedArgumentAfterConditional(Span),
+    UnexpectedArgument(Span),
+    CompileError(Box<CompileError>),
 }
 
 impl_from_compile_error!(CompileIfError);
 
 #[async_trait]
 impl Compile for ast::If {
-    type Error<'a> = CompileIfError<'a>;
+    type Error = CompileIfError;
 
-    async fn compile<'a>(
-        exprs: &[SExpr<'a>],
+    async fn compile(
+        exprs: &[Syntax],
         env: &Gc<Env>,
         binds: Arc<Binds>,
-        span: &Span<'a>,
-    ) -> Result<Self, CompileIfError<'a>> {
+        span: &Span,
+    ) -> Result<Self, CompileIfError> {
         match exprs {
-            [cond, success, SExpr::Nil { .. }] => Ok(ast::If {
+            [cond, success, Syntax::Nil { .. }] => Ok(ast::If {
                 cond: cond.compile(env, binds.clone()).await?,
                 success: success.compile(env, binds.clone()).await?,
                 failure: None,
             }),
-            [cond, success, failure, SExpr::Nil { .. }] => Ok(ast::If {
+            [cond, success, failure, Syntax::Nil { .. }] => Ok(ast::If {
                 cond: cond.compile(env, binds.clone()).await?,
                 success: success.compile(env, binds.clone()).await?,
                 failure: Some(failure.compile(env, binds.clone()).await?),
@@ -255,23 +254,23 @@ impl Compile for ast::If {
 }
 
 #[derive(Debug)]
-pub enum CompileBodyError<'a> {
-    EmptyBody(Span<'a>),
-    CompileError(Box<CompileError<'a>>),
+pub enum CompileBodyError {
+    EmptyBody(Span),
+    CompileError(Box<CompileError>),
 }
 
 impl_from_compile_error!(CompileBodyError);
 
 #[async_trait]
 impl Compile for ast::Body {
-    type Error<'a> = CompileBodyError<'a>;
+    type Error = CompileBodyError;
 
-    async fn compile<'a>(
-        exprs: &[SExpr<'a>],
+    async fn compile(
+        exprs: &[Syntax],
         env: &Gc<Env>,
         binds: Arc<Binds>,
-        span: &Span<'a>,
-    ) -> Result<Self, CompileBodyError<'a>> {
+        span: &Span,
+    ) -> Result<Self, CompileBodyError> {
         if exprs.is_empty() {
             return Err(CompileBodyError::EmptyBody(span.clone()));
         }
@@ -286,24 +285,24 @@ impl Compile for ast::Body {
 }
 
 #[derive(Debug)]
-pub enum CompileLetError<'a> {
-    BadForm(Span<'a>),
-    CompileBodyError(CompileBodyError<'a>),
-    CompileLetBindingError(CompileLetBindingError<'a>),
+pub enum CompileLetError {
+    BadForm(Span),
+    CompileBodyError(CompileBodyError),
+    CompileLetBindingError(CompileLetBindingError),
 }
 
 #[async_trait]
 impl Compile for ast::Let {
-    type Error<'a> = CompileLetError<'a>;
+    type Error = CompileLetError;
 
-    async fn compile<'a>(
-        expr: &[SExpr<'a>],
+    async fn compile(
+        expr: &[Syntax],
         env: &Gc<Env>,
         binds: Arc<Binds>,
-        span: &Span<'a>,
-    ) -> Result<Self, CompileLetError<'a>> {
+        span: &Span,
+    ) -> Result<Self, CompileLetError> {
         match expr {
-            [SExpr::List { list: bindings, .. }, body @ ..] => {
+            [Syntax::List { list: bindings, .. }, body @ ..] => {
                 let mut previously_bound = HashMap::new();
                 let mut compiled_bindings = Vec::new();
                 let mut new_scope = Binds::new_local(&binds);
@@ -334,38 +333,38 @@ impl Compile for ast::Let {
 }
 
 #[derive(Debug)]
-pub enum CompileLetBindingError<'a> {
-    BadForm(Span<'a>),
+pub enum CompileLetBindingError {
+    BadForm(Span),
     PreviouslyBound {
         ident: Ident,
-        first: Span<'a>,
-        second: Span<'a>,
+        first: Span,
+        second: Span,
     },
-    NotAList(Span<'a>),
-    CompileError(Box<CompileError<'a>>),
+    NotAList(Span),
+    CompileError(Box<CompileError>),
 }
 
 impl_from_compile_error!(CompileLetBindingError);
 
-struct LetBinding<'a> {
+struct LetBinding {
     ident: Ident,
-    span: Span<'a>,
+    span: Span,
     expr: Box<dyn Eval>,
 }
 
-impl<'a> LetBinding<'a> {
+impl LetBinding {
     async fn compile(
-        expr: &SExpr<'a>,
+        expr: &Syntax,
         env: &Gc<Env>,
         binds: Arc<Binds>,
-        previously_bound: &HashMap<Ident, Span<'a>>,
-    ) -> Result<LetBinding<'a>, CompileLetBindingError<'a>> {
+        previously_bound: &HashMap<Ident, Span>,
+    ) -> Result<LetBinding, CompileLetBindingError> {
         match expr {
-            SExpr::List { list, span } => match &list[..] {
-                [SExpr::Identifier {
+            Syntax::List { list, span } => match &list[..] {
+                [Syntax::Identifier {
                     ident,
                     span: bind_span,
-                }, expr, SExpr::Nil { .. }] => {
+                }, expr, Syntax::Nil { .. }] => {
                     let ident = ident.clone();
                     if let Some(prev_bind) = previously_bound.get(&ident) {
                         return Err(CompileLetBindingError::PreviouslyBound {
@@ -391,37 +390,37 @@ impl<'a> LetBinding<'a> {
 }
 
 #[derive(Debug)]
-pub enum CompileDefineSyntaxError<'a> {
-    BadForm(Span<'a>),
+pub enum CompileDefineSyntaxError {
+    BadForm(Span),
 }
 
 #[async_trait]
 impl Compile for ast::DefineSyntax {
-    type Error<'a> = CompileDefineSyntaxError<'a>;
+    type Error = CompileDefineSyntaxError;
 
-    async fn compile<'a>(
-        expr: &[SExpr<'a>],
+    async fn compile(
+        expr: &[Syntax],
         _env: &Gc<Env>,
         _binds: Arc<Binds>,
-        span: &Span<'a>,
-    ) -> Result<ast::DefineSyntax, CompileDefineSyntaxError<'a>> {
+        span: &Span,
+    ) -> Result<ast::DefineSyntax, CompileDefineSyntaxError> {
         match expr {
-            [SExpr::Identifier {
+            [Syntax::Identifier {
                 ident: macro_name, ..
-            }, SExpr::List {
+            }, Syntax::List {
                 list: syntax_rules, ..
-            }, SExpr::Nil { .. }] => {
+            }, Syntax::Nil { .. }] => {
                 let (mut keywords, mut rules) = match &syntax_rules[..] {
-                    [SExpr::Identifier { ident, .. }, SExpr::List {
+                    [Syntax::Identifier { ident, .. }, Syntax::List {
                         list: keywords_list,
                         ..
-                    }, SExpr::List { list: rules, .. }, SExpr::Nil { .. }]
+                    }, Syntax::List { list: rules, .. }, Syntax::Nil { .. }]
                         if ident.sym == "syntax-rules" =>
                     {
                         let mut keywords = HashSet::default();
                         // TODO: ensure keywords_list is proper
                         for keyword in &keywords_list[..keywords_list.len() - 1] {
-                            if let SExpr::Identifier { ident, .. } = keyword {
+                            if let Syntax::Identifier { ident, .. } = keyword {
                                 keywords.insert(ident.sym.clone());
                             } else {
                                 return Err(CompileDefineSyntaxError::BadForm(
@@ -431,7 +430,7 @@ impl Compile for ast::DefineSyntax {
                         }
                         (keywords, &rules[..])
                     }
-                    [SExpr::Identifier { ident, .. }, SExpr::Nil { .. }, SExpr::List { list: rules, .. }, SExpr::Nil { .. }]
+                    [Syntax::Identifier { ident, .. }, Syntax::Nil { .. }, Syntax::List { list: rules, .. }, Syntax::Nil { .. }]
                         if ident.sym == "syntax-rules" =>
                     {
                         (HashSet::default(), &rules[..])
@@ -442,7 +441,7 @@ impl Compile for ast::DefineSyntax {
                 let mut syntax_rules = Vec::new();
                 loop {
                     match rules {
-                        [SExpr::Nil { .. }] => break,
+                        [Syntax::Nil { .. }] => break,
                         [pattern, template, tail @ ..] => {
                             syntax_rules.push(SyntaxRule {
                                 pattern: Pattern::compile(pattern, &keywords),
@@ -465,14 +464,14 @@ impl Compile for ast::DefineSyntax {
 
 #[async_trait]
 impl Compile for ast::And {
-    type Error<'a> = CompileError<'a>;
+    type Error = CompileError;
 
-    async fn compile<'a>(
-        exprs: &[SExpr<'a>],
+    async fn compile(
+        exprs: &[Syntax],
         env: &Gc<Env>,
         binds: Arc<Binds>,
-        _span: &Span<'a>,
-    ) -> Result<Self, CompileError<'a>> {
+        _span: &Span,
+    ) -> Result<Self, CompileError> {
         let mut output = Vec::new();
         // TODO: what if the arguments aren't a proper list?
         for expr in &exprs[..exprs.len() - 1] {
@@ -484,14 +483,14 @@ impl Compile for ast::And {
 }
 #[async_trait]
 impl Compile for ast::Or {
-    type Error<'a> = CompileError<'a>;
+    type Error = CompileError;
 
-    async fn compile<'a>(
-        exprs: &[SExpr<'a>],
+    async fn compile(
+        exprs: &[Syntax],
         env: &Gc<Env>,
         binds: Arc<Binds>,
-        _span: &Span<'a>,
-    ) -> Result<Self, CompileError<'a>> {
+        _span: &Span,
+    ) -> Result<Self, CompileError> {
         let mut output = Vec::new();
         // TODO: what if the arguments aren't a proper list?
         for expr in &exprs[..exprs.len() - 1] {
@@ -503,26 +502,26 @@ impl Compile for ast::Or {
 }
 
 #[derive(Debug)]
-pub enum CompileQuoteError<'a> {
-    ExpectedArgument(Span<'a>),
-    UnexpectedArgument(Span<'a>),
-    BadForm(Span<'a>),
+pub enum CompileQuoteError {
+    ExpectedArgument(Span),
+    UnexpectedArgument(Span),
+    BadForm(Span),
 }
 
 #[async_trait]
 impl Compile for ast::Quote {
-    type Error<'a> = CompileQuoteError<'a>;
+    type Error = CompileQuoteError;
 
-    async fn compile<'a>(
-        exprs: &[SExpr<'a>],
+    async fn compile(
+        exprs: &[Syntax],
         _env: &Gc<Env>,
         _binds: Arc<Binds>,
-        span: &Span<'a>,
-    ) -> Result<Self, CompileQuoteError<'a>> {
+        span: &Span,
+    ) -> Result<Self, CompileQuoteError> {
         match exprs {
             [] => Err(CompileQuoteError::ExpectedArgument(span.clone())),
-            [expr, SExpr::Nil { .. }] => Ok(ast::Quote {
-                val: Value::from_sexpr(expr),
+            [expr, Syntax::Nil { .. }] => Ok(ast::Quote {
+                val: Value::from_syntax(expr),
             }),
             [_, arg, ..] => Err(CompileQuoteError::UnexpectedArgument(arg.span().clone())),
             _ => Err(CompileQuoteError::BadForm(span.clone())),
@@ -531,33 +530,33 @@ impl Compile for ast::Quote {
 }
 
 #[derive(Debug)]
-pub enum CompileSetError<'a> {
-    ExpectedArgument(Span<'a>),
-    ExpectedIdent(Span<'a>),
-    UnexpectedArgument(Span<'a>),
-    BadForm(Span<'a>),
-    CompileError(Box<CompileError<'a>>),
+pub enum CompileSetError {
+    ExpectedArgument(Span),
+    ExpectedIdent(Span),
+    UnexpectedArgument(Span),
+    BadForm(Span),
+    CompileError(Box<CompileError>),
 }
 
 impl_from_compile_error!(CompileSetError);
 
 #[async_trait]
 impl Compile for ast::Set {
-    type Error<'a> = CompileSetError<'a>;
+    type Error = CompileSetError;
 
-    async fn compile<'a>(
-        exprs: &[SExpr<'a>],
+    async fn compile(
+        exprs: &[Syntax],
         env: &Gc<Env>,
         binds: Arc<Binds>,
-        span: &Span<'a>,
-    ) -> Result<Self, CompileSetError<'a>> {
+        span: &Span,
+    ) -> Result<Self, CompileSetError> {
         match exprs {
             [] => Err(CompileSetError::ExpectedArgument(span.clone())),
-            [SExpr::Identifier { ident, .. }, expr, SExpr::Nil { .. }] => Ok(ast::Set {
+            [Syntax::Identifier { ident, .. }, expr, Syntax::Nil { .. }] => Ok(ast::Set {
                 var: ident.clone(),
                 val: expr.compile(env, binds.clone()).await?,
             }),
-            [arg1, _, SExpr::Nil { .. }] => {
+            [arg1, _, Syntax::Nil { .. }] => {
                 Err(CompileSetError::ExpectedIdent(arg1.span().clone()))
             }
             [_, _, arg3, ..] => Err(CompileSetError::UnexpectedArgument(arg3.span().clone())),
@@ -567,38 +566,38 @@ impl Compile for ast::Set {
 }
 
 #[derive(Debug)]
-pub enum CompileLambdaError<'a> {
-    ExpectedList(Span<'a>),
-    ExpectedIdentifier(Span<'a>),
-    CompileBodyError(CompileBodyError<'a>),
+pub enum CompileLambdaError {
+    ExpectedList(Span),
+    ExpectedIdentifier(Span),
+    CompileBodyError(CompileBodyError),
     ParameterDefinedMultipleTimes {
         ident: Ident,
-        first: Span<'a>,
-        second: Span<'a>,
+        first: Span,
+        second: Span,
     },
 }
 
 #[async_trait]
 impl Compile for ast::Lambda {
-    type Error<'a> = CompileLambdaError<'a>;
+    type Error = CompileLambdaError;
 
-    async fn compile<'a>(
-        exprs: &[SExpr<'a>],
+    async fn compile(
+        exprs: &[Syntax],
         env: &Gc<Env>,
         binds: Arc<Binds>,
-        span: &Span<'a>,
-    ) -> Result<Self, CompileLambdaError<'a>> {
+        span: &Span,
+    ) -> Result<Self, CompileLambdaError> {
         match exprs {
-            [SExpr::List {
+            [Syntax::List {
                 list: args,
-                span: args_span,
+                ..
             }, body @ ..] => {
                 let mut scope = Binds::new_local(&binds);
-                let mut bound = HashMap::<Ident, Span<'_>>::new();
+                let mut bound = HashMap::<Ident, Span>::new();
                 let mut fixed = Vec::new();
                 for arg in &args[..args.len() - 1] {
                     match arg {
-                        SExpr::Identifier { ident, span } => {
+                        Syntax::Identifier { ident, span } => {
                             if let Some(prev_span) = bound.get(ident) {
                                 return Err(CompileLambdaError::ParameterDefinedMultipleTimes {
                                     ident: ident.clone(),
@@ -616,8 +615,8 @@ impl Compile for ast::Lambda {
 
                 let args = if let Some(last) = args.last() {
                     match last {
-                        SExpr::Nil { .. } => ast::Formals::FixedArgs(fixed.into_iter().collect()),
-                        SExpr::Identifier { ident, span } => {
+                        Syntax::Nil { .. } => ast::Formals::FixedArgs(fixed.into_iter().collect()),
+                        Syntax::Identifier { ident, span } => {
                             if let Some(prev_span) = bound.get(ident) {
                                 return Err(CompileLambdaError::ParameterDefinedMultipleTimes {
                                     ident: ident.clone(),

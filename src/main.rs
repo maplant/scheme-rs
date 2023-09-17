@@ -2,12 +2,12 @@ use scheme_rs::{
     eval::{Env, RuntimeError},
     gc::Gc,
     lex::Token,
-    sexpr::ParsedSExpr,
+    syntax::ParsedSyntax,
 };
 
 async fn run(code: &str, env: &Gc<Env>) -> Result<(), RuntimeError> {
     let tokens = dbg!(Token::tokenize_str(code).unwrap());
-    let sexprs = dbg!(ParsedSExpr::parse(&tokens)).unwrap();
+    let sexprs = dbg!(ParsedSyntax::parse(&tokens)).unwrap();
     for sexpr in sexprs {
         let result = sexpr.compile(env).await.unwrap().eval(env).await?;
         println!("result = {}", result.read().await.fmt().await);

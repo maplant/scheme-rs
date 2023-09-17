@@ -7,12 +7,6 @@ use proc_macros::builtin;
 
 pub fn fmt_list<'a>(car: &'a Gc<Value>, cdr: &'a Gc<Value>) -> BoxFuture<'a, String> {
     Box::pin(async move {
-        /*
-        let car = car.read().await.fmt().await;
-        let cdr = cdr.read().await.fmt().await;
-
-         */
-
         match &*cdr.read().await {
             Value::Pair(_, _) | Value::Nil => (),
             cdr => {
