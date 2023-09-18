@@ -32,7 +32,7 @@ impl Builtin {
 
     pub fn install(&self, into: &mut Env) {
         into.define(
-            &Ident::new_free(self.name),
+            &Ident::new(self.name),
             Gc::new(Value::from(ExternalFn {
                 num_args: self.num_args,
                 variadic: self.variadic,

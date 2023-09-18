@@ -6,7 +6,7 @@ use crate::{
     syntax::Syntax,
 };
 use async_trait::async_trait;
-use futures::future::{Shared, BoxFuture};
+use futures::future::{BoxFuture, Shared};
 use std::{borrow::Cow, collections::HashMap, fmt};
 
 #[derive(Clone)]
@@ -66,7 +66,13 @@ impl Value {
                     output
                 }
                 Self::Nil => "()".to_string(),
-                _ => todo!(),
+                Self::Character(c) => format!("\\x{c}"),
+                Self::ByteVector(_) => "<byte_vector>".to_string(),
+                Self::Syntax(_) => "<syntax>".to_string(),
+                Self::Procedure(_) => "<lambda>".to_string(),
+                Self::ExternalFn(_) => "<external_fn>".to_string(),
+                Self::Future(_) => "<future>".to_string(),
+                Self::Transformer(_) => "<transformer>".to_string(),
             }
         })
     }
@@ -138,7 +144,6 @@ impl Env {
         };
 
         for builtin in inventory::iter::<Builtin> {
-            println!("installing builtin: {}", builtin.name);
             builtin.install(&mut base);
         }
 
@@ -304,17 +309,13 @@ impl Eval for ast::Ident {
         let result = env.read().await.fetch(self).await;
         // This should very rarely occur, but it is possible in certain circumstances
         // where macros refer to items in the global scope that have yet to be defined
-        if result.is_none() && self.macro_env.is_some() {
-            let new_ident = Ident {
-                sym: self.sym.clone(),
-                macro_env: None,
-            };
-            self.macro_env
+        if result.is_none() && self.hygiene.is_some() {
+            self.hygiene
                 .as_ref()
                 .unwrap()
                 .read()
                 .await
-                .fetch(&new_ident)
+                .fetch(&Ident::new(&self.sym))
                 .await
         } else {
             result
@@ -346,6 +347,7 @@ impl Eval for ast::Body {
 }
 
 pub struct PreparedCall {
+    is_external: bool,
     operator: Gc<Value>,
     args: Vec<Gc<Value>>,
 }
@@ -364,15 +366,15 @@ impl PreparedCall {
     async fn prepare(call: &ast::Call, env: &Gc<Env>) -> Result<Self, RuntimeError> {
         // Collect the operator
         let operator = call.operator.eval(env).await?;
-        let args = {
+        let (is_external, args) = {
             let read_op = operator.read().await;
             if !read_op.is_callable() {
                 return Err(RuntimeError::InvalidOperator(operator.clone()));
             }
             // Check the number of arguments provided
-            let (min_args, max_args) = match &*read_op {
-                Value::ExternalFn(extern_fn) => (extern_fn.min_args(), extern_fn.max_args()),
-                Value::Procedure(proc) => (proc.min_args(), proc.max_args()),
+            let (is_external, min_args, max_args) = match &*read_op {
+                Value::ExternalFn(extern_fn) => (true, extern_fn.min_args(), extern_fn.max_args()),
+                Value::Procedure(proc) => (false, proc.min_args(), proc.max_args()),
                 _ => unreachable!(),
             };
             if call.args.len() < min_args {
@@ -388,20 +390,26 @@ impl PreparedCall {
             for arg in &call.args {
                 args.push(arg.eval(env).await?);
             }
-            args
+            (is_external, args)
         };
 
-        Ok(Self { operator, args })
+        Ok(Self {
+            is_external,
+            operator,
+            args,
+        })
     }
 }
 
 #[async_trait]
 impl Eval for ast::Call {
     async fn tail_eval(&self, env: &Gc<Env>) -> Result<ValueOrPreparedCall, RuntimeError> {
-        // TODO: if external fn, call it and return the value
-        Ok(ValueOrPreparedCall::PreparedCall(
-            PreparedCall::prepare(self, env).await?,
-        ))
+        let prepared_call = PreparedCall::prepare(self, env).await?;
+        if prepared_call.is_external {
+            Ok(ValueOrPreparedCall::Value(prepared_call.eval(env).await?))
+        } else {
+            Ok(ValueOrPreparedCall::PreparedCall(prepared_call))
+        }
     }
 }
 
@@ -554,6 +562,13 @@ impl Eval for ast::Literal {
 impl Eval for ast::Quote {
     async fn eval(&self, _env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
         Ok(Gc::new(self.val.clone()))
+    }
+}
+
+#[async_trait]
+impl Eval for ast::Syntax {
+    async fn eval(&self, _env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
+        Ok(Gc::new(Value::Syntax(self.syn.clone())))
     }
 }
 

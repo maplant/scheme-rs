@@ -3,7 +3,7 @@ use crate::{
     eval::{Env, Eval, Value},
     expand::{Binds, Pattern, SyntaxRule, Template},
     gc::Gc,
-    syntax::{Syntax, Span},
+    syntax::{Span, Syntax},
 };
 use async_trait::async_trait;
 use derive_more::From;
@@ -22,6 +22,7 @@ pub enum CompileError {
     CompileDefineSyntaxError(CompileDefineSyntaxError),
     CompileBodyError(CompileBodyError),
     CompileQuoteError(CompileQuoteError),
+    CompileSyntaxError(CompileSyntaxError),
     CompileSetError(CompileSetError),
     CompileLambdaError(CompileLambdaError),
 }
@@ -122,10 +123,12 @@ impl Compile for ast::Define {
         span: &Span,
     ) -> Result<Self, Self::Error> {
         match exprs {
-            [Syntax::Identifier { ident, .. }, expr] => Ok(ast::Define::DefineVar(ast::DefineVar {
-                name: ident.clone(),
-                val: expr.compile(env, binds).await?,
-            })),
+            [Syntax::Identifier { ident, .. }, expr, Syntax::Nil { .. }] => {
+                Ok(ast::Define::DefineVar(ast::DefineVar {
+                    name: ident.clone(),
+                    val: expr.compile(env, binds).await?,
+                }))
+            }
             [Syntax::List { list, span }, body @ ..] => {
                 match &list[..] {
                     [] => Err(CompileDefineError::ExpectedIdentifier(span.clone())),
@@ -530,6 +533,32 @@ impl Compile for ast::Quote {
 }
 
 #[derive(Debug)]
+pub enum CompileSyntaxError {
+    ExpectedArgument(Span),
+    UnexpectedArgument(Span),
+    BadForm(Span),
+}
+
+#[async_trait]
+impl Compile for ast::Syntax {
+    type Error = CompileSyntaxError;
+
+    async fn compile(
+        exprs: &[Syntax],
+        _env: &Gc<Env>,
+        _binds: Arc<Binds>,
+        span: &Span,
+    ) -> Result<Self, CompileSyntaxError> {
+        match exprs {
+            [] => Err(CompileSyntaxError::ExpectedArgument(span.clone())),
+            [expr, Syntax::Nil { .. }] => Ok(ast::Syntax { syn: expr.clone() }),
+            [_, arg, ..] => Err(CompileSyntaxError::UnexpectedArgument(arg.span().clone())),
+            _ => Err(CompileSyntaxError::BadForm(span.clone())),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub enum CompileSetError {
     ExpectedArgument(Span),
     ExpectedIdent(Span),
@@ -588,10 +617,7 @@ impl Compile for ast::Lambda {
         span: &Span,
     ) -> Result<Self, CompileLambdaError> {
         match exprs {
-            [Syntax::List {
-                list: args,
-                ..
-            }, body @ ..] => {
+            [Syntax::List { list: args, .. }, body @ ..] => {
                 let mut scope = Binds::new_local(&binds);
                 let mut bound = HashMap::<Ident, Span>::new();
                 let mut fixed = Vec::new();

@@ -2,7 +2,7 @@ use crate::{
     ast::{Ident, Literal},
     eval::Env,
     gc::Gc,
-    syntax::{Span, Syntax}
+    syntax::{Span, Syntax},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -226,7 +226,7 @@ impl Template {
             Self::Identifier(ident) => match var_binds.get(ident) {
                 Some(SyntaxOrMany::Syntax(expr)) => expr.clone(),
                 Some(SyntaxOrMany::Many(exprs)) => Syntax::new_list(exprs.clone(), curr_span),
-                None => Syntax::new_identifier(Ident::new_macro(ident, macro_env), curr_span),
+                None => Syntax::new_identifier(Ident::with_hygiene(ident, macro_env), curr_span),
             },
             Self::Literal(literal) => Syntax::new_literal(literal.clone(), curr_span),
             _ => unreachable!(),
@@ -242,7 +242,7 @@ fn execute_slice(
 ) -> Vec<Syntax> {
     let mut output = Vec::new();
     for item in items {
-        match dbg!(item) {
+        match item {
             Template::Ellipsis(name) => match var_binds.get(name).unwrap() {
                 SyntaxOrMany::Syntax(expr) => output.push(expr.clone()),
                 SyntaxOrMany::Many(exprs) => output.extend(exprs.clone()),

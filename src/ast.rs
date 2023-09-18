@@ -11,21 +11,21 @@ use std::{
 
 #[derive(Clone)]
 pub struct Ident {
-    pub macro_env: Option<Gc<Env>>,
+    pub hygiene: Option<Gc<Env>>,
     pub sym: String,
 }
 
 impl Ident {
-    pub fn new_free(sym: &str) -> Self {
+    pub fn new(sym: &str) -> Self {
         Self {
-            macro_env: None,
+            hygiene: None,
             sym: sym.to_string(),
         }
     }
 
-    pub fn new_macro(sym: &str, macro_env: &Gc<Env>) -> Self {
+    pub fn with_hygiene(sym: &str, hygiene: &Gc<Env>) -> Self {
         Self {
-            macro_env: Some(macro_env.clone()),
+            hygiene: Some(hygiene.clone()),
             sym: sym.to_string(),
         }
     }
@@ -33,7 +33,7 @@ impl Ident {
 
 impl fmt::Debug for Ident {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.macro_env.is_some() {
+        if self.hygiene.is_some() {
             write!(f, "<macro>::{}", self.sym)
         } else {
             write!(f, "{}", self.sym)
@@ -43,14 +43,14 @@ impl fmt::Debug for Ident {
 
 impl Hash for Ident {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.macro_env.as_ref().map(Gc::as_ptr).hash(state);
+        self.hygiene.as_ref().map(Gc::as_ptr).hash(state);
         self.sym.hash(state);
     }
 }
 
 impl PartialEq for Ident {
     fn eq(&self, rhs: &Ident) -> bool {
-        self.macro_env.as_ref().map(Gc::as_ptr) == rhs.macro_env.as_ref().map(Gc::as_ptr)
+        self.hygiene.as_ref().map(Gc::as_ptr) == rhs.hygiene.as_ref().map(Gc::as_ptr)
             && self.sym == rhs.sym
     }
 }
@@ -83,6 +83,11 @@ pub enum Literal {
 #[derive(Clone)]
 pub struct Quote {
     pub val: Value,
+}
+
+#[derive(Clone)]
+pub struct Syntax {
+    pub syn: crate::syntax::Syntax,
 }
 
 #[derive(Clone)]

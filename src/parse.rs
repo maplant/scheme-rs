@@ -1,6 +1,6 @@
 use crate::{
     ast::{Ident, Literal},
-    lex::{Fragment, Lexeme, InputSpan, Token},
+    lex::{Fragment, InputSpan, Lexeme, Token},
     num::Number,
     syntax::Syntax,
 };
@@ -65,7 +65,7 @@ pub fn expression<'a>(i: &'a [Token<'a>]) -> Result<(&'a [Token<'a>], Syntax), P
         // Identifiers:
         [i @ token!(Lexeme::Identifier(_)), tail @ ..] => Ok((
             tail,
-            Syntax::new_identifier(Ident::new_free(i.lexeme.to_ident()), i.span.clone()),
+            Syntax::new_identifier(Ident::new(i.lexeme.to_ident()), i.span.clone()),
         )),
         // Lists:
         [n @ token!(Lexeme::LParen), token!(Lexeme::RParen), tail @ ..] => {
@@ -101,11 +101,27 @@ pub fn expression<'a>(i: &'a [Token<'a>]) -> Result<(&'a [Token<'a>], Syntax), P
                 tail,
                 Syntax::new_list(
                     vec![
-                        Syntax::new_identifier(Ident::new_free("quote"), q.span.clone()),
+                        Syntax::new_identifier(Ident::new("quote"), q.span.clone()),
                         expr,
                         Syntax::new_nil(expr_span),
                     ],
                     q.span.clone(),
+                ),
+            ))
+        }
+        // Syntax:
+        [s @ token!(Lexeme::HashTick), tail @ ..] => {
+            let (tail, expr) = expression(tail)?;
+            let expr_span = expr.span().clone();
+            Ok((
+                tail,
+                Syntax::new_list(
+                    vec![
+                        Syntax::new_identifier(Ident::new("syntax"), s.span.clone()),
+                        expr,
+                        Syntax::new_nil(expr_span),
+                    ],
+                    s.span.clone(),
                 ),
             ))
         }

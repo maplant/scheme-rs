@@ -1,92 +1,94 @@
-use scheme_rs::{
-    eval::{Env, RuntimeError},
-    gc::Gc,
-    lex::Token,
-    syntax::ParsedSyntax,
+use reedline::{Reedline, Signal, ValidationResult, Validator};
+use scheme_rs::{eval::Env, gc::Gc, lex::Token, parse::ParseError, syntax::ParsedSyntax};
+use std::{
+    borrow::Cow,
+    sync::{Arc, Mutex},
 };
 
-async fn run(code: &str, env: &Gc<Env>) -> Result<(), RuntimeError> {
-    let tokens = dbg!(Token::tokenize_str(code).unwrap());
-    let sexprs = dbg!(ParsedSyntax::parse(&tokens)).unwrap();
-    for sexpr in sexprs {
-        let result = sexpr.compile(env).await.unwrap().eval(env).await?;
-        println!("result = {}", result.read().await.fmt().await);
+struct InputParser {
+    parsed: Arc<Mutex<Option<Result<Vec<ParsedSyntax>, String>>>>,
+}
+
+impl Validator for InputParser {
+    fn validate(&self, line: &str) -> ValidationResult {
+        let Ok(tokens) = Token::tokenize_str(line) else {
+            return ValidationResult::Incomplete;
+        };
+        let syntax = ParsedSyntax::parse(&tokens);
+        match syntax {
+            Err(ParseError::UnclosedParen { .. }) => ValidationResult::Incomplete,
+            x => {
+                *self.parsed.lock().unwrap() = Some(x.map_err(|e| format!("{:?}", e)));
+                ValidationResult::Complete
+            }
+        }
     }
-    Ok(())
+}
+
+struct Prompt;
+
+impl reedline::Prompt for Prompt {
+    fn render_prompt_left(&self) -> Cow<str> {
+        Cow::Borrowed("")
+    }
+
+    fn render_prompt_right(&self) -> Cow<str> {
+        Cow::Borrowed("")
+    }
+
+    fn render_prompt_indicator(&self, _prompt_mode: reedline::PromptEditMode) -> Cow<str> {
+        Cow::Borrowed(">>> ")
+    }
+
+    fn render_prompt_multiline_indicator(&self) -> Cow<str> {
+        Cow::Borrowed("... ")
+    }
+
+    fn render_prompt_history_search_indicator(
+        &self,
+        _history_search: reedline::PromptHistorySearch,
+    ) -> Cow<str> {
+        Cow::Borrowed("? ")
+    }
 }
 
 #[tokio::main]
 async fn main() {
+    let parsed = Arc::new(Mutex::new(None));
+    let mut rl = Reedline::create().with_validator(Box::new(InputParser {
+        parsed: parsed.clone(),
+    }));
+    let mut n_results = 1;
     let base = Gc::new(Env::base());
-    //    let result = run("(5 . 5)", &base).await.unwrap();
-    // 1:
-    run(
-        r#"
-        (define (fact x acc)
-          (if (= x 0)
-              acc
-              (fact (- x 1) (* x acc))))
-        "#,
-        &base,
-    )
-    .await
-    .unwrap();
-    //    println!("result = {}", result.read().await.fmt().await);
-    // 2:
-    run(
-        r#"
-        (fact 150 1)
-        "#,
-        &base,
-    )
-    .await
-    .unwrap();
-    //    println!("result = {}", result.read().await.fmt().await);
-    // 3:
-    run(
-        r#"
-(define-syntax test
-  (syntax-rules ()
-     ((test x) (+ x 5))))
-        "#,
-        &base,
-    )
-    .await
-    .unwrap();
-    // 4:
-    run("(test 10)", &base).await.unwrap();
-    run(
-        r#"
-(define-syntax test2
-  (syntax-rules ()
-    ((test2 a b c d ... e f g) (list e f g a b c d ...))))
-"#,
-        &base,
-    )
-    .await
-    .unwrap();
-    run(
-        r#"
-(define-syntax kwote
-  (syntax-rules ()
-    ((kwote exp) (quote exp))))
-"#,
-        &base,
-    )
-    .await
-    .unwrap();
-    run(
-        "(kwote (hello my honey (hello my lady (hello my rag-time-gal))))",
-        &base,
-    )
-    .await
-    .unwrap();
-    run("(test2 1 2 3 4 5 6 7 8 9 10)", &base).await.unwrap();
-    run("(quote (a b c d (+ g b)))", &base).await.unwrap();
-    // ( a . (b . (c . ((d . (+ . (g . (b . ())))) . ()))))
-    run("(quote ((+ g b c 5 10 \"hello!!!\") . a))", &base)
-        .await
-        .unwrap();
-    run("'(a . ())", &base).await.unwrap();
-    run("#(5 5 5 ())", &base).await.unwrap();
+    loop {
+        match rl.read_line(&Prompt) {
+            Ok(Signal::Success(_)) => (),
+            _ => {
+                println!("exiting...");
+                return;
+            }
+        }
+        // let parsed_lock = parsed.lock().unwrap();
+        let Some(parsed) = parsed.lock().unwrap().take() else {
+            continue;
+        };
+        let parsed = match parsed {
+            Err(err) => {
+                println!("Error parsing: {}", err);
+                continue;
+            }
+            Ok(parsed) => parsed,
+        };
+        for sexpr in parsed {
+            let result = sexpr
+                .compile(&base)
+                .await
+                .unwrap()
+                .eval(&base)
+                .await
+                .unwrap();
+            println!("${n_results} = {}", result.read().await.fmt().await);
+            n_results += 1;
+        }
+    }
 }
