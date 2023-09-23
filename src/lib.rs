@@ -1,6 +1,7 @@
 pub mod ast;
 pub mod builtin;
 pub mod compile;
+pub mod env;
 pub mod eval;
 pub mod expand;
 pub mod gc;

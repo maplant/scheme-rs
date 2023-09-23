@@ -1,5 +1,5 @@
 use reedline::{Reedline, Signal, ValidationResult, Validator};
-use scheme_rs::{eval::Env, gc::Gc, lex::Token, parse::ParseError, syntax::ParsedSyntax};
+use scheme_rs::{env::Env, gc::Gc, lex::Token, parse::ParseError, syntax::ParsedSyntax};
 use std::{
     borrow::Cow,
     sync::{Arc, Mutex},
@@ -59,7 +59,7 @@ async fn main() {
         parsed: parsed.clone(),
     }));
     let mut n_results = 1;
-    let base = Gc::new(Env::base());
+    let top = Env::top();
     loop {
         match rl.read_line(&Prompt) {
             Ok(Signal::Success(_)) => (),
@@ -80,13 +80,7 @@ async fn main() {
             Ok(parsed) => parsed,
         };
         for sexpr in parsed {
-            let result = sexpr
-                .compile(&base)
-                .await
-                .unwrap()
-                .eval(&base)
-                .await
-                .unwrap();
+            let result = sexpr.compile(&top).await.unwrap().eval(&top).await.unwrap();
             println!("${n_results} = {}", result.read().await.fmt().await);
             n_results += 1;
         }

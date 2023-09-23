@@ -1,5 +1,6 @@
 use crate::{
-    eval::{Env, RuntimeError, Value},
+    env::Env,
+    eval::{RuntimeError, Value},
     gc::Gc,
 };
 use proc_macros::builtin;
@@ -54,7 +55,7 @@ impl From<Complex> for Number {
 }
 
 #[builtin(+)]
-pub async fn add(_env: &Gc<Env>, l: &Gc<Value>, r: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> {
+pub async fn add(_env: Env, l: &Gc<Value>, r: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> {
     let (l, r) = (l.read().await, r.read().await);
     match (&*l, &*r) {
         (Value::Number(Number::Integer(l)), Value::Number(Number::Integer(r))) => {
@@ -65,7 +66,7 @@ pub async fn add(_env: &Gc<Env>, l: &Gc<Value>, r: &Gc<Value>) -> Result<Gc<Valu
 }
 
 #[builtin(-)]
-pub async fn sub(_env: &Gc<Env>, l: &Gc<Value>, r: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> {
+pub async fn sub(_env: Env, l: &Gc<Value>, r: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> {
     let (l, r) = (l.read().await, r.read().await);
     match (&*l, &*r) {
         (Value::Number(Number::Integer(l)), Value::Number(Number::Integer(r))) => {
@@ -76,7 +77,7 @@ pub async fn sub(_env: &Gc<Env>, l: &Gc<Value>, r: &Gc<Value>) -> Result<Gc<Valu
 }
 
 #[builtin(*)]
-pub async fn mult(_env: &Gc<Env>, l: &Gc<Value>, r: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> {
+pub async fn mult(_env: Env, l: &Gc<Value>, r: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> {
     let (l, r) = (l.read().await, r.read().await);
     match (&*l, &*r) {
         (Value::Number(Number::Integer(l)), Value::Number(Number::Integer(r))) => {
@@ -87,7 +88,7 @@ pub async fn mult(_env: &Gc<Env>, l: &Gc<Value>, r: &Gc<Value>) -> Result<Gc<Val
 }
 
 #[builtin(=)]
-pub async fn eq(_env: &Gc<Env>, l: &Gc<Value>, r: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> {
+pub async fn eq(_env: Env, l: &Gc<Value>, r: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> {
     let (l, r) = (l.read().await, r.read().await);
     match (&*l, &*r) {
         (Value::Number(Number::Integer(l)), Value::Number(Number::Integer(r))) => {

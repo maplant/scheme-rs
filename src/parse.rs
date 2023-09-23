@@ -1,5 +1,5 @@
 use crate::{
-    ast::{Ident, Literal},
+    ast::Literal,
     lex::{Fragment, InputSpan, Lexeme, Token},
     num::Number,
     syntax::Syntax,
@@ -65,7 +65,7 @@ pub fn expression<'a>(i: &'a [Token<'a>]) -> Result<(&'a [Token<'a>], Syntax), P
         // Identifiers:
         [i @ token!(Lexeme::Identifier(_)), tail @ ..] => Ok((
             tail,
-            Syntax::new_identifier(Ident::new(i.lexeme.to_ident()), i.span.clone()),
+            Syntax::new_identifier(i.lexeme.to_ident(), i.span.clone()),
         )),
         // Lists:
         [n @ token!(Lexeme::LParen), token!(Lexeme::RParen), tail @ ..] => {
@@ -101,7 +101,7 @@ pub fn expression<'a>(i: &'a [Token<'a>]) -> Result<(&'a [Token<'a>], Syntax), P
                 tail,
                 Syntax::new_list(
                     vec![
-                        Syntax::new_identifier(Ident::new("quote"), q.span.clone()),
+                        Syntax::new_identifier("quote", q.span.clone()),
                         expr,
                         Syntax::new_nil(expr_span),
                     ],
@@ -117,7 +117,7 @@ pub fn expression<'a>(i: &'a [Token<'a>]) -> Result<(&'a [Token<'a>], Syntax), P
                 tail,
                 Syntax::new_list(
                     vec![
-                        Syntax::new_identifier(Ident::new("syntax"), s.span.clone()),
+                        Syntax::new_identifier("syntax", s.span.clone()),
                         expr,
                         Syntax::new_nil(expr_span),
                     ],

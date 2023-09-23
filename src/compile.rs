@@ -1,9 +1,10 @@
 use crate::{
-    ast::{self, Ident},
-    eval::{Env, Eval, Value},
-    expand::{Binds, Pattern, SyntaxRule, Template},
+    ast,
+    env::Env,
+    eval::{Eval, Value},
+    // expand::{Pattern, SyntaxRule, Template},
     gc::Gc,
-    syntax::{Span, Syntax},
+    syntax::{Identifier, Span, Syntax},
 };
 use async_trait::async_trait;
 use derive_more::From;
@@ -15,16 +16,19 @@ use std::{
 #[derive(From, Debug)]
 pub enum CompileError {
     UnexpectedEmptyList(Span),
+    CompileBodyError(CompileBodyError),
+    CompileLetError(CompileLetError),
     CompileFuncCallError(CompileFuncCallError),
+    UndefinedVariable(Identifier),
+    /*
     CompileDefineError(CompileDefineError),
     CompileIfError(CompileIfError),
-    CompileLetError(CompileLetError),
     CompileDefineSyntaxError(CompileDefineSyntaxError),
-    CompileBodyError(CompileBodyError),
     CompileQuoteError(CompileQuoteError),
     CompileSyntaxError(CompileSyntaxError),
     CompileSetError(CompileSetError),
     CompileLambdaError(CompileLambdaError),
+    */
 }
 
 macro_rules! impl_from_compile_error {
@@ -44,22 +48,178 @@ where
 {
     type Error;
 
-    async fn compile(
-        exprs: &[Syntax],
-        env: &Gc<Env>,
-        binds: Arc<Binds>,
-        span: &Span,
-    ) -> Result<Self, Self::Error>;
+    async fn compile(exprs: &[Syntax], env: &Env, span: &Span) -> Result<Self, Self::Error>;
 
     async fn compile_to_expr(
         exprs: &[Syntax],
-        env: &Gc<Env>,
-        binds: Arc<Binds>,
+        env: &Env,
         span: &Span,
     ) -> Result<Box<dyn Eval>, CompileError> {
-        Ok(Box::new(Self::compile(exprs, env, binds, span).await?))
+        Ok(Box::new(Self::compile(exprs, env, span).await?))
     }
 }
+
+#[derive(Debug)]
+pub enum CompileBodyError {
+    EmptyBody(Span),
+}
+
+#[async_trait]
+impl Compile for ast::Body {
+    type Error = CompileBodyError;
+
+    async fn compile(exprs: &[Syntax], env: &Env, span: &Span) -> Result<Self, CompileBodyError> {
+        if exprs.is_empty() {
+            return Err(CompileBodyError::EmptyBody(span.clone()));
+        }
+        // TODO: what if the body isn't a proper list?
+        Ok(ast::Body::new(
+            exprs[..exprs.len() - 1].iter().cloned().collect(),
+        ))
+    }
+}
+
+#[derive(Debug)]
+pub enum CompileLetError {
+    BadForm(Span),
+    CompileBodyError(CompileBodyError),
+    CompileLetBindingError(CompileLetBindingError),
+}
+
+#[async_trait]
+impl Compile for ast::Let {
+    type Error = CompileLetError;
+
+    async fn compile(expr: &[Syntax], env: &Env, span: &Span) -> Result<Self, CompileLetError> {
+        match expr {
+            [Syntax::List { list: bindings, .. }, body @ ..] => {
+                //                let mut previously_bound = HashMap::new();
+                //                let mut compiled_bindings = Vec::new();
+                //                let mut new_scope = Binds::new_local(&binds);
+                // TODO: Check that list is proper
+                let mut previously_bound = HashMap::new();
+                let mut new_contour = env.new_lexical_contour();
+                let mut compiled_bindings = Vec::new();
+                for binding in &bindings[..bindings.len() - 1] {
+                    let binding = LetBinding::compile(binding, env, &previously_bound)
+                        .await
+                        .map_err(CompileLetError::CompileLetBindingError)?;
+                    previously_bound.insert(binding.ident.clone(), binding.span.clone());
+                    new_contour.def_var(&binding.ident, Gc::new(Value::Nil));
+                    compiled_bindings.push(binding);
+                }
+                let env = Gc::new(new_contour);
+                let body = ast::Body::compile(body, &Env::from(env.clone()), span)
+                    .await
+                    .map_err(CompileLetError::CompileBodyError)?;
+                Ok(ast::Let {
+                    scope: env,
+                    bindings: compiled_bindings
+                        .into_iter()
+                        .map(|binding| (binding.ident, binding.expr))
+                        .collect(),
+                    body,
+                })
+            }
+            _ => Err(CompileLetError::BadForm(span.clone())),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum CompileLetBindingError {
+    BadForm(Span),
+    PreviouslyBound {
+        ident: Identifier,
+        first: Span,
+        second: Span,
+    },
+    NotAList(Span),
+    CompileError(Box<CompileError>),
+}
+
+impl_from_compile_error!(CompileLetBindingError);
+
+struct LetBinding {
+    ident: Identifier,
+    span: Span,
+    expr: Box<dyn Eval>,
+}
+
+impl LetBinding {
+    async fn compile(
+        expr: &Syntax,
+        env: &Env,
+        previously_bound: &HashMap<Identifier, Span>,
+    ) -> Result<LetBinding, CompileLetBindingError> {
+        match expr {
+            Syntax::List { list, span } => match &list[..] {
+                [Syntax::Identifier {
+                    ident,
+                    span: bind_span,
+                }, expr, Syntax::Nil { .. }] => {
+                    let ident = ident.clone();
+                    if let Some(prev_bind) = previously_bound.get(&ident) {
+                        return Err(CompileLetBindingError::PreviouslyBound {
+                            ident,
+                            first: prev_bind.clone(),
+                            second: bind_span.clone(),
+                        });
+                    }
+
+                    let expr = expr.compile(env).await?;
+
+                    Ok(LetBinding {
+                        ident,
+                        span: bind_span.clone(),
+                        expr,
+                    })
+                }
+                _ => Err(CompileLetBindingError::BadForm(span.clone())),
+            },
+            expr => Err(CompileLetBindingError::NotAList(expr.span().clone())),
+        }
+    }
+}
+
+#[derive(From, Debug)]
+pub enum CompileFuncCallError {
+    EmptyFunctionCall(Span),
+    CompileError(Box<CompileError>),
+}
+
+impl_from_compile_error!(CompileFuncCallError);
+
+#[async_trait]
+impl Compile for ast::Call {
+    type Error = CompileFuncCallError;
+
+    async fn compile(
+        exprs: &[Syntax],
+        env: &Env,
+        span: &Span,
+    ) -> Result<ast::Call, CompileFuncCallError> {
+        match exprs {
+            [operator, args @ ..] => {
+                // TODO: Support macro expansions in the call position that eventually
+                // resolve into an identifier, that is a macro (or function)
+                let operator = operator.compile(env).await?;
+                let mut compiled_args = Vec::new();
+                for arg in &args[..args.len() - 1] {
+                    compiled_args.push(arg.compile(env).await?);
+                }
+                // TODO: what if it's not a proper list?
+                Ok(ast::Call {
+                    operator,
+                    args: compiled_args,
+                })
+            }
+            [] => Err(CompileFuncCallError::EmptyFunctionCall(span.clone())),
+        }
+    }
+}
+
+/*
 
 #[derive(From, Debug)]
 pub enum CompileFuncCallError {
@@ -287,110 +447,6 @@ impl Compile for ast::Body {
     }
 }
 
-#[derive(Debug)]
-pub enum CompileLetError {
-    BadForm(Span),
-    CompileBodyError(CompileBodyError),
-    CompileLetBindingError(CompileLetBindingError),
-}
-
-#[async_trait]
-impl Compile for ast::Let {
-    type Error = CompileLetError;
-
-    async fn compile(
-        expr: &[Syntax],
-        env: &Gc<Env>,
-        binds: Arc<Binds>,
-        span: &Span,
-    ) -> Result<Self, CompileLetError> {
-        match expr {
-            [Syntax::List { list: bindings, .. }, body @ ..] => {
-                let mut previously_bound = HashMap::new();
-                let mut compiled_bindings = Vec::new();
-                let mut new_scope = Binds::new_local(&binds);
-                // TODO: Check that list is proper
-                for binding in &bindings[..bindings.len() - 1] {
-                    let binding =
-                        LetBinding::compile(binding, env, binds.clone(), &previously_bound)
-                            .await
-                            .map_err(CompileLetError::CompileLetBindingError)?;
-                    previously_bound.insert(binding.ident.clone(), binding.span.clone());
-                    new_scope.bind(&binding.ident.sym);
-                    compiled_bindings.push(binding);
-                }
-                let body = ast::Body::compile(body, env, binds.clone(), span)
-                    .await
-                    .map_err(CompileLetError::CompileBodyError)?;
-                Ok(ast::Let {
-                    bindings: compiled_bindings
-                        .into_iter()
-                        .map(|binding| (binding.ident, binding.expr))
-                        .collect(),
-                    body,
-                })
-            }
-            _ => Err(CompileLetError::BadForm(span.clone())),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum CompileLetBindingError {
-    BadForm(Span),
-    PreviouslyBound {
-        ident: Ident,
-        first: Span,
-        second: Span,
-    },
-    NotAList(Span),
-    CompileError(Box<CompileError>),
-}
-
-impl_from_compile_error!(CompileLetBindingError);
-
-struct LetBinding {
-    ident: Ident,
-    span: Span,
-    expr: Box<dyn Eval>,
-}
-
-impl LetBinding {
-    async fn compile(
-        expr: &Syntax,
-        env: &Gc<Env>,
-        binds: Arc<Binds>,
-        previously_bound: &HashMap<Ident, Span>,
-    ) -> Result<LetBinding, CompileLetBindingError> {
-        match expr {
-            Syntax::List { list, span } => match &list[..] {
-                [Syntax::Identifier {
-                    ident,
-                    span: bind_span,
-                }, expr, Syntax::Nil { .. }] => {
-                    let ident = ident.clone();
-                    if let Some(prev_bind) = previously_bound.get(&ident) {
-                        return Err(CompileLetBindingError::PreviouslyBound {
-                            ident,
-                            first: prev_bind.clone(),
-                            second: bind_span.clone(),
-                        });
-                    }
-
-                    let expr = expr.compile(env, binds).await?;
-
-                    Ok(LetBinding {
-                        ident,
-                        span: bind_span.clone(),
-                        expr,
-                    })
-                }
-                _ => Err(CompileLetBindingError::BadForm(span.clone())),
-            },
-            expr => Err(CompileLetBindingError::NotAList(expr.span().clone())),
-        }
-    }
-}
 
 #[derive(Debug)]
 pub enum CompileDefineSyntaxError {
@@ -546,12 +602,15 @@ impl Compile for ast::Syntax {
     async fn compile(
         exprs: &[Syntax],
         _env: &Gc<Env>,
-        _binds: Arc<Binds>,
+        binds: Arc<Binds>,
         span: &Span,
     ) -> Result<Self, CompileSyntaxError> {
         match exprs {
             [] => Err(CompileSyntaxError::ExpectedArgument(span.clone())),
-            [expr, Syntax::Nil { .. }] => Ok(ast::Syntax { syn: expr.clone() }),
+            [expr, Syntax::Nil { .. }] => Ok(ast::Syntax {
+                syn: expr.clone(),
+                binds,
+            }),
             [_, arg, ..] => Err(CompileSyntaxError::UnexpectedArgument(arg.span().clone())),
             _ => Err(CompileSyntaxError::BadForm(span.clone())),
         }
@@ -672,3 +731,5 @@ impl Compile for ast::Lambda {
         }
     }
 }
+
+*/

@@ -1,14 +1,14 @@
 use crate::{
-    ast::{self, Ident, Literal},
+    ast::{self, Literal},
     compile::{Compile, CompileError},
-    eval::{Env, Eval, Value},
-    expand::Binds,
+    env::Env,
+    eval::{Eval, Value},
     gc::Gc,
     lex::{InputSpan, Lexeme, Token},
     parse::ParseError,
 };
 use futures::future::BoxFuture;
-use std::{borrow::Cow, fmt, sync::Arc};
+use std::{borrow::Cow, collections::BTreeSet, fmt, sync::Arc};
 
 #[derive(Debug, Clone)]
 pub struct Span {
@@ -57,113 +57,85 @@ pub enum Syntax {
         span: Span,
     },
     Identifier {
-        ident: Ident,
+        ident: Identifier,
         span: Span,
     },
 }
 
 impl Syntax {
-    pub fn span(&self) -> &Span {
+    pub fn mark(&mut self, mark: Mark) {
         match self {
-            Self::Nil { span } => span,
-            Self::List { span, .. } => span,
-            Self::Vector { span, .. } => span,
-            Self::Literal { span, .. } => span,
-            Self::Identifier { span, .. } => span,
+            Self::List { ref mut list, .. } => {
+                for item in list {
+                    item.mark(mark);
+                }
+            }
+            Self::Vector { ref mut vector, .. } => {
+                for item in vector {
+                    item.mark(mark);
+                }
+            }
+            Self::Identifier { ident, .. } => ident.mark(mark),
+            _ => (),
         }
     }
 
-    // There's got to be a better way:
-
-    pub fn new_nil(span: impl Into<Span>) -> Self {
-        Self::Nil { span: span.into() }
-    }
-
-    pub fn is_nil(&self) -> bool {
-        matches!(self, Self::Nil { .. })
-    }
-
-    pub fn new_list(list: Vec<Syntax>, span: impl Into<Span>) -> Self {
-        Self::List {
-            list,
-            span: span.into(),
-        }
-    }
-
-    pub fn is_list(&self) -> bool {
-        matches!(self, Self::List { .. })
-    }
-
-    pub fn new_vector(vector: Vec<Syntax>, span: impl Into<Span>) -> Self {
-        Self::Vector {
-            vector,
-            span: span.into(),
-        }
-    }
-
-    pub fn is_vector(&self) -> bool {
-        matches!(self, Self::Vector { .. })
-    }
-
-    pub fn new_literal(literal: Literal, span: impl Into<Span>) -> Self {
-        Self::Literal {
-            literal,
-            span: span.into(),
-        }
-    }
-
-    pub fn is_literal(&self) -> bool {
-        matches!(self, Self::Literal { .. })
-    }
-
-    pub fn new_identifier(ident: Ident, span: impl Into<Span>) -> Self {
-        Self::Identifier {
-            ident,
-            span: span.into(),
-        }
-    }
-
-    pub fn is_identifier(&self) -> bool {
-        matches!(self, Self::Identifier { .. })
-    }
-
-    fn expand<'a>(&'a self, env: &'a Gc<Env>, binds: Arc<Binds>) -> BoxFuture<'a, Cow<'a, Syntax>> {
+    fn expand<'a>(&'a self, env: &'a Env) -> BoxFuture<'a, Expansion<'a>> {
         Box::pin(async move {
             match self {
                 Self::List { list, span } => {
                     let (head, tail) = list.split_first().unwrap();
+                    // If the head is not an identifier, we leave the expression unexpanded
+                    // for now. We will expand it later in the proc call
+                    let ident = match head {
+                        Self::Identifier { ident, .. } => ident,
+                        _ => return Expansion::Unexpanded(self),
+                    };
+                    /*
                     let head = match head {
-                        list @ Self::List { .. } => list.expand(env, binds.clone()).await,
-                        x => Cow::Borrowed(x),
+                        list @ Self::List { .. } => list.expand(env).await,
+                        x => Expansion::Unexpanded(x),
                     };
                     let ident = match head.as_ref() {
                         Self::Identifier { ident, .. } => ident,
+                        /*
+                        // If the head is not an identifier, we can simply return an
                         _ => {
-                            let mut borrowed = matches!(head, Cow::Borrowed(_));
+                            let mut expanded = head.is_expanded();
                             let mut output = vec![head];
                             for item in tail {
-                                let item = item.expand(env, binds.clone()).await;
-                                borrowed &= matches!(item, Cow::Borrowed(_));
+                                let item = item.expand(env).await;
+                                expanded |= item.is_expanded();
                                 output.push(item);
                             }
                             // If every item is borrowed, nothing has changed, and we
                             // can return the expression as is.
-                            if borrowed {
-                                return Cow::Borrowed(self);
-                            } else {
+                            if expanded {
                                 let output: Vec<_> =
                                     output.into_iter().map(Cow::into_owned).collect();
-                                return Cow::Owned(Self::new_list(output, span.clone()));
+                                return Expansion::Expanded(Self::new_list(output, span.clone()));
+                            } else {
+                                return Expansion::Unexpanded(self);
                             }
                         }
+                        */
                     };
-                    if let Some(head_value) = env.read().await.fetch(ident).await {
+                    */
+                    if let Some(head_value) = env.fetch_macro(&ident).await {
                         if let Value::Transformer(transformer) = &*head_value.read().await {
-                            let mut list = vec![head.into_owned()];
+                            let new_mark = Mark::new();
+                            let mut list = vec![head.clone()];
                             list.extend(tail.iter().cloned());
-                            let mut expanded = transformer
-                                .expand(&Syntax::new_list(list, span.clone()), binds.clone())
-                                .unwrap();
+                            let mut expanded = Expansion::Expanded {
+                                mark: new_mark,
+                                syntax: transformer
+                                    .expand(new_mark, &Syntax::new_list(list, span.clone()), env)
+                                    .await
+                                    .unwrap(),
+                                macro_env: transformer.macro_env.clone(),
+                            };
+                            return expanded;
+                            /*
                             loop {
                                 if let ref expr @ Syntax::List { ref list, .. } = expanded {
                                     if let [Syntax::Identifier { ident, .. }, ..] = &list[..] {
@@ -181,30 +153,63 @@ impl Syntax {
                                 }
                                 return Cow::Owned(expanded);
                             }
+                            */
                         }
                     }
                 }
                 expr @ Self::Identifier { ident, .. } => {
-                    if let Some(val) = env.read().await.fetch(ident).await {
+                    if let Some(val) = env.fetch_macro(ident).await {
                         if let Value::Transformer(transformer) = &*val.read().await {
-                            let expanded = transformer.expand(expr, binds.clone()).unwrap();
-                            return Cow::Owned(expanded);
+                            let new_mark = Mark::new();
+                            return Expansion::Expanded {
+                                mark: new_mark,
+                                syntax: transformer.expand(new_mark, expr, env).await.unwrap(),
+                                macro_env: transformer.macro_env.clone(),
+                            };
                         }
                     }
                 }
                 _ => (),
             }
-            Cow::Borrowed(self)
+            Expansion::Unexpanded(self)
         })
     }
 
+    pub async fn compile_expanded(&self, env: &Env) -> Result<Box<dyn Eval>, CompileError> {
+        match self {
+            Self::Nil { span } => Err(CompileError::UnexpectedEmptyList(span.clone())),
+            Self::Identifier { ident, .. } => {
+                // TODO: Fix this
+                Ok(Box::new(
+                    env.fetch_var(ident)
+                        .await
+                        .ok_or_else(|| CompileError::UndefinedVariable(ident.clone()))?,
+                ) as Box<dyn Eval>)
+            }
+            Self::Literal { literal, .. } => Ok(Box::new(literal.clone()) as Box<dyn Eval>),
+            Self::List { list: exprs, span } => match &exprs[..] {
+                // Special forms:
+                [Self::Identifier { ident, span }, tail @ ..] if ident == "let" => {
+                    ast::Let::compile_to_expr(tail, env, span).await
+                }
+                // Function call:
+                exprs => ast::Call::compile_to_expr(exprs, env, span).await,
+            },
+            x => unreachable!("{:?}", x),
+        }
+    }
+
+    pub async fn compile(&self, env: &Env) -> Result<Box<dyn Eval>, CompileError> {
+        self.expand(env).await.compile(env).await
+    }
+
+    /*
     pub fn compile<'a>(
         &'a self,
-        env: &'a Gc<Env>,
-        binds: Arc<Binds>,
+        env: &'a Env,
     ) -> BoxFuture<'a, Result<Box<dyn Eval>, CompileError>> {
         Box::pin(async move {
-            let expr = self.expand(env, binds.clone()).await;
+            let expr = self.expand(env).await;
             match &*expr {
                 Self::Nil { span } => Err(CompileError::UnexpectedEmptyList(span.clone())),
                 Self::List { list: exprs, span } => match &exprs[..] {
@@ -271,6 +276,64 @@ impl Syntax {
             }
         })
     }
+    */
+}
+
+pub enum Expansion<'a> {
+    /// Syntax remained unchanged after expansion
+    Unexpanded(&'a Syntax),
+    /// Syntax was expanded, producing a new expansion context
+    Expanded {
+        mark: Mark,
+        macro_env: Env,
+        syntax: Syntax,
+    },
+}
+
+impl Expansion<'_> {
+    pub fn is_expanded(&self) -> bool {
+        matches!(self, Self::Expanded { .. })
+    }
+
+    pub fn is_unexpanded(&self) -> bool {
+        matches!(self, Self::Unexpanded(_))
+    }
+}
+
+impl<'a> Expansion<'a> {
+    /*
+    pub async fn expand(&'a self, env: &'a Env) -> Expansion<'a> {
+    }
+     */
+
+    pub fn compile(self, env: &'a Env) -> BoxFuture<'a, Result<Box<dyn Eval>, CompileError>> {
+        Box::pin(async move {
+            match self {
+                Self::Unexpanded(syntax) => syntax.compile_expanded(env).await,
+                Self::Expanded {
+                    mark,
+                    syntax,
+                    macro_env,
+                } => {
+                    // If the expression has been expanded, we may need to expand it again, but
+                    // it must be done in a new expansion context.
+                    let env = Env::Expansion(Gc::new(env.new_expansion_context(mark, macro_env)));
+                    syntax.expand(&env).await.compile_expanded(&env).await
+                }
+            }
+        })
+    }
+}
+
+impl std::ops::Deref for Expansion<'_> {
+    type Target = Syntax;
+
+    fn deref(&self) -> &Syntax {
+        match self {
+            Self::Unexpanded(syntax) => syntax,
+            Self::Expanded { syntax, .. } => &syntax,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -310,8 +373,111 @@ impl ParsedSyntax {
         Ok(output)
     }
 
-    pub async fn compile(&self, env: &Gc<Env>) -> Result<Box<dyn Eval>, CompileError> {
-        let binds = Binds::from_global(env).await;
-        self.syntax.compile(env, binds).await
+    pub async fn compile(&self, env: &Env) -> Result<Box<dyn Eval>, CompileError> {
+        self.syntax.compile(&env).await
+    }
+}
+
+#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Mark(u64);
+
+impl Mark {
+    pub fn new() -> Self {
+        Self(rand::random())
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct Identifier {
+    pub name: String,
+    pub marks: BTreeSet<Mark>,
+}
+
+impl Identifier {
+    pub fn new(name: String) -> Self {
+        Self {
+            name,
+            marks: BTreeSet::default(),
+        }
+    }
+
+    pub fn mark(&mut self, mark: Mark) {
+        if self.marks.contains(&mark) {
+            self.marks.remove(&mark);
+        } else {
+            self.marks.insert(mark);
+        }
+    }
+}
+
+impl PartialEq<str> for Identifier {
+    fn eq(&self, rhs: &str) -> bool {
+        self.name == rhs
+    }
+}
+
+impl Syntax {
+    pub fn span(&self) -> &Span {
+        match self {
+            Self::Nil { span } => span,
+            Self::List { span, .. } => span,
+            Self::Vector { span, .. } => span,
+            Self::Literal { span, .. } => span,
+            Self::Identifier { span, .. } => span,
+        }
+    }
+
+    // There's got to be a better way:
+
+    pub fn new_nil(span: impl Into<Span>) -> Self {
+        Self::Nil { span: span.into() }
+    }
+
+    pub fn is_nil(&self) -> bool {
+        matches!(self, Self::Nil { .. })
+    }
+
+    pub fn new_list(list: Vec<Syntax>, span: impl Into<Span>) -> Self {
+        Self::List {
+            list,
+            span: span.into(),
+        }
+    }
+
+    pub fn is_list(&self) -> bool {
+        matches!(self, Self::List { .. })
+    }
+
+    pub fn new_vector(vector: Vec<Syntax>, span: impl Into<Span>) -> Self {
+        Self::Vector {
+            vector,
+            span: span.into(),
+        }
+    }
+
+    pub fn is_vector(&self) -> bool {
+        matches!(self, Self::Vector { .. })
+    }
+
+    pub fn new_literal(literal: Literal, span: impl Into<Span>) -> Self {
+        Self::Literal {
+            literal,
+            span: span.into(),
+        }
+    }
+
+    pub fn is_literal(&self) -> bool {
+        matches!(self, Self::Literal { .. })
+    }
+
+    pub fn new_identifier(name: &str, span: impl Into<Span>) -> Self {
+        Self::Identifier {
+            ident: Identifier::new(name.to_string()),
+            span: span.into(),
+        }
+    }
+
+    pub fn is_identifier(&self) -> bool {
+        matches!(self, Self::Identifier { .. })
     }
 }

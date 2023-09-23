@@ -1,5 +1,6 @@
 use crate::{
-    eval::{Env, RuntimeError, Value},
+    env::Env,
+    eval::{RuntimeError, Value},
     gc::Gc,
 };
 use futures::future::BoxFuture;
@@ -47,7 +48,7 @@ pub fn fmt_list<'a>(car: &'a Gc<Value>, cdr: &'a Gc<Value>) -> BoxFuture<'a, Str
 }
 
 #[builtin(list)]
-pub async fn list(_env: &Gc<Env>, args: Vec<Gc<Value>>) -> Result<Gc<Value>, RuntimeError> {
+pub async fn list(_env: Env, args: Vec<Gc<Value>>) -> Result<Gc<Value>, RuntimeError> {
     // Construct the list in reverse
     let mut cdr = Gc::new(Value::Nil);
     for arg in args.into_iter().rev() {
@@ -57,10 +58,6 @@ pub async fn list(_env: &Gc<Env>, args: Vec<Gc<Value>>) -> Result<Gc<Value>, Run
 }
 
 #[builtin(cons)]
-pub async fn cons(
-    _env: &Gc<Env>,
-    car: &Gc<Value>,
-    cdr: &Gc<Value>,
-) -> Result<Gc<Value>, RuntimeError> {
+pub async fn cons(_env: Env, car: &Gc<Value>, cdr: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> {
     Ok(Gc::new(Value::Pair(car.clone(), cdr.clone())))
 }

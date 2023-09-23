@@ -1,72 +1,16 @@
 use crate::{
-    eval::{Env, Eval, Value},
+    env::{Env, LexicalContour},
+    eval::{Eval, Value},
     expand::SyntaxRule,
     gc::Gc,
     num::Number,
+    syntax::{Identifier, Syntax},
 };
 use std::{
     fmt,
     hash::{Hash, Hasher},
+    sync::Arc,
 };
-
-#[derive(Clone)]
-pub struct Ident {
-    pub hygiene: Option<Gc<Env>>,
-    pub sym: String,
-}
-
-impl Ident {
-    pub fn new(sym: &str) -> Self {
-        Self {
-            hygiene: None,
-            sym: sym.to_string(),
-        }
-    }
-
-    pub fn with_hygiene(sym: &str, hygiene: &Gc<Env>) -> Self {
-        Self {
-            hygiene: Some(hygiene.clone()),
-            sym: sym.to_string(),
-        }
-    }
-}
-
-impl fmt::Debug for Ident {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.hygiene.is_some() {
-            write!(f, "<macro>::{}", self.sym)
-        } else {
-            write!(f, "{}", self.sym)
-        }
-    }
-}
-
-impl Hash for Ident {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.hygiene.as_ref().map(Gc::as_ptr).hash(state);
-        self.sym.hash(state);
-    }
-}
-
-impl PartialEq for Ident {
-    fn eq(&self, rhs: &Ident) -> bool {
-        self.hygiene.as_ref().map(Gc::as_ptr) == rhs.hygiene.as_ref().map(Gc::as_ptr)
-            && self.sym == rhs.sym
-    }
-}
-
-impl PartialEq<str> for Ident {
-    fn eq(&self, rhs: &str) -> bool {
-        self.sym == rhs
-    }
-}
-
-impl Eq for Ident {}
-
-#[derive(Clone)]
-pub struct Ref {
-    pub val: Gc<Value>,
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ByteVector(pub Vec<u8>);
@@ -86,8 +30,9 @@ pub struct Quote {
 }
 
 #[derive(Clone)]
-pub struct Syntax {
-    pub syn: crate::syntax::Syntax,
+pub struct SyntaxQuote {
+    pub syn: Syntax,
+    pub env: Env,
 }
 
 #[derive(Clone)]
@@ -98,14 +43,14 @@ pub struct Call {
 
 #[derive(Clone)]
 pub struct DefineFunc {
-    pub name: Ident,
+    pub name: Identifier,
     pub args: Formals,
     pub body: Body,
 }
 
 #[derive(Clone)]
 pub struct DefineVar {
-    pub name: Ident,
+    pub name: Identifier,
     pub val: Box<dyn Eval>,
 }
 
@@ -117,7 +62,7 @@ pub enum Define {
 
 #[derive(Clone)]
 pub struct DefineSyntax {
-    pub name: Ident,
+    pub name: Identifier,
     pub rules: Vec<SyntaxRule>,
 }
 
@@ -129,12 +74,15 @@ pub struct Lambda {
 
 #[derive(Debug, Clone)]
 pub enum Formals {
-    FixedArgs(Vec<Ident>),
-    VarArgs { fixed: Vec<Ident>, remaining: Ident },
+    FixedArgs(Vec<Identifier>),
+    VarArgs {
+        fixed: Vec<Identifier>,
+        remaining: Identifier,
+    },
 }
 
 impl Formals {
-    pub fn to_args_and_remaining(&self) -> (Vec<Ident>, Option<Ident>) {
+    pub fn to_args_and_remaining(&self) -> (Vec<Identifier>, Option<Identifier>) {
         match self {
             Self::VarArgs { fixed, remaining } => (fixed.clone(), Some(remaining.clone())),
             Self::FixedArgs(args) => (args.clone(), None),
@@ -144,24 +92,25 @@ impl Formals {
 
 #[derive(Clone)]
 pub struct Body {
-    pub exprs: Vec<Box<dyn Eval>>,
+    pub exprs: Vec<Syntax>,
 }
 
 impl Body {
-    pub fn new(exprs: Vec<Box<dyn Eval>>) -> Self {
+    pub fn new(exprs: Vec<Syntax>) -> Self {
         Self { exprs }
     }
 }
 
 #[derive(Clone)]
 pub struct Let {
-    pub bindings: Vec<(Ident, Box<dyn Eval>)>,
+    pub scope: Gc<LexicalContour>,
+    pub bindings: Vec<(Identifier, Box<dyn Eval>)>,
     pub body: Body,
 }
 
 #[derive(Clone)]
 pub struct Set {
-    pub var: Ident,
+    pub var: Identifier,
     pub val: Box<dyn Eval>,
 }
 
