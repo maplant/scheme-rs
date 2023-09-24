@@ -192,3 +192,9 @@ impl<T: Trace> Trace for Vec<T> {
         }
     }
 }
+
+pub trait Intern {
+    fn intern(&self) -> Option<*const Self> {
+        None
+    }
+}

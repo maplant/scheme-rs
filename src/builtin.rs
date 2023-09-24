@@ -1,9 +1,10 @@
 use futures::future::BoxFuture;
 
 use crate::{
-    ast::Ident,
-    eval::{Env, ExternalFn, RuntimeError, Value},
+    env::{Env, LexicalContour},
+    eval::{ExternalFn, RuntimeError, Value},
     gc::Gc,
+    syntax::Identifier,
 };
 
 type ExprFuture = BoxFuture<'static, Result<Gc<Value>, RuntimeError>>;
@@ -12,7 +13,7 @@ pub struct Builtin {
     pub name: &'static str,
     num_args: usize,
     variadic: bool,
-    wrapper: fn(Gc<Env>, Vec<Gc<Value>>) -> ExprFuture,
+    wrapper: fn(Env, Vec<Gc<Value>>) -> ExprFuture,
 }
 
 impl Builtin {
@@ -20,7 +21,7 @@ impl Builtin {
         name: &'static str,
         num_args: usize,
         variadic: bool,
-        wrapper: fn(Gc<Env>, Vec<Gc<Value>>) -> ExprFuture,
+        wrapper: fn(Env, Vec<Gc<Value>>) -> ExprFuture,
     ) -> Self {
         Self {
             name,
@@ -30,9 +31,9 @@ impl Builtin {
         }
     }
 
-    pub fn install(&self, into: &mut Env) {
-        into.define(
-            &Ident::new_free(self.name),
+    pub fn install(&self, into: &mut LexicalContour) {
+        into.def_var(
+            &Identifier::new(self.name.to_string()),
             Gc::new(Value::from(ExternalFn {
                 num_args: self.num_args,
                 variadic: self.variadic,

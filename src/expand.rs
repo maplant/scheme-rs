@@ -1,25 +1,22 @@
+use futures::future::BoxFuture;
+
 use crate::{
-    ast::{Ident, Literal},
-    eval::Env,
-    gc::Gc,
-    lex::Span,
-    sexpr::SExpr,
+    ast::Literal,
+    env::Env,
+    syntax::{Identifier, Mark, Span, Syntax},
 };
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone)]
 pub struct Transformer {
-    pub env: Gc<Env>,
+    pub macro_env: Env,
     pub rules: Vec<SyntaxRule>,
 }
 
 impl Transformer {
-    pub fn expand<'a>(&self, expr: &SExpr<'a>, binds: Arc<Binds>) -> Option<SExpr<'a>> {
+    pub async fn expand(&self, curr_mark: Mark, expr: &Syntax, env: &Env) -> Option<Syntax> {
         for rule in &self.rules {
-            if let Some(expansion) = rule.expand(expr, binds.clone(), &self.env) {
+            if let Some(expansion) = rule.expand(curr_mark, expr, env).await {
                 return Some(expansion);
             }
         }
@@ -27,23 +24,24 @@ impl Transformer {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SyntaxRule {
     pub pattern: Pattern,
     pub template: Template,
 }
 
 impl SyntaxRule {
-    fn expand<'a>(&self, expr: &SExpr<'a>, binds: Arc<Binds>, env: &Gc<Env>) -> Option<SExpr<'a>> {
+    async fn expand(&self, curr_mark: Mark, expr: &Syntax, env: &Env) -> Option<Syntax> {
         let mut var_binds = HashMap::new();
         let curr_span = expr.span().clone();
         self.pattern
-            .matches(expr, binds, &mut var_binds)
-            .then(|| self.template.execute(env, &var_binds, curr_span))
+            .matches(expr, env, &mut var_binds)
+            .await
+            .then(|| self.template.execute(curr_mark, &var_binds, curr_span))
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Pattern {
     Nil,
     Underscore,
@@ -51,46 +49,58 @@ pub enum Pattern {
     List(Vec<Pattern>),
     Vector(Vec<Pattern>),
     Variable(String),
+    MacroName(String),
     Keyword(String),
     Literal(Literal),
 }
 
 #[derive(Debug)]
-enum SExprOrMany<'a> {
-    SExpr(SExpr<'a>),
-    Many(Vec<SExpr<'a>>),
+enum SyntaxOrMany {
+    Syntax(Syntax),
+    Many(Vec<Syntax>),
 }
 
 impl Pattern {
-    pub fn compile(expr: &SExpr, keywords: &HashSet<String>) -> Self {
+    pub fn compile(expr: &Syntax, macro_name: &str, keywords: &HashSet<String>) -> Self {
         match expr {
-            SExpr::Nil { .. } => Self::Nil,
-            SExpr::Identifier { ident, .. } if ident.sym == "_" => Self::Underscore,
-            SExpr::Identifier { ident, .. } if keywords.contains(&ident.sym) => {
-                Self::Keyword(ident.sym.clone())
+            Syntax::Nil { .. } => Self::Nil,
+            Syntax::Identifier { ident, .. } if ident.name == "_" => Self::Underscore,
+            Syntax::Identifier { ident, .. } if ident.name == macro_name => {
+                Self::MacroName(ident.name.clone())
             }
-            SExpr::Identifier { ident, .. } => Self::Variable(ident.sym.clone()),
-            SExpr::List { list, .. } => Self::List(Self::compile_slice(list, keywords)),
-            SExpr::Vector { vector, .. } => Self::Vector(Self::compile_slice(vector, keywords)),
-            SExpr::Literal { literal, .. } => Self::Literal(literal.clone()),
+            Syntax::Identifier { ident, .. } if keywords.contains(&ident.name) => {
+                Self::Keyword(ident.name.clone())
+            }
+            Syntax::Identifier { ident, .. } => Self::Variable(ident.name.clone()),
+            Syntax::List { list, .. } => {
+                Self::List(Self::compile_slice(list, macro_name, keywords))
+            }
+            Syntax::Vector { vector, .. } => {
+                Self::Vector(Self::compile_slice(vector, macro_name, keywords))
+            }
+            Syntax::Literal { literal, .. } => Self::Literal(literal.clone()),
         }
     }
 
-    fn compile_slice(mut expr: &[SExpr<'_>], keywords: &HashSet<String>) -> Vec<Self> {
+    fn compile_slice(
+        mut expr: &[Syntax],
+        macro_name: &str,
+        keywords: &HashSet<String>,
+    ) -> Vec<Self> {
         let mut output = Vec::new();
         loop {
             match expr {
                 [] => break,
-                [SExpr::Identifier { ident: var, .. }, SExpr::Identifier {
+                [Syntax::Identifier { ident: var, .. }, Syntax::Identifier {
                     ident: ellipsis, ..
                 }, tail @ ..]
-                    if ellipsis.sym == "..." =>
+                    if ellipsis.name == "..." =>
                 {
-                    output.push(Self::Ellipsis(var.sym.clone()));
+                    output.push(Self::Ellipsis(var.name.clone()));
                     expr = tail;
                 }
                 [head, tail @ ..] => {
-                    output.push(Self::compile(head, keywords));
+                    output.push(Self::compile(head, macro_name, keywords));
                     expr = tail;
                 }
             }
@@ -99,37 +109,42 @@ impl Pattern {
     }
 
     fn matches<'a>(
-        &self,
-        expr: &SExpr<'a>,
-        binds: Arc<Binds>,
-        var_binds: &mut HashMap<String, SExprOrMany<'a>>,
-    ) -> bool {
-        match self {
-            Self::Underscore => !expr.is_nil(),
-            Self::Variable(ref name) => {
-                var_binds.insert(name.clone(), SExprOrMany::SExpr(expr.clone()));
-                true
+        &'a self,
+        expr: &'a Syntax,
+        env: &'a Env,
+        var_binds: &'a mut HashMap<String, SyntaxOrMany>,
+    ) -> BoxFuture<'a, bool> {
+        Box::pin(async move {
+            match self {
+                Self::Underscore => !expr.is_nil(),
+                Self::Variable(ref name) => {
+                    var_binds.insert(name.clone(), SyntaxOrMany::Syntax(expr.clone()));
+                    true
+                }
+                Self::MacroName(ref lhs) => {
+                    matches!(expr, Syntax::Identifier { ident: rhs, .. } if lhs == &rhs.name)
+                }
+                Self::Keyword(ref lhs) => {
+                    matches!(expr, Syntax::Identifier { ident: rhs, .. } if lhs == &rhs.name && !env.is_bound(rhs).await)
+                }
+                Self::List(list) => match_slice(list, expr, env, var_binds).await,
+                Self::Vector(vec) => match_slice(vec, expr, env, var_binds).await,
+                // We shouldn't ever see this outside of lists
+                Self::Nil => expr.is_nil(),
+                _ => todo!(),
             }
-            Self::Keyword(ref lhs) => {
-                matches!(expr, SExpr::Identifier { ident: rhs, .. } if lhs == &rhs.sym && !binds.is_bound(&rhs.sym))
-            }
-            Self::List(list) => match_slice(list, expr, binds, var_binds),
-            Self::Vector(vec) => match_slice(vec, expr, binds, var_binds),
-            // We shouldn't ever see this outside of lists
-            Self::Nil => expr.is_nil(),
-            _ => todo!(),
-        }
+        })
     }
 }
 
-fn match_slice<'a>(
+async fn match_slice(
     pattern: &[Pattern],
-    expr: &SExpr<'a>,
-    binds: Arc<Binds>,
-    var_binds: &mut HashMap<String, SExprOrMany<'a>>,
+    expr: &Syntax,
+    env: &Env,
+    var_binds: &mut HashMap<String, SyntaxOrMany>,
 ) -> bool {
     let mut expr_iter = match expr {
-        SExpr::List { list, .. } => list.iter().peekable(),
+        Syntax::List { list, .. } => list.iter().peekable(),
         _ => return false,
     };
     let mut pattern_iter = pattern.iter().peekable();
@@ -141,7 +156,7 @@ fn match_slice<'a>(
                 let rev_pattern_iter = pattern_iter.rev();
                 for pattern in rev_pattern_iter {
                     if let Some(expr) = rev_expr_iter.next() {
-                        if !pattern.matches(expr, binds.clone(), var_binds) {
+                        if !pattern.matches(expr, env, var_binds).await {
                             return false;
                         }
                     }
@@ -151,10 +166,10 @@ fn match_slice<'a>(
                 expr_iter.cloned().collect()
             };
             // Gobble up the rest
-            var_binds.insert(name.clone(), SExprOrMany::Many(exprs));
+            var_binds.insert(name.clone(), SyntaxOrMany::Many(exprs));
             return true;
         } else if let Some(next_expr) = expr_iter.next() {
-            if !item.matches(next_expr, binds.clone(), var_binds) {
+            if !item.matches(next_expr, env, var_binds).await {
                 return false;
             }
         } else {
@@ -171,32 +186,32 @@ pub enum Template {
     Ellipsis(String),
     List(Vec<Template>),
     Vector(Vec<Template>),
-    Identifier(String),
+    Identifier(Identifier),
     Literal(Literal),
 }
 
 impl Template {
-    pub fn compile(expr: &SExpr) -> Self {
+    pub fn compile(expr: &Syntax) -> Self {
         match expr {
-            SExpr::Nil { .. } => Self::Nil,
-            SExpr::List { list, .. } => Self::List(Self::compile_slice(list)),
-            SExpr::Vector { vector, .. } => Self::Vector(Self::compile_slice(vector)),
-            SExpr::Literal { literal, .. } => Self::Literal(literal.clone()),
-            SExpr::Identifier { ident, .. } => Self::Identifier(ident.sym.clone()),
+            Syntax::Nil { .. } => Self::Nil,
+            Syntax::List { list, .. } => Self::List(Self::compile_slice(list)),
+            Syntax::Vector { vector, .. } => Self::Vector(Self::compile_slice(vector)),
+            Syntax::Literal { literal, .. } => Self::Literal(literal.clone()),
+            Syntax::Identifier { ident, .. } => Self::Identifier(ident.clone()),
         }
     }
 
-    fn compile_slice(mut expr: &[SExpr<'_>]) -> Vec<Self> {
+    fn compile_slice(mut expr: &[Syntax]) -> Vec<Self> {
         let mut output = Vec::new();
         loop {
             match expr {
                 [] => break,
-                [SExpr::Identifier { ident: var, .. }, SExpr::Identifier {
+                [Syntax::Identifier { ident: var, .. }, Syntax::Identifier {
                     ident: ellipsis, ..
                 }, tail @ ..]
-                    if ellipsis.sym == "..." =>
+                    if ellipsis.name == "..." =>
                 {
-                    output.push(Self::Ellipsis(var.sym.clone()));
+                    output.push(Self::Ellipsis(var.name.clone()));
                     expr = tail;
                 }
                 [head, tail @ ..] => {
@@ -208,85 +223,65 @@ impl Template {
         output
     }
 
-    fn execute<'a>(
+    fn execute(
         &self,
-        macro_env: &Gc<Env>,
-        var_binds: &HashMap<String, SExprOrMany<'a>>,
-        curr_span: Span<'a>,
-    ) -> SExpr<'a> {
+        curr_mark: Mark,
+        var_binds: &HashMap<String, SyntaxOrMany>,
+        curr_span: Span,
+    ) -> Syntax {
         match self {
-            Self::Nil => SExpr::new_nil(curr_span),
-            Self::List(list) => SExpr::new_list(
-                execute_slice(list, macro_env, var_binds, curr_span.clone()),
+            Self::Nil => Syntax::new_nil(curr_span),
+            Self::List(list) => Syntax::new_list(
+                execute_slice(list, curr_mark, var_binds, curr_span.clone()),
                 curr_span,
             ),
-            Self::Vector(vec) => SExpr::new_vector(
-                execute_slice(vec, macro_env, var_binds, curr_span.clone()),
+            Self::Vector(vec) => Syntax::new_vector(
+                execute_slice(vec, curr_mark, var_binds, curr_span.clone()),
                 curr_span,
             ),
-            Self::Identifier(ident) => match var_binds.get(ident) {
-                Some(SExprOrMany::SExpr(expr)) => expr.clone(),
-                Some(SExprOrMany::Many(exprs)) => SExpr::new_list(exprs.clone(), curr_span),
-                None => SExpr::new_identifier(Ident::new_macro(ident, macro_env), curr_span),
+            Self::Identifier(ident) => match var_binds.get(&ident.name) {
+                // Syntax produced by the macro is marked. This will distinguish identifiers
+                // that are produced by the macro and those that come from input, allowing
+                // us to properly bind both.
+                None => {
+                    let mut syntax = Syntax::Identifier {
+                        ident: ident.clone(),
+                        span: curr_span,
+                    };
+                    syntax.mark(curr_mark);
+                    syntax
+                }
+                Some(SyntaxOrMany::Syntax(expr)) => expr.clone(),
+                Some(SyntaxOrMany::Many(exprs)) => Syntax::new_list(exprs.clone(), curr_span),
             },
-            Self::Literal(literal) => SExpr::new_literal(literal.clone(), curr_span),
+            Self::Literal(literal) => Syntax::new_literal(literal.clone(), curr_span),
             _ => unreachable!(),
         }
     }
 }
 
-fn execute_slice<'a>(
+fn execute_slice(
     items: &[Template],
-    macro_env: &Gc<Env>,
-    var_binds: &HashMap<String, SExprOrMany<'a>>,
-    curr_span: Span<'a>,
-) -> Vec<SExpr<'a>> {
+    curr_mark: Mark,
+    var_binds: &HashMap<String, SyntaxOrMany>,
+    curr_span: Span,
+) -> Vec<Syntax> {
     let mut output = Vec::new();
     for item in items {
-        match dbg!(item) {
+        match item {
             Template::Ellipsis(name) => match var_binds.get(name).unwrap() {
-                SExprOrMany::SExpr(expr) => output.push(expr.clone()),
-                SExprOrMany::Many(exprs) => output.extend(exprs.clone()),
+                SyntaxOrMany::Syntax(expr) => output.push(expr.clone()),
+                SyntaxOrMany::Many(exprs) => output.extend(exprs.clone()),
             },
-            _ => output.push(item.execute(macro_env, var_binds, curr_span.clone())),
+            Template::Nil => {
+                if let Some(Syntax::Nil { .. }) = output.last() {
+                    continue;
+                } else {
+                    output.push(Syntax::new_nil(curr_span.clone()));
+                }
+            }
+            _ => output.push(item.execute(curr_mark, var_binds, curr_span.clone())),
         }
     }
     output
-}
-
-pub struct Binds {
-    up: Option<Arc<Binds>>,
-    binds: HashSet<String>,
-}
-
-impl Binds {
-    pub async fn from_global(_env: &Gc<Env>) -> Arc<Self> {
-        Arc::new(Self {
-            up: None,
-            binds: HashSet::default(), // todo!("Need to fetch binds from current environment"),
-        })
-    }
-
-    pub fn new_local(up: &Arc<Binds>) -> Self {
-        Self {
-            up: Some(up.clone()),
-            binds: HashSet::default(),
-        }
-    }
-}
-
-impl Binds {
-    pub fn is_bound(&self, name: &str) -> bool {
-        if self.binds.contains(name) {
-            true
-        } else if let Some(ref up) = self.up {
-            up.is_bound(name)
-        } else {
-            false
-        }
-    }
-
-    pub fn bind(&mut self, name: &str) {
-        self.binds.insert(name.to_string());
-    }
 }

@@ -13,6 +13,8 @@ nom = "7"
 nom_locate = "4"
 proc-macros = { path = "proc-macros" }
 rug = "1"
+rand = "0.8"
 thiserror = "1"
 tokio = { version = "1", features = ["full"] }
 unicode_categories = "0.1"
+reedline = "0.23"
