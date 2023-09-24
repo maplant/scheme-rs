@@ -231,7 +231,7 @@ impl Procedure {
                 return Err(RuntimeError::TooManyArguments);
             }
 
-            let ret = self.body.tail_eval(&Env::from(env.clone())).await?;
+            let ret = proc.body.tail_eval(&Env::from(env.clone())).await?;
             match ret {
                 ValueOrPreparedCall::Value(value) => return Ok(value),
                 ValueOrPreparedCall::PreparedCall(prepared) => {

@@ -85,7 +85,7 @@ impl Formals {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Body {
     pub exprs: Vec<Syntax>,
 }
