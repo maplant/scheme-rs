@@ -1,12 +1,14 @@
 use reedline::{Reedline, Signal, ValidationResult, Validator};
-use scheme_rs::{env::Env, gc::Gc, lex::Token, parse::ParseError, syntax::ParsedSyntax};
+use scheme_rs::{env::Env, lex::Token, parse::ParseError, syntax::ParsedSyntax};
 use std::{
     borrow::Cow,
     sync::{Arc, Mutex},
 };
 
+type ParsedResult = Option<Result<Vec<ParsedSyntax>, String>>;
+
 struct InputParser {
-    parsed: Arc<Mutex<Option<Result<Vec<ParsedSyntax>, String>>>>,
+    parsed: Arc<Mutex<ParsedResult>>,
 }
 
 impl Validator for InputParser {
@@ -68,7 +70,6 @@ async fn main() {
                 return;
             }
         }
-        // let parsed_lock = parsed.lock().unwrap();
         let Some(parsed) = parsed.lock().unwrap().take() else {
             continue;
         };

@@ -1,6 +1,5 @@
 use crate::{
     ast::{self, Body},
-    builtin::Builtin,
     compile::CompileError,
     env::Env,
     gc::{Gc, Trace},
@@ -9,7 +8,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use futures::future::{BoxFuture, Shared};
-use std::{borrow::Cow, collections::HashMap, fmt, sync::Arc};
+use std::{borrow::Cow, fmt};
 
 #[derive(Clone)]
 pub enum Value {
@@ -425,80 +424,9 @@ impl Eval for ast::DefineSyntax {
     }
 }
 
-/*
-// TODO: Get rid of this implementation and use one that has a location
-#[async_trait]
-impl Eval for ast::Ident {
-    async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
-        let result = env.read().await.fetch(self).await;
-        // This should very rarely occur, but it is possible in certain circumstances
-        // where macros refer to items in the global scope that have yet to be defined
-        if result.is_none() && self.hygiene.is_some() {
-            self.hygiene
-                .as_ref()
-                .unwrap()
-                .read()
-                .await
-                .fetch(&Ident::new(&self.sym))
-                .await
-        } else {
-            result
-        }
-        .ok_or_else(|| RuntimeError::UndefinedVariable(self.clone()))
-    }
-}
-
-#[async_trait]
-impl Eval for ast::Ref {
-    async fn eval(&self, _env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
-        Ok(self.val.clone())
-    }
-}
-
-#[async_trait]
-impl Eval for ast::Lambda {
-    async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
-        // TODO: Optimize the AST with smart pointers to prevent constantly
-        // cloning.
-        let (args, remaining) = self.args.to_args_and_remaining();
-        Ok(Gc::new(Value::Procedure(Procedure {
-            up: env.clone(),
-            args,
-            remaining,
-            body: self.body.clone(),
-        })))
-    }
-}
-
-#[async_trait]
-impl Eval for ast::Let {
-    async fn tail_eval(&self, env: &Gc<Env>) -> Result<ValueOrPreparedCall, RuntimeError> {
-        let mut new_scope = Env::new(env);
-        for (ident, expr) in &self.bindings {
-            new_scope.define(ident, expr.eval(env).await?);
-        }
-        self.body.tail_eval(&Gc::new(new_scope)).await
-    }
-}
-
-#[async_trait]
-impl Eval for ast::Set {
-    async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
-        // TODO: Add try_unwrap to GC to avoid the clone of the inner value
-        *env.read()
-            .await
-            .fetch(&self.var)
-            .await
-            .ok_or_else(|| RuntimeError::UndefinedVariable(self.var.clone()))?
-            .write()
-            .await = self.val.eval(env).await?.read().await.clone();
-        Ok(Gc::new(Value::Nil))
-    }
-}
-
 #[async_trait]
 impl Eval for ast::And {
-    async fn tail_eval(&self, env: &Gc<Env>) -> Result<ValueOrPreparedCall, RuntimeError> {
+    async fn tail_eval(&self, env: &Env) -> Result<ValueOrPreparedCall, RuntimeError> {
         let Some((last, args)) = self.args.split_last() else {
             return Ok(ValueOrPreparedCall::Value(Gc::new(Value::Boolean(true))));
         };
@@ -516,7 +444,7 @@ impl Eval for ast::And {
 
 #[async_trait]
 impl Eval for ast::Or {
-    async fn tail_eval(&self, env: &Gc<Env>) -> Result<ValueOrPreparedCall, RuntimeError> {
+    async fn tail_eval(&self, env: &Env) -> Result<ValueOrPreparedCall, RuntimeError> {
         let Some((last, args)) = self.args.split_last() else {
             return Ok(ValueOrPreparedCall::Value(Gc::new(Value::Boolean(false))));
         };
@@ -532,25 +460,8 @@ impl Eval for ast::Or {
 }
 
 #[async_trait]
-impl Eval for ast::Literal {
-    async fn eval(&self, _env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
-        Ok(Gc::new(Value::from_literal(self)))
-    }
-}
-
-#[async_trait]
-impl Eval for ast::Syntax {
-    async fn eval(&self, _env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
-        Ok(Gc::new(Value::Syntax {
-            syntax: self.syn.clone(),
-            binds: self.binds.clone(),
-        }))
-    }
-}
-
-#[async_trait]
 impl Eval for ast::Vector {
-    async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
+    async fn eval(&self, env: &Env) -> Result<Gc<Value>, RuntimeError> {
         let mut output = Vec::new();
         for item in &self.vals {
             output.push(item.eval(env).await?);
@@ -561,8 +472,45 @@ impl Eval for ast::Vector {
 
 #[async_trait]
 impl Eval for ast::Nil {
-    async fn eval(&self, _env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
+    async fn eval(&self, _env: &Env) -> Result<Gc<Value>, RuntimeError> {
         Ok(Gc::new(Value::Nil))
     }
 }
-*/
+
+#[async_trait]
+impl Eval for ast::Set {
+    async fn eval(&self, env: &Env) -> Result<Gc<Value>, RuntimeError> {
+        // TODO: Add try_unwrap to GC to avoid the clone of the inner value
+        *env.fetch_var(&self.var)
+            .await
+            .ok_or_else(|| RuntimeError::UndefinedVariable(self.var.clone()))?
+            .write()
+            .await = self.val.eval(env).await?.read().await.clone();
+        Ok(Gc::new(Value::Nil))
+    }
+}
+
+#[async_trait]
+impl Eval for ast::Lambda {
+    async fn eval(&self, env: &Env) -> Result<Gc<Value>, RuntimeError> {
+        // TODO: Optimize the AST with smart pointers to prevent constantly
+        // cloning.
+        let (args, remaining) = self.args.to_args_and_remaining();
+        Ok(Gc::new(Value::Procedure(Procedure {
+            up: env.clone(),
+            args,
+            remaining,
+            body: self.body.clone(),
+        })))
+    }
+}
+
+#[async_trait]
+impl Eval for ast::SyntaxQuote {
+    async fn eval(&self, _env: &Env) -> Result<Gc<Value>, RuntimeError> {
+        Ok(Gc::new(Value::Syntax {
+            syntax: self.syn.clone(),
+            env: self.env.clone(),
+        }))
+    }
+}

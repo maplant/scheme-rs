@@ -6,11 +6,6 @@ use crate::{
     num::Number,
     syntax::{Identifier, Syntax},
 };
-use std::{
-    fmt,
-    hash::{Hash, Hasher},
-    sync::Arc,
-};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ByteVector(pub Vec<u8>);

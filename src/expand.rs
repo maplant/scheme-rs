@@ -3,13 +3,9 @@ use futures::future::BoxFuture;
 use crate::{
     ast::Literal,
     env::Env,
-    gc::Gc,
     syntax::{Identifier, Mark, Span, Syntax},
 };
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone)]
 pub struct Transformer {
@@ -129,7 +125,7 @@ impl Pattern {
                     matches!(expr, Syntax::Identifier { ident: rhs, .. } if lhs == &rhs.name)
                 }
                 Self::Keyword(ref lhs) => {
-                    matches!(expr, Syntax::Identifier { ident: rhs, .. } if lhs == &rhs.name && !env.is_bound(&rhs).await)
+                    matches!(expr, Syntax::Identifier { ident: rhs, .. } if lhs == &rhs.name && !env.is_bound(rhs).await)
                 }
                 Self::List(list) => match_slice(list, expr, env, var_binds).await,
                 Self::Vector(vec) => match_slice(vec, expr, env, var_binds).await,
@@ -277,6 +273,13 @@ fn execute_slice(
                 SyntaxOrMany::Syntax(expr) => output.push(expr.clone()),
                 SyntaxOrMany::Many(exprs) => output.extend(exprs.clone()),
             },
+            Template::Nil => {
+                if let Some(Syntax::Nil { .. }) = output.last() {
+                    continue;
+                } else {
+                    output.push(Syntax::new_nil(curr_span.clone()));
+                }
+            }
             _ => output.push(item.execute(curr_mark, var_binds, curr_span.clone())),
         }
     }
