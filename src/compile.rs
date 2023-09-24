@@ -378,7 +378,7 @@ impl Compile for ast::DefineSyntax {
                     [Syntax::Identifier { ident, .. }, Syntax::List {
                         list: keywords_list,
                         ..
-                    }, Syntax::List { list: rules, .. }, Syntax::Nil { .. }]
+                    }, rules @ ..]
                         if ident == "syntax-rules" =>
                     {
                         let mut keywords = HashSet::default();
@@ -394,7 +394,7 @@ impl Compile for ast::DefineSyntax {
                         }
                         (keywords, &rules[..])
                     }
-                    [Syntax::Identifier { ident, .. }, Syntax::Nil { .. }, Syntax::List { list: rules, .. }, Syntax::Nil { .. }]
+                    [Syntax::Identifier { ident, .. }, Syntax::Nil { .. }, rules @ ..]
                         if ident == "syntax-rules" =>
                     {
                         (HashSet::default(), &rules[..])
@@ -405,13 +405,16 @@ impl Compile for ast::DefineSyntax {
                 loop {
                     match rules {
                         [Syntax::Nil { .. }] => break,
-                        [pattern, template, tail @ ..] => {
-                            syntax_rules.push(SyntaxRule {
-                                pattern: Pattern::compile(pattern, &macro_name.name, &keywords),
-                                template: Template::compile(template),
-                            });
-                            rules = tail;
-                        }
+                        [Syntax::List { list, .. }, tail @ ..] => match &list[..] {
+                            [pattern, template, Syntax::Nil { .. }] => {
+                                syntax_rules.push(SyntaxRule {
+                                    pattern: Pattern::compile(pattern, &macro_name.name, &keywords),
+                                    template: Template::compile(template),
+                                });
+                                rules = tail;
+                            }
+                            _ => return Err(CompileDefineSyntaxError::BadForm(span.clone())),
+                        },
                         _ => return Err(CompileDefineSyntaxError::BadForm(span.clone())),
                     }
                 }
