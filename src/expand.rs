@@ -28,7 +28,7 @@ impl Transformer {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SyntaxRule {
     pub pattern: Pattern,
     pub template: Template,
@@ -45,7 +45,7 @@ impl SyntaxRule {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Pattern {
     Nil,
     Underscore,
@@ -53,6 +53,7 @@ pub enum Pattern {
     List(Vec<Pattern>),
     Vector(Vec<Pattern>),
     Variable(String),
+    MacroName(String),
     Keyword(String),
     Literal(Literal),
 }
@@ -64,21 +65,32 @@ enum SyntaxOrMany {
 }
 
 impl Pattern {
-    pub fn compile(expr: &Syntax, keywords: &HashSet<String>) -> Self {
+    pub fn compile(expr: &Syntax, macro_name: &str, keywords: &HashSet<String>) -> Self {
         match expr {
             Syntax::Nil { .. } => Self::Nil,
             Syntax::Identifier { ident, .. } if ident.name == "_" => Self::Underscore,
+            Syntax::Identifier { ident, .. } if ident.name == macro_name => {
+                Self::MacroName(ident.name.clone())
+            }
             Syntax::Identifier { ident, .. } if keywords.contains(&ident.name) => {
                 Self::Keyword(ident.name.clone())
             }
             Syntax::Identifier { ident, .. } => Self::Variable(ident.name.clone()),
-            Syntax::List { list, .. } => Self::List(Self::compile_slice(list, keywords)),
-            Syntax::Vector { vector, .. } => Self::Vector(Self::compile_slice(vector, keywords)),
+            Syntax::List { list, .. } => {
+                Self::List(Self::compile_slice(list, macro_name, keywords))
+            }
+            Syntax::Vector { vector, .. } => {
+                Self::Vector(Self::compile_slice(vector, macro_name, keywords))
+            }
             Syntax::Literal { literal, .. } => Self::Literal(literal.clone()),
         }
     }
 
-    fn compile_slice(mut expr: &[Syntax], keywords: &HashSet<String>) -> Vec<Self> {
+    fn compile_slice(
+        mut expr: &[Syntax],
+        macro_name: &str,
+        keywords: &HashSet<String>,
+    ) -> Vec<Self> {
         let mut output = Vec::new();
         loop {
             match expr {
@@ -92,7 +104,7 @@ impl Pattern {
                     expr = tail;
                 }
                 [head, tail @ ..] => {
-                    output.push(Self::compile(head, keywords));
+                    output.push(Self::compile(head, macro_name, keywords));
                     expr = tail;
                 }
             }
@@ -112,6 +124,9 @@ impl Pattern {
                 Self::Variable(ref name) => {
                     var_binds.insert(name.clone(), SyntaxOrMany::Syntax(expr.clone()));
                     true
+                }
+                Self::MacroName(ref lhs) => {
+                    matches!(expr, Syntax::Identifier { ident: rhs, .. } if lhs == &rhs.name)
                 }
                 Self::Keyword(ref lhs) => {
                     matches!(expr, Syntax::Identifier { ident: rhs, .. } if lhs == &rhs.name && !env.is_bound(&rhs).await)
@@ -233,7 +248,10 @@ impl Template {
                 // that are produced by the macro and those that come from input, allowing
                 // us to properly bind both.
                 None => {
-                    let mut syntax = Syntax::new_identifier(&ident.name, curr_span);
+                    let mut syntax = Syntax::Identifier {
+                        ident: ident.clone(),
+                        span: curr_span,
+                    };
                     syntax.mark(curr_mark);
                     syntax
                 }

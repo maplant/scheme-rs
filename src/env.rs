@@ -94,7 +94,9 @@ impl ExpansionContext {
             // If the ident contains this mark, it comes from the macro and
             // we must fetch from the macro's environment.
             if ident.marks.contains(&self.mark) {
-                self.macro_env.fetch_var(ident).await
+                let mut stripped = ident.clone();
+                stripped.mark(self.mark);
+                self.macro_env.fetch_var(&stripped).await
             } else {
                 self.up.fetch_var(ident).await
             }
@@ -104,7 +106,9 @@ impl ExpansionContext {
     pub fn fetch_macro<'a>(&'a self, ident: &'a Identifier) -> BoxFuture<'a, Option<Gc<Value>>> {
         Box::pin(async move {
             if ident.marks.contains(&self.mark) {
-                self.macro_env.fetch_macro(ident).await
+                let mut stripped = ident.clone();
+                stripped.mark(self.mark);
+                self.macro_env.fetch_macro(&stripped).await
             } else {
                 self.up.fetch_macro(ident).await
             }
@@ -176,6 +180,28 @@ impl Env {
             mark,
             macro_env,
         }
+    }
+
+    pub fn def_var<'a>(&'a self, ident: &'a Identifier, value: Gc<Value>) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            match self {
+                Self::Top => unreachable!(),
+                Self::Expansion(expansion) => expansion.read().await.up.def_var(ident, value).await,
+                Self::LexicalContour(contour) => contour.write().await.def_var(ident, value),
+            }
+        })
+    }
+
+    pub fn def_macro<'a>(&'a self, ident: &'a Identifier, value: Gc<Value>) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            match self {
+                Self::Top => unreachable!(),
+                Self::Expansion(expansion) => {
+                    expansion.read().await.up.def_macro(ident, value).await
+                }
+                Self::LexicalContour(contour) => contour.write().await.def_macro(ident, value),
+            }
+        })
     }
 
     fn unroot(&self) {

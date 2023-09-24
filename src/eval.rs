@@ -187,6 +187,13 @@ impl Eval for ast::Literal {
     }
 }
 
+#[async_trait]
+impl Eval for ast::Quote {
+    async fn eval(&self, _env: &Env) -> Result<Gc<Value>, RuntimeError> {
+        Ok(Gc::new(self.val.clone()))
+    }
+}
+
 #[derive(Clone)]
 pub struct Procedure {
     up: Env,
@@ -356,6 +363,68 @@ impl Eval for ast::Call {
     }
 }
 
+#[async_trait]
+impl Eval for ast::If {
+    async fn tail_eval(&self, env: &Env) -> Result<ValueOrPreparedCall, RuntimeError> {
+        if self.cond.eval(env).await?.read().await.is_true() {
+            self.success.tail_eval(env).await
+        } else if let Some(ref failure) = self.failure {
+            failure.tail_eval(env).await
+        } else {
+            Ok(ValueOrPreparedCall::Value(Gc::new(Value::Nil)))
+        }
+    }
+}
+
+#[async_trait]
+impl Eval for ast::DefineFunc {
+    async fn eval(&self, env: &Env) -> Result<Gc<Value>, RuntimeError> {
+        let (args, remaining) = self.args.to_args_and_remaining();
+        let func = Gc::new(Value::Procedure(Procedure {
+            up: env.clone(),
+            args,
+            remaining,
+            body: self.body.clone(),
+        }));
+        env.def_var(&self.name, func).await;
+        Ok(Gc::new(Value::Nil))
+    }
+}
+
+#[async_trait]
+impl Eval for ast::DefineVar {
+    async fn eval(&self, env: &Env) -> Result<Gc<Value>, RuntimeError> {
+        let val = self.val.eval(env).await?;
+        env.def_var(&self.name, val).await;
+        Ok(Gc::new(Value::Nil))
+    }
+}
+
+#[async_trait]
+impl Eval for ast::Define {
+    async fn eval(&self, env: &Env) -> Result<Gc<Value>, RuntimeError> {
+        match self {
+            ast::Define::DefineFunc(define_func) => define_func.eval(env).await,
+            ast::Define::DefineVar(define_var) => define_var.eval(env).await,
+        }
+    }
+}
+
+#[async_trait]
+impl Eval for ast::DefineSyntax {
+    async fn eval(&self, env: &Env) -> Result<Gc<Value>, RuntimeError> {
+        env.def_macro(
+            &self.name,
+            Gc::new(Value::Transformer(crate::expand::Transformer {
+                macro_env: env.clone(),
+                rules: self.rules.clone(),
+            })),
+        )
+        .await;
+        Ok(Gc::new(Value::Nil))
+    }
+}
+
 /*
 // TODO: Get rid of this implementation and use one that has a location
 #[async_trait]
@@ -428,68 +497,6 @@ impl Eval for ast::Set {
 }
 
 #[async_trait]
-impl Eval for ast::If {
-    async fn tail_eval(&self, env: &Gc<Env>) -> Result<ValueOrPreparedCall, RuntimeError> {
-        if self.cond.eval(env).await?.read().await.is_true() {
-            self.success.tail_eval(env).await
-        } else if let Some(ref failure) = self.failure {
-            failure.tail_eval(env).await
-        } else {
-            Ok(ValueOrPreparedCall::Value(Gc::new(Value::Nil)))
-        }
-    }
-}
-
-#[async_trait]
-impl Eval for ast::DefineFunc {
-    async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
-        let (args, remaining) = self.args.to_args_and_remaining();
-        let func = Gc::new(Value::Procedure(Procedure {
-            up: env.clone(),
-            args,
-            remaining,
-            body: self.body.clone(),
-        }));
-        env.write().await.define(&self.name, func);
-        Ok(Gc::new(Value::Nil))
-    }
-}
-
-#[async_trait]
-impl Eval for ast::DefineVar {
-    async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
-        let val = self.val.eval(env).await?;
-        env.write().await.define(&self.name, val);
-        Ok(Gc::new(Value::Nil))
-    }
-}
-
-#[async_trait]
-impl Eval for ast::Define {
-    async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
-        match self {
-            ast::Define::DefineFunc(define_func) => define_func.eval(env).await,
-            ast::Define::DefineVar(define_var) => define_var.eval(env).await,
-        }
-    }
-}
-
-#[async_trait]
-impl Eval for ast::DefineSyntax {
-    async fn eval(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
-        let macro_env = Gc::new(Env::new(env));
-        env.write().await.define(
-            &self.name,
-            Gc::new(Value::Transformer(crate::expand::Transformer {
-                env: macro_env,
-                rules: self.rules.clone(),
-            })),
-        );
-        Ok(Gc::new(Value::Nil))
-    }
-}
-
-#[async_trait]
 impl Eval for ast::And {
     async fn tail_eval(&self, env: &Gc<Env>) -> Result<ValueOrPreparedCall, RuntimeError> {
         let Some((last, args)) = self.args.split_last() else {
@@ -528,13 +535,6 @@ impl Eval for ast::Or {
 impl Eval for ast::Literal {
     async fn eval(&self, _env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
         Ok(Gc::new(Value::from_literal(self)))
-    }
-}
-
-#[async_trait]
-impl Eval for ast::Quote {
-    async fn eval(&self, _env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
-        Ok(Gc::new(self.val.clone()))
     }
 }
 

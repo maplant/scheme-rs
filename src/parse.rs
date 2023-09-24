@@ -160,8 +160,8 @@ fn list<'a>(
 
         match remaining {
             // Proper lists:
-            [end @ token!(Lexeme::RParen), tail @ ..] => {
-                output.push(Syntax::new_nil(end.span.clone()));
+            [token, tail @ ..] if token.lexeme == closing => {
+                output.push(Syntax::new_nil(token.span.clone()));
                 return Ok((tail, Syntax::new_list(output, span)));
             }
             [token!(Lexeme::Period), end @ token!(Lexeme::LParen), token!(Lexeme::RParen), token, tail @ ..]

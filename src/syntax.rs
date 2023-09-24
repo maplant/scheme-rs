@@ -83,12 +83,12 @@ impl Syntax {
     fn expand<'a>(&'a self, env: &'a Env) -> BoxFuture<'a, Expansion<'a>> {
         Box::pin(async move {
             match self {
-                Self::List { list, span } => {
+                expr @ Self::List { list, span } => {
                     let (head, tail) = list.split_first().unwrap();
                     // If the head is not an identifier, we leave the expression unexpanded
                     // for now. We will expand it later in the proc call
                     let ident = match head {
-                        Self::Identifier { ident, .. } => ident,
+                        Self::Identifier { ident, .. } => dbg!(ident),
                         _ => return Expansion::Unexpanded(self),
                     };
                     /*
@@ -124,14 +124,9 @@ impl Syntax {
                     if let Some(head_value) = env.fetch_macro(&ident).await {
                         if let Value::Transformer(transformer) = &*head_value.read().await {
                             let new_mark = Mark::new();
-                            let mut list = vec![head.clone()];
-                            list.extend(tail.iter().cloned());
                             let mut expanded = Expansion::Expanded {
                                 mark: new_mark,
-                                syntax: transformer
-                                    .expand(new_mark, &Syntax::new_list(list, span.clone()), env)
-                                    .await
-                                    .unwrap(),
+                                syntax: transformer.expand(new_mark, expr, env).await.unwrap(),
                                 macro_env: transformer.macro_env.clone(),
                             };
                             return expanded;
@@ -176,7 +171,7 @@ impl Syntax {
     }
 
     pub async fn compile_expanded(&self, env: &Env) -> Result<Box<dyn Eval>, CompileError> {
-        match self {
+        match dbg!(self) {
             Self::Nil { span } => Err(CompileError::UnexpectedEmptyList(span.clone())),
             Self::Identifier { ident, .. } => {
                 // TODO: Fix this
@@ -189,8 +184,23 @@ impl Syntax {
             Self::Literal { literal, .. } => Ok(Box::new(literal.clone()) as Box<dyn Eval>),
             Self::List { list: exprs, span } => match &exprs[..] {
                 // Special forms:
+                [Self::Identifier { ident, span }, tail @ ..] if ident == "quote" => {
+                    ast::Quote::compile_to_expr(tail, env, span).await
+                }
+                [Self::Identifier { ident, span }, tail @ ..] if ident == "begin" => {
+                    ast::Body::compile_to_expr(tail, env, span).await
+                }
                 [Self::Identifier { ident, span }, tail @ ..] if ident == "let" => {
                     ast::Let::compile_to_expr(tail, env, span).await
+                }
+                [Self::Identifier { ident, span }, tail @ ..] if ident == "if" => {
+                    ast::If::compile_to_expr(tail, env, span).await
+                }
+                [Self::Identifier { ident, span }, tail @ ..] if ident == "define" => {
+                    ast::Define::compile_to_expr(tail, env, span).await
+                }
+                [Self::Identifier { ident, span }, tail @ ..] if ident == "define-syntax" => {
+                    ast::DefineSyntax::compile_to_expr(tail, env, span).await
                 }
                 // Function call:
                 exprs => ast::Call::compile_to_expr(exprs, env, span).await,
