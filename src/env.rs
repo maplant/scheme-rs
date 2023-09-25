@@ -1,5 +1,5 @@
 use futures::future::BoxFuture;
-use std::collections::HashMap;
+use std::{borrow::Cow, collections::HashMap};
 
 use crate::{
     builtin::Builtin,
@@ -10,42 +10,78 @@ use crate::{
 
 pub struct LexicalContour {
     pub up: Env,
+    pub mark: Mark,
     vars: HashMap<Identifier, Gc<Value>>,
     macros: HashMap<Identifier, Gc<Value>>,
 }
 
 impl LexicalContour {
+    fn strip<'a>(&self, ident: &'a Identifier) -> Cow<'a, Identifier> {
+        if ident.marks.contains(&self.mark) {
+            let mut stripped = ident.clone();
+            stripped.mark(self.mark);
+            Cow::Owned(stripped)
+        } else {
+            Cow::Borrowed(ident)
+        }
+    }
+
+    pub fn strip_unused_marks<'a>(&'a self, ident: &'a mut Identifier) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if ident.marks.contains(&self.mark) && self.vars.contains_key(ident)
+                || self.macros.contains_key(ident)
+            {
+                return;
+            }
+            ident.marks.remove(&self.mark);
+            self.up.strip_unused_marks(ident).await;
+        })
+    }
+
     pub fn is_bound<'a>(&'a self, ident: &'a Identifier) -> BoxFuture<'a, bool> {
         Box::pin(async move {
             self.vars.contains_key(ident)
                 || self.macros.contains_key(ident)
-                || self.up.is_bound(ident).await
+                || self.up.is_bound(&self.strip(ident)).await
         })
     }
 
-    pub fn fetch_var<'a>(&'a self, ident: &'a Identifier) -> BoxFuture<'a, Option<Gc<Value>>> {
+    fn fetch_var<'a>(&'a self, ident: &'a Identifier) -> BoxFuture<'a, Option<Gc<Value>>> {
         Box::pin(async move {
-            if let Some(var) = self.vars.get(ident) {
+            if let Some(var) = self.vars.get(&ident) {
                 return Some(var.clone());
             }
             // Macros are also variables
-            if let Some(var) = self.macros.get(ident) {
+            if let Some(var) = self.macros.get(&ident) {
                 return Some(var.clone());
             }
             // Check the next lexical scope up
-            self.up.fetch_var(ident).await
+            self.up.fetch_var(&self.strip(ident)).await
         })
     }
 
+    /*
     pub fn fetch_macro<'a>(&'a self, ident: &'a Identifier) -> BoxFuture<'a, Option<Gc<Value>>> {
         Box::pin(async move {
             // Only check the macro definitions
             if let Some(var) = self.macros.get(ident) {
                 return Some(var.clone());
             }
-            self.up.fetch_macro(ident).await
+            self.up.fetch_macro(&self.strip(ident)).await
         })
     }
+     */
+    
+    fn fetch_macro<'a>(&'a self, ident: &'a Identifier) -> BoxFuture<'a, Option<MacroLookup>> {
+        Box::pin(async move {
+            // Only check the macro definitions
+            if let Some(var) = self.macros.get(ident) {
+                return Some(MacroLookup::WithoutEnv(var.clone()));
+            }
+            self.up.fetch_macro(&self.strip(ident)).await.map(MacroLookup::WithEnv)
+        })
+    }
+
 
     pub fn def_var(&mut self, ident: &Identifier, value: Gc<Value>) {
         // If the identifier is defined as a macro, remove it.
@@ -82,9 +118,25 @@ impl ExpansionContext {
     pub fn is_bound<'a>(&'a self, ident: &'a Identifier) -> BoxFuture<'a, bool> {
         Box::pin(async move {
             if ident.marks.contains(&self.mark) {
-                self.macro_env.is_bound(ident).await
+                let mut stripped = ident.clone();
+                stripped.mark(self.mark);
+                self.macro_env.is_bound(&stripped).await
             } else {
                 self.up.is_bound(ident).await
+            }
+        })
+    }
+
+    pub fn strip_unused_marks<'a>(&'a self, ident: &'a mut Identifier) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if ident.marks.contains(&self.mark) {
+                let mut stripped = ident.clone();
+                stripped.mark(self.mark);
+                self.macro_env.fetch_var(&stripped).await;
+                stripped.mark(self.mark);
+                ident.marks = stripped.marks;
+            } else {
+                self.up.strip_unused_marks(ident).await;
             }
         })
     }
@@ -103,7 +155,7 @@ impl ExpansionContext {
         })
     }
 
-    pub fn fetch_macro<'a>(&'a self, ident: &'a Identifier) -> BoxFuture<'a, Option<Gc<Value>>> {
+    pub fn fetch_macro<'a>(&'a self, ident: &'a Identifier) -> BoxFuture<'a, Option<(Env, Gc<Value>)>> {
         Box::pin(async move {
             if ident.marks.contains(&self.mark) {
                 let mut stripped = ident.clone();
@@ -134,6 +186,14 @@ pub enum Env {
 }
 
 impl Env {
+    pub async fn strip_unused_marks(&self, ident: &mut Identifier) {
+        match self {
+            Self::Expansion(expansion) => expansion.read().await.strip_unused_marks(ident).await,
+            Self::LexicalContour(contour) => contour.read().await.strip_unused_marks(ident).await,
+            _ => (),
+        }
+    }
+
     pub async fn is_bound(&self, ident: &Identifier) -> bool {
         match self {
             Self::Top => false,
@@ -150,11 +210,15 @@ impl Env {
         }
     }
 
-    pub async fn fetch_macro(&self, ident: &Identifier) -> Option<Gc<Value>> {
+    pub async fn fetch_macro(&self, ident: &Identifier) -> Option<(Env, Gc<Value>)> {
         match self {
             Self::Top => None,
             Self::Expansion(expansion) => expansion.read().await.fetch_macro(ident).await,
-            Self::LexicalContour(env) => env.read().await.fetch_macro(ident).await,
+            Self::LexicalContour(env) => match env.read().await.fetch_macro(ident).await {
+                Some(MacroLookup::WithEnv((env, value))) => Some((env, value)),
+                Some(MacroLookup::WithoutEnv(value)) => Some((self.clone(), value)),
+                _ => None,
+            }
         }
     }
 
@@ -169,6 +233,7 @@ impl Env {
     pub fn new_lexical_contour(&self) -> LexicalContour {
         LexicalContour {
             up: self.clone(),
+            mark: Mark::new(),
             vars: HashMap::default(),
             macros: HashMap::default(),
         }
@@ -219,7 +284,7 @@ impl From<Gc<LexicalContour>> for Env {
     }
 }
 
-pub enum VarOrMacro {
-    Var(Gc<Value>),
-    Macro(Gc<Value>),
+enum MacroLookup {
+    WithEnv((Env, Gc<Value>)),
+    WithoutEnv(Gc<Value>),
 }

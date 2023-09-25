@@ -2,7 +2,7 @@ use crate::{
     ast::{self, Literal},
     compile::{Compile, CompileError},
     env::Env,
-    eval::{Eval, Value},
+    eval::{Eval, RuntimeError, Value},
     gc::Gc,
     lex::{InputSpan, Lexeme, Token},
     parse::ParseError,
@@ -80,42 +80,86 @@ impl Syntax {
         }
     }
 
-    fn expand<'a>(&'a self, env: &'a Env) -> BoxFuture<'a, Expansion<'a>> {
+    pub fn strip_unused_marks<'a>(&'a mut self, env: &'a Env) -> BoxFuture<'a, ()> {
         Box::pin(async move {
             match self {
-                expr @ Self::List { list, .. } => {
+                Self::List { ref mut list, .. } => {
+                    for item in list {
+                        item.strip_unused_marks(env).await;
+                    }
+                }
+                Self::Vector { ref mut vector, .. } => {
+                    for item in vector {
+                        item.strip_unused_marks(env).await;
+                    }
+                }
+                Self::Identifier { ref mut ident, .. } => env.strip_unused_marks(ident).await,
+                _ => (),
+            }
+        })
+    }
+
+    async fn apply_transformer(
+        &self,
+        macro_env: Env,
+        transformer: Gc<Value>,
+    ) -> Result<Expansion<'static>, RuntimeError> {
+        // Create a new mark for the expansion context
+        let new_mark = Mark::new();
+        // Apply the new mark to the input
+        // TODO: Figure out a better way to do this without cloning so much
+        let mut input = self.clone();
+        input.mark(new_mark);
+        // Convert the input to a value. We wrap this with the current environment, but in
+        // theory it shouldn't matter too much.
+        let input = Gc::new(Value::Syntax(input));
+        // Call the transformer with the input:
+        let output = transformer
+            .read()
+            .await
+            .as_proc()
+            .ok_or(RuntimeError::InvalidType)?
+            .call(vec![input])
+            .await?;
+        // TODO: try_unwrap will make this more efficient
+        let output = match &*output.read().await {
+            Value::Syntax(syntax) => {
+                let mut output = syntax.clone();
+                // Apply the new mark to the output
+                output.mark(new_mark);
+                Ok(Expansion::Expanded {
+                    mark: new_mark,
+                    syntax: output,
+                    macro_env,
+                })
+            }
+            _ => todo!(),
+        };
+        output
+    }
+
+    fn expand<'a>(&'a self, env: &'a Env) -> BoxFuture<'a, Result<Expansion<'a>, RuntimeError>> {
+        Box::pin(async move {
+            match self {
+                Self::List { list, .. } => {
                     // If the head is not an identifier, we leave the expression unexpanded
                     // for now. We will expand it later in the proc call
                     let ident = match list.get(0) {
                         Some(Self::Identifier { ident, .. }) => ident,
-                        _ => return Expansion::Unexpanded(self),
+                        _ => return Ok(Expansion::Unexpanded(self)),
                     };
-                    if let Some(head_value) = env.fetch_macro(ident).await {
-                        if let Value::Transformer(transformer) = &*head_value.read().await {
-                            let new_mark = Mark::new();
-                            return Expansion::Expanded {
-                                mark: new_mark,
-                                syntax: transformer.expand(new_mark, expr, env).await.unwrap(),
-                                macro_env: transformer.macro_env.clone(),
-                            };
-                        }
+                    if let Some((macro_env, transformer)) = env.fetch_macro(ident).await {
+                        return self.apply_transformer(macro_env, transformer).await;
                     }
                 }
-                expr @ Self::Identifier { ident, .. } => {
-                    if let Some(val) = env.fetch_macro(ident).await {
-                        if let Value::Transformer(transformer) = &*val.read().await {
-                            let new_mark = Mark::new();
-                            return Expansion::Expanded {
-                                mark: new_mark,
-                                syntax: transformer.expand(new_mark, expr, env).await.unwrap(),
-                                macro_env: transformer.macro_env.clone(),
-                            };
-                        }
+                Self::Identifier { ident, .. } => {
+                    if let Some((macro_env, transformer)) = env.fetch_macro(ident).await {
+                        return self.apply_transformer(macro_env, transformer).await;
                     }
                 }
                 _ => (),
             }
-            Expansion::Unexpanded(self)
+            Ok(Expansion::Unexpanded(self))
         })
     }
 
@@ -129,6 +173,10 @@ impl Syntax {
             ) as Box<dyn Eval>),
             Self::Literal { literal, .. } => Ok(Box::new(literal.clone()) as Box<dyn Eval>),
             Self::List { list: exprs, span } => match &exprs[..] {
+                // Function call:
+                [Self::Identifier { ident, .. }, ..] if env.is_bound(&ident).await => {
+                    ast::Call::compile_to_expr(exprs, env, span).await
+                }
                 // Special forms:
                 [Self::Identifier { ident, span }, tail @ ..] if ident == "quote" => {
                     ast::Quote::compile_to_expr(tail, env, span).await
@@ -160,11 +208,13 @@ impl Syntax {
                 [Self::Identifier { ident, span }, tail @ ..] if ident == "define-syntax" => {
                     ast::DefineSyntax::compile_to_expr(tail, env, span).await
                 }
+                [Self::Identifier { ident, span }, tail @ ..] if ident == "syntax-case" => {
+                    ast::SyntaxCase::compile_to_expr(tail, env, span).await
+                }
                 [Self::Identifier { ident, span }, tail @ ..] if ident == "set!" => {
                     ast::Set::compile_to_expr(tail, env, span).await
                 }
-                // Function call:
-                exprs => ast::Call::compile_to_expr(exprs, env, span).await,
+                x => panic!("bad form: {:#?}", x),
             },
             Self::Vector { vector, .. } => {
                 let mut vals = Vec::new();
@@ -180,7 +230,7 @@ impl Syntax {
     }
 
     pub async fn compile(&self, env: &Env) -> Result<Box<dyn Eval>, CompileError> {
-        self.expand(env).await.compile(env).await
+        self.expand(env).await?.compile(env).await
     }
 }
 
@@ -218,7 +268,7 @@ impl<'a> Expansion<'a> {
                     // If the expression has been expanded, we may need to expand it again, but
                     // it must be done in a new expansion context.
                     let env = Env::Expansion(Gc::new(env.new_expansion_context(mark, macro_env)));
-                    syntax.expand(&env).await.compile_expanded(&env).await
+                    syntax.expand(&env).await?.compile_expanded(&env).await
                 }
             }
         })

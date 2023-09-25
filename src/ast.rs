@@ -1,7 +1,7 @@
 use crate::{
     env::{Env, LexicalContour},
     eval::{Eval, Value},
-    expand::SyntaxRule,
+    expand::Transformer,
     gc::Gc,
     num::Number,
     syntax::{Identifier, Syntax},
@@ -27,7 +27,7 @@ pub struct Quote {
 #[derive(Clone)]
 pub struct SyntaxQuote {
     pub syn: Syntax,
-    pub env: Env,
+    pub env: Env, 
 }
 
 #[derive(Clone)]
@@ -58,7 +58,7 @@ pub enum Define {
 #[derive(Clone)]
 pub struct DefineSyntax {
     pub name: Identifier,
-    pub rules: Vec<SyntaxRule>,
+    pub transformer: Box<dyn Eval>,
 }
 
 #[derive(Clone)]
@@ -145,6 +145,12 @@ pub struct Vector {
 
 #[derive(Clone)]
 pub struct Nil;
+
+#[derive(Clone)]
+pub struct SyntaxCase {
+    pub arg: Box<dyn Eval>,
+    pub transformer: Transformer,
+}
 
 /*
 struct Export {}

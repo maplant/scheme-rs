@@ -1,10 +1,10 @@
 use crate::{
     ast,
     env::Env,
-    eval::{Eval, Value},
-    expand::{Pattern, SyntaxRule, Template},
+    eval::{Eval, Value, RuntimeError},
+    expand::{Pattern, SyntaxRule, Template, Transformer},
     gc::Gc,
-    syntax::{Identifier, Span, Syntax},
+    syntax::{Identifier, Span, Syntax, Mark},
 };
 use async_trait::async_trait;
 use derive_more::From;
@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 pub enum CompileError {
     UnexpectedEmptyList(Span),
     UndefinedVariable(Identifier),
+    RuntimeError(Box<RuntimeError>),
     CompileBodyError(CompileBodyError),
     CompileLetError(CompileLetError),
     CompileFuncCallError(CompileFuncCallError),
@@ -24,6 +25,13 @@ pub enum CompileError {
     CompileSetError(CompileSetError),
     CompileLambdaError(CompileLambdaError),
     CompileSyntaxError(CompileSyntaxError),
+    CompileSyntaxCaseError(CompileSyntaxCaseError),
+}
+
+impl From<RuntimeError> for CompileError {
+    fn from(re: RuntimeError) -> Self {
+        Self::RuntimeError(Box::new(re))
+    }
 }
 
 macro_rules! impl_from_compile_error {
@@ -91,15 +99,19 @@ impl Compile for ast::Let {
                 let mut compiled_bindings = Vec::new();
                 // TODO: Check that the list of bindings is proper
                 for binding in &bindings[..bindings.len() - 1] {
-                    let binding = LetBinding::compile(binding, env, &previously_bound)
+                    let binding = LetBinding::compile(new_contour.mark, binding, env, &previously_bound)
                         .await
                         .map_err(CompileLetError::CompileLetBindingError)?;
                     previously_bound.insert(binding.ident.clone(), binding.span.clone());
                     new_contour.def_var(&binding.ident, Gc::new(Value::Nil));
                     compiled_bindings.push(binding);
                 }
+                let mut body = body.to_vec();
+                for item in &mut body {
+                    item.mark(new_contour.mark);
+                }
                 let env = Gc::new(new_contour);
-                let body = ast::Body::compile(body, &Env::from(env.clone()), span)
+                let body = ast::Body::compile(&body, &Env::from(env.clone()), span)
                     .await
                     .map_err(CompileLetError::CompileBodyError)?;
                 Ok(ast::Let {
@@ -138,6 +150,7 @@ struct LetBinding {
 
 impl LetBinding {
     async fn compile(
+        mark: Mark,
         expr: &Syntax,
         env: &Env,
         previously_bound: &HashMap<Identifier, Span>,
@@ -148,7 +161,8 @@ impl LetBinding {
                     ident,
                     span: bind_span,
                 }, expr, Syntax::Nil { .. }] => {
-                    let ident = ident.clone();
+                    let mut ident = ident.clone();
+                    ident.mark(mark);
                     if let Some(prev_bind) = previously_bound.get(&ident) {
                         return Err(CompileLetBindingError::PreviouslyBound {
                             ident,
@@ -357,7 +371,10 @@ impl Compile for ast::Define {
 #[derive(Debug)]
 pub enum CompileDefineSyntaxError {
     BadForm(Span),
+    CompileError(Box<CompileError>),
 }
+
+impl_from_compile_error!(CompileDefineSyntaxError);
 
 #[async_trait]
 impl Compile for ast::DefineSyntax {
@@ -365,9 +382,21 @@ impl Compile for ast::DefineSyntax {
 
     async fn compile(
         expr: &[Syntax],
-        _env: &Env,
+        env: &Env,
         span: &Span,
     ) -> Result<ast::DefineSyntax, CompileDefineSyntaxError> {
+        match expr {
+            [Syntax::Identifier { ident, .. }, expr, Syntax::Nil { .. }] => {
+                Ok(
+                    ast::DefineSyntax {
+                        name: ident.clone(),
+                        transformer: expr.compile(env).await?
+                    }
+                )
+            },
+            _ => Err(CompileDefineSyntaxError::BadForm(span.clone())),
+        }
+        /*
         match expr {
             [Syntax::Identifier {
                 ident: macro_name, ..
@@ -408,7 +437,7 @@ impl Compile for ast::DefineSyntax {
                         [Syntax::List { list, .. }, tail @ ..] => match &list[..] {
                             [pattern, template, Syntax::Nil { .. }] => {
                                 syntax_rules.push(SyntaxRule {
-                                    pattern: Pattern::compile(pattern, &macro_name.name, &keywords),
+                                    pattern: Pattern::compile(pattern, Some(&macro_name.name), &keywords),
                                     template: Template::compile(template),
                                 });
                                 rules = tail;
@@ -425,6 +454,7 @@ impl Compile for ast::DefineSyntax {
             }
             _ => Err(CompileDefineSyntaxError::BadForm(span.clone())),
         }
+         */
     }
 }
 
@@ -607,5 +637,64 @@ impl Compile for ast::Lambda {
             }
             _ => todo!(),
         }
+    }
+}
+
+#[derive(Debug)]
+pub enum CompileSyntaxCaseError {
+    CompileError(Box<CompileError>),
+    BadForm(Span),
+}
+
+impl_from_compile_error!(CompileSyntaxCaseError);
+
+#[async_trait]
+impl Compile for ast::SyntaxCase {
+    type Error = CompileSyntaxCaseError;
+
+    async fn compile(
+        exprs: &[Syntax],
+        env: &Env,
+        span: &Span,
+    ) -> Result<Self, CompileSyntaxCaseError> {
+        let (arg, keywords, mut rules) = match &exprs[..] {
+            [arg, Syntax::List { list, .. }, rules @ ..] => {
+                let mut keywords = HashSet::default();
+                // TODO: ensure keywords_list is proper
+                for keyword in &list[..list.len() - 1] {
+                    if let Syntax::Identifier { ident, .. } = keyword {
+                        keywords.insert(ident.name.clone());
+                    } else {
+                        return Err(CompileSyntaxCaseError::BadForm(keyword.span().clone()));
+                    }
+                }
+                (arg, keywords, &rules[..])
+            }
+            [arg, Syntax::Nil { .. }, rules @ ..] => (arg, HashSet::default(), &rules[..]),
+            _ => return Err(CompileSyntaxCaseError::BadForm(span.clone())),
+        };
+        let mut syntax_rules = Vec::new();
+        loop {
+            match rules {
+                [Syntax::Nil { .. }] => break,
+                [Syntax::List { list, .. }, tail @ ..] => match &list[..] {
+                    [pattern, template, Syntax::Nil { .. }] => {
+                        syntax_rules.push(SyntaxRule {
+                            pattern: Pattern::compile(pattern, None, &keywords),
+                            template: Template::compile(template),
+                        });
+                        rules = tail;
+                    }
+                    _ => return Err(CompileSyntaxCaseError::BadForm(span.clone())),
+                },
+                _ => return Err(CompileSyntaxCaseError::BadForm(span.clone())),
+            }
+        }
+        Ok(ast::SyntaxCase {
+            arg: arg.compile(env).await?,
+            transformer: Transformer {
+                rules: syntax_rules,
+            },
+        })
     }
 }

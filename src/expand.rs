@@ -3,20 +3,19 @@ use futures::future::BoxFuture;
 use crate::{
     ast::Literal,
     env::Env,
-    syntax::{Identifier, Mark, Span, Syntax},
+    syntax::{Identifier, Span, Syntax},
 };
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone)]
 pub struct Transformer {
-    pub macro_env: Env,
     pub rules: Vec<SyntaxRule>,
 }
 
 impl Transformer {
-    pub async fn expand(&self, curr_mark: Mark, expr: &Syntax, env: &Env) -> Option<Syntax> {
+    pub async fn expand(&self, expr: &Syntax, env: &Env) -> Option<Syntax> {
         for rule in &self.rules {
-            if let Some(expansion) = rule.expand(curr_mark, expr, env).await {
+            if let Some(expansion) = rule.expand(expr, env).await {
                 return Some(expansion);
             }
         }
@@ -31,13 +30,13 @@ pub struct SyntaxRule {
 }
 
 impl SyntaxRule {
-    async fn expand(&self, curr_mark: Mark, expr: &Syntax, env: &Env) -> Option<Syntax> {
+    async fn expand(&self, expr: &Syntax, env: &Env) -> Option<Syntax> {
         let mut var_binds = HashMap::new();
         let curr_span = expr.span().clone();
         self.pattern
             .matches(expr, env, &mut var_binds)
             .await
-            .then(|| self.template.execute(curr_mark, &var_binds, curr_span))
+            .then(|| self.template.execute(&var_binds, curr_span))
     }
 }
 
@@ -61,11 +60,11 @@ enum SyntaxOrMany {
 }
 
 impl Pattern {
-    pub fn compile(expr: &Syntax, macro_name: &str, keywords: &HashSet<String>) -> Self {
+    pub fn compile(expr: &Syntax, macro_name: Option<&str>, keywords: &HashSet<String>) -> Self {
         match expr {
             Syntax::Nil { .. } => Self::Nil,
             Syntax::Identifier { ident, .. } if ident.name == "_" => Self::Underscore,
-            Syntax::Identifier { ident, .. } if ident.name == macro_name => {
+            Syntax::Identifier { ident, .. } if Some(ident.name.as_str()) == macro_name => {
                 Self::MacroName(ident.name.clone())
             }
             Syntax::Identifier { ident, .. } if keywords.contains(&ident.name) => {
@@ -84,7 +83,7 @@ impl Pattern {
 
     fn compile_slice(
         mut expr: &[Syntax],
-        macro_name: &str,
+        macro_name: Option<&str>,
         keywords: &HashSet<String>,
     ) -> Vec<Self> {
         let mut output = Vec::new();
@@ -223,34 +222,20 @@ impl Template {
         output
     }
 
-    fn execute(
-        &self,
-        curr_mark: Mark,
-        var_binds: &HashMap<String, SyntaxOrMany>,
-        curr_span: Span,
-    ) -> Syntax {
+    fn execute(&self, var_binds: &HashMap<String, SyntaxOrMany>, curr_span: Span) -> Syntax {
         match self {
             Self::Nil => Syntax::new_nil(curr_span),
-            Self::List(list) => Syntax::new_list(
-                execute_slice(list, curr_mark, var_binds, curr_span.clone()),
-                curr_span,
-            ),
-            Self::Vector(vec) => Syntax::new_vector(
-                execute_slice(vec, curr_mark, var_binds, curr_span.clone()),
-                curr_span,
-            ),
+            Self::List(list) => {
+                Syntax::new_list(execute_slice(list, var_binds, curr_span.clone()), curr_span)
+            }
+            Self::Vector(vec) => {
+                Syntax::new_vector(execute_slice(vec, var_binds, curr_span.clone()), curr_span)
+            }
             Self::Identifier(ident) => match var_binds.get(&ident.name) {
-                // Syntax produced by the macro is marked. This will distinguish identifiers
-                // that are produced by the macro and those that come from input, allowing
-                // us to properly bind both.
-                None => {
-                    let mut syntax = Syntax::Identifier {
-                        ident: ident.clone(),
-                        span: curr_span,
-                    };
-                    syntax.mark(curr_mark);
-                    syntax
-                }
+                None => Syntax::Identifier {
+                    ident: ident.clone(),
+                    span: curr_span,
+                },
                 Some(SyntaxOrMany::Syntax(expr)) => expr.clone(),
                 Some(SyntaxOrMany::Many(exprs)) => Syntax::new_list(exprs.clone(), curr_span),
             },
@@ -262,7 +247,6 @@ impl Template {
 
 fn execute_slice(
     items: &[Template],
-    curr_mark: Mark,
     var_binds: &HashMap<String, SyntaxOrMany>,
     curr_span: Span,
 ) -> Vec<Syntax> {
@@ -280,7 +264,7 @@ fn execute_slice(
                     output.push(Syntax::new_nil(curr_span.clone()));
                 }
             }
-            _ => output.push(item.execute(curr_mark, var_binds, curr_span.clone())),
+            _ => output.push(item.execute(var_binds, curr_span.clone())),
         }
     }
     output
