@@ -48,11 +48,11 @@ impl LexicalContour {
 
     fn fetch_var<'a>(&'a self, ident: &'a Identifier) -> BoxFuture<'a, Option<Gc<Value>>> {
         Box::pin(async move {
-            if let Some(var) = self.vars.get(&ident) {
+            if let Some(var) = self.vars.get(ident) {
                 return Some(var.clone());
             }
             // Macros are also variables
-            if let Some(var) = self.macros.get(&ident) {
+            if let Some(var) = self.macros.get(ident) {
                 return Some(var.clone());
             }
             // Check the next lexical scope up
@@ -60,28 +60,18 @@ impl LexicalContour {
         })
     }
 
-    /*
-    pub fn fetch_macro<'a>(&'a self, ident: &'a Identifier) -> BoxFuture<'a, Option<Gc<Value>>> {
-        Box::pin(async move {
-            // Only check the macro definitions
-            if let Some(var) = self.macros.get(ident) {
-                return Some(var.clone());
-            }
-            self.up.fetch_macro(&self.strip(ident)).await
-        })
-    }
-     */
-    
     fn fetch_macro<'a>(&'a self, ident: &'a Identifier) -> BoxFuture<'a, Option<MacroLookup>> {
         Box::pin(async move {
             // Only check the macro definitions
             if let Some(var) = self.macros.get(ident) {
                 return Some(MacroLookup::WithoutEnv(var.clone()));
             }
-            self.up.fetch_macro(&self.strip(ident)).await.map(MacroLookup::WithEnv)
+            self.up
+                .fetch_macro(&self.strip(ident))
+                .await
+                .map(MacroLookup::WithEnv)
         })
     }
-
 
     pub fn def_var(&mut self, ident: &Identifier, value: Gc<Value>) {
         // If the identifier is defined as a macro, remove it.
@@ -155,7 +145,10 @@ impl ExpansionContext {
         })
     }
 
-    pub fn fetch_macro<'a>(&'a self, ident: &'a Identifier) -> BoxFuture<'a, Option<(Env, Gc<Value>)>> {
+    pub fn fetch_macro<'a>(
+        &'a self,
+        ident: &'a Identifier,
+    ) -> BoxFuture<'a, Option<(Env, Gc<Value>)>> {
         Box::pin(async move {
             if ident.marks.contains(&self.mark) {
                 let mut stripped = ident.clone();
@@ -218,22 +211,22 @@ impl Env {
                 Some(MacroLookup::WithEnv((env, value))) => Some((env, value)),
                 Some(MacroLookup::WithoutEnv(value)) => Some((self.clone(), value)),
                 _ => None,
-            }
+            },
         }
     }
 
     pub fn top() -> Self {
-        let mut top = Self::Top.new_lexical_contour();
+        let mut top = Self::Top.new_lexical_contour(Mark::new());
         for builtin in inventory::iter::<Builtin> {
             builtin.install(&mut top);
         }
         Self::LexicalContour(Gc::new(top))
     }
 
-    pub fn new_lexical_contour(&self) -> LexicalContour {
+    pub fn new_lexical_contour(&self, mark: Mark) -> LexicalContour {
         LexicalContour {
             up: self.clone(),
-            mark: Mark::new(),
+            mark,
             vars: HashMap::default(),
             macros: HashMap::default(),
         }

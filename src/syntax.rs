@@ -58,6 +58,7 @@ pub enum Syntax {
     },
     Identifier {
         ident: Identifier,
+        bound: bool,
         span: Span,
     },
 }
@@ -99,8 +100,32 @@ impl Syntax {
         })
     }
 
+    pub fn resolve_bindings<'a>(&'a mut self, env: &'a Env) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            match self {
+                Self::List { ref mut list, .. } => {
+                    for item in list {
+                        item.resolve_bindings(env).await;
+                    }
+                }
+                Self::Vector { ref mut vector, .. } => {
+                    for item in vector {
+                        item.resolve_bindings(env).await;
+                    }
+                }
+                Self::Identifier {
+                    ref ident,
+                    ref mut bound,
+                    ..
+                } => *bound = env.is_bound(ident).await,
+                _ => (),
+            }
+        })
+    }
+
     async fn apply_transformer(
         &self,
+        curr_env: &Env,
         macro_env: Env,
         transformer: Gc<Value>,
     ) -> Result<Expansion<'static>, RuntimeError> {
@@ -110,32 +135,27 @@ impl Syntax {
         // TODO: Figure out a better way to do this without cloning so much
         let mut input = self.clone();
         input.mark(new_mark);
-        // Convert the input to a value. We wrap this with the current environment, but in
-        // theory it shouldn't matter too much.
-        let input = Gc::new(Value::Syntax(input));
+        input.resolve_bindings(curr_env).await;
         // Call the transformer with the input:
-        let output = transformer
-            .read()
-            .await
-            .as_proc()
-            .ok_or(RuntimeError::InvalidType)?
-            .call(vec![input])
-            .await?;
-        // TODO: try_unwrap will make this more efficient
-        let output = match &*output.read().await {
-            Value::Syntax(syntax) => {
-                let mut output = syntax.clone();
-                // Apply the new mark to the output
-                output.mark(new_mark);
-                Ok(Expansion::Expanded {
-                    mark: new_mark,
-                    syntax: output,
-                    macro_env,
-                })
+        let mut output = match &*transformer.read().await {
+            Value::Procedure(proc) => {
+                let output = proc.call(vec![Gc::new(Value::Syntax(input))]).await?;
+                let output = output.read().await;
+                match &*output {
+                    Value::Syntax(syntax) => syntax.clone(),
+                    _ => todo!(),
+                }
             }
-            _ => todo!(),
+            Value::Transformer(transformer) => transformer.expand(&input).unwrap(),
+            _ => return Err(RuntimeError::InvalidType),
         };
-        output
+        // Apply the new mark to the output
+        output.mark(new_mark);
+        Ok(Expansion::Expanded {
+            mark: new_mark,
+            syntax: output,
+            macro_env,
+        })
     }
 
     fn expand<'a>(&'a self, env: &'a Env) -> BoxFuture<'a, Result<Expansion<'a>, RuntimeError>> {
@@ -149,12 +169,12 @@ impl Syntax {
                         _ => return Ok(Expansion::Unexpanded(self)),
                     };
                     if let Some((macro_env, transformer)) = env.fetch_macro(ident).await {
-                        return self.apply_transformer(macro_env, transformer).await;
+                        return self.apply_transformer(env, macro_env, transformer).await;
                     }
                 }
                 Self::Identifier { ident, .. } => {
                     if let Some((macro_env, transformer)) = env.fetch_macro(ident).await {
-                        return self.apply_transformer(macro_env, transformer).await;
+                        return self.apply_transformer(env, macro_env, transformer).await;
                     }
                 }
                 _ => (),
@@ -174,47 +194,51 @@ impl Syntax {
             Self::Literal { literal, .. } => Ok(Box::new(literal.clone()) as Box<dyn Eval>),
             Self::List { list: exprs, span } => match &exprs[..] {
                 // Function call:
-                [Self::Identifier { ident, .. }, ..] if env.is_bound(&ident).await => {
+                [Self::Identifier { ident, .. }, ..] if env.is_bound(ident).await => {
                     ast::Call::compile_to_expr(exprs, env, span).await
                 }
                 // Special forms:
-                [Self::Identifier { ident, span }, tail @ ..] if ident == "quote" => {
+                [Self::Identifier { ident, span, .. }, tail @ ..] if ident == "quote" => {
                     ast::Quote::compile_to_expr(tail, env, span).await
                 }
-                [Self::Identifier { ident, span }, tail @ ..] if ident == "syntax" => {
+                [Self::Identifier { ident, span, .. }, tail @ ..] if ident == "syntax" => {
                     ast::SyntaxQuote::compile_to_expr(tail, env, span).await
                 }
-                [Self::Identifier { ident, span }, tail @ ..] if ident == "begin" => {
+                [Self::Identifier { ident, span, .. }, tail @ ..] if ident == "begin" => {
                     ast::Body::compile_to_expr(tail, env, span).await
                 }
-                [Self::Identifier { ident, span }, tail @ ..] if ident == "let" => {
+                [Self::Identifier { ident, span, .. }, tail @ ..] if ident == "let" => {
                     ast::Let::compile_to_expr(tail, env, span).await
                 }
-                [Self::Identifier { ident, span }, tail @ ..] if ident == "lambda" => {
+                [Self::Identifier { ident, span, .. }, tail @ ..] if ident == "lambda" => {
                     ast::Lambda::compile_to_expr(tail, env, span).await
                 }
-                [Self::Identifier { ident, span }, tail @ ..] if ident == "if" => {
+                [Self::Identifier { ident, span, .. }, tail @ ..] if ident == "if" => {
                     ast::If::compile_to_expr(tail, env, span).await
                 }
-                [Self::Identifier { ident, span }, tail @ ..] if ident == "and" => {
+                [Self::Identifier { ident, span, .. }, tail @ ..] if ident == "and" => {
                     ast::And::compile_to_expr(tail, env, span).await
                 }
-                [Self::Identifier { ident, span }, tail @ ..] if ident == "or" => {
+                [Self::Identifier { ident, span, .. }, tail @ ..] if ident == "or" => {
                     ast::Or::compile_to_expr(tail, env, span).await
                 }
-                [Self::Identifier { ident, span }, tail @ ..] if ident == "define" => {
+                [Self::Identifier { ident, span, .. }, tail @ ..] if ident == "define" => {
                     ast::Define::compile_to_expr(tail, env, span).await
                 }
-                [Self::Identifier { ident, span }, tail @ ..] if ident == "define-syntax" => {
+                [Self::Identifier { ident, span, .. }, tail @ ..] if ident == "define-syntax" => {
                     ast::DefineSyntax::compile_to_expr(tail, env, span).await
                 }
-                [Self::Identifier { ident, span }, tail @ ..] if ident == "syntax-case" => {
+                [Self::Identifier { ident, span, .. }, tail @ ..] if ident == "syntax-case" => {
                     ast::SyntaxCase::compile_to_expr(tail, env, span).await
                 }
-                [Self::Identifier { ident, span }, tail @ ..] if ident == "set!" => {
+                [Self::Identifier { ident, span, .. }, tail @ ..] if ident == "syntax-rules" => {
+                    ast::SyntaxRules::compile_to_expr(tail, env, span).await
+                }
+                [Self::Identifier { ident, span, .. }, tail @ ..] if ident == "set!" => {
                     ast::Set::compile_to_expr(tail, env, span).await
                 }
-                x => panic!("bad form: {:#?}", x),
+                // Special function call:
+                _ => ast::Call::compile_to_expr(exprs, env, span).await,
             },
             Self::Vector { vector, .. } => {
                 let mut vals = Vec::new();
@@ -430,6 +454,7 @@ impl Syntax {
         Self::Identifier {
             ident: Identifier::new(name.to_string()),
             span: span.into(),
+            bound: false,
         }
     }
 

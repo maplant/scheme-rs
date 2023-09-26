@@ -4,7 +4,7 @@ use crate::{
     expand::Transformer,
     gc::Gc,
     num::Number,
-    syntax::{Identifier, Syntax},
+    syntax::{Identifier, Mark, Syntax},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -27,7 +27,7 @@ pub struct Quote {
 #[derive(Clone)]
 pub struct SyntaxQuote {
     pub syn: Syntax,
-    pub env: Env, 
+    pub env: Env,
 }
 
 #[derive(Clone)]
@@ -40,6 +40,7 @@ pub struct Call {
 pub struct DefineFunc {
     pub name: Identifier,
     pub args: Formals,
+    pub mark: Mark,
     pub body: Body,
 }
 
@@ -65,6 +66,7 @@ pub struct DefineSyntax {
 pub struct Lambda {
     pub args: Formals,
     pub body: Body,
+    pub mark: Mark,
 }
 
 #[derive(Debug, Clone)]
@@ -149,6 +151,11 @@ pub struct Nil;
 #[derive(Clone)]
 pub struct SyntaxCase {
     pub arg: Box<dyn Eval>,
+    pub transformer: Transformer,
+}
+
+#[derive(Clone)]
+pub struct SyntaxRules {
     pub transformer: Transformer,
 }
 

@@ -4,7 +4,7 @@ use crate::{
     env::Env,
     gc::{Gc, Trace},
     num::Number,
-    syntax::{Identifier, Syntax},
+    syntax::{Identifier, Mark, Syntax},
 };
 use async_trait::async_trait;
 use futures::future::{BoxFuture, Shared};
@@ -200,6 +200,7 @@ pub struct Procedure {
     args: Vec<Identifier>,
     remaining: Option<Identifier>,
     body: Body,
+    mark: Mark,
     pub is_variable_transformer: bool,
 }
 
@@ -213,9 +214,9 @@ impl Procedure {
     }
 
     pub async fn call(&self, mut args: Vec<Gc<Value>>) -> Result<Gc<Value>, RuntimeError> {
-        let env = Gc::new(self.up.new_lexical_contour());
         let mut proc = Cow::Borrowed(self);
         loop {
+            let env = Gc::new(proc.up.new_lexical_contour(proc.mark));
             let mut args_iter = args.iter().peekable();
             {
                 for required in &proc.args {
@@ -385,6 +386,7 @@ impl Eval for ast::DefineFunc {
             up: env.clone(),
             args,
             remaining,
+            mark: self.mark,
             body: self.body.clone(),
             is_variable_transformer: false,
         }));
@@ -497,6 +499,7 @@ impl Eval for ast::Lambda {
             up: env.clone(),
             args,
             remaining,
+            mark: self.mark,
             body: self.body.clone(),
             is_variable_transformer: false,
         })))
@@ -516,13 +519,20 @@ impl Eval for ast::SyntaxQuote {
 impl Eval for ast::SyntaxCase {
     async fn eval(&self, env: &Env) -> Result<Gc<Value>, RuntimeError> {
         let val = self.arg.eval(env).await?;
-        let x = match &*val.read().await {
+        let val = val.read().await;
+        match &*val {
             Value::Syntax(syntax) => {
-                let result = self.transformer.expand(&syntax, env).await.unwrap();
+                let result = self.transformer.expand(syntax).unwrap();
                 result.compile(env).await?.eval(env).await
             }
             _ => todo!(),
-        };
-        x
+        }
+    }
+}
+
+#[async_trait]
+impl Eval for ast::SyntaxRules {
+    async fn eval(&self, _env: &Env) -> Result<Gc<Value>, RuntimeError> {
+        Ok(Gc::new(Value::Transformer(self.transformer.clone())))
     }
 }

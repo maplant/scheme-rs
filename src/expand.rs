@@ -1,8 +1,5 @@
-use futures::future::BoxFuture;
-
 use crate::{
     ast::Literal,
-    env::Env,
     syntax::{Identifier, Span, Syntax},
 };
 use std::collections::{HashMap, HashSet};
@@ -13,9 +10,9 @@ pub struct Transformer {
 }
 
 impl Transformer {
-    pub async fn expand(&self, expr: &Syntax, env: &Env) -> Option<Syntax> {
+    pub fn expand(&self, expr: &Syntax) -> Option<Syntax> {
         for rule in &self.rules {
-            if let Some(expansion) = rule.expand(expr, env).await {
+            if let Some(expansion) = rule.expand(expr) {
                 return Some(expansion);
             }
         }
@@ -30,12 +27,11 @@ pub struct SyntaxRule {
 }
 
 impl SyntaxRule {
-    async fn expand(&self, expr: &Syntax, env: &Env) -> Option<Syntax> {
+    fn expand(&self, expr: &Syntax) -> Option<Syntax> {
         let mut var_binds = HashMap::new();
         let curr_span = expr.span().clone();
         self.pattern
-            .matches(expr, env, &mut var_binds)
-            .await
+            .matches(expr, &mut var_binds)
             .then(|| self.template.execute(&var_binds, curr_span))
     }
 }
@@ -107,39 +103,31 @@ impl Pattern {
         output
     }
 
-    fn matches<'a>(
-        &'a self,
-        expr: &'a Syntax,
-        env: &'a Env,
-        var_binds: &'a mut HashMap<String, SyntaxOrMany>,
-    ) -> BoxFuture<'a, bool> {
-        Box::pin(async move {
-            match self {
-                Self::Underscore => !expr.is_nil(),
-                Self::Variable(ref name) => {
-                    var_binds.insert(name.clone(), SyntaxOrMany::Syntax(expr.clone()));
-                    true
-                }
-                Self::MacroName(ref lhs) => {
-                    matches!(expr, Syntax::Identifier { ident: rhs, .. } if lhs == &rhs.name)
-                }
-                Self::Keyword(ref lhs) => {
-                    matches!(expr, Syntax::Identifier { ident: rhs, .. } if lhs == &rhs.name && !env.is_bound(rhs).await)
-                }
-                Self::List(list) => match_slice(list, expr, env, var_binds).await,
-                Self::Vector(vec) => match_slice(vec, expr, env, var_binds).await,
-                // We shouldn't ever see this outside of lists
-                Self::Nil => expr.is_nil(),
-                _ => todo!(),
+    fn matches(&self, expr: &Syntax, var_binds: &mut HashMap<String, SyntaxOrMany>) -> bool {
+        match self {
+            Self::Underscore => !expr.is_nil(),
+            Self::Variable(ref name) => {
+                var_binds.insert(name.clone(), SyntaxOrMany::Syntax(expr.clone()));
+                true
             }
-        })
+            Self::MacroName(ref lhs) => {
+                matches!(expr, Syntax::Identifier { ident: rhs, .. } if lhs == &rhs.name)
+            }
+            Self::Keyword(ref lhs) => {
+                matches!(expr, Syntax::Identifier { ident: rhs, bound: false, .. } if lhs == &rhs.name)
+            }
+            Self::List(list) => match_slice(list, expr, var_binds),
+            Self::Vector(vec) => match_slice(vec, expr, var_binds),
+            // We shouldn't ever see this outside of lists
+            Self::Nil => expr.is_nil(),
+            _ => todo!(),
+        }
     }
 }
 
-async fn match_slice(
+fn match_slice(
     pattern: &[Pattern],
     expr: &Syntax,
-    env: &Env,
     var_binds: &mut HashMap<String, SyntaxOrMany>,
 ) -> bool {
     let mut expr_iter = match expr {
@@ -155,7 +143,7 @@ async fn match_slice(
                 let rev_pattern_iter = pattern_iter.rev();
                 for pattern in rev_pattern_iter {
                     if let Some(expr) = rev_expr_iter.next() {
-                        if !pattern.matches(expr, env, var_binds).await {
+                        if !pattern.matches(expr, var_binds) {
                             return false;
                         }
                     }
@@ -168,7 +156,7 @@ async fn match_slice(
             var_binds.insert(name.clone(), SyntaxOrMany::Many(exprs));
             return true;
         } else if let Some(next_expr) = expr_iter.next() {
-            if !item.matches(next_expr, env, var_binds).await {
+            if !item.matches(next_expr, var_binds) {
                 return false;
             }
         } else {
@@ -235,6 +223,7 @@ impl Template {
                 None => Syntax::Identifier {
                     ident: ident.clone(),
                     span: curr_span,
+                    bound: false,
                 },
                 Some(SyntaxOrMany::Syntax(expr)) => expr.clone(),
                 Some(SyntaxOrMany::Many(exprs)) => Syntax::new_list(exprs.clone(), curr_span),
