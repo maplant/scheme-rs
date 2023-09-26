@@ -134,8 +134,8 @@ impl Syntax {
         // Apply the new mark to the input
         // TODO: Figure out a better way to do this without cloning so much
         let mut input = self.clone();
-        input.mark(new_mark);
         input.resolve_bindings(curr_env).await;
+        input.mark(new_mark);
         // Call the transformer with the input:
         let mut output = match &*transformer.read().await {
             Value::Procedure(proc) => {
