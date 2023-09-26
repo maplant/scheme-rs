@@ -44,7 +44,6 @@ pub enum Pattern {
     List(Vec<Pattern>),
     Vector(Vec<Pattern>),
     Variable(String),
-    MacroName(String),
     Keyword(String),
     Literal(Literal),
 }
@@ -56,32 +55,21 @@ enum SyntaxOrMany {
 }
 
 impl Pattern {
-    pub fn compile(expr: &Syntax, macro_name: Option<&str>, keywords: &HashSet<String>) -> Self {
+    pub fn compile(expr: &Syntax, keywords: &HashSet<String>) -> Self {
         match expr {
             Syntax::Nil { .. } => Self::Nil,
             Syntax::Identifier { ident, .. } if ident.name == "_" => Self::Underscore,
-            Syntax::Identifier { ident, .. } if Some(ident.name.as_str()) == macro_name => {
-                Self::MacroName(ident.name.clone())
-            }
             Syntax::Identifier { ident, .. } if keywords.contains(&ident.name) => {
                 Self::Keyword(ident.name.clone())
             }
             Syntax::Identifier { ident, .. } => Self::Variable(ident.name.clone()),
-            Syntax::List { list, .. } => {
-                Self::List(Self::compile_slice(list, macro_name, keywords))
-            }
-            Syntax::Vector { vector, .. } => {
-                Self::Vector(Self::compile_slice(vector, macro_name, keywords))
-            }
+            Syntax::List { list, .. } => Self::List(Self::compile_slice(list, keywords)),
+            Syntax::Vector { vector, .. } => Self::Vector(Self::compile_slice(vector, keywords)),
             Syntax::Literal { literal, .. } => Self::Literal(literal.clone()),
         }
     }
 
-    fn compile_slice(
-        mut expr: &[Syntax],
-        macro_name: Option<&str>,
-        keywords: &HashSet<String>,
-    ) -> Vec<Self> {
+    fn compile_slice(mut expr: &[Syntax], keywords: &HashSet<String>) -> Vec<Self> {
         let mut output = Vec::new();
         loop {
             match expr {
@@ -95,7 +83,7 @@ impl Pattern {
                     expr = tail;
                 }
                 [head, tail @ ..] => {
-                    output.push(Self::compile(head, macro_name, keywords));
+                    output.push(Self::compile(head, keywords));
                     expr = tail;
                 }
             }
@@ -109,9 +97,6 @@ impl Pattern {
             Self::Variable(ref name) => {
                 var_binds.insert(name.clone(), SyntaxOrMany::Syntax(expr.clone()));
                 true
-            }
-            Self::MacroName(ref lhs) => {
-                matches!(expr, Syntax::Identifier { ident: rhs, .. } if lhs == &rhs.name)
             }
             Self::Keyword(ref lhs) => {
                 matches!(expr, Syntax::Identifier { ident: rhs, bound: false, .. } if lhs == &rhs.name)

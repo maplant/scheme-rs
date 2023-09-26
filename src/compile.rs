@@ -643,7 +643,7 @@ impl Compile for ast::SyntaxCase {
                 [Syntax::List { list, .. }, tail @ ..] => match &list[..] {
                     [pattern, template, Syntax::Nil { .. }] => {
                         syntax_rules.push(SyntaxRule {
-                            pattern: Pattern::compile(pattern, None, &keywords),
+                            pattern: Pattern::compile(pattern, &keywords),
                             template: Template::compile(template),
                         });
                         rules = tail;
@@ -699,7 +699,7 @@ impl Compile for ast::SyntaxRules {
                 [Syntax::List { list, .. }, tail @ ..] => match &list[..] {
                     [pattern, template, Syntax::Nil { .. }] => {
                         syntax_rules.push(SyntaxRule {
-                            pattern: Pattern::compile(pattern, None, &keywords),
+                            pattern: Pattern::compile(pattern, &keywords),
                             template: Template::compile(template),
                         });
                         rules = tail;
