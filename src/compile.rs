@@ -15,6 +15,7 @@ pub enum CompileError {
     UnexpectedEmptyList(Span),
     UndefinedVariable(Identifier),
     RuntimeError(Box<RuntimeError>),
+    NotVariableTransformer,
     CompileBodyError(CompileBodyError),
     CompileLetError(CompileLetError),
     CompileFuncCallError(CompileFuncCallError),
@@ -657,6 +658,7 @@ impl Compile for ast::SyntaxCase {
             arg: arg.compile(env).await?,
             transformer: Transformer {
                 rules: syntax_rules,
+                is_variable_transformer: false,
             },
         })
     }
@@ -713,6 +715,7 @@ impl Compile for ast::SyntaxRules {
         Ok(Self {
             transformer: Transformer {
                 rules: syntax_rules,
+                is_variable_transformer: false,
             },
         })
     }

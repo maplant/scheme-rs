@@ -54,7 +54,7 @@ impl From<Complex> for Number {
     }
 }
 
-#[builtin(+)]
+#[builtin("+")]
 pub async fn add(_env: Env, l: &Gc<Value>, r: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> {
     let (l, r) = (l.read().await, r.read().await);
     match (&*l, &*r) {
@@ -65,7 +65,7 @@ pub async fn add(_env: Env, l: &Gc<Value>, r: &Gc<Value>) -> Result<Gc<Value>, R
     }
 }
 
-#[builtin(-)]
+#[builtin("-")]
 pub async fn sub(_env: Env, l: &Gc<Value>, r: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> {
     let (l, r) = (l.read().await, r.read().await);
     match (&*l, &*r) {
@@ -76,7 +76,7 @@ pub async fn sub(_env: Env, l: &Gc<Value>, r: &Gc<Value>) -> Result<Gc<Value>, R
     }
 }
 
-#[builtin(*)]
+#[builtin("*")]
 pub async fn mult(_env: Env, l: &Gc<Value>, r: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> {
     let (l, r) = (l.read().await, r.read().await);
     match (&*l, &*r) {
@@ -87,12 +87,34 @@ pub async fn mult(_env: Env, l: &Gc<Value>, r: &Gc<Value>) -> Result<Gc<Value>, 
     }
 }
 
-#[builtin(=)]
+#[builtin("=")]
 pub async fn eq(_env: Env, l: &Gc<Value>, r: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> {
     let (l, r) = (l.read().await, r.read().await);
     match (&*l, &*r) {
         (Value::Number(Number::Integer(l)), Value::Number(Number::Integer(r))) => {
             Ok(Gc::new(Value::Boolean(l == r)))
+        }
+        _ => todo!(),
+    }
+}
+
+#[builtin(">")]
+pub async fn gt(_env: Env, l: &Gc<Value>, r: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> {
+    let (l, r) = (l.read().await, r.read().await);
+    match (&*l, &*r) {
+        (Value::Number(Number::Integer(l)), Value::Number(Number::Integer(r))) => {
+            Ok(Gc::new(Value::Boolean(l > r)))
+        }
+        _ => todo!(),
+    }
+}
+
+#[builtin("<")]
+pub async fn lt(_env: Env, l: &Gc<Value>, r: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> {
+    let (l, r) = (l.read().await, r.read().await);
+    match (&*l, &*r) {
+        (Value::Number(Number::Integer(l)), Value::Number(Number::Integer(r))) => {
+            Ok(Gc::new(Value::Boolean(l < r)))
         }
         _ => todo!(),
     }

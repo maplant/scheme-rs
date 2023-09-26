@@ -1,12 +1,17 @@
 use crate::{
     ast::Literal,
+    env::Env,
+    eval::{RuntimeError, Value},
+    gc::Gc,
     syntax::{Identifier, Span, Syntax},
 };
+use proc_macros::builtin;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone)]
 pub struct Transformer {
     pub rules: Vec<SyntaxRule>,
+    pub is_variable_transformer: bool,
 }
 
 impl Transformer {
@@ -242,4 +247,25 @@ fn execute_slice(
         }
     }
     output
+}
+
+#[builtin("make-variable-transformer")]
+pub async fn make_variable_transformer(
+    _env: Env,
+    proc: &Gc<Value>,
+) -> Result<Gc<Value>, RuntimeError> {
+    let proc = proc.read().await;
+    match &*proc {
+        Value::Procedure(proc) => {
+            let mut proc = proc.clone();
+            proc.is_variable_transformer = true;
+            Ok(Gc::new(Value::Procedure(proc)))
+        }
+        Value::Transformer(transformer) => {
+            let mut transformer = transformer.clone();
+            transformer.is_variable_transformer = true;
+            Ok(Gc::new(Value::Transformer(transformer)))
+        }
+        _ => todo!(),
+    }
 }

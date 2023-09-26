@@ -47,7 +47,7 @@ pub fn fmt_list<'a>(car: &'a Gc<Value>, cdr: &'a Gc<Value>) -> BoxFuture<'a, Str
     })
 }
 
-#[builtin(list)]
+#[builtin("list")]
 pub async fn list(_env: Env, args: Vec<Gc<Value>>) -> Result<Gc<Value>, RuntimeError> {
     // Construct the list in reverse
     let mut cdr = Gc::new(Value::Nil);
@@ -57,7 +57,39 @@ pub async fn list(_env: Env, args: Vec<Gc<Value>>) -> Result<Gc<Value>, RuntimeE
     Ok(cdr)
 }
 
-#[builtin(cons)]
+#[builtin("cons")]
 pub async fn cons(_env: Env, car: &Gc<Value>, cdr: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> {
     Ok(Gc::new(Value::Pair(car.clone(), cdr.clone())))
+}
+
+#[builtin("car")]
+pub async fn car(_env: Env, val: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> {
+    let val = val.read().await;
+    match &*val {
+        Value::Pair(car, _cdr) => Ok(car.clone()),
+        _ => todo!(),
+    }
+}
+
+#[builtin("cdr")]
+pub async fn cdr(_env: Env, val: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> {
+    let val = val.read().await;
+    match &*val {
+        Value::Pair(_car, cdr) => Ok(cdr.clone()),
+        _ => todo!(),
+    }
+}
+
+#[builtin("set-car!")]
+pub async fn set_car(
+    _env: Env,
+    var: &Gc<Value>,
+    val: &Gc<Value>,
+) -> Result<Gc<Value>, RuntimeError> {
+    let mut var = var.write().await;
+    match &mut *var {
+        Value::Pair(ref mut car, _cdr) => *car = val.clone(),
+        _ => todo!(),
+    }
+    Ok(Gc::new(Value::Nil))
 }

@@ -4,9 +4,8 @@ use quote::quote;
 use syn::{parse_macro_input, parse_quote, FnArg, Ident, ItemFn, PatType, Type};
 
 #[proc_macro_attribute]
-pub fn builtin(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let name = attr.to_string();
-
+pub fn builtin(name: TokenStream, item: TokenStream) -> TokenStream {
+    let name = proc_macro2::TokenStream::from(name);
     let builtin = parse_macro_input!(item as ItemFn);
 
     let impl_name = builtin.sig.ident.clone();

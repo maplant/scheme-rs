@@ -2,6 +2,7 @@ use crate::{
     ast::{self, Body},
     compile::CompileError,
     env::Env,
+    expand::Transformer,
     gc::{Gc, Trace},
     num::Number,
     syntax::{Identifier, Mark, Syntax},
@@ -25,7 +26,7 @@ pub enum Value {
     Procedure(Procedure),
     ExternalFn(ExternalFn),
     Future(Shared<BoxFuture<'static, Value>>),
-    Transformer(crate::expand::Transformer),
+    Transformer(Transformer),
 }
 
 impl Value {
@@ -36,6 +37,14 @@ impl Value {
     /// #f is false, everything else is true
     pub fn is_true(&self) -> bool {
         !matches!(self, Self::Boolean(x) if !x)
+    }
+
+    pub fn is_variable_transformer(&self) -> bool {
+        match self {
+            Self::Procedure(ref proc) => proc.is_variable_transformer,
+            Self::Transformer(ref trans) => trans.is_variable_transformer,
+            _ => false,
+        }
     }
 
     pub fn as_proc(&self) -> Option<&Procedure> {

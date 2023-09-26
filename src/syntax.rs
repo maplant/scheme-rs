@@ -234,7 +234,21 @@ impl Syntax {
                 [Self::Identifier { ident, span, .. }, tail @ ..] if ident == "syntax-rules" => {
                     ast::SyntaxRules::compile_to_expr(tail, env, span).await
                 }
+                // Very special form:
                 [Self::Identifier { ident, span, .. }, tail @ ..] if ident == "set!" => {
+                    // Check for a variable transformer
+                    if let Some(Syntax::Identifier { ident, .. }) = tail.get(0) {
+                        if let Some((macro_env, transformer)) = env.fetch_macro(ident).await {
+                            if !transformer.read().await.is_variable_transformer() {
+                                return Err(CompileError::NotVariableTransformer);
+                            }
+                            return self
+                                .apply_transformer(env, macro_env, transformer)
+                                .await?
+                                .compile(env)
+                                .await;
+                        }
+                    }
                     ast::Set::compile_to_expr(tail, env, span).await
                 }
                 // Special function call:
