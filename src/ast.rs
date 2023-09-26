@@ -1,10 +1,10 @@
 use crate::{
     env::{Env, LexicalContour},
     eval::{Eval, Value},
-    expand::SyntaxRule,
+    expand::Transformer,
     gc::Gc,
     num::Number,
-    syntax::{Identifier, Syntax},
+    syntax::{Identifier, Mark, Syntax},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -40,6 +40,7 @@ pub struct Call {
 pub struct DefineFunc {
     pub name: Identifier,
     pub args: Formals,
+    pub mark: Mark,
     pub body: Body,
 }
 
@@ -58,13 +59,14 @@ pub enum Define {
 #[derive(Clone)]
 pub struct DefineSyntax {
     pub name: Identifier,
-    pub rules: Vec<SyntaxRule>,
+    pub transformer: Box<dyn Eval>,
 }
 
 #[derive(Clone)]
 pub struct Lambda {
     pub args: Formals,
     pub body: Body,
+    pub mark: Mark,
 }
 
 #[derive(Debug, Clone)]
@@ -145,6 +147,17 @@ pub struct Vector {
 
 #[derive(Clone)]
 pub struct Nil;
+
+#[derive(Clone)]
+pub struct SyntaxCase {
+    pub arg: Box<dyn Eval>,
+    pub transformer: Transformer,
+}
+
+#[derive(Clone)]
+pub struct SyntaxRules {
+    pub transformer: Transformer,
+}
 
 /*
 struct Export {}

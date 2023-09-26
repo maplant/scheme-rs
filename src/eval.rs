@@ -4,7 +4,7 @@ use crate::{
     env::Env,
     gc::{Gc, Trace},
     num::Number,
-    syntax::{Identifier, Syntax},
+    syntax::{Identifier, Mark, Syntax},
 };
 use async_trait::async_trait;
 use futures::future::{BoxFuture, Shared};
@@ -21,7 +21,7 @@ pub enum Value {
     Pair(Gc<Value>, Gc<Value>),
     Vector(Vec<Gc<Value>>),
     ByteVector(Vec<u8>),
-    Syntax { syntax: Syntax, env: Env },
+    Syntax(Syntax),
     Procedure(Procedure),
     ExternalFn(ExternalFn),
     Future(Shared<BoxFuture<'static, Value>>),
@@ -69,7 +69,7 @@ impl Value {
                 Self::Nil => "()".to_string(),
                 Self::Character(c) => format!("\\x{c}"),
                 Self::ByteVector(_) => "<byte_vector>".to_string(),
-                Self::Syntax { .. } => "<syntax>".to_string(),
+                Self::Syntax(syntax) => format!("{:#?}", syntax),
                 Self::Procedure(_) => "<lambda>".to_string(),
                 Self::ExternalFn(_) => "<external_fn>".to_string(),
                 Self::Future(_) => "<future>".to_string(),
@@ -117,6 +117,7 @@ impl From<ExternalFn> for Value {
 pub enum RuntimeError {
     UndefinedVariable(Identifier),
     InvalidOperator(Gc<Value>),
+    InvalidType,
     TooFewArguments,
     TooManyArguments,
     CompileError(CompileError),
@@ -199,6 +200,8 @@ pub struct Procedure {
     args: Vec<Identifier>,
     remaining: Option<Identifier>,
     body: Body,
+    mark: Mark,
+    pub is_variable_transformer: bool,
 }
 
 impl Procedure {
@@ -210,10 +213,10 @@ impl Procedure {
         self.remaining.is_none().then_some(self.args.len())
     }
 
-    async fn call(&self, mut args: Vec<Gc<Value>>) -> Result<Gc<Value>, RuntimeError> {
-        let env = Gc::new(self.up.new_lexical_contour());
+    pub async fn call(&self, mut args: Vec<Gc<Value>>) -> Result<Gc<Value>, RuntimeError> {
         let mut proc = Cow::Borrowed(self);
         loop {
+            let env = Gc::new(proc.up.new_lexical_contour(proc.mark));
             let mut args_iter = args.iter().peekable();
             {
                 for required in &proc.args {
@@ -383,7 +386,9 @@ impl Eval for ast::DefineFunc {
             up: env.clone(),
             args,
             remaining,
+            mark: self.mark,
             body: self.body.clone(),
+            is_variable_transformer: false,
         }));
         env.def_var(&self.name, func).await;
         Ok(Gc::new(Value::Nil))
@@ -412,14 +417,8 @@ impl Eval for ast::Define {
 #[async_trait]
 impl Eval for ast::DefineSyntax {
     async fn eval(&self, env: &Env) -> Result<Gc<Value>, RuntimeError> {
-        env.def_macro(
-            &self.name,
-            Gc::new(Value::Transformer(crate::expand::Transformer {
-                macro_env: env.clone(),
-                rules: self.rules.clone(),
-            })),
-        )
-        .await;
+        let val = self.transformer.eval(env).await?;
+        env.def_macro(&self.name, val).await;
         Ok(Gc::new(Value::Nil))
     }
 }
@@ -500,7 +499,9 @@ impl Eval for ast::Lambda {
             up: env.clone(),
             args,
             remaining,
+            mark: self.mark,
             body: self.body.clone(),
+            is_variable_transformer: false,
         })))
     }
 }
@@ -508,9 +509,30 @@ impl Eval for ast::Lambda {
 #[async_trait]
 impl Eval for ast::SyntaxQuote {
     async fn eval(&self, _env: &Env) -> Result<Gc<Value>, RuntimeError> {
-        Ok(Gc::new(Value::Syntax {
-            syntax: self.syn.clone(),
-            env: self.env.clone(),
-        }))
+        let mut syntax = self.syn.clone();
+        syntax.strip_unused_marks(&self.env).await;
+        Ok(Gc::new(Value::Syntax(syntax)))
+    }
+}
+
+#[async_trait]
+impl Eval for ast::SyntaxCase {
+    async fn eval(&self, env: &Env) -> Result<Gc<Value>, RuntimeError> {
+        let val = self.arg.eval(env).await?;
+        let val = val.read().await;
+        match &*val {
+            Value::Syntax(syntax) => {
+                let result = self.transformer.expand(syntax).unwrap();
+                result.compile(env).await?.eval(env).await
+            }
+            _ => todo!(),
+        }
+    }
+}
+
+#[async_trait]
+impl Eval for ast::SyntaxRules {
+    async fn eval(&self, _env: &Env) -> Result<Gc<Value>, RuntimeError> {
+        Ok(Gc::new(Value::Transformer(self.transformer.clone())))
     }
 }
