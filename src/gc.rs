@@ -69,6 +69,12 @@ impl<'a, T: ?Sized> Deref for GcReadGuard<'a, T> {
     }
 }
 
+impl<'a, T: ?Sized> AsRef<T> for GcReadGuard<'a, T> {
+    fn as_ref(&self) -> &T {
+        self
+    }
+}
+
 unsafe impl<T: ?Sized + Send + Sync> Send for GcReadGuard<'_, T> {}
 unsafe impl<T: ?Sized + Send + Sync> Sync for GcReadGuard<'_, T> {}
 

@@ -1,9 +1,10 @@
 use crate::{
     ast::Literal,
     env::Env,
-    eval::{RuntimeError, Value},
+    error::RuntimeError,
     gc::Gc,
     syntax::{Identifier, Span, Syntax},
+    value::Value,
 };
 use proc_macros::builtin;
 use std::collections::{HashMap, HashSet};

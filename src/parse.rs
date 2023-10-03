@@ -233,7 +233,10 @@ fn number<'a>(i: &Token<'a>) -> Result<Literal, ParseError<'a>> {
     let number = i.lexeme.to_number();
     // TODO: Parse correctly
     let number: Integer = number.parse().unwrap();
-    Ok(Literal::Number(Number::Integer(number)))
+    match number.to_i64() {
+        Some(fixed) => Ok(Literal::Number(Number::FixedInteger(fixed))),
+        None => Ok(Literal::Number(Number::BigInteger(number))),
+    }
 }
 
 fn string<'a>(i: &Token<'a>) -> Result<Literal, ParseError<'a>> {

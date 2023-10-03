@@ -2,9 +2,11 @@ use futures::future::BoxFuture;
 
 use crate::{
     env::{Env, LexicalContour},
-    eval::{ExternalFn, RuntimeError, Value},
+    error::RuntimeError,
     gc::Gc,
+    proc::ExternalFn,
     syntax::Identifier,
+    value::Value,
 };
 
 type ExprFuture = BoxFuture<'static, Result<Gc<Value>, RuntimeError>>;

@@ -11,12 +11,17 @@ pub fn builtin(name: TokenStream, item: TokenStream) -> TokenStream {
     let impl_name = builtin.sig.ident.clone();
     let wrapper_name = impl_name.to_string() + "_wrapper";
     let wrapper_name = Ident::new(&wrapper_name, Span::call_site());
-    let num_args = builtin.sig.inputs.len() - 1;
-    
+
     let is_variadic = if let Some(last_arg) = builtin.sig.inputs.last() {
         is_vec(last_arg)
     } else {
         false
+    };
+
+    let num_args = if is_variadic {
+        builtin.sig.inputs.len().saturating_sub(2)
+    } else {
+        builtin.sig.inputs.len() - 1
     };
 
     let wrapper: ItemFn = if !is_variadic {
@@ -24,8 +29,8 @@ pub fn builtin(name: TokenStream, item: TokenStream) -> TokenStream {
         parse_quote! {
             fn #wrapper_name(
                 env: crate::env::Env,
-                args: Vec<crate::gc::Gc<crate::eval::Value>>
-            ) -> futures::future::BoxFuture<'static, Result<crate::gc::Gc<crate::eval::Value>, crate::eval::RuntimeError>> {
+                args: Vec<crate::gc::Gc<crate::value::Value>>
+            ) -> futures::future::BoxFuture<'static, Result<crate::gc::Gc<crate::value::Value>, crate::error::RuntimeError>> {
                 Box::pin(
                     async move {
                         #impl_name(
@@ -37,14 +42,13 @@ pub fn builtin(name: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
     } else {
-        let num_required = num_args.saturating_sub(1);
-        let arg_indices: Vec<_> = (0..num_required).into_iter().collect();
+        let arg_indices: Vec<_> = (0..num_args).into_iter().collect();
         parse_quote! {
             fn #wrapper_name(
                 env: crate::env::Env,
-                mut required_args: Vec<crate::gc::Gc<crate::eval::Value>>
-            ) -> futures::future::BoxFuture<'static, Result<crate::gc::Gc<crate::eval::Value>, crate::eval::RuntimeError>> {
-                let var_args = required_args.split_off(#num_required);
+                mut required_args: Vec<crate::gc::Gc<crate::value::Value>>
+            ) -> futures::future::BoxFuture<'static, Result<crate::gc::Gc<crate::value::Value>, crate::error::RuntimeError>> {
+                let var_args = required_args.split_off(#num_args);
                 Box::pin(
                     async move {
                         #impl_name(

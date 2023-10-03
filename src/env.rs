@@ -3,9 +3,9 @@ use std::{borrow::Cow, collections::HashMap};
 
 use crate::{
     builtin::Builtin,
-    eval::Value,
     gc::{Gc, Trace},
     syntax::{Identifier, Mark},
+    value::Value,
 };
 
 pub struct LexicalContour {

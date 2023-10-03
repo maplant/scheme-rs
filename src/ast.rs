@@ -1,10 +1,11 @@
 use crate::{
     env::{Env, LexicalContour},
-    eval::{Eval, Value},
+    eval::Eval,
     expand::Transformer,
     gc::Gc,
     num::Number,
-    syntax::{Identifier, Mark, Syntax},
+    syntax::{Identifier, Mark, Span, Syntax},
+    value::Value,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -34,6 +35,8 @@ pub struct SyntaxQuote {
 pub struct Call {
     pub operator: Box<dyn Eval>,
     pub args: Vec<Box<dyn Eval>>,
+    pub location: Span,
+    pub proc_name: String,
 }
 
 #[derive(Clone)]

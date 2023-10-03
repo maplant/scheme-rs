@@ -1,8 +1,4 @@
-use crate::{
-    env::Env,
-    eval::{RuntimeError, Value},
-    gc::Gc,
-};
+use crate::{env::Env, error::RuntimeError, gc::Gc, value::Value};
 use futures::future::BoxFuture;
 use proc_macros::builtin;
 

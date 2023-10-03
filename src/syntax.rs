@@ -2,15 +2,17 @@ use crate::{
     ast::{self, Literal},
     compile::{Compile, CompileError},
     env::Env,
-    eval::{Eval, RuntimeError, Value},
+    error::RuntimeError,
+    eval::Eval,
     gc::Gc,
     lex::{InputSpan, Lexeme, Token},
     parse::ParseError,
+    value::Value,
 };
 use futures::future::BoxFuture;
 use std::{collections::BTreeSet, fmt, sync::Arc};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Span {
     pub line: u32,
     pub column: usize,
@@ -147,7 +149,7 @@ impl Syntax {
                 }
             }
             Value::Transformer(transformer) => transformer.expand(&input).unwrap(),
-            _ => return Err(RuntimeError::InvalidType),
+            x => return Err(RuntimeError::invalid_type("procedure", x.type_name())),
         };
         // Apply the new mark to the output
         output.mark(new_mark);

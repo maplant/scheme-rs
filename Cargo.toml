@@ -11,8 +11,9 @@ futures = "0.3"
 inventory = "0.3"
 nom = "7"
 nom_locate = "4"
+num = "0.4"
 proc-macros = { path = "proc-macros" }
-rug = "1"
+rug = { version = "1", features = ["num-traits"] }
 rand = "0.8"
 thiserror = "1"
 tokio = { version = "1", features = ["full"] }

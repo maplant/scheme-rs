@@ -1,10 +1,12 @@
 use crate::{
     ast,
     env::Env,
-    eval::{Eval, RuntimeError, Value},
+    error::RuntimeError,
+    eval::Eval,
     expand::{Pattern, SyntaxRule, Template, Transformer},
     gc::Gc,
     syntax::{Identifier, Mark, Span, Syntax},
+    value::Value,
 };
 use async_trait::async_trait;
 use derive_more::From;
@@ -211,6 +213,10 @@ impl Compile for ast::Call {
             [operator, args @ ..] => {
                 // TODO: Support macro expansions in the call position that eventually
                 // resolve into an identifier, that is a macro (or function)
+                let proc_name = match operator {
+                    Syntax::Identifier { ident, .. } => ident.name.clone(),
+                    _ => String::from("<lambda>"),
+                };
                 let operator = operator.compile(env).await?;
                 let mut compiled_args = Vec::new();
                 for arg in &args[..args.len() - 1] {
@@ -220,6 +226,8 @@ impl Compile for ast::Call {
                 Ok(ast::Call {
                     operator,
                     args: compiled_args,
+                    location: span.clone(),
+                    proc_name,
                 })
             }
             [] => Err(CompileFuncCallError::EmptyFunctionCall(span.clone())),
