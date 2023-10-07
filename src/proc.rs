@@ -5,10 +5,10 @@ use crate::{
     eval::{Eval, ValueOrPreparedCall},
     gc::Gc,
     syntax::{Identifier, Mark},
-    value::Value,
+    value::Value, continuation::Continuation,
 };
 use futures::future::BoxFuture;
-use std::borrow::Cow;
+use std::{sync::Arc, borrow::Cow};
 
 #[derive(Clone)]
 pub struct Procedure {
@@ -29,7 +29,7 @@ impl Procedure {
         self.remaining.is_none().then_some(self.args.len())
     }
 
-    pub async fn call(&self, mut args: Vec<Gc<Value>>) -> Result<Gc<Value>, RuntimeError> {
+    pub async fn call(&self, mut args: Vec<Gc<Value>>, cont: Option<Arc<Continuation>>) -> Result<Gc<Value>, RuntimeError> {
         let mut proc = Cow::Borrowed(self);
         loop {
             let env = Gc::new(proc.up.new_lexical_contour(proc.mark));
@@ -52,7 +52,7 @@ impl Procedure {
                 return Err(RuntimeError::wrong_num_of_args(proc.args.len(), provided));
             }
 
-            let ret = proc.body.tail_eval(&Env::from(env.clone())).await?;
+            let ret = proc.body.tail_eval(&Env::from(env.clone()), cont.clone()).await?;
             match ret {
                 ValueOrPreparedCall::Value(value) => return Ok(value),
                 ValueOrPreparedCall::PreparedCall(prepared) => {
@@ -96,19 +96,19 @@ pub struct PreparedCall {
 }
 
 impl PreparedCall {
-    pub async fn eval(self, env: &Env) -> Result<Gc<Value>, RuntimeError> {
+    pub async fn eval(self, env: &Env, cont: Option<Arc<Continuation>>) -> Result<Gc<Value>, RuntimeError> {
         let read_op = self.operator.read().await;
         // Call the operator with the arguments
         match &*read_op {
             Value::ExternalFn(extern_fn) => extern_fn.call(env, self.args).await,
-            Value::Procedure(proc) => proc.call(self.args).await,
+            Value::Procedure(proc) => proc.call(self.args, cont).await,
             _ => unreachable!(),
         }
     }
 
     pub async fn prepare(call: &ast::Call, env: &Env) -> Result<Self, RuntimeError> {
         // Collect the operator
-        let operator = call.operator.eval(env).await?;
+        let operator = call.operator.eval(env, todo!()).await?;
         let (is_external, args) = {
             let read_op = operator.read().await;
             if !read_op.is_callable() {
@@ -131,7 +131,7 @@ impl PreparedCall {
             // Collect the arguments
             let mut args = Vec::new();
             for arg in &call.args {
-                args.push(arg.eval(env).await?);
+                args.push(arg.eval(env, todo!()).await?);
             }
             (is_external, args)
         };

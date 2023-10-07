@@ -141,7 +141,7 @@ impl Syntax {
         // Call the transformer with the input:
         let mut output = match &*transformer.read().await {
             Value::Procedure(proc) => {
-                let output = proc.call(vec![Gc::new(Value::Syntax(input))]).await?;
+                let output = proc.call(vec![Gc::new(Value::Syntax(input))], todo!()).await?;
                 let output = output.read().await;
                 match &*output {
                     Value::Syntax(syntax) => syntax.clone(),
@@ -185,15 +185,15 @@ impl Syntax {
         })
     }
 
-    pub async fn compile_expanded(&self, env: &Env) -> Result<Box<dyn Eval>, CompileError> {
+    pub async fn compile_expanded(&self, env: &Env) -> Result<Arc<dyn Eval>, CompileError> {
         match self {
             Self::Nil { span } => Err(CompileError::UnexpectedEmptyList(span.clone())),
-            Self::Identifier { ident, .. } => Ok(Box::new(
+            Self::Identifier { ident, .. } => Ok(Arc::new(
                 env.fetch_var(ident)
                     .await
                     .ok_or_else(|| CompileError::UndefinedVariable(ident.clone()))?,
-            ) as Box<dyn Eval>),
-            Self::Literal { literal, .. } => Ok(Box::new(literal.clone()) as Box<dyn Eval>),
+            ) as Arc<dyn Eval>),
+            Self::Literal { literal, .. } => Ok(Arc::new(literal.clone()) as Arc<dyn Eval>),
             Self::List { list: exprs, span } => match &exprs[..] {
                 // Function call:
                 [Self::Identifier { ident, .. }, ..] if env.is_bound(ident).await => {
@@ -260,16 +260,16 @@ impl Syntax {
                 let mut vals = Vec::new();
                 for item in vector {
                     match item {
-                        Self::Nil { .. } => vals.push(Box::new(ast::Nil) as Box<dyn Eval>),
+                        Self::Nil { .. } => vals.push(Arc::new(ast::Nil) as Arc<dyn Eval>),
                         item => vals.push(item.compile(env).await?),
                     }
                 }
-                Ok(Box::new(ast::Vector { vals }) as Box<dyn Eval>)
+                Ok(Arc::new(ast::Vector { vals }) as Arc<dyn Eval>)
             }
         }
     }
 
-    pub async fn compile(&self, env: &Env) -> Result<Box<dyn Eval>, CompileError> {
+    pub async fn compile(&self, env: &Env) -> Result<Arc<dyn Eval>, CompileError> {
         self.expand(env).await?.compile(env).await
     }
 }
@@ -296,7 +296,7 @@ impl Expansion<'_> {
 }
 
 impl<'a> Expansion<'a> {
-    pub fn compile(self, env: &'a Env) -> BoxFuture<'a, Result<Box<dyn Eval>, CompileError>> {
+    pub fn compile(self, env: &'a Env) -> BoxFuture<'a, Result<Arc<dyn Eval>, CompileError>> {
         Box::pin(async move {
             match self {
                 Self::Unexpanded(syntax) => syntax.compile_expanded(env).await,
@@ -363,7 +363,7 @@ impl ParsedSyntax {
         Ok(output)
     }
 
-    pub async fn compile(&self, env: &Env) -> Result<Box<dyn Eval>, CompileError> {
+    pub async fn compile(&self, env: &Env) -> Result<Arc<dyn Eval>, CompileError> {
         self.syntax.compile(env).await
     }
 }

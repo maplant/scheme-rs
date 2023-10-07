@@ -10,7 +10,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use derive_more::From;
-use std::collections::{HashMap, HashSet};
+use std::{sync::Arc, collections::{HashMap, HashSet}};
 
 #[derive(From, Debug)]
 pub enum CompileError {
@@ -61,8 +61,8 @@ where
         exprs: &[Syntax],
         env: &Env,
         span: &Span,
-    ) -> Result<Box<dyn Eval>, CompileError> {
-        Ok(Box::new(Self::compile(exprs, env, span).await?))
+    ) -> Result<Arc<dyn Eval>, CompileError> {
+        Ok(Arc::new(Self::compile(exprs, env, span).await?))
     }
 }
 
@@ -150,7 +150,7 @@ impl_from_compile_error!(CompileLetBindingError);
 struct LetBinding {
     ident: Identifier,
     span: Span,
-    expr: Box<dyn Eval>,
+    expr: Arc<dyn Eval>,
 }
 
 impl LetBinding {

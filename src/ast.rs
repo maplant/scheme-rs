@@ -5,8 +5,9 @@ use crate::{
     gc::Gc,
     num::Number,
     syntax::{Identifier, Mark, Span, Syntax},
-    value::Value,
+    value::Value, util::ArcSlice,
 };
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ByteVector(pub Vec<u8>);
@@ -33,8 +34,8 @@ pub struct SyntaxQuote {
 
 #[derive(Clone)]
 pub struct Call {
-    pub operator: Box<dyn Eval>,
-    pub args: Vec<Box<dyn Eval>>,
+    pub operator: Arc<dyn Eval>,
+    pub args: Vec<Arc<dyn Eval>>,
     pub location: Span,
     pub proc_name: String,
 }
@@ -50,7 +51,7 @@ pub struct DefineFunc {
 #[derive(Clone)]
 pub struct DefineVar {
     pub name: Identifier,
-    pub val: Box<dyn Eval>,
+    pub val: Arc<dyn Eval>,
 }
 
 #[derive(Clone)]
@@ -62,7 +63,7 @@ pub enum Define {
 #[derive(Clone)]
 pub struct DefineSyntax {
     pub name: Identifier,
-    pub transformer: Box<dyn Eval>,
+    pub transformer: Arc<dyn Eval>,
 }
 
 #[derive(Clone)]
@@ -92,60 +93,60 @@ impl Formals {
 
 #[derive(Clone, Debug)]
 pub struct Body {
-    pub exprs: Vec<Syntax>,
+    pub exprs: ArcSlice<Syntax>,
 }
 
 impl Body {
     pub fn new(exprs: Vec<Syntax>) -> Self {
-        Self { exprs }
+        Self { exprs: ArcSlice::from(exprs) }
     }
 }
 
 #[derive(Clone)]
 pub struct Let {
     pub scope: Gc<LexicalContour>,
-    pub bindings: Vec<(Identifier, Box<dyn Eval>)>,
+    pub bindings: Arc<[(Identifier, Arc<dyn Eval>)]>,
     pub body: Body,
 }
 
 #[derive(Clone)]
 pub struct Set {
     pub var: Identifier,
-    pub val: Box<dyn Eval>,
+    pub val: Arc<dyn Eval>,
 }
 
 #[derive(Clone)]
 pub struct If {
-    pub cond: Box<dyn Eval>,
-    pub success: Box<dyn Eval>,
-    pub failure: Option<Box<dyn Eval>>,
+    pub cond: Arc<dyn Eval>,
+    pub success: Arc<dyn Eval>,
+    pub failure: Option<Arc<dyn Eval>>,
 }
 
 #[derive(Clone)]
 pub struct And {
-    pub args: Vec<Box<dyn Eval>>,
+    pub args: ArcSlice<Arc<dyn Eval>>,
 }
 
 impl And {
-    pub fn new(args: Vec<Box<dyn Eval>>) -> Self {
-        Self { args }
+    pub fn new(args: Vec<Arc<dyn Eval>>) -> Self {
+        Self { args: ArcSlice::from(args) }
     }
 }
 
 #[derive(Clone)]
 pub struct Or {
-    pub args: Vec<Box<dyn Eval>>,
+    pub args: ArcSlice<Arc<dyn Eval>>,
 }
 
 impl Or {
-    pub fn new(args: Vec<Box<dyn Eval>>) -> Self {
-        Self { args }
+    pub fn new(args: Vec<Arc<dyn Eval>>) -> Self {
+        Self { args: ArcSlice::from(args) }
     }
 }
 
 #[derive(Clone)]
 pub struct Vector {
-    pub vals: Vec<Box<dyn Eval>>,
+    pub vals: Vec<Arc<dyn Eval>>,
 }
 
 #[derive(Clone)]
@@ -153,7 +154,7 @@ pub struct Nil;
 
 #[derive(Clone)]
 pub struct SyntaxCase {
-    pub arg: Box<dyn Eval>,
+    pub arg: Arc<dyn Eval>,
     pub transformer: Transformer,
 }
 
