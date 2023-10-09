@@ -1,6 +1,7 @@
-use crate::{env::Env, error::RuntimeError, gc::Gc, value::Value};
+use crate::{continuation::Continuation, error::RuntimeError, gc::Gc, value::Value};
 use futures::future::BoxFuture;
 use proc_macros::builtin;
+use std::sync::Arc;
 
 pub fn fmt_list<'a>(car: &'a Gc<Value>, cdr: &'a Gc<Value>) -> BoxFuture<'a, String> {
     Box::pin(async move {
@@ -44,7 +45,10 @@ pub fn fmt_list<'a>(car: &'a Gc<Value>, cdr: &'a Gc<Value>) -> BoxFuture<'a, Str
 }
 
 #[builtin("list")]
-pub async fn list(_env: Env, args: Vec<Gc<Value>>) -> Result<Gc<Value>, RuntimeError> {
+pub async fn list(
+    _cont: &Option<Arc<Continuation>>,
+    args: Vec<Gc<Value>>,
+) -> Result<Gc<Value>, RuntimeError> {
     // Construct the list in reverse
     let mut cdr = Gc::new(Value::Nil);
     for arg in args.into_iter().rev() {
@@ -54,12 +58,19 @@ pub async fn list(_env: Env, args: Vec<Gc<Value>>) -> Result<Gc<Value>, RuntimeE
 }
 
 #[builtin("cons")]
-pub async fn cons(_env: Env, car: &Gc<Value>, cdr: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> {
+pub async fn cons(
+    _cont: &Option<Arc<Continuation>>,
+    car: &Gc<Value>,
+    cdr: &Gc<Value>,
+) -> Result<Gc<Value>, RuntimeError> {
     Ok(Gc::new(Value::Pair(car.clone(), cdr.clone())))
 }
 
 #[builtin("car")]
-pub async fn car(_env: Env, val: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> {
+pub async fn car(
+    _cont: &Option<Arc<Continuation>>,
+    val: &Gc<Value>,
+) -> Result<Gc<Value>, RuntimeError> {
     let val = val.read().await;
     match &*val {
         Value::Pair(car, _cdr) => Ok(car.clone()),
@@ -68,7 +79,10 @@ pub async fn car(_env: Env, val: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> 
 }
 
 #[builtin("cdr")]
-pub async fn cdr(_env: Env, val: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> {
+pub async fn cdr(
+    _cont: &Option<Arc<Continuation>>,
+    val: &Gc<Value>,
+) -> Result<Gc<Value>, RuntimeError> {
     let val = val.read().await;
     match &*val {
         Value::Pair(_car, cdr) => Ok(cdr.clone()),
@@ -78,7 +92,7 @@ pub async fn cdr(_env: Env, val: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> 
 
 #[builtin("set-car!")]
 pub async fn set_car(
-    _env: Env,
+    _cont: &Option<Arc<Continuation>>,
     var: &Gc<Value>,
     val: &Gc<Value>,
 ) -> Result<Gc<Value>, RuntimeError> {

@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use proc_macros::builtin;
 
 use crate::{
     ast,
@@ -7,6 +8,7 @@ use crate::{
     eval::{Eval, ValueOrPreparedCall},
     expand::Transformer,
     gc::Gc,
+    proc::{Callable, PreparedCall},
     syntax::{Identifier, Syntax},
     util::ArcSlice,
     value::Value,
@@ -18,13 +20,13 @@ pub trait Resumable: Send + Sync {
     async fn resume(
         &self,
         arg: Gc<Value>,
-        cont: Option<Arc<Continuation>>,
+        cont: &Option<Arc<Continuation>>,
     ) -> Result<Gc<Value>, RuntimeError>;
 
     async fn tail_resume(
         &self,
         arg: Gc<Value>,
-        cont: Option<Arc<Continuation>>,
+        cont: &Option<Arc<Continuation>>,
     ) -> Result<ValueOrPreparedCall, RuntimeError>;
 }
 
@@ -35,10 +37,10 @@ pub struct Continuation {
 }
 
 impl Continuation {
-    pub fn new(resume_point: Arc<dyn Resumable>, remaining: Option<Arc<Continuation>>) -> Self {
+    pub fn new(resume_point: Arc<dyn Resumable>, remaining: &Option<Arc<Continuation>>) -> Self {
         Self {
             resume_point,
-            remaining,
+            remaining: remaining.clone(),
         }
     }
 }
@@ -48,44 +50,58 @@ impl Resumable for Continuation {
     async fn resume(
         &self,
         arg: Gc<Value>,
-        cont: Option<Arc<Continuation>>,
+        cont: &Option<Arc<Continuation>>,
     ) -> Result<Gc<Value>, RuntimeError> {
-        let new_cont = Arc::new(Continuation::new(Arc::new(self.clone()), cont.clone()));
+        let new_cont = Arc::new(Continuation::new(Arc::new(self.clone()), cont));
         if let Some(ref remaining) = self.remaining {
-            let resume_result = self.resume_point.resume(arg, Some(new_cont)).await?;
+            let resume_result = self.resume_point.resume(arg, &Some(new_cont)).await?;
             let new_cont = Arc::new(Continuation::new(remaining.clone(), cont));
-            remaining.resume(resume_result, Some(new_cont)).await
+            remaining.resume(resume_result, &Some(new_cont)).await
         } else {
-            self.resume_point.resume(arg, Some(new_cont)).await
+            self.resume_point.resume(arg, &Some(new_cont)).await
         }
     }
 
     async fn tail_resume(
         &self,
         arg: Gc<Value>,
-        cont: Option<Arc<Continuation>>,
+        cont: &Option<Arc<Continuation>>,
     ) -> Result<ValueOrPreparedCall, RuntimeError> {
-        let new_cont = Arc::new(Continuation::new(Arc::new(self.clone()), cont.clone()));
+        let new_cont = Arc::new(Continuation::new(Arc::new(self.clone()), cont));
         if let Some(ref remaining) = self.remaining {
-            let resume_result = self.resume_point.resume(arg, Some(new_cont)).await?;
+            let resume_result = self.resume_point.resume(arg, &Some(new_cont)).await?;
             let new_cont = Arc::new(Continuation::new(remaining.clone(), cont));
-            remaining.tail_resume(resume_result, Some(new_cont)).await
+            remaining.tail_resume(resume_result, &Some(new_cont)).await
         } else {
-            self.resume_point.tail_resume(arg, Some(new_cont)).await
+            self.resume_point.tail_resume(arg, &Some(new_cont)).await
         }
     }
 }
 
-/*
-impl Continuation {
-    async fn call(&self, arg: Gc<Value>) -> Result<Gc<Value>, RuntimeError> {
-        let resumed_value = self.resume_point.resume(arg).await?;
-        if let Some(remaining) = self.remaining {
-            remaining.tail_eval(e
+#[async_trait]
+impl Callable for Option<Arc<Continuation>> {
+    fn min_args(&self) -> usize {
+        1
+    }
+
+    fn max_args(&self) -> Option<usize> {
+        Some(1)
+    }
+
+    async fn call(
+        &self,
+        mut args: Vec<Gc<Value>>,
+        calling_cont: &Self,
+    ) -> Result<ValueOrPreparedCall, RuntimeError> {
+        let arg = args.pop().unwrap();
+        if let Some(cont) = self {
+            cont.tail_resume(arg, calling_cont).await
+        } else {
+            println!("Continuation is empty");
+            Ok(ValueOrPreparedCall::Value(arg))
         }
     }
 }
- */
 
 pub struct ResumableBody {
     env: Env,
@@ -106,29 +122,26 @@ impl Resumable for ResumableBody {
     async fn resume(
         &self,
         arg: Gc<Value>,
-        cont: Option<Arc<Continuation>>,
+        cont: &Option<Arc<Continuation>>,
     ) -> Result<Gc<Value>, RuntimeError> {
-        self.tail_resume(arg, cont.clone())
-            .await?
-            .eval(&self.env, cont)
-            .await
+        self.tail_resume(arg, cont).await?.eval(cont).await
     }
 
     async fn tail_resume(
         &self,
         arg: Gc<Value>,
-        cont: Option<Arc<Continuation>>,
+        cont: &Option<Arc<Continuation>>,
     ) -> Result<ValueOrPreparedCall, RuntimeError> {
         for (head, tail) in self.remaining.iter() {
-            let new_cont = Arc::new(Continuation::new(
+            let cont = Some(Arc::new(Continuation::new(
                 Arc::new(ResumableBody::new(&self.env, &tail)),
-                cont.clone(),
-            ));
-            let compiled = head.compile(&self.env).await?;
+                cont,
+            )));
+            let compiled = head.compile(&self.env, &cont).await?;
             if tail.is_empty() {
-                return compiled.tail_eval(&self.env, Some(new_cont)).await;
+                return compiled.tail_eval(&self.env, &cont).await;
             } else {
-                compiled.eval(&self.env, Some(new_cont)).await?;
+                compiled.eval(&self.env, &cont).await?;
             }
         }
 
@@ -156,13 +169,17 @@ impl Resumable for ResumableSyntaxCase {
     async fn resume(
         &self,
         arg: Gc<Value>,
-        cont: Option<Arc<Continuation>>,
+        cont: &Option<Arc<Continuation>>,
     ) -> Result<Gc<Value>, RuntimeError> {
         let arg = arg.read().await;
         match &*arg {
             Value::Syntax(syntax) => {
                 let result = self.transformer.expand(syntax).unwrap();
-                result.compile(&self.env).await?.eval(&self.env, cont).await
+                result
+                    .compile(&self.env, cont)
+                    .await?
+                    .eval(&self.env, cont)
+                    .await
             }
             _ => todo!(),
         }
@@ -171,7 +188,7 @@ impl Resumable for ResumableSyntaxCase {
     async fn tail_resume(
         &self,
         arg: Gc<Value>,
-        cont: Option<Arc<Continuation>>,
+        cont: &Option<Arc<Continuation>>,
     ) -> Result<ValueOrPreparedCall, RuntimeError> {
         Ok(ValueOrPreparedCall::Value(self.resume(arg, cont).await?))
     }
@@ -196,7 +213,7 @@ impl Resumable for ResumableSet {
     async fn resume(
         &self,
         arg: Gc<Value>,
-        _cont: Option<Arc<Continuation>>,
+        _cont: &Option<Arc<Continuation>>,
     ) -> Result<Gc<Value>, RuntimeError> {
         // TODO: Add try_unwrap to GC to avoid the clone of the inner value
         *self
@@ -212,7 +229,7 @@ impl Resumable for ResumableSet {
     async fn tail_resume(
         &self,
         arg: Gc<Value>,
-        cont: Option<Arc<Continuation>>,
+        cont: &Option<Arc<Continuation>>,
     ) -> Result<ValueOrPreparedCall, RuntimeError> {
         Ok(ValueOrPreparedCall::Value(self.resume(arg, cont).await?))
     }
@@ -237,18 +254,15 @@ impl Resumable for ResumableAnd {
     async fn resume(
         &self,
         arg: Gc<Value>,
-        cont: Option<Arc<Continuation>>,
+        cont: &Option<Arc<Continuation>>,
     ) -> Result<Gc<Value>, RuntimeError> {
-        self.tail_resume(arg, cont.clone())
-            .await?
-            .eval(&self.env, cont)
-            .await
+        self.tail_resume(arg, cont).await?.eval(cont).await
     }
 
     async fn tail_resume(
         &self,
         arg: Gc<Value>,
-        cont: Option<Arc<Continuation>>,
+        cont: &Option<Arc<Continuation>>,
     ) -> Result<ValueOrPreparedCall, RuntimeError> {
         // This situation should never occur, because we don't create a new continuation
         // for the last argument
@@ -259,12 +273,12 @@ impl Resumable for ResumableAnd {
             return Ok(ValueOrPreparedCall::Value(Gc::new(Value::Boolean(false))));
         }
         for (arg, tail) in self.args.skip_last() {
-            let new_cont = Arc::new(Continuation::new(
+            let cont = Arc::new(Continuation::new(
                 Arc::new(ResumableAnd::new(&self.env, &tail)),
-                cont.clone(),
+                cont,
             ));
             if !arg
-                .eval(&self.env, Some(new_cont))
+                .eval(&self.env, &Some(cont))
                 .await?
                 .read()
                 .await
@@ -296,18 +310,15 @@ impl Resumable for ResumableOr {
     async fn resume(
         &self,
         arg: Gc<Value>,
-        cont: Option<Arc<Continuation>>,
+        cont: &Option<Arc<Continuation>>,
     ) -> Result<Gc<Value>, RuntimeError> {
-        self.tail_resume(arg, cont.clone())
-            .await?
-            .eval(&self.env, cont)
-            .await
+        self.tail_resume(arg, cont).await?.eval(cont).await
     }
 
     async fn tail_resume(
         &self,
         arg: Gc<Value>,
-        cont: Option<Arc<Continuation>>,
+        cont: &Option<Arc<Continuation>>,
     ) -> Result<ValueOrPreparedCall, RuntimeError> {
         // This situation should never occur, because we don't create a new continuation
         // for the last argument
@@ -318,12 +329,12 @@ impl Resumable for ResumableOr {
             return Ok(ValueOrPreparedCall::Value(Gc::new(Value::Boolean(true))));
         }
         for (arg, tail) in self.args.skip_last() {
-            let new_cont = Arc::new(Continuation::new(
+            let cont = Arc::new(Continuation::new(
                 Arc::new(ResumableAnd::new(&self.env, &tail)),
-                cont.clone(),
+                cont,
             ));
             if arg
-                .eval(&self.env, Some(new_cont))
+                .eval(&self.env, &Some(cont))
                 .await?
                 .read()
                 .await
@@ -364,18 +375,15 @@ impl Resumable for ResumableLet {
     async fn resume(
         &self,
         arg: Gc<Value>,
-        cont: Option<Arc<Continuation>>,
+        cont: &Option<Arc<Continuation>>,
     ) -> Result<Gc<Value>, RuntimeError> {
-        self.tail_resume(arg, cont.clone())
-            .await?
-            .eval(&Env::from(self.scope.clone()), cont)
-            .await
+        self.tail_resume(arg, cont).await?.eval(cont).await
     }
 
     async fn tail_resume(
         &self,
         arg: Gc<Value>,
-        cont: Option<Arc<Continuation>>,
+        cont: &Option<Arc<Continuation>>,
     ) -> Result<ValueOrPreparedCall, RuntimeError> {
         let up = {
             let mut scope = self.scope.write().await;
@@ -384,15 +392,10 @@ impl Resumable for ResumableLet {
         };
         for ((ident, expr), remaining) in self.remaining_bindings.iter() {
             let cont = Arc::new(Continuation::new(
-                Arc::new(ResumableLet::new(
-                    &self.scope,
-                    &ident,
-                    remaining,
-                    &self.body,
-                )),
-                cont.clone(),
+                Arc::new(ResumableLet::new(&self.scope, ident, remaining, &self.body)),
+                cont,
             ));
-            let val = expr.eval(&up, Some(cont)).await?;
+            let val = expr.eval(&up, &Some(cont)).await?;
             self.scope.write().await.def_var(ident, val);
         }
         self.body
@@ -422,18 +425,15 @@ impl Resumable for ResumableIf {
     async fn resume(
         &self,
         arg: Gc<Value>,
-        cont: Option<Arc<Continuation>>,
+        cont: &Option<Arc<Continuation>>,
     ) -> Result<Gc<Value>, RuntimeError> {
-        self.tail_resume(arg, cont.clone())
-            .await?
-            .eval(&self.env, cont)
-            .await
+        self.tail_resume(arg, cont).await?.eval(cont).await
     }
 
     async fn tail_resume(
         &self,
         arg: Gc<Value>,
-        cont: Option<Arc<Continuation>>,
+        cont: &Option<Arc<Continuation>>,
     ) -> Result<ValueOrPreparedCall, RuntimeError> {
         if arg.read().await.is_true() {
             self.success.tail_eval(&self.env, cont).await
@@ -464,7 +464,7 @@ impl Resumable for ResumableDefineVar {
     async fn resume(
         &self,
         arg: Gc<Value>,
-        _cont: Option<Arc<Continuation>>,
+        _cont: &Option<Arc<Continuation>>,
     ) -> Result<Gc<Value>, RuntimeError> {
         self.env.def_var(&self.name, arg).await;
         Ok(Gc::new(Value::Nil))
@@ -473,7 +473,7 @@ impl Resumable for ResumableDefineVar {
     async fn tail_resume(
         &self,
         arg: Gc<Value>,
-        cont: Option<Arc<Continuation>>,
+        cont: &Option<Arc<Continuation>>,
     ) -> Result<ValueOrPreparedCall, RuntimeError> {
         Ok(ValueOrPreparedCall::Value(self.resume(arg, cont).await?))
     }
@@ -498,7 +498,7 @@ impl Resumable for ResumableDefineSyntax {
     async fn resume(
         &self,
         arg: Gc<Value>,
-        _cont: Option<Arc<Continuation>>,
+        _cont: &Option<Arc<Continuation>>,
     ) -> Result<Gc<Value>, RuntimeError> {
         self.env.def_macro(&self.name, arg).await;
         Ok(Gc::new(Value::Nil))
@@ -507,7 +507,7 @@ impl Resumable for ResumableDefineSyntax {
     async fn tail_resume(
         &self,
         arg: Gc<Value>,
-        cont: Option<Arc<Continuation>>,
+        cont: &Option<Arc<Continuation>>,
     ) -> Result<ValueOrPreparedCall, RuntimeError> {
         Ok(ValueOrPreparedCall::Value(self.resume(arg, cont).await?))
     }
@@ -522,10 +522,10 @@ pub struct ResumableCall {
 }
 
 impl ResumableCall {
-    pub fn new(env: &Env, collected: &Vec<Gc<Value>>, remaining: ArcSlice<Arc<dyn Eval>>) -> Self {
+    pub fn new(env: &Env, collected: &[Gc<Value>], remaining: ArcSlice<Arc<dyn Eval>>) -> Self {
         Self {
             env: env.clone(),
-            collected: collected.clone(),
+            collected: collected.to_owned(),
             remaining,
         }
     }
@@ -536,29 +536,44 @@ impl Resumable for ResumableCall {
     async fn resume(
         &self,
         arg: Gc<Value>,
-        cont: Option<Arc<Continuation>>,
+        cont: &Option<Arc<Continuation>>,
     ) -> Result<Gc<Value>, RuntimeError> {
-        self.tail_resume(arg, cont.clone())
-            .await?
-            .eval(&self.env, cont)
-            .await
+        self.tail_resume(arg, cont).await?.eval(cont).await
     }
 
     async fn tail_resume(
         &self,
         arg: Gc<Value>,
-        cont: Option<Arc<Continuation>>,
+        cont: &Option<Arc<Continuation>>,
     ) -> Result<ValueOrPreparedCall, RuntimeError> {
         let mut collected = self.collected.clone();
         collected.push(arg);
         for (arg, remaining) in self.remaining.iter() {
             let cont = Arc::new(Continuation::new(
                 Arc::new(ResumableCall::new(&self.env, &collected, remaining)),
-                cont.clone(),
+                cont,
             ));
-            let arg = arg.eval(&self.env, Some(cont)).await?;
+            let arg = arg.eval(&self.env, &Some(cont)).await?;
             collected.push(arg);
         }
-        todo!()
+        Ok(ValueOrPreparedCall::PreparedCall(PreparedCall::prepare(
+            collected,
+        )))
     }
+}
+
+#[builtin("call/cc")]
+pub async fn call_cc(
+    cont: &Option<Arc<Continuation>>,
+    proc: &Gc<Value>,
+) -> Result<Gc<Value>, RuntimeError> {
+    let proc = proc.read().await;
+    let callable = proc
+        .as_callable()
+        .ok_or_else(|| RuntimeError::invalid_type("procedure", proc.type_name()))?;
+    callable
+        .call(vec![Gc::new(Value::Continuation(cont.clone()))], cont)
+        .await?
+        .eval(cont)
+        .await
 }

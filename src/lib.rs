@@ -1,4 +1,3 @@
-pub mod util;
 pub mod ast;
 pub mod builtin;
 pub mod compile;
@@ -14,4 +13,5 @@ pub mod num;
 pub mod parse;
 pub mod proc;
 pub mod syntax;
+pub mod util;
 pub mod value;

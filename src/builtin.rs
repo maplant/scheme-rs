@@ -1,13 +1,9 @@
-use futures::future::BoxFuture;
-
 use crate::{
-    env::{Env, LexicalContour},
-    error::RuntimeError,
-    gc::Gc,
-    proc::ExternalFn,
-    syntax::Identifier,
-    value::Value,
+    continuation::Continuation, env::LexicalContour, error::RuntimeError, gc::Gc, proc::ExternalFn,
+    syntax::Identifier, value::Value,
 };
+use futures::future::BoxFuture;
+use std::sync::Arc;
 
 type ExprFuture = BoxFuture<'static, Result<Gc<Value>, RuntimeError>>;
 
@@ -15,7 +11,7 @@ pub struct Builtin {
     pub name: &'static str,
     num_args: usize,
     variadic: bool,
-    wrapper: fn(Env, Vec<Gc<Value>>) -> ExprFuture,
+    wrapper: fn(Option<Arc<Continuation>>, Vec<Gc<Value>>) -> ExprFuture,
 }
 
 impl Builtin {
@@ -23,7 +19,7 @@ impl Builtin {
         name: &'static str,
         num_args: usize,
         variadic: bool,
-        wrapper: fn(Env, Vec<Gc<Value>>) -> ExprFuture,
+        wrapper: fn(Option<Arc<Continuation>>, Vec<Gc<Value>>) -> ExprFuture,
     ) -> Self {
         Self {
             name,

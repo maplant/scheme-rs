@@ -28,13 +28,13 @@ pub fn builtin(name: TokenStream, item: TokenStream) -> TokenStream {
         let arg_indices: Vec<_> = (0..num_args).into_iter().collect();
         parse_quote! {
             fn #wrapper_name(
-                env: crate::env::Env,
+                cont: Option<std::sync::Arc<crate::continuation::Continuation>>,
                 args: Vec<crate::gc::Gc<crate::value::Value>>
             ) -> futures::future::BoxFuture<'static, Result<crate::gc::Gc<crate::value::Value>, crate::error::RuntimeError>> {
                 Box::pin(
                     async move {
                         #impl_name(
-                            env,
+                            &cont,
                             #( &args[#arg_indices], )*
                         ).await
                     }
@@ -45,14 +45,14 @@ pub fn builtin(name: TokenStream, item: TokenStream) -> TokenStream {
         let arg_indices: Vec<_> = (0..num_args).into_iter().collect();
         parse_quote! {
             fn #wrapper_name(
-                env: crate::env::Env,
+                cont: Option<std::sync::Arc<crate::continuation::Continuation>>,
                 mut required_args: Vec<crate::gc::Gc<crate::value::Value>>
             ) -> futures::future::BoxFuture<'static, Result<crate::gc::Gc<crate::value::Value>, crate::error::RuntimeError>> {
                 let var_args = required_args.split_off(#num_args);
                 Box::pin(
                     async move {
                         #impl_name(
-                            env,
+                            &cont,
                             #( &required_args[#arg_indices], )*
                             var_args
                         ).await

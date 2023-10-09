@@ -2,13 +2,14 @@ use crate::{
     compile::CompileError,
     syntax::{Identifier, Span},
 };
-use std::fmt;
 
+#[derive(Debug)]
 pub struct RuntimeError {
     pub backtrace: Vec<Frame>,
     pub kind: RuntimeErrorKind,
 }
 
+#[derive(Debug)]
 pub enum RuntimeErrorKind {
     UndefinedVariable(Identifier),
     InvalidType {
@@ -29,6 +30,7 @@ pub enum RuntimeErrorKind {
     },
 }
 
+#[derive(Debug)]
 pub struct Frame {
     pub proc: String,
     pub span: Span,
@@ -103,8 +105,10 @@ impl From<CompileError> for RuntimeError {
     }
 }
 
+/*
 impl fmt::Debug for RuntimeError {
     fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
         todo!()
     }
 }
+*/

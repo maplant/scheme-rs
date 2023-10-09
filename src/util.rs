@@ -1,7 +1,4 @@
-use std::{
-    ops::Deref,
-    sync::Arc,
-};
+use std::{ops::Deref, sync::Arc};
 
 #[derive(Clone, Debug)]
 pub struct ArcSlice<T> {
@@ -11,13 +8,27 @@ pub struct ArcSlice<T> {
 
 impl<T> ArcSlice<T> {
     pub fn skip_last(&self) -> impl Iterator<Item = (&T, ArcSlice<T>)> {
-        (self.start..(self.arc.len().saturating_sub(1))).map(
-            |i| (&self.arc[i], ArcSlice { arc: self.arc.clone(), start: i + 1 }))
+        (self.start..(self.arc.len().saturating_sub(1))).map(|i| {
+            (
+                &self.arc[i],
+                ArcSlice {
+                    arc: self.arc.clone(),
+                    start: i + 1,
+                },
+            )
+        })
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&T, ArcSlice<T>)> {
-        (self.start..self.arc.len()).map(
-            |i| (&self.arc[i], ArcSlice { arc: self.arc.clone(), start: i + 1 }))
+        (self.start..self.arc.len()).map(|i| {
+            (
+                &self.arc[i],
+                ArcSlice {
+                    arc: self.arc.clone(),
+                    start: i + 1,
+                },
+            )
+        })
     }
 }
 

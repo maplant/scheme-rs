@@ -81,9 +81,21 @@ async fn main() {
             Ok(parsed) => parsed,
         };
         for sexpr in parsed {
-            let result = sexpr.compile(&top).await.unwrap().eval(&top, None).await.unwrap();
-            println!("${n_results} = {}", result.read().await.fmt().await);
-            n_results += 1;
+            match sexpr
+                .compile(&top, &None)
+                .await
+                .unwrap()
+                .eval(&top, &None)
+                .await
+            {
+                Err(err) => {
+                    println!("Error: {err:?}");
+                }
+                Ok(result) => {
+                    println!("${n_results} = {}", result.read().await.fmt().await);
+                    n_results += 1;
+                }
+            }
         }
     }
 }

@@ -5,7 +5,8 @@ use crate::{
     gc::Gc,
     num::Number,
     syntax::{Identifier, Mark, Span, Syntax},
-    value::Value, util::ArcSlice,
+    util::ArcSlice,
+    value::Value,
 };
 use std::sync::Arc;
 
@@ -34,8 +35,8 @@ pub struct SyntaxQuote {
 
 #[derive(Clone)]
 pub struct Call {
-    pub operator: Arc<dyn Eval>,
-    pub args: Vec<Arc<dyn Eval>>,
+    //    pub operator: Arc<dyn Eval>,
+    pub args: ArcSlice<Arc<dyn Eval>>,
     pub location: Span,
     pub proc_name: String,
 }
@@ -98,7 +99,9 @@ pub struct Body {
 
 impl Body {
     pub fn new(exprs: Vec<Syntax>) -> Self {
-        Self { exprs: ArcSlice::from(exprs) }
+        Self {
+            exprs: ArcSlice::from(exprs),
+        }
     }
 }
 
@@ -129,7 +132,9 @@ pub struct And {
 
 impl And {
     pub fn new(args: Vec<Arc<dyn Eval>>) -> Self {
-        Self { args: ArcSlice::from(args) }
+        Self {
+            args: ArcSlice::from(args),
+        }
     }
 }
 
@@ -140,7 +145,9 @@ pub struct Or {
 
 impl Or {
     pub fn new(args: Vec<Arc<dyn Eval>>) -> Self {
-        Self { args: ArcSlice::from(args) }
+        Self {
+            args: ArcSlice::from(args),
+        }
     }
 }
 
