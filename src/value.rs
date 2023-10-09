@@ -8,8 +8,8 @@ use crate::{
     proc::{Callable, ExternalFn, Procedure},
     syntax::Syntax,
 };
-use proc_macros::builtin;
 use futures::future::{BoxFuture, Shared};
+use proc_macros::builtin;
 use std::sync::Arc;
 #[derive(Clone)]
 pub enum Value {

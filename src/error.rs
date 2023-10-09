@@ -1,11 +1,12 @@
-use std::sync::Arc;
-use derivative::Derivative;
 use crate::{
-    gc::Gc,
-    value::Value,
     compile::CompileError,
-    syntax::{Identifier, Span}, continuation::Continuation,
+    continuation::Continuation,
+    gc::Gc,
+    syntax::{Identifier, Span},
+    value::Value,
 };
+use derivative::Derivative;
+use std::sync::Arc;
 
 // TODO: Rename this to condition to more accurately reflect its purpose
 #[derive(Debug)]
@@ -32,10 +33,10 @@ pub enum RuntimeErrorKind {
     DivisionByZero,
     CompileError(CompileError),
     AbandonCurrentContinuation {
-        #[derivative(Debug="ignore")]
+        #[derivative(Debug = "ignore")]
         args: Vec<Gc<Value>>,
-        #[derivative(Debug="ignore")]
-        new_cont: Option<Arc<Continuation>>
+        #[derivative(Debug = "ignore")]
+        new_cont: Option<Arc<Continuation>>,
     },
     Condition {
         // TODO
@@ -69,10 +70,13 @@ impl RuntimeError {
         }
     }
 
-    pub fn abandon_current_continuation(args: Vec<Gc<Value>>, new_cont: Option<Arc<Continuation>>) -> Self {
+    pub fn abandon_current_continuation(
+        args: Vec<Gc<Value>>,
+        new_cont: Option<Arc<Continuation>>,
+    ) -> Self {
         Self {
             backtrace: Vec::new(),
-            kind: RuntimeErrorKind::AbandonCurrentContinuation { args, new_cont }
+            kind: RuntimeErrorKind::AbandonCurrentContinuation { args, new_cont },
         }
     }
 

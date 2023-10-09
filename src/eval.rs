@@ -101,7 +101,6 @@ impl Eval for ast::Body {
                 Arc::new(ResumableBody::new(env, &tail)),
                 cont,
             )));
-            // println!("new_cont = {:#?}", cont);
             // Discard values that aren't returned
             expr.compile(env, &cont).await?.eval(env, &cont).await?;
         }
