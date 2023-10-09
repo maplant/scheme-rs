@@ -101,6 +101,7 @@ impl Eval for ast::Body {
                 Arc::new(ResumableBody::new(env, &tail)),
                 cont,
             )));
+            // println!("new_cont = {:#?}", cont);
             // Discard values that aren't returned
             expr.compile(env, &cont).await?.eval(env, &cont).await?;
         }
@@ -341,17 +342,18 @@ impl Eval for ast::Set {
             cont,
         ));
         // TODO: Add try_unwrap to GC to avoid the clone of the inner value
-        *env.fetch_var(&self.var)
-            .await
-            .ok_or_else(|| RuntimeError::undefined_variable(self.var.clone()))?
-            .write()
-            .await = self
+        let val = self
             .val
             .eval(env, &Some(new_cont))
             .await?
             .read()
             .await
             .clone();
+        *env.fetch_var(&self.var)
+            .await
+            .ok_or_else(|| RuntimeError::undefined_variable(self.var.clone()))?
+            .write()
+            .await = val;
         Ok(Gc::new(Value::Nil))
     }
 }

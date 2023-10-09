@@ -1,6 +1,6 @@
-use std::{ops::Deref, sync::Arc};
+use std::{ops::Deref, sync::Arc, fmt};
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ArcSlice<T> {
     arc: Arc<[T]>,
     start: usize,
@@ -31,6 +31,14 @@ impl<T> ArcSlice<T> {
         })
     }
 }
+
+impl<T: fmt::Debug> fmt::Debug for ArcSlice<T> {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt.debug_list().entries(&self.arc[self.start..])
+            .finish()
+    }
+}
+
 
 impl<T> From<Vec<T>> for ArcSlice<T> {
     fn from(v: Vec<T>) -> Self {

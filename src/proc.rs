@@ -77,6 +77,7 @@ pub type ExprFuture = BoxFuture<'static, Result<Gc<Value>, RuntimeError>>;
 
 #[derive(Debug, Clone)]
 pub struct ExternalFn {
+    pub name: &'static str,
     pub num_args: usize,
     pub variadic: bool,
     pub func: fn(Option<Arc<Continuation>>, Vec<Gc<Value>>) -> ExprFuture,
@@ -114,9 +115,13 @@ impl PreparedCall {
         let mut curr_proc = Some(self);
         loop {
             let proc = curr_proc.take().unwrap();
-            let op = proc.operator.read().await;
-            let Some(callable) = op.as_callable() else {
-                return Err(RuntimeError::invalid_operator_type(op.type_name()));
+            let callable = {
+                let proc = proc.operator.read().await;
+                let Some(callable) = proc.as_callable() else {
+                    return Err(RuntimeError::invalid_operator_type(proc.type_name()));
+                };
+                drop(proc);
+                callable
             };
             if proc.args.len() < callable.min_args() {
                 return Err(RuntimeError::wrong_num_of_args(

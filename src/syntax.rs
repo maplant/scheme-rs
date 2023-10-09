@@ -1,7 +1,7 @@
 use crate::{
     ast::{self, Literal},
     compile::{Compile, CompileError},
-    continuation::Continuation,
+    continuation::{CatchContinuationCall, Continuation},
     env::Env,
     error::RuntimeError,
     eval::Eval,
@@ -39,7 +39,7 @@ impl From<InputSpan<'_>> for Span {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum Syntax {
     /// An empty list.
     Nil {
@@ -65,6 +65,30 @@ pub enum Syntax {
         bound: bool,
         span: Span,
     },
+}
+
+impl fmt::Debug for Syntax {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Nil { .. } => write!(fmt, "()"),
+            Self::List { ref list, .. } => {
+                let mut fmt = fmt.debug_tuple("");
+                for item in list {
+                    fmt.field(item);
+                }
+                fmt.finish()
+            }
+            Self::Vector { ref vector, .. } => {
+                let mut fmt = fmt.debug_tuple("#");
+                for item in vector {
+                    fmt.field(item);
+                }
+                fmt.finish()
+            }
+            Self::Literal { literal, .. } => write!(fmt, "{:?}", literal),
+            Self::Identifier { ident, .. } => write!(fmt, "{}", ident.name),
+        }
+    }
 }
 
 impl Syntax {
@@ -399,7 +423,9 @@ impl ParsedSyntax {
         env: &Env,
         cont: &Option<Arc<Continuation>>,
     ) -> Result<Arc<dyn Eval>, CompileError> {
-        self.syntax.compile(env, cont).await
+        Ok(Arc::new(CatchContinuationCall::new(
+            self.syntax.compile(env, cont).await?,
+        )))
     }
 }
 

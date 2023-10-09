@@ -8,6 +8,7 @@ use crate::{
     proc::{Callable, ExternalFn, Procedure},
     syntax::Syntax,
 };
+use proc_macros::builtin;
 use futures::future::{BoxFuture, Shared};
 use std::sync::Arc;
 #[derive(Clone)]
@@ -50,11 +51,13 @@ impl Value {
         }
     }
 
-    pub fn as_callable(&self) -> Option<&dyn Callable> {
+    pub fn as_callable(&self) -> Option<Box<dyn Callable>> {
         match self {
-            Self::Procedure(ref proc) => Some(proc),
-            Self::ExternalFn(ref proc) => Some(proc),
-            Self::Continuation(ref proc) => Some(proc),
+            // Having to clone and box these kind of sucks. Hopefully we can
+            // fix this at some point
+            Self::Procedure(ref proc) => Some(Box::new(proc.clone())),
+            Self::ExternalFn(ref proc) => Some(Box::new(proc.clone())),
+            Self::Continuation(ref proc) => Some(Box::new(proc.clone())),
             _ => None,
         }
     }
@@ -166,4 +169,22 @@ impl<'a> TryFrom<&'a Value> for &'a Number {
             x => Err(RuntimeError::invalid_type("number", x.type_name())),
         }
     }
+}
+
+#[builtin("pair?")]
+pub async fn is_pair(
+    _cont: &Option<Arc<Continuation>>,
+    arg: &Gc<Value>,
+) -> Result<Gc<Value>, RuntimeError> {
+    let arg = arg.read().await;
+    Ok(Gc::new(Value::Boolean(matches!(&*arg, Value::Pair(_, _)))))
+}
+
+#[builtin("d")]
+pub async fn disp(
+    _cont: &Option<Arc<Continuation>>,
+    arg: &Gc<Value>,
+) -> Result<Gc<Value>, RuntimeError> {
+    println!("{}", arg.read().await.fmt().await);
+    Ok(Gc::new(Value::Nil))
 }

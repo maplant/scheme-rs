@@ -33,6 +33,7 @@ impl Builtin {
         into.def_var(
             &Identifier::new(self.name.to_string()),
             Gc::new(Value::from(ExternalFn {
+                name: self.name,
                 num_args: self.num_args,
                 variadic: self.variadic,
                 func: self.wrapper,

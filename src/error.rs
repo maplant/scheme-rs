@@ -1,15 +1,21 @@
+use std::sync::Arc;
+use derivative::Derivative;
 use crate::{
+    gc::Gc,
+    value::Value,
     compile::CompileError,
-    syntax::{Identifier, Span},
+    syntax::{Identifier, Span}, continuation::Continuation,
 };
 
+// TODO: Rename this to condition to more accurately reflect its purpose
 #[derive(Debug)]
 pub struct RuntimeError {
     pub backtrace: Vec<Frame>,
     pub kind: RuntimeErrorKind,
 }
 
-#[derive(Debug)]
+#[derive(Derivative)]
+#[derivative(Debug)]
 pub enum RuntimeErrorKind {
     UndefinedVariable(Identifier),
     InvalidType {
@@ -25,6 +31,12 @@ pub enum RuntimeErrorKind {
     },
     DivisionByZero,
     CompileError(CompileError),
+    AbandonCurrentContinuation {
+        #[derivative(Debug="ignore")]
+        args: Vec<Gc<Value>>,
+        #[derivative(Debug="ignore")]
+        new_cont: Option<Arc<Continuation>>
+    },
     Condition {
         // TODO
     },
@@ -54,6 +66,13 @@ impl RuntimeError {
                 last_frame.repeated += 1
             }
             _ => self.backtrace.push(Frame::new(proc, span)),
+        }
+    }
+
+    pub fn abandon_current_continuation(args: Vec<Gc<Value>>, new_cont: Option<Arc<Continuation>>) -> Self {
+        Self {
+            backtrace: Vec::new(),
+            kind: RuntimeErrorKind::AbandonCurrentContinuation { args, new_cont }
         }
     }
 
