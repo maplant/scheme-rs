@@ -1,13 +1,16 @@
 use crate::{
     ast::Literal,
-    env::Env,
+    continuation::Continuation,
     error::RuntimeError,
     gc::Gc,
     syntax::{Identifier, Span, Syntax},
     value::Value,
 };
 use proc_macros::builtin;
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 #[derive(Clone)]
 pub struct Transformer {
@@ -252,7 +255,7 @@ fn execute_slice(
 
 #[builtin("make-variable-transformer")]
 pub async fn make_variable_transformer(
-    _env: Env,
+    _cont: &Option<Arc<Continuation>>,
     proc: &Gc<Value>,
 ) -> Result<Gc<Value>, RuntimeError> {
     let proc = proc.read().await;

@@ -1,14 +1,16 @@
 use crate::{
     ast,
+    continuation::Continuation,
     error::RuntimeError,
     expand::Transformer,
     gc::{Gc, Trace},
     num::Number,
-    proc::{ExternalFn, Procedure},
+    proc::{Callable, ExternalFn, Procedure},
     syntax::Syntax,
 };
 use futures::future::{BoxFuture, Shared};
-
+use proc_macros::builtin;
+use std::sync::Arc;
 #[derive(Clone)]
 pub enum Value {
     Nil,
@@ -25,11 +27,15 @@ pub enum Value {
     ExternalFn(ExternalFn),
     Future(Shared<BoxFuture<'static, Value>>),
     Transformer(Transformer),
+    Continuation(Option<Arc<Continuation>>),
 }
 
 impl Value {
     pub fn is_callable(&self) -> bool {
-        matches!(self, Self::Procedure(_) | Self::ExternalFn(_))
+        matches!(
+            self,
+            Self::Procedure(_) | Self::ExternalFn(_) | Self::Transformer(_)
+        )
     }
 
     /// #f is false, everything else is true
@@ -45,9 +51,13 @@ impl Value {
         }
     }
 
-    pub fn as_proc(&self) -> Option<&Procedure> {
+    pub fn as_callable(&self) -> Option<Box<dyn Callable>> {
         match self {
-            Self::Procedure(ref proc) => Some(proc),
+            // Having to clone and box these kind of sucks. Hopefully we can
+            // fix this at some point
+            Self::Procedure(ref proc) => Some(Box::new(proc.clone())),
+            Self::ExternalFn(ref proc) => Some(Box::new(proc.clone())),
+            Self::Continuation(ref proc) => Some(Box::new(proc.clone())),
             _ => None,
         }
     }
@@ -81,6 +91,7 @@ impl Value {
                 Self::ExternalFn(_) => "<external_fn>".to_string(),
                 Self::Future(_) => "<future>".to_string(),
                 Self::Transformer(_) => "<transformer>".to_string(),
+                Self::Continuation(_) => "<continuation>".to_string(),
             }
         })
     }
@@ -125,6 +136,7 @@ impl Value {
             Self::Syntax(_) => "syntax",
             Self::Procedure(_) | Self::ExternalFn(_) | Self::Transformer(_) => "procedure",
             Self::Future(_) => "future",
+            Self::Continuation(_) => "continuation",
         }
     }
 }
@@ -157,4 +169,22 @@ impl<'a> TryFrom<&'a Value> for &'a Number {
             x => Err(RuntimeError::invalid_type("number", x.type_name())),
         }
     }
+}
+
+#[builtin("pair?")]
+pub async fn is_pair(
+    _cont: &Option<Arc<Continuation>>,
+    arg: &Gc<Value>,
+) -> Result<Gc<Value>, RuntimeError> {
+    let arg = arg.read().await;
+    Ok(Gc::new(Value::Boolean(matches!(&*arg, Value::Pair(_, _)))))
+}
+
+#[builtin("d")]
+pub async fn disp(
+    _cont: &Option<Arc<Continuation>>,
+    arg: &Gc<Value>,
+) -> Result<Gc<Value>, RuntimeError> {
+    println!("{}", arg.read().await.fmt().await);
+    Ok(Gc::new(Value::Nil))
 }

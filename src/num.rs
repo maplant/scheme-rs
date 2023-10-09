@@ -1,4 +1,4 @@
-use crate::{env::Env, error::RuntimeError, gc::Gc, value::Value};
+use crate::{continuation::Continuation, error::RuntimeError, gc::Gc, value::Value};
 use num::{complex::Complex64, FromPrimitive, ToPrimitive, Zero};
 use proc_macros::builtin;
 use rug::{Complete, Integer, Rational};
@@ -6,6 +6,7 @@ use std::{
     cmp::Ordering,
     fmt,
     ops::{Add, Div, Mul, Sub},
+    sync::Arc,
 };
 
 #[derive(Debug, Clone)]
@@ -280,7 +281,10 @@ impl<'a> Div<&'a Number> for &'a Number {
 }
 
 #[builtin("+")]
-pub async fn add(_env: Env, args: Vec<Gc<Value>>) -> Result<Gc<Value>, RuntimeError> {
+pub async fn add(
+    _cont: &Option<Arc<Continuation>>,
+    args: Vec<Gc<Value>>,
+) -> Result<Gc<Value>, RuntimeError> {
     let mut result = Number::FixedInteger(0);
     for arg in args {
         let arg = arg.read().await;
@@ -292,7 +296,7 @@ pub async fn add(_env: Env, args: Vec<Gc<Value>>) -> Result<Gc<Value>, RuntimeEr
 
 #[builtin("-")]
 pub async fn sub(
-    _env: Env,
+    _cont: &Option<Arc<Continuation>>,
     arg1: &Gc<Value>,
     args: Vec<Gc<Value>>,
 ) -> Result<Gc<Value>, RuntimeError> {
@@ -308,7 +312,10 @@ pub async fn sub(
 }
 
 #[builtin("*")]
-pub async fn mul(_env: Env, args: Vec<Gc<Value>>) -> Result<Gc<Value>, RuntimeError> {
+pub async fn mul(
+    _cont: &Option<Arc<Continuation>>,
+    args: Vec<Gc<Value>>,
+) -> Result<Gc<Value>, RuntimeError> {
     let mut result = Number::FixedInteger(1);
     for arg in args {
         let arg = arg.read().await;
@@ -320,7 +327,7 @@ pub async fn mul(_env: Env, args: Vec<Gc<Value>>) -> Result<Gc<Value>, RuntimeEr
 
 #[builtin("/")]
 pub async fn div(
-    _env: Env,
+    _cont: &Option<Arc<Continuation>>,
     arg1: &Gc<Value>,
     args: Vec<Gc<Value>>,
 ) -> Result<Gc<Value>, RuntimeError> {
@@ -342,7 +349,10 @@ pub async fn div(
 }
 
 #[builtin("=")]
-pub async fn equals(_env: Env, args: Vec<Gc<Value>>) -> Result<Gc<Value>, RuntimeError> {
+pub async fn equals(
+    _cont: &Option<Arc<Continuation>>,
+    args: Vec<Gc<Value>>,
+) -> Result<Gc<Value>, RuntimeError> {
     if let Some((first, rest)) = args.split_first() {
         let first = first.read().await;
         let first: &Number = first.as_ref().try_into()?;
@@ -358,7 +368,10 @@ pub async fn equals(_env: Env, args: Vec<Gc<Value>>) -> Result<Gc<Value>, Runtim
 }
 
 #[builtin(">")]
-pub async fn greater(_env: Env, args: Vec<Gc<Value>>) -> Result<Gc<Value>, RuntimeError> {
+pub async fn greater(
+    _cont: &Option<Arc<Continuation>>,
+    args: Vec<Gc<Value>>,
+) -> Result<Gc<Value>, RuntimeError> {
     if let Some((head, rest)) = args.split_first() {
         let mut prev = head.clone();
         for next in rest {
@@ -386,7 +399,10 @@ pub async fn greater(_env: Env, args: Vec<Gc<Value>>) -> Result<Gc<Value>, Runti
 }
 
 #[builtin(">=")]
-pub async fn greater_equal(_env: Env, args: Vec<Gc<Value>>) -> Result<Gc<Value>, RuntimeError> {
+pub async fn greater_equal(
+    _cont: &Option<Arc<Continuation>>,
+    args: Vec<Gc<Value>>,
+) -> Result<Gc<Value>, RuntimeError> {
     if let Some((head, rest)) = args.split_first() {
         let mut prev = head.clone();
         for next in rest {
@@ -412,7 +428,10 @@ pub async fn greater_equal(_env: Env, args: Vec<Gc<Value>>) -> Result<Gc<Value>,
 }
 
 #[builtin("<")]
-pub async fn lesser(_env: Env, args: Vec<Gc<Value>>) -> Result<Gc<Value>, RuntimeError> {
+pub async fn lesser(
+    _cont: &Option<Arc<Continuation>>,
+    args: Vec<Gc<Value>>,
+) -> Result<Gc<Value>, RuntimeError> {
     if let Some((head, rest)) = args.split_first() {
         let mut prev = head.clone();
         for next in rest {
@@ -438,7 +457,10 @@ pub async fn lesser(_env: Env, args: Vec<Gc<Value>>) -> Result<Gc<Value>, Runtim
 }
 
 #[builtin("<=")]
-pub async fn lesser_equal(_env: Env, args: Vec<Gc<Value>>) -> Result<Gc<Value>, RuntimeError> {
+pub async fn lesser_equal(
+    _cont: &Option<Arc<Continuation>>,
+    args: Vec<Gc<Value>>,
+) -> Result<Gc<Value>, RuntimeError> {
     if let Some((head, rest)) = args.split_first() {
         let mut prev = head.clone();
         for next in rest {
@@ -464,13 +486,19 @@ pub async fn lesser_equal(_env: Env, args: Vec<Gc<Value>>) -> Result<Gc<Value>, 
 }
 
 #[builtin("number?")]
-pub async fn is_number(_env: Env, arg: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> {
+pub async fn is_number(
+    _cont: &Option<Arc<Continuation>>,
+    arg: &Gc<Value>,
+) -> Result<Gc<Value>, RuntimeError> {
     let arg = arg.read().await;
     Ok(Gc::new(Value::Boolean(matches!(&*arg, Value::Number(_)))))
 }
 
 #[builtin("integer?")]
-pub async fn is_integer(_env: Env, arg: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> {
+pub async fn is_integer(
+    _cont: &Option<Arc<Continuation>>,
+    arg: &Gc<Value>,
+) -> Result<Gc<Value>, RuntimeError> {
     let arg = arg.read().await;
     Ok(Gc::new(Value::Boolean(matches!(
         &*arg,
@@ -479,7 +507,10 @@ pub async fn is_integer(_env: Env, arg: &Gc<Value>) -> Result<Gc<Value>, Runtime
 }
 
 #[builtin("rational?")]
-pub async fn is_rational(_env: Env, arg: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> {
+pub async fn is_rational(
+    _cont: &Option<Arc<Continuation>>,
+    arg: &Gc<Value>,
+) -> Result<Gc<Value>, RuntimeError> {
     let arg = arg.read().await;
     Ok(Gc::new(Value::Boolean(matches!(
         &*arg,
@@ -488,7 +519,10 @@ pub async fn is_rational(_env: Env, arg: &Gc<Value>) -> Result<Gc<Value>, Runtim
 }
 
 #[builtin("real?")]
-pub async fn is_real(_env: Env, arg: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> {
+pub async fn is_real(
+    _cont: &Option<Arc<Continuation>>,
+    arg: &Gc<Value>,
+) -> Result<Gc<Value>, RuntimeError> {
     let arg = arg.read().await;
     Ok(Gc::new(Value::Boolean(matches!(
         &*arg,
@@ -497,7 +531,10 @@ pub async fn is_real(_env: Env, arg: &Gc<Value>) -> Result<Gc<Value>, RuntimeErr
 }
 
 #[builtin("complex?")]
-pub async fn is_complex(_env: Env, arg: &Gc<Value>) -> Result<Gc<Value>, RuntimeError> {
+pub async fn is_complex(
+    _cont: &Option<Arc<Continuation>>,
+    arg: &Gc<Value>,
+) -> Result<Gc<Value>, RuntimeError> {
     let arg = arg.read().await;
     Ok(Gc::new(Value::Boolean(matches!(
         &*arg,

@@ -1,14 +1,22 @@
 use crate::{
     compile::CompileError,
+    continuation::Continuation,
+    gc::Gc,
     syntax::{Identifier, Span},
+    value::Value,
 };
-use std::fmt;
+use derivative::Derivative;
+use std::sync::Arc;
 
+// TODO: Rename this to condition to more accurately reflect its purpose
+#[derive(Debug)]
 pub struct RuntimeError {
     pub backtrace: Vec<Frame>,
     pub kind: RuntimeErrorKind,
 }
 
+#[derive(Derivative)]
+#[derivative(Debug)]
 pub enum RuntimeErrorKind {
     UndefinedVariable(Identifier),
     InvalidType {
@@ -24,11 +32,18 @@ pub enum RuntimeErrorKind {
     },
     DivisionByZero,
     CompileError(CompileError),
+    AbandonCurrentContinuation {
+        #[derivative(Debug = "ignore")]
+        args: Vec<Gc<Value>>,
+        #[derivative(Debug = "ignore")]
+        new_cont: Option<Arc<Continuation>>,
+    },
     Condition {
         // TODO
     },
 }
 
+#[derive(Debug)]
 pub struct Frame {
     pub proc: String,
     pub span: Span,
@@ -52,6 +67,16 @@ impl RuntimeError {
                 last_frame.repeated += 1
             }
             _ => self.backtrace.push(Frame::new(proc, span)),
+        }
+    }
+
+    pub fn abandon_current_continuation(
+        args: Vec<Gc<Value>>,
+        new_cont: Option<Arc<Continuation>>,
+    ) -> Self {
+        Self {
+            backtrace: Vec::new(),
+            kind: RuntimeErrorKind::AbandonCurrentContinuation { args, new_cont },
         }
     }
 
@@ -103,8 +128,10 @@ impl From<CompileError> for RuntimeError {
     }
 }
 
+/*
 impl fmt::Debug for RuntimeError {
     fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
         todo!()
     }
 }
+*/
