@@ -9,14 +9,14 @@ use derivative::Derivative;
 use std::sync::Arc;
 
 // TODO: Rename this to condition to more accurately reflect its purpose
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RuntimeError {
     pub backtrace: Vec<Frame>,
     pub kind: RuntimeErrorKind,
 }
 
 #[derive(Derivative)]
-#[derivative(Debug)]
+#[derivative(Debug, Clone)]
 pub enum RuntimeErrorKind {
     UndefinedVariable(Identifier),
     InvalidType {
@@ -43,7 +43,7 @@ pub enum RuntimeErrorKind {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Frame {
     pub proc: String,
     pub span: Span,

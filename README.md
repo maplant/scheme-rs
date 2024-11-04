@@ -40,6 +40,33 @@ pub async fn is_number(
 }
 ```
 
+## This is Scheme but it supports async via Tokio?
+
+Exactly. Here is an example:
+
+```scheme
+(define (sleep-and-print secs message)
+  (await (sleep (* secs 1000)))
+  (display message))
+
+(define (sleep-in-parallel)
+  (join (spawn (lambda ()
+                 (sleep-and-print 3 "first message")))
+        (spawn (lambda ()
+                 (sleep-and-print 5 "second message")))))
+```
+
+Now you can run the code and it will work as expected:
+
+```
+>>> (await (sleep-in-parallel))
+"first message"
+"second message"
+$3 = (() ())
+```
+
+Not a whole lot of IO operations are supported right now, so it's very limited.
+
 ## Why not just use Guile?
 
 In the end, it all comes down to [call with current continuation](https://en.wikipedia.org/wiki/Call-with-current-continuation). Guile implements this feature by copying the stack, an action which is obviously problematic when considering 
@@ -56,3 +83,15 @@ it properly. Additionally, the current continuation only contains references and
 - There is no real easy way to embed scheme-rs. 
 
 - GC never collects, no interning. 
+
+- Most of tokio's file system and networking functions are not implemented.
+
+## Okay, what _is_ implemented?
+
+Quite a bit. Tail calls work totally fine, you'll never blow out the stack via tail recursion.
+
+Macros are implemented to a surprisingly high degree, including allowing you to reference variables in different
+scopes and have them work properly. 
+
+Most of the base of Scheme is actually here, minus quite a bit of the functions you'd expect, such as let*, letrec,
+etc.

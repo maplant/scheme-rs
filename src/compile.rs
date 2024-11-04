@@ -17,7 +17,7 @@ use std::{
     sync::Arc,
 };
 
-#[derive(From, Debug)]
+#[derive(From, Debug, Clone)]
 pub enum CompileError {
     UnexpectedEmptyList(Span),
     UndefinedVariable(Identifier),
@@ -77,7 +77,7 @@ where
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum CompileBodyError {
     EmptyBody(Span),
 }
@@ -100,7 +100,7 @@ impl Compile for ast::Body {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum CompileLetError {
     BadForm(Span),
     CompileBodyError(CompileBodyError),
@@ -159,7 +159,7 @@ impl Compile for ast::Let {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum CompileLetBindingError {
     BadForm(Span),
     PreviouslyBound {
@@ -219,7 +219,7 @@ impl LetBinding {
     }
 }
 
-#[derive(From, Debug)]
+#[derive(From, Debug, Clone)]
 pub enum CompileFuncCallError {
     EmptyFunctionCall(Span),
     CompileError(Box<CompileError>),
@@ -263,7 +263,7 @@ impl Compile for ast::Call {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum CompileIfError {
     ExpectedConditional(Span),
     ExpectedArgumentAfterConditional(Span),
@@ -306,7 +306,7 @@ impl Compile for ast::If {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum CompileDefineError {
     ParameterDefinedMultipleTimes {
         ident: Identifier,
@@ -428,7 +428,7 @@ impl Compile for ast::Define {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum CompileDefineSyntaxError {
     BadForm(Span),
     CompileError(Box<CompileError>),
@@ -456,7 +456,7 @@ impl Compile for ast::DefineSyntax {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum CompileQuoteError {
     ExpectedArgument(Span),
     UnexpectedArgument(Span),
@@ -524,7 +524,7 @@ impl Compile for ast::Or {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum CompileSetError {
     ExpectedArgument(Span),
     ExpectedIdent(Span),
@@ -561,7 +561,7 @@ impl Compile for ast::Set {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum CompileSyntaxError {
     ExpectedArgument(Span),
     UnexpectedArgument(Span),
@@ -590,7 +590,7 @@ impl Compile for ast::SyntaxQuote {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum CompileLambdaError {
     ExpectedList(Span),
     ExpectedIdentifier(Span),
@@ -613,75 +613,87 @@ impl Compile for ast::Lambda {
         span: &Span,
     ) -> Result<Self, CompileLambdaError> {
         match exprs {
+            [Syntax::Nil { .. }, body @ ..] => compile_lambda(&[], body, env, cont, span).await,
             [Syntax::List { list: args, .. }, body @ ..] => {
-                let mut bound = HashMap::<Identifier, Span>::new();
-                let mut fixed = Vec::new();
-                let new_mark = Mark::new();
-                for arg in &args[..args.len() - 1] {
-                    match arg {
-                        Syntax::Identifier { ident, span, .. } => {
-                            if let Some(prev_span) = bound.get(ident) {
-                                return Err(CompileLambdaError::ParameterDefinedMultipleTimes {
-                                    ident: ident.clone(),
-                                    first: prev_span.clone(),
-                                    second: span.clone(),
-                                });
-                            }
-                            bound.insert(ident.clone(), span.clone());
-                            let mut ident = ident.clone();
-                            ident.mark(new_mark);
-                            fixed.push(ident);
-                        }
-                        x => return Err(CompileLambdaError::ExpectedIdentifier(x.span().clone())),
-                    }
-                }
-
-                let args = if let Some(last) = args.last() {
-                    match last {
-                        Syntax::Nil { .. } => ast::Formals::FixedArgs(fixed.into_iter().collect()),
-                        Syntax::Identifier { ident, span, .. } => {
-                            if let Some(prev_span) = bound.get(ident) {
-                                return Err(CompileLambdaError::ParameterDefinedMultipleTimes {
-                                    ident: ident.clone(),
-                                    first: prev_span.clone(),
-                                    second: span.clone(),
-                                });
-                            }
-                            let mut remaining = ident.clone();
-                            remaining.mark(new_mark);
-                            ast::Formals::VarArgs {
-                                fixed: fixed.into_iter().collect(),
-                                remaining,
-                            }
-                        }
-                        x => return Err(CompileLambdaError::ExpectedIdentifier(x.span().clone())),
-                    }
-                } else {
-                    // If there is no last argument, there are no arguments
-                    ast::Formals::FixedArgs(Vec::new())
-                };
-
-                // This heavily relies on the fact that body defers compilation until it is run,
-                // as lambda does not create a lexical contour until it is run.
-                let mut body = body.to_vec();
-                for item in &mut body {
-                    item.mark(new_mark);
-                }
-                let body = ast::Body::compile(&body, env, cont, span)
-                    .await
-                    .map_err(CompileLambdaError::CompileBodyError)?;
-                Ok(ast::Lambda {
-                    args,
-                    body,
-                    mark: new_mark,
-                })
+                compile_lambda(args, body, env, cont, span).await
             }
             _ => todo!(),
         }
     }
 }
 
-#[derive(Debug)]
+async fn compile_lambda(
+    args: &[Syntax],
+    body: &[Syntax],
+    env: &Env,
+    cont: &Option<Arc<Continuation>>,
+    span: &Span,
+) -> Result<ast::Lambda, CompileLambdaError> {
+    let mut bound = HashMap::<Identifier, Span>::new();
+    let mut fixed = Vec::new();
+    let new_mark = Mark::new();
+    if !args.is_empty() {
+        for arg in &args[..args.len() - 1] {
+            match arg {
+                Syntax::Identifier { ident, span, .. } => {
+                    if let Some(prev_span) = bound.get(ident) {
+                        return Err(CompileLambdaError::ParameterDefinedMultipleTimes {
+                            ident: ident.clone(),
+                            first: prev_span.clone(),
+                            second: span.clone(),
+                        });
+                    }
+                    bound.insert(ident.clone(), span.clone());
+                    let mut ident = ident.clone();
+                    ident.mark(new_mark);
+                    fixed.push(ident);
+                }
+                x => return Err(CompileLambdaError::ExpectedIdentifier(x.span().clone())),
+            }
+        }
+    }
+    let args = if let Some(last) = args.last() {
+        match last {
+            Syntax::Nil { .. } => ast::Formals::FixedArgs(fixed.into_iter().collect()),
+            Syntax::Identifier { ident, span, .. } => {
+                if let Some(prev_span) = bound.get(ident) {
+                    return Err(CompileLambdaError::ParameterDefinedMultipleTimes {
+                        ident: ident.clone(),
+                        first: prev_span.clone(),
+                        second: span.clone(),
+                    });
+                }
+                let mut remaining = ident.clone();
+                remaining.mark(new_mark);
+                ast::Formals::VarArgs {
+                    fixed: fixed.into_iter().collect(),
+                    remaining,
+                }
+            }
+            x => return Err(CompileLambdaError::ExpectedIdentifier(x.span().clone())),
+        }
+    } else {
+        // If there is no last argument, there are no arguments
+        ast::Formals::FixedArgs(Vec::new())
+    };
+
+    // This heavily relies on the fact that body defers compilation until it is run,
+    // as lambda does not create a lexical contour until it is run.
+    let mut body = body.to_vec();
+    for item in &mut body {
+        item.mark(new_mark);
+    }
+    let body = ast::Body::compile(&body, env, cont, span)
+        .await
+        .map_err(CompileLambdaError::CompileBodyError)?;
+    Ok(ast::Lambda {
+        args,
+        body,
+        mark: new_mark,
+    })
+}
+
+#[derive(Debug, Clone)]
 pub enum CompileSyntaxCaseError {
     CompileError(Box<CompileError>),
     BadForm(Span),
@@ -742,7 +754,7 @@ impl Compile for ast::SyntaxCase {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum CompileSyntaxRulesError {
     BadForm(Span),
 }
