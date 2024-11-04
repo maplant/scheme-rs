@@ -1,3 +1,6 @@
+//! Based on Manish's (Rust GC type)[https://github.com/Manishearth/rust-gc/blob/master/gc/src/lib.rs],
+//! but adapted to work with Tokio's sync primitives. 
+
 use std::{
     cell::UnsafeCell,
     collections::HashMap,
