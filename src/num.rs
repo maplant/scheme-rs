@@ -32,6 +32,16 @@ impl Number {
     fn is_complex(&self) -> bool {
         matches!(self, Self::Complex(_))
     }
+
+    pub fn to_u64(&self) -> u64 {
+        match self {
+            Self::FixedInteger(i) => i.to_u64().unwrap_or(0),
+            Self::BigInteger(i) => i.to_u64().unwrap_or(0),
+            Self::Rational(r) => r.to_u64().unwrap_or(0),
+            Self::Real(r) => r.to_u64().unwrap_or(0),
+            Self::Complex(c) => c.to_u64().unwrap_or(0),
+        }
+    }
 }
 
 impl From<i64> for Number {

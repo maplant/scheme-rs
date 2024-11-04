@@ -75,19 +75,20 @@ async fn main() {
         };
         let parsed = match parsed {
             Err(err) => {
-                println!("Error parsing: {}", err);
+                println!("Error parsing: {err}");
                 continue;
             }
             Ok(parsed) => parsed,
         };
         for sexpr in parsed {
-            match sexpr
-                .compile(&top, &None)
-                .await
-                .unwrap()
-                .eval(&top, &None)
-                .await
-            {
+            let compiled = match sexpr.compile(&top, &None).await {
+                Err(err) => {
+                    println!("Error compiling: {err:?}");
+                    continue;
+                }
+                Ok(compiled) => compiled,
+            };
+            match compiled.eval(&top, &None).await {
                 Err(err) => {
                     println!("Error: {err:?}");
                 }

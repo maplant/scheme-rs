@@ -1,3 +1,4 @@
+pub mod futures;
 pub mod ast;
 pub mod builtin;
 pub mod compile;

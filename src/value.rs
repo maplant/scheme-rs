@@ -11,6 +11,7 @@ use crate::{
 use futures::future::{BoxFuture, Shared};
 use proc_macros::builtin;
 use std::sync::Arc;
+
 #[derive(Clone)]
 pub enum Value {
     Nil,
@@ -25,7 +26,7 @@ pub enum Value {
     Syntax(Syntax),
     Procedure(Procedure),
     ExternalFn(ExternalFn),
-    Future(Shared<BoxFuture<'static, Value>>),
+    Future(Shared<BoxFuture<'static, Result<Gc<Value>, RuntimeError>>>),
     Transformer(Transformer),
     Continuation(Option<Arc<Continuation>>),
 }
@@ -149,6 +150,19 @@ impl From<ExternalFn> for Value {
     }
 }
 
+/// Create a proper list from a vector of values
+impl From<Vec<Gc<Value>>> for Value {
+    fn from(mut vec: Vec<Gc<Value>>) -> Value {
+        if vec.is_empty() {
+            Value::Nil
+        } else {
+            // I'm not spending too much time thinking about a better way to do this
+            let tail = vec.split_off(1);
+            Value::Pair(vec.pop().unwrap(), Gc::new(Value::from(tail)))
+        }
+    }
+}
+
 impl<'a> TryFrom<&'a Value> for bool {
     type Error = RuntimeError;
 
@@ -180,7 +194,7 @@ pub async fn is_pair(
     Ok(Gc::new(Value::Boolean(matches!(&*arg, Value::Pair(_, _)))))
 }
 
-#[builtin("d")]
+#[builtin("display")]
 pub async fn disp(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
