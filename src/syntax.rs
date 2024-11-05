@@ -67,6 +67,32 @@ pub enum Syntax {
     },
 }
 
+impl fmt::Display for Syntax {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Nil { .. } => write!(f, "()")?,
+            Self::List { list, .. } => {
+                write!(f, "(")?;
+                for item in list {
+                    write!(f, "{} ", item)?;
+                }
+                write!(f, ")")?;
+            }
+            Self::Literal {
+                literal,
+                ..
+            } => {
+                write!(f, "{:?}", literal)?;
+            },
+            Self::Identifier { ident, .. } => {
+                write!(f, "{}", ident.name)?;
+            }
+            _ => (),
+        }
+        Ok(())
+    }
+}
+
 impl Syntax {
     pub fn mark(&mut self, mark: Mark) {
         match self {
