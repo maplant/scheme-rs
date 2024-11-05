@@ -48,7 +48,7 @@ macro_rules! token {
     };
 }
 
-pub fn expression<'a>(i: &'a [Token<'a>]) -> Result<(&'a [Token<'a>], Syntax), ParseError<'a>> {
+pub fn expression<'a, 'b>(i: &'b [Token<'a>]) -> Result<(&'b [Token<'a>], Syntax), ParseError<'a>> {
     match i {
         // Calling expression with an empty list is an error
         [] => Err(ParseError::EmptyInput),
@@ -144,11 +144,11 @@ impl<'a> From<ParseError<'a>> for ParseListError<'a> {
     }
 }
 
-fn list<'a>(
-    mut i: &'a [Token<'a>],
+fn list<'a, 'b>(
+    mut i: &'b [Token<'a>],
     span: InputSpan<'a>,
     closing: Lexeme<'static>,
-) -> Result<(&'a [Token<'a>], Syntax), ParseListError<'a>> {
+) -> Result<(&'b [Token<'a>], Syntax), ParseListError<'a>> {
     let mut output = Vec::new();
     loop {
         if i.is_empty() {
@@ -205,10 +205,10 @@ impl<'a> From<ParseError<'a>> for ParseVectorError<'a> {
     }
 }
 
-fn vector<'a>(
-    mut i: &'a [Token<'a>],
+fn vector<'a, 'b>(
+    mut i: &'b [Token<'a>],
     span: InputSpan<'a>,
-) -> Result<(&'a [Token<'a>], Syntax), ParseVectorError<'a>> {
+) -> Result<(&'b [Token<'a>], Syntax), ParseVectorError<'a>> {
     let mut output = Vec::new();
     loop {
         match i {

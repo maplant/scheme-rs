@@ -61,7 +61,7 @@ async fn main() {
         parsed: parsed.clone(),
     }));
     let mut n_results = 1;
-    let top = Env::top();
+    let top = Env::top().await;
     loop {
         match rl.read_line(&Prompt) {
             Ok(Signal::Success(_)) => (),

@@ -29,6 +29,28 @@ impl Number {
         }
     }
 
+    fn is_even(&self) -> bool {
+        use num::Integer;
+        match self {
+            Self::FixedInteger(i) => i.is_even(),
+            Self::BigInteger(i) => i.is_even(),
+            Self::Rational(_) => false,
+            Self::Real(_) => false,
+            Self::Complex(_) => false,
+        }
+    }
+
+    fn is_odd(&self) -> bool {
+        use num::Integer;
+        match self {
+            Self::FixedInteger(i) => i.is_odd(),
+            Self::BigInteger(i) => i.is_odd(),
+            Self::Rational(_) => false,
+            Self::Real(_) => false,
+            Self::Complex(_) => false,
+        }
+    }
+
     fn is_complex(&self) -> bool {
         matches!(self, Self::Complex(_))
     }
@@ -288,6 +310,36 @@ impl<'a> Div<&'a Number> for &'a Number {
             (Number::Complex(l), Number::Complex(r)) => Number::Complex(l / r),
         }
     }
+}
+
+#[builtin("zero?")]
+pub async fn zero(
+    _cont: &Option<Arc<Continuation>>,
+    arg: &Gc<Value>,
+) -> Result<Gc<Value>, RuntimeError> {
+    let arg = arg.read().await;
+    let num: &Number = arg.as_ref().try_into()?;
+    Ok(Gc::new(Value::Boolean(num.is_zero())))
+}
+
+#[builtin("even?")]
+pub async fn even(
+    _cont: &Option<Arc<Continuation>>,
+    arg: &Gc<Value>,
+) -> Result<Gc<Value>, RuntimeError> {
+    let arg = arg.read().await;
+    let num: &Number = arg.as_ref().try_into()?;
+    Ok(Gc::new(Value::Boolean(num.is_even())))
+}
+
+#[builtin("odd?")]
+pub async fn odd(
+    _cont: &Option<Arc<Continuation>>,
+    arg: &Gc<Value>,
+) -> Result<Gc<Value>, RuntimeError> {
+    let arg = arg.read().await;
+    let num: &Number = arg.as_ref().try_into()?;
+    Ok(Gc::new(Value::Boolean(num.is_odd())))
 }
 
 #[builtin("+")]

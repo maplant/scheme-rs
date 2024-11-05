@@ -38,6 +38,7 @@ pub enum RuntimeErrorKind {
         #[derivative(Debug = "ignore")]
         new_cont: Option<Arc<Continuation>>,
     },
+    NoPatternsMatch,
     Condition {
         // TODO
     },
@@ -115,6 +116,13 @@ impl RuntimeError {
         Self {
             backtrace: Vec::new(),
             kind: RuntimeErrorKind::WrongNumberOfArguments { expected, provided },
+        }
+    }
+
+    pub fn no_patterns_match() -> Self {
+        Self {
+            backtrace: Vec::new(),
+            kind: RuntimeErrorKind::NoPatternsMatch,
         }
     }
 }
