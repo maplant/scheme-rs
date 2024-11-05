@@ -21,3 +21,6 @@ unicode_categories = "0.1"
 reedline = "0.23"
 # TODO: Get rid of this dependency
 derivative = "2"
+
+[profile.release]
+lto = true
