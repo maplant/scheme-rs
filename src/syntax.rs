@@ -67,6 +67,32 @@ pub enum Syntax {
     },
 }
 
+impl fmt::Display for Syntax {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Nil { .. } => write!(f, "()")?,
+            Self::List { list, .. } => {
+                write!(f, "(")?;
+                for item in list {
+                    write!(f, "{} ", item)?;
+                }
+                write!(f, ")")?;
+            }
+            Self::Literal {
+                literal,
+                ..
+            } => {
+                write!(f, "{:?}", literal)?;
+            },
+            Self::Identifier { ident, .. } => {
+                write!(f, "{}", ident.name)?;
+            }
+            _ => (),
+        }
+        Ok(())
+    }
+}
+
 impl Syntax {
     pub fn mark(&mut self, mark: Mark) {
         match self {
@@ -326,7 +352,9 @@ impl<'a> Expansion<'a> {
     ) -> BoxFuture<'a, Result<Arc<dyn Eval>, CompileError>> {
         Box::pin(async move {
             match self {
-                Self::Unexpanded(syntax) => syntax.compile_expanded(env, cont).await,
+                Self::Unexpanded(syntax) => {
+                    syntax.compile_expanded(env, cont).await
+                },
                 Self::Expanded {
                     mark,
                     syntax,
@@ -338,22 +366,11 @@ impl<'a> Expansion<'a> {
                     syntax
                         .expand(&env, cont)
                         .await?
-                        .compile_expanded(&env, cont)
+                        .compile(&env, cont)
                         .await
                 }
             }
         })
-    }
-}
-
-impl std::ops::Deref for Expansion<'_> {
-    type Target = Syntax;
-
-    fn deref(&self) -> &Syntax {
-        match self {
-            Self::Unexpanded(syntax) => syntax,
-            Self::Expanded { syntax, .. } => syntax,
-        }
     }
 }
 

@@ -118,45 +118,53 @@ impl Compile for ast::Let {
         span: &Span,
     ) -> Result<Self, CompileLetError> {
         match expr {
+            [Syntax::Nil { .. }, body @ ..] => compile_let(&[], body, env, cont, span).await,
             [Syntax::List { list: bindings, .. }, body @ ..] => {
-                let mut previously_bound = HashMap::new();
-                let mut new_contour = env.new_lexical_contour(Mark::new());
-                let mut compiled_bindings = Vec::new();
-                // TODO: Check that the list of bindings is proper
-                for binding in &bindings[..bindings.len() - 1] {
-                    let binding = LetBinding::compile(
-                        new_contour.mark,
-                        binding,
-                        env,
-                        cont,
-                        &previously_bound,
-                    )
-                    .await
-                    .map_err(CompileLetError::CompileLetBindingError)?;
-                    previously_bound.insert(binding.ident.clone(), binding.span.clone());
-                    new_contour.def_var(&binding.ident, Gc::new(Value::Nil));
-                    compiled_bindings.push(binding);
-                }
-                let mut body = body.to_vec();
-                for item in &mut body {
-                    item.mark(new_contour.mark);
-                }
-                let env = Gc::new(new_contour);
-                let body = ast::Body::compile(&body, &Env::from(env.clone()), cont, span)
-                    .await
-                    .map_err(CompileLetError::CompileBodyError)?;
-                Ok(ast::Let {
-                    scope: env,
-                    bindings: compiled_bindings
-                        .into_iter()
-                        .map(|binding| (binding.ident, binding.expr))
-                        .collect(),
-                    body,
-                })
+                compile_let(bindings, body, env, cont, span).await
             }
             _ => Err(CompileLetError::BadForm(span.clone())),
         }
     }
+}
+
+async fn compile_let(
+    bindings: &[Syntax],
+    body: &[Syntax],
+    env: &Env,
+    cont: &Option<Arc<Continuation>>,
+    span: &Span,
+) -> Result<ast::Let, CompileLetError> {
+    let mut previously_bound = HashMap::new();
+    let mut new_contour = env.new_lexical_contour(Mark::new());
+    let mut compiled_bindings = Vec::new();
+    // TODO: Check that the list of bindings is proper
+    if !bindings.is_empty() {
+        for binding in &bindings[..bindings.len() - 1] {
+            let binding =
+                LetBinding::compile(new_contour.mark, binding, env, cont, &previously_bound)
+                    .await
+                    .map_err(CompileLetError::CompileLetBindingError)?;
+            previously_bound.insert(binding.ident.clone(), binding.span.clone());
+            new_contour.def_var(&binding.ident, Gc::new(Value::Nil));
+            compiled_bindings.push(binding);
+        }
+    }
+    let mut body = body.to_vec();
+    for item in &mut body {
+        item.mark(new_contour.mark);
+    }
+    let env = Gc::new(new_contour);
+    let body = ast::Body::compile(&body, &Env::from(env.clone()), cont, span)
+        .await
+        .map_err(CompileLetError::CompileBodyError)?;
+    Ok(ast::Let {
+        scope: env,
+        bindings: compiled_bindings
+            .into_iter()
+            .map(|binding| (binding.ident, binding.expr))
+            .collect(),
+        body,
+    })
 }
 
 #[derive(Debug, Clone)]
