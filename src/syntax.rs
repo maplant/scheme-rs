@@ -352,7 +352,9 @@ impl<'a> Expansion<'a> {
     ) -> BoxFuture<'a, Result<Arc<dyn Eval>, CompileError>> {
         Box::pin(async move {
             match self {
-                Self::Unexpanded(syntax) => syntax.compile_expanded(env, cont).await,
+                Self::Unexpanded(syntax) => {
+                    syntax.compile_expanded(env, cont).await
+                },
                 Self::Expanded {
                     mark,
                     syntax,
@@ -364,22 +366,11 @@ impl<'a> Expansion<'a> {
                     syntax
                         .expand(&env, cont)
                         .await?
-                        .compile_expanded(&env, cont)
+                        .compile(&env, cont)
                         .await
                 }
             }
         })
-    }
-}
-
-impl std::ops::Deref for Expansion<'_> {
-    type Target = Syntax;
-
-    fn deref(&self) -> &Syntax {
-        match self {
-            Self::Unexpanded(syntax) => syntax,
-            Self::Expanded { syntax, .. } => syntax,
-        }
     }
 }
 

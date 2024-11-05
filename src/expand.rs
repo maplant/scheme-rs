@@ -20,11 +20,9 @@ pub struct Transformer {
 
 impl Transformer {
     pub fn expand(&self, expr: &Syntax) -> Option<Syntax> {
-        println!("expr: {expr}");
         for rule in &self.rules {
-            println!("{rule:?}");
-            if let Some(expansion) = rule.expand(expr) {
-                return Some(expansion);
+            if let expansion @ Some(_) = rule.expand(expr) {
+                return expansion;
             }
         }
         None
@@ -61,12 +59,6 @@ pub enum Pattern {
     Literal(Literal),
 }
 
-#[derive(Debug)]
-enum SyntaxOrMany {
-    Syntax(Syntax),
-    Many(Vec<Syntax>),
-}
-
 impl Pattern {
     pub fn compile(expr: &Syntax, keywords: &HashSet<String>) -> Self {
         match expr {
@@ -89,8 +81,10 @@ impl Pattern {
                 for item in list {
                     item.init_var_binds(var_binds);
                 }
-            },
-            Self::Variable(var) => {let _ = var_binds.insert(var.clone(), VecDeque::default());},
+            }
+            Self::Variable(var) => {
+                let _ = var_binds.insert(var.clone(), VecDeque::default());
+            }
             _ => (),
         }
     }
@@ -105,7 +99,9 @@ impl Pattern {
                 }, tail @ ..]
                     if ellipsis.name == "..." =>
                 {
-                    output.push(Self::Ellipsis(Box::new(Pattern::compile(pattern, keywords))));
+                    output.push(Self::Ellipsis(Box::new(Pattern::compile(
+                        pattern, keywords,
+                    ))));
                     expr = tail;
                 }
                 [head, tail @ ..] => {
@@ -118,12 +114,13 @@ impl Pattern {
     }
 
     fn matches(&self, expr: &Syntax, var_binds: &mut HashMap<String, VecDeque<Syntax>>) -> bool {
-        println!("matching: {expr}");
-        println!("pattern: {self:?}");
         match self {
             Self::Underscore => !expr.is_nil(),
             Self::Variable(ref name) => {
-                var_binds.entry(name.clone()).or_default().push_back(expr.clone());
+                var_binds
+                    .entry(name.clone())
+                    .or_default()
+                    .push_back(expr.clone());
                 true
             }
             Self::Keyword(ref lhs) => {
@@ -145,7 +142,7 @@ fn match_slice(
 ) -> bool {
     let mut expr_iter = match expr {
         Syntax::List { list, .. } => list.iter().peekable(),
-        // Syntax::Nil { .. } => return true,
+        Syntax::Nil { .. } => return true,
         _ => return false,
     };
     let mut pattern_iter = pattern.iter().peekable();
@@ -168,19 +165,16 @@ fn match_slice(
             };
             // Gobble up the rest
             for expr in exprs {
-                if !expr.is_nil() && !pattern.matches(&expr, var_binds) {
-                    // println!("maybe here? {pattern:?}, {expr:?}");
+                if !pattern.matches(&expr, var_binds) {
                     return false;
                 }
             }
             return true;
         } else if let Some(next_expr) = expr_iter.next() {
             if !item.matches(next_expr, var_binds) {
-                // println!("{item:?}]expr: {next_expr:?}");
                 return false;
             }
         } else {
-            // println!("here???");
             return false;
         }
     }
@@ -231,7 +225,11 @@ impl Template {
         output
     }
 
-    fn execute(&self, var_binds: &mut HashMap<String, VecDeque<Syntax>>, curr_span: Span) -> Option<Syntax> {
+    fn execute(
+        &self,
+        var_binds: &mut HashMap<String, VecDeque<Syntax>>,
+        curr_span: Span,
+    ) -> Option<Syntax> {
         let syntax = match self {
             Self::Nil => Syntax::new_nil(curr_span),
             Self::List(list) => {
@@ -269,16 +267,11 @@ fn execute_slice(
     for item in items {
         match item {
             Template::Ellipsis(template) => {
-                while let Some(val) = template.execute(var_binds, curr_span.clone()) {
-                    // println!("Looping? {template:?}, var_binds {var_binds:?}");
+                let mut var_binds = var_binds.clone();
+                while let Some(val) = template.execute(&mut var_binds, curr_span.clone()) {
                     output.push(val);
                 }
-                /*
-                match var_binds.get(name).unwrap() {
-                SyntaxOrMany::Syntax(expr) => output.push(expr.clone()),
-                SyntaxOrMany::Many(exprs) => output.extend(exprs.clone()),
-                */
-            },
+            }
             Template::Nil => {
                 if let Some(Syntax::Nil { .. }) = output.last() {
                     continue;
@@ -286,8 +279,7 @@ fn execute_slice(
                     output.push(Syntax::new_nil(curr_span.clone()));
                 }
             }
-            _ => 
-                output.push(item.execute(var_binds, curr_span.clone())?),
+            _ => output.push(item.execute(var_binds, curr_span.clone())?),
         }
     }
     Some(output)
