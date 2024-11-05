@@ -35,7 +35,7 @@ pub async fn sleep(
     let millis = time.to_u64();
     let future = async move {
         tokio::time::sleep(Duration::from_millis(millis)).await;
-        Ok(Gc::new(Value::Nil))
+        Ok(Gc::new(Value::Null))
     }
     .boxed()
     .shared();

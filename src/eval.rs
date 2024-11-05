@@ -94,7 +94,7 @@ impl Eval for ast::Body {
         cont: &Option<Arc<Continuation>>,
     ) -> Result<ValueOrPreparedCall, RuntimeError> {
         let Some(last) = self.exprs.last() else {
-            return Ok(ValueOrPreparedCall::Value(Gc::new(Value::Nil)));
+            return Ok(ValueOrPreparedCall::Value(Gc::new(Value::Null)));
         };
         for (expr, tail) in self.exprs.skip_last() {
             let cont = Some(Arc::new(Continuation::new(
@@ -175,7 +175,7 @@ impl Eval for ast::If {
         } else if let Some(ref failure) = self.failure {
             failure.tail_eval(env, cont).await
         } else {
-            Ok(ValueOrPreparedCall::Value(Gc::new(Value::Nil)))
+            Ok(ValueOrPreparedCall::Value(Gc::new(Value::Null)))
         }
     }
 }
@@ -197,7 +197,7 @@ impl Eval for ast::DefineFunc {
             is_variable_transformer: false,
         }));
         env.def_var(&self.name, func).await;
-        Ok(Gc::new(Value::Nil))
+        Ok(Gc::new(Value::Null))
     }
 }
 
@@ -214,7 +214,7 @@ impl Eval for ast::DefineVar {
         ));
         let val = self.val.eval(env, &Some(cont)).await?;
         env.def_var(&self.name, val).await;
-        Ok(Gc::new(Value::Nil))
+        Ok(Gc::new(Value::Null))
     }
 }
 
@@ -245,7 +245,7 @@ impl Eval for ast::DefineSyntax {
         ));
         let val = self.transformer.eval(env, &Some(cont)).await?;
         env.def_macro(&self.name, val).await;
-        Ok(Gc::new(Value::Nil))
+        Ok(Gc::new(Value::Null))
     }
 }
 
@@ -325,7 +325,7 @@ impl Eval for ast::Nil {
         _env: &Env,
         _cont: &Option<Arc<Continuation>>,
     ) -> Result<Gc<Value>, RuntimeError> {
-        Ok(Gc::new(Value::Nil))
+        Ok(Gc::new(Value::Null))
     }
 }
 
@@ -353,7 +353,7 @@ impl Eval for ast::Set {
             .ok_or_else(|| RuntimeError::undefined_variable(self.var.clone()))?
             .write()
             .await = val;
-        Ok(Gc::new(Value::Nil))
+        Ok(Gc::new(Value::Null))
     }
 }
 

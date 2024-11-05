@@ -145,7 +145,7 @@ async fn compile_let(
                     .await
                     .map_err(CompileLetError::CompileLetBindingError)?;
             previously_bound.insert(binding.ident.clone(), binding.span.clone());
-            new_contour.def_var(&binding.ident, Gc::new(Value::Nil));
+            new_contour.def_var(&binding.ident, Gc::new(Value::Null));
             compiled_bindings.push(binding);
         }
     }

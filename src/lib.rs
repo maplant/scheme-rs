@@ -1,4 +1,3 @@
-pub mod futures;
 pub mod ast;
 pub mod builtin;
 pub mod compile;
@@ -7,6 +6,7 @@ pub mod env;
 pub mod error;
 pub mod eval;
 pub mod expand;
+pub mod futures;
 pub mod gc;
 pub mod lex;
 pub mod lists;

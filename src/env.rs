@@ -3,8 +3,12 @@ use std::{borrow::Cow, collections::HashMap};
 
 use crate::{
     builtin::Builtin,
+    compile::CompileError,
+    error::RuntimeError,
     gc::{Gc, Trace},
-    syntax::{Identifier, Mark},
+    lex::{LexError, Token},
+    parse::ParseError,
+    syntax::{Identifier, Mark, ParsedSyntax},
     value::Value,
 };
 
@@ -215,12 +219,16 @@ impl Env {
         }
     }
 
-    pub fn top() -> Self {
+    pub async fn top() -> Self {
         let mut top = Self::Top.new_lexical_contour(Mark::new());
+        // Install the builtins:
         for builtin in inventory::iter::<Builtin> {
             builtin.install(&mut top);
         }
-        Self::LexicalContour(Gc::new(top))
+        // Install the stdlib:
+        let top = Self::LexicalContour(Gc::new(top));
+        let _ = top.eval(include_str!("stdlib.scm")).await.unwrap();
+        top
     }
 
     pub fn new_lexical_contour(&self, mark: Mark) -> LexicalContour {
@@ -269,6 +277,18 @@ impl Env {
             _ => (),
         }
     }
+
+    /// Evaluate a string, returning all of the results in a Vec
+    pub async fn eval<'e>(&self, exprs: &'e str) -> Result<Vec<Gc<Value>>, EvalError<'e>> {
+        let tokens = Token::tokenize_str(exprs)?;
+        let sexprs = ParsedSyntax::parse(&tokens)?;
+        let mut results = Vec::new();
+        for sexpr in sexprs {
+            let result = sexpr.compile(self, &None).await?.eval(self, &None).await?;
+            results.push(result);
+        }
+        Ok(results)
+    }
 }
 
 impl From<Gc<LexicalContour>> for Env {
@@ -280,4 +300,12 @@ impl From<Gc<LexicalContour>> for Env {
 enum MacroLookup {
     WithEnv((Env, Gc<Value>)),
     WithoutEnv(Gc<Value>),
+}
+
+#[derive(derive_more::From, Debug)]
+pub enum EvalError<'e> {
+    LexError(LexError<'e>),
+    ParseError(ParseError<'e>),
+    CompileError(CompileError),
+    RuntimeError(RuntimeError),
 }

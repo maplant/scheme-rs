@@ -78,12 +78,9 @@ impl fmt::Display for Syntax {
                 }
                 write!(f, ")")?;
             }
-            Self::Literal {
-                literal,
-                ..
-            } => {
+            Self::Literal { literal, .. } => {
                 write!(f, "{:?}", literal)?;
-            },
+            }
             Self::Identifier { ident, .. } => {
                 write!(f, "{}", ident.name)?;
             }
@@ -181,7 +178,9 @@ impl Syntax {
                     _ => todo!(),
                 }
             }
-            Value::Transformer(transformer) => transformer.expand(&input).unwrap(),
+            Value::Transformer(transformer) => transformer
+                .expand(&input)
+                .ok_or_else(RuntimeError::no_patterns_match)?,
             x => return Err(RuntimeError::invalid_type("procedure", x.type_name())),
         };
         // Apply the new mark to the output
@@ -233,6 +232,11 @@ impl Syntax {
     ) -> Result<Arc<dyn Eval>, CompileError> {
         match self {
             Self::Nil { span } => Err(CompileError::UnexpectedEmptyList(span.clone())),
+            // Special identifiers:
+            Self::Identifier { ident, .. } if ident == "<undefined>" => {
+                Ok(Arc::new(Gc::new(Value::Undefined)))
+            }
+            // Regulard identifiers:
             Self::Identifier { ident, .. } => Ok(Arc::new(
                 env.fetch_var(ident)
                     .await
@@ -352,9 +356,7 @@ impl<'a> Expansion<'a> {
     ) -> BoxFuture<'a, Result<Arc<dyn Eval>, CompileError>> {
         Box::pin(async move {
             match self {
-                Self::Unexpanded(syntax) => {
-                    syntax.compile_expanded(env, cont).await
-                },
+                Self::Unexpanded(syntax) => syntax.compile_expanded(env, cont).await,
                 Self::Expanded {
                     mark,
                     syntax,
@@ -363,11 +365,7 @@ impl<'a> Expansion<'a> {
                     // If the expression has been expanded, we may need to expand it again, but
                     // it must be done in a new expansion context.
                     let env = Env::Expansion(Gc::new(env.new_expansion_context(mark, macro_env)));
-                    syntax
-                        .expand(&env, cont)
-                        .await?
-                        .compile(&env, cont)
-                        .await
+                    syntax.expand(&env, cont).await?.compile(&env, cont).await
                 }
             }
         })
@@ -381,7 +379,9 @@ pub struct ParsedSyntax {
 }
 
 impl ParsedSyntax {
-    fn parse_fragment<'a>(i: &'a [Token<'a>]) -> Result<(&'a [Token<'a>], Self), ParseError<'a>> {
+    fn parse_fragment<'a, 'b>(
+        i: &'b [Token<'a>],
+    ) -> Result<(&'b [Token<'a>], Self), ParseError<'a>> {
         let (doc_comment, remaining) = if let Token {
             lexeme: Lexeme::DocComment(ref doc_comment),
             ..
@@ -401,7 +401,7 @@ impl ParsedSyntax {
         ))
     }
 
-    pub fn parse<'a>(mut i: &'a [Token<'a>]) -> Result<Vec<Self>, ParseError<'a>> {
+    pub fn parse<'a, 'b>(mut i: &'b [Token<'a>]) -> Result<Vec<Self>, ParseError<'a>> {
         let mut output = Vec::new();
         while !i.is_empty() {
             let (remaining, expr) = Self::parse_fragment(i)?;

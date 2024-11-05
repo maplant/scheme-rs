@@ -6,7 +6,7 @@ use std::sync::Arc;
 pub fn fmt_list<'a>(car: &'a Gc<Value>, cdr: &'a Gc<Value>) -> BoxFuture<'a, String> {
     Box::pin(async move {
         match &*cdr.read().await {
-            Value::Pair(_, _) | Value::Nil => (),
+            Value::Pair(_, _) | Value::Null => (),
             cdr => {
                 // This is not a proper list
                 let car = car.read().await.fmt().await;
@@ -22,7 +22,7 @@ pub fn fmt_list<'a>(car: &'a Gc<Value>, cdr: &'a Gc<Value>) -> BoxFuture<'a, Str
 
         while let Some(head) = stack.pop() {
             match &*head.read().await {
-                Value::Nil => {
+                Value::Null => {
                     if !stack.is_empty() {
                         output.push_str(" ()");
                     }
@@ -50,7 +50,7 @@ pub async fn list(
     args: Vec<Gc<Value>>,
 ) -> Result<Gc<Value>, RuntimeError> {
     // Construct the list in reverse
-    let mut cdr = Gc::new(Value::Nil);
+    let mut cdr = Gc::new(Value::Null);
     for arg in args.into_iter().rev() {
         cdr = Gc::new(Value::Pair(arg, cdr.clone()));
     }
@@ -74,7 +74,7 @@ pub async fn car(
     let val = val.read().await;
     match &*val {
         Value::Pair(car, _cdr) => Ok(car.clone()),
-        _ => todo!(),
+        _ => Err(RuntimeError::invalid_type("pair", val.type_name())),
     }
 }
 
@@ -86,7 +86,7 @@ pub async fn cdr(
     let val = val.read().await;
     match &*val {
         Value::Pair(_car, cdr) => Ok(cdr.clone()),
-        _ => todo!(),
+        _ => Err(RuntimeError::invalid_type("pair", val.type_name())),
     }
 }
 
@@ -101,5 +101,5 @@ pub async fn set_car(
         Value::Pair(ref mut car, _cdr) => *car = val.clone(),
         _ => todo!(),
     }
-    Ok(Gc::new(Value::Nil))
+    Ok(Gc::new(Value::Null))
 }

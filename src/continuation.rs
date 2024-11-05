@@ -221,7 +221,7 @@ impl Resumable for ResumableSet {
             .ok_or_else(|| RuntimeError::undefined_variable(self.var.clone()))?
             .write()
             .await = val;
-        Ok(Gc::new(Value::Nil))
+        Ok(Gc::new(Value::Null))
     }
 }
 
@@ -396,7 +396,7 @@ impl Resumable for ResumableIf {
         } else if let Some(ref failure) = self.failure {
             failure.eval(&self.env, cont).await
         } else {
-            Ok(Gc::new(Value::Nil))
+            Ok(Gc::new(Value::Null))
         }
     }
 }
@@ -423,7 +423,7 @@ impl Resumable for ResumableDefineVar {
         _cont: &Option<Arc<Continuation>>,
     ) -> Result<Gc<Value>, RuntimeError> {
         self.env.def_var(&self.name, arg).await;
-        Ok(Gc::new(Value::Nil))
+        Ok(Gc::new(Value::Null))
     }
 }
 
@@ -449,7 +449,7 @@ impl Resumable for ResumableDefineSyntax {
         _cont: &Option<Arc<Continuation>>,
     ) -> Result<Gc<Value>, RuntimeError> {
         self.env.def_macro(&self.name, arg).await;
-        Ok(Gc::new(Value::Nil))
+        Ok(Gc::new(Value::Null))
     }
 }
 
