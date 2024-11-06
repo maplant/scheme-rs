@@ -49,7 +49,7 @@ impl SyntaxRule {
 
 #[derive(Clone, Debug)]
 pub enum Pattern {
-    Nil,
+    Null,
     Underscore,
     Ellipsis(Box<Pattern>),
     List(Vec<Pattern>),
@@ -62,7 +62,7 @@ pub enum Pattern {
 impl Pattern {
     pub fn compile(expr: &Syntax, keywords: &HashSet<String>) -> Self {
         match expr {
-            Syntax::Nil { .. } => Self::Nil,
+            Syntax::Null { .. } => Self::Null,
             Syntax::Identifier { ident, .. } if ident.name == "_" => Self::Underscore,
             Syntax::Identifier { ident, .. } if keywords.contains(&ident.name) => {
                 Self::Keyword(ident.name.clone())
@@ -129,7 +129,7 @@ impl Pattern {
             Self::List(list) => match_slice(list, expr, var_binds),
             Self::Vector(vec) => match_slice(vec, expr, var_binds),
             // We shouldn't ever see this outside of lists
-            Self::Nil => expr.is_nil(),
+            Self::Null => expr.is_nil(),
             _ => todo!(),
         }
     }
@@ -140,15 +140,17 @@ fn match_slice(
     expr: &Syntax,
     var_binds: &mut HashMap<String, VecDeque<Syntax>>,
 ) -> bool {
-    let mut expr_iter = match expr {
-        Syntax::List { list, .. } => list.iter().peekable(),
-        Syntax::Nil { .. } => return true,
+    let span = expr.span();
+    let exprs = match expr {
+        Syntax::List { list, .. } => list,
+        Syntax::Null { .. } => return true,
         _ => return false,
     };
+    let mut expr_iter = exprs.iter().peekable();
     let mut pattern_iter = pattern.iter().peekable();
     while let Some(item) = pattern_iter.next() {
         if let Pattern::Ellipsis(ref pattern) = item {
-            let exprs: Vec<_> = if !matches!(pattern_iter.peek(), Some(Pattern::Nil)) {
+            let exprs: Vec<_> = if !matches!(pattern_iter.peek(), Some(Pattern::Null)) {
                 // Match backwards
                 let mut rev_expr_iter = expr_iter.rev();
                 let rev_pattern_iter = pattern_iter.rev();
@@ -170,6 +172,10 @@ fn match_slice(
                 }
             }
             return true;
+        } else if !matches!(item, Pattern::Null) && pattern_iter.peek().is_none() {
+            // Match to the rest of the expresions:
+            let exprs = Syntax::new_list(expr_iter.cloned().collect(), span.clone()).normalize();
+            return item.matches(&exprs, var_binds);
         } else if let Some(next_expr) = expr_iter.next() {
             if !item.matches(next_expr, var_binds) {
                 return false;
@@ -184,7 +190,7 @@ fn match_slice(
 
 #[derive(Clone, Debug)]
 pub enum Template {
-    Nil,
+    Null,
     Ellipsis(Box<Template>),
     List(Vec<Template>),
     Vector(Vec<Template>),
@@ -195,7 +201,7 @@ pub enum Template {
 impl Template {
     pub fn compile(expr: &Syntax) -> Self {
         match expr {
-            Syntax::Nil { .. } => Self::Nil,
+            Syntax::Null { .. } => Self::Null,
             Syntax::List { list, .. } => Self::List(Self::compile_slice(list)),
             Syntax::Vector { vector, .. } => Self::Vector(Self::compile_slice(vector)),
             Syntax::Literal { literal, .. } => Self::Literal(literal.clone()),
@@ -231,7 +237,7 @@ impl Template {
         curr_span: Span,
     ) -> Option<Syntax> {
         let syntax = match self {
-            Self::Nil => Syntax::new_nil(curr_span),
+            Self::Null => Syntax::new_nil(curr_span),
             Self::List(list) => {
                 let executed = execute_slice(list, var_binds, curr_span.clone())?;
                 if executed.len() == 1 {
@@ -269,11 +275,13 @@ fn execute_slice(
             Template::Ellipsis(template) => {
                 let mut var_binds = var_binds.clone();
                 while let Some(val) = template.execute(&mut var_binds, curr_span.clone()) {
-                    output.push(val);
+                    if !val.is_nil() {
+                        output.push(val);
+                    }
                 }
             }
-            Template::Nil => {
-                if let Some(Syntax::Nil { .. }) = output.last() {
+            Template::Null => {
+                if let Some(Syntax::Null { .. }) = output.last() {
                     continue;
                 } else {
                     output.push(Syntax::new_nil(curr_span.clone()));
@@ -289,18 +297,18 @@ fn execute_slice(
 pub async fn make_variable_transformer(
     _cont: &Option<Arc<Continuation>>,
     proc: &Gc<Value>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let proc = proc.read().await;
     match &*proc {
         Value::Procedure(proc) => {
             let mut proc = proc.clone();
             proc.is_variable_transformer = true;
-            Ok(Gc::new(Value::Procedure(proc)))
+            Ok(vec![Gc::new(Value::Procedure(proc))])
         }
         Value::Transformer(transformer) => {
             let mut transformer = transformer.clone();
             transformer.is_variable_transformer = true;
-            Ok(Gc::new(Value::Transformer(transformer)))
+            Ok(vec![Gc::new(Value::Transformer(transformer))])
         }
         _ => todo!(),
     }

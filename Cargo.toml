@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 async-trait = "0.1"
-derive_more = "0.99"
+derive_more = { version = "1.0", features = ["debug", "from"]}
 dyn-clone = "1.0.13"
 futures = "0.3"
 inventory = "0.3"
@@ -18,7 +18,7 @@ rand = "0.8"
 thiserror = "1"
 tokio = { version = "1", features = ["full"] }
 unicode_categories = "0.1"
-reedline = "0.23"
+reedline = "0.36"
 # TODO: Get rid of this dependency
 derivative = "2"
 

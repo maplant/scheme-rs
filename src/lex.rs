@@ -6,7 +6,7 @@ use nom::{
         streaming::anychar,
     },
     combinator::{map, opt, value, verify},
-    multi::{fold_many0, fold_many1, many0},
+    multi::{fold_many0, many0},
     sequence::{delimited, preceded, tuple},
     IResult,
 };
@@ -102,7 +102,9 @@ fn lexeme(i: InputSpan) -> IResult<InputSpan, Lexeme<'static>> {
         map(boolean, Lexeme::Boolean),
         map(string, Lexeme::string_owned),
         map(number, Lexeme::number_owned),
-        map(doc_comment, Lexeme::DocComment),
+        // I _want_ to do something with doc comments, but probably best not
+        // to include them for now.
+        // map(doc_comment, Lexeme::DocComment),
         map(match_char('.'), |_| Lexeme::Period),
         map(match_char('\''), |_| Lexeme::Quote),
         map(match_char('('), |_| Lexeme::LParen),
@@ -114,11 +116,12 @@ fn lexeme(i: InputSpan) -> IResult<InputSpan, Lexeme<'static>> {
     ))(i)
 }
 
-/*
-fn comment(_i: InputSpan) -> IResult<InputSpan, ()> {
-    todo!()
+fn comment(i: InputSpan) -> IResult<InputSpan, ()> {
+    map(
+        delimited(tag(";"), take_until("\n"), many0(whitespace)),
+        |_| (),
+    )(i)
 }
-*/
 
 fn whitespace(i: InputSpan) -> IResult<InputSpan, ()> {
     map(
@@ -132,7 +135,7 @@ fn atmosphere(i: InputSpan) -> IResult<InputSpan, ()> {
 }
 
 fn interlexeme_space(i: InputSpan) -> IResult<InputSpan, ()> {
-    fold_many0(atmosphere, || (), |_, _| ())(i)
+    fold_many0(alt((atmosphere, comment)), || (), |_, _| ())(i)
 }
 
 fn identifier(i: InputSpan) -> IResult<InputSpan, String> {
@@ -278,6 +281,7 @@ fn number(i: InputSpan) -> IResult<InputSpan, String> {
     )(i)
 }
 
+/*
 fn doc_comment(i: InputSpan) -> IResult<InputSpan, String> {
     fold_many1(
         delimited(tag(";;"), take_until("\n"), many0(whitespace)),
@@ -289,6 +293,7 @@ fn doc_comment(i: InputSpan) -> IResult<InputSpan, String> {
         },
     )(i)
 }
+*/
 
 #[derive(Debug)]
 pub struct Token<'a> {

@@ -1,8 +1,7 @@
 use crate::{
-    env::{Env, LexicalContour},
+    env::Env,
     eval::Eval,
     expand::Transformer,
-    gc::Gc,
     num::Number,
     syntax::{Identifier, Mark, Span, Syntax},
     util::ArcSlice,
@@ -35,7 +34,6 @@ pub struct SyntaxQuote {
 
 #[derive(Clone)]
 pub struct Call {
-    //    pub operator: Arc<dyn Eval>,
     pub args: ArcSlice<Arc<dyn Eval>>,
     pub location: Span,
     pub proc_name: String,
@@ -45,7 +43,6 @@ pub struct Call {
 pub struct DefineFunc {
     pub name: Identifier,
     pub args: Formals,
-    pub mark: Mark,
     pub body: Body,
 }
 
@@ -62,16 +59,12 @@ pub enum Define {
 }
 
 #[derive(Clone)]
-pub struct DefineSyntax {
-    pub name: Identifier,
-    pub transformer: Arc<dyn Eval>,
-}
+pub struct DefineSyntax;
 
 #[derive(Clone)]
 pub struct Lambda {
     pub args: Formals,
     pub body: Body,
-    pub mark: Mark,
 }
 
 #[derive(Debug, Clone)]
@@ -92,13 +85,13 @@ impl Formals {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Body {
-    pub exprs: ArcSlice<Syntax>,
+    pub exprs: ArcSlice<Arc<dyn Eval>>,
 }
 
 impl Body {
-    pub fn new(exprs: Vec<Syntax>) -> Self {
+    pub fn new(exprs: Vec<Arc<dyn Eval>>) -> Self {
         Self {
             exprs: ArcSlice::from(exprs),
         }
@@ -107,7 +100,6 @@ impl Body {
 
 #[derive(Clone)]
 pub struct Let {
-    pub scope: Gc<LexicalContour>,
     pub bindings: Arc<[(Identifier, Arc<dyn Eval>)]>,
     pub body: Body,
 }
@@ -170,6 +162,41 @@ pub struct SyntaxRules {
     pub transformer: Transformer,
 }
 
+#[derive(Clone)]
+pub struct Apply {
+    pub proc_name: String,
+    pub location: Span,
+    pub args: ArcSlice<Arc<dyn Eval>>,
+    pub rest_args: Arc<dyn Eval>,
+}
+
+#[derive(Clone)]
+pub struct FetchVar {
+    pub ident: Identifier,
+}
+
+impl FetchVar {
+    pub fn new(ident: Identifier) -> Self {
+        Self { ident }
+    }
+}
+
+#[derive(Clone)]
+pub struct MacroExpansionPoint {
+    pub mark: Mark,
+    pub macro_env: Env,
+    pub expr: Arc<dyn Eval>,
+}
+
+impl MacroExpansionPoint {
+    pub fn new(mark: Mark, macro_env: Env, expr: Arc<dyn Eval>) -> Self {
+        Self {
+            mark,
+            macro_env,
+            expr,
+        }
+    }
+}
 /*
 struct Export {}
 

@@ -1,3 +1,4 @@
+use crate::{error::RuntimeError, gc::Gc, value::Value};
 use std::{fmt, ops::Deref, sync::Arc};
 
 #[derive(Clone)]
@@ -7,6 +8,13 @@ pub struct ArcSlice<T> {
 }
 
 impl<T> ArcSlice<T> {
+    pub fn empty() -> Self {
+        Self {
+            arc: Arc::from([]),
+            start: 0,
+        }
+    }
+
     pub fn skip_last(&self) -> impl Iterator<Item = (&T, ArcSlice<T>)> {
         (self.start..(self.arc.len().saturating_sub(1))).map(|i| {
             (
@@ -65,4 +73,19 @@ pub fn iter_arc<T>(arc: &Arc<[T]>) -> impl Iterator<Item = (&T, ArcSlice<T>)> {
             },
         )
     })
+}
+
+/// Extension crate for extracting a single value from a Vec
+pub trait RequireOne {
+    fn require_one(self) -> Result<Gc<Value>, RuntimeError>;
+}
+
+impl RequireOne for Vec<Gc<Value>> {
+    fn require_one(self) -> Result<Gc<Value>, RuntimeError> {
+        let nargs = self.len();
+        let [arg] = self
+            .try_into()
+            .map_err(|_| RuntimeError::wrong_num_of_args(1, nargs))?;
+        Ok(arg)
+    }
 }

@@ -7,7 +7,7 @@ use std::{sync::Arc, time::Duration};
 pub async fn spawn(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let value = arg.read().await;
     let callable = value
         .as_callable()
@@ -22,35 +22,35 @@ pub async fn spawn(
         val.eval(&None).await
     });
     let future = async move { task.await.unwrap() }.boxed().shared();
-    Ok(Gc::new(Value::Future(future)))
+    Ok(vec![Gc::new(Value::Future(future))])
 }
 
 #[builtin("sleep")]
 pub async fn sleep(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let value = arg.read().await;
     let time: &Number = value.as_ref().try_into()?;
     let millis = time.to_u64();
     let future = async move {
         tokio::time::sleep(Duration::from_millis(millis)).await;
-        Ok(Gc::new(Value::Null))
+        Ok(vec![Gc::new(Value::Null)])
     }
     .boxed()
     .shared();
-    Ok(Gc::new(Value::Future(future)))
+    Ok(vec![Gc::new(Value::Future(future))])
 }
 
 #[builtin("await")]
 pub async fn await_value(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let value = arg.read().await;
     match &*value {
         Value::Future(fut) => fut.clone().await,
-        _ => Ok(arg.clone()),
+        _ => Ok(vec![arg.clone()]),
     }
 }
 
@@ -58,7 +58,7 @@ pub async fn await_value(
 pub async fn join(
     _cont: &Option<Arc<Continuation>>,
     args: Vec<Gc<Value>>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let mut futs = Vec::new();
     for arg in args.into_iter() {
         let value = arg.read().await;
@@ -68,16 +68,20 @@ pub async fn join(
                 // I can't figure out a way to get rid of this clone
                 // at the current moment without writing annoying code
                 let arg = arg.clone();
-                async move { Ok(arg) }.boxed().shared()
+                async move { Ok(vec![arg]) }.boxed().shared()
             }
         };
         futs.push(fut);
     }
     let future = async move {
-        let results = try_join_all(futs).await?;
-        Ok(Gc::new(Value::from(results)))
+        let results = try_join_all(futs)
+            .await?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        Ok(vec![Gc::new(Value::from(results))])
     }
     .boxed()
     .shared();
-    Ok(Gc::new(Value::Future(future)))
+    Ok(vec![Gc::new(Value::Future(future))])
 }

@@ -30,7 +30,7 @@ pub fn builtin(name: TokenStream, item: TokenStream) -> TokenStream {
             fn #wrapper_name(
                 cont: Option<std::sync::Arc<crate::continuation::Continuation>>,
                 args: Vec<crate::gc::Gc<crate::value::Value>>
-            ) -> futures::future::BoxFuture<'static, Result<crate::gc::Gc<crate::value::Value>, crate::error::RuntimeError>> {
+            ) -> futures::future::BoxFuture<'static, Result<Vec<crate::gc::Gc<crate::value::Value>>, crate::error::RuntimeError>> {
                 Box::pin(
                     async move {
                         #impl_name(
@@ -47,7 +47,7 @@ pub fn builtin(name: TokenStream, item: TokenStream) -> TokenStream {
             fn #wrapper_name(
                 cont: Option<std::sync::Arc<crate::continuation::Continuation>>,
                 mut required_args: Vec<crate::gc::Gc<crate::value::Value>>
-            ) -> futures::future::BoxFuture<'static, Result<crate::gc::Gc<crate::value::Value>, crate::error::RuntimeError>> {
+            ) -> futures::future::BoxFuture<'static, Result<Vec<crate::gc::Gc<crate::value::Value>>, crate::error::RuntimeError>> {
                 let var_args = required_args.split_off(#num_args);
                 Box::pin(
                     async move {

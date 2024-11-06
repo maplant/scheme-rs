@@ -1,5 +1,5 @@
 use futures::future::BoxFuture;
-use std::{borrow::Cow, collections::HashMap};
+use std::collections::HashMap;
 
 use crate::{
     builtin::Builtin,
@@ -12,14 +12,19 @@ use crate::{
     value::Value,
 };
 
+#[derive(derive_more::Debug)]
 pub struct LexicalContour {
+    #[debug(skip)]
     pub up: Env,
-    pub mark: Mark,
+    // pub mark: Mark,
+    #[debug("{:?}", vars.keys().cloned().collect::<Vec<_>>())]
     vars: HashMap<Identifier, Gc<Value>>,
+    #[debug("{:?}", macros.keys().cloned().collect::<Vec<_>>())]
     macros: HashMap<Identifier, Gc<Value>>,
 }
 
 impl LexicalContour {
+    /*
     fn strip<'a>(&self, ident: &'a Identifier) -> Cow<'a, Identifier> {
         if ident.marks.contains(&self.mark) {
             let mut stripped = ident.clone();
@@ -41,12 +46,13 @@ impl LexicalContour {
             self.up.strip_unused_marks(ident).await;
         })
     }
+    */
 
     pub fn is_bound<'a>(&'a self, ident: &'a Identifier) -> BoxFuture<'a, bool> {
         Box::pin(async move {
             self.vars.contains_key(ident)
                 || self.macros.contains_key(ident)
-                || self.up.is_bound(&self.strip(ident)).await
+                || self.up.is_bound(ident).await
         })
     }
 
@@ -60,7 +66,7 @@ impl LexicalContour {
                 return Some(var.clone());
             }
             // Check the next lexical scope up
-            self.up.fetch_var(&self.strip(ident)).await
+            self.up.fetch_var(ident).await
         })
     }
 
@@ -70,10 +76,7 @@ impl LexicalContour {
             if let Some(var) = self.macros.get(ident) {
                 return Some(MacroLookup::WithoutEnv(var.clone()));
             }
-            self.up
-                .fetch_macro(&self.strip(ident))
-                .await
-                .map(MacroLookup::WithEnv)
+            self.up.fetch_macro(ident).await.map(MacroLookup::WithEnv)
         })
     }
 
@@ -102,9 +105,12 @@ impl Trace for LexicalContour {
     }
 }
 
+#[derive(derive_more::Debug)]
 pub struct ExpansionContext {
+    #[debug(skip)]
     up: Env,
     mark: Mark,
+    #[debug(skip)]
     macro_env: Env,
 }
 
@@ -117,20 +123,6 @@ impl ExpansionContext {
                 self.macro_env.is_bound(&stripped).await
             } else {
                 self.up.is_bound(ident).await
-            }
-        })
-    }
-
-    pub fn strip_unused_marks<'a>(&'a self, ident: &'a mut Identifier) -> BoxFuture<'a, ()> {
-        Box::pin(async move {
-            if ident.marks.contains(&self.mark) {
-                let mut stripped = ident.clone();
-                stripped.mark(self.mark);
-                self.macro_env.fetch_var(&stripped).await;
-                stripped.mark(self.mark);
-                ident.marks = stripped.marks;
-            } else {
-                self.up.strip_unused_marks(ident).await;
             }
         })
     }
@@ -161,6 +153,18 @@ impl ExpansionContext {
             } else {
                 self.up.fetch_macro(ident).await
             }
+            /*
+            let ident = if ident.marks.contains(&self.mark) {
+                let stripped = self.strip(ident);
+                if let result @ Some(_) = self.macro_env.fetch_macro(&stripped).await {
+                    return result;
+                }
+                stripped
+            } else {
+                Cow::Borrowed(ident)
+            };
+            self.up.fetch_macro(&ident).await
+            */
         })
     }
 }
@@ -183,6 +187,7 @@ pub enum Env {
 }
 
 impl Env {
+    /*
     pub async fn strip_unused_marks(&self, ident: &mut Identifier) {
         match self {
             Self::Expansion(expansion) => expansion.read().await.strip_unused_marks(ident).await,
@@ -190,6 +195,7 @@ impl Env {
             _ => (),
         }
     }
+    */
 
     pub async fn is_bound(&self, ident: &Identifier) -> bool {
         match self {
@@ -220,7 +226,7 @@ impl Env {
     }
 
     pub async fn top() -> Self {
-        let mut top = Self::Top.new_lexical_contour(Mark::new());
+        let mut top = Self::Top.new_lexical_contour();
         // Install the builtins:
         for builtin in inventory::iter::<Builtin> {
             builtin.install(&mut top);
@@ -231,10 +237,10 @@ impl Env {
         top
     }
 
-    pub fn new_lexical_contour(&self, mark: Mark) -> LexicalContour {
+    pub fn new_lexical_contour(&self) -> LexicalContour {
         LexicalContour {
             up: self.clone(),
-            mark,
+            // mark,
             vars: HashMap::default(),
             macros: HashMap::default(),
         }
@@ -279,7 +285,7 @@ impl Env {
     }
 
     /// Evaluate a string, returning all of the results in a Vec
-    pub async fn eval<'e>(&self, exprs: &'e str) -> Result<Vec<Gc<Value>>, EvalError<'e>> {
+    pub async fn eval<'e>(&self, exprs: &'e str) -> Result<Vec<Vec<Gc<Value>>>, EvalError<'e>> {
         let tokens = Token::tokenize_str(exprs)?;
         let sexprs = ParsedSyntax::parse(&tokens)?;
         let mut results = Vec::new();
@@ -288,6 +294,12 @@ impl Env {
             results.push(result);
         }
         Ok(results)
+    }
+}
+
+impl From<Gc<ExpansionContext>> for Env {
+    fn from(env: Gc<ExpansionContext>) -> Self {
+        Self::Expansion(env)
     }
 }
 

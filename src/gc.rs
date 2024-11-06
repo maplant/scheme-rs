@@ -14,7 +14,7 @@ use std::{
 };
 use tokio::sync::{RwLock, Semaphore, SemaphorePermit};
 
-const MAX_READS: u32 = std::u32::MAX >> 3;
+const MAX_READS: u32 = u32::MAX >> 3;
 
 pub struct GcInner<T: ?Sized> {
     roots: atomic::AtomicUsize,

@@ -5,7 +5,7 @@ use crate::{
 use futures::future::BoxFuture;
 use std::sync::Arc;
 
-type ExprFuture = BoxFuture<'static, Result<Gc<Value>, RuntimeError>>;
+type ExprFuture = BoxFuture<'static, Result<Vec<Gc<Value>>, RuntimeError>>;
 
 pub struct Builtin {
     pub name: &'static str,

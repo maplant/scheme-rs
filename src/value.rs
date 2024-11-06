@@ -26,7 +26,7 @@ pub enum Value {
     Syntax(Syntax),
     Procedure(Procedure),
     ExternalFn(ExternalFn),
-    Future(Shared<BoxFuture<'static, Result<Gc<Value>, RuntimeError>>>),
+    Future(Shared<BoxFuture<'static, Result<Vec<Gc<Value>>, RuntimeError>>>),
     Transformer(Transformer),
     Continuation(Option<Arc<Continuation>>),
     Undefined,
@@ -110,7 +110,7 @@ impl Value {
 
     pub fn from_syntax(syntax: &Syntax) -> Self {
         match syntax {
-            Syntax::Nil { .. } => Self::Null,
+            Syntax::Null { .. } => Self::Null,
             Syntax::List { list, .. } => {
                 let mut curr = Self::from_syntax(list.last().unwrap());
                 for item in list[..list.len() - 1].iter().rev() {
@@ -214,7 +214,7 @@ pub fn eqv<'a>(a: &'a Gc<Value>, b: &'a Gc<Value>) -> BoxFuture<'a, bool> {
     Box::pin(async move {
         let a = a.read().await;
         let b = b.read().await;
-        a.eqv(&*b).await
+        a.eqv(&b).await
     })
 }
 
@@ -223,111 +223,132 @@ pub async fn eqv_pred(
     _cont: &Option<Arc<Continuation>>,
     a: &Gc<Value>,
     b: &Gc<Value>,
-) -> Result<Gc<Value>, RuntimeError> {
-    Ok(Gc::new(Value::Boolean(eqv(a, b).await)))
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
+    Ok(vec![Gc::new(Value::Boolean(eqv(a, b).await))])
 }
 
 #[builtin("boolean?")]
 pub async fn boolean_pred(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let arg = arg.read().await;
-    Ok(Gc::new(Value::Boolean(matches!(&*arg, Value::Boolean(_)))))
+    Ok(vec![Gc::new(Value::Boolean(matches!(
+        &*arg,
+        Value::Boolean(_)
+    )))])
 }
 
 #[builtin("symbol?")]
 pub async fn symbol_pred(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let arg = arg.read().await;
-    Ok(Gc::new(Value::Boolean(matches!(&*arg, Value::Symbol(_)))))
+    Ok(vec![Gc::new(Value::Boolean(matches!(
+        &*arg,
+        Value::Symbol(_)
+    )))])
 }
 
 #[builtin("char?")]
 pub async fn char_pred(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let arg = arg.read().await;
-    Ok(Gc::new(Value::Boolean(matches!(
+    Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
         Value::Character(_)
-    ))))
+    )))])
 }
 
 #[builtin("vector?")]
 pub async fn vector_pred(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let arg = arg.read().await;
-    Ok(Gc::new(Value::Boolean(matches!(&*arg, Value::Vector(_)))))
+    Ok(vec![Gc::new(Value::Boolean(matches!(
+        &*arg,
+        Value::Vector(_)
+    )))])
 }
 
 #[builtin("null?")]
 pub async fn null_pred(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let arg = arg.read().await;
-    Ok(Gc::new(Value::Boolean(matches!(&*arg, Value::Null))))
+    Ok(vec![Gc::new(Value::Boolean(matches!(&*arg, Value::Null)))])
 }
 
 #[builtin("pair?")]
 pub async fn pair_pred(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let arg = arg.read().await;
-    Ok(Gc::new(Value::Boolean(matches!(&*arg, Value::Pair(_, _)))))
+    Ok(vec![Gc::new(Value::Boolean(matches!(
+        &*arg,
+        Value::Pair(_, _)
+    )))])
 }
 
 #[builtin("number?")]
 pub async fn number_pred(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let arg = arg.read().await;
-    Ok(Gc::new(Value::Boolean(matches!(&*arg, Value::Number(_)))))
+    Ok(vec![Gc::new(Value::Boolean(matches!(
+        &*arg,
+        Value::Number(_)
+    )))])
 }
 
 #[builtin("string?")]
 pub async fn string_pred(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let arg = arg.read().await;
-    Ok(Gc::new(Value::Boolean(matches!(&*arg, Value::String(_)))))
+    Ok(vec![Gc::new(Value::Boolean(matches!(
+        &*arg,
+        Value::String(_)
+    )))])
 }
 
 #[builtin("procedure?")]
 pub async fn procedure_pred(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let arg = arg.read().await;
-    Ok(Gc::new(Value::Boolean(matches!(
+    Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
         Value::Procedure(_) | Value::ExternalFn(_) | Value::Transformer(_)
-    ))))
+    )))])
 }
 
 #[builtin("future?")]
 pub async fn future_pred(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let arg = arg.read().await;
-    Ok(Gc::new(Value::Boolean(matches!(&*arg, Value::Future(_)))))
+    Ok(vec![Gc::new(Value::Boolean(matches!(
+        &*arg,
+        Value::Future(_)
+    )))])
 }
 
 #[builtin("display")]
 pub async fn disp(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     println!("{}", arg.read().await.fmt().await);
-    Ok(Gc::new(Value::Null))
+    Ok(vec![Gc::new(Value::Null)])
 }
