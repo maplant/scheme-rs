@@ -7,7 +7,7 @@ use crate::{
     expand::{Pattern, SyntaxRule, Template, Transformer},
     gc::Gc,
     syntax::{Identifier, Span, Syntax},
-    util::ArcSlice,
+    util::{ArcSlice, RequireOne},
     value::Value,
 };
 use async_trait::async_trait;
@@ -432,9 +432,16 @@ impl Compile for ast::Define {
 pub enum CompileDefineSyntaxError {
     BadForm(Span),
     CompileError(Box<CompileError>),
+    RuntimeError(Box<RuntimeError>),
 }
 
 impl_from_compile_error!(CompileDefineSyntaxError);
+
+impl From<RuntimeError> for CompileDefineSyntaxError {
+    fn from(value: RuntimeError) -> Self {
+        Self::RuntimeError(Box::new(value))
+    }
+}
 
 #[async_trait]
 impl Compile for ast::DefineSyntax {
@@ -448,10 +455,16 @@ impl Compile for ast::DefineSyntax {
     ) -> Result<ast::DefineSyntax, CompileDefineSyntaxError> {
         match expr {
             [Syntax::Identifier { ident, .. }, expr, Syntax::Null { .. }] => {
-                Ok(ast::DefineSyntax {
-                    name: ident.clone(),
-                    transformer: expr.compile(env, cont).await?,
-                })
+                env.def_macro(
+                    ident,
+                    expr.compile(env, cont)
+                        .await?
+                        .eval(env, cont)
+                        .await?
+                        .require_one()?,
+                )
+                .await;
+                Ok(ast::DefineSyntax)
             }
             _ => Err(CompileDefineSyntaxError::BadForm(span.clone())),
         }

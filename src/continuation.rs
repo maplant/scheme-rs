@@ -443,33 +443,6 @@ impl Resumable for ResumableDefineVar {
     }
 }
 
-pub struct ResumableDefineSyntax {
-    env: Env,
-    name: Identifier,
-}
-
-impl ResumableDefineSyntax {
-    pub fn new(env: &Env, name: &Identifier) -> Self {
-        Self {
-            env: env.clone(),
-            name: name.clone(),
-        }
-    }
-}
-
-#[async_trait]
-impl Resumable for ResumableDefineSyntax {
-    async fn resume(
-        &self,
-        args: Vec<Gc<Value>>,
-        _cont: &Option<Arc<Continuation>>,
-    ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-        let arg = args.require_one()?;
-        self.env.def_macro(&self.name, arg).await;
-        Ok(vec![Gc::new(Value::Null)])
-    }
-}
-
 pub struct ResumableCall {
     env: Env,
     // TODO: Making this a SmallVec of around 10 would probably be a

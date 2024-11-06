@@ -2,8 +2,8 @@ use crate::{
     ast,
     continuation::{
         Continuation, ResumableAnd, ResumableApply, ResumableBody, ResumableCall,
-        ResumableDefineSyntax, ResumableDefineVar, ResumableIf, ResumableLet, ResumableOr,
-        ResumableSet, ResumableSyntaxCase,
+        ResumableDefineVar, ResumableIf, ResumableLet, ResumableOr, ResumableSet,
+        ResumableSyntaxCase,
     },
     env::Env,
     error::RuntimeError,
@@ -261,19 +261,9 @@ impl Eval for ast::Define {
 impl Eval for ast::DefineSyntax {
     async fn eval(
         &self,
-        env: &Env,
-        cont: &Option<Arc<Continuation>>,
+        _env: &Env,
+        _cont: &Option<Arc<Continuation>>,
     ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-        let cont = Arc::new(Continuation::new(
-            Arc::new(ResumableDefineSyntax::new(env, &self.name)),
-            cont,
-        ));
-        let val = self
-            .transformer
-            .eval(env, &Some(cont))
-            .await?
-            .require_one()?;
-        env.def_macro(&self.name, val).await;
         Ok(vec![Gc::new(Value::Null)])
     }
 }

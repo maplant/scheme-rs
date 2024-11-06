@@ -59,10 +59,7 @@ pub enum Define {
 }
 
 #[derive(Clone)]
-pub struct DefineSyntax {
-    pub name: Identifier,
-    pub transformer: Arc<dyn Eval>,
-}
+pub struct DefineSyntax;
 
 #[derive(Clone)]
 pub struct Lambda {
