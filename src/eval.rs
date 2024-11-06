@@ -159,7 +159,7 @@ impl Eval for ast::Call {
                 Arc::new(ResumableCall::new(
                     &self.proc_name,
                     &self.location,
-                    &env,
+                    env,
                     &collected,
                     remaining,
                 )),

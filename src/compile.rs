@@ -158,7 +158,7 @@ async fn compile_let(
     }
 
     let env = Gc::new(new_contour);
-    let body = ast::Body::compile(&body, &Env::from(env.clone()), cont, span)
+    let body = ast::Body::compile(body, &Env::from(env.clone()), cont, span)
         .await
         .map_err(CompileLetError::CompileBodyError)?;
     Ok(ast::Let {
@@ -204,7 +204,7 @@ impl LetBinding {
                     span: bind_span,
                     ..
                 }, expr, Syntax::Null { .. }] => {
-                    if let Some(prev_bind) = previously_bound.get(&ident) {
+                    if let Some(prev_bind) = previously_bound.get(ident) {
                         return Err(CompileLetBindingError::PreviouslyBound {
                             ident: ident.clone(),
                             first: prev_bind.clone(),
@@ -411,7 +411,7 @@ impl Compile for ast::Define {
                             // If there is no last argument, there are no arguments
                             ast::Formals::FixedArgs(Vec::new())
                         };
-                        let body = ast::Body::compile(&body, env, cont, func_span)
+                        let body = ast::Body::compile(body, env, cont, func_span)
                             .await
                             .map_err(CompileDefineError::CompileBodyError)?;
                         Ok(ast::Define::DefineFunc(ast::DefineFunc {
@@ -682,7 +682,7 @@ async fn compile_lambda(
         env.def_var(&bound, Gc::new(Value::Undefined));
     }
 
-    let body = ast::Body::compile(&body, &Env::from(Gc::new(env)), cont, span)
+    let body = ast::Body::compile(body, &Env::from(Gc::new(env)), cont, span)
         .await
         .map_err(CompileLambdaError::CompileBodyError)?;
     Ok(ast::Lambda { args, body })

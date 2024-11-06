@@ -214,7 +214,7 @@ pub fn eqv<'a>(a: &'a Gc<Value>, b: &'a Gc<Value>) -> BoxFuture<'a, bool> {
     Box::pin(async move {
         let a = a.read().await;
         let b = b.read().await;
-        a.eqv(&*b).await
+        a.eqv(&b).await
     })
 }
 

@@ -198,7 +198,7 @@ impl Syntax {
                 Self::List { list, .. } => {
                     // If the head is not an identifier, we leave the expression unexpanded
                     // for now. We will expand it later in the proc call
-                    let ident = match list.get(0) {
+                    let ident = match list.first() {
                         Some(Self::Identifier { ident, .. }) => ident,
                         _ => return Ok(Expansion::Unexpanded(self)),
                     };
@@ -285,7 +285,7 @@ impl Syntax {
                 // Very special form:
                 [Self::Identifier { ident, span, .. }, tail @ ..] if ident == "set!" => {
                     // Check for a variable transformer
-                    if let Some(Syntax::Identifier { ident, .. }) = tail.get(0) {
+                    if let Some(Syntax::Identifier { ident, .. }) = tail.first() {
                         if let Some((macro_env, transformer)) = env.fetch_macro(ident).await {
                             if !transformer.read().await.is_variable_transformer() {
                                 return Err(CompileError::NotVariableTransformer);
@@ -403,7 +403,7 @@ impl ParsedSyntax {
         ))
     }
 
-    pub fn parse<'a, 'b>(mut i: &'b [Token<'a>]) -> Result<Vec<Self>, ParseError<'a>> {
+    pub fn parse<'a>(mut i: &[Token<'a>]) -> Result<Vec<Self>, ParseError<'a>> {
         let mut output = Vec::new();
         while !i.is_empty() {
             let (remaining, expr) = Self::parse_fragment(i)?;
