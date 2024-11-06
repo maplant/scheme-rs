@@ -122,25 +122,6 @@ impl Syntax {
         }
     }
 
-    pub fn strip_unused_marks<'a>(&'a mut self, env: &'a Env) -> BoxFuture<'a, ()> {
-        Box::pin(async move {
-            match self {
-                Self::List { ref mut list, .. } => {
-                    for item in list {
-                        item.strip_unused_marks(env).await;
-                    }
-                }
-                Self::Vector { ref mut vector, .. } => {
-                    for item in vector {
-                        item.strip_unused_marks(env).await;
-                    }
-                }
-                Self::Identifier { ref mut ident, .. } => env.strip_unused_marks(ident).await,
-                _ => (),
-            }
-        })
-    }
-
     pub fn resolve_bindings<'a>(&'a mut self, env: &'a Env) -> BoxFuture<'a, ()> {
         Box::pin(async move {
             match self {
@@ -339,7 +320,6 @@ impl Syntax {
         env: &Env,
         cont: &Option<Arc<Continuation>>,
     ) -> Result<Arc<dyn Eval>, CompileError> {
-        println!("compiling, first expanding: {self}");
         self.expand(env, cont).await?.compile(env, cont).await
     }
 }
@@ -381,7 +361,6 @@ impl<'a> Expansion<'a> {
                 } => {
                     // If the expression has been expanded, we may need to expand it again, but
                     // it must be done in a new expansion context.
-                    println!("expanding: {syntax}, mark: {mark:?}");
                     let env =
                         Env::Expansion(Gc::new(env.new_expansion_context(mark, macro_env.clone())));
                     Ok(Arc::new(MacroExpansionPoint::new(

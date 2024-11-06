@@ -5,7 +5,7 @@ use crate::{
     error::{Frame, RuntimeError},
     eval::{Eval, ValuesOrPreparedCall},
     gc::Gc,
-    syntax::{Identifier, Mark, Span},
+    syntax::{Identifier, Span},
     value::Value,
 };
 use async_trait::async_trait;
@@ -31,7 +31,6 @@ pub struct Procedure {
     pub args: Vec<Identifier>,
     pub remaining: Option<Identifier>,
     pub body: Body,
-    pub mark: Mark,
     pub is_variable_transformer: bool,
 }
 
@@ -50,8 +49,7 @@ impl Callable for Procedure {
         args: Vec<Gc<Value>>,
         cont: &Option<Arc<Continuation>>,
     ) -> Result<ValuesOrPreparedCall, RuntimeError> {
-        println!("this one?");
-        let env = Gc::new(self.up.new_lexical_contour(self.mark));
+        let env = Gc::new(self.up.new_lexical_contour());
         let provided = args.len();
         let mut args_iter = args.iter().peekable();
 
@@ -102,7 +100,6 @@ impl Callable for ExternalFn {
         args: Vec<Gc<Value>>,
         cont: &Option<Arc<Continuation>>,
     ) -> Result<ValuesOrPreparedCall, RuntimeError> {
-        println!("maybe this one?");
         // TODO: check the arguments
         Ok(ValuesOrPreparedCall::Values(
             (self.func)(cont.clone(), args).await?,

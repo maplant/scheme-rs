@@ -1,5 +1,5 @@
 use crate::{
-    ast::{self, MacroExpansionPoint},
+    ast,
     continuation::{
         Continuation, ResumableAnd, ResumableApply, ResumableBody, ResumableCall,
         ResumableDefineSyntax, ResumableDefineVar, ResumableIf, ResumableLet, ResumableOr,
@@ -130,18 +130,19 @@ impl Eval for ast::Let {
         env: &Env,
         cont: &Option<Arc<Continuation>>,
     ) -> Result<ValuesOrPreparedCall, RuntimeError> {
-        let scope = Gc::new(env.new_lexical_contour(self.mark.clone()));
+        let scope = Gc::new(env.new_lexical_contour());
         for ((ident, expr), remaining) in util::iter_arc(&self.bindings) {
             let cont = Arc::new(Continuation::new(
                 Arc::new(ResumableLet::new(&scope, ident, remaining, &self.body)),
                 cont,
             ));
-            let val = expr.eval(&Env::from(scope.clone()), &Some(cont)).await?.require_one()?;
+            let val = expr
+                .eval(&Env::from(scope.clone()), &Some(cont))
+                .await?
+                .require_one()?;
             scope.write().await.def_var(ident, val);
         }
-        self.body
-            .tail_eval(&Env::from(scope), cont)
-            .await
+        self.body.tail_eval(&Env::from(scope), cont).await
     }
 }
 
@@ -152,7 +153,6 @@ impl Eval for ast::Call {
         env: &Env,
         cont: &Option<Arc<Continuation>>,
     ) -> Result<ValuesOrPreparedCall, RuntimeError> {
-        println!("....here?");
         let mut collected = Vec::new();
         for (arg, remaining) in self.args.iter() {
             let cont = Arc::new(Continuation::new(
@@ -217,7 +217,7 @@ impl Eval for ast::DefineFunc {
             up: env.clone(),
             args,
             remaining,
-            mark: self.mark,
+            // mark: self.mark,
             body: self.body.clone(),
             is_variable_transformer: false,
         }));
@@ -423,7 +423,7 @@ impl Eval for ast::Lambda {
             up: env.clone(),
             args,
             remaining,
-            mark: self.mark,
+            // mark: self.mark,
             body: self.body.clone(),
             is_variable_transformer: false,
         }))])
@@ -437,9 +437,7 @@ impl Eval for ast::SyntaxQuote {
         _env: &Env,
         _cont: &Option<Arc<Continuation>>,
     ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-        let mut syntax = self.syn.clone();
-        syntax.strip_unused_marks(&self.env).await;
-        Ok(vec![Gc::new(Value::Syntax(syntax))])
+        Ok(vec![Gc::new(Value::Syntax(self.syn.clone()))])
     }
 }
 
@@ -539,7 +537,7 @@ impl Eval for ast::FetchVar {
 }
 
 #[async_trait]
-impl Eval for ast::MacroExpansionPoint  {
+impl Eval for ast::MacroExpansionPoint {
     async fn tail_eval(
         &self,
         env: &Env,

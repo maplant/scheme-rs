@@ -74,7 +74,11 @@ pub async fn join(
         futs.push(fut);
     }
     let future = async move {
-        let results = try_join_all(futs).await?.into_iter().flatten().collect::<Vec<_>>();
+        let results = try_join_all(futs)
+            .await?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
         Ok(vec![Gc::new(Value::from(results))])
     }
     .boxed()

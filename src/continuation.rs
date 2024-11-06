@@ -10,7 +10,7 @@ use crate::{
     gc::Gc,
     lists::list_to_vec,
     proc::{Callable, PreparedCall},
-    syntax::{Identifier, Span, Syntax},
+    syntax::{Identifier, Span},
     util::{ArcSlice, RequireOne},
     value::Value,
 };
@@ -84,7 +84,6 @@ impl Callable for Option<Arc<Continuation>> {
         args: Vec<Gc<Value>>,
         _calling_cont: &Self,
     ) -> Result<ValuesOrPreparedCall, RuntimeError> {
-        println!("orrr this one?");
         Err(RuntimeError::abandon_current_continuation(
             args,
             self.clone(),

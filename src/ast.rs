@@ -1,8 +1,7 @@
 use crate::{
-    env::{Env, LexicalContour},
+    env::Env,
     eval::Eval,
     expand::Transformer,
-    gc::Gc,
     num::Number,
     syntax::{Identifier, Mark, Span, Syntax},
     util::ArcSlice,
@@ -35,7 +34,6 @@ pub struct SyntaxQuote {
 
 #[derive(Clone)]
 pub struct Call {
-    //    pub operator: Arc<dyn Eval>,
     pub args: ArcSlice<Arc<dyn Eval>>,
     pub location: Span,
     pub proc_name: String,
@@ -45,7 +43,6 @@ pub struct Call {
 pub struct DefineFunc {
     pub name: Identifier,
     pub args: Formals,
-    pub mark: Mark,
     pub body: Body,
 }
 
@@ -71,7 +68,6 @@ pub struct DefineSyntax {
 pub struct Lambda {
     pub args: Formals,
     pub body: Body,
-    pub mark: Mark,
 }
 
 #[derive(Debug, Clone)]
@@ -107,7 +103,6 @@ impl Body {
 
 #[derive(Clone)]
 pub struct Let {
-    pub mark: Mark,
     pub bindings: Arc<[(Identifier, Arc<dyn Eval>)]>,
     pub body: Body,
 }
@@ -184,11 +179,8 @@ pub struct FetchVar {
 }
 
 impl FetchVar {
-    pub fn new (ident: Identifier) -> Self {
-        Self {
-            ident
-
-        }
+    pub fn new(ident: Identifier) -> Self {
+        Self { ident }
     }
 }
 
@@ -207,7 +199,7 @@ impl MacroExpansionPoint {
             expr,
         }
     }
-}  
+}
 /*
 struct Export {}
 

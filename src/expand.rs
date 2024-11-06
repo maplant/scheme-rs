@@ -21,9 +21,8 @@ pub struct Transformer {
 impl Transformer {
     pub fn expand(&self, expr: &Syntax) -> Option<Syntax> {
         for rule in &self.rules {
-            if let Some(expansion) = rule.expand(expr) {
-                println!("expansion = {}", expansion);
-                return Some(expansion);
+            if let expansion @ Some(_) = rule.expand(expr) {
+                return expansion;
             }
         }
         None
@@ -176,8 +175,6 @@ fn match_slice(
         } else if !matches!(item, Pattern::Null) && pattern_iter.peek().is_none() {
             // Match to the rest of the expresions:
             let exprs = Syntax::new_list(expr_iter.cloned().collect(), span.clone()).normalize();
-            // println!("item = {:?}", item);
-            // println!("exprs = {exprs}");
             return item.matches(&exprs, var_binds);
         } else if let Some(next_expr) = expr_iter.next() {
             if !item.matches(next_expr, var_binds) {
@@ -258,11 +255,7 @@ impl Template {
                     span: curr_span,
                     bound: false,
                 },
-                Some(ref mut exprs) => {
-                    let exprs = exprs.pop_front()?;
-                    println!("{} => {exprs}", ident.name);
-                    exprs
-                },
+                Some(ref mut exprs) => exprs.pop_front()?,
             },
             Self::Literal(literal) => Syntax::new_literal(literal.clone(), curr_span),
             _ => unreachable!(),

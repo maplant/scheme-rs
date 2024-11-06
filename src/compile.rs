@@ -6,7 +6,7 @@ use crate::{
     eval::Eval,
     expand::{Pattern, SyntaxRule, Template, Transformer},
     gc::Gc,
-    syntax::{Identifier, Mark, Span, Syntax},
+    syntax::{Identifier, Span, Syntax},
     util::ArcSlice,
     value::Value,
 };
@@ -102,7 +102,6 @@ impl Compile for ast::Body {
         let mut output = Vec::new();
         for expr in &exprs[..exprs.len() - 1] {
             output.push(expr.compile(env, cont).await?);
-            // output.push(expr.
         }
         // TODO: what if the body isn't a proper list?
         Ok(ast::Body::new(output))
@@ -144,34 +143,25 @@ async fn compile_let(
     span: &Span,
 ) -> Result<ast::Let, CompileLetError> {
     let mut previously_bound = HashMap::new();
-    let new_mark = Mark::new();
-    println!("compile_let new_mark = {:?}", new_mark);
-    let mut new_contour = env.new_lexical_contour(new_mark);
+    let mut new_contour = env.new_lexical_contour();
     let mut compiled_bindings = Vec::new();
     // TODO: Check that the list of bindings is proper
     if !bindings.is_empty() {
         for binding in &bindings[..bindings.len() - 1] {
-            let binding =
-                LetBinding::compile(new_contour.mark, binding, env, cont, &previously_bound)
-                    .await
-                    .map_err(CompileLetError::CompileLetBindingError)?;
+            let binding = LetBinding::compile(binding, env, cont, &previously_bound)
+                .await
+                .map_err(CompileLetError::CompileLetBindingError)?;
             previously_bound.insert(binding.ident.clone(), binding.span.clone());
-            new_contour.def_var(&binding.ident, Gc::new(Value::Null));
+            new_contour.def_var(&binding.ident, Gc::new(Value::Undefined));
             compiled_bindings.push(binding);
         }
     }
-    /*
-    let mut body = body.to_vec();
-    for item in &mut body {
-        item.mark(new_contour.mark);
-    }
-     */
+
     let env = Gc::new(new_contour);
     let body = ast::Body::compile(&body, &Env::from(env.clone()), cont, span)
         .await
         .map_err(CompileLetError::CompileBodyError)?;
     Ok(ast::Let {
-        mark: new_mark,
         bindings: compiled_bindings
             .into_iter()
             .map(|binding| (binding.ident, binding.expr))
@@ -202,7 +192,6 @@ struct LetBinding {
 
 impl LetBinding {
     async fn compile(
-        mark: Mark,
         expr: &Syntax,
         env: &Env,
         cont: &Option<Arc<Continuation>>,
@@ -215,11 +204,9 @@ impl LetBinding {
                     span: bind_span,
                     ..
                 }, expr, Syntax::Null { .. }] => {
-                    let mut ident = ident.clone();
-                    ident.mark(mark);
                     if let Some(prev_bind) = previously_bound.get(&ident) {
                         return Err(CompileLetBindingError::PreviouslyBound {
-                            ident,
+                            ident: ident.clone(),
                             first: prev_bind.clone(),
                             second: bind_span.clone(),
                         });
@@ -228,7 +215,7 @@ impl LetBinding {
                     let expr = expr.compile(env, cont).await?;
 
                     Ok(LetBinding {
-                        ident,
+                        ident: ident.clone(),
                         span: bind_span.clone(),
                         expr,
                     })
@@ -369,8 +356,7 @@ impl Compile for ast::Define {
                     }, args @ ..] => {
                         let mut bound = HashMap::<Identifier, Span>::new();
                         let mut fixed = Vec::new();
-                        let new_mark = Mark::new();
-                        println!("compile_define new_mark = {:?}", new_mark);       
+                        // println!("compile_define new_mark = {:?}", new_mark);
                         for arg in &args[..args.len() - 1] {
                             match arg {
                                 Syntax::Identifier { ident, span, .. } => {
@@ -384,8 +370,6 @@ impl Compile for ast::Define {
                                         );
                                     }
                                     bound.insert(ident.clone(), span.clone());
-                                    let mut ident = ident.clone();
-                                    ident.mark(new_mark);
                                     fixed.push(ident.clone());
                                 }
                                 x => {
@@ -411,8 +395,7 @@ impl Compile for ast::Define {
                                             },
                                         );
                                     }
-                                    let mut remaining = ident.clone();
-                                    remaining.mark(new_mark);
+                                    let remaining = ident.clone();
                                     ast::Formals::VarArgs {
                                         fixed: fixed.into_iter().collect(),
                                         remaining,
@@ -428,12 +411,6 @@ impl Compile for ast::Define {
                             // If there is no last argument, there are no arguments
                             ast::Formals::FixedArgs(Vec::new())
                         };
-                        /*
-                        let mut body = body.to_vec();
-                        for item in &mut body {
-                            item.mark(new_mark);
-                        }
-                        */
                         let body = ast::Body::compile(&body, env, cont, func_span)
                             .await
                             .map_err(CompileDefineError::CompileBodyError)?;
@@ -441,7 +418,6 @@ impl Compile for ast::Define {
                             name: func_name.clone(),
                             args,
                             body,
-                            mark: new_mark,
                         }))
                     }
                     [x, ..] => Err(CompileDefineError::BadForm(x.span().clone())),
@@ -471,10 +447,12 @@ impl Compile for ast::DefineSyntax {
         span: &Span,
     ) -> Result<ast::DefineSyntax, CompileDefineSyntaxError> {
         match expr {
-            [Syntax::Identifier { ident, .. }, expr, Syntax::Null { .. }] => Ok(ast::DefineSyntax {
-                name: ident.clone(),
-                transformer: expr.compile(env, cont).await?,
-            }),
+            [Syntax::Identifier { ident, .. }, expr, Syntax::Null { .. }] => {
+                Ok(ast::DefineSyntax {
+                    name: ident.clone(),
+                    transformer: expr.compile(env, cont).await?,
+                })
+            }
             _ => Err(CompileDefineSyntaxError::BadForm(span.clone())),
         }
     }
@@ -655,8 +633,8 @@ async fn compile_lambda(
 ) -> Result<ast::Lambda, CompileLambdaError> {
     let mut bound = HashMap::<Identifier, Span>::new();
     let mut fixed = Vec::new();
-    let new_mark = Mark::new();
-    println!("compile_lambda new_mark = {:?}", new_mark);
+    // let new_mark = Mark::new();
+    //    println!("compile_lambda new_mark = {:?}", new_mark);
     if !args.is_empty() {
         for arg in &args[..args.len() - 1] {
             match arg {
@@ -669,9 +647,7 @@ async fn compile_lambda(
                         });
                     }
                     bound.insert(ident.clone(), span.clone());
-                    let mut ident = ident.clone();
-                    ident.mark(new_mark);
-                    fixed.push(ident);
+                    fixed.push(ident.clone());
                 }
                 x => return Err(CompileLambdaError::ExpectedIdentifier(x.span().clone())),
             }
@@ -688,8 +664,7 @@ async fn compile_lambda(
                         second: span.clone(),
                     });
                 }
-                let mut remaining = ident.clone();
-                remaining.mark(new_mark);
+                let remaining = ident.clone();
                 ast::Formals::VarArgs {
                     fixed: fixed.into_iter().collect(),
                     remaining,
@@ -702,24 +677,15 @@ async fn compile_lambda(
         ast::Formals::FixedArgs(Vec::new())
     };
 
-    /*
-    // This heavily relies on the fact that body defers compilation until it is run,
-    // as lambda does not create a lexical contour until it is run.
-    let mut body = body.to_vec();
-    for item in &mut body {
-        item.mark(new_mark);
+    let mut env = env.new_lexical_contour();
+    for bound in bound.into_keys() {
+        env.def_var(&bound, Gc::new(Value::Undefined));
     }
-    */
 
-    let env = Gc::new(env.new_lexical_contour(new_mark));
-    let body = ast::Body::compile(&body, &Env::from(env.clone()), cont, span)
+    let body = ast::Body::compile(&body, &Env::from(Gc::new(env)), cont, span)
         .await
         .map_err(CompileLambdaError::CompileBodyError)?;
-    Ok(ast::Lambda {
-        args,
-        body,
-        mark: new_mark,
-    })
+    Ok(ast::Lambda { args, body })
 }
 
 #[derive(Debug, Clone)]
