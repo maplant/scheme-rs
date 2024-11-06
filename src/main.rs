@@ -92,9 +92,11 @@ async fn main() {
                 Err(err) => {
                     println!("Error: {err:?}");
                 }
-                Ok(result) => {
-                    println!("${n_results} = {}", result.read().await.fmt().await);
-                    n_results += 1;
+                Ok(results) => {
+                    for result in results {
+                        println!("${n_results} = {}", result.read().await.fmt().await);
+                        n_results += 1;
+                    }
                 }
             }
         }

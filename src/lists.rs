@@ -44,17 +44,31 @@ pub fn fmt_list<'a>(car: &'a Gc<Value>, cdr: &'a Gc<Value>) -> BoxFuture<'a, Str
     })
 }
 
+pub fn list_to_vec<'a>(curr: &'a Gc<Value>, out: &'a mut Vec<Gc<Value>>) -> BoxFuture<'a, ()> {
+    Box::pin(async move {
+        let val = curr.read().await;
+        match &*val {
+            Value::Pair(a, b) => {
+                out.push(a.clone());
+                list_to_vec(b, out).await;
+            }
+            Value::Null => (),
+            _ => out.push(curr.clone()),
+        }
+    })
+}
+
 #[builtin("list")]
 pub async fn list(
     _cont: &Option<Arc<Continuation>>,
     args: Vec<Gc<Value>>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     // Construct the list in reverse
     let mut cdr = Gc::new(Value::Null);
     for arg in args.into_iter().rev() {
         cdr = Gc::new(Value::Pair(arg, cdr.clone()));
     }
-    Ok(cdr)
+    Ok(vec![cdr])
 }
 
 #[builtin("cons")]
@@ -62,18 +76,18 @@ pub async fn cons(
     _cont: &Option<Arc<Continuation>>,
     car: &Gc<Value>,
     cdr: &Gc<Value>,
-) -> Result<Gc<Value>, RuntimeError> {
-    Ok(Gc::new(Value::Pair(car.clone(), cdr.clone())))
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
+    Ok(vec![Gc::new(Value::Pair(car.clone(), cdr.clone()))])
 }
 
 #[builtin("car")]
 pub async fn car(
     _cont: &Option<Arc<Continuation>>,
     val: &Gc<Value>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let val = val.read().await;
     match &*val {
-        Value::Pair(car, _cdr) => Ok(car.clone()),
+        Value::Pair(car, _cdr) => Ok(vec![car.clone()]),
         _ => Err(RuntimeError::invalid_type("pair", val.type_name())),
     }
 }
@@ -82,10 +96,10 @@ pub async fn car(
 pub async fn cdr(
     _cont: &Option<Arc<Continuation>>,
     val: &Gc<Value>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let val = val.read().await;
     match &*val {
-        Value::Pair(_car, cdr) => Ok(cdr.clone()),
+        Value::Pair(_car, cdr) => Ok(vec![cdr.clone()]),
         _ => Err(RuntimeError::invalid_type("pair", val.type_name())),
     }
 }
@@ -95,11 +109,11 @@ pub async fn set_car(
     _cont: &Option<Arc<Continuation>>,
     var: &Gc<Value>,
     val: &Gc<Value>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let mut var = var.write().await;
     match &mut *var {
         Value::Pair(ref mut car, _cdr) => *car = val.clone(),
         _ => todo!(),
     }
-    Ok(Gc::new(Value::Null))
+    Ok(vec![Gc::new(Value::Null)])
 }

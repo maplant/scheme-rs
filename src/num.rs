@@ -5,7 +5,7 @@ use rug::{Complete, Integer, Rational};
 use std::{
     cmp::Ordering,
     fmt,
-    ops::{Add, Div, Mul, Sub},
+    ops::{Add, Div, Mul, Neg, Sub},
     sync::Arc,
 };
 
@@ -104,6 +104,20 @@ impl fmt::Display for Number {
             Self::Rational(r) => write!(f, "{}", r),
             Self::Real(r) => write!(f, "{}", r),
             Self::Complex(c) => write!(f, "{}", c),
+        }
+    }
+}
+
+impl Neg for Number {
+    type Output = Number;
+
+    fn neg(self) -> Self {
+        match self {
+            Self::FixedInteger(i) => Self::FixedInteger(-i),
+            Self::BigInteger(i) => Self::BigInteger(-i),
+            Self::Rational(r) => Self::Rational(-r),
+            Self::Real(r) => Self::Real(-r),
+            Self::Complex(c) => Self::Complex(-c),
         }
     }
 }
@@ -316,44 +330,44 @@ impl<'a> Div<&'a Number> for &'a Number {
 pub async fn zero(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let arg = arg.read().await;
     let num: &Number = arg.as_ref().try_into()?;
-    Ok(Gc::new(Value::Boolean(num.is_zero())))
+    Ok(vec![Gc::new(Value::Boolean(num.is_zero()))])
 }
 
 #[builtin("even?")]
 pub async fn even(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let arg = arg.read().await;
     let num: &Number = arg.as_ref().try_into()?;
-    Ok(Gc::new(Value::Boolean(num.is_even())))
+    Ok(vec![Gc::new(Value::Boolean(num.is_even()))])
 }
 
 #[builtin("odd?")]
 pub async fn odd(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let arg = arg.read().await;
     let num: &Number = arg.as_ref().try_into()?;
-    Ok(Gc::new(Value::Boolean(num.is_odd())))
+    Ok(vec![Gc::new(Value::Boolean(num.is_odd()))])
 }
 
 #[builtin("+")]
 pub async fn add(
     _cont: &Option<Arc<Continuation>>,
     args: Vec<Gc<Value>>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let mut result = Number::FixedInteger(0);
     for arg in args {
         let arg = arg.read().await;
         let num: &Number = arg.as_ref().try_into()?;
         result = &result + num;
     }
-    Ok(Gc::new(Value::Number(result)))
+    Ok(vec![Gc::new(Value::Number(result))])
 }
 
 #[builtin("-")]
@@ -361,30 +375,34 @@ pub async fn sub(
     _cont: &Option<Arc<Continuation>>,
     arg1: &Gc<Value>,
     args: Vec<Gc<Value>>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let arg1 = arg1.read().await;
     let arg1: &Number = arg1.as_ref().try_into()?;
-    let mut result = arg1.clone();
-    for arg in args {
-        let arg = arg.read().await;
-        let num: &Number = arg.as_ref().try_into()?;
-        result = &result - num;
+    if args.is_empty() {
+        Ok(vec![Gc::new(Value::Number(-arg1.clone()))])
+    } else {
+        let mut result = arg1.clone();
+        for arg in args {
+            let arg = arg.read().await;
+            let num: &Number = arg.as_ref().try_into()?;
+            result = &result - num;
+        }
+        Ok(vec![Gc::new(Value::Number(result))])
     }
-    Ok(Gc::new(Value::Number(result)))
 }
 
 #[builtin("*")]
 pub async fn mul(
     _cont: &Option<Arc<Continuation>>,
     args: Vec<Gc<Value>>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let mut result = Number::FixedInteger(1);
     for arg in args {
         let arg = arg.read().await;
         let num: &Number = arg.as_ref().try_into()?;
         result = &result * num;
     }
-    Ok(Gc::new(Value::Number(result)))
+    Ok(vec![Gc::new(Value::Number(result))])
 }
 
 #[builtin("/")]
@@ -392,7 +410,7 @@ pub async fn div(
     _cont: &Option<Arc<Continuation>>,
     arg1: &Gc<Value>,
     args: Vec<Gc<Value>>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let arg1 = arg1.read().await;
     let arg1: &Number = arg1.as_ref().try_into()?;
     if arg1.is_zero() {
@@ -407,14 +425,14 @@ pub async fn div(
         }
         result = &result / num;
     }
-    Ok(Gc::new(Value::Number(result)))
+    Ok(vec![Gc::new(Value::Number(result))])
 }
 
 #[builtin("=")]
 pub async fn equals(
     _cont: &Option<Arc<Continuation>>,
     args: Vec<Gc<Value>>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     if let Some((first, rest)) = args.split_first() {
         let first = first.read().await;
         let first: &Number = first.as_ref().try_into()?;
@@ -422,18 +440,18 @@ pub async fn equals(
             let next = next.read().await;
             let next: &Number = next.as_ref().try_into()?;
             if first != next {
-                return Ok(Gc::new(Value::Boolean(false)));
+                return Ok(vec![Gc::new(Value::Boolean(false))]);
             }
         }
     }
-    Ok(Gc::new(Value::Boolean(true)))
+    Ok(vec![Gc::new(Value::Boolean(true))])
 }
 
 #[builtin(">")]
 pub async fn greater(
     _cont: &Option<Arc<Continuation>>,
     args: Vec<Gc<Value>>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     if let Some((head, rest)) = args.split_first() {
         let mut prev = head.clone();
         for next in rest {
@@ -451,20 +469,20 @@ pub async fn greater(
                     return Err(RuntimeError::invalid_type("number", "complex"));
                 }
                 if prev <= next {
-                    return Ok(Gc::new(Value::Boolean(false)));
+                    return Ok(vec![Gc::new(Value::Boolean(false))]);
                 }
             }
             prev = next.clone();
         }
     }
-    Ok(Gc::new(Value::Boolean(true)))
+    Ok(vec![Gc::new(Value::Boolean(true))])
 }
 
 #[builtin(">=")]
 pub async fn greater_equal(
     _cont: &Option<Arc<Continuation>>,
     args: Vec<Gc<Value>>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     if let Some((head, rest)) = args.split_first() {
         let mut prev = head.clone();
         for next in rest {
@@ -480,20 +498,20 @@ pub async fn greater_equal(
                     return Err(RuntimeError::invalid_type("number", "complex"));
                 }
                 if prev < next {
-                    return Ok(Gc::new(Value::Boolean(false)));
+                    return Ok(vec![Gc::new(Value::Boolean(false))]);
                 }
             }
             prev = next.clone();
         }
     }
-    Ok(Gc::new(Value::Boolean(true)))
+    Ok(vec![Gc::new(Value::Boolean(true))])
 }
 
 #[builtin("<")]
 pub async fn lesser(
     _cont: &Option<Arc<Continuation>>,
     args: Vec<Gc<Value>>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     if let Some((head, rest)) = args.split_first() {
         let mut prev = head.clone();
         for next in rest {
@@ -509,20 +527,20 @@ pub async fn lesser(
                     return Err(RuntimeError::invalid_type("number", "complex"));
                 }
                 if prev >= next {
-                    return Ok(Gc::new(Value::Boolean(false)));
+                    return Ok(vec![Gc::new(Value::Boolean(false))]);
                 }
             }
             prev = next.clone();
         }
     }
-    Ok(Gc::new(Value::Boolean(true)))
+    Ok(vec![Gc::new(Value::Boolean(true))])
 }
 
 #[builtin("<=")]
 pub async fn lesser_equal(
     _cont: &Option<Arc<Continuation>>,
     args: Vec<Gc<Value>>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     if let Some((head, rest)) = args.split_first() {
         let mut prev = head.clone();
         for next in rest {
@@ -538,68 +556,71 @@ pub async fn lesser_equal(
                     return Err(RuntimeError::invalid_type("number", "complex"));
                 }
                 if prev > next {
-                    return Ok(Gc::new(Value::Boolean(false)));
+                    return Ok(vec![Gc::new(Value::Boolean(false))]);
                 }
             }
             prev = next.clone();
         }
     }
-    Ok(Gc::new(Value::Boolean(true)))
+    Ok(vec![Gc::new(Value::Boolean(true))])
 }
 
 #[builtin("number?")]
 pub async fn is_number(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let arg = arg.read().await;
-    Ok(Gc::new(Value::Boolean(matches!(&*arg, Value::Number(_)))))
+    Ok(vec![Gc::new(Value::Boolean(matches!(
+        &*arg,
+        Value::Number(_)
+    )))])
 }
 
 #[builtin("integer?")]
 pub async fn is_integer(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let arg = arg.read().await;
-    Ok(Gc::new(Value::Boolean(matches!(
+    Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
         Value::Number(Number::FixedInteger(_)) | Value::Number(Number::BigInteger(_))
-    ))))
+    )))])
 }
 
 #[builtin("rational?")]
 pub async fn is_rational(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let arg = arg.read().await;
-    Ok(Gc::new(Value::Boolean(matches!(
+    Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
         Value::Number(Number::Rational(_))
-    ))))
+    )))])
 }
 
 #[builtin("real?")]
 pub async fn is_real(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let arg = arg.read().await;
-    Ok(Gc::new(Value::Boolean(matches!(
+    Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
         Value::Number(Number::Real(_))
-    ))))
+    )))])
 }
 
 #[builtin("complex?")]
 pub async fn is_complex(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
-) -> Result<Gc<Value>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let arg = arg.read().await;
-    Ok(Gc::new(Value::Boolean(matches!(
+    Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
         Value::Number(Number::Complex(_))
-    ))))
+    )))])
 }

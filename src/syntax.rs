@@ -1,5 +1,5 @@
 use crate::{
-    ast::{self, Literal},
+    ast::{self, FetchVar, Literal, MacroExpansionPoint},
     compile::{Compile, CompileError},
     continuation::{CatchContinuationCall, Continuation},
     env::Env,
@@ -9,6 +9,7 @@ use crate::{
     lex::{InputSpan, Lexeme, Token},
     parse::ParseError,
     proc::Callable,
+    util::RequireOne,
     value::Value,
 };
 use futures::future::BoxFuture;
@@ -42,7 +43,7 @@ impl From<InputSpan<'_>> for Span {
 #[derive(Clone, Debug)]
 pub enum Syntax {
     /// An empty list.
-    Nil {
+    Null {
         span: Span,
     },
     /// A nested grouping of pairs. If the expression is a proper list, then the
@@ -70,7 +71,7 @@ pub enum Syntax {
 impl fmt::Display for Syntax {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Nil { .. } => write!(f, "()")?,
+            Self::Null { .. } => write!(f, "()")?,
             Self::List { list, .. } => {
                 write!(f, "(")?;
                 for item in list {
@@ -105,6 +106,19 @@ impl Syntax {
             }
             Self::Identifier { ident, .. } => ident.mark(mark),
             _ => (),
+        }
+    }
+
+    pub fn normalize(self) -> Self {
+        match self {
+            Self::List { mut list, span } => {
+                if let [Syntax::Null { .. }] = list.as_slice() {
+                    list.pop().unwrap()
+                } else {
+                    Self::List { list, span }
+                }
+            }
+            x => x,
         }
     }
 
@@ -171,7 +185,8 @@ impl Syntax {
                     .call(vec![Gc::new(Value::Syntax(input))], cont)
                     .await?
                     .eval(cont)
-                    .await?;
+                    .await?
+                    .require_one()?;
                 let output = output.read().await;
                 match &*output {
                     Value::Syntax(syntax) => syntax.clone(),
@@ -231,17 +246,15 @@ impl Syntax {
         cont: &Option<Arc<Continuation>>,
     ) -> Result<Arc<dyn Eval>, CompileError> {
         match self {
-            Self::Nil { span } => Err(CompileError::UnexpectedEmptyList(span.clone())),
+            Self::Null { span } => Err(CompileError::UnexpectedEmptyList(span.clone())),
             // Special identifiers:
             Self::Identifier { ident, .. } if ident == "<undefined>" => {
                 Ok(Arc::new(Gc::new(Value::Undefined)))
             }
-            // Regulard identifiers:
-            Self::Identifier { ident, .. } => Ok(Arc::new(
-                env.fetch_var(ident)
-                    .await
-                    .ok_or_else(|| CompileError::UndefinedVariable(ident.clone()))?,
-            ) as Arc<dyn Eval>),
+            // Regular identifiers:
+            Self::Identifier { ident, .. } => {
+                Ok(Arc::new(FetchVar::new(ident.clone())) as Arc<dyn Eval>)
+            }
             Self::Literal { literal, .. } => Ok(Arc::new(literal.clone()) as Arc<dyn Eval>),
             Self::List { list: exprs, span } => match &exprs[..] {
                 // Function call:
@@ -285,6 +298,9 @@ impl Syntax {
                 [Self::Identifier { ident, span, .. }, tail @ ..] if ident == "syntax-rules" => {
                     ast::SyntaxRules::compile_to_expr(tail, env, cont, span).await
                 }
+                [Self::Identifier { ident, span, .. }, tail @ ..] if ident == "apply" => {
+                    ast::Apply::compile_to_expr(tail, env, cont, span).await
+                }
                 // Very special form:
                 [Self::Identifier { ident, span, .. }, tail @ ..] if ident == "set!" => {
                     // Check for a variable transformer
@@ -309,7 +325,7 @@ impl Syntax {
                 let mut vals = Vec::new();
                 for item in vector {
                     match item {
-                        Self::Nil { .. } => vals.push(Arc::new(ast::Nil) as Arc<dyn Eval>),
+                        Self::Null { .. } => vals.push(Arc::new(ast::Nil) as Arc<dyn Eval>),
                         item => vals.push(item.compile(env, cont).await?),
                     }
                 }
@@ -323,6 +339,7 @@ impl Syntax {
         env: &Env,
         cont: &Option<Arc<Continuation>>,
     ) -> Result<Arc<dyn Eval>, CompileError> {
+        println!("compiling, first expanding: {self}");
         self.expand(env, cont).await?.compile(env, cont).await
     }
 }
@@ -364,8 +381,14 @@ impl<'a> Expansion<'a> {
                 } => {
                     // If the expression has been expanded, we may need to expand it again, but
                     // it must be done in a new expansion context.
-                    let env = Env::Expansion(Gc::new(env.new_expansion_context(mark, macro_env)));
-                    syntax.expand(&env, cont).await?.compile(&env, cont).await
+                    println!("expanding: {syntax}, mark: {mark:?}");
+                    let env =
+                        Env::Expansion(Gc::new(env.new_expansion_context(mark, macro_env.clone())));
+                    Ok(Arc::new(MacroExpansionPoint::new(
+                        mark,
+                        macro_env,
+                        syntax.expand(&env, cont).await?.compile(&env, cont).await?,
+                    )) as Arc<dyn Eval>)
                 }
             }
         })
@@ -469,7 +492,7 @@ impl PartialEq<str> for Identifier {
 impl Syntax {
     pub fn span(&self) -> &Span {
         match self {
-            Self::Nil { span } => span,
+            Self::Null { span } => span,
             Self::List { span, .. } => span,
             Self::Vector { span, .. } => span,
             Self::Literal { span, .. } => span,
@@ -480,11 +503,11 @@ impl Syntax {
     // There's got to be a better way:
 
     pub fn new_nil(span: impl Into<Span>) -> Self {
-        Self::Nil { span: span.into() }
+        Self::Null { span: span.into() }
     }
 
     pub fn is_nil(&self) -> bool {
-        matches!(self, Self::Nil { .. })
+        matches!(self, Self::Null { .. })
     }
 
     pub fn new_list(list: Vec<Syntax>, span: impl Into<Span>) -> Self {

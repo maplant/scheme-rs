@@ -2,10 +2,10 @@ use crate::{
     ast::Body,
     continuation::Continuation,
     env::Env,
-    error::RuntimeError,
-    eval::{Eval, ValueOrPreparedCall},
+    error::{Frame, RuntimeError},
+    eval::{Eval, ValuesOrPreparedCall},
     gc::Gc,
-    syntax::{Identifier, Mark},
+    syntax::{Identifier, Mark, Span},
     value::Value,
 };
 use async_trait::async_trait;
@@ -22,7 +22,7 @@ pub trait Callable: Send + Sync + 'static {
         &self,
         mut args: Vec<Gc<Value>>,
         cont: &Option<Arc<Continuation>>,
-    ) -> Result<ValueOrPreparedCall, RuntimeError>;
+    ) -> Result<ValuesOrPreparedCall, RuntimeError>;
 }
 
 #[derive(Clone)]
@@ -49,7 +49,8 @@ impl Callable for Procedure {
         &self,
         args: Vec<Gc<Value>>,
         cont: &Option<Arc<Continuation>>,
-    ) -> Result<ValueOrPreparedCall, RuntimeError> {
+    ) -> Result<ValuesOrPreparedCall, RuntimeError> {
+        println!("this one?");
         let env = Gc::new(self.up.new_lexical_contour(self.mark));
         let provided = args.len();
         let mut args_iter = args.iter().peekable();
@@ -63,8 +64,11 @@ impl Callable for Procedure {
             env.write().await.def_var(required, value);
         }
 
-        if let Some(ref _remaining) = self.remaining {
-            todo!()
+        if let Some(ref remaining) = self.remaining {
+            env.write().await.def_var(
+                remaining,
+                Gc::new(Value::from(args_iter.cloned().collect::<Vec<_>>())),
+            );
         } else if args_iter.peek().is_some() {
             return Err(RuntimeError::wrong_num_of_args(self.args.len(), provided));
         }
@@ -73,7 +77,7 @@ impl Callable for Procedure {
     }
 }
 
-pub type ExprFuture = BoxFuture<'static, Result<Gc<Value>, RuntimeError>>;
+pub type ExprFuture = BoxFuture<'static, Result<Vec<Gc<Value>>, RuntimeError>>;
 
 #[derive(Debug, Clone)]
 pub struct ExternalFn {
@@ -97,24 +101,32 @@ impl Callable for ExternalFn {
         &self,
         args: Vec<Gc<Value>>,
         cont: &Option<Arc<Continuation>>,
-    ) -> Result<ValueOrPreparedCall, RuntimeError> {
+    ) -> Result<ValuesOrPreparedCall, RuntimeError> {
+        println!("maybe this one?");
         // TODO: check the arguments
-        Ok(ValueOrPreparedCall::Value(
+        Ok(ValuesOrPreparedCall::Values(
             (self.func)(cont.clone(), args).await?,
         ))
     }
 }
 
 pub struct PreparedCall {
+    proc_name: String,
+    location: Span,
     operator: Gc<Value>,
     args: Vec<Gc<Value>>,
 }
 
 impl PreparedCall {
-    pub async fn eval(self, cont: &Option<Arc<Continuation>>) -> Result<Gc<Value>, RuntimeError> {
+    pub async fn eval(
+        self,
+        cont: &Option<Arc<Continuation>>,
+    ) -> Result<Vec<Gc<Value>>, RuntimeError> {
         let mut curr_proc = Some(self);
+        let mut bt = Vec::new();
         loop {
             let proc = curr_proc.take().unwrap();
+            bt.push(Frame::new(proc.proc_name.clone(), proc.location.clone()));
             let callable = {
                 let proc = proc.operator.read().await;
                 let Some(callable) = proc.as_callable() else {
@@ -134,10 +146,13 @@ impl PreparedCall {
                     return Err(RuntimeError::wrong_num_of_args(max_args, proc.args.len()));
                 }
             }
-            let ret = callable.call(proc.args, cont).await?;
+            let ret = callable.call(proc.args, cont).await.map_err(|mut err| {
+                err.backtrace.extend(std::mem::take(&mut bt));
+                err
+            })?;
             match ret {
-                ValueOrPreparedCall::Value(value) => return Ok(value),
-                ValueOrPreparedCall::PreparedCall(prepared) => {
+                ValuesOrPreparedCall::Values(value) => return Ok(value),
+                ValuesOrPreparedCall::PreparedCall(prepared) => {
                     curr_proc = Some(prepared);
                     // Continue
                 }
@@ -145,9 +160,14 @@ impl PreparedCall {
         }
     }
 
-    pub fn prepare(args: Vec<Gc<Value>>) -> Self {
+    pub fn prepare(proc_name: &str, location: &Span, args: Vec<Gc<Value>>) -> Self {
         let operator = args[0].clone();
         let args = args[1..].to_owned();
-        Self { operator, args }
+        Self {
+            proc_name: proc_name.to_string(),
+            location: location.clone(),
+            operator,
+            args,
+        }
     }
 }

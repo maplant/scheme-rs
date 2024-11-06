@@ -12,10 +12,14 @@ use crate::{
     value::Value,
 };
 
+#[derive(derive_more::Debug)]
 pub struct LexicalContour {
+    #[debug(skip)]
     pub up: Env,
     pub mark: Mark,
+    #[debug(skip)]
     vars: HashMap<Identifier, Gc<Value>>,
+    #[debug("{:?}", macros.keys().cloned().collect::<Vec<_>>())]
     macros: HashMap<Identifier, Gc<Value>>,
 }
 
@@ -66,6 +70,9 @@ impl LexicalContour {
 
     fn fetch_macro<'a>(&'a self, ident: &'a Identifier) -> BoxFuture<'a, Option<MacroLookup>> {
         Box::pin(async move {
+            println!("Lexical Contour ----------------");
+            println!("ident: {:?}", ident);
+            println!("env: {self:#?}");
             // Only check the macro definitions
             if let Some(var) = self.macros.get(ident) {
                 return Some(MacroLookup::WithoutEnv(var.clone()));
@@ -102,9 +109,12 @@ impl Trace for LexicalContour {
     }
 }
 
+#[derive(derive_more::Debug)]
 pub struct ExpansionContext {
+    #[debug(skip)]
     up: Env,
     mark: Mark,
+    #[debug(skip)]
     macro_env: Env,
 }
 
@@ -119,6 +129,16 @@ impl ExpansionContext {
                 self.up.is_bound(ident).await
             }
         })
+    }
+
+    fn strip<'a>(&self, ident: &'a Identifier) -> Cow<'a, Identifier> {
+        if ident.marks.contains(&self.mark) {
+            let mut stripped = ident.clone();
+            stripped.mark(self.mark);
+            Cow::Owned(stripped)
+        } else {
+            Cow::Borrowed(ident)
+        }
     }
 
     pub fn strip_unused_marks<'a>(&'a self, ident: &'a mut Identifier) -> BoxFuture<'a, ()> {
@@ -154,13 +174,19 @@ impl ExpansionContext {
         ident: &'a Identifier,
     ) -> BoxFuture<'a, Option<(Env, Gc<Value>)>> {
         Box::pin(async move {
-            if ident.marks.contains(&self.mark) {
-                let mut stripped = ident.clone();
-                stripped.mark(self.mark);
-                self.macro_env.fetch_macro(&stripped).await
+            println!("Expansion Context ----------------");
+            println!("ident: {:?}", ident);
+            println!("env: {self:#?}");
+            let ident = if ident.marks.contains(&self.mark) {
+                let stripped = self.strip(ident);
+                if let result @ Some(_) = self.macro_env.fetch_macro(&stripped).await {
+                    return result;
+                }
+                stripped
             } else {
-                self.up.fetch_macro(ident).await
-            }
+                Cow::Borrowed(ident)
+            };
+            self.up.fetch_macro(&ident).await
         })
     }
 }
@@ -279,7 +305,7 @@ impl Env {
     }
 
     /// Evaluate a string, returning all of the results in a Vec
-    pub async fn eval<'e>(&self, exprs: &'e str) -> Result<Vec<Gc<Value>>, EvalError<'e>> {
+    pub async fn eval<'e>(&self, exprs: &'e str) -> Result<Vec<Vec<Gc<Value>>>, EvalError<'e>> {
         let tokens = Token::tokenize_str(exprs)?;
         let sexprs = ParsedSyntax::parse(&tokens)?;
         let mut results = Vec::new();
@@ -288,6 +314,13 @@ impl Env {
             results.push(result);
         }
         Ok(results)
+    }
+}
+
+
+impl From<Gc<ExpansionContext>> for Env {
+    fn from(env: Gc<ExpansionContext>) -> Self {
+        Self::Expansion(env)
     }
 }
 
