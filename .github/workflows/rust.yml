@@ -1,0 +1,29 @@
+name: Rust
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+  
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy, rustfmt
+    - name: Install packages
+      run: sudo apt-get install libasound2-dev glslang-tools
+    - name: Build
+      run: cargo build 
+    - name: Check formatting
+      run: cargo fmt  -- --check
+    - name: Clippy
+      run: cargo clippy --all-targets -- -Dclippy::all -D warnings
