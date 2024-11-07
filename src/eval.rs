@@ -408,12 +408,12 @@ impl Eval for ast::Lambda {
     ) -> Result<Vec<Gc<Value>>, RuntimeError> {
         // TODO: Optimize the AST with smart pointers to prevent constantly
         // cloning.
+
         let (args, remaining) = self.args.to_args_and_remaining();
         Ok(vec![Gc::new(Value::Procedure(Procedure {
             up: env.clone(),
             args,
             remaining,
-            // mark: self.mark,
             body: self.body.clone(),
             is_variable_transformer: false,
         }))])

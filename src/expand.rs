@@ -8,7 +8,7 @@ use crate::{
 };
 use proc_macros::builtin;
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet},
     sync::Arc,
 };
 
@@ -36,14 +36,22 @@ pub struct SyntaxRule {
 }
 
 impl SyntaxRule {
+    pub fn compile(keywords: &HashSet<String>, pattern: &Syntax, template: &Syntax) -> Self {
+        let mut variables = HashSet::new();
+        let pattern = Pattern::compile(pattern, keywords, &mut variables);
+        let template = Template::compile(template, &variables);
+        Self { pattern, template }
+    }
+
     fn expand(&self, expr: &Syntax) -> Option<Syntax> {
-        let mut var_binds = HashMap::new();
-        self.pattern.init_var_binds(&mut var_binds);
+        let mut top_expansion_level = ExpansionLevel::default();
         let curr_span = expr.span().clone();
         self.pattern
-            .matches(expr, &mut var_binds)
-            .then(|| self.template.execute(&mut var_binds, curr_span))
-            .flatten()
+            .matches(expr, &mut top_expansion_level)
+            .then(|| {
+                let binds = Binds::new_top(&top_expansion_level);
+                self.template.execute(&binds, curr_span).unwrap()
+            })
     }
 }
 
@@ -60,36 +68,34 @@ pub enum Pattern {
 }
 
 impl Pattern {
-    pub fn compile(expr: &Syntax, keywords: &HashSet<String>) -> Self {
+    pub fn compile(
+        expr: &Syntax,
+        keywords: &HashSet<String>,
+        variables: &mut HashSet<String>,
+    ) -> Self {
         match expr {
             Syntax::Null { .. } => Self::Null,
             Syntax::Identifier { ident, .. } if ident.name == "_" => Self::Underscore,
             Syntax::Identifier { ident, .. } if keywords.contains(&ident.name) => {
                 Self::Keyword(ident.name.clone())
             }
-            Syntax::Identifier { ident, .. } => Self::Variable(ident.name.clone()),
-            Syntax::List { list, .. } => Self::List(Self::compile_slice(list, keywords)),
-            Syntax::Vector { vector, .. } => Self::Vector(Self::compile_slice(vector, keywords)),
+            Syntax::Identifier { ident, .. } => {
+                variables.insert(ident.name.clone());
+                Self::Variable(ident.name.clone())
+            }
+            Syntax::List { list, .. } => Self::List(Self::compile_slice(list, keywords, variables)),
+            Syntax::Vector { vector, .. } => {
+                Self::Vector(Self::compile_slice(vector, keywords, variables))
+            }
             Syntax::Literal { literal, .. } => Self::Literal(literal.clone()),
         }
     }
 
-    fn init_var_binds(&self, var_binds: &mut HashMap<String, VecDeque<Syntax>>) {
-        match self {
-            Self::Ellipsis(pattern) => pattern.init_var_binds(var_binds),
-            Self::List(list) | Self::Vector(list) => {
-                for item in list {
-                    item.init_var_binds(var_binds);
-                }
-            }
-            Self::Variable(var) => {
-                let _ = var_binds.insert(var.clone(), VecDeque::default());
-            }
-            _ => (),
-        }
-    }
-
-    fn compile_slice(mut expr: &[Syntax], keywords: &HashSet<String>) -> Vec<Self> {
+    fn compile_slice(
+        mut expr: &[Syntax],
+        keywords: &HashSet<String>,
+        variables: &mut HashSet<String>,
+    ) -> Vec<Self> {
         let mut output = Vec::new();
         loop {
             match expr {
@@ -100,12 +106,12 @@ impl Pattern {
                     if ellipsis.name == "..." =>
                 {
                     output.push(Self::Ellipsis(Box::new(Pattern::compile(
-                        pattern, keywords,
+                        pattern, keywords, variables,
                     ))));
                     expr = tail;
                 }
                 [head, tail @ ..] => {
-                    output.push(Self::compile(head, keywords));
+                    output.push(Self::compile(head, keywords, variables));
                     expr = tail;
                 }
             }
@@ -113,79 +119,125 @@ impl Pattern {
         output
     }
 
-    fn matches(&self, expr: &Syntax, var_binds: &mut HashMap<String, VecDeque<Syntax>>) -> bool {
+    fn matches(&self, expr: &Syntax, expansion_level: &mut ExpansionLevel) -> bool {
         match self {
-            Self::Underscore => !expr.is_nil(),
+            Self::Underscore => !expr.is_null(),
             Self::Variable(ref name) => {
-                var_binds
-                    .entry(name.clone())
-                    .or_default()
-                    .push_back(expr.clone());
+                assert!(expansion_level
+                    .binds
+                    .insert(name.clone(), expr.clone())
+                    .is_none());
                 true
+            }
+            Self::Literal(ref lhs) => {
+                if let Syntax::Literal { literal: rhs, .. } = expr {
+                    lhs == rhs
+                } else {
+                    false
+                }
             }
             Self::Keyword(ref lhs) => {
                 matches!(expr, Syntax::Identifier { ident: rhs, bound: false, .. } if lhs == &rhs.name)
             }
-            Self::List(list) => match_slice(list, expr, var_binds),
-            Self::Vector(vec) => match_slice(vec, expr, var_binds),
+            Self::List(list) => match_slice(list, expr, expansion_level),
+            Self::Vector(vec) => match_slice(vec, expr, expansion_level),
             // We shouldn't ever see this outside of lists
-            Self::Null => expr.is_nil(),
-            _ => todo!(),
+            Self::Null => expr.is_null(),
+            Self::Ellipsis(_) => unreachable!(),
         }
     }
 }
 
-fn match_slice(
-    pattern: &[Pattern],
-    expr: &Syntax,
-    var_binds: &mut HashMap<String, VecDeque<Syntax>>,
+fn match_ellipsis(
+    patterns: &[Pattern],
+    exprs: &[Syntax],
+    expansion_level: &mut ExpansionLevel,
 ) -> bool {
-    let span = expr.span();
+    // The ellipsis gets to consume any extra items, thus the difference:
+    let Some(extra_items) = (exprs.len() + 1).checked_sub(patterns.len()) else {
+        return false;
+    };
+
+    let mut expr_iter = exprs.iter();
+    for pattern in patterns.iter() {
+        if let Pattern::Ellipsis(muncher) = pattern {
+            // Gobble up the extra items:
+            for i in 0..extra_items {
+                if expansion_level.expansions.len() <= i {
+                    expansion_level.expansions.push(ExpansionLevel::default());
+                }
+                let expr = expr_iter.next().unwrap();
+                if !muncher.matches(expr, &mut expansion_level.expansions[i]) {
+                    return false;
+                }
+            }
+        } else {
+            // Otherwise, match the pattern normally
+            let expr = expr_iter.next().unwrap();
+            if !pattern.matches(expr, expansion_level) {
+                return false;
+            }
+        }
+    }
+
+    assert!(expr_iter.next().is_none());
+
+    true
+}
+
+fn match_slice(patterns: &[Pattern], expr: &Syntax, expansion_level: &mut ExpansionLevel) -> bool {
+    assert!(!patterns.is_empty());
+
     let exprs = match expr {
         Syntax::List { list, .. } => list,
         Syntax::Null { .. } => return true,
         _ => return false,
     };
-    let mut expr_iter = exprs.iter().peekable();
-    let mut pattern_iter = pattern.iter().peekable();
-    while let Some(item) = pattern_iter.next() {
-        if let Pattern::Ellipsis(ref pattern) = item {
-            let exprs: Vec<_> = if !matches!(pattern_iter.peek(), Some(Pattern::Null)) {
-                // Match backwards
-                let mut rev_expr_iter = expr_iter.rev();
-                let rev_pattern_iter = pattern_iter.rev();
-                for pattern in rev_pattern_iter {
-                    if let Some(expr) = rev_expr_iter.next() {
-                        if !pattern.matches(expr, var_binds) {
-                            return false;
-                        }
-                    }
-                }
-                rev_expr_iter.rev().cloned().collect()
-            } else {
-                expr_iter.cloned().collect()
-            };
-            // Gobble up the rest
-            for expr in exprs {
-                if !pattern.matches(&expr, var_binds) {
+
+    let contains_ellipsis = patterns.iter().any(|p| matches!(p, Pattern::Ellipsis(_)));
+
+    match (patterns.split_last().unwrap(), contains_ellipsis) {
+        ((Pattern::Null, _), false) => {
+            // Proper list, no ellipsis. Match everything in order
+            for (pattern, expr) in patterns.iter().zip(exprs.iter()) {
+                if !pattern.matches(expr, expansion_level) {
                     return false;
                 }
             }
-            return true;
-        } else if !matches!(item, Pattern::Null) && pattern_iter.peek().is_none() {
-            // Match to the rest of the expresions:
-            let exprs = Syntax::new_list(expr_iter.cloned().collect(), span.clone()).normalize();
-            return item.matches(&exprs, var_binds);
-        } else if let Some(next_expr) = expr_iter.next() {
-            if !item.matches(next_expr, var_binds) {
-                return false;
-            }
-        } else {
-            return false;
+            true
         }
+        ((cdr, head), false) => {
+            // The pattern is an improper list that contains no ellipsis.
+            // Math in order until the last pattern, then match that to the nth
+            // cdr.
+            let mut exprs = exprs.iter();
+            for pattern in head.iter() {
+                let Some(expr) = exprs.next() else {
+                    continue;
+                };
+                if !pattern.matches(expr, expansion_level) {
+                    return false;
+                }
+            }
+            // Match the cdr:
+            let exprs: Vec<_> = exprs.cloned().collect();
+            match exprs.as_slice() {
+                [] => false,
+                [x] => cdr.matches(x, expansion_level),
+                _ => cdr.matches(
+                    &Syntax::new_list(exprs, expr.span().clone()),
+                    expansion_level,
+                ),
+            }
+        }
+        (_, true) => match_ellipsis(patterns, exprs, expansion_level),
     }
+}
 
-    expr_iter.peek().is_none()
+#[derive(Debug, Default)]
+pub struct ExpansionLevel {
+    binds: HashMap<String, Syntax>,
+    expansions: Vec<ExpansionLevel>,
 }
 
 #[derive(Clone, Debug)]
@@ -195,21 +247,25 @@ pub enum Template {
     List(Vec<Template>),
     Vector(Vec<Template>),
     Identifier(Identifier),
+    Variable(Identifier),
     Literal(Literal),
 }
 
 impl Template {
-    pub fn compile(expr: &Syntax) -> Self {
+    pub fn compile(expr: &Syntax, variables: &HashSet<String>) -> Self {
         match expr {
             Syntax::Null { .. } => Self::Null,
-            Syntax::List { list, .. } => Self::List(Self::compile_slice(list)),
-            Syntax::Vector { vector, .. } => Self::Vector(Self::compile_slice(vector)),
+            Syntax::List { list, .. } => Self::List(Self::compile_slice(list, variables)),
+            Syntax::Vector { vector, .. } => Self::Vector(Self::compile_slice(vector, variables)),
             Syntax::Literal { literal, .. } => Self::Literal(literal.clone()),
+            Syntax::Identifier { ident, .. } if variables.contains(&ident.name) => {
+                Self::Variable(ident.clone())
+            }
             Syntax::Identifier { ident, .. } => Self::Identifier(ident.clone()),
         }
     }
 
-    fn compile_slice(mut expr: &[Syntax]) -> Vec<Self> {
+    fn compile_slice(mut expr: &[Syntax], variables: &HashSet<String>) -> Vec<Self> {
         let mut output = Vec::new();
         loop {
             match expr {
@@ -219,11 +275,13 @@ impl Template {
                 }, tail @ ..]
                     if ellipsis.name == "..." =>
                 {
-                    output.push(Self::Ellipsis(Box::new(Template::compile(template))));
+                    output.push(Self::Ellipsis(Box::new(Template::compile(
+                        template, variables,
+                    ))));
                     expr = tail;
                 }
                 [head, tail @ ..] => {
-                    output.push(Self::compile(head));
+                    output.push(Self::compile(head, variables));
                     expr = tail;
                 }
             }
@@ -231,66 +289,84 @@ impl Template {
         output
     }
 
-    fn execute(
-        &self,
-        var_binds: &mut HashMap<String, VecDeque<Syntax>>,
-        curr_span: Span,
-    ) -> Option<Syntax> {
-        let syntax = match self {
-            Self::Null => Syntax::new_nil(curr_span),
+    fn execute(&self, binds: &Binds<'_>, curr_span: Span) -> Option<Syntax> {
+        let syn = match self {
+            Self::Null => Syntax::new_null(curr_span),
             Self::List(list) => {
-                let executed = execute_slice(list, var_binds, curr_span.clone())?;
-                if executed.len() == 1 {
-                    Syntax::new_nil(curr_span)
-                } else {
-                    Syntax::new_list(executed, curr_span)
-                }
+                let executed = execute_slice(list, binds, curr_span.clone())?;
+                Syntax::new_list(executed, curr_span).normalize()
             }
             Self::Vector(vec) => {
-                Syntax::new_vector(execute_slice(vec, var_binds, curr_span.clone())?, curr_span)
+                Syntax::new_vector(execute_slice(vec, binds, curr_span.clone())?, curr_span)
             }
-            Self::Identifier(ident) => match var_binds.get_mut(&ident.name) {
-                None => Syntax::Identifier {
-                    ident: ident.clone(),
-                    span: curr_span,
-                    bound: false,
-                },
-                Some(ref mut exprs) => exprs.pop_front()?,
+            Self::Identifier(ident) => Syntax::Identifier {
+                ident: ident.clone(),
+                span: curr_span,
+                bound: false,
             },
+            Self::Variable(ident) => binds.get_bind(&ident.name)?,
             Self::Literal(literal) => Syntax::new_literal(literal.clone(), curr_span),
             _ => unreachable!(),
         };
-        Some(syntax)
+        Some(syn)
     }
 }
 
-fn execute_slice(
-    items: &[Template],
-    var_binds: &mut HashMap<String, VecDeque<Syntax>>,
-    curr_span: Span,
-) -> Option<Vec<Syntax>> {
+fn execute_slice(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<Vec<Syntax>> {
     let mut output = Vec::new();
     for item in items {
         match item {
             Template::Ellipsis(template) => {
-                let mut var_binds = var_binds.clone();
-                while let Some(val) = template.execute(&mut var_binds, curr_span.clone()) {
-                    if !val.is_nil() {
-                        output.push(val);
-                    }
+                for expansion in &binds.curr_expansion_level.expansions {
+                    let new_level = binds.new_level(expansion);
+                    let Some(result) = template.execute(&new_level, curr_span.clone()) else {
+                        break;
+                    };
+                    output.push(result);
                 }
             }
             Template::Null => {
                 if let Some(Syntax::Null { .. }) = output.last() {
                     continue;
                 } else {
-                    output.push(Syntax::new_nil(curr_span.clone()));
+                    output.push(Syntax::new_null(curr_span.clone()));
                 }
             }
-            _ => output.push(item.execute(var_binds, curr_span.clone())?),
+            _ => output.push(item.execute(binds, curr_span.clone())?),
         }
     }
     Some(output)
+}
+
+pub struct Binds<'a> {
+    curr_expansion_level: &'a ExpansionLevel,
+    parent_expansion_level: Option<&'a Binds<'a>>,
+}
+
+impl<'a> Binds<'a> {
+    fn new_top(top_expansion_level: &'a ExpansionLevel) -> Self {
+        Self {
+            curr_expansion_level: top_expansion_level,
+            parent_expansion_level: None,
+        }
+    }
+
+    fn new_level<'b: 'a>(&'b self, next_expansion_level: &'b ExpansionLevel) -> Binds<'b> {
+        Binds {
+            curr_expansion_level: next_expansion_level,
+            parent_expansion_level: Some(self),
+        }
+    }
+
+    fn get_bind(&self, name: &str) -> Option<Syntax> {
+        if let bind @ Some(_) = self.curr_expansion_level.binds.get(name) {
+            bind.cloned()
+        } else if let Some(up) = self.parent_expansion_level {
+            up.get_bind(name)
+        } else {
+            None
+        }
+    }
 }
 
 #[builtin("make-variable-transformer")]

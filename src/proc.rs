@@ -25,11 +25,13 @@ pub trait Callable: Send + Sync + 'static {
     ) -> Result<ValuesOrPreparedCall, RuntimeError>;
 }
 
-#[derive(Clone)]
+#[derive(Clone, derive_more::Debug)]
 pub struct Procedure {
+    #[debug(skip)]
     pub up: Env,
     pub args: Vec<Identifier>,
     pub remaining: Option<Identifier>,
+    #[debug(skip)]
     pub body: Body,
     pub is_variable_transformer: bool,
 }

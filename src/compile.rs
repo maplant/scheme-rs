@@ -4,7 +4,7 @@ use crate::{
     env::Env,
     error::RuntimeError,
     eval::Eval,
-    expand::{Pattern, SyntaxRule, Template, Transformer},
+    expand::{SyntaxRule, Transformer},
     gc::Gc,
     syntax::{Identifier, Span, Syntax},
     util::{ArcSlice, RequireOne},
@@ -356,7 +356,6 @@ impl Compile for ast::Define {
                     }, args @ ..] => {
                         let mut bound = HashMap::<Identifier, Span>::new();
                         let mut fixed = Vec::new();
-                        // println!("compile_define new_mark = {:?}", new_mark);
                         for arg in &args[..args.len() - 1] {
                             match arg {
                                 Syntax::Identifier { ident, span, .. } => {
@@ -490,6 +489,7 @@ impl Compile for ast::Quote {
     ) -> Result<Self, CompileQuoteError> {
         match exprs {
             [] => Err(CompileQuoteError::ExpectedArgument(span.clone())),
+            [Syntax::Null { .. }] => Ok(ast::Quote { val: Value::Null }),
             [expr, Syntax::Null { .. }] => Ok(ast::Quote {
                 val: Value::from_syntax(expr),
             }),
@@ -632,6 +632,22 @@ impl Compile for ast::Lambda {
             [Syntax::List { list: args, .. }, body @ ..] => {
                 compile_lambda(args, body, env, cont, span).await
             }
+            [Syntax::Identifier { ident, .. }, body @ ..] => {
+                let mut env = env.new_lexical_contour();
+                env.def_var(ident, Gc::new(Value::Undefined));
+
+                let body = ast::Body::compile(body, &Env::from(Gc::new(env)), cont, span)
+                    .await
+                    .map_err(CompileLambdaError::CompileBodyError)?;
+
+                Ok(ast::Lambda {
+                    args: ast::Formals::VarArgs {
+                        fixed: Vec::new(),
+                        remaining: ident.clone(),
+                    },
+                    body,
+                })
+            }
             _ => todo!(),
         }
     }
@@ -646,8 +662,6 @@ async fn compile_lambda(
 ) -> Result<ast::Lambda, CompileLambdaError> {
     let mut bound = HashMap::<Identifier, Span>::new();
     let mut fixed = Vec::new();
-    // let new_mark = Mark::new();
-    //    println!("compile_lambda new_mark = {:?}", new_mark);
     if !args.is_empty() {
         for arg in &args[..args.len() - 1] {
             match arg {
@@ -741,10 +755,7 @@ impl Compile for ast::SyntaxCase {
                 [Syntax::Null { .. }] => break,
                 [Syntax::List { list, .. }, tail @ ..] => match &list[..] {
                     [pattern, template, Syntax::Null { .. }] => {
-                        syntax_rules.push(SyntaxRule {
-                            pattern: Pattern::compile(pattern, &keywords),
-                            template: Template::compile(template),
-                        });
+                        syntax_rules.push(SyntaxRule::compile(&keywords, pattern, template));
                         rules = tail;
                     }
                     _ => return Err(CompileSyntaxCaseError::BadForm(span.clone())),
@@ -799,10 +810,7 @@ impl Compile for ast::SyntaxRules {
                 [Syntax::Null { .. }] => break,
                 [Syntax::List { list, .. }, tail @ ..] => match &list[..] {
                     [pattern, template, Syntax::Null { .. }] => {
-                        syntax_rules.push(SyntaxRule {
-                            pattern: Pattern::compile(pattern, &keywords),
-                            template: Template::compile(template),
-                        });
+                        syntax_rules.push(SyntaxRule::compile(&keywords, pattern, template));
                         rules = tail;
                     }
                     _ => return Err(CompileSyntaxRulesError::BadForm(span.clone())),

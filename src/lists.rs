@@ -1,4 +1,4 @@
-use crate::{continuation::Continuation, error::RuntimeError, gc::Gc, value::Value};
+use crate::{continuation::Continuation, error::RuntimeError, gc::Gc, num::Number, value::Value};
 use futures::future::BoxFuture;
 use proc_macros::builtin;
 use std::sync::Arc;
@@ -116,4 +116,24 @@ pub async fn set_car(
         _ => todo!(),
     }
     Ok(vec![Gc::new(Value::Null)])
+}
+
+#[builtin("length")]
+pub async fn length(
+    _cont: &Option<Arc<Continuation>>,
+    arg: &Gc<Value>,
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
+    let mut length = 0;
+    let mut arg = arg.clone();
+    loop {
+        arg = {
+            let val = arg.read().await;
+            match &*val {
+                Value::Pair(_, cdr) => cdr.clone(),
+                _ => break,
+            }
+        };
+        length += 1;
+    }
+    Ok(vec![Gc::new(Value::Number(Number::from(length)))])
 }
