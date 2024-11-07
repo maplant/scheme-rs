@@ -89,7 +89,7 @@ impl Value {
                 Self::Character(c) => format!("\\x{c}"),
                 Self::ByteVector(_) => "<byte_vector>".to_string(),
                 Self::Syntax(syntax) => format!("{:#?}", syntax),
-                Self::Procedure(_) => "<lambda>".to_string(),
+                Self::Procedure(proc) => format!("<{proc:?}>"),
                 Self::ExternalFn(_) => "<external_fn>".to_string(),
                 Self::Future(_) => "<future>".to_string(),
                 Self::Transformer(_) => "<transformer>".to_string(),
@@ -216,6 +216,18 @@ pub fn eqv<'a>(a: &'a Gc<Value>, b: &'a Gc<Value>) -> BoxFuture<'a, bool> {
         let b = b.read().await;
         a.eqv(&b).await
     })
+}
+
+#[builtin("not")]
+pub async fn not(
+    _cont: &Option<Arc<Continuation>>,
+    a: &Gc<Value>,
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
+    let a = a.read().await;
+    Ok(vec![Gc::new(Value::Boolean(matches!(
+        &*a,
+        Value::Boolean(false)
+    )))])
 }
 
 #[builtin("eqv?")]

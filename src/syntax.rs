@@ -40,10 +40,11 @@ impl From<InputSpan<'_>> for Span {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, derive_more::Debug)]
 pub enum Syntax {
     /// An empty list.
     Null {
+        #[debug(skip)]
         span: Span,
     },
     /// A nested grouping of pairs. If the expression is a proper list, then the
@@ -51,19 +52,25 @@ pub enum Syntax {
     /// at least two elements.
     List {
         list: Vec<Syntax>,
+        #[debug(skip)]
         span: Span,
     },
     Vector {
         vector: Vec<Syntax>,
+        #[debug(skip)]
         span: Span,
     },
     Literal {
         literal: Literal,
+        #[debug(skip)]
         span: Span,
     },
     Identifier {
+        //        #[debug(flatten = ".name")]
         ident: Identifier,
+        #[debug(skip)]
         bound: bool,
+        #[debug(skip)]
         span: Span,
     },
 }
@@ -114,6 +121,8 @@ impl Syntax {
             Self::List { mut list, span } => {
                 if let [Syntax::Null { .. }] = list.as_slice() {
                     list.pop().unwrap()
+                } else if list.is_empty() {
+                    Syntax::Null { span }
                 } else {
                     Self::List { list, span }
                 }
@@ -439,10 +448,16 @@ impl Default for Mark {
     }
 }
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Hash, PartialEq, Eq)]
 pub struct Identifier {
     pub name: String,
     pub marks: BTreeSet<Mark>,
+}
+
+impl fmt::Debug for Identifier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name)
+    }
 }
 
 impl Identifier {
@@ -481,11 +496,11 @@ impl Syntax {
 
     // There's got to be a better way:
 
-    pub fn new_nil(span: impl Into<Span>) -> Self {
+    pub fn new_null(span: impl Into<Span>) -> Self {
         Self::Null { span: span.into() }
     }
 
-    pub fn is_nil(&self) -> bool {
+    pub fn is_null(&self) -> bool {
         matches!(self, Self::Null { .. })
     }
 
