@@ -30,6 +30,10 @@ pub enum RuntimeErrorKind {
         expected: usize,
         provided: usize,
     },
+    AssertEqFailed {
+        expected: String,
+        actual: String,
+    },
     DivisionByZero,
     CompileError(CompileError),
     AbandonCurrentContinuation {
@@ -85,6 +89,15 @@ impl RuntimeError {
         Self {
             backtrace: Vec::new(),
             kind: RuntimeErrorKind::DivisionByZero,
+        }
+    }
+
+    pub fn assert_eq_failed(expected: &str, actual: &str) -> Self {
+        let expected = expected.to_string();
+        let actual = actual.to_string();
+        Self {
+            backtrace: Vec::new(),
+            kind: RuntimeErrorKind::AssertEqFailed { expected, actual },
         }
     }
 

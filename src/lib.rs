@@ -1,3 +1,5 @@
+extern crate self as scheme_rs;
+
 pub mod ast;
 pub mod builtin;
 pub mod compile;
@@ -16,3 +18,5 @@ pub mod proc;
 pub mod syntax;
 pub mod util;
 pub mod value;
+
+pub use proc_macros::*;

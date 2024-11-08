@@ -66,36 +66,12 @@ pub enum Syntax {
         span: Span,
     },
     Identifier {
-        //        #[debug(flatten = ".name")]
         ident: Identifier,
         #[debug(skip)]
         bound: bool,
         #[debug(skip)]
         span: Span,
     },
-}
-
-impl fmt::Display for Syntax {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Null { .. } => write!(f, "()")?,
-            Self::List { list, .. } => {
-                write!(f, "(")?;
-                for item in list {
-                    write!(f, "{} ", item)?;
-                }
-                write!(f, ")")?;
-            }
-            Self::Literal { literal, .. } => {
-                write!(f, "{:?}", literal)?;
-            }
-            Self::Identifier { ident, .. } => {
-                write!(f, "{}", ident.name)?;
-            }
-            _ => (),
-        }
-        Ok(())
-    }
 }
 
 impl Syntax {
