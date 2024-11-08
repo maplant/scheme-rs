@@ -19,6 +19,11 @@
 (define call-with-current-continuation call/cc)
 
 ;;
+;; WIP: All of the car/cdr combinations
+(define caar (lambda (x) (car (car x))))
+(define cadr (lambda (x) (car (cdr x))))
+
+;;
 ;; Complex definitions:
 ;;
 (define (memp proc list)

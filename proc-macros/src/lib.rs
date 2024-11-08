@@ -28,9 +28,9 @@ pub fn builtin(name: TokenStream, item: TokenStream) -> TokenStream {
         let arg_indices: Vec<_> = (0..num_args).into_iter().collect();
         parse_quote! {
             fn #wrapper_name(
-                cont: Option<std::sync::Arc<crate::continuation::Continuation>>,
-                args: Vec<crate::gc::Gc<crate::value::Value>>
-            ) -> futures::future::BoxFuture<'static, Result<Vec<crate::gc::Gc<crate::value::Value>>, crate::error::RuntimeError>> {
+                cont: Option<std::sync::Arc<::scheme_rs::continuation::Continuation>>,
+                args: Vec<::scheme_rs::gc::Gc<::scheme_rs::value::Value>>
+            ) -> futures::future::BoxFuture<'static, Result<Vec<::scheme_rs::gc::Gc<::scheme_rs::value::Value>>, ::scheme_rs::error::RuntimeError>> {
                 Box::pin(
                     async move {
                         #impl_name(
@@ -45,9 +45,9 @@ pub fn builtin(name: TokenStream, item: TokenStream) -> TokenStream {
         let arg_indices: Vec<_> = (0..num_args).into_iter().collect();
         parse_quote! {
             fn #wrapper_name(
-                cont: Option<std::sync::Arc<crate::continuation::Continuation>>,
-                mut required_args: Vec<crate::gc::Gc<crate::value::Value>>
-            ) -> futures::future::BoxFuture<'static, Result<Vec<crate::gc::Gc<crate::value::Value>>, crate::error::RuntimeError>> {
+                cont: Option<std::sync::Arc<::scheme_rs::continuation::Continuation>>,
+                mut required_args: Vec<::scheme_rs::gc::Gc<::scheme_rs::value::Value>>
+            ) -> futures::future::BoxFuture<'static, Result<Vec<::scheme_rs::gc::Gc<::scheme_rs::value::Value>>, ::scheme_rs::error::RuntimeError>> {
                 let var_args = required_args.split_off(#num_args);
                 Box::pin(
                     async move {
@@ -67,7 +67,7 @@ pub fn builtin(name: TokenStream, item: TokenStream) -> TokenStream {
         #wrapper
 
         inventory::submit! {
-            crate::builtin::Builtin::new(#name, #num_args, #is_variadic, #wrapper_name)
+            ::scheme_rs::builtin::Builtin::new(#name, #num_args, #is_variadic, #wrapper_name)
         }
     }
     .into()

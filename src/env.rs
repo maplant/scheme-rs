@@ -24,30 +24,6 @@ pub struct LexicalContour {
 }
 
 impl LexicalContour {
-    /*
-    fn strip<'a>(&self, ident: &'a Identifier) -> Cow<'a, Identifier> {
-        if ident.marks.contains(&self.mark) {
-            let mut stripped = ident.clone();
-            stripped.mark(self.mark);
-            Cow::Owned(stripped)
-        } else {
-            Cow::Borrowed(ident)
-        }
-    }
-
-    pub fn strip_unused_marks<'a>(&'a self, ident: &'a mut Identifier) -> BoxFuture<'a, ()> {
-        Box::pin(async move {
-            if ident.marks.contains(&self.mark) && self.vars.contains_key(ident)
-                || self.macros.contains_key(ident)
-            {
-                return;
-            }
-            ident.marks.remove(&self.mark);
-            self.up.strip_unused_marks(ident).await;
-        })
-    }
-    */
-
     pub fn is_bound<'a>(&'a self, ident: &'a Identifier) -> BoxFuture<'a, bool> {
         Box::pin(async move {
             self.vars.contains_key(ident)
@@ -153,18 +129,6 @@ impl ExpansionContext {
             } else {
                 self.up.fetch_macro(ident).await
             }
-            /*
-            let ident = if ident.marks.contains(&self.mark) {
-                let stripped = self.strip(ident);
-                if let result @ Some(_) = self.macro_env.fetch_macro(&stripped).await {
-                    return result;
-                }
-                stripped
-            } else {
-                Cow::Borrowed(ident)
-            };
-            self.up.fetch_macro(&ident).await
-            */
         })
     }
 }
@@ -187,16 +151,6 @@ pub enum Env {
 }
 
 impl Env {
-    /*
-    pub async fn strip_unused_marks(&self, ident: &mut Identifier) {
-        match self {
-            Self::Expansion(expansion) => expansion.read().await.strip_unused_marks(ident).await,
-            Self::LexicalContour(contour) => contour.read().await.strip_unused_marks(ident).await,
-            _ => (),
-        }
-    }
-    */
-
     pub async fn is_bound(&self, ident: &Identifier) -> bool {
         match self {
             Self::Top => false,
