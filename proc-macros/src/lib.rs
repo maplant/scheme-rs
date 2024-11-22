@@ -2,8 +2,7 @@ use proc_macro::{self, TokenStream};
 use proc_macro2::Span;
 use quote::quote;
 use syn::{
-    parse_macro_input, parse_quote, DataEnum, DataStruct, DeriveInput, Fields, FnArg, Ident,
-    ItemFn, PatType, Type,
+    parse_macro_input, parse_quote, DataEnum, DataStruct, DeriveInput, Fields, FnArg, Ident, ItemFn, Member, PatType, Type
 };
 
 #[proc_macro_attribute]
@@ -109,70 +108,95 @@ fn derive_trace_struct(name: Ident, record: DataStruct) -> proc_macro2::TokenStr
         _ => {
             return quote! {
                 impl ::scheme_rs::gc::Trace for #name {
-                    fn unroot(&self) {}
+                    fn visit_children(&self, visitor: fn(::scheme_rs::gc::OpaqueGcPtr)) {}
                 }
             }
         }
     };
 
-    let field_names = fields
+    let field_actions = fields
         .iter()
         .enumerate()
-        .map(|(i, f)| {
-            if is_gc(&f.ty) {
-                panic!("Gc types not allowed in Traceable struct, must be GcInner");
-            }
-            f.ident
+        .flat_map(|(i, f)| {
+            let ident = f
+                .ident
                 .clone()
-                .unwrap_or_else(|| Ident::new(&i.to_string(), Span::call_site()))
+                .map_or_else(
+                    || Member::Unnamed(syn::Index { index: i as u32, span: Span::call_site() }),
+                    Member::Named);
+            if is_gc(&f.ty) {
+                quote! {
+                    visitor(self.#ident.as_opaque());
+                }
+            } else {
+                quote! {
+                    self. #ident .visit_children(visitor);
+                }
+            }
         })
         .collect::<Vec<_>>();
 
     quote! {
-        impl ::scheme_rs::gc::Trace for #name {
-            fn unroot(&self) {
-                #( self.#field_names.unroot(); )*
+        unsafe impl ::scheme_rs::gc::Trace for #name {
+            unsafe fn visit_children(&self, visitor: fn(::scheme_rs::gc::OpaqueGcPtr)) {
+                #(
+                    #field_actions
+                )*
             }
         }
     }
 }
 
 fn derive_trace_enum(name: Ident, data_enum: DataEnum) -> proc_macro2::TokenStream {
-    let match_clauses = data_enum.variants.iter().flat_map(|variant| {
-        let variant_name = variant.ident.clone();
-        let field_name: Vec<_> = match variant.fields {
+    let match_clauses = data_enum.variants.into_iter().flat_map(|variant| {
+        let fields: Vec<_> = match variant.fields {
             Fields::Named(ref named) => named
                 .named
                 .iter()
-                .map(|x| {
-                    let ident = x.ident.clone().unwrap();
-                    quote! { #ident }
-                })
+                .map(|field| (field.ty.clone(), field.ident.as_ref().unwrap().clone()))
                 .collect(),
             Fields::Unnamed(ref unnamed) => unnamed
                 .unnamed
                 .iter()
                 .enumerate()
-                .map(|(i, _)| {
+                .map(|(i, field)| {
                     let ident = Ident::new(&format!("t{i}"), Span::call_site());
-                    quote! { #ident }
+                    (field.ty.clone(), ident)
                 })
                 .collect(),
             _ => return None,
         };
+        let actions: Vec<_> = fields
+            .iter()
+            .map(|(ty, accessor)| {
+                if is_gc(&ty) {
+                    quote! {
+                        visitor(#accessor.as_opaque())
+                    }
+                } else {
+                    quote! {
+                        #accessor.visit_children(visitor)
+                    }
+                }
+            })
+            .collect();
+        let field_name = fields.into_iter().map(|(_, field)| field);
         let fields_destructured = match variant.fields {
-            Fields::Named(..) => quote! { { #( ref #field_name ),* } },
+            Fields::Named(..) => quote! { { #( ref #field_name, )* .. } },
             _ => quote! { ( #( ref #field_name ),* ) },
         };
+        let variant_name = variant.ident;
         Some(quote! {
             #name::#variant_name #fields_destructured => {
-                #( #field_name.unroot(); )*
+                #(
+                    #actions;
+                )*
             }
         })
     });
     quote! {
-        impl ::scheme_rs::gc::Trace for #name {
-            fn unroot(&self) {
+        unsafe impl ::scheme_rs::gc::Trace for #name {
+            unsafe fn visit_children(&self, visitor: fn(::scheme_rs::gc::OpaqueGcPtr)) {
                 match self {
                     #( #match_clauses )*,
                     _ => (),

@@ -13,9 +13,10 @@ use crate::{
     value::Value,
 };
 use futures::future::BoxFuture;
+use proc_macros::Trace;
 use std::{collections::BTreeSet, fmt, sync::Arc};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Trace)]
 pub struct Span {
     pub line: u32,
     pub column: usize,
@@ -40,7 +41,7 @@ impl From<InputSpan<'_>> for Span {
     }
 }
 
-#[derive(Clone, derive_more::Debug)]
+#[derive(Clone, derive_more::Debug, Trace)]
 pub enum Syntax {
     /// An empty list.
     Null {
@@ -409,7 +410,7 @@ impl ParsedSyntax {
     }
 }
 
-#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Trace)]
 pub struct Mark(u64);
 
 impl Mark {
@@ -424,7 +425,7 @@ impl Default for Mark {
     }
 }
 
-#[derive(Clone, Hash, PartialEq, Eq)]
+#[derive(Clone, Hash, PartialEq, Eq, Trace)]
 pub struct Identifier {
     pub name: String,
     pub marks: BTreeSet<Mark>,

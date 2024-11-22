@@ -7,7 +7,7 @@ use crate::{
     error::{RuntimeError, RuntimeErrorKind},
     eval::{Eval, ValuesOrPreparedCall},
     expand::Transformer,
-    gc::Gc,
+    gc::{Gc, Trace},
     lists::list_to_vec,
     proc::{Callable, PreparedCall},
     syntax::{Identifier, Span},
@@ -37,6 +37,12 @@ pub trait Resumable: Send + Sync {
 pub struct Continuation {
     resume_point: Arc<dyn Resumable>,
     remaining: Option<Arc<Continuation>>,
+}
+
+unsafe impl Trace for Continuation {
+    unsafe fn visit_children(&self, visitor: fn(crate::gc::OpaqueGcPtr)) {
+        unimplemented!()
+    }
 }
 
 impl Continuation {

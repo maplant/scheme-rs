@@ -1,5 +1,17 @@
-//! Based on Manish's (Rust GC type)[https://github.com/Manishearth/rust-gc/blob/master/gc/src/lib.rs],
-//! but adapted to work with Tokio's sync primitives.
+//! Garbage-Collected smart pointers with interior mutability.
+//!
+//! Gc<T> is conceptually similar to Arc<tokio::sync::RwLock<T>>, but garbage
+//! collection occurs concurrently at a fixed cadence or whenever a threshold
+//! of memory has been allocated as opposed to when the type is Dropped.
+//!
+//! Strictly speaking, Gc<T> is not garbage collection per-se but instead uses 
+//! "cycle collection". 
+//!
+//! Cycle collection was chosen because it has similar characteristics to Gc,
+//! providing all of the semantics Scheme expects data to have and also plays
+//! nicely as a Rust type.
+//!
+//! 
 
 use std::{
     cell::UnsafeCell,
@@ -14,21 +26,88 @@ use std::{
 };
 use tokio::sync::{RwLock, Semaphore, SemaphorePermit};
 
+/// A Garbage-Collected smart pointer with interior mutability.
+pub struct Gc<T: ?Sized> {
+    ptr: NonNull<GcInner<T>>,
+    marker: PhantomData<Arc<RwLock<T>>>,
+}
+
+impl<T: ?Sized> Gc<T> {
+    pub fn as_ptr(&self) -> *const GcInner<T> {
+        self.ptr.as_ptr()
+    }
+}
+
+impl<T> Gc<T> {
+    pub fn new(t: T) -> Gc<T> {
+        Self {
+            ptr: NonNull::from(Box::leak(Box::new(GcInner {
+                roots: atomic::AtomicUsize::new(1),
+                semaphore: Semaphore::new(MAX_READS as usize),
+                data: UnsafeCell::new(t),
+            }))),
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<T: ?Sized> Gc<T> {
+    unsafe fn to_inner(&self) -> &GcInner<T> {
+        self.ptr.as_ref()
+    }
+
+    pub async fn read(&self) -> GcReadGuard<'_, T> {
+        unsafe { self.to_inner().read().await }
+    }
+
+    pub async fn write(&self) -> GcWriteGuard<'_, T> {
+        unsafe { self.to_inner().write().await }
+    }
+}
+
+impl<T: ?Sized> Clone for Gc<T> {
+    fn clone(&self) -> Gc<T> {
+        unsafe { self.ptr.as_ref().inc_roots() }
+        Self {
+            ptr: self.ptr,
+            marker: PhantomData,
+        }
+    }
+}
+
+enum Color {
+    /// In use or free
+    Black,
+    /// Possible member of a cycle
+    Gray,
+    /// Member of a garbage cycle
+    White,
+    /// Possible root of cycle
+    Purple,
+    /// Acyclic
+    Green,
+    /// Candidate cycle undergoing Σ-computation
+    Red,
+    /// Candidate cycle awaiting epoch boundary
+    Orange
+}
+
 const MAX_READS: u32 = u32::MAX >> 3;
 
 pub struct GcInner<T: ?Sized> {
-    roots: atomic::AtomicUsize,
+    rc: atomic::AtomicUsize,
+    color: Color,
     semaphore: Semaphore,
     data: UnsafeCell<T>,
 }
 
 impl<T: ?Sized> GcInner<T> {
-    fn inc_roots(&self) {
-        self.roots.fetch_add(1, Ordering::Relaxed);
+    fn inc_ref_count(&self) {
+        self.rc.fetch_add(1, Ordering::Relaxed);
     }
 
-    fn dec_roots(&self) {
-        self.roots.fetch_sub(1, Ordering::Release);
+    fn dec_ref_count(&self) {
+        self.rc.fetch_sub(1, Ordering::Release);
     }
 
     async fn read(&self) -> GcReadGuard<'_, T> {
@@ -54,6 +133,7 @@ impl<T: ?Sized + Trace> GcInner<T> {
         }
     }
 }
+
 
 unsafe impl<T: ?Sized + Send + Sync> Send for GcInner<T> {}
 unsafe impl<T: ?Sized + Send + Sync> Sync for GcInner<T> {}
@@ -107,103 +187,12 @@ impl<'a, T: ?Sized + Trace> Drop for GcWriteGuard<'a, T> {
     }
 }
 
-pub struct Gc<T: ?Sized> {
-    ptr: NonNull<GcInner<T>>,
-    marker: PhantomData<Arc<RwLock<T>>>,
-}
-
-impl<T: ?Sized> Gc<T> {
-    pub fn as_ptr(&self) -> *const GcInner<T> {
-        self.ptr.as_ptr()
-    }
-}
-
-impl<T: Trace> Gc<T> {
-    pub fn new(t: T) -> Gc<T> {
-        t.unroot();
-        Self {
-            ptr: NonNull::from(Box::leak(Box::new(GcInner {
-                roots: atomic::AtomicUsize::new(1),
-                semaphore: Semaphore::new(MAX_READS as usize),
-                data: UnsafeCell::new(t),
-            }))),
-            marker: PhantomData,
-        }
-    }
-}
-
-impl<T: ?Sized + Trace> Gc<T> {
-    unsafe fn to_inner(&self) -> &GcInner<T> {
-        self.ptr.as_ref()
-    }
-
-    pub async fn read(&self) -> GcReadGuard<'_, T> {
-        unsafe { self.to_inner().read().await }
-    }
-
-    pub async fn write(&self) -> GcWriteGuard<'_, T> {
-        unsafe { self.to_inner().write().await }
-    }
-}
-
-impl<T: ?Sized + Trace> Clone for Gc<T> {
-    fn clone(&self) -> Gc<T> {
-        unsafe { self.ptr.as_ref().inc_roots() }
-        Self {
-            ptr: self.ptr,
-            marker: PhantomData,
-        }
-    }
-}
-
 impl<T: ?Sized + Trace> Trace for Gc<T> {
     fn unroot(&self) {
         unsafe { self.ptr.as_ref().dec_roots() }
     }
 }
+*/
 
 unsafe impl<T: ?Sized + Send + Sync> Send for Gc<T> {}
 unsafe impl<T: ?Sized + Send + Sync> Sync for Gc<T> {}
-
-#[async_trait::async_trait]
-pub trait Trace {
-    fn root(&self) {}
-
-    fn unroot(&self) {}
-
-    // async fn visit_children(&self, visitor: fn(Gc<&dyn Trace>) -> Box<dyn Future<Output = ()>>) {}
-}
-
-impl<K, T: Trace> Trace for HashMap<K, T> {
-    fn root(&self) {
-        for item in self.values() {
-            item.root();
-        }
-    }
-
-    fn unroot(&self) {
-        for item in self.values() {
-            item.unroot();
-        }
-    }
-}
-
-impl<T: Trace> Trace for Vec<T> {
-    fn root(&self) {
-        for item in self {
-            item.root();
-        }
-    }
-
-    fn unroot(&self) {
-        for item in self {
-            item.unroot();
-        }
-    }
-}
-
-pub trait Intern {
-    fn intern(&self) -> Option<*const Self> {
-        None
-    }
-}

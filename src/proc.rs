@@ -10,6 +10,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use futures::future::BoxFuture;
+use proc_macros::Trace;
 use std::sync::Arc;
 
 #[async_trait]
@@ -25,7 +26,7 @@ pub trait Callable: Send + Sync + 'static {
     ) -> Result<ValuesOrPreparedCall, RuntimeError>;
 }
 
-#[derive(Clone, derive_more::Debug)]
+#[derive(Clone, derive_more::Debug, Trace)]
 pub struct Procedure {
     #[debug(skip)]
     pub up: Env,
@@ -79,7 +80,7 @@ impl Callable for Procedure {
 
 pub type ExprFuture = BoxFuture<'static, Result<Vec<Gc<Value>>, RuntimeError>>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Trace)]
 pub struct ExternalFn {
     pub name: &'static str,
     pub num_args: usize,

@@ -1,18 +1,19 @@
 use futures::future::BoxFuture;
+use proc_macros::Trace;
 use std::collections::HashMap;
 
 use crate::{
     builtin::Builtin,
     compile::CompileError,
     error::RuntimeError,
-    gc::{Gc, Trace},
+    gc::{init_gc, Gc},
     lex::{LexError, Token},
     parse::ParseError,
     syntax::{Identifier, Mark, ParsedSyntax},
     value::Value,
 };
 
-#[derive(derive_more::Debug)]
+#[derive(derive_more::Debug, Trace)]
 pub struct LexicalContour {
     #[debug(skip)]
     pub up: Env,
@@ -73,15 +74,7 @@ impl LexicalContour {
     }
 }
 
-impl Trace for LexicalContour {
-    fn unroot(&self) {
-        self.up.unroot();
-        self.vars.unroot();
-        self.macros.unroot();
-    }
-}
-
-#[derive(derive_more::Debug)]
+#[derive(derive_more::Debug, Trace)]
 pub struct ExpansionContext {
     #[debug(skip)]
     up: Env,
@@ -133,14 +126,8 @@ impl ExpansionContext {
     }
 }
 
-impl Trace for ExpansionContext {
-    fn unroot(&self) {
-        self.up.unroot();
-        self.macro_env.unroot();
-    }
-}
 
-#[derive(Clone)]
+#[derive(Clone, Trace)]
 pub enum Env {
     /// This is the top level environment
     Top,
@@ -180,6 +167,9 @@ impl Env {
     }
 
     pub async fn top() -> Self {
+        // We should probably find another place to init_gc, but this is honestly fine
+        init_gc();
+        
         let mut top = Self::Top.new_lexical_contour();
         // Install the builtins:
         for builtin in inventory::iter::<Builtin> {
@@ -228,14 +218,6 @@ impl Env {
                 Self::LexicalContour(contour) => contour.write().await.def_macro(ident, value),
             }
         })
-    }
-
-    fn unroot(&self) {
-        match self {
-            Self::Expansion(expansion) => expansion.unroot(),
-            Self::LexicalContour(contour) => contour.unroot(),
-            _ => (),
-        }
     }
 
     /// Evaluate a string, returning all of the results in a Vec

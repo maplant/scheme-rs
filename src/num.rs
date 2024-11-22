@@ -1,4 +1,4 @@
-use crate::{continuation::Continuation, error::RuntimeError, gc::Gc, value::Value};
+use crate::{continuation::Continuation, error::RuntimeError, gc::{Gc, Trace}, value::Value};
 use num::{complex::Complex64, FromPrimitive, ToPrimitive, Zero};
 use proc_macros::builtin;
 use rug::{Complete, Integer, Rational};
@@ -324,6 +324,10 @@ impl<'a> Div<&'a Number> for &'a Number {
             (Number::Complex(l), Number::Complex(r)) => Number::Complex(l / r),
         }
     }
+}
+
+unsafe impl Trace for Number {
+    unsafe fn visit_children(&self, _visitor: fn(crate::gc::OpaqueGcPtr)) {}
 }
 
 #[builtin("zero?")]

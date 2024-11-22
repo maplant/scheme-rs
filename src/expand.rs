@@ -6,13 +6,13 @@ use crate::{
     syntax::{Identifier, Span, Syntax},
     value::Value,
 };
-use proc_macros::builtin;
+use proc_macros::{builtin, Trace};
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
 };
 
-#[derive(Clone)]
+#[derive(Clone, Trace)]
 pub struct Transformer {
     pub rules: Vec<SyntaxRule>,
     pub is_variable_transformer: bool,
@@ -29,7 +29,7 @@ impl Transformer {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Trace)]
 pub struct SyntaxRule {
     pub pattern: Pattern,
     pub template: Template,
@@ -55,7 +55,7 @@ impl SyntaxRule {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Trace)]
 pub enum Pattern {
     Null,
     Underscore,
@@ -240,7 +240,7 @@ pub struct ExpansionLevel {
     expansions: Vec<ExpansionLevel>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Trace)]
 pub enum Template {
     Null,
     Ellipsis(Box<Template>),

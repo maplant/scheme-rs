@@ -1,18 +1,14 @@
+use proc_macros::Trace;
+
 use crate::{
-    env::Env,
-    eval::Eval,
-    expand::Transformer,
-    num::Number,
-    syntax::{Identifier, Mark, Span, Syntax},
-    util::ArcSlice,
-    value::Value,
+    env::Env, eval::Eval, expand::Transformer, gc::Trace, num::Number, syntax::{Identifier, Mark, Span, Syntax}, util::ArcSlice, value::Value
 };
 use std::sync::Arc;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Trace)]
 pub struct ByteVector(pub Vec<u8>);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Trace)]
 pub enum Literal {
     Number(Number),
     Boolean(bool),
@@ -95,6 +91,12 @@ impl Body {
         Self {
             exprs: ArcSlice::from(exprs),
         }
+    }
+}
+
+unsafe impl Trace for Body {
+    unsafe fn visit_children(&self, visitor: fn(crate::gc::OpaqueGcPtr)) {
+        unimplemented!();
     }
 }
 

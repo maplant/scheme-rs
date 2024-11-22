@@ -3,16 +3,17 @@ use crate::{
     continuation::Continuation,
     error::RuntimeError,
     expand::Transformer,
-    gc::{Gc, Trace},
+    gc::Gc,
     num::Number,
     proc::{Callable, ExternalFn, Procedure},
     syntax::Syntax,
+    Trace,
 };
 use futures::future::{BoxFuture, Shared};
 use proc_macros::builtin;
 use std::sync::Arc;
 
-#[derive(Clone)]
+#[derive(Clone, Trace)]
 pub enum Value {
     Null,
     Boolean(bool),
@@ -166,8 +167,6 @@ impl Value {
         }
     }
 }
-
-impl Trace for Value {}
 
 impl From<ExternalFn> for Value {
     fn from(ef: ExternalFn) -> Self {
