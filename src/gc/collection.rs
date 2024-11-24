@@ -3,7 +3,6 @@
 //! V.T. Rajan.
 
 use std::{
-    cell::UnsafeCell,
     ptr::{addr_of_mut, NonNull},
     sync::OnceLock,
 };
@@ -20,11 +19,11 @@ use super::{Color, GcInner, OpaqueGc, OpaqueGcPtr, Trace};
 #[derive(Copy, Clone, Debug)]
 pub struct Mutation {
     kind: MutationKind,
-    gc: NonNull<UnsafeCell<OpaqueGc>>,
+    gc: NonNull<OpaqueGc>,
 }
 
 impl Mutation {
-    fn new(kind: MutationKind, gc: NonNull<UnsafeCell<OpaqueGc>>) -> Self {
+    fn new(kind: MutationKind, gc: NonNull<OpaqueGc>) -> Self {
         Self { kind, gc }
     }
 }
@@ -57,32 +56,26 @@ impl Default for MutationBuffer {
 
 static mut MUTATION_BUFFER: OnceLock<MutationBuffer> = OnceLock::new();
 
-pub(super) fn inc_rc<T: Trace>(gc: NonNull<UnsafeCell<GcInner<T>>>) {
+pub(super) fn inc_rc<T: Trace>(gc: NonNull<GcInner<T>>) {
     // SAFETY: send takes an immutable reference and is atomic
     unsafe {
         MUTATION_BUFFER
             .get()
             .unwrap()
             .mutation_buffer_tx
-            .send(Mutation::new(
-                MutationKind::Inc,
-                gc as NonNull<UnsafeCell<OpaqueGc>>,
-            ))
+            .send(Mutation::new(MutationKind::Inc, gc as NonNull<OpaqueGc>))
             .unwrap();
     }
 }
 
-pub(super) fn dec_rc<T: Trace>(gc: NonNull<UnsafeCell<GcInner<T>>>) {
+pub(super) fn dec_rc<T: Trace>(gc: NonNull<GcInner<T>>) {
     // SAFETY: send takes an immutable reference and is atomic
     unsafe {
         MUTATION_BUFFER
             .get()
             .unwrap()
             .mutation_buffer_tx
-            .send(Mutation::new(
-                MutationKind::Dec,
-                gc as NonNull<UnsafeCell<OpaqueGc>>,
-            ))
+            .send(Mutation::new(MutationKind::Dec, gc as NonNull<OpaqueGc>))
             .unwrap();
     }
 }
@@ -360,36 +353,36 @@ fn cyclic_decrement(m: OpaqueGcPtr) {
 }
 
 fn color<'a>(s: OpaqueGcPtr) -> &'a mut Color {
-    unsafe { &mut (*s.as_ref().get()).header.color }
+    unsafe { &mut (*s.as_ref().header.get()).color }
 }
 
 fn rc<'a>(s: OpaqueGcPtr) -> &'a mut usize {
-    unsafe { &mut (*s.as_ref().get()).header.rc }
+    unsafe { &mut (*s.as_ref().header.get()).rc }
 }
 
 fn crc<'a>(s: OpaqueGcPtr) -> &'a mut isize {
-    unsafe { &mut (*s.as_ref().get()).header.crc }
+    unsafe { &mut (*s.as_ref().header.get()).crc }
 }
 
 fn buffered<'a>(s: OpaqueGcPtr) -> &'a mut bool {
-    unsafe { &mut (*s.as_ref().get()).header.buffered }
+    unsafe { &mut (*s.as_ref().header.get()).buffered }
 }
 
 fn semaphore<'a>(s: OpaqueGcPtr) -> &'a Semaphore {
-    unsafe { &(*s.as_ref().get()).header.semaphore }
+    unsafe { &(*s.as_ref().header.get()).semaphore }
 }
 
 fn acquire_permit(semaphore: &'_ Semaphore) -> SemaphorePermit<'_> {
     loop {
         if let Ok(permit) = semaphore.try_acquire() {
-	    return permit;
-	}
+            return permit;
+        }
     }
 }
 
 fn for_each_child(s: OpaqueGcPtr, visitor: fn(OpaqueGcPtr)) {
     let permit = acquire_permit(semaphore(s));
-    unsafe { (*s.as_ref().get()).data.visit_children(visitor) }
+    unsafe { (*s.as_ref().data.get()).visit_children(visitor) }
     drop(permit);
 }
 

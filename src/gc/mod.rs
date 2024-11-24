@@ -30,54 +30,63 @@ use tokio::sync::{RwLock, Semaphore, SemaphorePermit};
 
 /// A Garbage-Collected smart pointer with interior mutability.
 pub struct Gc<T: Trace> {
-    ptr: NonNull<UnsafeCell<GcInner<T>>>,
+    ptr: NonNull<GcInner<T>>,
     marker: PhantomData<Arc<RwLock<T>>>,
 }
 
 impl<T: Trace> Gc<T> {
-    // #[track_caller]
     pub fn new(data: T) -> Gc<T> {
-        let ptr = NonNull::from(Box::leak(Box::new(UnsafeCell::new(GcInner {
-            header: GcHeader::default(),
-            data,
-        }))));
-        // println!("Alloc ptr {ptr:?} at {}", std::panic::Location::caller());
         Self {
-            ptr,
+            ptr: NonNull::from(Box::leak(Box::new(GcInner {
+                header: UnsafeCell::new(GcHeader::default()),
+                data: UnsafeCell::new(data),
+            }))),
             marker: PhantomData,
         }
     }
 }
 
 impl<T: Trace> Gc<T> {
+    /// # Safety
+    ///
+    /// This function is not safe and basically useless for anything outside of
+    /// the Trace proc macro's generated code.
     pub unsafe fn as_opaque(&self) -> OpaqueGcPtr {
         self.ptr as OpaqueGcPtr
     }
 
     /// Acquire a read lock for the object
     pub async fn read(&self) -> GcReadGuard<'_, T> {
-	unsafe {
-	    let _permit = (&*self.ptr.as_ref().get()).header.semaphore.acquire().await.unwrap();
-	    let data = &(&*self.ptr.as_ref().get()).data as *const T;
-	    GcReadGuard {
-		_permit,
-		data,
-		marker: PhantomData,
-	    }
-	}
+        unsafe {
+            let _permit = (*self.ptr.as_ref().header.get())
+                .semaphore
+                .acquire()
+                .await
+                .unwrap();
+            let data = &*self.ptr.as_ref().data.get() as *const T;
+            GcReadGuard {
+                _permit,
+                data,
+                marker: PhantomData,
+            }
+        }
     }
 
     /// Acquire a write lock for the object
     pub async fn write(&self) -> GcWriteGuard<'_, T> {
-	unsafe {
-	    let _permit = (&*self.ptr.as_ref().get()).header.semaphore.acquire_many(MAX_READS).await.unwrap();
-	    let data = &mut (&mut *self.ptr.as_ref().get()).data as *mut T;
-	    GcWriteGuard {
-		_permit,
-		data,
-		marker: PhantomData,
-	    }
-	}
+        unsafe {
+            let _permit = (*self.ptr.as_ref().header.get())
+                .semaphore
+                .acquire_many(MAX_READS)
+                .await
+                .unwrap();
+            let data = &mut *self.ptr.as_ref().data.get() as *mut T;
+            GcWriteGuard {
+                _permit,
+                data,
+                marker: PhantomData,
+            }
+        }
     }
 }
 
@@ -143,39 +152,15 @@ unsafe impl Send for GcHeader {}
 unsafe impl Sync for GcHeader {}
 
 pub struct GcInner<T: ?Sized> {
-    header: GcHeader,
-    data: T,
+    header: UnsafeCell<GcHeader>,
+    data: UnsafeCell<T>,
 }
-
-/*
-impl<T: ?Sized> GcInner<T> {
-    async fn read(&self) -> GcReadGuard<'_, T> {
-        let _permit = self.header.semaphore.acquire().await.unwrap();
-        let data = &self.data as *const T;
-        GcReadGuard {
-            _permit,
-            data,
-            marker: PhantomData,
-        }
-    }
-
-    async fn write(&self) -> GcWriteGuard<'_, T> {
-        let _permit = self.header.semaphore.acquire_many(MAX_READS).await.unwrap();
-        let data = &mut self.data as *mut T;
-        GcWriteGuard {
-            _permit,
-            data,
-            marker: PhantomData,
-        }
-    }
-}
-*/
 
 unsafe impl<T: ?Sized + Send + Sync> Send for GcInner<T> {}
 unsafe impl<T: ?Sized + Send + Sync> Sync for GcInner<T> {}
 
 type OpaqueGc = GcInner<dyn Trace>;
-pub type OpaqueGcPtr = NonNull<UnsafeCell<OpaqueGc>>;
+pub type OpaqueGcPtr = NonNull<OpaqueGc>;
 
 pub struct GcReadGuard<'a, T: ?Sized> {
     _permit: SemaphorePermit<'a>,
@@ -220,8 +205,11 @@ impl<'a, T: ?Sized> DerefMut for GcWriteGuard<'a, T> {
     }
 }
 
+/// # Safety
+///
+/// This trait should _not_ be manually implemented!
 pub unsafe trait Trace: 'static {
-    /// # Safety:
+    /// # Safety
     ///
     /// This function may _ONLY_ be called by the garbage collector! Calling this
     /// function **ANYWHERE ELSE** is a **RACE CONDITION**!
@@ -268,6 +256,9 @@ impl_empty_trace! {
     String
 }
 
+/// # Safety
+///
+/// This function is _not_ safe to implement!
 unsafe trait VisitOrRecurse: 'static {
     unsafe fn visit_or_recurse(&self, visitor: fn(OpaqueGcPtr));
 }
