@@ -40,7 +40,7 @@ pub struct Continuation {
 }
 
 unsafe impl Trace for Continuation {
-    unsafe fn visit_children(&self, visitor: fn(crate::gc::OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, _visitor: fn(crate::gc::OpaqueGcPtr)) {
         unimplemented!()
     }
 }

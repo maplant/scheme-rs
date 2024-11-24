@@ -1,4 +1,9 @@
-use crate::{continuation::Continuation, error::RuntimeError, gc::{Gc, Trace}, value::Value};
+use crate::{
+    continuation::Continuation,
+    error::RuntimeError,
+    gc::{Gc, Trace},
+    value::Value,
+};
 use num::{complex::Complex64, FromPrimitive, ToPrimitive, Zero};
 use proc_macros::builtin;
 use rug::{Complete, Integer, Rational};

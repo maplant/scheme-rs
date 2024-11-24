@@ -4,22 +4,27 @@
 //! collection occurs concurrently at a fixed cadence or whenever a threshold
 //! of memory has been allocated as opposed to when the type is Dropped.
 //!
-//! Strictly speaking, Gc<T> is not garbage collection per-se but instead uses 
-//! "cycle collection". 
+//! Strictly speaking, Gc<T> is not garbage collection per-se but instead uses
+//! "cycle collection".
 //!
 //! Cycle collection was chosen because it has similar characteristics to Gc,
-//! providing all of the semantics Scheme expects data to have and also plays
-//! nicely as a Rust type.
+//! providing all of the semantics Scheme expects and also plays nicely as a
+//! Rust type (no need to root/unroot).
 
 mod collection;
 
-use collection::{dec_rc, inc_rc};
 pub use collection::init_gc;
+use collection::{dec_rc, inc_rc};
 use futures::future::Shared;
 
 use std::{
-    cell::UnsafeCell, collections::{BTreeMap, BTreeSet, HashMap, HashSet}, future::Future, marker::PhantomData, ops::{Deref, DerefMut}, ptr::NonNull, sync::
-        Arc
+    cell::UnsafeCell,
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    future::Future,
+    marker::PhantomData,
+    ops::{Deref, DerefMut},
+    ptr::NonNull,
+    sync::Arc,
 };
 use tokio::sync::{RwLock, Semaphore, SemaphorePermit};
 
@@ -30,38 +35,49 @@ pub struct Gc<T: Trace> {
 }
 
 impl<T: Trace> Gc<T> {
+    // #[track_caller]
     pub fn new(data: T) -> Gc<T> {
+        let ptr = NonNull::from(Box::leak(Box::new(UnsafeCell::new(GcInner {
+            header: GcHeader::default(),
+            data,
+        }))));
+        // println!("Alloc ptr {ptr:?} at {}", std::panic::Location::caller());
         Self {
-            ptr: NonNull::from(Box::leak(Box::new(UnsafeCell::new(GcInner {
-                header: GcHeader::default(),
-                data,
-            })))),
+            ptr,
             marker: PhantomData,
         }
     }
 }
 
 impl<T: Trace> Gc<T> {
-    unsafe fn as_inner(&self) -> &GcInner<T> {
-        &*self.ptr.as_ref().get()
-    }
-
-    unsafe fn as_inner_mut(&self) -> &mut GcInner<T> {
-        &mut * self.ptr.as_ref().get() as &mut GcInner<T>
-    }
-
     pub unsafe fn as_opaque(&self) -> OpaqueGcPtr {
         self.ptr as OpaqueGcPtr
     }
 
     /// Acquire a read lock for the object
     pub async fn read(&self) -> GcReadGuard<'_, T> {
-        unsafe { self.as_inner().read().await }
+	unsafe {
+	    let _permit = (&*self.ptr.as_ref().get()).header.semaphore.acquire().await.unwrap();
+	    let data = &(&*self.ptr.as_ref().get()).data as *const T;
+	    GcReadGuard {
+		_permit,
+		data,
+		marker: PhantomData,
+	    }
+	}
     }
 
     /// Acquire a write lock for the object
     pub async fn write(&self) -> GcWriteGuard<'_, T> {
-        unsafe { self.as_inner_mut().write().await }
+	unsafe {
+	    let _permit = (&*self.ptr.as_ref().get()).header.semaphore.acquire_many(MAX_READS).await.unwrap();
+	    let data = &mut (&mut *self.ptr.as_ref().get()).data as *mut T;
+	    GcWriteGuard {
+		_permit,
+		data,
+		marker: PhantomData,
+	    }
+	}
     }
 }
 
@@ -94,19 +110,18 @@ enum Color {
     White,
     /// Possible root of cycle
     Purple,
-    /// Acyclic
-    Green,
     /// Candidate cycle undergoing Σ-computation
     Red,
     /// Candidate cycle awaiting epoch boundary
-    Orange
+    Orange,
 }
 
 const MAX_READS: u32 = u32::MAX >> 3;
 
+#[derive(Debug)]
 pub struct GcHeader {
     rc: usize,
-    crc: isize, 
+    crc: isize,
     color: Color,
     buffered: bool,
     semaphore: Semaphore,
@@ -132,6 +147,7 @@ pub struct GcInner<T: ?Sized> {
     data: T,
 }
 
+/*
 impl<T: ?Sized> GcInner<T> {
     async fn read(&self) -> GcReadGuard<'_, T> {
         let _permit = self.header.semaphore.acquire().await.unwrap();
@@ -142,10 +158,8 @@ impl<T: ?Sized> GcInner<T> {
             marker: PhantomData,
         }
     }
-}
 
-impl<T: ?Sized> GcInner<T> {
-    async fn write(&mut self) -> GcWriteGuard<'_, T> {
+    async fn write(&self) -> GcWriteGuard<'_, T> {
         let _permit = self.header.semaphore.acquire_many(MAX_READS).await.unwrap();
         let data = &mut self.data as *mut T;
         GcWriteGuard {
@@ -155,6 +169,7 @@ impl<T: ?Sized> GcInner<T> {
         }
     }
 }
+*/
 
 unsafe impl<T: ?Sized + Send + Sync> Send for GcInner<T> {}
 unsafe impl<T: ?Sized + Send + Sync> Sync for GcInner<T> {}
@@ -206,7 +221,7 @@ impl<'a, T: ?Sized> DerefMut for GcWriteGuard<'a, T> {
 }
 
 pub unsafe trait Trace: 'static {
-    /// # SAFETY:
+    /// # Safety:
     ///
     /// This function may _ONLY_ be called by the garbage collector! Calling this
     /// function **ANYWHERE ELSE** is a **RACE CONDITION**!
@@ -304,7 +319,6 @@ where
     }
 }
 
-
 unsafe impl<K> Trace for BTreeSet<K>
 where
     K: VisitOrRecurse,
@@ -342,7 +356,7 @@ where
 
 unsafe impl<T> Trace for Box<T>
 where
-    T: VisitOrRecurse
+    T: VisitOrRecurse,
 {
     unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
         self.as_ref().visit_or_recurse(visitor);
@@ -351,7 +365,7 @@ where
 
 unsafe impl<T> Trace for std::sync::Arc<T>
 where
-    T: VisitOrRecurse
+    T: VisitOrRecurse,
 {
     unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
         self.as_ref().visit_or_recurse(visitor);
@@ -362,19 +376,16 @@ unsafe impl<T> Trace for Shared<T>
 where
     T: Future + 'static,
 {
-    unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, _visitor: fn(OpaqueGcPtr)) {
         // I _think_ doing nothing is correct here.
+        unimplemented!()
     }
 }
 
 unsafe impl<A: 'static, O: 'static> Trace for fn(A) -> O {
-    unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, _visitor: fn(OpaqueGcPtr)) {}
+}
 
-    }
-}
-     
 unsafe impl<A: 'static, B: 'static, O: 'static> Trace for fn(A, B) -> O {
-    unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
-    }
+    unsafe fn visit_children(&self, _visitor: fn(OpaqueGcPtr)) {}
 }
-     

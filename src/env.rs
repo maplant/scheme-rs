@@ -126,7 +126,6 @@ impl ExpansionContext {
     }
 }
 
-
 #[derive(Clone, Trace)]
 pub enum Env {
     /// This is the top level environment
@@ -169,14 +168,14 @@ impl Env {
     pub async fn top() -> Self {
         // We should probably find another place to init_gc, but this is honestly fine
         init_gc();
-        
+
         let mut top = Self::Top.new_lexical_contour();
         // Install the builtins:
         for builtin in inventory::iter::<Builtin> {
             builtin.install(&mut top);
         }
-        // Install the stdlib:
         let top = Self::LexicalContour(Gc::new(top));
+        // Install the stdlib:
         let _ = top.eval(include_str!("stdlib.scm")).await.unwrap();
         top
     }

@@ -5,16 +5,19 @@
 use std::{
     cell::UnsafeCell,
     ptr::{addr_of_mut, NonNull},
-    sync::{LazyLock, OnceLock},
+    sync::OnceLock,
 };
 use tokio::{
-    sync::{mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender}, Semaphore, SemaphorePermit},
+    sync::{
+        mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
+        Semaphore, SemaphorePermit,
+    },
     task::JoinHandle,
 };
 
-use super::{Color, Gc, GcHeader, GcInner, OpaqueGc, OpaqueGcPtr, Trace};
+use super::{Color, GcInner, OpaqueGc, OpaqueGcPtr, Trace};
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct Mutation {
     kind: MutationKind,
     gc: NonNull<UnsafeCell<OpaqueGc>>,
@@ -29,7 +32,7 @@ impl Mutation {
 unsafe impl Send for Mutation {}
 unsafe impl Sync for Mutation {}
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub enum MutationKind {
     Inc,
     Dec,
@@ -111,15 +114,13 @@ async fn process_mutation_buffer() {
     let mut mutation_buffer: Vec<_> = Vec::with_capacity(MUTATIONS_PER_EPOCH);
     // SAFETY: This function has _exclusive access_ to the receive buffer.
     unsafe {
-        let buffer = &mut MUTATION_BUFFER
-            .get_mut()
-            .unwrap()
-            .mutation_buffer_rx;
+        let buffer = &mut MUTATION_BUFFER.get_mut().unwrap().mutation_buffer_rx;
         if buffer.len() < MUTATIONS_PER_EPOCH {
             tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
             return;
         }
-        buffer.recv_many(&mut mutation_buffer, MUTATIONS_PER_EPOCH)
+        buffer
+            .recv_many(&mut mutation_buffer, MUTATIONS_PER_EPOCH)
             .await;
     }
 
@@ -155,10 +156,11 @@ fn decrement(s: OpaqueGcPtr) {
 }
 
 fn release(s: OpaqueGcPtr) {
-    for_each_child(s, |t| decrement(t));
+    // TODO: When we fix deallocation, actually decrement the children!
+    // for_each_child(s, decrement);
     *color(s) = Color::Black;
     if !*buffered(s) {
-        unsafe { drop(Box::from_raw(s.as_ptr())) }
+        free(s);
     }
 }
 
@@ -192,7 +194,9 @@ fn mark_roots() {
             new_roots.push(*s);
         } else {
             *buffered(*s) = false;
-            free(*s);
+            if *rc(*s) == 0 {
+                free(*s);
+            }
         }
     }
     unsafe { ROOTS = new_roots }
@@ -221,8 +225,8 @@ fn mark_gray(s: OpaqueGcPtr) {
     if *color(s) != Color::Gray {
         *color(s) = Color::Gray;
         *crc(s) = *rc(s) as isize;
-        for_each_child(s, |t| mark_gray(t));
-    } else {
+        for_each_child(s, mark_gray);
+    } else if *crc(s) > 0 {
         *crc(s) -= 1;
     }
 }
@@ -230,7 +234,7 @@ fn mark_gray(s: OpaqueGcPtr) {
 fn scan(s: OpaqueGcPtr) {
     if *color(s) == Color::Gray && *crc(s) == 0 {
         *color(s) = Color::White;
-        for_each_child(s, |t| scan(t));
+        for_each_child(s, scan);
     } else {
         scan_black(s);
     }
@@ -239,7 +243,7 @@ fn scan(s: OpaqueGcPtr) {
 fn scan_black(s: OpaqueGcPtr) {
     if *color(s) != Color::Black {
         *color(s) = Color::Black;
-        for_each_child(s, |t| scan_black(t));
+        for_each_child(s, scan_black);
     }
 }
 
@@ -250,7 +254,7 @@ fn collect_white(s: OpaqueGcPtr) {
         unsafe {
             CURRENT_CYCLE.push(s);
         }
-        for_each_child(s, |t| collect_white(t));
+        for_each_child(s, collect_white);
     }
 }
 
@@ -337,7 +341,7 @@ fn free_cycle(c: &[OpaqueGcPtr]) {
         *color(*n) = Color::Red;
     }
     for n in c {
-        for_each_child(*n, |m| cyclic_decrement(m));
+        for_each_child(*n, cyclic_decrement);
     }
     for n in c {
         free(*n);
@@ -356,40 +360,41 @@ fn cyclic_decrement(m: OpaqueGcPtr) {
 }
 
 fn color<'a>(s: OpaqueGcPtr) -> &'a mut Color {
-    unsafe { &mut (&mut *s.as_ref().get()).header.color }
+    unsafe { &mut (*s.as_ref().get()).header.color }
 }
 
 fn rc<'a>(s: OpaqueGcPtr) -> &'a mut usize {
-    unsafe { &mut (&mut *s.as_ref().get()).header.rc }
+    unsafe { &mut (*s.as_ref().get()).header.rc }
 }
 
 fn crc<'a>(s: OpaqueGcPtr) -> &'a mut isize {
-    unsafe { &mut (&mut *s.as_ref().get()).header.crc }
+    unsafe { &mut (*s.as_ref().get()).header.crc }
 }
 
 fn buffered<'a>(s: OpaqueGcPtr) -> &'a mut bool {
-    unsafe { &mut (&mut *s.as_ref().get()).header.buffered }
+    unsafe { &mut (*s.as_ref().get()).header.buffered }
 }
 
 fn semaphore<'a>(s: OpaqueGcPtr) -> &'a Semaphore {
-    unsafe { &(&*s.as_ref().get()).header.semaphore }
+    unsafe { &(*s.as_ref().get()).header.semaphore }
 }
 
-fn acquire_permit<'a>(semaphore: &'a Semaphore) -> SemaphorePermit<'a> {
+fn acquire_permit(semaphore: &'_ Semaphore) -> SemaphorePermit<'_> {
     loop {
-        match semaphore.try_acquire() {
-            Ok(permit) => return permit,
-            _ => (),
-        }
+        if let Ok(permit) = semaphore.try_acquire() {
+	    return permit;
+	}
     }
 }
 
 fn for_each_child(s: OpaqueGcPtr, visitor: fn(OpaqueGcPtr)) {
     let permit = acquire_permit(semaphore(s));
-    unsafe { (&*s.as_ref().get()).data.visit_children(visitor) }
+    unsafe { (*s.as_ref().get()).data.visit_children(visitor) }
     drop(permit);
 }
 
 fn free(s: OpaqueGcPtr) {
+    // We probably need to re-think how we deallocate - this will run the destructor, and thus
+    // buffer decrements.
     unsafe { drop(Box::from_raw(s.as_ptr())) }
 }

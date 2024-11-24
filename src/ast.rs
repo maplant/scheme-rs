@@ -1,7 +1,14 @@
 use proc_macros::Trace;
 
 use crate::{
-    env::Env, eval::Eval, expand::Transformer, gc::Trace, num::Number, syntax::{Identifier, Mark, Span, Syntax}, util::ArcSlice, value::Value
+    env::Env,
+    eval::Eval,
+    expand::Transformer,
+    gc::Trace,
+    num::Number,
+    syntax::{Identifier, Mark, Span, Syntax},
+    util::ArcSlice,
+    value::Value,
 };
 use std::sync::Arc;
 
@@ -95,7 +102,7 @@ impl Body {
 }
 
 unsafe impl Trace for Body {
-    unsafe fn visit_children(&self, visitor: fn(crate::gc::OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, _visitor: fn(crate::gc::OpaqueGcPtr)) {
         unimplemented!();
     }
 }
