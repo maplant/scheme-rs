@@ -4,6 +4,7 @@ use proc_macros::builtin;
 use std::sync::Arc;
 
 pub fn fmt_list<'a>(car: &'a Gc<Value>, cdr: &'a Gc<Value>) -> BoxFuture<'a, String> {
+    // TODO(map): If the list is circular, DO NOT print infinitely!
     Box::pin(async move {
         match &*cdr.read().await {
             Value::Pair(_, _) | Value::Null => (),

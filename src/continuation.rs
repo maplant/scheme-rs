@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use proc_macros::builtin;
+use proc_macros::{builtin, trace};
 
 use crate::{
     ast,

@@ -367,10 +367,7 @@ unsafe impl<T> Trace for Shared<T>
 where
     T: Future + 'static,
 {
-    unsafe fn visit_children(&self, _visitor: fn(OpaqueGcPtr)) {
-        // I _think_ doing nothing is correct here.
-        unimplemented!()
-    }
+    unsafe fn visit_children(&self, _visitor: fn(OpaqueGcPtr)) {}
 }
 
 unsafe impl<A: 'static, O: 'static> Trace for fn(A) -> O {
@@ -379,4 +376,39 @@ unsafe impl<A: 'static, O: 'static> Trace for fn(A) -> O {
 
 unsafe impl<A: 'static, B: 'static, O: 'static> Trace for fn(A, B) -> O {
     unsafe fn visit_children(&self, _visitor: fn(OpaqueGcPtr)) {}
+}
+
+unsafe impl<T> Trace for tokio::sync::Mutex<T>
+where
+    T: VisitOrRecurse,
+{
+    unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
+	// This _should_ be fine, while not optimally efficient.
+	let lock = self.blocking_lock();
+	lock.visit_or_recurse(visitor);
+    }
+}
+
+unsafe impl<T> Trace for tokio::sync::RwLock<T>
+where
+    T: VisitOrRecurse,
+{
+    unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
+	loop {
+	    if let Ok(read_lock) = self.try_read() {
+		read_lock.visit_or_recurse(visitor);
+		return;
+	    }
+	}
+    }
+}
+
+unsafe impl<T> Trace for std::sync::Mutex<T>
+where
+    T: VisitOrRecurse,
+{
+    unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
+	let lock = self.lock().unwrap();
+	lock.visit_or_recurse(visitor);
+    }
 }
