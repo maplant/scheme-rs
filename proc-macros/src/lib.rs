@@ -2,7 +2,8 @@ use proc_macro::{self, TokenStream};
 use proc_macro2::Span;
 use quote::quote;
 use syn::{
-    parse_macro_input, parse_quote, DataEnum, DataStruct, DeriveInput, Fields, FnArg, Generics, Ident, ItemFn, ItemTrait, Member, PatType, Type
+    parse_macro_input, parse_quote, punctuated::Punctuated, DataEnum, DataStruct, DeriveInput,
+    Fields, FnArg, GenericParam, Generics, Ident, ItemFn, ItemTrait, Member, PatType, Token, Type,
 };
 
 #[proc_macro_attribute]
@@ -92,16 +93,25 @@ fn is_vec(arg: &FnArg) -> bool {
 
 #[proc_macro_derive(Trace)]
 pub fn derive_trace(input: TokenStream) -> TokenStream {
-    let DeriveInput { ident, data, .. } = parse_macro_input!(input);
+    let DeriveInput {
+        ident,
+        data,
+        generics,
+        ..
+    } = parse_macro_input!(input);
 
     match data {
-        syn::Data::Struct(data_struct) => derive_trace_struct(ident, data_struct).into(),
+        syn::Data::Struct(data_struct) => derive_trace_struct(ident, data_struct, generics).into(),
         syn::Data::Enum(data_enum) => derive_trace_enum(ident, data_enum).into(),
         _ => panic!("Union types are not supported."),
     }
 }
 
-fn derive_trace_struct(name: Ident, record: DataStruct) -> proc_macro2::TokenStream {
+fn derive_trace_struct(
+    name: Ident,
+    record: DataStruct,
+    generics: Generics,
+) -> proc_macro2::TokenStream {
     let fields = match record.fields {
         Fields::Named(fields) => fields.named,
         Fields::Unnamed(fields) => fields.unnamed,
@@ -113,6 +123,26 @@ fn derive_trace_struct(name: Ident, record: DataStruct) -> proc_macro2::TokenStr
             }
         }
     };
+
+    let Generics {
+        mut params,
+        where_clause,
+        ..
+    } = generics;
+
+    let mut unbound_params = Punctuated::<GenericParam, Token![,]>::new();
+
+    for param in params.iter_mut() {
+        match param {
+            GenericParam::Type(ref mut ty) => {
+                ty.bounds.push(syn::TypeParamBound::Verbatim(
+                    quote! { ::scheme_rs::gc::Trace },
+                ));
+                unbound_params.push(GenericParam::Type(syn::TypeParam::from(ty.ident.clone())));
+            }
+            param => unbound_params.push(param.clone()),
+        }
+    }
 
     let field_actions = fields
         .iter()
@@ -140,7 +170,10 @@ fn derive_trace_struct(name: Ident, record: DataStruct) -> proc_macro2::TokenStr
         .collect::<Vec<_>>();
 
     quote! {
-        unsafe impl ::scheme_rs::gc::Trace for #name {
+    #[automatically_derived]
+        unsafe impl<#params> ::scheme_rs::gc::Trace for #name <#unbound_params>
+    #where_clause
+    {
             unsafe fn visit_children(&self, visitor: fn(::scheme_rs::gc::OpaqueGcPtr)) {
                 #(
                     #field_actions
@@ -150,6 +183,7 @@ fn derive_trace_struct(name: Ident, record: DataStruct) -> proc_macro2::TokenStr
     }
 }
 
+// TODO: Add generics here
 fn derive_trace_enum(name: Ident, data_enum: DataEnum) -> proc_macro2::TokenStream {
     let match_clauses = data_enum.variants.into_iter().flat_map(|variant| {
         let fields: Vec<_> = match variant.fields {
@@ -225,45 +259,47 @@ fn is_gc(arg: &Type) -> bool {
 #[proc_macro_attribute]
 pub fn trace(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let ItemTrait {
-	attrs,
-	vis,
-	unsafety,
-	auto_token,
-	ident,
-	generics: Generics {
-	    params,
-	    where_clause,
-	    ..
-	},
-	mut supertraits,
-	items,
-	..
+        attrs,
+        vis,
+        unsafety,
+        auto_token,
+        ident,
+        generics: Generics {
+            params,
+            where_clause,
+            ..
+        },
+        mut supertraits,
+        items,
+        ..
     } = parse_macro_input!(item as ItemTrait);
 
-    supertraits.push(syn::TypeParamBound::Verbatim(quote! { ::scheme_rs::gc::Trace }));
+    supertraits.push(syn::TypeParamBound::Verbatim(
+        quote! { ::scheme_rs::gc::Trace },
+    ));
 
     quote! {
-	#( #attrs )* #vis #unsafety #auto_token trait #ident < #params >: #supertraits
-	#where_clause
-	{
-	    #( #items )*
+    #( #attrs )* #vis #unsafety #auto_token trait #ident < #params >: #supertraits
+    #where_clause
+    {
+        #( #items )*
 
-	    /// # Safety
-	    ///
-	    /// Function automatically implemented by [::scheme_rs::gc::Trace] macro. DO NOT CALL!
-	    /// DO NOT IMPLEMENT!
-	    unsafe fn scheme_rs_visit_children(&self, visitor: fn(::scheme_rs::gc::OpaqueGcPtr)) {
-		<Self as ::scheme_rs::gc::Trace>::visit_children(self, visitor);
-	    }
-	}
+        /// # Safety
+        ///
+        /// Function automatically implemented by [::scheme_rs::gc::Trace] macro. DO NOT CALL!
+        /// DO NOT IMPLEMENT!
+        unsafe fn scheme_rs_visit_children(&self, visitor: fn(::scheme_rs::gc::OpaqueGcPtr)) {
+        <Self as ::scheme_rs::gc::Trace>::visit_children(self, visitor);
+        }
+    }
 
-	unsafe impl < #params > ::scheme_rs::gc::Trace for dyn #ident < #params >
-	#where_clause
-	{
-	    unsafe fn visit_children(&self, visitor: fn(::scheme_rs::gc::OpaqueGcPtr)) {
-		self.scheme_rs_visit_children(visitor);
-	    }
-	}
+    unsafe impl < #params > ::scheme_rs::gc::Trace for dyn #ident < #params >
+    #where_clause
+    {
+        unsafe fn visit_children(&self, visitor: fn(::scheme_rs::gc::OpaqueGcPtr)) {
+        self.scheme_rs_visit_children(visitor);
+        }
+    }
     }
     .into()
 }

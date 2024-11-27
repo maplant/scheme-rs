@@ -1,7 +1,11 @@
-use crate::{error::RuntimeError, gc::Gc, value::Value};
+use crate::{
+    error::RuntimeError,
+    gc::{Gc, Trace},
+    value::Value,
+};
 use std::{fmt, ops::Deref, sync::Arc};
 
-#[derive(Clone)]
+#[derive(Clone, Trace)]
 pub struct ArcSlice<T> {
     arc: Arc<[T]>,
     start: usize,

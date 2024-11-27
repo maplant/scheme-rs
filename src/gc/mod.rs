@@ -16,6 +16,7 @@ mod collection;
 pub use collection::init_gc;
 use collection::{dec_rc, inc_rc};
 use futures::future::Shared;
+pub use proc_macros::{trace, Trace};
 
 use std::{
     cell::UnsafeCell,
@@ -354,6 +355,17 @@ where
     }
 }
 
+unsafe impl<T> Trace for [T]
+where
+    T: VisitOrRecurse,
+{
+    unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
+        for item in self {
+            item.visit_or_recurse(visitor);
+        }
+    }
+}
+
 unsafe impl<T> Trace for std::sync::Arc<T>
 where
     T: VisitOrRecurse,
@@ -383,9 +395,9 @@ where
     T: VisitOrRecurse,
 {
     unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
-	// This _should_ be fine, while not optimally efficient.
-	let lock = self.blocking_lock();
-	lock.visit_or_recurse(visitor);
+        // This _should_ be fine, while not optimally efficient.
+        let lock = self.blocking_lock();
+        lock.visit_or_recurse(visitor);
     }
 }
 
@@ -394,12 +406,12 @@ where
     T: VisitOrRecurse,
 {
     unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
-	loop {
-	    if let Ok(read_lock) = self.try_read() {
-		read_lock.visit_or_recurse(visitor);
-		return;
-	    }
-	}
+        loop {
+            if let Ok(read_lock) = self.try_read() {
+                read_lock.visit_or_recurse(visitor);
+                return;
+            }
+        }
     }
 }
 
@@ -408,7 +420,7 @@ where
     T: VisitOrRecurse,
 {
     unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
-	let lock = self.lock().unwrap();
-	lock.visit_or_recurse(visitor);
+        let lock = self.lock().unwrap();
+        lock.visit_or_recurse(visitor);
     }
 }

@@ -1,5 +1,3 @@
-use proc_macros::Trace;
-
 use crate::{
     env::Env,
     eval::Eval,
