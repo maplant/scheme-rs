@@ -216,7 +216,7 @@ impl Syntax {
             Self::Null { span } => Err(CompileError::UnexpectedEmptyList(span.clone())),
             // Special identifiers:
             Self::Identifier { ident, .. } if ident == "<undefined>" => {
-                Ok(Arc::new(Gc::new(Value::Undefined)))
+                Ok(Arc::new(Value::Undefined))
             }
             // Regular identifiers:
             Self::Identifier { ident, .. } => {
@@ -292,7 +292,7 @@ impl Syntax {
                 let mut vals = Vec::new();
                 for item in vector {
                     match item {
-                        Self::Null { .. } => vals.push(Arc::new(ast::Nil) as Arc<dyn Eval>),
+                        Self::Null { .. } => vals.push(Arc::new(Value::Null) as Arc<dyn Eval>),
                         item => vals.push(item.compile(env, cont).await?),
                     }
                 }

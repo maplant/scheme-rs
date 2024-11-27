@@ -7,7 +7,7 @@ use crate::{
     },
     env::Env,
     error::RuntimeError,
-    gc::Gc,
+    gc::{Gc, Trace},
     lists::list_to_vec,
     proc::{PreparedCall, Procedure},
     util::{self, ArcSlice, RequireOne},
@@ -58,13 +58,13 @@ pub trait Eval: Send + Sync {
 }
 
 #[async_trait]
-impl Eval for Gc<Value> {
+impl Eval for Value {
     async fn eval(
         &self,
         _env: &Env,
         _cont: &Option<Arc<Continuation>>,
     ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-        Ok(vec![self.clone()])
+        Ok(vec![Gc::new(self.clone())])
     }
 }
 
@@ -356,17 +356,6 @@ impl Eval for ast::Vector {
         Ok(Gc::new(Value::Vector(output)))
          */
         todo!("FIXME: Vectors don't evaluate their arguments, take the literals")
-    }
-}
-
-#[async_trait]
-impl Eval for ast::Nil {
-    async fn eval(
-        &self,
-        _env: &Env,
-        _cont: &Option<Arc<Continuation>>,
-    ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-        Ok(vec![Gc::new(Value::Null)])
     }
 }
 

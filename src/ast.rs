@@ -156,9 +156,6 @@ pub struct Vector {
 }
 
 #[derive(Clone)]
-pub struct Nil;
-
-#[derive(Clone)]
 pub struct SyntaxCase {
     pub arg: Arc<dyn Eval>,
     pub transformer: Transformer,
