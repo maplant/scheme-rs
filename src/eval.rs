@@ -38,7 +38,7 @@ impl ValuesOrPreparedCall {
 /// Any struct implementing this trait must either implement `eval`, `tail_eval`, or
 /// both, even though both methods are provided.
 #[async_trait]
-pub trait Eval: Send + Sync {
+pub trait Eval: Trace + Send + Sync + 'static {
     async fn eval(
         &self,
         env: &Env,

@@ -3,7 +3,7 @@ use proc_macro2::Span;
 use quote::quote;
 use syn::{
     parse_macro_input, parse_quote, punctuated::Punctuated, DataEnum, DataStruct, DeriveInput,
-    Fields, FnArg, GenericParam, Generics, Ident, ItemFn, ItemTrait, Member, PatType, Token, Type,
+    Fields, FnArg, GenericParam, Generics, Ident, ItemFn, Member, PatType, Token, Type,
 };
 
 #[proc_macro_attribute]
@@ -117,8 +117,8 @@ fn derive_trace_struct(
         Fields::Unnamed(fields) => fields.unnamed,
         _ => {
             return quote! {
-                impl ::scheme_rs::gc::Trace for #name {
-                    fn visit_children(&self, visitor: fn(::scheme_rs::gc::OpaqueGcPtr)) {}
+                unsafe impl ::scheme_rs::gc::Trace for #name {
+                    unsafe fn visit_children(&self, visitor: fn(::scheme_rs::gc::OpaqueGcPtr)) {}
                 }
             }
         }
@@ -254,52 +254,4 @@ fn is_gc(arg: &Type) -> bool {
             == Some("Gc");
     }
     false
-}
-
-#[proc_macro_attribute]
-pub fn trace(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    let ItemTrait {
-        attrs,
-        vis,
-        unsafety,
-        auto_token,
-        ident,
-        generics: Generics {
-            params,
-            where_clause,
-            ..
-        },
-        mut supertraits,
-        items,
-        ..
-    } = parse_macro_input!(item as ItemTrait);
-
-    supertraits.push(syn::TypeParamBound::Verbatim(
-        quote! { ::scheme_rs::gc::Trace },
-    ));
-
-    quote! {
-    #( #attrs )* #vis #unsafety #auto_token trait #ident < #params >: #supertraits
-    #where_clause
-    {
-        #( #items )*
-
-        /// # Safety
-        ///
-        /// Function automatically implemented by [::scheme_rs::gc::Trace] macro. DO NOT CALL!
-        /// DO NOT IMPLEMENT!
-        unsafe fn scheme_rs_visit_children(&self, visitor: fn(::scheme_rs::gc::OpaqueGcPtr)) {
-        <Self as ::scheme_rs::gc::Trace>::visit_children(self, visitor);
-        }
-    }
-
-    unsafe impl < #params > ::scheme_rs::gc::Trace for dyn #ident < #params >
-    #where_clause
-    {
-        unsafe fn visit_children(&self, visitor: fn(::scheme_rs::gc::OpaqueGcPtr)) {
-        self.scheme_rs_visit_children(visitor);
-        }
-    }
-    }
-    .into()
 }

@@ -16,7 +16,7 @@ mod collection;
 pub use collection::init_gc;
 use collection::{dec_rc, inc_rc};
 use futures::future::Shared;
-pub use proc_macros::{trace, Trace};
+pub use proc_macros::Trace;
 
 use std::{
     cell::UnsafeCell,
@@ -270,9 +270,20 @@ unsafe impl<T: Trace> VisitOrRecurse for Gc<T> {
     }
 }
 
-unsafe impl<T: Trace> VisitOrRecurse for T {
+unsafe impl<T: Trace + ?Sized> VisitOrRecurse for T {
     unsafe fn visit_or_recurse(&self, visitor: fn(OpaqueGcPtr)) {
         self.visit_children(visitor);
+    }
+}
+
+unsafe impl<A, B> Trace for (A, B)
+where
+    A: VisitOrRecurse,
+    B: VisitOrRecurse,
+{
+    unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
+        self.0.visit_or_recurse(visitor);
+        self.1.visit_or_recurse(visitor);
     }
 }
 
@@ -368,7 +379,7 @@ where
 
 unsafe impl<T> Trace for std::sync::Arc<T>
 where
-    T: VisitOrRecurse,
+    T: VisitOrRecurse + ?Sized,
 {
     unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
         self.as_ref().visit_or_recurse(visitor);
