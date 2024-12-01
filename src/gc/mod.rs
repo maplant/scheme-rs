@@ -24,7 +24,7 @@ use std::{
     future::Future,
     marker::PhantomData,
     ops::{Deref, DerefMut},
-    ptr::NonNull,
+    ptr::{drop_in_place, NonNull},
     sync::Arc,
 };
 use tokio::sync::{RwLock, Semaphore, SemaphorePermit};
@@ -218,6 +218,23 @@ pub unsafe trait Trace: 'static {
     /// **DO NOT CALL THIS FUNCTION!!**
     // TODO(map): Make this function async
     unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr));
+
+    /// # Safety
+    ///
+    /// This function may _ONLY_ be called by the garbage collector! Calling this
+    /// function **ANYWHERE ELSE** is a **RACE CONDITION**!
+    ///
+    /// **DO NOT CALL THIS FUNCTION!!**
+    unsafe fn finalize(&mut self) {
+        drop_in_place(self as *mut Self);
+    }
+
+    /// I'm not really sure that this function is necessary, but basically works to
+    /// discard the upper half of the fat pointer. 
+    fn as_ptr(&mut self) -> *mut u8 {
+        let ptr: *mut Self = self;
+        ptr as *mut u8
+    }
 }
 
 macro_rules! impl_empty_trace {

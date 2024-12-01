@@ -144,10 +144,10 @@ fn derive_trace_struct(
         }
     }
 
-    let field_actions = fields
+    let field_visits = fields
         .iter()
         .enumerate()
-        .flat_map(|(i, f)| {
+        .map(|(i, f)| {
             let ident = f.ident.clone().map_or_else(
                 || {
                     Member::Unnamed(syn::Index {
@@ -169,14 +169,44 @@ fn derive_trace_struct(
         })
         .collect::<Vec<_>>();
 
+    let field_drops = fields
+        .iter()
+        .enumerate()
+        .flat_map(|(i, f)| {
+            let ident = f.ident.clone().map_or_else(
+                || {
+                    Member::Unnamed(syn::Index {
+                        index: i as u32,
+                        span: Span::call_site(),
+                    })
+                },
+                Member::Named,
+            );
+            if !is_gc(&f.ty) {
+                let ty = &f.ty;
+                Some(quote! {
+                        std::ptr::drop_in_place(&mut self.#ident as *mut #ty);
+                })
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
     quote! {
-    #[automatically_derived]
+        #[automatically_derived]
         unsafe impl<#params> ::scheme_rs::gc::Trace for #name <#unbound_params>
-    #where_clause
-    {
+        #where_clause
+        {
             unsafe fn visit_children(&self, visitor: fn(::scheme_rs::gc::OpaqueGcPtr)) {
                 #(
-                    #field_actions
+                    #field_visits
+                )*
+            }
+
+            unsafe fn finalize(&mut self) {
+                #(
+                    #field_drops
                 )*
             }
         }
@@ -185,57 +215,91 @@ fn derive_trace_struct(
 
 // TODO: Add generics here
 fn derive_trace_enum(name: Ident, data_enum: DataEnum) -> proc_macro2::TokenStream {
-    let match_clauses = data_enum.variants.into_iter().flat_map(|variant| {
-        let fields: Vec<_> = match variant.fields {
-            Fields::Named(ref named) => named
-                .named
+    let (visit_match_clauses, finalize_match_clauses): (Vec<_>, Vec<_>) = data_enum
+        .variants
+        .into_iter()
+        .flat_map(|variant| {
+            let fields: Vec<_> = match variant.fields {
+                Fields::Named(ref named) => named
+                    .named
+                    .iter()
+                    .map(|field| (field.ty.clone(), field.ident.as_ref().unwrap().clone()))
+                    .collect(),
+                Fields::Unnamed(ref unnamed) => unnamed
+                    .unnamed
+                    .iter()
+                    .enumerate()
+                    .map(|(i, field)| {
+                        let ident = Ident::new(&format!("t{i}"), Span::call_site());
+                        (field.ty.clone(), ident)
+                    })
+                    .collect(),
+                _ => return None,
+            };
+            let visits: Vec<_> = fields
                 .iter()
-                .map(|field| (field.ty.clone(), field.ident.as_ref().unwrap().clone()))
-                .collect(),
-            Fields::Unnamed(ref unnamed) => unnamed
-                .unnamed
-                .iter()
-                .enumerate()
-                .map(|(i, field)| {
-                    let ident = Ident::new(&format!("t{i}"), Span::call_site());
-                    (field.ty.clone(), ident)
+                .map(|(ty, accessor)| {
+                    if is_gc(&ty) {
+                        quote! {
+                            visitor(#accessor.as_opaque())
+                        }
+                    } else {
+                        quote! {
+                            #accessor.visit_children(visitor)
+                        }
+                    }
                 })
-                .collect(),
-            _ => return None,
-        };
-        let actions: Vec<_> = fields
-            .iter()
-            .map(|(ty, accessor)| {
-                if is_gc(&ty) {
+                .collect();
+            let drops: Vec<_> = fields
+                .iter()
+                .filter(|(ty, _)| is_gc(ty))
+                .map(|(ty, accessor)| {
                     quote! {
-                        visitor(#accessor.as_opaque())
+                        std::ptr::drop_in_place(#accessor as *mut #ty);
                     }
-                } else {
-                    quote! {
-                        #accessor.visit_children(visitor)
+                })
+                .collect();
+            let field_name = fields.iter().map(|(_, field)| field);
+            let fields_destructured = match variant.fields {
+                Fields::Named(..) => quote! { { #( ref #field_name, )* .. } },
+                _ => quote! { ( #( ref #field_name ),* ) },
+            };
+            let field_name = fields.iter().map(|(_, field)| field);
+            let fields_destructured_mut = match variant.fields {
+                Fields::Named(..) => quote! { { #( ref mut #field_name, )* .. } },
+                _ => quote! { ( #( ref mut #field_name ),* ) },
+            };
+            let variant_name = variant.ident;
+            Some((
+                quote! {
+                    Self::#variant_name #fields_destructured => {
+                        #(
+                            #visits;
+                        )*
                     }
-                }
-            })
-            .collect();
-        let field_name = fields.into_iter().map(|(_, field)| field);
-        let fields_destructured = match variant.fields {
-            Fields::Named(..) => quote! { { #( ref #field_name, )* .. } },
-            _ => quote! { ( #( ref #field_name ),* ) },
-        };
-        let variant_name = variant.ident;
-        Some(quote! {
-            #name::#variant_name #fields_destructured => {
-                #(
-                    #actions;
-                )*
-            }
+                },
+                quote! {
+                    Self::#variant_name #fields_destructured_mut => {
+                        #(
+                            #drops
+                        )*
+                    }
+                },
+            ))
         })
-    });
+        .unzip();
     quote! {
         unsafe impl ::scheme_rs::gc::Trace for #name {
             unsafe fn visit_children(&self, visitor: fn(::scheme_rs::gc::OpaqueGcPtr)) {
                 match self {
-                    #( #match_clauses )*,
+                    #( #visit_match_clauses )*,
+                    _ => (),
+                }
+            }
+
+            unsafe fn finalize(&mut self) {
+                match self {
+                    #( #finalize_match_clauses )*,
                     _ => (),
                 }
             }

@@ -3,6 +3,7 @@
 //! V.T. Rajan.
 
 use std::{
+    alloc::Layout,
     ptr::{addr_of_mut, NonNull},
     sync::OnceLock,
 };
@@ -149,8 +150,7 @@ fn decrement(s: OpaqueGcPtr) {
 }
 
 fn release(s: OpaqueGcPtr) {
-    // TODO: When we fix deallocation, actually decrement the children!
-    // for_each_child(s, decrement);
+    for_each_child(s, decrement);
     *color(s) = Color::Black;
     if !*buffered(s) {
         free(s);
@@ -380,6 +380,10 @@ fn acquire_permit(semaphore: &'_ Semaphore) -> SemaphorePermit<'_> {
     }
 }
 
+fn trace<'a>(s: OpaqueGcPtr) -> &'a mut dyn Trace {
+    unsafe { &mut *s.as_ref().data.get() }
+}
+
 fn for_each_child(s: OpaqueGcPtr, visitor: fn(OpaqueGcPtr)) {
     let permit = acquire_permit(semaphore(s));
     unsafe { (*s.as_ref().data.get()).visit_children(visitor) }
@@ -387,7 +391,11 @@ fn for_each_child(s: OpaqueGcPtr, visitor: fn(OpaqueGcPtr)) {
 }
 
 fn free(s: OpaqueGcPtr) {
-    // We probably need to re-think how we deallocate - this will run the destructor, and thus
-    // buffer decrements.
-    unsafe { drop(Box::from_raw(s.as_ptr())) }
+    // Safety: No need to acquire a permit, s is guaranteed to be garbage.
+    let trace = trace(s);
+    unsafe {
+        trace.finalize();
+        let layout = Layout::for_value(trace);
+        std::alloc::dealloc(trace.as_ptr(), layout);
+    }
 }
