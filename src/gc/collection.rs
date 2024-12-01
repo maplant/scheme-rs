@@ -103,7 +103,7 @@ async fn epoch() {
 /// SAFETY: this function is _not reentrant_, may only be called by once per epoch,
 /// and must _complete_ before the next epoch.
 async fn process_mutation_buffer() {
-    const MUTATIONS_PER_EPOCH: usize = 10_000; // No idea what a good value is here.
+    const MUTATIONS_PER_EPOCH: usize = 10; // No idea what a good value is here.
 
     let mut mutation_buffer: Vec<_> = Vec::with_capacity(MUTATIONS_PER_EPOCH);
     // SAFETY: This function has _exclusive access_ to the receive buffer.
@@ -396,6 +396,6 @@ fn free(s: OpaqueGcPtr) {
     unsafe {
         trace.finalize();
         let layout = Layout::for_value(trace);
-        std::alloc::dealloc(trace.as_ptr(), layout);
+        std::alloc::dealloc(s.as_ptr() as *mut u8, dbg!(layout));
     }
 }

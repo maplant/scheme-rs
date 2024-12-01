@@ -228,13 +228,6 @@ pub unsafe trait Trace: 'static {
     unsafe fn finalize(&mut self) {
         drop_in_place(self as *mut Self);
     }
-
-    /// I'm not really sure that this function is necessary, but basically works to
-    /// discard the upper half of the fat pointer. 
-    fn as_ptr(&mut self) -> *mut u8 {
-        let ptr: *mut Self = self;
-        ptr as *mut u8
-    }
 }
 
 macro_rules! impl_empty_trace {
