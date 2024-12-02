@@ -2,6 +2,7 @@ use crate::{
     env::Env,
     eval::Eval,
     expand::Transformer,
+    gc::Trace,
     num::Number,
     syntax::{Identifier, Mark, Span, Syntax},
     util::ArcSlice,
@@ -9,10 +10,10 @@ use crate::{
 };
 use std::sync::Arc;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Trace)]
 pub struct ByteVector(pub Vec<u8>);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Trace)]
 pub enum Literal {
     Number(Number),
     Boolean(bool),
@@ -21,53 +22,53 @@ pub enum Literal {
     ByteVector(ByteVector),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Trace)]
 pub struct Quote {
     pub val: Value,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Trace)]
 pub struct SyntaxQuote {
     pub syn: Syntax,
     pub env: Env,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Trace)]
 pub struct Call {
     pub args: ArcSlice<Arc<dyn Eval>>,
     pub location: Span,
     pub proc_name: String,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Trace)]
 pub struct DefineFunc {
     pub name: Identifier,
     pub args: Formals,
     pub body: Body,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Trace)]
 pub struct DefineVar {
     pub name: Identifier,
     pub val: Arc<dyn Eval>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Trace, derive_more::Debug)]
 pub enum Define {
-    DefineVar(DefineVar),
-    DefineFunc(DefineFunc),
+    DefineVar(#[debug(skip)] DefineVar),
+    DefineFunc(#[debug(skip)] DefineFunc),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Trace)]
 pub struct DefineSyntax;
 
-#[derive(Clone)]
+#[derive(Clone, Trace)]
 pub struct Lambda {
     pub args: Formals,
     pub body: Body,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Trace)]
 pub enum Formals {
     FixedArgs(Vec<Identifier>),
     VarArgs {
@@ -85,7 +86,7 @@ impl Formals {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Trace)]
 pub struct Body {
     pub exprs: ArcSlice<Arc<dyn Eval>>,
 }
@@ -98,26 +99,26 @@ impl Body {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Trace)]
 pub struct Let {
     pub bindings: Arc<[(Identifier, Arc<dyn Eval>)]>,
     pub body: Body,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Trace)]
 pub struct Set {
     pub var: Identifier,
     pub val: Arc<dyn Eval>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Trace)]
 pub struct If {
     pub cond: Arc<dyn Eval>,
     pub success: Arc<dyn Eval>,
     pub failure: Option<Arc<dyn Eval>>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Trace)]
 pub struct And {
     pub args: ArcSlice<Arc<dyn Eval>>,
 }
@@ -130,7 +131,7 @@ impl And {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Trace)]
 pub struct Or {
     pub args: ArcSlice<Arc<dyn Eval>>,
 }
@@ -143,26 +144,23 @@ impl Or {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Trace)]
 pub struct Vector {
     pub vals: Vec<Arc<dyn Eval>>,
 }
 
-#[derive(Clone)]
-pub struct Nil;
-
-#[derive(Clone)]
+#[derive(Clone, Trace)]
 pub struct SyntaxCase {
     pub arg: Arc<dyn Eval>,
     pub transformer: Transformer,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Trace)]
 pub struct SyntaxRules {
     pub transformer: Transformer,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Trace)]
 pub struct Apply {
     pub proc_name: String,
     pub location: Span,
@@ -170,7 +168,7 @@ pub struct Apply {
     pub rest_args: Arc<dyn Eval>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Trace)]
 pub struct FetchVar {
     pub ident: Identifier,
 }
@@ -181,7 +179,7 @@ impl FetchVar {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Trace)]
 pub struct MacroExpansionPoint {
     pub mark: Mark,
     pub macro_env: Env,

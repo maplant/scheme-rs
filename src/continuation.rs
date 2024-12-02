@@ -7,7 +7,7 @@ use crate::{
     error::{RuntimeError, RuntimeErrorKind},
     eval::{Eval, ValuesOrPreparedCall},
     expand::Transformer,
-    gc::Gc,
+    gc::{Gc, Trace},
     lists::list_to_vec,
     proc::{Callable, PreparedCall},
     syntax::{Identifier, Span},
@@ -17,7 +17,7 @@ use crate::{
 use std::sync::Arc;
 
 #[async_trait]
-pub trait Resumable: Send + Sync {
+pub trait Resumable: Trace + Send + Sync {
     fn min_args(&self) -> usize {
         1
     }
@@ -33,7 +33,7 @@ pub trait Resumable: Send + Sync {
     ) -> Result<Vec<Gc<Value>>, RuntimeError>;
 }
 
-#[derive(Clone)]
+#[derive(Clone, Trace)]
 pub struct Continuation {
     resume_point: Arc<dyn Resumable>,
     remaining: Option<Arc<Continuation>>,
@@ -91,6 +91,7 @@ impl Callable for Option<Arc<Continuation>> {
     }
 }
 
+#[derive(Trace)]
 pub struct CatchContinuationCall {
     inner: Arc<dyn Eval>,
 }
@@ -127,6 +128,7 @@ impl Eval for CatchContinuationCall {
     }
 }
 
+#[derive(Trace)]
 pub struct ResumableBody {
     env: Env,
     remaining: ArcSlice<Arc<dyn Eval>>,
@@ -162,6 +164,7 @@ impl Resumable for ResumableBody {
     }
 }
 
+#[derive(Trace)]
 pub struct ResumableSyntaxCase {
     env: Env,
     transformer: Transformer,
@@ -199,6 +202,7 @@ impl Resumable for ResumableSyntaxCase {
     }
 }
 
+#[derive(Trace)]
 pub struct ResumableSet {
     env: Env,
     var: Identifier,
@@ -234,6 +238,7 @@ impl Resumable for ResumableSet {
     }
 }
 
+#[derive(Trace)]
 pub struct ResumableAnd {
     env: Env,
     args: ArcSlice<Arc<dyn Eval>>,
@@ -284,6 +289,7 @@ impl Resumable for ResumableAnd {
     }
 }
 
+#[derive(Trace)]
 pub struct ResumableOr {
     env: Env,
     args: ArcSlice<Arc<dyn Eval>>,
@@ -334,6 +340,7 @@ impl Resumable for ResumableOr {
     }
 }
 
+#[derive(Trace)]
 pub struct ResumableLet {
     scope: Gc<LexicalContour>,
     curr: Identifier,
@@ -382,6 +389,7 @@ impl Resumable for ResumableLet {
     }
 }
 
+#[derive(Trace)]
 pub struct ResumableIf {
     env: Env,
     success: Arc<dyn Eval>,
@@ -416,6 +424,7 @@ impl Resumable for ResumableIf {
     }
 }
 
+#[derive(Trace)]
 pub struct ResumableDefineVar {
     env: Env,
     name: Identifier,
@@ -443,6 +452,7 @@ impl Resumable for ResumableDefineVar {
     }
 }
 
+#[derive(Trace)]
 pub struct ResumableCall {
     env: Env,
     // TODO: Making this a SmallVec of around 10 would probably be a
@@ -508,6 +518,7 @@ impl Resumable for ResumableCall {
     }
 }
 
+#[derive(Trace)]
 pub struct ResumableApply {
     env: Env,
     collected: Vec<Gc<Value>>,
@@ -610,6 +621,7 @@ pub async fn call_cc(
         .await
 }
 
+#[derive(Trace)]
 pub struct CallWithValues {
     min_args: usize,
     max_args: Option<usize>,

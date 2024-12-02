@@ -3,16 +3,17 @@ use crate::{
     continuation::Continuation,
     error::RuntimeError,
     expand::Transformer,
-    gc::{Gc, Trace},
+    gc::Gc,
     num::Number,
     proc::{Callable, ExternalFn, Procedure},
     syntax::Syntax,
+    Trace,
 };
 use futures::future::{BoxFuture, Shared};
 use proc_macros::builtin;
 use std::sync::Arc;
 
-#[derive(Clone)]
+#[derive(Clone, Trace, derive_more::Debug)]
 pub enum Value {
     Null,
     Boolean(bool),
@@ -20,15 +21,15 @@ pub enum Value {
     Character(char),
     String(String),
     Symbol(String),
-    Pair(Gc<Value>, Gc<Value>),
-    Vector(Vec<Gc<Value>>),
+    Pair(#[debug(skip)] Gc<Value>, #[debug(skip)] Gc<Value>),
+    Vector(#[debug(skip)] Vec<Gc<Value>>),
     ByteVector(Vec<u8>),
     Syntax(Syntax),
     Procedure(Procedure),
     ExternalFn(ExternalFn),
-    Future(Shared<BoxFuture<'static, Result<Vec<Gc<Value>>, RuntimeError>>>),
-    Transformer(Transformer),
-    Continuation(Option<Arc<Continuation>>),
+    Future(#[debug(skip)] Shared<BoxFuture<'static, Result<Vec<Gc<Value>>, RuntimeError>>>),
+    Transformer(#[debug(skip)] Transformer),
+    Continuation(#[debug(skip)] Option<Arc<Continuation>>),
     Undefined,
 }
 
@@ -166,8 +167,6 @@ impl Value {
         }
     }
 }
-
-impl Trace for Value {}
 
 impl From<ExternalFn> for Value {
     fn from(ef: ExternalFn) -> Self {
