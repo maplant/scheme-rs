@@ -13,8 +13,8 @@
 
 mod collection;
 
-pub use collection::init_gc;
 use collection::{dec_rc, inc_rc};
+pub use collection::{init_gc, process_mutation_buffer};
 use futures::future::Shared;
 pub use proc_macros::Trace;
 
@@ -73,6 +73,22 @@ impl<T: Trace> Gc<T> {
         }
     }
 
+    /// Attempt to acquire a read lock for the object
+    pub fn try_read(&self) -> Option<GcReadGuard<'_, T>> {
+        unsafe {
+            let _permit = (*self.ptr.as_ref().header.get())
+                .semaphore
+                .try_acquire()
+                .ok()?;
+            let data = &*self.ptr.as_ref().data.get() as *const T;
+            Some(GcReadGuard {
+                _permit,
+                data,
+                marker: PhantomData,
+            })
+        }
+    }
+
     /// Acquire a write lock for the object
     pub async fn write(&self) -> GcWriteGuard<'_, T> {
         unsafe {
@@ -86,6 +102,19 @@ impl<T: Trace> Gc<T> {
                 _permit,
                 data,
                 marker: PhantomData,
+            }
+        }
+    }
+}
+
+impl<T: Trace> std::fmt::Debug for Gc<T>
+where
+    T: std::fmt::Debug,
+{
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        loop {
+            if let Some(x) = self.try_read() {
+                return x.fmt(fmt);
             }
         }
     }
@@ -128,12 +157,13 @@ enum Color {
 
 const MAX_READS: u32 = u32::MAX >> 3;
 
-#[derive(Debug)]
+#[derive(derive_more::Debug)]
 pub struct GcHeader {
     rc: usize,
     crc: isize,
     color: Color,
     buffered: bool,
+    #[debug(skip)]
     semaphore: Semaphore,
 }
 
@@ -270,83 +300,125 @@ impl_empty_trace! {
 /// # Safety
 ///
 /// This function is _not_ safe to implement!
-unsafe trait VisitOrRecurse: 'static {
+unsafe trait GcOrTrace: 'static {
     unsafe fn visit_or_recurse(&self, visitor: fn(OpaqueGcPtr));
+
+    unsafe fn finalize_or_skip(&mut self);
 }
 
-unsafe impl<T: Trace> VisitOrRecurse for Gc<T> {
+unsafe impl<T: Trace> GcOrTrace for Gc<T> {
     unsafe fn visit_or_recurse(&self, visitor: fn(OpaqueGcPtr)) {
         visitor(self.as_opaque())
     }
+
+    unsafe fn finalize_or_skip(&mut self) {}
 }
 
-unsafe impl<T: Trace + ?Sized> VisitOrRecurse for T {
+unsafe impl<T: Trace + ?Sized> GcOrTrace for T {
     unsafe fn visit_or_recurse(&self, visitor: fn(OpaqueGcPtr)) {
         self.visit_children(visitor);
+    }
+
+    unsafe fn finalize_or_skip(&mut self) {
+        self.finalize();
     }
 }
 
 unsafe impl<A, B> Trace for (A, B)
 where
-    A: VisitOrRecurse,
-    B: VisitOrRecurse,
+    A: GcOrTrace,
+    B: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
         self.0.visit_or_recurse(visitor);
         self.1.visit_or_recurse(visitor);
     }
+
+    unsafe fn finalize(&mut self) {
+        self.0.finalize_or_skip();
+        self.1.finalize_or_skip();
+    }
 }
 
 unsafe impl<T> Trace for Vec<T>
 where
-    T: VisitOrRecurse,
+    T: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
         for child in self {
             child.visit_or_recurse(visitor);
         }
     }
+
+    unsafe fn finalize(&mut self) {
+        for mut child in std::mem::take(self).into_iter() {
+            child.finalize_or_skip();
+            std::mem::forget(child);
+        }
+    }
 }
 
 unsafe impl<K> Trace for HashSet<K>
 where
-    K: VisitOrRecurse,
+    K: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
         for k in self {
             k.visit_or_recurse(visitor);
+        }
+    }
+
+    unsafe fn finalize(&mut self) {
+        for mut k in std::mem::take(self).into_iter() {
+            k.finalize_or_skip();
+            std::mem::forget(k);
         }
     }
 }
 
 unsafe impl<K, V> Trace for HashMap<K, V>
 where
-    K: VisitOrRecurse,
-    V: VisitOrRecurse,
+    K: GcOrTrace,
+    V: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
         for (k, v) in self {
             k.visit_or_recurse(visitor);
             v.visit_or_recurse(visitor);
+        }
+    }
+
+    unsafe fn finalize(&mut self) {
+        for (mut k, mut v) in std::mem::take(self) {
+            k.finalize_or_skip();
+            v.finalize_or_skip();
+            std::mem::forget((k, v));
         }
     }
 }
 
 unsafe impl<K> Trace for BTreeSet<K>
 where
-    K: VisitOrRecurse,
+    K: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
         for k in self {
             k.visit_or_recurse(visitor);
         }
     }
+
+    unsafe fn finalize(&mut self) {
+        for mut k in std::mem::take(self) {
+            k.finalize_or_skip();
+            std::mem::forget(k);
+        }
+    }
 }
 
 unsafe impl<K, V> Trace for BTreeMap<K, V>
 where
-    K: VisitOrRecurse,
-    V: VisitOrRecurse,
+    K: GcOrTrace,
+    V: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
         for (k, v) in self {
@@ -354,45 +426,83 @@ where
             v.visit_or_recurse(visitor);
         }
     }
+
+    unsafe fn finalize(&mut self) {
+        for (mut k, mut v) in std::mem::take(self).into_iter() {
+            k.finalize_or_skip();
+            v.finalize_or_skip();
+            std::mem::forget((k, v));
+        }
+    }
 }
 
 unsafe impl<T> Trace for Option<T>
 where
-    T: VisitOrRecurse,
+    T: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
         if let Some(inner) = self {
             inner.visit_or_recurse(visitor);
         }
     }
+
+    unsafe fn finalize(&mut self) {
+        if let Some(inner) = self {
+            inner.finalize_or_skip();
+        }
+    }
 }
 
 unsafe impl<T> Trace for Box<T>
 where
-    T: VisitOrRecurse,
+    T: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
         self.as_ref().visit_or_recurse(visitor);
+    }
+
+    unsafe fn finalize(&mut self) {
+        self.as_mut().finalize_or_skip();
+        todo!("need to dealloc data without dropping box");
     }
 }
 
 unsafe impl<T> Trace for [T]
 where
-    T: VisitOrRecurse,
+    T: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
         for item in self {
             item.visit_or_recurse(visitor);
         }
     }
+
+    unsafe fn finalize(&mut self) {
+        for item in self {
+            item.finalize_or_skip();
+        }
+    }
 }
 
 unsafe impl<T> Trace for std::sync::Arc<T>
 where
-    T: VisitOrRecurse + ?Sized,
+    T: ?Sized + 'static,
 {
-    unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
-        self.as_ref().visit_or_recurse(visitor);
+    unsafe fn visit_children(&self, _visitor: fn(OpaqueGcPtr)) {
+        // We cannot visit the children for an Arc, as it may lead to situations
+        // were we incorrectly decrement a child twice.
+        // An Arc wrapping a Gc effectively creates an additional ref count for
+        // that Gc that we cannot access.
+    }
+}
+
+unsafe impl<T> Trace for std::sync::Weak<T>
+where
+    T: ?Sized + 'static,
+{
+    unsafe fn visit_children(&self, _visitor: fn(OpaqueGcPtr)) {
+        // Same reasoning as Arc. If we're not visiting Arcs, we shouldn't visit Weak.
+        // Let it handle its own ref count.
     }
 }
 
@@ -413,9 +523,10 @@ unsafe impl<A: 'static, B: 'static, O: 'static> Trace for fn(A, B) -> O {
 
 unsafe impl<T> Trace for tokio::sync::Mutex<T>
 where
-    T: VisitOrRecurse,
+    T: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
+        // TODO: Think really hard as to if this is correct
         // This _should_ be fine, while not optimally efficient.
         let lock = self.blocking_lock();
         lock.visit_or_recurse(visitor);
@@ -424,9 +535,10 @@ where
 
 unsafe impl<T> Trace for tokio::sync::RwLock<T>
 where
-    T: VisitOrRecurse,
+    T: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
+        // TODO: Think really hard as to if this is correct
         loop {
             if let Ok(read_lock) = self.try_read() {
                 read_lock.visit_or_recurse(visitor);
@@ -438,9 +550,10 @@ where
 
 unsafe impl<T> Trace for std::sync::Mutex<T>
 where
-    T: VisitOrRecurse,
+    T: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
+        // TODO: Think really hard as to if this is correct
         let lock = self.lock().unwrap();
         lock.visit_or_recurse(visitor);
     }

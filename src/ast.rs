@@ -53,10 +53,10 @@ pub struct DefineVar {
     pub val: Arc<dyn Eval>,
 }
 
-#[derive(Clone, Trace)]
+#[derive(Clone, Trace, derive_more::Debug)]
 pub enum Define {
-    DefineVar(DefineVar),
-    DefineFunc(DefineFunc),
+    DefineVar(#[debug(skip)] DefineVar),
+    DefineFunc(#[debug(skip)] DefineFunc),
 }
 
 #[derive(Clone, Trace)]

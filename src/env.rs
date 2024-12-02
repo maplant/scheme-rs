@@ -126,14 +126,14 @@ impl ExpansionContext {
     }
 }
 
-#[derive(Clone, Trace)]
+#[derive(Clone, Trace, derive_more::Debug)]
 pub enum Env {
     /// This is the top level environment
     Top,
     /// This is an expansion context
-    Expansion(Gc<ExpansionContext>),
+    Expansion(#[debug(skip)] Gc<ExpansionContext>),
     /// This is a lexical contour
-    LexicalContour(Gc<LexicalContour>),
+    LexicalContour(#[debug(skip)] Gc<LexicalContour>),
 }
 
 impl Env {

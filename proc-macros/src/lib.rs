@@ -183,9 +183,8 @@ fn derive_trace_struct(
                 Member::Named,
             );
             if !is_gc(&f.ty) {
-                let ty = &f.ty;
                 Some(quote! {
-                        std::ptr::drop_in_place(&mut self.#ident as *mut #ty);
+                        self.#ident.finalize();
                 })
             } else {
                 None
@@ -252,10 +251,10 @@ fn derive_trace_enum(name: Ident, data_enum: DataEnum) -> proc_macro2::TokenStre
                 .collect();
             let drops: Vec<_> = fields
                 .iter()
-                .filter(|(ty, _)| is_gc(ty))
-                .map(|(ty, accessor)| {
+                .filter(|(ty, _)| !is_gc(ty))
+                .map(|(_, accessor)| {
                     quote! {
-                        std::ptr::drop_in_place(#accessor as *mut #ty);
+                        #accessor.finalize();
                     }
                 })
                 .collect();

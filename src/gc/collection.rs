@@ -6,6 +6,7 @@ use std::{
     alloc::Layout,
     ptr::{addr_of_mut, NonNull},
     sync::OnceLock,
+    time::{Duration, Instant},
 };
 use tokio::{
     sync::{
@@ -88,38 +89,47 @@ pub fn init_gc() {
     let _ = unsafe { MUTATION_BUFFER.get_or_init(MutationBuffer::default) };
     let _ = COLLECTOR_TASK.get_or_init(|| {
         tokio::task::spawn(async {
+            let mut last_epoch = Instant::now();
             loop {
-                epoch().await
+                epoch(&mut last_epoch).await
             }
         })
     });
 }
 
-async fn epoch() {
+#[cfg(test)]
+pub fn init_gc_test() {
+    let _ = unsafe { MUTATION_BUFFER.get_or_init(MutationBuffer::default) };
+}
+
+async fn epoch(last_epoch: &mut Instant) {
     process_mutation_buffer().await;
-    tokio::task::spawn_blocking(process_cycles).await.unwrap();
+    let duration_since_last_epoch = Instant::now() - *last_epoch;
+    if duration_since_last_epoch > Duration::from_millis(100) {
+        tokio::task::spawn_blocking(process_cycles).await.unwrap();
+        *last_epoch = Instant::now();
+    }
 }
 
 /// SAFETY: this function is _not reentrant_, may only be called by once per epoch,
 /// and must _complete_ before the next epoch.
-async fn process_mutation_buffer() {
-    const MUTATIONS_PER_EPOCH: usize = 10; // No idea what a good value is here.
+pub async fn process_mutation_buffer() {
+    const MAX_MUTATIONS_PER_EPOCH: usize = 10_000; // No idea what a good value is here.
 
-    let mut mutation_buffer: Vec<_> = Vec::with_capacity(MUTATIONS_PER_EPOCH);
+    let mut mutation_buffer: Vec<_> = Vec::with_capacity(MAX_MUTATIONS_PER_EPOCH);
     // SAFETY: This function has _exclusive access_ to the receive buffer.
     unsafe {
-        let buffer = &mut MUTATION_BUFFER.get_mut().unwrap().mutation_buffer_rx;
-        if buffer.len() < MUTATIONS_PER_EPOCH {
-            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-            return;
-        }
-        buffer
-            .recv_many(&mut mutation_buffer, MUTATIONS_PER_EPOCH)
+        MUTATION_BUFFER
+            .get_mut()
+            .unwrap()
+            .mutation_buffer_rx
+            .recv_many(&mut mutation_buffer, MAX_MUTATIONS_PER_EPOCH)
             .await;
     }
 
     // SAFETY: This function has _exclusive access_ to mutate the header of
     // _every_ garbage collected object. It does so _only now_.
+
     for mutation in mutation_buffer.into_iter() {
         match mutation.kind {
             MutationKind::Inc => increment(mutation.gc),
@@ -139,8 +149,6 @@ fn increment(s: OpaqueGcPtr) {
 }
 
 fn decrement(s: OpaqueGcPtr) {
-    // TODO: Possible optimization: check if the semaphore's value is
-    // greater than 0.
     *rc(s) -= 1;
     if *rc(s) == 0 {
         release(s);
@@ -218,18 +226,23 @@ fn mark_gray(s: OpaqueGcPtr) {
     if *color(s) != Color::Gray {
         *color(s) = Color::Gray;
         *crc(s) = *rc(s) as isize;
-        for_each_child(s, mark_gray);
-    } else if *crc(s) > 0 {
-        *crc(s) -= 1;
+        for_each_child(s, |t| {
+            mark_gray(t);
+            if *crc(t) > 0 {
+                *crc(t) -= 1;
+            }
+        });
     }
 }
 
 fn scan(s: OpaqueGcPtr) {
-    if *color(s) == Color::Gray && *crc(s) == 0 {
-        *color(s) = Color::White;
-        for_each_child(s, scan);
-    } else {
-        scan_black(s);
+    if *color(s) == Color::Gray {
+        if *crc(s) == 0 {
+            *color(s) = Color::White;
+            for_each_child(s, scan);
+        } else {
+            scan_black(s);
+        }
     }
 }
 
@@ -394,8 +407,49 @@ fn free(s: OpaqueGcPtr) {
     // Safety: No need to acquire a permit, s is guaranteed to be garbage.
     let trace = trace(s);
     unsafe {
-        trace.finalize();
         let layout = Layout::for_value(trace);
-        std::alloc::dealloc(s.as_ptr() as *mut u8, dbg!(layout));
+        trace.finalize();
+        std::alloc::dealloc(s.as_ptr() as *mut u8, layout);
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use collection::{init_gc_test, process_cycles};
+
+    use crate::gc::*;
+
+    #[tokio::test]
+    async fn cycles() {
+        #[derive(Default, Trace)]
+        struct Cyclic {
+            next: Option<Gc<Cyclic>>,
+            out: Option<Arc<()>>,
+        }
+
+        let out_ptr = Arc::new(());
+
+        init_gc_test();
+
+        let a = Gc::new(Cyclic::default());
+        let b = Gc::new(Cyclic::default());
+        let c = Gc::new(Cyclic::default());
+
+        // a -> b -> c -
+        // ^----------/
+        a.write().await.next = Some(b.clone());
+        b.write().await.next = Some(c.clone());
+        b.write().await.out = Some(out_ptr.clone());
+        c.write().await.next = Some(a.clone());
+
+        assert_eq!(Arc::strong_count(&out_ptr), 2);
+
+        drop(a);
+        drop(b);
+        drop(c);
+        process_mutation_buffer().await;
+        process_cycles();
+        process_cycles();
+        assert_eq!(Arc::strong_count(&out_ptr), 1);
     }
 }

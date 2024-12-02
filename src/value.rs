@@ -13,7 +13,7 @@ use futures::future::{BoxFuture, Shared};
 use proc_macros::builtin;
 use std::sync::Arc;
 
-#[derive(Clone, Trace)]
+#[derive(Clone, Trace, derive_more::Debug)]
 pub enum Value {
     Null,
     Boolean(bool),
@@ -21,15 +21,15 @@ pub enum Value {
     Character(char),
     String(String),
     Symbol(String),
-    Pair(Gc<Value>, Gc<Value>),
-    Vector(Vec<Gc<Value>>),
+    Pair(#[debug(skip)] Gc<Value>, #[debug(skip)] Gc<Value>),
+    Vector(#[debug(skip)] Vec<Gc<Value>>),
     ByteVector(Vec<u8>),
     Syntax(Syntax),
     Procedure(Procedure),
     ExternalFn(ExternalFn),
-    Future(Shared<BoxFuture<'static, Result<Vec<Gc<Value>>, RuntimeError>>>),
-    Transformer(Transformer),
-    Continuation(Option<Arc<Continuation>>),
+    Future(#[debug(skip)] Shared<BoxFuture<'static, Result<Vec<Gc<Value>>, RuntimeError>>>),
+    Transformer(#[debug(skip)] Transformer),
+    Continuation(#[debug(skip)] Option<Arc<Continuation>>),
     Undefined,
 }
 
