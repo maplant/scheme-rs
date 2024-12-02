@@ -11,32 +11,24 @@ information. One key issue is that no garbage collection ever occurs, so every p
 Eventually, I would like scheme-rs to be more opinionated in the extras it provides, and include a package manager.
 That is obviously a long way away.
 
-## This is Scheme but it supports async via Tokio?
+## Features currently supported by scheme-rs:
 
-Exactly. Here is an example:
+- Tail-call optimizations are fully supported 
+- Garbage Collected via [Bacon-Rajan Concurrent Cycle Collection](https://pages.cs.wisc.edu/~cymen/misc/interests/Bacon01Concurrent.pdf)
+- Most key forms (let/let*/define)
+- Call by current continuation
+- Transformers 
+- Spawning tasks and awaiting futures
 
-```scheme
-(define (sleep-and-print secs message)
-  (await (sleep (* secs 1000)))
-  (display message))
+## Features currently unsupported by scheme-rs: 
 
-(define (sleep-in-parallel)
-  (join (spawn (lambda ()
-                 (sleep-and-print 3 "first message")))
-        (spawn (lambda ()
-                 (sleep-and-print 5 "second message")))))
-```
-
-Now you can run the code and it will work as expected:
-
-```
->>> (await (sleep-in-parallel))
-"first message"
-"second message"
-$3 = (() ())
-```
-
-Not a whole lot of IO operations are supported right now, so it's very limited.
+- Records, and therefore conditions and error handling
+- Ports and IO operations
+- Generally, most API functions are not currently implemented
+- set-car! and set-cdr!
+- A large portion of lexical structures are missing; there's no way to specify recursive data structures
+- Let loop
+- And many more that I cannot think of off the top of my head.
 
 ## Usage:
 
@@ -72,30 +64,5 @@ pub async fn is_number(
 ## Why not just use Guile?
 
 In the end, it all comes down to [call with current continuation](https://en.wikipedia.org/wiki/Call-with-current-continuation). Guile implements this feature by copying the stack, an action which is obviously problematic when considering 
-open locks. Scheme-rs remedies this by providing all functions with the current continuation so that they may handle 
-it properly. Additionally, the current continuation only contains references and not locked variables. 
-
-## Unimplemented features
-
-- Currently, the compiler does not include macro expansion as part of the continuation. Therefore, calling `call/cc`
-  in syntax transformers will not produce correct results. I had an _amazing_ example of this but I lost it.
-  
-- A large number of library functions are missing. 
-
-- There is no real easy way to embed scheme-rs. 
-
-- GC never collects, no interning. 
-
-- Most of tokio's file system and networking functions are not implemented.
-
-## Okay, what _is_ implemented?
-
-Quite a bit. Tail calls work totally fine, you'll never blow out the stack via tail recursion.
-
-Macros are implemented to a surprisingly high degree, including allowing you to reference variables in different
-scopes and have them work properly. Special forms (i.e. `set!` macros) are also implemented. 
-
-`call/cc` is implemented, except in the scenario outlined in the previous section. 
-
-Most of the base of Scheme is actually here, minus quite a bit of the functions you'd expect, such as let*, letrec,
-etc.
+ref counts and locks. Scheme-rs remedies this by providing all functions with the current continuation so that they
+may handle it properly. Additionally, the current continuation only contains references and not locked variables. 
