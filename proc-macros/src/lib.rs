@@ -28,7 +28,7 @@ pub fn builtin(name: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     let wrapper: ItemFn = if !is_variadic {
-        let arg_indices: Vec<_> = (0..num_args).into_iter().collect();
+        let arg_indices: Vec<_> = (0..num_args).collect();
         parse_quote! {
             fn #wrapper_name(
                 cont: Option<std::sync::Arc<::scheme_rs::continuation::Continuation>>,
@@ -45,7 +45,7 @@ pub fn builtin(name: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
     } else {
-        let arg_indices: Vec<_> = (0..num_args).into_iter().collect();
+        let arg_indices: Vec<_> = (0..num_args).collect();
         parse_quote! {
             fn #wrapper_name(
                 cont: Option<std::sync::Arc<::scheme_rs::continuation::Continuation>>,
@@ -238,7 +238,7 @@ fn derive_trace_enum(name: Ident, data_enum: DataEnum) -> proc_macro2::TokenStre
             let visits: Vec<_> = fields
                 .iter()
                 .map(|(ty, accessor)| {
-                    if is_gc(&ty) {
+                    if is_gc(ty) {
                         quote! {
                             visitor(#accessor.as_opaque())
                         }

@@ -199,7 +199,7 @@ pub struct GcReadGuard<'a, T: ?Sized> {
     marker: PhantomData<&'a T>,
 }
 
-impl<'a, T: ?Sized> Deref for GcReadGuard<'a, T> {
+impl<T: ?Sized> Deref for GcReadGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
@@ -207,7 +207,7 @@ impl<'a, T: ?Sized> Deref for GcReadGuard<'a, T> {
     }
 }
 
-impl<'a, T: ?Sized> AsRef<T> for GcReadGuard<'a, T> {
+impl<T: ?Sized> AsRef<T> for GcReadGuard<'_, T> {
     fn as_ref(&self) -> &T {
         self
     }
@@ -222,7 +222,7 @@ pub struct GcWriteGuard<'a, T: ?Sized> {
     marker: PhantomData<&'a mut T>,
 }
 
-impl<'a, T: ?Sized> Deref for GcWriteGuard<'a, T> {
+impl<T: ?Sized> Deref for GcWriteGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
@@ -230,7 +230,7 @@ impl<'a, T: ?Sized> Deref for GcWriteGuard<'a, T> {
     }
 }
 
-impl<'a, T: ?Sized> DerefMut for GcWriteGuard<'a, T> {
+impl<T: ?Sized> DerefMut for GcWriteGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
         unsafe { &mut *self.data }
     }
