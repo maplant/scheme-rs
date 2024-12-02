@@ -5,7 +5,7 @@ of the scheme programming language that is designed to work with async Rust runt
 In essence, it is a embedded scripting language for the async Rust ecosystem.
 
 Scheme-rs is intended to be fully compliant with R6RS, and R7RS large when it is eventually released. To that end
-the bones are mostly there but some key issues. 
+the bones are mostly there but some key issues remain. 
 
 Eventually, I would like scheme-rs to be more opinionated in the extras it provides, and include a package manager.
 That is obviously a long way away.
