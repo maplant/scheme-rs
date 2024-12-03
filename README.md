@@ -1,4 +1,4 @@
-# Scheme-rs
+# <img align="left" width="150px" src="logo.png"> Scheme-rs: Embedded Scheme for the Async Rust Ecosystem
 
 Scheme-rs is a work-in-progress implementation of the [R6RS](https://www.r6rs.org/final/r6rs.pdf) specification
 of the scheme programming language that is designed to work with async Rust runtimes like [tokio](https://tokio.rs/).
