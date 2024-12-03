@@ -4,6 +4,7 @@
 
 use std::{
     alloc::Layout,
+    cell::UnsafeCell,
     ptr::NonNull,
     sync::OnceLock,
     time::{Duration, Instant},
@@ -43,59 +44,46 @@ pub enum MutationKind {
 /// "epochs", and handled by precisely one thread.
 struct MutationBuffer {
     mutation_buffer_tx: UnboundedSender<Mutation>,
-    mutation_buffer_rx: UnboundedReceiver<Mutation>,
+    mutation_buffer_rx: UnsafeCell<UnboundedReceiver<Mutation>>,
 }
+
+unsafe impl Sync for MutationBuffer {}
 
 impl Default for MutationBuffer {
     fn default() -> Self {
         let (mutation_buffer_tx, mutation_buffer_rx) = unbounded_channel();
         Self {
             mutation_buffer_tx,
-            mutation_buffer_rx,
+            mutation_buffer_rx: UnsafeCell::new(mutation_buffer_rx),
         }
     }
 }
 
-static mut MUTATION_BUFFER: OnceLock<MutationBuffer> = OnceLock::new();
+static MUTATION_BUFFER: OnceLock<MutationBuffer> = OnceLock::new();
 
 pub(super) fn inc_rc<T: Trace>(gc: NonNull<GcInner<T>>) {
     // SAFETY: send takes an immutable reference and is atomic
-    unsafe {
-        (&raw const MUTATION_BUFFER)
-            .as_ref()
-            .unwrap()
-            .get()
-            .unwrap()
-            .mutation_buffer_tx
-            .send(Mutation::new(MutationKind::Inc, gc as NonNull<OpaqueGc>))
-            .unwrap();
-    }
+    MUTATION_BUFFER
+        .get_or_init(MutationBuffer::default)
+        .mutation_buffer_tx
+        .send(Mutation::new(MutationKind::Inc, gc as NonNull<OpaqueGc>))
+        .unwrap();
 }
 
 pub(super) fn dec_rc<T: Trace>(gc: NonNull<GcInner<T>>) {
     // SAFETY: send takes an immutable reference and is atomic
-    unsafe {
-        (&raw const MUTATION_BUFFER)
-            .as_ref()
-            .unwrap()
-            .get()
-            .unwrap()
-            .mutation_buffer_tx
-            .send(Mutation::new(MutationKind::Dec, gc as NonNull<OpaqueGc>))
-            .unwrap();
-    }
+    MUTATION_BUFFER
+        .get_or_init(MutationBuffer::default)
+        .mutation_buffer_tx
+        .send(Mutation::new(MutationKind::Dec, gc as NonNull<OpaqueGc>))
+        .unwrap();
 }
 
 static COLLECTOR_TASK: OnceLock<JoinHandle<()>> = OnceLock::new();
 
 pub fn init_gc() {
     // SAFETY: We DO NOT mutate MUTATION_BUFFER, we mutate the _interior once lock_.
-    let _ = unsafe {
-        (&raw const MUTATION_BUFFER)
-            .as_ref()
-            .unwrap()
-            .get_or_init(MutationBuffer::default)
-    };
+    let _ = MUTATION_BUFFER.get_or_init(MutationBuffer::default);
     let _ = COLLECTOR_TASK.get_or_init(|| {
         tokio::task::spawn(async {
             let mut last_epoch = Instant::now();
@@ -104,16 +92,6 @@ pub fn init_gc() {
             }
         })
     });
-}
-
-#[cfg(test)]
-pub fn init_gc_test() {
-    let _ = unsafe {
-        (&raw const MUTATION_BUFFER)
-            .as_ref()
-            .unwrap()
-            .get_or_init(MutationBuffer::default)
-    };
 }
 
 async fn epoch(last_epoch: &mut Instant) {
@@ -133,14 +111,12 @@ pub async fn process_mutation_buffer() {
     let mut mutation_buffer: Vec<_> = Vec::with_capacity(MAX_MUTATIONS_PER_EPOCH);
     // SAFETY: This function has _exclusive access_ to the receive buffer.
     unsafe {
-        (&raw mut MUTATION_BUFFER)
-            .as_mut()
-            .unwrap()
-            .get_mut()
-            .unwrap()
+        (*MUTATION_BUFFER
+            .get_or_init(MutationBuffer::default)
             .mutation_buffer_rx
-            .recv_many(&mut mutation_buffer, MAX_MUTATIONS_PER_EPOCH)
-            .await;
+            .get())
+        .recv_many(&mut mutation_buffer, MAX_MUTATIONS_PER_EPOCH)
+        .await;
     }
 
     // SAFETY: This function has _exclusive access_ to mutate the header of
@@ -435,7 +411,7 @@ fn free(s: OpaqueGcPtr) {
 
 #[cfg(test)]
 mod test {
-    use collection::{init_gc_test, process_cycles};
+    use collection::process_cycles;
 
     use crate::gc::*;
 
@@ -448,8 +424,6 @@ mod test {
         }
 
         let out_ptr = Arc::new(());
-
-        init_gc_test();
 
         let a = Gc::new(Cyclic::default());
         let b = Gc::new(Cyclic::default());
@@ -470,6 +444,7 @@ mod test {
         process_mutation_buffer().await;
         process_cycles();
         process_cycles();
+
         assert_eq!(Arc::strong_count(&out_ptr), 1);
     }
 }
