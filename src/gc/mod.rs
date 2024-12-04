@@ -13,8 +13,8 @@
 
 mod collection;
 
+pub use collection::init_gc;
 use collection::{dec_rc, inc_rc};
-pub use collection::{init_gc, process_mutation_buffer};
 use futures::future::Shared;
 pub use proc_macros::Trace;
 
@@ -247,7 +247,7 @@ pub unsafe trait Trace: 'static {
     ///
     /// **DO NOT CALL THIS FUNCTION!!**
     // TODO(map): Make this function async
-    unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr));
+    unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr));
 
     /// # Safety
     ///
@@ -264,7 +264,7 @@ macro_rules! impl_empty_trace {
     ( $( $x:ty ),* ) => {
         $(
             unsafe impl Trace for $x {
-                unsafe fn visit_children(&self, _visitor: fn(OpaqueGcPtr)) {}
+                unsafe fn visit_children(&self, _visitor: unsafe fn(OpaqueGcPtr)) {}
             }
         )*
     }
@@ -301,13 +301,13 @@ impl_empty_trace! {
 ///
 /// This function is _not_ safe to implement!
 unsafe trait GcOrTrace: 'static {
-    unsafe fn visit_or_recurse(&self, visitor: fn(OpaqueGcPtr));
+    unsafe fn visit_or_recurse(&self, visitor: unsafe fn(OpaqueGcPtr));
 
     unsafe fn finalize_or_skip(&mut self);
 }
 
 unsafe impl<T: Trace> GcOrTrace for Gc<T> {
-    unsafe fn visit_or_recurse(&self, visitor: fn(OpaqueGcPtr)) {
+    unsafe fn visit_or_recurse(&self, visitor: unsafe fn(OpaqueGcPtr)) {
         visitor(self.as_opaque())
     }
 
@@ -315,7 +315,7 @@ unsafe impl<T: Trace> GcOrTrace for Gc<T> {
 }
 
 unsafe impl<T: Trace + ?Sized> GcOrTrace for T {
-    unsafe fn visit_or_recurse(&self, visitor: fn(OpaqueGcPtr)) {
+    unsafe fn visit_or_recurse(&self, visitor: unsafe fn(OpaqueGcPtr)) {
         self.visit_children(visitor);
     }
 
@@ -329,7 +329,7 @@ where
     A: GcOrTrace,
     B: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
         self.0.visit_or_recurse(visitor);
         self.1.visit_or_recurse(visitor);
     }
@@ -344,7 +344,7 @@ unsafe impl<T> Trace for Vec<T>
 where
     T: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
         for child in self {
             child.visit_or_recurse(visitor);
         }
@@ -362,7 +362,7 @@ unsafe impl<K> Trace for HashSet<K>
 where
     K: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
         for k in self {
             k.visit_or_recurse(visitor);
         }
@@ -381,7 +381,7 @@ where
     K: GcOrTrace,
     V: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
         for (k, v) in self {
             k.visit_or_recurse(visitor);
             v.visit_or_recurse(visitor);
@@ -401,7 +401,7 @@ unsafe impl<K> Trace for BTreeSet<K>
 where
     K: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
         for k in self {
             k.visit_or_recurse(visitor);
         }
@@ -420,7 +420,7 @@ where
     K: GcOrTrace,
     V: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
         for (k, v) in self {
             k.visit_or_recurse(visitor);
             v.visit_or_recurse(visitor);
@@ -440,7 +440,7 @@ unsafe impl<T> Trace for Option<T>
 where
     T: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
         if let Some(inner) = self {
             inner.visit_or_recurse(visitor);
         }
@@ -457,7 +457,7 @@ unsafe impl<T> Trace for Box<T>
 where
     T: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
         self.as_ref().visit_or_recurse(visitor);
     }
 
@@ -471,7 +471,7 @@ unsafe impl<T> Trace for [T]
 where
     T: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
         for item in self {
             item.visit_or_recurse(visitor);
         }
@@ -488,7 +488,7 @@ unsafe impl<T> Trace for std::sync::Arc<T>
 where
     T: ?Sized + 'static,
 {
-    unsafe fn visit_children(&self, _visitor: fn(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, _visitor: unsafe fn(OpaqueGcPtr)) {
         // We cannot visit the children for an Arc, as it may lead to situations
         // were we incorrectly decrement a child twice.
         // An Arc wrapping a Gc effectively creates an additional ref count for
@@ -500,7 +500,7 @@ unsafe impl<T> Trace for std::sync::Weak<T>
 where
     T: ?Sized + 'static,
 {
-    unsafe fn visit_children(&self, _visitor: fn(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, _visitor: unsafe fn(OpaqueGcPtr)) {
         // Same reasoning as Arc. If we're not visiting Arcs, we shouldn't visit Weak.
         // Let it handle its own ref count.
     }
@@ -510,22 +510,22 @@ unsafe impl<T> Trace for Shared<T>
 where
     T: Future + 'static,
 {
-    unsafe fn visit_children(&self, _visitor: fn(OpaqueGcPtr)) {}
+    unsafe fn visit_children(&self, _visitor: unsafe fn(OpaqueGcPtr)) {}
 }
 
 unsafe impl<A: 'static, O: 'static> Trace for fn(A) -> O {
-    unsafe fn visit_children(&self, _visitor: fn(OpaqueGcPtr)) {}
+    unsafe fn visit_children(&self, _visitor: unsafe fn(OpaqueGcPtr)) {}
 }
 
 unsafe impl<A: 'static, B: 'static, O: 'static> Trace for fn(A, B) -> O {
-    unsafe fn visit_children(&self, _visitor: fn(OpaqueGcPtr)) {}
+    unsafe fn visit_children(&self, _visitor: unsafe fn(OpaqueGcPtr)) {}
 }
 
 unsafe impl<T> Trace for tokio::sync::Mutex<T>
 where
     T: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
         // TODO: Think really hard as to if this is correct
         // This _should_ be fine, while not optimally efficient.
         let lock = self.blocking_lock();
@@ -537,7 +537,7 @@ unsafe impl<T> Trace for tokio::sync::RwLock<T>
 where
     T: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
         // TODO: Think really hard as to if this is correct
         loop {
             if let Ok(read_lock) = self.try_read() {
@@ -552,7 +552,7 @@ unsafe impl<T> Trace for std::sync::Mutex<T>
 where
     T: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: fn(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
         // TODO: Think really hard as to if this is correct
         let lock = self.lock().unwrap();
         lock.visit_or_recurse(visitor);

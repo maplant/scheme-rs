@@ -332,7 +332,7 @@ impl<'a> Div<&'a Number> for &'a Number {
 }
 
 unsafe impl Trace for Number {
-    unsafe fn visit_children(&self, _visitor: fn(crate::gc::OpaqueGcPtr)) {}
+    unsafe fn visit_children(&self, _visitor: unsafe fn(crate::gc::OpaqueGcPtr)) {}
 }
 
 #[builtin("zero?")]
