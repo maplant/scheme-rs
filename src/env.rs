@@ -72,6 +72,16 @@ impl LexicalContour {
         }
         self.macros.insert(ident.clone(), value);
     }
+
+    pub fn deep_clone(&self) -> BoxFuture<'_, Self> {
+        Box::pin(async move {
+            Self {
+                up: self.up.deep_clone().await,
+                vars: self.vars.clone(),
+                macros: self.macros.clone(),
+            }
+        })
+    }
 }
 
 #[derive(derive_more::Debug, Trace)]
@@ -121,6 +131,16 @@ impl ExpansionContext {
                 self.macro_env.fetch_macro(&stripped).await
             } else {
                 self.up.fetch_macro(ident).await
+            }
+        })
+    }
+
+    pub fn deep_clone(&self) -> BoxFuture<'_, Self> {
+        Box::pin(async move {
+            Self {
+                up: self.up.deep_clone().await,
+                mark: self.mark,
+                macro_env: self.macro_env.deep_clone().await,
             }
         })
     }
@@ -217,6 +237,18 @@ impl Env {
                 Self::LexicalContour(contour) => contour.write().await.def_macro(ident, value),
             }
         })
+    }
+
+    pub async fn deep_clone(&self) -> Self {
+        match self {
+            Self::Top => Self::Top,
+            Self::Expansion(expansion) => {
+                Self::Expansion(Gc::new(expansion.read().await.deep_clone().await))
+            }
+            Self::LexicalContour(env) => {
+                Self::LexicalContour(Gc::new(env.read().await.deep_clone().await))
+            }
+        }
     }
 
     /// Evaluate a string, returning all of the results in a Vec
