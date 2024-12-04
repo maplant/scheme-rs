@@ -84,45 +84,47 @@ static COLLECTOR_TASK: OnceLock<JoinHandle<()>> = OnceLock::new();
 pub fn init_gc() {
     // SAFETY: We DO NOT mutate MUTATION_BUFFER, we mutate the _interior once lock_.
     let _ = MUTATION_BUFFER.get_or_init(MutationBuffer::default);
-    let _ = COLLECTOR_TASK.get_or_init(|| {
-        tokio::task::spawn(async {
-            let mut last_epoch = Instant::now();
-            loop {
-                epoch(&mut last_epoch).await
-            }
-        })
-    });
+    let _ = COLLECTOR_TASK
+        .get_or_init(|| tokio::task::spawn(async { unsafe { run_garbage_collector().await } }));
 }
 
-async fn epoch(last_epoch: &mut Instant) {
-    process_mutation_buffer().await;
+const MAX_MUTATIONS_PER_EPOCH: usize = 10_000; // No idea what a good value is here.
+
+async unsafe fn run_garbage_collector() {
+    let mut last_epoch = Instant::now();
+    let mut mutation_buffer: Vec<_> = Vec::with_capacity(MAX_MUTATIONS_PER_EPOCH);
+    loop {
+        epoch(&mut last_epoch, &mut mutation_buffer).await;
+        mutation_buffer.clear();
+    }
+}
+
+async unsafe fn epoch(last_epoch: &mut Instant, mutation_buffer: &mut Vec<Mutation>) {
+    process_mutation_buffer(mutation_buffer).await;
     let duration_since_last_epoch = Instant::now() - *last_epoch;
     if duration_since_last_epoch > Duration::from_millis(100) {
-        tokio::task::spawn_blocking(process_cycles).await.unwrap();
+        tokio::task::spawn_blocking(|| unsafe { process_cycles() })
+            .await
+            .unwrap();
         *last_epoch = Instant::now();
     }
 }
 
 /// SAFETY: this function is _not reentrant_, may only be called by once per epoch,
 /// and must _complete_ before the next epoch.
-pub async fn process_mutation_buffer() {
-    const MAX_MUTATIONS_PER_EPOCH: usize = 10_000; // No idea what a good value is here.
-
-    let mut mutation_buffer: Vec<_> = Vec::with_capacity(MAX_MUTATIONS_PER_EPOCH);
+async unsafe fn process_mutation_buffer(mutation_buffer: &mut Vec<Mutation>) {
     // SAFETY: This function has _exclusive access_ to the receive buffer.
-    unsafe {
-        (*MUTATION_BUFFER
-            .get_or_init(MutationBuffer::default)
-            .mutation_buffer_rx
-            .get())
-        .recv_many(&mut mutation_buffer, MAX_MUTATIONS_PER_EPOCH)
-        .await;
-    }
+    (*MUTATION_BUFFER
+        .get_or_init(MutationBuffer::default)
+        .mutation_buffer_rx
+        .get())
+    .recv_many(mutation_buffer, MAX_MUTATIONS_PER_EPOCH)
+    .await;
 
     // SAFETY: This function has _exclusive access_ to mutate the header of
     // _every_ garbage collected object. It does so _only now_.
 
-    for mutation in mutation_buffer.into_iter() {
+    for mutation in mutation_buffer {
         match mutation.kind {
             MutationKind::Inc => increment(mutation.gc),
             MutationKind::Dec => decrement(mutation.gc),
@@ -135,12 +137,12 @@ static mut ROOTS: Vec<OpaqueGcPtr> = Vec::new();
 static mut CYCLE_BUFFER: Vec<Vec<OpaqueGcPtr>> = Vec::new();
 static mut CURRENT_CYCLE: Vec<OpaqueGcPtr> = Vec::new();
 
-fn increment(s: OpaqueGcPtr) {
+unsafe fn increment(s: OpaqueGcPtr) {
     *rc(s) += 1;
     scan_black(s);
 }
 
-fn decrement(s: OpaqueGcPtr) {
+unsafe fn decrement(s: OpaqueGcPtr) {
     *rc(s) -= 1;
     if *rc(s) == 0 {
         release(s);
@@ -149,7 +151,7 @@ fn decrement(s: OpaqueGcPtr) {
     }
 }
 
-fn release(s: OpaqueGcPtr) {
+unsafe fn release(s: OpaqueGcPtr) {
     for_each_child(s, decrement);
     *color(s) = Color::Black;
     if !*buffered(s) {
@@ -157,31 +159,31 @@ fn release(s: OpaqueGcPtr) {
     }
 }
 
-fn possible_root(s: OpaqueGcPtr) {
+unsafe fn possible_root(s: OpaqueGcPtr) {
     scan_black(s);
     *color(s) = Color::Purple;
     if !*buffered(s) {
         *buffered(s) = true;
-        unsafe { (&raw mut ROOTS).as_mut().unwrap().push(s) };
+        (&raw mut ROOTS).as_mut().unwrap().push(s);
     }
 }
 
-fn process_cycles() {
+unsafe fn process_cycles() {
     free_cycles();
     collect_cycles();
     sigma_preparation();
 }
 
-fn collect_cycles() {
+unsafe fn collect_cycles() {
     mark_roots();
     scan_roots();
     collect_roots();
 }
 
 // SAFETY: No function called by mark_roots may access ROOTS
-fn mark_roots() {
+unsafe fn mark_roots() {
     let mut new_roots = Vec::new();
-    for s in unsafe { (&raw const ROOTS).as_ref().unwrap().iter() } {
+    for s in (&raw const ROOTS).as_ref().unwrap().iter() {
         if *color(*s) == Color::Purple && *rc(*s) > 0 {
             mark_gray(*s);
             new_roots.push(*s);
@@ -192,33 +194,31 @@ fn mark_roots() {
             }
         }
     }
-    unsafe { ROOTS = new_roots }
+    ROOTS = new_roots;
 }
 
-fn scan_roots() {
-    for s in unsafe { (&raw const ROOTS).as_ref().unwrap().iter() } {
+unsafe fn scan_roots() {
+    for s in (&raw const ROOTS).as_ref().unwrap().iter() {
         scan(*s)
     }
 }
 
-fn collect_roots() {
-    for s in unsafe { std::mem::take((&raw mut ROOTS).as_mut().unwrap()) } {
+unsafe fn collect_roots() {
+    for s in std::mem::take((&raw mut ROOTS).as_mut().unwrap()) {
         if *color(s) == Color::White {
             collect_white(s);
-            unsafe {
-                let current_cycle = std::mem::take((&raw mut CURRENT_CYCLE).as_mut().unwrap());
-                (&raw mut CYCLE_BUFFER)
-                    .as_mut()
-                    .unwrap()
-                    .push(current_cycle);
-            }
+            let current_cycle = std::mem::take((&raw mut CURRENT_CYCLE).as_mut().unwrap());
+            (&raw mut CYCLE_BUFFER)
+                .as_mut()
+                .unwrap()
+                .push(current_cycle);
         } else {
             *buffered(s) = false;
         }
     }
 }
 
-fn mark_gray(s: OpaqueGcPtr) {
+unsafe fn mark_gray(s: OpaqueGcPtr) {
     if *color(s) != Color::Gray {
         *color(s) = Color::Gray;
         *crc(s) = *rc(s) as isize;
@@ -231,7 +231,7 @@ fn mark_gray(s: OpaqueGcPtr) {
     }
 }
 
-fn scan(s: OpaqueGcPtr) {
+unsafe fn scan(s: OpaqueGcPtr) {
     if *color(s) == Color::Gray {
         if *crc(s) == 0 {
             *color(s) = Color::White;
@@ -242,26 +242,24 @@ fn scan(s: OpaqueGcPtr) {
     }
 }
 
-fn scan_black(s: OpaqueGcPtr) {
+unsafe fn scan_black(s: OpaqueGcPtr) {
     if *color(s) != Color::Black {
         *color(s) = Color::Black;
         for_each_child(s, scan_black);
     }
 }
 
-fn collect_white(s: OpaqueGcPtr) {
+unsafe fn collect_white(s: OpaqueGcPtr) {
     if *color(s) == Color::White {
         *color(s) = Color::Orange;
         *buffered(s) = true;
-        unsafe {
-            (&raw mut CURRENT_CYCLE).as_mut().unwrap().push(s);
-        }
+        (&raw mut CURRENT_CYCLE).as_mut().unwrap().push(s);
         for_each_child(s, collect_white);
     }
 }
 
-fn sigma_preparation() {
-    for c in unsafe { (&raw const CYCLE_BUFFER).as_ref().unwrap() } {
+unsafe fn sigma_preparation() {
+    for c in (&raw const CYCLE_BUFFER).as_ref().unwrap() {
         for n in c {
             *color(*n) = Color::Red;
             *crc(*n) = *rc(*n) as isize;
@@ -279,12 +277,11 @@ fn sigma_preparation() {
     }
 }
 
-fn free_cycles() {
-    for c in unsafe {
-        std::mem::take((&raw mut CYCLE_BUFFER).as_mut().unwrap())
-            .into_iter()
-            .rev()
-    } {
+unsafe fn free_cycles() {
+    for c in std::mem::take((&raw mut CYCLE_BUFFER).as_mut().unwrap())
+        .into_iter()
+        .rev()
+    {
         if delta_test(&c) && sigma_test(&c) {
             free_cycle(&c);
         } else {
@@ -293,7 +290,7 @@ fn free_cycles() {
     }
 }
 
-fn delta_test(c: &[OpaqueGcPtr]) -> bool {
+unsafe fn delta_test(c: &[OpaqueGcPtr]) -> bool {
     for n in c {
         if *color(*n) != Color::Orange {
             return false;
@@ -302,12 +299,14 @@ fn delta_test(c: &[OpaqueGcPtr]) -> bool {
     true
 }
 
-fn sigma_test(c: &[OpaqueGcPtr]) -> bool {
+unsafe fn sigma_test(c: &[OpaqueGcPtr]) -> bool {
     let mut sum = 0;
     for n in c {
         sum += *crc(*n);
     }
     sum == 0
+    // TODO: I think this is still correct. Make CRC a usize and uncomment
+    // out this code.
     /*
     // NOTE: This is the only function so far that I have not implemented
     // _exactly_ as the text reads. I do not understand why I would have to
@@ -321,7 +320,7 @@ fn sigma_test(c: &[OpaqueGcPtr]) -> bool {
     */
 }
 
-fn refurbish(c: &[OpaqueGcPtr]) {
+unsafe fn refurbish(c: &[OpaqueGcPtr]) {
     for (i, n) in c.iter().enumerate() {
         match (i, *color(*n)) {
             (0, Color::Orange) | (_, Color::Purple) => {
@@ -338,7 +337,7 @@ fn refurbish(c: &[OpaqueGcPtr]) {
     }
 }
 
-fn free_cycle(c: &[OpaqueGcPtr]) {
+unsafe fn free_cycle(c: &[OpaqueGcPtr]) {
     for n in c {
         *color(*n) = Color::Red;
     }
@@ -350,7 +349,7 @@ fn free_cycle(c: &[OpaqueGcPtr]) {
     }
 }
 
-fn cyclic_decrement(m: OpaqueGcPtr) {
+unsafe fn cyclic_decrement(m: OpaqueGcPtr) {
     if *color(m) != Color::Red {
         if *color(m) == Color::Orange {
             *rc(m) -= 1;
@@ -361,24 +360,24 @@ fn cyclic_decrement(m: OpaqueGcPtr) {
     }
 }
 
-fn color<'a>(s: OpaqueGcPtr) -> &'a mut Color {
-    unsafe { &mut (*s.as_ref().header.get()).color }
+unsafe fn color<'a>(s: OpaqueGcPtr) -> &'a mut Color {
+    &mut (*s.as_ref().header.get()).color
 }
 
-fn rc<'a>(s: OpaqueGcPtr) -> &'a mut usize {
-    unsafe { &mut (*s.as_ref().header.get()).rc }
+unsafe fn rc<'a>(s: OpaqueGcPtr) -> &'a mut usize {
+    &mut (*s.as_ref().header.get()).rc
 }
 
-fn crc<'a>(s: OpaqueGcPtr) -> &'a mut isize {
-    unsafe { &mut (*s.as_ref().header.get()).crc }
+unsafe fn crc<'a>(s: OpaqueGcPtr) -> &'a mut isize {
+    &mut (*s.as_ref().header.get()).crc
 }
 
-fn buffered<'a>(s: OpaqueGcPtr) -> &'a mut bool {
-    unsafe { &mut (*s.as_ref().header.get()).buffered }
+unsafe fn buffered<'a>(s: OpaqueGcPtr) -> &'a mut bool {
+    &mut (*s.as_ref().header.get()).buffered
 }
 
-fn semaphore<'a>(s: OpaqueGcPtr) -> &'a Semaphore {
-    unsafe { &(*s.as_ref().header.get()).semaphore }
+unsafe fn semaphore<'a>(s: OpaqueGcPtr) -> &'a Semaphore {
+    &(*s.as_ref().header.get()).semaphore
 }
 
 fn acquire_permit(semaphore: &'_ Semaphore) -> SemaphorePermit<'_> {
@@ -389,30 +388,27 @@ fn acquire_permit(semaphore: &'_ Semaphore) -> SemaphorePermit<'_> {
     }
 }
 
-fn trace<'a>(s: OpaqueGcPtr) -> &'a mut dyn Trace {
-    unsafe { &mut *s.as_ref().data.get() }
+unsafe fn trace<'a>(s: OpaqueGcPtr) -> &'a mut dyn Trace {
+    &mut *s.as_ref().data.get()
 }
 
-fn for_each_child(s: OpaqueGcPtr, visitor: fn(OpaqueGcPtr)) {
+unsafe fn for_each_child(s: OpaqueGcPtr, visitor: unsafe fn(OpaqueGcPtr)) {
     let permit = acquire_permit(semaphore(s));
-    unsafe { (*s.as_ref().data.get()).visit_children(visitor) }
+    (*s.as_ref().data.get()).visit_children(visitor);
     drop(permit);
 }
 
-fn free(s: OpaqueGcPtr) {
+unsafe fn free(s: OpaqueGcPtr) {
     // Safety: No need to acquire a permit, s is guaranteed to be garbage.
     let trace = trace(s);
-    unsafe {
-        let layout = Layout::for_value(trace);
-        trace.finalize();
-        std::alloc::dealloc(s.as_ptr() as *mut u8, layout);
-    }
+    let layout = Layout::for_value(trace);
+    trace.finalize();
+    std::alloc::dealloc(s.as_ptr() as *mut u8, layout);
 }
 
 #[cfg(test)]
 mod test {
-    use collection::process_cycles;
-
+    use super::*;
     use crate::gc::*;
 
     #[tokio::test]
@@ -441,9 +437,12 @@ mod test {
         drop(a);
         drop(b);
         drop(c);
-        process_mutation_buffer().await;
-        process_cycles();
-        process_cycles();
+        let mut mutation_buffer = Vec::new();
+        unsafe {
+            process_mutation_buffer(&mut mutation_buffer).await;
+            process_cycles();
+            process_cycles();
+        }
 
         assert_eq!(Arc::strong_count(&out_ptr), 1);
     }

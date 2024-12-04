@@ -118,7 +118,7 @@ fn derive_trace_struct(
         _ => {
             return quote! {
                 unsafe impl ::scheme_rs::gc::Trace for #name {
-                    unsafe fn visit_children(&self, visitor: fn(::scheme_rs::gc::OpaqueGcPtr)) {}
+                    unsafe fn visit_children(&self, visitor: unsafe fn(::scheme_rs::gc::OpaqueGcPtr)) {}
                 }
             }
         }
@@ -197,7 +197,7 @@ fn derive_trace_struct(
         unsafe impl<#params> ::scheme_rs::gc::Trace for #name <#unbound_params>
         #where_clause
         {
-            unsafe fn visit_children(&self, visitor: fn(::scheme_rs::gc::OpaqueGcPtr)) {
+            unsafe fn visit_children(&self, visitor: unsafe fn(::scheme_rs::gc::OpaqueGcPtr)) {
                 #(
                     #field_visits
                 )*
@@ -289,7 +289,7 @@ fn derive_trace_enum(name: Ident, data_enum: DataEnum) -> proc_macro2::TokenStre
         .unzip();
     quote! {
         unsafe impl ::scheme_rs::gc::Trace for #name {
-            unsafe fn visit_children(&self, visitor: fn(::scheme_rs::gc::OpaqueGcPtr)) {
+            unsafe fn visit_children(&self, visitor: unsafe fn(::scheme_rs::gc::OpaqueGcPtr)) {
                 match self {
                     #( #visit_match_clauses )*,
                     _ => (),
