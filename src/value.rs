@@ -360,6 +360,6 @@ pub async fn disp(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    println!("{}", arg.read().await.fmt().await);
+    print!("{}", arg.read().await.fmt().await);
     Ok(vec![Gc::new(Value::Null)])
 }
