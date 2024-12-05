@@ -126,9 +126,13 @@ impl Compile for ast::Let {
         span: &Span,
     ) -> Result<Self, CompileLetError> {
         match expr {
-            [Syntax::Null { .. }, body @ ..] => compile_let(&[], body, env, cont, span).await,
+            [Syntax::Null { .. }, body @ ..] => compile_let(None, &[], body, env, cont, span).await,
             [Syntax::List { list: bindings, .. }, body @ ..] => {
-                compile_let(bindings, body, env, cont, span).await
+                compile_let(None, bindings, body, env, cont, span).await
+            }
+            // Named let:
+            [Syntax::Identifier { ident, .. }, Syntax::List { list: bindings, .. }, body @ ..] => {
+                compile_let(Some(ident), bindings, body, env, cont, span).await
             }
             _ => Err(CompileLetError::BadForm(span.clone())),
         }
@@ -136,6 +140,7 @@ impl Compile for ast::Let {
 }
 
 async fn compile_let(
+    name: Option<&Identifier>,
     bindings: &[Syntax],
     body: &[Syntax],
     env: &Env,
@@ -161,11 +166,26 @@ async fn compile_let(
     let body = ast::Body::compile(body, &Env::from(env.clone()), cont, span)
         .await
         .map_err(CompileLetError::CompileBodyError)?;
+
+    let mut bindings: Vec<_> = compiled_bindings
+        .into_iter()
+        .map(|binding| (binding.ident, binding.expr))
+        .collect();
+
+    // If this is a named let, add a binding for a procedure with the same
+    // body and args of the formals:
+    if let Some(name) = name {
+        let lambda = ast::Lambda {
+            args: ast::Formals::FixedArgs(
+                bindings.iter().map(|(ident, _)| ident.clone()).collect(),
+            ),
+            body: body.clone(),
+        };
+        bindings.push((name.clone(), Arc::new(lambda)));
+    }
+
     Ok(ast::Let {
-        bindings: compiled_bindings
-            .into_iter()
-            .map(|binding| (binding.ident, binding.expr))
-            .collect(),
+        bindings: Arc::from(bindings),
         body,
     })
 }

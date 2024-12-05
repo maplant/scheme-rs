@@ -14,34 +14,42 @@ That is obviously a long way away.
 
 - Tail-call optimizations are fully supported 
 - Garbage Collected via [Bacon-Rajan Concurrent Cycle Collection](https://pages.cs.wisc.edu/~cymen/misc/interests/Bacon01Concurrent.pdf)
-- Most key forms (let/let*/define)
+- Most key forms (let/let*/letrec/lambda/define etc)
 - Call by current continuation
-- Transformers 
+- Transformers (define-syntax, syntax-case, make-variable-transformer)
 - Spawning tasks and awaiting futures
 
 ## Features currently unsupported by scheme-rs: 
 
 - Records, and therefore conditions and error handling
 - Ports and IO operations
-- Generally, most API functions are not currently implemented
-- set-car! and set-cdr!
+- Most API functions are not implemented
 - A large portion of lexical structures are missing; there's no way to specify recursive data structures
-- Let loop
-- And many more that I cannot think of off the top of my head.
+- And many more that I cannot think of off the top of my head
 
 ## Usage:
 
 ### Running a REPL:
 
 A REPL is the default entry point for scheme-rs at the current moment. You can access it by running `cargo run`
-in the repo's root directory:
+in the repo's root directory (examples taken from wikipedia):
 
 ```
 ~/scheme-rs> cargo run
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
      Running `target/debug/scheme-rs`
->>> (+ 5 5)
-$1 = 10
+>>> (let loop ((n 1))
+...   (if (> n 10)
+...       '()
+...       (cons n
+...     (loop (+ n 1)))))
+$1 = (1 2 3 4 5 6 7 8 9 10)
+>>> (let* ((yin
+...          ((lambda (cc) (display "@") cc) (call-with-current-continuation (lambda (c) c))))
+...        (yang
+...          ((lambda (cc) (display "*") cc) (call-with-current-continuation (lambda (c) c)))))
+...     (yin yang))
+@*@**@***@****@*****@******@*******@********@*********@**********@***********@**********...^C
 ```
 
 ### Creating Builtin Functions:
@@ -59,9 +67,3 @@ pub async fn is_number(
     Ok(Gc::new(Value::Boolean(matches!(&*arg, Value::Number(_)))))
 }
 ```
-
-## Why not just use Guile?
-
-In the end, it all comes down to [call with current continuation](https://en.wikipedia.org/wiki/Call-with-current-continuation). Guile implements this feature by copying the stack, an action which is obviously problematic when considering 
-ref counts and locks. Scheme-rs remedies this by providing all functions with the current continuation so that they
-may handle it properly. Additionally, the current continuation only contains references and not locked variables. 
