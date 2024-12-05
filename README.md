@@ -14,9 +14,9 @@ That is obviously a long way away.
 
 - Tail-call optimizations are fully supported 
 - Garbage Collected via [Bacon-Rajan Concurrent Cycle Collection](https://pages.cs.wisc.edu/~cymen/misc/interests/Bacon01Concurrent.pdf)
-- Most key forms (let/let*/define)
+- Most key forms (let/let*/letrec/lambda/define etc)
 - Call by current continuation
-- Transformers 
+- Transformers (define-syntax, syntax-case, make-variable-transformer)
 - Spawning tasks and awaiting futures
 
 ## Features currently unsupported by scheme-rs: 
@@ -67,9 +67,3 @@ pub async fn is_number(
     Ok(Gc::new(Value::Boolean(matches!(&*arg, Value::Number(_)))))
 }
 ```
-
-## Why not just use Guile?
-
-In the end, it all comes down to [call with current continuation](https://en.wikipedia.org/wiki/Call-with-current-continuation). Guile implements this feature by copying the stack, an action which is obviously problematic when considering 
-ref counts and locks. Scheme-rs remedies this by providing all functions with the current continuation so that they
-may handle it properly. Additionally, the current continuation only contains references and not locked variables. 
