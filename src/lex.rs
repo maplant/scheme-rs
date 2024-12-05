@@ -1,14 +1,14 @@
 use nom::{
     branch::alt,
-    bytes::complete::{is_not, tag, tag_no_case, take_until, take_while1},
+    bytes::complete::{is_not, tag, tag_no_case, take, take_until, take_while1},
     character::{
         complete::{char as match_char, hex_digit1, one_of, satisfy},
         streaming::anychar,
     },
-    combinator::{map, opt, value, verify},
+    combinator::{map, not, opt, value, verify},
     multi::{fold_many0, many0},
     sequence::{delimited, preceded, tuple},
-    IResult,
+    IResult, Parser,
 };
 use nom_locate::{position, LocatedSpan};
 use std::{borrow::Cow, sync::Arc};
@@ -123,6 +123,21 @@ fn comment(i: InputSpan) -> IResult<InputSpan, ()> {
     )(i)
 }
 
+fn nested_comment(i: InputSpan) -> IResult<InputSpan, ()> {
+    delimited(
+        tag("#|"),
+        fold_many0(
+            alt((
+                nested_comment,
+                map(not(tag("|#")).and(take(1_usize)), |_| ()),
+            )),
+            || (),
+            |_, _| (),
+        ),
+        tag("|#"),
+    )(i)
+}
+
 fn whitespace(i: InputSpan) -> IResult<InputSpan, ()> {
     map(
         alt((satisfy(UnicodeCategories::is_separator), match_char('\n'))),
@@ -135,7 +150,7 @@ fn atmosphere(i: InputSpan) -> IResult<InputSpan, ()> {
 }
 
 fn interlexeme_space(i: InputSpan) -> IResult<InputSpan, ()> {
-    fold_many0(alt((atmosphere, comment)), || (), |_, _| ())(i)
+    fold_many0(alt((atmosphere, comment, nested_comment)), || (), |_, _| ())(i)
 }
 
 fn identifier(i: InputSpan) -> IResult<InputSpan, String> {
