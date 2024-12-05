@@ -71,7 +71,7 @@ impl Value {
                 Self::Boolean(true) => "#t".to_string(),
                 Self::Boolean(false) => "#f".to_string(),
                 Self::Number(number) => number.to_string(),
-                Self::String(string) => format!("\"{string}\""),
+                Self::String(string) => string.to_string(),
                 Self::Symbol(symbol) => symbol.clone(),
                 Self::Pair(car, cdr) => crate::lists::fmt_list(car, cdr).await,
                 Self::Vector(vec) => {

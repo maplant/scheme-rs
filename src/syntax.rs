@@ -49,7 +49,7 @@ pub enum Syntax {
         span: Span,
     },
     /// A nested grouping of pairs. If the expression is a proper list, then the
-    /// last element of expression will be Nil. This vector is guaranteed to contain
+    /// last element of expression will be Null. This vector is guaranteed to contain
     /// at least two elements.
     List {
         list: Vec<Syntax>,

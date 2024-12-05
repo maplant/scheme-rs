@@ -119,6 +119,20 @@ pub async fn set_car(
     Ok(vec![Gc::new(Value::Null)])
 }
 
+#[builtin("set-cdr!")]
+pub async fn set_cdr(
+    _cont: &Option<Arc<Continuation>>,
+    var: &Gc<Value>,
+    val: &Gc<Value>,
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
+    let mut var = var.write().await;
+    match &mut *var {
+        Value::Pair(_car, ref mut cdr) => *cdr = val.clone(),
+        _ => todo!(),
+    }
+    Ok(vec![Gc::new(Value::Null)])
+}
+
 #[builtin("length")]
 pub async fn length(
     _cont: &Option<Arc<Continuation>>,
