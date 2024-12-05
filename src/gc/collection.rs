@@ -410,6 +410,7 @@ unsafe fn free(s: OpaqueGcPtr) {
 mod test {
     use super::*;
     use crate::gc::*;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn cycles() {

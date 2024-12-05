@@ -25,14 +25,13 @@ use std::{
     marker::PhantomData,
     ops::{Deref, DerefMut},
     ptr::{drop_in_place, NonNull},
-    sync::Arc,
 };
-use tokio::sync::{RwLock, Semaphore, SemaphorePermit};
+use tokio::sync::{Semaphore, SemaphorePermit};
 
 /// A Garbage-Collected smart pointer with interior mutability.
 pub struct Gc<T: Trace> {
     ptr: NonNull<GcInner<T>>,
-    marker: PhantomData<Arc<RwLock<T>>>,
+    marker: PhantomData<GcInner<T>>,
 }
 
 impl<T: Trace> Gc<T> {
