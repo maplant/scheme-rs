@@ -271,9 +271,14 @@
     ((_ args n (r b1 b2 ...) more ...)
      (apply (lambda r b1 b2 ...) args))))
 
-;; First class apply. The compiler will compile every instance of
-;; apply that appears in the operator position (including the body
-;; of this definition). If apply appears in the argument position,
-;; this function will be returned.
-(define (apply proc arg1 . args)
-  (apply proc arg1 args))
+;; TODO: First class apply
+
+(define (for-each func lst . remaining)
+  (let loop ((rest lst))
+    (unless (null? rest)
+      (func (car rest))
+      (loop (cdr rest))))
+  (if (not (null? remaining))
+      (begin
+        (display remaining)
+        (apply for-each (cons func remaining)))))
