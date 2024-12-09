@@ -265,9 +265,6 @@ impl Syntax {
                 [Self::Identifier { ident, span, .. }, tail @ ..] if ident == "syntax-rules" => {
                     ast::SyntaxRules::compile_to_expr(tail, env, cont, span).await
                 }
-                [Self::Identifier { ident, span, .. }, tail @ ..] if ident == "apply" => {
-                    ast::Apply::compile_to_expr(tail, env, cont, span).await
-                }
                 // Very special form:
                 [Self::Identifier { ident, span, .. }, tail @ ..] if ident == "set!" => {
                     // Check for a variable transformer

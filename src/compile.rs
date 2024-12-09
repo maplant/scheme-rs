@@ -35,7 +35,6 @@ pub enum CompileError {
     CompileSyntaxError(CompileSyntaxError),
     CompileSyntaxCaseError(CompileSyntaxCaseError),
     CompileSyntaxRulesError(CompileSyntaxRulesError),
-    CompileApplyError(CompileApplyError),
 }
 
 impl From<RuntimeError> for CompileError {
@@ -845,47 +844,5 @@ impl Compile for ast::SyntaxRules {
                 is_variable_transformer: false,
             },
         })
-    }
-}
-
-#[derive(From, Debug, Clone)]
-pub enum CompileApplyError {
-    BadForm(Span),
-    CompileError(Box<CompileError>),
-}
-
-impl_from_compile_error!(CompileApplyError);
-
-#[async_trait]
-impl Compile for ast::Apply {
-    type Error = CompileApplyError;
-
-    async fn compile(
-        exprs: &[Syntax],
-        env: &Env,
-        cont: &Option<Arc<Continuation>>,
-        span: &Span,
-    ) -> Result<Self, CompileApplyError> {
-        match exprs {
-            [operator, args @ .., rest_args, Syntax::Null { .. }] => {
-                let proc_name = match operator {
-                    Syntax::Identifier { ident, .. } => ident.name.clone(),
-                    _ => String::from("<lambda>"),
-                };
-                let operator = operator.compile(env, cont).await?;
-                let mut compiled_args = vec![operator];
-                for arg in args {
-                    compiled_args.push(arg.compile(env, cont).await?);
-                }
-                let rest_args = rest_args.compile(env, cont).await?;
-                Ok(ast::Apply {
-                    proc_name,
-                    location: span.clone(),
-                    args: ArcSlice::from(compiled_args),
-                    rest_args,
-                })
-            }
-            _ => Err(CompileApplyError::BadForm(span.clone())),
-        }
     }
 }

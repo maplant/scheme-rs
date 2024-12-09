@@ -1,12 +1,5 @@
 use crate::{
-    ast::Body,
-    continuation::Continuation,
-    env::Env,
-    error::{Frame, RuntimeError},
-    eval::{Eval, ValuesOrPreparedCall},
-    gc::Gc,
-    syntax::{Identifier, Span},
-    value::Value,
+    ast::Body, builtin, continuation::Continuation, env::Env, error::{Frame, RuntimeError}, eval::{Eval, ValuesOrPreparedCall}, gc::Gc, lists::list_to_vec, syntax::{Identifier, Span}, value::Value
 };
 use async_trait::async_trait;
 use futures::future::BoxFuture;
@@ -78,7 +71,7 @@ impl Callable for Procedure {
     }
 }
 
-pub type ExprFuture = BoxFuture<'static, Result<Vec<Gc<Value>>, RuntimeError>>;
+pub type ExprFuture = BoxFuture<'static, Result<ValuesOrPreparedCall, RuntimeError>>;
 
 #[derive(Debug, Clone, Trace)]
 pub struct ExternalFn {
@@ -104,15 +97,12 @@ impl Callable for ExternalFn {
         cont: &Option<Arc<Continuation>>,
     ) -> Result<ValuesOrPreparedCall, RuntimeError> {
         // TODO: check the arguments
-        Ok(ValuesOrPreparedCall::Values(
-            (self.func)(cont.clone(), args).await?,
-        ))
+        (self.func)(cont.clone(), args).await
     }
 }
 
 pub struct PreparedCall {
-    proc_name: String,
-    location: Span,
+    proc_debug_info: Option<ProcDebugInfo>,
     operator: Gc<Value>,
     args: Vec<Gc<Value>>,
 }
@@ -126,7 +116,9 @@ impl PreparedCall {
         let mut bt = Vec::new();
         loop {
             let proc = curr_proc.take().unwrap();
-            bt.push(Frame::new(proc.proc_name.clone(), proc.location.clone()));
+            if let Some(ProcDebugInfo { proc_name, location }) = proc.proc_debug_info {
+                bt.push(Frame::new(proc_name.clone(), location.clone()));
+            }
             let callable = {
                 let proc = proc.operator.read().await;
                 let Some(callable) = proc.as_callable() else {
@@ -160,14 +152,45 @@ impl PreparedCall {
         }
     }
 
-    pub fn prepare(proc_name: &str, location: &Span, args: Vec<Gc<Value>>) -> Self {
+    /// Such a strange interface. Whatever. FIXME
+    pub fn prepare(args: Vec<Gc<Value>>, proc_debug_info: Option<ProcDebugInfo>) -> Self {
         let operator = args[0].clone();
         let args = args[1..].to_owned();
         Self {
-            proc_name: proc_name.to_string(),
-            location: location.clone(),
+            proc_debug_info,
             operator,
             args,
         }
     }
+}
+
+
+pub struct ProcDebugInfo {
+    proc_name: String,
+    location: Span,
+}
+
+impl ProcDebugInfo {
+    pub fn new(proc_name: &str, location: &Span) -> Self {
+        Self {
+            proc_name: proc_name.to_string(),
+            location: location.clone(),
+        }
+    }
+}
+
+#[builtin("apply")]
+pub async fn apply(
+    _cont: &Option<Arc<Continuation>>,
+    mut args: Vec<Gc<Value>>,
+) -> Result<PreparedCall, RuntimeError> {
+    if args.len() < 2 {
+        return Err(RuntimeError::wrong_num_of_args(2, 3));
+    }
+    let last = args.pop().unwrap();
+    list_to_vec(&last, &mut args).await;
+    Ok(PreparedCall::prepare(
+        args,
+        None
+    ))
 }
