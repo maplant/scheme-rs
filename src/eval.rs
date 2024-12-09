@@ -1,9 +1,8 @@
 use crate::{
     ast,
     continuation::{
-        Continuation, ResumableAnd, ResumableBody, ResumableCall,
-        ResumableDefineVar, ResumableIf, ResumableLet, ResumableOr, ResumableSet,
-        ResumableSyntaxCase,
+        Continuation, ResumableAnd, ResumableBody, ResumableCall, ResumableDefineVar, ResumableIf,
+        ResumableLet, ResumableOr, ResumableSet, ResumableSyntaxCase,
     },
     env::Env,
     error::RuntimeError,

@@ -1,5 +1,14 @@
 use crate::{
-    ast::Body, builtin, continuation::Continuation, env::Env, error::{Frame, RuntimeError}, eval::{Eval, ValuesOrPreparedCall}, gc::Gc, lists::list_to_vec, syntax::{Identifier, Span}, value::Value
+    ast::Body,
+    builtin,
+    continuation::Continuation,
+    env::Env,
+    error::{Frame, RuntimeError},
+    eval::{Eval, ValuesOrPreparedCall},
+    gc::Gc,
+    lists::list_to_vec,
+    syntax::{Identifier, Span},
+    value::Value,
 };
 use async_trait::async_trait;
 use futures::future::BoxFuture;
@@ -116,7 +125,11 @@ impl PreparedCall {
         let mut bt = Vec::new();
         loop {
             let proc = curr_proc.take().unwrap();
-            if let Some(ProcDebugInfo { proc_name, location }) = proc.proc_debug_info {
+            if let Some(ProcDebugInfo {
+                proc_name,
+                location,
+            }) = proc.proc_debug_info
+            {
                 bt.push(Frame::new(proc_name.clone(), location.clone()));
             }
             let callable = {
@@ -164,7 +177,6 @@ impl PreparedCall {
     }
 }
 
-
 pub struct ProcDebugInfo {
     proc_name: String,
     location: Span,
@@ -189,8 +201,5 @@ pub async fn apply(
     }
     let last = args.pop().unwrap();
     list_to_vec(&last, &mut args).await;
-    Ok(PreparedCall::prepare(
-        args,
-        None
-    ))
+    Ok(PreparedCall::prepare(args, None))
 }

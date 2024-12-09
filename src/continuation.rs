@@ -590,9 +590,12 @@ impl Resumable for ResumableCall {
                 .require_one()?;
             collected.push(arg);
         }
-        PreparedCall::prepare(collected, Some(ProcDebugInfo::new(&self.proc_name, &self.location)))
-            .eval(cont)
-            .await
+        PreparedCall::prepare(
+            collected,
+            Some(ProcDebugInfo::new(&self.proc_name, &self.location)),
+        )
+        .eval(cont)
+        .await
     }
 
     async fn clone_stack(&self) -> Arc<dyn Resumable> {
