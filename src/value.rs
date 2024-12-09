@@ -88,10 +88,10 @@ impl Value {
                 }
                 Self::Null => "()".to_string(),
                 Self::Character(c) => format!("\\x{c}"),
-                Self::ByteVector(_) => "<byte_vector>".to_string(),
+                Self::ByteVector(_) => "<byte-vector>".to_string(),
                 Self::Syntax(syntax) => format!("{:#?}", syntax),
                 Self::Procedure(proc) => format!("<{proc:?}>"),
-                Self::ExternalFn(_) => "<external_fn>".to_string(),
+                Self::ExternalFn(_) => "<external-fn>".to_string(),
                 Self::Future(_) => "<future>".to_string(),
                 Self::Transformer(_) => "<transformer>".to_string(),
                 Self::Continuation(_) => "<continuation>".to_string(),
