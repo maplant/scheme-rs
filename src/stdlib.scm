@@ -270,3 +270,15 @@
          (case-lambda-help args n more ...)))
     ((_ args n (r b1 b2 ...) more ...)
      (apply (lambda r b1 b2 ...) args))))
+
+;; TODO: First class apply
+
+(define (for-each func lst . remaining)
+  (let loop ((rest lst))
+    (unless (null? rest)
+      (func (car rest))
+      (loop (cdr rest))))
+  (if (not (null? remaining))
+      (begin
+        (display remaining)
+        (apply for-each (cons func remaining)))))

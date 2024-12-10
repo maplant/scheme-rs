@@ -9,8 +9,7 @@ use crate::{
     eval::{Eval, ValuesOrPreparedCall},
     expand::Transformer,
     gc::{Gc, Trace},
-    lists::list_to_vec,
-    proc::{Callable, PreparedCall},
+    proc::{Callable, PreparedCall, ProcDebugInfo},
     syntax::{Identifier, Span},
     util::{ArcSlice, RequireOne},
     value::Value,
@@ -189,12 +188,6 @@ impl Resumable for ResumableBody {
             remaining: self.remaining.clone(),
         })
     }
-
-    /*
-    async fn clone_stack(&self) -> Arc<dyn Resumable> {
-        Arc::new(self.clone())
-    }
-    */
 }
 
 #[derive(Trace)]
@@ -597,9 +590,12 @@ impl Resumable for ResumableCall {
                 .require_one()?;
             collected.push(arg);
         }
-        PreparedCall::prepare(&self.proc_name, &self.location, collected)
-            .eval(cont)
-            .await
+        PreparedCall::prepare(
+            collected,
+            Some(ProcDebugInfo::new(&self.proc_name, &self.location)),
+        )
+        .eval(cont)
+        .await
     }
 
     async fn clone_stack(&self) -> Arc<dyn Resumable> {
@@ -607,103 +603,6 @@ impl Resumable for ResumableCall {
             env: self.env.deep_clone().await,
             collected: self.collected.clone(),
             remaining: self.remaining.clone(),
-            proc_name: self.proc_name.clone(),
-            location: self.location.clone(),
-        })
-    }
-}
-
-#[derive(Trace)]
-pub struct ResumableApply {
-    env: Env,
-    collected: Vec<Gc<Value>>,
-    remaining: ArcSlice<Arc<dyn Eval>>,
-    rest_args: Option<Arc<dyn Eval>>,
-    proc_name: String,
-    location: Span,
-}
-
-impl ResumableApply {
-    pub fn new(
-        proc_name: &str,
-        location: &Span,
-        env: &Env,
-        collected: &[Gc<Value>],
-        remaining: ArcSlice<Arc<dyn Eval>>,
-        rest_args: Option<Arc<dyn Eval>>,
-    ) -> Self {
-        Self {
-            proc_name: proc_name.to_string(),
-            location: location.clone(),
-            env: env.clone(),
-            collected: collected.to_owned(),
-            remaining,
-            rest_args,
-        }
-    }
-}
-
-#[async_trait]
-impl Resumable for ResumableApply {
-    async fn resume(
-        &self,
-        args: Vec<Gc<Value>>,
-        cont: &Option<Arc<Continuation>>,
-    ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-        let arg = args.require_one()?;
-        let mut collected = self.collected.clone();
-        if let Some(ref rest_args) = self.rest_args {
-            collected.push(arg);
-
-            for (arg, remaining) in self.remaining.iter() {
-                let cont = Arc::new(Continuation::new(
-                    Arc::new(ResumableApply::new(
-                        &self.proc_name,
-                        &self.location,
-                        &self.env,
-                        &collected,
-                        remaining,
-                        Some(rest_args.clone()),
-                    )),
-                    cont,
-                ));
-                let arg = arg.eval(&self.env, &Some(cont)).await?.require_one()?;
-                collected.push(arg);
-            }
-
-            let cont = Arc::new(Continuation::new(
-                Arc::new(ResumableApply::new(
-                    &self.proc_name,
-                    &self.location,
-                    &self.env,
-                    &collected,
-                    ArcSlice::empty(),
-                    None,
-                )),
-                cont,
-            ));
-            let rest_args = rest_args
-                .eval(&self.env, &Some(cont))
-                .await?
-                .require_one()?;
-            // TODO: Throw an error if rest_args is not a list
-            list_to_vec(&rest_args, &mut collected).await;
-        } else {
-            // TODO: Throw an error if arg is not a list
-            list_to_vec(&arg, &mut collected).await;
-        }
-
-        PreparedCall::prepare(&self.proc_name, &self.location, collected)
-            .eval(cont)
-            .await
-    }
-
-    async fn clone_stack(&self) -> Arc<dyn Resumable> {
-        Arc::new(Self {
-            env: self.env.deep_clone().await,
-            collected: self.collected.clone(),
-            remaining: self.remaining.clone(),
-            rest_args: self.rest_args.clone(),
             proc_name: self.proc_name.clone(),
             location: self.location.clone(),
         })

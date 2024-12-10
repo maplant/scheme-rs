@@ -33,13 +33,13 @@ pub fn builtin(name: TokenStream, item: TokenStream) -> TokenStream {
             fn #wrapper_name(
                 cont: Option<std::sync::Arc<::scheme_rs::continuation::Continuation>>,
                 args: Vec<::scheme_rs::gc::Gc<::scheme_rs::value::Value>>
-            ) -> futures::future::BoxFuture<'static, Result<Vec<::scheme_rs::gc::Gc<::scheme_rs::value::Value>>, ::scheme_rs::error::RuntimeError>> {
+            ) -> futures::future::BoxFuture<'static, Result<::scheme_rs::eval::ValuesOrPreparedCall, ::scheme_rs::error::RuntimeError>> {
                 Box::pin(
                     async move {
                         #impl_name(
                             &cont,
                             #( &args[#arg_indices], )*
-                        ).await
+                        ).await.map(::scheme_rs::eval::ValuesOrPreparedCall::from)
                     }
                 )
             }
@@ -50,7 +50,7 @@ pub fn builtin(name: TokenStream, item: TokenStream) -> TokenStream {
             fn #wrapper_name(
                 cont: Option<std::sync::Arc<::scheme_rs::continuation::Continuation>>,
                 mut required_args: Vec<::scheme_rs::gc::Gc<::scheme_rs::value::Value>>
-            ) -> futures::future::BoxFuture<'static, Result<Vec<::scheme_rs::gc::Gc<::scheme_rs::value::Value>>, ::scheme_rs::error::RuntimeError>> {
+            ) -> futures::future::BoxFuture<'static, Result<::scheme_rs::eval::ValuesOrPreparedCall, ::scheme_rs::error::RuntimeError>> {
                 let var_args = required_args.split_off(#num_args);
                 Box::pin(
                     async move {
@@ -58,7 +58,7 @@ pub fn builtin(name: TokenStream, item: TokenStream) -> TokenStream {
                             &cont,
                             #( &required_args[#arg_indices], )*
                             var_args
-                        ).await
+                        ).await.map(::scheme_rs::eval::ValuesOrPreparedCall::from)
                     }
                 )
             }

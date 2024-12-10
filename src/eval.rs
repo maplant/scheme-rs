@@ -1,16 +1,14 @@
 use crate::{
     ast,
     continuation::{
-        Continuation, ResumableAnd, ResumableApply, ResumableBody, ResumableCall,
-        ResumableDefineVar, ResumableIf, ResumableLet, ResumableOr, ResumableSet,
-        ResumableSyntaxCase,
+        Continuation, ResumableAnd, ResumableBody, ResumableCall, ResumableDefineVar, ResumableIf,
+        ResumableLet, ResumableOr, ResumableSet, ResumableSyntaxCase,
     },
     env::Env,
     error::RuntimeError,
     gc::{Gc, Trace},
-    lists::list_to_vec,
-    proc::{PreparedCall, Procedure},
-    util::{self, ArcSlice, RequireOne},
+    proc::{PreparedCall, ProcDebugInfo, Procedure},
+    util::{self, RequireOne},
     value::Value,
 };
 use async_trait::async_trait;
@@ -19,6 +17,18 @@ use std::sync::Arc;
 pub enum ValuesOrPreparedCall {
     Values(Vec<Gc<Value>>),
     PreparedCall(PreparedCall),
+}
+
+impl From<Vec<Gc<Value>>> for ValuesOrPreparedCall {
+    fn from(values: Vec<Gc<Value>>) -> Self {
+        Self::Values(values)
+    }
+}
+
+impl From<PreparedCall> for ValuesOrPreparedCall {
+    fn from(prepared_call: PreparedCall) -> ValuesOrPreparedCall {
+        Self::PreparedCall(prepared_call)
+    }
 }
 
 impl ValuesOrPreparedCall {
@@ -169,9 +179,8 @@ impl Eval for ast::Call {
             collected.push(arg);
         }
         Ok(ValuesOrPreparedCall::PreparedCall(PreparedCall::prepare(
-            &self.proc_name,
-            &self.location,
             collected,
+            Some(ProcDebugInfo::new(&self.proc_name, &self.location)),
         )))
     }
 }
@@ -451,54 +460,6 @@ impl Eval for ast::SyntaxRules {
         _cont: &Option<Arc<Continuation>>,
     ) -> Result<Vec<Gc<Value>>, RuntimeError> {
         Ok(vec![Gc::new(Value::Transformer(self.transformer.clone()))])
-    }
-}
-
-#[async_trait]
-impl Eval for ast::Apply {
-    async fn tail_eval(
-        &self,
-        env: &Env,
-        cont: &Option<Arc<Continuation>>,
-    ) -> Result<ValuesOrPreparedCall, RuntimeError> {
-        let mut collected = Vec::new();
-
-        for (arg, remaining) in self.args.iter() {
-            let cont = Arc::new(Continuation::new(
-                Arc::new(ResumableApply::new(
-                    &self.proc_name,
-                    &self.location,
-                    env,
-                    &collected,
-                    remaining,
-                    Some(self.rest_args.clone()),
-                )),
-                cont,
-            ));
-            let arg = arg.eval(env, &Some(cont)).await?.require_one()?;
-            collected.push(arg);
-        }
-
-        let cont = Arc::new(Continuation::new(
-            Arc::new(ResumableApply::new(
-                &self.proc_name,
-                &self.location,
-                env,
-                &collected,
-                ArcSlice::empty(),
-                None,
-            )),
-            cont,
-        ));
-        let rest_args = self.rest_args.eval(env, &Some(cont)).await?.require_one()?;
-        // TODO: Throw an error if rest_args is not a list
-        list_to_vec(&rest_args, &mut collected).await;
-
-        Ok(ValuesOrPreparedCall::PreparedCall(PreparedCall::prepare(
-            &self.proc_name,
-            &self.location,
-            collected,
-        )))
     }
 }
 

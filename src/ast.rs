@@ -161,14 +161,6 @@ pub struct SyntaxRules {
 }
 
 #[derive(Clone, Trace)]
-pub struct Apply {
-    pub proc_name: String,
-    pub location: Span,
-    pub args: ArcSlice<Arc<dyn Eval>>,
-    pub rest_args: Arc<dyn Eval>,
-}
-
-#[derive(Clone, Trace)]
 pub struct FetchVar {
     pub ident: Identifier,
 }
@@ -195,6 +187,7 @@ impl MacroExpansionPoint {
         }
     }
 }
+
 /*
 struct Export {}
 

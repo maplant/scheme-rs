@@ -21,8 +21,8 @@ pub enum Value {
     Character(char),
     String(String),
     Symbol(String),
-    Pair(#[debug(skip)] Gc<Value>, #[debug(skip)] Gc<Value>),
-    Vector(#[debug(skip)] Vec<Gc<Value>>),
+    Pair(Gc<Value>, Gc<Value>),
+    Vector(Vec<Gc<Value>>),
     ByteVector(Vec<u8>),
     Syntax(Syntax),
     Procedure(Procedure),
@@ -339,7 +339,7 @@ pub async fn procedure_pred(
     let arg = arg.read().await;
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
-        Value::Procedure(_) | Value::ExternalFn(_) | Value::Transformer(_)
+        Value::Procedure(_) | Value::ExternalFn(_) | Value::Transformer(_) | Value::Continuation(_)
     )))])
 }
 

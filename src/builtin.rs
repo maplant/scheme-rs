@@ -1,11 +1,11 @@
 use crate::{
-    continuation::Continuation, env::LexicalContour, error::RuntimeError, gc::Gc, proc::ExternalFn,
-    syntax::Identifier, value::Value,
+    continuation::Continuation, env::LexicalContour, error::RuntimeError,
+    eval::ValuesOrPreparedCall, gc::Gc, proc::ExternalFn, syntax::Identifier, value::Value,
 };
 use futures::future::BoxFuture;
 use std::sync::Arc;
 
-type ExprFuture = BoxFuture<'static, Result<Vec<Gc<Value>>, RuntimeError>>;
+type ExprFuture = BoxFuture<'static, Result<ValuesOrPreparedCall, RuntimeError>>;
 
 pub struct Builtin {
     pub name: &'static str,
