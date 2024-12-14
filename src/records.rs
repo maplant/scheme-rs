@@ -10,8 +10,8 @@ use crate::{
     error::RuntimeError,
     eval::Eval,
     gc::{Gc, Trace},
+    proc::Procedure,
     syntax::{Identifier, Mark, Span, Syntax},
-    util::RequireOne,
     value::Value,
 };
 
@@ -310,7 +310,7 @@ impl Eval for DefineRecordType {
     async fn eval(
         &self,
         env: &Env,
-        cont: &Option<Arc<Continuation>>,
+        _cont: &Option<Arc<Continuation>>,
     ) -> Result<Vec<Gc<Value>>, RuntimeError> {
         let inherits = if let Some(ref parent) = self.parent {
             let parent_gc = env
@@ -372,14 +372,16 @@ impl Eval for DefineRecordType {
                 }) as Arc<dyn Eval>
             })
             .collect();
+
         // Append the return value
         setters.push(
             Arc::new(ast::FetchVar::new(Identifier::new("this".to_string()))) as Arc<dyn Eval>,
         );
 
-        let constructor = ast::Lambda {
-            args: ast::Formals::FixedArgs(fields.clone()),
-            body: ast::Body::new(vec![Arc::new(ast::Let::new(
+        let constructor = new_proc(
+            env,
+            fields.clone(),
+            ast::Body::new(vec![Arc::new(ast::Let::new(
                 vec![(
                     Identifier::new("this".to_string()),
                     Arc::new(Value::Record(Record {
@@ -389,18 +391,19 @@ impl Eval for DefineRecordType {
                 )],
                 ast::Body::new(setters),
             )) as Arc<dyn Eval>]),
-        };
+        );
 
         // Set up the predicate:
         // TODO: Extract this pattern into a function.
-        let predicate = ast::Lambda {
-            args: ast::Formals::FixedArgs(vec![Identifier::new("this".to_string())]),
-            body: ast::Body::new(vec![Arc::new(RecordPredicate {
+        let predicate = new_proc(
+            env,
+            vec![Identifier::new("this".to_string())],
+            ast::Body::new(vec![Arc::new(RecordPredicate {
                 record_type: record_type.clone(),
             }) as Arc<dyn Eval>]),
-        };
+        );
 
-        let mut new_functions = HashMap::<String, Arc<dyn Eval>>::new();
+        let mut new_functions = HashMap::<String, Gc<Value>>::new();
 
         // Set up the new field accessors and mutators:
         for field in &self.fields {
@@ -412,15 +415,16 @@ impl Eval for DefineRecordType {
                 || format!("{}-{}", self.name.name, ident.name),
                 |accessor| accessor.name.clone(),
             );
-            let accessor = ast::Lambda {
-                args: ast::Formals::FixedArgs(vec![Identifier::new("this".to_string())]),
-                body: ast::Body::new(vec![Arc::new(FieldAccessor {
+            let accessor = new_proc(
+                env,
+                vec![Identifier::new("this".to_string())],
+                ast::Body::new(vec![Arc::new(FieldAccessor {
                     record_type: record_type.clone(),
                     identifier: ident.clone(),
                 }) as Arc<dyn Eval>]),
-            };
+            );
 
-            new_functions.insert(accessor_name, Arc::new(accessor) as Arc<dyn Eval>);
+            new_functions.insert(accessor_name, accessor);
 
             // Set up mutator, if we should:
             if let Some(mutator_name) = match field.kind {
@@ -432,17 +436,15 @@ impl Eval for DefineRecordType {
                 }
                 _ => None,
             } {
-                let mutator = ast::Lambda {
-                    args: ast::Formals::FixedArgs(vec![
-                        Identifier::new("this".to_string()),
-                        ident.clone(),
-                    ]),
-                    body: ast::Body::new(vec![Arc::new(FieldMutator {
+                let mutator = new_proc(
+                    env,
+                    vec![Identifier::new("this".to_string()), ident.clone()],
+                    ast::Body::new(vec![Arc::new(FieldMutator {
                         record_type: record_type.clone(),
                         identifier: ident.clone(),
                     }) as Arc<dyn Eval>]),
-                };
-                new_functions.insert(mutator_name, Arc::new(mutator) as Arc<dyn Eval>);
+                );
+                new_functions.insert(mutator_name, mutator);
             }
         }
 
@@ -459,29 +461,18 @@ impl Eval for DefineRecordType {
             .as_ref()
             .map_or_else(|| format!("make-{}", self.name.name), |cn| cn.name.clone());
         let constructor_name = Identifier::new(constructor_name);
-        env.def_var(
-            &constructor_name,
-            constructor.eval(env, cont).await?.require_one()?,
-        )
-        .await;
+        env.def_var(&constructor_name, constructor).await;
 
         let predicate_name = self
             .predicate
             .as_ref()
             .map_or_else(|| format!("{}?", self.name.name), |cn| cn.name.clone());
         let predicate_name = Identifier::new(predicate_name);
-        env.def_var(
-            &predicate_name,
-            predicate.eval(env, cont).await?.require_one()?,
-        )
-        .await;
+        env.def_var(&predicate_name, predicate).await;
 
         for (new_function_name, new_function) in new_functions.into_iter() {
-            env.def_var(
-                &Identifier::new(new_function_name),
-                new_function.eval(env, cont).await?.require_one()?,
-            )
-            .await;
+            env.def_var(&Identifier::new(new_function_name), new_function)
+                .await;
         }
 
         env.def_var(&self.name, Gc::new(Value::RecordType(record_type)))
@@ -489,6 +480,16 @@ impl Eval for DefineRecordType {
 
         Ok(Vec::new())
     }
+}
+
+fn new_proc(env: &Env, args: Vec<Identifier>, body: ast::Body) -> Gc<Value> {
+    Gc::new(Value::Procedure(Procedure {
+        up: env.clone(),
+        args,
+        remaining: None,
+        body,
+        is_variable_transformer: false,
+    }))
 }
 
 // These are implemented in a super weird way and I'm sure I could figure
