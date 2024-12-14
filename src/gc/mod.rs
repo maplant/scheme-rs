@@ -23,6 +23,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     future::Future,
     marker::PhantomData,
+    mem::ManuallyDrop,
     ops::{Deref, DerefMut},
     ptr::{drop_in_place, NonNull},
 };
@@ -350,9 +351,8 @@ where
     }
 
     unsafe fn finalize(&mut self) {
-        for mut child in std::mem::take(self).into_iter() {
+        for mut child in std::mem::take(self).into_iter().map(ManuallyDrop::new) {
             child.finalize_or_skip();
-            std::mem::forget(child);
         }
     }
 }
@@ -368,9 +368,8 @@ where
     }
 
     unsafe fn finalize(&mut self) {
-        for mut k in std::mem::take(self).into_iter() {
+        for mut k in std::mem::take(self).into_iter().map(ManuallyDrop::new) {
             k.finalize_or_skip();
-            std::mem::forget(k);
         }
     }
 }
@@ -388,10 +387,11 @@ where
     }
 
     unsafe fn finalize(&mut self) {
-        for (mut k, mut v) in std::mem::take(self) {
+        for (k, v) in std::mem::take(self) {
+            let mut k = ManuallyDrop::new(k);
+            let mut v = ManuallyDrop::new(v);
             k.finalize_or_skip();
             v.finalize_or_skip();
-            std::mem::forget((k, v));
         }
     }
 }
@@ -407,9 +407,8 @@ where
     }
 
     unsafe fn finalize(&mut self) {
-        for mut k in std::mem::take(self) {
+        for mut k in std::mem::take(self).into_iter().map(ManuallyDrop::new) {
             k.finalize_or_skip();
-            std::mem::forget(k);
         }
     }
 }
@@ -427,10 +426,11 @@ where
     }
 
     unsafe fn finalize(&mut self) {
-        for (mut k, mut v) in std::mem::take(self).into_iter() {
+        for (k, v) in std::mem::take(self).into_iter() {
+            let mut k = ManuallyDrop::new(k);
+            let mut v = ManuallyDrop::new(v);
             k.finalize_or_skip();
             v.finalize_or_skip();
-            std::mem::forget((k, v));
         }
     }
 }

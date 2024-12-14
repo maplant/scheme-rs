@@ -4,9 +4,8 @@
 
 use std::{
     alloc::Layout,
-    cell::UnsafeCell,
     ptr::NonNull,
-    sync::OnceLock,
+    sync::{Mutex, OnceLock},
     time::{Duration, Instant},
 };
 use tokio::{
@@ -44,7 +43,7 @@ pub enum MutationKind {
 /// "epochs", and handled by precisely one thread.
 struct MutationBuffer {
     mutation_buffer_tx: UnboundedSender<Mutation>,
-    mutation_buffer_rx: UnsafeCell<UnboundedReceiver<Mutation>>,
+    mutation_buffer_rx: Mutex<Option<UnboundedReceiver<Mutation>>>,
 }
 
 unsafe impl Sync for MutationBuffer {}
@@ -54,7 +53,7 @@ impl Default for MutationBuffer {
         let (mutation_buffer_tx, mutation_buffer_rx) = unbounded_channel();
         Self {
             mutation_buffer_tx,
-            mutation_buffer_rx: UnsafeCell::new(mutation_buffer_rx),
+            mutation_buffer_rx: Mutex::new(Some(mutation_buffer_rx)),
         }
     }
 }
@@ -93,36 +92,58 @@ const MAX_MUTATIONS_PER_EPOCH: usize = 10_000; // No idea what a good value is h
 async unsafe fn run_garbage_collector() {
     let mut last_epoch = Instant::now();
     let mut mutation_buffer: Vec<_> = Vec::with_capacity(MAX_MUTATIONS_PER_EPOCH);
+    let mut mutation_buffer_rx = MUTATION_BUFFER
+        .get_or_init(MutationBuffer::default)
+        .mutation_buffer_rx
+        .lock()
+        .unwrap()
+        .take()
+        .unwrap();
     loop {
-        epoch(&mut last_epoch, &mut mutation_buffer).await;
+        if !epoch(
+            &mut last_epoch,
+            &mut mutation_buffer_rx,
+            &mut mutation_buffer,
+        )
+        .await
+        {
+            return;
+        }
         mutation_buffer.clear();
     }
 }
 
-async unsafe fn epoch(last_epoch: &mut Instant, mutation_buffer: &mut Vec<Mutation>) {
-    process_mutation_buffer(mutation_buffer).await;
+// Run a collection epoch. Returns false if we've been cancelled and should exit.
+async unsafe fn epoch(
+    last_epoch: &mut Instant,
+    mutation_buffer_rx: &mut UnboundedReceiver<Mutation>,
+    mutation_buffer: &mut Vec<Mutation>,
+) -> bool {
+    process_mutation_buffer(mutation_buffer_rx, mutation_buffer).await;
     let duration_since_last_epoch = Instant::now() - *last_epoch;
     if duration_since_last_epoch > Duration::from_millis(100) {
-        tokio::task::spawn_blocking(|| unsafe { process_cycles() })
+        if tokio::task::spawn_blocking(|| unsafe { process_cycles() })
             .await
-            .unwrap();
+            .is_err()
+        {
+            return false;
+        }
+
         *last_epoch = Instant::now();
     }
+    true
 }
 
 /// SAFETY: this function is _not reentrant_, may only be called by once per epoch,
 /// and must _complete_ before the next epoch.
-async unsafe fn process_mutation_buffer(mutation_buffer: &mut Vec<Mutation>) {
-    // SAFETY: This function has _exclusive access_ to the receive buffer.
-    (*MUTATION_BUFFER
-        .get_or_init(MutationBuffer::default)
-        .mutation_buffer_rx
-        .get())
-    .recv_many(mutation_buffer, MAX_MUTATIONS_PER_EPOCH)
-    .await;
-
-    // SAFETY: This function has _exclusive access_ to mutate the header of
-    // _every_ garbage collected object. It does so _only now_.
+async unsafe fn process_mutation_buffer(
+    mutation_buffer_rx: &mut UnboundedReceiver<Mutation>,
+    mutation_buffer: &mut Vec<Mutation>,
+) {
+    // It is very important that we do not delay any mutations that
+    // have occurred at this point by an extra epoch.
+    let to_recv = mutation_buffer_rx.len();
+    mutation_buffer_rx.recv_many(mutation_buffer, to_recv).await;
 
     for mutation in mutation_buffer {
         match mutation.kind {
@@ -438,9 +459,16 @@ mod test {
         drop(a);
         drop(b);
         drop(c);
+        let mut mutation_buffer_rx = MUTATION_BUFFER
+            .get_or_init(MutationBuffer::default)
+            .mutation_buffer_rx
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap();
         let mut mutation_buffer = Vec::new();
         unsafe {
-            process_mutation_buffer(&mut mutation_buffer).await;
+            process_mutation_buffer(&mut mutation_buffer_rx, &mut mutation_buffer).await;
             process_cycles();
             process_cycles();
         }
