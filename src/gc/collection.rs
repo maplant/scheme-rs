@@ -61,21 +61,21 @@ impl Default for MutationBuffer {
 static MUTATION_BUFFER: OnceLock<MutationBuffer> = OnceLock::new();
 
 pub(super) fn inc_rc<T: Trace>(gc: NonNull<GcInner<T>>) {
-    // SAFETY: send takes an immutable reference and is atomic
-    MUTATION_BUFFER
+    // Disregard any send errors. If the receiver was dropped then the process
+    // is exiting and we don't care if we leak.
+    let _ = MUTATION_BUFFER
         .get_or_init(MutationBuffer::default)
         .mutation_buffer_tx
-        .send(Mutation::new(MutationKind::Inc, gc as NonNull<OpaqueGc>))
-        .unwrap();
+        .send(Mutation::new(MutationKind::Inc, gc as NonNull<OpaqueGc>));
 }
 
 pub(super) fn dec_rc<T: Trace>(gc: NonNull<GcInner<T>>) {
-    // SAFETY: send takes an immutable reference and is atomic
-    MUTATION_BUFFER
+    // Disregard any send errors. If the receiver was dropped then the process
+    // is exiting and we don't care if we leak.
+    let _ = MUTATION_BUFFER
         .get_or_init(MutationBuffer::default)
         .mutation_buffer_tx
-        .send(Mutation::new(MutationKind::Dec, gc as NonNull<OpaqueGc>))
-        .unwrap();
+        .send(Mutation::new(MutationKind::Dec, gc as NonNull<OpaqueGc>));
 }
 
 static COLLECTOR_TASK: OnceLock<JoinHandle<()>> = OnceLock::new();
