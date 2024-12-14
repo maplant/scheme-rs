@@ -1,13 +1,5 @@
 use crate::{
-    ast,
-    continuation::Continuation,
-    error::RuntimeError,
-    expand::Transformer,
-    gc::Gc,
-    num::Number,
-    proc::{Callable, ExternalFn, Procedure},
-    syntax::Syntax,
-    Trace,
+    ast, continuation::Continuation, error::RuntimeError, expand::Transformer, gc::Gc, num::Number, proc::{Callable, ExternalFn, Procedure}, records::{Record, RecordType}, syntax::Syntax, Trace
 };
 use futures::future::{BoxFuture, Shared};
 use proc_macros::builtin;
@@ -30,6 +22,8 @@ pub enum Value {
     Future(#[debug(skip)] Shared<BoxFuture<'static, Result<Vec<Gc<Value>>, RuntimeError>>>),
     Transformer(#[debug(skip)] Transformer),
     Continuation(#[debug(skip)] Option<Arc<Continuation>>),
+    Record(#[debug(skip)] Record),
+    RecordType(#[debug(skip)] Gc<RecordType>),
     Undefined,
 }
 
@@ -95,6 +89,8 @@ impl Value {
                 Self::Future(_) => "<future>".to_string(),
                 Self::Transformer(_) => "<transformer>".to_string(),
                 Self::Continuation(_) => "<continuation>".to_string(),
+                Self::Record(_) => "<record>".to_string(),
+                Self::RecordType(_) => "<record-type>".to_string(),
                 Self::Undefined => "<undefined>".to_string(),
             }
         })
@@ -141,6 +137,8 @@ impl Value {
             Self::Procedure(_) | Self::ExternalFn(_) | Self::Transformer(_) => "procedure",
             Self::Future(_) => "future",
             Self::Continuation(_) => "continuation",
+            Self::Record(_) => "record",
+            Self::RecordType(_) => "record-type",
             Self::Undefined => "undefined",
         }
     }
@@ -205,6 +203,40 @@ impl<'a> TryFrom<&'a Value> for &'a Number {
         match v {
             Value::Number(n) => Ok(n),
             x => Err(RuntimeError::invalid_type("number", x.type_name())),
+        }
+    }
+}
+
+
+impl<'a> TryFrom<&'a Value> for &'a Record {
+    type Error = RuntimeError;
+
+    fn try_from(v: &'a Value) -> Result<&'a Record, Self::Error> {
+        match v {
+            Value::Record(r) => Ok(r),
+            x => Err(RuntimeError::invalid_type("record", x.type_name())),
+        }
+    }
+}
+
+impl<'a> TryFrom<&'a mut Value> for &'a mut Record {
+    type Error = RuntimeError;
+
+    fn try_from(v: &'a mut Value) -> Result<&'a mut Record, Self::Error> {
+        match v {
+            Value::Record(r) => Ok(r),
+            x => Err(RuntimeError::invalid_type("record", x.type_name())),
+        }
+    }
+}
+
+impl<'a> TryFrom<&'a Value> for &'a Gc<RecordType> {
+    type Error = RuntimeError;
+
+    fn try_from(v: &'a Value) -> Result<&'a Gc<RecordType>, Self::Error> {
+        match v {
+            Value::RecordType(rt) => Ok(rt),
+            x => Err(RuntimeError::invalid_type("record-type", x.type_name())),
         }
     }
 }

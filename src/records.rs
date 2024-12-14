@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     sync::Arc,
 };
 
@@ -323,10 +323,10 @@ impl Eval for DefineRecordType {
                 .fetch_var(parent)
                 .await
                 .ok_or_else(|| RuntimeError::undefined_variable(parent.clone()))?;
-            let parent = parent.read().await;
-            let record_type: &RecordType = (&*parent).try_into()?;
-            let mut inherits = record_type.inherits.clone();
-            inherits.insert(parent_gc);
+            let parent = parent_gc.read().await;
+            let record_type: &Gc<RecordType> = (&*parent).try_into()?;
+            let mut inherits = record_type.read().await.inherits.clone();
+            inherits.insert(record_type.clone());
             inherits
         } else {
             indexmap::IndexSet::new()

@@ -35,6 +35,7 @@ pub enum CompileError {
     CompileSyntaxError(CompileSyntaxError),
     CompileSyntaxCaseError(CompileSyntaxCaseError),
     CompileSyntaxRulesError(CompileSyntaxRulesError),
+    CompileDefineRecordTypeError(crate::records::CompileDefineRecordTypeError),
 }
 
 impl From<RuntimeError> for CompileError {

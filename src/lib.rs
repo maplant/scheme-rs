@@ -15,7 +15,7 @@ pub mod lists;
 pub mod num;
 pub mod parse;
 pub mod proc;
-pub mod record;
+pub mod records;
 pub mod syntax;
 pub mod util;
 pub mod value;
