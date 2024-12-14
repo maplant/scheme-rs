@@ -459,9 +459,16 @@ mod test {
         drop(a);
         drop(b);
         drop(c);
+        let mut mutation_buffer_rx = MUTATION_BUFFER
+            .get_or_init(MutationBuffer::default)
+            .mutation_buffer_rx
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap();
         let mut mutation_buffer = Vec::new();
         unsafe {
-            process_mutation_buffer(&mut mutation_buffer).await;
+            process_mutation_buffer(&mut mutation_buffer_rx, &mut mutation_buffer).await;
             process_cycles();
             process_cycles();
         }
