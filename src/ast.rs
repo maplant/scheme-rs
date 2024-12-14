@@ -105,6 +105,15 @@ pub struct Let {
     pub body: Body,
 }
 
+impl Let {
+    pub fn new(bindings: Vec<(Identifier, Arc<dyn Eval>)>, body: Body) -> Self {
+        Self {
+            bindings: Arc::from(bindings),
+            body,
+        }
+    }
+}
+
 #[derive(Clone, Trace)]
 pub struct Set {
     pub var: Identifier,

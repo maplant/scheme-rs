@@ -19,7 +19,14 @@ use futures::future::Shared;
 pub use proc_macros::Trace;
 
 use std::{
-    cell::UnsafeCell, collections::{BTreeMap, BTreeSet, HashMap, HashSet}, future::Future, hash::Hash, marker::PhantomData, mem::ManuallyDrop, ops::{Deref, DerefMut}, ptr::{drop_in_place, NonNull}
+    cell::UnsafeCell,
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    future::Future,
+    hash::Hash,
+    marker::PhantomData,
+    mem::ManuallyDrop,
+    ops::{Deref, DerefMut},
+    ptr::{drop_in_place, NonNull},
 };
 use tokio::sync::{Semaphore, SemaphorePermit};
 

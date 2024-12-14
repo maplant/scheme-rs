@@ -1,5 +1,14 @@
 use crate::{
-    ast, continuation::Continuation, error::RuntimeError, expand::Transformer, gc::Gc, num::Number, proc::{Callable, ExternalFn, Procedure}, records::{Record, RecordType}, syntax::Syntax, Trace
+    ast,
+    continuation::Continuation,
+    error::RuntimeError,
+    expand::Transformer,
+    gc::Gc,
+    num::Number,
+    proc::{Callable, ExternalFn, Procedure},
+    records::{Record, RecordType},
+    syntax::Syntax,
+    Trace,
 };
 use futures::future::{BoxFuture, Shared};
 use proc_macros::builtin;
@@ -206,7 +215,6 @@ impl<'a> TryFrom<&'a Value> for &'a Number {
         }
     }
 }
-
 
 impl<'a> TryFrom<&'a Value> for &'a Record {
     type Error = RuntimeError;
