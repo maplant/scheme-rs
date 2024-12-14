@@ -22,6 +22,7 @@ use std::{
     cell::UnsafeCell,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     future::Future,
+    hash::Hash,
     marker::PhantomData,
     mem::ManuallyDrop,
     ops::{Deref, DerefMut},
@@ -135,6 +136,20 @@ impl<T: Trace> Drop for Gc<T> {
         dec_rc(self.ptr);
     }
 }
+
+impl<T: Trace> Hash for Gc<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.ptr.hash(state)
+    }
+}
+
+impl<T: Trace> PartialEq for Gc<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.ptr == other.ptr
+    }
+}
+
+impl<T: Trace> Eq for Gc<T> {}
 
 unsafe impl<T: Trace + Send + Sync> Send for Gc<T> {}
 unsafe impl<T: Trace + Send + Sync> Sync for Gc<T> {}
@@ -375,6 +390,45 @@ where
 }
 
 unsafe impl<K, V> Trace for HashMap<K, V>
+where
+    K: GcOrTrace,
+    V: GcOrTrace,
+{
+    unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
+        for (k, v) in self {
+            k.visit_or_recurse(visitor);
+            v.visit_or_recurse(visitor);
+        }
+    }
+
+    unsafe fn finalize(&mut self) {
+        for (k, v) in std::mem::take(self) {
+            let mut k = ManuallyDrop::new(k);
+            let mut v = ManuallyDrop::new(v);
+            k.finalize_or_skip();
+            v.finalize_or_skip();
+        }
+    }
+}
+
+unsafe impl<K> Trace for indexmap::IndexSet<K>
+where
+    K: GcOrTrace,
+{
+    unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
+        for k in self {
+            k.visit_or_recurse(visitor);
+        }
+    }
+
+    unsafe fn finalize(&mut self) {
+        for mut k in std::mem::take(self).into_iter().map(ManuallyDrop::new) {
+            k.finalize_or_skip();
+        }
+    }
+}
+
+unsafe impl<K, V> Trace for indexmap::IndexMap<K, V>
 where
     K: GcOrTrace,
     V: GcOrTrace,

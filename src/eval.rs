@@ -231,7 +231,7 @@ impl Eval for ast::DefineFunc {
             is_variable_transformer: false,
         }));
         env.def_var(&self.name, func).await;
-        Ok(vec![Gc::new(Value::Null)])
+        Ok(vec![])
     }
 }
 
@@ -248,7 +248,7 @@ impl Eval for ast::DefineVar {
         ));
         let val = self.val.eval(env, &Some(cont)).await?.require_one()?;
         env.def_var(&self.name, val).await;
-        Ok(vec![Gc::new(Value::Null)])
+        Ok(vec![])
     }
 }
 
@@ -273,7 +273,7 @@ impl Eval for ast::DefineSyntax {
         _env: &Env,
         _cont: &Option<Arc<Continuation>>,
     ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-        Ok(vec![Gc::new(Value::Null)])
+        Ok(vec![])
     }
 }
 
@@ -393,7 +393,7 @@ impl Eval for ast::Set {
             .ok_or_else(|| RuntimeError::undefined_variable(self.var.clone()))?
             .write()
             .await = val;
-        Ok(vec![Gc::new(Value::Null)])
+        Ok(vec![])
     }
 }
 

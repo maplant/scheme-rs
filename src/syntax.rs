@@ -5,15 +5,15 @@ use crate::{
     env::Env,
     error::RuntimeError,
     eval::Eval,
-    gc::Gc,
+    gc::{Gc, Trace},
     lex::{InputSpan, Lexeme, Token},
     parse::ParseError,
     proc::Callable,
+    records,
     util::RequireOne,
     value::Value,
 };
 use futures::future::BoxFuture;
-use proc_macros::Trace;
 use std::{collections::BTreeSet, fmt, sync::Arc};
 
 #[derive(Debug, Clone, PartialEq, Trace)]
@@ -265,6 +265,11 @@ impl Syntax {
                 [Self::Identifier { ident, span, .. }, tail @ ..] if ident == "syntax-rules" => {
                     ast::SyntaxRules::compile_to_expr(tail, env, cont, span).await
                 }
+                [Self::Identifier { ident, span, .. }, tail @ ..]
+                    if ident == "define-record-type" =>
+                {
+                    records::DefineRecordType::compile_to_expr(tail, env, cont, span).await
+                }
                 // Very special form:
                 [Self::Identifier { ident, span, .. }, tail @ ..] if ident == "set!" => {
                     // Check for a variable transformer
@@ -408,11 +413,16 @@ impl ParsedSyntax {
 }
 
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Trace)]
-pub struct Mark(u64);
+pub struct Mark(usize);
 
 impl Mark {
     pub fn new() -> Self {
         Self(rand::random())
+    }
+
+    /// Obtain a mark from a Gc pointer value.
+    pub fn from_gc<T: Trace>(gc: &Gc<T>) -> Self {
+        Self(unsafe { gc.as_opaque().as_ptr() as *const () as usize })
     }
 }
 
