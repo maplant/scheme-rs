@@ -39,11 +39,11 @@ impl reedline::Prompt for Prompt {
     }
 
     fn render_prompt_indicator(&self, _prompt_mode: reedline::PromptEditMode) -> Cow<str> {
-        Cow::Borrowed(">>> ")
+        Cow::Borrowed("> ")
     }
 
     fn render_prompt_multiline_indicator(&self) -> Cow<str> {
-        Cow::Borrowed("... ")
+        Cow::Borrowed("  ")
     }
 
     fn render_prompt_history_search_indicator(
