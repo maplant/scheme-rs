@@ -271,8 +271,6 @@
     ((_ args n (r b1 b2 ...) more ...)
      (apply (lambda r b1 b2 ...) args))))
 
-;; TODO: First class apply
-
 (define (for-each func lst . remaining)
   (let loop ((rest lst))
     (unless (null? rest)
@@ -282,3 +280,47 @@
       (begin
         (display remaining)
         (apply for-each (cons func remaining)))))
+
+
+;; Conditions
+
+(define-record-type &condition)
+
+(define-record-type &compound-condition
+  (parent &condition)
+  (fields (immutable simple-conditions)))
+
+(define (condition condition1 . conditions)
+  (make-&compound-condition (append condition1 conditions)))
+
+(define (simple-conditions condition)
+  (if (&conditions?)
+      (&compound-condition-simple-conditions condition)
+      condition))
+
+;; TODO: What we really want is for predicate to also check to see
+;; if it's a compound condition
+
+(define-syntax define-condition-type
+  (syntax-rules ()
+    ([_ condition-type supertype
+        constructor predicate
+        (field accessor) ...]
+     (define-record-type (condition-type constructor predicate)
+       (parent supertype)
+       (fields (immutable field accessor) ...)))))
+       
+(define-condition-type &message &condition
+  make-message-condition message-condition?
+  (message condition-message))
+
+(define-condition-type &warning &condition
+  make-warning warning?)
+
+(define-condition-type &serious &condition
+  make-serious-condition serious-condition?)
+
+(define-condition-type &error &serious
+  make-error error?)
+
+

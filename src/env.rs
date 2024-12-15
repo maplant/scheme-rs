@@ -1,6 +1,7 @@
 use futures::future::BoxFuture;
 use proc_macros::Trace;
 use std::collections::HashMap;
+use tokio::sync::OnceCell;
 
 use crate::{
     builtin::Builtin,
@@ -156,6 +157,8 @@ pub enum Env {
     LexicalContour(#[debug(skip)] Gc<LexicalContour>),
 }
 
+static TOP_LEVEL_ENV: OnceCell<Env> = OnceCell::const_new();
+
 impl Env {
     pub async fn is_bound(&self, ident: &Identifier) -> bool {
         match self {
@@ -186,18 +189,27 @@ impl Env {
     }
 
     pub async fn top() -> Self {
-        // We should probably find another place to init_gc, but this is honestly fine
-        init_gc();
+        TOP_LEVEL_ENV
+            .get_or_init(|| async {
+                // Initialize and begin running the garbage collector.
+                init_gc();
 
-        let mut top = Self::Top.new_lexical_contour();
-        // Install the builtins:
-        for builtin in inventory::iter::<Builtin> {
-            builtin.install(&mut top);
-        }
-        let top = Self::LexicalContour(Gc::new(top));
-        // Install the stdlib:
-        let _ = top.eval(include_str!("stdlib.scm")).await.unwrap();
-        top
+                let mut top = Env::Top.new_lexical_contour();
+
+                // Install the builtins:
+                for builtin in inventory::iter::<Builtin> {
+                    builtin.install(&mut top);
+                }
+
+                let top = Env::LexicalContour(Gc::new(top));
+
+                // Install the stdlib:
+                let _ = top.eval(include_str!("stdlib.scm")).await.unwrap();
+
+                top
+            })
+            .await
+            .clone()
     }
 
     pub fn new_lexical_contour(&self) -> LexicalContour {
