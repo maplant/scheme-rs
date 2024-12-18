@@ -10,12 +10,11 @@
 (define-syntax syntax-rules
   (lambda (x)
     (syntax-case x ()
-	([_ (keywords ...)
-	    (pattern template) ...]
-	 (syntax
-	  (lambda (x')
-	    (syntax-case x' (keywords ...)
-	      (pattern template) ...)))))))
+      ((_ (i ...) ((keyword . pattern) template) ...)
+       (syntax (lambda (x)
+                 (syntax-case x (i ...)
+                   ((dummy . pattern) (syntax template))
+                   ...))))))) 
 
 ;; 
 ;; Aliases:
@@ -293,4 +292,4 @@
   (if (not (null? remaining))
       (begin
         (display remaining)
-        (apply for-each (cons func remaining)))))
+       (apply for-each (cons func remaining)))))
