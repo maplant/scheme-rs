@@ -14,6 +14,7 @@ use crate::{
     value::Value,
 };
 use futures::future::BoxFuture;
+use proc_macros::builtin;
 use std::{collections::BTreeSet, fmt, sync::Arc};
 
 #[derive(Debug, Clone, PartialEq, Trace)]
@@ -93,6 +94,7 @@ impl Syntax {
         }
     }
 
+    // I do not like the fact that this function exists.
     pub fn normalize(self) -> Self {
         match self {
             Self::List { mut list, span } => {
@@ -106,6 +108,10 @@ impl Syntax {
             }
             x => x,
         }
+    }
+
+    pub fn from_datum(mark: Mark, datum: &'_ Gc<Value>) -> BoxFuture<'_, Self> {
+        todo!()
     }
 
     pub fn resolve_bindings<'a>(&'a mut self, env: &'a Env) -> BoxFuture<'a, ()> {
@@ -261,9 +267,6 @@ impl Syntax {
                 }
                 [Self::Identifier { ident, span, .. }, tail @ ..] if ident == "syntax-case" => {
                     ast::SyntaxCase::compile_to_expr(tail, env, cont, span).await
-                }
-                [Self::Identifier { ident, span, .. }, tail @ ..] if ident == "syntax-rules" => {
-                    ast::SyntaxRules::compile_to_expr(tail, env, cont, span).await
                 }
                 [Self::Identifier { ident, span, .. }, tail @ ..]
                     if ident == "define-record-type" =>
@@ -532,4 +535,35 @@ impl Syntax {
     pub fn is_identifier(&self) -> bool {
         matches!(self, Self::Identifier { .. })
     }
+}
+
+#[builtin("syntax->datum")]
+pub async fn syntax_to_datum(
+    _cont: &Option<Arc<Continuation>>,
+    syn: &Gc<Value>,
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
+    let syn = syn.read().await;
+    let Value::Syntax(ref syn) = &*syn else {
+        return Err(RuntimeError::invalid_type("syntax", syn.type_name()));
+    };
+    Ok(vec![Gc::new(Value::from_syntax(syn))])
+}
+
+#[builtin("datum->syntax")]
+pub async fn datum_to_syntax(
+    _cont: &Option<Arc<Continuation>>,
+    template_id: &Gc<Value>,
+    datum: &Gc<Value>,
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
+    let template_id = template_id.read().await;
+    let Value::Syntax(ref _template_id) = &*template_id else {
+        return Err(RuntimeError::invalid_type(
+            "syntax",
+            template_id.type_name(),
+        ));
+    };
+    // TODO: Extract mark from template-id
+    Ok(vec![Gc::new(Value::Syntax(
+        Syntax::from_datum(todo!(), datum).await,
+    ))])
 }

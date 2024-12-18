@@ -34,7 +34,6 @@ pub enum CompileError {
     CompileLambdaError(CompileLambdaError),
     CompileSyntaxError(CompileSyntaxError),
     CompileSyntaxCaseError(CompileSyntaxCaseError),
-    CompileSyntaxRulesError(CompileSyntaxRulesError),
     CompileDefineRecordTypeError(crate::records::CompileDefineRecordTypeError),
 }
 
@@ -785,61 +784,6 @@ impl Compile for ast::SyntaxCase {
         }
         Ok(ast::SyntaxCase {
             arg: arg.compile(env, cont).await?,
-            transformer: Transformer {
-                rules: syntax_rules,
-                is_variable_transformer: false,
-            },
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum CompileSyntaxRulesError {
-    BadForm(Span),
-}
-
-#[async_trait]
-impl Compile for ast::SyntaxRules {
-    type Error = CompileSyntaxRulesError;
-
-    async fn compile(
-        exprs: &[Syntax],
-        _env: &Env,
-        _cont: &Option<Arc<Continuation>>,
-        span: &Span,
-    ) -> Result<Self, CompileSyntaxRulesError> {
-        let (keywords, mut rules) = match exprs {
-            [Syntax::List { list, .. }, rules @ ..] => {
-                let mut keywords = HashSet::default();
-                // TODO: ensure keywords_list is proper
-                for keyword in &list[..list.len() - 1] {
-                    if let Syntax::Identifier { ident, .. } = keyword {
-                        keywords.insert(ident.name.clone());
-                    } else {
-                        return Err(CompileSyntaxRulesError::BadForm(keyword.span().clone()));
-                    }
-                }
-                (keywords, rules)
-            }
-            [Syntax::Null { .. }, rules @ ..] => (HashSet::default(), rules),
-            _ => return Err(CompileSyntaxRulesError::BadForm(span.clone())),
-        };
-        let mut syntax_rules = Vec::new();
-        loop {
-            match rules {
-                [Syntax::Null { .. }] => break,
-                [Syntax::List { list, .. }, tail @ ..] => match &list[..] {
-                    [pattern, template, Syntax::Null { .. }] => {
-                        syntax_rules.push(SyntaxRule::compile(&keywords, pattern, template));
-                        rules = tail;
-                    }
-                    _ => return Err(CompileSyntaxRulesError::BadForm(span.clone())),
-                },
-                _ => return Err(CompileSyntaxRulesError::BadForm(span.clone())),
-            }
-        }
-
-        Ok(Self {
             transformer: Transformer {
                 rules: syntax_rules,
                 is_variable_transformer: false,

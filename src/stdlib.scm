@@ -5,6 +5,18 @@
 ;; By and large, these macro definitions come from Appendix B of the R6RS
 ;; standard. This allows for use to test the correctness of the compiler.
 
+
+;; Define syntax-rules in terms of syntax-case:
+(define-syntax syntax-rules
+  (lambda (x)
+    (syntax-case x ()
+	([_ (keywords ...)
+	    (pattern template) ...]
+	 (syntax
+	  (lambda (x')
+	    (syntax-case x' (keywords ...)
+	      (pattern template) ...)))))))
+
 ;; 
 ;; Aliases:
 ;; 
