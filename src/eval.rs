@@ -453,17 +453,6 @@ impl Eval for ast::SyntaxCase {
 }
 
 #[async_trait]
-impl Eval for ast::SyntaxRules {
-    async fn eval(
-        &self,
-        _env: &Env,
-        _cont: &Option<Arc<Continuation>>,
-    ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-        Ok(vec![Gc::new(Value::Transformer(self.transformer.clone()))])
-    }
-}
-
-#[async_trait]
 impl Eval for ast::FetchVar {
     async fn eval(
         &self,

@@ -140,7 +140,7 @@ fn nested_comment(i: InputSpan) -> IResult<InputSpan, ()> {
 
 fn whitespace(i: InputSpan) -> IResult<InputSpan, ()> {
     map(
-        alt((satisfy(UnicodeCategories::is_separator), match_char('\n'))),
+        alt((satisfy(UnicodeCategories::is_separator), match_char('\t'), match_char('\n'))),
         |_| (),
     )(i)
 }

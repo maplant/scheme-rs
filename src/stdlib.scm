@@ -5,6 +5,17 @@
 ;; By and large, these macro definitions come from Appendix B of the R6RS
 ;; standard. This allows for use to test the correctness of the compiler.
 
+
+;; Define syntax-rules in terms of syntax-case:
+(define-syntax syntax-rules
+  (lambda (x)
+    (syntax-case x ()
+      ((_ (i ...) ((keyword . pattern) template) ...)
+       (syntax (lambda (x)
+                 (syntax-case x (i ...)
+                   ((dummy . pattern) (syntax template))
+                   ...))))))) 
+
 ;; 
 ;; Aliases:
 ;; 
@@ -281,4 +292,4 @@
   (if (not (null? remaining))
       (begin
         (display remaining)
-        (apply for-each (cons func remaining)))))
+       (apply for-each (cons func remaining)))))
