@@ -7,6 +7,7 @@ use crate::{
     eval::Eval,
     gc::{Gc, Trace},
     lex::{InputSpan, Lexeme, Token},
+    lists::list_to_vec_with_null,
     parse::ParseError,
     proc::Callable,
     records,
@@ -28,6 +29,17 @@ pub struct Span {
 impl fmt::Display for Span {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}:{}:{}", self.file, self.line, self.column)
+    }
+}
+
+impl Default for Span {
+    fn default() -> Self {
+        Self {
+            line: 0,
+            column: 0,
+            offset: 0,
+            file: Arc::new(String::new()),
+        }
     }
 }
 
@@ -110,8 +122,43 @@ impl Syntax {
         }
     }
 
-    pub fn from_datum(mark: Mark, datum: &'_ Gc<Value>) -> BoxFuture<'_, Self> {
-        todo!()
+    // TODO: Return a Cow<'a, Self> instead to avoid the clone. 
+    pub fn from_datum<'a>(marks: &'a BTreeSet<Mark>, datum: &'a Gc<Value>) -> BoxFuture<'a, Self> {
+        Box::pin(async move {
+            let datum = datum.read().await;
+            // TODO: conjure up better values for Span
+            match &*datum {
+                Value::Null => Syntax::new_null(Span::default()),
+                Value::Pair(lhs, rhs) => {
+                    let mut list = Vec::new();
+                    list.push(lhs.clone());
+                    list_to_vec_with_null(rhs, &mut list).await;
+                    // TODO: Use futures combinators
+                    let mut out_list = Vec::new();
+                    for item in list.iter() {
+                        out_list.push(Syntax::from_datum(marks, item).await);
+                    }
+                    Syntax::new_list(out_list, Span::default())
+                }
+		Value::Syntax(syntax) => {
+		    // TODO: Mark the output with marks.
+		    let syntax = syntax.clone();
+		    syntax
+		}
+                Value::Symbol(sym) => {
+                    let ident = Identifier {
+                        name: sym.clone(),
+                        marks: marks.clone(),
+                    };
+                    Syntax::Identifier {
+                        ident,
+                        bound: false,
+                        span: Span::default(),
+                    }
+                }
+                _ => unimplemented!(),
+            }
+        })
     }
 
     pub fn resolve_bindings<'a>(&'a mut self, env: &'a Env) -> BoxFuture<'a, ()> {
@@ -556,14 +603,18 @@ pub async fn datum_to_syntax(
     datum: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let template_id = template_id.read().await;
-    let Value::Syntax(ref _template_id) = &*template_id else {
+    let Value::Syntax(Syntax::Identifier {
+        ident: template_id, ..
+    }) = &*template_id
+    else {
         return Err(RuntimeError::invalid_type(
             "syntax",
             template_id.type_name(),
         ));
     };
+    println!("datum: {datum:#?}");
     // TODO: Extract mark from template-id
     Ok(vec![Gc::new(Value::Syntax(
-        Syntax::from_datum(todo!(), datum).await,
+        dbg!(Syntax::from_datum(&template_id.marks, datum).await),
     ))])
 }

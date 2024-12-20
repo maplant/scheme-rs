@@ -4,6 +4,8 @@
 ;;
 ;; By and large, these macro definitions come from Appendix B of the R6RS
 ;; standard. This allows for use to test the correctness of the compiler.
+;;
+;; This code is for definitions only. Most builtins are not provided at this point.
 
 
 ;; Define syntax-rules in terms of syntax-case:
@@ -16,6 +18,12 @@
                    ((dummy . pattern) (syntax template))
                    ...))))))) 
 
+(define-syntax with-syntax
+  (lambda (x)
+    (syntax-case x ()
+      ((_ ((p e0) ...) e1 e2 ...)
+       (syntax (syntax-case (list e0 ...) ()
+		 ((p ...) (let () e1 e2 ...))))))))
 ;; 
 ;; Aliases:
 ;; 
@@ -268,8 +276,7 @@
 (define-syntax case-lambda-help
   (syntax-rules ()
     ((_ args n)
-     (assertion-violation #f
-                          "unexpected number of arguments"))
+     (assertion-violation #f "unexpected number of arguments"))
     ((_ args n ((x ...) b1 b2 ...) more ...)
      (if (= n (length '(x ...)))
          (apply (lambda (x ...) b1 b2 ...) args)
@@ -282,8 +289,6 @@
     ((_ args n (r b1 b2 ...) more ...)
      (apply (lambda r b1 b2 ...) args))))
 
-;; TODO: First class apply
-
 (define (for-each func lst . remaining)
   (let loop ((rest lst))
     (unless (null? rest)
@@ -293,3 +298,22 @@
       (begin
         (display remaining)
        (apply for-each (cons func remaining)))))
+
+
+;; TEST:
+
+(define-syntax loop
+  (lambda (x)
+    (syntax-case x ()
+      [(k e ...)
+       (with-syntax
+	   ([break (datum->syntax #'k 'break)])
+	 #'(call-with-current-continuation
+	    (lambda (break)
+	      (let f () e ... (f)))))])))
+
+(let ((n 3) (ls '()))
+  (loop
+   (if (= n 0) (break ls))
+   (set! ls (cons 'a ls))
+   (set! n (- n 1))))

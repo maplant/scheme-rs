@@ -133,7 +133,13 @@ impl Compile for ast::Let {
             [Syntax::Identifier { ident, .. }, Syntax::List { list: bindings, .. }, body @ ..] => {
                 compile_let(Some(ident), bindings, body, env, cont, span).await
             }
-            _ => Err(CompileLetError::BadForm(span.clone())),
+            [Syntax::Identifier { ident, .. }, Syntax::Null { .. }, body @ ..] => {
+                compile_let(Some(ident), &[], body, env, cont, span).await
+            }
+            x => {
+		println!("x: {x:#?}");
+		Err(CompileLetError::BadForm(span.clone()))
+	    },
         }
     }
 }
@@ -441,7 +447,10 @@ impl Compile for ast::Define {
                     [x, ..] => Err(CompileDefineError::BadForm(x.span().clone())),
                 }
             }
-            _ => Err(CompileDefineError::BadForm(span.clone())),
+            x => {
+		println!("{x:#?}");
+		Err(CompileDefineError::BadForm(span.clone()))
+	    },
         }
     }
 }

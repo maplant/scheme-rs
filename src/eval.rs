@@ -10,9 +10,10 @@ use crate::{
     proc::{PreparedCall, ProcDebugInfo, Procedure},
     util::{self, RequireOne},
     value::Value,
+    syntax::Syntax
 };
 use async_trait::async_trait;
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 pub enum ValuesOrPreparedCall {
     Values(Vec<Gc<Value>>),
@@ -441,14 +442,23 @@ impl Eval for ast::SyntaxCase {
             cont,
         ));
         let val = self.arg.eval(env, &Some(new_cont)).await?.require_one()?;
-        let val = val.read().await;
+	// This clones _all_ syntax objects; we should fix this to be more optimal. 
+	let syntax = Syntax::from_datum(&BTreeSet::default(), &val).await;
+	let result = self.transformer.expand(&syntax).unwrap();
+        result.compile(env, cont).await?.eval(env, cont).await
+
+	    /*
         match &*val {
             Value::Syntax(syntax) => {
                 let result = self.transformer.expand(syntax).unwrap();
                 result.compile(env, cont).await?.eval(env, cont).await
             }
-            _ => todo!(),
+            x => {
+		let syntax = Syntax::from_
+	    }
+todo!("{x:#?}, transformer: {:#?}", self.transformer),
         }
+	    */
     }
 }
 
