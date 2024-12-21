@@ -47,9 +47,10 @@ pub struct DefineFunc {
     pub body: Body,
 }
 
-#[derive(Clone, Trace)]
+#[derive(Clone, Trace, derive_more::Debug)]
 pub struct DefineVar {
     pub name: Identifier,
+    #[debug(skip)]
     pub val: Arc<dyn Eval>,
 }
 

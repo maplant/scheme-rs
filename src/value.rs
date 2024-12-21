@@ -14,8 +14,9 @@ use futures::future::{BoxFuture, Shared};
 use proc_macros::builtin;
 use std::sync::Arc;
 
-#[derive(Clone, Trace, derive_more::Debug)]
+#[derive(Trace, derive_more::Debug)]
 pub enum Value {
+    Undefined,
     Null,
     Boolean(bool),
     Number(Number),
@@ -28,12 +29,11 @@ pub enum Value {
     Syntax(Syntax),
     Procedure(Procedure),
     ExternalFn(ExternalFn),
+    Transformer(Transformer),
+    Record(Record),
+    RecordType(Gc<RecordType>),
     Future(#[debug(skip)] Shared<BoxFuture<'static, Result<Vec<Gc<Value>>, RuntimeError>>>),
-    Transformer(#[debug(skip)] Transformer),
     Continuation(#[debug(skip)] Option<Arc<Continuation>>),
-    Record(#[debug(skip)] Record),
-    RecordType(#[debug(skip)] Gc<RecordType>),
-    Undefined,
 }
 
 impl Value {
@@ -68,41 +68,39 @@ impl Value {
         }
     }
 
-    pub fn fmt(&self) -> BoxFuture<'_, String> {
-        Box::pin(async move {
-            match self {
-                Self::Boolean(true) => "#t".to_string(),
-                Self::Boolean(false) => "#f".to_string(),
-                Self::Number(number) => number.to_string(),
-                Self::String(string) => string.to_string(),
-                Self::Symbol(symbol) => symbol.clone(),
-                Self::Pair(car, cdr) => crate::lists::fmt_list(car, cdr).await,
-                Self::Vector(vec) => {
-                    let mut iter = vec.iter().peekable();
-                    let mut output = String::from("#(");
-                    while let Some(item) = iter.next() {
-                        output.push_str(&item.read().await.fmt().await);
-                        if iter.peek().is_some() {
-                            output.push(' ');
-                        }
+    pub fn fmt(&self) -> String {
+        match self {
+            Self::Boolean(true) => "#t".to_string(),
+            Self::Boolean(false) => "#f".to_string(),
+            Self::Number(number) => number.to_string(),
+            Self::String(string) => string.to_string(),
+            Self::Symbol(symbol) => symbol.clone(),
+            Self::Pair(car, cdr) => crate::lists::fmt_list(car, cdr),
+            Self::Vector(vec) => {
+                let mut iter = vec.iter().peekable();
+                let mut output = String::from("#(");
+                while let Some(item) = iter.next() {
+                    output.push_str(&item.read().fmt());
+                    if iter.peek().is_some() {
+                        output.push(' ');
                     }
-                    output.push(')');
-                    output
                 }
-                Self::Null => "()".to_string(),
-                Self::Character(c) => format!("\\x{c}"),
-                Self::ByteVector(_) => "<byte-vector>".to_string(),
-                Self::Syntax(syntax) => format!("{:#?}", syntax),
-                Self::Procedure(proc) => format!("<{proc:?}>"),
-                Self::ExternalFn(_) => "<external-fn>".to_string(),
-                Self::Future(_) => "<future>".to_string(),
-                Self::Transformer(_) => "<transformer>".to_string(),
-                Self::Continuation(_) => "<continuation>".to_string(),
-                Self::Record(_) => "<record>".to_string(),
-                Self::RecordType(_) => "<record-type>".to_string(),
-                Self::Undefined => "<undefined>".to_string(),
+                output.push(')');
+                output
             }
-        })
+            Self::Null => "()".to_string(),
+            Self::Character(c) => format!("\\x{c}"),
+            Self::ByteVector(_) => "<byte-vector>".to_string(),
+            Self::Syntax(syntax) => format!("{:#?}", syntax),
+            Self::Procedure(proc) => format!("<{proc:?}>"),
+            Self::ExternalFn(_) => "<external-fn>".to_string(),
+            Self::Future(_) => "<future>".to_string(),
+            Self::Transformer(_) => "<transformer>".to_string(),
+            Self::Continuation(_) => "<continuation>".to_string(),
+            Self::Record(_) => "<record>".to_string(),
+            Self::RecordType(_) => "<record-type>".to_string(),
+            Self::Undefined => "<undefined>".to_string(),
+        }
     }
 
     pub fn from_literal(literal: &ast::Literal) -> Self {
@@ -152,17 +150,17 @@ impl Value {
         }
     }
 
-    pub async fn eqv(&self, other: &Self) -> bool {
+    pub fn eqv(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Null, Self::Null) => true,
             (Self::Boolean(a), Self::Boolean(b)) => a == b,
             (Self::Number(a), Self::Number(b)) => a == b,
             (Self::Character(a), Self::Character(b)) => a == b,
             (Self::Symbol(a), Self::Symbol(b)) => a == b,
-            (Self::Pair(a1, a2), Self::Pair(b1, b2)) => eqv(a1, b1).await && eqv(a2, b2).await,
+            (Self::Pair(a1, a2), Self::Pair(b1, b2)) => eqv(a1, b1) && eqv(a2, b2),
             (Self::Vector(a), Self::Vector(b)) => {
                 for (a, b) in a.iter().zip(b.iter()) {
-                    if !eqv(a, b).await {
+                    if !eqv(a, b) {
                         return false;
                     }
                 }
@@ -173,33 +171,32 @@ impl Value {
             _ => false,
         }
     }
+}
 
-    pub fn deep_clone(&self) -> BoxFuture<'_, Self> {
-        Box::pin(async move {
-            match self {
-                Self::Null => Self::Null,
-                Self::Boolean(b) => Self::Boolean(*b),
-                Self::Number(n) => Self::Number(n.clone()),
-                Self::Character(c) => Self::Character(*c),
-                Self::String(s) => Self::String(s.clone()),
-                Self::Symbol(s) => Self::Symbol(s.clone()),
-                Self::Pair(car, cdr) => Self::Pair(
-                    Gc::new(car.read().await.deep_clone().await),
-                    Gc::new(cdr.read().await.deep_clone().await),
-                ),
-                Self::Vector(vec) => Self::Vector(vec.clone()),
-                Self::ByteVector(bvec) => Self::ByteVector(bvec.clone()),
-                Self::Syntax(syn) => Self::Syntax(syn.clone()),
-                Self::Procedure(proc) => Self::Procedure(proc.clone()),
-                Self::ExternalFn(ext_fn) => Self::ExternalFn(*ext_fn),
-                Self::Future(fut) => Self::Future(fut.clone()),
-                Self::Transformer(trans) => Self::Transformer(trans.clone()),
-                Self::Continuation(cont) => Self::Continuation(cont.clone()),
-                Self::Record(record) => Self::Record(record.clone()),
-                Self::RecordType(rt) => Self::RecordType(rt.clone()),
-                Self::Undefined => Self::Undefined,
+impl Clone for Value {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Null => Self::Null,
+            Self::Boolean(b) => Self::Boolean(*b),
+            Self::Number(n) => Self::Number(n.clone()),
+            Self::Character(c) => Self::Character(*c),
+            Self::String(s) => Self::String(s.clone()),
+            Self::Symbol(s) => Self::Symbol(s.clone()),
+            Self::Pair(car, cdr) => {
+                Self::Pair(Gc::new(car.read().clone()), Gc::new(cdr.read().clone()))
             }
-        })
+            Self::Vector(vec) => Self::Vector(vec.clone()),
+            Self::ByteVector(bvec) => Self::ByteVector(bvec.clone()),
+            Self::Syntax(syn) => Self::Syntax(syn.clone()),
+            Self::Procedure(proc) => Self::Procedure(proc.clone()),
+            Self::ExternalFn(ext_fn) => Self::ExternalFn(*ext_fn),
+            Self::Future(fut) => Self::Future(fut.clone()),
+            Self::Transformer(trans) => Self::Transformer(trans.clone()),
+            Self::Continuation(cont) => Self::Continuation(cont.clone()),
+            Self::Record(record) => Self::Record(record.clone()),
+            Self::RecordType(rt) => Self::RecordType(rt.clone()),
+            Self::Undefined => Self::Undefined,
+        }
     }
 }
 
@@ -277,12 +274,10 @@ impl<'a> TryFrom<&'a Value> for &'a Gc<RecordType> {
     }
 }
 
-pub fn eqv<'a>(a: &'a Gc<Value>, b: &'a Gc<Value>) -> BoxFuture<'a, bool> {
-    Box::pin(async move {
-        let a = a.read().await;
-        let b = b.read().await;
-        a.eqv(&b).await
-    })
+pub fn eqv(a: &Gc<Value>, b: &Gc<Value>) -> bool {
+    let a = a.read();
+    let b = b.read();
+    a.eqv(&b)
 }
 
 #[builtin("not")]
@@ -290,7 +285,7 @@ pub async fn not(
     _cont: &Option<Arc<Continuation>>,
     a: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let a = a.read().await;
+    let a = a.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*a,
         Value::Boolean(false)
@@ -303,7 +298,7 @@ pub async fn eqv_pred(
     a: &Gc<Value>,
     b: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    Ok(vec![Gc::new(Value::Boolean(eqv(a, b).await))])
+    Ok(vec![Gc::new(Value::Boolean(eqv(a, b)))])
 }
 
 #[builtin("boolean?")]
@@ -311,7 +306,7 @@ pub async fn boolean_pred(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let arg = arg.read().await;
+    let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
         Value::Boolean(_)
@@ -323,7 +318,7 @@ pub async fn symbol_pred(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let arg = arg.read().await;
+    let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
         Value::Symbol(_)
@@ -335,7 +330,7 @@ pub async fn char_pred(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let arg = arg.read().await;
+    let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
         Value::Character(_)
@@ -347,7 +342,7 @@ pub async fn vector_pred(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let arg = arg.read().await;
+    let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
         Value::Vector(_)
@@ -359,7 +354,7 @@ pub async fn null_pred(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let arg = arg.read().await;
+    let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(&*arg, Value::Null)))])
 }
 
@@ -368,7 +363,7 @@ pub async fn pair_pred(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let arg = arg.read().await;
+    let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
         Value::Pair(_, _)
@@ -380,7 +375,7 @@ pub async fn number_pred(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let arg = arg.read().await;
+    let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
         Value::Number(_)
@@ -392,7 +387,7 @@ pub async fn string_pred(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let arg = arg.read().await;
+    let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
         Value::String(_)
@@ -404,7 +399,7 @@ pub async fn procedure_pred(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let arg = arg.read().await;
+    let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
         Value::Procedure(_) | Value::ExternalFn(_) | Value::Transformer(_) | Value::Continuation(_)
@@ -416,7 +411,7 @@ pub async fn future_pred(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let arg = arg.read().await;
+    let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
         Value::Future(_)
@@ -428,6 +423,6 @@ pub async fn disp(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    print!("{}", arg.read().await.fmt().await);
+    print!("{}", arg.read().fmt());
     Ok(vec![Gc::new(Value::Null)])
 }

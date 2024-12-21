@@ -94,7 +94,7 @@ async fn main() {
                 }
                 Ok(results) => {
                     for result in results {
-                        println!("${n_results} = {}", result.read().await.fmt().await);
+                        println!("${n_results} = {}", result.read().fmt());
                         n_results += 1;
                     }
                 }

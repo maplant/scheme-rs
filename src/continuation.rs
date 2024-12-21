@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use futures::future::BoxFuture;
 use proc_macros::builtin;
 
 use crate::{
@@ -32,10 +31,12 @@ pub trait Resumable: Trace + Send + Sync {
         cont: &Option<Arc<Continuation>>,
     ) -> Result<Vec<Gc<Value>>, RuntimeError>;
 
-    async fn clone_stack(&self) -> Arc<dyn Resumable>;
+    /// Clone the contents of the resumable; necessary to ensure the continuation
+    /// is unique when we make a continuation first-class.
+    fn clone_stack(&self) -> Arc<dyn Resumable>;
 }
 
-#[derive(Clone, Trace)]
+#[derive(Trace)]
 pub struct Continuation {
     resume_point: Arc<dyn Resumable>,
     remaining: Option<Arc<Continuation>>,
@@ -49,16 +50,10 @@ impl Continuation {
         }
     }
 
-    fn clone_stack(&self) -> BoxFuture<'_, Arc<Self>> {
-        Box::pin(async move {
-            Arc::new(Self {
-                resume_point: self.resume_point.clone_stack().await,
-                remaining: if let Some(ref cont) = self.remaining {
-                    Some(cont.clone_stack().await)
-                } else {
-                    None
-                },
-            })
+    fn clone_stack(&self) -> Arc<Self> {
+        Arc::new(Self {
+            resume_point: self.resume_point.clone_stack(),
+            remaining: self.remaining.as_ref().map(|cont| cont.clone_stack()),
         })
     }
 }
@@ -79,8 +74,8 @@ impl Resumable for Continuation {
         }
     }
 
-    async fn clone_stack(&self) -> Arc<dyn Resumable> {
-        self.clone_stack().await
+    fn clone_stack(&self) -> Arc<dyn Resumable> {
+        self.clone_stack()
     }
 }
 
@@ -147,7 +142,7 @@ impl Eval for CatchContinuationCall {
     }
 }
 
-#[derive(Trace, Clone)]
+#[derive(Trace)]
 pub struct ResumableBody {
     env: Env,
     remaining: ArcSlice<Arc<dyn Eval>>,
@@ -182,9 +177,9 @@ impl Resumable for ResumableBody {
         last.eval(&self.env, cont).await
     }
 
-    async fn clone_stack(&self) -> Arc<dyn Resumable> {
+    fn clone_stack(&self) -> Arc<dyn Resumable> {
         Arc::new(Self {
-            env: self.env.deep_clone().await,
+            env: self.env.deep_clone(),
             remaining: self.remaining.clone(),
         })
     }
@@ -213,23 +208,23 @@ impl Resumable for ResumableSyntaxCase {
         cont: &Option<Arc<Continuation>>,
     ) -> Result<Vec<Gc<Value>>, RuntimeError> {
         let arg = args.require_one()?;
-        let arg = arg.read().await;
-        match &*arg {
-            Value::Syntax(syntax) => {
-                let result = self.transformer.expand(syntax).unwrap();
-                result
-                    .compile(&self.env, cont)
-                    .await?
-                    .eval(&self.env, cont)
-                    .await
+        let transformed = {
+            let arg = arg.read();
+            match &*arg {
+                Value::Syntax(syntax) => self.transformer.expand(syntax).unwrap(),
+                _ => todo!(),
             }
-            _ => todo!(),
-        }
+        };
+        transformed
+            .compile(&self.env, cont)
+            .await?
+            .eval(&self.env, cont)
+            .await
     }
 
-    async fn clone_stack(&self) -> Arc<dyn Resumable> {
+    fn clone_stack(&self) -> Arc<dyn Resumable> {
         Arc::new(Self {
-            env: self.env.deep_clone().await,
+            env: self.env.deep_clone(),
             transformer: self.transformer.clone(),
         })
     }
@@ -259,20 +254,18 @@ impl Resumable for ResumableSet {
     ) -> Result<Vec<Gc<Value>>, RuntimeError> {
         // TODO: Add try_unwrap to GC to avoid the clone of the inner value
         let arg = args.require_one()?;
-        let val = arg.read().await.clone();
+        let val = arg.read().clone();
         *self
             .env
             .fetch_var(&self.var)
-            .await
             .ok_or_else(|| RuntimeError::undefined_variable(self.var.clone()))?
-            .write()
-            .await = val;
+            .write() = val;
         Ok(vec![Gc::new(Value::Null)])
     }
 
-    async fn clone_stack(&self) -> Arc<dyn Resumable> {
+    fn clone_stack(&self) -> Arc<dyn Resumable> {
         Arc::new(Self {
-            env: self.env.deep_clone().await,
+            env: self.env.deep_clone(),
             var: self.var.clone(),
         })
     }
@@ -306,7 +299,7 @@ impl Resumable for ResumableAnd {
             return Ok(args);
         };
         let arg = args.require_one()?;
-        if !arg.read().await.is_true() {
+        if !arg.read().is_true() {
             return Ok(vec![Gc::new(Value::Boolean(false))]);
         }
         for (arg, tail) in self.args.skip_last() {
@@ -319,7 +312,6 @@ impl Resumable for ResumableAnd {
                 .await?
                 .require_one()?
                 .read()
-                .await
                 .is_true()
             {
                 return Ok(vec![Gc::new(Value::Boolean(false))]);
@@ -328,9 +320,9 @@ impl Resumable for ResumableAnd {
         last.eval(&self.env, cont).await
     }
 
-    async fn clone_stack(&self) -> Arc<dyn Resumable> {
+    fn clone_stack(&self) -> Arc<dyn Resumable> {
         Arc::new(Self {
-            env: self.env.deep_clone().await,
+            env: self.env.deep_clone(),
             args: self.args.clone(),
         })
     }
@@ -364,7 +356,7 @@ impl Resumable for ResumableOr {
             return Ok(args);
         };
         let arg = args.require_one()?;
-        if arg.read().await.is_true() {
+        if arg.read().is_true() {
             return Ok(vec![Gc::new(Value::Boolean(true))]);
         }
         for (arg, tail) in self.args.skip_last() {
@@ -377,7 +369,6 @@ impl Resumable for ResumableOr {
                 .await?
                 .require_one()?
                 .read()
-                .await
                 .is_true()
             {
                 return Ok(vec![Gc::new(Value::Boolean(true))]);
@@ -386,9 +377,9 @@ impl Resumable for ResumableOr {
         last.eval(&self.env, cont).await
     }
 
-    async fn clone_stack(&self) -> Arc<dyn Resumable> {
+    fn clone_stack(&self) -> Arc<dyn Resumable> {
         Arc::new(Self {
-            env: self.env.deep_clone().await,
+            env: self.env.deep_clone(),
             args: self.args.clone(),
         })
     }
@@ -427,7 +418,7 @@ impl Resumable for ResumableLet {
     ) -> Result<Vec<Gc<Value>>, RuntimeError> {
         let arg = args.require_one()?;
         let up = {
-            let mut scope = self.scope.write().await;
+            let mut scope = self.scope.write();
             scope.def_var(&self.curr, arg);
             scope.up.clone()
         };
@@ -437,14 +428,14 @@ impl Resumable for ResumableLet {
                 cont,
             ));
             let val = expr.eval(&up, &Some(cont)).await?.require_one()?;
-            self.scope.write().await.def_var(ident, val);
+            self.scope.write().def_var(ident, val);
         }
         self.body.eval(&Env::from(self.scope.clone()), cont).await
     }
 
-    async fn clone_stack(&self) -> Arc<dyn Resumable> {
+    fn clone_stack(&self) -> Arc<dyn Resumable> {
         Arc::new(Self {
-            scope: Gc::new(self.scope.read().await.deep_clone().await),
+            scope: Gc::new(self.scope.read().deep_clone()),
             curr: self.curr.clone(),
             remaining_bindings: self.remaining_bindings.clone(),
             body: self.body.clone(),
@@ -477,7 +468,7 @@ impl Resumable for ResumableIf {
         cont: &Option<Arc<Continuation>>,
     ) -> Result<Vec<Gc<Value>>, RuntimeError> {
         let arg = args.require_one()?;
-        if arg.read().await.is_true() {
+        if arg.read().is_true() {
             self.success.eval(&self.env, cont).await
         } else if let Some(ref failure) = self.failure {
             failure.eval(&self.env, cont).await
@@ -486,9 +477,9 @@ impl Resumable for ResumableIf {
         }
     }
 
-    async fn clone_stack(&self) -> Arc<dyn Resumable> {
+    fn clone_stack(&self) -> Arc<dyn Resumable> {
         Arc::new(Self {
-            env: self.env.deep_clone().await,
+            env: self.env.deep_clone(),
             success: self.success.clone(),
             failure: self.failure.clone(),
         })
@@ -518,13 +509,13 @@ impl Resumable for ResumableDefineVar {
         _cont: &Option<Arc<Continuation>>,
     ) -> Result<Vec<Gc<Value>>, RuntimeError> {
         let arg = args.require_one()?;
-        self.env.def_var(&self.name, arg).await;
+        self.env.def_var(&self.name, arg);
         Ok(vec![Gc::new(Value::Null)])
     }
 
-    async fn clone_stack(&self) -> Arc<dyn Resumable> {
+    fn clone_stack(&self) -> Arc<dyn Resumable> {
         Arc::new(Self {
-            env: self.env.deep_clone().await,
+            env: self.env.deep_clone(),
             name: self.name.clone(),
         })
     }
@@ -598,22 +589,14 @@ impl Resumable for ResumableCall {
         .await
     }
 
-    async fn clone_stack(&self) -> Arc<dyn Resumable> {
+    fn clone_stack(&self) -> Arc<dyn Resumable> {
         Arc::new(Self {
-            env: self.env.deep_clone().await,
+            env: self.env.deep_clone(),
             collected: self.collected.clone(),
             remaining: self.remaining.clone(),
             proc_name: self.proc_name.clone(),
             location: self.location.clone(),
         })
-    }
-}
-
-async fn clone_cont_stack(cont: &Option<Arc<Continuation>>) -> Option<Arc<Continuation>> {
-    if let Some(ref cont) = cont {
-        Some(cont.clone_stack().await)
-    } else {
-        None
     }
 }
 
@@ -623,13 +606,15 @@ pub async fn call_cc(
     proc: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let callable = {
-        let proc = proc.read().await;
+        let proc = proc.read();
         proc.as_callable()
             .ok_or_else(|| RuntimeError::invalid_type("procedure", proc.type_name()))?
     };
     callable
         .call(
-            vec![Gc::new(Value::Continuation(clone_cont_stack(cont).await))],
+            vec![Gc::new(Value::Continuation(
+                cont.as_ref().map(|cont| cont.clone_stack()),
+            ))],
             cont,
         )
         .await?
@@ -637,7 +622,7 @@ pub async fn call_cc(
         .await
 }
 
-#[derive(Trace, Clone)]
+#[derive(Clone, Trace)]
 pub struct CallWithValues {
     min_args: usize,
     max_args: Option<usize>,
@@ -660,13 +645,13 @@ impl Resumable for CallWithValues {
         cont: &Option<Arc<Continuation>>,
     ) -> Result<Vec<Gc<Value>>, RuntimeError> {
         let callable = {
-            let proc = self.consumer.read().await;
+            let proc = self.consumer.read();
             proc.as_callable().unwrap()
         };
         callable.call(args, cont).await?.eval(cont).await
     }
 
-    async fn clone_stack(&self) -> Arc<dyn Resumable> {
+    fn clone_stack(&self) -> Arc<dyn Resumable> {
         Arc::new(self.clone())
     }
 }
@@ -678,12 +663,12 @@ pub async fn call_with_values(
     consumer: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let producer_callable = {
-        let proc = producer.read().await;
+        let proc = producer.read();
         proc.as_callable()
             .ok_or_else(|| RuntimeError::invalid_type("procedure", proc.type_name()))?
     };
     let consumer_callable = {
-        let proc = consumer.read().await;
+        let proc = consumer.read();
         proc.as_callable()
             .ok_or_else(|| RuntimeError::invalid_type("procedure", proc.type_name()))?
     };
@@ -693,7 +678,7 @@ pub async fn call_with_values(
             max_args: consumer_callable.max_args(),
             consumer: consumer.clone(),
         }),
-        &clone_cont_stack(cont).await,
+        &cont.as_ref().map(|cont| cont.clone_stack()),
     ));
 
     let producer_result = producer_callable

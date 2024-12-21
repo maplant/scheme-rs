@@ -17,11 +17,10 @@ pub async fn test_assert(
     arg1: &Gc<Value>,
     arg2: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    //
-    if !eqv(arg1, arg2).await {
-        let arg1 = arg1.read().await.fmt().await;
-        let arg2 = arg2.read().await.fmt().await;
-        Err(RuntimeError::assert_eq_failed(&arg1, &arg2))
+    if !eqv(arg1, arg2) {
+        let arg1 = arg1.read().fmt();
+        let arg2 = arg2.read().fmt();
+        Err(RuntimeError::assert_eq_failed(&arg2, &arg1))
     } else {
         Ok(vec![])
     }
