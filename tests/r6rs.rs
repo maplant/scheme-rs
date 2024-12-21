@@ -20,7 +20,7 @@ pub async fn test_assert(
     if !eqv(arg1, arg2) {
         let arg1 = arg1.read().fmt();
         let arg2 = arg2.read().fmt();
-        Err(RuntimeError::assert_eq_failed(&arg1, &arg2))
+        Err(RuntimeError::assert_eq_failed(&arg2, &arg1))
     } else {
         Ok(vec![])
     }

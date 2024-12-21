@@ -33,10 +33,10 @@ pub trait Resumable: Trace + Send + Sync {
 
     /// Clone the contents of the resumable; necessary to ensure the continuation
     /// is unique when we make a continuation first-class.
-    fn dyn_clone(&self) -> Arc<dyn Resumable>;
+    fn clone_stack(&self) -> Arc<dyn Resumable>;
 }
 
-#[derive(Clone, Trace)]
+#[derive(Trace)]
 pub struct Continuation {
     resume_point: Arc<dyn Resumable>,
     remaining: Option<Arc<Continuation>>,
@@ -52,7 +52,7 @@ impl Continuation {
 
     fn clone_stack(&self) -> Arc<Self> {
         Arc::new(Self {
-            resume_point: self.resume_point.dyn_clone(),
+            resume_point: self.resume_point.clone_stack(),
             remaining: self.remaining.as_ref().map(|cont| cont.clone_stack()),
         })
     }
@@ -74,7 +74,7 @@ impl Resumable for Continuation {
         }
     }
 
-    fn dyn_clone(&self) -> Arc<dyn Resumable> {
+    fn clone_stack(&self) -> Arc<dyn Resumable> {
         self.clone_stack()
     }
 }
@@ -142,7 +142,7 @@ impl Eval for CatchContinuationCall {
     }
 }
 
-#[derive(Clone, Trace)]
+#[derive(Trace)]
 pub struct ResumableBody {
     env: Env,
     remaining: ArcSlice<Arc<dyn Eval>>,
@@ -153,6 +153,15 @@ impl ResumableBody {
         Self {
             env: env.clone(),
             remaining: remaining.clone(),
+        }
+    }
+}
+
+impl Clone for ResumableBody {
+    fn clone(&self) -> Self {
+        Self {
+            env: self.env.deep_clone(),
+            remaining: self.remaining.clone(),
         }
     }
 }
@@ -177,12 +186,12 @@ impl Resumable for ResumableBody {
         last.eval(&self.env, cont).await
     }
 
-    fn dyn_clone(&self) -> Arc<dyn Resumable> {
+    fn clone_stack(&self) -> Arc<dyn Resumable> {
         Arc::new(self.clone())
     }
 }
 
-#[derive(Clone, Trace)]
+#[derive(Trace)]
 pub struct ResumableSyntaxCase {
     env: Env,
     transformer: Transformer,
@@ -193,6 +202,15 @@ impl ResumableSyntaxCase {
         Self {
             env: env.clone(),
             transformer: transformer.clone(),
+        }
+    }
+}
+
+impl Clone for ResumableSyntaxCase {
+    fn clone(&self) -> Self {
+        Self {
+            env: self.env.deep_clone(),
+            transformer: self.transformer.clone(),
         }
     }
 }
@@ -219,12 +237,12 @@ impl Resumable for ResumableSyntaxCase {
             .await
     }
 
-    fn dyn_clone(&self) -> Arc<dyn Resumable> {
+    fn clone_stack(&self) -> Arc<dyn Resumable> {
         Arc::new(self.clone())
     }
 }
 
-#[derive(Clone, Trace)]
+#[derive(Trace)]
 pub struct ResumableSet {
     env: Env,
     var: Identifier,
@@ -235,6 +253,15 @@ impl ResumableSet {
         Self {
             env: env.clone(),
             var: var.clone(),
+        }
+    }
+}
+
+impl Clone for ResumableSet {
+    fn clone(&self) -> Self {
+        Self {
+            env: self.env.deep_clone(),
+            var: self.var.clone(),
         }
     }
 }
@@ -257,12 +284,12 @@ impl Resumable for ResumableSet {
         Ok(vec![Gc::new(Value::Null)])
     }
 
-    fn dyn_clone(&self) -> Arc<dyn Resumable> {
+    fn clone_stack(&self) -> Arc<dyn Resumable> {
         Arc::new(self.clone())
     }
 }
 
-#[derive(Trace, Clone)]
+#[derive(Trace)]
 pub struct ResumableAnd {
     env: Env,
     args: ArcSlice<Arc<dyn Eval>>,
@@ -273,6 +300,15 @@ impl ResumableAnd {
         Self {
             env: env.clone(),
             args: args.clone(),
+        }
+    }
+}
+
+impl Clone for ResumableAnd {
+    fn clone(&self) -> Self {
+        Self {
+            env: self.env.deep_clone(),
+            args: self.args.clone(),
         }
     }
 }
@@ -311,12 +347,12 @@ impl Resumable for ResumableAnd {
         last.eval(&self.env, cont).await
     }
 
-    fn dyn_clone(&self) -> Arc<dyn Resumable> {
+    fn clone_stack(&self) -> Arc<dyn Resumable> {
         Arc::new(self.clone())
     }
 }
 
-#[derive(Clone, Trace)]
+#[derive(Trace)]
 pub struct ResumableOr {
     env: Env,
     args: ArcSlice<Arc<dyn Eval>>,
@@ -327,6 +363,15 @@ impl ResumableOr {
         Self {
             env: env.clone(),
             args: args.clone(),
+        }
+    }
+}
+
+impl Clone for ResumableOr {
+    fn clone(&self) -> Self {
+        Self {
+            env: self.env.deep_clone(),
+            args: self.args.clone(),
         }
     }
 }
@@ -365,12 +410,12 @@ impl Resumable for ResumableOr {
         last.eval(&self.env, cont).await
     }
 
-    fn dyn_clone(&self) -> Arc<dyn Resumable> {
+    fn clone_stack(&self) -> Arc<dyn Resumable> {
         Arc::new(self.clone())
     }
 }
 
-#[derive(Clone, Trace)]
+#[derive(Trace)]
 pub struct ResumableLet {
     scope: Gc<LexicalContour>,
     curr: Identifier,
@@ -390,6 +435,17 @@ impl ResumableLet {
             curr: curr.clone(),
             remaining_bindings,
             body: body.clone(),
+        }
+    }
+}
+
+impl Clone for ResumableLet {
+    fn clone(&self) -> Self {
+        Self {
+            scope: Gc::new(self.scope.read().deep_clone()),
+            curr: self.curr.clone(),
+            remaining_bindings: self.remaining_bindings.clone(),
+            body: self.body.clone(),
         }
     }
 }
@@ -418,12 +474,12 @@ impl Resumable for ResumableLet {
         self.body.eval(&Env::from(self.scope.clone()), cont).await
     }
 
-    fn dyn_clone(&self) -> Arc<dyn Resumable> {
+    fn clone_stack(&self) -> Arc<dyn Resumable> {
         Arc::new(self.clone())
     }
 }
 
-#[derive(Clone, Trace)]
+#[derive(Trace)]
 pub struct ResumableIf {
     env: Env,
     success: Arc<dyn Eval>,
@@ -436,6 +492,16 @@ impl ResumableIf {
             env: env.clone(),
             success: success.clone(),
             failure: failure.clone(),
+        }
+    }
+}
+
+impl Clone for ResumableIf {
+    fn clone(&self) -> Self {
+        Self {
+            env: self.env.deep_clone(),
+            success: self.success.clone(),
+            failure: self.failure.clone(),
         }
     }
 }
@@ -457,12 +523,12 @@ impl Resumable for ResumableIf {
         }
     }
 
-    fn dyn_clone(&self) -> Arc<dyn Resumable> {
+    fn clone_stack(&self) -> Arc<dyn Resumable> {
         Arc::new(self.clone())
     }
 }
 
-#[derive(Clone, Trace)]
+#[derive(Trace)]
 pub struct ResumableDefineVar {
     env: Env,
     name: Identifier,
@@ -473,6 +539,15 @@ impl ResumableDefineVar {
         Self {
             env: env.clone(),
             name: name.clone(),
+        }
+    }
+}
+
+impl Clone for ResumableDefineVar {
+    fn clone(&self) -> Self {
+        Self {
+            env: self.env.deep_clone(),
+            name: self.name.clone(),
         }
     }
 }
@@ -489,12 +564,12 @@ impl Resumable for ResumableDefineVar {
         Ok(vec![Gc::new(Value::Null)])
     }
 
-    fn dyn_clone(&self) -> Arc<dyn Resumable> {
+    fn clone_stack(&self) -> Arc<dyn Resumable> {
         Arc::new(self.clone())
     }
 }
 
-#[derive(Clone, Trace)]
+#[derive(Trace)]
 pub struct ResumableCall {
     env: Env,
     // TODO: Making this a SmallVec of around 10 would probably be a
@@ -519,6 +594,18 @@ impl ResumableCall {
             remaining,
             proc_name: proc_name.to_string(),
             location: location.clone(),
+        }
+    }
+}
+
+impl Clone for ResumableCall {
+    fn clone(&self) -> Self {
+        Self {
+            env: self.env.deep_clone(),
+            collected: self.collected.clone(),
+            remaining: self.remaining.clone(),
+            proc_name: self.proc_name.clone(),
+            location: self.location.clone(),
         }
     }
 }
@@ -562,7 +649,7 @@ impl Resumable for ResumableCall {
         .await
     }
 
-    fn dyn_clone(&self) -> Arc<dyn Resumable> {
+    fn clone_stack(&self) -> Arc<dyn Resumable> {
         Arc::new(self.clone())
     }
 }
@@ -589,7 +676,7 @@ pub async fn call_cc(
         .await
 }
 
-#[derive(Trace, Clone)]
+#[derive(Clone, Trace)]
 pub struct CallWithValues {
     min_args: usize,
     max_args: Option<usize>,
@@ -618,7 +705,7 @@ impl Resumable for CallWithValues {
         callable.call(args, cont).await?.eval(cont).await
     }
 
-    fn dyn_clone(&self) -> Arc<dyn Resumable> {
+    fn clone_stack(&self) -> Arc<dyn Resumable> {
         Arc::new(self.clone())
     }
 }

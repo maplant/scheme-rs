@@ -12,7 +12,7 @@ use crate::{
     value::Value,
 };
 
-#[derive(derive_more::Debug, Clone, Trace)]
+#[derive(derive_more::Debug, Trace)]
 pub struct LexicalContour {
     #[debug(skip)]
     pub up: Env,
@@ -62,11 +62,18 @@ impl LexicalContour {
         }
         self.macros.insert(ident.clone(), value);
     }
+
+    pub fn deep_clone(&self) -> Self {
+        Self {
+            up: self.up.deep_clone(),
+            vars: self.vars.clone(),
+            macros: self.macros.clone(),
+        }
+    }
 }
 
-#[derive(derive_more::Debug, Clone, Trace)]
+#[derive(derive_more::Debug, Trace)]
 pub struct ExpansionContext {
-    #[debug(skip)]
     up: Env,
     mark: Mark,
     #[debug(skip)]
@@ -105,9 +112,17 @@ impl ExpansionContext {
             self.up.fetch_macro(ident)
         }
     }
+
+    pub fn deep_clone(&self) -> Self {
+        Self {
+            up: self.up.deep_clone(),
+            mark: self.mark,
+            macro_env: self.macro_env.deep_clone(),
+        }
+    }
 }
 
-#[derive(Trace, Debug)]
+#[derive(Clone, Trace, Debug)]
 pub enum Env {
     /// This is the top level environment
     Top,
@@ -205,14 +220,12 @@ impl Env {
         }
         Ok(results)
     }
-}
 
-impl Clone for Env {
-    fn clone(&self) -> Self {
+    pub fn deep_clone(&self) -> Self {
         match self {
             Self::Top => Self::Top,
-            Self::Expansion(expansion) => Self::Expansion(Gc::new(expansion.read().clone())),
-            Self::LexicalContour(env) => Self::LexicalContour(Gc::new(env.read().clone())),
+            Self::Expansion(expansion) => Self::Expansion(Gc::new(expansion.read().deep_clone())),
+            Self::LexicalContour(env) => Self::LexicalContour(Gc::new(env.read().deep_clone())),
         }
     }
 }

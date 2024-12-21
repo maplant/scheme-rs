@@ -225,27 +225,6 @@ impl Syntax {
                 _ => todo!(),
             }
         };
-        /*
-            let mut output = match &*transformer.read() {
-                Value::Procedure(proc) => {
-                    let output = proc
-                        .call(vec![Gc::new(Value::Syntax(input))], cont)
-                        .await?
-                        .eval(cont)
-                        .await?
-                        .require_one()?;
-                    let output = output.read();
-                    match &*output {
-                        Value::Syntax(syntax) => syntax.clone(),
-                        _ => todo!(),
-                    }
-                }
-                Value::Transformer(transformer) => transformer
-                    .expand(&input)
-                    .ok_or_else(RuntimeError::no_patterns_match)?,
-                x => return Err(RuntimeError::invalid_type("procedure", x.type_name())),
-        };
-            */
         // Apply the new mark to the output
         output.mark(new_mark);
         Ok(Expansion::Expanded {
@@ -518,7 +497,15 @@ pub struct Identifier {
 
 impl fmt::Debug for Identifier {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.name)
+        write!(
+            f,
+            "{} ({})",
+            self.name,
+            self.marks
+                .iter()
+                .map(|m| m.0.to_string() + " ")
+                .collect::<String>()
+        )
     }
 }
 
