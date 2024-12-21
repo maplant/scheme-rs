@@ -1,78 +1,68 @@
 use crate::{continuation::Continuation, error::RuntimeError, gc::Gc, num::Number, value::Value};
-use futures::future::BoxFuture;
 use proc_macros::builtin;
 use std::sync::Arc;
 
-pub fn fmt_list<'a>(car: &'a Gc<Value>, cdr: &'a Gc<Value>) -> BoxFuture<'a, String> {
+pub fn fmt_list(car: &Gc<Value>, cdr: &Gc<Value>) -> String {
     // TODO(map): If the list is circular, DO NOT print infinitely!
-    Box::pin(async move {
-        match &*cdr.read().await {
-            Value::Pair(_, _) | Value::Null => (),
-            cdr => {
-                // This is not a proper list
-                let car = car.read().await.fmt().await;
-                let cdr = cdr.fmt().await;
-                return format!("({car} . {cdr})");
-            }
+    match &*cdr.read() {
+        Value::Pair(_, _) | Value::Null => (),
+        cdr => {
+            // This is not a proper list
+            let car = car.read().fmt();
+            let cdr = cdr.fmt();
+            return format!("({car} . {cdr})");
         }
+    }
 
-        let mut output = String::from("(");
-        output.push_str(&car.read().await.fmt().await);
+    let mut output = String::from("(");
+    output.push_str(&car.read().fmt());
 
-        let mut stack = vec![cdr.clone()];
+    let mut stack = vec![cdr.clone()];
 
-        while let Some(head) = stack.pop() {
-            match &*head.read().await {
-                Value::Null => {
-                    if !stack.is_empty() {
-                        output.push_str(" ()");
-                    }
-                }
-                Value::Pair(car, cdr) => {
-                    output.push(' ');
-                    output.push_str(&car.read().await.fmt().await);
-                    stack.push(cdr.clone());
-                }
-                x => {
-                    output.push(' ');
-                    output.push_str(&x.fmt().await)
+    while let Some(head) = stack.pop() {
+        match &*head.read() {
+            Value::Null => {
+                if !stack.is_empty() {
+                    output.push_str(" ()");
                 }
             }
+            Value::Pair(car, cdr) => {
+                output.push(' ');
+                output.push_str(&car.read().fmt());
+                stack.push(cdr.clone());
+            }
+            x => {
+                output.push(' ');
+                output.push_str(&x.fmt())
+            }
         }
+    }
 
-        output.push(')');
-        output
-    })
+    output.push(')');
+    output
 }
 
-pub fn list_to_vec<'a>(curr: &'a Gc<Value>, out: &'a mut Vec<Gc<Value>>) -> BoxFuture<'a, ()> {
-    Box::pin(async move {
-        let val = curr.read().await;
-        match &*val {
-            Value::Pair(a, b) => {
-                out.push(a.clone());
-                list_to_vec(b, out).await;
-            }
-            Value::Null => (),
-            _ => out.push(curr.clone()),
+pub fn list_to_vec(curr: &Gc<Value>, out: &mut Vec<Gc<Value>>) {
+    let val = curr.read();
+    match &*val {
+        Value::Pair(a, b) => {
+            out.push(a.clone());
+            list_to_vec(b, out);
         }
-    })
+        Value::Null => (),
+        _ => out.push(curr.clone()),
+    }
 }
 
-pub fn list_to_vec_with_null<'a>(
-    curr: &'a Gc<Value>,
-    out: &'a mut Vec<Gc<Value>>,
-) -> BoxFuture<'a, ()> {
-    Box::pin(async move {
-        let val = curr.read().await;
-        match &*val {
-            Value::Pair(a, b) => {
-                out.push(a.clone());
-                list_to_vec_with_null(b, out).await;
-            }
-            _ => out.push(curr.clone()),
+pub fn list_to_vec_with_null(curr: &Gc<Value>, out: &mut Vec<Gc<Value>>) {
+    let val = curr.read();
+    match &*val {
+        Value::Pair(a, b) => {
+            out.push(a.clone());
+            list_to_vec_with_null(b, out);
         }
-    })
+        _ => out.push(curr.clone()),
+    }
 }
 
 #[builtin("list")]
@@ -94,8 +84,8 @@ pub async fn cons(
     car: &Gc<Value>,
     cdr: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let car = Gc::new(car.read().await.deep_clone().await);
-    let cdr = Gc::new(cdr.read().await.deep_clone().await);
+    let car = Gc::new(car.read().clone());
+    let cdr = Gc::new(cdr.read().clone());
     Ok(vec![Gc::new(Value::Pair(car, cdr))])
 }
 
@@ -104,7 +94,7 @@ pub async fn car(
     _cont: &Option<Arc<Continuation>>,
     val: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let val = val.read().await;
+    let val = val.read();
     match &*val {
         Value::Pair(car, _cdr) => Ok(vec![car.clone()]),
         _ => Err(RuntimeError::invalid_type("pair", val.type_name())),
@@ -116,7 +106,7 @@ pub async fn cdr(
     _cont: &Option<Arc<Continuation>>,
     val: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let val = val.read().await;
+    let val = val.read();
     match &*val {
         Value::Pair(_car, cdr) => Ok(vec![cdr.clone()]),
         _ => Err(RuntimeError::invalid_type("pair", val.type_name())),
@@ -129,7 +119,7 @@ pub async fn set_car(
     var: &Gc<Value>,
     val: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let mut var = var.write().await;
+    let mut var = var.write();
     match &mut *var {
         Value::Pair(ref mut car, _cdr) => *car = val.clone(),
         _ => todo!(),
@@ -143,7 +133,7 @@ pub async fn set_cdr(
     var: &Gc<Value>,
     val: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let mut var = var.write().await;
+    let mut var = var.write();
     match &mut *var {
         Value::Pair(_car, ref mut cdr) => *cdr = val.clone(),
         _ => todo!(),
@@ -160,7 +150,7 @@ pub async fn length(
     let mut arg = arg.clone();
     loop {
         arg = {
-            let val = arg.read().await;
+            let val = arg.read();
             match &*val {
                 Value::Pair(_, cdr) => cdr.clone(),
                 _ => break,

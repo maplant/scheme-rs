@@ -16,7 +16,7 @@ use crate::{
 };
 
 /// Type declaration for a record.
-#[derive(Trace, Clone)]
+#[derive(Debug, Trace, Clone)]
 pub struct RecordType {
     name: String,
     /// Parent is most recently inserted record type, if one exists.
@@ -34,14 +34,14 @@ impl RecordType {
     }
 }
 
-async fn is_subtype_of(lhs: &Gc<RecordType>, rhs: &Gc<RecordType>) -> bool {
+fn is_subtype_of(lhs: &Gc<RecordType>, rhs: &Gc<RecordType>) -> bool {
     lhs == rhs || {
-        let lhs = lhs.read().await;
+        let lhs = lhs.read();
         lhs.inherits.contains(rhs)
     }
 }
 
-#[derive(Trace, Clone)]
+#[derive(Debug, Trace, Clone)]
 pub struct Record {
     record_type: Gc<RecordType>,
     fields: HashMap<Identifier, Gc<Value>>,
@@ -315,11 +315,10 @@ impl Eval for DefineRecordType {
         let inherits = if let Some(ref parent) = self.parent {
             let parent_gc = env
                 .fetch_var(parent)
-                .await
                 .ok_or_else(|| RuntimeError::undefined_variable(parent.clone()))?;
-            let parent = parent_gc.read().await;
+            let parent = parent_gc.read();
             let record_type: &Gc<RecordType> = (&*parent).try_into()?;
-            let mut inherits = record_type.read().await.inherits.clone();
+            let mut inherits = record_type.read().inherits.clone();
             inherits.insert(record_type.clone());
             inherits
         } else {
@@ -329,7 +328,7 @@ impl Eval for DefineRecordType {
         let mut fields = Vec::new();
 
         for parent in &inherits {
-            let record_type = parent.read().await;
+            let record_type = parent.read();
             fields.extend_from_slice(record_type.fields.as_slice());
         }
 
@@ -349,7 +348,7 @@ impl Eval for DefineRecordType {
 
         // Set up the record type:
         {
-            let mut rt = record_type.write().await;
+            let mut rt = record_type.write();
             rt.inherits = inherits;
             // Got this code has gotten ugly. TODO: clean all of this up at some point.x
             rt.fields = fields
@@ -461,22 +460,20 @@ impl Eval for DefineRecordType {
             .as_ref()
             .map_or_else(|| format!("make-{}", self.name.name), |cn| cn.name.clone());
         let constructor_name = Identifier::new(constructor_name);
-        env.def_var(&constructor_name, constructor).await;
+        env.def_var(&constructor_name, constructor);
 
         let predicate_name = self
             .predicate
             .as_ref()
             .map_or_else(|| format!("{}?", self.name.name), |cn| cn.name.clone());
         let predicate_name = Identifier::new(predicate_name);
-        env.def_var(&predicate_name, predicate).await;
+        env.def_var(&predicate_name, predicate);
 
         for (new_function_name, new_function) in new_functions.into_iter() {
-            env.def_var(&Identifier::new(new_function_name), new_function)
-                .await;
+            env.def_var(&Identifier::new(new_function_name), new_function);
         }
 
-        env.def_var(&self.name, Gc::new(Value::RecordType(record_type)))
-            .await;
+        env.def_var(&self.name, Gc::new(Value::RecordType(record_type)));
 
         Ok(Vec::new())
     }
@@ -507,13 +504,9 @@ impl Eval for UncheckedFieldMutator {
         env: &Env,
         _cont: &Option<Arc<Continuation>>,
     ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-        let this_gc = env
-            .fetch_var(&Identifier::new("this".to_string()))
-            .await
-            .unwrap();
-
-        let value = env.fetch_var(&self.identifier).await.unwrap();
-        let mut this = this_gc.write().await;
+        let this_gc = env.fetch_var(&Identifier::new("this".to_string())).unwrap();
+        let value = env.fetch_var(&self.identifier).unwrap();
+        let mut this = this_gc.write();
         let this: &mut Record = (&mut *this).try_into()?;
         this.fields.insert(self.identifier.clone(), value);
 
@@ -534,26 +527,23 @@ impl Eval for FieldMutator {
         env: &Env,
         _cont: &Option<Arc<Continuation>>,
     ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-        let this_gc = env
-            .fetch_var(&Identifier::new("this".to_string()))
-            .await
-            .unwrap();
+        let this_gc = env.fetch_var(&Identifier::new("this".to_string())).unwrap();
 
         {
-            let this = this_gc.read().await;
+            let this = this_gc.read();
             let this: &Record = (&*this).try_into()?;
 
-            if !is_subtype_of(&this.record_type, &self.record_type).await {
+            if !is_subtype_of(&this.record_type, &self.record_type) {
                 return Err(RuntimeError::invalid_type(
-                    &self.record_type.read().await.name,
-                    &this.record_type.read().await.name,
+                    &self.record_type.read().name,
+                    &this.record_type.read().name,
                 ));
             }
         }
 
-        let value = env.fetch_var(&self.identifier).await.unwrap();
+        let value = env.fetch_var(&self.identifier).unwrap();
 
-        let mut this = this_gc.write().await;
+        let mut this = this_gc.write();
         let this: &mut Record = (&mut *this).try_into()?;
         this.fields.insert(self.identifier.clone(), value);
 
@@ -574,17 +564,14 @@ impl Eval for FieldAccessor {
         env: &Env,
         _cont: &Option<Arc<Continuation>>,
     ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-        let this_gc = env
-            .fetch_var(&Identifier::new("this".to_string()))
-            .await
-            .unwrap();
-        let this = this_gc.read().await;
+        let this_gc = env.fetch_var(&Identifier::new("this".to_string())).unwrap();
+        let this = this_gc.read();
         let this: &Record = (&*this).try_into()?;
 
-        if !is_subtype_of(&this.record_type, &self.record_type).await {
+        if !is_subtype_of(&this.record_type, &self.record_type) {
             return Err(RuntimeError::invalid_type(
-                &self.record_type.read().await.name,
-                &this.record_type.read().await.name,
+                &self.record_type.read().name,
+                &this.record_type.read().name,
             ));
         }
 
@@ -604,18 +591,16 @@ impl Eval for RecordPredicate {
         env: &Env,
         _cont: &Option<Arc<Continuation>>,
     ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-        let this_gc = env
-            .fetch_var(&Identifier::new("this".to_string()))
-            .await
-            .unwrap();
-        let this = this_gc.read().await;
+        let this_gc = env.fetch_var(&Identifier::new("this".to_string())).unwrap();
+        let this = this_gc.read();
         let this = match &*this {
             Value::Record(ref rec) => rec,
             _ => return Ok(vec![Gc::new(Value::Boolean(false))]),
         };
 
-        Ok(vec![Gc::new(Value::Boolean(
-            is_subtype_of(&this.record_type, &self.record_type).await,
-        ))])
+        Ok(vec![Gc::new(Value::Boolean(is_subtype_of(
+            &this.record_type,
+            &self.record_type,
+        )))])
     }
 }

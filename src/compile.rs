@@ -483,8 +483,7 @@ impl Compile for ast::DefineSyntax {
                         .eval(env, cont)
                         .await?
                         .require_one()?,
-                )
-                .await;
+                );
                 Ok(ast::DefineSyntax)
             }
             _ => Err(CompileDefineSyntaxError::BadForm(span.clone())),

@@ -8,7 +8,7 @@ pub async fn spawn(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let value = arg.read().await;
+    let value = arg.read();
     let callable = value
         .as_callable()
         .ok_or_else(|| RuntimeError::invalid_type("callable", value.type_name()))?;
@@ -30,7 +30,7 @@ pub async fn sleep(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let value = arg.read().await;
+    let value = arg.read();
     let time: &Number = value.as_ref().try_into()?;
     let millis = time.to_u64();
     let future = async move {
@@ -47,11 +47,14 @@ pub async fn await_value(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let value = arg.read().await;
-    match &*value {
-        Value::Future(fut) => fut.clone().await,
-        _ => Ok(vec![arg.clone()]),
-    }
+    let future = {
+        let value = arg.read();
+        match &*value {
+            Value::Future(fut) => fut.clone(),
+            _ => return Ok(vec![arg.clone()]),
+        }
+    };
+    future.await
 }
 
 #[builtin("join")]
@@ -61,7 +64,7 @@ pub async fn join(
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let mut futs = Vec::new();
     for arg in args.into_iter() {
-        let value = arg.read().await;
+        let value = arg.read();
         let fut = match &*value {
             Value::Future(fut) => fut.clone(),
             _ => {

@@ -64,11 +64,11 @@ impl Callable for Procedure {
             let Some(value) = args_iter.next().cloned() else {
                 return Err(RuntimeError::wrong_num_of_args(self.args.len(), provided));
             };
-            env.write().await.def_var(required, value);
+            env.write().def_var(required, value);
         }
 
         if let Some(ref remaining) = self.remaining {
-            env.write().await.def_var(
+            env.write().def_var(
                 remaining,
                 Gc::new(Value::from(args_iter.cloned().collect::<Vec<_>>())),
             );
@@ -133,7 +133,7 @@ impl PreparedCall {
                 bt.push(Frame::new(proc_name.clone(), location.clone()));
             }
             let callable = {
-                let proc = proc.operator.read().await;
+                let proc = proc.operator.read();
                 let Some(callable) = proc.as_callable() else {
                     return Err(RuntimeError::invalid_operator_type(proc.type_name()));
                 };
@@ -197,9 +197,9 @@ pub async fn apply(
     mut args: Vec<Gc<Value>>,
 ) -> Result<PreparedCall, RuntimeError> {
     if args.len() < 2 {
-        return Err(RuntimeError::wrong_num_of_args(2, 3));
+        return Err(RuntimeError::wrong_num_of_args(2, args.len()));
     }
     let last = args.pop().unwrap();
-    list_to_vec(&last, &mut args).await;
+    list_to_vec(&last, &mut args);
     Ok(PreparedCall::prepare(args, None))
 }

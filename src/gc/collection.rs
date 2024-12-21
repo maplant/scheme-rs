@@ -5,14 +5,11 @@
 use std::{
     alloc::Layout,
     ptr::NonNull,
-    sync::{Mutex, OnceLock},
+    sync::{Mutex, OnceLock, RwLock},
     time::{Duration, Instant},
 };
 use tokio::{
-    sync::{
-        mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
-        Semaphore, SemaphorePermit,
-    },
+    sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
     task::JoinHandle,
 };
 
@@ -397,16 +394,8 @@ unsafe fn buffered<'a>(s: OpaqueGcPtr) -> &'a mut bool {
     &mut (*s.as_ref().header.get()).buffered
 }
 
-unsafe fn semaphore<'a>(s: OpaqueGcPtr) -> &'a Semaphore {
-    &(*s.as_ref().header.get()).semaphore
-}
-
-fn acquire_permit(semaphore: &'_ Semaphore) -> SemaphorePermit<'_> {
-    loop {
-        if let Ok(permit) = semaphore.try_acquire() {
-            return permit;
-        }
-    }
+unsafe fn lock<'a>(s: OpaqueGcPtr) -> &'a RwLock<()> {
+    &(*s.as_ref().header.get()).lock
 }
 
 unsafe fn trace<'a>(s: OpaqueGcPtr) -> &'a mut dyn Trace {
@@ -414,9 +403,9 @@ unsafe fn trace<'a>(s: OpaqueGcPtr) -> &'a mut dyn Trace {
 }
 
 unsafe fn for_each_child(s: OpaqueGcPtr, visitor: unsafe fn(OpaqueGcPtr)) {
-    let permit = acquire_permit(semaphore(s));
+    let lock = lock(s).read().unwrap();
     (*s.as_ref().data.get()).visit_children(visitor);
-    drop(permit);
+    drop(lock);
 }
 
 unsafe fn free(s: OpaqueGcPtr) {
@@ -449,10 +438,10 @@ mod test {
 
         // a -> b -> c -
         // ^----------/
-        a.write().await.next = Some(b.clone());
-        b.write().await.next = Some(c.clone());
-        b.write().await.out = Some(out_ptr.clone());
-        c.write().await.next = Some(a.clone());
+        a.write().next = Some(b.clone());
+        b.write().next = Some(c.clone());
+        b.write().out = Some(out_ptr.clone());
+        c.write().next = Some(a.clone());
 
         assert_eq!(Arc::strong_count(&out_ptr), 2);
 

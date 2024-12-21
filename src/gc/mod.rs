@@ -27,8 +27,8 @@ use std::{
     mem::ManuallyDrop,
     ops::{Deref, DerefMut},
     ptr::{drop_in_place, NonNull},
+    sync::{RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
-use tokio::sync::{Semaphore, SemaphorePermit};
 
 /// A Garbage-Collected smart pointer with interior mutability.
 pub struct Gc<T: Trace> {
@@ -58,13 +58,9 @@ impl<T: Trace> Gc<T> {
     }
 
     /// Acquire a read lock for the object
-    pub async fn read(&self) -> GcReadGuard<'_, T> {
+    pub fn read(&self) -> GcReadGuard<'_, T> {
         unsafe {
-            let _permit = (*self.ptr.as_ref().header.get())
-                .semaphore
-                .acquire()
-                .await
-                .unwrap();
+            let _permit = (*self.ptr.as_ref().header.get()).lock.read().unwrap();
             let data = &*self.ptr.as_ref().data.get() as *const T;
             GcReadGuard {
                 _permit,
@@ -74,30 +70,10 @@ impl<T: Trace> Gc<T> {
         }
     }
 
-    /// Attempt to acquire a read lock for the object
-    pub fn try_read(&self) -> Option<GcReadGuard<'_, T>> {
-        unsafe {
-            let _permit = (*self.ptr.as_ref().header.get())
-                .semaphore
-                .try_acquire()
-                .ok()?;
-            let data = &*self.ptr.as_ref().data.get() as *const T;
-            Some(GcReadGuard {
-                _permit,
-                data,
-                marker: PhantomData,
-            })
-        }
-    }
-
     /// Acquire a write lock for the object
-    pub async fn write(&self) -> GcWriteGuard<'_, T> {
+    pub fn write(&self) -> GcWriteGuard<'_, T> {
         unsafe {
-            let _permit = (*self.ptr.as_ref().header.get())
-                .semaphore
-                .acquire_many(MAX_READS)
-                .await
-                .unwrap();
+            let _permit = (*self.ptr.as_ref().header.get()).lock.write().unwrap();
             let data = &mut *self.ptr.as_ref().data.get() as *mut T;
             GcWriteGuard {
                 _permit,
@@ -113,11 +89,7 @@ where
     T: std::fmt::Debug,
 {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        loop {
-            if let Some(x) = self.try_read() {
-                return x.fmt(fmt);
-            }
-        }
+        self.read().fmt(fmt)
     }
 }
 
@@ -151,8 +123,8 @@ impl<T: Trace> PartialEq for Gc<T> {
 
 impl<T: Trace> Eq for Gc<T> {}
 
-unsafe impl<T: Trace + Send + Sync> Send for Gc<T> {}
-unsafe impl<T: Trace + Send + Sync> Sync for Gc<T> {}
+unsafe impl<T: Trace + Send> Send for Gc<T> {}
+unsafe impl<T: Trace + Sync> Sync for Gc<T> {}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum Color {
@@ -170,8 +142,6 @@ enum Color {
     Orange,
 }
 
-const MAX_READS: u32 = u32::MAX >> 3;
-
 #[derive(derive_more::Debug)]
 pub struct GcHeader {
     rc: usize,
@@ -179,7 +149,7 @@ pub struct GcHeader {
     color: Color,
     buffered: bool,
     #[debug(skip)]
-    semaphore: Semaphore,
+    lock: RwLock<()>,
 }
 
 impl Default for GcHeader {
@@ -189,7 +159,7 @@ impl Default for GcHeader {
             crc: 1,
             color: Color::Black,
             buffered: false,
-            semaphore: Semaphore::new(MAX_READS as usize),
+            lock: RwLock::new(()),
         }
     }
 }
@@ -202,14 +172,14 @@ pub struct GcInner<T: ?Sized> {
     data: UnsafeCell<T>,
 }
 
-unsafe impl<T: ?Sized + Send + Sync> Send for GcInner<T> {}
-unsafe impl<T: ?Sized + Send + Sync> Sync for GcInner<T> {}
+unsafe impl<T: ?Sized + Send> Send for GcInner<T> {}
+unsafe impl<T: ?Sized + Sync> Sync for GcInner<T> {}
 
 type OpaqueGc = GcInner<dyn Trace>;
 pub type OpaqueGcPtr = NonNull<OpaqueGc>;
 
 pub struct GcReadGuard<'a, T: ?Sized> {
-    _permit: SemaphorePermit<'a>,
+    _permit: RwLockReadGuard<'a, ()>,
     data: *const T,
     marker: PhantomData<&'a T>,
 }
@@ -228,11 +198,11 @@ impl<T: ?Sized> AsRef<T> for GcReadGuard<'_, T> {
     }
 }
 
-unsafe impl<T: ?Sized + Send + Sync> Send for GcReadGuard<'_, T> {}
-unsafe impl<T: ?Sized + Send + Sync> Sync for GcReadGuard<'_, T> {}
+// unsafe impl<T: ?Sized + Send> Send for GcReadGuard<'_, T> {}
+// unsafe impl<T: ?Sized + Sync> Sync for GcReadGuard<'_, T> {}
 
 pub struct GcWriteGuard<'a, T: ?Sized> {
-    _permit: SemaphorePermit<'a>,
+    _permit: RwLockWriteGuard<'a, ()>,
     data: *mut T,
     marker: PhantomData<&'a mut T>,
 }
@@ -250,6 +220,9 @@ impl<T: ?Sized> DerefMut for GcWriteGuard<'_, T> {
         unsafe { &mut *self.data }
     }
 }
+
+// impl<T: ?Sized> !Send for GcWriteGuard<'_, T> {}
+// unsafe impl<T: ?Sized + Sync> Sync for GcWriteGuard<'_, T> {}
 
 /// # Safety
 ///

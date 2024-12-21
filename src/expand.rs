@@ -374,7 +374,7 @@ pub async fn make_variable_transformer(
     _cont: &Option<Arc<Continuation>>,
     proc: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let proc = proc.read().await;
+    let proc = proc.read();
     match &*proc {
         Value::Procedure(proc) => {
             let mut proc = proc.clone();

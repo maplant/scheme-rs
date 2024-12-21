@@ -29,3 +29,5 @@ jobs:
       run: cargo clippy --all-targets -- -Dclippy::all -D warnings
     - name: Test
       run: cargo test
+    - name: Bench
+      run: cargo bench

@@ -9,7 +9,6 @@ use crate::{
     lex::{InputSpan, Lexeme, Token},
     lists::list_to_vec_with_null,
     parse::ParseError,
-    proc::Callable,
     records,
     util::RequireOne,
     value::Value,
@@ -140,65 +139,61 @@ impl Syntax {
     }
 
     // TODO: Return a Cow<'a, Self> instead to avoid the clone.
-    pub fn from_datum<'a>(marks: &'a BTreeSet<Mark>, datum: &'a Gc<Value>) -> BoxFuture<'a, Self> {
-        Box::pin(async move {
-            let datum = datum.read().await;
-            // TODO: conjure up better values for Span
-            match &*datum {
-                Value::Null => Syntax::new_null(Span::default()),
-                Value::Pair(lhs, rhs) => {
-                    let mut list = Vec::new();
-                    list.push(lhs.clone());
-                    list_to_vec_with_null(rhs, &mut list).await;
-                    // TODO: Use futures combinators
-                    let mut out_list = Vec::new();
-                    for item in list.iter() {
-                        out_list.push(Syntax::from_datum(marks, item).await);
-                    }
-                    Syntax::new_list(out_list, Span::default())
+    pub fn from_datum(marks: &BTreeSet<Mark>, datum: &Gc<Value>) -> Self {
+        let datum = datum.read();
+        // TODO: conjure up better values for Span
+        match &*datum {
+            Value::Null => Syntax::new_null(Span::default()),
+            Value::Pair(lhs, rhs) => {
+                let mut list = Vec::new();
+                list.push(lhs.clone());
+                list_to_vec_with_null(rhs, &mut list);
+                // TODO: Use futures combinators
+                let mut out_list = Vec::new();
+                for item in list.iter() {
+                    out_list.push(Syntax::from_datum(marks, item));
                 }
-                Value::Syntax(syntax) => {
-                    let mut syntax = syntax.clone();
-                    syntax.mark_many(marks);
-                    syntax
-                }
-                Value::Symbol(sym) => {
-                    let ident = Identifier {
-                        name: sym.clone(),
-                        marks: marks.clone(),
-                    };
-                    Syntax::Identifier {
-                        ident,
-                        bound: false,
-                        span: Span::default(),
-                    }
-                }
-                _ => unimplemented!(),
+                Syntax::new_list(out_list, Span::default())
             }
-        })
+            Value::Syntax(syntax) => {
+                let mut syntax = syntax.clone();
+                syntax.mark_many(marks);
+                syntax
+            }
+            Value::Symbol(sym) => {
+                let ident = Identifier {
+                    name: sym.clone(),
+                    marks: marks.clone(),
+                };
+                Syntax::Identifier {
+                    ident,
+                    bound: false,
+                    span: Span::default(),
+                }
+            }
+            _ => unimplemented!(),
+        }
     }
 
-    pub fn resolve_bindings<'a>(&'a mut self, env: &'a Env) -> BoxFuture<'a, ()> {
-        Box::pin(async move {
-            match self {
-                Self::List { ref mut list, .. } => {
-                    for item in list {
-                        item.resolve_bindings(env).await;
-                    }
+    pub fn resolve_bindings(&mut self, env: &Env) {
+        match self {
+            Self::List { ref mut list, .. } => {
+                for item in list {
+                    item.resolve_bindings(env);
                 }
-                Self::Vector { ref mut vector, .. } => {
-                    for item in vector {
-                        item.resolve_bindings(env).await;
-                    }
-                }
-                Self::Identifier {
-                    ref ident,
-                    ref mut bound,
-                    ..
-                } => *bound = env.is_bound(ident).await,
-                _ => (),
             }
-        })
+            Self::Vector { ref mut vector, .. } => {
+                for item in vector {
+                    item.resolve_bindings(env);
+                }
+            }
+            Self::Identifier {
+                ref ident,
+                ref mut bound,
+                ..
+            } => *bound = env.is_bound(ident),
+            _ => (),
+        }
     }
 
     async fn apply_transformer(
@@ -213,28 +208,44 @@ impl Syntax {
         // Apply the new mark to the input
         // TODO: Figure out a better way to do this without cloning so much
         let mut input = self.clone();
-        input.resolve_bindings(curr_env).await;
+        input.resolve_bindings(curr_env);
         input.mark(new_mark);
         // Call the transformer with the input:
-        let mut output = match &*transformer.read().await {
-            Value::Procedure(proc) => {
-                let output = proc
-                    .call(vec![Gc::new(Value::Syntax(input))], cont)
-                    .await?
-                    .eval(cont)
-                    .await?
-                    .require_one()?;
-                let output = output.read().await;
-                match &*output {
-                    Value::Syntax(syntax) => syntax.clone(),
-                    _ => todo!(),
-                }
+        let transform = transformer.read().as_callable().unwrap();
+        let mut output = {
+            let output = transform
+                .call(vec![Gc::new(Value::Syntax(input))], cont)
+                .await?
+                .eval(cont)
+                .await?
+                .require_one()?;
+            let output = output.read();
+            match &*output {
+                Value::Syntax(syntax) => syntax.clone(),
+                _ => todo!(),
             }
-            Value::Transformer(transformer) => transformer
-                .expand(&input)
-                .ok_or_else(RuntimeError::no_patterns_match)?,
-            x => return Err(RuntimeError::invalid_type("procedure", x.type_name())),
         };
+        /*
+            let mut output = match &*transformer.read() {
+                Value::Procedure(proc) => {
+                    let output = proc
+                        .call(vec![Gc::new(Value::Syntax(input))], cont)
+                        .await?
+                        .eval(cont)
+                        .await?
+                        .require_one()?;
+                    let output = output.read();
+                    match &*output {
+                        Value::Syntax(syntax) => syntax.clone(),
+                        _ => todo!(),
+                    }
+                }
+                Value::Transformer(transformer) => transformer
+                    .expand(&input)
+                    .ok_or_else(RuntimeError::no_patterns_match)?,
+                x => return Err(RuntimeError::invalid_type("procedure", x.type_name())),
+        };
+            */
         // Apply the new mark to the output
         output.mark(new_mark);
         Ok(Expansion::Expanded {
@@ -258,14 +269,14 @@ impl Syntax {
                         Some(Self::Identifier { ident, .. }) => ident,
                         _ => return Ok(Expansion::Unexpanded(self)),
                     };
-                    if let Some((macro_env, transformer)) = env.fetch_macro(ident).await {
+                    if let Some((macro_env, transformer)) = env.fetch_macro(ident) {
                         return self
                             .apply_transformer(env, macro_env, cont, transformer)
                             .await;
                     }
                 }
                 Self::Identifier { ident, .. } => {
-                    if let Some((macro_env, transformer)) = env.fetch_macro(ident).await {
+                    if let Some((macro_env, transformer)) = env.fetch_macro(ident) {
                         return self
                             .apply_transformer(env, macro_env, cont, transformer)
                             .await;
@@ -295,7 +306,7 @@ impl Syntax {
             Self::Literal { literal, .. } => Ok(Arc::new(literal.clone()) as Arc<dyn Eval>),
             Self::List { list: exprs, span } => match &exprs[..] {
                 // Function call:
-                [Self::Identifier { ident, .. }, ..] if env.is_bound(ident).await => {
+                [Self::Identifier { ident, .. }, ..] if env.is_bound(ident) => {
                     ast::Call::compile_to_expr(exprs, env, cont, span).await
                 }
                 // Special forms:
@@ -341,8 +352,8 @@ impl Syntax {
                 [Self::Identifier { ident, span, .. }, tail @ ..] if ident == "set!" => {
                     // Check for a variable transformer
                     if let Some(Syntax::Identifier { ident, .. }) = tail.first() {
-                        if let Some((macro_env, transformer)) = env.fetch_macro(ident).await {
-                            if !transformer.read().await.is_variable_transformer() {
+                        if let Some((macro_env, transformer)) = env.fetch_macro(ident) {
+                            if !transformer.read().is_variable_transformer() {
                                 return Err(CompileError::NotVariableTransformer);
                             }
                             return self
@@ -610,7 +621,7 @@ pub async fn syntax_to_datum(
     _cont: &Option<Arc<Continuation>>,
     syn: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let syn = syn.read().await;
+    let syn = syn.read();
     let Value::Syntax(ref syn) = &*syn else {
         return Err(RuntimeError::invalid_type("syntax", syn.type_name()));
     };
@@ -623,7 +634,7 @@ pub async fn datum_to_syntax(
     template_id: &Gc<Value>,
     datum: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let template_id = template_id.read().await;
+    let template_id = template_id.read();
     let Value::Syntax(Syntax::Identifier {
         ident: template_id, ..
     }) = &*template_id
@@ -633,7 +644,8 @@ pub async fn datum_to_syntax(
             template_id.type_name(),
         ));
     };
-    Ok(vec![Gc::new(Value::Syntax(
-        Syntax::from_datum(&template_id.marks, datum).await,
-    ))])
+    Ok(vec![Gc::new(Value::Syntax(Syntax::from_datum(
+        &template_id.marks,
+        datum,
+    )))])
 }
