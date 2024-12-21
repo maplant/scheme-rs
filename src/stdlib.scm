@@ -271,6 +271,36 @@
     ((_ args n (r b1 b2 ...) more ...)
      (apply (lambda r b1 b2 ...) args))))
 
+;; TODO: Implement all of these functions as builtins. 
+
+(define (append l m)
+ (if (null? l) m
+  (cons (car l) (append (cdr l) m))))
+
+;; https://stackoverflow.com/questions/21629203/implementation-of-variadic-map-function-in-scheme
+(define (map function list1 . more-lists)
+  (define (some? function list)
+    ;; returns #f if (function x) returns #t for 
+    ;; some x in the list
+    (and (pair? list)
+         (or (function (car list))
+             (some? function (cdr list)))))
+  (define (map1 function list)
+    ;; non-variadic map.  Returns a list whose elements are
+    ;; the result of calling function with corresponding
+    ;; elements of list
+    (if (null? list)
+        '()
+        (cons (function (car list))
+              (map1 function (cdr list)))))
+  ;; Variadic map implementation terminates
+  ;; when any of the argument lists is empty
+  (let ((lists (cons list1 more-lists)))
+    (if (some? null? lists)
+        '()
+        (cons (apply function (map1 car lists))
+              (apply map function (map1 cdr lists))))))
+
 (define (for-each func lst . remaining)
   (let loop ((rest lst))
     (unless (null? rest)
@@ -281,21 +311,27 @@
         (display remaining)
         (apply for-each (cons func remaining)))))
 
+(define (flatten lst)
+  (let loop ((lst lst) (acc '()))
+    (cond
+     ((null? lst) acc)
+     ((pair? lst) (loop (car lst) (loop (cdr lst) acc)))
+     (else (cons lst acc)))))
 
 ;; Conditions
 
 (define-record-type &condition)
 
-(define-record-type &compound-condition
+(define-record-type compound-condition
   (parent &condition)
   (fields (immutable simple-conditions)))
 
 (define (condition condition1 . conditions)
-  (make-&compound-condition (append condition1 conditions)))
+  (make-compound-condition (flatten (map simple-conditions (append condition1 conditions)))))
 
 (define (simple-conditions condition)
-  (if (&conditions?)
-      (&compound-condition-simple-conditions condition)
+  (if (compound-condition? condition)
+      (compound-condition-simple-conditions condition)
       condition))
 
 ;; TODO: What we really want is for predicate to also check to see
@@ -306,9 +342,14 @@
     ([_ condition-type supertype
         constructor predicate
         (field accessor) ...]
-     (define-record-type (condition-type constructor predicate)
-       (parent supertype)
-       (fields (immutable field accessor) ...)))))
+     (begin
+       (define-record-type (condition-type constructor is-condition?)
+         (parent supertype)
+         (fields (immutable field accessor) ...))
+       (define (predicate condition)
+         (if (not (&condition? condition))
+             #f
+             (not (eq? #f (find is-condition? (simple-conditions condition))))))))))
        
 (define-condition-type &message &condition
   make-message-condition message-condition?
@@ -323,4 +364,28 @@
 (define-condition-type &error &serious
   make-error error?)
 
+(define-condition-type &violation &serious
+  make-violation violation?)
 
+(define-condition-type &assertion &violation
+  make-assertion-violation assertion-violation?)
+
+(define-condition-type &irritants &condition
+  make-who-condition who-condition?
+  (who condition-who))
+
+(define-condition-type &non-continuable &violation
+  make-non-continuable-violation
+  non-continuable-violation?)
+
+(define-condition-type &implementation-restriction &violation
+  make-implementation-restriction-violation
+  implementation-restriction-violation?)
+
+(define-condition-type &lexical &violation
+  make-lexical-violation lexical-violation?)
+
+(define-condition-type &syntax &violation
+  make-syntax-violation syntax-violation?
+  (form syntax-violation-form)
+  (subform syntax-violation-subform))
