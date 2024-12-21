@@ -82,7 +82,7 @@ impl Callable for Procedure {
 
 pub type ExprFuture = BoxFuture<'static, Result<ValuesOrPreparedCall, RuntimeError>>;
 
-#[derive(Debug, Clone, Trace)]
+#[derive(Debug, Copy, Clone, Trace)]
 pub struct ExternalFn {
     pub name: &'static str,
     pub num_args: usize,

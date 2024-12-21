@@ -59,8 +59,10 @@ pub fn list_to_vec<'a>(curr: &'a Gc<Value>, out: &'a mut Vec<Gc<Value>>) -> BoxF
     })
 }
 
-
-pub fn list_to_vec_with_null<'a>(curr: &'a Gc<Value>, out: &'a mut Vec<Gc<Value>>) -> BoxFuture<'a, ()> {
+pub fn list_to_vec_with_null<'a>(
+    curr: &'a Gc<Value>,
+    out: &'a mut Vec<Gc<Value>>,
+) -> BoxFuture<'a, ()> {
     Box::pin(async move {
         let val = curr.read().await;
         match &*val {
@@ -92,7 +94,9 @@ pub async fn cons(
     car: &Gc<Value>,
     cdr: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    Ok(vec![Gc::new(Value::Pair(car.clone(), cdr.clone()))])
+    let car = Gc::new(car.read().await.deep_clone().await);
+    let cdr = Gc::new(cdr.read().await.deep_clone().await);
+    Ok(vec![Gc::new(Value::Pair(car, cdr))])
 }
 
 #[builtin("car")]

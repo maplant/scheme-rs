@@ -8,9 +8,9 @@ use crate::{
     error::RuntimeError,
     gc::{Gc, Trace},
     proc::{PreparedCall, ProcDebugInfo, Procedure},
+    syntax::Syntax,
     util::{self, RequireOne},
     value::Value,
-    syntax::Syntax
 };
 use async_trait::async_trait;
 use std::{collections::BTreeSet, sync::Arc};
@@ -442,23 +442,10 @@ impl Eval for ast::SyntaxCase {
             cont,
         ));
         let val = self.arg.eval(env, &Some(new_cont)).await?.require_one()?;
-	// This clones _all_ syntax objects; we should fix this to be more optimal. 
-	let syntax = Syntax::from_datum(&BTreeSet::default(), &val).await;
-	let result = self.transformer.expand(&syntax).unwrap();
+        // This clones _all_ syntax objects; we should fix this to be more optimal.
+        let syntax = Syntax::from_datum(&BTreeSet::default(), &val).await;
+        let result = self.transformer.expand(&syntax).unwrap();
         result.compile(env, cont).await?.eval(env, cont).await
-
-	    /*
-        match &*val {
-            Value::Syntax(syntax) => {
-                let result = self.transformer.expand(syntax).unwrap();
-                result.compile(env, cont).await?.eval(env, cont).await
-            }
-            x => {
-		let syntax = Syntax::from_
-	    }
-todo!("{x:#?}, transformer: {:#?}", self.transformer),
-        }
-	    */
     }
 }
 

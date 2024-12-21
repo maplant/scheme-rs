@@ -106,6 +106,23 @@ impl Syntax {
         }
     }
 
+    pub fn mark_many(&mut self, marks: &BTreeSet<Mark>) {
+        match self {
+            Self::List { ref mut list, .. } => {
+                for item in list {
+                    item.mark_many(marks);
+                }
+            }
+            Self::Vector { ref mut vector, .. } => {
+                for item in vector {
+                    item.mark_many(marks);
+                }
+            }
+            Self::Identifier { ident, .. } => ident.mark_many(marks),
+            _ => (),
+        }
+    }
+
     // I do not like the fact that this function exists.
     pub fn normalize(self) -> Self {
         match self {
@@ -122,7 +139,7 @@ impl Syntax {
         }
     }
 
-    // TODO: Return a Cow<'a, Self> instead to avoid the clone. 
+    // TODO: Return a Cow<'a, Self> instead to avoid the clone.
     pub fn from_datum<'a>(marks: &'a BTreeSet<Mark>, datum: &'a Gc<Value>) -> BoxFuture<'a, Self> {
         Box::pin(async move {
             let datum = datum.read().await;
@@ -140,11 +157,11 @@ impl Syntax {
                     }
                     Syntax::new_list(out_list, Span::default())
                 }
-		Value::Syntax(syntax) => {
-		    // TODO: Mark the output with marks.
-		    let syntax = syntax.clone();
-		    syntax
-		}
+                Value::Syntax(syntax) => {
+                    let mut syntax = syntax.clone();
+                    syntax.mark_many(marks);
+                    syntax
+                }
                 Value::Symbol(sym) => {
                     let ident = Identifier {
                         name: sym.clone(),
@@ -509,6 +526,10 @@ impl Identifier {
             self.marks.insert(mark);
         }
     }
+
+    pub fn mark_many(&mut self, marks: &BTreeSet<Mark>) {
+        self.marks = self.marks.symmetric_difference(marks).cloned().collect();
+    }
 }
 
 impl PartialEq<str> for Identifier {
@@ -612,9 +633,7 @@ pub async fn datum_to_syntax(
             template_id.type_name(),
         ));
     };
-    println!("datum: {datum:#?}");
-    // TODO: Extract mark from template-id
     Ok(vec![Gc::new(Value::Syntax(
-        dbg!(Syntax::from_datum(&template_id.marks, datum).await),
+        Syntax::from_datum(&template_id.marks, datum).await,
     ))])
 }
