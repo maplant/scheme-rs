@@ -157,15 +157,6 @@ impl ResumableBody {
     }
 }
 
-impl Clone for ResumableBody {
-    fn clone(&self) -> Self {
-        Self {
-            env: self.env.deep_clone(),
-            remaining: self.remaining.clone(),
-        }
-    }
-}
-
 #[async_trait]
 impl Resumable for ResumableBody {
     async fn resume(
@@ -187,7 +178,10 @@ impl Resumable for ResumableBody {
     }
 
     fn clone_stack(&self) -> Arc<dyn Resumable> {
-        Arc::new(self.clone())
+        Arc::new(Self {
+            env: self.env.deep_clone(),
+            remaining: self.remaining.clone(),
+        })
     }
 }
 
@@ -202,15 +196,6 @@ impl ResumableSyntaxCase {
         Self {
             env: env.clone(),
             transformer: transformer.clone(),
-        }
-    }
-}
-
-impl Clone for ResumableSyntaxCase {
-    fn clone(&self) -> Self {
-        Self {
-            env: self.env.deep_clone(),
-            transformer: self.transformer.clone(),
         }
     }
 }
@@ -238,7 +223,10 @@ impl Resumable for ResumableSyntaxCase {
     }
 
     fn clone_stack(&self) -> Arc<dyn Resumable> {
-        Arc::new(self.clone())
+        Arc::new(Self {
+            env: self.env.deep_clone(),
+            transformer: self.transformer.clone(),
+        })
     }
 }
 
@@ -253,15 +241,6 @@ impl ResumableSet {
         Self {
             env: env.clone(),
             var: var.clone(),
-        }
-    }
-}
-
-impl Clone for ResumableSet {
-    fn clone(&self) -> Self {
-        Self {
-            env: self.env.deep_clone(),
-            var: self.var.clone(),
         }
     }
 }
@@ -285,7 +264,10 @@ impl Resumable for ResumableSet {
     }
 
     fn clone_stack(&self) -> Arc<dyn Resumable> {
-        Arc::new(self.clone())
+        Arc::new(Self {
+            env: self.env.deep_clone(),
+            var: self.var.clone(),
+        })
     }
 }
 
@@ -300,15 +282,6 @@ impl ResumableAnd {
         Self {
             env: env.clone(),
             args: args.clone(),
-        }
-    }
-}
-
-impl Clone for ResumableAnd {
-    fn clone(&self) -> Self {
-        Self {
-            env: self.env.deep_clone(),
-            args: self.args.clone(),
         }
     }
 }
@@ -348,7 +321,10 @@ impl Resumable for ResumableAnd {
     }
 
     fn clone_stack(&self) -> Arc<dyn Resumable> {
-        Arc::new(self.clone())
+        Arc::new(Self {
+            env: self.env.deep_clone(),
+            args: self.args.clone(),
+        })
     }
 }
 
@@ -363,15 +339,6 @@ impl ResumableOr {
         Self {
             env: env.clone(),
             args: args.clone(),
-        }
-    }
-}
-
-impl Clone for ResumableOr {
-    fn clone(&self) -> Self {
-        Self {
-            env: self.env.deep_clone(),
-            args: self.args.clone(),
         }
     }
 }
@@ -411,7 +378,10 @@ impl Resumable for ResumableOr {
     }
 
     fn clone_stack(&self) -> Arc<dyn Resumable> {
-        Arc::new(self.clone())
+        Arc::new(Self {
+            env: self.env.deep_clone(),
+            args: self.args.clone(),
+        })
     }
 }
 
@@ -435,17 +405,6 @@ impl ResumableLet {
             curr: curr.clone(),
             remaining_bindings,
             body: body.clone(),
-        }
-    }
-}
-
-impl Clone for ResumableLet {
-    fn clone(&self) -> Self {
-        Self {
-            scope: Gc::new(self.scope.read().deep_clone()),
-            curr: self.curr.clone(),
-            remaining_bindings: self.remaining_bindings.clone(),
-            body: self.body.clone(),
         }
     }
 }
@@ -475,7 +434,12 @@ impl Resumable for ResumableLet {
     }
 
     fn clone_stack(&self) -> Arc<dyn Resumable> {
-        Arc::new(self.clone())
+        Arc::new(Self {
+            scope: Gc::new(self.scope.read().deep_clone()),
+            curr: self.curr.clone(),
+            remaining_bindings: self.remaining_bindings.clone(),
+            body: self.body.clone(),
+        })
     }
 }
 
@@ -492,16 +456,6 @@ impl ResumableIf {
             env: env.clone(),
             success: success.clone(),
             failure: failure.clone(),
-        }
-    }
-}
-
-impl Clone for ResumableIf {
-    fn clone(&self) -> Self {
-        Self {
-            env: self.env.deep_clone(),
-            success: self.success.clone(),
-            failure: self.failure.clone(),
         }
     }
 }
@@ -524,7 +478,11 @@ impl Resumable for ResumableIf {
     }
 
     fn clone_stack(&self) -> Arc<dyn Resumable> {
-        Arc::new(self.clone())
+        Arc::new(Self {
+            env: self.env.deep_clone(),
+            success: self.success.clone(),
+            failure: self.failure.clone(),
+        })
     }
 }
 
@@ -543,15 +501,6 @@ impl ResumableDefineVar {
     }
 }
 
-impl Clone for ResumableDefineVar {
-    fn clone(&self) -> Self {
-        Self {
-            env: self.env.deep_clone(),
-            name: self.name.clone(),
-        }
-    }
-}
-
 #[async_trait]
 impl Resumable for ResumableDefineVar {
     async fn resume(
@@ -565,7 +514,10 @@ impl Resumable for ResumableDefineVar {
     }
 
     fn clone_stack(&self) -> Arc<dyn Resumable> {
-        Arc::new(self.clone())
+        Arc::new(Self {
+            env: self.env.deep_clone(),
+            name: self.name.clone(),
+        })
     }
 }
 
@@ -594,18 +546,6 @@ impl ResumableCall {
             remaining,
             proc_name: proc_name.to_string(),
             location: location.clone(),
-        }
-    }
-}
-
-impl Clone for ResumableCall {
-    fn clone(&self) -> Self {
-        Self {
-            env: self.env.deep_clone(),
-            collected: self.collected.clone(),
-            remaining: self.remaining.clone(),
-            proc_name: self.proc_name.clone(),
-            location: self.location.clone(),
         }
     }
 }
@@ -650,7 +590,13 @@ impl Resumable for ResumableCall {
     }
 
     fn clone_stack(&self) -> Arc<dyn Resumable> {
-        Arc::new(self.clone())
+        Arc::new(Self {
+            env: self.env.deep_clone(),
+            collected: self.collected.clone(),
+            remaining: self.remaining.clone(),
+            proc_name: self.proc_name.clone(),
+            location: self.location.clone(),
+        })
     }
 }
 
