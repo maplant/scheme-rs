@@ -12,7 +12,7 @@ use std::{
     sync::Arc,
 };
 
-#[derive(Clone, Trace)]
+#[derive(Clone, Trace, Debug)]
 pub struct Transformer {
     pub rules: Vec<SyntaxRule>,
     pub is_variable_transformer: bool,

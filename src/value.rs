@@ -62,7 +62,7 @@ impl Value {
             // Having to clone and box these kind of sucks. Hopefully we can
             // fix this at some point
             Self::Procedure(ref proc) => Some(Box::new(proc.clone())),
-            Self::ExternalFn(ref proc) => Some(Box::new(proc.clone())),
+            Self::ExternalFn(ref proc) => Some(Box::new(*proc)),
             Self::Continuation(ref proc) => Some(Box::new(proc.clone())),
             _ => None,
         }
@@ -172,6 +172,34 @@ impl Value {
             // TODO: Syntax
             _ => false,
         }
+    }
+
+    pub fn deep_clone(&self) -> BoxFuture<'_, Self> {
+        Box::pin(async move {
+            match self {
+                Self::Null => Self::Null,
+                Self::Boolean(b) => Self::Boolean(*b),
+                Self::Number(n) => Self::Number(n.clone()),
+                Self::Character(c) => Self::Character(*c),
+                Self::String(s) => Self::String(s.clone()),
+                Self::Symbol(s) => Self::Symbol(s.clone()),
+                Self::Pair(car, cdr) => Self::Pair(
+                    Gc::new(car.read().await.deep_clone().await),
+                    Gc::new(cdr.read().await.deep_clone().await),
+                ),
+                Self::Vector(vec) => Self::Vector(vec.clone()),
+                Self::ByteVector(bvec) => Self::ByteVector(bvec.clone()),
+                Self::Syntax(syn) => Self::Syntax(syn.clone()),
+                Self::Procedure(proc) => Self::Procedure(proc.clone()),
+                Self::ExternalFn(ext_fn) => Self::ExternalFn(*ext_fn),
+                Self::Future(fut) => Self::Future(fut.clone()),
+                Self::Transformer(trans) => Self::Transformer(trans.clone()),
+                Self::Continuation(cont) => Self::Continuation(cont.clone()),
+                Self::Record(record) => Self::Record(record.clone()),
+                Self::RecordType(rt) => Self::RecordType(rt.clone()),
+                Self::Undefined => Self::Undefined,
+            }
+        })
     }
 }
 

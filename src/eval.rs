@@ -8,11 +8,12 @@ use crate::{
     error::RuntimeError,
     gc::{Gc, Trace},
     proc::{PreparedCall, ProcDebugInfo, Procedure},
+    syntax::Syntax,
     util::{self, RequireOne},
     value::Value,
 };
 use async_trait::async_trait;
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 pub enum ValuesOrPreparedCall {
     Values(Vec<Gc<Value>>),
@@ -441,25 +442,10 @@ impl Eval for ast::SyntaxCase {
             cont,
         ));
         let val = self.arg.eval(env, &Some(new_cont)).await?.require_one()?;
-        let val = val.read().await;
-        match &*val {
-            Value::Syntax(syntax) => {
-                let result = self.transformer.expand(syntax).unwrap();
-                result.compile(env, cont).await?.eval(env, cont).await
-            }
-            _ => todo!(),
-        }
-    }
-}
-
-#[async_trait]
-impl Eval for ast::SyntaxRules {
-    async fn eval(
-        &self,
-        _env: &Env,
-        _cont: &Option<Arc<Continuation>>,
-    ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-        Ok(vec![Gc::new(Value::Transformer(self.transformer.clone()))])
+        // This clones _all_ syntax objects; we should fix this to be more optimal.
+        let syntax = Syntax::from_datum(&BTreeSet::default(), &val).await;
+        let result = self.transformer.expand(&syntax).unwrap();
+        result.compile(env, cont).await?.eval(env, cont).await
     }
 }
 

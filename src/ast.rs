@@ -165,11 +165,6 @@ pub struct SyntaxCase {
 }
 
 #[derive(Clone, Trace)]
-pub struct SyntaxRules {
-    pub transformer: Transformer,
-}
-
-#[derive(Clone, Trace)]
 pub struct FetchVar {
     pub ident: Identifier,
 }

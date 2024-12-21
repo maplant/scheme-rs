@@ -4,7 +4,26 @@
 ;;
 ;; By and large, these macro definitions come from Appendix B of the R6RS
 ;; standard. This allows for use to test the correctness of the compiler.
+;;
+;; This code is for definitions only. Most builtins are not provided at this point.
 
+
+;; Define syntax-rules in terms of syntax-case:
+(define-syntax syntax-rules
+  (lambda (x)
+    (syntax-case x ()
+      ((_ (i ...) ((keyword . pattern) template) ...)
+       (syntax (lambda (x)
+                 (syntax-case x (i ...)
+                   ((dummy . pattern) (syntax template))
+                   ...))))))) 
+
+(define-syntax with-syntax
+  (lambda (x)
+    (syntax-case x ()
+      ((_ ((p e0) ...) e1 e2 ...)
+       (syntax (syntax-case (list e0 ...) ()
+		 ((p ...) (let () e1 e2 ...))))))))
 ;; 
 ;; Aliases:
 ;; 
@@ -257,8 +276,7 @@
 (define-syntax case-lambda-help
   (syntax-rules ()
     ((_ args n)
-     (assertion-violation #f
-                          "unexpected number of arguments"))
+     (assertion-violation #f "unexpected number of arguments"))
     ((_ args n ((x ...) b1 b2 ...) more ...)
      (if (= n (length '(x ...)))
          (apply (lambda (x ...) b1 b2 ...) args)
@@ -271,8 +289,6 @@
     ((_ args n (r b1 b2 ...) more ...)
      (apply (lambda r b1 b2 ...) args))))
 
-;; TODO: First class apply
-
 (define (for-each func lst . remaining)
   (let loop ((rest lst))
     (unless (null? rest)
@@ -281,4 +297,5 @@
   (if (not (null? remaining))
       (begin
         (display remaining)
-        (apply for-each (cons func remaining)))))
+       (apply for-each (cons func remaining)))))
+

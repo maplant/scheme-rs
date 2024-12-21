@@ -7,6 +7,7 @@ use crate::{
     eval::Eval,
     gc::{Gc, Trace},
     lex::{InputSpan, Lexeme, Token},
+    lists::list_to_vec_with_null,
     parse::ParseError,
     proc::Callable,
     records,
@@ -14,6 +15,7 @@ use crate::{
     value::Value,
 };
 use futures::future::BoxFuture;
+use proc_macros::builtin;
 use std::{collections::BTreeSet, fmt, sync::Arc};
 
 #[derive(Debug, Clone, PartialEq, Trace)]
@@ -27,6 +29,17 @@ pub struct Span {
 impl fmt::Display for Span {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}:{}:{}", self.file, self.line, self.column)
+    }
+}
+
+impl Default for Span {
+    fn default() -> Self {
+        Self {
+            line: 0,
+            column: 0,
+            offset: 0,
+            file: Arc::new(String::new()),
+        }
     }
 }
 
@@ -93,6 +106,24 @@ impl Syntax {
         }
     }
 
+    pub fn mark_many(&mut self, marks: &BTreeSet<Mark>) {
+        match self {
+            Self::List { ref mut list, .. } => {
+                for item in list {
+                    item.mark_many(marks);
+                }
+            }
+            Self::Vector { ref mut vector, .. } => {
+                for item in vector {
+                    item.mark_many(marks);
+                }
+            }
+            Self::Identifier { ident, .. } => ident.mark_many(marks),
+            _ => (),
+        }
+    }
+
+    // I do not like the fact that this function exists.
     pub fn normalize(self) -> Self {
         match self {
             Self::List { mut list, span } => {
@@ -106,6 +137,45 @@ impl Syntax {
             }
             x => x,
         }
+    }
+
+    // TODO: Return a Cow<'a, Self> instead to avoid the clone.
+    pub fn from_datum<'a>(marks: &'a BTreeSet<Mark>, datum: &'a Gc<Value>) -> BoxFuture<'a, Self> {
+        Box::pin(async move {
+            let datum = datum.read().await;
+            // TODO: conjure up better values for Span
+            match &*datum {
+                Value::Null => Syntax::new_null(Span::default()),
+                Value::Pair(lhs, rhs) => {
+                    let mut list = Vec::new();
+                    list.push(lhs.clone());
+                    list_to_vec_with_null(rhs, &mut list).await;
+                    // TODO: Use futures combinators
+                    let mut out_list = Vec::new();
+                    for item in list.iter() {
+                        out_list.push(Syntax::from_datum(marks, item).await);
+                    }
+                    Syntax::new_list(out_list, Span::default())
+                }
+                Value::Syntax(syntax) => {
+                    let mut syntax = syntax.clone();
+                    syntax.mark_many(marks);
+                    syntax
+                }
+                Value::Symbol(sym) => {
+                    let ident = Identifier {
+                        name: sym.clone(),
+                        marks: marks.clone(),
+                    };
+                    Syntax::Identifier {
+                        ident,
+                        bound: false,
+                        span: Span::default(),
+                    }
+                }
+                _ => unimplemented!(),
+            }
+        })
     }
 
     pub fn resolve_bindings<'a>(&'a mut self, env: &'a Env) -> BoxFuture<'a, ()> {
@@ -261,9 +331,6 @@ impl Syntax {
                 }
                 [Self::Identifier { ident, span, .. }, tail @ ..] if ident == "syntax-case" => {
                     ast::SyntaxCase::compile_to_expr(tail, env, cont, span).await
-                }
-                [Self::Identifier { ident, span, .. }, tail @ ..] if ident == "syntax-rules" => {
-                    ast::SyntaxRules::compile_to_expr(tail, env, cont, span).await
                 }
                 [Self::Identifier { ident, span, .. }, tail @ ..]
                     if ident == "define-record-type" =>
@@ -459,6 +526,10 @@ impl Identifier {
             self.marks.insert(mark);
         }
     }
+
+    pub fn mark_many(&mut self, marks: &BTreeSet<Mark>) {
+        self.marks = self.marks.symmetric_difference(marks).cloned().collect();
+    }
 }
 
 impl PartialEq<str> for Identifier {
@@ -532,4 +603,37 @@ impl Syntax {
     pub fn is_identifier(&self) -> bool {
         matches!(self, Self::Identifier { .. })
     }
+}
+
+#[builtin("syntax->datum")]
+pub async fn syntax_to_datum(
+    _cont: &Option<Arc<Continuation>>,
+    syn: &Gc<Value>,
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
+    let syn = syn.read().await;
+    let Value::Syntax(ref syn) = &*syn else {
+        return Err(RuntimeError::invalid_type("syntax", syn.type_name()));
+    };
+    Ok(vec![Gc::new(Value::from_syntax(syn))])
+}
+
+#[builtin("datum->syntax")]
+pub async fn datum_to_syntax(
+    _cont: &Option<Arc<Continuation>>,
+    template_id: &Gc<Value>,
+    datum: &Gc<Value>,
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
+    let template_id = template_id.read().await;
+    let Value::Syntax(Syntax::Identifier {
+        ident: template_id, ..
+    }) = &*template_id
+    else {
+        return Err(RuntimeError::invalid_type(
+            "syntax",
+            template_id.type_name(),
+        ));
+    };
+    Ok(vec![Gc::new(Value::Syntax(
+        Syntax::from_datum(&template_id.marks, datum).await,
+    ))])
 }
