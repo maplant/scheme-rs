@@ -21,7 +21,7 @@ async fn fib() {
 fn fib_benchmark(c: &mut Criterion) {
     c.bench_function("fib 100", |b| {
         b.to_async(tokio::runtime::Runtime::new().unwrap())
-            .iter(|| fib())
+            .iter(fib)
     });
 }
 

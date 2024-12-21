@@ -1,4 +1,3 @@
-use futures::future::BoxFuture;
 use proc_macros::Trace;
 use std::collections::HashMap;
 
@@ -13,11 +12,10 @@ use crate::{
     value::Value,
 };
 
-#[derive(derive_more::Debug, Trace)]
+#[derive(derive_more::Debug, Clone, Trace)]
 pub struct LexicalContour {
     #[debug(skip)]
     pub up: Env,
-    // pub mark: Mark,
     #[debug("{:?}", vars.keys().cloned().collect::<Vec<_>>())]
     vars: HashMap<Identifier, Gc<Value>>,
     #[debug("{:?}", macros.keys().cloned().collect::<Vec<_>>())]
@@ -25,36 +23,28 @@ pub struct LexicalContour {
 }
 
 impl LexicalContour {
-    pub fn is_bound<'a>(&'a self, ident: &'a Identifier) -> BoxFuture<'a, bool> {
-        Box::pin(async move {
-            self.vars.contains_key(ident)
-                || self.macros.contains_key(ident)
-                || self.up.is_bound(ident).await
-        })
+    pub fn is_bound(&self, ident: &Identifier) -> bool {
+        self.vars.contains_key(ident) || self.macros.contains_key(ident) || self.up.is_bound(ident)
     }
 
-    fn fetch_var<'a>(&'a self, ident: &'a Identifier) -> BoxFuture<'a, Option<Gc<Value>>> {
-        Box::pin(async move {
-            if let Some(var) = self.vars.get(ident) {
-                return Some(var.clone());
-            }
-            // Macros are also variables
-            if let Some(var) = self.macros.get(ident) {
-                return Some(var.clone());
-            }
-            // Check the next lexical scope up
-            self.up.fetch_var(ident).await
-        })
+    fn fetch_var(&self, ident: &Identifier) -> Option<Gc<Value>> {
+        if let Some(var) = self.vars.get(ident) {
+            return Some(var.clone());
+        }
+        // Macros are also variables
+        if let Some(var) = self.macros.get(ident) {
+            return Some(var.clone());
+        }
+        // Check the next lexical scope up
+        self.up.fetch_var(ident)
     }
 
-    fn fetch_macro<'a>(&'a self, ident: &'a Identifier) -> BoxFuture<'a, Option<MacroLookup>> {
-        Box::pin(async move {
-            // Only check the macro definitions
-            if let Some(var) = self.macros.get(ident) {
-                return Some(MacroLookup::WithoutEnv(var.clone()));
-            }
-            self.up.fetch_macro(ident).await.map(MacroLookup::WithEnv)
-        })
+    fn fetch_macro(&self, ident: &Identifier) -> Option<MacroLookup> {
+        // Only check the macro definitions
+        if let Some(var) = self.macros.get(ident) {
+            return Some(MacroLookup::WithoutEnv(var.clone()));
+        }
+        self.up.fetch_macro(ident).map(MacroLookup::WithEnv)
     }
 
     pub fn def_var(&mut self, ident: &Identifier, value: Gc<Value>) {
@@ -72,19 +62,9 @@ impl LexicalContour {
         }
         self.macros.insert(ident.clone(), value);
     }
-
-    pub fn deep_clone(&self) -> BoxFuture<'_, Self> {
-        Box::pin(async move {
-            Self {
-                up: self.up.deep_clone().await,
-                vars: self.vars.clone(),
-                macros: self.macros.clone(),
-            }
-        })
-    }
 }
 
-#[derive(derive_more::Debug, Trace)]
+#[derive(derive_more::Debug, Clone, Trace)]
 pub struct ExpansionContext {
     #[debug(skip)]
     up: Env,
@@ -94,90 +74,71 @@ pub struct ExpansionContext {
 }
 
 impl ExpansionContext {
-    pub fn is_bound<'a>(&'a self, ident: &'a Identifier) -> BoxFuture<'a, bool> {
-        Box::pin(async move {
-            if ident.marks.contains(&self.mark) {
-                let mut stripped = ident.clone();
-                stripped.mark(self.mark);
-                self.macro_env.is_bound(&stripped).await
-            } else {
-                self.up.is_bound(ident).await
-            }
-        })
+    pub fn is_bound(&self, ident: &Identifier) -> bool {
+        if ident.marks.contains(&self.mark) {
+            let mut stripped = ident.clone();
+            stripped.mark(self.mark);
+            self.macro_env.is_bound(&stripped)
+        } else {
+            self.up.is_bound(ident)
+        }
     }
 
-    pub fn fetch_var<'a>(&'a self, ident: &'a Identifier) -> BoxFuture<'a, Option<Gc<Value>>> {
-        Box::pin(async move {
-            // If the ident contains this mark, it comes from the macro and
-            // we must fetch from the macro's environment.
-            if ident.marks.contains(&self.mark) {
-                let mut stripped = ident.clone();
-                stripped.mark(self.mark);
-                self.macro_env.fetch_var(&stripped).await
-            } else {
-                self.up.fetch_var(ident).await
-            }
-        })
+    pub fn fetch_var(&self, ident: &Identifier) -> Option<Gc<Value>> {
+        // If the ident contains this mark, it comes from the macro and
+        // we must fetch from the macro's environment.
+        if ident.marks.contains(&self.mark) {
+            let mut stripped = ident.clone();
+            stripped.mark(self.mark);
+            self.macro_env.fetch_var(&stripped)
+        } else {
+            self.up.fetch_var(ident)
+        }
     }
 
-    pub fn fetch_macro<'a>(
-        &'a self,
-        ident: &'a Identifier,
-    ) -> BoxFuture<'a, Option<(Env, Gc<Value>)>> {
-        Box::pin(async move {
-            if ident.marks.contains(&self.mark) {
-                let mut stripped = ident.clone();
-                stripped.mark(self.mark);
-                self.macro_env.fetch_macro(&stripped).await
-            } else {
-                self.up.fetch_macro(ident).await
-            }
-        })
-    }
-
-    pub fn deep_clone(&self) -> BoxFuture<'_, Self> {
-        Box::pin(async move {
-            Self {
-                up: self.up.deep_clone().await,
-                mark: self.mark,
-                macro_env: self.macro_env.deep_clone().await,
-            }
-        })
+    pub fn fetch_macro(&self, ident: &Identifier) -> Option<(Env, Gc<Value>)> {
+        if ident.marks.contains(&self.mark) {
+            let mut stripped = ident.clone();
+            stripped.mark(self.mark);
+            self.macro_env.fetch_macro(&stripped)
+        } else {
+            self.up.fetch_macro(ident)
+        }
     }
 }
 
-#[derive(Clone, Trace, derive_more::Debug)]
+#[derive(Trace, Debug)]
 pub enum Env {
     /// This is the top level environment
     Top,
     /// This is an expansion context
-    Expansion(#[debug(skip)] Gc<ExpansionContext>),
+    Expansion(Gc<ExpansionContext>),
     /// This is a lexical contour
-    LexicalContour(#[debug(skip)] Gc<LexicalContour>),
+    LexicalContour(Gc<LexicalContour>),
 }
 
 impl Env {
-    pub async fn is_bound(&self, ident: &Identifier) -> bool {
+    pub fn is_bound(&self, ident: &Identifier) -> bool {
         match self {
             Self::Top => false,
-            Self::Expansion(expansion) => expansion.read().await.is_bound(ident).await,
-            Self::LexicalContour(env) => env.read().await.is_bound(ident).await,
+            Self::Expansion(expansion) => expansion.read().is_bound(ident),
+            Self::LexicalContour(env) => env.read().is_bound(ident),
         }
     }
 
-    pub async fn fetch_var(&self, ident: &Identifier) -> Option<Gc<Value>> {
+    pub fn fetch_var(&self, ident: &Identifier) -> Option<Gc<Value>> {
         match self {
             Self::Top => None,
-            Self::Expansion(expansion) => expansion.read().await.fetch_var(ident).await,
-            Self::LexicalContour(env) => env.read().await.fetch_var(ident).await,
+            Self::Expansion(expansion) => expansion.read().fetch_var(ident),
+            Self::LexicalContour(env) => env.read().fetch_var(ident),
         }
     }
 
-    pub async fn fetch_macro(&self, ident: &Identifier) -> Option<(Env, Gc<Value>)> {
+    pub fn fetch_macro(&self, ident: &Identifier) -> Option<(Env, Gc<Value>)> {
         match self {
             Self::Top => None,
-            Self::Expansion(expansion) => expansion.read().await.fetch_macro(ident).await,
-            Self::LexicalContour(env) => match env.read().await.fetch_macro(ident).await {
+            Self::Expansion(expansion) => expansion.read().fetch_macro(ident),
+            Self::LexicalContour(env) => match env.read().fetch_macro(ident) {
                 Some(MacroLookup::WithEnv((env, value))) => Some((env, value)),
                 Some(MacroLookup::WithoutEnv(value)) => Some((self.clone(), value)),
                 _ => None,
@@ -217,37 +178,19 @@ impl Env {
         }
     }
 
-    pub fn def_var<'a>(&'a self, ident: &'a Identifier, value: Gc<Value>) -> BoxFuture<'a, ()> {
-        Box::pin(async move {
-            match self {
-                Self::Top => unreachable!(),
-                Self::Expansion(expansion) => expansion.read().await.up.def_var(ident, value).await,
-                Self::LexicalContour(contour) => contour.write().await.def_var(ident, value),
-            }
-        })
-    }
-
-    pub fn def_macro<'a>(&'a self, ident: &'a Identifier, value: Gc<Value>) -> BoxFuture<'a, ()> {
-        Box::pin(async move {
-            match self {
-                Self::Top => unreachable!(),
-                Self::Expansion(expansion) => {
-                    expansion.read().await.up.def_macro(ident, value).await
-                }
-                Self::LexicalContour(contour) => contour.write().await.def_macro(ident, value),
-            }
-        })
-    }
-
-    pub async fn deep_clone(&self) -> Self {
+    pub fn def_var(&self, ident: &Identifier, value: Gc<Value>) {
         match self {
-            Self::Top => Self::Top,
-            Self::Expansion(expansion) => {
-                Self::Expansion(Gc::new(expansion.read().await.deep_clone().await))
-            }
-            Self::LexicalContour(env) => {
-                Self::LexicalContour(Gc::new(env.read().await.deep_clone().await))
-            }
+            Self::Top => unreachable!(),
+            Self::Expansion(expansion) => expansion.read().up.def_var(ident, value),
+            Self::LexicalContour(contour) => contour.write().def_var(ident, value),
+        }
+    }
+
+    pub fn def_macro(&self, ident: &Identifier, value: Gc<Value>) {
+        match self {
+            Self::Top => unreachable!(),
+            Self::Expansion(expansion) => expansion.read().up.def_macro(ident, value),
+            Self::LexicalContour(contour) => contour.write().def_macro(ident, value),
         }
     }
 
@@ -261,6 +204,16 @@ impl Env {
             results.push(result);
         }
         Ok(results)
+    }
+}
+
+impl Clone for Env {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Top => Self::Top,
+            Self::Expansion(expansion) => Self::Expansion(Gc::new(expansion.read().clone())),
+            Self::LexicalContour(env) => Self::LexicalContour(Gc::new(env.read().clone())),
+        }
     }
 }
 

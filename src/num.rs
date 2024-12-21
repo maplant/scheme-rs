@@ -340,7 +340,7 @@ pub async fn zero(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let arg = arg.read().await;
+    let arg = arg.read();
     let num: &Number = arg.as_ref().try_into()?;
     Ok(vec![Gc::new(Value::Boolean(num.is_zero()))])
 }
@@ -350,7 +350,7 @@ pub async fn even(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let arg = arg.read().await;
+    let arg = arg.read();
     let num: &Number = arg.as_ref().try_into()?;
     Ok(vec![Gc::new(Value::Boolean(num.is_even()))])
 }
@@ -360,7 +360,7 @@ pub async fn odd(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let arg = arg.read().await;
+    let arg = arg.read();
     let num: &Number = arg.as_ref().try_into()?;
     Ok(vec![Gc::new(Value::Boolean(num.is_odd()))])
 }
@@ -372,7 +372,7 @@ pub async fn add(
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let mut result = Number::FixedInteger(0);
     for arg in args {
-        let arg = arg.read().await;
+        let arg = arg.read();
         let num: &Number = arg.as_ref().try_into()?;
         result = &result + num;
     }
@@ -385,14 +385,14 @@ pub async fn sub(
     arg1: &Gc<Value>,
     args: Vec<Gc<Value>>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let arg1 = arg1.read().await;
+    let arg1 = arg1.read();
     let arg1: &Number = arg1.as_ref().try_into()?;
     if args.is_empty() {
         Ok(vec![Gc::new(Value::Number(-arg1.clone()))])
     } else {
         let mut result = arg1.clone();
         for arg in args {
-            let arg = arg.read().await;
+            let arg = arg.read();
             let num: &Number = arg.as_ref().try_into()?;
             result = &result - num;
         }
@@ -407,7 +407,7 @@ pub async fn mul(
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
     let mut result = Number::FixedInteger(1);
     for arg in args {
-        let arg = arg.read().await;
+        let arg = arg.read();
         let num: &Number = arg.as_ref().try_into()?;
         result = &result * num;
     }
@@ -420,14 +420,14 @@ pub async fn div(
     arg1: &Gc<Value>,
     args: Vec<Gc<Value>>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let arg1 = arg1.read().await;
+    let arg1 = arg1.read();
     let arg1: &Number = arg1.as_ref().try_into()?;
     if arg1.is_zero() {
         return Err(RuntimeError::division_by_zero());
     }
     let mut result = &Number::FixedInteger(1) / arg1;
     for arg in args {
-        let arg = arg.read().await;
+        let arg = arg.read();
         let num: &Number = arg.as_ref().try_into()?;
         if num.is_zero() {
             return Err(RuntimeError::division_by_zero());
@@ -443,10 +443,10 @@ pub async fn equals(
     args: Vec<Gc<Value>>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
     if let Some((first, rest)) = args.split_first() {
-        let first = first.read().await;
+        let first = first.read();
         let first: &Number = first.as_ref().try_into()?;
         for next in rest {
-            let next = next.read().await;
+            let next = next.read();
             let next: &Number = next.as_ref().try_into()?;
             if first != next {
                 return Ok(vec![Gc::new(Value::Boolean(false))]);
@@ -465,8 +465,8 @@ pub async fn greater(
         let mut prev = head.clone();
         for next in rest {
             {
-                let prev = prev.read().await;
-                let next = next.read().await;
+                let prev = prev.read();
+                let next = next.read();
                 let prev: &Number = prev.as_ref().try_into()?;
                 let next: &Number = next.as_ref().try_into()?;
                 // This is somewhat less efficient for small numbers but avoids
@@ -496,8 +496,8 @@ pub async fn greater_equal(
         let mut prev = head.clone();
         for next in rest {
             {
-                let prev = prev.read().await;
-                let next = next.read().await;
+                let prev = prev.read();
+                let next = next.read();
                 let prev: &Number = prev.as_ref().try_into()?;
                 let next: &Number = next.as_ref().try_into()?;
                 if prev.is_complex() {
@@ -525,8 +525,8 @@ pub async fn lesser(
         let mut prev = head.clone();
         for next in rest {
             {
-                let prev = prev.read().await;
-                let next = next.read().await;
+                let prev = prev.read();
+                let next = next.read();
                 let prev: &Number = prev.as_ref().try_into()?;
                 let next: &Number = next.as_ref().try_into()?;
                 if prev.is_complex() {
@@ -554,8 +554,8 @@ pub async fn lesser_equal(
         let mut prev = head.clone();
         for next in rest {
             {
-                let prev = prev.read().await;
-                let next = next.read().await;
+                let prev = prev.read();
+                let next = next.read();
                 let prev: &Number = prev.as_ref().try_into()?;
                 let next: &Number = next.as_ref().try_into()?;
                 if prev.is_complex() {
@@ -579,7 +579,7 @@ pub async fn is_number(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let arg = arg.read().await;
+    let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
         Value::Number(_)
@@ -591,7 +591,7 @@ pub async fn is_integer(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let arg = arg.read().await;
+    let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
         Value::Number(Number::FixedInteger(_)) | Value::Number(Number::BigInteger(_))
@@ -603,7 +603,7 @@ pub async fn is_rational(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let arg = arg.read().await;
+    let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
         Value::Number(Number::Rational(_))
@@ -615,7 +615,7 @@ pub async fn is_real(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let arg = arg.read().await;
+    let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
         Value::Number(Number::Real(_))
@@ -627,7 +627,7 @@ pub async fn is_complex(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
 ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let arg = arg.read().await;
+    let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
         Value::Number(Number::Complex(_))

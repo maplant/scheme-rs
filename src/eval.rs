@@ -151,7 +151,7 @@ impl Eval for ast::Let {
                 .eval(&Env::from(scope.clone()), &Some(cont))
                 .await?
                 .require_one()?;
-            scope.write().await.def_var(ident, val);
+            scope.write().def_var(ident, val);
         }
         self.body.tail_eval(&Env::from(scope), cont).await
     }
@@ -203,7 +203,6 @@ impl Eval for ast::If {
             .await?
             .require_one()?
             .read()
-            .await
             .is_true();
         if condition {
             self.success.tail_eval(env, cont).await
@@ -231,7 +230,7 @@ impl Eval for ast::DefineFunc {
             body: self.body.clone(),
             is_variable_transformer: false,
         }));
-        env.def_var(&self.name, func).await;
+        env.def_var(&self.name, func);
         Ok(vec![])
     }
 }
@@ -248,7 +247,7 @@ impl Eval for ast::DefineVar {
             cont,
         ));
         let val = self.val.eval(env, &Some(cont)).await?.require_one()?;
-        env.def_var(&self.name, val).await;
+        env.def_var(&self.name, val);
         Ok(vec![])
     }
 }
@@ -302,7 +301,6 @@ impl Eval for ast::And {
                 .await?
                 .require_one()?
                 .read()
-                .await
                 .is_true()
             {
                 return Ok(ValuesOrPreparedCall::Values(vec![Gc::new(Value::Boolean(
@@ -338,7 +336,6 @@ impl Eval for ast::Or {
                 .await?
                 .require_one()?
                 .read()
-                .await
                 .is_true()
             {
                 return Ok(ValuesOrPreparedCall::Values(vec![Gc::new(Value::Boolean(
@@ -387,13 +384,10 @@ impl Eval for ast::Set {
             .await?
             .require_one()?
             .read()
-            .await
             .clone();
         *env.fetch_var(&self.var)
-            .await
             .ok_or_else(|| RuntimeError::undefined_variable(self.var.clone()))?
-            .write()
-            .await = val;
+            .write() = val;
         Ok(vec![])
     }
 }
@@ -443,7 +437,7 @@ impl Eval for ast::SyntaxCase {
         ));
         let val = self.arg.eval(env, &Some(new_cont)).await?.require_one()?;
         // This clones _all_ syntax objects; we should fix this to be more optimal.
-        let syntax = Syntax::from_datum(&BTreeSet::default(), &val).await;
+        let syntax = Syntax::from_datum(&BTreeSet::default(), &val);
         let result = self.transformer.expand(&syntax).unwrap();
         result.compile(env, cont).await?.eval(env, cont).await
     }
@@ -456,7 +450,7 @@ impl Eval for ast::FetchVar {
         env: &Env,
         _cont: &Option<Arc<Continuation>>,
     ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-        Ok(vec![env.fetch_var(&self.ident).await.ok_or_else(|| {
+        Ok(vec![env.fetch_var(&self.ident).ok_or_else(|| {
             RuntimeError::undefined_variable(self.ident.clone())
         })?])
     }
