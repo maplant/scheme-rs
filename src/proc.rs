@@ -197,7 +197,7 @@ pub async fn apply(
     mut args: Vec<Gc<Value>>,
 ) -> Result<PreparedCall, RuntimeError> {
     if args.len() < 2 {
-        return Err(RuntimeError::wrong_num_of_args(2, 3));
+        return Err(RuntimeError::wrong_num_of_args(2, args.len()));
     }
     let last = args.pop().unwrap();
     list_to_vec(&last, &mut args).await;
