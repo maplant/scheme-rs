@@ -1,10 +1,13 @@
+/*
 use reedline::{Reedline, Signal, ValidationResult, Validator};
-use scheme_rs::{env::Env, lex::Token, parse::ParseError, syntax::ParsedSyntax};
+use scheme_rs::{env::Env, lex::Token, parse::ParseError};
 use std::{
     borrow::Cow,
     sync::{Arc, Mutex},
-};
+};e
+*/
 
+/*
 type ParsedResult = Option<Result<Vec<ParsedSyntax>, String>>;
 
 struct InputParser {
@@ -53,9 +56,11 @@ impl reedline::Prompt for Prompt {
         Cow::Borrowed("? ")
     }
 }
+*/
 
 #[tokio::main]
 async fn main() {
+    /*
     let parsed = Arc::new(Mutex::new(None));
     let mut rl = Reedline::create().with_validator(Box::new(InputParser {
         parsed: parsed.clone(),
@@ -101,4 +106,6 @@ async fn main() {
             }
         }
     }
+     */
+    todo!()
 }

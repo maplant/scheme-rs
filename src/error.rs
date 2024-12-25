@@ -1,9 +1,9 @@
 use crate::{
-    compile::CompileError,
     continuation::Continuation,
     gc::Gc,
     syntax::{Identifier, Span},
     value::Value,
+    ast::parse::ParseAstError,
 };
 use derivative::Derivative;
 use std::sync::Arc;
@@ -35,7 +35,7 @@ pub enum RuntimeErrorKind {
         actual: String,
     },
     DivisionByZero,
-    CompileError(CompileError),
+    ParseAstError(ParseAstError),
     AbandonCurrentContinuation {
         #[derivative(Debug = "ignore")]
         args: Vec<Gc<Value>>,
@@ -140,6 +140,7 @@ impl RuntimeError {
     }
 }
 
+/*
 impl From<CompileError> for RuntimeError {
     fn from(ce: CompileError) -> Self {
         Self {
@@ -148,6 +149,7 @@ impl From<CompileError> for RuntimeError {
         }
     }
 }
+*/
 
 /*
 impl fmt::Debug for RuntimeError {

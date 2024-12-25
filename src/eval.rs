@@ -15,35 +15,6 @@ use crate::{
 use async_trait::async_trait;
 use std::{collections::BTreeSet, sync::Arc};
 
-pub enum ValuesOrPreparedCall {
-    Values(Vec<Gc<Value>>),
-    PreparedCall(PreparedCall),
-}
-
-impl From<Vec<Gc<Value>>> for ValuesOrPreparedCall {
-    fn from(values: Vec<Gc<Value>>) -> Self {
-        Self::Values(values)
-    }
-}
-
-impl From<PreparedCall> for ValuesOrPreparedCall {
-    fn from(prepared_call: PreparedCall) -> ValuesOrPreparedCall {
-        Self::PreparedCall(prepared_call)
-    }
-}
-
-impl ValuesOrPreparedCall {
-    pub async fn eval(
-        self,
-        cont: &Option<Arc<Continuation>>,
-    ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-        match self {
-            Self::Values(val) => Ok(val),
-            Self::PreparedCall(prepared_call) => prepared_call.eval(cont).await,
-        }
-    }
-}
-
 /// Core evaulation trait for expressions.
 ///
 /// Any struct implementing this trait must either implement `eval`, `tail_eval`, or
@@ -444,7 +415,7 @@ impl Eval for ast::SyntaxCase {
 }
 
 #[async_trait]
-impl Eval for ast::FetchVar {
+impl Eval for ast::Var {
     async fn eval(
         &self,
         env: &Env,

@@ -2,13 +2,12 @@ use async_trait::async_trait;
 use proc_macros::builtin;
 
 use crate::{
-    ast,
+    ast::{self, AstNode},
     env::{Env, LexicalContour},
     error::{RuntimeError, RuntimeErrorKind},
-    eval::{Eval, ValuesOrPreparedCall},
     expand::Transformer,
     gc::{Gc, Trace},
-    proc::{Callable, PreparedCall, ProcDebugInfo},
+    proc::{Callable, PreparedCall, ProcCallDebugInfo, ValuesOrPreparedCall},
     syntax::{Identifier, Span},
     util::{ArcSlice, RequireOne},
     value::Value,
@@ -105,6 +104,7 @@ impl Callable for Option<Arc<Continuation>> {
     }
 }
 
+/*
 #[derive(Trace)]
 pub struct CatchContinuationCall {
     inner: Arc<dyn Eval>,
@@ -141,15 +141,16 @@ impl Eval for CatchContinuationCall {
         inner
     }
 }
+*/
 
 #[derive(Trace)]
 pub struct ResumableBody {
     env: Env,
-    remaining: ArcSlice<Arc<dyn Eval>>,
+    remaining: ArcSlice<AstNode>,
 }
 
 impl ResumableBody {
-    pub fn new(env: &Env, remaining: &ArcSlice<Arc<dyn Eval>>) -> Self {
+    pub fn new(env: &Env, remaining: &ArcSlice<AstNode>) -> Self {
         Self {
             env: env.clone(),
             remaining: remaining.clone(),
@@ -167,12 +168,12 @@ impl Resumable for ResumableBody {
         let Some(last) = self.remaining.last() else {
             return Ok(args);
         };
-        for (expr, tail) in self.remaining.skip_last() {
+        for (form, tail) in self.remaining.skip_last() {
             let cont = Some(Arc::new(Continuation::new(
                 Arc::new(ResumableBody::new(&self.env, &tail)),
                 cont,
             )));
-            expr.eval(&self.env, &cont).await?;
+            form.eval(&self.env, &cont).await?;
         }
         last.eval(&self.env, cont).await
     }
@@ -185,6 +186,7 @@ impl Resumable for ResumableBody {
     }
 }
 
+/*
 #[derive(Trace)]
 pub struct ResumableSyntaxCase {
     env: Env,
@@ -583,7 +585,7 @@ impl Resumable for ResumableCall {
         }
         PreparedCall::prepare(
             collected,
-            Some(ProcDebugInfo::new(&self.proc_name, &self.location)),
+            Some(ProcCallDebugInfo::new(&self.proc_name, &self.location)),
         )
         .eval(cont)
         .await
@@ -694,3 +696,4 @@ pub async fn call_with_values(
         .eval(cont)
         .await
 }
+*/

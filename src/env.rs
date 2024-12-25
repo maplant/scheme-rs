@@ -3,12 +3,11 @@ use std::collections::HashMap;
 
 use crate::{
     builtin::Builtin,
-    compile::CompileError,
     error::RuntimeError,
     gc::{init_gc, Gc},
     lex::{LexError, Token},
     parse::ParseError,
-    syntax::{Identifier, Mark, ParsedSyntax},
+    syntax::{Identifier, Mark},
     value::Value,
 };
 
@@ -211,6 +210,7 @@ impl Env {
 
     /// Evaluate a string, returning all of the results in a Vec
     pub async fn eval<'e>(&self, exprs: &'e str) -> Result<Vec<Vec<Gc<Value>>>, EvalError<'e>> {
+        /*
         let tokens = Token::tokenize_str(exprs)?;
         let sexprs = ParsedSyntax::parse(&tokens)?;
         let mut results = Vec::new();
@@ -219,7 +219,10 @@ impl Env {
             results.push(result);
         }
         Ok(results)
+         */
+        todo!()
     }
+
 
     pub fn deep_clone(&self) -> Self {
         match self {
@@ -251,6 +254,6 @@ enum MacroLookup {
 pub enum EvalError<'e> {
     LexError(LexError<'e>),
     ParseError(ParseError<'e>),
-    CompileError(CompileError),
+    // CompileError(CompileError),
     RuntimeError(RuntimeError),
 }

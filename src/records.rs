@@ -4,11 +4,11 @@ use async_trait::async_trait;
 
 use crate::{
     ast,
-    compile::Compile,
+    // compile::Compile,
     continuation::Continuation,
     env::Env,
     error::RuntimeError,
-    eval::Eval,
+    //     eval::Eval,
     gc::{Gc, Trace},
     proc::Procedure,
     syntax::{Identifier, Mark, Span, Syntax},
@@ -97,6 +97,7 @@ enum FieldDefinitionKind {
     Immutable,
 }
 
+/*
 #[derive(Debug, Clone)]
 pub enum CompileDefineRecordTypeError {
     ParentSpecifiedMultiple { first: Span, second: Span },
@@ -374,7 +375,7 @@ impl Eval for DefineRecordType {
 
         // Append the return value
         setters.push(
-            Arc::new(ast::FetchVar::new(Identifier::new("this".to_string()))) as Arc<dyn Eval>,
+            Arc::new(ast::Var::new(Identifier::new("this".to_string()))) as Arc<dyn Eval>,
         );
 
         let constructor = new_proc(
@@ -604,3 +605,4 @@ impl Eval for RecordPredicate {
         )))])
     }
 }
+*/

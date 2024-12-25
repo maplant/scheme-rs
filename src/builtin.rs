@@ -1,6 +1,6 @@
 use crate::{
     continuation::Continuation, env::LexicalContour, error::RuntimeError,
-    eval::ValuesOrPreparedCall, gc::Gc, proc::ExternalFn, syntax::Identifier, value::Value,
+    proc::ValuesOrPreparedCall, gc::Gc, proc::ExternalFn, syntax::Identifier, value::Value,
 };
 use futures::future::BoxFuture;
 use std::sync::Arc;

@@ -1,10 +1,10 @@
 use crate::{
-    ast::{self, FetchVar, Literal, MacroExpansionPoint},
-    compile::{Compile, CompileError},
-    continuation::{CatchContinuationCall, Continuation},
+    ast::{self, Var, Literal, MacroExpansionPoint},
+    // compile::{Compile, CompileError},
+    continuation::Continuation,
     env::Env,
     error::RuntimeError,
-    eval::Eval,
+    // eval::Eval,
     gc::{Gc, Trace},
     lex::{InputSpan, Lexeme, Token},
     lists::list_to_vec_with_null,
@@ -15,7 +15,7 @@ use crate::{
 };
 use futures::future::BoxFuture;
 use proc_macros::builtin;
-use std::{collections::BTreeSet, fmt, sync::Arc};
+use std::{borrow::Cow, collections::BTreeSet, fmt, sync::Arc};
 
 #[derive(Debug, Clone, PartialEq, Trace)]
 pub struct Span {
@@ -202,7 +202,7 @@ impl Syntax {
         macro_env: Env,
         cont: &Option<Arc<Continuation>>,
         transformer: Gc<Value>,
-    ) -> Result<Expansion<'static>, RuntimeError> {
+    ) -> Result<Expansion, RuntimeError> {
         // Create a new mark for the expansion context
         let new_mark = Mark::new();
         // Apply the new mark to the input
@@ -234,11 +234,11 @@ impl Syntax {
         })
     }
 
-    fn expand<'a>(
+    fn expand_once<'a>(
         &'a self,
         env: &'a Env,
         cont: &'a Option<Arc<Continuation>>,
-    ) -> BoxFuture<'a, Result<Expansion<'a>, RuntimeError>> {
+    ) -> BoxFuture<'a, Result<Expansion, RuntimeError>> {
         Box::pin(async move {
             match self {
                 Self::List { list, .. } => {
@@ -246,7 +246,7 @@ impl Syntax {
                     // for now. We will expand it later in the proc call
                     let ident = match list.first() {
                         Some(Self::Identifier { ident, .. }) => ident,
-                        _ => return Ok(Expansion::Unexpanded(self)),
+                        _ => return Ok(Expansion::Unexpanded),
                     };
                     if let Some((macro_env, transformer)) = env.fetch_macro(ident) {
                         return self
@@ -263,10 +263,39 @@ impl Syntax {
                 }
                 _ => (),
             }
-            Ok(Expansion::Unexpanded(self))
+            Ok(Expansion::Unexpanded)
         })
     }
 
+    /// Fully expand the outermost syntax object.
+    pub async fn expand<'a>(&'a self, env: &Env, cont: &Option<Arc<Continuation>>) -> Result<FullyExpanded<'a>, RuntimeError> {
+        let mut expansion_envs = Vec::new();
+        let mut expansion = Cow::Borrowed(self);
+        loop {
+            match expansion.expand_once(env, cont).await? {
+                Expansion::Unexpanded => {
+                    return Ok(FullyExpanded {
+                        expansion_envs,
+                        expanded: expansion,
+                    })
+                },
+                Expansion::Expanded { mark, macro_env, syntax } => {
+                    expansion_envs.push(ExpansionEnv::new(mark, macro_env));
+                    expansion = Cow::Owned(syntax);
+                }
+            }
+        }
+    }
+
+    pub fn as_list(&self) -> Option<&[Syntax]> {
+        todo!()
+    }
+
+    pub fn as_ident(&self) -> Option<&Identifier> {
+        todo!()
+    }
+
+    /*
     pub async fn compile_expanded(
         &self,
         env: &Env,
@@ -280,7 +309,7 @@ impl Syntax {
             }
             // Regular identifiers:
             Self::Identifier { ident, .. } => {
-                Ok(Arc::new(FetchVar::new(ident.clone())) as Arc<dyn Eval>)
+                Ok(Arc::new(Var::new(ident.clone())) as Arc<dyn Eval>)
             }
             Self::Literal { literal, .. } => Ok(Arc::new(literal.clone()) as Arc<dyn Eval>),
             Self::List { list: exprs, span } => match &exprs[..] {
@@ -366,12 +395,13 @@ impl Syntax {
         cont: &Option<Arc<Continuation>>,
     ) -> Result<Arc<dyn Eval>, CompileError> {
         self.expand(env, cont).await?.compile(env, cont).await
-    }
+}
+    */
 }
 
-pub enum Expansion<'a> {
+pub enum Expansion {
     /// Syntax remained unchanged after expansion
-    Unexpanded(&'a Syntax),
+    Unexpanded,
     /// Syntax was expanded, producing a new expansion context
     Expanded {
         mark: Mark,
@@ -380,6 +410,7 @@ pub enum Expansion<'a> {
     },
 }
 
+/*
 impl Expansion<'_> {
     pub fn is_expanded(&self) -> bool {
         matches!(self, Self::Expanded { .. })
@@ -389,7 +420,40 @@ impl Expansion<'_> {
         matches!(self, Self::Unexpanded(_))
     }
 }
+ */
 
+pub struct ExpansionEnv {
+    mark: Mark,
+    macro_env: Env,
+}
+
+impl ExpansionEnv {
+    fn new(mark: Mark, macro_env: Env) -> Self {
+        todo!()
+    }
+}
+
+pub struct FullyExpanded<'a> {
+    pub expansion_envs: Vec<ExpansionEnv>,
+    pub expanded: Cow<'a, Syntax>,
+}
+
+impl AsRef<Syntax> for FullyExpanded<'_> {
+    fn as_ref(&self) -> &Syntax {
+        self.expanded.as_ref()
+    }
+}
+
+impl FullyExpanded<'_> {
+    pub fn to_owned(self) -> FullyExpanded<'static> {
+        FullyExpanded {
+            expansion_envs: self.expansion_envs,
+            expanded: Cow::Owned(self.expanded.as_ref().clone()),
+        }
+    }
+}
+
+/*
 impl<'a> Expansion<'a> {
     pub fn compile(
         self,
@@ -419,6 +483,9 @@ impl<'a> Expansion<'a> {
     }
 }
 
+*/
+
+/*
 #[derive(Debug)]
 pub struct ParsedSyntax {
     pub doc_comment: Option<String>,
@@ -468,6 +535,7 @@ impl ParsedSyntax {
         )))
     }
 }
+*/
 
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Trace)]
 pub struct Mark(usize);
@@ -603,6 +671,8 @@ impl Syntax {
     }
 }
 
+/*
+
 #[builtin("syntax->datum")]
 pub async fn syntax_to_datum(
     _cont: &Option<Arc<Continuation>>,
@@ -636,3 +706,4 @@ pub async fn datum_to_syntax(
         datum,
     )))])
 }
+*/
