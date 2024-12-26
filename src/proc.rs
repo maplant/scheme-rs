@@ -82,7 +82,7 @@ impl Callable for Procedure {
         args: Vec<Gc<Value>>,
         cont: &Option<Arc<Continuation>>,
     ) -> Result<ValuesOrPreparedCall, RuntimeError> {
-        let env = Gc::new(self.up.read().new_lexical_contour());
+        let env = Gc::new(self.up.new_lexical_contour());
         let provided = args.len();
         let mut args_iter = args.iter().peekable();
 

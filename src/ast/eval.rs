@@ -111,7 +111,6 @@ impl Expression {
                 Self::Begin(body) => body.tail_eval(env, cont).await,
                 Self::Var(var) => Ok(ValuesOrPreparedCall::Values(vec![var
                     .fetch(env)
-                    .await
                     .map_err(|ident| RuntimeError::undefined_variable(ident))?])),
             }
         })
@@ -185,7 +184,7 @@ impl Let {
         env: &Gc<Env>,
         cont: &Option<Arc<Continuation>>,
     ) -> Result<ValuesOrPreparedCall, RuntimeError> {
-        let scope = Gc::new(env.read().new_lexical_contour());
+        let scope = Gc::new(env.new_lexical_contour());
         for ((ident, expr), remaining) in util::iter_arc(&self.bindings) {
             let cont = Arc::new(Continuation::new(
                 Arc::new(ResumableLet::new(&scope, ident, remaining, &self.body)),
@@ -312,7 +311,7 @@ impl Set {
             .require_one()?
             .read()
             .clone();
-        self.var.set(env, &Gc::new(val));
+        self.var.set(env, &Gc::new(val)).await;
         Ok(())
     }
 }

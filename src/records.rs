@@ -1,6 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
-
-use async_trait::async_trait;
+use std::collections::HashMap;
 
 use crate::{
     ast,

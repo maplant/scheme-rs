@@ -38,10 +38,7 @@ pub enum Value {
 
 impl Value {
     pub fn is_callable(&self) -> bool {
-        matches!(
-            self,
-            Self::Procedure(_) | Self::ExternalFn(_)
-        )
+        matches!(self, Self::Procedure(_) | Self::ExternalFn(_))
     }
 
     /// #f is false, everything else is true

@@ -171,13 +171,10 @@ impl Resumable for ResumableDefineVar {
     }
 
     fn clone_stack(&self) -> Arc<dyn Resumable> {
-        /*
         Arc::new(Self {
             env: self.env.deep_clone(),
             name: self.name.clone(),
         })
-         */
-        todo!()
     }
 }
 
@@ -217,13 +214,10 @@ impl Resumable for ResumableBody {
     }
 
     fn clone_stack(&self) -> Arc<dyn Resumable> {
-        /*
         Arc::new(Self {
             env: self.env.deep_clone(),
             remaining: self.remaining.clone(),
         })
-         */
-        todo!()
     }
 }
 
@@ -276,15 +270,12 @@ impl Resumable for ResumableLet {
     }
 
     fn clone_stack(&self) -> Arc<dyn Resumable> {
-        /*
         Arc::new(Self {
-            scope: Gc::new(self.scope.read().deep_clone()),
+            scope: self.scope.deep_clone(),
             curr: self.curr.clone(),
             remaining_bindings: self.remaining_bindings.clone(),
             body: self.body.clone(),
         })
-         */
-        todo!()
     }
 }
 
@@ -327,14 +318,11 @@ impl Resumable for ResumableIf {
     }
 
     fn clone_stack(&self) -> Arc<dyn Resumable> {
-        /*
         Arc::new(Self {
             env: self.env.deep_clone(),
             success: self.success.clone(),
             failure: self.failure.clone(),
         })
-         */
-        todo!()
     }
 }
 
@@ -388,12 +376,10 @@ impl Resumable for ResumableAnd {
     }
 
     fn clone_stack(&self) -> Arc<dyn Resumable> {
-        /*
-            Arc::new(Self {
-                env: self.env.deep_clone(),
-                args: self.args.clone(),
-        })*/
-        todo!()
+        Arc::new(Self {
+            env: self.env.deep_clone(),
+            args: self.args.clone(),
+        })
     }
 }
 
@@ -447,13 +433,10 @@ impl Resumable for ResumableOr {
     }
 
     fn clone_stack(&self) -> Arc<dyn Resumable> {
-        /*
-            Arc::new(Self {
-                env: self.env.deep_clone(),
-                args: self.args.clone(),
+        Arc::new(Self {
+            env: self.env.deep_clone(),
+            args: self.args.clone(),
         })
-             */
-        todo!()
     }
 }
 
@@ -481,18 +464,15 @@ impl Resumable for ResumableSet {
     ) -> Result<Vec<Gc<Value>>, RuntimeError> {
         let arg = args.require_one()?;
         let val = arg.read().clone();
-        self.var.set(&self.env, &Gc::new(val));
+        self.var.set(&self.env, &Gc::new(val)).await;
         Ok(Vec::new())
     }
 
     fn clone_stack(&self) -> Arc<dyn Resumable> {
-        /*
-            Arc::new(Self {
-                env: self.env.deep_clone(),
-                var: self.var.clone(),
+        Arc::new(Self {
+            env: self.env.deep_clone(),
+            var: self.var.clone(),
         })
-             */
-        todo!()
     }
 }
 
@@ -535,13 +515,10 @@ impl Resumable for ResumableSyntaxCase {
     }
 
     fn clone_stack(&self) -> Arc<dyn Resumable> {
-        /*
         Arc::new(Self {
             env: self.env.deep_clone(),
             transformer: self.transformer.clone(),
         })
-         */
-        todo!()
     }
 }
 
@@ -614,7 +591,6 @@ impl Resumable for ResumableCall {
     }
 
     fn clone_stack(&self) -> Arc<dyn Resumable> {
-        /*
         Arc::new(Self {
             env: self.env.deep_clone(),
             collected: self.collected.clone(),
@@ -622,8 +598,6 @@ impl Resumable for ResumableCall {
             proc_name: self.proc_name.clone(),
             location: self.location.clone(),
         })
-         */
-        todo!()
     }
 }
 
@@ -648,7 +622,6 @@ pub async fn call_cc(
         .eval(cont)
         .await
 }
-
 
 #[derive(Clone, Trace)]
 pub struct CallWithValues {

@@ -1,8 +1,6 @@
 use reedline::{Reedline, Signal, ValidationResult, Validator};
 use scheme_rs::{env::Env, lex::Token, parse::ParseError, syntax::ParsedSyntax};
-use std::{
-    borrow::Cow,
-};
+use std::borrow::Cow;
 
 struct InputParser;
 
@@ -51,6 +49,7 @@ async fn main() {
     let mut rl = Reedline::create().with_validator(Box::new(InputParser));
     let mut n_results = 1;
     let top = Env::top().await;
+    println!("installed");
     loop {
         let Ok(Signal::Success(input)) = rl.read_line(&Prompt) else {
             println!("exiting...");

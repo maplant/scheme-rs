@@ -1,5 +1,11 @@
 use crate::{
-    continuation::Continuation, env::Env, error::RuntimeError, gc::Gc, proc::{ExternalFn, ValuesOrPreparedCall}, syntax::Identifier, value::Value
+    continuation::Continuation,
+    env::Env,
+    error::RuntimeError,
+    gc::Gc,
+    proc::{ExternalFn, ValuesOrPreparedCall},
+    syntax::Identifier,
+    value::Value,
 };
 use futures::future::BoxFuture;
 use std::sync::Arc;

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use scheme_rs::{
+    ast::AstNode,
     builtin,
     continuation::Continuation,
     env::Env,
@@ -33,12 +34,12 @@ async fn r6rs() {
     let r6rs_tok = Token::tokenize_file(include_str!("r6rs.scm"), "r6rs.scm").unwrap();
     let r6rs_sexprs = ParsedSyntax::parse(&r6rs_tok).unwrap();
     for sexpr in r6rs_sexprs {
-        sexpr
-            .compile(&top, &None)
+        let result = AstNode::from_syntax(sexpr.syntax, &top, &None)
             .await
             .unwrap()
-            .eval(&top, &None)
-            .await
             .unwrap();
+
+        // TODO: Catch continuation calls
+        let _ = result.eval(&top, &None).await.unwrap();
     }
 }

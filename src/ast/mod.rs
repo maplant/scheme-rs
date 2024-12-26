@@ -1,7 +1,6 @@
 mod eval;
 pub mod parse;
 
-use nom::error::ParseError;
 use parse::define_syntax;
 
 use crate::{
@@ -12,7 +11,7 @@ use crate::{
     gc::{Gc, Trace},
     num::Number,
     proc::ValuesOrPreparedCall,
-    syntax::{ExpansionCtx, FullyExpanded, Identifier, Mark, Span, Syntax},
+    syntax::{FullyExpanded, Identifier, Span, Syntax},
     util::ArcSlice,
     value::Value,
 };
@@ -63,7 +62,7 @@ impl AstNode {
             expanded,
             expansion_envs,
         } = syn.expand(&expansion_env, cont).await?;
-        let expansion_env = expansion_env.new_expansion_env(expansion_envs);
+        let expansion_env = expansion_env.push_expansion_env(expansion_envs);
         Self::from_syntax_with_expansion_env(expanded, &expansion_env, cont).await
     }
 
@@ -73,11 +72,11 @@ impl AstNode {
         cont: &Option<Arc<Continuation>>,
     ) -> Result<Option<Self>, parse::ParseAstError> {
         match syn.as_list() {
-            Some([Syntax::Identifier { ident, .. }, expr, Syntax::Null { .. }])
-                if ident.name == "define-syntax" =>
-            {
+            Some(
+                [Syntax::Identifier { ident, .. }, Syntax::Identifier { ident: name, .. }, expr, Syntax::Null { .. }],
+            ) if ident.name == "define-syntax" => {
                 // TODO: Error if define syntax isn't proper, error.
-                define_syntax(ident, expr.clone(), &env.lexical_contour, cont).await?;
+                define_syntax(name, expr.clone(), &env.lexical_contour, cont).await?;
                 Ok(None)
             }
             Some(syn @ [Syntax::Identifier { ident, span, .. }, ..]) if ident.name == "define" => {
@@ -129,7 +128,6 @@ pub enum Expression {
     Vector(Vector),
     Begin(Body),
 }
-
 
 #[derive(Debug, Clone, PartialEq, Trace)]
 // Vector should be in here too. Oh well.

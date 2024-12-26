@@ -1,19 +1,16 @@
-//! todo
-
 use crate::{
     continuation::Continuation,
     env::Env,
     error::RuntimeError,
     expand::{SyntaxRule, Transformer},
     gc::Gc,
-    syntax::{Expansion, FullyExpanded, Identifier, Span, Syntax},
+    syntax::{FullyExpanded, Identifier, Span, Syntax},
     util::{ArcSlice, RequireOne},
     value::Value,
 };
 
 use super::*;
 
-use async_trait::async_trait;
 use derive_more::From;
 use futures::future::BoxFuture;
 use std::{
@@ -71,7 +68,7 @@ impl Definition {
                         ..
                     }, args @ ..] => {
                         let mut bound = HashMap::<Identifier, Span>::new();
-                        let mut new_env = env.lexical_contour.read().new_lexical_contour();
+                        let mut new_env = env.lexical_contour.new_lexical_contour();
                         let mut fixed = Vec::new();
 
                         // Bind the arguments to a new environment:
@@ -125,7 +122,7 @@ impl Definition {
                             Formals::FixedArgs(Vec::new())
                         };
 
-                        let new_env = env.new_lexical_contour(Gc::new(new_env));
+                        let new_env = env.push_lexical_contour(Gc::new(new_env));
 
                         // Parse the body:
                         let body = Body::parse(body, &new_env, cont, func_span).await?;
@@ -166,7 +163,7 @@ impl Body {
             let mut exprs_parsed = Vec::new();
 
             for def in defs.into_iter() {
-                let new_expansion_env = env.new_expansion_env(def.expansion_envs);
+                let new_expansion_env = env.push_expansion_env(def.expansion_envs);
                 defs_parsed.push(
                     Definition::parse(
                         def.expanded.as_list().unwrap(),
@@ -179,7 +176,7 @@ impl Body {
             }
 
             for expr in exprs.into_iter() {
-                let new_expansion_env = env.new_expansion_env(expr.expansion_envs);
+                let new_expansion_env = env.push_expansion_env(expr.expansion_envs);
                 exprs_parsed.push(
                     Expression::parse_expanded(expr.expanded, &new_expansion_env, cont).await?,
                 );
@@ -285,7 +282,7 @@ pub(super) async fn define_syntax(
         expanded,
         expansion_envs,
     } = expr.expand(&expansion_env, cont).await?;
-    let expansion_env = expansion_env.new_expansion_env(expansion_envs);
+    let expansion_env = expansion_env.push_expansion_env(expansion_envs);
     let value = Expression::parse(expanded, &expansion_env, cont)
         .await?
         .eval(env, cont)
@@ -305,7 +302,7 @@ impl Expression {
             expanded,
             expansion_envs,
         } = syn.expand(&env, cont).await?;
-        let expansion_env = env.new_expansion_env(expansion_envs);
+        let expansion_env = env.push_expansion_env(expansion_envs);
         Self::parse_expanded(expanded, &expansion_env, cont).await
     }
 
@@ -336,9 +333,11 @@ impl Expression {
                 Syntax::Vector { vector, .. } => Ok(Self::Vector(Vector::parse(&vector))),
 
                 // Functional forms:
-                Syntax::List { list: exprs, span, .. } => match exprs.as_slice() {
+                Syntax::List {
+                    list: exprs, span, ..
+                } => match exprs.as_slice() {
                     // Special forms:
-                    [Syntax::Identifier { ident,  .. }, tail @ .., Syntax::Null { .. }]
+                    [Syntax::Identifier { ident, .. }, tail @ .., Syntax::Null { .. }]
                         if ident.name == "begin" =>
                     {
                         Body::parse_in_expr_context(tail, env, cont)
@@ -378,14 +377,18 @@ impl Expression {
                         Quote::parse(tail, span).await.map(Expression::Quote)
                     }
                     [Syntax::Identifier { ident, span, .. }, tail @ .., Syntax::Null { .. }]
-                        if ident.name == "syntax-quote" =>
+                        if ident.name == "syntax" =>
                     {
-                        SyntaxQuote::parse(tail, span).await.map(Expression::SyntaxQuote)
+                        SyntaxQuote::parse(tail, span)
+                            .await
+                            .map(Expression::SyntaxQuote)
                     }
                     [Syntax::Identifier { ident, span, .. }, tail @ .., Syntax::Null { .. }]
                         if ident.name == "syntax-case" =>
                     {
-                        SyntaxCase::parse(tail, env, cont, span).await.map(Expression::SyntaxCase)
+                        SyntaxCase::parse(tail, env, cont, span)
+                            .await
+                            .map(Expression::SyntaxCase)
                     }
 
                     // Extra special form (set!):
@@ -396,7 +399,7 @@ impl Expression {
                     }
 
                     // Definition in expression context is illegal:
-                    [Syntax::Identifier { ident, span, .. },  .., Syntax::Null { .. }]
+                    [Syntax::Identifier { ident, span, .. }, .., Syntax::Null { .. }]
                         if ident.name == "define" =>
                     {
                         return Err(ParseAstError::DefInExprContext(span.clone()));
@@ -404,7 +407,9 @@ impl Expression {
 
                     // Regular old function call:
                     [operator, args @ .., Syntax::Null { .. }] => {
-                        Call::parse(operator.clone(), args, env, cont).await.map(Expression::Call)
+                        Call::parse(operator.clone(), args, env, cont)
+                            .await
+                            .map(Expression::Call)
                     }
 
                     _ => return Err(ParseAstError::BadForm(span.clone())),
@@ -469,7 +474,7 @@ async fn parse_lambda(
 ) -> Result<Lambda, ParseAstError> {
     let mut bound = HashMap::<Identifier, Span>::new();
     let mut fixed = Vec::new();
-    let mut new_contour = env.lexical_contour.read().new_lexical_contour();
+    let mut new_contour = env.lexical_contour.new_lexical_contour();
 
     if !args.is_empty() {
         for arg in &args[..args.len() - 1] {
@@ -516,7 +521,7 @@ async fn parse_lambda(
         Formals::FixedArgs(Vec::new())
     };
 
-    let new_env = env.new_lexical_contour(Gc::new(new_contour));
+    let new_env = env.push_lexical_contour(Gc::new(new_contour));
     let body = Body::parse(body, &new_env, cont, span).await?;
 
     Ok(Lambda { args, body })
@@ -555,7 +560,7 @@ async fn parse_let(
     span: &Span,
 ) -> Result<Let, ParseAstError> {
     let mut previously_bound = HashMap::new();
-    let mut new_contour = env.lexical_contour.read().new_lexical_contour();
+    let mut new_contour = env.lexical_contour.new_lexical_contour();
     let mut compiled_bindings = Vec::new();
 
     match bindings {
@@ -571,7 +576,7 @@ async fn parse_let(
         _ => return Err(ParseAstError::BadForm(span.clone())),
     }
 
-    let new_env = env.new_lexical_contour(Gc::new(new_contour));
+    let new_env = env.push_lexical_contour(Gc::new(new_contour));
     let body = Body::parse(body, &new_env, cont, span).await?;
 
     let mut bindings: Vec<_> = compiled_bindings
@@ -734,18 +739,15 @@ impl Vector {
         for expr in exprs {
             vals.push(Value::from_syntax(expr));
         }
-        Self { vals } 
+        Self { vals }
     }
 }
-
 
 impl SyntaxQuote {
     async fn parse(exprs: &[Syntax], span: &Span) -> Result<Self, ParseAstError> {
         match exprs {
             [] => Err(ParseAstError::ExpectedArgument(span.clone())),
-            [expr] => Ok(SyntaxQuote {
-                syn: expr.clone(),
-            }),
+            [expr] => Ok(SyntaxQuote { syn: expr.clone() }),
             [_, arg, ..] => Err(ParseAstError::UnexpectedArgument(arg.span().clone())),
         }
     }
