@@ -59,7 +59,7 @@ pub trait Callable: Send + Sync + 'static {
 #[derive(Clone, derive_more::Debug, Trace)]
 pub struct Procedure {
     #[debug(skip)]
-    pub up: Env,
+    pub up: Gc<Env>,
     pub args: Vec<Identifier>,
     pub remaining: Option<Identifier>,
     #[debug(skip)]
@@ -82,7 +82,7 @@ impl Callable for Procedure {
         args: Vec<Gc<Value>>,
         cont: &Option<Arc<Continuation>>,
     ) -> Result<ValuesOrPreparedCall, RuntimeError> {
-        let env = Gc::new(self.up.new_lexical_contour());
+        let env = Gc::new(self.up.read().new_lexical_contour());
         let provided = args.len();
         let mut args_iter = args.iter().peekable();
 
@@ -92,11 +92,11 @@ impl Callable for Procedure {
             let Some(value) = args_iter.next().cloned() else {
                 return Err(RuntimeError::wrong_num_of_args(self.args.len(), provided));
             };
-            env.write().def_var(required, value);
+            env.write().def_local_var(required, value);
         }
 
         if let Some(ref remaining) = self.remaining {
-            env.write().def_var(
+            env.write().def_local_var(
                 remaining,
                 Gc::new(Value::from(args_iter.cloned().collect::<Vec<_>>())),
             );
@@ -104,7 +104,7 @@ impl Callable for Procedure {
             return Err(RuntimeError::wrong_num_of_args(self.args.len(), provided));
         }
 
-        self.body.tail_eval(&Env::from(env.clone()), cont).await
+        self.body.tail_eval(&env, cont).await
     }
 }
 

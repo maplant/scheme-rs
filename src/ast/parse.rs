@@ -30,19 +30,14 @@ pub enum ParseAstError {
     NotAVariableTransformer,
     EmptyBody(Span),
     DefInExprContext(Span),
-    /*
-    ParseLetError(ParseLetError),
-    ParseFuncCallError(ParseFuncCallError),
-    ParseIfError(ParseIfError),
-    ParseDefineError(ParseDefineError),
-    ParseDefineSyntaxError(ParseDefineSyntaxError),
-    ParseQuoteError(ParseQuoteError),
-    ParseSetError(ParseSetError),
-    ParseLambdaError(ParseLambdaError),
-    ParseSyntaxError(ParseSyntaxError),
-    ParseSyntaxCaseError(ParseSyntaxCaseError),
-    */
-    // ParseDefineRecordTypeError(crate::records::ParseDefineRecordTypeError),
+    ExpectedIdentifier(Span),
+    NameBoundMultipleTimes {
+        ident: Identifier,
+        first: Span,
+        second: Span,
+    },
+    ExpectedArgument(Span),
+    UnexpectedArgument(Span),
 }
 
 impl From<RuntimeError> for ParseAstError {
@@ -51,50 +46,175 @@ impl From<RuntimeError> for ParseAstError {
     }
 }
 
-impl Body {
-    async fn parse(
-        body: &[Syntax],
-        env: &Env,
+impl Definition {
+    pub(super) async fn parse(
+        syn: &[Syntax],
+        env: &ExpansionEnv<'_>,
         cont: &Option<Arc<Continuation>>,
         span: &Span,
     ) -> Result<Self, ParseAstError> {
-        let mut defs = Vec::new();
-        let mut exprs = Vec::new();
+        match syn {
+            [_, Syntax::Identifier { ident, .. }, expr, Syntax::Null { .. }] => {
+                Ok(Definition::DefineVar(DefineVar {
+                    name: ident.clone(),
+                    val: Arc::new(Expression::parse(expr.clone(), env, cont).await?),
+                }))
+            }
+            [_, Syntax::List { list, span }, body @ .., Syntax::Null { .. }] => {
+                if body.is_empty() {
+                    return Err(ParseAstError::EmptyBody(span.clone()));
+                }
+                match list.as_slice() {
+                    [Syntax::Identifier {
+                        ident: func_name,
+                        span: func_span,
+                        ..
+                    }, args @ ..] => {
+                        let mut bound = HashMap::<Identifier, Span>::new();
+                        let mut new_env = env.lexical_contour.read().new_lexical_contour();
+                        let mut fixed = Vec::new();
 
-        splice_in(&mut defs, &mut exprs, body, env, cont, span).await?;
+                        // Bind the arguments to a new environment:
+                        for arg in &args[..args.len() - 1] {
+                            match arg {
+                                Syntax::Identifier { ident, span, .. } => {
+                                    if let Some(prev_span) = bound.get(ident) {
+                                        return Err(ParseAstError::NameBoundMultipleTimes {
+                                            ident: ident.clone(),
+                                            first: prev_span.clone(),
+                                            second: span.clone(),
+                                        });
+                                    }
+                                    new_env.def_local_var(&ident, Gc::new(Value::Undefined));
+                                    bound.insert(ident.clone(), span.clone());
+                                    fixed.push(ident.clone());
+                                }
+                                x => {
+                                    return Err(ParseAstError::ExpectedIdentifier(x.span().clone()))
+                                }
+                            }
+                        }
 
-        let mut defs_parsed = Vec::new();
-        let mut exprs_parsed = Vec::new();
+                        let args = if let Some(last) = args.last() {
+                            match last {
+                                Syntax::Null { .. } => {
+                                    Formals::FixedArgs(fixed.into_iter().collect())
+                                }
+                                Syntax::Identifier { ident, span, .. } => {
+                                    if let Some(prev_span) = bound.get(ident) {
+                                        return Err(ParseAstError::NameBoundMultipleTimes {
+                                            ident: ident.clone(),
+                                            first: prev_span.clone(),
+                                            second: span.clone(),
+                                        });
+                                    }
+                                    let remaining = ident.clone();
+                                    new_env.def_local_var(&ident, Gc::new(Value::Undefined));
+                                    bound.insert(remaining.clone(), span.clone());
+                                    Formals::VarArgs {
+                                        fixed: fixed.into_iter().collect(),
+                                        remaining,
+                                    }
+                                }
+                                x => {
+                                    return Err(ParseAstError::ExpectedIdentifier(x.span().clone()))
+                                }
+                            }
+                        } else {
+                            // If there is no last argument, there are no arguments
+                            Formals::FixedArgs(Vec::new())
+                        };
 
-        for def in defs.into_iter() {
-            defs_parsed.push(
-                Definition::parse(&def.expanded, env, cont)
-                    .await?
-                    .wrap(def.expansion_envs),
-            );
+                        let new_env = env.new_lexical_contour(Gc::new(new_env));
+
+                        // Parse the body:
+                        let body = Body::parse(body, &new_env, cont, func_span).await?;
+
+                        Ok(Self::DefineFunc(DefineFunc {
+                            name: func_name.clone(),
+                            args,
+                            body,
+                        }))
+                    }
+                    _ => Err(ParseAstError::BadForm(span.clone())),
+                }
+            }
+            _ => Err(ParseAstError::BadForm(span.clone())),
         }
-
-        for expr in exprs.into_iter() {
-            exprs_parsed.push(
-                Expression::parse(&expr.expanded, env, cont)
-                    .await?
-                    .wrap(expr.expansion_envs),
-            );
-        }
-
-        Ok(Self::new(defs_parsed, exprs_parsed))
     }
 }
 
+impl Body {
+    /// Parse the body. body is expected to be a list of valid syntax objects, and should not include
+    /// _any_ nulls, including one at the end.
+    pub(super) fn parse<'a, 'b>(
+        body: &'a [Syntax],
+        env: &'a ExpansionEnv<'b>,
+        cont: &'a Option<Arc<Continuation>>,
+        span: &'a Span,
+    ) -> BoxFuture<'a, Result<Self, ParseAstError>>
+    where
+        'a: 'b,
+    {
+        Box::pin(async move {
+            let mut defs = Vec::<FullyExpanded>::new();
+            let mut exprs = Vec::<FullyExpanded>::new();
 
-fn splice_in<'a>(
-    defs: &'a mut Vec<FullyExpanded<'static>>,
-    exprs: &'a mut Vec<FullyExpanded<'static>>,
+            splice_in(&mut defs, &mut exprs, body, env, cont, span).await?;
+
+            let mut defs_parsed = Vec::new();
+            let mut exprs_parsed = Vec::new();
+
+            for def in defs.into_iter() {
+                let new_expansion_env = env.new_expansion_env(def.expansion_envs);
+                defs_parsed.push(
+                    Definition::parse(
+                        def.expanded.as_list().unwrap(),
+                        &new_expansion_env,
+                        cont,
+                        def.expanded.span(),
+                    )
+                    .await?,
+                );
+            }
+
+            for expr in exprs.into_iter() {
+                let new_expansion_env = env.new_expansion_env(expr.expansion_envs);
+                exprs_parsed.push(
+                    Expression::parse_expanded(expr.expanded, &new_expansion_env, cont).await?,
+                );
+            }
+
+            Ok(Self::new(defs_parsed, exprs_parsed))
+        })
+    }
+
+    /// Differs from Body by being purely expression based. No definitions allowed.
+    pub(super) async fn parse_in_expr_context(
+        body: &[Syntax],
+        env: &ExpansionEnv<'_>,
+        cont: &Option<Arc<Continuation>>,
+    ) -> Result<Self, ParseAstError> {
+        let mut forms = Vec::new();
+        for sexpr in body {
+            let parsed = AstNode::Expression(Expression::parse(sexpr.clone(), env, cont).await?);
+            forms.push(parsed);
+        }
+        let forms = ArcSlice::from(forms);
+        Ok(Self { forms })
+    }
+}
+
+fn splice_in<'a, 'b>(
+    defs: &'a mut Vec<FullyExpanded>,
+    exprs: &'a mut Vec<FullyExpanded>,
     body: &'a [Syntax],
-    env: &'a Env,
+    env: &'a ExpansionEnv<'b>,
     cont: &'a Option<Arc<Continuation>>,
     span: &'a Span,
 ) -> BoxFuture<'a, Result<(), ParseAstError>>
+where
+    'a: 'b,
 {
     Box::pin(async move {
         if body.len() == 0 {
@@ -103,14 +223,10 @@ fn splice_in<'a>(
 
         let mut expanded = Vec::new();
         for unexpanded in body {
-            expanded.push(unexpanded.expand(env, cont).await?);
+            expanded.push(unexpanded.clone().expand(env, cont).await?);
         }
 
         for expanded in expanded.into_iter() {
-            /*
-            let mut is_def;
-            (defs, exprs, is_def) = body1(defs, exprs, expanded
-            */
             let is_def = {
                 match expanded.as_ref().as_list() {
                     Some([Syntax::Identifier { ident, .. }, body @ .., Syntax::Null { .. }])
@@ -122,7 +238,7 @@ fn splice_in<'a>(
                     Some([Syntax::Identifier { ident, .. }, expr, Syntax::Null { .. }])
                         if ident == "define-syntax" =>
                     {
-                        define_syntax(ident, expr, env, cont).await?;
+                        define_syntax(ident, expr.clone(), &env.lexical_contour, cont).await?;
                         continue;
                     }
                     Some(
@@ -138,7 +254,9 @@ fn splice_in<'a>(
                                 .as_ident()
                                 .ok_or(ParseAstError::BadForm(def.span().clone()))?,
                         };
-                        env.def_var(ident, Gc::new(Value::Undefined));
+                        env.lexical_contour
+                            .write()
+                            .def_local_var(ident, Gc::new(Value::Undefined));
                         true
                     }
                     _ => false,
@@ -146,9 +264,9 @@ fn splice_in<'a>(
             };
 
             if is_def {
-                defs.push(expanded.to_owned());
+                defs.push(expanded);
             } else {
-                exprs.push(expanded.to_owned());
+                exprs.push(expanded);
             }
         }
 
@@ -156,107 +274,305 @@ fn splice_in<'a>(
     })
 }
 
-async fn define_syntax(
+pub(super) async fn define_syntax(
     ident: &Identifier,
-    expr: &Syntax,
-    env: &Env,
+    expr: Syntax,
+    env: &Gc<Env>,
     cont: &Option<Arc<Continuation>>,
 ) -> Result<(), ParseAstError> {
-    env.def_macro(
-        ident,
-        Expression::parse(expr, env, cont)
-            .await?
-            .eval(cont)
-            .await?
-            .require_one()?,
-    );
+    let expansion_env = ExpansionEnv::from_env(env);
+    let FullyExpanded {
+        expanded,
+        expansion_envs,
+    } = expr.expand(&expansion_env, cont).await?;
+    let expansion_env = expansion_env.new_expansion_env(expansion_envs);
+    let value = Expression::parse(expanded, &expansion_env, cont)
+        .await?
+        .eval(env, cont)
+        .await?
+        .require_one()?;
+    env.write().def_local_macro(ident, value);
     Ok(())
 }
 
-/*
-#[async_trait]
-impl Parse for ast::Body {
-    type Error = ParseBodyError;
-
-    async fn compile(
-        exprs: &[Syntax],
-        env: &Env,
+impl Expression {
+    pub(crate) async fn parse(
+        syn: Syntax,
+        env: &ExpansionEnv<'_>,
         cont: &Option<Arc<Continuation>>,
-        span: &Span,
-    ) -> Result<Self, ParseBodyError> {
-        if exprs.is_empty() {
-            return Err(ParseBodyError::EmptyBody(span.clone()));
-        }
-        let mut output = Vec::new();
-        for expr in &exprs[..exprs.len() - 1] {
-            output.push(expr.compile(env, cont).await?);
-        }
-        // TODO: what if the body isn't a proper list?
-        Ok(ast::Body::new(output))
+    ) -> Result<Self, ParseAstError> {
+        let FullyExpanded {
+            expanded,
+            expansion_envs,
+        } = syn.expand(&env, cont).await?;
+        let expansion_env = env.new_expansion_env(expansion_envs);
+        Self::parse_expanded(expanded, &expansion_env, cont).await
+    }
+
+    fn parse_expanded<'a, 'b>(
+        syn: Syntax,
+        env: &'a ExpansionEnv<'b>,
+        cont: &'a Option<Arc<Continuation>>,
+    ) -> BoxFuture<'a, Result<Self, ParseAstError>>
+    where
+        'a: 'b,
+    {
+        Box::pin(async move {
+            match syn {
+                Syntax::Null { span } => Err(ParseAstError::UnexpectedEmptyList(span)),
+
+                // Special Identifiers:
+                Syntax::Identifier { ident, .. } if ident.name == "<undefined>" => {
+                    Ok(Self::Undefined)
+                }
+
+                // Regular identifiers:
+                Syntax::Identifier { ident, .. } => Ok(Self::Var(env.fetch_var_ref(&ident))),
+
+                // Literals:
+                Syntax::Literal { literal, .. } => Ok(Self::Literal(literal)),
+
+                // Vector literals:
+                Syntax::Vector { vector, .. } => Ok(Self::Vector(Vector::parse(&vector))),
+
+                // Functional forms:
+                Syntax::List { list: exprs, span, .. } => match exprs.as_slice() {
+                    // Special forms:
+                    [Syntax::Identifier { ident,  .. }, tail @ .., Syntax::Null { .. }]
+                        if ident.name == "begin" =>
+                    {
+                        Body::parse_in_expr_context(tail, env, cont)
+                            .await
+                            .map(Expression::Begin)
+                    }
+                    [Syntax::Identifier { ident, span, .. }, tail @ .., Syntax::Null { .. }]
+                        if ident.name == "lambda" =>
+                    {
+                        Lambda::parse(tail, env, cont, span)
+                            .await
+                            .map(Expression::Lambda)
+                    }
+                    [Syntax::Identifier { ident, span, .. }, tail @ .., Syntax::Null { .. }]
+                        if ident.name == "let" =>
+                    {
+                        Let::parse(tail, env, cont, span).await.map(Expression::Let)
+                    }
+                    [Syntax::Identifier { ident, span, .. }, tail @ .., Syntax::Null { .. }]
+                        if ident.name == "if" =>
+                    {
+                        If::parse(tail, env, cont, span).await.map(Expression::If)
+                    }
+                    [Syntax::Identifier { ident, .. }, tail @ .., Syntax::Null { .. }]
+                        if ident.name == "and" =>
+                    {
+                        And::parse(tail, env, cont).await.map(Expression::And)
+                    }
+                    [Syntax::Identifier { ident, .. }, tail @ .., Syntax::Null { .. }]
+                        if ident.name == "or" =>
+                    {
+                        Or::parse(tail, env, cont).await.map(Expression::Or)
+                    }
+                    [Syntax::Identifier { ident, span, .. }, tail @ .., Syntax::Null { .. }]
+                        if ident.name == "quote" =>
+                    {
+                        Quote::parse(tail, span).await.map(Expression::Quote)
+                    }
+                    [Syntax::Identifier { ident, span, .. }, tail @ .., Syntax::Null { .. }]
+                        if ident.name == "syntax-quote" =>
+                    {
+                        SyntaxQuote::parse(tail, span).await.map(Expression::SyntaxQuote)
+                    }
+                    [Syntax::Identifier { ident, span, .. }, tail @ .., Syntax::Null { .. }]
+                        if ident.name == "syntax-case" =>
+                    {
+                        SyntaxCase::parse(tail, env, cont, span).await.map(Expression::SyntaxCase)
+                    }
+
+                    // Extra special form (set!):
+                    [Syntax::Identifier { ident, span, .. }, tail @ .., Syntax::Null { .. }]
+                        if ident.name == "set!" =>
+                    {
+                        Set::parse(tail, env, cont, span).await.map(Expression::Set)
+                    }
+
+                    // Definition in expression context is illegal:
+                    [Syntax::Identifier { ident, span, .. },  .., Syntax::Null { .. }]
+                        if ident.name == "define" =>
+                    {
+                        return Err(ParseAstError::DefInExprContext(span.clone()));
+                    }
+
+                    // Regular old function call:
+                    [operator, args @ .., Syntax::Null { .. }] => {
+                        Call::parse(operator.clone(), args, env, cont).await.map(Expression::Call)
+                    }
+
+                    _ => return Err(ParseAstError::BadForm(span.clone())),
+                },
+            }
+        })
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum ParseLetError {
-    BadForm(Span),
-    ParseBodyError(ParseBodyError),
-    ParseLetBindingError(ParseLetBindingError),
+impl Call {
+    async fn parse(
+        operator: Syntax,
+        args: &[Syntax],
+        env: &ExpansionEnv<'_>,
+        cont: &Option<Arc<Continuation>>,
+    ) -> Result<Self, ParseAstError> {
+        let location = operator.span().clone();
+        let proc_name = match operator {
+            Syntax::Identifier { ref ident, .. } => ident.name.clone(),
+            _ => String::from("<lambda>"),
+        };
+        let operator = Expression::parse(operator, env, cont).await?;
+        let mut compiled_args = vec![operator];
+        for arg in args {
+            compiled_args.push(Expression::parse(arg.clone(), env, cont).await?);
+        }
+        Ok(Call {
+            args: ArcSlice::from(compiled_args),
+            location,
+            proc_name,
+        })
+    }
 }
 
-#[async_trait]
-impl Parse for ast::Let {
-    type Error = ParseLetError;
-
-    async fn compile(
-        expr: &[Syntax],
-        env: &Env,
+impl Lambda {
+    async fn parse(
+        sexprs: &[Syntax],
+        env: &ExpansionEnv<'_>,
         cont: &Option<Arc<Continuation>>,
         span: &Span,
-    ) -> Result<Self, ParseLetError> {
-        match expr {
-            [Syntax::Null { .. }, body @ ..] => compile_let(None, &[], body, env, cont, span).await,
+    ) -> Result<Self, ParseAstError> {
+        match sexprs {
+            [Syntax::Null { .. }, body @ ..] => parse_lambda(&[], body, env, cont, span).await,
+            [Syntax::List { list: args, .. }, body @ ..] => {
+                parse_lambda(args, body, env, cont, span).await
+            }
+            [ident @ Syntax::Identifier { .. }, body @ ..] => {
+                let args = &[ident.clone()];
+                parse_lambda(args, body, env, cont, span).await
+            }
+            _ => Err(ParseAstError::BadForm(span.clone())),
+        }
+    }
+}
+
+async fn parse_lambda(
+    args: &[Syntax],
+    body: &[Syntax],
+    env: &ExpansionEnv<'_>,
+    cont: &Option<Arc<Continuation>>,
+    span: &Span,
+) -> Result<Lambda, ParseAstError> {
+    let mut bound = HashMap::<Identifier, Span>::new();
+    let mut fixed = Vec::new();
+    let mut new_contour = env.lexical_contour.read().new_lexical_contour();
+
+    if !args.is_empty() {
+        for arg in &args[..args.len() - 1] {
+            match arg {
+                Syntax::Identifier { ident, span, .. } => {
+                    if let Some(prev_span) = bound.get(ident) {
+                        return Err(ParseAstError::NameBoundMultipleTimes {
+                            ident: ident.clone(),
+                            first: prev_span.clone(),
+                            second: span.clone(),
+                        });
+                    }
+                    new_contour.def_local_var(&ident, Gc::new(Value::Undefined));
+                    bound.insert(ident.clone(), span.clone());
+                    fixed.push(ident.clone());
+                }
+                x => return Err(ParseAstError::ExpectedIdentifier(x.span().clone())),
+            }
+        }
+    }
+
+    let args = if let Some(last) = args.last() {
+        match last {
+            Syntax::Null { .. } => Formals::FixedArgs(fixed.into_iter().collect()),
+            Syntax::Identifier { ident, span, .. } => {
+                if let Some(prev_span) = bound.get(ident) {
+                    return Err(ParseAstError::NameBoundMultipleTimes {
+                        ident: ident.clone(),
+                        first: prev_span.clone(),
+                        second: span.clone(),
+                    });
+                }
+                new_contour.def_local_var(&ident, Gc::new(Value::Undefined));
+                let remaining = ident.clone();
+                Formals::VarArgs {
+                    fixed: fixed.into_iter().collect(),
+                    remaining,
+                }
+            }
+            x => return Err(ParseAstError::ExpectedIdentifier(x.span().clone())),
+        }
+    } else {
+        // If there is no last argument, there are no arguments
+        Formals::FixedArgs(Vec::new())
+    };
+
+    let new_env = env.new_lexical_contour(Gc::new(new_contour));
+    let body = Body::parse(body, &new_env, cont, span).await?;
+
+    Ok(Lambda { args, body })
+}
+
+impl Let {
+    async fn parse(
+        syn: &[Syntax],
+        env: &ExpansionEnv<'_>,
+        cont: &Option<Arc<Continuation>>,
+        span: &Span,
+    ) -> Result<Self, ParseAstError> {
+        match syn {
+            [Syntax::Null { .. }, body @ ..] => parse_let(None, &[], body, env, cont, span).await,
             [Syntax::List { list: bindings, .. }, body @ ..] => {
-                compile_let(None, bindings, body, env, cont, span).await
+                parse_let(None, bindings, body, env, cont, span).await
             }
             // Named let:
             [Syntax::Identifier { ident, .. }, Syntax::List { list: bindings, .. }, body @ ..] => {
-                compile_let(Some(ident), bindings, body, env, cont, span).await
+                parse_let(Some(ident), bindings, body, env, cont, span).await
             }
             [Syntax::Identifier { ident, .. }, Syntax::Null { .. }, body @ ..] => {
-                compile_let(Some(ident), &[], body, env, cont, span).await
+                parse_let(Some(ident), &[], body, env, cont, span).await
             }
-            _ => Err(ParseLetError::BadForm(span.clone())),
+            _ => Err(ParseAstError::BadForm(span.clone())),
         }
     }
 }
 
-async fn compile_let(
+async fn parse_let(
     name: Option<&Identifier>,
     bindings: &[Syntax],
     body: &[Syntax],
-    env: &Env,
+    env: &ExpansionEnv<'_>,
     cont: &Option<Arc<Continuation>>,
     span: &Span,
-) -> Result<ast::Let, ParseLetError> {
+) -> Result<Let, ParseAstError> {
     let mut previously_bound = HashMap::new();
-    let mut new_contour = env.new_lexical_contour();
+    let mut new_contour = env.lexical_contour.read().new_lexical_contour();
     let mut compiled_bindings = Vec::new();
-    // TODO: Check that the list of bindings is proper
-    if !bindings.is_empty() {
-        for binding in &bindings[..bindings.len() - 1] {
-            let binding = LetBinding::compile(binding, env, cont, &previously_bound)
-                .await
-                .map_err(ParseLetError::ParseLetBindingError)?;
-            previously_bound.insert(binding.ident.clone(), binding.span.clone());
-            new_contour.def_var(&binding.ident, Gc::new(Value::Undefined));
-            compiled_bindings.push(binding);
+
+    match bindings {
+        [Syntax::Null { .. }] => (),
+        [bindings @ .., Syntax::Null { .. }] => {
+            for binding in bindings {
+                let binding = LetBinding::parse(binding, env, cont, &previously_bound).await?;
+                previously_bound.insert(binding.ident.clone(), binding.span.clone());
+                new_contour.def_local_var(&binding.ident, Gc::new(Value::Undefined));
+                compiled_bindings.push(binding);
+            }
         }
+        _ => return Err(ParseAstError::BadForm(span.clone())),
     }
 
-    let env = Gc::new(new_contour);
-    let body = ast::Body::compile(body, &Env::from(env.clone()), cont, span)
-        .await
-        .map_err(ParseLetError::ParseBodyError)?;
+    let new_env = env.new_lexical_contour(Gc::new(new_contour));
+    let body = Body::parse(body, &new_env, cont, span).await?;
 
     let mut bindings: Vec<_> = compiled_bindings
         .into_iter()
@@ -264,585 +580,184 @@ async fn compile_let(
         .collect();
 
     // If this is a named let, add a binding for a procedure with the same
-    // body and args of the formals:
+    // body and args of the formals.
     if let Some(name) = name {
-        let lambda = ast::Lambda {
-            args: ast::Formals::FixedArgs(
-                bindings.iter().map(|(ident, _)| ident.clone()).collect(),
-            ),
+        let lambda = Lambda {
+            args: Formals::FixedArgs(bindings.iter().map(|(ident, _)| ident.clone()).collect()),
             body: body.clone(),
         };
-        bindings.push((name.clone(), Arc::new(lambda)));
+        bindings.push((name.clone(), Expression::Lambda(lambda)));
     }
 
-    Ok(ast::Let {
+    Ok(Let {
         bindings: Arc::from(bindings),
         body,
     })
 }
 
-#[derive(Debug, Clone)]
-pub enum ParseLetBindingError {
-    BadForm(Span),
-    PreviouslyBound {
-        ident: Identifier,
-        first: Span,
-        second: Span,
-    },
-    NotAList(Span),
-    ParseError(Box<ParseError>),
-}
-
-impl_from_parse_error!(ParseLetBindingError);
-
 struct LetBinding {
     ident: Identifier,
     span: Span,
-    expr: Arc<dyn Eval>,
+    expr: Expression,
 }
 
 impl LetBinding {
-    async fn compile(
-        expr: &Syntax,
-        env: &Env,
+    async fn parse(
+        form: &Syntax,
+        env: &ExpansionEnv<'_>,
         cont: &Option<Arc<Continuation>>,
         previously_bound: &HashMap<Identifier, Span>,
-    ) -> Result<LetBinding, ParseLetBindingError> {
-        match expr {
-            Syntax::List { list, span } => match &list[..] {
-                [Syntax::Identifier {
-                    ident,
-                    span: bind_span,
-                    ..
-                }, expr, Syntax::Null { .. }] => {
-                    if let Some(prev_bind) = previously_bound.get(ident) {
-                        return Err(ParseLetBindingError::PreviouslyBound {
-                            ident: ident.clone(),
-                            first: prev_bind.clone(),
-                            second: bind_span.clone(),
-                        });
-                    }
-
-                    let expr = expr.compile(env, cont).await?;
-
-                    Ok(LetBinding {
-                        ident: ident.clone(),
-                        span: bind_span.clone(),
-                        expr,
-                    })
-                }
-                _ => Err(ParseLetBindingError::BadForm(span.clone())),
-            },
-            expr => Err(ParseLetBindingError::NotAList(expr.span().clone())),
-        }
-    }
-}
-
-#[derive(From, Debug, Clone)]
-pub enum ParseFuncCallError {
-    EmptyFunctionCall(Span),
-    ParseError(Box<ParseError>),
-}
-
-impl_from_parse_error!(ParseFuncCallError);
-
-#[async_trait]
-impl Parse for ast::Call {
-    type Error = ParseFuncCallError;
-
-    async fn compile(
-        exprs: &[Syntax],
-        env: &Env,
-        cont: &Option<Arc<Continuation>>,
-        span: &Span,
-    ) -> Result<ast::Call, ParseFuncCallError> {
-        match exprs {
-            [operator, args @ ..] => {
-                // TODO: Support macro expansions in the call position that eventually
-                // resolve into an identifier, that is a macro (or function)
-                let proc_name = match operator {
-                    Syntax::Identifier { ident, .. } => ident.name.clone(),
-                    _ => String::from("<lambda>"),
-                };
-                let operator = operator.compile(env, cont).await?;
-                let mut compiled_args = vec![operator];
-                for arg in &args[..args.len() - 1] {
-                    compiled_args.push(arg.compile(env, cont).await?);
-                }
-                // TODO: what if it's not a proper list?
-                Ok(ast::Call {
-                    // operator,
-                    args: ArcSlice::from(compiled_args),
-                    location: span.clone(),
-                    proc_name,
-                })
+    ) -> Result<LetBinding, ParseAstError> {
+        if let Some(
+            [Syntax::Identifier {
+                ident,
+                span: bind_span,
+                ..
+            }, expr, Syntax::Null { .. }],
+        ) = form.as_list()
+        {
+            if let Some(prev_bind) = previously_bound.get(ident) {
+                return Err(ParseAstError::NameBoundMultipleTimes {
+                    ident: ident.clone(),
+                    first: prev_bind.clone(),
+                    second: bind_span.clone(),
+                });
             }
-            [] => Err(ParseFuncCallError::EmptyFunctionCall(span.clone())),
+
+            let expr = Expression::parse(expr.clone(), env, cont).await?;
+
+            Ok(LetBinding {
+                ident: ident.clone(),
+                span: bind_span.clone(),
+                expr,
+            })
+        } else {
+            Err(ParseAstError::BadForm(form.span().clone()))
         }
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum ParseIfError {
-    ExpectedConditional(Span),
-    ExpectedArgumentAfterConditional(Span),
-    UnexpectedArgument(Span),
-    ParseError(Box<ParseError>),
-}
-
-impl_from_parse_error!(ParseIfError);
-
-#[async_trait]
-impl Parse for ast::If {
-    type Error = ParseIfError;
-
-    async fn compile(
+impl If {
+    async fn parse(
         exprs: &[Syntax],
-        env: &Env,
+        env: &ExpansionEnv<'_>,
         cont: &Option<Arc<Continuation>>,
         span: &Span,
-    ) -> Result<Self, ParseIfError> {
+    ) -> Result<Self, ParseAstError> {
         match exprs {
-            [cond, success, Syntax::Null { .. }] => Ok(ast::If {
-                cond: cond.compile(env, cont).await?,
-                success: success.compile(env, cont).await?,
+            [cond, success] => Ok(If {
+                cond: Arc::new(Expression::parse(cond.clone(), env, cont).await?),
+                success: Arc::new(Expression::parse(success.clone(), env, cont).await?),
                 failure: None,
             }),
-            [cond, success, failure, Syntax::Null { .. }] => Ok(ast::If {
-                cond: cond.compile(env, cont).await?,
-                success: success.compile(env, cont).await?,
-                failure: Some(failure.compile(env, cont).await?),
+            [cond, success, failure] => Ok(If {
+                cond: Arc::new(Expression::parse(cond.clone(), env, cont).await?),
+                success: Arc::new(Expression::parse(success.clone(), env, cont).await?),
+                failure: Some(Arc::new(
+                    Expression::parse(failure.clone(), env, cont).await?,
+                )),
             }),
-            [] => Err(ParseIfError::ExpectedConditional(span.clone())),
-            [a1] => Err(ParseIfError::ExpectedArgumentAfterConditional(
-                a1.span().clone(),
-            )),
-            [_, _, _, unexpected, ..] => Err(ParseIfError::UnexpectedArgument(
-                unexpected.span().clone(),
-            )),
-            _ => unreachable!(),
+            [] => Err(ParseAstError::ExpectedArgument(span.clone())),
+            [a1] => Err(ParseAstError::ExpectedArgument(a1.span().clone())),
+            [_, _, _, unexpected, ..] => {
+                Err(ParseAstError::UnexpectedArgument(unexpected.span().clone()))
+            }
         }
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum ParseDefineError {
-    ParameterDefinedMultipleTimes {
-        ident: Identifier,
-        first: Span,
-        second: Span,
-    },
-    ExpectedIdentifier(Span),
-    ParseBodyError(ParseBodyError),
-    BadForm(Span),
-    ParseError(Box<ParseError>),
+impl And {
+    async fn parse(
+        exprs: &[Syntax],
+        env: &ExpansionEnv<'_>,
+        cont: &Option<Arc<Continuation>>,
+    ) -> Result<Self, ParseAstError> {
+        let mut output = Vec::new();
+        for expr in exprs {
+            let expr = Expression::parse(expr.clone(), env, cont).await?;
+            output.push(expr);
+        }
+        Ok(Self::new(output))
+    }
 }
 
-impl_from_parse_error!(ParseDefineError);
-
-#[async_trait]
-impl Parse for ast::Define {
-    type Error = ParseDefineError;
-
-    async fn compile(
+impl Or {
+    async fn parse(
         exprs: &[Syntax],
-        env: &Env,
+        env: &ExpansionEnv<'_>,
+        cont: &Option<Arc<Continuation>>,
+    ) -> Result<Self, ParseAstError> {
+        let mut output = Vec::new();
+        for expr in exprs {
+            let expr = Expression::parse(expr.clone(), env, cont).await?;
+            output.push(expr);
+        }
+        Ok(Self::new(output))
+    }
+}
+
+impl Set {
+    async fn parse(
+        exprs: &[Syntax],
+        env: &ExpansionEnv<'_>,
         cont: &Option<Arc<Continuation>>,
         span: &Span,
-    ) -> Result<Self, Self::Error> {
+    ) -> Result<Self, ParseAstError> {
         match exprs {
-            [Syntax::Identifier { ident, .. }, expr, Syntax::Null { .. }] => {
-                Ok(ast::Define::DefineVar(ast::DefineVar {
-                    name: ident.clone(),
-                    val: expr.compile(env, cont).await?,
-                }))
-            }
-            [Syntax::List { list, span }, body @ ..] => {
-                match &list[..] {
-                    [] => Err(ParseDefineError::ExpectedIdentifier(span.clone())),
-                    [Syntax::Identifier {
-                        ident: func_name,
-                        span: func_span,
-                        ..
-                    }, args @ ..] => {
-                        let mut bound = HashMap::<Identifier, Span>::new();
-                        let mut fixed = Vec::new();
-                        for arg in &args[..args.len() - 1] {
-                            match arg {
-                                Syntax::Identifier { ident, span, .. } => {
-                                    if let Some(prev_span) = bound.get(ident) {
-                                        return Err(
-                                            ParseDefineError::ParameterDefinedMultipleTimes {
-                                                ident: ident.clone(),
-                                                first: prev_span.clone(),
-                                                second: span.clone(),
-                                            },
-                                        );
-                                    }
-                                    bound.insert(ident.clone(), span.clone());
-                                    fixed.push(ident.clone());
-                                }
-                                x => {
-                                    return Err(ParseDefineError::ExpectedIdentifier(
-                                        x.span().clone(),
-                                    ))
-                                }
-                            }
-                        }
-
-                        let args = if let Some(last) = args.last() {
-                            match last {
-                                Syntax::Null { .. } => {
-                                    ast::Formals::FixedArgs(fixed.into_iter().collect())
-                                }
-                                Syntax::Identifier { ident, span, .. } => {
-                                    if let Some(prev_span) = bound.get(ident) {
-                                        return Err(
-                                            ParseDefineError::ParameterDefinedMultipleTimes {
-                                                ident: ident.clone(),
-                                                first: prev_span.clone(),
-                                                second: span.clone(),
-                                            },
-                                        );
-                                    }
-                                    let remaining = ident.clone();
-                                    ast::Formals::VarArgs {
-                                        fixed: fixed.into_iter().collect(),
-                                        remaining,
-                                    }
-                                }
-                                x => {
-                                    return Err(ParseDefineError::ExpectedIdentifier(
-                                        x.span().clone(),
-                                    ))
-                                }
-                            }
-                        } else {
-                            // If there is no last argument, there are no arguments
-                            ast::Formals::FixedArgs(Vec::new())
-                        };
-                        let body = ast::Body::compile(body, env, cont, func_span)
-                            .await
-                            .map_err(ParseDefineError::ParseBodyError)?;
-                        Ok(ast::Define::DefineFunc(ast::DefineFunc {
-                            name: func_name.clone(),
-                            args,
-                            body,
-                        }))
-                    }
-                    [x, ..] => Err(ParseDefineError::BadForm(x.span().clone())),
-                }
-            }
-            _ => Err(ParseDefineError::BadForm(span.clone())),
+            [] => Err(ParseAstError::ExpectedArgument(span.clone())),
+            [Syntax::Identifier { ident, .. }, expr] => Ok(Set {
+                var: env.fetch_var_ref(ident),
+                val: Arc::new(Expression::parse(expr.clone(), env, cont).await?),
+            }),
+            [arg1, _] => Err(ParseAstError::ExpectedIdentifier(arg1.span().clone())),
+            [_, _, arg3, ..] => Err(ParseAstError::UnexpectedArgument(arg3.span().clone())),
+            _ => Err(ParseAstError::BadForm(span.clone())),
         }
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum ParseDefineSyntaxError {
-    BadForm(Span),
-    ParseError(Box<ParseError>),
-    RuntimeError(Box<RuntimeError>),
-}
-
-impl_from_parse_error!(ParseDefineSyntaxError);
-
-impl From<RuntimeError> for ParseDefineSyntaxError {
-    fn from(value: RuntimeError) -> Self {
-        Self::RuntimeError(Box::new(value))
-    }
-}
-
-#[async_trait]
-impl Parse for ast::DefineSyntax {
-    type Error = ParseDefineSyntaxError;
-
-    async fn compile(
-        expr: &[Syntax],
-        env: &Env,
-        cont: &Option<Arc<Continuation>>,
-        span: &Span,
-    ) -> Result<ast::DefineSyntax, ParseDefineSyntaxError> {
-        match expr {
-            [Syntax::Identifier { ident, .. }, expr, Syntax::Null { .. }] => {
-                env.def_macro(
-                    ident,
-                    expr.compile(env, cont)
-                        .await?
-                        .eval(env, cont)
-                        .await?
-                        .require_one()?,
-                );
-                Ok(ast::DefineSyntax)
-            }
-            _ => Err(ParseDefineSyntaxError::BadForm(span.clone())),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum ParseQuoteError {
-    ExpectedArgument(Span),
-    UnexpectedArgument(Span),
-    BadForm(Span),
-}
-
-#[async_trait]
-impl Parse for ast::Quote {
-    type Error = ParseQuoteError;
-
-    async fn compile(
-        exprs: &[Syntax],
-        _env: &Env,
-        _cont: &Option<Arc<Continuation>>,
-        span: &Span,
-    ) -> Result<Self, ParseQuoteError> {
+impl Quote {
+    async fn parse(exprs: &[Syntax], span: &Span) -> Result<Self, ParseAstError> {
         match exprs {
-            [] => Err(ParseQuoteError::ExpectedArgument(span.clone())),
-            [Syntax::Null { .. }] => Ok(ast::Quote { val: Value::Null }),
-            [expr, Syntax::Null { .. }] => Ok(ast::Quote {
+            [] => Err(ParseAstError::ExpectedArgument(span.clone())),
+            [expr] => Ok(Quote {
                 val: Value::from_syntax(expr),
             }),
-            [_, arg, ..] => Err(ParseQuoteError::UnexpectedArgument(arg.span().clone())),
-            _ => Err(ParseQuoteError::BadForm(span.clone())),
+            [_, arg, ..] => Err(ParseAstError::UnexpectedArgument(arg.span().clone())),
         }
     }
 }
 
-#[async_trait]
-impl Parse for ast::And {
-    type Error = ParseError;
-
-    async fn compile(
-        exprs: &[Syntax],
-        env: &Env,
-        cont: &Option<Arc<Continuation>>,
-        _span: &Span,
-    ) -> Result<Self, ParseError> {
-        let mut output = Vec::new();
-        // TODO: what if the arguments aren't a proper list?
-        for expr in &exprs[..exprs.len() - 1] {
-            let expr = expr.compile(env, cont).await?;
-            output.push(expr);
+impl Vector {
+    fn parse(exprs: &[Syntax]) -> Self {
+        let mut vals = Vec::new();
+        for expr in exprs {
+            vals.push(Value::from_syntax(expr));
         }
-        Ok(Self::new(output))
+        Self { vals } 
     }
 }
 
-#[async_trait]
-impl Parse for ast::Or {
-    type Error = ParseError;
 
-    async fn compile(
-        exprs: &[Syntax],
-        env: &Env,
-        cont: &Option<Arc<Continuation>>,
-        _span: &Span,
-    ) -> Result<Self, ParseError> {
-        let mut output = Vec::new();
-        // TODO: what if the arguments aren't a proper list?
-        for expr in &exprs[..exprs.len() - 1] {
-            let expr = expr.compile(env, cont).await?;
-            output.push(expr);
-        }
-        Ok(Self::new(output))
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum ParseSetError {
-    ExpectedArgument(Span),
-    ExpectedIdent(Span),
-    UnexpectedArgument(Span),
-    BadForm(Span),
-    ParseError(Box<ParseError>),
-}
-
-impl_from_parse_error!(ParseSetError);
-
-#[async_trait]
-impl Parse for ast::Set {
-    type Error = ParseSetError;
-
-    async fn compile(
-        exprs: &[Syntax],
-        env: &Env,
-        cont: &Option<Arc<Continuation>>,
-        span: &Span,
-    ) -> Result<Self, ParseSetError> {
-        // TODO: We need to check if the identifier is defined as a variable transformer
+impl SyntaxQuote {
+    async fn parse(exprs: &[Syntax], span: &Span) -> Result<Self, ParseAstError> {
         match exprs {
-            [] => Err(ParseSetError::ExpectedArgument(span.clone())),
-            [Syntax::Identifier { ident, .. }, expr, Syntax::Null { .. }] => Ok(ast::Set {
-                var: ident.clone(),
-                val: expr.compile(env, cont).await?,
-            }),
-            [arg1, _, Syntax::Null { .. }] => {
-                Err(ParseSetError::ExpectedIdent(arg1.span().clone()))
-            }
-            [_, _, arg3, ..] => Err(ParseSetError::UnexpectedArgument(arg3.span().clone())),
-            _ => Err(ParseSetError::BadForm(span.clone())),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum ParseSyntaxError {
-    ExpectedArgument(Span),
-    UnexpectedArgument(Span),
-    BadForm(Span),
-}
-
-#[async_trait]
-impl Parse for ast::SyntaxQuote {
-    type Error = ParseSyntaxError;
-
-    async fn compile(
-        exprs: &[Syntax],
-        env: &Env,
-        _cont: &Option<Arc<Continuation>>,
-        span: &Span,
-    ) -> Result<Self, ParseSyntaxError> {
-        match exprs {
-            [] => Err(ParseSyntaxError::ExpectedArgument(span.clone())),
-            [expr, Syntax::Null { .. }] => Ok(ast::SyntaxQuote {
+            [] => Err(ParseAstError::ExpectedArgument(span.clone())),
+            [expr] => Ok(SyntaxQuote {
                 syn: expr.clone(),
-                env: env.clone(),
             }),
-            [_, arg, ..] => Err(ParseSyntaxError::UnexpectedArgument(arg.span().clone())),
-            _ => Err(ParseSyntaxError::BadForm(span.clone())),
+            [_, arg, ..] => Err(ParseAstError::UnexpectedArgument(arg.span().clone())),
         }
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum ParseLambdaError {
-    ExpectedList(Span),
-    ExpectedIdentifier(Span),
-    ParseBodyError(ParseBodyError),
-    ParameterDefinedMultipleTimes {
-        ident: Identifier,
-        first: Span,
-        second: Span,
-    },
-}
-
-#[async_trait]
-impl Parse for ast::Lambda {
-    type Error = ParseLambdaError;
-
-    async fn compile(
+impl SyntaxCase {
+    async fn parse(
         exprs: &[Syntax],
-        env: &Env,
+        env: &ExpansionEnv<'_>,
         cont: &Option<Arc<Continuation>>,
         span: &Span,
-    ) -> Result<Self, ParseLambdaError> {
-        match exprs {
-            [Syntax::Null { .. }, body @ ..] => compile_lambda(&[], body, env, cont, span).await,
-            [Syntax::List { list: args, .. }, body @ ..] => {
-                compile_lambda(args, body, env, cont, span).await
-            }
-            [Syntax::Identifier { ident, .. }, body @ ..] => {
-                let mut env = env.new_lexical_contour();
-                env.def_var(ident, Gc::new(Value::Undefined));
-
-                let body = ast::Body::compile(body, &Env::from(Gc::new(env)), cont, span)
-                    .await
-                    .map_err(ParseLambdaError::ParseBodyError)?;
-
-                Ok(ast::Lambda {
-                    args: ast::Formals::VarArgs {
-                        fixed: Vec::new(),
-                        remaining: ident.clone(),
-                    },
-                    body,
-                })
-            }
-            _ => todo!(),
-        }
-    }
-}
-
-async fn compile_lambda(
-    args: &[Syntax],
-    body: &[Syntax],
-    env: &Env,
-    cont: &Option<Arc<Continuation>>,
-    span: &Span,
-) -> Result<ast::Lambda, ParseLambdaError> {
-    let mut bound = HashMap::<Identifier, Span>::new();
-    let mut fixed = Vec::new();
-    if !args.is_empty() {
-        for arg in &args[..args.len() - 1] {
-            match arg {
-                Syntax::Identifier { ident, span, .. } => {
-                    if let Some(prev_span) = bound.get(ident) {
-                        return Err(ParseLambdaError::ParameterDefinedMultipleTimes {
-                            ident: ident.clone(),
-                            first: prev_span.clone(),
-                            second: span.clone(),
-                        });
-                    }
-                    bound.insert(ident.clone(), span.clone());
-                    fixed.push(ident.clone());
-                }
-                x => return Err(ParseLambdaError::ExpectedIdentifier(x.span().clone())),
-            }
-        }
-    }
-    let args = if let Some(last) = args.last() {
-        match last {
-            Syntax::Null { .. } => ast::Formals::FixedArgs(fixed.into_iter().collect()),
-            Syntax::Identifier { ident, span, .. } => {
-                if let Some(prev_span) = bound.get(ident) {
-                    return Err(ParseLambdaError::ParameterDefinedMultipleTimes {
-                        ident: ident.clone(),
-                        first: prev_span.clone(),
-                        second: span.clone(),
-                    });
-                }
-                let remaining = ident.clone();
-                ast::Formals::VarArgs {
-                    fixed: fixed.into_iter().collect(),
-                    remaining,
-                }
-            }
-            x => return Err(ParseLambdaError::ExpectedIdentifier(x.span().clone())),
-        }
-    } else {
-        // If there is no last argument, there are no arguments
-        ast::Formals::FixedArgs(Vec::new())
-    };
-
-    let mut env = env.new_lexical_contour();
-    for bound in bound.into_keys() {
-        env.def_var(&bound, Gc::new(Value::Undefined));
-    }
-
-    let body = ast::Body::compile(body, &Env::from(Gc::new(env)), cont, span)
-        .await
-        .map_err(ParseLambdaError::ParseBodyError)?;
-    Ok(ast::Lambda { args, body })
-}
-
-#[derive(Debug, Clone)]
-pub enum ParseSyntaxCaseError {
-    ParseError(Box<ParseError>),
-    BadForm(Span),
-}
-
-impl_from_parse_error!(ParseSyntaxCaseError);
-
-#[async_trait]
-impl Parse for ast::SyntaxCase {
-    type Error = ParseSyntaxCaseError;
-
-    async fn compile(
-        exprs: &[Syntax],
-        env: &Env,
-        cont: &Option<Arc<Continuation>>,
-        span: &Span,
-    ) -> Result<Self, ParseSyntaxCaseError> {
+    ) -> Result<Self, ParseAstError> {
         let (arg, keywords, mut rules) = match exprs {
             [arg, Syntax::List { list, .. }, rules @ ..] => {
                 let mut keywords = HashSet::default();
@@ -851,30 +766,30 @@ impl Parse for ast::SyntaxCase {
                     if let Syntax::Identifier { ident, .. } = keyword {
                         keywords.insert(ident.name.clone());
                     } else {
-                        return Err(ParseSyntaxCaseError::BadForm(keyword.span().clone()));
+                        return Err(ParseAstError::BadForm(keyword.span().clone()));
                     }
                 }
                 (arg, keywords, rules)
             }
             [arg, Syntax::Null { .. }, rules @ ..] => (arg, HashSet::default(), rules),
-            _ => return Err(ParseSyntaxCaseError::BadForm(span.clone())),
+            _ => return Err(ParseAstError::BadForm(span.clone())),
         };
         let mut syntax_rules = Vec::new();
         loop {
             match rules {
-                [Syntax::Null { .. }] => break,
+                [] => break,
                 [Syntax::List { list, .. }, tail @ ..] => match &list[..] {
                     [pattern, template, Syntax::Null { .. }] => {
                         syntax_rules.push(SyntaxRule::compile(&keywords, pattern, template));
                         rules = tail;
                     }
-                    _ => return Err(ParseSyntaxCaseError::BadForm(span.clone())),
+                    _ => return Err(ParseAstError::BadForm(span.clone())),
                 },
-                _ => return Err(ParseSyntaxCaseError::BadForm(span.clone())),
+                _ => return Err(ParseAstError::BadForm(span.clone())),
             }
         }
-        Ok(ast::SyntaxCase {
-            arg: arg.compile(env, cont).await?,
+        Ok(SyntaxCase {
+            arg: Arc::new(Expression::parse(arg.clone(), env, cont).await?),
             transformer: Transformer {
                 rules: syntax_rules,
                 is_variable_transformer: false,
@@ -882,5 +797,3 @@ impl Parse for ast::SyntaxCase {
         })
     }
 }
-
-*/

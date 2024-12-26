@@ -1,9 +1,9 @@
 use crate::{
+    ast::parse::ParseAstError,
     continuation::Continuation,
     gc::Gc,
     syntax::{Identifier, Span},
     value::Value,
-    ast::parse::ParseAstError,
 };
 use derivative::Derivative;
 use std::sync::Arc;
@@ -34,6 +34,7 @@ pub enum RuntimeErrorKind {
         expected: String,
         actual: String,
     },
+    NotAVariableTransformer,
     DivisionByZero,
     ParseAstError(ParseAstError),
     AbandonCurrentContinuation {
@@ -129,6 +130,13 @@ impl RuntimeError {
         Self {
             backtrace: Vec::new(),
             kind: RuntimeErrorKind::WrongNumberOfArguments { expected, provided },
+        }
+    }
+
+    pub fn not_a_variable_transformer() -> Self {
+        Self {
+            backtrace: Vec::new(),
+            kind: RuntimeErrorKind::NotAVariableTransformer,
         }
     }
 

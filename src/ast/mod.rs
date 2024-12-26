@@ -2,16 +2,17 @@ mod eval;
 pub mod parse;
 
 use nom::error::ParseError;
+use parse::define_syntax;
 
 use crate::{
     continuation::Continuation,
-    env::Env,
+    env::{Env, ExpansionEnv, Ref},
     error::RuntimeError,
     expand::Transformer,
     gc::{Gc, Trace},
     num::Number,
     proc::ValuesOrPreparedCall,
-    syntax::{ExpansionEnv, Identifier, Mark, Span, Syntax},
+    syntax::{ExpansionCtx, FullyExpanded, Identifier, Mark, Span, Syntax},
     util::ArcSlice,
     value::Value,
 };
@@ -26,7 +27,7 @@ pub enum AstNode {
 impl AstNode {
     pub async fn eval(
         &self,
-        env: &Env,
+        env: &Gc<Env>,
         cont: &Option<Arc<Continuation>>,
     ) -> Result<Vec<Gc<Value>>, RuntimeError> {
         match self {
@@ -40,7 +41,7 @@ impl AstNode {
 
     pub async fn tail_eval(
         &self,
-        env: &Env,
+        env: &Gc<Env>,
         cont: &Option<Arc<Continuation>>,
     ) -> Result<ValuesOrPreparedCall, RuntimeError> {
         match self {
@@ -48,7 +49,45 @@ impl AstNode {
                 def.eval(env, cont).await?;
                 Ok(ValuesOrPreparedCall::Values(Vec::new()))
             }
-            Self::Expression(expr) => expr.tail_eval(env, cont).await
+            Self::Expression(expr) => expr.tail_eval(env, cont).await,
+        }
+    }
+
+    pub async fn from_syntax(
+        syn: Syntax,
+        env: &Gc<Env>,
+        cont: &Option<Arc<Continuation>>,
+    ) -> Result<Option<Self>, parse::ParseAstError> {
+        let expansion_env = ExpansionEnv::from_env(env);
+        let FullyExpanded {
+            expanded,
+            expansion_envs,
+        } = syn.expand(&expansion_env, cont).await?;
+        let expansion_env = expansion_env.new_expansion_env(expansion_envs);
+        Self::from_syntax_with_expansion_env(expanded, &expansion_env, cont).await
+    }
+
+    async fn from_syntax_with_expansion_env(
+        syn: Syntax,
+        env: &ExpansionEnv<'_>,
+        cont: &Option<Arc<Continuation>>,
+    ) -> Result<Option<Self>, parse::ParseAstError> {
+        match syn.as_list() {
+            Some([Syntax::Identifier { ident, .. }, expr, Syntax::Null { .. }])
+                if ident.name == "define-syntax" =>
+            {
+                // TODO: Error if define syntax isn't proper, error.
+                define_syntax(ident, expr.clone(), &env.lexical_contour, cont).await?;
+                Ok(None)
+            }
+            Some(syn @ [Syntax::Identifier { ident, span, .. }, ..]) if ident.name == "define" => {
+                Ok(Some(Self::Definition(
+                    Definition::parse(syn, env, cont, span).await?,
+                )))
+            }
+            _ => Ok(Some(Self::Expression(
+                Expression::parse(syn, env, cont).await?,
+            ))),
         }
     }
 }
@@ -57,28 +96,6 @@ impl AstNode {
 pub enum Definition {
     DefineVar(DefineVar),
     DefineFunc(DefineFunc),
-}
-
-impl Definition {
-    pub async fn eval(
-        &self,
-        env: &Env,
-        cont: &Option<Arc<Continuation>>,
-    ) -> Result<(), RuntimeError> {
-        todo!()
-    }
-
-    pub async fn parse(
-        syn: &Syntax,
-        env: &Env,
-        cont: &Option<Arc<Continuation>>,
-    ) -> Result<Self, parse::ParseAstError> {
-        todo!()
-    }
-
-    pub fn wrap(self, envs: Vec<ExpansionEnv>) -> Self {
-        todo!()
-    }
 }
 
 #[derive(Debug, Clone, Trace)]
@@ -96,48 +113,26 @@ pub struct DefineFunc {
 
 #[derive(Debug, Clone, Trace)]
 pub enum Expression {
+    Undefined,
     Literal(Literal),
     Quote(Quote),
     SyntaxQuote(SyntaxQuote),
+    SyntaxCase(SyntaxCase),
     Call(Call),
+    Let(Let),
+    If(If),
+    And(And),
+    Or(Or),
     Lambda(Lambda),
     Set(Set),
-    MacroExpansionPoint(MacroExpansionPoint),
+    Var(Ref),
+    Vector(Vector),
+    Begin(Body),
 }
 
-impl Expression {
-    pub async fn eval(
-        &self,
-        env: &Env,
-        cont: &Option<Arc<Continuation>>,
-    ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-        match self {
-            _ => todo!(),
-        }
-    }
-
-    pub async fn tail_eval(
-        &self,
-        env: &Env,
-        cont: &Option<Arc<Continuation>>,
-    ) -> Result<ValuesOrPreparedCall, RuntimeError> {
-        todo!()
-    }
-
-    pub async fn parse(
-        syn: &Syntax,
-        env: &Env,
-        cont: &Option<Arc<Continuation>>,
-    ) -> Result<Self, parse::ParseAstError> {
-        todo!()
-    }
-
-    fn wrap(self, envs: Vec<ExpansionEnv>) -> Self {
-        todo!()
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Trace)]
+// Vector should be in here too. Oh well.
 pub enum Literal {
     Number(Number),
     Boolean(bool),
@@ -154,12 +149,11 @@ pub struct Quote {
 #[derive(Debug, Clone, Trace)]
 pub struct SyntaxQuote {
     pub syn: Syntax,
-    pub env: Env,
 }
 
 #[derive(Debug, Clone, Trace)]
 pub struct Call {
-    pub args: ArcSlice<Arc<Expression>>,
+    pub args: ArcSlice<Expression>,
     pub location: Span,
     pub proc_name: String,
 }
@@ -172,12 +166,12 @@ pub struct Lambda {
 
 #[derive(Debug, Clone, Trace)]
 pub struct Let {
-    pub bindings: Arc<[(Identifier, Arc<Expression>)]>,
+    pub bindings: Arc<[(Identifier, Expression)]>,
     pub body: Body,
 }
 
 impl Let {
-    pub fn new(bindings: Vec<(Identifier, Arc<Expression>)>, body: Body) -> Self {
+    pub fn new(bindings: Vec<(Identifier, Expression)>, body: Body) -> Self {
         Self {
             bindings: Arc::from(bindings),
             body,
@@ -187,7 +181,7 @@ impl Let {
 
 #[derive(Debug, Clone, Trace)]
 pub struct Set {
-    pub var: Identifier,
+    pub var: Ref,
     pub val: Arc<Expression>,
 }
 
@@ -224,16 +218,17 @@ pub struct Body {
 impl Body {
     pub fn new(defs: Vec<Definition>, exprs: Vec<Expression>) -> Self {
         Self {
-            forms: ArcSlice::from(defs
-                .into_iter()
-                .map(AstNode::Definition)
-                .chain(exprs.into_iter().map(AstNode::Expression))
-                .collect::<Vec<_>>()),
+            forms: ArcSlice::from(
+                defs.into_iter()
+                    .map(AstNode::Definition)
+                    .chain(exprs.into_iter().map(AstNode::Expression))
+                    .collect::<Vec<_>>(),
+            ),
         }
     }
 }
 
-#[derive(Clone, Trace)]
+#[derive(Debug, Clone, Trace)]
 pub struct And {
     pub args: ArcSlice<Expression>,
 }
@@ -246,7 +241,7 @@ impl And {
     }
 }
 
-#[derive(Clone, Trace)]
+#[derive(Debug, Clone, Trace)]
 pub struct Or {
     pub args: ArcSlice<Expression>,
 }
@@ -259,41 +254,13 @@ impl Or {
     }
 }
 
-#[derive(Clone, Trace)]
+#[derive(Debug, Clone, Trace)]
 pub struct Vector {
-    pub vals: Vec<Literal>,
-}
-
-#[derive(Clone, Trace)]
-pub struct SyntaxCase {
-    pub arg: Arc<Expression>,
-    pub transformer: Transformer,
-}
-
-#[derive(Clone, Trace)]
-pub struct Var {
-    pub ident: Identifier,
-}
-
-impl Var {
-    pub fn new(ident: Identifier) -> Self {
-        Self { ident }
-    }
+    pub vals: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Trace)]
-pub struct MacroExpansionPoint {
-    pub mark: Mark,
-    pub macro_env: Env,
-    pub expr: Arc<Expression>,
-}
-
-impl MacroExpansionPoint {
-    pub fn new(mark: Mark, macro_env: Env, expr: Arc<Expression>) -> Self {
-        Self {
-            mark,
-            macro_env,
-            expr,
-        }
-    }
+pub struct SyntaxCase {
+    pub arg: Arc<Expression>,
+    pub transformer: Transformer,
 }

@@ -1,6 +1,5 @@
 use crate::{
-    continuation::Continuation, env::LexicalContour, error::RuntimeError,
-    proc::ValuesOrPreparedCall, gc::Gc, proc::ExternalFn, syntax::Identifier, value::Value,
+    continuation::Continuation, env::Env, error::RuntimeError, gc::Gc, proc::{ExternalFn, ValuesOrPreparedCall}, syntax::Identifier, value::Value
 };
 use futures::future::BoxFuture;
 use std::sync::Arc;
@@ -29,8 +28,8 @@ impl Builtin {
         }
     }
 
-    pub fn install(&self, into: &mut LexicalContour) {
-        into.def_var(
+    pub fn install(&self, into: &mut Env) {
+        into.def_local_var(
             &Identifier::new(self.name.to_string()),
             Gc::new(Value::from(ExternalFn {
                 name: self.name,

@@ -1,18 +1,10 @@
-/*
 use reedline::{Reedline, Signal, ValidationResult, Validator};
-use scheme_rs::{env::Env, lex::Token, parse::ParseError};
+use scheme_rs::{env::Env, lex::Token, parse::ParseError, syntax::ParsedSyntax};
 use std::{
     borrow::Cow,
-    sync::{Arc, Mutex},
-};e
-*/
+};
 
-/*
-type ParsedResult = Option<Result<Vec<ParsedSyntax>, String>>;
-
-struct InputParser {
-    parsed: Arc<Mutex<ParsedResult>>,
-}
+struct InputParser;
 
 impl Validator for InputParser {
     fn validate(&self, line: &str) -> ValidationResult {
@@ -22,10 +14,7 @@ impl Validator for InputParser {
         let syntax = ParsedSyntax::parse(&tokens);
         match syntax {
             Err(ParseError::UnclosedParen { .. }) => ValidationResult::Incomplete,
-            x => {
-                *self.parsed.lock().unwrap() = Some(x.map_err(|e| format!("{:?}", e)));
-                ValidationResult::Complete
-            }
+            _ => ValidationResult::Complete,
         }
     }
 }
@@ -56,56 +45,27 @@ impl reedline::Prompt for Prompt {
         Cow::Borrowed("? ")
     }
 }
-*/
 
 #[tokio::main]
 async fn main() {
-    /*
-    let parsed = Arc::new(Mutex::new(None));
-    let mut rl = Reedline::create().with_validator(Box::new(InputParser {
-        parsed: parsed.clone(),
-    }));
+    let mut rl = Reedline::create().with_validator(Box::new(InputParser));
     let mut n_results = 1;
     let top = Env::top().await;
     loop {
-        match rl.read_line(&Prompt) {
-            Ok(Signal::Success(_)) => (),
-            _ => {
-                println!("exiting...");
-                return;
-            }
-        }
-        let Some(parsed) = parsed.lock().unwrap().take() else {
-            continue;
+        let Ok(Signal::Success(input)) = rl.read_line(&Prompt) else {
+            println!("exiting...");
+            return;
         };
-        let parsed = match parsed {
+        match top.eval(&input).await {
+            Ok(results) => {
+                for result in results.into_iter().flatten() {
+                    println!("${n_results} = {}", result.read().fmt());
+                    n_results += 1;
+                }
+            }
             Err(err) => {
-                println!("Error parsing: {err}");
-                continue;
-            }
-            Ok(parsed) => parsed,
-        };
-        for sexpr in parsed {
-            let compiled = match sexpr.compile(&top, &None).await {
-                Err(err) => {
-                    println!("Error compiling: {err:?}");
-                    continue;
-                }
-                Ok(compiled) => compiled,
-            };
-            match compiled.eval(&top, &None).await {
-                Err(err) => {
-                    println!("Error: {err:?}");
-                }
-                Ok(results) => {
-                    for result in results {
-                        println!("${n_results} = {}", result.read().fmt());
-                        n_results += 1;
-                    }
-                }
+                println!("Error: {err:?}");
             }
         }
     }
-     */
-    todo!()
 }

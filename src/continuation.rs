@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use proc_macros::builtin;
 
 use crate::{
-    ast::{self, AstNode},
-    env::{Env, LexicalContour},
+    ast::{self, AstNode, Body, Expression},
+    env::{Env, ExpansionEnv, Ref},
     error::{RuntimeError, RuntimeErrorKind},
     expand::Transformer,
     gc::{Gc, Trace},
@@ -141,16 +141,54 @@ impl Eval for CatchContinuationCall {
         inner
     }
 }
-*/
+ */
+
+#[derive(Trace)]
+pub struct ResumableDefineVar {
+    env: Gc<Env>,
+    name: Identifier,
+}
+
+impl ResumableDefineVar {
+    pub fn new(env: &Gc<Env>, name: &Identifier) -> Self {
+        Self {
+            env: env.clone(),
+            name: name.clone(),
+        }
+    }
+}
+
+#[async_trait]
+impl Resumable for ResumableDefineVar {
+    async fn resume(
+        &self,
+        args: Vec<Gc<Value>>,
+        _cont: &Option<Arc<Continuation>>,
+    ) -> Result<Vec<Gc<Value>>, RuntimeError> {
+        let arg = args.require_one()?;
+        self.env.write().def_local_var(&self.name, arg);
+        Ok(vec![])
+    }
+
+    fn clone_stack(&self) -> Arc<dyn Resumable> {
+        /*
+        Arc::new(Self {
+            env: self.env.deep_clone(),
+            name: self.name.clone(),
+        })
+         */
+        todo!()
+    }
+}
 
 #[derive(Trace)]
 pub struct ResumableBody {
-    env: Env,
+    env: Gc<Env>,
     remaining: ArcSlice<AstNode>,
 }
 
 impl ResumableBody {
-    pub fn new(env: &Env, remaining: &ArcSlice<AstNode>) -> Self {
+    pub fn new(env: &Gc<Env>, remaining: &ArcSlice<AstNode>) -> Self {
         Self {
             env: env.clone(),
             remaining: remaining.clone(),
@@ -179,108 +217,135 @@ impl Resumable for ResumableBody {
     }
 
     fn clone_stack(&self) -> Arc<dyn Resumable> {
+        /*
         Arc::new(Self {
             env: self.env.deep_clone(),
             remaining: self.remaining.clone(),
         })
+         */
+        todo!()
     }
 }
 
-/*
 #[derive(Trace)]
-pub struct ResumableSyntaxCase {
-    env: Env,
-    transformer: Transformer,
+pub struct ResumableLet {
+    scope: Gc<Env>,
+    curr: Identifier,
+    remaining_bindings: ArcSlice<(Identifier, Expression)>,
+    body: Body,
 }
 
-impl ResumableSyntaxCase {
-    pub fn new(env: &Env, transformer: &Transformer) -> Self {
+impl ResumableLet {
+    pub fn new(
+        scope: &Gc<Env>,
+        curr: &Identifier,
+        remaining_bindings: ArcSlice<(Identifier, Expression)>,
+        body: &Body,
+    ) -> Self {
         Self {
-            env: env.clone(),
-            transformer: transformer.clone(),
+            scope: scope.clone(),
+            curr: curr.clone(),
+            remaining_bindings,
+            body: body.clone(),
         }
     }
 }
 
 #[async_trait]
-impl Resumable for ResumableSyntaxCase {
+impl Resumable for ResumableLet {
     async fn resume(
         &self,
         args: Vec<Gc<Value>>,
         cont: &Option<Arc<Continuation>>,
     ) -> Result<Vec<Gc<Value>>, RuntimeError> {
         let arg = args.require_one()?;
-        let transformed = {
-            let arg = arg.read();
-            match &*arg {
-                Value::Syntax(syntax) => self.transformer.expand(syntax).unwrap(),
-                _ => todo!(),
-            }
+        let up = {
+            let mut scope = self.scope.write();
+            scope.def_local_var(&self.curr, arg);
+            scope.up.as_ref().unwrap().clone()
         };
-        transformed
-            .compile(&self.env, cont)
-            .await?
-            .eval(&self.env, cont)
-            .await
+        for ((ident, expr), remaining) in self.remaining_bindings.iter() {
+            let cont = Arc::new(Continuation::new(
+                Arc::new(ResumableLet::new(&self.scope, ident, remaining, &self.body)),
+                cont,
+            ));
+            let val = expr.eval(&up, &Some(cont)).await?.require_one()?;
+            self.scope.write().def_local_var(ident, val);
+        }
+        self.body.eval(&self.scope, cont).await
     }
 
     fn clone_stack(&self) -> Arc<dyn Resumable> {
+        /*
         Arc::new(Self {
-            env: self.env.deep_clone(),
-            transformer: self.transformer.clone(),
+            scope: Gc::new(self.scope.read().deep_clone()),
+            curr: self.curr.clone(),
+            remaining_bindings: self.remaining_bindings.clone(),
+            body: self.body.clone(),
         })
+         */
+        todo!()
     }
 }
 
 #[derive(Trace)]
-pub struct ResumableSet {
-    env: Env,
-    var: Identifier,
+pub struct ResumableIf {
+    env: Gc<Env>,
+    success: Arc<Expression>,
+    failure: Option<Arc<Expression>>,
 }
 
-impl ResumableSet {
-    pub fn new(env: &Env, var: &Identifier) -> Self {
+impl ResumableIf {
+    pub fn new(
+        env: &Gc<Env>,
+        success: &Arc<Expression>,
+        failure: &Option<Arc<Expression>>,
+    ) -> Self {
         Self {
             env: env.clone(),
-            var: var.clone(),
+            success: success.clone(),
+            failure: failure.clone(),
         }
     }
 }
 
 #[async_trait]
-impl Resumable for ResumableSet {
+impl Resumable for ResumableIf {
     async fn resume(
         &self,
         args: Vec<Gc<Value>>,
-        _cont: &Option<Arc<Continuation>>,
+        cont: &Option<Arc<Continuation>>,
     ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-        // TODO: Add try_unwrap to GC to avoid the clone of the inner value
         let arg = args.require_one()?;
-        let val = arg.read().clone();
-        *self
-            .env
-            .fetch_var(&self.var)
-            .ok_or_else(|| RuntimeError::undefined_variable(self.var.clone()))?
-            .write() = val;
-        Ok(vec![Gc::new(Value::Null)])
+        if arg.read().is_true() {
+            self.success.eval(&self.env, cont).await
+        } else if let Some(ref failure) = self.failure {
+            failure.eval(&self.env, cont).await
+        } else {
+            Ok(Vec::new())
+        }
     }
 
     fn clone_stack(&self) -> Arc<dyn Resumable> {
+        /*
         Arc::new(Self {
             env: self.env.deep_clone(),
-            var: self.var.clone(),
+            success: self.success.clone(),
+            failure: self.failure.clone(),
         })
+         */
+        todo!()
     }
 }
 
 #[derive(Trace)]
 pub struct ResumableAnd {
-    env: Env,
-    args: ArcSlice<Arc<dyn Eval>>,
+    env: Gc<Env>,
+    args: ArcSlice<Expression>,
 }
 
 impl ResumableAnd {
-    pub fn new(env: &Env, args: &ArcSlice<Arc<dyn Eval>>) -> Self {
+    pub fn new(env: &Gc<Env>, args: &ArcSlice<Expression>) -> Self {
         Self {
             env: env.clone(),
             args: args.clone(),
@@ -323,21 +388,23 @@ impl Resumable for ResumableAnd {
     }
 
     fn clone_stack(&self) -> Arc<dyn Resumable> {
-        Arc::new(Self {
-            env: self.env.deep_clone(),
-            args: self.args.clone(),
-        })
+        /*
+            Arc::new(Self {
+                env: self.env.deep_clone(),
+                args: self.args.clone(),
+        })*/
+        todo!()
     }
 }
 
 #[derive(Trace)]
 pub struct ResumableOr {
-    env: Env,
-    args: ArcSlice<Arc<dyn Eval>>,
+    env: Gc<Env>,
+    args: ArcSlice<Expression>,
 }
 
 impl ResumableOr {
-    pub fn new(env: &Env, args: &ArcSlice<Arc<dyn Eval>>) -> Self {
+    pub fn new(env: &Gc<Env>, args: &ArcSlice<Expression>) -> Self {
         Self {
             env: env.clone(),
             args: args.clone(),
@@ -363,7 +430,7 @@ impl Resumable for ResumableOr {
         }
         for (arg, tail) in self.args.skip_last() {
             let cont = Arc::new(Continuation::new(
-                Arc::new(ResumableAnd::new(&self.env, &tail)),
+                Arc::new(ResumableOr::new(&self.env, &tail)),
                 cont,
             ));
             if arg
@@ -380,156 +447,111 @@ impl Resumable for ResumableOr {
     }
 
     fn clone_stack(&self) -> Arc<dyn Resumable> {
-        Arc::new(Self {
-            env: self.env.deep_clone(),
-            args: self.args.clone(),
+        /*
+            Arc::new(Self {
+                env: self.env.deep_clone(),
+                args: self.args.clone(),
         })
+             */
+        todo!()
     }
 }
 
 #[derive(Trace)]
-pub struct ResumableLet {
-    scope: Gc<LexicalContour>,
-    curr: Identifier,
-    remaining_bindings: ArcSlice<(Identifier, Arc<dyn Eval>)>,
-    body: ast::Body,
+pub struct ResumableSet {
+    env: Gc<Env>,
+    var: Ref,
 }
 
-impl ResumableLet {
-    pub fn new(
-        scope: &Gc<LexicalContour>,
-        curr: &Identifier,
-        remaining_bindings: ArcSlice<(Identifier, Arc<dyn Eval>)>,
-        body: &ast::Body,
-    ) -> Self {
-        Self {
-            scope: scope.clone(),
-            curr: curr.clone(),
-            remaining_bindings,
-            body: body.clone(),
-        }
-    }
-}
-
-#[async_trait]
-impl Resumable for ResumableLet {
-    async fn resume(
-        &self,
-        args: Vec<Gc<Value>>,
-        cont: &Option<Arc<Continuation>>,
-    ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-        let arg = args.require_one()?;
-        let up = {
-            let mut scope = self.scope.write();
-            scope.def_var(&self.curr, arg);
-            scope.up.clone()
-        };
-        for ((ident, expr), remaining) in self.remaining_bindings.iter() {
-            let cont = Arc::new(Continuation::new(
-                Arc::new(ResumableLet::new(&self.scope, ident, remaining, &self.body)),
-                cont,
-            ));
-            let val = expr.eval(&up, &Some(cont)).await?.require_one()?;
-            self.scope.write().def_var(ident, val);
-        }
-        self.body.eval(&Env::from(self.scope.clone()), cont).await
-    }
-
-    fn clone_stack(&self) -> Arc<dyn Resumable> {
-        Arc::new(Self {
-            scope: Gc::new(self.scope.read().deep_clone()),
-            curr: self.curr.clone(),
-            remaining_bindings: self.remaining_bindings.clone(),
-            body: self.body.clone(),
-        })
-    }
-}
-
-#[derive(Trace)]
-pub struct ResumableIf {
-    env: Env,
-    success: Arc<dyn Eval>,
-    failure: Option<Arc<dyn Eval>>,
-}
-
-impl ResumableIf {
-    pub fn new(env: &Env, success: &Arc<dyn Eval>, failure: &Option<Arc<dyn Eval>>) -> Self {
+impl ResumableSet {
+    pub fn new(env: &Gc<Env>, var: &Ref) -> Self {
         Self {
             env: env.clone(),
-            success: success.clone(),
-            failure: failure.clone(),
+            var: var.clone(),
         }
     }
 }
 
 #[async_trait]
-impl Resumable for ResumableIf {
-    async fn resume(
-        &self,
-        args: Vec<Gc<Value>>,
-        cont: &Option<Arc<Continuation>>,
-    ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-        let arg = args.require_one()?;
-        if arg.read().is_true() {
-            self.success.eval(&self.env, cont).await
-        } else if let Some(ref failure) = self.failure {
-            failure.eval(&self.env, cont).await
-        } else {
-            Ok(vec![Gc::new(Value::Null)])
-        }
-    }
-
-    fn clone_stack(&self) -> Arc<dyn Resumable> {
-        Arc::new(Self {
-            env: self.env.deep_clone(),
-            success: self.success.clone(),
-            failure: self.failure.clone(),
-        })
-    }
-}
-
-#[derive(Trace)]
-pub struct ResumableDefineVar {
-    env: Env,
-    name: Identifier,
-}
-
-impl ResumableDefineVar {
-    pub fn new(env: &Env, name: &Identifier) -> Self {
-        Self {
-            env: env.clone(),
-            name: name.clone(),
-        }
-    }
-}
-
-#[async_trait]
-impl Resumable for ResumableDefineVar {
+impl Resumable for ResumableSet {
     async fn resume(
         &self,
         args: Vec<Gc<Value>>,
         _cont: &Option<Arc<Continuation>>,
     ) -> Result<Vec<Gc<Value>>, RuntimeError> {
         let arg = args.require_one()?;
-        self.env.def_var(&self.name, arg);
-        Ok(vec![Gc::new(Value::Null)])
+        let val = arg.read().clone();
+        self.var.set(&self.env, &Gc::new(val));
+        Ok(Vec::new())
     }
 
     fn clone_stack(&self) -> Arc<dyn Resumable> {
+        /*
+            Arc::new(Self {
+                env: self.env.deep_clone(),
+                var: self.var.clone(),
+        })
+             */
+        todo!()
+    }
+}
+
+#[derive(Trace)]
+pub struct ResumableSyntaxCase {
+    env: Gc<Env>,
+    transformer: Transformer,
+}
+
+impl ResumableSyntaxCase {
+    pub fn new(env: &Gc<Env>, transformer: &Transformer) -> Self {
+        Self {
+            env: env.clone(),
+            transformer: transformer.clone(),
+        }
+    }
+}
+
+#[async_trait]
+impl Resumable for ResumableSyntaxCase {
+    async fn resume(
+        &self,
+        args: Vec<Gc<Value>>,
+        cont: &Option<Arc<Continuation>>,
+    ) -> Result<Vec<Gc<Value>>, RuntimeError> {
+        let arg = args.require_one()?;
+        let transformed = {
+            let arg = arg.read();
+            match &*arg {
+                Value::Syntax(syntax) => self.transformer.expand(syntax).unwrap(),
+                _ => todo!(),
+            }
+        };
+        let expansion_env = ExpansionEnv::from_env(&self.env);
+        Expression::parse(transformed, &expansion_env, cont)
+            .await
+            .expect("fixme")
+            .eval(&self.env, cont)
+            .await
+    }
+
+    fn clone_stack(&self) -> Arc<dyn Resumable> {
+        /*
         Arc::new(Self {
             env: self.env.deep_clone(),
-            name: self.name.clone(),
+            transformer: self.transformer.clone(),
         })
+         */
+        todo!()
     }
 }
 
 #[derive(Trace)]
 pub struct ResumableCall {
-    env: Env,
+    env: Gc<Env>,
     // TODO: Making this a SmallVec of around 10 would probably be a
     // performance improvement.
     collected: Vec<Gc<Value>>,
-    remaining: ArcSlice<Arc<dyn Eval>>,
+    remaining: ArcSlice<Expression>,
     proc_name: String,
     location: Span,
 }
@@ -538,9 +560,9 @@ impl ResumableCall {
     pub fn new(
         proc_name: &str,
         location: &Span,
-        env: &Env,
+        env: &Gc<Env>,
         collected: &[Gc<Value>],
-        remaining: ArcSlice<Arc<dyn Eval>>,
+        remaining: ArcSlice<Expression>,
     ) -> Self {
         Self {
             env: env.clone(),
@@ -592,6 +614,7 @@ impl Resumable for ResumableCall {
     }
 
     fn clone_stack(&self) -> Arc<dyn Resumable> {
+        /*
         Arc::new(Self {
             env: self.env.deep_clone(),
             collected: self.collected.clone(),
@@ -599,6 +622,8 @@ impl Resumable for ResumableCall {
             proc_name: self.proc_name.clone(),
             location: self.location.clone(),
         })
+         */
+        todo!()
     }
 }
 
@@ -623,6 +648,7 @@ pub async fn call_cc(
         .eval(cont)
         .await
 }
+
 
 #[derive(Clone, Trace)]
 pub struct CallWithValues {
@@ -696,4 +722,3 @@ pub async fn call_with_values(
         .eval(cont)
         .await
 }
-*/

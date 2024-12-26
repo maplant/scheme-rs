@@ -24,12 +24,12 @@ pub enum Value {
     String(String),
     Symbol(String),
     Pair(Gc<Value>, Gc<Value>),
-    Vector(Vec<Gc<Value>>),
+    Vector(Vec<Value>),
     ByteVector(Vec<u8>),
     Syntax(Syntax),
     Procedure(Procedure),
     ExternalFn(ExternalFn),
-    Transformer(Transformer),
+    // Transformer(Transformer),
     Record(Record),
     RecordType(Gc<RecordType>),
     Future(#[debug(skip)] Shared<BoxFuture<'static, Result<Vec<Gc<Value>>, RuntimeError>>>),
@@ -40,7 +40,7 @@ impl Value {
     pub fn is_callable(&self) -> bool {
         matches!(
             self,
-            Self::Procedure(_) | Self::ExternalFn(_) | Self::Transformer(_)
+            Self::Procedure(_) | Self::ExternalFn(_)
         )
     }
 
@@ -52,7 +52,7 @@ impl Value {
     pub fn is_variable_transformer(&self) -> bool {
         match self {
             Self::Procedure(ref proc) => proc.is_variable_transformer,
-            Self::Transformer(ref trans) => trans.is_variable_transformer,
+            // Self::Transformer(ref trans) => trans.is_variable_transformer,
             _ => false,
         }
     }
@@ -80,7 +80,7 @@ impl Value {
                 let mut iter = vec.iter().peekable();
                 let mut output = String::from("#(");
                 while let Some(item) = iter.next() {
-                    output.push_str(&item.read().fmt());
+                    output.push_str(&item.fmt());
                     if iter.peek().is_some() {
                         output.push(' ');
                     }
@@ -95,7 +95,7 @@ impl Value {
             Self::Procedure(proc) => format!("<{proc:?}>"),
             Self::ExternalFn(_) => "<external-fn>".to_string(),
             Self::Future(_) => "<future>".to_string(),
-            Self::Transformer(_) => "<transformer>".to_string(),
+            // Self::Transformer(_) => "<transformer>".to_string(),
             Self::Continuation(_) => "<continuation>".to_string(),
             Self::Record(_) => "<record>".to_string(),
             Self::RecordType(_) => "<record-type>".to_string(),
@@ -123,7 +123,7 @@ impl Value {
                 curr
             }
             Syntax::Vector { vector, .. } => {
-                Self::Vector(vector.iter().map(Self::from_syntax).map(Gc::new).collect())
+                Self::Vector(vector.iter().map(Self::from_syntax).collect())
             }
             Syntax::Literal { literal, .. } => Self::from_literal(literal),
             Syntax::Identifier { ident, .. } => Self::Symbol(ident.name.clone()),
@@ -141,7 +141,7 @@ impl Value {
             Self::Vector(_) => "vector",
             Self::ByteVector(_) => "byte vector",
             Self::Syntax(_) => "syntax",
-            Self::Procedure(_) | Self::ExternalFn(_) | Self::Transformer(_) => "procedure",
+            Self::Procedure(_) | Self::ExternalFn(_) => "procedure",
             Self::Future(_) => "future",
             Self::Continuation(_) => "continuation",
             Self::Record(_) => "record",
@@ -160,7 +160,7 @@ impl Value {
             (Self::Pair(a1, a2), Self::Pair(b1, b2)) => eqv(a1, b1) && eqv(a2, b2),
             (Self::Vector(a), Self::Vector(b)) => {
                 for (a, b) in a.iter().zip(b.iter()) {
-                    if !eqv(a, b) {
+                    if !a.eqv(b) {
                         return false;
                     }
                 }
@@ -191,7 +191,6 @@ impl Clone for Value {
             Self::Procedure(proc) => Self::Procedure(proc.clone()),
             Self::ExternalFn(ext_fn) => Self::ExternalFn(*ext_fn),
             Self::Future(fut) => Self::Future(fut.clone()),
-            Self::Transformer(trans) => Self::Transformer(trans.clone()),
             Self::Continuation(cont) => Self::Continuation(cont.clone()),
             Self::Record(record) => Self::Record(record.clone()),
             Self::RecordType(rt) => Self::RecordType(rt.clone()),
@@ -402,7 +401,7 @@ pub async fn procedure_pred(
     let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
-        Value::Procedure(_) | Value::ExternalFn(_) | Value::Transformer(_) | Value::Continuation(_)
+        Value::Procedure(_) | Value::ExternalFn(_) | Value::Continuation(_)
     )))])
 }
 
