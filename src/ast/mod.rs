@@ -75,9 +75,6 @@ impl AstNode {
             Some(
                 [Syntax::Identifier { ident, .. }, Syntax::Identifier { ident: name, .. }, expr, Syntax::Null { .. }],
             ) if ident.name == "define-syntax" => {
-                // println!("defining here {}", ident.name);
-                // TODO: Error if define syntax isn't proper, error.
-                // println!("mod.rs:80");
                 define_syntax(name, expr.clone(), &env.lexical_contour, cont).await?;
                 Ok(None)
             }

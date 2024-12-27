@@ -90,7 +90,6 @@ impl Expression {
         env: &'a Gc<Env>,
         cont: &'a Option<Arc<Continuation>>,
     ) -> BoxFuture<'a, Result<ValuesOrPreparedCall, RuntimeError>> {
-        //println!("expr: {self:#?}");
         Box::pin(async move {
             match self {
                 Self::Undefined => val(Value::Undefined),
@@ -159,7 +158,6 @@ impl Call {
             let arg = arg.eval(env, &Some(cont)).await?.require_one()?;
             collected.push(arg);
         }
-        // println!("prepared: {:#?}", env);
         Ok(ValuesOrPreparedCall::PreparedCall(PreparedCall::prepare(
             collected,
             Some(ProcCallDebugInfo::new(&self.proc_name, &self.location)),
