@@ -201,3 +201,26 @@
 ;;                           ((x y) (values a b)))
 ;;               (list a b x y)))
 ;;           (x y x y))
+
+(assert-eq (let loop ((n 1))
+             (if (> n 10)
+                 '()
+                 (cons n (loop (+ n 1)))))
+           '(1 2 3 4 5 6 7 8 9 10))
+           
+(define-syntax loop
+  (lambda (x)
+    (syntax-case x ()
+      [(k e ...)
+       (with-syntax
+           ([break (datum->syntax #'k 'break)])
+         #'(call-with-current-continuation
+            (lambda (break)
+              (let f () e ... (f)))))])))
+
+(assert-eq (let ((n 3) (ls '()))
+             (loop
+              (if (= n 0) (break ls))
+              (set! ls (cons 'a ls))
+              (set! n (- n 1))))
+           '(a a a))

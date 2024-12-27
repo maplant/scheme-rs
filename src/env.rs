@@ -214,7 +214,7 @@ pub enum EvalError<'e> {
 
 /// Reference to a variable that is accessible via the current environment. Could be
 /// local or non-local depending on the depth field.
-#[derive(Debug, Copy, Clone, Trace)]
+#[derive(Debug, Copy, Clone, Trace, Default)]
 pub struct VarRef {
     /// Number of up environments we need to traverse in order to reach the defining
     /// scope of the variable. Variables with a depth of 0 are local.
@@ -236,6 +236,11 @@ impl VarRef {
             depth: self.depth - 1,
             offset: self.offset,
         }
+    }
+
+    pub fn offset(mut self, offset: usize) -> Self {
+        self.offset += offset;
+        self
     }
 
     pub fn fetch(&self, env: &Gc<Env>) -> Gc<Value> {
