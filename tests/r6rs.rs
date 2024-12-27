@@ -6,8 +6,6 @@ use scheme_rs::{
     env::Env,
     error::RuntimeError,
     gc::Gc,
-    lex::Token,
-    syntax::ParsedSyntax,
     value::{eqv, Value},
 };
 
@@ -30,15 +28,8 @@ pub async fn test_assert(
 async fn r6rs() {
     let top = Env::top().await;
 
-    let r6rs_tok = Token::tokenize_file(include_str!("r6rs.scm"), "r6rs.scm").unwrap();
-    let r6rs_sexprs = ParsedSyntax::parse(&r6rs_tok).unwrap();
-    for sexpr in r6rs_sexprs {
-        sexpr
-            .compile(&top, &None)
-            .await
-            .unwrap()
-            .eval(&top, &None)
-            .await
-            .unwrap();
-    }
+    let _ = top
+        .eval("r6rs.scm", include_str!("r6rs.scm"))
+        .await
+        .unwrap();
 }

@@ -323,8 +323,8 @@ pub struct Token<'a> {
 pub type LexError<'a> = nom::Err<nom::error::Error<InputSpan<'a>>>;
 
 impl<'a> Token<'a> {
-    pub fn tokenize_file(s: &'a str, filename: &str) -> Result<Vec<Self>, LexError<'a>> {
-        let mut span = InputSpan::new_extra(s, Arc::new(filename.to_string()));
+    pub fn tokenize_file(file_name: &str, s: &'a str) -> Result<Vec<Self>, LexError<'a>> {
+        let mut span = InputSpan::new_extra(s, Arc::new(file_name.to_string()));
         let mut output = Vec::new();
         while !span.is_empty() {
             let (remaining, ()) = interlexeme_space(span)?;
@@ -343,6 +343,6 @@ impl<'a> Token<'a> {
     }
 
     pub fn tokenize_str(s: &'a str) -> Result<Vec<Self>, LexError<'a>> {
-        Self::tokenize_file(s, "<stdin>")
+        Self::tokenize_file("<stdin>", s)
     }
 }

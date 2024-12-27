@@ -381,11 +381,6 @@ pub async fn make_variable_transformer(
             proc.is_variable_transformer = true;
             Ok(vec![Gc::new(Value::Procedure(proc))])
         }
-        Value::Transformer(transformer) => {
-            let mut transformer = transformer.clone();
-            transformer.is_variable_transformer = true;
-            Ok(vec![Gc::new(Value::Transformer(transformer))])
-        }
         _ => todo!(),
     }
 }

@@ -4,7 +4,6 @@ use crate::{
     continuation::Continuation,
     env::Env,
     error::{Frame, RuntimeError},
-    eval::{Eval, ValuesOrPreparedCall},
     gc::Gc,
     lists::list_to_vec,
     syntax::{Identifier, Span},
@@ -14,6 +13,35 @@ use async_trait::async_trait;
 use futures::future::BoxFuture;
 use proc_macros::Trace;
 use std::sync::Arc;
+
+pub enum ValuesOrPreparedCall {
+    Values(Vec<Gc<Value>>),
+    PreparedCall(PreparedCall),
+}
+
+impl From<Vec<Gc<Value>>> for ValuesOrPreparedCall {
+    fn from(values: Vec<Gc<Value>>) -> Self {
+        Self::Values(values)
+    }
+}
+
+impl From<PreparedCall> for ValuesOrPreparedCall {
+    fn from(prepared_call: PreparedCall) -> ValuesOrPreparedCall {
+        Self::PreparedCall(prepared_call)
+    }
+}
+
+impl ValuesOrPreparedCall {
+    pub async fn eval(
+        self,
+        cont: &Option<Arc<Continuation>>,
+    ) -> Result<Vec<Gc<Value>>, RuntimeError> {
+        match self {
+            Self::Values(val) => Ok(val),
+            Self::PreparedCall(prepared_call) => prepared_call.eval(cont).await,
+        }
+    }
+}
 
 #[async_trait]
 pub trait Callable: Send + Sync + 'static {
@@ -31,7 +59,7 @@ pub trait Callable: Send + Sync + 'static {
 #[derive(Clone, derive_more::Debug, Trace)]
 pub struct Procedure {
     #[debug(skip)]
-    pub up: Env,
+    pub up: Gc<Env>,
     pub args: Vec<Identifier>,
     pub remaining: Option<Identifier>,
     #[debug(skip)]
@@ -64,11 +92,11 @@ impl Callable for Procedure {
             let Some(value) = args_iter.next().cloned() else {
                 return Err(RuntimeError::wrong_num_of_args(self.args.len(), provided));
             };
-            env.write().def_var(required, value);
+            env.write().def_local_var(required, value);
         }
 
         if let Some(ref remaining) = self.remaining {
-            env.write().def_var(
+            env.write().def_local_var(
                 remaining,
                 Gc::new(Value::from(args_iter.cloned().collect::<Vec<_>>())),
             );
@@ -76,7 +104,7 @@ impl Callable for Procedure {
             return Err(RuntimeError::wrong_num_of_args(self.args.len(), provided));
         }
 
-        self.body.tail_eval(&Env::from(env.clone()), cont).await
+        self.body.tail_eval(&env, cont).await
     }
 }
 
@@ -111,7 +139,7 @@ impl Callable for ExternalFn {
 }
 
 pub struct PreparedCall {
-    proc_debug_info: Option<ProcDebugInfo>,
+    proc_debug_info: Option<ProcCallDebugInfo>,
     operator: Gc<Value>,
     args: Vec<Gc<Value>>,
 }
@@ -125,7 +153,7 @@ impl PreparedCall {
         let mut bt = Vec::new();
         loop {
             let proc = curr_proc.take().unwrap();
-            if let Some(ProcDebugInfo {
+            if let Some(ProcCallDebugInfo {
                 proc_name,
                 location,
             }) = proc.proc_debug_info
@@ -166,7 +194,7 @@ impl PreparedCall {
     }
 
     /// Such a strange interface. Whatever. FIXME
-    pub fn prepare(args: Vec<Gc<Value>>, proc_debug_info: Option<ProcDebugInfo>) -> Self {
+    pub fn prepare(args: Vec<Gc<Value>>, proc_debug_info: Option<ProcCallDebugInfo>) -> Self {
         let operator = args[0].clone();
         let args = args[1..].to_owned();
         Self {
@@ -177,12 +205,12 @@ impl PreparedCall {
     }
 }
 
-pub struct ProcDebugInfo {
+pub struct ProcCallDebugInfo {
     proc_name: String,
     location: Span,
 }
 
-impl ProcDebugInfo {
+impl ProcCallDebugInfo {
     pub fn new(proc_name: &str, location: &Span) -> Self {
         Self {
             proc_name: proc_name.to_string(),

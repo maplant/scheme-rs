@@ -1,5 +1,5 @@
 use crate::{
-    compile::CompileError,
+    ast::parse::ParseAstError,
     continuation::Continuation,
     gc::Gc,
     syntax::{Identifier, Span},
@@ -34,8 +34,9 @@ pub enum RuntimeErrorKind {
         expected: String,
         actual: String,
     },
+    NotAVariableTransformer,
     DivisionByZero,
-    CompileError(CompileError),
+    ParseAstError(ParseAstError),
     AbandonCurrentContinuation {
         #[derivative(Debug = "ignore")]
         args: Vec<Gc<Value>>,
@@ -132,6 +133,13 @@ impl RuntimeError {
         }
     }
 
+    pub fn not_a_variable_transformer() -> Self {
+        Self {
+            backtrace: Vec::new(),
+            kind: RuntimeErrorKind::NotAVariableTransformer,
+        }
+    }
+
     pub fn no_patterns_match() -> Self {
         Self {
             backtrace: Vec::new(),
@@ -140,6 +148,7 @@ impl RuntimeError {
     }
 }
 
+/*
 impl From<CompileError> for RuntimeError {
     fn from(ce: CompileError) -> Self {
         Self {
@@ -148,6 +157,7 @@ impl From<CompileError> for RuntimeError {
         }
     }
 }
+*/
 
 /*
 impl fmt::Debug for RuntimeError {
