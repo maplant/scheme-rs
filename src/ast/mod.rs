@@ -82,7 +82,7 @@ impl AstNode {
                 Ok(None)
             }
             Some([Syntax::Identifier { ident, span, .. }, ..]) if ident.name == "define-syntax" => {
-                return Err(parse::ParseAstError::BadForm(span.clone()));
+                Err(parse::ParseAstError::BadForm(span.clone()))
             }
             Some(syn @ [Syntax::Identifier { ident, span, .. }, ..]) if ident.name == "define" => {
                 Ok(Some(Self::Definition(

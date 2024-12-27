@@ -70,8 +70,7 @@ impl Env {
             || {
                 self.up
                     .as_ref()
-                    .map(|up| up.read().fetch_var_ref(ident).map(VarRef::inc_depth))
-                    .flatten()
+                    .and_then(|up| up.read().fetch_var_ref(ident).map(VarRef::inc_depth))
             },
             |offset| Some(VarRef { depth: 0, offset }),
         )
@@ -286,9 +285,7 @@ impl GlobalRef {
         };
 
         let top = top.read();
-        let Some(var) = top.fetch_var_ref(&self.name) else {
-            return None;
-        };
+        let var = top.fetch_var_ref(&self.name)?;
         Some(top.fetch_var(var))
     }
 
@@ -377,7 +374,7 @@ impl ExpansionEnv<'_> {
         !matches!(self.fetch_var_ref(ident), Ref::Global(_))
     }
 
-    pub fn push_expansion_env<'a>(&'a self, ctxs: Vec<ExpansionCtx>) -> ExpansionEnv<'a> {
+    pub fn push_expansion_env(&self, ctxs: Vec<ExpansionCtx>) -> ExpansionEnv<'_> {
         ExpansionEnv {
             lexical_contour: self.lexical_contour.clone(),
             up: Some(self),
@@ -385,7 +382,7 @@ impl ExpansionEnv<'_> {
         }
     }
 
-    pub fn push_lexical_contour<'a>(&'a self, gc: Gc<Env>) -> ExpansionEnv<'a> {
+    pub fn push_lexical_contour(&self, gc: Gc<Env>) -> ExpansionEnv<'_> {
         ExpansionEnv {
             up: Some(self),
             expansion_ctxs: Vec::new(),

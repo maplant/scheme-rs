@@ -112,7 +112,7 @@ impl Expression {
                 Self::Begin(body) => body.tail_eval(env, cont).await,
                 Self::Var(var) => Ok(ValuesOrPreparedCall::Values(vec![var
                     .fetch(env)
-                    .map_err(|ident| RuntimeError::undefined_variable(ident))?])),
+                    .map_err(RuntimeError::undefined_variable)?])),
             }
         })
     }
@@ -336,7 +336,7 @@ impl SyntaxCase {
         Expression::parse(transformed, &expansion_env, cont)
             .await
             .expect("fixme")
-            .eval(&env, cont)
+            .eval(env, cont)
             .await
     }
 }

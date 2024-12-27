@@ -82,7 +82,7 @@ impl Definition {
                                             second: span.clone(),
                                         });
                                     }
-                                    new_env.def_local_var(&ident, Gc::new(Value::Undefined));
+                                    new_env.def_local_var(ident, Gc::new(Value::Undefined));
                                     bound.insert(ident.clone(), span.clone());
                                     fixed.push(ident.clone());
                                 }
@@ -106,7 +106,7 @@ impl Definition {
                                         });
                                     }
                                     let remaining = ident.clone();
-                                    new_env.def_local_var(&ident, Gc::new(Value::Undefined));
+                                    new_env.def_local_var(ident, Gc::new(Value::Undefined));
                                     bound.insert(remaining.clone(), span.clone());
                                     Formals::VarArgs {
                                         fixed: fixed.into_iter().collect(),
@@ -214,7 +214,7 @@ where
     'a: 'b,
 {
     Box::pin(async move {
-        if body.len() == 0 {
+        if body.is_empty() {
             return Err(ParseAstError::EmptyBody(span.clone()));
         }
 
@@ -302,7 +302,7 @@ impl Expression {
         let FullyExpanded {
             expanded,
             expansion_ctxs: expansion_envs,
-        } = syn.expand(&env, cont).await?;
+        } = syn.expand(env, cont).await?;
         let expansion_env = env.push_expansion_env(expansion_envs);
         Self::parse_expanded(expanded, &expansion_env, cont).await
     }
@@ -403,7 +403,7 @@ impl Expression {
                     [Syntax::Identifier { ident, span, .. }, .., Syntax::Null { .. }]
                         if ident.name == "define" =>
                     {
-                        return Err(ParseAstError::DefInExprContext(span.clone()));
+                        Err(ParseAstError::DefInExprContext(span.clone()))
                     }
 
                     // Regular old function call:
@@ -413,7 +413,7 @@ impl Expression {
                             .map(Expression::Call)
                     }
 
-                    _ => return Err(ParseAstError::BadForm(span.clone())),
+                    _ => Err(ParseAstError::BadForm(span.clone())),
                 },
             }
         })
@@ -488,7 +488,7 @@ async fn parse_lambda(
                             second: span.clone(),
                         });
                     }
-                    new_contour.def_local_var(&ident, Gc::new(Value::Undefined));
+                    new_contour.def_local_var(ident, Gc::new(Value::Undefined));
                     bound.insert(ident.clone(), span.clone());
                     fixed.push(ident.clone());
                 }
@@ -508,7 +508,7 @@ async fn parse_lambda(
                         second: span.clone(),
                     });
                 }
-                new_contour.def_local_var(&ident, Gc::new(Value::Undefined));
+                new_contour.def_local_var(ident, Gc::new(Value::Undefined));
                 let remaining = ident.clone();
                 Formals::VarArgs {
                     fixed: fixed.into_iter().collect(),
@@ -727,7 +727,7 @@ impl Set {
 impl Quote {
     async fn parse(exprs: &[Syntax], span: &Span) -> Result<Self, ParseAstError> {
         match exprs {
-            [] => Err(dbg!(ParseAstError::ExpectedArgument(span.clone()))),
+            [] => Err(ParseAstError::ExpectedArgument(span.clone())),
             [Syntax::Null { .. }] => Ok(Quote { val: Value::Null }),
             [expr, Syntax::Null { .. }] => Ok(Quote {
                 val: Value::from_syntax(expr),

@@ -1,14 +1,11 @@
 use std::sync::Arc;
 
 use scheme_rs::{
-    ast::AstNode,
     builtin,
     continuation::Continuation,
     env::Env,
     error::RuntimeError,
     gc::Gc,
-    lex::Token,
-    syntax::ParsedSyntax,
     value::{eqv, Value},
 };
 
