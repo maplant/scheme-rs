@@ -6,7 +6,8 @@ use tokio::sync::OnceCell;
 use crate::{
     ast::{parse::ParseAstError, AstNode},
     builtin::Builtin,
-    error::RuntimeError,
+    continuation::Resumable,
+    error::{RuntimeError, RuntimeErrorKind},
     gc::{init_gc, Gc},
     lex::{LexError, Token},
     parse::ParseError,
@@ -16,10 +17,11 @@ use crate::{
 
 /// An Environment, or store of variables and macros with a reference to its containing
 /// lexical scope.
-#[derive(Debug, Default, Trace)]
+#[derive(derive_more::Debug, Default, Trace)]
 pub struct Env {
     /// The containing environment of this environment, or None if this is a top level
     /// environment.
+    #[debug(skip)]
     pub up: Option<Gc<Env>>,
     /// Variables stored in this environment. Variables are referenced via their index
     /// into an array. This array is dynamic only because a top level environment
@@ -40,7 +42,6 @@ impl Env {
         TOP_LEVEL_ENV
             .get_or_init(|| async {
                 init_gc();
-                println!("init gc");
 
                 let mut top = Env::default();
 
@@ -49,12 +50,12 @@ impl Env {
                     builtin.install(&mut top);
                 }
 
-                println!("builtins installed");
-
                 // Install the stdlib:
                 let top = Gc::new(top);
-                let _ = top.eval(include_str!("stdlib.scm")).await.unwrap();
-                println!("evaling");
+                let _ = top
+                    .eval("stdlib.scm", include_str!("stdlib.scm"))
+                    .await
+                    .unwrap();
 
                 top
             })
@@ -147,19 +148,50 @@ impl Gc<Env> {
 
     /// Evaluate a string, returning all of the results in a Vec
     // TODO: Add file name
-    pub async fn eval<'e>(&self, exprs: &'e str) -> Result<Vec<Vec<Gc<Value>>>, EvalError<'e>> {
-        let tokens = Token::tokenize_str(exprs)?;
+    pub async fn eval<'e>(
+        &self,
+        file_name: &str,
+        exprs: &'e str,
+    ) -> Result<Vec<Vec<Gc<Value>>>, EvalError<'e>> {
+        let tokens = Token::tokenize_file(file_name, exprs)?;
         let sexprs = ParsedSyntax::parse(&tokens)?;
         let mut results = Vec::new();
         for sexpr in sexprs {
-            let Some(result) = AstNode::from_syntax(sexpr.syntax, self, &None).await? else {
+            let Some(expr) = AstNode::from_syntax(sexpr.syntax, self, &None).await? else {
                 continue;
             };
             // TODO: Catch continuation calls
-            let vals = result.eval(self, &None).await?;
+            let vals = self.abandon_cc_trampoline(expr).await?;
             results.push(vals);
         }
         Ok(results)
+    }
+
+    async fn abandon_cc_trampoline(&self, expr: AstNode) -> Result<Vec<Gc<Value>>, RuntimeError> {
+        let mut inner = expr.eval(self, &None).await;
+        while let Err(RuntimeError {
+            kind: RuntimeErrorKind::AbandonCurrentContinuation { args, new_cont },
+            ..
+        }) = inner
+        {
+            // Abandon the current continuation and evaluate the newly returned one
+            // TODO: Retain the backtrace for errors
+            // let arg = args.pop().unwrap();
+            if let Some(new_cont) = new_cont {
+                inner = new_cont.resume(args, &None).await;
+            } else {
+                return Ok(args);
+            }
+        }
+        inner
+    }
+
+    pub fn distance(&self, rhs: &Gc<Env>) -> usize {
+        if self == rhs {
+            0
+        } else {
+            1 + self.read().up.as_ref().unwrap().distance(rhs)
+        }
     }
 
     pub fn deep_clone(&self) -> Self {
@@ -314,9 +346,11 @@ enum MacroLookup {
     WithoutEnv(Gc<Value>),
 }
 
+#[derive(derive_more::Debug)]
 pub struct ExpansionEnv<'a> {
     up: Option<&'a ExpansionEnv<'a>>,
-    expansion_ctxs: Vec<ExpansionCtx>,
+    pub expansion_ctxs: Vec<ExpansionCtx>,
+    #[debug(skip)]
     pub lexical_contour: Gc<Env>,
 }
 
@@ -370,30 +404,42 @@ impl ExpansionEnv<'_> {
         self.lexical_contour
             .read()
             .fetch_var_ref(ident)
-            .map_or_else(|| self.fetch_macro_var_ref(ident), Ref::Regular)
+            .map_or_else(
+                || match self.fetch_macro_var_ref(ident) {
+                    Ref::Macro(m) => Ref::Regular({
+                        let mut local = m.var_ref;
+                        local.depth += self.lexical_contour.distance(&m.env);
+                        local
+                    }),
+                    x => x,
+                },
+                Ref::Regular,
+            )
     }
 
     /// Lexical environments are separately linked, so when we know that a variable is
     /// free in the current lexical environment, we can just check the macro envs.
     fn fetch_macro_var_ref(&self, ident: &Identifier) -> Ref {
-        for expansion_ctx in &self.expansion_ctxs {
+        let mut ident = ident.clone();
+        for expansion_ctx in self.expansion_ctxs.iter().rev() {
             if ident.marks.contains(&expansion_ctx.mark) {
                 // Strip the mark and check the macro environment
-                let mut ident = ident.clone();
                 ident.mark(expansion_ctx.mark);
+
                 // Fetch the var from the macro env:
-                let Some(var_ref) = expansion_ctx.env.read().fetch_var_ref(&ident) else {
-                    return Ref::Global(GlobalRef::new(ident));
+                let Some(expansion_ctx_ref) = expansion_ctx.env.read().fetch_var_ref(&ident) else {
+                    continue;
                 };
+
                 return Ref::Macro(MacroVarRef {
                     env: expansion_ctx.env.clone(),
-                    var_ref,
+                    var_ref: expansion_ctx_ref,
                 });
             }
         }
 
         if let Some(up) = self.up {
-            up.fetch_macro_var_ref(ident)
+            up.fetch_macro_var_ref(&ident)
         } else {
             Ref::Global(GlobalRef::new(ident.clone()))
         }
@@ -412,21 +458,24 @@ impl ExpansionEnv<'_> {
 
     // Terrible name, but it's the same thing going on as `fetch_macro_var_ref`
     fn fetch_macro_macro(&self, ident: &Identifier) -> Option<(Gc<Env>, Gc<Value>)> {
+        let mut ident = ident.clone();
         for expansion_ctx in &self.expansion_ctxs {
             if ident.marks.contains(&expansion_ctx.mark) {
                 // Strip the mark and check the macro environment
-                let mut ident = ident.clone();
                 ident.mark(expansion_ctx.mark);
                 // Fetch the macro from the macro env:
-                return match expansion_ctx.env.read().fetch_macro(&ident)? {
-                    MacroLookup::WithEnv { env, value } => Some((env, value)),
-                    MacroLookup::WithoutEnv(value) => Some((expansion_ctx.env.clone(), value)),
+                match expansion_ctx.env.read().fetch_macro(&ident) {
+                    Some(MacroLookup::WithEnv { env, value }) => return Some((env, value)),
+                    Some(MacroLookup::WithoutEnv(value)) => {
+                        return Some((expansion_ctx.env.clone(), value))
+                    }
+                    None => (),
                 };
             }
         }
 
         if let Some(up) = self.up {
-            up.fetch_macro_macro(ident)
+            up.fetch_macro_macro(&ident)
         } else {
             None
         }

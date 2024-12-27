@@ -201,18 +201,3 @@
 ;;                           ((x y) (values a b)))
 ;;               (list a b x y)))
 ;;           (x y x y))
-
-;; Scoping rules:
-(define (f x)
-  (let ([y 1])
-    (define (g h)
-      (* y x h))
-    (let ([h 2])
-      (g h))))
-
-(define-syntax test
-    (lambda (i)
-      (let ([x 10])
-        (syntax-case i ()
-          ([_ from]
-           #'(define from x))))))

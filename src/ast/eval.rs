@@ -90,6 +90,7 @@ impl Expression {
         env: &'a Gc<Env>,
         cont: &'a Option<Arc<Continuation>>,
     ) -> BoxFuture<'a, Result<ValuesOrPreparedCall, RuntimeError>> {
+        //println!("expr: {self:#?}");
         Box::pin(async move {
             match self {
                 Self::Undefined => val(Value::Undefined),
@@ -158,6 +159,7 @@ impl Call {
             let arg = arg.eval(env, &Some(cont)).await?.require_one()?;
             collected.push(arg);
         }
+        // println!("prepared: {:#?}", env);
         Ok(ValuesOrPreparedCall::PreparedCall(PreparedCall::prepare(
             collected,
             Some(ProcCallDebugInfo::new(&self.proc_name, &self.location)),
@@ -190,7 +192,7 @@ impl Let {
                 Arc::new(ResumableLet::new(&scope, ident, remaining, &self.body)),
                 cont,
             ));
-            let val = expr.eval(&scope, &Some(cont)).await?.require_one()?;
+            let val = expr.eval(env, &Some(cont)).await?.require_one()?;
             scope.write().def_local_var(ident, val);
         }
         self.body.tail_eval(&scope, cont).await

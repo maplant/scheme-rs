@@ -49,13 +49,12 @@ async fn main() {
     let mut rl = Reedline::create().with_validator(Box::new(InputParser));
     let mut n_results = 1;
     let top = Env::top().await;
-    println!("installed");
     loop {
         let Ok(Signal::Success(input)) = rl.read_line(&Prompt) else {
             println!("exiting...");
             return;
         };
-        match top.eval(&input).await {
+        match top.eval("<stdin>", &input).await {
             Ok(results) => {
                 for result in results.into_iter().flatten() {
                     println!("${n_results} = {}", result.read().fmt());

@@ -290,12 +290,12 @@ impl Syntax {
         env: &ExpansionEnv<'_>,
         cont: &Option<Arc<Continuation>>,
     ) -> Result<FullyExpanded, RuntimeError> {
-        let mut expansion_envs = Vec::new();
+        let mut env = env.push_expansion_env(Vec::new());
         loop {
-            match self.expand_once(env, cont).await? {
+            match self.expand_once(&env, cont).await? {
                 Expansion::Unexpanded => {
                     return Ok(FullyExpanded {
-                        expansion_envs,
+                        expansion_ctxs: env.expansion_ctxs,
                         expanded: self,
                     })
                 }
@@ -304,7 +304,7 @@ impl Syntax {
                     macro_env,
                     syntax,
                 } => {
-                    expansion_envs.push(ExpansionCtx::new(mark, macro_env));
+                    env.expansion_ctxs.push(ExpansionCtx::new(mark, macro_env));
                     self = syntax;
                 }
             }
@@ -312,19 +312,23 @@ impl Syntax {
     }
 }
 
+#[derive(derive_more::Debug)]
 pub enum Expansion {
     /// Syntax remained unchanged after expansion
     Unexpanded,
     /// Syntax was expanded, producing a new expansion context
     Expanded {
         mark: Mark,
+        #[debug(skip)]
         macro_env: Gc<Env>,
         syntax: Syntax,
     },
 }
 
+#[derive(derive_more::Debug, Clone)]
 pub struct ExpansionCtx {
     pub mark: Mark,
+    #[debug(skip)]
     pub env: Gc<Env>,
 }
 
@@ -334,8 +338,9 @@ impl ExpansionCtx {
     }
 }
 
+#[derive(Debug)]
 pub struct FullyExpanded {
-    pub expansion_envs: Vec<ExpansionCtx>,
+    pub expansion_ctxs: Vec<ExpansionCtx>,
     pub expanded: Syntax,
 }
 

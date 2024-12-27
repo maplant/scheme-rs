@@ -31,15 +31,8 @@ pub async fn test_assert(
 async fn r6rs() {
     let top = Env::top().await;
 
-    let r6rs_tok = Token::tokenize_file(include_str!("r6rs.scm"), "r6rs.scm").unwrap();
-    let r6rs_sexprs = ParsedSyntax::parse(&r6rs_tok).unwrap();
-    for sexpr in r6rs_sexprs {
-        let result = AstNode::from_syntax(sexpr.syntax, &top, &None)
-            .await
-            .unwrap()
-            .unwrap();
-
-        // TODO: Catch continuation calls
-        let _ = result.eval(&top, &None).await.unwrap();
-    }
+    let _ = top
+        .eval("r6rs.scm", include_str!("r6rs.scm"))
+        .await
+        .unwrap();
 }

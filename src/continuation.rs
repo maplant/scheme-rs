@@ -2,9 +2,9 @@ use async_trait::async_trait;
 use proc_macros::builtin;
 
 use crate::{
-    ast::{self, AstNode, Body, Expression},
+    ast::{AstNode, Body, Expression},
     env::{Env, ExpansionEnv, Ref},
-    error::{RuntimeError, RuntimeErrorKind},
+    error::RuntimeError,
     expand::Transformer,
     gc::{Gc, Trace},
     proc::{Callable, PreparedCall, ProcCallDebugInfo, ValuesOrPreparedCall},
@@ -103,45 +103,6 @@ impl Callable for Option<Arc<Continuation>> {
         ))
     }
 }
-
-/*
-#[derive(Trace)]
-pub struct CatchContinuationCall {
-    inner: Arc<dyn Eval>,
-}
-
-impl CatchContinuationCall {
-    pub fn new(inner: Arc<dyn Eval>) -> Self {
-        Self { inner }
-    }
-}
-
-#[async_trait]
-impl Eval for CatchContinuationCall {
-    async fn eval(
-        &self,
-        env: &Env,
-        cont: &Option<Arc<Continuation>>,
-    ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-        let mut inner = self.inner.eval(env, cont).await;
-        while let Err(RuntimeError {
-            kind: RuntimeErrorKind::AbandonCurrentContinuation { args, new_cont },
-            ..
-        }) = inner
-        {
-            // Abandon the current continuation and evaluate the newly returned one
-            // TODO: Retain the backtrace for errors
-            // let arg = args.pop().unwrap();
-            if let Some(new_cont) = new_cont {
-                inner = new_cont.resume(args, cont).await;
-            } else {
-                return Ok(args);
-            }
-        }
-        inner
-    }
-}
- */
 
 #[derive(Trace)]
 pub struct ResumableDefineVar {

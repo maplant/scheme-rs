@@ -60,7 +60,7 @@ impl AstNode {
         let expansion_env = ExpansionEnv::from_env(env);
         let FullyExpanded {
             expanded,
-            expansion_envs,
+            expansion_ctxs: expansion_envs,
         } = syn.expand(&expansion_env, cont).await?;
         let expansion_env = expansion_env.push_expansion_env(expansion_envs);
         Self::from_syntax_with_expansion_env(expanded, &expansion_env, cont).await
@@ -75,9 +75,14 @@ impl AstNode {
             Some(
                 [Syntax::Identifier { ident, .. }, Syntax::Identifier { ident: name, .. }, expr, Syntax::Null { .. }],
             ) if ident.name == "define-syntax" => {
+                // println!("defining here {}", ident.name);
                 // TODO: Error if define syntax isn't proper, error.
+                // println!("mod.rs:80");
                 define_syntax(name, expr.clone(), &env.lexical_contour, cont).await?;
                 Ok(None)
+            }
+            Some([Syntax::Identifier { ident, span, .. }, ..]) if ident.name == "define-syntax" => {
+                return Err(parse::ParseAstError::BadForm(span.clone()));
             }
             Some(syn @ [Syntax::Identifier { ident, span, .. }, ..]) if ident.name == "define" => {
                 Ok(Some(Self::Definition(
