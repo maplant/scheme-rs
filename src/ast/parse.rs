@@ -1,6 +1,6 @@
 use crate::{
     continuation::Continuation,
-    env::Env,
+    env::{Env, VarRef},
     error::RuntimeError,
     expand::{SyntaxRule, Transformer},
     gc::Gc,
@@ -579,8 +579,16 @@ async fn parse_let(
         }
     }
 
-    let new_env = env.push_lexical_contour(Gc::new(new_contour));
-    let body = Body::parse(body, &new_env, cont, span).await?;
+    let new_env = Gc::new(new_contour);
+    let new_exp_env = env.push_lexical_contour(new_env.clone());
+
+    if let Some(name) = name {
+        new_env
+            .write()
+            .def_local_var(name, Gc::new(Value::Undefined));
+    }
+
+    let mut ast_body = Body::parse(body, &new_exp_env, cont, span).await?;
 
     let mut bindings: Vec<_> = compiled_bindings
         .into_iter()
@@ -589,17 +597,34 @@ async fn parse_let(
 
     // If this is a named let, add a binding for a procedure with the same
     // body and args of the formals.
+    // This code is really bad, but I wanted to get this working
     if let Some(name) = name {
+        let mut new_new_env = new_env.new_lexical_contour();
+        for (binding, _) in &bindings {
+            new_new_env.def_local_var(binding, Gc::new(Value::Undefined));
+        }
+        let new_new_exp_env = new_exp_env.push_lexical_contour(Gc::new(new_new_env));
         let lambda = Lambda {
             args: Formals::FixedArgs(bindings.iter().map(|(ident, _)| ident.clone()).collect()),
-            body: body.clone(),
+            body: Body::parse(body, &new_new_exp_env, cont, span).await?,
         };
-        bindings.push((name.clone(), Expression::Lambda(lambda)));
+        ast_body = Body {
+            forms: ArcSlice::from(
+                vec![AstNode::Expression(Expression::Set(Set {
+                    var: Ref::Regular(VarRef::default().offset(bindings.len())),
+                    val: Arc::new(Expression::Lambda(lambda)),
+                }))]
+                .into_iter()
+                .chain(ast_body.forms.iter().map(|(x, _)| x).cloned())
+                .collect::<Vec<_>>(),
+            ),
+        };
+        bindings.push((name.clone(), Expression::Undefined));
     }
 
     Ok(Let {
         bindings: Arc::from(bindings),
-        body,
+        body: ast_body,
     })
 }
 
