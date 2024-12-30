@@ -1,11 +1,10 @@
-/*
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     ast,
     // compile::Compile,
     continuation::Continuation,
-    env::Env,
+    env::{Env, VarRef},
     error::RuntimeError,
     //     eval::Eval,
     gc::{Gc, Trace},
@@ -43,7 +42,7 @@ fn is_subtype_of(lhs: &Gc<RecordType>, rhs: &Gc<RecordType>) -> bool {
 #[derive(Debug, Trace, Clone)]
 pub struct Record {
     record_type: Gc<RecordType>,
-    fields: HashMap<Identifier, Gc<Value>>,
+    fields: Vec<Gc<Value>>,
 }
 
 #[derive(Trace, Debug)]
@@ -304,13 +303,12 @@ impl Compile for DefineRecordType {
         }
     }
 }
+*/
 
-#[async_trait]
-impl Eval for DefineRecordType {
+impl DefineRecordType {
     async fn eval(
         &self,
         env: &Env,
-        _cont: &Option<Arc<Continuation>>,
     ) -> Result<Vec<Gc<Value>>, RuntimeError> {
         let inherits = if let Some(ref parent) = self.parent {
             let parent_gc = env
@@ -489,45 +487,33 @@ fn new_proc(env: &Env, args: Vec<Identifier>, body: ast::Body) -> Gc<Value> {
     }))
 }
 
-// These are implemented in a super weird way and I'm sure I could figure
-// out something better. But they'll do for now.
 
 #[derive(Trace)]
 struct UncheckedFieldMutator {
-    identifier: Identifier,
+    offset: usize,
 }
 
-#[async_trait]
-impl Eval for UncheckedFieldMutator {
-    async fn eval(
-        &self,
-        env: &Env,
-        _cont: &Option<Arc<Continuation>>,
-    ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-        let this_gc = env.fetch_var(&Identifier::new("this".to_string())).unwrap();
-        let value = env.fetch_var(&self.identifier).unwrap();
+impl UncheckedFieldMutator {
+    async fn eval(&self, env: &Env) -> Result<(), RuntimeError> {
+        let this_gc = env.fetch_var(VarRef::default());
+        let value = env.fetch_var(VarRef::default().offset(1));
         let mut this = this_gc.write();
         let this: &mut Record = (&mut *this).try_into()?;
-        this.fields.insert(self.identifier.clone(), value);
+        this.fields[self.offset] = value;
 
-        Ok(Vec::new())
+        Ok(())
     }
 }
 
 #[derive(Trace)]
 struct FieldMutator {
     record_type: Gc<RecordType>,
-    identifier: Identifier,
+    offset: usize,
 }
 
-#[async_trait]
-impl Eval for FieldMutator {
-    async fn eval(
-        &self,
-        env: &Env,
-        _cont: &Option<Arc<Continuation>>,
-    ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-        let this_gc = env.fetch_var(&Identifier::new("this".to_string())).unwrap();
+impl FieldMutator {
+    async fn eval(&self, env: &Env) -> Result<(), RuntimeError> {
+        let this_gc = env.fetch_var(VarRef::default());
 
         {
             let this = this_gc.read();
@@ -541,30 +527,25 @@ impl Eval for FieldMutator {
             }
         }
 
-        let value = env.fetch_var(&self.identifier).unwrap();
+        let value = env.fetch_var(VarRef::default().offset(1));
 
         let mut this = this_gc.write();
         let this: &mut Record = (&mut *this).try_into()?;
-        this.fields.insert(self.identifier.clone(), value);
+        this.fields[self.offset] = value;
 
-        Ok(Vec::new())
+        Ok(())
     }
 }
 
 #[derive(Trace)]
 struct FieldAccessor {
     record_type: Gc<RecordType>,
-    identifier: Identifier,
+    offset: usize,
 }
 
-#[async_trait]
-impl Eval for FieldAccessor {
-    async fn eval(
-        &self,
-        env: &Env,
-        _cont: &Option<Arc<Continuation>>,
-    ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-        let this_gc = env.fetch_var(&Identifier::new("this".to_string())).unwrap();
+impl FieldAccessor {
+    async fn eval(&self, env: &Env) -> Result<Gc<Value>, RuntimeError> {
+        let this_gc = env.fetch_var(VarRef::default());
         let this = this_gc.read();
         let this: &Record = (&*this).try_into()?;
 
@@ -575,7 +556,7 @@ impl Eval for FieldAccessor {
             ));
         }
 
-        Ok(vec![this.fields.get(&self.identifier).unwrap().clone()])
+        Ok(this.fields[self.offset].clone())
     }
 }
 
@@ -584,25 +565,18 @@ struct RecordPredicate {
     record_type: Gc<RecordType>,
 }
 
-#[async_trait]
-impl Eval for RecordPredicate {
-    async fn eval(
-        &self,
-        env: &Env,
-        _cont: &Option<Arc<Continuation>>,
-    ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-        let this_gc = env.fetch_var(&Identifier::new("this".to_string())).unwrap();
+impl RecordPredicate {
+    async fn eval(&self, env: &Env) -> Result<Gc<Value>, RuntimeError> {
+        let this_gc = env.fetch_var(VarRef::default());
         let this = this_gc.read();
         let this = match &*this {
             Value::Record(ref rec) => rec,
-            _ => return Ok(vec![Gc::new(Value::Boolean(false))]),
+            _ => return Ok(Gc::new(Value::Boolean(false))),
         };
 
-        Ok(vec![Gc::new(Value::Boolean(is_subtype_of(
+        Ok(Gc::new(Value::Boolean(is_subtype_of(
             &this.record_type,
             &self.record_type,
-        )))])
+        ))))
     }
 }
-*/
-*/
