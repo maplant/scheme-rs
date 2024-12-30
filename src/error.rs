@@ -6,16 +6,17 @@ use crate::{
     value::Value,
 };
 use derivative::Derivative;
+use proc_macros::Trace;
 use std::sync::Arc;
 
 // TODO: Rename this to condition to more accurately reflect its purpose
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Trace)]
 pub struct RuntimeError {
     pub backtrace: Vec<Frame>,
     pub kind: RuntimeErrorKind,
 }
 
-#[derive(Derivative)]
+#[derive(Derivative, Trace)]
 #[derivative(Debug, Clone)]
 pub enum RuntimeErrorKind {
     UndefinedVariable(Identifier),
@@ -49,7 +50,7 @@ pub enum RuntimeErrorKind {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Trace)]
 pub struct Frame {
     pub proc: String,
     pub span: Span,

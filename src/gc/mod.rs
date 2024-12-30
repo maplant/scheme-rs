@@ -479,6 +479,26 @@ where
     }
 }
 
+unsafe impl<V, E> Trace for Result<V, E>
+where
+    V: GcOrTrace,
+    E: GcOrTrace,
+{
+    unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
+        match self {
+            Ok(inner) => inner.visit_or_recurse(visitor),
+            Err(inner) => inner.visit_or_recurse(visitor),
+        }
+    }
+
+    unsafe fn finalize(&mut self) {
+        match self {
+            Ok(ref mut inner) => inner.finalize_or_skip(),
+            Err(ref mut inner) => inner.finalize_or_skip(),
+        }
+    }
+}
+
 unsafe impl<T> Trace for Box<T>
 where
     T: GcOrTrace,

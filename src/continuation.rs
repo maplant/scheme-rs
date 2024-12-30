@@ -12,7 +12,7 @@ use crate::{
     util::{ArcSlice, RequireOne},
     value::Value,
 };
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 #[async_trait]
 pub trait Resumable: Trace + Send + Sync {
@@ -32,13 +32,34 @@ pub trait Resumable: Trace + Send + Sync {
 
     /// Clone the contents of the resumable; necessary to ensure the continuation
     /// is unique when we make a continuation first-class.
-    fn clone_stack(&self) -> Arc<dyn Resumable>;
+    fn clone_stack(&self, cloned: &mut HashMap<Gc<Env>, Gc<Env>>) -> Arc<dyn Resumable>;
+}
+
+#[derive(Clone, Trace)]
+struct DiscardResumeArgs {
+    replacement: Result<Vec<Gc<Value>>, RuntimeError>,
+}
+
+#[async_trait]
+impl Resumable for DiscardResumeArgs {
+    async fn resume(
+        &self,
+        _args: Vec<Gc<Value>>,
+        _cont: &Option<Arc<Continuation>>,
+    ) -> Result<Vec<Gc<Value>>, RuntimeError> {
+        self.replacement.clone()
+    }
+
+    fn clone_stack(&self, _cloned: &mut HashMap<Gc<Env>, Gc<Env>>) -> Arc<dyn Resumable> {
+        Arc::new(self.clone())
+    }
 }
 
 #[derive(Trace)]
 pub struct Continuation {
     resume_point: Arc<dyn Resumable>,
     remaining: Option<Arc<Continuation>>,
+    dynamic_wind: Option<DynamicWind>,
 }
 
 impl Continuation {
@@ -46,14 +67,70 @@ impl Continuation {
         Self {
             resume_point,
             remaining: remaining.clone(),
+            dynamic_wind: remaining
+                .as_ref()
+                .and_then(|cont| cont.dynamic_wind.clone()),
         }
     }
 
-    fn clone_stack(&self) -> Arc<Self> {
+    pub fn with_dynamic_wind(
+        resume_point: Arc<dyn Resumable>,
+        remaining: &Option<Arc<Continuation>>,
+        dynamic_wind: DynamicWind,
+    ) -> Self {
+        Self {
+            resume_point,
+            remaining: remaining.clone(),
+            dynamic_wind: Some(dynamic_wind),
+        }
+    }
+
+    fn clone_stack(&self, cloned: &mut HashMap<Gc<Env>, Gc<Env>>) -> Arc<Self> {
         Arc::new(Self {
-            resume_point: self.resume_point.clone_stack(),
-            remaining: self.remaining.as_ref().map(|cont| cont.clone_stack()),
+            resume_point: self.resume_point.clone_stack(cloned),
+            remaining: self.remaining.as_ref().map(|cont| cont.clone_stack(cloned)),
+            dynamic_wind: self.dynamic_wind.clone(),
         })
+    }
+
+    pub async fn enter_extent(
+        self: &Arc<Self>,
+        args: Vec<Gc<Value>>,
+    ) -> Result<Vec<Gc<Value>>, RuntimeError> {
+        if let Some(ref dynamic_wind) = self.dynamic_wind {
+            let in_cont = Some(Arc::new(Continuation::with_dynamic_wind(
+                Arc::new(ResumableDynamicWind {
+                    args: args.clone(),
+                    body_thunk: Arc::new(Some(self.clone())),
+                    dynamic_wind: dynamic_wind.clone(),
+                    stage: Stage::In,
+                }),
+                &None,
+                dynamic_wind.clone(),
+            )));
+
+            let _ = dynamic_wind
+                .in_thunk
+                .call(Vec::new(), &in_cont)
+                .await?
+                .eval(&in_cont)
+                .await?;
+
+            let body_cont = Some(Arc::new(Continuation::with_dynamic_wind(
+                Arc::new(ResumableDynamicWind {
+                    args: args.clone(),
+                    body_thunk: Arc::new(Some(self.clone())),
+                    dynamic_wind: dynamic_wind.clone(),
+                    stage: Stage::Body,
+                }),
+                &None,
+                dynamic_wind.clone(),
+            )));
+
+            self.resume(args, &body_cont).await
+        } else {
+            self.resume(args, &None).await
+        }
     }
 }
 
@@ -66,15 +143,30 @@ impl Resumable for Continuation {
     ) -> Result<Vec<Gc<Value>>, RuntimeError> {
         if let Some(ref remaining) = self.remaining {
             let new_cont = Some(Arc::new(Continuation::new(remaining.clone(), cont)));
-            let resume_result = self.resume_point.resume(args, &new_cont).await?;
-            remaining.resume(resume_result, cont).await
+            let resume_result = self.resume_point.resume(args, &new_cont).await;
+            if let Some(out_thunk) =
+                leaving_dynamic_extent(&self.dynamic_wind, &remaining.dynamic_wind)
+            {
+                let out_cont = Some(Arc::new(Continuation::new(
+                    Arc::new(DiscardResumeArgs {
+                        replacement: resume_result.clone(),
+                    }),
+                    &self.remaining,
+                )));
+                let _ = out_thunk
+                    .call(Vec::new(), &out_cont)
+                    .await?
+                    .eval(&out_cont)
+                    .await?;
+            }
+            remaining.resume(resume_result?, cont).await
         } else {
             self.resume_point.resume(args, cont).await
         }
     }
 
-    fn clone_stack(&self) -> Arc<dyn Resumable> {
-        self.clone_stack()
+    fn clone_stack(&self, cloned: &mut HashMap<Gc<Env>, Gc<Env>>) -> Arc<dyn Resumable> {
+        self.clone_stack(cloned)
     }
 }
 
@@ -99,7 +191,9 @@ impl Callable for Option<Arc<Continuation>> {
     ) -> Result<ValuesOrPreparedCall, RuntimeError> {
         Err(RuntimeError::abandon_current_continuation(
             args,
-            self.clone(),
+            // Cloning the stack is _extremely_ slow. This needs to be fixed at some point.
+            self.as_ref()
+                .map(|cont| cont.clone_stack(&mut HashMap::default())),
         ))
     }
 }
@@ -128,18 +222,18 @@ impl Resumable for ResumableDefineVar {
     ) -> Result<Vec<Gc<Value>>, RuntimeError> {
         let arg = args.require_one()?;
         self.env.write().def_local_var(&self.name, arg);
-        Ok(vec![])
+        Ok(Vec::new())
     }
 
-    fn clone_stack(&self) -> Arc<dyn Resumable> {
+    fn clone_stack(&self, cloned: &mut HashMap<Gc<Env>, Gc<Env>>) -> Arc<dyn Resumable> {
         Arc::new(Self {
-            env: self.env.deep_clone(),
+            env: self.env.deep_clone(cloned),
             name: self.name.clone(),
         })
     }
 }
 
-#[derive(Trace)]
+#[derive(Trace, Debug)]
 pub struct ResumableBody {
     env: Gc<Env>,
     remaining: ArcSlice<AstNode>,
@@ -156,6 +250,14 @@ impl ResumableBody {
 
 #[async_trait]
 impl Resumable for ResumableBody {
+    fn min_args(&self) -> usize {
+        0
+    }
+
+    fn max_args(&self) -> Option<usize> {
+        None
+    }
+
     async fn resume(
         &self,
         args: Vec<Gc<Value>>,
@@ -174,9 +276,9 @@ impl Resumable for ResumableBody {
         last.eval(&self.env, cont).await
     }
 
-    fn clone_stack(&self) -> Arc<dyn Resumable> {
+    fn clone_stack(&self, cloned: &mut HashMap<Gc<Env>, Gc<Env>>) -> Arc<dyn Resumable> {
         Arc::new(Self {
-            env: self.env.deep_clone(),
+            env: self.env.deep_clone(cloned),
             remaining: self.remaining.clone(),
         })
     }
@@ -230,9 +332,9 @@ impl Resumable for ResumableLet {
         self.body.eval(&self.scope, cont).await
     }
 
-    fn clone_stack(&self) -> Arc<dyn Resumable> {
+    fn clone_stack(&self, cloned: &mut HashMap<Gc<Env>, Gc<Env>>) -> Arc<dyn Resumable> {
         Arc::new(Self {
-            scope: self.scope.deep_clone(),
+            scope: self.scope.deep_clone(cloned),
             curr: self.curr.clone(),
             remaining_bindings: self.remaining_bindings.clone(),
             body: self.body.clone(),
@@ -278,9 +380,9 @@ impl Resumable for ResumableIf {
         }
     }
 
-    fn clone_stack(&self) -> Arc<dyn Resumable> {
+    fn clone_stack(&self, cloned: &mut HashMap<Gc<Env>, Gc<Env>>) -> Arc<dyn Resumable> {
         Arc::new(Self {
-            env: self.env.deep_clone(),
+            env: self.env.deep_clone(cloned),
             success: self.success.clone(),
             failure: self.failure.clone(),
         })
@@ -336,9 +438,9 @@ impl Resumable for ResumableAnd {
         last.eval(&self.env, cont).await
     }
 
-    fn clone_stack(&self) -> Arc<dyn Resumable> {
+    fn clone_stack(&self, cloned: &mut HashMap<Gc<Env>, Gc<Env>>) -> Arc<dyn Resumable> {
         Arc::new(Self {
-            env: self.env.deep_clone(),
+            env: self.env.deep_clone(cloned),
             args: self.args.clone(),
         })
     }
@@ -393,9 +495,9 @@ impl Resumable for ResumableOr {
         last.eval(&self.env, cont).await
     }
 
-    fn clone_stack(&self) -> Arc<dyn Resumable> {
+    fn clone_stack(&self, cloned: &mut HashMap<Gc<Env>, Gc<Env>>) -> Arc<dyn Resumable> {
         Arc::new(Self {
-            env: self.env.deep_clone(),
+            env: self.env.deep_clone(cloned),
             args: self.args.clone(),
         })
     }
@@ -429,9 +531,9 @@ impl Resumable for ResumableSet {
         Ok(Vec::new())
     }
 
-    fn clone_stack(&self) -> Arc<dyn Resumable> {
+    fn clone_stack(&self, cloned: &mut HashMap<Gc<Env>, Gc<Env>>) -> Arc<dyn Resumable> {
         Arc::new(Self {
-            env: self.env.deep_clone(),
+            env: self.env.deep_clone(cloned),
             var: self.var.clone(),
         })
     }
@@ -475,9 +577,9 @@ impl Resumable for ResumableSyntaxCase {
             .await
     }
 
-    fn clone_stack(&self) -> Arc<dyn Resumable> {
+    fn clone_stack(&self, cloned: &mut HashMap<Gc<Env>, Gc<Env>>) -> Arc<dyn Resumable> {
         Arc::new(Self {
-            env: self.env.deep_clone(),
+            env: self.env.deep_clone(cloned),
             transformer: self.transformer.clone(),
         })
     }
@@ -551,9 +653,9 @@ impl Resumable for ResumableCall {
         .await
     }
 
-    fn clone_stack(&self) -> Arc<dyn Resumable> {
+    fn clone_stack(&self, cloned: &mut HashMap<Gc<Env>, Gc<Env>>) -> Arc<dyn Resumable> {
         Arc::new(Self {
-            env: self.env.deep_clone(),
+            env: self.env.deep_clone(cloned),
             collected: self.collected.clone(),
             remaining: self.remaining.clone(),
             proc_name: self.proc_name.clone(),
@@ -573,12 +675,7 @@ pub async fn call_cc(
             .ok_or_else(|| RuntimeError::invalid_type("procedure", proc.type_name()))?
     };
     callable
-        .call(
-            vec![Gc::new(Value::Continuation(
-                cont.as_ref().map(|cont| cont.clone_stack()),
-            ))],
-            cont,
-        )
+        .call(vec![Gc::new(Value::Continuation(cont.clone()))], cont)
         .await?
         .eval(cont)
         .await
@@ -613,7 +710,7 @@ impl Resumable for CallWithValues {
         callable.call(args, cont).await?.eval(cont).await
     }
 
-    fn clone_stack(&self) -> Arc<dyn Resumable> {
+    fn clone_stack(&self, _cloned: &mut HashMap<Gc<Env>, Gc<Env>>) -> Arc<dyn Resumable> {
         Arc::new(self.clone())
     }
 }
@@ -640,7 +737,9 @@ pub async fn call_with_values(
             max_args: consumer_callable.max_args(),
             consumer: consumer.clone(),
         }),
-        &cont.as_ref().map(|cont| cont.clone_stack()),
+        &cont
+            .as_ref()
+            .map(|cont| cont.clone_stack(&mut HashMap::default())),
     ));
 
     let producer_result = producer_callable
@@ -655,4 +754,174 @@ pub async fn call_with_values(
         .await?
         .eval(cont)
         .await
+}
+
+#[derive(Trace, Clone)]
+pub struct DynamicWind {
+    in_thunk: Arc<dyn Callable>,
+    out_thunk: Arc<dyn Callable>,
+}
+
+fn leaving_dynamic_extent<'a>(
+    curr_wind: &'a Option<DynamicWind>,
+    containing_wind: &Option<DynamicWind>,
+) -> Option<&'a dyn Callable> {
+    if curr_wind.as_ref().map(|wind| Arc::as_ptr(&wind.out_thunk))
+        != containing_wind
+            .as_ref()
+            .map(|wind| Arc::as_ptr(&wind.out_thunk))
+    {
+        curr_wind.as_ref().map(|wind| wind.out_thunk.as_ref())
+    } else {
+        None
+    }
+}
+
+#[derive(derive_more::Debug, Clone, Trace)]
+pub struct ResumableDynamicWind {
+    args: Vec<Gc<Value>>,
+    #[debug(skip)]
+    body_thunk: Arc<dyn Callable>,
+    #[debug(skip)]
+    dynamic_wind: DynamicWind,
+    stage: Stage,
+}
+
+#[derive(Debug, Clone, Trace)]
+enum Stage {
+    In,
+    Body,
+}
+
+#[async_trait]
+impl Resumable for ResumableDynamicWind {
+    fn min_args(&self) -> usize {
+        0
+    }
+
+    fn max_args(&self) -> Option<usize> {
+        None
+    }
+
+    async fn resume(
+        &self,
+        args: Vec<Gc<Value>>,
+        cont: &Option<Arc<Continuation>>,
+    ) -> Result<Vec<Gc<Value>>, RuntimeError> {
+        match self.stage {
+            Stage::In => {
+                let mut body = self.clone();
+                body.stage = Stage::Body;
+                let body = Arc::new(body);
+
+                let body_cont = Some(Arc::new(Continuation::with_dynamic_wind(
+                    body.clone(),
+                    cont,
+                    self.dynamic_wind.clone(),
+                )));
+
+                let vals = self
+                    .body_thunk
+                    .call(self.args.clone(), &body_cont)
+                    .await?
+                    .eval(&body_cont)
+                    .await?;
+
+                Ok(vals)
+            }
+            Stage::Body => Ok(args),
+        }
+    }
+
+    fn clone_stack(&self, _cloned: &mut HashMap<Gc<Env>, Gc<Env>>) -> Arc<dyn Resumable> {
+        // Do I need to clone the closures of the dynamic wind? I don't think so, but maybe.
+        Arc::new(self.clone())
+    }
+}
+
+#[builtin("dynamic-wind")]
+pub async fn dynamic_wind(
+    cont: &Option<Arc<Continuation>>,
+    in_thunk: &Gc<Value>,
+    body_thunk: &Gc<Value>,
+    out_thunk: &Gc<Value>,
+) -> Result<Vec<Gc<Value>>, RuntimeError> {
+    let in_thunk = {
+        let in_thunk = in_thunk.read();
+        in_thunk
+            .as_callable()
+            .ok_or_else(|| RuntimeError::invalid_type("procedure", in_thunk.type_name()))?
+            .clone()
+    };
+
+    let body_thunk = {
+        let body_thunk = body_thunk.read();
+        body_thunk
+            .as_callable()
+            .ok_or_else(|| RuntimeError::invalid_type("procedure", body_thunk.type_name()))?
+            .clone()
+    };
+
+    let out_thunk = {
+        let out_thunk = out_thunk.read();
+        out_thunk
+            .as_callable()
+            .ok_or_else(|| RuntimeError::invalid_type("procedure", out_thunk.type_name()))?
+            .clone()
+    };
+
+    let dynamic_wind = DynamicWind {
+        in_thunk: in_thunk.clone(),
+        out_thunk: out_thunk.clone(),
+    };
+
+    let in_cont = Some(Arc::new(Continuation::with_dynamic_wind(
+        Arc::new(ResumableDynamicWind {
+            args: Vec::new(),
+            body_thunk: body_thunk.clone(),
+            dynamic_wind: dynamic_wind.clone(),
+            stage: Stage::In,
+        }),
+        cont,
+        dynamic_wind.clone(),
+    )));
+
+    let _ = in_thunk
+        .call(Vec::new(), &in_cont)
+        .await?
+        .eval(&in_cont)
+        .await?;
+
+    let body_cont = Some(Arc::new(Continuation::with_dynamic_wind(
+        Arc::new(ResumableDynamicWind {
+            args: Vec::new(),
+            body_thunk: body_thunk.clone(),
+            dynamic_wind: dynamic_wind.clone(),
+            stage: Stage::Body,
+        }),
+        cont,
+        dynamic_wind.clone(),
+    )));
+
+    let res = body_thunk
+        .call(Vec::new(), &body_cont)
+        .await?
+        .eval(&body_cont)
+        .await?;
+
+    let out_cont = Some(Arc::new(Continuation::with_dynamic_wind(
+        Arc::new(DiscardResumeArgs {
+            replacement: Ok(res.clone()),
+        }),
+        cont,
+        dynamic_wind.clone(),
+    )));
+
+    let _ = out_thunk
+        .call(Vec::new(), &out_cont)
+        .await?
+        .eval(&out_cont)
+        .await?;
+
+    Ok(res)
 }
