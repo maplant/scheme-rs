@@ -91,8 +91,8 @@ impl Value {
             Self::ExternalFn(_) => "<external-fn>".to_string(),
             Self::Future(_) => "<future>".to_string(),
             Self::Continuation(_) => "<continuation>".to_string(),
-            Self::Record(_) => "<record>".to_string(),
-            Self::RecordType(_) => "<record-type>".to_string(),
+            Self::Record(record) => format!("<{record:?}>"),
+            Self::RecordType(record_type) => format!("<{record_type:?}>"),
             Self::Undefined => "<undefined>".to_string(),
         }
     }

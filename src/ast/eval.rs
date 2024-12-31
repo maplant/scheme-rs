@@ -1,5 +1,3 @@
-//! todo
-
 use std::collections::BTreeSet;
 
 use futures::future::BoxFuture;
@@ -19,7 +17,8 @@ impl Definition {
     ) -> Result<(), RuntimeError> {
         match self {
             Self::DefineVar(var) => var.eval(env, cont).await,
-            Self::DefineFunc(func_def) => func_def.eval(env).await,
+            Self::DefineFunc(func_def) => func_def.eval(env),
+            Self::DefineRecordType(record) => record.eval(env),
         }
     }
 }
@@ -41,7 +40,7 @@ impl DefineVar {
 }
 
 impl DefineFunc {
-    pub(super) async fn eval(&self, env: &Gc<Env>) -> Result<(), RuntimeError> {
+    pub(super) fn eval(&self, env: &Gc<Env>) -> Result<(), RuntimeError> {
         let (args, remaining) = self.args.to_args_and_remaining();
         let func = Gc::new(Value::Procedure(Procedure {
             up: env.clone(),
@@ -109,9 +108,18 @@ impl Expression {
                 }
                 Self::Vector(vec) => val(vec.eval()),
                 Self::Begin(body) => body.tail_eval(env, cont).await,
-                Self::Var(var) => Ok(ValuesOrPreparedCall::Values(vec![var
-                    .fetch(env)
-                    .map_err(RuntimeError::undefined_variable)?])),
+                Self::Var(var) => Ok(ValuesOrPreparedCall::Values(vec![var.fetch(env)?])),
+                Self::MakeRecord(mk_record) => val(mk_record.eval()),
+                Self::UncheckedFieldMutation(fm) => {
+                    fm.eval(env)?;
+                    no_vals()
+                }
+                Self::FieldMutation(fm) => {
+                    fm.eval(env)?;
+                    no_vals()
+                }
+                Self::FieldProjection(fp) => vals(fp.eval(env)?),
+                Self::RecordPredicate(rp) => val(rp.eval(env)),
             }
         })
     }

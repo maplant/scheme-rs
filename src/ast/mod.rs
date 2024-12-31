@@ -1,3 +1,8 @@
+//! Code for parsing and linking Scheme code into a format that is instantly
+//! evaluatable. The AST format is largely equivalent to a post-expansion
+//! process version Scheme without significant lowering. The biggest change
+//! is all variables scopes have been resolved.
+
 mod eval;
 pub mod parse;
 
@@ -11,6 +16,10 @@ use crate::{
     gc::{Gc, Trace},
     num::Number,
     proc::ValuesOrPreparedCall,
+    records::{
+        DefineRecordType, FieldMutation, FieldProjection, MakeRecord, RecordPredicate,
+        UncheckedFieldMutation,
+    },
     syntax::{FullyExpanded, Identifier, Span, Syntax},
     util::ArcSlice,
     value::Value,
@@ -78,10 +87,19 @@ impl AstNode {
                 define_syntax(name, expr.clone(), &env.lexical_contour, cont).await?;
                 Ok(None)
             }
-            Some([Syntax::Identifier { ident, span, .. }, ..]) if ident.name == "define-syntax" => {
+            Some([Syntax::Identifier { ident, span, .. }, body @ .., Syntax::Null { .. }])
+                if ident == "define-record-type" =>
+            {
+                let record_type = DefineRecordType::parse(body, env, span)?;
+                record_type.define(&env.lexical_contour);
+                Ok(Some(AstNode::Definition(Definition::DefineRecordType(
+                    record_type,
+                ))))
+            }
+            Some([Syntax::Identifier { ident, span, .. }, ..]) if ident == "define-syntax" => {
                 Err(parse::ParseAstError::BadForm(span.clone()))
             }
-            Some(syn @ [Syntax::Identifier { ident, span, .. }, ..]) if ident.name == "define" => {
+            Some(syn @ [Syntax::Identifier { ident, span, .. }, ..]) if ident == "define" => {
                 Ok(Some(Self::Definition(
                     Definition::parse(syn, env, cont, span).await?,
                 )))
@@ -97,6 +115,7 @@ impl AstNode {
 pub enum Definition {
     DefineVar(DefineVar),
     DefineFunc(DefineFunc),
+    DefineRecordType(DefineRecordType),
 }
 
 #[derive(Debug, Clone, Trace)]
@@ -129,6 +148,13 @@ pub enum Expression {
     Var(Ref),
     Vector(Vector),
     Begin(Body),
+    // Record expressions:
+    // I would like to get rid of these eventually somehow.
+    MakeRecord(MakeRecord),
+    UncheckedFieldMutation(UncheckedFieldMutation),
+    FieldMutation(FieldMutation),
+    FieldProjection(FieldProjection),
+    RecordPredicate(RecordPredicate),
 }
 
 #[derive(Debug, Clone, PartialEq, Trace)]

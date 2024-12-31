@@ -1,15 +1,14 @@
-use std::{collections::HashMap, sync::Arc};
+//! Rudimentary structure support. CPS will probably make a lot of this redundant.
+
+use std::collections::HashMap;
 
 use crate::{
-    ast,
-    // compile::Compile,
-    continuation::Continuation,
-    env::{Env, VarRef},
+    ast::{self, parse::ParseAstError, Body, Expression, Let},
+    env::{Env, ExpansionEnv, Ref, VarRef},
     error::RuntimeError,
-    //     eval::Eval,
     gc::{Gc, Trace},
     proc::Procedure,
-    syntax::{Identifier, Mark, Span, Syntax},
+    syntax::{Identifier, Span, Syntax},
     value::Value,
 };
 
@@ -45,16 +44,16 @@ pub struct Record {
     fields: Vec<Gc<Value>>,
 }
 
-#[derive(Trace, Debug)]
+#[derive(Clone, Trace, Debug)]
 pub struct DefineRecordType {
-    parent: Option<Identifier>,
+    parent: Option<Ref>,
     name: Identifier,
     constructor: Option<Identifier>,
     predicate: Option<Identifier>,
     fields: Vec<FieldDefinition>,
 }
 
-#[derive(Trace, Debug)]
+#[derive(Trace, Debug, Clone)]
 struct FieldDefinition {
     field_name: Identifier,
     accessor_name: Option<Identifier>,
@@ -89,25 +88,13 @@ impl FieldDefinition {
     }
 }
 
-#[derive(Trace, Debug)]
+#[derive(Trace, Debug, Clone)]
 enum FieldDefinitionKind {
     Mutable { mutator_name: Option<Identifier> },
     Immutable,
 }
 
-/*
-#[derive(Debug, Clone)]
-pub enum CompileDefineRecordTypeError {
-    ParentSpecifiedMultiple { first: Span, second: Span },
-    FieldDefinedMultipleTimes { first: Span, second: Span },
-    MultipleFieldsClauses { first: Span, second: Span },
-    BadForm(Span),
-}
-
-fn compile_field(
-    field: &[Syntax],
-    span: &Span,
-) -> Result<FieldDefinition, CompileDefineRecordTypeError> {
+fn parse_field(field: &[Syntax], span: &Span) -> Result<FieldDefinition, ParseAstError> {
     match field {
         [Syntax::Identifier {
             ident: mutability, ..
@@ -177,36 +164,32 @@ fn compile_field(
         {
             Ok(FieldDefinition::new(field_name, Some(accessor_name), span))
         }
-        _ => Err(CompileDefineRecordTypeError::BadForm(span.clone())),
+        _ => Err(ParseAstError::BadForm(span.clone())),
     }
 }
 
-fn compile_fields(fields: &[Syntax]) -> Result<Vec<FieldDefinition>, CompileDefineRecordTypeError> {
-    let mut compiled_fields = Vec::new();
+fn parse_fields(fields: &[Syntax]) -> Result<Vec<FieldDefinition>, ParseAstError> {
+    let mut parsed_fields = Vec::new();
     for field in fields {
         match field {
             Syntax::Identifier { ident, span, .. } => {
-                compiled_fields.push(FieldDefinition::new(ident, None, span));
+                parsed_fields.push(FieldDefinition::new(ident, None, span));
             }
-            Syntax::List { list, span } => compiled_fields.push(compile_field(list, span)?),
-            x => return Err(CompileDefineRecordTypeError::BadForm(x.span().clone())),
+            Syntax::List { list, span } => parsed_fields.push(parse_field(list, span)?),
+            x => return Err(ParseAstError::BadForm(x.span().clone())),
         }
     }
-    Ok(compiled_fields)
+    Ok(parsed_fields)
 }
 
-#[async_trait]
-impl Compile for DefineRecordType {
-    type Error = CompileDefineRecordTypeError;
-
-    async fn compile(
+impl DefineRecordType {
+    pub fn parse(
         exprs: &[Syntax],
-        _env: &Env,
-        _cont: &Option<Arc<Continuation>>,
+        env: &ExpansionEnv<'_>,
         span: &Span,
-    ) -> Result<Self, CompileDefineRecordTypeError> {
+    ) -> Result<Self, ParseAstError> {
         match exprs {
-            [first_arg, args @ .., Syntax::Null { .. }] => {
+            [first_arg, args @ ..] => {
                 let (name, constructor, predicate) = match first_arg {
                     Syntax::Identifier { ident: name, .. } => (name.clone(), None, None),
                     Syntax::List { list, span, .. } => {
@@ -222,98 +205,130 @@ impl Compile for DefineRecordType {
                                 Some(predicate.clone()),
                             )
                         } else {
-                            return Err(CompileDefineRecordTypeError::BadForm(span.clone()));
+                            return Err(ParseAstError::BadForm(span.clone()));
                         }
                     }
-                    _ => return Err(CompileDefineRecordTypeError::BadForm(span.clone())),
+                    _ => return Err(ParseAstError::BadForm(span.clone())),
                 };
 
                 let mut parent: Option<(Identifier, Span)> = None;
                 let mut fields: Option<(Vec<FieldDefinition>, Span)> = None;
 
                 for arg in args {
-                    if let Syntax::List { list, span, .. } = arg {
-                        match list.as_slice() {
+                    match arg.as_list() {
+                        Some(
                             [Syntax::Identifier {
                                 ident,
                                 span: second,
                                 ..
                             }, Syntax::Identifier {
                                 ident: parent_name, ..
-                            }, Syntax::Null { .. }] => {
-                                if ident.name == "parent" {
-                                    if let Some((_, first)) = parent {
-                                        return Err(
-                                            CompileDefineRecordTypeError::ParentSpecifiedMultiple {
-                                                first: first.clone(),
-                                                second: second.clone(),
-                                            },
-                                        );
-                                    }
-                                    parent = Some((parent_name.clone(), second.clone()));
-                                }
+                            }, Syntax::Null { .. }],
+                        ) if ident.name == "parent" => {
+                            if let Some((_, first)) = parent {
+                                return Err(ParseAstError::ParentSpecifiedMultipleTimes {
+                                    first: first.clone(),
+                                    second: second.clone(),
+                                });
                             }
+                            parent = Some((parent_name.clone(), second.clone()));
+                        }
+                        Some(
                             [Syntax::Identifier {
                                 ident,
                                 span: second,
                                 ..
-                            }, uncompiled_fields @ .., Syntax::Null { .. }]
-                                if ident.name == "fields" =>
-                            {
-                                if let Some((_, first)) = fields {
-                                    return Err(
-                                        CompileDefineRecordTypeError::ParentSpecifiedMultiple {
-                                            first: first.clone(),
-                                            second: second.clone(),
-                                        },
-                                    );
-                                }
-
-                                let compiled_fields = compile_fields(uncompiled_fields)?;
-
-                                // Check for fields with the same name:
-                                let mut field_locs = HashMap::<String, Span>::new();
-
-                                for field in &compiled_fields {
-                                    if let Some(first) = field_locs.get(&field.field_name.name) {
-                                        return Err(CompileDefineRecordTypeError::FieldDefinedMultipleTimes { first: first.clone(), second: field.span.clone() });
-                                    }
-                                    field_locs
-                                        .insert(field.field_name.name.clone(), field.span.clone());
-                                }
-
-                                fields = Some((compiled_fields, span.clone()));
+                            }, unparsed_fields @ .., Syntax::Null { .. }],
+                        ) if ident == "fields" => {
+                            if let Some((_, first)) = fields {
+                                return Err(ParseAstError::ParentSpecifiedMultipleTimes {
+                                    first: first.clone(),
+                                    second: second.clone(),
+                                });
                             }
-                            _ => return Err(CompileDefineRecordTypeError::BadForm(span.clone())),
+
+                            let parsed_fields = parse_fields(unparsed_fields)?;
+
+                            // Check for fields with the same name:
+                            let mut field_locs = HashMap::<String, Span>::new();
+
+                            for field in &parsed_fields {
+                                if let Some(first) = field_locs.get(&field.field_name.name) {
+                                    return Err(ParseAstError::NameBoundMultipleTimes {
+                                        ident: field.field_name.clone(),
+                                        first: first.clone(),
+                                        second: field.span.clone(),
+                                    });
+                                }
+                                field_locs
+                                    .insert(field.field_name.name.clone(), field.span.clone());
+                            }
+
+                            fields = Some((parsed_fields, span.clone()));
                         }
-                    } else {
-                        return Err(CompileDefineRecordTypeError::BadForm(span.clone()));
+                        _ => return Err(ParseAstError::BadForm(span.clone())),
                     }
                 }
 
                 Ok(Self {
-                    parent: parent.map(|(x, _)| x),
+                    parent: parent.map(|(x, _)| env.fetch_var_ref(&x)),
                     name,
                     constructor,
                     predicate,
                     fields: fields.map(|(x, _)| x).unwrap_or_default(),
                 })
             }
-            _ => Err(CompileDefineRecordTypeError::BadForm(span.clone())),
+            _ => Err(ParseAstError::BadForm(span.clone())),
         }
     }
-}
-*/
 
-impl DefineRecordType {
-    async fn eval(
-        &self,
-        env: &Env,
-    ) -> Result<Vec<Gc<Value>>, RuntimeError> {
+    pub fn define(&self, env: &Gc<Env>) {
+        let mut env = env.write();
+        let constructor_name = self
+            .constructor
+            .as_ref()
+            .map_or_else(|| format!("make-{}", self.name.name), |cn| cn.name.clone());
+        let constructor_name = Identifier::new(constructor_name);
+        env.def_local_var(&constructor_name, Gc::new(Value::Undefined));
+
+        let predicate_name = self
+            .predicate
+            .as_ref()
+            .map_or_else(|| format!("{}?", self.name.name), |cn| cn.name.clone());
+        let predicate_name = Identifier::new(predicate_name);
+        env.def_local_var(&predicate_name, Gc::new(Value::Undefined));
+
+        for field in &self.fields {
+            let ident = field.field_name.clone();
+
+            let accessor_name = field.accessor_name.as_ref().map_or_else(
+                || format!("{}-{}", self.name.name, ident.name),
+                |accessor| accessor.name.clone(),
+            );
+            let accessor_name = Identifier::new(accessor_name);
+            env.def_local_var(&accessor_name, Gc::new(Value::Undefined));
+
+            // Set up mutator, if we should:
+            if let Some(mutator_name) = match field.kind {
+                FieldDefinitionKind::Mutable {
+                    mutator_name: Some(ref mutator_name),
+                } => Some(mutator_name.name.clone()),
+                FieldDefinitionKind::Mutable { .. } => {
+                    Some(format!("{}-{}-set!", self.name.name, ident.name))
+                }
+                _ => None,
+            } {
+                let mutator_name = Identifier::new(mutator_name);
+                env.def_local_var(&mutator_name, Gc::new(Value::Undefined));
+            }
+        }
+
+        env.def_local_var(&self.name, Gc::new(Value::Undefined));
+    }
+
+    pub fn eval(&self, env: &Gc<Env>) -> Result<(), RuntimeError> {
         let inherits = if let Some(ref parent) = self.parent {
-            let parent_gc = env
-                .fetch_var(parent)
-                .ok_or_else(|| RuntimeError::undefined_variable(parent.clone()))?;
+            let parent_gc = parent.fetch(env)?;
             let parent = parent_gc.read();
             let record_type: &Gc<RecordType> = (&*parent).try_into()?;
             let mut inherits = record_type.read().inherits.clone();
@@ -330,19 +345,14 @@ impl DefineRecordType {
             fields.extend_from_slice(record_type.fields.as_slice());
         }
 
-        let record_type = Gc::new(RecordType::new(&self.name.name));
+        let base_offset = fields.len();
 
         for field in &self.fields {
-            // In order to avoid name collisions, we mark the ident with the
-            // pointer of the record type.
-            // This is safe because we are never converting that mark back
-            // to a pointer.
-            // Once we do this, we never have to do it again, it will propagate
-            // to all futures subtypes
-            let mut field = field.field_name.clone();
-            field.mark(Mark::from_gc(&record_type));
+            let field = field.field_name.clone();
             fields.push(field);
         }
+
+        let record_type = Gc::new(RecordType::new(&self.name.name));
 
         // Set up the record type:
         {
@@ -361,51 +371,56 @@ impl DefineRecordType {
         // Set up the constructor:
 
         // Get the arguments for the constructor:
-        let mut setters: Vec<Arc<dyn Eval>> = fields
-            .iter()
-            .map(|field| {
-                Arc::new(UncheckedFieldMutator {
-                    identifier: field.clone(),
-                }) as Arc<dyn Eval>
+        let mut setters: Vec<Expression> = (0..fields.len())
+            .map(|offset| {
+                Expression::UncheckedFieldMutation(UncheckedFieldMutation {
+                    value: VarRef::default().offset(offset).inc_depth(),
+                    offset,
+                })
             })
             .collect();
 
         // Append the return value
-        setters.push(
-            Arc::new(ast::Var::new(Identifier::new("this".to_string()))) as Arc<dyn Eval>,
-        );
+        setters.push(Expression::Var(Ref::Regular(VarRef::default())));
 
         let constructor = new_proc(
             env,
-            fields.clone(),
-            ast::Body::new(vec![Arc::new(ast::Let::new(
-                vec![(
-                    Identifier::new("this".to_string()),
-                    Arc::new(Value::Record(Record {
-                        record_type: record_type.clone(),
-                        fields: HashMap::new(),
-                    })),
-                )],
-                ast::Body::new(setters),
-            )) as Arc<dyn Eval>]),
+            // Yes, argument names shouldn't matter, but they do. Oh well.
+            (0..fields.len())
+                .map(|i| Identifier::new(format!("a{i}")))
+                .collect(),
+            Body::new(
+                Vec::new(),
+                vec![Expression::Let(Let::new(
+                    vec![(
+                        Identifier::new("this".to_string()),
+                        Expression::MakeRecord(MakeRecord {
+                            record_type: record_type.clone(),
+                            num_fields: fields.len(),
+                        }),
+                    )],
+                    Body::new(Vec::new(), setters),
+                ))],
+            ),
         );
 
         // Set up the predicate:
-        // TODO: Extract this pattern into a function.
         let predicate = new_proc(
             env,
             vec![Identifier::new("this".to_string())],
-            ast::Body::new(vec![Arc::new(RecordPredicate {
-                record_type: record_type.clone(),
-            }) as Arc<dyn Eval>]),
+            Body::new(
+                Vec::new(),
+                vec![Expression::RecordPredicate(RecordPredicate {
+                    record_type: record_type.clone(),
+                })],
+            ),
         );
 
         let mut new_functions = HashMap::<String, Gc<Value>>::new();
 
         // Set up the new field accessors and mutators:
-        for field in &self.fields {
-            let mut ident = field.field_name.clone();
-            ident.mark(Mark::from_gc(&record_type));
+        for (offset, field) in self.fields.iter().enumerate() {
+            let ident = field.field_name.clone();
 
             // Set up accessor:
             let accessor_name = field.accessor_name.as_ref().map_or_else(
@@ -415,10 +430,13 @@ impl DefineRecordType {
             let accessor = new_proc(
                 env,
                 vec![Identifier::new("this".to_string())],
-                ast::Body::new(vec![Arc::new(FieldAccessor {
-                    record_type: record_type.clone(),
-                    identifier: ident.clone(),
-                }) as Arc<dyn Eval>]),
+                Body::new(
+                    Vec::new(),
+                    vec![Expression::FieldProjection(FieldProjection {
+                        record_type: record_type.clone(),
+                        offset: base_offset + offset,
+                    })],
+                ),
             );
 
             new_functions.insert(accessor_name, accessor);
@@ -436,10 +454,14 @@ impl DefineRecordType {
                 let mutator = new_proc(
                     env,
                     vec![Identifier::new("this".to_string()), ident.clone()],
-                    ast::Body::new(vec![Arc::new(FieldMutator {
-                        record_type: record_type.clone(),
-                        identifier: ident.clone(),
-                    }) as Arc<dyn Eval>]),
+                    Body::new(
+                        Vec::new(),
+                        vec![Expression::FieldMutation(FieldMutation {
+                            value: VarRef::default().offset(1),
+                            record_type: record_type.clone(),
+                            offset: base_offset + offset,
+                        })],
+                    ),
                 );
                 new_functions.insert(mutator_name, mutator);
             }
@@ -447,37 +469,37 @@ impl DefineRecordType {
 
         // Now that we have all of the appropriate functions set up, we can
         // apply them to the environment.
-        // TODO: We should really figure out a way to define all of these at once. It's unlikely
-        // to cause errors, but worth doing just for the sake of correctness.
 
-        // All of this evaluations should be super simple, no need to worry about
+        // All of these evaluations should be super simple, no need to worry about
         // the continuation being correct.
+
+        let mut env = env.write();
 
         let constructor_name = self
             .constructor
             .as_ref()
             .map_or_else(|| format!("make-{}", self.name.name), |cn| cn.name.clone());
         let constructor_name = Identifier::new(constructor_name);
-        env.def_var(&constructor_name, constructor);
+        env.def_local_var(&constructor_name, constructor);
 
         let predicate_name = self
             .predicate
             .as_ref()
             .map_or_else(|| format!("{}?", self.name.name), |cn| cn.name.clone());
         let predicate_name = Identifier::new(predicate_name);
-        env.def_var(&predicate_name, predicate);
+        env.def_local_var(&predicate_name, predicate);
 
         for (new_function_name, new_function) in new_functions.into_iter() {
-            env.def_var(&Identifier::new(new_function_name), new_function);
+            env.def_local_var(&Identifier::new(new_function_name), new_function);
         }
 
-        env.def_var(&self.name, Gc::new(Value::RecordType(record_type)));
+        env.def_local_var(&self.name, Gc::new(Value::RecordType(record_type)));
 
-        Ok(Vec::new())
+        Ok(())
     }
 }
 
-fn new_proc(env: &Env, args: Vec<Identifier>, body: ast::Body) -> Gc<Value> {
+fn new_proc(env: &Gc<Env>, args: Vec<Identifier>, body: ast::Body) -> Gc<Value> {
     Gc::new(Value::Procedure(Procedure {
         up: env.clone(),
         args,
@@ -487,16 +509,34 @@ fn new_proc(env: &Env, args: Vec<Identifier>, body: ast::Body) -> Gc<Value> {
     }))
 }
 
+#[derive(Debug, Clone, Trace)]
+pub struct MakeRecord {
+    record_type: Gc<RecordType>,
+    num_fields: usize,
+}
 
-#[derive(Trace)]
-struct UncheckedFieldMutator {
+impl MakeRecord {
+    pub fn eval(&self) -> Value {
+        Value::Record(Record {
+            record_type: self.record_type.clone(),
+            fields: std::iter::repeat_with(|| Gc::new(Value::Undefined))
+                .take(self.num_fields)
+                .collect(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Trace)]
+pub struct UncheckedFieldMutation {
+    value: VarRef,
     offset: usize,
 }
 
-impl UncheckedFieldMutator {
-    async fn eval(&self, env: &Env) -> Result<(), RuntimeError> {
+impl UncheckedFieldMutation {
+    pub fn eval(&self, env: &Gc<Env>) -> Result<(), RuntimeError> {
+        let env = env.read();
         let this_gc = env.fetch_var(VarRef::default());
-        let value = env.fetch_var(VarRef::default().offset(1));
+        let value = env.fetch_var(self.value);
         let mut this = this_gc.write();
         let this: &mut Record = (&mut *this).try_into()?;
         this.fields[self.offset] = value;
@@ -505,14 +545,16 @@ impl UncheckedFieldMutator {
     }
 }
 
-#[derive(Trace)]
-struct FieldMutator {
+#[derive(Debug, Clone, Trace)]
+pub struct FieldMutation {
     record_type: Gc<RecordType>,
+    value: VarRef,
     offset: usize,
 }
 
-impl FieldMutator {
-    async fn eval(&self, env: &Env) -> Result<(), RuntimeError> {
+impl FieldMutation {
+    pub fn eval(&self, env: &Gc<Env>) -> Result<(), RuntimeError> {
+        let env = env.read();
         let this_gc = env.fetch_var(VarRef::default());
 
         {
@@ -527,7 +569,7 @@ impl FieldMutator {
             }
         }
 
-        let value = env.fetch_var(VarRef::default().offset(1));
+        let value = env.fetch_var(self.value);
 
         let mut this = this_gc.write();
         let this: &mut Record = (&mut *this).try_into()?;
@@ -537,15 +579,15 @@ impl FieldMutator {
     }
 }
 
-#[derive(Trace)]
-struct FieldAccessor {
+#[derive(Debug, Clone, Trace)]
+pub struct FieldProjection {
     record_type: Gc<RecordType>,
     offset: usize,
 }
 
-impl FieldAccessor {
-    async fn eval(&self, env: &Env) -> Result<Gc<Value>, RuntimeError> {
-        let this_gc = env.fetch_var(VarRef::default());
+impl FieldProjection {
+    pub fn eval(&self, env: &Gc<Env>) -> Result<Vec<Gc<Value>>, RuntimeError> {
+        let this_gc = env.read().fetch_var(VarRef::default());
         let this = this_gc.read();
         let this: &Record = (&*this).try_into()?;
 
@@ -556,27 +598,24 @@ impl FieldAccessor {
             ));
         }
 
-        Ok(this.fields[self.offset].clone())
+        Ok(vec![this.fields[self.offset].clone()])
     }
 }
 
-#[derive(Trace)]
-struct RecordPredicate {
+#[derive(Debug, Clone, Trace)]
+pub struct RecordPredicate {
     record_type: Gc<RecordType>,
 }
 
 impl RecordPredicate {
-    async fn eval(&self, env: &Env) -> Result<Gc<Value>, RuntimeError> {
-        let this_gc = env.fetch_var(VarRef::default());
+    pub fn eval(&self, env: &Gc<Env>) -> Value {
+        let this_gc = env.read().fetch_var(VarRef::default());
         let this = this_gc.read();
         let this = match &*this {
             Value::Record(ref rec) => rec,
-            _ => return Ok(Gc::new(Value::Boolean(false))),
+            _ => return Value::Boolean(false),
         };
 
-        Ok(Gc::new(Value::Boolean(is_subtype_of(
-            &this.record_type,
-            &self.record_type,
-        ))))
+        Value::Boolean(is_subtype_of(&this.record_type, &self.record_type))
     }
 }
