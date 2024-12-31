@@ -325,3 +325,10 @@
         '()
         (cons (apply function (map1 car lists))
               (apply map function (map1 cdr lists))))))
+
+(define (reverse ls)
+  (define (reverse ls acc)
+    (if (null? ls)
+        acc
+        (reverse (cdr ls) (cons (car ls) acc))))
+  (reverse ls '()))

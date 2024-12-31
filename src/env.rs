@@ -6,7 +6,6 @@ use tokio::sync::OnceCell;
 use crate::{
     ast::{parse::ParseAstError, AstNode},
     builtin::Builtin,
-    continuation::Resumable,
     error::{RuntimeError, RuntimeErrorKind},
     gc::{init_gc, Gc},
     lex::{LexError, Token},
@@ -177,7 +176,7 @@ impl Gc<Env> {
             // TODO: Retain the backtrace for errors
             // let arg = args.pop().unwrap();
             if let Some(new_cont) = new_cont {
-                inner = new_cont.resume(args, &None).await;
+                inner = new_cont.enter_extent(args).await;
             } else {
                 return Ok(args);
             }
@@ -193,14 +192,20 @@ impl Gc<Env> {
         }
     }
 
-    pub fn deep_clone(&self) -> Self {
-        let this = self.read();
-        Gc::new(Env {
-            up: this.up.as_ref().map(|up| up.deep_clone()),
-            vars: this.vars.clone(),
-            var_names: this.var_names.clone(),
-            macros: this.macros.clone(),
-        })
+    pub fn deep_clone(&self, cloned: &mut HashMap<Self, Self>) -> Self {
+        if cloned.contains_key(self) {
+            cloned.get(self).unwrap().clone()
+        } else {
+            let this = self.read();
+            let clone = Gc::new(Env {
+                up: this.up.as_ref().map(|up| up.deep_clone(cloned)),
+                vars: this.vars.clone(),
+                var_names: this.var_names.clone(),
+                macros: this.macros.clone(),
+            });
+            cloned.insert(self.clone(), clone.clone());
+            clone
+        }
     }
 }
 

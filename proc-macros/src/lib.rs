@@ -291,14 +291,14 @@ fn derive_trace_enum(name: Ident, data_enum: DataEnum) -> proc_macro2::TokenStre
         unsafe impl ::scheme_rs::gc::Trace for #name {
             unsafe fn visit_children(&self, visitor: unsafe fn(::scheme_rs::gc::OpaqueGcPtr)) {
                 match self {
-                    #( #visit_match_clauses )*,
+                    #( #visit_match_clauses, )*
                     _ => (),
                 }
             }
 
             unsafe fn finalize(&mut self) {
                 match self {
-                    #( #finalize_match_clauses )*,
+                    #( #finalize_match_clauses, )*
                     _ => (),
                 }
             }
