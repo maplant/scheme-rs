@@ -257,3 +257,23 @@
                       (set! n (+ n 4))))))
              n)
            1)
+
+(define n 0)
+
+(dynamic-wind
+    (lambda ()
+      (set! n (+ n 1))
+      (call/cc (lambda (x) (set! h x))))
+    (lambda ()
+      (set! n (+ n 2))
+      (dynamic-wind
+          (lambda () (set! n (+ n 3)))
+          (lambda () (call/cc (lambda (x) (set! g x))))
+          (lambda () (set! n (+ n 5)))))
+    (lambda () (set! n (+ n 7))))
+
+(g)
+(h)
+
+(assert-eq n 49) ; 1 + 2 + 3 + 5 + 7 + (1 + 3 + 5 + 7) + (3 + 5 + 7)
+              
