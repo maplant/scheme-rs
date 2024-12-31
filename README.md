@@ -22,7 +22,6 @@ That is obviously a long way away.
 ## Features currently unsupported by scheme-rs: 
 
 - Exceptions and error handling
-- Dynamic winding 
 - Ports and IO operations
 - Most API functions are not implemented
 - A large portion of lexical structures are missing; there's no way to specify recursive data structures
@@ -39,17 +38,17 @@ in the repo's root directory (examples taken from wikipedia):
 ~/scheme-rs> cargo run
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
      Running `target/debug/scheme-rs`
->>> (let loop ((n 1))
-...   (if (> n 10)
-...       '()
-...       (cons n
-...     (loop (+ n 1)))))
+> (let loop ((n 1))
+   (if (> n 10)
+       '()
+       (cons n
+         (loop (+ n 1)))))
 $1 = (1 2 3 4 5 6 7 8 9 10)
 >>> (let* ((yin
-...          ((lambda (cc) (display "@") cc) (call-with-current-continuation (lambda (c) c))))
-...        (yang
-...          ((lambda (cc) (display "*") cc) (call-with-current-continuation (lambda (c) c)))))
-...     (yin yang))
+            ((lambda (cc) (display "@") cc) (call-with-current-continuation (lambda (c) c))))
+           (yang
+            ((lambda (cc) (display "*") cc) (call-with-current-continuation (lambda (c) c)))))
+     (yin yang))
 @*@**@***@****@*****@******@*******@********@*********@**********@***********@**********...^C
 ```
 
