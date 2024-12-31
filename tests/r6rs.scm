@@ -224,3 +224,56 @@
               (set! ls (cons 'a ls))
               (set! n (- n 1))))
            '(a a a))
+
+;; 11.15 Control features
+
+(assert-eq (let ((path '())
+                 (c #f))
+             (let ((add (lambda (s)
+                          (set! path (cons s path)))))
+               (dynamic-wind
+                   (lambda () (add 'connect))
+                   (lambda ()
+                     (add (call-with-current-continuation
+                           (lambda (c0)
+                             (set! c c0)
+                             'talk1))))
+                   (lambda () (add 'disconnect)))
+               (if (< (length path) 4)
+                   (c 'talk2)
+                   (reverse path))))
+           '(connect talk1 disconnect connect talk2 disconnect))
+
+(assert-eq (let ((n 0))
+             (call-with-current-continuation
+              (lambda (k)
+                (dynamic-wind
+                    (lambda ()
+                      (set! n (+ n 1))
+                      (k))
+                    (lambda ()
+                      (set! n (+ n 2)))
+                    (lambda ()
+                      (set! n (+ n 4))))))
+             n)
+           1)
+
+(define n 0)
+
+(dynamic-wind
+    (lambda ()
+      (set! n (+ n 1))
+      (call/cc (lambda (x) (set! h x))))
+    (lambda ()
+      (set! n (+ n 2))
+      (dynamic-wind
+          (lambda () (set! n (+ n 3)))
+          (lambda () (call/cc (lambda (x) (set! g x))))
+          (lambda () (set! n (+ n 5)))))
+    (lambda () (set! n (+ n 7))))
+
+(g)
+(h)
+
+(assert-eq n 49) ; 1 + 2 + 3 + 5 + 7 + (1 + 3 + 5 + 7) + (3 + 5 + 7)
+              

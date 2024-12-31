@@ -52,13 +52,13 @@ impl Value {
         }
     }
 
-    pub fn as_callable(&self) -> Option<Box<dyn Callable>> {
+    pub fn as_callable(&self) -> Option<Arc<dyn Callable>> {
         match self {
             // Having to clone and box these kind of sucks. Hopefully we can
             // fix this at some point
-            Self::Procedure(ref proc) => Some(Box::new(proc.clone())),
-            Self::ExternalFn(ref proc) => Some(Box::new(*proc)),
-            Self::Continuation(ref proc) => Some(Box::new(proc.clone())),
+            Self::Procedure(ref proc) => Some(Arc::new(proc.clone())),
+            Self::ExternalFn(ref proc) => Some(Arc::new(*proc)),
+            Self::Continuation(ref proc) => Some(Arc::new(proc.clone())),
             _ => None,
         }
     }

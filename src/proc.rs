@@ -44,7 +44,7 @@ impl ValuesOrPreparedCall {
 }
 
 #[async_trait]
-pub trait Callable: Send + Sync + 'static {
+pub trait Callable: Send + Sync + 'static + std::fmt::Debug {
     fn min_args(&self) -> usize;
 
     fn max_args(&self) -> Option<usize>;
@@ -62,7 +62,6 @@ pub struct Procedure {
     pub up: Gc<Env>,
     pub args: Vec<Identifier>,
     pub remaining: Option<Identifier>,
-    #[debug(skip)]
     pub body: Body,
     pub is_variable_transformer: bool,
 }

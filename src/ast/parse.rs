@@ -18,7 +18,7 @@ use std::{
     sync::Arc,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Trace)]
 pub enum ParseAstError {
     BadForm(Span),
     UnexpectedEmptyList(Span),
