@@ -229,14 +229,14 @@ pub struct VarRef {
 }
 
 impl VarRef {
-    fn inc_depth(self) -> Self {
+    pub fn inc_depth(self) -> Self {
         Self {
             depth: self.depth + 1,
             offset: self.offset,
         }
     }
 
-    fn dec_depth(self) -> Self {
+    pub fn dec_depth(self) -> Self {
         Self {
             depth: self.depth - 1,
             offset: self.offset,
@@ -322,6 +322,7 @@ fn get_top_env_from_curr(mut curr: Gc<Env>) -> Gc<Env> {
 
 /// A reference that can either be global, macro, or regular
 #[derive(Debug, Clone, Trace)]
+// TODO: Rename
 pub enum Ref {
     Macro(MacroVarRef),
     Global(GlobalRef),
@@ -329,10 +330,12 @@ pub enum Ref {
 }
 
 impl Ref {
-    pub fn fetch(&self, env: &Gc<Env>) -> Result<Gc<Value>, Identifier> {
+    pub fn fetch(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
         match self {
             Self::Macro(m) => Ok(m.fetch()),
-            Self::Global(g) => g.fetch(env).ok_or_else(|| g.name.clone()),
+            Self::Global(g) => g
+                .fetch(env)
+                .ok_or_else(|| RuntimeError::undefined_variable(g.name.clone())),
             Self::Regular(v) => Ok(env.read().fetch_var(*v)),
         }
     }
@@ -400,6 +403,7 @@ impl ExpansionEnv<'_> {
         }
     }
 
+    // TODO: This can be cached.
     pub fn fetch_var_ref(&self, ident: &Identifier) -> Ref {
         // The very first thing we do is check the current lexical contour. We do not
         // need to do anything special here; any marks introduced via a macro expansion
@@ -426,6 +430,7 @@ impl ExpansionEnv<'_> {
 
     /// Lexical environments are separately linked, so when we know that a variable is
     /// free in the current lexical environment, we can just check the macro envs.
+    // TODO: This can be cached.
     fn fetch_macro_var_ref(&self, ident: &Identifier) -> Ref {
         let mut ident = ident.clone();
         for expansion_ctx in self.expansion_ctxs.iter().rev() {
@@ -452,6 +457,7 @@ impl ExpansionEnv<'_> {
         }
     }
 
+    // TODO: This can be cached.
     pub fn fetch_macro(&self, ident: &Identifier) -> Option<(Gc<Env>, Gc<Value>)> {
         // Mechanically this works exactly the same as fetch_var_ref.
         self.lexical_contour.read().fetch_macro(ident).map_or_else(
@@ -464,6 +470,7 @@ impl ExpansionEnv<'_> {
     }
 
     // Terrible name, but it's the same thing going on as `fetch_macro_var_ref`
+    // TODO: This can be cached.
     fn fetch_macro_macro(&self, ident: &Identifier) -> Option<(Gc<Env>, Gc<Value>)> {
         let mut ident = ident.clone();
         for expansion_ctx in &self.expansion_ctxs {

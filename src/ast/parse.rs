@@ -28,6 +28,14 @@ pub enum ParseAstError {
     EmptyBody(Span),
     DefInExprContext(Span),
     ExpectedIdentifier(Span),
+    ParentSpecifiedMultipleTimes {
+        first: Span,
+        second: Span,
+    },
+    MultipleFieldsClauses {
+        first: Span,
+        second: Span,
+    },
     NameBoundMultipleTimes {
         ident: Identifier,
         first: Span,
@@ -154,8 +162,8 @@ impl Body {
         'a: 'b,
     {
         Box::pin(async move {
-            let mut defs = Vec::<FullyExpanded>::new();
-            let mut exprs = Vec::<FullyExpanded>::new();
+            let mut defs = Vec::new();
+            let mut exprs = Vec::new();
 
             splice_in(&mut defs, &mut exprs, body, env, cont, span).await?;
 
@@ -163,16 +171,20 @@ impl Body {
             let mut exprs_parsed = Vec::new();
 
             for def in defs.into_iter() {
-                let new_expansion_env = env.push_expansion_env(def.expansion_ctxs);
-                defs_parsed.push(
-                    Definition::parse(
-                        def.expanded.as_list().unwrap(),
-                        &new_expansion_env,
-                        cont,
-                        def.expanded.span(),
-                    )
-                    .await?,
-                );
+                let def = match def {
+                    Ok(def) => {
+                        let new_expansion_env = env.push_expansion_env(def.expansion_ctxs);
+                        Definition::parse(
+                            def.expanded.as_list().unwrap(),
+                            &new_expansion_env,
+                            cont,
+                            def.expanded.span(),
+                        )
+                        .await?
+                    }
+                    Err(def_record) => Definition::DefineRecordType(def_record),
+                };
+                defs_parsed.push(def);
             }
 
             for expr in exprs.into_iter() {
@@ -203,7 +215,7 @@ impl Body {
 }
 
 fn splice_in<'a, 'b>(
-    defs: &'a mut Vec<FullyExpanded>,
+    defs: &'a mut Vec<Result<FullyExpanded, DefineRecordType>>,
     exprs: &'a mut Vec<FullyExpanded>,
     body: &'a [Syntax],
     env: &'a ExpansionEnv<'b>,
@@ -252,6 +264,14 @@ where
                             .def_local_var(ident, Gc::new(Value::Undefined));
                         true
                     }
+                    Some(
+                        [Syntax::Identifier { ident, span, .. }, body @ .., Syntax::Null { .. }],
+                    ) if ident == "define-record-type" => {
+                        let record_type = DefineRecordType::parse(body, env, span)?;
+                        record_type.define(&env.lexical_contour);
+                        defs.push(Err(record_type));
+                        continue;
+                    }
                     Some([Syntax::Identifier { ident, span, .. }, ..])
                         if ident == "define-syntax" =>
                     {
@@ -262,7 +282,7 @@ where
             };
 
             if is_def {
-                defs.push(expanded);
+                defs.push(Ok(expanded));
             } else {
                 exprs.push(expanded);
             }
@@ -339,53 +359,51 @@ impl Expression {
                 } => match exprs.as_slice() {
                     // Special forms:
                     [Syntax::Identifier { ident, .. }, tail @ .., Syntax::Null { .. }]
-                        if ident.name == "begin" =>
+                        if ident == "begin" =>
                     {
                         Body::parse_in_expr_context(tail, env, cont)
                             .await
                             .map(Expression::Begin)
                     }
                     [Syntax::Identifier { ident, span, .. }, tail @ .., Syntax::Null { .. }]
-                        if ident.name == "lambda" =>
+                        if ident == "lambda" =>
                     {
                         Lambda::parse(tail, env, cont, span)
                             .await
                             .map(Expression::Lambda)
                     }
                     [Syntax::Identifier { ident, span, .. }, tail @ .., Syntax::Null { .. }]
-                        if ident.name == "let" =>
+                        if ident == "let" =>
                     {
                         Let::parse(tail, env, cont, span).await.map(Expression::Let)
                     }
                     [Syntax::Identifier { ident, span, .. }, tail @ .., Syntax::Null { .. }]
-                        if ident.name == "if" =>
+                        if ident == "if" =>
                     {
                         If::parse(tail, env, cont, span).await.map(Expression::If)
                     }
                     [Syntax::Identifier { ident, .. }, tail @ .., Syntax::Null { .. }]
-                        if ident.name == "and" =>
+                        if ident == "and" =>
                     {
                         And::parse(tail, env, cont).await.map(Expression::And)
                     }
                     [Syntax::Identifier { ident, .. }, tail @ .., Syntax::Null { .. }]
-                        if ident.name == "or" =>
+                        if ident == "or" =>
                     {
                         Or::parse(tail, env, cont).await.map(Expression::Or)
                     }
-                    [Syntax::Identifier { ident, span, .. }, tail @ ..]
-                        if ident.name == "quote" =>
-                    {
+                    [Syntax::Identifier { ident, span, .. }, tail @ ..] if ident == "quote" => {
                         Quote::parse(tail, span).await.map(Expression::Quote)
                     }
                     [Syntax::Identifier { ident, span, .. }, tail @ .., Syntax::Null { .. }]
-                        if ident.name == "syntax" =>
+                        if ident == "syntax" =>
                     {
                         SyntaxQuote::parse(tail, span)
                             .await
                             .map(Expression::SyntaxQuote)
                     }
                     [Syntax::Identifier { ident, span, .. }, tail @ .., Syntax::Null { .. }]
-                        if ident.name == "syntax-case" =>
+                        if ident == "syntax-case" =>
                     {
                         SyntaxCase::parse(tail, env, cont, span)
                             .await
@@ -394,14 +412,14 @@ impl Expression {
 
                     // Extra special form (set!):
                     [Syntax::Identifier { ident, span, .. }, tail @ .., Syntax::Null { .. }]
-                        if ident.name == "set!" =>
+                        if ident == "set!" =>
                     {
                         Set::parse(tail, env, cont, span).await.map(Expression::Set)
                     }
 
                     // Definition in expression context is illegal:
                     [Syntax::Identifier { ident, span, .. }, .., Syntax::Null { .. }]
-                        if ident.name == "define" =>
+                        if ident == "define" || ident == "define-record-type" =>
                     {
                         Err(ParseAstError::DefInExprContext(span.clone()))
                     }

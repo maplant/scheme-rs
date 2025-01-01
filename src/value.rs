@@ -5,7 +5,7 @@ use crate::{
     gc::Gc,
     num::Number,
     proc::{Callable, ExternalFn, Procedure},
-    // records::{Record, RecordType},
+    records::{Record, RecordType},
     syntax::Syntax,
     Trace,
 };
@@ -28,8 +28,8 @@ pub enum Value {
     Syntax(Syntax),
     Procedure(Procedure),
     ExternalFn(ExternalFn),
-    // Record(Record),
-    // RecordType(Gc<RecordType>),
+    Record(Record),
+    RecordType(Gc<RecordType>),
     Future(#[debug(skip)] Shared<BoxFuture<'static, Result<Vec<Gc<Value>>, RuntimeError>>>),
     Continuation(#[debug(skip)] Option<Arc<Continuation>>),
 }
@@ -90,10 +90,9 @@ impl Value {
             Self::Procedure(proc) => format!("<{proc:?}>"),
             Self::ExternalFn(_) => "<external-fn>".to_string(),
             Self::Future(_) => "<future>".to_string(),
-            // Self::Transformer(_) => "<transformer>".to_string(),
             Self::Continuation(_) => "<continuation>".to_string(),
-            // Self::Record(_) => "<record>".to_string(),
-            // Self::RecordType(_) => "<record-type>".to_string(),
+            Self::Record(record) => format!("<{record:?}>"),
+            Self::RecordType(record_type) => format!("<{record_type:?}>"),
             Self::Undefined => "<undefined>".to_string(),
         }
     }
@@ -139,8 +138,8 @@ impl Value {
             Self::Procedure(_) | Self::ExternalFn(_) => "procedure",
             Self::Future(_) => "future",
             Self::Continuation(_) => "continuation",
-            // Self::Record(_) => "record",
-            // Self::RecordType(_) => "record-type",
+            Self::Record(_) => "record",
+            Self::RecordType(_) => "record-type",
             Self::Undefined => "undefined",
         }
     }
@@ -187,8 +186,8 @@ impl Clone for Value {
             Self::ExternalFn(ext_fn) => Self::ExternalFn(*ext_fn),
             Self::Future(fut) => Self::Future(fut.clone()),
             Self::Continuation(cont) => Self::Continuation(cont.clone()),
-            // Self::Record(record) => Self::Record(record.clone()),
-            // Self::RecordType(rt) => Self::RecordType(rt.clone()),
+            Self::Record(record) => Self::Record(record.clone()),
+            Self::RecordType(rt) => Self::RecordType(rt.clone()),
             Self::Undefined => Self::Undefined,
         }
     }
@@ -235,7 +234,6 @@ impl<'a> TryFrom<&'a Value> for &'a Number {
     }
 }
 
-/*
 impl<'a> TryFrom<&'a Value> for &'a Record {
     type Error = RuntimeError;
 
@@ -268,7 +266,6 @@ impl<'a> TryFrom<&'a Value> for &'a Gc<RecordType> {
         }
     }
 }
-*/
 
 pub fn eqv(a: &Gc<Value>, b: &Gc<Value>) -> bool {
     let a = a.read();
