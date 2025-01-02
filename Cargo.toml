@@ -10,6 +10,7 @@ dyn-clone = "1.0.13"
 futures = "0.3"
 indexmap = "2"
 inventory = "0.3"
+inkwell = { version = "0.5.0", features = ["llvm18-0"] }
 nom = "7"
 nom_locate = "4"
 num = "0.4"

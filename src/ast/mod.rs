@@ -234,6 +234,13 @@ impl Formals {
             Self::FixedArgs(args) => (args.clone(), None),
         }
     }
+
+    pub fn args_to_alloc(&self) -> usize {
+        match self {
+            Self::VarArgs { fixed, .. } => fixed.len() + 1,
+            Self::FixedArgs(args) => args.len(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Trace)]

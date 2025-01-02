@@ -3,6 +3,7 @@ extern crate self as scheme_rs;
 pub mod ast;
 pub mod builtin;
 pub mod continuation;
+pub mod cps;
 pub mod env;
 pub mod error;
 pub mod expand;
