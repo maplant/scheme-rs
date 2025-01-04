@@ -12,7 +12,7 @@ impl Cps {
     }
 }
 
-pub fn record_codegen(ctx: &Context, builder: &Builder<'_>, size: usize, var: Var, cont: &Cps) {
+pub fn record_codegen(ctx: &Context, builder: &Builder<'_>, size: usize, var: CpsVar, cont: &Cps) {
     let ptr_type = ctx.ptr_type(AddressSpace::default());
     let _ = builder.build_array_alloca(
         ptr_type,

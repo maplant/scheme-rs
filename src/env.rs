@@ -64,19 +64,19 @@ impl Env {
 
     /// Compute the reference of the variable. If no such reference exists, the variable
     /// is either undefined or a global.
-    pub fn fetch_var_ref(&self, ident: &Identifier) -> Option<VarRef> {
+    pub fn fetch_var_ref(&self, ident: &Identifier) -> Option<DeBruijnIndex> {
         self.var_names.get_index_of(ident).map_or_else(
             || {
                 self.up
                     .as_ref()
-                    .and_then(|up| up.read().fetch_var_ref(ident).map(VarRef::inc_depth))
+                    .and_then(|up| up.read().fetch_var_ref(ident).map(DeBruijnIndex::inc_depth))
             },
-            |offset| Some(VarRef { depth: 0, offset }),
+            |offset| Some(DeBruijnIndex { depth: 0, offset }),
         )
     }
 
     /// Fetch the value of the variable. Will panic if no variable exists.
-    pub fn fetch_var(&self, var_ref: VarRef) -> Gc<Value> {
+    pub fn fetch_var(&self, var_ref: DeBruijnIndex) -> Gc<Value> {
         // TODO: Convert this to an iterative function.
         if var_ref.depth == 0 {
             self.vars[var_ref.offset].clone()
@@ -100,7 +100,7 @@ impl Env {
     }
 
     /// Set the value of the variable. Will panic if no variable exists.
-    pub fn set_var(&mut self, var_ref: VarRef, new_val: Gc<Value>) {
+    pub fn set_var(&mut self, var_ref: DeBruijnIndex, new_val: Gc<Value>) {
         // TODO: Convert this to an iterative function.
         if var_ref.depth == 0 {
             self.vars[var_ref.offset] = new_val;
@@ -220,7 +220,7 @@ pub enum EvalError<'e> {
 /// Reference to a variable that is accessible via the current environment. Could be
 /// local or non-local depending on the depth field.
 #[derive(Debug, Copy, Clone, Trace, Default)]
-pub struct VarRef {
+pub struct DeBruijnIndex {
     /// Number of up environments we need to traverse in order to reach the defining
     /// scope of the variable. Variables with a depth of 0 are local.
     depth: usize,
@@ -228,7 +228,7 @@ pub struct VarRef {
     offset: usize,
 }
 
-impl VarRef {
+impl DeBruijnIndex {
     pub fn inc_depth(self) -> Self {
         Self {
             depth: self.depth + 1,
@@ -259,7 +259,7 @@ pub struct MacroVarRef {
     /// The environment that the macro was defined in.
     env: Gc<Env>,
     /// Reference to the variable from within that macro.
-    var_ref: VarRef,
+    var_ref: DeBruijnIndex,
 }
 
 impl MacroVarRef {
@@ -323,20 +323,20 @@ fn get_top_env_from_curr(mut curr: Gc<Env>) -> Gc<Env> {
 /// A reference that can either be global, macro, or regular
 #[derive(Debug, Clone, Trace)]
 // TODO: Rename
-pub enum Ref {
+pub enum VariableRef {
     Macro(MacroVarRef),
     Global(GlobalRef),
-    Regular(VarRef),
+    Lexical(DeBruijnIndex),
 }
 
-impl Ref {
+impl VariableRef {
     pub fn fetch(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
         match self {
             Self::Macro(m) => Ok(m.fetch()),
             Self::Global(g) => g
                 .fetch(env)
                 .ok_or_else(|| RuntimeError::undefined_variable(g.name.clone())),
-            Self::Regular(v) => Ok(env.read().fetch_var(*v)),
+            Self::Lexical(v) => Ok(env.read().fetch_var(*v)),
         }
     }
 
@@ -344,7 +344,7 @@ impl Ref {
         match self {
             Self::Macro(m) => m.set(value),
             Self::Global(g) => g.set(env, value),
-            Self::Regular(v) => env.write().set_var(*v, value.clone()),
+            Self::Lexical(v) => env.write().set_var(*v, value.clone()),
         }
     }
 }
@@ -384,7 +384,7 @@ impl ExpansionEnv<'static> {
 
 impl ExpansionEnv<'_> {
     pub fn is_bound(&self, ident: &Identifier) -> bool {
-        !matches!(self.fetch_var_ref(ident), Ref::Global(_))
+        !matches!(self.fetch_var_ref(ident), VariableRef::Global(_))
     }
 
     pub fn push_expansion_env(&self, ctxs: Vec<ExpansionCtx>) -> ExpansionEnv<'_> {
@@ -404,7 +404,8 @@ impl ExpansionEnv<'_> {
     }
 
     // TODO: This can be cached.
-    pub fn fetch_var_ref(&self, ident: &Identifier) -> Ref {
+    pub fn fetch_var_ref(&self, ident: &Identifier) -> VariableRef {
+        println!("num_marks: {}", ident.marks.len());
         // The very first thing we do is check the current lexical contour. We do not
         // need to do anything special here; any marks introduced via a macro expansion
         // can only be used to define variables in more local lexical contours.
@@ -417,21 +418,21 @@ impl ExpansionEnv<'_> {
             .fetch_var_ref(ident)
             .map_or_else(
                 || match self.fetch_macro_var_ref(ident) {
-                    Ref::Macro(m) => Ref::Regular({
+                    VariableRef::Macro(m) => VariableRef::Lexical({
                         let mut local = m.var_ref;
                         local.depth += self.lexical_contour.distance(&m.env);
                         local
                     }),
                     x => x,
                 },
-                Ref::Regular,
+                VariableRef::Lexical,
             )
     }
 
     /// Lexical environments are separately linked, so when we know that a variable is
     /// free in the current lexical environment, we can just check the macro envs.
     // TODO: This can be cached.
-    fn fetch_macro_var_ref(&self, ident: &Identifier) -> Ref {
+    fn fetch_macro_var_ref(&self, ident: &Identifier) -> VariableRef {
         let mut ident = ident.clone();
         for expansion_ctx in self.expansion_ctxs.iter().rev() {
             if ident.marks.contains(&expansion_ctx.mark) {
@@ -443,7 +444,7 @@ impl ExpansionEnv<'_> {
                     continue;
                 };
 
-                return Ref::Macro(MacroVarRef {
+                return VariableRef::Macro(MacroVarRef {
                     env: expansion_ctx.env.clone(),
                     var_ref: expansion_ctx_ref,
                 });
@@ -453,7 +454,7 @@ impl ExpansionEnv<'_> {
         if let Some(up) = self.up {
             up.fetch_macro_var_ref(&ident)
         } else {
-            Ref::Global(GlobalRef::new(ident.clone()))
+            VariableRef::Global(GlobalRef::new(ident.clone()))
         }
     }
 

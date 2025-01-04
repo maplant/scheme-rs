@@ -11,18 +11,18 @@
 //! - Closure-Passing Style maps well to SSA, allowing us to compile functions
 //!   directly to machine code.
 //!
-//! We go directly from our Scheme AST to CPS because our AST already maps well
-//! onto the closure compilation style of linked closures; this is because our
-//! AST creation step resolves symbols into pairs of up-links and offsets.
+
+use indexmap::IndexSet;
 
 use crate::{ast::Literal, syntax::Identifier};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{collections::HashSet, sync::atomic::{AtomicUsize, Ordering}};
 
+mod analysis;
 mod codegen;
 mod compile;
 
 pub enum Value {
-    Var(Var),
+    Var(CpsVar),
     Literal(Literal),
 }
 
@@ -41,16 +41,30 @@ pub enum PrimOp {
 pub enum Cps {
     /// A record, for now, is an array of values. These are used to represent
     /// environments at runtime.
-    Record(usize, Var, Box<Cps>),
+    Record(usize, CpsVar, Box<Cps>),
     /// Operation to get the address of a value in a record.
-    Select(usize, Var, Var, Box<Cps>),
+    Select(usize, CpsVar, CpsVar, Box<Cps>),
     /// Call to a primitive operator.
-    PrimOp(PrimOp, Value, Var, Box<Cps>),
+    PrimOp(PrimOp, Value, CpsVar, Box<Cps>),
     /// Function application.
     App(Value, Vec<Value>),
     /// Anonymous function generation. The result of this operation is a function
     /// pointer.
-    Fix(Var, Vec<Var>, Box<Cps>, Box<Cps>),
+    Fix(CpsVar, Vec<CpsVar>, Box<Cps>, Box<Cps>),
+}
+
+/// This struct serves two primary purposes:
+/// - Allow for conversion between De Bruijn indices and globaly unique names.
+/// - Store which functions are determined to be "known" or "escaping".
+pub struct CpsCtx<'a> {
+    pub up: Option<&'a CpsCtx<'a>>,
+    pub vars: IndexSet<CpsVar>,
+    pub functions: Option<Functions>,
+}
+
+pub struct Functions {
+    pub known: HashSet<CpsVar, HashSet<CpsVar>>,
+    pub escaping: HashSet<CpsVar, HashSet<CpsVar>>,
 }
 
 /// To start, a compilation unit will be a single function. This is because
@@ -66,17 +80,17 @@ pub struct CpsCompiledFunction {
 /// Vars in our CPS notation purely represent temporaries; they have no location
 /// on the stack and are immutable.
 #[derive(Copy, Clone, Debug)]
-pub struct Var(usize);
+pub struct CpsVar(usize);
 
-impl Var {
+impl CpsVar {
     /// Create a new temporary value.
     fn gensym() -> Self {
         static NEXT_SYM: AtomicUsize = AtomicUsize::new(0);
-        Var(NEXT_SYM.fetch_add(1, Ordering::Relaxed))
+        CpsVar(NEXT_SYM.fetch_add(1, Ordering::Relaxed))
     }
 }
 
-impl ToString for Var {
+impl ToString for CpsVar {
     fn to_string(&self) -> String {
         format!("v{}", self.0)
     }

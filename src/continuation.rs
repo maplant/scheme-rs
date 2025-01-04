@@ -3,7 +3,7 @@ use proc_macros::builtin;
 
 use crate::{
     ast::{AstNode, Body, Expression},
-    env::{Env, ExpansionEnv, Ref},
+    env::{Env, ExpansionEnv, VariableRef},
     error::RuntimeError,
     expand::Transformer,
     gc::{Gc, Trace},
@@ -463,11 +463,11 @@ impl Resumable for ResumableOr {
 #[derive(Trace, Debug)]
 pub struct ResumableSet {
     env: Gc<Env>,
-    var: Ref,
+    var: VariableRef,
 }
 
 impl ResumableSet {
-    pub fn new(env: &Gc<Env>, var: &Ref) -> Self {
+    pub fn new(env: &Gc<Env>, var: &VariableRef) -> Self {
         Self {
             env: env.clone(),
             var: var.clone(),

@@ -1,6 +1,6 @@
 use crate::{
     continuation::Continuation,
-    env::{Env, VarRef},
+    env::{Env, DeBruijnIndex},
     error::RuntimeError,
     expand::{SyntaxRule, Transformer},
     gc::Gc,
@@ -629,7 +629,7 @@ async fn parse_let(
         ast_body = Body {
             forms: ArcSlice::from(
                 vec![AstNode::Expression(Expression::Set(Set {
-                    var: Ref::Regular(VarRef::default().offset(bindings.len())),
+                    var: VariableRef::Lexical(DeBruijnIndex::default().offset(bindings.len())),
                     val: Arc::new(Expression::Lambda(lambda)),
                 }))]
                 .into_iter()

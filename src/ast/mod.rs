@@ -10,10 +10,11 @@ use parse::define_syntax;
 
 use crate::{
     continuation::Continuation,
-    env::{Env, ExpansionEnv, Ref},
+    env::{Env, ExpansionEnv, VariableRef},
     error::RuntimeError,
     expand::Transformer,
     gc::{Gc, Trace},
+    cps::CpsVar,
     num::Number,
     proc::ValuesOrPreparedCall,
     records::{
@@ -145,7 +146,7 @@ pub enum Expression {
     Or(Or),
     Lambda(Lambda),
     Set(Set),
-    Var(Ref),
+    Var { var: VariableRef, uniq: CpsVar },
     Vector(Vector),
     Begin(Body),
     // Record expressions:
@@ -207,7 +208,7 @@ impl Let {
 
 #[derive(Debug, Clone, Trace)]
 pub struct Set {
-    pub var: Ref,
+    pub var: VariableRef,
     pub val: Arc<Expression>,
 }
 

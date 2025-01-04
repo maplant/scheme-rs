@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crate::{
     ast::{self, parse::ParseAstError, Body, Expression, Let},
-    env::{Env, ExpansionEnv, Ref, VarRef},
+    env::{Env, ExpansionEnv, VariableRef, DeBruijnIndex},
     error::RuntimeError,
     gc::{Gc, Trace},
     proc::Procedure,
@@ -46,7 +46,7 @@ pub struct Record {
 
 #[derive(Clone, Trace, Debug)]
 pub struct DefineRecordType {
-    parent: Option<Ref>,
+    parent: Option<VariableRef>,
     name: Identifier,
     constructor: Option<Identifier>,
     predicate: Option<Identifier>,
@@ -374,14 +374,14 @@ impl DefineRecordType {
         let mut setters: Vec<Expression> = (0..fields.len())
             .map(|offset| {
                 Expression::UncheckedFieldMutation(UncheckedFieldMutation {
-                    value: VarRef::default().offset(offset).inc_depth(),
+                    value: DeBruijnIndex::default().offset(offset).inc_depth(),
                     offset,
                 })
             })
             .collect();
 
         // Append the return value
-        setters.push(Expression::Var(Ref::Regular(VarRef::default())));
+        setters.push(Expression::Var(VariableRef::Lexical(DeBruijnIndex::default())));
 
         let constructor = new_proc(
             env,
@@ -457,7 +457,7 @@ impl DefineRecordType {
                     Body::new(
                         Vec::new(),
                         vec![Expression::FieldMutation(FieldMutation {
-                            value: VarRef::default().offset(1),
+                            value: DeBruijnIndex::default().offset(1),
                             record_type: record_type.clone(),
                             offset: base_offset + offset,
                         })],
@@ -528,14 +528,14 @@ impl MakeRecord {
 
 #[derive(Debug, Clone, Trace)]
 pub struct UncheckedFieldMutation {
-    value: VarRef,
+    value: DeBruijnIndex,
     offset: usize,
 }
 
 impl UncheckedFieldMutation {
     pub fn eval(&self, env: &Gc<Env>) -> Result<(), RuntimeError> {
         let env = env.read();
-        let this_gc = env.fetch_var(VarRef::default());
+        let this_gc = env.fetch_var(DeBruijnIndex::default());
         let value = env.fetch_var(self.value);
         let mut this = this_gc.write();
         let this: &mut Record = (&mut *this).try_into()?;
@@ -548,14 +548,14 @@ impl UncheckedFieldMutation {
 #[derive(Debug, Clone, Trace)]
 pub struct FieldMutation {
     record_type: Gc<RecordType>,
-    value: VarRef,
+    value: DeBruijnIndex,
     offset: usize,
 }
 
 impl FieldMutation {
     pub fn eval(&self, env: &Gc<Env>) -> Result<(), RuntimeError> {
         let env = env.read();
-        let this_gc = env.fetch_var(VarRef::default());
+        let this_gc = env.fetch_var(DeBruijnIndex::default());
 
         {
             let this = this_gc.read();
@@ -587,7 +587,7 @@ pub struct FieldProjection {
 
 impl FieldProjection {
     pub fn eval(&self, env: &Gc<Env>) -> Result<Vec<Gc<Value>>, RuntimeError> {
-        let this_gc = env.read().fetch_var(VarRef::default());
+        let this_gc = env.read().fetch_var(DeBruijnIndex::default());
         let this = this_gc.read();
         let this: &Record = (&*this).try_into()?;
 
@@ -609,7 +609,7 @@ pub struct RecordPredicate {
 
 impl RecordPredicate {
     pub fn eval(&self, env: &Gc<Env>) -> Value {
-        let this_gc = env.read().fetch_var(VarRef::default());
+        let this_gc = env.read().fetch_var(DeBruijnIndex::default());
         let this = this_gc.read();
         let this = match &*this {
             Value::Record(ref rec) => rec,
