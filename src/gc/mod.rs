@@ -15,6 +15,7 @@ mod collection;
 
 pub use collection::init_gc;
 use collection::{dec_rc, inc_rc};
+use either::Either;
 use futures::future::Shared;
 pub use proc_macros::Trace;
 
@@ -498,6 +499,27 @@ where
         }
     }
 }
+
+unsafe impl<L, R> Trace for Either<L, R>
+where
+    L: GcOrTrace,
+    R: GcOrTrace,
+{
+    unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
+        match self {
+            Either::Left(inner) => inner.visit_or_recurse(visitor),
+            Either::Right(inner) => inner.visit_or_recurse(visitor),
+        }
+    }
+
+    unsafe fn finalize(&mut self) {
+        match self {
+            Either::Left(ref mut inner) => inner.finalize_or_skip(),
+            Either::Right(ref mut inner) => inner.finalize_or_skip(),
+        }
+    }
+}
+
 
 unsafe impl<T> Trace for Box<T>
 where

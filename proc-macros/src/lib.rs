@@ -102,7 +102,7 @@ pub fn derive_trace(input: TokenStream) -> TokenStream {
 
     match data {
         syn::Data::Struct(data_struct) => derive_trace_struct(ident, data_struct, generics).into(),
-        syn::Data::Enum(data_enum) => derive_trace_enum(ident, data_enum).into(),
+        syn::Data::Enum(data_enum) => derive_trace_enum(ident, data_enum, generics).into(),
         _ => panic!("Union types are not supported."),
     }
 }
@@ -213,7 +213,7 @@ fn derive_trace_struct(
 }
 
 // TODO: Add generics here
-fn derive_trace_enum(name: Ident, data_enum: DataEnum) -> proc_macro2::TokenStream {
+fn derive_trace_enum(name: Ident, data_enum: DataEnum, generics: Generics) -> proc_macro2::TokenStream {
     let (visit_match_clauses, finalize_match_clauses): (Vec<_>, Vec<_>) = data_enum
         .variants
         .into_iter()
@@ -287,8 +287,31 @@ fn derive_trace_enum(name: Ident, data_enum: DataEnum) -> proc_macro2::TokenStre
             ))
         })
         .unzip();
+
+    let Generics {
+        mut params,
+        where_clause,
+        ..
+    } = generics;
+
+    let mut unbound_params = Punctuated::<GenericParam, Token![,]>::new();
+
+    for param in params.iter_mut() {
+        match param {
+            GenericParam::Type(ref mut ty) => {
+                ty.bounds.push(syn::TypeParamBound::Verbatim(
+                    quote! { ::scheme_rs::gc::Trace },
+                ));
+                unbound_params.push(GenericParam::Type(syn::TypeParam::from(ty.ident.clone())));
+            }
+            param => unbound_params.push(param.clone()),
+        }
+    }
+
     quote! {
-        unsafe impl ::scheme_rs::gc::Trace for #name {
+        unsafe impl<#params> ::scheme_rs::gc::Trace for #name <#unbound_params> 
+        #where_clause
+        {
             unsafe fn visit_children(&self, visitor: unsafe fn(::scheme_rs::gc::OpaqueGcPtr)) {
                 match self {
                     #( #visit_match_clauses, )*

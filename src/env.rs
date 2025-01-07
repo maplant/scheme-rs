@@ -1,19 +1,246 @@
+use either::Either;
 use indexmap::IndexSet;
-use proc_macros::Trace;
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 use tokio::sync::OnceCell;
 
 use crate::{
     ast::{parse::ParseAstError, AstNode},
     builtin::Builtin,
     error::{RuntimeError, RuntimeErrorKind},
-    gc::{init_gc, Gc},
+    gc::{init_gc, Gc, Trace},
     lex::{LexError, Token},
     parse::ParseError,
-    syntax::{ExpansionCtx, Identifier, ParsedSyntax},
+    syntax::{ExpansionCtx, Identifier, Mark, ParsedSyntax},
     value::Value,
 };
 
+
+/// A Top level environment. 
+pub trait Top: Trace {
+    fn def_var(&mut self, name: String);
+
+    fn def_macro(&mut self, name: String, val: Gc<Value>);
+
+    fn set_var(&self, name: String, val: Value);
+
+    fn fetch_var(&mut self, name: &str) -> Option<Global>;
+
+    fn fetch_macro(&self, name: &str) -> Option<Gc<Value>>;
+}
+
+
+/// Top level environment, or compilation unit, for a Scheme library.
+#[derive(Trace)]
+pub struct Library {
+    vars: HashMap<String, Gc<Value>>,
+    macros: HashMap<String, Gc<Value>>,
+}
+
+impl Top for Library {
+    fn def_var(&mut self, name: String) {
+        self.write().vars.insert(name, Gc::new(Value::Undefined));
+    }
+
+    fn def_macro(&mut self, name: String, val: Gc<Value>) {
+        todo!()
+    }
+
+    fn set_var(&self, name: String, val: Value) {
+        todo!()
+    }
+
+    // TODO: Gracefully handle undefined variables.
+    fn fetch_var(&mut self, name: &str) -> Option<Global> {
+        self.vars.get(name)
+            .map(|val| Global::new(val))
+    }
+
+    fn fetch_macro(&self, name: &str) -> Option<Gc<Value>> {
+        todo!()
+    }
+}
+
+/// Top level environment for a Scheme program.
+#[derive(Trace)]
+pub struct Program {
+    vars: HashMap<String, Gc<Value>>,
+    macros: HashMap<String, Gc<Value>>,
+}
+
+
+/// Top level environment for a Scheme REPL.
+#[derive(Trace)]
+pub struct Repl {
+    vars: HashMap<String, Gc<Value>>,
+    macros: HashMap<String, Gc<Value>>,
+}
+
+#[derive(Trace)]
+pub struct LexicalContour<T: Trace> {
+    up: Environment<T>,
+    vars: HashMap<Identifier, Local>,
+    macros: HashMap<Identifier, Gc<Value>>,
+}
+
+impl<T: Top> LexicalContour<T> {
+    fn new(env: &Environment<T>) -> Self {
+        Self {
+            up: env.clone(),
+            vars: Default::default(),
+            macros: Default::default(),
+        }
+    }
+}
+
+impl<T: Top> Gc<LexicalContour<T>> {
+    pub fn def_var(&self, name: Identifier) {
+        self.write().vars.insert(name, Local::gensym());
+    }
+
+    pub fn def_macro(&self, name: Identifier, value: Gc<Value>) {
+        todo!()
+    }
+
+    pub fn fetch_var(&self, name: &Identifier) -> Option<Var> {
+        todo!()
+    }
+}
+
+#[derive(Trace)]
+pub struct MacroExpansion<T: Trace> {
+    up: Environment<T>,
+    mark: Mark,
+    source: Either<Gc<LexicalContour<T>>, Gc<T>>,
+}
+
+impl<T: Top> MacroExpansion<T> {
+    pub fn new(env: &Environment<T>, mark: Mark, source: Either<Gc<LexicalContour<T>>, Gc<T>>) -> Self {
+        Self {
+            up: env.clone(),
+            mark,
+            source,
+        }
+    }
+}
+
+impl<T: Top> Gc<MacroExpansion<T>> {
+    pub fn def_var(&self, name: Identifier) {
+        // In the case of defining variables produced from macro expansions, pass them
+        // on to the next environment up.
+        self.read().up.def_var(name);
+    }
+
+    pub fn fetch_var(&self, name: &Identifier) -> Option<Var> {
+        // Attempt to check the up scope first:
+        let this = self.read();
+        let var = this.up.fetch_var(name);
+        if var.is_some() {
+            return var;
+        }
+        // If the current expansion context contains the mark, remove it and check the
+        // expansion source scope.
+        if name.marks.contains(&this.mark) {
+            match this.source {
+                Either::Left(ref lex) => {
+                    let mut unmarked = name.clone();
+                    unmarked.mark(this.mark);
+                    lex.fetch_var(&unmarked)
+                }
+                Either::Right(ref lib) => lib.write().fetch_var(&name.name).map(Var::Global),
+            }
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Trace)]
+pub enum Environment<T: Trace> {
+    Top(Gc<T>),
+    LexicalContour(Gc<LexicalContour<T>>),
+    MacroExpansion(Gc<MacroExpansion<T>>),
+}
+
+impl<T: Top> Environment<T> {
+    pub fn def_var(&self, name: Identifier) {
+        match self {
+            Self::Top(top) => top.write().def_var(name.name),
+            Self::LexicalContour(lex) => lex.def_var(name),
+            Self::MacroExpansion(me) => me.def_var(name),
+        }
+    }
+
+    pub fn def_macro(&self, name: Identifier, val: Gc<Value>) {
+        todo!()
+    }
+
+    pub fn fetch_var(&self, name: &Identifier) -> Option<Var> {
+        todo!()
+    }
+
+    pub fn fetch_macro(&self, name: &Identifier) -> Gc<Value> {
+        todo!()
+    }
+
+    pub fn new_lexical_contour(&self) -> Self {
+        let new_lexical_contour = LexicalContour::new(self);
+        Self::LexicalContour(Gc::new(new_lexical_contour))
+    }
+
+    pub fn new_macro_expansion(&self, mark: Mark, source: Either<Gc<LexicalContour<T>>, Gc<T>>) -> Self {
+        let new_macro_expansion = MacroExpansion::new(self, mark, source);
+        Self::MacroExpansion(Gc::new(new_macro_expansion))
+    }
+}
+
+impl<T: Top> Clone for Environment<T> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Top(top) => Self::Top(top.clone()),
+            Self::LexicalContour(lex) => Self::LexicalContour(lex.clone()),
+            Self::MacroExpansion(mac) => Self::MacroExpansion(mac.clone())
+        }
+    }
+}
+
+#[derive(Copy, Clone, Trace, Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct Local(usize);
+
+impl Local {
+    /// Create a new temporary value.
+    fn gensym() -> Self {
+        static NEXT_SYM: AtomicUsize = AtomicUsize::new(0);
+        Self(NEXT_SYM.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+impl ToString for Local {
+    fn to_string(&self) -> String {
+        format!("v{}", self.0)
+    }
+}
+
+#[derive(Trace)]
+pub struct Global {
+    val: Gc<Value>,
+}
+
+impl Global {
+    pub fn new(val: &Gc<Value>) -> Self {
+        todo!()
+    }
+}
+
+#[derive(Trace)]
+pub enum Var {
+    Global(Global),
+    Local(Local),
+}
+
+/*
 /// An Environment, or store of variables and macros with a reference to its containing
 /// lexical scope.
 #[derive(derive_more::Debug, Default, Trace)]
@@ -496,3 +723,4 @@ impl ExpansionEnv<'_> {
         }
     }
 }
+*/
