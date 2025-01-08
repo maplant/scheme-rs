@@ -1,16 +1,10 @@
 use crate::{
     ast::Literal,
-    continuation::Continuation,
-    error::RuntimeError,
-    gc::Gc,
     syntax::{Identifier, Span, Syntax},
-    value::Value,
 };
-use proc_macros::{builtin, Trace};
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use proc_macros::Trace;
+use std::
+    collections::{HashMap, HashSet};
 
 #[derive(Clone, Trace, Debug)]
 pub struct Transformer {
@@ -369,6 +363,7 @@ impl<'a> Binds<'a> {
     }
 }
 
+/*
 #[builtin("make-variable-transformer")]
 pub async fn make_variable_transformer(
     _cont: &Option<Arc<Continuation>>,
@@ -384,3 +379,4 @@ pub async fn make_variable_transformer(
         _ => todo!(),
     }
 }
+*/

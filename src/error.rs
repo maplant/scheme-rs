@@ -1,13 +1,9 @@
 use crate::{
     ast::parse::ParseAstError,
-    continuation::Continuation,
-    gc::Gc,
     syntax::{Identifier, Span},
-    value::Value,
 };
 use derivative::Derivative;
 use proc_macros::Trace;
-use std::sync::Arc;
 
 // TODO: Rename this to condition to more accurately reflect its purpose
 #[derive(Debug, Clone, Trace)]
@@ -38,12 +34,6 @@ pub enum RuntimeErrorKind {
     NotAVariableTransformer,
     DivisionByZero,
     ParseAstError(ParseAstError),
-    AbandonCurrentContinuation {
-        #[derivative(Debug = "ignore")]
-        args: Vec<Gc<Value>>,
-        #[derivative(Debug = "ignore")]
-        new_cont: Option<Arc<Continuation>>,
-    },
     NoPatternsMatch,
     Condition {
         // TODO
@@ -77,6 +67,7 @@ impl RuntimeError {
         }
     }
 
+    /*
     pub fn abandon_current_continuation(
         args: Vec<Gc<Value>>,
         new_cont: Option<Arc<Continuation>>,
@@ -86,6 +77,7 @@ impl RuntimeError {
             kind: RuntimeErrorKind::AbandonCurrentContinuation { args, new_cont },
         }
     }
+    */
 
     pub fn division_by_zero() -> Self {
         Self {

@@ -1,7 +1,7 @@
 use crate::{
     ast::Literal,
-    continuation::Continuation,
-    env::{Env, ExpansionEnv},
+    // continuation::Continuation,
+    env::{Environment, LexicalContour, MacroSource, Top},
     error::RuntimeError,
     gc::{Gc, Trace},
     lex::{InputSpan, Lexeme, Token},
@@ -173,7 +173,7 @@ impl Syntax {
         }
     }
 
-    pub fn resolve_bindings(&mut self, env: &ExpansionEnv<'_>) {
+    pub fn resolve_bindings(&mut self, env: &Environment<impl Top>) {
         match self {
             Self::List { ref mut list, .. } => {
                 for item in list {
@@ -194,13 +194,13 @@ impl Syntax {
         }
     }
 
-    async fn apply_transformer(
+    async fn apply_transformer<T: Top>(
         &self,
-        env: &ExpansionEnv<'_>,
-        macro_env: Gc<Env>,
-        cont: &Option<Arc<Continuation>>,
+        env: &Environment<T>,
+        macro_source: MacroSource<T>,
         transformer: Gc<Value>,
-    ) -> Result<Expansion, RuntimeError> {
+        // cont: &Closure,
+    ) -> Result<Expansion<T>, RuntimeError> {
         // Create a new mark for the expansion context
         let new_mark = Mark::new();
         // Apply the new mark to the input
@@ -209,8 +209,9 @@ impl Syntax {
         input.resolve_bindings(env);
         input.mark(new_mark);
         // Call the transformer with the input:
-        let transform = transformer.read().as_callable().unwrap();
-        let mut output = {
+        // let transform = transformer.read().as_callable().unwrap();
+        let mut output: Syntax = {
+            /*
             let output = transform
                 .call(vec![Gc::new(Value::Syntax(input))], cont)
                 .await?
@@ -222,24 +223,22 @@ impl Syntax {
                 Value::Syntax(syntax) => syntax.clone(),
                 _ => todo!(),
             }
+             */
+            todo!()
         };
         // Apply the new mark to the output
         output.mark(new_mark);
-        Ok(Expansion::Expanded {
-            mark: new_mark,
-            syntax: output,
-            macro_env,
-        })
+
+        let new_env = env.new_macro_expansion(new_mark, macro_source);
+
+        Ok(Expansion::new_expanded(new_env, output))
     }
 
-    fn expand_once<'a, 'b>(
+    fn expand_once<'a, T: Top>(
         &'a self,
-        env: &'a ExpansionEnv<'b>,
-        cont: &'a Option<Arc<Continuation>>,
-    ) -> BoxFuture<'a, Result<Expansion, RuntimeError>>
-    where
-        'a: 'b,
-    {
+        env: &'a Environment<T>,
+        // cont: &Closure,
+    ) -> BoxFuture<'a, Result<Expansion<T>, RuntimeError>> {
         Box::pin(async move {
             match self {
                 Self::List { list, .. } => {
@@ -250,9 +249,7 @@ impl Syntax {
                         _ => return Ok(Expansion::Unexpanded),
                     };
                     if let Some((macro_env, transformer)) = env.fetch_macro(ident) {
-                        return self
-                            .apply_transformer(env, macro_env, cont, transformer)
-                            .await;
+                        return self.apply_transformer(env, macro_env, transformer).await;
                     }
 
                     // Check for set! macro
@@ -263,9 +260,7 @@ impl Syntax {
                                 if !transformer.read().is_variable_transformer() {
                                     return Err(RuntimeError::not_a_variable_transformer());
                                 }
-                                return self
-                                    .apply_transformer(env, macro_env, cont, transformer)
-                                    .await;
+                                return self.apply_transformer(env, macro_env, transformer).await;
                             }
                         }
                         _ => (),
@@ -273,9 +268,7 @@ impl Syntax {
                 }
                 Self::Identifier { ident, .. } => {
                     if let Some((macro_env, transformer)) = env.fetch_macro(ident) {
-                        return self
-                            .apply_transformer(env, macro_env, cont, transformer)
-                            .await;
+                        return self.apply_transformer(env, macro_env, transformer).await;
                     }
                 }
                 _ => (),
@@ -285,26 +278,19 @@ impl Syntax {
     }
 
     /// Fully expand the outermost syntax object.
-    pub async fn expand(
+    pub async fn expand<T: Top>(
         mut self,
-        env: &ExpansionEnv<'_>,
-        cont: &Option<Arc<Continuation>>,
-    ) -> Result<FullyExpanded, RuntimeError> {
-        let mut env = env.push_expansion_env(Vec::new());
+        env: &Environment<T>,
+        // cont: &Closure,
+    ) -> Result<FullyExpanded<T>, RuntimeError> {
+        let mut curr_env = env.clone();
         loop {
-            match self.expand_once(&env, cont).await? {
+            match self.expand_once(&curr_env).await? {
                 Expansion::Unexpanded => {
-                    return Ok(FullyExpanded {
-                        expansion_ctxs: env.expansion_ctxs,
-                        expanded: self,
-                    })
+                    return Ok(FullyExpanded::new(curr_env, self));
                 }
-                Expansion::Expanded {
-                    mark,
-                    macro_env,
-                    syntax,
-                } => {
-                    env.expansion_ctxs.push(ExpansionCtx::new(mark, macro_env));
+                Expansion::Expanded { new_env, syntax } => {
+                    curr_env = new_env;
                     self = syntax;
                 }
             }
@@ -312,19 +298,35 @@ impl Syntax {
     }
 }
 
-#[derive(derive_more::Debug)]
-pub enum Expansion {
+// #[derive(derive_more::Debug)]
+pub enum Expansion<T: Trace> {
     /// Syntax remained unchanged after expansion
     Unexpanded,
     /// Syntax was expanded, producing a new expansion context
     Expanded {
-        mark: Mark,
-        #[debug(skip)]
-        macro_env: Gc<Env>,
+        new_env: Environment<T>,
         syntax: Syntax,
     },
 }
 
+impl<T: Trace> Expansion<T> {
+    fn new_expanded(new_env: Environment<T>, syntax: Syntax) -> Self {
+        Self::Expanded { new_env, syntax }
+    }
+}
+
+pub struct FullyExpanded<T: Trace> {
+    pub expansion_env: Environment<T>,
+    pub expanded: Syntax,
+}
+
+impl<T: Trace> FullyExpanded<T> {
+    pub fn new(expansion_env: Environment<T>, expanded: Syntax) -> Self {
+        Self { expansion_env, expanded }
+    }
+}
+
+/*
 #[derive(derive_more::Debug, Clone)]
 pub struct ExpansionCtx {
     pub mark: Mark,
@@ -349,6 +351,7 @@ impl AsRef<Syntax> for FullyExpanded {
         &self.expanded
     }
 }
+*/
 
 #[derive(Debug)]
 pub struct ParsedSyntax {
@@ -540,6 +543,7 @@ impl Syntax {
     }
 }
 
+/*
 #[builtin("syntax->datum")]
 pub async fn syntax_to_datum(
     _cont: &Option<Arc<Continuation>>,
@@ -573,3 +577,4 @@ pub async fn datum_to_syntax(
         datum,
     )))])
 }
+*/

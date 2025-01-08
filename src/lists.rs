@@ -1,4 +1,4 @@
-use crate::{continuation::Continuation, error::RuntimeError, gc::Gc, num::Number, value::Value};
+use crate::{error::RuntimeError, gc::Gc, num::Number, value::Value};
 use proc_macros::builtin;
 use std::sync::Arc;
 
@@ -65,6 +65,7 @@ pub fn list_to_vec_with_null(curr: &Gc<Value>, out: &mut Vec<Gc<Value>>) {
     }
 }
 
+/*
 #[builtin("list")]
 pub async fn list(
     _cont: &Option<Arc<Continuation>>,
@@ -160,3 +161,4 @@ pub async fn length(
     }
     Ok(vec![Gc::new(Value::Number(Number::from(length)))])
 }
+*/

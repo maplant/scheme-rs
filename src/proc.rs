@@ -1,8 +1,8 @@
 use crate::{
     ast::Body,
     builtin,
-    continuation::Continuation,
-    env::Env,
+    // continuation::Continuation,
+    // env::Env,
     error::{Frame, RuntimeError},
     gc::Gc,
     lists::list_to_vec,
@@ -10,9 +10,12 @@ use crate::{
     value::Value,
 };
 use async_trait::async_trait;
+use either::Either;
 use futures::future::BoxFuture;
 use proc_macros::Trace;
 use std::sync::Arc;
+
+/*
 
 pub enum ValuesOrPreparedCall {
     Values(Vec<Gc<Value>>),
@@ -229,4 +232,65 @@ pub async fn apply(
     let last = args.pop().unwrap();
     list_to_vec(&last, &mut args);
     Ok(PreparedCall::prepare(args, None))
+}
+*/
+
+pub type Record = Box<[Gc<Value>]>;
+
+pub type RawFuncPtr = unsafe extern "C" fn(
+    env: *const Gc<Value>,
+    globals: *const Gc<Value>,
+    args: *const Gc<Value>,
+    cont: *const Closure,
+    // ...
+) -> Application;
+
+pub type SyncFuncPtr = fn(
+    env: &[Gc<Value>],
+    globals: &[Gc<Value>],
+    args: &[Gc<Value>],
+    cont: Option<Closure>,
+) -> Application;
+
+
+pub type AsyncFuncPtr = fn(
+    args: Box<[Gc<Value>]>,
+    cont: Option<Closure>,
+) -> BoxFuture<'static, Application>;
+
+pub struct Closure {
+    env: Record,
+    globals: Record,
+    func: Either<SyncFuncPtr, AsyncFuncPtr>,
+    is_variable_transformer: bool,
+}
+
+impl Closure {
+    /// Evaluate the current - and all subsequent applications - until all that
+    /// remains are values.
+    pub async fn eval(mut self, mut args: Box<[Gc<Value>]>) -> Box<[Gc<Value>]> {
+        loop {
+            let app = match self.func {
+                Either::Left(sync_func) => sync_func(
+                    self.env.as_ref(),
+                    self.globals.as_ref(),
+                    args.as_ref(),
+                    None,
+                ),
+                Either::Right(async_func) =>
+                    async_func(args, None).await
+            };
+            if let Some(op) = app.op {
+                self = op;
+                args = app.args;
+            } else {
+                return app.args;
+            }
+        }
+    }
+}
+
+pub struct Application {
+    op: Option<Closure>,
+    args: Box<[Gc<Value>]>,
 }

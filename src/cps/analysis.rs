@@ -3,28 +3,11 @@
 //!
 
 use super::*;
-use crate::{env::DeBruijnIndex, ast::Body};
 
-impl CpsCtx<'_> {
-    /// Returns the variables that are present in the CpsCtx but not local to
-    /// the function body.
-    pub fn free_variables(&self, body: &Body) -> HashSet<CpsVar> {
-        let mut vars = HashSet::new();
-        body.free_variables(self, 0, &mut vars);
-        vars
-    }
-
-    pub fn lexical_to_cps(&self, lexical: DeBruijnIndex) -> CpsVar {
-        todo!()
-    }
-}
-
+/// To begin, we are converting all functions to closures, regardless of whether
+/// or not they escape. In this case, the free variables of a function f is
+/// simply F(f) =  V(f) - B(f), where V(f) is the variables in the body of f and
+/// B(f) are the variables introduced in a binding in f.
 trait FreeVariables {
-    fn free_variables(&self, ctx: &CpsCtx, curr_depth: usize, free_vars: &mut HashSet<CpsVar>);
-}
-
-impl FreeVariables for Body {
-    fn free_variables(&self, ctx: &CpsCtx, curr_depth: usize, free_vars: &mut HashSet<CpsVar>) {
-        todo!()
-    }
+    fn free_variables(&self) -> HashSet<Var>;
 }

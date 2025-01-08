@@ -1,27 +1,32 @@
 use super::*;
 use crate::ast::*;
 
+pub struct ReboundLocals {
+    
+}
+
 /// There's not too much reason that this is a trait, other than I wanted to
 /// see all of the Compile implementations in one place.
 pub trait Compile {
-    fn compile(&self, env: CpsVar, meta_cont: impl FnMut(Value) -> Cps) -> Cps;
+    fn compile(&self, rebinds: &ReboundLocals, meta_cont: impl FnMut(Value) -> Cps) -> Cps;
 }
 
 impl Compile for Lambda {
     /// Generates the maximally-correct implementation of a lambda, i.e. a closure that
     /// tail-calls a closure.
-    fn compile(&self, parent_env: CpsVar, mut meta_cont: impl FnMut(Value) -> Cps) -> Cps {
-        let f = CpsVar::gensym();
-        let env = CpsVar::gensym();
-        let k = CpsVar::gensym();
+    fn compile(&self, rebinds: &ReboundLocals, mut meta_cont: impl FnMut(Value) -> Cps) -> Cps {
+        /*
+        let f = Var::gensym();
+        let env = Var::gensym();
+        let k = Var::gensym();
 
         // TODO: This does not capture any of the parameters into an environment, that
         // needs to be done next.
         let body = self.body.compile(env, |z| {
             // In order to call the continuation, we must extract the function pointer
             // and the parent environment.
-            let func_ptr = CpsVar::gensym();
-            let parent_env = CpsVar::gensym();
+            let func_ptr = Var::gensym();
+            let parent_env = Var::gensym();
             Cps::Select(
                 0,
                 k,
@@ -42,9 +47,9 @@ impl Compile for Lambda {
 
         // Generates a closure for the lambda function.
         Cps::Fix(f, vec![k, env], Box::new(body), {
-            let closure = CpsVar::gensym();
-            let s1 = CpsVar::gensym();
-            let s2 = CpsVar::gensym();
+            let closure = Var::gensym();
+            let s1 = Var::gensym();
+            let s2 = Var::gensym();
             Box::new(Cps::Record(
                 2,
                 closure,
@@ -70,7 +75,9 @@ impl Compile for Lambda {
                     )),
                 )),
             ))
-        })
+    })
+         */
+        todo!()
     }
 }
 
@@ -85,7 +92,7 @@ impl Compile for Let {
 */
 
 impl Compile for Body {
-    fn compile(&self, env: CpsVar, meta_cont: impl FnMut(Value) -> Cps) -> Cps {
+    fn compile(&self, rebinds: &ReboundLocals, meta_cont: impl FnMut(Value) -> Cps) -> Cps {
         todo!()
     }
 }

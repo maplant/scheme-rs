@@ -1,10 +1,10 @@
 use crate::{
     ast,
-    continuation::Continuation,
+    // continuation::Continuation,
     error::RuntimeError,
     gc::Gc,
     num::Number,
-    proc::{Callable, ExternalFn, Procedure},
+    // proc::{Callable, ExternalFn, Procedure},
     records::{Record, RecordType},
     syntax::Syntax,
     Trace,
@@ -26,18 +26,22 @@ pub enum Value {
     Vector(Vec<Value>),
     ByteVector(Vec<u8>),
     Syntax(Syntax),
+    // Closure(Closure),
+    /*
     Procedure(Procedure),
     ExternalFn(ExternalFn),
+     */
     Record(Record),
     RecordType(Gc<RecordType>),
     Future(#[debug(skip)] Shared<BoxFuture<'static, Result<Vec<Gc<Value>>, RuntimeError>>>),
-    Continuation(#[debug(skip)] Option<Arc<Continuation>>),
 }
 
 impl Value {
+    /*
     pub fn is_callable(&self) -> bool {
         matches!(self, Self::Procedure(_) | Self::ExternalFn(_))
     }
+    */
 
     /// #f is false, everything else is true
     pub fn is_true(&self) -> bool {
@@ -45,13 +49,17 @@ impl Value {
     }
 
     pub fn is_variable_transformer(&self) -> bool {
+        /*
         match self {
             Self::Procedure(ref proc) => proc.is_variable_transformer,
             // Self::Transformer(ref trans) => trans.is_variable_transformer,
             _ => false,
         }
+         */
+        todo!()
     }
 
+    /*
     pub fn as_callable(&self) -> Option<Arc<dyn Callable>> {
         match self {
             // Having to clone and box these kind of sucks. Hopefully we can
@@ -62,6 +70,7 @@ impl Value {
             _ => None,
         }
     }
+    */
 
     pub fn fmt(&self) -> String {
         match self {
@@ -87,10 +96,10 @@ impl Value {
             Self::Character(c) => format!("\\x{c}"),
             Self::ByteVector(_) => "<byte-vector>".to_string(),
             Self::Syntax(syntax) => format!("{:#?}", syntax),
-            Self::Procedure(proc) => format!("<{proc:?}>"),
-            Self::ExternalFn(_) => "<external-fn>".to_string(),
+            // Self::Procedure(proc) => format!("<{proc:?}>"),
+            // Self::ExternalFn(_) => "<external-fn>".to_string(),
             Self::Future(_) => "<future>".to_string(),
-            Self::Continuation(_) => "<continuation>".to_string(),
+            // Self::Continuation(_) => "<continuation>".to_string(),
             Self::Record(record) => format!("<{record:?}>"),
             Self::RecordType(record_type) => format!("<{record_type:?}>"),
             Self::Undefined => "<undefined>".to_string(),
@@ -135,9 +144,9 @@ impl Value {
             Self::Vector(_) => "vector",
             Self::ByteVector(_) => "byte vector",
             Self::Syntax(_) => "syntax",
-            Self::Procedure(_) | Self::ExternalFn(_) => "procedure",
+            // Self::Procedure(_) | Self::ExternalFn(_) => "procedure",
             Self::Future(_) => "future",
-            Self::Continuation(_) => "continuation",
+            // Self::Continuation(_) => "continuation",
             Self::Record(_) => "record",
             Self::RecordType(_) => "record-type",
             Self::Undefined => "undefined",
@@ -182,10 +191,9 @@ impl Clone for Value {
             Self::Vector(vec) => Self::Vector(vec.clone()),
             Self::ByteVector(bvec) => Self::ByteVector(bvec.clone()),
             Self::Syntax(syn) => Self::Syntax(syn.clone()),
-            Self::Procedure(proc) => Self::Procedure(proc.clone()),
-            Self::ExternalFn(ext_fn) => Self::ExternalFn(*ext_fn),
+            // Self::Procedure(proc) => Self::Procedure(proc.clone()),
+            // Self::ExternalFn(ext_fn) => Self::ExternalFn(*ext_fn),
             Self::Future(fut) => Self::Future(fut.clone()),
-            Self::Continuation(cont) => Self::Continuation(cont.clone()),
             Self::Record(record) => Self::Record(record.clone()),
             Self::RecordType(rt) => Self::RecordType(rt.clone()),
             Self::Undefined => Self::Undefined,
@@ -193,11 +201,13 @@ impl Clone for Value {
     }
 }
 
+/*
 impl From<ExternalFn> for Value {
     fn from(ef: ExternalFn) -> Self {
         Value::ExternalFn(ef)
     }
 }
+*/
 
 /// Create a proper list from a vector of values
 impl From<Vec<Gc<Value>>> for Value {
@@ -273,6 +283,7 @@ pub fn eqv(a: &Gc<Value>, b: &Gc<Value>) -> bool {
     a.eqv(&b)
 }
 
+/*
 #[builtin("not")]
 pub async fn not(
     _cont: &Option<Arc<Continuation>>,
@@ -419,3 +430,4 @@ pub async fn disp(
     print!("{}", arg.read().fmt());
     Ok(vec![Gc::new(Value::Null)])
 }
+*/

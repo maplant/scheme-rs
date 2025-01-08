@@ -1,5 +1,11 @@
 use reedline::{Reedline, Signal, ValidationResult, Validator};
-use scheme_rs::{env::Env, lex::Token, parse::ParseError, syntax::ParsedSyntax};
+use scheme_rs::{
+    ast::{parse::ParseAstError, AstNode},
+    env::{Environment, Repl},
+    lex::{LexError, Token},
+    parse::ParseError,
+    syntax::ParsedSyntax,
+};
 use std::borrow::Cow;
 
 struct InputParser;
@@ -47,13 +53,20 @@ impl reedline::Prompt for Prompt {
 #[tokio::main]
 async fn main() {
     let mut rl = Reedline::create().with_validator(Box::new(InputParser));
-    let mut n_results = 1;
-    let top = Env::top().await;
+    // let mut n_results = 1;
+    let top = Environment::new_repl();
     loop {
         let Ok(Signal::Success(input)) = rl.read_line(&Prompt) else {
             println!("exiting...");
             return;
         };
+        match parse_str(&top, &input).await {
+            Ok(()) => (),
+            Err(err) => {
+                println!("Error: {err:?}");
+            }
+        }
+        /*
         match top.eval("<stdin>", &input).await {
             Ok(results) => {
                 for result in results.into_iter().flatten() {
@@ -65,5 +78,25 @@ async fn main() {
                 println!("Error: {err:?}");
             }
         }
+         */
     }
+}
+
+#[derive(derive_more::From, Debug)]
+pub enum EvalError<'e> {
+    LexError(LexError<'e>),
+    ParseError(ParseError<'e>),
+    ParseAstError(ParseAstError),
+}
+
+async fn parse_str<'e>(env: &Environment<Repl>, input: &'e str) -> Result<(), EvalError<'e>> {
+    let tokens = Token::tokenize_str(input).unwrap();
+    let sexprs = ParsedSyntax::parse(&tokens)?;
+    for sexpr in sexprs {
+        let Some(expr) = AstNode::from_syntax(sexpr.syntax, env).await? else {
+            continue;
+        };
+        println!("Parsed: {expr:#?}");
+    }
+    Ok(())
 }

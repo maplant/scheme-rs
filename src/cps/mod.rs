@@ -12,20 +12,23 @@
 //!   directly to machine code.
 //!
 
-use indexmap::IndexSet;
-
-use crate::{ast::Literal, syntax::Identifier};
-use std::{collections::HashSet, sync::atomic::{AtomicUsize, Ordering}};
+use crate::{
+    ast::Literal,
+    env::{Local, Var},
+    gc::Trace,
+};
+use std::{collections::HashSet, str::FromStr};
 
 mod analysis;
 mod codegen;
 mod compile;
 
 pub enum Value {
-    Var(CpsVar),
+    Var(Var),
     Literal(Literal),
 }
 
+#[derive(Copy, Clone, Debug, Trace)]
 pub enum PrimOp {
     Set,
     Add,
@@ -38,60 +41,34 @@ pub enum PrimOp {
     CallWithCurrentContinuation,
 }
 
+impl FromStr for PrimOp {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, ()> {
+        match s.as_ref() {
+            "+" => Ok(Self::Add),
+            "-" => Ok(Self::Sub),
+            "/" => Ok(Self::Div),
+            "if" => Ok(Self::If),
+            "and" => Ok(Self::And),
+            "or" => Ok(Self::Or),
+            "call/cc" | "call-with-current-continuation" => Ok(Self::CallWithCurrentContinuation),
+            _ => Err(()),
+        }
+    }
+}
+
 pub enum Cps {
     /// A record, for now, is an array of values. These are used to represent
     /// environments at runtime.
-    Record(usize, CpsVar, Box<Cps>),
+    Record(usize, Local, Box<Cps>),
     /// Operation to get the address of a value in a record.
-    Select(usize, CpsVar, CpsVar, Box<Cps>),
+    Select(usize, Var, Local, Box<Cps>),
     /// Call to a primitive operator.
-    PrimOp(PrimOp, Value, CpsVar, Box<Cps>),
+    PrimOp(PrimOp, Vec<Value>, Local, Box<Cps>),
     /// Function application.
     App(Value, Vec<Value>),
     /// Anonymous function generation. The result of this operation is a function
     /// pointer.
-    Fix(CpsVar, Vec<CpsVar>, Box<Cps>, Box<Cps>),
-}
-
-/// This struct serves two primary purposes:
-/// - Allow for conversion between De Bruijn indices and globaly unique names.
-/// - Store which functions are determined to be "known" or "escaping".
-pub struct CpsCtx<'a> {
-    pub up: Option<&'a CpsCtx<'a>>,
-    pub vars: IndexSet<CpsVar>,
-    pub functions: Option<Functions>,
-}
-
-pub struct Functions {
-    pub known: HashSet<CpsVar, HashSet<CpsVar>>,
-    pub escaping: HashSet<CpsVar, HashSet<CpsVar>>,
-}
-
-/// To start, a compilation unit will be a single function. This is because
-/// calling set! on a function is perfectly legal. Later, we'll prove which
-/// functions are set! and which are not, allowing us to make further
-/// optimizations.
-pub struct CpsCompiledFunction {
-    args: Vec<Identifier>,
-    remaining: Option<Identifier>,
-    cps: Cps,
-}
-
-/// Vars in our CPS notation purely represent temporaries; they have no location
-/// on the stack and are immutable.
-#[derive(Copy, Clone, Debug)]
-pub struct CpsVar(usize);
-
-impl CpsVar {
-    /// Create a new temporary value.
-    fn gensym() -> Self {
-        static NEXT_SYM: AtomicUsize = AtomicUsize::new(0);
-        CpsVar(NEXT_SYM.fetch_add(1, Ordering::Relaxed))
-    }
-}
-
-impl ToString for CpsVar {
-    fn to_string(&self) -> String {
-        format!("v{}", self.0)
-    }
+    Fix(Var, Vec<Var>, Box<Cps>, Box<Cps>),
 }

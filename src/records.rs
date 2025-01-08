@@ -4,10 +4,10 @@ use std::collections::HashMap;
 
 use crate::{
     ast::{self, parse::ParseAstError, Body, Expression, Let},
-    env::{Env, ExpansionEnv, VariableRef, DeBruijnIndex},
+    env::{Environment, Top, Var},
     error::RuntimeError,
     gc::{Gc, Trace},
-    proc::Procedure,
+    // proc::Procedure,
     syntax::{Identifier, Span, Syntax},
     value::Value,
 };
@@ -46,7 +46,7 @@ pub struct Record {
 
 #[derive(Clone, Trace, Debug)]
 pub struct DefineRecordType {
-    parent: Option<VariableRef>,
+    parent: Option<Var>,
     name: Identifier,
     constructor: Option<Identifier>,
     predicate: Option<Identifier>,
@@ -185,7 +185,7 @@ fn parse_fields(fields: &[Syntax]) -> Result<Vec<FieldDefinition>, ParseAstError
 impl DefineRecordType {
     pub fn parse(
         exprs: &[Syntax],
-        env: &ExpansionEnv<'_>,
+        env: &Environment<impl Top>,
         span: &Span,
     ) -> Result<Self, ParseAstError> {
         match exprs {
@@ -271,7 +271,12 @@ impl DefineRecordType {
                 }
 
                 Ok(Self {
-                    parent: parent.map(|(x, _)| env.fetch_var_ref(&x)),
+                    parent: parent
+                        .map(|(x, _)| {
+                            env.fetch_var(&x)
+                                .ok_or_else(|| ParseAstError::UndefinedVariable(x.clone()))
+                        })
+                        .transpose()?,
                     name,
                     constructor,
                     predicate,
@@ -282,6 +287,7 @@ impl DefineRecordType {
         }
     }
 
+    /*
     pub fn define(&self, env: &Gc<Env>) {
         let mut env = env.write();
         let constructor_name = self
@@ -325,7 +331,9 @@ impl DefineRecordType {
 
         env.def_local_var(&self.name, Gc::new(Value::Undefined));
     }
+    */
 
+    /*
     pub fn eval(&self, env: &Gc<Env>) -> Result<(), RuntimeError> {
         let inherits = if let Some(ref parent) = self.parent {
             let parent_gc = parent.fetch(env)?;
@@ -497,8 +505,10 @@ impl DefineRecordType {
 
         Ok(())
     }
+    */
 }
 
+/*
 fn new_proc(env: &Gc<Env>, args: Vec<Identifier>, body: ast::Body) -> Gc<Value> {
     Gc::new(Value::Procedure(Procedure {
         up: env.clone(),
@@ -508,114 +518,4 @@ fn new_proc(env: &Gc<Env>, args: Vec<Identifier>, body: ast::Body) -> Gc<Value> 
         is_variable_transformer: false,
     }))
 }
-
-#[derive(Debug, Clone, Trace)]
-pub struct MakeRecord {
-    record_type: Gc<RecordType>,
-    num_fields: usize,
-}
-
-impl MakeRecord {
-    pub fn eval(&self) -> Value {
-        Value::Record(Record {
-            record_type: self.record_type.clone(),
-            fields: std::iter::repeat_with(|| Gc::new(Value::Undefined))
-                .take(self.num_fields)
-                .collect(),
-        })
-    }
-}
-
-#[derive(Debug, Clone, Trace)]
-pub struct UncheckedFieldMutation {
-    value: DeBruijnIndex,
-    offset: usize,
-}
-
-impl UncheckedFieldMutation {
-    pub fn eval(&self, env: &Gc<Env>) -> Result<(), RuntimeError> {
-        let env = env.read();
-        let this_gc = env.fetch_var(DeBruijnIndex::default());
-        let value = env.fetch_var(self.value);
-        let mut this = this_gc.write();
-        let this: &mut Record = (&mut *this).try_into()?;
-        this.fields[self.offset] = value;
-
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Trace)]
-pub struct FieldMutation {
-    record_type: Gc<RecordType>,
-    value: DeBruijnIndex,
-    offset: usize,
-}
-
-impl FieldMutation {
-    pub fn eval(&self, env: &Gc<Env>) -> Result<(), RuntimeError> {
-        let env = env.read();
-        let this_gc = env.fetch_var(DeBruijnIndex::default());
-
-        {
-            let this = this_gc.read();
-            let this: &Record = (&*this).try_into()?;
-
-            if !is_subtype_of(&this.record_type, &self.record_type) {
-                return Err(RuntimeError::invalid_type(
-                    &self.record_type.read().name,
-                    &this.record_type.read().name,
-                ));
-            }
-        }
-
-        let value = env.fetch_var(self.value);
-
-        let mut this = this_gc.write();
-        let this: &mut Record = (&mut *this).try_into()?;
-        this.fields[self.offset] = value;
-
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Trace)]
-pub struct FieldProjection {
-    record_type: Gc<RecordType>,
-    offset: usize,
-}
-
-impl FieldProjection {
-    pub fn eval(&self, env: &Gc<Env>) -> Result<Vec<Gc<Value>>, RuntimeError> {
-        let this_gc = env.read().fetch_var(DeBruijnIndex::default());
-        let this = this_gc.read();
-        let this: &Record = (&*this).try_into()?;
-
-        if !is_subtype_of(&this.record_type, &self.record_type) {
-            return Err(RuntimeError::invalid_type(
-                &self.record_type.read().name,
-                &this.record_type.read().name,
-            ));
-        }
-
-        Ok(vec![this.fields[self.offset].clone()])
-    }
-}
-
-#[derive(Debug, Clone, Trace)]
-pub struct RecordPredicate {
-    record_type: Gc<RecordType>,
-}
-
-impl RecordPredicate {
-    pub fn eval(&self, env: &Gc<Env>) -> Value {
-        let this_gc = env.read().fetch_var(DeBruijnIndex::default());
-        let this = this_gc.read();
-        let this = match &*this {
-            Value::Record(ref rec) => rec,
-            _ => return Value::Boolean(false),
-        };
-
-        Value::Boolean(is_subtype_of(&this.record_type, &self.record_type))
-    }
-}
+*/

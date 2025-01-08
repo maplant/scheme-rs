@@ -1,17 +1,10 @@
-use crate::{
-    continuation::Continuation,
-    error::RuntimeError,
-    gc::{Gc, Trace},
-    value::Value,
-};
+use crate::gc::Trace;
 use num::{complex::Complex64, FromPrimitive, ToPrimitive, Zero};
-use proc_macros::builtin;
 use rug::{Complete, Integer, Rational};
 use std::{
     cmp::Ordering,
     fmt,
     ops::{Add, Div, Mul, Neg, Sub},
-    sync::Arc,
 };
 
 #[derive(Debug, Clone)]
@@ -335,6 +328,7 @@ unsafe impl Trace for Number {
     unsafe fn visit_children(&self, _visitor: unsafe fn(crate::gc::OpaqueGcPtr)) {}
 }
 
+/*
 #[builtin("zero?")]
 pub async fn zero(
     _cont: &Option<Arc<Continuation>>,
@@ -633,3 +627,4 @@ pub async fn is_complex(
         Value::Number(Number::Complex(_))
     )))])
 }
+*/
