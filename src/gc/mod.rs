@@ -520,7 +520,6 @@ where
     }
 }
 
-
 unsafe impl<T> Trace for Box<T>
 where
     T: GcOrTrace,

@@ -129,7 +129,7 @@ impl<T: Top> Gc<LexicalContour<T>> {
 
     pub fn fetch_var(&self, name: &Identifier) -> Option<Var> {
         if let Some(local) = self.read().vars.get(name).copied() {
-            return Some(Var::Local(local))
+            return Some(Var::Local(local));
         }
         self.read().up.fetch_var(name)
     }
@@ -304,7 +304,7 @@ pub struct Global {
 
 impl Global {
     pub fn new(val: Gc<Value>) -> Self {
-        Global { val, }
+        Global { val }
     }
 }
 

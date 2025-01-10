@@ -322,7 +322,10 @@ pub struct FullyExpanded<T: Trace> {
 
 impl<T: Trace> FullyExpanded<T> {
     pub fn new(expansion_env: Environment<T>, expanded: Syntax) -> Self {
-        Self { expansion_env, expanded }
+        Self {
+            expansion_env,
+            expanded,
+        }
     }
 }
 

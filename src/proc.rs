@@ -243,7 +243,7 @@ pub type RawFuncPtr = unsafe extern "C" fn(
     args: *const Gc<Value>,
     cont: *const Closure,
     // ...
-) -> Application;
+) -> *const Application;
 
 pub type SyncFuncPtr = fn(
     env: &[Gc<Value>],
@@ -252,11 +252,8 @@ pub type SyncFuncPtr = fn(
     cont: Option<Closure>,
 ) -> Application;
 
-
-pub type AsyncFuncPtr = fn(
-    args: Box<[Gc<Value>]>,
-    cont: Option<Closure>,
-) -> BoxFuture<'static, Application>;
+pub type AsyncFuncPtr =
+    fn(args: Box<[Gc<Value>]>, cont: Option<Closure>) -> BoxFuture<'static, Application>;
 
 pub struct Closure {
     env: Record,
@@ -277,8 +274,7 @@ impl Closure {
                     args.as_ref(),
                     None,
                 ),
-                Either::Right(async_func) =>
-                    async_func(args, None).await
+                Either::Right(async_func) => async_func(args, None).await,
             };
             if let Some(op) = app.op {
                 self = op;

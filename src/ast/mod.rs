@@ -10,7 +10,14 @@ use either::Either;
 use parse::define_syntax;
 
 use crate::{
-    cps::PrimOp, env::{Environment, Top, Var}, expand::Transformer, gc::Trace, num::Number, records::DefineRecordType, syntax::{Identifier, Span, Syntax}, value::Value
+    cps::PrimOp,
+    env::{Environment, Local, Top, Var},
+    expand::Transformer,
+    gc::Trace,
+    num::Number,
+    records::DefineRecordType,
+    syntax::{Identifier, Span, Syntax},
+    value::Value,
 };
 use std::sync::Arc;
 
@@ -76,7 +83,7 @@ impl AstNode {
             Some(
                 [Syntax::Identifier { ident, .. }, Syntax::Identifier { ident: name, .. }, expr, Syntax::Null { .. }],
             ) if ident.name == "define-syntax" => {
-                define_syntax(name.clone(), expr.clone(), &env, /* cont */).await?;
+                define_syntax(name.clone(), expr.clone(), &env /* cont */).await?;
                 Ok(None)
             }
             Some([Syntax::Identifier { ident, span, .. }, body @ .., Syntax::Null { .. }])
@@ -94,11 +101,11 @@ impl AstNode {
             }
             Some(syn @ [Syntax::Identifier { ident, span, .. }, ..]) if ident == "define" => {
                 Ok(Some(Self::Definition(
-                    Definition::parse(syn, env, span, /* cont */).await?,
+                    Definition::parse(syn, env, span /* cont */).await?,
                 )))
             }
             _ => Ok(Some(Self::Expression(
-                Expression::parse(syn, env, /* cont */).await?,
+                Expression::parse(syn, env /* cont */).await?,
             ))),
         }
     }
@@ -179,12 +186,12 @@ pub struct Lambda {
 
 #[derive(Debug, Clone, Trace)]
 pub struct Let {
-    pub bindings: Vec<(Var, Expression)>,
+    pub bindings: Vec<(Local, Expression)>,
     pub body: Body,
 }
 
 impl Let {
-    pub fn new(bindings: Vec<(Var, Expression)>, body: Body) -> Self {
+    pub fn new(bindings: Vec<(Local, Expression)>, body: Body) -> Self {
         Self { bindings, body }
     }
 }
@@ -204,13 +211,25 @@ pub struct If {
 
 #[derive(Debug, Clone, Trace)]
 pub enum Formals {
-    FixedArgs(Vec<Identifier>),
-    VarArgs {
-        fixed: Vec<Identifier>,
-        remaining: Identifier,
-    },
+    FixedArgs(Vec<Local>),
+    VarArgs { fixed: Vec<Local>, remaining: Local },
 }
 
+impl Formals {
+    pub fn iter(&self) -> impl Iterator<Item = &'_ Local> {
+        let fixed_iter = match self {
+            Self::FixedArgs(fixed) => fixed.iter(),
+            Self::VarArgs { fixed, .. } => fixed.iter(),
+        };
+        let remaining = match self {
+            Self::FixedArgs(_) => None,
+            Self::VarArgs { ref remaining, .. } => Some(remaining),
+        };
+        fixed_iter.chain(remaining)
+    }
+}
+
+/*
 impl Formals {
     pub fn to_args_and_remaining(&self) -> (Vec<Identifier>, Option<Identifier>) {
         match self {
@@ -226,6 +245,7 @@ impl Formals {
         }
     }
 }
+*/
 
 #[derive(Debug, Clone, Trace)]
 pub struct Body {

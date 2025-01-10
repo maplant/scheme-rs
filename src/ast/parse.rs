@@ -74,9 +74,9 @@ impl Definition {
                         span: func_span,
                         ..
                     }, args @ ..] => {
-                        // Define the variable, just in case. 
+                        // Define the variable, just in case.
                         env.def_var(func_name.clone());
-                        
+
                         let mut bound = HashMap::<Identifier, Span>::new();
                         let mut fixed = Vec::new();
                         let new_env = env.new_lexical_contour();
@@ -92,9 +92,11 @@ impl Definition {
                                             second: span.clone(),
                                         });
                                     }
-                                    new_env.def_var(ident.clone());
+                                    let Var::Local(sym) = new_env.def_var(ident.clone()) else {
+                                        unreachable!()
+                                    };
                                     bound.insert(ident.clone(), span.clone());
-                                    fixed.push(ident.clone());
+                                    fixed.push(sym);
                                 }
                                 x => {
                                     return Err(ParseAstError::ExpectedIdentifier(x.span().clone()))
@@ -115,9 +117,11 @@ impl Definition {
                                             second: span.clone(),
                                         });
                                     }
-                                    let remaining = ident.clone();
-                                    new_env.def_var(ident.clone());
-                                    bound.insert(remaining.clone(), span.clone());
+                                    let Var::Local(remaining) = new_env.def_var(ident.clone())
+                                    else {
+                                        unreachable!()
+                                    };
+                                    bound.insert(ident.clone(), span.clone());
                                     Formals::VarArgs {
                                         fixed: fixed.into_iter().collect(),
                                         remaining,
@@ -517,9 +521,11 @@ async fn parse_lambda(
                             second: span.clone(),
                         });
                     }
-                    new_contour.def_var(ident.clone());
+                    let Var::Local(arg) = new_contour.def_var(ident.clone()) else {
+                        unreachable!()
+                    };
+                    fixed.push(arg);
                     bound.insert(ident.clone(), span.clone());
-                    fixed.push(ident.clone());
                 }
                 x => return Err(ParseAstError::ExpectedIdentifier(x.span().clone())),
             }
@@ -537,8 +543,9 @@ async fn parse_lambda(
                         second: span.clone(),
                     });
                 }
-                new_contour.def_var(ident.clone());
-                let remaining = ident.clone();
+                let Var::Local(remaining) = new_contour.def_var(ident.clone()) else {
+                    unreachable!()
+                };
                 Formals::VarArgs {
                     fixed: fixed.into_iter().collect(),
                     remaining,
@@ -600,7 +607,9 @@ async fn parse_let(
             for binding in bindings {
                 let binding = LetBinding::parse(binding, env, &previously_bound /* cont */).await?;
                 previously_bound.insert(binding.ident.clone(), binding.span.clone());
-                let var = new_contour.def_var(binding.ident.clone());
+                let Var::Local(var) = new_contour.def_var(binding.ident.clone()) else {
+                    unreachable!()
+                };
                 parsed_bindings.push((var, binding));
             }
         }
@@ -619,21 +628,21 @@ async fn parse_let(
         .map(|(var, binding)| (var.clone(), binding.expr.clone()))
         .collect();
 
-    // If this is a named let, add a binding for a procedure with the same
-    // body and args of the formals.
-    // This code is really bad, but I wanted to get this working
-    if let Some(lambda_var) = lambda_var {
+    // If this is a named let, add a binding for a procedure with the same body
+    // and args of the formals.
+    if let Some(Var::Local(lambda_var)) = lambda_var {
         let new_new_contour = new_contour.new_lexical_contour();
-        for (_, binding) in &parsed_bindings {
-            new_new_contour.def_var(binding.ident.clone());
-        }
+        let args = parsed_bindings
+            .iter()
+            .map(|(_, binding)| {
+                let Var::Local(var) = new_new_contour.def_var(binding.ident.clone()) else {
+                    unreachable!()
+                };
+                var
+            })
+            .collect();
         let lambda = Lambda {
-            args: Formals::FixedArgs(
-                parsed_bindings
-                    .iter()
-                    .map(|(_, binding)| binding.ident.clone())
-                    .collect(),
-            ),
+            args: Formals::FixedArgs(args),
             body: Body::parse(body, &new_new_contour, span /* cont */).await?,
         };
         bindings.push((lambda_var, Expression::Lambda(lambda)));

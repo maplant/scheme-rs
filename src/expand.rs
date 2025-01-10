@@ -3,8 +3,7 @@ use crate::{
     syntax::{Identifier, Span, Syntax},
 };
 use proc_macros::Trace;
-use std::
-    collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Trace, Debug)]
 pub struct Transformer {
