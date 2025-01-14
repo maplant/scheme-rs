@@ -183,7 +183,7 @@ fn compile_apply(
                     let collected_args: Vec<_> = collected_args
                         .iter()
                         .cloned()
-                        .chain(vec![Value::from(new_arg), Value::from(k4)])
+                        .chain(vec![Value::from(new_arg), Value::from(k3)])
                         .collect();
                     Cps::Closure {
                         args: vec![new_arg, k3],
