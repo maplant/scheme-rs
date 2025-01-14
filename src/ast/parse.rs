@@ -139,11 +139,7 @@ impl Definition {
                         // Parse the body:
                         let body = Body::parse(body, &new_env, func_span /* cont */).await?;
 
-                        Ok(Self::DefineFunc(DefineFunc {
-                            var,
-                            args,
-                            body,
-                        }))
+                        Ok(Self::DefineFunc(DefineFunc { var, args, body }))
                     }
                     _ => Err(ParseAstError::BadForm(span.clone())),
                 }

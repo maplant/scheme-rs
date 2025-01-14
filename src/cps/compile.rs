@@ -38,7 +38,7 @@ fn compile_lambda(
     Cps::Closure {
         args,
         body: Box::new(body.compile(Box::new(|result| {
-            Cps::App(Value::from(closure_arg), vec![result])
+            Cps::App(result, vec![Value::from(closure_arg)])
         }))),
         val: k,
         cexp: Box::new(meta_cont(Value::Var(Var::Local(k)))),
@@ -252,12 +252,12 @@ impl Compile for If {
                         Value::Var(Var::Local(cond_arg)),
                         Box::new(
                             self.success.compile(Box::new(|success| {
-                                Cps::App(Value::from(k3), vec![success])
+                                Cps::App(success, vec![Value::from(k3)])
                             })),
                         ),
                         Box::new(
                             self.failure.as_ref().unwrap().compile(Box::new(|failure| {
-                                Cps::App(Value::from(k3), vec![failure])
+                                Cps::App(failure, vec![Value::from(k3)])
                             })),
                         ),
                     )),

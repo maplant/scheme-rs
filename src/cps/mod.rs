@@ -17,7 +17,7 @@ use crate::{
     env::{Local, Var},
     gc::Trace,
 };
-use std::{collections::HashSet, str::FromStr, fmt};
+use std::{collections::HashSet, fmt, str::FromStr};
 
 mod analysis;
 mod codegen;

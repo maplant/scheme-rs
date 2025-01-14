@@ -1,6 +1,11 @@
 use reedline::{Reedline, Signal, ValidationResult, Validator};
 use scheme_rs::{
-    ast::{parse::ParseAstError, AstNode}, cps::Compile, env::{Environment, Repl}, lex::{LexError, Token}, parse::ParseError, syntax::{Identifier, ParsedSyntax}
+    ast::{parse::ParseAstError, AstNode},
+    cps::Compile,
+    env::{Environment, Repl},
+    lex::{LexError, Token},
+    parse::ParseError,
+    syntax::{Identifier, ParsedSyntax},
 };
 use std::borrow::Cow;
 

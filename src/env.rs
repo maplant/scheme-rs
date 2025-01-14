@@ -1,8 +1,8 @@
 use either::Either;
 use std::{
     collections::HashMap,
-    sync::atomic::{AtomicUsize, Ordering},
     fmt,
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use crate::{
@@ -47,7 +47,9 @@ impl Top for Library {
     }
 
     fn fetch_var(&mut self, name: &str) -> Option<Global> {
-        self.vars.get(name).map(|val| Global::new(name.to_string(), val.clone()))
+        self.vars
+            .get(name)
+            .map(|val| Global::new(name.to_string(), val.clone()))
     }
 
     fn fetch_macro(&self, name: &str) -> Option<Gc<Value>> {
