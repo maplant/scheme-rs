@@ -1,10 +1,6 @@
 use reedline::{Reedline, Signal, ValidationResult, Validator};
 use scheme_rs::{
-    ast::{parse::ParseAstError, AstNode},
-    env::{Environment, Repl},
-    lex::{LexError, Token},
-    parse::ParseError,
-    syntax::ParsedSyntax,
+    ast::{parse::ParseAstError, AstNode}, cps::Compile, env::{Environment, Repl}, lex::{LexError, Token}, parse::ParseError, syntax::{Identifier, ParsedSyntax}
 };
 use std::borrow::Cow;
 
@@ -55,6 +51,10 @@ async fn main() {
     let mut rl = Reedline::create().with_validator(Box::new(InputParser));
     // let mut n_results = 1;
     let top = Environment::new_repl();
+    top.def_var(Identifier::new("+".to_string()));
+    top.def_var(Identifier::new("-".to_string()));
+    top.def_var(Identifier::new("*".to_string()));
+    top.def_var(Identifier::new("/".to_string()));
     loop {
         let Ok(Signal::Success(input)) = rl.read_line(&Prompt) else {
             println!("exiting...");
@@ -97,6 +97,8 @@ async fn parse_str<'e>(env: &Environment<Repl>, input: &'e str) -> Result<(), Ev
             continue;
         };
         println!("Parsed: {expr:#?}");
+        let compiled = expr.compile_top_level();
+        println!("Compiled: {compiled:#?}");
     }
     Ok(())
 }

@@ -120,13 +120,13 @@ pub enum Definition {
 
 #[derive(Debug, Clone, Trace)]
 pub struct DefineVar {
-    pub name: Identifier,
+    pub var: Var,
     pub val: Arc<Expression>,
 }
 
 #[derive(Debug, Clone, Trace)]
 pub struct DefineFunc {
-    pub name: Identifier,
+    pub var: Var,
     pub args: Formals,
     pub body: Body,
 }

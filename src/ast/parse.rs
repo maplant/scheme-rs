@@ -58,9 +58,9 @@ impl Definition {
     ) -> Result<Self, ParseAstError> {
         match syn {
             [_, Syntax::Identifier { ident, .. }, expr, Syntax::Null { .. }] => {
-                env.def_var(ident.clone());
                 Ok(Definition::DefineVar(DefineVar {
-                    name: ident.clone(),
+                    var: env.def_var(ident.clone()),
+
                     val: Arc::new(Expression::parse(expr.clone(), env /* cont */).await?),
                 }))
             }
@@ -75,7 +75,7 @@ impl Definition {
                         ..
                     }, args @ ..] => {
                         // Define the variable, just in case.
-                        env.def_var(func_name.clone());
+                        let var = env.def_var(func_name.clone());
 
                         let mut bound = HashMap::<Identifier, Span>::new();
                         let mut fixed = Vec::new();
@@ -140,7 +140,7 @@ impl Definition {
                         let body = Body::parse(body, &new_env, func_span /* cont */).await?;
 
                         Ok(Self::DefineFunc(DefineFunc {
-                            name: func_name.clone(),
+                            var,
                             args,
                             body,
                         }))

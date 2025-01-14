@@ -2,6 +2,7 @@ use either::Either;
 use std::{
     collections::HashMap,
     sync::atomic::{AtomicUsize, Ordering},
+    fmt,
 };
 
 use crate::{
@@ -33,8 +34,8 @@ pub struct Library {
 impl Top for Library {
     fn def_var(&mut self, name: String) -> Var {
         let global = Gc::new(Value::Undefined);
-        self.vars.insert(name, global.clone());
-        Var::Global(Global::new(global))
+        self.vars.insert(name.clone(), global.clone());
+        Var::Global(Global::new(name, global))
     }
 
     fn def_macro(&mut self, name: String, val: Gc<Value>) {
@@ -46,7 +47,7 @@ impl Top for Library {
     }
 
     fn fetch_var(&mut self, name: &str) -> Option<Global> {
-        self.vars.get(name).map(|val| Global::new(val.clone()))
+        self.vars.get(name).map(|val| Global::new(name.to_string(), val.clone()))
     }
 
     fn fetch_macro(&self, name: &str) -> Option<Gc<Value>> {
@@ -73,8 +74,8 @@ pub struct Repl {
 impl Top for Repl {
     fn def_var(&mut self, name: String) -> Var {
         let global = Gc::new(Value::Undefined);
-        self.vars.insert(name, global.clone());
-        Var::Global(Global::new(global))
+        assert!(self.vars.insert(name.clone(), global.clone()).is_none());
+        Var::Global(Global::new(name, global))
     }
 
     fn def_macro(&mut self, name: String, val: Gc<Value>) {
@@ -87,6 +88,7 @@ impl Top for Repl {
 
     fn fetch_var(&mut self, name: &str) -> Option<Global> {
         Some(Global::new(
+            name.to_string(),
             self.vars
                 .entry(name.to_string())
                 .or_insert_with(|| Gc::new(Value::Undefined))
@@ -280,12 +282,12 @@ impl<T: Top> Clone for Environment<T> {
     }
 }
 
-#[derive(Copy, Clone, Debug, Trace, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Trace, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Local(usize);
 
 impl Local {
     /// Create a new temporary value.
-    fn gensym() -> Self {
+    pub fn gensym() -> Self {
         static NEXT_SYM: AtomicUsize = AtomicUsize::new(0);
         Self(NEXT_SYM.fetch_add(1, Ordering::Relaxed))
     }
@@ -297,21 +299,43 @@ impl ToString for Local {
     }
 }
 
-#[derive(Clone, Debug, Trace)]
+impl fmt::Debug for Local {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "v{}", self.0)
+    }
+}
+
+#[derive(Clone, Trace)]
 pub struct Global {
+    name: String,
     val: Gc<Value>,
 }
 
 impl Global {
-    pub fn new(val: Gc<Value>) -> Self {
-        Global { val }
+    pub fn new(name: String, val: Gc<Value>) -> Self {
+        Global { name, val }
     }
 }
 
-#[derive(Clone, Debug, Trace)]
+impl fmt::Debug for Global {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "g{}", self.name)
+    }
+}
+
+#[derive(Clone, Trace)]
 pub enum Var {
     Global(Global),
     Local(Local),
+}
+
+impl fmt::Debug for Var {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Global(global) => global.fmt(f),
+            Self::Local(local) => local.fmt(f),
+        }
+    }
 }
 
 /*

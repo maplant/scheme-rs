@@ -17,16 +17,39 @@ use crate::{
     env::{Local, Var},
     gc::Trace,
 };
-use std::{collections::HashSet, str::FromStr};
+use std::{collections::HashSet, str::FromStr, fmt};
 
 mod analysis;
 mod codegen;
 mod compile;
 
+pub use compile::Compile;
+
 #[derive(Clone)]
 pub enum Value {
     Var(Var),
     Literal(Literal),
+}
+
+impl From<Var> for Value {
+    fn from(var: Var) -> Self {
+        Self::Var(var)
+    }
+}
+
+impl From<Local> for Value {
+    fn from(local: Local) -> Self {
+        Self::Var(Var::Local(local))
+    }
+}
+
+impl fmt::Debug for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Var(var) => var.fmt(f),
+            Self::Literal(lit) => lit.fmt(f),
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, Trace)]
@@ -44,16 +67,20 @@ impl FromStr for PrimOp {
 
     fn from_str(s: &str) -> Result<Self, ()> {
         match s.as_ref() {
+            // Ignore these right now for testing
+            /*
             "+" => Ok(Self::Add),
             "-" => Ok(Self::Sub),
             "/" => Ok(Self::Div),
             "set" => Ok(Self::Set),
+             */
             "call/cc" | "call-with-current-continuation" => Ok(Self::CallWithCurrentContinuation),
             _ => Err(()),
         }
     }
 }
 
+#[derive(Debug)]
 pub enum Cps {
     /*
     /// A record, for now, is an array of values. These are used to represent
@@ -83,4 +110,6 @@ pub enum Cps {
         val: Local,
         cexp: Box<Cps>,
     },
+    // Temporary terminating value for debugging purposes (to be removed)
+    PrintLocal(Local),
 }
