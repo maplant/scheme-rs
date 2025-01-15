@@ -31,6 +31,12 @@ pub enum Value {
     Literal(Literal),
 }
 
+impl From<bool> for Value {
+    fn from(b: bool) -> Self {
+        Self::Literal(Literal::Boolean(b))
+    }
+}
+
 impl From<Var> for Value {
     fn from(var: Var) -> Self {
         Self::Var(var)
