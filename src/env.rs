@@ -293,6 +293,10 @@ impl Local {
         static NEXT_SYM: AtomicUsize = AtomicUsize::new(0);
         Self(NEXT_SYM.fetch_add(1, Ordering::Relaxed))
     }
+
+    pub fn to_func_name(&self) -> String {
+        format!("$_{}", self.0)
+    }
 }
 
 impl ToString for Local {

@@ -31,6 +31,16 @@ pub enum Value {
     Literal(Literal),
 }
 
+impl Value {
+    fn to_local(&self) -> Option<Local> {
+        if let Self::Var(Var::Local(local)) = self {
+            Some(*local)
+        } else {
+            None
+        }
+    }
+}
+
 impl From<bool> for Value {
     fn from(b: bool) -> Self {
         Self::Literal(Literal::Boolean(b))
@@ -88,13 +98,6 @@ impl FromStr for PrimOp {
 
 #[derive(Debug)]
 pub enum Cps {
-    /*
-    /// A record, for now, is an array of values. These are used to represent
-    /// environments at runtime.
-    Record(usize, Local, Box<Cps>),
-    /// Operation to get the address of a value in a record.
-    Select(usize, Var, Local, Box<Cps>),
-     */
     /// Generates a cell of type *const Gc<Value>
     AllocCell(Local, Box<Cps>),
     /// Call to a primitive operator.
@@ -103,15 +106,9 @@ pub enum Cps {
     App(Value, Vec<Value>),
     /// Branching.
     If(Value, Box<Cps>, Box<Cps>),
-    /*
-    /// Anonymous function generation. The result of this operation is a function
-    /// pointer.
-    Fix(Var, Vec<Var>, Box<Cps>, Box<Cps>),
-    */
     /// Closure generation. The result of this operation is a *const Value::Closure
     Closure {
         args: Vec<Local>,
-        // env: Vec<Local>,
         body: Box<Cps>,
         val: Local,
         cexp: Box<Cps>,

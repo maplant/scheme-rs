@@ -1,7 +1,6 @@
 //! LLVM SSA Codegen from CPS.
 
-// Example of how codegen will work (most likely)
-
+use std::collections::HashMap;
 use inkwell::{
     builder::{Builder, BuilderError},
     context::Context,
@@ -11,11 +10,36 @@ use inkwell::{
 
 use super::*;
 
-impl Cps {
-    fn codegen(&self, ctx: &Context, builder: &Builder<'_>) {
+struct Rebinds<'a> {
+    up: Option<&'a Rebinds<'a>>,
+    rebinds: HashMap<Local, Local>,
+}
+
+impl Rebinds<'_> {
+    fn rebind(&mut self, old_var: Local, new_var: Local) {
+        todo!()
+    }
+
+    fn fetch_bind(&self, var: Local) -> Local {
         todo!()
     }
 }
+
+impl Cps {
+    pub fn codegen(&self, ctx: &Context, module: &Module<'_>, builder: &Builder<'_>) -> Result<(), BuilderError> {
+        todo!()
+    }
+
+    pub fn func_name(&self) -> Option<String> {
+        todo!()
+    }
+}
+
+// 
+// List of necessary runtime functions:
+//  - fn gc_alloc_undef_val() -> *const Value (allocated from a Gc)
+//  - fn make_closure(env: *cont Value, num_env: usize, f_ptr: *const fn()) -> *const Closure (allocated from a Gc)
+//  - fn (dec/inc)_ref_count(*const ())
 
 /*
 pub fn record_codegen(ctx: &Context, builder: &Builder<'_>, size: usize, var: Local, cont: &Cps) {
@@ -30,7 +54,29 @@ pub fn record_codegen(ctx: &Context, builder: &Builder<'_>, size: usize, var: Lo
 }
 */
 
-pub fn alloc_cell_codegen(
+fn create_closure_codegen(
+    ctx: &Context,
+    module: &Module<'_>,
+    builder: &Builder<'_>,
+    body: &Cps,
+    val: Local,
+    rebinds: &Rebinds<'_>,
+) -> Result<(), BuilderError> {
+    todo!()
+}
+
+fn define_closure_func_codegen(
+    ctx: &Context,
+    module: &Module<'_>,
+    builder: &Builder<'_>,
+    name: Local,
+    args: &[Local],
+    body: &Cps,
+) -> Result<(), BuilderError> {
+    todo!()
+}
+
+fn alloc_cell_codegen(
     ctx: &Context,
     module: &Module<'_>,
     builder: &Builder<'_>,
@@ -49,7 +95,7 @@ pub fn alloc_cell_codegen(
     Ok(())
 }
 
-pub fn app_codegen(
+fn app_codegen(
     ctx: &Context,
     module: &Module<'_>,
     builder: &Builder<'_>,

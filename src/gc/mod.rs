@@ -580,14 +580,6 @@ where
     unsafe fn visit_children(&self, _visitor: unsafe fn(OpaqueGcPtr)) {}
 }
 
-unsafe impl<A: 'static, O: 'static> Trace for fn(A) -> O {
-    unsafe fn visit_children(&self, _visitor: unsafe fn(OpaqueGcPtr)) {}
-}
-
-unsafe impl<A: 'static, B: 'static, O: 'static> Trace for fn(A, B) -> O {
-    unsafe fn visit_children(&self, _visitor: unsafe fn(OpaqueGcPtr)) {}
-}
-
 unsafe impl<T> Trace for tokio::sync::Mutex<T>
 where
     T: GcOrTrace,

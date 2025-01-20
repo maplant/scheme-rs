@@ -5,6 +5,7 @@ use crate::{
 };
 use std::{fmt, ops::Deref, sync::Arc};
 
+/*
 #[derive(Clone, Trace)]
 pub struct ArcSlice<T> {
     arc: Arc<[T]>,
@@ -78,6 +79,7 @@ pub fn iter_arc<T>(arc: &Arc<[T]>) -> impl Iterator<Item = (&T, ArcSlice<T>)> {
         )
     })
 }
+*/
 
 /// Extension crate for extracting a single value from a Vec
 pub trait RequireOne {

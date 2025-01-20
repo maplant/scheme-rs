@@ -17,52 +17,57 @@
 //! count as free variables, because we already have a different way for
 //! accessing those.
 
-use crate::ast::*;
-
 use super::*;
 
-trait FreeVariables {
-    fn free_variables(&self) -> HashSet<Local>;
-}
-
-impl FreeVariables for DefineFunc {
+impl Cps {
     fn free_variables(&self) -> HashSet<Local> {
-        let bound: HashSet<Local> = self.args.iter().copied().collect();
-        let free_vars = self.body.free_variables();
-        free_vars.difference(&bound).copied().collect()
+        match self {
+            Self::AllocCell(ref bind, cexpr) => {
+                let mut free = cexpr.free_variables();
+                free.remove(bind);
+                free
+            }
+            Self::PrimOp(_, args, bind, cexpr) => {
+                let mut free = cexpr.free_variables();
+                free.remove(bind);
+                free.union(&values_to_free_variables(&args))
+                    .copied()
+                    .collect()
+            }
+            Self::If(cond, success, failure) => {
+                let mut free: HashSet<_> = success
+                    .free_variables()
+                    .union(&failure.free_variables())
+                    .copied()
+                    .collect();
+                free.extend(cond.to_local());
+                free
+            }
+            Self::App(op, vals) => {
+                let mut free = values_to_free_variables(&vals);
+                free.extend(op.to_local());
+                free
+            }
+            Self::Closure {
+                args,
+                body,
+                val,
+                cexp,
+            } => {
+                let mut free_body = body.free_variables();
+                for arg in args {
+                    free_body.remove(arg);
+                }
+                let mut free: HashSet<_> =
+                    free_body.union(&cexp.free_variables()).copied().collect();
+                free.remove(val);
+                free
+            }
+            Self::PrintLocal(_) => HashSet::new(),
+        }
     }
 }
 
-impl FreeVariables for Lambda {
-    fn free_variables(&self) -> HashSet<Local> {
-        let bound: HashSet<Local> = self.args.iter().copied().collect();
-        let free_vars = self.body.free_variables();
-        free_vars.difference(&bound).copied().collect()
-    }
-}
-
-impl FreeVariables for Let {
-    fn free_variables(&self) -> HashSet<Local> {
-        // We do not need to do anything special with regards to ordering here,
-        // this is because all locals are globally unique.
-        let (bound, free_vars): (HashSet<_>, Vec<_>) = self
-            .bindings
-            .iter()
-            .map(|(bound, expr)| (bound, expr.free_variables()))
-            .unzip();
-        let free_vars: HashSet<_> = free_vars.into_iter().flatten().collect();
-        free_vars.difference(&bound).copied().collect()
-    }
-}
-
-impl FreeVariables for Body {
-    fn free_variables(&self) -> HashSet<Local> {
-        todo!()
-    }
-}
-
-impl FreeVariables for Expression {
-    fn free_variables(&self) -> HashSet<Local> {
-        todo!()
-    }
+fn values_to_free_variables(vals: &[Value]) -> HashSet<Local> {
+    vals.iter().flat_map(|val| val.to_local()).collect()
 }

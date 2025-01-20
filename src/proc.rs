@@ -4,7 +4,7 @@ use crate::{
     // continuation::Continuation,
     // env::Env,
     error::{Frame, RuntimeError},
-    gc::Gc,
+    gc::{Gc, Trace},
     lists::list_to_vec,
     syntax::{Identifier, Span},
     value::Value,
@@ -12,7 +12,6 @@ use crate::{
 use async_trait::async_trait;
 use either::Either;
 use futures::future::BoxFuture;
-use proc_macros::Trace;
 use std::sync::Arc;
 
 /*
@@ -237,44 +236,65 @@ pub async fn apply(
 
 pub type Record = Box<[Gc<Value>]>;
 
-pub type RawFuncPtr = unsafe extern "C" fn(
+pub type SyncFuncPtr = unsafe extern "C" fn(
     env: *const Gc<Value>,
     globals: *const Gc<Value>,
     args: *const Gc<Value>,
-    cont: *const Closure,
+    // cont: *const Closure,
     // ...
 ) -> *const Application;
 
+/*
 pub type SyncFuncPtr = fn(
     env: &[Gc<Value>],
     globals: &[Gc<Value>],
     args: &[Gc<Value>],
-    cont: Option<Closure>,
+    // cont: Option<Closure>,
 ) -> Application;
+*/
 
-pub type AsyncFuncPtr =
-    fn(args: Box<[Gc<Value>]>, cont: Option<Closure>) -> BoxFuture<'static, Application>;
-
+pub type AsyncFuncPtr = fn(args: &[Gc<Value>]) -> BoxFuture<'static, Application>;
+ 
+// #[derive(Trace)]
 pub struct Closure {
     env: Record,
     globals: Record,
     func: Either<SyncFuncPtr, AsyncFuncPtr>,
-    is_variable_transformer: bool,
+    // is_variable_transformer: bool,
+    // is_variadic: bool,
+}
+
+unsafe impl Trace for Closure {
+    unsafe fn visit_children(&self, visitor: unsafe fn(crate::gc::OpaqueGcPtr)) {
+        self.env.visit_children(visitor);
+        self.globals.visit_children(visitor);
+    }
+
+    unsafe fn finalize(&mut self) {
+        self.env.finalize();
+        self.globals.finalize();
+    }
+}
+
+impl Gc<Closure> {
+    pub async fn call(&self, args: &[Gc<Value>]) -> Application {
+        todo!()
+    }
 }
 
 impl Closure {
     /// Evaluate the current - and all subsequent applications - until all that
     /// remains are values.
-    pub async fn eval(mut self, mut args: Box<[Gc<Value>]>) -> Box<[Gc<Value>]> {
+    pub async fn eval(mut self, mut args: &[Gc<Value>]) -> Box<[Gc<Value>]> {
+        /*,
         loop {
             let app = match self.func {
                 Either::Left(sync_func) => sync_func(
                     self.env.as_ref(),
                     self.globals.as_ref(),
                     args.as_ref(),
-                    None,
                 ),
-                Either::Right(async_func) => async_func(args, None).await,
+                Either::Right(async_func) => async_func(args.as_ref()).await,
             };
             if let Some(op) = app.op {
                 self = op;
@@ -283,6 +303,8 @@ impl Closure {
                 return app.args;
             }
         }
+         */
+        todo!()
     }
 }
 

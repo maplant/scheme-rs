@@ -1,6 +1,8 @@
 extern crate self as scheme_rs;
 
 pub mod ast;
+pub mod runtime;
+pub mod registry;
 // pub mod builtin;
 // pub mod continuation;
 pub mod cps;
