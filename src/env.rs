@@ -295,23 +295,23 @@ impl Local {
     }
 
     pub fn to_func_name(&self) -> String {
-        format!("$_{}", self.0)
+        format!("$f{}", self.0)
     }
 }
 
 impl ToString for Local {
     fn to_string(&self) -> String {
-        format!("v{}", self.0)
+        format!("%{}", self.0)
     }
 }
 
 impl fmt::Debug for Local {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "v{}", self.0)
+        write!(f, "%{}", self.0)
     }
 }
 
-#[derive(Clone, Trace)]
+#[derive(Clone, Trace, Hash, PartialEq, Eq)]
 pub struct Global {
     name: String,
     val: Gc<Value>,
@@ -325,11 +325,11 @@ impl Global {
 
 impl fmt::Debug for Global {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "g{}", self.name)
+        write!(f, "${}", self.name)
     }
 }
 
-#[derive(Clone, Trace)]
+#[derive(Clone, Trace, Hash, PartialEq, Eq)]
 pub enum Var {
     Global(Global),
     Local(Local),

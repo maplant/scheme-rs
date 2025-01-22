@@ -16,5 +16,3 @@ struct Version {
 struct Registry {
     libs: HashMap<LibraryName, Library>,
 }
-
-

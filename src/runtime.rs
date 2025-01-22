@@ -2,7 +2,7 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::{
     cps::Cps,
-    proc::SyncFuncPtr,
+    proc::{Closure, SyncFuncPtr},
 };
 use inkwell::{
     context::Context, execution_engine::ExecutionEngine, module::Module, OptimizationLevel,
@@ -28,7 +28,7 @@ struct CompilationTask {
     compilation_unit: Cps,
 }
 
-type CompilationResult = Result<SyncFuncPtr, CompilationError>;
+type CompilationResult = Result<Closure, CompilationError>;
 
 enum CompilationError {}
 
@@ -64,19 +64,9 @@ async fn compilation_task() {
             compilation_unit,
         } = task;
 
-        compilation_unit
-            .codegen(&context, &module, &builder)
-            .unwrap();
-        let fn_name = compilation_unit.func_name().unwrap();
+        let closure = compilation_unit.into_closure(&context, &module, &builder);
 
-        let result_fn = unsafe {
-            execution_engine
-                .get_function::<SyncFuncPtr>(&fn_name)
-                .unwrap()
-                .into_raw()
-        };
-
-        let _ = completion_tx.send(Ok(result_fn));
+        let _ = completion_tx.send(Ok(closure));
     }
 }
 

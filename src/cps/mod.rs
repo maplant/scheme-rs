@@ -14,7 +14,7 @@
 
 use crate::{
     ast::Literal,
-    env::{Local, Var},
+    env::{Global, Local, Var},
     gc::Trace,
 };
 use std::{collections::HashSet, fmt, str::FromStr};
@@ -35,6 +35,14 @@ impl Value {
     fn to_local(&self) -> Option<Local> {
         if let Self::Var(Var::Local(local)) = self {
             Some(*local)
+        } else {
+            None
+        }
+    }
+
+    fn to_global(&self) -> Option<Global> {
+        if let Self::Var(Var::Global(global)) = self {
+            Some(global.clone())
         } else {
             None
         }

@@ -254,7 +254,7 @@ pub type SyncFuncPtr = fn(
 */
 
 pub type AsyncFuncPtr = fn(args: &[Gc<Value>]) -> BoxFuture<'static, Application>;
- 
+
 // #[derive(Trace)]
 pub struct Closure {
     env: Record,

@@ -66,8 +66,42 @@ impl Cps {
             Self::PrintLocal(_) => HashSet::new(),
         }
     }
+
+    // I could merge these into one function, but I"m lazy.
+    fn globals(&self) -> HashSet<Global> {
+        match self {
+            Self::AllocCell(_, cexpr) => cexpr.globals(),
+            Self::PrimOp(_, args, _, cexpr) => cexpr
+                .globals()
+                .union(&values_to_globals(&args))
+                .cloned()
+                .collect(),
+            Self::If(cond, success, failure) => {
+                let mut globals: HashSet<_> = success
+                    .globals()
+                    .union(&failure.globals())
+                    .cloned()
+                    .collect();
+                globals.extend(cond.to_global());
+                globals
+            }
+            Self::App(op, vals) => {
+                let mut globals = values_to_globals(&vals);
+                globals.extend(op.to_global());
+                globals
+            }
+            Self::Closure { body, cexp, .. } => {
+                body.globals().union(&cexp.globals()).cloned().collect()
+            }
+            Self::PrintLocal(_) => HashSet::new(),
+        }
+    }
 }
 
 fn values_to_free_variables(vals: &[Value]) -> HashSet<Local> {
     vals.iter().flat_map(|val| val.to_local()).collect()
+}
+
+fn values_to_globals(vals: &[Value]) -> HashSet<Global> {
+    vals.iter().flat_map(|val| val.to_global()).collect()
 }
