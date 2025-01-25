@@ -283,6 +283,18 @@ impl Gc<Closure> {
 }
 
 impl Closure {
+    pub fn new(
+        env: Vec<Gc<Value>>,
+        globals: Vec<Gc<Value>>,
+        func: Either<SyncFuncPtr, AsyncFuncPtr>,
+    ) -> Self {
+        Self {
+            env: Box::from(env),
+            globals: Box::from(globals),
+            func,
+        }
+    }
+
     /// Evaluate the current - and all subsequent applications - until all that
     /// remains are values.
     pub async fn eval(mut self, mut args: &[Gc<Value>]) -> Box<[Gc<Value>]> {

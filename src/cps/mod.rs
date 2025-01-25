@@ -104,7 +104,7 @@ impl FromStr for PrimOp {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Cps {
     /// Generates a cell of type *const Gc<Value>
     AllocCell(Local, Box<Cps>),
@@ -122,5 +122,5 @@ pub enum Cps {
         cexp: Box<Cps>,
     },
     // Temporary terminating value for debugging purposes (to be removed)
-    PrintLocal(Local),
+    ReturnValues(Local),
 }

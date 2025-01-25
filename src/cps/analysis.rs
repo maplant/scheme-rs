@@ -16,11 +16,15 @@
 //! free variable in the context of the function's body. Also, _globals_ do not
 //! count as free variables, because we already have a different way for
 //! accessing those.
+//!
+//! ## TODO:
+//! All of these functions should be memoized. They're not insanely expensive but
+//! there's no reason to do duplicate work.
 
 use super::*;
 
 impl Cps {
-    fn free_variables(&self) -> HashSet<Local> {
+    pub(super) fn free_variables(&self) -> HashSet<Local> {
         match self {
             Self::AllocCell(ref bind, cexpr) => {
                 let mut free = cexpr.free_variables();
@@ -63,12 +67,12 @@ impl Cps {
                 free.remove(val);
                 free
             }
-            Self::PrintLocal(_) => HashSet::new(),
+            Self::ReturnValues(_) => HashSet::new(),
         }
     }
 
-    // I could merge these into one function, but I"m lazy.
-    fn globals(&self) -> HashSet<Global> {
+    // I could merge these two into one function, but I"m lazy.
+    pub(super) fn globals(&self) -> HashSet<Global> {
         match self {
             Self::AllocCell(_, cexpr) => cexpr.globals(),
             Self::PrimOp(_, args, _, cexpr) => cexpr
@@ -93,7 +97,7 @@ impl Cps {
             Self::Closure { body, cexp, .. } => {
                 body.globals().union(&cexp.globals()).cloned().collect()
             }
-            Self::PrintLocal(_) => HashSet::new(),
+            Self::ReturnValues(_) => HashSet::new(),
         }
     }
 }

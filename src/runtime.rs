@@ -5,7 +5,8 @@ use crate::{
     proc::{Closure, SyncFuncPtr},
 };
 use inkwell::{
-    context::Context, execution_engine::ExecutionEngine, module::Module, OptimizationLevel,
+    builder::BuilderError, context::Context, execution_engine::ExecutionEngine, module::Module,
+    OptimizationLevel,
 };
 use tokio::{
     sync::{mpsc, oneshot},
@@ -28,9 +29,7 @@ struct CompilationTask {
     compilation_unit: Cps,
 }
 
-type CompilationResult = Result<Closure, CompilationError>;
-
-enum CompilationError {}
+type CompilationResult = Result<Closure, BuilderError>;
 
 static COMPILATION_QUEUE: OnceLock<CompilationBuffer> = OnceLock::new();
 static COMPILATION_TASK: OnceLock<JoinHandle<()>> = OnceLock::new();
@@ -64,9 +63,9 @@ async fn compilation_task() {
             compilation_unit,
         } = task;
 
-        let closure = compilation_unit.into_closure(&context, &module, &builder);
+        let closure = compilation_unit.into_closure(&context, &module, &execution_engine, &builder);
 
-        let _ = completion_tx.send(Ok(closure));
+        let _ = completion_tx.send(closure);
     }
 }
 

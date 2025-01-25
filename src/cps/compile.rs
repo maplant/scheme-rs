@@ -13,7 +13,7 @@ pub trait Compile {
         let arg = Local::gensym();
         Cps::Closure {
             args: vec![arg],
-            body: Box::new(Cps::PrintLocal(arg)),
+            body: Box::new(Cps::ReturnValues(arg)),
             val: k,
             cexp: Box::new(self.compile(Box::new(|expr| Cps::App(expr, vec![Value::from(k)])))),
         }

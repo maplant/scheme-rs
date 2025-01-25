@@ -321,6 +321,10 @@ impl Global {
     pub fn new(name: String, val: Gc<Value>) -> Self {
         Global { name, val }
     }
+
+    pub fn value(self) -> Gc<Value> {
+        self.val
+    }
 }
 
 impl fmt::Debug for Global {
