@@ -4,7 +4,7 @@ use crate::{
     // continuation::Continuation,
     // env::Env,
     error::{Frame, RuntimeError},
-    gc::{Gc, Trace},
+    gc::{Gc, GcInner, Trace},
     lists::list_to_vec,
     syntax::{Identifier, Span},
     value::Value,
@@ -237,25 +237,14 @@ pub async fn apply(
 pub type Record = Box<[Gc<Value>]>;
 
 pub type SyncFuncPtr = unsafe extern "C" fn(
-    env: *const Gc<Value>,
-    globals: *const Gc<Value>,
-    args: *const Gc<Value>,
-    // cont: *const Closure,
-    // ...
-) -> *const Application;
-
-/*
-pub type SyncFuncPtr = fn(
-    env: &[Gc<Value>],
-    globals: &[Gc<Value>],
-    args: &[Gc<Value>],
-    // cont: Option<Closure>,
-) -> Application;
-*/
+    env: *const *mut GcInner<Value>,
+    globals: *const *mut GcInner<Value>,
+    args: *const *mut GcInner<Value>,
+) -> *mut Application;
 
 pub type AsyncFuncPtr = fn(args: &[Gc<Value>]) -> BoxFuture<'static, Application>;
 
-// #[derive(Trace)]
+#[derive(Debug)]
 pub struct Closure {
     env: Record,
     globals: Record,
@@ -276,51 +265,68 @@ unsafe impl Trace for Closure {
     }
 }
 
-impl Gc<Closure> {
-    pub async fn call(&self, args: &[Gc<Value>]) -> Application {
-        todo!()
-    }
-}
-
 impl Closure {
     pub fn new(
-        env: Vec<Gc<Value>>,
-        globals: Vec<Gc<Value>>,
+        env: impl Into<Record>,
+        globals: impl Into<Record>,
         func: Either<SyncFuncPtr, AsyncFuncPtr>,
     ) -> Self {
         Self {
-            env: Box::from(env),
-            globals: Box::from(globals),
+            env: env.into(),
+            globals: globals.into(),
             func,
         }
     }
 
-    /// Evaluate the current - and all subsequent applications - until all that
-    /// remains are values.
-    pub async fn eval(mut self, mut args: &[Gc<Value>]) -> Box<[Gc<Value>]> {
-        /*,
-        loop {
-            let app = match self.func {
-                Either::Left(sync_func) => sync_func(
-                    self.env.as_ref(),
-                    self.globals.as_ref(),
-                    args.as_ref(),
-                ),
-                Either::Right(async_func) => async_func(args.as_ref()).await,
-            };
-            if let Some(op) = app.op {
-                self = op;
-                args = app.args;
-            } else {
-                return app.args;
+    pub async fn apply(&self, args: &[Gc<Value>]) -> Application {
+        match self.func {
+            Either::Left(sync_fn) => {
+                let env = values_to_vec_of_ptrs(&self.env);
+                let globals = values_to_vec_of_ptrs(&self.globals);
+                let args = values_to_vec_of_ptrs(args);
+                let app = unsafe { (sync_fn)(env.as_ptr(), globals.as_ptr(), args.as_ptr()) };
+                let app = unsafe { Box::from_raw(app) };
+                *app
             }
+            Either::Right(async_fn) => async_fn(args).await,
         }
-         */
-        todo!()
     }
 }
 
+// This is really sorta emblematic of my excess allocations. Really gotta fix that
+// at some point.
+fn values_to_vec_of_ptrs(vals: &[Gc<Value>]) -> Vec<*mut GcInner<Value>> {
+    vals.iter().map(|val| val.clone().into_raw()).collect()
+}
+
 pub struct Application {
-    op: Option<Closure>,
+    op: Option<Gc<Closure>>,
+    // Consider making this a Cow
     args: Box<[Gc<Value>]>,
+}
+
+impl Application {
+    pub fn new(op: Gc<Closure>, args: impl Into<Record>) -> Self {
+        Self {
+            op: Some(op),
+            args: args.into(),
+        }
+    }
+
+    pub fn new_empty(args: impl Into<Record>) -> Self {
+        Self {
+            op: None,
+            args: args.into(),
+        }
+    }
+
+    /// Evaluate the application - and all subsequent application - until all that
+    /// remains are values. This is the main trampoline of the evaluation engine.
+    pub async fn eval(mut self) -> Box<[Gc<Value>]> {
+        while let Application { op: Some(op), args } = self {
+            self = op.read().apply(&args).await;
+        }
+        // If we have no operator left, return the arguments as the final values:
+        self.args
+    }
 }

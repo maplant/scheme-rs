@@ -83,6 +83,29 @@ impl<T: Trace> Gc<T> {
             }
         }
     }
+
+    pub fn into_raw(self) -> *mut GcInner<T> {
+        self.ptr.as_ptr()
+    }
+
+    /// Drops a raw pointer as if it were a Gc.
+    pub unsafe fn drop_raw(ptr: *mut GcInner<T>) {
+        drop(Self {
+            ptr: NonNull::new(ptr).unwrap(),
+            marker: PhantomData,
+        })
+    }
+
+    /// Create a new Gc from the raw pointer. This increments the ref count for
+    /// safety.
+    pub unsafe fn from_raw(ptr: *mut GcInner<T>) -> Self {
+        let ptr = NonNull::new(ptr).unwrap();
+        inc_rc(ptr);
+        Self {
+            ptr,
+            marker: PhantomData,
+        }
+    }
 }
 
 impl<T: Trace> std::fmt::Debug for Gc<T>

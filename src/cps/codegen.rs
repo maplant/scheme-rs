@@ -31,14 +31,6 @@ impl<'ctx> Rebinds<'ctx> {
         // .unwrap_or_else(|| self.up.as_ref().unwrap().fetch_bind(var))
     }
 
-    /*
-    fn new_scope(&'ctx self) -> Rebinds<'ctx> {
-        Self {
-            up: Some(self),
-            rebinds: HashMap::new(),
-        }
-    }
-     */
     fn new() -> Self {
         Self {
             rebinds: HashMap::default(),
@@ -104,7 +96,7 @@ impl Cps {
 
         Ok(Closure::new(
             Vec::new(),
-            globals.into_iter().map(Global::value).collect(),
+            globals.into_iter().map(Global::value).collect::<Vec<_>>(),
             Either::Left(func),
         ))
     }
@@ -124,14 +116,7 @@ struct CompilationUnit<'ctx, 'b> {
 // in the function at return, and inc the ref count when we create a Gc from a raw pointer
 // on the Rust side
 //
-// List of necessary runtime functions:
-//  - fn gc_alloc_undef_val() -> *const Value (allocated from a Gc)
-//  - fn make_closure(env: *const Value, num_env: u32, globals: *const Value, num_globals: u32, f_ptr: *const fn()) -> *const Closure (allocated from a Gc)
-//  - fn make_application(op: *const Value, args: *const *const Value, num_args: usize) -> *const Application
-//  - fn (dec/inc)_ref_count(*const ())
-//  - fn store(Gc<Value>, Box<Value>)
-//  - fn truthy(*const Value) -> bool
-//  - fn i64_to_number(i32) -> *const Value
+// List of included runtime functions can be found in runtime.rs
 
 impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
     fn new(
@@ -211,7 +196,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
     fn alloc_cell_codegen(&mut self, var: Local) -> Result<(), BuilderError> {
         let ptr_type = self.ctx.ptr_type(AddressSpace::default());
         let val = self.builder.build_alloca(ptr_type, &var.to_string())?;
-        let gc_alloc_undef_val = self.module.get_function("gc_alloc_undef_val").unwrap();
+        let gc_alloc_undef_val = self.module.get_function("alloc_undef_val").unwrap();
         let undef_val = self
             .builder
             .build_call(gc_alloc_undef_val, &[], "")?
@@ -223,11 +208,42 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         Ok(())
     }
 
+    fn drop_values_codegen(&self, drops: &[Value]) -> Result<(), BuilderError> {
+        // Put the drops in an array
+        let ptr_type = self.ctx.ptr_type(AddressSpace::default());
+        let i32_type = self.ctx.i32_type();
+        let array_type = ptr_type.array_type(drops.len() as u32);
+        let drops_alloca = self.builder.build_alloca(array_type, "drops")?;
+        let drops_load = self
+            .builder
+            .build_load(ptr_type, drops_alloca, "drops_load")?
+            .into_array_value();
+        for (i, drp) in drops.iter().enumerate() {
+            let drp = self.value_codegen(drp)?;
+            self.builder
+                .build_insert_value(drops_load, drp, i as u32, "drops_insert")?;
+        }
+
+        // Call drop_values
+        let drop_values = self.module.get_function("drop_values").unwrap();
+        self.builder.build_call(
+            drop_values,
+            &[
+                drops_alloca.into(),
+                i32_type.const_int(drops.len() as u64, false).into(),
+            ],
+            "drop_values"
+        )?;
+
+        Ok(())
+    }
+
     fn app_codegen(&self, operator: &Value, args: &[Value]) -> Result<(), BuilderError> {
         let operator = self.value_codegen(operator)?;
 
         // Allocate space for the args to be passed to make_application
         let ptr_type = self.ctx.ptr_type(AddressSpace::default());
+        let i32_type = self.ctx.i32_type();
         let array_type = ptr_type.array_type(args.len() as u32);
         let args_alloca = self.builder.build_alloca(array_type, "args")?;
         let args_load = self
@@ -244,7 +260,15 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         let make_app = self.module.get_function("make_application").unwrap();
         let app = self
             .builder
-            .build_call(make_app, &[operator.into(), args_alloca.into()], "make_app")?
+            .build_call(
+                make_app,
+                &[
+                    operator.into(),
+                    args_alloca.into(),
+                    i32_type.const_int(args.len() as u64, false).into(),
+                ],
+                "make_app",
+            )?
             .try_as_basic_value()
             .left()
             .unwrap();
@@ -255,6 +279,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
 
     fn return_values_codegen(&self, args: &[Value]) -> Result<(), BuilderError> {
         // Allocate space for the args to be passed to make_application
+        let i32_type = self.ctx.i32_type();
         let ptr_type = self.ctx.ptr_type(AddressSpace::default());
         let array_type = ptr_type.array_type(args.len() as u32);
         let args_alloca = self.builder.build_alloca(array_type, "args")?;
@@ -272,7 +297,14 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         let make_app = self.module.get_function("make_return_values").unwrap();
         let app = self
             .builder
-            .build_call(make_app, &[args_alloca.into()], "make_return_values")?
+            .build_call(
+                make_app,
+                &[
+                    args_alloca.into(),
+                    i32_type.const_int(args.len() as u64, false).into(),
+                ],
+                "make_return_values",
+            )?
             .try_as_basic_value()
             .left()
             .unwrap();
@@ -390,7 +422,6 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
 
 pub struct ClosureBundle<'ctx> {
     val: Local,
-    // name: String,
     env: Vec<Local>,
     globals: Vec<Global>,
     args: Vec<Local>,
@@ -411,7 +442,7 @@ impl<'ctx> ClosureBundle<'ctx> {
         args: Vec<Local>,
         body: Cps,
     ) -> Self {
-        // TODO: These calls need to be cached and also done at the same time.
+        // TODO: These calls need to be cached and also calculated at the same time.
         let env = body.free_variables().into_iter().collect::<Vec<_>>();
         let globals = body.globals().into_iter().collect::<Vec<_>>();
 

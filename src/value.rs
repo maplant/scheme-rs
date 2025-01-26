@@ -1,13 +1,5 @@
 use crate::{
-    ast,
-    // continuation::Continuation,
-    error::RuntimeError,
-    gc::Gc,
-    num::Number,
-    // proc::{Callable, ExternalFn, Procedure},
-    records::{Record, RecordType},
-    syntax::Syntax,
-    Trace,
+    ast, error::RuntimeError, gc::Gc, num::Number, proc::Closure, records::{Record, RecordType}, syntax::Syntax, Trace
 };
 use futures::future::{BoxFuture, Shared};
 use proc_macros::builtin;
@@ -26,11 +18,7 @@ pub enum Value {
     Vector(Vec<Value>),
     ByteVector(Vec<u8>),
     Syntax(Syntax),
-    // Closure(Closure),
-    /*
-    Procedure(Procedure),
-    ExternalFn(ExternalFn),
-     */
+    Closure(Gc<Closure>),
     Record(Record),
     RecordType(Gc<RecordType>),
     Future(#[debug(skip)] Shared<BoxFuture<'static, Result<Vec<Gc<Value>>, RuntimeError>>>),
@@ -96,10 +84,8 @@ impl Value {
             Self::Character(c) => format!("\\x{c}"),
             Self::ByteVector(_) => "<byte-vector>".to_string(),
             Self::Syntax(syntax) => format!("{:#?}", syntax),
-            // Self::Procedure(proc) => format!("<{proc:?}>"),
-            // Self::ExternalFn(_) => "<external-fn>".to_string(),
+            Self::Closure(_) => "<procedure>".to_string(),
             Self::Future(_) => "<future>".to_string(),
-            // Self::Continuation(_) => "<continuation>".to_string(),
             Self::Record(record) => format!("<{record:?}>"),
             Self::RecordType(record_type) => format!("<{record_type:?}>"),
             Self::Undefined => "<undefined>".to_string(),
@@ -144,9 +130,8 @@ impl Value {
             Self::Vector(_) => "vector",
             Self::ByteVector(_) => "byte vector",
             Self::Syntax(_) => "syntax",
-            // Self::Procedure(_) | Self::ExternalFn(_) => "procedure",
+            Self::Closure(_) => "procedure",
             Self::Future(_) => "future",
-            // Self::Continuation(_) => "continuation",
             Self::Record(_) => "record",
             Self::RecordType(_) => "record-type",
             Self::Undefined => "undefined",
@@ -191,8 +176,7 @@ impl Clone for Value {
             Self::Vector(vec) => Self::Vector(vec.clone()),
             Self::ByteVector(bvec) => Self::ByteVector(bvec.clone()),
             Self::Syntax(syn) => Self::Syntax(syn.clone()),
-            // Self::Procedure(proc) => Self::Procedure(proc.clone()),
-            // Self::ExternalFn(ext_fn) => Self::ExternalFn(*ext_fn),
+            Self::Closure(proc) => Self::Closure(proc.clone()),
             Self::Future(fut) => Self::Future(fut.clone()),
             Self::Record(record) => Self::Record(record.clone()),
             Self::RecordType(rt) => Self::RecordType(rt.clone()),
@@ -200,14 +184,6 @@ impl Clone for Value {
         }
     }
 }
-
-/*
-impl From<ExternalFn> for Value {
-    fn from(ef: ExternalFn) -> Self {
-        Value::ExternalFn(ef)
-    }
-}
-*/
 
 /// Create a proper list from a vector of values
 impl From<Vec<Gc<Value>>> for Value {
@@ -240,6 +216,17 @@ impl<'a> TryFrom<&'a Value> for &'a Number {
         match v {
             Value::Number(n) => Ok(n),
             x => Err(RuntimeError::invalid_type("number", x.type_name())),
+        }
+    }
+}
+
+impl<'a> TryFrom<&'a Value> for &'a Gc<Closure> {
+    type Error = RuntimeError;
+
+    fn try_from(v: &'a Value) -> Result<&'a Gc<Closure>, Self::Error> {
+        match v {
+            Value::Closure(proc) => Ok(proc),
+            x => Err(RuntimeError::invalid_type("procedure", x.type_name())),
         }
     }
 }

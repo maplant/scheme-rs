@@ -65,7 +65,7 @@ async fn main() {
             println!("exiting...");
             return;
         };
-        match parse_str(&top, &input).await {
+        match compile_str(&top, &input).await {
             Ok(()) => (),
             Err(err) => {
                 println!("Error: {err:?}");
@@ -94,7 +94,7 @@ pub enum EvalError<'e> {
     ParseAstError(ParseAstError),
 }
 
-async fn parse_str<'e>(env: &Environment<Repl>, input: &'e str) -> Result<(), EvalError<'e>> {
+async fn compile_str<'e>(env: &Environment<Repl>, input: &'e str) -> Result<(), EvalError<'e>> {
     let tokens = Token::tokenize_str(input).unwrap();
     let sexprs = ParsedSyntax::parse(&tokens)?;
     for sexpr in sexprs {
@@ -104,6 +104,7 @@ async fn parse_str<'e>(env: &Environment<Repl>, input: &'e str) -> Result<(), Ev
         println!("Parsed: {expr:#?}");
         let compiled = expr.compile_top_level();
         println!("Compiled: {compiled:#?}");
+        // let closure = 
     }
     Ok(())
 }
