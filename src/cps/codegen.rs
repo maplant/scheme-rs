@@ -1,18 +1,19 @@
 //! LLVM SSA Codegen from CPS.
 
-use either::Either;
-use indexmap::IndexSet;
 use inkwell::{
     builder::{Builder, BuilderError},
     context::Context,
     execution_engine::ExecutionEngine,
     module::Module,
-    values::{BasicMetadataValueEnum, BasicValue, BasicValueEnum, FunctionValue, PointerValue},
+    values::{BasicValueEnum, FunctionValue, PointerValue},
     AddressSpace,
 };
 use std::collections::HashMap;
 
-use crate::proc::{Closure, SyncFuncPtr};
+use crate::{
+    proc::{Closure, FuncPtr, SyncFuncPtr},
+    runtime,
+};
 
 use super::*;
 
@@ -27,7 +28,10 @@ impl<'ctx> Rebinds<'ctx> {
     }
 
     fn fetch_bind(&self, var: &Var) -> &PointerValue<'ctx> {
-        self.rebinds.get(var).unwrap()
+        self.rebinds.get(var).expect(&format!(
+            "Couldn't find var: {var:?}, rebinds: {:#?}",
+            self.rebinds
+        ))
         // .unwrap_or_else(|| self.up.as_ref().unwrap().fetch_bind(var))
     }
 
@@ -39,17 +43,21 @@ impl<'ctx> Rebinds<'ctx> {
 }
 
 impl Cps {
+    pub async fn compile(self) -> Result<Closure, BuilderError> {
+        runtime::compile_cps(self).await
+    }
+
     pub fn into_closure<'ctx, 'b>(
         self,
         ctx: &'ctx Context,
-        module: &Module<'ctx>,
+        module: &'b Module<'ctx>,
         ee: &ExecutionEngine<'ctx>,
         builder: &'b Builder<'ctx>,
     ) -> Result<Closure, BuilderError>
     where
         'ctx: 'b,
     {
-        let i32_type = ctx.i32_type();
+        // let i32_type = ctx.i32_type();
         let ptr_type = ctx.ptr_type(AddressSpace::default());
         let fn_type = ptr_type.fn_type(
             &[
@@ -67,21 +75,31 @@ impl Cps {
 
         let entry = ctx.append_basic_block(function, "entry");
         builder.position_at_end(entry);
-        let mut cu = CompilationUnit::new(ctx, module.clone(), builder, function);
+
+        /*
+        builder.build_call(
+            module.get_function("dbg_args").unwrap(),
+            &[ function.get_nth_param(0).unwrap().into(),
+               function.get_nth_param(1).unwrap().into(),
+               function.get_nth_param(2).unwrap().into(), ], "dbg")?;
+         */
+
+        let mut cu = CompilationUnit::new(ctx, module, builder, function);
+
+        let globals_param = function
+            .get_nth_param(GLOBALS_PARAM)
+            .unwrap()
+            .into_pointer_value();
+        let array_type = ptr_type.array_type(globals.len() as u32);
+        let globals_load = builder
+            .build_load(array_type, globals_param, "globals_load")?
+            .into_array_value();
 
         for (i, global) in globals.iter().enumerate() {
-            let globals = function
-                .get_nth_param(GLOBALS_PARAM)
+            let res = builder
+                .build_extract_value(globals_load, i as u32, "extract_global")
                 .unwrap()
                 .into_pointer_value();
-            let res = unsafe {
-                cu.builder.build_gep(
-                    ptr_type,
-                    globals,
-                    &[i32_type.const_int(i as u64, false)],
-                    "global",
-                )?
-            };
             cu.rebinds.rebind(Var::Global(global.clone()), res);
         }
 
@@ -89,22 +107,28 @@ impl Cps {
         cu.cps_codegen(self, &mut deferred)?;
 
         while let Some(next) = deferred.pop() {
-            next.codegen(ctx, module.clone(), builder, &mut deferred)?;
+            next.codegen(ctx, module, builder, &mut deferred)?;
         }
+
+        assert!(function.verify(true));
+
+        function.print_to_stderr();
 
         let func = unsafe { ee.get_function::<SyncFuncPtr>(&name).unwrap().into_raw() };
 
         Ok(Closure::new(
             Vec::new(),
             globals.into_iter().map(Global::value).collect::<Vec<_>>(),
-            Either::Left(func),
+            FuncPtr::SyncFunc(func),
+            0,
+            true,
         ))
     }
 }
 
 struct CompilationUnit<'ctx, 'b> {
     ctx: &'ctx Context,
-    module: Module<'ctx>,
+    module: &'b Module<'ctx>,
     builder: &'b Builder<'ctx>,
     function: FunctionValue<'ctx>,
     rebinds: Rebinds<'ctx>,
@@ -121,7 +145,7 @@ struct CompilationUnit<'ctx, 'b> {
 impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
     fn new(
         ctx: &'ctx Context,
-        module: Module<'ctx>,
+        module: &'b Module<'ctx>,
         builder: &'b Builder<'ctx>,
         function: FunctionValue<'ctx>,
     ) -> Self {
@@ -208,6 +232,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn drop_values_codegen(&self, drops: &[Value]) -> Result<(), BuilderError> {
         // Put the drops in an array
         let ptr_type = self.ctx.ptr_type(AddressSpace::default());
@@ -216,7 +241,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         let drops_alloca = self.builder.build_alloca(array_type, "drops")?;
         let drops_load = self
             .builder
-            .build_load(ptr_type, drops_alloca, "drops_load")?
+            .build_load(array_type, drops_alloca, "drops_load")?
             .into_array_value();
         for (i, drp) in drops.iter().enumerate() {
             let drp = self.value_codegen(drp)?;
@@ -232,7 +257,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 drops_alloca.into(),
                 i32_type.const_int(drops.len() as u64, false).into(),
             ],
-            "drop_values"
+            "drop_values",
         )?;
 
         Ok(())
@@ -246,14 +271,17 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         let i32_type = self.ctx.i32_type();
         let array_type = ptr_type.array_type(args.len() as u32);
         let args_alloca = self.builder.build_alloca(array_type, "args")?;
-        let args_load = self
-            .builder
-            .build_load(ptr_type, args_alloca, "args_load")?
-            .into_array_value();
         for (i, arg) in args.iter().enumerate() {
-            let arg = self.value_codegen(arg)?;
-            self.builder
-                .build_insert_value(args_load, arg, i as u32, "args_insert")?;
+            let ep = unsafe {
+                self.builder.build_gep(
+                    ptr_type,
+                    args_alloca,
+                    &[i32_type.const_int(i as u64, false)],
+                    "alloca_elem",
+                )?
+            };
+            let val = self.value_codegen(arg)?;
+            self.builder.build_store(ep, val)?;
         }
 
         // Call make_application
@@ -283,14 +311,17 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         let ptr_type = self.ctx.ptr_type(AddressSpace::default());
         let array_type = ptr_type.array_type(args.len() as u32);
         let args_alloca = self.builder.build_alloca(array_type, "args")?;
-        let args_load = self
-            .builder
-            .build_load(ptr_type, args_alloca, "args_load")?
-            .into_array_value();
         for (i, arg) in args.iter().enumerate() {
-            let arg = self.value_codegen(arg)?;
-            self.builder
-                .build_insert_value(args_load, arg, i as u32, "args_insert")?;
+            let ep = unsafe {
+                self.builder.build_gep(
+                    ptr_type,
+                    args_alloca,
+                    &[i32_type.const_int(i as u64, false)],
+                    "alloca_elem",
+                )?
+            };
+            let val = self.value_codegen(arg)?;
+            self.builder.build_store(ep, val)?;
         }
 
         // Call make_application
@@ -361,49 +392,68 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         deferred: &mut Vec<ClosureBundle<'ctx>>,
     ) -> Result<(), BuilderError> {
         let i32_type = self.ctx.i32_type();
+        let bool_type = self.ctx.bool_type();
         let ptr_type = self.ctx.ptr_type(AddressSpace::default());
 
         // Construct the envs array:
         let num_envs = i32_type.const_int(bundle.env.len() as u64, false);
         let env_type = ptr_type.array_type(bundle.env.len() as u32);
         let env_alloca = self.builder.build_alloca(env_type, "env_alloca")?;
-        let env = self
-            .builder
-            .build_load(ptr_type, env_alloca, "env_load")?
-            .into_array_value();
 
         for (i, var) in bundle.env.iter().enumerate() {
+            let ep = unsafe {
+                self.builder.build_gep(
+                    ptr_type,
+                    env_alloca,
+                    &[i32_type.const_int(i as u64, false)],
+                    "alloca_elem",
+                )?
+            };
             let val: BasicValueEnum = (*self.rebinds.fetch_bind(&Var::Local(*var))).into();
-            self.builder
-                .build_insert_value(env, val, i as u32, "insert_env")?;
+            self.builder.build_store(ep, val)?;
         }
 
         // Construct the globals array:
         let num_globals = i32_type.const_int(bundle.globals.len() as u64, false);
         let globals_type = ptr_type.array_type(bundle.globals.len() as u32);
         let globals_alloca = self.builder.build_alloca(globals_type, "globals_alloca")?;
-        let globals = self
-            .builder
-            .build_load(ptr_type, globals_alloca, "globals_load")?
-            .into_array_value();
 
         for (i, var) in bundle.globals.iter().enumerate() {
+            let ep = unsafe {
+                self.builder.build_gep(
+                    ptr_type,
+                    globals_alloca,
+                    &[i32_type.const_int(i as u64, false)],
+                    "alloca_elem",
+                )?
+            };
             let val: BasicValueEnum = (*self.rebinds.fetch_bind(&Var::Global(var.clone()))).into();
-            self.builder
-                .build_insert_value(globals, val, i as u32, "insert_global")?;
+            self.builder.build_store(ep, val)?;
         }
 
-        let make_closure = self.module.get_function("make_closure").unwrap();
+        let make_closure = if bundle.args.continuation.is_some() {
+            self.module
+                .get_function("make_closure_with_continuation")
+                .unwrap()
+        } else {
+            self.module.get_function("make_closure").unwrap()
+        };
         let closure = self
             .builder
             .build_call(
                 make_closure,
                 &[
+                    bundle.function.as_global_value().as_pointer_value().into(),
                     env_alloca.into(),
                     num_envs.into(),
                     globals_alloca.into(),
                     num_globals.into(),
-                    bundle.function.as_global_value().as_pointer_value().into(),
+                    i32_type
+                        .const_int(bundle.args.num_required() as u64, false)
+                        .into(),
+                    bool_type
+                        .const_int(bundle.args.variadic as u64, false)
+                        .into(),
                 ],
                 "make_closure",
             )?
@@ -420,11 +470,12 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
     }
 }
 
+#[derive(Debug)]
 pub struct ClosureBundle<'ctx> {
     val: Local,
     env: Vec<Local>,
     globals: Vec<Global>,
-    args: Vec<Local>,
+    args: ClosureArgs,
     body: Cps,
     function: FunctionValue<'ctx>,
 }
@@ -432,6 +483,7 @@ pub struct ClosureBundle<'ctx> {
 const ENV_PARAM: u32 = 0;
 const GLOBALS_PARAM: u32 = 1;
 const ARGS_PARAM: u32 = 2;
+const CONTINUATION_PARAM: u32 = 3;
 
 impl<'ctx> ClosureBundle<'ctx> {
     fn new(
@@ -439,23 +491,39 @@ impl<'ctx> ClosureBundle<'ctx> {
         module: &Module<'ctx>,
         val: Local,
         // name: String,
-        args: Vec<Local>,
+        args: ClosureArgs,
         body: Cps,
     ) -> Self {
         // TODO: These calls need to be cached and also calculated at the same time.
-        let env = body.free_variables().into_iter().collect::<Vec<_>>();
+        let env = body
+            .free_variables()
+            .difference(&args.into_vec().into_iter().collect::<HashSet<_>>())
+            .cloned()
+            .collect::<Vec<_>>();
         let globals = body.globals().into_iter().collect::<Vec<_>>();
 
         let ptr_type = ctx.ptr_type(AddressSpace::default());
 
-        let fn_type = ptr_type.fn_type(
-            &[
-                ptr_type.into(), // Env
-                ptr_type.into(), // Globals
-                ptr_type.into(), // Args
-            ],
-            false,
-        );
+        let fn_type = if args.continuation.is_some() {
+            ptr_type.fn_type(
+                &[
+                    ptr_type.into(), // Env
+                    ptr_type.into(), // Globals
+                    ptr_type.into(), // Args
+                    ptr_type.into(), // Continuation
+                ],
+                false,
+            )
+        } else {
+            ptr_type.fn_type(
+                &[
+                    ptr_type.into(), // Env
+                    ptr_type.into(), // Globals
+                    ptr_type.into(), // Args
+                ],
+                false,
+            )
+        };
         let name = val.to_func_name();
         let function = module.add_function(&name, fn_type, None);
         Self {
@@ -472,11 +540,10 @@ impl<'ctx> ClosureBundle<'ctx> {
     fn codegen<'b>(
         self,
         ctx: &'ctx Context,
-        module: Module<'ctx>,
+        module: &'b Module<'ctx>,
         builder: &'b Builder<'ctx>,
         deferred: &mut Vec<Self>,
     ) -> Result<(), BuilderError> {
-        let i32_type = ctx.i32_type();
         let ptr_type = ctx.ptr_type(AddressSpace::default());
         let entry = ctx.append_basic_block(self.function, "entry");
 
@@ -484,55 +551,67 @@ impl<'ctx> ClosureBundle<'ctx> {
 
         let mut cu = CompilationUnit::new(ctx, module, builder, self.function);
 
+        let env_param = self
+            .function
+            .get_nth_param(ENV_PARAM)
+            .unwrap()
+            .into_pointer_value();
+        let array_type = ptr_type.array_type(self.env.len() as u32);
+        let env_load = builder
+            .build_load(array_type, env_param, "env_load")?
+            .into_array_value();
+
         for (i, env_var) in self.env.iter().enumerate() {
-            let envs = self
-                .function
-                .get_nth_param(ENV_PARAM)
+            let res = builder
+                .build_extract_value(env_load, i as u32, "extract_global")
                 .unwrap()
                 .into_pointer_value();
-            let res = unsafe {
-                cu.builder.build_gep(
-                    ptr_type,
-                    envs,
-                    &[i32_type.const_int(i as u64, false)],
-                    "env",
-                )?
-            };
             cu.rebinds.rebind(Var::Local(*env_var), res);
         }
 
-        for (i, global_var) in self.globals.iter().enumerate() {
-            let globals = self
-                .function
-                .get_nth_param(GLOBALS_PARAM)
+        let globals_param = self
+            .function
+            .get_nth_param(GLOBALS_PARAM)
+            .unwrap()
+            .into_pointer_value();
+        let array_type = ptr_type.array_type(self.globals.len() as u32);
+        let globals_load = builder
+            .build_load(array_type, globals_param, "globals_load")?
+            .into_array_value();
+
+        for (i, global) in self.globals.iter().enumerate() {
+            let res = builder
+                .build_extract_value(globals_load, i as u32, "extract_global")
                 .unwrap()
                 .into_pointer_value();
-            let res = unsafe {
-                cu.builder.build_gep(
-                    ptr_type,
-                    globals,
-                    &[i32_type.const_int(i as u64, false)],
-                    "global",
-                )?
-            };
-            cu.rebinds.rebind(Var::Global(global_var.clone()), res);
+            cu.rebinds.rebind(Var::Global(global.clone()), res);
         }
 
-        for (i, arg_var) in self.args.iter().enumerate() {
-            let args = self
-                .function
-                .get_nth_param(ARGS_PARAM)
+        let args_param = self
+            .function
+            .get_nth_param(ARGS_PARAM)
+            .unwrap()
+            .into_pointer_value();
+        let array_type = ptr_type.array_type(self.args.args.len() as u32);
+        let args_load = builder
+            .build_load(array_type, args_param, "args_load")?
+            .into_array_value();
+
+        for (i, arg_var) in self.args.args.iter().enumerate() {
+            let res = builder
+                .build_extract_value(args_load, i as u32, "extract_arg")
                 .unwrap()
                 .into_pointer_value();
-            let res = unsafe {
-                cu.builder.build_gep(
-                    ptr_type,
-                    args,
-                    &[i32_type.const_int(i as u64, false)],
-                    "arg",
-                )?
-            };
             cu.rebinds.rebind(Var::Local(*arg_var), res);
+        }
+
+        if let Some(cont) = self.args.continuation {
+            let cont_param = self
+                .function
+                .get_nth_param(CONTINUATION_PARAM)
+                .unwrap()
+                .into_pointer_value();
+            cu.rebinds.rebind(Var::Local(cont), cont_param);
         }
 
         cu.cps_codegen(self.body, deferred)?;

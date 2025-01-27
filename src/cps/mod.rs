@@ -105,6 +105,35 @@ impl FromStr for PrimOp {
 }
 
 #[derive(Debug, Clone)]
+pub struct ClosureArgs {
+    args: Vec<Local>,
+    variadic: bool,
+    continuation: Option<Local>,
+}
+
+impl ClosureArgs {
+    fn new(args: Vec<Local>, variadic: bool, continuation: Option<Local>) -> Self {
+        Self {
+            args,
+            variadic,
+            continuation,
+        }
+    }
+
+    fn into_vec(&self) -> Vec<Local> {
+        self.args
+            .clone()
+            .into_iter()
+            .chain(self.continuation)
+            .collect()
+    }
+
+    fn num_required(&self) -> usize {
+        self.args.len() - self.variadic as usize + self.continuation.is_some() as usize
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum Cps {
     /// Generates a cell of type *const Gc<Value>
     AllocCell(Local, Box<Cps>),
@@ -116,7 +145,7 @@ pub enum Cps {
     If(Value, Box<Cps>, Box<Cps>),
     /// Closure generation. The result of this operation is a *const Value::Closure
     Closure {
-        args: Vec<Local>,
+        args: ClosureArgs,
         body: Box<Cps>,
         val: Local,
         cexp: Box<Cps>,

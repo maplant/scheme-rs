@@ -12,7 +12,7 @@ pub trait Compile {
         let k = Local::gensym();
         let arg = Local::gensym();
         Cps::Closure {
-            args: vec![arg],
+            args: ClosureArgs::new(vec![arg], true, None),
             body: Box::new(Cps::ReturnValues(arg)),
             val: k,
             cexp: Box::new(self.compile(Box::new(|expr| Cps::App(expr, vec![Value::from(k)])))),
@@ -24,19 +24,24 @@ impl Compile for Lambda {
     /// Generates the maximally-correct implementation of a lambda, i.e. a closure that
     /// tail-calls a closure.
     fn compile(&self, meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
-        let args: Vec<_> = self.args.iter().cloned().collect();
-        compile_lambda(args, &self.body, meta_cont)
+        compile_lambda(
+            self.args.iter().cloned().collect(),
+            self.args.is_variadic(),
+            &self.body,
+            meta_cont,
+        )
     }
 }
 
 fn compile_lambda(
-    mut args: Vec<Local>,
+    args: Vec<Local>,
+    is_variadic: bool,
     body: &Body,
     mut meta_cont: impl FnMut(Value) -> Cps,
 ) -> Cps {
     let closure_arg = Local::gensym();
     let k = Local::gensym();
-    args.push(closure_arg);
+    let args = ClosureArgs::new(args, is_variadic, Some(closure_arg));
     Cps::Closure {
         args,
         body: Box::new(body.compile(Box::new(|result| {
@@ -65,11 +70,11 @@ fn compile_let(
         let k3 = Local::gensym();
         let k4 = Local::gensym();
         Cps::Closure {
-            args: vec![k2],
+            args: ClosureArgs::new(vec![k2], false, None),
             body: Box::new(Cps::AllocCell(
                 *curr_bind,
                 Box::new(Cps::Closure {
-                    args: vec![expr_result, k4],
+                    args: ClosureArgs::new(vec![expr_result], false, Some(k4)),
                     body: Box::new(Cps::PrimOp(
                         PrimOp::Set,
                         vec![
@@ -107,19 +112,35 @@ impl Compile for AstNode {
 }
 
 impl Compile for Expression {
-    fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+    fn compile(&self, meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
         match self {
             Self::Literal(l) => l.compile(meta_cont),
             Self::Apply(e) => e.compile(meta_cont),
             Self::Let(e) => e.compile(meta_cont),
             Self::If(e) => e.compile(meta_cont),
             Self::Lambda(e) => e.compile(meta_cont),
-            Self::Var(v) => meta_cont(Value::from(v.clone())),
+            Self::Var(v) => v.compile(meta_cont),
             Self::Begin(e) => e.compile(meta_cont),
             Self::And(e) => e.compile(meta_cont),
             Self::Or(e) => e.compile(meta_cont),
             x => panic!("not yet implemented: {x:#?}"),
         }
+    }
+}
+
+impl Compile for Var {
+    fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+        /*
+        let k1 = Local::genxsym();
+        let k2 = Local::gensym();
+        Cps::Closure {
+            args: ClosureArgs::new(vec![k2], false, None),
+            body: Box::new(Cps::App(Value::from(k2), vec![Value::from(self.clone())])),
+            val: k1,
+            cexp: Box::new(meta_cont(Value::from(k1))),
+        }
+         */
+        meta_cont(Value::from(self.clone()))
     }
 }
 
@@ -131,13 +152,12 @@ impl Compile for &[AstNode] {
             [head, tail @ ..] => {
                 let k = Local::gensym();
                 Cps::Closure {
-                    args: vec![],
+                    args: ClosureArgs::new(vec![Local::gensym()], false, None),
                     body: Box::new(tail.compile(meta_cont)),
                     val: k,
-                    cexp: Box::new(head.compile(
-                        // Discard the result
-                        Box::new(move |_result| Cps::App(Value::from(k), vec![])),
-                    )),
+                    cexp: Box::new(head.compile(Box::new(move |result| {
+                        Cps::App(Value::from(k), vec![result])
+                    }))),
                 }
             }
         }
@@ -146,7 +166,17 @@ impl Compile for &[AstNode] {
 
 impl Compile for Literal {
     fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
-        meta_cont(Value::Literal(self.clone()))
+        let k1 = Local::gensym();
+        let k2 = Local::gensym();
+        Cps::Closure {
+            args: ClosureArgs::new(vec![k2], false, None),
+            body: Box::new(Cps::App(
+                Value::from(k2),
+                vec![Value::Literal(self.clone())],
+            )),
+            val: k1,
+            cexp: Box::new(meta_cont(Value::from(k1))),
+        }
     }
 }
 
@@ -185,7 +215,7 @@ fn compile_apply(
     let k1 = Local::gensym();
     let k2 = Local::gensym();
     Cps::Closure {
-        args: vec![k1],
+        args: ClosureArgs::new(vec![k1], false, None),
         body: Box::new(arg.compile(Box::new(move |arg_result| {
             let k3 = Local::gensym();
             let k4 = Local::gensym();
@@ -196,7 +226,7 @@ fn compile_apply(
                 .chain(vec![Value::from(new_arg), Value::from(k3)])
                 .collect();
             Cps::Closure {
-                args: vec![new_arg, k3],
+                args: ClosureArgs::new(vec![new_arg], false, Some(k3)),
                 body: Box::new(if let Some(tail) = tail {
                     compile_apply(
                         operator,
@@ -223,7 +253,7 @@ fn compile_call_with_cc(
     let k1 = Local::gensym();
     let k2 = Local::gensym();
     Cps::Closure {
-        args: vec![k1],
+        args: ClosureArgs::new(vec![k1], false, None),
         body: Box::new(thunk.compile(Box::new(|thunk| {
             let k1 = Value::from(k1);
             Cps::App(thunk, vec![k1.clone(), k1])
@@ -238,13 +268,13 @@ impl Compile for If {
         let k1 = Local::gensym();
         let k2 = Local::gensym();
         Cps::Closure {
-            args: vec![k1],
+            args: ClosureArgs::new(vec![k1], false, None),
             body: Box::new(self.cond.compile(Box::new(|cond_result| {
                 let k3 = Local::gensym();
                 let k4 = Local::gensym();
                 let cond_arg = Local::gensym();
                 Cps::Closure {
-                    args: vec![cond_arg, k3],
+                    args: ClosureArgs::new(vec![cond_arg], false, Some(k3)),
                     body: Box::new(Cps::If(
                         Value::from(cond_arg),
                         Box::new(
@@ -289,13 +319,13 @@ fn compile_and(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps 
     let k1 = Local::gensym();
     let k2 = Local::gensym();
     Cps::Closure {
-        args: vec![k1],
+        args: ClosureArgs::new(vec![k1], false, None),
         body: Box::new(expr.compile(Box::new(|expr_result| {
             let k3 = Local::gensym();
             let k4 = Local::gensym();
             let cond_arg = Local::gensym();
             Cps::Closure {
-                args: vec![cond_arg, k3],
+                args: ClosureArgs::new(vec![cond_arg], false, Some(k3)),
                 body: Box::new(Cps::If(
                     Value::from(cond_arg),
                     Box::new(if let Some(tail) = tail {
@@ -333,13 +363,13 @@ fn compile_or(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps +
     let k1 = Local::gensym();
     let k2 = Local::gensym();
     Cps::Closure {
-        args: vec![k1],
+        args: ClosureArgs::new(vec![k1], false, None),
         body: Box::new(expr.compile(Box::new(|expr_result| {
             let k3 = Local::gensym();
             let k4 = Local::gensym();
             let cond_arg = Local::gensym();
             Cps::Closure {
-                args: vec![cond_arg, k3],
+                args: ClosureArgs::new(vec![cond_arg], false, Some(k3)),
                 body: Box::new(Cps::If(
                     Value::from(cond_arg),
                     Box::new(Cps::App(Value::from(k3), vec![Value::from(true)])),
@@ -376,13 +406,13 @@ impl Compile for DefineVar {
         let k1 = Local::gensym();
         let k2 = Local::gensym();
         let set_cont = Cps::Closure {
-            args: vec![k1],
+            args: ClosureArgs::new(vec![k1], false, None),
             body: Box::new(self.val.compile(Box::new(|val_result| {
                 let k3 = Local::gensym();
                 let k4 = Local::gensym();
                 let define_arg = Local::gensym();
                 Cps::Closure {
-                    args: vec![define_arg, k3],
+                    args: ClosureArgs::new(vec![define_arg], false, Some(k3)),
                     body: Box::new(Cps::PrimOp(
                         PrimOp::Set,
                         vec![Value::from(self.var.clone()), Value::from(define_arg)],
@@ -410,17 +440,21 @@ impl Compile for DefineFunc {
     fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
         let k1 = Local::gensym();
         let k2 = Local::gensym();
-        let args: Vec<_> = self.args.iter().cloned().collect();
         let set_cont = Cps::Closure {
-            args: vec![k1],
-            body: Box::new(compile_lambda(args, &self.body, |lambda_result| {
-                Cps::PrimOp(
-                    PrimOp::Set,
-                    vec![Value::from(self.var.clone()), Value::from(lambda_result)],
-                    Local::gensym(),
-                    Box::new(Cps::App(Value::from(k1), Vec::new())),
-                )
-            })),
+            args: ClosureArgs::new(vec![k1], false, None),
+            body: Box::new(compile_lambda(
+                self.args.iter().cloned().collect(),
+                self.args.is_variadic(),
+                &self.body,
+                |lambda_result| {
+                    Cps::PrimOp(
+                        PrimOp::Set,
+                        vec![Value::from(self.var.clone()), Value::from(lambda_result)],
+                        Local::gensym(),
+                        Box::new(Cps::App(Value::from(k1), Vec::new())),
+                    )
+                },
+            )),
             val: k2,
             cexp: Box::new(meta_cont(Value::from(k2))),
         };

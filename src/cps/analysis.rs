@@ -59,8 +59,8 @@ impl Cps {
                 cexp,
             } => {
                 let mut free_body = body.free_variables();
-                for arg in args {
-                    free_body.remove(arg);
+                for arg in args.into_vec() {
+                    free_body.remove(&arg);
                 }
                 let mut free: HashSet<_> =
                     free_body.union(&cexp.free_variables()).copied().collect();

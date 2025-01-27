@@ -1,9 +1,14 @@
 use crate::{
-    ast, error::RuntimeError, gc::Gc, num::Number, proc::Closure, records::{Record, RecordType}, syntax::Syntax, Trace
+    ast,
+    error::RuntimeError,
+    gc::Gc,
+    num::Number,
+    proc::Closure,
+    records::{Record, RecordType},
+    syntax::Syntax,
+    Trace,
 };
 use futures::future::{BoxFuture, Shared};
-use proc_macros::builtin;
-use std::sync::Arc;
 
 #[derive(Trace, derive_more::Debug)]
 pub enum Value {

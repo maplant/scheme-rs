@@ -5,14 +5,17 @@ use std::collections::HashMap;
 use crate::env::Library;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
-struct LibraryName {
+#[allow(dead_code)]
+pub struct LibraryName {
     idents: Vec<String>,
 }
 
-struct Version {
+#[allow(dead_code)]
+pub struct Version {
     version: Vec<u32>,
 }
 
-struct Registry {
+#[allow(dead_code)]
+pub struct Registry {
     libs: HashMap<LibraryName, Library>,
 }

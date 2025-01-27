@@ -3,11 +3,9 @@
 use std::collections::HashMap;
 
 use crate::{
-    ast::{self, parse::ParseAstError, Body, Expression, Let},
+    ast::parse::ParseAstError,
     env::{Environment, Top, Var},
-    error::RuntimeError,
     gc::{Gc, Trace},
-    // proc::Procedure,
     syntax::{Identifier, Span, Syntax},
     value::Value,
 };
@@ -31,12 +29,14 @@ impl RecordType {
     }
 }
 
+/*
 fn is_subtype_of(lhs: &Gc<RecordType>, rhs: &Gc<RecordType>) -> bool {
     lhs == rhs || {
         let lhs = lhs.read();
         lhs.inherits.contains(rhs)
     }
 }
+*/
 
 #[derive(Debug, Trace, Clone)]
 pub struct Record {

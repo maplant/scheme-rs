@@ -3,11 +3,9 @@
 //! process version Scheme without significant lowering. The biggest change
 //! is all variables scopes have been resolved.
 
-// mod eval;
 pub mod parse;
 
 use either::Either;
-use parse::define_syntax;
 
 use crate::{
     cps::PrimOp,
@@ -16,7 +14,7 @@ use crate::{
     gc::Trace,
     num::Number,
     records::DefineRecordType,
-    syntax::{Identifier, Span, Syntax},
+    syntax::{Span, Syntax},
     value::Value,
 };
 use std::sync::Arc;
@@ -28,74 +26,31 @@ pub enum AstNode {
 }
 
 impl AstNode {
-    /*
-    pub async fn eval(
-        &self,
-        env: &Gc<Env>,
-        cont: &Option<Arc<Continuation>>,
-    ) -> Result<Vec<Gc<Value>>, RuntimeError> {
-        match self {
-            Self::Definition(def) => {
-                def.eval(env, cont).await?;
-                Ok(Vec::new())
-            }
-            Self::Expression(expr) => expr.eval(env, cont).await,
-        }
-    }
-
-    pub async fn tail_eval(
-        &self,
-        env: &Gc<Env>,
-        cont: &Option<Arc<Continuation>>,
-    ) -> Result<ValuesOrPreparedCall, RuntimeError> {
-        match self {
-            Self::Definition(def) => {
-                def.eval(env, cont).await?;
-                Ok(ValuesOrPreparedCall::Values(Vec::new()))
-            }
-            Self::Expression(expr) => expr.tail_eval(env, cont).await,
-        }
-    }
-    */
-
-    /*
-    pub async fn from_syntax(
-        syn: Syntax,
-        env: &Gc<Env>,
-        cont: &Option<Arc<Continuation>>,
-    ) -> Result<Option<Self>, parse::ParseAstError> {
-        let expansion_env = ExpansionEnv::from_env(env);
-        let FullyExpanded {
-            expanded,
-            expansion_ctxs: expansion_envs,
-        } = syn.expand(&expansion_env, cont).await?;
-        let expansion_env = expansion_env.push_expansion_env(expansion_envs);
-        Self::from_syntax_with_expansion_env(expanded, &expansion_env, cont).await
-    }
-    */
-
     pub async fn from_syntax(
         syn: Syntax,
         env: &Environment<impl Top>,
-        // cont: &Closure,
     ) -> Result<Option<Self>, parse::ParseAstError> {
         match syn.as_list() {
+            /*
             Some(
                 [Syntax::Identifier { ident, .. }, Syntax::Identifier { ident: name, .. }, expr, Syntax::Null { .. }],
             ) if ident.name == "define-syntax" => {
                 define_syntax(name.clone(), expr.clone(), &env /* cont */).await?;
                 Ok(None)
             }
+            */
+
+            /*
             Some([Syntax::Identifier { ident, span, .. }, body @ .., Syntax::Null { .. }])
                 if ident == "define-record-type" =>
             {
                 let record_type = DefineRecordType::parse(body, env, span)?;
-                todo!();
-                // record_type.define(&env.lexical_contour);
+                record_type.define(&env.lexical_contour);
                 Ok(Some(AstNode::Definition(Definition::DefineRecordType(
                     record_type,
                 ))))
             }
+            */
             Some([Syntax::Identifier { ident, span, .. }, ..]) if ident == "define-syntax" => {
                 Err(parse::ParseAstError::BadForm(span.clone()))
             }
@@ -226,6 +181,10 @@ impl Formals {
             Self::VarArgs { ref remaining, .. } => Some(remaining),
         };
         fixed_iter.chain(remaining)
+    }
+
+    pub fn is_variadic(&self) -> bool {
+        matches!(self, Self::VarArgs { .. })
     }
 }
 

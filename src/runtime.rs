@@ -1,15 +1,21 @@
-use std::sync::{Mutex, OnceLock};
+use std::{
+    mem::ManuallyDrop,
+    sync::{Mutex, OnceLock},
+};
 
 use crate::{
     cps::Cps,
     gc::{Gc, GcInner},
     num::Number,
-    proc::{Application, Closure, SyncFuncPtr},
+    proc::{Application, Closure, FuncPtr, SyncFuncPtr, SyncFuncWithContinuationPtr},
     value::Value,
 };
-use either::Either;
 use inkwell::{
-    builder::BuilderError, context::Context, execution_engine::ExecutionEngine, module::Module,
+    builder::BuilderError,
+    context::Context,
+    execution_engine::ExecutionEngine,
+    module::Module,
+    targets::{InitializationConfig, Target},
     AddressSpace, OptimizationLevel,
 };
 use tokio::{
@@ -73,19 +79,13 @@ fn compilation_task() {
         .take()
         .unwrap();
 
+    Target::initialize_native(&InitializationConfig::default()).unwrap();
+
     // Create an LLVM context, module and execution engine. All of these should live for
     // the lifetime of the program.
-    //
-    // We're just going to put everything in a single module to begin. We can worry about
-    // parallelizing these things later.
     let context = Context::create();
-    let module = context.create_module("scheme_rs");
-    let execution_engine = module
-        .create_jit_execution_engine(OptimizationLevel::default())
-        .unwrap();
-    let builder = context.create_builder();
 
-    install_runtime(&context, &module, &execution_engine);
+    let mut modules = Vec::new();
 
     while let Some(task) = compilation_queue_rx.blocking_recv() {
         let CompilationTask {
@@ -93,7 +93,19 @@ fn compilation_task() {
             compilation_unit,
         } = task;
 
+        // I don't really know a way to do this beyond just creating a new module every time.
+
+        let module = context.create_module("scheme_rs");
+        let execution_engine = module
+            .create_jit_execution_engine(OptimizationLevel::default())
+            .unwrap();
+        let builder = context.create_builder();
+
+        install_runtime(&context, &module, &execution_engine);
+
         let closure = compilation_unit.into_closure(&context, &module, &execution_engine, &builder);
+
+        modules.push(module);
 
         let _ = completion_tx.send(closure);
     }
@@ -130,9 +142,9 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     let f = module.add_function("make_application", sig, None);
     ee.add_global_mapping(&f, make_application as usize);
 
-    // fn make_return_values(op: *Value, args: **Value, num_args: u32) -> *Application
+    // fn make_return_values(args: **Value, num_args: u32) -> *Application
     //
-    let sig = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into(), i32_type.into()], false);
+    let sig = ptr_type.fn_type(&[ptr_type.into(), i32_type.into()], false);
     let f = module.add_function("make_return_values", sig, None);
     ee.add_global_mapping(&f, make_return_values as usize);
 
@@ -149,30 +161,64 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     ee.add_global_mapping(&f, store as usize);
 
     // fn make_closure(
+    //         fn_ptr: SyncFuncPtr
     //         env: **Value,
     //         num_envs: u32,
     //         globals: **Value,
     //         num_globals: u32,
-    //         fn_ptr: SyncFuncPtr
+    //         num_required_args: u32,
+    //         variadic: bool,
     // ) -> *Value
     //
     let sig = ptr_type.fn_type(
         &[
             ptr_type.into(),
-            i32_type.into(),
             ptr_type.into(),
             i32_type.into(),
             ptr_type.into(),
+            i32_type.into(),
+            i32_type.into(),
+            bool_type.into(),
         ],
         false,
     );
     let f = module.add_function("make_closure", sig, None);
     ee.add_global_mapping(&f, make_closure as usize);
+
+    // fn make_closure_with_continuation(
+    //         fn_ptr: SyncFuncPtr
+    //         env: **Value,
+    //         num_envs: u32,
+    //         globals: **Value,
+    //         num_globals: u32,
+    //         num_required_args: u32,
+    //         variadic: bool,
+    // ) -> *Value
+    //
+    let sig = ptr_type.fn_type(
+        &[
+            ptr_type.into(),
+            ptr_type.into(),
+            i32_type.into(),
+            ptr_type.into(),
+            i32_type.into(),
+            i32_type.into(),
+            bool_type.into(),
+        ],
+        false,
+    );
+    let f = module.add_function("make_closure_with_continuation", sig, None);
+    ee.add_global_mapping(&f, make_closure_with_continuation as usize);
+
+    let sig = void_type.fn_type(&[ptr_type.into(), ptr_type.into(), ptr_type.into()], false);
+    let f = module.add_function("dbg_args", sig, None);
+    ee.add_global_mapping(&f, dbg_args as usize);
 }
 
 /// Allocate a new Gc with a value of undefined
 unsafe extern "C" fn alloc_undef_val() -> *mut GcInner<Value> {
-    Gc::new(Value::Undefined).into_raw()
+    let raw = ManuallyDrop::new(Gc::new(Value::Undefined)).as_ptr();
+    raw
 }
 
 /// Decrement the reference count of all of the values
@@ -184,7 +230,7 @@ unsafe extern "C" fn drop_values(vals: *const *mut GcInner<Value>, num_vals: u32
 
 /// Convert the i64 value into a Number and return it boxed
 unsafe extern "C" fn i64_to_number(val: i64) -> *mut GcInner<Value> {
-    Gc::new(Value::Number(Number::from(val))).into_raw()
+    ManuallyDrop::new(Gc::new(Value::Number(Number::from(val)))).as_ptr()
 }
 
 /// Create a boxed application
@@ -197,10 +243,10 @@ unsafe extern "C" fn make_application(
 ) -> *mut Application {
     let mut gc_args = Vec::new();
     for i in 0..num_args {
-        gc_args.push(Gc::from_raw(args.add(i as usize).read()));
+        gc_args.push(Gc::from_ptr(args.add(i as usize).read()));
     }
 
-    let op = Gc::from_raw(op);
+    let op = Gc::from_ptr(op);
     let op_read = op.read();
     let op: &Gc<Closure> = op_read.as_ref().try_into().unwrap();
     let app = Application::new(op.clone(), gc_args);
@@ -215,7 +261,7 @@ unsafe extern "C" fn make_return_values(
 ) -> *mut Application {
     let mut gc_args = Vec::new();
     for i in 0..num_args {
-        gc_args.push(Gc::from_raw(args.add(i as usize).read()));
+        gc_args.push(Gc::from_ptr(args.add(i as usize).read()));
     }
 
     let app = Application::new_empty(gc_args);
@@ -225,34 +271,87 @@ unsafe extern "C" fn make_return_values(
 
 /// Evaluate a Gc<Value> as "truthy" or not, as in whether it triggers a conditional.
 unsafe extern "C" fn truthy(val: *mut GcInner<Value>) -> bool {
-    Gc::from_raw(val).read().is_true()
+    Gc::from_ptr(val).read().is_true()
 }
 
 /// Replace the value pointed to at to with the value contained in from.
 unsafe extern "C" fn store(from: *mut GcInner<Value>, to: *mut GcInner<Value>) {
-    let from = Gc::from_raw(from);
-    let to = Gc::from_raw(to);
+    let from = Gc::from_ptr(from);
+    let to = Gc::from_ptr(to);
     let new_val = from.read().clone();
     *to.write() = new_val;
 }
 
 unsafe extern "C" fn make_closure(
+    fn_ptr: SyncFuncPtr,
     env: *const *mut GcInner<Value>,
     num_envs: u32,
     globals: *const *mut GcInner<Value>,
     num_globals: u32,
-    fn_ptr: SyncFuncPtr,
+    num_required_args: u32,
+    variadic: bool,
 ) -> *mut GcInner<Value> {
     // Collect the environment:
     let env: Vec<_> = (0..num_envs)
-        .map(|i| Gc::from_raw(env.add(i as usize).read()))
+        .map(|i| Gc::from_ptr(env.add(i as usize).read()))
         .collect();
 
     // Collect the globals:
     let globals: Vec<_> = (0..num_globals)
-        .map(|i| Gc::from_raw(globals.add(i as usize).read()))
+        .map(|i| {
+            let raw = globals.add(i as usize).read();
+            Gc::from_ptr(raw)
+        })
         .collect();
 
-    let closure = Closure::new(env, globals, Either::Left(fn_ptr));
-    Gc::new(Value::Closure(Gc::new(closure))).into_raw()
+    let closure = Closure::new(
+        env,
+        globals,
+        FuncPtr::SyncFunc(fn_ptr),
+        num_required_args as usize,
+        variadic,
+    );
+    ManuallyDrop::new(Gc::new(Value::Closure(Gc::new(closure)))).as_ptr()
+}
+
+unsafe extern "C" fn make_closure_with_continuation(
+    fn_ptr: SyncFuncWithContinuationPtr,
+    env: *const *mut GcInner<Value>,
+    num_envs: u32,
+    globals: *const *mut GcInner<Value>,
+    num_globals: u32,
+    num_required_args: u32,
+    variadic: bool,
+) -> *mut GcInner<Value> {
+    // Collect the environment:
+    let env: Vec<_> = (0..num_envs)
+        .map(|i| Gc::from_ptr(env.add(i as usize).read()))
+        .collect();
+
+    // Collect the globals:
+    let globals: Vec<_> = (0..num_globals)
+        .map(|i| {
+            let raw = globals.add(i as usize).read();
+            Gc::from_ptr(raw)
+        })
+        .collect();
+
+    let closure = Closure::new(
+        env,
+        globals,
+        FuncPtr::SyncFuncWithContinuation(fn_ptr),
+        num_required_args as usize,
+        variadic,
+    );
+    ManuallyDrop::new(Gc::new(Value::Closure(Gc::new(closure)))).as_ptr()
+}
+
+unsafe extern "C" fn dbg_args(
+    env: *const *mut GcInner<Value>,
+    globals: *const *mut GcInner<Value>,
+    args: *const *mut GcInner<Value>,
+) {
+    println!("env: {env:p}");
+    println!("globals: {globals:p}");
+    println!("args: {args:p}");
 }

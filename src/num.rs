@@ -17,6 +17,7 @@ pub enum Number {
 }
 
 impl Number {
+    #[allow(dead_code)]
     fn is_zero(&self) -> bool {
         match self {
             Self::FixedInteger(i) => i.is_zero(),
@@ -27,6 +28,7 @@ impl Number {
         }
     }
 
+    #[allow(dead_code)]
     fn is_even(&self) -> bool {
         use num::Integer;
         match self {
@@ -38,6 +40,7 @@ impl Number {
         }
     }
 
+    #[allow(dead_code)]
     fn is_odd(&self) -> bool {
         use num::Integer;
         match self {
@@ -49,6 +52,7 @@ impl Number {
         }
     }
 
+    #[allow(dead_code)]
     fn is_complex(&self) -> bool {
         matches!(self, Self::Complex(_))
     }

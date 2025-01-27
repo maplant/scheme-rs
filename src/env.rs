@@ -138,7 +138,7 @@ impl<T: Top> Gc<LexicalContour<T>> {
         self.read().up.fetch_var(name)
     }
 
-    pub fn fetch_macro(&self, name: &Identifier) -> Option<(MacroSource<T>, Gc<Value>)> {
+    pub fn fetch_macro(&self, _name: &Identifier) -> Option<(MacroSource<T>, Gc<Value>)> {
         todo!()
     }
 }
@@ -200,7 +200,7 @@ impl<T: Top> Gc<MacroExpansion<T>> {
         }
     }
 
-    pub fn fetch_macro(&self, name: &Identifier) -> Option<(MacroSource<T>, Gc<Value>)> {
+    pub fn fetch_macro(&self, _name: &Identifier) -> Option<(MacroSource<T>, Gc<Value>)> {
         todo!()
     }
 }
@@ -237,7 +237,7 @@ impl<T: Top> Environment<T> {
         }
     }
 
-    pub fn fetch_macro(&self, name: &Identifier) -> Option<(MacroSource<T>, Gc<Value>)> {
+    pub fn fetch_macro(&self, _name: &Identifier) -> Option<(MacroSource<T>, Gc<Value>)> {
         /*
         match self {
             Self::Top(top) => top.read().fetch_macro(&name.name).map(|mac| (Either::Right(top.clone()), mac)),
@@ -295,7 +295,7 @@ impl Local {
     }
 
     pub fn to_func_name(&self) -> String {
-        format!("$f{}", self.0)
+        format!("f{}", self.0)
     }
 }
 

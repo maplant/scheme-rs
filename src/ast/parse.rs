@@ -237,6 +237,7 @@ fn splice_in<'a, T: Top>(
                         splice_in(defs, exprs, body, &expansion_env, span /* cont */).await?;
                         continue;
                     }
+                    /*
                     Some(
                         [Syntax::Identifier { ident, .. }, Syntax::Identifier { ident: name, .. }, expr, Syntax::Null { .. }],
                     ) if ident == "define-syntax" => {
@@ -244,6 +245,7 @@ fn splice_in<'a, T: Top>(
                             .await?;
                         continue;
                     }
+                    */
                     Some(
                         [Syntax::Identifier { ident, span, .. }, def, .., Syntax::Null { .. }],
                     ) if ident == "define" => {
@@ -260,17 +262,16 @@ fn splice_in<'a, T: Top>(
                         expansion_env.def_var(ident.clone());
                         true
                     }
+                    /*
                     Some(
                         [Syntax::Identifier { ident, span, .. }, body @ .., Syntax::Null { .. }],
                     ) if ident == "define-record-type" => {
-                        /*
                         let record_type = DefineRecordType::parse(body, env, span)?;
                         record_type.define(&env.lexical_contour);
                         defs.push(Err(record_type));
-                         */
-                        todo!();
                         continue;
                     }
+                    */
                     Some([Syntax::Identifier { ident, span, .. }, ..])
                         if ident == "define-syntax" =>
                     {
@@ -292,6 +293,7 @@ fn splice_in<'a, T: Top>(
     })
 }
 
+/*
 pub(super) async fn define_syntax(
     ident: Identifier,
     expr: Syntax,
@@ -313,6 +315,7 @@ pub(super) async fn define_syntax(
     env.def_macro(ident, todo!());
     Ok(())
 }
+*/
 
 impl Expression {
     pub(crate) async fn parse(
@@ -352,7 +355,7 @@ impl Expression {
                 Syntax::Literal { literal, .. } => Ok(Self::Literal(literal)),
 
                 // Vector literals:
-                Syntax::Vector { vector, .. } => todo!(), // Ok(Self::Vector(Vector::parse(&vector))),
+                Syntax::Vector { /* vector, */ .. } => todo!(), // Ok(Self::Vector(Vector::parse(&vector))),
 
                 // Functional forms:
                 Syntax::List {
@@ -788,6 +791,7 @@ impl Quote {
 }
 
 impl Vector {
+    #[allow(dead_code)]
     fn parse(exprs: &[Syntax]) -> Self {
         let mut vals = Vec::new();
         for expr in exprs {

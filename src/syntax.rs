@@ -1,17 +1,14 @@
 use crate::{
     ast::Literal,
-    // continuation::Continuation,
-    env::{Environment, LexicalContour, MacroSource, Top},
+    env::{Environment, MacroSource, Top},
     error::RuntimeError,
     gc::{Gc, Trace},
     lex::{InputSpan, Lexeme, Token},
     lists::list_to_vec_with_null,
     parse::ParseError,
-    util::RequireOne,
     value::Value,
 };
 use futures::future::BoxFuture;
-use proc_macros::builtin;
 use std::{collections::BTreeSet, fmt, sync::Arc};
 
 #[derive(Debug, Clone, PartialEq, Trace)]
@@ -196,11 +193,13 @@ impl Syntax {
 
     async fn apply_transformer<T: Top>(
         &self,
-        env: &Environment<T>,
-        macro_source: MacroSource<T>,
-        transformer: Gc<Value>,
+        _env: &Environment<T>,
+        _macro_source: MacroSource<T>,
+        _transformer: Gc<Value>,
         // cont: &Closure,
     ) -> Result<Expansion<T>, RuntimeError> {
+        todo!()
+        /*
         // Create a new mark for the expansion context
         let new_mark = Mark::new();
         // Apply the new mark to the input
@@ -232,6 +231,7 @@ impl Syntax {
         let new_env = env.new_macro_expansion(new_mark, macro_source);
 
         Ok(Expansion::new_expanded(new_env, output))
+        */
     }
 
     fn expand_once<'a, T: Top>(
@@ -309,11 +309,13 @@ pub enum Expansion<T: Trace> {
     },
 }
 
+/*
 impl<T: Trace> Expansion<T> {
     fn new_expanded(new_env: Environment<T>, syntax: Syntax) -> Self {
         Self::Expanded { new_env, syntax }
     }
 }
+*/
 
 pub struct FullyExpanded<T: Trace> {
     pub expansion_env: Environment<T>,

@@ -1,6 +1,4 @@
-use crate::{error::RuntimeError, gc::Gc, num::Number, value::Value};
-use proc_macros::builtin;
-use std::sync::Arc;
+use crate::{gc::Gc, value::Value};
 
 pub fn fmt_list(car: &Gc<Value>, cdr: &Gc<Value>) -> String {
     // TODO(map): If the list is circular, DO NOT print infinitely!
@@ -40,6 +38,13 @@ pub fn fmt_list(car: &Gc<Value>, cdr: &Gc<Value>) -> String {
 
     output.push(')');
     output
+}
+
+pub fn slice_to_list(items: &[Gc<Value>]) -> Value {
+    match items {
+        [] => Value::Null,
+        [head, tail @ ..] => Value::Pair(head.clone(), Gc::new(slice_to_list(tail))),
+    }
 }
 
 pub fn list_to_vec(curr: &Gc<Value>, out: &mut Vec<Gc<Value>>) {

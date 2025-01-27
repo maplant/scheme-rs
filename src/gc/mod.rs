@@ -84,7 +84,7 @@ impl<T: Trace> Gc<T> {
         }
     }
 
-    pub fn into_raw(self) -> *mut GcInner<T> {
+    pub fn as_ptr(&self) -> *mut GcInner<T> {
         self.ptr.as_ptr()
     }
 
@@ -98,7 +98,8 @@ impl<T: Trace> Gc<T> {
 
     /// Create a new Gc from the raw pointer. This increments the ref count for
     /// safety.
-    pub unsafe fn from_raw(ptr: *mut GcInner<T>) -> Self {
+    #[track_caller]
+    pub unsafe fn from_ptr(ptr: *mut GcInner<T>) -> Self {
         let ptr = NonNull::new(ptr).unwrap();
         inc_rc(ptr);
         Self {
