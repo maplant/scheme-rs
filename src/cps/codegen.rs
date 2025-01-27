@@ -219,15 +219,21 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
 
     fn alloc_cell_codegen(&mut self, var: Local) -> Result<(), BuilderError> {
         let ptr_type = self.ctx.ptr_type(AddressSpace::default());
-        let val = self.builder.build_alloca(ptr_type, &var.to_string())?;
+        let val = self.builder.build_alloca(ptr_type, "local")?;
         let gc_alloc_undef_val = self.module.get_function("alloc_undef_val").unwrap();
         let undef_val = self
             .builder
-            .build_call(gc_alloc_undef_val, &[], "")?
+            .build_call(gc_alloc_undef_val, &[], "undefined")?
             .try_as_basic_value()
             .left()
             .unwrap();
         let _store = self.builder.build_store(val, undef_val);
+        // THIS DOES NOT WORK IN GENERAL! WE DON'T STORE TO THE ALLOCA AGAIN
+        // BECAUSE IT'S BOXED.
+        let val = self
+            .builder
+            .build_load(ptr_type, val, "gc_ptr")?
+            .into_pointer_value();
         self.rebinds.rebind(Var::Local(var), val);
         Ok(())
     }
@@ -563,7 +569,7 @@ impl<'ctx> ClosureBundle<'ctx> {
 
         for (i, env_var) in self.env.iter().enumerate() {
             let res = builder
-                .build_extract_value(env_load, i as u32, "extract_global")
+                .build_extract_value(env_load, i as u32, "extract_env")
                 .unwrap()
                 .into_pointer_value();
             cu.rebinds.rebind(Var::Local(*env_var), res);

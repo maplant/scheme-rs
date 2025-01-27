@@ -85,7 +85,7 @@ fn compile_let(
                         Box::new(compile_let(
                             tail,
                             body,
-                            Box::new(move |result| Cps::App(Value::from(k4), vec![result])),
+                            Box::new(move |result| Cps::App(result, vec![Value::from(k4)])),
                         )),
                     )),
                     val: k3,
