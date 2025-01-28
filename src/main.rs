@@ -103,7 +103,7 @@ async fn compile_and_run_str<'e>(
         let Some(expr) = AstNode::from_syntax(sexpr.syntax, env).await? else {
             continue;
         };
-        println!("Parsed: {expr:#?}");
+        // println!("Parsed: {expr:#?}");
         let compiled = expr.compile_top_level();
         println!("Compiled: {compiled:#?}");
 

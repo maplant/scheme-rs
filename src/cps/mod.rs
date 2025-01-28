@@ -67,6 +67,12 @@ impl From<Local> for Value {
     }
 }
 
+impl From<Global> for Value {
+    fn from(global: Global) -> Self {
+        Self::Var(Var::Global(global))
+    }
+}
+
 impl fmt::Debug for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

@@ -18,7 +18,6 @@ use crate::{
 use super::*;
 
 struct Rebinds<'ctx> {
-    // up: Option<&'ctx Rebinds<'ctx>>,
     rebinds: HashMap<Var, PointerValue<'ctx>>,
 }
 
@@ -28,11 +27,7 @@ impl<'ctx> Rebinds<'ctx> {
     }
 
     fn fetch_bind(&self, var: &Var) -> &PointerValue<'ctx> {
-        self.rebinds.get(var).expect(&format!(
-            "Couldn't find var: {var:?}, rebinds: {:#?}",
-            self.rebinds
-        ))
-        // .unwrap_or_else(|| self.up.as_ref().unwrap().fetch_bind(var))
+        self.rebinds.get(var).unwrap()
     }
 
     fn new() -> Self {
@@ -76,14 +71,6 @@ impl Cps {
         let entry = ctx.append_basic_block(function, "entry");
         builder.position_at_end(entry);
 
-        /*
-        builder.build_call(
-            module.get_function("dbg_args").unwrap(),
-            &[ function.get_nth_param(0).unwrap().into(),
-               function.get_nth_param(1).unwrap().into(),
-               function.get_nth_param(2).unwrap().into(), ], "dbg")?;
-         */
-
         let mut cu = CompilationUnit::new(ctx, module, builder, function);
 
         let globals_param = function
@@ -112,7 +99,7 @@ impl Cps {
 
         assert!(function.verify(true));
 
-        function.print_to_stderr();
+        // function.print_to_stderr();
 
         let func = unsafe { ee.get_function::<SyncFuncPtr>(&name).unwrap().into_raw() };
 
@@ -134,8 +121,8 @@ struct CompilationUnit<'ctx, 'b> {
     rebinds: Rebinds<'ctx>,
 }
 
+// Everything returns a pointer allocated from a Gc, so everything is a Gc<Value>.
 //
-// Update: everything returns a pointer allocated from a Gc, so everything is a Gc<Value>
 // If we do this, then we only need to do two things: dec the ref count of every gc allocated
 // in the function at return, and inc the ref count when we create a Gc from a raw pointer
 // on the Rust side
@@ -192,7 +179,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 self.make_closure_codegen(&bundle, *cexp, deferred)?;
                 deferred.push(bundle);
             }
-            Cps::ReturnValues(value) => self.return_values_codegen(&[Value::from(value)])?,
+            Cps::ReturnValues(value) => self.return_values_codegen(&Value::from(value))?,
             _ => unimplemented!(),
         }
         Ok(())
@@ -311,7 +298,8 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         Ok(())
     }
 
-    fn return_values_codegen(&self, args: &[Value]) -> Result<(), BuilderError> {
+    fn return_values_codegen(&self, args: &Value) -> Result<(), BuilderError> {
+        /*
         // Allocate space for the args to be passed to make_application
         let i32_type = self.ctx.i32_type();
         let ptr_type = self.ctx.ptr_type(AddressSpace::default());
@@ -329,7 +317,8 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             let val = self.value_codegen(arg)?;
             self.builder.build_store(ep, val)?;
         }
-
+         */
+        let val = self.value_codegen(args)?;
         // Call make_application
         let make_app = self.module.get_function("make_return_values").unwrap();
         let app = self
@@ -337,8 +326,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             .build_call(
                 make_app,
                 &[
-                    args_alloca.into(),
-                    i32_type.const_int(args.len() as u64, false).into(),
+                    val.into()
                 ],
                 "make_return_values",
             )?
@@ -622,8 +610,8 @@ impl<'ctx> ClosureBundle<'ctx> {
 
         cu.cps_codegen(self.body, deferred)?;
 
-        self.function.print_to_stderr();
-        eprintln!();
+        // self.function.print_to_stderr();
+        // eprintln!();
 
         if !self.function.verify(true) {
             panic!("Invalid function");

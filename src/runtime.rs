@@ -4,11 +4,7 @@ use std::{
 };
 
 use crate::{
-    cps::Cps,
-    gc::{Gc, GcInner},
-    num::Number,
-    proc::{Application, Closure, FuncPtr, SyncFuncPtr, SyncFuncWithContinuationPtr},
-    value::Value,
+    cps::Cps, gc::{Gc, GcInner}, lists::list_to_vec, num::Number, proc::{Application, Closure, FuncPtr, SyncFuncPtr, SyncFuncWithContinuationPtr}, value::Value
 };
 use inkwell::{
     builder::BuilderError,
@@ -142,9 +138,9 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     let f = module.add_function("make_application", sig, None);
     ee.add_global_mapping(&f, make_application as usize);
 
-    // fn make_return_values(args: **Value, num_args: u32) -> *Application
+    // fn make_return_values(args: *Value) -> *Application
     //
-    let sig = ptr_type.fn_type(&[ptr_type.into(), i32_type.into()], false);
+    let sig = ptr_type.fn_type(&[ptr_type.into()], false);
     let f = module.add_function("make_return_values", sig, None);
     ee.add_global_mapping(&f, make_return_values as usize);
 
@@ -256,22 +252,20 @@ unsafe extern "C" fn make_application(
 
 /// Create a boxed application that simply returns its arguments
 unsafe extern "C" fn make_return_values(
-    args: *const *mut GcInner<Value>,
-    num_args: u32,
+    args: *mut GcInner<Value>,
 ) -> *mut Application {
-    let mut gc_args = Vec::new();
-    for i in 0..num_args {
-        gc_args.push(Gc::from_ptr(args.add(i as usize).read()));
-    }
+    let args = Gc::from_ptr(args);
+    let mut flattened = Vec::new();
+    list_to_vec(&args, &mut flattened);
 
-    let app = Application::new_empty(gc_args);
+    let app = Application::new_empty(flattened);
 
     Box::into_raw(Box::new(app))
 }
 
 /// Evaluate a Gc<Value> as "truthy" or not, as in whether it triggers a conditional.
 unsafe extern "C" fn truthy(val: *mut GcInner<Value>) -> bool {
-    Gc::from_ptr(val).read().is_true()
+    dbg!(dbg!(Gc::from_ptr(val)).read().is_true())
 }
 
 /// Replace the value pointed to at to with the value contained in from.

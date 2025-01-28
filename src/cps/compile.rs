@@ -1,7 +1,6 @@
-use either::Either;
-
 use super::*;
-use crate::ast::*;
+use crate::{ast::*, gc::Gc};
+use either::Either;
 
 /// There's not too much reason that this is a trait, other than I wanted to
 /// see all of the Compile implementations in one place.
@@ -130,16 +129,6 @@ impl Compile for Expression {
 
 impl Compile for Var {
     fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
-        /*
-        let k1 = Local::genxsym();
-        let k2 = Local::gensym();
-        Cps::Closure {
-            args: ClosureArgs::new(vec![k2], false, None),
-            body: Box::new(Cps::App(Value::from(k2), vec![Value::from(self.clone())])),
-            val: k1,
-            cexp: Box::new(meta_cont(Value::from(k1))),
-        }
-         */
         meta_cont(Value::from(self.clone()))
     }
 }
@@ -172,7 +161,13 @@ impl Compile for Literal {
             args: ClosureArgs::new(vec![k2], false, None),
             body: Box::new(Cps::App(
                 Value::from(k2),
-                vec![Value::Literal(self.clone())],
+                // TODO: This is obviously quite bad, we're boxing every single literal that
+                // comes our way and making them global variables. This is a hack, but one that
+                // _is technically correct_.
+                vec![Value::from(Global::new(
+                    format!("{self:?}"),
+                    Gc::new(crate::value::Value::from_literal(self)),
+                ))],
             )),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
@@ -271,30 +266,26 @@ impl Compile for If {
             args: ClosureArgs::new(vec![k1], false, None),
             body: Box::new(self.cond.compile(Box::new(|cond_result| {
                 let k3 = Local::gensym();
-                let k4 = Local::gensym();
                 let cond_arg = Local::gensym();
                 Cps::Closure {
-                    args: ClosureArgs::new(vec![cond_arg], false, Some(k3)),
+                    args: ClosureArgs::new(vec![cond_arg], false, None),
                     body: Box::new(Cps::If(
                         Value::from(cond_arg),
                         Box::new(
                             self.success.compile(Box::new(|success| {
-                                Cps::App(success, vec![Value::from(k3)])
+                                Cps::App(success, vec![Value::from(k1)])
                             })),
                         ),
                         Box::new(if let Some(ref failure) = self.failure {
                             failure.compile(Box::new(|failure| {
-                                Cps::App(failure, vec![Value::from(k3)])
+                                Cps::App(failure, vec![Value::from(k1)])
                             }))
                         } else {
-                            Cps::App(Value::from(k3), Vec::new())
+                            Cps::App(Value::from(k1), Vec::new())
                         }),
                     )),
-                    val: k4,
-                    cexp: Box::new(Cps::App(
-                        Value::from(k4),
-                        vec![cond_result, Value::from(k1)],
-                    )),
+                    val: k3,
+                    cexp: Box::new(Cps::App(cond_result, vec![Value::from(k3)])),
                 }
             }))),
             val: k2,
@@ -322,24 +313,20 @@ fn compile_and(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps 
         args: ClosureArgs::new(vec![k1], false, None),
         body: Box::new(expr.compile(Box::new(|expr_result| {
             let k3 = Local::gensym();
-            let k4 = Local::gensym();
             let cond_arg = Local::gensym();
             Cps::Closure {
-                args: ClosureArgs::new(vec![cond_arg], false, Some(k3)),
+                args: ClosureArgs::new(vec![cond_arg], false, None),
                 body: Box::new(Cps::If(
                     Value::from(cond_arg),
                     Box::new(if let Some(tail) = tail {
-                        compile_and(tail, Box::new(|expr| Cps::App(expr, vec![Value::from(k3)])))
+                        compile_and(tail, Box::new(|expr| Cps::App(expr, vec![Value::from(k1)])))
                     } else {
-                        Cps::App(Value::from(k3), vec![Value::from(true)])
+                        Cps::App(Value::from(k1), vec![Value::from(true)])
                     }),
-                    Box::new(Cps::App(Value::from(k3), vec![Value::from(false)])),
+                    Box::new(Cps::App(Value::from(k1), vec![Value::from(false)])),
                 )),
-                val: k4,
-                cexp: Box::new(Cps::App(
-                    Value::from(k4),
-                    vec![expr_result, Value::from(k1)],
-                )),
+                val: k3,
+                cexp: Box::new(Cps::App(expr_result, vec![Value::from(k3)])),
             }
         }))),
         val: k2,
@@ -366,7 +353,6 @@ fn compile_or(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps +
         args: ClosureArgs::new(vec![k1], false, None),
         body: Box::new(expr.compile(Box::new(|expr_result| {
             let k3 = Local::gensym();
-            let k4 = Local::gensym();
             let cond_arg = Local::gensym();
             Cps::Closure {
                 args: ClosureArgs::new(vec![cond_arg], false, Some(k3)),
@@ -379,11 +365,8 @@ fn compile_or(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps +
                         Cps::App(Value::from(k3), vec![Value::from(false)])
                     }),
                 )),
-                val: k4,
-                cexp: Box::new(Cps::App(
-                    Value::from(k4),
-                    vec![expr_result, Value::from(k1)],
-                )),
+                val: k3,
+                cexp: Box::new(Cps::App(expr_result, vec![Value::from(k3)])),
             }
         }))),
         val: k2,
