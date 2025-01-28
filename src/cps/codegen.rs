@@ -11,8 +11,9 @@ use inkwell::{
 use std::collections::HashMap;
 
 use crate::{
+    gc::Gc,
     proc::{Closure, FuncPtr, SyncFuncPtr},
-    runtime,
+    runtime::Runtime,
 };
 
 use super::*;
@@ -27,7 +28,7 @@ impl<'ctx> Rebinds<'ctx> {
     }
 
     fn fetch_bind(&self, var: &Var) -> &PointerValue<'ctx> {
-        self.rebinds.get(var).unwrap()
+        self.rebinds.get(var).expect(&format!("could not find {:?}", var))
     }
 
     fn new() -> Self {
@@ -38,12 +39,9 @@ impl<'ctx> Rebinds<'ctx> {
 }
 
 impl Cps {
-    pub async fn compile(self) -> Result<Closure, BuilderError> {
-        runtime::compile_cps(self).await
-    }
-
     pub fn into_closure<'ctx, 'b>(
         self,
+        runtime: Gc<Runtime>,
         ctx: &'ctx Context,
         module: &'b Module<'ctx>,
         ee: &ExecutionEngine<'ctx>,
@@ -104,6 +102,7 @@ impl Cps {
         let func = unsafe { ee.get_function::<SyncFuncPtr>(&name).unwrap().into_raw() };
 
         Ok(Closure::new(
+            runtime,
             Vec::new(),
             globals.into_iter().map(Global::value).collect::<Vec<_>>(),
             FuncPtr::SyncFunc(func),
@@ -179,7 +178,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 self.make_closure_codegen(&bundle, *cexp, deferred)?;
                 deferred.push(bundle);
             }
-            Cps::ReturnValues(value) => self.return_values_codegen(&Value::from(value))?,
+            Cps::ReturnValues(value) => self.return_values_codegen(&value)?,
             _ => unimplemented!(),
         }
         Ok(())
@@ -299,37 +298,12 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
     }
 
     fn return_values_codegen(&self, args: &Value) -> Result<(), BuilderError> {
-        /*
-        // Allocate space for the args to be passed to make_application
-        let i32_type = self.ctx.i32_type();
-        let ptr_type = self.ctx.ptr_type(AddressSpace::default());
-        let array_type = ptr_type.array_type(args.len() as u32);
-        let args_alloca = self.builder.build_alloca(array_type, "args")?;
-        for (i, arg) in args.iter().enumerate() {
-            let ep = unsafe {
-                self.builder.build_gep(
-                    ptr_type,
-                    args_alloca,
-                    &[i32_type.const_int(i as u64, false)],
-                    "alloca_elem",
-                )?
-            };
-            let val = self.value_codegen(arg)?;
-            self.builder.build_store(ep, val)?;
-        }
-         */
         let val = self.value_codegen(args)?;
         // Call make_application
         let make_app = self.module.get_function("make_return_values").unwrap();
         let app = self
             .builder
-            .build_call(
-                make_app,
-                &[
-                    val.into()
-                ],
-                "make_return_values",
-            )?
+            .build_call(make_app, &[val.into()], "make_return_values")?
             .try_as_basic_value()
             .left()
             .unwrap();
@@ -437,6 +411,11 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             .build_call(
                 make_closure,
                 &[
+                    self.function
+                        .get_nth_param(RUNTIME_PARAM)
+                        .unwrap()
+                        .into_pointer_value()
+                        .into(),
                     bundle.function.as_global_value().as_pointer_value().into(),
                     env_alloca.into(),
                     num_envs.into(),
@@ -474,17 +453,17 @@ pub struct ClosureBundle<'ctx> {
     function: FunctionValue<'ctx>,
 }
 
-const ENV_PARAM: u32 = 0;
-const GLOBALS_PARAM: u32 = 1;
-const ARGS_PARAM: u32 = 2;
-const CONTINUATION_PARAM: u32 = 3;
+const RUNTIME_PARAM: u32 = 0;
+const ENV_PARAM: u32 = 1;
+const GLOBALS_PARAM: u32 = 2;
+const ARGS_PARAM: u32 = 3;
+const CONTINUATION_PARAM: u32 = 4;
 
 impl<'ctx> ClosureBundle<'ctx> {
     fn new(
         ctx: &'ctx Context,
         module: &Module<'ctx>,
         val: Local,
-        // name: String,
         args: ClosureArgs,
         body: Cps,
     ) -> Self {
@@ -501,6 +480,7 @@ impl<'ctx> ClosureBundle<'ctx> {
         let fn_type = if args.continuation.is_some() {
             ptr_type.fn_type(
                 &[
+                    ptr_type.into(), // Runtime
                     ptr_type.into(), // Env
                     ptr_type.into(), // Globals
                     ptr_type.into(), // Args
@@ -511,6 +491,7 @@ impl<'ctx> ClosureBundle<'ctx> {
         } else {
             ptr_type.fn_type(
                 &[
+                    ptr_type.into(), // Runtime
                     ptr_type.into(), // Env
                     ptr_type.into(), // Globals
                     ptr_type.into(), // Args
@@ -522,7 +503,6 @@ impl<'ctx> ClosureBundle<'ctx> {
         let function = module.add_function(&name, fn_type, None);
         Self {
             val,
-            // name,
             env,
             globals,
             args,

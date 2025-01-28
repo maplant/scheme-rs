@@ -1,7 +1,5 @@
 use crate::{
-    gc::{Gc, GcInner, Trace},
-    lists::slice_to_list,
-    value::Value,
+    gc::{Gc, GcInner, Trace}, lists::slice_to_list, runtime::Runtime, value::Value
 };
 use futures::future::BoxFuture;
 use std::borrow::Cow;
@@ -38,12 +36,14 @@ pub async fn apply(
 pub type Record = Box<[Gc<Value>]>;
 
 pub type SyncFuncPtr = unsafe extern "C" fn(
+    runtime: *mut GcInner<Runtime>,
     env: *const *mut GcInner<Value>,
     globals: *const *mut GcInner<Value>,
     args: *const *mut GcInner<Value>,
 ) -> *mut Application;
 
 pub type SyncFuncWithContinuationPtr = unsafe extern "C" fn(
+    runtime: *mut GcInner<Runtime>,
     env: *const *mut GcInner<Value>,
     globals: *const *mut GcInner<Value>,
     args: *const *mut GcInner<Value>,
@@ -61,6 +61,7 @@ pub enum FuncPtr {
 
 #[derive(Debug)]
 pub struct Closure {
+    runtime: Gc<Runtime>,
     env: Record,
     globals: Record,
     func: FuncPtr,
@@ -70,6 +71,7 @@ pub struct Closure {
 
 unsafe impl Trace for Closure {
     unsafe fn visit_children(&self, visitor: unsafe fn(crate::gc::OpaqueGcPtr)) {
+        visitor(self.runtime.as_opaque());
         self.env.visit_children(visitor);
         self.globals.visit_children(visitor);
     }
@@ -82,6 +84,7 @@ unsafe impl Trace for Closure {
 
 impl Closure {
     pub fn new(
+        runtime: Gc<Runtime>,
         env: impl Into<Record>,
         globals: impl Into<Record>,
         func: FuncPtr,
@@ -89,6 +92,7 @@ impl Closure {
         variadic: bool,
     ) -> Self {
         Self {
+            runtime,
             env: env.into(),
             globals: globals.into(),
             func,
@@ -124,7 +128,7 @@ impl Closure {
                 // arg isn't dropped before it's upgraded to a proper Gc
                 let args = values_to_vec_of_ptrs(args.as_ref());
 
-                let app = unsafe { (sync_fn)(env.as_ptr(), globals.as_ptr(), args.as_ptr()) };
+                let app = unsafe { (sync_fn)(self.runtime.as_ptr(), env.as_ptr(), globals.as_ptr(), args.as_ptr()) };
                 let app = unsafe { Box::from_raw(app) };
 
                 drop(args);
@@ -143,11 +147,14 @@ impl Closure {
                             args.push(Gc::new(slice_to_list(rest_args)));
                             (Cow::Owned(args), cont)
                         }
+                        (true, Some(([ cont ], []))) => {
+                            (Cow::Owned(vec![Gc::new(Value::Null)]), cont)
+                        }
                         (false, _) => {
                             let (cont, args) = args.split_last().unwrap();
                             (Cow::Borrowed(args), cont)
                         }
-                        _ => unreachable!(),
+                        _ => unreachable!("self: {:#?}, args: {:#?}", self, args),
                     };
 
                 let env = values_to_vec_of_ptrs(&self.env);
@@ -158,7 +165,7 @@ impl Closure {
                 let args = values_to_vec_of_ptrs(args.as_ref());
 
                 let app = unsafe {
-                    (sync_fn)(env.as_ptr(), globals.as_ptr(), args.as_ptr(), cont.as_ptr())
+                    (sync_fn)(self.runtime.as_ptr(), env.as_ptr(), globals.as_ptr(), args.as_ptr(), cont.as_ptr())
                 };
                 let app = unsafe { Box::from_raw(app) };
 

@@ -135,7 +135,7 @@ impl ClosureArgs {
     }
 
     fn num_required(&self) -> usize {
-        self.args.len() - self.variadic as usize + self.continuation.is_some() as usize
+        self.args.len().saturating_sub(self.variadic as usize) + self.continuation.is_some() as usize
     }
 }
 
@@ -157,5 +157,5 @@ pub enum Cps {
         cexp: Box<Cps>,
     },
     // Temporary terminating value for debugging purposes (to be removed)
-    ReturnValues(Local),
+    ReturnValues(Value),
 }

@@ -6,7 +6,7 @@ use scheme_rs::{
     gc::Gc,
     lex::{LexError, Token},
     parse::ParseError,
-    runtime::init_compiler,
+    runtime::Runtime,
     syntax::{Identifier, ParsedSyntax},
     value::Value,
 };
@@ -56,9 +56,7 @@ impl reedline::Prompt for Prompt {
 
 #[tokio::main]
 async fn main() {
-    // init_gc();
-    init_compiler();
-
+    let runtime = Gc::new(Runtime::new());
     let mut rl = Reedline::create().with_validator(Box::new(InputParser));
     let mut n_results = 1;
     let top = Environment::new_repl();
@@ -71,7 +69,7 @@ async fn main() {
             println!("exiting...");
             return;
         };
-        match compile_and_run_str(&top, &input).await {
+        match compile_and_run_str(&runtime, &top, &input).await {
             Ok(results) => {
                 for result in results.into_iter() {
                     println!("${n_results} = {}", result.read().fmt());
@@ -93,6 +91,7 @@ pub enum EvalError<'e> {
 }
 
 async fn compile_and_run_str<'e>(
+    runtime: &Gc<Runtime>,
     env: &Environment<Repl>,
     input: &'e str,
 ) -> Result<Vec<Gc<Value>>, EvalError<'e>> {
@@ -107,7 +106,7 @@ async fn compile_and_run_str<'e>(
         let compiled = expr.compile_top_level();
         println!("Compiled: {compiled:#?}");
 
-        let closure = compiled.compile().await.unwrap();
+        let closure = runtime.compile_cps(compiled).await.unwrap();
         let result = closure.apply(&[]).await.eval().await;
         output.extend(result)
     }

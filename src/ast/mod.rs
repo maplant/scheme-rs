@@ -73,17 +73,35 @@ pub enum Definition {
     DefineRecordType(DefineRecordType),
 }
 
+impl Definition {
+    fn set_next(self, next: Either<Box<Definition>, ExprBody>) -> Self {
+        match self {
+            Self::DefineVar(mut def_var) => {
+                def_var.next = Some(next);
+                Self::DefineVar(def_var)
+            }
+            Self::DefineFunc(mut def_func) => {
+                def_func.next = Some(next);
+                Self::DefineFunc(def_func)
+            }
+            _ => todo!()
+        }
+    }
+}
+
 #[derive(Debug, Clone, Trace)]
 pub struct DefineVar {
     pub var: Var,
     pub val: Arc<Expression>,
+    pub next: Option<Either<Box<Definition>, ExprBody>>,
 }
 
 #[derive(Debug, Clone, Trace)]
 pub struct DefineFunc {
     pub var: Var,
     pub args: Formals,
-    pub body: Body,
+    pub body: Box<DefinitionBody>,
+    pub next: Option<Either<Box<Definition>, ExprBody>>
 }
 
 #[derive(Debug, Clone, Trace)]
@@ -102,7 +120,7 @@ pub enum Expression {
     Set(Set),
     Var(Var),
     Vector(Vector),
-    Begin(Body),
+    Begin(ExprBody),
 }
 
 #[derive(Debug, Clone, PartialEq, Trace)]
@@ -136,17 +154,17 @@ pub struct Apply {
 #[derive(Debug, Clone, Trace)]
 pub struct Lambda {
     pub args: Formals,
-    pub body: Body,
+    pub body: DefinitionBody,
 }
 
 #[derive(Debug, Clone, Trace)]
 pub struct Let {
     pub bindings: Vec<(Local, Expression)>,
-    pub body: Body,
+    pub body: DefinitionBody,
 }
 
 impl Let {
-    pub fn new(bindings: Vec<(Local, Expression)>, body: Body) -> Self {
+    pub fn new(bindings: Vec<(Local, Expression)>, body: DefinitionBody) -> Self {
         Self { bindings, body }
     }
 }
@@ -207,22 +225,29 @@ impl Formals {
 */
 
 #[derive(Debug, Clone, Trace)]
-pub struct Body {
-    pub forms: Vec<AstNode>,
+pub struct ExprBody {
+    pub exprs: Vec<Expression>,
 }
 
-impl Body {
-    pub fn new(defs: Vec<Definition>, exprs: Vec<Expression>) -> Self {
+impl ExprBody {
+    pub fn new(exprs: Vec<Expression>) -> Self {
+        Self { exprs }
+    }
+}
+
+#[derive(Debug, Clone, Trace)]
+pub struct DefinitionBody {
+    pub first: Either<Definition, ExprBody>,
+}
+
+impl DefinitionBody {
+    pub fn new(first: Either<Definition, ExprBody>) -> Self {
         Self {
-            forms: Vec::from(
-                defs.into_iter()
-                    .map(AstNode::Definition)
-                    .chain(exprs.into_iter().map(AstNode::Expression))
-                    .collect::<Vec<_>>(),
-            ),
+            first
         }
     }
 }
+
 
 #[derive(Debug, Clone, Trace)]
 pub struct And {

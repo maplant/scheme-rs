@@ -1,10 +1,16 @@
 use std::{
+    cell::RefCell,
     mem::ManuallyDrop,
     sync::{Mutex, OnceLock},
 };
 
 use crate::{
-    cps::Cps, gc::{Gc, GcInner}, lists::list_to_vec, num::Number, proc::{Application, Closure, FuncPtr, SyncFuncPtr, SyncFuncWithContinuationPtr}, value::Value
+    cps::Cps,
+    gc::{init_gc, Gc, GcInner},
+    lists::list_to_vec,
+    num::Number,
+    proc::{Application, Closure, FuncPtr, SyncFuncPtr, SyncFuncWithContinuationPtr},
+    value::Value,
 };
 use inkwell::{
     builder::BuilderError,
@@ -14,67 +20,67 @@ use inkwell::{
     targets::{InitializationConfig, Target},
     AddressSpace, OptimizationLevel,
 };
-use tokio::{
-    sync::{mpsc, oneshot},
-    task::JoinHandle,
-};
+use proc_macros::Trace;
+use tokio::sync::{mpsc, oneshot};
 
-struct CompilationBuffer {
+/// # Safety:
+///
+/// The runtime contains the only live references to the LLVM Context and therefore
+/// modules and allocated functions in the form a Sender of compilation tasks.
+///
+/// When that sender's ref count is zero, it will the receiver will fail and the task
+/// will exit, allowing for a graceful shutdown.
+///
+/// However, this is dropping a lifetime. If we clone a closure and drop the runtime
+/// from wence it was cleaved, we're left with a dangling pointer.
+///
+/// In order to remedy this it is vitaly important the closure has a back pointer to
+/// the runtime. Probably also want to make it immutable
+#[derive(Trace, Clone, Debug)]
+pub struct Runtime {
     compilation_buffer_tx: mpsc::Sender<CompilationTask>,
-    compilation_buffer_rx: Mutex<Option<mpsc::Receiver<CompilationTask>>>,
 }
 
-pub const MAX_COMPILATION_TASKS: usize = 5; // Idk
+const MAX_COMPILATION_TASKS: usize = 5; // Shrug
 
-impl Default for CompilationBuffer {
-    fn default() -> Self {
+impl Runtime {
+    pub fn new() -> Self {
+        init_gc();
         let (compilation_buffer_tx, compilation_buffer_rx) = mpsc::channel(MAX_COMPILATION_TASKS);
-        CompilationBuffer {
+        std::thread::spawn(move || compilation_task(compilation_buffer_rx));
+        Runtime {
             compilation_buffer_tx,
-            compilation_buffer_rx: Mutex::new(Some(compilation_buffer_rx)),
         }
     }
 }
 
+impl Gc<Runtime> {
+    pub async fn compile_cps(&self, cps: Cps) -> Result<Closure, BuilderError> {
+        let (completion_tx, completion_rx) = oneshot::channel();
+        let task = CompilationTask {
+            completion_tx,
+            compilation_unit: cps,
+            runtime: self.clone(),
+        };
+        self.read().compilation_buffer_tx.send(task).await.unwrap();
+        // Wait for the compilation task to complete:
+        completion_rx.await.unwrap()
+    }
+}
+
 struct CompilationTask {
-    completion_tx: oneshot::Sender<CompilationResult>,
     compilation_unit: Cps,
+    completion_tx: oneshot::Sender<CompilationResult>,
+    /// Since Contexts are per-thread, we will only ever see the same Runtime. However,
+    /// we can't cache the Runtime, as that would cause a live cycle that would prevent
+    /// the last compilation buffer sender to drop. Therefore, its lifetime is that of
+    /// the compilation task
+    runtime: Gc<Runtime>,
 }
 
 type CompilationResult = Result<Closure, BuilderError>;
 
-static COMPILATION_QUEUE: OnceLock<CompilationBuffer> = OnceLock::new();
-static COMPILATION_TASK: OnceLock<JoinHandle<()>> = OnceLock::new();
-
-pub fn init_compiler() {
-    let _ = COMPILATION_TASK.get_or_init(|| tokio::task::spawn_blocking(compilation_task));
-}
-
-pub async fn compile_cps(cps: Cps) -> Result<Closure, BuilderError> {
-    let (completion_tx, completion_rx) = oneshot::channel();
-    let task = CompilationTask {
-        completion_tx,
-        compilation_unit: cps,
-    };
-    COMPILATION_QUEUE
-        .get_or_init(CompilationBuffer::default)
-        .compilation_buffer_tx
-        .send(task)
-        .await
-        .unwrap();
-    // Wait for the compilation task to complete:
-    completion_rx.await.unwrap()
-}
-
-fn compilation_task() {
-    let mut compilation_queue_rx = COMPILATION_QUEUE
-        .get_or_init(CompilationBuffer::default)
-        .compilation_buffer_rx
-        .lock()
-        .unwrap()
-        .take()
-        .unwrap();
-
+fn compilation_task(mut compilation_queue_rx: mpsc::Receiver<CompilationTask>) {
     Target::initialize_native(&InitializationConfig::default()).unwrap();
 
     // Create an LLVM context, module and execution engine. All of these should live for
@@ -87,6 +93,7 @@ fn compilation_task() {
         let CompilationTask {
             completion_tx,
             compilation_unit,
+            runtime,
         } = task;
 
         // I don't really know a way to do this beyond just creating a new module every time.
@@ -99,7 +106,8 @@ fn compilation_task() {
 
         install_runtime(&context, &module, &execution_engine);
 
-        let closure = compilation_unit.into_closure(&context, &module, &execution_engine, &builder);
+        let closure =
+            compilation_unit.into_closure(runtime, &context, &module, &execution_engine, &builder);
 
         modules.push(module);
 
@@ -157,6 +165,7 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     ee.add_global_mapping(&f, store as usize);
 
     // fn make_closure(
+    //         runtime: *Runtime,
     //         fn_ptr: SyncFuncPtr
     //         env: **Value,
     //         num_envs: u32,
@@ -168,6 +177,7 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     //
     let sig = ptr_type.fn_type(
         &[
+            ptr_type.into(),
             ptr_type.into(),
             ptr_type.into(),
             i32_type.into(),
@@ -182,6 +192,7 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     ee.add_global_mapping(&f, make_closure as usize);
 
     // fn make_closure_with_continuation(
+    //         runtime: *Runtime,
     //         fn_ptr: SyncFuncPtr
     //         env: **Value,
     //         num_envs: u32,
@@ -193,6 +204,7 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     //
     let sig = ptr_type.fn_type(
         &[
+            ptr_type.into(),
             ptr_type.into(),
             ptr_type.into(),
             i32_type.into(),
@@ -251,9 +263,7 @@ unsafe extern "C" fn make_application(
 }
 
 /// Create a boxed application that simply returns its arguments
-unsafe extern "C" fn make_return_values(
-    args: *mut GcInner<Value>,
-) -> *mut Application {
+unsafe extern "C" fn make_return_values(args: *mut GcInner<Value>) -> *mut Application {
     let args = Gc::from_ptr(args);
     let mut flattened = Vec::new();
     list_to_vec(&args, &mut flattened);
@@ -270,13 +280,15 @@ unsafe extern "C" fn truthy(val: *mut GcInner<Value>) -> bool {
 
 /// Replace the value pointed to at to with the value contained in from.
 unsafe extern "C" fn store(from: *mut GcInner<Value>, to: *mut GcInner<Value>) {
-    let from = Gc::from_ptr(from);
+    let from = dbg!(Gc::from_ptr(from));
     let to = Gc::from_ptr(to);
     let new_val = from.read().clone();
     *to.write() = new_val;
 }
 
+/// Allocate a closure
 unsafe extern "C" fn make_closure(
+    runtime: *mut GcInner<Runtime>,
     fn_ptr: SyncFuncPtr,
     env: *const *mut GcInner<Value>,
     num_envs: u32,
@@ -299,6 +311,7 @@ unsafe extern "C" fn make_closure(
         .collect();
 
     let closure = Closure::new(
+        Gc::from_ptr(runtime),
         env,
         globals,
         FuncPtr::SyncFunc(fn_ptr),
@@ -308,7 +321,9 @@ unsafe extern "C" fn make_closure(
     ManuallyDrop::new(Gc::new(Value::Closure(Gc::new(closure)))).as_ptr()
 }
 
+/// Allocate a closure for a function that takes a continuation
 unsafe extern "C" fn make_closure_with_continuation(
+    runtime: *mut GcInner<Runtime>,
     fn_ptr: SyncFuncWithContinuationPtr,
     env: *const *mut GcInner<Value>,
     num_envs: u32,
@@ -331,6 +346,7 @@ unsafe extern "C" fn make_closure_with_continuation(
         .collect();
 
     let closure = Closure::new(
+        Gc::from_ptr(runtime),
         env,
         globals,
         FuncPtr::SyncFuncWithContinuation(fn_ptr),

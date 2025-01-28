@@ -631,6 +631,15 @@ where
     }
 }
 
+unsafe impl<T> Trace for tokio::sync::mpsc::Sender<T>
+where
+    T: 'static
+{
+    unsafe fn visit_children(&self, _visitor: unsafe fn(OpaqueGcPtr)) {
+    }
+}
+
+
 unsafe impl<T> Trace for std::sync::Mutex<T>
 where
     T: GcOrTrace,

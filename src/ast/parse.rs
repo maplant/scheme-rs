@@ -62,6 +62,7 @@ impl Definition {
                     var: env.def_var(ident.clone()),
 
                     val: Arc::new(Expression::parse(expr.clone(), env /* cont */).await?),
+                    next: None,
                 }))
             }
             [_, Syntax::List { list, span }, body @ .., Syntax::Null { .. }] => {
@@ -137,9 +138,14 @@ impl Definition {
                         };
 
                         // Parse the body:
-                        let body = Body::parse(body, &new_env, func_span /* cont */).await?;
+                        let body = DefinitionBody::parse(body, &new_env, func_span /* cont */).await?;
 
-                        Ok(Self::DefineFunc(DefineFunc { var, args, body }))
+                        Ok(Self::DefineFunc(DefineFunc {
+                            var,
+                            args,
+                            body: Box::new(body),
+                            next: None,
+                        }))
                     }
                     _ => Err(ParseAstError::BadForm(span.clone())),
                 }
@@ -149,7 +155,7 @@ impl Definition {
     }
 }
 
-impl Body {
+impl DefinitionBody {
     /// Parse the body. body is expected to be a list of valid syntax objects, and should not include
     /// _any_ nulls, including one at the end.
     pub(super) fn parse<'a>(
@@ -191,23 +197,33 @@ impl Body {
                 );
             }
 
-            Ok(Self::new(defs_parsed, exprs_parsed))
+            let expr_body = ExprBody::new(exprs_parsed);
+            if let Some(last_def) = defs_parsed.pop() {
+                let mut last_def = last_def.set_next(Either::Right(expr_body));
+                for next_def in defs_parsed.into_iter().rev() {
+                    last_def = next_def.set_next(Either::Left(Box::new(last_def)));
+                }
+                Ok(Self::new(Either::Left(last_def)))
+            } else {
+                Ok(Self::new(Either::Right(expr_body)))
+            }
         })
     }
+}
 
+impl ExprBody {
     /// Differs from Body by being purely expression based. No definitions allowed.
-    pub(super) async fn parse_in_expr_context(
+    pub(super) async fn parse(
         body: &[Syntax],
         env: &Environment<impl Top>,
         // cont: &Closure
     ) -> Result<Self, ParseAstError> {
-        let mut forms = Vec::new();
+        let mut exprs = Vec::new();
         for sexpr in body {
-            let parsed =
-                AstNode::Expression(Expression::parse(sexpr.clone(), env /* cont */).await?);
-            forms.push(parsed);
+            let parsed = Expression::parse(sexpr.clone(), env /* cont */).await?;
+            exprs.push(parsed);
         }
-        Ok(Self { forms })
+        Ok(Self { exprs })
     }
 }
 
@@ -365,7 +381,7 @@ impl Expression {
                     [Syntax::Identifier { ident, .. }, tail @ .., Syntax::Null { .. }]
                         if ident == "begin" =>
                     {
-                        Body::parse_in_expr_context(tail, env /* cont */)
+                        ExprBody::parse(tail, env /* cont */)
                             .await
                             .map(Expression::Begin)
                     }
@@ -557,7 +573,7 @@ async fn parse_lambda(
         Formals::FixedArgs(Vec::new())
     };
 
-    let body = Body::parse(body, &new_contour, span /* cont */).await?;
+    let body = DefinitionBody::parse(body, &new_contour, span /* cont */).await?;
 
     Ok(Lambda { args, body })
 }
@@ -619,7 +635,7 @@ async fn parse_let(
 
     let lambda_var = name.map(|name| new_contour.def_var(name.clone()));
 
-    let ast_body = Body::parse(body, &new_contour, span /* cont */).await?;
+    let ast_body = DefinitionBody::parse(body, &new_contour, span /* cont */).await?;
 
     // TODO: Lot of unnecessary cloning here, fix that.
     let mut bindings: Vec<_> = parsed_bindings
@@ -642,7 +658,7 @@ async fn parse_let(
             .collect();
         let lambda = Lambda {
             args: Formals::FixedArgs(args),
-            body: Body::parse(body, &new_new_contour, span /* cont */).await?,
+            body: DefinitionBody::parse(body, &new_new_contour, span /* cont */).await?,
         };
         bindings.push((lambda_var, Expression::Lambda(lambda)));
     }

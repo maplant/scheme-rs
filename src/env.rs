@@ -1,6 +1,6 @@
 use either::Either;
 use std::{
-    collections::HashMap,
+    collections::{hash_map::Entry, HashMap},
     fmt,
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -34,7 +34,7 @@ pub struct Library {
 impl Top for Library {
     fn def_var(&mut self, name: String) -> Var {
         let global = Gc::new(Value::Undefined);
-        self.vars.insert(name.clone(), global.clone());
+        assert!(self.vars.insert(name.clone(), global.clone()).is_none());
         Var::Global(Global::new(name, global))
     }
 
@@ -75,9 +75,11 @@ pub struct Repl {
 /// that undefined variables are simply yet to be defined.
 impl Top for Repl {
     fn def_var(&mut self, name: String) -> Var {
-        let global = Gc::new(Value::Undefined);
-        assert!(self.vars.insert(name.clone(), global.clone()).is_none());
-        Var::Global(Global::new(name, global))
+        let global = self
+            .vars
+            .entry(name.clone())
+            .or_insert_with(|| Gc::new(Value::Undefined));
+        Var::Global(Global::new(name, global.clone()))
     }
 
     fn def_macro(&mut self, name: String, val: Gc<Value>) {
