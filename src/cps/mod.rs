@@ -23,7 +23,7 @@ mod analysis;
 mod codegen;
 mod compile;
 
-pub use compile::Compile;
+pub use compile::{Compile, TopLevelExpr};
 
 #[derive(Clone)]
 pub enum Value {
@@ -135,7 +135,8 @@ impl ClosureArgs {
     }
 
     fn num_required(&self) -> usize {
-        self.args.len().saturating_sub(self.variadic as usize) + self.continuation.is_some() as usize
+        self.args.len().saturating_sub(self.variadic as usize)
+            + self.continuation.is_some() as usize
     }
 }
 

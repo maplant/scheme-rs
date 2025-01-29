@@ -1,5 +1,6 @@
 //! LLVM SSA Codegen from CPS.
 
+use compile::TopLevelExpr;
 use inkwell::{
     builder::{Builder, BuilderError},
     context::Context,
@@ -28,7 +29,9 @@ impl<'ctx> Rebinds<'ctx> {
     }
 
     fn fetch_bind(&self, var: &Var) -> &PointerValue<'ctx> {
-        self.rebinds.get(var).expect(&format!("could not find {:?}", var))
+        self.rebinds
+            .get(var)
+            .expect(&format!("could not find {:?}", var))
     }
 
     fn new() -> Self {
@@ -38,7 +41,7 @@ impl<'ctx> Rebinds<'ctx> {
     }
 }
 
-impl Cps {
+impl TopLevelExpr {
     pub fn into_closure<'ctx, 'b>(
         self,
         runtime: Gc<Runtime>,
@@ -50,7 +53,6 @@ impl Cps {
     where
         'ctx: 'b,
     {
-        // let i32_type = ctx.i32_type();
         let ptr_type = ctx.ptr_type(AddressSpace::default());
         let fn_type = ptr_type.fn_type(
             &[
@@ -60,11 +62,12 @@ impl Cps {
             ],
             false,
         );
-        let name = Local::gensym().to_func_name();
-        let function = module.add_function(&name, fn_type, None);
+        let fn_value = Local::gensym();
+        let fn_name = fn_value.to_func_name();
+        let function = module.add_function(&fn_name, fn_type, None);
         // There should be _no_ env variables for the CPS we call
         // into_closure with
-        let globals = self.globals().into_iter().collect::<Vec<_>>();
+        let globals = self.body.globals().into_iter().collect::<Vec<_>>();
 
         let entry = ctx.append_basic_block(function, "entry");
         builder.position_at_end(entry);
@@ -89,7 +92,7 @@ impl Cps {
         }
 
         let mut deferred = Vec::new();
-        cu.cps_codegen(self, &mut deferred)?;
+        cu.cps_codegen(self.body, &mut deferred)?;
 
         while let Some(next) = deferred.pop() {
             next.codegen(ctx, module, builder, &mut deferred)?;
@@ -99,7 +102,7 @@ impl Cps {
 
         // function.print_to_stderr();
 
-        let func = unsafe { ee.get_function::<SyncFuncPtr>(&name).unwrap().into_raw() };
+        let func = unsafe { ee.get_function::<SyncFuncPtr>(&fn_name).unwrap().into_raw() };
 
         Ok(Closure::new(
             runtime,

@@ -65,6 +65,7 @@ impl Value {
     }
     */
 
+    // TODO: Move to Display impl
     pub fn fmt(&self) -> String {
         match self {
             Self::Boolean(true) => "#t".to_string(),
@@ -187,6 +188,12 @@ impl Clone for Value {
             Self::RecordType(rt) => Self::RecordType(rt.clone()),
             Self::Undefined => Self::Undefined,
         }
+    }
+}
+
+impl From<bool> for Value {
+    fn from(b: bool) -> Value {
+        Value::Boolean(b)
     }
 }
 

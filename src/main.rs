@@ -104,9 +104,9 @@ async fn compile_and_run_str<'e>(
         };
         // println!("Parsed: {expr:#?}");
         let compiled = expr.compile_top_level();
-        println!("Compiled: {compiled:#?}");
+        // println!("Compiled: {compiled:#?}");
 
-        let closure = runtime.compile_cps(compiled).await.unwrap();
+        let closure = runtime.compile_expr(compiled).await.unwrap();
         let result = closure.apply(&[]).await.eval().await;
         output.extend(result)
     }

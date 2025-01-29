@@ -1,11 +1,5 @@
-use std::{
-    cell::RefCell,
-    mem::ManuallyDrop,
-    sync::{Mutex, OnceLock},
-};
-
 use crate::{
-    cps::Cps,
+    cps::TopLevelExpr,
     gc::{init_gc, Gc, GcInner},
     lists::list_to_vec,
     num::Number,
@@ -21,6 +15,7 @@ use inkwell::{
     AddressSpace, OptimizationLevel,
 };
 use proc_macros::Trace;
+use std::mem::ManuallyDrop;
 use tokio::sync::{mpsc, oneshot};
 
 /// # Safety:
@@ -55,11 +50,11 @@ impl Runtime {
 }
 
 impl Gc<Runtime> {
-    pub async fn compile_cps(&self, cps: Cps) -> Result<Closure, BuilderError> {
+    pub async fn compile_expr(&self, expr: TopLevelExpr) -> Result<Closure, BuilderError> {
         let (completion_tx, completion_rx) = oneshot::channel();
         let task = CompilationTask {
             completion_tx,
-            compilation_unit: cps,
+            compilation_unit: expr,
             runtime: self.clone(),
         };
         self.read().compilation_buffer_tx.send(task).await.unwrap();
@@ -69,7 +64,7 @@ impl Gc<Runtime> {
 }
 
 struct CompilationTask {
-    compilation_unit: Cps,
+    compilation_unit: TopLevelExpr,
     completion_tx: oneshot::Sender<CompilationResult>,
     /// Since Contexts are per-thread, we will only ever see the same Runtime. However,
     /// we can't cache the Runtime, as that would cause a live cycle that would prevent
@@ -275,12 +270,12 @@ unsafe extern "C" fn make_return_values(args: *mut GcInner<Value>) -> *mut Appli
 
 /// Evaluate a Gc<Value> as "truthy" or not, as in whether it triggers a conditional.
 unsafe extern "C" fn truthy(val: *mut GcInner<Value>) -> bool {
-    dbg!(dbg!(Gc::from_ptr(val)).read().is_true())
+    Gc::from_ptr(val).read().is_true()
 }
 
 /// Replace the value pointed to at to with the value contained in from.
 unsafe extern "C" fn store(from: *mut GcInner<Value>, to: *mut GcInner<Value>) {
-    let from = dbg!(Gc::from_ptr(from));
+    let from = Gc::from_ptr(from);
     let to = Gc::from_ptr(to);
     let new_val = from.read().clone();
     *to.write() = new_val;

@@ -84,7 +84,7 @@ impl Definition {
                 def_func.next = Some(next);
                 Self::DefineFunc(def_func)
             }
-            _ => todo!()
+            _ => todo!(),
         }
     }
 }
@@ -101,7 +101,7 @@ pub struct DefineFunc {
     pub var: Var,
     pub args: Formals,
     pub body: Box<DefinitionBody>,
-    pub next: Option<Either<Box<Definition>, ExprBody>>
+    pub next: Option<Either<Box<Definition>, ExprBody>>,
 }
 
 #[derive(Debug, Clone, Trace)]
@@ -242,12 +242,9 @@ pub struct DefinitionBody {
 
 impl DefinitionBody {
     pub fn new(first: Either<Definition, ExprBody>) -> Self {
-        Self {
-            first
-        }
+        Self { first }
     }
 }
-
 
 #[derive(Debug, Clone, Trace)]
 pub struct And {

@@ -1,5 +1,8 @@
 use crate::{
-    gc::{Gc, GcInner, Trace}, lists::slice_to_list, runtime::Runtime, value::Value
+    gc::{Gc, GcInner, Trace},
+    lists::slice_to_list,
+    runtime::Runtime,
+    value::Value,
 };
 use futures::future::BoxFuture;
 use std::borrow::Cow;
@@ -59,10 +62,13 @@ pub enum FuncPtr {
     AsyncFunc(AsyncFuncPtr),
 }
 
-#[derive(Debug)]
+#[derive(derive_more::Debug)]
 pub struct Closure {
+    #[debug(skip)]
     runtime: Gc<Runtime>,
+    #[debug(skip)]
     env: Record,
+    #[debug(skip)]
     globals: Record,
     func: FuncPtr,
     num_required_args: usize,
@@ -102,10 +108,14 @@ impl Closure {
     }
 
     pub async fn apply(&self, args: &[Gc<Value>]) -> Application {
+        // println!("APP_RAW({:#?}, {:#?})", self, args);
         match self.func {
             FuncPtr::SyncFunc(sync_fn) => {
                 if args.len() < self.num_required_args {
                     panic!("Too few arguments");
+                }
+                if !self.variadic && args.len() > self.num_required_args {
+                    panic!("Too many arguments");
                 }
                 let args = match (self.variadic, args.split_at_checked(self.num_required_args)) {
                     (true, Some((args, rest_args))) => {
@@ -128,7 +138,16 @@ impl Closure {
                 // arg isn't dropped before it's upgraded to a proper Gc
                 let args = values_to_vec_of_ptrs(args.as_ref());
 
-                let app = unsafe { (sync_fn)(self.runtime.as_ptr(), env.as_ptr(), globals.as_ptr(), args.as_ptr()) };
+                // println!("APP({:p}, {:?})", self, args);
+
+                let app = unsafe {
+                    (sync_fn)(
+                        self.runtime.as_ptr(),
+                        env.as_ptr(),
+                        globals.as_ptr(),
+                        args.as_ptr(),
+                    )
+                };
                 let app = unsafe { Box::from_raw(app) };
 
                 drop(args);
@@ -137,7 +156,10 @@ impl Closure {
             }
             FuncPtr::SyncFuncWithContinuation(sync_fn) => {
                 if args.len() < self.num_required_args {
-                    panic!("Too few arguments");
+                    panic!("Too few arguments: {:#?}, args: {:#?}", self, args);
+                }
+                if !self.variadic && args.len() > self.num_required_args {
+                    panic!("Too many arguments");
                 }
                 // I think this code could definitely be simplified, but I am a little scatter-brained right now.
                 let (args, cont) =
@@ -147,7 +169,7 @@ impl Closure {
                             args.push(Gc::new(slice_to_list(rest_args)));
                             (Cow::Owned(args), cont)
                         }
-                        (true, Some(([ cont ], []))) => {
+                        (true, Some(([cont], []))) => {
                             (Cow::Owned(vec![Gc::new(Value::Null)]), cont)
                         }
                         (false, _) => {
@@ -164,8 +186,16 @@ impl Closure {
                 // arg isn't dropped before it's upgraded to a proper Gc
                 let args = values_to_vec_of_ptrs(args.as_ref());
 
+                // println!("APP({:p}, {:?}, {:?})", self, args, cont.as_ptr());
+
                 let app = unsafe {
-                    (sync_fn)(self.runtime.as_ptr(), env.as_ptr(), globals.as_ptr(), args.as_ptr(), cont.as_ptr())
+                    (sync_fn)(
+                        self.runtime.as_ptr(),
+                        env.as_ptr(),
+                        globals.as_ptr(),
+                        args.as_ptr(),
+                        cont.as_ptr(),
+                    )
                 };
                 let app = unsafe { Box::from_raw(app) };
 

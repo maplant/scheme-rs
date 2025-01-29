@@ -138,7 +138,8 @@ impl Definition {
                         };
 
                         // Parse the body:
-                        let body = DefinitionBody::parse(body, &new_env, func_span /* cont */).await?;
+                        let body =
+                            DefinitionBody::parse(body, &new_env, func_span /* cont */).await?;
 
                         Ok(Self::DefineFunc(DefineFunc {
                             var,
