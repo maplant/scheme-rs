@@ -84,13 +84,12 @@ fn compile_let(
         let k1 = Local::gensym();
         let k2 = Local::gensym();
         let k3 = Local::gensym();
-        let k4 = Local::gensym();
         Cps::Closure {
             args: ClosureArgs::new(vec![k2], false, None),
             body: Box::new(Cps::AllocCell(
                 *curr_bind,
                 Box::new(Cps::Closure {
-                    args: ClosureArgs::new(vec![expr_result], false, Some(k4)),
+                    args: ClosureArgs::new(vec![expr_result], false, None),
                     body: Box::new(Cps::PrimOp(
                         PrimOp::Set,
                         vec![
@@ -101,12 +100,12 @@ fn compile_let(
                         Box::new(compile_let(
                             tail,
                             body,
-                            Box::new(move |result| Cps::App(result, vec![Value::from(k4)])),
+                            Box::new(move |result| Cps::App(result, vec![Value::from(k2)])),
                         )),
                     )),
                     val: k3,
                     cexp: Box::new(curr_expr.compile(Box::new(move |result| {
-                        Cps::App(Value::from(k3), vec![result, Value::from(k2)])
+                        Cps::App(Value::from(result), vec![Value::from(k3)])
                     }))),
                 }),
             )),
@@ -154,7 +153,6 @@ impl Compile for Var {
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
         }
-        // meta_cont(Value::from(self.clone()))
     }
 }
 
@@ -374,7 +372,10 @@ fn compile_and(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps 
                     } else {
                         Cps::App(Value::from(k1), vec![constant(SchemeValue::from(true))])
                     }),
-                    Box::new(Cps::App(Value::from(k1), vec![constant(SchemeValue::from(false))])),
+                    Box::new(Cps::App(
+                        Value::from(k1),
+                        vec![constant(SchemeValue::from(false))],
+                    )),
                 )),
                 val: k3,
                 cexp: Box::new(Cps::App(expr_result, vec![Value::from(k3)])),
@@ -409,11 +410,14 @@ fn compile_or(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps +
                 args: ClosureArgs::new(vec![cond_arg], false, None),
                 body: Box::new(Cps::If(
                     Value::from(cond_arg),
-                    Box::new(Cps::App(Value::from(k3), vec![constant(SchemeValue::from(true))])),
+                    Box::new(Cps::App(
+                        Value::from(k1),
+                        vec![constant(SchemeValue::from(true))],
+                    )),
                     Box::new(if let Some(tail) = tail {
-                        compile_or(tail, Box::new(|expr| Cps::App(expr, vec![Value::from(k3)])))
+                        compile_or(tail, Box::new(|expr| Cps::App(expr, vec![Value::from(k1)])))
                     } else {
-                        Cps::App(Value::from(k3), vec![constant(SchemeValue::from(false))])
+                        Cps::App(Value::from(k1), vec![constant(SchemeValue::from(false))])
                     }),
                 )),
                 val: k3,

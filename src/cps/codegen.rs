@@ -9,7 +9,7 @@ use inkwell::{
     values::{BasicValueEnum, FunctionValue, PointerValue},
     AddressSpace,
 };
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc};
 
 use crate::{
     gc::Gc,
@@ -38,6 +38,30 @@ impl<'ctx> Rebinds<'ctx> {
         Self {
             rebinds: HashMap::default(),
         }
+    }
+}
+
+struct Allocs<'ctx> {
+    prev_alloc: Option<Rc<Allocs<'ctx>>>,
+    value: PointerValue<'ctx>,
+}
+
+impl<'ctx> Allocs<'ctx> {
+    fn new(
+        prev_alloc: Option<Rc<Allocs<'ctx>>>,
+        value: PointerValue<'ctx>,
+    ) -> Option<Rc<Allocs<'ctx>>> {
+        Some(Rc::new(Allocs { prev_alloc, value }))
+    }
+
+    fn into_values(&self) -> Vec<PointerValue<'ctx>> {
+        let mut allocs = vec![self.value];
+
+        if let Some(ref prev_alloc) = self.prev_alloc {
+            allocs.extend(prev_alloc.into_values());
+        }
+
+        allocs
     }
 }
 
@@ -92,7 +116,7 @@ impl TopLevelExpr {
         }
 
         let mut deferred = Vec::new();
-        cu.cps_codegen(self.body, &mut deferred)?;
+        cu.cps_codegen(self.body, None, &mut deferred)?;
 
         while let Some(next) = deferred.pop() {
             next.codegen(ctx, module, builder, &mut deferred)?;
@@ -150,20 +174,20 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
     fn cps_codegen(
         &mut self,
         cps: Cps,
+        allocs: Option<Rc<Allocs<'ctx>>>,
         deferred: &mut Vec<ClosureBundle<'ctx>>,
     ) -> Result<(), BuilderError> {
         match cps {
             Cps::AllocCell(into, cexpr) => {
-                self.alloc_cell_codegen(into)?;
-                self.cps_codegen(*cexpr, deferred)?;
+                self.alloc_cell_codegen(into, *cexpr, allocs, deferred)?;
             }
             Cps::If(cond, success, failure) => {
-                self.if_codegen(&cond, *success, *failure, deferred)?
+                self.if_codegen(&cond, *success, *failure, allocs, deferred)?
             }
-            Cps::App(operator, args) => self.app_codegen(&operator, &args)?,
+            Cps::App(operator, args) => self.app_codegen(&operator, &args, allocs)?,
             Cps::PrimOp(PrimOp::Set, args, _, cexpr) => {
                 self.store_codegen(&args[1], &args[0])?;
-                self.cps_codegen(*cexpr, deferred)?;
+                self.cps_codegen(*cexpr, allocs, deferred)?;
             }
             Cps::Closure {
                 args,
@@ -178,7 +202,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                     args.clone(),
                     body.as_ref().clone(),
                 );
-                self.make_closure_codegen(&bundle, *cexp, deferred)?;
+                self.make_closure_codegen(&bundle, *cexp, allocs, deferred)?;
                 deferred.push(bundle);
             }
             Cps::ReturnValues(value) => self.return_values_codegen(&value)?,
@@ -206,8 +230,16 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         }
     }
 
-    fn alloc_cell_codegen(&mut self, var: Local) -> Result<(), BuilderError> {
+    fn alloc_cell_codegen(
+        &mut self,
+        var: Local,
+        cexpr: Cps,
+        allocs: Option<Rc<Allocs<'ctx>>>,
+        deferred: &mut Vec<ClosureBundle<'ctx>>,
+    ) -> Result<(), BuilderError> {
         let ptr_type = self.ctx.ptr_type(AddressSpace::default());
+        // Honestly, I'm not even sure allocated anything explicitly on the stack is necessary,
+        // especially because we build a load right after we store. I need to check that.
         let val = self.builder.build_alloca(ptr_type, "local")?;
         let gc_alloc_undef_val = self.module.get_function("alloc_undef_val").unwrap();
         let undef_val = self
@@ -224,24 +256,37 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             .build_load(ptr_type, val, "gc_ptr")?
             .into_pointer_value();
         self.rebinds.rebind(Var::Local(var), val);
+
+        let new_alloc = Allocs::new(allocs, val);
+
+        self.cps_codegen(cexpr, new_alloc, deferred)?;
+
         Ok(())
     }
 
-    #[allow(dead_code)]
-    fn drop_values_codegen(&self, drops: &[Value]) -> Result<(), BuilderError> {
+    fn drop_values_codegen(&self, drops: Option<Rc<Allocs<'ctx>>>) -> Result<(), BuilderError> {
+        let drops = drops.as_ref().map_or_else(Vec::new, |x| x.into_values());
+        let num_drops = drops.len();
+
+        if num_drops == 0 {
+            return Ok(());
+        }
+
         // Put the drops in an array
         let ptr_type = self.ctx.ptr_type(AddressSpace::default());
         let i32_type = self.ctx.i32_type();
         let array_type = ptr_type.array_type(drops.len() as u32);
         let drops_alloca = self.builder.build_alloca(array_type, "drops")?;
-        let drops_load = self
-            .builder
-            .build_load(array_type, drops_alloca, "drops_load")?
-            .into_array_value();
-        for (i, drp) in drops.iter().enumerate() {
-            let drp = self.value_codegen(drp)?;
-            self.builder
-                .build_insert_value(drops_load, drp, i as u32, "drops_insert")?;
+        for (i, drp) in drops.into_iter().enumerate() {
+            let ep = unsafe {
+                self.builder.build_gep(
+                    ptr_type,
+                    drops_alloca,
+                    &[i32_type.const_int(i as u64, false)],
+                    "alloca_elem",
+                )?
+            };
+            self.builder.build_store(ep, drp)?;
         }
 
         // Call drop_values
@@ -250,7 +295,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             drop_values,
             &[
                 drops_alloca.into(),
-                i32_type.const_int(drops.len() as u64, false).into(),
+                i32_type.const_int(num_drops as u64, false).into(),
             ],
             "drop_values",
         )?;
@@ -258,7 +303,12 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         Ok(())
     }
 
-    fn app_codegen(&self, operator: &Value, args: &[Value]) -> Result<(), BuilderError> {
+    fn app_codegen(
+        &self,
+        operator: &Value,
+        args: &[Value],
+        allocs: Option<Rc<Allocs<'ctx>>>,
+    ) -> Result<(), BuilderError> {
         let operator = self.value_codegen(operator)?;
 
         // Allocate space for the args to be passed to make_application
@@ -295,6 +345,11 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             .try_as_basic_value()
             .left()
             .unwrap();
+
+        // Now that we have created an application, we can reduce the ref counts of
+        // all of the Gcs we have allocated in this function:
+        self.drop_values_codegen(allocs)?;
+
         let _ = self.builder.build_return(Some(&app))?;
 
         Ok(())
@@ -320,6 +375,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         cond: &Value,
         success: Cps,
         failure: Cps,
+        allocs: Option<Rc<Allocs<'ctx>>>,
         deferred: &mut Vec<ClosureBundle<'ctx>>,
     ) -> Result<(), BuilderError> {
         let cond = self.value_codegen(cond)?;
@@ -340,10 +396,10 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             .build_conditional_branch(cond.into_int_value(), success_bb, failure_bb)?;
 
         self.builder.position_at_end(success_bb);
-        self.cps_codegen(success, deferred)?;
+        self.cps_codegen(success, allocs.clone(), deferred)?;
 
         self.builder.position_at_end(failure_bb);
-        self.cps_codegen(failure, deferred)?;
+        self.cps_codegen(failure, allocs, deferred)?;
 
         Ok(())
     }
@@ -360,6 +416,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         &mut self,
         bundle: &ClosureBundle<'ctx>,
         cexp: Cps,
+        allocs: Option<Rc<Allocs<'ctx>>>,
         deferred: &mut Vec<ClosureBundle<'ctx>>,
     ) -> Result<(), BuilderError> {
         let i32_type = self.ctx.i32_type();
@@ -440,7 +497,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         self.rebinds
             .rebind(Var::Local(bundle.val), closure.into_pointer_value());
 
-        self.cps_codegen(cexp, deferred)?;
+        self.cps_codegen(cexp, allocs, deferred)?;
 
         Ok(())
     }
@@ -591,7 +648,7 @@ impl<'ctx> ClosureBundle<'ctx> {
             cu.rebinds.rebind(Var::Local(cont), cont_param);
         }
 
-        cu.cps_codegen(self.body, deferred)?;
+        cu.cps_codegen(self.body, None, deferred)?;
 
         // self.function.print_to_stderr();
         // eprintln!();
