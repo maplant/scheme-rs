@@ -2,7 +2,6 @@ use crate::{
     cps::TopLevelExpr,
     gc::{init_gc, Gc, GcInner},
     lists::list_to_vec,
-    num::Number,
     proc::{Application, Closure, FuncPtr, SyncFuncPtr, SyncFuncWithContinuationPtr},
     value::Value,
 };
@@ -114,7 +113,6 @@ fn compilation_task(mut compilation_queue_rx: mpsc::Receiver<CompilationTask>) {
 }
 
 fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &ExecutionEngine<'ctx>) {
-    let i64_type = ctx.i64_type();
     let i32_type = ctx.i32_type();
     let bool_type = ctx.bool_type();
     let void_type = ctx.void_type();
@@ -131,12 +129,6 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     let sig = void_type.fn_type(&[ptr_type.into(), i32_type.into()], false);
     let f = module.add_function("drop_values", sig, None);
     ee.add_global_mapping(&f, drop_values as usize);
-
-    // fn i64_to_number(i64) -> *Value
-    //
-    let sig = ptr_type.fn_type(&[i64_type.into()], false);
-    let f = module.add_function("i64_to_number", sig, None);
-    ee.add_global_mapping(&f, i64_to_number as usize);
 
     // fn make_application(op: *Value, args: **Value, num_args: u32) -> *Application
     //
@@ -227,11 +219,6 @@ unsafe extern "C" fn drop_values(vals: *const *mut GcInner<Value>, num_vals: u32
     for i in 0..num_vals {
         Gc::drop_raw(vals.add(i as usize).read())
     }
-}
-
-/// Convert the i64 value into a Number and return it boxed
-unsafe extern "C" fn i64_to_number(val: i64) -> *mut GcInner<Value> {
-    ManuallyDrop::new(Gc::new(Value::Number(Number::from(val)))).as_ptr()
 }
 
 /// Create a boxed application

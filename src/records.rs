@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    ast::parse::ParseAstError,
+    ast::ParseAstError,
     env::{Environment, Top, Var},
     gc::{Gc, Trace},
     syntax::{Identifier, Span, Syntax},

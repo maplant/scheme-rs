@@ -1,6 +1,6 @@
 use reedline::{Reedline, Signal, ValidationResult, Validator};
 use scheme_rs::{
-    ast::{parse::ParseAstError, AstNode},
+    ast::{AstNode, ParseAstError},
     cps::Compile,
     env::{Environment, Repl},
     gc::Gc,

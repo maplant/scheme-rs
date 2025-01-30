@@ -1,5 +1,5 @@
 use crate::{
-    ast::parse::ParseAstError,
+    ast::ParseAstError,
     syntax::{Identifier, Span},
 };
 use derivative::Derivative;
@@ -66,18 +66,6 @@ impl RuntimeError {
             _ => self.backtrace.push(Frame::new(proc, span)),
         }
     }
-
-    /*
-    pub fn abandon_current_continuation(
-        args: Vec<Gc<Value>>,
-        new_cont: Option<Arc<Continuation>>,
-    ) -> Self {
-        Self {
-            backtrace: Vec::new(),
-            kind: RuntimeErrorKind::AbandonCurrentContinuation { args, new_cont },
-        }
-    }
-    */
 
     pub fn division_by_zero() -> Self {
         Self {
