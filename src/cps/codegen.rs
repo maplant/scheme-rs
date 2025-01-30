@@ -77,6 +77,10 @@ impl TopLevelExpr {
     where
         'ctx: 'b,
     {
+        if std::env::var("SCHEME_RS_DEBUG").is_ok() {
+            eprintln!("compiling: {self:#?}");
+        }
+
         let ptr_type = ctx.ptr_type(AddressSpace::default());
         let fn_type = ptr_type.fn_type(
             &[
@@ -124,7 +128,9 @@ impl TopLevelExpr {
 
         assert!(function.verify(true));
 
-        // function.print_to_stderr();
+        if std::env::var("SCHEME_RS_DEBUG").is_ok() {
+            function.print_to_stderr();
+        }
 
         let func = unsafe { ee.get_function::<SyncFuncPtr>(&fn_name).unwrap().into_raw() };
 
@@ -237,28 +243,22 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         allocs: Option<Rc<Allocs<'ctx>>>,
         deferred: &mut Vec<ClosureBundle<'ctx>>,
     ) -> Result<(), BuilderError> {
-        let ptr_type = self.ctx.ptr_type(AddressSpace::default());
-        // Honestly, I'm not even sure allocated anything explicitly on the stack is necessary,
-        // especially because we build a load right after we store. I need to check that.
-        let val = self.builder.build_alloca(ptr_type, "local")?;
+        // Get a newly allocated undefined value
         let gc_alloc_undef_val = self.module.get_function("alloc_undef_val").unwrap();
         let undef_val = self
             .builder
             .build_call(gc_alloc_undef_val, &[], "undefined")?
             .try_as_basic_value()
             .left()
-            .unwrap();
-        let _store = self.builder.build_store(val, undef_val);
-        // THIS DOES NOT WORK IN GENERAL! WE DON'T STORE TO THE ALLOCA AGAIN
-        // BECAUSE IT'S BOXED.
-        let val = self
-            .builder
-            .build_load(ptr_type, val, "gc_ptr")?
+            .unwrap()
             .into_pointer_value();
-        self.rebinds.rebind(Var::Local(var), val);
 
-        let new_alloc = Allocs::new(allocs, val);
+        // Rebind the variable to it
+        self.rebinds.rebind(Var::Local(var), undef_val);
 
+        let new_alloc = Allocs::new(allocs, undef_val);
+
+        // Compile the continuation with the newly allocated value
         self.cps_codegen(cexpr, new_alloc, deferred)?;
 
         Ok(())
@@ -650,8 +650,9 @@ impl<'ctx> ClosureBundle<'ctx> {
 
         cu.cps_codegen(self.body, None, deferred)?;
 
-        // self.function.print_to_stderr();
-        // eprintln!();
+        if std::env::var("SCHEME_RS_DEBUG").is_ok() {
+            self.function.print_to_stderr();
+        }
 
         if !self.function.verify(true) {
             panic!("Invalid function");

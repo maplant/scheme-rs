@@ -351,7 +351,7 @@ impl Compile for And {
 
 fn compile_and(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
     let (expr, tail) = match exprs {
-        [] => return meta_cont(Value::from(true)),
+        [] => return meta_cont(constant(SchemeValue::from(true))),
         [expr] => (expr, None),
         [expr, tail @ ..] => (expr, Some(tail)),
     };
@@ -394,7 +394,7 @@ impl Compile for Or {
 
 fn compile_or(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
     let (expr, tail) = match exprs {
-        [] => return meta_cont(Value::from(false)),
+        [] => return meta_cont(constant(SchemeValue::from(false))),
         [expr] => (expr, None),
         [expr, tail @ ..] => (expr, Some(tail)),
     };

@@ -641,7 +641,7 @@ async fn parse_let(
     // TODO: Lot of unnecessary cloning here, fix that.
     let mut bindings: Vec<_> = parsed_bindings
         .iter()
-        .map(|(var, binding)| (var.clone(), binding.expr.clone()))
+        .map(|(var, binding)| (*var, binding.expr.clone()))
         .collect();
 
     // If this is a named let, add a binding for a procedure with the same body

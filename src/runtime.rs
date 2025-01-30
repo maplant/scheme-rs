@@ -23,8 +23,8 @@ use tokio::sync::{mpsc, oneshot};
 /// The runtime contains the only live references to the LLVM Context and therefore
 /// modules and allocated functions in the form a Sender of compilation tasks.
 ///
-/// When that sender's ref count is zero, it will the receiver will fail and the task
-/// will exit, allowing for a graceful shutdown.
+/// When that sender's ref count is zero, it will cause the receiver to fail and the
+/// compilation task will exit, allowing for a graceful shutdown.
 ///
 /// However, this is dropping a lifetime. If we clone a closure and drop the runtime
 /// from wence it was cleaved, we're left with a dangling pointer.
@@ -42,6 +42,9 @@ impl Runtime {
     pub fn new() -> Self {
         init_gc();
         let (compilation_buffer_tx, compilation_buffer_rx) = mpsc::channel(MAX_COMPILATION_TASKS);
+        // According the inkwell (and therefore LLVM docs), one LlvmContext may be
+        // present per thread. Thus, we spawn a new thread and a  new compilation
+        // task for every Runtime.
         std::thread::spawn(move || compilation_task(compilation_buffer_rx));
         Runtime {
             compilation_buffer_tx,
@@ -212,16 +215,11 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     );
     let f = module.add_function("make_closure_with_continuation", sig, None);
     ee.add_global_mapping(&f, make_closure_with_continuation as usize);
-
-    let sig = void_type.fn_type(&[ptr_type.into(), ptr_type.into(), ptr_type.into()], false);
-    let f = module.add_function("dbg_args", sig, None);
-    ee.add_global_mapping(&f, dbg_args as usize);
 }
 
 /// Allocate a new Gc with a value of undefined
 unsafe extern "C" fn alloc_undef_val() -> *mut GcInner<Value> {
-    let raw = ManuallyDrop::new(Gc::new(Value::Undefined)).as_ptr();
-    raw
+    ManuallyDrop::new(Gc::new(Value::Undefined)).as_ptr()
 }
 
 /// Decrement the reference count of all of the values
@@ -349,14 +347,4 @@ unsafe extern "C" fn make_closure_with_continuation(
         variadic,
     );
     ManuallyDrop::new(Gc::new(Value::Closure(Gc::new(closure)))).as_ptr()
-}
-
-unsafe extern "C" fn dbg_args(
-    env: *const *mut GcInner<Value>,
-    globals: *const *mut GcInner<Value>,
-    args: *const *mut GcInner<Value>,
-) {
-    println!("env: {env:p}");
-    println!("globals: {globals:p}");
-    println!("args: {args:p}");
 }
