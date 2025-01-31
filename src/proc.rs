@@ -53,7 +53,11 @@ pub type SyncFuncWithContinuationPtr = unsafe extern "C" fn(
     cont: *mut GcInner<Value>,
 ) -> *mut Application;
 
-pub type AsyncFuncPtr = fn(args: &[Gc<Value>]) -> BoxFuture<'static, Application>;
+pub type AsyncFuncPtr = for<'a> fn(
+    args: &'a [Gc<Value>],
+    rest_args: &'a [Gc<Value>],
+    cont: &'a Gc<Value>,
+) -> BoxFuture<'a, Application>;
 
 #[derive(Debug)]
 pub enum FuncPtr {
@@ -108,102 +112,87 @@ impl Closure {
     }
 
     pub async fn apply(&self, args: &[Gc<Value>]) -> Application {
-        // println!("APP_RAW({:#?}, {:#?})", self, args);
-        match self.func {
-            FuncPtr::SyncFunc(sync_fn) => {
-                if args.len() < self.num_required_args {
-                    panic!("Too few arguments");
-                }
-                if !self.variadic && args.len() > self.num_required_args {
-                    panic!("Too many arguments");
-                }
-                let args = match (self.variadic, args.split_at_checked(self.num_required_args)) {
-                    (true, Some((args, rest_args))) => {
-                        let mut args = args.to_owned();
-                        args.push(Gc::new(slice_to_list(rest_args)));
-                        Cow::Owned(args)
-                    }
-                    (true, None) => {
-                        let mut args = args.to_owned();
-                        args.push(Gc::new(Value::Null));
-                        Cow::Owned(args)
-                    }
-                    (false, _) => Cow::Borrowed(args),
-                };
+        // Handle arguments
 
-                let env = values_to_vec_of_ptrs(&self.env);
-                let globals = values_to_vec_of_ptrs(&self.globals);
+        // Error if the number of arguments provided is incorrect
+        if args.len() < self.num_required_args {
+            panic!("Too few arguments");
+        }
+        if !self.variadic && args.len() > self.num_required_args {
+            panic!("Too many arguments");
+        }
 
-                // Safety: args must last until the return of app so any freshly allocated var
-                // arg isn't dropped before it's upgraded to a proper Gc
-                let args = values_to_vec_of_ptrs(args.as_ref());
+        // Extract the continuation, if it is required
+        let cont = !matches!(self.func, FuncPtr::SyncFunc(_));
+        let (cont, args) = if cont {
+            let (cont, args) = args.split_last().unwrap();
+            (Some(cont), args)
+        } else {
+            (None, args)
+        };
 
-                // println!("APP({:p}, {:?})", self, args);
+        // If this function is variadic, create a list to put any extra arguments
+        // into
+        let bridge = !matches!(self.func, FuncPtr::AsyncFunc(_));
+        let (args, rest_args) = if self.variadic {
+            let (args, rest_args) = args.split_at(self.num_required_args);
+            // If this is a bridge function, vector is more natural to work with:
+            if bridge {
+                (Cow::Borrowed(args), Some(rest_args))
+            } else {
+                let mut args = args.to_owned();
+                args.push(Gc::new(slice_to_list(rest_args)));
+                (Cow::Owned(args), None)
+            }
+        } else {
+            (Cow::Borrowed(args), None)
+        };
 
-                let app = unsafe {
-                    (sync_fn)(
+        if bridge {
+            // If this a bridge functiuon, calling it is relatively simple:
+            let FuncPtr::AsyncFunc(async_fn) = self.func else {
+                unreachable!()
+            };
+            (async_fn)(args.as_ref(), rest_args.unwrap(), cont.unwrap()).await
+        } else {
+            // For LLVM functions, we need to convert our args into raw pointers
+            // and make sure any freshly allocated rest_args are disposed of poperly.
+
+            let env = values_to_vec_of_ptrs(&self.env);
+            let globals = values_to_vec_of_ptrs(&self.globals);
+
+            // Safety: args must last until the return of app so any freshly allocated var
+            // arg isn't dropped before it's upgraded to a proper Gc
+            let args = values_to_vec_of_ptrs(args.as_ref());
+
+            // Finally: call the function pointer
+            let app = match self.func {
+                FuncPtr::SyncFunc(sync_fn) => unsafe {
+                    let app = (sync_fn)(
                         self.runtime.as_ptr(),
                         env.as_ptr(),
                         globals.as_ptr(),
                         args.as_ptr(),
-                    )
-                };
-                let app = unsafe { Box::from_raw(app) };
-
-                drop(args);
-
-                *app
-            }
-            FuncPtr::SyncFuncWithContinuation(sync_fn) => {
-                if args.len() < self.num_required_args {
-                    panic!("Too few arguments: {:#?}, args: {:#?}", self, args);
-                }
-                if !self.variadic && args.len() > self.num_required_args {
-                    panic!("Too many arguments");
-                }
-                // I think this code could definitely be simplified, but I am a little scatter-brained right now.
-                let (args, cont) =
-                    match (self.variadic, args.split_at_checked(self.num_required_args)) {
-                        (true, Some((args, [rest_args @ .., cont]))) => {
-                            let mut args = args.to_owned();
-                            args.push(Gc::new(slice_to_list(rest_args)));
-                            (Cow::Owned(args), cont)
-                        }
-                        (true, Some(([cont], []))) => {
-                            (Cow::Owned(vec![Gc::new(Value::Null)]), cont)
-                        }
-                        (false, _) => {
-                            let (cont, args) = args.split_last().unwrap();
-                            (Cow::Borrowed(args), cont)
-                        }
-                        _ => unreachable!("self: {:#?}, args: {:#?}", self, args),
-                    };
-
-                let env = values_to_vec_of_ptrs(&self.env);
-                let globals = values_to_vec_of_ptrs(&self.globals);
-
-                // Safety: args must last until the return of app so any freshly allocated var
-                // arg isn't dropped before it's upgraded to a proper Gc
-                let args = values_to_vec_of_ptrs(args.as_ref());
-
-                // println!("APP({:p}, {:?}, {:?})", self, args, cont.as_ptr());
-
-                let app = unsafe {
-                    (sync_fn)(
+                    );
+                    *Box::from_raw(app)
+                },
+                FuncPtr::SyncFuncWithContinuation(sync_fn) => unsafe {
+                    let app = (sync_fn)(
                         self.runtime.as_ptr(),
                         env.as_ptr(),
                         globals.as_ptr(),
                         args.as_ptr(),
-                        cont.as_ptr(),
-                    )
-                };
-                let app = unsafe { Box::from_raw(app) };
+                        cont.unwrap().as_ptr(),
+                    );
+                    *Box::from_raw(app)
+                },
+                _ => unreachable!(),
+            };
 
-                drop(args);
+            // Now we can drop the args
+            drop(args);
 
-                *app
-            }
-            FuncPtr::AsyncFunc(async_fn) => async_fn(args).await,
+            app
         }
     }
 }

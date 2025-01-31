@@ -25,7 +25,7 @@ pub trait Top: Trace + Send + Sync + 'static {
 }
 
 /// Top level environment, or compilation unit, for a Scheme library.
-#[derive(Trace)]
+#[derive(Default, Trace)]
 pub struct Library {
     vars: HashMap<String, Gc<Value>>,
     macros: HashMap<String, Gc<Value>>,

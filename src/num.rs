@@ -1,4 +1,4 @@
-use crate::gc::Trace;
+use crate::{gc::{Gc, Trace}, value::Value, registry::bridge};
 use num::{complex::Complex64, FromPrimitive, ToPrimitive, Zero};
 use rug::{Complete, Integer, Rational};
 use std::{
@@ -332,17 +332,16 @@ unsafe impl Trace for Number {
     unsafe fn visit_children(&self, _visitor: unsafe fn(crate::gc::OpaqueGcPtr)) {}
 }
 
-/*
-#[builtin("zero?")]
+#[bridge(name = "zero?", lib = "(base)")]
 pub async fn zero(
-    _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+) -> Vec<Gc<Value>> {
     let arg = arg.read();
-    let num: &Number = arg.as_ref().try_into()?;
-    Ok(vec![Gc::new(Value::Boolean(num.is_zero()))])
+    let num: &Number = arg.as_ref().try_into().unwrap();
+    vec![Gc::new(Value::Boolean(num.is_zero()))]
 }
 
+/*
 #[builtin("even?")]
 pub async fn even(
     _cont: &Option<Arc<Continuation>>,

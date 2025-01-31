@@ -1,12 +1,11 @@
 use crate::{
     ast,
     error::RuntimeError,
-    gc::Gc,
+    gc::{Gc, Trace},
     num::Number,
     proc::Closure,
     records::{Record, RecordType},
     syntax::Syntax,
-    Trace,
 };
 use futures::future::{BoxFuture, Shared};
 

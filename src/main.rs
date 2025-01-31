@@ -1,14 +1,6 @@
 use reedline::{Reedline, Signal, ValidationResult, Validator};
 use scheme_rs::{
-    ast::{AstNode, ParseAstError},
-    cps::Compile,
-    env::{Environment, Repl},
-    gc::Gc,
-    lex::{LexError, Token},
-    parse::ParseError,
-    runtime::Runtime,
-    syntax::{Identifier, ParsedSyntax},
-    value::Value,
+    ast::{AstNode, ParseAstError}, cps::Compile, env::{Environment, Repl}, gc::Gc, lex::{LexError, Token}, parse::ParseError, registry::Registry, runtime::Runtime, syntax::{Identifier, ParsedSyntax}, value::Value
 };
 use std::borrow::Cow;
 
@@ -57,13 +49,10 @@ impl reedline::Prompt for Prompt {
 #[tokio::main]
 async fn main() {
     let runtime = Gc::new(Runtime::new());
+    let registry = Registry::new(&runtime);
     let mut rl = Reedline::create().with_validator(Box::new(InputParser));
     let mut n_results = 1;
     let top = Environment::new_repl();
-    top.def_var(Identifier::new("+".to_string()));
-    top.def_var(Identifier::new("-".to_string()));
-    top.def_var(Identifier::new("*".to_string()));
-    top.def_var(Identifier::new("/".to_string()));
     loop {
         let Ok(Signal::Success(input)) = rl.read_line(&Prompt) else {
             println!("exiting...");
