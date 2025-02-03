@@ -109,6 +109,15 @@ impl<T: Trace> Gc<T> {
     }
 }
 
+impl<T: Trace> std::fmt::Display for Gc<T>
+where
+    T: std::fmt::Display,
+{
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.read().fmt(fmt)
+    }
+}
+
 impl<T: Trace> std::fmt::Debug for Gc<T>
 where
     T: std::fmt::Debug,

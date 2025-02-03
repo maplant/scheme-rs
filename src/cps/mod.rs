@@ -136,7 +136,7 @@ impl ClosureArgs {
 
     fn num_required(&self) -> usize {
         self.args.len().saturating_sub(self.variadic as usize)
-            + self.continuation.is_some() as usize
+        // + self.continuation.is_some() as usize
     }
 }
 

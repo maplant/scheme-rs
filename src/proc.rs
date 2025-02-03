@@ -1,6 +1,8 @@
 use crate::{
+    exception::Exception,
     gc::{Gc, GcInner, Trace},
-    lists::slice_to_list,
+    lists::{list_to_vec, slice_to_list},
+    registry::BridgeFn,
     runtime::Runtime,
     value::Value,
 };
@@ -20,19 +22,6 @@ impl ProcCallDebugInfo {
             location: location.clone(),
         }
     }
-}
-
-#[builtin("apply")]
-pub async fn apply(
-    _cont: &Option<Arc<Continuation>>,
-    mut args: Vec<Gc<Value>>,
-) -> Result<PreparedCall, RuntimeError> {
-    if args.len() < 2 {
-        return Err(RuntimeError::wrong_num_of_args(2, args.len()));
-    }
-    let last = args.pop().unwrap();
-    list_to_vec(&last, &mut args);
-    Ok(PreparedCall::prepare(args, None))
 }
 */
 
@@ -57,7 +46,7 @@ pub type AsyncFuncPtr = for<'a> fn(
     args: &'a [Gc<Value>],
     rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
-) -> BoxFuture<'a, Application>;
+) -> BoxFuture<'a, Result<Application, Exception>>;
 
 #[derive(Debug)]
 pub enum FuncPtr {
@@ -111,16 +100,8 @@ impl Closure {
         }
     }
 
-    pub async fn apply(&self, args: &[Gc<Value>]) -> Application {
+    pub async fn apply(&self, args: &[Gc<Value>]) -> Result<Application, Exception> {
         // Handle arguments
-
-        // Error if the number of arguments provided is incorrect
-        if args.len() < self.num_required_args {
-            panic!("Too few arguments");
-        }
-        if !self.variadic && args.len() > self.num_required_args {
-            panic!("Too many arguments");
-        }
 
         // Extract the continuation, if it is required
         let cont = !matches!(self.func, FuncPtr::SyncFunc(_));
@@ -131,9 +112,17 @@ impl Closure {
             (None, args)
         };
 
+        // Error if the number of arguments provided is incorrect
+        if args.len() < self.num_required_args {
+            panic!("Too few arguments");
+        }
+        if !self.variadic && args.len() > self.num_required_args {
+            panic!("Too many arguments");
+        }
+
         // If this function is variadic, create a list to put any extra arguments
         // into
-        let bridge = !matches!(self.func, FuncPtr::AsyncFunc(_));
+        let bridge = matches!(self.func, FuncPtr::AsyncFunc(_));
         let (args, rest_args) = if self.variadic {
             let (args, rest_args) = args.split_at(self.num_required_args);
             // If this is a bridge function, vector is more natural to work with:
@@ -153,7 +142,7 @@ impl Closure {
             let FuncPtr::AsyncFunc(async_fn) = self.func else {
                 unreachable!()
             };
-            (async_fn)(args.as_ref(), rest_args.unwrap(), cont.unwrap()).await
+            (async_fn)(args.as_ref(), rest_args.unwrap_or(&[]), cont.unwrap()).await
         } else {
             // For LLVM functions, we need to convert our args into raw pointers
             // and make sure any freshly allocated rest_args are disposed of poperly.
@@ -192,7 +181,7 @@ impl Closure {
             // Now we can drop the args
             drop(args);
 
-            app
+            Ok(app)
         }
     }
 }
@@ -226,11 +215,34 @@ impl Application {
 
     /// Evaluate the application - and all subsequent application - until all that
     /// remains are values. This is the main trampoline of the evaluation engine.
-    pub async fn eval(mut self) -> Box<[Gc<Value>]> {
+    pub async fn eval(mut self) -> Result<Box<[Gc<Value>]>, Exception> {
         while let Application { op: Some(op), args } = self {
-            self = op.read().apply(&args).await;
+            self = op.read().apply(&args).await?;
         }
         // If we have no operator left, return the arguments as the final values:
-        self.args
+        Ok(self.args)
     }
+}
+
+pub fn apply<'a>(
+    args: &'a [Gc<Value>],
+    rest_args: &'a [Gc<Value>],
+    cont: &'a Gc<Value>,
+) -> BoxFuture<'a, Result<Application, Exception>> {
+    Box::pin(async move {
+        if rest_args.len() < 1 {
+            return Err(Exception::wrong_num_of_args(2, args.len()));
+        }
+        let op = args[0].read();
+        let op: &Gc<Closure> = op.as_ref().try_into()?;
+        let (last, args) = rest_args.split_last().unwrap();
+        let mut args = args.to_vec();
+        list_to_vec(&last, &mut args);
+        args.push(cont.clone());
+        Ok(Application::new(op.clone(), args))
+    })
+}
+
+inventory::submit! {
+    BridgeFn::new("apply", "(base)", 1, true, apply)
 }

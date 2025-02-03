@@ -4,6 +4,7 @@ use quote::quote;
 use syn::{
     parse_macro_input, parse_quote, punctuated::Punctuated, DataEnum, DataStruct, DeriveInput,
     Fields, FnArg, GenericParam, Generics, Ident, ItemFn, LitStr, Member, PatType, Token, Type,
+    TypeReference,
 };
 
 #[proc_macro_attribute]
@@ -33,7 +34,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     let wrapper_name = Ident::new(&wrapper_name, Span::call_site());
 
     let is_variadic = if let Some(last_arg) = bridge.sig.inputs.last() {
-        is_vec(last_arg)
+        is_slice(last_arg)
     } else {
         false
     };
@@ -51,7 +52,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 args: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
                 rest_args: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
                 cont: &'a ::scheme_rs::gc::Gc<::scheme_rs::value::Value>,
-            ) -> futures::future::BoxFuture<'a, scheme_rs::proc::Application> {
+            ) -> futures::future::BoxFuture<'a, Result<scheme_rs::proc::Application, scheme_rs::exception::Exception>> {
                 let cont = {
                     let cont = cont.read();
                     if let ::scheme_rs::value::Value::Closure(proc) = &*cont {
@@ -62,12 +63,12 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 };
                 Box::pin(
                     async move {
-                        ::scheme_rs::proc::Application::new(
+                        Ok(::scheme_rs::proc::Application::new(
                             cont,
                             #impl_name(
                                 #( &args[#arg_indices], )*
-                            ).await
-                        )
+                            ).await?
+                        ))
                     }
                 )
             }
@@ -79,25 +80,24 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 args: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
                 rest_args: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
                 cont: &'a ::scheme_rs::gc::Gc<::scheme_rs::value::Value>,
-            ) -> futures::future::BoxFuture<'a, scheme_rs::proc::Application> {
+            ) -> futures::future::BoxFuture<'a, Result<scheme_rs::proc::Application, scheme_rs::exception::Exception>> {
                 let cont = {
                     let cont = cont.read();
-                    if let ::scheme_rs::value::Value::Closure(proc) = cont {
-                        cont.clone();
+                    if let ::scheme_rs::value::Value::Closure(proc) = &*cont {
+                        proc.clone()
                     } else {
                         panic!("Continuation is not a function!");
                     }
                 };
                 Box::pin(
                     async move {
-                        ::scheme_rs::proc::Application::new(
+                        Ok(::scheme_rs::proc::Application::new(
                             cont,
                             #impl_name(
-                                &cont,
-                                #( &required_args[#arg_indices], )*
+                                #( &args[#arg_indices], )*
                                 rest_args
-                            ).await
-                        )
+                            ).await?
+                        ))
                     }
                 )
             }
@@ -109,25 +109,14 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         #wrapper
 
         inventory::submit! {
-            ::scheme_rs::registry::BridgeFn::new(#name, #lib, #num_args + 1, #is_variadic, #wrapper_name)
+            ::scheme_rs::registry::BridgeFn::new(#name, #lib, #num_args, #is_variadic, #wrapper_name)
         }
     }
     .into()
 }
 
-fn is_vec(arg: &FnArg) -> bool {
-    if let FnArg::Typed(PatType { ty, .. }) = arg {
-        if let Type::Path(ref path) = ty.as_ref() {
-            return path
-                .path
-                .segments
-                .last()
-                .map(|p| p.ident.to_string())
-                .as_deref()
-                == Some("Vec");
-        }
-    }
-    false
+fn is_slice(arg: &FnArg) -> bool {
+    matches!(arg, FnArg::Typed(PatType { ty, ..}) if matches!(ty.as_ref(), Type::Reference(TypeReference { elem, .. }) if matches!(elem.as_ref(), Type::Slice(_))))
 }
 
 #[proc_macro_derive(Trace)]

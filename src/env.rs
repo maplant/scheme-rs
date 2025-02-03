@@ -1,4 +1,3 @@
-use either::Either;
 use std::{
     collections::HashMap,
     fmt,
@@ -7,28 +6,44 @@ use std::{
 
 use crate::{
     gc::{Gc, Trace},
+    proc::Closure,
     syntax::{Identifier, Mark},
     value::Value,
 };
 
 /// A Top level environment.
-pub trait Top: Trace + Send + Sync + 'static {
+pub trait Top: Trace + Send + Sync + 'static + Sized {
+    // TODO: Fixme, this should take a default value.
     fn def_var(&mut self, name: String) -> Var;
 
-    fn def_macro(&mut self, name: String, val: Gc<Value>);
+    // fn def_macro(&mut self, name: String, mcro: Macro<Self>);
 
     fn set_var(&self, name: &str, val: Value);
 
     fn fetch_var(&mut self, name: &str) -> Option<Global>;
 
-    fn fetch_macro(&self, name: &str) -> Option<Gc<Value>>;
+    // fn fetch_macro(&self, name: &str) -> Option<Macro<DynTop>>;
+
+    fn import<'a>(&mut self, vars: impl Iterator<Item = (&'a str, &'a Gc<Value>)>);
 }
 
 /// Top level environment, or compilation unit, for a Scheme library.
 #[derive(Default, Trace)]
 pub struct Library {
     vars: HashMap<String, Gc<Value>>,
-    macros: HashMap<String, Gc<Value>>,
+    // macros: HashMap<String, Macro<Self>>,
+}
+
+impl Library {
+    pub fn exported_vars<'a>(&'a self) -> impl Iterator<Item = (&'a str, &'a Gc<Value>)> {
+        self.vars.iter().map(|(k, v)| (k.as_str(), v))
+    }
+
+    /*
+    pub fn exported_macros<'a>(&'a self) -> impl Iterator<Item = (&'a str, &'a Macro<Self>)> {
+        self.macros.iter().map(|(k, v)| (k.as_str(), v))
+    }
+    */
 }
 
 impl Top for Library {
@@ -38,9 +53,11 @@ impl Top for Library {
         Var::Global(Global::new(name, global))
     }
 
-    fn def_macro(&mut self, name: String, val: Gc<Value>) {
-        self.macros.insert(name, val);
+    /*
+    fn def_macro(&mut self, name: String, mac: Macro<Self>) {
+        self.macros.insert(name, mac);
     }
+    */
 
     fn set_var(&self, name: &str, val: Value) {
         *self.vars.get(name).unwrap().write() = val;
@@ -52,8 +69,16 @@ impl Top for Library {
             .map(|val| Global::new(name.to_string(), val.clone()))
     }
 
-    fn fetch_macro(&self, name: &str) -> Option<Gc<Value>> {
+    /*
+    fn fetch_macro(&self, name: &str) -> Option<Macro<DynTop>> {
         self.macros.get(name).cloned()
+    }
+    */
+
+    fn import<'a>(&mut self, vars: impl Iterator<Item = (&'a str, &'a Gc<Value>)>) {
+        for (name, val) in vars {
+            self.vars.insert(name.to_string(), val.clone());
+        }
     }
 }
 
@@ -68,7 +93,7 @@ pub struct Program {
 #[derive(Default, Trace)]
 pub struct Repl {
     vars: HashMap<String, Gc<Value>>,
-    macros: HashMap<String, Gc<Value>>,
+    // macros: HashMap<String, Macro>,
 }
 
 /// Repl's implementation of Top differs from Program and Library by assuming
@@ -82,9 +107,11 @@ impl Top for Repl {
         Var::Global(Global::new(name, global.clone()))
     }
 
-    fn def_macro(&mut self, name: String, val: Gc<Value>) {
-        self.macros.insert(name, val);
+    /*
+    fn def_macro(&mut self, name: String, mcro: Macro) {
+        self.macros.insert(name, mcro);
     }
+     */
 
     fn set_var(&self, name: &str, val: Value) {
         *self.vars.get(name).unwrap().write() = val;
@@ -100,8 +127,16 @@ impl Top for Repl {
         ))
     }
 
-    fn fetch_macro(&self, name: &str) -> Option<Gc<Value>> {
+    /*
+    fn fetch_macro(&self, name: &str) -> Option<Macro> {
         self.macros.get(name).cloned()
+    }
+    */
+
+    fn import<'a>(&mut self, vars: impl Iterator<Item = (&'a str, &'a Gc<Value>)>) {
+        for (name, val) in vars {
+            self.vars.insert(name.to_string(), val.clone());
+        }
     }
 }
 
@@ -109,7 +144,7 @@ impl Top for Repl {
 pub struct LexicalContour<T: Trace> {
     up: Environment<T>,
     vars: HashMap<Identifier, Local>,
-    macros: HashMap<Identifier, Gc<Value>>,
+    macros: HashMap<Identifier, Gc<Closure>>,
 }
 
 impl<T: Top> LexicalContour<T> {
@@ -129,8 +164,8 @@ impl<T: Top> Gc<LexicalContour<T>> {
         local
     }
 
-    pub fn def_macro(&self, name: Identifier, value: Gc<Value>) {
-        self.write().macros.insert(name, value);
+    pub fn def_macro(&self, name: Identifier, closure: Gc<Closure>) {
+        self.write().macros.insert(name, closure);
     }
 
     pub fn fetch_var(&self, name: &Identifier) -> Option<Var> {
@@ -140,26 +175,22 @@ impl<T: Top> Gc<LexicalContour<T>> {
         self.read().up.fetch_var(name)
     }
 
-    pub fn fetch_macro(&self, _name: &Identifier) -> Option<(MacroSource<T>, Gc<Value>)> {
+    /*
+    pub fn fetch_macro(&self, _name: &Identifier) -> Option<Macro> {
         todo!()
     }
+    */
 }
 
 #[derive(Trace)]
 pub struct MacroExpansion<T: Trace> {
     up: Environment<T>,
     mark: Mark,
-    source: Either<Gc<LexicalContour<T>>, Gc<T>>,
+    source: Environment<DynTop>,
 }
 
-pub type MacroSource<T> = Either<Gc<LexicalContour<T>>, Gc<T>>;
-
 impl<T: Top> MacroExpansion<T> {
-    pub fn new(
-        env: &Environment<T>,
-        mark: Mark,
-        source: Either<Gc<LexicalContour<T>>, Gc<T>>,
-    ) -> Self {
+    pub fn new(env: &Environment<T>, mark: Mark, source: Environment<DynTop>) -> Self {
         Self {
             up: env.clone(),
             mark,
@@ -175,9 +206,11 @@ impl<T: Top> Gc<MacroExpansion<T>> {
         self.read().up.def_var(name)
     }
 
-    pub fn def_macro(&self, name: Identifier, val: Gc<Value>) {
-        self.read().up.def_macro(name, val);
+    /*
+    pub fn def_macro(&self, name: Identifier, closure: Gc<Closure>) {
+        self.read().up.def_macro(name, closure);
     }
+    */
 
     pub fn fetch_var(&self, name: &Identifier) -> Option<Var> {
         // Attempt to check the up scope first:
@@ -188,23 +221,21 @@ impl<T: Top> Gc<MacroExpansion<T>> {
         }
         // If the current expansion context contains the mark, remove it and check the
         // expansion source scope.
-        if name.marks.contains(&this.mark) {
-            match this.source {
-                Either::Left(ref lex) => {
-                    let mut unmarked = name.clone();
-                    unmarked.mark(this.mark);
-                    lex.fetch_var(&unmarked)
-                }
-                Either::Right(ref lib) => lib.write().fetch_var(&name.name).map(Var::Global),
-            }
-        } else {
-            None
-        }
+        name.marks
+            .contains(&this.mark)
+            .then(|| {
+                let mut unmarked = name.clone();
+                unmarked.mark(this.mark);
+                this.source.fetch_var(&unmarked)
+            })
+            .flatten()
     }
 
-    pub fn fetch_macro(&self, _name: &Identifier) -> Option<(MacroSource<T>, Gc<Value>)> {
+    /*
+    pub fn fetch_macro(&self, _name: &Identifier) -> Option<Macro> {
         todo!()
     }
+     */
 }
 
 #[derive(Trace)]
@@ -223,13 +254,18 @@ impl<T: Top> Environment<T> {
         }
     }
 
-    pub fn def_macro(&self, name: Identifier, val: Gc<Value>) {
+    /*
+    pub fn def_macro(&self, name: Identifier, val: Gc<Closure>) {
         match self {
-            Self::Top(top) => top.write().def_macro(name.name, val),
+            Self::Top(top) => {
+                // let macro = Macro::new(Environment::Top(DynTop::from(top.clone())), val);p
+                top.write().def_macro(name.name, val)
+            },
             Self::LexicalContour(lex) => lex.def_macro(name, val),
             Self::MacroExpansion(me) => me.def_macro(name, val),
         }
     }
+    */
 
     pub fn fetch_var(&self, name: &Identifier) -> Option<Var> {
         match self {
@@ -239,7 +275,8 @@ impl<T: Top> Environment<T> {
         }
     }
 
-    pub fn fetch_macro(&self, _name: &Identifier) -> Option<(MacroSource<T>, Gc<Value>)> {
+    /*
+    pub fn fetch_macro(&self, _name: &Identifier) -> Option<Macro> {
         /*
         match self {
             Self::Top(top) => top.read().fetch_macro(&name.name).map(|mac| (Either::Right(top.clone()), mac)),
@@ -250,6 +287,7 @@ impl<T: Top> Environment<T> {
         // For now, just None
         None
     }
+    */
 
     pub fn is_bound(&self, name: &Identifier) -> bool {
         self.fetch_var(name).is_some()
@@ -260,11 +298,7 @@ impl<T: Top> Environment<T> {
         Self::LexicalContour(Gc::new(new_lexical_contour))
     }
 
-    pub fn new_macro_expansion(
-        &self,
-        mark: Mark,
-        source: Either<Gc<LexicalContour<T>>, Gc<T>>,
-    ) -> Self {
+    pub fn new_macro_expansion(&self, mark: Mark, source: Environment<DynTop>) -> Self {
         let new_macro_expansion = MacroExpansion::new(self, mark, source);
         Self::MacroExpansion(Gc::new(new_macro_expansion))
     }
@@ -273,6 +307,10 @@ impl<T: Top> Environment<T> {
 impl Environment<Repl> {
     pub fn new_repl() -> Self {
         Self::Top(Gc::new(Repl::default()))
+    }
+
+    pub fn from_repl(repl: Repl) -> Self {
+        Self::Top(Gc::new(repl))
     }
 }
 
@@ -346,6 +384,76 @@ impl fmt::Debug for Var {
         match self {
             Self::Global(global) => global.fmt(f),
             Self::Local(local) => local.fmt(f),
+        }
+    }
+}
+
+#[derive(Clone, Trace)]
+pub enum DynTop {
+    Repl(Gc<Repl>),
+    Library(Gc<Library>),
+    Program(Gc<Program>),
+}
+
+impl From<Gc<Repl>> for DynTop {
+    fn from(repl: Gc<Repl>) -> Self {
+        Self::Repl(repl)
+    }
+}
+
+impl From<Gc<Library>> for DynTop {
+    fn from(library: Gc<Library>) -> Self {
+        Self::Library(library)
+    }
+}
+
+impl From<Gc<Program>> for DynTop {
+    fn from(program: Gc<Program>) -> Self {
+        Self::Program(program)
+    }
+}
+
+impl Top for DynTop {
+    fn def_var(&mut self, _name: String) -> Var {
+        todo!()
+    }
+
+    /*
+    fn def_macro(&mut self, name: String, mcro: Macro<DynTop>) {
+        todo!()
+    }
+    */
+
+    fn set_var(&self, _name: &str, _val: Value) {
+        todo!()
+    }
+
+    fn fetch_var(&mut self, _name: &str) -> Option<Global> {
+        todo!()
+    }
+
+    /*
+    fn fetch_macro(&self, name: &str) -> Option<Macro<DynTop>> {
+        todo!()
+    }
+     */
+
+    fn import<'a>(&mut self, _vars: impl Iterator<Item = (&'a str, &'a Gc<Value>)>) {
+        todo!()
+    }
+}
+
+#[derive(Trace, Clone)]
+pub struct Macro<T: Trace + Top> {
+    source_env: Environment<T>,
+    transformer: Gc<Closure>,
+}
+
+impl<T: Trace + Top> Macro<T> {
+    pub fn new(source_env: Environment<T>, transformer: Gc<Closure>) -> Self {
+        Self {
+            source_env,
+            transformer,
         }
     }
 }

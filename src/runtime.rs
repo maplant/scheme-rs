@@ -96,6 +96,7 @@ fn compilation_task(mut compilation_queue_rx: mpsc::Receiver<CompilationTask>) {
         // I don't really know a way to do this beyond just creating a new module every time.
 
         let module = context.create_module("scheme_rs");
+        ExecutionEngine::link_in_mc_jit();
         let execution_engine = module
             .create_jit_execution_engine(OptimizationLevel::default())
             .unwrap();

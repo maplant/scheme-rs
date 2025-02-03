@@ -11,13 +11,11 @@ use crate::{
     value::Value,
 };
 use crate::{
-    error::RuntimeError,
+    exception::Exception,
     expand::SyntaxRule,
     syntax::{FullyExpanded, Identifier},
 };
 use either::Either;
-
-use super::*;
 
 use derive_more::From;
 use futures::future::BoxFuture;
@@ -28,14 +26,24 @@ use std::{
 
 #[derive(Debug, Clone, Trace)]
 pub enum ParseAstError {
+    /// The most general error. Something just looks bad.
+    ///
+    /// This error type should be avoided, and instead one should use a more specific error type,
+    /// or create one.
     BadForm(Span),
-    UnexpectedEmptyList(Span),
-    UndefinedVariable(Identifier),
-    RuntimeError(Box<RuntimeError>),
-    NotAVariableTransformer,
-    EmptyBody(Span),
-    DefInExprContext(Span),
+
+    ExpectedArgument(Span),
+    ExpectedBody(Span),
     ExpectedIdentifier(Span),
+    ExpectedNumber(Span),
+    ExpectedVariableTransformer,
+
+    UnexpectedArgument(Span),
+    UnexpectedDefinition(Span),
+    UnexpectedEmptyList(Span),
+
+    UndefinedVariable(Identifier),
+
     ParentSpecifiedMultipleTimes {
         first: Span,
         second: Span,
@@ -49,13 +57,13 @@ pub enum ParseAstError {
         first: Span,
         second: Span,
     },
-    ExpectedArgument(Span),
-    UnexpectedArgument(Span),
+
+    Exception(Exception),
 }
 
-impl From<RuntimeError> for ParseAstError {
-    fn from(re: RuntimeError) -> Self {
-        Self::RuntimeError(Box::new(re))
+impl From<Exception> for ParseAstError {
+    fn from(re: Exception) -> Self {
+        Self::Exception(re)
     }
 }
 
@@ -145,7 +153,7 @@ impl Definition {
             }
             [_, Syntax::List { list, span }, body @ .., Syntax::Null { .. }] => {
                 if body.is_empty() {
-                    return Err(ParseAstError::EmptyBody(span.clone()));
+                    return Err(ParseAstError::ExpectedBody(span.clone()));
                 }
                 match list.as_slice() {
                     [Syntax::Identifier {
@@ -406,7 +414,7 @@ impl Expression {
                     [Syntax::Identifier { ident, span, .. }, .., Syntax::Null { .. }]
                         if ident == "define" || ident == "define-record-type" =>
                     {
-                        Err(ParseAstError::DefInExprContext(span.clone()))
+                        Err(ParseAstError::UnexpectedDefinition(span.clone()))
                     }
 
                     // Regular old function call:
@@ -944,7 +952,7 @@ fn splice_in<'a, T: Top>(
 ) -> BoxFuture<'a, Result<(), ParseAstError>> {
     Box::pin(async move {
         if body.is_empty() {
-            return Err(ParseAstError::EmptyBody(span.clone()));
+            return Err(ParseAstError::ExpectedBody(span.clone()));
         }
 
         for unexpanded in body {
@@ -973,7 +981,7 @@ fn splice_in<'a, T: Top>(
                         [Syntax::Identifier { ident, span, .. }, def, .., Syntax::Null { .. }],
                     ) if ident == "define" => {
                         if !exprs.is_empty() {
-                            return Err(ParseAstError::DefInExprContext(span.clone()));
+                            return Err(ParseAstError::UnexpectedDefinition(span.clone()));
                         }
 
                         let ident = match def.as_list() {

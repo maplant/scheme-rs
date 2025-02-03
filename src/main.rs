@@ -1,6 +1,16 @@
 use reedline::{Reedline, Signal, ValidationResult, Validator};
 use scheme_rs::{
-    ast::{AstNode, ParseAstError}, cps::Compile, env::{Environment, Repl}, gc::Gc, lex::{LexError, Token}, parse::ParseError, registry::Registry, runtime::Runtime, syntax::{Identifier, ParsedSyntax}, value::Value
+    ast::{AstNode, ParseAstError},
+    cps::Compile,
+    env::{Environment, Repl, Top},
+    exception::Exception,
+    gc::Gc,
+    lex::LexError,
+    parse::ParseSyntaxError,
+    registry::Registry,
+    runtime::Runtime,
+    syntax::Syntax,
+    value::Value,
 };
 use std::borrow::Cow;
 
@@ -8,12 +18,9 @@ struct InputParser;
 
 impl Validator for InputParser {
     fn validate(&self, line: &str) -> ValidationResult {
-        let Ok(tokens) = Token::tokenize_str(line) else {
-            return ValidationResult::Incomplete;
-        };
-        let syntax = ParsedSyntax::parse(&tokens);
+        let syntax = Syntax::from_str(line, None);
         match syntax {
-            Err(ParseError::UnclosedParen { .. }) => ValidationResult::Incomplete,
+            Err(ParseSyntaxError::UnclosedParen { .. }) => ValidationResult::Incomplete,
             _ => ValidationResult::Complete,
         }
     }
@@ -50,9 +57,16 @@ impl reedline::Prompt for Prompt {
 async fn main() {
     let runtime = Gc::new(Runtime::new());
     let registry = Registry::new(&runtime);
+    let base = registry.import("(base)").unwrap();
     let mut rl = Reedline::create().with_validator(Box::new(InputParser));
     let mut n_results = 1;
-    let top = Environment::new_repl();
+    let mut repl = Repl::default();
+    {
+        let base = base.read();
+        repl.import(base.exported_vars());
+    }
+    let top = Environment::from_repl(repl);
+
     loop {
         let Ok(Signal::Success(input)) = rl.read_line(&Prompt) else {
             println!("exiting...");
@@ -61,7 +75,7 @@ async fn main() {
         match compile_and_run_str(&runtime, &top, &input).await {
             Ok(results) => {
                 for result in results.into_iter() {
-                    println!("${n_results} = {}", result.read().fmt());
+                    println!("${n_results} = {:?}", result);
                     n_results += 1;
                 }
             }
@@ -75,8 +89,9 @@ async fn main() {
 #[derive(derive_more::From, Debug)]
 pub enum EvalError<'e> {
     LexError(LexError<'e>),
-    ParseError(ParseError<'e>),
+    ParseError(ParseSyntaxError<'e>),
     ParseAstError(ParseAstError),
+    Exception(Exception),
 }
 
 async fn compile_and_run_str<'e>(
@@ -84,11 +99,10 @@ async fn compile_and_run_str<'e>(
     env: &Environment<Repl>,
     input: &'e str,
 ) -> Result<Vec<Gc<Value>>, EvalError<'e>> {
-    let tokens = Token::tokenize_str(input).unwrap();
-    let sexprs = ParsedSyntax::parse(&tokens)?;
+    let sexprs = Syntax::from_str(&input, None)?;
     let mut output = Vec::new();
     for sexpr in sexprs {
-        let Some(expr) = AstNode::from_syntax(sexpr.syntax, env).await? else {
+        let Some(expr) = AstNode::from_syntax(sexpr, env).await? else {
             continue;
         };
         // println!("Parsed: {expr:#?}");
@@ -96,7 +110,7 @@ async fn compile_and_run_str<'e>(
         // println!("Compiled: {compiled:#?}");
 
         let closure = runtime.compile_expr(compiled).await.unwrap();
-        let result = closure.apply(&[]).await.eval().await;
+        let result = closure.apply(&[]).await?.eval().await?;
         output.extend(result)
     }
     Ok(output)

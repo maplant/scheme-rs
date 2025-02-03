@@ -1,11 +1,12 @@
 use crate::{
     ast::Literal,
-    env::{Environment, MacroSource, Top},
-    error::RuntimeError,
+    env::{Environment, Top},
+    exception::Exception,
     gc::{Gc, Trace},
-    lex::{InputSpan, Lexeme, Token},
+    lex::{InputSpan, Token},
     lists::list_to_vec_with_null,
-    parse::ParseError,
+    parse::ParseSyntaxError,
+    proc::Closure,
     value::Value,
 };
 use futures::future::BoxFuture;
@@ -191,13 +192,14 @@ impl Syntax {
         }
     }
 
+    #[allow(dead_code)]
     async fn apply_transformer<T: Top>(
         &self,
         _env: &Environment<T>,
-        _macro_source: MacroSource<T>,
-        _transformer: Gc<Value>,
+        // _macro_source: MacroSource<T>,
+        _transformer: Gc<Closure>,
         // cont: &Closure,
-    ) -> Result<Expansion<T>, RuntimeError> {
+    ) -> Result<Expansion<T>, Exception> {
         todo!()
         /*
         // Create a new mark for the expansion context
@@ -236,10 +238,11 @@ impl Syntax {
 
     fn expand_once<'a, T: Top>(
         &'a self,
-        env: &'a Environment<T>,
+        _env: &'a Environment<T>,
         // cont: &Closure,
-    ) -> BoxFuture<'a, Result<Expansion<T>, RuntimeError>> {
+    ) -> BoxFuture<'a, Result<Expansion<T>, Exception>> {
         Box::pin(async move {
+            /*
             match self {
                 Self::List { list, .. } => {
                     // TODO: If list head is a list, do we expand this in here or in proc call?
@@ -258,7 +261,9 @@ impl Syntax {
                             // Look for variable transformer:
                             if let Some((macro_env, transformer)) = env.fetch_macro(ident) {
                                 if !transformer.read().is_variable_transformer() {
-                                    return Err(RuntimeError::not_a_variable_transformer());
+                                    return Err(Exception::error(
+                                        "Not a variable transformer".to_string(),
+                                    ));
                                 }
                                 return self.apply_transformer(env, macro_env, transformer).await;
                             }
@@ -273,6 +278,7 @@ impl Syntax {
                 }
                 _ => (),
             }
+             */
             Ok(Expansion::Unexpanded)
         })
     }
@@ -282,7 +288,7 @@ impl Syntax {
         mut self,
         env: &Environment<T>,
         // cont: &Closure,
-    ) -> Result<FullyExpanded<T>, RuntimeError> {
+    ) -> Result<FullyExpanded<T>, Exception> {
         let mut curr_env = env.clone();
         loop {
             match self.expand_once(&curr_env).await? {
@@ -295,6 +301,31 @@ impl Syntax {
                 }
             }
         }
+    }
+
+    fn parse_fragment<'a, 'b>(
+        i: &'b [Token<'a>],
+    ) -> Result<(&'b [Token<'a>], Self), ParseSyntaxError<'a>> {
+        let (remaining, syntax) = crate::parse::expression(i)?;
+        Ok((remaining, syntax))
+    }
+
+    pub fn parse<'a>(mut i: &[Token<'a>]) -> Result<Vec<Self>, ParseSyntaxError<'a>> {
+        let mut output = Vec::new();
+        while !i.is_empty() {
+            let (remaining, expr) = Self::parse_fragment(i)?;
+            output.push(expr);
+            i = remaining
+        }
+        Ok(output)
+    }
+
+    pub fn from_str<'a>(
+        s: &'a str,
+        file_name: Option<&str>,
+    ) -> Result<Vec<Self>, ParseSyntaxError<'a>> {
+        let tokens = Token::tokenize(s, file_name)?;
+        Self::parse(&tokens)
     }
 }
 
@@ -364,39 +395,7 @@ pub struct ParsedSyntax {
     pub syntax: Syntax,
 }
 
-impl ParsedSyntax {
-    fn parse_fragment<'a, 'b>(
-        i: &'b [Token<'a>],
-    ) -> Result<(&'b [Token<'a>], Self), ParseError<'a>> {
-        let (doc_comment, remaining) = if let Token {
-            lexeme: Lexeme::DocComment(ref doc_comment),
-            ..
-        } = i[0]
-        {
-            (Some(doc_comment.clone()), &i[1..])
-        } else {
-            (None, i)
-        };
-        let (remaining, syntax) = crate::parse::expression(remaining)?;
-        Ok((
-            remaining,
-            Self {
-                doc_comment,
-                syntax,
-            },
-        ))
-    }
-
-    pub fn parse<'a>(mut i: &[Token<'a>]) -> Result<Vec<Self>, ParseError<'a>> {
-        let mut output = Vec::new();
-        while !i.is_empty() {
-            let (remaining, expr) = Self::parse_fragment(i)?;
-            output.push(expr);
-            i = remaining
-        }
-        Ok(output)
-    }
-}
+impl ParsedSyntax {}
 
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Trace)]
 pub struct Mark(usize);
@@ -404,11 +403,6 @@ pub struct Mark(usize);
 impl Mark {
     pub fn new() -> Self {
         Self(rand::random())
-    }
-
-    /// Obtain a mark from a Gc pointer value.
-    pub fn from_gc<T: Trace>(gc: &Gc<T>) -> Self {
-        Self(unsafe { gc.as_opaque().as_ptr() as *const () as usize })
     }
 }
 
