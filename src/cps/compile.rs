@@ -1,5 +1,5 @@
 use super::*;
-use crate::{ast::*, gc::Gc, value::Value as SchemeValue};
+use crate::{ast::*, gc::Gc, syntax::Identifier, value::Value as SchemeValue};
 use either::Either;
 
 /// There's not too much reason that this is a trait, other than I wanted to
@@ -19,6 +19,7 @@ pub trait Compile {
                 cexp: Box::new(
                     self.compile(Box::new(|value| Cps::App(value, vec![Value::from(k)]))),
                 ),
+                analysis: AnalysisCache::default(),
             },
         }
     }
@@ -62,9 +63,11 @@ fn compile_lambda(
             ),
             val: k4,
             cexp: Box::new(Cps::App(Value::from(k2), vec![Value::from(k4)])),
+            analysis: AnalysisCache::default(),
         }),
         val: k1,
         cexp: Box::new(meta_cont(Value::from(k1))),
+        analysis: AnalysisCache::default(),
     }
 }
 
@@ -107,10 +110,12 @@ fn compile_let(
                     cexp: Box::new(curr_expr.compile(Box::new(move |result| {
                         Cps::App(Value::from(result), vec![Value::from(k3)])
                     }))),
+                    analysis: AnalysisCache::default(),
                 }),
             )),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
+            analysis: AnalysisCache::default(),
         }
     } else {
         body.compile(meta_cont)
@@ -138,6 +143,9 @@ impl Compile for Expression {
             Self::Begin(e) => e.compile(meta_cont),
             Self::And(e) => e.compile(meta_cont),
             Self::Or(e) => e.compile(meta_cont),
+            Self::Quote(q) => q.compile(meta_cont),
+            Self::SyntaxQuote(sq) => sq.compile(meta_cont),
+            Self::SyntaxCase(sc) => sc.compile(meta_cont),
             x => panic!("not yet implemented: {x:#?}"),
         }
     }
@@ -152,6 +160,7 @@ impl Compile for Var {
             body: Box::new(Cps::App(Value::from(k2), vec![Value::from(self.clone())])),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
+            analysis: AnalysisCache::default(),
         }
     }
 }
@@ -171,6 +180,7 @@ impl Compile for &[Expression] {
                     cexp: Box::new(head.compile(Box::new(move |result| {
                         Cps::App(result, vec![Value::from(k2)])
                     }))),
+                    analysis: AnalysisCache::default(),
                 }
             }
         }
@@ -182,7 +192,10 @@ impl Compile for &[Expression] {
 /// constant that comes our way and making them global variables. This is a
 /// hack, but one that _is technically correct_.
 fn constant(constant: SchemeValue) -> Value {
-    Value::from(Global::new(format!("{constant:?}"), Gc::new(constant)))
+    Value::from(Global::new(
+        Identifier::new(format!("{constant:?}")),
+        Gc::new(constant),
+    ))
 }
 
 impl Compile for Literal {
@@ -197,6 +210,7 @@ impl Compile for Literal {
             )),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
+            analysis: AnalysisCache::default(),
         }
     }
 }
@@ -240,9 +254,11 @@ fn compile_apply(
             )),
             val: k4,
             cexp: Box::new(Cps::App(Value::from(op_result), vec![Value::from(k4)])),
+            analysis: AnalysisCache::default(),
         }))),
         val: k1,
         cexp: Box::new(meta_cont(Value::from(k1))),
+        analysis: AnalysisCache::default(),
     }
 }
 
@@ -270,6 +286,7 @@ fn compile_apply_args(
         }),
         val: k1,
         cexp: Box::new(arg.compile(Box::new(|result| Cps::App(result, vec![Value::from(k1)])))),
+        analysis: AnalysisCache::default(),
     }
 }
 
@@ -300,10 +317,13 @@ fn compile_call_with_cc(
                 cexp: Box::new(thunk.compile(Box::new(|thunk_result| {
                     Cps::App(thunk_result, vec![Value::from(k4)])
                 }))),
+                analysis: AnalysisCache::default(),
             }),
+            analysis: AnalysisCache::default(),
         }),
         val: k2,
         cexp: Box::new(meta_cont(Value::from(k2))),
+        analysis: AnalysisCache::default(),
     }
 }
 
@@ -335,10 +355,12 @@ impl Compile for If {
                     )),
                     val: k3,
                     cexp: Box::new(Cps::App(cond_result, vec![Value::from(k3)])),
+                    analysis: AnalysisCache::default(),
                 }
             }))),
             val: k2,
             cexp: Box::new(meta_cont(Value::from(k2))),
+            analysis: AnalysisCache::default(),
         }
     }
 }
@@ -379,10 +401,12 @@ fn compile_and(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps 
                 )),
                 val: k3,
                 cexp: Box::new(Cps::App(expr_result, vec![Value::from(k3)])),
+                analysis: AnalysisCache::default(),
             }
         }))),
         val: k2,
         cexp: Box::new(meta_cont(Value::from(k2))),
+        analysis: AnalysisCache::default(),
     }
 }
 
@@ -422,10 +446,12 @@ fn compile_or(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps +
                 )),
                 val: k3,
                 cexp: Box::new(Cps::App(expr_result, vec![Value::from(k3)])),
+                analysis: AnalysisCache::default(),
             }
         }))),
         val: k2,
         cexp: Box::new(meta_cont(Value::from(k2))),
+        analysis: AnalysisCache::default(),
     }
 }
 
@@ -461,6 +487,7 @@ impl Compile for Option<Either<Box<Definition>, ExprBody>> {
                     body: Box::new(Cps::App(Value::from(k1), Vec::new())),
                     val: k2,
                     cexp: Box::new(meta_cont(Value::from(k2))),
+                    analysis: AnalysisCache::default(),
                 }
             }
         }
@@ -493,9 +520,11 @@ impl Compile for DefineVar {
                 cexp: Box::new(self.val.compile(Box::new(move |result| {
                     Cps::App(result, vec![Value::from(k3)]) // Value::from(k3), vec![result, Value::from(k2)])
                 }))),
+                analysis: AnalysisCache::default(),
             }),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
+            analysis: AnalysisCache::default(),
         };
 
         // If we need to allocate a cell because the value is not a global,
@@ -535,13 +564,98 @@ impl Compile for DefineFunc {
                     &self.body,
                     |lambda_result| Cps::App(lambda_result, vec![Value::from(k3)]),
                 )),
+                analysis: AnalysisCache::default(),
             }),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
+            analysis: AnalysisCache::default(),
         };
         match self.var {
             Var::Global(_) => set_cont,
             Var::Local(local) => Cps::AllocCell(local, Box::new(set_cont)),
+        }
+    }
+}
+
+impl Compile for Quote {
+    fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+        let k1 = Local::gensym();
+        let k2 = Local::gensym();
+        Cps::Closure {
+            args: ClosureArgs::new(vec![k2], false, None),
+            body: Box::new(Cps::App(Value::from(k2), vec![constant(self.val.clone())])),
+            val: k1,
+            cexp: Box::new(meta_cont(Value::from(k1))),
+            analysis: AnalysisCache::default(),
+        }
+    }
+}
+
+impl Compile for SyntaxQuote {
+    fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+        let k1 = Local::gensym();
+        let k2 = Local::gensym();
+        Cps::Closure {
+            args: ClosureArgs::new(vec![k2], false, None),
+            body: Box::new(Cps::App(
+                Value::from(k2),
+                vec![constant(SchemeValue::Syntax(self.syn.clone()))],
+            )),
+            val: k1,
+            cexp: Box::new(meta_cont(Value::from(k1))),
+            analysis: AnalysisCache::default(),
+        }
+    }
+}
+
+impl Compile for SyntaxCase {
+    fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+        let k1 = Local::gensym();
+        let k2 = Local::gensym();
+        Cps::Closure {
+            args: ClosureArgs::new(vec![k1], false, None),
+            body: Box::new(self.arg.compile(Box::new(|arg_result| {
+                let k3 = Local::gensym();
+                let to_expand = Local::gensym();
+                let transformer_result = Local::gensym();
+                Cps::Closure {
+                    args: ClosureArgs::new(vec![to_expand], false, None),
+                    body: Box::new(Cps::PrimOp(
+                        PrimOp::CallTransformer,
+                        vec![
+                            constant(SchemeValue::Transformer(self.transformer.clone())),
+                            Value::from(to_expand),
+                        ],
+                        transformer_result,
+                        Box::new(Cps::App(
+                            Value::from(k1),
+                            vec![Value::from(transformer_result)],
+                        )),
+                    )),
+                    /*                        Cps::If(
+                        Value::from(cond_arg),
+                        Box::new(
+                            self.success.compile(Box::new(|success| {
+                                Cps::App(success, vec![Value::from(k1)])
+                            })),
+                        ),
+                        Box::new(if let Some(ref failure) = self.failure {
+                            failure.compile(Box::new(|failure| {
+                                Cps::App(failure, vec![Value::from(k1)])
+                            }))
+                        } else {
+                            Cps::App(Value::from(k1), Vec::new())
+                        }),
+                    )),
+                         */
+                    val: k3,
+                    cexp: Box::new(Cps::App(arg_result, vec![Value::from(k3)])),
+                    analysis: AnalysisCache::default(),
+                }
+            }))),
+            val: k2,
+            cexp: Box::new(meta_cont(Value::from(k2))),
+            analysis: AnalysisCache::default(),
         }
     }
 }

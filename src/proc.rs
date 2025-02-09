@@ -48,17 +48,17 @@ pub type AsyncFuncPtr = for<'a> fn(
     cont: &'a Gc<Value>,
 ) -> BoxFuture<'a, Result<Application, Exception>>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum FuncPtr {
     SyncFunc(SyncFuncPtr),
     SyncFuncWithContinuation(SyncFuncWithContinuationPtr),
     AsyncFunc(AsyncFuncPtr),
 }
 
-#[derive(derive_more::Debug)]
+#[derive(Clone, derive_more::Debug)]
 pub struct Closure {
     #[debug(skip)]
-    runtime: Gc<Runtime>,
+    pub runtime: Gc<Runtime>,
     #[debug(skip)]
     env: Record,
     #[debug(skip)]
@@ -100,6 +100,30 @@ impl Closure {
         }
     }
 
+    pub async fn call(&self, args: &[Gc<Value>]) -> Result<Box<[Gc<Value>]>, Exception> {
+        unsafe extern "C" fn just_return(
+            _runtime: *mut GcInner<Runtime>,
+            _env: *const *mut GcInner<Value>,
+            _globals: *const *mut GcInner<Value>,
+            args: *const *mut GcInner<Value>,
+        ) -> *mut Application {
+            crate::runtime::make_return_values(args.read())
+        }
+
+        let mut args = args.to_vec();
+        // TODO: We don't need to create a new one of these every time, we should just have
+        // one
+        args.push(Gc::new(Value::Closure(Closure::new(
+            self.runtime.clone(),
+            Vec::new(),
+            Vec::new(),
+            FuncPtr::SyncFunc(just_return),
+            0,
+            true,
+        ))));
+        self.apply(&args).await?.eval().await
+    }
+
     pub async fn apply(&self, args: &[Gc<Value>]) -> Result<Application, Exception> {
         // Handle arguments
 
@@ -114,10 +138,16 @@ impl Closure {
 
         // Error if the number of arguments provided is incorrect
         if args.len() < self.num_required_args {
-            panic!("Too few arguments");
+            return Err(Exception::wrong_num_of_args(
+                self.num_required_args,
+                args.len(),
+            ));
         }
         if !self.variadic && args.len() > self.num_required_args {
-            panic!("Too many arguments");
+            return Err(Exception::wrong_num_of_args(
+                self.num_required_args,
+                args.len(),
+            ));
         }
 
         // If this function is variadic, create a list to put any extra arguments
@@ -193,14 +223,15 @@ fn values_to_vec_of_ptrs(vals: &[Gc<Value>]) -> Vec<*mut GcInner<Value>> {
 }
 
 pub struct Application {
-    op: Option<Gc<Closure>>,
+    op: Option<Closure>,
     // Consider making this a Cow
     args: Box<[Gc<Value>]>,
 }
 
 impl Application {
-    pub fn new(op: Gc<Closure>, args: impl Into<Record>) -> Self {
+    pub fn new(op: Closure, args: impl Into<Record>) -> Self {
         Self {
+            // We really gotta figure out how to deal with this better
             op: Some(op),
             args: args.into(),
         }
@@ -217,7 +248,7 @@ impl Application {
     /// remains are values. This is the main trampoline of the evaluation engine.
     pub async fn eval(mut self) -> Result<Box<[Gc<Value>]>, Exception> {
         while let Application { op: Some(op), args } = self {
-            self = op.read().apply(&args).await?;
+            self = op.apply(&args).await?;
         }
         // If we have no operator left, return the arguments as the final values:
         Ok(self.args)
@@ -234,7 +265,7 @@ pub fn apply<'a>(
             return Err(Exception::wrong_num_of_args(2, args.len()));
         }
         let op = args[0].read();
-        let op: &Gc<Closure> = op.as_ref().try_into()?;
+        let op: &Closure = op.as_ref().try_into()?;
         let (last, args) = rest_args.split_last().unwrap();
         let mut args = args.to_vec();
         list_to_vec(&last, &mut args);

@@ -16,12 +16,63 @@
 //! free variable in the context of the function's body. Also, _globals_ do not
 //! count as free variables, because we already have a different way for
 //! accessing those.
-//!
-//! ## TODO:
-//! All of these functions should be memoized. They're not insanely expensive but
-//! there's no reason to do duplicate work.
+
+use std::cell::{Ref, RefCell};
 
 use super::*;
+
+#[derive(Debug, Default, Clone)]
+pub struct Analysis {
+    globals: HashSet<Global>,
+    free_variables: HashSet<Local>,
+}
+
+pub(super) type AnalysisCache = RefCell<Option<Analysis>>;
+
+impl Analysis {
+    fn analyze_fix(args: &ClosureArgs, body: &Cps, val: &Local, cexp: &Cps) -> Self {
+        // Calculate globals:
+        let globals = body.globals().union(&cexp.globals()).cloned().collect();
+
+        // Calculate free variables in the cexp
+        let mut free_body = body.free_variables();
+        for arg in args.into_vec() {
+            free_body.remove(&arg);
+        }
+        let mut free_variables: HashSet<_> =
+            free_body.union(&cexp.free_variables()).copied().collect();
+        free_variables.remove(val);
+
+        Self {
+            globals,
+            free_variables,
+        }
+    }
+
+    fn free_variables(&self) -> HashSet<Local> {
+        self.free_variables.clone()
+    }
+
+    fn globals(&self) -> HashSet<Global> {
+        self.globals.clone()
+    }
+
+    fn fetch<'a>(
+        cache: &'a RefCell<Option<Self>>,
+        args: &ClosureArgs,
+        body: &Cps,
+        val: &Local,
+        cexp: &Cps,
+    ) -> Ref<'a, Analysis> {
+        {
+            let mut cached = cache.borrow_mut();
+            if cached.is_none() {
+                *cached = Some(Analysis::analyze_fix(args, body, val, cexp));
+            }
+        }
+        Ref::map(cache.borrow(), |cache| cache.as_ref().unwrap())
+    }
+}
 
 impl Cps {
     pub(super) fn free_variables(&self) -> HashSet<Local> {
@@ -57,21 +108,12 @@ impl Cps {
                 body,
                 val,
                 cexp,
-            } => {
-                let mut free_body = body.free_variables();
-                for arg in args.into_vec() {
-                    free_body.remove(&arg);
-                }
-                let mut free: HashSet<_> =
-                    free_body.union(&cexp.free_variables()).copied().collect();
-                free.remove(val);
-                free
-            }
+                analysis,
+            } => Analysis::fetch(analysis, args, &body, val, cexp).free_variables(),
             Self::ReturnValues(_) => HashSet::new(),
         }
     }
 
-    // I could merge these two into one function, but I"m lazy.
     pub(super) fn globals(&self) -> HashSet<Global> {
         match self {
             Self::AllocCell(_, cexpr) => cexpr.globals(),
@@ -94,9 +136,13 @@ impl Cps {
                 globals.extend(op.to_global());
                 globals
             }
-            Self::Closure { body, cexp, .. } => {
-                body.globals().union(&cexp.globals()).cloned().collect()
-            }
+            Self::Closure {
+                args,
+                body,
+                val,
+                cexp,
+                analysis,
+            } => Analysis::fetch(analysis, args, &body, val, cexp).globals(),
             Self::ReturnValues(_) => HashSet::new(),
         }
     }

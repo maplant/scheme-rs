@@ -7,7 +7,7 @@ use crate::{
     parse::ParseSyntaxError,
     proc::{AsyncFuncPtr, Closure, FuncPtr},
     runtime::Runtime,
-    syntax::{Span, Syntax},
+    syntax::{Identifier, Span, Syntax},
     value::Value,
 };
 pub use proc_macros::bridge;
@@ -167,17 +167,16 @@ impl Registry {
                 .entry(lib_name)
                 .or_insert_with(|| Gc::new(Library::default()));
             let mut lib = lib.write();
-            lib.def_var(bridge_fn.name.to_string());
-            lib.set_var(
-                bridge_fn.name,
-                Value::Closure(Gc::new(Closure::new(
+            lib.def_var(
+                Identifier::new(bridge_fn.name.to_string()),
+                Value::Closure(Closure::new(
                     runtime.clone(),
                     Vec::new(),
                     Vec::new(),
                     FuncPtr::AsyncFunc(bridge_fn.wrapper),
                     bridge_fn.num_args,
                     bridge_fn.variadic,
-                ))),
+                )),
             );
         }
 

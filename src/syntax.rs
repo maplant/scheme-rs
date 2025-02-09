@@ -1,12 +1,12 @@
 use crate::{
-    ast::Literal,
-    env::{Environment, Top},
+    ast::{Expression, Literal},
+    cps::Compile,
+    env::{Environment, Macro, Top},
     exception::Exception,
     gc::{Gc, Trace},
     lex::{InputSpan, Token},
     lists::list_to_vec_with_null,
     parse::ParseSyntaxError,
-    proc::Closure,
     value::Value,
 };
 use futures::future::BoxFuture;
@@ -134,7 +134,6 @@ impl Syntax {
         }
     }
 
-    // TODO: Return a Cow<'a, Self> instead to avoid the clone.
     pub fn from_datum(marks: &BTreeSet<Mark>, datum: &Gc<Value>) -> Self {
         let datum = datum.read();
         // TODO: conjure up better values for Span
@@ -195,13 +194,10 @@ impl Syntax {
     #[allow(dead_code)]
     async fn apply_transformer<T: Top>(
         &self,
-        _env: &Environment<T>,
-        // _macro_source: MacroSource<T>,
-        _transformer: Gc<Closure>,
+        env: &Environment<T>,
+        mac: Macro<T>,
         // cont: &Closure,
     ) -> Result<Expansion<T>, Exception> {
-        todo!()
-        /*
         // Create a new mark for the expansion context
         let new_mark = Mark::new();
         // Apply the new mark to the input
@@ -212,37 +208,47 @@ impl Syntax {
         // Call the transformer with the input:
         // let transform = transformer.read().as_callable().unwrap();
         let mut output: Syntax = {
-            /*
-            let output = transform
-                .call(vec![Gc::new(Value::Syntax(input))], cont)
-                .await?
-                .eval(cont)
-                .await?
-                .require_one()?;
-            let output = output.read();
-            match &*output {
-                Value::Syntax(syntax) => syntax.clone(),
-                _ => todo!(),
-            }
-             */
-            todo!()
+            let transformer_output = mac
+                .transformer
+                .call(&[Gc::new(Value::Syntax(input))])
+                .await?;
+            let transformer_output_syn = {
+                let transformer_output_read = transformer_output[0].read();
+                let syntax: &Syntax = transformer_output_read.as_ref().try_into()?;
+                syntax.clone()
+            };
+            // Evaluate the syntax
+            let transformer_output_expr =
+                Expression::parse(&mac.transformer.runtime, transformer_output_syn, env)
+                    .await
+                    .unwrap();
+            let transformer_ouput_cps_expr = transformer_output_expr.compile_top_level();
+            let result = mac
+                .transformer
+                .runtime
+                .compile_expr(transformer_ouput_cps_expr)
+                .await
+                .unwrap()
+                .call(&[])
+                .await?;
+            let result_read = result[0].read();
+            let expanded: &Syntax = result_read.as_ref().try_into()?;
+            expanded.clone()
         };
         // Apply the new mark to the output
         output.mark(new_mark);
 
-        let new_env = env.new_macro_expansion(new_mark, macro_source);
+        let new_env = env.new_macro_expansion(new_mark, mac.source_env.clone());
 
         Ok(Expansion::new_expanded(new_env, output))
-        */
     }
 
     fn expand_once<'a, T: Top>(
         &'a self,
-        _env: &'a Environment<T>,
+        env: &'a Environment<T>,
         // cont: &Closure,
     ) -> BoxFuture<'a, Result<Expansion<T>, Exception>> {
         Box::pin(async move {
-            /*
             match self {
                 Self::List { list, .. } => {
                     // TODO: If list head is a list, do we expand this in here or in proc call?
@@ -251,34 +257,35 @@ impl Syntax {
                         Some(Self::Identifier { ident, .. }) => ident,
                         _ => return Ok(Expansion::Unexpanded),
                     };
-                    if let Some((macro_env, transformer)) = env.fetch_macro(ident) {
-                        return self.apply_transformer(env, macro_env, transformer).await;
+                    if let Some(mac) = env.fetch_macro(ident) {
+                        return self.apply_transformer(env, mac).await;
                     }
 
                     // Check for set! macro
                     match list.as_slice() {
                         [Syntax::Identifier { ident, .. }, ..] if ident.name == "set!" => {
                             // Look for variable transformer:
-                            if let Some((macro_env, transformer)) = env.fetch_macro(ident) {
-                                if !transformer.read().is_variable_transformer() {
+                            if let Some(mac) = env.fetch_macro(ident) {
+                                /*
+                                if !mac.transformer.read().is_variable_transformer() {
                                     return Err(Exception::error(
                                         "Not a variable transformer".to_string(),
                                     ));
                                 }
-                                return self.apply_transformer(env, macro_env, transformer).await;
+                                */
+                                return self.apply_transformer(env, mac).await;
                             }
                         }
                         _ => (),
                     }
                 }
                 Self::Identifier { ident, .. } => {
-                    if let Some((macro_env, transformer)) = env.fetch_macro(ident) {
-                        return self.apply_transformer(env, macro_env, transformer).await;
+                    if let Some(mac) = env.fetch_macro(ident) {
+                        return self.apply_transformer(env, mac).await;
                     }
                 }
                 _ => (),
             }
-             */
             Ok(Expansion::Unexpanded)
         })
     }
@@ -340,13 +347,11 @@ pub enum Expansion<T: Trace> {
     },
 }
 
-/*
 impl<T: Trace> Expansion<T> {
     fn new_expanded(new_env: Environment<T>, syntax: Syntax) -> Self {
         Self::Expanded { new_env, syntax }
     }
 }
-*/
 
 pub struct FullyExpanded<T: Trace> {
     pub expansion_env: Environment<T>,

@@ -1,8 +1,10 @@
 use crate::{
     cps::TopLevelExpr,
+    expand::Transformer,
     gc::{init_gc, Gc, GcInner},
     lists::list_to_vec,
     proc::{Application, Closure, FuncPtr, SyncFuncPtr, SyncFuncWithContinuationPtr},
+    syntax::Syntax,
     value::Value,
 };
 use inkwell::{
@@ -17,6 +19,8 @@ use proc_macros::Trace;
 use std::mem::ManuallyDrop;
 use tokio::sync::{mpsc, oneshot};
 
+/// Scheme-rs Runtime
+///
 /// # Safety:
 ///
 /// The runtime contains the only live references to the LLVM Context and therefore
@@ -59,7 +63,8 @@ impl Gc<Runtime> {
             compilation_unit: expr,
             runtime: self.clone(),
         };
-        self.read().compilation_buffer_tx.send(task).await.unwrap();
+        let sender = { self.read().compilation_buffer_tx.clone() };
+        sender.send(task).await.unwrap();
         // Wait for the compilation task to complete:
         completion_rx.await.unwrap()
     }
@@ -208,6 +213,12 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     );
     let f = module.add_function("make_closure_with_continuation", sig, None);
     ee.add_global_mapping(&f, make_closure_with_continuation as usize);
+
+    // fn call_transformer(trans: *Value, arg: *Value) -> *Value
+    //
+    let sig = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+    let f = module.add_function("call_transformer", sig, None);
+    ee.add_global_mapping(&f, call_transformer as usize);
 }
 
 /// Allocate a new Gc with a value of undefined
@@ -237,14 +248,14 @@ unsafe extern "C" fn make_application(
 
     let op = Gc::from_ptr(op);
     let op_read = op.read();
-    let op: &Gc<Closure> = op_read.as_ref().try_into().unwrap();
+    let op: &Closure = op_read.as_ref().try_into().unwrap();
     let app = Application::new(op.clone(), gc_args);
 
     Box::into_raw(Box::new(app))
 }
 
 /// Create a boxed application that simply returns its arguments
-unsafe extern "C" fn make_return_values(args: *mut GcInner<Value>) -> *mut Application {
+pub unsafe extern "C" fn make_return_values(args: *mut GcInner<Value>) -> *mut Application {
     let args = Gc::from_ptr(args);
     let mut flattened = Vec::new();
     list_to_vec(&args, &mut flattened);
@@ -299,7 +310,7 @@ unsafe extern "C" fn make_closure(
         num_required_args as usize,
         variadic,
     );
-    ManuallyDrop::new(Gc::new(Value::Closure(Gc::new(closure)))).as_ptr()
+    ManuallyDrop::new(Gc::new(Value::Closure(closure))).as_ptr()
 }
 
 /// Allocate a closure for a function that takes a continuation
@@ -334,5 +345,23 @@ unsafe extern "C" fn make_closure_with_continuation(
         num_required_args as usize,
         variadic,
     );
-    ManuallyDrop::new(Gc::new(Value::Closure(Gc::new(closure)))).as_ptr()
+    ManuallyDrop::new(Gc::new(Value::Closure(closure))).as_ptr()
+}
+
+/// Call a transformer with the given argument and return the expansion
+unsafe extern "C" fn call_transformer(
+    transformer: *mut GcInner<Value>,
+    arg: *mut GcInner<Value>,
+) -> *mut GcInner<Value> {
+    let trans = Gc::from_ptr(transformer);
+    let trans_read = trans.read();
+    let trans: &Transformer = trans_read.as_ref().try_into().unwrap();
+
+    let arg = Gc::from_ptr(arg);
+    let arg_read = arg.read();
+    let arg: &Syntax = arg_read.as_ref().try_into().unwrap();
+
+    let expanded = trans.expand(arg).unwrap();
+
+    ManuallyDrop::new(Gc::new(Value::Syntax(expanded))).as_ptr()
 }

@@ -1,6 +1,7 @@
 use crate::{
     ast,
     exception::Exception,
+    expand::Transformer,
     gc::{Gc, Trace},
     num::Number,
     proc::Closure,
@@ -26,10 +27,11 @@ pub enum Value {
     Vector(Vec<Value>),
     ByteVector(Vec<u8>),
     Syntax(Syntax),
-    Closure(Gc<Closure>),
+    Closure(Closure),
     Record(Record),
     RecordType(Gc<RecordType>),
     Future(Future),
+    Transformer(Transformer),
 }
 
 impl Value {
@@ -92,6 +94,7 @@ impl Value {
             Self::Record(_) => "record",
             Self::RecordType(_) => "record-type",
             Self::Undefined => "undefined",
+            Self::Transformer(_) => "transformer",
         }
     }
 
@@ -138,6 +141,7 @@ impl Clone for Value {
             Self::Record(record) => Self::Record(record.clone()),
             Self::RecordType(rt) => Self::RecordType(rt.clone()),
             Self::Undefined => Self::Undefined,
+            Self::Transformer(trans) => Self::Transformer(trans.clone()),
         }
     }
 }
@@ -173,6 +177,7 @@ impl fmt::Display for Value {
             Self::Record(record) => write!(f, "<{record:?}>"),
             Self::RecordType(record_type) => write!(f, "<{record_type:?}>"),
             Self::Undefined => write!(f, "<undefined>"),
+            Self::Transformer(_) => write!(f, "<transformer>"),
         }
     }
 }
@@ -206,6 +211,7 @@ impl fmt::Debug for Value {
             Self::Record(record) => write!(f, "<{record:?}>"),
             Self::RecordType(record_type) => write!(f, "<{record_type:?}>"),
             Self::Undefined => write!(f, "<undefined>"),
+            Self::Transformer(_) => write!(f, "<transformer>"),
         }
     }
 }
@@ -251,10 +257,10 @@ impl<'a> TryFrom<&'a Value> for &'a Number {
     }
 }
 
-impl<'a> TryFrom<&'a Value> for &'a Gc<Closure> {
+impl<'a> TryFrom<&'a Value> for &'a Closure {
     type Error = Exception;
 
-    fn try_from(v: &'a Value) -> Result<&'a Gc<Closure>, Self::Error> {
+    fn try_from(v: &'a Value) -> Result<&'a Closure, Self::Error> {
         match v {
             Value::Closure(proc) => Ok(proc),
             x => Err(Exception::invalid_type("procedure", x.type_name())),
@@ -291,6 +297,28 @@ impl<'a> TryFrom<&'a Value> for &'a Gc<RecordType> {
         match v {
             Value::RecordType(rt) => Ok(rt),
             x => Err(Exception::invalid_type("record-type", x.type_name())),
+        }
+    }
+}
+
+impl<'a> TryFrom<&'a Value> for &'a Transformer {
+    type Error = Exception;
+
+    fn try_from(v: &'a Value) -> Result<&'a Transformer, Self::Error> {
+        match v {
+            Value::Transformer(t) => Ok(t),
+            x => Err(Exception::invalid_type("transformer", x.type_name())),
+        }
+    }
+}
+
+impl<'a> TryFrom<&'a Value> for &'a Syntax {
+    type Error = Exception;
+
+    fn try_from(v: &'a Value) -> Result<&'a Syntax, Self::Error> {
+        match v {
+            Value::Syntax(s) => Ok(s),
+            x => Err(Exception::invalid_type("transformer", x.type_name())),
         }
     }
 }

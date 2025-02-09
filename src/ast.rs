@@ -1,12 +1,14 @@
 //! Data structures for expanding and representing Scheme code.
 
 use crate::{
-    cps::PrimOp,
+    cps::{Compile, PrimOp},
     env::{Environment, Local, Top, Var},
     expand::Transformer,
-    gc::Trace,
+    gc::{Gc, Trace},
     num::Number,
+    proc::Closure,
     records::DefineRecordType,
+    runtime::Runtime,
     syntax::{Span, Syntax},
     value::Value,
 };
@@ -19,12 +21,13 @@ use either::Either;
 
 use derive_more::From;
 use futures::future::BoxFuture;
+use inkwell::builder::BuilderError;
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
 };
 
-#[derive(Debug, Clone, Trace)]
+#[derive(Debug)]
 pub enum ParseAstError {
     /// The most general error. Something just looks bad.
     ///
@@ -58,7 +61,15 @@ pub enum ParseAstError {
         second: Span,
     },
 
+    BuilderError(BuilderError),
+
     Exception(Exception),
+}
+
+impl From<BuilderError> for ParseAstError {
+    fn from(be: BuilderError) -> Self {
+        Self::BuilderError(be)
+    }
 }
 
 impl From<Exception> for ParseAstError {
@@ -75,18 +86,17 @@ pub enum AstNode {
 
 impl AstNode {
     pub async fn from_syntax(
+        runtime: &Gc<Runtime>,
         syn: Syntax,
         env: &Environment<impl Top>,
     ) -> Result<Option<Self>, ParseAstError> {
         match syn.as_list() {
-            /*
             Some(
                 [Syntax::Identifier { ident, .. }, Syntax::Identifier { ident: name, .. }, expr, Syntax::Null { .. }],
             ) if ident.name == "define-syntax" => {
-                define_syntax(name.clone(), expr.clone(), &env /* cont */).await?;
+                define_syntax(runtime, name.clone(), expr.clone(), &env /* cont */).await?;
                 Ok(None)
             }
-            */
 
             /*
             Some([Syntax::Identifier { ident, span, .. }, body @ .., Syntax::Null { .. }])
@@ -104,11 +114,11 @@ impl AstNode {
             }
             Some(syn @ [Syntax::Identifier { ident, span, .. }, ..]) if ident == "define" => {
                 Ok(Some(Self::Definition(
-                    Definition::parse(syn, env, span /* cont */).await?,
+                    Definition::parse(runtime, syn, env, span /* cont */).await?,
                 )))
             }
             _ => Ok(Some(Self::Expression(
-                Expression::parse(syn, env /* cont */).await?,
+                Expression::parse(runtime, syn, env /* cont */).await?,
             ))),
         }
     }
@@ -137,6 +147,7 @@ impl Definition {
     }
 
     async fn parse(
+        runtime: &Gc<Runtime>,
         syn: &[Syntax],
         env: &Environment<impl Top>,
         span: &Span,
@@ -147,7 +158,7 @@ impl Definition {
                 Ok(Definition::DefineVar(DefineVar {
                     var: env.def_var(ident.clone()),
 
-                    val: Arc::new(Expression::parse(expr.clone(), env /* cont */).await?),
+                    val: Arc::new(Expression::parse(runtime, expr.clone(), env /* cont */).await?),
                     next: None,
                 }))
             }
@@ -224,8 +235,10 @@ impl Definition {
                         };
 
                         // Parse the body:
-                        let body =
-                            DefinitionBody::parse(body, &new_env, func_span /* cont */).await?;
+                        let body = DefinitionBody::parse(
+                            runtime, body, &new_env, func_span, /* cont */
+                        )
+                        .await?;
 
                         Ok(Self::DefineFunc(DefineFunc {
                             var,
@@ -257,8 +270,8 @@ pub struct DefineFunc {
     pub next: Option<Either<Box<Definition>, ExprBody>>,
 }
 
-/*
 pub(super) async fn define_syntax(
+    runtime: &Gc<Runtime>,
     ident: Identifier,
     expr: Syntax,
     env: &Environment<impl Top>,
@@ -268,18 +281,16 @@ pub(super) async fn define_syntax(
         expanded,
         expansion_env,
     } = expr.expand(&env /* cont */).await?;
-    /*
-    let value = Expression::parse(expanded, &expansion_env, /* cont */)
-        .await?
-        .eval(env, cont)
-        .await?
-    .require_one()?;
-     */
 
-    env.def_macro(ident, todo!());
+    let expr = Expression::parse(runtime, expanded, &expansion_env /* cont */).await?;
+    let cps_expr = expr.compile_top_level();
+    let mac = runtime.compile_expr(cps_expr).await?.call(&[]).await?;
+    let mac_read = mac[0].read();
+    let transformer: &Closure = mac_read.as_ref().try_into().unwrap();
+    env.def_macro(ident, transformer.clone());
+
     Ok(())
 }
-*/
 
 #[derive(Debug, Clone, Trace)]
 pub enum Expression {
@@ -301,7 +312,8 @@ pub enum Expression {
 }
 
 impl Expression {
-    async fn parse(
+    pub async fn parse(
+        runtime: &Gc<Runtime>,
         syn: Syntax,
         env: &Environment<impl Top>,
         // cont: &Closure
@@ -310,14 +322,15 @@ impl Expression {
             expansion_env,
             expanded,
         } = syn.expand(env /* cont */).await?;
-        Self::parse_expanded(expanded, &expansion_env /* cont*/).await
+        Self::parse_expanded(runtime, expanded, &expansion_env /* cont*/).await
     }
 
-    fn parse_expanded(
+    fn parse_expanded<'a>(
+        runtime: &'a Gc<Runtime>,
         syn: Syntax,
-        env: &Environment<impl Top>,
+        env: &'a Environment<impl Top>,
         // cont: &Closure,
-    ) -> BoxFuture<'_, Result<Self, ParseAstError>> {
+    ) -> BoxFuture<'a, Result<Self, ParseAstError>> {
         Box::pin(async move {
             match syn {
                 Syntax::Null { span } => Err(ParseAstError::UnexpectedEmptyList(span)),
@@ -348,40 +361,40 @@ impl Expression {
                     [Syntax::Identifier { ident, .. }, tail @ .., Syntax::Null { .. }]
                         if ident == "begin" =>
                     {
-                        ExprBody::parse(tail, env /* cont */)
+                        ExprBody::parse(runtime, tail, env /* cont */)
                             .await
                             .map(Expression::Begin)
                     }
                     [Syntax::Identifier { ident, span, .. }, tail @ .., Syntax::Null { .. }]
                         if ident == "lambda" =>
                     {
-                        Lambda::parse(tail, env, span /* cont */)
+                        Lambda::parse(runtime, tail, env, span /* cont */)
                             .await
                             .map(Expression::Lambda)
                     }
                     [Syntax::Identifier { ident, span, .. }, tail @ .., Syntax::Null { .. }]
                         if ident == "let" =>
                     {
-                        Let::parse(tail, env, span /* cont */)
+                        Let::parse(runtime, tail, env, span /* cont */)
                             .await
                             .map(Expression::Let)
                     }
                     [Syntax::Identifier { ident, span, .. }, tail @ .., Syntax::Null { .. }]
                         if ident == "if" =>
                     {
-                        If::parse(tail, env, span /* cont */)
+                        If::parse(runtime, tail, env, span /* cont */)
                             .await
                             .map(Expression::If)
                     }
                     [Syntax::Identifier { ident, .. }, tail @ .., Syntax::Null { .. }]
                         if ident == "and" =>
                     {
-                        And::parse(tail, env /* cont */).await.map(Expression::And)
+                        And::parse(runtime, tail, env /* cont */).await.map(Expression::And)
                     }
                     [Syntax::Identifier { ident, .. }, tail @ .., Syntax::Null { .. }]
                         if ident == "or" =>
                     {
-                        Or::parse(tail, env /* cont */).await.map(Expression::Or)
+                        Or::parse(runtime, tail, env /* cont */).await.map(Expression::Or)
                     }
                     [Syntax::Identifier { ident, span, .. }, tail @ ..] if ident == "quote" => {
                         Quote::parse(tail, span).await.map(Expression::Quote)
@@ -396,7 +409,7 @@ impl Expression {
                     [Syntax::Identifier { ident, span, .. }, tail @ .., Syntax::Null { .. }]
                         if ident == "syntax-case" =>
                     {
-                        SyntaxCase::parse(tail, env, span /* cont */)
+                        SyntaxCase::parse(runtime, tail, env, span /* cont */)
                             .await
                             .map(Expression::SyntaxCase)
                     }
@@ -405,7 +418,7 @@ impl Expression {
                     [Syntax::Identifier { ident, span, .. }, tail @ .., Syntax::Null { .. }]
                         if ident == "set!" =>
                     {
-                        Set::parse(tail, env, span /* cont */)
+                        Set::parse(runtime, tail, env, span /* cont */)
                             .await
                             .map(Expression::Set)
                     }
@@ -419,7 +432,7 @@ impl Expression {
 
                     // Regular old function call:
                     [operator, args @ .., Syntax::Null { .. }] => {
-                        Apply::parse(operator.clone(), args, env /* cont */)
+                        Apply::parse(runtime, operator.clone(), args, env /* cont */)
                             .await
                             .map(Expression::Apply)
                     }
@@ -485,6 +498,7 @@ pub struct Apply {
 
 impl Apply {
     async fn parse(
+        runtime: &Gc<Runtime>,
         operator: Syntax,
         args: &[Syntax],
         env: &Environment<impl Top>,
@@ -497,11 +511,13 @@ impl Apply {
         };
         let operator = match proc_name.parse::<PrimOp>() {
             Ok(prim_op) => Either::Right(prim_op),
-            _ => Either::Left(Box::new(Expression::parse(operator, env /* cont */).await?)),
+            _ => Either::Left(Box::new(
+                Expression::parse(runtime, operator, env /* cont */).await?,
+            )),
         };
         let mut parsed_args = Vec::new();
         for arg in args {
-            parsed_args.push(Expression::parse(arg.clone(), env /* cont */).await?);
+            parsed_args.push(Expression::parse(runtime, arg.clone(), env /* cont */).await?);
         }
         Ok(Apply {
             operator,
@@ -520,19 +536,22 @@ pub struct Lambda {
 
 impl Lambda {
     async fn parse(
+        runtime: &Gc<Runtime>,
         sexprs: &[Syntax],
         env: &Environment<impl Top>,
         span: &Span,
         // cont: &Closure,
     ) -> Result<Self, ParseAstError> {
         match sexprs {
-            [Syntax::Null { .. }, body @ ..] => parse_lambda(&[], body, env, span /* cont */).await,
+            [Syntax::Null { .. }, body @ ..] => {
+                parse_lambda(runtime, &[], body, env, span /* cont */).await
+            }
             [Syntax::List { list: args, .. }, body @ ..] => {
-                parse_lambda(args, body, env, span /* cont */).await
+                parse_lambda(runtime, args, body, env, span /* cont */).await
             }
             [ident @ Syntax::Identifier { .. }, body @ ..] => {
                 let args = &[ident.clone()];
-                parse_lambda(args, body, env, span /* cont */).await
+                parse_lambda(runtime, args, body, env, span /* cont */).await
             }
             _ => Err(ParseAstError::BadForm(span.clone())),
         }
@@ -540,6 +559,7 @@ impl Lambda {
 }
 
 async fn parse_lambda(
+    runtime: &Gc<Runtime>,
     args: &[Syntax],
     body: &[Syntax],
     env: &Environment<impl Top>,
@@ -598,7 +618,7 @@ async fn parse_lambda(
         Formals::FixedArgs(Vec::new())
     };
 
-    let body = DefinitionBody::parse(body, &new_contour, span /* cont */).await?;
+    let body = DefinitionBody::parse(runtime, body, &new_contour, span /* cont */).await?;
 
     Ok(Lambda { args, body })
 }
@@ -615,6 +635,7 @@ impl Let {
     }
 
     async fn parse(
+        runtime: &Gc<Runtime>,
         syn: &[Syntax],
         env: &Environment<impl Top>,
         span: &Span,
@@ -622,17 +643,25 @@ impl Let {
     ) -> Result<Self, ParseAstError> {
         match syn {
             [Syntax::Null { .. }, body @ ..] => {
-                parse_let(None, &[], body, env, span /* cont */).await
+                parse_let(runtime, None, &[], body, env, span /* cont */).await
             }
             [Syntax::List { list: bindings, .. }, body @ ..] => {
-                parse_let(None, bindings, body, env, span /* cont */).await
+                parse_let(runtime, None, bindings, body, env, span /* cont */).await
             }
             // Named let:
             [Syntax::Identifier { ident, .. }, Syntax::List { list: bindings, .. }, body @ ..] => {
-                parse_let(Some(ident), bindings, body, env, span /* cont */).await
+                parse_let(
+                    runtime,
+                    Some(ident),
+                    bindings,
+                    body,
+                    env,
+                    span, /* cont */
+                )
+                .await
             }
             [Syntax::Identifier { ident, .. }, Syntax::Null { .. }, body @ ..] => {
-                parse_let(Some(ident), &[], body, env, span /* cont */).await
+                parse_let(runtime, Some(ident), &[], body, env, span /* cont */).await
             }
             _ => Err(ParseAstError::BadForm(span.clone())),
         }
@@ -640,6 +669,7 @@ impl Let {
 }
 
 async fn parse_let(
+    runtime: &Gc<Runtime>,
     name: Option<&Identifier>,
     bindings: &[Syntax],
     body: &[Syntax],
@@ -655,7 +685,8 @@ async fn parse_let(
         [] | [Syntax::Null { .. }] => (),
         [bindings @ .., Syntax::Null { .. }] => {
             for binding in bindings {
-                let binding = LetBinding::parse(binding, env, &previously_bound /* cont */).await?;
+                let binding =
+                    LetBinding::parse(runtime, binding, env, &previously_bound /* cont */).await?;
                 previously_bound.insert(binding.ident.clone(), binding.span.clone());
                 let Var::Local(var) = new_contour.def_var(binding.ident.clone()) else {
                     unreachable!()
@@ -670,7 +701,7 @@ async fn parse_let(
 
     let lambda_var = name.map(|name| new_contour.def_var(name.clone()));
 
-    let ast_body = DefinitionBody::parse(body, &new_contour, span /* cont */).await?;
+    let ast_body = DefinitionBody::parse(runtime, body, &new_contour, span /* cont */).await?;
 
     // TODO: Lot of unnecessary cloning here, fix that.
     let mut bindings: Vec<_> = parsed_bindings
@@ -693,7 +724,7 @@ async fn parse_let(
             .collect();
         let lambda = Lambda {
             args: Formals::FixedArgs(args),
-            body: DefinitionBody::parse(body, &new_new_contour, span /* cont */).await?,
+            body: DefinitionBody::parse(runtime, body, &new_new_contour, span /* cont */).await?,
         };
         bindings.push((lambda_var, Expression::Lambda(lambda)));
     }
@@ -712,6 +743,7 @@ struct LetBinding {
 
 impl LetBinding {
     async fn parse(
+        runtime: &Gc<Runtime>,
         form: &Syntax,
         env: &Environment<impl Top>,
         previously_bound: &HashMap<Identifier, Span>,
@@ -733,7 +765,7 @@ impl LetBinding {
                 });
             }
 
-            let expr = Expression::parse(expr.clone(), env /* cont */).await?;
+            let expr = Expression::parse(runtime, expr.clone(), env /* cont */).await?;
 
             Ok(LetBinding {
                 ident: ident.clone(),
@@ -754,6 +786,7 @@ pub struct Set {
 
 impl Set {
     async fn parse(
+        runtime: &Gc<Runtime>,
         exprs: &[Syntax],
         env: &Environment<impl Top>,
         span: &Span,
@@ -765,7 +798,7 @@ impl Set {
                 var: env
                     .fetch_var(ident)
                     .ok_or_else(|| ParseAstError::UndefinedVariable(ident.clone()))?,
-                val: Arc::new(Expression::parse(expr.clone(), env /* cont */).await?),
+                val: Arc::new(Expression::parse(runtime, expr.clone(), env /* cont */).await?),
             }),
             [arg1, _] => Err(ParseAstError::ExpectedIdentifier(arg1.span().clone())),
             [_, _, arg3, ..] => Err(ParseAstError::UnexpectedArgument(arg3.span().clone())),
@@ -783,6 +816,7 @@ pub struct If {
 
 impl If {
     async fn parse(
+        runtime: &Gc<Runtime>,
         exprs: &[Syntax],
         env: &Environment<impl Top>,
         span: &Span,
@@ -790,15 +824,19 @@ impl If {
     ) -> Result<Self, ParseAstError> {
         match exprs {
             [cond, success] => Ok(If {
-                cond: Arc::new(Expression::parse(cond.clone(), env /* cont */).await?),
-                success: Arc::new(Expression::parse(success.clone(), env /* cont */).await?),
+                cond: Arc::new(Expression::parse(runtime, cond.clone(), env /* cont */).await?),
+                success: Arc::new(
+                    Expression::parse(runtime, success.clone(), env /* cont */).await?,
+                ),
                 failure: None,
             }),
             [cond, success, failure] => Ok(If {
-                cond: Arc::new(Expression::parse(cond.clone(), env /* cont */).await?),
-                success: Arc::new(Expression::parse(success.clone(), env /* cont */).await?),
+                cond: Arc::new(Expression::parse(runtime, cond.clone(), env /* cont */).await?),
+                success: Arc::new(
+                    Expression::parse(runtime, success.clone(), env /* cont */).await?,
+                ),
                 failure: Some(Arc::new(
-                    Expression::parse(failure.clone(), env /* cont */).await?,
+                    Expression::parse(runtime, failure.clone(), env /* cont */).await?,
                 )),
             }),
             [] => Err(ParseAstError::ExpectedArgument(span.clone())),
@@ -865,6 +903,7 @@ impl DefinitionBody {
     /// Parse the body. body is expected to be a list of valid syntax objects, and should not include
     /// _any_ nulls, including one at the end.
     fn parse<'a>(
+        runtime: &'a Gc<Runtime>,
         body: &'a [Syntax],
         env: &'a Environment<impl Top>,
         span: &'a Span,
@@ -874,7 +913,10 @@ impl DefinitionBody {
             let mut defs = Vec::new();
             let mut exprs = Vec::new();
 
-            splice_in(&mut defs, &mut exprs, body, env, span /* cont */).await?;
+            splice_in(
+                runtime, &mut defs, &mut exprs, body, env, span, /* cont */
+            )
+            .await?;
 
             let mut defs_parsed = Vec::new();
             let mut exprs_parsed = Vec::new();
@@ -883,6 +925,7 @@ impl DefinitionBody {
                 let def = match def {
                     Either::Left(def) => {
                         Definition::parse(
+                            runtime,
                             def.expanded.as_list().unwrap(),
                             &def.expansion_env,
                             def.expanded.span(),
@@ -898,8 +941,12 @@ impl DefinitionBody {
             for expr in exprs.into_iter() {
                 // let new_expansion_env = env.push_expansion_env(expr.expansion_ctxs);
                 exprs_parsed.push(
-                    Expression::parse_expanded(expr.expanded, &expr.expansion_env /* cont */)
-                        .await?,
+                    Expression::parse_expanded(
+                        runtime,
+                        expr.expanded,
+                        &expr.expansion_env, /* cont */
+                    )
+                    .await?,
                 );
             }
 
@@ -929,13 +976,14 @@ impl ExprBody {
 
     /// Differs from Body by being purely expression based. No definitions allowed.
     async fn parse(
+        runtime: &Gc<Runtime>,
         body: &[Syntax],
         env: &Environment<impl Top>,
         // cont: &Closure
     ) -> Result<Self, ParseAstError> {
         let mut exprs = Vec::new();
         for sexpr in body {
-            let parsed = Expression::parse(sexpr.clone(), env /* cont */).await?;
+            let parsed = Expression::parse(runtime, sexpr.clone(), env /* cont */).await?;
             exprs.push(parsed);
         }
         Ok(Self { exprs })
@@ -943,6 +991,7 @@ impl ExprBody {
 }
 
 fn splice_in<'a, T: Top>(
+    runtime: &'a Gc<Runtime>,
     defs: &'a mut Vec<Either<FullyExpanded<T>, DefineRecordType>>,
     exprs: &'a mut Vec<FullyExpanded<T>>,
     body: &'a [Syntax],
@@ -965,18 +1014,29 @@ fn splice_in<'a, T: Top>(
                     Some([Syntax::Identifier { ident, .. }, body @ .., Syntax::Null { .. }])
                         if ident == "begin" =>
                     {
-                        splice_in(defs, exprs, body, &expansion_env, span /* cont */).await?;
+                        splice_in(
+                            runtime,
+                            defs,
+                            exprs,
+                            body,
+                            &expansion_env,
+                            span, /* cont */
+                        )
+                        .await?;
                         continue;
                     }
-                    /*
                     Some(
                         [Syntax::Identifier { ident, .. }, Syntax::Identifier { ident: name, .. }, expr, Syntax::Null { .. }],
                     ) if ident == "define-syntax" => {
-                        define_syntax(name.clone(), expr.clone(), &expansion_env /* cont */)
-                            .await?;
+                        define_syntax(
+                            runtime,
+                            name.clone(),
+                            expr.clone(),
+                            &expansion_env, /* cont */
+                        )
+                        .await?;
                         continue;
                     }
-                    */
                     Some(
                         [Syntax::Identifier { ident, span, .. }, def, .., Syntax::Null { .. }],
                     ) if ident == "define" => {
@@ -1037,13 +1097,14 @@ impl And {
 
 impl And {
     async fn parse(
+        runtime: &Gc<Runtime>,
         exprs: &[Syntax],
         env: &Environment<impl Top>,
         // cont: &Closure
     ) -> Result<Self, ParseAstError> {
         let mut output = Vec::new();
         for expr in exprs {
-            let expr = Expression::parse(expr.clone(), env /* cont */).await?;
+            let expr = Expression::parse(runtime, expr.clone(), env /* cont */).await?;
             output.push(expr);
         }
         Ok(Self::new(output))
@@ -1061,13 +1122,14 @@ impl Or {
     }
 
     async fn parse(
+        runtime: &Gc<Runtime>,
         exprs: &[Syntax],
         env: &Environment<impl Top>,
         // cont: &Closure
     ) -> Result<Self, ParseAstError> {
         let mut output = Vec::new();
         for expr in exprs {
-            let expr = Expression::parse(expr.clone(), env /* cont */).await?;
+            let expr = Expression::parse(runtime, expr.clone(), env /* cont */).await?;
             output.push(expr);
         }
         Ok(Self::new(output))
@@ -1098,6 +1160,7 @@ pub struct SyntaxCase {
 
 impl SyntaxCase {
     async fn parse(
+        runtime: &Gc<Runtime>,
         exprs: &[Syntax],
         env: &Environment<impl Top>,
         span: &Span,
@@ -1134,7 +1197,7 @@ impl SyntaxCase {
             }
         }
         Ok(SyntaxCase {
-            arg: Arc::new(Expression::parse(arg.clone(), env /* cont */).await?),
+            arg: Arc::new(Expression::parse(runtime, arg.clone(), env /* cont */).await?),
             transformer: Transformer {
                 rules: syntax_rules,
                 is_variable_transformer: false,

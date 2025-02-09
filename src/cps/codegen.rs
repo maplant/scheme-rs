@@ -195,11 +195,16 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 self.store_codegen(&args[1], &args[0])?;
                 self.cps_codegen(*cexpr, allocs, deferred)?;
             }
+            Cps::PrimOp(PrimOp::CallTransformer, args, res, cexpr) => {
+                self.call_transformer_codegen(&args[0], &args[1], res)?;
+                self.cps_codegen(*cexpr, allocs, deferred)?;
+            }
             Cps::Closure {
                 args,
                 body,
                 val,
                 cexp,
+                ..
             } => {
                 let bundle = ClosureBundle::new(
                     self.ctx,
@@ -412,6 +417,26 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         Ok(())
     }
 
+    fn call_transformer_codegen(
+        &mut self,
+        trans: &Value,
+        arg: &Value,
+        result: Local,
+    ) -> Result<(), BuilderError> {
+        let trans = self.value_codegen(trans)?.into();
+        let arg = self.value_codegen(arg)?.into();
+        let call_transformer = self.module.get_function("call_transformer").unwrap();
+        let expanded = self
+            .builder
+            .build_call(call_transformer, &[trans, arg], "expand")?
+            .try_as_basic_value()
+            .left()
+            .unwrap()
+            .into_pointer_value();
+        self.rebinds.rebind(Var::Local(result), expanded);
+        Ok(())
+    }
+
     fn make_closure_codegen(
         &mut self,
         bundle: &ClosureBundle<'ctx>,
@@ -518,6 +543,8 @@ const ENV_PARAM: u32 = 1;
 const GLOBALS_PARAM: u32 = 2;
 const ARGS_PARAM: u32 = 3;
 const CONTINUATION_PARAM: u32 = 4;
+const _DYNAMIC_WIND_PARAM: u32 = 5;
+const _EXCEPTION_HANDLER_PARAM: u32 = 6;
 
 impl<'ctx> ClosureBundle<'ctx> {
     fn new(

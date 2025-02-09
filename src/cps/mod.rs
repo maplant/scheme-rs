@@ -23,6 +23,7 @@ mod analysis;
 mod codegen;
 mod compile;
 
+use analysis::AnalysisCache;
 pub use compile::{Compile, TopLevelExpr};
 
 #[derive(Clone)]
@@ -89,6 +90,7 @@ pub enum PrimOp {
     Sub,
     Mul,
     Div,
+    CallTransformer,
     CallWithCurrentContinuation,
 }
 
@@ -156,6 +158,7 @@ pub enum Cps {
         body: Box<Cps>,
         val: Local,
         cexp: Box<Cps>,
+        analysis: AnalysisCache,
     },
     // Temporary terminating value for debugging purposes (to be removed)
     ReturnValues(Value),
