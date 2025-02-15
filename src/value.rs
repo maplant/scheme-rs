@@ -1,5 +1,6 @@
 use crate::{
     ast,
+    env::CapturedEnv,
     exception::Exception,
     expand::Transformer,
     gc::{Gc, Trace},
@@ -14,24 +15,52 @@ use std::fmt;
 
 type Future = Shared<BoxFuture<'static, Result<Vec<Gc<Value>>, Exception>>>;
 
+/// A Scheme value
 #[derive(Trace)]
 pub enum Value {
+    /// The value is undefined. Variables before they are initialized are undefined.
+    /// Any attempt to set a variable after creation to undefined results in an error.
     Undefined,
+
+    /// An empty list.
     Null,
-    Boolean(bool),
-    Number(Number),
-    Character(char),
-    String(String),
-    Symbol(String),
+
+    /// A combination of two values. Has a head (car) and a tail (cdr)
     Pair(Gc<Value>, Gc<Value>),
+
+    /// A value that is either True (#t) or False (#f)
+    Boolean(bool),
+
+    /// A numeric value.
+    Number(Number),
+
+    /// A Unicode code point.
+    Character(char),
+
+    /// A list of unicode code points.
+    String(String),
+
+    Symbol(String),
+
     Vector(Vec<Value>),
+
     ByteVector(Vec<u8>),
+
     Syntax(Syntax),
+
+    /// A procedure.
     Closure(Closure),
+
     Record(Record),
+
     RecordType(Gc<RecordType>),
+
     Future(Future),
+
     Transformer(Transformer),
+
+    /// A captured lexical environment.
+    CapturedEnv(CapturedEnv),
 }
 
 impl Value {
@@ -95,6 +124,7 @@ impl Value {
             Self::RecordType(_) => "record-type",
             Self::Undefined => "undefined",
             Self::Transformer(_) => "transformer",
+            Self::CapturedEnv(_) => "captured-env",
         }
     }
 
@@ -142,6 +172,7 @@ impl Clone for Value {
             Self::RecordType(rt) => Self::RecordType(rt.clone()),
             Self::Undefined => Self::Undefined,
             Self::Transformer(trans) => Self::Transformer(trans.clone()),
+            Self::CapturedEnv(cap) => Self::CapturedEnv(cap.clone()),
         }
     }
 }
@@ -178,6 +209,7 @@ impl fmt::Display for Value {
             Self::RecordType(record_type) => write!(f, "<{record_type:?}>"),
             Self::Undefined => write!(f, "<undefined>"),
             Self::Transformer(_) => write!(f, "<transformer>"),
+            Self::CapturedEnv(_) => write!(f, "<environment>"),
         }
     }
 }
@@ -189,7 +221,7 @@ impl fmt::Debug for Value {
             Self::Boolean(false) => write!(f, "#f"),
             Self::Number(number) => write!(f, "{number:?}"),
             Self::String(string) => write!(f, "{string:?}"),
-            Self::Symbol(symbol) => write!(f, "{symbol:?}"),
+            Self::Symbol(symbol) => write!(f, "'{symbol }"),
             Self::Pair(car, cdr) => crate::lists::debug_list(car, cdr, f),
             Self::Vector(vec) => {
                 write!(f, "#(")?;
@@ -212,6 +244,7 @@ impl fmt::Debug for Value {
             Self::RecordType(record_type) => write!(f, "<{record_type:?}>"),
             Self::Undefined => write!(f, "<undefined>"),
             Self::Transformer(_) => write!(f, "<transformer>"),
+            Self::CapturedEnv(_) => write!(f, "<environment>"),
         }
     }
 }
@@ -312,13 +345,24 @@ impl<'a> TryFrom<&'a Value> for &'a Transformer {
     }
 }
 
+impl<'a> TryFrom<&'a Value> for &'a CapturedEnv {
+    type Error = Exception;
+
+    fn try_from(v: &'a Value) -> Result<&'a CapturedEnv, Self::Error> {
+        match v {
+            Value::CapturedEnv(ce) => Ok(ce),
+            x => Err(Exception::invalid_type("environment", x.type_name())),
+        }
+    }
+}
+
 impl<'a> TryFrom<&'a Value> for &'a Syntax {
     type Error = Exception;
 
     fn try_from(v: &'a Value) -> Result<&'a Syntax, Self::Error> {
         match v {
             Value::Syntax(s) => Ok(s),
-            x => Err(Exception::invalid_type("transformer", x.type_name())),
+            x => Err(Exception::invalid_type("syntax", x.type_name())),
         }
     }
 }

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crate::{
     ast::ParseAstError,
-    env::{Environment, Top, Var},
+    env::{Environment, Var},
     gc::{Gc, Trace},
     syntax::{Identifier, Span, Syntax},
     value::Value,
@@ -183,11 +183,7 @@ fn parse_fields(fields: &[Syntax]) -> Result<Vec<FieldDefinition>, ParseAstError
 }
 
 impl DefineRecordType {
-    pub fn parse(
-        exprs: &[Syntax],
-        env: &Environment<impl Top>,
-        span: &Span,
-    ) -> Result<Self, ParseAstError> {
+    pub fn parse(exprs: &[Syntax], env: &Environment, span: &Span) -> Result<Self, ParseAstError> {
         match exprs {
             [first_arg, args @ ..] => {
                 let (name, constructor, predicate) = match first_arg {

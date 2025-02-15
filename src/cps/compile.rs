@@ -1,3 +1,5 @@
+use std::iter::once;
+
 use super::*;
 use crate::{ast::*, gc::Gc, syntax::Identifier, value::Value as SchemeValue};
 use either::Either;
@@ -122,15 +124,6 @@ fn compile_let(
     }
 }
 
-impl Compile for AstNode {
-    fn compile(&self, meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
-        match self {
-            Self::Definition(def) => def.compile(meta_cont),
-            Self::Expression(exp) => exp.compile(meta_cont),
-        }
-    }
-}
-
 impl Compile for Expression {
     fn compile(&self, meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
         match self {
@@ -166,9 +159,19 @@ impl Compile for Var {
 }
 
 impl Compile for &[Expression] {
-    fn compile(&self, meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+    fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
         match self {
-            [] => panic!("Empty body"),
+            [] => {
+                let k1 = Local::gensym();
+                let k2 = Local::gensym();
+                Cps::Closure {
+                    args: ClosureArgs::new(vec![k2], false, None),
+                    body: Box::new(Cps::App(Value::from(k2), vec![])),
+                    val: k1,
+                    cexp: Box::new(meta_cont(Value::from(k1))),
+                    analysis: AnalysisCache::default(),
+                }
+            }
             [last_expr] => last_expr.compile(Box::new(meta_cont) as Box<dyn FnMut(Value) -> Cps>),
             [head, tail @ ..] => {
                 let k1 = Local::gensym();
@@ -617,37 +620,26 @@ impl Compile for SyntaxCase {
             body: Box::new(self.arg.compile(Box::new(|arg_result| {
                 let k3 = Local::gensym();
                 let to_expand = Local::gensym();
-                let transformer_result = Local::gensym();
+                let call_transformer = Local::gensym();
                 Cps::Closure {
                     args: ClosureArgs::new(vec![to_expand], false, None),
                     body: Box::new(Cps::PrimOp(
-                        PrimOp::CallTransformer,
-                        vec![
-                            constant(SchemeValue::Transformer(self.transformer.clone())),
-                            Value::from(to_expand),
-                        ],
-                        transformer_result,
+                        PrimOp::GetCallTransformerFn,
+                        vec![],
+                        call_transformer,
                         Box::new(Cps::App(
-                            Value::from(k1),
-                            vec![Value::from(transformer_result)],
+                            Value::from(call_transformer),
+                            vec![
+                                constant(SchemeValue::CapturedEnv(self.captured_env.clone())),
+                                constant(SchemeValue::Transformer(self.transformer.clone())),
+                                Value::from(to_expand),
+                            ]
+                            .into_iter()
+                            .chain(self.captured_env.captured.iter().copied().map(Value::from))
+                            .chain(once(Value::from(k1)))
+                            .collect(),
                         )),
                     )),
-                    /*                        Cps::If(
-                        Value::from(cond_arg),
-                        Box::new(
-                            self.success.compile(Box::new(|success| {
-                                Cps::App(success, vec![Value::from(k1)])
-                            })),
-                        ),
-                        Box::new(if let Some(ref failure) = self.failure {
-                            failure.compile(Box::new(|failure| {
-                                Cps::App(failure, vec![Value::from(k1)])
-                            }))
-                        } else {
-                            Cps::App(Value::from(k1), Vec::new())
-                        }),
-                    )),
-                         */
                     val: k3,
                     cexp: Box::new(Cps::App(arg_result, vec![Value::from(k3)])),
                     analysis: AnalysisCache::default(),

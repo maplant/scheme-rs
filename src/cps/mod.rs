@@ -90,7 +90,8 @@ pub enum PrimOp {
     Sub,
     Mul,
     Div,
-    CallTransformer,
+    CaptureEnvironment,
+    GetCallTransformerFn,
     CallWithCurrentContinuation,
 }
 

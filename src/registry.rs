@@ -2,7 +2,7 @@
 
 use crate::{
     ast::{Literal, ParseAstError},
-    env::{Library, Top},
+    env::Top,
     gc::Gc,
     parse::ParseSyntaxError,
     proc::{AsyncFuncPtr, Closure, FuncPtr},
@@ -153,19 +153,19 @@ impl BridgeFn {
 inventory::collect!(BridgeFn);
 
 pub struct Registry {
-    libs: HashMap<LibraryName, Gc<Library>>,
+    libs: HashMap<LibraryName, Gc<Top>>,
 }
 
 impl Registry {
     /// Construct a Registry with all of the available bridge functions present but no external libraries imported.
     pub fn new(runtime: &Gc<Runtime>) -> Self {
-        let mut libs = HashMap::<LibraryName, Gc<Library>>::default();
+        let mut libs = HashMap::<LibraryName, Gc<Top>>::default();
 
         for bridge_fn in inventory::iter::<BridgeFn>() {
             let lib_name = LibraryName::from_str(&bridge_fn.lib_name, None).unwrap();
             let lib = libs
                 .entry(lib_name)
-                .or_insert_with(|| Gc::new(Library::default()));
+                .or_insert_with(|| Gc::new(Top::library()));
             let mut lib = lib.write();
             lib.def_var(
                 Identifier::new(bridge_fn.name.to_string()),
@@ -183,7 +183,7 @@ impl Registry {
         Self { libs }
     }
 
-    pub fn import(&self, lib: &str) -> Option<Gc<Library>> {
+    pub fn import(&self, lib: &str) -> Option<Gc<Top>> {
         let lib_name = LibraryName::from_str(lib, None).unwrap();
         self.libs.get(&lib_name).cloned()
     }

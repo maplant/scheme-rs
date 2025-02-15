@@ -1,7 +1,6 @@
 use crate::{
-    ast::{Expression, Literal},
-    cps::Compile,
-    env::{Environment, Macro, Top},
+    ast::Literal,
+    env::{Environment, Macro},
     exception::Exception,
     gc::{Gc, Trace},
     lex::{InputSpan, Token},
@@ -10,7 +9,11 @@ use crate::{
     value::Value,
 };
 use futures::future::BoxFuture;
-use std::{collections::BTreeSet, fmt, sync::Arc};
+use std::{
+    collections::{BTreeSet, HashSet},
+    fmt,
+    sync::Arc,
+};
 
 #[derive(Debug, Clone, PartialEq, Trace)]
 pub struct Span {
@@ -170,7 +173,7 @@ impl Syntax {
         }
     }
 
-    pub fn resolve_bindings(&mut self, env: &Environment<impl Top>) {
+    pub fn resolve_bindings(&mut self, env: &Environment) {
         match self {
             Self::List { ref mut list, .. } => {
                 for item in list {
@@ -192,50 +195,34 @@ impl Syntax {
     }
 
     #[allow(dead_code)]
-    async fn apply_transformer<T: Top>(
+    async fn apply_transformer(
         &self,
-        env: &Environment<T>,
-        mac: Macro<T>,
+        env: &Environment,
+        mac: Macro,
         // cont: &Closure,
-    ) -> Result<Expansion<T>, Exception> {
+    ) -> Result<Expansion, Exception> {
         // Create a new mark for the expansion context
         let new_mark = Mark::new();
-        // Apply the new mark to the input
+
+        // Apply the new mark to the input and resolve any bindings
         // TODO: Figure out a better way to do this without cloning so much
         let mut input = self.clone();
         input.resolve_bindings(env);
         input.mark(new_mark);
+
         // Call the transformer with the input:
-        // let transform = transformer.read().as_callable().unwrap();
-        let mut output: Syntax = {
-            let transformer_output = mac
-                .transformer
-                .call(&[Gc::new(Value::Syntax(input))])
-                .await?;
-            let transformer_output_syn = {
-                let transformer_output_read = transformer_output[0].read();
-                let syntax: &Syntax = transformer_output_read.as_ref().try_into()?;
-                syntax.clone()
-            };
-            // Evaluate the syntax
-            let transformer_output_expr =
-                Expression::parse(&mac.transformer.runtime, transformer_output_syn, env)
-                    .await
-                    .unwrap();
-            let transformer_ouput_cps_expr = transformer_output_expr.compile_top_level();
-            let result = mac
-                .transformer
-                .runtime
-                .compile_expr(transformer_ouput_cps_expr)
-                .await
-                .unwrap()
-                .call(&[])
-                .await?;
-            let result_read = result[0].read();
-            let expanded: &Syntax = result_read.as_ref().try_into()?;
-            expanded.clone()
-        };
+
+        let transformer_output = mac
+            .transformer
+            .call(&[Gc::new(Value::Syntax(input))])
+            .await?;
+        let transformer_output = transformer_output[0].read();
+
+        // Output must be syntax:
+        let output: &Syntax = transformer_output.as_ref().try_into()?;
+
         // Apply the new mark to the output
+        let mut output = output.clone();
         output.mark(new_mark);
 
         let new_env = env.new_macro_expansion(new_mark, mac.source_env.clone());
@@ -243,11 +230,11 @@ impl Syntax {
         Ok(Expansion::new_expanded(new_env, output))
     }
 
-    fn expand_once<'a, T: Top>(
+    fn expand_once<'a>(
         &'a self,
-        env: &'a Environment<T>,
+        env: &'a Environment,
         // cont: &Closure,
-    ) -> BoxFuture<'a, Result<Expansion<T>, Exception>> {
+    ) -> BoxFuture<'a, Result<Expansion, Exception>> {
         Box::pin(async move {
             match self {
                 Self::List { list, .. } => {
@@ -291,11 +278,11 @@ impl Syntax {
     }
 
     /// Fully expand the outermost syntax object.
-    pub async fn expand<T: Top>(
+    pub async fn expand(
         mut self,
-        env: &Environment<T>,
+        env: &Environment,
         // cont: &Closure,
-    ) -> Result<FullyExpanded<T>, Exception> {
+    ) -> Result<FullyExpanded, Exception> {
         let mut curr_env = env.clone();
         loop {
             match self.expand_once(&curr_env).await? {
@@ -334,32 +321,46 @@ impl Syntax {
         let tokens = Token::tokenize(s, file_name)?;
         Self::parse(&tokens)
     }
+
+    pub fn fetch_all_identifiers(&self, idents: &mut HashSet<Identifier>) {
+        match self {
+            Self::List { list: syns, .. } | Self::Vector { vector: syns, .. } => {
+                for item in syns {
+                    item.fetch_all_identifiers(idents);
+                }
+            }
+            Self::Identifier { ident, .. } => {
+                idents.insert(ident.clone());
+            }
+            _ => (),
+        }
+    }
 }
 
 // #[derive(derive_more::Debug)]
-pub enum Expansion<T: Trace> {
+pub enum Expansion {
     /// Syntax remained unchanged after expansion
     Unexpanded,
     /// Syntax was expanded, producing a new expansion context
     Expanded {
-        new_env: Environment<T>,
+        new_env: Environment,
         syntax: Syntax,
     },
 }
 
-impl<T: Trace> Expansion<T> {
-    fn new_expanded(new_env: Environment<T>, syntax: Syntax) -> Self {
+impl Expansion {
+    fn new_expanded(new_env: Environment, syntax: Syntax) -> Self {
         Self::Expanded { new_env, syntax }
     }
 }
 
-pub struct FullyExpanded<T: Trace> {
-    pub expansion_env: Environment<T>,
+pub struct FullyExpanded {
+    pub expansion_env: Environment,
     pub expanded: Syntax,
 }
 
-impl<T: Trace> FullyExpanded<T> {
-    pub fn new(expansion_env: Environment<T>, expanded: Syntax) -> Self {
+impl FullyExpanded {
+    pub fn new(expansion_env: Environment, expanded: Syntax) -> Self {
         Self {
             expansion_env,
             expanded,

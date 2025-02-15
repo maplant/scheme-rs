@@ -1,6 +1,7 @@
 //! LLVM SSA Codegen from CPS.
 
 use compile::TopLevelExpr;
+use indexmap::IndexMap;
 use inkwell::{
     builder::{Builder, BuilderError},
     context::Context,
@@ -15,6 +16,7 @@ use crate::{
     gc::Gc,
     proc::{Closure, FuncPtr, SyncFuncPtr},
     runtime::Runtime,
+    value::Value as SchemeValue,
 };
 
 use super::*;
@@ -69,6 +71,7 @@ impl TopLevelExpr {
     pub fn into_closure<'ctx, 'b>(
         self,
         runtime: Gc<Runtime>,
+        env: IndexMap<Local, Gc<SchemeValue>>,
         ctx: &'ctx Context,
         module: &'b Module<'ctx>,
         ee: &ExecutionEngine<'ctx>,
@@ -93,14 +96,35 @@ impl TopLevelExpr {
         let fn_value = Local::gensym();
         let fn_name = fn_value.to_func_name();
         let function = module.add_function(&fn_name, fn_type, None);
-        // There should be _no_ env variables for the CPS we call
-        // into_closure with
-        let globals = self.body.globals().into_iter().collect::<Vec<_>>();
 
+        let mut cu = CompilationUnit::new(ctx, module, builder, function);
         let entry = ctx.append_basic_block(function, "entry");
         builder.position_at_end(entry);
 
-        let mut cu = CompilationUnit::new(ctx, module, builder, function);
+        // Collect the provided environment:
+
+        let env_param = function
+            .get_nth_param(ENV_PARAM)
+            .unwrap()
+            .into_pointer_value();
+        let array_type = ptr_type.array_type(env.len() as u32);
+        let env_load = builder
+            .build_load(array_type, env_param, "env_load")?
+            .into_array_value();
+
+        let mut collected_env = Vec::new();
+        for (i, (local, val)) in env.into_iter().enumerate() {
+            collected_env.push(val);
+            let res = builder
+                .build_extract_value(env_load, i as u32, "extract_env")
+                .unwrap()
+                .into_pointer_value();
+            cu.rebinds.rebind(Var::Local(local), res);
+        }
+
+        // Collect the provided globals:
+
+        let globals = self.body.globals().into_iter().collect::<Vec<_>>();
 
         let globals_param = function
             .get_nth_param(GLOBALS_PARAM)
@@ -136,7 +160,7 @@ impl TopLevelExpr {
 
         Ok(Closure::new(
             runtime,
-            Vec::new(),
+            collected_env,
             globals.into_iter().map(Global::value).collect::<Vec<_>>(),
             FuncPtr::SyncFunc(func),
             0,
@@ -195,8 +219,8 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 self.store_codegen(&args[1], &args[0])?;
                 self.cps_codegen(*cexpr, allocs, deferred)?;
             }
-            Cps::PrimOp(PrimOp::CallTransformer, args, res, cexpr) => {
-                self.call_transformer_codegen(&args[0], &args[1], res)?;
+            Cps::PrimOp(PrimOp::GetCallTransformerFn, _, res, cexpr) => {
+                self.get_call_transformer_codegen(res)?;
                 self.cps_codegen(*cexpr, allocs, deferred)?;
             }
             Cps::Closure {
@@ -417,18 +441,20 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         Ok(())
     }
 
-    fn call_transformer_codegen(
-        &mut self,
-        trans: &Value,
-        arg: &Value,
-        result: Local,
-    ) -> Result<(), BuilderError> {
-        let trans = self.value_codegen(trans)?.into();
-        let arg = self.value_codegen(arg)?.into();
-        let call_transformer = self.module.get_function("call_transformer").unwrap();
+    fn get_call_transformer_codegen(&mut self, result: Local) -> Result<(), BuilderError> {
+        let get_call_transformer_fn = self.module.get_function("get_call_transformer_fn").unwrap();
         let expanded = self
             .builder
-            .build_call(call_transformer, &[trans, arg], "expand")?
+            .build_call(
+                get_call_transformer_fn,
+                &[self
+                    .function
+                    .get_nth_param(RUNTIME_PARAM)
+                    .unwrap()
+                    .into_pointer_value()
+                    .into()],
+                "call_transformer",
+            )?
             .try_as_basic_value()
             .left()
             .unwrap()

@@ -38,6 +38,14 @@ impl Exception {
         }
     }
 
+    pub fn syntax_error() -> Self {
+        Self {
+            backtrace: Vec::new(),
+            message: "Invalid syntax".to_string(),
+            condition: Condition::Syntax,
+        }
+    }
+
     pub fn division_by_zero() -> Self {
         Self::error("division by zero".to_string())
     }

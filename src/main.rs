@@ -1,8 +1,8 @@
 use reedline::{Reedline, Signal, ValidationResult, Validator};
 use scheme_rs::{
-    ast::{AstNode, ParseAstError},
+    ast::{DefinitionBody, ParseAstError},
     cps::Compile,
-    env::{Environment, Repl, Top},
+    env::{Environment, Top},
     exception::Exception,
     gc::Gc,
     lex::LexError,
@@ -60,12 +60,12 @@ async fn main() {
     let base = registry.import("(base)").unwrap();
     let mut rl = Reedline::create().with_validator(Box::new(InputParser));
     let mut n_results = 1;
-    let mut repl = Repl::default();
+    let mut repl = Top::repl();
     {
         let base = base.read();
-        repl.import(base.exported_vars());
+        repl.import(&base);
     }
-    let top = Environment::from_repl(repl);
+    let top = Environment::from(Gc::new(repl));
 
     loop {
         let Ok(Signal::Success(input)) = rl.read_line(&Prompt) else {
@@ -96,15 +96,15 @@ pub enum EvalError<'e> {
 
 async fn compile_and_run_str<'e>(
     runtime: &Gc<Runtime>,
-    env: &Environment<Repl>,
+    env: &Environment,
     input: &'e str,
 ) -> Result<Vec<Gc<Value>>, EvalError<'e>> {
     let sexprs = Syntax::from_str(&input, None)?;
     let mut output = Vec::new();
     for sexpr in sexprs {
-        let Some(expr) = AstNode::from_syntax(runtime, sexpr, env).await? else {
-            continue;
-        };
+        let span = sexpr.span().clone();
+        let expr = DefinitionBody::parse(runtime, &[sexpr], env, &span).await?;
+
         // println!("Parsed: {expr:#?}");
         let compiled = expr.compile_top_level();
         // println!("Compiled: {compiled:#?}");

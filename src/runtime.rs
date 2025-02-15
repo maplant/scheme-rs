@@ -1,12 +1,13 @@
 use crate::{
     cps::TopLevelExpr,
-    expand::Transformer,
+    env::Local,
+    expand,
     gc::{init_gc, Gc, GcInner},
     lists::list_to_vec,
     proc::{Application, Closure, FuncPtr, SyncFuncPtr, SyncFuncWithContinuationPtr},
-    syntax::Syntax,
     value::Value,
 };
+use indexmap::IndexMap;
 use inkwell::{
     builder::BuilderError,
     context::Context,
@@ -57,8 +58,17 @@ impl Runtime {
 
 impl Gc<Runtime> {
     pub async fn compile_expr(&self, expr: TopLevelExpr) -> Result<Closure, BuilderError> {
+        self.compile_expr_with_env(expr, IndexMap::default()).await
+    }
+
+    pub async fn compile_expr_with_env(
+        &self,
+        expr: TopLevelExpr,
+        env: IndexMap<Local, Gc<Value>>,
+    ) -> Result<Closure, BuilderError> {
         let (completion_tx, completion_rx) = oneshot::channel();
         let task = CompilationTask {
+            env,
             completion_tx,
             compilation_unit: expr,
             runtime: self.clone(),
@@ -71,6 +81,7 @@ impl Gc<Runtime> {
 }
 
 struct CompilationTask {
+    env: IndexMap<Local, Gc<Value>>,
     compilation_unit: TopLevelExpr,
     completion_tx: oneshot::Sender<CompilationResult>,
     /// Since Contexts are per-thread, we will only ever see the same Runtime. However,
@@ -93,6 +104,7 @@ fn compilation_task(mut compilation_queue_rx: mpsc::Receiver<CompilationTask>) {
 
     while let Some(task) = compilation_queue_rx.blocking_recv() {
         let CompilationTask {
+            env,
             completion_tx,
             compilation_unit,
             runtime,
@@ -109,8 +121,14 @@ fn compilation_task(mut compilation_queue_rx: mpsc::Receiver<CompilationTask>) {
 
         install_runtime(&context, &module, &execution_engine);
 
-        let closure =
-            compilation_unit.into_closure(runtime, &context, &module, &execution_engine, &builder);
+        let closure = compilation_unit.into_closure(
+            runtime,
+            env,
+            &context,
+            &module,
+            &execution_engine,
+            &builder,
+        );
 
         modules.push(module);
 
@@ -214,11 +232,11 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     let f = module.add_function("make_closure_with_continuation", sig, None);
     ee.add_global_mapping(&f, make_closure_with_continuation as usize);
 
-    // fn call_transformer(trans: *Value, arg: *Value) -> *Value
+    // fn get_call_transformer(runtime: *Runtime) -> *Value
     //
-    let sig = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
-    let f = module.add_function("call_transformer", sig, None);
-    ee.add_global_mapping(&f, call_transformer as usize);
+    let sig = ptr_type.fn_type(&[ptr_type.into()], false);
+    let f = module.add_function("get_call_transformer_fn", sig, None);
+    ee.add_global_mapping(&f, get_call_transformer_fn as usize);
 }
 
 /// Allocate a new Gc with a value of undefined
@@ -349,19 +367,16 @@ unsafe extern "C" fn make_closure_with_continuation(
 }
 
 /// Call a transformer with the given argument and return the expansion
-unsafe extern "C" fn call_transformer(
-    transformer: *mut GcInner<Value>,
-    arg: *mut GcInner<Value>,
+unsafe extern "C" fn get_call_transformer_fn(
+    runtime: *mut GcInner<Runtime>,
 ) -> *mut GcInner<Value> {
-    let trans = Gc::from_ptr(transformer);
-    let trans_read = trans.read();
-    let trans: &Transformer = trans_read.as_ref().try_into().unwrap();
-
-    let arg = Gc::from_ptr(arg);
-    let arg_read = arg.read();
-    let arg: &Syntax = arg_read.as_ref().try_into().unwrap();
-
-    let expanded = trans.expand(arg).unwrap();
-
-    ManuallyDrop::new(Gc::new(Value::Syntax(expanded))).as_ptr()
+    let closure = Closure::new(
+        Gc::from_ptr(runtime),
+        Vec::new(),
+        Vec::new(),
+        FuncPtr::AsyncFunc(expand::call_transformer),
+        3,
+        true,
+    );
+    ManuallyDrop::new(Gc::new(Value::Closure(closure))).as_ptr()
 }
