@@ -16,8 +16,9 @@ That is obviously a long way away.
 - Garbage Collected via [Bacon-Rajan Concurrent Cycle Collection](https://pages.cs.wisc.edu/~cymen/misc/interests/Bacon01Concurrent.pdf)
 - Most key forms (let/let*/letrec/lambda/define etc)
 - Call by current continuation
-- Transformers (define-syntax, syntax-case, make-variable-transformer)
+- Transformers (define-syntax, syntax-case, datum->syntax and syntax->datum)
 - Spawning tasks and awaiting futures
+- Defining async bridge functions in Rust
 
 ## Features currently unsupported by scheme-rs: 
 
@@ -30,11 +31,12 @@ That is obviously a long way away.
 ## Implementation details:
 
 `scheme-rs` is JIT compiled, compiling the expanded Scheme code into a [CPS](https://en.wikipedia.org/wiki/Continuation-passing_style) 
-mid-level IR, and the convertin that into LLVM IR. 
+mid-level IR, and the converting that into LLVM IR. 
 
 At present the code produced by `scheme-rs` is of pretty poor quality. Very few optimizations are performed, all variables 
-are boxed. Focus was spent on making this project as _correct_ as possible, and to that end this is a JIT compiler for 
-scheme that fully supports syntax-case, proper tail recursion, and interaction with async Rust.
+are boxed. Focus was spent on making this project as correct as possible, and to that end this is a JIT compiler for 
+scheme that fully supports syntax-case, proper tail recursion, and interaction with async Rust. Contributions are more than
+welcome if you would like to add optimizations passes to the compiler.
 
 ## Usage:
 
