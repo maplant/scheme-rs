@@ -20,7 +20,7 @@ jobs:
       with:
         components: clippy, rustfmt
     - name: Install packages
-      run: sudo apt-get install libllvm18 llvm-18 llvm-18-dev 
+      run: sudo apt-get install libllvm18 llvm-18 llvm-18-dev libpolly-18-dev
     - name: Build
       run: cargo build 
     - name: Check formatting
