@@ -1,100 +1,68 @@
 use crate::{
     ast,
-    continuation::Continuation,
-    error::RuntimeError,
-    gc::Gc,
+    env::CapturedEnv,
+    exception::Exception,
+    expand::Transformer,
+    gc::{Gc, Trace},
     num::Number,
-    proc::{Callable, ExternalFn, Procedure},
+    proc::Closure,
     records::{Record, RecordType},
+    registry::bridge,
     syntax::Syntax,
-    Trace,
 };
 use futures::future::{BoxFuture, Shared};
-use proc_macros::builtin;
-use std::sync::Arc;
+use std::{fmt, io::Write};
 
-#[derive(Trace, derive_more::Debug)]
+type Future = Shared<BoxFuture<'static, Result<Vec<Gc<Value>>, Exception>>>;
+
+/// A Scheme value
+#[derive(Trace)]
 pub enum Value {
+    /// The value is undefined. Variables before they are initialized are undefined.
+    /// Any attempt to set a variable after creation to undefined results in an error.
     Undefined,
+    /// An empty list.
     Null,
-    Boolean(bool),
-    Number(Number),
-    Character(char),
-    String(String),
-    Symbol(String),
+    /// Combination of two values. Has a head (car) and a tail (cdr)
     Pair(Gc<Value>, Gc<Value>),
+    /// Value that is either True (#t) or False (#f)
+    Boolean(bool),
+    /// Numeric value.
+    Number(Number),
+    /// Unicode code point.
+    Character(char),
+    /// List of unicode code points.
+    String(String),
+    /// Atom of an S-Expression
+    Symbol(String),
     Vector(Vec<Value>),
     ByteVector(Vec<u8>),
     Syntax(Syntax),
-    Procedure(Procedure),
-    ExternalFn(ExternalFn),
+    /// A procedure.
+    Closure(Closure),
     Record(Record),
     RecordType(Gc<RecordType>),
-    Future(#[debug(skip)] Shared<BoxFuture<'static, Result<Vec<Gc<Value>>, RuntimeError>>>),
-    Continuation(#[debug(skip)] Option<Arc<Continuation>>),
+    Future(Future),
+    Transformer(Transformer),
+    /// A captured lexical environment.
+    CapturedEnv(CapturedEnv),
 }
 
 impl Value {
-    pub fn is_callable(&self) -> bool {
-        matches!(self, Self::Procedure(_) | Self::ExternalFn(_))
-    }
-
     /// #f is false, everything else is true
     pub fn is_true(&self) -> bool {
         !matches!(self, Self::Boolean(x) if !x)
     }
 
     pub fn is_variable_transformer(&self) -> bool {
+        /*
         match self {
             Self::Procedure(ref proc) => proc.is_variable_transformer,
             // Self::Transformer(ref trans) => trans.is_variable_transformer,
             _ => false,
         }
-    }
-
-    pub fn as_callable(&self) -> Option<Arc<dyn Callable>> {
-        match self {
-            // Having to clone and box these kind of sucks. Hopefully we can
-            // fix this at some point
-            Self::Procedure(ref proc) => Some(Arc::new(proc.clone())),
-            Self::ExternalFn(ref proc) => Some(Arc::new(*proc)),
-            Self::Continuation(ref proc) => Some(Arc::new(proc.clone())),
-            _ => None,
-        }
-    }
-
-    pub fn fmt(&self) -> String {
-        match self {
-            Self::Boolean(true) => "#t".to_string(),
-            Self::Boolean(false) => "#f".to_string(),
-            Self::Number(number) => number.to_string(),
-            Self::String(string) => string.to_string(),
-            Self::Symbol(symbol) => symbol.clone(),
-            Self::Pair(car, cdr) => crate::lists::fmt_list(car, cdr),
-            Self::Vector(vec) => {
-                let mut iter = vec.iter().peekable();
-                let mut output = String::from("#(");
-                while let Some(item) = iter.next() {
-                    output.push_str(&item.fmt());
-                    if iter.peek().is_some() {
-                        output.push(' ');
-                    }
-                }
-                output.push(')');
-                output
-            }
-            Self::Null => "()".to_string(),
-            Self::Character(c) => format!("\\x{c}"),
-            Self::ByteVector(_) => "<byte-vector>".to_string(),
-            Self::Syntax(syntax) => format!("{:#?}", syntax),
-            Self::Procedure(proc) => format!("<{proc:?}>"),
-            Self::ExternalFn(_) => "<external-fn>".to_string(),
-            Self::Future(_) => "<future>".to_string(),
-            Self::Continuation(_) => "<continuation>".to_string(),
-            Self::Record(record) => format!("<{record:?}>"),
-            Self::RecordType(record_type) => format!("<{record_type:?}>"),
-            Self::Undefined => "<undefined>".to_string(),
-        }
+         */
+        todo!()
     }
 
     pub fn from_literal(literal: &ast::Literal) -> Self {
@@ -135,12 +103,13 @@ impl Value {
             Self::Vector(_) => "vector",
             Self::ByteVector(_) => "byte vector",
             Self::Syntax(_) => "syntax",
-            Self::Procedure(_) | Self::ExternalFn(_) => "procedure",
+            Self::Closure(_) => "procedure",
             Self::Future(_) => "future",
-            Self::Continuation(_) => "continuation",
             Self::Record(_) => "record",
             Self::RecordType(_) => "record-type",
             Self::Undefined => "undefined",
+            Self::Transformer(_) => "transformer",
+            Self::CapturedEnv(_) => "captured-env",
         }
     }
 
@@ -182,20 +151,92 @@ impl Clone for Value {
             Self::Vector(vec) => Self::Vector(vec.clone()),
             Self::ByteVector(bvec) => Self::ByteVector(bvec.clone()),
             Self::Syntax(syn) => Self::Syntax(syn.clone()),
-            Self::Procedure(proc) => Self::Procedure(proc.clone()),
-            Self::ExternalFn(ext_fn) => Self::ExternalFn(*ext_fn),
+            Self::Closure(proc) => Self::Closure(proc.clone()),
             Self::Future(fut) => Self::Future(fut.clone()),
-            Self::Continuation(cont) => Self::Continuation(cont.clone()),
             Self::Record(record) => Self::Record(record.clone()),
             Self::RecordType(rt) => Self::RecordType(rt.clone()),
             Self::Undefined => Self::Undefined,
+            Self::Transformer(trans) => Self::Transformer(trans.clone()),
+            Self::CapturedEnv(cap) => Self::CapturedEnv(cap.clone()),
         }
     }
 }
 
-impl From<ExternalFn> for Value {
-    fn from(ef: ExternalFn) -> Self {
-        Value::ExternalFn(ef)
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Boolean(true) => write!(f, "#t"),
+            Self::Boolean(false) => write!(f, "#f"),
+            Self::Number(number) => write!(f, "{number}"),
+            Self::String(string) => write!(f, "{string}"),
+            Self::Symbol(symbol) => write!(f, "{symbol}"),
+            Self::Pair(car, cdr) => crate::lists::display_list(car, cdr, f),
+            Self::Vector(vec) => {
+                write!(f, "#(")?;
+                let mut iter = vec.iter().peekable();
+                while let Some(item) = iter.next() {
+                    write!(f, "{item}")?;
+                    if iter.peek().is_some() {
+                        write!(f, " ")?;
+                    }
+                }
+                write!(f, ")")
+            }
+            Self::Null => write!(f, "()"),
+            Self::Character(c) => write!(f, "\\x{c}"),
+            Self::ByteVector(_) => write!(f, "<byte-vector>"),
+            // TODO: This shouldn't be debug output.
+            Self::Syntax(syntax) => write!(f, "{:?}", syntax),
+            Self::Closure(_) => write!(f, "<procedure>"),
+            Self::Future(_) => write!(f, "<future>"),
+            // TODO: These two shouldn't be debug output either.
+            Self::Record(record) => write!(f, "<{record:?}>"),
+            Self::RecordType(record_type) => write!(f, "<{record_type:?}>"),
+            Self::Undefined => write!(f, "<undefined>"),
+            Self::Transformer(_) => write!(f, "<transformer>"),
+            Self::CapturedEnv(_) => write!(f, "<environment>"),
+        }
+    }
+}
+
+impl fmt::Debug for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Boolean(true) => write!(f, "#t"),
+            Self::Boolean(false) => write!(f, "#f"),
+            Self::Number(number) => write!(f, "{number:?}"),
+            Self::String(string) => write!(f, "{string:?}"),
+            Self::Symbol(symbol) => write!(f, "'{symbol }"),
+            Self::Pair(car, cdr) => crate::lists::debug_list(car, cdr, f),
+            Self::Vector(vec) => {
+                write!(f, "#(")?;
+                let mut iter = vec.iter().peekable();
+                while let Some(item) = iter.next() {
+                    write!(f, "{item:?}")?;
+                    if iter.peek().is_some() {
+                        write!(f, " ")?;
+                    }
+                }
+                write!(f, ")")
+            }
+            Self::Null => write!(f, "()"),
+            Self::Character(c) => write!(f, "\\x{c}"),
+            Self::ByteVector(_) => write!(f, "<byte-vector>"),
+            Self::Syntax(syntax) => write!(f, "{:?}", syntax),
+            Self::Closure(_) => write!(f, "<procedure>"),
+            Self::Future(_) => write!(f, "<future>"),
+            Self::Record(record) => write!(f, "<{record:?}>"),
+            Self::RecordType(record_type) => write!(f, "<{record_type:?}>"),
+            Self::Undefined => write!(f, "<undefined>"),
+            Self::Transformer(_) => write!(f, "<transformer>"),
+            Self::CapturedEnv(_) => write!(f, "<environment>"),
+        }
+    }
+}
+
+impl From<bool> for Value {
+    fn from(b: bool) -> Value {
+        Value::Boolean(b)
     }
 }
 
@@ -213,56 +254,111 @@ impl From<Vec<Gc<Value>>> for Value {
 }
 
 impl<'a> TryFrom<&'a Value> for bool {
-    type Error = RuntimeError;
+    type Error = Exception;
 
     fn try_from(v: &'a Value) -> Result<bool, Self::Error> {
         match v {
             Value::Boolean(b) => Ok(*b),
-            x => Err(RuntimeError::invalid_type("bool", x.type_name())),
+            x => Err(Exception::invalid_type("bool", x.type_name())),
         }
     }
 }
 
 impl<'a> TryFrom<&'a Value> for &'a Number {
-    type Error = RuntimeError;
+    type Error = Exception;
 
     fn try_from(v: &'a Value) -> Result<&'a Number, Self::Error> {
         match v {
             Value::Number(n) => Ok(n),
-            x => Err(RuntimeError::invalid_type("number", x.type_name())),
+            x => Err(Exception::invalid_type("number", x.type_name())),
+        }
+    }
+}
+
+impl<'a> TryFrom<&'a Value> for &'a Closure {
+    type Error = Exception;
+
+    fn try_from(v: &'a Value) -> Result<&'a Closure, Self::Error> {
+        match v {
+            Value::Closure(proc) => Ok(proc),
+            x => Err(Exception::invalid_type("procedure", x.type_name())),
+        }
+    }
+}
+
+impl<'a> TryFrom<&'a mut Value> for &'a mut Closure {
+    type Error = Exception;
+
+    fn try_from(v: &'a mut Value) -> Result<&'a mut Closure, Self::Error> {
+        match v {
+            Value::Closure(proc) => Ok(proc),
+            x => Err(Exception::invalid_type("procedure", x.type_name())),
         }
     }
 }
 
 impl<'a> TryFrom<&'a Value> for &'a Record {
-    type Error = RuntimeError;
+    type Error = Exception;
 
     fn try_from(v: &'a Value) -> Result<&'a Record, Self::Error> {
         match v {
             Value::Record(r) => Ok(r),
-            x => Err(RuntimeError::invalid_type("record", x.type_name())),
+            x => Err(Exception::invalid_type("record", x.type_name())),
         }
     }
 }
 
 impl<'a> TryFrom<&'a mut Value> for &'a mut Record {
-    type Error = RuntimeError;
+    type Error = Exception;
 
     fn try_from(v: &'a mut Value) -> Result<&'a mut Record, Self::Error> {
         match v {
             Value::Record(r) => Ok(r),
-            x => Err(RuntimeError::invalid_type("record", x.type_name())),
+            x => Err(Exception::invalid_type("record", x.type_name())),
         }
     }
 }
 
 impl<'a> TryFrom<&'a Value> for &'a Gc<RecordType> {
-    type Error = RuntimeError;
+    type Error = Exception;
 
     fn try_from(v: &'a Value) -> Result<&'a Gc<RecordType>, Self::Error> {
         match v {
             Value::RecordType(rt) => Ok(rt),
-            x => Err(RuntimeError::invalid_type("record-type", x.type_name())),
+            x => Err(Exception::invalid_type("record-type", x.type_name())),
+        }
+    }
+}
+
+impl<'a> TryFrom<&'a Value> for &'a Transformer {
+    type Error = Exception;
+
+    fn try_from(v: &'a Value) -> Result<&'a Transformer, Self::Error> {
+        match v {
+            Value::Transformer(t) => Ok(t),
+            x => Err(Exception::invalid_type("transformer", x.type_name())),
+        }
+    }
+}
+
+impl<'a> TryFrom<&'a Value> for &'a CapturedEnv {
+    type Error = Exception;
+
+    fn try_from(v: &'a Value) -> Result<&'a CapturedEnv, Self::Error> {
+        match v {
+            Value::CapturedEnv(ce) => Ok(ce),
+            x => Err(Exception::invalid_type("environment", x.type_name())),
+        }
+    }
+}
+
+impl<'a> TryFrom<&'a Value> for &'a Syntax {
+    type Error = Exception;
+
+    fn try_from(v: &'a Value) -> Result<&'a Syntax, Self::Error> {
+        match v {
+            Value::Syntax(s) => Ok(s),
+            x => Err(Exception::invalid_type("syntax", x.type_name())),
         }
     }
 }
@@ -273,11 +369,8 @@ pub fn eqv(a: &Gc<Value>, b: &Gc<Value>) -> bool {
     a.eqv(&b)
 }
 
-#[builtin("not")]
-pub async fn not(
-    _cont: &Option<Arc<Continuation>>,
-    a: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+#[bridge(name = "not", lib = "(base)")]
+pub async fn not(a: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
     let a = a.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*a,
@@ -285,20 +378,13 @@ pub async fn not(
     )))])
 }
 
-#[builtin("eqv?")]
-pub async fn eqv_pred(
-    _cont: &Option<Arc<Continuation>>,
-    a: &Gc<Value>,
-    b: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+#[bridge(name = "eqv?", lib = "(base)")]
+pub async fn eqv_pred(a: &Gc<Value>, b: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
     Ok(vec![Gc::new(Value::Boolean(eqv(a, b)))])
 }
 
-#[builtin("boolean?")]
-pub async fn boolean_pred(
-    _cont: &Option<Arc<Continuation>>,
-    arg: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+#[bridge(name = "boolean?", lib = "(base)")]
+pub async fn boolean_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
     let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
@@ -306,11 +392,8 @@ pub async fn boolean_pred(
     )))])
 }
 
-#[builtin("symbol?")]
-pub async fn symbol_pred(
-    _cont: &Option<Arc<Continuation>>,
-    arg: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+#[bridge(name = "symbol?", lib = "(base)")]
+pub async fn symbol_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
     let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
@@ -318,11 +401,8 @@ pub async fn symbol_pred(
     )))])
 }
 
-#[builtin("char?")]
-pub async fn char_pred(
-    _cont: &Option<Arc<Continuation>>,
-    arg: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+#[bridge(name = "char?", lib = "(base)")]
+pub async fn char_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
     let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
@@ -330,11 +410,8 @@ pub async fn char_pred(
     )))])
 }
 
-#[builtin("vector?")]
-pub async fn vector_pred(
-    _cont: &Option<Arc<Continuation>>,
-    arg: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+#[bridge(name = "vector?", lib = "(base)")]
+pub async fn vector_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
     let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
@@ -342,20 +419,14 @@ pub async fn vector_pred(
     )))])
 }
 
-#[builtin("null?")]
-pub async fn null_pred(
-    _cont: &Option<Arc<Continuation>>,
-    arg: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+#[bridge(name = "null?", lib = "(base)")]
+pub async fn null_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
     let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(&*arg, Value::Null)))])
 }
 
-#[builtin("pair?")]
-pub async fn pair_pred(
-    _cont: &Option<Arc<Continuation>>,
-    arg: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+#[bridge(name = "pair?", lib = "(base)")]
+pub async fn pair_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
     let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
@@ -363,23 +434,8 @@ pub async fn pair_pred(
     )))])
 }
 
-#[builtin("number?")]
-pub async fn number_pred(
-    _cont: &Option<Arc<Continuation>>,
-    arg: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let arg = arg.read();
-    Ok(vec![Gc::new(Value::Boolean(matches!(
-        &*arg,
-        Value::Number(_)
-    )))])
-}
-
-#[builtin("string?")]
-pub async fn string_pred(
-    _cont: &Option<Arc<Continuation>>,
-    arg: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+#[bridge(name = "string?", lib = "(base)")]
+pub async fn string_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
     let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
@@ -387,23 +443,17 @@ pub async fn string_pred(
     )))])
 }
 
-#[builtin("procedure?")]
-pub async fn procedure_pred(
-    _cont: &Option<Arc<Continuation>>,
-    arg: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+#[bridge(name = "procedure?", lib = "(base)")]
+pub async fn procedure_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
     let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
-        Value::Procedure(_) | Value::ExternalFn(_) | Value::Continuation(_)
+        Value::Closure(_)
     )))])
 }
 
-#[builtin("future?")]
-pub async fn future_pred(
-    _cont: &Option<Arc<Continuation>>,
-    arg: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+#[bridge(name = "future?", lib = "(base)")]
+pub async fn future_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
     let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
@@ -411,11 +461,9 @@ pub async fn future_pred(
     )))])
 }
 
-#[builtin("display")]
-pub async fn disp(
-    _cont: &Option<Arc<Continuation>>,
-    arg: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    print!("{}", arg.read().fmt());
-    Ok(vec![Gc::new(Value::Null)])
+#[bridge(name = "display", lib = "(base)")]
+pub async fn display(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+    print!("{}", arg);
+    let _ = std::io::stdout().flush();
+    Ok(Vec::new())
 }

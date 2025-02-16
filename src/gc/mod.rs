@@ -15,6 +15,7 @@ mod collection;
 
 pub use collection::init_gc;
 use collection::{dec_rc, inc_rc};
+use either::Either;
 use futures::future::Shared;
 pub use proc_macros::Trace;
 
@@ -81,6 +82,38 @@ impl<T: Trace> Gc<T> {
                 marker: PhantomData,
             }
         }
+    }
+
+    pub fn as_ptr(&self) -> *mut GcInner<T> {
+        self.ptr.as_ptr()
+    }
+
+    /// Drops a raw pointer as if it were a Gc.
+    pub(crate) unsafe fn drop_raw(ptr: *mut GcInner<T>) {
+        drop(Self {
+            ptr: NonNull::new(ptr).unwrap(),
+            marker: PhantomData,
+        })
+    }
+
+    /// Create a new Gc from the raw pointer. This increments the ref count for
+    /// safety.
+    pub(crate) unsafe fn from_ptr(ptr: *mut GcInner<T>) -> Self {
+        let ptr = NonNull::new(ptr).unwrap();
+        inc_rc(ptr);
+        Self {
+            ptr,
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<T: Trace> std::fmt::Display for Gc<T>
+where
+    T: std::fmt::Display,
+{
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.read().fmt(fmt)
     }
 }
 
@@ -218,6 +251,18 @@ impl<T: ?Sized> Deref for GcWriteGuard<'_, T> {
 impl<T: ?Sized> DerefMut for GcWriteGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
         unsafe { &mut *self.data }
+    }
+}
+
+impl<T: ?Sized> AsRef<T> for GcWriteGuard<'_, T> {
+    fn as_ref(&self) -> &T {
+        self
+    }
+}
+
+impl<T: ?Sized> AsMut<T> for GcWriteGuard<'_, T> {
+    fn as_mut(&mut self) -> &mut T {
+        self
     }
 }
 
@@ -499,6 +544,26 @@ where
     }
 }
 
+unsafe impl<L, R> Trace for Either<L, R>
+where
+    L: GcOrTrace,
+    R: GcOrTrace,
+{
+    unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
+        match self {
+            Either::Left(inner) => inner.visit_or_recurse(visitor),
+            Either::Right(inner) => inner.visit_or_recurse(visitor),
+        }
+    }
+
+    unsafe fn finalize(&mut self) {
+        match self {
+            Either::Left(ref mut inner) => inner.finalize_or_skip(),
+            Either::Right(ref mut inner) => inner.finalize_or_skip(),
+        }
+    }
+}
+
 unsafe impl<T> Trace for Box<T>
 where
     T: GcOrTrace,
@@ -559,14 +624,6 @@ where
     unsafe fn visit_children(&self, _visitor: unsafe fn(OpaqueGcPtr)) {}
 }
 
-unsafe impl<A: 'static, O: 'static> Trace for fn(A) -> O {
-    unsafe fn visit_children(&self, _visitor: unsafe fn(OpaqueGcPtr)) {}
-}
-
-unsafe impl<A: 'static, B: 'static, O: 'static> Trace for fn(A, B) -> O {
-    unsafe fn visit_children(&self, _visitor: unsafe fn(OpaqueGcPtr)) {}
-}
-
 unsafe impl<T> Trace for tokio::sync::Mutex<T>
 where
     T: GcOrTrace,
@@ -592,6 +649,13 @@ where
             }
         }
     }
+}
+
+unsafe impl<T> Trace for tokio::sync::mpsc::Sender<T>
+where
+    T: 'static,
+{
+    unsafe fn visit_children(&self, _visitor: unsafe fn(OpaqueGcPtr)) {}
 }
 
 unsafe impl<T> Trace for std::sync::Mutex<T>

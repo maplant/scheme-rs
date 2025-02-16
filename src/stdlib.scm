@@ -35,7 +35,7 @@
   (memp (lambda (x) (eqv? x obj)) list))
 (define (memq obj list)
   (memp (lambda (x) (eq? x obj)) list))
-(define call-with-current-continuation call/cc)
+; (define call-with-current-continuation call/cc)
 
 ;;
 ;; WIP: All of the car/cdr combinations
@@ -296,7 +296,6 @@
       (loop (cdr rest))))
   (if (not (null? remaining))
       (begin
-        (display remaining)
         (apply for-each (cons func remaining)))))
 
 (define (append l m)
@@ -323,7 +322,7 @@
   (let ((lists (cons list1 more-lists)))
     (if (some? null? lists)
         '()
-        (cons (apply function (map1 car lists))
+        (cons (apply function (map1 car lists)) 
               (apply map function (map1 cdr lists))))))
 
 (define (reverse ls)

@@ -3,11 +3,9 @@
 use std::collections::HashMap;
 
 use crate::{
-    ast::{self, parse::ParseAstError, Body, Expression, Let},
-    env::{Env, ExpansionEnv, Ref, VarRef},
-    error::RuntimeError,
+    ast::ParseAstError,
+    env::{Environment, Var},
     gc::{Gc, Trace},
-    proc::Procedure,
     syntax::{Identifier, Span, Syntax},
     value::Value,
 };
@@ -31,12 +29,14 @@ impl RecordType {
     }
 }
 
+/*
 fn is_subtype_of(lhs: &Gc<RecordType>, rhs: &Gc<RecordType>) -> bool {
     lhs == rhs || {
         let lhs = lhs.read();
         lhs.inherits.contains(rhs)
     }
 }
+*/
 
 #[derive(Debug, Trace, Clone)]
 pub struct Record {
@@ -46,7 +46,7 @@ pub struct Record {
 
 #[derive(Clone, Trace, Debug)]
 pub struct DefineRecordType {
-    parent: Option<Ref>,
+    parent: Option<Var>,
     name: Identifier,
     constructor: Option<Identifier>,
     predicate: Option<Identifier>,
@@ -183,11 +183,7 @@ fn parse_fields(fields: &[Syntax]) -> Result<Vec<FieldDefinition>, ParseAstError
 }
 
 impl DefineRecordType {
-    pub fn parse(
-        exprs: &[Syntax],
-        env: &ExpansionEnv<'_>,
-        span: &Span,
-    ) -> Result<Self, ParseAstError> {
+    pub fn parse(exprs: &[Syntax], env: &Environment, span: &Span) -> Result<Self, ParseAstError> {
         match exprs {
             [first_arg, args @ ..] => {
                 let (name, constructor, predicate) = match first_arg {
@@ -271,7 +267,12 @@ impl DefineRecordType {
                 }
 
                 Ok(Self {
-                    parent: parent.map(|(x, _)| env.fetch_var_ref(&x)),
+                    parent: parent
+                        .map(|(x, _)| {
+                            env.fetch_var(&x)
+                                .ok_or_else(|| ParseAstError::UndefinedVariable(x.clone()))
+                        })
+                        .transpose()?,
                     name,
                     constructor,
                     predicate,
@@ -282,6 +283,7 @@ impl DefineRecordType {
         }
     }
 
+    /*
     pub fn define(&self, env: &Gc<Env>) {
         let mut env = env.write();
         let constructor_name = self
@@ -325,7 +327,9 @@ impl DefineRecordType {
 
         env.def_local_var(&self.name, Gc::new(Value::Undefined));
     }
+    */
 
+    /*
     pub fn eval(&self, env: &Gc<Env>) -> Result<(), RuntimeError> {
         let inherits = if let Some(ref parent) = self.parent {
             let parent_gc = parent.fetch(env)?;
@@ -374,14 +378,14 @@ impl DefineRecordType {
         let mut setters: Vec<Expression> = (0..fields.len())
             .map(|offset| {
                 Expression::UncheckedFieldMutation(UncheckedFieldMutation {
-                    value: VarRef::default().offset(offset).inc_depth(),
+                    value: DeBruijnIndex::default().offset(offset).inc_depth(),
                     offset,
                 })
             })
             .collect();
 
         // Append the return value
-        setters.push(Expression::Var(Ref::Regular(VarRef::default())));
+        setters.push(Expression::Var(VariableRef::Lexical(DeBruijnIndex::default())));
 
         let constructor = new_proc(
             env,
@@ -457,7 +461,7 @@ impl DefineRecordType {
                     Body::new(
                         Vec::new(),
                         vec![Expression::FieldMutation(FieldMutation {
-                            value: VarRef::default().offset(1),
+                            value: DeBruijnIndex::default().offset(1),
                             record_type: record_type.clone(),
                             offset: base_offset + offset,
                         })],
@@ -497,8 +501,10 @@ impl DefineRecordType {
 
         Ok(())
     }
+    */
 }
 
+/*
 fn new_proc(env: &Gc<Env>, args: Vec<Identifier>, body: ast::Body) -> Gc<Value> {
     Gc::new(Value::Procedure(Procedure {
         up: env.clone(),
@@ -508,114 +514,4 @@ fn new_proc(env: &Gc<Env>, args: Vec<Identifier>, body: ast::Body) -> Gc<Value> 
         is_variable_transformer: false,
     }))
 }
-
-#[derive(Debug, Clone, Trace)]
-pub struct MakeRecord {
-    record_type: Gc<RecordType>,
-    num_fields: usize,
-}
-
-impl MakeRecord {
-    pub fn eval(&self) -> Value {
-        Value::Record(Record {
-            record_type: self.record_type.clone(),
-            fields: std::iter::repeat_with(|| Gc::new(Value::Undefined))
-                .take(self.num_fields)
-                .collect(),
-        })
-    }
-}
-
-#[derive(Debug, Clone, Trace)]
-pub struct UncheckedFieldMutation {
-    value: VarRef,
-    offset: usize,
-}
-
-impl UncheckedFieldMutation {
-    pub fn eval(&self, env: &Gc<Env>) -> Result<(), RuntimeError> {
-        let env = env.read();
-        let this_gc = env.fetch_var(VarRef::default());
-        let value = env.fetch_var(self.value);
-        let mut this = this_gc.write();
-        let this: &mut Record = (&mut *this).try_into()?;
-        this.fields[self.offset] = value;
-
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Trace)]
-pub struct FieldMutation {
-    record_type: Gc<RecordType>,
-    value: VarRef,
-    offset: usize,
-}
-
-impl FieldMutation {
-    pub fn eval(&self, env: &Gc<Env>) -> Result<(), RuntimeError> {
-        let env = env.read();
-        let this_gc = env.fetch_var(VarRef::default());
-
-        {
-            let this = this_gc.read();
-            let this: &Record = (&*this).try_into()?;
-
-            if !is_subtype_of(&this.record_type, &self.record_type) {
-                return Err(RuntimeError::invalid_type(
-                    &self.record_type.read().name,
-                    &this.record_type.read().name,
-                ));
-            }
-        }
-
-        let value = env.fetch_var(self.value);
-
-        let mut this = this_gc.write();
-        let this: &mut Record = (&mut *this).try_into()?;
-        this.fields[self.offset] = value;
-
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Trace)]
-pub struct FieldProjection {
-    record_type: Gc<RecordType>,
-    offset: usize,
-}
-
-impl FieldProjection {
-    pub fn eval(&self, env: &Gc<Env>) -> Result<Vec<Gc<Value>>, RuntimeError> {
-        let this_gc = env.read().fetch_var(VarRef::default());
-        let this = this_gc.read();
-        let this: &Record = (&*this).try_into()?;
-
-        if !is_subtype_of(&this.record_type, &self.record_type) {
-            return Err(RuntimeError::invalid_type(
-                &self.record_type.read().name,
-                &this.record_type.read().name,
-            ));
-        }
-
-        Ok(vec![this.fields[self.offset].clone()])
-    }
-}
-
-#[derive(Debug, Clone, Trace)]
-pub struct RecordPredicate {
-    record_type: Gc<RecordType>,
-}
-
-impl RecordPredicate {
-    pub fn eval(&self, env: &Gc<Env>) -> Value {
-        let this_gc = env.read().fetch_var(VarRef::default());
-        let this = this_gc.read();
-        let this = match &*this {
-            Value::Record(ref rec) => rec,
-            _ => return Value::Boolean(false),
-        };
-
-        Value::Boolean(is_subtype_of(&this.record_type, &self.record_type))
-    }
-}
+*/

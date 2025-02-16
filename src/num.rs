@@ -1,20 +1,18 @@
 use crate::{
-    continuation::Continuation,
-    error::RuntimeError,
+    exception::Exception,
     gc::{Gc, Trace},
+    registry::bridge,
     value::Value,
 };
 use num::{complex::Complex64, FromPrimitive, ToPrimitive, Zero};
-use proc_macros::builtin;
 use rug::{Complete, Integer, Rational};
 use std::{
     cmp::Ordering,
     fmt,
     ops::{Add, Div, Mul, Neg, Sub},
-    sync::Arc,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum Number {
     FixedInteger(i64),
     BigInteger(Integer),
@@ -24,6 +22,7 @@ pub enum Number {
 }
 
 impl Number {
+    #[allow(dead_code)]
     fn is_zero(&self) -> bool {
         match self {
             Self::FixedInteger(i) => i.is_zero(),
@@ -34,6 +33,7 @@ impl Number {
         }
     }
 
+    #[allow(dead_code)]
     fn is_even(&self) -> bool {
         use num::Integer;
         match self {
@@ -45,6 +45,7 @@ impl Number {
         }
     }
 
+    #[allow(dead_code)]
     fn is_odd(&self) -> bool {
         use num::Integer;
         match self {
@@ -56,10 +57,13 @@ impl Number {
         }
     }
 
+    #[allow(dead_code)]
     fn is_complex(&self) -> bool {
         matches!(self, Self::Complex(_))
     }
 
+    /// FIXME: This code is so insanely wrong in every conceivable way that it is bordeline
+    /// or even outright dangerous.
     pub fn to_u64(&self) -> u64 {
         match self {
             Self::FixedInteger(i) => i.to_u64().unwrap_or(0),
@@ -102,6 +106,18 @@ impl From<Complex64> for Number {
 }
 
 impl fmt::Display for Number {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::FixedInteger(i) => write!(f, "{}", i),
+            Self::BigInteger(i) => write!(f, "{}", i),
+            Self::Rational(r) => write!(f, "{}", r),
+            Self::Real(r) => write!(f, "{}", r),
+            Self::Complex(c) => write!(f, "{}", c),
+        }
+    }
+}
+
+impl fmt::Debug for Number {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Self::FixedInteger(i) => write!(f, "{}", i),
@@ -335,41 +351,29 @@ unsafe impl Trace for Number {
     unsafe fn visit_children(&self, _visitor: unsafe fn(crate::gc::OpaqueGcPtr)) {}
 }
 
-#[builtin("zero?")]
-pub async fn zero(
-    _cont: &Option<Arc<Continuation>>,
-    arg: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+#[bridge(name = "zero?", lib = "(base)")]
+pub async fn zero(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
     let arg = arg.read();
     let num: &Number = arg.as_ref().try_into()?;
     Ok(vec![Gc::new(Value::Boolean(num.is_zero()))])
 }
 
-#[builtin("even?")]
-pub async fn even(
-    _cont: &Option<Arc<Continuation>>,
-    arg: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+#[bridge(name = "even?", lib = "(base)")]
+pub async fn even(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
     let arg = arg.read();
     let num: &Number = arg.as_ref().try_into()?;
     Ok(vec![Gc::new(Value::Boolean(num.is_even()))])
 }
 
-#[builtin("odd?")]
-pub async fn odd(
-    _cont: &Option<Arc<Continuation>>,
-    arg: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+#[bridge(name = "odd?", lib = "(base)")]
+pub async fn odd(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
     let arg = arg.read();
     let num: &Number = arg.as_ref().try_into()?;
     Ok(vec![Gc::new(Value::Boolean(num.is_odd()))])
 }
 
-#[builtin("+")]
-pub async fn add(
-    _cont: &Option<Arc<Continuation>>,
-    args: Vec<Gc<Value>>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+#[bridge(name = "+", lib = "(base)")]
+pub async fn add(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
     let mut result = Number::FixedInteger(0);
     for arg in args {
         let arg = arg.read();
@@ -379,12 +383,8 @@ pub async fn add(
     Ok(vec![Gc::new(Value::Number(result))])
 }
 
-#[builtin("-")]
-pub async fn sub(
-    _cont: &Option<Arc<Continuation>>,
-    arg1: &Gc<Value>,
-    args: Vec<Gc<Value>>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+#[bridge(name = "-", lib = "(base)")]
+pub async fn sub(arg1: &Gc<Value>, args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
     let arg1 = arg1.read();
     let arg1: &Number = arg1.as_ref().try_into()?;
     if args.is_empty() {
@@ -400,11 +400,8 @@ pub async fn sub(
     }
 }
 
-#[builtin("*")]
-pub async fn mul(
-    _cont: &Option<Arc<Continuation>>,
-    args: Vec<Gc<Value>>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+#[bridge(name = "*", lib = "(base)")]
+pub async fn mul(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
     let mut result = Number::FixedInteger(1);
     for arg in args {
         let arg = arg.read();
@@ -414,34 +411,27 @@ pub async fn mul(
     Ok(vec![Gc::new(Value::Number(result))])
 }
 
-#[builtin("/")]
-pub async fn div(
-    _cont: &Option<Arc<Continuation>>,
-    arg1: &Gc<Value>,
-    args: Vec<Gc<Value>>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+#[bridge(name = "/", lib = "(base)")]
+pub async fn div(arg1: &Gc<Value>, args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
     let arg1 = arg1.read();
     let arg1: &Number = arg1.as_ref().try_into()?;
     if arg1.is_zero() {
-        return Err(RuntimeError::division_by_zero());
+        return Err(Exception::division_by_zero());
     }
     let mut result = &Number::FixedInteger(1) / arg1;
     for arg in args {
         let arg = arg.read();
         let num: &Number = arg.as_ref().try_into()?;
         if num.is_zero() {
-            return Err(RuntimeError::division_by_zero());
+            return Err(Exception::division_by_zero());
         }
         result = &result / num;
     }
     Ok(vec![Gc::new(Value::Number(result))])
 }
 
-#[builtin("=")]
-pub async fn equals(
-    _cont: &Option<Arc<Continuation>>,
-    args: Vec<Gc<Value>>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+#[bridge(name = "=", lib = "(base)")]
+pub async fn equals(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
     if let Some((first, rest)) = args.split_first() {
         let first = first.read();
         let first: &Number = first.as_ref().try_into()?;
@@ -456,11 +446,8 @@ pub async fn equals(
     Ok(vec![Gc::new(Value::Boolean(true))])
 }
 
-#[builtin(">")]
-pub async fn greater(
-    _cont: &Option<Arc<Continuation>>,
-    args: Vec<Gc<Value>>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+#[bridge(name = ">", lib = "(base)")]
+pub async fn greater(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
     if let Some((head, rest)) = args.split_first() {
         let mut prev = head.clone();
         for next in rest {
@@ -472,10 +459,10 @@ pub async fn greater(
                 // This is somewhat less efficient for small numbers but avoids
                 // cloning big ones
                 if prev.is_complex() {
-                    return Err(RuntimeError::invalid_type("number", "complex"));
+                    return Err(Exception::invalid_type("number", "complex"));
                 }
                 if next.is_complex() {
-                    return Err(RuntimeError::invalid_type("number", "complex"));
+                    return Err(Exception::invalid_type("number", "complex"));
                 }
                 if prev <= next {
                     return Ok(vec![Gc::new(Value::Boolean(false))]);
@@ -487,11 +474,8 @@ pub async fn greater(
     Ok(vec![Gc::new(Value::Boolean(true))])
 }
 
-#[builtin(">=")]
-pub async fn greater_equal(
-    _cont: &Option<Arc<Continuation>>,
-    args: Vec<Gc<Value>>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+#[bridge(name = ">=", lib = "(base)")]
+pub async fn greater_equal(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
     if let Some((head, rest)) = args.split_first() {
         let mut prev = head.clone();
         for next in rest {
@@ -501,10 +485,10 @@ pub async fn greater_equal(
                 let prev: &Number = prev.as_ref().try_into()?;
                 let next: &Number = next.as_ref().try_into()?;
                 if prev.is_complex() {
-                    return Err(RuntimeError::invalid_type("number", "complex"));
+                    return Err(Exception::invalid_type("number", "complex"));
                 }
                 if next.is_complex() {
-                    return Err(RuntimeError::invalid_type("number", "complex"));
+                    return Err(Exception::invalid_type("number", "complex"));
                 }
                 if prev < next {
                     return Ok(vec![Gc::new(Value::Boolean(false))]);
@@ -516,11 +500,8 @@ pub async fn greater_equal(
     Ok(vec![Gc::new(Value::Boolean(true))])
 }
 
-#[builtin("<")]
-pub async fn lesser(
-    _cont: &Option<Arc<Continuation>>,
-    args: Vec<Gc<Value>>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+#[bridge(name = "<", lib = "(base)")]
+pub async fn lesser(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
     if let Some((head, rest)) = args.split_first() {
         let mut prev = head.clone();
         for next in rest {
@@ -530,10 +511,10 @@ pub async fn lesser(
                 let prev: &Number = prev.as_ref().try_into()?;
                 let next: &Number = next.as_ref().try_into()?;
                 if prev.is_complex() {
-                    return Err(RuntimeError::invalid_type("number", "complex"));
+                    return Err(Exception::invalid_type("number", "complex"));
                 }
                 if next.is_complex() {
-                    return Err(RuntimeError::invalid_type("number", "complex"));
+                    return Err(Exception::invalid_type("number", "complex"));
                 }
                 if prev >= next {
                     return Ok(vec![Gc::new(Value::Boolean(false))]);
@@ -545,11 +526,8 @@ pub async fn lesser(
     Ok(vec![Gc::new(Value::Boolean(true))])
 }
 
-#[builtin("<=")]
-pub async fn lesser_equal(
-    _cont: &Option<Arc<Continuation>>,
-    args: Vec<Gc<Value>>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+#[bridge(name = "<=", lib = "(base)")]
+pub async fn lesser_equal(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
     if let Some((head, rest)) = args.split_first() {
         let mut prev = head.clone();
         for next in rest {
@@ -559,10 +537,10 @@ pub async fn lesser_equal(
                 let prev: &Number = prev.as_ref().try_into()?;
                 let next: &Number = next.as_ref().try_into()?;
                 if prev.is_complex() {
-                    return Err(RuntimeError::invalid_type("number", "complex"));
+                    return Err(Exception::invalid_type("number", "complex"));
                 }
                 if next.is_complex() {
-                    return Err(RuntimeError::invalid_type("number", "complex"));
+                    return Err(Exception::invalid_type("number", "complex"));
                 }
                 if prev > next {
                     return Ok(vec![Gc::new(Value::Boolean(false))]);
@@ -574,11 +552,8 @@ pub async fn lesser_equal(
     Ok(vec![Gc::new(Value::Boolean(true))])
 }
 
-#[builtin("number?")]
-pub async fn is_number(
-    _cont: &Option<Arc<Continuation>>,
-    arg: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+#[bridge(name = "number?", lib = "(base)")]
+pub async fn is_number(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
     let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
@@ -586,11 +561,8 @@ pub async fn is_number(
     )))])
 }
 
-#[builtin("integer?")]
-pub async fn is_integer(
-    _cont: &Option<Arc<Continuation>>,
-    arg: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+#[bridge(name = "integer?", lib = "(base)")]
+pub async fn is_integer(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
     let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
@@ -598,11 +570,8 @@ pub async fn is_integer(
     )))])
 }
 
-#[builtin("rational?")]
-pub async fn is_rational(
-    _cont: &Option<Arc<Continuation>>,
-    arg: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+#[bridge(name = "rational?", lib = "(base)")]
+pub async fn is_rational(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
     let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
@@ -610,11 +579,8 @@ pub async fn is_rational(
     )))])
 }
 
-#[builtin("real?")]
-pub async fn is_real(
-    _cont: &Option<Arc<Continuation>>,
-    arg: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+#[bridge(name = "real?", lib = "(base)")]
+pub async fn is_real(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
     let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
@@ -622,11 +588,8 @@ pub async fn is_real(
     )))])
 }
 
-#[builtin("complex?")]
-pub async fn is_complex(
-    _cont: &Option<Arc<Continuation>>,
-    arg: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+#[bridge(name = "complex?", lib = "(base)")]
+pub async fn is_complex(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
     let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,

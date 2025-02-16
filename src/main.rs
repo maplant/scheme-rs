@@ -1,17 +1,26 @@
 use reedline::{Reedline, Signal, ValidationResult, Validator};
-use scheme_rs::{env::Env, lex::Token, parse::ParseError, syntax::ParsedSyntax};
+use scheme_rs::{
+    ast::{DefinitionBody, ParseAstError},
+    cps::Compile,
+    env::{Environment, Top},
+    exception::Exception,
+    gc::Gc,
+    lex::LexError,
+    parse::ParseSyntaxError,
+    registry::Registry,
+    runtime::Runtime,
+    syntax::Syntax,
+    value::Value,
+};
 use std::borrow::Cow;
 
 struct InputParser;
 
 impl Validator for InputParser {
     fn validate(&self, line: &str) -> ValidationResult {
-        let Ok(tokens) = Token::tokenize_str(line) else {
-            return ValidationResult::Incomplete;
-        };
-        let syntax = ParsedSyntax::parse(&tokens);
+        let syntax = Syntax::from_str(line, None);
         match syntax {
-            Err(ParseError::UnclosedParen { .. }) => ValidationResult::Incomplete,
+            Err(ParseSyntaxError::UnclosedParen { .. }) => ValidationResult::Incomplete,
             _ => ValidationResult::Complete,
         }
     }
@@ -46,18 +55,28 @@ impl reedline::Prompt for Prompt {
 
 #[tokio::main]
 async fn main() {
+    let runtime = Gc::new(Runtime::new());
+    let registry = Registry::new(&runtime).await;
+    let base = registry.import("(base)").unwrap();
     let mut rl = Reedline::create().with_validator(Box::new(InputParser));
     let mut n_results = 1;
-    let top = Env::top().await;
+    let mut repl = Top::repl();
+    {
+        let base = base.read();
+        repl.import(&base);
+    }
+    let top = Environment::from(Gc::new(repl));
+
     loop {
-        let Ok(Signal::Success(input)) = rl.read_line(&Prompt) else {
+        let Ok(Signal::Success(mut input)) = rl.read_line(&Prompt) else {
             println!("exiting...");
             return;
         };
-        match top.eval("<stdin>", &input).await {
+        input.push('\n');
+        match compile_and_run_str(&runtime, &top, &input).await {
             Ok(results) => {
-                for result in results.into_iter().flatten() {
-                    println!("${n_results} = {}", result.read().fmt());
+                for result in results.into_iter() {
+                    println!("${n_results} = {:?}", result);
                     n_results += 1;
                 }
             }
@@ -66,4 +85,34 @@ async fn main() {
             }
         }
     }
+}
+
+#[derive(derive_more::From, Debug)]
+pub enum EvalError<'e> {
+    LexError(LexError<'e>),
+    ParseError(ParseSyntaxError<'e>),
+    ParseAstError(ParseAstError),
+    Exception(Exception),
+}
+
+async fn compile_and_run_str<'e>(
+    runtime: &Gc<Runtime>,
+    env: &Environment,
+    input: &'e str,
+) -> Result<Vec<Gc<Value>>, EvalError<'e>> {
+    let sexprs = Syntax::from_str(input, None)?;
+    let mut output = Vec::new();
+    for sexpr in sexprs {
+        let span = sexpr.span().clone();
+        let expr = DefinitionBody::parse(runtime, &[sexpr], env, &span).await?;
+
+        // println!("Parsed: {expr:#?}");
+        let compiled = expr.compile_top_level();
+        // println!("Compiled: {compiled:#?}");
+
+        let closure = runtime.compile_expr(compiled).await.unwrap();
+        let result = closure.apply(&[]).await?.eval().await?;
+        output.extend(result)
+    }
+    Ok(output)
 }

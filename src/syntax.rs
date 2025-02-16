@@ -1,18 +1,20 @@
 use crate::{
     ast::Literal,
-    continuation::Continuation,
-    env::{Env, ExpansionEnv},
-    error::RuntimeError,
+    env::{Environment, Macro},
+    exception::Exception,
     gc::{Gc, Trace},
-    lex::{InputSpan, Lexeme, Token},
+    lex::{InputSpan, Token},
     lists::list_to_vec_with_null,
-    parse::ParseError,
-    util::RequireOne,
+    parse::ParseSyntaxError,
     value::Value,
 };
 use futures::future::BoxFuture;
-use proc_macros::builtin;
-use std::{collections::BTreeSet, fmt, sync::Arc};
+use proc_macros::bridge;
+use std::{
+    collections::{BTreeSet, HashSet},
+    fmt,
+    sync::Arc,
+};
 
 #[derive(Debug, Clone, PartialEq, Trace)]
 pub struct Span {
@@ -136,7 +138,6 @@ impl Syntax {
         }
     }
 
-    // TODO: Return a Cow<'a, Self> instead to avoid the clone.
     pub fn from_datum(marks: &BTreeSet<Mark>, datum: &Gc<Value>) -> Self {
         let datum = datum.read();
         // TODO: conjure up better values for Span
@@ -173,7 +174,7 @@ impl Syntax {
         }
     }
 
-    pub fn resolve_bindings(&mut self, env: &ExpansionEnv<'_>) {
+    pub fn resolve_bindings(&mut self, env: &Environment) {
         match self {
             Self::List { ref mut list, .. } => {
                 for item in list {
@@ -194,52 +195,47 @@ impl Syntax {
         }
     }
 
+    #[allow(dead_code)]
     async fn apply_transformer(
         &self,
-        env: &ExpansionEnv<'_>,
-        macro_env: Gc<Env>,
-        cont: &Option<Arc<Continuation>>,
-        transformer: Gc<Value>,
-    ) -> Result<Expansion, RuntimeError> {
+        env: &Environment,
+        mac: Macro,
+        // cont: &Closure,
+    ) -> Result<Expansion, Exception> {
         // Create a new mark for the expansion context
         let new_mark = Mark::new();
-        // Apply the new mark to the input
+
+        // Apply the new mark to the input and resolve any bindings
         // TODO: Figure out a better way to do this without cloning so much
         let mut input = self.clone();
         input.resolve_bindings(env);
         input.mark(new_mark);
+
         // Call the transformer with the input:
-        let transform = transformer.read().as_callable().unwrap();
-        let mut output = {
-            let output = transform
-                .call(vec![Gc::new(Value::Syntax(input))], cont)
-                .await?
-                .eval(cont)
-                .await?
-                .require_one()?;
-            let output = output.read();
-            match &*output {
-                Value::Syntax(syntax) => syntax.clone(),
-                _ => todo!(),
-            }
-        };
+
+        let transformer_output = mac
+            .transformer
+            .call(&[Gc::new(Value::Syntax(input))])
+            .await?;
+        let transformer_output = transformer_output[0].read();
+
+        // Output must be syntax:
+        let output: &Syntax = transformer_output.as_ref().try_into()?;
+
         // Apply the new mark to the output
+        let mut output = output.clone();
         output.mark(new_mark);
-        Ok(Expansion::Expanded {
-            mark: new_mark,
-            syntax: output,
-            macro_env,
-        })
+
+        let new_env = env.new_macro_expansion(new_mark, mac.source_env.clone());
+
+        Ok(Expansion::new_expanded(new_env, output))
     }
 
-    fn expand_once<'a, 'b>(
+    fn expand_once<'a>(
         &'a self,
-        env: &'a ExpansionEnv<'b>,
-        cont: &'a Option<Arc<Continuation>>,
-    ) -> BoxFuture<'a, Result<Expansion, RuntimeError>>
-    where
-        'a: 'b,
-    {
+        env: &'a Environment,
+        // cont: &Closure,
+    ) -> BoxFuture<'a, Result<Expansion, Exception>> {
         Box::pin(async move {
             match self {
                 Self::List { list, .. } => {
@@ -249,33 +245,31 @@ impl Syntax {
                         Some(Self::Identifier { ident, .. }) => ident,
                         _ => return Ok(Expansion::Unexpanded),
                     };
-                    if let Some((macro_env, transformer)) = env.fetch_macro(ident) {
-                        return self
-                            .apply_transformer(env, macro_env, cont, transformer)
-                            .await;
+                    if let Some(mac) = env.fetch_macro(ident) {
+                        return self.apply_transformer(env, mac).await;
                     }
 
                     // Check for set! macro
                     match list.as_slice() {
                         [Syntax::Identifier { ident, .. }, ..] if ident.name == "set!" => {
                             // Look for variable transformer:
-                            if let Some((macro_env, transformer)) = env.fetch_macro(ident) {
-                                if !transformer.read().is_variable_transformer() {
-                                    return Err(RuntimeError::not_a_variable_transformer());
+                            if let Some(mac) = env.fetch_macro(ident) {
+                                /*
+                                if !mac.transformer.read().is_variable_transformer() {
+                                    return Err(Exception::error(
+                                        "Not a variable transformer".to_string(),
+                                    ));
                                 }
-                                return self
-                                    .apply_transformer(env, macro_env, cont, transformer)
-                                    .await;
+                                */
+                                return self.apply_transformer(env, mac).await;
                             }
                         }
                         _ => (),
                     }
                 }
                 Self::Identifier { ident, .. } => {
-                    if let Some((macro_env, transformer)) = env.fetch_macro(ident) {
-                        return self
-                            .apply_transformer(env, macro_env, cont, transformer)
-                            .await;
+                    if let Some(mac) = env.fetch_macro(ident) {
+                        return self.apply_transformer(env, mac).await;
                     }
                 }
                 _ => (),
@@ -287,44 +281,95 @@ impl Syntax {
     /// Fully expand the outermost syntax object.
     pub async fn expand(
         mut self,
-        env: &ExpansionEnv<'_>,
-        cont: &Option<Arc<Continuation>>,
-    ) -> Result<FullyExpanded, RuntimeError> {
-        let mut env = env.push_expansion_env(Vec::new());
+        env: &Environment,
+        // cont: &Closure,
+    ) -> Result<FullyExpanded, Exception> {
+        let mut curr_env = env.clone();
         loop {
-            match self.expand_once(&env, cont).await? {
+            match self.expand_once(&curr_env).await? {
                 Expansion::Unexpanded => {
-                    return Ok(FullyExpanded {
-                        expansion_ctxs: env.expansion_ctxs,
-                        expanded: self,
-                    })
+                    return Ok(FullyExpanded::new(curr_env, self));
                 }
-                Expansion::Expanded {
-                    mark,
-                    macro_env,
-                    syntax,
-                } => {
-                    env.expansion_ctxs.push(ExpansionCtx::new(mark, macro_env));
+                Expansion::Expanded { new_env, syntax } => {
+                    curr_env = new_env;
                     self = syntax;
                 }
             }
         }
     }
+
+    fn parse_fragment<'a, 'b>(
+        i: &'b [Token<'a>],
+    ) -> Result<(&'b [Token<'a>], Self), ParseSyntaxError<'a>> {
+        let (remaining, syntax) = crate::parse::expression(i)?;
+        Ok((remaining, syntax))
+    }
+
+    pub fn parse<'a>(mut i: &[Token<'a>]) -> Result<Vec<Self>, ParseSyntaxError<'a>> {
+        let mut output = Vec::new();
+        while !i.is_empty() {
+            let (remaining, expr) = Self::parse_fragment(i)?;
+            output.push(expr);
+            i = remaining
+        }
+        Ok(output)
+    }
+
+    pub fn from_str<'a>(
+        s: &'a str,
+        file_name: Option<&str>,
+    ) -> Result<Vec<Self>, ParseSyntaxError<'a>> {
+        let tokens = Token::tokenize(s, file_name)?;
+        Self::parse(&tokens)
+    }
+
+    pub fn fetch_all_identifiers(&self, idents: &mut HashSet<Identifier>) {
+        match self {
+            Self::List { list: syns, .. } | Self::Vector { vector: syns, .. } => {
+                for item in syns {
+                    item.fetch_all_identifiers(idents);
+                }
+            }
+            Self::Identifier { ident, .. } => {
+                idents.insert(ident.clone());
+            }
+            _ => (),
+        }
+    }
 }
 
-#[derive(derive_more::Debug)]
+// #[derive(derive_more::Debug)]
 pub enum Expansion {
     /// Syntax remained unchanged after expansion
     Unexpanded,
     /// Syntax was expanded, producing a new expansion context
     Expanded {
-        mark: Mark,
-        #[debug(skip)]
-        macro_env: Gc<Env>,
+        new_env: Environment,
         syntax: Syntax,
     },
 }
 
+impl Expansion {
+    fn new_expanded(new_env: Environment, syntax: Syntax) -> Self {
+        Self::Expanded { new_env, syntax }
+    }
+}
+
+pub struct FullyExpanded {
+    pub expansion_env: Environment,
+    pub expanded: Syntax,
+}
+
+impl FullyExpanded {
+    pub fn new(expansion_env: Environment, expanded: Syntax) -> Self {
+        Self {
+            expansion_env,
+            expanded,
+        }
+    }
+}
+
+/*
 #[derive(derive_more::Debug, Clone)]
 pub struct ExpansionCtx {
     pub mark: Mark,
@@ -349,6 +394,7 @@ impl AsRef<Syntax> for FullyExpanded {
         &self.expanded
     }
 }
+*/
 
 #[derive(Debug)]
 pub struct ParsedSyntax {
@@ -356,39 +402,7 @@ pub struct ParsedSyntax {
     pub syntax: Syntax,
 }
 
-impl ParsedSyntax {
-    fn parse_fragment<'a, 'b>(
-        i: &'b [Token<'a>],
-    ) -> Result<(&'b [Token<'a>], Self), ParseError<'a>> {
-        let (doc_comment, remaining) = if let Token {
-            lexeme: Lexeme::DocComment(ref doc_comment),
-            ..
-        } = i[0]
-        {
-            (Some(doc_comment.clone()), &i[1..])
-        } else {
-            (None, i)
-        };
-        let (remaining, syntax) = crate::parse::expression(remaining)?;
-        Ok((
-            remaining,
-            Self {
-                doc_comment,
-                syntax,
-            },
-        ))
-    }
-
-    pub fn parse<'a>(mut i: &[Token<'a>]) -> Result<Vec<Self>, ParseError<'a>> {
-        let mut output = Vec::new();
-        while !i.is_empty() {
-            let (remaining, expr) = Self::parse_fragment(i)?;
-            output.push(expr);
-            i = remaining
-        }
-        Ok(output)
-    }
-}
+impl ParsedSyntax {}
 
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Trace)]
 pub struct Mark(usize);
@@ -396,11 +410,6 @@ pub struct Mark(usize);
 impl Mark {
     pub fn new() -> Self {
         Self(rand::random())
-    }
-
-    /// Obtain a mark from a Gc pointer value.
-    pub fn from_gc<T: Trace>(gc: &Gc<T>) -> Self {
-        Self(unsafe { gc.as_opaque().as_ptr() as *const () as usize })
     }
 }
 
@@ -540,7 +549,8 @@ impl Syntax {
     }
 }
 
-#[builtin("syntax->datum")]
+/*
+#[bridge(name = "syntax->datum", )]
 pub async fn syntax_to_datum(
     _cont: &Option<Arc<Continuation>>,
     syn: &Gc<Value>,
@@ -551,22 +561,19 @@ pub async fn syntax_to_datum(
     };
     Ok(vec![Gc::new(Value::from_syntax(syn))])
 }
+*/
 
-#[builtin("datum->syntax")]
+#[bridge(name = "datum->syntax", lib = "(base)")]
 pub async fn datum_to_syntax(
-    _cont: &Option<Arc<Continuation>>,
     template_id: &Gc<Value>,
     datum: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, Exception> {
     let template_id = template_id.read();
     let Value::Syntax(Syntax::Identifier {
         ident: template_id, ..
     }) = &*template_id
     else {
-        return Err(RuntimeError::invalid_type(
-            "syntax",
-            template_id.type_name(),
-        ));
+        return Err(Exception::invalid_type("syntax", template_id.type_name()));
     };
     Ok(vec![Gc::new(Value::Syntax(Syntax::from_datum(
         &template_id.marks,

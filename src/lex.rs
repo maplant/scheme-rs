@@ -1,6 +1,6 @@
 use nom::{
     branch::alt,
-    bytes::complete::{is_not, tag, tag_no_case, take, take_until, take_while1},
+    bytes::complete::{is_not, tag, tag_no_case, take, take_while, take_while1},
     character::{
         complete::{char as match_char, hex_digit1, one_of, satisfy},
         streaming::anychar,
@@ -38,7 +38,6 @@ pub enum Lexeme<'a> {
     HashTick,
     HashComma,
     HashCommaAt,
-    DocComment(String),
 }
 
 impl Lexeme<'static> {
@@ -102,9 +101,6 @@ fn lexeme(i: InputSpan) -> IResult<InputSpan, Lexeme<'static>> {
         map(boolean, Lexeme::Boolean),
         map(string, Lexeme::string_owned),
         map(number, Lexeme::number_owned),
-        // I _want_ to do something with doc comments, but probably best not
-        // to include them for now.
-        // map(doc_comment, Lexeme::DocComment),
         map(match_char('.'), |_| Lexeme::Period),
         map(match_char('\''), |_| Lexeme::Quote),
         map(match_char('('), |_| Lexeme::LParen),
@@ -118,7 +114,7 @@ fn lexeme(i: InputSpan) -> IResult<InputSpan, Lexeme<'static>> {
 
 fn comment(i: InputSpan) -> IResult<InputSpan, ()> {
     map(
-        delimited(tag(";"), take_until("\n"), many0(whitespace)),
+        delimited(tag(";"), take_while(|x| x != '\n'), many0(whitespace)),
         |_| (),
     )(i)
 }
@@ -323,8 +319,9 @@ pub struct Token<'a> {
 pub type LexError<'a> = nom::Err<nom::error::Error<InputSpan<'a>>>;
 
 impl<'a> Token<'a> {
-    pub fn tokenize_file(file_name: &str, s: &'a str) -> Result<Vec<Self>, LexError<'a>> {
-        let mut span = InputSpan::new_extra(s, Arc::new(file_name.to_string()));
+    pub fn tokenize(s: &'a str, file_name: Option<&str>) -> Result<Vec<Self>, LexError<'a>> {
+        let mut span =
+            InputSpan::new_extra(s, Arc::new(file_name.unwrap_or("<stdin>").to_string()));
         let mut output = Vec::new();
         while !span.is_empty() {
             let (remaining, ()) = interlexeme_space(span)?;
@@ -340,9 +337,5 @@ impl<'a> Token<'a> {
             span = remaining;
         }
         Ok(output)
-    }
-
-    pub fn tokenize_str(s: &'a str) -> Result<Vec<Self>, LexError<'a>> {
-        Self::tokenize_file("<stdin>", s)
     }
 }

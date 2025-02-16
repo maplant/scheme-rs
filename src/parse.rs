@@ -1,13 +1,13 @@
 use crate::{
     ast::Literal,
-    lex::{Fragment, InputSpan, Lexeme, Token},
+    lex::{Fragment, InputSpan, LexError, Lexeme, Token},
     num::Number,
     syntax::Syntax,
 };
 use rug::Integer;
 
 #[derive(Debug)]
-pub enum ParseError<'a> {
+pub enum ParseSyntaxError<'a> {
     EmptyInput,
     UnexpectedEndOfFile,
     ExpectedClosingParen { span: InputSpan<'a> },
@@ -17,17 +17,18 @@ pub enum ParseError<'a> {
     InvalidPeriodLocation { span: InputSpan<'a> },
     UnclosedParen { span: InputSpan<'a> },
     DocCommentMustPrecedeDefine,
+    LexError(LexError<'a>),
 }
 
-impl<'a> ParseError<'a> {
+impl<'a> From<LexError<'a>> for ParseSyntaxError<'a> {
+    fn from(lex: LexError<'a>) -> Self {
+        Self::LexError(lex)
+    }
+}
+
+impl<'a> ParseSyntaxError<'a> {
     fn invalid_period(token: &Token<'a>) -> Self {
         Self::InvalidPeriodLocation {
-            span: token.span.clone(),
-        }
-    }
-
-    fn invalid_doc_comment(token: &Token<'a>) -> Self {
-        Self::InvalidDocCommentLocation {
             span: token.span.clone(),
         }
     }
@@ -48,10 +49,12 @@ macro_rules! token {
     };
 }
 
-pub fn expression<'a, 'b>(i: &'b [Token<'a>]) -> Result<(&'b [Token<'a>], Syntax), ParseError<'a>> {
+pub fn expression<'a, 'b>(
+    i: &'b [Token<'a>],
+) -> Result<(&'b [Token<'a>], Syntax), ParseSyntaxError<'a>> {
     match i {
         // Calling expression with an empty list is an error
-        [] => Err(ParseError::EmptyInput),
+        [] => Err(ParseSyntaxError::EmptyInput),
         // Literals:
         [b @ token!(Lexeme::Boolean(_)), tail @ ..] => {
             Ok((tail, Syntax::new_literal(boolean(b)?, b.span.clone())))
@@ -76,20 +79,20 @@ pub fn expression<'a, 'b>(i: &'b [Token<'a>]) -> Result<(&'b [Token<'a>], Syntax
         }
         [p @ token!(Lexeme::LParen), tail @ ..] => match list(tail, p.span.clone(), Lexeme::RParen)
         {
-            Err(ParseListError::UnclosedParen) => Err(ParseError::unclosed_paren(p)),
+            Err(ParseListError::UnclosedParen) => Err(ParseSyntaxError::unclosed_paren(p)),
             Err(ParseListError::ParseError(err)) => Err(err),
             Ok(ok) => Ok(ok),
         },
         [p @ token!(Lexeme::LBracket), tail @ ..] => {
             match list(tail, p.span.clone(), Lexeme::RBracket) {
-                Err(ParseListError::UnclosedParen) => Err(ParseError::unclosed_paren(p)),
+                Err(ParseListError::UnclosedParen) => Err(ParseSyntaxError::unclosed_paren(p)),
                 Err(ParseListError::ParseError(err)) => Err(err),
                 Ok(ok) => Ok(ok),
             }
         }
         // Vectors:
         [v @ token!(Lexeme::HashParen), tail @ ..] => match vector(tail, v.span.clone()) {
-            Err(ParseVectorError::UnclosedParen) => Err(ParseError::unclosed_paren(v)),
+            Err(ParseVectorError::UnclosedParen) => Err(ParseSyntaxError::unclosed_paren(v)),
             Err(ParseVectorError::ParseError(err)) => Err(err),
             Ok(ok) => Ok(ok),
         },
@@ -126,8 +129,7 @@ pub fn expression<'a, 'b>(i: &'b [Token<'a>]) -> Result<(&'b [Token<'a>], Syntax
             ))
         }
         // Invalid locations:
-        [d @ token!(Lexeme::Period), ..] => Err(ParseError::invalid_period(d)),
-        [d @ token!(Lexeme::DocComment(_)), ..] => Err(ParseError::invalid_doc_comment(d)),
+        [d @ token!(Lexeme::Period), ..] => Err(ParseSyntaxError::invalid_period(d)),
         x => todo!("Not implemented: {x:#?}"),
     }
 }
@@ -135,11 +137,11 @@ pub fn expression<'a, 'b>(i: &'b [Token<'a>]) -> Result<(&'b [Token<'a>], Syntax
 #[derive(Debug)]
 enum ParseListError<'a> {
     UnclosedParen,
-    ParseError(ParseError<'a>),
+    ParseError(ParseSyntaxError<'a>),
 }
 
-impl<'a> From<ParseError<'a>> for ParseListError<'a> {
-    fn from(pe: ParseError<'a>) -> Self {
+impl<'a> From<ParseSyntaxError<'a>> for ParseListError<'a> {
+    fn from(pe: ParseSyntaxError<'a>) -> Self {
         Self::ParseError(pe)
     }
 }
@@ -176,12 +178,14 @@ fn list<'a, 'b>(
                 let (remaining, expr) = expression(tail)?;
                 output.push(expr);
                 return match remaining {
-                    [] => Err(ParseListError::ParseError(ParseError::UnexpectedEndOfFile)),
+                    [] => Err(ParseListError::ParseError(
+                        ParseSyntaxError::UnexpectedEndOfFile,
+                    )),
                     [token!(Lexeme::RParen), tail @ ..] => {
                         Ok((tail, Syntax::new_list(output, span)))
                     }
                     [unexpected, ..] => Err(ParseListError::ParseError(
-                        ParseError::ExpectedClosingParen {
+                        ParseSyntaxError::ExpectedClosingParen {
                             span: unexpected.span.clone(),
                         },
                     )),
@@ -196,11 +200,11 @@ fn list<'a, 'b>(
 #[derive(Debug)]
 enum ParseVectorError<'a> {
     UnclosedParen,
-    ParseError(ParseError<'a>),
+    ParseError(ParseSyntaxError<'a>),
 }
 
-impl<'a> From<ParseError<'a>> for ParseVectorError<'a> {
-    fn from(pe: ParseError<'a>) -> Self {
+impl<'a> From<ParseSyntaxError<'a>> for ParseVectorError<'a> {
+    fn from(pe: ParseSyntaxError<'a>) -> Self {
         Self::ParseError(pe)
     }
 }
@@ -225,11 +229,11 @@ fn vector<'a, 'b>(
     }
 }
 
-fn boolean<'a>(i: &Token<'a>) -> Result<Literal, ParseError<'a>> {
+fn boolean<'a>(i: &Token<'a>) -> Result<Literal, ParseSyntaxError<'a>> {
     Ok(Literal::Boolean(i.lexeme.to_boolean()))
 }
 
-fn number<'a>(i: &Token<'a>) -> Result<Literal, ParseError<'a>> {
+fn number<'a>(i: &Token<'a>) -> Result<Literal, ParseSyntaxError<'a>> {
     let number = i.lexeme.to_number();
     // TODO: Parse correctly
     let number: Integer = number.parse().unwrap();
@@ -239,7 +243,7 @@ fn number<'a>(i: &Token<'a>) -> Result<Literal, ParseError<'a>> {
     }
 }
 
-fn string<'a>(i: &Token<'a>) -> Result<Literal, ParseError<'a>> {
+fn string<'a>(i: &Token<'a>) -> Result<Literal, ParseSyntaxError<'a>> {
     let fragments = i.lexeme.to_string();
     let mut output = String::new();
     for fragment in fragments {
@@ -248,13 +252,13 @@ fn string<'a>(i: &Token<'a>) -> Result<Literal, ParseError<'a>> {
             Fragment::Unescaped(s) => output.push_str(s),
             Fragment::HexValue(hex) => {
                 let Ok(hex_value) = u32::from_str_radix(hex, 16) else {
-                    return Err(ParseError::InvalidHexValue {
+                    return Err(ParseSyntaxError::InvalidHexValue {
                         value: hex.to_string(),
                         span: i.span.clone(),
                     });
                 };
                 let Some(c) = char::from_u32(hex_value) else {
-                    return Err(ParseError::InvalidHexValue {
+                    return Err(ParseSyntaxError::InvalidHexValue {
                         value: hex.to_string(),
                         span: i.span.clone(),
                     });

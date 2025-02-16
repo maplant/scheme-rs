@@ -16,8 +16,9 @@ That is obviously a long way away.
 - Garbage Collected via [Bacon-Rajan Concurrent Cycle Collection](https://pages.cs.wisc.edu/~cymen/misc/interests/Bacon01Concurrent.pdf)
 - Most key forms (let/let*/letrec/lambda/define etc)
 - Call by current continuation
-- Transformers (define-syntax, syntax-case, make-variable-transformer)
+- Transformers (define-syntax, syntax-case, datum->syntax and syntax->datum)
 - Spawning tasks and awaiting futures
+- Defining async bridge functions in Rust
 
 ## Features currently unsupported by scheme-rs: 
 
@@ -26,6 +27,16 @@ That is obviously a long way away.
 - Most API functions are not implemented
 - A large portion of lexical structures are missing; there's no way to specify recursive data structures
 - And many more that I cannot think of off the top of my head
+
+## Implementation details:
+
+`scheme-rs` is JIT compiled, compiling the expanded Scheme code into a [CPS](https://en.wikipedia.org/wiki/Continuation-passing_style) 
+mid-level IR, and the converting that into LLVM IR. 
+
+At present the code produced by `scheme-rs` is of pretty poor quality. Very few optimizations are performed, all variables 
+are boxed. Focus was spent on making this project as correct as possible, and to that end this is a JIT compiler for 
+scheme that fully supports syntax-case, proper tail recursion, and interaction with async Rust. Contributions are more than
+welcome if you would like to add optimizations passes to the compiler.
 
 ## Usage:
 
@@ -58,12 +69,17 @@ Scheme-rs provides a `builtin` function attribute macro to allow you to easily d
 here is the definition of the `number?` builtin in the source code:
 
 ```rust
-#[builtin("number?")]
-pub async fn is_number(
-    _cont: &Option<Arc<Continuation>>,
-    arg: &Gc<Value>,
-) -> Result<Gc<Value>, RuntimeError> {
-    let arg = arg.read().await;
+#[bridge(name = "number?", lib = "(base)")]
+pub async fn is_number(arg: &Gc<Value>) -> Result<Gc<Value>, Exception> {
+    let arg = arg.read();
     Ok(Gc::new(Value::Boolean(matches!(&*arg, Value::Number(_)))))
 }
 ```
+
+### Contributing
+
+If you are an intrepid scheme compiler optimizer, this project is for you! Lots of work needs to be done
+to bring this project up to snuff. The initial focus was on correctness, so if you would like to take a
+stab at improving perf or add features anywhere in this project, feel free!
+
+

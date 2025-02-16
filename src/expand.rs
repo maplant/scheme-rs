@@ -1,16 +1,17 @@
 use crate::{
-    ast::Literal,
-    continuation::Continuation,
-    error::RuntimeError,
+    ast::{Expression, Literal},
+    cps::Compile,
+    env::CapturedEnv,
+    exception::Exception,
     gc::Gc,
+    proc::{Application, Closure},
     syntax::{Identifier, Span, Syntax},
     value::Value,
 };
-use proc_macros::{builtin, Trace};
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use futures::future::BoxFuture;
+use indexmap::IndexMap;
+use proc_macros::Trace;
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 #[derive(Clone, Trace, Debug)]
 pub struct Transformer {
@@ -369,6 +370,7 @@ impl<'a> Binds<'a> {
     }
 }
 
+/*
 #[builtin("make-variable-transformer")]
 pub async fn make_variable_transformer(
     _cont: &Option<Arc<Continuation>>,
@@ -383,4 +385,62 @@ pub async fn make_variable_transformer(
         }
         _ => todo!(),
     }
+}
+ */
+
+pub fn call_transformer<'a>(
+    args: &'a [Gc<Value>],
+    env: &'a [Gc<Value>],
+    cont: &'a Gc<Value>,
+) -> BoxFuture<'a, Result<Application, Exception>> {
+    Box::pin(async move {
+        let [captured_env, trans, arg] = args else {
+            panic!("wrong args");
+        };
+
+        // Fetch a runtime from the continuation. It doesn't really matter
+        // _which_ runtime we use, in fact we could create a new one, but it
+        // behooves us to use one that already exists.
+        let cont = {
+            let cont = cont.read();
+            let cont: &Closure = cont.as_ref().try_into()?;
+            cont.clone()
+        };
+
+        let expanded = {
+            let trans_read = trans.read();
+            let trans: &Transformer = trans_read.as_ref().try_into().unwrap();
+
+            let arg = Syntax::from_datum(&BTreeSet::default(), arg);
+
+            // Expand the argument:
+            trans.expand(&arg).ok_or_else(Exception::syntax_error)?
+        };
+
+        let captured_env = {
+            let captured_env_read = captured_env.read();
+            let captured_env: &CapturedEnv = captured_env_read.as_ref().try_into().unwrap();
+            captured_env.clone()
+        };
+
+        let mut collected_env = IndexMap::new();
+        for (i, local) in captured_env.captured.into_iter().enumerate() {
+            collected_env.insert(local, env[i].clone());
+        }
+
+        // Parse the expression in the captured environment:
+        let parsed = Expression::parse(&cont.runtime, expanded, &captured_env.env)
+            .await
+            .unwrap();
+        let cps_expr = parsed.compile_top_level();
+        let compiled = cont
+            .runtime
+            .compile_expr_with_env(cps_expr, collected_env)
+            .await
+            .unwrap();
+        let transformer_result = compiled.call(&[]).await?;
+        let application = Application::new(cont, transformer_result);
+
+        Ok(application)
+    })
 }

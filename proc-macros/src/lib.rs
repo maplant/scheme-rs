@@ -3,43 +3,72 @@ use proc_macro2::Span;
 use quote::quote;
 use syn::{
     parse_macro_input, parse_quote, punctuated::Punctuated, DataEnum, DataStruct, DeriveInput,
-    Fields, FnArg, GenericParam, Generics, Ident, ItemFn, Member, PatType, Token, Type,
+    Fields, FnArg, GenericParam, Generics, Ident, ItemFn, LitStr, Member, PatType, Token, Type,
+    TypeReference,
 };
 
 #[proc_macro_attribute]
-pub fn builtin(name: TokenStream, item: TokenStream) -> TokenStream {
-    let name = proc_macro2::TokenStream::from(name);
-    let builtin = parse_macro_input!(item as ItemFn);
+pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
+    let mut name: Option<LitStr> = None;
+    let mut lib: Option<LitStr> = None;
+    let bridge_attr_parser = syn::meta::parser(|meta| {
+        if meta.path.is_ident("name") {
+            name = Some(meta.value()?.parse()?);
+            Ok(())
+        } else if meta.path.is_ident("lib") {
+            lib = Some(meta.value()?.parse()?);
+            Ok(())
+        } else {
+            Err(meta.error("unsupported bridge property"))
+        }
+    });
 
-    let impl_name = builtin.sig.ident.clone();
+    parse_macro_input!(args with bridge_attr_parser);
+
+    let name = name.unwrap().value();
+    let lib = lib.unwrap().value();
+    let bridge = parse_macro_input!(item as ItemFn);
+
+    let impl_name = bridge.sig.ident.clone();
     let wrapper_name = impl_name.to_string() + "_wrapper";
     let wrapper_name = Ident::new(&wrapper_name, Span::call_site());
 
-    let is_variadic = if let Some(last_arg) = builtin.sig.inputs.last() {
-        is_vec(last_arg)
+    let is_variadic = if let Some(last_arg) = bridge.sig.inputs.last() {
+        is_slice(last_arg)
     } else {
         false
     };
 
     let num_args = if is_variadic {
-        builtin.sig.inputs.len().saturating_sub(2)
+        bridge.sig.inputs.len().saturating_sub(1)
     } else {
-        builtin.sig.inputs.len() - 1
+        bridge.sig.inputs.len()
     };
 
     let wrapper: ItemFn = if !is_variadic {
         let arg_indices: Vec<_> = (0..num_args).collect();
         parse_quote! {
-            fn #wrapper_name(
-                cont: Option<std::sync::Arc<::scheme_rs::continuation::Continuation>>,
-                args: Vec<::scheme_rs::gc::Gc<::scheme_rs::value::Value>>
-            ) -> futures::future::BoxFuture<'static, Result<::scheme_rs::proc::ValuesOrPreparedCall, ::scheme_rs::error::RuntimeError>> {
+            fn #wrapper_name<'a>(
+                args: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
+                rest_args: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
+                cont: &'a ::scheme_rs::gc::Gc<::scheme_rs::value::Value>,
+            ) -> futures::future::BoxFuture<'a, Result<scheme_rs::proc::Application, scheme_rs::exception::Exception>> {
+                let cont = {
+                    let cont = cont.read();
+                    if let ::scheme_rs::value::Value::Closure(proc) = &*cont {
+                        proc.clone()
+                    } else {
+                        panic!("Continuation is not a function!");
+                    }
+                };
                 Box::pin(
                     async move {
-                        #impl_name(
-                            &cont,
-                            #( &args[#arg_indices], )*
-                        ).await.map(::scheme_rs::proc::ValuesOrPreparedCall::from)
+                        Ok(::scheme_rs::proc::Application::new(
+                            cont,
+                            #impl_name(
+                                #( &args[#arg_indices], )*
+                            ).await?
+                        ))
                     }
                 )
             }
@@ -47,48 +76,47 @@ pub fn builtin(name: TokenStream, item: TokenStream) -> TokenStream {
     } else {
         let arg_indices: Vec<_> = (0..num_args).collect();
         parse_quote! {
-            fn #wrapper_name(
-                cont: Option<std::sync::Arc<::scheme_rs::continuation::Continuation>>,
-                mut required_args: Vec<::scheme_rs::gc::Gc<::scheme_rs::value::Value>>
-            ) -> futures::future::BoxFuture<'static, Result<::scheme_rs::proc::ValuesOrPreparedCall, ::scheme_rs::error::RuntimeError>> {
-                let var_args = required_args.split_off(#num_args);
+            fn #wrapper_name<'a>(
+                args: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
+                rest_args: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
+                cont: &'a ::scheme_rs::gc::Gc<::scheme_rs::value::Value>,
+            ) -> futures::future::BoxFuture<'a, Result<scheme_rs::proc::Application, scheme_rs::exception::Exception>> {
+                let cont = {
+                    let cont = cont.read();
+                    if let ::scheme_rs::value::Value::Closure(proc) = &*cont {
+                        proc.clone()
+                    } else {
+                        panic!("Continuation is not a function!");
+                    }
+                };
                 Box::pin(
                     async move {
-                        #impl_name(
-                            &cont,
-                            #( &required_args[#arg_indices], )*
-                            var_args
-                        ).await.map(::scheme_rs::proc::ValuesOrPreparedCall::from)
+                        Ok(::scheme_rs::proc::Application::new(
+                            cont,
+                            #impl_name(
+                                #( &args[#arg_indices], )*
+                                rest_args
+                            ).await?
+                        ))
                     }
                 )
             }
         }
     };
     quote! {
-        #builtin
+        #bridge
 
         #wrapper
 
         inventory::submit! {
-            ::scheme_rs::builtin::Builtin::new(#name, #num_args, #is_variadic, #wrapper_name)
+            ::scheme_rs::registry::BridgeFn::new(#name, #lib, #num_args, #is_variadic, #wrapper_name)
         }
     }
     .into()
 }
 
-fn is_vec(arg: &FnArg) -> bool {
-    if let FnArg::Typed(PatType { ty, .. }) = arg {
-        if let Type::Path(ref path) = ty.as_ref() {
-            return path
-                .path
-                .segments
-                .last()
-                .map(|p| p.ident.to_string())
-                .as_deref()
-                == Some("Vec");
-        }
-    }
-    false
+fn is_slice(arg: &FnArg) -> bool {
+    matches!(arg, FnArg::Typed(PatType { ty, ..}) if matches!(ty.as_ref(), Type::Reference(TypeReference { elem, .. }) if matches!(elem.as_ref(), Type::Slice(_))))
 }
 
 #[proc_macro_derive(Trace)]
@@ -102,7 +130,7 @@ pub fn derive_trace(input: TokenStream) -> TokenStream {
 
     match data {
         syn::Data::Struct(data_struct) => derive_trace_struct(ident, data_struct, generics).into(),
-        syn::Data::Enum(data_enum) => derive_trace_enum(ident, data_enum).into(),
+        syn::Data::Enum(data_enum) => derive_trace_enum(ident, data_enum, generics).into(),
         _ => panic!("Union types are not supported."),
     }
 }
@@ -213,7 +241,11 @@ fn derive_trace_struct(
 }
 
 // TODO: Add generics here
-fn derive_trace_enum(name: Ident, data_enum: DataEnum) -> proc_macro2::TokenStream {
+fn derive_trace_enum(
+    name: Ident,
+    data_enum: DataEnum,
+    generics: Generics,
+) -> proc_macro2::TokenStream {
     let (visit_match_clauses, finalize_match_clauses): (Vec<_>, Vec<_>) = data_enum
         .variants
         .into_iter()
@@ -287,8 +319,31 @@ fn derive_trace_enum(name: Ident, data_enum: DataEnum) -> proc_macro2::TokenStre
             ))
         })
         .unzip();
+
+    let Generics {
+        mut params,
+        where_clause,
+        ..
+    } = generics;
+
+    let mut unbound_params = Punctuated::<GenericParam, Token![,]>::new();
+
+    for param in params.iter_mut() {
+        match param {
+            GenericParam::Type(ref mut ty) => {
+                ty.bounds.push(syn::TypeParamBound::Verbatim(
+                    quote! { ::scheme_rs::gc::Trace },
+                ));
+                unbound_params.push(GenericParam::Type(syn::TypeParam::from(ty.ident.clone())));
+            }
+            param => unbound_params.push(param.clone()),
+        }
+    }
+
     quote! {
-        unsafe impl ::scheme_rs::gc::Trace for #name {
+        unsafe impl<#params> ::scheme_rs::gc::Trace for #name <#unbound_params>
+        #where_clause
+        {
             unsafe fn visit_children(&self, visitor: unsafe fn(::scheme_rs::gc::OpaqueGcPtr)) {
                 match self {
                     #( #visit_match_clauses, )*

@@ -1,497 +1,412 @@
-use indexmap::IndexSet;
-use proc_macros::Trace;
-use std::collections::HashMap;
-use tokio::sync::OnceCell;
+use std::{
+    collections::{hash_map::Entry, HashMap},
+    fmt,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use crate::{
-    ast::{parse::ParseAstError, AstNode},
-    builtin::Builtin,
-    error::{RuntimeError, RuntimeErrorKind},
-    gc::{init_gc, Gc},
-    lex::{LexError, Token},
-    parse::ParseError,
-    syntax::{ExpansionCtx, Identifier, ParsedSyntax},
+    gc::{Gc, Trace},
+    proc::Closure,
+    syntax::{Identifier, Mark},
     value::Value,
 };
 
-/// An Environment, or store of variables and macros with a reference to its containing
-/// lexical scope.
-#[derive(derive_more::Debug, Default, Trace)]
-pub struct Env {
-    /// The containing environment of this environment, or None if this is a top level
-    /// environment.
-    #[debug(skip)]
-    pub up: Option<Gc<Env>>,
-    /// Variables stored in this environment. Variables are referenced via their index
-    /// into an array. This array is dynamic only because a top level environment
-    /// (i.e. a REPL) can define new variables over the course of evaluation.
-    vars: Vec<Gc<Value>>,
-    /// Names of the variables, used during parsing and compute the reference of the
-    /// variable.
-    var_names: IndexSet<Identifier>,
-    /// Macros stored in the scope. Macros can only be used in the expansion process, so
-    /// there's no reason to precompute faster lookups for thme.
-    macros: HashMap<Identifier, Gc<Value>>,
+/// A Top level environment
+#[derive(Trace)]
+pub struct Top {
+    kind: TopLevelEnvKind,
+    vars: HashMap<Identifier, Gc<Value>>,
+    macros: HashMap<Identifier, Macro>,
 }
 
-static TOP_LEVEL_ENV: OnceCell<Gc<Env>> = OnceCell::const_new();
-
-impl Env {
-    pub async fn top() -> Gc<Self> {
-        TOP_LEVEL_ENV
-            .get_or_init(|| async {
-                init_gc();
-
-                let mut top = Env::default();
-
-                // Install the builtins:
-                for builtin in inventory::iter::<Builtin> {
-                    builtin.install(&mut top);
-                }
-
-                // Install the stdlib:
-                let top = Gc::new(top);
-                let _ = top
-                    .eval("stdlib.scm", include_str!("stdlib.scm"))
-                    .await
-                    .unwrap();
-
-                top
-            })
-            .await
-            .clone()
-    }
-
-    /// Compute the reference of the variable. If no such reference exists, the variable
-    /// is either undefined or a global.
-    pub fn fetch_var_ref(&self, ident: &Identifier) -> Option<VarRef> {
-        self.var_names.get_index_of(ident).map_or_else(
-            || {
-                self.up
-                    .as_ref()
-                    .and_then(|up| up.read().fetch_var_ref(ident).map(VarRef::inc_depth))
-            },
-            |offset| Some(VarRef { depth: 0, offset }),
-        )
-    }
-
-    /// Fetch the value of the variable. Will panic if no variable exists.
-    pub fn fetch_var(&self, var_ref: VarRef) -> Gc<Value> {
-        // TODO: Convert this to an iterative function.
-        if var_ref.depth == 0 {
-            self.vars[var_ref.offset].clone()
-        } else {
-            self.up
-                .as_ref()
-                .unwrap()
-                .read()
-                .fetch_var(var_ref.dec_depth())
-        }
-    }
-
-    /// Define a variable local to this scope.
-    pub fn def_local_var(&mut self, ident: &Identifier, val: Gc<Value>) {
-        let (idx, new) = self.var_names.insert_full(ident.clone());
-        if !new {
-            self.vars[idx] = val;
-        } else {
-            self.vars.push(val);
-        }
-    }
-
-    /// Set the value of the variable. Will panic if no variable exists.
-    pub fn set_var(&mut self, var_ref: VarRef, new_val: Gc<Value>) {
-        // TODO: Convert this to an iterative function.
-        if var_ref.depth == 0 {
-            self.vars[var_ref.offset] = new_val;
-        } else {
-            self.up
-                .as_ref()
-                .unwrap()
-                .write()
-                .set_var(var_ref.dec_depth(), new_val)
-        }
-    }
-
-    /// Fetch a macro, along with its containing environment.
-    fn fetch_macro(&self, ident: &Identifier) -> Option<MacroLookup> {
-        match self.macros.get(ident) {
-            Some(mac) => Some(MacroLookup::WithoutEnv(mac.clone())),
-            None => match self.up.as_ref().map(|up| up.read().fetch_macro(ident))?? {
-                wenv @ MacroLookup::WithEnv { .. } => Some(wenv),
-                MacroLookup::WithoutEnv(value) => Some(MacroLookup::WithEnv {
-                    env: self.up.as_ref().unwrap().clone(),
-                    value,
-                }),
-            },
-        }
-    }
-
-    /// Fetch a macro, along with its containing environment.
-    pub fn def_local_macro(&mut self, ident: &Identifier, val: Gc<Value>) {
-        self.macros.insert(ident.clone(), val);
-    }
+#[derive(Trace)]
+pub enum TopLevelEnvKind {
+    Library,
+    Program,
+    Repl,
 }
 
-impl Gc<Env> {
-    /// Create a new lexical contour that is a child of self.
-    pub fn new_lexical_contour(&self) -> Env {
-        Env {
-            up: Some(self.clone()),
-            vars: Vec::with_capacity(1), // There will probably always be at least one var
-            var_names: IndexSet::default(),
+impl Top {
+    pub fn library() -> Self {
+        Self {
+            kind: TopLevelEnvKind::Library,
+            vars: HashMap::new(),
             macros: HashMap::new(),
         }
     }
 
-    /// Evaluate a string, returning all of the results in a Vec
-    // TODO: Add file name
-    pub async fn eval<'e>(
-        &self,
-        file_name: &str,
-        exprs: &'e str,
-    ) -> Result<Vec<Vec<Gc<Value>>>, EvalError<'e>> {
-        let tokens = Token::tokenize_file(file_name, exprs)?;
-        let sexprs = ParsedSyntax::parse(&tokens)?;
-        let mut results = Vec::new();
-        for sexpr in sexprs {
-            let Some(expr) = AstNode::from_syntax(sexpr.syntax, self, &None).await? else {
-                continue;
-            };
-            // TODO: Catch continuation calls
-            let vals = self.abandon_cc_trampoline(expr).await?;
-            results.push(vals);
-        }
-        Ok(results)
-    }
-
-    async fn abandon_cc_trampoline(&self, expr: AstNode) -> Result<Vec<Gc<Value>>, RuntimeError> {
-        let mut inner = expr.eval(self, &None).await;
-        while let Err(RuntimeError {
-            kind: RuntimeErrorKind::AbandonCurrentContinuation { args, new_cont },
-            ..
-        }) = inner
-        {
-            // Abandon the current continuation and evaluate the newly returned one
-            // TODO: Retain the backtrace for errors
-            // let arg = args.pop().unwrap();
-            if let Some(new_cont) = new_cont {
-                inner = new_cont.enter_extent(args).await;
-            } else {
-                return Ok(args);
-            }
-        }
-        inner
-    }
-
-    pub fn distance(&self, rhs: &Gc<Env>) -> usize {
-        if self == rhs {
-            0
-        } else {
-            1 + self.read().up.as_ref().unwrap().distance(rhs)
-        }
-    }
-
-    pub fn deep_clone(&self, cloned: &mut HashMap<Self, Self>) -> Self {
-        if cloned.contains_key(self) {
-            cloned.get(self).unwrap().clone()
-        } else {
-            let this = self.read();
-            let clone = Gc::new(Env {
-                up: this.up.as_ref().map(|up| up.deep_clone(cloned)),
-                vars: this.vars.clone(),
-                var_names: this.var_names.clone(),
-                macros: this.macros.clone(),
-            });
-            cloned.insert(self.clone(), clone.clone());
-            clone
-        }
-    }
-}
-
-#[derive(derive_more::From, Debug)]
-pub enum EvalError<'e> {
-    LexError(LexError<'e>),
-    ParseError(ParseError<'e>),
-    ParseAstError(ParseAstError),
-    RuntimeError(RuntimeError),
-}
-
-/// Reference to a variable that is accessible via the current environment. Could be
-/// local or non-local depending on the depth field.
-#[derive(Debug, Copy, Clone, Trace, Default)]
-pub struct VarRef {
-    /// Number of up environments we need to traverse in order to reach the defining
-    /// scope of the variable. Variables with a depth of 0 are local.
-    depth: usize,
-    /// Offset into the `vars` field of the environment.
-    offset: usize,
-}
-
-impl VarRef {
-    pub fn inc_depth(self) -> Self {
+    pub fn program() -> Self {
         Self {
-            depth: self.depth + 1,
-            offset: self.offset,
+            kind: TopLevelEnvKind::Program,
+            vars: HashMap::new(),
+            macros: HashMap::new(),
         }
     }
 
-    pub fn dec_depth(self) -> Self {
+    pub fn repl() -> Self {
         Self {
-            depth: self.depth - 1,
-            offset: self.offset,
+            kind: TopLevelEnvKind::Repl,
+            vars: HashMap::new(),
+            macros: HashMap::new(),
         }
     }
 
-    pub fn offset(mut self, offset: usize) -> Self {
-        self.offset += offset;
-        self
+    pub fn is_repl(&self) -> bool {
+        matches!(self.kind, TopLevelEnvKind::Repl)
     }
 
-    pub fn fetch(&self, env: &Gc<Env>) -> Gc<Value> {
-        env.read().fetch_var(*self)
+    pub fn import(&mut self, lib: &Top) {
+        for (name, val) in lib.vars.iter() {
+            self.vars.insert(name.clone(), val.clone());
+        }
+        for (name, mac) in lib.macros.iter() {
+            self.macros.insert(name.clone(), mac.clone());
+        }
+    }
+
+    pub fn def_var(&mut self, name: Identifier, value: Value) -> Global {
+        let global = Gc::new(value);
+        match self.vars.entry(name.clone()) {
+            Entry::Occupied(occup) => Global::new(name, occup.get().clone()),
+            Entry::Vacant(vacant) => Global::new(name, vacant.insert(global).clone()),
+        }
+    }
+
+    pub fn def_macro(&mut self, name: Identifier, mac: Macro) {
+        self.macros.insert(name, mac);
+    }
+
+    pub fn fetch_var(&mut self, name: &Identifier) -> Option<Global> {
+        self.vars
+            .get(name)
+            .map(|val| Global::new(name.clone(), val.clone()))
+    }
+
+    pub fn fetch_macro(&self, name: &Identifier) -> Option<Macro> {
+        self.macros.get(name).cloned()
     }
 }
 
-/// Reference to a bound variable that has been introduced as part of a macro.
-#[derive(Debug, Clone, Trace)]
-pub struct MacroVarRef {
-    /// The environment that the macro was defined in.
-    env: Gc<Env>,
-    /// Reference to the variable from within that macro.
-    var_ref: VarRef,
+#[derive(Trace)]
+pub struct LexicalContour {
+    up: Environment,
+    vars: HashMap<Identifier, Local>,
+    macros: HashMap<Identifier, Closure>,
 }
 
-impl MacroVarRef {
-    pub fn fetch(&self) -> Gc<Value> {
-        self.env.read().fetch_var(self.var_ref)
-    }
-
-    pub fn set(&self, value: &Gc<Value>) {
-        self.env.write().set_var(self.var_ref, value.clone());
+impl LexicalContour {
+    fn new(env: &Environment) -> Self {
+        Self {
+            up: env.clone(),
+            vars: Default::default(),
+            macros: Default::default(),
+        }
     }
 }
 
-/// References a variable in the global scope. Essentially, any variable that is
-/// undefined must be a global.
-#[derive(Debug, Clone, Trace)]
-pub struct GlobalRef {
+impl LexicalContour {
+    pub fn def_var(&mut self, name: Identifier) -> Local {
+        let local = Local::gensym();
+        self.vars.insert(name, local);
+        local
+    }
+
+    pub fn def_macro(&mut self, name: Identifier, closure: Closure) {
+        self.macros.insert(name, closure);
+    }
+
+    pub fn fetch_var(&self, name: &Identifier) -> Option<Var> {
+        if let Some(local) = self.vars.get(name) {
+            return Some(Var::Local(*local));
+        }
+        self.up.fetch_var(name)
+    }
+
+    pub fn fetch_local(&self, name: &Identifier) -> Option<Local> {
+        if let Some(local) = self.vars.get(name) {
+            return Some(*local);
+        }
+        self.up.fetch_local(name)
+    }
+
+    pub fn fetch_top(&self) -> Gc<Top> {
+        self.up.fetch_top()
+    }
+}
+
+impl Gc<LexicalContour> {
+    pub fn fetch_macro(&self, name: &Identifier) -> Option<Macro> {
+        if let Some(trans) = self.read().macros.get(name) {
+            return Some(Macro::new(
+                Environment::LexicalContour(self.clone()),
+                trans.clone(),
+            ));
+        }
+        self.read().up.fetch_macro(name)
+    }
+}
+
+#[derive(Trace)]
+pub struct MacroExpansion {
+    up: Environment,
+    mark: Mark,
+    source: Environment,
+}
+
+impl MacroExpansion {
+    pub fn new(env: &Environment, mark: Mark, source: Environment) -> Self {
+        Self {
+            up: env.clone(),
+            mark,
+            source,
+        }
+    }
+}
+
+impl MacroExpansion {
+    pub fn def_var(&self, name: Identifier) -> Var {
+        // In the case of defining variables produced from macro expansions, pass them
+        // on to the next environment up.
+        self.up.def_var(name)
+    }
+
+    pub fn def_macro(&self, name: Identifier, closure: Closure) {
+        self.up.def_macro(name, closure);
+    }
+
+    pub fn fetch_var(&self, name: &Identifier) -> Option<Var> {
+        // Attempt to check the up scope first:
+        let var = self.up.fetch_var(name);
+        if var.is_some() {
+            return var;
+        }
+        // If the current expansion context contains the mark, remove it and check the
+        // expansion source scope.
+        name.marks
+            .contains(&self.mark)
+            .then(|| {
+                let mut unmarked = name.clone();
+                unmarked.mark(self.mark);
+                self.source.fetch_var(&unmarked)
+            })
+            .flatten()
+    }
+
+    pub fn fetch_local(&self, name: &Identifier) -> Option<Local> {
+        // Attempt to check the up scope first:
+        let var = self.up.fetch_local(name);
+        if var.is_some() {
+            return var;
+        }
+        // If the current expansion context contains the mark, remove it and check the
+        // expansion source scope.
+        name.marks
+            .contains(&self.mark)
+            .then(|| {
+                let mut unmarked = name.clone();
+                unmarked.mark(self.mark);
+                self.source.fetch_local(&unmarked)
+            })
+            .flatten()
+    }
+
+    pub fn fetch_macro(&self, name: &Identifier) -> Option<Macro> {
+        // Attempt to check the up scope first:
+        let mac = self.up.fetch_macro(name);
+        if mac.is_some() {
+            return mac;
+        }
+        // If the current expansion context contains the mark, remove it and check the
+        // expansion source scope.
+        name.marks
+            .contains(&self.mark)
+            .then(|| {
+                let mut unmarked = name.clone();
+                unmarked.mark(self.mark);
+                self.source.fetch_macro(&unmarked)
+            })
+            .flatten()
+    }
+
+    pub fn fetch_top(&self) -> Gc<Top> {
+        self.up.fetch_top()
+    }
+}
+
+#[derive(Trace)]
+pub enum Environment {
+    Top(Gc<Top>),
+    LexicalContour(Gc<LexicalContour>),
+    MacroExpansion(Gc<MacroExpansion>),
+}
+
+impl Environment {
+    pub fn fetch_top(&self) -> Gc<Top> {
+        match self {
+            Self::Top(top) => top.clone(),
+            Self::LexicalContour(lex) => lex.read().fetch_top(),
+            Self::MacroExpansion(me) => me.read().fetch_top(),
+        }
+    }
+
+    pub fn def_var(&self, name: Identifier) -> Var {
+        match self {
+            Self::Top(top) => Var::Global(top.write().def_var(name, Value::Undefined)),
+            Self::LexicalContour(lex) => Var::Local(lex.write().def_var(name)),
+            Self::MacroExpansion(me) => me.read().def_var(name),
+        }
+    }
+
+    pub fn def_macro(&self, name: Identifier, val: Closure) {
+        match self {
+            Self::Top(top) => top.write().def_macro(name, Macro::new(self.clone(), val)),
+            Self::LexicalContour(lex) => lex.write().def_macro(name, val),
+            Self::MacroExpansion(me) => me.read().def_macro(name, val),
+        }
+    }
+
+    pub fn fetch_var(&self, name: &Identifier) -> Option<Var> {
+        match self {
+            Self::Top(top) => top.write().fetch_var(name).map(Var::Global),
+            Self::LexicalContour(lex) => lex.read().fetch_var(name),
+            Self::MacroExpansion(me) => me.read().fetch_var(name),
+        }
+    }
+
+    pub fn fetch_local(&self, name: &Identifier) -> Option<Local> {
+        match self {
+            Self::Top(_) => None,
+            Self::LexicalContour(lex) => lex.read().fetch_local(name),
+            Self::MacroExpansion(me) => me.read().fetch_local(name),
+        }
+    }
+
+    pub fn fetch_macro(&self, name: &Identifier) -> Option<Macro> {
+        match self {
+            Self::Top(top) => top.read().fetch_macro(name),
+            Self::LexicalContour(lex) => lex.fetch_macro(name),
+            Self::MacroExpansion(me) => me.read().fetch_macro(name),
+        }
+    }
+
+    pub fn is_bound(&self, name: &Identifier) -> bool {
+        self.fetch_var(name).is_some()
+    }
+
+    pub fn new_lexical_contour(&self) -> Self {
+        let new_lexical_contour = LexicalContour::new(self);
+        Self::LexicalContour(Gc::new(new_lexical_contour))
+    }
+
+    pub fn new_macro_expansion(&self, mark: Mark, source: Environment) -> Self {
+        let new_macro_expansion = MacroExpansion::new(self, mark, source);
+        Self::MacroExpansion(Gc::new(new_macro_expansion))
+    }
+}
+
+impl From<Gc<Top>> for Environment {
+    fn from(top: Gc<Top>) -> Self {
+        Self::Top(top)
+    }
+}
+
+impl Clone for Environment {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Top(top) => Self::Top(top.clone()),
+            Self::LexicalContour(lex) => Self::LexicalContour(lex.clone()),
+            Self::MacroExpansion(mac) => Self::MacroExpansion(mac.clone()),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Trace, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Local(usize);
+
+impl Local {
+    /// Create a new temporary value.
+    pub fn gensym() -> Self {
+        static NEXT_SYM: AtomicUsize = AtomicUsize::new(0);
+        Self(NEXT_SYM.fetch_add(1, Ordering::Relaxed))
+    }
+
+    pub fn to_func_name(&self) -> String {
+        format!("f{}", self.0)
+    }
+}
+
+impl fmt::Display for Local {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "%{}", self.0)
+    }
+}
+
+impl fmt::Debug for Local {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "%{}", self.0)
+    }
+}
+
+#[derive(Clone, Trace, Hash, PartialEq, Eq)]
+pub struct Global {
     name: Identifier,
-    // TODO: Add span for debug info
+    val: Gc<Value>,
 }
 
-impl GlobalRef {
-    pub fn new(name: Identifier) -> Self {
-        Self { name }
+impl Global {
+    pub fn new(name: Identifier, val: Gc<Value>) -> Self {
+        Global { name, val }
     }
 
-    // Throw error when variable is undefined
-    pub fn fetch(&self, default: &Gc<Env>) -> Option<Gc<Value>> {
-        let top = if let Some(top) = TOP_LEVEL_ENV.get() {
-            top.clone()
-        } else {
-            // Currently installing the top level environment.
-            get_top_env_from_curr(default.clone())
-        };
-
-        let top = top.read();
-        let var = top.fetch_var_ref(&self.name)?;
-        Some(top.fetch_var(var))
-    }
-
-    pub fn set(&self, default: &Gc<Env>, value: &Gc<Value>) {
-        let top = if let Some(top) = TOP_LEVEL_ENV.get() {
-            top.clone()
-        } else {
-            // Currently installing the top level environment.
-            get_top_env_from_curr(default.clone())
-        };
-        top.write().def_local_var(&self.name, value.clone());
+    pub fn value(self) -> Gc<Value> {
+        self.val
     }
 }
 
-fn get_top_env_from_curr(mut curr: Gc<Env>) -> Gc<Env> {
-    while let Some(up) = {
-        let curr = curr.read();
-        curr.up.as_ref().cloned()
-    } {
-        curr = up.clone();
+impl fmt::Debug for Global {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "${}", self.name.name)
     }
-    curr
 }
 
-/// A reference that can either be global, macro, or regular
-#[derive(Debug, Clone, Trace)]
-// TODO: Rename
-pub enum Ref {
-    Macro(MacroVarRef),
-    Global(GlobalRef),
-    Regular(VarRef),
+#[derive(Clone, Trace, Hash, PartialEq, Eq)]
+pub enum Var {
+    Global(Global),
+    Local(Local),
 }
 
-impl Ref {
-    pub fn fetch(&self, env: &Gc<Env>) -> Result<Gc<Value>, RuntimeError> {
+impl fmt::Debug for Var {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Macro(m) => Ok(m.fetch()),
-            Self::Global(g) => g
-                .fetch(env)
-                .ok_or_else(|| RuntimeError::undefined_variable(g.name.clone())),
-            Self::Regular(v) => Ok(env.read().fetch_var(*v)),
-        }
-    }
-
-    pub async fn set(&self, env: &Gc<Env>, value: &Gc<Value>) {
-        match self {
-            Self::Macro(m) => m.set(value),
-            Self::Global(g) => g.set(env, value),
-            Self::Regular(v) => env.write().set_var(*v, value.clone()),
+            Self::Global(global) => global.fmt(f),
+            Self::Local(local) => local.fmt(f),
         }
     }
 }
 
-/// The result of looking up a macro. If the macro is present in the local environment,
-/// `WithoutEnv` is returned (this is because we do not have the Gc of the env).
-enum MacroLookup {
-    WithEnv { env: Gc<Env>, value: Gc<Value> },
-    WithoutEnv(Gc<Value>),
+#[derive(Clone, Trace)]
+pub struct Macro {
+    pub source_env: Environment,
+    pub transformer: Closure,
 }
 
-#[derive(derive_more::Debug)]
-pub struct ExpansionEnv<'a> {
-    up: Option<&'a ExpansionEnv<'a>>,
-    pub expansion_ctxs: Vec<ExpansionCtx>,
-    #[debug(skip)]
-    pub lexical_contour: Gc<Env>,
-}
-
-impl ExpansionEnv<'static> {
-    pub async fn top() -> Self {
+impl Macro {
+    pub fn new(source_env: Environment, transformer: Closure) -> Self {
         Self {
-            up: None,
-            expansion_ctxs: Vec::new(),
-            lexical_contour: Env::top().await,
-        }
-    }
-
-    pub fn from_env(env: &Gc<Env>) -> Self {
-        Self {
-            up: None,
-            expansion_ctxs: Vec::new(),
-            lexical_contour: env.clone(),
+            source_env,
+            transformer,
         }
     }
 }
 
-impl ExpansionEnv<'_> {
-    pub fn is_bound(&self, ident: &Identifier) -> bool {
-        !matches!(self.fetch_var_ref(ident), Ref::Global(_))
-    }
+#[derive(Clone, Trace)]
+pub struct CapturedEnv {
+    pub env: Environment,
+    pub captured: Vec<Local>,
+}
 
-    pub fn push_expansion_env(&self, ctxs: Vec<ExpansionCtx>) -> ExpansionEnv<'_> {
-        ExpansionEnv {
-            lexical_contour: self.lexical_contour.clone(),
-            up: Some(self),
-            expansion_ctxs: ctxs,
-        }
-    }
-
-    pub fn push_lexical_contour(&self, gc: Gc<Env>) -> ExpansionEnv<'_> {
-        ExpansionEnv {
-            up: Some(self),
-            expansion_ctxs: Vec::new(),
-            lexical_contour: gc,
-        }
-    }
-
-    // TODO: This can be cached.
-    pub fn fetch_var_ref(&self, ident: &Identifier) -> Ref {
-        // The very first thing we do is check the current lexical contour. We do not
-        // need to do anything special here; any marks introduced via a macro expansion
-        // can only be used to define variables in more local lexical contours.
-        //
-        // After we check the lexical scope, we can check the macro expansion contexts.
-        // If any of them contain the mark of an expansion context, it belongs to that
-        // macro environment.
-        self.lexical_contour
-            .read()
-            .fetch_var_ref(ident)
-            .map_or_else(
-                || match self.fetch_macro_var_ref(ident) {
-                    Ref::Macro(m) => Ref::Regular({
-                        let mut local = m.var_ref;
-                        local.depth += self.lexical_contour.distance(&m.env);
-                        local
-                    }),
-                    x => x,
-                },
-                Ref::Regular,
-            )
-    }
-
-    /// Lexical environments are separately linked, so when we know that a variable is
-    /// free in the current lexical environment, we can just check the macro envs.
-    // TODO: This can be cached.
-    fn fetch_macro_var_ref(&self, ident: &Identifier) -> Ref {
-        let mut ident = ident.clone();
-        for expansion_ctx in self.expansion_ctxs.iter().rev() {
-            if ident.marks.contains(&expansion_ctx.mark) {
-                // Strip the mark and check the macro environment
-                ident.mark(expansion_ctx.mark);
-
-                // Fetch the var from the macro env:
-                let Some(expansion_ctx_ref) = expansion_ctx.env.read().fetch_var_ref(&ident) else {
-                    continue;
-                };
-
-                return Ref::Macro(MacroVarRef {
-                    env: expansion_ctx.env.clone(),
-                    var_ref: expansion_ctx_ref,
-                });
-            }
-        }
-
-        if let Some(up) = self.up {
-            up.fetch_macro_var_ref(&ident)
-        } else {
-            Ref::Global(GlobalRef::new(ident.clone()))
-        }
-    }
-
-    // TODO: This can be cached.
-    pub fn fetch_macro(&self, ident: &Identifier) -> Option<(Gc<Env>, Gc<Value>)> {
-        // Mechanically this works exactly the same as fetch_var_ref.
-        self.lexical_contour.read().fetch_macro(ident).map_or_else(
-            || self.fetch_macro_macro(ident),
-            |ml| match ml {
-                MacroLookup::WithEnv { env, value } => Some((env, value)),
-                MacroLookup::WithoutEnv(value) => Some((self.lexical_contour.clone(), value)),
-            },
-        )
-    }
-
-    // Terrible name, but it's the same thing going on as `fetch_macro_var_ref`
-    // TODO: This can be cached.
-    fn fetch_macro_macro(&self, ident: &Identifier) -> Option<(Gc<Env>, Gc<Value>)> {
-        let mut ident = ident.clone();
-        for expansion_ctx in &self.expansion_ctxs {
-            if ident.marks.contains(&expansion_ctx.mark) {
-                // Strip the mark and check the macro environment
-                ident.mark(expansion_ctx.mark);
-                // Fetch the macro from the macro env:
-                match expansion_ctx.env.read().fetch_macro(&ident) {
-                    Some(MacroLookup::WithEnv { env, value }) => return Some((env, value)),
-                    Some(MacroLookup::WithoutEnv(value)) => {
-                        return Some((expansion_ctx.env.clone(), value))
-                    }
-                    None => (),
-                };
-            }
-        }
-
-        if let Some(up) = self.up {
-            up.fetch_macro_macro(&ident)
-        } else {
-            None
-        }
+impl CapturedEnv {
+    pub fn new(env: Environment, captured: Vec<Local>) -> Self {
+        Self { env, captured }
     }
 }

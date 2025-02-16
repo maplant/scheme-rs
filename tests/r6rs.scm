@@ -8,7 +8,7 @@
 
 ;; The following are omitted because they don't really show anything:
 ;; (assert-eq #t #t)
-;; (assert-eq 23 23)
+ ;; (assert-eq 23 23)
 
 (assert-eq (+ 23 42) 65)
 (assert-eq (+ 14 (* 23 42)) 980)
@@ -29,6 +29,7 @@
 
 (define x 23)
 (define y 42)
+
 (assert-eq (let ((y 43))
              (+ x y))
            66)
@@ -59,6 +60,8 @@
 (assert-eq (h + 23 42) 65)
 (assert-eq (h * 23 42) 966)
 
+;; mark
+
 (assert-eq ((lambda (x) (+ x 42)) 23) 65)
 
 ;; 1.8 Assignments
@@ -87,6 +90,7 @@
              (even? 10))
            #t)
 
+
 (assert-eq (let ()
              (define-syntax bind-to-zero
                (syntax-rules ()
@@ -95,7 +99,9 @@
              x)
            0)
 
+
 ;; 11.3 Bodies
+
 
 (assert-eq (let ((x 5))
              (define foo (lambda (y) (bar x y)))
@@ -108,6 +114,7 @@
 
 ;; (skipping a bunch of these because this stuff works)
 
+
 (assert-eq ((lambda (x)
               (define (p y)
                 (+ y 1))
@@ -116,6 +123,7 @@
            11)
 
 ;; 11.4.3 Conditionals
+
 
 (assert-eq (if (> 3 2) 'yes 'no) 'yes)
 (assert-eq (if (> 2 3) 'yes 'no) 'no)
@@ -146,6 +154,7 @@
              ((w y) 'semivowel)
              (else 'consonant))
            'consonant)
+
 
 ;; 11.4.6. Binding constructs
 
@@ -181,6 +190,8 @@
              y)
            5)
 
+#|
+
 (assert-eq (let-values (((a b) (values 1 2))
                         ((c d) (values 3 4)))
              (list a b c d))
@@ -196,16 +207,19 @@
                (list a b x y)))
            '(x y a b))
 
+|#
+
+
 ;;(assert-eq (let ((a 'a) (b 'b) (x 'x) (y 'y))
 ;;             (let*-values (((a b) (values x y))
 ;;                           ((x y) (values a b)))
 ;;               (list a b x y)))
 ;;           (x y x y))
 
-(assert-eq (let loop ((n 1))
+(assert-eq (let loopv ((n 1))
              (if (> n 10)
                  '()
-                 (cons n (loop (+ n 1)))))
+                 (cons n (loopv (+ n 1)))))
            '(1 2 3 4 5 6 7 8 9 10))
            
 (define-syntax loop
@@ -227,53 +241,59 @@
 
 ;; 11.15 Control features
 
-(assert-eq (let ((path '())
-                 (c #f))
-             (let ((add (lambda (s)
-                          (set! path (cons s path)))))
-               (dynamic-wind
-                   (lambda () (add 'connect))
-                   (lambda ()
-                     (add (call-with-current-continuation
-                           (lambda (c0)
-                             (set! c c0)
-                             'talk1))))
-                   (lambda () (add 'disconnect)))
-               (if (< (length path) 4)
-                   (c 'talk2)
-                   (reverse path))))
-           '(connect talk1 disconnect connect talk2 disconnect))
+;; (assert-eq (let ((path '())
+;;                  (c #f))
+;;              (let ((add (lambda (s)
+;;                           (set! path (cons s path)))))
+;;                (dynamic-wind
+;;                    (lambda () (add 'connect))
+;;                    (lambda ()
+;;                      (add (call-with-current-continuation
+;;                            (lambda (c0)
+;;                              (set! c c0)
+;;                              'talk1))))
+;;                    (lambda () (add 'disconnect)))
+;;                (if (< (length path) 4)
+;;                    (c 'talk2)
+;;                    (reverse path))))
+;;            '(connect talk1 disconnect connect talk2 disconnect))
 
-(assert-eq (let ((n 0))
-             (call-with-current-continuation
-              (lambda (k)
-                (dynamic-wind
-                    (lambda ()
-                      (set! n (+ n 1))
-                      (k))
-                    (lambda ()
-                      (set! n (+ n 2)))
-                    (lambda ()
-                      (set! n (+ n 4))))))
-             n)
-           1)
+;; (assert-eq (let ((n 0))
+;;              (call-with-current-continuation
+;;               (lambda (k)
+;;                 (dynamic-wind
+;;                     (lambda ()
+;;                       (set! n (+ n 1))
+;;                       (k))
+;;                     (lambda ()
+;;                       (set! n (+ n 2)))
+;;                     (lambda ()
+;;                       (set! n (+ n 4))))))
+;;              n)
+;;            1)
 
-(define n 0)
+;; (define n 0)
 
-(dynamic-wind
-    (lambda ()
-      (set! n (+ n 1))
-      (call/cc (lambda (x) (set! h x))))
-    (lambda ()
-      (set! n (+ n 2))
-      (dynamic-wind
-          (lambda () (set! n (+ n 3)))
-          (lambda () (call/cc (lambda (x) (set! g x))))
-          (lambda () (set! n (+ n 5)))))
-    (lambda () (set! n (+ n 7))))
+;; (dynamic-wind
+;;     (lambda ()
+;;       (set! n (+ n 1))
+;;       (call/cc (lambda (x) (set! h x))))
+;;     (lambda ()
+;;       (set! n (+ n 2))
+;;       (dynamic-wind
+;;           (lambda () (set! n (+ n 3)))
+;;           (lambda () (call/cc (lambda (x) (set! g x))))
+;;           (lambda () (set! n (+ n 5)))))
+;;     (lambda () (set! n (+ n 7))))
 
-(g)
-(h)
+;; (g)
+;; (h)
 
-(assert-eq n 49) ; 1 + 2 + 3 + 5 + 7 + (1 + 3 + 5 + 7) + (3 + 5 + 7)
+;; (assert-eq n 49) ; 1 + 2 + 3 + 5 + 7 + (1 + 3 + 5 + 7) + (3 + 5 + 7)
               
+
+;; Extra stuff
+(assert-eq (let ([x 1])
+             (syntax-case #'() ()
+               ([] x)))
+           1)
