@@ -11,7 +11,7 @@ use crate::{
 use futures::future::BoxFuture;
 use indexmap::IndexMap;
 use proc_macros::Trace;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 #[derive(Clone, Trace, Debug)]
 pub struct Transformer {
@@ -411,11 +411,10 @@ pub fn call_transformer<'a>(
             let trans_read = trans.read();
             let trans: &Transformer = trans_read.as_ref().try_into().unwrap();
 
-            let arg_read = arg.read();
-            let arg: &Syntax = arg_read.as_ref().try_into().unwrap();
+            let arg = Syntax::from_datum(&BTreeSet::default(), arg);
 
             // Expand the argument:
-            trans.expand(arg).ok_or_else(Exception::syntax_error)?
+            trans.expand(&arg).ok_or_else(Exception::syntax_error)?
         };
 
         let captured_env = {

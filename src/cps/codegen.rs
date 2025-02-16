@@ -33,7 +33,7 @@ impl<'ctx> Rebinds<'ctx> {
     fn fetch_bind(&self, var: &Var) -> &PointerValue<'ctx> {
         self.rebinds
             .get(var)
-            .expect(&format!("could not find {:?}", var))
+            .unwrap_or_else(|| panic!("could not find {var:?}"))
     }
 
     fn new() -> Self {
@@ -56,11 +56,11 @@ impl<'ctx> Allocs<'ctx> {
         Some(Rc::new(Allocs { prev_alloc, value }))
     }
 
-    fn into_values(&self) -> Vec<PointerValue<'ctx>> {
+    fn to_values(&self) -> Vec<PointerValue<'ctx>> {
         let mut allocs = vec![self.value];
 
         if let Some(ref prev_alloc) = self.prev_alloc {
-            allocs.extend(prev_alloc.into_values());
+            allocs.extend(prev_alloc.to_values());
         }
 
         allocs
@@ -165,6 +165,7 @@ impl TopLevelExpr {
             FuncPtr::SyncFunc(func),
             0,
             true,
+            true,
         ))
     }
 }
@@ -219,6 +220,13 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 self.store_codegen(&args[1], &args[0])?;
                 self.cps_codegen(*cexpr, allocs, deferred)?;
             }
+            Cps::PrimOp(PrimOp::CloneClosure, proc, val, cexpr) => {
+                let [proc] = proc.as_slice() else {
+                    unreachable!()
+                };
+                self.clone_closure_codegen(proc, val)?;
+                self.cps_codegen(*cexpr, allocs, deferred)?;
+            }
             Cps::PrimOp(PrimOp::GetCallTransformerFn, _, res, cexpr) => {
                 self.get_call_transformer_codegen(res)?;
                 self.cps_codegen(*cexpr, allocs, deferred)?;
@@ -232,7 +240,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             } => {
                 let bundle = ClosureBundle::new(
                     self.ctx,
-                    &self.module,
+                    self.module,
                     val,
                     args.clone(),
                     body.as_ref().clone(),
@@ -265,6 +273,20 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         }
     }
 
+    fn clone_closure_codegen(&mut self, proc: &Value, new_var: Local) -> Result<(), BuilderError> {
+        let proc = self.value_codegen(proc)?.into_pointer_value();
+        let clone_env = self.module.get_function("clone_closure").unwrap();
+        let cloned = self
+            .builder
+            .build_call(clone_env, &[proc.into()], "clone_closure")?
+            .try_as_basic_value()
+            .left()
+            .unwrap()
+            .into_pointer_value();
+        self.rebinds.rebind(Var::Local(new_var), cloned);
+        Ok(())
+    }
+
     fn alloc_cell_codegen(
         &mut self,
         var: Local,
@@ -294,7 +316,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
     }
 
     fn drop_values_codegen(&self, drops: Option<Rc<Allocs<'ctx>>>) -> Result<(), BuilderError> {
-        let drops = drops.as_ref().map_or_else(Vec::new, |x| x.into_values());
+        let drops = drops.as_ref().map_or_else(Vec::new, |x| x.to_values());
         let num_drops = drops.len();
 
         if num_drops == 0 {
@@ -511,11 +533,9 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         }
 
         let make_closure = if bundle.args.continuation.is_some() {
-            self.module
-                .get_function("make_closure_with_continuation")
-                .unwrap()
-        } else {
             self.module.get_function("make_closure").unwrap()
+        } else {
+            self.module.get_function("make_continuation").unwrap()
         };
         let closure = self
             .builder
@@ -583,7 +603,7 @@ impl<'ctx> ClosureBundle<'ctx> {
         // TODO: These calls need to be cached and also calculated at the same time.
         let env = body
             .free_variables()
-            .difference(&args.into_vec().into_iter().collect::<HashSet<_>>())
+            .difference(&args.to_vec().into_iter().collect::<HashSet<_>>())
             .cloned()
             .collect::<Vec<_>>();
         let globals = body.globals().into_iter().collect::<Vec<_>>();

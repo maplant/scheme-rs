@@ -9,6 +9,7 @@ use crate::{
     value::Value,
 };
 use futures::future::BoxFuture;
+use proc_macros::bridge;
 use std::{
     collections::{BTreeSet, HashSet},
     fmt,
@@ -549,7 +550,7 @@ impl Syntax {
 }
 
 /*
-#[builtin("syntax->datum")]
+#[bridge(name = "syntax->datum", )]
 pub async fn syntax_to_datum(
     _cont: &Option<Arc<Continuation>>,
     syn: &Gc<Value>,
@@ -560,26 +561,22 @@ pub async fn syntax_to_datum(
     };
     Ok(vec![Gc::new(Value::from_syntax(syn))])
 }
+*/
 
-#[builtin("datum->syntax")]
+#[bridge(name = "datum->syntax", lib = "(base)")]
 pub async fn datum_to_syntax(
-    _cont: &Option<Arc<Continuation>>,
     template_id: &Gc<Value>,
     datum: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+) -> Result<Vec<Gc<Value>>, Exception> {
     let template_id = template_id.read();
     let Value::Syntax(Syntax::Identifier {
         ident: template_id, ..
     }) = &*template_id
     else {
-        return Err(RuntimeError::invalid_type(
-            "syntax",
-            template_id.type_name(),
-        ));
+        return Err(Exception::invalid_type("syntax", template_id.type_name()));
     };
     Ok(vec![Gc::new(Value::Syntax(Syntax::from_datum(
         &template_id.marks,
         datum,
     )))])
 }
-*/

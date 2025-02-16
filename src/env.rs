@@ -34,6 +34,7 @@ impl Top {
             macros: HashMap::new(),
         }
     }
+
     pub fn program() -> Self {
         Self {
             kind: TopLevelEnvKind::Program,
@@ -41,6 +42,7 @@ impl Top {
             macros: HashMap::new(),
         }
     }
+
     pub fn repl() -> Self {
         Self {
             kind: TopLevelEnvKind::Repl,
@@ -57,6 +59,9 @@ impl Top {
         for (name, val) in lib.vars.iter() {
             self.vars.insert(name.clone(), val.clone());
         }
+        for (name, mac) in lib.macros.iter() {
+            self.macros.insert(name.clone(), mac.clone());
+        }
     }
 
     pub fn def_var(&mut self, name: Identifier, value: Value) -> Global {
@@ -72,8 +77,7 @@ impl Top {
     }
 
     pub fn fetch_var(&mut self, name: &Identifier) -> Option<Global> {
-        self
-            .vars
+        self.vars
             .get(name)
             .map(|val| Global::new(name.clone(), val.clone()))
     }
@@ -279,7 +283,7 @@ impl Environment {
 
     pub fn fetch_macro(&self, name: &Identifier) -> Option<Macro> {
         match self {
-            Self::Top(top) => top.read().fetch_macro(&name),
+            Self::Top(top) => top.read().fetch_macro(name),
             Self::LexicalContour(lex) => lex.fetch_macro(name),
             Self::MacroExpansion(me) => me.read().fetch_macro(name),
         }
@@ -331,9 +335,9 @@ impl Local {
     }
 }
 
-impl ToString for Local {
-    fn to_string(&self) -> String {
-        format!("%{}", self.0)
+impl fmt::Display for Local {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "%{}", self.0)
     }
 }
 

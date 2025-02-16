@@ -1,8 +1,9 @@
 //! A Registry is a collection of libraries.
 
 use crate::{
-    ast::{Literal, ParseAstError},
-    env::Top,
+    ast::{DefinitionBody, Literal, ParseAstError},
+    cps::Compile,
+    env::{Environment, Top},
     gc::Gc,
     parse::ParseSyntaxError,
     proc::{AsyncFuncPtr, Closure, FuncPtr},
@@ -72,7 +73,7 @@ impl<'a> From<ParseSyntaxError<'a>> for ParseLibraryNameError<'a> {
     }
 }
 
-impl<'a> From<ParseAstError> for ParseLibraryNameError<'a> {
+impl From<ParseAstError> for ParseLibraryNameError<'_> {
     fn from(pae: ParseAstError) -> Self {
         Self::ParseAstError(pae)
     }
@@ -158,11 +159,11 @@ pub struct Registry {
 
 impl Registry {
     /// Construct a Registry with all of the available bridge functions present but no external libraries imported.
-    pub fn new(runtime: &Gc<Runtime>) -> Self {
+    pub async fn new(runtime: &Gc<Runtime>) -> Self {
         let mut libs = HashMap::<LibraryName, Gc<Top>>::default();
 
         for bridge_fn in inventory::iter::<BridgeFn>() {
-            let lib_name = LibraryName::from_str(&bridge_fn.lib_name, None).unwrap();
+            let lib_name = LibraryName::from_str(bridge_fn.lib_name, None).unwrap();
             let lib = libs
                 .entry(lib_name)
                 .or_insert_with(|| Gc::new(Top::library()));
@@ -176,9 +177,23 @@ impl Registry {
                     FuncPtr::AsyncFunc(bridge_fn.wrapper),
                     bridge_fn.num_args,
                     bridge_fn.variadic,
+                    false,
                 )),
             );
         }
+
+        // Import the stdlib:
+        let base_lib = libs
+            .entry(LibraryName::from_str("(base)", None).unwrap())
+            .or_insert_with(|| Gc::new(Top::library()));
+        let base_env = Environment::Top(base_lib.clone());
+        let sexprs = Syntax::from_str(include_str!("stdlib.scm"), Some("stdlib.scm")).unwrap();
+        let base = DefinitionBody::parse(runtime, &sexprs, &base_env, &Span::default())
+            .await
+            .unwrap();
+        let compiled = base.compile_top_level();
+        let closure = runtime.compile_expr(compiled).await.unwrap();
+        closure.call(&[]).await.unwrap();
 
         Self { libs }
     }
@@ -188,9 +203,3 @@ impl Registry {
         self.libs.get(&lib_name).cloned()
     }
 }
-
-/*
-impl Registry {
-    pub fn import(&self,
-}
-*/

@@ -1,6 +1,6 @@
 use nom::{
     branch::alt,
-    bytes::complete::{is_not, tag, tag_no_case, take, take_until, take_while1},
+    bytes::complete::{is_not, tag, tag_no_case, take, take_while, take_while1},
     character::{
         complete::{char as match_char, hex_digit1, one_of, satisfy},
         streaming::anychar,
@@ -114,7 +114,7 @@ fn lexeme(i: InputSpan) -> IResult<InputSpan, Lexeme<'static>> {
 
 fn comment(i: InputSpan) -> IResult<InputSpan, ()> {
     map(
-        delimited(tag(";"), take_until("\n"), many0(whitespace)),
+        delimited(tag(";"), take_while(|x| x != '\n'), many0(whitespace)),
         |_| (),
     )(i)
 }

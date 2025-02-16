@@ -11,7 +11,7 @@ use crate::{
     syntax::Syntax,
 };
 use futures::future::{BoxFuture, Shared};
-use std::fmt;
+use std::{fmt, io::Write};
 
 type Future = Shared<BoxFuture<'static, Result<Vec<Gc<Value>>, Exception>>>;
 
@@ -21,44 +21,29 @@ pub enum Value {
     /// The value is undefined. Variables before they are initialized are undefined.
     /// Any attempt to set a variable after creation to undefined results in an error.
     Undefined,
-
     /// An empty list.
     Null,
-
-    /// A combination of two values. Has a head (car) and a tail (cdr)
+    /// Combination of two values. Has a head (car) and a tail (cdr)
     Pair(Gc<Value>, Gc<Value>),
-
-    /// A value that is either True (#t) or False (#f)
+    /// Value that is either True (#t) or False (#f)
     Boolean(bool),
-
-    /// A numeric value.
+    /// Numeric value.
     Number(Number),
-
-    /// A Unicode code point.
+    /// Unicode code point.
     Character(char),
-
-    /// A list of unicode code points.
+    /// List of unicode code points.
     String(String),
-
+    /// Atom of an S-Expression
     Symbol(String),
-
     Vector(Vec<Value>),
-
     ByteVector(Vec<u8>),
-
     Syntax(Syntax),
-
     /// A procedure.
     Closure(Closure),
-
     Record(Record),
-
     RecordType(Gc<RecordType>),
-
     Future(Future),
-
     Transformer(Transformer),
-
     /// A captured lexical environment.
     CapturedEnv(CapturedEnv),
 }
@@ -301,6 +286,17 @@ impl<'a> TryFrom<&'a Value> for &'a Closure {
     }
 }
 
+impl<'a> TryFrom<&'a mut Value> for &'a mut Closure {
+    type Error = Exception;
+
+    fn try_from(v: &'a mut Value) -> Result<&'a mut Closure, Self::Error> {
+        match v {
+            Value::Closure(proc) => Ok(proc),
+            x => Err(Exception::invalid_type("procedure", x.type_name())),
+        }
+    }
+}
+
 impl<'a> TryFrom<&'a Value> for &'a Record {
     type Error = Exception;
 
@@ -468,5 +464,6 @@ pub async fn future_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
 #[bridge(name = "display", lib = "(base)")]
 pub async fn display(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
     print!("{}", arg);
+    let _ = std::io::stdout().flush();
     Ok(Vec::new())
 }

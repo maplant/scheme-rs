@@ -103,7 +103,7 @@ pub fn list_to_vec_with_null(curr: &Gc<Value>, out: &mut Vec<Gc<Value>>) {
 pub async fn list(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
     // Construct the list in reverse
     let mut cdr = Gc::new(Value::Null);
-    for arg in args.into_iter().rev() {
+    for arg in args.iter().rev() {
         cdr = Gc::new(Value::Pair(arg.clone(), cdr.clone()));
     }
     Ok(vec![cdr])

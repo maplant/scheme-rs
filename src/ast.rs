@@ -78,60 +78,6 @@ impl From<Exception> for ParseAstError {
     }
 }
 
-/*
-#[derive(Debug, Clone, Trace)]
-pub enum AstNode {
-    Definition(Definition),
-    Expression(Expression),
-}
-
-impl AstNode {
-    pub async fn from_syntax(
-        runtime: &Gc<Runtime>,
-        syn: Syntax,
-        env: &Environment,
-    ) -> Result<Option<Self>, ParseAstError> {
-        match syn.as_list() {
-            Some(
-                [Syntax::Identifier { ident, .. }, Syntax::Identifier { ident: name, .. }, expr, Syntax::Null { .. }],
-            ) if ident.name == "define-syntax" => {
-                define_syntax(runtime, name.clone(), expr.clone(), &env /* cont */).await?;
-                Ok(None)
-            }
-
-            Some(
-                [Syntax::Identifier { ident, .. }, Syntax::Identifier { ident: name, .. }, expr, Syntax::Null { .. }],
-            ) if ident.name == "begin" => {
-                match
-            }
-
-            /*
-            Some([Syntax::Identifier { ident, span, .. }, body @ .., Syntax::Null { .. }])
-                if ident == "define-record-type" =>
-            {
-                let record_type = DefineRecordType::parse(body, env, span)?;
-                record_type.define(&env.lexical_contour);
-                Ok(Some(AstNode::Definition(Definition::DefineRecordType(
-                    record_type,
-                ))))
-            }
-            */
-            Some([Syntax::Identifier { ident, span, .. }, ..]) if ident == "define-syntax" => {
-                Err(ParseAstError::BadForm(span.clone()))
-            }
-            Some(syn @ [Syntax::Identifier { ident, span, .. }, ..]) if ident == "define" => {
-                Ok(Some(Self::Definition(
-                    Definition::parse(runtime, syn, env, span /* cont */).await?,
-                )))
-            }
-            _ => Ok(Some(Self::Expression(
-                Expression::parse(runtime, syn, env /* cont */).await?,
-            ))),
-        }
-    }
-}
-*/
-
 #[derive(Debug, Clone, Trace)]
 pub enum Definition {
     DefineVar(DefineVar),
@@ -286,7 +232,7 @@ pub(super) async fn define_syntax(
     let FullyExpanded {
         expanded,
         expansion_env,
-    } = expr.expand(&env /* cont */).await?;
+    } = expr.expand(env /* cont */).await?;
 
     let expr = Expression::parse(runtime, expanded, &expansion_env /* cont */).await?;
     let cps_expr = expr.compile_top_level();
@@ -900,7 +846,7 @@ impl Formals {
         }
     }
 }
-*/
+ */
 
 #[derive(Debug, Clone, Trace)]
 pub struct DefinitionBody {
@@ -912,11 +858,30 @@ impl DefinitionBody {
         Self { first }
     }
 
+    pub async fn parse_program_body(
+        runtime: &Gc<Runtime>,
+        body: &[Syntax],
+        env: &Environment,
+        span: &Span,
+    ) -> Result<Self, ParseAstError> {
+        Self::parse_helper(runtime, body, true, env, span).await
+    }
+
+    pub async fn parse(
+        runtime: &Gc<Runtime>,
+        body: &[Syntax],
+        env: &Environment,
+        span: &Span,
+    ) -> Result<Self, ParseAstError> {
+        Self::parse_helper(runtime, body, false, env, span).await
+    }
+
     /// Parse the body. body is expected to be a list of valid syntax objects, and should not include
     /// _any_ nulls, including one at the end.
-    pub fn parse<'a>(
+    fn parse_helper<'a>(
         runtime: &'a Gc<Runtime>,
         body: &'a [Syntax],
+        permissive: bool,
         env: &'a Environment,
         span: &'a Span,
         // cont: &'a Closure
@@ -926,12 +891,25 @@ impl DefinitionBody {
             let mut exprs = Vec::new();
 
             splice_in(
-                runtime, &mut defs, &mut exprs, body, env, span, /* cont */
+                runtime, permissive, body, env, span, &mut defs, &mut exprs, /* cont */
             )
             .await?;
 
             let mut defs_parsed = Vec::new();
             let mut exprs_parsed = Vec::new();
+
+            // Mark all of the defs as defined:
+            for def in defs.iter() {
+                if let Some([_, def, ..]) = def.as_ref().left().and_then(|d| d.expanded.as_list()) {
+                    let ident = match def.as_list() {
+                        Some([Syntax::Identifier { ident, .. }, ..]) => ident,
+                        _ => def
+                            .as_ident()
+                            .ok_or(ParseAstError::BadForm(def.span().clone()))?,
+                    };
+                    env.def_var(ident.clone());
+                }
+            }
 
             for def in defs.into_iter() {
                 let def = match def {
@@ -944,6 +922,7 @@ impl DefinitionBody {
                             /* cont */
                         )
                         .await?
+                        // expansion_env.def_var(ident.clone());
                     }
                     Either::Right(def_record) => Definition::DefineRecordType(def_record),
                 };
@@ -1004,11 +983,12 @@ impl ExprBody {
 
 fn splice_in<'a>(
     runtime: &'a Gc<Runtime>,
-    defs: &'a mut Vec<Either<FullyExpanded, DefineRecordType>>,
-    exprs: &'a mut Vec<FullyExpanded>,
+    permissive: bool,
     body: &'a [Syntax],
     env: &'a Environment,
     span: &'a Span,
+    defs: &'a mut Vec<Either<FullyExpanded, DefineRecordType>>,
+    exprs: &'a mut Vec<FullyExpanded>,
     // cont: &Closure
 ) -> BoxFuture<'a, Result<(), ParseAstError>> {
     Box::pin(async move {
@@ -1028,11 +1008,12 @@ fn splice_in<'a>(
                     {
                         splice_in(
                             runtime,
-                            defs,
-                            exprs,
+                            permissive,
                             body,
                             &expansion_env,
                             span, /* cont */
+                            defs,
+                            exprs,
                         )
                         .await?;
                         continue;
@@ -1049,20 +1030,12 @@ fn splice_in<'a>(
                         .await?;
                         continue;
                     }
-                    Some(
-                        [Syntax::Identifier { ident, span, .. }, def, .., Syntax::Null { .. }],
-                    ) if ident == "define" => {
-                        if !exprs.is_empty() {
+                    Some([Syntax::Identifier { ident, span, .. }, _, .., Syntax::Null { .. }])
+                        if ident == "define" =>
+                    {
+                        if !permissive && !exprs.is_empty() {
                             return Err(ParseAstError::UnexpectedDefinition(span.clone()));
                         }
-
-                        let ident = match def.as_list() {
-                            Some([Syntax::Identifier { ident, .. }, ..]) => ident,
-                            _ => def
-                                .as_ident()
-                                .ok_or(ParseAstError::BadForm(def.span().clone()))?,
-                        };
-                        expansion_env.def_var(ident.clone());
                         true
                     }
                     /*

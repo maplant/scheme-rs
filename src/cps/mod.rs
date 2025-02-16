@@ -90,6 +90,7 @@ pub enum PrimOp {
     Sub,
     Mul,
     Div,
+    CloneClosure,
     CaptureEnvironment,
     GetCallTransformerFn,
     CallWithCurrentContinuation,
@@ -99,7 +100,7 @@ impl FromStr for PrimOp {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, ()> {
-        match s.as_ref() {
+        match s {
             // Ignore these right now for testing
             /*
             "+" => Ok(Self::Add),
@@ -129,7 +130,7 @@ impl ClosureArgs {
         }
     }
 
-    fn into_vec(&self) -> Vec<Local> {
+    fn to_vec(&self) -> Vec<Local> {
         self.args
             .clone()
             .into_iter()

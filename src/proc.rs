@@ -7,7 +7,7 @@ use crate::{
     value::Value,
 };
 use futures::future::BoxFuture;
-use std::borrow::Cow;
+use std::{borrow::Cow, collections::HashMap};
 
 /*
 pub struct ProcCallDebugInfo {
@@ -48,7 +48,7 @@ pub type AsyncFuncPtr = for<'a> fn(
     cont: &'a Gc<Value>,
 ) -> BoxFuture<'a, Result<Application, Exception>>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub enum FuncPtr {
     SyncFunc(SyncFuncPtr),
     SyncFuncWithContinuation(SyncFuncWithContinuationPtr),
@@ -56,16 +56,18 @@ pub enum FuncPtr {
 }
 
 #[derive(Clone, derive_more::Debug)]
+// TODO: Add an optional name to the closure for debugging purposes
 pub struct Closure {
     #[debug(skip)]
     pub runtime: Gc<Runtime>,
     #[debug(skip)]
-    env: Record,
+    pub(crate) env: Record,
     #[debug(skip)]
-    globals: Record,
-    func: FuncPtr,
-    num_required_args: usize,
-    variadic: bool,
+    pub(crate) globals: Record,
+    pub(crate) func: FuncPtr,
+    pub(crate) num_required_args: usize,
+    pub(crate) variadic: bool,
+    pub(crate) continuation: bool,
 }
 
 unsafe impl Trace for Closure {
@@ -89,6 +91,7 @@ impl Closure {
         func: FuncPtr,
         num_required_args: usize,
         variadic: bool,
+        continuation: bool,
     ) -> Self {
         Self {
             runtime,
@@ -97,6 +100,16 @@ impl Closure {
             func,
             num_required_args,
             variadic,
+            continuation,
+        }
+    }
+
+    pub(crate) fn deep_clone(&mut self, cloned: &mut HashMap<Gc<Value>, Gc<Value>>) {
+        if !self.continuation {
+            return;
+        }
+        for captured in &mut self.env {
+            *captured = deep_clone_value(captured, cloned);
         }
     }
 
@@ -119,6 +132,7 @@ impl Closure {
             Vec::new(),
             FuncPtr::SyncFunc(just_return),
             0,
+            true,
             true,
         ))));
         self.apply(&args).await?.eval().await
@@ -261,14 +275,14 @@ pub fn apply<'a>(
     cont: &'a Gc<Value>,
 ) -> BoxFuture<'a, Result<Application, Exception>> {
     Box::pin(async move {
-        if rest_args.len() < 1 {
+        if rest_args.is_empty() {
             return Err(Exception::wrong_num_of_args(2, args.len()));
         }
         let op = args[0].read();
         let op: &Closure = op.as_ref().try_into()?;
         let (last, args) = rest_args.split_last().unwrap();
         let mut args = args.to_vec();
-        list_to_vec(&last, &mut args);
+        list_to_vec(last, &mut args);
         args.push(cont.clone());
         Ok(Application::new(op.clone(), args))
     })
@@ -276,4 +290,31 @@ pub fn apply<'a>(
 
 inventory::submit! {
     BridgeFn::new("apply", "(base)", 1, true, apply)
+}
+
+pub(crate) fn deep_clone_value(
+    value: &Gc<Value>,
+    cloned: &mut HashMap<Gc<Value>, Gc<Value>>,
+) -> Gc<Value> {
+    if let Some(cloned) = cloned.get(value) {
+        return cloned.clone();
+    }
+    let val_ref = value.read();
+    match &*val_ref {
+        Value::Closure(clos) => {
+            let clos_cloned = Gc::new(Value::Closure(clos.clone()));
+            cloned.insert(value.clone(), clos_cloned.clone());
+            {
+                let mut clos_mut = clos_cloned.write();
+                let clos_cloned: &mut Closure = clos_mut.as_mut().try_into().unwrap();
+                clos_cloned.deep_clone(cloned);
+            }
+            clos_cloned
+        }
+        val => {
+            let val_cloned = Gc::new(val.clone());
+            cloned.insert(value.clone(), val_cloned.clone());
+            val_cloned
+        }
+    }
 }

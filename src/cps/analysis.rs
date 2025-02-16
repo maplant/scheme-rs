@@ -36,7 +36,7 @@ impl Analysis {
 
         // Calculate free variables in the cexp
         let mut free_body = body.free_variables();
-        for arg in args.into_vec() {
+        for arg in args.to_vec() {
             free_body.remove(&arg);
         }
         let mut free_variables: HashSet<_> =
@@ -85,7 +85,7 @@ impl Cps {
             Self::PrimOp(_, args, bind, cexpr) => {
                 let mut free = cexpr.free_variables();
                 free.remove(bind);
-                free.union(&values_to_free_variables(&args))
+                free.union(&values_to_free_variables(args))
                     .copied()
                     .collect()
             }
@@ -99,7 +99,7 @@ impl Cps {
                 free
             }
             Self::App(op, vals) => {
-                let mut free = values_to_free_variables(&vals);
+                let mut free = values_to_free_variables(vals);
                 free.extend(op.to_local());
                 free
             }
@@ -109,7 +109,7 @@ impl Cps {
                 val,
                 cexp,
                 analysis,
-            } => Analysis::fetch(analysis, args, &body, val, cexp).free_variables(),
+            } => Analysis::fetch(analysis, args, body, val, cexp).free_variables(),
             Self::ReturnValues(_) => HashSet::new(),
         }
     }
@@ -119,7 +119,7 @@ impl Cps {
             Self::AllocCell(_, cexpr) => cexpr.globals(),
             Self::PrimOp(_, args, _, cexpr) => cexpr
                 .globals()
-                .union(&values_to_globals(&args))
+                .union(&values_to_globals(args))
                 .cloned()
                 .collect(),
             Self::If(cond, success, failure) => {
@@ -132,7 +132,7 @@ impl Cps {
                 globals
             }
             Self::App(op, vals) => {
-                let mut globals = values_to_globals(&vals);
+                let mut globals = values_to_globals(vals);
                 globals.extend(op.to_global());
                 globals
             }
@@ -142,7 +142,7 @@ impl Cps {
                 val,
                 cexp,
                 analysis,
-            } => Analysis::fetch(analysis, args, &body, val, cexp).globals(),
+            } => Analysis::fetch(analysis, args, body, val, cexp).globals(),
             Self::ReturnValues(_) => HashSet::new(),
         }
     }

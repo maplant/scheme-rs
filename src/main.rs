@@ -56,7 +56,7 @@ impl reedline::Prompt for Prompt {
 #[tokio::main]
 async fn main() {
     let runtime = Gc::new(Runtime::new());
-    let registry = Registry::new(&runtime);
+    let registry = Registry::new(&runtime).await;
     let base = registry.import("(base)").unwrap();
     let mut rl = Reedline::create().with_validator(Box::new(InputParser));
     let mut n_results = 1;
@@ -68,10 +68,11 @@ async fn main() {
     let top = Environment::from(Gc::new(repl));
 
     loop {
-        let Ok(Signal::Success(input)) = rl.read_line(&Prompt) else {
+        let Ok(Signal::Success(mut input)) = rl.read_line(&Prompt) else {
             println!("exiting...");
             return;
         };
+        input.push('\n');
         match compile_and_run_str(&runtime, &top, &input).await {
             Ok(results) => {
                 for result in results.into_iter() {
@@ -99,7 +100,7 @@ async fn compile_and_run_str<'e>(
     env: &Environment,
     input: &'e str,
 ) -> Result<Vec<Gc<Value>>, EvalError<'e>> {
-    let sexprs = Syntax::from_str(&input, None)?;
+    let sexprs = Syntax::from_str(input, None)?;
     let mut output = Vec::new();
     for sexpr in sexprs {
         let span = sexpr.span().clone();

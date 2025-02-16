@@ -4,7 +4,9 @@ use crate::{
     expand,
     gc::{init_gc, Gc, GcInner},
     lists::list_to_vec,
-    proc::{Application, Closure, FuncPtr, SyncFuncPtr, SyncFuncWithContinuationPtr},
+    proc::{
+        deep_clone_value, Application, Closure, FuncPtr, SyncFuncPtr, SyncFuncWithContinuationPtr,
+    },
     value::Value,
 };
 use indexmap::IndexMap;
@@ -17,7 +19,7 @@ use inkwell::{
     AddressSpace, OptimizationLevel,
 };
 use proc_macros::Trace;
-use std::mem::ManuallyDrop;
+use std::{collections::HashMap, mem::ManuallyDrop};
 use tokio::sync::{mpsc, oneshot};
 
 /// Scheme-rs Runtime
@@ -41,6 +43,12 @@ pub struct Runtime {
 }
 
 const MAX_COMPILATION_TASKS: usize = 5; // Shrug
+
+impl Default for Runtime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Runtime {
     pub fn new() -> Self {
@@ -202,8 +210,8 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
         ],
         false,
     );
-    let f = module.add_function("make_closure", sig, None);
-    ee.add_global_mapping(&f, make_closure as usize);
+    let f = module.add_function("make_continuation", sig, None);
+    ee.add_global_mapping(&f, make_continuation as usize);
 
     // fn make_closure_with_continuation(
     //         runtime: *Runtime,
@@ -229,14 +237,20 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
         ],
         false,
     );
-    let f = module.add_function("make_closure_with_continuation", sig, None);
-    ee.add_global_mapping(&f, make_closure_with_continuation as usize);
+    let f = module.add_function("make_closure", sig, None);
+    ee.add_global_mapping(&f, make_closure as usize);
 
     // fn get_call_transformer(runtime: *Runtime) -> *Value
     //
     let sig = ptr_type.fn_type(&[ptr_type.into()], false);
     let f = module.add_function("get_call_transformer_fn", sig, None);
     ee.add_global_mapping(&f, get_call_transformer_fn as usize);
+
+    // fn clone_environment(closure: *Value) -> ()
+    //
+    let sig = ptr_type.fn_type(&[ptr_type.into()], false);
+    let f = module.add_function("clone_closure", sig, None);
+    ee.add_global_mapping(&f, clone_closure as usize);
 }
 
 /// Allocate a new Gc with a value of undefined
@@ -273,7 +287,7 @@ unsafe extern "C" fn make_application(
 }
 
 /// Create a boxed application that simply returns its arguments
-pub unsafe extern "C" fn make_return_values(args: *mut GcInner<Value>) -> *mut Application {
+pub(crate) unsafe extern "C" fn make_return_values(args: *mut GcInner<Value>) -> *mut Application {
     let args = Gc::from_ptr(args);
     let mut flattened = Vec::new();
     list_to_vec(&args, &mut flattened);
@@ -297,7 +311,7 @@ unsafe extern "C" fn store(from: *mut GcInner<Value>, to: *mut GcInner<Value>) {
 }
 
 /// Allocate a closure
-unsafe extern "C" fn make_closure(
+unsafe extern "C" fn make_continuation(
     runtime: *mut GcInner<Runtime>,
     fn_ptr: SyncFuncPtr,
     env: *const *mut GcInner<Value>,
@@ -327,12 +341,13 @@ unsafe extern "C" fn make_closure(
         FuncPtr::SyncFunc(fn_ptr),
         num_required_args as usize,
         variadic,
+        true,
     );
     ManuallyDrop::new(Gc::new(Value::Closure(closure))).as_ptr()
 }
 
 /// Allocate a closure for a function that takes a continuation
-unsafe extern "C" fn make_closure_with_continuation(
+unsafe extern "C" fn make_closure(
     runtime: *mut GcInner<Runtime>,
     fn_ptr: SyncFuncWithContinuationPtr,
     env: *const *mut GcInner<Value>,
@@ -362,6 +377,7 @@ unsafe extern "C" fn make_closure_with_continuation(
         FuncPtr::SyncFuncWithContinuation(fn_ptr),
         num_required_args as usize,
         variadic,
+        false,
     );
     ManuallyDrop::new(Gc::new(Value::Closure(closure))).as_ptr()
 }
@@ -377,6 +393,16 @@ unsafe extern "C" fn get_call_transformer_fn(
         FuncPtr::AsyncFunc(expand::call_transformer),
         3,
         true,
+        false,
     );
     ManuallyDrop::new(Gc::new(Value::Closure(closure))).as_ptr()
+}
+
+/// Clone the values in a closure's environment.
+///
+/// This is done so poorly and is extremely slow. Need to fix!!
+unsafe extern "C" fn clone_closure(closure: *mut GcInner<Value>) -> *mut GcInner<Value> {
+    let closure = Gc::from_ptr(closure);
+    let mut cloned = HashMap::new();
+    ManuallyDrop::new(deep_clone_value(&closure, &mut cloned)).as_ptr()
 }

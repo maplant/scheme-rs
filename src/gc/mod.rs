@@ -89,7 +89,7 @@ impl<T: Trace> Gc<T> {
     }
 
     /// Drops a raw pointer as if it were a Gc.
-    pub unsafe fn drop_raw(ptr: *mut GcInner<T>) {
+    pub(crate) unsafe fn drop_raw(ptr: *mut GcInner<T>) {
         drop(Self {
             ptr: NonNull::new(ptr).unwrap(),
             marker: PhantomData,
@@ -98,8 +98,7 @@ impl<T: Trace> Gc<T> {
 
     /// Create a new Gc from the raw pointer. This increments the ref count for
     /// safety.
-    #[track_caller]
-    pub unsafe fn from_ptr(ptr: *mut GcInner<T>) -> Self {
+    pub(crate) unsafe fn from_ptr(ptr: *mut GcInner<T>) -> Self {
         let ptr = NonNull::new(ptr).unwrap();
         inc_rc(ptr);
         Self {
@@ -252,6 +251,18 @@ impl<T: ?Sized> Deref for GcWriteGuard<'_, T> {
 impl<T: ?Sized> DerefMut for GcWriteGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
         unsafe { &mut *self.data }
+    }
+}
+
+impl<T: ?Sized> AsRef<T> for GcWriteGuard<'_, T> {
+    fn as_ref(&self) -> &T {
+        self
+    }
+}
+
+impl<T: ?Sized> AsMut<T> for GcWriteGuard<'_, T> {
+    fn as_mut(&mut self) -> &mut T {
+        self
     }
 }
 
