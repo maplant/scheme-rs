@@ -11,7 +11,7 @@ use crate::{
     syntax::{Identifier, Span, Syntax},
     value::Value,
 };
-pub use proc_macros::bridge;
+pub use scheme_rs_macros::bridge;
 use std::collections::HashMap;
 
 #[derive(Clone, Default, PartialEq, Eq, Hash)]

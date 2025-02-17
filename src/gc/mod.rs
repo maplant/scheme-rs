@@ -17,7 +17,7 @@ pub use collection::init_gc;
 use collection::{dec_rc, inc_rc};
 use either::Either;
 use futures::future::Shared;
-pub use proc_macros::Trace;
+pub use scheme_rs_macros::Trace;
 
 use std::{
     cell::UnsafeCell,

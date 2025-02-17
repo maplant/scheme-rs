@@ -6,10 +6,10 @@ use crate::{
     lex::{InputSpan, Token},
     lists::list_to_vec_with_null,
     parse::ParseSyntaxError,
+    registry::bridge,
     value::Value,
 };
 use futures::future::BoxFuture;
-use proc_macros::bridge;
 use std::{
     collections::{BTreeSet, HashSet},
     fmt,
