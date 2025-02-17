@@ -26,8 +26,7 @@ async fn fib_fn() -> scheme_rs::proc::Closure {
         .await
         .unwrap();
     let compiled = base.compile_top_level();
-    let closure = runtime.compile_expr(compiled).await.unwrap();
-    closure
+    runtime.compile_expr(compiled).await.unwrap()
 }
 
 fn fib_benchmark(c: &mut Criterion) {
