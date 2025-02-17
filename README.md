@@ -55,9 +55,9 @@ in the repo's root directory (examples taken from wikipedia):
        (cons n
          (loop (+ n 1)))))
 $1 = (1 2 3 4 5 6 7 8 9 10)
->>> (let* ((yin
+> (let* ((yin
             ((lambda (cc) (display "@") cc) (call-with-current-continuation (lambda (c) c))))
-           (yang
+         (yang
             ((lambda (cc) (display "*") cc) (call-with-current-continuation (lambda (c) c)))))
      (yin yang))
 @*@**@***@****@*****@******@*******@********@*********@**********@***********@**********...^C
@@ -65,8 +65,8 @@ $1 = (1 2 3 4 5 6 7 8 9 10)
 
 ### Creating Builtin Functions:
 
-Scheme-rs provides a `builtin` function attribute macro to allow you to easily define builtins. For example,
-here is the definition of the `number?` builtin in the source code:
+Scheme-rs provides a `bridge` function attribute macro to allow you to easily define builtins. For example,
+here is the definition of the `number?` builtin in the source code. Notice that this function is async:
 
 ```rust
 #[bridge(name = "number?", lib = "(base)")]
