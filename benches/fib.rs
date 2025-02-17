@@ -10,7 +10,7 @@ use scheme_rs::{
 
 use criterion::*;
 
-async fn fib() {
+async fn fib_fn() -> scheme_rs::proc::Closure {
     let runtime = Gc::new(Runtime::new());
     let registry = Registry::new(&runtime).await;
     let base = registry.import("(base)").unwrap();
@@ -26,14 +26,17 @@ async fn fib() {
         .await
         .unwrap();
     let compiled = base.compile_top_level();
-    let closure = runtime.compile_expr(compiled).await.unwrap();
-    closure.call(&[]).await.unwrap();
+    runtime.compile_expr(compiled).await.unwrap()
 }
 
 fn fib_benchmark(c: &mut Criterion) {
+    // Set up and compile the closure
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let closure = runtime.block_on(async move { fib_fn().await });
+
     c.bench_function("fib 10000", |b| {
-        b.to_async(tokio::runtime::Runtime::new().unwrap())
-            .iter(fib)
+        b.to_async(&runtime)
+            .iter(|| async { closure.call(&[]).await })
     });
 }
 

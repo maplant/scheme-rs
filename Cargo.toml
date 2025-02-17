@@ -1,7 +1,14 @@
 [package]
 name = "scheme-rs"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 edition = "2021"
+authors = ["Matthew Plant <maplant@protonmail.com>"]
+description = "Embedded scheme for the async-rust ecosystem"
+license = "MPL-2.0"
+
+documentation = "https://docs.rs/crate/scheme-rs"
+homepage = "https://github.com/maplant/scheme-rs"
+repository = "https://github.com/maplant/scheme-rs"
 
 [dependencies]
 async-trait = "0.1"
@@ -15,7 +22,7 @@ inkwell = { version = "0.5.0", features = ["llvm18-0"] }
 nom = "7"
 nom_locate = "4"
 num = "0.4"
-proc-macros = { path = "proc-macros" }
+scheme-rs-macros = { version = "0.1.0-alpha.1", path = "proc-macros" }
 rug = { version = "1", features = ["num-traits"] }
 rand = "0.8"
 thiserror = "1"

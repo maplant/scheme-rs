@@ -3,14 +3,13 @@ use crate::{
     cps::Compile,
     env::CapturedEnv,
     exception::Exception,
-    gc::Gc,
+    gc::{Gc, Trace},
     proc::{Application, Closure},
     syntax::{Identifier, Span, Syntax},
     value::Value,
 };
 use futures::future::BoxFuture;
 use indexmap::IndexMap;
-use proc_macros::Trace;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 #[derive(Clone, Trace, Debug)]

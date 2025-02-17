@@ -2,7 +2,7 @@ use crate::{
     cps::TopLevelExpr,
     env::Local,
     expand,
-    gc::{init_gc, Gc, GcInner},
+    gc::{init_gc, Gc, GcInner, Trace},
     lists::list_to_vec,
     proc::{
         deep_clone_value, Application, Closure, FuncPtr, SyncFuncPtr, SyncFuncWithContinuationPtr,
@@ -18,7 +18,6 @@ use inkwell::{
     targets::{InitializationConfig, Target},
     AddressSpace, OptimizationLevel,
 };
-use proc_macros::Trace;
 use std::{collections::HashMap, mem::ManuallyDrop};
 use tokio::sync::{mpsc, oneshot};
 
@@ -33,9 +32,9 @@ use tokio::sync::{mpsc, oneshot};
 /// compilation task will exit, allowing for a graceful shutdown.
 ///
 /// However, this is dropping a lifetime. If we clone a closure and drop the runtime
-/// from wence it was cleaved, we're left with a dangling pointer.
+/// from whence it was cleaved, we're left with a dangling pointer.
 ///
-/// In order to remedy this it is vitaly important the closure has a back pointer to
+/// In order to remedy this it is vitally important the closure has a back pointer to
 /// the runtime. Probably also want to make it immutable
 #[derive(Trace, Clone, Debug)]
 pub struct Runtime {

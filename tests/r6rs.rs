@@ -1,11 +1,10 @@
-use proc_macros::bridge;
 use scheme_rs::{
     ast::DefinitionBody,
     cps::Compile,
     env::{Environment, Top},
     exception::Exception,
     gc::Gc,
-    registry::Registry,
+    registry::{bridge, Registry},
     runtime::Runtime,
     syntax::{Span, Syntax},
     value::{eqv, Value},
