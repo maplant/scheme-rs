@@ -78,6 +78,17 @@
                    (+ 2 (escape 3)))))
            4)
 
+;; ?? boolean=?
+
+(assert-eq (boolean=? #t #t #t) #t)
+(assert-eq (boolean=? #f #f #f) #t)
+(assert-eq (boolean=? #t #f #f) #f)
+(assert-eq (boolean=? #f #t #t) #f)
+(assert-eq (boolean=? 1 2) #f)
+(assert-eq (boolean=? #t 2) #f)
+(assert-eq (boolean=? #t) #t)
+(assert-eq (boolean=? #f) #t)
+
 ;; 11.2.2. Syntax definitions
 
 (assert-eq (let ()
