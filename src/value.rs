@@ -392,6 +392,23 @@ pub async fn boolean_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> 
     )))])
 }
 
+#[bridge(name = "boolean=?", lib = "(base)")]
+pub async fn boolean_eq_pred(
+    a: &Gc<Value>,
+    args: &[Gc<Value>],
+) -> Result<Vec<Gc<Value>>, Exception> {
+    let a_val = &*a.read();
+
+    let result = match a_val {
+        Value::Boolean(_) => {
+            let a_bool = a_val;
+            args.iter().all(|arg| a_bool.eqv(&arg.read()))
+        }
+        _ => false,
+    };
+    Ok(vec![Gc::new(Value::Boolean(result))])
+}
+
 #[bridge(name = "symbol?", lib = "(base)")]
 pub async fn symbol_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
     let arg = arg.read();
