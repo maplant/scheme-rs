@@ -103,6 +103,10 @@ impl Cps {
                 free.extend(op.to_local());
                 free
             }
+            Self::Forward(op, arg) => vec![op.to_local(), arg.to_local()]
+                .into_iter()
+                .flatten()
+                .collect(),
             Self::Closure {
                 args,
                 body,
@@ -136,6 +140,10 @@ impl Cps {
                 globals.extend(op.to_global());
                 globals
             }
+            Self::Forward(op, arg) => vec![op.to_global(), arg.to_global()]
+                .into_iter()
+                .flatten()
+                .collect(),
             Self::Closure {
                 args,
                 body,

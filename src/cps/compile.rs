@@ -325,14 +325,14 @@ fn compile_call_with_cc(
     Cps::Closure {
         args: ClosureArgs::new(vec![k1], false, None),
         body: Box::new(Cps::Closure {
-            args: ClosureArgs::new(vec![arg], false, Some(Local::gensym())),
+            args: ClosureArgs::new(vec![arg], true, Some(Local::gensym())),
             body: Box::new(Cps::PrimOp(
                 PrimOp::CloneClosure,
                 vec![Value::from(k1)],
                 cloned_closure,
-                Box::new(Cps::App(
+                Box::new(Cps::Forward(
                     Value::from(cloned_closure),
-                    vec![Value::from(arg)],
+                    Value::from(arg),
                 )),
             )),
             val: escape_procedure,

@@ -152,6 +152,8 @@ pub enum Cps {
     PrimOp(PrimOp, Vec<Value>, Local, Box<Cps>),
     /// Function application.
     App(Value, Vec<Value>),
+    /// Forward a list of values into an application.
+    Forward(Value, Value),
     /// Branching.
     If(Value, Box<Cps>, Box<Cps>),
     /// Closure generation. The result of this operation is a *const Value::Closure
