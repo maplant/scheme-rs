@@ -109,18 +109,13 @@ pub async fn is_vector(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
 }
 
 #[bridge(name = "make-vector", lib = "(base)")]
-pub async fn make_vector(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
-    let n = args
-        .first()
-        .ok_or_else(|| Exception::wrong_num_of_variadic_args(1..2, 0))?
-        .read();
+pub async fn make_vector(n: &Gc<Value>, with: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
+    let n = n.read();
     let n: &Number = n.as_ref().try_into()?;
     let n = n.to_u64();
 
-    let with = args.get(1);
-
     Ok((0..n)
-        .map(|_| with.cloned().unwrap_or_else(|| Gc::new(Value::Null)))
+        .map(|_| with.first().cloned().unwrap_or_else(|| Gc::new(Value::Null)))
         .collect())
 }
 
