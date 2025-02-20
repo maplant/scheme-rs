@@ -2,7 +2,7 @@ use crate::{
     exception::Exception, gc::Gc, lists::slice_to_list, num::Number, registry::bridge, value::Value,
 };
 use rug::Integer;
-use std::{clone::Clone, error::Error as StdError, fmt::Display, ops::Range};
+use std::{clone::Clone, ops::Range};
 
 fn try_make_range(start: usize, end: usize) -> Result<Range<usize>, Exception> {
     if end < start {
@@ -47,9 +47,9 @@ trait Indexer {
             .get(2)
             .map(try_to_u64)
             .transpose()?
-            .map(|end| <u64 as TryInto<usize>>::try_into(end))
+            .map(<u64 as TryInto<usize>>::try_into)
             .transpose()?
-            .unwrap_or(len.try_into()?);
+            .unwrap_or(len);
 
         let range = try_make_range(start, end)?;
         if range.end >= len {
@@ -201,7 +201,7 @@ pub async fn vector_to_string(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exce
         VectorIndexer
             .index(args, 1..3)?
             .into_iter()
-            .map(|val| <Value as TryInto<char>>::try_into(val))
+            .map(<Value as TryInto<char>>::try_into)
             .collect::<Result<String, _>>()?,
     ))])
 }
@@ -212,7 +212,7 @@ pub async fn string_to_vector(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exce
         StringIndexer
             .index(args, 1..3)?
             .chars()
-            .map(|c| Value::Character(c))
+            .map(Value::Character)
             .collect(),
     ))])
 }
