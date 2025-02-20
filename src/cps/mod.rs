@@ -140,7 +140,6 @@ impl ClosureArgs {
 
     fn num_required(&self) -> usize {
         self.args.len().saturating_sub(self.variadic as usize)
-        // + self.continuation.is_some() as usize
     }
 }
 
@@ -153,6 +152,7 @@ pub enum Cps {
     /// Function application.
     App(Value, Vec<Value>),
     /// Forward a list of values into an application.
+    // TODO: I'm not sure I like this name
     Forward(Value, Value),
     /// Branching.
     If(Value, Box<Cps>, Box<Cps>),

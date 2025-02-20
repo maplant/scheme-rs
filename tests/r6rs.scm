@@ -201,8 +201,6 @@
              y)
            5)
 
-#|
-
 (assert-eq (let-values (((a b) (values 1 2))
                         ((c d) (values 3 4)))
              (list a b c d))
@@ -217,8 +215,6 @@
                           ((x y) (values a b)))
                (list a b x y)))
            '(x y a b))
-
-|#
 
 
 ;;(assert-eq (let ((a 'a) (b 'b) (x 'x) (y 'y))
