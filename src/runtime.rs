@@ -167,6 +167,11 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     let f = module.add_function("make_application", sig, None);
     ee.add_global_mapping(&f, make_application as usize);
 
+    // fn make_forward(op: *Value, arg: *Value) -> *Application
+    let sig = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+    let f = module.add_function("make_forward", sig, None);
+    ee.add_global_mapping(&f, make_forward as usize);
+
     // fn make_return_values(args: *Value) -> *Application
     //
     let sig = ptr_type.fn_type(&[ptr_type.into()], false);
@@ -281,6 +286,22 @@ unsafe extern "C" fn make_application(
     let op_read = op.read();
     let op: &Closure = op_read.as_ref().try_into().unwrap();
     let app = Application::new(op.clone(), gc_args);
+
+    Box::into_raw(Box::new(app))
+}
+
+/// Create a boxed application that forwards a list of values to the operator
+unsafe extern "C" fn make_forward(
+    op: *mut GcInner<Value>,
+    to_forward: *mut GcInner<Value>,
+) -> *mut Application {
+    let op = Gc::from_ptr(op);
+    let to_forward = Gc::from_ptr(to_forward);
+    let mut args = Vec::new();
+    list_to_vec(&to_forward, &mut args);
+    let op_ref = op.read();
+    let op: &Closure = op_ref.as_ref().try_into().unwrap();
+    let app = Application::new(op.clone(), args);
 
     Box::into_raw(Box::new(app))
 }

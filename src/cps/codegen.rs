@@ -216,6 +216,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 self.if_codegen(&cond, *success, *failure, allocs, deferred)?
             }
             Cps::App(operator, args) => self.app_codegen(&operator, &args, allocs)?,
+            Cps::Forward(operator, arg) => self.forward_codegen(&operator, &arg, allocs)?,
             Cps::PrimOp(PrimOp::Set, args, _, cexpr) => {
                 self.store_codegen(&args[1], &args[0])?;
                 self.cps_codegen(*cexpr, allocs, deferred)?;
@@ -393,6 +394,33 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 ],
                 "make_app",
             )?
+            .try_as_basic_value()
+            .left()
+            .unwrap();
+
+        // Now that we have created an application, we can reduce the ref counts of
+        // all of the Gcs we have allocated in this function:
+        self.drop_values_codegen(allocs)?;
+
+        let _ = self.builder.build_return(Some(&app))?;
+
+        Ok(())
+    }
+
+    fn forward_codegen(
+        &self,
+        operator: &Value,
+        arg: &Value,
+        allocs: Option<Rc<Allocs<'ctx>>>,
+    ) -> Result<(), BuilderError> {
+        let operator = self.value_codegen(operator)?;
+        let arg = self.value_codegen(arg)?;
+
+        // Call make_forward
+        let make_forward = self.module.get_function("make_forward").unwrap();
+        let app = self
+            .builder
+            .build_call(make_forward, &[operator.into(), arg.into()], "make_forward")?
             .try_as_basic_value()
             .left()
             .unwrap();

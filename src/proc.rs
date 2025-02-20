@@ -318,3 +318,82 @@ pub(crate) fn deep_clone_value(
         }
     }
 }
+
+unsafe extern "C" fn call_consumer_with_values(
+    _runtime: *mut GcInner<Runtime>,
+    env: *const *mut GcInner<Value>,
+    _globals: *const *mut GcInner<Value>,
+    args: *const *mut GcInner<Value>,
+) -> *mut Application {
+    // env[0] is the consumer
+    let consumer = Gc::from_ptr(env.read());
+    let consumer = {
+        let consumer_ref = consumer.read();
+        let consumer: &Closure = consumer_ref.as_ref().try_into().unwrap();
+        consumer.clone()
+    };
+    // env[1] is the continuation
+    let cont = Gc::from_ptr(env.add(1).read());
+
+    let mut collected_args: Vec<_> = (0..consumer.num_required_args)
+        .map(|i| Gc::from_ptr(args.add(i).read()))
+        .collect();
+
+    // I hate this constant going back and forth from variadic to list. I have
+    // to figure out a way to make it consistent
+    if consumer.variadic {
+        let rest_args = Gc::from_ptr(args.add(consumer.num_required_args).read());
+        let mut vec = Vec::new();
+        list_to_vec(&rest_args, &mut vec);
+        collected_args.extend(vec);
+    }
+
+    collected_args.push(cont);
+
+    Box::into_raw(Box::new(Application::new(consumer, collected_args)))
+}
+
+pub fn call_with_values<'a>(
+    args: &'a [Gc<Value>],
+    _rest_args: &'a [Gc<Value>],
+    cont: &'a Gc<Value>,
+) -> BoxFuture<'a, Result<Application, Exception>> {
+    Box::pin(async move {
+        let [producer, consumer] = args else {
+            return Err(Exception::wrong_num_of_args(2, args.len()));
+        };
+
+        // Fetch the producer
+        let producer = {
+            let producer_ref = producer.read();
+            let producer: &Closure = producer_ref.as_ref().try_into()?;
+            producer.clone()
+        };
+
+        // Get the details of the consumer:
+        let (num_required_args, variadic) = {
+            let consumer_ref = consumer.read();
+            let consumer: &Closure = consumer_ref.as_ref().try_into()?;
+            (consumer.num_required_args, consumer.variadic)
+        };
+
+        let call_consumer_closure = Closure::new(
+            producer.runtime.clone(),
+            vec![consumer.clone(), cont.clone()],
+            Vec::new(),
+            FuncPtr::SyncFunc(call_consumer_with_values),
+            num_required_args,
+            variadic,
+            false,
+        );
+
+        Ok(Application::new(
+            producer,
+            vec![Gc::new(Value::Closure(call_consumer_closure))],
+        ))
+    })
+}
+
+inventory::submit! {
+    BridgeFn::new("call-with-values", "(base)", 2, false, call_with_values)
+}
