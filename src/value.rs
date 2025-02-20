@@ -253,153 +253,49 @@ impl From<Vec<Gc<Value>>> for Value {
     }
 }
 
-impl<'a> TryFrom<&'a Value> for bool {
-    type Error = Exception;
-
-    fn try_from(v: &'a Value) -> Result<bool, Self::Error> {
-        match v {
-            Value::Boolean(b) => Ok(*b),
-            x => Err(Exception::invalid_type("bool", x.type_name())),
-        }
-    }
-}
-
-impl<'a> TryFrom<&'a Value> for &'a Number {
-    type Error = Exception;
-
-    fn try_from(v: &'a Value) -> Result<&'a Number, Self::Error> {
-        match v {
-            Value::Number(n) => Ok(n),
-            x => Err(Exception::invalid_type("number", x.type_name())),
-        }
-    }
-}
-
-impl<'a> TryFrom<&'a Value> for &'a Closure {
-    type Error = Exception;
-
-    fn try_from(v: &'a Value) -> Result<&'a Closure, Self::Error> {
-        match v {
-            Value::Closure(proc) => Ok(proc),
-            x => Err(Exception::invalid_type("procedure", x.type_name())),
-        }
-    }
-}
-
-impl<'a> TryFrom<&'a mut Value> for &'a mut Closure {
-    type Error = Exception;
-
-    fn try_from(v: &'a mut Value) -> Result<&'a mut Closure, Self::Error> {
-        match v {
-            Value::Closure(proc) => Ok(proc),
-            x => Err(Exception::invalid_type("procedure", x.type_name())),
-        }
-    }
-}
-
-impl<'a> TryFrom<&'a Value> for &'a Record {
-    type Error = Exception;
-
-    fn try_from(v: &'a Value) -> Result<&'a Record, Self::Error> {
-        match v {
-            Value::Record(r) => Ok(r),
-            x => Err(Exception::invalid_type("record", x.type_name())),
-        }
-    }
-}
-
-impl<'a> TryFrom<&'a mut Value> for &'a mut Record {
-    type Error = Exception;
-
-    fn try_from(v: &'a mut Value) -> Result<&'a mut Record, Self::Error> {
-        match v {
-            Value::Record(r) => Ok(r),
-            x => Err(Exception::invalid_type("record", x.type_name())),
-        }
-    }
-}
-
-impl<'a> TryFrom<&'a Value> for &'a Gc<RecordType> {
-    type Error = Exception;
-
-    fn try_from(v: &'a Value) -> Result<&'a Gc<RecordType>, Self::Error> {
-        match v {
-            Value::RecordType(rt) => Ok(rt),
-            x => Err(Exception::invalid_type("record-type", x.type_name())),
-        }
-    }
-}
-
-impl<'a> TryFrom<&'a Value> for &'a Transformer {
-    type Error = Exception;
-
-    fn try_from(v: &'a Value) -> Result<&'a Transformer, Self::Error> {
-        match v {
-            Value::Transformer(t) => Ok(t),
-            x => Err(Exception::invalid_type("transformer", x.type_name())),
-        }
-    }
-}
-
-impl<'a> TryFrom<&'a Value> for &'a CapturedEnv {
-    type Error = Exception;
-
-    fn try_from(v: &'a Value) -> Result<&'a CapturedEnv, Self::Error> {
-        match v {
-            Value::CapturedEnv(ce) => Ok(ce),
-            x => Err(Exception::invalid_type("environment", x.type_name())),
-        }
-    }
-}
-
-impl<'a> TryFrom<&'a Value> for &'a Syntax {
-    type Error = Exception;
-
-    fn try_from(v: &'a Value) -> Result<&'a Syntax, Self::Error> {
-        match v {
-            Value::Syntax(s) => Ok(s),
-            x => Err(Exception::invalid_type("syntax", x.type_name())),
-        }
-    }
-}
-
-macro_rules! impl_try_into_for_value {
-    ($ty:ty, $enum_variant:ident, $ty_name:literal) => {
-        impl TryInto<$ty> for Value {
+macro_rules! impl_try_from_value_for {
+    ($ty:ty, $enum_variant:ident, $type_name:literal) => {
+        impl TryFrom<Value> for $ty {
             type Error = Exception;
-
-            fn try_into(self) -> Result<$ty, Exception> {
-                match self {
-                    Value::$enum_variant(v) => Ok(v),
-                    t => Err(Exception::invalid_type($ty_name, t.type_name())),
+            fn try_from(v: Value) -> Result<$ty, Self::Error> {
+                match v {
+                    Value::$enum_variant(i) => Ok(i),
+                    e => Err(Exception::invalid_type($type_name, e.type_name()))
                 }
             }
         }
-        impl<'a> TryInto<&'a $ty> for &'a Value {
+        impl<'a> TryFrom<&'a mut Value> for &'a mut $ty {
             type Error = Exception;
-
-            fn try_into(self) -> Result<&'a $ty, Exception> {
-                match self {
-                    Value::$enum_variant(v) => Ok(v),
-                    t => Err(Exception::invalid_type($ty_name, t.type_name())),
+            fn try_from(v: &'a mut Value) -> Result<&'a mut $ty, Self::Error> {
+                match v {
+                    Value::$enum_variant(i) => Ok(i),
+                    e => Err(Exception::invalid_type($type_name, e.type_name()))
                 }
             }
         }
-        impl<'a> TryInto<&'a mut $ty> for &'a mut Value {
+        impl<'a> TryFrom<&'a Value> for &'a $ty {
             type Error = Exception;
-
-            fn try_into(self) -> Result<&'a mut $ty, Exception> {
-                match self {
-                    Value::$enum_variant(v) => Ok(v),
-                    t => Err(Exception::invalid_type($ty_name, t.type_name())),
+            fn try_from(v: &'a Value) -> Result<&'a $ty, Self::Error> {
+                match v {
+                    Value::$enum_variant(i) => Ok(i),
+                    e => Err(Exception::invalid_type($type_name, e.type_name()))
                 }
             }
         }
-    }
+    };
 }
-impl_try_into_for_value!(Vec<Value>, Vector, "vector");
-impl_try_into_for_value!(char, Character, "char");
-impl_try_into_for_value!(String, String, "string");
+
+impl_try_from_value_for!(bool, Boolean, "bool");
+impl_try_from_value_for!(Number, Number, "number");
+impl_try_from_value_for!(Closure, Closure, "procedure");
+impl_try_from_value_for!(Record, Record, "record");
+impl_try_from_value_for!(Gc<RecordType>, RecordType, "record-type");
+impl_try_from_value_for!(Transformer, Transformer, "transformer");
+impl_try_from_value_for!(CapturedEnv, CapturedEnv, "environment");
+impl_try_from_value_for!(Syntax, Syntax, "syntax");
+impl_try_from_value_for!(Vec<Value>, Vector, "vector");
+impl_try_from_value_for!(char, Character, "char");
+impl_try_from_value_for!(String, String, "string");
 
 pub fn eqv(a: &Gc<Value>, b: &Gc<Value>) -> bool {
     let a = a.read();
