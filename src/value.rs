@@ -122,10 +122,7 @@ impl Value {
             (Self::Symbol(a), Self::Symbol(b)) => a == b,
             (Self::Pair(a1, a2), Self::Pair(b1, b2)) => eqv(a1, b1) && eqv(a2, b2),
             (Self::Vector(a), Self::Vector(b)) => {
-                a.len() == b.len() &&
-                !a.iter()
-                    .zip(b.iter())
-                    .any(|(l, r)| !l.eqv(r))
+                a.len() == b.len() && !a.iter().zip(b.iter()).any(|(l, r)| !l.eqv(r))
             }
             (Self::ByteVector(a), Self::ByteVector(b)) => a == b,
             (Self::String(a), Self::String(b)) => a == b,
@@ -259,7 +256,7 @@ macro_rules! impl_try_from_value_for {
             fn try_from(v: Value) -> Result<$ty, Self::Error> {
                 match v {
                     Value::$enum_variant(i) => Ok(i),
-                    e => Err(Exception::invalid_type($type_name, e.type_name()))
+                    e => Err(Exception::invalid_type($type_name, e.type_name())),
                 }
             }
         }
@@ -268,7 +265,7 @@ macro_rules! impl_try_from_value_for {
             fn try_from(v: &'a mut Value) -> Result<&'a mut $ty, Self::Error> {
                 match v {
                     Value::$enum_variant(i) => Ok(i),
-                    e => Err(Exception::invalid_type($type_name, e.type_name()))
+                    e => Err(Exception::invalid_type($type_name, e.type_name())),
                 }
             }
         }
@@ -277,7 +274,7 @@ macro_rules! impl_try_from_value_for {
             fn try_from(v: &'a Value) -> Result<&'a $ty, Self::Error> {
                 match v {
                     Value::$enum_variant(i) => Ok(i),
-                    e => Err(Exception::invalid_type($type_name, e.type_name()))
+                    e => Err(Exception::invalid_type($type_name, e.type_name())),
                 }
             }
         }

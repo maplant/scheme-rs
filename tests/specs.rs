@@ -39,16 +39,18 @@ macro_rules! test_specification {
 
             let sexprs = Syntax::from_str(
                 include_str!(concat!(stringify!($name), ".scm")),
-                Some(concat!(stringify!($name), ".scm"))
-            ).unwrap();
-            let base = DefinitionBody::parse_program_body(&runtime, &sexprs, &test_top, &Span::default())
-                .await
-                .unwrap();
+                Some(concat!(stringify!($name), ".scm")),
+            )
+            .unwrap();
+            let base =
+                DefinitionBody::parse_program_body(&runtime, &sexprs, &test_top, &Span::default())
+                    .await
+                    .unwrap();
             let compiled = base.compile_top_level();
             let closure = runtime.compile_expr(compiled).await.unwrap();
             closure.call(&[]).await.unwrap();
         }
-    }
+    };
 }
 test_specification!(r6rs);
 test_specification!(r7rs);

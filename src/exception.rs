@@ -3,10 +3,7 @@ use crate::{
     gc::Trace,
     syntax::{Identifier, Span},
 };
-use std::{
-    error::Error as StdError,
-    ops::Range,
-};
+use std::{error::Error as StdError, ops::Range};
 
 #[derive(Debug, Clone, Trace)]
 pub struct Exception {
