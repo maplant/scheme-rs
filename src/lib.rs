@@ -17,3 +17,4 @@ pub mod proc;
 pub mod records;
 pub mod syntax;
 pub mod value;
+pub mod vectors;

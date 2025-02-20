@@ -363,6 +363,44 @@ impl<'a> TryFrom<&'a Value> for &'a Syntax {
     }
 }
 
+macro_rules! impl_try_into_for_value {
+    ($ty:ty, $enum_variant:ident, $ty_name:literal) => {
+        impl TryInto<$ty> for Value {
+            type Error = Exception;
+
+            fn try_into(self) -> Result<$ty, Exception> {
+                match self {
+                    Value::$enum_variant(v) => Ok(v),
+                    t => Err(Exception::invalid_type($ty_name, t.type_name())),
+                }
+            }
+        }
+        impl<'a> TryInto<&'a $ty> for &'a Value {
+            type Error = Exception;
+
+            fn try_into(self) -> Result<&'a $ty, Exception> {
+                match self {
+                    Value::$enum_variant(v) => Ok(v),
+                    t => Err(Exception::invalid_type($ty_name, t.type_name())),
+                }
+            }
+        }
+        impl<'a> TryInto<&'a mut $ty> for &'a mut Value {
+            type Error = Exception;
+
+            fn try_into(self) -> Result<&'a mut $ty, Exception> {
+                match self {
+                    Value::$enum_variant(v) => Ok(v),
+                    t => Err(Exception::invalid_type($ty_name, t.type_name())),
+                }
+            }
+        }
+    }
+}
+impl_try_into_for_value!(Vec<Value>, Vector, "vector");
+impl_try_into_for_value!(char, Character, "char");
+impl_try_into_for_value!(String, String, "string");
+
 pub fn eqv(a: &Gc<Value>, b: &Gc<Value>) -> bool {
     let a = a.read();
     let b = b.read();

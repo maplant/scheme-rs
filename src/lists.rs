@@ -170,3 +170,13 @@ pub async fn length(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
     }
     Ok(vec![Gc::new(Value::Number(Number::from(length)))])
 }
+
+#[bridge(name = "list->vector", lib = "(base)")]
+pub async fn list_to_vector(list: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+    let mut vec = Vec::new();
+    list_to_vec(list, &mut vec);
+
+    Ok(vec![
+        Gc::new(Value::Vector(vec.into_iter().map(|i| i.read().as_ref().clone()).collect()))
+    ])
+}

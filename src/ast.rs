@@ -309,7 +309,7 @@ impl Expression {
                 Syntax::Literal { literal, .. } => Ok(Self::Literal(literal)),
 
                 // Vector literals:
-                Syntax::Vector { /* vector, */ .. } => todo!(), // Ok(Self::Vector(Vector::parse(&vector))),
+                Syntax::Vector { vector, .. } => Ok(Self::Vector(Vector::parse(&vector))),
 
                 // Functional forms:
                 Syntax::List {

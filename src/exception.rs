@@ -3,6 +3,10 @@ use crate::{
     gc::Trace,
     syntax::{Identifier, Span},
 };
+use std::{
+    error::Error as StdError,
+    ops::Range,
+};
 
 #[derive(Debug, Clone, Trace)]
 pub struct Exception {
@@ -72,10 +76,31 @@ impl Exception {
         ))
     }
 
+    pub fn invalid_index(index: usize, len: usize) -> Self {
+        Self::error(format!(
+            "Invalid index of {index} into collection of size {len}"
+        ))
+    }
+    pub fn invalid_range(range: Range<usize>, len: usize) -> Self {
+        Self::error(format!(
+            "Invalid range of {range:?} into collection of size {len}"
+        ))
+    }
+
     pub fn wrong_num_of_args(expected: usize, provided: usize) -> Self {
         Self::error(format!(
             "Expected {expected} arguments, provided {provided}"
         ))
+    }
+    pub fn wrong_num_of_variadic_args(expected: Range<usize>, provided: usize) -> Self {
+        Self::error(format!(
+            "Expected {expected:?} arguments, provided {provided}"
+        ))
+    }
+}
+impl<E: StdError> From<E> for Exception {
+    fn from(e: E) -> Self {
+        Self::error(e.to_string())
     }
 }
 
