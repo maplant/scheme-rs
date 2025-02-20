@@ -6,10 +6,10 @@ use std::{clone::Clone, ops::Range};
 
 fn try_make_range(start: usize, end: usize) -> Result<Range<usize>, Exception> {
     if end < start {
-        return Err(Exception::error(format!(
+        Err(Exception::error(format!(
             "Range end {} cannot be less than start {}",
             end, start
-        )));
+        )))
     } else {
         Ok(start..end)
     }
@@ -35,7 +35,7 @@ trait Indexer {
         let len = self.get_len(collection);
 
         let start: usize = range
-            .get(0)
+            .first()
             .map(try_to_u64)
             .transpose()?
             .unwrap_or(0)
