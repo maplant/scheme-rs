@@ -339,7 +339,7 @@ unsafe extern "C" fn call_consumer_with_values(
         .map(|i| Gc::from_ptr(args.add(i).read()))
         .collect();
 
-    // I hate this constant going back and forth from variadice to list. I have
+    // I hate this constant going back and forth from variadic to list. I have
     // to figure out a way to make it consistent
     if consumer.variadic {
         let rest_args = Gc::from_ptr(args.add(consumer.num_required_args).read());
@@ -369,6 +369,7 @@ pub fn call_with_values<'a>(
             let producer: &Closure = producer_ref.as_ref().try_into().unwrap();
             producer.clone()
         };
+
         // Get the details of the consumer:
         let (num_required_args, variadic) = {
             let consumer_ref = consumer.read();
@@ -385,6 +386,7 @@ pub fn call_with_values<'a>(
             variadic,
             false,
         );
+
         Ok(Application::new(
             producer,
             vec![Gc::new(Value::Closure(call_consumer_closure))],

@@ -330,10 +330,7 @@ fn compile_call_with_cc(
                 PrimOp::CloneClosure,
                 vec![Value::from(k1)],
                 cloned_closure,
-                Box::new(Cps::Forward(
-                    Value::from(cloned_closure),
-                    Value::from(arg),
-                )),
+                Box::new(Cps::Forward(Value::from(cloned_closure), Value::from(arg))),
             )),
             val: escape_procedure,
             cexp: Box::new(Cps::Closure {
