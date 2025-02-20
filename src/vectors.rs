@@ -220,24 +220,11 @@ pub async fn vector_copy(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception
 }
 
 #[bridge(name = "vector-copy!", lib = "(base)")]
-pub async fn vector_copy_to(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
-    const ARGS: Range<usize> = 2..5;
-
-    let mut args = args.iter();
-    let mut i = 0;
-    let mut next_arg = || {
-        let arg = args
-            .next()
-            .ok_or_else(|| Exception::wrong_num_of_variadic_args(ARGS, i));
-        i += 1;
-
-        arg
-    };
-
-    let mut to = next_arg()?.write();
+pub async fn vector_copy_to(to: &Gc<Value>, at: &Gc<Value>, args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
+    let mut to = to.write();
     let to: &mut Vec<Value> = to.as_mut().try_into()?;
 
-    let at: usize = try_to_u64(next_arg()?)?.try_into()?;
+    let at: usize = try_to_u64(at)?.try_into()?;
 
     if at >= to.len() {
         return Err(Exception::invalid_index(at, to.len()));
@@ -246,7 +233,7 @@ pub async fn vector_copy_to(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Except
 
     to.extend(
         VectorIndexer
-            .index(args.as_slice(), ARGS)?
+            .index(args, 2..5)?
             .into_iter()
             .chain(split.into_iter()),
     );
