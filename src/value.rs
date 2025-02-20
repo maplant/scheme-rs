@@ -122,14 +122,13 @@ impl Value {
             (Self::Symbol(a), Self::Symbol(b)) => a == b,
             (Self::Pair(a1, a2), Self::Pair(b1, b2)) => eqv(a1, b1) && eqv(a2, b2),
             (Self::Vector(a), Self::Vector(b)) => {
-                for (a, b) in a.iter().zip(b.iter()) {
-                    if !a.eqv(b) {
-                        return false;
-                    }
-                }
-                true
+                a.len() == b.len() &&
+                !a.iter()
+                    .zip(b.iter())
+                    .any(|(l, r)| !l.eqv(r))
             }
             (Self::ByteVector(a), Self::ByteVector(b)) => a == b,
+            (Self::String(a), Self::String(b)) => a == b,
             // TODO: Syntax
             _ => false,
         }
