@@ -302,6 +302,35 @@
  (if (null? l) m
   (cons (car l) (append (cdr l) m))))
 
+(define (make-list n)
+  (if (> n 0)
+      (cons #f (make-list (- n 1)))
+      '()))
+
+(define (list-copy lst)
+  (if (null? lst)
+      '()
+      (cons (car lst)
+            (list-copy (cdr lst)))))
+
+(define (list-tail lst n)
+  (if (> n 0)
+      (list-tail (cdr lst) (- n 1))
+      lst))
+
+(define (list-ref lst n)
+  (if (> n 0)
+      (list-ref (cdr lst) (- n 1))
+      (car lst)))
+
+(define (assoc k lst)
+  (if (null? lst)
+      #f
+      (let ((pair (car lst)))
+        (if (equal? (car pair) k)
+            pair
+            (assoc k (cdr lst))))))
+
 (define (map function list1 . more-lists)
   (define (some? function list)
     ;; returns #f if (function x) returns #t for 
