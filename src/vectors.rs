@@ -97,14 +97,6 @@ impl Indexer for VectorIndexer {
     }
 }
 
-#[bridge(name = "vector?", lib = "(base)")]
-pub async fn is_vector(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
-    Ok(vec![Gc::new(Value::Boolean(matches!(
-        &*arg.read(),
-        Value::Vector(_)
-    )))])
-}
-
 #[bridge(name = "make-vector", lib = "(base)")]
 pub async fn make_vector(n: &Gc<Value>, with: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
     let n = n.read();
