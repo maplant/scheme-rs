@@ -27,24 +27,21 @@ trait Indexer {
 
     fn index(
         &self,
-        args: &[Gc<Value>],
-        arg_range: Range<usize>,
+        from: &Gc<Value>,
+        range: &[Gc<Value>],
     ) -> Result<Self::Collection, Exception> {
-        let arg = args
-            .first()
-            .ok_or_else(|| Exception::wrong_num_of_variadic_args(arg_range, 0))?;
-        let arg = arg.read();
-        let collection = self.try_get(&arg)?;
+        let from = from.read();
+        let collection = self.try_get(&from)?;
         let len = self.get_len(collection);
 
-        let start: usize = args
-            .get(1)
+        let start: usize = range
+            .get(0)
             .map(try_to_u64)
             .transpose()?
             .unwrap_or(0)
             .try_into()?;
-        let end: usize = args
-            .get(2)
+        let end: usize = range
+            .get(1)
             .map(try_to_u64)
             .transpose()?
             .map(<u64 as TryInto<usize>>::try_into)
@@ -181,9 +178,9 @@ pub async fn vector_set(
 }
 
 #[bridge(name = "vector->list", lib = "(base)")]
-pub async fn vector_to_list(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn vector_to_list(from: &Gc<Value>, range: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
     let vec: Vec<Gc<Value>> = VectorIndexer
-        .index(args, 1..3)?
+        .index(from, range)?
         .into_iter()
         .map(Gc::new)
         .collect();
@@ -191,10 +188,10 @@ pub async fn vector_to_list(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Except
 }
 
 #[bridge(name = "vector->string", lib = "(base)")]
-pub async fn vector_to_string(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn vector_to_string(from: &Gc<Value>, range: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
     Ok(vec![Gc::new(Value::String(
         VectorIndexer
-            .index(args, 1..3)?
+            .index(from, range)?
             .into_iter()
             .map(<Value as TryInto<char>>::try_into)
             .collect::<Result<String, _>>()?,
@@ -202,10 +199,10 @@ pub async fn vector_to_string(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exce
 }
 
 #[bridge(name = "string->vector", lib = "(base)")]
-pub async fn string_to_vector(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn string_to_vector(from: &Gc<Value>, range: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
     Ok(vec![Gc::new(Value::Vector(
         StringIndexer
-            .index(args, 1..3)?
+            .index(from, range)?
             .chars()
             .map(Value::Character)
             .collect(),
@@ -213,14 +210,14 @@ pub async fn string_to_vector(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exce
 }
 
 #[bridge(name = "vector-copy", lib = "(base)")]
-pub async fn vector_copy(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn vector_copy(from: &Gc<Value>, range: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
     Ok(vec![Gc::new(Value::Vector(
-        VectorIndexer.index(args, 1..3)?,
+        VectorIndexer.index(from, range)?,
     ))])
 }
 
 #[bridge(name = "vector-copy!", lib = "(base)")]
-pub async fn vector_copy_to(to: &Gc<Value>, at: &Gc<Value>, args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn vector_copy_to(to: &Gc<Value>, at: &Gc<Value>, from: &Gc<Value>, range: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
     let mut to = to.write();
     let to: &mut Vec<Value> = to.as_mut().try_into()?;
 
@@ -233,7 +230,7 @@ pub async fn vector_copy_to(to: &Gc<Value>, at: &Gc<Value>, args: &[Gc<Value>]) 
 
     to.extend(
         VectorIndexer
-            .index(args, 2..5)?
+            .index(from, range)?
             .into_iter()
             .chain(split.into_iter()),
     );
