@@ -273,7 +273,7 @@ pub async fn vector_append(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Excepti
     ))])
 }
 
-#[bridge(name = "vector-fill", lib = "(base)")]
+#[bridge(name = "vector-fill!", lib = "(base)")]
 pub async fn vector_fill(
     vector: &Gc<Value>,
     with: &Gc<Value>,
