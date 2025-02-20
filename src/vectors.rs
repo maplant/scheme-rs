@@ -49,7 +49,7 @@ trait Indexer {
             .unwrap_or(len);
 
         let range = try_make_range(start, end)?;
-        if range.end >= len {
+        if range.end > len {
             return Err(Exception::invalid_range(
                 range,
                 len,
@@ -218,14 +218,18 @@ pub async fn vector_copy_to(to: &Gc<Value>, at: &Gc<Value>, from: &Gc<Value>, ra
     if at >= to.len() {
         return Err(Exception::invalid_index(at, to.len()));
     }
-    let split = to.split_off(at);
 
-    to.extend(
-        VectorIndexer
-            .index(from, range)?
-            .into_iter()
-            .chain(split.into_iter()),
-    );
+    let copies = VectorIndexer
+        .index(from, range)?;
+    if copies.len() + at >= to.len() {
+        return Err(Exception::invalid_range(at..at + copies.len(), to.len()));
+    }
+
+    copies.into_iter().enumerate()
+        .map(|(i, copy)| (i + at, copy))
+        .for_each(|(i, copy)| if let Some(i) = to.get_mut(i) {
+            *i = copy;
+        });
 
     Ok(vec![])
 }
@@ -269,11 +273,9 @@ pub async fn vector_fill(
         return Err(Exception::invalid_range(range, vector.len()));
     }
 
-    for i in range {
-        if let Some(i) = vector.get_mut(i) {
-            *i = with.read().as_ref().clone();
-        }
-    }
+    range.for_each(|i| if let Some(slot) = vector.get_mut(i) {
+        *slot = with.read().as_ref().clone();
+    });
 
     Ok(vec![])
 }
