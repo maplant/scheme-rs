@@ -293,23 +293,23 @@ impl Expression {
                 }
 
                 // Regular identifiers:
-                Syntax::Identifier { ident, .. } => {
-                    Ok(Self::Var(env.fetch_var(&ident)
-                                 .or_else(|| {
-                                     let top = env.fetch_top();
-                                     let is_repl =  { top.read().is_repl() };
-                                     is_repl.then(|| Var::Global(top.write().def_var(ident.clone(), Value::Undefined)))
-                                 })
-                                 .ok_or_else(|| {
-                        ParseAstError::UndefinedVariable(ident.clone())
-                    })?))
-                }
+                Syntax::Identifier { ident, .. } => Ok(Self::Var(
+                    env.fetch_var(&ident)
+                        .or_else(|| {
+                            let top = env.fetch_top();
+                            let is_repl = { top.read().is_repl() };
+                            is_repl.then(|| {
+                                Var::Global(top.write().def_var(ident.clone(), Value::Undefined))
+                            })
+                        })
+                        .ok_or_else(|| ParseAstError::UndefinedVariable(ident.clone()))?,
+                )),
 
                 // Literals:
                 Syntax::Literal { literal, .. } => Ok(Self::Literal(literal)),
 
                 // Vector literals:
-                Syntax::Vector { /* vector, */ .. } => todo!(), // Ok(Self::Vector(Vector::parse(&vector))),
+                Syntax::Vector { vector, .. } => Ok(Self::Vector(Vector::parse(&vector))),
 
                 // Functional forms:
                 Syntax::List {
@@ -347,12 +347,16 @@ impl Expression {
                     [Syntax::Identifier { ident, .. }, tail @ .., Syntax::Null { .. }]
                         if ident == "and" =>
                     {
-                        And::parse(runtime, tail, env /* cont */).await.map(Expression::And)
+                        And::parse(runtime, tail, env /* cont */)
+                            .await
+                            .map(Expression::And)
                     }
                     [Syntax::Identifier { ident, .. }, tail @ .., Syntax::Null { .. }]
                         if ident == "or" =>
                     {
-                        Or::parse(runtime, tail, env /* cont */).await.map(Expression::Or)
+                        Or::parse(runtime, tail, env /* cont */)
+                            .await
+                            .map(Expression::Or)
                     }
                     [Syntax::Identifier { ident, span, .. }, tail @ ..] if ident == "quote" => {
                         Quote::parse(tail, span).await.map(Expression::Quote)
