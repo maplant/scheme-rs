@@ -366,14 +366,14 @@ pub fn call_with_values<'a>(
         // Fetch the producer
         let producer = {
             let producer_ref = producer.read();
-            let producer: &Closure = producer_ref.as_ref().try_into().unwrap();
+            let producer: &Closure = producer_ref.as_ref().try_into()?;
             producer.clone()
         };
 
         // Get the details of the consumer:
         let (num_required_args, variadic) = {
             let consumer_ref = consumer.read();
-            let consumer: &Closure = consumer_ref.as_ref().try_into().unwrap();
+            let consumer: &Closure = consumer_ref.as_ref().try_into()?;
             (consumer.num_required_args, consumer.variadic)
         };
 
