@@ -308,6 +308,11 @@ pub async fn not(a: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
     )))])
 }
 
+#[bridge(name = "eq?", lib = "(base)")]
+pub async fn eq_pred(a: &Gc<Value>, b: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+    Ok(vec![Gc::new(Value::Boolean(a == b))])
+}
+
 #[bridge(name = "eqv?", lib = "(base)")]
 pub async fn eqv_pred(a: &Gc<Value>, b: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
     Ok(vec![Gc::new(Value::Boolean(eqv(a, b)))])

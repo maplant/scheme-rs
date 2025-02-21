@@ -27,7 +27,6 @@
 ;; 
 ;; Aliases:
 ;; 
-(define eq? eqv?)
 (define equal? eqv?) ;; TODO(map): This is INCORRECT, needs to be fixed!
 (define (member obj list)
   (memp (lambda (x) (equal? x obj)) list))
