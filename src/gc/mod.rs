@@ -1,13 +1,13 @@
 //! Garbage-Collected smart pointers with interior mutability.
 //!
-//! Gc<T> is conceptually similar to Arc<tokio::sync::RwLock<T>>, but garbage
+//! `Gc<T>` is conceptually similar to `Arc<tokio::sync::RwLock<T>>`, but garbage
 //! collection occurs concurrently at a fixed cadence or whenever a threshold
 //! of memory has been allocated as opposed to when the type is Dropped.
 //!
-//! Strictly speaking, Gc<T> is not garbage collection per-se but instead uses
+//! Strictly speaking, `Gc<T>` is not garbage collection per-se but instead uses
 //! "cycle collection".
 //!
-//! Cycle collection was chosen because it has similar characteristics to Gc,
+//! Cycle collection was chosen because it has similar characteristics to `Gc`,
 //! providing all of the semantics Scheme expects and also plays nicely as a
 //! Rust type (no need to root/unroot).
 
