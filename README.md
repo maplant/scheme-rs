@@ -76,10 +76,10 @@ pub async fn is_number(arg: &Gc<Value>) -> Result<Gc<Value>, Exception> {
 }
 ```
 
-### Contributing
+## Contributing
 
 If you are an intrepid scheme compiler optimizer, this project is for you! Lots of work needs to be done
 to bring this project up to snuff. The initial focus was on correctness, so if you would like to take a
 stab at improving perf or add features anywhere in this project, feel free!
 
-
+If you have any questions or comments about the project, feel free to join [the scheme-rs discord server here](https://discord.gg/sR4TttzGv5).
