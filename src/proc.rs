@@ -25,7 +25,7 @@ impl ProcCallDebugInfo {
 }
 */
 
-pub type Record = Box<[Gc<Value>]>;
+pub type Record = Vec<Gc<Value>>; // Box<[Gc<Value>]>;
 
 pub type SyncFuncPtr = unsafe extern "C" fn(
     runtime: *mut GcInner<Runtime>,
@@ -55,7 +55,13 @@ pub enum FuncPtr {
     AsyncFunc(AsyncFuncPtr),
 }
 
-#[derive(Clone, derive_more::Debug)]
+unsafe impl Trace for FuncPtr {
+    unsafe fn visit_children(&self, _visitor: unsafe fn(crate::gc::OpaqueGcPtr)) {}
+
+    unsafe fn finalize(&mut self) {}
+}
+
+#[derive(Clone, derive_more::Debug, Trace)]
 // TODO: Add an optional name to the closure for debugging purposes
 pub struct Closure {
     #[debug(skip)]
@@ -68,19 +74,6 @@ pub struct Closure {
     pub(crate) num_required_args: usize,
     pub(crate) variadic: bool,
     pub(crate) continuation: bool,
-}
-
-unsafe impl Trace for Closure {
-    unsafe fn visit_children(&self, visitor: unsafe fn(crate::gc::OpaqueGcPtr)) {
-        visitor(self.runtime.as_opaque());
-        self.env.visit_children(visitor);
-        self.globals.visit_children(visitor);
-    }
-
-    unsafe fn finalize(&mut self) {
-        self.env.finalize();
-        self.globals.finalize();
-    }
 }
 
 impl Closure {
@@ -113,7 +106,7 @@ impl Closure {
         }
     }
 
-    pub async fn call(&self, args: &[Gc<Value>]) -> Result<Box<[Gc<Value>]>, Exception> {
+    pub async fn call(&self, args: &[Gc<Value>]) -> Result<Record, Exception> {
         unsafe extern "C" fn just_return(
             _runtime: *mut GcInner<Runtime>,
             _env: *const *mut GcInner<Value>,
@@ -239,7 +232,7 @@ fn values_to_vec_of_ptrs(vals: &[Gc<Value>]) -> Vec<*mut GcInner<Value>> {
 pub struct Application {
     op: Option<Closure>,
     // Consider making this a Cow
-    args: Box<[Gc<Value>]>,
+    args: Record,
 }
 
 impl Application {
@@ -260,7 +253,7 @@ impl Application {
 
     /// Evaluate the application - and all subsequent application - until all that
     /// remains are values. This is the main trampoline of the evaluation engine.
-    pub async fn eval(mut self) -> Result<Box<[Gc<Value>]>, Exception> {
+    pub async fn eval(mut self) -> Result<Record, Exception> {
         while let Application { op: Some(op), args } = self {
             self = op.apply(&args).await?;
         }
