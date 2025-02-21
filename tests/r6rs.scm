@@ -222,6 +222,18 @@
 ;;               (list a b x y)))
 ;;           (x y x y))
 
+;; 11.5. Equivalence predicates
+
+;; Right now, constants have a new allocation per each instance. This is obviously
+;; wrong, but a much deeper problem than one with the implementation of eq?
+
+(assert-eq (eq? (list 'a) (list 'a))
+           #f)
+
+(assert-eq (let ((x 1))
+             (eq? x x))
+           #t)
+
 (assert-eq (let loopv ((n 1))
              (if (> n 10)
                  '()
