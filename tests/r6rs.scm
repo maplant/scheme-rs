@@ -89,6 +89,27 @@
 (assert-eq (boolean=? #t) #t)
 (assert-eq (boolean=? #f) #t)
 
+;;  6.4. list procedures
+
+(assert-eq (make-list 2) '(#f #f))
+(assert-eq (make-list 5) '(#f #f #f #f #f))
+
+(define xs '(1 2 3 4 5))
+
+(assert-eq (eq? (list-copy xs) xs) #f)
+(assert-eq (eq? xs xs) #t)
+
+(assert-eq (list-ref xs 2) 3)
+(assert-eq (list-ref xs 3) 4)
+
+(assert-eq (list-tail xs 3) '(4 5))
+
+(define alist '((a . 1) (b . 2)))
+
+(assert-eq (assoc 'a alist) '(a . 1))
+(assert-eq (assoc 'b alist) '(b . 2))
+(assert-eq (assoc 'c alist) #f)
+
 ;; 11.2.2. Syntax definitions
 
 (assert-eq (let ()
