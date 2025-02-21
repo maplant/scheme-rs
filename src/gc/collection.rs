@@ -139,7 +139,7 @@ async unsafe fn process_mutation_buffer(
         .len()
         .min(MIN_MUTATIONS_PER_EPOCH)
         .max(MAX_MUTATIONS_PER_EPOCH);
-    
+
     loop {
         mutation_buffer_rx.recv_many(mutation_buffer, to_recv).await;
         for mutation in mutation_buffer.drain(..) {
@@ -149,10 +149,10 @@ async unsafe fn process_mutation_buffer(
             }
         }
 
-        if mutation_buffer_rx.len() == 0 { break; }
-        to_recv = mutation_buffer_rx
-            .len()
-            .max(MAX_MUTATIONS_PER_EPOCH);
+        if mutation_buffer_rx.len() == 0 {
+            break;
+        }
+        to_recv = mutation_buffer_rx.len().max(MAX_MUTATIONS_PER_EPOCH);
     }
 }
 
