@@ -137,8 +137,7 @@ async unsafe fn process_mutation_buffer(
     // have occurred at this point by an extra epoch.
     let to_recv = mutation_buffer_rx
         .len()
-        .min(MIN_MUTATIONS_PER_EPOCH)
-        .max(MAX_MUTATIONS_PER_EPOCH);
+        .min(MIN_MUTATIONS_PER_EPOCH);
     mutation_buffer_rx.recv_many(mutation_buffer, to_recv).await;
 
     for mutation in mutation_buffer.drain(..) {
