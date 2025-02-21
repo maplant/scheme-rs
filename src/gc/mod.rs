@@ -566,18 +566,23 @@ where
 
 unsafe impl<T> Trace for Box<T>
 where
-    T: GcOrTrace,
+    T: GcOrTrace + ?Sized,
 {
-    unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        self.as_ref().visit_or_recurse(visitor);
+    unsafe fn visit_children(&self, _visitor: unsafe fn(OpaqueGcPtr)) {
+        // self.as_ref().visit_or_recurse(visitor);
     }
 
+    /*
     unsafe fn finalize(&mut self) {
+        println!("finalizing box!");
         self.as_mut().finalize_or_skip();
-        todo!("need to dealloc data without dropping box");
+        std::alloc::dealloc(self.as_mut() as *mut T as *mut u8, Layout::new::<T>());
+        // todo!("need to dealloc data without dropping box");
     }
+    */
 }
 
+/*
 unsafe impl<T> Trace for [T]
 where
     T: GcOrTrace,
@@ -594,6 +599,7 @@ where
         }
     }
 }
+*/
 
 unsafe impl<T> Trace for std::sync::Arc<T>
 where

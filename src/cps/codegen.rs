@@ -225,8 +225,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 let [proc] = proc.as_slice() else {
                     unreachable!()
                 };
-                self.clone_closure_codegen(proc, val)?;
-                self.cps_codegen(*cexpr, allocs, deferred)?;
+                self.clone_closure_codegen(proc, val, *cexpr, allocs, deferred)?;
             }
             Cps::PrimOp(PrimOp::GetCallTransformerFn, _, res, cexpr) => {
                 self.get_call_transformer_codegen(res)?;
@@ -274,7 +273,14 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         }
     }
 
-    fn clone_closure_codegen(&mut self, proc: &Value, new_var: Local) -> Result<(), BuilderError> {
+    fn clone_closure_codegen(
+        &mut self,
+        proc: &Value,
+        new_var: Local,
+        cexpr: Cps,
+        allocs: Option<Rc<Allocs<'ctx>>>,
+        deferred: &mut Vec<ClosureBundle<'ctx>>,
+    ) -> Result<(), BuilderError> {
         let proc = self.value_codegen(proc)?.into_pointer_value();
         let clone_env = self.module.get_function("clone_closure").unwrap();
         let cloned = self
@@ -285,6 +291,8 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             .unwrap()
             .into_pointer_value();
         self.rebinds.rebind(Var::Local(new_var), cloned);
+        let new_alloc = Allocs::new(allocs, cloned);
+        self.cps_codegen(cexpr, new_alloc, deferred)?;
         Ok(())
     }
 
@@ -591,12 +599,14 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             )?
             .try_as_basic_value()
             .left()
-            .unwrap();
+            .unwrap()
+            .into_pointer_value();
 
-        self.rebinds
-            .rebind(Var::Local(bundle.val), closure.into_pointer_value());
+        self.rebinds.rebind(Var::Local(bundle.val), closure);
 
-        self.cps_codegen(cexp, allocs, deferred)?;
+        let new_alloc = Allocs::new(allocs, closure);
+
+        self.cps_codegen(cexp, new_alloc, deferred)?;
 
         Ok(())
     }
