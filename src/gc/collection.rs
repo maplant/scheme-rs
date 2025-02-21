@@ -140,22 +140,14 @@ async unsafe fn process_mutation_buffer(
     // have occurred at this point by an extra epoch.
     let mut to_recv = mutation_buffer_rx
         .len()
-        .min(MAX_MUTATIONS_PER_EPOCH)
-        .max(MIN_MUTATIONS_PER_EPOCH);
+        .min(MAX_MUTATIONS_PER_EPOCH);
 
-    loop {
-        mutation_buffer_rx.recv_many(mutation_buffer, to_recv).await;
-        for mutation in mutation_buffer.drain(..) {
-            match mutation.kind {
-                MutationKind::Inc => increment(mutation.gc),
-                MutationKind::Dec => decrement(mutation.gc),
-            }
+    mutation_buffer_rx.recv_many(mutation_buffer, to_recv).await;
+    for mutation in mutation_buffer.drain(..) {
+        match mutation.kind {
+            MutationKind::Inc => increment(mutation.gc),
+            MutationKind::Dec => decrement(mutation.gc),
         }
-
-        if mutation_buffer_rx.is_empty() {
-            break;
-        }
-        to_recv = mutation_buffer_rx.len().min(MAX_MUTATIONS_PER_EPOCH);
     }
 }
 
