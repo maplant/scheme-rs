@@ -137,8 +137,7 @@ async unsafe fn process_mutation_buffer(
     // have occurred at this point by an extra epoch.
     let mut to_recv = mutation_buffer_rx
         .len()
-        .min(MIN_MUTATIONS_PER_EPOCH)
-        .max(MAX_MUTATIONS_PER_EPOCH);
+        .clamp(MAX_MUTATIONS_PER_EPOCH, MIN_MUTATIONS_PER_EPOCH);
 
     loop {
         mutation_buffer_rx.recv_many(mutation_buffer, to_recv).await;
@@ -152,7 +151,7 @@ async unsafe fn process_mutation_buffer(
         if mutation_buffer_rx.is_empty() {
             break;
         }
-        to_recv = mutation_buffer_rx.len().max(MAX_MUTATIONS_PER_EPOCH);
+        to_recv = mutation_buffer_rx.len().min(MAX_MUTATIONS_PER_EPOCH);
     }
 }
 
