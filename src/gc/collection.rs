@@ -133,11 +133,15 @@ async unsafe fn process_mutation_buffer(
     mutation_buffer_rx: &mut UnboundedReceiver<Mutation>,
     mutation_buffer: &mut Vec<Mutation>,
 ) {
+    // [std::cmp::clamp] has an assertion where min must be larger than max, so this cannot be done
+    // using [std::cmp::clamp]
+    #[expect(clippy::manual_clamp)]
     // It is very important that we do not delay any mutations that
     // have occurred at this point by an extra epoch.
     let mut to_recv = mutation_buffer_rx
         .len()
-        .clamp(MAX_MUTATIONS_PER_EPOCH, MIN_MUTATIONS_PER_EPOCH);
+        .min(MAX_MUTATIONS_PER_EPOCH)
+        .max(MIN_MUTATIONS_PER_EPOCH);
 
     loop {
         mutation_buffer_rx.recv_many(mutation_buffer, to_recv).await;
