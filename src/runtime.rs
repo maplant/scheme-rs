@@ -317,7 +317,7 @@ pub(crate) unsafe extern "C" fn make_return_values(args: *mut GcInner<Value>) ->
     Box::into_raw(Box::new(app))
 }
 
-/// Evaluate a Gc<Value> as "truthy" or not, as in whether it triggers a conditional.
+/// Evaluate a `Gc<Value>` as "truthy" or not, as in whether it triggers a conditional.
 unsafe extern "C" fn truthy(val: *mut GcInner<Value>) -> bool {
     Gc::from_ptr(val).read().is_true()
 }

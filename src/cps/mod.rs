@@ -145,7 +145,7 @@ impl ClosureArgs {
 
 #[derive(Debug, Clone)]
 pub enum Cps {
-    /// Generates a cell of type *const GcInner<Value>
+    /// Generates a cell of type `*const GcInner<Value>`
     AllocCell(Local, Box<Cps>),
     /// Call to a primitive operator.
     PrimOp(PrimOp, Vec<Value>, Local, Box<Cps>),
