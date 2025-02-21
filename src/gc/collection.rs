@@ -98,10 +98,12 @@ async unsafe fn run_garbage_collector() {
         .take()
         .unwrap();
     while epoch(
-            &mut last_epoch,
-            &mut mutation_buffer_rx,
-            &mut mutation_buffer,
-        ).await {}
+        &mut last_epoch,
+        &mut mutation_buffer_rx,
+        &mut mutation_buffer,
+    )
+    .await
+    {}
 }
 
 // Run a collection epoch. Returns false if we've been cancelled and should exit.
@@ -133,7 +135,10 @@ async unsafe fn process_mutation_buffer(
 ) {
     // It is very important that we do not delay any mutations that
     // have occurred at this point by an extra epoch.
-    let to_recv = mutation_buffer_rx.len().min(MIN_MUTATIONS_PER_EPOCH).max(MAX_MUTATIONS_PER_EPOCH);
+    let to_recv = mutation_buffer_rx
+        .len()
+        .min(MIN_MUTATIONS_PER_EPOCH)
+        .max(MAX_MUTATIONS_PER_EPOCH);
     mutation_buffer_rx.recv_many(mutation_buffer, to_recv).await;
 
     for mutation in mutation_buffer.drain(..) {
