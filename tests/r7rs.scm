@@ -2,6 +2,9 @@
 
 ;; 6.8 Vectors
 
+; not part of r7rs examples
+(assert-eq (make-vector 10 'a) #(a a a a a a a a a a))
+
 (assert-eq (vector 'a 'b 'c) #(a b c))
 
 (assert-eq (vector-ref '#(1 1 2 3 5 8 13 21) 5) 8)

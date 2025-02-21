@@ -96,13 +96,18 @@ pub async fn make_vector(n: &Gc<Value>, with: &[Gc<Value>]) -> Result<Vec<Gc<Val
     let n: &Number = n.as_ref().try_into()?;
     let n = n.to_u64();
 
-    Ok((0..n)
-        .map(|_| {
-            with.first()
-                .cloned()
-                .unwrap_or_else(|| Gc::new(Value::Null))
-        })
-        .collect())
+    Ok(vec![Gc::new(Value::Vector(
+        (0..n)
+            .map(|_| {
+                with.first()
+                    .map(|with| {
+                        let with = with.read();
+                        with.clone()
+                    })
+                    .unwrap_or_else(|| Value::Null)
+            })
+            .collect::<Vec<_>>(),
+    ))])
 }
 
 #[bridge(name = "vector", lib = "(base)")]
