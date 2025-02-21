@@ -359,3 +359,32 @@
         acc
         (reverse (cdr ls) (cons (car ls) acc))))
   (reverse ls '()))
+
+;; 6.2. Numbers
+
+(define (positive? x) (> x 0))
+
+(define (negative? x) (< x 0))
+
+(define (abs x)
+  (if (< x 0)
+      (- x)
+      x))
+
+(define (min x . xs)
+  (let loop ((xs xs) (smallest x))
+    (if (null? xs)
+        smallest
+        (loop (cdr xs)
+              (if (< (car xs) smallest)
+                  (car xs)
+                  smallest)))))
+
+(define (max x . xs)
+  (let loop ((xs xs) (biggest x))
+    (if (null? xs)
+        biggest
+        (loop (cdr xs)
+              (if (> (car xs) biggest)
+                  (car xs)
+                  biggest)))))
