@@ -149,7 +149,7 @@ async unsafe fn process_mutation_buffer(
             }
         }
 
-        if mutation_buffer_rx.len() == 0 {
+        if mutation_buffer_rx.is_empty() {
             break;
         }
         to_recv = mutation_buffer_rx.len().max(MAX_MUTATIONS_PER_EPOCH);
