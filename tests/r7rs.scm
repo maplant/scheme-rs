@@ -1,5 +1,27 @@
 ;; r7rs.scm - Compatibility test for the R7RS small implementation
 
+;; 6.2 Numbers
+
+(assert-eq (positive? 1) #t)
+(assert-eq (positive? 0) #f)
+(assert-eq (positive? (- 1)) #f)
+
+(assert-eq (negative? 1) #f)
+(assert-eq (negative? 0) #f)
+(assert-eq (negative? (- 1)) #t)
+
+(assert-eq (abs 1) 1)
+(assert-eq (abs 0) 0)
+(assert-eq (abs (- 1)) 1)
+
+(assert-eq (min 2 4 1 3) 1)
+(assert-eq (min 2 4 (- 1 ) 3) (- 1))
+(assert-eq (min 2 4 3) 2)
+
+(assert-eq (max 2 4 1 3) 4)
+(assert-eq (max 2 4 3)   4)
+(assert-eq (max 3 2 1)   3)
+
 ;; 6.8 Vectors
 
 ; not part of r7rs examples
