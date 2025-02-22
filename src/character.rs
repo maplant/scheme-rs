@@ -15,6 +15,7 @@ fn digit_to_num(ch: char) -> Option<i64> {
     }
 
     // i love magic numbers
+    // https://www.unicode.org/Public/UNIDATA/extracted/DerivedNumericType.txt
     convert_digits_to_num!(
         ch,
         [
@@ -121,6 +122,7 @@ impl ExactSizeIterator for ToFoldcase<'_> {
     }
 }
 const fn to_foldcase<'a>(ch: &'a char) -> ToFoldcase<'a> {
+    // https://www.unicode.org/Public/UNIDATA/CaseFolding.txt
     ToFoldcase::new(match *ch {
         '\u{0041}' => &['\u{0061}'] as &[char],  // LATIN CAPITAL LETTER A
         '\u{0042}' => &['\u{0062}'],             // LATIN CAPITAL LETTER B
