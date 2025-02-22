@@ -280,9 +280,21 @@ macro_rules! impl_try_from_value_for {
             }
         }
     };
+    ($ty:ty, $enum_variant:ident, $type_name:literal, copy) => {
+        impl_try_from_value_for!($ty, $enum_variant, $type_name);
+        impl TryFrom<&Value> for $ty {
+            type Error = Exception;
+            fn try_from(v: &Value) -> Result<$ty, Self::Error> {
+                match v {
+                    Value::$enum_variant(i) => Ok(*i),
+                    e => Err(Exception::invalid_type($type_name, e.type_name())),
+                }
+            }
+        }
+    }
 }
 
-impl_try_from_value_for!(bool, Boolean, "bool");
+impl_try_from_value_for!(bool, Boolean, "bool", copy);
 impl_try_from_value_for!(Number, Number, "number");
 impl_try_from_value_for!(Closure, Closure, "procedure");
 impl_try_from_value_for!(Record, Record, "record");
@@ -291,7 +303,7 @@ impl_try_from_value_for!(Transformer, Transformer, "transformer");
 impl_try_from_value_for!(CapturedEnv, CapturedEnv, "environment");
 impl_try_from_value_for!(Syntax, Syntax, "syntax");
 impl_try_from_value_for!(Vec<Value>, Vector, "vector");
-impl_try_from_value_for!(char, Character, "char");
+impl_try_from_value_for!(char, Character, "char", copy);
 impl_try_from_value_for!(String, String, "string");
 
 pub fn eqv(a: &Gc<Value>, b: &Gc<Value>) -> bool {
