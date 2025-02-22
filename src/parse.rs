@@ -1,10 +1,11 @@
 use crate::{
     ast::Literal,
-    lex::{Fragment, InputSpan, LexError, Lexeme, Token},
+    lex::{Character as LexCharacter, Fragment, InputSpan, LexError, Lexeme, Token},
     num::Number,
     syntax::Syntax,
 };
 use rug::Integer;
+use std::char::CharTryFromError;
 
 #[derive(Debug)]
 pub enum ParseSyntaxError<'a> {
@@ -17,6 +18,7 @@ pub enum ParseSyntaxError<'a> {
     InvalidPeriodLocation { span: InputSpan<'a> },
     UnclosedParen { span: InputSpan<'a> },
     DocCommentMustPrecedeDefine,
+    CharTryFrom(CharTryFromError),
     LexError(LexError<'a>),
 }
 
@@ -25,8 +27,22 @@ impl<'a> From<LexError<'a>> for ParseSyntaxError<'a> {
         Self::LexError(lex)
     }
 }
+impl From<CharTryFromError> for ParseSyntaxError<'_> {
+    fn from(e: CharTryFromError) -> Self {
+        Self::CharTryFrom(e)
+    }
+}
 
 impl<'a> ParseSyntaxError<'a> {
+    fn try_parse_hex<S: AsRef<str> + ?Sized>(hex: &S, span: InputSpan<'a>) -> Result<u32, Self> {
+        u32::from_str_radix(hex.as_ref(), 16)
+            .ok()
+            .ok_or_else(|| Self::InvalidHexValue {
+                value: hex.as_ref().to_string(),
+                span,
+            })
+    }
+
     fn invalid_period(token: &Token<'a>) -> Self {
         Self::InvalidPeriodLocation {
             span: token.span.clone(),
@@ -58,6 +74,9 @@ pub fn expression<'a, 'b>(
         // Literals:
         [b @ token!(Lexeme::Boolean(_)), tail @ ..] => {
             Ok((tail, Syntax::new_literal(boolean(b)?, b.span.clone())))
+        }
+        [c @ token!(Lexeme::Character(_)), tail @ ..] => {
+            Ok((tail, Syntax::new_literal(character(c)?, c.span.clone())))
         }
         [n @ token!(Lexeme::Number(_)), tail @ ..] => {
             Ok((tail, Syntax::new_literal(number(n)?, n.span.clone())))
@@ -233,6 +252,17 @@ fn boolean<'a>(i: &Token<'a>) -> Result<Literal, ParseSyntaxError<'a>> {
     Ok(Literal::Boolean(i.lexeme.to_boolean()))
 }
 
+fn character<'a>(i: &Token<'a>) -> Result<Literal, ParseSyntaxError<'a>> {
+    let char = i.lexeme.to_char();
+    match char {
+        LexCharacter::Literal(c) => Ok(Literal::Character(*c)),
+        LexCharacter::Escaped(e) => Ok(Literal::Character((*e).into())),
+        LexCharacter::Unicode(u) => Ok(Literal::Character(char::try_from(
+            ParseSyntaxError::try_parse_hex(u, i.span.clone())?,
+        )?)),
+    }
+}
+
 fn number<'a>(i: &Token<'a>) -> Result<Literal, ParseSyntaxError<'a>> {
     let number = i.lexeme.to_number();
     // TODO: Parse correctly
@@ -251,12 +281,7 @@ fn string<'a>(i: &Token<'a>) -> Result<Literal, ParseSyntaxError<'a>> {
             Fragment::Escaped(c) => output.push(*c),
             Fragment::Unescaped(s) => output.push_str(s),
             Fragment::HexValue(hex) => {
-                let Ok(hex_value) = u32::from_str_radix(hex, 16) else {
-                    return Err(ParseSyntaxError::InvalidHexValue {
-                        value: hex.to_string(),
-                        span: i.span.clone(),
-                    });
-                };
+                let hex_value = ParseSyntaxError::try_parse_hex(hex, i.span.clone())?;
                 let Some(c) = char::from_u32(hex_value) else {
                     return Err(ParseSyntaxError::InvalidHexValue {
                         value: hex.to_string(),

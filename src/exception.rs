@@ -84,6 +84,12 @@ impl Exception {
         ))
     }
 
+    pub fn wrong_num_of_unicode_chars(expected: usize, provided: usize) -> Self {
+        Self::error(format!(
+            "Expected to receive {expected} unicode characters from transform, received {provided}"
+        ))
+    }
+
     pub fn wrong_num_of_args(expected: usize, provided: usize) -> Self {
         Self::error(format!(
             "Expected {expected} arguments, provided {provided}"

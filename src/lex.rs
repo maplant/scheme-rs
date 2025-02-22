@@ -21,7 +21,7 @@ pub enum Lexeme<'a> {
     Identifier(Cow<'a, str>),
     Boolean(bool),
     Number(Cow<'a, str>),
-    Character(Cow<'a, str>),
+    Character(Character),
     String(Vec<Fragment<'a>>),
     LParen,
     RParen,
@@ -76,11 +76,11 @@ impl<'a> Lexeme<'a> {
         i.as_ref()
     }
 
-    pub fn to_char(&self) -> &str {
+    pub fn to_char(&self) -> &Character {
         let Lexeme::Character(c) = self else {
             panic!("not a character");
         };
-        c.as_ref()
+        c
     }
 
     pub fn to_string(&self) -> &[Fragment<'a>] {
@@ -97,6 +97,7 @@ impl<'a> Lexeme<'a> {
 
 fn lexeme(i: InputSpan) -> IResult<InputSpan, Lexeme<'static>> {
     alt((
+        map(character, Lexeme::Character),
         map(identifier, Lexeme::identifier_owned),
         map(boolean, Lexeme::Boolean),
         map(string, Lexeme::string_owned),
@@ -110,6 +111,33 @@ fn lexeme(i: InputSpan) -> IResult<InputSpan, Lexeme<'static>> {
         map(tag("#("), |_| Lexeme::HashParen),
         map(tag("#'"), |_| Lexeme::HashTick),
     ))(i)
+}
+
+fn character(i: InputSpan) -> IResult<InputSpan, Character> {
+    preceded(
+        tag("#\\"),
+        alt((
+            map(
+                alt((
+                    map(tag_no_case("alarm"), |_| EscapedCharacter::Alarm),
+                    map(tag_no_case("backspace"), |_| EscapedCharacter::Backspace),
+                    map(tag_no_case("delete"), |_| EscapedCharacter::Delete),
+                    map(tag_no_case("escape"), |_| EscapedCharacter::Escape),
+                    map(tag_no_case("newline"), |_| EscapedCharacter::Newline),
+                    map(tag_no_case("null"), |_| EscapedCharacter::Null),
+                    map(tag_no_case("return"), |_| EscapedCharacter::Return),
+                    map(tag_no_case("space"), |_| EscapedCharacter::Space),
+                    map(tag_no_case("tab"), |_| EscapedCharacter::Tab),
+                )),
+                Character::Escaped,
+            ),
+            preceded(
+                tag_no_case("x"),
+                map(hex_digit1, |s: InputSpan| Character::Unicode(s.to_string())),
+            ),
+            map(anychar, Character::Literal),
+        )),
+    )(i)
 }
 
 fn comment(i: InputSpan) -> IResult<InputSpan, ()> {
@@ -238,6 +266,44 @@ fn is_special_initial(c: char) -> bool {
         c,
         '!' | '$' | '%' | '&' | '*' | '/' | ':' | '<' | '=' | '>' | '?' | '^' | '_' | '~'
     )
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Character {
+    /// `#\a` characters
+    Literal(char),
+    /// `#\foo` characters
+    Escaped(EscapedCharacter),
+    /// `#\xcafe` characters
+    Unicode(String),
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EscapedCharacter {
+    Alarm,
+    Backspace,
+    Delete,
+    Escape,
+    Newline,
+    Null,
+    Return,
+    Space,
+    Tab,
+}
+impl From<EscapedCharacter> for char {
+    fn from(c: EscapedCharacter) -> char {
+        // from r7rs 6.6
+        match c {
+            EscapedCharacter::Alarm => '\u{0007}',
+            EscapedCharacter::Backspace => '\u{0008}',
+            EscapedCharacter::Delete => '\u{007F}',
+            EscapedCharacter::Escape => '\u{001B}',
+            EscapedCharacter::Newline => '\u{000A}',
+            EscapedCharacter::Null => '\u{0000}',
+            EscapedCharacter::Return => '\u{000D}',
+            EscapedCharacter::Space => ' ',
+            EscapedCharacter::Tab => '\u{0009}',
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
