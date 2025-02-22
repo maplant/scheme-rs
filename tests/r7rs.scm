@@ -25,11 +25,10 @@
   (list->vector '(dididit dah))
   #(dididit dah))
 
-; cannot lex
-; (assert-eq
-;   (string->vector "ABC")
-;   #(#\A #\B #\C))
-; (assert-eq (vector->string #(#\A #\B #\C)) "ABC")
+ (assert-eq
+   (string->vector "ABC")
+   #(#\A #\B #\C))
+ (assert-eq (vector->string #(#\A #\B #\C)) "ABC")
 
 (define a #(1 8 2 8))
 (define b (vector-copy a))
