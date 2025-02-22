@@ -291,7 +291,7 @@ macro_rules! impl_try_from_value_for {
                 }
             }
         }
-    }
+    };
 }
 
 impl_try_from_value_for!(bool, Boolean, "bool", copy);

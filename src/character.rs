@@ -1,14 +1,13 @@
-use crate::{
-    exception::Exception, gc::Gc, lists::slice_to_list, num::Number, registry::bridge, value::Value,
-};
-use rug::Integer;
+use crate::{exception::Exception, gc::Gc, num::Number, registry::bridge, value::Value};
 
 #[bridge(name = "char->integer", lib = "(base)")]
 pub async fn char_to_integer(ch: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
     let ch = ch.read();
     let ch: char = ch.as_ref().try_into()?;
 
-    Ok(vec![Gc::new(Value::Number(Number::FixedInteger(<char as Into<u32>>::into(ch).into())))])
+    Ok(vec![Gc::new(Value::Number(Number::FixedInteger(
+        <char as Into<u32>>::into(ch).into(),
+    )))])
 }
 
 #[bridge(name = "integer->char", lib = "(base)")]
@@ -23,16 +22,18 @@ pub async fn integer_to_char(int: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exceptio
     }
 
     // char->integer returns a number larger than 0x10FFFF if integer is not an unicode scalar
-    Ok(vec![Gc::new(Value::Number(Number::FixedInteger(0x10FFFF + 1)))])
+    Ok(vec![Gc::new(Value::Number(Number::FixedInteger(
+        0x10FFFF + 1,
+    )))])
 }
 
 macro_rules! impl_char_operator {
     (
-        $bridge_name:literal,
+        $(($bridge_name:literal,
         $function_name:ident,
-        $cmp_function:ident $(,)?
+        $cmp_function:ident)),* $(,)?
     ) => {
-        #[bridge(name = $bridge_name, lib = "(base)")]
+        $(#[bridge(name = $bridge_name, lib = "(base)")]
         pub async fn $function_name(req_lhs: &Gc<Value>, req_rhs: &Gc<Value>, opt_chars: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
             for window in [req_lhs, req_rhs]
                 .into_iter()
@@ -43,7 +44,7 @@ macro_rules! impl_char_operator {
                 })
                 .collect::<Result<Vec<char>, Exception>>()?
                 .windows(2) {
-                
+
                 if !window.first()
                     .and_then(|lhs| Some((lhs, window.get(1)?)))
                     .map(|(lhs, rhs)| lhs.$cmp_function(rhs))
@@ -53,16 +54,24 @@ macro_rules! impl_char_operator {
             }
 
             Ok(vec![Gc::new(Value::Boolean(true))])
-        }
+        })*
     }
 }
+impl_char_operator![
+    ("char=?", char_eq, eq),
+    ("char<?", char_lt, lt),
+    ("char>?", char_gt, gt),
+    ("char>=?", char_ge, ge),
+    ("char<=?", char_le, le),
+];
+
 macro_rules! impl_char_ci_operator {
     (
-        $bridge_name:literal,
+        $(($bridge_name:literal,
         $function_name:ident,
-        $cmp_function:ident $(,)?
+        $cmp_function:ident)),* $(,)?
     ) => {
-        #[bridge(name = $bridge_name, lib = "(base)")]
+        $(#[bridge(name = $bridge_name, lib = "(base)")]
         pub async fn $function_name(req_lhs: &Gc<Value>, req_rhs: &Gc<Value>, opt_chars: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
             for window in [req_lhs, req_rhs]
                 .into_iter()
@@ -74,15 +83,15 @@ macro_rules! impl_char_ci_operator {
                             let mut ch = ch.to_lowercase();
                             let len = ch.len();
                             if len == 1 {
-                                Err(Exception::wrong_num_of_unicode_chars(1, len))
-                            } else {
                                 Ok(ch.next().unwrap())
+                            } else {
+                                Err(Exception::wrong_num_of_unicode_chars(1, len))
                             }
                         })
                 })
                 .collect::<Result<Vec<char>, Exception>>()?
                 .windows(2) {
-                
+
                 if !window.first()
                     .and_then(|lhs| Some((lhs, window.get(1)?)))
                     .map(|(lhs, rhs)| lhs.$cmp_function(rhs))
@@ -92,18 +101,31 @@ macro_rules! impl_char_ci_operator {
             }
 
             Ok(vec![Gc::new(Value::Boolean(true))])
-        }
+        })*
     }
 }
+impl_char_ci_operator![
+    ("char-ci-=?", char_ci_eq, eq),
+    ("char-ci-<?", char_ci_lt, lt),
+    ("char-ci->?", char_ci_gt, gt),
+    ("char-ci->=?", char_ci_ge, ge),
+    ("char-ci-<=?", char_ci_le, le),
+];
 
-impl_char_operator!("char=?",  char_eq, eq);
-impl_char_operator!("char<?",  char_lt, lt);
-impl_char_operator!("char>?",  char_gt, gt);
-impl_char_operator!("char>=?", char_ge, ge);
-impl_char_operator!("char<=?", char_le, le);
-
-impl_char_ci_operator!("char-ci-=?",  char_ci_eq, eq);
-impl_char_ci_operator!("char-ci-<?",  char_ci_lt, lt);
-impl_char_ci_operator!("char-ci->?",  char_ci_gt, gt);
-impl_char_ci_operator!("char-ci->=?", char_ci_ge, ge);
-impl_char_ci_operator!("char-ci-<=?", char_ci_le, le);
+macro_rules! impl_char_predicate {
+    ($(($bridge_name:literal, $function_name:ident, $predicate:ident)),* $(,)?) => {
+        $(#[bridge(name = $bridge_name, lib = "(base)")]
+        pub async fn $function_name(ch: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+            let ch = ch.read();
+            let ch: char = ch.as_ref().try_into()?;
+            Ok(vec![Gc::new(Value::Boolean(ch.$predicate()))])
+        })*
+    }
+}
+impl_char_predicate![
+    ("char-alphabetic?", char_is_alphabetic, is_ascii_alphabetic),
+    ("char-numeric?", char_is_numeric, is_numeric),
+    ("char-whitespace?", char_is_whitespace, is_whitespace),
+    ("char-upper?", char_is_uppercase, is_uppercase),
+    ("char-lower?", char_is_lowercase, is_lowercase),
+];

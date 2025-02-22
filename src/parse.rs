@@ -4,11 +4,8 @@ use crate::{
     num::Number,
     syntax::Syntax,
 };
-use std::{
-    borrow::Cow,
-    char::CharTryFromError,
-};
 use rug::Integer;
+use std::char::CharTryFromError;
 
 #[derive(Debug)]
 pub enum ParseSyntaxError<'a> {
@@ -38,10 +35,12 @@ impl From<CharTryFromError> for ParseSyntaxError<'_> {
 
 impl<'a> ParseSyntaxError<'a> {
     fn try_parse_hex<S: AsRef<str> + ?Sized>(hex: &S, span: InputSpan<'a>) -> Result<u32, Self> {
-        u32::from_str_radix(hex.as_ref(), 16).ok().ok_or_else(|| Self::InvalidHexValue {
-            value: hex.as_ref().to_string(),
-            span,
-        })
+        u32::from_str_radix(hex.as_ref(), 16)
+            .ok()
+            .ok_or_else(|| Self::InvalidHexValue {
+                value: hex.as_ref().to_string(),
+                span,
+            })
     }
 
     fn invalid_period(token: &Token<'a>) -> Self {
@@ -258,9 +257,9 @@ fn character<'a>(i: &Token<'a>) -> Result<Literal, ParseSyntaxError<'a>> {
     match char {
         LexCharacter::Literal(c) => Ok(Literal::Character(*c)),
         LexCharacter::Escaped(e) => Ok(Literal::Character((*e).into())),
-        LexCharacter::Unicode(u) => {
-            Ok(Literal::Character(char::try_from(ParseSyntaxError::try_parse_hex(u, i.span.clone())?)?))
-        },
+        LexCharacter::Unicode(u) => Ok(Literal::Character(char::try_from(
+            ParseSyntaxError::try_parse_hex(u, i.span.clone())?,
+        )?)),
     }
 }
 

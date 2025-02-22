@@ -131,8 +131,11 @@ fn character(i: InputSpan) -> IResult<InputSpan, Character> {
                 )),
                 Character::Escaped,
             ),
-            preceded(tag_no_case("x"), map(hex_digit1, |s: InputSpan| Character::Unicode(s.to_string()))),
-            map(anychar, Character::Literal)
+            preceded(
+                tag_no_case("x"),
+                map(hex_digit1, |s: InputSpan| Character::Unicode(s.to_string())),
+            ),
+            map(anychar, Character::Literal),
         )),
     )(i)
 }
@@ -286,19 +289,19 @@ pub enum EscapedCharacter {
     Space,
     Tab,
 }
-impl Into<char> for EscapedCharacter {
-    fn into(self) -> char {
+impl From<EscapedCharacter> for char {
+    fn from(c: EscapedCharacter) -> char {
         // from r7rs 6.6
-        match self {
-            Self::Alarm => '\u{0007}',
-            Self::Backspace => '\u{0008}',
-            Self::Delete => '\u{007F}',
-            Self::Escape => '\u{001B}',
-            Self::Newline => '\u{000A}',
-            Self::Null => '\u{0000}',
-            Self::Return => '\u{000D}',
-            Self::Space => ' ',
-            Self::Tab => '\u{0009}',
+        match c {
+            EscapedCharacter::Alarm => '\u{0007}',
+            EscapedCharacter::Backspace => '\u{0008}',
+            EscapedCharacter::Delete => '\u{007F}',
+            EscapedCharacter::Escape => '\u{001B}',
+            EscapedCharacter::Newline => '\u{000A}',
+            EscapedCharacter::Null => '\u{0000}',
+            EscapedCharacter::Return => '\u{000D}',
+            EscapedCharacter::Space => ' ',
+            EscapedCharacter::Tab => '\u{0009}',
         }
     }
 }
