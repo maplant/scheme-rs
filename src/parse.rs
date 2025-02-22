@@ -257,7 +257,7 @@ fn character<'a>(i: &Token<'a>) -> Result<Literal, ParseSyntaxError<'a>> {
     let char = i.lexeme.to_char();
     match char {
         LexCharacter::Literal(c) => Ok(Literal::Character(*c)),
-        LexCharacter::Escaped(e) => todo!(),
+        LexCharacter::Escaped(e) => Ok(Literal::Character((*e).into())),
         LexCharacter::Unicode(u) => {
             Ok(Literal::Character(char::try_from(ParseSyntaxError::try_parse_hex(u, i.span.clone())?)?))
         },

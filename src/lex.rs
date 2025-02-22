@@ -274,7 +274,7 @@ pub enum Character {
     /// `#\xcafe` characters
     Unicode(String),
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EscapedCharacter {
     Alarm,
     Backspace,
