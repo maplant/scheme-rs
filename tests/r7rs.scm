@@ -1,8 +1,11 @@
 ;; r7rs.scm - Compatibility test for the R7RS small implementation
 
+;; 6.6 Characters
+(assert-eq (char->integer #\a) 97)
+(assert-eq (integer->char 97) #\a)
+
 ;; 6.8 Vectors
 
-; not part of r7rs examples
 (assert-eq (make-vector 10 'a) #(a a a a a a a a a a))
 
 (assert-eq (vector 'a 'b 'c) #(a b c))
@@ -30,22 +33,24 @@
    #(#\A #\B #\C))
  (assert-eq (vector->string #(#\A #\B #\C)) "ABC")
 
-(define a #(1 8 2 8))
-(define b (vector-copy a))
-(define c (vector-copy b 1 3))
-(vector-set! b 0 3)
+(let* ((a #(1 8 2 8))
+       (b (vector-copy a))
+       (c (vector-copy b 1 3)))
 
-(assert-eq b #(3 8 2 8))
-(assert-eq c #(8 2))
+  (vector-set! b 0 3)
 
-(set! a (vector 1 2 3 4 5))
-(set! b (vector 10 20 30 40 50))
-(vector-copy! b 1 a 0 2)
-(assert-eq b #(10 1 2 40 50))
+  (assert-eq b #(3 8 2 8))
+  (assert-eq c #(8 2)))
+
+(let ((a (vector 1 2 3 4 5))
+      (b (vector 10 20 30 40 50)))
+
+  (vector-copy! b 1 a 0 2)
+  (assert-eq b #(10 1 2 40 50)))
 
 (assert-eq (vector-append #(a b c) #(d e f))
            #(a b c d e f))
 
-(define v (vector 1 2 3 4 5))
-(vector-fill! v 'smash 2 4)
-(assert-eq v #(1 2 smash smash 5))
+(let ((v (vector 1 2 3 4 5)))
+  (vector-fill! v 'smash 2 4)
+  (assert-eq v #(1 2 smash smash 5)))
