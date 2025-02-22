@@ -97,8 +97,8 @@ impl<'a> Lexeme<'a> {
 
 fn lexeme(i: InputSpan) -> IResult<InputSpan, Lexeme<'static>> {
     alt((
-        map(identifier, Lexeme::identifier_owned),
         map(character, Lexeme::Character),
+        map(identifier, Lexeme::identifier_owned),
         map(boolean, Lexeme::Boolean),
         map(string, Lexeme::string_owned),
         map(number, Lexeme::number_owned),
@@ -285,6 +285,22 @@ pub enum EscapedCharacter {
     Return,
     Space,
     Tab,
+}
+impl Into<char> for EscapedCharacter {
+    fn into(self) -> char {
+        // from r7rs 6.6
+        match self {
+            Self::Alarm => '\u{0007}',
+            Self::Backspace => '\u{0008}',
+            Self::Delete => '\u{007F}',
+            Self::Escape => '\u{001B}',
+            Self::Newline => '\u{000A}',
+            Self::Null => '\u{0000}',
+            Self::Return => '\u{000D}',
+            Self::Space => ' ',
+            Self::Tab => '\u{0009}',
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

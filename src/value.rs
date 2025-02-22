@@ -70,6 +70,7 @@ impl Value {
             ast::Literal::Number(n) => Value::Number(n.clone()),
             ast::Literal::Boolean(b) => Value::Boolean(*b),
             ast::Literal::String(s) => Value::String(s.clone()),
+            ast::Literal::Character(c) => Value::Character(*c),
             _ => todo!("Literal evaluation not implemented"),
         }
     }
@@ -179,7 +180,7 @@ impl fmt::Display for Value {
                 write!(f, ")")
             }
             Self::Null => write!(f, "()"),
-            Self::Character(c) => write!(f, "\\x{c}"),
+            Self::Character(c) => write!(f, "#\\{c}"),
             Self::ByteVector(_) => write!(f, "<byte-vector>"),
             // TODO: This shouldn't be debug output.
             Self::Syntax(syntax) => write!(f, "{:?}", syntax),
@@ -216,7 +217,7 @@ impl fmt::Debug for Value {
                 write!(f, ")")
             }
             Self::Null => write!(f, "()"),
-            Self::Character(c) => write!(f, "\\x{c}"),
+            Self::Character(c) => write!(f, "#\\{c}"),
             Self::ByteVector(_) => write!(f, "<byte-vector>"),
             Self::Syntax(syntax) => write!(f, "{:?}", syntax),
             Self::Closure(_) => write!(f, "<procedure>"),
