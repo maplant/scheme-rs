@@ -1910,7 +1910,6 @@ mod tests {
     #[test]
     fn test_digit_to_num() {
         (char::MIN..char::MAX)
-            .into_iter()
             .filter(|c| c.is_number_decimal_digit())
             .map(digit_to_num)
             .for_each(|d| assert!(d.is_some()));
