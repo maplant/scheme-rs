@@ -1,4 +1,21 @@
 use crate::{exception::Exception, gc::Gc, num::Number, registry::bridge, value::Value};
+use unicode_categories::UnicodeCategories;
+
+mod unicode;
+use unicode::*;
+
+fn char_switch_case<I: Iterator<Item = char> + ExactSizeIterator>(
+    ch: char,
+    operation: fn(char) -> I,
+) -> Result<char, Exception> {
+    let mut ch = operation(ch);
+    let len = ch.len();
+    if len == 1 {
+        Ok(ch.next().unwrap())
+    } else {
+        Err(Exception::wrong_num_of_unicode_chars(1, len))
+    }
+}
 
 #[bridge(name = "char->integer", lib = "(base)")]
 pub async fn char_to_integer(ch: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
@@ -79,15 +96,7 @@ macro_rules! impl_char_ci_operator {
                 .map(|ch| {
                     let ch = ch.read();
                     <&Value as TryInto<char>>::try_into(ch.as_ref())
-                        .and_then(|ch| {
-                            let mut ch = ch.to_lowercase();
-                            let len = ch.len();
-                            if len == 1 {
-                                Ok(ch.next().unwrap())
-                            } else {
-                                Err(Exception::wrong_num_of_unicode_chars(1, len))
-                            }
-                        })
+                        .and_then(|c| char_switch_case(c, to_foldcase))
                 })
                 .collect::<Result<Vec<char>, Exception>>()?
                 .windows(2) {
@@ -124,8 +133,60 @@ macro_rules! impl_char_predicate {
 }
 impl_char_predicate![
     ("char-alphabetic?", char_is_alphabetic, is_ascii_alphabetic),
-    ("char-numeric?", char_is_numeric, is_numeric),
+    ("char-numeric?", char_is_numeric, is_number_decimal_digit),
     ("char-whitespace?", char_is_whitespace, is_whitespace),
     ("char-upper?", char_is_uppercase, is_uppercase),
     ("char-lower?", char_is_lowercase, is_lowercase),
 ];
+
+#[bridge(name = "digit-value", lib = "(base)")]
+pub async fn digit_value(ch: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+    let ch = ch.read();
+    let ch: char = ch.as_ref().try_into()?;
+
+    Ok(vec![Gc::new(
+        digit_to_num(ch)
+            .map(<u32 as Into<i64>>::into)
+            .map(Number::FixedInteger)
+            .map(Value::Number)
+            .unwrap_or(Value::Boolean(false)),
+    )])
+}
+
+macro_rules! impl_char_case_converter {
+    ($(($bridge_name:literal, $function_name:ident, $converter:expr)),* $(,)?) => {
+        $(#[bridge(name = $bridge_name, lib = "(base)")]
+        pub async fn $function_name(ch: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+            let ch = ch.read();
+            let ch: char = ch.as_ref().try_into()?;
+            Ok(vec![Gc::new(Value::Character(char_switch_case(ch, $converter)?))])
+        })*
+    }
+}
+impl_char_case_converter![
+    ("char-upcase", char_upcase, char::to_uppercase),
+    ("char-downcase", char_downcase, char::to_lowercase),
+];
+
+#[bridge(name = "char-foldcase", lib = "(base)")]
+pub async fn char_foldcase(ch: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+    let ch = ch.read();
+    let ch: char = ch.as_ref().try_into()?;
+    Ok(vec![Gc::new(Value::Character(char_switch_case(
+        ch,
+        to_foldcase,
+    )?))])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_digit_to_num() {
+        (char::MIN..char::MAX)
+            .filter(|c| c.is_number_decimal_digit())
+            .map(digit_to_num)
+            .for_each(|d| assert!(d.is_some()));
+    }
+}

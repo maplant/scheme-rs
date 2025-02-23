@@ -35,6 +35,9 @@ derivative = "2"
 [profile.release]
 lto = true
 
+[build-dependencies]
+nom = "7"
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 
