@@ -86,13 +86,13 @@ impl<'a> TryFrom<Vec<Line<'a>>> for File<'a> {
                     if len == 10 {
                         vec![(lower_bound..upper_bound, name)]
                     } else {
-                        upper_bound = lower_bound + 9;
+                        upper_bound = lower_bound + 10;
                         let mut ranges = Vec::with_capacity(len / 10);
 
-                        while len > 10 {
+                        while len >= 10 {
                             ranges.push((lower_bound..upper_bound, name));
                             lower_bound = upper_bound + 1;
-                            upper_bound = lower_bound + 9;
+                            upper_bound = lower_bound + 10;
                             len -= 10;
                         }
 
@@ -114,8 +114,10 @@ impl Display for File<'_> {
         self.numeric_types.iter().try_for_each(|(r, name)| {
             writeln!(
                 f,
-                "       '\\u{{{:x}}}'..='\\u{{{:x}}}' => Some(ch as u32 - {0}), // {}",
-                r.start, r.end, name
+                "       '\\u{{{:x}}}'..'\\u{{{:x}}}' => Some(ch as u32 - {0}), // {}",
+                r.start,
+                r.end + 1,
+                name
             )
         })?;
         writeln!(
