@@ -16,18 +16,6 @@ fn char_switch_case<I: Iterator<Item = char> + ExactSizeIterator>(
         Err(Exception::wrong_num_of_unicode_chars(1, len))
     }
 }
-fn char_switch_case_ref<'a, I: Iterator<Item = char> + ExactSizeIterator + 'a>(
-    ch: &'a char,
-    operation: fn(&'a char) -> I,
-) -> Result<char, Exception> {
-    let mut ch = operation(ch);
-    let len = ch.len();
-    if len == 1 {
-        Ok(ch.next().unwrap())
-    } else {
-        Err(Exception::wrong_num_of_unicode_chars(1, len))
-    }
-}
 
 #[bridge(name = "char->integer", lib = "(base)")]
 pub async fn char_to_integer(ch: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
@@ -108,7 +96,7 @@ macro_rules! impl_char_ci_operator {
                 .map(|ch| {
                     let ch = ch.read();
                     <&Value as TryInto<char>>::try_into(ch.as_ref())
-                        .and_then(|c| char_switch_case_ref(&c, to_foldcase))
+                        .and_then(|c| char_switch_case(c, to_foldcase))
                 })
                 .collect::<Result<Vec<char>, Exception>>()?
                 .windows(2) {
@@ -158,6 +146,7 @@ pub async fn digit_value(ch: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
 
     Ok(vec![Gc::new(
         digit_to_num(ch)
+            .map(<u32 as Into<i64>>::into)
             .map(Number::FixedInteger)
             .map(Value::Number)
             .unwrap_or(Value::Boolean(false)),
@@ -182,8 +171,8 @@ impl_char_case_converter![
 #[bridge(name = "char-foldcase", lib = "(base)")]
 pub async fn char_foldcase(ch: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
     let ch = ch.read();
-    let ch: &char = ch.as_ref().try_into()?;
-    Ok(vec![Gc::new(Value::Character(char_switch_case_ref(
+    let ch: char = ch.as_ref().try_into()?;
+    Ok(vec![Gc::new(Value::Character(char_switch_case(
         ch,
         to_foldcase,
     )?))])
