@@ -1,7 +1,5 @@
 //! Rudimentary structure support. CPS will probably make a lot of this redundant.
 
-use std::collections::HashMap;
-
 use crate::{
     ast::ParseAstError,
     env::{Environment, Var},
@@ -9,6 +7,8 @@ use crate::{
     syntax::{Identifier, Span, Syntax},
     value::Value,
 };
+use smallvec::SmallVec;
+use std::collections::HashMap;
 
 /// Type declaration for a record.
 #[derive(Debug, Trace, Clone)]
@@ -41,7 +41,7 @@ fn is_subtype_of(lhs: &Gc<RecordType>, rhs: &Gc<RecordType>) -> bool {
 #[derive(Debug, Trace, Clone)]
 pub struct Record {
     record_type: Gc<RecordType>,
-    fields: Vec<Gc<Value>>,
+    fields: SmallVec<[Gc<Value>; 1]>,
 }
 
 #[derive(Clone, Trace, Debug)]

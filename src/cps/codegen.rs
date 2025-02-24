@@ -10,6 +10,7 @@ use inkwell::{
     values::{BasicValueEnum, FunctionValue, PointerValue},
     AddressSpace,
 };
+use smallvec::SmallVec;
 use std::{collections::HashMap, rc::Rc};
 
 use crate::{
@@ -615,8 +616,8 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
 #[derive(Debug)]
 pub struct ClosureBundle<'ctx> {
     val: Local,
-    env: Vec<Local>,
-    globals: Vec<Global>,
+    env: SmallVec<[Local; 1]>,
+    globals: SmallVec<[Global; 1]>,
     args: ClosureArgs,
     body: Cps,
     function: FunctionValue<'ctx>,
@@ -643,8 +644,8 @@ impl<'ctx> ClosureBundle<'ctx> {
             .free_variables()
             .difference(&args.to_vec().into_iter().collect::<HashSet<_>>())
             .cloned()
-            .collect::<Vec<_>>();
-        let globals = body.globals().into_iter().collect::<Vec<_>>();
+            .collect::<SmallVec<_>>();
+        let globals = body.globals().into_iter().collect::<SmallVec<_>>();
 
         let ptr_type = ctx.ptr_type(AddressSpace::default());
 

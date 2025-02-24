@@ -7,6 +7,7 @@ use crate::{
     value::Value,
 };
 use futures::future::BoxFuture;
+use smallvec::{smallvec, SmallVec};
 use std::{borrow::Cow, collections::HashMap};
 
 /*
@@ -25,7 +26,7 @@ impl ProcCallDebugInfo {
 }
 */
 
-pub type Record = Vec<Gc<Value>>; // Box<[Gc<Value>]>;
+pub type Record = SmallVec<[Gc<Value>; 1]>;
 
 pub type SyncFuncPtr = unsafe extern "C" fn(
     runtime: *mut GcInner<Runtime>,
@@ -116,7 +117,7 @@ impl Closure {
             crate::runtime::make_return_values(args.read())
         }
 
-        let mut args = args.to_vec();
+        let mut args: Record = SmallVec::from(args);
         // TODO: We don't need to create a new one of these every time, we should just have
         // one
         args.push(Gc::new(Value::Closure(Closure::new(
@@ -225,7 +226,7 @@ impl Closure {
 
 // This is really sorta emblematic of my excess allocations. Really gotta fix that
 // at some point.
-fn values_to_vec_of_ptrs(vals: &[Gc<Value>]) -> Vec<*mut GcInner<Value>> {
+fn values_to_vec_of_ptrs(vals: &[Gc<Value>]) -> SmallVec<[*mut GcInner<Value>; 1]> {
     vals.iter().map(Gc::as_ptr).collect()
 }
 
@@ -236,19 +237,16 @@ pub struct Application {
 }
 
 impl Application {
-    pub fn new(op: Closure, args: impl Into<Record>) -> Self {
+    pub fn new(op: Closure, args: Record) -> Self {
         Self {
             // We really gotta figure out how to deal with this better
             op: Some(op),
-            args: args.into(),
+            args,
         }
     }
 
-    pub fn new_empty(args: impl Into<Record>) -> Self {
-        Self {
-            op: None,
-            args: args.into(),
-        }
+    pub fn new_empty(args: Record) -> Self {
+        Self { op: None, args }
     }
 
     /// Evaluate the application - and all subsequent application - until all that
@@ -274,7 +272,7 @@ pub fn apply<'a>(
         let op = args[0].read();
         let op: &Closure = op.as_ref().try_into()?;
         let (last, args) = rest_args.split_last().unwrap();
-        let mut args = args.to_vec();
+        let mut args = SmallVec::from(args);
         list_to_vec(last, &mut args);
         args.push(cont.clone());
         Ok(Application::new(op.clone(), args))
@@ -328,7 +326,7 @@ unsafe extern "C" fn call_consumer_with_values(
     // env[1] is the continuation
     let cont = Gc::from_ptr(env.add(1).read());
 
-    let mut collected_args: Vec<_> = (0..consumer.num_required_args)
+    let mut collected_args: Record = (0..consumer.num_required_args)
         .map(|i| Gc::from_ptr(args.add(i).read()))
         .collect();
 
@@ -336,7 +334,7 @@ unsafe extern "C" fn call_consumer_with_values(
     // to figure out a way to make it consistent
     if consumer.variadic {
         let rest_args = Gc::from_ptr(args.add(consumer.num_required_args).read());
-        let mut vec = Vec::new();
+        let mut vec = SmallVec::new();
         list_to_vec(&rest_args, &mut vec);
         collected_args.extend(vec);
     }
@@ -382,7 +380,7 @@ pub fn call_with_values<'a>(
 
         Ok(Application::new(
             producer,
-            vec![Gc::new(Value::Closure(call_consumer_closure))],
+            smallvec![Gc::new(Value::Closure(call_consumer_closure))],
         ))
     })
 }
