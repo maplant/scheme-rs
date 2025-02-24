@@ -5,7 +5,8 @@ use crate::{
     gc::{init_gc, Gc, GcInner, Trace},
     lists::list_to_vec,
     proc::{
-        deep_clone_value, Application, Closure, FuncPtr, SyncFuncPtr, SyncFuncWithContinuationPtr,
+        deep_clone_value, Application, Closure, FuncPtr, Record, SyncFuncPtr,
+        SyncFuncWithContinuationPtr,
     },
     value::Value,
 };
@@ -278,7 +279,7 @@ unsafe extern "C" fn make_application(
     args: *const *mut GcInner<Value>,
     num_args: u32,
 ) -> *mut Application {
-    let mut gc_args = Vec::new();
+    let mut gc_args = Record::new();
     for i in 0..num_args {
         gc_args.push(Gc::from_ptr(args.add(i as usize).read()));
     }
