@@ -2,6 +2,7 @@ use crate::{
     exception::Exception, gc::Gc, lists::slice_to_list, num::Number, registry::bridge, value::Value,
 };
 use rug::Integer;
+use smallvec::{smallvec, SmallVec};
 use std::{clone::Clone, ops::Range};
 
 fn try_make_range(start: usize, end: usize) -> Result<Range<usize>, Exception> {
@@ -91,12 +92,12 @@ impl Indexer for VectorIndexer {
 }
 
 #[bridge(name = "make-vector", lib = "(base)")]
-pub async fn make_vector(n: &Gc<Value>, with: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn make_vector(n: &Gc<Value>, with: &[Gc<Value>]) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     let n = n.read();
     let n: &Number = n.as_ref().try_into()?;
     let n = n.to_u64();
 
-    Ok(vec![Gc::new(Value::Vector(
+    Ok(smallvec![Gc::new(Value::Vector(
         (0..n)
             .map(|_| {
                 with.first()
@@ -111,8 +112,8 @@ pub async fn make_vector(n: &Gc<Value>, with: &[Gc<Value>]) -> Result<Vec<Gc<Val
 }
 
 #[bridge(name = "vector", lib = "(base)")]
-pub async fn vector(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
-    Ok(vec![Gc::new(Value::Vector(
+pub async fn vector(args: &[Gc<Value>]) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
+    Ok(smallvec![Gc::new(Value::Vector(
         args.iter()
             .map(Gc::read)
             .map(|guard| guard.as_ref().clone())
@@ -121,7 +122,7 @@ pub async fn vector(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
 }
 
 #[bridge(name = "vector-ref", lib = "(base)")]
-pub async fn vector_ref(vec: &Gc<Value>, index: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn vector_ref(vec: &Gc<Value>, index: &Gc<Value>) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     let vec = vec.read();
     let vec: &Vec<Value> = vec.as_ref().try_into()?;
 
@@ -129,7 +130,7 @@ pub async fn vector_ref(vec: &Gc<Value>, index: &Gc<Value>) -> Result<Vec<Gc<Val
     let index: &Number = index.as_ref().try_into()?;
     let index: usize = index.to_u64().try_into()?;
 
-    Ok(vec![Gc::new(
+    Ok(smallvec![Gc::new(
         vec.get(index)
             .ok_or_else(|| Exception::invalid_index(index, vec.len()))?
             .clone(),
@@ -137,11 +138,11 @@ pub async fn vector_ref(vec: &Gc<Value>, index: &Gc<Value>) -> Result<Vec<Gc<Val
 }
 
 #[bridge(name = "vector-length", lib = "(base)")]
-pub async fn vector_len(vec: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn vector_len(vec: &Gc<Value>) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     let vec = vec.read();
     let vec: &Vec<Value> = vec.as_ref().try_into()?;
 
-    Ok(vec![Gc::new(Value::Number(
+    Ok(smallvec![Gc::new(Value::Number(
         match i64::try_from(vec.len()) {
             Ok(len) => Number::FixedInteger(len),
             Err(_) => Number::BigInteger(Integer::from(vec.len())),
@@ -154,7 +155,7 @@ pub async fn vector_set(
     vec: &Gc<Value>,
     index: &Gc<Value>,
     with: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, Exception> {
+) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     let mut vec = vec.write();
     let vec: &mut Vec<Value> = vec.as_mut().try_into()?;
     let vec_len = vec.len();
@@ -168,28 +169,28 @@ pub async fn vector_set(
         .ok_or_else(|| Exception::invalid_index(index, vec_len))?;
     *index = with.read().clone();
 
-    Ok(vec![])
+    Ok(smallvec![])
 }
 
 #[bridge(name = "vector->list", lib = "(base)")]
 pub async fn vector_to_list(
     from: &Gc<Value>,
     range: &[Gc<Value>],
-) -> Result<Vec<Gc<Value>>, Exception> {
-    let vec: Vec<Gc<Value>> = VectorIndexer
+) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
+    let vec: SmallVec<[Gc<Value>; 1]> = VectorIndexer
         .index(from, range)?
         .into_iter()
         .map(Gc::new)
         .collect();
-    Ok(vec![Gc::new(slice_to_list(vec.as_slice()))])
+    Ok(smallvec![Gc::new(slice_to_list(vec.as_slice()))])
 }
 
 #[bridge(name = "vector->string", lib = "(base)")]
 pub async fn vector_to_string(
     from: &Gc<Value>,
     range: &[Gc<Value>],
-) -> Result<Vec<Gc<Value>>, Exception> {
-    Ok(vec![Gc::new(Value::String(
+) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
+    Ok(smallvec![Gc::new(Value::String(
         VectorIndexer
             .index(from, range)?
             .into_iter()
@@ -202,8 +203,8 @@ pub async fn vector_to_string(
 pub async fn string_to_vector(
     from: &Gc<Value>,
     range: &[Gc<Value>],
-) -> Result<Vec<Gc<Value>>, Exception> {
-    Ok(vec![Gc::new(Value::Vector(
+) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
+    Ok(smallvec![Gc::new(Value::Vector(
         StringIndexer
             .index(from, range)?
             .chars()
@@ -216,8 +217,8 @@ pub async fn string_to_vector(
 pub async fn vector_copy(
     from: &Gc<Value>,
     range: &[Gc<Value>],
-) -> Result<Vec<Gc<Value>>, Exception> {
-    Ok(vec![Gc::new(Value::Vector(
+) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
+    Ok(smallvec![Gc::new(Value::Vector(
         VectorIndexer.index(from, range)?,
     ))])
 }
@@ -228,7 +229,7 @@ pub async fn vector_copy_to(
     at: &Gc<Value>,
     from: &Gc<Value>,
     range: &[Gc<Value>],
-) -> Result<Vec<Gc<Value>>, Exception> {
+) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     let mut to = to.write();
     let to: &mut Vec<Value> = to.as_mut().try_into()?;
 
@@ -253,16 +254,16 @@ pub async fn vector_copy_to(
             }
         });
 
-    Ok(vec![])
+    Ok(smallvec![])
 }
 
 #[bridge(name = "vector-append", lib = "(base)")]
-pub async fn vector_append(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn vector_append(args: &[Gc<Value>]) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     if args.is_empty() {
         return Err(Exception::wrong_num_of_variadic_args(1..usize::MAX, 0));
     }
 
-    Ok(vec![Gc::new(Value::Vector(
+    Ok(smallvec![Gc::new(Value::Vector(
         args.iter()
             .flat_map(|arg| {
                 <&Value as TryInto<&Vec<Value>>>::try_into(arg.read().as_ref())
@@ -281,7 +282,7 @@ pub async fn vector_fill(
     with: &Gc<Value>,
     start: &Gc<Value>,
     end: &[Gc<Value>],
-) -> Result<Vec<Gc<Value>>, Exception> {
+) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     let mut vector = vector.write();
     let vector: &mut Vec<Value> = vector.as_mut().try_into()?;
 
@@ -305,5 +306,5 @@ pub async fn vector_fill(
         }
     });
 
-    Ok(vec![])
+    Ok(smallvec![])
 }

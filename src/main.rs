@@ -12,6 +12,7 @@ use scheme_rs::{
     syntax::Syntax,
     value::Value,
 };
+use smallvec::SmallVec;
 use std::borrow::Cow;
 
 struct InputParser;
@@ -99,9 +100,9 @@ async fn compile_and_run_str<'e>(
     runtime: &Gc<Runtime>,
     env: &Environment,
     input: &'e str,
-) -> Result<Vec<Gc<Value>>, EvalError<'e>> {
+) -> Result<SmallVec<[Gc<Value>; 1]>, EvalError<'e>> {
     let sexprs = Syntax::from_str(input, None)?;
-    let mut output = Vec::new();
+    let mut output = SmallVec::new();
     for sexpr in sexprs {
         let span = sexpr.span().clone();
         let expr = DefinitionBody::parse(runtime, &[sexpr], env, &span).await?;

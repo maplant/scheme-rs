@@ -18,6 +18,7 @@ use inkwell::{
     targets::{InitializationConfig, Target},
     AddressSpace, OptimizationLevel,
 };
+use smallvec::SmallVec;
 use std::{collections::HashMap, mem::ManuallyDrop};
 use tokio::sync::{mpsc, oneshot};
 
@@ -297,7 +298,7 @@ unsafe extern "C" fn make_forward(
 ) -> *mut Application {
     let op = Gc::from_ptr(op);
     let to_forward = Gc::from_ptr(to_forward);
-    let mut args = Vec::new();
+    let mut args = SmallVec::new();
     list_to_vec(&to_forward, &mut args);
     let op_ref = op.read();
     let op: &Closure = op_ref.as_ref().try_into().unwrap();
@@ -309,7 +310,7 @@ unsafe extern "C" fn make_forward(
 /// Create a boxed application that simply returns its arguments
 pub(crate) unsafe extern "C" fn make_return_values(args: *mut GcInner<Value>) -> *mut Application {
     let args = Gc::from_ptr(args);
-    let mut flattened = Vec::new();
+    let mut flattened = SmallVec::new();
     list_to_vec(&args, &mut flattened);
 
     let app = Application::new_empty(flattened);

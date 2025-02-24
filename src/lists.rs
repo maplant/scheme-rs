@@ -1,4 +1,5 @@
 use crate::{exception::Exception, gc::Gc, num::Number, registry::bridge, value::Value};
+use smallvec::{smallvec, SmallVec};
 use std::fmt;
 
 pub fn display_list(car: &Gc<Value>, cdr: &Gc<Value>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -76,7 +77,7 @@ pub fn slice_to_list(items: &[Gc<Value>]) -> Value {
     }
 }
 
-pub fn list_to_vec(curr: &Gc<Value>, out: &mut Vec<Gc<Value>>) {
+pub fn list_to_vec(curr: &Gc<Value>, out: &mut SmallVec<[Gc<Value>; 1]>) {
     let val = curr.read();
     match &*val {
         Value::Pair(a, b) => {
@@ -88,7 +89,7 @@ pub fn list_to_vec(curr: &Gc<Value>, out: &mut Vec<Gc<Value>>) {
     }
 }
 
-pub fn list_to_vec_with_null(curr: &Gc<Value>, out: &mut Vec<Gc<Value>>) {
+pub fn list_to_vec_with_null(curr: &Gc<Value>, out: &mut SmallVec<[Gc<Value>; 1]>) {
     let val = curr.read();
     match &*val {
         Value::Pair(a, b) => {
@@ -100,62 +101,62 @@ pub fn list_to_vec_with_null(curr: &Gc<Value>, out: &mut Vec<Gc<Value>>) {
 }
 
 #[bridge(name = "list", lib = "(base)")]
-pub async fn list(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn list(args: &[Gc<Value>]) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     // Construct the list in reverse
     let mut cdr = Gc::new(Value::Null);
     for arg in args.iter().rev() {
         cdr = Gc::new(Value::Pair(arg.clone(), cdr.clone()));
     }
-    Ok(vec![cdr])
+    Ok(smallvec![cdr])
 }
 
 #[bridge(name = "cons", lib = "(base)")]
-pub async fn cons(car: &Gc<Value>, cdr: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn cons(car: &Gc<Value>, cdr: &Gc<Value>) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     let car = Gc::new(car.read().clone());
     let cdr = Gc::new(cdr.read().clone());
-    Ok(vec![Gc::new(Value::Pair(car, cdr))])
+    Ok(smallvec![Gc::new(Value::Pair(car, cdr))])
 }
 
 #[bridge(name = "car", lib = "(base)")]
-pub async fn car(val: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn car(val: &Gc<Value>) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     let val = val.read();
     match &*val {
-        Value::Pair(car, _cdr) => Ok(vec![car.clone()]),
+        Value::Pair(car, _cdr) => Ok(smallvec![car.clone()]),
         _ => Err(Exception::invalid_type("pair", val.type_name())),
     }
 }
 
 #[bridge(name = "cdr", lib = "(base)")]
-pub async fn cdr(val: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn cdr(val: &Gc<Value>) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     let val = val.read();
     match &*val {
-        Value::Pair(_car, cdr) => Ok(vec![cdr.clone()]),
+        Value::Pair(_car, cdr) => Ok(smallvec![cdr.clone()]),
         _ => Err(Exception::invalid_type("pair", val.type_name())),
     }
 }
 
 #[bridge(name = "set-car!", lib = "(base)")]
-pub async fn set_car(var: &Gc<Value>, val: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn set_car(var: &Gc<Value>, val: &Gc<Value>) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     let mut var = var.write();
     match &mut *var {
         Value::Pair(ref mut car, _cdr) => *car = val.clone(),
         _ => todo!(),
     }
-    Ok(vec![Gc::new(Value::Null)])
+    Ok(smallvec![Gc::new(Value::Null)])
 }
 
 #[bridge(name = "set-cdr!", lib = "(base)")]
-pub async fn set_cdr(var: &Gc<Value>, val: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn set_cdr(var: &Gc<Value>, val: &Gc<Value>) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     let mut var = var.write();
     match &mut *var {
         Value::Pair(_car, ref mut cdr) => *cdr = val.clone(),
         _ => todo!(),
     }
-    Ok(vec![Gc::new(Value::Null)])
+    Ok(smallvec![Gc::new(Value::Null)])
 }
 
 #[bridge(name = "length", lib = "(base)")]
-pub async fn length(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn length(arg: &Gc<Value>) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     let mut length = 0;
     let mut arg = arg.clone();
     loop {
@@ -168,15 +169,15 @@ pub async fn length(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
         };
         length += 1;
     }
-    Ok(vec![Gc::new(Value::Number(Number::from(length)))])
+    Ok(smallvec![Gc::new(Value::Number(Number::from(length)))])
 }
 
 #[bridge(name = "list->vector", lib = "(base)")]
-pub async fn list_to_vector(list: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
-    let mut vec = Vec::new();
+pub async fn list_to_vector(list: &Gc<Value>) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
+    let mut vec = SmallVec::new();
     list_to_vec(list, &mut vec);
 
-    Ok(vec![Gc::new(Value::Vector(
+    Ok(smallvec![Gc::new(Value::Vector(
         vec.into_iter().map(|i| i.read().as_ref().clone()).collect(),
     ))])
 }

@@ -7,7 +7,7 @@ use std::{sync::Arc, time::Duration};
 pub async fn spawn(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+) -> Result<SmallVec<[Gc<Value>; 1]>, RuntimeError> {
     let value = arg.read();
     let callable = value
         .as_callable()
@@ -22,36 +22,36 @@ pub async fn spawn(
         val.eval(&None).await
     });
     let future = async move { task.await.unwrap() }.boxed().shared();
-    Ok(vec![Gc::new(Value::Future(future))])
+    Ok(smallvec![Gc::new(Value::Future(future))])
 }
 
 #[builtin("sleep")]
 pub async fn sleep(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+) -> Result<SmallVec<[Gc<Value>; 1]>, RuntimeError> {
     let value = arg.read();
     let time: &Number = value.as_ref().try_into()?;
     let millis = time.to_u64();
     let future = async move {
         tokio::time::sleep(Duration::from_millis(millis)).await;
-        Ok(vec![Gc::new(Value::Null)])
+        Ok(smallvec![Gc::new(Value::Null)])
     }
     .boxed()
     .shared();
-    Ok(vec![Gc::new(Value::Future(future))])
+    Ok(smallvec![Gc::new(Value::Future(future))])
 }
 
 #[builtin("await")]
 pub async fn await_value(
     _cont: &Option<Arc<Continuation>>,
     arg: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+) -> Result<SmallVec<[Gc<Value>; 1]>, RuntimeError> {
     let future = {
         let value = arg.read();
         match &*value {
             Value::Future(fut) => fut.clone(),
-            _ => return Ok(vec![arg.clone()]),
+            _ => return Ok(smallvec![arg.clone()]),
         }
     };
     future.await
@@ -60,8 +60,8 @@ pub async fn await_value(
 #[builtin("join")]
 pub async fn join(
     _cont: &Option<Arc<Continuation>>,
-    args: Vec<Gc<Value>>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+    args: SmallVec<[Gc<Value>; 1]>,
+) -> Result<SmallVec<[Gc<Value>; 1]>, RuntimeError> {
     let mut futs = Vec::new();
     for arg in args.into_iter() {
         let value = arg.read();
@@ -71,7 +71,7 @@ pub async fn join(
                 // I can't figure out a way to get rid of this clone
                 // at the current moment without writing annoying code
                 let arg = arg.clone();
-                async move { Ok(vec![arg]) }.boxed().shared()
+                async move { Ok(smallvec![arg]) }.boxed().shared()
             }
         };
         futs.push(fut);
@@ -82,9 +82,9 @@ pub async fn join(
             .into_iter()
             .flatten()
             .collect::<Vec<_>>();
-        Ok(vec![Gc::new(Value::from(results))])
+        Ok(smallvec![Gc::new(Value::from(results))])
     }
     .boxed()
     .shared();
-    Ok(vec![Gc::new(Value::Future(future))])
+    Ok(smallvec![Gc::new(Value::Future(future))])
 }

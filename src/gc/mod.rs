@@ -17,6 +17,7 @@ pub use collection::init_gc;
 use collection::{dec_rc, inc_rc};
 use either::Either;
 use futures::future::Shared;
+use smallvec::SmallVec;
 pub use scheme_rs_macros::Trace;
 
 use std::{
@@ -374,6 +375,22 @@ where
 }
 
 unsafe impl<T> Trace for Vec<T>
+where
+    T: GcOrTrace,
+{
+    unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
+        for child in self {
+            child.visit_or_recurse(visitor);
+        }
+    }
+
+    unsafe fn finalize(&mut self) {
+        for mut child in std::mem::take(self).into_iter().map(ManuallyDrop::new) {
+            child.finalize_or_skip();
+        }
+    }
+}
+unsafe impl<T> Trace for SmallVec<[T; 1]>
 where
     T: GcOrTrace,
 {

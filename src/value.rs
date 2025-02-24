@@ -11,9 +11,10 @@ use crate::{
     syntax::Syntax,
 };
 use futures::future::{BoxFuture, Shared};
+use smallvec::{smallvec, SmallVec};
 use std::{fmt, io::Write};
 
-type Future = Shared<BoxFuture<'static, Result<Vec<Gc<Value>>, Exception>>>;
+type Future = Shared<BoxFuture<'static, Result<SmallVec<[Gc<Value>; 1]>, Exception>>>;
 
 /// A Scheme value
 #[derive(Trace)]
@@ -237,18 +238,17 @@ impl From<bool> for Value {
     }
 }
 
-/// Create a proper list from a vector of values
-impl From<Vec<Gc<Value>>> for Value {
-    fn from(mut vec: Vec<Gc<Value>>) -> Value {
-        if vec.is_empty() {
-            Value::Null
-        } else {
-            // I'm not spending too much time thinking about a better way to do this
-            let tail = vec.split_off(1);
-            Value::Pair(vec.pop().unwrap(), Gc::new(Value::from(tail)))
+macro_rules! impl_from_into_iter_for_list_value {
+    ($ty:ty) => {
+        impl From<$ty> for Value {
+            fn from(iter: $ty) -> Self {
+                crate::lists::slice_to_list(&iter)
+            }
         }
     }
 }
+impl_from_into_iter_for_list_value!(Vec<Gc<Value>>);
+impl_from_into_iter_for_list_value!(SmallVec<[Gc<Value>; 1]>);
 
 macro_rules! impl_try_from_value_for {
     ($ty:ty, $enum_variant:ident, $type_name:literal) => {
@@ -313,28 +313,28 @@ pub fn eqv(a: &Gc<Value>, b: &Gc<Value>) -> bool {
 }
 
 #[bridge(name = "not", lib = "(base)")]
-pub async fn not(a: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn not(a: &Gc<Value>) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     let a = a.read();
-    Ok(vec![Gc::new(Value::Boolean(matches!(
+    Ok(smallvec![Gc::new(Value::Boolean(matches!(
         &*a,
         Value::Boolean(false)
     )))])
 }
 
 #[bridge(name = "eq?", lib = "(base)")]
-pub async fn eq_pred(a: &Gc<Value>, b: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
-    Ok(vec![Gc::new(Value::Boolean(a == b))])
+pub async fn eq_pred(a: &Gc<Value>, b: &Gc<Value>) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
+    Ok(smallvec![Gc::new(Value::Boolean(a == b))])
 }
 
 #[bridge(name = "eqv?", lib = "(base)")]
-pub async fn eqv_pred(a: &Gc<Value>, b: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
-    Ok(vec![Gc::new(Value::Boolean(eqv(a, b)))])
+pub async fn eqv_pred(a: &Gc<Value>, b: &Gc<Value>) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
+    Ok(smallvec![Gc::new(Value::Boolean(eqv(a, b)))])
 }
 
 #[bridge(name = "boolean?", lib = "(base)")]
-pub async fn boolean_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn boolean_pred(arg: &Gc<Value>) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     let arg = arg.read();
-    Ok(vec![Gc::new(Value::Boolean(matches!(
+    Ok(smallvec![Gc::new(Value::Boolean(matches!(
         &*arg,
         Value::Boolean(_)
     )))])
@@ -344,7 +344,7 @@ pub async fn boolean_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> 
 pub async fn boolean_eq_pred(
     a: &Gc<Value>,
     args: &[Gc<Value>],
-) -> Result<Vec<Gc<Value>>, Exception> {
+) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     let a_val = &*a.read();
 
     let result = match a_val {
@@ -354,81 +354,81 @@ pub async fn boolean_eq_pred(
         }
         _ => false,
     };
-    Ok(vec![Gc::new(Value::Boolean(result))])
+    Ok(smallvec![Gc::new(Value::Boolean(result))])
 }
 
 #[bridge(name = "symbol?", lib = "(base)")]
-pub async fn symbol_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn symbol_pred(arg: &Gc<Value>) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     let arg = arg.read();
-    Ok(vec![Gc::new(Value::Boolean(matches!(
+    Ok(smallvec![Gc::new(Value::Boolean(matches!(
         &*arg,
         Value::Symbol(_)
     )))])
 }
 
 #[bridge(name = "char?", lib = "(base)")]
-pub async fn char_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn char_pred(arg: &Gc<Value>) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     let arg = arg.read();
-    Ok(vec![Gc::new(Value::Boolean(matches!(
+    Ok(smallvec![Gc::new(Value::Boolean(matches!(
         &*arg,
         Value::Character(_)
     )))])
 }
 
 #[bridge(name = "vector?", lib = "(base)")]
-pub async fn vector_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn vector_pred(arg: &Gc<Value>) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     let arg = arg.read();
-    Ok(vec![Gc::new(Value::Boolean(matches!(
+    Ok(smallvec![Gc::new(Value::Boolean(matches!(
         &*arg,
         Value::Vector(_)
     )))])
 }
 
 #[bridge(name = "null?", lib = "(base)")]
-pub async fn null_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn null_pred(arg: &Gc<Value>) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     let arg = arg.read();
-    Ok(vec![Gc::new(Value::Boolean(matches!(&*arg, Value::Null)))])
+    Ok(smallvec![Gc::new(Value::Boolean(matches!(&*arg, Value::Null)))])
 }
 
 #[bridge(name = "pair?", lib = "(base)")]
-pub async fn pair_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn pair_pred(arg: &Gc<Value>) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     let arg = arg.read();
-    Ok(vec![Gc::new(Value::Boolean(matches!(
+    Ok(smallvec![Gc::new(Value::Boolean(matches!(
         &*arg,
         Value::Pair(_, _)
     )))])
 }
 
 #[bridge(name = "string?", lib = "(base)")]
-pub async fn string_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn string_pred(arg: &Gc<Value>) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     let arg = arg.read();
-    Ok(vec![Gc::new(Value::Boolean(matches!(
+    Ok(smallvec![Gc::new(Value::Boolean(matches!(
         &*arg,
         Value::String(_)
     )))])
 }
 
 #[bridge(name = "procedure?", lib = "(base)")]
-pub async fn procedure_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn procedure_pred(arg: &Gc<Value>) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     let arg = arg.read();
-    Ok(vec![Gc::new(Value::Boolean(matches!(
+    Ok(smallvec![Gc::new(Value::Boolean(matches!(
         &*arg,
         Value::Closure(_)
     )))])
 }
 
 #[bridge(name = "future?", lib = "(base)")]
-pub async fn future_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn future_pred(arg: &Gc<Value>) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     let arg = arg.read();
-    Ok(vec![Gc::new(Value::Boolean(matches!(
+    Ok(smallvec![Gc::new(Value::Boolean(matches!(
         &*arg,
         Value::Future(_)
     )))])
 }
 
 #[bridge(name = "display", lib = "(base)")]
-pub async fn display(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn display(arg: &Gc<Value>) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     print!("{}", arg);
     let _ = std::io::stdout().flush();
-    Ok(Vec::new())
+    Ok(SmallVec::new())
 }

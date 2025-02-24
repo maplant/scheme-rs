@@ -7,6 +7,7 @@ use crate::{
     value::Value,
 };
 use futures::future::BoxFuture;
+use smallvec::SmallVec;
 use std::{borrow::Cow, collections::HashMap};
 
 /*
@@ -25,7 +26,7 @@ impl ProcCallDebugInfo {
 }
 */
 
-pub type Record = Vec<Gc<Value>>; // Box<[Gc<Value>]>;
+pub type Record = SmallVec<[Gc<Value>; 1]>; // Box<[Gc<Value>]>;
 
 pub type SyncFuncPtr = unsafe extern "C" fn(
     runtime: *mut GcInner<Runtime>,
@@ -116,7 +117,7 @@ impl Closure {
             crate::runtime::make_return_values(args.read())
         }
 
-        let mut args = args.to_vec();
+        let mut args: Record = SmallVec::from(args);
         // TODO: We don't need to create a new one of these every time, we should just have
         // one
         args.push(Gc::new(Value::Closure(Closure::new(
@@ -274,7 +275,7 @@ pub fn apply<'a>(
         let op = args[0].read();
         let op: &Closure = op.as_ref().try_into()?;
         let (last, args) = rest_args.split_last().unwrap();
-        let mut args = args.to_vec();
+        let mut args = SmallVec::from(args);
         list_to_vec(last, &mut args);
         args.push(cont.clone());
         Ok(Application::new(op.clone(), args))
@@ -336,7 +337,7 @@ unsafe extern "C" fn call_consumer_with_values(
     // to figure out a way to make it consistent
     if consumer.variadic {
         let rest_args = Gc::from_ptr(args.add(consumer.num_required_args).read());
-        let mut vec = Vec::new();
+        let mut vec = SmallVec::new();
         list_to_vec(&rest_args, &mut vec);
         collected_args.extend(vec);
     }

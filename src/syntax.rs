@@ -10,6 +10,7 @@ use crate::{
     value::Value,
 };
 use futures::future::BoxFuture;
+use smallvec::{smallvec, SmallVec};
 use std::{
     collections::{BTreeSet, HashSet},
     fmt,
@@ -144,7 +145,7 @@ impl Syntax {
         match &*datum {
             Value::Null => Syntax::new_null(Span::default()),
             Value::Pair(lhs, rhs) => {
-                let mut list = Vec::new();
+                let mut list = SmallVec::new();
                 list.push(lhs.clone());
                 list_to_vec_with_null(rhs, &mut list);
                 // TODO: Use futures combinators
@@ -554,12 +555,12 @@ impl Syntax {
 pub async fn syntax_to_datum(
     _cont: &Option<Arc<Continuation>>,
     syn: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
+) -> Result<SmallVec<[Gc<Value>; 1]>, RuntimeError> {
     let syn = syn.read();
     let Value::Syntax(ref syn) = &*syn else {
         return Err(RuntimeError::invalid_type("syntax", syn.type_name()));
     };
-    Ok(vec![Gc::new(Value::from_syntax(syn))])
+    Ok(smallvec![Gc::new(Value::from_syntax(syn))])
 }
 */
 
@@ -567,7 +568,7 @@ pub async fn syntax_to_datum(
 pub async fn datum_to_syntax(
     template_id: &Gc<Value>,
     datum: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, Exception> {
+) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     let template_id = template_id.read();
     let Value::Syntax(Syntax::Identifier {
         ident: template_id, ..
@@ -575,7 +576,7 @@ pub async fn datum_to_syntax(
     else {
         return Err(Exception::invalid_type("syntax", template_id.type_name()));
     };
-    Ok(vec![Gc::new(Value::Syntax(Syntax::from_datum(
+    Ok(smallvec![Gc::new(Value::Syntax(Syntax::from_datum(
         &template_id.marks,
         datum,
     )))])
