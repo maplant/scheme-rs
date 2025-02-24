@@ -84,6 +84,7 @@ pub fn init_gc() {
         .get_or_init(|| tokio::task::spawn(async { unsafe { run_garbage_collector().await } }));
 }
 
+const MIN_MUTATIONS_PER_EPOCH: usize = 10;
 const MAX_MUTATIONS_PER_EPOCH: usize = 10_000; // No idea what a good value is here.
 
 async unsafe fn run_garbage_collector() {
@@ -134,7 +135,7 @@ async unsafe fn process_mutation_buffer(
 ) {
     // It is very important that we do not delay any mutations that
     // have occurred at this point by an extra epoch.
-    let to_recv = mutation_buffer_rx.len().min(MAX_MUTATIONS_PER_EPOCH);
+    let to_recv = mutation_buffer_rx.len().max(MIN_MUTATIONS_PER_EPOCH);
 
     mutation_buffer_rx.recv_many(mutation_buffer, to_recv).await;
     for mutation in mutation_buffer.drain(..) {
