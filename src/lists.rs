@@ -136,7 +136,10 @@ pub async fn cdr(val: &Gc<Value>) -> Result<SmallVec<[Gc<Value>; 1]>, Exception>
 }
 
 #[bridge(name = "set-car!", lib = "(base)")]
-pub async fn set_car(var: &Gc<Value>, val: &Gc<Value>) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
+pub async fn set_car(
+    var: &Gc<Value>,
+    val: &Gc<Value>,
+) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     let mut var = var.write();
     match &mut *var {
         Value::Pair(ref mut car, _cdr) => *car = val.clone(),
@@ -146,7 +149,10 @@ pub async fn set_car(var: &Gc<Value>, val: &Gc<Value>) -> Result<SmallVec<[Gc<Va
 }
 
 #[bridge(name = "set-cdr!", lib = "(base)")]
-pub async fn set_cdr(var: &Gc<Value>, val: &Gc<Value>) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
+pub async fn set_cdr(
+    var: &Gc<Value>,
+    val: &Gc<Value>,
+) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     let mut var = var.write();
     match &mut *var {
         Value::Pair(_car, ref mut cdr) => *cdr = val.clone(),

@@ -245,7 +245,7 @@ macro_rules! impl_from_into_iter_for_list_value {
                 crate::lists::slice_to_list(&iter)
             }
         }
-    }
+    };
 }
 impl_from_into_iter_for_list_value!(Vec<Gc<Value>>);
 impl_from_into_iter_for_list_value!(SmallVec<[Gc<Value>; 1]>);
@@ -387,7 +387,10 @@ pub async fn vector_pred(arg: &Gc<Value>) -> Result<SmallVec<[Gc<Value>; 1]>, Ex
 #[bridge(name = "null?", lib = "(base)")]
 pub async fn null_pred(arg: &Gc<Value>) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     let arg = arg.read();
-    Ok(smallvec![Gc::new(Value::Boolean(matches!(&*arg, Value::Null)))])
+    Ok(smallvec![Gc::new(Value::Boolean(matches!(
+        &*arg,
+        Value::Null
+    )))])
 }
 
 #[bridge(name = "pair?", lib = "(base)")]

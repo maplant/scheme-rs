@@ -385,7 +385,10 @@ pub async fn add(args: &[Gc<Value>]) -> Result<SmallVec<[Gc<Value>; 1]>, Excepti
 }
 
 #[bridge(name = "-", lib = "(base)")]
-pub async fn sub(arg1: &Gc<Value>, args: &[Gc<Value>]) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
+pub async fn sub(
+    arg1: &Gc<Value>,
+    args: &[Gc<Value>],
+) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     let arg1 = arg1.read();
     let arg1: &Number = arg1.as_ref().try_into()?;
     if args.is_empty() {
@@ -413,7 +416,10 @@ pub async fn mul(args: &[Gc<Value>]) -> Result<SmallVec<[Gc<Value>; 1]>, Excepti
 }
 
 #[bridge(name = "/", lib = "(base)")]
-pub async fn div(arg1: &Gc<Value>, args: &[Gc<Value>]) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
+pub async fn div(
+    arg1: &Gc<Value>,
+    args: &[Gc<Value>],
+) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     let arg1 = arg1.read();
     let arg1: &Number = arg1.as_ref().try_into()?;
     if arg1.is_zero() {

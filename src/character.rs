@@ -2,8 +2,8 @@ mod unicode;
 
 use crate::{exception::Exception, gc::Gc, num::Number, registry::bridge, value::Value};
 use smallvec::{smallvec, SmallVec};
-use unicode_categories::UnicodeCategories;
 use unicode::*;
+use unicode_categories::UnicodeCategories;
 
 fn char_switch_case<I: Iterator<Item = char> + ExactSizeIterator>(
     ch: char,

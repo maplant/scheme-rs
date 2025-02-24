@@ -92,7 +92,10 @@ impl Indexer for VectorIndexer {
 }
 
 #[bridge(name = "make-vector", lib = "(base)")]
-pub async fn make_vector(n: &Gc<Value>, with: &[Gc<Value>]) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
+pub async fn make_vector(
+    n: &Gc<Value>,
+    with: &[Gc<Value>],
+) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     let n = n.read();
     let n: &Number = n.as_ref().try_into()?;
     let n = n.to_u64();
@@ -122,7 +125,10 @@ pub async fn vector(args: &[Gc<Value>]) -> Result<SmallVec<[Gc<Value>; 1]>, Exce
 }
 
 #[bridge(name = "vector-ref", lib = "(base)")]
-pub async fn vector_ref(vec: &Gc<Value>, index: &Gc<Value>) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
+pub async fn vector_ref(
+    vec: &Gc<Value>,
+    index: &Gc<Value>,
+) -> Result<SmallVec<[Gc<Value>; 1]>, Exception> {
     let vec = vec.read();
     let vec: &Vec<Value> = vec.as_ref().try_into()?;
 

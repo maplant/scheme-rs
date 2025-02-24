@@ -17,8 +17,8 @@ pub use collection::init_gc;
 use collection::{dec_rc, inc_rc};
 use either::Either;
 use futures::future::Shared;
-use smallvec::SmallVec;
 pub use scheme_rs_macros::Trace;
+use smallvec::SmallVec;
 
 use std::{
     cell::UnsafeCell,
