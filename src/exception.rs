@@ -1,7 +1,12 @@
 //! Exceptional situations and conditions
+
+use futures::future::BoxFuture;
+
 use crate::{
-    gc::Trace,
+    gc::{Gc, Trace},
+    proc::{Application, Closure},
     syntax::{Identifier, Span},
+    value::Value,
 };
 use std::{error::Error as StdError, ops::Range};
 
@@ -31,6 +36,10 @@ pub enum Condition {
 }
 
 impl Exception {
+    pub fn from_value(value: Gc<Value>) -> Self {
+        todo!()
+    }
+
     pub fn error(err: String) -> Self {
         Self {
             backtrace: Vec::new(),
@@ -122,4 +131,73 @@ impl Frame {
             repeated: 0,
         }
     }
+}
+
+/// An exception handler includes the current handler - a function to call with
+/// any condition that is raised - and the previous handler. 
+pub struct ExceptionHandler {
+    /// The previously installed handler. If the previously installed handler is
+    /// None, we return the condition as an Error.
+    prev_handler: Option<Box<ExceptionHandler>>,
+    /// The currently installed handler.
+    curr_handler: Closure,
+}
+
+/// Raises a non-continuable exception to the current exception handler.
+pub fn raise<'a>(
+    args: &'a [Gc<Value>],
+    _rest_args: &'a [Gc<Value>],
+    _cont: &'a Gc<Value>,
+    exception_handler: Option<Box<ExceptionHandler>>,
+) -> BoxFuture<'a, Result<Application, Exception>> {
+    Box::pin(async move {
+        let [condition] = args else {
+            return Err(Exception::wrong_num_of_args(1, args.len()));
+        };
+
+        let Some(handler) = exception_handler else {
+            return Err(Exception::from_value(condition.clone()));
+        };
+
+        Ok(Application::new(
+            handler.curr_handler.clone(),
+            vec![
+                condition.clone(),
+                todo!(
+                    "The continuation for exception handler in the case of a non-continuable \
+                       exception should discard the result of the handler and call the previous \
+                       handler with the condition"
+                ),
+                todo!("Add exception handler to Value"),
+            ],
+        ))
+    })
+}
+
+/// Raises an exception to the current exception handler and coninues with the
+/// value returned by the handler.
+pub fn raise_continuable<'a>(
+    args: &'a [Gc<Value>],
+    _rest_args: &'a [Gc<Value>],
+    cont: &'a Gc<Value>,
+    exception_handler: Option<Box<ExceptionHandler>>,
+) -> BoxFuture<'a, Result<Application, Exception>> {
+    Box::pin(async move {
+        let [condition] = args else {
+            return Err(Exception::wrong_num_of_args(1, args.len()));
+        };
+
+        let Some(handler) = exception_handler else {
+            return Err(Exception::from_value(condition.clone()));
+        };
+
+        Ok(Application::new(
+            handler.curr_handler.clone(),
+            vec![
+                condition.clone(),
+                cont.clone(),
+                todo!("Add exception handler to Value"),
+            ],
+        ))
+    })
 }
