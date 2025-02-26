@@ -160,20 +160,18 @@ impl Clone for Value {
     }
 }
 
-macro_rules! display_vec_like {
-    ($head:literal, $fmt:expr, $vec:expr) => {
-        write!($fmt, $head)?;
+fn display_vec<T: fmt::Display>(head: &str, f: &mut fmt::Formatter<'_>, v: &[T]) -> Result<(), fmt::Error> {
+    write!(f, "{}", head)?;
 
-        let mut iter = $vec.iter().peekable();
-        while let Some(item) = iter.next() {
-            write!($fmt, "{item}")?;
-            if iter.peek().is_some() {
-                write!($fmt, " ")?;
-            }
+    let mut iter = v.iter().peekable();
+    while let Some(next) = iter.next() {
+        write!(f, "{}", next)?;
+        if iter.peek().is_some() {
+            write!(f, " ")?;
         }
-
-        write!($fmt, ")")?;
     }
+
+    write!(f, ")")
 }
 
 impl fmt::Display for Value {
@@ -186,10 +184,10 @@ impl fmt::Display for Value {
             Self::String(string) => write!(f, "{string}"),
             Self::Symbol(symbol) => write!(f, "{symbol}"),
             Self::Pair(car, cdr) => crate::lists::display_list(car, cdr, f),
-            Self::Vector(v) => { display_vec_like!("#(", f, v); Ok(()) },
+            Self::Vector(v) => display_vec("#(", f, v),
             Self::Null => write!(f, "()"),
             Self::Character(c) => write!(f, "#\\{c}"),
-            Self::ByteVector(v) => { display_vec_like!("#u8(", f, v); Ok(()) },
+            Self::ByteVector(v) => display_vec("#u8(", f, v),
             // TODO: This shouldn't be debug output.
             Self::Syntax(syntax) => write!(f, "{:?}", syntax),
             Self::Closure(_) => write!(f, "<procedure>"),
@@ -213,16 +211,10 @@ impl fmt::Debug for Value {
             Self::String(string) => write!(f, "{string:?}"),
             Self::Symbol(symbol) => write!(f, "'{symbol }"),
             Self::Pair(car, cdr) => crate::lists::debug_list(car, cdr, f),
-            Self::Vector(v) => {
-                display_vec_like!("#(", f, v);
-                Ok(())
-            }
+            Self::Vector(v) => display_vec("#(", f, v),
             Self::Null => write!(f, "()"),
             Self::Character(c) => write!(f, "#\\{c}"),
-            Self::ByteVector(v) => {
-                display_vec_like!("#u8(", f, v);
-                Ok(())
-            },
+            Self::ByteVector(v) => display_vec("#u8(", f, v),
             Self::Syntax(syntax) => write!(f, "{:?}", syntax),
             Self::Closure(_) => write!(f, "<procedure>"),
             Self::Future(_) => write!(f, "<future>"),
