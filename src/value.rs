@@ -160,7 +160,11 @@ impl Clone for Value {
     }
 }
 
-fn display_vec<T: fmt::Display>(head: &str, f: &mut fmt::Formatter<'_>, v: &[T]) -> Result<(), fmt::Error> {
+fn display_vec<T: fmt::Display>(
+    head: &str,
+    f: &mut fmt::Formatter<'_>,
+    v: &[T],
+) -> Result<(), fmt::Error> {
     write!(f, "{}", head)?;
 
     let mut iter = v.iter().peekable();
@@ -176,7 +180,6 @@ fn display_vec<T: fmt::Display>(head: &str, f: &mut fmt::Formatter<'_>, v: &[T])
 
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-
         match self {
             Self::Boolean(true) => write!(f, "#t"),
             Self::Boolean(false) => write!(f, "#f"),

@@ -5,10 +5,7 @@ use crate::{
     syntax::Syntax,
 };
 use rug::Integer;
-use std::{
-    char::CharTryFromError,
-    num::TryFromIntError,
-};
+use std::{char::CharTryFromError, num::TryFromIntError};
 
 #[derive(Debug)]
 pub enum ParseSyntaxError<'a> {
@@ -20,7 +17,7 @@ pub enum ParseSyntaxError<'a> {
     InvalidHexValue { value: String, span: InputSpan<'a> },
     InvalidDocCommentLocation { span: InputSpan<'a> },
     InvalidPeriodLocation { span: InputSpan<'a> },
-    NonByte { span: InputSpan<'a>, },
+    NonByte { span: InputSpan<'a> },
     UnclosedParen { span: InputSpan<'a> },
     DocCommentMustPrecedeDefine,
     CharTryFrom(CharTryFromError),
@@ -28,7 +25,7 @@ pub enum ParseSyntaxError<'a> {
     TryFromInt(TryFromIntError),
 }
 
-impl<'a> From<TryFromIntError> for ParseSyntaxError<'a> {
+impl From<TryFromIntError> for ParseSyntaxError<'_> {
     fn from(e: TryFromIntError) -> Self {
         Self::TryFromInt(e)
     }
@@ -252,9 +249,7 @@ fn vector_shared<'a, 'b>(
     loop {
         match i {
             [] => return Err(ParseVectorError::UnclosedParen),
-            [token!(Lexeme::RParen), tail @ ..] => {
-                return Ok((tail, output))
-            }
+            [token!(Lexeme::RParen), tail @ ..] => return Ok((tail, output)),
             _ => (),
         }
 
@@ -269,10 +264,7 @@ fn vector<'a, 'b>(
 ) -> Result<(&'b [Token<'a>], Syntax), ParseVectorError<'a>> {
     let (i, vec) = vector_shared(i)?;
 
-    Ok((
-        i,
-        Syntax::new_vector(vec, span),
-    ))
+    Ok((i, Syntax::new_vector(vec, span)))
 }
 
 fn byte_vector<'a, 'b>(
@@ -280,20 +272,25 @@ fn byte_vector<'a, 'b>(
     span: InputSpan<'a>,
 ) -> Result<(&'b [Token<'a>], Syntax), ParseVectorError<'a>> {
     let (i, vec) = vector_shared(i)?;
-    let vec = vec.into_iter()
-        .map(|i| if let Syntax::Literal{ literal: Literal::Number(Number::FixedInteger(i)), .. } = i {
-            Ok(i)
-        } else {
-            Err(ParseSyntaxError::NonByte { span: span.clone(), })
+    let vec = vec
+        .into_iter()
+        .map(|i| {
+            if let Syntax::Literal {
+                literal: Literal::Number(Number::FixedInteger(i)),
+                ..
+            } = i
+            {
+                Ok(i)
+            } else {
+                Err(ParseSyntaxError::NonByte { span: span.clone() })
+            }
         })
-        .collect::<Result<Vec<_>, _>>()?.into_iter()
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
         .map(|i| u8::try_from(i).map_err(ParseSyntaxError::from))
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok((
-        i,
-        Syntax::new_byte_vector(vec, span)
-    ))
+    Ok((i, Syntax::new_byte_vector(vec, span)))
 }
 
 fn boolean<'a>(i: &Token<'a>) -> Result<Literal, ParseSyntaxError<'a>> {
