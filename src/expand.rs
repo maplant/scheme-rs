@@ -62,6 +62,7 @@ pub enum Pattern {
     Ellipsis(Box<Pattern>),
     List(Vec<Pattern>),
     Vector(Vec<Pattern>),
+    ByteVector(Vec<u8>),
     Variable(String),
     Keyword(String),
     Literal(Literal),
@@ -86,7 +87,10 @@ impl Pattern {
             Syntax::List { list, .. } => Self::List(Self::compile_slice(list, keywords, variables)),
             Syntax::Vector { vector, .. } => {
                 Self::Vector(Self::compile_slice(vector, keywords, variables))
-            }
+            },
+            Syntax::ByteVector { vector, .. } => {
+                Self::ByteVector(vector.clone())
+            },
             Syntax::Literal { literal, .. } => Self::Literal(literal.clone()),
         }
     }
@@ -141,6 +145,11 @@ impl Pattern {
             }
             Self::List(list) => match_slice(list, expr, expansion_level),
             Self::Vector(vec) => match_slice(vec, expr, expansion_level),
+            Self::ByteVector(vec) => if let Self::ByteVector(v) = self {
+                v == vec
+            } else {
+                false
+            },
             // We shouldn't ever see this outside of lists
             Self::Null => expr.is_null(),
             Self::Ellipsis(_) => unreachable!(),
@@ -246,6 +255,7 @@ pub enum Template {
     Ellipsis(Box<Template>),
     List(Vec<Template>),
     Vector(Vec<Template>),
+    ByteVector(Vec<u8>),
     Identifier(Identifier),
     Variable(Identifier),
     Literal(Literal),
@@ -257,6 +267,7 @@ impl Template {
             Syntax::Null { .. } => Self::Null,
             Syntax::List { list, .. } => Self::List(Self::compile_slice(list, variables)),
             Syntax::Vector { vector, .. } => Self::Vector(Self::compile_slice(vector, variables)),
+            Syntax::ByteVector { vector, .. } => Self::ByteVector(vector.clone()),
             Syntax::Literal { literal, .. } => Self::Literal(literal.clone()),
             Syntax::Identifier { ident, .. } if variables.contains(&ident.name) => {
                 Self::Variable(ident.clone())

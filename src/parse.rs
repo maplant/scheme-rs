@@ -5,7 +5,10 @@ use crate::{
     syntax::Syntax,
 };
 use rug::Integer;
-use std::char::CharTryFromError;
+use std::{
+    char::CharTryFromError,
+    num::TryFromIntError,
+};
 
 #[derive(Debug)]
 pub enum ParseSyntaxError<'a> {
@@ -13,15 +16,23 @@ pub enum ParseSyntaxError<'a> {
     UnexpectedEndOfFile,
     ExpectedClosingParen { span: InputSpan<'a> },
     ParseNumberError { value: String, span: InputSpan<'a> },
+    InvalidByte { value: Number, span: InputSpan<'a> },
     InvalidHexValue { value: String, span: InputSpan<'a> },
     InvalidDocCommentLocation { span: InputSpan<'a> },
     InvalidPeriodLocation { span: InputSpan<'a> },
+    NonByte { span: InputSpan<'a>, },
     UnclosedParen { span: InputSpan<'a> },
     DocCommentMustPrecedeDefine,
     CharTryFrom(CharTryFromError),
     LexError(LexError<'a>),
+    TryFromInt(TryFromIntError),
 }
 
+impl<'a> From<TryFromIntError> for ParseSyntaxError<'a> {
+    fn from(e: TryFromIntError) -> Self {
+        Self::TryFromInt(e)
+    }
+}
 impl<'a> From<LexError<'a>> for ParseSyntaxError<'a> {
     fn from(lex: LexError<'a>) -> Self {
         Self::LexError(lex)
@@ -111,6 +122,12 @@ pub fn expression<'a, 'b>(
         }
         // Vectors:
         [v @ token!(Lexeme::HashParen), tail @ ..] => match vector(tail, v.span.clone()) {
+            Err(ParseVectorError::UnclosedParen) => Err(ParseSyntaxError::unclosed_paren(v)),
+            Err(ParseVectorError::ParseError(err)) => Err(err),
+            Ok(ok) => Ok(ok),
+        },
+        // Byte vectors:
+        [v @ token!(Lexeme::Vu8Paren), tail @ ..] => match byte_vector(tail, v.span.clone()) {
             Err(ParseVectorError::UnclosedParen) => Err(ParseSyntaxError::unclosed_paren(v)),
             Err(ParseVectorError::ParseError(err)) => Err(err),
             Ok(ok) => Ok(ok),
@@ -228,16 +245,15 @@ impl<'a> From<ParseSyntaxError<'a>> for ParseVectorError<'a> {
     }
 }
 
-fn vector<'a, 'b>(
+fn vector_shared<'a, 'b>(
     mut i: &'b [Token<'a>],
-    span: InputSpan<'a>,
-) -> Result<(&'b [Token<'a>], Syntax), ParseVectorError<'a>> {
+) -> Result<(&'b [Token<'a>], Vec<Syntax>), ParseVectorError<'a>> {
     let mut output = Vec::new();
     loop {
         match i {
             [] => return Err(ParseVectorError::UnclosedParen),
             [token!(Lexeme::RParen), tail @ ..] => {
-                return Ok((tail, Syntax::new_vector(output, span)))
+                return Ok((tail, output))
             }
             _ => (),
         }
@@ -246,6 +262,38 @@ fn vector<'a, 'b>(
         output.push(expr);
         i = remaining;
     }
+}
+fn vector<'a, 'b>(
+    i: &'b [Token<'a>],
+    span: InputSpan<'a>,
+) -> Result<(&'b [Token<'a>], Syntax), ParseVectorError<'a>> {
+    let (i, vec) = vector_shared(i)?;
+
+    Ok((
+        i,
+        Syntax::new_vector(vec, span),
+    ))
+}
+
+fn byte_vector<'a, 'b>(
+    i: &'b [Token<'a>],
+    span: InputSpan<'a>,
+) -> Result<(&'b [Token<'a>], Syntax), ParseVectorError<'a>> {
+    let (i, vec) = vector_shared(i)?;
+    let vec = vec.into_iter()
+        .map(|i| if let Syntax::Literal{ literal: Literal::Number(Number::FixedInteger(i)), .. } = i {
+            Ok(i)
+        } else {
+            Err(ParseSyntaxError::NonByte { span: span.clone(), })
+        })
+        .collect::<Result<Vec<_>, _>>()?.into_iter()
+        .map(|i| u8::try_from(i).map_err(ParseSyntaxError::from))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok((
+        i,
+        Syntax::new_byte_vector(vec, span)
+    ))
 }
 
 fn boolean<'a>(i: &Token<'a>) -> Result<Literal, ParseSyntaxError<'a>> {
