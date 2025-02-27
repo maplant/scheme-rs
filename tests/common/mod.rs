@@ -1,8 +1,5 @@
 //! Test to see whether or not passes r*rs specifications
 
-mod r6rs;
-mod r7rs;
-
 use scheme_rs::{
     ast::DefinitionBody,
     cps::Compile,
@@ -16,7 +13,7 @@ use scheme_rs::{
 };
 use std::error::Error as StdError;
 
-struct TestRuntime {
+pub struct TestRuntime {
     runtime: Gc<Runtime>,
     test_top: Environment,
 }
@@ -70,13 +67,12 @@ pub async fn test_assert(arg1: &Gc<Value>, arg2: &Gc<Value>) -> Result<Vec<Gc<Va
     }
 }
 
-#[macro_export]
 macro_rules! assert_file {
     ($name:ident) => {
         #[::tokio::test]
         async fn $name() {
-            let rt = $crate::tests::TestRuntime::new().await;
-            let sexprs = $crate::syntax::Syntax::from_str(
+            let rt = $crate::common::TestRuntime::new().await;
+            let sexprs = scheme_rs::syntax::Syntax::from_str(
                 include_str!(concat!(stringify!($name), ".scm")),
                 Some(concat!(stringify!($name), ".scm")),
             )
@@ -90,13 +86,15 @@ macro_rules! assert_file {
     };
 }
 
-#[macro_export]
 macro_rules! assert_failure {
     ($name:ident, $expr:literal) => {
         #[::tokio::test]
         async fn $name() {
-            let rt = $crate::tests::TestRuntime::new().await;
+            let rt = $crate::common::TestRuntime::new().await;
             assert!(rt.exec_str($expr).await.is_err())
         }
     };
 }
+
+pub(crate) use assert_failure;
+pub(crate) use assert_file;
