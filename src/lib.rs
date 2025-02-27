@@ -19,3 +19,6 @@ pub mod records;
 pub mod syntax;
 pub mod value;
 pub mod vectors;
+
+#[cfg(test)]
+mod tests;

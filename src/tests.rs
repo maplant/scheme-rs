@@ -1,5 +1,8 @@
 //! Test to see whether or not passes r*rs specifications
 
+mod r6rs;
+mod r7rs;
+
 use scheme_rs::{
     ast::DefinitionBody,
     cps::Compile,
@@ -52,5 +55,3 @@ macro_rules! test_specification {
         }
     };
 }
-test_specification!(r6rs);
-test_specification!(r7rs);
