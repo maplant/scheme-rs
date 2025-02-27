@@ -214,7 +214,7 @@ impl fmt::Debug for Value {
             Self::String(string) => write!(f, "{string:?}"),
             Self::Symbol(symbol) => write!(f, "'{symbol }"),
             Self::Pair(car, cdr) => crate::lists::debug_list(car, cdr, f),
-            Self::Vector(v) => display_vec("#(", f, v),
+            Self::Vector(v) => display_vec("#(", v, f),
             Self::Null => write!(f, "()"),
             Self::Character(c) => write!(f, "#\\{c}"),
             Self::ByteVector(v) => display_vec("#u8(", v, f),
