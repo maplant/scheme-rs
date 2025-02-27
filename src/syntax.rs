@@ -73,6 +73,11 @@ pub enum Syntax {
         #[debug(skip)]
         span: Span,
     },
+    ByteVector {
+        vector: Vec<u8>,
+        #[debug(skip)]
+        span: Span,
+    },
     Literal {
         literal: Literal,
         #[debug(skip)]
@@ -472,6 +477,7 @@ impl Syntax {
             Self::Null { span } => span,
             Self::List { span, .. } => span,
             Self::Vector { span, .. } => span,
+            Self::ByteVector { span, .. } => span,
             Self::Literal { span, .. } => span,
             Self::Identifier { span, .. } => span,
         }
@@ -516,6 +522,13 @@ impl Syntax {
 
     pub fn new_vector(vector: Vec<Syntax>, span: impl Into<Span>) -> Self {
         Self::Vector {
+            vector,
+            span: span.into(),
+        }
+    }
+
+    pub fn new_byte_vector(vector: Vec<u8>, span: impl Into<Span>) -> Self {
+        Self::ByteVector {
             vector,
             span: span.into(),
         }

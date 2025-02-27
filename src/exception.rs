@@ -3,7 +3,7 @@ use crate::{
     gc::Trace,
     syntax::{Identifier, Span},
 };
-use std::{error::Error as StdError, ops::Range};
+use std::{error::Error as StdError, fmt, ops::Range};
 
 #[derive(Debug, Clone, Trace)]
 pub struct Exception {
@@ -11,6 +11,12 @@ pub struct Exception {
     pub message: String,
     pub condition: Condition,
 }
+impl fmt::Display for Exception {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+impl StdError for Exception {}
 
 #[derive(Debug, Clone, Trace)]
 pub enum Condition {
@@ -101,11 +107,16 @@ impl Exception {
         ))
     }
 }
-impl<E: StdError> From<E> for Exception {
-    fn from(e: E) -> Self {
-        Self::error(e.to_string())
-    }
+macro_rules! impl_into_exception_for {
+    ($for:ty) => {
+        impl From<$for> for Exception {
+            fn from(e: $for) -> Self {
+                Self::error(e.to_string())
+            }
+        }
+    };
 }
+impl_into_exception_for!(std::num::TryFromIntError);
 
 #[derive(Debug, Clone, Trace)]
 pub struct Frame {

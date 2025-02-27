@@ -109,6 +109,7 @@ fn lexeme(i: InputSpan) -> IResult<InputSpan, Lexeme<'static>> {
         map(match_char('['), |_| Lexeme::LBracket),
         map(match_char(']'), |_| Lexeme::RBracket),
         map(tag("#("), |_| Lexeme::HashParen),
+        map(tag("#u8("), |_| Lexeme::Vu8Paren),
         map(tag("#'"), |_| Lexeme::HashTick),
     ))(i)
 }

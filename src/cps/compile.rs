@@ -142,6 +142,7 @@ impl Compile for Expression {
             Self::Set(set) => set.compile(meta_cont),
             Self::Undefined => compile_undefined(meta_cont),
             Self::Vector(vec) => vec.compile(meta_cont),
+            Self::ByteVector(vec) => vec.compile(meta_cont),
         }
     }
 }
@@ -746,6 +747,23 @@ impl Compile for Vector {
             body: Box::new(Cps::App(
                 Value::from(k2),
                 vec![constant(SchemeValue::Vector(self.vals.clone()))],
+            )),
+            val: k1,
+            cexp: Box::new(meta_cont(Value::from(k1))),
+            analysis: AnalysisCache::default(),
+        }
+    }
+}
+impl Compile for Vec<u8> {
+    fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+        let k1 = Local::gensym();
+        let k2 = Local::gensym();
+
+        Cps::Closure {
+            args: ClosureArgs::new(vec![k2], false, None),
+            body: Box::new(Cps::App(
+                Value::from(k2),
+                vec![constant(SchemeValue::ByteVector(self.clone()))],
             )),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),

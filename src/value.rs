@@ -88,6 +88,7 @@ impl Value {
             Syntax::Vector { vector, .. } => {
                 Self::Vector(vector.iter().map(Self::from_syntax).collect())
             }
+            Syntax::ByteVector { vector, .. } => Self::ByteVector(vector.clone()),
             Syntax::Literal { literal, .. } => Self::from_literal(literal),
             Syntax::Identifier { ident, .. } => Self::Symbol(ident.name.clone()),
         }
@@ -159,6 +160,24 @@ impl Clone for Value {
     }
 }
 
+fn display_vec<T: fmt::Display>(
+    head: &str,
+    v: &[T],
+    f: &mut fmt::Formatter<'_>,
+) -> Result<(), fmt::Error> {
+    write!(f, "{}", head)?;
+
+    let mut iter = v.iter().peekable();
+    while let Some(next) = iter.next() {
+        write!(f, "{}", next)?;
+        if iter.peek().is_some() {
+            write!(f, " ")?;
+        }
+    }
+
+    write!(f, ")")
+}
+
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -168,20 +187,10 @@ impl fmt::Display for Value {
             Self::String(string) => write!(f, "{string}"),
             Self::Symbol(symbol) => write!(f, "{symbol}"),
             Self::Pair(car, cdr) => crate::lists::display_list(car, cdr, f),
-            Self::Vector(vec) => {
-                write!(f, "#(")?;
-                let mut iter = vec.iter().peekable();
-                while let Some(item) = iter.next() {
-                    write!(f, "{item}")?;
-                    if iter.peek().is_some() {
-                        write!(f, " ")?;
-                    }
-                }
-                write!(f, ")")
-            }
+            Self::Vector(v) => display_vec("#(", v, f),
             Self::Null => write!(f, "()"),
             Self::Character(c) => write!(f, "#\\{c}"),
-            Self::ByteVector(_) => write!(f, "<byte-vector>"),
+            Self::ByteVector(v) => display_vec("#u8(", v, f),
             // TODO: This shouldn't be debug output.
             Self::Syntax(syntax) => write!(f, "{:?}", syntax),
             Self::Closure(_) => write!(f, "<procedure>"),
@@ -205,20 +214,10 @@ impl fmt::Debug for Value {
             Self::String(string) => write!(f, "{string:?}"),
             Self::Symbol(symbol) => write!(f, "'{symbol }"),
             Self::Pair(car, cdr) => crate::lists::debug_list(car, cdr, f),
-            Self::Vector(vec) => {
-                write!(f, "#(")?;
-                let mut iter = vec.iter().peekable();
-                while let Some(item) = iter.next() {
-                    write!(f, "{item:?}")?;
-                    if iter.peek().is_some() {
-                        write!(f, " ")?;
-                    }
-                }
-                write!(f, ")")
-            }
+            Self::Vector(v) => display_vec("#(", v, f),
             Self::Null => write!(f, "()"),
             Self::Character(c) => write!(f, "#\\{c}"),
-            Self::ByteVector(_) => write!(f, "<byte-vector>"),
+            Self::ByteVector(v) => display_vec("#u8(", v, f),
             Self::Syntax(syntax) => write!(f, "{:?}", syntax),
             Self::Closure(_) => write!(f, "<procedure>"),
             Self::Future(_) => write!(f, "<future>"),

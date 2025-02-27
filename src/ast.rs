@@ -260,6 +260,7 @@ pub enum Expression {
     Set(Set),
     Var(Var),
     Vector(Vector),
+    ByteVector(Vec<u8>),
     Begin(ExprBody),
 }
 
@@ -310,6 +311,7 @@ impl Expression {
 
                 // Vector literals:
                 Syntax::Vector { vector, .. } => Ok(Self::Vector(Vector::parse(&vector))),
+                Syntax::ByteVector { vector, .. } => Ok(Self::ByteVector(vector)),
 
                 // Functional forms:
                 Syntax::List {
