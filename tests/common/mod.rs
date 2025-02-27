@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_macros, unused_imports)]
+
 //! Test to see whether or not passes r*rs specifications
 
 use scheme_rs::{
