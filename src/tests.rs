@@ -38,7 +38,7 @@ impl TestRuntime {
     pub async fn exec_syn(&self, sexprs: &[Syntax]) -> Result<(), Box<dyn StdError>> {
         let base = DefinitionBody::parse_program_body(
             &self.runtime,
-            &sexprs,
+            sexprs,
             &self.test_top,
             &Span::default(),
         )
