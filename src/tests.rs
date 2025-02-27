@@ -1,5 +1,8 @@
 //! Test to see whether or not passes r*rs specifications
 
+mod r6rs;
+mod r7rs;
+
 use scheme_rs::{
     ast::DefinitionBody,
     cps::Compile,
@@ -66,8 +69,8 @@ macro_rules! assert_file {
     ($name:ident) => {
         #[::tokio::test]
         async fn $name() {
-            let rt = $crate::TestRuntime::new().await;
-            let sexprs = $crate::Syntax::from_str(
+            let rt = $crate::tests::TestRuntime::new().await;
+            let sexprs = $crate::syntax::Syntax::from_str(
                 include_str!(concat!(stringify!($name), ".scm")),
                 Some(concat!(stringify!($name), ".scm")),
             ).unwrap();
@@ -81,11 +84,8 @@ macro_rules! assert_failure {
     ($name:ident, $expr:literal) => {
         #[::tokio::test]
         async fn $name() {
-            let rt = $crate::TestRuntime::new().await;
-            assert!(rt.exec_str($expr).await
-            .inspect(|i| println!("{i:?}"))
-            .inspect_err(|i| println!("{i}"))
-                .is_err())
+            let rt = $crate::tests::TestRuntime::new().await;
+            assert!(rt.exec_str($expr).await.is_err())
         }
     }
 }
