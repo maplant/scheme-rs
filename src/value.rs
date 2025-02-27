@@ -162,8 +162,8 @@ impl Clone for Value {
 
 fn display_vec<T: fmt::Display>(
     head: &str,
-    f: &mut fmt::Formatter<'_>,
     v: &[T],
+    f: &mut fmt::Formatter<'_>,
 ) -> Result<(), fmt::Error> {
     write!(f, "{}", head)?;
 
@@ -187,10 +187,10 @@ impl fmt::Display for Value {
             Self::String(string) => write!(f, "{string}"),
             Self::Symbol(symbol) => write!(f, "{symbol}"),
             Self::Pair(car, cdr) => crate::lists::display_list(car, cdr, f),
-            Self::Vector(v) => display_vec("#(", f, v),
+            Self::Vector(v) => display_vec("#(", v, f),
             Self::Null => write!(f, "()"),
             Self::Character(c) => write!(f, "#\\{c}"),
-            Self::ByteVector(v) => display_vec("#u8(", f, v),
+            Self::ByteVector(v) => display_vec("#u8(", v, f),
             // TODO: This shouldn't be debug output.
             Self::Syntax(syntax) => write!(f, "{:?}", syntax),
             Self::Closure(_) => write!(f, "<procedure>"),
@@ -217,7 +217,7 @@ impl fmt::Debug for Value {
             Self::Vector(v) => display_vec("#(", f, v),
             Self::Null => write!(f, "()"),
             Self::Character(c) => write!(f, "#\\{c}"),
-            Self::ByteVector(v) => display_vec("#u8(", f, v),
+            Self::ByteVector(v) => display_vec("#u8(", v, f),
             Self::Syntax(syntax) => write!(f, "{:?}", syntax),
             Self::Closure(_) => write!(f, "<procedure>"),
             Self::Future(_) => write!(f, "<future>"),
