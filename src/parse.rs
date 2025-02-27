@@ -5,25 +5,38 @@ use crate::{
     syntax::Syntax,
 };
 use rug::Integer;
-use std::{char::CharTryFromError, num::TryFromIntError};
+use std::{char::CharTryFromError, error::Error as StdError, fmt, num::TryFromIntError};
 
 #[derive(Debug)]
 pub enum ParseSyntaxError<'a> {
     EmptyInput,
     UnexpectedEndOfFile,
     ExpectedClosingParen { span: InputSpan<'a> },
-    ParseNumberError { value: String, span: InputSpan<'a> },
-    InvalidByte { value: Number, span: InputSpan<'a> },
     InvalidHexValue { value: String, span: InputSpan<'a> },
-    InvalidDocCommentLocation { span: InputSpan<'a> },
     InvalidPeriodLocation { span: InputSpan<'a> },
     NonByte { span: InputSpan<'a> },
     UnclosedParen { span: InputSpan<'a> },
-    DocCommentMustPrecedeDefine,
     CharTryFrom(CharTryFromError),
-    LexError(LexError<'a>),
+    Lex(LexError<'a>),
     TryFromInt(TryFromIntError),
 }
+impl fmt::Display for ParseSyntaxError<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyInput => write!(f, "cannot parse an empty list"),
+            Self::UnexpectedEndOfFile => write!(f, "unexpected end of file"),
+            Self::ExpectedClosingParen { span } => write!(f, "closing parenthesis not found at `{}`", span),
+            Self::InvalidHexValue { value, span } => write!(f, "invalid hex value `{}` found at `{}`", value, span),
+            Self::InvalidPeriodLocation { span } => write!(f, "invalid period found at location `{}`", span),
+            Self::NonByte { span } => write!(f, "non byte value found in byte vector at location `{}`", span),
+            Self::UnclosedParen { span } => write!(f, "unclosed parenthesis at location `{}`", span),
+            Self::CharTryFrom(e) => write!(f, "{}", e),
+            Self::Lex(e) => write!(f, "{}", e),
+            Self::TryFromInt(e) => write!(f, "{}", e),
+        }
+    }
+}
+impl StdError for ParseSyntaxError<'_> {}
 
 impl From<TryFromIntError> for ParseSyntaxError<'_> {
     fn from(e: TryFromIntError) -> Self {
@@ -32,7 +45,7 @@ impl From<TryFromIntError> for ParseSyntaxError<'_> {
 }
 impl<'a> From<LexError<'a>> for ParseSyntaxError<'a> {
     fn from(lex: LexError<'a>) -> Self {
-        Self::LexError(lex)
+        Self::Lex(lex)
     }
 }
 impl From<CharTryFromError> for ParseSyntaxError<'_> {
