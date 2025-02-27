@@ -3,11 +3,7 @@ use crate::{
     gc::Trace,
     syntax::{Identifier, Span},
 };
-use std::{
-    error::Error as StdError,
-    fmt,
-    ops::Range,
-};
+use std::{error::Error as StdError, fmt, ops::Range};
 
 #[derive(Debug, Clone, Trace)]
 pub struct Exception {
@@ -118,7 +114,7 @@ macro_rules! impl_into_exception_for {
                 Self::error(e.to_string())
             }
         }
-    }
+    };
 }
 impl_into_exception_for!(std::num::TryFromIntError);
 

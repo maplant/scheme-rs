@@ -1,4 +1,4 @@
-use crate::{assert_file, assert_failure};
+use crate::{assert_failure, assert_file};
 
 assert_file!(r7rs);
 

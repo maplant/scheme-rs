@@ -32,18 +32,24 @@ impl TestRuntime {
         }
         let test_top = Environment::from(Gc::new(test_top));
 
-        Self {
-            runtime,
-            test_top,
-        }
+        Self { runtime, test_top }
     }
 
     pub async fn exec_syn(&self, sexprs: &[Syntax]) -> Result<(), Box<dyn StdError>> {
-        let base = DefinitionBody::parse_program_body(&self.runtime, &sexprs, &self.test_top, &Span::default())
-            .await
-            .unwrap();
+        let base = DefinitionBody::parse_program_body(
+            &self.runtime,
+            &sexprs,
+            &self.test_top,
+            &Span::default(),
+        )
+        .await
+        .unwrap();
         let compiled = base.compile_top_level();
-        let closure = self.runtime.compile_expr(compiled).await.map_err(Box::new)?;
+        let closure = self
+            .runtime
+            .compile_expr(compiled)
+            .await
+            .map_err(Box::new)?;
         Ok(closure.call(&[]).await.map(drop).map_err(Box::new)?)
     }
 
@@ -73,8 +79,13 @@ macro_rules! assert_file {
             let sexprs = $crate::syntax::Syntax::from_str(
                 include_str!(concat!(stringify!($name), ".scm")),
                 Some(concat!(stringify!($name), ".scm")),
-            ).unwrap();
-            assert!(rt.exec_syn(&sexprs).await.inspect_err(|e| eprintln!("{}", e)).is_ok());
+            )
+            .unwrap();
+            assert!(rt
+                .exec_syn(&sexprs)
+                .await
+                .inspect_err(|e| eprintln!("{}", e))
+                .is_ok());
         }
     };
 }
@@ -87,5 +98,5 @@ macro_rules! assert_failure {
             let rt = $crate::tests::TestRuntime::new().await;
             assert!(rt.exec_str($expr).await.is_err())
         }
-    }
+    };
 }
