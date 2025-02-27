@@ -25,16 +25,18 @@ impl ProcCallDebugInfo {
 }
 */
 
-pub type Record = Vec<Gc<Value>>; // Box<[Gc<Value>]>;
+pub type Record = Vec<Gc<Value>>;
 
-pub type SyncFuncPtr = unsafe extern "C" fn(
+/// A function pointer to a generated continuation.
+pub type ContinuationPtr = unsafe extern "C" fn(
     runtime: *mut GcInner<Runtime>,
     env: *const *mut GcInner<Value>,
     globals: *const *mut GcInner<Value>,
     args: *const *mut GcInner<Value>,
 ) -> *mut Application;
 
-pub type SyncFuncWithContinuationPtr = unsafe extern "C" fn(
+/// A function pointer to a generated closure function.
+pub type ClosurePtr = unsafe extern "C" fn(
     runtime: *mut GcInner<Runtime>,
     env: *const *mut GcInner<Value>,
     globals: *const *mut GcInner<Value>,
@@ -42,7 +44,8 @@ pub type SyncFuncWithContinuationPtr = unsafe extern "C" fn(
     cont: *mut GcInner<Value>,
 ) -> *mut Application;
 
-pub type AsyncFuncPtr = for<'a> fn(
+/// A function pointer to an async Rust bridge function.
+pub type BridgePtr = for<'a> fn(
     args: &'a [Gc<Value>],
     rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
@@ -50,9 +53,9 @@ pub type AsyncFuncPtr = for<'a> fn(
 
 #[derive(Debug, Copy, Clone)]
 pub enum FuncPtr {
-    SyncFunc(SyncFuncPtr),
-    SyncFuncWithContinuation(SyncFuncWithContinuationPtr),
-    AsyncFunc(AsyncFuncPtr),
+    Continuation(ContinuationPtr),
+    Closure(ClosurePtr),
+    Bridge(BridgePtr),
 }
 
 unsafe impl Trace for FuncPtr {
@@ -123,7 +126,7 @@ impl Closure {
             self.runtime.clone(),
             Vec::new(),
             Vec::new(),
-            FuncPtr::SyncFunc(just_return),
+            FuncPtr::Continuation(just_return),
             0,
             true,
             true,
@@ -135,7 +138,7 @@ impl Closure {
         // Handle arguments
 
         // Extract the continuation, if it is required
-        let cont = !matches!(self.func, FuncPtr::SyncFunc(_));
+        let cont = !matches!(self.func, FuncPtr::Continuation(_));
         let (cont, args) = if cont {
             let (cont, args) = args.split_last().unwrap();
             (Some(cont), args)
@@ -159,7 +162,7 @@ impl Closure {
 
         // If this function is variadic, create a list to put any extra arguments
         // into
-        let bridge = matches!(self.func, FuncPtr::AsyncFunc(_));
+        let bridge = matches!(self.func, FuncPtr::Bridge(_));
         let (args, rest_args) = if self.variadic {
             let (args, rest_args) = args.split_at(self.num_required_args);
             // If this is a bridge function, vector is more natural to work with:
@@ -176,7 +179,7 @@ impl Closure {
 
         if bridge {
             // If this a bridge functiuon, calling it is relatively simple:
-            let FuncPtr::AsyncFunc(async_fn) = self.func else {
+            let FuncPtr::Bridge(async_fn) = self.func else {
                 unreachable!()
             };
             (async_fn)(args.as_ref(), rest_args.unwrap_or(&[]), cont.unwrap()).await
@@ -193,7 +196,7 @@ impl Closure {
 
             // Finally: call the function pointer
             let app = match self.func {
-                FuncPtr::SyncFunc(sync_fn) => unsafe {
+                FuncPtr::Continuation(sync_fn) => unsafe {
                     let app = (sync_fn)(
                         self.runtime.as_ptr(),
                         env.as_ptr(),
@@ -202,7 +205,7 @@ impl Closure {
                     );
                     *Box::from_raw(app)
                 },
-                FuncPtr::SyncFuncWithContinuation(sync_fn) => unsafe {
+                FuncPtr::Closure(sync_fn) => unsafe {
                     let app = (sync_fn)(
                         self.runtime.as_ptr(),
                         env.as_ptr(),
@@ -229,26 +232,26 @@ fn values_to_vec_of_ptrs(vals: &[Gc<Value>]) -> Vec<*mut GcInner<Value>> {
     vals.iter().map(Gc::as_ptr).collect()
 }
 
+/// An application of a function to a given set of values.
 pub struct Application {
+    /// The operator being applied to. If None, we return the values to the Rust
+    /// caller.
     op: Option<Closure>,
-    // Consider making this a Cow
+    /// The arguments being applied to the operator.
     args: Record,
 }
 
 impl Application {
-    pub fn new(op: Closure, args: impl Into<Record>) -> Self {
+    pub fn new(op: Closure, args: Record) -> Self {
         Self {
             // We really gotta figure out how to deal with this better
             op: Some(op),
-            args: args.into(),
+            args,
         }
     }
 
-    pub fn new_empty(args: impl Into<Record>) -> Self {
-        Self {
-            op: None,
-            args: args.into(),
-        }
+    pub fn values(args: Record) -> Self {
+        Self { op: None, args }
     }
 
     /// Evaluate the application - and all subsequent application - until all that
@@ -374,7 +377,7 @@ pub fn call_with_values<'a>(
             producer.runtime.clone(),
             vec![consumer.clone(), cont.clone()],
             Vec::new(),
-            FuncPtr::SyncFunc(call_consumer_with_values),
+            FuncPtr::Continuation(call_consumer_with_values),
             num_required_args,
             variadic,
             false,

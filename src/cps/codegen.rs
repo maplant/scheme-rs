@@ -14,7 +14,7 @@ use std::{collections::HashMap, rc::Rc};
 
 use crate::{
     gc::Gc,
-    proc::{Closure, FuncPtr, SyncFuncPtr},
+    proc::{Closure, ContinuationPtr, FuncPtr},
     runtime::Runtime,
     value::Value as SchemeValue,
 };
@@ -156,13 +156,17 @@ impl TopLevelExpr {
             function.print_to_stderr();
         }
 
-        let func = unsafe { ee.get_function::<SyncFuncPtr>(&fn_name).unwrap().into_raw() };
+        let func = unsafe {
+            ee.get_function::<ContinuationPtr>(&fn_name)
+                .unwrap()
+                .into_raw()
+        };
 
         Ok(Closure::new(
             runtime,
             collected_env,
             globals.into_iter().map(Global::value).collect::<Vec<_>>(),
-            FuncPtr::SyncFunc(func),
+            FuncPtr::Continuation(func),
             0,
             true,
             true,
