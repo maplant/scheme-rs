@@ -6,7 +6,7 @@ use crate::{
     env::{Environment, Top},
     gc::Gc,
     parse::ParseSyntaxError,
-    proc::{AsyncFuncPtr, Closure, FuncPtr},
+    proc::{BridgePtr, Closure, FuncPtr},
     runtime::Runtime,
     syntax::{Identifier, Span, Syntax},
     value::Value,
@@ -130,7 +130,7 @@ pub struct BridgeFn {
     lib_name: &'static str,
     num_args: usize,
     variadic: bool,
-    wrapper: AsyncFuncPtr,
+    wrapper: BridgePtr,
 }
 
 impl BridgeFn {
@@ -139,7 +139,7 @@ impl BridgeFn {
         lib_name: &'static str,
         num_args: usize,
         variadic: bool,
-        wrapper: AsyncFuncPtr,
+        wrapper: BridgePtr,
     ) -> Self {
         Self {
             name,
@@ -174,7 +174,7 @@ impl Registry {
                     runtime.clone(),
                     Vec::new(),
                     Vec::new(),
-                    FuncPtr::AsyncFunc(bridge_fn.wrapper),
+                    FuncPtr::Bridge(bridge_fn.wrapper),
                     bridge_fn.num_args,
                     bridge_fn.variadic,
                     false,

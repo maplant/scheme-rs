@@ -34,7 +34,14 @@
   (memp (lambda (x) (eqv? x obj)) list))
 (define (memq obj list)
   (memp (lambda (x) (eq? x obj)) list))
-; (define call-with-current-continuation call/cc)
+
+
+;; Define call/cc and call-with-current-continuation in terms of its primitive
+(define (call/cc x)
+  (&call/cc x));
+
+(define (call-with-current-continuation x)
+  (&call/cc x))
 
 ;;
 ;; WIP: All of the car/cdr combinations

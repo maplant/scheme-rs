@@ -1,12 +1,11 @@
 use crate::{
     cps::TopLevelExpr,
     env::Local,
+    exception::ExceptionHandler,
     expand,
     gc::{init_gc, Gc, GcInner, Trace},
     lists::list_to_vec,
-    proc::{
-        deep_clone_value, Application, Closure, FuncPtr, SyncFuncPtr, SyncFuncWithContinuationPtr,
-    },
+    proc::{deep_clone_value, Application, Closure, ClosurePtr, ContinuationPtr, FuncPtr},
     value::Value,
 };
 use indexmap::IndexMap;
@@ -161,14 +160,22 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     let f = module.add_function("drop_values", sig, None);
     ee.add_global_mapping(&f, drop_values as usize);
 
-    // fn make_application(op: *Value, args: **Value, num_args: u32) -> *Application
+    // fn make_application(op: *Value, args: **Value, num_args: u32, exception_handler *EH) -> *Application
     //
-    let sig = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into(), i32_type.into()], false);
+    let sig = ptr_type.fn_type(
+        &[
+            ptr_type.into(),
+            ptr_type.into(),
+            i32_type.into(),
+            ptr_type.into(),
+        ],
+        false,
+    );
     let f = module.add_function("make_application", sig, None);
     ee.add_global_mapping(&f, make_application as usize);
 
-    // fn make_forward(op: *Value, arg: *Value) -> *Application
-    let sig = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+    // fn make_forward(op: *Value, arg: *Value, exception_handler: *EH) -> *Application
+    let sig = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into(), ptr_type.into()], false);
     let f = module.add_function("make_forward", sig, None);
     ee.add_global_mapping(&f, make_forward as usize);
 
@@ -276,6 +283,7 @@ unsafe extern "C" fn make_application(
     op: *mut GcInner<Value>,
     args: *const *mut GcInner<Value>,
     num_args: u32,
+    exception_handler: *mut GcInner<ExceptionHandler>,
 ) -> *mut Application {
     let mut gc_args = Vec::new();
     for i in 0..num_args {
@@ -285,7 +293,12 @@ unsafe extern "C" fn make_application(
     let op = Gc::from_ptr(op);
     let op_read = op.read();
     let op: &Closure = op_read.as_ref().try_into().unwrap();
-    let app = Application::new(op.clone(), gc_args);
+    let exception_handler = if exception_handler.is_null() {
+        None
+    } else {
+        Some(Gc::from_ptr(exception_handler))
+    };
+    let app = Application::new(op.clone(), gc_args, exception_handler);
 
     Box::into_raw(Box::new(app))
 }
@@ -294,6 +307,7 @@ unsafe extern "C" fn make_application(
 unsafe extern "C" fn make_forward(
     op: *mut GcInner<Value>,
     to_forward: *mut GcInner<Value>,
+    exception_handler: *mut GcInner<ExceptionHandler>,
 ) -> *mut Application {
     let op = Gc::from_ptr(op);
     let to_forward = Gc::from_ptr(to_forward);
@@ -301,7 +315,12 @@ unsafe extern "C" fn make_forward(
     list_to_vec(&to_forward, &mut args);
     let op_ref = op.read();
     let op: &Closure = op_ref.as_ref().try_into().unwrap();
-    let app = Application::new(op.clone(), args);
+    let exception_handler = if exception_handler.is_null() {
+        None
+    } else {
+        Some(Gc::from_ptr(exception_handler))
+    };
+    let app = Application::new(op.clone(), args, exception_handler);
 
     Box::into_raw(Box::new(app))
 }
@@ -312,7 +331,7 @@ pub(crate) unsafe extern "C" fn make_return_values(args: *mut GcInner<Value>) ->
     let mut flattened = Vec::new();
     list_to_vec(&args, &mut flattened);
 
-    let app = Application::new_empty(flattened);
+    let app = Application::values(flattened);
 
     Box::into_raw(Box::new(app))
 }
@@ -333,7 +352,7 @@ unsafe extern "C" fn store(from: *mut GcInner<Value>, to: *mut GcInner<Value>) {
 /// Allocate a closure
 unsafe extern "C" fn make_continuation(
     runtime: *mut GcInner<Runtime>,
-    fn_ptr: SyncFuncPtr,
+    fn_ptr: ContinuationPtr,
     env: *const *mut GcInner<Value>,
     num_envs: u32,
     globals: *const *mut GcInner<Value>,
@@ -358,7 +377,7 @@ unsafe extern "C" fn make_continuation(
         Gc::from_ptr(runtime),
         env,
         globals,
-        FuncPtr::SyncFunc(fn_ptr),
+        FuncPtr::Continuation(fn_ptr),
         num_required_args as usize,
         variadic,
         true,
@@ -369,7 +388,7 @@ unsafe extern "C" fn make_continuation(
 /// Allocate a closure for a function that takes a continuation
 unsafe extern "C" fn make_closure(
     runtime: *mut GcInner<Runtime>,
-    fn_ptr: SyncFuncWithContinuationPtr,
+    fn_ptr: ClosurePtr,
     env: *const *mut GcInner<Value>,
     num_envs: u32,
     globals: *const *mut GcInner<Value>,
@@ -394,7 +413,7 @@ unsafe extern "C" fn make_closure(
         Gc::from_ptr(runtime),
         env,
         globals,
-        FuncPtr::SyncFuncWithContinuation(fn_ptr),
+        FuncPtr::Closure(fn_ptr),
         num_required_args as usize,
         variadic,
         false,
@@ -410,7 +429,7 @@ unsafe extern "C" fn get_call_transformer_fn(
         Gc::from_ptr(runtime),
         Vec::new(),
         Vec::new(),
-        FuncPtr::AsyncFunc(expand::call_transformer),
+        FuncPtr::Bridge(expand::call_transformer),
         3,
         true,
         false,
