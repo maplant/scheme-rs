@@ -87,9 +87,11 @@ impl TopLevelExpr {
         let ptr_type = ctx.ptr_type(AddressSpace::default());
         let fn_type = ptr_type.fn_type(
             &[
+                ptr_type.into(), // Runtime
                 ptr_type.into(), // Env
                 ptr_type.into(), // Globals
                 ptr_type.into(), // Args
+                ptr_type.into(), // ExceptionHandler
             ],
             false,
         );
@@ -403,8 +405,13 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                     operator.into(),
                     args_alloca.into(),
                     i32_type.const_int(args.len() as u64, false).into(),
+                    self.function
+                        .get_nth_param(EXCEPTION_HANDLER_PARAM)
+                        .unwrap()
+                        .into_pointer_value()
+                        .into(),
                 ],
-                "make_app",
+                "make_application",
             )?
             .try_as_basic_value()
             .left()
@@ -432,7 +439,19 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         let make_forward = self.module.get_function("make_forward").unwrap();
         let app = self
             .builder
-            .build_call(make_forward, &[operator.into(), arg.into()], "make_forward")?
+            .build_call(
+                make_forward,
+                &[
+                    operator.into(),
+                    arg.into(),
+                    self.function
+                        .get_nth_param(EXCEPTION_HANDLER_PARAM)
+                        .unwrap()
+                        .into_pointer_value()
+                        .into(),
+                ],
+                "make_forward",
+            )?
             .try_as_basic_value()
             .left()
             .unwrap();
@@ -448,7 +467,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
 
     fn return_values_codegen(&self, args: &Value) -> Result<(), BuilderError> {
         let val = self.value_codegen(args)?;
-        // Call make_application
+        // Call make_return_values
         let make_app = self.module.get_function("make_return_values").unwrap();
         let app = self
             .builder
@@ -630,9 +649,9 @@ const RUNTIME_PARAM: u32 = 0;
 const ENV_PARAM: u32 = 1;
 const GLOBALS_PARAM: u32 = 2;
 const ARGS_PARAM: u32 = 3;
-const CONTINUATION_PARAM: u32 = 4;
-const _DYNAMIC_WIND_PARAM: u32 = 5;
-const _EXCEPTION_HANDLER_PARAM: u32 = 6;
+const EXCEPTION_HANDLER_PARAM: u32 = 4;
+const CONTINUATION_PARAM: u32 = 5;
+// const DYNAMIC_WIND_PARAM: u32 = 5;
 
 impl<'ctx> ClosureBundle<'ctx> {
     fn new(
@@ -659,6 +678,7 @@ impl<'ctx> ClosureBundle<'ctx> {
                     ptr_type.into(), // Env
                     ptr_type.into(), // Globals
                     ptr_type.into(), // Args
+                    ptr_type.into(), // Exception handler
                     ptr_type.into(), // Continuation
                 ],
                 false,
@@ -670,6 +690,7 @@ impl<'ctx> ClosureBundle<'ctx> {
                     ptr_type.into(), // Env
                     ptr_type.into(), // Globals
                     ptr_type.into(), // Args
+                    ptr_type.into(), // Exception handler
                 ],
                 false,
             )

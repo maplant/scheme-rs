@@ -134,11 +134,12 @@ impl Frame {
 }
 
 /// An exception handler includes the current handler - a function to call with
-/// any condition that is raised - and the previous handler. 
+/// any condition that is raised - and the previous handler.
+#[derive(Clone, Trace)]
 pub struct ExceptionHandler {
     /// The previously installed handler. If the previously installed handler is
     /// None, we return the condition as an Error.
-    prev_handler: Option<Box<ExceptionHandler>>,
+    prev_handler: Option<Gc<ExceptionHandler>>,
     /// The currently installed handler.
     curr_handler: Closure,
 }
@@ -148,16 +149,18 @@ pub fn raise<'a>(
     args: &'a [Gc<Value>],
     _rest_args: &'a [Gc<Value>],
     _cont: &'a Gc<Value>,
-    exception_handler: Option<Box<ExceptionHandler>>,
+    exception_handler: Option<Gc<ExceptionHandler>>,
 ) -> BoxFuture<'a, Result<Application, Exception>> {
     Box::pin(async move {
         let [condition] = args else {
             return Err(Exception::wrong_num_of_args(1, args.len()));
         };
 
-        let Some(handler) = exception_handler else {
+        let Some(ref handler) = exception_handler else {
             return Err(Exception::from_value(condition.clone()));
         };
+
+        let handler = handler.read().clone();
 
         Ok(Application::new(
             handler.curr_handler.clone(),
@@ -168,8 +171,8 @@ pub fn raise<'a>(
                        exception should discard the result of the handler and call the previous \
                        handler with the condition"
                 ),
-                todo!("Add exception handler to Value"),
             ],
+            handler.prev_handler.clone(),
         ))
     })
 }
@@ -180,24 +183,23 @@ pub fn raise_continuable<'a>(
     args: &'a [Gc<Value>],
     _rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
-    exception_handler: Option<Box<ExceptionHandler>>,
+    exception_handler: Option<Gc<ExceptionHandler>>,
 ) -> BoxFuture<'a, Result<Application, Exception>> {
     Box::pin(async move {
         let [condition] = args else {
             return Err(Exception::wrong_num_of_args(1, args.len()));
         };
 
-        let Some(handler) = exception_handler else {
+        let Some(ref handler) = exception_handler else {
             return Err(Exception::from_value(condition.clone()));
         };
 
+        let handler = handler.read().clone();
+
         Ok(Application::new(
-            handler.curr_handler.clone(),
-            vec![
-                condition.clone(),
-                cont.clone(),
-                todo!("Add exception handler to Value"),
-            ],
+            handler.curr_handler,
+            vec![condition.clone(), cont.clone()],
+            handler.prev_handler,
         ))
     })
 }

@@ -52,6 +52,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 args: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
                 rest_args: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
                 cont: &'a ::scheme_rs::gc::Gc<::scheme_rs::value::Value>,
+                exception_handler: &'a Option<::scheme_rs::gc::Gc<::scheme_rs::exception::ExceptionHandler>>
             ) -> futures::future::BoxFuture<'a, Result<scheme_rs::proc::Application, scheme_rs::exception::Exception>> {
                 let cont = {
                     let cont = cont.read();
@@ -67,7 +68,8 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                             cont,
                             #impl_name(
                                 #( &args[#arg_indices], )*
-                            ).await?
+                            ).await?,
+                            exception_handler.clone(),
                         ))
                     }
                 )
@@ -80,6 +82,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 args: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
                 rest_args: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
                 cont: &'a ::scheme_rs::gc::Gc<::scheme_rs::value::Value>,
+                exception_handler: &'a Option<::scheme_rs::gc::Gc<::scheme_rs::exception::ExceptionHandler>>
             ) -> futures::future::BoxFuture<'a, Result<scheme_rs::proc::Application, scheme_rs::exception::Exception>> {
                 let cont = {
                     let cont = cont.read();
@@ -96,7 +99,8 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                             #impl_name(
                                 #( &args[#arg_indices], )*
                                 rest_args
-                            ).await?
+                            ).await?,
+                            exception_handler.clone(),
                         ))
                     }
                 )

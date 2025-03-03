@@ -1,5 +1,5 @@
 use crate::{
-    exception::Exception,
+    exception::{Exception, ExceptionHandler},
     gc::{Gc, GcInner, Trace},
     lists::{list_to_vec, slice_to_list},
     registry::BridgeFn,
@@ -7,7 +7,7 @@ use crate::{
     value::Value,
 };
 use futures::future::BoxFuture;
-use std::{borrow::Cow, collections::HashMap};
+use std::{borrow::Cow, collections::HashMap, ptr::null_mut};
 
 /*
 pub struct ProcCallDebugInfo {
@@ -33,6 +33,7 @@ pub type ContinuationPtr = unsafe extern "C" fn(
     env: *const *mut GcInner<Value>,
     globals: *const *mut GcInner<Value>,
     args: *const *mut GcInner<Value>,
+    exception_handler: *mut GcInner<ExceptionHandler>,
 ) -> *mut Application;
 
 /// A function pointer to a generated closure function.
@@ -41,6 +42,7 @@ pub type ClosurePtr = unsafe extern "C" fn(
     env: *const *mut GcInner<Value>,
     globals: *const *mut GcInner<Value>,
     args: *const *mut GcInner<Value>,
+    exception_handler: *mut GcInner<ExceptionHandler>,
     cont: *mut GcInner<Value>,
 ) -> *mut Application;
 
@@ -49,6 +51,7 @@ pub type BridgePtr = for<'a> fn(
     args: &'a [Gc<Value>],
     rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
+    exception_handler: &'a Option<Gc<ExceptionHandler>>,
 ) -> BoxFuture<'a, Result<Application, Exception>>;
 
 #[derive(Debug, Copy, Clone)]
@@ -115,6 +118,7 @@ impl Closure {
             _env: *const *mut GcInner<Value>,
             _globals: *const *mut GcInner<Value>,
             args: *const *mut GcInner<Value>,
+            _exception_handler: *mut GcInner<ExceptionHandler>,
         ) -> *mut Application {
             crate::runtime::make_return_values(args.read())
         }
@@ -131,10 +135,14 @@ impl Closure {
             true,
             true,
         ))));
-        self.apply(&args).await?.eval().await
+        self.apply(&args, None).await?.eval().await
     }
 
-    pub async fn apply(&self, args: &[Gc<Value>]) -> Result<Application, Exception> {
+    pub async fn apply(
+        &self,
+        args: &[Gc<Value>],
+        exception_handler: Option<Gc<ExceptionHandler>>,
+    ) -> Result<Application, Exception> {
         // Handle arguments
 
         // Extract the continuation, if it is required
@@ -182,7 +190,13 @@ impl Closure {
             let FuncPtr::Bridge(async_fn) = self.func else {
                 unreachable!()
             };
-            (async_fn)(args.as_ref(), rest_args.unwrap_or(&[]), cont.unwrap()).await
+            (async_fn)(
+                args.as_ref(),
+                rest_args.unwrap_or(&[]),
+                cont.unwrap(),
+                &exception_handler,
+            )
+            .await
         } else {
             // For LLVM functions, we need to convert our args into raw pointers
             // and make sure any freshly allocated rest_args are disposed of poperly.
@@ -202,6 +216,7 @@ impl Closure {
                         env.as_ptr(),
                         globals.as_ptr(),
                         args.as_ptr(),
+                        exception_handler.as_ref().map_or_else(null_mut, Gc::as_ptr),
                     );
                     *Box::from_raw(app)
                 },
@@ -211,6 +226,7 @@ impl Closure {
                         env.as_ptr(),
                         globals.as_ptr(),
                         args.as_ptr(),
+                        exception_handler.as_ref().map_or_else(null_mut, Gc::as_ptr),
                         cont.unwrap().as_ptr(),
                     );
                     *Box::from_raw(app)
@@ -239,26 +255,38 @@ pub struct Application {
     op: Option<Closure>,
     /// The arguments being applied to the operator.
     args: Record,
+    /// The current exception handler to be passed to the operator.
+    exception_handler: Option<Gc<ExceptionHandler>>,
 }
 
 impl Application {
-    pub fn new(op: Closure, args: Record) -> Self {
+    pub fn new(op: Closure, args: Record, exception_handler: Option<Gc<ExceptionHandler>>) -> Self {
         Self {
             // We really gotta figure out how to deal with this better
             op: Some(op),
             args,
+            exception_handler,
         }
     }
 
     pub fn values(args: Record) -> Self {
-        Self { op: None, args }
+        Self {
+            op: None,
+            args,
+            exception_handler: None,
+        }
     }
 
     /// Evaluate the application - and all subsequent application - until all that
     /// remains are values. This is the main trampoline of the evaluation engine.
     pub async fn eval(mut self) -> Result<Record, Exception> {
-        while let Application { op: Some(op), args } = self {
-            self = op.apply(&args).await?;
+        while let Application {
+            op: Some(op),
+            args,
+            exception_handler,
+        } = self
+        {
+            self = op.apply(&args, exception_handler).await?;
         }
         // If we have no operator left, return the arguments as the final values:
         Ok(self.args)
@@ -269,6 +297,7 @@ pub fn apply<'a>(
     args: &'a [Gc<Value>],
     rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
+    exception_handler: &'a Option<Gc<ExceptionHandler>>,
 ) -> BoxFuture<'a, Result<Application, Exception>> {
     Box::pin(async move {
         if rest_args.is_empty() {
@@ -280,7 +309,11 @@ pub fn apply<'a>(
         let mut args = args.to_vec();
         list_to_vec(last, &mut args);
         args.push(cont.clone());
-        Ok(Application::new(op.clone(), args))
+        Ok(Application::new(
+            op.clone(),
+            args,
+            exception_handler.clone(),
+        ))
     })
 }
 
@@ -320,6 +353,7 @@ unsafe extern "C" fn call_consumer_with_values(
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
     args: *const *mut GcInner<Value>,
+    exception_handler: *mut GcInner<ExceptionHandler>,
 ) -> *mut Application {
     // env[0] is the consumer
     let consumer = Gc::from_ptr(env.read());
@@ -346,13 +380,24 @@ unsafe extern "C" fn call_consumer_with_values(
 
     collected_args.push(cont);
 
-    Box::into_raw(Box::new(Application::new(consumer, collected_args)))
+    let exception_handler = if exception_handler.is_null() {
+        None
+    } else {
+        Some(Gc::from_ptr(exception_handler))
+    };
+
+    Box::into_raw(Box::new(Application::new(
+        consumer,
+        collected_args,
+        exception_handler,
+    )))
 }
 
 pub fn call_with_values<'a>(
     args: &'a [Gc<Value>],
     _rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
+    exception_handler: &'a Option<Gc<ExceptionHandler>>,
 ) -> BoxFuture<'a, Result<Application, Exception>> {
     Box::pin(async move {
         let [producer, consumer] = args else {
@@ -386,6 +431,7 @@ pub fn call_with_values<'a>(
         Ok(Application::new(
             producer,
             vec![Gc::new(Value::Closure(call_consumer_closure))],
+            exception_handler.clone(),
         ))
     })
 }
