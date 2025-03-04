@@ -11,16 +11,16 @@ use nom::{
     IResult, Parser,
 };
 use nom_locate::{position, LocatedSpan};
-use std::{borrow::Cow, sync::Arc};
+use std::{borrow::{Borrow, Cow}, error::Error as StdError, fmt, sync::Arc};
 use unicode_categories::UnicodeCategories;
 
 pub type InputSpan<'a> = LocatedSpan<&'a str, Arc<String>>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Lexeme<'a> {
-    Identifier(Cow<'a, str>),
+    Identifier(String),
     Boolean(bool),
-    Number(Cow<'a, str>),
+    Number(NumberLexeme<'a>),
     Character(Character),
     String(Vec<Fragment<'a>>),
     LParen,
@@ -40,26 +40,28 @@ pub enum Lexeme<'a> {
     HashCommaAt,
 }
 
-impl Lexeme<'static> {
-    fn identifier_owned(s: String) -> Self {
-        Self::Identifier(Cow::Owned(s))
-    }
-
-    fn number_owned(s: String) -> Self {
-        Self::Number(Cow::Owned(s))
-    }
-
-    fn string_owned(v: Vec<Fragment<'static>>) -> Self {
-        Self::String(v)
-    }
-}
+//impl Lexeme<'static> {
+//    fn identifier_owned(s: String) -> Self {
+//        Self::Identifier(Cow::Owned(s))
+//    }
+//
+//    fn number_owned<'a>(num: NumberLexeme<'a>) -> Self {
+//        todo!()
+//        //Self::Number(NumberLexeme {
+//        //    radix: num.radix,
+//        //    negative: num.negative,
+//        //    contents: num.contents,
+//        //})
+//    }
+//
+//    fn string_owned(v: Vec<Fragment<'static>>) -> Self {
+//        Self::String(v)
+//    }
+//}
 
 impl<'a> Lexeme<'a> {
     pub fn to_number(&self) -> &str {
-        let Lexeme::Number(num) = self else {
-            panic!("not a number");
-        };
-        num.as_ref()
+        todo!()
     }
 
     pub fn to_boolean(&self) -> bool {
@@ -95,13 +97,13 @@ impl<'a> Lexeme<'a> {
     }
 }
 
-fn lexeme(i: InputSpan) -> IResult<InputSpan, Lexeme<'static>> {
+fn lexeme<'a>(i: InputSpan<'a>) -> IResult<InputSpan<'a>, Lexeme<'a>> {
     alt((
         map(character, Lexeme::Character),
-        map(identifier, Lexeme::identifier_owned),
+        map(identifier, Lexeme::Identifier),
         map(boolean, Lexeme::Boolean),
-        map(string, Lexeme::string_owned),
-        map(number, Lexeme::number_owned),
+        //map(string, Lexeme::String),
+        map(number, Lexeme::Number),
         map(match_char('.'), |_| Lexeme::Period),
         map(match_char('\''), |_| Lexeme::Quote),
         map(match_char('('), |_| Lexeme::LParen),
@@ -346,20 +348,22 @@ fn string(i: InputSpan) -> IResult<InputSpan, Vec<Fragment<'static>>> {
     )(i)
 }
 
-fn number(i: InputSpan) -> IResult<InputSpan, String> {
-    map(
+fn number<'a>(i: InputSpan<'a>) -> IResult<InputSpan<'a>, NumberLexeme<'a>> {
+    map::<InputSpan<'a>, (u32, bool, InputSpan<'a>), NumberLexeme<'a>, _, _, _>(
         tuple((
-            opt(alt((
-                tag_no_case("#b"),
-                tag_no_case("#o"),
-                tag_no_case("#d"),
-                tag_no_case("#x"),
-            ))),
-            take_while1(|c: char| c.is_ascii_hexdigit()),
+            map(
+                opt(alt((
+                    map(tag_no_case("#b"), |_| 2),
+                    map(tag_no_case("#o"), |_| 8),
+                    map(tag_no_case("#d"), |_| 10),
+                    map(tag_no_case("#x"), |_| 16),
+                ))),
+                |radix: Option<u32>| radix.unwrap_or(10),
+            ),
+            map(opt(tag("-")), |negative| negative.is_some()),
+            take_while1(|c: char| c.is_ascii_hexdigit())
         )),
-        |(radix, real): (Option<InputSpan>, InputSpan)| {
-            format!("{}{real}", radix.map(|s| *s.fragment()).unwrap_or(""))
-        },
+        |(radix, negative, contents)| NumberLexeme::new(radix, negative, &contents),
     )(i)
 }
 
@@ -379,7 +383,7 @@ fn doc_comment(i: InputSpan) -> IResult<InputSpan, String> {
 
 #[derive(Debug)]
 pub struct Token<'a> {
-    pub lexeme: Lexeme<'static>,
+    pub lexeme: Lexeme<'a>,
     pub span: InputSpan<'a>,
 }
 
@@ -404,5 +408,121 @@ impl<'a> Token<'a> {
             span = remaining;
         }
         Ok(output)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NumberLexeme<'a> {
+    radix: u32,
+    negative: bool,
+    contents: &'a str,
+}
+impl<'a> NumberLexeme<'a> {
+    pub const fn new(radix: u32, negative: bool, contents: &'a str) -> Self {
+        Self {
+            radix,
+            negative,
+            contents,
+        }
+    }
+}
+macro_rules! impl_try_into_number_lexeme_for {
+    ($ty:ty) => {
+        impl<'a> TryFrom<NumberLexeme<'a>> for $ty {
+            type Error = TryFromNumberLexemeError<'a>;
+            fn try_from(num: NumberLexeme<'a>) -> Result<Self, TryFromNumberLexemeError<'a>> {
+                num.contents.chars()
+                    .map(|digit_char| digit_char
+                        .to_digit(num.radix)
+                        .ok_or_else(|| TryFromNumberLexemeError::new(num.contents, TryFromNumberLexemeErrorKind::InvalidDigit(num.radix))))
+                    .fold(Ok::<$ty, TryFromNumberLexemeError<'a>>(0), |number, new_digit| {
+                        let overflow_err = || TryFromNumberLexemeError::new(&num.contents, TryFromNumberLexemeErrorKind::Overflow);
+
+                        number?
+                            .checked_mul(num.radix as $ty)
+                            .ok_or_else(overflow_err)?
+                            .checked_add(new_digit? as $ty)
+                            .ok_or_else(overflow_err)
+                    })
+                    .map(|full_num| if num.negative {
+                        -full_num
+                    } else {
+                        full_num
+                    })
+            }
+        }
+    };
+    ($($ty:ty),* $(,)?) => {
+        $(impl_try_into_number_lexeme_for!($ty);)*
+    }
+}
+// We cannot use on `u.` types since the number may be negative.
+impl_try_into_number_lexeme_for! [
+    i8,
+    i16,
+    i32,
+    i64,
+    i128,
+    isize,
+];
+#[derive(Debug, PartialEq)]
+pub struct TryFromNumberLexemeError<'a> {
+    num: &'a str,
+    kind: TryFromNumberLexemeErrorKind,
+}
+impl<'a> TryFromNumberLexemeError<'a> {
+    const fn new(num: &'a str, kind: TryFromNumberLexemeErrorKind) -> Self {
+        Self {
+            num,
+            kind,
+        }
+    }
+}
+impl fmt::Display for TryFromNumberLexemeError<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "invalid number `{}`: {}", self.num, self.kind)
+    }
+}
+impl StdError for TryFromNumberLexemeError<'_> {}
+#[derive(Debug, PartialEq)]
+enum TryFromNumberLexemeErrorKind {
+    Overflow,
+    /// Contains radix
+    InvalidDigit(u32),
+}
+impl fmt::Display for TryFromNumberLexemeErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidDigit(radix) => write!(f, "invalid digit of radix `{}`", radix),
+            Self::Overflow => write!(f, "number too large"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn number_lexeme_to_num() {
+        assert_eq!(
+            <NumberLexeme<'_> as TryInto<i32>>::try_into(NumberLexeme::new(10, false, "123")),
+            Ok(123_i32),
+        );
+        assert_eq!(
+            <NumberLexeme<'_> as TryInto<i64>>::try_into(NumberLexeme::new(16, false, "DEADBEEF")),
+            Ok(0xDEADBEEF_i64),
+        );
+    }
+    #[test]
+    fn number_lexeme_errors() {
+        assert_eq!(
+            <NumberLexeme<'_> as TryInto<i8>>::try_into(NumberLexeme::new(10, false, "9001")),
+            Err(TryFromNumberLexemeError::new("9001", TryFromNumberLexemeErrorKind::Overflow)),
+        );
+        assert_eq!(
+            <NumberLexeme<'_> as TryInto<i8>>::try_into(NumberLexeme::new(10, false, "foo bar")),
+            Err(TryFromNumberLexemeError::new("foo bar", TryFromNumberLexemeErrorKind::InvalidDigit(10))),
+        );
     }
 }
