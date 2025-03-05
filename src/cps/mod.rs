@@ -99,10 +99,6 @@ pub enum PrimOp {
     // Continuation primitive operators:
     CloneClosure,
     CallWithCurrentContinuation,
-
-    // Exception primitive operators:
-    InstallExcpetionHandler,
-    GetCurrentExceptionHandler,
 }
 
 impl FromStr for PrimOp {

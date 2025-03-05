@@ -1,7 +1,7 @@
 use crate::{
     ast,
     env::CapturedEnv,
-    exception::{Exception, ExceptionHandler},
+    exception::Exception,
     expand::Transformer,
     gc::{Gc, Trace},
     num::Number,
