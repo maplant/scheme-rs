@@ -85,14 +85,19 @@ impl fmt::Debug for Value {
 
 #[derive(Copy, Clone, Debug, Trace)]
 pub enum PrimOp {
+    // Math primitive operators (to be implemented):
     Set,
     Add,
     Sub,
     Mul,
     Div,
-    CloneClosure,
+
+    // Macro expansion primitive operators:
     CaptureEnvironment,
     GetCallTransformerFn,
+
+    // Continuation primitive operators:
+    CloneClosure,
     CallWithCurrentContinuation,
 }
 
@@ -101,14 +106,7 @@ impl FromStr for PrimOp {
 
     fn from_str(s: &str) -> Result<Self, ()> {
         match s {
-            // Ignore these right now for testing
-            /*
-            "+" => Ok(Self::Add),
-            "-" => Ok(Self::Sub),
-            "/" => Ok(Self::Div),
-            "set" => Ok(Self::Set),
-             */
-            "call/cc" | "call-with-current-continuation" => Ok(Self::CallWithCurrentContinuation),
+            "&call/cc" => Ok(Self::CallWithCurrentContinuation),
             _ => Err(()),
         }
     }
@@ -164,6 +162,6 @@ pub enum Cps {
         cexp: Box<Cps>,
         analysis: AnalysisCache,
     },
-    // Temporary terminating value for debugging purposes (to be removed)
+    /// Returns the values
     ReturnValues(Value),
 }

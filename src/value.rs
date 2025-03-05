@@ -46,6 +46,7 @@ pub enum Value {
     Transformer(Transformer),
     /// A captured lexical environment.
     CapturedEnv(CapturedEnv),
+    // ExceptionHandler(Option<Gc<ExceptionHandler>>),
 }
 
 impl Value {
@@ -112,6 +113,7 @@ impl Value {
             Self::Undefined => "undefined",
             Self::Transformer(_) => "transformer",
             Self::CapturedEnv(_) => "captured-env",
+            // Self::ExceptionHandler(_) => "exception-handler",
         }
     }
 
@@ -156,6 +158,7 @@ impl Clone for Value {
             Self::Undefined => Self::Undefined,
             Self::Transformer(trans) => Self::Transformer(trans.clone()),
             Self::CapturedEnv(cap) => Self::CapturedEnv(cap.clone()),
+            // Self::ExceptionHandler(eh) => Self::ExceptionHandler(eh.clone()),
         }
     }
 }
@@ -201,6 +204,7 @@ impl fmt::Display for Value {
             Self::Undefined => write!(f, "<undefined>"),
             Self::Transformer(_) => write!(f, "<transformer>"),
             Self::CapturedEnv(_) => write!(f, "<environment>"),
+            // Self::ExceptionHandler(_) => write!(f, "<exception-handler>"),
         }
     }
 }
@@ -226,6 +230,7 @@ impl fmt::Debug for Value {
             Self::Undefined => write!(f, "<undefined>"),
             Self::Transformer(_) => write!(f, "<transformer>"),
             Self::CapturedEnv(_) => write!(f, "<environment>"),
+            // Self::ExceptionHandler(_) => write!(f, "<exception-handler>"),
         }
     }
 }

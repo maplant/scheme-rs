@@ -2,7 +2,7 @@ use crate::{
     ast::{Expression, Literal},
     cps::Compile,
     env::CapturedEnv,
-    exception::Exception,
+    exception::{Exception, ExceptionHandler},
     gc::{Gc, Trace},
     proc::{Application, Closure},
     syntax::{Identifier, Span, Syntax},
@@ -402,6 +402,7 @@ pub fn call_transformer<'a>(
     args: &'a [Gc<Value>],
     env: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
+    exception_handler: &'a Option<Gc<ExceptionHandler>>,
 ) -> BoxFuture<'a, Result<Application, Exception>> {
     Box::pin(async move {
         let [captured_env, trans, arg] = args else {
@@ -449,7 +450,7 @@ pub fn call_transformer<'a>(
             .await
             .unwrap();
         let transformer_result = compiled.call(&[]).await?;
-        let application = Application::new(cont, transformer_result);
+        let application = Application::new(cont, transformer_result, exception_handler.clone());
 
         Ok(application)
     })

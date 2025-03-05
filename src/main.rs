@@ -111,7 +111,7 @@ async fn compile_and_run_str<'e>(
         // println!("Compiled: {compiled:#?}");
 
         let closure = runtime.compile_expr(compiled).await.unwrap();
-        let result = closure.apply(&[]).await?.eval().await?;
+        let result = closure.apply(&[], None).await?.eval().await?;
         output.extend(result)
     }
     Ok(output)

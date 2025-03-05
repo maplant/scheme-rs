@@ -1,7 +1,14 @@
 //! Exceptional situations and conditions
+
+use futures::future::BoxFuture;
+
 use crate::{
-    gc::Trace,
+    gc::{Gc, GcInner, Trace},
+    proc::{Application, Closure, FuncPtr},
+    registry::BridgeFn,
+    runtime::Runtime,
     syntax::{Identifier, Span},
+    value::Value,
 };
 use std::{error::Error as StdError, fmt, ops::Range};
 
@@ -10,6 +17,7 @@ pub struct Exception {
     pub backtrace: Vec<Frame>,
     pub message: String,
     pub condition: Condition,
+    pub obj: Gc<Value>,
 }
 impl fmt::Display for Exception {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -37,11 +45,21 @@ pub enum Condition {
 }
 
 impl Exception {
+    pub fn from_value(obj: Gc<Value>) -> Self {
+        Self {
+            backtrace: Vec::new(),
+            message: "Todo".to_string(),
+            condition: Condition::Error,
+            obj,
+        }
+    }
+
     pub fn error(err: String) -> Self {
         Self {
             backtrace: Vec::new(),
             message: err,
             condition: Condition::Error,
+            obj: Gc::new(Value::Null),
         }
     }
 
@@ -50,6 +68,7 @@ impl Exception {
             backtrace: Vec::new(),
             message: "Invalid syntax".to_string(),
             condition: Condition::Syntax,
+            obj: Gc::new(Value::Null),
         }
     }
 
@@ -133,4 +152,157 @@ impl Frame {
             repeated: 0,
         }
     }
+}
+
+/// An exception handler includes the current handler - a function to call with
+/// any condition that is raised - and the previous handler.
+#[derive(Clone, Trace)]
+pub struct ExceptionHandler {
+    /// The previously installed handler. If the previously installed handler is
+    /// None, we return the condition as an Error.
+    prev_handler: Option<Gc<ExceptionHandler>>,
+    /// The currently installed handler.
+    curr_handler: Closure,
+}
+
+pub fn with_exception_handler<'a>(
+    args: &'a [Gc<Value>],
+    _rest_args: &'a [Gc<Value>],
+    cont: &'a Gc<Value>,
+    exception_handler: &'a Option<Gc<ExceptionHandler>>,
+) -> BoxFuture<'a, Result<Application, Exception>> {
+    Box::pin(async move {
+        let [handler, thunk] = args else {
+            return Err(Exception::wrong_num_of_args(2, args.len()));
+        };
+
+        let handler_ref = handler.read();
+        let handler: &Closure = handler_ref.as_ref().try_into()?;
+
+        let thunk_ref = thunk.read();
+        let thunk: &Closure = thunk_ref.as_ref().try_into()?;
+
+        let exception_handler = ExceptionHandler {
+            prev_handler: exception_handler.clone(),
+            curr_handler: handler.clone(),
+        };
+
+        Ok(Application::new(
+            thunk.clone(),
+            vec![cont.clone()],
+            Some(Gc::new(exception_handler)),
+        ))
+    })
+}
+
+inventory::submit! {
+    BridgeFn::new("with-exception-handler", "(base)", 2, false, with_exception_handler)
+}
+
+/// Raises a non-continuable exception to the current exception handler.
+pub fn raise<'a>(
+    args: &'a [Gc<Value>],
+    _rest_args: &'a [Gc<Value>],
+    cont: &'a Gc<Value>,
+    exception_handler: &'a Option<Gc<ExceptionHandler>>,
+) -> BoxFuture<'a, Result<Application, Exception>> {
+    Box::pin(async move {
+        let [condition] = args else {
+            return Err(Exception::wrong_num_of_args(1, args.len()));
+        };
+
+        let Some(ref handler) = exception_handler else {
+            return Err(Exception::from_value(condition.clone()));
+        };
+
+        let handler = handler.read().clone();
+
+        Ok(Application::new(
+            handler.curr_handler.clone(),
+            vec![
+                condition.clone(),
+                Gc::new(Value::Closure(Closure::new(
+                    handler.curr_handler.runtime.clone(),
+                    vec![condition.clone(), cont.clone()],
+                    Vec::new(),
+                    FuncPtr::Continuation(reraise_exception),
+                    0,
+                    true,
+                    false,
+                ))),
+            ],
+            handler.prev_handler.clone(),
+        ))
+    })
+}
+
+inventory::submit! {
+    BridgeFn::new("raise", "(base)", 1, false, raise)
+}
+
+unsafe extern "C" fn reraise_exception(
+    runtime: *mut GcInner<Runtime>,
+    env: *const *mut GcInner<Value>,
+    _globals: *const *mut GcInner<Value>,
+    _args: *const *mut GcInner<Value>,
+    exception_handler: *mut GcInner<ExceptionHandler>,
+) -> *mut Application {
+    let runtime = Gc::from_ptr(runtime);
+
+    // env[0] is the exception
+    let exception = Gc::from_ptr(env.read());
+
+    // env[1] is the continuation
+    let cont = Gc::from_ptr(env.add(1).read());
+
+    let curr_handler = if exception_handler.is_null() {
+        None
+    } else {
+        Some(Gc::from_ptr(exception_handler))
+    };
+
+    Box::into_raw(Box::new(Application::new(
+        Closure::new(
+            runtime,
+            Vec::new(),
+            Vec::new(),
+            FuncPtr::Bridge(raise),
+            1,
+            false,
+            false,
+        ),
+        vec![exception, cont],
+        curr_handler,
+    )))
+}
+
+/// Raises an exception to the current exception handler and coninues with the
+/// value returned by the handler.
+pub fn raise_continuable<'a>(
+    args: &'a [Gc<Value>],
+    _rest_args: &'a [Gc<Value>],
+    cont: &'a Gc<Value>,
+    exception_handler: &'a Option<Gc<ExceptionHandler>>,
+) -> BoxFuture<'a, Result<Application, Exception>> {
+    Box::pin(async move {
+        let [condition] = args else {
+            return Err(Exception::wrong_num_of_args(1, args.len()));
+        };
+
+        let Some(ref handler) = exception_handler else {
+            return Err(Exception::from_value(condition.clone()));
+        };
+
+        let handler = handler.read().clone();
+
+        Ok(Application::new(
+            handler.curr_handler,
+            vec![condition.clone(), cont.clone()],
+            handler.prev_handler,
+        ))
+    })
+}
+
+inventory::submit! {
+    BridgeFn::new("raise-continuable", "(base)", 1, false, raise_continuable)
 }
