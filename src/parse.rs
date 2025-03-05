@@ -1,6 +1,9 @@
 use crate::{
     ast::Literal,
-    lex::{Character as LexCharacter, Fragment, InputSpan, LexError, Lexeme, Token},
+    lex::{
+        Character as LexCharacter, Fragment, InputSpan, LexError, Lexeme, Number as LexNumber,
+        Token, TryFromNumberError,
+    },
     num::Number,
     syntax::Syntax,
 };
@@ -19,6 +22,7 @@ pub enum ParseSyntaxError<'a> {
     CharTryFrom(CharTryFromError),
     Lex(LexError<'a>),
     TryFromInt(TryFromIntError),
+    TryFromNumber(TryFromNumberError<'a>),
 }
 impl fmt::Display for ParseSyntaxError<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -45,6 +49,7 @@ impl fmt::Display for ParseSyntaxError<'_> {
             Self::CharTryFrom(e) => write!(f, "{}", e),
             Self::Lex(e) => write!(f, "{}", e),
             Self::TryFromInt(e) => write!(f, "{}", e),
+            Self::TryFromNumber(e) => write!(f, "{}", e),
         }
     }
 }
@@ -63,6 +68,11 @@ impl<'a> From<LexError<'a>> for ParseSyntaxError<'a> {
 impl From<CharTryFromError> for ParseSyntaxError<'_> {
     fn from(e: CharTryFromError) -> Self {
         Self::CharTryFrom(e)
+    }
+}
+impl<'a> From<TryFromNumberError<'a>> for ParseSyntaxError<'a> {
+    fn from(e: TryFromNumberError<'a>) -> Self {
+        Self::TryFromNumber(e)
     }
 }
 
@@ -111,9 +121,10 @@ pub fn expression<'a, 'b>(
         [c @ token!(Lexeme::Character(_)), tail @ ..] => {
             Ok((tail, Syntax::new_literal(character(c)?, c.span.clone())))
         }
-        [n @ token!(Lexeme::Number(_)), tail @ ..] => {
-            Ok((tail, Syntax::new_literal(number(n)?, n.span.clone())))
-        }
+        [Token {
+            lexeme: Lexeme::Number(n),
+            span,
+        }, tail @ ..] => Ok((tail, Syntax::new_literal(number(n)?, span.clone()))),
         [s @ token!(Lexeme::String(_)), tail @ ..] => {
             Ok((tail, Syntax::new_literal(string(s)?, s.span.clone())))
         }
@@ -333,14 +344,12 @@ fn character<'a>(i: &Token<'a>) -> Result<Literal, ParseSyntaxError<'a>> {
     }
 }
 
-fn number<'a>(i: &Token<'a>) -> Result<Literal, ParseSyntaxError<'a>> {
-    let number = i.lexeme.to_number();
-    // TODO: Parse correctly
-    let number: Integer = number.parse().unwrap();
-    match number.to_i64() {
-        Some(fixed) => Ok(Literal::Number(Number::FixedInteger(fixed))),
-        None => Ok(Literal::Number(Number::BigInteger(number))),
-    }
+fn number<'a>(i: &LexNumber<'a>) -> Result<Literal, ParseSyntaxError<'a>> {
+    <LexNumber as TryInto<i64>>::try_into(*i)
+        .map(Number::FixedInteger)
+        .or_else(|_| <LexNumber as TryInto<Integer>>::try_into(*i).map(Number::BigInteger))
+        .map(Literal::Number)
+        .map_err(ParseSyntaxError::from)
 }
 
 fn string<'a>(i: &Token<'a>) -> Result<Literal, ParseSyntaxError<'a>> {
