@@ -18,11 +18,13 @@ That is obviously a long way away.
 - Call by current continuation
 - Transformers (define-syntax, syntax-case, datum->syntax and syntax->datum)
 - Spawning tasks and awaiting futures
+- Exceptions and error handling (`raise`, `raise-continuable`, `with-exception-handler`)
 - Defining async bridge functions in Rust
 
 ## Features currently unsupported by scheme-rs: 
 
-- Exceptions and error handling
+- `dynamic-wind`
+- Records and conditions 
 - Ports and IO operations
 - Most API functions are not implemented
 - A large portion of lexical structures are missing; there's no way to specify recursive data structures
