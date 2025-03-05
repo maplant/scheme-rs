@@ -11,7 +11,6 @@ use nom::{
     IResult, Parser,
 };
 use nom_locate::{position, LocatedSpan};
-use num::{bigint::Sign, BigInt};
 use rug::Integer;
 use std::{
     borrow::Cow,
@@ -449,8 +448,8 @@ macro_rules! impl_try_into_number_lexeme_for {
                     .map(|digit_char| digit_char
                         .to_digit(num.radix)
                         .ok_or_else(invalid_digit_err))
-                    .fold(Ok::<$ty, TryFromNumberError<'a>>(0), |number, new_digit| {
-                        number?
+                    .try_fold(0 as $ty, |number, new_digit| {
+                        number
                             .checked_mul(num.radix as $ty)
                             .ok_or_else(overflow_err)?
                             .checked_add(new_digit? as $ty)
@@ -470,32 +469,27 @@ macro_rules! impl_try_into_number_lexeme_for {
 }
 // We cannot use on `u.` types since the number may be negative.
 impl_try_into_number_lexeme_for![i8, i16, i32, i64, i128, isize];
-macro_rules! impl_try_into_number_lexeme_for_big_int {
-    ($init:expr, $big_int:ty) => {
-        impl<'a> TryFrom<Number<'a>> for $big_int {
-            type Error = TryFromNumberError<'a>;
-            fn try_from(num: Number<'a>) -> Result<Self, TryFromNumberError<'a>> {
-                num.contents
-                    .chars()
-                    .map(|digit| {
-                        digit.to_digit(num.radix).ok_or_else(|| {
-                            TryFromNumberError::new(
-                                num.contents,
-                                TryFromNumberErrorKind::InvalidDigit(num.radix),
-                            )
-                        })
-                    })
-                    .fold(
-                        Ok::<$big_int, TryFromNumberError<'a>>($init),
-                        |number, digit| Ok(number?.mul(num.radix).add(digit?)),
+
+impl<'a> TryFrom<Number<'a>> for Integer {
+    type Error = TryFromNumberError<'a>;
+    fn try_from(num: Number<'a>) -> Result<Self, TryFromNumberError<'a>> {
+        num.contents
+            .chars()
+            .map(|digit| {
+                digit.to_digit(num.radix).ok_or_else(|| {
+                    TryFromNumberError::new(
+                        num.contents,
+                        TryFromNumberErrorKind::InvalidDigit(num.radix),
                     )
-                    .map(|number| if num.negative { number.neg() } else { number })
-            }
-        }
-    };
+                })
+            })
+            .try_fold(Integer::new(), |number, digit| {
+                Ok(number.mul(num.radix).add(digit?))
+            })
+            .map(|number| if num.negative { number.neg() } else { number })
+    }
 }
-impl_try_into_number_lexeme_for_big_int!(BigInt::new(Sign::Plus, Vec::new()), BigInt);
-impl_try_into_number_lexeme_for_big_int!(Integer::new(), Integer);
+
 #[derive(Debug, PartialEq)]
 pub struct TryFromNumberError<'a> {
     num: &'a str,
