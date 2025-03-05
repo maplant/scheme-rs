@@ -1,6 +1,6 @@
 use crate::{
     ast::Literal,
-    lex::{Character as LexCharacter, Fragment, InputSpan, LexError, Lexeme, NumberLexeme, Token, TryFromNumberLexemeError},
+    lex::{Character as LexCharacter, Fragment, InputSpan, LexError, Lexeme, Number as LexNumber, Token, TryFromNumberError},
     num::Number,
     syntax::Syntax,
 };
@@ -20,7 +20,7 @@ pub enum ParseSyntaxError<'a> {
     CharTryFrom(CharTryFromError),
     Lex(LexError<'a>),
     TryFromInt(TryFromIntError),
-    TryFromNumberLexeme(TryFromNumberLexemeError<'a>),
+    TryFromNumber(TryFromNumberError<'a>),
 }
 impl fmt::Display for ParseSyntaxError<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -47,7 +47,7 @@ impl fmt::Display for ParseSyntaxError<'_> {
             Self::CharTryFrom(e) => write!(f, "{}", e),
             Self::Lex(e) => write!(f, "{}", e),
             Self::TryFromInt(e) => write!(f, "{}", e),
-            Self::TryFromNumberLexeme(e) => write!(f, "{}", e),
+            Self::TryFromNumber(e) => write!(f, "{}", e),
         }
     }
 }
@@ -68,9 +68,9 @@ impl From<CharTryFromError> for ParseSyntaxError<'_> {
         Self::CharTryFrom(e)
     }
 }
-impl<'a> From<TryFromNumberLexemeError<'a>> for ParseSyntaxError<'a> {
-    fn from(e: TryFromNumberLexemeError<'a>) -> Self {
-        Self::TryFromNumberLexeme(e)
+impl<'a> From<TryFromNumberError<'a>> for ParseSyntaxError<'a> {
+    fn from(e: TryFromNumberError<'a>) -> Self {
+        Self::TryFromNumber(e)
     }
 }
 
@@ -344,10 +344,10 @@ fn character<'a>(i: &Token<'a>) -> Result<Literal, ParseSyntaxError<'a>> {
     }
 }
 
-fn number<'a>(i: &NumberLexeme<'a>) -> Result<Literal, ParseSyntaxError<'a>> {
-    <NumberLexeme as TryInto<i64>>::try_into(*i)
+fn number<'a>(i: &LexNumber<'a>) -> Result<Literal, ParseSyntaxError<'a>> {
+    <LexNumber as TryInto<i64>>::try_into(*i)
         .map(Number::FixedInteger)
-        .or_else(|_| <NumberLexeme as TryInto<Integer>>::try_into(*i)
+        .or_else(|_| <LexNumber as TryInto<Integer>>::try_into(*i)
             .map(Number::BigInteger))
         .map(Literal::Number)
         .map_err(ParseSyntaxError::from)
