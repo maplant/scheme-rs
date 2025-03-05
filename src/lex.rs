@@ -11,7 +11,15 @@ use nom::{
     IResult, Parser,
 };
 use nom_locate::{position, LocatedSpan};
-use std::{borrow::{Borrow, Cow}, error::Error as StdError, fmt, sync::Arc};
+use num::{bigint::Sign, BigInt};
+use rug::Integer;
+use std::{
+    borrow::{Borrow, Cow},
+    error::Error as StdError,
+    fmt,
+    ops::{Add, Mul, Neg},
+    sync::Arc,
+};
 use unicode_categories::UnicodeCategories;
 
 pub type InputSpan<'a> = LocatedSpan<&'a str, Arc<String>>;
@@ -60,10 +68,6 @@ pub enum Lexeme<'a> {
 //}
 
 impl<'a> Lexeme<'a> {
-    pub fn to_number(&self) -> &str {
-        todo!()
-    }
-
     pub fn to_boolean(&self) -> bool {
         let Lexeme::Boolean(b) = self else {
             panic!("not a boolean");
@@ -100,10 +104,10 @@ impl<'a> Lexeme<'a> {
 fn lexeme<'a>(i: InputSpan<'a>) -> IResult<InputSpan<'a>, Lexeme<'a>> {
     alt((
         map(character, Lexeme::Character),
+        map(number, Lexeme::Number),
         map(identifier, Lexeme::Identifier),
         map(boolean, Lexeme::Boolean),
-        //map(string, Lexeme::String),
-        map(number, Lexeme::Number),
+        map(string, Lexeme::String),
         map(match_char('.'), |_| Lexeme::Period),
         map(match_char('\''), |_| Lexeme::Quote),
         map(match_char('('), |_| Lexeme::LParen),
@@ -316,7 +320,7 @@ pub enum Fragment<'a> {
     Unescaped(Cow<'a, str>),
 }
 
-fn string(i: InputSpan) -> IResult<InputSpan, Vec<Fragment<'static>>> {
+fn string<'a>(i: InputSpan<'a>) -> IResult<InputSpan<'a>, Vec<Fragment<'a>>> {
     delimited(
         match_char('"'),
         many0(alt((
@@ -361,7 +365,7 @@ fn number<'a>(i: InputSpan<'a>) -> IResult<InputSpan<'a>, NumberLexeme<'a>> {
                 |radix: Option<u32>| radix.unwrap_or(10),
             ),
             map(opt(tag("-")), |negative| negative.is_some()),
-            take_while1(|c: char| c.is_ascii_hexdigit())
+            take_while1(|c: char| c.is_ascii_hexdigit()),
         )),
         |(radix, negative, contents)| NumberLexeme::new(radix, negative, &contents),
     )(i)
@@ -411,7 +415,7 @@ impl<'a> Token<'a> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NumberLexeme<'a> {
     radix: u32,
     negative: bool,
@@ -431,13 +435,14 @@ macro_rules! impl_try_into_number_lexeme_for {
         impl<'a> TryFrom<NumberLexeme<'a>> for $ty {
             type Error = TryFromNumberLexemeError<'a>;
             fn try_from(num: NumberLexeme<'a>) -> Result<Self, TryFromNumberLexemeError<'a>> {
+                let invalid_digit_err = || TryFromNumberLexemeError::new(num.contents, TryFromNumberLexemeErrorKind::InvalidDigit(num.radix));
+                let overflow_err = || TryFromNumberLexemeError::new(&num.contents, TryFromNumberLexemeErrorKind::Overflow);
+
                 num.contents.chars()
                     .map(|digit_char| digit_char
                         .to_digit(num.radix)
-                        .ok_or_else(|| TryFromNumberLexemeError::new(num.contents, TryFromNumberLexemeErrorKind::InvalidDigit(num.radix))))
+                        .ok_or_else(invalid_digit_err))
                     .fold(Ok::<$ty, TryFromNumberLexemeError<'a>>(0), |number, new_digit| {
-                        let overflow_err = || TryFromNumberLexemeError::new(&num.contents, TryFromNumberLexemeErrorKind::Overflow);
-
                         number?
                             .checked_mul(num.radix as $ty)
                             .ok_or_else(overflow_err)?
@@ -457,14 +462,37 @@ macro_rules! impl_try_into_number_lexeme_for {
     }
 }
 // We cannot use on `u.` types since the number may be negative.
-impl_try_into_number_lexeme_for! [
-    i8,
-    i16,
-    i32,
-    i64,
-    i128,
-    isize,
-];
+impl_try_into_number_lexeme_for![i8, i16, i32, i64, i128, isize];
+macro_rules! impl_try_into_number_lexeme_for_big_int {
+    ($init:expr, $big_int:ty) => {
+        impl<'a> TryFrom<NumberLexeme<'a>> for $big_int {
+            type Error = TryFromNumberLexemeError<'a>;
+            fn try_from(num: NumberLexeme<'a>) -> Result<Self, TryFromNumberLexemeError<'a>> {
+                num.contents
+                    .chars()
+                    .map(|digit| {
+                        digit.to_digit(num.radix).ok_or_else(|| {
+                            TryFromNumberLexemeError::new(
+                                num.contents,
+                                TryFromNumberLexemeErrorKind::InvalidDigit(num.radix),
+                            )
+                        })
+                    })
+                    .fold(
+                        Ok::<$big_int, TryFromNumberLexemeError<'a>>($init),
+                        |number, digit| Ok(number?.mul(num.radix).add(digit?)),
+                    )
+                    .map(|number| if num.negative {
+                        number.neg()
+                    } else {
+                        number
+                    })
+            }
+        }
+    }
+}
+impl_try_into_number_lexeme_for_big_int!(BigInt::new(Sign::Plus, Vec::new()), BigInt);
+impl_try_into_number_lexeme_for_big_int!(Integer::new(), Integer);
 #[derive(Debug, PartialEq)]
 pub struct TryFromNumberLexemeError<'a> {
     num: &'a str,
@@ -472,10 +500,7 @@ pub struct TryFromNumberLexemeError<'a> {
 }
 impl<'a> TryFromNumberLexemeError<'a> {
     const fn new(num: &'a str, kind: TryFromNumberLexemeErrorKind) -> Self {
-        Self {
-            num,
-            kind,
-        }
+        Self { num, kind }
     }
 }
 impl fmt::Display for TryFromNumberLexemeError<'_> {
@@ -518,11 +543,17 @@ mod tests {
     fn number_lexeme_errors() {
         assert_eq!(
             <NumberLexeme<'_> as TryInto<i8>>::try_into(NumberLexeme::new(10, false, "9001")),
-            Err(TryFromNumberLexemeError::new("9001", TryFromNumberLexemeErrorKind::Overflow)),
+            Err(TryFromNumberLexemeError::new(
+                "9001",
+                TryFromNumberLexemeErrorKind::Overflow
+            )),
         );
         assert_eq!(
             <NumberLexeme<'_> as TryInto<i8>>::try_into(NumberLexeme::new(10, false, "foo bar")),
-            Err(TryFromNumberLexemeError::new("foo bar", TryFromNumberLexemeErrorKind::InvalidDigit(10))),
+            Err(TryFromNumberLexemeError::new(
+                "foo bar",
+                TryFromNumberLexemeErrorKind::InvalidDigit(10)
+            )),
         );
     }
 }
