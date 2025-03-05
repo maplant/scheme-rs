@@ -8,14 +8,14 @@
 
 (assert-eq (negative? 1) #f)
 (assert-eq (negative? 0) #f)
-(assert-eq (negative? (- 1)) #t)
+(assert-eq (negative? -1) #t)
 
 (assert-eq (abs 1) 1)
 (assert-eq (abs 0) 0)
-(assert-eq (abs (- 1)) 1)
+(assert-eq (abs -1) 1)
 
 (assert-eq (min 2 4 1 3) 1)
-(assert-eq (min 2 4 (- 1 ) 3) (- 1))
+(assert-eq (min 2 4 -1 3) -1)
 (assert-eq (min 2 4 3) 2)
 
 (assert-eq (max 2 4 1 3) 4)
