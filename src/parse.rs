@@ -1,10 +1,12 @@
 use crate::{
     ast::Literal,
-    lex::{Character as LexCharacter, Fragment, InputSpan, LexError, Lexeme, Number as LexNumber, Token, TryFromNumberError},
+    lex::{
+        Character as LexCharacter, Fragment, InputSpan, LexError, Lexeme, Number as LexNumber,
+        Token, TryFromNumberError,
+    },
     num::Number,
     syntax::Syntax,
 };
-use num::BigInt;
 use rug::Integer;
 use std::{char::CharTryFromError, error::Error as StdError, fmt, num::TryFromIntError};
 
@@ -122,9 +124,7 @@ pub fn expression<'a, 'b>(
         [Token {
             lexeme: Lexeme::Number(n),
             span,
-        }, tail @ ..] => {
-            Ok((tail, Syntax::new_literal(number(n)?, span.clone())))
-        }
+        }, tail @ ..] => Ok((tail, Syntax::new_literal(number(n)?, span.clone()))),
         [s @ token!(Lexeme::String(_)), tail @ ..] => {
             Ok((tail, Syntax::new_literal(string(s)?, s.span.clone())))
         }
@@ -347,8 +347,7 @@ fn character<'a>(i: &Token<'a>) -> Result<Literal, ParseSyntaxError<'a>> {
 fn number<'a>(i: &LexNumber<'a>) -> Result<Literal, ParseSyntaxError<'a>> {
     <LexNumber as TryInto<i64>>::try_into(*i)
         .map(Number::FixedInteger)
-        .or_else(|_| <LexNumber as TryInto<Integer>>::try_into(*i)
-            .map(Number::BigInteger))
+        .or_else(|_| <LexNumber as TryInto<Integer>>::try_into(*i).map(Number::BigInteger))
         .map(Literal::Number)
         .map_err(ParseSyntaxError::from)
 }

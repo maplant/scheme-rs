@@ -14,7 +14,7 @@ use nom_locate::{position, LocatedSpan};
 use num::{bigint::Sign, BigInt};
 use rug::Integer;
 use std::{
-    borrow::{Borrow, Cow},
+    borrow::Cow,
     error::Error as StdError,
     fmt,
     ops::{Add, Mul, Neg},
@@ -101,7 +101,7 @@ impl<'a> Lexeme<'a> {
     }
 }
 
-fn lexeme<'a>(i: InputSpan<'a>) -> IResult<InputSpan<'a>, Lexeme<'a>> {
+fn lexeme(i: InputSpan) -> IResult<InputSpan, Lexeme> {
     alt((
         map(character, Lexeme::Character),
         map(number, Lexeme::Number),
@@ -320,7 +320,7 @@ pub enum Fragment<'a> {
     Unescaped(Cow<'a, str>),
 }
 
-fn string<'a>(i: InputSpan<'a>) -> IResult<InputSpan<'a>, Vec<Fragment<'a>>> {
+fn string(i: InputSpan) -> IResult<InputSpan, Vec<Fragment>> {
     delimited(
         match_char('"'),
         many0(alt((
@@ -360,7 +360,7 @@ fn number<'a>(i: InputSpan<'a>) -> IResult<InputSpan<'a>, Number<'a>> {
                 opt(match_char('-')).map(|neg| neg.is_some()),
                 take_while1(|c: char| c.is_digit($radix)),
             ))
-        }
+        };
     }
 
     map::<InputSpan<'a>, (u32, bool, InputSpan<'a>), Number<'a>, _, _, _>(
@@ -371,10 +371,10 @@ fn number<'a>(i: InputSpan<'a>) -> IResult<InputSpan<'a>, Number<'a>> {
             tuple((
                 opt(tag_no_case("#d")).map(|_| 10),
                 opt(match_char('-')).map(|neg| neg.is_some()),
-                take_while1(|c: char| c.is_digit(10)),
+                take_while1(|c: char| c.is_ascii_digit()),
             )),
         )),
-        |(radix, neg, contents)| Number::new(radix, neg, &contents)
+        |(radix, neg, contents)| Number::new(radix, neg, &contents),
     )(i)
 }
 
@@ -489,14 +489,10 @@ macro_rules! impl_try_into_number_lexeme_for_big_int {
                         Ok::<$big_int, TryFromNumberError<'a>>($init),
                         |number, digit| Ok(number?.mul(num.radix).add(digit?)),
                     )
-                    .map(|number| if num.negative {
-                        number.neg()
-                    } else {
-                        number
-                    })
+                    .map(|number| if num.negative { number.neg() } else { number })
             }
         }
-    }
+    };
 }
 impl_try_into_number_lexeme_for_big_int!(BigInt::new(Sign::Plus, Vec::new()), BigInt);
 impl_try_into_number_lexeme_for_big_int!(Integer::new(), Integer);
