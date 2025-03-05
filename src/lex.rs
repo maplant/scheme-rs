@@ -47,25 +47,6 @@ pub enum Lexeme<'a> {
     HashCommaAt,
 }
 
-//impl Lexeme<'static> {
-//    fn identifier_owned(s: String) -> Self {
-//        Self::Identifier(Cow::Owned(s))
-//    }
-//
-//    fn number_owned<'a>(num: Number<'a>) -> Self {
-//        todo!()
-//        //Self::Number(Number {
-//        //    radix: num.radix,
-//        //    negative: num.negative,
-//        //    contents: num.contents,
-//        //})
-//    }
-//
-//    fn string_owned(v: Vec<Fragment<'static>>) -> Self {
-//        Self::String(v)
-//    }
-//}
-
 impl<'a> Lexeme<'a> {
     pub fn to_boolean(&self) -> bool {
         let Lexeme::Boolean(b) = self else {
