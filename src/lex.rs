@@ -353,21 +353,28 @@ fn string<'a>(i: InputSpan<'a>) -> IResult<InputSpan<'a>, Vec<Fragment<'a>>> {
 }
 
 fn number<'a>(i: InputSpan<'a>) -> IResult<InputSpan<'a>, NumberLexeme<'a>> {
+    macro_rules! gen_radix_parser {
+        ($head:expr, $radix:expr) => {
+            tuple((
+                tag_no_case($head).map(|_| $radix),
+                opt(match_char('-')).map(|neg| neg.is_some()),
+                take_while1(|c: char| c.is_digit($radix)),
+            ))
+        }
+    }
+
     map::<InputSpan<'a>, (u32, bool, InputSpan<'a>), NumberLexeme<'a>, _, _, _>(
-        tuple((
-            map(
-                opt(alt((
-                    map(tag_no_case("#b"), |_| 2),
-                    map(tag_no_case("#o"), |_| 8),
-                    map(tag_no_case("#d"), |_| 10),
-                    map(tag_no_case("#x"), |_| 16),
-                ))),
-                |radix: Option<u32>| radix.unwrap_or(10),
-            ),
-            map(opt(tag("-")), |negative| negative.is_some()),
-            take_while1(|c: char| c.is_ascii_hexdigit()),
+        alt((
+            gen_radix_parser!("#b", 2),
+            gen_radix_parser!("#o", 8),
+            gen_radix_parser!("#x", 16),
+            tuple((
+                opt(tag_no_case("#d")).map(|_| 10),
+                opt(match_char('-')).map(|neg| neg.is_some()),
+                take_while1(|c: char| c.is_digit(10)),
+            )),
         )),
-        |(radix, negative, contents)| NumberLexeme::new(radix, negative, &contents),
+        |(radix, neg, contents)| NumberLexeme::new(radix, neg, &contents)
     )(i)
 }
 
