@@ -17,37 +17,7 @@
 //! count as free variables, because we already have a different way for
 //! accessing those.
 
-use std::cell::{Ref, RefCell};
-
 use super::*;
-
-#[derive(Debug, Default, Clone)]
-pub struct Analysis {
-    uses: HashMap<Local, usize>,
-}
-
-pub(super) type AnalysisCache = RefCell<Option<Analysis>>;
-
-impl Analysis {
-    fn analyze_fix(body: &Cps, cexp: &Cps) -> Self {
-        let uses = merge_uses(body.uses(), cexp.uses());
-        Self { uses }
-    }
-
-    fn uses(&self) -> HashMap<Local, usize> {
-        self.uses.clone()
-    }
-
-    fn fetch<'a>(cache: &'a AnalysisCache, body: &Cps, cexp: &Cps) -> Ref<'a, Analysis> {
-        {
-            let mut cached = cache.borrow_mut();
-            if cached.is_none() {
-                *cached = Some(Analysis::analyze_fix(body, cexp));
-            }
-        }
-        Ref::map(cache.borrow(), |cache| cache.as_ref().unwrap())
-    }
-}
 
 impl Cps {
     // TODO: Have this function return a Cow<'_, HashSet<Local>>
@@ -135,13 +105,18 @@ impl Cps {
         }
     }
 
-    // TODO: Have this function return a Cow<'_, HashSet<Local>>
-    pub(super) fn uses(&self) -> HashMap<Local, usize> {
+    // TODO: Have this function return a Cow
+    pub(super) fn uses(
+        &self,
+        uses_cache: &mut HashMap<Local, HashMap<Local, usize>>,
+    ) -> HashMap<Local, usize> {
         match self {
-            Cps::AllocCell(_, cexpr) => cexpr.uses(),
-            Cps::PrimOp(_, args, _, cexpr) => merge_uses(cexpr.uses(), values_to_uses(args)),
+            Cps::AllocCell(_, cexpr) => cexpr.uses(uses_cache).clone(),
+            Cps::PrimOp(_, args, _, cexpr) => {
+                merge_uses(values_to_uses(args), cexpr.uses(uses_cache))
+            }
             Cps::If(cond, success, failure) => {
-                let uses = merge_uses(success.uses(), failure.uses());
+                let uses = merge_uses(success.uses(uses_cache).clone(), failure.uses(uses_cache));
                 add_value_use(uses, cond)
             }
             Cps::App(op, vals) => {
@@ -150,67 +125,17 @@ impl Cps {
             }
             Cps::Forward(op, arg) => add_value_use(add_value_use(HashMap::new(), op), arg),
             Cps::Closure {
-                body,
-                cexp,
-                analysis,
-                ..
-            } => Analysis::fetch(analysis, body, cexp).uses(),
+                body, val, cexp, ..
+            } => {
+                if !uses_cache.contains_key(val) {
+                    let uses = merge_uses(body.uses(uses_cache).clone(), cexp.uses(uses_cache));
+                    uses_cache.insert(*val, uses);
+                }
+                uses_cache.get(val).unwrap().clone()
+            }
             Cps::Halt(value) => add_value_use(HashMap::new(), value),
         }
     }
-
-    pub fn reset_uses(self) -> Self {
-        match self {
-            Cps::AllocCell(cell, cexpr) => Cps::AllocCell(cell, Box::new(cexpr.reset_uses())),
-            Cps::PrimOp(op, args, result, cexpr) => {
-                Cps::PrimOp(op, args, result, Box::new(cexpr.reset_uses()))
-            }
-            Cps::If(cond, success, failure) => Cps::If(
-                cond,
-                Box::new(success.reset_uses()),
-                Box::new(failure.reset_uses()),
-            ),
-            Cps::Closure {
-                args,
-                body,
-                val,
-                cexp,
-                ..
-            } => Cps::Closure {
-                args,
-                body: Box::new(body.reset_uses()),
-                val,
-                cexp: Box::new(cexp.reset_uses()),
-                analysis: AnalysisCache::default(),
-            },
-            cexpr => cexpr,
-        }
-    }
-
-    /*
-    pub(super) fn clear_uses(&self) -> HashMap<Local, usize> {
-        match self {
-            Cps::AllocCell(_, cexpr) => cexpr.uses(),
-            Cps::PrimOp(_, args, _, cexpr) => merge_uses(cexpr.uses(), values_to_uses(args)),
-            Cps::If(cond, success, failure) => {
-                let uses = merge_uses(success.uses(), failure.uses());
-                add_value_use(uses, cond)
-            }
-            Cps::App(op, vals) => {
-                let uses = values_to_uses(vals);
-                add_value_use(uses, op)
-            }
-            Cps::Forward(op, arg) => add_value_use(add_value_use(HashMap::new(), op), arg),
-            Cps::Closure {
-                body,
-                cexp,
-                analysis,
-                ..
-            } => Analysis::fetch(analysis, body, cexp).uses(),
-            Cps::Halt(value) => add_value_use(HashMap::new(), value),
-        }
-    }
-    */
 }
 
 fn values_to_locals(vals: &[Value]) -> HashSet<Local> {

@@ -14,19 +14,16 @@ pub trait Compile {
         let k = Local::gensym();
         let result = Local::gensym();
         let body = Cps::Closure {
-                args: ClosureArgs::new(vec![result], true, None),
-                body: Box::new(Cps::Halt(Value::from(result))),
-                val: k,
-                cexp: Box::new(
-                    self.compile(Box::new(|value| Cps::App(value, vec![Value::from(k)]))),
-                ),
-                analysis: AnalysisCache::default(),
+            args: ClosureArgs::new(vec![result], true, None),
+            body: Box::new(Cps::Halt(Value::from(result))),
+            val: k,
+            cexp: Box::new(self.compile(Box::new(|value| Cps::App(value, vec![Value::from(k)])))),
         };
         if std::env::var("SCHEME_RS_DEBUG").is_ok() {
             eprintln!("unreduced: {body:#?}");
         }
         TopLevelExpr {
-            body: body.reduce()
+            body: body.reduce(),
         }
     }
 }
@@ -69,11 +66,9 @@ fn compile_lambda(
             ),
             val: k4,
             cexp: Box::new(Cps::App(Value::from(k2), vec![Value::from(k4)])),
-            analysis: AnalysisCache::default(),
         }),
         val: k1,
         cexp: Box::new(meta_cont(Value::from(k1))),
-        analysis: AnalysisCache::default(),
     }
 }
 
@@ -116,12 +111,10 @@ fn compile_let(
                     cexp: Box::new(curr_expr.compile(Box::new(move |result| {
                         Cps::App(result, vec![Value::from(k3)])
                     }))),
-                    analysis: AnalysisCache::default(),
                 }),
             )),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
-            analysis: AnalysisCache::default(),
         }
     } else {
         body.compile(meta_cont)
@@ -160,7 +153,6 @@ impl Compile for Var {
             body: Box::new(Cps::App(Value::from(k2), vec![Value::from(self.clone())])),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
-            analysis: AnalysisCache::default(),
         }
     }
 }
@@ -176,7 +168,6 @@ impl Compile for &[Expression] {
                     body: Box::new(Cps::App(Value::from(k2), vec![])),
                     val: k1,
                     cexp: Box::new(meta_cont(Value::from(k1))),
-                    analysis: AnalysisCache::default(),
                 }
             }
             [last_expr] => last_expr.compile(Box::new(meta_cont) as Box<dyn FnMut(Value) -> Cps>),
@@ -190,7 +181,6 @@ impl Compile for &[Expression] {
                     cexp: Box::new(head.compile(Box::new(move |result| {
                         Cps::App(result, vec![Value::from(k2)])
                     }))),
-                    analysis: AnalysisCache::default(),
                 }
             }
         }
@@ -219,7 +209,6 @@ fn compile_undefined(mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
         )),
         val: k1,
         cexp: Box::new(meta_cont(Value::from(k1))),
-        analysis: AnalysisCache::default(),
     }
 }
 
@@ -235,7 +224,6 @@ impl Compile for Literal {
             )),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
-            analysis: AnalysisCache::default(),
         }
     }
 }
@@ -279,11 +267,9 @@ fn compile_apply(
             )),
             val: k4,
             cexp: Box::new(Cps::App(op_result, vec![Value::from(k4)])),
-            analysis: AnalysisCache::default(),
         }))),
         val: k1,
         cexp: Box::new(meta_cont(Value::from(k1))),
-        analysis: AnalysisCache::default(),
     }
 }
 
@@ -311,7 +297,6 @@ fn compile_apply_args(
         }),
         val: k1,
         cexp: Box::new(arg.compile(Box::new(|result| Cps::App(result, vec![Value::from(k1)])))),
-        analysis: AnalysisCache::default(),
     }
 }
 
@@ -348,13 +333,10 @@ fn compile_call_with_cc(
                 cexp: Box::new(thunk.compile(Box::new(|thunk_result| {
                     Cps::App(thunk_result, vec![Value::from(k4)])
                 }))),
-                analysis: AnalysisCache::default(),
             }),
-            analysis: AnalysisCache::default(),
         }),
         val: k2,
         cexp: Box::new(meta_cont(Value::from(k2))),
-        analysis: AnalysisCache::default(),
     }
 }
 
@@ -386,12 +368,10 @@ impl Compile for If {
                     )),
                     val: k3,
                     cexp: Box::new(Cps::App(cond_result, vec![Value::from(k3)])),
-                    analysis: AnalysisCache::default(),
                 }
             }))),
             val: k2,
             cexp: Box::new(meta_cont(Value::from(k2))),
-            analysis: AnalysisCache::default(),
         }
     }
 }
@@ -432,12 +412,10 @@ fn compile_and(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps 
                 )),
                 val: k3,
                 cexp: Box::new(Cps::App(expr_result, vec![Value::from(k3)])),
-                analysis: AnalysisCache::default(),
             }
         }))),
         val: k2,
         cexp: Box::new(meta_cont(Value::from(k2))),
-        analysis: AnalysisCache::default(),
     }
 }
 
@@ -477,12 +455,10 @@ fn compile_or(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps +
                 )),
                 val: k3,
                 cexp: Box::new(Cps::App(expr_result, vec![Value::from(k3)])),
-                analysis: AnalysisCache::default(),
             }
         }))),
         val: k2,
         cexp: Box::new(meta_cont(Value::from(k2))),
-        analysis: AnalysisCache::default(),
     }
 }
 
@@ -555,7 +531,6 @@ impl Compile for Option<Either<Box<Definition>, ExprBody>> {
                     body: Box::new(Cps::App(Value::from(k1), Vec::new())),
                     val: k2,
                     cexp: Box::new(meta_cont(Value::from(k2))),
-                    analysis: AnalysisCache::default(),
                 }
             }
         }
@@ -588,11 +563,9 @@ impl Compile for Set {
                 cexp: Box::new(self.val.compile(Box::new(move |result| {
                     Cps::App(result, vec![Value::from(k3)]) // Value::from(k3), vec![result, Value::from(k2)])
                 }))),
-                analysis: AnalysisCache::default(),
             }),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
-            analysis: AnalysisCache::default(),
         }
     }
 }
@@ -623,11 +596,9 @@ impl Compile for DefineVar {
                 cexp: Box::new(self.val.compile(Box::new(move |result| {
                     Cps::App(result, vec![Value::from(k3)]) // Value::from(k3), vec![result, Value::from(k2)])
                 }))),
-                analysis: AnalysisCache::default(),
             }),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
-            analysis: AnalysisCache::default(),
         }
     }
 }
@@ -660,11 +631,9 @@ impl Compile for DefineFunc {
                     &self.body,
                     |lambda_result| Cps::App(lambda_result, vec![Value::from(k3)]),
                 )),
-                analysis: AnalysisCache::default(),
             }),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
-            analysis: AnalysisCache::default(),
         }
     }
 }
@@ -678,7 +647,6 @@ impl Compile for Quote {
             body: Box::new(Cps::App(Value::from(k2), vec![constant(self.val.clone())])),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
-            analysis: AnalysisCache::default(),
         }
     }
 }
@@ -695,7 +663,6 @@ impl Compile for SyntaxQuote {
             )),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
-            analysis: AnalysisCache::default(),
         }
     }
 }
@@ -731,12 +698,10 @@ impl Compile for SyntaxCase {
                     )),
                     val: k3,
                     cexp: Box::new(Cps::App(arg_result, vec![Value::from(k3)])),
-                    analysis: AnalysisCache::default(),
                 }
             }))),
             val: k2,
             cexp: Box::new(meta_cont(Value::from(k2))),
-            analysis: AnalysisCache::default(),
         }
     }
 }
@@ -754,7 +719,6 @@ impl Compile for Vector {
             )),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
-            analysis: AnalysisCache::default(),
         }
     }
 }
@@ -771,7 +735,6 @@ impl Compile for Vec<u8> {
             )),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
-            analysis: AnalysisCache::default(),
         }
     }
 }

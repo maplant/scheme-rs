@@ -28,7 +28,6 @@ mod codegen;
 mod compile;
 mod reduce;
 
-use analysis::AnalysisCache;
 pub use compile::{Compile, TopLevelExpr};
 
 #[derive(Clone, PartialEq)]
@@ -150,23 +149,28 @@ impl ClosureArgs {
 pub enum Cps {
     /// Generates a cell of type `*const GcInner<Value>`
     AllocCell(Local, Box<Cps>),
+
     /// Call to a primitive operator.
     PrimOp(PrimOp, Vec<Value>, Local, Box<Cps>),
+
     /// Function application.
     App(Value, Vec<Value>),
+
     /// Forward a list of values into an application.
     // TODO: I'm not sure I like this name
     Forward(Value, Value),
+
     /// Branching.
     If(Value, Box<Cps>, Box<Cps>),
+
     /// Closure generation. The result of this operation is a *const Value::Closure
     Closure {
         args: ClosureArgs,
         body: Box<Cps>,
         val: Local,
         cexp: Box<Cps>,
-        analysis: AnalysisCache,
     },
+
     /// Halt execution and return the values
     Halt(Value),
 }
@@ -195,19 +199,9 @@ impl Cps {
                 success.substitute(substitutions);
                 failure.substitute(substitutions);
             }
-            Self::Closure {
-                body,
-                cexp,
-                ..
-            } => {
+            Self::Closure { body, cexp, .. } => {
                 body.substitute(substitutions);
                 cexp.substitute(substitutions);
-                /*
-                *analysis = None;
-                if let Some(ref mut analysis) = analysis.get_mut() {
-                    analysis.substitute(substitutions);
-                }
-                */
             }
             Self::Halt(value) => {
                 substitute_value(value, substitutions);
@@ -218,7 +212,7 @@ impl Cps {
 
 fn substitute_value(value: &mut Value, substitutions: &HashMap<Local, Value>) {
     if let Value::Var(Var::Local(local)) = value {
-        if let Some(substitution) = substitutions.get(&local) {
+        if let Some(substitution) = substitutions.get(local) {
             *value = substitution.clone();
         }
     }
