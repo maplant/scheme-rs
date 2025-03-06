@@ -165,7 +165,6 @@ pub enum Cps {
         body: Box<Cps>,
         val: Local,
         cexp: Box<Cps>,
-        #[debug(skip)]
         analysis: AnalysisCache,
     },
     /// Halt execution and return the values
@@ -203,6 +202,12 @@ impl Cps {
             } => {
                 body.substitute(substitutions);
                 cexp.substitute(substitutions);
+                /*
+                *analysis = None;
+                if let Some(ref mut analysis) = analysis.get_mut() {
+                    analysis.substitute(substitutions);
+                }
+                */
             }
             Self::Halt(value) => {
                 substitute_value(value, substitutions);
