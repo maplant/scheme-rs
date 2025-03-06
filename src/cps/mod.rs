@@ -1,32 +1,37 @@
-//! Closure-Passing Style
+//! Continuation-Passing Style
 //!
-//! Distinct but similar to Continuation-Passing Style, this representation is
-//! the ultimate result of our parsing and compilation steps and the final step
-//! before interpretation or compilation.
+//! Our mid-level representation for scheme code that ultimately gets translated
+//! into LLVM SSA for JIT compilation. This representation is the ultimate
+//! result of our parsing and compilation steps and the final step before JIT
+//! compilation.
 //!
 //! There are two main reasons we choose this IR:
-//! - Closure-Passing Style lets use build our continuations mechanically once,
-//!   as opposed to creating them at runtime by hand in a process that is slow
-//!   and error prone.
-//! - Closure-Passing Style maps well to SSA, allowing us to compile functions
+//! - Continuation-Passing Style lets use build our continuations mechanically
+//!   once, as opposed to creating them at runtime by hand in a process that is
+//!   slow and error prone.
+//! - Continuation-Passing Style maps well to SSA, allowing us to compile functions
 //!   directly to machine code.
-//!
 
 use crate::{
     ast::Literal,
     env::{Global, Local, Var},
     gc::Trace,
 };
-use std::{collections::HashSet, fmt, str::FromStr};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+    str::FromStr,
+};
 
 mod analysis;
 mod codegen;
 mod compile;
+mod reduce;
 
 use analysis::AnalysisCache;
 pub use compile::{Compile, TopLevelExpr};
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub enum Value {
     Var(Var),
     Literal(Literal),
@@ -141,7 +146,7 @@ impl ClosureArgs {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(derive_more::Debug, Clone)]
 pub enum Cps {
     /// Generates a cell of type `*const GcInner<Value>`
     AllocCell(Local, Box<Cps>),
@@ -160,8 +165,62 @@ pub enum Cps {
         body: Box<Cps>,
         val: Local,
         cexp: Box<Cps>,
+        #[debug(skip)]
         analysis: AnalysisCache,
     },
-    /// Returns the values
-    ReturnValues(Value),
+    /// Halt execution and return the values
+    Halt(Value),
+}
+
+impl Cps {
+    /// Perform substitutions on local variables.
+    fn substitute(&mut self, substitutions: &HashMap<Local, Value>) {
+        match self {
+            Self::AllocCell(_, cexp) => {
+                cexp.substitute(substitutions);
+            }
+            Self::PrimOp(_, args, _, cexp) => {
+                substitute_values(args, substitutions);
+                cexp.substitute(substitutions);
+            }
+            Self::App(value, values) => {
+                substitute_value(value, substitutions);
+                substitute_values(values, substitutions);
+            }
+            Self::Forward(op, arg) => {
+                substitute_value(op, substitutions);
+                substitute_value(arg, substitutions);
+            }
+            Self::If(cond, success, failure) => {
+                substitute_value(cond, substitutions);
+                success.substitute(substitutions);
+                failure.substitute(substitutions);
+            }
+            Self::Closure {
+                body,
+                cexp,
+                ..
+            } => {
+                body.substitute(substitutions);
+                cexp.substitute(substitutions);
+            }
+            Self::Halt(value) => {
+                substitute_value(value, substitutions);
+            }
+        }
+    }
+}
+
+fn substitute_value(value: &mut Value, substitutions: &HashMap<Local, Value>) {
+    if let Value::Var(Var::Local(local)) = value {
+        if let Some(substitution) = substitutions.get(&local) {
+            *value = substitution.clone();
+        }
+    }
+}
+
+fn substitute_values(values: &mut [Value], substitutions: &HashMap<Local, Value>) {
+    values
+        .iter_mut()
+        .for_each(|value| substitute_value(value, substitutions))
 }

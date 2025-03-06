@@ -13,16 +13,20 @@ pub trait Compile {
     fn compile_top_level(&self) -> TopLevelExpr {
         let k = Local::gensym();
         let result = Local::gensym();
-        TopLevelExpr {
-            body: Cps::Closure {
+        let body = Cps::Closure {
                 args: ClosureArgs::new(vec![result], true, None),
-                body: Box::new(Cps::ReturnValues(Value::from(result))),
+                body: Box::new(Cps::Halt(Value::from(result))),
                 val: k,
                 cexp: Box::new(
                     self.compile(Box::new(|value| Cps::App(value, vec![Value::from(k)]))),
                 ),
                 analysis: AnalysisCache::default(),
-            },
+        };
+        if std::env::var("SCHEME_RS_DEBUG").is_ok() {
+            eprintln!("unreduced: {body:#?}");
+        }
+        TopLevelExpr {
+            body: body.reduce()
         }
     }
 }

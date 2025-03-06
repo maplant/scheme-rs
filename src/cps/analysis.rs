@@ -25,6 +25,7 @@ use super::*;
 pub struct Analysis {
     globals: HashSet<Global>,
     free_variables: HashSet<Local>,
+    used: HashSet<Local>,
 }
 
 pub(super) type AnalysisCache = RefCell<Option<Analysis>>;
@@ -34,7 +35,7 @@ impl Analysis {
         // Calculate globals:
         let globals = body.globals().union(&cexp.globals()).cloned().collect();
 
-        // Calculate free variables in the cexp
+        // Calculate free variables in the cexp:
         let mut free_body = body.free_variables();
         for arg in args.to_vec() {
             free_body.remove(&arg);
@@ -43,9 +44,13 @@ impl Analysis {
             free_body.union(&cexp.free_variables()).copied().collect();
         free_variables.remove(val);
 
+        // Calculate the used variables in the body and cexp:
+        let used = body.used().union(&cexp.used()).copied().collect();
+
         Self {
             globals,
             free_variables,
+            used,
         }
     }
 
@@ -55,6 +60,10 @@ impl Analysis {
 
     fn globals(&self) -> HashSet<Global> {
         self.globals.clone()
+    }
+
+    fn used(&self) -> HashSet<Local> {
+        self.used.clone()
     }
 
     fn fetch<'a>(
@@ -75,6 +84,7 @@ impl Analysis {
 }
 
 impl Cps {
+    // TODO: Have this function return a Cow<'_, HashSet<Local>>
     pub(super) fn free_variables(&self) -> HashSet<Local> {
         match self {
             Self::AllocCell(ref bind, cexpr) => {
@@ -85,9 +95,7 @@ impl Cps {
             Self::PrimOp(_, args, bind, cexpr) => {
                 let mut free = cexpr.free_variables();
                 free.remove(bind);
-                free.union(&values_to_free_variables(args))
-                    .copied()
-                    .collect()
+                free.union(&values_to_locals(args)).copied().collect()
             }
             Self::If(cond, success, failure) => {
                 let mut free: HashSet<_> = success
@@ -99,7 +107,7 @@ impl Cps {
                 free
             }
             Self::App(op, vals) => {
-                let mut free = values_to_free_variables(vals);
+                let mut free = values_to_locals(vals);
                 free.extend(op.to_local());
                 free
             }
@@ -114,10 +122,11 @@ impl Cps {
                 cexp,
                 analysis,
             } => Analysis::fetch(analysis, args, body, val, cexp).free_variables(),
-            Self::ReturnValues(_) => HashSet::new(),
+            Self::Halt(val) => val.to_local().into_iter().collect(),
         }
     }
 
+    // TODO: Have this function return a Cow<'_, HashSet<Local>>
     pub(super) fn globals(&self) -> HashSet<Global> {
         match self {
             Self::AllocCell(_, cexpr) => cexpr.globals(),
@@ -151,12 +160,46 @@ impl Cps {
                 cexp,
                 analysis,
             } => Analysis::fetch(analysis, args, body, val, cexp).globals(),
-            Self::ReturnValues(_) => HashSet::new(),
+            Self::Halt(val) => val.to_global().into_iter().collect(),
+        }
+    }
+
+    // TODO: Have this function return a Cow<'_, HashSet<Local>>
+    pub(super) fn used(&self) -> HashSet<Local> {
+        match self {
+            Self::AllocCell(_, cexpr) => cexpr.used(),
+            Self::PrimOp(_, args, _, cexpr) => cexpr
+                .used()
+                .union(&values_to_locals(args))
+                .copied()
+                .collect(),
+            Self::If(cond, success, failure) => {
+                let mut used: HashSet<_> = success.used().union(&failure.used()).copied().collect();
+                used.extend(cond.to_local());
+                used
+            }
+            Self::App(op, vals) => {
+                let mut used = values_to_locals(vals);
+                used.extend(op.to_local());
+                used
+            }
+            Self::Forward(op, arg) => vec![op.to_local(), arg.to_local()]
+                .into_iter()
+                .flatten()
+                .collect(),
+            Self::Closure {
+                args,
+                body,
+                val,
+                cexp,
+                analysis,
+            } => Analysis::fetch(analysis, args, body, val, cexp).used(),
+            Self::Halt(value) => value.to_local().into_iter().collect(),
         }
     }
 }
 
-fn values_to_free_variables(vals: &[Value]) -> HashSet<Local> {
+fn values_to_locals(vals: &[Value]) -> HashSet<Local> {
     vals.iter().flat_map(|val| val.to_local()).collect()
 }
 
