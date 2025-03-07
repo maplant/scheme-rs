@@ -254,7 +254,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 self.make_closure_codegen(&bundle, *cexp, allocs, deferred)?;
                 deferred.push(bundle);
             }
-            Cps::ReturnValues(value) => self.return_values_codegen(&value)?,
+            Cps::Halt(value) => self.return_values_codegen(&value)?,
             _ => unimplemented!(),
         }
         Ok(())
