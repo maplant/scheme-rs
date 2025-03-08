@@ -91,7 +91,8 @@ impl TopLevelExpr {
                 ptr_type.into(), // Env
                 ptr_type.into(), // Globals
                 ptr_type.into(), // Args
-                ptr_type.into(), // ExceptionHandler
+                ptr_type.into(), // Exception handler
+                ptr_type.into(), // Dyanmic wind
             ],
             false,
         );
@@ -254,7 +255,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 self.make_closure_codegen(&bundle, *cexp, allocs, deferred)?;
                 deferred.push(bundle);
             }
-            Cps::Halt(value) => self.return_values_codegen(&value)?,
+            Cps::Halt(value) => self.halt_codegen(&value)?,
             _ => unimplemented!(),
         }
         Ok(())
@@ -410,6 +411,11 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                         .unwrap()
                         .into_pointer_value()
                         .into(),
+                    self.function
+                        .get_nth_param(DYNAMIC_WIND_PARAM)
+                        .unwrap()
+                        .into_pointer_value()
+                        .into(),
                 ],
                 "make_application",
             )?
@@ -449,6 +455,11 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                         .unwrap()
                         .into_pointer_value()
                         .into(),
+                    self.function
+                        .get_nth_param(DYNAMIC_WIND_PARAM)
+                        .unwrap()
+                        .into_pointer_value()
+                        .into(),
                 ],
                 "make_forward",
             )?
@@ -465,13 +476,13 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         Ok(())
     }
 
-    fn return_values_codegen(&self, args: &Value) -> Result<(), BuilderError> {
+    fn halt_codegen(&self, args: &Value) -> Result<(), BuilderError> {
         let val = self.value_codegen(args)?;
-        // Call make_return_values
-        let make_app = self.module.get_function("make_return_values").unwrap();
+        // Call halt
+        let make_app = self.module.get_function("halt").unwrap();
         let app = self
             .builder
-            .build_call(make_app, &[val.into()], "make_return_values")?
+            .build_call(make_app, &[val.into()], "halt")?
             .try_as_basic_value()
             .left()
             .unwrap();
@@ -650,8 +661,8 @@ const ENV_PARAM: u32 = 1;
 const GLOBALS_PARAM: u32 = 2;
 const ARGS_PARAM: u32 = 3;
 const EXCEPTION_HANDLER_PARAM: u32 = 4;
-const CONTINUATION_PARAM: u32 = 5;
-// const DYNAMIC_WIND_PARAM: u32 = 5;
+const DYNAMIC_WIND_PARAM: u32 = 5;
+const CONTINUATION_PARAM: u32 = 6;
 
 impl<'ctx> ClosureBundle<'ctx> {
     fn new(
@@ -679,6 +690,7 @@ impl<'ctx> ClosureBundle<'ctx> {
                     ptr_type.into(), // Globals
                     ptr_type.into(), // Args
                     ptr_type.into(), // Exception handler
+                    ptr_type.into(), // Dynamic wind
                     ptr_type.into(), // Continuation
                 ],
                 false,
@@ -691,6 +703,7 @@ impl<'ctx> ClosureBundle<'ctx> {
                     ptr_type.into(), // Globals
                     ptr_type.into(), // Args
                     ptr_type.into(), // Exception handler
+                    ptr_type.into(), // Dynamic wind
                 ],
                 false,
             )

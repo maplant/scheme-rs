@@ -34,6 +34,7 @@ pub type ContinuationPtr = unsafe extern "C" fn(
     globals: *const *mut GcInner<Value>,
     args: *const *mut GcInner<Value>,
     exception_handler: *mut GcInner<ExceptionHandler>,
+    dynamic_wind: *const DynamicWind,
 ) -> *mut Application;
 
 /// A function pointer to a generated closure function.
@@ -43,6 +44,7 @@ pub type ClosurePtr = unsafe extern "C" fn(
     globals: *const *mut GcInner<Value>,
     args: *const *mut GcInner<Value>,
     exception_handler: *mut GcInner<ExceptionHandler>,
+    dynamic_wind: *const DynamicWind,
     cont: *mut GcInner<Value>,
 ) -> *mut Application;
 
@@ -52,6 +54,7 @@ pub type BridgePtr = for<'a> fn(
     rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
+    dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Exception>>;
 
 #[derive(Debug, Copy, Clone)]
@@ -113,14 +116,15 @@ impl Closure {
     }
 
     pub async fn call(&self, args: &[Gc<Value>]) -> Result<Record, Exception> {
-        unsafe extern "C" fn just_return(
+        unsafe extern "C" fn halt(
             _runtime: *mut GcInner<Runtime>,
             _env: *const *mut GcInner<Value>,
             _globals: *const *mut GcInner<Value>,
             args: *const *mut GcInner<Value>,
             _exception_handler: *mut GcInner<ExceptionHandler>,
+            _dynamic_wind: *const DynamicWind,
         ) -> *mut Application {
-            crate::runtime::make_return_values(args.read())
+            crate::runtime::halt(args.read())
         }
 
         let mut args = args.to_vec();
@@ -130,18 +134,19 @@ impl Closure {
             self.runtime.clone(),
             Vec::new(),
             Vec::new(),
-            FuncPtr::Continuation(just_return),
+            FuncPtr::Continuation(halt),
             0,
             true,
             true,
         ))));
-        self.apply(&args, None).await?.eval().await
+        self.apply(&args, None, &DynamicWind::default()).await?.eval().await
     }
 
     pub async fn apply(
         &self,
         args: &[Gc<Value>],
         exception_handler: Option<Gc<ExceptionHandler>>,
+        dynamic_wind: &DynamicWind,
     ) -> Result<Application, Exception> {
         // Handle arguments
 
@@ -195,6 +200,7 @@ impl Closure {
                 rest_args.unwrap_or(&[]),
                 cont.unwrap(),
                 &exception_handler,
+                &dynamic_wind,
             )
             .await
         } else {
@@ -217,6 +223,7 @@ impl Closure {
                         globals.as_ptr(),
                         args.as_ptr(),
                         exception_handler.as_ref().map_or_else(null_mut, Gc::as_ptr),
+                        dynamic_wind as *const DynamicWind,
                     );
                     *Box::from_raw(app)
                 },
@@ -227,6 +234,7 @@ impl Closure {
                         globals.as_ptr(),
                         args.as_ptr(),
                         exception_handler.as_ref().map_or_else(null_mut, Gc::as_ptr),
+                        dynamic_wind as *const DynamicWind,
                         cont.unwrap().as_ptr(),
                     );
                     *Box::from_raw(app)
@@ -257,6 +265,8 @@ pub struct Application {
     args: Record,
     /// The current exception handler to be passed to the operator.
     exception_handler: Option<Gc<ExceptionHandler>>,
+    /// The dynamic extend of the application.
+    dynamic_wind: DynamicWind,
 }
 
 impl Application {
@@ -266,14 +276,16 @@ impl Application {
             op: Some(op),
             args,
             exception_handler,
+            dynamic_wind: DynamicWind::default(),
         }
     }
 
-    pub fn values(args: Record) -> Self {
+    pub fn halt(args: Record) -> Self {
         Self {
             op: None,
             args,
             exception_handler: None,
+            dynamic_wind: DynamicWind::default(),
         }
     }
 
@@ -284,9 +296,10 @@ impl Application {
             op: Some(op),
             args,
             exception_handler,
+            dynamic_wind,
         } = self
         {
-            self = op.apply(&args, exception_handler).await?;
+            self = op.apply(&args, exception_handler, &dynamic_wind).await?;
         }
         // If we have no operator left, return the arguments as the final values:
         Ok(self.args)
@@ -298,6 +311,7 @@ pub fn apply<'a>(
     rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
+    dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Exception>> {
     Box::pin(async move {
         if rest_args.is_empty() {
@@ -313,6 +327,7 @@ pub fn apply<'a>(
             op.clone(),
             args,
             exception_handler.clone(),
+            // dynamic_wind.clone(),
         ))
     })
 }
@@ -438,4 +453,25 @@ pub fn call_with_values<'a>(
 
 inventory::submit! {
     BridgeFn::new("call-with-values", "(base)", 2, false, call_with_values)
+}
+
+#[derive(Clone, Default, Trace)]
+pub struct DynamicWind {
+    in_thunks: Vec<Closure>,
+    out_thunks: Vec<Closure>,
+}
+
+pub fn dynamic_wind<'a>(
+    args: &'a [Gc<Value>],
+    _rest_args: &'a [Gc<Value>],
+    cont: &'a Gc<Value>,
+    exception_handler: &'a Option<Gc<ExceptionHandler>>,
+    dynamic_wind: &'a DynamicWind,
+) -> BoxFuture<'a, Result<Application, Exception>> {
+    Box::pin(async move {
+        let [in_thunk, consumer] = args else {
+            return Err(Exception::wrong_num_of_args(2, args.len()));
+        };
+        todo!()
+    })
 }

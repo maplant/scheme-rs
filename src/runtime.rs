@@ -183,7 +183,7 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     //
     let sig = ptr_type.fn_type(&[ptr_type.into()], false);
     let f = module.add_function("make_return_values", sig, None);
-    ee.add_global_mapping(&f, make_return_values as usize);
+    ee.add_global_mapping(&f, halt as usize);
 
     // fn truthy(val: *Value) -> bool
     //
@@ -326,12 +326,12 @@ unsafe extern "C" fn make_forward(
 }
 
 /// Create a boxed application that simply returns its arguments
-pub(crate) unsafe extern "C" fn make_return_values(args: *mut GcInner<Value>) -> *mut Application {
+pub(crate) unsafe extern "C" fn halt(args: *mut GcInner<Value>) -> *mut Application {
     let args = Gc::from_ptr(args);
     let mut flattened = Vec::new();
     list_to_vec(&args, &mut flattened);
 
-    let app = Application::values(flattened);
+    let app = Application::halt(flattened);
 
     Box::into_raw(Box::new(app))
 }
