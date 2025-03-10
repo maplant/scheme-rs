@@ -270,13 +270,13 @@ pub struct Application {
 }
 
 impl Application {
-    pub fn new(op: Closure, args: Record, exception_handler: Option<Gc<ExceptionHandler>>) -> Self {
+    pub fn new(op: Closure, args: Record, exception_handler: Option<Gc<ExceptionHandler>>, dynamic_wind: DynamicWind) -> Self {
         Self {
             // We really gotta figure out how to deal with this better
             op: Some(op),
             args,
             exception_handler,
-            dynamic_wind: DynamicWind::default(),
+            dynamic_wind,
         }
     }
 
@@ -457,8 +457,7 @@ inventory::submit! {
 
 #[derive(Clone, Default, Trace)]
 pub struct DynamicWind {
-    in_thunks: Vec<Closure>,
-    out_thunks: Vec<Closure>,
+    winders: Vec<(Closure, Closure)>,
 }
 
 pub fn dynamic_wind<'a>(
@@ -469,9 +468,21 @@ pub fn dynamic_wind<'a>(
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Exception>> {
     Box::pin(async move {
-        let [in_thunk, consumer] = args else {
-            return Err(Exception::wrong_num_of_args(2, args.len()));
+        let [in_thunk, body_thunk, out_thunk] = args else {
+            return Err(Exception::wrong_num_of_args(3, args.len()));
         };
+        let in_thunk = {
+            let in_thunk_ref = in_thunk.read();
+            let in_thunk: &Closure = in_thunk_ref.as_ref().try_into()?;
+            in_thunk.clone()
+        };
+        let out_thunk = {
+            let out_thunk_ref = out_thunk.read();
+            let out_thunk: &Closure = out_thunk_ref.as_ref().try_into()?;
+            out_thunk.clone()
+        };
+        let mut new_extent = dynamic_wind.clone();
+        new_extent.winders.push((in_thunk, out_thunk));
         todo!()
     })
 }
