@@ -5,7 +5,9 @@ use crate::{
     expand,
     gc::{init_gc, Gc, GcInner, Trace},
     lists::list_to_vec,
-    proc::{deep_clone_value, Application, Closure, ClosurePtr, ContinuationPtr, FuncPtr},
+    proc::{
+        deep_clone_value, Application, Closure, ClosurePtr, ContinuationPtr, DynamicWind, FuncPtr,
+    },
     value::Value,
 };
 use indexmap::IndexMap;
@@ -284,6 +286,7 @@ unsafe extern "C" fn make_application(
     args: *const *mut GcInner<Value>,
     num_args: u32,
     exception_handler: *mut GcInner<ExceptionHandler>,
+    dynamic_wind: *const DynamicWind,
 ) -> *mut Application {
     let mut gc_args = Vec::new();
     for i in 0..num_args {
@@ -298,7 +301,12 @@ unsafe extern "C" fn make_application(
     } else {
         Some(Gc::from_ptr(exception_handler))
     };
-    let app = Application::new(op.clone(), gc_args, exception_handler);
+    let app = Application::new(
+        op.clone(),
+        gc_args,
+        exception_handler,
+        dynamic_wind.as_ref().unwrap().clone(),
+    );
 
     Box::into_raw(Box::new(app))
 }
@@ -308,6 +316,7 @@ unsafe extern "C" fn make_forward(
     op: *mut GcInner<Value>,
     to_forward: *mut GcInner<Value>,
     exception_handler: *mut GcInner<ExceptionHandler>,
+    dynamic_wind: *const DynamicWind,
 ) -> *mut Application {
     let op = Gc::from_ptr(op);
     let to_forward = Gc::from_ptr(to_forward);
@@ -320,7 +329,12 @@ unsafe extern "C" fn make_forward(
     } else {
         Some(Gc::from_ptr(exception_handler))
     };
-    let app = Application::new(op.clone(), args, exception_handler);
+    let app = Application::new(
+        op.clone(),
+        args,
+        exception_handler,
+        dynamic_wind.as_ref().unwrap().clone(),
+    );
 
     Box::into_raw(Box::new(app))
 }

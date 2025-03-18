@@ -139,7 +139,10 @@ impl Closure {
             true,
             true,
         ))));
-        self.apply(&args, None, &DynamicWind::default()).await?.eval().await
+        self.apply(&args, None, &DynamicWind::default())
+            .await?
+            .eval()
+            .await
     }
 
     pub async fn apply(
@@ -270,7 +273,12 @@ pub struct Application {
 }
 
 impl Application {
-    pub fn new(op: Closure, args: Record, exception_handler: Option<Gc<ExceptionHandler>>, dynamic_wind: DynamicWind) -> Self {
+    pub fn new(
+        op: Closure,
+        args: Record,
+        exception_handler: Option<Gc<ExceptionHandler>>,
+        dynamic_wind: DynamicWind,
+    ) -> Self {
         Self {
             // We really gotta figure out how to deal with this better
             op: Some(op),
@@ -327,7 +335,7 @@ pub fn apply<'a>(
             op.clone(),
             args,
             exception_handler.clone(),
-            // dynamic_wind.clone(),
+            dynamic_wind.clone(),
         ))
     })
 }
@@ -369,6 +377,7 @@ unsafe extern "C" fn call_consumer_with_values(
     _globals: *const *mut GcInner<Value>,
     args: *const *mut GcInner<Value>,
     exception_handler: *mut GcInner<ExceptionHandler>,
+    dynamic_wind: *const DynamicWind,
 ) -> *mut Application {
     // env[0] is the consumer
     let consumer = Gc::from_ptr(env.read());
@@ -401,10 +410,13 @@ unsafe extern "C" fn call_consumer_with_values(
         Some(Gc::from_ptr(exception_handler))
     };
 
+    let dynamic_wind = dynamic_wind.as_ref().unwrap().clone();
+
     Box::into_raw(Box::new(Application::new(
         consumer,
         collected_args,
         exception_handler,
+        dynamic_wind,
     )))
 }
 
@@ -413,6 +425,7 @@ pub fn call_with_values<'a>(
     _rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
+    dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Exception>> {
     Box::pin(async move {
         let [producer, consumer] = args else {
@@ -447,6 +460,7 @@ pub fn call_with_values<'a>(
             producer,
             vec![Gc::new(Value::Closure(call_consumer_closure))],
             exception_handler.clone(),
+            dynamic_wind.clone(),
         ))
     })
 }
