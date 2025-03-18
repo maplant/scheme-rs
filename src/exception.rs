@@ -4,7 +4,7 @@ use futures::future::BoxFuture;
 
 use crate::{
     gc::{Gc, GcInner, Trace},
-    proc::{Application, Closure, FuncPtr},
+    proc::{Application, Closure, DynamicWind, FuncPtr},
     registry::BridgeFn,
     runtime::Runtime,
     syntax::{Identifier, Span},
@@ -170,6 +170,7 @@ pub fn with_exception_handler<'a>(
     _rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
+    dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Exception>> {
     Box::pin(async move {
         let [handler, thunk] = args else {
@@ -191,6 +192,7 @@ pub fn with_exception_handler<'a>(
             thunk.clone(),
             vec![cont.clone()],
             Some(Gc::new(exception_handler)),
+            dynamic_wind.clone(),
         ))
     })
 }
@@ -205,6 +207,7 @@ pub fn raise<'a>(
     _rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
+    _dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Exception>> {
     Box::pin(async move {
         let [condition] = args else {
@@ -232,6 +235,7 @@ pub fn raise<'a>(
                 ))),
             ],
             handler.prev_handler.clone(),
+            DynamicWind::default(),
         ))
     })
 }
@@ -246,6 +250,7 @@ unsafe extern "C" fn reraise_exception(
     _globals: *const *mut GcInner<Value>,
     _args: *const *mut GcInner<Value>,
     exception_handler: *mut GcInner<ExceptionHandler>,
+    dynamic_wind: *const DynamicWind,
 ) -> *mut Application {
     let runtime = Gc::from_ptr(runtime);
 
@@ -273,6 +278,7 @@ unsafe extern "C" fn reraise_exception(
         ),
         vec![exception, cont],
         curr_handler,
+        todo!(),
     )))
 }
 
@@ -283,6 +289,7 @@ pub fn raise_continuable<'a>(
     _rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
+    dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Exception>> {
     Box::pin(async move {
         let [condition] = args else {
@@ -299,6 +306,7 @@ pub fn raise_continuable<'a>(
             handler.curr_handler,
             vec![condition.clone(), cont.clone()],
             handler.prev_handler,
+            todo!(),
         ))
     })
 }

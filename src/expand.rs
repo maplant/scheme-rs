@@ -4,7 +4,7 @@ use crate::{
     env::CapturedEnv,
     exception::{Exception, ExceptionHandler},
     gc::{Gc, Trace},
-    proc::{Application, Closure},
+    proc::{Application, Closure, DynamicWind},
     syntax::{Identifier, Span, Syntax},
     value::Value,
 };
@@ -403,6 +403,7 @@ pub fn call_transformer<'a>(
     env: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
+    dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Exception>> {
     Box::pin(async move {
         let [captured_env, trans, arg] = args else {
@@ -450,7 +451,7 @@ pub fn call_transformer<'a>(
             .await
             .unwrap();
         let transformer_result = compiled.call(&[]).await?;
-        let application = Application::new(cont, transformer_result, exception_handler.clone());
+        let application = Application::new(cont, transformer_result, exception_handler.clone(), dynamic_wind.clone());
 
         Ok(application)
     })
