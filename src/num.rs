@@ -374,60 +374,79 @@ pub async fn odd(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
 
 #[bridge(name = "+", lib = "(base)")]
 pub async fn add(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
+    Ok(vec![Gc::new(Value::Number(add_vals(args)?))])
+}
+
+pub(crate) fn add_vals(vals: &[Gc<Value>]) -> Result<Number, Exception> {
     let mut result = Number::FixedInteger(0);
-    for arg in args {
-        let arg = arg.read();
-        let num: &Number = arg.as_ref().try_into()?;
+    for val in vals {
+        let val = val.read();
+        let num: &Number = val.as_ref().try_into()?;
         result = &result + num;
     }
-    Ok(vec![Gc::new(Value::Number(result))])
+    Ok(result)
 }
 
 #[bridge(name = "-", lib = "(base)")]
 pub async fn sub(arg1: &Gc<Value>, args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
-    let arg1 = arg1.read();
-    let arg1: &Number = arg1.as_ref().try_into()?;
-    if args.is_empty() {
-        Ok(vec![Gc::new(Value::Number(-arg1.clone()))])
+    Ok(vec![Gc::new(Value::Number(sub_vals(arg1, args)?))])
+}
+
+pub(crate) fn sub_vals(val1: &Gc<Value>, vals: &[Gc<Value>]) -> Result<Number, Exception> {
+    let val1 = val1.read();
+    let val1: &Number = val1.as_ref().try_into()?;
+    let mut val1 = val1.clone();
+    if vals.is_empty() {
+        Ok(-val1)
     } else {
-        let mut result = arg1.clone();
-        for arg in args {
-            let arg = arg.read();
-            let num: &Number = arg.as_ref().try_into()?;
-            result = &result - num;
+        for val in vals {
+            let val = val.read();
+            let num: &Number = val.as_ref().try_into()?;
+            val1 = &val1 - num;
         }
-        Ok(vec![Gc::new(Value::Number(result))])
+        Ok(val1)
     }
 }
 
 #[bridge(name = "*", lib = "(base)")]
 pub async fn mul(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
+    Ok(vec![Gc::new(Value::Number(mul_vals(args)?))])
+}
+
+pub(crate) fn mul_vals(vals: &[Gc<Value>]) -> Result<Number, Exception> {
     let mut result = Number::FixedInteger(1);
-    for arg in args {
-        let arg = arg.read();
-        let num: &Number = arg.as_ref().try_into()?;
+    for val in vals {
+        let val = val.read();
+        let num: &Number = val.as_ref().try_into()?;
         result = &result * num;
     }
-    Ok(vec![Gc::new(Value::Number(result))])
+    Ok(result)
 }
 
 #[bridge(name = "/", lib = "(base)")]
 pub async fn div(arg1: &Gc<Value>, args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
-    let arg1 = arg1.read();
-    let arg1: &Number = arg1.as_ref().try_into()?;
-    if arg1.is_zero() {
+    Ok(vec![Gc::new(Value::Number(div_vals(arg1, args)?))])
+}
+
+pub(crate) fn div_vals(val1: &Gc<Value>, vals: &[Gc<Value>]) -> Result<Number, Exception> {
+    let val1 = val1.read();
+    let val1: &Number = val1.as_ref().try_into()?;
+    if val1.is_zero() {
         return Err(Exception::division_by_zero());
     }
-    let mut result = &Number::FixedInteger(1) / arg1;
-    for arg in args {
-        let arg = arg.read();
-        let num: &Number = arg.as_ref().try_into()?;
+    if vals.is_empty() {
+        return Ok(&Number::FixedInteger(1) / val1);
+    }
+    let mut result = val1.clone();
+    for val in vals {
+        let val = val.read();
+        let num: &Number = val.as_ref().try_into()?;
         if num.is_zero() {
             return Err(Exception::division_by_zero());
         }
         result = &result / num;
     }
-    Ok(vec![Gc::new(Value::Number(result))])
+    Ok(result)
 }
 
 #[bridge(name = "=", lib = "(base)")]

@@ -1,6 +1,5 @@
 //! LLVM SSA Codegen from CPS.
 
-use compile::TopLevelExpr;
 use indexmap::IndexMap;
 use inkwell::{
     builder::{Builder, BuilderError},
@@ -67,7 +66,7 @@ impl<'ctx> Allocs<'ctx> {
     }
 }
 
-impl TopLevelExpr {
+impl Cps {
     pub fn into_closure<'ctx, 'b>(
         self,
         runtime: Gc<Runtime>,
@@ -126,7 +125,7 @@ impl TopLevelExpr {
 
         // Collect the provided globals:
 
-        let globals = self.body.globals().into_iter().collect::<Vec<_>>();
+        let globals = self.globals().into_iter().collect::<Vec<_>>();
 
         let globals_param = function
             .get_nth_param(GLOBALS_PARAM)
@@ -146,7 +145,7 @@ impl TopLevelExpr {
         }
 
         let mut deferred = Vec::new();
-        cu.cps_codegen(self.body, None, &mut deferred)?;
+        cu.cps_codegen(self, None, &mut deferred)?;
 
         while let Some(next) = deferred.pop() {
             next.codegen(ctx, module, builder, &mut deferred)?;
@@ -237,6 +236,9 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 self.get_call_transformer_codegen(res)?;
                 self.cps_codegen(*cexpr, allocs, deferred)?;
             }
+            Cps::PrimOp(primop, vals, result, cexpr) => {
+                self.simple_primop_codegen(primop, &vals, result, *cexpr, allocs, deferred)?
+            }
             Cps::Closure {
                 args,
                 body,
@@ -254,8 +256,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 self.make_closure_codegen(&bundle, *cexp, allocs, deferred)?;
                 deferred.push(bundle);
             }
-            Cps::Halt(value) => self.return_values_codegen(&value)?,
-            _ => unimplemented!(),
+            Cps::Halt(value) => self.halt_codegen(&value, allocs)?,
         }
         Ok(())
     }
@@ -299,6 +300,67 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         self.rebinds.rebind(Var::Local(new_var), cloned);
         let new_alloc = Allocs::new(allocs, cloned);
         self.cps_codegen(cexpr, new_alloc, deferred)?;
+        Ok(())
+    }
+
+    fn simple_primop_codegen(
+        &mut self,
+        primop: PrimOp,
+        vals: &[Value],
+        result: Local,
+        cexpr: Cps,
+        allocs: Option<Rc<Allocs<'ctx>>>,
+        deferred: &mut Vec<ClosureBundle<'ctx>>,
+    ) -> Result<(), BuilderError> {
+        // Put the values into an array:
+        let ptr_type = self.ctx.ptr_type(AddressSpace::default());
+        let i32_type = self.ctx.i32_type();
+        let num_vals = vals.len();
+        let array_type = ptr_type.array_type(num_vals as u32);
+        let vals_alloca = self.builder.build_alloca(array_type, "vals")?;
+        for (i, val) in vals.iter().enumerate() {
+            let ep = unsafe {
+                self.builder.build_gep(
+                    ptr_type,
+                    vals_alloca,
+                    &[i32_type.const_int(i as u64, false)],
+                    "vals_elem",
+                )?
+            };
+            let val = self.value_codegen(val)?;
+            self.builder.build_store(ep, val)?;
+        }
+
+        // Call the respective runtime function:
+        let runtime_fn_name = match primop {
+            PrimOp::Add => "add",
+            PrimOp::Sub => "sub",
+            PrimOp::Mul => "mul",
+            PrimOp::Div => "div",
+            _ => unreachable!(),
+        };
+
+        let runtime_fn = self.module.get_function(runtime_fn_name).unwrap();
+        let result_val = self
+            .builder
+            .build_call(
+                runtime_fn,
+                &[
+                    vals_alloca.into(),
+                    i32_type.const_int(num_vals as u64, false).into(),
+                ],
+                runtime_fn_name,
+            )?
+            .try_as_basic_value()
+            .left()
+            .unwrap()
+            .into_pointer_value();
+
+        self.rebinds.rebind(Var::Local(result), result_val);
+        let new_alloc = Allocs::new(allocs, result_val);
+
+        self.cps_codegen(cexpr, new_alloc, deferred)?;
+
         Ok(())
     }
 
@@ -465,7 +527,11 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         Ok(())
     }
 
-    fn return_values_codegen(&self, args: &Value) -> Result<(), BuilderError> {
+    fn halt_codegen(
+        &self,
+        args: &Value,
+        allocs: Option<Rc<Allocs<'ctx>>>,
+    ) -> Result<(), BuilderError> {
         let val = self.value_codegen(args)?;
         // Call make_return_values
         let make_app = self.module.get_function("make_return_values").unwrap();
@@ -475,6 +541,9 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             .try_as_basic_value()
             .left()
             .unwrap();
+
+        self.drop_values_codegen(allocs)?;
+
         let _ = self.builder.build_return(Some(&app))?;
 
         Ok(())

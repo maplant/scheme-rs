@@ -406,6 +406,30 @@ impl Expression {
             }
         })
     }
+
+    // These function pointer comparisons are guaranteed to be meaningful since
+    // they are returned from a store.
+    #[allow(unpredictable_function_pointer_comparisons)]
+    pub fn to_primop(&self) -> Option<PrimOp> {
+        use crate::{
+            num::{add_wrapper, div_wrapper, mul_wrapper, sub_wrapper},
+            proc::{Closure, FuncPtr::Bridge},
+        };
+
+        if let Expression::Var(Var::Global(global)) = self {
+            let val_ref = global.value_ref().read();
+            let val: &Closure = val_ref.as_ref().try_into().ok()?;
+            match val.func {
+                Bridge(ptr) if ptr == add_wrapper => Some(PrimOp::Add),
+                Bridge(ptr) if ptr == sub_wrapper => Some(PrimOp::Sub),
+                Bridge(ptr) if ptr == mul_wrapper => Some(PrimOp::Mul),
+                Bridge(ptr) if ptr == div_wrapper => Some(PrimOp::Div),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Trace)]

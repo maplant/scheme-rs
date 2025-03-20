@@ -48,7 +48,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     let wrapper: ItemFn = if !is_variadic {
         let arg_indices: Vec<_> = (0..num_args).collect();
         parse_quote! {
-            fn #wrapper_name<'a>(
+            pub(crate) fn #wrapper_name<'a>(
                 args: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
                 rest_args: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
                 cont: &'a ::scheme_rs::gc::Gc<::scheme_rs::value::Value>,
@@ -78,7 +78,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     } else {
         let arg_indices: Vec<_> = (0..num_args).collect();
         parse_quote! {
-            fn #wrapper_name<'a>(
+            pub(crate) fn #wrapper_name<'a>(
                 args: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
                 rest_args: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
                 cont: &'a ::scheme_rs::gc::Gc<::scheme_rs::value::Value>,

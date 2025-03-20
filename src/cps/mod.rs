@@ -28,7 +28,7 @@ mod codegen;
 mod compile;
 mod reduce;
 
-pub use compile::{Compile, TopLevelExpr};
+pub use compile::Compile;
 
 #[derive(Clone, PartialEq)]
 pub enum Value {
@@ -89,8 +89,10 @@ impl fmt::Debug for Value {
 
 #[derive(Copy, Clone, Debug, Trace)]
 pub enum PrimOp {
-    // Math primitive operators (to be implemented):
+    /// Set cell value:
     Set,
+
+    // Math primitive operators:
     Add,
     Sub,
     Mul,

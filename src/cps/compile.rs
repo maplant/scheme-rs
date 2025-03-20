@@ -10,26 +10,17 @@ pub trait Compile {
     fn compile(&self, meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps;
 
     /// The top level function takes no arguments.
-    fn compile_top_level(&self) -> TopLevelExpr {
+    fn compile_top_level(&self) -> Cps {
         let k = Local::gensym();
         let result = Local::gensym();
-        TopLevelExpr {
-            body: Cps::Closure {
-                args: ClosureArgs::new(vec![result], true, None),
-                body: Box::new(Cps::Halt(Value::from(result))),
-                val: k,
-                cexp: Box::new(
-                    self.compile(Box::new(|value| Cps::App(value, vec![Value::from(k)]))),
-                ),
-            }
-            .reduce(),
+        Cps::Closure {
+            args: ClosureArgs::new(vec![result], true, None),
+            body: Box::new(Cps::Halt(Value::from(result))),
+            val: k,
+            cexp: Box::new(self.compile(Box::new(|value| Cps::App(value, vec![Value::from(k)])))),
         }
+        .reduce()
     }
-}
-
-#[derive(Debug)]
-pub struct TopLevelExpr {
-    pub body: Cps,
 }
 
 impl Compile for Lambda {
@@ -256,17 +247,21 @@ fn compile_apply(
     let k4 = Local::gensym();
     Cps::Closure {
         args: ClosureArgs::new(vec![k2], false, None),
-        body: Box::new(operator.compile(Box::new(move |op_result| Cps::Closure {
-            args: ClosureArgs::new(vec![k3], false, None),
-            body: Box::new(compile_apply_args(
-                Value::from(k2),
-                Value::from(k3),
-                Vec::new(),
-                args,
-            )),
-            val: k4,
-            cexp: Box::new(Cps::App(op_result, vec![Value::from(k4)])),
-        }))),
+        body: Box::new(if let Some(primop) = operator.to_primop() {
+            compile_primop(Value::from(k2), primop, Vec::new(), args)
+        } else {
+            operator.compile(Box::new(move |op_result| Cps::Closure {
+                args: ClosureArgs::new(vec![k3], false, None),
+                body: Box::new(compile_apply_args(
+                    Value::from(k2),
+                    Value::from(k3),
+                    Vec::new(),
+                    args,
+                )),
+                val: k4,
+                cexp: Box::new(Cps::App(op_result, vec![Value::from(k4)])),
+            }))
+        }),
         val: k1,
         cexp: Box::new(meta_cont(Value::from(k1))),
     }
@@ -293,6 +288,38 @@ fn compile_apply_args(
         body: Box::new({
             collected_args.push(Value::from(k2));
             compile_apply_args(cont, op, collected_args, tail)
+        }),
+        val: k1,
+        cexp: Box::new(arg.compile(Box::new(|result| Cps::App(result, vec![Value::from(k1)])))),
+    }
+}
+
+fn compile_primop(
+    cont: Value,
+    primop: PrimOp,
+    mut collected_args: Vec<Value>,
+    remaining_args: &[Expression],
+) -> Cps {
+    let (arg, tail) = match remaining_args {
+        [] => {
+            let val = Local::gensym();
+            return Cps::PrimOp(
+                primop,
+                collected_args,
+                val,
+                Box::new(Cps::App(cont, vec![Value::from(val)])),
+            );
+        }
+        [arg, tail @ ..] => (arg, tail),
+    };
+
+    let k1 = Local::gensym();
+    let k2 = Local::gensym();
+    Cps::Closure {
+        args: ClosureArgs::new(vec![k2], false, None),
+        body: Box::new({
+            collected_args.push(Value::from(k2));
+            compile_primop(cont, primop, collected_args, tail)
         }),
         val: k1,
         cexp: Box::new(arg.compile(Box::new(|result| Cps::App(result, vec![Value::from(k1)])))),
