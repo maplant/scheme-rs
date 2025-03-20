@@ -97,6 +97,11 @@ pub enum PrimOp {
     Sub,
     Mul,
     Div,
+    Equal,
+    Greater,
+    GreaterEqual,
+    Lesser,
+    LesserEqual,
 
     // Macro expansion primitive operators:
     CaptureEnvironment,

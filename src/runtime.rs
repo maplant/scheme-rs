@@ -287,6 +287,36 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     let sig = ptr_type.fn_type(&[ptr_type.into(), i32_type.into()], false);
     let f = module.add_function("div", sig, None);
     ee.add_global_mapping(&f, div as usize);
+
+    // fn equal(args: **Value, num_args: u32) -> *Value
+    //
+    let sig = ptr_type.fn_type(&[ptr_type.into(), i32_type.into()], false);
+    let f = module.add_function("equal", sig, None);
+    ee.add_global_mapping(&f, equal as usize);
+
+    // fn greater(args: **Value, num_args: u32) -> *Value
+    //
+    let sig = ptr_type.fn_type(&[ptr_type.into(), i32_type.into()], false);
+    let f = module.add_function("greater", sig, None);
+    ee.add_global_mapping(&f, greater as usize);
+
+    // fn greater_equal(args: **Value, num_args: u32) -> *Value
+    //
+    let sig = ptr_type.fn_type(&[ptr_type.into(), i32_type.into()], false);
+    let f = module.add_function("greater_equal", sig, None);
+    ee.add_global_mapping(&f, greater_equal as usize);
+
+    // fn lesser(args: **Value, num_args: u32) -> *Value
+    //
+    let sig = ptr_type.fn_type(&[ptr_type.into(), i32_type.into()], false);
+    let f = module.add_function("lesser", sig, None);
+    ee.add_global_mapping(&f, lesser as usize);
+
+    // fn lesser_equal(args: **Value, num_args: u32) -> *Value
+    //
+    let sig = ptr_type.fn_type(&[ptr_type.into(), i32_type.into()], false);
+    let f = module.add_function("lesser_equal", sig, None);
+    ee.add_global_mapping(&f, lesser_equal as usize);
 }
 
 /// Allocate a new Gc with a value of undefined
@@ -476,7 +506,7 @@ unsafe extern "C" fn add(vals: *const *mut GcInner<Value>, num_vals: u32) -> *mu
     let vals: Vec<_> = (0..num_vals)
         .map(|i| Gc::from_ptr(vals.add(i as usize).read()))
         .collect();
-    ManuallyDrop::new(Gc::new(Value::Number(num::add_vals(&vals).unwrap()))).as_ptr()
+    ManuallyDrop::new(Gc::new(Value::Number(num::add(&vals).unwrap()))).as_ptr()
 }
 
 /// Subtract all of the values
@@ -485,7 +515,7 @@ unsafe extern "C" fn sub(vals: *const *mut GcInner<Value>, num_vals: u32) -> *mu
         .map(|i| Gc::from_ptr(vals.add(i as usize).read()))
         .collect();
     ManuallyDrop::new(Gc::new(Value::Number(
-        num::sub_vals(&vals[0], &vals[1..]).unwrap(),
+        num::sub(&vals[0], &vals[1..]).unwrap(),
     )))
     .as_ptr()
 }
@@ -495,7 +525,7 @@ unsafe extern "C" fn mul(vals: *const *mut GcInner<Value>, num_vals: u32) -> *mu
     let vals: Vec<_> = (0..num_vals)
         .map(|i| Gc::from_ptr(vals.add(i as usize).read()))
         .collect();
-    ManuallyDrop::new(Gc::new(Value::Number(num::mul_vals(&vals).unwrap()))).as_ptr()
+    ManuallyDrop::new(Gc::new(Value::Number(num::mul(&vals).unwrap()))).as_ptr()
 }
 
 /// Divide all of the values
@@ -504,7 +534,54 @@ unsafe extern "C" fn div(vals: *const *mut GcInner<Value>, num_vals: u32) -> *mu
         .map(|i| Gc::from_ptr(vals.add(i as usize).read()))
         .collect();
     ManuallyDrop::new(Gc::new(Value::Number(
-        num::div_vals(&vals[0], &vals[1..]).unwrap(),
+        num::div(&vals[0], &vals[1..]).unwrap(),
     )))
     .as_ptr()
+}
+
+unsafe extern "C" fn equal(vals: *const *mut GcInner<Value>, num_vals: u32) -> *mut GcInner<Value> {
+    let vals: Vec<_> = (0..num_vals)
+        .map(|i| Gc::from_ptr(vals.add(i as usize).read()))
+        .collect();
+    ManuallyDrop::new(Gc::new(Value::Boolean(num::equal(&vals).unwrap()))).as_ptr()
+}
+
+unsafe extern "C" fn greater(
+    vals: *const *mut GcInner<Value>,
+    num_vals: u32,
+) -> *mut GcInner<Value> {
+    let vals: Vec<_> = (0..num_vals)
+        .map(|i| Gc::from_ptr(vals.add(i as usize).read()))
+        .collect();
+    ManuallyDrop::new(Gc::new(Value::Boolean(num::greater(&vals).unwrap()))).as_ptr()
+}
+
+unsafe extern "C" fn greater_equal(
+    vals: *const *mut GcInner<Value>,
+    num_vals: u32,
+) -> *mut GcInner<Value> {
+    let vals: Vec<_> = (0..num_vals)
+        .map(|i| Gc::from_ptr(vals.add(i as usize).read()))
+        .collect();
+    ManuallyDrop::new(Gc::new(Value::Boolean(num::greater_equal(&vals).unwrap()))).as_ptr()
+}
+
+unsafe extern "C" fn lesser(
+    vals: *const *mut GcInner<Value>,
+    num_vals: u32,
+) -> *mut GcInner<Value> {
+    let vals: Vec<_> = (0..num_vals)
+        .map(|i| Gc::from_ptr(vals.add(i as usize).read()))
+        .collect();
+    ManuallyDrop::new(Gc::new(Value::Boolean(num::lesser(&vals).unwrap()))).as_ptr()
+}
+
+unsafe extern "C" fn lesser_equal(
+    vals: *const *mut GcInner<Value>,
+    num_vals: u32,
+) -> *mut GcInner<Value> {
+    let vals: Vec<_> = (0..num_vals)
+        .map(|i| Gc::from_ptr(vals.add(i as usize).read()))
+        .collect();
+    ManuallyDrop::new(Gc::new(Value::Boolean(num::lesser_equal(&vals).unwrap()))).as_ptr()
 }

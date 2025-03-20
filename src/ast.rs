@@ -412,7 +412,11 @@ impl Expression {
     #[allow(unpredictable_function_pointer_comparisons)]
     pub fn to_primop(&self) -> Option<PrimOp> {
         use crate::{
-            num::{add_wrapper, div_wrapper, mul_wrapper, sub_wrapper},
+            num::{
+                add_builtin_wrapper, div_builtin_wrapper, equal_builtin_wrapper,
+                greater_builtin_wrapper, greater_equal_builtin_wrapper, lesser_builtin_wrapper,
+                lesser_equal_builtin_wrapper, mul_builtin_wrapper, sub_builtin_wrapper,
+            },
             proc::{Closure, FuncPtr::Bridge},
         };
 
@@ -420,10 +424,15 @@ impl Expression {
             let val_ref = global.value_ref().read();
             let val: &Closure = val_ref.as_ref().try_into().ok()?;
             match val.func {
-                Bridge(ptr) if ptr == add_wrapper => Some(PrimOp::Add),
-                Bridge(ptr) if ptr == sub_wrapper => Some(PrimOp::Sub),
-                Bridge(ptr) if ptr == mul_wrapper => Some(PrimOp::Mul),
-                Bridge(ptr) if ptr == div_wrapper => Some(PrimOp::Div),
+                Bridge(ptr) if ptr == add_builtin_wrapper => Some(PrimOp::Add),
+                Bridge(ptr) if ptr == sub_builtin_wrapper => Some(PrimOp::Sub),
+                Bridge(ptr) if ptr == mul_builtin_wrapper => Some(PrimOp::Mul),
+                Bridge(ptr) if ptr == div_builtin_wrapper => Some(PrimOp::Div),
+                Bridge(ptr) if ptr == equal_builtin_wrapper => Some(PrimOp::Equal),
+                Bridge(ptr) if ptr == greater_builtin_wrapper => Some(PrimOp::Greater),
+                Bridge(ptr) if ptr == greater_equal_builtin_wrapper => Some(PrimOp::GreaterEqual),
+                Bridge(ptr) if ptr == lesser_builtin_wrapper => Some(PrimOp::Lesser),
+                Bridge(ptr) if ptr == lesser_equal_builtin_wrapper => Some(PrimOp::LesserEqual),
                 _ => None,
             }
         } else {

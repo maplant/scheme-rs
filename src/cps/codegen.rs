@@ -337,6 +337,11 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             PrimOp::Sub => "sub",
             PrimOp::Mul => "mul",
             PrimOp::Div => "div",
+            PrimOp::Equal => "equal",
+            PrimOp::Greater => "greater",
+            PrimOp::GreaterEqual => "greater_equal",
+            PrimOp::Lesser => "lesser",
+            PrimOp::LesserEqual => "lesser_equal",
             _ => unreachable!(),
         };
 

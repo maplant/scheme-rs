@@ -373,11 +373,11 @@ pub async fn odd(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
 }
 
 #[bridge(name = "+", lib = "(base)")]
-pub async fn add(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
-    Ok(vec![Gc::new(Value::Number(add_vals(args)?))])
+pub async fn add_builtin(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
+    Ok(vec![Gc::new(Value::Number(add(args)?))])
 }
 
-pub(crate) fn add_vals(vals: &[Gc<Value>]) -> Result<Number, Exception> {
+pub(crate) fn add(vals: &[Gc<Value>]) -> Result<Number, Exception> {
     let mut result = Number::FixedInteger(0);
     for val in vals {
         let val = val.read();
@@ -388,11 +388,14 @@ pub(crate) fn add_vals(vals: &[Gc<Value>]) -> Result<Number, Exception> {
 }
 
 #[bridge(name = "-", lib = "(base)")]
-pub async fn sub(arg1: &Gc<Value>, args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
-    Ok(vec![Gc::new(Value::Number(sub_vals(arg1, args)?))])
+pub async fn sub_builtin(
+    arg1: &Gc<Value>,
+    args: &[Gc<Value>],
+) -> Result<Vec<Gc<Value>>, Exception> {
+    Ok(vec![Gc::new(Value::Number(sub(arg1, args)?))])
 }
 
-pub(crate) fn sub_vals(val1: &Gc<Value>, vals: &[Gc<Value>]) -> Result<Number, Exception> {
+pub(crate) fn sub(val1: &Gc<Value>, vals: &[Gc<Value>]) -> Result<Number, Exception> {
     let val1 = val1.read();
     let val1: &Number = val1.as_ref().try_into()?;
     let mut val1 = val1.clone();
@@ -409,11 +412,11 @@ pub(crate) fn sub_vals(val1: &Gc<Value>, vals: &[Gc<Value>]) -> Result<Number, E
 }
 
 #[bridge(name = "*", lib = "(base)")]
-pub async fn mul(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
-    Ok(vec![Gc::new(Value::Number(mul_vals(args)?))])
+pub async fn mul_builtin(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
+    Ok(vec![Gc::new(Value::Number(mul(args)?))])
 }
 
-pub(crate) fn mul_vals(vals: &[Gc<Value>]) -> Result<Number, Exception> {
+pub(crate) fn mul(vals: &[Gc<Value>]) -> Result<Number, Exception> {
     let mut result = Number::FixedInteger(1);
     for val in vals {
         let val = val.read();
@@ -424,11 +427,14 @@ pub(crate) fn mul_vals(vals: &[Gc<Value>]) -> Result<Number, Exception> {
 }
 
 #[bridge(name = "/", lib = "(base)")]
-pub async fn div(arg1: &Gc<Value>, args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
-    Ok(vec![Gc::new(Value::Number(div_vals(arg1, args)?))])
+pub async fn div_builtin(
+    arg1: &Gc<Value>,
+    args: &[Gc<Value>],
+) -> Result<Vec<Gc<Value>>, Exception> {
+    Ok(vec![Gc::new(Value::Number(div(arg1, args)?))])
 }
 
-pub(crate) fn div_vals(val1: &Gc<Value>, vals: &[Gc<Value>]) -> Result<Number, Exception> {
+pub(crate) fn div(val1: &Gc<Value>, vals: &[Gc<Value>]) -> Result<Number, Exception> {
     let val1 = val1.read();
     let val1: &Number = val1.as_ref().try_into()?;
     if val1.is_zero() {
@@ -450,24 +456,32 @@ pub(crate) fn div_vals(val1: &Gc<Value>, vals: &[Gc<Value>]) -> Result<Number, E
 }
 
 #[bridge(name = "=", lib = "(base)")]
-pub async fn equals(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
-    if let Some((first, rest)) = args.split_first() {
+pub async fn equal_builtin(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
+    Ok(vec![Gc::new(Value::Boolean(equal(args)?))])
+}
+
+pub(crate) fn equal(vals: &[Gc<Value>]) -> Result<bool, Exception> {
+    if let Some((first, rest)) = vals.split_first() {
         let first = first.read();
         let first: &Number = first.as_ref().try_into()?;
         for next in rest {
             let next = next.read();
             let next: &Number = next.as_ref().try_into()?;
             if first != next {
-                return Ok(vec![Gc::new(Value::Boolean(false))]);
+                return Ok(false);
             }
         }
     }
-    Ok(vec![Gc::new(Value::Boolean(true))])
+    Ok(true)
 }
 
 #[bridge(name = ">", lib = "(base)")]
-pub async fn greater(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
-    if let Some((head, rest)) = args.split_first() {
+pub async fn greater_builtin(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
+    Ok(vec![Gc::new(Value::Boolean(greater(args)?))])
+}
+
+pub(crate) fn greater(vals: &[Gc<Value>]) -> Result<bool, Exception> {
+    if let Some((head, rest)) = vals.split_first() {
         let mut prev = head.clone();
         for next in rest {
             {
@@ -484,18 +498,22 @@ pub async fn greater(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
                     return Err(Exception::invalid_type("number", "complex"));
                 }
                 if prev <= next {
-                    return Ok(vec![Gc::new(Value::Boolean(false))]);
+                    return Ok(false);
                 }
             }
             prev = next.clone();
         }
     }
-    Ok(vec![Gc::new(Value::Boolean(true))])
+    Ok(true)
 }
 
 #[bridge(name = ">=", lib = "(base)")]
-pub async fn greater_equal(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
-    if let Some((head, rest)) = args.split_first() {
+pub async fn greater_equal_builtin(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
+    Ok(vec![Gc::new(Value::Boolean(greater_equal(args)?))])
+}
+
+pub(crate) fn greater_equal(vals: &[Gc<Value>]) -> Result<bool, Exception> {
+    if let Some((head, rest)) = vals.split_first() {
         let mut prev = head.clone();
         for next in rest {
             {
@@ -510,18 +528,22 @@ pub async fn greater_equal(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Excepti
                     return Err(Exception::invalid_type("number", "complex"));
                 }
                 if prev < next {
-                    return Ok(vec![Gc::new(Value::Boolean(false))]);
+                    return Ok(false);
                 }
             }
             prev = next.clone();
         }
     }
-    Ok(vec![Gc::new(Value::Boolean(true))])
+    Ok(true)
 }
 
 #[bridge(name = "<", lib = "(base)")]
-pub async fn lesser(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
-    if let Some((head, rest)) = args.split_first() {
+pub async fn lesser_builtin(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
+    Ok(vec![Gc::new(Value::Boolean(lesser(args)?))])
+}
+
+pub(crate) fn lesser(vals: &[Gc<Value>]) -> Result<bool, Exception> {
+    if let Some((head, rest)) = vals.split_first() {
         let mut prev = head.clone();
         for next in rest {
             {
@@ -536,18 +558,22 @@ pub async fn lesser(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
                     return Err(Exception::invalid_type("number", "complex"));
                 }
                 if prev >= next {
-                    return Ok(vec![Gc::new(Value::Boolean(false))]);
+                    return Ok(false);
                 }
             }
             prev = next.clone();
         }
     }
-    Ok(vec![Gc::new(Value::Boolean(true))])
+    Ok(true)
 }
 
 #[bridge(name = "<=", lib = "(base)")]
-pub async fn lesser_equal(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
-    if let Some((head, rest)) = args.split_first() {
+pub async fn lesser_equal_builtin(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
+    Ok(vec![Gc::new(Value::Boolean(lesser_equal(args)?))])
+}
+
+pub(crate) fn lesser_equal(vals: &[Gc<Value>]) -> Result<bool, Exception> {
+    if let Some((head, rest)) = vals.split_first() {
         let mut prev = head.clone();
         for next in rest {
             {
@@ -562,13 +588,13 @@ pub async fn lesser_equal(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exceptio
                     return Err(Exception::invalid_type("number", "complex"));
                 }
                 if prev > next {
-                    return Ok(vec![Gc::new(Value::Boolean(false))]);
+                    return Ok(false);
                 }
             }
             prev = next.clone();
         }
     }
-    Ok(vec![Gc::new(Value::Boolean(true))])
+    Ok(true)
 }
 
 #[bridge(name = "number?", lib = "(base)")]
