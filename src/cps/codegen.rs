@@ -462,8 +462,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             self.builder.build_store(ep, val)?;
         }
 
-        // Call make_application
-        let make_app = self.module.get_function("make_application").unwrap();
+        let make_app = self.module.get_function("apply").unwrap();
         let app = self
             .builder
             .build_call(
@@ -478,7 +477,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                         .into_pointer_value()
                         .into(),
                 ],
-                "make_application",
+                "apply",
             )?
             .try_as_basic_value()
             .left()
@@ -502,8 +501,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         let operator = self.value_codegen(operator)?;
         let arg = self.value_codegen(arg)?;
 
-        // Call make_forward
-        let make_forward = self.module.get_function("make_forward").unwrap();
+        let make_forward = self.module.get_function("forward").unwrap();
         let app = self
             .builder
             .build_call(
@@ -517,7 +515,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                         .into_pointer_value()
                         .into(),
                 ],
-                "make_forward",
+                "forward",
             )?
             .try_as_basic_value()
             .left()
@@ -538,11 +536,10 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         allocs: Option<Rc<Allocs<'ctx>>>,
     ) -> Result<(), BuilderError> {
         let val = self.value_codegen(args)?;
-        // Call make_return_values
-        let make_app = self.module.get_function("make_return_values").unwrap();
+        let make_app = self.module.get_function("halt").unwrap();
         let app = self
             .builder
-            .build_call(make_app, &[val.into()], "make_return_values")?
+            .build_call(make_app, &[val.into()], "halt")?
             .try_as_basic_value()
             .left()
             .unwrap();

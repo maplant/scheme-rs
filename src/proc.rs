@@ -113,14 +113,14 @@ impl Closure {
     }
 
     pub async fn call(&self, args: &[Gc<Value>]) -> Result<Record, Exception> {
-        unsafe extern "C" fn just_return(
+        unsafe extern "C" fn halt(
             _runtime: *mut GcInner<Runtime>,
             _env: *const *mut GcInner<Value>,
             _globals: *const *mut GcInner<Value>,
             args: *const *mut GcInner<Value>,
             _exception_handler: *mut GcInner<ExceptionHandler>,
         ) -> *mut Application {
-            crate::runtime::make_return_values(args.read())
+            crate::runtime::halt(args.read())
         }
 
         let mut args = args.to_vec();
@@ -130,7 +130,7 @@ impl Closure {
             self.runtime.clone(),
             Vec::new(),
             Vec::new(),
-            FuncPtr::Continuation(just_return),
+            FuncPtr::Continuation(halt),
             0,
             true,
             true,

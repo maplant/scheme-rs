@@ -141,7 +141,7 @@ impl_into_exception_for!(std::num::TryFromIntError);
 pub struct Frame {
     pub proc: String,
     pub span: Span,
-    pub repeated: usize,
+    // pub repeated: usize,
 }
 
 impl Frame {
@@ -149,7 +149,7 @@ impl Frame {
         Self {
             proc,
             span,
-            repeated: 0,
+            // repeated: 0,
         }
     }
 }
