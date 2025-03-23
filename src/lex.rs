@@ -343,6 +343,24 @@ fn number<'a>(i: InputSpan<'a>) -> IResult<InputSpan<'a>, Number<'a>> {
         };
     }
 
+    // Special parsing for decimal followed by number, so for example: -.5
+    let (i, frac) = opt(tuple((
+        opt(match_char('-')).map(|neg| neg.is_some()),
+        match_char('.'),
+        take_while1(|c: char| c.is_ascii_digit()),
+    )))(i)?;
+    if let Some((negative, _, frac)) = frac {
+        return Ok((
+            i,
+            Number {
+                radix: 10,
+                negative,
+                integer_or_numerator: "0",
+                fractional_or_denominator: Some((FractionalOrDenominator::Fractional, *frac)),
+            },
+        ));
+    }
+
     let (remaining, mut number) =
         map::<InputSpan<'a>, (u32, bool, InputSpan<'a>), Number<'a>, _, _, _>(
             alt((
@@ -518,7 +536,11 @@ impl<'a> TryFrom<Number<'a>> for Rational {
         let numerator: Integer = num.integer_or_numerator.parse().unwrap();
         let denominator: Integer = denominator.parse().unwrap();
 
-        Ok(Rational::from((numerator, denominator)))
+        if num.negative {
+            Ok(-Rational::from((numerator, denominator)))
+        } else {
+            Ok(Rational::from((numerator, denominator)))
+        }
     }
 }
 
@@ -535,10 +557,15 @@ impl<'a> TryFrom<Number<'a>> for f64 {
             return Err(TryFromNumberError::InvalidRadix);
         }
 
+        let negative = num.negative;
         let num = format!("{}.{frac}", num.integer_or_numerator);
         let num: f64 = num.parse()?;
 
-        Ok(num)
+        if negative {
+            Ok(-num)
+        } else {
+            Ok(num)
+        }
     }
 }
 
