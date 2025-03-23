@@ -333,6 +333,22 @@ fn string(i: InputSpan) -> IResult<InputSpan, Vec<Fragment>> {
 }
 
 fn number<'a>(i: InputSpan<'a>) -> IResult<InputSpan<'a>, Number<'a>> {
+    let (remaining, number) = number_inner(i.clone())?;
+    if remaining
+        .chars()
+        .next()
+        .map(is_valid_numeric_char)
+        .unwrap_or(false)
+    {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            i,
+            nom::error::ErrorKind::Alt,
+        )));
+    }
+    Ok((remaining, number))
+}
+
+fn number_inner<'a>(i: InputSpan<'a>) -> IResult<InputSpan<'a>, Number<'a>> {
     macro_rules! gen_radix_parser {
         ($head:expr, $radix:expr) => {
             tuple((
@@ -389,6 +405,10 @@ fn number<'a>(i: InputSpan<'a>) -> IResult<InputSpan<'a>, Number<'a>> {
     } else {
         Ok((remaining, number))
     }
+}
+
+fn is_valid_numeric_char(ch: char) -> bool {
+    ch.is_ascii_digit() || ch == '-' || ch == '/' || ch == '.' || is_constituent(ch)
 }
 
 /*
