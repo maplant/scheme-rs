@@ -332,7 +332,7 @@ fn string(i: InputSpan) -> IResult<InputSpan, Vec<Fragment>> {
     )(i)
 }
 
-fn number<'a>(i: InputSpan<'a>) -> IResult<InputSpan<'a>, Number<'a>> {
+fn number(i: InputSpan<'_>) -> IResult<InputSpan<'_>, Number<'_>> {
     let (remaining, number) = number_inner(i.clone())?;
     if remaining
         .chars()
