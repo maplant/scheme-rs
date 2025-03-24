@@ -10,8 +10,8 @@ use nom::{
     sequence::{delimited, preceded, tuple},
     IResult, Parser,
 };
+use malachite::{Integer, Natural, rational::Rational};
 use nom_locate::{position, LocatedSpan};
-use rug::{Integer, Rational};
 use std::{
     borrow::Cow,
     fmt,
@@ -528,8 +528,8 @@ impl<'a> TryFrom<Number<'a>> for Integer {
                     .to_digit(num.radix)
                     .ok_or(TryFromNumberError::InvalidDigit)
             })
-            .try_fold(Integer::new(), |number, digit| {
-                Ok(number.mul(num.radix).add(digit?))
+            .try_fold(Integer::default(), |number, digit| {
+                Ok(number.mul(Integer::from(num.radix)).add(Integer::from(digit?)))
             })
             .map(|number| if num.negative { number.neg() } else { number })
     }
@@ -553,14 +553,15 @@ impl<'a> TryFrom<Number<'a>> for Rational {
             return Err(TryFromNumberError::EmptyDenominator);
         }
 
-        let numerator: Integer = num.integer_or_numerator.parse().unwrap();
-        let denominator: Integer = denominator.parse().unwrap();
+        let numerator: Natural = num.integer_or_numerator.parse().map_err(|_| TryFromNumberError::Overflow)?;
+        let denominator: Natural = denominator.parse().map_err(|_| TryFromNumberError::Overflow)?;
 
-        if num.negative {
-            Ok(-Rational::from((numerator, denominator)))
-        } else {
-            Ok(Rational::from((numerator, denominator)))
-        }
+        Ok(Rational::from_sign_and_naturals(
+            // true is positive for malachite
+            !num.negative,
+            numerator,
+            denominator,
+        ))
     }
 }
 

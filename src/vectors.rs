@@ -1,7 +1,7 @@
 use crate::{
     exception::Exception, gc::Gc, lists::slice_to_list, num::Number, registry::bridge, value::Value,
 };
-use rug::Integer;
+use malachite::Integer;
 use std::{clone::Clone, ops::Range};
 
 fn try_make_range(start: usize, end: usize) -> Result<Range<usize>, Exception> {

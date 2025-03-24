@@ -7,7 +7,7 @@ use crate::{
     num::Number,
     syntax::Syntax,
 };
-use rug::{Integer, Rational};
+use malachite::{Integer, rational::Rational};
 use std::{char::CharTryFromError, error::Error as StdError, fmt, num::TryFromIntError};
 
 #[derive(Debug)]

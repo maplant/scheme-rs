@@ -5,7 +5,7 @@ use crate::{
     value::Value,
 };
 use num::{complex::Complex64, FromPrimitive, ToPrimitive, Zero};
-use rug::{Complete, Integer, Rational};
+use malachite::{base::num::arithmetic::traits::Parity, Integer, rational::Rational};
 use std::{
     cmp::Ordering,
     fmt,
@@ -26,8 +26,8 @@ impl Number {
     fn is_zero(&self) -> bool {
         match self {
             Self::FixedInteger(i) => i.is_zero(),
-            Self::BigInteger(i) => i.is_zero(),
-            Self::Rational(r) => r.is_zero(),
+            Self::BigInteger(i) => i.eq(&0),
+            Self::Rational(r) => r.eq(&0),
             Self::Real(r) => r.is_zero(),
             Self::Complex(c) => c.is_zero(),
         }
@@ -37,8 +37,8 @@ impl Number {
     fn is_even(&self) -> bool {
         use num::Integer;
         match self {
-            Self::FixedInteger(i) => i.is_even(),
-            Self::BigInteger(i) => i.is_even(),
+            Self::FixedInteger(i) => i.even(),
+            Self::BigInteger(i) => i.even(),
             Self::Rational(_) => false,
             Self::Real(_) => false,
             Self::Complex(_) => false,
@@ -49,8 +49,8 @@ impl Number {
     fn is_odd(&self) -> bool {
         use num::Integer;
         match self {
-            Self::FixedInteger(i) => i.is_odd(),
-            Self::BigInteger(i) => i.is_odd(),
+            Self::FixedInteger(i) => i.odd(),
+            Self::BigInteger(i) => i.odd(),
             Self::Rational(_) => false,
             Self::Real(_) => false,
             Self::Complex(_) => false,
@@ -65,13 +65,7 @@ impl Number {
     /// FIXME: This code is so insanely wrong in every conceivable way that it is bordeline
     /// or even outright dangerous.
     pub fn to_u64(&self) -> u64 {
-        match self {
-            Self::FixedInteger(i) => i.to_u64().unwrap_or(0),
-            Self::BigInteger(i) => i.to_u64().unwrap_or(0),
-            Self::Rational(r) => r.to_u64().unwrap_or(0),
-            Self::Real(r) => r.to_u64().unwrap_or(0),
-            Self::Complex(c) => c.to_u64().unwrap_or(0),
-        }
+        todo!("deprecate")
     }
 }
 
@@ -148,38 +142,32 @@ impl PartialEq for Number {
         // TODO: A macro could probably greatly improve this
         match (self, rhs) {
             (Self::FixedInteger(l), Self::FixedInteger(r)) => l == r,
-            (Self::FixedInteger(l), Self::BigInteger(r)) => l == r,
-            (Self::FixedInteger(l), Self::Rational(r)) => l == r,
-            (Self::FixedInteger(l), Self::Real(r)) => Some(*l) == r.to_i64(),
-            (Self::FixedInteger(l), Self::Complex(r)) => Complex64::from_i64(*l) == Some(*r),
-            (Self::BigInteger(l), Self::FixedInteger(r)) => l == r,
             (Self::BigInteger(l), Self::BigInteger(r)) => l == r,
-            (Self::BigInteger(l), Self::Rational(r)) => l == r,
-            (Self::BigInteger(l), Self::Real(r)) => l == r,
-            (Self::BigInteger(l), Self::Complex(r)) => {
-                <Integer as ToPrimitive>::to_f64(l).map(|l| Complex64::new(l, 0.0)) == Some(*r)
-            }
-            (Self::Rational(l), Self::FixedInteger(r)) => l == r,
-            (Self::Rational(l), Self::BigInteger(r)) => l == r,
             (Self::Rational(l), Self::Rational(r)) => l == r,
-            (Self::Rational(l), Self::Real(r)) => <Rational as ToPrimitive>::to_f64(l) == Some(*r),
-            (Self::Rational(l), Self::Complex(r)) => {
-                <Rational as ToPrimitive>::to_f64(l).map(|l| Complex64::new(l, 0.0)) == Some(*r)
-            }
-            (Self::Real(l), Self::FixedInteger(r)) => l.to_i64() == Some(*r),
-            (Self::Real(l), Self::BigInteger(r)) => l == r,
-            (Self::Real(l), Self::Rational(r)) => l == r,
+            (Self::Complex(_), _) | (_, Self::Complex(_)) => false,
             (Self::Real(l), Self::Real(r)) => l == r,
-            (Self::Real(l), Self::Complex(r)) => Complex64::new(*l, 0.0) == *r,
-            (Self::Complex(l), Self::FixedInteger(r)) => Some(*l) == Complex64::from_i64(*r),
-            (Self::Complex(l), Self::BigInteger(r)) => {
-                Some(*l) == <Integer as ToPrimitive>::to_f64(r).map(|r| Complex64::new(r, 0.0))
-            }
-            (Self::Complex(l), Self::Rational(r)) => {
-                Some(*l) == <Rational as ToPrimitive>::to_f64(r).map(|r| Complex64::new(r, 0.0))
-            }
-            (Self::Complex(l), Self::Real(r)) => *l == Complex64::new(*r, 0.0),
-            (Self::Complex(l), Self::Complex(r)) => l == r,
+
+            (Self::BigInteger(big_int), Self::FixedInteger(fixed_int)) |
+            (Self::FixedInteger(fixed_int), Self::BigInteger(big_int)) => fixed_int == big_int,
+
+            (Self::Rational(rational), Self::FixedInteger(fixed_int)) |
+            (Self::FixedInteger(fixed_int), Self::Rational(rational)) => fixed_int == rational,
+
+            (Self::BigInteger(big_int), Self::Rational(rational)) |
+            (Self::Rational(rational), Self::BigInteger(big_int)) => big_int == rational,
+
+            (Self::BigInteger(big_int), Self::Real(float)) |
+            (Self::Real(float), Self::BigInteger(big_int)) => float == big_int,
+
+            (Self::Rational(rational), Self::Real(float)) |
+            (Self::Real(float), Self::Rational(rational)) => float == rational,
+
+            (Self::FixedInteger(fixed_int), Self::Real(float)) |
+            (Self::Real(float), Self::FixedInteger(fixed_int)) =>
+                <i64 as TryInto<i32>>::try_into(*fixed_int)
+                    .map(f64::from)
+                    .map(|fixed_int| fixed_int == *float)
+                    .unwrap_or(false),
         }
     }
 }
@@ -216,68 +204,7 @@ macro_rules! impl_op {
 
             fn $op(self, rhs: &'a Number) -> Number {
                 // TODO: A macro could probably greatly improve this
-                match (self, rhs) {
-                    (Number::FixedInteger(l), Number::FixedInteger(r)) => match l.$checked_op(*r) {
-                        Some(fixed) => Number::FixedInteger(fixed),
-                        None => Number::BigInteger(Integer::from(*l).$op(r)),
-                    },
-                    (Number::FixedInteger(l), Number::BigInteger(r)) => {
-                        Number::BigInteger(Integer::from(*l).$op(r))
-                    }
-                    (Number::FixedInteger(l), Number::Rational(r)) => {
-                        Number::Rational(Rational::from((*l, 1)).$op(r))
-                    }
-                    (Number::FixedInteger(l), Number::Real(r)) => Number::Real((*l as f64).$op(*r)),
-                    (Number::FixedInteger(l), Number::Complex(r)) => {
-                        Number::Complex(Complex64::new(*l as f64, 0.0).$op(*r))
-                    }
-                    (Number::BigInteger(l), Number::FixedInteger(r)) => {
-                        Number::BigInteger(l.$op(r).complete())
-                    }
-                    (Number::BigInteger(l), Number::BigInteger(r)) => {
-                        Number::BigInteger(l.$op(r).complete())
-                    }
-                    (Number::BigInteger(l), Number::Rational(r)) => {
-                        Number::Rational(Rational::from(l).$op(r))
-                    }
-                    (Number::BigInteger(l), Number::Real(r)) => Number::Real(l.to_f64().$op(r)),
-                    (Number::BigInteger(l), Number::Complex(r)) => {
-                        Number::Complex(Complex64::new(l.to_f64(), 0.0).$op(r))
-                    }
-                    (Number::Rational(l), Number::FixedInteger(r)) => {
-                        Number::Rational(l.$op(Rational::from((*r, 1))))
-                    }
-                    (Number::Rational(l), Number::BigInteger(r)) => {
-                        Number::Rational(l.$op(Rational::from(r)))
-                    }
-                    (Number::Rational(l), Number::Rational(r)) => {
-                        Number::Rational(l.$op(r).complete())
-                    }
-                    (Number::Rational(l), Number::Real(r)) => Number::Real(l.to_f64().$op(r)),
-                    (Number::Rational(l), Number::Complex(r)) => {
-                        Number::Complex(Complex64::new(l.to_f64(), 0.0).$op(r))
-                    }
-                    (Number::Real(l), Number::FixedInteger(r)) => Number::Real(l.$op(*r as f64)),
-                    (Number::Real(l), Number::BigInteger(r)) => Number::Real(l.$op(r.to_f64())),
-                    (Number::Real(l), Number::Rational(r)) => Number::Real(l.$op(r.to_f64())),
-                    (Number::Real(l), Number::Real(r)) => Number::Real(l.$op(r)),
-                    (Number::Real(l), Number::Complex(r)) => {
-                        Number::Complex(Complex64::new(*l, 0.0).$op(r))
-                    }
-                    (Number::Complex(l), Number::FixedInteger(r)) => {
-                        Number::Complex(l.$op(Complex64::new(*r as f64, 0.0)))
-                    }
-                    (Number::Complex(l), Number::BigInteger(r)) => {
-                        Number::Complex(l.$op(Complex64::new(r.to_f64(), 0.0)))
-                    }
-                    (Number::Complex(l), Number::Rational(r)) => {
-                        Number::Complex(l.$op(Complex64::new(r.to_f64(), 0.0)))
-                    }
-                    (Number::Complex(l), Number::Real(r)) => {
-                        Number::Complex(l.$op(Complex64::new(*r, 0.0)))
-                    }
-                    (Number::Complex(l), Number::Complex(r)) => Number::Complex(l.$op(r)),
-                }
+                todo!()
             }
         }
     };
@@ -292,58 +219,7 @@ impl<'a> Div<&'a Number> for &'a Number {
 
     fn div(self, rhs: &'a Number) -> Number {
         // TODO: A macro could probably greatly improve this
-        match (self, rhs) {
-            (Number::FixedInteger(l), Number::FixedInteger(r)) => {
-                Number::Rational(Rational::from((*l, *r)))
-            }
-            (Number::FixedInteger(l), Number::BigInteger(r)) => {
-                Number::Rational(Rational::from((*l, r)))
-            }
-            (Number::FixedInteger(l), Number::Rational(r)) => {
-                Number::Rational(Rational::from((*l, 1)) / r)
-            }
-            (Number::FixedInteger(l), Number::Real(r)) => Number::Real((*l as f64) / *r),
-            (Number::FixedInteger(l), Number::Complex(r)) => {
-                Number::Complex(Complex64::new(*l as f64, 0.0) / *r)
-            }
-            (Number::BigInteger(l), Number::FixedInteger(r)) => {
-                Number::Rational(Rational::from((l, *r)))
-            }
-            (Number::BigInteger(l), Number::BigInteger(r)) => {
-                Number::Rational(Rational::from((l, r)))
-            }
-            (Number::BigInteger(l), Number::Rational(r)) => Number::Rational(Rational::from(l) / r),
-            (Number::BigInteger(l), Number::Real(r)) => Number::Real(l.to_f64() / r),
-            (Number::BigInteger(l), Number::Complex(r)) => {
-                Number::Complex(Complex64::new(l.to_f64(), 0.0) / r)
-            }
-            (Number::Rational(l), Number::FixedInteger(r)) => {
-                Number::Rational(l / Rational::from((*r, 1)))
-            }
-            (Number::Rational(l), Number::BigInteger(r)) => Number::Rational((l / r).complete()),
-
-            (Number::Rational(l), Number::Rational(r)) => Number::Rational((l / r).complete()),
-            (Number::Rational(l), Number::Real(r)) => Number::Real(l.to_f64() / r),
-            (Number::Rational(l), Number::Complex(r)) => {
-                Number::Complex(Complex64::new(l.to_f64(), 0.0) / r)
-            }
-            (Number::Real(l), Number::FixedInteger(r)) => Number::Real(l / *r as f64),
-            (Number::Real(l), Number::BigInteger(r)) => Number::Real(l / r.to_f64()),
-            (Number::Real(l), Number::Rational(r)) => Number::Real(l / r.to_f64()),
-            (Number::Real(l), Number::Real(r)) => Number::Real(l / r),
-            (Number::Real(l), Number::Complex(r)) => Number::Complex(Complex64::new(*l, 0.0) / r),
-            (Number::Complex(l), Number::FixedInteger(r)) => {
-                Number::Complex(l / Complex64::new(*r as f64, 0.0))
-            }
-            (Number::Complex(l), Number::BigInteger(r)) => {
-                Number::Complex(l / Complex64::new(r.to_f64(), 0.0))
-            }
-            (Number::Complex(l), Number::Rational(r)) => {
-                Number::Complex(l / Complex64::new(r.to_f64(), 0.0))
-            }
-            (Number::Complex(l), Number::Real(r)) => Number::Complex(l / Complex64::new(*r, 0.0)),
-            (Number::Complex(l), Number::Complex(r)) => Number::Complex(l / r),
-        }
+        todo!()
     }
 }
 
