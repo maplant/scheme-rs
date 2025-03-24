@@ -11,11 +11,11 @@ use nom::{
     IResult, Parser,
 };
 use nom_locate::{position, LocatedSpan};
-use rug::Integer;
+use rug::{Integer, Rational};
 use std::{
     borrow::Cow,
-    error::Error as StdError,
     fmt,
+    num::ParseFloatError,
     ops::{Add, Mul, Neg},
     sync::Arc,
 };
@@ -332,7 +332,23 @@ fn string(i: InputSpan) -> IResult<InputSpan, Vec<Fragment>> {
     )(i)
 }
 
-fn number<'a>(i: InputSpan<'a>) -> IResult<InputSpan<'a>, Number<'a>> {
+fn number(i: InputSpan<'_>) -> IResult<InputSpan<'_>, Number<'_>> {
+    let (remaining, number) = number_inner(i.clone())?;
+    if remaining
+        .chars()
+        .next()
+        .map(is_valid_numeric_char)
+        .unwrap_or(false)
+    {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            i,
+            nom::error::ErrorKind::Alt,
+        )));
+    }
+    Ok((remaining, number))
+}
+
+fn number_inner<'a>(i: InputSpan<'a>) -> IResult<InputSpan<'a>, Number<'a>> {
     macro_rules! gen_radix_parser {
         ($head:expr, $radix:expr) => {
             tuple((
@@ -343,19 +359,56 @@ fn number<'a>(i: InputSpan<'a>) -> IResult<InputSpan<'a>, Number<'a>> {
         };
     }
 
-    map::<InputSpan<'a>, (u32, bool, InputSpan<'a>), Number<'a>, _, _, _>(
-        alt((
-            gen_radix_parser!("#b", 2),
-            gen_radix_parser!("#o", 8),
-            gen_radix_parser!("#x", 16),
-            tuple((
-                opt(tag_no_case("#d")).map(|_| 10),
-                opt(match_char('-')).map(|neg| neg.is_some()),
-                take_while1(|c: char| c.is_ascii_digit()),
+    // Special parsing for decimal followed by number, so for example: -.5
+    let (i, frac) = opt(tuple((
+        opt(match_char('-')).map(|neg| neg.is_some()),
+        match_char('.'),
+        take_while1(|c: char| c.is_ascii_digit()),
+    )))(i)?;
+    if let Some((negative, _, frac)) = frac {
+        return Ok((
+            i,
+            Number {
+                radix: 10,
+                negative,
+                integer_or_numerator: "0",
+                fractional_or_denominator: Some((FractionalOrDenominator::Fractional, *frac)),
+            },
+        ));
+    }
+
+    let (remaining, mut number) =
+        map::<InputSpan<'a>, (u32, bool, InputSpan<'a>), Number<'a>, _, _, _>(
+            alt((
+                gen_radix_parser!("#b", 2),
+                gen_radix_parser!("#o", 8),
+                gen_radix_parser!("#x", 16),
+                tuple((
+                    opt(tag_no_case("#d")).map(|_| 10),
+                    opt(match_char('-')).map(|neg| neg.is_some()),
+                    take_while1(|c: char| c.is_ascii_digit()),
+                )),
             )),
-        )),
-        |(radix, neg, contents)| Number::new(radix, neg, &contents),
-    )(i)
+            |(radix, neg, contents)| Number::new(radix, neg, &contents),
+        )(i)?;
+
+    if number.radix == 10 {
+        let (remaining, fractional_or_denominator) = opt(tuple((
+            alt((
+                match_char('.').map(|_| FractionalOrDenominator::Fractional),
+                match_char('/').map(|_| FractionalOrDenominator::Denominator),
+            )),
+            take_while(|c: char| c.is_ascii_digit()),
+        )))(remaining)?;
+        number.fractional_or_denominator = fractional_or_denominator.map(|(fd, cnts)| (fd, *cnts));
+        Ok((remaining, number))
+    } else {
+        Ok((remaining, number))
+    }
+}
+
+fn is_valid_numeric_char(ch: char) -> bool {
+    ch.is_ascii_digit() || ch == '-' || ch == '/' || ch == '.' || is_constituent(ch)
 }
 
 /*
@@ -406,35 +459,45 @@ impl<'a> Token<'a> {
 pub struct Number<'a> {
     radix: u32,
     negative: bool,
-    contents: &'a str,
+    integer_or_numerator: &'a str,
+    fractional_or_denominator: Option<(FractionalOrDenominator, &'a str)>,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FractionalOrDenominator {
+    Fractional,
+    Denominator,
+}
+
 impl<'a> Number<'a> {
-    pub const fn new(radix: u32, negative: bool, contents: &'a str) -> Self {
+    pub const fn new(radix: u32, negative: bool, integer_or_numerator: &'a str) -> Self {
         Self {
             radix,
             negative,
-            contents,
+            integer_or_numerator,
+            fractional_or_denominator: None,
         }
     }
 }
+
 macro_rules! impl_try_into_number_lexeme_for {
     ($ty:ty) => {
         impl<'a> TryFrom<Number<'a>> for $ty {
-            type Error = TryFromNumberError<'a>;
-            fn try_from(num: Number<'a>) -> Result<Self, TryFromNumberError<'a>> {
-                let invalid_digit_err = || TryFromNumberError::new(num.contents, TryFromNumberErrorKind::InvalidDigit(num.radix));
-                let overflow_err = || TryFromNumberError::new(&num.contents, TryFromNumberErrorKind::Overflow);
-
-                num.contents.chars()
+            type Error = TryFromNumberError;
+            fn try_from(num: Number<'a>) -> Result<Self, TryFromNumberError> {
+                if num.fractional_or_denominator.is_some() {
+                    return Err(TryFromNumberError::InvalidDigit);
+                }
+                num.integer_or_numerator.chars()
                     .map(|digit_char| digit_char
                         .to_digit(num.radix)
-                        .ok_or_else(invalid_digit_err))
+                        .ok_or(TryFromNumberError::InvalidDigit))
                     .try_fold(0 as $ty, |number, new_digit| {
                         number
                             .checked_mul(num.radix as $ty)
-                            .ok_or_else(overflow_err)?
+                            .ok_or(TryFromNumberError::Overflow)?
                             .checked_add(new_digit? as $ty)
-                            .ok_or_else(overflow_err)
+                            .ok_or(TryFromNumberError::Overflow)
                     })
                     .map(|full_num| if num.negative {
                         -full_num
@@ -448,21 +511,22 @@ macro_rules! impl_try_into_number_lexeme_for {
         $(impl_try_into_number_lexeme_for!($ty);)*
     }
 }
+
 // We cannot use on `u.` types since the number may be negative.
 impl_try_into_number_lexeme_for![i8, i16, i32, i64, i128, isize];
 
 impl<'a> TryFrom<Number<'a>> for Integer {
-    type Error = TryFromNumberError<'a>;
-    fn try_from(num: Number<'a>) -> Result<Self, TryFromNumberError<'a>> {
-        num.contents
+    type Error = TryFromNumberError;
+    fn try_from(num: Number<'a>) -> Result<Self, TryFromNumberError> {
+        if num.fractional_or_denominator.is_some() {
+            return Err(TryFromNumberError::InvalidDigit);
+        }
+        num.integer_or_numerator
             .chars()
             .map(|digit| {
-                digit.to_digit(num.radix).ok_or_else(|| {
-                    TryFromNumberError::new(
-                        num.contents,
-                        TryFromNumberErrorKind::InvalidDigit(num.radix),
-                    )
-                })
+                digit
+                    .to_digit(num.radix)
+                    .ok_or(TryFromNumberError::InvalidDigit)
             })
             .try_fold(Integer::new(), |number, digit| {
                 Ok(number.mul(num.radix).add(digit?))
@@ -471,34 +535,84 @@ impl<'a> TryFrom<Number<'a>> for Integer {
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub struct TryFromNumberError<'a> {
-    num: &'a str,
-    kind: TryFromNumberErrorKind,
-}
-impl<'a> TryFromNumberError<'a> {
-    const fn new(num: &'a str, kind: TryFromNumberErrorKind) -> Self {
-        Self { num, kind }
+impl<'a> TryFrom<Number<'a>> for Rational {
+    type Error = TryFromNumberError;
+
+    fn try_from(num: Number<'a>) -> Result<Self, TryFromNumberError> {
+        let Some((FractionalOrDenominator::Denominator, denominator)) =
+            num.fractional_or_denominator
+        else {
+            return Err(TryFromNumberError::InvalidDigit);
+        };
+
+        if num.radix != 10 {
+            return Err(TryFromNumberError::InvalidRadix);
+        }
+
+        if denominator.is_empty() {
+            return Err(TryFromNumberError::EmptyDenominator);
+        }
+
+        let numerator: Integer = num.integer_or_numerator.parse().unwrap();
+        let denominator: Integer = denominator.parse().unwrap();
+
+        if num.negative {
+            Ok(-Rational::from((numerator, denominator)))
+        } else {
+            Ok(Rational::from((numerator, denominator)))
+        }
     }
 }
-impl fmt::Display for TryFromNumberError<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "invalid number `{}`: {}", self.num, self.kind)
+
+impl<'a> TryFrom<Number<'a>> for f64 {
+    type Error = TryFromNumberError;
+
+    fn try_from(num: Number<'a>) -> Result<Self, TryFromNumberError> {
+        let Some((FractionalOrDenominator::Fractional, frac)) = num.fractional_or_denominator
+        else {
+            return Err(TryFromNumberError::InvalidDigit);
+        };
+
+        if num.radix != 10 {
+            return Err(TryFromNumberError::InvalidRadix);
+        }
+
+        let negative = num.negative;
+        let num = format!("{}.{frac}", num.integer_or_numerator);
+        let num: f64 = num.parse()?;
+
+        if negative {
+            Ok(-num)
+        } else {
+            Ok(num)
+        }
     }
 }
-impl StdError for TryFromNumberError<'_> {}
+
 #[derive(Debug, PartialEq)]
-enum TryFromNumberErrorKind {
+pub enum TryFromNumberError {
     Overflow,
-    /// Contains radix
-    InvalidDigit(u32),
+    InvalidDigit,
+    InvalidRadix,
+    ParseFloatError(ParseFloatError),
+    EmptyDenominator,
 }
-impl fmt::Display for TryFromNumberErrorKind {
+
+impl fmt::Display for TryFromNumberError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidDigit(radix) => write!(f, "invalid digit of radix `{}`", radix),
+            Self::InvalidDigit => write!(f, "invalid digit"),
             Self::Overflow => write!(f, "number too large"),
+            Self::InvalidRadix => write!(f, "invalid radix"),
+            Self::ParseFloatError(_) => write!(f, "cannot parse float"),
+            Self::EmptyDenominator => write!(f, "empty denominator"),
         }
+    }
+}
+
+impl From<ParseFloatError> for TryFromNumberError {
+    fn from(value: ParseFloatError) -> Self {
+        Self::ParseFloatError(value)
     }
 }
 
@@ -521,17 +635,11 @@ mod tests {
     fn number_lexeme_errors() {
         assert_eq!(
             <Number<'_> as TryInto<i8>>::try_into(Number::new(10, false, "9001")),
-            Err(TryFromNumberError::new(
-                "9001",
-                TryFromNumberErrorKind::Overflow
-            )),
+            Err(TryFromNumberError::Overflow)
         );
         assert_eq!(
             <Number<'_> as TryInto<i8>>::try_into(Number::new(10, false, "foo bar")),
-            Err(TryFromNumberError::new(
-                "foo bar",
-                TryFromNumberErrorKind::InvalidDigit(10)
-            )),
+            Err(TryFromNumberError::InvalidDigit),
         );
     }
 }

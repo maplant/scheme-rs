@@ -7,7 +7,7 @@ use crate::{
     num::Number,
     syntax::Syntax,
 };
-use rug::Integer;
+use rug::{Integer, Rational};
 use std::{char::CharTryFromError, error::Error as StdError, fmt, num::TryFromIntError};
 
 #[derive(Debug)]
@@ -22,7 +22,7 @@ pub enum ParseSyntaxError<'a> {
     CharTryFrom(CharTryFromError),
     Lex(LexError<'a>),
     TryFromInt(TryFromIntError),
-    TryFromNumber(TryFromNumberError<'a>),
+    TryFromNumber(TryFromNumberError),
 }
 impl fmt::Display for ParseSyntaxError<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -70,8 +70,8 @@ impl From<CharTryFromError> for ParseSyntaxError<'_> {
         Self::CharTryFrom(e)
     }
 }
-impl<'a> From<TryFromNumberError<'a>> for ParseSyntaxError<'a> {
-    fn from(e: TryFromNumberError<'a>) -> Self {
+impl From<TryFromNumberError> for ParseSyntaxError<'_> {
+    fn from(e: TryFromNumberError) -> Self {
         Self::TryFromNumber(e)
     }
 }
@@ -348,6 +348,8 @@ fn number<'a>(i: &LexNumber<'a>) -> Result<Literal, ParseSyntaxError<'a>> {
     <LexNumber as TryInto<i64>>::try_into(*i)
         .map(Number::FixedInteger)
         .or_else(|_| <LexNumber as TryInto<Integer>>::try_into(*i).map(Number::BigInteger))
+        .or_else(|_| <LexNumber as TryInto<Rational>>::try_into(*i).map(Number::Rational))
+        .or_else(|_| <LexNumber as TryInto<f64>>::try_into(*i).map(Number::Real))
         .map(Literal::Number)
         .map_err(ParseSyntaxError::from)
 }
