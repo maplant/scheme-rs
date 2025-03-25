@@ -72,10 +72,6 @@ impl Exception {
         }
     }
 
-    pub fn division_by_zero() -> Self {
-        Self::error("division by zero".to_string())
-    }
-
     pub fn assert_eq_failed(expected: &str, actual: &str) -> Self {
         Self::error(format!(
             "Assertion failed, expected: {expected}, actual: {actual}"
@@ -135,6 +131,7 @@ macro_rules! impl_into_exception_for {
         }
     };
 }
+impl_into_exception_for!(crate::num::ArithmeticError);
 impl_into_exception_for!(std::num::TryFromIntError);
 
 #[derive(Debug, Clone, Trace)]

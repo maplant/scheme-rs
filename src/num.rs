@@ -4,11 +4,21 @@ use crate::{
     registry::bridge,
     value::Value,
 };
+use malachite::{
+    base::{
+        num::{
+            arithmetic::traits::{CheckedAdd, Parity},
+            conversion::traits::{ConvertibleFrom, RoundingFrom, WrappingFrom},
+        },
+        rounding_modes::RoundingMode,
+    },
+    rational::{conversion::from_primitive_float::RationalFromPrimitiveFloatError, Rational},
+    Float, Integer,
+};
 use num::{complex::Complex64, FromPrimitive, ToPrimitive, Zero};
-use malachite::{base::num::arithmetic::traits::Parity, Integer, rational::Rational};
 use std::{
     cmp::Ordering,
-    fmt,
+    fmt::{self, Display, Formatter},
     ops::{Add, Div, Mul, Neg, Sub},
 };
 
@@ -147,27 +157,28 @@ impl PartialEq for Number {
             (Self::Complex(_), _) | (_, Self::Complex(_)) => false,
             (Self::Real(l), Self::Real(r)) => l == r,
 
-            (Self::BigInteger(big_int), Self::FixedInteger(fixed_int)) |
-            (Self::FixedInteger(fixed_int), Self::BigInteger(big_int)) => fixed_int == big_int,
+            (Self::BigInteger(big_int), Self::FixedInteger(fixed_int))
+            | (Self::FixedInteger(fixed_int), Self::BigInteger(big_int)) => fixed_int == big_int,
 
-            (Self::Rational(rational), Self::FixedInteger(fixed_int)) |
-            (Self::FixedInteger(fixed_int), Self::Rational(rational)) => fixed_int == rational,
+            (Self::Rational(rational), Self::FixedInteger(fixed_int))
+            | (Self::FixedInteger(fixed_int), Self::Rational(rational)) => fixed_int == rational,
 
-            (Self::BigInteger(big_int), Self::Rational(rational)) |
-            (Self::Rational(rational), Self::BigInteger(big_int)) => big_int == rational,
+            (Self::BigInteger(big_int), Self::Rational(rational))
+            | (Self::Rational(rational), Self::BigInteger(big_int)) => big_int == rational,
 
-            (Self::BigInteger(big_int), Self::Real(float)) |
-            (Self::Real(float), Self::BigInteger(big_int)) => float == big_int,
+            (Self::BigInteger(big_int), Self::Real(float))
+            | (Self::Real(float), Self::BigInteger(big_int)) => float == big_int,
 
-            (Self::Rational(rational), Self::Real(float)) |
-            (Self::Real(float), Self::Rational(rational)) => float == rational,
+            (Self::Rational(rational), Self::Real(float))
+            | (Self::Real(float), Self::Rational(rational)) => float == rational,
 
-            (Self::FixedInteger(fixed_int), Self::Real(float)) |
-            (Self::Real(float), Self::FixedInteger(fixed_int)) =>
+            (Self::FixedInteger(fixed_int), Self::Real(float))
+            | (Self::Real(float), Self::FixedInteger(fixed_int)) => {
                 <i64 as TryInto<i32>>::try_into(*fixed_int)
                     .map(f64::from)
                     .map(|fixed_int| fixed_int == *float)
-                    .unwrap_or(false),
+                    .unwrap_or(false)
+            }
         }
     }
 }
@@ -197,29 +208,193 @@ impl PartialOrd for Number {
     }
 }
 
-macro_rules! impl_op {
-    ( $trait:ident, $op:ident, $checked_op:ident ) => {
-        impl<'a> $trait<&'a Number> for &'a Number {
-            type Output = Number;
+macro_rules! impl_checked_op_for_number {
+    ($trait:ident, $unchecked:ident, $checked:ident) => {
+        impl Number {
+            pub fn $checked(&self, rhs: &Number) -> Result<Number, ArithmeticError> {
+                Ok(match (&self, rhs) {
+                    (Self::FixedInteger(l), Self::FixedInteger(r)) => {
+                        l.$checked(*r).map(Self::FixedInteger).unwrap_or_else(|| {
+                            Self::BigInteger(Integer::from(*l).$unchecked(Integer::from(*r)))
+                        })
+                    }
+                    (Self::BigInteger(l), Self::BigInteger(r)) => Self::BigInteger(l.$unchecked(r)),
+                    (Self::Rational(l), Self::Rational(r)) => Self::Rational(l.$unchecked(r)),
+                    (Self::Complex(l), Self::Complex(r)) => Self::Complex(l.$unchecked(r)),
+                    (Self::Real(l), Self::Real(r)) => Self::Real(l.$unchecked(r)),
 
-            fn $op(self, rhs: &'a Number) -> Number {
-                // TODO: A macro could probably greatly improve this
-                todo!()
+                    (Self::BigInteger(big_int), Self::FixedInteger(fixed_int))
+                    | (Self::FixedInteger(fixed_int), Self::BigInteger(big_int)) => {
+                        i64::convertible_from(big_int)
+                            .then(|| i64::wrapping_from(big_int).$checked(*fixed_int))
+                            .flatten()
+                            .map(Self::FixedInteger)
+                            .unwrap_or_else(|| {
+                                Self::BigInteger(Integer::from(*fixed_int).$unchecked(big_int))
+                            })
+                    }
+
+                    (Self::Rational(rational), Self::FixedInteger(fixed_int))
+                    | (Self::FixedInteger(fixed_int), Self::Rational(rational)) => {
+                        Self::Rational(rational.$unchecked(Rational::from(*fixed_int)))
+                    }
+
+                    (Self::BigInteger(big_int), Self::Rational(rational))
+                    | (Self::Rational(rational), Self::BigInteger(big_int)) => {
+                        Self::Rational(rational.$unchecked(Rational::from(big_int)))
+                    }
+
+                    (Self::BigInteger(big_int), Self::Real(float))
+                    | (Self::Real(float), Self::BigInteger(big_int)) => Self::Rational(
+                        Rational::try_from_float_simplest(*float)?
+                            .$unchecked(Rational::from(big_int)),
+                    ),
+
+                    (Self::Rational(rational), Self::Real(float))
+                    | (Self::Real(float), Self::Rational(rational)) => Self::Rational(
+                        Rational::try_from_float_simplest(*float)?.$unchecked(rational),
+                    ),
+
+                    (Self::FixedInteger(fixed_int), Self::Real(float))
+                    | (Self::Real(float), Self::FixedInteger(fixed_int)) => Self::Rational(
+                        Rational::from(*fixed_int)
+                            .$unchecked(Rational::try_from_float_simplest(*float)?),
+                    ),
+
+                    (Self::FixedInteger(fixed_int), Self::Complex(complex))
+                    | (Self::Complex(complex), Self::FixedInteger(fixed_int)) => Self::Complex(
+                        Complex64::from_i64(*fixed_int)
+                            .ok_or_else(|| {
+                                ArithmeticError::Overflow(
+                                    Operation::$trait,
+                                    self.clone(),
+                                    rhs.clone(),
+                                )
+                            })?
+                            .$unchecked(complex),
+                    ),
+
+                    (Self::BigInteger(big_int), Self::Complex(complex))
+                    | (Self::Complex(complex), Self::BigInteger(big_int)) => Self::Complex(complex.$unchecked(f64::rounding_from(big_int, RoundingMode::Nearest).0)),
+
+                    (Self::Rational(rational), Self::Complex(complex))
+                    | (Self::Complex(complex), Self::Rational(rational)) => Self::Complex(
+                        complex.$unchecked(f64::rounding_from(rational, RoundingMode::Nearest).0),
+                    ),
+
+                    (Number::Real(real), Number::Complex(complex))
+                    | (Number::Complex(complex), Number::Real(real)) => {
+                        Self::Complex(complex.$unchecked(real))
+                    }
+                })
             }
         }
     };
 }
+impl_checked_op_for_number!(Add, add, checked_add);
+impl_checked_op_for_number!(Sub, sub, checked_sub);
+impl_checked_op_for_number!(Mul, mul, checked_mul);
+impl Number {
+    pub fn checked_div(&self, rhs: &Self) -> Result<Self, ArithmeticError> {
+        let overflow = || {
+                                ArithmeticError::Overflow(
+                                    Operation::Div,
+                                    self.clone(),
+                                    rhs.clone(),
+                                )
+                            };
 
-impl_op!(Add, add, checked_add);
-impl_op!(Sub, sub, checked_sub);
-impl_op!(Mul, mul, checked_mul);
+        Ok(match (self, rhs) {
+            (l, r) if l.is_zero() || r.is_zero() => return Err(ArithmeticError::DivisionByZero),
 
-impl<'a> Div<&'a Number> for &'a Number {
-    type Output = Number;
+            (Self::FixedInteger(l), Self::FixedInteger(r)) => Number::FixedInteger(l.checked_div(*r).ok_or_else(overflow)?),
+            (Self::BigInteger(l), Self::BigInteger(r)) => Self::BigInteger(l / r),
+            (Self::Rational(l), Self::Rational(r)) => Self::Rational(l / r),
+            (Self::Complex(l), Self::Complex(r)) => Self::Complex(l / r),
+            (Self::Real(l), Self::Real(r)) => Self::Real(l / r),
 
-    fn div(self, rhs: &'a Number) -> Number {
-        // TODO: A macro could probably greatly improve this
-        todo!()
+            (Self::BigInteger(l), Self::FixedInteger(r)) => Self::BigInteger(l / Integer::from(*r)),
+            (Self::FixedInteger(l), Self::BigInteger(r)) => i64::convertible_from(r)
+                .then(|| l.checked_div(i64::wrapping_from(r)).map(Self::FixedInteger))
+                .flatten()
+                .unwrap_or_else(|| Self::BigInteger(Integer::from(*l) / r)),
+
+            (Self::Rational(l), Self::FixedInteger(r)) => Self::Rational(l / Rational::from(*r)),
+            (Self::FixedInteger(l), Self::Rational(r)) => Self::Rational(Rational::from(*l) / r),
+
+            (Self::BigInteger(l), Self::Rational(r)) => Self::Rational(Rational::from(l) / r),
+            (Self::Rational(l), Self::BigInteger(r)) => Self::Rational(l / Rational::from(r)),
+
+            (Self::BigInteger(l), Self::Real(r)) => Self::Rational(Rational::from(l) / Rational::try_from_float_simplest(*r)?),
+            (Self::Real(l), Self::BigInteger(r)) => Self::Rational(Rational::try_from_float_simplest(*l)? / Rational::from(r)),
+
+            (Self::Rational(l), Self::Real(r)) => Self::Rational(l / Rational::try_from_float_simplest(*r)?),
+            (Self::Real(l), Self::Rational(r)) => Self::Rational(Rational::try_from_float_simplest(*l)? / r),
+
+            (Self::FixedInteger(l), Self::Real(r)) => <i64 as TryInto<i32>>::try_into(*l)
+                .ok()
+                .map(f64::from)
+                .map(|l| l / r)
+                .map(Self::Real)
+                .ok_or_else(overflow)?,
+            (Self::Real(l), Self::FixedInteger(r)) => <i64 as TryInto<i32>>::try_into(*r)
+                .ok()
+                .map(f64::from)
+                .map(|r| l / r)
+                .map(Self::Real)
+                .ok_or_else(overflow)?,
+
+            (Self::FixedInteger(l), Self::Complex(r)) => Self::Complex(Complex64::from_i64(*l).ok_or_else(overflow)? / r),
+            (Self::Complex(l), Self::FixedInteger(r)) => Self::Complex(l / Complex64::from_i64(*r).ok_or_else(overflow)?),
+
+            (Self::BigInteger(l), Self::Complex(r)) => Self::Complex(Complex64::from(f64::rounding_from(l, RoundingMode::Nearest).0) / r),
+            (Self::Complex(l), Self::BigInteger(r)) => Self::Complex(Complex64::from(l / f64::rounding_from(r, RoundingMode::Nearest).0)),
+
+            (Self::Rational(l), Self::Complex(r)) => Self::Complex(Complex64::from(f64::rounding_from(l, RoundingMode::Nearest).0) / r),
+            (Self::Complex(l), Self::Rational(r)) => Self::Complex(l / Complex64::from(f64::rounding_from(r, RoundingMode::Nearest).0)),
+
+            (Number::Real(l), Number::Complex(r)) => Self::Complex(Complex64::from(l) / r),
+            (Number::Complex(l), Number::Real(r)) => Self::Complex(l / r),
+        })
+    }
+}
+
+#[derive(Debug)]
+pub enum Operation {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+impl Display for Operation {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "{}", match self {
+            Self::Add => '+',
+            Self::Sub => '-',
+            Self::Mul => '*',
+            Self::Div => '/',
+        })
+    }
+}
+
+#[derive(Debug)]
+pub enum ArithmeticError {
+    DivisionByZero,
+    Overflow(Operation, Number, Number),
+    RationalFromPrimitiveFloat(RationalFromPrimitiveFloatError),
+}
+impl Display for ArithmeticError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DivisionByZero => write!(f, "division by zero"),
+            Self::Overflow(op, l, r) => write!(f, "overflow when calculating ({} {} {})", op, l, r),
+            _ => todo!(),
+        }
+    }
+}
+impl From<RationalFromPrimitiveFloatError> for ArithmeticError {
+    fn from(err: RationalFromPrimitiveFloatError) -> Self {
+        Self::RationalFromPrimitiveFloat(err)
     }
 }
 
@@ -258,7 +433,7 @@ pub(crate) fn add(vals: &[Gc<Value>]) -> Result<Number, Exception> {
     for val in vals {
         let val = val.read();
         let num: &Number = val.as_ref().try_into()?;
-        result = &result + num;
+        result = result.checked_add(num)?;
     }
     Ok(result)
 }
@@ -281,7 +456,7 @@ pub(crate) fn sub(val1: &Gc<Value>, vals: &[Gc<Value>]) -> Result<Number, Except
         for val in vals {
             let val = val.read();
             let num: &Number = val.as_ref().try_into()?;
-            val1 = &val1 - num;
+            val1 = val1.checked_sub(num)?;
         }
         Ok(val1)
     }
@@ -297,7 +472,7 @@ pub(crate) fn mul(vals: &[Gc<Value>]) -> Result<Number, Exception> {
     for val in vals {
         let val = val.read();
         let num: &Number = val.as_ref().try_into()?;
-        result = &result * num;
+        result = result.checked_mul(num)?;
     }
     Ok(result)
 }
@@ -313,20 +488,14 @@ pub async fn div_builtin(
 pub(crate) fn div(val1: &Gc<Value>, vals: &[Gc<Value>]) -> Result<Number, Exception> {
     let val1 = val1.read();
     let val1: &Number = val1.as_ref().try_into()?;
-    if val1.is_zero() {
-        return Err(Exception::division_by_zero());
-    }
     if vals.is_empty() {
-        return Ok(&Number::FixedInteger(1) / val1);
+        return Ok(Number::FixedInteger(1).checked_div(val1)?);
     }
     let mut result = val1.clone();
     for val in vals {
         let val = val.read();
         let num: &Number = val.as_ref().try_into()?;
-        if num.is_zero() {
-            return Err(Exception::division_by_zero());
-        }
-        result = &result / num;
+        result = result.checked_div(num)?;
     }
     Ok(result)
 }
