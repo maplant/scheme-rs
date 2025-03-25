@@ -430,7 +430,9 @@ impl Display for ArithmeticError {
         match self {
             Self::DivisionByZero => write!(f, "division by zero"),
             Self::Overflow(op, l, r) => write!(f, "overflow when calculating ({} {} {})", op, l, r),
-            Self::RationalFromPrimitiveFloat(_) => write!(f, "failed to convert imaginary float to a rational"),
+            Self::RationalFromPrimitiveFloat(_) => {
+                write!(f, "failed to convert imaginary float to a rational")
+            }
         }
     }
 }
