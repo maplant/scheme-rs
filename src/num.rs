@@ -57,7 +57,6 @@ impl Number {
 
     #[allow(dead_code)]
     fn is_odd(&self) -> bool {
-        use num::Integer;
         match self {
             Self::FixedInteger(i) => i.odd(),
             Self::BigInteger(i) => i.odd(),
@@ -71,11 +70,26 @@ impl Number {
     fn is_complex(&self) -> bool {
         matches!(self, Self::Complex(_))
     }
+}
+impl TryFrom<&Number> for usize {
+    type Error = NumberToUsizeError;
 
-    /// FIXME: This code is so insanely wrong in every conceivable way that it is bordeline
-    /// or even outright dangerous.
-    pub fn to_u64(&self) -> u64 {
-        todo!("deprecate")
+    fn try_from(number: &Number) -> Result<usize, NumberToUsizeError> {
+        let make_err = |kind| NumberToUsizeError::new(number.clone(), kind);
+
+        // using `<` operator would require dereferencing
+        if matches!(number.partial_cmp(&Number::FixedInteger(0)), Some(Ordering::Less) | None) {
+            return Err(make_err(NumberToUsizeErrorKind::Negative));
+        }
+
+        match number {
+            Number::FixedInteger(i) => <i64 as TryInto<usize>>::try_into(*i)
+                .map_err(|_| make_err(NumberToUsizeErrorKind::TooLarge)),
+            Number::BigInteger(i) => usize::convertible_from(i)
+                .then(|| usize::wrapping_from(i))
+                .ok_or_else(|| make_err(NumberToUsizeErrorKind::TooLarge)),
+            _ => Err(make_err(NumberToUsizeErrorKind::NotInteger)),
+        }
     }
 }
 
@@ -377,6 +391,10 @@ impl Display for Operation {
     }
 }
 
+unsafe impl Trace for Number {
+    unsafe fn visit_children(&self, _visitor: unsafe fn(crate::gc::OpaqueGcPtr)) {}
+}
+
 #[derive(Debug)]
 pub enum ArithmeticError {
     DivisionByZero,
@@ -398,8 +416,39 @@ impl From<RationalFromPrimitiveFloatError> for ArithmeticError {
     }
 }
 
-unsafe impl Trace for Number {
-    unsafe fn visit_children(&self, _visitor: unsafe fn(crate::gc::OpaqueGcPtr)) {}
+#[derive(Debug)]
+pub struct NumberToUsizeError {
+    number: Number,
+    kind: NumberToUsizeErrorKind,
+}
+impl NumberToUsizeError {
+    const fn new(number: Number, kind: NumberToUsizeErrorKind) -> Self {
+        Self {
+            number,
+            kind,
+        }
+    }
+}
+impl Display for NumberToUsizeError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self.kind {
+            NumberToUsizeErrorKind::NotInteger => write!(f, "expected integer, got {}", match self.number {
+                Number::FixedInteger(_) | Number::BigInteger(_) => "integer",
+                Number::Rational(_) => "rational",
+                Number::Real(_) => "float",
+                Number::Complex(_) => "complex",
+            }),
+            NumberToUsizeErrorKind::Negative => write!(f, "number `{}` is a negative", self.number),
+            NumberToUsizeErrorKind::TooLarge => write!(f, "number `{}` is too large", self.number),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum NumberToUsizeErrorKind {
+    NotInteger,
+    Negative,
+    TooLarge,
 }
 
 #[bridge(name = "zero?", lib = "(base)")]

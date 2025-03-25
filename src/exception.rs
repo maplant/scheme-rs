@@ -132,6 +132,7 @@ macro_rules! impl_into_exception_for {
     };
 }
 impl_into_exception_for!(crate::num::ArithmeticError);
+impl_into_exception_for!(crate::num::NumberToUsizeError);
 impl_into_exception_for!(std::num::TryFromIntError);
 
 #[derive(Debug, Clone, Trace)]

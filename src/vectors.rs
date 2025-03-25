@@ -1,5 +1,5 @@
 use crate::{
-    exception::Exception, gc::Gc, lists::slice_to_list, num::Number, registry::bridge, value::Value,
+    exception::Exception, gc::Gc, lists::slice_to_list, num::{Number, NumberToUsizeError}, registry::bridge, value::Value,
 };
 use malachite::Integer;
 use std::{clone::Clone, ops::Range};
@@ -14,8 +14,12 @@ fn try_make_range(start: usize, end: usize) -> Result<Range<usize>, Exception> {
         Ok(start..end)
     }
 }
-fn try_to_u64(n: &Gc<Value>) -> Result<u64, Exception> {
-    n.read().as_ref().try_into().map(|n: &Number| n.to_u64())
+fn try_to_usize(n: &Gc<Value>) -> Result<usize, Exception> {
+    n
+        .read()
+        .as_ref()
+        .try_into()
+        .and_then(|n: &Number| n.try_into().map_err(<NumberToUsizeError as Into<Exception>>::into))
 }
 
 trait Indexer {
@@ -32,15 +36,12 @@ trait Indexer {
 
         let start: usize = range
             .first()
-            .map(try_to_u64)
+            .map(try_to_usize)
             .transpose()?
-            .unwrap_or(0)
-            .try_into()?;
+            .unwrap_or(0);
         let end: usize = range
             .get(1)
-            .map(try_to_u64)
-            .transpose()?
-            .map(<u64 as TryInto<usize>>::try_into)
+            .map(try_to_usize)
             .transpose()?
             .unwrap_or(len);
 
@@ -94,7 +95,7 @@ impl Indexer for VectorIndexer {
 pub async fn make_vector(n: &Gc<Value>, with: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
     let n = n.read();
     let n: &Number = n.as_ref().try_into()?;
-    let n = n.to_u64();
+    let n: usize = n.try_into()?;
 
     Ok(vec![Gc::new(Value::Vector(
         (0..n)
@@ -125,9 +126,7 @@ pub async fn vector_ref(vec: &Gc<Value>, index: &Gc<Value>) -> Result<Vec<Gc<Val
     let vec = vec.read();
     let vec: &Vec<Value> = vec.as_ref().try_into()?;
 
-    let index = index.read();
-    let index: &Number = index.as_ref().try_into()?;
-    let index: usize = index.to_u64().try_into()?;
+    let index: usize = try_to_usize(index)?;
 
     Ok(vec![Gc::new(
         vec.get(index)
@@ -161,7 +160,7 @@ pub async fn vector_set(
 
     let index = index.read();
     let index: &Number = index.as_ref().try_into()?;
-    let index: usize = index.to_u64().try_into()?;
+    let index: usize = index.try_into()?;
 
     let index = vec
         .get_mut(index)
@@ -232,7 +231,7 @@ pub async fn vector_copy_to(
     let mut to = to.write();
     let to: &mut Vec<Value> = to.as_mut().try_into()?;
 
-    let at: usize = try_to_u64(at)?.try_into()?;
+    let at: usize = try_to_usize(at)?;
 
     if at >= to.len() {
         return Err(Exception::invalid_index(at, to.len()));
@@ -285,14 +284,15 @@ pub async fn vector_fill(
     let mut vector = vector.write();
     let vector: &mut Vec<Value> = vector.as_mut().try_into()?;
 
-    let start: usize = try_to_u64(start)?.try_into()?;
-    let end: usize = end
-        .first()
-        .map(try_to_u64)
-        .transpose()?
-        .map(|n| n.try_into())
-        .transpose()?
-        .unwrap_or(vector.len());
+    let start: usize = try_to_usize(start)?;
+    let end = match end.first() {
+        Some(end) => try_to_usize(end)?,
+        None => vector.len(),
+    };
+    //let end: usize = end
+    //    .first()
+    //    //.map(try_to_usize)
+    //    .unwrap_or(Some(vector.len()));
 
     let range = try_make_range(start, end)?;
     if range.end > vector.len() {

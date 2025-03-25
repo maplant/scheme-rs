@@ -4,6 +4,7 @@ use crate::{
     ast::{DefinitionBody, Literal, ParseAstError},
     cps::Compile,
     env::{Environment, Top},
+    exception::Exception,
     gc::Gc,
     parse::ParseSyntaxError,
     proc::{BridgePtr, Closure, FuncPtr},
@@ -81,14 +82,14 @@ impl From<ParseAstError> for ParseLibraryNameError<'_> {
 
 #[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Hash, Default)]
 pub struct Version {
-    version: Vec<u64>,
+    version: Vec<usize>,
 }
 
 impl Version {
     fn parse(syn: &[Syntax], span: &Span) -> Result<Self, ParseAstError> {
         match syn {
             [version @ .., Syntax::Null { .. }] => {
-                let version: Result<Vec<u64>, _> = version
+                let version: Result<Vec<usize>, _> = version
                     .iter()
                     .map(|subvers| {
                         if let Syntax::Literal {
@@ -96,7 +97,9 @@ impl Version {
                             ..
                         } = subvers
                         {
-                            Ok(num.to_u64())
+                            num.try_into()
+                                .map_err(Exception::from)
+                                .map_err(ParseAstError::Exception)
                         } else {
                             Err(ParseAstError::ExpectedNumber(subvers.span().clone()))
                         }
