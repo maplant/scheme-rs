@@ -1,5 +1,10 @@
 use crate::{
-    exception::Exception, gc::Gc, lists::slice_to_list, num::{Number, NumberToUsizeError}, registry::bridge, value::Value,
+    exception::Exception,
+    gc::Gc,
+    lists::slice_to_list,
+    num::{Number, NumberToUsizeError},
+    registry::bridge,
+    value::Value,
 };
 use malachite::Integer;
 use std::{clone::Clone, ops::Range};
@@ -15,11 +20,10 @@ fn try_make_range(start: usize, end: usize) -> Result<Range<usize>, Exception> {
     }
 }
 fn try_to_usize(n: &Gc<Value>) -> Result<usize, Exception> {
-    n
-        .read()
-        .as_ref()
-        .try_into()
-        .and_then(|n: &Number| n.try_into().map_err(<NumberToUsizeError as Into<Exception>>::into))
+    n.read().as_ref().try_into().and_then(|n: &Number| {
+        n.try_into()
+            .map_err(<NumberToUsizeError as Into<Exception>>::into)
+    })
 }
 
 trait Indexer {
@@ -34,16 +38,8 @@ trait Indexer {
         let collection = self.try_get(&from)?;
         let len = self.get_len(collection);
 
-        let start: usize = range
-            .first()
-            .map(try_to_usize)
-            .transpose()?
-            .unwrap_or(0);
-        let end: usize = range
-            .get(1)
-            .map(try_to_usize)
-            .transpose()?
-            .unwrap_or(len);
+        let start: usize = range.first().map(try_to_usize).transpose()?.unwrap_or(0);
+        let end: usize = range.get(1).map(try_to_usize).transpose()?.unwrap_or(len);
 
         let range = try_make_range(start, end)?;
         if range.end > len {

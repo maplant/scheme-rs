@@ -14,7 +14,6 @@ use std::{collections::HashMap, rc::Rc};
 use crate::{
     gc::Gc,
     proc::{Closure, ContinuationPtr, FuncPtr},
-    num::Number,
     runtime::Runtime,
     value::Value as SchemeValue,
 };
