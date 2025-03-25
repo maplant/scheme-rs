@@ -285,10 +285,6 @@ pub async fn vector_fill(
         Some(end) => try_to_usize(end)?,
         None => vector.len(),
     };
-    //let end: usize = end
-    //    .first()
-    //    //.map(try_to_usize)
-    //    .unwrap_or(Some(vector.len()));
 
     let range = try_make_range(start, end)?;
     if range.end > vector.len() {
