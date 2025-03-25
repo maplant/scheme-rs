@@ -425,7 +425,7 @@ fn doc_comment(i: InputSpan) -> IResult<InputSpan, String> {
 }
 */
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Token<'a> {
     pub lexeme: Lexeme<'a>,
     pub span: InputSpan<'a>,
