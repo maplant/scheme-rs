@@ -323,7 +323,7 @@ impl Number {
                 Self::Rational(Rational::from(*l) / Rational::from(*r))
             }
             (Self::BigInteger(l), Self::BigInteger(r)) => {
-                Self::Rational(Rational::from(l) / Rational::from(r))
+            Self::Rational(Rational::from_integers_ref(l, r))
             }
             (Self::Rational(l), Self::Rational(r)) => Self::Rational(l / r),
             (Self::Complex(l), Self::Complex(r)) => Self::Complex(l / r),
