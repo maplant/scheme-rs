@@ -31,8 +31,8 @@ pub async fn char_to_integer(ch: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception
 pub async fn integer_to_char(int: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
     let int = int.read();
     let int: &Number = int.as_ref().try_into()?;
-    let int: u64 = int.to_u64();
-    if let Ok(int) = <u64 as TryInto<u32>>::try_into(int) {
+    let int: usize = int.try_into()?;
+    if let Ok(int) = <usize as TryInto<u32>>::try_into(int) {
         if let Some(ch) = char::from_u32(int) {
             return Ok(vec![Gc::new(Value::Character(ch))]);
         }
