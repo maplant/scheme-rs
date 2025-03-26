@@ -319,20 +319,17 @@ impl Number {
         Ok(match (self, rhs) {
             (l, r) if l.is_zero() || r.is_zero() => return Err(ArithmeticError::DivisionByZero),
 
-            (Self::FixedInteger(l), Self::FixedInteger(r)) => {
-                Number::FixedInteger(l.checked_div(*r).ok_or_else(overflow)?)
-            }
-            (Self::BigInteger(l), Self::BigInteger(r)) => Self::BigInteger(l / r),
+            (Self::FixedInteger(l), Self::FixedInteger(r)) => Self::Rational(Rational::from(*l) / Rational::from(*r)),
+            (Self::BigInteger(l), Self::BigInteger(r)) => Self::Rational(
+                Rational::from(l) / Rational::from(r)
+            ),
             (Self::Rational(l), Self::Rational(r)) => Self::Rational(l / r),
             (Self::Complex(l), Self::Complex(r)) => Self::Complex(l / r),
             (Self::Real(l), Self::Real(r)) => Self::Real(l / r),
 
-            (Self::BigInteger(l), Self::FixedInteger(r)) => Self::BigInteger(l / Integer::from(*r)),
-            (Self::FixedInteger(l), Self::BigInteger(r)) => i64::convertible_from(r)
-                .then(|| l.checked_div(i64::wrapping_from(r)).map(Self::FixedInteger))
-                .flatten()
-                .unwrap_or_else(|| Self::BigInteger(Integer::from(*l) / r)),
-
+            (Self::BigInteger(l), Self::FixedInteger(r)) => Self::Rational(Rational::from(l) / Rational::from(*r)),
+            (Self::FixedInteger(l), Self::BigInteger(r)) => Self::Rational(Rational::from(*l) / Rational::from(r)),
+            
             (Self::Rational(l), Self::FixedInteger(r)) => Self::Rational(l / Rational::from(*r)),
             (Self::FixedInteger(l), Self::Rational(r)) => Self::Rational(Rational::from(*l) / r),
 
@@ -353,18 +350,8 @@ impl Number {
                 Self::Rational(Rational::try_from_float_simplest(*l)? / r)
             }
 
-            (Self::FixedInteger(l), Self::Real(r)) => <i64 as TryInto<i32>>::try_into(*l)
-                .ok()
-                .map(f64::from)
-                .map(|l| l / r)
-                .map(Self::Real)
-                .ok_or_else(overflow)?,
-            (Self::Real(l), Self::FixedInteger(r)) => <i64 as TryInto<i32>>::try_into(*r)
-                .ok()
-                .map(f64::from)
-                .map(|r| l / r)
-                .map(Self::Real)
-                .ok_or_else(overflow)?,
+            (Self::FixedInteger(l), Self::Real(r)) => Self::Rational(Rational::from(*l) / Rational::try_from_float_simplest(*r)?),
+            (Self::Real(l), Self::FixedInteger(r)) => Self::Rational(Rational::try_from_float_simplest(*l)? / Rational::from(*r)),
 
             (Self::FixedInteger(l), Self::Complex(r)) => {
                 Self::Complex(Complex64::from_i64(*l).ok_or_else(overflow)? / r)
