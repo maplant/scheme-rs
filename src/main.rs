@@ -1,4 +1,12 @@
-use reedline::{Reedline, Signal, ValidationResult, Validator};
+use rustyline::{
+    completion::{Completer, Pair},
+    error::ReadlineError,
+    highlight::Highlighter,
+    hint::Hinter,
+    history::DefaultHistory,
+    validate::{ValidationContext, ValidationResult, Validator},
+    Editor, Helper,
+};
 use scheme_rs::{
     ast::{DefinitionBody, ParseAstError},
     cps::Compile,
@@ -12,53 +20,39 @@ use scheme_rs::{
     syntax::Syntax,
     value::Value,
 };
-use std::borrow::Cow;
+use std::process::ExitCode;
 
-struct InputParser;
-
-impl Validator for InputParser {
-    fn validate(&self, line: &str) -> ValidationResult {
-        let syntax = Syntax::from_str(line, None);
-        match syntax {
-            Err(ParseSyntaxError::UnclosedParen { .. }) => ValidationResult::Incomplete,
-            _ => ValidationResult::Complete,
+struct InputHelper;
+impl Completer for InputHelper {
+    type Candidate = Pair;
+}
+impl Helper for InputHelper {}
+impl Hinter for InputHelper {
+    type Hint = String;
+}
+impl Highlighter for InputHelper {}
+impl Validator for InputHelper {
+    fn validate(&self, ctx: &mut ValidationContext<'_>) -> rustyline::Result<ValidationResult> {
+        match Syntax::from_str(ctx.input(), None) {
+            Err(ParseSyntaxError::UnclosedParen { .. }) => Ok(ValidationResult::Incomplete),
+            _ => Ok(ValidationResult::Valid(None)),
         }
     }
 }
 
-struct Prompt;
-
-impl reedline::Prompt for Prompt {
-    fn render_prompt_left(&self) -> Cow<str> {
-        Cow::Borrowed("")
-    }
-
-    fn render_prompt_right(&self) -> Cow<str> {
-        Cow::Borrowed("")
-    }
-
-    fn render_prompt_indicator(&self, _prompt_mode: reedline::PromptEditMode) -> Cow<str> {
-        Cow::Borrowed("> ")
-    }
-
-    fn render_prompt_multiline_indicator(&self) -> Cow<str> {
-        Cow::Borrowed("  ")
-    }
-
-    fn render_prompt_history_search_indicator(
-        &self,
-        _history_search: reedline::PromptHistorySearch,
-    ) -> Cow<str> {
-        Cow::Borrowed("? ")
-    }
-}
-
 #[tokio::main]
-async fn main() {
+async fn main() -> ExitCode {
     let runtime = Gc::new(Runtime::new());
     let registry = Registry::new(&runtime).await;
     let base = registry.import("(base)").unwrap();
-    let mut rl = Reedline::create().with_validator(Box::new(InputParser));
+
+    let mut editor = match Editor::<InputHelper, DefaultHistory>::new() {
+        Ok(e) => e,
+        Err(err) => {
+            eprintln!("Error creating line editor: {}", err);
+            return ExitCode::FAILURE;
+        }
+    };
     let mut n_results = 1;
     let mut repl = Top::repl();
     {
@@ -68,11 +62,16 @@ async fn main() {
     let top = Environment::from(Gc::new(repl));
 
     loop {
-        let Ok(Signal::Success(mut input)) = rl.read_line(&Prompt) else {
-            println!("exiting...");
-            return;
+        let input = match editor.readline("> ") {
+            Ok(line) => line,
+            Err(ReadlineError::Eof) => break,
+            Err(err) => {
+                eprintln!("Error while reading input: {}", err);
+                return ExitCode::FAILURE;
+            }
         };
-        input.push('\n');
+
+        //input.push('\n');
         match compile_and_run_str(&runtime, &top, &input).await {
             Ok(results) => {
                 for result in results.into_iter() {
@@ -85,6 +84,8 @@ async fn main() {
             }
         }
     }
+
+    ExitCode::SUCCESS
 }
 
 #[derive(derive_more::From, Debug)]

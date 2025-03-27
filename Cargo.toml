@@ -27,10 +27,10 @@ rand = "0.8"
 thiserror = "1"
 tokio = { version = "1.41", features = ["full"] }
 unicode_categories = "0.1"
-reedline = "0.36"
 # TODO: Get rid of this dependency
 derivative = "2"
 malachite = { version = "0.5.1", features = ["floats"] }
+rustyline = "15.0.0"
 
 [profile.release]
 lto = true
