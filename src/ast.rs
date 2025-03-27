@@ -6,9 +6,9 @@ use crate::{
     expand::Transformer,
     gc::{Gc, Trace},
     num::Number,
-    proc::Closure,
+    proc::{Closure, FunctionDebugInfo},
     records::DefineRecordType,
-    runtime::Runtime,
+    runtime::{FunctionDebugInfoId, Runtime},
     syntax::{Span, Syntax},
     value::Value,
 };
@@ -83,6 +83,22 @@ pub enum Definition {
     DefineVar(DefineVar),
     DefineFunc(DefineFunc),
     DefineRecordType(DefineRecordType),
+}
+
+#[derive(Debug, Clone, Trace)]
+pub struct DefineVar {
+    pub var: Var,
+    pub val: Arc<Expression>,
+    pub next: Option<Either<Box<Definition>, ExprBody>>,
+}
+
+#[derive(Debug, Clone, Trace)]
+pub struct DefineFunc {
+    pub var: Var,
+    pub args: Formals,
+    pub body: Box<DefinitionBody>,
+    pub next: Option<Either<Box<Definition>, ExprBody>>,
+    pub debug_info_id: FunctionDebugInfoId,
 }
 
 impl Definition {
@@ -192,11 +208,17 @@ impl Definition {
                         )
                         .await?;
 
+                        // Create the new debug info:
+                        let debug_info_id = runtime.write().debug_info.new_function_debug_info(
+                            FunctionDebugInfo::new(Some(func_name.name.clone()), todo!(), todo!()),
+                        );
+
                         Ok(Self::DefineFunc(DefineFunc {
                             var,
                             args,
                             body: Box::new(body),
                             next: None,
+                            debug_info_id,
                         }))
                     }
                     _ => Err(ParseAstError::BadForm(span.clone())),
@@ -205,21 +227,6 @@ impl Definition {
             _ => Err(ParseAstError::BadForm(span.clone())),
         }
     }
-}
-
-#[derive(Debug, Clone, Trace)]
-pub struct DefineVar {
-    pub var: Var,
-    pub val: Arc<Expression>,
-    pub next: Option<Either<Box<Definition>, ExprBody>>,
-}
-
-#[derive(Debug, Clone, Trace)]
-pub struct DefineFunc {
-    pub var: Var,
-    pub args: Formals,
-    pub body: Box<DefinitionBody>,
-    pub next: Option<Either<Box<Definition>, ExprBody>>,
 }
 
 pub(super) async fn define_syntax(
@@ -490,7 +497,6 @@ pub struct Apply {
     pub operator: Either<Box<Expression>, PrimOp>,
     pub args: Vec<Expression>,
     pub location: Span,
-    pub proc_name: String,
 }
 
 impl Apply {
@@ -520,7 +526,6 @@ impl Apply {
             operator,
             args: parsed_args,
             location,
-            proc_name,
         })
     }
 }
@@ -529,6 +534,7 @@ impl Apply {
 pub struct Lambda {
     pub args: Formals,
     pub body: DefinitionBody,
+    pub debug_info_id: FunctionDebugInfoId,
 }
 
 impl Lambda {
@@ -617,7 +623,17 @@ async fn parse_lambda(
 
     let body = DefinitionBody::parse(runtime, body, &new_contour, span /* cont */).await?;
 
-    Ok(Lambda { args, body })
+    // Create the new debug info:
+    let debug_info_id = runtime
+        .write()
+        .debug_info
+        .new_function_debug_info(FunctionDebugInfo::new(None, todo!(), todo!()));
+
+    Ok(Lambda {
+        args,
+        body,
+        debug_info_id,
+    })
 }
 
 #[derive(Debug, Clone, Trace)]
@@ -722,6 +738,7 @@ async fn parse_let(
         let lambda = Lambda {
             args: Formals::FixedArgs(args),
             body: DefinitionBody::parse(runtime, body, &new_new_contour, span /* cont */).await?,
+            debug_info_id: todo!(),
         };
         bindings.push((lambda_var, Expression::Lambda(lambda)));
     }

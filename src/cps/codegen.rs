@@ -170,7 +170,7 @@ impl Cps {
             FuncPtr::Continuation(func),
             0,
             true,
-            true,
+            None,
         ))
     }
 }

@@ -1,29 +1,17 @@
+//! Procedures, continuation and user, and applying values to those procedures.
+//! Contains the main trampoline.
+
 use crate::{
-    exception::{Exception, ExceptionHandler},
+    exception::{Exception, ExceptionHandler, Frame},
     gc::{Gc, GcInner, Trace},
     lists::{list_to_vec, slice_to_list},
     registry::BridgeFn,
-    runtime::Runtime,
+    runtime::{FunctionDebugInfoId, Runtime},
+    syntax::Span,
     value::Value,
 };
 use futures::future::BoxFuture;
 use std::{borrow::Cow, collections::HashMap, ptr::null_mut};
-
-/*
-pub struct ProcCallDebugInfo {
-    proc_name: String,
-    location: Span,
-}
-
-impl ProcCallDebugInfo {
-    pub fn new(proc_name: &str, location: &Span) -> Self {
-        Self {
-            proc_name: proc_name.to_string(),
-            location: location.clone(),
-        }
-    }
-}
-*/
 
 pub type Record = Vec<Gc<Value>>;
 
@@ -67,19 +55,31 @@ unsafe impl Trace for FuncPtr {
     unsafe fn finalize(&mut self) {}
 }
 
-#[derive(Clone, derive_more::Debug, Trace)]
-// TODO: Add an optional name to the closure for debugging purposes
+/// The runtime representation of a Closure, which can be either a user function
+/// or a continuation. Contains a reference to all of the globals and
+/// environmental variables used in the body, along with a function pointer to
+/// the body of the closure.
+#[derive(Clone, Trace)]
 pub struct Closure {
-    #[debug(skip)]
+    /// The runtime the Closure is defined in. This is necessary to ensure that
+    /// dropping the runtime does not de-allocate the function pointer for this
+    /// closure.
     pub runtime: Gc<Runtime>,
-    #[debug(skip)]
-    pub(crate) env: Record,
-    #[debug(skip)]
-    pub(crate) globals: Record,
-    pub(crate) func: FuncPtr,
-    pub(crate) num_required_args: usize,
-    pub(crate) variadic: bool,
-    pub(crate) continuation: bool,
+    /// Environmental variables used by the closure.
+    pub env: Record,
+    /// Global variables used by this closure.
+    pub globals: Record,
+    /// Fuction pointer to the body of the closure.
+    pub func: FuncPtr,
+    /// Number of required arguments to this closure.
+    pub num_required_args: usize,
+    /// Whether or not this is a variadic function.
+    pub variadic: bool,
+    /// Whether or not the function is a user function. A user function is a
+    /// function that is not a continuation. If the function is a user function,
+    /// this value will contain a reference to the debug information stored in
+    /// [runtime].
+    pub user_func_info: Option<FunctionDebugInfoId>,
 }
 
 impl Closure {
@@ -90,7 +90,7 @@ impl Closure {
         func: FuncPtr,
         num_required_args: usize,
         variadic: bool,
-        continuation: bool,
+        user_func_info: Option<FunctionDebugInfoId>,
     ) -> Self {
         Self {
             runtime,
@@ -99,12 +99,20 @@ impl Closure {
             func,
             num_required_args,
             variadic,
-            continuation,
+            user_func_info,
         }
     }
 
+    pub fn is_continuation(&self) -> bool {
+        self.user_func_info.is_none()
+    }
+
+    pub fn is_user_func(&self) -> bool {
+        self.user_func_info.is_some()
+    }
+
     pub(crate) fn deep_clone(&mut self, cloned: &mut HashMap<Gc<Value>, Gc<Value>>) {
-        if !self.continuation {
+        if self.is_user_func() {
             return;
         }
         for captured in &mut self.env {
@@ -133,7 +141,7 @@ impl Closure {
             FuncPtr::Continuation(halt),
             0,
             true,
-            true,
+            None,
         ))));
         self.apply(&args, None).await?.eval().await
     }
@@ -257,6 +265,8 @@ pub struct Application {
     args: Record,
     /// The current exception handler to be passed to the operator.
     exception_handler: Option<Gc<ExceptionHandler>>,
+    /// The call site of this application, if it exists.
+    call_site: Option<Span>,
 }
 
 impl Application {
@@ -266,6 +276,7 @@ impl Application {
             op: Some(op),
             args,
             exception_handler,
+            call_site: None,
         }
     }
 
@@ -274,22 +285,64 @@ impl Application {
             op: None,
             args,
             exception_handler: None,
+            call_site: None,
         }
     }
 
     /// Evaluate the application - and all subsequent application - until all that
     /// remains are values. This is the main trampoline of the evaluation engine.
     pub async fn eval(mut self) -> Result<Record, Exception> {
+        let mut stack_trace = Vec::new();
+
         while let Application {
             op: Some(op),
             args,
             exception_handler,
+            call_site,
         } = self
         {
+            if let Some(user_func_info_id) = op.user_func_info {
+                // This is a user func, and therefore we should push to the
+                // current stack trace.
+                let proc = op.runtime.read()
+                    .debug_info
+                    .function_debug_info[user_func_info_id]
+                    .name
+                    .clone()
+                    .unwrap_or_else(||"(lambda)".to_string());
+                stack_trace.push(Frame::new(proc, call_site));
+            } else {
+                // If this is not user func, we are returning from one via a
+                // continuation and should pop the stack frame:
+                stack_trace.pop();
+            }
+
             self = op.apply(&args, exception_handler).await?;
         }
+
         // If we have no operator left, return the arguments as the final values:
         Ok(self.args)
+    }
+}
+
+#[derive(Clone, Debug, Trace)]
+pub struct FunctionDebugInfo {
+    /// The name of the function, or None if the function is a lambda
+    // TODO(map): Make this an Arc<String> so we aren't constantly cloning strings.
+    pub name: Option<String>,
+    /// Named arguments for the function
+    pub args: Vec<String>,
+    /// Location of the function definition
+    pub location: Span,
+}
+
+impl FunctionDebugInfo {
+    pub fn new(name: Option<String>, args: Vec<String>, location: Span) -> Self {
+        Self {
+            name,
+            args,
+            location,
+        }
     }
 }
 
@@ -425,7 +478,7 @@ pub fn call_with_values<'a>(
             FuncPtr::Continuation(call_consumer_with_values),
             num_required_args,
             variadic,
-            false,
+            todo!(),
         );
 
         Ok(Application::new(

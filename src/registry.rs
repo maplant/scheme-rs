@@ -180,7 +180,7 @@ impl Registry {
                     FuncPtr::Bridge(bridge_fn.wrapper),
                     bridge_fn.num_args,
                     bridge_fn.variadic,
-                    false,
+                    Some(todo!()),
                 )),
             );
         }

@@ -6,7 +6,7 @@ use crate::{
     gc::{Gc, GcInner, Trace},
     proc::{Application, Closure, FuncPtr},
     registry::BridgeFn,
-    runtime::Runtime,
+    runtime::{CallSiteId, FunctionDebugInfoId, Runtime},
     syntax::{Identifier, Span},
     value::Value,
 };
@@ -138,18 +138,42 @@ impl_into_exception_for!(std::num::TryFromIntError);
 #[derive(Debug, Clone, Trace)]
 pub struct Frame {
     pub proc: String,
-    pub span: Span,
+    pub call_site_span: Option<Span>,
     // pub repeated: usize,
 }
 
 impl Frame {
-    pub fn new(proc: String, span: Span) -> Self {
+    pub fn new(proc: String, call_site_span: Option<Span>) -> Self {
         Self {
             proc,
-            span,
+            call_site_span,
             // repeated: 0,
         }
     }
+
+    /*
+    pub fn from_debug_ids(
+        caller_runtime: &Gc<Runtime>,
+        call_site_id: CallSiteId,
+        callee_runtime: &Gc<Runtime>,
+        function_debug_info_id: FunctionDebugInfoId,
+    ) -> Self {
+        let proc = callee_runtime.read()
+            .debug_info
+            .function_debug_info[function_debug_info_id]
+            .name
+            .clone()
+            .unwrap_or_else(||"(lambda)".to_string());
+        let call_site_span = caller_runtime.read()
+            .debug_info
+            .call_sites[call_site_id]
+            .clone();
+        Self {
+            proc,
+            call_site_span
+        }
+    }
+    */
 }
 
 /// An exception handler includes the current handler - a function to call with
@@ -226,7 +250,7 @@ pub fn raise<'a>(
                     FuncPtr::Continuation(reraise_exception),
                     0,
                     true,
-                    false,
+                    todo!()
                 ))),
             ],
             handler.prev_handler.clone(),
@@ -267,7 +291,7 @@ unsafe extern "C" fn reraise_exception(
             FuncPtr::Bridge(raise),
             1,
             false,
-            false,
+            todo!()
         ),
         vec![exception, cont],
         curr_handler,

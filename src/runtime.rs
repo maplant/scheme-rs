@@ -6,7 +6,7 @@ use crate::{
     gc::{init_gc, Gc, GcInner, Trace},
     lists::list_to_vec,
     num,
-    proc::{deep_clone_value, Application, Closure, ClosurePtr, ContinuationPtr, FuncPtr},
+    proc::{deep_clone_value, Application, Closure, ClosurePtr, ContinuationPtr, FuncPtr, FunctionDebugInfo},
     syntax::Span,
     value::Value,
 };
@@ -40,8 +40,8 @@ use tokio::sync::{mpsc, oneshot};
 #[derive(Trace, Clone, Debug)]
 pub struct Runtime {
     compilation_buffer_tx: mpsc::Sender<CompilationTask>,
-    call_sites: Vec<Span>,
-}
+    pub(crate) debug_info: DebugInfo,
+} 
 
 const MAX_COMPILATION_TASKS: usize = 5; // Shrug
 
@@ -61,7 +61,7 @@ impl Runtime {
         std::thread::spawn(move || compilation_task(compilation_buffer_rx));
         Runtime {
             compilation_buffer_tx,
-            call_sites: Vec::new(),
+            debug_info: DebugInfo::default(),
         }
     }
 }
@@ -89,6 +89,31 @@ impl Gc<Runtime> {
         completion_rx.await.unwrap()
     }
 }
+
+#[derive(Trace, Clone, Debug, Default)]
+pub struct DebugInfo {
+    /// Location of function applications 
+    pub(crate) call_sites: Vec<Span>,
+    /// Functions and their debug information
+    pub(crate) function_debug_info: Vec<FunctionDebugInfo>
+}
+
+pub type CallSiteId = usize;
+pub type FunctionDebugInfoId = usize;
+
+impl DebugInfo {
+    pub fn new_call_site(&mut self, span: Span) -> CallSiteId {
+        let id = self.call_sites.len();
+        self.call_sites.push(span);
+        id
+    }
+
+    pub fn new_function_debug_info(&mut self, function_debug_info: FunctionDebugInfo) -> FunctionDebugInfoId {
+        let id = self.function_debug_info.len();
+        self.function_debug_info.push(function_debug_info);
+        id
+    }
+} 
 
 struct CompilationTask {
     env: IndexMap<Local, Gc<Value>>,
@@ -438,7 +463,7 @@ unsafe extern "C" fn make_continuation(
         FuncPtr::Continuation(fn_ptr),
         num_required_args as usize,
         variadic,
-        true,
+        None,
     );
     ManuallyDrop::new(Gc::new(Value::Closure(closure))).as_ptr()
 }
@@ -474,7 +499,7 @@ unsafe extern "C" fn make_closure(
         FuncPtr::Closure(fn_ptr),
         num_required_args as usize,
         variadic,
-        false,
+        Some(todo!()),
     );
     ManuallyDrop::new(Gc::new(Value::Closure(closure))).as_ptr()
 }
@@ -490,7 +515,7 @@ unsafe extern "C" fn get_call_transformer_fn(
         FuncPtr::Bridge(expand::call_transformer),
         3,
         true,
-        false,
+        Some(todo!())
     );
     ManuallyDrop::new(Gc::new(Value::Closure(closure))).as_ptr()
 }
@@ -504,7 +529,6 @@ unsafe extern "C" fn clone_closure(closure: *mut GcInner<Value>) -> *mut GcInner
     ManuallyDrop::new(deep_clone_value(&closure, &mut cloned)).as_ptr()
 }
 
-/// Add all of the values together
 unsafe extern "C" fn add(vals: *const *mut GcInner<Value>, num_vals: u32) -> *mut GcInner<Value> {
     let vals: Vec<_> = (0..num_vals)
         .map(|i| Gc::from_ptr(vals.add(i as usize).read()))
@@ -512,7 +536,6 @@ unsafe extern "C" fn add(vals: *const *mut GcInner<Value>, num_vals: u32) -> *mu
     ManuallyDrop::new(Gc::new(Value::Number(num::add(&vals).unwrap()))).as_ptr()
 }
 
-/// Subtract all of the values
 unsafe extern "C" fn sub(vals: *const *mut GcInner<Value>, num_vals: u32) -> *mut GcInner<Value> {
     let vals: Vec<_> = (0..num_vals)
         .map(|i| Gc::from_ptr(vals.add(i as usize).read()))
@@ -523,7 +546,6 @@ unsafe extern "C" fn sub(vals: *const *mut GcInner<Value>, num_vals: u32) -> *mu
     .as_ptr()
 }
 
-/// Multiply all of the values
 unsafe extern "C" fn mul(vals: *const *mut GcInner<Value>, num_vals: u32) -> *mut GcInner<Value> {
     let vals: Vec<_> = (0..num_vals)
         .map(|i| Gc::from_ptr(vals.add(i as usize).read()))
@@ -531,7 +553,6 @@ unsafe extern "C" fn mul(vals: *const *mut GcInner<Value>, num_vals: u32) -> *mu
     ManuallyDrop::new(Gc::new(Value::Number(num::mul(&vals).unwrap()))).as_ptr()
 }
 
-/// Divide all of the values
 unsafe extern "C" fn div(vals: *const *mut GcInner<Value>, num_vals: u32) -> *mut GcInner<Value> {
     let vals: Vec<_> = (0..num_vals)
         .map(|i| Gc::from_ptr(vals.add(i as usize).read()))
