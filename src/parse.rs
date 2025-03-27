@@ -7,7 +7,7 @@ use crate::{
     num::Number,
     syntax::Syntax,
 };
-use rug::Integer;
+use malachite::{rational::Rational, Integer};
 use std::{char::CharTryFromError, error::Error as StdError, fmt, num::TryFromIntError};
 
 #[derive(Debug)]
@@ -15,6 +15,7 @@ pub enum ParseSyntaxError<'a> {
     EmptyInput,
     UnexpectedEndOfFile,
     ExpectedClosingParen { span: InputSpan<'a> },
+    UnexpectedClosingParen { span: InputSpan<'a> },
     InvalidHexValue { value: String, span: InputSpan<'a> },
     InvalidPeriodLocation { span: InputSpan<'a> },
     NonByte { span: InputSpan<'a> },
@@ -22,8 +23,10 @@ pub enum ParseSyntaxError<'a> {
     CharTryFrom(CharTryFromError),
     Lex(LexError<'a>),
     TryFromInt(TryFromIntError),
-    TryFromNumber(TryFromNumberError<'a>),
+    TryFromNumber(TryFromNumberError),
+    UnexpectedToken { token: Token<'a> },
 }
+
 impl fmt::Display for ParseSyntaxError<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -31,6 +34,9 @@ impl fmt::Display for ParseSyntaxError<'_> {
             Self::UnexpectedEndOfFile => write!(f, "unexpected end of file"),
             Self::ExpectedClosingParen { span } => {
                 write!(f, "closing parenthesis not found at `{}`", span)
+            }
+            Self::UnexpectedClosingParen { span } => {
+                write!(f, "unexpected closing parenthesis found at `{}`", span)
             }
             Self::InvalidHexValue { value, span } => {
                 write!(f, "invalid hex value `{}` found at `{}`", value, span)
@@ -50,6 +56,13 @@ impl fmt::Display for ParseSyntaxError<'_> {
             Self::Lex(e) => write!(f, "{}", e),
             Self::TryFromInt(e) => write!(f, "{}", e),
             Self::TryFromNumber(e) => write!(f, "{}", e),
+            Self::UnexpectedToken { token } => {
+                write!(
+                    f,
+                    "unexpected token {:?} at location `{}`",
+                    token.lexeme, token.span
+                )
+            }
         }
     }
 }
@@ -70,8 +83,8 @@ impl From<CharTryFromError> for ParseSyntaxError<'_> {
         Self::CharTryFrom(e)
     }
 }
-impl<'a> From<TryFromNumberError<'a>> for ParseSyntaxError<'a> {
-    fn from(e: TryFromNumberError<'a>) -> Self {
+impl From<TryFromNumberError> for ParseSyntaxError<'_> {
+    fn from(e: TryFromNumberError) -> Self {
         Self::TryFromNumber(e)
     }
 }
@@ -94,6 +107,12 @@ impl<'a> ParseSyntaxError<'a> {
 
     fn unclosed_paren(token: &Token<'a>) -> Self {
         Self::UnclosedParen {
+            span: token.span.clone(),
+        }
+    }
+
+    fn unexpected_closing_paren(token: &Token<'a>) -> Self {
+        Self::UnexpectedClosingParen {
             span: token.span.clone(),
         }
     }
@@ -197,9 +216,18 @@ pub fn expression<'a, 'b>(
                 ),
             ))
         }
+        [paren @ token!(Lexeme::RParen), ..] => {
+            Err(ParseSyntaxError::unexpected_closing_paren(paren))
+        }
+        [paren @ token!(Lexeme::RBracket), ..] => {
+            Err(ParseSyntaxError::unexpected_closing_paren(paren))
+        }
         // Invalid locations:
         [d @ token!(Lexeme::Period), ..] => Err(ParseSyntaxError::invalid_period(d)),
-        x => todo!("Not implemented: {x:#?}"),
+        // Unexpected token (perhaps not supported?):
+        [token, ..] => Err(ParseSyntaxError::UnexpectedToken {
+            token: token.clone(),
+        }),
     }
 }
 
@@ -348,6 +376,8 @@ fn number<'a>(i: &LexNumber<'a>) -> Result<Literal, ParseSyntaxError<'a>> {
     <LexNumber as TryInto<i64>>::try_into(*i)
         .map(Number::FixedInteger)
         .or_else(|_| <LexNumber as TryInto<Integer>>::try_into(*i).map(Number::BigInteger))
+        .or_else(|_| <LexNumber as TryInto<Rational>>::try_into(*i).map(Number::Rational))
+        .or_else(|_| <LexNumber as TryInto<f64>>::try_into(*i).map(Number::Real))
         .map(Literal::Number)
         .map_err(ParseSyntaxError::from)
 }

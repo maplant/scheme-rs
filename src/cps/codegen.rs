@@ -266,7 +266,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             Value::Var(var) => Ok((*self.rebinds.fetch_bind(var)).into()),
             Value::Literal(Literal::Number(num)) => {
                 // FIXME: Number has to be a u64
-                let num = num.to_u64();
+                let num: u64 = u64::try_from(usize::try_from(num).unwrap()).unwrap();
                 let i64_to_number = self.module.get_function("i64_to_number").unwrap();
                 let constant = self.ctx.i64_type().const_int(num, false);
                 Ok(self
