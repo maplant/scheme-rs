@@ -6,7 +6,8 @@ use crate::{
     gc::{init_gc, Gc, GcInner, Trace},
     lists::list_to_vec,
     num,
-    proc::{deep_clone_value, Application, Closure, ClosurePtr, ContinuationPtr, FuncPtr},
+    proc::{deep_clone_value, Application, Closure, ClosurePtr, ContinuationPtr, FuncPtr, FunctionDebugInfo},
+    syntax::Span,
     value::Value,
 };
 use indexmap::IndexMap;
@@ -39,7 +40,8 @@ use tokio::sync::{mpsc, oneshot};
 #[derive(Trace, Clone, Debug)]
 pub struct Runtime {
     compilation_buffer_tx: mpsc::Sender<CompilationTask>,
-}
+    pub(crate) debug_info: DebugInfo,
+} 
 
 const MAX_COMPILATION_TASKS: usize = 5; // Shrug
 
@@ -59,6 +61,7 @@ impl Runtime {
         std::thread::spawn(move || compilation_task(compilation_buffer_rx));
         Runtime {
             compilation_buffer_tx,
+            debug_info: DebugInfo::default(),
         }
     }
 }
@@ -86,6 +89,31 @@ impl Gc<Runtime> {
         completion_rx.await.unwrap()
     }
 }
+
+#[derive(Trace, Clone, Debug, Default)]
+pub struct DebugInfo {
+    /// Location of function applications 
+    pub(crate) call_sites: Vec<Span>,
+    /// Functions and their debug information
+    pub(crate) function_debug_info: Vec<FunctionDebugInfo>
+}
+
+pub type CallSiteId = usize;
+pub type FunctionDebugInfoId = usize;
+
+impl DebugInfo {
+    pub fn new_call_site(&mut self, span: Span) -> CallSiteId {
+        let id = self.call_sites.len();
+        self.call_sites.push(span);
+        id
+    }
+
+    pub fn new_function_debug_info(&mut self, function_debug_info: FunctionDebugInfo) -> FunctionDebugInfoId {
+        let id = self.function_debug_info.len();
+        self.function_debug_info.push(function_debug_info);
+        id
+    }
+} 
 
 struct CompilationTask {
     env: IndexMap<Local, Gc<Value>>,
@@ -161,7 +189,7 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     let f = module.add_function("drop_values", sig, None);
     ee.add_global_mapping(&f, drop_values as usize);
 
-    // fn make_application(op: *Value, args: **Value, num_args: u32, exception_handler *EH) -> *Application
+    // fn apply(op: *Value, args: **Value, num_args: u32, exception_handler *EH) -> *Application
     //
     let sig = ptr_type.fn_type(
         &[
@@ -172,19 +200,19 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
         ],
         false,
     );
-    let f = module.add_function("make_application", sig, None);
-    ee.add_global_mapping(&f, make_application as usize);
+    let f = module.add_function("apply", sig, None);
+    ee.add_global_mapping(&f, apply as usize);
 
-    // fn make_forward(op: *Value, arg: *Value, exception_handler: *EH) -> *Application
+    // fn forward(op: *Value, arg: *Value, exception_handler: *EH) -> *Application
     let sig = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into(), ptr_type.into()], false);
-    let f = module.add_function("make_forward", sig, None);
-    ee.add_global_mapping(&f, make_forward as usize);
+    let f = module.add_function("forward", sig, None);
+    ee.add_global_mapping(&f, forward as usize);
 
-    // fn make_return_values(args: *Value) -> *Application
+    // fn halt(args: *Value) -> *Application
     //
     let sig = ptr_type.fn_type(&[ptr_type.into()], false);
-    let f = module.add_function("make_return_values", sig, None);
-    ee.add_global_mapping(&f, make_return_values as usize);
+    let f = module.add_function("halt", sig, None);
+    ee.add_global_mapping(&f, halt as usize);
 
     // fn truthy(val: *Value) -> bool
     //
@@ -334,7 +362,7 @@ unsafe extern "C" fn drop_values(vals: *const *mut GcInner<Value>, num_vals: u32
 /// Create a boxed application
 /// TODO: Take error handler as argument, return application with error handler
 /// if operator is not a closure.
-unsafe extern "C" fn make_application(
+unsafe extern "C" fn apply(
     op: *mut GcInner<Value>,
     args: *const *mut GcInner<Value>,
     num_args: u32,
@@ -359,7 +387,7 @@ unsafe extern "C" fn make_application(
 }
 
 /// Create a boxed application that forwards a list of values to the operator
-unsafe extern "C" fn make_forward(
+unsafe extern "C" fn forward(
     op: *mut GcInner<Value>,
     to_forward: *mut GcInner<Value>,
     exception_handler: *mut GcInner<ExceptionHandler>,
@@ -381,7 +409,7 @@ unsafe extern "C" fn make_forward(
 }
 
 /// Create a boxed application that simply returns its arguments
-pub(crate) unsafe extern "C" fn make_return_values(args: *mut GcInner<Value>) -> *mut Application {
+pub(crate) unsafe extern "C" fn halt(args: *mut GcInner<Value>) -> *mut Application {
     let args = Gc::from_ptr(args);
     let mut flattened = Vec::new();
     list_to_vec(&args, &mut flattened);
@@ -435,7 +463,7 @@ unsafe extern "C" fn make_continuation(
         FuncPtr::Continuation(fn_ptr),
         num_required_args as usize,
         variadic,
-        true,
+        None,
     );
     ManuallyDrop::new(Gc::new(Value::Closure(closure))).as_ptr()
 }
@@ -471,7 +499,7 @@ unsafe extern "C" fn make_closure(
         FuncPtr::Closure(fn_ptr),
         num_required_args as usize,
         variadic,
-        false,
+        Some(todo!()),
     );
     ManuallyDrop::new(Gc::new(Value::Closure(closure))).as_ptr()
 }
@@ -487,7 +515,7 @@ unsafe extern "C" fn get_call_transformer_fn(
         FuncPtr::Bridge(expand::call_transformer),
         3,
         true,
-        false,
+        Some(todo!())
     );
     ManuallyDrop::new(Gc::new(Value::Closure(closure))).as_ptr()
 }
@@ -501,7 +529,6 @@ unsafe extern "C" fn clone_closure(closure: *mut GcInner<Value>) -> *mut GcInner
     ManuallyDrop::new(deep_clone_value(&closure, &mut cloned)).as_ptr()
 }
 
-/// Add all of the values together
 unsafe extern "C" fn add(vals: *const *mut GcInner<Value>, num_vals: u32) -> *mut GcInner<Value> {
     let vals: Vec<_> = (0..num_vals)
         .map(|i| Gc::from_ptr(vals.add(i as usize).read()))
@@ -509,7 +536,6 @@ unsafe extern "C" fn add(vals: *const *mut GcInner<Value>, num_vals: u32) -> *mu
     ManuallyDrop::new(Gc::new(Value::Number(num::add(&vals).unwrap()))).as_ptr()
 }
 
-/// Subtract all of the values
 unsafe extern "C" fn sub(vals: *const *mut GcInner<Value>, num_vals: u32) -> *mut GcInner<Value> {
     let vals: Vec<_> = (0..num_vals)
         .map(|i| Gc::from_ptr(vals.add(i as usize).read()))
@@ -520,7 +546,6 @@ unsafe extern "C" fn sub(vals: *const *mut GcInner<Value>, num_vals: u32) -> *mu
     .as_ptr()
 }
 
-/// Multiply all of the values
 unsafe extern "C" fn mul(vals: *const *mut GcInner<Value>, num_vals: u32) -> *mut GcInner<Value> {
     let vals: Vec<_> = (0..num_vals)
         .map(|i| Gc::from_ptr(vals.add(i as usize).read()))
@@ -528,7 +553,6 @@ unsafe extern "C" fn mul(vals: *const *mut GcInner<Value>, num_vals: u32) -> *mu
     ManuallyDrop::new(Gc::new(Value::Number(num::mul(&vals).unwrap()))).as_ptr()
 }
 
-/// Divide all of the values
 unsafe extern "C" fn div(vals: *const *mut GcInner<Value>, num_vals: u32) -> *mut GcInner<Value> {
     let vals: Vec<_> = (0..num_vals)
         .map(|i| Gc::from_ptr(vals.add(i as usize).read()))
