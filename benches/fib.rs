@@ -22,7 +22,7 @@ async fn fib_fn() -> scheme_rs::proc::Closure {
     let test_top = Environment::from(Gc::new(test_top));
 
     let sexprs = Syntax::from_str(include_str!("fib.scm"), Some("fib.scm")).unwrap();
-    let base = DefinitionBody::parse_program_body(&runtime, &sexprs, &test_top, &Span::default())
+    let base = DefinitionBody::parse_program_body(&runtime, &sexprs, &test_top, Span::default())
         .await
         .unwrap();
     let compiled = base.compile_top_level();

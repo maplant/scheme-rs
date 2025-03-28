@@ -16,27 +16,20 @@ use std::{
     sync::Arc,
 };
 
-#[derive(Debug, Clone, PartialEq, Trace)]
+#[derive(Clone, Debug, Default, PartialEq, Trace)]
 pub struct Span {
     pub line: u32,
     pub column: usize,
     pub offset: usize,
-    pub file: Arc<String>,
+    pub file: Option<Arc<String>>,
 }
 
 impl fmt::Display for Span {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}:{}", self.file, self.line, self.column)
-    }
-}
-
-impl Default for Span {
-    fn default() -> Self {
-        Self {
-            line: 0,
-            column: 0,
-            offset: 0,
-            file: Arc::new(String::new()),
+        if let Some(file) = &self.file {
+            write!(f, "{}:{}:{}", file, self.line, self.column)
+        } else {
+            write!(f, "{}:{}", self.line, self.column)
         }
     }
 }
@@ -47,7 +40,7 @@ impl From<InputSpan<'_>> for Span {
             line: span.location_line(),
             column: span.get_column(),
             offset: span.location_offset(),
-            file: span.extra.clone(),
+            file: Some(span.extra),
         }
     }
 }
@@ -90,6 +83,13 @@ pub enum Syntax {
         #[debug(skip)]
         span: Span,
     },
+}
+impl Default for Syntax {
+    fn default() -> Self {
+        Self::Null {
+            span: Default::default(),
+        }
+    }
 }
 
 impl Syntax {
