@@ -12,7 +12,7 @@ use crate::{
 use futures::future::BoxFuture;
 use std::{
     collections::{BTreeSet, HashSet},
-    fmt,
+    fmt::{self, Display, Formatter},
     sync::Arc,
 };
 
@@ -468,6 +468,11 @@ impl Identifier {
 impl PartialEq<str> for Identifier {
     fn eq(&self, rhs: &str) -> bool {
         self.name == rhs
+    }
+}
+impl Display for Identifier {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name)
     }
 }
 

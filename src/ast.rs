@@ -21,6 +21,8 @@ use futures::future::BoxFuture;
 use inkwell::builder::BuilderError;
 use std::{
     collections::{HashMap, HashSet},
+    error::Error as StdError,
+    fmt::{self, Display, Formatter},
     mem::take,
     sync::Arc,
 };
@@ -64,6 +66,45 @@ pub enum ParseAstError {
 
     RaisedValue(Gc<Value>),
 }
+impl Display for ParseAstError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        // TODO: make better messages
+        match self {
+            Self::BadForm(span) => write!(f, "bad form: {}", span),
+
+            Self::ExpectedArgument(span) => write!(f, "expected argument: {}", span),
+            Self::ExpectedBody(span) => write!(f, "expected body: {}", span),
+            Self::ExpectedIdentifier(span) => write!(f, "expected identifier: {}", span),
+            Self::ExpectedNumber(span) => write!(f, "expected number: {}", span),
+            Self::ExpectedVariableTransformer => write!(f, "expected transformer"),
+
+            Self::UnexpectedArgument(span) => write!(f, "unexpected argument: {}", span),
+            Self::UnexpectedDefinition(span) => write!(f, "unexpected definition: {}", span),
+            Self::UnexpectedEmptyList(span) => write!(f, "unexpected empty list: {}", span),
+
+            Self::UndefinedVariable(ident) => write!(f, "undefined variable: {}", ident),
+
+            Self::ParentSpecifiedMultipleTimes {
+                first,
+                second,
+            } => write!(f, "parent specified multiple times, first: {}, second: {}", first, second),
+            Self::MultipleFieldsClauses {
+                first,
+                second,
+            } => write!(f, "multiple field clauses, first: {}, second: {}", first, second),
+            Self::NameBoundMultipleTimes {
+                ident,
+                first,
+                second,
+            } => write!(f, "name bound `{}` multiple times, first: {}, second: {}", ident, first, second),
+
+            Self::BuilderError(error) => write!(f, "builder error: {}", error),
+
+            Self::Exception(exception) => write!(f, "exception raised: {}", exception),
+        }
+    }
+}
+impl StdError for ParseAstError {}
 
 impl From<BuilderError> for ParseAstError {
     fn from(be: BuilderError) -> Self {
@@ -306,11 +347,22 @@ impl Expression {
             match syn {
                 Syntax::Null { span } => Err(ParseAstError::UnexpectedEmptyList(span)),
 
+                Syntax::Identifier { ident, .. } if ident.name == "<undefined>" => {
+                    Ok(Self::Undefined)
+                }
+
                 // Regular identifiers:
                 Syntax::Identifier { ident, .. } => Ok(Self::Var(
                     env.fetch_var(&ident)
+                        .or_else(|| {
+                            let top = env.fetch_top();
+                            let is_repl = { top.read().is_repl() };
+                            is_repl.then(|| {
+                                Var::Global(top.write().def_var(ident.clone(), Value::Undefined))
+                            })
+                        })
                         .ok_or_else(|| ParseAstError::UndefinedVariable(ident))?,
-                )),
+                 )),
 
                 // Literals:
                 Syntax::Literal { literal, .. } => Ok(Self::Literal(literal)),
