@@ -21,6 +21,7 @@ use futures::future::BoxFuture;
 use inkwell::builder::BuilderError;
 use std::{
     collections::{HashMap, HashSet},
+    mem::take,
     sync::Arc,
 };
 
@@ -205,7 +206,7 @@ impl Definition {
 
                         // Parse the body:
                         let body = DefinitionBody::parse(
-                            runtime, body, &new_env, func_span, /* cont */
+                            runtime, body, &new_env, func_span.clone(), /* cont */
                         )
                         .await?;
 
@@ -305,22 +306,10 @@ impl Expression {
             match syn {
                 Syntax::Null { span } => Err(ParseAstError::UnexpectedEmptyList(span)),
 
-                // Special Identifiers:
-                Syntax::Identifier { ident, .. } if ident.name == "<undefined>" => {
-                    Ok(Self::Undefined)
-                }
-
                 // Regular identifiers:
                 Syntax::Identifier { ident, .. } => Ok(Self::Var(
                     env.fetch_var(&ident)
-                        .or_else(|| {
-                            let top = env.fetch_top();
-                            let is_repl = { top.read().is_repl() };
-                            is_repl.then(|| {
-                                Var::Global(top.write().def_var(ident.clone(), Value::Undefined))
-                            })
-                        })
-                        .ok_or_else(|| ParseAstError::UndefinedVariable(ident.clone()))?,
+                        .ok_or_else(|| ParseAstError::UndefinedVariable(ident))?,
                 )),
 
                 // Literals:
@@ -332,8 +321,8 @@ impl Expression {
 
                 // Functional forms:
                 Syntax::List {
-                    list: exprs, span, ..
-                } => match exprs.as_slice() {
+                    list: mut exprs, span, ..
+                } => match exprs.as_mut_slice() {
                     // Special forms:
                     [Syntax::Identifier { ident, .. }, tail @ .., Syntax::Null { .. }]
                         if ident == "begin" =>
@@ -342,24 +331,24 @@ impl Expression {
                             .await
                             .map(Expression::Begin)
                     }
-                    [Syntax::Identifier { ident, span, .. }, tail @ .., Syntax::Null { .. }]
+                    [Syntax::Identifier { ident, ref mut span, .. }, tail @ .., Syntax::Null { .. }]
                         if ident == "lambda" =>
                     {
-                        Lambda::parse(runtime, tail, env, span /* cont */)
+                        Lambda::parse(runtime, tail, env, take(span) /* cont */)
                             .await
                             .map(Expression::Lambda)
                     }
-                    [Syntax::Identifier { ident, span, .. }, tail @ .., Syntax::Null { .. }]
+                    [Syntax::Identifier { ident, ref mut span, .. }, tail @ .., Syntax::Null { .. }]
                         if ident == "let" =>
                     {
-                        Let::parse(runtime, tail, env, span /* cont */)
+                        Let::parse(runtime, tail, env, take(span) /* cont */)
                             .await
                             .map(Expression::Let)
                     }
-                    [Syntax::Identifier { ident, span, .. }, tail @ .., Syntax::Null { .. }]
+                    [Syntax::Identifier { ident, ref mut span, .. }, tail @ .., Syntax::Null { .. }]
                         if ident == "if" =>
                     {
-                        If::parse(runtime, tail, env, span /* cont */)
+                        If::parse(runtime, tail, env, take(span) /* cont */)
                             .await
                             .map(Expression::If)
                     }
@@ -377,38 +366,38 @@ impl Expression {
                             .await
                             .map(Expression::Or)
                     }
-                    [Syntax::Identifier { ident, span, .. }, tail @ ..] if ident == "quote" => {
-                        Quote::parse(tail, span).await.map(Expression::Quote)
+                    [Syntax::Identifier { ident, ref mut span, .. }, tail @ ..] if ident == "quote" => {
+                        Quote::parse(tail, take(span)).await.map(Expression::Quote)
                     }
-                    [Syntax::Identifier { ident, span, .. }, tail @ .., Syntax::Null { .. }]
+                    [Syntax::Identifier { ident, ref mut span, .. }, tail @ .., Syntax::Null { .. }]
                         if ident == "syntax" =>
                     {
-                        SyntaxQuote::parse(tail, span)
+                        SyntaxQuote::parse(tail, take(span))
                             .await
                             .map(Expression::SyntaxQuote)
                     }
-                    [Syntax::Identifier { ident, span, .. }, tail @ .., Syntax::Null { .. }]
+                    [Syntax::Identifier { ident, ref mut span, .. }, tail @ .., Syntax::Null { .. }]
                         if ident == "syntax-case" =>
                     {
-                        SyntaxCase::parse(runtime, tail, env, span /* cont */)
+                        SyntaxCase::parse(runtime, tail, env, take(span) /* cont */)
                             .await
                             .map(Expression::SyntaxCase)
                     }
 
                     // Extra special form (set!):
-                    [Syntax::Identifier { ident, span, .. }, tail @ .., Syntax::Null { .. }]
+                    [Syntax::Identifier { ident, ref mut span, .. }, tail @ .., Syntax::Null { .. }]
                         if ident == "set!" =>
                     {
-                        Set::parse(runtime, tail, env, span /* cont */)
+                        Set::parse(runtime, tail, env, take(span) /* cont */)
                             .await
                             .map(Expression::Set)
                     }
 
                     // Definition in expression context is illegal:
-                    [Syntax::Identifier { ident, span, .. }, .., Syntax::Null { .. }]
+                    [Syntax::Identifier { ident, ref mut span, .. }, .., Syntax::Null { .. }]
                         if ident == "define" || ident == "define-record-type" =>
                     {
-                        Err(ParseAstError::UnexpectedDefinition(span.clone()))
+                        Err(ParseAstError::UnexpectedDefinition(take(span)))
                     }
 
                     // Regular old function call:
@@ -418,7 +407,7 @@ impl Expression {
                             .map(Expression::Apply)
                     }
 
-                    _ => Err(ParseAstError::BadForm(span.clone())),
+                    _ => Err(ParseAstError::BadForm(span)),
                 },
             }
         })
@@ -474,15 +463,15 @@ pub struct Quote {
 }
 
 impl Quote {
-    async fn parse(exprs: &[Syntax], span: &Span) -> Result<Self, ParseAstError> {
+    async fn parse(exprs: &[Syntax], span: Span) -> Result<Self, ParseAstError> {
         match exprs {
-            [] => Err(ParseAstError::ExpectedArgument(span.clone())),
+            [] => Err(ParseAstError::ExpectedArgument(span)),
             [Syntax::Null { .. }] => Ok(Quote { val: Value::Null }),
             [expr, Syntax::Null { .. }] => Ok(Quote {
                 val: Value::from_syntax(expr),
             }),
             [_, arg, ..] => Err(ParseAstError::UnexpectedArgument(arg.span().clone())),
-            _ => Err(ParseAstError::BadForm(span.clone())),
+            _ => Err(ParseAstError::BadForm(span)),
         }
     }
 }
@@ -493,9 +482,9 @@ pub struct SyntaxQuote {
 }
 
 impl SyntaxQuote {
-    async fn parse(exprs: &[Syntax], span: &Span) -> Result<Self, ParseAstError> {
+    async fn parse(exprs: &[Syntax], span: Span) -> Result<Self, ParseAstError> {
         match exprs {
-            [] => Err(ParseAstError::ExpectedArgument(span.clone())),
+            [] => Err(ParseAstError::ExpectedArgument(span)),
             [expr] => Ok(SyntaxQuote { syn: expr.clone() }),
             [_, arg, ..] => Err(ParseAstError::UnexpectedArgument(arg.span().clone())),
         }
@@ -553,7 +542,7 @@ impl Lambda {
         runtime: &Gc<Runtime>,
         sexprs: &[Syntax],
         env: &Environment,
-        span: &Span,
+        span: Span,
         // cont: &Closure,
     ) -> Result<Self, ParseAstError> {
         match sexprs {
@@ -567,7 +556,7 @@ impl Lambda {
                 let args = &[ident.clone()];
                 parse_lambda(runtime, args, body, env, span /* cont */).await
             }
-            _ => Err(ParseAstError::BadForm(span.clone())),
+            _ => Err(ParseAstError::BadForm(span)),
         }
     }
 }
@@ -577,7 +566,7 @@ async fn parse_lambda(
     args: &[Syntax],
     body: &[Syntax],
     env: &Environment,
-    span: &Span,
+    span: Span,
     // cont: &Closure
 ) -> Result<Lambda, ParseAstError> {
     let mut bound = HashMap::<Identifier, Span>::new();
@@ -665,7 +654,7 @@ impl Let {
         runtime: &Gc<Runtime>,
         syn: &[Syntax],
         env: &Environment,
-        span: &Span,
+        span: Span,
         // cont: &Closure,
     ) -> Result<Self, ParseAstError> {
         match syn {
@@ -690,7 +679,7 @@ impl Let {
             [Syntax::Identifier { ident, .. }, Syntax::Null { .. }, body @ ..] => {
                 parse_let(runtime, Some(ident), &[], body, env, span /* cont */).await
             }
-            _ => Err(ParseAstError::BadForm(span.clone())),
+            _ => Err(ParseAstError::BadForm(span)),
         }
     }
 }
@@ -701,7 +690,7 @@ async fn parse_let(
     bindings: &[Syntax],
     body: &[Syntax],
     env: &Environment,
-    span: &Span,
+    span: Span,
     // cont: &Closure
 ) -> Result<Let, ParseAstError> {
     let mut previously_bound = HashMap::new();
@@ -724,13 +713,13 @@ async fn parse_let(
             }
         }
         _ => {
-            return Err(ParseAstError::BadForm(span.clone()));
+            return Err(ParseAstError::BadForm(span));
         }
     }
 
     let lambda_var = name.map(|name| new_contour.def_var(name.clone()));
 
-    let ast_body = DefinitionBody::parse(runtime, body, &new_contour, span /* cont */).await?;
+    let ast_body = DefinitionBody::parse(runtime, body, &new_contour, span.clone() /* cont */).await?;
 
     // TODO: Lot of unnecessary cloning here, fix that.
     let mut bindings: Vec<_> = parsed_bindings
@@ -830,11 +819,11 @@ impl Set {
         runtime: &Gc<Runtime>,
         exprs: &[Syntax],
         env: &Environment,
-        span: &Span,
+        span: Span,
         // cont: &Closure,
     ) -> Result<Self, ParseAstError> {
         match exprs {
-            [] => Err(ParseAstError::ExpectedArgument(span.clone())),
+            [] => Err(ParseAstError::ExpectedArgument(span)),
             [Syntax::Identifier { ident, .. }, expr] => Ok(Set {
                 var: env
                     .fetch_var(ident)
@@ -843,7 +832,7 @@ impl Set {
             }),
             [arg1, _] => Err(ParseAstError::ExpectedIdentifier(arg1.span().clone())),
             [_, _, arg3, ..] => Err(ParseAstError::UnexpectedArgument(arg3.span().clone())),
-            _ => Err(ParseAstError::BadForm(span.clone())),
+            _ => Err(ParseAstError::BadForm(span)),
         }
     }
 }
@@ -860,7 +849,7 @@ impl If {
         runtime: &Gc<Runtime>,
         exprs: &[Syntax],
         env: &Environment,
-        span: &Span,
+        span: Span,
         // cont: &Option<Arc<Continuation>>,
     ) -> Result<Self, ParseAstError> {
         match exprs {
@@ -880,7 +869,7 @@ impl If {
                     Expression::parse(runtime, failure.clone(), env /* cont */).await?,
                 )),
             }),
-            [] => Err(ParseAstError::ExpectedArgument(span.clone())),
+            [] => Err(ParseAstError::ExpectedArgument(span)),
             [a1] => Err(ParseAstError::ExpectedArgument(a1.span().clone())),
             [_, _, _, unexpected, ..] => {
                 Err(ParseAstError::UnexpectedArgument(unexpected.span().clone()))
@@ -945,7 +934,7 @@ impl DefinitionBody {
         runtime: &Gc<Runtime>,
         body: &[Syntax],
         env: &Environment,
-        span: &Span,
+        span: Span,
     ) -> Result<Self, ParseAstError> {
         Self::parse_helper(runtime, body, true, env, span).await
     }
@@ -954,7 +943,7 @@ impl DefinitionBody {
         runtime: &Gc<Runtime>,
         body: &[Syntax],
         env: &Environment,
-        span: &Span,
+        span: Span,
     ) -> Result<Self, ParseAstError> {
         Self::parse_helper(runtime, body, false, env, span).await
     }
@@ -966,7 +955,7 @@ impl DefinitionBody {
         body: &'a [Syntax],
         permissive: bool,
         env: &'a Environment,
-        span: &'a Span,
+        span: Span,
         // cont: &'a Closure
     ) -> BoxFuture<'a, Result<Self, ParseAstError>> {
         Box::pin(async move {
@@ -1069,14 +1058,14 @@ fn splice_in<'a>(
     permissive: bool,
     body: &'a [Syntax],
     env: &'a Environment,
-    span: &'a Span,
+    span: Span,
     defs: &'a mut Vec<Either<FullyExpanded, DefineRecordType>>,
     exprs: &'a mut Vec<FullyExpanded>,
     // cont: &Closure
 ) -> BoxFuture<'a, Result<(), ParseAstError>> {
     Box::pin(async move {
         if body.is_empty() {
-            return Err(ParseAstError::ExpectedBody(span.clone()));
+            return Err(ParseAstError::ExpectedBody(span));
         }
 
         for unexpanded in body {
@@ -1094,7 +1083,7 @@ fn splice_in<'a>(
                             permissive,
                             body,
                             &expansion_env,
-                            span, /* cont */
+                            span.clone(), /* cont */
                             defs,
                             exprs,
                         )
@@ -1233,7 +1222,7 @@ impl SyntaxCase {
         runtime: &Gc<Runtime>,
         exprs: &[Syntax],
         env: &Environment,
-        span: &Span,
+        span: Span,
         // cont: &Closure,
     ) -> Result<Self, ParseAstError> {
         // Get every possible variable referenced by the transformer:
@@ -1255,7 +1244,7 @@ impl SyntaxCase {
                 (arg, keywords, rules)
             }
             [arg, Syntax::Null { .. }, rules @ ..] => (arg, HashSet::default(), rules),
-            _ => return Err(ParseAstError::BadForm(span.clone())),
+            _ => return Err(ParseAstError::BadForm(span)),
         };
         let mut syntax_rules = Vec::new();
         loop {
@@ -1266,9 +1255,9 @@ impl SyntaxCase {
                         syntax_rules.push(SyntaxRule::compile(&keywords, pattern, template));
                         rules = tail;
                     }
-                    _ => return Err(ParseAstError::BadForm(span.clone())),
+                    _ => return Err(ParseAstError::BadForm(span)),
                 },
-                _ => return Err(ParseAstError::BadForm(span.clone())),
+                _ => return Err(ParseAstError::BadForm(span)),
             }
         }
         Ok(SyntaxCase {
