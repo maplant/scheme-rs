@@ -27,7 +27,6 @@ use std::{
     error::Error as StdError,
     fmt::{self, Display, Formatter},
     mem::take,
-    sync::Arc,
 };
 
 #[derive(Debug)]
@@ -86,19 +85,25 @@ impl Display for ParseAstError {
 
             Self::UndefinedVariable(ident) => write!(f, "undefined variable: {}", ident),
 
-            Self::ParentSpecifiedMultipleTimes {
-                first,
-                second,
-            } => write!(f, "parent specified multiple times, first: {}, second: {}", first, second),
-            Self::MultipleFieldsClauses {
-                first,
-                second,
-            } => write!(f, "multiple field clauses, first: {}, second: {}", first, second),
+            Self::ParentSpecifiedMultipleTimes { first, second } => write!(
+                f,
+                "parent specified multiple times, first: {}, second: {}",
+                first, second
+            ),
+            Self::MultipleFieldsClauses { first, second } => write!(
+                f,
+                "multiple field clauses, first: {}, second: {}",
+                first, second
+            ),
             Self::NameBoundMultipleTimes {
                 ident,
                 first,
                 second,
-            } => write!(f, "name bound `{}` multiple times, first: {}, second: {}", ident, first, second),
+            } => write!(
+                f,
+                "name bound `{}` multiple times, first: {}, second: {}",
+                ident, first, second
+            ),
 
             Self::BuilderError(error) => write!(f, "builder error: {}", error),
 
@@ -153,7 +158,7 @@ impl Definition {
             [_, Syntax::Identifier { ident, .. }, expr, Syntax::Null { .. }] => {
                 Ok(Definition::DefineVar(DefineVar {
                     var: env.fetch_var(ident).unwrap(),
-                    val: Arc::new(Expression::parse(runtime, expr.clone(), env /* cont */).await?),
+                    val: Box::new(Expression::parse(runtime, expr.clone(), env /* cont */).await?),
                     next: None,
                 }))
             }
@@ -230,7 +235,10 @@ impl Definition {
 
                         // Parse the body:
                         let body = DefinitionBody::parse(
-                            runtime, body, &new_env, func_span.clone(), /* cont */
+                            runtime,
+                            body,
+                            &new_env,
+                            func_span.clone(), /* cont */
                         )
                         .await?;
 
@@ -252,7 +260,7 @@ impl Definition {
 #[derive(Debug, Clone, Trace)]
 pub struct DefineVar {
     pub var: Var,
-    pub val: Arc<Expression>,
+    pub val: Box<Expression>,
     pub next: Option<Either<Box<Definition>, ExprBody>>,
 }
 
@@ -286,8 +294,9 @@ pub(super) async fn define_syntax(
     Ok(())
 }
 
-#[derive(Debug, Clone, Trace)]
+#[derive(Debug, Clone, Default, Trace)]
 pub enum Expression {
+    #[default]
     Undefined,
     Literal(Literal),
     Quote(Quote),
@@ -345,18 +354,20 @@ impl Expression {
                             })
                         })
                         .ok_or_else(|| ParseAstError::UndefinedVariable(ident))?,
-                 )),
+                )),
 
                 // Literals:
                 Syntax::Literal { literal, .. } => Ok(Self::Literal(literal)),
 
                 // Vector literals:
-                Syntax::Vector { vector, .. } => Ok(Self::Vector(Vector::parse(&vector))),
+                Syntax::Vector { vector, .. } => Ok(Self::Vector(Vector::parse(vector))),
                 Syntax::ByteVector { vector, .. } => Ok(Self::ByteVector(vector)),
 
                 // Functional forms:
                 Syntax::List {
-                    list: mut exprs, span, ..
+                    list: mut exprs,
+                    span,
+                    ..
                 } => match exprs.as_mut_slice() {
                     // Special forms:
                     [Syntax::Identifier { ident, .. }, tail @ .., Syntax::Null { .. }]
@@ -366,21 +377,33 @@ impl Expression {
                             .await
                             .map(Expression::Begin)
                     }
-                    [Syntax::Identifier { ident, ref mut span, .. }, tail @ .., Syntax::Null { .. }]
+                    [Syntax::Identifier {
+                        ident,
+                        ref mut span,
+                        ..
+                    }, tail @ .., Syntax::Null { .. }]
                         if ident == "lambda" =>
                     {
                         Lambda::parse(runtime, tail, env, take(span) /* cont */)
                             .await
                             .map(Expression::Lambda)
                     }
-                    [Syntax::Identifier { ident, ref mut span, .. }, tail @ .., Syntax::Null { .. }]
+                    [Syntax::Identifier {
+                        ident,
+                        ref mut span,
+                        ..
+                    }, tail @ .., Syntax::Null { .. }]
                         if ident == "let" =>
                     {
                         Let::parse(runtime, tail, env, take(span) /* cont */)
                             .await
                             .map(Expression::Let)
                     }
-                    [Syntax::Identifier { ident, ref mut span, .. }, tail @ .., Syntax::Null { .. }]
+                    [Syntax::Identifier {
+                        ident,
+                        ref mut span,
+                        ..
+                    }, tail @ .., Syntax::Null { .. }]
                         if ident == "if" =>
                     {
                         If::parse(runtime, tail, env, take(span) /* cont */)
@@ -401,17 +424,31 @@ impl Expression {
                             .await
                             .map(Expression::Or)
                     }
-                    [Syntax::Identifier { ident, ref mut span, .. }, tail @ ..] if ident == "quote" => {
+                    [Syntax::Identifier {
+                        ident,
+                        ref mut span,
+                        ..
+                    }, tail @ ..]
+                        if ident == "quote" =>
+                    {
                         Quote::parse(tail, take(span)).await.map(Expression::Quote)
                     }
-                    [Syntax::Identifier { ident, ref mut span, .. }, tail @ .., Syntax::Null { .. }]
+                    [Syntax::Identifier {
+                        ident,
+                        ref mut span,
+                        ..
+                    }, tail @ .., Syntax::Null { .. }]
                         if ident == "syntax" =>
                     {
                         SyntaxQuote::parse(tail, take(span))
                             .await
                             .map(Expression::SyntaxQuote)
                     }
-                    [Syntax::Identifier { ident, ref mut span, .. }, tail @ .., Syntax::Null { .. }]
+                    [Syntax::Identifier {
+                        ident,
+                        ref mut span,
+                        ..
+                    }, tail @ .., Syntax::Null { .. }]
                         if ident == "syntax-case" =>
                     {
                         SyntaxCase::parse(runtime, tail, env, take(span) /* cont */)
@@ -420,7 +457,11 @@ impl Expression {
                     }
 
                     // Extra special form (set!):
-                    [Syntax::Identifier { ident, ref mut span, .. }, tail @ .., Syntax::Null { .. }]
+                    [Syntax::Identifier {
+                        ident,
+                        ref mut span,
+                        ..
+                    }, tail @ .., Syntax::Null { .. }]
                         if ident == "set!" =>
                     {
                         Set::parse(runtime, tail, env, take(span) /* cont */)
@@ -429,7 +470,11 @@ impl Expression {
                     }
 
                     // Definition in expression context is illegal:
-                    [Syntax::Identifier { ident, ref mut span, .. }, .., Syntax::Null { .. }]
+                    [Syntax::Identifier {
+                        ident,
+                        ref mut span,
+                        ..
+                    }, .., Syntax::Null { .. }]
                         if ident == "define" || ident == "define-record-type" =>
                     {
                         Err(ParseAstError::UnexpectedDefinition(take(span)))
@@ -437,7 +482,7 @@ impl Expression {
 
                     // Regular old function call:
                     [operator, args @ .., Syntax::Null { .. }] => {
-                        Apply::parse(runtime, operator.clone(), args, env /* cont */)
+                        Apply::parse(runtime, take(operator), args, env /* cont */)
                             .await
                             .map(Expression::Apply)
                     }
@@ -498,12 +543,12 @@ pub struct Quote {
 }
 
 impl Quote {
-    async fn parse(exprs: &[Syntax], span: Span) -> Result<Self, ParseAstError> {
+    async fn parse(exprs: &mut [Syntax], span: Span) -> Result<Self, ParseAstError> {
         match exprs {
             [] => Err(ParseAstError::ExpectedArgument(span)),
             [Syntax::Null { .. }] => Ok(Quote { val: Value::Null }),
             [expr, Syntax::Null { .. }] => Ok(Quote {
-                val: Value::from_syntax(expr),
+                val: Value::from_syntax(take(expr)),
             }),
             [_, arg, ..] => Err(ParseAstError::UnexpectedArgument(arg.span().clone())),
             _ => Err(ParseAstError::BadForm(span)),
@@ -739,7 +784,8 @@ async fn parse_let(
 
     let lambda_var = name.map(|name| new_contour.def_var(name.clone()));
 
-    let ast_body = DefinitionBody::parse(runtime, body, &new_contour, span.clone() /* cont */).await?;
+    let ast_body =
+        DefinitionBody::parse(runtime, body, &new_contour, span.clone() /* cont */).await?;
 
     // TODO: Lot of unnecessary cloning here, fix that.
     let mut bindings: Vec<_> = parsed_bindings
@@ -819,7 +865,7 @@ impl LetBinding {
 #[derive(Debug, Clone, Trace)]
 pub struct Set {
     pub var: Var,
-    pub val: Arc<Expression>,
+    pub val: Box<Expression>,
 }
 
 impl Set {
@@ -836,7 +882,7 @@ impl Set {
                 var: env
                     .fetch_var(ident)
                     .ok_or_else(|| ParseAstError::UndefinedVariable(ident.clone()))?,
-                val: Arc::new(Expression::parse(runtime, expr.clone(), env /* cont */).await?),
+                val: Box::new(Expression::parse(runtime, expr.clone(), env /* cont */).await?),
             }),
             [arg1, _] => Err(ParseAstError::ExpectedIdentifier(arg1.span().clone())),
             [_, _, arg3, ..] => Err(ParseAstError::UnexpectedArgument(arg3.span().clone())),
@@ -847,9 +893,9 @@ impl Set {
 
 #[derive(Debug, Clone, Trace)]
 pub struct If {
-    pub cond: Arc<Expression>,
-    pub success: Arc<Expression>,
-    pub failure: Option<Arc<Expression>>,
+    pub cond: Box<Expression>,
+    pub success: Box<Expression>,
+    pub failure: Option<Box<Expression>>,
 }
 
 impl If {
@@ -862,18 +908,18 @@ impl If {
     ) -> Result<Self, ParseAstError> {
         match exprs {
             [cond, success] => Ok(If {
-                cond: Arc::new(Expression::parse(runtime, cond.clone(), env /* cont */).await?),
-                success: Arc::new(
+                cond: Box::new(Expression::parse(runtime, cond.clone(), env /* cont */).await?),
+                success: Box::new(
                     Expression::parse(runtime, success.clone(), env /* cont */).await?,
                 ),
                 failure: None,
             }),
             [cond, success, failure] => Ok(If {
-                cond: Arc::new(Expression::parse(runtime, cond.clone(), env /* cont */).await?),
-                success: Arc::new(
+                cond: Box::new(Expression::parse(runtime, cond.clone(), env /* cont */).await?),
+                success: Box::new(
                     Expression::parse(runtime, success.clone(), env /* cont */).await?,
                 ),
-                failure: Some(Arc::new(
+                failure: Some(Box::new(
                     Expression::parse(runtime, failure.clone(), env /* cont */).await?,
                 )),
             }),
@@ -893,20 +939,22 @@ pub enum Formals {
 }
 
 impl Formals {
-    pub fn iter(&self) -> impl Iterator<Item = &'_ Local> {
-        let fixed_iter = match self {
-            Self::FixedArgs(fixed) => fixed.iter(),
-            Self::VarArgs { fixed, .. } => fixed.iter(),
-        };
-        let remaining = match self {
-            Self::FixedArgs(_) => None,
-            Self::VarArgs { ref remaining, .. } => Some(remaining),
-        };
-        fixed_iter.chain(remaining)
-    }
-
     pub fn is_variadic(&self) -> bool {
         matches!(self, Self::VarArgs { .. })
+    }
+}
+impl From<Formals> for Vec<Local> {
+    fn from(formals: Formals) -> Vec<Local> {
+        match formals {
+            Formals::FixedArgs(vec) => vec,
+            Formals::VarArgs {
+                mut fixed,
+                remaining,
+            } => {
+                fixed.push(remaining);
+                fixed
+            }
+        }
     }
 }
 
@@ -1208,18 +1256,16 @@ pub struct Vector {
 
 impl Vector {
     #[allow(dead_code)]
-    fn parse(exprs: &[Syntax]) -> Self {
-        let mut vals = Vec::new();
-        for expr in exprs {
-            vals.push(Value::from_syntax(expr));
+    fn parse(exprs: Vec<Syntax>) -> Self {
+        Self {
+            vals: exprs.into_iter().map(Value::from_syntax).collect(),
         }
-        Self { vals }
     }
 }
 
 #[derive(derive_more::Debug, Clone, Trace)]
 pub struct SyntaxCase {
-    pub arg: Arc<Expression>,
+    pub arg: Box<Expression>,
     pub transformer: Transformer,
     #[debug(skip)]
     pub captured_env: CapturedEnv,
@@ -1269,7 +1315,7 @@ impl SyntaxCase {
             }
         }
         Ok(SyntaxCase {
-            arg: Arc::new(Expression::parse(runtime, arg.clone(), env /* cont */).await?),
+            arg: Box::new(Expression::parse(runtime, arg.clone(), env /* cont */).await?),
             transformer: Transformer {
                 rules: syntax_rules,
                 is_variable_transformer: false,
