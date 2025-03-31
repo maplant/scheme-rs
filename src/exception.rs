@@ -6,7 +6,7 @@ use crate::{
     gc::{Gc, GcInner, Trace},
     proc::{Application, Closure, FuncPtr},
     registry::BridgeFn,
-    runtime::{CallSiteId, FunctionDebugInfoId, Runtime},
+    runtime::{Runtime, IGNORE_FUNCTION},
     syntax::{Identifier, Span},
     value::Value,
 };
@@ -213,6 +213,7 @@ pub fn with_exception_handler<'a>(
             thunk.clone(),
             vec![cont.clone()],
             Some(Gc::new(exception_handler)),
+            None,
         ))
     })
 }
@@ -250,10 +251,11 @@ pub fn raise<'a>(
                     FuncPtr::Continuation(reraise_exception),
                     0,
                     true,
-                    todo!()
+                    Some(IGNORE_FUNCTION),
                 ))),
             ],
             handler.prev_handler.clone(),
+            None,
         ))
     })
 }
@@ -291,10 +293,11 @@ unsafe extern "C" fn reraise_exception(
             FuncPtr::Bridge(raise),
             1,
             false,
-            todo!()
+            Some(IGNORE_FUNCTION),
         ),
         vec![exception, cont],
         curr_handler,
+        None,
     )))
 }
 
@@ -321,6 +324,7 @@ pub fn raise_continuable<'a>(
             handler.curr_handler,
             vec![condition.clone(), cont.clone()],
             handler.prev_handler,
+            None,
         ))
     })
 }

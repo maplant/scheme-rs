@@ -16,6 +16,7 @@ use crate::{
     ast::Literal,
     env::{Global, Local, Var},
     gc::Trace,
+    runtime::{CallSiteId, FunctionDebugInfoId},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -161,7 +162,7 @@ pub enum Cps {
     PrimOp(PrimOp, Vec<Value>, Local, Box<Cps>),
 
     /// Function application.
-    App(Value, Vec<Value>),
+    App(Value, Vec<Value>, Option<CallSiteId>),
 
     /// Forward a list of values into an application.
     // TODO: I'm not sure I like this name
@@ -176,6 +177,7 @@ pub enum Cps {
         body: Box<Cps>,
         val: Local,
         cexp: Box<Cps>,
+        debug_info_id: Option<FunctionDebugInfoId>,
     },
 
     /// Halt execution and return the values
@@ -193,7 +195,7 @@ impl Cps {
                 substitute_values(args, substitutions);
                 cexp.substitute(substitutions);
             }
-            Self::App(value, values) => {
+            Self::App(value, values, _) => {
                 substitute_value(value, substitutions);
                 substitute_values(values, substitutions);
             }

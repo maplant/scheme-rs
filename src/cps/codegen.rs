@@ -14,7 +14,7 @@ use std::{collections::HashMap, rc::Rc};
 use crate::{
     gc::Gc,
     proc::{Closure, ContinuationPtr, FuncPtr},
-    runtime::Runtime,
+    runtime::{Runtime, IGNORE_CALL_SITE, IGNORE_FUNCTION},
     value::Value as SchemeValue,
 };
 
@@ -220,7 +220,9 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             Cps::If(cond, success, failure) => {
                 self.if_codegen(&cond, *success, *failure, allocs, deferred)?
             }
-            Cps::App(operator, args) => self.app_codegen(&operator, &args, allocs)?,
+            Cps::App(operator, args, call_site_id) => {
+                self.app_codegen(&operator, &args, call_site_id, allocs)?
+            }
             Cps::Forward(operator, arg) => self.forward_codegen(&operator, &arg, allocs)?,
             Cps::PrimOp(PrimOp::Set, args, _, cexpr) => {
                 self.store_codegen(&args[1], &args[0])?;
@@ -244,7 +246,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 body,
                 val,
                 cexp,
-                ..
+                debug_info_id,
             } => {
                 let bundle = ClosureBundle::new(
                     self.ctx,
@@ -253,7 +255,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                     args.clone(),
                     body.as_ref().clone(),
                 );
-                self.make_closure_codegen(&bundle, *cexp, allocs, deferred)?;
+                self.make_closure_codegen(&bundle, *cexp, debug_info_id, allocs, deferred)?;
                 deferred.push(bundle);
             }
             Cps::Halt(value) => self.halt_codegen(&value, allocs)?,
@@ -440,6 +442,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         &self,
         operator: &Value,
         args: &[Value],
+        call_site_id: Option<CallSiteId>,
         allocs: Option<Rc<Allocs<'ctx>>>,
     ) -> Result<(), BuilderError> {
         let operator = self.value_codegen(operator)?;
@@ -468,6 +471,11 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             .build_call(
                 make_app,
                 &[
+                    self.function
+                        .get_nth_param(RUNTIME_PARAM)
+                        .unwrap()
+                        .into_pointer_value()
+                        .into(),
                     operator.into(),
                     args_alloca.into(),
                     i32_type.const_int(args.len() as u64, false).into(),
@@ -475,6 +483,9 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                         .get_nth_param(EXCEPTION_HANDLER_PARAM)
                         .unwrap()
                         .into_pointer_value()
+                        .into(),
+                    i32_type
+                        .const_int(call_site_id.unwrap_or(IGNORE_CALL_SITE) as u64, false)
                         .into(),
                 ],
                 "apply",
@@ -619,6 +630,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         &mut self,
         bundle: &ClosureBundle<'ctx>,
         cexp: Cps,
+        debug_info_id: Option<FunctionDebugInfoId>,
         allocs: Option<Rc<Allocs<'ctx>>>,
         deferred: &mut Vec<ClosureBundle<'ctx>>,
     ) -> Result<(), BuilderError> {
@@ -662,35 +674,39 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             self.builder.build_store(ep, val)?;
         }
 
+        let mut args = vec![
+            self.function
+                .get_nth_param(RUNTIME_PARAM)
+                .unwrap()
+                .into_pointer_value()
+                .into(),
+            bundle.function.as_global_value().as_pointer_value().into(),
+            env_alloca.into(),
+            num_envs.into(),
+            globals_alloca.into(),
+            num_globals.into(),
+            i32_type
+                .const_int(bundle.args.num_required() as u64, false)
+                .into(),
+            bool_type
+                .const_int(bundle.args.variadic as u64, false)
+                .into(),
+        ];
+
         let make_closure = if bundle.args.continuation.is_some() {
+            args.push(
+                i32_type
+                    .const_int(debug_info_id.unwrap_or(IGNORE_FUNCTION) as u64, false)
+                    .into(),
+            );
             self.module.get_function("make_closure").unwrap()
         } else {
             self.module.get_function("make_continuation").unwrap()
         };
+
         let closure = self
             .builder
-            .build_call(
-                make_closure,
-                &[
-                    self.function
-                        .get_nth_param(RUNTIME_PARAM)
-                        .unwrap()
-                        .into_pointer_value()
-                        .into(),
-                    bundle.function.as_global_value().as_pointer_value().into(),
-                    env_alloca.into(),
-                    num_envs.into(),
-                    globals_alloca.into(),
-                    num_globals.into(),
-                    i32_type
-                        .const_int(bundle.args.num_required() as u64, false)
-                        .into(),
-                    bool_type
-                        .const_int(bundle.args.variadic as u64, false)
-                        .into(),
-                ],
-                "make_closure",
-            )?
+            .build_call(make_closure, &args, "make_closure")?
             .try_as_basic_value()
             .left()
             .unwrap()

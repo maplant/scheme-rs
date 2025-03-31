@@ -6,7 +6,10 @@ use crate::{
     gc::{init_gc, Gc, GcInner, Trace},
     lists::list_to_vec,
     num,
-    proc::{deep_clone_value, Application, Closure, ClosurePtr, ContinuationPtr, FuncPtr, FunctionDebugInfo},
+    proc::{
+        deep_clone_value, Application, Closure, ClosurePtr, ContinuationPtr, FuncPtr,
+        FunctionDebugInfo,
+    },
     syntax::Span,
     value::Value,
 };
@@ -41,7 +44,7 @@ use tokio::sync::{mpsc, oneshot};
 pub struct Runtime {
     compilation_buffer_tx: mpsc::Sender<CompilationTask>,
     pub(crate) debug_info: DebugInfo,
-} 
+}
 
 const MAX_COMPILATION_TASKS: usize = 5; // Shrug
 
@@ -92,28 +95,46 @@ impl Gc<Runtime> {
 
 #[derive(Trace, Clone, Debug, Default)]
 pub struct DebugInfo {
-    /// Location of function applications 
+    /// Location of function applications
     pub(crate) call_sites: Vec<Span>,
     /// Functions and their debug information
-    pub(crate) function_debug_info: Vec<FunctionDebugInfo>
+    pub(crate) function_debug_info: Vec<FunctionDebugInfo>,
 }
 
-pub type CallSiteId = usize;
-pub type FunctionDebugInfoId = usize;
+pub type CallSiteId = u32;
+pub type FunctionDebugInfoId = u32;
+
+pub const IGNORE_CALL_SITE: CallSiteId = u32::MAX;
+pub const IGNORE_FUNCTION: FunctionDebugInfoId = u32::MAX;
 
 impl DebugInfo {
     pub fn new_call_site(&mut self, span: Span) -> CallSiteId {
         let id = self.call_sites.len();
         self.call_sites.push(span);
-        id
+        id as CallSiteId
     }
 
-    pub fn new_function_debug_info(&mut self, function_debug_info: FunctionDebugInfo) -> FunctionDebugInfoId {
+    pub fn new_function_debug_info(
+        &mut self,
+        function_debug_info: FunctionDebugInfo,
+    ) -> FunctionDebugInfoId {
         let id = self.function_debug_info.len();
         self.function_debug_info.push(function_debug_info);
-        id
+        id as FunctionDebugInfoId
     }
-} 
+
+    pub fn get_function_debug_info(
+        &self,
+        function_debug_info_id: FunctionDebugInfoId,
+    ) -> Option<&FunctionDebugInfo> {
+        if function_debug_info_id == IGNORE_FUNCTION {
+            None
+        } else {
+            self.function_debug_info
+                .get(function_debug_info_id as usize)
+        }
+    }
+}
 
 struct CompilationTask {
     env: IndexMap<Local, Gc<Value>>,
@@ -177,65 +198,67 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     let void_type = ctx.void_type();
     let ptr_type = ctx.ptr_type(AddressSpace::default());
 
-    // fn alloc_undef_val() -> *Value
+    //
+    // fn alloc_undef_val:
     //
     let sig = ptr_type.fn_type(&[], false);
     let f = module.add_function("alloc_undef_val", sig, None);
     ee.add_global_mapping(&f, alloc_undef_val as usize);
 
-    // fn drop_values(values: **Value, num_values: u32)
+    //
+    // drop_values:
     //
     let sig = void_type.fn_type(&[ptr_type.into(), i32_type.into()], false);
     let f = module.add_function("drop_values", sig, None);
     ee.add_global_mapping(&f, drop_values as usize);
 
-    // fn apply(op: *Value, args: **Value, num_args: u32, exception_handler *EH) -> *Application
+    //
+    // apply:
     //
     let sig = ptr_type.fn_type(
         &[
             ptr_type.into(),
             ptr_type.into(),
+            ptr_type.into(),
             i32_type.into(),
             ptr_type.into(),
+            i32_type.into(),
         ],
         false,
     );
     let f = module.add_function("apply", sig, None);
     ee.add_global_mapping(&f, apply as usize);
 
-    // fn forward(op: *Value, arg: *Value, exception_handler: *EH) -> *Application
+    //
+    // forward:
+    //
     let sig = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into(), ptr_type.into()], false);
     let f = module.add_function("forward", sig, None);
     ee.add_global_mapping(&f, forward as usize);
 
-    // fn halt(args: *Value) -> *Application
+    //
+    // halt:
     //
     let sig = ptr_type.fn_type(&[ptr_type.into()], false);
     let f = module.add_function("halt", sig, None);
     ee.add_global_mapping(&f, halt as usize);
 
-    // fn truthy(val: *Value) -> bool
+    //
+    // truthy:
     //
     let sig = bool_type.fn_type(&[ptr_type.into()], false);
     let f = module.add_function("truthy", sig, None);
     ee.add_global_mapping(&f, truthy as usize);
 
-    // fn store(from: *Value, to: *Value);
+    //
+    // store:
     //
     let sig = void_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
     let f = module.add_function("store", sig, None);
     ee.add_global_mapping(&f, store as usize);
 
-    // fn make_closure(
-    //         runtime: *Runtime,
-    //         fn_ptr: SyncFuncPtr
-    //         env: **Value,
-    //         num_envs: u32,
-    //         globals: **Value,
-    //         num_globals: u32,
-    //         num_required_args: u32,
-    //         variadic: bool,
-    // ) -> *Value
+    //
+    // make_continuation
     //
     let sig = ptr_type.fn_type(
         &[
@@ -253,16 +276,8 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     let f = module.add_function("make_continuation", sig, None);
     ee.add_global_mapping(&f, make_continuation as usize);
 
-    // fn make_closure_with_continuation(
-    //         runtime: *Runtime,
-    //         fn_ptr: SyncFuncPtr
-    //         env: **Value,
-    //         num_envs: u32,
-    //         globals: **Value,
-    //         num_globals: u32,
-    //         num_required_args: u32,
-    //         variadic: bool,
-    // ) -> *Value
+    //
+    // make_closure:
     //
     let sig = ptr_type.fn_type(
         &[
@@ -274,73 +289,85 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
             i32_type.into(),
             i32_type.into(),
             bool_type.into(),
+            i32_type.into(),
         ],
         false,
     );
     let f = module.add_function("make_closure", sig, None);
     ee.add_global_mapping(&f, make_closure as usize);
 
-    // fn get_call_transformer(runtime: *Runtime) -> *Value
+    //
+    // get_call_transformer_fn:
     //
     let sig = ptr_type.fn_type(&[ptr_type.into()], false);
     let f = module.add_function("get_call_transformer_fn", sig, None);
     ee.add_global_mapping(&f, get_call_transformer_fn as usize);
 
-    // fn clone_environment(closure: *Value) -> ()
+    //
+    // clone_environment:
     //
     let sig = ptr_type.fn_type(&[ptr_type.into()], false);
     let f = module.add_function("clone_closure", sig, None);
     ee.add_global_mapping(&f, clone_closure as usize);
 
-    // fn add(args: **Value, num_args: u32) -> *Value
+    //
+    // add:
     //
     let sig = ptr_type.fn_type(&[ptr_type.into(), i32_type.into()], false);
     let f = module.add_function("add", sig, None);
     ee.add_global_mapping(&f, add as usize);
 
-    // fn sub(args: **Value, num_args: u32) -> *Value
+    //
+    // sub:
     //
     let sig = ptr_type.fn_type(&[ptr_type.into(), i32_type.into()], false);
     let f = module.add_function("sub", sig, None);
     ee.add_global_mapping(&f, sub as usize);
 
-    // fn mul(args: **Value, num_args: u32) -> *Value
+    //
+    // mul:
     //
     let sig = ptr_type.fn_type(&[ptr_type.into(), i32_type.into()], false);
     let f = module.add_function("mul", sig, None);
     ee.add_global_mapping(&f, mul as usize);
 
-    // fn div(args: **Value, num_args: u32) -> *Value
+    //
+    // div:
     //
     let sig = ptr_type.fn_type(&[ptr_type.into(), i32_type.into()], false);
     let f = module.add_function("div", sig, None);
     ee.add_global_mapping(&f, div as usize);
 
-    // fn equal(args: **Value, num_args: u32) -> *Value
+    //
+    // equal:
     //
     let sig = ptr_type.fn_type(&[ptr_type.into(), i32_type.into()], false);
     let f = module.add_function("equal", sig, None);
     ee.add_global_mapping(&f, equal as usize);
 
-    // fn greater(args: **Value, num_args: u32) -> *Value
+    //
+    // greater:
     //
     let sig = ptr_type.fn_type(&[ptr_type.into(), i32_type.into()], false);
     let f = module.add_function("greater", sig, None);
     ee.add_global_mapping(&f, greater as usize);
 
-    // fn greater_equal(args: **Value, num_args: u32) -> *Value
+    //
+    // greater_equal:
     //
     let sig = ptr_type.fn_type(&[ptr_type.into(), i32_type.into()], false);
     let f = module.add_function("greater_equal", sig, None);
     ee.add_global_mapping(&f, greater_equal as usize);
 
-    // fn lesser(args: **Value, num_args: u32) -> *Value
+    //
+    // lesser:
     //
     let sig = ptr_type.fn_type(&[ptr_type.into(), i32_type.into()], false);
     let f = module.add_function("lesser", sig, None);
     ee.add_global_mapping(&f, lesser as usize);
 
-    // fn lesser_equal(args: **Value, num_args: u32) -> *Value
+    //
+    // lesser_equal:
     //
     let sig = ptr_type.fn_type(&[ptr_type.into(), i32_type.into()], false);
     let f = module.add_function("lesser_equal", sig, None);
@@ -363,10 +390,12 @@ unsafe extern "C" fn drop_values(vals: *const *mut GcInner<Value>, num_vals: u32
 /// TODO: Take error handler as argument, return application with error handler
 /// if operator is not a closure.
 unsafe extern "C" fn apply(
+    runtime: *mut GcInner<Runtime>,
     op: *mut GcInner<Value>,
     args: *const *mut GcInner<Value>,
     num_args: u32,
     exception_handler: *mut GcInner<ExceptionHandler>,
+    call_site_id: u32,
 ) -> *mut Application {
     let mut gc_args = Vec::new();
     for i in 0..num_args {
@@ -381,7 +410,16 @@ unsafe extern "C" fn apply(
     } else {
         Some(Gc::from_ptr(exception_handler))
     };
-    let app = Application::new(op.clone(), gc_args, exception_handler);
+
+    let call_site = if call_site_id == u32::MAX {
+        None
+    } else {
+        let runtime = Gc::from_ptr(runtime);
+        let runtime_ref = runtime.read();
+        Some(runtime_ref.debug_info.call_sites[call_site_id as usize].clone())
+    };
+
+    let app = Application::new(op.clone(), gc_args, exception_handler, call_site);
 
     Box::into_raw(Box::new(app))
 }
@@ -403,7 +441,7 @@ unsafe extern "C" fn forward(
     } else {
         Some(Gc::from_ptr(exception_handler))
     };
-    let app = Application::new(op.clone(), args, exception_handler);
+    let app = Application::new(op.clone(), args, exception_handler, None);
 
     Box::into_raw(Box::new(app))
 }
@@ -478,6 +516,7 @@ unsafe extern "C" fn make_closure(
     num_globals: u32,
     num_required_args: u32,
     variadic: bool,
+    debug_info_id: u32,
 ) -> *mut GcInner<Value> {
     // Collect the environment:
     let env: Vec<_> = (0..num_envs)
@@ -499,7 +538,7 @@ unsafe extern "C" fn make_closure(
         FuncPtr::Closure(fn_ptr),
         num_required_args as usize,
         variadic,
-        Some(todo!()),
+        Some(debug_info_id),
     );
     ManuallyDrop::new(Gc::new(Value::Closure(closure))).as_ptr()
 }
@@ -515,7 +554,7 @@ unsafe extern "C" fn get_call_transformer_fn(
         FuncPtr::Bridge(expand::call_transformer),
         3,
         true,
-        Some(todo!())
+        Some(IGNORE_FUNCTION),
     );
     ManuallyDrop::new(Gc::new(Value::Closure(closure))).as_ptr()
 }

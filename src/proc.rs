@@ -6,10 +6,11 @@ use crate::{
     gc::{Gc, GcInner, Trace},
     lists::{list_to_vec, slice_to_list},
     registry::BridgeFn,
-    runtime::{FunctionDebugInfoId, Runtime},
+    runtime::{FunctionDebugInfoId, Runtime, IGNORE_FUNCTION},
     syntax::Span,
     value::Value,
 };
+use either::Either;
 use futures::future::BoxFuture;
 use std::{borrow::Cow, collections::HashMap, ptr::null_mut};
 
@@ -270,13 +271,18 @@ pub struct Application {
 }
 
 impl Application {
-    pub fn new(op: Closure, args: Record, exception_handler: Option<Gc<ExceptionHandler>>) -> Self {
+    pub fn new(
+        op: Closure,
+        args: Record,
+        exception_handler: Option<Gc<ExceptionHandler>>,
+        call_site: Option<Span>,
+    ) -> Self {
         Self {
             // We really gotta figure out how to deal with this better
             op: Some(op),
             args,
             exception_handler,
-            call_site: None,
+            call_site,
         }
     }
 
@@ -301,21 +307,33 @@ impl Application {
             call_site,
         } = self
         {
+            // TODO: Extract to function
             if let Some(user_func_info_id) = op.user_func_info {
                 // This is a user func, and therefore we should push to the
                 // current stack trace.
-                let proc = op.runtime.read()
+                let frame = if let Some(debug_info) = op
+                    .runtime
+                    .read()
                     .debug_info
-                    .function_debug_info[user_func_info_id]
-                    .name
-                    .clone()
-                    .unwrap_or_else(||"(lambda)".to_string());
-                stack_trace.push(Frame::new(proc, call_site));
+                    .get_function_debug_info(user_func_info_id)
+                {
+                    let proc = debug_info
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| "(lambda)".to_string());
+
+                    Either::Left(Frame::new(proc, call_site))
+                } else {
+                    Either::Right(call_site)
+                };
+                stack_trace.push(frame);
             } else {
                 // If this is not user func, we are returning from one via a
                 // continuation and should pop the stack frame:
                 stack_trace.pop();
             }
+
+            println!("curr_stack_trace: {stack_trace:#?}");
 
             self = op.apply(&args, exception_handler).await?;
         }
@@ -366,6 +384,7 @@ pub fn apply<'a>(
             op.clone(),
             args,
             exception_handler.clone(),
+            None,
         ))
     })
 }
@@ -443,6 +462,7 @@ unsafe extern "C" fn call_consumer_with_values(
         consumer,
         collected_args,
         exception_handler,
+        None,
     )))
 }
 
@@ -478,13 +498,14 @@ pub fn call_with_values<'a>(
             FuncPtr::Continuation(call_consumer_with_values),
             num_required_args,
             variadic,
-            todo!(),
+            Some(IGNORE_FUNCTION),
         );
 
         Ok(Application::new(
             producer,
             vec![Gc::new(Value::Closure(call_consumer_closure))],
             exception_handler.clone(),
+            None,
         ))
     })
 }

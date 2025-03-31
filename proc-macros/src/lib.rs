@@ -70,6 +70,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                                 #( &args[#arg_indices], )*
                             ).await?,
                             exception_handler.clone(),
+                            None // TODO
                         ))
                     }
                 )
@@ -101,6 +102,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                                 rest_args
                             ).await?,
                             exception_handler.clone(),
+                            None // TODO
                         ))
                     }
                 )

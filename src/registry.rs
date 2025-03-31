@@ -8,7 +8,7 @@ use crate::{
     gc::Gc,
     parse::ParseSyntaxError,
     proc::{BridgePtr, Closure, FuncPtr},
-    runtime::Runtime,
+    runtime::{Runtime, IGNORE_FUNCTION},
     syntax::{Identifier, Span, Syntax},
     value::Value,
 };
@@ -180,7 +180,7 @@ impl Registry {
                     FuncPtr::Bridge(bridge_fn.wrapper),
                     bridge_fn.num_args,
                     bridge_fn.variadic,
-                    Some(todo!()),
+                    Some(IGNORE_FUNCTION), // TODO: add debug info to bridge functions
                 )),
             );
         }

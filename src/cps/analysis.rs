@@ -42,7 +42,7 @@ impl Cps {
                 free.extend(cond.to_local());
                 free
             }
-            Cps::App(op, vals) => {
+            Cps::App(op, vals, _) => {
                 let mut free = values_to_locals(vals);
                 free.extend(op.to_local());
                 free
@@ -89,7 +89,7 @@ impl Cps {
                 globals.extend(cond.to_global());
                 globals
             }
-            Cps::App(op, vals) => {
+            Cps::App(op, vals, _) => {
                 let mut globals = values_to_globals(vals);
                 globals.extend(op.to_global());
                 globals
@@ -119,7 +119,7 @@ impl Cps {
                 let uses = merge_uses(success.uses(uses_cache).clone(), failure.uses(uses_cache));
                 add_value_use(uses, cond)
             }
-            Cps::App(op, vals) => {
+            Cps::App(op, vals, _) => {
                 let uses = values_to_uses(vals);
                 add_value_use(uses, op)
             }

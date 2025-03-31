@@ -8,7 +8,7 @@ use crate::{
     num::Number,
     proc::{Closure, FunctionDebugInfo},
     records::DefineRecordType,
-    runtime::{FunctionDebugInfoId, Runtime},
+    runtime::{CallSiteId, FunctionDebugInfoId, Runtime},
     syntax::{Span, Syntax},
     value::Value,
 };
@@ -146,6 +146,7 @@ impl Definition {
                         let mut bound = HashMap::<Identifier, Span>::new();
                         let mut fixed = Vec::new();
                         let new_env = env.new_lexical_contour();
+                        let mut arg_names = Vec::new();
 
                         // Bind the arguments to a new environment:
                         for arg in &args[..args.len() - 1] {
@@ -163,6 +164,7 @@ impl Definition {
                                     };
                                     bound.insert(ident.clone(), span.clone());
                                     fixed.push(sym);
+                                    arg_names.push(ident.name.clone());
                                 }
                                 x => {
                                     return Err(ParseAstError::ExpectedIdentifier(x.span().clone()))
@@ -188,6 +190,7 @@ impl Definition {
                                         unreachable!()
                                     };
                                     bound.insert(ident.clone(), span.clone());
+                                    arg_names.push(ident.name.clone());
                                     Formals::VarArgs {
                                         fixed: fixed.into_iter().collect(),
                                         remaining,
@@ -210,7 +213,11 @@ impl Definition {
 
                         // Create the new debug info:
                         let debug_info_id = runtime.write().debug_info.new_function_debug_info(
-                            FunctionDebugInfo::new(Some(func_name.name.clone()), todo!(), todo!()),
+                            FunctionDebugInfo::new(
+                                Some(func_name.name.clone()),
+                                arg_names,
+                                span.clone(),
+                            ),
                         );
 
                         Ok(Self::DefineFunc(DefineFunc {
@@ -496,7 +503,7 @@ impl SyntaxQuote {
 pub struct Apply {
     pub operator: Either<Box<Expression>, PrimOp>,
     pub args: Vec<Expression>,
-    pub location: Span,
+    pub call_site_id: CallSiteId,
 }
 
 impl Apply {
@@ -508,6 +515,7 @@ impl Apply {
         // cont: &Option<Arc<Continuation>>,
     ) -> Result<Self, ParseAstError> {
         let location = operator.span().clone();
+        let call_site_id = runtime.write().debug_info.new_call_site(location);
         let proc_name = match operator {
             Syntax::Identifier { ref ident, .. } => ident.name.clone(),
             _ => String::from(""),
@@ -525,7 +533,7 @@ impl Apply {
         Ok(Apply {
             operator,
             args: parsed_args,
-            location,
+            call_site_id,
         })
     }
 }
@@ -572,6 +580,7 @@ async fn parse_lambda(
     let mut bound = HashMap::<Identifier, Span>::new();
     let mut fixed = Vec::new();
     let new_contour = env.new_lexical_contour();
+    let mut arg_names = Vec::new();
 
     if !args.is_empty() {
         for arg in &args[..args.len() - 1] {
@@ -588,6 +597,7 @@ async fn parse_lambda(
                         unreachable!()
                     };
                     fixed.push(arg);
+                    arg_names.push(ident.name.clone());
                     bound.insert(ident.clone(), span.clone());
                 }
                 x => return Err(ParseAstError::ExpectedIdentifier(x.span().clone())),
@@ -606,6 +616,7 @@ async fn parse_lambda(
                         second: span.clone(),
                     });
                 }
+                arg_names.push(ident.name.clone());
                 let Var::Local(remaining) = new_contour.def_var(ident.clone()) else {
                     unreachable!()
                 };
@@ -627,7 +638,7 @@ async fn parse_lambda(
     let debug_info_id = runtime
         .write()
         .debug_info
-        .new_function_debug_info(FunctionDebugInfo::new(None, todo!(), todo!()));
+        .new_function_debug_info(FunctionDebugInfo::new(None, arg_names, span.clone()));
 
     Ok(Lambda {
         args,
@@ -692,6 +703,7 @@ async fn parse_let(
 ) -> Result<Let, ParseAstError> {
     let mut previously_bound = HashMap::new();
     let mut parsed_bindings = Vec::new();
+    let mut binding_names = Vec::new();
     let new_contour = env.new_lexical_contour();
 
     match bindings {
@@ -704,6 +716,7 @@ async fn parse_let(
                 let Var::Local(var) = new_contour.def_var(binding.ident.clone()) else {
                     unreachable!()
                 };
+                binding_names.push(binding.ident.name.clone());
                 parsed_bindings.push((var, binding));
             }
         }
@@ -735,10 +748,21 @@ async fn parse_let(
                 var
             })
             .collect();
+
+        let debug_info_id =
+            runtime
+                .write()
+                .debug_info
+                .new_function_debug_info(FunctionDebugInfo::new(
+                    Some(name.as_ref().unwrap().name.clone()),
+                    binding_names,
+                    span.clone(),
+                ));
+
         let lambda = Lambda {
             args: Formals::FixedArgs(args),
             body: DefinitionBody::parse(runtime, body, &new_new_contour, span /* cont */).await?,
-            debug_info_id: todo!(),
+            debug_info_id,
         };
         bindings.push((lambda_var, Expression::Lambda(lambda)));
     }
