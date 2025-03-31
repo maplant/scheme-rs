@@ -1,11 +1,9 @@
 use rustyline::{
-    completion::{Completer, Pair},
     error::ReadlineError,
-    highlight::Highlighter,
-    hint::Hinter,
+    highlight::MatchingBracketHighlighter,
     history::DefaultHistory,
     validate::{ValidationContext, ValidationResult, Validator},
-    Editor, Helper,
+    Completer, Config, Editor, Helper, Highlighter, Hinter, Validator,
 };
 use scheme_rs::{
     ast::{DefinitionBody, ParseAstError},
@@ -22,16 +20,10 @@ use scheme_rs::{
 };
 use std::process::ExitCode;
 
-struct InputHelper;
-impl Completer for InputHelper {
-    type Candidate = Pair;
-}
-impl Helper for InputHelper {}
-impl Hinter for InputHelper {
-    type Hint = String;
-}
-impl Highlighter for InputHelper {}
-impl Validator for InputHelper {
+#[derive(Default)]
+struct InputValidator;
+
+impl Validator for InputValidator {
     fn validate(&self, ctx: &mut ValidationContext<'_>) -> rustyline::Result<ValidationResult> {
         match Syntax::from_str(ctx.input(), None) {
             Err(ParseSyntaxError::UnclosedParen { .. }) => Ok(ValidationResult::Incomplete),
@@ -40,19 +32,36 @@ impl Validator for InputHelper {
     }
 }
 
+#[derive(Completer, Helper, Highlighter, Hinter, Validator)]
+struct InputHelper {
+    #[rustyline(Validator)]
+    validator: InputValidator,
+    #[rustyline(Highlighter)]
+    highlighter: MatchingBracketHighlighter,
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let runtime = Gc::new(Runtime::new());
     let registry = Registry::new(&runtime).await;
     let base = registry.import("(base)").unwrap();
 
-    let mut editor = match Editor::<InputHelper, DefaultHistory>::new() {
+    let config = Config::builder().auto_add_history(true).build();
+    let mut editor = match Editor::with_history(config, DefaultHistory::new()) {
         Ok(e) => e,
         Err(err) => {
             eprintln!("Error creating line editor: {}", err);
             return ExitCode::FAILURE;
         }
     };
+
+    let helper = InputHelper {
+        validator: InputValidator,
+        highlighter: MatchingBracketHighlighter::new(),
+    };
+
+    editor.set_helper(Some(helper));
+
     let mut n_results = 1;
     let mut repl = Top::repl();
     {

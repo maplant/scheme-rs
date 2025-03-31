@@ -30,7 +30,7 @@ unicode_categories = "0.1"
 # TODO: Get rid of this dependency
 derivative = "2"
 malachite = { version = "0.5.1", features = ["floats"] }
-rustyline = "15.0.0"
+rustyline = { version = "15.0.0", features = ["derive"] }
 
 [profile.release]
 lto = true
