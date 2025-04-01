@@ -384,7 +384,7 @@ impl Expression {
                     }, tail @ .., Syntax::Null { .. }]
                         if ident == "lambda" =>
                     {
-                        Lambda::parse(runtime, tail, env, take(span) /* cont */)
+                        Lambda::parse(runtime, tail, env, span.clone() /* cont */)
                             .await
                             .map(Expression::Lambda)
                     }
@@ -395,7 +395,7 @@ impl Expression {
                     }, tail @ .., Syntax::Null { .. }]
                         if ident == "let" =>
                     {
-                        Let::parse(runtime, tail, env, take(span) /* cont */)
+                        Let::parse(runtime, tail, env, span.clone() /* cont */)
                             .await
                             .map(Expression::Let)
                     }
@@ -406,7 +406,7 @@ impl Expression {
                     }, tail @ .., Syntax::Null { .. }]
                         if ident == "if" =>
                     {
-                        If::parse(runtime, tail, env, take(span) /* cont */)
+                        If::parse(runtime, tail, env, span.clone() /* cont */)
                             .await
                             .map(Expression::If)
                     }
@@ -431,7 +431,9 @@ impl Expression {
                     }, tail @ ..]
                         if ident == "quote" =>
                     {
-                        Quote::parse(tail, take(span)).await.map(Expression::Quote)
+                        Quote::parse(tail, span.clone())
+                            .await
+                            .map(Expression::Quote)
                     }
                     [Syntax::Identifier {
                         ident,
@@ -440,7 +442,7 @@ impl Expression {
                     }, tail @ .., Syntax::Null { .. }]
                         if ident == "syntax" =>
                     {
-                        SyntaxQuote::parse(tail, take(span))
+                        SyntaxQuote::parse(tail, span.clone())
                             .await
                             .map(Expression::SyntaxQuote)
                     }
@@ -451,7 +453,7 @@ impl Expression {
                     }, tail @ .., Syntax::Null { .. }]
                         if ident == "syntax-case" =>
                     {
-                        SyntaxCase::parse(runtime, tail, env, take(span) /* cont */)
+                        SyntaxCase::parse(runtime, tail, env, span.clone() /* cont */)
                             .await
                             .map(Expression::SyntaxCase)
                     }
@@ -464,7 +466,7 @@ impl Expression {
                     }, tail @ .., Syntax::Null { .. }]
                         if ident == "set!" =>
                     {
-                        Set::parse(runtime, tail, env, take(span) /* cont */)
+                        Set::parse(runtime, tail, env, span.clone() /* cont */)
                             .await
                             .map(Expression::Set)
                     }
@@ -477,7 +479,7 @@ impl Expression {
                     }, .., Syntax::Null { .. }]
                         if ident == "define" || ident == "define-record-type" =>
                     {
-                        Err(ParseAstError::UnexpectedDefinition(take(span)))
+                        Err(ParseAstError::UnexpectedDefinition(span.clone()))
                     }
 
                     // Regular old function call:
