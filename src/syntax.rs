@@ -21,16 +21,12 @@ pub struct Span {
     pub line: u32,
     pub column: usize,
     pub offset: usize,
-    pub file: Option<Arc<String>>,
+    pub file: Arc<String>,
 }
 
 impl fmt::Display for Span {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(file) = &self.file {
-            write!(f, "{}:{}:{}", file, self.line, self.column)
-        } else {
-            write!(f, "{}:{}", self.line, self.column)
-        }
+        write!(f, "{}:{}:{}", self.file, self.line, self.column)
     }
 }
 
@@ -40,7 +36,7 @@ impl From<InputSpan<'_>> for Span {
             line: span.location_line(),
             column: span.get_column(),
             offset: span.location_offset(),
-            file: Some(span.extra),
+            file: span.extra,
         }
     }
 }
