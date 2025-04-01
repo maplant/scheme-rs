@@ -36,7 +36,7 @@ impl fmt::Display for Exception {
                     writeln!(f, "(backtrace truncated)")?;
                     break;
                 }
-                writeln!(f, "{i}: {frame}\n")?;
+                writeln!(f, "{i}: {frame}")?;
             }
         }
         Ok(())
