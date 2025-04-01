@@ -239,7 +239,7 @@ pub fn raise<'a>(
             return Err(Condition::wrong_num_of_args(1, args.len()).into());
         };
 
-        // TODO: Make condition non-continuable whe it is re-raised
+        // TODO: Make condition non-continuable when it is re-raised
 
         let Some(ref handler) = exception_handler else {
             return Err(condition.clone());
