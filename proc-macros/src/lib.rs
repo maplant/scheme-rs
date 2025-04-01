@@ -53,7 +53,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 rest_args: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
                 cont: &'a ::scheme_rs::gc::Gc<::scheme_rs::value::Value>,
                 exception_handler: &'a Option<::scheme_rs::gc::Gc<::scheme_rs::exception::ExceptionHandler>>
-            ) -> futures::future::BoxFuture<'a, Result<scheme_rs::proc::Application, scheme_rs::exception::Condition>> {
+            ) -> futures::future::BoxFuture<'a, Result<scheme_rs::proc::Application, ::scheme_rs::gc::Gc<::scheme_rs::value::Value>>> {
                 let cont = {
                     let cont = cont.read();
                     if let ::scheme_rs::value::Value::Closure(proc) = &*cont {
@@ -84,7 +84,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 rest_args: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
                 cont: &'a ::scheme_rs::gc::Gc<::scheme_rs::value::Value>,
                 exception_handler: &'a Option<::scheme_rs::gc::Gc<::scheme_rs::exception::ExceptionHandler>>
-            ) -> futures::future::BoxFuture<'a, Result<scheme_rs::proc::Application, scheme_rs::exception::Condition>> {
+            ) -> futures::future::BoxFuture<'a, Result<scheme_rs::proc::Application, ::scheme_rs::gc::Gc<::scheme_rs::value::Value>>> {
                 let cont = {
                     let cont = cont.read();
                     if let ::scheme_rs::value::Value::Closure(proc) = &*cont {

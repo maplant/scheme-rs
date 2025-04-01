@@ -13,7 +13,7 @@ use crate::{
 use futures::future::{BoxFuture, Shared};
 use std::{fmt, io::Write};
 
-type Future = Shared<BoxFuture<'static, Result<Vec<Gc<Value>>, Exception>>>;
+type Future = Shared<BoxFuture<'static, Result<Vec<Gc<Value>>, Gc<Value>>>>;
 
 /// A Scheme value
 #[derive(Trace)]
@@ -233,7 +233,7 @@ impl fmt::Debug for Value {
             Self::Character(c) => write!(f, "#\\{c}"),
             Self::ByteVector(v) => display_vec("#u8(", v, f),
             Self::Syntax(syntax) => write!(f, "{:?}", syntax),
-            Self::Closure(_) => write!(f, "<procedure>"),
+            Self::Closure(proc) => write!(f, "#<procedure {proc:?}>"),
             Self::Future(_) => write!(f, "<future>"),
             Self::Record(record) => write!(f, "<{record:?}>"),
             Self::RecordType(record_type) => write!(f, "<{record_type:?}>"),
@@ -249,6 +249,20 @@ impl fmt::Debug for Value {
 impl From<bool> for Value {
     fn from(b: bool) -> Value {
         Value::Boolean(b)
+    }
+}
+
+impl From<Condition> for Gc<Value> {
+    fn from(cond: Condition) -> Gc<Value> {
+        Gc::new(Value::Condition(cond))
+    }
+}
+
+impl From<Exception> for Gc<Value> {
+    fn from(exception: Exception) -> Gc<Value> {
+        // Until we can decide on a good method for including the stack trace with
+        // the new condition, just return the object.
+        exception.obj
     }
 }
 

@@ -17,19 +17,25 @@ pub struct Exception {
     pub backtrace: Vec<Frame>,
     pub obj: Gc<Value>,
 }
+
+impl Exception {
+    pub fn new(backtrace: Vec<Frame>, obj: Gc<Value>) -> Self {
+        Self { backtrace, obj }
+    }
+}
+
 impl fmt::Display for Exception {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.obj)
     }
 }
+
 impl StdError for Exception {}
 
 #[derive(Debug, Clone, Trace)]
 pub enum Condition {
     Condition,
-    Message {
-        message: String,
-    },
+    Message { message: String },
     Warning,
     Serious,
     Error,
@@ -38,106 +44,74 @@ pub enum Condition {
     NonContinuable,
     ImplementationRestriction,
     Lexical,
-    Syntax {
-        form: Gc<Value>,
-        subform: Gc<Value>,
-    },
+    Syntax { form: Gc<Value>, subform: Gc<Value> },
     Undefined,
-    Irritants {
-        irritants: Gc<Value>,
-    },
-    Who {
-        who: Gc<Value>,
-    },
-    CompoundCondition {
-        simple_conditions: Vec<Gc<Value>>,
-    }
+    Irritants { irritants: Gc<Value> },
+    Who { who: Gc<Value> },
+    CompoundCondition { simple_conditions: Vec<Gc<Value>> },
 }
 
 impl Condition {
-    pub fn error(err: String) -> Self {
-        todo!()
+    pub fn error(message: String) -> Self {
+        Self::Message { message }
     }
 
     pub fn syntax_error() -> Self {
-        todo!()
+        // TODO: Expand on these
+        Self::Syntax {
+            form: Gc::new(Value::Null),
+            subform: Gc::new(Value::Boolean(false)),
+        }
     }
 
     pub fn assert_eq_failed(expected: &str, actual: &str) -> Self {
-        todo!()
-        /*
         Self::error(format!(
             "Assertion failed, expected: {expected}, actual: {actual}"
         ))
-        */
     }
 
     pub fn undefined_variable(ident: Identifier) -> Self {
-        todo!()
-        /*
         Self::error(format!("Undefined variable {}", ident.name))
-        */
     }
 
     pub fn invalid_type(expected: &str, provided: &str) -> Self {
-        todo!()
-        /*
         Self::error(format!(
             "Expected value of type {expected}, provided {provided}"
         ))
-        */
     }
 
     pub fn invalid_operator_type(provided: &str) -> Self {
-        todo!()
-        /*
         Self::error(format!(
             "Invalid operator, expected procedure, provided {provided}"
         ))
-        */
     }
 
     pub fn invalid_index(index: usize, len: usize) -> Self {
-        todo!()
-        /*
         Self::error(format!(
             "Invalid index of {index} into collection of size {len}"
         ))
-        */
     }
     pub fn invalid_range(range: Range<usize>, len: usize) -> Self {
-        todo!()
-        /*
         Self::error(format!(
             "Invalid range of {range:?} into collection of size {len}"
         ))
-        */
     }
 
     pub fn wrong_num_of_unicode_chars(expected: usize, provided: usize) -> Self {
-        todo!()
-        /*
         Self::error(format!(
             "Expected to receive {expected} unicode characters from transform, received {provided}"
         ))
-        */
     }
 
     pub fn wrong_num_of_args(expected: usize, provided: usize) -> Self {
-        todo!()
-        /*
         Self::error(format!(
-        "Expected {expected} arguments, provided {provided}"
-    ))
-         */
+            "Expected {expected} arguments, provided {provided}"
+        ))
     }
     pub fn wrong_num_of_variadic_args(expected: Range<usize>, provided: usize) -> Self {
-        todo!()
-        /*
         Self::error(format!(
             "Expected {expected:?} arguments, provided {provided}"
         ))
-        */
     }
 }
 
@@ -153,7 +127,6 @@ macro_rules! impl_into_condition_for {
 impl_into_condition_for!(crate::num::ArithmeticError);
 impl_into_condition_for!(crate::num::NumberToUsizeError);
 impl_into_condition_for!(std::num::TryFromIntError);
-
 
 #[derive(Debug, Clone, Trace)]
 pub struct Frame {
@@ -212,10 +185,10 @@ pub fn with_exception_handler<'a>(
     _rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
-) -> BoxFuture<'a, Result<Application, Condition>> {
+) -> BoxFuture<'a, Result<Application, Gc<Value>>> {
     Box::pin(async move {
         let [handler, thunk] = args else {
-            return Err(Condition::wrong_num_of_args(2, args.len()));
+            return Err(Condition::wrong_num_of_args(2, args.len()).into());
         };
 
         let handler_ref = handler.read();
@@ -248,17 +221,16 @@ pub fn raise<'a>(
     _rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
-) -> BoxFuture<'a, Result<Application, Condition>> {
+) -> BoxFuture<'a, Result<Application, Gc<Value>>> {
     Box::pin(async move {
         let [condition] = args else {
-            return Err(Condition::wrong_num_of_args(1, args.len()));
+            return Err(Condition::wrong_num_of_args(1, args.len()).into());
         };
 
         // TODO: Make condition non-continuable whe it is re-raised
 
         let Some(ref handler) = exception_handler else {
-            // return Err(Condition::from_value(condition.clone()));
-            return Err(todo!());
+            return Err(condition.clone());
         };
 
         let handler = handler.read().clone();
@@ -331,15 +303,14 @@ pub fn raise_continuable<'a>(
     _rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
-) -> BoxFuture<'a, Result<Application, Condition>> {
+) -> BoxFuture<'a, Result<Application, Gc<Value>>> {
     Box::pin(async move {
         let [condition] = args else {
-            return Err(Condition::wrong_num_of_args(1, args.len()));
+            return Err(Condition::wrong_num_of_args(1, args.len()).into());
         };
 
         let Some(ref handler) = exception_handler else {
-            // return Err(Condition::from_value(condition.clone()));
-            return todo!();
+            return Err(condition.clone());
         };
 
         let handler = handler.read().clone();

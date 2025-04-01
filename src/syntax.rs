@@ -1,7 +1,7 @@
 use crate::{
     ast::Literal,
     env::{Environment, Macro},
-    exception::{Condition, Exception},
+    exception::Condition,
     gc::{Gc, Trace},
     lex::{InputSpan, Token},
     lists::list_to_vec_with_null,
@@ -206,7 +206,7 @@ impl Syntax {
         env: &Environment,
         mac: Macro,
         // cont: &Closure,
-    ) -> Result<Expansion, Condition> {
+    ) -> Result<Expansion, Gc<Value>> {
         // Create a new mark for the expansion context
         let new_mark = Mark::new();
 
@@ -221,10 +221,7 @@ impl Syntax {
         let transformer_output = mac
             .transformer
             .call(&[Gc::new(Value::Syntax(input))])
-            .await
-            .map_err(|_err| -> Condition {
-                todo!()
-            })?;
+            .await?;
         let transformer_output = transformer_output[0].read();
 
         // Output must be syntax:
@@ -243,7 +240,7 @@ impl Syntax {
         &'a self,
         env: &'a Environment,
         // cont: &Closure,
-    ) -> BoxFuture<'a, Result<Expansion, Condition>> {
+    ) -> BoxFuture<'a, Result<Expansion, Gc<Value>>> {
         Box::pin(async move {
             match self {
                 Self::List { list, .. } => {
@@ -291,7 +288,7 @@ impl Syntax {
         mut self,
         env: &Environment,
         // cont: &Closure,
-    ) -> Result<FullyExpanded, Condition> {
+    ) -> Result<FullyExpanded, Gc<Value>> {
         let mut curr_env = env.clone();
         loop {
             match self.expand_once(&curr_env).await? {

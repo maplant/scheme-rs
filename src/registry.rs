@@ -4,7 +4,6 @@ use crate::{
     ast::{DefinitionBody, Literal, ParseAstError},
     cps::Compile,
     env::{Environment, Top},
-    exception::{Condition, Exception},
     gc::Gc,
     parse::ParseSyntaxError,
     proc::{BridgePtr, Closure, FuncPtr},
@@ -97,9 +96,7 @@ impl Version {
                             ..
                         } = subvers
                         {
-                            num.try_into()
-                                .map_err(Condition::from)
-                                .map_err(ParseAstError::Condition)
+                            num.try_into().map_err(ParseAstError::ExpectedInteger)
                         } else {
                             Err(ParseAstError::ExpectedNumber(subvers.span().clone()))
                         }

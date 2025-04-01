@@ -6,12 +6,12 @@ use crate::{
     gc::{Gc, GcInner, Trace},
     lists::{list_to_vec, slice_to_list},
     registry::BridgeFn,
-    runtime::{CallSiteId, FunctionDebugInfoId, Runtime, IGNORE_FUNCTION},
+    runtime::{FunctionDebugInfoId, Runtime, IGNORE_FUNCTION},
     syntax::Span,
     value::Value,
 };
 use futures::future::BoxFuture;
-use std::{borrow::Cow, collections::HashMap, hint::black_box, ptr::null_mut};
+use std::{borrow::Cow, collections::HashMap, fmt, ptr::null_mut};
 
 pub type Record = Vec<Gc<Value>>;
 
@@ -40,7 +40,7 @@ pub type BridgePtr = for<'a> fn(
     rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
-) -> BoxFuture<'a, Result<Application, Condition>>;
+) -> BoxFuture<'a, Result<Application, Gc<Value>>>;
 
 #[derive(Debug, Copy, Clone)]
 pub enum FuncPtr {
@@ -143,9 +143,7 @@ impl Closure {
             true,
             None,
         ))));
-        self.apply(&args, None)
-            .await
-            .map_err(|_err| -> Exception { todo!() })?
+        Application::new(self.clone(), args, None, None)
             .eval()
             .await
     }
@@ -154,7 +152,7 @@ impl Closure {
         &self,
         args: &[Gc<Value>],
         exception_handler: Option<Gc<ExceptionHandler>>,
-    ) -> Result<Application, Condition> {
+    ) -> Result<Application, Gc<Value>> {
         // Handle arguments
 
         // Extract the continuation, if it is required
@@ -168,16 +166,10 @@ impl Closure {
 
         // Error if the number of arguments provided is incorrect
         if args.len() < self.num_required_args {
-            return Err(Condition::wrong_num_of_args(
-                self.num_required_args,
-                args.len(),
-            ));
+            return Err(Condition::wrong_num_of_args(self.num_required_args, args.len()).into());
         }
         if !self.variadic && args.len() > self.num_required_args {
-            return Err(Condition::wrong_num_of_args(
-                self.num_required_args,
-                args.len(),
-            ));
+            return Err(Condition::wrong_num_of_args(self.num_required_args, args.len()).into());
         }
 
         // If this function is variadic, create a list to put any extra arguments
@@ -254,6 +246,40 @@ impl Closure {
     }
 }
 
+impl fmt::Debug for Closure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Some(debug_info_id) = self.user_func_info else {
+            return write!(f, "continuation");
+        };
+
+        let runtime_ref = self.runtime.read();
+        let Some(debug_info) = runtime_ref
+            .debug_info
+            .get_function_debug_info(debug_info_id)
+        else {
+            return write!(f, "unknown-function");
+        };
+
+        if let Some(ref proc_name) = debug_info.name {
+            write!(f, "({proc_name}")?;
+        } else {
+            write!(f, "(<lambda>")?;
+        }
+
+        if let Some((last, args)) = debug_info.args.split_last() {
+            for arg in args {
+                write!(f, " {arg}")?;
+            }
+            if self.variadic {
+                write!(f, " .")?;
+            }
+            write!(f, " {last}")?;
+        }
+
+        write!(f, ") @ {}", debug_info.location)
+    }
+}
+
 // This is really sorta emblematic of my excess allocations. Really gotta fix that
 // at some point.
 fn values_to_vec_of_ptrs(vals: &[Gc<Value>]) -> Vec<*mut GcInner<Value>> {
@@ -311,13 +337,13 @@ impl Application {
         } = self
         {
             stack_trace.collect_application(&op.runtime, op.user_func_info, call_site);
-            self = op
-                .apply(&args, exception_handler)
-                .await
-                .map_err(|_err| -> Exception { todo!() })?;
+            self = match op.apply(&args, exception_handler).await {
+                Err(exception) => {
+                    return Err(Exception::new(stack_trace.into_frames(), exception));
+                }
+                Ok(app) => app,
+            };
         }
-
-        let _ = black_box(stack_trace);
 
         // If we have no operator left, return the arguments as the final values:
         Ok(self.args)
@@ -332,6 +358,10 @@ struct StackTraceCollector {
 impl StackTraceCollector {
     fn new() -> Self {
         Self::default()
+    }
+
+    fn into_frames(self) -> Vec<Frame> {
+        todo!()
     }
 
     fn collect_application(
@@ -416,10 +446,10 @@ pub fn apply<'a>(
     rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
-) -> BoxFuture<'a, Result<Application, Condition>> {
+) -> BoxFuture<'a, Result<Application, Gc<Value>>> {
     Box::pin(async move {
         if rest_args.is_empty() {
-            return Err(Condition::wrong_num_of_args(2, args.len()));
+            return Err(Condition::wrong_num_of_args(2, args.len()).into());
         }
         let op = args[0].read();
         let op: &Closure = op.as_ref().try_into()?;
@@ -518,10 +548,10 @@ pub fn call_with_values<'a>(
     _rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
-) -> BoxFuture<'a, Result<Application, Condition>> {
+) -> BoxFuture<'a, Result<Application, Gc<Value>>> {
     Box::pin(async move {
         let [producer, consumer] = args else {
-            return Err(Condition::wrong_num_of_args(2, args.len()));
+            return Err(Condition::wrong_num_of_args(2, args.len()).into());
         };
 
         // Fetch the producer

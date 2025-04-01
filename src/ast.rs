@@ -1,12 +1,18 @@
 //! Data structures for expanding and representing Scheme code.
 
 use crate::{
-    cps::{Compile, PrimOp}, env::{CapturedEnv, Environment, Local, Var}, exception::Condition, expand::Transformer, gc::{Gc, Trace}, num::Number, proc::{Closure, FunctionDebugInfo}, records::DefineRecordType, runtime::{CallSiteId, FunctionDebugInfoId, Runtime}, syntax::{Span, Syntax}, value::Value
-};
-use crate::{
-    exception::Exception,
+    cps::{Compile, PrimOp},
+    env::{CapturedEnv, Environment, Local, Var},
     expand::SyntaxRule,
+    expand::Transformer,
+    gc::{Gc, Trace},
+    num::{Number, NumberToUsizeError},
+    proc::{Closure, FunctionDebugInfo},
+    records::DefineRecordType,
+    runtime::{CallSiteId, FunctionDebugInfoId, Runtime},
     syntax::{FullyExpanded, Identifier},
+    syntax::{Span, Syntax},
+    value::Value,
 };
 use either::Either;
 
@@ -31,6 +37,7 @@ pub enum ParseAstError {
     ExpectedIdentifier(Span),
     ExpectedNumber(Span),
     ExpectedVariableTransformer,
+    ExpectedInteger(NumberToUsizeError),
 
     UnexpectedArgument(Span),
     UnexpectedDefinition(Span),
@@ -54,7 +61,7 @@ pub enum ParseAstError {
 
     BuilderError(BuilderError),
 
-    Condition(Condition),
+    RaisedValue(Gc<Value>),
 }
 
 impl From<BuilderError> for ParseAstError {
@@ -63,9 +70,9 @@ impl From<BuilderError> for ParseAstError {
     }
 }
 
-impl From<Condition> for ParseAstError {
-    fn from(re: Condition) -> Self {
-        Self::Condition(re)
+impl From<Gc<Value>> for ParseAstError {
+    fn from(raised: Gc<Value>) -> Self {
+        Self::RaisedValue(raised)
     }
 }
 
@@ -241,7 +248,12 @@ pub(super) async fn define_syntax(
 
     let expr = Expression::parse(runtime, expanded, &expansion_env /* cont */).await?;
     let cps_expr = expr.compile_top_level();
-    let mac = runtime.compile_expr(cps_expr).await?.call(&[]).await.map_err(|_err| -> Condition { todo!() })?;
+    let mac = runtime
+        .compile_expr(cps_expr)
+        .await?
+        .call(&[])
+        .await
+        .map_err(|err| ParseAstError::RaisedValue(err.into()))?;
     let mac_read = mac[0].read();
     let transformer: &Closure = mac_read.as_ref().try_into().unwrap();
     env.def_macro(ident, transformer.clone());
