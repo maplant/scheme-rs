@@ -1,16 +1,7 @@
 //! Data structures for expanding and representing Scheme code.
 
 use crate::{
-    cps::{Compile, PrimOp},
-    env::{CapturedEnv, Environment, Local, Var},
-    expand::Transformer,
-    gc::{Gc, Trace},
-    num::Number,
-    proc::{Closure, FunctionDebugInfo},
-    records::DefineRecordType,
-    runtime::{CallSiteId, FunctionDebugInfoId, Runtime},
-    syntax::{Span, Syntax},
-    value::Value,
+    cps::{Compile, PrimOp}, env::{CapturedEnv, Environment, Local, Var}, exception::Condition, expand::Transformer, gc::{Gc, Trace}, num::Number, proc::{Closure, FunctionDebugInfo}, records::DefineRecordType, runtime::{CallSiteId, FunctionDebugInfoId, Runtime}, syntax::{Span, Syntax}, value::Value
 };
 use crate::{
     exception::Exception,
@@ -63,7 +54,7 @@ pub enum ParseAstError {
 
     BuilderError(BuilderError),
 
-    Exception(Exception),
+    Condition(Condition),
 }
 
 impl From<BuilderError> for ParseAstError {
@@ -72,9 +63,9 @@ impl From<BuilderError> for ParseAstError {
     }
 }
 
-impl From<Exception> for ParseAstError {
-    fn from(re: Exception) -> Self {
-        Self::Exception(re)
+impl From<Condition> for ParseAstError {
+    fn from(re: Condition) -> Self {
+        Self::Condition(re)
     }
 }
 
@@ -250,7 +241,7 @@ pub(super) async fn define_syntax(
 
     let expr = Expression::parse(runtime, expanded, &expansion_env /* cont */).await?;
     let cps_expr = expr.compile_top_level();
-    let mac = runtime.compile_expr(cps_expr).await?.call(&[]).await?;
+    let mac = runtime.compile_expr(cps_expr).await?.call(&[]).await.map_err(|_err| -> Condition { todo!() })?;
     let mac_read = mac[0].read();
     let transformer: &Closure = mac_read.as_ref().try_into().unwrap();
     env.def_macro(ident, transformer.clone());

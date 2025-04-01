@@ -15,13 +15,11 @@ use std::{error::Error as StdError, fmt, ops::Range};
 #[derive(Debug, Clone, Trace)]
 pub struct Exception {
     pub backtrace: Vec<Frame>,
-    pub message: String,
-    pub condition: Condition,
     pub obj: Gc<Value>,
 }
 impl fmt::Display for Exception {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.message)
+        write!(f, "{}", self.obj)
     }
 }
 impl StdError for Exception {}
@@ -29,6 +27,9 @@ impl StdError for Exception {}
 #[derive(Debug, Clone, Trace)]
 pub enum Condition {
     Condition,
+    Message {
+        message: String,
+    },
     Warning,
     Serious,
     Error,
@@ -37,103 +38,122 @@ pub enum Condition {
     NonContinuable,
     ImplementationRestriction,
     Lexical,
-    Syntax,
+    Syntax {
+        form: Gc<Value>,
+        subform: Gc<Value>,
+    },
     Undefined,
-    Message,
-    Irritants,
-    Who,
+    Irritants {
+        irritants: Gc<Value>,
+    },
+    Who {
+        who: Gc<Value>,
+    },
+    CompoundCondition {
+        simple_conditions: Vec<Gc<Value>>,
+    }
 }
 
-impl Exception {
-    pub fn from_value(obj: Gc<Value>) -> Self {
-        Self {
-            backtrace: Vec::new(),
-            message: "Todo".to_string(),
-            condition: Condition::Error,
-            obj,
-        }
-    }
-
+impl Condition {
     pub fn error(err: String) -> Self {
-        Self {
-            backtrace: Vec::new(),
-            message: err,
-            condition: Condition::Error,
-            obj: Gc::new(Value::Null),
-        }
+        todo!()
     }
 
     pub fn syntax_error() -> Self {
-        Self {
-            backtrace: Vec::new(),
-            message: "Invalid syntax".to_string(),
-            condition: Condition::Syntax,
-            obj: Gc::new(Value::Null),
-        }
+        todo!()
     }
 
     pub fn assert_eq_failed(expected: &str, actual: &str) -> Self {
+        todo!()
+        /*
         Self::error(format!(
             "Assertion failed, expected: {expected}, actual: {actual}"
         ))
+        */
     }
 
     pub fn undefined_variable(ident: Identifier) -> Self {
+        todo!()
+        /*
         Self::error(format!("Undefined variable {}", ident.name))
+        */
     }
 
     pub fn invalid_type(expected: &str, provided: &str) -> Self {
+        todo!()
+        /*
         Self::error(format!(
             "Expected value of type {expected}, provided {provided}"
         ))
+        */
     }
 
     pub fn invalid_operator_type(provided: &str) -> Self {
+        todo!()
+        /*
         Self::error(format!(
             "Invalid operator, expected procedure, provided {provided}"
         ))
+        */
     }
 
     pub fn invalid_index(index: usize, len: usize) -> Self {
+        todo!()
+        /*
         Self::error(format!(
             "Invalid index of {index} into collection of size {len}"
         ))
+        */
     }
     pub fn invalid_range(range: Range<usize>, len: usize) -> Self {
+        todo!()
+        /*
         Self::error(format!(
             "Invalid range of {range:?} into collection of size {len}"
         ))
+        */
     }
 
     pub fn wrong_num_of_unicode_chars(expected: usize, provided: usize) -> Self {
+        todo!()
+        /*
         Self::error(format!(
             "Expected to receive {expected} unicode characters from transform, received {provided}"
         ))
+        */
     }
 
     pub fn wrong_num_of_args(expected: usize, provided: usize) -> Self {
+        todo!()
+        /*
         Self::error(format!(
-            "Expected {expected} arguments, provided {provided}"
-        ))
+        "Expected {expected} arguments, provided {provided}"
+    ))
+         */
     }
     pub fn wrong_num_of_variadic_args(expected: Range<usize>, provided: usize) -> Self {
+        todo!()
+        /*
         Self::error(format!(
             "Expected {expected:?} arguments, provided {provided}"
         ))
+        */
     }
 }
-macro_rules! impl_into_exception_for {
+
+macro_rules! impl_into_condition_for {
     ($for:ty) => {
-        impl From<$for> for Exception {
+        impl From<$for> for Condition {
             fn from(e: $for) -> Self {
                 Self::error(e.to_string())
             }
         }
     };
 }
-impl_into_exception_for!(crate::num::ArithmeticError);
-impl_into_exception_for!(crate::num::NumberToUsizeError);
-impl_into_exception_for!(std::num::TryFromIntError);
+impl_into_condition_for!(crate::num::ArithmeticError);
+impl_into_condition_for!(crate::num::NumberToUsizeError);
+impl_into_condition_for!(std::num::TryFromIntError);
+
 
 #[derive(Debug, Clone, Trace)]
 pub struct Frame {
@@ -192,10 +212,10 @@ pub fn with_exception_handler<'a>(
     _rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
-) -> BoxFuture<'a, Result<Application, Exception>> {
+) -> BoxFuture<'a, Result<Application, Condition>> {
     Box::pin(async move {
         let [handler, thunk] = args else {
-            return Err(Exception::wrong_num_of_args(2, args.len()));
+            return Err(Condition::wrong_num_of_args(2, args.len()));
         };
 
         let handler_ref = handler.read();
@@ -228,14 +248,17 @@ pub fn raise<'a>(
     _rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
-) -> BoxFuture<'a, Result<Application, Exception>> {
+) -> BoxFuture<'a, Result<Application, Condition>> {
     Box::pin(async move {
         let [condition] = args else {
-            return Err(Exception::wrong_num_of_args(1, args.len()));
+            return Err(Condition::wrong_num_of_args(1, args.len()));
         };
 
+        // TODO: Make condition non-continuable whe it is re-raised
+
         let Some(ref handler) = exception_handler else {
-            return Err(Exception::from_value(condition.clone()));
+            // return Err(Condition::from_value(condition.clone()));
+            return Err(todo!());
         };
 
         let handler = handler.read().clone();
@@ -308,14 +331,15 @@ pub fn raise_continuable<'a>(
     _rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
-) -> BoxFuture<'a, Result<Application, Exception>> {
+) -> BoxFuture<'a, Result<Application, Condition>> {
     Box::pin(async move {
         let [condition] = args else {
-            return Err(Exception::wrong_num_of_args(1, args.len()));
+            return Err(Condition::wrong_num_of_args(1, args.len()));
         };
 
         let Some(ref handler) = exception_handler else {
-            return Err(Exception::from_value(condition.clone()));
+            // return Err(Condition::from_value(condition.clone()));
+            return todo!();
         };
 
         let handler = handler.read().clone();

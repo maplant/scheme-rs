@@ -1,5 +1,5 @@
 use crate::{
-    exception::Exception,
+    exception::Condition,
     gc::Gc,
     lists::slice_to_list,
     num::{Number, NumberToUsizeError},
@@ -9,9 +9,9 @@ use crate::{
 use malachite::Integer;
 use std::{clone::Clone, ops::Range};
 
-fn try_make_range(start: usize, end: usize) -> Result<Range<usize>, Exception> {
+fn try_make_range(start: usize, end: usize) -> Result<Range<usize>, Condition> {
     if end < start {
-        Err(Exception::error(format!(
+        Err(Condition::error(format!(
             "Range end {} cannot be less than start {}",
             end, start
         )))
@@ -19,10 +19,10 @@ fn try_make_range(start: usize, end: usize) -> Result<Range<usize>, Exception> {
         Ok(start..end)
     }
 }
-fn try_to_usize(n: &Gc<Value>) -> Result<usize, Exception> {
+fn try_to_usize(n: &Gc<Value>) -> Result<usize, Condition> {
     n.read().as_ref().try_into().and_then(|n: &Number| {
         n.try_into()
-            .map_err(<NumberToUsizeError as Into<Exception>>::into)
+            .map_err(<NumberToUsizeError as Into<Condition>>::into)
     })
 }
 
@@ -31,9 +31,9 @@ trait Indexer {
 
     fn get_len(&self, _: &Self::Collection) -> usize;
     fn get_range(&self, _: &Self::Collection, _: Range<usize>) -> Self::Collection;
-    fn try_get<'a>(&self, _: &'a Value) -> Result<&'a Self::Collection, Exception>;
+    fn try_get<'a>(&self, _: &'a Value) -> Result<&'a Self::Collection, Condition>;
 
-    fn index(&self, from: &Gc<Value>, range: &[Gc<Value>]) -> Result<Self::Collection, Exception> {
+    fn index(&self, from: &Gc<Value>, range: &[Gc<Value>]) -> Result<Self::Collection, Condition> {
         let from = from.read();
         let collection = self.try_get(&from)?;
         let len = self.get_len(collection);
@@ -43,7 +43,7 @@ trait Indexer {
 
         let range = try_make_range(start, end)?;
         if range.end > len {
-            return Err(Exception::invalid_range(range, len));
+            return Err(Condition::invalid_range(range, len));
         }
 
         Ok(self.get_range(collection, range))
@@ -64,7 +64,7 @@ impl Indexer for StringIndexer {
             .take(range.end - range.start)
             .collect()
     }
-    fn try_get<'a>(&self, val: &'a Value) -> Result<&'a String, Exception> {
+    fn try_get<'a>(&self, val: &'a Value) -> Result<&'a String, Condition> {
         val.try_into()
     }
 }
@@ -82,13 +82,13 @@ impl Indexer for VectorIndexer {
             .cloned()
             .collect()
     }
-    fn try_get<'a>(&self, val: &'a Value) -> Result<&'a Vec<Value>, Exception> {
+    fn try_get<'a>(&self, val: &'a Value) -> Result<&'a Vec<Value>, Condition> {
         val.try_into()
     }
 }
 
 #[bridge(name = "make-vector", lib = "(base)")]
-pub async fn make_vector(n: &Gc<Value>, with: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn make_vector(n: &Gc<Value>, with: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Condition> {
     let n = n.read();
     let n: &Number = n.as_ref().try_into()?;
     let n: usize = n.try_into()?;
@@ -108,7 +108,7 @@ pub async fn make_vector(n: &Gc<Value>, with: &[Gc<Value>]) -> Result<Vec<Gc<Val
 }
 
 #[bridge(name = "vector", lib = "(base)")]
-pub async fn vector(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn vector(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Condition> {
     Ok(vec![Gc::new(Value::Vector(
         args.iter()
             .map(Gc::read)
@@ -118,7 +118,7 @@ pub async fn vector(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
 }
 
 #[bridge(name = "vector-ref", lib = "(base)")]
-pub async fn vector_ref(vec: &Gc<Value>, index: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn vector_ref(vec: &Gc<Value>, index: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
     let vec = vec.read();
     let vec: &Vec<Value> = vec.as_ref().try_into()?;
 
@@ -126,13 +126,13 @@ pub async fn vector_ref(vec: &Gc<Value>, index: &Gc<Value>) -> Result<Vec<Gc<Val
 
     Ok(vec![Gc::new(
         vec.get(index)
-            .ok_or_else(|| Exception::invalid_index(index, vec.len()))?
+            .ok_or_else(|| Condition::invalid_index(index, vec.len()))?
             .clone(),
     )])
 }
 
 #[bridge(name = "vector-length", lib = "(base)")]
-pub async fn vector_len(vec: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn vector_len(vec: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
     let vec = vec.read();
     let vec: &Vec<Value> = vec.as_ref().try_into()?;
 
@@ -149,7 +149,7 @@ pub async fn vector_set(
     vec: &Gc<Value>,
     index: &Gc<Value>,
     with: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, Exception> {
+) -> Result<Vec<Gc<Value>>, Condition> {
     let mut vec = vec.write();
     let vec: &mut Vec<Value> = vec.as_mut().try_into()?;
     let vec_len = vec.len();
@@ -160,7 +160,7 @@ pub async fn vector_set(
 
     let index = vec
         .get_mut(index)
-        .ok_or_else(|| Exception::invalid_index(index, vec_len))?;
+        .ok_or_else(|| Condition::invalid_index(index, vec_len))?;
     *index = with.read().clone();
 
     Ok(vec![])
@@ -170,7 +170,7 @@ pub async fn vector_set(
 pub async fn vector_to_list(
     from: &Gc<Value>,
     range: &[Gc<Value>],
-) -> Result<Vec<Gc<Value>>, Exception> {
+) -> Result<Vec<Gc<Value>>, Condition> {
     let vec: Vec<Gc<Value>> = VectorIndexer
         .index(from, range)?
         .into_iter()
@@ -183,7 +183,7 @@ pub async fn vector_to_list(
 pub async fn vector_to_string(
     from: &Gc<Value>,
     range: &[Gc<Value>],
-) -> Result<Vec<Gc<Value>>, Exception> {
+) -> Result<Vec<Gc<Value>>, Condition> {
     Ok(vec![Gc::new(Value::String(
         VectorIndexer
             .index(from, range)?
@@ -197,7 +197,7 @@ pub async fn vector_to_string(
 pub async fn string_to_vector(
     from: &Gc<Value>,
     range: &[Gc<Value>],
-) -> Result<Vec<Gc<Value>>, Exception> {
+) -> Result<Vec<Gc<Value>>, Condition> {
     Ok(vec![Gc::new(Value::Vector(
         StringIndexer
             .index(from, range)?
@@ -211,7 +211,7 @@ pub async fn string_to_vector(
 pub async fn vector_copy(
     from: &Gc<Value>,
     range: &[Gc<Value>],
-) -> Result<Vec<Gc<Value>>, Exception> {
+) -> Result<Vec<Gc<Value>>, Condition> {
     Ok(vec![Gc::new(Value::Vector(
         VectorIndexer.index(from, range)?,
     ))])
@@ -223,19 +223,19 @@ pub async fn vector_copy_to(
     at: &Gc<Value>,
     from: &Gc<Value>,
     range: &[Gc<Value>],
-) -> Result<Vec<Gc<Value>>, Exception> {
+) -> Result<Vec<Gc<Value>>, Condition> {
     let mut to = to.write();
     let to: &mut Vec<Value> = to.as_mut().try_into()?;
 
     let at: usize = try_to_usize(at)?;
 
     if at >= to.len() {
-        return Err(Exception::invalid_index(at, to.len()));
+        return Err(Condition::invalid_index(at, to.len()));
     }
 
     let copies = VectorIndexer.index(from, range)?;
     if copies.len() + at >= to.len() {
-        return Err(Exception::invalid_range(at..at + copies.len(), to.len()));
+        return Err(Condition::invalid_range(at..at + copies.len(), to.len()));
     }
 
     copies
@@ -252,9 +252,9 @@ pub async fn vector_copy_to(
 }
 
 #[bridge(name = "vector-append", lib = "(base)")]
-pub async fn vector_append(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn vector_append(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Condition> {
     if args.is_empty() {
-        return Err(Exception::wrong_num_of_variadic_args(1..usize::MAX, 0));
+        return Err(Condition::wrong_num_of_variadic_args(1..usize::MAX, 0));
     }
 
     Ok(vec![Gc::new(Value::Vector(
@@ -276,7 +276,7 @@ pub async fn vector_fill(
     with: &Gc<Value>,
     start: &Gc<Value>,
     end: &[Gc<Value>],
-) -> Result<Vec<Gc<Value>>, Exception> {
+) -> Result<Vec<Gc<Value>>, Condition> {
     let mut vector = vector.write();
     let vector: &mut Vec<Value> = vector.as_mut().try_into()?;
 
@@ -288,7 +288,7 @@ pub async fn vector_fill(
 
     let range = try_make_range(start, end)?;
     if range.end > vector.len() {
-        return Err(Exception::invalid_range(range, vector.len()));
+        return Err(Condition::invalid_range(range, vector.len()));
     }
 
     range.for_each(|i| {

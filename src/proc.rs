@@ -2,17 +2,16 @@
 //! Contains the main trampoline.
 
 use crate::{
-    exception::{Exception, ExceptionHandler, Frame},
+    exception::{Condition, Exception, ExceptionHandler, Frame},
     gc::{Gc, GcInner, Trace},
     lists::{list_to_vec, slice_to_list},
     registry::BridgeFn,
-    runtime::{FunctionDebugInfoId, Runtime, IGNORE_FUNCTION},
+    runtime::{CallSiteId, FunctionDebugInfoId, Runtime, IGNORE_FUNCTION},
     syntax::Span,
     value::Value,
 };
-use either::Either;
 use futures::future::BoxFuture;
-use std::{borrow::Cow, collections::HashMap, ptr::null_mut};
+use std::{borrow::Cow, collections::HashMap, hint::black_box, ptr::null_mut};
 
 pub type Record = Vec<Gc<Value>>;
 
@@ -41,7 +40,7 @@ pub type BridgePtr = for<'a> fn(
     rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
-) -> BoxFuture<'a, Result<Application, Exception>>;
+) -> BoxFuture<'a, Result<Application, Condition>>;
 
 #[derive(Debug, Copy, Clone)]
 pub enum FuncPtr {
@@ -144,14 +143,18 @@ impl Closure {
             true,
             None,
         ))));
-        self.apply(&args, None).await?.eval().await
+        self.apply(&args, None)
+            .await
+            .map_err(|_err| -> Exception { todo!() })?
+            .eval()
+            .await
     }
 
     pub async fn apply(
         &self,
         args: &[Gc<Value>],
         exception_handler: Option<Gc<ExceptionHandler>>,
-    ) -> Result<Application, Exception> {
+    ) -> Result<Application, Condition> {
         // Handle arguments
 
         // Extract the continuation, if it is required
@@ -165,13 +168,13 @@ impl Closure {
 
         // Error if the number of arguments provided is incorrect
         if args.len() < self.num_required_args {
-            return Err(Exception::wrong_num_of_args(
+            return Err(Condition::wrong_num_of_args(
                 self.num_required_args,
                 args.len(),
             ));
         }
         if !self.variadic && args.len() > self.num_required_args {
-            return Err(Exception::wrong_num_of_args(
+            return Err(Condition::wrong_num_of_args(
                 self.num_required_args,
                 args.len(),
             ));
@@ -298,7 +301,7 @@ impl Application {
     /// Evaluate the application - and all subsequent application - until all that
     /// remains are values. This is the main trampoline of the evaluation engine.
     pub async fn eval(mut self) -> Result<Record, Exception> {
-        let mut stack_trace = Vec::new();
+        let mut stack_trace = StackTraceCollector::new();
 
         while let Application {
             op: Some(op),
@@ -307,12 +310,52 @@ impl Application {
             call_site,
         } = self
         {
-            // TODO: Extract to function
-            if let Some(user_func_info_id) = op.user_func_info {
-                // This is a user func, and therefore we should push to the
-                // current stack trace.
-                let frame = if let Some(debug_info) = op
-                    .runtime
+            stack_trace.collect_application(&op.runtime, op.user_func_info, call_site);
+            self = op
+                .apply(&args, exception_handler)
+                .await
+                .map_err(|_err| -> Exception { todo!() })?;
+        }
+
+        let _ = black_box(stack_trace);
+
+        // If we have no operator left, return the arguments as the final values:
+        Ok(self.args)
+    }
+}
+
+#[derive(Default)]
+struct StackTraceCollector {
+    stack_trace: Vec<StackTrace>,
+}
+
+impl StackTraceCollector {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn collect_application(
+        &mut self,
+        runtime: &Gc<Runtime>,
+        user_func_info: Option<FunctionDebugInfoId>,
+        call_site: Option<Span>,
+    ) {
+        if let Some(user_func_info_id) = user_func_info {
+            // This is a user func, and therefore we should push to the
+            // current stack trace.
+            let trace = if user_func_info_id != IGNORE_FUNCTION {
+                StackTrace::UserFuncCall {
+                    runtime: runtime.clone(),
+                    user_func_info_id,
+                    call_site,
+                }
+            } else {
+                StackTrace::CallSite(call_site)
+            };
+            self.stack_trace.push(trace);
+            /*
+                let frame = if let Some(debug_info) =
+                    runtime
                     .read()
                     .debug_info
                     .get_function_debug_info(user_func_info_id)
@@ -325,22 +368,26 @@ impl Application {
                     Either::Left(Frame::new(proc, call_site))
                 } else {
                     Either::Right(call_site)
-                };
-                stack_trace.push(frame);
-            } else {
-                // If this is not user func, we are returning from one via a
-                // continuation and should pop the stack frame:
-                stack_trace.pop();
-            }
-
-            println!("curr_stack_trace: {stack_trace:#?}");
-
-            self = op.apply(&args, exception_handler).await?;
+            };
+                    stack_trace.push(frame);
+                    */
+        } else {
+            // If this is not user func, we are returning from one via a
+            // continuation and should pop the stack frame:
+            self.stack_trace.pop();
         }
-
-        // If we have no operator left, return the arguments as the final values:
-        Ok(self.args)
     }
+}
+
+#[derive(Debug)]
+#[allow(dead_code)]
+enum StackTrace {
+    CallSite(Option<Span>),
+    UserFuncCall {
+        runtime: Gc<Runtime>,
+        user_func_info_id: FunctionDebugInfoId,
+        call_site: Option<Span>,
+    },
 }
 
 #[derive(Clone, Debug, Trace)]
@@ -369,10 +416,10 @@ pub fn apply<'a>(
     rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
-) -> BoxFuture<'a, Result<Application, Exception>> {
+) -> BoxFuture<'a, Result<Application, Condition>> {
     Box::pin(async move {
         if rest_args.is_empty() {
-            return Err(Exception::wrong_num_of_args(2, args.len()));
+            return Err(Condition::wrong_num_of_args(2, args.len()));
         }
         let op = args[0].read();
         let op: &Closure = op.as_ref().try_into()?;
@@ -471,10 +518,10 @@ pub fn call_with_values<'a>(
     _rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
-) -> BoxFuture<'a, Result<Application, Exception>> {
+) -> BoxFuture<'a, Result<Application, Condition>> {
     Box::pin(async move {
         let [producer, consumer] = args else {
-            return Err(Exception::wrong_num_of_args(2, args.len()));
+            return Err(Condition::wrong_num_of_args(2, args.len()));
         };
 
         // Fetch the producer
