@@ -5,7 +5,7 @@ use crate::{
     exception::{Condition, Exception, ExceptionHandler, Frame},
     gc::{Gc, GcInner, Trace},
     lists::{list_to_vec, slice_to_list},
-    registry::BridgeFn,
+    registry::{BridgeFn, BridgeFnDebugInfo},
     runtime::{FunctionDebugInfoId, Runtime, IGNORE_FUNCTION},
     syntax::Span,
     value::Value,
@@ -361,7 +361,36 @@ impl StackTraceCollector {
     }
 
     fn into_frames(self) -> Vec<Frame> {
-        todo!()
+        let mut frames = Vec::new();
+        let mut last_call_site = None;
+
+        for trace in self.stack_trace.into_iter() {
+            match trace {
+                StackTrace::CallSite(new_call_site) => {
+                    last_call_site = last_call_site.or(new_call_site);
+                }
+                StackTrace::UserFuncCall {
+                    runtime,
+                    user_func_info_id,
+                    call_site,
+                } => {
+                    if let Some(debug_info) = runtime
+                        .read()
+                        .debug_info
+                        .get_function_debug_info(user_func_info_id)
+                    {
+                        let proc = debug_info
+                            .name
+                            .clone()
+                            .unwrap_or_else(|| "<lambda>".to_string());
+                        last_call_site = call_site.or(last_call_site);
+                        frames.push(Frame::new(proc, last_call_site.clone()));
+                    }
+                }
+            }
+        }
+
+        frames
     }
 
     fn collect_application(
@@ -383,24 +412,6 @@ impl StackTraceCollector {
                 StackTrace::CallSite(call_site)
             };
             self.stack_trace.push(trace);
-            /*
-                let frame = if let Some(debug_info) =
-                    runtime
-                    .read()
-                    .debug_info
-                    .get_function_debug_info(user_func_info_id)
-                {
-                    let proc = debug_info
-                        .name
-                        .clone()
-                        .unwrap_or_else(|| "(lambda)".to_string());
-
-                    Either::Left(Frame::new(proc, call_site))
-                } else {
-                    Either::Right(call_site)
-            };
-                    stack_trace.push(frame);
-                    */
         } else {
             // If this is not user func, we are returning from one via a
             // continuation and should pop the stack frame:
@@ -439,6 +450,19 @@ impl FunctionDebugInfo {
             location,
         }
     }
+
+    pub fn from_bridge_fn(name: &'static str, debug_info: BridgeFnDebugInfo) -> Self {
+        Self {
+            name: Some(name.to_string()),
+            args: debug_info.args.iter().map(|arg| arg.to_string()).collect(),
+            location: Span {
+                line: debug_info.line,
+                column: debug_info.column as usize,
+                offset: debug_info.offset,
+                file: std::sync::Arc::new(debug_info.file.to_string()),
+            },
+        }
+    }
 }
 
 pub fn apply<'a>(
@@ -467,7 +491,20 @@ pub fn apply<'a>(
 }
 
 inventory::submit! {
-    BridgeFn::new("apply", "(base)", 1, true, apply)
+    BridgeFn::new(
+        "apply",
+        "(base)",
+        1,
+        true,
+        apply,
+        BridgeFnDebugInfo::new(
+            "proc.rs",
+            468,
+            7,
+            0,
+            &[ "arg1", "args" ],
+        )
+    )
 }
 
 pub(crate) fn deep_clone_value(
@@ -588,5 +625,18 @@ pub fn call_with_values<'a>(
 }
 
 inventory::submit! {
-    BridgeFn::new("call-with-values", "(base)", 2, false, call_with_values)
+    BridgeFn::new(
+        "call-with-values",
+        "(base)",
+        2,
+        false,
+        call_with_values,
+        BridgeFnDebugInfo::new(
+            "proc.rs",
+            583,
+            7,
+            0,
+            &["producer", "consumer"]
+        )
+    )
 }

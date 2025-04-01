@@ -7,7 +7,7 @@ use crate::{
     gc::Gc,
     parse::ParseSyntaxError,
     proc::{BridgePtr, Closure, FuncPtr},
-    runtime::{Runtime, IGNORE_FUNCTION},
+    runtime::Runtime,
     syntax::{Identifier, Span, Syntax},
     value::Value,
 };
@@ -131,6 +131,7 @@ pub struct BridgeFn {
     num_args: usize,
     variadic: bool,
     wrapper: BridgePtr,
+    debug_info: BridgeFnDebugInfo,
 }
 
 impl BridgeFn {
@@ -140,6 +141,7 @@ impl BridgeFn {
         num_args: usize,
         variadic: bool,
         wrapper: BridgePtr,
+        debug_info: BridgeFnDebugInfo,
     ) -> Self {
         Self {
             name,
@@ -147,6 +149,34 @@ impl BridgeFn {
             num_args,
             variadic,
             wrapper,
+            debug_info,
+        }
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct BridgeFnDebugInfo {
+    pub(crate) file: &'static str,
+    pub(crate) line: u32,
+    pub(crate) column: u32,
+    pub(crate) offset: usize,
+    pub(crate) args: &'static [&'static str],
+}
+
+impl BridgeFnDebugInfo {
+    pub const fn new(
+        file: &'static str,
+        line: u32,
+        column: u32,
+        offset: usize,
+        args: &'static [&'static str],
+    ) -> Self {
+        Self {
+            file,
+            line,
+            column,
+            offset,
+            args,
         }
     }
 }
@@ -163,6 +193,12 @@ impl Registry {
         let mut libs = HashMap::<LibraryName, Gc<Top>>::default();
 
         for bridge_fn in inventory::iter::<BridgeFn>() {
+            let debug_info_id = runtime.write().debug_info.new_function_debug_info(
+                crate::proc::FunctionDebugInfo::from_bridge_fn(
+                    bridge_fn.name,
+                    bridge_fn.debug_info,
+                ),
+            );
             let lib_name = LibraryName::from_str(bridge_fn.lib_name, None).unwrap();
             let lib = libs
                 .entry(lib_name)
@@ -177,7 +213,7 @@ impl Registry {
                     FuncPtr::Bridge(bridge_fn.wrapper),
                     bridge_fn.num_args,
                     bridge_fn.variadic,
-                    Some(IGNORE_FUNCTION), // TODO: add debug info to bridge functions
+                    Some(debug_info_id),
                 )),
             );
         }

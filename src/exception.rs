@@ -5,7 +5,7 @@ use futures::future::BoxFuture;
 use crate::{
     gc::{Gc, GcInner, Trace},
     proc::{Application, Closure, FuncPtr},
-    registry::BridgeFn,
+    registry::{BridgeFn, BridgeFnDebugInfo},
     runtime::{Runtime, IGNORE_FUNCTION},
     syntax::{Identifier, Span},
     value::Value,
@@ -24,9 +24,22 @@ impl Exception {
     }
 }
 
+// TODO: This shouldn't be the display impl for Exception, I don' t think.
 impl fmt::Display for Exception {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.obj)
+        const MAX_BACKTRACE_LEN: usize = 20;
+        write!(f, "Uncaught exception: {}\n", self.obj)?;
+        if !self.backtrace.is_empty() {
+            write!(f, "Stack trace:\n")?;
+            for (i, frame) in self.backtrace.iter().rev().enumerate() {
+                if i >= MAX_BACKTRACE_LEN {
+                    write!(f, "(backtrace truncated)\n")?;
+                    break;
+                }
+                write!(f, "{i}: {frame}\n")?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -143,30 +156,16 @@ impl Frame {
             // repeated: 0,
         }
     }
+}
 
-    /*
-    pub fn from_debug_ids(
-        caller_runtime: &Gc<Runtime>,
-        call_site_id: CallSiteId,
-        callee_runtime: &Gc<Runtime>,
-        function_debug_info_id: FunctionDebugInfoId,
-    ) -> Self {
-        let proc = callee_runtime.read()
-            .debug_info
-            .function_debug_info[function_debug_info_id]
-            .name
-            .clone()
-            .unwrap_or_else(||"(lambda)".to_string());
-        let call_site_span = caller_runtime.read()
-            .debug_info
-            .call_sites[call_site_id]
-            .clone();
-        Self {
-            proc,
-            call_site_span
+impl fmt::Display for Frame {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(ref call_site) = self.call_site_span {
+            write!(f, "{} at {call_site}", self.proc)
+        } else {
+            write!(f, "{} at (unknown)", self.proc)
         }
     }
-    */
 }
 
 /// An exception handler includes the current handler - a function to call with
@@ -212,7 +211,20 @@ pub fn with_exception_handler<'a>(
 }
 
 inventory::submit! {
-    BridgeFn::new("with-exception-handler", "(base)", 2, false, with_exception_handler)
+    BridgeFn::new(
+        "with-exception-handler",
+        "(base)",
+        2,
+        false,
+        with_exception_handler,
+        BridgeFnDebugInfo::new(
+            "exception.rs",
+            182,
+            7,
+            0,
+            &[ "handler", "thunk" ],
+        )
+    )
 }
 
 /// Raises a non-continuable exception to the current exception handler.
@@ -256,7 +268,20 @@ pub fn raise<'a>(
 }
 
 inventory::submit! {
-    BridgeFn::new("raise", "(base)", 1, false, raise)
+    BridgeFn::new(
+        "raise",
+        "(base)",
+        1,
+        false,
+        raise,
+        BridgeFnDebugInfo::new(
+            "exception.rs",
+            231,
+            7,
+            0,
+            &["condition"],
+        )
+    )
 }
 
 unsafe extern "C" fn reraise_exception(
@@ -325,5 +350,18 @@ pub fn raise_continuable<'a>(
 }
 
 inventory::submit! {
-    BridgeFn::new("raise-continuable", "(base)", 1, false, raise_continuable)
+    BridgeFn::new(
+        "raise-continuable",
+        "(base)",
+        1,
+        false,
+        raise_continuable,
+        BridgeFnDebugInfo::new(
+            "exception.rs",
+            326,
+            7,
+            0,
+            &["condition"],
+        )
+    )
 }

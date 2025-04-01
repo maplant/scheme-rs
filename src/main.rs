@@ -81,6 +81,9 @@ async fn main() {
                     n_results += 1;
                 }
             }
+            Err(EvalError::Exception(exception)) => {
+                print!("{exception}");
+            }
             Err(err) => {
                 println!("Error: {err:?}");
             }
