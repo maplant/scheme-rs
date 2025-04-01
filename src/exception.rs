@@ -28,15 +28,15 @@ impl Exception {
 impl fmt::Display for Exception {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         const MAX_BACKTRACE_LEN: usize = 20;
-        write!(f, "Uncaught exception: {}\n", self.obj)?;
+        writeln!(f, "Uncaught exception: {}", self.obj)?;
         if !self.backtrace.is_empty() {
-            write!(f, "Stack trace:\n")?;
+            writeln!(f, "Stack trace:")?;
             for (i, frame) in self.backtrace.iter().rev().enumerate() {
                 if i >= MAX_BACKTRACE_LEN {
-                    write!(f, "(backtrace truncated)\n")?;
+                    writeln!(f, "(backtrace truncated)")?;
                     break;
                 }
-                write!(f, "{i}: {frame}\n")?;
+                writeln!(f, "{i}: {frame}\n")?;
             }
         }
         Ok(())
@@ -290,7 +290,7 @@ unsafe extern "C" fn reraise_exception(
     _globals: *const *mut GcInner<Value>,
     _args: *const *mut GcInner<Value>,
     exception_handler: *mut GcInner<ExceptionHandler>,
-) -> *mut Application {
+) -> *mut Result<Application, Condition> {
     let runtime = Gc::from_ptr(runtime);
 
     // env[0] is the exception
@@ -305,7 +305,7 @@ unsafe extern "C" fn reraise_exception(
         Some(Gc::from_ptr(exception_handler))
     };
 
-    Box::into_raw(Box::new(Application::new(
+    Box::into_raw(Box::new(Ok(Application::new(
         Closure::new(
             runtime,
             Vec::new(),
@@ -318,7 +318,7 @@ unsafe extern "C" fn reraise_exception(
         vec![exception, cont],
         curr_handler,
         None,
-    )))
+    ))))
 }
 
 /// Raises an exception to the current exception handler and coninues with the

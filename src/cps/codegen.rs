@@ -347,6 +347,8 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             _ => unreachable!(),
         };
 
+        let error_val = self.builder.build_alloca(ptr_type, "error")?;
+
         let runtime_fn = self.module.get_function(runtime_fn_name).unwrap();
         let result_val = self
             .builder
@@ -355,6 +357,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 &[
                     vals_alloca.into(),
                     i32_type.const_int(num_vals as u64, false).into(),
+                    error_val.into(),
                 ],
                 runtime_fn_name,
             )?
@@ -362,6 +365,22 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             .left()
             .unwrap()
             .into_pointer_value();
+
+        let is_null_bb = self.ctx.append_basic_block(self.function, "is_null");
+        let success_bb = self.ctx.append_basic_block(self.function, "success");
+
+        let is_null = self.builder.build_is_null(result_val, "is_null")?;
+        self.builder
+            .build_conditional_branch(is_null, is_null_bb, success_bb)?;
+
+        self.builder.position_at_end(is_null_bb);
+        self.drop_values_codegen(allocs.clone())?;
+        let error_val = self
+            .builder
+            .build_load(ptr_type, error_val, "error_val_load")?;
+        self.builder.build_return(Some(&error_val))?;
+
+        self.builder.position_at_end(success_bb);
 
         self.rebinds.rebind(Var::Local(result), result_val);
         let new_alloc = Allocs::new(allocs, result_val);
@@ -580,7 +599,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             .unwrap();
 
         // Because our compiler is not particularly sophisticated right now, we can guarantee
-        // that both branches terminate. Thus, noc ontinuation basic block.
+        // that both branches terminate. Thus, no continuation basic block.
         let success_bb = self.ctx.append_basic_block(self.function, "success");
         let failure_bb = self.ctx.append_basic_block(self.function, "failure");
 

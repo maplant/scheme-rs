@@ -58,6 +58,10 @@ pub enum Value {
 }
 
 impl Value {
+    pub fn is_undefined(&self) -> bool {
+        !matches!(self, Self::Undefined)
+    }
+
     /// #f is false, everything else is true
     pub fn is_true(&self) -> bool {
         !matches!(self, Self::Boolean(x) if !x)

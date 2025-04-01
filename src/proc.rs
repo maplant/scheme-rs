@@ -22,7 +22,7 @@ pub type ContinuationPtr = unsafe extern "C" fn(
     globals: *const *mut GcInner<Value>,
     args: *const *mut GcInner<Value>,
     exception_handler: *mut GcInner<ExceptionHandler>,
-) -> *mut Application;
+) -> *mut Result<Application, Condition>;
 
 /// A function pointer to a generated closure function.
 pub type ClosurePtr = unsafe extern "C" fn(
@@ -32,7 +32,7 @@ pub type ClosurePtr = unsafe extern "C" fn(
     args: *const *mut GcInner<Value>,
     exception_handler: *mut GcInner<ExceptionHandler>,
     cont: *mut GcInner<Value>,
-) -> *mut Application;
+) -> *mut Result<Application, Condition>;
 
 /// A function pointer to an async Rust bridge function.
 pub type BridgePtr = for<'a> fn(
@@ -127,7 +127,7 @@ impl Closure {
             _globals: *const *mut GcInner<Value>,
             args: *const *mut GcInner<Value>,
             _exception_handler: *mut GcInner<ExceptionHandler>,
-        ) -> *mut Application {
+        ) -> *mut Result<Application, Condition> {
             crate::runtime::halt(args.read())
         }
 
@@ -241,7 +241,7 @@ impl Closure {
             // Now we can drop the args
             drop(args);
 
-            Ok(app)
+            Ok(app?)
         }
     }
 }
@@ -276,7 +276,7 @@ impl fmt::Debug for Closure {
             write!(f, " {last}")?;
         }
 
-        write!(f, ") @ {}", debug_info.location)
+        write!(f, ") at {}", debug_info.location)
     }
 }
 
@@ -540,12 +540,18 @@ unsafe extern "C" fn call_consumer_with_values(
     _globals: *const *mut GcInner<Value>,
     args: *const *mut GcInner<Value>,
     exception_handler: *mut GcInner<ExceptionHandler>,
-) -> *mut Application {
+) -> *mut Result<Application, Condition> {
     // env[0] is the consumer
     let consumer = Gc::from_ptr(env.read());
     let consumer = {
         let consumer_ref = consumer.read();
-        let consumer: &Closure = consumer_ref.as_ref().try_into().unwrap();
+        let consumer: &Closure = if let Ok(consumer) = consumer_ref.as_ref().try_into() {
+            consumer
+        } else {
+            return Box::into_raw(Box::new(Err(Condition::invalid_operator_type(
+                consumer_ref.type_name(),
+            ))));
+        };
         consumer.clone()
     };
     // env[1] is the continuation
@@ -572,12 +578,12 @@ unsafe extern "C" fn call_consumer_with_values(
         Some(Gc::from_ptr(exception_handler))
     };
 
-    Box::into_raw(Box::new(Application::new(
+    Box::into_raw(Box::new(Ok(Application::new(
         consumer,
         collected_args,
         exception_handler,
         None,
-    )))
+    ))))
 }
 
 pub fn call_with_values<'a>(
@@ -633,7 +639,7 @@ inventory::submit! {
         call_with_values,
         BridgeFnDebugInfo::new(
             "proc.rs",
-            583,
+            587,
             7,
             0,
             &["producer", "consumer"]
