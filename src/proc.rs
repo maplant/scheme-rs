@@ -1,29 +1,17 @@
+//! Procedures, continuation and user, and applying values to those procedures.
+//! Contains the main trampoline.
+
 use crate::{
-    exception::{Exception, ExceptionHandler},
+    exception::{Condition, Exception, ExceptionHandler, Frame},
     gc::{Gc, GcInner, Trace},
     lists::{list_to_vec, slice_to_list},
-    registry::BridgeFn,
-    runtime::Runtime,
+    registry::{BridgeFn, BridgeFnDebugInfo},
+    runtime::{FunctionDebugInfoId, Runtime, IGNORE_FUNCTION},
+    syntax::Span,
     value::Value,
 };
 use futures::future::BoxFuture;
-use std::{borrow::Cow, collections::HashMap, ptr::null_mut};
-
-/*
-pub struct ProcCallDebugInfo {
-    proc_name: String,
-    location: Span,
-}
-
-impl ProcCallDebugInfo {
-    pub fn new(proc_name: &str, location: &Span) -> Self {
-        Self {
-            proc_name: proc_name.to_string(),
-            location: location.clone(),
-        }
-    }
-}
-*/
+use std::{borrow::Cow, collections::HashMap, fmt, ptr::null_mut};
 
 pub type Record = Vec<Gc<Value>>;
 
@@ -34,7 +22,7 @@ pub type ContinuationPtr = unsafe extern "C" fn(
     globals: *const *mut GcInner<Value>,
     args: *const *mut GcInner<Value>,
     exception_handler: *mut GcInner<ExceptionHandler>,
-) -> *mut Application;
+) -> *mut Result<Application, Condition>;
 
 /// A function pointer to a generated closure function.
 pub type ClosurePtr = unsafe extern "C" fn(
@@ -44,7 +32,7 @@ pub type ClosurePtr = unsafe extern "C" fn(
     args: *const *mut GcInner<Value>,
     exception_handler: *mut GcInner<ExceptionHandler>,
     cont: *mut GcInner<Value>,
-) -> *mut Application;
+) -> *mut Result<Application, Condition>;
 
 /// A function pointer to an async Rust bridge function.
 pub type BridgePtr = for<'a> fn(
@@ -52,7 +40,7 @@ pub type BridgePtr = for<'a> fn(
     rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
-) -> BoxFuture<'a, Result<Application, Exception>>;
+) -> BoxFuture<'a, Result<Application, Gc<Value>>>;
 
 #[derive(Debug, Copy, Clone)]
 pub enum FuncPtr {
@@ -67,19 +55,31 @@ unsafe impl Trace for FuncPtr {
     unsafe fn finalize(&mut self) {}
 }
 
-#[derive(Clone, derive_more::Debug, Trace)]
-// TODO: Add an optional name to the closure for debugging purposes
+/// The runtime representation of a Closure, which can be either a user function
+/// or a continuation. Contains a reference to all of the globals and
+/// environmental variables used in the body, along with a function pointer to
+/// the body of the closure.
+#[derive(Clone, Trace)]
 pub struct Closure {
-    #[debug(skip)]
+    /// The runtime the Closure is defined in. This is necessary to ensure that
+    /// dropping the runtime does not de-allocate the function pointer for this
+    /// closure.
     pub runtime: Gc<Runtime>,
-    #[debug(skip)]
-    pub(crate) env: Record,
-    #[debug(skip)]
-    pub(crate) globals: Record,
-    pub(crate) func: FuncPtr,
-    pub(crate) num_required_args: usize,
-    pub(crate) variadic: bool,
-    pub(crate) continuation: bool,
+    /// Environmental variables used by the closure.
+    pub env: Record,
+    /// Global variables used by this closure.
+    pub globals: Record,
+    /// Fuction pointer to the body of the closure.
+    pub func: FuncPtr,
+    /// Number of required arguments to this closure.
+    pub num_required_args: usize,
+    /// Whether or not this is a variadic function.
+    pub variadic: bool,
+    /// Whether or not the function is a user function. A user function is a
+    /// function that is not a continuation. If the function is a user function,
+    /// this value will contain a reference to the debug information stored in
+    /// [runtime].
+    pub user_func_info: Option<FunctionDebugInfoId>,
 }
 
 impl Closure {
@@ -90,7 +90,7 @@ impl Closure {
         func: FuncPtr,
         num_required_args: usize,
         variadic: bool,
-        continuation: bool,
+        user_func_info: Option<FunctionDebugInfoId>,
     ) -> Self {
         Self {
             runtime,
@@ -99,12 +99,20 @@ impl Closure {
             func,
             num_required_args,
             variadic,
-            continuation,
+            user_func_info,
         }
     }
 
+    pub fn is_continuation(&self) -> bool {
+        self.user_func_info.is_none()
+    }
+
+    pub fn is_user_func(&self) -> bool {
+        self.user_func_info.is_some()
+    }
+
     pub(crate) fn deep_clone(&mut self, cloned: &mut HashMap<Gc<Value>, Gc<Value>>) {
-        if !self.continuation {
+        if self.is_user_func() {
             return;
         }
         for captured in &mut self.env {
@@ -113,14 +121,14 @@ impl Closure {
     }
 
     pub async fn call(&self, args: &[Gc<Value>]) -> Result<Record, Exception> {
-        unsafe extern "C" fn just_return(
+        unsafe extern "C" fn halt(
             _runtime: *mut GcInner<Runtime>,
             _env: *const *mut GcInner<Value>,
             _globals: *const *mut GcInner<Value>,
             args: *const *mut GcInner<Value>,
             _exception_handler: *mut GcInner<ExceptionHandler>,
-        ) -> *mut Application {
-            crate::runtime::make_return_values(args.read())
+        ) -> *mut Result<Application, Condition> {
+            crate::runtime::halt(args.read())
         }
 
         let mut args = args.to_vec();
@@ -130,19 +138,21 @@ impl Closure {
             self.runtime.clone(),
             Vec::new(),
             Vec::new(),
-            FuncPtr::Continuation(just_return),
+            FuncPtr::Continuation(halt),
             0,
             true,
-            true,
+            None,
         ))));
-        self.apply(&args, None).await?.eval().await
+        Application::new(self.clone(), args, None, None)
+            .eval()
+            .await
     }
 
     pub async fn apply(
         &self,
         args: &[Gc<Value>],
         exception_handler: Option<Gc<ExceptionHandler>>,
-    ) -> Result<Application, Exception> {
+    ) -> Result<Application, Gc<Value>> {
         // Handle arguments
 
         // Extract the continuation, if it is required
@@ -156,16 +166,10 @@ impl Closure {
 
         // Error if the number of arguments provided is incorrect
         if args.len() < self.num_required_args {
-            return Err(Exception::wrong_num_of_args(
-                self.num_required_args,
-                args.len(),
-            ));
+            return Err(Condition::wrong_num_of_args(self.num_required_args, args.len()).into());
         }
         if !self.variadic && args.len() > self.num_required_args {
-            return Err(Exception::wrong_num_of_args(
-                self.num_required_args,
-                args.len(),
-            ));
+            return Err(Condition::wrong_num_of_args(self.num_required_args, args.len()).into());
         }
 
         // If this function is variadic, create a list to put any extra arguments
@@ -237,8 +241,42 @@ impl Closure {
             // Now we can drop the args
             drop(args);
 
-            Ok(app)
+            Ok(app?)
         }
+    }
+}
+
+impl fmt::Debug for Closure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Some(debug_info_id) = self.user_func_info else {
+            return write!(f, "continuation");
+        };
+
+        let runtime_ref = self.runtime.read();
+        let Some(debug_info) = runtime_ref
+            .debug_info
+            .get_function_debug_info(debug_info_id)
+        else {
+            return write!(f, "unknown-function");
+        };
+
+        if let Some(ref proc_name) = debug_info.name {
+            write!(f, "({proc_name}")?;
+        } else {
+            write!(f, "(<lambda>")?;
+        }
+
+        if let Some((last, args)) = debug_info.args.split_last() {
+            for arg in args {
+                write!(f, " {arg}")?;
+            }
+            if self.variadic {
+                write!(f, " .")?;
+            }
+            write!(f, " {last}")?;
+        }
+
+        write!(f, ") at {}", debug_info.location)
     }
 }
 
@@ -257,15 +295,23 @@ pub struct Application {
     args: Record,
     /// The current exception handler to be passed to the operator.
     exception_handler: Option<Gc<ExceptionHandler>>,
+    /// The call site of this application, if it exists.
+    call_site: Option<Span>,
 }
 
 impl Application {
-    pub fn new(op: Closure, args: Record, exception_handler: Option<Gc<ExceptionHandler>>) -> Self {
+    pub fn new(
+        op: Closure,
+        args: Record,
+        exception_handler: Option<Gc<ExceptionHandler>>,
+        call_site: Option<Span>,
+    ) -> Self {
         Self {
             // We really gotta figure out how to deal with this better
             op: Some(op),
             args,
             exception_handler,
+            call_site,
         }
     }
 
@@ -274,22 +320,148 @@ impl Application {
             op: None,
             args,
             exception_handler: None,
+            call_site: None,
         }
     }
 
     /// Evaluate the application - and all subsequent application - until all that
     /// remains are values. This is the main trampoline of the evaluation engine.
     pub async fn eval(mut self) -> Result<Record, Exception> {
+        let mut stack_trace = StackTraceCollector::new();
+
         while let Application {
             op: Some(op),
             args,
             exception_handler,
+            call_site,
         } = self
         {
-            self = op.apply(&args, exception_handler).await?;
+            stack_trace.collect_application(&op.runtime, op.user_func_info, call_site);
+            self = match op.apply(&args, exception_handler).await {
+                Err(exception) => {
+                    return Err(Exception::new(stack_trace.into_frames(), exception));
+                }
+                Ok(app) => app,
+            };
         }
+
         // If we have no operator left, return the arguments as the final values:
         Ok(self.args)
+    }
+}
+
+#[derive(Default)]
+struct StackTraceCollector {
+    stack_trace: Vec<StackTrace>,
+}
+
+impl StackTraceCollector {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn into_frames(self) -> Vec<Frame> {
+        let mut frames = Vec::new();
+        let mut last_call_site = None;
+
+        for trace in self.stack_trace.into_iter() {
+            match trace {
+                StackTrace::CallSite(new_call_site) => {
+                    last_call_site = last_call_site.or(new_call_site);
+                }
+                StackTrace::UserFuncCall {
+                    runtime,
+                    user_func_info_id,
+                    call_site,
+                } => {
+                    if let Some(debug_info) = runtime
+                        .read()
+                        .debug_info
+                        .get_function_debug_info(user_func_info_id)
+                    {
+                        let proc = debug_info
+                            .name
+                            .clone()
+                            .unwrap_or_else(|| "<lambda>".to_string());
+                        last_call_site = call_site.or(last_call_site);
+                        frames.push(Frame::new(proc, last_call_site.clone()));
+                    }
+                }
+            }
+        }
+
+        frames
+    }
+
+    fn collect_application(
+        &mut self,
+        runtime: &Gc<Runtime>,
+        user_func_info: Option<FunctionDebugInfoId>,
+        call_site: Option<Span>,
+    ) {
+        if let Some(user_func_info_id) = user_func_info {
+            // This is a user func, and therefore we should push to the
+            // current stack trace.
+            let trace = if user_func_info_id != IGNORE_FUNCTION {
+                StackTrace::UserFuncCall {
+                    runtime: runtime.clone(),
+                    user_func_info_id,
+                    call_site,
+                }
+            } else {
+                StackTrace::CallSite(call_site)
+            };
+            self.stack_trace.push(trace);
+        } else {
+            // If this is not user func, we are returning from one via a
+            // continuation and should pop the stack frame:
+            self.stack_trace.pop();
+        }
+    }
+}
+
+#[derive(Debug)]
+#[allow(dead_code)]
+enum StackTrace {
+    CallSite(Option<Span>),
+    UserFuncCall {
+        runtime: Gc<Runtime>,
+        user_func_info_id: FunctionDebugInfoId,
+        call_site: Option<Span>,
+    },
+}
+
+#[derive(Clone, Debug, Trace)]
+pub struct FunctionDebugInfo {
+    /// The name of the function, or None if the function is a lambda
+    // TODO(map): Make this an Arc<String> so we aren't constantly cloning strings.
+    pub name: Option<String>,
+    /// Named arguments for the function
+    pub args: Vec<String>,
+    /// Location of the function definition
+    pub location: Span,
+}
+
+impl FunctionDebugInfo {
+    pub fn new(name: Option<String>, args: Vec<String>, location: Span) -> Self {
+        Self {
+            name,
+            args,
+            location,
+        }
+    }
+
+    pub fn from_bridge_fn(name: &'static str, debug_info: BridgeFnDebugInfo) -> Self {
+        Self {
+            name: Some(name.to_string()),
+            args: debug_info.args.iter().map(|arg| arg.to_string()).collect(),
+            location: Span {
+                line: debug_info.line,
+                column: debug_info.column as usize,
+                offset: debug_info.offset,
+                file: std::sync::Arc::new(debug_info.file.to_string()),
+            },
+        }
     }
 }
 
@@ -298,10 +470,10 @@ pub fn apply<'a>(
     rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
-) -> BoxFuture<'a, Result<Application, Exception>> {
+) -> BoxFuture<'a, Result<Application, Gc<Value>>> {
     Box::pin(async move {
         if rest_args.is_empty() {
-            return Err(Exception::wrong_num_of_args(2, args.len()));
+            return Err(Condition::wrong_num_of_args(2, args.len()).into());
         }
         let op = args[0].read();
         let op: &Closure = op.as_ref().try_into()?;
@@ -313,12 +485,26 @@ pub fn apply<'a>(
             op.clone(),
             args,
             exception_handler.clone(),
+            None,
         ))
     })
 }
 
 inventory::submit! {
-    BridgeFn::new("apply", "(base)", 1, true, apply)
+    BridgeFn::new(
+        "apply",
+        "(base)",
+        1,
+        true,
+        apply,
+        BridgeFnDebugInfo::new(
+            "proc.rs",
+            468,
+            7,
+            0,
+            &[ "arg1", "args" ],
+        )
+    )
 }
 
 pub(crate) fn deep_clone_value(
@@ -354,12 +540,18 @@ unsafe extern "C" fn call_consumer_with_values(
     _globals: *const *mut GcInner<Value>,
     args: *const *mut GcInner<Value>,
     exception_handler: *mut GcInner<ExceptionHandler>,
-) -> *mut Application {
+) -> *mut Result<Application, Condition> {
     // env[0] is the consumer
     let consumer = Gc::from_ptr(env.read());
     let consumer = {
         let consumer_ref = consumer.read();
-        let consumer: &Closure = consumer_ref.as_ref().try_into().unwrap();
+        let consumer: &Closure = if let Ok(consumer) = consumer_ref.as_ref().try_into() {
+            consumer
+        } else {
+            return Box::into_raw(Box::new(Err(Condition::invalid_operator_type(
+                consumer_ref.type_name(),
+            ))));
+        };
         consumer.clone()
     };
     // env[1] is the continuation
@@ -386,11 +578,12 @@ unsafe extern "C" fn call_consumer_with_values(
         Some(Gc::from_ptr(exception_handler))
     };
 
-    Box::into_raw(Box::new(Application::new(
+    Box::into_raw(Box::new(Ok(Application::new(
         consumer,
         collected_args,
         exception_handler,
-    )))
+        None,
+    ))))
 }
 
 pub fn call_with_values<'a>(
@@ -398,10 +591,10 @@ pub fn call_with_values<'a>(
     _rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
-) -> BoxFuture<'a, Result<Application, Exception>> {
+) -> BoxFuture<'a, Result<Application, Gc<Value>>> {
     Box::pin(async move {
         let [producer, consumer] = args else {
-            return Err(Exception::wrong_num_of_args(2, args.len()));
+            return Err(Condition::wrong_num_of_args(2, args.len()).into());
         };
 
         // Fetch the producer
@@ -425,17 +618,31 @@ pub fn call_with_values<'a>(
             FuncPtr::Continuation(call_consumer_with_values),
             num_required_args,
             variadic,
-            false,
+            Some(IGNORE_FUNCTION),
         );
 
         Ok(Application::new(
             producer,
             vec![Gc::new(Value::Closure(call_consumer_closure))],
             exception_handler.clone(),
+            None,
         ))
     })
 }
 
 inventory::submit! {
-    BridgeFn::new("call-with-values", "(base)", 2, false, call_with_values)
+    BridgeFn::new(
+        "call-with-values",
+        "(base)",
+        2,
+        false,
+        call_with_values,
+        BridgeFnDebugInfo::new(
+            "proc.rs",
+            587,
+            7,
+            0,
+            &["producer", "consumer"]
+        )
+    )
 }

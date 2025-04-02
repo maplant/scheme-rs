@@ -2,9 +2,7 @@ use proc_macro::{self, TokenStream};
 use proc_macro2::Span;
 use quote::quote;
 use syn::{
-    parse_macro_input, parse_quote, punctuated::Punctuated, DataEnum, DataStruct, DeriveInput,
-    Fields, FnArg, GenericParam, Generics, Ident, ItemFn, LitStr, Member, PatType, Token, Type,
-    TypeReference,
+    parse_macro_input, parse_quote, punctuated::Punctuated, DataEnum, DataStruct, DeriveInput, Fields, FnArg, GenericParam, Generics, Ident, ItemFn, LitStr, Member, Pat, PatIdent, PatType, Token, Type, TypeReference
 };
 
 #[proc_macro_attribute]
@@ -45,6 +43,18 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         bridge.sig.inputs.len()
     };
 
+    let arg_names: Vec<_> = bridge.sig.inputs.iter()
+        .enumerate()
+        .map(|(i, arg)| {
+            if let FnArg::Typed(PatType { pat, .. }) = arg {
+                if let Pat::Ident(PatIdent { ref ident, .. }) = pat.as_ref() {
+                    return ident.to_string();
+                }
+            }
+            format!("arg{i}")
+        })
+        .collect();
+
     let wrapper: ItemFn = if !is_variadic {
         let arg_indices: Vec<_> = (0..num_args).collect();
         parse_quote! {
@@ -53,7 +63,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 rest_args: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
                 cont: &'a ::scheme_rs::gc::Gc<::scheme_rs::value::Value>,
                 exception_handler: &'a Option<::scheme_rs::gc::Gc<::scheme_rs::exception::ExceptionHandler>>
-            ) -> futures::future::BoxFuture<'a, Result<scheme_rs::proc::Application, scheme_rs::exception::Exception>> {
+            ) -> futures::future::BoxFuture<'a, Result<scheme_rs::proc::Application, ::scheme_rs::gc::Gc<::scheme_rs::value::Value>>> {
                 let cont = {
                     let cont = cont.read();
                     if let ::scheme_rs::value::Value::Closure(proc) = &*cont {
@@ -70,6 +80,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                                 #( &args[#arg_indices], )*
                             ).await?,
                             exception_handler.clone(),
+                            None // TODO
                         ))
                     }
                 )
@@ -83,7 +94,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 rest_args: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
                 cont: &'a ::scheme_rs::gc::Gc<::scheme_rs::value::Value>,
                 exception_handler: &'a Option<::scheme_rs::gc::Gc<::scheme_rs::exception::ExceptionHandler>>
-            ) -> futures::future::BoxFuture<'a, Result<scheme_rs::proc::Application, scheme_rs::exception::Exception>> {
+            ) -> futures::future::BoxFuture<'a, Result<scheme_rs::proc::Application, ::scheme_rs::gc::Gc<::scheme_rs::value::Value>>> {
                 let cont = {
                     let cont = cont.read();
                     if let ::scheme_rs::value::Value::Closure(proc) = &*cont {
@@ -101,6 +112,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                                 rest_args
                             ).await?,
                             exception_handler.clone(),
+                            None // TODO
                         ))
                     }
                 )
@@ -113,7 +125,20 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         #wrapper
 
         inventory::submit! {
-            ::scheme_rs::registry::BridgeFn::new(#name, #lib, #num_args, #is_variadic, #wrapper_name)
+            ::scheme_rs::registry::BridgeFn::new(
+                #name,
+                #lib,
+                #num_args,
+                #is_variadic,
+                #wrapper_name,
+                ::scheme_rs::registry::BridgeFnDebugInfo::new(
+                    "(unknown)",
+                    0,
+                    0,
+                    0,
+                    &[ #( #arg_names, )* ],
+                )
+            )
         }
     }
     .into()

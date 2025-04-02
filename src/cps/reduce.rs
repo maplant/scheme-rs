@@ -44,6 +44,7 @@ impl Cps {
                 body,
                 val,
                 cexp,
+                debug_info_id,
             } => {
                 let body = body.beta_reduction(single_use_functions, uses_cache);
                 let cexp = cexp.beta_reduction(single_use_functions, uses_cache);
@@ -61,6 +62,7 @@ impl Cps {
                             body: Box::new(body),
                             val,
                             cexp: Box::new(cexp),
+                            debug_info_id,
                         }
                     } else {
                         cexp
@@ -72,10 +74,11 @@ impl Cps {
                         body: Box::new(body),
                         val,
                         cexp: Box::new(cexp),
+                        debug_info_id,
                     }
                 }
             }
-            Cps::App(Value::Var(Var::Local(operator)), applied)
+            Cps::App(Value::Var(Var::Local(operator)), applied, call_site_id)
                 if single_use_functions.contains_key(&operator) =>
             {
                 let (args, mut body) = single_use_functions.remove(&operator).unwrap();
@@ -83,7 +86,7 @@ impl Cps {
                 if args.args.len() != applied.len() {
                     // Not really sure what to do about variadic args right now
                     single_use_functions.insert(operator, (args, body));
-                    return Cps::App(Value::Var(Var::Local(operator)), applied);
+                    return Cps::App(Value::Var(Var::Local(operator)), applied, call_site_id);
                 }
 
                 // Get the substitutions:

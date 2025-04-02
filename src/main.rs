@@ -13,6 +13,7 @@ use scheme_rs::{
     gc::Gc,
     lex::LexError,
     parse::ParseSyntaxError,
+    proc::Application,
     registry::Registry,
     runtime::Runtime,
     syntax::Syntax,
@@ -88,6 +89,9 @@ async fn main() -> ExitCode {
                     n_results += 1;
                 }
             }
+            Err(EvalError::Exception(exception)) => {
+                print!("{exception}");
+            }
             Err(err) => {
                 println!("Error: {err:?}");
             }
@@ -121,7 +125,9 @@ async fn compile_and_run_str<'e>(
         // println!("Compiled: {compiled:#?}");
 
         let closure = runtime.compile_expr(compiled).await.unwrap();
-        let result = closure.apply(&[], None).await?.eval().await?;
+        let result = Application::new(closure, Vec::new(), None, None)
+            .eval()
+            .await?;
         output.extend(result)
     }
     Ok(output)

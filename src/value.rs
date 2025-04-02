@@ -1,7 +1,7 @@
 use crate::{
     ast,
     env::CapturedEnv,
-    exception::Exception,
+    exception::{Condition, Exception},
     expand::Transformer,
     gc::{Gc, Trace},
     num::Number,
@@ -13,7 +13,7 @@ use crate::{
 use futures::future::{BoxFuture, Shared};
 use std::{fmt, io::Write};
 
-type Future = Shared<BoxFuture<'static, Result<Vec<Gc<Value>>, Exception>>>;
+type Future = Shared<BoxFuture<'static, Result<Vec<Gc<Value>>, Gc<Value>>>>;
 
 /// A Scheme value
 #[derive(Trace)]
@@ -21,35 +21,47 @@ pub enum Value {
     /// The value is undefined. Variables before they are initialized are undefined.
     /// Any attempt to set a variable after creation to undefined results in an error.
     Undefined,
-    /// An empty list.
+    /// An empty list:
     Null,
-    /// Combination of two values. Has a head (car) and a tail (cdr)
+    /// Combination of two values. Has a head (car) and a tail (cdr):
     Pair(Gc<Value>, Gc<Value>),
-    /// Value that is either True (#t) or False (#f)
+    /// Value that is either True (#t) or False (#f):
     Boolean(bool),
-    /// Numeric value.
+    /// Numeric value:
     Number(Number),
-    /// Unicode code point.
+    /// Unicode code point:
     Character(char),
-    /// List of unicode code points.
+    /// Vector of unicode code points:
     String(String),
-    /// Atom of an S-Expression
+    /// Atom of an S-Expression:
     Symbol(String),
+    /// Vector of values:
     Vector(Vec<Value>),
+    /// Vector of bytes:
     ByteVector(Vec<u8>),
+    /// A wrapped syntax object:
     Syntax(Syntax),
-    /// A procedure.
+    /// A procedure:
     Closure(Closure),
+    /// A collection of named values:
     Record(Record),
+    /// The type of a collection of named values:
     RecordType(Gc<RecordType>),
+    /// A condition (which is also a type of record):
+    Condition(Condition),
+    /// A value that will exist in the future:
     Future(Future),
+    /// A procedure that that transforms syntax objects:
     Transformer(Transformer),
-    /// A captured lexical environment.
+    /// A captured lexical environment:
     CapturedEnv(CapturedEnv),
-    // ExceptionHandler(Option<Gc<ExceptionHandler>>),
 }
 
 impl Value {
+    pub fn is_undefined(&self) -> bool {
+        !matches!(self, Self::Undefined)
+    }
+
     /// #f is false, everything else is true
     pub fn is_true(&self) -> bool {
         !matches!(self, Self::Boolean(x) if !x)
@@ -108,7 +120,7 @@ impl Value {
             Self::Syntax(_) => "syntax",
             Self::Closure(_) => "procedure",
             Self::Future(_) => "future",
-            Self::Record(_) => "record",
+            Self::Record(_) | Self::Condition(_) => "record",
             Self::RecordType(_) => "record-type",
             Self::Undefined => "undefined",
             Self::Transformer(_) => "transformer",
@@ -158,6 +170,7 @@ impl Clone for Value {
             Self::Undefined => Self::Undefined,
             Self::Transformer(trans) => Self::Transformer(trans.clone()),
             Self::CapturedEnv(cap) => Self::CapturedEnv(cap.clone()),
+            Self::Condition(cond) => Self::Condition(cond.clone()),
             // Self::ExceptionHandler(eh) => Self::ExceptionHandler(eh.clone()),
         }
     }
@@ -204,6 +217,7 @@ impl fmt::Display for Value {
             Self::Undefined => write!(f, "<undefined>"),
             Self::Transformer(_) => write!(f, "<transformer>"),
             Self::CapturedEnv(_) => write!(f, "<environment>"),
+            Self::Condition(cond) => write!(f, "<{cond:?}>"),
             // Self::ExceptionHandler(_) => write!(f, "<exception-handler>"),
         }
     }
@@ -223,13 +237,14 @@ impl fmt::Debug for Value {
             Self::Character(c) => write!(f, "#\\{c}"),
             Self::ByteVector(v) => display_vec("#u8(", v, f),
             Self::Syntax(syntax) => write!(f, "{:?}", syntax),
-            Self::Closure(_) => write!(f, "<procedure>"),
+            Self::Closure(proc) => write!(f, "#<procedure {proc:?}>"),
             Self::Future(_) => write!(f, "<future>"),
             Self::Record(record) => write!(f, "<{record:?}>"),
             Self::RecordType(record_type) => write!(f, "<{record_type:?}>"),
             Self::Undefined => write!(f, "<undefined>"),
             Self::Transformer(_) => write!(f, "<transformer>"),
             Self::CapturedEnv(_) => write!(f, "<environment>"),
+            Self::Condition(cond) => write!(f, "<{cond:?}>"),
             // Self::ExceptionHandler(_) => write!(f, "<exception-handler>"),
         }
     }
@@ -238,6 +253,20 @@ impl fmt::Debug for Value {
 impl From<bool> for Value {
     fn from(b: bool) -> Value {
         Value::Boolean(b)
+    }
+}
+
+impl From<Condition> for Gc<Value> {
+    fn from(cond: Condition) -> Gc<Value> {
+        Gc::new(Value::Condition(cond))
+    }
+}
+
+impl From<Exception> for Gc<Value> {
+    fn from(exception: Exception) -> Gc<Value> {
+        // Until we can decide on a good method for including the stack trace with
+        // the new condition, just return the object.
+        exception.obj
     }
 }
 
@@ -257,29 +286,29 @@ impl From<Vec<Gc<Value>>> for Value {
 macro_rules! impl_try_from_value_for {
     ($ty:ty, $enum_variant:ident, $type_name:literal) => {
         impl TryFrom<Value> for $ty {
-            type Error = Exception;
+            type Error = Condition;
             fn try_from(v: Value) -> Result<$ty, Self::Error> {
                 match v {
                     Value::$enum_variant(i) => Ok(i),
-                    e => Err(Exception::invalid_type($type_name, e.type_name())),
+                    e => Err(Condition::invalid_type($type_name, e.type_name())),
                 }
             }
         }
         impl<'a> TryFrom<&'a mut Value> for &'a mut $ty {
-            type Error = Exception;
+            type Error = Condition;
             fn try_from(v: &'a mut Value) -> Result<&'a mut $ty, Self::Error> {
                 match v {
                     Value::$enum_variant(i) => Ok(i),
-                    e => Err(Exception::invalid_type($type_name, e.type_name())),
+                    e => Err(Condition::invalid_type($type_name, e.type_name())),
                 }
             }
         }
         impl<'a> TryFrom<&'a Value> for &'a $ty {
-            type Error = Exception;
+            type Error = Condition;
             fn try_from(v: &'a Value) -> Result<&'a $ty, Self::Error> {
                 match v {
                     Value::$enum_variant(i) => Ok(i),
-                    e => Err(Exception::invalid_type($type_name, e.type_name())),
+                    e => Err(Condition::invalid_type($type_name, e.type_name())),
                 }
             }
         }
@@ -287,11 +316,11 @@ macro_rules! impl_try_from_value_for {
     ($ty:ty, $enum_variant:ident, $type_name:literal, copy) => {
         impl_try_from_value_for!($ty, $enum_variant, $type_name);
         impl TryFrom<&Value> for $ty {
-            type Error = Exception;
+            type Error = Condition;
             fn try_from(v: &Value) -> Result<$ty, Self::Error> {
                 match v {
                     Value::$enum_variant(i) => Ok(*i),
-                    e => Err(Exception::invalid_type($type_name, e.type_name())),
+                    e => Err(Condition::invalid_type($type_name, e.type_name())),
                 }
             }
         }
@@ -317,7 +346,7 @@ pub fn eqv(a: &Gc<Value>, b: &Gc<Value>) -> bool {
 }
 
 #[bridge(name = "not", lib = "(base)")]
-pub async fn not(a: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn not(a: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
     let a = a.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*a,
@@ -326,17 +355,17 @@ pub async fn not(a: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
 }
 
 #[bridge(name = "eq?", lib = "(base)")]
-pub async fn eq_pred(a: &Gc<Value>, b: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn eq_pred(a: &Gc<Value>, b: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
     Ok(vec![Gc::new(Value::Boolean(a == b))])
 }
 
 #[bridge(name = "eqv?", lib = "(base)")]
-pub async fn eqv_pred(a: &Gc<Value>, b: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn eqv_pred(a: &Gc<Value>, b: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
     Ok(vec![Gc::new(Value::Boolean(eqv(a, b)))])
 }
 
 #[bridge(name = "boolean?", lib = "(base)")]
-pub async fn boolean_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn boolean_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
     let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
@@ -348,7 +377,7 @@ pub async fn boolean_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> 
 pub async fn boolean_eq_pred(
     a: &Gc<Value>,
     args: &[Gc<Value>],
-) -> Result<Vec<Gc<Value>>, Exception> {
+) -> Result<Vec<Gc<Value>>, Condition> {
     let a_val = &*a.read();
 
     let result = match a_val {
@@ -362,7 +391,7 @@ pub async fn boolean_eq_pred(
 }
 
 #[bridge(name = "symbol?", lib = "(base)")]
-pub async fn symbol_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn symbol_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
     let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
@@ -371,7 +400,7 @@ pub async fn symbol_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
 }
 
 #[bridge(name = "char?", lib = "(base)")]
-pub async fn char_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn char_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
     let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
@@ -380,7 +409,7 @@ pub async fn char_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
 }
 
 #[bridge(name = "vector?", lib = "(base)")]
-pub async fn vector_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn vector_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
     let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
@@ -389,13 +418,13 @@ pub async fn vector_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
 }
 
 #[bridge(name = "null?", lib = "(base)")]
-pub async fn null_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn null_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
     let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(&*arg, Value::Null)))])
 }
 
 #[bridge(name = "pair?", lib = "(base)")]
-pub async fn pair_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn pair_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
     let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
@@ -404,7 +433,7 @@ pub async fn pair_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
 }
 
 #[bridge(name = "string?", lib = "(base)")]
-pub async fn string_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn string_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
     let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
@@ -413,7 +442,7 @@ pub async fn string_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
 }
 
 #[bridge(name = "procedure?", lib = "(base)")]
-pub async fn procedure_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn procedure_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
     let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
@@ -422,7 +451,7 @@ pub async fn procedure_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception
 }
 
 #[bridge(name = "future?", lib = "(base)")]
-pub async fn future_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn future_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
     let arg = arg.read();
     Ok(vec![Gc::new(Value::Boolean(matches!(
         &*arg,
@@ -431,7 +460,7 @@ pub async fn future_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
 }
 
 #[bridge(name = "display", lib = "(base)")]
-pub async fn display(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn display(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
     print!("{}", arg);
     let _ = std::io::stdout().flush();
     Ok(Vec::new())

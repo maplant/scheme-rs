@@ -1,7 +1,7 @@
 use crate::{
     ast::Literal,
     env::{Environment, Macro},
-    exception::Exception,
+    exception::Condition,
     gc::{Gc, Trace},
     lex::{InputSpan, Token},
     lists::list_to_vec_with_null,
@@ -206,7 +206,7 @@ impl Syntax {
         env: &Environment,
         mac: Macro,
         // cont: &Closure,
-    ) -> Result<Expansion, Exception> {
+    ) -> Result<Expansion, Gc<Value>> {
         // Create a new mark for the expansion context
         let new_mark = Mark::new();
 
@@ -240,7 +240,7 @@ impl Syntax {
         &'a self,
         env: &'a Environment,
         // cont: &Closure,
-    ) -> BoxFuture<'a, Result<Expansion, Exception>> {
+    ) -> BoxFuture<'a, Result<Expansion, Gc<Value>>> {
         Box::pin(async move {
             match self {
                 Self::List { list, .. } => {
@@ -288,7 +288,7 @@ impl Syntax {
         mut self,
         env: &Environment,
         // cont: &Closure,
-    ) -> Result<FullyExpanded, Exception> {
+    ) -> Result<FullyExpanded, Gc<Value>> {
         let mut curr_env = env.clone();
         loop {
             match self.expand_once(&curr_env).await? {
@@ -580,13 +580,13 @@ pub async fn syntax_to_datum(
 pub async fn datum_to_syntax(
     template_id: &Gc<Value>,
     datum: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, Exception> {
+) -> Result<Vec<Gc<Value>>, Condition> {
     let template_id = template_id.read();
     let Value::Syntax(Syntax::Identifier {
         ident: template_id, ..
     }) = &*template_id
     else {
-        return Err(Exception::invalid_type("syntax", template_id.type_name()));
+        return Err(Condition::invalid_type("syntax", template_id.type_name()));
     };
     Ok(vec![Gc::new(Value::Syntax(Syntax::from_datum(
         &template_id.marks,

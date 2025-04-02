@@ -5,8 +5,8 @@ use futures::future::BoxFuture;
 use crate::{
     gc::{Gc, GcInner, Trace},
     proc::{Application, Closure, FuncPtr},
-    registry::BridgeFn,
-    runtime::Runtime,
+    registry::{BridgeFn, BridgeFnDebugInfo},
+    runtime::{Runtime, IGNORE_FUNCTION},
     syntax::{Identifier, Span},
     value::Value,
 };
@@ -15,20 +15,40 @@ use std::{error::Error as StdError, fmt, ops::Range};
 #[derive(Debug, Clone, Trace)]
 pub struct Exception {
     pub backtrace: Vec<Frame>,
-    pub message: String,
-    pub condition: Condition,
     pub obj: Gc<Value>,
 }
-impl fmt::Display for Exception {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.message)
+
+impl Exception {
+    pub fn new(backtrace: Vec<Frame>, obj: Gc<Value>) -> Self {
+        Self { backtrace, obj }
     }
 }
+
+// TODO: This shouldn't be the display impl for Exception, I don' t think.
+impl fmt::Display for Exception {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        const MAX_BACKTRACE_LEN: usize = 20;
+        writeln!(f, "Uncaught exception: {}", self.obj)?;
+        if !self.backtrace.is_empty() {
+            writeln!(f, "Stack trace:")?;
+            for (i, frame) in self.backtrace.iter().rev().enumerate() {
+                if i >= MAX_BACKTRACE_LEN {
+                    writeln!(f, "(backtrace truncated)")?;
+                    break;
+                }
+                writeln!(f, "{i}: {frame}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
 impl StdError for Exception {}
 
 #[derive(Debug, Clone, Trace)]
 pub enum Condition {
     Condition,
+    Message { message: String },
     Warning,
     Serious,
     Error,
@@ -37,38 +57,23 @@ pub enum Condition {
     NonContinuable,
     ImplementationRestriction,
     Lexical,
-    Syntax,
+    Syntax { form: Gc<Value>, subform: Gc<Value> },
     Undefined,
-    Message,
-    Irritants,
-    Who,
+    Irritants { irritants: Gc<Value> },
+    Who { who: Gc<Value> },
+    CompoundCondition { simple_conditions: Vec<Gc<Value>> },
 }
 
-impl Exception {
-    pub fn from_value(obj: Gc<Value>) -> Self {
-        Self {
-            backtrace: Vec::new(),
-            message: "Todo".to_string(),
-            condition: Condition::Error,
-            obj,
-        }
-    }
-
-    pub fn error(err: String) -> Self {
-        Self {
-            backtrace: Vec::new(),
-            message: err,
-            condition: Condition::Error,
-            obj: Gc::new(Value::Null),
-        }
+impl Condition {
+    pub fn error(message: String) -> Self {
+        Self::Message { message }
     }
 
     pub fn syntax_error() -> Self {
-        Self {
-            backtrace: Vec::new(),
-            message: "Invalid syntax".to_string(),
-            condition: Condition::Syntax,
-            obj: Gc::new(Value::Null),
+        // TODO: Expand on these
+        Self::Syntax {
+            form: Gc::new(Value::Null),
+            subform: Gc::new(Value::Boolean(false)),
         }
     }
 
@@ -122,32 +127,43 @@ impl Exception {
         ))
     }
 }
-macro_rules! impl_into_exception_for {
+
+macro_rules! impl_into_condition_for {
     ($for:ty) => {
-        impl From<$for> for Exception {
+        impl From<$for> for Condition {
             fn from(e: $for) -> Self {
                 Self::error(e.to_string())
             }
         }
     };
 }
-impl_into_exception_for!(crate::num::ArithmeticError);
-impl_into_exception_for!(crate::num::NumberToUsizeError);
-impl_into_exception_for!(std::num::TryFromIntError);
+impl_into_condition_for!(crate::num::ArithmeticError);
+impl_into_condition_for!(crate::num::NumberToUsizeError);
+impl_into_condition_for!(std::num::TryFromIntError);
 
 #[derive(Debug, Clone, Trace)]
 pub struct Frame {
     pub proc: String,
-    pub span: Span,
-    pub repeated: usize,
+    pub call_site_span: Option<Span>,
+    // pub repeated: usize,
 }
 
 impl Frame {
-    pub fn new(proc: String, span: Span) -> Self {
+    pub fn new(proc: String, call_site_span: Option<Span>) -> Self {
         Self {
             proc,
-            span,
-            repeated: 0,
+            call_site_span,
+            // repeated: 0,
+        }
+    }
+}
+
+impl fmt::Display for Frame {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(ref call_site) = self.call_site_span {
+            write!(f, "{} at {call_site}", self.proc)
+        } else {
+            write!(f, "{} at (unknown)", self.proc)
         }
     }
 }
@@ -168,10 +184,10 @@ pub fn with_exception_handler<'a>(
     _rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
-) -> BoxFuture<'a, Result<Application, Exception>> {
+) -> BoxFuture<'a, Result<Application, Gc<Value>>> {
     Box::pin(async move {
         let [handler, thunk] = args else {
-            return Err(Exception::wrong_num_of_args(2, args.len()));
+            return Err(Condition::wrong_num_of_args(2, args.len()).into());
         };
 
         let handler_ref = handler.read();
@@ -189,12 +205,26 @@ pub fn with_exception_handler<'a>(
             thunk.clone(),
             vec![cont.clone()],
             Some(Gc::new(exception_handler)),
+            None,
         ))
     })
 }
 
 inventory::submit! {
-    BridgeFn::new("with-exception-handler", "(base)", 2, false, with_exception_handler)
+    BridgeFn::new(
+        "with-exception-handler",
+        "(base)",
+        2,
+        false,
+        with_exception_handler,
+        BridgeFnDebugInfo::new(
+            "exception.rs",
+            182,
+            7,
+            0,
+            &[ "handler", "thunk" ],
+        )
+    )
 }
 
 /// Raises a non-continuable exception to the current exception handler.
@@ -203,14 +233,16 @@ pub fn raise<'a>(
     _rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
-) -> BoxFuture<'a, Result<Application, Exception>> {
+) -> BoxFuture<'a, Result<Application, Gc<Value>>> {
     Box::pin(async move {
         let [condition] = args else {
-            return Err(Exception::wrong_num_of_args(1, args.len()));
+            return Err(Condition::wrong_num_of_args(1, args.len()).into());
         };
 
+        // TODO: Make condition non-continuable when it is re-raised
+
         let Some(ref handler) = exception_handler else {
-            return Err(Exception::from_value(condition.clone()));
+            return Err(condition.clone());
         };
 
         let handler = handler.read().clone();
@@ -226,16 +258,30 @@ pub fn raise<'a>(
                     FuncPtr::Continuation(reraise_exception),
                     0,
                     true,
-                    false,
+                    Some(IGNORE_FUNCTION),
                 ))),
             ],
             handler.prev_handler.clone(),
+            None,
         ))
     })
 }
 
 inventory::submit! {
-    BridgeFn::new("raise", "(base)", 1, false, raise)
+    BridgeFn::new(
+        "raise",
+        "(base)",
+        1,
+        false,
+        raise,
+        BridgeFnDebugInfo::new(
+            "exception.rs",
+            231,
+            7,
+            0,
+            &["condition"],
+        )
+    )
 }
 
 unsafe extern "C" fn reraise_exception(
@@ -244,7 +290,7 @@ unsafe extern "C" fn reraise_exception(
     _globals: *const *mut GcInner<Value>,
     _args: *const *mut GcInner<Value>,
     exception_handler: *mut GcInner<ExceptionHandler>,
-) -> *mut Application {
+) -> *mut Result<Application, Condition> {
     let runtime = Gc::from_ptr(runtime);
 
     // env[0] is the exception
@@ -259,7 +305,7 @@ unsafe extern "C" fn reraise_exception(
         Some(Gc::from_ptr(exception_handler))
     };
 
-    Box::into_raw(Box::new(Application::new(
+    Box::into_raw(Box::new(Ok(Application::new(
         Closure::new(
             runtime,
             Vec::new(),
@@ -267,11 +313,12 @@ unsafe extern "C" fn reraise_exception(
             FuncPtr::Bridge(raise),
             1,
             false,
-            false,
+            Some(IGNORE_FUNCTION),
         ),
         vec![exception, cont],
         curr_handler,
-    )))
+        None,
+    ))))
 }
 
 /// Raises an exception to the current exception handler and coninues with the
@@ -281,14 +328,14 @@ pub fn raise_continuable<'a>(
     _rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
-) -> BoxFuture<'a, Result<Application, Exception>> {
+) -> BoxFuture<'a, Result<Application, Gc<Value>>> {
     Box::pin(async move {
         let [condition] = args else {
-            return Err(Exception::wrong_num_of_args(1, args.len()));
+            return Err(Condition::wrong_num_of_args(1, args.len()).into());
         };
 
         let Some(ref handler) = exception_handler else {
-            return Err(Exception::from_value(condition.clone()));
+            return Err(condition.clone());
         };
 
         let handler = handler.read().clone();
@@ -297,10 +344,24 @@ pub fn raise_continuable<'a>(
             handler.curr_handler,
             vec![condition.clone(), cont.clone()],
             handler.prev_handler,
+            None,
         ))
     })
 }
 
 inventory::submit! {
-    BridgeFn::new("raise-continuable", "(base)", 1, false, raise_continuable)
+    BridgeFn::new(
+        "raise-continuable",
+        "(base)",
+        1,
+        false,
+        raise_continuable,
+        BridgeFnDebugInfo::new(
+            "exception.rs",
+            326,
+            7,
+            0,
+            &["condition"],
+        )
+    )
 }

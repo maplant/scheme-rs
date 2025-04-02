@@ -14,7 +14,7 @@ use std::{collections::HashMap, rc::Rc};
 use crate::{
     gc::Gc,
     proc::{Closure, ContinuationPtr, FuncPtr},
-    runtime::Runtime,
+    runtime::{Runtime, IGNORE_CALL_SITE, IGNORE_FUNCTION},
     value::Value as SchemeValue,
 };
 
@@ -170,7 +170,7 @@ impl Cps {
             FuncPtr::Continuation(func),
             0,
             true,
-            true,
+            None,
         ))
     }
 }
@@ -220,7 +220,9 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             Cps::If(cond, success, failure) => {
                 self.if_codegen(&cond, *success, *failure, allocs, deferred)?
             }
-            Cps::App(operator, args) => self.app_codegen(&operator, &args, allocs)?,
+            Cps::App(operator, args, call_site_id) => {
+                self.app_codegen(&operator, &args, call_site_id, allocs)?
+            }
             Cps::Forward(operator, arg) => self.forward_codegen(&operator, &arg, allocs)?,
             Cps::PrimOp(PrimOp::Set, args, _, cexpr) => {
                 self.store_codegen(&args[1], &args[0])?;
@@ -244,7 +246,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 body,
                 val,
                 cexp,
-                ..
+                debug_info_id,
             } => {
                 let bundle = ClosureBundle::new(
                     self.ctx,
@@ -253,7 +255,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                     args.clone(),
                     body.as_ref().clone(),
                 );
-                self.make_closure_codegen(&bundle, *cexp, allocs, deferred)?;
+                self.make_closure_codegen(&bundle, *cexp, debug_info_id, allocs, deferred)?;
                 deferred.push(bundle);
             }
             Cps::Halt(value) => self.halt_codegen(&value, allocs)?,
@@ -345,6 +347,8 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             _ => unreachable!(),
         };
 
+        let error_val = self.builder.build_alloca(ptr_type, "error")?;
+
         let runtime_fn = self.module.get_function(runtime_fn_name).unwrap();
         let result_val = self
             .builder
@@ -353,6 +357,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 &[
                     vals_alloca.into(),
                     i32_type.const_int(num_vals as u64, false).into(),
+                    error_val.into(),
                 ],
                 runtime_fn_name,
             )?
@@ -360,6 +365,22 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             .left()
             .unwrap()
             .into_pointer_value();
+
+        let is_null_bb = self.ctx.append_basic_block(self.function, "is_null");
+        let success_bb = self.ctx.append_basic_block(self.function, "success");
+
+        let is_null = self.builder.build_is_null(result_val, "is_null")?;
+        self.builder
+            .build_conditional_branch(is_null, is_null_bb, success_bb)?;
+
+        self.builder.position_at_end(is_null_bb);
+        self.drop_values_codegen(allocs.clone())?;
+        let error_val = self
+            .builder
+            .build_load(ptr_type, error_val, "error_val_load")?;
+        self.builder.build_return(Some(&error_val))?;
+
+        self.builder.position_at_end(success_bb);
 
         self.rebinds.rebind(Var::Local(result), result_val);
         let new_alloc = Allocs::new(allocs, result_val);
@@ -440,6 +461,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         &self,
         operator: &Value,
         args: &[Value],
+        call_site_id: Option<CallSiteId>,
         allocs: Option<Rc<Allocs<'ctx>>>,
     ) -> Result<(), BuilderError> {
         let operator = self.value_codegen(operator)?;
@@ -462,13 +484,17 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             self.builder.build_store(ep, val)?;
         }
 
-        // Call make_application
-        let make_app = self.module.get_function("make_application").unwrap();
+        let make_app = self.module.get_function("apply").unwrap();
         let app = self
             .builder
             .build_call(
                 make_app,
                 &[
+                    self.function
+                        .get_nth_param(RUNTIME_PARAM)
+                        .unwrap()
+                        .into_pointer_value()
+                        .into(),
                     operator.into(),
                     args_alloca.into(),
                     i32_type.const_int(args.len() as u64, false).into(),
@@ -477,8 +503,11 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                         .unwrap()
                         .into_pointer_value()
                         .into(),
+                    i32_type
+                        .const_int(call_site_id.unwrap_or(IGNORE_CALL_SITE) as u64, false)
+                        .into(),
                 ],
-                "make_application",
+                "apply",
             )?
             .try_as_basic_value()
             .left()
@@ -502,8 +531,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         let operator = self.value_codegen(operator)?;
         let arg = self.value_codegen(arg)?;
 
-        // Call make_forward
-        let make_forward = self.module.get_function("make_forward").unwrap();
+        let make_forward = self.module.get_function("forward").unwrap();
         let app = self
             .builder
             .build_call(
@@ -517,7 +545,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                         .into_pointer_value()
                         .into(),
                 ],
-                "make_forward",
+                "forward",
             )?
             .try_as_basic_value()
             .left()
@@ -538,11 +566,10 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         allocs: Option<Rc<Allocs<'ctx>>>,
     ) -> Result<(), BuilderError> {
         let val = self.value_codegen(args)?;
-        // Call make_return_values
-        let make_app = self.module.get_function("make_return_values").unwrap();
+        let make_app = self.module.get_function("halt").unwrap();
         let app = self
             .builder
-            .build_call(make_app, &[val.into()], "make_return_values")?
+            .build_call(make_app, &[val.into()], "halt")?
             .try_as_basic_value()
             .left()
             .unwrap();
@@ -572,7 +599,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             .unwrap();
 
         // Because our compiler is not particularly sophisticated right now, we can guarantee
-        // that both branches terminate. Thus, noc ontinuation basic block.
+        // that both branches terminate. Thus, no continuation basic block.
         let success_bb = self.ctx.append_basic_block(self.function, "success");
         let failure_bb = self.ctx.append_basic_block(self.function, "failure");
 
@@ -622,6 +649,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         &mut self,
         bundle: &ClosureBundle<'ctx>,
         cexp: Cps,
+        debug_info_id: Option<FunctionDebugInfoId>,
         allocs: Option<Rc<Allocs<'ctx>>>,
         deferred: &mut Vec<ClosureBundle<'ctx>>,
     ) -> Result<(), BuilderError> {
@@ -665,35 +693,39 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             self.builder.build_store(ep, val)?;
         }
 
+        let mut args = vec![
+            self.function
+                .get_nth_param(RUNTIME_PARAM)
+                .unwrap()
+                .into_pointer_value()
+                .into(),
+            bundle.function.as_global_value().as_pointer_value().into(),
+            env_alloca.into(),
+            num_envs.into(),
+            globals_alloca.into(),
+            num_globals.into(),
+            i32_type
+                .const_int(bundle.args.num_required() as u64, false)
+                .into(),
+            bool_type
+                .const_int(bundle.args.variadic as u64, false)
+                .into(),
+        ];
+
         let make_closure = if bundle.args.continuation.is_some() {
+            args.push(
+                i32_type
+                    .const_int(debug_info_id.unwrap_or(IGNORE_FUNCTION) as u64, false)
+                    .into(),
+            );
             self.module.get_function("make_closure").unwrap()
         } else {
             self.module.get_function("make_continuation").unwrap()
         };
+
         let closure = self
             .builder
-            .build_call(
-                make_closure,
-                &[
-                    self.function
-                        .get_nth_param(RUNTIME_PARAM)
-                        .unwrap()
-                        .into_pointer_value()
-                        .into(),
-                    bundle.function.as_global_value().as_pointer_value().into(),
-                    env_alloca.into(),
-                    num_envs.into(),
-                    globals_alloca.into(),
-                    num_globals.into(),
-                    i32_type
-                        .const_int(bundle.args.num_required() as u64, false)
-                        .into(),
-                    bool_type
-                        .const_int(bundle.args.variadic as u64, false)
-                        .into(),
-                ],
-                "make_closure",
-            )?
+            .build_call(make_closure, &args, "make_closure")?
             .try_as_basic_value()
             .left()
             .unwrap()
