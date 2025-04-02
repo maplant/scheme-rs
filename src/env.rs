@@ -361,6 +361,10 @@ impl Global {
     pub fn value(self) -> Gc<Value> {
         self.val
     }
+
+    pub fn value_ref(&self) -> &Gc<Value> {
+        &self.val
+    }
 }
 
 impl fmt::Debug for Global {

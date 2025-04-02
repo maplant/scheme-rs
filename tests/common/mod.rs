@@ -6,7 +6,7 @@ use scheme_rs::{
     ast::DefinitionBody,
     cps::Compile,
     env::{Environment, Top},
-    exception::Exception,
+    exception::Condition,
     gc::Gc,
     registry::{bridge, Registry},
     runtime::Runtime,
@@ -59,11 +59,11 @@ impl TestRuntime {
 }
 
 #[bridge(name = "assert-eq", lib = "(base)")]
-pub async fn test_assert(arg1: &Gc<Value>, arg2: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn test_assert(arg1: &Gc<Value>, arg2: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
     if !eqv(arg1, arg2) {
         let arg1 = format!("{arg1:?}");
         let arg2 = format!("{arg2:?}");
-        Err(Exception::assert_eq_failed(&arg2, &arg1))
+        Err(Condition::assert_eq_failed(&arg2, &arg1))
     } else {
         Ok(vec![])
     }

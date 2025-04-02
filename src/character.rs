@@ -1,4 +1,4 @@
-use crate::{exception::Exception, gc::Gc, num::Number, registry::bridge, value::Value};
+use crate::{exception::Condition, gc::Gc, num::Number, registry::bridge, value::Value};
 use unicode_categories::UnicodeCategories;
 
 mod unicode;
@@ -7,18 +7,18 @@ use unicode::*;
 fn char_switch_case<I: Iterator<Item = char> + ExactSizeIterator>(
     ch: char,
     operation: fn(char) -> I,
-) -> Result<char, Exception> {
+) -> Result<char, Condition> {
     let mut ch = operation(ch);
     let len = ch.len();
     if len == 1 {
         Ok(ch.next().unwrap())
     } else {
-        Err(Exception::wrong_num_of_unicode_chars(1, len))
+        Err(Condition::wrong_num_of_unicode_chars(1, len))
     }
 }
 
 #[bridge(name = "char->integer", lib = "(base)")]
-pub async fn char_to_integer(ch: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn char_to_integer(ch: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
     let ch = ch.read();
     let ch: char = ch.as_ref().try_into()?;
 
@@ -28,11 +28,11 @@ pub async fn char_to_integer(ch: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception
 }
 
 #[bridge(name = "integer->char", lib = "(base)")]
-pub async fn integer_to_char(int: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn integer_to_char(int: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
     let int = int.read();
     let int: &Number = int.as_ref().try_into()?;
-    let int: u64 = int.to_u64();
-    if let Ok(int) = <u64 as TryInto<u32>>::try_into(int) {
+    let int: usize = int.try_into()?;
+    if let Ok(int) = <usize as TryInto<u32>>::try_into(int) {
         if let Some(ch) = char::from_u32(int) {
             return Ok(vec![Gc::new(Value::Character(ch))]);
         }
@@ -51,7 +51,7 @@ macro_rules! impl_char_operator {
         $cmp_function:ident)),* $(,)?
     ) => {
         $(#[bridge(name = $bridge_name, lib = "(base)")]
-        pub async fn $function_name(req_lhs: &Gc<Value>, req_rhs: &Gc<Value>, opt_chars: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
+        pub async fn $function_name(req_lhs: &Gc<Value>, req_rhs: &Gc<Value>, opt_chars: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Condition> {
             for window in [req_lhs, req_rhs]
                 .into_iter()
                 .chain(opt_chars)
@@ -59,7 +59,7 @@ macro_rules! impl_char_operator {
                     let ch = ch.read();
                     ch.as_ref().try_into()
                 })
-                .collect::<Result<Vec<char>, Exception>>()?
+                .collect::<Result<Vec<char>, Condition>>()?
                 .windows(2) {
 
                 if !window.first()
@@ -89,7 +89,7 @@ macro_rules! impl_char_ci_operator {
         $cmp_function:ident)),* $(,)?
     ) => {
         $(#[bridge(name = $bridge_name, lib = "(base)")]
-        pub async fn $function_name(req_lhs: &Gc<Value>, req_rhs: &Gc<Value>, opt_chars: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Exception> {
+        pub async fn $function_name(req_lhs: &Gc<Value>, req_rhs: &Gc<Value>, opt_chars: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Condition> {
             for window in [req_lhs, req_rhs]
                 .into_iter()
                 .chain(opt_chars)
@@ -98,7 +98,7 @@ macro_rules! impl_char_ci_operator {
                     <&Value as TryInto<char>>::try_into(ch.as_ref())
                         .and_then(|c| char_switch_case(c, to_foldcase))
                 })
-                .collect::<Result<Vec<char>, Exception>>()?
+                .collect::<Result<Vec<char>, Condition>>()?
                 .windows(2) {
 
                 if !window.first()
@@ -124,7 +124,7 @@ impl_char_ci_operator![
 macro_rules! impl_char_predicate {
     ($(($bridge_name:literal, $function_name:ident, $predicate:ident)),* $(,)?) => {
         $(#[bridge(name = $bridge_name, lib = "(base)")]
-        pub async fn $function_name(ch: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+        pub async fn $function_name(ch: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
             let ch = ch.read();
             let ch: char = ch.as_ref().try_into()?;
             Ok(vec![Gc::new(Value::Boolean(ch.$predicate()))])
@@ -140,7 +140,7 @@ impl_char_predicate![
 ];
 
 #[bridge(name = "digit-value", lib = "(base)")]
-pub async fn digit_value(ch: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn digit_value(ch: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
     let ch = ch.read();
     let ch: char = ch.as_ref().try_into()?;
 
@@ -156,7 +156,7 @@ pub async fn digit_value(ch: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
 macro_rules! impl_char_case_converter {
     ($(($bridge_name:literal, $function_name:ident, $converter:expr)),* $(,)?) => {
         $(#[bridge(name = $bridge_name, lib = "(base)")]
-        pub async fn $function_name(ch: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+        pub async fn $function_name(ch: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
             let ch = ch.read();
             let ch: char = ch.as_ref().try_into()?;
             Ok(vec![Gc::new(Value::Character(char_switch_case(ch, $converter)?))])
@@ -169,7 +169,7 @@ impl_char_case_converter![
 ];
 
 #[bridge(name = "char-foldcase", lib = "(base)")]
-pub async fn char_foldcase(ch: &Gc<Value>) -> Result<Vec<Gc<Value>>, Exception> {
+pub async fn char_foldcase(ch: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
     let ch = ch.read();
     let ch: char = ch.as_ref().try_into()?;
     Ok(vec![Gc::new(Value::Character(char_switch_case(

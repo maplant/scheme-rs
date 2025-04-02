@@ -278,6 +278,11 @@
               (set! n (- n 1))))
            '(a a a))
 
+;; 11.7 Arithmetic
+
+(assert-eq (/ 5) 1/5)
+(assert-eq (/ 5 10) 1/2)
+
 ;; 11.15 Control features
 
 ;; (assert-eq (let ((path '())

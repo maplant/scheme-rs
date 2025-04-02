@@ -2,7 +2,7 @@ use crate::{
     ast::{Expression, Literal},
     cps::Compile,
     env::CapturedEnv,
-    exception::{Exception, ExceptionHandler},
+    exception::{Condition, ExceptionHandler},
     gc::{Gc, Trace},
     proc::{Application, Closure, DynamicWind},
     syntax::{Identifier, Span, Syntax},
@@ -404,7 +404,7 @@ pub fn call_transformer<'a>(
     cont: &'a Gc<Value>,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
-) -> BoxFuture<'a, Result<Application, Exception>> {
+) -> BoxFuture<'a, Result<Application, Gc<Value>>> {
     Box::pin(async move {
         let [captured_env, trans, arg] = args else {
             panic!("wrong args");
@@ -426,7 +426,7 @@ pub fn call_transformer<'a>(
             let arg = Syntax::from_datum(&BTreeSet::default(), arg);
 
             // Expand the argument:
-            trans.expand(&arg).ok_or_else(Exception::syntax_error)?
+            trans.expand(&arg).ok_or_else(Condition::syntax_error)?
         };
 
         let captured_env = {
@@ -451,7 +451,8 @@ pub fn call_transformer<'a>(
             .await
             .unwrap();
         let transformer_result = compiled.call(&[]).await?;
-        let application = Application::new(cont, transformer_result, exception_handler.clone(), dynamic_wind.clone());
+        let application =
+            Application::new(cont, transformer_result, exception_handler.clone(),  dynamic_wind.clone(), None);
 
         Ok(application)
     })

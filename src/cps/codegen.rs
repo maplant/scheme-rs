@@ -1,6 +1,5 @@
 //! LLVM SSA Codegen from CPS.
 
-use compile::TopLevelExpr;
 use indexmap::IndexMap;
 use inkwell::{
     builder::{Builder, BuilderError},
@@ -15,7 +14,7 @@ use std::{collections::HashMap, rc::Rc};
 use crate::{
     gc::Gc,
     proc::{Closure, ContinuationPtr, FuncPtr},
-    runtime::Runtime,
+    runtime::{Runtime, IGNORE_CALL_SITE, IGNORE_FUNCTION},
     value::Value as SchemeValue,
 };
 
@@ -67,7 +66,7 @@ impl<'ctx> Allocs<'ctx> {
     }
 }
 
-impl TopLevelExpr {
+impl Cps {
     pub fn into_closure<'ctx, 'b>(
         self,
         runtime: Gc<Runtime>,
@@ -127,7 +126,7 @@ impl TopLevelExpr {
 
         // Collect the provided globals:
 
-        let globals = self.body.globals().into_iter().collect::<Vec<_>>();
+        let globals = self.globals().into_iter().collect::<Vec<_>>();
 
         let globals_param = function
             .get_nth_param(GLOBALS_PARAM)
@@ -147,7 +146,7 @@ impl TopLevelExpr {
         }
 
         let mut deferred = Vec::new();
-        cu.cps_codegen(self.body, None, &mut deferred)?;
+        cu.cps_codegen(self, None, &mut deferred)?;
 
         while let Some(next) = deferred.pop() {
             next.codegen(ctx, module, builder, &mut deferred)?;
@@ -172,7 +171,7 @@ impl TopLevelExpr {
             FuncPtr::Continuation(func),
             0,
             true,
-            true,
+            None,
         ))
     }
 }
@@ -222,7 +221,9 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             Cps::If(cond, success, failure) => {
                 self.if_codegen(&cond, *success, *failure, allocs, deferred)?
             }
-            Cps::App(operator, args) => self.app_codegen(&operator, &args, allocs)?,
+            Cps::App(operator, args, call_site_id) => {
+                self.app_codegen(&operator, &args, call_site_id, allocs)?
+            }
             Cps::Forward(operator, arg) => self.forward_codegen(&operator, &arg, allocs)?,
             Cps::PrimOp(PrimOp::Set, args, _, cexpr) => {
                 self.store_codegen(&args[1], &args[0])?;
@@ -238,12 +239,15 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 self.get_call_transformer_codegen(res)?;
                 self.cps_codegen(*cexpr, allocs, deferred)?;
             }
+            Cps::PrimOp(primop, vals, result, cexpr) => {
+                self.simple_primop_codegen(primop, &vals, result, *cexpr, allocs, deferred)?
+            }
             Cps::Closure {
                 args,
                 body,
                 val,
                 cexp,
-                ..
+                debug_info_id,
             } => {
                 let bundle = ClosureBundle::new(
                     self.ctx,
@@ -252,11 +256,10 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                     args.clone(),
                     body.as_ref().clone(),
                 );
-                self.make_closure_codegen(&bundle, *cexp, allocs, deferred)?;
+                self.make_closure_codegen(&bundle, *cexp, debug_info_id, allocs, deferred)?;
                 deferred.push(bundle);
             }
-            Cps::Halt(value) => self.halt_codegen(&value)?,
-            _ => unimplemented!(),
+            Cps::Halt(value) => self.halt_codegen(&value, allocs)?,
         }
         Ok(())
     }
@@ -266,7 +269,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             Value::Var(var) => Ok((*self.rebinds.fetch_bind(var)).into()),
             Value::Literal(Literal::Number(num)) => {
                 // FIXME: Number has to be a u64
-                let num = num.to_u64();
+                let num: u64 = u64::try_from(usize::try_from(num).unwrap()).unwrap();
                 let i64_to_number = self.module.get_function("i64_to_number").unwrap();
                 let constant = self.ctx.i64_type().const_int(num, false);
                 Ok(self
@@ -300,6 +303,91 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         self.rebinds.rebind(Var::Local(new_var), cloned);
         let new_alloc = Allocs::new(allocs, cloned);
         self.cps_codegen(cexpr, new_alloc, deferred)?;
+        Ok(())
+    }
+
+    fn simple_primop_codegen(
+        &mut self,
+        primop: PrimOp,
+        vals: &[Value],
+        result: Local,
+        cexpr: Cps,
+        allocs: Option<Rc<Allocs<'ctx>>>,
+        deferred: &mut Vec<ClosureBundle<'ctx>>,
+    ) -> Result<(), BuilderError> {
+        // Put the values into an array:
+        let ptr_type = self.ctx.ptr_type(AddressSpace::default());
+        let i32_type = self.ctx.i32_type();
+        let num_vals = vals.len();
+        let array_type = ptr_type.array_type(num_vals as u32);
+        let vals_alloca = self.builder.build_alloca(array_type, "vals")?;
+        for (i, val) in vals.iter().enumerate() {
+            let ep = unsafe {
+                self.builder.build_gep(
+                    ptr_type,
+                    vals_alloca,
+                    &[i32_type.const_int(i as u64, false)],
+                    "vals_elem",
+                )?
+            };
+            let val = self.value_codegen(val)?;
+            self.builder.build_store(ep, val)?;
+        }
+
+        // Call the respective runtime function:
+        let runtime_fn_name = match primop {
+            PrimOp::Add => "add",
+            PrimOp::Sub => "sub",
+            PrimOp::Mul => "mul",
+            PrimOp::Div => "div",
+            PrimOp::Equal => "equal",
+            PrimOp::Greater => "greater",
+            PrimOp::GreaterEqual => "greater_equal",
+            PrimOp::Lesser => "lesser",
+            PrimOp::LesserEqual => "lesser_equal",
+            _ => unreachable!(),
+        };
+
+        let error_val = self.builder.build_alloca(ptr_type, "error")?;
+
+        let runtime_fn = self.module.get_function(runtime_fn_name).unwrap();
+        let result_val = self
+            .builder
+            .build_call(
+                runtime_fn,
+                &[
+                    vals_alloca.into(),
+                    i32_type.const_int(num_vals as u64, false).into(),
+                    error_val.into(),
+                ],
+                runtime_fn_name,
+            )?
+            .try_as_basic_value()
+            .left()
+            .unwrap()
+            .into_pointer_value();
+
+        let is_null_bb = self.ctx.append_basic_block(self.function, "is_null");
+        let success_bb = self.ctx.append_basic_block(self.function, "success");
+
+        let is_null = self.builder.build_is_null(result_val, "is_null")?;
+        self.builder
+            .build_conditional_branch(is_null, is_null_bb, success_bb)?;
+
+        self.builder.position_at_end(is_null_bb);
+        self.drop_values_codegen(allocs.clone())?;
+        let error_val = self
+            .builder
+            .build_load(ptr_type, error_val, "error_val_load")?;
+        self.builder.build_return(Some(&error_val))?;
+
+        self.builder.position_at_end(success_bb);
+
+        self.rebinds.rebind(Var::Local(result), result_val);
+        let new_alloc = Allocs::new(allocs, result_val);
+
+        self.cps_codegen(cexpr, new_alloc, deferred)?;
+
         Ok(())
     }
 
@@ -374,6 +462,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         &self,
         operator: &Value,
         args: &[Value],
+        call_site_id: Option<CallSiteId>,
         allocs: Option<Rc<Allocs<'ctx>>>,
     ) -> Result<(), BuilderError> {
         let operator = self.value_codegen(operator)?;
@@ -396,13 +485,17 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             self.builder.build_store(ep, val)?;
         }
 
-        // Call make_application
-        let make_app = self.module.get_function("make_application").unwrap();
+        let make_app = self.module.get_function("apply").unwrap();
         let app = self
             .builder
             .build_call(
                 make_app,
                 &[
+                    self.function
+                        .get_nth_param(RUNTIME_PARAM)
+                        .unwrap()
+                        .into_pointer_value()
+                        .into(),
                     operator.into(),
                     args_alloca.into(),
                     i32_type.const_int(args.len() as u64, false).into(),
@@ -414,10 +507,12 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                     self.function
                         .get_nth_param(DYNAMIC_WIND_PARAM)
                         .unwrap()
-                        .into_pointer_value()
+                        .into_pointer_value(),
+                    i32_type
+                        .const_int(call_site_id.unwrap_or(IGNORE_CALL_SITE) as u64, false)
                         .into(),
                 ],
-                "make_application",
+                "apply",
             )?
             .try_as_basic_value()
             .left()
@@ -441,8 +536,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         let operator = self.value_codegen(operator)?;
         let arg = self.value_codegen(arg)?;
 
-        // Call make_forward
-        let make_forward = self.module.get_function("make_forward").unwrap();
+        let make_forward = self.module.get_function("forward").unwrap();
         let app = self
             .builder
             .build_call(
@@ -461,7 +555,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                         .into_pointer_value()
                         .into(),
                 ],
-                "make_forward",
+                "forward",
             )?
             .try_as_basic_value()
             .left()
@@ -476,9 +570,12 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         Ok(())
     }
 
-    fn halt_codegen(&self, args: &Value) -> Result<(), BuilderError> {
+    fn halt_codegen(
+        &self,
+        args: &Value,
+        allocs: Option<Rc<Allocs<'ctx>>>,
+    ) -> Result<(), BuilderError> {
         let val = self.value_codegen(args)?;
-        // Call halt
         let make_app = self.module.get_function("halt").unwrap();
         let app = self
             .builder
@@ -486,6 +583,9 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             .try_as_basic_value()
             .left()
             .unwrap();
+
+        self.drop_values_codegen(allocs)?;
+
         let _ = self.builder.build_return(Some(&app))?;
 
         Ok(())
@@ -509,7 +609,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             .unwrap();
 
         // Because our compiler is not particularly sophisticated right now, we can guarantee
-        // that both branches terminate. Thus, noc ontinuation basic block.
+        // that both branches terminate. Thus, no continuation basic block.
         let success_bb = self.ctx.append_basic_block(self.function, "success");
         let failure_bb = self.ctx.append_basic_block(self.function, "failure");
 
@@ -559,6 +659,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         &mut self,
         bundle: &ClosureBundle<'ctx>,
         cexp: Cps,
+        debug_info_id: Option<FunctionDebugInfoId>,
         allocs: Option<Rc<Allocs<'ctx>>>,
         deferred: &mut Vec<ClosureBundle<'ctx>>,
     ) -> Result<(), BuilderError> {
@@ -602,35 +703,39 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             self.builder.build_store(ep, val)?;
         }
 
+        let mut args = vec![
+            self.function
+                .get_nth_param(RUNTIME_PARAM)
+                .unwrap()
+                .into_pointer_value()
+                .into(),
+            bundle.function.as_global_value().as_pointer_value().into(),
+            env_alloca.into(),
+            num_envs.into(),
+            globals_alloca.into(),
+            num_globals.into(),
+            i32_type
+                .const_int(bundle.args.num_required() as u64, false)
+                .into(),
+            bool_type
+                .const_int(bundle.args.variadic as u64, false)
+                .into(),
+        ];
+
         let make_closure = if bundle.args.continuation.is_some() {
+            args.push(
+                i32_type
+                    .const_int(debug_info_id.unwrap_or(IGNORE_FUNCTION) as u64, false)
+                    .into(),
+            );
             self.module.get_function("make_closure").unwrap()
         } else {
             self.module.get_function("make_continuation").unwrap()
         };
+
         let closure = self
             .builder
-            .build_call(
-                make_closure,
-                &[
-                    self.function
-                        .get_nth_param(RUNTIME_PARAM)
-                        .unwrap()
-                        .into_pointer_value()
-                        .into(),
-                    bundle.function.as_global_value().as_pointer_value().into(),
-                    env_alloca.into(),
-                    num_envs.into(),
-                    globals_alloca.into(),
-                    num_globals.into(),
-                    i32_type
-                        .const_int(bundle.args.num_required() as u64, false)
-                        .into(),
-                    bool_type
-                        .const_int(bundle.args.variadic as u64, false)
-                        .into(),
-                ],
-                "make_closure",
-            )?
+            .build_call(make_closure, &args, "make_closure")?
             .try_as_basic_value()
             .left()
             .unwrap()
