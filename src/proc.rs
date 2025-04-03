@@ -599,7 +599,7 @@ unsafe extern "C" fn call_consumer_with_values(
         consumer,
         collected_args,
         exception_handler,
-        dynamic_wind,
+        dynamic_wind.as_ref().unwrap().clone(),
         None,
     ))))
 }
@@ -678,10 +678,10 @@ pub fn dynamic_wind<'a>(
     cont: &'a Gc<Value>,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
-) -> BoxFuture<'a, Result<Application, Exception>> {
+) -> BoxFuture<'a, Result<Application, Gc<Value>>> {
     Box::pin(async move {
         let [in_thunk, body_thunk, out_thunk] = args else {
-            return Err(Exception::wrong_num_of_args(3, args.len()));
+            return Err(Condition::wrong_num_of_args(3, args.len()).into());
         };
         let in_thunk = {
             let in_thunk_ref = in_thunk.read();

@@ -507,7 +507,8 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                     self.function
                         .get_nth_param(DYNAMIC_WIND_PARAM)
                         .unwrap()
-                        .into_pointer_value(),
+                        .into_pointer_value()
+                        .into(),
                     i32_type
                         .const_int(call_site_id.unwrap_or(IGNORE_CALL_SITE) as u64, false)
                         .into(),

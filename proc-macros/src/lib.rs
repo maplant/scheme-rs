@@ -62,7 +62,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 args: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
                 rest_args: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
                 cont: &'a ::scheme_rs::gc::Gc<::scheme_rs::value::Value>,
-                exception_handler: &'a Option<::scheme_rs::gc::Gc<::scheme_rs::exception::ExceptionHandler>>
+                exception_handler: &'a Option<::scheme_rs::gc::Gc<::scheme_rs::exception::ExceptionHandler>>,
                 dynamic_wind: &'a ::scheme_rs::proc::DynamicWind,
             ) -> futures::future::BoxFuture<'a, Result<scheme_rs::proc::Application, ::scheme_rs::gc::Gc<::scheme_rs::value::Value>>> {
                 let cont = {
@@ -95,7 +95,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 args: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
                 rest_args: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
                 cont: &'a ::scheme_rs::gc::Gc<::scheme_rs::value::Value>,
-                exception_handler: &'a Option<::scheme_rs::gc::Gc<::scheme_rs::exception::ExceptionHandler>>
+                exception_handler: &'a Option<::scheme_rs::gc::Gc<::scheme_rs::exception::ExceptionHandler>>,
                 dynamic_wind: &'a ::scheme_rs::proc::DynamicWind,
             ) -> futures::future::BoxFuture<'a, Result<scheme_rs::proc::Application, ::scheme_rs::gc::Gc<::scheme_rs::value::Value>>> {
                 let cont = {
