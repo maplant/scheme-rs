@@ -1,4 +1,4 @@
-# <img align="left" width="150px" src="logo.png"> Scheme-rs: Embedded Scheme for the Async Rust Ecosystem
+# <picture><source media="(prefers-color-scheme: dark)" srcset="logo-dark.png"><img align="left" width="150px" src="logo-light.png"></picture> Scheme-rs: Embedded Scheme for the Async Rust Ecosystem
 
 Scheme-rs is a work-in-progress implementation of the [R6RS](https://www.r6rs.org/final/r6rs.pdf) specification
 of the scheme programming language that is designed to work with async Rust runtimes like [tokio](https://tokio.rs/).
@@ -19,11 +19,11 @@ That is obviously a long way away.
 - Hygienic macros and syntax transformers (`define-syntax`, `syntax-case`, `datum->syntax` and `syntax->datum`) 
 - Spawning tasks and awaiting futures
 - Exceptions and error handling (`raise`, `raise-continuable`, `with-exception-handler`)
+- `dynamic-wind`
 - Defining async bridge functions in Rust
 
 ## Features currently unsupported by scheme-rs: 
 
-- `dynamic-wind`
 - Records and conditions 
 - Ports and IO operations
 - Most API functions are not implemented

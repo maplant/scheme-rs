@@ -4,7 +4,7 @@ use futures::future::BoxFuture;
 
 use crate::{
     gc::{Gc, GcInner, Trace},
-    proc::{Application, Closure, FuncPtr},
+    proc::{Application, Closure, DynamicWind, FuncPtr},
     registry::{BridgeFn, BridgeFnDebugInfo},
     runtime::{Runtime, IGNORE_FUNCTION},
     syntax::{Identifier, Span},
@@ -170,6 +170,8 @@ impl fmt::Display for Frame {
 
 /// An exception handler includes the current handler - a function to call with
 /// any condition that is raised - and the previous handler.
+// TODO: We need to determine include the dynamic extent with the exception handler
+// so that we can call the proper winders.
 #[derive(Clone, Trace)]
 pub struct ExceptionHandler {
     /// The previously installed handler. If the previously installed handler is
@@ -177,6 +179,17 @@ pub struct ExceptionHandler {
     prev_handler: Option<Gc<ExceptionHandler>>,
     /// The currently installed handler.
     curr_handler: Closure,
+    /// The dynamic extent of the exception handler.
+    dynamic_extent: DynamicWind,
+}
+
+impl ExceptionHandler {
+    /// # Safety
+    /// Exception handler must point to a valid Gc'd object.
+    pub unsafe fn from_ptr(ptr: *mut GcInner<Self>) -> Option<Gc<Self>> {
+        use std::ops::Not;
+        ptr.is_null().not().then(|| unsafe { Gc::from_ptr(ptr) })
+    }
 }
 
 pub fn with_exception_handler<'a>(
@@ -184,6 +197,7 @@ pub fn with_exception_handler<'a>(
     _rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
+    dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Gc<Value>>> {
     Box::pin(async move {
         let [handler, thunk] = args else {
@@ -199,12 +213,14 @@ pub fn with_exception_handler<'a>(
         let exception_handler = ExceptionHandler {
             prev_handler: exception_handler.clone(),
             curr_handler: handler.clone(),
+            dynamic_extent: dynamic_wind.clone(),
         };
 
         Ok(Application::new(
             thunk.clone(),
             vec![cont.clone()],
             Some(Gc::new(exception_handler)),
+            dynamic_wind.clone(),
             None,
         ))
     })
@@ -233,6 +249,7 @@ pub fn raise<'a>(
     _rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
+    dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Gc<Value>>> {
     Box::pin(async move {
         let [condition] = args else {
@@ -262,6 +279,7 @@ pub fn raise<'a>(
                 ))),
             ],
             handler.prev_handler.clone(),
+            dynamic_wind.clone(),
             None,
         ))
     })
@@ -290,6 +308,7 @@ unsafe extern "C" fn reraise_exception(
     _globals: *const *mut GcInner<Value>,
     _args: *const *mut GcInner<Value>,
     exception_handler: *mut GcInner<ExceptionHandler>,
+    dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition> {
     let runtime = Gc::from_ptr(runtime);
 
@@ -298,12 +317,6 @@ unsafe extern "C" fn reraise_exception(
 
     // env[1] is the continuation
     let cont = Gc::from_ptr(env.add(1).read());
-
-    let curr_handler = if exception_handler.is_null() {
-        None
-    } else {
-        Some(Gc::from_ptr(exception_handler))
-    };
 
     Box::into_raw(Box::new(Ok(Application::new(
         Closure::new(
@@ -316,7 +329,8 @@ unsafe extern "C" fn reraise_exception(
             Some(IGNORE_FUNCTION),
         ),
         vec![exception, cont],
-        curr_handler,
+        ExceptionHandler::from_ptr(exception_handler),
+        dynamic_wind.as_ref().unwrap().clone(),
         None,
     ))))
 }
@@ -328,6 +342,7 @@ pub fn raise_continuable<'a>(
     _rest_args: &'a [Gc<Value>],
     cont: &'a Gc<Value>,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
+    dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Gc<Value>>> {
     Box::pin(async move {
         let [condition] = args else {
@@ -344,6 +359,7 @@ pub fn raise_continuable<'a>(
             handler.curr_handler,
             vec![condition.clone(), cont.clone()],
             handler.prev_handler,
+            dynamic_wind.clone(),
             None,
         ))
     })
@@ -365,3 +381,33 @@ inventory::submit! {
         )
     )
 }
+
+/*
+pub fn winders(from_extent: &DynamicWind, to_extent: &DynamicWind) -> Gc<Value> {
+    let len = from_extent.winders.len().min(to_extent.winders.len());
+
+    let mut split_point = 0;
+    for i in 0..len {
+        if from_extent.winders[i].0 == to_extent.winders[i].0 {
+            split_point = i + 1;
+        } else {
+            break;
+        }
+    }
+
+    let (_, to_extent) = to_extent.winders.split_at(split_point);
+
+    let mut thunks = Gc::new(Value::Null);
+    for thunk in to_extent
+        .iter()
+        .map(|to_extent| {
+            to_extent.1.clone()
+        })
+        .rev()
+    {
+        thunks = Gc::new(Value::Pair(Gc::new(Value::Closure(thunk)), thunks));
+    }
+
+    thunks
+}
+*/

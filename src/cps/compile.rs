@@ -20,7 +20,7 @@ pub trait Compile {
             cexp: Box::new(self.compile(Box::new(|value| {
                 Cps::App(value, vec![Value::from(k)], None)
             }))),
-            debug_info_id: None,
+            debug: None,
         }
         .reduce()
     }
@@ -61,11 +61,11 @@ fn compile_lambda(
             }))),
             val: k4,
             cexp: Box::new(Cps::App(Value::from(k2), vec![Value::from(k4)], None)),
-            debug_info_id: Some(debug_info_id),
+            debug: Some(debug_info_id),
         }),
         val: k1,
         cexp: Box::new(meta_cont(Value::from(k1))),
-        debug_info_id: None,
+        debug: None,
     }
 }
 
@@ -108,12 +108,12 @@ fn compile_let(
                     cexp: Box::new(curr_expr.compile(Box::new(move |result| {
                         Cps::App(result, vec![Value::from(k3)], None)
                     }))),
-                    debug_info_id: None,
+                    debug: None,
                 }),
             )),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
-            debug_info_id: None,
+            debug: None,
         }
     } else {
         body.compile(meta_cont)
@@ -156,7 +156,7 @@ impl Compile for Var {
             )),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
-            debug_info_id: None,
+            debug: None,
         }
     }
 }
@@ -172,7 +172,7 @@ impl Compile for &[Expression] {
                     body: Box::new(Cps::App(Value::from(k2), vec![], None)),
                     val: k1,
                     cexp: Box::new(meta_cont(Value::from(k1))),
-                    debug_info_id: None,
+                    debug: None,
                 }
             }
             [last_expr] => last_expr.compile(Box::new(meta_cont) as Box<dyn FnMut(Value) -> Cps>),
@@ -186,7 +186,7 @@ impl Compile for &[Expression] {
                     cexp: Box::new(head.compile(Box::new(move |result| {
                         Cps::App(result, vec![Value::from(k2)], None)
                     }))),
-                    debug_info_id: None,
+                    debug: None,
                 }
             }
         }
@@ -216,7 +216,7 @@ fn compile_undefined(mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
         )),
         val: k1,
         cexp: Box::new(meta_cont(Value::from(k1))),
-        debug_info_id: None,
+        debug: None,
     }
 }
 
@@ -233,7 +233,7 @@ impl Compile for Literal {
             )),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
-            debug_info_id: None,
+            debug: None,
         }
     }
 }
@@ -282,12 +282,12 @@ fn compile_apply(
                 )),
                 val: k4,
                 cexp: Box::new(Cps::App(op_result, vec![Value::from(k4)], None)),
-                debug_info_id: None,
+                debug: None,
             }))
         }),
         val: k1,
         cexp: Box::new(meta_cont(Value::from(k1))),
-        debug_info_id: None,
+        debug: None,
     }
 }
 
@@ -318,7 +318,7 @@ fn compile_apply_args(
         cexp: Box::new(arg.compile(Box::new(|result| {
             Cps::App(result, vec![Value::from(k1)], None)
         }))),
-        debug_info_id: None,
+        debug: None,
     }
 }
 
@@ -353,7 +353,7 @@ fn compile_primop(
         cexp: Box::new(arg.compile(Box::new(|result| {
             Cps::App(result, vec![Value::from(k1)], None)
         }))),
-        debug_info_id: None,
+        debug: None,
     }
 }
 
@@ -365,39 +365,45 @@ fn compile_call_with_cc(
     let k2 = Local::gensym();
     let k3 = Local::gensym();
     let k4 = Local::gensym();
-    let escape_procedure = Local::gensym();
     let arg = Local::gensym();
-    let cloned_closure = Local::gensym();
+    let winders = Local::gensym();
+    let escape_procedure = Local::gensym();
+    let prepared_cont = Local::gensym();
 
     Cps::Closure {
         args: ClosureArgs::new(vec![k1], false, None),
-        body: Box::new(Cps::Closure {
-            args: ClosureArgs::new(vec![arg], true, Some(Local::gensym())),
-            body: Box::new(Cps::PrimOp(
-                PrimOp::CloneClosure,
-                vec![Value::from(k1)],
-                cloned_closure,
-                Box::new(Cps::Forward(Value::from(cloned_closure), Value::from(arg))),
-            )),
-            val: escape_procedure,
-            cexp: Box::new(Cps::Closure {
-                args: ClosureArgs::new(vec![k3], false, None),
-                body: Box::new(Cps::App(
-                    Value::from(k3),
-                    vec![Value::from(escape_procedure), Value::from(k1)],
-                    None,
+        body: Box::new(Cps::PrimOp(
+            PrimOp::ExtractWinders,
+            Vec::new(),
+            winders,
+            Box::new(Cps::Closure {
+                args: ClosureArgs::new(vec![arg], true, Some(Local::gensym())),
+                body: Box::new(Cps::PrimOp(
+                    PrimOp::PrepareContinuation,
+                    vec![Value::from(k1), Value::from(winders)],
+                    prepared_cont,
+                    Box::new(Cps::Forward(Value::from(prepared_cont), Value::from(arg))),
                 )),
-                val: k4,
-                cexp: Box::new(thunk.compile(Box::new(|thunk_result| {
-                    Cps::App(thunk_result, vec![Value::from(k4)], None)
-                }))),
-                debug_info_id: None,
+                val: escape_procedure,
+                cexp: Box::new(Cps::Closure {
+                    args: ClosureArgs::new(vec![k3], false, None),
+                    body: Box::new(Cps::App(
+                        Value::from(k3),
+                        vec![Value::from(escape_procedure), Value::from(k1)],
+                        None,
+                    )),
+                    val: k4,
+                    cexp: Box::new(thunk.compile(Box::new(|thunk_result| {
+                        Cps::App(thunk_result, vec![Value::from(k4)], None)
+                    }))),
+                    debug: None,
+                }),
+                debug: None,
             }),
-            debug_info_id: None,
-        }),
+        )),
         val: k2,
         cexp: Box::new(meta_cont(Value::from(k2))),
-        debug_info_id: None,
+        debug: None,
     }
 }
 
@@ -427,12 +433,12 @@ impl Compile for If {
                     )),
                     val: k3,
                     cexp: Box::new(Cps::App(cond_result, vec![Value::from(k3)], None)),
-                    debug_info_id: None,
+                    debug: None,
                 }
             }))),
             val: k2,
             cexp: Box::new(meta_cont(Value::from(k2))),
-            debug_info_id: None,
+            debug: None,
         }
     }
 }
@@ -481,12 +487,12 @@ fn compile_and(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps 
                 )),
                 val: k3,
                 cexp: Box::new(Cps::App(expr_result, vec![Value::from(k3)], None)),
-                debug_info_id: None,
+                debug: None,
             }
         }))),
         val: k2,
         cexp: Box::new(meta_cont(Value::from(k2))),
-        debug_info_id: None,
+        debug: None,
     }
 }
 
@@ -534,12 +540,12 @@ fn compile_or(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps +
                 )),
                 val: k3,
                 cexp: Box::new(Cps::App(expr_result, vec![Value::from(k3)], None)),
-                debug_info_id: None,
+                debug: None,
             }
         }))),
         val: k2,
         cexp: Box::new(meta_cont(Value::from(k2))),
-        debug_info_id: None,
+        debug: None,
     }
 }
 
@@ -612,7 +618,7 @@ impl Compile for Option<Either<Box<Definition>, ExprBody>> {
                     body: Box::new(Cps::App(Value::from(k1), Vec::new(), None)),
                     val: k2,
                     cexp: Box::new(meta_cont(Value::from(k2))),
-                    debug_info_id: None,
+                    debug: None,
                 }
             }
         }
@@ -637,19 +643,23 @@ impl Compile for Set {
                         Value::Var(Var::Local(expr_result)),
                     ],
                     Local::gensym(),
-                    Box::new(self.var.compile(Box::new(move |result| {
-                        Cps::App(result, vec![Value::from(k2)], None)
+                    Box::new(Cps::App(Value::from(k2), Vec::new(), None)),
+                    /*
+                        // TODO: We should not return the value of the variable.
+                        Box::new(self.var.compile(Box::new(move |result| {
+                            Cps::App(result, vec![Value::from(k2)], None)
                     }))),
+                        */
                 )),
                 val: k3,
                 cexp: Box::new(self.val.compile(Box::new(move |result| {
                     Cps::App(result, vec![Value::from(k3)], None) // Value::from(k3), vec![result, Value::from(k2)])
                 }))),
-                debug_info_id: None,
+                debug: None,
             }),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
-            debug_info_id: None,
+            debug: None,
         }
     }
 }
@@ -680,11 +690,11 @@ impl Compile for DefineVar {
                 cexp: Box::new(self.val.compile(Box::new(move |result| {
                     Cps::App(result, vec![Value::from(k3)], None)
                 }))),
-                debug_info_id: None,
+                debug: None,
             }),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
-            debug_info_id: None,
+            debug: None,
         }
     }
 }
@@ -718,11 +728,11 @@ impl Compile for DefineFunc {
                     self.debug_info_id,
                     |lambda_result| Cps::App(lambda_result, vec![Value::from(k3)], None),
                 )),
-                debug_info_id: None,
+                debug: None,
             }),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
-            debug_info_id: None,
+            debug: None,
         }
     }
 }
@@ -740,7 +750,7 @@ impl Compile for Quote {
             )),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
-            debug_info_id: None,
+            debug: None,
         }
     }
 }
@@ -758,7 +768,7 @@ impl Compile for SyntaxQuote {
             )),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
-            debug_info_id: None,
+            debug: None,
         }
     }
 }
@@ -795,12 +805,12 @@ impl Compile for SyntaxCase {
                     )),
                     val: k3,
                     cexp: Box::new(Cps::App(arg_result, vec![Value::from(k3)], None)),
-                    debug_info_id: None,
+                    debug: None,
                 }
             }))),
             val: k2,
             cexp: Box::new(meta_cont(Value::from(k2))),
-            debug_info_id: None,
+            debug: None,
         }
     }
 }
@@ -819,7 +829,7 @@ impl Compile for Vector {
             )),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
-            debug_info_id: None,
+            debug: None,
         }
     }
 }
@@ -837,7 +847,7 @@ impl Compile for Vec<u8> {
             )),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
-            debug_info_id: None,
+            debug: None,
         }
     }
 }

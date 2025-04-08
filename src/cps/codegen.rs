@@ -90,7 +90,8 @@ impl Cps {
                 ptr_type.into(), // Env
                 ptr_type.into(), // Globals
                 ptr_type.into(), // Args
-                ptr_type.into(), // ExceptionHandler
+                ptr_type.into(), // Exception handler
+                ptr_type.into(), // Dyanmic wind
             ],
             false,
         );
@@ -228,11 +229,22 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 self.store_codegen(&args[1], &args[0])?;
                 self.cps_codegen(*cexpr, allocs, deferred)?;
             }
-            Cps::PrimOp(PrimOp::CloneClosure, proc, val, cexpr) => {
-                let [proc] = proc.as_slice() else {
+            Cps::PrimOp(PrimOp::Clone, args, clone_into, cexpr) => {
+                let [to_clone] = args.as_slice() else {
                     unreachable!()
                 };
-                self.clone_closure_codegen(proc, val, *cexpr, allocs, deferred)?;
+                self.clone_codegen(to_clone, clone_into, *cexpr, allocs, deferred)?;
+            }
+            Cps::PrimOp(PrimOp::ExtractWinders, _, extract_to, cexpr) => {
+                self.extract_winders_codegen(extract_to, *cexpr, allocs, deferred)?;
+            }
+            Cps::PrimOp(PrimOp::PrepareContinuation, args, prepare_to, cexpr) => {
+                let [cont, winders] = args.as_slice() else {
+                    unreachable!()
+                };
+                self.prepare_continuation_codegen(
+                    cont, winders, prepare_to, *cexpr, allocs, deferred,
+                )?;
             }
             Cps::PrimOp(PrimOp::GetCallTransformerFn, _, res, cexpr) => {
                 self.get_call_transformer_codegen(res)?;
@@ -246,7 +258,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 body,
                 val,
                 cexp,
-                debug_info_id,
+                debug: debug_info_id,
             } => {
                 let bundle = ClosureBundle::new(
                     self.ctx,
@@ -263,45 +275,104 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         Ok(())
     }
 
-    fn value_codegen(&self, value: &Value) -> Result<BasicValueEnum<'ctx>, BuilderError> {
-        match value {
-            Value::Var(var) => Ok((*self.rebinds.fetch_bind(var)).into()),
-            Value::Literal(Literal::Number(num)) => {
-                // FIXME: Number has to be a u64
-                let num: u64 = u64::try_from(usize::try_from(num).unwrap()).unwrap();
-                let i64_to_number = self.module.get_function("i64_to_number").unwrap();
-                let constant = self.ctx.i64_type().const_int(num, false);
-                Ok(self
-                    .builder
-                    .build_call(i64_to_number, &[constant.into()], "i64_to_number")?
-                    .try_as_basic_value()
-                    .left()
-                    .unwrap())
-            }
-            _ => todo!(),
-        }
-    }
-
-    fn clone_closure_codegen(
+    fn clone_codegen(
         &mut self,
-        proc: &Value,
-        new_var: Local,
+        value: &Value,
+        clone_into: Local,
         cexpr: Cps,
         allocs: Option<Rc<Allocs<'ctx>>>,
         deferred: &mut Vec<ClosureBundle<'ctx>>,
     ) -> Result<(), BuilderError> {
-        let proc = self.value_codegen(proc)?.into_pointer_value();
-        let clone_env = self.module.get_function("clone_closure").unwrap();
+        let value = self.value_codegen(value)?.into_pointer_value();
+        let clone = self.module.get_function("clone").unwrap();
         let cloned = self
             .builder
-            .build_call(clone_env, &[proc.into()], "clone_closure")?
+            .build_call(clone, &[value.into()], "cloned")?
             .try_as_basic_value()
             .left()
             .unwrap()
             .into_pointer_value();
-        self.rebinds.rebind(Var::Local(new_var), cloned);
+        self.rebinds.rebind(Var::Local(clone_into), cloned);
         let new_alloc = Allocs::new(allocs, cloned);
         self.cps_codegen(cexpr, new_alloc, deferred)?;
+        Ok(())
+    }
+
+    fn value_codegen(&self, value: &Value) -> Result<BasicValueEnum<'ctx>, BuilderError> {
+        match value {
+            Value::Var(var) => Ok((*self.rebinds.fetch_bind(var)).into()),
+            _ => todo!(),
+        }
+    }
+
+    fn extract_winders_codegen(
+        &mut self,
+        extract_to: Local,
+        cexpr: Cps,
+        allocs: Option<Rc<Allocs<'ctx>>>,
+        deferred: &mut Vec<ClosureBundle<'ctx>>,
+    ) -> Result<(), BuilderError> {
+        let extract_winders = self.module.get_function("extract_winders").unwrap();
+        let winders = self
+            .builder
+            .build_call(
+                extract_winders,
+                &[self
+                    .function
+                    .get_nth_param(DYNAMIC_WIND_PARAM)
+                    .unwrap()
+                    .into_pointer_value()
+                    .into()],
+                "winders",
+            )?
+            .try_as_basic_value()
+            .left()
+            .unwrap()
+            .into_pointer_value();
+
+        self.rebinds.rebind(Var::Local(extract_to), winders);
+        let new_alloc = Allocs::new(allocs, winders);
+        self.cps_codegen(cexpr, new_alloc, deferred)?;
+
+        Ok(())
+    }
+
+    fn prepare_continuation_codegen(
+        &mut self,
+        cont: &Value,
+        winders: &Value,
+        prepare_to: Local,
+        cexpr: Cps,
+        allocs: Option<Rc<Allocs<'ctx>>>,
+        deferred: &mut Vec<ClosureBundle<'ctx>>,
+    ) -> Result<(), BuilderError> {
+        let cont = self.value_codegen(cont)?;
+        let winders = self.value_codegen(winders)?;
+        let prepare_continuation = self.module.get_function("prepare_continuation").unwrap();
+        let prepared = self
+            .builder
+            .build_call(
+                prepare_continuation,
+                &[
+                    cont.into(),
+                    winders.into(),
+                    self.function
+                        .get_nth_param(DYNAMIC_WIND_PARAM)
+                        .unwrap()
+                        .into_pointer_value()
+                        .into(),
+                ],
+                "prepared_continuation",
+            )?
+            .try_as_basic_value()
+            .left()
+            .unwrap()
+            .into_pointer_value();
+
+        self.rebinds.rebind(Var::Local(prepare_to), prepared);
+        let new_alloc = Allocs::new(allocs, prepared);
+        self.cps_codegen(cexpr, new_alloc, deferred)?;
+
         Ok(())
     }
 
@@ -503,6 +574,11 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                         .unwrap()
                         .into_pointer_value()
                         .into(),
+                    self.function
+                        .get_nth_param(DYNAMIC_WIND_PARAM)
+                        .unwrap()
+                        .into_pointer_value()
+                        .into(),
                     i32_type
                         .const_int(call_site_id.unwrap_or(IGNORE_CALL_SITE) as u64, false)
                         .into(),
@@ -541,6 +617,11 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                     arg.into(),
                     self.function
                         .get_nth_param(EXCEPTION_HANDLER_PARAM)
+                        .unwrap()
+                        .into_pointer_value()
+                        .into(),
+                    self.function
+                        .get_nth_param(DYNAMIC_WIND_PARAM)
                         .unwrap()
                         .into_pointer_value()
                         .into(),
@@ -756,8 +837,8 @@ const ENV_PARAM: u32 = 1;
 const GLOBALS_PARAM: u32 = 2;
 const ARGS_PARAM: u32 = 3;
 const EXCEPTION_HANDLER_PARAM: u32 = 4;
-const CONTINUATION_PARAM: u32 = 5;
-// const DYNAMIC_WIND_PARAM: u32 = 5;
+const DYNAMIC_WIND_PARAM: u32 = 5;
+const CONTINUATION_PARAM: u32 = 6;
 
 impl<'ctx> ClosureBundle<'ctx> {
     fn new(
@@ -785,6 +866,7 @@ impl<'ctx> ClosureBundle<'ctx> {
                     ptr_type.into(), // Globals
                     ptr_type.into(), // Args
                     ptr_type.into(), // Exception handler
+                    ptr_type.into(), // Dynamic wind
                     ptr_type.into(), // Continuation
                 ],
                 false,
@@ -797,6 +879,7 @@ impl<'ctx> ClosureBundle<'ctx> {
                     ptr_type.into(), // Globals
                     ptr_type.into(), // Args
                     ptr_type.into(), // Exception handler
+                    ptr_type.into(), // Dynamic wind
                 ],
                 false,
             )
