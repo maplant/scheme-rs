@@ -451,8 +451,13 @@ pub fn call_transformer<'a>(
             .await
             .unwrap();
         let transformer_result = compiled.call(&[]).await?;
-        let application =
-            Application::new(cont, transformer_result, exception_handler.clone(),  dynamic_wind.clone(), None);
+        let application = Application::new(
+            cont,
+            transformer_result,
+            exception_handler.clone(),
+            dynamic_wind.clone(),
+            None,
+        );
 
         Ok(application)
     })

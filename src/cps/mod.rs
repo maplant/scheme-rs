@@ -93,6 +93,12 @@ pub enum PrimOp {
     /// Set cell value:
     Set,
 
+    /// Read the cell and clone the underlying value:
+    Clone,
+
+    // List operators:
+    Cons,
+
     // Math primitive operators:
     Add,
     Sub,
@@ -109,8 +115,11 @@ pub enum PrimOp {
     GetCallTransformerFn,
 
     // Continuation primitive operators:
-    CloneClosure,
     CallWithCurrentContinuation,
+    /// Converts a continuation to a callable user function
+    PrepareContinuation,
+    /// Extract the current winders from the environment into a value
+    ExtractWinders,
 }
 
 impl FromStr for PrimOp {
@@ -177,7 +186,7 @@ pub enum Cps {
         body: Box<Cps>,
         val: Local,
         cexp: Box<Cps>,
-        debug_info_id: Option<FunctionDebugInfoId>,
+        debug: Option<FunctionDebugInfoId>,
     },
 
     /// Halt execution and return the values

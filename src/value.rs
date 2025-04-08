@@ -230,7 +230,7 @@ impl fmt::Debug for Value {
             Self::Boolean(false) => write!(f, "#f"),
             Self::Number(number) => write!(f, "{number:?}"),
             Self::String(string) => write!(f, "{string:?}"),
-            Self::Symbol(symbol) => write!(f, "'{symbol }"),
+            Self::Symbol(symbol) => write!(f, "{symbol}"),
             Self::Pair(car, cdr) => crate::lists::debug_list(car, cdr, f),
             Self::Vector(v) => display_vec("#(", v, f),
             Self::Null => write!(f, "()"),
@@ -283,10 +283,57 @@ impl From<Vec<Gc<Value>>> for Value {
     }
 }
 
+impl TryFrom<Value> for (Gc<Value>, Gc<Value>) {
+    type Error = Condition;
+
+    fn try_from(v: Value) -> Result<(Gc<Value>, Gc<Value>), Self::Error> {
+        match v {
+            Value::Pair(head, tail) => Ok((head, tail)),
+            e => Err(Condition::invalid_type("pair", e.type_name())),
+        }
+    }
+}
+
+impl<'a> TryFrom<&'a Value> for (Gc<Value>, Gc<Value>) {
+    type Error = Condition;
+
+    fn try_from(v: &'a Value) -> Result<(Gc<Value>, Gc<Value>), Self::Error> {
+        match v {
+            Value::Pair(head, tail) => Ok((head.clone(), tail.clone())),
+            e => Err(Condition::invalid_type("pair", e.type_name())),
+        }
+    }
+}
+
+impl TryFrom<Gc<Value>> for Closure {
+    type Error = Condition;
+
+    fn try_from(v: Gc<Value>) -> Result<Self, Self::Error> {
+        let read = v.read();
+        match &*read {
+            Value::Closure(clos) => Ok(clos.clone()),
+            e => Err(Condition::invalid_type("procedure", e.type_name())),
+        }
+    }
+}
+
+impl TryFrom<Gc<Value>> for Vec<Value> {
+    type Error = Condition;
+
+    fn try_from(v: Gc<Value>) -> Result<Self, Self::Error> {
+        let read = v.read();
+        match &*read {
+            Value::Vector(vec) => Ok(vec.clone()),
+            e => Err(Condition::invalid_type("procedure", e.type_name())),
+        }
+    }
+}
+
 macro_rules! impl_try_from_value_for {
     ($ty:ty, $enum_variant:ident, $type_name:literal) => {
         impl TryFrom<Value> for $ty {
             type Error = Condition;
+
             fn try_from(v: Value) -> Result<$ty, Self::Error> {
                 match v {
                     Value::$enum_variant(i) => Ok(i),
@@ -294,8 +341,10 @@ macro_rules! impl_try_from_value_for {
                 }
             }
         }
+
         impl<'a> TryFrom<&'a mut Value> for &'a mut $ty {
             type Error = Condition;
+
             fn try_from(v: &'a mut Value) -> Result<&'a mut $ty, Self::Error> {
                 match v {
                     Value::$enum_variant(i) => Ok(i),
@@ -303,8 +352,10 @@ macro_rules! impl_try_from_value_for {
                 }
             }
         }
+
         impl<'a> TryFrom<&'a Value> for &'a $ty {
             type Error = Condition;
+
             fn try_from(v: &'a Value) -> Result<&'a $ty, Self::Error> {
                 match v {
                     Value::$enum_variant(i) => Ok(i),
@@ -313,8 +364,10 @@ macro_rules! impl_try_from_value_for {
             }
         }
     };
+
     ($ty:ty, $enum_variant:ident, $type_name:literal, copy) => {
         impl_try_from_value_for!($ty, $enum_variant, $type_name);
+
         impl TryFrom<&Value> for $ty {
             type Error = Condition;
             fn try_from(v: &Value) -> Result<$ty, Self::Error> {

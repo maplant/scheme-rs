@@ -44,7 +44,7 @@ impl Cps {
                 body,
                 val,
                 cexp,
-                debug_info_id,
+                debug: debug_info_id,
             } => {
                 let body = body.beta_reduction(single_use_functions, uses_cache);
                 let cexp = cexp.beta_reduction(single_use_functions, uses_cache);
@@ -62,7 +62,7 @@ impl Cps {
                             body: Box::new(body),
                             val,
                             cexp: Box::new(cexp),
-                            debug_info_id,
+                            debug: debug_info_id,
                         }
                     } else {
                         cexp
@@ -74,7 +74,7 @@ impl Cps {
                         body: Box::new(body),
                         val,
                         cexp: Box::new(cexp),
-                        debug_info_id,
+                        debug: debug_info_id,
                     }
                 }
             }
