@@ -608,36 +608,6 @@ unsafe extern "C" fn prepare_continuation(
 
     let thunks = compute_winders(from_winders, to_winders);
 
-    /*
-    let mut to_winders_iter = to_winders.iter();
-    let mut from_winders_iter = from_winders.winders.iter();
-
-    // Strip the from_winders prefix
-    // TODO: We need to also do this in the other direction for the current dynamic extent's
-    // out thunks
-    let mut in_thunks = Vec::new();
-    while let Some(to_in_winder) = to_winders_iter.next() {
-        let Value::Pair(to_in, _to_out) = to_in_winder else {
-            unreachable!()
-        };
-        let to_in_ref = to_in.read();
-        let to_in: &Closure = to_in_ref.as_ref().try_into().unwrap();
-        match from_winders_iter.next() {
-            Some(from_in) if to_in != &from_in.0 => {
-                in_thunks.push(Gc::new(Value::Closure(to_in.clone())));
-                break;
-            }
-            None => {
-                in_thunks.push(Gc::new(Value::Closure(to_in.clone())));
-                break;
-            }
-            _ => (),
-        }
-    }
-
-    let in_thunks = slice_to_list(&in_thunks);
-    */
-
     // Clone the continuation
     let cont = clone_continuation_env(&cont, &mut HashMap::default());
 

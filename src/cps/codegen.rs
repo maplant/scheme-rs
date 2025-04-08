@@ -229,14 +229,6 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 self.store_codegen(&args[1], &args[0])?;
                 self.cps_codegen(*cexpr, allocs, deferred)?;
             }
-            /*
-            Cps::PrimOp(PrimOp::CloneClosure, proc, val, cexpr) => {
-                let [proc] = proc.as_slice() else {
-                    unreachable!()
-                };
-                self.clone_closure_codegen(proc, val, *cexpr, allocs, deferred)?;
-            }
-             */
             Cps::PrimOp(PrimOp::Clone, args, clone_into, cexpr) => {
                 let [to_clone] = args.as_slice() else {
                     unreachable!()
@@ -312,31 +304,6 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             _ => todo!(),
         }
     }
-
-    /*
-    fn clone_closure_codegen(
-        &mut self,
-        proc: &Value,
-        new_var: Local,
-        cexpr: Cps,
-        allocs: Option<Rc<Allocs<'ctx>>>,
-        deferred: &mut Vec<ClosureBundle<'ctx>>,
-    ) -> Result<(), BuilderError> {
-        let proc = self.value_codegen(proc)?.into_pointer_value();
-        let clone_env = self.module.get_function("clone_closure").unwrap();
-        let cloned = self
-            .builder
-            .build_call(clone_env, &[proc.into()], "clone_closure")?
-            .try_as_basic_value()
-            .left()
-            .unwrap()
-            .into_pointer_value();
-        self.rebinds.rebind(Var::Local(new_var), cloned);
-        let new_alloc = Allocs::new(allocs, cloned);
-        self.cps_codegen(cexpr, new_alloc, deferred)?;
-        Ok(())
-    }
-    */
 
     fn extract_winders_codegen(
         &mut self,
