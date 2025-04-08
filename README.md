@@ -1,4 +1,4 @@
-# <div align="left" width="150px"> <picture> <source media="(prefers-color-scheme: dark)"  srcset="logo-dark.png">  <source media="(prefers-color-scheme: light)" srcset="logo-light.png"> <img src="logo-light.png">  </picture> </div> Scheme-rs: Embedded Scheme for the Async Rust Ecosystem
+# <picture><source media="(prefers-color-scheme: dark)" srcset="logo-dark.png"><img align="left" width="150px" src="logo-light.png"></picture> Scheme-rs: Embedded Scheme for the Async Rust Ecosystem
 
 Scheme-rs is a work-in-progress implementation of the [R6RS](https://www.r6rs.org/final/r6rs.pdf) specification
 of the scheme programming language that is designed to work with async Rust runtimes like [tokio](https://tokio.rs/).
