@@ -443,9 +443,12 @@ impl Compile for And {
     }
 }
 
-fn compile_and(mut exprs: VecDeque<Expression>, meta_cont: &mut (dyn FnMut(Value) -> Cps + '_)) -> Cps {
+fn compile_and(
+    mut exprs: VecDeque<Expression>,
+    meta_cont: &mut (dyn FnMut(Value) -> Cps + '_),
+) -> Cps {
     let Some(expr) = exprs.pop_front() else {
-        return meta_cont(constant(SchemeValue::from(true)))
+        return meta_cont(constant(SchemeValue::from(true)));
     };
 
     let k1 = Local::gensym();
@@ -491,9 +494,12 @@ impl Compile for Or {
     }
 }
 
-fn compile_or(mut exprs: VecDeque<Expression>, meta_cont: &mut (dyn FnMut(Value) -> Cps + '_)) -> Cps {
+fn compile_or(
+    mut exprs: VecDeque<Expression>,
+    meta_cont: &mut (dyn FnMut(Value) -> Cps + '_),
+) -> Cps {
     let Some(expr) = exprs.pop_front() else {
-        return meta_cont(constant(SchemeValue::from(false)))
+        return meta_cont(constant(SchemeValue::from(false)));
     };
 
     let k1 = Local::gensym();
@@ -697,10 +703,7 @@ impl Compile for DefineFunc {
                 args: ClosureArgs::new(vec![lambda_result], false, None),
                 body: Box::new(Cps::PrimOp(
                     PrimOp::Set,
-                    vec![
-                        Value::from(self.var),
-                        Value::Var(Var::Local(lambda_result)),
-                    ],
+                    vec![Value::from(self.var), Value::Var(Var::Local(lambda_result))],
                     Local::gensym(),
                     Box::new(self.next.compile(&mut move |result| {
                         Cps::App(result, vec![Value::from(k2)], None)
