@@ -118,7 +118,7 @@ async fn compile_and_run_str<'e>(
     let mut output = Vec::new();
     for sexpr in sexprs {
         let span = sexpr.span().clone();
-        let expr = DefinitionBody::parse(runtime, &[sexpr], env, &span).await?;
+        let expr = DefinitionBody::parse(runtime, &[sexpr], env, span).await?;
 
         // println!("Parsed: {expr:#?}");
         let compiled = expr.compile_top_level();

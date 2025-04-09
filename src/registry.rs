@@ -224,7 +224,7 @@ impl Registry {
             .or_insert_with(|| Gc::new(Top::library()));
         let base_env = Environment::Top(base_lib.clone());
         let sexprs = Syntax::from_str(include_str!("stdlib.scm"), Some("stdlib.scm")).unwrap();
-        let base = DefinitionBody::parse(runtime, &sexprs, &base_env, &Span::default())
+        let base = DefinitionBody::parse(runtime, &sexprs, &base_env, Span::default())
             .await
             .unwrap();
         let compiled = base.compile_top_level();

@@ -39,10 +39,9 @@ impl TestRuntime {
             &self.runtime,
             sexprs,
             &self.test_top,
-            &Span::default(),
+            Span::default(),
         )
-        .await
-        .unwrap();
+        .await?;
         let compiled = base.compile_top_level();
         let closure = self
             .runtime

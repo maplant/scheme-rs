@@ -78,32 +78,35 @@ impl Value {
         todo!()
     }
 
-    pub fn from_literal(literal: &ast::Literal) -> Self {
+    pub fn from_literal(literal: ast::Literal) -> Self {
         match literal {
-            ast::Literal::Number(n) => Value::Number(n.clone()),
-            ast::Literal::Boolean(b) => Value::Boolean(*b),
-            ast::Literal::String(s) => Value::String(s.clone()),
-            ast::Literal::Character(c) => Value::Character(*c),
+            ast::Literal::Number(n) => Value::Number(n),
+            ast::Literal::Boolean(b) => Value::Boolean(b),
+            ast::Literal::String(s) => Value::String(s),
+            ast::Literal::Character(c) => Value::Character(c),
             _ => todo!("Literal evaluation not implemented"),
         }
     }
 
-    pub fn from_syntax(syntax: &Syntax) -> Self {
+    pub fn from_syntax(syntax: Syntax) -> Self {
         match syntax {
             Syntax::Null { .. } => Self::Null,
-            Syntax::List { list, .. } => {
-                let mut curr = Self::from_syntax(list.last().unwrap());
-                for item in list[..list.len() - 1].iter().rev() {
-                    curr = Self::Pair(Gc::new(Self::from_syntax(item)), Gc::new(curr));
-                }
-                curr
-            }
+            Syntax::List { list, .. } => list
+                .into_iter()
+                .rev()
+                .fold(None, |state, item| match state {
+                    Some(state) => {
+                        Some(Self::Pair(Gc::new(Self::from_syntax(item)), Gc::new(state)))
+                    }
+                    None => Some(Self::from_syntax(item)),
+                })
+                .unwrap(),
             Syntax::Vector { vector, .. } => {
-                Self::Vector(vector.iter().map(Self::from_syntax).collect())
+                Self::Vector(vector.into_iter().map(Self::from_syntax).collect())
             }
-            Syntax::ByteVector { vector, .. } => Self::ByteVector(vector.clone()),
+            Syntax::ByteVector { vector, .. } => Self::ByteVector(vector),
             Syntax::Literal { literal, .. } => Self::from_literal(literal),
-            Syntax::Identifier { ident, .. } => Self::Symbol(ident.name.clone()),
+            Syntax::Identifier { ident, .. } => Self::Symbol(ident.name),
         }
     }
 
