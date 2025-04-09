@@ -154,7 +154,7 @@ impl Compile for Var {
             args: ClosureArgs::new(vec![k2], false, None),
             body: Box::new(Cps::App(
                 Value::from(k2),
-                vec![Value::from(self.clone())],
+                vec![Value::from(self)],
                 None,
             )),
             val: k1,
@@ -178,9 +178,7 @@ impl Compile for &mut [Expression] {
                     debug: None,
                 }
             }
-            [last_expr] => {
-                take(last_expr).compile(meta_cont)
-            }
+            [last_expr] => take(last_expr).compile(meta_cont),
             [head, tail @ ..] => {
                 let k1 = Local::gensym();
                 let k2 = Local::gensym();
@@ -363,10 +361,7 @@ fn compile_primop(
     }
 }
 
-fn compile_call_with_cc(
-    thunk: Expression,
-    meta_cont: &mut (dyn FnMut(Value) -> Cps + '_),
-) -> Cps {
+fn compile_call_with_cc(thunk: Expression, meta_cont: &mut (dyn FnMut(Value) -> Cps + '_)) -> Cps {
     let k1 = Local::gensym();
     let k2 = Local::gensym();
     let k3 = Local::gensym();
@@ -717,7 +712,7 @@ impl Compile for DefineFunc {
                 body: Box::new(Cps::PrimOp(
                     PrimOp::Set,
                     vec![
-                        Value::from(self.var.clone()),
+                        Value::from(self.var),
                         Value::Var(Var::Local(lambda_result)),
                     ],
                     Local::gensym(),
@@ -750,7 +745,7 @@ impl Compile for Quote {
             args: ClosureArgs::new(vec![k2], false, None),
             body: Box::new(Cps::App(
                 Value::from(k2),
-                vec![constant(self.val.clone())],
+                vec![constant(self.val)],
                 None,
             )),
             val: k1,
@@ -768,7 +763,7 @@ impl Compile for SyntaxQuote {
             args: ClosureArgs::new(vec![k2], false, None),
             body: Box::new(Cps::App(
                 Value::from(k2),
-                vec![constant(SchemeValue::Syntax(self.syn.clone()))],
+                vec![constant(SchemeValue::Syntax(self.syn))],
                 None,
             )),
             val: k1,
@@ -829,7 +824,7 @@ impl Compile for Vector {
             args: ClosureArgs::new(vec![k2], false, None),
             body: Box::new(Cps::App(
                 Value::from(k2),
-                vec![constant(SchemeValue::Vector(self.vals.clone()))],
+                vec![constant(SchemeValue::Vector(self.vals))],
                 None,
             )),
             val: k1,
