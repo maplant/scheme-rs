@@ -12,6 +12,7 @@ use crate::{
 
 /// Type declaration for a record.
 #[derive(Debug, Trace, Clone)]
+#[repr(align(16))]
 pub struct RecordType {
     name: String,
     /// Parent is most recently inserted record type, if one exists.
@@ -39,6 +40,7 @@ fn is_subtype_of(lhs: &Gc<RecordType>, rhs: &Gc<RecordType>) -> bool {
 */
 
 #[derive(Debug, Trace, Clone)]
+#[repr(align(16))]
 pub struct Record {
     record_type: Gc<RecordType>,
     fields: Vec<Gc<Value>>,

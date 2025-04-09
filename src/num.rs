@@ -23,6 +23,7 @@ use std::{
 };
 
 #[derive(Clone)]
+#[repr(align(16))]
 pub enum Number {
     FixedInteger(i64),
     BigInteger(Integer),

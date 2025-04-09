@@ -63,6 +63,7 @@ unsafe impl Trace for FuncPtr {
 /// environmental variables used in the body, along with a function pointer to
 /// the body of the closure.
 #[derive(Clone, Trace, PartialEq)]
+#[repr(align(16))]
 pub struct Closure {
     /// The runtime the Closure is defined in. This is necessary to ensure that
     /// dropping the runtime does not de-allocate the function pointer for this

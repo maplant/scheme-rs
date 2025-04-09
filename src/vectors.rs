@@ -1,6 +1,6 @@
 use crate::{
     exception::Condition,
-    gc::Gc,
+    gc::{Gc, Trace},
     lists::slice_to_list,
     num::{Number, NumberToUsizeError},
     registry::bridge,
@@ -8,6 +8,11 @@ use crate::{
 };
 use malachite::Integer;
 use std::{clone::Clone, ops::Range};
+
+/// A vector aligned to 16 bytes.
+#[derive(Trace)]
+#[repr(align(16))]
+pub struct AlignedVector<T: Trace>(pub Vec<T>);
 
 fn try_make_range(start: usize, end: usize) -> Result<Range<usize>, Condition> {
     if end < start {
