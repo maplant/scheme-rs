@@ -20,7 +20,7 @@ use derive_more::From;
 use futures::future::BoxFuture;
 use inkwell::builder::BuilderError;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     error::Error as StdError,
     fmt::{self, Display, Formatter},
     mem::take,
@@ -594,8 +594,10 @@ impl SyntaxQuote {
 #[derive(Debug, Clone, Trace)]
 pub struct Apply {
     pub operator: Either<Box<Expression>, PrimOp>,
-    pub args: Vec<Expression>,
+    pub args: VecDeque<Expression>,
     pub call_site_id: CallSiteId,
+    pub location: Span,
+    pub proc_name: String,
 }
 
 impl Apply {
@@ -607,7 +609,7 @@ impl Apply {
         // cont: &Option<Arc<Continuation>>,
     ) -> Result<Self, ParseAstError> {
         let location = operator.span().clone();
-        let call_site_id = runtime.write().debug_info.new_call_site(location);
+        let call_site_id = runtime.write().debug_info.new_call_site(location.clone());
         let proc_name = match operator {
             Syntax::Identifier { ref ident, .. } => ident.name.clone(),
             _ => String::from(""),
@@ -618,14 +620,16 @@ impl Apply {
                 Expression::parse(runtime, operator, env /* cont */).await?,
             )),
         };
-        let mut parsed_args = Vec::new();
+        let mut parsed_args = VecDeque::new();
         for arg in args {
-            parsed_args.push(Expression::parse(runtime, arg.clone(), env /* cont */).await?);
+            parsed_args.push_back(Expression::parse(runtime, arg.clone(), env /* cont */).await?);
         }
         Ok(Apply {
             operator,
             args: parsed_args,
             call_site_id,
+            location,
+            proc_name,
         })
     }
 }
@@ -741,12 +745,12 @@ async fn parse_lambda(
 
 #[derive(Debug, Clone, Trace)]
 pub struct Let {
-    pub bindings: Vec<(Local, Expression)>,
+    pub bindings: VecDeque<(Local, Expression)>,
     pub body: DefinitionBody,
 }
 
 impl Let {
-    pub fn new(bindings: Vec<(Local, Expression)>, body: DefinitionBody) -> Self {
+    pub fn new(bindings: VecDeque<(Local, Expression)>, body: DefinitionBody) -> Self {
         Self { bindings, body }
     }
 
@@ -823,7 +827,7 @@ async fn parse_let(
         DefinitionBody::parse(runtime, body, &new_contour, span.clone() /* cont */).await?;
 
     // TODO: Lot of unnecessary cloning here, fix that.
-    let mut bindings: Vec<_> = parsed_bindings
+    let mut bindings: VecDeque<_> = parsed_bindings
         .iter()
         .map(|(var, binding)| (*var, binding.expr.clone()))
         .collect();
@@ -857,7 +861,7 @@ async fn parse_let(
             body: DefinitionBody::parse(runtime, body, &new_new_contour, span /* cont */).await?,
             debug_info_id,
         };
-        bindings.push((lambda_var, Expression::Lambda(lambda)));
+        bindings.push_back((lambda_var, Expression::Lambda(lambda)));
     }
 
     Ok(Let {
@@ -1246,11 +1250,11 @@ fn splice_in<'a>(
 
 #[derive(Debug, Clone, Trace)]
 pub struct And {
-    pub args: Vec<Expression>,
+    pub args: VecDeque<Expression>,
 }
 
 impl And {
-    pub fn new(args: Vec<Expression>) -> Self {
+    pub fn new(args: VecDeque<Expression>) -> Self {
         Self { args }
     }
 }
@@ -1262,10 +1266,10 @@ impl And {
         env: &Environment,
         // cont: &Closure
     ) -> Result<Self, ParseAstError> {
-        let mut output = Vec::new();
+        let mut output = VecDeque::new();
         for expr in exprs {
             let expr = Expression::parse(runtime, expr.clone(), env /* cont */).await?;
-            output.push(expr);
+            output.push_back(expr);
         }
         Ok(Self::new(output))
     }
@@ -1273,11 +1277,11 @@ impl And {
 
 #[derive(Debug, Clone, Trace)]
 pub struct Or {
-    pub args: Vec<Expression>,
+    pub args: VecDeque<Expression>,
 }
 
 impl Or {
-    pub fn new(args: Vec<Expression>) -> Self {
+    pub fn new(args: VecDeque<Expression>) -> Self {
         Self { args }
     }
 
@@ -1287,10 +1291,10 @@ impl Or {
         env: &Environment,
         // cont: &Closure
     ) -> Result<Self, ParseAstError> {
-        let mut output = Vec::new();
+        let mut output = VecDeque::new();
         for expr in exprs {
             let expr = Expression::parse(runtime, expr.clone(), env /* cont */).await?;
-            output.push(expr);
+            output.push_back(expr);
         }
         Ok(Self::new(output))
     }

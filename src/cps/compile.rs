@@ -1,4 +1,4 @@
-use std::{iter::once, mem::take};
+use std::{collections::VecDeque, iter::once, mem::take};
 
 use super::*;
 use crate::{ast::*, gc::Gc, syntax::Identifier, value::Value as SchemeValue};
@@ -70,20 +70,17 @@ fn compile_lambda(
 }
 
 impl Compile for Let {
-    fn compile(mut self, meta_cont: &mut (dyn FnMut(Value) -> Cps + '_)) -> Cps {
-        compile_let(&mut self.bindings, self.body, meta_cont)
+    fn compile(self, meta_cont: &mut (dyn FnMut(Value) -> Cps + '_)) -> Cps {
+        compile_let(self.bindings, self.body, meta_cont)
     }
 }
 
 fn compile_let(
-    binds: &mut [(Local, Expression)],
+    mut binds: VecDeque<(Local, Expression)>,
     body: DefinitionBody,
     meta_cont: &mut (dyn FnMut(Value) -> Cps + '_),
 ) -> Cps {
-    if let Some(((curr_bind, curr_expr), tail)) = binds.split_first_mut() {
-        let curr_bind = *curr_bind;
-        let curr_expr = take(curr_expr);
-
+    if let Some((curr_bind, curr_expr)) = binds.pop_front() {
         let expr_result = Local::gensym();
         let k1 = Local::gensym();
         let k2 = Local::gensym();
@@ -102,7 +99,7 @@ fn compile_let(
                         ],
                         Local::gensym(),
                         Box::new(compile_let(
-                            tail,
+                            binds,
                             body,
                             &mut move |result| Cps::App(result, vec![Value::from(k2)], None),
                         )),
@@ -250,10 +247,9 @@ impl Compile for ExprBody {
 impl Compile for Apply {
     fn compile(mut self, meta_cont: &mut (dyn FnMut(Value) -> Cps + '_)) -> Cps {
         match self.operator {
-            Either::Left(op) => compile_apply(*op, &mut self.args, self.call_site_id, meta_cont),
+            Either::Left(op) => compile_apply(*op, self.args, self.call_site_id, meta_cont),
             Either::Right(PrimOp::CallWithCurrentContinuation) => {
-                // don't care about ordering since we no longer read
-                compile_call_with_cc(self.args.swap_remove(0), meta_cont)
+                compile_call_with_cc(self.args.pop_front().unwrap(), meta_cont)
             }
             _ => todo!(),
         }
@@ -262,7 +258,7 @@ impl Compile for Apply {
 
 fn compile_apply(
     operator: Expression,
-    args: &mut [Expression],
+    mut args: VecDeque<Expression>,
     call_site_id: CallSiteId,
     meta_cont: &mut (dyn FnMut(Value) -> Cps + '_),
 ) -> Cps {
@@ -281,7 +277,7 @@ fn compile_apply(
                     Value::from(k2),
                     Value::from(k3),
                     Vec::new(),
-                    args,
+                    take(&mut args),
                     call_site_id,
                 )),
                 val: k4,
@@ -299,15 +295,12 @@ fn compile_apply_args(
     cont: Value,
     op: Value,
     mut collected_args: Vec<Value>,
-    remaining_args: &mut [Expression],
+    mut remaining_args: VecDeque<Expression>,
     call_site_id: CallSiteId,
 ) -> Cps {
-    let (arg, tail) = match remaining_args {
-        [] => {
-            collected_args.push(cont);
-            return Cps::App(op, collected_args, Some(call_site_id));
-        }
-        [arg, tail @ ..] => (take(arg), tail),
+    let Some(arg) = remaining_args.pop_front() else {
+        collected_args.push(cont);
+        return Cps::App(op, collected_args, Some(call_site_id))
     };
 
     let k1 = Local::gensym();
@@ -316,7 +309,7 @@ fn compile_apply_args(
         args: ClosureArgs::new(vec![k2], false, None),
         body: Box::new({
             collected_args.push(Value::from(k2));
-            compile_apply_args(cont, op, collected_args, tail, call_site_id)
+            compile_apply_args(cont, op, collected_args, remaining_args, call_site_id)
         }),
         val: k1,
         cexp: Box::new(arg.compile(&mut |result| {
@@ -330,19 +323,16 @@ fn compile_primop(
     cont: Value,
     primop: PrimOp,
     mut collected_args: Vec<Value>,
-    remaining_args: &mut [Expression],
+    mut remaining_args: VecDeque<Expression>,
 ) -> Cps {
-    let (arg, tail) = match remaining_args {
-        [] => {
-            let val = Local::gensym();
-            return Cps::PrimOp(
-                primop,
-                collected_args,
-                val,
-                Box::new(Cps::App(cont, vec![Value::from(val)], None)),
-            );
-        }
-        [arg, tail @ ..] => (take(arg), tail),
+    let Some(arg) = remaining_args.pop_front() else {
+        let val = Local::gensym();
+        return Cps::PrimOp(
+            primop,
+            collected_args,
+            val,
+            Box::new(Cps::App(cont, vec![Value::from(val)], None)),
+        )
     };
 
     let k1 = Local::gensym();
@@ -351,7 +341,7 @@ fn compile_primop(
         args: ClosureArgs::new(vec![k2], false, None),
         body: Box::new({
             collected_args.push(Value::from(k2));
-            compile_primop(cont, primop, collected_args, tail)
+            compile_primop(cont, primop, collected_args, remaining_args)
         }),
         val: k1,
         cexp: Box::new(arg.compile(&mut |result| {
@@ -448,37 +438,35 @@ impl Compile for If {
 }
 
 impl Compile for And {
-    fn compile(mut self, meta_cont: &mut (dyn FnMut(Value) -> Cps + '_)) -> Cps {
-        compile_and(&mut self.args, meta_cont)
+    fn compile(self, meta_cont: &mut (dyn FnMut(Value) -> Cps + '_)) -> Cps {
+        compile_and(self.args, meta_cont)
     }
 }
 
-fn compile_and(exprs: &mut [Expression], meta_cont: &mut (dyn FnMut(Value) -> Cps + '_)) -> Cps {
-    let (expr, mut tail) = match exprs {
-        [] => return meta_cont(constant(SchemeValue::from(true))),
-        [expr] => (expr, None),
-        [expr, tail @ ..] => (expr, Some(tail)),
+fn compile_and(mut exprs: VecDeque<Expression>, meta_cont: &mut (dyn FnMut(Value) -> Cps + '_)) -> Cps {
+    let Some(expr) = exprs.pop_front() else {
+        return meta_cont(constant(SchemeValue::from(true)))
     };
 
     let k1 = Local::gensym();
     let k2 = Local::gensym();
     Cps::Closure {
         args: ClosureArgs::new(vec![k1], false, None),
-        body: Box::new(take(expr).compile(&mut |expr_result| {
+        body: Box::new(expr.compile(&mut |expr_result| {
             let k3 = Local::gensym();
             let cond_arg = Local::gensym();
             Cps::Closure {
                 args: ClosureArgs::new(vec![cond_arg], false, None),
                 body: Box::new(Cps::If(
                     Value::from(cond_arg),
-                    Box::new(if let Some(tail) = &mut tail {
-                        compile_and(tail, &mut |expr| Cps::App(expr, vec![Value::from(k1)], None))
-                    } else {
+                    Box::new(if exprs.is_empty() {
                         Cps::App(
                             Value::from(k1),
                             vec![constant(SchemeValue::from(true))],
                             None,
                         )
+                    } else {
+                        compile_and(take(&mut exprs), &mut |expr| Cps::App(expr, vec![Value::from(k1)], None))
                     }),
                     Box::new(Cps::App(
                         Value::from(k1),
@@ -498,16 +486,14 @@ fn compile_and(exprs: &mut [Expression], meta_cont: &mut (dyn FnMut(Value) -> Cp
 }
 
 impl Compile for Or {
-    fn compile(mut self, meta_cont: &mut (dyn FnMut(Value) -> Cps + '_)) -> Cps {
-        compile_or(&mut self.args, meta_cont)
+    fn compile(self, meta_cont: &mut (dyn FnMut(Value) -> Cps + '_)) -> Cps {
+        compile_or(self.args, meta_cont)
     }
 }
 
-fn compile_or(exprs: &mut [Expression], meta_cont: &mut (dyn FnMut(Value) -> Cps + '_)) -> Cps {
-    let (expr, mut tail) = match exprs {
-        [] => return meta_cont(constant(SchemeValue::from(false))),
-        [expr] => (take(expr), None),
-        [expr, tail @ ..] => (take(expr), Some(tail)),
+fn compile_or(mut exprs: VecDeque<Expression>, meta_cont: &mut (dyn FnMut(Value) -> Cps + '_)) -> Cps {
+    let Some(expr) = exprs.pop_front() else {
+        return meta_cont(constant(SchemeValue::from(false)))
     };
 
     let k1 = Local::gensym();
@@ -526,14 +512,14 @@ fn compile_or(exprs: &mut [Expression], meta_cont: &mut (dyn FnMut(Value) -> Cps
                         vec![constant(SchemeValue::from(true))],
                         None,
                     )),
-                    Box::new(if let Some(tail) = &mut tail {
-                        compile_or(tail, &mut |expr| Cps::App(expr, vec![Value::from(k1)], None))
-                    } else {
+                    Box::new(if exprs.is_empty() {
                         Cps::App(
                             Value::from(k1),
                             vec![constant(SchemeValue::from(false))],
                             None,
                         )
+                    } else {
+                        compile_or(take(&mut exprs), &mut |expr| Cps::App(expr, vec![Value::from(k1)], None))
                     }),
                 )),
                 val: k3,

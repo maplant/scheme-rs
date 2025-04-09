@@ -21,7 +21,7 @@ pub use scheme_rs_macros::Trace;
 
 use std::{
     cell::UnsafeCell,
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     future::Future,
     hash::Hash,
     marker::PhantomData,
@@ -374,6 +374,23 @@ where
 }
 
 unsafe impl<T> Trace for Vec<T>
+where
+    T: GcOrTrace,
+{
+    unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
+        for child in self {
+            child.visit_or_recurse(visitor);
+        }
+    }
+
+    unsafe fn finalize(&mut self) {
+        for mut child in std::mem::take(self).into_iter().map(ManuallyDrop::new) {
+            child.finalize_or_skip();
+        }
+    }
+}
+
+unsafe impl<T> Trace for VecDeque<T>
 where
     T: GcOrTrace,
 {
