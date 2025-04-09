@@ -17,9 +17,7 @@ pub trait Compile: Sized {
             args: ClosureArgs::new(vec![result], true, None),
             body: Box::new(Cps::Halt(Value::from(result))),
             val: k,
-            cexp: Box::new(self.compile(&mut |value| {
-                Cps::App(value, vec![Value::from(k)], None)
-            })),
+            cexp: Box::new(self.compile(&mut |value| Cps::App(value, vec![Value::from(k)], None))),
             debug: None,
         }
         .reduce()
@@ -56,9 +54,9 @@ fn compile_lambda(
         args: ClosureArgs::new(vec![k2], false, None),
         body: Box::new(Cps::Closure {
             args: ClosureArgs::new(args, is_variadic, Some(k3)),
-            body: Box::new(body.compile(&mut |result| {
-                Cps::App(result, vec![Value::from(k3)], None)
-            })),
+            body: Box::new(
+                body.compile(&mut |result| Cps::App(result, vec![Value::from(k3)], None)),
+            ),
             val: k4,
             cexp: Box::new(Cps::App(Value::from(k2), vec![Value::from(k4)], None)),
             debug: Some(debug_info_id),
@@ -98,16 +96,16 @@ fn compile_let(
                             Value::Var(Var::Local(expr_result)),
                         ],
                         Local::gensym(),
-                        Box::new(compile_let(
-                            binds,
-                            body,
-                            &mut move |result| Cps::App(result, vec![Value::from(k2)], None),
-                        )),
+                        Box::new(compile_let(binds, body, &mut move |result| {
+                            Cps::App(result, vec![Value::from(k2)], None)
+                        })),
                     )),
                     val: k3,
-                    cexp: Box::new(curr_expr.compile(&mut move |result| {
-                        Cps::App(result, vec![Value::from(k3)], None)
-                    })),
+                    cexp: Box::new(
+                        curr_expr.compile(&mut move |result| {
+                            Cps::App(result, vec![Value::from(k3)], None)
+                        }),
+                    ),
                     debug: None,
                 }),
             )),
@@ -149,11 +147,7 @@ impl Compile for Var {
         let k2 = Local::gensym();
         Cps::Closure {
             args: ClosureArgs::new(vec![k2], false, None),
-            body: Box::new(Cps::App(
-                Value::from(k2),
-                vec![Value::from(self)],
-                None,
-            )),
+            body: Box::new(Cps::App(Value::from(k2), vec![Value::from(self)], None)),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
             debug: None,
@@ -183,9 +177,11 @@ impl Compile for &mut [Expression] {
                     args: ClosureArgs::new(vec![k1], true, None),
                     body: Box::new(tail.compile(meta_cont)),
                     val: k2,
-                    cexp: Box::new(take(head).compile(&mut move |result| {
-                        Cps::App(result, vec![Value::from(k2)], None)
-                    })),
+                    cexp: Box::new(
+                        take(head).compile(&mut move |result| {
+                            Cps::App(result, vec![Value::from(k2)], None)
+                        }),
+                    ),
                     debug: None,
                 }
             }
@@ -300,7 +296,7 @@ fn compile_apply_args(
 ) -> Cps {
     let Some(arg) = remaining_args.pop_front() else {
         collected_args.push(cont);
-        return Cps::App(op, collected_args, Some(call_site_id))
+        return Cps::App(op, collected_args, Some(call_site_id));
     };
 
     let k1 = Local::gensym();
@@ -312,9 +308,7 @@ fn compile_apply_args(
             compile_apply_args(cont, op, collected_args, remaining_args, call_site_id)
         }),
         val: k1,
-        cexp: Box::new(arg.compile(&mut |result| {
-            Cps::App(result, vec![Value::from(k1)], None)
-        })),
+        cexp: Box::new(arg.compile(&mut |result| Cps::App(result, vec![Value::from(k1)], None))),
         debug: None,
     }
 }
@@ -332,7 +326,7 @@ fn compile_primop(
             collected_args,
             val,
             Box::new(Cps::App(cont, vec![Value::from(val)], None)),
-        )
+        );
     };
 
     let k1 = Local::gensym();
@@ -344,9 +338,7 @@ fn compile_primop(
             compile_primop(cont, primop, collected_args, remaining_args)
         }),
         val: k1,
-        cexp: Box::new(arg.compile(&mut |result| {
-            Cps::App(result, vec![Value::from(k1)], None)
-        })),
+        cexp: Box::new(arg.compile(&mut |result| Cps::App(result, vec![Value::from(k1)], None))),
         debug: None,
     }
 }
@@ -469,7 +461,9 @@ fn compile_and(
                             None,
                         )
                     } else {
-                        compile_and(take(&mut exprs), &mut |expr| Cps::App(expr, vec![Value::from(k1)], None))
+                        compile_and(take(&mut exprs), &mut |expr| {
+                            Cps::App(expr, vec![Value::from(k1)], None)
+                        })
                     }),
                     Box::new(Cps::App(
                         Value::from(k1),
@@ -525,7 +519,9 @@ fn compile_or(
                             None,
                         )
                     } else {
-                        compile_or(take(&mut exprs), &mut |expr| Cps::App(expr, vec![Value::from(k1)], None))
+                        compile_or(take(&mut exprs), &mut |expr| {
+                            Cps::App(expr, vec![Value::from(k1)], None)
+                        })
                     }),
                 )),
                 val: k3,
@@ -628,10 +624,7 @@ impl Compile for Set {
                 args: ClosureArgs::new(vec![expr_result], false, None),
                 body: Box::new(Cps::PrimOp(
                     PrimOp::Set,
-                    vec![
-                        Value::from(self.var),
-                        Value::Var(Var::Local(expr_result)),
-                    ],
+                    vec![Value::from(self.var), Value::Var(Var::Local(expr_result))],
                     Local::gensym(),
                     Box::new(Cps::App(Value::from(k2), Vec::new(), None)),
                     /*
@@ -642,11 +635,9 @@ impl Compile for Set {
                         */
                 )),
                 val: k3,
-                cexp: Box::new(self.val.compile(
-                    &mut move |result| {
-                        Cps::App(result, vec![Value::from(k3)], None) // Value::from(k3), vec![result, Value::from(k2)])
-                    },
-                )),
+                cexp: Box::new(self.val.compile(&mut move |result| {
+                    Cps::App(result, vec![Value::from(k3)], None) // Value::from(k3), vec![result, Value::from(k2)])
+                })),
                 debug: None,
             }),
             val: k1,
@@ -669,19 +660,19 @@ impl Compile for DefineVar {
                 args: ClosureArgs::new(vec![expr_result], false, None),
                 body: Box::new(Cps::PrimOp(
                     PrimOp::Set,
-                    vec![
-                        Value::from(self.var),
-                        Value::Var(Var::Local(expr_result)),
-                    ],
+                    vec![Value::from(self.var), Value::Var(Var::Local(expr_result))],
                     Local::gensym(),
-                    Box::new(self.next.compile(&mut move |result| {
-                        Cps::App(result, vec![Value::from(k2)], None)
-                    })),
+                    Box::new(
+                        self.next.compile(&mut move |result| {
+                            Cps::App(result, vec![Value::from(k2)], None)
+                        }),
+                    ),
                 )),
                 val: k3,
-                cexp: Box::new(self.val.compile(&mut move |result| {
-                    Cps::App(result, vec![Value::from(k3)], None)
-                })),
+                cexp: Box::new(
+                    self.val
+                        .compile(&mut move |result| Cps::App(result, vec![Value::from(k3)], None)),
+                ),
                 debug: None,
             }),
             val: k1,
@@ -705,9 +696,11 @@ impl Compile for DefineFunc {
                     PrimOp::Set,
                     vec![Value::from(self.var), Value::Var(Var::Local(lambda_result))],
                     Local::gensym(),
-                    Box::new(self.next.compile(&mut move |result| {
-                        Cps::App(result, vec![Value::from(k2)], None)
-                    })),
+                    Box::new(
+                        self.next.compile(&mut move |result| {
+                            Cps::App(result, vec![Value::from(k2)], None)
+                        }),
+                    ),
                 )),
                 val: k3,
                 cexp: Box::new(compile_lambda(
@@ -732,11 +725,7 @@ impl Compile for Quote {
         let k2 = Local::gensym();
         Cps::Closure {
             args: ClosureArgs::new(vec![k2], false, None),
-            body: Box::new(Cps::App(
-                Value::from(k2),
-                vec![constant(self.val)],
-                None,
-            )),
+            body: Box::new(Cps::App(Value::from(k2), vec![constant(self.val)], None)),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
             debug: None,
