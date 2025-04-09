@@ -53,6 +53,7 @@ impl From<InputSpan<'_>> for Span {
 }
 
 #[derive(Clone, derive_more::Debug, Trace)]
+#[repr(align(16))]
 // TODO: Make cloning this struct as fast as possible.
 pub enum Syntax {
     /// An empty list.

@@ -404,6 +404,7 @@ impl Macro {
 }
 
 #[derive(Clone, Trace)]
+#[repr(align(16))]
 pub struct CapturedEnv {
     pub env: Environment,
     pub captured: Vec<Local>,

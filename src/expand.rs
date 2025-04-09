@@ -13,6 +13,7 @@ use indexmap::IndexMap;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 #[derive(Clone, Trace, Debug)]
+#[repr(align(16))]
 pub struct Transformer {
     pub rules: Vec<SyntaxRule>,
     pub is_variable_transformer: bool,

@@ -9,11 +9,136 @@ use crate::{
     records::{Record, RecordType},
     registry::bridge,
     syntax::Syntax,
+    lists,
+    vectors, 
 };
 use futures::future::{BoxFuture, Shared};
-use std::{fmt, io::Write};
+use std::{fmt, io::Write, marker::PhantomData, mem::ManuallyDrop, ops::{Deref, DerefMut}, sync::Arc};
 
 type Future = Shared<BoxFuture<'static, Result<Vec<Gc<Value>>, Gc<Value>>>>;
+
+/// A Scheme value. Represented as a tagged pointer.
+pub struct Value2(u64);
+
+impl Value2 {
+    pub unsafe fn from_raw(_raw: u64) -> Self {
+        todo!()
+    }
+
+    pub fn unpack(self) -> UnpackedValue {
+        todo!()
+    }
+
+    pub fn unpacked_ref(&self) -> UnpackedValueRef<'_> {
+        todo!()
+    }
+
+    pub fn unpacked_mut(&mut self) -> UnpackedValueMut<'_> {
+        todo!()
+    }
+}
+
+pub struct UnpackedValueRef<'a> {
+    unpacked: ManuallyDrop<UnpackedValue>,
+    marker: PhantomData<&'a UnpackedValue>,
+}
+
+impl Deref for UnpackedValueRef<'_> {
+    type Target = UnpackedValue;
+
+    fn deref(&self) -> &Self::Target {
+        &self.unpacked
+    }
+}
+
+pub struct UnpackedValueMut<'a> {
+    unpacked: ManuallyDrop<UnpackedValue>,
+    marker: PhantomData<&'a UnpackedValue>,
+}
+
+impl Deref for UnpackedValueMut<'_> {
+    type Target = UnpackedValue;
+
+    fn deref(&self) -> &Self::Target {
+        &self.unpacked
+    }
+}
+
+impl DerefMut for UnpackedValueMut<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.unpacked
+    }
+}
+
+unsafe impl Trace for Value2 {
+    unsafe fn visit_children(&self, visitor: unsafe fn(crate::gc::OpaqueGcPtr)) {
+        self.unpacked_ref().visit_children(visitor);
+    }
+
+    unsafe fn finalize(&mut self) {
+        self.unpacked_mut().finalize()
+    }
+}
+
+const ALIGNMENT: u64 = 16;
+const TAG_BITS: u64 = ALIGNMENT.ilog2() as u64;
+const TAG: u64 = 0b1111;
+
+#[repr(u64)]
+pub enum ValueType {
+    Undefined = 0,
+    Null = 1,
+    Boolean = 2,
+    Character = 3,
+    Number = 4,
+    String = 5,
+    Symbol = 6,
+    Vector = 7,
+    ByteVector = 8,
+    Syntax = 9,
+    Closure = 10,
+    Record = 11,
+    // RecordType = 12,
+    Condition = 12,
+    Pair = 13,
+    CapturedEnv = 14,
+    ExternalValue = 15,
+    /*
+    Future = 13,
+    Transformer = 14,
+    CapturedEnv = 15,
+    Pair = 16,
+    */
+}
+
+#[derive(Trace)]
+pub struct ExternalValue(std::sync::Arc<dyn std::any::Any>);
+
+/// The external, unpacked representation of a scheme value.
+///
+/// Values that are not potentially cyclical, such as syntax objects and byte
+/// vectors use Arcs as they are much less expensive than Gc types.
+#[non_exhaustive]
+#[derive(Trace)]
+pub enum UnpackedValue {
+    Undefined,
+    Null,
+    Boolean(bool),
+    Character(char),
+    Number(Arc<Number>),
+    String(Arc<AlignedString>),
+    Symbol(Arc<AlignedString>),
+    Vector(Gc<vectors::AlignedVector<Value2>>),
+    ByteVector(Arc<vectors::AlignedVector<u8>>),
+    Syntax(Arc<Syntax>),
+    Closure(Gc<Closure>),
+    Pair(Gc<lists::Pair>),
+    ExternalValue(ExternalValue),
+}
+
+#[repr(align(16))]
+pub struct AlignedString(pub String);
+
 
 /// A Scheme value
 #[derive(Trace)]

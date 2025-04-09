@@ -93,9 +93,12 @@ pub enum PrimOp {
     /// Set cell value:
     Set,
 
-    /// Read the cell and clone the underlying value:
-    Clone,
-
+    // Cell operations:
+    /// Allocate a cell, returning a Gc<Value>.
+    AllocCell,
+    /// Read a cell (a Gc<Value>), returning a Value.
+    ReadCell,
+    
     // List operators:
     Cons,
 

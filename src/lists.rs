@@ -1,5 +1,9 @@
-use crate::{exception::Condition, gc::Gc, num::Number, registry::bridge, value::Value};
+use crate::{exception::Condition, gc::{Trace, Gc}, num::Number, registry::bridge, value::{Value2, Value}};
 use std::fmt;
+
+/// A pair of scheme values. Has a head and tail.
+#[derive(Trace)]
+pub struct Pair(Gc<Value2>, Gc<Value2>);
 
 pub fn display_list(car: &Gc<Value>, cdr: &Gc<Value>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     // TODO(map): If the list is circular, DO NOT print infinitely!

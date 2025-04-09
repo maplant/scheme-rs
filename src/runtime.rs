@@ -198,10 +198,10 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     let void_type = ctx.void_type();
     let ptr_type = ctx.ptr_type(AddressSpace::default());
 
-    // alloc_undef_val:
+    // alloc_cell:
     let sig = ptr_type.fn_type(&[], false);
-    let f = module.add_function("alloc_undef_val", sig, None);
-    ee.add_global_mapping(&f, alloc_undef_val as usize);
+    let f = module.add_function("alloc_cell", sig, None);
+    ee.add_global_mapping(&f, alloc_cell as usize);
 
     // clone:
     let sig = ptr_type.fn_type(&[ptr_type.into()], false);
@@ -354,7 +354,7 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
 }
 
 /// Allocate a new Gc with a value of undefined
-unsafe extern "C" fn alloc_undef_val() -> *mut GcInner<Value> {
+unsafe extern "C" fn alloc_cell() -> *mut GcInner<Value> {
     ManuallyDrop::new(Gc::new(Value::Undefined)).as_ptr()
 }
 
