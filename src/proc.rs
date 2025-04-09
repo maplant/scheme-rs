@@ -471,7 +471,7 @@ impl FunctionDebugInfo {
                 line: debug_info.line,
                 column: debug_info.column as usize,
                 offset: debug_info.offset,
-                file: Some(std::sync::Arc::new(debug_info.file.to_string())),
+                file: std::sync::Arc::new(debug_info.file.to_string()),
             },
         }
     }
