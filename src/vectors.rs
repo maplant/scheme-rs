@@ -7,13 +7,43 @@ use crate::{
     value::Value,
 };
 use malachite::Integer;
-use std::{clone::Clone, ops::Range};
+use std::{clone::Clone, ops::{Deref, DerefMut, Range}, fmt};
 
 /// A vector aligned to 16 bytes.
 #[derive(Trace)]
 #[repr(align(16))]
 pub struct AlignedVector<T: Trace>(pub Vec<T>);
 
+
+impl<T: Trace> Deref for AlignedVector<T> {
+    type Target = Vec<T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+
+fn display_vec<T: fmt::Display>(
+    head: &str,
+    v: &[T],
+    f: &mut fmt::Formatter<'_>,
+) -> Result<(), fmt::Error> {
+    write!(f, "{}", head)?;
+
+    let mut iter = v.iter().peekable();
+    while let Some(next) = iter.next() {
+        write!(f, "{}", next)?;
+        if iter.peek().is_some() {
+            write!(f, " ")?;
+        }
+    }
+
+    write!(f, ")")
+}
+
+
+/*
 fn try_make_range(start: usize, end: usize) -> Result<Range<usize>, Condition> {
     if end < start {
         Err(Condition::error(format!(
@@ -73,6 +103,7 @@ impl Indexer for StringIndexer {
         val.try_into()
     }
 }
+
 struct VectorIndexer;
 impl Indexer for VectorIndexer {
     type Collection = Vec<Value>;
@@ -91,7 +122,9 @@ impl Indexer for VectorIndexer {
         val.try_into()
     }
 }
+*/
 
+/*
 #[bridge(name = "make-vector", lib = "(base)")]
 pub async fn make_vector(n: &Gc<Value>, with: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Condition> {
     let n = n.read();
@@ -304,3 +337,4 @@ pub async fn vector_fill(
 
     Ok(vec![])
 }
+*/

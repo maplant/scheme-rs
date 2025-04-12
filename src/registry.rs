@@ -206,7 +206,7 @@ impl Registry {
             let mut lib = lib.write();
             lib.def_var(
                 Identifier::new(bridge_fn.name.to_string()),
-                Value::Closure(Closure::new(
+                Value::from(Closure::new(
                     runtime.clone(),
                     Vec::new(),
                     Vec::new(),

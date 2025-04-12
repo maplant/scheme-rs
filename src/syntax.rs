@@ -144,10 +144,10 @@ impl Syntax {
         }
     }
 
-    pub fn from_datum(marks: &BTreeSet<Mark>, datum: &Gc<Value>) -> Self {
-        let datum = datum.read();
+    pub fn from_datum(marks: &BTreeSet<Mark>, datum: Value) -> Self {
         // TODO: conjure up better values for Span
-        match &*datum {
+        /*
+        match datum {
             Value::Null => Syntax::new_null(Span::default()),
             Value::Pair(lhs, rhs) => {
                 let mut list = Vec::new();
@@ -178,6 +178,8 @@ impl Syntax {
             }
             _ => unimplemented!(),
         }
+         */
+        todo!()
     }
 
     pub fn resolve_bindings(&mut self, env: &Environment) {
@@ -207,7 +209,8 @@ impl Syntax {
         env: &Environment,
         mac: Macro,
         // cont: &Closure,
-    ) -> Result<Expansion, Gc<Value>> {
+    ) -> Result<Expansion, Value> {
+        /*
         // Create a new mark for the expansion context
         let new_mark = Mark::new();
 
@@ -235,13 +238,15 @@ impl Syntax {
         let new_env = env.new_macro_expansion(new_mark, mac.source_env.clone());
 
         Ok(Expansion::new_expanded(new_env, output))
+         */
+        todo!()
     }
 
     fn expand_once<'a>(
         &'a self,
         env: &'a Environment,
         // cont: &Closure,
-    ) -> BoxFuture<'a, Result<Expansion, Gc<Value>>> {
+    ) -> BoxFuture<'a, Result<Expansion, Value>> {
         Box::pin(async move {
             match self {
                 Self::List { list, .. } => {
@@ -289,7 +294,7 @@ impl Syntax {
         mut self,
         env: &Environment,
         // cont: &Closure,
-    ) -> Result<FullyExpanded, Gc<Value>> {
+    ) -> Result<FullyExpanded, Value> {
         let mut curr_env = env.clone();
         loop {
             match self.expand_once(&curr_env).await? {
@@ -579,9 +584,10 @@ pub async fn syntax_to_datum(
 
 #[bridge(name = "datum->syntax", lib = "(base)")]
 pub async fn datum_to_syntax(
-    template_id: &Gc<Value>,
-    datum: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, Condition> {
+    template_id: &Value,
+    datum: &Value,
+) -> Result<Vec<Value>, Condition> {
+    /*
     let template_id = template_id.read();
     let Value::Syntax(Syntax::Identifier {
         ident: template_id, ..
@@ -593,4 +599,6 @@ pub async fn datum_to_syntax(
         &template_id.marks,
         datum,
     )))])
+     */
+    todo!()
 }

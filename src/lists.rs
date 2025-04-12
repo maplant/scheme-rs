@@ -1,11 +1,12 @@
-use crate::{exception::Condition, gc::{Trace, Gc}, num::Number, registry::bridge, value::{Value2, Value}};
+use crate::{exception::Condition, gc::{Trace, Gc}, num::Number, registry::bridge, value::Value};
 use std::fmt;
 
 /// A pair of scheme values. Has a head and tail.
 #[derive(Trace)]
-pub struct Pair(Gc<Value2>, Gc<Value2>);
+pub struct Pair(Value, Value);
 
-pub fn display_list(car: &Gc<Value>, cdr: &Gc<Value>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+pub fn display_list(car: &Value, cdr: &Value, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    /*
     // TODO(map): If the list is circular, DO NOT print infinitely!
     match &*cdr.read() {
         Value::Pair(_, _) | Value::Null => (),
@@ -37,9 +38,12 @@ pub fn display_list(car: &Gc<Value>, cdr: &Gc<Value>, f: &mut fmt::Formatter<'_>
     }
 
     write!(f, ")")
+     */
+    todo!()
 }
 
-pub fn debug_list(car: &Gc<Value>, cdr: &Gc<Value>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+pub fn debug_list(car: &Value, cdr: &Value, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    /*
     // TODO(map): If the list is circular, DO NOT print infinitely!
     match &*cdr.read() {
         Value::Pair(_, _) | Value::Null => (),
@@ -71,16 +75,22 @@ pub fn debug_list(car: &Gc<Value>, cdr: &Gc<Value>, f: &mut fmt::Formatter<'_>) 
     }
 
     write!(f, ")")
+     */
+    todo!()
 }
 
-pub fn slice_to_list(items: &[Gc<Value>]) -> Value {
+pub fn slice_to_list(items: &[Value]) -> Value {
+    /*
     match items {
-        [] => Value::Null,
-        [head, tail @ ..] => Value::Pair(head.clone(), Gc::new(slice_to_list(tail))),
+        [] => Value::null(),
+        [head, tail @ ..] => Value::new((head.clone(), slice_to_list(tail))),
     }
+     */
+    todo!()
 }
 
-pub fn list_to_vec(curr: &Gc<Value>, out: &mut Vec<Gc<Value>>) {
+pub fn list_to_vec(curr: &Value, out: &mut Vec<Value>) {
+    /*
     let val = curr.read();
     match &*val {
         Value::Pair(a, b) => {
@@ -90,9 +100,11 @@ pub fn list_to_vec(curr: &Gc<Value>, out: &mut Vec<Gc<Value>>) {
         Value::Null => (),
         _ => out.push(curr.clone()),
     }
+     */
 }
 
-pub fn list_to_vec_with_null(curr: &Gc<Value>, out: &mut Vec<Gc<Value>>) {
+pub fn list_to_vec_with_null(curr: &Value, out: &mut Vec<Value>) {
+    /*
     let val = curr.read();
     match &*val {
         Value::Pair(a, b) => {
@@ -101,8 +113,11 @@ pub fn list_to_vec_with_null(curr: &Gc<Value>, out: &mut Vec<Gc<Value>>) {
         }
         _ => out.push(curr.clone()),
     }
+     */
+    todo!()
 }
 
+/*
 #[bridge(name = "list", lib = "(base)")]
 pub async fn list(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Condition> {
     // Construct the list in reverse
@@ -184,3 +199,4 @@ pub async fn list_to_vector(list: &Gc<Value>) -> Result<Vec<Gc<Value>>, Conditio
         vec.into_iter().map(|i| i.read().as_ref().clone()).collect(),
     ))])
 }
+*/

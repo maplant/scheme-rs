@@ -23,7 +23,7 @@ impl Cps {
     // TODO: Have this function return a Cow<'_, HashSet<Local>>
     pub(super) fn free_variables(&self) -> HashSet<Local> {
         match self {
-            Cps::AllocCell(ref bind, cexpr) => {
+            Cps::PrimOp(PrimOp::AllocCell, _, ref bind, cexpr) => {
                 let mut free = cexpr.free_variables();
                 free.remove(bind);
                 free
@@ -74,7 +74,7 @@ impl Cps {
     // TODO: Have this function return a Cow<'_, HashSet<Local>>
     pub(super) fn globals(&self) -> HashSet<Global> {
         match self {
-            Cps::AllocCell(_, cexpr) => cexpr.globals(),
+            Cps::PrimOp(PrimOp::AllocCell, _, s_, cexpr) => cexpr.globals(),
             Cps::PrimOp(_, args, _, cexpr) => cexpr
                 .globals()
                 .union(&values_to_globals(args))
@@ -111,7 +111,7 @@ impl Cps {
         uses_cache: &mut HashMap<Local, HashMap<Local, usize>>,
     ) -> HashMap<Local, usize> {
         match self {
-            Cps::AllocCell(_, cexpr) => cexpr.uses(uses_cache).clone(),
+            // Cps::AllocCell(_, cexpr) => cexpr.uses(uses_cache).clone(),
             Cps::PrimOp(_, args, _, cexpr) => {
                 merge_uses(values_to_uses(args), cexpr.uses(uses_cache))
             }

@@ -1,8 +1,8 @@
 use crate::{exception::Condition, gc::Gc, num::Number, registry::bridge, value::Value};
 use unicode_categories::UnicodeCategories;
 
-mod unicode;
-use unicode::*;
+// mod unicode;
+// use unicode::*;
 
 fn char_switch_case<I: Iterator<Item = char> + ExactSizeIterator>(
     ch: char,
@@ -16,6 +16,8 @@ fn char_switch_case<I: Iterator<Item = char> + ExactSizeIterator>(
         Err(Condition::wrong_num_of_unicode_chars(1, len))
     }
 }
+
+/*
 
 #[bridge(name = "char->integer", lib = "(base)")]
 pub async fn char_to_integer(ch: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
@@ -190,3 +192,4 @@ mod tests {
             .for_each(|d| assert!(d.is_some()));
     }
 }
+*/

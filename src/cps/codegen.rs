@@ -215,9 +215,6 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         deferred: &mut Vec<ClosureBundle<'ctx>>,
     ) -> Result<(), BuilderError> {
         match cps {
-            Cps::AllocCell(into, cexpr) => {
-                self.alloc_cell_codegen(into, *cexpr, allocs, deferred)?;
-            }
             Cps::If(cond, success, failure) => {
                 self.if_codegen(&cond, *success, *failure, allocs, deferred)?
             }
@@ -229,11 +226,8 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 self.store_codegen(&args[1], &args[0])?;
                 self.cps_codegen(*cexpr, allocs, deferred)?;
             }
-            Cps::PrimOp(PrimOp::Clone, args, clone_into, cexpr) => {
-                let [to_clone] = args.as_slice() else {
-                    unreachable!()
-                };
-                self.clone_codegen(to_clone, clone_into, *cexpr, allocs, deferred)?;
+            Cps::PrimOp(PrimOp::AllocCell, _, into, cexpr) => {
+                self.alloc_cell_codegen(into, *cexpr, allocs, deferred)?;
             }
             Cps::PrimOp(PrimOp::ExtractWinders, _, extract_to, cexpr) => {
                 self.extract_winders_codegen(extract_to, *cexpr, allocs, deferred)?;

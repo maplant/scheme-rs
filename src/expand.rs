@@ -400,12 +400,13 @@ pub async fn make_variable_transformer(
  */
 
 pub fn call_transformer<'a>(
-    args: &'a [Gc<Value>],
-    env: &'a [Gc<Value>],
-    cont: &'a Gc<Value>,
+    args: &'a [Value],
+    env: &'a [Value],
+    cont: &'a Value,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
-) -> BoxFuture<'a, Result<Application, Gc<Value>>> {
+) -> BoxFuture<'a, Result<Application, Value>> {
+    /*
     Box::pin(async move {
         let [captured_env, trans, arg] = args else {
             panic!("wrong args");
@@ -462,4 +463,6 @@ pub fn call_transformer<'a>(
 
         Ok(application)
     })
+     */
+    todo!()
 }

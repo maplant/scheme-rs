@@ -476,6 +476,7 @@ enum NumberToUsizeErrorKind {
     TooLarge,
 }
 
+/*
 #[bridge(name = "zero?", lib = "(base)")]
 pub async fn zero(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
     let arg = arg.read();
@@ -760,3 +761,4 @@ pub async fn is_complex(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
         Value::Number(Number::Complex(_))
     )))])
 }
+*/

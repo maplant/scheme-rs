@@ -3,37 +3,207 @@ use crate::{
     env::CapturedEnv,
     exception::{Condition, Exception},
     expand::Transformer,
-    gc::{Gc, Trace},
+    gc::{Gc, GcInner, Trace},
+    lists,
     num::Number,
     proc::Closure,
     records::{Record, RecordType},
     registry::bridge,
     syntax::Syntax,
-    lists,
-    vectors, 
+    vectors::{self, AlignedVector},
 };
 use futures::future::{BoxFuture, Shared};
-use std::{fmt, io::Write, marker::PhantomData, mem::ManuallyDrop, ops::{Deref, DerefMut}, sync::Arc};
+use std::{
+    fmt,
+    io::Write,
+    marker::PhantomData,
+    mem::ManuallyDrop,
+    ops::{Deref, DerefMut},
+    sync::Arc,
+};
 
-type Future = Shared<BoxFuture<'static, Result<Vec<Gc<Value>>, Gc<Value>>>>;
+// type Future = Shared<BoxFuture<'static, Result<Vec<Gc<Value>>, Gc<Value>>>>;
+
+const ALIGNMENT: u64 = 16;
+const TAG_BITS: u64 = ALIGNMENT.ilog2() as u64;
+const TAG: u64 = 0b1111;
 
 /// A Scheme value. Represented as a tagged pointer.
-pub struct Value2(u64);
+pub struct Value(u64);
 
-impl Value2 {
-    pub unsafe fn from_raw(_raw: u64) -> Self {
+impl Value {
+    pub fn new(v: UnpackedValue) -> Self {
+        v.into_value()
+    }
+    
+    /// Creates a new Value from a raw u64. Increments the reference count.
+    ///
+    /// # Safety
+    /// Calling this function is undefined behavior if the raw u64 was not obtained
+    /// via [into_raw]
+    pub unsafe fn from_raw(raw: u64) -> Self {
+        let tag = ValueType::from(raw & TAG);
+        let untagged = raw & !TAG;
+        unsafe {
+            match tag {
+                ValueType::Number => Arc::increment_strong_count(untagged as *const Number),
+                ValueType::String => Arc::increment_strong_count(untagged as *const AlignedString),
+                ValueType::Symbol => Arc::increment_strong_count(untagged as *const AlignedString),
+                ValueType::Vector => Gc::increment_reference_count(
+                    untagged as *mut GcInner<vectors::AlignedVector<Self>>,
+                ),
+                ValueType::ByteVector => Arc::increment_strong_count(untagged as *const Vec<u8>),
+                ValueType::Syntax => Arc::increment_strong_count(untagged as *const Syntax),
+                ValueType::Closure => {
+                    Gc::increment_reference_count(untagged as *mut GcInner<Closure>)
+                }
+                ValueType::Record => {
+                    Gc::increment_reference_count(untagged as *mut GcInner<Record>)
+                }
+                ValueType::Condition => {
+                    Gc::increment_reference_count(untagged as *mut GcInner<Condition>)
+                }
+                ValueType::Pair => {
+                    Gc::increment_reference_count(untagged as *mut GcInner<lists::Pair>)
+                }
+                ValueType::HashTable | 
+                ValueType::Other => todo!(),
+                ValueType::Undefined | ValueType::Null | ValueType::Boolean |
+                ValueType::Character => (),
+            }
+        }
+        Self(raw)
+    }
+
+    /// Creates a raw u64 from a Value. Does not decrement the reference count.
+    /// Calling this function without turning the raw value into a Value via
+    /// [from_raw] is equivalent to calling mem::forget on the value.
+    pub fn into_raw(val: Self) -> u64 {
+        ManuallyDrop::new(val).0
+    }
+
+    /// Creates a raw u64 from the Value. Does not decrement the reference count.
+    pub fn as_raw(&self) -> u64 {
+        self.0
+    }
+
+    fn from_ptr_and_tag<T>(ptr: *const T, tag: ValueType) -> Self {
+        Self(ptr as u64 | tag as u64)
+    }
+
+    fn from_mut_ptr_and_tag<T>(ptr: *mut T, tag: ValueType) -> Self {
+        Self(ptr as u64 | tag as u64)
+    }
+
+    pub fn undefined() -> Self {
+        Self(ValueType::Undefined as u64)
+    }
+
+    pub fn null() -> Self {
+        Self(ValueType::Null as u64)
+    }
+
+    pub fn datum_from_syntax(syntax: &Syntax) -> Self {
         todo!()
     }
 
     pub fn unpack(self) -> UnpackedValue {
-        todo!()
+        let tag = ValueType::from(self.0 & TAG);
+        let untagged = self.0 & !TAG;
+        match tag {
+            ValueType::Undefined => UnpackedValue::Undefined,
+            ValueType::Null => UnpackedValue::Null,
+            ValueType::Boolean => {
+                let untagged = untagged >> TAG_BITS;
+                UnpackedValue::Boolean(untagged != 0)
+            }
+            ValueType::Character => {
+                let untagged = (untagged >> TAG_BITS) as u32;
+                UnpackedValue::Character(char::from_u32(untagged).unwrap())
+            }
+            ValueType::Number => {
+                let number = unsafe { Arc::from_raw(untagged as *const Number) };
+                UnpackedValue::Number(number)
+            }
+            ValueType::String => {
+                let str = unsafe { Arc::from_raw(untagged as *const AlignedString) };
+                UnpackedValue::String(str)
+            }
+            ValueType::Symbol => {
+                let sym = unsafe { Arc::from_raw(untagged as *const AlignedString) };
+                UnpackedValue::Symbol(sym)
+            }
+            ValueType::Vector => {
+                let vec = unsafe { Gc::from_raw(untagged as *mut GcInner<vectors::AlignedVector<Self>>) };
+                UnpackedValue::Vector(vec)
+            }
+            ValueType::ByteVector => {
+                let bvec = unsafe { Arc::from_raw(untagged as *const vectors::AlignedVector<u8>) };
+                UnpackedValue::ByteVector(bvec)
+            }
+            ValueType::Syntax => {
+                let syn = unsafe { Arc::from_raw(untagged as *const Syntax) };
+                UnpackedValue::Syntax(syn)
+            }
+            ValueType::Closure => {
+                let clos = unsafe { Gc::from_raw(untagged as *mut GcInner<Closure>) };
+                UnpackedValue::Closure(clos)
+            }
+            ValueType::Record => {
+                let rec = unsafe { Gc::from_raw(untagged as *mut GcInner<Record>) };
+                UnpackedValue::Record(rec)
+            }
+            ValueType::Condition => {
+                let cond = unsafe { Gc::from_raw(untagged as *mut GcInner<Condition>) };
+                UnpackedValue::Condition(cond)
+            }
+            ValueType::Pair => {
+                let pair = unsafe { Gc::from_raw(untagged as *mut GcInner<lists::Pair>) };
+                UnpackedValue::Pair(pair)
+            }
+            ValueType::HashTable => todo!(),
+            ValueType::Other => todo!()
+        }
     }
 
     pub fn unpacked_ref(&self) -> UnpackedValueRef<'_> {
-        todo!()
+        let unpacked = ManuallyDrop::new(Value(self.0).unpack());
+        UnpackedValueRef {
+            unpacked,
+            marker: PhantomData,
+        }
     }
 
     pub fn unpacked_mut(&mut self) -> UnpackedValueMut<'_> {
+        let unpacked = ManuallyDrop::new(Value(self.0).unpack());
+        UnpackedValueMut {
+            unpacked,
+            marker: PhantomData,
+        }
+    }
+}
+
+impl Clone for Value {
+    fn clone(&self) -> Self {
+        unsafe { Self::from_raw(self.0) }
+    }
+}
+
+impl Drop for Value {
+    fn drop(&mut self) {
+        // FIXME: This is a pretty dumb way to do this, do it manually!
+        unsafe { ManuallyDrop::drop(&mut self.unpacked_mut().unpacked) }
+    }
+}
+
+impl fmt::Debug for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        todo!()
+    }
+}
+
+impl PartialEq for Value {
+    fn eq(&self, rhs: &Self) -> bool {
         todo!()
     }
 }
@@ -53,7 +223,7 @@ impl Deref for UnpackedValueRef<'_> {
 
 pub struct UnpackedValueMut<'a> {
     unpacked: ManuallyDrop<UnpackedValue>,
-    marker: PhantomData<&'a UnpackedValue>,
+    marker: PhantomData<&'a mut UnpackedValue>,
 }
 
 impl Deref for UnpackedValueMut<'_> {
@@ -70,7 +240,7 @@ impl DerefMut for UnpackedValueMut<'_> {
     }
 }
 
-unsafe impl Trace for Value2 {
+unsafe impl Trace for Value {
     unsafe fn visit_children(&self, visitor: unsafe fn(crate::gc::OpaqueGcPtr)) {
         self.unpacked_ref().visit_children(visitor);
     }
@@ -80,9 +250,99 @@ unsafe impl Trace for Value2 {
     }
 }
 
-const ALIGNMENT: u64 = 16;
-const TAG_BITS: u64 = ALIGNMENT.ilog2() as u64;
-const TAG: u64 = 0b1111;
+impl From<bool> for Value {
+    fn from(b: bool) -> Self {
+        Value::new(b.into())
+    }
+}
+
+impl From<char> for Value {
+    fn from(c: char) -> Self {
+        Value::new(c.into())
+    }
+}
+
+impl From<Number> for Value {
+    fn from(num: Number) -> Self {
+        Value::new(num.into())
+    }
+}
+
+impl From<String> for Value {
+    fn from(str: String) -> Self {
+        Value::new(str.into())
+    }
+}
+
+
+impl From<ast::Literal> for Value {
+    fn from(lit: ast::Literal) -> Self {
+        Value::new(lit.into())
+    }
+}
+
+impl From<(Value, Value)> for Value {
+    fn from(pair: (Value, Value)) -> Self {
+        Value::new(pair.into())
+    }
+}
+
+impl From<Closure> for Value {
+    fn from(proc: Closure) -> Self {
+        Value::new(proc.into())
+    }
+}
+
+impl From<Syntax> for Value {
+    fn from(syn: Syntax) -> Self {
+        // Value::new(syn.into())
+        todo!()
+    }
+}
+
+impl From<Vec<Value>> for Value {
+    fn from(vec: Vec<Value>) -> Self {
+        todo!()
+    }
+}
+
+impl From<Vec<u8>> for Value {
+    fn from(vec: Vec<u8>) -> Self {
+        todo!()
+    }
+}
+
+impl From<Exception> for Value {
+    fn from(exception: Exception) -> Self {
+        todo!()
+    }
+}
+
+impl From<Condition> for Value {
+    fn from(condition: Condition) -> Self {
+        todo!()
+    }
+}
+
+impl<'a> TryFrom<&'a Value> for Gc<Closure> {
+    type Error = Condition;
+
+    fn try_from(v: &'a Value) -> Result<Self, Self::Error> {
+        todo!()
+    }
+}
+
+
+/*
+impl<T> From<UnpackedValue> for Value2
+where
+    UnpackedValue: From<T>,
+{
+    fn from(t: T) -> Self {
+        UnpackedValue::from(t).into_value()
+    }
+}
+*/
 
 #[repr(u64)]
 pub enum ValueType {
@@ -98,28 +358,43 @@ pub enum ValueType {
     Syntax = 9,
     Closure = 10,
     Record = 11,
-    // RecordType = 12,
     Condition = 12,
     Pair = 13,
-    CapturedEnv = 14,
-    ExternalValue = 15,
-    /*
-    Future = 13,
-    Transformer = 14,
-    CapturedEnv = 15,
-    Pair = 16,
-    */
+    HashTable = 14,
+    Other = 15,
 }
 
-#[derive(Trace)]
-pub struct ExternalValue(std::sync::Arc<dyn std::any::Any>);
+// TODO: Make TryFrom with error
+impl From<u64> for ValueType {
+    fn from(tag: u64) -> Self {
+        match tag {
+            0 => Self::Undefined,
+            1 => Self::Null,
+            2 => Self::Boolean,
+            3 => Self::Character,
+            4 => Self::Number,
+            5 => Self::String,
+            6 => Self::Symbol,
+            7 => Self::Vector,
+            8 => Self::ByteVector,
+            9 => Self::Syntax,
+            10 => Self::Closure,
+            11 => Self::Record,
+            12 => Self::Condition,
+            13 => Self::Pair,
+            14 => Self::HashTable,
+            15 => Self::Other,
+            tag => panic!("Invalid tag: {tag}"),
+        }
+    }
+}
 
 /// The external, unpacked representation of a scheme value.
 ///
 /// Values that are not potentially cyclical, such as syntax objects and byte
 /// vectors use Arcs as they are much less expensive than Gc types.
 #[non_exhaustive]
-#[derive(Trace)]
+#[derive(Trace, Clone)]
 pub enum UnpackedValue {
     Undefined,
     Null,
@@ -128,18 +403,134 @@ pub enum UnpackedValue {
     Number(Arc<Number>),
     String(Arc<AlignedString>),
     Symbol(Arc<AlignedString>),
-    Vector(Gc<vectors::AlignedVector<Value2>>),
+    Vector(Gc<vectors::AlignedVector<Value>>),
     ByteVector(Arc<vectors::AlignedVector<u8>>),
     Syntax(Arc<Syntax>),
     Closure(Gc<Closure>),
+    Record(Gc<Record>),
+    Condition(Gc<Condition>),
     Pair(Gc<lists::Pair>),
-    ExternalValue(ExternalValue),
+    // HashTable,
+    // OtherData,
+}
+
+impl UnpackedValue {
+    pub fn into_value(self) -> Value {
+        match self {
+            Self::Undefined => Value::undefined(),
+            Self::Null => Value::null(),
+            Self::Boolean(b) => Value((b as u64) << TAG_BITS | ValueType::Boolean as u64),
+            Self::Character(c) => Value((c as u64) << TAG_BITS | ValueType::Character as u64),
+            Self::Number(num) => {
+                let untagged = Arc::into_raw(num);
+                Value::from_ptr_and_tag(untagged, ValueType::Number)
+            }
+            Self::String(str) => {
+                let untagged = Arc::into_raw(str);
+                Value::from_ptr_and_tag(untagged, ValueType::String)
+            }
+            Self::Symbol(sym) => {
+                let untagged = Arc::into_raw(sym);
+                Value::from_ptr_and_tag(untagged, ValueType::Symbol)
+            }
+            Self::Vector(vec) => {
+                let untagged = Gc::into_raw(vec);
+                Value::from_mut_ptr_and_tag(untagged, ValueType::Vector)
+            }
+            Self::ByteVector(b_vec) => {
+                let untagged = Arc::into_raw(b_vec);
+                Value::from_ptr_and_tag(untagged, ValueType::ByteVector)
+            }
+            Self::Syntax(syn) => {
+                let untagged = Arc::into_raw(syn);
+                Value::from_ptr_and_tag(untagged, ValueType::Syntax)
+            }
+            Self::Closure(clos) => {
+                let untagged = Gc::into_raw(clos);
+                Value::from_mut_ptr_and_tag(untagged, ValueType::Closure)
+            }
+            Self::Record(rec) => {
+                let untagged = Gc::into_raw(rec);
+                Value::from_mut_ptr_and_tag(untagged, ValueType::Record)
+            }
+            Self::Condition(cond) => {
+                let untagged = Gc::into_raw(cond);
+                Value::from_mut_ptr_and_tag(untagged, ValueType::Condition)
+            }
+            Self::Pair(pair) => {
+                let untagged = Gc::into_raw(pair);
+                Value::from_mut_ptr_and_tag(untagged, ValueType::Pair)
+            }
+        }
+    }
+}
+
+impl From<bool> for UnpackedValue {
+    fn from(b: bool) -> Self {
+        Self::Boolean(b)
+    }
+}
+
+impl From<char> for UnpackedValue {
+    fn from(c: char) -> Self {
+        Self::Character(c)
+    }
+}
+
+impl From<Number> for UnpackedValue {
+    fn from(num: Number) -> Self {
+        Self::Number(Arc::new(num))
+    }
+}
+
+impl From<String> for UnpackedValue {
+    fn from(str: String) -> Self {
+        Self::String(Arc::new(AlignedString(str)))
+    }
+}
+
+
+impl From<ast::Literal> for UnpackedValue {
+    fn from(lit: ast::Literal) -> Self {
+        match lit {
+            ast::Literal::Number(n) => Self::Number(Arc::new(n.clone())),
+            ast::Literal::Boolean(b) => Self::Boolean(b),
+            ast::Literal::String(s) => Self::String(Arc::new(AlignedString(s.clone()))),
+            ast::Literal::Character(c) => Self::Character(c),
+            ast::Literal::ByteVector(v) => Self::ByteVector(Arc::new(vectors::AlignedVector(v.clone())))
+        }
+    }
+}
+
+impl From<(Value, Value)> for UnpackedValue {
+    fn from(pair: (Value, Value)) -> Self {
+        todo!()
+    }
+}
+
+impl From<Closure> for UnpackedValue {
+    fn from(proc: Closure) -> Self {
+        todo!()
+    }
 }
 
 #[repr(align(16))]
 pub struct AlignedString(pub String);
 
+/// Any data that doesn't fit well with the serde data model, or is otherwise
+/// uncommon or unavailable in a public API.
+///
+///  This enum is subject to change and is not avaiable as part of a public api.
+#[derive(Clone, Trace)]
+pub(crate) enum OtherData {
+    CapturedEnv(Gc<CapturedEnv>),
+    Transformer(Transformer),
+    // Future(Future),
+    RecordType(Arc<RecordType>),
+    UserData(Arc<dyn std::any::Any>),
+}
 
+/*
 /// A Scheme value
 #[derive(Trace)]
 pub enum Value {
@@ -171,7 +562,7 @@ pub enum Value {
     /// A collection of named values:
     Record(Record),
     /// The type of a collection of named values:
-    RecordType(Gc<RecordType>),
+    RecordType(()),
     /// A condition (which is also a type of record):
     Condition(Condition),
     /// A value that will exist in the future:
@@ -301,24 +692,6 @@ impl Clone for Value {
     }
 }
 
-fn display_vec<T: fmt::Display>(
-    head: &str,
-    v: &[T],
-    f: &mut fmt::Formatter<'_>,
-) -> Result<(), fmt::Error> {
-    write!(f, "{}", head)?;
-
-    let mut iter = v.iter().peekable();
-    while let Some(next) = iter.next() {
-        write!(f, "{}", next)?;
-        if iter.peek().is_some() {
-            write!(f, " ")?;
-        }
-    }
-
-    write!(f, ")")
-}
-
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -374,7 +747,9 @@ impl fmt::Debug for Value {
         }
     }
 }
+*/
 
+/*
 impl From<bool> for Value {
     fn from(b: bool) -> Value {
         Value::Boolean(b)
@@ -386,7 +761,9 @@ impl From<Condition> for Gc<Value> {
         Gc::new(Value::Condition(cond))
     }
 }
+*/
 
+/*
 impl From<Exception> for Gc<Value> {
     fn from(exception: Exception) -> Gc<Value> {
         // Until we can decide on a good method for including the stack trace with
@@ -516,13 +893,17 @@ impl_try_from_value_for!(Syntax, Syntax, "syntax");
 impl_try_from_value_for!(Vec<Value>, Vector, "vector");
 impl_try_from_value_for!(char, Character, "char", copy);
 impl_try_from_value_for!(String, String, "string");
+*/
 
+/*
 pub fn eqv(a: &Gc<Value>, b: &Gc<Value>) -> bool {
     let a = a.read();
     let b = b.read();
     a.eqv(&b)
 }
+*/
 
+/*
 #[bridge(name = "not", lib = "(base)")]
 pub async fn not(a: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
     let a = a.read();
@@ -643,3 +1024,4 @@ pub async fn display(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
     let _ = std::io::stdout().flush();
     Ok(Vec::new())
 }
+*/

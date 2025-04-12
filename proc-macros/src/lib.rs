@@ -2,7 +2,9 @@ use proc_macro::{self, TokenStream};
 use proc_macro2::Span;
 use quote::quote;
 use syn::{
-    parse_macro_input, parse_quote, punctuated::Punctuated, DataEnum, DataStruct, DeriveInput, Fields, FnArg, GenericParam, Generics, Ident, ItemFn, LitStr, Member, Pat, PatIdent, PatType, Token, Type, TypeReference
+    parse_macro_input, parse_quote, punctuated::Punctuated, DataEnum, DataStruct, DeriveInput,
+    Fields, FnArg, GenericParam, Generics, Ident, ItemFn, LitStr, Member, Pat, PatIdent, PatType,
+    Token, Type, TypeReference,
 };
 
 #[proc_macro_attribute]
@@ -43,7 +45,10 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         bridge.sig.inputs.len()
     };
 
-    let arg_names: Vec<_> = bridge.sig.inputs.iter()
+    let arg_names: Vec<_> = bridge
+        .sig
+        .inputs
+        .iter()
         .enumerate()
         .map(|(i, arg)| {
             if let FnArg::Typed(PatType { pat, .. }) = arg {
@@ -59,22 +64,15 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         let arg_indices: Vec<_> = (0..num_args).collect();
         parse_quote! {
             pub(crate) fn #wrapper_name<'a>(
-                args: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
-                rest_args: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
-                cont: &'a ::scheme_rs::gc::Gc<::scheme_rs::value::Value>,
+                args: &'a [::scheme_rs::value::Value],
+                rest_args: &'a [::scheme_rs::value::Value],
+                cont: &'a ::scheme_rs::value::Value,
                 exception_handler: &'a Option<::scheme_rs::gc::Gc<::scheme_rs::exception::ExceptionHandler>>,
                 dynamic_wind: &'a ::scheme_rs::proc::DynamicWind,
-            ) -> futures::future::BoxFuture<'a, Result<scheme_rs::proc::Application, ::scheme_rs::gc::Gc<::scheme_rs::value::Value>>> {
-                let cont = {
-                    let cont = cont.read();
-                    if let ::scheme_rs::value::Value::Closure(proc) = &*cont {
-                        proc.clone()
-                    } else {
-                        panic!("Continuation is not a function!");
-                    }
-                };
+            ) -> futures::future::BoxFuture<'a, Result<scheme_rs::proc::Application, ::scheme_rs::value::Value>> {
                 Box::pin(
                     async move {
+                        let cont = cont.try_into()?;
                         Ok(::scheme_rs::proc::Application::new(
                             cont,
                             #impl_name(
@@ -92,22 +90,15 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         let arg_indices: Vec<_> = (0..num_args).collect();
         parse_quote! {
             pub(crate) fn #wrapper_name<'a>(
-                args: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
-                rest_args: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
-                cont: &'a ::scheme_rs::gc::Gc<::scheme_rs::value::Value>,
+                args: &'a [::scheme_rs::value::Value],
+                rest_args: &'a [::scheme_rs::value::Value],
+                cont: &'a ::scheme_rs::value::Value,
                 exception_handler: &'a Option<::scheme_rs::gc::Gc<::scheme_rs::exception::ExceptionHandler>>,
                 dynamic_wind: &'a ::scheme_rs::proc::DynamicWind,
-            ) -> futures::future::BoxFuture<'a, Result<scheme_rs::proc::Application, ::scheme_rs::gc::Gc<::scheme_rs::value::Value>>> {
-                let cont = {
-                    let cont = cont.read();
-                    if let ::scheme_rs::value::Value::Closure(proc) = &*cont {
-                        proc.clone()
-                    } else {
-                        panic!("Continuation is not a function!");
-                    }
-                };
+            ) -> futures::future::BoxFuture<'a, Result<scheme_rs::proc::Application, ::scheme_rs::value::Value>> {
                 Box::pin(
                     async move {
+                        let cont = cont.try_into()?;
                         Ok(::scheme_rs::proc::Application::new(
                             cont,
                             #impl_name(

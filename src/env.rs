@@ -251,7 +251,7 @@ impl Environment {
 
     pub fn def_var(&self, name: Identifier) -> Var {
         match self {
-            Self::Top(top) => Var::Global(top.write().def_var(name, Value::Undefined)),
+            Self::Top(top) => Var::Global(top.write().def_var(name, Value::undefined())),
             Self::LexicalContour(lex) => Var::Local(lex.write().def_var(name)),
             Self::MacroExpansion(me) => me.read().def_var(name),
         }

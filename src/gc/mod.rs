@@ -88,19 +88,24 @@ impl<T: Trace> Gc<T> {
         self.ptr.as_ptr()
     }
 
-    /// Drops a raw pointer as if it were a Gc.
-    pub(crate) unsafe fn drop_raw(ptr: *mut GcInner<T>) {
-        drop(Self {
-            ptr: NonNull::new(ptr).unwrap(),
-            marker: PhantomData,
-        })
+    pub fn into_raw(gc: Self) -> *mut GcInner<T> {
+        ManuallyDrop::new(gc).ptr.as_ptr()
     }
 
-    /// Create a new Gc from the raw pointer. This increments the ref count for
-    /// safety.
-    pub(crate) unsafe fn from_ptr(ptr: *mut GcInner<T>) -> Self {
+    pub(crate) unsafe fn increment_reference_count(ptr: *mut GcInner<T>) {
         let ptr = NonNull::new(ptr).unwrap();
         inc_rc(ptr);
+    }
+
+    pub(crate) unsafe fn decrement_reference_count(ptr: *mut GcInner<T>) {
+        let ptr = NonNull::new(ptr).unwrap();
+        dec_rc(ptr);
+    }
+
+    /// Create a new Gc from the raw pointer. Does not decrement the reference
+    /// count.
+    pub(crate) unsafe fn from_raw(ptr: *mut GcInner<T>) -> Self {
+        let ptr = NonNull::new(ptr).unwrap();
         Self {
             ptr,
             marker: PhantomData,

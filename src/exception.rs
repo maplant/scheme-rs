@@ -15,11 +15,11 @@ use std::{error::Error as StdError, fmt, ops::Range};
 #[derive(Debug, Clone, Trace)]
 pub struct Exception {
     pub backtrace: Vec<Frame>,
-    pub obj: Gc<Value>,
+    pub obj: Value,
 }
 
 impl Exception {
-    pub fn new(backtrace: Vec<Frame>, obj: Gc<Value>) -> Self {
+    pub fn new(backtrace: Vec<Frame>, obj: Value) -> Self {
         Self { backtrace, obj }
     }
 }
@@ -27,6 +27,7 @@ impl Exception {
 // TODO: This shouldn't be the display impl for Exception, I don' t think.
 impl fmt::Display for Exception {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        /*
         const MAX_BACKTRACE_LEN: usize = 20;
         writeln!(f, "Uncaught exception: {}", self.obj)?;
         if !self.backtrace.is_empty() {
@@ -40,6 +41,8 @@ impl fmt::Display for Exception {
             }
         }
         Ok(())
+         */
+        todo!()
     }
 }
 
@@ -57,11 +60,11 @@ pub enum Condition {
     NonContinuable,
     ImplementationRestriction,
     Lexical,
-    Syntax { form: Gc<Value>, subform: Gc<Value> },
+    Syntax { form: Value, subform: Value },
     Undefined,
-    Irritants { irritants: Gc<Value> },
-    Who { who: Gc<Value> },
-    CompoundCondition { simple_conditions: Vec<Gc<Value>> },
+    Irritants { irritants: Value },
+    Who { who: Value },
+    CompoundCondition { simple_conditions: Vec<Value> },
 }
 
 impl Condition {
@@ -72,8 +75,8 @@ impl Condition {
     pub fn syntax_error() -> Self {
         // TODO: Expand on these
         Self::Syntax {
-            form: Gc::new(Value::Null),
-            subform: Gc::new(Value::Boolean(false)),
+            form: Value::null(),
+            subform: Value::from(false),
         }
     }
 
@@ -188,17 +191,18 @@ impl ExceptionHandler {
     /// Exception handler must point to a valid Gc'd object.
     pub unsafe fn from_ptr(ptr: *mut GcInner<Self>) -> Option<Gc<Self>> {
         use std::ops::Not;
-        ptr.is_null().not().then(|| unsafe { Gc::from_ptr(ptr) })
+        ptr.is_null().not().then(|| unsafe { Gc::from_raw(ptr) })
     }
 }
 
 pub fn with_exception_handler<'a>(
-    args: &'a [Gc<Value>],
-    _rest_args: &'a [Gc<Value>],
-    cont: &'a Gc<Value>,
+    args: &'a [Value],
+    _rest_args: &'a [Value],
+    cont: &'a Value,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
-) -> BoxFuture<'a, Result<Application, Gc<Value>>> {
+) -> BoxFuture<'a, Result<Application, Value>> {
+    /*
     Box::pin(async move {
         let [handler, thunk] = args else {
             return Err(Condition::wrong_num_of_args(2, args.len()).into());
@@ -224,6 +228,8 @@ pub fn with_exception_handler<'a>(
             None,
         ))
     })
+     */
+    todo!()
 }
 
 inventory::submit! {
@@ -245,12 +251,13 @@ inventory::submit! {
 
 /// Raises a non-continuable exception to the current exception handler.
 pub fn raise<'a>(
-    args: &'a [Gc<Value>],
-    _rest_args: &'a [Gc<Value>],
-    cont: &'a Gc<Value>,
+    args: &'a [Value],
+    _rest_args: &'a [Value],
+    cont: &'a Value,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
-) -> BoxFuture<'a, Result<Application, Gc<Value>>> {
+) -> BoxFuture<'a, Result<Application, Value>> {
+    /*
     Box::pin(async move {
         let [condition] = args else {
             return Err(Condition::wrong_num_of_args(1, args.len()).into());
@@ -282,7 +289,9 @@ pub fn raise<'a>(
             dynamic_wind.clone(),
             None,
         ))
-    })
+})
+     */
+    todo!()
 }
 
 inventory::submit! {
@@ -306,17 +315,18 @@ unsafe extern "C" fn reraise_exception(
     runtime: *mut GcInner<Runtime>,
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
-    _args: *const *mut GcInner<Value>,
+    _args: *const i64,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition> {
-    let runtime = Gc::from_ptr(runtime);
+    /*
+    let runtime = Gc::from_raw(runtime);
 
     // env[0] is the exception
-    let exception = Gc::from_ptr(env.read());
+    let exception = Gc::from_raw(env.read());
 
     // env[1] is the continuation
-    let cont = Gc::from_ptr(env.add(1).read());
+    let cont = Gc::from_raw(env.add(1).read());
 
     Box::into_raw(Box::new(Ok(Application::new(
         Closure::new(
@@ -332,18 +342,21 @@ unsafe extern "C" fn reraise_exception(
         ExceptionHandler::from_ptr(exception_handler),
         dynamic_wind.as_ref().unwrap().clone(),
         None,
-    ))))
+))))
+     */
+    todo!()
 }
 
 /// Raises an exception to the current exception handler and coninues with the
 /// value returned by the handler.
 pub fn raise_continuable<'a>(
-    args: &'a [Gc<Value>],
-    _rest_args: &'a [Gc<Value>],
-    cont: &'a Gc<Value>,
+    args: &'a [Value],
+    _rest_args: &'a [Value],
+    cont: &'a Value,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
-) -> BoxFuture<'a, Result<Application, Gc<Value>>> {
+) -> BoxFuture<'a, Result<Application, Value>> {
+    /*
     Box::pin(async move {
         let [condition] = args else {
             return Err(Condition::wrong_num_of_args(1, args.len()).into());
@@ -363,6 +376,8 @@ pub fn raise_continuable<'a>(
             None,
         ))
     })
+     */
+    todo!()
 }
 
 inventory::submit! {

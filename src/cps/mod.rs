@@ -16,7 +16,7 @@ use crate::{
     ast::Literal,
     env::{Global, Local, Var},
     gc::Trace,
-    runtime::{CallSiteId, FunctionDebugInfoId},
+    runtime::{CallSiteId, FunctionDebugInfoId}, value::Value as RuntimeValue,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -34,7 +34,7 @@ pub use compile::Compile;
 #[derive(Clone, PartialEq)]
 pub enum Value {
     Var(Var),
-    Literal(Literal),
+    Value(RuntimeValue),
 }
 
 impl Value {
@@ -55,9 +55,9 @@ impl Value {
     }
 }
 
-impl From<bool> for Value {
-    fn from(b: bool) -> Self {
-        Self::Literal(Literal::Boolean(b))
+impl From<RuntimeValue> for Value {
+    fn from(v: RuntimeValue) -> Self {
+        Self::Value(v)
     }
 }
 
@@ -83,7 +83,8 @@ impl fmt::Debug for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Var(var) => var.fmt(f),
-            Self::Literal(lit) => lit.fmt(f),
+            // Self::Value(val) => val.fmt(f),
+            _ => todo!()
         }
     }
 }
@@ -167,8 +168,10 @@ impl ClosureArgs {
 
 #[derive(derive_more::Debug, Clone)]
 pub enum Cps {
+    /*
     /// Generates a cell of type `*const GcInner<Value>`
     AllocCell(Local, Box<Cps>),
+    */
 
     /// Call to a primitive operator.
     PrimOp(PrimOp, Vec<Value>, Local, Box<Cps>),
@@ -200,9 +203,6 @@ impl Cps {
     /// Perform substitutions on local variables.
     fn substitute(&mut self, substitutions: &HashMap<Local, Value>) {
         match self {
-            Self::AllocCell(_, cexp) => {
-                cexp.substitute(substitutions);
-            }
             Self::PrimOp(_, args, _, cexp) => {
                 substitute_values(args, substitutions);
                 cexp.substitute(substitutions);

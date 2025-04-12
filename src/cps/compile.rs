@@ -1,7 +1,7 @@
 use std::iter::once;
 
 use super::*;
-use crate::{ast::*, gc::Gc, syntax::Identifier, value::Value as SchemeValue};
+use crate::{ast::*, gc::Gc, syntax::Identifier, value::Value as RuntimeValue};
 use either::Either;
 
 /// There's not too much reason that this is a trait, other than I wanted to
@@ -87,7 +87,9 @@ fn compile_let(
         let k3 = Local::gensym();
         Cps::Closure {
             args: ClosureArgs::new(vec![k2], false, None),
-            body: Box::new(Cps::AllocCell(
+            body: Box::new(Cps::PrimOp(
+                PrimOp::AllocCell,
+                vec![],
                 *curr_bind,
                 Box::new(Cps::Closure {
                     args: ClosureArgs::new(vec![expr_result], false, None),
@@ -193,17 +195,6 @@ impl Compile for &[Expression] {
     }
 }
 
-/// Create a constant value from any Scheme value
-/// TODO: The way we do this is obviously quite bad, we're boxing every single
-/// constant that comes our way and making them global variables. This is a
-/// hack, but one that _is technically correct_.
-fn constant(constant: SchemeValue) -> Value {
-    Value::from(Global::new(
-        Identifier::new(format!("{constant:?}")),
-        Gc::new(constant),
-    ))
-}
-
 fn compile_undefined(mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
     let k1 = Local::gensym();
     let k2 = Local::gensym();
@@ -211,7 +202,7 @@ fn compile_undefined(mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
         args: ClosureArgs::new(vec![k2], false, None),
         body: Box::new(Cps::App(
             Value::from(k2),
-            vec![constant(SchemeValue::Undefined)],
+            vec![Value::from(RuntimeValue::undefined())],
             None,
         )),
         val: k1,
@@ -228,7 +219,7 @@ impl Compile for Literal {
             args: ClosureArgs::new(vec![k2], false, None),
             body: Box::new(Cps::App(
                 Value::from(k2),
-                vec![constant(SchemeValue::from_literal(self))],
+                vec![Value::from(RuntimeValue::from(self.clone()))],
                 None,
             )),
             val: k1,
@@ -451,7 +442,7 @@ impl Compile for And {
 
 fn compile_and(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
     let (expr, tail) = match exprs {
-        [] => return meta_cont(constant(SchemeValue::from(true))),
+        [] => return meta_cont(Value::from(RuntimeValue::from(true))),
         [expr] => (expr, None),
         [expr, tail @ ..] => (expr, Some(tail)),
     };
@@ -475,13 +466,13 @@ fn compile_and(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps 
                     } else {
                         Cps::App(
                             Value::from(k1),
-                            vec![constant(SchemeValue::from(true))],
+                            vec![Value::from(RuntimeValue::from(true))],
                             None,
                         )
                     }),
                     Box::new(Cps::App(
                         Value::from(k1),
-                        vec![constant(SchemeValue::from(false))],
+                        vec![Value::from(RuntimeValue::from(false))],
                         None,
                     )),
                 )),
@@ -504,7 +495,7 @@ impl Compile for Or {
 
 fn compile_or(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
     let (expr, tail) = match exprs {
-        [] => return meta_cont(constant(SchemeValue::from(false))),
+        [] => return meta_cont(Value::from(RuntimeValue::from(false))),
         [expr] => (expr, None),
         [expr, tail @ ..] => (expr, Some(tail)),
     };
@@ -522,7 +513,7 @@ fn compile_or(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps +
                     Value::from(cond_arg),
                     Box::new(Cps::App(
                         Value::from(k1),
-                        vec![constant(SchemeValue::from(true))],
+                        vec![Value::from(RuntimeValue::from(true))],
                         None,
                     )),
                     Box::new(if let Some(tail) = tail {
@@ -533,7 +524,7 @@ fn compile_or(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps +
                     } else {
                         Cps::App(
                             Value::from(k1),
-                            vec![constant(SchemeValue::from(false))],
+                            vec![Value::from(RuntimeValue::from(false))],
                             None,
                         )
                     }),
@@ -573,7 +564,7 @@ impl DefineVar {
     fn alloc_cells(&self, wrap: Cps) -> Cps {
         let cps = match self.var {
             Var::Global(_) => wrap,
-            Var::Local(local) => Cps::AllocCell(local, Box::new(wrap)),
+            Var::Local(local) => Cps::PrimOp(PrimOp::AllocCell, Vec::new(), local, Box::new(wrap)),
         };
         next_or_wrap(&self.next, cps)
     }
@@ -583,7 +574,7 @@ impl DefineFunc {
     fn alloc_cells(&self, wrap: Cps) -> Cps {
         let cps = match self.var {
             Var::Global(_) => wrap,
-            Var::Local(local) => Cps::AllocCell(local, Box::new(wrap)),
+            Var::Local(local) => Cps::PrimOp(PrimOp::AllocCell, Vec::new(), local, Box::new(wrap)),
         };
         next_or_wrap(&self.next, cps)
     }
@@ -745,7 +736,7 @@ impl Compile for Quote {
             args: ClosureArgs::new(vec![k2], false, None),
             body: Box::new(Cps::App(
                 Value::from(k2),
-                vec![constant(self.val.clone())],
+                vec![Value::from(self.val.clone())],
                 None,
             )),
             val: k1,
@@ -763,7 +754,7 @@ impl Compile for SyntaxQuote {
             args: ClosureArgs::new(vec![k2], false, None),
             body: Box::new(Cps::App(
                 Value::from(k2),
-                vec![constant(SchemeValue::Syntax(self.syn.clone()))],
+                vec![Value::from(RuntimeValue::from(self.syn.clone()))],
                 None,
             )),
             val: k1,
@@ -792,8 +783,10 @@ impl Compile for SyntaxCase {
                         Box::new(Cps::App(
                             Value::from(call_transformer),
                             vec![
-                                constant(SchemeValue::CapturedEnv(self.captured_env.clone())),
-                                constant(SchemeValue::Transformer(self.transformer.clone())),
+                                todo!(),
+                                todo!(),
+                                // Value::from(RuntimeValue::CapturedEnv(self.captured_env.clone())),
+                                // Value::from(RuntimeValue::Transformer(self.transformer.clone())),
                                 Value::from(to_expand),
                             ]
                             .into_iter()
@@ -824,7 +817,7 @@ impl Compile for Vector {
             args: ClosureArgs::new(vec![k2], false, None),
             body: Box::new(Cps::App(
                 Value::from(k2),
-                vec![constant(SchemeValue::Vector(self.vals.clone()))],
+                vec![Value::from(RuntimeValue::from(self.vals.clone()))],
                 None,
             )),
             val: k1,
@@ -842,7 +835,7 @@ impl Compile for Vec<u8> {
             args: ClosureArgs::new(vec![k2], false, None),
             body: Box::new(Cps::App(
                 Value::from(k2),
-                vec![constant(SchemeValue::ByteVector(self.clone()))],
+                vec![Value::from(RuntimeValue::from(self.clone()))],
                 None,
             )),
             val: k1,

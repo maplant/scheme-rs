@@ -1,6 +1,6 @@
 //! Rudimentary structure support. CPS will probably make a lot of this redundant.
 
-use std::collections::HashMap;
+use std::{sync::Arc, collections::HashMap};
 
 use crate::{
     ast::ParseAstError,
@@ -11,12 +11,12 @@ use crate::{
 };
 
 /// Type declaration for a record.
-#[derive(Debug, Trace, Clone)]
+#[derive(Debug, Clone)]
 #[repr(align(16))]
 pub struct RecordType {
     name: String,
     /// Parent is most recently inserted record type, if one exists.
-    inherits: indexmap::IndexSet<Gc<RecordType>>,
+    inherits: indexmap::IndexSet<Arc<RecordType>>,
     fields: Vec<Identifier>,
 }
 
@@ -42,7 +42,7 @@ fn is_subtype_of(lhs: &Gc<RecordType>, rhs: &Gc<RecordType>) -> bool {
 #[derive(Debug, Trace, Clone)]
 #[repr(align(16))]
 pub struct Record {
-    record_type: Gc<RecordType>,
+    record_type: Arc<RecordType>,
     fields: Vec<Gc<Value>>,
 }
 
