@@ -5,21 +5,17 @@ use crate::{
     expand::Transformer,
     gc::{Gc, GcInner, Trace},
     lists,
-    num::Number,
+    num::{Number, ReflexiveNumber},
     proc::Closure,
     records::{Record, RecordType},
     registry::bridge,
+    strings::AlignedString,
     syntax::Syntax,
-    vectors::{self, AlignedVector},
+    vectors,
 };
 use futures::future::{BoxFuture, Shared};
 use std::{
-    fmt,
-    io::Write,
-    marker::PhantomData,
-    mem::ManuallyDrop,
-    ops::{Deref, DerefMut},
-    sync::Arc,
+    fmt, hash::Hash, io::Write, marker::PhantomData, mem::ManuallyDrop, ops::Deref, sync::Arc,
 };
 
 // type Future = Shared<BoxFuture<'static, Result<Vec<Gc<Value>>, Gc<Value>>>>;
@@ -35,13 +31,27 @@ impl Value {
     pub fn new(v: UnpackedValue) -> Self {
         v.into_value()
     }
-    
-    /// Creates a new Value from a raw u64. Increments the reference count.
+
+    /// #f is false, everything else is true
+    pub fn is_true(&self) -> bool {
+        self.0 != ValueType::Boolean as u64
+    }
+
+    /// Creates a new Value from a raw u64.
     ///
     /// # Safety
     /// Calling this function is undefined behavior if the raw u64 was not obtained
     /// via [into_raw]
     pub unsafe fn from_raw(raw: u64) -> Self {
+        Self(raw)
+    }
+
+    /// Creates a new Value from a raw u64, incrementing the reference count.
+    ///
+    /// # Safety
+    /// Calling this function is undefined behavior if the raw u64 was not obtained
+    /// via [into_raw]
+    pub unsafe fn from_raw_inc_rc(raw: u64) -> Self {
         let tag = ValueType::from(raw & TAG);
         let untagged = raw & !TAG;
         unsafe {
@@ -66,10 +76,11 @@ impl Value {
                 ValueType::Pair => {
                     Gc::increment_reference_count(untagged as *mut GcInner<lists::Pair>)
                 }
-                ValueType::HashTable | 
-                ValueType::Other => todo!(),
-                ValueType::Undefined | ValueType::Null | ValueType::Boolean |
-                ValueType::Character => (),
+                ValueType::HashTable | ValueType::Other => todo!(),
+                ValueType::Undefined
+                | ValueType::Null
+                | ValueType::Boolean
+                | ValueType::Character => (),
             }
         }
         Self(raw)
@@ -83,8 +94,8 @@ impl Value {
     }
 
     /// Creates a raw u64 from the Value. Does not decrement the reference count.
-    pub fn as_raw(&self) -> u64 {
-        self.0
+    pub fn as_raw(this: &Self) -> u64 {
+        this.0
     }
 
     fn from_ptr_and_tag<T>(ptr: *const T, tag: ValueType) -> Self {
@@ -105,6 +116,10 @@ impl Value {
 
     pub fn datum_from_syntax(syntax: &Syntax) -> Self {
         todo!()
+    }
+
+    pub fn type_of(&self) -> ValueType {
+        ValueType::from(self.0 & TAG)
     }
 
     pub fn unpack(self) -> UnpackedValue {
@@ -134,7 +149,8 @@ impl Value {
                 UnpackedValue::Symbol(sym)
             }
             ValueType::Vector => {
-                let vec = unsafe { Gc::from_raw(untagged as *mut GcInner<vectors::AlignedVector<Self>>) };
+                let vec =
+                    unsafe { Gc::from_raw(untagged as *mut GcInner<vectors::AlignedVector<Self>>) };
                 UnpackedValue::Vector(vec)
             }
             ValueType::ByteVector => {
@@ -162,7 +178,7 @@ impl Value {
                 UnpackedValue::Pair(pair)
             }
             ValueType::HashTable => todo!(),
-            ValueType::Other => todo!()
+            ValueType::Other => todo!(),
         }
     }
 
@@ -173,38 +189,46 @@ impl Value {
             marker: PhantomData,
         }
     }
+}
 
-    pub fn unpacked_mut(&mut self) -> UnpackedValueMut<'_> {
-        let unpacked = ManuallyDrop::new(Value(self.0).unpack());
-        UnpackedValueMut {
-            unpacked,
-            marker: PhantomData,
-        }
+impl PartialEq for Value {
+    fn eq(&self, rhs: &Self) -> bool {
+        &*self.unpacked_ref() == &*rhs.unpacked_ref()
     }
 }
 
 impl Clone for Value {
     fn clone(&self) -> Self {
-        unsafe { Self::from_raw(self.0) }
+        unsafe { Self::from_raw_inc_rc(self.0) }
     }
 }
 
 impl Drop for Value {
     fn drop(&mut self) {
         // FIXME: This is a pretty dumb way to do this, do it manually!
-        unsafe { ManuallyDrop::drop(&mut self.unpacked_mut().unpacked) }
+        unsafe { ManuallyDrop::drop(&mut ManuallyDrop::new(Self(self.0).unpack())) }
+    }
+}
+
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        <UnpackedValue as fmt::Display>::fmt(&*self.unpacked_ref(), f)
     }
 }
 
 impl fmt::Debug for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+        <UnpackedValue as fmt::Debug>::fmt(&*self.unpacked_ref(), f)
     }
 }
 
-impl PartialEq for Value {
-    fn eq(&self, rhs: &Self) -> bool {
-        todo!()
+unsafe impl Trace for Value {
+    unsafe fn visit_children(&self, visitor: unsafe fn(crate::gc::OpaqueGcPtr)) {
+        self.unpacked_ref().visit_children(visitor);
+    }
+
+    unsafe fn finalize(&mut self) {
+        ManuallyDrop::new(Self(self.0).unpack()).finalize()
     }
 }
 
@@ -221,130 +245,22 @@ impl Deref for UnpackedValueRef<'_> {
     }
 }
 
-pub struct UnpackedValueMut<'a> {
-    unpacked: ManuallyDrop<UnpackedValue>,
-    marker: PhantomData<&'a mut UnpackedValue>,
-}
-
-impl Deref for UnpackedValueMut<'_> {
-    type Target = UnpackedValue;
-
-    fn deref(&self) -> &Self::Target {
-        &self.unpacked
-    }
-}
-
-impl DerefMut for UnpackedValueMut<'_> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.unpacked
-    }
-}
-
-unsafe impl Trace for Value {
-    unsafe fn visit_children(&self, visitor: unsafe fn(crate::gc::OpaqueGcPtr)) {
-        self.unpacked_ref().visit_children(visitor);
-    }
-
-    unsafe fn finalize(&mut self) {
-        self.unpacked_mut().finalize()
-    }
-}
-
-impl From<bool> for Value {
-    fn from(b: bool) -> Self {
-        Value::new(b.into())
-    }
-}
-
-impl From<char> for Value {
-    fn from(c: char) -> Self {
-        Value::new(c.into())
-    }
-}
-
-impl From<Number> for Value {
-    fn from(num: Number) -> Self {
-        Value::new(num.into())
-    }
-}
-
-impl From<String> for Value {
-    fn from(str: String) -> Self {
-        Value::new(str.into())
-    }
-}
-
-
 impl From<ast::Literal> for Value {
     fn from(lit: ast::Literal) -> Self {
         Value::new(lit.into())
     }
 }
 
-impl From<(Value, Value)> for Value {
-    fn from(pair: (Value, Value)) -> Self {
-        Value::new(pair.into())
-    }
-}
-
-impl From<Closure> for Value {
-    fn from(proc: Closure) -> Self {
-        Value::new(proc.into())
-    }
-}
-
-impl From<Syntax> for Value {
-    fn from(syn: Syntax) -> Self {
-        // Value::new(syn.into())
-        todo!()
-    }
-}
-
-impl From<Vec<Value>> for Value {
-    fn from(vec: Vec<Value>) -> Self {
-        todo!()
-    }
-}
-
-impl From<Vec<u8>> for Value {
-    fn from(vec: Vec<u8>) -> Self {
-        todo!()
-    }
-}
-
 impl From<Exception> for Value {
     fn from(exception: Exception) -> Self {
-        todo!()
+        // Until we can decide on a good method for including the stack trace with
+        // the new condition, just return the object.
+        exception.obj
     }
 }
-
-impl From<Condition> for Value {
-    fn from(condition: Condition) -> Self {
-        todo!()
-    }
-}
-
-impl<'a> TryFrom<&'a Value> for Gc<Closure> {
-    type Error = Condition;
-
-    fn try_from(v: &'a Value) -> Result<Self, Self::Error> {
-        todo!()
-    }
-}
-
-
-/*
-impl<T> From<UnpackedValue> for Value2
-where
-    UnpackedValue: From<T>,
-{
-    fn from(t: T) -> Self {
-        UnpackedValue::from(t).into_value()
-    }
-}
-*/
 
 #[repr(u64)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ValueType {
     Undefined = 0,
     Null = 1,
@@ -463,32 +379,91 @@ impl UnpackedValue {
             }
         }
     }
-}
 
-impl From<bool> for UnpackedValue {
-    fn from(b: bool) -> Self {
-        Self::Boolean(b)
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Self::Undefined => "undefined",
+            Self::Boolean(_) => "bool",
+            Self::Number(_) => "number",
+            Self::Character(_) => "character",
+            Self::String(_) => "string",
+            Self::Symbol(_) => "symbol",
+            Self::Pair(_) | Self::Null => "pair",
+            Self::Vector(_) => "vector",
+            Self::ByteVector(_) => "byte vector",
+            Self::Syntax(_) => "syntax",
+            Self::Closure(_) => "procedure",
+            Self::Record(_) | Self::Condition(_) => "record",
+            // Self::Transformer(_) => "transformer",
+            // Self::CapturedEnv(_) => "captured-env",
+            // Self::ExceptionHandler(_) => "exception-handler",
+        }
     }
 }
 
-impl From<char> for UnpackedValue {
-    fn from(c: char) -> Self {
-        Self::Character(c)
+impl PartialEq for UnpackedValue {
+    fn eq(&self, rhs: &Self) -> bool {
+        match (self, rhs) {
+            (Self::Null, Self::Null) => true,
+            (Self::Boolean(a), Self::Boolean(b)) => a == b,
+            (Self::Number(a), Self::Number(b)) => a == b,
+            (Self::Character(a), Self::Character(b)) => a == b,
+            (Self::String(a), Self::String(b)) => a == b,
+            (Self::Symbol(a), Self::Symbol(b)) => a == b,
+            (Self::Pair(a), Self::Pair(b)) => a == b,
+            (Self::Vector(a), Self::Vector(b)) => a == b,
+            (Self::ByteVector(a), Self::ByteVector(b)) => a == b,
+            (Self::Closure(a), Self::Closure(b)) => Gc::ptr_eq(a, b),
+            // TODO: Syntax
+            _ => false,
+        }
     }
 }
 
-impl From<Number> for UnpackedValue {
-    fn from(num: Number) -> Self {
-        Self::Number(Arc::new(num))
+impl fmt::Display for UnpackedValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Undefined => write!(f, "<undefined>"),
+            Self::Null => write!(f, "()"),
+            Self::Boolean(true) => write!(f, "#t"),
+            Self::Boolean(false) => write!(f, "#f"),
+            Self::Number(number) => write!(f, "{number}"),
+            Self::Character(c) => write!(f, "#\\{c}"),
+            Self::String(string) => write!(f, "{string}"),
+            Self::Symbol(symbol) => write!(f, "{symbol}"),
+            Self::Pair(pair) => {
+                let pair_read = pair.read();
+                let lists::Pair(car, cdr) = pair_read.as_ref();
+                lists::display_list(car, cdr, f)
+            }
+            Self::Vector(v) => {
+                let v_read = v.read();
+                vectors::display_vec("#(", v_read.as_ref(), f)
+            }
+            Self::ByteVector(v) => vectors::display_vec("#u8(", v, f),
+            Self::Closure(_) => write!(f, "<procedure>"),
+            /*
+            // TODO: This shouldn't be debug output.
+            Self::Syntax(syntax) => write!(f, "{:?}", syntax),
+            Self::Future(_) => write!(f, "<future>"),
+            // TODO: These two shouldn't be debug output either.
+            Self::Record(record) => write!(f, "<{record:?}>"),
+            Self::RecordType(record_type) => write!(f, "<{record_type:?}>"),
+            Self::Transformer(_) => write!(f, "<transformer>"),
+            Self::CapturedEnv(_) => write!(f, "<environment>"),
+            Self::Condition(cond) => write!(f, "<{cond:?}>"),
+            // Self::ExceptionHandler(_) => write!(f, "<exception-handler>"),
+            */
+            _ => todo!(),
+        }
     }
 }
 
-impl From<String> for UnpackedValue {
-    fn from(str: String) -> Self {
-        Self::String(Arc::new(AlignedString(str)))
+impl fmt::Debug for UnpackedValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        todo!()
     }
 }
-
 
 impl From<ast::Literal> for UnpackedValue {
     fn from(lit: ast::Literal) -> Self {
@@ -497,25 +472,89 @@ impl From<ast::Literal> for UnpackedValue {
             ast::Literal::Boolean(b) => Self::Boolean(b),
             ast::Literal::String(s) => Self::String(Arc::new(AlignedString(s.clone()))),
             ast::Literal::Character(c) => Self::Character(c),
-            ast::Literal::ByteVector(v) => Self::ByteVector(Arc::new(vectors::AlignedVector(v.clone())))
+            ast::Literal::ByteVector(v) => {
+                Self::ByteVector(Arc::new(vectors::AlignedVector(v.clone())))
+            }
         }
     }
 }
 
-impl From<(Value, Value)> for UnpackedValue {
-    fn from(pair: (Value, Value)) -> Self {
-        todo!()
-    }
+macro_rules! impl_try_from_value_for {
+    ($ty:ty, $variant:ident, $type_name:literal) => {
+        impl From<$ty> for UnpackedValue {
+            fn from(v: $ty) -> Self {
+                Self::$variant(v)
+            }
+        }
+
+        impl From<$ty> for Value {
+            fn from(v: $ty) -> Self {
+                UnpackedValue::from(v).into_value()
+            }
+        }
+
+        impl TryFrom<UnpackedValue> for $ty {
+            type Error = Condition;
+
+            fn try_from(v: UnpackedValue) -> Result<Self, Self::Error> {
+                match v {
+                    UnpackedValue::$variant(v) => Ok(v),
+                    e => Err(Condition::invalid_type($type_name, e.type_name())),
+                }
+            }
+        }
+
+        impl TryFrom<Value> for $ty {
+            type Error = Condition;
+
+            fn try_from(v: Value) -> Result<Self, Self::Error> {
+                v.unpack().try_into()
+            }
+        }
+    };
 }
 
-impl From<Closure> for UnpackedValue {
-    fn from(proc: Closure) -> Self {
-        todo!()
-    }
+impl_try_from_value_for!(bool, Boolean, "bool");
+impl_try_from_value_for!(char, Character, "char");
+impl_try_from_value_for!(Arc<Number>, Number, "number");
+impl_try_from_value_for!(Arc<AlignedString>, String, "string");
+impl_try_from_value_for!(Gc<vectors::AlignedVector<Value>>, Vector, "vector");
+impl_try_from_value_for!(Arc<vectors::AlignedVector<u8>>, ByteVector, "byte-vector");
+impl_try_from_value_for!(Arc<Syntax>, Syntax, "syntax");
+impl_try_from_value_for!(Gc<Closure>, Closure, "procedure");
+impl_try_from_value_for!(Gc<Condition>, Condition, "condition");
+impl_try_from_value_for!(Gc<lists::Pair>, Pair, "pair");
+
+macro_rules! impl_from_wrapped_for {
+    ($ty:ty, $variant:ident, $wrapper:expr) => {
+        impl From<$ty> for UnpackedValue {
+            fn from(v: $ty) -> Self {
+                Self::$variant(($wrapper)(v))
+            }
+        }
+
+        impl From<$ty> for Value {
+            fn from(v: $ty) -> Self {
+                UnpackedValue::from(v).into_value()
+            }
+        }
+    };
 }
 
-#[repr(align(16))]
-pub struct AlignedString(pub String);
+impl_from_wrapped_for!(Number, Number, Arc::new);
+impl_from_wrapped_for!(String, String, |str| Arc::new(AlignedString::new(str)));
+impl_from_wrapped_for!(Vec<Value>, Vector, |vec| Gc::new(
+    vectors::AlignedVector::new(vec)
+));
+impl_from_wrapped_for!(Vec<u8>, ByteVector, |vec| Arc::new(
+    vectors::AlignedVector::new(vec)
+));
+impl_from_wrapped_for!(Syntax, Syntax, Arc::new);
+impl_from_wrapped_for!(Closure, Closure, Gc::from);
+impl_from_wrapped_for!((Value, Value), Pair, |(car, cdr)| Gc::new(
+    lists::Pair::new(car, cdr)
+));
+impl_from_wrapped_for!(Condition, Condition, Gc::from);
 
 /// Any data that doesn't fit well with the serde data model, or is otherwise
 /// uncommon or unavailable in a public API.
@@ -529,6 +568,81 @@ pub(crate) enum OtherData {
     RecordType(Arc<RecordType>),
     UserData(Arc<dyn std::any::Any>),
 }
+
+#[derive(Clone, Debug, Trace)]
+pub(crate) struct ReflexiveValue(pub(crate) Value);
+
+impl AsRef<Value> for ReflexiveValue {
+    fn as_ref(&self) -> &Value {
+        &self.0
+    }
+}
+
+impl Hash for ReflexiveValue {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        let unpacked = self.0.unpacked_ref();
+        std::mem::discriminant(&*unpacked).hash(state);
+        match &*unpacked {
+            UnpackedValue::Boolean(b) => b.hash(state),
+            UnpackedValue::Character(c) => c.hash(state),
+            UnpackedValue::Number(n) => ReflexiveNumber(n.clone()).hash(state),
+            UnpackedValue::String(s) => s.hash(state),
+            UnpackedValue::Symbol(s) => s.hash(state),
+            UnpackedValue::Vector(v) => {
+                let v_read = v.read();
+                for val in v_read.as_ref().iter() {
+                    ReflexiveValue(val.clone()).hash(state);
+                }
+            }
+            UnpackedValue::ByteVector(v) => v.hash(state),
+            UnpackedValue::Syntax(s) => Arc::as_ptr(s).hash(state),
+            UnpackedValue::Closure(c) => Gc::as_ptr(c).hash(state),
+            UnpackedValue::Record(r) => Gc::as_ptr(r).hash(state),
+            UnpackedValue::Condition(c) => Gc::as_ptr(c).hash(state),
+            // TODO: We can make this better by checking the list for equivalence reflexively.
+            UnpackedValue::Pair(p) => Gc::as_ptr(p).hash(state),
+            // UnpackedValue::Cls
+            _ => (),
+        }
+    }
+}
+
+impl PartialEq for ReflexiveValue {
+    fn eq(&self, rhs: &Self) -> bool {
+        let unpacked_lhs = self.0.unpacked_ref();
+        let unpacked_rhs = rhs.0.unpacked_ref();
+        match (&*unpacked_lhs, &*unpacked_rhs) {
+            (UnpackedValue::Undefined, UnpackedValue::Undefined) => true,
+            (UnpackedValue::Null, UnpackedValue::Null) => true,
+            (UnpackedValue::Boolean(a), UnpackedValue::Boolean(b)) => a == b,
+            (UnpackedValue::Number(a), UnpackedValue::Number(b)) => {
+                ReflexiveNumber(a.clone()) == ReflexiveNumber(b.clone())
+            }
+            (UnpackedValue::Character(a), UnpackedValue::Character(b)) => a == b,
+            (UnpackedValue::String(a), UnpackedValue::String(b)) => a == b,
+            (UnpackedValue::Symbol(a), UnpackedValue::Symbol(b)) => a == b,
+            (UnpackedValue::Pair(a), UnpackedValue::Pair(b)) => Gc::ptr_eq(a, b),
+            (UnpackedValue::Vector(a), UnpackedValue::Vector(b)) => {
+                let a_read = a.read();
+                let b_read = b.read();
+                a_read.as_ref().len() == b_read.as_ref().len()
+                    && a_read
+                        .as_ref()
+                        .iter()
+                        .zip(b_read.as_ref().iter())
+                        .any(|(l, r)| ReflexiveValue(l.clone()) != ReflexiveValue(r.clone()))
+            }
+            (UnpackedValue::ByteVector(a), UnpackedValue::ByteVector(b)) => a == b,
+            (UnpackedValue::Syntax(a), UnpackedValue::Syntax(b)) => Arc::ptr_eq(a, b),
+            (UnpackedValue::Closure(a), UnpackedValue::Closure(b)) => Gc::ptr_eq(a, b),
+            (UnpackedValue::Record(a), UnpackedValue::Record(b)) => Gc::ptr_eq(a, b),
+            (UnpackedValue::Condition(a), UnpackedValue::Condition(b)) => Gc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+}
+
+impl Eq for ReflexiveValue {}
 
 /*
 /// A Scheme value
@@ -764,13 +878,6 @@ impl From<Condition> for Gc<Value> {
 */
 
 /*
-impl From<Exception> for Gc<Value> {
-    fn from(exception: Exception) -> Gc<Value> {
-        // Until we can decide on a good method for including the stack trace with
-        // the new condition, just return the object.
-        exception.obj
-    }
-}
 
 /// Create a proper list from a vector of values
 impl From<Vec<Gc<Value>>> for Value {
@@ -903,35 +1010,27 @@ pub fn eqv(a: &Gc<Value>, b: &Gc<Value>) -> bool {
 }
 */
 
-/*
 #[bridge(name = "not", lib = "(base)")]
-pub async fn not(a: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
-    let a = a.read();
-    Ok(vec![Gc::new(Value::Boolean(matches!(
-        &*a,
-        Value::Boolean(false)
-    )))])
-}
-
-#[bridge(name = "eq?", lib = "(base)")]
-pub async fn eq_pred(a: &Gc<Value>, b: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
-    Ok(vec![Gc::new(Value::Boolean(a == b))])
+pub async fn not(a: &Value) -> Result<Vec<Value>, Condition> {
+    Ok(vec![Value::from(a.0 == ValueType::Boolean as u64)])
 }
 
 #[bridge(name = "eqv?", lib = "(base)")]
-pub async fn eqv_pred(a: &Gc<Value>, b: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
-    Ok(vec![Gc::new(Value::Boolean(eqv(a, b)))])
+pub async fn eqv(a: &Value, b: &Value) -> Result<Vec<Value>, Condition> {
+    Ok(vec![Value::from(a == b)])
+}
+
+#[bridge(name = "eq?", lib = "(base)")]
+pub async fn eq(a: &Value, b: &Value) -> Result<Vec<Value>, Condition> {
+    Ok(vec![Value::from(a.0 == b.0)])
 }
 
 #[bridge(name = "boolean?", lib = "(base)")]
-pub async fn boolean_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
-    let arg = arg.read();
-    Ok(vec![Gc::new(Value::Boolean(matches!(
-        &*arg,
-        Value::Boolean(_)
-    )))])
+pub async fn boolean_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
+    Ok(vec![Value::from(arg.type_of() == ValueType::Boolean)])
 }
 
+/*
 #[bridge(name = "boolean=?", lib = "(base)")]
 pub async fn boolean_eq_pred(
     a: &Gc<Value>,
@@ -948,67 +1047,44 @@ pub async fn boolean_eq_pred(
     };
     Ok(vec![Gc::new(Value::Boolean(result))])
 }
+*/
 
 #[bridge(name = "symbol?", lib = "(base)")]
-pub async fn symbol_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
-    let arg = arg.read();
-    Ok(vec![Gc::new(Value::Boolean(matches!(
-        &*arg,
-        Value::Symbol(_)
-    )))])
+pub async fn symbol_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
+    Ok(vec![Value::from(arg.type_of() == ValueType::Symbol)])
 }
 
 #[bridge(name = "char?", lib = "(base)")]
-pub async fn char_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
-    let arg = arg.read();
-    Ok(vec![Gc::new(Value::Boolean(matches!(
-        &*arg,
-        Value::Character(_)
-    )))])
+pub async fn char_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
+    Ok(vec![Value::from(arg.type_of() == ValueType::Character)])
 }
 
 #[bridge(name = "vector?", lib = "(base)")]
-pub async fn vector_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
-    let arg = arg.read();
-    Ok(vec![Gc::new(Value::Boolean(matches!(
-        &*arg,
-        Value::Vector(_)
-    )))])
+pub async fn vector_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
+    Ok(vec![Value::from(arg.type_of() == ValueType::Vector)])
 }
 
 #[bridge(name = "null?", lib = "(base)")]
-pub async fn null_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
-    let arg = arg.read();
-    Ok(vec![Gc::new(Value::Boolean(matches!(&*arg, Value::Null)))])
+pub async fn null_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
+    Ok(vec![Value::from(arg.type_of() == ValueType::Null)])
 }
 
 #[bridge(name = "pair?", lib = "(base)")]
-pub async fn pair_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
-    let arg = arg.read();
-    Ok(vec![Gc::new(Value::Boolean(matches!(
-        &*arg,
-        Value::Pair(_, _)
-    )))])
+pub async fn pair_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
+    Ok(vec![Value::from(arg.type_of() == ValueType::Pair)])
 }
 
 #[bridge(name = "string?", lib = "(base)")]
-pub async fn string_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
-    let arg = arg.read();
-    Ok(vec![Gc::new(Value::Boolean(matches!(
-        &*arg,
-        Value::String(_)
-    )))])
+pub async fn string_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
+    Ok(vec![Value::from(arg.type_of() == ValueType::String)])
 }
 
 #[bridge(name = "procedure?", lib = "(base)")]
-pub async fn procedure_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
-    let arg = arg.read();
-    Ok(vec![Gc::new(Value::Boolean(matches!(
-        &*arg,
-        Value::Closure(_)
-    )))])
+pub async fn procedure_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
+    Ok(vec![Value::from(arg.type_of() == ValueType::Closure)])
 }
 
+/*
 #[bridge(name = "future?", lib = "(base)")]
 pub async fn future_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
     let arg = arg.read();
@@ -1017,11 +1093,11 @@ pub async fn future_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
         Value::Future(_)
     )))])
 }
+*/
 
 #[bridge(name = "display", lib = "(base)")]
-pub async fn display(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
+pub async fn display(arg: &Value) -> Result<Vec<Value>, Condition> {
     print!("{}", arg);
     let _ = std::io::stdout().flush();
     Ok(Vec::new())
 }
-*/

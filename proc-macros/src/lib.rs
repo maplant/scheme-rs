@@ -72,7 +72,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
             ) -> futures::future::BoxFuture<'a, Result<scheme_rs::proc::Application, ::scheme_rs::value::Value>> {
                 Box::pin(
                     async move {
-                        let cont = cont.try_into()?;
+                        let cont = cont.clone().try_into()?;
                         Ok(::scheme_rs::proc::Application::new(
                             cont,
                             #impl_name(
@@ -98,7 +98,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
             ) -> futures::future::BoxFuture<'a, Result<scheme_rs::proc::Application, ::scheme_rs::value::Value>> {
                 Box::pin(
                     async move {
-                        let cont = cont.try_into()?;
+                        let cont = cont.clone().try_into()?;
                         Ok(::scheme_rs::proc::Application::new(
                             cont,
                             #impl_name(

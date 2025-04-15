@@ -1,7 +1,5 @@
 use std::{
-    collections::{hash_map::Entry, HashMap},
-    fmt,
-    sync::atomic::{AtomicUsize, Ordering},
+    collections::{hash_map::Entry, HashMap}, fmt, hash::{Hash, Hasher}, sync::atomic::{AtomicUsize, Ordering}
 };
 
 use crate::{
@@ -347,7 +345,8 @@ impl fmt::Debug for Local {
     }
 }
 
-#[derive(Clone, Trace, Hash, PartialEq, Eq)]
+// TODO: Do we need to make this pointer eq?
+#[derive(Clone, Trace)]
 pub struct Global {
     name: Identifier,
     val: Gc<Value>,
@@ -372,6 +371,24 @@ impl fmt::Debug for Global {
         write!(f, "${}", self.name.name)
     }
 }
+
+impl PartialEq for Global {
+    fn eq(&self, rhs: &Self) -> bool {
+        self.name == rhs.name && Gc::ptr_eq(&self.val, &rhs.val)
+    }
+}
+
+impl Hash for Global {
+    fn hash<H>(&self, state: &mut H)
+    where
+        H: Hasher,
+    {
+        self.name.hash(state);
+        Gc::as_ptr(&self.val).hash(state);
+    }
+}
+
+impl Eq for Global {}
 
 #[derive(Clone, Trace, Hash, PartialEq, Eq)]
 pub enum Var {

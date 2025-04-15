@@ -84,8 +84,12 @@ impl<T: Trace> Gc<T> {
         }
     }
 
-    pub fn as_ptr(&self) -> *mut GcInner<T> {
-        self.ptr.as_ptr()
+    pub fn ptr_eq(lhs: &Self, rhs: &Self) -> bool {
+        lhs.ptr == rhs.ptr
+    }
+
+    pub fn as_ptr(this: &Self) -> *mut GcInner<T> {
+        this.ptr.as_ptr()
     }
 
     pub fn into_raw(gc: Self) -> *mut GcInner<T> {
@@ -110,6 +114,22 @@ impl<T: Trace> Gc<T> {
             ptr,
             marker: PhantomData,
         }
+    }
+
+    /// The same as from_raw, but increments the reference count.
+    pub(crate) unsafe fn from_raw_inc_rc(ptr: *mut GcInner<T>) -> Self {
+        let ptr = NonNull::new(ptr).unwrap();
+        inc_rc(ptr);
+        Self {
+            ptr,
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<T: Trace> From<T> for Gc<T> {
+    fn from(t: T) -> Self {
+        Gc::new(t)
     }
 }
 
@@ -147,19 +167,21 @@ impl<T: Trace> Drop for Gc<T> {
     }
 }
 
-impl<T: Trace> Hash for Gc<T> {
+impl<T: Trace + Hash> Hash for Gc<T> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.ptr.hash(state)
+        self.read().hash(state);
     }
 }
 
-impl<T: Trace> PartialEq for Gc<T> {
+impl<T: Trace + PartialEq> PartialEq for Gc<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.ptr == other.ptr
+        let self_read = self.read();
+        let other_read = other.read();
+        self_read.as_ref() == other_read.as_ref()
     }
 }
 
-impl<T: Trace> Eq for Gc<T> {}
+impl<T: Trace + Eq> Eq for Gc<T> {}
 
 unsafe impl<T: Trace + Send> Send for Gc<T> {}
 unsafe impl<T: Trace + Sync> Sync for Gc<T> {}

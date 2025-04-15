@@ -149,12 +149,18 @@ impl Compile for Var {
     fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
         let k1 = Local::gensym();
         let k2 = Local::gensym();
+        let read_into = Local::gensym();
         Cps::Closure {
             args: ClosureArgs::new(vec![k2], false, None),
-            body: Box::new(Cps::App(
-                Value::from(k2),
+            body: Box::new(Cps::PrimOp(
+                PrimOp::ReadCell,
                 vec![Value::from(self.clone())],
-                None,
+                read_into,
+                Box::new(Cps::App(
+                    Value::from(k2),
+                    vec![Value::from(read_into)],
+                    None,
+                )),
             )),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),

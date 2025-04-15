@@ -11,7 +11,7 @@ use crate::{
         Application, Closure, ClosurePtr, ContinuationPtr, DynamicWind, FuncPtr, FunctionDebugInfo,
     },
     syntax::Span,
-    value::Value,
+    value::{ReflexiveValue, UnpackedValue, Value},
 };
 use indexmap::IndexMap;
 use inkwell::{
@@ -22,7 +22,7 @@ use inkwell::{
     targets::{InitializationConfig, Target},
     AddressSpace, OptimizationLevel,
 };
-use std::{collections::HashMap, mem::ManuallyDrop, ptr::null_mut};
+use std::{collections::{HashMap, HashSet}, mem::ManuallyDrop, ptr::null_mut};
 use tokio::sync::{mpsc, oneshot};
 
 /// Scheme-rs Runtime
@@ -44,7 +44,7 @@ use tokio::sync::{mpsc, oneshot};
 pub struct Runtime {
     compilation_buffer_tx: mpsc::Sender<CompilationTask>,
     // TODO: Make this something better than just a vec
-    constants: Vec<Value>,
+    pub(crate) constants_pool: HashSet<ReflexiveValue>,
     pub(crate) debug_info: DebugInfo,
 }
 
@@ -66,7 +66,7 @@ impl Runtime {
         std::thread::spawn(move || compilation_task(compilation_buffer_rx));
         Runtime {
             compilation_buffer_tx,
-            constants: Vec::new(),
+            constants_pool: HashSet::new(),
             debug_info: DebugInfo::default(),
         }
     }
@@ -191,8 +191,8 @@ fn compilation_task(mut compilation_queue_rx: mpsc::Receiver<CompilationTask>) {
 }
 
 fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &ExecutionEngine<'ctx>) {
-    /*
     let i32_type = ctx.i32_type();
+    let i64_type = ctx.i64_type();
     let bool_type = ctx.bool_type();
     let void_type = ctx.void_type();
     let ptr_type = ctx.ptr_type(AddressSpace::default());
@@ -202,13 +202,18 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     let f = module.add_function("alloc_cell", sig, None);
     ee.add_global_mapping(&f, alloc_cell as usize);
 
-    // clone:
-    let sig = ptr_type.fn_type(&[ptr_type.into()], false);
-    let f = module.add_function("clone", sig, None);
-    ee.add_global_mapping(&f, clone as usize);
+    // read_cell:
+    let sig = i64_type.fn_type(&[ptr_type.into()], false);
+    let f = module.add_function("read_cell", sig, None);
+    ee.add_global_mapping(&f, read_cell as usize);
+
+    // drop_cells:
+    let sig = void_type.fn_type(&[ptr_type.into(), i32_type.into()], false);
+    let f = module.add_function("drop_cells", sig, None);
+    ee.add_global_mapping(&f, drop_cells as usize);
 
     // drop_values:
-    let sig = void_type.fn_type(&[ptr_type.into(), i32_type.into()], false);
+    let sig = void_type.fn_type(&[i64_type.into(), i32_type.into()], false);
     let f = module.add_function("drop_values", sig, None);
     ee.add_global_mapping(&f, drop_values as usize);
 
@@ -216,7 +221,7 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     let sig = ptr_type.fn_type(
         &[
             ptr_type.into(), // runtime
-            ptr_type.into(), // operator
+            i64_type.into(), // operator
             ptr_type.into(), // args
             i32_type.into(), // num args
             ptr_type.into(), // exception handler
@@ -231,16 +236,17 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     // forward:
     let sig = ptr_type.fn_type(
         &[
-            ptr_type.into(),
-            ptr_type.into(),
-            ptr_type.into(),
-            ptr_type.into(),
+            i64_type.into(), // operator
+            i64_type.into(), // args
+            ptr_type.into(), // exception handler
+            ptr_type.into(), // dynamic_wind
         ],
         false,
     );
     let f = module.add_function("forward", sig, None);
     ee.add_global_mapping(&f, forward as usize);
 
+    /*
     // halt:
     let sig = ptr_type.fn_type(&[ptr_type.into()], false);
     let f = module.add_function("halt", sig, None);
@@ -360,15 +366,24 @@ unsafe extern "C" fn alloc_cell() -> *mut GcInner<Value> {
 
 /// Read the value of a Cell
 unsafe extern "C" fn read_cell(cell: *mut GcInner<Value>) -> i64 {
+    // We do not need to increment the reference count of the cell, it is going to
+    // be decremented at the end of this function.
     let cell = ManuallyDrop::new(Gc::from_raw(cell));
     let cell_read = cell.read();
-    cell_read.as_raw() as i64
+    Value::as_raw(&cell_read) as i64
 }
 
 /// Decrement the reference count of all of the cells
 unsafe extern "C" fn drop_cells(cells: *const *mut GcInner<Value>, num_cells: u32) {
     for i in 0..num_cells {
         Gc::decrement_reference_count(cells.add(i as usize).read())
+    }
+}
+
+/// Decrement the reference count of all of the values
+unsafe extern "C" fn drop_values(vals: *const i64, num_vals: u32) {
+    for i in 0..num_vals {
+        drop(Value::from_raw(vals.add(i as usize).read() as u64));
     }
 }
 
@@ -384,106 +399,95 @@ unsafe extern "C" fn apply(
     dynamic_wind: *const DynamicWind,
     call_site_id: u32,
 ) -> *mut Result<Application, Condition> {
-    /*
-    let mut gc_args = Vec::new();
-    for i in 0..num_args {
-        gc_args.push(Gc::from_raw(args.add(i as usize).read()));
-    }
+    let args: Vec<_> = (0..num_args)
+        .map(|i| Value::from_raw_inc_rc(args.add(i as usize).read() as u64))
+        .collect();
 
-    let op = Gc::from_raw(op);
-    let op_ref = op.read();
-    let op: &Closure = if let Ok(op) = op_ref.as_ref().try_into() {
-        op
-    } else {
-        return Box::into_raw(Box::new(Err(Condition::invalid_operator_type(
-            op_ref.type_name(),
-        ))));
+    let op = match Value::from_raw_inc_rc(op as u64).unpack() {
+        UnpackedValue::Closure(op) => op,
+        x => {
+            return Box::into_raw(Box::new(Err(Condition::invalid_operator_type(
+                x.type_name(),
+            ))))
+        }
     };
 
-    let call_site = if call_site_id == u32::MAX {
-        None
-    } else {
-        let runtime = Gc::from_raw(runtime);
-        let runtime_ref = runtime.read();
-        Some(runtime_ref.debug_info.call_sites[call_site_id as usize].clone())
-    };
+    let call_site = (call_site_id != u32::MAX).then(|| {
+        // No need to increment the ref count for runtime here, it is dropped
+        // immediately.
+        let runtime = ManuallyDrop::new(Gc::from_raw(runtime));
+        let runtime_read = runtime.read();
+        runtime_read.debug_info.call_sites[call_site_id as usize].clone()
+    });
 
     let app = Application::new(
-        op.clone(),
-        gc_args,
+        op,
+        args,
         ExceptionHandler::from_ptr(exception_handler),
         dynamic_wind.as_ref().unwrap().clone(),
         call_site,
     );
 
     Box::into_raw(Box::new(Ok(app)))
-     */
-    todo!()
 }
 
 /// Create a boxed application that forwards a list of values to the operator
 unsafe extern "C" fn forward(
     op: i64,
-    to_forward: i64,
+    args: i64,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition> {
-    /*
-    let op = Gc::from_raw(op);
-    let to_forward = Gc::from_raw(to_forward);
-    let mut args = Vec::new();
-    list_to_vec(&to_forward, &mut args);
-    let op_ref = op.read();
-    let op: &Closure = if let Ok(op) = op_ref.as_ref().try_into() {
-        op
-    } else {
-        return Box::into_raw(Box::new(Err(Condition::invalid_operator_type(
-            op_ref.type_name(),
-        ))));
+    let op = match Value::from_raw_inc_rc(op as u64).unpack() {
+        UnpackedValue::Closure(op) => op,
+        x => {
+            return Box::into_raw(Box::new(Err(Condition::invalid_operator_type(
+                x.type_name(),
+            ))))
+        }
     };
 
+    // We do not need to increment to forward here, for the same reason as in
+    // halt.
+    let args = ManuallyDrop::new(Value::from_raw(args as u64));
+    let mut flattened = Vec::new();
+    list_to_vec(&args, &mut flattened);
+
     let app = Application::new(
-        op.clone(),
-        args,
+        op,
+        flattened,
         ExceptionHandler::from_ptr(exception_handler),
         dynamic_wind.as_ref().unwrap().clone(),
         None,
     );
 
     Box::into_raw(Box::new(Ok(app)))
-     */
-    todo!()
 }
 
 /// Create a boxed application that simply returns its arguments
 pub(crate) unsafe extern "C" fn halt(args: i64) -> *mut Result<Application, Condition> {
-    /*
-    let args = Gc::from_raw(args);
+    // We do not need to increment the rc here, it will be incremented in list_to_vec
+    let args = ManuallyDrop::new(Value::from_raw(args as u64));
     let mut flattened = Vec::new();
     list_to_vec(&args, &mut flattened);
-
     let app = Application::halt(flattened);
-
     Box::into_raw(Box::new(Ok(app)))
-     */
-    todo!()
 }
 
 /// Evaluate a `Gc<Value>` as "truthy" or not, as in whether it triggers a
 /// conditional.
 unsafe extern "C" fn truthy(val: i64) -> bool {
-    //     Gc::from_raw(val).read().is_true()
-    todo!()
+    // No need to increment the reference count here:
+    ManuallyDrop::new(Value::from_raw(val as u64)).is_true()
 }
 
 /// Replace the value pointed to at to with the value contained in from.
 unsafe extern "C" fn store(from: i64, to: *mut GcInner<Value>) {
-    /*
-    let from = Gc::from_raw(from);
-    let to = Gc::from_raw(to);
-    let new_val = from.read().clone();
-    *to.write() = new_val;
-    */
+    // We do not need to increment the ref count for to, it is dropped
+    // immediately.
+    let from = Value::from_raw_inc_rc(from as u64);
+    let to = ManuallyDrop::new(Gc::from_raw(to));
+    *to.write() = from;
 }
 
 /// Allocate a closure
@@ -497,22 +501,21 @@ unsafe extern "C" fn make_continuation(
     num_required_args: u32,
     variadic: bool,
 ) -> i64 {
-    /*
     // Collect the environment:
     let env: Vec<_> = (0..num_envs)
-        .map(|i| Gc::from_raw(env.add(i as usize).read()))
+        .map(|i| Gc::from_raw_inc_rc(env.add(i as usize).read()))
         .collect();
 
     // Collect the globals:
     let globals: Vec<_> = (0..num_globals)
         .map(|i| {
             let raw = globals.add(i as usize).read();
-            Gc::from_raw(raw)
+            Gc::from_raw_inc_rc(raw)
         })
         .collect();
 
     let closure = Closure::new(
-        Gc::from_raw(runtime),
+        Gc::from_raw_inc_rc(runtime),
         env,
         globals,
         FuncPtr::Continuation(fn_ptr),
@@ -520,9 +523,8 @@ unsafe extern "C" fn make_continuation(
         variadic,
         None,
     );
-    ManuallyDrop::new(Gc::new(Value::Closure(closure))).as_ptr()
-     */
-    todo!()
+
+    Value::into_raw(Value::from(closure)) as i64
 }
 
 /// Allocate a closure for a function that takes a continuation
@@ -537,22 +539,21 @@ unsafe extern "C" fn make_closure(
     variadic: bool,
     debug_info_id: u32,
 ) -> i64 {
-    /*
     // Collect the environment:
     let env: Vec<_> = (0..num_envs)
-        .map(|i| Gc::from_raw(env.add(i as usize).read()))
+        .map(|i| Gc::from_raw_inc_rc(env.add(i as usize).read()))
         .collect();
 
     // Collect the globals:
     let globals: Vec<_> = (0..num_globals)
         .map(|i| {
             let raw = globals.add(i as usize).read();
-            Gc::from_raw(raw)
+            Gc::from_raw_inc_rc(raw)
         })
         .collect();
 
     let closure = Closure::new(
-        Gc::from_raw(runtime),
+        Gc::from_raw_inc_rc(runtime),
         env,
         globals,
         FuncPtr::Closure(fn_ptr),
@@ -560,9 +561,8 @@ unsafe extern "C" fn make_closure(
         variadic,
         Some(debug_info_id),
     );
-    ManuallyDrop::new(Gc::new(Value::Closure(closure))).as_ptr()
-     */
-    todo!()
+
+    Value::into_raw(Value::from(closure)) as i64
 }
 
 /// Call a transformer with the given argument and return the expansion
@@ -818,72 +818,71 @@ unsafe extern "C" fn call_thunks_pass_args(
     todo!()
 }
 
-/*
-
 unsafe extern "C" fn add(
-    vals: *const *mut GcInner<Value>,
+    vals: *const i64,
     num_vals: u32,
     error: *mut *mut Result<Application, Condition>,
-) -> *mut GcInner<Value> {
+) -> i64 {
     let vals: Vec<_> = (0..num_vals)
-        .map(|i| Gc::from_raw(vals.add(i as usize).read()))
+        // Can't easily wrap these in a ManuallyDrop, so we dec the rc.
+        .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read() as u64))
         .collect();
     match num::add(&vals) {
-        Ok(num) => ManuallyDrop::new(Gc::new(Value::Number(num))).as_ptr(),
+        Ok(num) => Value::into_raw(Value::from(num)) as i64,
         Err(condition) => {
             error.write(Box::into_raw(Box::new(Err(condition))));
-            null_mut()
+            Value::into_raw(Value::undefined()) as i64
         }
     }
 }
 
 unsafe extern "C" fn sub(
-    vals: *const *mut GcInner<Value>,
+    vals: *const i64,
     num_vals: u32,
     error: *mut *mut Result<Application, Condition>,
-) -> *mut GcInner<Value> {
+) -> i64 {
     let vals: Vec<_> = (0..num_vals)
-        .map(|i| Gc::from_raw(vals.add(i as usize).read()))
+        .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read() as u64))
         .collect();
     match num::sub(&vals[0], &vals[1..]) {
-        Ok(num) => ManuallyDrop::new(Gc::new(Value::Number(num))).as_ptr(),
+        Ok(num) => Value::into_raw(Value::from(num)) as i64,
         Err(condition) => {
             error.write(Box::into_raw(Box::new(Err(condition))));
-            null_mut()
+            Value::into_raw(Value::undefined()) as i64
         }
-    }
+    } 
 }
 
 unsafe extern "C" fn mul(
-    vals: *const *mut GcInner<Value>,
+    vals: *const i64,
     num_vals: u32,
     error: *mut *mut Result<Application, Condition>,
-) -> *mut GcInner<Value> {
+) -> i64 {
     let vals: Vec<_> = (0..num_vals)
-        .map(|i| Gc::from_raw(vals.add(i as usize).read()))
+        .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read() as u64))
         .collect();
     match num::mul(&vals) {
-        Ok(num) => ManuallyDrop::new(Gc::new(Value::Number(num))).as_ptr(),
+        Ok(num) => Value::into_raw(Value::from(num)) as i64,
         Err(condition) => {
             error.write(Box::into_raw(Box::new(Err(condition))));
-            null_mut()
+            Value::into_raw(Value::undefined()) as i64
         }
     }
 }
 
 unsafe extern "C" fn div(
-    vals: *const *mut GcInner<Value>,
+    vals: *const i64,
     num_vals: u32,
     error: *mut *mut Result<Application, Condition>,
-) -> *mut GcInner<Value> {
+) -> i64 {
     let vals: Vec<_> = (0..num_vals)
-        .map(|i| Gc::from_raw(vals.add(i as usize).read()))
+        .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read() as u64))
         .collect();
     match num::div(&vals[0], &vals[1..]) {
-        Ok(num) => ManuallyDrop::new(Gc::new(Value::Number(num))).as_ptr(),
+        Ok(num) => Value::into_raw(Value::from(num)) as i64,
         Err(condition) => {
             error.write(Box::into_raw(Box::new(Err(condition))));
-            null_mut()
+            Value::into_raw(Value::undefined()) as i64
         }
     }
 }
@@ -891,18 +890,18 @@ unsafe extern "C" fn div(
 macro_rules! define_comparison_fn {
     ( $name:ident ) => {
         unsafe extern "C" fn $name(
-            vals: *const *mut GcInner<Value>,
+            vals: *const i64,
             num_vals: u32,
             error: *mut *mut Result<Application, Condition>,
-        ) -> *mut GcInner<Value> {
+        ) -> i64 {
             let vals: Vec<_> = (0..num_vals)
-                .map(|i| Gc::from_ptr(vals.add(i as usize).read()))
+                .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read() as u64))
                 .collect();
             match num::$name(&vals) {
-                Ok(res) => ManuallyDrop::new(Gc::new(Value::Boolean(res))).as_ptr(),
+                Ok(res) => Value::into_raw(Value::from(res)) as i64,
                 Err(condition) => {
                     error.write(Box::into_raw(Box::new(Err(condition))));
-                    null_mut()
+                    Value::into_raw(Value::undefined()) as i64
                 }
             }
         }
@@ -914,4 +913,3 @@ define_comparison_fn!(greater);
 define_comparison_fn!(greater_equal);
 define_comparison_fn!(lesser);
 define_comparison_fn!(lesser_equal);
-*/

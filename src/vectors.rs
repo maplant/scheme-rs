@@ -7,13 +7,22 @@ use crate::{
     value::Value,
 };
 use malachite::Integer;
-use std::{clone::Clone, ops::{Deref, DerefMut, Range}, fmt};
+use std::{
+    clone::Clone,
+    fmt,
+    ops::{Deref, DerefMut, Range},
+};
 
 /// A vector aligned to 16 bytes.
 #[derive(Trace)]
 #[repr(align(16))]
 pub struct AlignedVector<T: Trace>(pub Vec<T>);
 
+impl<T: Trace> AlignedVector<T> {
+    pub fn new(v: Vec<T>) -> Self {
+        Self(v)
+    }
+}
 
 impl<T: Trace> Deref for AlignedVector<T> {
     type Target = Vec<T>;
@@ -23,8 +32,19 @@ impl<T: Trace> Deref for AlignedVector<T> {
     }
 }
 
+impl<T: Trace> DerefMut for AlignedVector<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
 
-fn display_vec<T: fmt::Display>(
+impl<T: Trace + PartialEq> PartialEq for AlignedVector<T> {
+    fn eq(&self, rhs: &Self) -> bool {
+        self.0 == rhs.0
+    }
+}
+
+pub fn display_vec<T: fmt::Display>(
     head: &str,
     v: &[T],
     f: &mut fmt::Formatter<'_>,
@@ -41,7 +61,6 @@ fn display_vec<T: fmt::Display>(
 
     write!(f, ")")
 }
-
 
 /*
 fn try_make_range(start: usize, end: usize) -> Result<Range<usize>, Condition> {

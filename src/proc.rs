@@ -62,7 +62,7 @@ unsafe impl Trace for FuncPtr {
 /// or a continuation. Contains a reference to all of the globals and
 /// environmental variables used in the body, along with a function pointer to
 /// the body of the closure.
-#[derive(Clone, Trace, PartialEq)]
+#[derive(Clone, Trace)]
 #[repr(align(16))]
 pub struct Closure {
     /// The runtime the Closure is defined in. This is necessary to ensure that
@@ -193,7 +193,7 @@ impl Closure {
             let app = match self.func {
                 FuncPtr::Continuation(sync_fn) => unsafe {
                     let app = (sync_fn)(
-                        self.runtime.as_ptr(),
+                        Gc::as_ptr(&self.runtime),
                         env.as_ptr(),
                         globals.as_ptr(),
                         args.as_ptr(),
@@ -204,7 +204,7 @@ impl Closure {
                 },
                 FuncPtr::Closure(sync_fn) => unsafe {
                     let app = (sync_fn)(
-                        self.runtime.as_ptr(),
+                        Gc::as_ptr(&self.runtime),
                         env.as_ptr(),
                         globals.as_ptr(),
                         args.as_ptr(),

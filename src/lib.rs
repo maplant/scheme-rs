@@ -17,5 +17,6 @@ pub mod parse;
 pub mod proc;
 pub mod records;
 pub mod syntax;
+pub mod strings;
 pub mod value;
 pub mod vectors;
