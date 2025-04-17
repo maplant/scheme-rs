@@ -428,7 +428,6 @@ impl Expression {
     // they are returned from a store.
     #[allow(unpredictable_function_pointer_comparisons)]
     pub fn to_primop(&self) -> Option<PrimOp> {
-        /*
         use crate::{
             num::{
                 add_builtin_wrapper, div_builtin_wrapper, equal_builtin_wrapper,
@@ -439,9 +438,10 @@ impl Expression {
         };
 
         if let Expression::Var(Var::Global(global)) = self {
-            let val_ref = global.value_ref().read();
-            let val: &Closure = val_ref.as_ref().try_into().ok()?;
-            match val.func {
+            let val = global.value_ref().read().clone();
+            let val: Gc<Closure>  = val.try_into().ok()?;
+            let val_read = val.read();
+            match val_read.func {
                 Bridge(ptr) if ptr == add_builtin_wrapper => Some(PrimOp::Add),
                 Bridge(ptr) if ptr == sub_builtin_wrapper => Some(PrimOp::Sub),
                 Bridge(ptr) if ptr == mul_builtin_wrapper => Some(PrimOp::Mul),
@@ -455,9 +455,7 @@ impl Expression {
             }
         } else {
             None
-    }
-         */
-        None
+        }
     }
 }
 

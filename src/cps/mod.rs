@@ -83,8 +83,7 @@ impl fmt::Debug for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Var(var) => var.fmt(f),
-            // Self::Value(val) => val.fmt(f),
-            _ => todo!()
+            Self::Value(val) => val.fmt(f),
         }
     }
 }
@@ -97,8 +96,8 @@ pub enum PrimOp {
     // Cell operations:
     /// Allocate a cell, returning a Gc<Value>.
     AllocCell,
-    /// Read a cell (a Gc<Value>), returning a Value.
-    ReadCell,
+    // /// Read a cell (a Gc<Value>), returning a Value.
+    // ReadCell,
     
     // List operators:
     Cons,

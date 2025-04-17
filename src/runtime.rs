@@ -213,7 +213,7 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     ee.add_global_mapping(&f, drop_cells as usize);
 
     // drop_values:
-    let sig = void_type.fn_type(&[i64_type.into(), i32_type.into()], false);
+    let sig = void_type.fn_type(&[ptr_type.into(), i32_type.into()], false);
     let f = module.add_function("drop_values", sig, None);
     ee.add_global_mapping(&f, drop_values as usize);
 
@@ -246,33 +246,32 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     let f = module.add_function("forward", sig, None);
     ee.add_global_mapping(&f, forward as usize);
 
-    /*
     // halt:
-    let sig = ptr_type.fn_type(&[ptr_type.into()], false);
+    let sig = ptr_type.fn_type(&[i64_type.into()], false);
     let f = module.add_function("halt", sig, None);
     ee.add_global_mapping(&f, halt as usize);
 
     // truthy:
-    let sig = bool_type.fn_type(&[ptr_type.into()], false);
+    let sig = bool_type.fn_type(&[i64_type.into()], false);
     let f = module.add_function("truthy", sig, None);
     ee.add_global_mapping(&f, truthy as usize);
 
     // store:
-    let sig = void_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+    let sig = void_type.fn_type(&[i64_type.into(), ptr_type.into()], false);
     let f = module.add_function("store", sig, None);
     ee.add_global_mapping(&f, store as usize);
 
     // make_continuation
     let sig = ptr_type.fn_type(
         &[
-            ptr_type.into(),
-            ptr_type.into(),
-            ptr_type.into(),
-            i32_type.into(),
-            ptr_type.into(),
-            i32_type.into(),
-            i32_type.into(),
-            bool_type.into(),
+            ptr_type.into(), // Runtime
+            ptr_type.into(), // Continuation Ptr
+            ptr_type.into(), // Env
+            i32_type.into(), // Num envs
+            ptr_type.into(), // Globals
+            i32_type.into(), // Num globals
+            i32_type.into(), // Num required args
+            bool_type.into(), // Variadic?
         ],
         false,
     );
@@ -282,21 +281,22 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     // make_closure:
     let sig = ptr_type.fn_type(
         &[
-            ptr_type.into(),
-            ptr_type.into(),
-            ptr_type.into(),
-            i32_type.into(),
-            ptr_type.into(),
-            i32_type.into(),
-            i32_type.into(),
-            bool_type.into(),
-            i32_type.into(),
+            ptr_type.into(), // Runtime
+            ptr_type.into(), // Closure Ptr
+            ptr_type.into(), // Env
+            i32_type.into(), // Num envs
+            ptr_type.into(), // Globals
+            i32_type.into(), // Num globals
+            i32_type.into(), // Num required args
+            bool_type.into(), // Variadic?
+            i32_type.into(), // Debug info 
         ],
         false,
     );
     let f = module.add_function("make_closure", sig, None);
     ee.add_global_mapping(&f, make_closure as usize);
 
+    /*
     // get_call_transformer_fn:
     let sig = ptr_type.fn_type(&[ptr_type.into()], false);
     let f = module.add_function("get_call_transformer_fn", sig, None);
@@ -311,52 +311,52 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     let sig = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into(), ptr_type.into()], false);
     let f = module.add_function("prepare_continuation", sig, None);
     ee.add_global_mapping(&f, prepare_continuation as usize);
+    */
 
     // add:
-    let sig = ptr_type.fn_type(&[ptr_type.into(), i32_type.into(), ptr_type.into()], false);
+    let sig = i64_type.fn_type(&[ptr_type.into(), i32_type.into(), ptr_type.into()], false);
     let f = module.add_function("add", sig, None);
     ee.add_global_mapping(&f, add as usize);
 
     // sub:
-    let sig = ptr_type.fn_type(&[ptr_type.into(), i32_type.into(), ptr_type.into()], false);
+    let sig = i64_type.fn_type(&[ptr_type.into(), i32_type.into(), ptr_type.into()], false);
     let f = module.add_function("sub", sig, None);
     ee.add_global_mapping(&f, sub as usize);
 
     // mul:
-    let sig = ptr_type.fn_type(&[ptr_type.into(), i32_type.into(), ptr_type.into()], false);
+    let sig = i64_type.fn_type(&[ptr_type.into(), i32_type.into(), ptr_type.into()], false);
     let f = module.add_function("mul", sig, None);
     ee.add_global_mapping(&f, mul as usize);
 
     // div:
-    let sig = ptr_type.fn_type(&[ptr_type.into(), i32_type.into(), ptr_type.into()], false);
+    let sig = i64_type.fn_type(&[ptr_type.into(), i32_type.into(), ptr_type.into()], false);
     let f = module.add_function("div", sig, None);
     ee.add_global_mapping(&f, div as usize);
 
     // equal:
-    let sig = ptr_type.fn_type(&[ptr_type.into(), i32_type.into(), ptr_type.into()], false);
+    let sig = i64_type.fn_type(&[ptr_type.into(), i32_type.into(), ptr_type.into()], false);
     let f = module.add_function("equal", sig, None);
     ee.add_global_mapping(&f, equal as usize);
 
     // greater:
-    let sig = ptr_type.fn_type(&[ptr_type.into(), i32_type.into(), ptr_type.into()], false);
+    let sig = i64_type.fn_type(&[ptr_type.into(), i32_type.into(), ptr_type.into()], false);
     let f = module.add_function("greater", sig, None);
     ee.add_global_mapping(&f, greater as usize);
 
     // greater_equal:
-    let sig = ptr_type.fn_type(&[ptr_type.into(), i32_type.into(), ptr_type.into()], false);
+    let sig = i64_type.fn_type(&[ptr_type.into(), i32_type.into(), ptr_type.into()], false);
     let f = module.add_function("greater_equal", sig, None);
     ee.add_global_mapping(&f, greater_equal as usize);
 
     // lesser:
-    let sig = ptr_type.fn_type(&[ptr_type.into(), i32_type.into(), ptr_type.into()], false);
+    let sig = i64_type.fn_type(&[ptr_type.into(), i32_type.into(), ptr_type.into()], false);
     let f = module.add_function("lesser", sig, None);
     ee.add_global_mapping(&f, lesser as usize);
 
     // lesser_equal:
-    let sig = ptr_type.fn_type(&[ptr_type.into(), i32_type.into(), ptr_type.into()], false);
+    let sig = i64_type.fn_type(&[ptr_type.into(), i32_type.into(), ptr_type.into()], false);
     let f = module.add_function("lesser_equal", sig, None);
     ee.add_global_mapping(&f, lesser_equal as usize);
-    */
 }
 
 /// Allocate a new Gc with a value of undefined
@@ -370,7 +370,8 @@ unsafe extern "C" fn read_cell(cell: *mut GcInner<Value>) -> i64 {
     // be decremented at the end of this function.
     let cell = ManuallyDrop::new(Gc::from_raw(cell));
     let cell_read = cell.read();
-    Value::as_raw(&cell_read) as i64
+    let raw = Value::as_raw(&cell_read);
+    raw as i64
 }
 
 /// Decrement the reference count of all of the cells
@@ -399,8 +400,11 @@ unsafe extern "C" fn apply(
     dynamic_wind: *const DynamicWind,
     call_site_id: u32,
 ) -> *mut Result<Application, Condition> {
+    
     let args: Vec<_> = (0..num_args)
-        .map(|i| Value::from_raw_inc_rc(args.add(i as usize).read() as u64))
+        .map(|i|
+            Value::from_raw_inc_rc(args.add(i as usize).read() as u64)
+        )
         .collect();
 
     let op = match Value::from_raw_inc_rc(op as u64).unpack() {
@@ -412,6 +416,7 @@ unsafe extern "C" fn apply(
         }
     };
 
+    /*
     let call_site = (call_site_id != u32::MAX).then(|| {
         // No need to increment the ref count for runtime here, it is dropped
         // immediately.
@@ -419,13 +424,15 @@ unsafe extern "C" fn apply(
         let runtime_read = runtime.read();
         runtime_read.debug_info.call_sites[call_site_id as usize].clone()
     });
+     */
 
     let app = Application::new(
         op,
         args,
         ExceptionHandler::from_ptr(exception_handler),
         dynamic_wind.as_ref().unwrap().clone(),
-        call_site,
+        // call_site,
+        None
     );
 
     Box::into_raw(Box::new(Ok(app)))
@@ -500,7 +507,7 @@ unsafe extern "C" fn make_continuation(
     num_globals: u32,
     num_required_args: u32,
     variadic: bool,
-) -> i64 {
+) -> *mut GcInner<Value> {
     // Collect the environment:
     let env: Vec<_> = (0..num_envs)
         .map(|i| Gc::from_raw_inc_rc(env.add(i as usize).read()))
@@ -524,7 +531,7 @@ unsafe extern "C" fn make_continuation(
         None,
     );
 
-    Value::into_raw(Value::from(closure)) as i64
+    Gc::into_raw(Gc::new(Value::from(closure)))
 }
 
 /// Allocate a closure for a function that takes a continuation
@@ -538,7 +545,7 @@ unsafe extern "C" fn make_closure(
     num_required_args: u32,
     variadic: bool,
     debug_info_id: u32,
-) -> i64 {
+) -> *mut GcInner<Value> {
     // Collect the environment:
     let env: Vec<_> = (0..num_envs)
         .map(|i| Gc::from_raw_inc_rc(env.add(i as usize).read()))
@@ -559,10 +566,12 @@ unsafe extern "C" fn make_closure(
         FuncPtr::Closure(fn_ptr),
         num_required_args as usize,
         variadic,
-        Some(debug_info_id),
+        // Some(debug_info_id),
+        None
     );
 
-    Value::into_raw(Value::from(closure)) as i64
+    let raw = Gc::into_raw(Gc::new(Value::from(closure)));
+    raw  
 }
 
 /// Call a transformer with the given argument and return the expansion

@@ -246,12 +246,14 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             Cps::PrimOp(PrimOp::AllocCell, _, into, cexpr) => {
                 self.alloc_cell_codegen(into, *cexpr, allocs, deferred)?;
             }
+            /*
             Cps::PrimOp(PrimOp::ReadCell, args, into, cexpr) => {
                 let [cell] = args.as_slice() else {
                     unreachable!()
                 };
                 self.read_cell_codegen(cell, into, *cexpr, allocs, deferred)?;
             }
+             */
             Cps::PrimOp(PrimOp::ExtractWinders, _, extract_to, cexpr) => {
                 self.extract_winders_codegen(extract_to, *cexpr, allocs, deferred)?;
             }
@@ -295,7 +297,20 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
 
     fn value_codegen(&self, value: &Value) -> BasicValueEnum<'ctx> {
         match value {
-            Value::Var(var) => (*self.rebinds.fetch_bind(var)).into(),
+            Value::Var(var) => {
+                let cell = match *self.rebinds.fetch_bind(var) {
+                    read @ BasicValueEnum::IntValue(_) => return read,
+                    x => x
+                };
+                let read_cell = self.module.get_function("read_cell").unwrap();
+                self
+                    .builder
+                    .build_call(read_cell, &[cell.into()], "read_value")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap()
+            },
             Value::Value(val) => {
                 let mut runtime_write = self.runtime.write();
                 let reflexive_val = ReflexiveValue(val.clone());
@@ -447,7 +462,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         let is_undef_bb = self.ctx.append_basic_block(self.function, "is_undef");
         let success_bb = self.ctx.append_basic_block(self.function, "success");
 
-        let i64_type = self.ctx.i16_type();
+        let i64_type = self.ctx.i64_type();
         let undef = i64_type.const_int(0, false);
         let is_undef = self.builder.build_int_compare(IntPredicate::EQ, result_val.into_int_value(), undef.into(), "is_undef")?;
         // let is_undef = self.builder.build_is_null(result_val, "is_undef")?;
@@ -775,7 +790,8 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
 
     fn store_codegen(&self, from: &Value, to: &Value) -> Result<(), BuilderError> {
         let from = self.value_codegen(from).into();
-        let to = self.value_codegen(to).into();
+        let Value::Var(to) = to else { unreachable!() }; // self.value_codegen(to).into();
+        let to = self.rebinds.fetch_bind(to).into_pointer_value().into();
         let store = self.module.get_function("store").unwrap();
         let _ = self.builder.build_call(store, &[from, to], "")?;
         Ok(())
@@ -982,6 +998,7 @@ impl<'ctx> ClosureBundle<'ctx> {
         builder: &'b Builder<'ctx>,
         deferred: &mut Vec<Self>,
     ) -> Result<(), BuilderError> {
+        // let i64_type = ctx.i64_type();
         let ptr_type = ctx.ptr_type(AddressSpace::default());
         let entry = ctx.append_basic_block(self.function, "entry");
 

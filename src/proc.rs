@@ -20,7 +20,7 @@ pub type ContinuationPtr = unsafe extern "C" fn(
     runtime: *mut GcInner<Runtime>,
     env: *const *mut GcInner<Value>,
     globals: *const *mut GcInner<Value>,
-    args: *const i64,
+    args: *const *mut GcInner<Value>,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition>;
@@ -30,10 +30,10 @@ pub type ClosurePtr = unsafe extern "C" fn(
     runtime: *mut GcInner<Runtime>,
     env: *const *mut GcInner<Value>,
     globals: *const *mut GcInner<Value>,
-    args: *const i64,
+    args: *const *mut GcInner<Value>,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
-    cont: i64,
+    cont: *mut GcInner<Value>,
 ) -> *mut Result<Application, Condition>;
 
 /// A function pointer to an async Rust bridge function.
@@ -135,7 +135,7 @@ impl Closure {
         let cont = !matches!(self.func, FuncPtr::Continuation(_));
         let (cont, args) = if cont {
             let (cont, args) = args.split_last().unwrap();
-            (Some(cont), args)
+            (Some(Gc::new(cont.clone())), args)
         } else {
             (None, args)
         };
@@ -173,7 +173,7 @@ impl Closure {
             (async_fn)(
                 args.as_ref(),
                 rest_args.unwrap_or(&[]),
-                cont.unwrap(),
+                cont.unwrap().read().as_ref(),
                 &exception_handler,
                 dynamic_wind,
             )
@@ -185,9 +185,8 @@ impl Closure {
             let env = cells_to_vec_of_ptrs(&self.env);
             let globals = cells_to_vec_of_ptrs(&self.globals);
 
-            // Safety: args must last until the return of app so any freshly allocated var
-            // arg isn't dropped before it's upgraded to a proper Gc
-            let args = values_to_vec_of_i64s(&args);
+            let args = values_to_vec_of_cells(&args);
+            let args = cells_to_vec_of_ptrs(&args);
 
             // Finally: call the function pointer
             let app = match self.func {
@@ -210,7 +209,7 @@ impl Closure {
                         args.as_ptr(),
                         exception_handler.as_ref().map_or_else(null_mut, Gc::as_ptr),
                         dynamic_wind as *const DynamicWind,
-                        cont.map(Value::as_raw).unwrap() as i64
+                        cont.as_ref().map(Gc::as_ptr).unwrap()
                     );
                     *Box::from_raw(app)
                 },
@@ -219,6 +218,7 @@ impl Closure {
 
             // Now we can drop the args
             drop(args);
+            drop(cont);
 
             Ok(app?)
         }
@@ -231,11 +231,13 @@ impl Gc<Closure> {
             _runtime: *mut GcInner<Runtime>,
             _env: *const *mut GcInner<Value>,
             _globals: *const *mut GcInner<Value>,
-            args: *const i64,
+            args: *const *mut GcInner<Value>,
             _exception_handler: *mut GcInner<ExceptionHandler>,
             _dynamic_wind: *const DynamicWind,
         ) -> *mut Result<Application, Condition> {
-            crate::runtime::halt(args.read())
+            let args = Gc::from_raw(args.read());
+            let args_read = args.read();
+            crate::runtime::halt(Value::as_raw(&args_read) as i64)
         }
 
         let mut args = args.to_vec();
@@ -250,7 +252,7 @@ impl Gc<Closure> {
             true,
             None,
         )));
-        Application::new(self, args, None, DynamicWind::default(), None)
+        Application::new(self.clone(), args, None, DynamicWind::default(), None)
             .eval()
             .await
     }
@@ -294,8 +296,8 @@ fn cells_to_vec_of_ptrs(cells: &[Gc<Value>]) -> Vec<*mut GcInner<Value>> {
     cells.iter().map(Gc::as_ptr).collect()
 }
 
-fn values_to_vec_of_i64s(vals: &[Value]) -> Vec<i64> {
-    vals.iter().map(Value::as_raw).map(|x| x as i64).collect()
+fn values_to_vec_of_cells(vals: &[Value]) -> Vec<Gc<Value>> {
+    vals.iter().map(|val| Gc::new(val.clone())).collect()
 }
 
 /// An application of a function to a given set of values.

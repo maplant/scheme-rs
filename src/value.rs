@@ -123,8 +123,9 @@ impl Value {
     }
 
     pub fn unpack(self) -> UnpackedValue {
-        let tag = ValueType::from(self.0 & TAG);
-        let untagged = self.0 & !TAG;
+        let raw = ManuallyDrop::new(self).0;
+        let tag = ValueType::from(raw & TAG);
+        let untagged = raw & !TAG;
         match tag {
             ValueType::Undefined => UnpackedValue::Undefined,
             ValueType::Null => UnpackedValue::Null,
@@ -461,7 +462,34 @@ impl fmt::Display for UnpackedValue {
 
 impl fmt::Debug for UnpackedValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+        match self {
+            Self::Undefined => write!(f, "<undefined>"),
+            Self::Null => write!(f, "()"),
+            Self::Boolean(true) => write!(f, "#t"),
+            Self::Boolean(false) => write!(f, "#f"),
+            Self::Number(number) => write!(f, "{number:?}"),
+            Self::Character(c) => write!(f, "#\\{c}"),
+            Self::String(string) => write!(f, "{string:?}"),
+            Self::Symbol(symbol) => write!(f, "{symbol}"),
+            Self::Pair(pair) => {
+                let pair_read = pair.read();
+                let lists::Pair(car, cdr) = pair_read.as_ref();
+                lists::debug_list(car, cdr, f)
+            }
+            Self::Vector(v) => {
+                let v_read = v.read();
+                vectors::display_vec("#(", v_read.as_ref(), f)
+            }
+            Self::ByteVector(v) => vectors::display_vec("#u8(", v, f),
+            Self::Syntax(syntax) => write!(f, "{:?}", syntax),
+            Self::Closure(proc) => write!(f, "#<procedure {proc:?}>"),
+            // Self::Record(record) => write!(f, "<{record:?}>"),
+            // Self::Transformer(_) => write!(f, "<transformer>"),
+            // Self::CapturedEnv(_) => write!(f, "<environment>"),
+            // Self::Condition(cond) => write!(f, "<{cond:?}>"),
+            // Self::ExceptionHandler(_) => write!(f, "<exception-handler>"),
+            _ => todo!(),
+        }
     }
 }
 

@@ -77,7 +77,9 @@ impl Top {
     pub fn fetch_var(&mut self, name: &Identifier) -> Option<Global> {
         self.vars
             .get(name)
-            .map(|val| Global::new(name.clone(), val.clone()))
+            .map(|val| 
+                Global::new(name.clone(), val.clone())
+            )
     }
 
     pub fn fetch_macro(&self, name: &Identifier) -> Option<Macro> {

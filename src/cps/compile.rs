@@ -152,6 +152,12 @@ impl Compile for Var {
         let read_into = Local::gensym();
         Cps::Closure {
             args: ClosureArgs::new(vec![k2], false, None),
+            body: Box::new(Cps::App(
+                Value::from(k2),
+                vec![Value::from(self.clone())],
+                None,
+            )),
+            /*
             body: Box::new(Cps::PrimOp(
                 PrimOp::ReadCell,
                 vec![Value::from(self.clone())],
@@ -162,6 +168,7 @@ impl Compile for Var {
                     None,
                 )),
             )),
+            */
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
             debug: None,

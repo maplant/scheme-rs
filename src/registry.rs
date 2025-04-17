@@ -218,6 +218,7 @@ impl Registry {
             );
         }
 
+        /*
         // Import the stdlib:
         let base_lib = libs
             .entry(LibraryName::from_str("(base)", None).unwrap())
@@ -230,6 +231,7 @@ impl Registry {
         let compiled = base.compile_top_level();
         let closure = runtime.compile_expr(compiled).await.unwrap();
         closure.call(&[]).await.unwrap();
+         */
 
         Self { libs }
     }
