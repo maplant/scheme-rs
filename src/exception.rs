@@ -196,6 +196,7 @@ pub fn with_exception_handler<'a>(
     args: &'a [Value],
     _rest_args: &'a [Value],
     cont: &'a Value,
+    env: &'a [Gc<Value>],
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {
@@ -251,6 +252,7 @@ pub fn raise<'a>(
     args: &'a [Value],
     _rest_args: &'a [Value],
     cont: &'a Value,
+    _env: &'a [Gc<Value>],
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {
@@ -350,6 +352,7 @@ pub fn raise_continuable<'a>(
     args: &'a [Value],
     _rest_args: &'a [Value],
     cont: &'a Value,
+    _env: &'a [Gc<Value>],
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {

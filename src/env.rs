@@ -91,7 +91,7 @@ impl Top {
 pub struct LexicalContour {
     up: Environment,
     vars: HashMap<Identifier, Local>,
-    macros: HashMap<Identifier, Closure>,
+    macros: HashMap<Identifier, Gc<Closure>>,
 }
 
 impl LexicalContour {
@@ -111,7 +111,7 @@ impl LexicalContour {
         local
     }
 
-    pub fn def_macro(&mut self, name: Identifier, closure: Closure) {
+    pub fn def_macro(&mut self, name: Identifier, closure: Gc<Closure>) {
         self.macros.insert(name, closure);
     }
 
@@ -170,7 +170,7 @@ impl MacroExpansion {
         self.up.def_var(name)
     }
 
-    pub fn def_macro(&self, name: Identifier, closure: Closure) {
+    pub fn def_macro(&self, name: Identifier, closure: Gc<Closure>) {
         self.up.def_macro(name, closure);
     }
 
@@ -257,7 +257,7 @@ impl Environment {
         }
     }
 
-    pub fn def_macro(&self, name: Identifier, val: Closure) {
+    pub fn def_macro(&self, name: Identifier, val: Gc<Closure>) {
         match self {
             Self::Top(top) => top.write().def_macro(name, Macro::new(self.clone(), val)),
             Self::LexicalContour(lex) => lex.write().def_macro(name, val),
@@ -410,11 +410,11 @@ impl fmt::Debug for Var {
 #[derive(Clone, Trace)]
 pub struct Macro {
     pub source_env: Environment,
-    pub transformer: Closure,
+    pub transformer: Gc<Closure>,
 }
 
 impl Macro {
-    pub fn new(source_env: Environment, transformer: Closure) -> Self {
+    pub fn new(source_env: Environment, transformer: Gc<Closure>) -> Self {
         Self {
             source_env,
             transformer,

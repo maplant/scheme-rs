@@ -41,6 +41,7 @@ pub type BridgePtr = for<'a> fn(
     args: &'a [Value],
     rest_args: &'a [Value],
     cont: &'a Value,
+    env: &'a [Gc<Value>],
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>>;
@@ -123,6 +124,7 @@ impl Closure {
         }
     }
     */
+
     pub async fn apply(
         &self,
         args: &[Value],
@@ -170,10 +172,12 @@ impl Closure {
             let FuncPtr::Bridge(async_fn) = self.func else {
                 unreachable!()
             };
+            let cont = { cont.unwrap().read().clone() };
             (async_fn)(
                 args.as_ref(),
                 rest_args.unwrap_or(&[]),
-                cont.unwrap().read().as_ref(),
+                &cont,
+                &self.env,
                 &exception_handler,
                 dynamic_wind,
             )
@@ -357,7 +361,7 @@ impl Application {
             call_site,
         } = self
         {
-            let op = op.read();
+            let op = { op.read().as_ref().clone() };
             stack_trace.collect_application(&op.runtime, op.debug_info, call_site);
             self = match op.apply(&args, exception_handler, &dynamic_wind).await {
                 Err(exception) => {
@@ -491,6 +495,7 @@ pub fn apply<'a>(
     args: &'a [Value],
     rest_args: &'a [Value],
     cont: &'a Value,
+    _env: &'a [Gc<Value>],
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {
@@ -614,6 +619,7 @@ pub fn call_with_values<'a>(
     args: &'a [Value],
     _rest_args: &'a [Value],
     cont: &'a Value,
+    _env: &'a [Gc<Value>],
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {
@@ -685,6 +691,7 @@ pub fn dynamic_wind<'a>(
     args: &'a [Value],
     _rest_args: &'a [Value],
     cont: &'a Value,
+    _env: &'a [Gc<Value>],
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {

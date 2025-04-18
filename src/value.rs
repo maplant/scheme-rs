@@ -345,7 +345,7 @@ pub enum UnpackedValue {
     Condition(Gc<Condition>),
     Pair(Gc<lists::Pair>),
     // HashTable,
-    // OtherData,
+    OtherData(Gc<OtherData>),
 }
 
 impl UnpackedValue {
@@ -395,6 +395,10 @@ impl UnpackedValue {
                 let untagged = Gc::into_raw(pair);
                 Value::from_mut_ptr_and_tag(untagged, ValueType::Pair)
             }
+            Self::OtherData(other) => {
+                let untagged = Gc::into_raw(other);
+                Value::from_mut_ptr_and_tag(untagged, ValueType::Other)
+            }
         }
     }
 
@@ -411,7 +415,7 @@ impl UnpackedValue {
             Self::ByteVector(_) => "byte vector",
             Self::Syntax(_) => "syntax",
             Self::Closure(_) => "procedure",
-            Self::Record(_) | Self::Condition(_) => "record",
+            Self::Record(_) | Self::Condition(_) | Self::OtherData(_) => "record",
             // Self::Transformer(_) => "transformer",
             // Self::CapturedEnv(_) => "captured-env",
             // Self::ExceptionHandler(_) => "exception-handler",
@@ -463,6 +467,7 @@ impl fmt::Display for UnpackedValue {
             Self::Condition(cond) => write!(f, "<{cond:?}>"),
             Self::Record(record) => write!(f, "<{record:?}>"),
             Self::Syntax(syntax) => write!(f, "{:?}", syntax),
+            Self::OtherData(_) => write!(f, "<unknown record>"),
         }
     }
 }
@@ -492,6 +497,7 @@ impl fmt::Debug for UnpackedValue {
             Self::Closure(proc) => write!(f, "#<procedure {proc:?}>"),
             Self::Condition(cond) => write!(f, "<{cond:?}>"),
             Self::Record(record) => write!(f, "<{record:?}>"),
+            Self::OtherData(_) => write!(f, "<unknown record>"),
         }
     }
 }
@@ -555,6 +561,7 @@ impl_try_from_value_for!(Arc<Syntax>, Syntax, "syntax");
 impl_try_from_value_for!(Gc<Closure>, Closure, "procedure");
 impl_try_from_value_for!(Gc<Condition>, Condition, "condition");
 impl_try_from_value_for!(Gc<lists::Pair>, Pair, "pair");
+impl_try_from_value_for!(Gc<OtherData>, OtherData, "record");
 
 macro_rules! impl_from_wrapped_for {
     ($ty:ty, $variant:ident, $wrapper:expr) => {
@@ -586,17 +593,20 @@ impl_from_wrapped_for!((Value, Value), Pair, |(car, cdr)| Gc::new(
     lists::Pair::new(car, cdr)
 ));
 impl_from_wrapped_for!(Condition, Condition, Gc::from);
+impl_from_wrapped_for!(CapturedEnv, OtherData, |env| Gc::new(OtherData::CapturedEnv(env)));
+impl_from_wrapped_for!(Transformer, OtherData, |trans| Gc::new(OtherData::Transformer(trans)));
 
 /// Any data that doesn't fit well with the serde data model, or is otherwise
 /// uncommon or unavailable in a public API.
 ///
 ///  This enum is subject to change and is not avaiable as part of a public api.
 #[derive(Clone, Trace)]
-pub(crate) enum OtherData {
-    CapturedEnv(Gc<CapturedEnv>),
+#[repr(align(16))]
+pub enum OtherData {
+    CapturedEnv(CapturedEnv),
     Transformer(Transformer),
     // Future(Future),
-    RecordType(Arc<RecordType>),
+    RecordType(RecordType),
     UserData(Arc<dyn std::any::Any>),
 }
 

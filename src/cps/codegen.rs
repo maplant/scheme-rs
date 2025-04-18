@@ -246,14 +246,6 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             Cps::PrimOp(PrimOp::AllocCell, _, into, cexpr) => {
                 self.alloc_cell_codegen(into, *cexpr, allocs, deferred)?;
             }
-            /*
-            Cps::PrimOp(PrimOp::ReadCell, args, into, cexpr) => {
-                let [cell] = args.as_slice() else {
-                    unreachable!()
-                };
-                self.read_cell_codegen(cell, into, *cexpr, allocs, deferred)?;
-            }
-             */
             Cps::PrimOp(PrimOp::ExtractWinders, _, extract_to, cexpr) => {
                 self.extract_winders_codegen(extract_to, *cexpr, allocs, deferred)?;
             }
@@ -265,7 +257,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                     cont, winders, prepare_to, *cexpr, allocs, deferred,
                 )?;
             }
-            Cps::PrimOp(PrimOp::GetCallTransformerFn, _, res, cexpr) => {
+            Cps::PrimOp(PrimOp::GetCallTransformerFn, env, res, cexpr) => {
                 self.get_call_transformer_codegen(res)?;
                 self.cps_codegen(*cexpr, allocs, deferred)?;
             }
@@ -311,7 +303,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                     .left()
                     .unwrap()
             },
-            Value::Value(val) => {
+            Value::Const(val) => {
                 let mut runtime_write = self.runtime.write();
                 let reflexive_val = ReflexiveValue(val.clone());
                 if !runtime_write.constants_pool.contains(&reflexive_val) {
@@ -790,14 +782,16 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
 
     fn store_codegen(&self, from: &Value, to: &Value) -> Result<(), BuilderError> {
         let from = self.value_codegen(from).into();
-        let Value::Var(to) = to else { unreachable!() }; // self.value_codegen(to).into();
+        let Value::Var(to) = to else { unreachable!() };
         let to = self.rebinds.fetch_bind(to).into_pointer_value().into();
         let store = self.module.get_function("store").unwrap();
         let _ = self.builder.build_call(store, &[from, to], "")?;
         Ok(())
     }
 
-    fn get_call_transformer_codegen(&mut self, result: Local) -> Result<(), BuilderError> {
+    fn get_call_transformer_codegen(&mut self, env: &[Value], result: Local) -> Result<(), BuilderError> {
+        todo!();
+        /*
         let get_call_transformer_fn = self.module.get_function("get_call_transformer_fn").unwrap();
         let expanded = self
             .builder
@@ -816,6 +810,8 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             .unwrap();
 
         self.rebinds.rebind(Var::Local(result), expanded);
+         */
+        
         Ok(())
     }
 

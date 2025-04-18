@@ -2,12 +2,12 @@ use crate::{
     ast::Literal,
     env::{Environment, Macro},
     exception::Condition,
-    gc::{Gc, Trace},
+    gc::Trace,
     lex::{InputSpan, Token},
-    lists::list_to_vec_with_null,
+    lists::{self, list_to_vec_with_null},
     parse::ParseSyntaxError,
     registry::bridge,
-    value::Value,
+    value::{UnpackedValue, Value},
 };
 use futures::future::BoxFuture;
 use std::{
@@ -146,28 +146,29 @@ impl Syntax {
 
     pub fn from_datum(marks: &BTreeSet<Mark>, datum: Value) -> Self {
         // TODO: conjure up better values for Span
-        /*
-        match datum {
-            Value::Null => Syntax::new_null(Span::default()),
-            Value::Pair(lhs, rhs) => {
+        match datum.unpack() {
+            UnpackedValue::Null => Syntax::new_null(Span::default()),
+            UnpackedValue::Pair(pair) => {
+                let pair_read = pair.read();
+                let lists::Pair(lhs, rhs) = pair_read.as_ref();
                 let mut list = Vec::new();
                 list.push(lhs.clone());
                 list_to_vec_with_null(rhs, &mut list);
                 // TODO: Use futures combinators
                 let mut out_list = Vec::new();
                 for item in list.iter() {
-                    out_list.push(Syntax::from_datum(marks, item));
+                    out_list.push(Syntax::from_datum(marks, item.clone()));
                 }
                 Syntax::new_list(out_list, Span::default())
             }
-            Value::Syntax(syntax) => {
-                let mut syntax = syntax.clone();
+            UnpackedValue::Syntax(syntax) => {
+                let mut syntax = syntax.as_ref().clone();
                 syntax.mark_many(marks);
                 syntax
             }
-            Value::Symbol(sym) => {
+            UnpackedValue::Symbol(sym) => {
                 let ident = Identifier {
-                    name: sym.clone(),
+                    name: sym.0.clone(),
                     marks: marks.clone(),
                 };
                 Syntax::Identifier {
@@ -178,8 +179,6 @@ impl Syntax {
             }
             _ => unimplemented!(),
         }
-         */
-        todo!()
     }
 
     pub fn resolve_bindings(&mut self, env: &Environment) {
@@ -210,7 +209,6 @@ impl Syntax {
         mac: Macro,
         // cont: &Closure,
     ) -> Result<Expansion, Value> {
-        /*
         // Create a new mark for the expansion context
         let new_mark = Mark::new();
 
@@ -224,22 +222,19 @@ impl Syntax {
 
         let transformer_output = mac
             .transformer
-            .call(&[Gc::new(Value::Syntax(input))])
+            .call(&[Value::from(input)])
             .await?;
-        let transformer_output = transformer_output[0].read();
 
         // Output must be syntax:
-        let output: &Syntax = transformer_output.as_ref().try_into()?;
+        let output: Arc<Syntax> = transformer_output[0].clone().try_into()?;
 
         // Apply the new mark to the output
-        let mut output = output.clone();
+        let mut output = output.as_ref().clone();
         output.mark(new_mark);
 
         let new_env = env.new_macro_expansion(new_mark, mac.source_env.clone());
 
         Ok(Expansion::new_expanded(new_env, output))
-         */
-        todo!()
     }
 
     fn expand_once<'a>(
@@ -379,33 +374,6 @@ impl FullyExpanded {
         }
     }
 }
-
-/*
-#[derive(derive_more::Debug, Clone)]
-pub struct ExpansionCtx {
-    pub mark: Mark,
-    #[debug(skip)]
-    pub env: Gc<Env>,
-}
-
-impl ExpansionCtx {
-    fn new(mark: Mark, env: Gc<Env>) -> Self {
-        Self { mark, env }
-    }
-}
-
-#[derive(Debug)]
-pub struct FullyExpanded {
-    pub expansion_ctxs: Vec<ExpansionCtx>,
-    pub expanded: Syntax,
-}
-
-impl AsRef<Syntax> for FullyExpanded {
-    fn as_ref(&self) -> &Syntax {
-        &self.expanded
-    }
-}
-*/
 
 #[derive(Debug)]
 pub struct ParsedSyntax {
@@ -587,18 +555,9 @@ pub async fn datum_to_syntax(
     template_id: &Value,
     datum: &Value,
 ) -> Result<Vec<Value>, Condition> {
-    /*
-    let template_id = template_id.read();
-    let Value::Syntax(Syntax::Identifier {
-        ident: template_id, ..
-    }) = &*template_id
-    else {
-        return Err(Condition::invalid_type("syntax", template_id.type_name()));
+    let syntax: Arc<Syntax> = template_id.clone().try_into()?;
+    let Syntax::Identifier { ident: template_id, .. } = syntax.as_ref() else {
+        return Err(Condition::invalid_type("template_id", "syntax"));
     };
-    Ok(vec![Gc::new(Value::Syntax(Syntax::from_datum(
-        &template_id.marks,
-        datum,
-    )))])
-     */
-    todo!()
+    Ok(vec![Value::from(Syntax::from_datum(&template_id.marks, datum.clone()))])
 }

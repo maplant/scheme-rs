@@ -564,17 +564,23 @@ unsafe extern "C" fn make_closure(
         FuncPtr::Closure(fn_ptr),
         num_required_args as usize,
         variadic,
-        // Some(debug_info_id),
-        None,
+        Some(debug_info_id),
     );
 
-    let raw = Gc::into_raw(Gc::new(Value::from(closure)));
-    raw
+    Gc::into_raw(Gc::new(Value::from(closure)))
 }
 
 /// Call a transformer with the given argument and return the expansion
-unsafe extern "C" fn get_call_transformer_fn(runtime: *mut GcInner<Runtime>) -> i64 {
-    /*
+unsafe extern "C" fn get_call_transformer_fn(
+    runtime: *mut GcInner<Runtime>,
+    env: *const *mut GcInner<Value>,
+    num_envs: u32,
+) -> *mut GcInner<Value> {
+    // Collect the environment:
+    let env: Vec<_> = (0..num_envs)
+        .map(|i| Gc::from_raw_inc_rc(env.add(i as usize).read()))
+        .collect();
+
     let closure = Closure::new(
         Gc::from_raw(runtime),
         Vec::new(),
@@ -584,9 +590,8 @@ unsafe extern "C" fn get_call_transformer_fn(runtime: *mut GcInner<Runtime>) -> 
         true,
         Some(IGNORE_FUNCTION),
     );
-    ManuallyDrop::new(Gc::new(Value::Closure(closure))).as_ptr()
-     */
-    todo!()
+
+    Gc::into_raw(Gc::new(Value::from(closure)))
 }
 
 /*

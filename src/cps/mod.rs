@@ -34,7 +34,7 @@ pub use compile::Compile;
 #[derive(Clone, PartialEq)]
 pub enum Value {
     Var(Var),
-    Value(RuntimeValue),
+    Const(RuntimeValue),
 }
 
 impl Value {
@@ -57,7 +57,7 @@ impl Value {
 
 impl From<RuntimeValue> for Value {
     fn from(v: RuntimeValue) -> Self {
-        Self::Value(v)
+        Self::Const(v)
     }
 }
 
@@ -83,7 +83,7 @@ impl fmt::Debug for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Var(var) => var.fmt(f),
-            Self::Value(val) => val.fmt(f),
+            Self::Const(val) => val.fmt(f),
         }
     }
 }
@@ -96,9 +96,7 @@ pub enum PrimOp {
     // Cell operations:
     /// Allocate a cell, returning a Gc<Value>.
     AllocCell,
-    // /// Read a cell (a Gc<Value>), returning a Value.
-    // ReadCell,
-    
+
     // List operators:
     Cons,
 
@@ -167,11 +165,6 @@ impl ClosureArgs {
 
 #[derive(derive_more::Debug, Clone)]
 pub enum Cps {
-    /*
-    /// Generates a cell of type `*const GcInner<Value>`
-    AllocCell(Local, Box<Cps>),
-    */
-
     /// Call to a primitive operator.
     PrimOp(PrimOp, Vec<Value>, Local, Box<Cps>),
 

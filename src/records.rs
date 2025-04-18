@@ -11,7 +11,7 @@ use crate::{
 };
 
 /// Type declaration for a record.
-#[derive(Debug, Clone)]
+#[derive(Debug, Trace, Clone)]
 #[repr(align(16))]
 pub struct RecordType {
     name: String,
