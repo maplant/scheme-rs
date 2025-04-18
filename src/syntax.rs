@@ -213,17 +213,12 @@ impl Syntax {
         let new_mark = Mark::new();
 
         // Apply the new mark to the input and resolve any bindings
-        // TODO: Figure out a better way to do this without cloning so much
         let mut input = self.clone();
         input.resolve_bindings(env);
         input.mark(new_mark);
 
         // Call the transformer with the input:
-
-        let transformer_output = mac
-            .transformer
-            .call(&[Value::from(input)])
-            .await?;
+        let transformer_output = mac.transformer.call(&[Value::from(input)]).await?;
 
         // Output must be syntax:
         let output: Arc<Syntax> = transformer_output[0].clone().try_into()?;
@@ -551,13 +546,16 @@ pub async fn syntax_to_datum(
 */
 
 #[bridge(name = "datum->syntax", lib = "(base)")]
-pub async fn datum_to_syntax(
-    template_id: &Value,
-    datum: &Value,
-) -> Result<Vec<Value>, Condition> {
+pub async fn datum_to_syntax(template_id: &Value, datum: &Value) -> Result<Vec<Value>, Condition> {
     let syntax: Arc<Syntax> = template_id.clone().try_into()?;
-    let Syntax::Identifier { ident: template_id, .. } = syntax.as_ref() else {
+    let Syntax::Identifier {
+        ident: template_id, ..
+    } = syntax.as_ref()
+    else {
         return Err(Condition::invalid_type("template_id", "syntax"));
     };
-    Ok(vec![Value::from(Syntax::from_datum(&template_id.marks, datum.clone()))])
+    Ok(vec![Value::from(Syntax::from_datum(
+        &template_id.marks,
+        datum.clone(),
+    ))])
 }

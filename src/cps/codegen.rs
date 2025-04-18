@@ -44,7 +44,7 @@ impl<'ctx> Rebinds<'ctx> {
 
 struct Allocs<'ctx> {
     prev_alloc: Option<Rc<Allocs<'ctx>>>,
-    value: BasicValueEnum<'ctx>// PointerValue<'ctx>,
+    value: BasicValueEnum<'ctx>, // PointerValue<'ctx>,
 }
 
 impl<'ctx> Allocs<'ctx> {
@@ -258,7 +258,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 )?;
             }
             Cps::PrimOp(PrimOp::GetCallTransformerFn, env, res, cexpr) => {
-                self.get_call_transformer_codegen(res)?;
+                self.get_call_transformer_codegen(&env, res)?;
                 self.cps_codegen(*cexpr, allocs, deferred)?;
             }
             Cps::PrimOp(primop, vals, result, cexpr) => {
@@ -292,17 +292,16 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             Value::Var(var) => {
                 let cell = match *self.rebinds.fetch_bind(var) {
                     read @ BasicValueEnum::IntValue(_) => return read,
-                    x => x
+                    x => x,
                 };
                 let read_cell = self.module.get_function("read_cell").unwrap();
-                self
-                    .builder
+                self.builder
                     .build_call(read_cell, &[cell.into()], "read_value")
                     .unwrap()
                     .try_as_basic_value()
                     .left()
                     .unwrap()
-            },
+            }
             Value::Const(val) => {
                 let mut runtime_write = self.runtime.write();
                 let reflexive_val = ReflexiveValue(val.clone());
@@ -456,7 +455,12 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
 
         let i64_type = self.ctx.i64_type();
         let undef = i64_type.const_int(0, false);
-        let is_undef = self.builder.build_int_compare(IntPredicate::EQ, result_val.into_int_value(), undef.into(), "is_undef")?;
+        let is_undef = self.builder.build_int_compare(
+            IntPredicate::EQ,
+            result_val.into_int_value(),
+            undef.into(),
+            "is_undef",
+        )?;
         // let is_undef = self.builder.build_is_null(result_val, "is_undef")?;
         self.builder
             .build_conditional_branch(is_undef, is_undef_bb, success_bb)?;
@@ -500,30 +504,6 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
 
         // Compile the continuation with the newly allocated value
         self.cps_codegen(cexpr, new_alloc, deferred)?;
-
-        Ok(())
-    }
-
-    fn read_cell_codegen(
-        &mut self,
-        cell: &Value,
-        read_into: Local,
-        cexpr: Cps,
-        allocs: Option<Rc<Allocs<'ctx>>>,
-        deferred: &mut Vec<ClosureBundle<'ctx>>,
-    ) -> Result<(), BuilderError> {
-        let cell = self.value_codegen(cell);
-        let read_cell = self.module.get_function("read_cell").unwrap();
-        let value = self
-            .builder
-            .build_call(read_cell, &[cell.into()], "read_value")?
-            .try_as_basic_value()
-            .left()
-            .unwrap();
-        
-        self.rebinds.rebind(Var::Local(read_into), value);
-
-        self.cps_codegen(cexpr, allocs, deferred)?;
 
         Ok(())
     }
@@ -789,29 +769,52 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         Ok(())
     }
 
-    fn get_call_transformer_codegen(&mut self, env: &[Value], result: Local) -> Result<(), BuilderError> {
-        todo!();
-        /*
+    fn get_call_transformer_codegen(
+        &mut self,
+        env: &[Value],
+        result: Local,
+    ) -> Result<(), BuilderError> {
+        let i32_type = self.ctx.i32_type();
+        let ptr_type = self.ctx.ptr_type(AddressSpace::default());
+
+        let num_envs = i32_type.const_int(env.len() as u64, false);
+        let env_type = ptr_type.array_type(env.len() as u32);
+        let env_alloca = self.builder.build_alloca(env_type, "env_alloca")?;
+
+        for (i, var) in env.iter().enumerate() {
+            let ep = unsafe {
+                self.builder.build_gep(
+                    ptr_type,
+                    env_alloca,
+                    &[i32_type.const_int(i as u64, false)],
+                    "alloca_elem",
+                )?
+            };
+            let Value::Var(var) = var else { unreachable!() };
+            let val: BasicValueEnum = (*self.rebinds.fetch_bind(&var)).into();
+            self.builder.build_store(ep, val)?;
+        }
+
         let get_call_transformer_fn = self.module.get_function("get_call_transformer_fn").unwrap();
         let expanded = self
             .builder
             .build_call(
                 get_call_transformer_fn,
-                &[self
-                    .function
-                    .get_nth_param(RUNTIME_PARAM)
-                    .unwrap()
-                    .into_pointer_value()
-                    .into()],
+                &[
+                    self.function
+                        .get_nth_param(RUNTIME_PARAM)
+                        .unwrap()
+                        .into_pointer_value()
+                        .into(),
+                    env_alloca.into(),
+                    num_envs.into(),
+                ],
                 "call_transformer",
             )?
             .try_as_basic_value()
             .left()
             .unwrap();
-
         self.rebinds.rebind(Var::Local(result), expanded);
-         */
-        
         Ok(())
     }
 
@@ -1055,10 +1058,7 @@ impl<'ctx> ClosureBundle<'ctx> {
         }
 
         if let Some(cont) = self.args.continuation {
-            let cont_param = self
-                .function
-                .get_nth_param(CONTINUATION_PARAM)
-                .unwrap();
+            let cont_param = self.function.get_nth_param(CONTINUATION_PARAM).unwrap();
             cu.rebinds.rebind(Var::Local(cont), cont_param);
         }
 

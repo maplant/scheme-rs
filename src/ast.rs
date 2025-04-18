@@ -241,7 +241,6 @@ pub(super) async fn define_syntax(
     env: &Environment,
     // cont: &Closure
 ) -> Result<(), ParseAstError> {
-    /*
     let FullyExpanded {
         expanded,
         expansion_env,
@@ -255,11 +254,9 @@ pub(super) async fn define_syntax(
         .call(&[])
         .await
         .map_err(|err| ParseAstError::RaisedValue(err.into()))?;
-    let mac_read = mac[0].read();
-    let transformer: &Closure = mac_read.as_ref().try_into().unwrap();
-    env.def_macro(ident, transformer.clone());
-     */
-    todo!();
+    let transformer: Gc<Closure> = mac[0].clone().try_into().unwrap();
+    env.def_macro(ident, transformer);
+
     Ok(())
 }
 

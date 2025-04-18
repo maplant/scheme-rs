@@ -76,7 +76,10 @@ impl Value {
                 ValueType::Pair => {
                     Gc::increment_reference_count(untagged as *mut GcInner<lists::Pair>)
                 }
-                ValueType::HashTable | ValueType::Other => todo!(),
+                ValueType::Other => {
+                    Gc::increment_reference_count(untagged as *mut GcInner<OtherData>)
+                }
+                ValueType::HashTable => todo!(),
                 ValueType::Undefined
                 | ValueType::Null
                 | ValueType::Boolean
@@ -124,14 +127,17 @@ impl Value {
                 }
                 curr
             }
-            Syntax::Vector { vector, .. } => {
-                Self::from(vector.iter().map(Self::datum_from_syntax).collect::<Vec<_>>())
-            }
+            Syntax::Vector { vector, .. } => Self::from(
+                vector
+                    .iter()
+                    .map(Self::datum_from_syntax)
+                    .collect::<Vec<_>>(),
+            ),
             Syntax::ByteVector { vector, .. } => Self::from(vector.clone()),
             Syntax::Literal { literal, .. } => Self::from(literal.clone()),
-            Syntax::Identifier { ident, .. } => {
-                Self::new(UnpackedValue::Symbol(Arc::new(AlignedString(ident.name.clone()))))
-            }
+            Syntax::Identifier { ident, .. } => Self::new(UnpackedValue::Symbol(Arc::new(
+                AlignedString(ident.name.clone()),
+            ))),
         }
     }
 
@@ -195,8 +201,11 @@ impl Value {
                 let pair = unsafe { Gc::from_raw(untagged as *mut GcInner<lists::Pair>) };
                 UnpackedValue::Pair(pair)
             }
+            ValueType::Other => {
+                let other = unsafe { Gc::from_raw(untagged as *mut GcInner<OtherData>) };
+                UnpackedValue::OtherData(other)
+            }
             ValueType::HashTable => todo!(),
-            ValueType::Other => todo!(),
         }
     }
 
@@ -416,9 +425,6 @@ impl UnpackedValue {
             Self::Syntax(_) => "syntax",
             Self::Closure(_) => "procedure",
             Self::Record(_) | Self::Condition(_) | Self::OtherData(_) => "record",
-            // Self::Transformer(_) => "transformer",
-            // Self::CapturedEnv(_) => "captured-env",
-            // Self::ExceptionHandler(_) => "exception-handler",
         }
     }
 }
@@ -593,8 +599,12 @@ impl_from_wrapped_for!((Value, Value), Pair, |(car, cdr)| Gc::new(
     lists::Pair::new(car, cdr)
 ));
 impl_from_wrapped_for!(Condition, Condition, Gc::from);
-impl_from_wrapped_for!(CapturedEnv, OtherData, |env| Gc::new(OtherData::CapturedEnv(env)));
-impl_from_wrapped_for!(Transformer, OtherData, |trans| Gc::new(OtherData::Transformer(trans)));
+impl_from_wrapped_for!(CapturedEnv, OtherData, |env| Gc::new(
+    OtherData::CapturedEnv(env)
+));
+impl_from_wrapped_for!(Transformer, OtherData, |trans| Gc::new(
+    OtherData::Transformer(trans)
+));
 
 /// Any data that doesn't fit well with the serde data model, or is otherwise
 /// uncommon or unavailable in a public API.
@@ -624,6 +634,8 @@ impl Hash for ReflexiveValue {
         let unpacked = self.0.unpacked_ref();
         std::mem::discriminant(&*unpacked).hash(state);
         match &*unpacked {
+            UnpackedValue::Undefined => (),
+            UnpackedValue::Null => (),
             UnpackedValue::Boolean(b) => b.hash(state),
             UnpackedValue::Character(c) => c.hash(state),
             UnpackedValue::Number(n) => ReflexiveNumber(n.clone()).hash(state),
@@ -640,11 +652,10 @@ impl Hash for ReflexiveValue {
             UnpackedValue::Closure(c) => Gc::as_ptr(c).hash(state),
             UnpackedValue::Record(r) => Gc::as_ptr(r).hash(state),
             UnpackedValue::Condition(c) => Gc::as_ptr(c).hash(state),
+            UnpackedValue::OtherData(o) => Gc::as_ptr(o).hash(state),
             // TODO: We can make this better by checking the list for equivalence reflexively.
             // But if we do that, we need to make sure that constants cannot be set.
             UnpackedValue::Pair(p) => Gc::as_ptr(p).hash(state),
-            // UnpackedValue::Cls
-            _ => (),
         }
     }
 }
@@ -679,6 +690,7 @@ impl PartialEq for ReflexiveValue {
             (UnpackedValue::Closure(a), UnpackedValue::Closure(b)) => Gc::ptr_eq(a, b),
             (UnpackedValue::Record(a), UnpackedValue::Record(b)) => Gc::ptr_eq(a, b),
             (UnpackedValue::Condition(a), UnpackedValue::Condition(b)) => Gc::ptr_eq(a, b),
+            (UnpackedValue::OtherData(a), UnpackedValue::OtherData(b)) => Gc::ptr_eq(a, b),
             _ => false,
         }
     }

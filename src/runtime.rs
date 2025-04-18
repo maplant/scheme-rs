@@ -3,12 +3,13 @@ use crate::{
     env::Local,
     exception::{Condition, ExceptionHandler},
     expand,
+    vectors,
     gc::{init_gc, Gc, GcInner, Trace},
-    lists::list_to_vec,
+    lists::{self, list_to_vec},
     num,
     proc::{
-        /* clone_continuation_env, */
-        Application, Closure, ClosurePtr, ContinuationPtr, DynamicWind, FuncPtr, FunctionDebugInfo,
+        clone_continuation_env, Application, Closure, ClosurePtr, ContinuationPtr, DynamicWind,
+        FuncPtr, FunctionDebugInfo,
     },
     syntax::Span,
     value::{ReflexiveValue, UnpackedValue, Value},
@@ -300,9 +301,8 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     let f = module.add_function("make_closure", sig, None);
     ee.add_global_mapping(&f, make_closure as usize);
 
-    /*
     // get_call_transformer_fn:
-    let sig = ptr_type.fn_type(&[ptr_type.into()], false);
+    let sig = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into(), i32_type.into()], false);
     let f = module.add_function("get_call_transformer_fn", sig, None);
     ee.add_global_mapping(&f, get_call_transformer_fn as usize);
 
@@ -312,10 +312,9 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     ee.add_global_mapping(&f, extract_winders as usize);
 
     // prepare_continuation:
-    let sig = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into(), ptr_type.into()], false);
+    let sig = i64_type.fn_type(&[i64_type.into(), i64_type.into(), ptr_type.into()], false);
     let f = module.add_function("prepare_continuation", sig, None);
     ee.add_global_mapping(&f, prepare_continuation as usize);
-    */
 
     // add:
     let sig = i64_type.fn_type(&[ptr_type.into(), i32_type.into(), ptr_type.into()], false);
@@ -582,12 +581,12 @@ unsafe extern "C" fn get_call_transformer_fn(
         .collect();
 
     let closure = Closure::new(
-        Gc::from_raw(runtime),
-        Vec::new(),
+        Gc::from_raw_inc_rc(runtime),
+        env,
         Vec::new(),
         FuncPtr::Bridge(expand::call_transformer),
         3,
-        true,
+        false,
         Some(IGNORE_FUNCTION),
     );
 
@@ -607,23 +606,18 @@ unsafe extern "C" fn cons(
 */
 
 /// Extract the current winders from the environment and return them as a vec.
-unsafe extern "C" fn extract_winders(dynamic_wind: *const DynamicWind) -> i64 {
-    /*
+/// This has to return a Gc since this is added to the environment of the continuation.
+unsafe extern "C" fn extract_winders(dynamic_wind: *const DynamicWind) -> *mut GcInner<Value> {
     let dynamic_wind = dynamic_wind.as_ref().unwrap();
     let winders: Vec<_> = dynamic_wind
         .winders
         .iter()
         .cloned()
         .map(|(in_winder, out_winder)| {
-            Value::Pair(
-                Gc::new(Value::Closure(in_winder)),
-                Gc::new(Value::Closure(out_winder)),
-            )
+            Value::from((Value::from(in_winder), Value::from(out_winder)))
         })
         .collect();
-    ManuallyDrop::new(Gc::new(Value::Vector(winders))).as_ptr()
-     */
-    todo!()
+    Gc::into_raw(Gc::new(Value::from(winders)))
 }
 
 /// Prepare the continuation for call/cc. Clones the continuation environment
@@ -636,54 +630,50 @@ unsafe extern "C" fn prepare_continuation(
     winders: i64,
     from_dynamic_extent: *const DynamicWind,
 ) -> i64 {
-    /*
     // Determine which winders we will need to call. This is determined as the
     // winders provided in cont_and_winders with the prefix of curr_dynamic_wind
     // removed.
-    let cont = Gc::from_raw(cont);
-    let winders = Gc::from_raw(winders);
-    let winders = winders.read();
-    let to_winders: &Vec<Value> = winders.as_ref().try_into().unwrap();
+    let cont = Value::from_raw_inc_rc(cont as u64);
+    let winders = Value::from_raw_inc_rc(winders as u64);
+    let to_winders: Gc<vectors::AlignedVector<Value>> = winders.try_into().unwrap();
     let from_winders = from_dynamic_extent.as_ref().unwrap();
 
-    let thunks = compute_winders(from_winders, to_winders);
+    let thunks = compute_winders(from_winders, to_winders.read().as_ref());
 
     // Clone the continuation
     let cont = clone_continuation_env(&cont, &mut HashMap::default());
+    let cont: Gc<Closure> = cont.try_into().unwrap();
 
     let (runtime, req_args, variadic) = {
-        let cont = cont.read();
-        let cont: &Closure = cont.as_ref().try_into().unwrap();
-        (cont.runtime.clone(), cont.num_required_args, cont.variadic)
+        let cont_read = cont.read();
+        (cont_read.runtime.clone(), cont_read.num_required_args, cont_read.variadic)
     };
 
-    ManuallyDrop::new(Gc::new(Value::Closure(Closure::new(
+    Value::into_raw(Value::from(Closure::new(
+        //     ManuallyDrop::new(Gc::new(Value::Closure(Closure::new(
         runtime,
-        vec![thunks, cont],
+        vec![Gc::new(thunks), Gc::new(Value::from(cont))],
         Vec::new(),
         FuncPtr::Continuation(call_thunks),
         req_args,
         variadic,
         None,
-    ))))
-    .as_ptr()
-     */
-    todo!()
+    ))) as i64
 }
 
 fn compute_winders(from_extent: &DynamicWind, to_extent: &[Value]) -> Value {
-    /*
     let len = from_extent.winders.len().min(to_extent.len());
 
     let mut split_point = 0;
     #[allow(clippy::needless_range_loop)]
     for i in 0..len {
-        let Value::Pair(ref to_in, _) = to_extent[i] else {
+        let UnpackedValue::Pair(pair /* ref to_in, _*/) = &*to_extent[i].unpacked_ref() else {
             unreachable!()
         };
-        let to_in_ref = to_in.read();
-        let to_in: &Closure = to_in_ref.as_ref().try_into().unwrap();
-        if &from_extent.winders[i].0 == to_in {
+        let pair_read = pair.read();
+        let lists::Pair(to_in, _) = pair_read.as_ref();
+        let to_in: Gc<Closure> = to_in.clone().try_into().unwrap();
+        if Gc::ptr_eq(&from_extent.winders[i].0, &to_in) {
             split_point = i + 1;
         } else {
             break;
@@ -696,28 +686,26 @@ fn compute_winders(from_extent: &DynamicWind, to_extent: &[Value]) -> Value {
         .split_at_checked(split_point)
         .unwrap_or((&[], &[]));
 
-    let mut thunks = Gc::new(Value::Null);
+    let mut thunks = Value::null();
     for thunk in from_extent
         .iter()
-        .map(|(_, out)| Gc::new(Value::Closure(out.clone())))
+        .map(|(_, out)| Value::from(out.clone()))
         .chain(
             to_extent
                 .iter()
                 .map(|to_extent| {
-                    let Value::Pair(ref to_in, _) = to_extent else {
-                        unreachable!()
-                    };
-                    to_in.clone()
+                    let pair: Gc<lists::Pair> = to_extent.clone().try_into().unwrap();
+                    let pair_read = pair.read();
+                    pair_read.0.clone()
                 })
                 .rev(),
         )
     {
-        thunks = Gc::new(Value::Pair(thunk, thunks));
+        thunks = Value::from((thunk, thunks));
+        // Gc::new(Value::Pair(thunk, thunks));
     }
 
     thunks
-     */
-    todo!()
 }
 
 unsafe extern "C" fn call_thunks(
@@ -728,30 +716,44 @@ unsafe extern "C" fn call_thunks(
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition> {
-    /*
     // env[0] are the thunks:
-    let thunks = Gc::from_raw(env.read());
+    let thunks = Gc::from_raw_inc_rc(env.read());
     // env[1] is the continuation:
-    let k: Closure = Gc::from_raw(env.add(1).read()).try_into().unwrap();
+    let k: Gc<Closure> = Gc::from_raw_inc_rc(env.add(1).read())
+        .read()
+        .clone()
+        .try_into()
+        .unwrap();
 
     // k determines the number of arguments:
-    let num_args = k.num_required_args;
-    let mut collected_args = if k.variadic {
-        Gc::from_raw(args.add(num_args).read())
-    } else {
-        Gc::new(Value::Null)
+    let collected_args = {
+        let k_read = k.read();
+        let num_args = k_read.num_required_args;
+
+        let mut collected_args = if k_read.variadic {
+            let var_arg = Gc::from_raw_inc_rc(args.add(num_args).read());
+            let var_read = var_arg.read();
+            var_read.clone()
+            // Value::from_raw_inc_rc( as u64)
+        } else {
+            Value::null()
+        };
+
+        for i in (0..num_args).rev() {
+            let arg = Gc::from_raw_inc_rc(args.add(i).read());
+            let arg_read = arg.read();
+            collected_args = Value::from((
+                arg_read.clone(),
+                collected_args,
+            ));
+        }
+
+        collected_args
     };
 
-    for i in (0..num_args).rev() {
-        collected_args = Gc::new(Value::Pair(
-            Gc::from_raw(args.add(i).read()),
-            collected_args,
-        ));
-    }
-
     let thunks = Closure::new(
-        Gc::from_raw(runtime),
-        vec![thunks, collected_args, Gc::new(Value::Closure(k))],
+        Gc::from_raw_inc_rc(runtime),
+        vec![thunks, Gc::new(collected_args), Gc::new(Value::from(k))],
         Vec::new(),
         FuncPtr::Continuation(call_thunks_pass_args),
         0,
@@ -760,7 +762,7 @@ unsafe extern "C" fn call_thunks(
     );
 
     let app = Application::new(
-        thunks,
+        Gc::new(thunks),
         Vec::new(),
         ExceptionHandler::from_ptr(exception_handler),
         dynamic_wind.as_ref().unwrap().clone(),
@@ -768,8 +770,6 @@ unsafe extern "C" fn call_thunks(
     );
 
     Box::into_raw(Box::new(Ok(app)))
-     */
-    todo!()
 }
 
 unsafe extern "C" fn call_thunks_pass_args(
@@ -780,22 +780,22 @@ unsafe extern "C" fn call_thunks_pass_args(
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition> {
-    /*
     // env[0] are the thunks:
-    let thunks = Gc::from_raw(env.read());
+    let thunks = Gc::from_raw_inc_rc(env.read());
     // env[1] are the collected arguments
-    let args = Gc::from_raw(env.add(1).read());
+    let args = Gc::from_raw_inc_rc(env.add(1).read());
     // env[2] is k1, the current continuation
-    let k = Gc::from_raw(env.add(2).read());
+    let k = Gc::from_raw_inc_rc(env.add(2).read());
 
     let thunks = thunks.read();
-    let app = match thunks.as_ref() {
-        Value::Pair(head_thunk, tail) => {
-            let head_thunk = head_thunk.read();
-            let head_thunk: &Closure = head_thunk.as_ref().try_into().unwrap();
+    let app = match &*thunks.unpacked_ref() {
+        // UnpackedValue::Pair(head_thunk, tail) => {
+        UnpackedValue::Pair(pair) => {
+            let lists::Pair(head_thunk, tail) = &*pair.read();
+            let head_thunk: Gc<Closure> = head_thunk.clone().try_into().unwrap();
             let cont = Closure::new(
-                Gc::from_raw(runtime),
-                vec![tail.clone(), args, k],
+                Gc::from_raw_inc_rc(runtime),
+                vec![Gc::new(tail.clone()), args, k],
                 Vec::new(),
                 FuncPtr::Continuation(call_thunks_pass_args),
                 0,
@@ -804,18 +804,19 @@ unsafe extern "C" fn call_thunks_pass_args(
             );
             Application::new(
                 head_thunk.clone(),
-                vec![Gc::new(Value::Closure(cont))],
+                vec![Value::from(cont)],
                 ExceptionHandler::from_ptr(exception_handler),
                 dynamic_wind.as_ref().unwrap().clone(),
                 None,
             )
         }
-        Value::Null => {
+        UnpackedValue::Null => {
             let mut collected_args = Vec::new();
+            let args = args.read();
             list_to_vec(&args, &mut collected_args);
             // collected_args.push(Gc::new(Value::Null));
             Application::new(
-                k.try_into().unwrap(),
+                k.read().clone().try_into().unwrap(),
                 collected_args,
                 ExceptionHandler::from_ptr(exception_handler),
                 dynamic_wind.as_ref().unwrap().clone(),
@@ -826,8 +827,6 @@ unsafe extern "C" fn call_thunks_pass_args(
     };
 
     Box::into_raw(Box::new(Ok(app)))
-     */
-    todo!()
 }
 
 unsafe extern "C" fn add(

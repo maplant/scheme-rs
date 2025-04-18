@@ -8,10 +8,10 @@ use crate::{
     registry::{BridgeFn, BridgeFnDebugInfo},
     runtime::{FunctionDebugInfoId, Runtime, IGNORE_FUNCTION},
     syntax::Span,
-    value::Value,
+    value::{UnpackedValue, Value, ValueType},
 };
 use futures::future::BoxFuture;
-use std::{borrow::Cow, collections::HashMap, fmt, ptr::null_mut};
+use std::{borrow::Cow, collections::HashMap, fmt, hash::Hash, ptr::null_mut};
 
 pub type Record = Vec<Gc<Value>>;
 
@@ -114,16 +114,20 @@ impl Closure {
         !self.is_continuation()
     }
 
-    /*
-    pub(crate) fn deep_clone(&mut self, cloned: &mut HashMap<Gc<Value>, Gc<Value>>) {
-        if self.is_user_func() {
-            return;
-        }
+    pub(crate) fn deep_clone(&mut self, cloned: &mut HashMap<ClonedContinuation, Value>) {
+        let new_env: Vec<_> = std::mem::take(&mut self.env)
+            .into_iter()
+            .map(|env| {
+                Gc::new(clone_continuation_env(&env.read(), cloned))
+            })
+            .collect();
+        self.env = new_env;
+        /*
         for captured in &mut self.env {
-            *captured = clone_continuation_env(captured, cloned);
+            *captured = Gc::new(clone_continuation_env(captured, cloned));
         }
+        */
     }
-    */
 
     pub async fn apply(
         &self,
@@ -189,8 +193,8 @@ impl Closure {
             let env = cells_to_vec_of_ptrs(&self.env);
             let globals = cells_to_vec_of_ptrs(&self.globals);
 
-            let args = values_to_vec_of_cells(&args);
-            let args = cells_to_vec_of_ptrs(&args);
+            let args_cells = values_to_vec_of_cells(&args);
+            let args = cells_to_vec_of_ptrs(&args_cells);
 
             // Finally: call the function pointer
             let app = match self.func {
@@ -221,7 +225,7 @@ impl Closure {
             };
 
             // Now we can drop the args
-            drop(args);
+            drop(args_cells);
             drop(cont);
 
             Ok(app?)
@@ -239,7 +243,7 @@ impl Gc<Closure> {
             _exception_handler: *mut GcInner<ExceptionHandler>,
             _dynamic_wind: *const DynamicWind,
         ) -> *mut Result<Application, Condition> {
-            let args = Gc::from_raw(args.read());
+            let args = Gc::from_raw_inc_rc(args.read());
             let args_read = args.read();
             crate::runtime::halt(Value::as_raw(&args_read) as i64)
         }
@@ -535,34 +539,51 @@ inventory::submit! {
     )
 }
 
-/*
 pub(crate) fn clone_continuation_env(
-    value: &Gc<Value>,
-    cloned: &mut HashMap<Gc<Value>, Gc<Value>>,
-) -> Gc<Value> {
-    if let Some(cloned) = cloned.get(value) {
+    value: &Value,
+    cloned: &mut HashMap<ClonedContinuation, Value>,
+) -> Value {
+    if value.type_of() != ValueType::Closure {
+        return value.clone();
+    }
+    let UnpackedValue::Closure(clos) = value.clone().unpack() else { unreachable!() };
+
+    if clos.read().is_user_func() {
+        return value.clone();
+    }
+    
+    let to_clone = ClonedContinuation(clos);
+    
+    if let Some(cloned) = cloned.get(&to_clone) {
         return cloned.clone();
     }
-    let val_ref = value.read();
-    match &*val_ref {
-        Value::Closure(clos) => {
-            let clos_cloned = Gc::new(Value::Closure(clos.clone()));
-            cloned.insert(value.clone(), clos_cloned.clone());
-            {
-                let mut clos_mut = clos_cloned.write();
-                let clos_cloned: &mut Closure = clos_mut.as_mut().try_into().unwrap();
-                clos_cloned.deep_clone(cloned);
-            }
-            clos_cloned
-        }
-        val => {
-            let val_cloned = Gc::new(val.clone());
-            cloned.insert(value.clone(), val_cloned.clone());
-            val_cloned
-        }
+    
+    let clos_cloned = Gc::new(to_clone.0.read().clone());
+    cloned.insert(to_clone, Value::from(clos_cloned.clone()));
+
+    { 
+        let mut clos_mut = clos_cloned.write();
+        clos_mut.deep_clone(cloned);
+    }
+
+    Value::from(clos_cloned)
+}
+
+pub(crate) struct ClonedContinuation(Gc<Closure>);
+
+impl Hash for ClonedContinuation {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        Gc::as_ptr(&self.0).hash(state);
     }
 }
-*/
+
+impl PartialEq for ClonedContinuation {
+    fn eq(&self, rhs: &Self) -> bool {
+        Gc::ptr_eq(&self.0, &rhs.0)
+    }
+}
+
+impl Eq for ClonedContinuation {}
 
 unsafe extern "C" fn call_consumer_with_values(
     _runtime: *mut GcInner<Runtime>,
@@ -684,7 +705,7 @@ inventory::submit! {
 
 #[derive(Clone, Debug, Default, Trace)]
 pub struct DynamicWind {
-    pub(crate) winders: Vec<(Closure, Closure)>,
+    pub(crate) winders: Vec<(Gc<Closure>, Gc<Closure>)>,
 }
 
 pub fn dynamic_wind<'a>(
