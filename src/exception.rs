@@ -27,7 +27,6 @@ impl Exception {
 // TODO: This shouldn't be the display impl for Exception, I don' t think.
 impl fmt::Display for Exception {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        /*
         const MAX_BACKTRACE_LEN: usize = 20;
         writeln!(f, "Uncaught exception: {}", self.obj)?;
         if !self.backtrace.is_empty() {
@@ -41,8 +40,6 @@ impl fmt::Display for Exception {
             }
         }
         Ok(())
-         */
-        todo!()
     }
 }
 

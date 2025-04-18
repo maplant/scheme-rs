@@ -115,7 +115,24 @@ impl Value {
     }
 
     pub fn datum_from_syntax(syntax: &Syntax) -> Self {
-        todo!()
+        match syntax {
+            Syntax::Null { .. } => Self::null(),
+            Syntax::List { list, .. } => {
+                let mut curr = Self::datum_from_syntax(list.last().unwrap());
+                for item in list[..list.len() - 1].iter().rev() {
+                    curr = Self::from(Gc::new(lists::Pair(Self::datum_from_syntax(item), curr)));
+                }
+                curr
+            }
+            Syntax::Vector { vector, .. } => {
+                Self::from(vector.iter().map(Self::datum_from_syntax).collect::<Vec<_>>())
+            }
+            Syntax::ByteVector { vector, .. } => Self::from(vector.clone()),
+            Syntax::Literal { literal, .. } => Self::from(literal.clone()),
+            Syntax::Identifier { ident, .. } => {
+                Self::new(UnpackedValue::Symbol(Arc::new(AlignedString(ident.name.clone()))))
+            }
+        }
     }
 
     pub fn type_of(&self) -> ValueType {
@@ -455,7 +472,7 @@ impl fmt::Display for UnpackedValue {
             Self::Condition(cond) => write!(f, "<{cond:?}>"),
             // Self::ExceptionHandler(_) => write!(f, "<exception-handler>"),
             */
-            _ => todo!(),
+            x => todo!("{}", x.type_name()),
         }
     }
 }
