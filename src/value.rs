@@ -460,19 +460,9 @@ impl fmt::Display for UnpackedValue {
             }
             Self::ByteVector(v) => vectors::display_vec("#u8(", v, f),
             Self::Closure(_) => write!(f, "<procedure>"),
-            /*
-            // TODO: This shouldn't be debug output.
-            Self::Syntax(syntax) => write!(f, "{:?}", syntax),
-            Self::Future(_) => write!(f, "<future>"),
-            // TODO: These two shouldn't be debug output either.
-            Self::Record(record) => write!(f, "<{record:?}>"),
-            Self::RecordType(record_type) => write!(f, "<{record_type:?}>"),
-            Self::Transformer(_) => write!(f, "<transformer>"),
-            Self::CapturedEnv(_) => write!(f, "<environment>"),
             Self::Condition(cond) => write!(f, "<{cond:?}>"),
-            // Self::ExceptionHandler(_) => write!(f, "<exception-handler>"),
-            */
-            x => todo!("{}", x.type_name()),
+            Self::Record(record) => write!(f, "<{record:?}>"),
+            Self::Syntax(syntax) => write!(f, "{:?}", syntax),
         }
     }
 }
@@ -500,12 +490,8 @@ impl fmt::Debug for UnpackedValue {
             Self::ByteVector(v) => vectors::display_vec("#u8(", v, f),
             Self::Syntax(syntax) => write!(f, "{:?}", syntax),
             Self::Closure(proc) => write!(f, "#<procedure {proc:?}>"),
-            // Self::Record(record) => write!(f, "<{record:?}>"),
-            // Self::Transformer(_) => write!(f, "<transformer>"),
-            // Self::CapturedEnv(_) => write!(f, "<environment>"),
-            // Self::Condition(cond) => write!(f, "<{cond:?}>"),
-            // Self::ExceptionHandler(_) => write!(f, "<exception-handler>"),
-            _ => todo!(),
+            Self::Condition(cond) => write!(f, "<{cond:?}>"),
+            Self::Record(record) => write!(f, "<{record:?}>"),
         }
     }
 }
@@ -645,6 +631,7 @@ impl Hash for ReflexiveValue {
             UnpackedValue::Record(r) => Gc::as_ptr(r).hash(state),
             UnpackedValue::Condition(c) => Gc::as_ptr(c).hash(state),
             // TODO: We can make this better by checking the list for equivalence reflexively.
+            // But if we do that, we need to make sure that constants cannot be set.
             UnpackedValue::Pair(p) => Gc::as_ptr(p).hash(state),
             // UnpackedValue::Cls
             _ => (),

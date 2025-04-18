@@ -22,7 +22,11 @@ use inkwell::{
     targets::{InitializationConfig, Target},
     AddressSpace, OptimizationLevel,
 };
-use std::{collections::{HashMap, HashSet}, mem::ManuallyDrop, ptr::null_mut};
+use std::{
+    collections::{HashMap, HashSet},
+    mem::ManuallyDrop,
+    ptr::null_mut,
+};
 use tokio::sync::{mpsc, oneshot};
 
 /// Scheme-rs Runtime
@@ -264,13 +268,13 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     // make_continuation
     let sig = ptr_type.fn_type(
         &[
-            ptr_type.into(), // Runtime
-            ptr_type.into(), // Continuation Ptr
-            ptr_type.into(), // Env
-            i32_type.into(), // Num envs
-            ptr_type.into(), // Globals
-            i32_type.into(), // Num globals
-            i32_type.into(), // Num required args
+            ptr_type.into(),  // Runtime
+            ptr_type.into(),  // Continuation Ptr
+            ptr_type.into(),  // Env
+            i32_type.into(),  // Num envs
+            ptr_type.into(),  // Globals
+            i32_type.into(),  // Num globals
+            i32_type.into(),  // Num required args
             bool_type.into(), // Variadic?
         ],
         false,
@@ -281,15 +285,15 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     // make_closure:
     let sig = ptr_type.fn_type(
         &[
-            ptr_type.into(), // Runtime
-            ptr_type.into(), // Closure Ptr
-            ptr_type.into(), // Env
-            i32_type.into(), // Num envs
-            ptr_type.into(), // Globals
-            i32_type.into(), // Num globals
-            i32_type.into(), // Num required args
+            ptr_type.into(),  // Runtime
+            ptr_type.into(),  // Closure Ptr
+            ptr_type.into(),  // Env
+            i32_type.into(),  // Num envs
+            ptr_type.into(),  // Globals
+            i32_type.into(),  // Num globals
+            i32_type.into(),  // Num required args
             bool_type.into(), // Variadic?
-            i32_type.into(), // Debug info 
+            i32_type.into(),  // Debug info
         ],
         false,
     );
@@ -400,11 +404,8 @@ unsafe extern "C" fn apply(
     dynamic_wind: *const DynamicWind,
     call_site_id: u32,
 ) -> *mut Result<Application, Condition> {
-    
     let args: Vec<_> = (0..num_args)
-        .map(|i|
-            Value::from_raw_inc_rc(args.add(i as usize).read() as u64)
-        )
+        .map(|i| Value::from_raw_inc_rc(args.add(i as usize).read() as u64))
         .collect();
 
     let op = match Value::from_raw_inc_rc(op as u64).unpack() {
@@ -416,7 +417,6 @@ unsafe extern "C" fn apply(
         }
     };
 
-    /*
     let call_site = (call_site_id != u32::MAX).then(|| {
         // No need to increment the ref count for runtime here, it is dropped
         // immediately.
@@ -424,15 +424,13 @@ unsafe extern "C" fn apply(
         let runtime_read = runtime.read();
         runtime_read.debug_info.call_sites[call_site_id as usize].clone()
     });
-     */
 
     let app = Application::new(
         op,
         args,
         ExceptionHandler::from_ptr(exception_handler),
         dynamic_wind.as_ref().unwrap().clone(),
-        // call_site,
-        None
+        call_site,
     );
 
     Box::into_raw(Box::new(Ok(app)))
@@ -567,11 +565,11 @@ unsafe extern "C" fn make_closure(
         num_required_args as usize,
         variadic,
         // Some(debug_info_id),
-        None
+        None,
     );
 
     let raw = Gc::into_raw(Gc::new(Value::from(closure)));
-    raw  
+    raw
 }
 
 /// Call a transformer with the given argument and return the expansion
@@ -859,7 +857,7 @@ unsafe extern "C" fn sub(
             error.write(Box::into_raw(Box::new(Err(condition))));
             Value::into_raw(Value::undefined()) as i64
         }
-    } 
+    }
 }
 
 unsafe extern "C" fn mul(

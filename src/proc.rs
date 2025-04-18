@@ -301,6 +301,7 @@ fn values_to_vec_of_cells(vals: &[Value]) -> Vec<Gc<Value>> {
 }
 
 /// An application of a function to a given set of values.
+#[derive(Debug)]
 pub struct Application {
     /// The operator being applied to. If None, we return the values to the Rust
     /// caller.
@@ -493,13 +494,11 @@ pub fn apply<'a>(
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {
-    /*
     Box::pin(async move {
         if rest_args.is_empty() {
             return Err(Condition::wrong_num_of_args(2, args.len()).into());
         }
-        let op = args[0].read();
-        let op: &Closure = op.as_ref().try_into()?;
+        let op: Gc<Closure> = args[0].clone().try_into()?;
         let (last, args) = rest_args.split_last().unwrap();
         let mut args = args.to_vec();
         list_to_vec(last, &mut args);
@@ -512,8 +511,6 @@ pub fn apply<'a>(
             None,
         ))
     })
-     */
-    todo!()
 }
 
 inventory::submit! {
@@ -525,7 +522,7 @@ inventory::submit! {
         apply,
         BridgeFnDebugInfo::new(
             "proc.rs",
-            468,
+            490,
             7,
             0,
             &[ "arg1", "args" ],
@@ -679,7 +676,7 @@ inventory::submit! {
     )
 }
 
-#[derive(Clone, Default, Trace)]
+#[derive(Clone, Debug, Default, Trace)]
 pub struct DynamicWind {
     pub(crate) winders: Vec<(Closure, Closure)>,
 }

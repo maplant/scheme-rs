@@ -172,7 +172,7 @@ impl fmt::Display for Frame {
 /// any condition that is raised - and the previous handler.
 // TODO: We need to determine include the dynamic extent with the exception handler
 // so that we can call the proper winders.
-#[derive(Clone, Trace)]
+#[derive(Clone, Debug, Trace)]
 pub struct ExceptionHandler {
     /// The previously installed handler. If the previously installed handler is
     /// None, we return the condition as an Error.

@@ -406,7 +406,6 @@ pub fn call_transformer<'a>(
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {
-    /*
     Box::pin(async move {
         let [captured_env, trans, arg] = args else {
             panic!("wrong args");
@@ -415,12 +414,9 @@ pub fn call_transformer<'a>(
         // Fetch a runtime from the continuation. It doesn't really matter
         // _which_ runtime we use, in fact we could create a new one, but it
         // behooves us to use one that already exists.
-        let cont = {
-            let cont = cont.read();
-            let cont: &Closure = cont.as_ref().try_into()?;
-            cont.clone()
-        };
+        let cont: Gc<Closure> = cont.clone().try_into()?;
 
+        /*
         let expanded = {
             let trans_read = trans.read();
             let trans: &Transformer = trans_read.as_ref().try_into().unwrap();
@@ -430,13 +426,17 @@ pub fn call_transformer<'a>(
             // Expand the argument:
             trans.expand(&arg).ok_or_else(Condition::syntax_error)?
         };
+        */
 
+        /*
         let captured_env = {
             let captured_env_read = captured_env.read();
             let captured_env: &CapturedEnv = captured_env_read.as_ref().try_into().unwrap();
             captured_env.clone()
         };
+        */
 
+        /*
         let mut collected_env = IndexMap::new();
         for (i, local) in captured_env.captured.into_iter().enumerate() {
             collected_env.insert(local, env[i].clone());
@@ -462,7 +462,7 @@ pub fn call_transformer<'a>(
         );
 
         Ok(application)
+         */
+        Ok(todo!())
     })
-     */
-    todo!()
 }

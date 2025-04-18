@@ -24,12 +24,6 @@ impl Cps {
         uses_cache: &mut HashMap<Local, HashMap<Local, usize>>,
     ) -> Self {
         match self {
-            /*
-            Cps::AllocCell(cell, cexp) => Cps::AllocCell(
-                cell,
-                Box::new(cexp.beta_reduction(single_use_functions, uses_cache)),
-            ),
-            */
             Cps::PrimOp(prim_op, values, result, cexp) => Cps::PrimOp(
                 prim_op,
                 values,
