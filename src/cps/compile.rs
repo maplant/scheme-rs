@@ -1,7 +1,7 @@
 use std::iter::once;
 
 use super::*;
-use crate::{ast::*, gc::Gc, syntax::Identifier, value::Value as RuntimeValue};
+use crate::{ast::*, value::Value as RuntimeValue};
 use either::Either;
 
 /// There's not too much reason that this is a trait, other than I wanted to
@@ -149,7 +149,6 @@ impl Compile for Var {
     fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
         let k1 = Local::gensym();
         let k2 = Local::gensym();
-        let read_into = Local::gensym();
         Cps::Closure {
             args: ClosureArgs::new(vec![k2], false, None),
             body: Box::new(Cps::App(
@@ -157,18 +156,6 @@ impl Compile for Var {
                 vec![Value::from(self.clone())],
                 None,
             )),
-            /*
-            body: Box::new(Cps::PrimOp(
-                PrimOp::ReadCell,
-                vec![Value::from(self.clone())],
-                read_into,
-                Box::new(Cps::App(
-                    Value::from(k2),
-                    vec![Value::from(read_into)],
-                    None,
-                )),
-            )),
-            */
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
             debug: None,

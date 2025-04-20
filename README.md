@@ -67,14 +67,17 @@ $1 = (1 2 3 4 5 6 7 8 9 10)
 
 ### Creating Builtin Functions:
 
-Scheme-rs provides a `bridge` function attribute macro to allow you to easily define builtins. For example,
-here is the definition of the `number?` builtin in the source code. Notice that this function is async:
+Scheme-rs provides a `bridge` function attribute macro to allow you to easily define builtins. Here is 
+an example of a function that reads a file into a string using tokio's `read_to_string` function:
 
 ```rust
-#[bridge(name = "number?", lib = "(base)")]
-pub async fn is_number(arg: &Gc<Value>) -> Result<Gc<Value>, Exception> {
-    let arg = arg.read();
-    Ok(Gc::new(Value::Boolean(matches!(&*arg, Value::Number(_)))))
+#[bridge(name = "read-file-to-string", lib = "(base)")]
+pub async fn read_file(file: &Value) -> Result<Vec<Value>, Condition> {
+    let file = file.to_string();
+    let contents = tokio::fs::read_to_string(&file)
+        .await
+        .map_err(|err| Condition::error(format!("failed to read file {file}: {err:?}")))?;
+    Ok(vec![Value::from(contents)])
 }
 ```
 

@@ -13,7 +13,7 @@ use tokio::{
     task::JoinHandle,
 };
 
-use super::{Color, GcInner, OpaqueGc, OpaqueGcPtr, Trace};
+use super::{Color, OpaqueGc, OpaqueGcPtr, Trace};
 
 #[derive(Copy, Clone, Debug)]
 pub struct Mutation {

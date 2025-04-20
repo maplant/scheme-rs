@@ -290,10 +290,10 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
     fn value_codegen(&self, value: &Value) -> BasicValueEnum<'ctx> {
         match value {
             Value::Var(var) => {
-                let cell = match *self.rebinds.fetch_bind(var) {
-                    read @ BasicValueEnum::IntValue(_) => return read,
-                    x => x,
-                };
+                let cell = *self.rebinds.fetch_bind(var);
+                if cell.is_int_value() {
+                    return cell;
+                }
                 let read_cell = self.module.get_function("read_cell").unwrap();
                 self.builder
                     .build_call(read_cell, &[cell.into()], "read_value")
@@ -458,7 +458,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         let is_undef = self.builder.build_int_compare(
             IntPredicate::EQ,
             result_val.into_int_value(),
-            undef.into(),
+            undef,
             "is_undef",
         )?;
         // let is_undef = self.builder.build_is_null(result_val, "is_undef")?;
@@ -791,7 +791,8 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 )?
             };
             let Value::Var(var) = var else { unreachable!() };
-            let val: BasicValueEnum = (*self.rebinds.fetch_bind(&var)).into();
+            let val = *self.rebinds.fetch_bind(var);
+            assert!(val.is_pointer_value());
             self.builder.build_store(ep, val)?;
         }
 
@@ -844,7 +845,8 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                     "alloca_elem",
                 )?
             };
-            let val: BasicValueEnum = (*self.rebinds.fetch_bind(&Var::Local(*var))).into();
+            let val = *self.rebinds.fetch_bind(&Var::Local(*var));
+            assert!(val.is_pointer_value());
             self.builder.build_store(ep, val)?;
         }
 
@@ -862,7 +864,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                     "alloca_elem",
                 )?
             };
-            let val: BasicValueEnum = (*self.rebinds.fetch_bind(&Var::Global(var.clone()))).into();
+            let val = *self.rebinds.fetch_bind(&Var::Global(var.clone()));
             self.builder.build_store(ep, val)?;
         }
 

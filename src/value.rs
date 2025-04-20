@@ -13,7 +13,7 @@ use crate::{
     syntax::Syntax,
     vectors,
 };
-use futures::future::{BoxFuture, Shared};
+// use futures::future::{BoxFuture, Shared};
 use std::{
     fmt, hash::Hash, io::Write, marker::PhantomData, mem::ManuallyDrop, ops::Deref, sync::Arc,
 };
@@ -238,7 +238,7 @@ impl Value {
 
 impl PartialEq for Value {
     fn eq(&self, rhs: &Self) -> bool {
-        &*self.unpacked_ref() == &*rhs.unpacked_ref()
+        *self.unpacked_ref() == *rhs.unpacked_ref()
     }
 }
 
@@ -744,24 +744,15 @@ pub async fn boolean_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(arg.type_of() == ValueType::Boolean)])
 }
 
-/*
 #[bridge(name = "boolean=?", lib = "(base)")]
-pub async fn boolean_eq_pred(
-    a: &Gc<Value>,
-    args: &[Gc<Value>],
-) -> Result<Vec<Gc<Value>>, Condition> {
-    let a_val = &*a.read();
-
-    let result = match a_val {
-        Value::Boolean(_) => {
-            let a_bool = a_val;
-            args.iter().all(|arg| a_bool.eqv(&arg.read()))
-        }
-        _ => false,
+pub async fn boolean_eq_pred(a: &Value, args: &[Value]) -> Result<Vec<Value>, Condition> {
+    let res = if a.type_of() == ValueType::Boolean {
+        args.iter().all(|arg| arg == a)
+    } else {
+        false
     };
-    Ok(vec![Gc::new(Value::Boolean(result))])
+    Ok(vec![Value::from(res)])
 }
-*/
 
 #[bridge(name = "symbol?", lib = "(base)")]
 pub async fn symbol_pred(arg: &Value) -> Result<Vec<Value>, Condition> {

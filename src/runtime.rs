@@ -26,7 +26,6 @@ use inkwell::{
 use std::{
     collections::{HashMap, HashSet},
     mem::ManuallyDrop,
-    ptr::null_mut,
 };
 use tokio::sync::{mpsc, oneshot};
 

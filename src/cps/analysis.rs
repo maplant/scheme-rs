@@ -74,7 +74,7 @@ impl Cps {
     // TODO: Have this function return a Cow<'_, HashSet<Local>>
     pub(super) fn globals(&self) -> HashSet<Global> {
         match self {
-            Cps::PrimOp(PrimOp::AllocCell, _, s_, cexpr) => cexpr.globals(),
+            Cps::PrimOp(PrimOp::AllocCell, _, _, cexpr) => cexpr.globals(),
             Cps::PrimOp(_, args, _, cexpr) => cexpr
                 .globals()
                 .union(&values_to_globals(args))

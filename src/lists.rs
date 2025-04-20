@@ -197,14 +197,10 @@ pub async fn length(arg: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(Number::from(length))])
 }
 
-/*
 #[bridge(name = "list->vector", lib = "(base)")]
-pub async fn list_to_vector(list: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
+pub async fn list_to_vector(list: &Value) -> Result<Vec<Value>, Condition> {
     let mut vec = Vec::new();
     list_to_vec(list, &mut vec);
 
-    Ok(vec![Gc::new(Value::Vector(
-        vec.into_iter().map(|i| i.read().as_ref().clone()).collect(),
-    ))])
+    Ok(vec![Value::from(vec)])
 }
-*/

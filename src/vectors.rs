@@ -4,6 +4,7 @@ use crate::{
     lists::slice_to_list,
     num::{Number, NumberToUsizeError},
     registry::bridge,
+    strings,
     value::Value,
 };
 use malachite::Integer;
@@ -11,6 +12,7 @@ use std::{
     clone::Clone,
     fmt,
     ops::{Deref, DerefMut, Range},
+    sync::Arc,
 };
 
 /// A vector aligned to 16 bytes.
@@ -62,7 +64,6 @@ pub fn display_vec<T: fmt::Display>(
     write!(f, ")")
 }
 
-/*
 fn try_make_range(start: usize, end: usize) -> Result<Range<usize>, Condition> {
     if end < start {
         Err(Condition::error(format!(
@@ -73,9 +74,11 @@ fn try_make_range(start: usize, end: usize) -> Result<Range<usize>, Condition> {
         Ok(start..end)
     }
 }
-fn try_to_usize(n: &Gc<Value>) -> Result<usize, Condition> {
-    n.read().as_ref().try_into().and_then(|n: &Number| {
-        n.try_into()
+
+fn try_to_usize(n: &Value) -> Result<usize, Condition> {
+    n.clone().try_into().and_then(|n: Arc<Number>| {
+        n.as_ref()
+            .try_into()
             .map_err(<NumberToUsizeError as Into<Condition>>::into)
     })
 }
@@ -83,14 +86,15 @@ fn try_to_usize(n: &Gc<Value>) -> Result<usize, Condition> {
 trait Indexer {
     type Collection;
 
-    fn get_len(&self, _: &Self::Collection) -> usize;
-    fn get_range(&self, _: &Self::Collection, _: Range<usize>) -> Self::Collection;
-    fn try_get<'a>(&self, _: &'a Value) -> Result<&'a Self::Collection, Condition>;
+    fn get_len(_: &Self::Collection) -> usize;
 
-    fn index(&self, from: &Gc<Value>, range: &[Gc<Value>]) -> Result<Self::Collection, Condition> {
-        let from = from.read();
-        let collection = self.try_get(&from)?;
-        let len = self.get_len(collection);
+    fn get_range(_: &Self::Collection, _: Range<usize>) -> Self::Collection;
+
+    fn try_get(_: &Value) -> Result<Self::Collection, Condition>;
+
+    fn index(from: &Value, range: &[Value]) -> Result<Self::Collection, Condition> {
+        let collection = Self::try_get(from)?;
+        let len = Self::get_len(&collection);
 
         let start: usize = range.first().map(try_to_usize).transpose()?.unwrap_or(0);
         let end: usize = range.get(1).map(try_to_usize).transpose()?.unwrap_or(len);
@@ -100,189 +104,154 @@ trait Indexer {
             return Err(Condition::invalid_range(range, len));
         }
 
-        Ok(self.get_range(collection, range))
+        Ok(Self::get_range(&collection, range))
     }
 }
 
 struct StringIndexer;
-impl Indexer for StringIndexer {
-    type Collection = String;
 
-    fn get_len(&self, string: &String) -> usize {
+impl Indexer for StringIndexer {
+    type Collection = Arc<strings::AlignedString>;
+
+    fn get_len(string: &Self::Collection) -> usize {
         string.chars().count()
     }
-    fn get_range(&self, string: &String, range: Range<usize>) -> String {
-        string
+
+    fn get_range(string: &Self::Collection, range: Range<usize>) -> Self::Collection {
+        let substr: String = string
             .chars()
             .skip(range.start)
             .take(range.end - range.start)
-            .collect()
+            .collect();
+        Arc::new(strings::AlignedString::new(substr))
     }
-    fn try_get<'a>(&self, val: &'a Value) -> Result<&'a String, Condition> {
-        val.try_into()
+
+    fn try_get(val: &Value) -> Result<Self::Collection, Condition> {
+        val.clone().try_into()
     }
 }
 
 struct VectorIndexer;
-impl Indexer for VectorIndexer {
-    type Collection = Vec<Value>;
 
-    fn get_len(&self, vec: &Vec<Value>) -> usize {
-        vec.len()
+impl Indexer for VectorIndexer {
+    type Collection = Gc<AlignedVector<Value>>;
+
+    fn get_len(vec: &Self::Collection) -> usize {
+        vec.read().len()
     }
-    fn get_range(&self, vec: &Vec<Value>, range: Range<usize>) -> Self::Collection {
-        vec.iter()
+
+    fn get_range(vec: &Self::Collection, range: Range<usize>) -> Self::Collection {
+        let subvec: Vec<Value> = vec
+            .read()
+            .iter()
             .skip(range.start)
             .take(range.end - range.start)
             .cloned()
-            .collect()
+            .collect();
+        Gc::new(AlignedVector::new(subvec))
     }
-    fn try_get<'a>(&self, val: &'a Value) -> Result<&'a Vec<Value>, Condition> {
-        val.try_into()
+
+    fn try_get(val: &Value) -> Result<Self::Collection, Condition> {
+        val.clone().try_into()
     }
 }
-*/
 
-/*
 #[bridge(name = "make-vector", lib = "(base)")]
-pub async fn make_vector(n: &Gc<Value>, with: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Condition> {
-    let n = n.read();
-    let n: &Number = n.as_ref().try_into()?;
-    let n: usize = n.try_into()?;
+pub async fn make_vector(n: &Value, with: &[Value]) -> Result<Vec<Value>, Condition> {
+    let n: Arc<Number> = n.clone().try_into()?;
+    let n: usize = n.as_ref().try_into()?;
 
-    Ok(vec![Gc::new(Value::Vector(
+    Ok(vec![Value::from(
         (0..n)
-            .map(|_| {
-                with.first()
-                    .map(|with| {
-                        let with = with.read();
-                        with.clone()
-                    })
-                    .unwrap_or_else(|| Value::Null)
-            })
+            .map(|_| with.first().cloned().unwrap_or_else(Value::null))
             .collect::<Vec<_>>(),
-    ))])
-}
-
-#[bridge(name = "vector", lib = "(base)")]
-pub async fn vector(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Condition> {
-    Ok(vec![Gc::new(Value::Vector(
-        args.iter()
-            .map(Gc::read)
-            .map(|guard| guard.as_ref().clone())
-            .collect(),
-    ))])
-}
-
-#[bridge(name = "vector-ref", lib = "(base)")]
-pub async fn vector_ref(vec: &Gc<Value>, index: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
-    let vec = vec.read();
-    let vec: &Vec<Value> = vec.as_ref().try_into()?;
-
-    let index: usize = try_to_usize(index)?;
-
-    Ok(vec![Gc::new(
-        vec.get(index)
-            .ok_or_else(|| Condition::invalid_index(index, vec.len()))?
-            .clone(),
     )])
 }
 
-#[bridge(name = "vector-length", lib = "(base)")]
-pub async fn vector_len(vec: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
-    let vec = vec.read();
-    let vec: &Vec<Value> = vec.as_ref().try_into()?;
+#[bridge(name = "vector", lib = "(base)")]
+pub async fn vector(args: &[Value]) -> Result<Vec<Value>, Condition> {
+    Ok(vec![Value::from(args.to_vec())])
+}
 
-    Ok(vec![Gc::new(Value::Number(
-        match i64::try_from(vec.len()) {
-            Ok(len) => Number::FixedInteger(len),
-            Err(_) => Number::BigInteger(Integer::from(vec.len())),
-        },
-    ))])
+#[bridge(name = "vector-ref", lib = "(base)")]
+pub async fn vector_ref(vec: &Value, index: &Value) -> Result<Vec<Value>, Condition> {
+    let vec: Gc<AlignedVector<Value>> = vec.clone().try_into()?;
+    let index: usize = try_to_usize(index)?;
+    let vec_read = vec.read();
+
+    Ok(vec![vec_read
+        .get(index)
+        .ok_or_else(|| Condition::invalid_index(index, vec_read.len()))?
+        .clone()])
+}
+
+#[bridge(name = "vector-length", lib = "(base)")]
+pub async fn vector_len(vec: &Value) -> Result<Vec<Value>, Condition> {
+    let vec: Gc<AlignedVector<Value>> = vec.clone().try_into()?;
+    let len = vec.read().len();
+
+    Ok(vec![Value::from(match i64::try_from(len) {
+        Ok(len) => Number::FixedInteger(len),
+        Err(_) => Number::BigInteger(Integer::from(len)),
+    })])
 }
 
 #[bridge(name = "vector-set!", lib = "(base)")]
-pub async fn vector_set(
-    vec: &Gc<Value>,
-    index: &Gc<Value>,
-    with: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, Condition> {
-    let mut vec = vec.write();
-    let vec: &mut Vec<Value> = vec.as_mut().try_into()?;
-    let vec_len = vec.len();
+pub async fn vector_set(vec: &Value, index: &Value, with: &Value) -> Result<Vec<Value>, Condition> {
+    let vec: Gc<AlignedVector<Value>> = vec.clone().try_into()?;
+    let vec_len = vec.read().len();
 
-    let index = index.read();
-    let index: &Number = index.as_ref().try_into()?;
-    let index: usize = index.try_into()?;
+    let index: usize = try_to_usize(index)?;
 
-    let index = vec
+    *vec.write()
         .get_mut(index)
-        .ok_or_else(|| Condition::invalid_index(index, vec_len))?;
-    *index = with.read().clone();
+        .ok_or_else(|| Condition::invalid_index(index, vec_len))? = with.clone();
 
     Ok(vec![])
 }
 
 #[bridge(name = "vector->list", lib = "(base)")]
-pub async fn vector_to_list(
-    from: &Gc<Value>,
-    range: &[Gc<Value>],
-) -> Result<Vec<Gc<Value>>, Condition> {
-    let vec: Vec<Gc<Value>> = VectorIndexer
-        .index(from, range)?
-        .into_iter()
-        .map(Gc::new)
-        .collect();
-    Ok(vec![Gc::new(slice_to_list(vec.as_slice()))])
+pub async fn vector_to_list(from: &Value, range: &[Value]) -> Result<Vec<Value>, Condition> {
+    let vec = VectorIndexer::index(from, range)?;
+    let vec_read = vec.read();
+    Ok(vec![slice_to_list(&vec_read)])
 }
 
 #[bridge(name = "vector->string", lib = "(base)")]
-pub async fn vector_to_string(
-    from: &Gc<Value>,
-    range: &[Gc<Value>],
-) -> Result<Vec<Gc<Value>>, Condition> {
-    Ok(vec![Gc::new(Value::String(
-        VectorIndexer
-            .index(from, range)?
-            .into_iter()
+pub async fn vector_to_string(from: &Value, range: &[Value]) -> Result<Vec<Value>, Condition> {
+    let vec = VectorIndexer::index(from, range)?;
+    let vec_read = vec.read();
+    Ok(vec![Value::from(
+        vec_read
+            .iter()
+            .cloned()
             .map(<Value as TryInto<char>>::try_into)
             .collect::<Result<String, _>>()?,
-    ))])
+    )])
 }
 
 #[bridge(name = "string->vector", lib = "(base)")]
-pub async fn string_to_vector(
-    from: &Gc<Value>,
-    range: &[Gc<Value>],
-) -> Result<Vec<Gc<Value>>, Condition> {
-    Ok(vec![Gc::new(Value::Vector(
-        StringIndexer
-            .index(from, range)?
-            .chars()
-            .map(Value::Character)
-            .collect(),
-    ))])
+pub async fn string_to_vector(from: &Value, range: &[Value]) -> Result<Vec<Value>, Condition> {
+    let str = StringIndexer::index(from, range)?;
+    Ok(vec![Value::from(
+        str.chars().map(Value::from).collect::<Vec<_>>(),
+    )])
 }
 
 #[bridge(name = "vector-copy", lib = "(base)")]
-pub async fn vector_copy(
-    from: &Gc<Value>,
-    range: &[Gc<Value>],
-) -> Result<Vec<Gc<Value>>, Condition> {
-    Ok(vec![Gc::new(Value::Vector(
-        VectorIndexer.index(from, range)?,
-    ))])
+pub async fn vector_copy(from: &Value, range: &[Value]) -> Result<Vec<Value>, Condition> {
+    Ok(vec![Value::from(VectorIndexer::index(from, range)?)])
 }
 
 #[bridge(name = "vector-copy!", lib = "(base)")]
 pub async fn vector_copy_to(
-    to: &Gc<Value>,
-    at: &Gc<Value>,
-    from: &Gc<Value>,
-    range: &[Gc<Value>],
-) -> Result<Vec<Gc<Value>>, Condition> {
+    to: &Value,
+    at: &Value,
+    from: &Value,
+    range: &[Value],
+) -> Result<Vec<Value>, Condition> {
+    let to: Gc<AlignedVector<Value>> = to.clone().try_into()?;
     let mut to = to.write();
-    let to: &mut Vec<Value> = to.as_mut().try_into()?;
 
     let at: usize = try_to_usize(at)?;
 
@@ -290,18 +259,19 @@ pub async fn vector_copy_to(
         return Err(Condition::invalid_index(at, to.len()));
     }
 
-    let copies = VectorIndexer.index(from, range)?;
+    let copies = VectorIndexer::index(from, range)?;
+    let copies = copies.read();
     if copies.len() + at >= to.len() {
         return Err(Condition::invalid_range(at..at + copies.len(), to.len()));
     }
 
     copies
-        .into_iter()
+        .iter()
         .enumerate()
         .map(|(i, copy)| (i + at, copy))
         .for_each(|(i, copy)| {
             if let Some(i) = to.get_mut(i) {
-                *i = copy;
+                *i = copy.clone();
             }
         });
 
@@ -309,33 +279,34 @@ pub async fn vector_copy_to(
 }
 
 #[bridge(name = "vector-append", lib = "(base)")]
-pub async fn vector_append(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Condition> {
+pub async fn vector_append(args: &[Value]) -> Result<Vec<Value>, Condition> {
     if args.is_empty() {
         return Err(Condition::wrong_num_of_variadic_args(1..usize::MAX, 0));
     }
 
-    Ok(vec![Gc::new(Value::Vector(
+    Ok(vec![Value::from(
         args.iter()
-            .flat_map(|arg| {
-                <&Value as TryInto<&Vec<Value>>>::try_into(arg.read().as_ref())
-                    .into_iter()
-                    .cloned()
-                    .collect::<Vec<_>>()
+            .map(|arg| {
+                let vec: Gc<AlignedVector<Value>> = arg.clone().try_into()?;
+                let vec_read = vec.read();
+                Ok(vec_read.iter().cloned().collect::<Vec<_>>())
             })
+            .collect::<Result<Vec<_>, Condition>>()?
+            .into_iter()
             .flatten()
             .collect::<Vec<_>>(),
-    ))])
+    )])
 }
 
 #[bridge(name = "vector-fill!", lib = "(base)")]
 pub async fn vector_fill(
-    vector: &Gc<Value>,
-    with: &Gc<Value>,
-    start: &Gc<Value>,
-    end: &[Gc<Value>],
-) -> Result<Vec<Gc<Value>>, Condition> {
+    vector: &Value,
+    with: &Value,
+    start: &Value,
+    end: &[Value],
+) -> Result<Vec<Value>, Condition> {
+    let vector: Gc<AlignedVector<Value>> = vector.clone().try_into()?;
     let mut vector = vector.write();
-    let vector: &mut Vec<Value> = vector.as_mut().try_into()?;
 
     let start: usize = try_to_usize(start)?;
     let end = match end.first() {
@@ -350,10 +321,9 @@ pub async fn vector_fill(
 
     range.for_each(|i| {
         if let Some(slot) = vector.get_mut(i) {
-            *slot = with.read().as_ref().clone();
+            *slot = with.clone()
         }
     });
 
     Ok(vec![])
 }
-*/

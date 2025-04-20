@@ -656,10 +656,7 @@ pub fn call_with_values<'a>(
 
         let call_consumer_closure = Closure::new(
             producer.read().runtime.clone(),
-            vec![
-                Gc::new(Value::from(consumer)),
-                Gc::new(Value::from(cont.clone())),
-            ],
+            vec![Gc::new(Value::from(consumer)), Gc::new(cont.clone())],
             Vec::new(),
             FuncPtr::Continuation(call_consumer_with_values),
             num_required_args,

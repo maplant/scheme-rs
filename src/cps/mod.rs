@@ -13,7 +13,6 @@
 //!   directly to machine code.
 
 use crate::{
-    ast::Literal,
     env::{Global, Local, Var},
     gc::Trace,
     runtime::{CallSiteId, FunctionDebugInfoId},

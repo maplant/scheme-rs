@@ -106,7 +106,7 @@ impl<T: Trace> Gc<T> {
         dec_rc(ptr);
     }
 
-    /// Create a new Gc from the raw pointer. Does not decrement the reference
+    /// Create a new Gc from the raw pointer. Does not increment the reference
     /// count.
     pub(crate) unsafe fn from_raw(ptr: *mut GcInner<T>) -> Self {
         let ptr = NonNull::new(ptr).unwrap();

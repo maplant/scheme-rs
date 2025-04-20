@@ -232,7 +232,7 @@ impl PartialOrd for Number {
 macro_rules! impl_checked_op_for_number {
     ($trait:ident, $unchecked:ident, $checked:ident) => {
         impl Number {
-            pub fn $checked(&self, rhs: &Number) -> Result<Number, ArithmeticError> {
+            pub fn $checked(&self, rhs: &Number) -> Result<Number, Box<ArithmeticError>> {
                 Ok(match (&self, rhs) {
                     (Self::FixedInteger(l), Self::FixedInteger(r)) => {
                         l.$checked(*r).map(Self::FixedInteger).unwrap_or_else(|| {
@@ -286,11 +286,11 @@ macro_rules! impl_checked_op_for_number {
                     | (Self::Complex(complex), Self::FixedInteger(fixed_int)) => Self::Complex(
                         Complex64::from_i64(*fixed_int)
                             .ok_or_else(|| {
-                                ArithmeticError::Overflow(
+                                Box::new(ArithmeticError::Overflow(
                                     Operation::$trait,
                                     self.clone(),
                                     rhs.clone(),
-                                )
+                                ))
                             })?
                             .$unchecked(complex),
                     ),
@@ -314,15 +314,19 @@ macro_rules! impl_checked_op_for_number {
         }
     };
 }
+
 impl_checked_op_for_number!(Add, add, checked_add);
 impl_checked_op_for_number!(Sub, sub, checked_sub);
 impl_checked_op_for_number!(Mul, mul, checked_mul);
+
 impl Number {
-    pub fn checked_div(&self, rhs: &Self) -> Result<Self, ArithmeticError> {
+    pub fn checked_div(&self, rhs: &Self) -> Result<Self, Box<ArithmeticError>> {
         let overflow = || ArithmeticError::Overflow(Operation::Div, self.clone(), rhs.clone());
 
         Ok(match (self, rhs) {
-            (l, r) if l.is_zero() || r.is_zero() => return Err(ArithmeticError::DivisionByZero),
+            (l, r) if l.is_zero() || r.is_zero() => {
+                return Err(Box::new(ArithmeticError::DivisionByZero))
+            }
 
             (Self::FixedInteger(l), Self::FixedInteger(r)) => {
                 Self::Rational(Rational::from(*l) / Rational::from(*r))
@@ -402,6 +406,7 @@ pub enum Operation {
     Mul,
     Div,
 }
+
 impl Display for Operation {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(
@@ -440,9 +445,9 @@ impl Display for ArithmeticError {
     }
 }
 
-impl From<RationalFromPrimitiveFloatError> for ArithmeticError {
+impl From<RationalFromPrimitiveFloatError> for Box<ArithmeticError> {
     fn from(err: RationalFromPrimitiveFloatError) -> Self {
-        Self::RationalFromPrimitiveFloat(err)
+        Box::new(ArithmeticError::RationalFromPrimitiveFloat(err))
     }
 }
 
