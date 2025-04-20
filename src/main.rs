@@ -113,7 +113,7 @@ async fn compile_and_run_str<'e>(
     runtime: &Gc<Runtime>,
     env: &Environment,
     input: &'e str,
-) -> Result<Vec<Gc<Value>>, EvalError<'e>> {
+) -> Result<Vec<Value>, EvalError<'e>> {
     let sexprs = Syntax::from_str(input, None)?;
     let mut output = Vec::new();
     for sexpr in sexprs {

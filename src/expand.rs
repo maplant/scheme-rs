@@ -1,18 +1,18 @@
 use crate::{
     ast::{Expression, Literal},
     cps::Compile,
-    env::CapturedEnv,
     exception::{Condition, ExceptionHandler},
     gc::{Gc, Trace},
     proc::{Application, Closure, DynamicWind},
     syntax::{Identifier, Span, Syntax},
-    value::Value,
+    value::{OtherData, Value},
 };
 use futures::future::BoxFuture;
 use indexmap::IndexMap;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 #[derive(Clone, Trace, Debug)]
+#[repr(align(16))]
 pub struct Transformer {
     pub rules: Vec<SyntaxRule>,
     pub is_variable_transformer: bool,
@@ -399,59 +399,72 @@ pub async fn make_variable_transformer(
  */
 
 pub fn call_transformer<'a>(
-    args: &'a [Gc<Value>],
+    args: &'a [Value],
+    _rest_args: &'a [Value],
+    cont: &'a Value,
     env: &'a [Gc<Value>],
-    cont: &'a Gc<Value>,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
-) -> BoxFuture<'a, Result<Application, Gc<Value>>> {
+) -> BoxFuture<'a, Result<Application, Value>> {
     Box::pin(async move {
-        let [captured_env, trans, arg] = args else {
+        let [captured_env, transformer, arg] = args else {
             panic!("wrong args");
         };
+
+        let cont: Gc<Closure> = cont.clone().try_into()?;
 
         // Fetch a runtime from the continuation. It doesn't really matter
         // _which_ runtime we use, in fact we could create a new one, but it
         // behooves us to use one that already exists.
-        let cont = {
-            let cont = cont.read();
-            let cont: &Closure = cont.as_ref().try_into()?;
-            cont.clone()
-        };
-
-        let expanded = {
-            let trans_read = trans.read();
-            let trans: &Transformer = trans_read.as_ref().try_into().unwrap();
-
-            let arg = Syntax::from_datum(&BTreeSet::default(), arg);
-
-            // Expand the argument:
-            trans.expand(&arg).ok_or_else(Condition::syntax_error)?
+        let runtime = {
+            let cont_read = cont.read();
+            cont_read.runtime.clone()
         };
 
         let captured_env = {
+            let captured_env: Gc<OtherData> = captured_env.clone().try_into()?;
             let captured_env_read = captured_env.read();
-            let captured_env: &CapturedEnv = captured_env_read.as_ref().try_into().unwrap();
-            captured_env.clone()
+            let OtherData::CapturedEnv(env) = captured_env_read.as_ref() else {
+                unreachable!()
+            };
+            env.clone()
         };
+
+        let transformer = {
+            let transformer: Gc<OtherData> = transformer.clone().try_into()?;
+            let transformer_read = transformer.read();
+            let OtherData::Transformer(trans) = transformer_read.as_ref() else {
+                unreachable!()
+            };
+            trans.clone()
+        };
+
+        // Expand the input:
+
+        let syn = Syntax::from_datum(&BTreeSet::default(), arg.clone());
+        let expanded = transformer
+            .expand(&syn)
+            .ok_or_else(Condition::syntax_error)?;
+
+        // Collect the environment:
 
         let mut collected_env = IndexMap::new();
         for (i, local) in captured_env.captured.into_iter().enumerate() {
             collected_env.insert(local, env[i].clone());
         }
 
-        // Parse the expression in the captured environment:
-        let parsed = Expression::parse(&cont.runtime, expanded, &captured_env.env)
+        // Parse and compile the expanded input in the captured environment:
+        // TODO: Get rid of these unwraps
+        let parsed = Expression::parse(&runtime, expanded, &captured_env.env)
             .await
             .unwrap();
         let cps_expr = parsed.compile_top_level();
-        let compiled = cont
-            .runtime
+        let compiled = runtime
             .compile_expr_with_env(cps_expr, collected_env)
             .await
             .unwrap();
         let transformer_result = compiled.call(&[]).await?;
-        let application = Application::new(
+        let app = Application::new(
             cont,
             transformer_result,
             exception_handler.clone(),
@@ -459,6 +472,6 @@ pub fn call_transformer<'a>(
             None,
         );
 
-        Ok(application)
+        Ok(app)
     })
 }

@@ -1,8 +1,8 @@
 use crate::{
     exception::Condition,
-    gc::{Gc, Trace},
+    gc::Trace,
     registry::bridge,
-    value::Value,
+    value::{Value, ValueType},
 };
 use malachite::{
     base::{
@@ -15,14 +15,18 @@ use malachite::{
     rational::{conversion::from_primitive_float::RationalFromPrimitiveFloatError, Rational},
     Integer,
 };
-use num::{complex::Complex64, FromPrimitive, Zero};
+use num::{complex::Complex64, Complex, FromPrimitive, Zero};
+use ordered_float::OrderedFloat;
 use std::{
     cmp::Ordering,
     fmt::{self, Display, Formatter},
+    hash::Hash,
     ops::{Add, Mul, Neg, Sub},
+    sync::Arc,
 };
 
 #[derive(Clone)]
+#[repr(align(16))]
 pub enum Number {
     FixedInteger(i64),
     BigInteger(Integer),
@@ -70,6 +74,7 @@ impl Number {
         matches!(self, Self::Complex(_))
     }
 }
+
 impl TryFrom<&Number> for usize {
     type Error = NumberToUsizeError;
 
@@ -227,7 +232,7 @@ impl PartialOrd for Number {
 macro_rules! impl_checked_op_for_number {
     ($trait:ident, $unchecked:ident, $checked:ident) => {
         impl Number {
-            pub fn $checked(&self, rhs: &Number) -> Result<Number, ArithmeticError> {
+            pub fn $checked(&self, rhs: &Number) -> Result<Number, Box<ArithmeticError>> {
                 Ok(match (&self, rhs) {
                     (Self::FixedInteger(l), Self::FixedInteger(r)) => {
                         l.$checked(*r).map(Self::FixedInteger).unwrap_or_else(|| {
@@ -281,11 +286,11 @@ macro_rules! impl_checked_op_for_number {
                     | (Self::Complex(complex), Self::FixedInteger(fixed_int)) => Self::Complex(
                         Complex64::from_i64(*fixed_int)
                             .ok_or_else(|| {
-                                ArithmeticError::Overflow(
+                                Box::new(ArithmeticError::Overflow(
                                     Operation::$trait,
                                     self.clone(),
                                     rhs.clone(),
-                                )
+                                ))
                             })?
                             .$unchecked(complex),
                     ),
@@ -309,15 +314,19 @@ macro_rules! impl_checked_op_for_number {
         }
     };
 }
+
 impl_checked_op_for_number!(Add, add, checked_add);
 impl_checked_op_for_number!(Sub, sub, checked_sub);
 impl_checked_op_for_number!(Mul, mul, checked_mul);
+
 impl Number {
-    pub fn checked_div(&self, rhs: &Self) -> Result<Self, ArithmeticError> {
+    pub fn checked_div(&self, rhs: &Self) -> Result<Self, Box<ArithmeticError>> {
         let overflow = || ArithmeticError::Overflow(Operation::Div, self.clone(), rhs.clone());
 
         Ok(match (self, rhs) {
-            (l, r) if l.is_zero() || r.is_zero() => return Err(ArithmeticError::DivisionByZero),
+            (l, r) if l.is_zero() || r.is_zero() => {
+                return Err(Box::new(ArithmeticError::DivisionByZero))
+            }
 
             (Self::FixedInteger(l), Self::FixedInteger(r)) => {
                 Self::Rational(Rational::from(*l) / Rational::from(*r))
@@ -397,6 +406,7 @@ pub enum Operation {
     Mul,
     Div,
 }
+
 impl Display for Operation {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(
@@ -422,6 +432,7 @@ pub enum ArithmeticError {
     Overflow(Operation, Number, Number),
     RationalFromPrimitiveFloat(RationalFromPrimitiveFloatError),
 }
+
 impl Display for ArithmeticError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
@@ -433,9 +444,10 @@ impl Display for ArithmeticError {
         }
     }
 }
-impl From<RationalFromPrimitiveFloatError> for ArithmeticError {
+
+impl From<RationalFromPrimitiveFloatError> for Box<ArithmeticError> {
     fn from(err: RationalFromPrimitiveFloatError) -> Self {
-        Self::RationalFromPrimitiveFloat(err)
+        Box::new(ArithmeticError::RationalFromPrimitiveFloat(err))
     }
 }
 
@@ -444,11 +456,13 @@ pub struct NumberToUsizeError {
     number: Number,
     kind: NumberToUsizeErrorKind,
 }
+
 impl NumberToUsizeError {
     const fn new(number: Number, kind: NumberToUsizeErrorKind) -> Self {
         Self { number, kind }
     }
 }
+
 impl Display for NumberToUsizeError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self.kind {
@@ -475,116 +489,138 @@ enum NumberToUsizeErrorKind {
     TooLarge,
 }
 
+pub(crate) struct ReflexiveNumber(pub(crate) Arc<Number>);
+
+impl PartialEq for ReflexiveNumber {
+    fn eq(&self, rhs: &Self) -> bool {
+        match (self.0.as_ref(), rhs.0.as_ref()) {
+            (Number::FixedInteger(lhs), Number::FixedInteger(rhs)) => lhs == rhs,
+            (Number::BigInteger(lhs), Number::BigInteger(rhs)) => lhs == rhs,
+            (Number::Rational(lhs), Number::Rational(rhs)) => lhs == rhs,
+            (Number::Real(lhs), Number::Real(rhs)) => OrderedFloat(*lhs) == OrderedFloat(*rhs),
+            (Number::Complex(lhs), Number::Complex(rhs)) => {
+                let Complex { im, re } = *lhs;
+                let lhs = Complex::new(OrderedFloat(im), OrderedFloat(re));
+                let Complex { im, re } = *rhs;
+                let rhs = Complex::new(OrderedFloat(im), OrderedFloat(re));
+                lhs == rhs
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Eq for ReflexiveNumber {}
+
+impl Hash for ReflexiveNumber {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self.0.as_ref()).hash(state);
+        match self.0.as_ref() {
+            Number::FixedInteger(i) => i.hash(state),
+            Number::BigInteger(i) => i.hash(state),
+            Number::Rational(r) => r.hash(state),
+            Number::Real(r) => OrderedFloat(*r).hash(state),
+            Number::Complex(c) => {
+                let Complex { im, re } = *c;
+                Complex::new(OrderedFloat(im), OrderedFloat(re)).hash(state);
+            }
+        }
+    }
+}
+
 #[bridge(name = "zero?", lib = "(base)")]
-pub async fn zero(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
-    let arg = arg.read();
-    let num: &Number = arg.as_ref().try_into()?;
-    Ok(vec![Gc::new(Value::Boolean(num.is_zero()))])
+pub async fn zero(arg: &Value) -> Result<Vec<Value>, Condition> {
+    let num: Arc<Number> = arg.clone().try_into()?;
+    Ok(vec![Value::from(num.is_zero())])
 }
 
 #[bridge(name = "even?", lib = "(base)")]
-pub async fn even(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
-    let arg = arg.read();
-    let num: &Number = arg.as_ref().try_into()?;
-    Ok(vec![Gc::new(Value::Boolean(num.is_even()))])
+pub async fn even(arg: &Value) -> Result<Vec<Value>, Condition> {
+    let num: Arc<Number> = arg.clone().try_into()?;
+    Ok(vec![Value::from(num.is_even())])
 }
 
 #[bridge(name = "odd?", lib = "(base)")]
-pub async fn odd(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
-    let arg = arg.read();
-    let num: &Number = arg.as_ref().try_into()?;
-    Ok(vec![Gc::new(Value::Boolean(num.is_odd()))])
+pub async fn odd(arg: &Value) -> Result<Vec<Value>, Condition> {
+    let num: Arc<Number> = arg.clone().try_into()?;
+    Ok(vec![Value::from(num.is_odd())])
 }
 
 #[bridge(name = "+", lib = "(base)")]
-pub async fn add_builtin(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Condition> {
-    Ok(vec![Gc::new(Value::Number(add(args)?))])
+pub async fn add_builtin(args: &[Value]) -> Result<Vec<Value>, Condition> {
+    Ok(vec![Value::from(add(args)?)])
 }
 
-pub(crate) fn add(vals: &[Gc<Value>]) -> Result<Number, Condition> {
+pub(crate) fn add(vals: &[Value]) -> Result<Number, Condition> {
     let mut result = Number::FixedInteger(0);
     for val in vals {
-        let val = val.read();
-        let num: &Number = val.as_ref().try_into()?;
-        result = result.checked_add(num)?;
+        let num: Arc<Number> = val.clone().try_into()?;
+        result = result.checked_add(&num)?;
     }
     Ok(result)
 }
 
 #[bridge(name = "-", lib = "(base)")]
-pub async fn sub_builtin(
-    arg1: &Gc<Value>,
-    args: &[Gc<Value>],
-) -> Result<Vec<Gc<Value>>, Condition> {
-    Ok(vec![Gc::new(Value::Number(sub(arg1, args)?))])
+pub async fn sub_builtin(arg1: &Value, args: &[Value]) -> Result<Vec<Value>, Condition> {
+    Ok(vec![Value::from(sub(arg1, args)?)])
 }
 
-pub(crate) fn sub(val1: &Gc<Value>, vals: &[Gc<Value>]) -> Result<Number, Condition> {
-    let val1 = val1.read();
-    let val1: &Number = val1.as_ref().try_into()?;
-    let mut val1 = val1.clone();
+pub(crate) fn sub(val1: &Value, vals: &[Value]) -> Result<Number, Condition> {
+    let val1: Arc<Number> = val1.clone().try_into()?;
+    let mut val1 = val1.as_ref().clone();
     if vals.is_empty() {
         Ok(-val1)
     } else {
         for val in vals {
-            let val = val.read();
-            let num: &Number = val.as_ref().try_into()?;
-            val1 = val1.checked_sub(num)?;
+            let num: Arc<Number> = val.clone().try_into()?;
+            val1 = val1.checked_sub(&num)?;
         }
         Ok(val1)
     }
 }
 
 #[bridge(name = "*", lib = "(base)")]
-pub async fn mul_builtin(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Condition> {
-    Ok(vec![Gc::new(Value::Number(mul(args)?))])
+pub async fn mul_builtin(args: &[Value]) -> Result<Vec<Value>, Condition> {
+    Ok(vec![Value::from(mul(args)?)])
 }
 
-pub(crate) fn mul(vals: &[Gc<Value>]) -> Result<Number, Condition> {
+pub(crate) fn mul(vals: &[Value]) -> Result<Number, Condition> {
     let mut result = Number::FixedInteger(1);
     for val in vals {
-        let val = val.read();
-        let num: &Number = val.as_ref().try_into()?;
-        result = result.checked_mul(num)?;
+        let num: Arc<Number> = val.clone().try_into()?;
+        result = result.checked_mul(&num)?;
     }
     Ok(result)
 }
 
 #[bridge(name = "/", lib = "(base)")]
-pub async fn div_builtin(
-    arg1: &Gc<Value>,
-    args: &[Gc<Value>],
-) -> Result<Vec<Gc<Value>>, Condition> {
-    Ok(vec![Gc::new(Value::Number(div(arg1, args)?))])
+pub async fn div_builtin(arg1: &Value, args: &[Value]) -> Result<Vec<Value>, Condition> {
+    Ok(vec![Value::from(div(arg1, args)?)])
 }
 
-pub(crate) fn div(val1: &Gc<Value>, vals: &[Gc<Value>]) -> Result<Number, Condition> {
-    let val1 = val1.read();
-    let val1: &Number = val1.as_ref().try_into()?;
+pub(crate) fn div(val1: &Value, vals: &[Value]) -> Result<Number, Condition> {
+    let val1: Arc<Number> = val1.clone().try_into()?;
     if vals.is_empty() {
-        return Ok(Number::FixedInteger(1).checked_div(val1)?);
+        return Ok(Number::FixedInteger(1).checked_div(&val1)?);
     }
-    let mut result = val1.clone();
+    let mut result = val1.as_ref().clone();
     for val in vals {
-        let val = val.read();
-        let num: &Number = val.as_ref().try_into()?;
-        result = result.checked_div(num)?;
+        let num: Arc<Number> = val.clone().try_into()?;
+        result = result.checked_div(&num)?;
     }
     Ok(result)
 }
 
 #[bridge(name = "=", lib = "(base)")]
-pub async fn equal_builtin(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Condition> {
-    Ok(vec![Gc::new(Value::Boolean(equal(args)?))])
+pub async fn equal_builtin(args: &[Value]) -> Result<Vec<Value>, Condition> {
+    Ok(vec![Value::from(equal(args)?)])
 }
 
-pub(crate) fn equal(vals: &[Gc<Value>]) -> Result<bool, Condition> {
+pub(crate) fn equal(vals: &[Value]) -> Result<bool, Condition> {
     if let Some((first, rest)) = vals.split_first() {
-        let first = first.read();
-        let first: &Number = first.as_ref().try_into()?;
+        let first: Arc<Number> = first.clone().try_into()?;
         for next in rest {
-            let next = next.read();
-            let next: &Number = next.as_ref().try_into()?;
+            let next: Arc<Number> = next.clone().try_into()?;
             if first != next {
                 return Ok(false);
             }
@@ -594,19 +630,17 @@ pub(crate) fn equal(vals: &[Gc<Value>]) -> Result<bool, Condition> {
 }
 
 #[bridge(name = ">", lib = "(base)")]
-pub async fn greater_builtin(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Condition> {
-    Ok(vec![Gc::new(Value::Boolean(greater(args)?))])
+pub async fn greater_builtin(args: &[Value]) -> Result<Vec<Value>, Condition> {
+    Ok(vec![Value::from(greater(args)?)])
 }
 
-pub(crate) fn greater(vals: &[Gc<Value>]) -> Result<bool, Condition> {
+pub(crate) fn greater(vals: &[Value]) -> Result<bool, Condition> {
     if let Some((head, rest)) = vals.split_first() {
         let mut prev = head.clone();
         for next in rest {
             {
-                let prev = prev.read();
-                let next = next.read();
-                let prev: &Number = prev.as_ref().try_into()?;
-                let next: &Number = next.as_ref().try_into()?;
+                let prev: Arc<Number> = prev.clone().try_into()?;
+                let next: Arc<Number> = next.clone().try_into()?;
                 // This is somewhat less efficient for small numbers but avoids
                 // cloning big ones
                 if prev.is_complex() {
@@ -626,19 +660,17 @@ pub(crate) fn greater(vals: &[Gc<Value>]) -> Result<bool, Condition> {
 }
 
 #[bridge(name = ">=", lib = "(base)")]
-pub async fn greater_equal_builtin(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Condition> {
-    Ok(vec![Gc::new(Value::Boolean(greater_equal(args)?))])
+pub async fn greater_equal_builtin(args: &[Value]) -> Result<Vec<Value>, Condition> {
+    Ok(vec![Value::from(greater_equal(args)?)])
 }
 
-pub(crate) fn greater_equal(vals: &[Gc<Value>]) -> Result<bool, Condition> {
+pub(crate) fn greater_equal(vals: &[Value]) -> Result<bool, Condition> {
     if let Some((head, rest)) = vals.split_first() {
         let mut prev = head.clone();
         for next in rest {
             {
-                let prev = prev.read();
-                let next = next.read();
-                let prev: &Number = prev.as_ref().try_into()?;
-                let next: &Number = next.as_ref().try_into()?;
+                let prev: Arc<Number> = prev.clone().try_into()?;
+                let next: Arc<Number> = next.clone().try_into()?;
                 if prev.is_complex() {
                     return Err(Condition::invalid_type("number", "complex"));
                 }
@@ -656,19 +688,17 @@ pub(crate) fn greater_equal(vals: &[Gc<Value>]) -> Result<bool, Condition> {
 }
 
 #[bridge(name = "<", lib = "(base)")]
-pub async fn lesser_builtin(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Condition> {
-    Ok(vec![Gc::new(Value::Boolean(lesser(args)?))])
+pub async fn lesser_builtin(args: &[Value]) -> Result<Vec<Value>, Condition> {
+    Ok(vec![Value::from(lesser(args)?)])
 }
 
-pub(crate) fn lesser(vals: &[Gc<Value>]) -> Result<bool, Condition> {
+pub(crate) fn lesser(vals: &[Value]) -> Result<bool, Condition> {
     if let Some((head, rest)) = vals.split_first() {
         let mut prev = head.clone();
         for next in rest {
             {
-                let prev = prev.read();
-                let next = next.read();
-                let prev: &Number = prev.as_ref().try_into()?;
-                let next: &Number = next.as_ref().try_into()?;
+                let prev: Arc<Number> = prev.clone().try_into()?;
+                let next: Arc<Number> = next.clone().try_into()?;
                 if prev.is_complex() {
                     return Err(Condition::invalid_type("number", "complex"));
                 }
@@ -686,19 +716,17 @@ pub(crate) fn lesser(vals: &[Gc<Value>]) -> Result<bool, Condition> {
 }
 
 #[bridge(name = "<=", lib = "(base)")]
-pub async fn lesser_equal_builtin(args: &[Gc<Value>]) -> Result<Vec<Gc<Value>>, Condition> {
-    Ok(vec![Gc::new(Value::Boolean(lesser_equal(args)?))])
+pub async fn lesser_equal_builtin(args: &[Value]) -> Result<Vec<Value>, Condition> {
+    Ok(vec![Value::from(lesser_equal(args)?)])
 }
 
-pub(crate) fn lesser_equal(vals: &[Gc<Value>]) -> Result<bool, Condition> {
+pub(crate) fn lesser_equal(vals: &[Value]) -> Result<bool, Condition> {
     if let Some((head, rest)) = vals.split_first() {
         let mut prev = head.clone();
         for next in rest {
             {
-                let prev = prev.read();
-                let next = next.read();
-                let prev: &Number = prev.as_ref().try_into()?;
-                let next: &Number = next.as_ref().try_into()?;
+                let prev: Arc<Number> = prev.clone().try_into()?;
+                let next: Arc<Number> = next.clone().try_into()?;
                 if prev.is_complex() {
                     return Err(Condition::invalid_type("number", "complex"));
                 }
@@ -716,46 +744,51 @@ pub(crate) fn lesser_equal(vals: &[Gc<Value>]) -> Result<bool, Condition> {
 }
 
 #[bridge(name = "number?", lib = "(base)")]
-pub async fn is_number(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
-    let arg = arg.read();
-    Ok(vec![Gc::new(Value::Boolean(matches!(
-        &*arg,
-        Value::Number(_)
-    )))])
+pub async fn is_number(arg: &Value) -> Result<Vec<Value>, Condition> {
+    Ok(vec![Value::from(arg.type_of() == ValueType::Number)])
 }
 
 #[bridge(name = "integer?", lib = "(base)")]
-pub async fn is_integer(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
-    let arg = arg.read();
-    Ok(vec![Gc::new(Value::Boolean(matches!(
-        &*arg,
-        Value::Number(Number::FixedInteger(_)) | Value::Number(Number::BigInteger(_))
-    )))])
+pub async fn is_integer(arg: &Value) -> Result<Vec<Value>, Condition> {
+    let arg: Arc<Number> = match arg.clone().try_into() {
+        Ok(arg) => arg,
+        Err(_) => return Ok(vec![Value::from(false)]),
+    };
+    Ok(vec![Value::from(matches!(
+        arg.as_ref(),
+        Number::FixedInteger(_) | Number::BigInteger(_)
+    ))])
 }
 
 #[bridge(name = "rational?", lib = "(base)")]
-pub async fn is_rational(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
-    let arg = arg.read();
-    Ok(vec![Gc::new(Value::Boolean(matches!(
-        &*arg,
-        Value::Number(Number::Rational(_))
-    )))])
+pub async fn is_rational(arg: &Value) -> Result<Vec<Value>, Condition> {
+    let arg: Arc<Number> = match arg.clone().try_into() {
+        Ok(arg) => arg,
+        Err(_) => return Ok(vec![Value::from(false)]),
+    };
+    Ok(vec![Value::from(matches!(
+        arg.as_ref(),
+        Number::Rational(_)
+    ))])
 }
 
 #[bridge(name = "real?", lib = "(base)")]
-pub async fn is_real(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
-    let arg = arg.read();
-    Ok(vec![Gc::new(Value::Boolean(matches!(
-        &*arg,
-        Value::Number(Number::Real(_))
-    )))])
+pub async fn is_real(arg: &Value) -> Result<Vec<Value>, Condition> {
+    let arg: Arc<Number> = match arg.clone().try_into() {
+        Ok(arg) => arg,
+        Err(_) => return Ok(vec![Value::from(false)]),
+    };
+    Ok(vec![Value::from(matches!(arg.as_ref(), Number::Real(_)))])
 }
 
 #[bridge(name = "complex?", lib = "(base)")]
-pub async fn is_complex(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
-    let arg = arg.read();
-    Ok(vec![Gc::new(Value::Boolean(matches!(
-        &*arg,
-        Value::Number(Number::Complex(_))
-    )))])
+pub async fn is_complex(arg: &Value) -> Result<Vec<Value>, Condition> {
+    let arg: Arc<Number> = match arg.clone().try_into() {
+        Ok(arg) => arg,
+        Err(_) => return Ok(vec![Value::from(false)]),
+    };
+    Ok(vec![Value::from(matches!(
+        arg.as_ref(),
+        Number::Complex(_)
+    ))])
 }

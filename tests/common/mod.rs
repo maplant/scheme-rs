@@ -59,8 +59,8 @@ impl TestRuntime {
 }
 
 #[bridge(name = "assert-eq", lib = "(base)")]
-pub async fn test_assert(arg1: &Gc<Value>, arg2: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
-    if !eqv(arg1, arg2) {
+pub async fn test_assert(arg1: &Value, arg2: &Value) -> Result<Vec<Value>, Condition> {
+    if arg1 != arg2 {
         let arg1 = format!("{arg1:?}");
         let arg2 = format!("{arg2:?}");
         Err(Condition::assert_eq_failed(&arg2, &arg1))
@@ -79,11 +79,7 @@ macro_rules! assert_file {
                 Some(concat!(stringify!($name), ".scm")),
             )
             .unwrap();
-            assert!(rt
-                .exec_syn(&sexprs)
-                .await
-                .inspect_err(|e| eprintln!("{}", e))
-                .is_ok());
+            rt.exec_syn(&sexprs).await.unwrap();
         }
     };
 }

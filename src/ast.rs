@@ -61,7 +61,7 @@ pub enum ParseAstError {
 
     BuilderError(BuilderError),
 
-    RaisedValue(Gc<Value>),
+    RaisedValue(Value),
 }
 
 impl From<BuilderError> for ParseAstError {
@@ -70,8 +70,8 @@ impl From<BuilderError> for ParseAstError {
     }
 }
 
-impl From<Gc<Value>> for ParseAstError {
-    fn from(raised: Gc<Value>) -> Self {
+impl From<Value> for ParseAstError {
+    fn from(raised: Value) -> Self {
         Self::RaisedValue(raised)
     }
 }
@@ -254,9 +254,8 @@ pub(super) async fn define_syntax(
         .call(&[])
         .await
         .map_err(|err| ParseAstError::RaisedValue(err.into()))?;
-    let mac_read = mac[0].read();
-    let transformer: &Closure = mac_read.as_ref().try_into().unwrap();
-    env.def_macro(ident, transformer.clone());
+    let transformer: Gc<Closure> = mac[0].clone().try_into().unwrap();
+    env.def_macro(ident, transformer);
 
     Ok(())
 }
@@ -317,7 +316,7 @@ impl Expression {
                             let top = env.fetch_top();
                             let is_repl = { top.read().is_repl() };
                             is_repl.then(|| {
-                                Var::Global(top.write().def_var(ident.clone(), Value::Undefined))
+                                Var::Global(top.write().def_var(ident.clone(), Value::undefined()))
                             })
                         })
                         .ok_or_else(|| ParseAstError::UndefinedVariable(ident.clone()))?,
@@ -438,9 +437,10 @@ impl Expression {
         };
 
         if let Expression::Var(Var::Global(global)) = self {
-            let val_ref = global.value_ref().read();
-            let val: &Closure = val_ref.as_ref().try_into().ok()?;
-            match val.func {
+            let val = global.value_ref().read().clone();
+            let val: Gc<Closure> = val.try_into().ok()?;
+            let val_read = val.read();
+            match val_read.func {
                 Bridge(ptr) if ptr == add_builtin_wrapper => Some(PrimOp::Add),
                 Bridge(ptr) if ptr == sub_builtin_wrapper => Some(PrimOp::Sub),
                 Bridge(ptr) if ptr == mul_builtin_wrapper => Some(PrimOp::Mul),
@@ -477,9 +477,9 @@ impl Quote {
     async fn parse(exprs: &[Syntax], span: &Span) -> Result<Self, ParseAstError> {
         match exprs {
             [] => Err(ParseAstError::ExpectedArgument(span.clone())),
-            [Syntax::Null { .. }] => Ok(Quote { val: Value::Null }),
+            [Syntax::Null { .. }] => Ok(Quote { val: Value::null() }),
             [expr, Syntax::Null { .. }] => Ok(Quote {
-                val: Value::from_syntax(expr),
+                val: Value::datum_from_syntax(expr),
             }),
             [_, arg, ..] => Err(ParseAstError::UnexpectedArgument(arg.span().clone())),
             _ => Err(ParseAstError::BadForm(span.clone())),
@@ -1214,7 +1214,7 @@ impl Vector {
     fn parse(exprs: &[Syntax]) -> Self {
         let mut vals = Vec::new();
         for expr in exprs {
-            vals.push(Value::from_syntax(expr));
+            vals.push(Value::datum_from_syntax(expr));
         }
         Self { vals }
     }

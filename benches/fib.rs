@@ -10,7 +10,7 @@ use scheme_rs::{
 
 use criterion::*;
 
-async fn fib_fn() -> scheme_rs::proc::Closure {
+async fn fib_fn() -> Gc<scheme_rs::proc::Closure> {
     let runtime = Gc::new(Runtime::new());
     let registry = Registry::new(&runtime).await;
     let base = registry.import("(base)").unwrap();
@@ -35,8 +35,10 @@ fn fib_benchmark(c: &mut Criterion) {
     let closure = runtime.block_on(async move { fib_fn().await });
 
     c.bench_function("fib 10000", |b| {
-        b.to_async(&runtime)
-            .iter(|| async { closure.call(&[]).await })
+        b.to_async(&runtime).iter(|| {
+            let val = closure.clone();
+            async move { val.call(&[]).await }
+        })
     });
 }
 

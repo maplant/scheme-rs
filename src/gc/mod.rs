@@ -84,27 +84,52 @@ impl<T: Trace> Gc<T> {
         }
     }
 
-    pub fn as_ptr(&self) -> *mut GcInner<T> {
-        self.ptr.as_ptr()
+    pub fn ptr_eq(lhs: &Self, rhs: &Self) -> bool {
+        lhs.ptr == rhs.ptr
     }
 
-    /// Drops a raw pointer as if it were a Gc.
-    pub(crate) unsafe fn drop_raw(ptr: *mut GcInner<T>) {
-        drop(Self {
-            ptr: NonNull::new(ptr).unwrap(),
+    pub fn as_ptr(this: &Self) -> *mut GcInner<T> {
+        this.ptr.as_ptr()
+    }
+
+    pub fn into_raw(gc: Self) -> *mut GcInner<T> {
+        ManuallyDrop::new(gc).ptr.as_ptr()
+    }
+
+    pub(crate) unsafe fn increment_reference_count(ptr: *mut GcInner<T>) {
+        let ptr = NonNull::new(ptr).unwrap();
+        inc_rc(ptr);
+    }
+
+    pub(crate) unsafe fn decrement_reference_count(ptr: *mut GcInner<T>) {
+        let ptr = NonNull::new(ptr).unwrap();
+        dec_rc(ptr);
+    }
+
+    /// Create a new Gc from the raw pointer. Does not increment the reference
+    /// count.
+    pub(crate) unsafe fn from_raw(ptr: *mut GcInner<T>) -> Self {
+        let ptr = NonNull::new(ptr).unwrap();
+        Self {
+            ptr,
             marker: PhantomData,
-        })
+        }
     }
 
-    /// Create a new Gc from the raw pointer. This increments the ref count for
-    /// safety.
-    pub(crate) unsafe fn from_ptr(ptr: *mut GcInner<T>) -> Self {
+    /// The same as from_raw, but increments the reference count.
+    pub(crate) unsafe fn from_raw_inc_rc(ptr: *mut GcInner<T>) -> Self {
         let ptr = NonNull::new(ptr).unwrap();
         inc_rc(ptr);
         Self {
             ptr,
             marker: PhantomData,
         }
+    }
+}
+
+impl<T: Trace> From<T> for Gc<T> {
+    fn from(t: T) -> Self {
+        Gc::new(t)
     }
 }
 
@@ -142,19 +167,21 @@ impl<T: Trace> Drop for Gc<T> {
     }
 }
 
-impl<T: Trace> Hash for Gc<T> {
+impl<T: Trace + Hash> Hash for Gc<T> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.ptr.hash(state)
+        self.read().hash(state);
     }
 }
 
-impl<T: Trace> PartialEq for Gc<T> {
+impl<T: Trace + PartialEq> PartialEq for Gc<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.ptr == other.ptr
+        let self_read = self.read();
+        let other_read = other.read();
+        self_read.as_ref() == other_read.as_ref()
     }
 }
 
-impl<T: Trace> Eq for Gc<T> {}
+impl<T: Trace + Eq> Eq for Gc<T> {}
 
 unsafe impl<T: Trace + Send> Send for Gc<T> {}
 unsafe impl<T: Trace + Sync> Sync for Gc<T> {}

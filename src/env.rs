@@ -1,6 +1,7 @@
 use std::{
     collections::{hash_map::Entry, HashMap},
     fmt,
+    hash::{Hash, Hasher},
     sync::atomic::{AtomicUsize, Ordering},
 };
 
@@ -91,7 +92,7 @@ impl Top {
 pub struct LexicalContour {
     up: Environment,
     vars: HashMap<Identifier, Local>,
-    macros: HashMap<Identifier, Closure>,
+    macros: HashMap<Identifier, Gc<Closure>>,
 }
 
 impl LexicalContour {
@@ -111,7 +112,7 @@ impl LexicalContour {
         local
     }
 
-    pub fn def_macro(&mut self, name: Identifier, closure: Closure) {
+    pub fn def_macro(&mut self, name: Identifier, closure: Gc<Closure>) {
         self.macros.insert(name, closure);
     }
 
@@ -170,7 +171,7 @@ impl MacroExpansion {
         self.up.def_var(name)
     }
 
-    pub fn def_macro(&self, name: Identifier, closure: Closure) {
+    pub fn def_macro(&self, name: Identifier, closure: Gc<Closure>) {
         self.up.def_macro(name, closure);
     }
 
@@ -251,13 +252,13 @@ impl Environment {
 
     pub fn def_var(&self, name: Identifier) -> Var {
         match self {
-            Self::Top(top) => Var::Global(top.write().def_var(name, Value::Undefined)),
+            Self::Top(top) => Var::Global(top.write().def_var(name, Value::undefined())),
             Self::LexicalContour(lex) => Var::Local(lex.write().def_var(name)),
             Self::MacroExpansion(me) => me.read().def_var(name),
         }
     }
 
-    pub fn def_macro(&self, name: Identifier, val: Closure) {
+    pub fn def_macro(&self, name: Identifier, val: Gc<Closure>) {
         match self {
             Self::Top(top) => top.write().def_macro(name, Macro::new(self.clone(), val)),
             Self::LexicalContour(lex) => lex.write().def_macro(name, val),
@@ -347,7 +348,8 @@ impl fmt::Debug for Local {
     }
 }
 
-#[derive(Clone, Trace, Hash, PartialEq, Eq)]
+// TODO: Do we need to make this pointer eq?
+#[derive(Clone, Trace)]
 pub struct Global {
     name: Identifier,
     val: Gc<Value>,
@@ -373,6 +375,24 @@ impl fmt::Debug for Global {
     }
 }
 
+impl PartialEq for Global {
+    fn eq(&self, rhs: &Self) -> bool {
+        self.name == rhs.name && Gc::ptr_eq(&self.val, &rhs.val)
+    }
+}
+
+impl Hash for Global {
+    fn hash<H>(&self, state: &mut H)
+    where
+        H: Hasher,
+    {
+        self.name.hash(state);
+        Gc::as_ptr(&self.val).hash(state);
+    }
+}
+
+impl Eq for Global {}
+
 #[derive(Clone, Trace, Hash, PartialEq, Eq)]
 pub enum Var {
     Global(Global),
@@ -391,11 +411,11 @@ impl fmt::Debug for Var {
 #[derive(Clone, Trace)]
 pub struct Macro {
     pub source_env: Environment,
-    pub transformer: Closure,
+    pub transformer: Gc<Closure>,
 }
 
 impl Macro {
-    pub fn new(source_env: Environment, transformer: Closure) -> Self {
+    pub fn new(source_env: Environment, transformer: Gc<Closure>) -> Self {
         Self {
             source_env,
             transformer,
@@ -404,6 +424,7 @@ impl Macro {
 }
 
 #[derive(Clone, Trace)]
+#[repr(align(16))]
 pub struct CapturedEnv {
     pub env: Environment,
     pub captured: Vec<Local>,

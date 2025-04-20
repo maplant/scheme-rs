@@ -6,8 +6,8 @@ use inkwell::{
     context::Context,
     execution_engine::ExecutionEngine,
     module::Module,
-    values::{BasicValueEnum, FunctionValue, PointerValue},
-    AddressSpace,
+    values::{BasicValueEnum, FunctionValue, IntValue, PointerValue},
+    AddressSpace, IntPredicate,
 };
 use std::{collections::HashMap, rc::Rc};
 
@@ -15,21 +15,21 @@ use crate::{
     gc::Gc,
     proc::{Closure, ContinuationPtr, FuncPtr},
     runtime::{Runtime, IGNORE_CALL_SITE, IGNORE_FUNCTION},
-    value::Value as SchemeValue,
+    value::{ReflexiveValue, Value as SchemeValue},
 };
 
 use super::*;
 
 struct Rebinds<'ctx> {
-    rebinds: HashMap<Var, PointerValue<'ctx>>,
+    rebinds: HashMap<Var, BasicValueEnum<'ctx>>,
 }
 
 impl<'ctx> Rebinds<'ctx> {
-    fn rebind(&mut self, old_var: Var, new_var: PointerValue<'ctx>) {
+    fn rebind(&mut self, old_var: Var, new_var: BasicValueEnum<'ctx>) {
         self.rebinds.insert(old_var, new_var);
     }
 
-    fn fetch_bind(&self, var: &Var) -> &PointerValue<'ctx> {
+    fn fetch_bind(&self, var: &Var) -> &BasicValueEnum<'ctx> {
         self.rebinds
             .get(var)
             .unwrap_or_else(|| panic!("could not find {var:?}"))
@@ -44,19 +44,35 @@ impl<'ctx> Rebinds<'ctx> {
 
 struct Allocs<'ctx> {
     prev_alloc: Option<Rc<Allocs<'ctx>>>,
-    value: PointerValue<'ctx>,
+    value: BasicValueEnum<'ctx>, // PointerValue<'ctx>,
 }
 
 impl<'ctx> Allocs<'ctx> {
     fn new(
         prev_alloc: Option<Rc<Allocs<'ctx>>>,
-        value: PointerValue<'ctx>,
+        value: BasicValueEnum<'ctx>,
     ) -> Option<Rc<Allocs<'ctx>>> {
         Some(Rc::new(Allocs { prev_alloc, value }))
     }
 
-    fn to_values(&self) -> Vec<PointerValue<'ctx>> {
-        let mut allocs = vec![self.value];
+    fn to_cells(&self) -> Vec<PointerValue<'ctx>> {
+        let mut allocs = match self.value {
+            BasicValueEnum::PointerValue(value) => vec![value],
+            _ => Vec::new(),
+        };
+
+        if let Some(ref prev_alloc) = self.prev_alloc {
+            allocs.extend(prev_alloc.to_cells());
+        }
+
+        allocs
+    }
+
+    fn to_values(&self) -> Vec<IntValue<'ctx>> {
+        let mut allocs = match self.value {
+            BasicValueEnum::IntValue(value) => vec![value],
+            _ => Vec::new(),
+        };
 
         if let Some(ref prev_alloc) = self.prev_alloc {
             allocs.extend(prev_alloc.to_values());
@@ -99,7 +115,7 @@ impl Cps {
         let fn_name = fn_value.to_func_name();
         let function = module.add_function(&fn_name, fn_type, None);
 
-        let mut cu = CompilationUnit::new(ctx, module, builder, function);
+        let mut cu = CompilationUnit::new(runtime.clone(), ctx, module, builder, function);
         let entry = ctx.append_basic_block(function, "entry");
         builder.position_at_end(entry);
 
@@ -119,8 +135,7 @@ impl Cps {
             collected_env.push(val);
             let res = builder
                 .build_extract_value(env_load, i as u32, "extract_env")
-                .unwrap()
-                .into_pointer_value();
+                .unwrap();
             cu.rebinds.rebind(Var::Local(local), res);
         }
 
@@ -140,8 +155,7 @@ impl Cps {
         for (i, global) in globals.iter().enumerate() {
             let res = builder
                 .build_extract_value(globals_load, i as u32, "extract_global")
-                .unwrap()
-                .into_pointer_value();
+                .unwrap();
             cu.rebinds.rebind(Var::Global(global.clone()), res);
         }
 
@@ -177,6 +191,7 @@ impl Cps {
 }
 
 struct CompilationUnit<'ctx, 'b> {
+    runtime: Gc<Runtime>,
     ctx: &'ctx Context,
     module: &'b Module<'ctx>,
     builder: &'b Builder<'ctx>,
@@ -194,12 +209,14 @@ struct CompilationUnit<'ctx, 'b> {
 
 impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
     fn new(
+        runtime: Gc<Runtime>,
         ctx: &'ctx Context,
         module: &'b Module<'ctx>,
         builder: &'b Builder<'ctx>,
         function: FunctionValue<'ctx>,
     ) -> Self {
         Self {
+            runtime,
             ctx,
             module,
             builder,
@@ -215,9 +232,6 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         deferred: &mut Vec<ClosureBundle<'ctx>>,
     ) -> Result<(), BuilderError> {
         match cps {
-            Cps::AllocCell(into, cexpr) => {
-                self.alloc_cell_codegen(into, *cexpr, allocs, deferred)?;
-            }
             Cps::If(cond, success, failure) => {
                 self.if_codegen(&cond, *success, *failure, allocs, deferred)?
             }
@@ -229,11 +243,8 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 self.store_codegen(&args[1], &args[0])?;
                 self.cps_codegen(*cexpr, allocs, deferred)?;
             }
-            Cps::PrimOp(PrimOp::Clone, args, clone_into, cexpr) => {
-                let [to_clone] = args.as_slice() else {
-                    unreachable!()
-                };
-                self.clone_codegen(to_clone, clone_into, *cexpr, allocs, deferred)?;
+            Cps::PrimOp(PrimOp::AllocCell, _, into, cexpr) => {
+                self.alloc_cell_codegen(into, *cexpr, allocs, deferred)?;
             }
             Cps::PrimOp(PrimOp::ExtractWinders, _, extract_to, cexpr) => {
                 self.extract_winders_codegen(extract_to, *cexpr, allocs, deferred)?;
@@ -246,8 +257,8 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                     cont, winders, prepare_to, *cexpr, allocs, deferred,
                 )?;
             }
-            Cps::PrimOp(PrimOp::GetCallTransformerFn, _, res, cexpr) => {
-                self.get_call_transformer_codegen(res)?;
+            Cps::PrimOp(PrimOp::GetCallTransformerFn, env, res, cexpr) => {
+                self.get_call_transformer_codegen(&env, res)?;
                 self.cps_codegen(*cexpr, allocs, deferred)?;
             }
             Cps::PrimOp(primop, vals, result, cexpr) => {
@@ -261,6 +272,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 debug: debug_info_id,
             } => {
                 let bundle = ClosureBundle::new(
+                    self.runtime.clone(),
                     self.ctx,
                     self.module,
                     val,
@@ -275,33 +287,37 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         Ok(())
     }
 
-    fn clone_codegen(
-        &mut self,
-        value: &Value,
-        clone_into: Local,
-        cexpr: Cps,
-        allocs: Option<Rc<Allocs<'ctx>>>,
-        deferred: &mut Vec<ClosureBundle<'ctx>>,
-    ) -> Result<(), BuilderError> {
-        let value = self.value_codegen(value)?.into_pointer_value();
-        let clone = self.module.get_function("clone").unwrap();
-        let cloned = self
-            .builder
-            .build_call(clone, &[value.into()], "cloned")?
-            .try_as_basic_value()
-            .left()
-            .unwrap()
-            .into_pointer_value();
-        self.rebinds.rebind(Var::Local(clone_into), cloned);
-        let new_alloc = Allocs::new(allocs, cloned);
-        self.cps_codegen(cexpr, new_alloc, deferred)?;
-        Ok(())
-    }
-
-    fn value_codegen(&self, value: &Value) -> Result<BasicValueEnum<'ctx>, BuilderError> {
+    fn value_codegen(&self, value: &Value) -> BasicValueEnum<'ctx> {
         match value {
-            Value::Var(var) => Ok((*self.rebinds.fetch_bind(var)).into()),
-            _ => todo!(),
+            Value::Var(var) => {
+                let cell = *self.rebinds.fetch_bind(var);
+                if cell.is_int_value() {
+                    return cell;
+                }
+                let read_cell = self.module.get_function("read_cell").unwrap();
+                self.builder
+                    .build_call(read_cell, &[cell.into()], "read_value")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap()
+            }
+            Value::Const(val) => {
+                let mut runtime_write = self.runtime.write();
+                let reflexive_val = ReflexiveValue(val.clone());
+                if !runtime_write.constants_pool.contains(&reflexive_val) {
+                    runtime_write.constants_pool.insert(reflexive_val.clone());
+                }
+                let raw = SchemeValue::as_raw(
+                    runtime_write
+                        .constants_pool
+                        .get(&reflexive_val)
+                        .unwrap()
+                        .as_ref(),
+                );
+                let i64_type = self.ctx.i64_type();
+                i64_type.const_int(raw, false).into()
+            }
         }
     }
 
@@ -327,8 +343,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             )?
             .try_as_basic_value()
             .left()
-            .unwrap()
-            .into_pointer_value();
+            .unwrap();
 
         self.rebinds.rebind(Var::Local(extract_to), winders);
         let new_alloc = Allocs::new(allocs, winders);
@@ -346,8 +361,8 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         allocs: Option<Rc<Allocs<'ctx>>>,
         deferred: &mut Vec<ClosureBundle<'ctx>>,
     ) -> Result<(), BuilderError> {
-        let cont = self.value_codegen(cont)?;
-        let winders = self.value_codegen(winders)?;
+        let cont = self.value_codegen(cont);
+        let winders = self.value_codegen(winders);
         let prepare_continuation = self.module.get_function("prepare_continuation").unwrap();
         let prepared = self
             .builder
@@ -366,8 +381,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             )?
             .try_as_basic_value()
             .left()
-            .unwrap()
-            .into_pointer_value();
+            .unwrap();
 
         self.rebinds.rebind(Var::Local(prepare_to), prepared);
         let new_alloc = Allocs::new(allocs, prepared);
@@ -400,7 +414,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                     "vals_elem",
                 )?
             };
-            let val = self.value_codegen(val)?;
+            let val = self.value_codegen(val);
             self.builder.build_store(ep, val)?;
         }
 
@@ -434,18 +448,25 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             )?
             .try_as_basic_value()
             .left()
-            .unwrap()
-            .into_pointer_value();
+            .unwrap();
 
-        let is_null_bb = self.ctx.append_basic_block(self.function, "is_null");
+        let is_undef_bb = self.ctx.append_basic_block(self.function, "is_undef");
         let success_bb = self.ctx.append_basic_block(self.function, "success");
 
-        let is_null = self.builder.build_is_null(result_val, "is_null")?;
+        let i64_type = self.ctx.i64_type();
+        let undef = i64_type.const_int(0, false);
+        let is_undef = self.builder.build_int_compare(
+            IntPredicate::EQ,
+            result_val.into_int_value(),
+            undef,
+            "is_undef",
+        )?;
+        // let is_undef = self.builder.build_is_null(result_val, "is_undef")?;
         self.builder
-            .build_conditional_branch(is_null, is_null_bb, success_bb)?;
+            .build_conditional_branch(is_undef, is_undef_bb, success_bb)?;
 
-        self.builder.position_at_end(is_null_bb);
-        self.drop_values_codegen(allocs.clone())?;
+        self.builder.position_at_end(is_undef_bb);
+        self.drops_codegen(allocs.clone())?;
         let error_val = self
             .builder
             .build_load(ptr_type, error_val, "error_val_load")?;
@@ -469,19 +490,17 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         deferred: &mut Vec<ClosureBundle<'ctx>>,
     ) -> Result<(), BuilderError> {
         // Get a newly allocated undefined value
-        let gc_alloc_undef_val = self.module.get_function("alloc_undef_val").unwrap();
-        let undef_val = self
+        let alloc_cell = self.module.get_function("alloc_cell").unwrap();
+        let cell = self
             .builder
-            .build_call(gc_alloc_undef_val, &[], "undefined")?
+            .build_call(alloc_cell, &[], "cell")?
             .try_as_basic_value()
             .left()
-            .unwrap()
-            .into_pointer_value();
+            .unwrap();
 
         // Rebind the variable to it
-        self.rebinds.rebind(Var::Local(var), undef_val);
-
-        let new_alloc = Allocs::new(allocs, undef_val);
+        self.rebinds.rebind(Var::Local(var), cell);
+        let new_alloc = Allocs::new(allocs, cell);
 
         // Compile the continuation with the newly allocated value
         self.cps_codegen(cexpr, new_alloc, deferred)?;
@@ -489,8 +508,53 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         Ok(())
     }
 
-    fn drop_values_codegen(&self, drops: Option<Rc<Allocs<'ctx>>>) -> Result<(), BuilderError> {
+    fn drops_codegen(&self, drops: Option<Rc<Allocs<'ctx>>>) -> Result<(), BuilderError> {
+        self.drop_values_codgen(drops.clone())?;
+        self.drop_cells_codegen(drops.clone())?;
+        Ok(())
+    }
+
+    fn drop_values_codgen(&self, drops: Option<Rc<Allocs<'ctx>>>) -> Result<(), BuilderError> {
         let drops = drops.as_ref().map_or_else(Vec::new, |x| x.to_values());
+        let num_drops = drops.len();
+
+        if num_drops == 0 {
+            return Ok(());
+        }
+
+        // Put the drops in an array
+        let i64_type = self.ctx.i64_type();
+        let i32_type = self.ctx.i32_type();
+        let array_type = i64_type.array_type(drops.len() as u32);
+        let drops_alloca = self.builder.build_alloca(array_type, "drops")?;
+        for (i, drp) in drops.into_iter().enumerate() {
+            let ep = unsafe {
+                self.builder.build_gep(
+                    i64_type,
+                    drops_alloca,
+                    &[i32_type.const_int(i as u64, false)],
+                    "alloca_elem",
+                )?
+            };
+            self.builder.build_store(ep, drp)?;
+        }
+
+        // Call drop_values
+        let drop_values = self.module.get_function("drop_values").unwrap();
+        self.builder.build_call(
+            drop_values,
+            &[
+                drops_alloca.into(),
+                i32_type.const_int(num_drops as u64, false).into(),
+            ],
+            "drop_values",
+        )?;
+
+        Ok(())
+    }
+
+    fn drop_cells_codegen(&self, drops: Option<Rc<Allocs<'ctx>>>) -> Result<(), BuilderError> {
+        let drops = drops.as_ref().map_or_else(Vec::new, |x| x.to_cells());
         let num_drops = drops.len();
 
         if num_drops == 0 {
@@ -514,15 +578,15 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             self.builder.build_store(ep, drp)?;
         }
 
-        // Call drop_values
-        let drop_values = self.module.get_function("drop_values").unwrap();
+        // Call drop_cells
+        let drop_cells = self.module.get_function("drop_cells").unwrap();
         self.builder.build_call(
-            drop_values,
+            drop_cells,
             &[
                 drops_alloca.into(),
                 i32_type.const_int(num_drops as u64, false).into(),
             ],
-            "drop_values",
+            "drop_cells",
         )?;
 
         Ok(())
@@ -535,7 +599,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         call_site_id: Option<CallSiteId>,
         allocs: Option<Rc<Allocs<'ctx>>>,
     ) -> Result<(), BuilderError> {
-        let operator = self.value_codegen(operator)?;
+        let operator = self.value_codegen(operator);
 
         // Allocate space for the args to be passed to make_application
         let ptr_type = self.ctx.ptr_type(AddressSpace::default());
@@ -551,7 +615,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                     "alloca_elem",
                 )?
             };
-            let val = self.value_codegen(arg)?;
+            let val = self.value_codegen(arg);
             self.builder.build_store(ep, val)?;
         }
 
@@ -591,7 +655,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
 
         // Now that we have created an application, we can reduce the ref counts of
         // all of the Gcs we have allocated in this function:
-        self.drop_values_codegen(allocs)?;
+        self.drops_codegen(allocs)?;
 
         let _ = self.builder.build_return(Some(&app))?;
 
@@ -604,8 +668,8 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         arg: &Value,
         allocs: Option<Rc<Allocs<'ctx>>>,
     ) -> Result<(), BuilderError> {
-        let operator = self.value_codegen(operator)?;
-        let arg = self.value_codegen(arg)?;
+        let operator = self.value_codegen(operator);
+        let arg = self.value_codegen(arg);
 
         let make_forward = self.module.get_function("forward").unwrap();
         let app = self
@@ -634,7 +698,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
 
         // Now that we have created an application, we can reduce the ref counts of
         // all of the Gcs we have allocated in this function:
-        self.drop_values_codegen(allocs)?;
+        self.drops_codegen(allocs)?;
 
         let _ = self.builder.build_return(Some(&app))?;
 
@@ -646,7 +710,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         args: &Value,
         allocs: Option<Rc<Allocs<'ctx>>>,
     ) -> Result<(), BuilderError> {
-        let val = self.value_codegen(args)?;
+        let val = self.value_codegen(args);
         let make_app = self.module.get_function("halt").unwrap();
         let app = self
             .builder
@@ -655,7 +719,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             .left()
             .unwrap();
 
-        self.drop_values_codegen(allocs)?;
+        self.drops_codegen(allocs)?;
 
         let _ = self.builder.build_return(Some(&app))?;
 
@@ -670,7 +734,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         allocs: Option<Rc<Allocs<'ctx>>>,
         deferred: &mut Vec<ClosureBundle<'ctx>>,
     ) -> Result<(), BuilderError> {
-        let cond = self.value_codegen(cond)?;
+        let cond = self.value_codegen(cond);
         let truthy = self.module.get_function("truthy").unwrap();
         let cond = self
             .builder
@@ -697,31 +761,60 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
     }
 
     fn store_codegen(&self, from: &Value, to: &Value) -> Result<(), BuilderError> {
-        let from = self.value_codegen(from)?.into();
-        let to = self.value_codegen(to)?.into();
+        let from = self.value_codegen(from).into();
+        let Value::Var(to) = to else { unreachable!() };
+        let to = self.rebinds.fetch_bind(to).into_pointer_value().into();
         let store = self.module.get_function("store").unwrap();
         let _ = self.builder.build_call(store, &[from, to], "")?;
         Ok(())
     }
 
-    fn get_call_transformer_codegen(&mut self, result: Local) -> Result<(), BuilderError> {
+    fn get_call_transformer_codegen(
+        &mut self,
+        env: &[Value],
+        result: Local,
+    ) -> Result<(), BuilderError> {
+        let i32_type = self.ctx.i32_type();
+        let ptr_type = self.ctx.ptr_type(AddressSpace::default());
+
+        let num_envs = i32_type.const_int(env.len() as u64, false);
+        let env_type = ptr_type.array_type(env.len() as u32);
+        let env_alloca = self.builder.build_alloca(env_type, "env_alloca")?;
+
+        for (i, var) in env.iter().enumerate() {
+            let ep = unsafe {
+                self.builder.build_gep(
+                    ptr_type,
+                    env_alloca,
+                    &[i32_type.const_int(i as u64, false)],
+                    "alloca_elem",
+                )?
+            };
+            let Value::Var(var) = var else { unreachable!() };
+            let val = *self.rebinds.fetch_bind(var);
+            assert!(val.is_pointer_value());
+            self.builder.build_store(ep, val)?;
+        }
+
         let get_call_transformer_fn = self.module.get_function("get_call_transformer_fn").unwrap();
         let expanded = self
             .builder
             .build_call(
                 get_call_transformer_fn,
-                &[self
-                    .function
-                    .get_nth_param(RUNTIME_PARAM)
-                    .unwrap()
-                    .into_pointer_value()
-                    .into()],
+                &[
+                    self.function
+                        .get_nth_param(RUNTIME_PARAM)
+                        .unwrap()
+                        .into_pointer_value()
+                        .into(),
+                    env_alloca.into(),
+                    num_envs.into(),
+                ],
                 "call_transformer",
             )?
             .try_as_basic_value()
             .left()
-            .unwrap()
-            .into_pointer_value();
+            .unwrap();
         self.rebinds.rebind(Var::Local(result), expanded);
         Ok(())
     }
@@ -752,7 +845,8 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                     "alloca_elem",
                 )?
             };
-            let val: BasicValueEnum = (*self.rebinds.fetch_bind(&Var::Local(*var))).into();
+            let val = *self.rebinds.fetch_bind(&Var::Local(*var));
+            assert!(val.is_pointer_value());
             self.builder.build_store(ep, val)?;
         }
 
@@ -770,7 +864,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                     "alloca_elem",
                 )?
             };
-            let val: BasicValueEnum = (*self.rebinds.fetch_bind(&Var::Global(var.clone()))).into();
+            let val = *self.rebinds.fetch_bind(&Var::Global(var.clone()));
             self.builder.build_store(ep, val)?;
         }
 
@@ -809,8 +903,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             .build_call(make_closure, &args, "make_closure")?
             .try_as_basic_value()
             .left()
-            .unwrap()
-            .into_pointer_value();
+            .unwrap();
 
         self.rebinds.rebind(Var::Local(bundle.val), closure);
 
@@ -824,6 +917,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
 
 #[derive(Debug)]
 pub struct ClosureBundle<'ctx> {
+    runtime: Gc<Runtime>,
     val: Local,
     env: Vec<Local>,
     globals: Vec<Global>,
@@ -842,6 +936,7 @@ const CONTINUATION_PARAM: u32 = 6;
 
 impl<'ctx> ClosureBundle<'ctx> {
     fn new(
+        runtime: Gc<Runtime>,
         ctx: &'ctx Context,
         module: &Module<'ctx>,
         val: Local,
@@ -887,6 +982,7 @@ impl<'ctx> ClosureBundle<'ctx> {
         let name = val.to_func_name();
         let function = module.add_function(&name, fn_type, None);
         Self {
+            runtime,
             val,
             env,
             globals,
@@ -903,12 +999,14 @@ impl<'ctx> ClosureBundle<'ctx> {
         builder: &'b Builder<'ctx>,
         deferred: &mut Vec<Self>,
     ) -> Result<(), BuilderError> {
+        // let i64_type = ctx.i64_type();
         let ptr_type = ctx.ptr_type(AddressSpace::default());
         let entry = ctx.append_basic_block(self.function, "entry");
 
         builder.position_at_end(entry);
 
-        let mut cu = CompilationUnit::new(ctx, module, builder, self.function);
+        let mut cu =
+            CompilationUnit::new(self.runtime.clone(), ctx, module, builder, self.function);
 
         let env_param = self
             .function
@@ -923,8 +1021,7 @@ impl<'ctx> ClosureBundle<'ctx> {
         for (i, env_var) in self.env.iter().enumerate() {
             let res = builder
                 .build_extract_value(env_load, i as u32, "extract_env")
-                .unwrap()
-                .into_pointer_value();
+                .unwrap();
             cu.rebinds.rebind(Var::Local(*env_var), res);
         }
 
@@ -941,8 +1038,7 @@ impl<'ctx> ClosureBundle<'ctx> {
         for (i, global) in self.globals.iter().enumerate() {
             let res = builder
                 .build_extract_value(globals_load, i as u32, "extract_global")
-                .unwrap()
-                .into_pointer_value();
+                .unwrap();
             cu.rebinds.rebind(Var::Global(global.clone()), res);
         }
 
@@ -959,17 +1055,12 @@ impl<'ctx> ClosureBundle<'ctx> {
         for (i, arg_var) in self.args.args.iter().enumerate() {
             let res = builder
                 .build_extract_value(args_load, i as u32, "extract_arg")
-                .unwrap()
-                .into_pointer_value();
+                .unwrap();
             cu.rebinds.rebind(Var::Local(*arg_var), res);
         }
 
         if let Some(cont) = self.args.continuation {
-            let cont_param = self
-                .function
-                .get_nth_param(CONTINUATION_PARAM)
-                .unwrap()
-                .into_pointer_value();
+            let cont_param = self.function.get_nth_param(CONTINUATION_PARAM).unwrap();
             cu.rebinds.rebind(Var::Local(cont), cont_param);
         }
 

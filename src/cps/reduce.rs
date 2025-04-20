@@ -24,10 +24,6 @@ impl Cps {
         uses_cache: &mut HashMap<Local, HashMap<Local, usize>>,
     ) -> Self {
         match self {
-            Cps::AllocCell(cell, cexp) => Cps::AllocCell(
-                cell,
-                Box::new(cexp.beta_reduction(single_use_functions, uses_cache)),
-            ),
             Cps::PrimOp(prim_op, values, result, cexp) => Cps::PrimOp(
                 prim_op,
                 values,
@@ -44,7 +40,7 @@ impl Cps {
                 body,
                 val,
                 cexp,
-                debug: debug_info_id,
+                debug,
             } => {
                 let body = body.beta_reduction(single_use_functions, uses_cache);
                 let cexp = cexp.beta_reduction(single_use_functions, uses_cache);
@@ -52,7 +48,8 @@ impl Cps {
                 let is_recursive = body.uses(uses_cache).contains_key(&val);
                 let uses = cexp.uses(uses_cache).get(&val).copied().unwrap_or(0);
 
-                if !is_recursive && uses == 1 {
+                // TODO: When we get more list primops, allow for variadic substitutions
+                if !args.variadic && !is_recursive && uses == 1 {
                     single_use_functions.insert(val, (args, body));
                     let cexp = cexp.beta_reduction(single_use_functions, uses_cache);
                     if let Some((args, body)) = single_use_functions.remove(&val) {
@@ -62,7 +59,7 @@ impl Cps {
                             body: Box::new(body),
                             val,
                             cexp: Box::new(cexp),
-                            debug: debug_info_id,
+                            debug,
                         }
                     } else {
                         cexp
@@ -74,7 +71,7 @@ impl Cps {
                         body: Box::new(body),
                         val,
                         cexp: Box::new(cexp),
-                        debug: debug_info_id,
+                        debug,
                     }
                 }
             }
