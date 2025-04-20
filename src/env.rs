@@ -1,5 +1,8 @@
 use std::{
-    collections::{hash_map::Entry, HashMap}, fmt, hash::{Hash, Hasher}, sync::atomic::{AtomicUsize, Ordering}
+    collections::{hash_map::Entry, HashMap},
+    fmt,
+    hash::{Hash, Hasher},
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use crate::{
@@ -77,9 +80,7 @@ impl Top {
     pub fn fetch_var(&mut self, name: &Identifier) -> Option<Global> {
         self.vars
             .get(name)
-            .map(|val| 
-                Global::new(name.clone(), val.clone())
-            )
+            .map(|val| Global::new(name.clone(), val.clone()))
     }
 
     pub fn fetch_macro(&self, name: &Identifier) -> Option<Macro> {

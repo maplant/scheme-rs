@@ -16,7 +16,8 @@ use crate::{
     ast::Literal,
     env::{Global, Local, Var},
     gc::Trace,
-    runtime::{CallSiteId, FunctionDebugInfoId}, value::Value as RuntimeValue,
+    runtime::{CallSiteId, FunctionDebugInfoId},
+    value::Value as RuntimeValue,
 };
 use std::{
     collections::{HashMap, HashSet},

@@ -315,7 +315,9 @@ impl Expression {
                         .or_else(|| {
                             let top = env.fetch_top();
                             let is_repl = { top.read().is_repl() };
-                            is_repl.then(||Var::Global(top.write().def_var(ident.clone(), Value::undefined())))
+                            is_repl.then(|| {
+                                Var::Global(top.write().def_var(ident.clone(), Value::undefined()))
+                            })
                         })
                         .ok_or_else(|| ParseAstError::UndefinedVariable(ident.clone()))?,
                 )),
@@ -436,7 +438,7 @@ impl Expression {
 
         if let Expression::Var(Var::Global(global)) = self {
             let val = global.value_ref().read().clone();
-            let val: Gc<Closure>  = val.try_into().ok()?;
+            let val: Gc<Closure> = val.try_into().ok()?;
             let val_read = val.read();
             match val_read.func {
                 Bridge(ptr) if ptr == add_builtin_wrapper => Some(PrimOp::Add),

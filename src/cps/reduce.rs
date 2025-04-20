@@ -71,7 +71,7 @@ impl Cps {
                         body: Box::new(body),
                         val,
                         cexp: Box::new(cexp),
-                        debug
+                        debug,
                     }
                 }
             }

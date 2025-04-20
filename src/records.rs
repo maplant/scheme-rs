@@ -1,6 +1,6 @@
 //! Rudimentary structure support. CPS will probably make a lot of this redundant.
 
-use std::{sync::Arc, collections::HashMap};
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     ast::ParseAstError,

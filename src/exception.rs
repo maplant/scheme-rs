@@ -178,7 +178,7 @@ pub struct ExceptionHandler {
     /// None, we return the condition as an Error.
     prev_handler: Option<Gc<ExceptionHandler>>,
     /// The currently installed handler.
-    curr_handler: Closure,
+    curr_handler: Gc<Closure>,
     /// The dynamic extent of the exception handler.
     dynamic_extent: DynamicWind,
 }
@@ -188,7 +188,9 @@ impl ExceptionHandler {
     /// Exception handler must point to a valid Gc'd object.
     pub unsafe fn from_ptr(ptr: *mut GcInner<Self>) -> Option<Gc<Self>> {
         use std::ops::Not;
-        ptr.is_null().not().then(|| unsafe { Gc::from_raw(ptr) })
+        ptr.is_null()
+            .not()
+            .then(|| unsafe { Gc::from_raw_inc_rc(ptr) })
     }
 }
 
@@ -196,21 +198,18 @@ pub fn with_exception_handler<'a>(
     args: &'a [Value],
     _rest_args: &'a [Value],
     cont: &'a Value,
-    env: &'a [Gc<Value>],
+    _env: &'a [Gc<Value>],
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {
-    /*
     Box::pin(async move {
         let [handler, thunk] = args else {
             return Err(Condition::wrong_num_of_args(2, args.len()).into());
         };
 
-        let handler_ref = handler.read();
-        let handler: &Closure = handler_ref.as_ref().try_into()?;
+        let handler: Gc<Closure> = handler.clone().try_into()?;
 
-        let thunk_ref = thunk.read();
-        let thunk: &Closure = thunk_ref.as_ref().try_into()?;
+        let thunk: Gc<Closure> = thunk.clone().try_into()?;
 
         let exception_handler = ExceptionHandler {
             prev_handler: exception_handler.clone(),
@@ -226,8 +225,6 @@ pub fn with_exception_handler<'a>(
             None,
         ))
     })
-     */
-    todo!()
 }
 
 inventory::submit! {
@@ -256,7 +253,6 @@ pub fn raise<'a>(
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {
-    /*
     Box::pin(async move {
         let [condition] = args else {
             return Err(Condition::wrong_num_of_args(1, args.len()).into());
@@ -268,29 +264,31 @@ pub fn raise<'a>(
             return Err(condition.clone());
         };
 
-        let handler = handler.read().clone();
+        let handler = handler.read();
+        let runtime = {
+            let curr_handler = handler.curr_handler.read();
+            curr_handler.runtime.clone()
+        };
 
         Ok(Application::new(
             handler.curr_handler.clone(),
             vec![
                 condition.clone(),
-                Gc::new(Value::Closure(Closure::new(
-                    handler.curr_handler.runtime.clone(),
-                    vec![condition.clone(), cont.clone()],
+                Value::from(Closure::new(
+                    runtime,
+                    vec![Gc::new(condition.clone()), Gc::new(cont.clone())],
                     Vec::new(),
                     FuncPtr::Continuation(reraise_exception),
                     0,
                     true,
                     Some(IGNORE_FUNCTION),
-                ))),
+                )),
             ],
             handler.prev_handler.clone(),
             dynamic_wind.clone(),
             None,
         ))
-})
-     */
-    todo!()
+    })
 }
 
 inventory::submit! {
@@ -314,21 +312,22 @@ unsafe extern "C" fn reraise_exception(
     runtime: *mut GcInner<Runtime>,
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
-    _args: *const i64,
+    _args: *const *mut GcInner<Value>,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition> {
-    /*
-    let runtime = Gc::from_raw(runtime);
+    let runtime = Gc::from_raw_inc_rc(runtime);
 
     // env[0] is the exception
-    let exception = Gc::from_raw(env.read());
+    let exception = Gc::from_raw_inc_rc(env.read());
+    let exception = exception.read().clone();
 
     // env[1] is the continuation
-    let cont = Gc::from_raw(env.add(1).read());
+    let cont = Gc::from_raw_inc_rc(env.add(1).read());
+    let cont = cont.read().clone();
 
     Box::into_raw(Box::new(Ok(Application::new(
-        Closure::new(
+        Gc::new(Closure::new(
             runtime,
             Vec::new(),
             Vec::new(),
@@ -336,14 +335,12 @@ unsafe extern "C" fn reraise_exception(
             1,
             false,
             Some(IGNORE_FUNCTION),
-        ),
+        )),
         vec![exception, cont],
         ExceptionHandler::from_ptr(exception_handler),
         dynamic_wind.as_ref().unwrap().clone(),
         None,
-))))
-     */
-    todo!()
+    ))))
 }
 
 /// Raises an exception to the current exception handler and coninues with the
@@ -356,7 +353,6 @@ pub fn raise_continuable<'a>(
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {
-    /*
     Box::pin(async move {
         let [condition] = args else {
             return Err(Condition::wrong_num_of_args(1, args.len()).into());
@@ -376,8 +372,6 @@ pub fn raise_continuable<'a>(
             None,
         ))
     })
-     */
-    todo!()
 }
 
 inventory::submit! {

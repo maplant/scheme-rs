@@ -117,16 +117,9 @@ impl Closure {
     pub(crate) fn deep_clone(&mut self, cloned: &mut HashMap<ClonedContinuation, Value>) {
         let new_env: Vec<_> = std::mem::take(&mut self.env)
             .into_iter()
-            .map(|env| {
-                Gc::new(clone_continuation_env(&env.read(), cloned))
-            })
+            .map(|env| Gc::new(clone_continuation_env(&env.read(), cloned)))
             .collect();
         self.env = new_env;
-        /*
-        for captured in &mut self.env {
-            *captured = Gc::new(clone_continuation_env(captured, cloned));
-        }
-        */
     }
 
     pub async fn apply(
@@ -135,7 +128,7 @@ impl Closure {
         exception_handler: Option<Gc<ExceptionHandler>>,
         dynamic_wind: &DynamicWind,
     ) -> Result<Application, Value> {
-        // Handle arguments
+        // Handle arguments:
 
         // Extract the continuation, if it is required
         let cont = !matches!(self.func, FuncPtr::Continuation(_));
@@ -217,7 +210,7 @@ impl Closure {
                         args.as_ptr(),
                         exception_handler.as_ref().map_or_else(null_mut, Gc::as_ptr),
                         dynamic_wind as *const DynamicWind,
-                        cont.as_ref().map(Gc::as_ptr).unwrap()
+                        cont.as_ref().map(Gc::as_ptr).unwrap(),
                     );
                     *Box::from_raw(app)
                 },
@@ -546,22 +539,24 @@ pub(crate) fn clone_continuation_env(
     if value.type_of() != ValueType::Closure {
         return value.clone();
     }
-    let UnpackedValue::Closure(clos) = value.clone().unpack() else { unreachable!() };
+    let UnpackedValue::Closure(clos) = value.clone().unpack() else {
+        unreachable!()
+    };
 
     if clos.read().is_user_func() {
         return value.clone();
     }
-    
+
     let to_clone = ClonedContinuation(clos);
-    
+
     if let Some(cloned) = cloned.get(&to_clone) {
         return cloned.clone();
     }
-    
+
     let clos_cloned = Gc::new(to_clone.0.read().clone());
     cloned.insert(to_clone, Value::from(clos_cloned.clone()));
 
-    { 
+    {
         let mut clos_mut = clos_cloned.write();
         clos_mut.deep_clone(cloned);
     }
@@ -589,51 +584,52 @@ unsafe extern "C" fn call_consumer_with_values(
     _runtime: *mut GcInner<Runtime>,
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
-    args: *const i64,
+    args: *const *mut GcInner<Value>,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition> {
-    /*
     // env[0] is the consumer
-    let consumer = Gc::from_raw(env.read());
+    let consumer = Gc::from_raw_inc_rc(env.read());
     let consumer = {
-        let consumer_ref = consumer.read();
-        let consumer: &Closure = if let Ok(consumer) = consumer_ref.as_ref().try_into() {
+        let consumer_read = consumer.read();
+        let consumer: Gc<Closure> = if let Ok(consumer) = consumer_read.clone().try_into() {
             consumer
         } else {
             return Box::into_raw(Box::new(Err(Condition::invalid_operator_type(
-                consumer_ref.type_name(),
+                consumer_read.type_name(),
             ))));
         };
         consumer.clone()
     };
-    // env[1] is the continuation
-    let cont = Gc::from_raw(env.add(1).read());
 
-    let mut collected_args: Vec<_> = (0..consumer.num_required_args)
-        .map(|i| Gc::from_raw(args.add(i).read()))
+    let consumer_read = consumer.read();
+
+    // env[1] is the continuation
+    let cont = Gc::from_raw_inc_rc(env.add(1).read());
+
+    let mut collected_args: Vec<_> = (0..consumer_read.num_required_args)
+        .map(|i| Gc::from_raw_inc_rc(args.add(i).read()).read().clone())
         .collect();
 
     // I hate this constant going back and forth from variadic to list. I have
     // to figure out a way to make it consistent
-    if consumer.variadic {
-        let rest_args = Gc::from_raw(args.add(consumer.num_required_args).read());
+    if consumer_read.variadic {
+        let rest_args = Gc::from_raw_inc_rc(args.add(consumer_read.num_required_args).read());
+        let rest_args_read = rest_args.read();
         let mut vec = Vec::new();
-        list_to_vec(&rest_args, &mut vec);
+        list_to_vec(&rest_args_read, &mut vec);
         collected_args.extend(vec);
     }
 
-    collected_args.push(cont);
+    collected_args.push(cont.read().clone());
 
     Box::into_raw(Box::new(Ok(Application::new(
-        consumer,
+        consumer.clone(),
         collected_args,
         ExceptionHandler::from_ptr(exception_handler),
         dynamic_wind.as_ref().unwrap().clone(),
         None,
     ))))
-     */
-    todo!()
 }
 
 pub fn call_with_values<'a>(
@@ -644,29 +640,26 @@ pub fn call_with_values<'a>(
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {
-    /*
     Box::pin(async move {
         let [producer, consumer] = args else {
             return Err(Condition::wrong_num_of_args(2, args.len()).into());
         };
 
-        // Fetch the producer
-        let producer = {
-            let producer_ref = producer.read();
-            let producer: &Closure = producer_ref.as_ref().try_into()?;
-            producer.clone()
-        };
+        let producer: Gc<Closure> = producer.clone().try_into()?;
+        let consumer: Gc<Closure> = consumer.clone().try_into()?;
 
         // Get the details of the consumer:
         let (num_required_args, variadic) = {
-            let consumer_ref = consumer.read();
-            let consumer: &Closure = consumer_ref.as_ref().try_into()?;
-            (consumer.num_required_args, consumer.variadic)
+            let consumer_read = consumer.read();
+            (consumer_read.num_required_args, consumer_read.variadic)
         };
 
         let call_consumer_closure = Closure::new(
-            producer.runtime.clone(),
-            vec![consumer.clone(), cont.clone()],
+            producer.read().runtime.clone(),
+            vec![
+                Gc::new(Value::from(consumer)),
+                Gc::new(Value::from(cont.clone())),
+            ],
             Vec::new(),
             FuncPtr::Continuation(call_consumer_with_values),
             num_required_args,
@@ -676,14 +669,12 @@ pub fn call_with_values<'a>(
 
         Ok(Application::new(
             producer,
-            vec![Gc::new(Value::Closure(call_consumer_closure))],
+            vec![Value::from(call_consumer_closure)],
             exception_handler.clone(),
             dynamic_wind.clone(),
             None,
         ))
     })
-     */
-    todo!()
 }
 
 inventory::submit! {
@@ -716,36 +707,23 @@ pub fn dynamic_wind<'a>(
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {
-    /*
     Box::pin(async move {
-        let [in_thunk_gc, body_thunk, out_thunk_gc] = args else {
+        let [in_thunk_val, body_thunk_val, out_thunk_val] = args else {
             return Err(Condition::wrong_num_of_args(3, args.len()).into());
         };
-        let in_thunk = {
-            let in_thunk_ref = in_thunk_gc.read();
-            let in_thunk: &Closure = in_thunk_ref.as_ref().try_into()?;
-            in_thunk.clone()
-        };
 
-        {
-            let out_thunk_ref = out_thunk_gc.read();
-            let _: &Closure = out_thunk_ref.as_ref().try_into()?;
-        };
+        let in_thunk: Gc<Closure> = in_thunk_val.clone().try_into()?;
+        let _: Gc<Closure> = body_thunk_val.clone().try_into()?;
 
-        {
-            let body_thunk_ref = body_thunk.read();
-            let _: &Closure = body_thunk_ref.as_ref().try_into()?;
-        };
-
-        let runtime = in_thunk.runtime.clone();
+        let runtime = in_thunk.read().runtime.clone();
 
         let call_body_thunk_cont = Closure::new(
             runtime,
             vec![
-                in_thunk_gc.clone(),
-                body_thunk.clone(),
-                out_thunk_gc.clone(),
-                cont.clone(),
+                Gc::new(in_thunk_val.clone()),
+                Gc::new(body_thunk_val.clone()),
+                Gc::new(out_thunk_val.clone()),
+                Gc::new(cont.clone()),
             ],
             Vec::new(),
             FuncPtr::Continuation(call_body_thunk),
@@ -756,14 +734,12 @@ pub fn dynamic_wind<'a>(
 
         Ok(Application::new(
             in_thunk,
-            vec![Gc::new(Value::Closure(call_body_thunk_cont))],
+            vec![Value::from(call_body_thunk_cont)],
             exception_handler.clone(),
             dynamic_wind.clone(),
             None,
         ))
     })
-     */
-    todo!()
 }
 
 inventory::submit! {
@@ -787,28 +763,31 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
     runtime: *mut GcInner<Runtime>,
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
-    _args: *const i64,
+    _args: *const *mut GcInner<Value>,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition> {
-    /*
     // env[0] is the in thunk
-    let in_thunk = Gc::from_raw(env.read());
+    let in_thunk = Gc::from_raw_inc_rc(env.read());
     // env[1] is the body thunk
-    let body_thunk: Closure = Gc::from_raw(env.add(1).read()).try_into().unwrap();
+    let body_thunk: Gc<Closure> = Gc::from_raw_inc_rc(env.add(1).read())
+        .read()
+        .clone()
+        .try_into()
+        .unwrap();
     // env[2] is the out thunk
-    let out_thunk = Gc::from_raw(env.add(2).read());
+    let out_thunk = Gc::from_raw_inc_rc(env.add(2).read());
     // env[3] is k, the continuation
-    let k = Gc::from_raw(env.add(3).read());
+    let k = Gc::from_raw_inc_rc(env.add(3).read());
 
     let mut new_extent = dynamic_wind.as_ref().unwrap().clone();
     new_extent.winders.push((
-        in_thunk.clone().try_into().unwrap(),
-        out_thunk.clone().try_into().unwrap(),
+        in_thunk.read().clone().try_into().unwrap(),
+        out_thunk.read().clone().try_into().unwrap(),
     ));
 
     let cont = Closure::new(
-        Gc::from_raw(runtime),
+        Gc::from_raw_inc_rc(runtime),
         vec![out_thunk, k],
         Vec::new(),
         FuncPtr::Continuation(call_out_thunks),
@@ -819,39 +798,40 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
 
     let app = Application::new(
         body_thunk,
-        vec![Gc::new(Value::Closure(cont))],
+        vec![Value::from(cont)],
         ExceptionHandler::from_ptr(exception_handler),
         new_extent,
         None,
     );
 
     Box::into_raw(Box::new(Ok(app)))
-     */
-    todo!()
 }
 
 pub(crate) unsafe extern "C" fn call_out_thunks(
     runtime: *mut GcInner<Runtime>,
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
-    args: *const i64,
+    args: *const *mut GcInner<Value>,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition> {
-    /*
     // env[0] is the out thunk
-    let out_thunk: Closure = Gc::from_raw(env.read()).try_into().unwrap();
+    let out_thunk: Gc<Closure> = Gc::from_raw_inc_rc(env.read())
+        .read()
+        .clone()
+        .try_into()
+        .unwrap();
     // env[1] is k, the remaining continuation
-    let k = Gc::from_raw(env.add(1).read());
+    let k = Gc::from_raw_inc_rc(env.add(1).read());
 
     // args[0] is the result of the body thunk
-    let body_thunk_res = Gc::from_raw(args.read());
+    let body_thunk_res = Gc::from_raw_inc_rc(args.read());
 
     let mut new_extent = dynamic_wind.as_ref().unwrap().clone();
     new_extent.winders.pop();
 
     let cont = Closure::new(
-        Gc::from_raw(runtime),
+        Gc::from_raw_inc_rc(runtime),
         vec![body_thunk_res, k],
         Vec::new(),
         FuncPtr::Continuation(forward_body_thunk_result),
@@ -862,30 +842,31 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
 
     let app = Application::new(
         out_thunk,
-        vec![Gc::new(Value::Closure(cont))],
+        vec![Value::from(cont)],
         ExceptionHandler::from_ptr(exception_handler),
         new_extent,
         None,
     );
 
     Box::into_raw(Box::new(Ok(app)))
-     */
-    todo!()
 }
 
 unsafe extern "C" fn forward_body_thunk_result(
     _runtime: *mut GcInner<Runtime>,
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
-    _args: *const i64,
+    _args: *const *mut GcInner<Value>,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition> {
-    /*
     // env[0] is the result of the body thunk
-    let body_thunk_res = Gc::from_raw(env.read());
+    let body_thunk_res = Gc::from_raw_inc_rc(env.read()).read().clone();
     // env[1] is k, the continuation.
-    let k: Closure = Gc::from_raw(env.add(1).read()).try_into().unwrap();
+    let k: Gc<Closure> = Gc::from_raw_inc_rc(env.add(1).read())
+        .read()
+        .clone()
+        .try_into()
+        .unwrap();
 
     let mut args = Vec::new();
     list_to_vec(&body_thunk_res, &mut args);
@@ -899,6 +880,4 @@ unsafe extern "C" fn forward_body_thunk_result(
     );
 
     Box::into_raw(Box::new(Ok(app)))
-     */
-    todo!()
 }

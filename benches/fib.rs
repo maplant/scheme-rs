@@ -35,11 +35,10 @@ fn fib_benchmark(c: &mut Criterion) {
     let closure = runtime.block_on(async move { fib_fn().await });
 
     c.bench_function("fib 10000", |b| {
-        b.to_async(&runtime)
-            .iter(|| {
-                let val = closure.clone();
-                async move { val.call(&[]).await }
-            })
+        b.to_async(&runtime).iter(|| {
+            let val = closure.clone();
+            async move { val.call(&[]).await }
+        })
     });
 }
 

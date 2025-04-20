@@ -1,4 +1,10 @@
-use crate::{exception::Condition, gc::{Trace, Gc}, num::Number, registry::bridge, value::{UnpackedValue, Value}};
+use crate::{
+    exception::Condition,
+    gc::{Gc, Trace},
+    num::Number,
+    registry::bridge,
+    value::{UnpackedValue, Value},
+};
 use std::fmt;
 
 /// A pair of scheme values. Has a head and tail.
@@ -137,7 +143,6 @@ pub async fn cons(car: &Value, cdr: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(Gc::new(Pair(car.clone(), cdr.clone())))])
 }
 
-
 #[bridge(name = "car", lib = "(base)")]
 pub async fn car(val: &Value) -> Result<Vec<Value>, Condition> {
     let pair: Gc<Pair> = val.clone().try_into()?;
@@ -145,7 +150,6 @@ pub async fn car(val: &Value) -> Result<Vec<Value>, Condition> {
     let Pair(car, _) = pair_read.as_ref();
     Ok(vec![car.clone()])
 }
-
 
 #[bridge(name = "cdr", lib = "(base)")]
 pub async fn cdr(val: &Value) -> Result<Vec<Value>, Condition> {

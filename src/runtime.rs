@@ -3,7 +3,6 @@ use crate::{
     env::Local,
     exception::{Condition, ExceptionHandler},
     expand,
-    vectors,
     gc::{init_gc, Gc, GcInner, Trace},
     lists::{self, list_to_vec},
     num,
@@ -13,6 +12,7 @@ use crate::{
     },
     syntax::Span,
     value::{ReflexiveValue, UnpackedValue, Value},
+    vectors,
 };
 use indexmap::IndexMap;
 use inkwell::{
@@ -646,7 +646,11 @@ unsafe extern "C" fn prepare_continuation(
 
     let (runtime, req_args, variadic) = {
         let cont_read = cont.read();
-        (cont_read.runtime.clone(), cont_read.num_required_args, cont_read.variadic)
+        (
+            cont_read.runtime.clone(),
+            cont_read.num_required_args,
+            cont_read.variadic,
+        )
     };
 
     Value::into_raw(Value::from(Closure::new(
@@ -742,10 +746,7 @@ unsafe extern "C" fn call_thunks(
         for i in (0..num_args).rev() {
             let arg = Gc::from_raw_inc_rc(args.add(i).read());
             let arg_read = arg.read();
-            collected_args = Value::from((
-                arg_read.clone(),
-                collected_args,
-            ));
+            collected_args = Value::from((arg_read.clone(), collected_args));
         }
 
         collected_args

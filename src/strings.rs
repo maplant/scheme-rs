@@ -1,6 +1,9 @@
 //! String builtins and data types
 
-use std::{fmt, ops::{Deref, DerefMut}};
+use std::{
+    fmt,
+    ops::{Deref, DerefMut},
+};
 
 #[repr(align(16))]
 pub struct AlignedString(pub String);

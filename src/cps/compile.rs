@@ -791,17 +791,22 @@ impl Compile for SyntaxCase {
                     args: ClosureArgs::new(vec![to_expand], false, None),
                     body: Box::new(Cps::PrimOp(
                         PrimOp::GetCallTransformerFn,
-                        self.captured_env.captured.iter().copied().map(Value::from).collect(),
+                        self.captured_env
+                            .captured
+                            .iter()
+                            .copied()
+                            .map(Value::from)
+                            .collect(),
                         call_transformer,
                         Box::new(Cps::App(
                             Value::from(call_transformer),
                             vec![
-                                Value::from(RuntimeValue::from(self.captured_env.clone())),                         
+                                Value::from(RuntimeValue::from(self.captured_env.clone())),
                                 Value::from(RuntimeValue::from(self.transformer.clone())),
                                 Value::from(to_expand),
                             ]
                             .into_iter()
-                                // .chain(
+                            // .chain(
                             .chain(once(Value::from(k1)))
                             .collect(),
                             None,
