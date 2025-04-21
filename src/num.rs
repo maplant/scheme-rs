@@ -244,47 +244,52 @@ macro_rules! impl_checked_op_for_number {
                     (Self::Complex(l), Self::Complex(r)) => Self::Complex(l.$unchecked(r)),
                     (Self::Real(l), Self::Real(r)) => Self::Real(l.$unchecked(r)),
 
-                    (Self::BigInteger(big_int), Self::FixedInteger(fixed_int))
-                    | (Self::FixedInteger(fixed_int), Self::BigInteger(big_int)) => {
-                        i64::convertible_from(big_int)
-                            .then(|| i64::wrapping_from(big_int).$checked(*fixed_int))
-                            .flatten()
-                            .map(Self::FixedInteger)
-                            .unwrap_or_else(|| {
-                                Self::BigInteger(Integer::from(*fixed_int).$unchecked(big_int))
-                            })
+                    (Self::BigInteger(l), Self::FixedInteger(r)) => i64::convertible_from(l)
+                        .then(|| i64::wrapping_from(l).$checked(*r))
+                        .flatten()
+                        .map(Self::FixedInteger)
+                        .unwrap_or_else(|| Self::BigInteger(l.$unchecked(Integer::from(*r)))),
+                    (Self::FixedInteger(l), Self::BigInteger(r)) => i64::convertible_from(r)
+                        .then(|| l.$checked(i64::wrapping_from(r)))
+                        .flatten()
+                        .map(Self::FixedInteger)
+                        .unwrap_or_else(|| Self::BigInteger(Integer::from(*l).$unchecked(r))),
+
+                    (Self::Rational(l), Self::FixedInteger(r)) => {
+                        Self::Rational(l.$unchecked(Rational::from(*r)))
+                    }
+                    (Self::FixedInteger(l), Self::Rational(r)) => {
+                        Self::Rational(Rational::from(*l).$unchecked(r))
                     }
 
-                    (Self::Rational(rational), Self::FixedInteger(fixed_int))
-                    | (Self::FixedInteger(fixed_int), Self::Rational(rational)) => {
-                        Self::Rational(rational.$unchecked(Rational::from(*fixed_int)))
+                    (Self::Rational(l), Self::BigInteger(r)) => {
+                        Self::Rational(l.$unchecked(Rational::from(r)))
+                    }
+                    (Self::BigInteger(l), Self::Rational(r)) => {
+                        Self::Rational(Rational::from(l).$unchecked(r))
                     }
 
-                    (Self::BigInteger(big_int), Self::Rational(rational))
-                    | (Self::Rational(rational), Self::BigInteger(big_int)) => {
-                        Self::Rational(rational.$unchecked(Rational::from(big_int)))
-                    }
-
-                    (Self::BigInteger(big_int), Self::Real(float))
-                    | (Self::Real(float), Self::BigInteger(big_int)) => Self::Real(
-                        float.$unchecked(f64::rounding_from(big_int, RoundingMode::Nearest).0),
-                    ),
-
-                    (Self::Rational(rational), Self::Real(float))
-                    | (Self::Real(float), Self::Rational(rational)) => Self::Real(
-                        f64::rounding_from(rational, RoundingMode::Nearest)
+                    (Self::BigInteger(l), Self::Real(r)) => Self::Real(
+                        f64::rounding_from(l, RoundingMode::Nearest)
                             .0
-                            .$unchecked(float),
+                            .$unchecked(*r),
                     ),
-
-                    (Self::FixedInteger(fixed_int), Self::Real(float))
-                    | (Self::Real(float), Self::FixedInteger(fixed_int)) => {
-                        Self::Real(float.$unchecked(*fixed_int as f64))
+                    (Self::Real(l), Self::BigInteger(r)) => {
+                        Self::Real(l.$unchecked(f64::rounding_from(r, RoundingMode::Nearest).0))
                     }
 
-                    (Self::FixedInteger(fixed_int), Self::Complex(complex))
-                    | (Self::Complex(complex), Self::FixedInteger(fixed_int)) => Self::Complex(
-                        Complex64::from_i64(*fixed_int)
+                    (Self::Rational(l), Self::Real(r)) => {
+                        Self::Real(f64::rounding_from(l, RoundingMode::Nearest).0.$unchecked(r))
+                    }
+                    (Self::Real(l), Self::Rational(r)) => {
+                        Self::Real(l.$unchecked(f64::rounding_from(r, RoundingMode::Nearest).0))
+                    }
+
+                    (Self::FixedInteger(l), Self::Real(r)) => Self::Real((*l as f64).$unchecked(r)),
+                    (Self::Real(l), Self::FixedInteger(r)) => Self::Real(l.$unchecked(*r as f64)),
+
+                    (Self::FixedInteger(l), Self::Complex(r)) => Self::Complex(
+                        Complex64::from_i64(*l)
                             .ok_or_else(|| {
                                 Box::new(ArithmeticError::Overflow(
                                     Operation::$trait,
@@ -292,23 +297,60 @@ macro_rules! impl_checked_op_for_number {
                                     rhs.clone(),
                                 ))
                             })?
-                            .$unchecked(complex),
+                            .$unchecked(r),
                     ),
-
-                    (Self::BigInteger(big_int), Self::Complex(complex))
-                    | (Self::Complex(complex), Self::BigInteger(big_int)) => Self::Complex(
-                        complex.$unchecked(f64::rounding_from(big_int, RoundingMode::Nearest).0),
-                    ),
-
-                    (Self::Rational(rational), Self::Complex(complex))
-                    | (Self::Complex(complex), Self::Rational(rational)) => Self::Complex(
-                        complex.$unchecked(f64::rounding_from(rational, RoundingMode::Nearest).0),
-                    ),
-
-                    (Number::Real(real), Number::Complex(complex))
-                    | (Number::Complex(complex), Number::Real(real)) => {
-                        Self::Complex(complex.$unchecked(real))
+                    (Self::Complex(l), Self::FixedInteger(r)) => {
+                        Self::Complex(l.$unchecked(Complex64::from_i64(*r).ok_or_else(|| {
+                            Box::new(ArithmeticError::Overflow(
+                                Operation::$trait,
+                                self.clone(),
+                                rhs.clone(),
+                            ))
+                        })?))
                     }
+
+                    (Self::BigInteger(l), Self::Complex(r)) => Self::Complex(
+                        Complex64::from_f64(f64::rounding_from(l, RoundingMode::Nearest).0)
+                            .ok_or_else(|| {
+                                Box::new(ArithmeticError::Overflow(
+                                    Operation::$trait,
+                                    self.clone(),
+                                    rhs.clone(),
+                                ))
+                            })?
+                            .$unchecked(r),
+                    ),
+                    (Self::Complex(l), Self::BigInteger(r)) => {
+                        Self::Complex(l.$unchecked(f64::rounding_from(r, RoundingMode::Nearest).0))
+                    }
+
+                    (Self::Rational(l), Self::Complex(r)) => Self::Complex(
+                        Complex64::from_f64(f64::rounding_from(l, RoundingMode::Nearest).0)
+                            .ok_or_else(|| {
+                                Box::new(ArithmeticError::Overflow(
+                                    Operation::$trait,
+                                    self.clone(),
+                                    rhs.clone(),
+                                ))
+                            })?
+                            .$unchecked(r),
+                    ),
+                    (Self::Complex(l), Self::Rational(r)) => {
+                        Self::Complex(l.$unchecked(f64::rounding_from(r, RoundingMode::Nearest).0))
+                    }
+
+                    (Number::Real(l), Number::Complex(r)) => Self::Complex(
+                        Complex64::from_f64(*l)
+                            .ok_or_else(|| {
+                                Box::new(ArithmeticError::Overflow(
+                                    Operation::$trait,
+                                    self.clone(),
+                                    rhs.clone(),
+                                ))
+                            })?
+                            .$unchecked(r),
+                    ),
+                    (Number::Complex(l), Number::Real(r)) => Self::Complex(l.$unchecked(r)),
                 })
             }
         }
