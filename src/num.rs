@@ -266,21 +266,21 @@ macro_rules! impl_checked_op_for_number {
                     }
 
                     (Self::BigInteger(big_int), Self::Real(float))
-                    | (Self::Real(float), Self::BigInteger(big_int)) => Self::Rational(
-                        Rational::try_from_float_simplest(*float)?
-                            .$unchecked(Rational::from(big_int)),
+                    | (Self::Real(float), Self::BigInteger(big_int)) => Self::Real(
+                        float.$unchecked(f64::rounding_from(big_int, RoundingMode::Nearest).0),
                     ),
 
                     (Self::Rational(rational), Self::Real(float))
-                    | (Self::Real(float), Self::Rational(rational)) => Self::Rational(
-                        Rational::try_from_float_simplest(*float)?.$unchecked(rational),
+                    | (Self::Real(float), Self::Rational(rational)) => Self::Real(
+                        f64::rounding_from(rational, RoundingMode::Nearest)
+                            .0
+                            .$unchecked(float),
                     ),
 
                     (Self::FixedInteger(fixed_int), Self::Real(float))
-                    | (Self::Real(float), Self::FixedInteger(fixed_int)) => Self::Rational(
-                        Rational::from(*fixed_int)
-                            .$unchecked(Rational::try_from_float_simplest(*float)?),
-                    ),
+                    | (Self::Real(float), Self::FixedInteger(fixed_int)) => {
+                        Self::Real(float.$unchecked(*fixed_int as f64))
+                    }
 
                     (Self::FixedInteger(fixed_int), Self::Complex(complex))
                     | (Self::Complex(complex), Self::FixedInteger(fixed_int)) => Self::Complex(
@@ -322,12 +322,11 @@ impl_checked_op_for_number!(Mul, mul, checked_mul);
 impl Number {
     pub fn checked_div(&self, rhs: &Self) -> Result<Self, Box<ArithmeticError>> {
         let overflow = || ArithmeticError::Overflow(Operation::Div, self.clone(), rhs.clone());
+        if rhs.is_zero() {
+            return Err(Box::new(ArithmeticError::DivisionByZero));
+        }
 
         Ok(match (self, rhs) {
-            (l, r) if l.is_zero() || r.is_zero() => {
-                return Err(Box::new(ArithmeticError::DivisionByZero))
-            }
-
             (Self::FixedInteger(l), Self::FixedInteger(r)) => {
                 Self::Rational(Rational::from(*l) / Rational::from(*r))
             }
@@ -352,25 +351,21 @@ impl Number {
             (Self::Rational(l), Self::BigInteger(r)) => Self::Rational(l / Rational::from(r)),
 
             (Self::BigInteger(l), Self::Real(r)) => {
-                Self::Rational(Rational::from(l) / Rational::try_from_float_simplest(*r)?)
+                Self::Real(f64::rounding_from(l, RoundingMode::Nearest).0 / *r)
             }
             (Self::Real(l), Self::BigInteger(r)) => {
-                Self::Rational(Rational::try_from_float_simplest(*l)? / Rational::from(r))
+                Self::Real(*l / f64::rounding_from(r, RoundingMode::Nearest).0)
             }
 
             (Self::Rational(l), Self::Real(r)) => {
-                Self::Rational(l / Rational::try_from_float_simplest(*r)?)
+                Self::Real(f64::rounding_from(l, RoundingMode::Nearest).0 / *r)
             }
             (Self::Real(l), Self::Rational(r)) => {
-                Self::Rational(Rational::try_from_float_simplest(*l)? / r)
+                Self::Real(*l / f64::rounding_from(r, RoundingMode::Nearest).0)
             }
 
-            (Self::FixedInteger(l), Self::Real(r)) => {
-                Self::Rational(Rational::from(*l) / Rational::try_from_float_simplest(*r)?)
-            }
-            (Self::Real(l), Self::FixedInteger(r)) => {
-                Self::Rational(Rational::try_from_float_simplest(*l)? / Rational::from(*r))
-            }
+            (Self::FixedInteger(l), Self::Real(r)) => Self::Real(*l as f64 / r),
+            (Self::Real(l), Self::FixedInteger(r)) => Self::Real(l / *r as f64),
 
             (Self::FixedInteger(l), Self::Complex(r)) => {
                 Self::Complex(Complex64::from_i64(*l).ok_or_else(overflow)? / r)
