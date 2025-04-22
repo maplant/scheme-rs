@@ -80,6 +80,8 @@ pub struct Closure {
     pub num_required_args: usize,
     /// Whether or not this is a variadic function.
     pub variadic: bool,
+    /// Whether or not this function is a variable transformer.
+    pub is_variable_transformer: bool,
     /// Debug information for this function. Only applicable if the function is
     /// a user function, i.e. not a continuation.
     pub debug_info: Option<FunctionDebugInfoId>,
@@ -102,6 +104,7 @@ impl Closure {
             func,
             num_required_args,
             variadic,
+            is_variable_transformer: false,
             debug_info,
         }
     }
