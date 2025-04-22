@@ -59,7 +59,7 @@ impl Default for MutationBuffer {
 
 static MUTATION_BUFFER: OnceLock<MutationBuffer> = OnceLock::new();
 
-static MAX_PENDING_MUTATIONS_ALLOWED: usize = 500_000;
+static MAX_PENDING_MUTATIONS_ALLOWED: usize = 100_000;
 
 pub(crate) async fn yield_until_gc_cleared() {
     while PENDING_MUTATIONS.load(std::sync::atomic::Ordering::Relaxed) > MAX_PENDING_MUTATIONS_ALLOWED {
@@ -94,12 +94,12 @@ pub fn init_gc() {
         .get_or_init(|| tokio::task::spawn(async { unsafe { run_garbage_collector().await } }));
 }
 
-const MIN_MUTATIONS_PER_EPOCH: usize = 1;
-const MAX_MUTATIONS_PER_EPOCH: usize = 10_000; // No idea what a good value is here.
+const MIN_MUTATIONS_PER_EPOCH: usize = 1_000;
+const AVG_MUTATIONS_PER_EPOCH: usize = MAX_PENDING_MUTATIONS_ALLOWED >> 1;// 10_000; // No idea what a good value is here.
 
 async unsafe fn run_garbage_collector() {
     let mut last_epoch = Instant::now();
-    let mut mutation_buffer: Vec<_> = Vec::with_capacity(MAX_MUTATIONS_PER_EPOCH);
+    let mut mutation_buffer: Vec<_> = Vec::with_capacity(AVG_MUTATIONS_PER_EPOCH);
     let mut mutation_buffer_rx = MUTATION_BUFFER
         .get_or_init(MutationBuffer::default)
         .mutation_buffer_rx
@@ -150,7 +150,7 @@ async unsafe fn process_mutation_buffer(
     let to_recv = mutation_buffer_rx.len().max(MIN_MUTATIONS_PER_EPOCH);
 
     mutation_buffer_rx.recv_many(mutation_buffer, to_recv).await;
-    for mutation in std::mem::take(mutation_buffer).into_iter() {
+    for mutation in mutation_buffer.drain(..) {
         match mutation.kind {
             MutationKind::Inc => increment(mutation.gc),
             MutationKind::Dec => decrement(mutation.gc),

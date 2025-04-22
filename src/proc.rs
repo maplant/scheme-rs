@@ -11,7 +11,7 @@ use crate::{
     value::{UnpackedValue, Value, ValueType},
 };
 use futures::future::BoxFuture;
-use std::{borrow::Cow, collections::HashMap, fmt, hash::Hash, ptr::null_mut, sync::atomic::AtomicU64};
+use std::{borrow::Cow, collections::HashMap, fmt, hash::Hash, ptr::null_mut};
 
 pub type Record = Vec<Gc<Value>>;
 
@@ -84,11 +84,6 @@ pub struct Closure {
     /// a user function, i.e. not a continuation.
     pub debug_info: Option<FunctionDebugInfoId>,
 }
-
-/*
-pub static NUM_ENV_VARS: AtomicU64 = AtomicU64::new(0);
-pub static NUM_ENV_VARS_COUNT: AtomicU64 = AtomicU64::new(0);
-*/
 
 impl Closure {
     pub fn new(
@@ -186,18 +181,7 @@ impl Closure {
             .await
         } else {
             // For LLVM functions, we need to convert our args into raw pointers
-            // and make sure any freshly allocated rest_args are disposed of poperly.
-
-            /*
-            let num_env_vars = NUM_ENV_VARS.fetch_add(self.env.len() as u64, std::sync::atomic::Ordering::SeqCst);
-            let num_env_vars_count = NUM_ENV_VARS.fetch_add(1_u64, std::sync::atomic::Ordering::SeqCst);
-
-            if num_env_vars_count > 1000000000 {
-                panic!("Average number of env vars: {}", num_env_vars as f64 / num_env_vars_count as f64);
-            } else if num_env_vars_count > 1000 {
-                // println!("{num_env_vars_count}");
-            }
-             */
+            // and make sure any freshly allocated rest_args are disposed of properly.
             
             let env = cells_to_vec_of_ptrs(&self.env);
             let globals = cells_to_vec_of_ptrs(&self.globals);
