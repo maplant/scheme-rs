@@ -14,6 +14,7 @@
 mod collection;
 
 pub use collection::init_gc;
+pub(crate) use collection::yield_until_gc_cleared;
 use collection::{dec_rc, inc_rc};
 use either::Either;
 use futures::future::Shared;

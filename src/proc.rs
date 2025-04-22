@@ -3,7 +3,7 @@
 
 use crate::{
     exception::{Condition, Exception, ExceptionHandler, Frame},
-    gc::{Gc, GcInner, Trace},
+    gc::{yield_until_gc_cleared, Gc, GcInner, Trace},
     lists::{list_to_vec, slice_to_list},
     registry::{BridgeFn, BridgeFnDebugInfo},
     runtime::{FunctionDebugInfoId, Runtime, IGNORE_FUNCTION},
@@ -382,6 +382,7 @@ impl Application {
                 }
                 Ok(app) => app,
             };
+            yield_until_gc_cleared().await
         }
 
         // If we have no operator left, return the arguments as the final values:
