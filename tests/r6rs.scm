@@ -316,8 +316,97 @@
              n)
            1)
 
+;; 11.18 Binding constructs for syntactic-keywords
+(assert-eq (let-syntax ((when (syntax-rules ()
+                                ((when test stmt1 stmt2 ...)
+                                 (if test
+                                     (begin stmt1
+                                            stmt2 ...))))))
+             (let ((if #t))
+               (when if (set! if 'now))
+               if))
+           'now)
+
+(assert-eq (let ()
+             (let-syntax
+                 ((def (syntax-rules ()
+                         ((def stuff ...) (define stuff ...)))))
+               (def foo 42))
+             foo)
+           42)
+
+(assert-eq (let ((x 'outer))
+             (let-syntax ((m (syntax-rules () ((m) x))))
+               (let ((x 'inner))
+                 (m))))
+           'outer)
+
+;; TODO: Fix parser for this, I guess.
+;; (assert-eq (let ()
+;;              (let-syntax ())
+;;              5)
+;;            5)
+
+(assert-eq (letrec-syntax
+               ((my-or (syntax-rules ()
+                         ((my-or) #f)
+                         ((my-or e) e)
+                         ((my-or e1 e2 ...)
+                          (let ((temp e1))
+                            (if temp
+                                temp
+                                (my-or e2 ...)))))))
+             (let ((x #f)
+                   (y 7)
+                   (temp 8)
+                   ;; TODO: In the R6RS docs these are let and if and everything
+                   ;; works fine. Got to fix the parser
+                   (let odd?)
+                   (if even?))
+               (my-or x
+                      (let temp)
+                      (if y)
+                      y)))
+           7)
+
+(assert-eq (let ((f (lambda (x) (+ x 1))))
+             (let-syntax ((f (syntax-rules ()
+                               ((f x) x)))
+                          (g (syntax-rules ()
+                               ((g x) (f x)))))
+               (list (f 1) (g 1))))
+           '(1 2))
+
+(assert-eq (let ((f (lambda (x) (+ x 1))))
+             (letrec-syntax ((f (syntax-rules ()
+                                  ((f x) x)))
+                             (g (syntax-rules ()
+                                  ((g x) (f x)))))
+               (list (f 1) (g 1))))
+           '(1 1))
+
 ;; Extra stuff
 (assert-eq (let ([x 1])
              (syntax-case #'() ()
                ([] x)))
            1)
+
+;; Guile hygiene example:
+
+(define-syntax defconst
+  (lambda (x)
+    (syntax-case x ()
+        [(_ name val)
+         (syntax (begin
+                   (define t val)
+                   (define-syntax name
+                     (lambda (x)
+                       (syntax-case x ()
+                           ([_] #'t))))))])))
+
+;; foo is already bound to a macro in this scope
+(defconst newfoo 42)
+(defconst newbar 70)
+
+(assert-eq (newfoo) 42)
+(assert-eq (newbar) 70)

@@ -35,6 +35,10 @@ impl<'ctx> Rebinds<'ctx> {
             .unwrap_or_else(|| panic!("could not find {var:?}"))
     }
 
+    fn fetch_bind_opt(&self, var: &Var) -> Option<&BasicValueEnum<'ctx>> {
+        self.rebinds.get(var)
+    }
+
     fn new() -> Self {
         Self {
             rebinds: HashMap::default(),
@@ -791,7 +795,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 )?
             };
             let Value::Var(var) = var else { unreachable!() };
-            let val = *self.rebinds.fetch_bind(var);
+            let val = self.fetch_bind_or_undefined(var)?;
             assert!(val.is_pointer_value());
             self.builder.build_store(ep, val)?;
         }
@@ -845,7 +849,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                     "alloca_elem",
                 )?
             };
-            let val = *self.rebinds.fetch_bind(&Var::Local(*var));
+            let val = self.fetch_bind_or_undefined(&Var::Local(*var))?;
             assert!(val.is_pointer_value());
             self.builder.build_store(ep, val)?;
         }
@@ -912,6 +916,22 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         self.cps_codegen(cexp, new_alloc, deferred)?;
 
         Ok(())
+    }
+
+    fn fetch_bind_or_undefined(&self, var: &Var) -> Result<BasicValueEnum<'ctx>, BuilderError> {
+        if let Some(val) = self.rebinds.fetch_bind_opt(var) {
+            Ok(*val)
+        } else {
+            // This variable is not available to the macro transformer (or
+            // whatever else, but most likely a macro transformer)
+            let alloc_cell = self.module.get_function("alloc_cell").unwrap();
+            Ok(self
+                .builder
+                .build_call(alloc_cell, &[], "cell")?
+                .try_as_basic_value()
+                .left()
+                .unwrap())
+        }
     }
 }
 
