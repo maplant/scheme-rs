@@ -5,8 +5,9 @@ use super::*;
 
 impl Cps {
     pub(super) fn reduce(self) -> Self {
-        self.beta_reduction(&mut HashMap::default(), &mut HashMap::default())
-        // .dead_code_elimination(&mut HashMap::default())
+        // Perform beta reduction twice. This seems like the sweet spot for now
+        self.beta_reduction(&mut HashMap::default())
+            .beta_reduction(&mut HashMap::default())
     }
 
     /// Beta-reduction optimization step. This function replaces applications to
@@ -18,22 +19,18 @@ impl Cps {
     ///
     /// The uses analysis cache is absolutely demolished and dangerous to use by
     /// the end of this function.
-    fn beta_reduction(
-        self,
-        single_use_functions: &mut HashMap<Local, (ClosureArgs, Cps)>,
-        uses_cache: &mut HashMap<Local, HashMap<Local, usize>>,
-    ) -> Self {
+    fn beta_reduction(self, uses_cache: &mut HashMap<Local, HashMap<Local, usize>>) -> Self {
         match self {
             Cps::PrimOp(prim_op, values, result, cexp) => Cps::PrimOp(
                 prim_op,
                 values,
                 result,
-                Box::new(cexp.beta_reduction(single_use_functions, uses_cache)),
+                Box::new(cexp.beta_reduction(uses_cache)),
             ),
             Cps::If(cond, success, failure) => Cps::If(
                 cond,
-                Box::new(success.beta_reduction(single_use_functions, uses_cache)),
-                Box::new(failure.beta_reduction(single_use_functions, uses_cache)),
+                Box::new(success.beta_reduction(uses_cache)),
+                Box::new(failure.beta_reduction(uses_cache)),
             ),
             Cps::Closure {
                 args,
@@ -42,64 +39,72 @@ impl Cps {
                 cexp,
                 debug,
             } => {
-                let body = body.beta_reduction(single_use_functions, uses_cache);
-                let cexp = cexp.beta_reduction(single_use_functions, uses_cache);
+                let body = body.beta_reduction(uses_cache);
+                let mut cexp = cexp.beta_reduction(uses_cache);
 
                 let is_recursive = body.uses(uses_cache).contains_key(&val);
                 let uses = cexp.uses(uses_cache).get(&val).copied().unwrap_or(0);
 
                 // TODO: When we get more list primops, allow for variadic substitutions
                 if !args.variadic && !is_recursive && uses == 1 {
-                    single_use_functions.insert(val, (args, body));
-                    let cexp = cexp.beta_reduction(single_use_functions, uses_cache);
-                    if let Some((args, body)) = single_use_functions.remove(&val) {
+                    let reduced = cexp.reduce_function(val, &args, &body, uses_cache);
+                    if reduced {
                         uses_cache.remove(&val);
-                        Cps::Closure {
-                            args,
-                            body: Box::new(body),
-                            val,
-                            cexp: Box::new(cexp),
-                            debug,
-                        }
-                    } else {
-                        cexp
+                        return cexp;
                     }
-                } else {
-                    uses_cache.remove(&val);
-                    Cps::Closure {
-                        args,
-                        body: Box::new(body),
-                        val,
-                        cexp: Box::new(cexp),
-                        debug,
-                    }
+                }
+
+                Cps::Closure {
+                    args,
+                    body: Box::new(body),
+                    val,
+                    cexp: Box::new(cexp),
+                    debug,
                 }
             }
-            Cps::App(Value::Var(Var::Local(operator)), applied, call_site_id)
-                if single_use_functions.contains_key(&operator) =>
-            {
-                let (args, mut body) = single_use_functions.remove(&operator).unwrap();
+            cexp => cexp,
+        }
+    }
 
-                if args.args.len() != applied.len() {
-                    // Not really sure what to do about variadic args right now
-                    single_use_functions.insert(operator, (args, body));
-                    return Cps::App(Value::Var(Var::Local(operator)), applied, call_site_id);
+    fn reduce_function(
+        &mut self,
+        func: Local,
+        args: &ClosureArgs,
+        func_body: &Cps,
+        uses_cache: &mut HashMap<Local, HashMap<Local, usize>>,
+    ) -> bool {
+        let new = match self {
+            Cps::PrimOp(_, _, _, cexp) => {
+                return cexp.reduce_function(func, args, func_body, uses_cache)
+            }
+            Cps::If(_, succ, fail) => {
+                return succ.reduce_function(func, args, func_body, uses_cache)
+                    || fail.reduce_function(func, args, func_body, uses_cache)
+            }
+            Cps::Closure {
+                val, body, cexp, ..
+            } => {
+                let reduced = body.reduce_function(func, args, func_body, uses_cache)
+                    || cexp.reduce_function(func, args, func_body, uses_cache);
+                if reduced {
+                    uses_cache.remove(val);
                 }
-
-                // Get the substitutions:
+                return reduced;
+            }
+            Cps::App(Value::Var(Var::Local(operator)), applied, _) if *operator == func => {
                 let substitutions: HashMap<_, _> = args
                     .to_vec()
                     .into_iter()
                     .zip(applied.iter().cloned())
                     .collect();
-
-                // Perform the beta reduction:
+                let mut body = func_body.clone();
                 body.substitute(&substitutions);
-
                 body
             }
-            cexp => cexp,
-        }
+            Cps::App(_, _, _) | Cps::Forward(_, _) | Cps::Halt(_) => return false,
+        };
+        *self = new;
+        true
     }
 
     /*
@@ -113,13 +118,6 @@ impl Cps {
             Cps::Closure { val, cexp, .. } if !cexp.uses(uses_cache).contains_key(&val) => {
                 // Unused closure can be eliminated
                 cexp.dead_code_elimination(uses_cache)
-            }
-            Cps::AllocCell(cell, cexp) if !cexp.uses(uses_cache).contains_key(&cell) => {
-                // Unused cell can be eliminated
-                cexp.dead_code_elimination(uses_cache)
-            }
-            Cps::AllocCell(cell, cexp) => {
-                Cps::AllocCell(cell, Box::new(cexp.dead_code_elimination(uses_cache)))
             }
             Cps::PrimOp(prim_op, values, result, cexp) => Cps::PrimOp(
                 prim_op,
@@ -137,12 +135,13 @@ impl Cps {
                 body,
                 val,
                 cexp,
-                ..
+                debug
             } => Cps::Closure {
                 args,
                 body: Box::new(body.dead_code_elimination(uses_cache)),
                 val,
                 cexp: Box::new(cexp.dead_code_elimination(uses_cache)),
+                debug,
             },
             cexp => cexp,
         }
