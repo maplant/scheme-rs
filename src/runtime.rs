@@ -211,15 +211,15 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     let f = module.add_function("read_cell", sig, None);
     ee.add_global_mapping(&f, read_cell as usize);
 
-    // drop_cells:
-    let sig = void_type.fn_type(&[ptr_type.into(), i32_type.into()], false);
-    let f = module.add_function("drop_cells", sig, None);
-    ee.add_global_mapping(&f, drop_cells as usize);
+    // dropc:
+    let sig = void_type.fn_type(&[ptr_type.into()], false);
+    let f = module.add_function("dropc", sig, None);
+    ee.add_global_mapping(&f, dropc as usize);
 
-    // drop_values:
-    let sig = void_type.fn_type(&[ptr_type.into(), i32_type.into()], false);
-    let f = module.add_function("drop_values", sig, None);
-    ee.add_global_mapping(&f, drop_values as usize);
+    // dropv:
+    let sig = void_type.fn_type(&[i64_type.into()], false);
+    let f = module.add_function("dropv", sig, None);
+    ee.add_global_mapping(&f, dropv as usize);
 
     // apply:
     let sig = ptr_type.fn_type(
@@ -376,18 +376,14 @@ unsafe extern "C" fn read_cell(cell: *mut GcInner<Value>) -> i64 {
     raw as i64
 }
 
-/// Decrement the reference count of all of the cells
-unsafe extern "C" fn drop_cells(cells: *const *mut GcInner<Value>, num_cells: u32) {
-    for i in 0..num_cells {
-        Gc::decrement_reference_count(cells.add(i as usize).read())
-    }
+/// Decrement the reference count of a cell
+unsafe extern "C" fn dropc(cell: *mut GcInner<Value>) {
+    Gc::decrement_reference_count(cell)
 }
 
-/// Decrement the reference count of all of the values
-unsafe extern "C" fn drop_values(vals: *const i64, num_vals: u32) {
-    for i in 0..num_vals {
-        drop(Value::from_raw(vals.add(i as usize).read() as u64));
-    }
+/// Decrement the reference count of a value
+unsafe extern "C" fn dropv(val: i64) {
+    drop(Value::from_raw(val as u64))
 }
 
 /// Create a boxed application

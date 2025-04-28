@@ -519,79 +519,23 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
     }
 
     fn drop_values_codgen(&self, drops: Option<Rc<Allocs<'ctx>>>) -> Result<(), BuilderError> {
-        let drops = drops.as_ref().map_or_else(Vec::new, |x| x.to_values());
-        let num_drops = drops.len();
+        let vals = drops.as_ref().map_or_else(Vec::new, |x| x.to_values());
 
-        if num_drops == 0 {
-            return Ok(());
+        let dropv = self.module.get_function("dropv").unwrap();
+        for val in vals.into_iter() {
+            self.builder.build_call(dropv, &[val.into()], "_")?;
         }
-
-        // Put the drops in an array
-        let i64_type = self.ctx.i64_type();
-        let i32_type = self.ctx.i32_type();
-        let array_type = i64_type.array_type(drops.len() as u32);
-        let drops_alloca = self.builder.build_alloca(array_type, "drops")?;
-        for (i, drp) in drops.into_iter().enumerate() {
-            let ep = unsafe {
-                self.builder.build_gep(
-                    i64_type,
-                    drops_alloca,
-                    &[i32_type.const_int(i as u64, false)],
-                    "alloca_elem",
-                )?
-            };
-            self.builder.build_store(ep, drp)?;
-        }
-
-        // Call drop_values
-        let drop_values = self.module.get_function("drop_values").unwrap();
-        self.builder.build_call(
-            drop_values,
-            &[
-                drops_alloca.into(),
-                i32_type.const_int(num_drops as u64, false).into(),
-            ],
-            "drop_values",
-        )?;
 
         Ok(())
     }
 
     fn drop_cells_codegen(&self, drops: Option<Rc<Allocs<'ctx>>>) -> Result<(), BuilderError> {
-        let drops = drops.as_ref().map_or_else(Vec::new, |x| x.to_cells());
-        let num_drops = drops.len();
+        let cells = drops.as_ref().map_or_else(Vec::new, |x| x.to_cells());
 
-        if num_drops == 0 {
-            return Ok(());
+        let dropc = self.module.get_function("dropc").unwrap();
+        for cell in cells.into_iter() {
+            self.builder.build_call(dropc, &[cell.into()], "_")?;
         }
-
-        // Put the drops in an array
-        let ptr_type = self.ctx.ptr_type(AddressSpace::default());
-        let i32_type = self.ctx.i32_type();
-        let array_type = ptr_type.array_type(drops.len() as u32);
-        let drops_alloca = self.builder.build_alloca(array_type, "drops")?;
-        for (i, drp) in drops.into_iter().enumerate() {
-            let ep = unsafe {
-                self.builder.build_gep(
-                    ptr_type,
-                    drops_alloca,
-                    &[i32_type.const_int(i as u64, false)],
-                    "alloca_elem",
-                )?
-            };
-            self.builder.build_store(ep, drp)?;
-        }
-
-        // Call drop_cells
-        let drop_cells = self.module.get_function("drop_cells").unwrap();
-        self.builder.build_call(
-            drop_cells,
-            &[
-                drops_alloca.into(),
-                i32_type.const_int(num_drops as u64, false).into(),
-            ],
-            "drop_cells",
-        )?;
 
         Ok(())
     }
