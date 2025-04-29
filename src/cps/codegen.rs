@@ -729,7 +729,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         let env_type = ptr_type.array_type(env.len() as u32);
         let env_alloca = self.builder.build_alloca(env_type, "env_alloca")?;
 
-        for (i, var) in env.iter().enumerate() {
+        for (i, env_var) in env.iter().enumerate() {
             let ep = unsafe {
                 self.builder.build_gep(
                     ptr_type,
@@ -738,9 +738,13 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                     "alloca_elem",
                 )?
             };
-            let Value::Var(var) = var else { unreachable!() };
+            let Value::Var(var) = env_var else {
+                unreachable!()
+            };
             let val = self.fetch_bind_or_undefined(var)?;
-            assert!(val.is_pointer_value());
+            if !val.is_pointer_value() {
+                panic!("{env_var:?} is not a pointer");
+            }
             self.builder.build_store(ep, val)?;
         }
 
@@ -797,7 +801,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             if !val.is_pointer_value() {
                 panic!("{env_var:?} is not a pointer");
             }
-                // assert!(val.is_pointer_value());
+            // assert!(val.is_pointer_value());
             self.builder.build_store(ep, val)?;
         }
 

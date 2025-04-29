@@ -110,16 +110,15 @@ impl Cps {
 
     /// Removes any closures and allocated cells that are left unused.
     #[allow(dead_code)]
-    fn dead_code_elimination(
-        self,
-        uses_cache: &mut HashMap<Local, HashMap<Local, usize>>,
-    ) -> Self {
+    fn dead_code_elimination(self, uses_cache: &mut HashMap<Local, HashMap<Local, usize>>) -> Self {
         match self {
             Cps::Closure { val, cexp, .. } if !cexp.uses(uses_cache).contains_key(&val) => {
                 // Unused closure can be eliminated
                 cexp.dead_code_elimination(uses_cache)
             }
-            Cps::PrimOp(PrimOp::AllocCell, _, result, cexp) if !cexp.uses(uses_cache).contains_key(&result) => {
+            Cps::PrimOp(PrimOp::AllocCell, _, result, cexp)
+                if !cexp.uses(uses_cache).contains_key(&result) =>
+            {
                 cexp.dead_code_elimination(uses_cache)
             }
             Cps::PrimOp(prim_op, values, result, cexp) => Cps::PrimOp(
@@ -138,7 +137,7 @@ impl Cps {
                 body,
                 val,
                 cexp,
-                debug
+                debug,
             } => Cps::Closure {
                 args,
                 body: Box::new(body.dead_code_elimination(uses_cache)),
