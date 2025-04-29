@@ -88,6 +88,7 @@ impl Condition {
     }
 
     pub fn invalid_type(expected: &str, provided: &str) -> Self {
+        // panic!();
         Self::error(format!(
             "Expected value of type {expected}, provided {provided}"
         ))
@@ -313,7 +314,7 @@ unsafe extern "C" fn reraise_exception(
     runtime: *mut GcInner<Runtime>,
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
-    _args: *const *mut GcInner<Value>,
+    _args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition> {

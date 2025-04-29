@@ -385,7 +385,8 @@
                (list (f 1) (g 1))))
            '(1 1))
 
-;; Extra stuff
+;; Extra stuff:
+
 (assert-eq (let ([x 1])
              (syntax-case #'() ()
                ([] x)))
@@ -410,3 +411,6 @@
 
 (assert-eq (newfoo) 42)
 (assert-eq (newbar) 70)
+
+;; Realized this was an issue when doing escape analysis:
+(define (test a) (set! a '()))

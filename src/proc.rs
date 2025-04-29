@@ -20,7 +20,7 @@ pub type ContinuationPtr = unsafe extern "C" fn(
     runtime: *mut GcInner<Runtime>,
     env: *const *mut GcInner<Value>,
     globals: *const *mut GcInner<Value>,
-    args: *const *mut GcInner<Value>,
+    args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition>;
@@ -30,10 +30,10 @@ pub type ClosurePtr = unsafe extern "C" fn(
     runtime: *mut GcInner<Runtime>,
     env: *const *mut GcInner<Value>,
     globals: *const *mut GcInner<Value>,
-    args: *const *mut GcInner<Value>,
+    args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
-    cont: *mut GcInner<Value>,
+    cont: *const Value,
 ) -> *mut Result<Application, Condition>;
 
 /// A function pointer to an async Rust bridge function.
@@ -137,7 +137,7 @@ impl Closure {
         let cont = !matches!(self.func, FuncPtr::Continuation(_));
         let (cont, args) = if cont {
             let (cont, args) = args.split_last().unwrap();
-            (Some(Gc::new(cont.clone())), args)
+            (Some(cont.clone()), args)
         } else {
             (None, args)
         };
@@ -172,11 +172,10 @@ impl Closure {
             let FuncPtr::Bridge(async_fn) = self.func else {
                 unreachable!()
             };
-            let cont = { cont.unwrap().read().clone() };
             (async_fn)(
                 args.as_ref(),
                 rest_args.unwrap_or(&[]),
-                &cont,
+                cont.as_ref().unwrap(),
                 &self.env,
                 &exception_handler,
                 dynamic_wind,
@@ -189,8 +188,8 @@ impl Closure {
             let env = cells_to_vec_of_ptrs(&self.env);
             let globals = cells_to_vec_of_ptrs(&self.globals);
 
-            let args_cells = values_to_vec_of_cells(&args);
-            let args = cells_to_vec_of_ptrs(&args_cells);
+            // let args_cells = values_to_vec_of_cells(&args);
+            // let args = cells_to_vec_of_ptrs(&args_cells);
 
             // Finally: call the function pointer
             let app = match self.func {
@@ -213,15 +212,13 @@ impl Closure {
                         args.as_ptr(),
                         exception_handler.as_ref().map_or_else(null_mut, Gc::as_ptr),
                         dynamic_wind as *const DynamicWind,
-                        cont.as_ref().map(Gc::as_ptr).unwrap(),
+                        cont.as_ref().map(|v| v as *const Value).unwrap(),
                     );
                     *Box::from_raw(app)
                 },
                 _ => unreachable!(),
             };
 
-            // Now we can drop the args
-            drop(args_cells);
             drop(cont);
 
             Ok(app?)
@@ -235,13 +232,11 @@ impl Gc<Closure> {
             _runtime: *mut GcInner<Runtime>,
             _env: *const *mut GcInner<Value>,
             _globals: *const *mut GcInner<Value>,
-            args: *const *mut GcInner<Value>,
+            args: *const Value,
             _exception_handler: *mut GcInner<ExceptionHandler>,
             _dynamic_wind: *const DynamicWind,
         ) -> *mut Result<Application, Condition> {
-            let args = Gc::from_raw_inc_rc(args.read());
-            let args_read = args.read();
-            crate::runtime::halt(Value::as_raw(&args_read) as i64)
+            crate::runtime::halt(Value::into_raw(args.read()) as i64)
         }
 
         let mut args = args.to_vec();
@@ -300,9 +295,9 @@ fn cells_to_vec_of_ptrs(cells: &[Gc<Value>]) -> Vec<*mut GcInner<Value>> {
     cells.iter().map(Gc::as_ptr).collect()
 }
 
-fn values_to_vec_of_cells(vals: &[Value]) -> Vec<Gc<Value>> {
-    vals.iter().map(|val| Gc::new(val.clone())).collect()
-}
+// fn values_to_vec_of_cells(vals: &[Value]) -> Vec<Gc<Value>> {
+//     vals.iter().map(|val| Gc::new(val.clone())).collect()
+// }
 
 /// An application of a function to a given set of values.
 #[derive(Debug)]
@@ -587,7 +582,7 @@ unsafe extern "C" fn call_consumer_with_values(
     _runtime: *mut GcInner<Runtime>,
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
-    args: *const *mut GcInner<Value>,
+    args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition> {
@@ -611,16 +606,19 @@ unsafe extern "C" fn call_consumer_with_values(
     let cont = Gc::from_raw_inc_rc(env.add(1).read());
 
     let mut collected_args: Vec<_> = (0..consumer_read.num_required_args)
-        .map(|i| Gc::from_raw_inc_rc(args.add(i).read()).read().clone())
+        .map(|i| args.add(i).as_ref().unwrap().clone())
         .collect();
 
     // I hate this constant going back and forth from variadic to list. I have
     // to figure out a way to make it consistent
     if consumer_read.variadic {
-        let rest_args = Gc::from_raw_inc_rc(args.add(consumer_read.num_required_args).read());
-        let rest_args_read = rest_args.read();
+        let rest_args = args
+            .add(consumer_read.num_required_args)
+            .as_ref()
+            .unwrap()
+            .clone();
         let mut vec = Vec::new();
-        list_to_vec(&rest_args_read, &mut vec);
+        list_to_vec(&rest_args, &mut vec);
         collected_args.extend(vec);
     }
 
@@ -763,7 +761,7 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
     runtime: *mut GcInner<Runtime>,
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
-    _args: *const *mut GcInner<Value>,
+    _args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition> {
@@ -811,7 +809,7 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
     runtime: *mut GcInner<Runtime>,
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
-    args: *const *mut GcInner<Value>,
+    args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition> {
@@ -825,7 +823,7 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
     let k = Gc::from_raw_inc_rc(env.add(1).read());
 
     // args[0] is the result of the body thunk
-    let body_thunk_res = Gc::from_raw_inc_rc(args.read());
+    let body_thunk_res = Gc::new(args.as_ref().unwrap().clone());
 
     let mut new_extent = dynamic_wind.as_ref().unwrap().clone();
     new_extent.winders.pop();
@@ -855,7 +853,7 @@ unsafe extern "C" fn forward_body_thunk_result(
     _runtime: *mut GcInner<Runtime>,
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
-    _args: *const *mut GcInner<Value>,
+    _args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition> {

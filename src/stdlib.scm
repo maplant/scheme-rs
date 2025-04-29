@@ -295,6 +295,8 @@
     ((_ args n (r b1 b2 ...) more ...)
      (apply (lambda r b1 b2 ...) args))))
 
+;; This fails:
+
 (define (for-each func lst . remaining)
   (let loop ((rest lst))
     (unless (null? rest)

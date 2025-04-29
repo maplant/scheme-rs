@@ -25,6 +25,7 @@ const TAG_BITS: u64 = ALIGNMENT.ilog2() as u64;
 const TAG: u64 = 0b1111;
 
 /// A Scheme value. Represented as a tagged pointer.
+#[repr(transparent)]
 pub struct Value(u64);
 
 impl Value {

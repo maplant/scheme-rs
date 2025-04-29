@@ -211,15 +211,15 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     let f = module.add_function("read_cell", sig, None);
     ee.add_global_mapping(&f, read_cell as usize);
 
-    // drop_cells:
-    let sig = void_type.fn_type(&[ptr_type.into(), i32_type.into()], false);
-    let f = module.add_function("drop_cells", sig, None);
-    ee.add_global_mapping(&f, drop_cells as usize);
+    // dropc:
+    let sig = void_type.fn_type(&[ptr_type.into()], false);
+    let f = module.add_function("dropc", sig, None);
+    ee.add_global_mapping(&f, dropc as usize);
 
-    // drop_values:
-    let sig = void_type.fn_type(&[ptr_type.into(), i32_type.into()], false);
-    let f = module.add_function("drop_values", sig, None);
-    ee.add_global_mapping(&f, drop_values as usize);
+    // dropv:
+    let sig = void_type.fn_type(&[i64_type.into()], false);
+    let f = module.add_function("dropv", sig, None);
+    ee.add_global_mapping(&f, dropv as usize);
 
     // apply:
     let sig = ptr_type.fn_type(
@@ -376,18 +376,14 @@ unsafe extern "C" fn read_cell(cell: *mut GcInner<Value>) -> i64 {
     raw as i64
 }
 
-/// Decrement the reference count of all of the cells
-unsafe extern "C" fn drop_cells(cells: *const *mut GcInner<Value>, num_cells: u32) {
-    for i in 0..num_cells {
-        Gc::decrement_reference_count(cells.add(i as usize).read())
-    }
+/// Decrement the reference count of a cell
+unsafe extern "C" fn dropc(cell: *mut GcInner<Value>) {
+    Gc::decrement_reference_count(cell)
 }
 
-/// Decrement the reference count of all of the values
-unsafe extern "C" fn drop_values(vals: *const i64, num_vals: u32) {
-    for i in 0..num_vals {
-        drop(Value::from_raw(vals.add(i as usize).read() as u64));
-    }
+/// Decrement the reference count of a value
+unsafe extern "C" fn dropv(val: i64) {
+    drop(Value::from_raw(val as u64))
 }
 
 /// Create a boxed application
@@ -715,7 +711,7 @@ unsafe extern "C" fn call_thunks(
     runtime: *mut GcInner<Runtime>,
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
-    args: *const *mut GcInner<Value>,
+    args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition> {
@@ -734,18 +730,14 @@ unsafe extern "C" fn call_thunks(
         let num_args = k_read.num_required_args;
 
         let mut collected_args = if k_read.variadic {
-            let var_arg = Gc::from_raw_inc_rc(args.add(num_args).read());
-            let var_read = var_arg.read();
-            var_read.clone()
-            // Value::from_raw_inc_rc( as u64)
+            args.add(num_args).as_ref().unwrap().clone()
         } else {
             Value::null()
         };
 
         for i in (0..num_args).rev() {
-            let arg = Gc::from_raw_inc_rc(args.add(i).read());
-            let arg_read = arg.read();
-            collected_args = Value::from((arg_read.clone(), collected_args));
+            let arg = args.add(i).as_ref().unwrap().clone();
+            collected_args = Value::from((arg, collected_args));
         }
 
         collected_args
@@ -776,7 +768,7 @@ unsafe extern "C" fn call_thunks_pass_args(
     runtime: *mut GcInner<Runtime>,
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
-    _args: *const *mut GcInner<Value>,
+    _args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition> {
