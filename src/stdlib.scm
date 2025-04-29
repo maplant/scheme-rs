@@ -7,6 +7,9 @@
 ;;
 ;; This code is for definitions only. Most builtins are not provided at this point.
 
+;;
+;; Syntax definitions:
+;; 
 
 ;; Define syntax-rules in terms of syntax-case:
 (define-syntax syntax-rules
@@ -24,38 +27,6 @@
       ((_ ((p e0) ...) e1 e2 ...)
        (syntax (syntax-case (list e0 ...) ()
 		 ((p ...) (let () e1 e2 ...))))))))
-;; 
-;; Aliases:
-;; 
-(define equal? eqv?) ;; TODO(map): This is INCORRECT, needs to be fixed!
-(define (member obj list)
-  (memp (lambda (x) (equal? x obj)) list))
-(define (memv obj list)
-  (memp (lambda (x) (eqv? x obj)) list))
-(define (memq obj list)
-  (memp (lambda (x) (eq? x obj)) list))
-
-
-;; Define call/cc and call-with-current-continuation in terms of its primitive
-(define (call/cc x)
-  (&call/cc x));
-
-(define (call-with-current-continuation x)
-  (&call/cc x))
-
-;;
-;; WIP: All of the car/cdr combinations
-(define caar (lambda (x) (car (car x))))
-(define cadr (lambda (x) (car (cdr x))))
-
-;;
-;; Complex definitions:
-;;
-(define (memp proc list)
-  (if (and (pair? list)
-           (proc (car list)))
-      list
-      (if (null? list) #f (memp proc (cdr list)))))
 
 (define-syntax cond
   (syntax-rules (else =>)
@@ -113,7 +84,6 @@
      (let ((name1 expr1))
        (let* ((name2 expr2) ...)
          body1 body2 ...)))))
-
 
 (define-syntax letrec
   (syntax-rules ()
@@ -234,6 +204,16 @@
           bindings
           body1 body2 ...))))))
 
+(define-syntax let*-values
+  (syntax-rules ()
+    ((let*-values () body1 body2 ...)
+     (let-values () body1 body2 ...))
+    ((let*-values ((name1 expr1) (name2 expr2) ...)
+       body1 body2 ...)
+     (let-values ((name1 expr1))
+       (let*-values ((name2 expr2) ...)
+         body1 body2 ...)))))
+
 (define-syntax when
   (syntax-rules ()
     ((when test result1 result2 ...)
@@ -295,7 +275,37 @@
     ((_ args n (r b1 b2 ...) more ...)
      (apply (lambda r b1 b2 ...) args))))
 
-;; This fails:
+;;
+;; Aliases and function definitions: 
+;;
+
+(define equal? eqv?) ;; TODO(map): This is INCORRECT, needs to be fixed!
+(define (member obj list)
+  (memp (lambda (x) (equal? x obj)) list))
+(define (memv obj list)
+  (memp (lambda (x) (eqv? x obj)) list))
+(define (memq obj list)
+  (memp (lambda (x) (eq? x obj)) list))
+
+;; TODO: All of the car/cdr combinations
+(define caar (lambda (x) (car (car x))))
+(define cadr (lambda (x) (car (cdr x))))
+
+(define (memp proc list)
+  (if (and (pair? list)
+           (proc (car list)))
+      list
+      (if (null? list) #f (memp proc (cdr list)))))
+
+;; Define call/cc and call-with-current-continuation in terms of its primitive
+(define (call/cc x)
+  (&call/cc x));
+
+(define (call-with-current-continuation x)
+  (&call/cc x))
+
+;; TODO: a lot of these should be made into rust functions, as of right now
+;; these are quite slow.
 
 (define (for-each func lst . remaining)
   (let loop ((rest lst))
