@@ -446,7 +446,7 @@ pub fn call_transformer<'a>(
             panic!("wrong args");
         };
 
-        let cont: Gc<Closure> = cont.clone().try_into()?;
+        let cont: Gc<Closure> = cont.clone().try_into().expect("huh");
 
         // Fetch a runtime from the continuation. It doesn't really matter
         // _which_ runtime we use, in fact we could create a new one, but it

@@ -784,7 +784,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         let env_type = ptr_type.array_type(bundle.env.len() as u32);
         let env_alloca = self.builder.build_alloca(env_type, "env_alloca")?;
 
-        for (i, var) in bundle.env.iter().enumerate() {
+        for (i, env_var) in bundle.env.iter().enumerate() {
             let ep = unsafe {
                 self.builder.build_gep(
                     ptr_type,
@@ -793,8 +793,11 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                     "alloca_elem",
                 )?
             };
-            let val = self.fetch_bind_or_undefined(&Var::Local(*var))?;
-            assert!(val.is_pointer_value());
+            let val = self.fetch_bind_or_undefined(&Var::Local(*env_var))?;
+            if !val.is_pointer_value() {
+                panic!("{env_var:?} is not a pointer");
+            }
+                // assert!(val.is_pointer_value());
             self.builder.build_store(ep, val)?;
         }
 
@@ -963,7 +966,7 @@ impl<'ctx> ClosureBundle<'ctx> {
         builder: &'b Builder<'ctx>,
         deferred: &mut Vec<Self>,
     ) -> Result<(), BuilderError> {
-        // let i64_type = ctx.i64_type();
+        let i64_type = ctx.i64_type();
         let ptr_type = ctx.ptr_type(AddressSpace::default());
         let entry = ctx.append_basic_block(self.function, "entry");
 
@@ -1011,7 +1014,7 @@ impl<'ctx> ClosureBundle<'ctx> {
             .get_nth_param(ARGS_PARAM)
             .unwrap()
             .into_pointer_value();
-        let array_type = ptr_type.array_type(self.args.args.len() as u32);
+        let array_type = i64_type.array_type(self.args.args.len() as u32);
         let args_load = builder
             .build_load(array_type, args_param, "args_load")?
             .into_array_value();
@@ -1024,8 +1027,13 @@ impl<'ctx> ClosureBundle<'ctx> {
         }
 
         if let Some(cont) = self.args.continuation {
-            let cont_param = self.function.get_nth_param(CONTINUATION_PARAM).unwrap();
-            cu.rebinds.rebind(Var::Local(cont), cont_param);
+            let cont_param = self
+                .function
+                .get_nth_param(CONTINUATION_PARAM)
+                .unwrap()
+                .into_pointer_value();
+            let cont_load = builder.build_load(i64_type, cont_param, "continuation")?;
+            cu.rebinds.rebind(Var::Local(cont), cont_load);
         }
 
         cu.cps_codegen(self.body, None, deferred)?;

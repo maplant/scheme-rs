@@ -192,6 +192,7 @@ impl Registry {
     pub async fn new(runtime: &Gc<Runtime>) -> Self {
         let mut libs = HashMap::<LibraryName, Gc<Top>>::default();
 
+        
         for bridge_fn in inventory::iter::<BridgeFn>() {
             let debug_info_id = runtime.write().debug_info.new_function_debug_info(
                 crate::proc::FunctionDebugInfo::from_bridge_fn(

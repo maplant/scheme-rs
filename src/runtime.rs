@@ -711,7 +711,7 @@ unsafe extern "C" fn call_thunks(
     runtime: *mut GcInner<Runtime>,
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
-    args: *const *mut GcInner<Value>,
+    args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition> {
@@ -730,18 +730,14 @@ unsafe extern "C" fn call_thunks(
         let num_args = k_read.num_required_args;
 
         let mut collected_args = if k_read.variadic {
-            let var_arg = Gc::from_raw_inc_rc(args.add(num_args).read());
-            let var_read = var_arg.read();
-            var_read.clone()
-            // Value::from_raw_inc_rc( as u64)
+            args.add(num_args).as_ref().unwrap().clone()
         } else {
             Value::null()
         };
 
         for i in (0..num_args).rev() {
-            let arg = Gc::from_raw_inc_rc(args.add(i).read());
-            let arg_read = arg.read();
-            collected_args = Value::from((arg_read.clone(), collected_args));
+            let arg = args.add(i).as_ref().unwrap().clone();
+            collected_args = Value::from((arg, collected_args));
         }
 
         collected_args
@@ -772,7 +768,7 @@ unsafe extern "C" fn call_thunks_pass_args(
     runtime: *mut GcInner<Runtime>,
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
-    _args: *const *mut GcInner<Value>,
+    _args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition> {
