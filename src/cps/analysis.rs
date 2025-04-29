@@ -145,12 +145,29 @@ impl Cps {
     ) -> HashSet<Local> {
         match self {
             Cps::PrimOp(PrimOp::GetCallTransformerFn, args, _, cexp) => {
-                // The GetCallTransformerFn requires that all arguments to it are cells.
-                // We should fix this at some point.
+                // The GetCallTransformerFn requires that all arguments to it are
+                // cells. We should fix this at some point.
                 cexp.escaping_args(local_args, escaping_arg_cache)
                     .union(&values_to_locals(args))
                     .copied()
                     .collect()
+            }
+            Cps::PrimOp(PrimOp::Set, args, _, cexp) => {
+                let [to, from] = args.as_slice() else {
+                    unreachable!()
+                };
+                // From should always escape so that it can be set. This is
+                // really stretching the definition of "escaping", but it's easy
+                // to put in here for now.
+                let mut escaping_args = cexp.escaping_args(local_args, escaping_arg_cache);
+                match from.to_local() {
+                    Some(local) if !local_args.contains(&local) => {
+                        escaping_args.insert(local);
+                    }
+                    _ => (),
+                }
+                escaping_args.extend(to.to_local());
+                escaping_args
             }
             Cps::PrimOp(_, args, _, cexp) => values_to_locals(args)
                 .difference(local_args)
@@ -165,9 +182,9 @@ impl Cps {
                     .union(&failure.escaping_args(local_args, escaping_arg_cache))
                     .copied()
                     .collect();
-                match cond {
-                    Value::Var(Var::Local(local)) if !local_args.contains(local) => {
-                        escaping_args.insert(*local);
+                match cond.to_local() {
+                    Some(local) if !local_args.contains(&local) => {
+                        escaping_args.insert(local);
                     }
                     _ => (),
                 }
@@ -178,9 +195,9 @@ impl Cps {
                     .difference(local_args)
                     .copied()
                     .collect();
-                match op {
-                    Value::Var(Var::Local(local)) if !local_args.contains(local) => {
-                        escaping_args.insert(*local);
+                match op.to_local() {
+                    Some(local) if !local_args.contains(&local) => {
+                        escaping_args.insert(local);
                     }
                     _ => (),
                 }
@@ -188,15 +205,15 @@ impl Cps {
             }
             Cps::Forward(op, val) => {
                 let mut escaping_args = HashSet::new();
-                match val {
-                    Value::Var(Var::Local(local)) if !local_args.contains(local) => {
-                        escaping_args.insert(*local);
+                match val.to_local() {
+                    Some(local) if !local_args.contains(&local) => {
+                        escaping_args.insert(local);
                     }
                     _ => (),
                 }
-                match op {
-                    Value::Var(Var::Local(local)) if !local_args.contains(local) => {
-                        escaping_args.insert(*local);
+                match op.to_local() {
+                    Some(local) if !local_args.contains(&local) => {
+                        escaping_args.insert(local);
                     }
                     _ => (),
                 }
@@ -204,9 +221,9 @@ impl Cps {
             }
             Cps::Halt(val) => {
                 let mut escaping_args = HashSet::new();
-                match val {
-                    Value::Var(Var::Local(local)) if !local_args.contains(local) => {
-                        escaping_args.insert(*local);
+                match val.to_local() {
+                    Some(local) if !local_args.contains(&local) => {
+                        escaping_args.insert(local);
                     }
                     _ => (),
                 }
