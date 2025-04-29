@@ -144,7 +144,7 @@ impl Syntax {
         }
     }
 
-    pub fn from_datum(marks: &BTreeSet<Mark>, datum: Value) -> Self {
+    pub fn syntax_from_datum(marks: &BTreeSet<Mark>, datum: Value) -> Self {
         // TODO: conjure up better values for Span
         match datum.unpack() {
             UnpackedValue::Null => Syntax::new_null(Span::default()),
@@ -157,7 +157,7 @@ impl Syntax {
                 // TODO: Use futures combinators
                 let mut out_list = Vec::new();
                 for item in list.iter() {
-                    out_list.push(Syntax::from_datum(marks, item.clone()));
+                    out_list.push(Syntax::syntax_from_datum(marks, item.clone()));
                 }
                 Syntax::new_list(out_list, Span::default())
             }
@@ -253,17 +253,17 @@ impl Syntax {
                     }
 
                     // Check for set! macro
-                    match list.as_slice() {
-                        [Syntax::Identifier { ident, .. }, ..] if ident.name == "set!" => {
-                            // Look for variable transformer:
-                            if let Some(mac) = env.fetch_macro(ident) {
-                                /*
-                                if !mac.transformer.read().is_variable_transformer() {
-                                    return Err(Exception::error(
-                                        "Not a variable transformer".to_string(),
-                                    ));
+                    match &list.as_slice()[1..] {
+                        [Syntax::Identifier { ident: var, .. }, ..] if ident.name == "set!" => {
+                            // Look for a variable transformer:
+                            if let Some(mac) = env.fetch_macro(var) {
+                                if !mac.transformer.read().is_variable_transformer {
+                                    return Err(Condition::error(format!(
+                                        "{} not a variable transformer",
+                                        var.name
+                                    ))
+                                    .into());
                                 }
-                                */
                                 return self.apply_transformer(env, mac).await;
                             }
                         }
@@ -533,19 +533,11 @@ impl Syntax {
     }
 }
 
-/*
-#[bridge(name = "syntax->datum", )]
-pub async fn syntax_to_datum(
-    _cont: &Option<Arc<Continuation>>,
-    syn: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let syn = syn.read();
-    let Value::Syntax(ref syn) = &*syn else {
-        return Err(RuntimeError::invalid_type("syntax", syn.type_name()));
-    };
-    Ok(vec![Gc::new(Value::from_syntax(syn))])
+#[bridge(name = "syntax->datum", lib = "(base)")]
+pub async fn syntax_to_datum(syn: &Value) -> Result<Vec<Value>, Condition> {
+    let syn: Arc<Syntax> = syn.clone().try_into()?;
+    Ok(vec![Value::datum_from_syntax(syn.as_ref())])
 }
-*/
 
 #[bridge(name = "datum->syntax", lib = "(base)")]
 pub async fn datum_to_syntax(template_id: &Value, datum: &Value) -> Result<Vec<Value>, Condition> {
@@ -556,7 +548,7 @@ pub async fn datum_to_syntax(template_id: &Value, datum: &Value) -> Result<Vec<V
     else {
         return Err(Condition::invalid_type("template_id", "syntax"));
     };
-    Ok(vec![Value::from(Syntax::from_datum(
+    Ok(vec![Value::from(Syntax::syntax_from_datum(
         &template_id.marks,
         datum.clone(),
     ))])

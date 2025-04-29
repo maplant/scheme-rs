@@ -35,6 +35,10 @@ impl<'ctx> Rebinds<'ctx> {
             .unwrap_or_else(|| panic!("could not find {var:?}"))
     }
 
+    fn fetch_bind_opt(&self, var: &Var) -> Option<&BasicValueEnum<'ctx>> {
+        self.rebinds.get(var)
+    }
+
     fn new() -> Self {
         Self {
             rebinds: HashMap::default(),
@@ -515,79 +519,23 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
     }
 
     fn drop_values_codgen(&self, drops: Option<Rc<Allocs<'ctx>>>) -> Result<(), BuilderError> {
-        let drops = drops.as_ref().map_or_else(Vec::new, |x| x.to_values());
-        let num_drops = drops.len();
+        let vals = drops.as_ref().map_or_else(Vec::new, |x| x.to_values());
 
-        if num_drops == 0 {
-            return Ok(());
+        let dropv = self.module.get_function("dropv").unwrap();
+        for val in vals.into_iter() {
+            self.builder.build_call(dropv, &[val.into()], "_")?;
         }
-
-        // Put the drops in an array
-        let i64_type = self.ctx.i64_type();
-        let i32_type = self.ctx.i32_type();
-        let array_type = i64_type.array_type(drops.len() as u32);
-        let drops_alloca = self.builder.build_alloca(array_type, "drops")?;
-        for (i, drp) in drops.into_iter().enumerate() {
-            let ep = unsafe {
-                self.builder.build_gep(
-                    i64_type,
-                    drops_alloca,
-                    &[i32_type.const_int(i as u64, false)],
-                    "alloca_elem",
-                )?
-            };
-            self.builder.build_store(ep, drp)?;
-        }
-
-        // Call drop_values
-        let drop_values = self.module.get_function("drop_values").unwrap();
-        self.builder.build_call(
-            drop_values,
-            &[
-                drops_alloca.into(),
-                i32_type.const_int(num_drops as u64, false).into(),
-            ],
-            "drop_values",
-        )?;
 
         Ok(())
     }
 
     fn drop_cells_codegen(&self, drops: Option<Rc<Allocs<'ctx>>>) -> Result<(), BuilderError> {
-        let drops = drops.as_ref().map_or_else(Vec::new, |x| x.to_cells());
-        let num_drops = drops.len();
+        let cells = drops.as_ref().map_or_else(Vec::new, |x| x.to_cells());
 
-        if num_drops == 0 {
-            return Ok(());
+        let dropc = self.module.get_function("dropc").unwrap();
+        for cell in cells.into_iter() {
+            self.builder.build_call(dropc, &[cell.into()], "_")?;
         }
-
-        // Put the drops in an array
-        let ptr_type = self.ctx.ptr_type(AddressSpace::default());
-        let i32_type = self.ctx.i32_type();
-        let array_type = ptr_type.array_type(drops.len() as u32);
-        let drops_alloca = self.builder.build_alloca(array_type, "drops")?;
-        for (i, drp) in drops.into_iter().enumerate() {
-            let ep = unsafe {
-                self.builder.build_gep(
-                    ptr_type,
-                    drops_alloca,
-                    &[i32_type.const_int(i as u64, false)],
-                    "alloca_elem",
-                )?
-            };
-            self.builder.build_store(ep, drp)?;
-        }
-
-        // Call drop_cells
-        let drop_cells = self.module.get_function("drop_cells").unwrap();
-        self.builder.build_call(
-            drop_cells,
-            &[
-                drops_alloca.into(),
-                i32_type.const_int(num_drops as u64, false).into(),
-            ],
-            "drop_cells",
-        )?;
 
         Ok(())
     }
@@ -781,7 +729,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         let env_type = ptr_type.array_type(env.len() as u32);
         let env_alloca = self.builder.build_alloca(env_type, "env_alloca")?;
 
-        for (i, var) in env.iter().enumerate() {
+        for (i, env_var) in env.iter().enumerate() {
             let ep = unsafe {
                 self.builder.build_gep(
                     ptr_type,
@@ -790,9 +738,13 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                     "alloca_elem",
                 )?
             };
-            let Value::Var(var) = var else { unreachable!() };
-            let val = *self.rebinds.fetch_bind(var);
-            assert!(val.is_pointer_value());
+            let Value::Var(var) = env_var else {
+                unreachable!()
+            };
+            let val = self.fetch_bind_or_undefined(var)?;
+            if !val.is_pointer_value() {
+                panic!("{env_var:?} is not a pointer");
+            }
             self.builder.build_store(ep, val)?;
         }
 
@@ -836,7 +788,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         let env_type = ptr_type.array_type(bundle.env.len() as u32);
         let env_alloca = self.builder.build_alloca(env_type, "env_alloca")?;
 
-        for (i, var) in bundle.env.iter().enumerate() {
+        for (i, env_var) in bundle.env.iter().enumerate() {
             let ep = unsafe {
                 self.builder.build_gep(
                     ptr_type,
@@ -845,8 +797,11 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                     "alloca_elem",
                 )?
             };
-            let val = *self.rebinds.fetch_bind(&Var::Local(*var));
-            assert!(val.is_pointer_value());
+            let val = self.fetch_bind_or_undefined(&Var::Local(*env_var))?;
+            if !val.is_pointer_value() {
+                panic!("{env_var:?} is not a pointer");
+            }
+            // assert!(val.is_pointer_value());
             self.builder.build_store(ep, val)?;
         }
 
@@ -912,6 +867,22 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         self.cps_codegen(cexp, new_alloc, deferred)?;
 
         Ok(())
+    }
+
+    fn fetch_bind_or_undefined(&self, var: &Var) -> Result<BasicValueEnum<'ctx>, BuilderError> {
+        if let Some(val) = self.rebinds.fetch_bind_opt(var) {
+            Ok(*val)
+        } else {
+            // This variable is not available to the macro transformer (or
+            // whatever else, but most likely a macro transformer)
+            let alloc_cell = self.module.get_function("alloc_cell").unwrap();
+            Ok(self
+                .builder
+                .build_call(alloc_cell, &[], "cell")?
+                .try_as_basic_value()
+                .left()
+                .unwrap())
+        }
     }
 }
 
@@ -999,7 +970,7 @@ impl<'ctx> ClosureBundle<'ctx> {
         builder: &'b Builder<'ctx>,
         deferred: &mut Vec<Self>,
     ) -> Result<(), BuilderError> {
-        // let i64_type = ctx.i64_type();
+        let i64_type = ctx.i64_type();
         let ptr_type = ctx.ptr_type(AddressSpace::default());
         let entry = ctx.append_basic_block(self.function, "entry");
 
@@ -1047,7 +1018,7 @@ impl<'ctx> ClosureBundle<'ctx> {
             .get_nth_param(ARGS_PARAM)
             .unwrap()
             .into_pointer_value();
-        let array_type = ptr_type.array_type(self.args.args.len() as u32);
+        let array_type = i64_type.array_type(self.args.args.len() as u32);
         let args_load = builder
             .build_load(array_type, args_param, "args_load")?
             .into_array_value();
@@ -1060,8 +1031,13 @@ impl<'ctx> ClosureBundle<'ctx> {
         }
 
         if let Some(cont) = self.args.continuation {
-            let cont_param = self.function.get_nth_param(CONTINUATION_PARAM).unwrap();
-            cu.rebinds.rebind(Var::Local(cont), cont_param);
+            let cont_param = self
+                .function
+                .get_nth_param(CONTINUATION_PARAM)
+                .unwrap()
+                .into_pointer_value();
+            let cont_load = builder.build_load(i64_type, cont_param, "continuation")?;
+            cu.rebinds.rebind(Var::Local(cont), cont_load);
         }
 
         cu.cps_codegen(self.body, None, deferred)?;

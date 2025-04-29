@@ -9,6 +9,7 @@ use crate::{
 };
 use futures::future::BoxFuture;
 use indexmap::IndexMap;
+use scheme_rs_macros::bridge;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 #[derive(Clone, Trace, Debug)]
@@ -141,8 +142,8 @@ impl Pattern {
             Self::Keyword(ref lhs) => {
                 matches!(expr, Syntax::Identifier { ident: rhs, bound: false, .. } if lhs == &rhs.name)
             }
-            Self::List(list) => match_slice(list, expr, expansion_level),
-            Self::Vector(vec) => match_slice(vec, expr, expansion_level),
+            Self::List(list) => match_list(list, expr, expansion_level),
+            Self::Vector(vec) => match_vec(vec, expr, expansion_level),
             Self::ByteVector(vec) => {
                 if let Self::ByteVector(v) = self {
                     v == vec
@@ -194,7 +195,7 @@ fn match_ellipsis(
     true
 }
 
-fn match_slice(patterns: &[Pattern], expr: &Syntax, expansion_level: &mut ExpansionLevel) -> bool {
+fn match_list(patterns: &[Pattern], expr: &Syntax, expansion_level: &mut ExpansionLevel) -> bool {
     assert!(!patterns.is_empty());
 
     let exprs = match expr {
@@ -208,6 +209,9 @@ fn match_slice(patterns: &[Pattern], expr: &Syntax, expansion_level: &mut Expans
     match (patterns.split_last().unwrap(), contains_ellipsis) {
         ((Pattern::Null, _), false) => {
             // Proper list, no ellipsis. Match everything in order
+            if patterns.len() != exprs.len() {
+                return false;
+            }
             for (pattern, expr) in patterns.iter().zip(exprs.iter()) {
                 if !pattern.matches(expr, expansion_level) {
                     return false;
@@ -217,7 +221,7 @@ fn match_slice(patterns: &[Pattern], expr: &Syntax, expansion_level: &mut Expans
         }
         ((cdr, head), false) => {
             // The pattern is an improper list that contains no ellipsis.
-            // Math in order until the last pattern, then match that to the nth
+            // Match in order until the last pattern, then match that to the nth
             // cdr.
             let mut exprs = exprs.iter();
             for pattern in head.iter() {
@@ -240,6 +244,28 @@ fn match_slice(patterns: &[Pattern], expr: &Syntax, expansion_level: &mut Expans
             }
         }
         (_, true) => match_ellipsis(patterns, exprs, expansion_level),
+    }
+}
+
+fn match_vec(patterns: &[Pattern], expr: &Syntax, expansion_level: &mut ExpansionLevel) -> bool {
+    let Syntax::Vector { vector: exprs, .. } = expr else {
+        return false;
+    };
+
+    let contains_ellipsis = patterns.iter().any(|p| matches!(p, Pattern::Ellipsis(_)));
+
+    if contains_ellipsis {
+        match_ellipsis(patterns, exprs, expansion_level)
+    } else {
+        if patterns.len() != exprs.len() {
+            return false;
+        }
+        for (pattern, expr) in patterns.iter().zip(exprs.iter()) {
+            if !pattern.matches(expr, expansion_level) {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -304,11 +330,11 @@ impl Template {
         let syn = match self {
             Self::Null => Syntax::new_null(curr_span),
             Self::List(list) => {
-                let executed = execute_slice(list, binds, curr_span.clone())?;
+                let executed = execute_list(list, binds, curr_span.clone())?;
                 Syntax::new_list(executed, curr_span).normalize()
             }
             Self::Vector(vec) => {
-                Syntax::new_vector(execute_slice(vec, binds, curr_span.clone())?, curr_span)
+                Syntax::new_vector(execute_vec(vec, binds, curr_span.clone())?, curr_span)
             }
             Self::Identifier(ident) => Syntax::Identifier {
                 ident: ident.clone(),
@@ -323,7 +349,7 @@ impl Template {
     }
 }
 
-fn execute_slice(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<Vec<Syntax>> {
+fn execute_list(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<Vec<Syntax>> {
     let mut output = Vec::new();
     for item in items {
         match item {
@@ -344,6 +370,25 @@ fn execute_slice(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Opti
                 }
             }
             _ => output.push(item.execute(binds, curr_span.clone())?),
+        }
+    }
+    Some(output)
+}
+
+fn execute_vec(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<Vec<Syntax>> {
+    let mut output = Vec::new();
+    for item in items {
+        match item {
+            Template::Ellipsis(template) => {
+                for expansion in &binds.curr_expansion_level.expansions {
+                    let new_level = binds.new_level(expansion);
+                    let Some(result) = template.execute(&new_level, curr_span.clone()) else {
+                        break;
+                    };
+                    output.push(result);
+                }
+            }
+            item => output.push(item.execute(binds, curr_span.clone())?),
         }
     }
     Some(output)
@@ -380,23 +425,13 @@ impl<'a> Binds<'a> {
     }
 }
 
-/*
-#[builtin("make-variable-transformer")]
-pub async fn make_variable_transformer(
-    _cont: &Option<Arc<Continuation>>,
-    proc: &Gc<Value>,
-) -> Result<Vec<Gc<Value>>, RuntimeError> {
-    let proc = proc.read();
-    match &*proc {
-        Value::Procedure(proc) => {
-            let mut proc = proc.clone();
-            proc.is_variable_transformer = true;
-            Ok(vec![Gc::new(Value::Procedure(proc))])
-        }
-        _ => todo!(),
-    }
+#[bridge(name = "make-variable-transformer", lib = "(base)")]
+pub async fn make_variable_transformer(proc: &Value) -> Result<Vec<Value>, Condition> {
+    let proc: Gc<Closure> = proc.clone().try_into()?;
+    let mut var_transformer = proc.read().clone();
+    var_transformer.is_variable_transformer = true;
+    Ok(vec![Value::from(var_transformer)])
 }
- */
 
 pub fn call_transformer<'a>(
     args: &'a [Value],
@@ -411,7 +446,7 @@ pub fn call_transformer<'a>(
             panic!("wrong args");
         };
 
-        let cont: Gc<Closure> = cont.clone().try_into()?;
+        let cont: Gc<Closure> = cont.clone().try_into().expect("huh");
 
         // Fetch a runtime from the continuation. It doesn't really matter
         // _which_ runtime we use, in fact we could create a new one, but it
@@ -441,7 +476,7 @@ pub fn call_transformer<'a>(
 
         // Expand the input:
 
-        let syn = Syntax::from_datum(&BTreeSet::default(), arg.clone());
+        let syn = Syntax::syntax_from_datum(&BTreeSet::default(), arg.clone());
         let expanded = transformer
             .expand(&syn)
             .ok_or_else(Condition::syntax_error)?;

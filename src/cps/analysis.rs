@@ -136,6 +136,103 @@ impl Cps {
             Cps::Halt(value) => add_value_use(HashMap::new(), value),
         }
     }
+
+    // TODO: Clean up this function!
+    pub(super) fn escaping_args(
+        &self,
+        local_args: &HashSet<Local>,
+        escaping_arg_cache: &mut HashMap<Local, HashSet<Local>>,
+    ) -> HashSet<Local> {
+        match self {
+            Cps::PrimOp(PrimOp::GetCallTransformerFn, args, _, cexp) => {
+                // The GetCallTransformerFn requires that all arguments to it are cells.
+                // We should fix this at some point.
+                cexp.escaping_args(local_args, escaping_arg_cache)
+                    .union(&values_to_locals(args))
+                    .copied()
+                    .collect()
+            }
+            Cps::PrimOp(_, args, _, cexp) => values_to_locals(args)
+                .difference(local_args)
+                .copied()
+                .collect::<HashSet<_>>()
+                .union(&cexp.escaping_args(local_args, escaping_arg_cache))
+                .copied()
+                .collect::<HashSet<_>>(),
+            Cps::If(cond, success, failure) => {
+                let mut escaping_args: HashSet<_> = success
+                    .escaping_args(local_args, escaping_arg_cache)
+                    .union(&failure.escaping_args(local_args, escaping_arg_cache))
+                    .copied()
+                    .collect();
+                match cond {
+                    Value::Var(Var::Local(local)) if !local_args.contains(local) => {
+                        escaping_args.insert(*local);
+                    }
+                    _ => (),
+                }
+                escaping_args
+            }
+            Cps::App(op, vals, _) => {
+                let mut escaping_args: HashSet<_> = values_to_locals(vals)
+                    .difference(local_args)
+                    .copied()
+                    .collect();
+                match op {
+                    Value::Var(Var::Local(local)) if !local_args.contains(local) => {
+                        escaping_args.insert(*local);
+                    }
+                    _ => (),
+                }
+                escaping_args
+            }
+            Cps::Forward(op, val) => {
+                let mut escaping_args = HashSet::new();
+                match val {
+                    Value::Var(Var::Local(local)) if !local_args.contains(local) => {
+                        escaping_args.insert(*local);
+                    }
+                    _ => (),
+                }
+                match op {
+                    Value::Var(Var::Local(local)) if !local_args.contains(local) => {
+                        escaping_args.insert(*local);
+                    }
+                    _ => (),
+                }
+                escaping_args
+            }
+            Cps::Halt(val) => {
+                let mut escaping_args = HashSet::new();
+                match val {
+                    Value::Var(Var::Local(local)) if !local_args.contains(local) => {
+                        escaping_args.insert(*local);
+                    }
+                    _ => (),
+                }
+                escaping_args
+            }
+            Cps::Closure {
+                args,
+                body,
+                val,
+                cexp,
+                ..
+            } => {
+                if !escaping_arg_cache.contains_key(val) {
+                    let new_local_args: HashSet<_> = args.to_vec().into_iter().collect();
+                    let escaping_args = body
+                        .escaping_args(&new_local_args, escaping_arg_cache)
+                        .union(&cexp.escaping_args(local_args, escaping_arg_cache))
+                        .copied()
+                        .collect();
+
+                    escaping_arg_cache.insert(*val, escaping_args);
+                }
+                escaping_arg_cache.get(val).unwrap().clone()
+            }
+        }
+    }
 }
 
 fn values_to_locals(vals: &[Value]) -> HashSet<Local> {

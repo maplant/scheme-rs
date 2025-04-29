@@ -88,7 +88,13 @@ impl Top {
     }
 }
 
-#[derive(Trace)]
+impl fmt::Debug for Top {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Top")
+    }
+}
+
+#[derive(Debug, Trace)]
 pub struct LexicalContour {
     up: Environment,
     vars: HashMap<Identifier, Local>,
@@ -147,7 +153,62 @@ impl Gc<LexicalContour> {
     }
 }
 
-#[derive(Trace)]
+#[derive(Debug, Trace)]
+pub struct LetSyntaxContour {
+    up: Environment,
+    macros: HashMap<Identifier, Gc<Closure>>,
+    recursive: bool,
+}
+
+impl LetSyntaxContour {
+    fn new(env: &Environment, recursive: bool) -> Self {
+        Self {
+            up: env.clone(),
+            macros: Default::default(),
+            recursive,
+        }
+    }
+}
+
+impl LetSyntaxContour {
+    pub fn def_var(&self, name: Identifier) -> Var {
+        self.up.def_var(name)
+    }
+
+    pub fn def_macro(&mut self, name: Identifier, closure: Gc<Closure>) {
+        self.macros.insert(name, closure);
+    }
+
+    pub fn fetch_var(&self, name: &Identifier) -> Option<Var> {
+        self.up.fetch_var(name)
+    }
+
+    pub fn fetch_local(&self, name: &Identifier) -> Option<Local> {
+        self.up.fetch_local(name)
+    }
+
+    pub fn fetch_top(&self) -> Gc<Top> {
+        self.up.fetch_top()
+    }
+}
+
+impl Gc<LetSyntaxContour> {
+    pub fn fetch_macro(&self, name: &Identifier) -> Option<Macro> {
+        if let Some(trans) = self.read().macros.get(name) {
+            return Some(Macro::new(
+                if self.read().recursive {
+                    Environment::LetSyntaxContour(self.clone())
+                } else {
+                    self.read().up.clone()
+                },
+                trans.clone(),
+            ));
+        }
+        self.read().up.fetch_macro(name)
+    }
+}
+
+#[derive(Debug, Trace)]
 pub struct MacroExpansion {
     up: Environment,
     mark: Mark,
@@ -234,10 +295,11 @@ impl MacroExpansion {
     }
 }
 
-#[derive(Trace)]
+#[derive(Debug, Trace)]
 pub enum Environment {
     Top(Gc<Top>),
     LexicalContour(Gc<LexicalContour>),
+    LetSyntaxContour(Gc<LetSyntaxContour>),
     MacroExpansion(Gc<MacroExpansion>),
 }
 
@@ -246,6 +308,7 @@ impl Environment {
         match self {
             Self::Top(top) => top.clone(),
             Self::LexicalContour(lex) => lex.read().fetch_top(),
+            Self::LetSyntaxContour(ls) => ls.read().fetch_top(),
             Self::MacroExpansion(me) => me.read().fetch_top(),
         }
     }
@@ -254,6 +317,7 @@ impl Environment {
         match self {
             Self::Top(top) => Var::Global(top.write().def_var(name, Value::undefined())),
             Self::LexicalContour(lex) => Var::Local(lex.write().def_var(name)),
+            Self::LetSyntaxContour(ls) => ls.read().def_var(name),
             Self::MacroExpansion(me) => me.read().def_var(name),
         }
     }
@@ -262,6 +326,7 @@ impl Environment {
         match self {
             Self::Top(top) => top.write().def_macro(name, Macro::new(self.clone(), val)),
             Self::LexicalContour(lex) => lex.write().def_macro(name, val),
+            Self::LetSyntaxContour(ls) => ls.write().def_macro(name, val),
             Self::MacroExpansion(me) => me.read().def_macro(name, val),
         }
     }
@@ -270,6 +335,7 @@ impl Environment {
         match self {
             Self::Top(top) => top.write().fetch_var(name).map(Var::Global),
             Self::LexicalContour(lex) => lex.read().fetch_var(name),
+            Self::LetSyntaxContour(ls) => ls.read().fetch_var(name),
             Self::MacroExpansion(me) => me.read().fetch_var(name),
         }
     }
@@ -278,6 +344,7 @@ impl Environment {
         match self {
             Self::Top(_) => None,
             Self::LexicalContour(lex) => lex.read().fetch_local(name),
+            Self::LetSyntaxContour(ls) => ls.read().fetch_local(name),
             Self::MacroExpansion(me) => me.read().fetch_local(name),
         }
     }
@@ -286,6 +353,7 @@ impl Environment {
         match self {
             Self::Top(top) => top.read().fetch_macro(name),
             Self::LexicalContour(lex) => lex.fetch_macro(name),
+            Self::LetSyntaxContour(ls) => ls.fetch_macro(name),
             Self::MacroExpansion(me) => me.read().fetch_macro(name),
         }
     }
@@ -297,6 +365,11 @@ impl Environment {
     pub fn new_lexical_contour(&self) -> Self {
         let new_lexical_contour = LexicalContour::new(self);
         Self::LexicalContour(Gc::new(new_lexical_contour))
+    }
+
+    pub fn new_let_syntax_contour(&self, recursive: bool) -> Self {
+        let new_let_syntax_contour = LetSyntaxContour::new(self, recursive);
+        Self::LetSyntaxContour(Gc::new(new_let_syntax_contour))
     }
 
     pub fn new_macro_expansion(&self, mark: Mark, source: Environment) -> Self {
@@ -316,6 +389,7 @@ impl Clone for Environment {
         match self {
             Self::Top(top) => Self::Top(top.clone()),
             Self::LexicalContour(lex) => Self::LexicalContour(lex.clone()),
+            Self::LetSyntaxContour(ls) => Self::LetSyntaxContour(ls.clone()),
             Self::MacroExpansion(mac) => Self::MacroExpansion(mac.clone()),
         }
     }

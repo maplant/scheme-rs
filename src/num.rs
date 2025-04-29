@@ -277,7 +277,7 @@ macro_rules! impl_checked_op_for_number {
                     (Self::Real(l), Self::BigInteger(r)) => {
                         Self::Real(l.$unchecked(f64::rounding_from(r, RoundingMode::Nearest).0))
                     }
-                    
+
                     (Self::Rational(l), Self::Real(r)) => {
                         Self::Real(f64::rounding_from(l, RoundingMode::Nearest).0.$unchecked(r))
                     }

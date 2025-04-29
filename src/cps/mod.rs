@@ -150,6 +150,10 @@ impl ClosureArgs {
         }
     }
 
+    fn iter_mut(&mut self) -> impl Iterator<Item = &mut Local> {
+        self.args.iter_mut().chain(self.continuation.as_mut())
+    }
+
     fn to_vec(&self) -> Vec<Local> {
         self.args
             .clone()
@@ -172,7 +176,7 @@ pub enum Cps {
     App(Value, Vec<Value>, Option<CallSiteId>),
 
     /// Forward a list of values into an application.
-    // TODO: I'm not sure I like this name
+    // TODO: I think we can get rid of this with better primitive operators, maybe.
     Forward(Value, Value),
 
     /// Branching.

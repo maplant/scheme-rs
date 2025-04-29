@@ -23,6 +23,7 @@ pub trait Compile {
             debug: None,
         }
         .reduce()
+        .args_to_cells(&mut HashMap::default())
     }
 }
 
@@ -89,7 +90,7 @@ fn compile_let(
             args: ClosureArgs::new(vec![k2], false, None),
             body: Box::new(Cps::PrimOp(
                 PrimOp::AllocCell,
-                vec![],
+                Vec::new(),
                 *curr_bind,
                 Box::new(Cps::Closure {
                     args: ClosureArgs::new(vec![expr_result], false, None),
@@ -846,4 +847,70 @@ impl Compile for Vec<u8> {
             debug: None,
         }
     }
+}
+
+impl Cps {
+    /// Convert arguments for closures into cells if they are written to or escape.
+    fn args_to_cells(self, escaping_args_cache: &mut HashMap<Local, HashSet<Local>>) -> Self {
+        match self {
+            Self::PrimOp(op, vals, local, cexpr) => Self::PrimOp(
+                op,
+                vals,
+                local,
+                Box::new(cexpr.args_to_cells(escaping_args_cache)),
+            ),
+            Self::If(val, succ, fail) => Self::If(
+                val,
+                Box::new(succ.args_to_cells(escaping_args_cache)),
+                Box::new(fail.args_to_cells(escaping_args_cache)),
+            ),
+            Self::Closure {
+                mut args,
+                body,
+                val,
+                cexp,
+                debug,
+            } => {
+                let local_args: HashSet<_> = args.to_vec().into_iter().collect();
+                let escaping_args = body.escaping_args(&local_args, escaping_args_cache);
+
+                let mut body = Box::new(body.args_to_cells(escaping_args_cache));
+                let cexp = Box::new(cexp.args_to_cells(escaping_args_cache));
+
+                for arg in args.iter_mut() {
+                    if escaping_args.contains(arg) {
+                        // println!("1,");
+                        body = arg_to_cell(arg, body);
+                    } else {
+                        // println!("0,");
+                    }
+                }
+
+                Self::Closure {
+                    args,
+                    body,
+                    val,
+                    cexp,
+                    debug,
+                }
+            }
+            done => done,
+        }
+    }
+}
+
+fn arg_to_cell(arg: &mut Local, body: Box<Cps>) -> Box<Cps> {
+    let val_arg = Local::gensym();
+    let cell_arg = std::mem::replace(arg, val_arg);
+    Box::new(Cps::PrimOp(
+        PrimOp::AllocCell,
+        Vec::new(),
+        cell_arg,
+        Box::new(Cps::PrimOp(
+            PrimOp::Set,
+            vec![Value::from(cell_arg), Value::from(val_arg)],
+            Local::gensym(),
+            body,
+        )),
+    ))
 }
