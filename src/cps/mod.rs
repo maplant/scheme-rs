@@ -100,6 +100,14 @@ pub enum PrimOp {
     // List operators:
     Cons,
 
+    // Record operators:
+    /// Select the Nth field from a Record. Returns a Gc<Value>.
+    Select,
+    /// Determine if a record is a subtype of a record type.
+    IsSubType,
+    /// Create a RecordType from a parent and a list of symbols.
+    NewRecordType,
+
     // Math primitive operators:
     Add,
     Sub,
