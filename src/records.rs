@@ -3,11 +3,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{
-    ast::ParseAstError,
-    env::{Environment, Var},
-    gc::{Gc, Trace},
-    syntax::{Identifier, Span, Syntax},
-    value::Value,
+    ast::ParseAstError, cps::{self, Compile}, env::{Environment, Var}, gc::{Gc, Trace}, syntax::{Identifier, Span, Syntax}, value::Value
 };
 
 /// Type declaration for a record.
@@ -285,22 +281,20 @@ impl DefineRecordType {
         }
     }
 
-    /*
-    pub fn define(&self, env: &Gc<Env>) {
-        let mut env = env.write();
+    pub fn define(&self, env: &Environment) {
         let constructor_name = self
             .constructor
             .as_ref()
             .map_or_else(|| format!("make-{}", self.name.name), |cn| cn.name.clone());
         let constructor_name = Identifier::new(constructor_name);
-        env.def_local_var(&constructor_name, Gc::new(Value::Undefined));
+        env.def_var(constructor_name);
 
         let predicate_name = self
             .predicate
             .as_ref()
             .map_or_else(|| format!("{}?", self.name.name), |cn| cn.name.clone());
         let predicate_name = Identifier::new(predicate_name);
-        env.def_local_var(&predicate_name, Gc::new(Value::Undefined));
+        env.def_var(predicate_name);
 
         for field in &self.fields {
             let ident = field.field_name.clone();
@@ -310,7 +304,7 @@ impl DefineRecordType {
                 |accessor| accessor.name.clone(),
             );
             let accessor_name = Identifier::new(accessor_name);
-            env.def_local_var(&accessor_name, Gc::new(Value::Undefined));
+            env.def_var(accessor_name);
 
             // Set up mutator, if we should:
             if let Some(mutator_name) = match field.kind {
@@ -323,13 +317,12 @@ impl DefineRecordType {
                 _ => None,
             } {
                 let mutator_name = Identifier::new(mutator_name);
-                env.def_local_var(&mutator_name, Gc::new(Value::Undefined));
+                env.def_var(mutator_name);
             }
         }
 
-        env.def_local_var(&self.name, Gc::new(Value::Undefined));
+        env.def_var(self.name.clone());
     }
-    */
 
     /*
     pub fn eval(&self, env: &Gc<Env>) -> Result<(), RuntimeError> {
@@ -517,3 +510,9 @@ fn new_proc(env: &Gc<Env>, args: Vec<Identifier>, body: ast::Body) -> Gc<Value> 
     }))
 }
 */
+
+impl Compile for DefineRecordType {
+    fn compile(&self, _meta_cont: Box<dyn FnMut(cps::Value) -> cps::Cps + '_>) -> cps::Cps {
+        todo!()
+    }
+}

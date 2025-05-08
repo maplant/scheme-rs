@@ -1159,16 +1159,14 @@ fn splice_in<'a>(
                         }
                         true
                     }
-                    /*
                     Some(
                         [Syntax::Identifier { ident, span, .. }, body @ .., Syntax::Null { .. }],
                     ) if ident == "define-record-type" => {
                         let record_type = DefineRecordType::parse(body, env, span)?;
-                        record_type.define(&env.lexical_contour);
-                        defs.push(Err(record_type));
+                        record_type.define(env);
+                        defs.push(Either::Right(record_type));
                         continue;
                     }
-                    */
                     Some([Syntax::Identifier { ident, span, .. }, ..])
                         if ident == "define-syntax" =>
                     {

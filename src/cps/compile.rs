@@ -172,7 +172,7 @@ impl Compile for &[Expression] {
                 let k2 = Local::gensym();
                 Cps::Closure {
                     args: ClosureArgs::new(vec![k2], false, None),
-                    body: Box::new(Cps::App(Value::from(k2), vec![], None)),
+                    body: Box::new(Cps::App(Value::from(k2), Vec::new(), None)),
                     val: k1,
                     cexp: Box::new(meta_cont(Value::from(k1))),
                     debug: None,
@@ -546,7 +546,7 @@ impl Compile for Definition {
         match self {
             Self::DefineVar(var) => var.compile(meta_cont),
             Self::DefineFunc(func) => func.compile(meta_cont),
-            _ => todo!(),
+            Self::DefineRecordType(rec) => rec.compile(meta_cont),
         }
     }
 }
@@ -879,10 +879,7 @@ impl Cps {
 
                 for arg in args.iter_mut() {
                     if escaping_args.contains(arg) {
-                        // println!("1,");
                         body = arg_to_cell(arg, body);
-                    } else {
-                        // println!("0,");
                     }
                 }
 
