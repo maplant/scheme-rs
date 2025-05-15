@@ -851,18 +851,18 @@ impl Compile for Vec<u8> {
 
 impl Cps {
     /// Convert arguments for closures into cells if they are written to or escape.
-    fn args_to_cells(self, escaping_args_cache: &mut HashMap<Local, HashSet<Local>>) -> Self {
+    fn args_to_cells(self, needs_cell_cache: &mut HashMap<Local, HashSet<Local>>) -> Self {
         match self {
             Self::PrimOp(op, vals, local, cexpr) => Self::PrimOp(
                 op,
                 vals,
                 local,
-                Box::new(cexpr.args_to_cells(escaping_args_cache)),
+                Box::new(cexpr.args_to_cells(needs_cell_cache)),
             ),
             Self::If(val, succ, fail) => Self::If(
                 val,
-                Box::new(succ.args_to_cells(escaping_args_cache)),
-                Box::new(fail.args_to_cells(escaping_args_cache)),
+                Box::new(succ.args_to_cells(needs_cell_cache)),
+                Box::new(fail.args_to_cells(needs_cell_cache)),
             ),
             Self::Closure {
                 mut args,
@@ -872,17 +872,14 @@ impl Cps {
                 debug,
             } => {
                 let local_args: HashSet<_> = args.to_vec().into_iter().collect();
-                let escaping_args = body.escaping_args(&local_args, escaping_args_cache);
+                let escaping_args = body.need_cells(&local_args, needs_cell_cache);
 
-                let mut body = Box::new(body.args_to_cells(escaping_args_cache));
-                let cexp = Box::new(cexp.args_to_cells(escaping_args_cache));
+                let mut body = Box::new(body.args_to_cells(needs_cell_cache));
+                let cexp = Box::new(cexp.args_to_cells(needs_cell_cache));
 
                 for arg in args.iter_mut() {
                     if escaping_args.contains(arg) {
-                        // println!("1,");
                         body = arg_to_cell(arg, body);
-                    } else {
-                        // println!("0,");
                     }
                 }
 
