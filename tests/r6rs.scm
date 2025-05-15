@@ -121,7 +121,6 @@
              (even? 10))
            #t)
 
-
 (assert-eq (let ()
              (define-syntax bind-to-zero
                (syntax-rules ()
@@ -130,9 +129,7 @@
              x)
            0)
 
-
 ;; 11.3 Bodies
-
 
 (assert-eq (let ((x 5))
              (define foo (lambda (y) (bar x y)))
@@ -145,7 +142,6 @@
 
 ;; (skipping a bunch of these because this stuff works)
 
-
 (assert-eq ((lambda (x)
               (define (p y)
                 (+ y 1))
@@ -154,7 +150,6 @@
            11)
 
 ;; 11.4.3 Conditionals
-
 
 (assert-eq (if (> 3 2) 'yes 'no) 'yes)
 (assert-eq (if (> 2 3) 'yes 'no) 'no)
@@ -236,12 +231,11 @@
                (list a b x y)))
            '(x y a b))
 
-
-;;(assert-eq (let ((a 'a) (b 'b) (x 'x) (y 'y))
-;;             (let*-values (((a b) (values x y))
-;;                           ((x y) (values a b)))
-;;               (list a b x y)))
-;;           (x y x y))
+(assert-eq (let ((a 'a) (b 'b) (x 'x) (y 'y))
+             (let*-values (((a b) (values x y))
+                           ((x y) (values a b)))
+               (list a b x y)))
+           '(x y x y))
 
 ;; 11.5. Equivalence predicates
 
@@ -385,7 +379,8 @@
                (list (f 1) (g 1))))
            '(1 1))
 
-;; Extra stuff
+;; Extra stuff:
+
 (assert-eq (let ([x 1])
              (syntax-case #'() ()
                ([] x)))
@@ -410,3 +405,6 @@
 
 (assert-eq (newfoo) 42)
 (assert-eq (newbar) 70)
+
+;; Realized this was an issue when doing escape analysis:
+(define (test a) (set! a '()))
