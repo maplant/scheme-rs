@@ -138,7 +138,7 @@ impl Cps {
     }
 
     // TODO: Clean up this function!
-    pub(super) fn escaping_args(
+    pub(super) fn need_cells(
         &self,
         local_args: &HashSet<Local>,
         escaping_arg_cache: &mut HashMap<Local, HashSet<Local>>,
@@ -147,7 +147,7 @@ impl Cps {
             Cps::PrimOp(PrimOp::GetCallTransformerFn, args, _, cexp) => {
                 // The GetCallTransformerFn requires that all arguments to it are
                 // cells. We should fix this at some point.
-                cexp.escaping_args(local_args, escaping_arg_cache)
+                cexp.need_cells(local_args, escaping_arg_cache)
                     .union(&values_to_locals(args))
                     .copied()
                     .collect()
@@ -159,7 +159,7 @@ impl Cps {
                 // From should always escape so that it can be set. This is
                 // really stretching the definition of "escaping", but it's easy
                 // to put in here for now.
-                let mut escaping_args = cexp.escaping_args(local_args, escaping_arg_cache);
+                let mut escaping_args = cexp.need_cells(local_args, escaping_arg_cache);
                 match from.to_local() {
                     Some(local) if !local_args.contains(&local) => {
                         escaping_args.insert(local);
@@ -173,13 +173,13 @@ impl Cps {
                 .difference(local_args)
                 .copied()
                 .collect::<HashSet<_>>()
-                .union(&cexp.escaping_args(local_args, escaping_arg_cache))
+                .union(&cexp.need_cells(local_args, escaping_arg_cache))
                 .copied()
                 .collect::<HashSet<_>>(),
             Cps::If(cond, success, failure) => {
                 let mut escaping_args: HashSet<_> = success
-                    .escaping_args(local_args, escaping_arg_cache)
-                    .union(&failure.escaping_args(local_args, escaping_arg_cache))
+                    .need_cells(local_args, escaping_arg_cache)
+                    .union(&failure.need_cells(local_args, escaping_arg_cache))
                     .copied()
                     .collect();
                 match cond.to_local() {
@@ -239,8 +239,8 @@ impl Cps {
                 if !escaping_arg_cache.contains_key(val) {
                     let new_local_args: HashSet<_> = args.to_vec().into_iter().collect();
                     let escaping_args = body
-                        .escaping_args(&new_local_args, escaping_arg_cache)
-                        .union(&cexp.escaping_args(local_args, escaping_arg_cache))
+                        .need_cells(&new_local_args, escaping_arg_cache)
+                        .union(&cexp.need_cells(local_args, escaping_arg_cache))
                         .copied()
                         .collect();
 

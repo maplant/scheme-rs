@@ -11,7 +11,7 @@ use scheme_rs::{
     registry::{bridge, Registry},
     runtime::Runtime,
     syntax::{Span, Syntax},
-    value::{eqv, Value},
+    value::Value,
 };
 use std::error::Error as StdError;
 
