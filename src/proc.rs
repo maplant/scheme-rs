@@ -184,7 +184,7 @@ impl Closure {
         } else {
             // For LLVM functions, we need to convert our args into raw pointers
             // and make sure any freshly allocated rest_args are disposed of properly.
-            
+
             let env = cells_to_vec_of_ptrs(&self.env);
             let globals = cells_to_vec_of_ptrs(&self.globals);
 
