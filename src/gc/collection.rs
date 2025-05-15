@@ -5,7 +5,7 @@
 use std::{
     alloc::Layout,
     ptr::NonNull,
-    sync::{Mutex, OnceLock, RwLock},
+    sync::{atomic::AtomicUsize, Mutex, OnceLock, RwLock},
     time::{Duration, Instant},
 };
 use tokio::{
@@ -43,6 +43,8 @@ struct MutationBuffer {
     mutation_buffer_rx: Mutex<Option<UnboundedReceiver<Mutation>>>,
 }
 
+static PENDING_MUTATIONS: AtomicUsize = AtomicUsize::new(0);
+
 unsafe impl Sync for MutationBuffer {}
 
 impl Default for MutationBuffer {
@@ -56,6 +58,16 @@ impl Default for MutationBuffer {
 }
 
 static MUTATION_BUFFER: OnceLock<MutationBuffer> = OnceLock::new();
+
+static MAX_PENDING_MUTATIONS_ALLOWED: usize = 100_000;
+
+pub(crate) async fn yield_until_gc_cleared() {
+    while PENDING_MUTATIONS.load(std::sync::atomic::Ordering::Relaxed)
+        > MAX_PENDING_MUTATIONS_ALLOWED
+    {
+        tokio::task::yield_now().await
+    }
+}
 
 pub(super) fn inc_rc(gc: NonNull<OpaqueGc>) {
     // Disregard any send errors. If the receiver was dropped then the process
@@ -84,12 +96,12 @@ pub fn init_gc() {
         .get_or_init(|| tokio::task::spawn(async { unsafe { run_garbage_collector().await } }));
 }
 
-const MIN_MUTATIONS_PER_EPOCH: usize = 10;
-const MAX_MUTATIONS_PER_EPOCH: usize = 10_000; // No idea what a good value is here.
+const MIN_MUTATIONS_PER_EPOCH: usize = 1_000;
+const AVG_MUTATIONS_PER_EPOCH: usize = MAX_PENDING_MUTATIONS_ALLOWED >> 1; // 10_000; // No idea what a good value is here.
 
 async unsafe fn run_garbage_collector() {
     let mut last_epoch = Instant::now();
-    let mut mutation_buffer: Vec<_> = Vec::with_capacity(MAX_MUTATIONS_PER_EPOCH);
+    let mut mutation_buffer: Vec<_> = Vec::with_capacity(AVG_MUTATIONS_PER_EPOCH);
     let mut mutation_buffer_rx = MUTATION_BUFFER
         .get_or_init(MutationBuffer::default)
         .mutation_buffer_rx
@@ -135,6 +147,11 @@ async unsafe fn process_mutation_buffer(
 ) {
     // It is very important that we do not delay any mutations that
     // have occurred at this point by an extra epoch.
+    PENDING_MUTATIONS.store(
+        mutation_buffer_rx.len(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+
     let to_recv = mutation_buffer_rx.len().max(MIN_MUTATIONS_PER_EPOCH);
 
     mutation_buffer_rx.recv_many(mutation_buffer, to_recv).await;
