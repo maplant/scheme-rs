@@ -235,6 +235,13 @@ impl Value {
             marker: PhantomData,
         }
     }
+
+    pub fn try_into_sym(self) -> Result<Arc<AlignedString>, Condition> {
+        match self.unpack() {
+            UnpackedValue::Symbol(sym) => Ok(sym),
+            e => Err(Condition::invalid_type("symbol", e.type_name())),
+        }
+    }
 }
 
 impl PartialEq for Value {
@@ -576,6 +583,43 @@ macro_rules! impl_try_from_value_for {
     };
 }
 
+/*
+macro_rules! impl_try_from_other_data_value_for {
+    ($ty:ty, $variant:ident, $type_name:literal) => {
+        impl From<$ty> for UnpackedValue {
+            fn from(v: $ty) -> Self {
+                Self::$variant(OtherData::$variant(v))
+            }
+        }
+
+        impl From<$ty> for Value {
+            fn from(v: $ty) -> Self {
+                UnpackedValue::from(OtherData::$variant(v)).into_value()
+            }
+        }
+
+        impl TryFrom<UnpackedValue> for $ty {
+            type Error = Condition;
+
+            fn try_from(v: UnpackedValue) -> Result<Self, Self::Error> {
+                match v {
+                    UnpackedValue::OtherData(OtherData::$variant(v)) => Ok(v),
+                    e => Err(Condition::invalid_type($type_name, e.type_name())),
+                }
+            }
+        }
+
+        impl TryFrom<Value> for $ty {
+            type Error = Condition;
+
+            fn try_from(v: Value) -> Result<Self, Self::Error> {
+                v.unpack().try_into()
+            }
+        }
+    };
+}
+*/
+
 impl_try_from_value_for!(bool, Boolean, "bool");
 impl_try_from_value_for!(char, Character, "char");
 impl_try_from_value_for!(Arc<Number>, Number, "number");
@@ -635,7 +679,7 @@ pub enum OtherData {
     CapturedEnv(CapturedEnv),
     Transformer(Transformer),
     // Future(Future),
-    RecordType(RecordType),
+    RecordType(Arc<RecordType>),
     UserData(Arc<dyn std::any::Any>),
 }
 

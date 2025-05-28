@@ -267,6 +267,23 @@ pub struct GcWriteGuard<'a, T: ?Sized> {
     marker: PhantomData<&'a mut T>,
 }
 
+/*
+impl<'a, T: ?Sized> GcWriteGuard<'a, T> {
+    pub fn try_map<U, E, F>(mut orig: Self, f: F) -> Result<GcWriteGuard<'a, U>, E>
+    where
+        F: FnOnce(&mut T) -> Result<&mut U, E>,
+        U: ?Sized,
+    {
+        let data = NonNull::from(f(orig.as_mut())?).as_ptr();
+        Ok(GcWriteGuard {
+            _permit: orig._permit,
+            data,
+            marker: PhantomData,
+        })
+    }
+}
+*/
+
 impl<T: ?Sized> Deref for GcWriteGuard<'_, T> {
     type Target = T;
 
