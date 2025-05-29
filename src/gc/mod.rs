@@ -20,6 +20,7 @@ use futures::future::Shared;
 pub use scheme_rs_macros::Trace;
 
 use std::{
+    alloc::Layout,
     cell::UnsafeCell,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     future::Future,
@@ -32,7 +33,7 @@ use std::{
 };
 
 /// A Garbage-Collected smart pointer with interior mutability.
-pub struct Gc<T: Trace> {
+pub struct Gc<T: ?Sized> {
     ptr: NonNull<GcInner<T>>,
     marker: PhantomData<GcInner<T>>,
 }
@@ -41,7 +42,7 @@ impl<T: Trace> Gc<T> {
     pub fn new(data: T) -> Gc<T> {
         Self {
             ptr: NonNull::from(Box::leak(Box::new(GcInner {
-                header: UnsafeCell::new(GcHeader::default()),
+                header: UnsafeCell::new(GcHeader::new::<T>()),
                 data: UnsafeCell::new(data),
             }))),
             marker: PhantomData,
@@ -49,13 +50,13 @@ impl<T: Trace> Gc<T> {
     }
 }
 
-impl<T: Trace> Gc<T> {
+impl<T: ?Sized> Gc<T> {
     /// # Safety
     ///
     /// This function is not safe and basically useless for anything outside of
     /// the Trace proc macro's generated code.
     pub unsafe fn as_opaque(&self) -> OpaqueGcPtr {
-        self.ptr as OpaqueGcPtr
+        OpaqueGcPtr::from(self.ptr)
     }
 
     /// Acquire a read lock for the object
@@ -85,7 +86,7 @@ impl<T: Trace> Gc<T> {
     }
 
     pub fn ptr_eq(lhs: &Self, rhs: &Self) -> bool {
-        lhs.ptr == rhs.ptr
+        std::ptr::addr_eq(lhs.ptr.as_ptr(), rhs.ptr.as_ptr())
     }
 
     pub fn as_ptr(this: &Self) -> *mut GcInner<T> {
@@ -161,7 +162,7 @@ impl<T: Trace> Clone for Gc<T> {
     }
 }
 
-impl<T: Trace> Drop for Gc<T> {
+impl<T: ?Sized> Drop for Gc<T> {
     fn drop(&mut self) {
         dec_rc(self.ptr);
     }
@@ -202,24 +203,35 @@ enum Color {
     Orange,
 }
 
-#[derive(derive_more::Debug)]
 pub struct GcHeader {
     rc: usize,
     crc: isize,
     color: Color,
     buffered: bool,
-    #[debug(skip)]
     lock: RwLock<()>,
+    // Vtable for Trace:
+    visit_children: unsafe fn(this: *const (), visitor: unsafe fn(OpaqueGcPtr)),
+    finalize: unsafe fn(this: *mut ()),
+    layout: Layout,
 }
 
-impl Default for GcHeader {
-    fn default() -> Self {
+impl GcHeader {
+    fn new<T: Trace>() -> Self {
         Self {
             rc: 1,
             crc: 1,
             color: Color::Black,
             buffered: false,
             lock: RwLock::new(()),
+            visit_children: |this, visitor| unsafe {
+                let this = this as *const T;
+                T::visit_children(this.as_ref().unwrap(), visitor);
+            },
+            finalize: |this| unsafe {
+                let this = this as *mut T;
+                T::finalize(this.as_mut().unwrap());
+            },
+            layout: Layout::new::<GcInner<T>>(),
         }
     }
 }
@@ -235,8 +247,84 @@ pub struct GcInner<T: ?Sized> {
 unsafe impl<T: ?Sized + Send> Send for GcInner<T> {}
 unsafe impl<T: ?Sized + Sync> Sync for GcInner<T> {}
 
-type OpaqueGc = GcInner<dyn Trace>;
-pub type OpaqueGcPtr = NonNull<OpaqueGc>;
+/// Fat pointer to the header and data of the Gc
+#[derive(Clone, Copy)]
+pub struct OpaqueGcPtr {
+    header: NonNull<UnsafeCell<GcHeader>>,
+    data: NonNull<UnsafeCell<()>>,
+}
+
+impl<T: ?Sized> From<NonNull<GcInner<T>>> for OpaqueGcPtr {
+    fn from(mut value: NonNull<GcInner<T>>) -> Self {
+        unsafe {
+            let value_mut = value.as_mut();
+            let header = NonNull::new(value_mut.header.get() as *mut _).unwrap();
+            let data = NonNull::new(UnsafeCell::from_mut(
+                &mut *(value_mut.data.get() as *mut ()),
+            ))
+            .unwrap();
+            Self { header, data }
+        }
+    }
+}
+
+impl OpaqueGcPtr {
+    unsafe fn rc(&self) -> usize {
+        (*self.header.as_ref().get()).rc
+    }
+
+    unsafe fn set_rc(&self, rc: usize) {
+        (*self.header.as_ref().get()).rc = rc;
+    }
+
+    unsafe fn crc(&self) -> isize {
+        (*self.header.as_ref().get()).crc
+    }
+
+    unsafe fn set_crc(&self, crc: isize) {
+        (*self.header.as_ref().get()).crc = crc;
+    }
+
+    unsafe fn color(&self) -> Color {
+        (*self.header.as_ref().get()).color
+    }
+
+    unsafe fn set_color(&self, color: Color) {
+        (*self.header.as_ref().get()).color = color;
+    }
+
+    unsafe fn buffered(&self) -> bool {
+        (*self.header.as_ref().get()).buffered
+    }
+
+    unsafe fn set_buffered(&self, buffered: bool) {
+        (*self.header.as_ref().get()).buffered = buffered;
+    }
+
+    unsafe fn lock(&self) -> &RwLock<()> {
+        &(*self.header.as_ref().get()).lock
+    }
+
+    unsafe fn visit_children(&self) -> unsafe fn(this: *const (), visitor: unsafe fn(OpaqueGcPtr)) {
+        (*self.header.as_ref().get()).visit_children
+    }
+
+    unsafe fn finalize(&self) -> unsafe fn(this: *mut ()) {
+        (*self.header.as_ref().get()).finalize
+    }
+
+    unsafe fn layout(&self) -> Layout {
+        (*self.header.as_ref().get()).layout
+    }
+
+    unsafe fn data(&self) -> *const () {
+        self.data.as_ref().get() as *const ()
+    }
+
+    unsafe fn data_mut(&self) -> *mut () {
+        self.data.as_ref().get()
+    }
+}
 
 pub struct GcReadGuard<'a, T: ?Sized> {
     _permit: RwLockReadGuard<'a, ()>,
