@@ -3,7 +3,7 @@
 
 use crate::{
     exception::{Condition, Exception, ExceptionHandler, Frame},
-    gc::{Gc, GcInner, Trace},
+    gc::{yield_until_gc_cleared, Gc, GcInner, Trace},
     lists::{list_to_vec, slice_to_list},
     registry::{BridgeFn, BridgeFnDebugInfo},
     runtime::{FunctionDebugInfoId, Runtime, IGNORE_FUNCTION},
@@ -183,7 +183,7 @@ impl Closure {
             .await
         } else {
             // For LLVM functions, we need to convert our args into raw pointers
-            // and make sure any freshly allocated rest_args are disposed of poperly.
+            // and make sure any freshly allocated rest_args are disposed of properly.
 
             let env = cells_to_vec_of_ptrs(&self.env);
             let globals = cells_to_vec_of_ptrs(&self.globals);
@@ -364,6 +364,7 @@ impl Application {
                 }
                 Ok(app) => app,
             };
+            yield_until_gc_cleared().await
         }
 
         // If we have no operator left, return the arguments as the final values:
