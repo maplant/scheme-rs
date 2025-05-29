@@ -30,7 +30,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     let bridge = parse_macro_input!(item as ItemFn);
 
     let impl_name = bridge.sig.ident.clone();
-    let wrapper_name = impl_name.to_string() + "_wrapper";
+    let wrapper_name = impl_name.to_string();
     let wrapper_name = Ident::new(&wrapper_name, Span::call_site());
 
     let is_variadic = if let Some(last_arg) = bridge.sig.inputs.last() {
@@ -71,6 +71,8 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 exception_handler: &'a Option<::scheme_rs::gc::Gc<::scheme_rs::exception::ExceptionHandler>>,
                 dynamic_wind: &'a ::scheme_rs::proc::DynamicWind,
             ) -> futures::future::BoxFuture<'a, Result<scheme_rs::proc::Application, ::scheme_rs::value::Value>> {
+                #bridge
+
                 Box::pin(
                     async move {
                         let cont = cont.clone().try_into()?;
@@ -98,6 +100,8 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 exception_handler: &'a Option<::scheme_rs::gc::Gc<::scheme_rs::exception::ExceptionHandler>>,
                 dynamic_wind: &'a ::scheme_rs::proc::DynamicWind,
             ) -> futures::future::BoxFuture<'a, Result<scheme_rs::proc::Application, ::scheme_rs::value::Value>> {
+                #bridge
+
                 Box::pin(
                     async move {
                         let cont = cont.clone().try_into()?;
@@ -117,8 +121,6 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
     quote! {
-        #bridge
-
         #wrapper
 
         inventory::submit! {
@@ -129,9 +131,9 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 #is_variadic,
                 #wrapper_name,
                 ::scheme_rs::registry::BridgeFnDebugInfo::new(
-                    "(unknown)",
-                    0,
-                    0,
+                    ::std::file!(),
+                    ::std::line!(),
+                    ::std::column!(),
                     0,
                     &[ #( #arg_names, )* ],
                 )

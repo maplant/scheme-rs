@@ -447,9 +447,8 @@ impl Expression {
     pub fn to_primop(&self) -> Option<PrimOp> {
         use crate::{
             num::{
-                add_builtin_wrapper, div_builtin_wrapper, equal_builtin_wrapper,
-                greater_builtin_wrapper, greater_equal_builtin_wrapper, lesser_builtin_wrapper,
-                lesser_equal_builtin_wrapper, mul_builtin_wrapper, sub_builtin_wrapper,
+                add_builtin, div_builtin, equal_builtin, greater_builtin, greater_equal_builtin,
+                lesser_builtin, lesser_equal_builtin, mul_builtin, sub_builtin,
             },
             proc::{Closure, FuncPtr::Bridge},
         };
@@ -459,15 +458,15 @@ impl Expression {
             let val: Gc<Closure> = val.try_into().ok()?;
             let val_read = val.read();
             match val_read.func {
-                Bridge(ptr) if ptr == add_builtin_wrapper => Some(PrimOp::Add),
-                Bridge(ptr) if ptr == sub_builtin_wrapper => Some(PrimOp::Sub),
-                Bridge(ptr) if ptr == mul_builtin_wrapper => Some(PrimOp::Mul),
-                Bridge(ptr) if ptr == div_builtin_wrapper => Some(PrimOp::Div),
-                Bridge(ptr) if ptr == equal_builtin_wrapper => Some(PrimOp::Equal),
-                Bridge(ptr) if ptr == greater_builtin_wrapper => Some(PrimOp::Greater),
-                Bridge(ptr) if ptr == greater_equal_builtin_wrapper => Some(PrimOp::GreaterEqual),
-                Bridge(ptr) if ptr == lesser_builtin_wrapper => Some(PrimOp::Lesser),
-                Bridge(ptr) if ptr == lesser_equal_builtin_wrapper => Some(PrimOp::LesserEqual),
+                Bridge(ptr) if ptr == add_builtin => Some(PrimOp::Add),
+                Bridge(ptr) if ptr == sub_builtin => Some(PrimOp::Sub),
+                Bridge(ptr) if ptr == mul_builtin => Some(PrimOp::Mul),
+                Bridge(ptr) if ptr == div_builtin => Some(PrimOp::Div),
+                Bridge(ptr) if ptr == equal_builtin => Some(PrimOp::Equal),
+                Bridge(ptr) if ptr == greater_builtin => Some(PrimOp::Greater),
+                Bridge(ptr) if ptr == greater_equal_builtin => Some(PrimOp::GreaterEqual),
+                Bridge(ptr) if ptr == lesser_builtin => Some(PrimOp::Lesser),
+                Bridge(ptr) if ptr == lesser_equal_builtin => Some(PrimOp::LesserEqual),
                 _ => None,
             }
         } else {
