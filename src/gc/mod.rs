@@ -269,9 +269,52 @@ impl<T: ?Sized> From<NonNull<GcInner<T>>> for OpaqueGcPtr {
 }
 
 impl OpaqueGcPtr {
-    // TODO: Fix this by having getters and setters for the header fields
-    unsafe fn header(&self) -> &mut GcHeader {
-        &mut *self.header.as_ref().get()
+    unsafe fn rc(&self) -> usize {
+        (*self.header.as_ref().get()).rc
+    }
+
+    unsafe fn set_rc(&self, rc: usize) {
+        (*self.header.as_ref().get()).rc = rc;
+    }
+
+    unsafe fn crc(&self) -> isize {
+        (*self.header.as_ref().get()).crc
+    }
+
+    unsafe fn set_crc(&self, crc: isize) {
+        (*self.header.as_ref().get()).crc = crc;
+    }
+
+    unsafe fn color(&self) -> Color {
+        (*self.header.as_ref().get()).color
+    }
+
+    unsafe fn set_color(&self, color: Color) {
+        (*self.header.as_ref().get()).color = color;
+    }
+
+    unsafe fn buffered(&self) -> bool {
+        (*self.header.as_ref().get()).buffered
+    }
+
+    unsafe fn set_buffered(&self, buffered: bool) {
+        (*self.header.as_ref().get()).buffered = buffered;
+    }
+
+    unsafe fn lock(&self) -> &RwLock<()> {
+        &(*self.header.as_ref().get()).lock
+    }
+
+    unsafe fn visit_children(&self) -> unsafe fn(this: *const (), visitor: unsafe fn(OpaqueGcPtr)) {
+        (*self.header.as_ref().get()).visit_children
+    }
+
+    unsafe fn finalize(&self) -> unsafe fn(this: *mut ()) {
+        (*self.header.as_ref().get()).finalize
+    }
+
+    unsafe fn layout(&self) -> Layout {
+        (*self.header.as_ref().get()).layout
     }
 
     unsafe fn data(&self) -> *const () {
@@ -279,7 +322,7 @@ impl OpaqueGcPtr {
     }
 
     unsafe fn data_mut(&self) -> *mut () {
-        self.data.as_ref().get() as *mut ()
+        self.data.as_ref().get()
     }
 }
 
