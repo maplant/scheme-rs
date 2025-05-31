@@ -401,8 +401,3 @@ fn is_gc(arg: &Type) -> bool {
     }
     false
 }
-
-#[proc_macro_derive(Record)]
-pub fn derive_record(input: TokenStream) -> TokenStream {
-    todo!()
-}
