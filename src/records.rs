@@ -1,13 +1,16 @@
-//! Rudimentary structure support. CPS will probably make a lot of this redundant.
+//! Rudimentary structure support.
 
 use std::{cell::LazyCell, sync::Arc};
 
+use by_address::ByAddress;
+
 use crate::{
+    ast::ParseAstError,
     exception::Condition,
     gc::Trace,
     registry::bridge,
-    syntax::{Identifier, Syntax},
-    value::Value,
+    syntax::{Identifier, Span, Syntax},
+    value::{Value, ValueType},
 };
 
 /// Type declaration for a record.
@@ -18,9 +21,7 @@ pub struct RecordType {
     sealed: bool,
     opaque: bool,
     /// Parent is most recently inserted record type, if one exists.
-    // TODO: We need to change this from an Arc to some other type that hashes
-    // pointers rather than the inner type.
-    inherits: indexmap::IndexSet<Arc<RecordType>>,
+    inherits: indexmap::IndexSet<ByAddress<Arc<RecordType>>>,
     fields: Vec<Field>,
 }
 
@@ -28,6 +29,41 @@ pub struct RecordType {
 pub enum Field {
     Immutable(Identifier),
     Mutable(Identifier),
+}
+
+impl Field {
+    fn parse(field: &Syntax, span: &Span) -> Result<Self, ParseAstError> {
+        match field.as_list() {
+            Some(
+                [
+                    Syntax::Identifier {
+                        ident: mutability, ..
+                    },
+                    Syntax::Identifier {
+                        ident: field_name, ..
+                    },
+                    Syntax::Null { .. },
+                ],
+            ) => match mutability.name.as_str() {
+                "mutable" => Ok(Field::Mutable(field_name.clone())),
+                "immutable" => Ok(Field::Immutable(field_name.clone())),
+                _ => Err(ParseAstError::BadForm(span.clone())),
+            },
+            _ => Err(ParseAstError::BadForm(span.clone())),
+        }
+    }
+
+    fn parse_fields(fields: &Syntax) -> Result<Vec<Self>, ParseAstError> {
+        let span = fields.span();
+        if let Some([fields @ .., Syntax::Null { .. }]) = fields.as_list() {
+            fields
+                .iter()
+                .map(|field| Self::parse(field, span))
+                .collect()
+        } else {
+            Err(ParseAstError::BadForm(span.clone()))
+        }
+    }
 }
 
 /// The record type for the "record type" type.
@@ -70,21 +106,26 @@ pub async fn make_record_type_descriptor(
         .transpose()?;
     let inherits = if let Some(parent) = parent {
         let mut inherits = parent.inherits.clone();
-        // inherits.insert(parent);
+        inherits.insert(ByAddress(parent));
         inherits
     } else {
         indexmap::IndexSet::new()
     };
     let sealed = sealed.is_true();
     let opaque = opaque.is_true();
-    let _fields: Arc<Syntax> = fields.clone().try_into()?;
+    let fields: Arc<Syntax> = fields.clone().try_into()?;
     Ok(vec![Value::from(Arc::new(RecordType {
         name: name.to_string(),
         sealed,
         opaque,
         inherits,
-        fields: todo!(),
+        fields: Field::parse_fields(&fields)?,
     }))])
+}
+
+#[bridge(name = "record-type-descriptor?", lib = "(base)")]
+pub async fn record_type_descriptor_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
+    Ok(vec![Value::from(obj.type_of() == ValueType::RecordType)])
 }
 
 /*

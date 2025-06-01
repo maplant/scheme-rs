@@ -759,7 +759,20 @@ where
         }
     }
 }
-*/
+ */
+
+unsafe impl<T> Trace for by_address::ByAddress<T>
+where
+    T: ?Sized + GcOrTrace + Deref,
+{
+    unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
+        self.0.visit_or_recurse(visitor)
+    }
+
+    unsafe fn finalize(&mut self) {
+        self.0.finalize_or_skip()
+    }
+}
 
 unsafe impl<T> Trace for std::sync::Arc<T>
 where
