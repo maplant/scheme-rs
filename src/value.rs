@@ -500,6 +500,7 @@ impl fmt::Display for UnpackedValue {
             Self::Record(record) => write!(f, "<{record:?}>"),
             Self::Syntax(syntax) => write!(f, "{:?}", syntax),
             _ => write!(f, "<record>"),
+            // TODO: Add custom display for Condition
         }
     }
 }
@@ -529,6 +530,7 @@ impl fmt::Debug for UnpackedValue {
             Self::Closure(proc) => write!(f, "#<procedure {proc:?}>"),
             Self::Record(record) => write!(f, "<{record:?}>"),
             _ => write!(f, "<record>"),
+            // TODO: Add custom display for Condition
         }
     }
 }

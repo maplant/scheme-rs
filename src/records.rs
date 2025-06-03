@@ -3,14 +3,20 @@
 use std::{cell::LazyCell, sync::Arc};
 
 use by_address::ByAddress;
+use futures::future::BoxFuture;
+use indexmap::IndexMap;
 
 use crate::{
     ast::ParseAstError,
-    exception::Condition,
-    gc::Trace,
-    registry::bridge,
+    cps::{ClosureArgs, Cps, PrimOp, Value as CpsValue},
+    env::Local,
+    exception::{Condition, ExceptionHandler},
+    gc::{Gc, Trace},
+    proc::{Application, Closure, DynamicWind},
+    registry::{BridgeFn, BridgeFnDebugInfo, bridge},
     syntax::{Identifier, Span, Syntax},
-    value::{Value, ValueType},
+    value::{UnpackedValue, Value, ValueType},
+    vectors,
 };
 
 /// Type declaration for a record.
@@ -113,13 +119,14 @@ pub async fn make_record_type_descriptor(
     };
     let sealed = sealed.is_true();
     let opaque = opaque.is_true();
-    let fields: Arc<Syntax> = fields.clone().try_into()?;
+    let fields: Gc<vectors::AlignedVector<Value>> = fields.clone().try_into()?;
     Ok(vec![Value::from(Arc::new(RecordType {
         name: name.to_string(),
         sealed,
         opaque,
         inherits,
-        fields: Field::parse_fields(&fields)?,
+        fields: vec![],
+        // fields: Field::parse_fields(&fields)?,
     }))])
 }
 
@@ -135,7 +142,83 @@ fn is_subtype_of(lhs: &Gc<RecordType>, rhs: &Gc<RecordType>) -> bool {
         lhs.inherits.contains(rhs)
     }
 }
-*/
+ */
+
+pub fn is_subtype_of(val: &Value, rt: &Value) -> bool {
+    let UnpackedValue::Record(rec) = val.clone().unpack() else {
+        return false;
+    };
+    let rec_read = rec.read();
+    let rt: Arc<RecordType> = rt.clone().try_into().unwrap();
+    Arc::ptr_eq(&rec_read.record_type, &rt)
+        || rec_read.record_type.inherits.contains(&ByAddress::from(rt))
+}
+
+pub fn record_predicate<'a>(
+    args: &'a [Value],
+    _rest_args: &'a [Value],
+    cont: &'a Value,
+    _env: &'a [Gc<Value>],
+    exception_handler: &'a Option<Gc<ExceptionHandler>>,
+    dynamic_wind: &'a DynamicWind,
+) -> BoxFuture<'a, Result<Application, Value>> {
+    Box::pin(async move {
+        let cont: Gc<Closure> = cont.clone().try_into()?;
+        let [rtd] = args else { unreachable!() };
+        let rtd: Arc<RecordType> = rtd.clone().try_into()?;
+        let arg = Local::gensym();
+        let k = Local::gensym();
+        let pred = Local::gensym();
+        let pred_fn = Cps::Closure {
+            args: ClosureArgs::new(vec![arg], false, Some(k)),
+            body: Box::new(Cps::PrimOp(
+                PrimOp::IsSubType,
+                vec![CpsValue::from(arg), CpsValue::from(Value::from(rtd))],
+                pred,
+                Box::new(Cps::App(
+                    CpsValue::from(k),
+                    vec![CpsValue::from(pred)],
+                    None,
+                )),
+            )),
+            val: pred,
+            cexp: Box::new(Cps::Halt(CpsValue::from(pred))),
+            debug: None,
+        };
+        // Use the runtime from the continuation to compile the pred function
+        let runtime = cont.read().runtime.clone();
+        let compiled = runtime
+            .compile_expr_with_env(pred_fn, IndexMap::default())
+            .await
+            .unwrap();
+        let pred_fn = compiled.call(&[]).await?[0].clone();
+        let app = Application::new(
+            cont,
+            vec![pred_fn],
+            exception_handler.clone(),
+            dynamic_wind.clone(),
+            None,
+        );
+        Ok(app)
+    })
+}
+
+inventory::submit! {
+    BridgeFn::new(
+        "record-predicate",
+        "(base)",
+        1,
+        false,
+        record_predicate,
+        BridgeFnDebugInfo::new(
+            "records.rs",
+            0,
+            0,
+            0,
+            &[ "rtd" ],
+        )
+    )
+}
 
 #[derive(Debug, Trace, Clone)]
 #[repr(align(16))]

@@ -359,6 +359,11 @@ fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &Executi
     let sig = i64_type.fn_type(&[ptr_type.into(), i32_type.into(), ptr_type.into()], false);
     let f = module.add_function("lesser_equal", sig, None);
     ee.add_global_mapping(&f, lesser_equal as usize);
+
+    // is_subtype_of:
+    let sig = i64_type.fn_type(&[i64_type.into(), i64_type.into()], false);
+    let f = module.add_function("is_subtype_of", sig, None);
+    ee.add_global_mapping(&f, is_subtype_of as usize);
 }
 
 /// Allocate a new Gc with a value of undefined
@@ -586,6 +591,13 @@ unsafe extern "C" fn get_call_transformer_fn(
     );
 
     Gc::into_raw(Gc::new(Value::from(closure)))
+}
+
+unsafe extern "C" fn is_subtype_of(val: i64, rt: i64) -> i64 {
+    let val = ManuallyDrop::new(Value::from_raw(val as u64));
+    let rt = ManuallyDrop::new(Value::from_raw(rt as u64));
+    let is_subtype = Value::from(crate::records::is_subtype_of(&val, &rt));
+    Value::into_raw(is_subtype) as i64
 }
 
 /*

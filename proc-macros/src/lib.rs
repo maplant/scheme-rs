@@ -2,9 +2,9 @@ use proc_macro::{self, TokenStream};
 use proc_macro2::Span;
 use quote::quote;
 use syn::{
-    parse_macro_input, parse_quote, punctuated::Punctuated, DataEnum, DataStruct, DeriveInput,
-    Fields, FnArg, GenericParam, Generics, Ident, ItemFn, LitStr, Member, Pat, PatIdent, PatType,
-    Token, Type, TypeReference,
+    DataEnum, DataStruct, DeriveInput, Fields, FnArg, GenericParam, Generics, Ident, ItemFn,
+    LitStr, Member, Pat, PatIdent, PatType, Token, Type, TypeReference, parse_macro_input,
+    parse_quote, punctuated::Punctuated,
 };
 
 #[proc_macro_attribute]
@@ -176,7 +176,7 @@ fn derive_trace_struct(
                 unsafe impl ::scheme_rs::gc::Trace for #name {
                     unsafe fn visit_children(&self, visitor: unsafe fn(::scheme_rs::gc::OpaqueGcPtr)) {}
                 }
-            }
+            };
         }
     };
 
