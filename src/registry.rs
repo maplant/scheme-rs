@@ -183,14 +183,26 @@ impl BridgeFnDebugInfo {
 
 inventory::collect!(BridgeFn);
 
+#[derive(Copy, Clone)]
+pub struct Initializer {
+    lib_name: &'static str,
+    initializer: fn(lib: &Gc<Top>),
+}
+
 pub struct Registry {
     libs: HashMap<LibraryName, Gc<Top>>,
 }
 
+inventory::collect!(Initializer);
+
 impl Registry {
     /// Construct a Registry with all of the available bridge functions present but no external libraries imported.
+    // TODO: This should probably return a result.
     pub async fn new(runtime: &Gc<Runtime>) -> Self {
+        // This should probably be moved to a once cell.
         let mut libs = HashMap::<LibraryName, Gc<Top>>::default();
+
+        // Import the bridge functions:
 
         for bridge_fn in inventory::iter::<BridgeFn>() {
             let debug_info_id = runtime.write().debug_info.new_function_debug_info(
@@ -218,7 +230,18 @@ impl Registry {
             );
         }
 
+        // Run the initializers:
+
+        for initializer in inventory::iter::<Initializer>() {
+            let lib_name = LibraryName::from_str(initializer.lib_name, None).unwrap();
+            let lib = libs
+                .entry(lib_name)
+                .or_insert_with(|| Gc::new(Top::library()));
+            (initializer.initializer)(lib);
+        }
+
         // Import the stdlib:
+
         let base_lib = libs
             .entry(LibraryName::from_str("(base)", None).unwrap())
             .or_insert_with(|| Gc::new(Top::library()));

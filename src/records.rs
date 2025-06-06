@@ -1,33 +1,138 @@
-//! Rudimentary structure support. CPS will probably make a lot of this redundant.
+//! Rudimentary structure support.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{cell::LazyCell, sync::Arc};
+
+use by_address::ByAddress;
+use futures::future::BoxFuture;
+use indexmap::IndexMap;
 
 use crate::{
     ast::ParseAstError,
-    env::{Environment, Var},
+    cps::{ClosureArgs, Cps, PrimOp, Value as CpsValue},
+    env::Local,
+    exception::{Condition, ExceptionHandler},
     gc::{Gc, Trace},
+    proc::{Application, Closure, DynamicWind},
+    registry::{BridgeFn, BridgeFnDebugInfo, bridge},
     syntax::{Identifier, Span, Syntax},
-    value::Value,
+    value::{UnpackedValue, Value, ValueType},
+    vectors,
 };
 
 /// Type declaration for a record.
 #[derive(Debug, Trace, Clone)]
 #[repr(align(16))]
 pub struct RecordType {
-    name: String,
+    name: String, // Make Arc<AlignedString>?
+    sealed: bool,
+    opaque: bool,
     /// Parent is most recently inserted record type, if one exists.
-    inherits: indexmap::IndexSet<Arc<RecordType>>,
-    fields: Vec<Identifier>,
+    inherits: indexmap::IndexSet<ByAddress<Arc<RecordType>>>,
+    fields: Vec<Field>,
 }
 
+#[derive(Debug, Trace, Clone)]
+pub enum Field {
+    Immutable(Identifier),
+    Mutable(Identifier),
+}
+
+impl Field {
+    fn parse(field: &Syntax, span: &Span) -> Result<Self, ParseAstError> {
+        match field.as_list() {
+            Some(
+                [
+                    Syntax::Identifier {
+                        ident: mutability, ..
+                    },
+                    Syntax::Identifier {
+                        ident: field_name, ..
+                    },
+                    Syntax::Null { .. },
+                ],
+            ) => match mutability.name.as_str() {
+                "mutable" => Ok(Field::Mutable(field_name.clone())),
+                "immutable" => Ok(Field::Immutable(field_name.clone())),
+                _ => Err(ParseAstError::BadForm(span.clone())),
+            },
+            _ => Err(ParseAstError::BadForm(span.clone())),
+        }
+    }
+
+    fn parse_fields(fields: &Syntax) -> Result<Vec<Self>, ParseAstError> {
+        let span = fields.span();
+        if let Some([fields @ .., Syntax::Null { .. }]) = fields.as_list() {
+            fields
+                .iter()
+                .map(|field| Self::parse(field, span))
+                .collect()
+        } else {
+            Err(ParseAstError::BadForm(span.clone()))
+        }
+    }
+}
+
+/// The record type for the "record type" type.
+const RECORD_TYPE_RT: LazyCell<Arc<RecordType>> = LazyCell::new(|| {
+    Arc::new(RecordType {
+        name: "rt".to_string(),
+        sealed: true,
+        opaque: true,
+        inherits: indexmap::IndexSet::new(),
+        fields: vec![],
+    })
+});
+
+/*
 impl RecordType {
-    pub fn new(name: &str) -> Self {
+    pub fn new(name: &str, parent: Option<&RecordType>, sealed: bool, opaque: bool) -> Self {
         Self {
             name: name.to_string(),
             inherits: indexmap::IndexSet::new(),
             fields: Vec::new(),
         }
     }
+}
+
+*/
+
+#[bridge(name = "make-record-type-descriptor", lib = "(base)")]
+pub async fn make_record_type_descriptor(
+    name: &Value,
+    parent: &Value,
+    _uid: &Value,
+    sealed: &Value,
+    opaque: &Value,
+    fields: &Value,
+) -> Result<Vec<Value>, Condition> {
+    let name = name.clone().try_into_sym()?;
+    let parent: Option<Arc<RecordType>> = parent
+        .is_true()
+        .then(|| parent.clone().try_into())
+        .transpose()?;
+    let inherits = if let Some(parent) = parent {
+        let mut inherits = parent.inherits.clone();
+        inherits.insert(ByAddress(parent));
+        inherits
+    } else {
+        indexmap::IndexSet::new()
+    };
+    let sealed = sealed.is_true();
+    let opaque = opaque.is_true();
+    let fields: Gc<vectors::AlignedVector<Value>> = fields.clone().try_into()?;
+    Ok(vec![Value::from(Arc::new(RecordType {
+        name: name.to_string(),
+        sealed,
+        opaque,
+        inherits,
+        fields: vec![],
+        // fields: Field::parse_fields(&fields)?,
+    }))])
+}
+
+#[bridge(name = "record-type-descriptor?", lib = "(base)")]
+pub async fn record_type_descriptor_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
+    Ok(vec![Value::from(obj.type_of() == ValueType::RecordType)])
 }
 
 /*
@@ -37,483 +142,87 @@ fn is_subtype_of(lhs: &Gc<RecordType>, rhs: &Gc<RecordType>) -> bool {
         lhs.inherits.contains(rhs)
     }
 }
-*/
+ */
+
+pub fn is_subtype_of(val: &Value, rt: &Value) -> bool {
+    let UnpackedValue::Record(rec) = val.clone().unpack() else {
+        return false;
+    };
+    let rec_read = rec.read();
+    let rt: Arc<RecordType> = rt.clone().try_into().unwrap();
+    Arc::ptr_eq(&rec_read.record_type, &rt)
+        || rec_read.record_type.inherits.contains(&ByAddress::from(rt))
+}
+
+pub fn record_predicate<'a>(
+    args: &'a [Value],
+    _rest_args: &'a [Value],
+    cont: &'a Value,
+    _env: &'a [Gc<Value>],
+    exception_handler: &'a Option<Gc<ExceptionHandler>>,
+    dynamic_wind: &'a DynamicWind,
+) -> BoxFuture<'a, Result<Application, Value>> {
+    Box::pin(async move {
+        let cont: Gc<Closure> = cont.clone().try_into()?;
+        let [rtd] = args else { unreachable!() };
+        let rtd: Arc<RecordType> = rtd.clone().try_into()?;
+        let arg = Local::gensym();
+        let k = Local::gensym();
+        let pred = Local::gensym();
+        let pred_fn = Cps::Closure {
+            args: ClosureArgs::new(vec![arg], false, Some(k)),
+            body: Box::new(Cps::PrimOp(
+                PrimOp::IsSubType,
+                vec![CpsValue::from(arg), CpsValue::from(Value::from(rtd))],
+                pred,
+                Box::new(Cps::App(
+                    CpsValue::from(k),
+                    vec![CpsValue::from(pred)],
+                    None,
+                )),
+            )),
+            val: pred,
+            cexp: Box::new(Cps::Halt(CpsValue::from(pred))),
+            debug: None,
+        };
+        // Use the runtime from the continuation to compile the pred function
+        let runtime = cont.read().runtime.clone();
+        let compiled = runtime
+            .compile_expr_with_env(pred_fn, IndexMap::default())
+            .await
+            .unwrap();
+        let pred_fn = compiled.call(&[]).await?[0].clone();
+        let app = Application::new(
+            cont,
+            vec![pred_fn],
+            exception_handler.clone(),
+            dynamic_wind.clone(),
+            None,
+        );
+        Ok(app)
+    })
+}
+
+inventory::submit! {
+    BridgeFn::new(
+        "record-predicate",
+        "(base)",
+        1,
+        false,
+        record_predicate,
+        BridgeFnDebugInfo::new(
+            "records.rs",
+            0,
+            0,
+            0,
+            &[ "rtd" ],
+        )
+    )
+}
 
 #[derive(Debug, Trace, Clone)]
 #[repr(align(16))]
 pub struct Record {
-    record_type: Arc<RecordType>,
-    fields: Vec<Gc<Value>>,
+    pub(crate) record_type: Arc<RecordType>,
+    pub(crate) fields: Vec<Value>,
 }
-
-#[derive(Clone, Trace, Debug)]
-pub struct DefineRecordType {
-    parent: Option<Var>,
-    name: Identifier,
-    constructor: Option<Identifier>,
-    predicate: Option<Identifier>,
-    fields: Vec<FieldDefinition>,
-}
-
-#[derive(Trace, Debug, Clone)]
-struct FieldDefinition {
-    field_name: Identifier,
-    accessor_name: Option<Identifier>,
-    kind: FieldDefinitionKind,
-    span: Span,
-}
-
-impl FieldDefinition {
-    fn new(name: &Identifier, accessor: Option<&Identifier>, span: &Span) -> Self {
-        Self {
-            field_name: name.clone(),
-            accessor_name: accessor.cloned(),
-            kind: FieldDefinitionKind::Immutable,
-            span: span.clone(),
-        }
-    }
-
-    fn new_mut(
-        name: &Identifier,
-        accessor: Option<&Identifier>,
-        mutator: Option<&Identifier>,
-        span: &Span,
-    ) -> Self {
-        Self {
-            field_name: name.clone(),
-            accessor_name: accessor.cloned(),
-            kind: FieldDefinitionKind::Mutable {
-                mutator_name: mutator.cloned(),
-            },
-            span: span.clone(),
-        }
-    }
-}
-
-#[derive(Trace, Debug, Clone)]
-enum FieldDefinitionKind {
-    Mutable { mutator_name: Option<Identifier> },
-    Immutable,
-}
-
-fn parse_field(field: &[Syntax], span: &Span) -> Result<FieldDefinition, ParseAstError> {
-    match field {
-        [Syntax::Identifier {
-            ident: mutability, ..
-        }, Syntax::Identifier {
-            ident: field_name, ..
-        }, Syntax::Null { .. }]
-            if mutability.name == "mutable" =>
-        {
-            Ok(FieldDefinition::new_mut(field_name, None, None, span))
-        }
-        [Syntax::Identifier {
-            ident: mutability, ..
-        }, Syntax::Identifier {
-            ident: field_name, ..
-        }, Syntax::Identifier {
-            ident: accessor_name,
-            ..
-        }, Syntax::Null { .. }]
-            if mutability.name == "mutable" =>
-        {
-            Ok(FieldDefinition::new_mut(
-                field_name,
-                Some(accessor_name),
-                None,
-                span,
-            ))
-        }
-        [Syntax::Identifier {
-            ident: mutability, ..
-        }, Syntax::Identifier {
-            ident: field_name, ..
-        }, Syntax::Identifier {
-            ident: accessor_name,
-            ..
-        }, Syntax::Identifier {
-            ident: mutator_name,
-            ..
-        }, Syntax::Null { .. }]
-            if mutability.name == "mutable" =>
-        {
-            Ok(FieldDefinition::new_mut(
-                field_name,
-                Some(accessor_name),
-                Some(mutator_name),
-                span,
-            ))
-        }
-
-        [Syntax::Identifier {
-            ident: mutability, ..
-        }, Syntax::Identifier {
-            ident: field_name, ..
-        }, Syntax::Null { .. }]
-            if mutability.name == "immutable" =>
-        {
-            Ok(FieldDefinition::new(field_name, None, span))
-        }
-        [Syntax::Identifier {
-            ident: mutability, ..
-        }, Syntax::Identifier {
-            ident: field_name, ..
-        }, Syntax::Identifier {
-            ident: accessor_name,
-            ..
-        }, Syntax::Null { .. }]
-            if mutability.name == "immutable" =>
-        {
-            Ok(FieldDefinition::new(field_name, Some(accessor_name), span))
-        }
-        _ => Err(ParseAstError::BadForm(span.clone())),
-    }
-}
-
-fn parse_fields(fields: &[Syntax]) -> Result<Vec<FieldDefinition>, ParseAstError> {
-    let mut parsed_fields = Vec::new();
-    for field in fields {
-        match field {
-            Syntax::Identifier { ident, span, .. } => {
-                parsed_fields.push(FieldDefinition::new(ident, None, span));
-            }
-            Syntax::List { list, span } => parsed_fields.push(parse_field(list, span)?),
-            x => return Err(ParseAstError::BadForm(x.span().clone())),
-        }
-    }
-    Ok(parsed_fields)
-}
-
-impl DefineRecordType {
-    pub fn parse(exprs: &[Syntax], env: &Environment, span: &Span) -> Result<Self, ParseAstError> {
-        match exprs {
-            [first_arg, args @ ..] => {
-                let (name, constructor, predicate) = match first_arg {
-                    Syntax::Identifier { ident: name, .. } => (name.clone(), None, None),
-                    Syntax::List { list, span, .. } => {
-                        if let [Syntax::Identifier { ident: name, .. }, Syntax::Identifier {
-                            ident: constructor, ..
-                        }, Syntax::Identifier {
-                            ident: predicate, ..
-                        }, Syntax::Null { .. }] = list.as_slice()
-                        {
-                            (
-                                name.clone(),
-                                Some(constructor.clone()),
-                                Some(predicate.clone()),
-                            )
-                        } else {
-                            return Err(ParseAstError::BadForm(span.clone()));
-                        }
-                    }
-                    _ => return Err(ParseAstError::BadForm(span.clone())),
-                };
-
-                let mut parent: Option<(Identifier, Span)> = None;
-                let mut fields: Option<(Vec<FieldDefinition>, Span)> = None;
-
-                for arg in args {
-                    match arg.as_list() {
-                        Some(
-                            [Syntax::Identifier {
-                                ident,
-                                span: second,
-                                ..
-                            }, Syntax::Identifier {
-                                ident: parent_name, ..
-                            }, Syntax::Null { .. }],
-                        ) if ident.name == "parent" => {
-                            if let Some((_, first)) = parent {
-                                return Err(ParseAstError::ParentSpecifiedMultipleTimes {
-                                    first: first.clone(),
-                                    second: second.clone(),
-                                });
-                            }
-                            parent = Some((parent_name.clone(), second.clone()));
-                        }
-                        Some(
-                            [Syntax::Identifier {
-                                ident,
-                                span: second,
-                                ..
-                            }, unparsed_fields @ .., Syntax::Null { .. }],
-                        ) if ident == "fields" => {
-                            if let Some((_, first)) = fields {
-                                return Err(ParseAstError::ParentSpecifiedMultipleTimes {
-                                    first: first.clone(),
-                                    second: second.clone(),
-                                });
-                            }
-
-                            let parsed_fields = parse_fields(unparsed_fields)?;
-
-                            // Check for fields with the same name:
-                            let mut field_locs = HashMap::<String, Span>::new();
-
-                            for field in &parsed_fields {
-                                if let Some(first) = field_locs.get(&field.field_name.name) {
-                                    return Err(ParseAstError::NameBoundMultipleTimes {
-                                        ident: field.field_name.clone(),
-                                        first: first.clone(),
-                                        second: field.span.clone(),
-                                    });
-                                }
-                                field_locs
-                                    .insert(field.field_name.name.clone(), field.span.clone());
-                            }
-
-                            fields = Some((parsed_fields, span.clone()));
-                        }
-                        _ => return Err(ParseAstError::BadForm(span.clone())),
-                    }
-                }
-
-                Ok(Self {
-                    parent: parent
-                        .map(|(x, _)| {
-                            env.fetch_var(&x)
-                                .ok_or_else(|| ParseAstError::UndefinedVariable(x.clone()))
-                        })
-                        .transpose()?,
-                    name,
-                    constructor,
-                    predicate,
-                    fields: fields.map(|(x, _)| x).unwrap_or_default(),
-                })
-            }
-            _ => Err(ParseAstError::BadForm(span.clone())),
-        }
-    }
-
-    /*
-    pub fn define(&self, env: &Gc<Env>) {
-        let mut env = env.write();
-        let constructor_name = self
-            .constructor
-            .as_ref()
-            .map_or_else(|| format!("make-{}", self.name.name), |cn| cn.name.clone());
-        let constructor_name = Identifier::new(constructor_name);
-        env.def_local_var(&constructor_name, Gc::new(Value::Undefined));
-
-        let predicate_name = self
-            .predicate
-            .as_ref()
-            .map_or_else(|| format!("{}?", self.name.name), |cn| cn.name.clone());
-        let predicate_name = Identifier::new(predicate_name);
-        env.def_local_var(&predicate_name, Gc::new(Value::Undefined));
-
-        for field in &self.fields {
-            let ident = field.field_name.clone();
-
-            let accessor_name = field.accessor_name.as_ref().map_or_else(
-                || format!("{}-{}", self.name.name, ident.name),
-                |accessor| accessor.name.clone(),
-            );
-            let accessor_name = Identifier::new(accessor_name);
-            env.def_local_var(&accessor_name, Gc::new(Value::Undefined));
-
-            // Set up mutator, if we should:
-            if let Some(mutator_name) = match field.kind {
-                FieldDefinitionKind::Mutable {
-                    mutator_name: Some(ref mutator_name),
-                } => Some(mutator_name.name.clone()),
-                FieldDefinitionKind::Mutable { .. } => {
-                    Some(format!("{}-{}-set!", self.name.name, ident.name))
-                }
-                _ => None,
-            } {
-                let mutator_name = Identifier::new(mutator_name);
-                env.def_local_var(&mutator_name, Gc::new(Value::Undefined));
-            }
-        }
-
-        env.def_local_var(&self.name, Gc::new(Value::Undefined));
-    }
-    */
-
-    /*
-    pub fn eval(&self, env: &Gc<Env>) -> Result<(), RuntimeError> {
-        let inherits = if let Some(ref parent) = self.parent {
-            let parent_gc = parent.fetch(env)?;
-            let parent = parent_gc.read();
-            let record_type: &Gc<RecordType> = (&*parent).try_into()?;
-            let mut inherits = record_type.read().inherits.clone();
-            inherits.insert(record_type.clone());
-            inherits
-        } else {
-            indexmap::IndexSet::new()
-        };
-
-        let mut fields = Vec::new();
-
-        for parent in &inherits {
-            let record_type = parent.read();
-            fields.extend_from_slice(record_type.fields.as_slice());
-        }
-
-        let base_offset = fields.len();
-
-        for field in &self.fields {
-            let field = field.field_name.clone();
-            fields.push(field);
-        }
-
-        let record_type = Gc::new(RecordType::new(&self.name.name));
-
-        // Set up the record type:
-        {
-            let mut rt = record_type.write();
-            rt.inherits = inherits;
-            // Got this code has gotten ugly. TODO: clean all of this up at some point.x
-            rt.fields = fields
-                .iter()
-                .rev()
-                .take(self.fields.len())
-                .rev()
-                .cloned()
-                .collect();
-        }
-
-        // Set up the constructor:
-
-        // Get the arguments for the constructor:
-        let mut setters: Vec<Expression> = (0..fields.len())
-            .map(|offset| {
-                Expression::UncheckedFieldMutation(UncheckedFieldMutation {
-                    value: DeBruijnIndex::default().offset(offset).inc_depth(),
-                    offset,
-                })
-            })
-            .collect();
-
-        // Append the return value
-        setters.push(Expression::Var(VariableRef::Lexical(DeBruijnIndex::default())));
-
-        let constructor = new_proc(
-            env,
-            // Yes, argument names shouldn't matter, but they do. Oh well.
-            (0..fields.len())
-                .map(|i| Identifier::new(format!("a{i}")))
-                .collect(),
-            Body::new(
-                Vec::new(),
-                vec![Expression::Let(Let::new(
-                    vec![(
-                        Identifier::new("this".to_string()),
-                        Expression::MakeRecord(MakeRecord {
-                            record_type: record_type.clone(),
-                            num_fields: fields.len(),
-                        }),
-                    )],
-                    Body::new(Vec::new(), setters),
-                ))],
-            ),
-        );
-
-        // Set up the predicate:
-        let predicate = new_proc(
-            env,
-            vec![Identifier::new("this".to_string())],
-            Body::new(
-                Vec::new(),
-                vec![Expression::RecordPredicate(RecordPredicate {
-                    record_type: record_type.clone(),
-                })],
-            ),
-        );
-
-        let mut new_functions = HashMap::<String, Gc<Value>>::new();
-
-        // Set up the new field accessors and mutators:
-        for (offset, field) in self.fields.iter().enumerate() {
-            let ident = field.field_name.clone();
-
-            // Set up accessor:
-            let accessor_name = field.accessor_name.as_ref().map_or_else(
-                || format!("{}-{}", self.name.name, ident.name),
-                |accessor| accessor.name.clone(),
-            );
-            let accessor = new_proc(
-                env,
-                vec![Identifier::new("this".to_string())],
-                Body::new(
-                    Vec::new(),
-                    vec![Expression::FieldProjection(FieldProjection {
-                        record_type: record_type.clone(),
-                        offset: base_offset + offset,
-                    })],
-                ),
-            );
-
-            new_functions.insert(accessor_name, accessor);
-
-            // Set up mutator, if we should:
-            if let Some(mutator_name) = match field.kind {
-                FieldDefinitionKind::Mutable {
-                    mutator_name: Some(ref mutator_name),
-                } => Some(mutator_name.name.clone()),
-                FieldDefinitionKind::Mutable { .. } => {
-                    Some(format!("{}-{}-set!", self.name.name, ident.name))
-                }
-                _ => None,
-            } {
-                let mutator = new_proc(
-                    env,
-                    vec![Identifier::new("this".to_string()), ident.clone()],
-                    Body::new(
-                        Vec::new(),
-                        vec![Expression::FieldMutation(FieldMutation {
-                            value: DeBruijnIndex::default().offset(1),
-                            record_type: record_type.clone(),
-                            offset: base_offset + offset,
-                        })],
-                    ),
-                );
-                new_functions.insert(mutator_name, mutator);
-            }
-        }
-
-        // Now that we have all of the appropriate functions set up, we can
-        // apply them to the environment.
-
-        // All of these evaluations should be super simple, no need to worry about
-        // the continuation being correct.
-
-        let mut env = env.write();
-
-        let constructor_name = self
-            .constructor
-            .as_ref()
-            .map_or_else(|| format!("make-{}", self.name.name), |cn| cn.name.clone());
-        let constructor_name = Identifier::new(constructor_name);
-        env.def_local_var(&constructor_name, constructor);
-
-        let predicate_name = self
-            .predicate
-            .as_ref()
-            .map_or_else(|| format!("{}?", self.name.name), |cn| cn.name.clone());
-        let predicate_name = Identifier::new(predicate_name);
-        env.def_local_var(&predicate_name, predicate);
-
-        for (new_function_name, new_function) in new_functions.into_iter() {
-            env.def_local_var(&Identifier::new(new_function_name), new_function);
-        }
-
-        env.def_local_var(&self.name, Gc::new(Value::RecordType(record_type)));
-
-        Ok(())
-    }
-    */
-}
-
-/*
-fn new_proc(env: &Gc<Env>, args: Vec<Identifier>, body: ast::Body) -> Gc<Value> {
-    Gc::new(Value::Procedure(Procedure {
-        up: env.clone(),
-        args,
-        remaining: None,
-        body,
-        is_variable_transformer: false,
-    }))
-}
-*/
