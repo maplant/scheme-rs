@@ -223,6 +223,6 @@ inventory::submit! {
 #[derive(Debug, Trace, Clone)]
 #[repr(align(16))]
 pub struct Record {
-    record_type: Arc<RecordType>,
-    fields: Vec<Value>,
+    pub(crate) record_type: Arc<RecordType>,
+    pub(crate) fields: Vec<Value>,
 }

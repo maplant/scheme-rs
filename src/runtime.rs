@@ -1,18 +1,8 @@
 use crate::{
-    cps::Cps,
-    env::Local,
-    exception::{Condition, ExceptionHandler},
-    expand,
-    gc::{init_gc, Gc, GcInner, Trace},
-    lists::{self, list_to_vec},
-    num,
-    proc::{
+    cps::Cps, env::Local, exception::{Condition, ExceptionHandler}, expand, gc::{init_gc, Gc, GcInner, Trace}, lists::{self, list_to_vec}, num::{self, Number}, proc::{
         clone_continuation_env, Application, Closure, ClosurePtr, ContinuationPtr, DynamicWind,
         FuncPtr, FunctionDebugInfo,
-    },
-    syntax::Span,
-    value::{ReflexiveValue, UnpackedValue, Value},
-    vectors,
+    }, records::Record, syntax::Span, value::{ReflexiveValue, UnpackedValue, Value}, vectors
 };
 use indexmap::IndexMap;
 use inkwell::{
@@ -25,7 +15,7 @@ use inkwell::{
 };
 use std::{
     collections::{HashMap, HashSet},
-    mem::ManuallyDrop,
+    mem::ManuallyDrop, sync::Arc,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -492,6 +482,17 @@ unsafe extern "C" fn store(from: i64, to: *mut GcInner<Value>) {
     let from = Value::from_raw_inc_rc(from as u64);
     let to = ManuallyDrop::new(Gc::from_raw(to));
     *to.write() = from;
+}
+
+/// Select a value from a record.
+unsafe extern "C" fn select(record: i64, offset: i64) -> i64 {
+    let record = Value::from_raw_inc_rc(record as u64);
+    let record: Gc<Record> = record.try_into().unwrap();
+    let offset = Value::from_raw_inc_rc(offset as u64);
+    let offset: Arc<Number> = offset.try_into().unwrap();
+    let offset: usize = offset.as_ref().try_into().unwrap();
+    let record_read = record.read();
+    Value::into_raw(record_read.fields[offset].clone()) as i64 
 }
 
 /// Allocate a closure

@@ -593,6 +593,7 @@ impl_try_from_value_for!(Arc<vectors::AlignedVector<u8>>, ByteVector, "byte-vect
 impl_try_from_value_for!(Arc<Syntax>, Syntax, "syntax");
 impl_try_from_value_for!(Gc<Closure>, Closure, "procedure");
 impl_try_from_value_for!(Gc<lists::Pair>, Pair, "pair");
+impl_try_from_value_for!(Gc<Record>, Record, "record");
 impl_try_from_value_for!(Arc<RecordType>, RecordType, "rt");
 impl_try_from_value_for!(Gc<Gc<dyn Any>>, Any, "record");
 // impl_try_from_value_for!(Gc<OtherData>, OtherData, "record");
