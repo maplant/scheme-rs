@@ -178,7 +178,9 @@ impl Definition {
                                     arg_names.push(ident.name.clone());
                                 }
                                 x => {
-                                    return Err(ParseAstError::ExpectedIdentifier(x.span().clone()));
+                                    return Err(ParseAstError::ExpectedIdentifier(
+                                        x.span().clone(),
+                                    ));
                                 }
                             }
                         }
@@ -208,7 +210,9 @@ impl Definition {
                                     }
                                 }
                                 x => {
-                                    return Err(ParseAstError::ExpectedIdentifier(x.span().clone()));
+                                    return Err(ParseAstError::ExpectedIdentifier(
+                                        x.span().clone(),
+                                    ));
                                 }
                             }
                         } else {
