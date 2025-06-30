@@ -51,11 +51,11 @@ pub fn display_vec<T: fmt::Display>(
     v: &[T],
     f: &mut fmt::Formatter<'_>,
 ) -> Result<(), fmt::Error> {
-    write!(f, "{}", head)?;
+    write!(f, "{head}")?;
 
     let mut iter = v.iter().peekable();
     while let Some(next) = iter.next() {
-        write!(f, "{}", next)?;
+        write!(f, "{next}")?;
         if iter.peek().is_some() {
             write!(f, " ")?;
         }
@@ -67,8 +67,7 @@ pub fn display_vec<T: fmt::Display>(
 fn try_make_range(start: usize, end: usize) -> Result<Range<usize>, Condition> {
     if end < start {
         Err(Condition::error(format!(
-            "Range end {} cannot be less than start {}",
-            end, start
+            "Range end {end} cannot be less than start {start}",
         )))
     } else {
         Ok(start..end)

@@ -133,11 +133,11 @@ impl From<Complex64> for Number {
 impl fmt::Display for Number {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Self::FixedInteger(i) => write!(f, "{}", i),
-            Self::BigInteger(i) => write!(f, "{}", i),
-            Self::Rational(r) => write!(f, "{}", r),
-            Self::Real(r) => write!(f, "{}", r),
-            Self::Complex(c) => write!(f, "{}", c),
+            Self::FixedInteger(i) => write!(f, "{i}"),
+            Self::BigInteger(i) => write!(f, "{i}"),
+            Self::Rational(r) => write!(f, "{r}"),
+            Self::Real(r) => write!(f, "{r}"),
+            Self::Complex(c) => write!(f, "{c}"),
         }
     }
 }
@@ -145,11 +145,11 @@ impl fmt::Display for Number {
 impl fmt::Debug for Number {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Self::FixedInteger(i) => write!(f, "{}", i),
-            Self::BigInteger(i) => write!(f, "{}", i),
-            Self::Rational(r) => write!(f, "{}", r),
-            Self::Real(r) => write!(f, "{}", r),
-            Self::Complex(c) => write!(f, "{}", c),
+            Self::FixedInteger(i) => write!(f, "{i}"),
+            Self::BigInteger(i) => write!(f, "{i}"),
+            Self::Rational(r) => write!(f, "{r}"),
+            Self::Real(r) => write!(f, "{r}"),
+            Self::Complex(c) => write!(f, "{c}"),
         }
     }
 }
@@ -474,7 +474,7 @@ impl Display for ArithmeticError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::DivisionByZero => write!(f, "division by zero"),
-            Self::Overflow(op, l, r) => write!(f, "overflow when calculating ({} {} {})", op, l, r),
+            Self::Overflow(op, l, r) => write!(f, "overflow when calculating ({op} {l} {r})"),
             Self::RationalFromPrimitiveFloat(_) => {
                 write!(f, "failed to convert imaginary float to a rational")
             }

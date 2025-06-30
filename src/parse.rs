@@ -33,29 +33,28 @@ impl fmt::Display for ParseSyntaxError<'_> {
             Self::EmptyInput => write!(f, "cannot parse an empty list"),
             Self::UnexpectedEndOfFile => write!(f, "unexpected end of file"),
             Self::ExpectedClosingParen { span } => {
-                write!(f, "closing parenthesis not found at `{}`", span)
+                write!(f, "closing parenthesis not found at `{span}`")
             }
             Self::UnexpectedClosingParen { span } => {
-                write!(f, "unexpected closing parenthesis found at `{}`", span)
+                write!(f, "unexpected closing parenthesis found at `{span}`")
             }
             Self::InvalidHexValue { value, span } => {
-                write!(f, "invalid hex value `{}` found at `{}`", value, span)
+                write!(f, "invalid hex value `{value}` found at `{span}`")
             }
             Self::InvalidPeriodLocation { span } => {
-                write!(f, "invalid period found at location `{}`", span)
+                write!(f, "invalid period found at location `{span}`")
             }
             Self::NonByte { span } => write!(
                 f,
-                "non byte value found in byte vector at location `{}`",
-                span
+                "non byte value found in byte vector at location `{span}`",
             ),
             Self::UnclosedParen { span } => {
-                write!(f, "unclosed parenthesis at location `{}`", span)
+                write!(f, "unclosed parenthesis at location `{span}`")
             }
-            Self::CharTryFrom(e) => write!(f, "{}", e),
-            Self::Lex(e) => write!(f, "{}", e),
-            Self::TryFromInt(e) => write!(f, "{}", e),
-            Self::TryFromNumber(e) => write!(f, "{}", e),
+            Self::CharTryFrom(e) => write!(f, "{e}"),
+            Self::Lex(e) => write!(f, "{e}"),
+            Self::TryFromInt(e) => write!(f, "{e}"),
+            Self::TryFromNumber(e) => write!(f, "{e}"),
             Self::UnexpectedToken { token } => {
                 write!(
                     f,

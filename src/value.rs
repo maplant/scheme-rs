@@ -493,7 +493,7 @@ impl fmt::Display for UnpackedValue {
             Self::Closure(_) => write!(f, "<procedure>"),
             Self::Condition(cond) => write!(f, "<{cond:?}>"),
             Self::Record(record) => write!(f, "<{record:?}>"),
-            Self::Syntax(syntax) => write!(f, "{:?}", syntax),
+            Self::Syntax(syntax) => write!(f, "{syntax:?}"),
             Self::OtherData(_) => write!(f, "<unknown record>"),
         }
     }
@@ -520,7 +520,7 @@ impl fmt::Debug for UnpackedValue {
                 vectors::display_vec("#(", v_read.as_ref(), f)
             }
             Self::ByteVector(v) => vectors::display_vec("#u8(", v, f),
-            Self::Syntax(syntax) => write!(f, "{:?}", syntax),
+            Self::Syntax(syntax) => write!(f, "{syntax:?}"),
             Self::Closure(proc) => write!(f, "#<procedure {proc:?}>"),
             Self::Condition(cond) => write!(f, "<{cond:?}>"),
             Self::Record(record) => write!(f, "<{record:?}>"),
@@ -805,7 +805,7 @@ pub async fn future_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
 
 #[bridge(name = "display", lib = "(base)")]
 pub async fn display(arg: &Value) -> Result<Vec<Value>, Condition> {
-    print!("{}", arg);
+    print!("{arg}");
     let _ = std::io::stdout().flush();
     Ok(Vec::new())
 }
