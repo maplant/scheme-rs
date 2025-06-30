@@ -163,7 +163,7 @@ pub async fn cdr(val: &Value) -> Result<Vec<Value>, Condition> {
 pub async fn set_car(var: &Value, val: &Value) -> Result<Vec<Value>, Condition> {
     let pair: Gc<Pair> = var.clone().try_into()?;
     let mut pair_write = pair.write();
-    let Pair(ref mut car, _) = pair_write.as_mut();
+    let Pair(car, _) = pair_write.as_mut();
     *car = val.clone();
     Ok(Vec::new())
 }
@@ -172,7 +172,7 @@ pub async fn set_car(var: &Value, val: &Value) -> Result<Vec<Value>, Condition> 
 pub async fn set_cdr(var: &Value, val: &Value) -> Result<Vec<Value>, Condition> {
     let pair: Gc<Pair> = var.clone().try_into()?;
     let mut pair_write = pair.write();
-    let Pair(_, ref mut cdr) = pair_write.as_mut();
+    let Pair(_, cdr) = pair_write.as_mut();
     *cdr = val.clone();
     Ok(Vec::new())
 }

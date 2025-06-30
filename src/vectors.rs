@@ -51,11 +51,11 @@ pub fn display_vec<T: fmt::Display>(
     v: &[T],
     f: &mut fmt::Formatter<'_>,
 ) -> Result<(), fmt::Error> {
-    write!(f, "{}", head)?;
+    write!(f, "{head}")?;
 
     let mut iter = v.iter().peekable();
     while let Some(next) = iter.next() {
-        write!(f, "{}", next)?;
+        write!(f, "{next}")?;
         if iter.peek().is_some() {
             write!(f, " ")?;
         }
@@ -67,8 +67,7 @@ pub fn display_vec<T: fmt::Display>(
 fn try_make_range(start: usize, end: usize) -> Result<Range<usize>, Condition> {
     if end < start {
         Err(Condition::error(format!(
-            "Range end {} cannot be less than start {}",
-            end, start
+            "Range end {end} cannot be less than start {start}",
         )))
     } else {
         Ok(start..end)
@@ -179,10 +178,12 @@ pub async fn vector_ref(vec: &Value, index: &Value) -> Result<Vec<Value>, Condit
     let index: usize = try_to_usize(index)?;
     let vec_read = vec.read();
 
-    Ok(vec![vec_read
-        .get(index)
-        .ok_or_else(|| Condition::invalid_index(index, vec_read.len()))?
-        .clone()])
+    Ok(vec![
+        vec_read
+            .get(index)
+            .ok_or_else(|| Condition::invalid_index(index, vec_read.len()))?
+            .clone(),
+    ])
 }
 
 #[bridge(name = "vector-length", lib = "(base)")]

@@ -3,12 +3,12 @@ use crate::{
     env::Local,
     exception::{Condition, ExceptionHandler},
     expand,
-    gc::{init_gc, Gc, GcInner, Trace},
+    gc::{Gc, GcInner, Trace, init_gc},
     lists::{self, list_to_vec},
     num,
     proc::{
-        clone_continuation_env, Application, Closure, ClosurePtr, ContinuationPtr, DynamicWind,
-        FuncPtr, FunctionDebugInfo,
+        Application, Closure, ClosurePtr, ContinuationPtr, DynamicWind, FuncPtr, FunctionDebugInfo,
+        clone_continuation_env,
     },
     syntax::Span,
     value::{ReflexiveValue, UnpackedValue, Value},
@@ -16,12 +16,12 @@ use crate::{
 };
 use indexmap::IndexMap;
 use inkwell::{
+    AddressSpace, OptimizationLevel,
     builder::BuilderError,
     context::Context,
     execution_engine::ExecutionEngine,
     module::Module,
     targets::{InitializationConfig, Target},
-    AddressSpace, OptimizationLevel,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -368,22 +368,24 @@ unsafe extern "C" fn alloc_cell() -> *mut GcInner<Value> {
 
 /// Read the value of a Cell
 unsafe extern "C" fn read_cell(cell: *mut GcInner<Value>) -> i64 {
-    // We do not need to increment the reference count of the cell, it is going to
-    // be decremented at the end of this function.
-    let cell = ManuallyDrop::new(Gc::from_raw(cell));
-    let cell_read = cell.read();
-    let raw = Value::as_raw(&cell_read);
-    raw as i64
+    unsafe {
+        // We do not need to increment the reference count of the cell, it is going to
+        // be decremented at the end of this function.
+        let cell = ManuallyDrop::new(Gc::from_raw(cell));
+        let cell_read = cell.read();
+        let raw = Value::as_raw(&cell_read);
+        raw as i64
+    }
 }
 
 /// Decrement the reference count of a cell
 unsafe extern "C" fn dropc(cell: *mut GcInner<Value>) {
-    Gc::decrement_reference_count(cell)
+    unsafe { Gc::decrement_reference_count(cell) }
 }
 
 /// Decrement the reference count of a value
 unsafe extern "C" fn dropv(val: i64) {
-    drop(Value::from_raw(val as u64))
+    unsafe { drop(Value::from_raw(val as u64)) }
 }
 
 /// Create a boxed application
@@ -398,36 +400,38 @@ unsafe extern "C" fn apply(
     dynamic_wind: *const DynamicWind,
     call_site_id: u32,
 ) -> *mut Result<Application, Condition> {
-    let args: Vec<_> = (0..num_args)
-        .map(|i| Value::from_raw_inc_rc(args.add(i as usize).read() as u64))
-        .collect();
+    unsafe {
+        let args: Vec<_> = (0..num_args)
+            .map(|i| Value::from_raw_inc_rc(args.add(i as usize).read() as u64))
+            .collect();
 
-    let op = match Value::from_raw_inc_rc(op as u64).unpack() {
-        UnpackedValue::Closure(op) => op,
-        x => {
-            return Box::into_raw(Box::new(Err(Condition::invalid_operator_type(
-                x.type_name(),
-            ))))
-        }
-    };
+        let op = match Value::from_raw_inc_rc(op as u64).unpack() {
+            UnpackedValue::Closure(op) => op,
+            x => {
+                return Box::into_raw(Box::new(Err(Condition::invalid_operator_type(
+                    x.type_name(),
+                ))));
+            }
+        };
 
-    let call_site = (call_site_id != u32::MAX).then(|| {
-        // No need to increment the ref count for runtime here, it is dropped
-        // immediately.
-        let runtime = ManuallyDrop::new(Gc::from_raw(runtime));
-        let runtime_read = runtime.read();
-        runtime_read.debug_info.call_sites[call_site_id as usize].clone()
-    });
+        let call_site = (call_site_id != u32::MAX).then(|| {
+            // No need to increment the ref count for runtime here, it is dropped
+            // immediately.
+            let runtime = ManuallyDrop::new(Gc::from_raw(runtime));
+            let runtime_read = runtime.read();
+            runtime_read.debug_info.call_sites[call_site_id as usize].clone()
+        });
 
-    let app = Application::new(
-        op,
-        args,
-        ExceptionHandler::from_ptr(exception_handler),
-        dynamic_wind.as_ref().unwrap().clone(),
-        call_site,
-    );
+        let app = Application::new(
+            op,
+            args,
+            ExceptionHandler::from_ptr(exception_handler),
+            dynamic_wind.as_ref().unwrap().clone(),
+            call_site,
+        );
 
-    Box::into_raw(Box::new(Ok(app)))
+        Box::into_raw(Box::new(Ok(app)))
+    }
 }
 
 /// Create a boxed application that forwards a list of values to the operator
@@ -437,56 +441,64 @@ unsafe extern "C" fn forward(
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition> {
-    let op = match Value::from_raw_inc_rc(op as u64).unpack() {
-        UnpackedValue::Closure(op) => op,
-        x => {
-            return Box::into_raw(Box::new(Err(Condition::invalid_operator_type(
-                x.type_name(),
-            ))))
-        }
-    };
+    unsafe {
+        let op = match Value::from_raw_inc_rc(op as u64).unpack() {
+            UnpackedValue::Closure(op) => op,
+            x => {
+                return Box::into_raw(Box::new(Err(Condition::invalid_operator_type(
+                    x.type_name(),
+                ))));
+            }
+        };
 
-    // We do not need to increment to forward here, for the same reason as in
-    // halt.
-    let args = ManuallyDrop::new(Value::from_raw(args as u64));
-    let mut flattened = Vec::new();
-    list_to_vec(&args, &mut flattened);
+        // We do not need to increment to forward here, for the same reason as in
+        // halt.
+        let args = ManuallyDrop::new(Value::from_raw(args as u64));
+        let mut flattened = Vec::new();
+        list_to_vec(&args, &mut flattened);
 
-    let app = Application::new(
-        op,
-        flattened,
-        ExceptionHandler::from_ptr(exception_handler),
-        dynamic_wind.as_ref().unwrap().clone(),
-        None,
-    );
+        let app = Application::new(
+            op,
+            flattened,
+            ExceptionHandler::from_ptr(exception_handler),
+            dynamic_wind.as_ref().unwrap().clone(),
+            None,
+        );
 
-    Box::into_raw(Box::new(Ok(app)))
+        Box::into_raw(Box::new(Ok(app)))
+    }
 }
 
 /// Create a boxed application that simply returns its arguments
 pub(crate) unsafe extern "C" fn halt(args: i64) -> *mut Result<Application, Condition> {
-    // We do not need to increment the rc here, it will be incremented in list_to_vec
-    let args = ManuallyDrop::new(Value::from_raw(args as u64));
-    let mut flattened = Vec::new();
-    list_to_vec(&args, &mut flattened);
-    let app = Application::halt(flattened);
-    Box::into_raw(Box::new(Ok(app)))
+    unsafe {
+        // We do not need to increment the rc here, it will be incremented in list_to_vec
+        let args = ManuallyDrop::new(Value::from_raw(args as u64));
+        let mut flattened = Vec::new();
+        list_to_vec(&args, &mut flattened);
+        let app = Application::halt(flattened);
+        Box::into_raw(Box::new(Ok(app)))
+    }
 }
 
 /// Evaluate a `Gc<Value>` as "truthy" or not, as in whether it triggers a
 /// conditional.
 unsafe extern "C" fn truthy(val: i64) -> bool {
-    // No need to increment the reference count here:
-    ManuallyDrop::new(Value::from_raw(val as u64)).is_true()
+    unsafe {
+        // No need to increment the reference count here:
+        ManuallyDrop::new(Value::from_raw(val as u64)).is_true()
+    }
 }
 
 /// Replace the value pointed to at to with the value contained in from.
 unsafe extern "C" fn store(from: i64, to: *mut GcInner<Value>) {
-    // We do not need to increment the ref count for to, it is dropped
-    // immediately.
-    let from = Value::from_raw_inc_rc(from as u64);
-    let to = ManuallyDrop::new(Gc::from_raw(to));
-    *to.write() = from;
+    unsafe {
+        // We do not need to increment the ref count for to, it is dropped
+        // immediately.
+        let from = Value::from_raw_inc_rc(from as u64);
+        let to = ManuallyDrop::new(Gc::from_raw(to));
+        *to.write() = from;
+    }
 }
 
 /// Allocate a closure
@@ -500,30 +512,32 @@ unsafe extern "C" fn make_continuation(
     num_required_args: u32,
     variadic: bool,
 ) -> *mut GcInner<Value> {
-    // Collect the environment:
-    let env: Vec<_> = (0..num_envs)
-        .map(|i| Gc::from_raw_inc_rc(env.add(i as usize).read()))
-        .collect();
+    unsafe {
+        // Collect the environment:
+        let env: Vec<_> = (0..num_envs)
+            .map(|i| Gc::from_raw_inc_rc(env.add(i as usize).read()))
+            .collect();
 
-    // Collect the globals:
-    let globals: Vec<_> = (0..num_globals)
-        .map(|i| {
-            let raw = globals.add(i as usize).read();
-            Gc::from_raw_inc_rc(raw)
-        })
-        .collect();
+        // Collect the globals:
+        let globals: Vec<_> = (0..num_globals)
+            .map(|i| {
+                let raw = globals.add(i as usize).read();
+                Gc::from_raw_inc_rc(raw)
+            })
+            .collect();
 
-    let closure = Closure::new(
-        Gc::from_raw_inc_rc(runtime),
-        env,
-        globals,
-        FuncPtr::Continuation(fn_ptr),
-        num_required_args as usize,
-        variadic,
-        None,
-    );
+        let closure = Closure::new(
+            Gc::from_raw_inc_rc(runtime),
+            env,
+            globals,
+            FuncPtr::Continuation(fn_ptr),
+            num_required_args as usize,
+            variadic,
+            None,
+        );
 
-    Gc::into_raw(Gc::new(Value::from(closure)))
+        Gc::into_raw(Gc::new(Value::from(closure)))
+    }
 }
 
 /// Allocate a closure for a function that takes a continuation
@@ -538,30 +552,32 @@ unsafe extern "C" fn make_closure(
     variadic: bool,
     debug_info_id: u32,
 ) -> *mut GcInner<Value> {
-    // Collect the environment:
-    let env: Vec<_> = (0..num_envs)
-        .map(|i| Gc::from_raw_inc_rc(env.add(i as usize).read()))
-        .collect();
+    unsafe {
+        // Collect the environment:
+        let env: Vec<_> = (0..num_envs)
+            .map(|i| Gc::from_raw_inc_rc(env.add(i as usize).read()))
+            .collect();
 
-    // Collect the globals:
-    let globals: Vec<_> = (0..num_globals)
-        .map(|i| {
-            let raw = globals.add(i as usize).read();
-            Gc::from_raw_inc_rc(raw)
-        })
-        .collect();
+        // Collect the globals:
+        let globals: Vec<_> = (0..num_globals)
+            .map(|i| {
+                let raw = globals.add(i as usize).read();
+                Gc::from_raw_inc_rc(raw)
+            })
+            .collect();
 
-    let closure = Closure::new(
-        Gc::from_raw_inc_rc(runtime),
-        env,
-        globals,
-        FuncPtr::Closure(fn_ptr),
-        num_required_args as usize,
-        variadic,
-        Some(debug_info_id),
-    );
+        let closure = Closure::new(
+            Gc::from_raw_inc_rc(runtime),
+            env,
+            globals,
+            FuncPtr::Closure(fn_ptr),
+            num_required_args as usize,
+            variadic,
+            Some(debug_info_id),
+        );
 
-    Gc::into_raw(Gc::new(Value::from(closure)))
+        Gc::into_raw(Gc::new(Value::from(closure)))
+    }
 }
 
 /// Call a transformer with the given argument and return the expansion
@@ -570,22 +586,24 @@ unsafe extern "C" fn get_call_transformer_fn(
     env: *const *mut GcInner<Value>,
     num_envs: u32,
 ) -> *mut GcInner<Value> {
-    // Collect the environment:
-    let env: Vec<_> = (0..num_envs)
-        .map(|i| Gc::from_raw_inc_rc(env.add(i as usize).read()))
-        .collect();
+    unsafe {
+        // Collect the environment:
+        let env: Vec<_> = (0..num_envs)
+            .map(|i| Gc::from_raw_inc_rc(env.add(i as usize).read()))
+            .collect();
 
-    let closure = Closure::new(
-        Gc::from_raw_inc_rc(runtime),
-        env,
-        Vec::new(),
-        FuncPtr::Bridge(expand::call_transformer),
-        3,
-        false,
-        Some(IGNORE_FUNCTION),
-    );
+        let closure = Closure::new(
+            Gc::from_raw_inc_rc(runtime),
+            env,
+            Vec::new(),
+            FuncPtr::Bridge(expand::call_transformer),
+            3,
+            false,
+            Some(IGNORE_FUNCTION),
+        );
 
-    Gc::into_raw(Gc::new(Value::from(closure)))
+        Gc::into_raw(Gc::new(Value::from(closure)))
+    }
 }
 
 /*
@@ -603,16 +621,18 @@ unsafe extern "C" fn cons(
 /// Extract the current winders from the environment and return them as a vec.
 /// This has to return a Gc since this is added to the environment of the continuation.
 unsafe extern "C" fn extract_winders(dynamic_wind: *const DynamicWind) -> *mut GcInner<Value> {
-    let dynamic_wind = dynamic_wind.as_ref().unwrap();
-    let winders: Vec<_> = dynamic_wind
-        .winders
-        .iter()
-        .cloned()
-        .map(|(in_winder, out_winder)| {
-            Value::from((Value::from(in_winder), Value::from(out_winder)))
-        })
-        .collect();
-    Gc::into_raw(Gc::new(Value::from(winders)))
+    unsafe {
+        let dynamic_wind = dynamic_wind.as_ref().unwrap();
+        let winders: Vec<_> = dynamic_wind
+            .winders
+            .iter()
+            .cloned()
+            .map(|(in_winder, out_winder)| {
+                Value::from((Value::from(in_winder), Value::from(out_winder)))
+            })
+            .collect();
+        Gc::into_raw(Gc::new(Value::from(winders)))
+    }
 }
 
 /// Prepare the continuation for call/cc. Clones the continuation environment
@@ -625,39 +645,41 @@ unsafe extern "C" fn prepare_continuation(
     winders: i64,
     from_dynamic_extent: *const DynamicWind,
 ) -> i64 {
-    // Determine which winders we will need to call. This is determined as the
-    // winders provided in cont_and_winders with the prefix of curr_dynamic_wind
-    // removed.
-    let cont = Value::from_raw_inc_rc(cont as u64);
-    let winders = Value::from_raw_inc_rc(winders as u64);
-    let to_winders: Gc<vectors::AlignedVector<Value>> = winders.try_into().unwrap();
-    let from_winders = from_dynamic_extent.as_ref().unwrap();
+    unsafe {
+        // Determine which winders we will need to call. This is determined as the
+        // winders provided in cont_and_winders with the prefix of curr_dynamic_wind
+        // removed.
+        let cont = Value::from_raw_inc_rc(cont as u64);
+        let winders = Value::from_raw_inc_rc(winders as u64);
+        let to_winders: Gc<vectors::AlignedVector<Value>> = winders.try_into().unwrap();
+        let from_winders = from_dynamic_extent.as_ref().unwrap();
 
-    let thunks = compute_winders(from_winders, to_winders.read().as_ref());
+        let thunks = compute_winders(from_winders, to_winders.read().as_ref());
 
-    // Clone the continuation
-    let cont = clone_continuation_env(&cont, &mut HashMap::default());
-    let cont: Gc<Closure> = cont.try_into().unwrap();
+        // Clone the continuation
+        let cont = clone_continuation_env(&cont, &mut HashMap::default());
+        let cont: Gc<Closure> = cont.try_into().unwrap();
 
-    let (runtime, req_args, variadic) = {
-        let cont_read = cont.read();
-        (
-            cont_read.runtime.clone(),
-            cont_read.num_required_args,
-            cont_read.variadic,
-        )
-    };
+        let (runtime, req_args, variadic) = {
+            let cont_read = cont.read();
+            (
+                cont_read.runtime.clone(),
+                cont_read.num_required_args,
+                cont_read.variadic,
+            )
+        };
 
-    Value::into_raw(Value::from(Closure::new(
-        //     ManuallyDrop::new(Gc::new(Value::Closure(Closure::new(
-        runtime,
-        vec![Gc::new(thunks), Gc::new(Value::from(cont))],
-        Vec::new(),
-        FuncPtr::Continuation(call_thunks),
-        req_args,
-        variadic,
-        None,
-    ))) as i64
+        Value::into_raw(Value::from(Closure::new(
+            //     ManuallyDrop::new(Gc::new(Value::Closure(Closure::new(
+            runtime,
+            vec![Gc::new(thunks), Gc::new(Value::from(cont))],
+            Vec::new(),
+            FuncPtr::Continuation(call_thunks),
+            req_args,
+            variadic,
+            None,
+        ))) as i64
+    }
 }
 
 fn compute_winders(from_extent: &DynamicWind, to_extent: &[Value]) -> Value {
@@ -715,53 +737,55 @@ unsafe extern "C" fn call_thunks(
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition> {
-    // env[0] are the thunks:
-    let thunks = Gc::from_raw_inc_rc(env.read());
-    // env[1] is the continuation:
-    let k: Gc<Closure> = Gc::from_raw_inc_rc(env.add(1).read())
-        .read()
-        .clone()
-        .try_into()
-        .unwrap();
+    unsafe {
+        // env[0] are the thunks:
+        let thunks = Gc::from_raw_inc_rc(env.read());
+        // env[1] is the continuation:
+        let k: Gc<Closure> = Gc::from_raw_inc_rc(env.add(1).read())
+            .read()
+            .clone()
+            .try_into()
+            .unwrap();
 
-    // k determines the number of arguments:
-    let collected_args = {
-        let k_read = k.read();
-        let num_args = k_read.num_required_args;
+        // k determines the number of arguments:
+        let collected_args = {
+            let k_read = k.read();
+            let num_args = k_read.num_required_args;
 
-        let mut collected_args = if k_read.variadic {
-            args.add(num_args).as_ref().unwrap().clone()
-        } else {
-            Value::null()
+            let mut collected_args = if k_read.variadic {
+                args.add(num_args).as_ref().unwrap().clone()
+            } else {
+                Value::null()
+            };
+
+            for i in (0..num_args).rev() {
+                let arg = args.add(i).as_ref().unwrap().clone();
+                collected_args = Value::from((arg, collected_args));
+            }
+
+            collected_args
         };
 
-        for i in (0..num_args).rev() {
-            let arg = args.add(i).as_ref().unwrap().clone();
-            collected_args = Value::from((arg, collected_args));
-        }
+        let thunks = Closure::new(
+            Gc::from_raw_inc_rc(runtime),
+            vec![thunks, Gc::new(collected_args), Gc::new(Value::from(k))],
+            Vec::new(),
+            FuncPtr::Continuation(call_thunks_pass_args),
+            0,
+            false,
+            None,
+        );
 
-        collected_args
-    };
+        let app = Application::new(
+            Gc::new(thunks),
+            Vec::new(),
+            ExceptionHandler::from_ptr(exception_handler),
+            dynamic_wind.as_ref().unwrap().clone(),
+            None,
+        );
 
-    let thunks = Closure::new(
-        Gc::from_raw_inc_rc(runtime),
-        vec![thunks, Gc::new(collected_args), Gc::new(Value::from(k))],
-        Vec::new(),
-        FuncPtr::Continuation(call_thunks_pass_args),
-        0,
-        false,
-        None,
-    );
-
-    let app = Application::new(
-        Gc::new(thunks),
-        Vec::new(),
-        ExceptionHandler::from_ptr(exception_handler),
-        dynamic_wind.as_ref().unwrap().clone(),
-        None,
-    );
-
-    Box::into_raw(Box::new(Ok(app)))
+        Box::into_raw(Box::new(Ok(app)))
+    }
 }
 
 unsafe extern "C" fn call_thunks_pass_args(
@@ -772,53 +796,55 @@ unsafe extern "C" fn call_thunks_pass_args(
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition> {
-    // env[0] are the thunks:
-    let thunks = Gc::from_raw_inc_rc(env.read());
-    // env[1] are the collected arguments
-    let args = Gc::from_raw_inc_rc(env.add(1).read());
-    // env[2] is k1, the current continuation
-    let k = Gc::from_raw_inc_rc(env.add(2).read());
+    unsafe {
+        // env[0] are the thunks:
+        let thunks = Gc::from_raw_inc_rc(env.read());
+        // env[1] are the collected arguments
+        let args = Gc::from_raw_inc_rc(env.add(1).read());
+        // env[2] is k1, the current continuation
+        let k = Gc::from_raw_inc_rc(env.add(2).read());
 
-    let thunks = thunks.read();
-    let app = match &*thunks.unpacked_ref() {
-        // UnpackedValue::Pair(head_thunk, tail) => {
-        UnpackedValue::Pair(pair) => {
-            let lists::Pair(head_thunk, tail) = &*pair.read();
-            let head_thunk: Gc<Closure> = head_thunk.clone().try_into().unwrap();
-            let cont = Closure::new(
-                Gc::from_raw_inc_rc(runtime),
-                vec![Gc::new(tail.clone()), args, k],
-                Vec::new(),
-                FuncPtr::Continuation(call_thunks_pass_args),
-                0,
-                false,
-                None,
-            );
-            Application::new(
-                head_thunk.clone(),
-                vec![Value::from(cont)],
-                ExceptionHandler::from_ptr(exception_handler),
-                dynamic_wind.as_ref().unwrap().clone(),
-                None,
-            )
-        }
-        UnpackedValue::Null => {
-            let mut collected_args = Vec::new();
-            let args = args.read();
-            list_to_vec(&args, &mut collected_args);
-            // collected_args.push(Gc::new(Value::Null));
-            Application::new(
-                k.read().clone().try_into().unwrap(),
-                collected_args,
-                ExceptionHandler::from_ptr(exception_handler),
-                dynamic_wind.as_ref().unwrap().clone(),
-                None,
-            )
-        }
-        _ => unreachable!(),
-    };
+        let thunks = thunks.read();
+        let app = match &*thunks.unpacked_ref() {
+            // UnpackedValue::Pair(head_thunk, tail) => {
+            UnpackedValue::Pair(pair) => {
+                let lists::Pair(head_thunk, tail) = &*pair.read();
+                let head_thunk: Gc<Closure> = head_thunk.clone().try_into().unwrap();
+                let cont = Closure::new(
+                    Gc::from_raw_inc_rc(runtime),
+                    vec![Gc::new(tail.clone()), args, k],
+                    Vec::new(),
+                    FuncPtr::Continuation(call_thunks_pass_args),
+                    0,
+                    false,
+                    None,
+                );
+                Application::new(
+                    head_thunk.clone(),
+                    vec![Value::from(cont)],
+                    ExceptionHandler::from_ptr(exception_handler),
+                    dynamic_wind.as_ref().unwrap().clone(),
+                    None,
+                )
+            }
+            UnpackedValue::Null => {
+                let mut collected_args = Vec::new();
+                let args = args.read();
+                list_to_vec(&args, &mut collected_args);
+                // collected_args.push(Gc::new(Value::Null));
+                Application::new(
+                    k.read().clone().try_into().unwrap(),
+                    collected_args,
+                    ExceptionHandler::from_ptr(exception_handler),
+                    dynamic_wind.as_ref().unwrap().clone(),
+                    None,
+                )
+            }
+            _ => unreachable!(),
+        };
 
-    Box::into_raw(Box::new(Ok(app)))
+        Box::into_raw(Box::new(Ok(app)))
+    }
 }
 
 unsafe extern "C" fn add(
@@ -826,15 +852,17 @@ unsafe extern "C" fn add(
     num_vals: u32,
     error: *mut *mut Result<Application, Condition>,
 ) -> i64 {
-    let vals: Vec<_> = (0..num_vals)
-        // Can't easily wrap these in a ManuallyDrop, so we dec the rc.
-        .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read() as u64))
-        .collect();
-    match num::add(&vals) {
-        Ok(num) => Value::into_raw(Value::from(num)) as i64,
-        Err(condition) => {
-            error.write(Box::into_raw(Box::new(Err(condition))));
-            Value::into_raw(Value::undefined()) as i64
+    unsafe {
+        let vals: Vec<_> = (0..num_vals)
+            // Can't easily wrap these in a ManuallyDrop, so we dec the rc.
+            .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read() as u64))
+            .collect();
+        match num::add(&vals) {
+            Ok(num) => Value::into_raw(Value::from(num)) as i64,
+            Err(condition) => {
+                error.write(Box::into_raw(Box::new(Err(condition))));
+                Value::into_raw(Value::undefined()) as i64
+            }
         }
     }
 }
@@ -844,14 +872,16 @@ unsafe extern "C" fn sub(
     num_vals: u32,
     error: *mut *mut Result<Application, Condition>,
 ) -> i64 {
-    let vals: Vec<_> = (0..num_vals)
-        .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read() as u64))
-        .collect();
-    match num::sub(&vals[0], &vals[1..]) {
-        Ok(num) => Value::into_raw(Value::from(num)) as i64,
-        Err(condition) => {
-            error.write(Box::into_raw(Box::new(Err(condition))));
-            Value::into_raw(Value::undefined()) as i64
+    unsafe {
+        let vals: Vec<_> = (0..num_vals)
+            .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read() as u64))
+            .collect();
+        match num::sub(&vals[0], &vals[1..]) {
+            Ok(num) => Value::into_raw(Value::from(num)) as i64,
+            Err(condition) => {
+                error.write(Box::into_raw(Box::new(Err(condition))));
+                Value::into_raw(Value::undefined()) as i64
+            }
         }
     }
 }
@@ -861,14 +891,16 @@ unsafe extern "C" fn mul(
     num_vals: u32,
     error: *mut *mut Result<Application, Condition>,
 ) -> i64 {
-    let vals: Vec<_> = (0..num_vals)
-        .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read() as u64))
-        .collect();
-    match num::mul(&vals) {
-        Ok(num) => Value::into_raw(Value::from(num)) as i64,
-        Err(condition) => {
-            error.write(Box::into_raw(Box::new(Err(condition))));
-            Value::into_raw(Value::undefined()) as i64
+    unsafe {
+        let vals: Vec<_> = (0..num_vals)
+            .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read() as u64))
+            .collect();
+        match num::mul(&vals) {
+            Ok(num) => Value::into_raw(Value::from(num)) as i64,
+            Err(condition) => {
+                error.write(Box::into_raw(Box::new(Err(condition))));
+                Value::into_raw(Value::undefined()) as i64
+            }
         }
     }
 }
@@ -878,14 +910,16 @@ unsafe extern "C" fn div(
     num_vals: u32,
     error: *mut *mut Result<Application, Condition>,
 ) -> i64 {
-    let vals: Vec<_> = (0..num_vals)
-        .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read() as u64))
-        .collect();
-    match num::div(&vals[0], &vals[1..]) {
-        Ok(num) => Value::into_raw(Value::from(num)) as i64,
-        Err(condition) => {
-            error.write(Box::into_raw(Box::new(Err(condition))));
-            Value::into_raw(Value::undefined()) as i64
+    unsafe {
+        let vals: Vec<_> = (0..num_vals)
+            .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read() as u64))
+            .collect();
+        match num::div(&vals[0], &vals[1..]) {
+            Ok(num) => Value::into_raw(Value::from(num)) as i64,
+            Err(condition) => {
+                error.write(Box::into_raw(Box::new(Err(condition))));
+                Value::into_raw(Value::undefined()) as i64
+            }
         }
     }
 }
@@ -897,14 +931,16 @@ macro_rules! define_comparison_fn {
             num_vals: u32,
             error: *mut *mut Result<Application, Condition>,
         ) -> i64 {
-            let vals: Vec<_> = (0..num_vals)
-                .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read() as u64))
-                .collect();
-            match num::$name(&vals) {
-                Ok(res) => Value::into_raw(Value::from(res)) as i64,
-                Err(condition) => {
-                    error.write(Box::into_raw(Box::new(Err(condition))));
-                    Value::into_raw(Value::undefined()) as i64
+            unsafe {
+                let vals: Vec<_> = (0..num_vals)
+                    .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read() as u64))
+                    .collect();
+                match num::$name(&vals) {
+                    Ok(res) => Value::into_raw(Value::from(res)) as i64,
+                    Err(condition) => {
+                        error.write(Box::into_raw(Box::new(Err(condition))));
+                        Value::into_raw(Value::undefined()) as i64
+                    }
                 }
             }
         }

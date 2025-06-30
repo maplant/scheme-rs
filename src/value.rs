@@ -270,11 +270,13 @@ impl fmt::Debug for Value {
 
 unsafe impl Trace for Value {
     unsafe fn visit_children(&self, visitor: unsafe fn(crate::gc::OpaqueGcPtr)) {
-        self.unpacked_ref().visit_children(visitor);
+        unsafe {
+            self.unpacked_ref().visit_children(visitor);
+        }
     }
 
     unsafe fn finalize(&mut self) {
-        ManuallyDrop::new(Self(self.0).unpack()).finalize()
+        unsafe { ManuallyDrop::new(Self(self.0).unpack()).finalize() }
     }
 }
 
@@ -491,7 +493,7 @@ impl fmt::Display for UnpackedValue {
             Self::Closure(_) => write!(f, "<procedure>"),
             Self::Condition(cond) => write!(f, "<{cond:?}>"),
             Self::Record(record) => write!(f, "<{record:?}>"),
-            Self::Syntax(syntax) => write!(f, "{:?}", syntax),
+            Self::Syntax(syntax) => write!(f, "{syntax:?}"),
             Self::OtherData(_) => write!(f, "<unknown record>"),
         }
     }
@@ -518,7 +520,7 @@ impl fmt::Debug for UnpackedValue {
                 vectors::display_vec("#(", v_read.as_ref(), f)
             }
             Self::ByteVector(v) => vectors::display_vec("#u8(", v, f),
-            Self::Syntax(syntax) => write!(f, "{:?}", syntax),
+            Self::Syntax(syntax) => write!(f, "{syntax:?}"),
             Self::Closure(proc) => write!(f, "#<procedure {proc:?}>"),
             Self::Condition(cond) => write!(f, "<{cond:?}>"),
             Self::Record(record) => write!(f, "<{record:?}>"),
@@ -589,7 +591,7 @@ impl_try_from_value_for!(Gc<lists::Pair>, Pair, "pair");
 impl_try_from_value_for!(Gc<OtherData>, OtherData, "record");
 
 macro_rules! impl_from_wrapped_for {
-    ($ty:ty, $variant:ident, $wrapper:expr) => {
+    ($ty:ty, $variant:ident, $wrapper:expr_2021) => {
         impl From<$ty> for UnpackedValue {
             fn from(v: $ty) -> Self {
                 Self::$variant(($wrapper)(v))
@@ -803,7 +805,7 @@ pub async fn future_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
 
 #[bridge(name = "display", lib = "(base)")]
 pub async fn display(arg: &Value) -> Result<Vec<Value>, Condition> {
-    print!("{}", arg);
+    print!("{arg}");
     let _ = std::io::stdout().flush();
     Ok(Vec::new())
 }

@@ -18,7 +18,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let src = ["case_folding", "numeric_types"]
         .into_iter()
-        .map(|p| format!("unicode/{}.txt", p))
+        .map(|p| format!("unicode/{p}.txt"))
         .map(|p| manifest_dir.join(p))
         .map(fs::read_to_string)
         .collect::<Result<String, _>>()?;
@@ -28,7 +28,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let output_dir = env::var("OUT_DIR")?;
     let output_dir = Path::new(&output_dir);
     let mut output_file = File::create(output_dir.join("unicode.rs"))?;
-    writeln!(output_file, "{}", output)?;
+    writeln!(output_file, "{output}")?;
 
     Ok(())
 }

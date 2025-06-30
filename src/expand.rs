@@ -103,11 +103,13 @@ impl Pattern {
         loop {
             match expr {
                 [] => break,
-                [pattern, Syntax::Identifier {
-                    ident: ellipsis, ..
-                }, tail @ ..]
-                    if ellipsis.name == "..." =>
-                {
+                [
+                    pattern,
+                    Syntax::Identifier {
+                        ident: ellipsis, ..
+                    },
+                    tail @ ..,
+                ] if ellipsis.name == "..." => {
                     output.push(Self::Ellipsis(Box::new(Pattern::compile(
                         pattern, keywords, variables,
                     ))));
@@ -125,21 +127,23 @@ impl Pattern {
     fn matches(&self, expr: &Syntax, expansion_level: &mut ExpansionLevel) -> bool {
         match self {
             Self::Underscore => !expr.is_null(),
-            Self::Variable(ref name) => {
-                assert!(expansion_level
-                    .binds
-                    .insert(name.clone(), expr.clone())
-                    .is_none());
+            Self::Variable(name) => {
+                assert!(
+                    expansion_level
+                        .binds
+                        .insert(name.clone(), expr.clone())
+                        .is_none()
+                );
                 true
             }
-            Self::Literal(ref lhs) => {
+            Self::Literal(lhs) => {
                 if let Syntax::Literal { literal: rhs, .. } = expr {
                     lhs == rhs
                 } else {
                     false
                 }
             }
-            Self::Keyword(ref lhs) => {
+            Self::Keyword(lhs) => {
                 matches!(expr, Syntax::Identifier { ident: rhs, bound: false, .. } if lhs == &rhs.name)
             }
             Self::List(list) => match_list(list, expr, expansion_level),
@@ -307,11 +311,13 @@ impl Template {
         loop {
             match expr {
                 [] => break,
-                [template, Syntax::Identifier {
-                    ident: ellipsis, ..
-                }, tail @ ..]
-                    if ellipsis.name == "..." =>
-                {
+                [
+                    template,
+                    Syntax::Identifier {
+                        ident: ellipsis, ..
+                    },
+                    tail @ ..,
+                ] if ellipsis.name == "..." => {
                     output.push(Self::Ellipsis(Box::new(Template::compile(
                         template, variables,
                     ))));

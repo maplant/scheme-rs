@@ -122,23 +122,36 @@ impl Definition {
         // cont: &Closure
     ) -> Result<Self, ParseAstError> {
         match syn {
-            [_, Syntax::Identifier { ident, .. }, expr, Syntax::Null { .. }] => {
+            [
+                _,
+                Syntax::Identifier { ident, .. },
+                expr,
+                Syntax::Null { .. },
+            ] => {
                 Ok(Definition::DefineVar(DefineVar {
                     var: env.fetch_var(ident).unwrap(),
                     val: Arc::new(Expression::parse(runtime, expr.clone(), env /* cont */).await?),
                     next: None,
                 }))
             }
-            [_, Syntax::List { list, span }, body @ .., Syntax::Null { .. }] => {
+            [
+                _,
+                Syntax::List { list, span },
+                body @ ..,
+                Syntax::Null { .. },
+            ] => {
                 if body.is_empty() {
                     return Err(ParseAstError::ExpectedBody(span.clone()));
                 }
                 match list.as_slice() {
-                    [Syntax::Identifier {
-                        ident: func_name,
-                        span: func_span,
-                        ..
-                    }, args @ ..] => {
+                    [
+                        Syntax::Identifier {
+                            ident: func_name,
+                            span: func_span,
+                            ..
+                        },
+                        args @ ..,
+                    ] => {
                         let var = env.fetch_var(func_name).unwrap();
 
                         let mut bound = HashMap::<Identifier, Span>::new();
@@ -165,7 +178,9 @@ impl Definition {
                                     arg_names.push(ident.name.clone());
                                 }
                                 x => {
-                                    return Err(ParseAstError::ExpectedIdentifier(x.span().clone()))
+                                    return Err(ParseAstError::ExpectedIdentifier(
+                                        x.span().clone(),
+                                    ));
                                 }
                             }
                         }
@@ -195,7 +210,9 @@ impl Definition {
                                     }
                                 }
                                 x => {
-                                    return Err(ParseAstError::ExpectedIdentifier(x.span().clone()))
+                                    return Err(ParseAstError::ExpectedIdentifier(
+                                        x.span().clone(),
+                                    ));
                                 }
                             }
                         } else {
@@ -334,60 +351,78 @@ impl Expression {
                     list: exprs, span, ..
                 } => match exprs.as_slice() {
                     // Special forms:
-                    [Syntax::Identifier { ident, bound, .. }, tail @ .., Syntax::Null { .. }]
-                        if ident == "begin" && !bound =>
-                    {
+                    [
+                        Syntax::Identifier { ident, bound, .. },
+                        tail @ ..,
+                        Syntax::Null { .. },
+                    ] if ident == "begin" && !bound => {
                         ExprBody::parse(runtime, tail, env /* cont */)
                             .await
                             .map(Expression::Begin)
                     }
-                    [Syntax::Identifier { ident, span, bound }, tail @ .., Syntax::Null { .. }]
-                        if ident == "lambda" && !bound =>
-                    {
+                    [
+                        Syntax::Identifier { ident, span, bound },
+                        tail @ ..,
+                        Syntax::Null { .. },
+                    ] if ident == "lambda" && !bound => {
                         Lambda::parse(runtime, tail, env, span /* cont */)
                             .await
                             .map(Expression::Lambda)
                     }
-                    [Syntax::Identifier { ident, span, bound }, tail @ .., Syntax::Null { .. }]
-                        if ident == "let" && !bound =>
-                    {
+                    [
+                        Syntax::Identifier { ident, span, bound },
+                        tail @ ..,
+                        Syntax::Null { .. },
+                    ] if ident == "let" && !bound => {
                         Let::parse(runtime, tail, env, span /* cont */)
                             .await
                             .map(Expression::Let)
                     }
-                    [Syntax::Identifier { ident, bound, .. }, bindings, tail @ .., Syntax::Null { .. }]
-                        if ident == "let-syntax" && !bound =>
-                    {
+                    [
+                        Syntax::Identifier { ident, bound, .. },
+                        bindings,
+                        tail @ ..,
+                        Syntax::Null { .. },
+                    ] if ident == "let-syntax" && !bound => {
                         let new_env = parse_let_syntax(runtime, false, bindings, env).await?;
                         ExprBody::parse(runtime, tail, &new_env)
                             .await
                             .map(Expression::Begin)
                     }
-                    [Syntax::Identifier { ident, bound, .. }, bindings, tail @ .., Syntax::Null { .. }]
-                        if ident == "letrec-syntax" && !bound =>
-                    {
+                    [
+                        Syntax::Identifier { ident, bound, .. },
+                        bindings,
+                        tail @ ..,
+                        Syntax::Null { .. },
+                    ] if ident == "letrec-syntax" && !bound => {
                         let new_env = parse_let_syntax(runtime, true, bindings, env).await?;
                         ExprBody::parse(runtime, tail, &new_env)
                             .await
                             .map(Expression::Begin)
                     }
-                    [Syntax::Identifier { ident, span, bound }, tail @ .., Syntax::Null { .. }]
-                        if ident == "if" && !bound =>
-                    {
+                    [
+                        Syntax::Identifier { ident, span, bound },
+                        tail @ ..,
+                        Syntax::Null { .. },
+                    ] if ident == "if" && !bound => {
                         If::parse(runtime, tail, env, span /* cont */)
                             .await
                             .map(Expression::If)
                     }
-                    [Syntax::Identifier { ident, bound, .. }, tail @ .., Syntax::Null { .. }]
-                        if ident == "and" && !bound =>
-                    {
+                    [
+                        Syntax::Identifier { ident, bound, .. },
+                        tail @ ..,
+                        Syntax::Null { .. },
+                    ] if ident == "and" && !bound => {
                         And::parse(runtime, tail, env /* cont */)
                             .await
                             .map(Expression::And)
                     }
-                    [Syntax::Identifier { ident, bound, .. }, tail @ .., Syntax::Null { .. }]
-                        if ident == "or" && !bound =>
-                    {
+                    [
+                        Syntax::Identifier { ident, bound, .. },
+                        tail @ ..,
+                        Syntax::Null { .. },
+                    ] if ident == "or" && !bound => {
                         Or::parse(runtime, tail, env /* cont */)
                             .await
                             .map(Expression::Or)
@@ -397,34 +432,40 @@ impl Expression {
                     {
                         Quote::parse(tail, span).await.map(Expression::Quote)
                     }
-                    [Syntax::Identifier { ident, span, bound }, tail @ .., Syntax::Null { .. }]
-                        if ident == "syntax" && !bound =>
-                    {
-                        SyntaxQuote::parse(tail, span)
-                            .await
-                            .map(Expression::SyntaxQuote)
-                    }
-                    [Syntax::Identifier { ident, span, bound }, tail @ .., Syntax::Null { .. }]
-                        if ident == "syntax-case" && !bound =>
-                    {
+                    [
+                        Syntax::Identifier { ident, span, bound },
+                        tail @ ..,
+                        Syntax::Null { .. },
+                    ] if ident == "syntax" && !bound => SyntaxQuote::parse(tail, span)
+                        .await
+                        .map(Expression::SyntaxQuote),
+                    [
+                        Syntax::Identifier { ident, span, bound },
+                        tail @ ..,
+                        Syntax::Null { .. },
+                    ] if ident == "syntax-case" && !bound => {
                         SyntaxCase::parse(runtime, tail, env, span /* cont */)
                             .await
                             .map(Expression::SyntaxCase)
                     }
 
                     // Extra special form (set!):
-                    [Syntax::Identifier { ident, span, bound }, tail @ .., Syntax::Null { .. }]
-                        if ident == "set!" && !bound =>
-                    {
+                    [
+                        Syntax::Identifier { ident, span, bound },
+                        tail @ ..,
+                        Syntax::Null { .. },
+                    ] if ident == "set!" && !bound => {
                         Set::parse(runtime, tail, env, span /* cont */)
                             .await
                             .map(Expression::Set)
                     }
 
                     // Definition in expression context is illegal:
-                    [Syntax::Identifier { ident, span, bound }, .., Syntax::Null { .. }]
-                        if !bound && (ident == "define" || ident == "define-record-type") =>
-                    {
+                    [
+                        Syntax::Identifier { ident, span, bound },
+                        ..,
+                        Syntax::Null { .. },
+                    ] if !bound && (ident == "define" || ident == "define-record-type") => {
                         Err(ParseAstError::UnexpectedDefinition(span.clone()))
                     }
 
@@ -693,7 +734,11 @@ impl Let {
                 parse_let(runtime, None, bindings, body, env, span /* cont */).await
             }
             // Named let:
-            [Syntax::Identifier { ident, .. }, Syntax::List { list: bindings, .. }, body @ ..] => {
+            [
+                Syntax::Identifier { ident, .. },
+                Syntax::List { list: bindings, .. },
+                body @ ..,
+            ] => {
                 parse_let(
                     runtime,
                     Some(ident),
@@ -704,7 +749,11 @@ impl Let {
                 )
                 .await
             }
-            [Syntax::Identifier { ident, .. }, Syntax::Null { .. }, body @ ..] => {
+            [
+                Syntax::Identifier { ident, .. },
+                Syntax::Null { .. },
+                body @ ..,
+            ] => {
                 parse_let(runtime, Some(ident), &[], body, env, span /* cont */).await
             }
             _ => Err(ParseAstError::BadForm(span.clone())),
@@ -808,11 +857,15 @@ impl LetBinding {
         // cont: &Closure
     ) -> Result<LetBinding, ParseAstError> {
         if let Some(
-            [Syntax::Identifier {
-                ident,
-                span: bind_span,
-                ..
-            }, expr, Syntax::Null { .. }],
+            [
+                Syntax::Identifier {
+                    ident,
+                    span: bind_span,
+                    ..
+                },
+                expr,
+                Syntax::Null { .. },
+            ],
         ) = form.as_list()
         {
             if let Some(prev_bind) = previously_bound.get(ident) {
@@ -920,7 +973,7 @@ impl Formals {
         };
         let remaining = match self {
             Self::FixedArgs(_) => None,
-            Self::VarArgs { ref remaining, .. } => Some(remaining),
+            Self::VarArgs { remaining, .. } => Some(remaining),
         };
         fixed_iter.chain(remaining)
     }
@@ -1042,14 +1095,15 @@ impl DefinitionBody {
             }
 
             let expr_body = ExprBody::new(exprs_parsed);
-            if let Some(last_def) = defs_parsed.pop() {
-                let mut last_def = last_def.set_next(Either::Right(expr_body));
-                for next_def in defs_parsed.into_iter().rev() {
-                    last_def = next_def.set_next(Either::Left(Box::new(last_def)));
+            match defs_parsed.pop() {
+                Some(last_def) => {
+                    let mut last_def = last_def.set_next(Either::Right(expr_body));
+                    for next_def in defs_parsed.into_iter().rev() {
+                        last_def = next_def.set_next(Either::Left(Box::new(last_def)));
+                    }
+                    Ok(Self::new(Either::Left(last_def)))
                 }
-                Ok(Self::new(Either::Left(last_def)))
-            } else {
-                Ok(Self::new(Either::Right(expr_body)))
+                _ => Ok(Self::new(Either::Right(expr_body))),
             }
         })
     }
@@ -1103,9 +1157,13 @@ fn splice_in<'a>(
             } = unexpanded.clone().expand(env /* cont */).await?;
             let is_def = {
                 match expanded.as_list() {
-                    Some([Syntax::Identifier { ident, .. }, body @ .., Syntax::Null { .. }])
-                        if ident == "begin" =>
-                    {
+                    Some(
+                        [
+                            Syntax::Identifier { ident, .. },
+                            body @ ..,
+                            Syntax::Null { .. },
+                        ],
+                    ) if ident == "begin" => {
                         splice_in(
                             runtime,
                             permissive,
@@ -1120,7 +1178,12 @@ fn splice_in<'a>(
                     }
 
                     Some(
-                        [Syntax::Identifier { ident, .. }, Syntax::Identifier { ident: name, .. }, expr, Syntax::Null { .. }],
+                        [
+                            Syntax::Identifier { ident, .. },
+                            Syntax::Identifier { ident: name, .. },
+                            expr,
+                            Syntax::Null { .. },
+                        ],
                     ) if ident == "define-syntax" => {
                         define_syntax(
                             runtime,
@@ -1133,7 +1196,12 @@ fn splice_in<'a>(
                     }
 
                     Some(
-                        [Syntax::Identifier { ident, span, .. }, bindings, form @ .., Syntax::Null { .. }],
+                        [
+                            Syntax::Identifier { ident, span, .. },
+                            bindings,
+                            form @ ..,
+                            Syntax::Null { .. },
+                        ],
                     ) if ident == "let-syntax" => {
                         let new_env =
                             parse_let_syntax(runtime, false, bindings, &expansion_env).await?;
@@ -1142,7 +1210,12 @@ fn splice_in<'a>(
                     }
 
                     Some(
-                        [Syntax::Identifier { ident, span, .. }, bindings, form @ .., Syntax::Null { .. }],
+                        [
+                            Syntax::Identifier { ident, span, .. },
+                            bindings,
+                            form @ ..,
+                            Syntax::Null { .. },
+                        ],
                     ) if ident == "letrec-syntax" => {
                         let new_env =
                             parse_let_syntax(runtime, true, bindings, &expansion_env).await?;
@@ -1150,9 +1223,14 @@ fn splice_in<'a>(
                         continue;
                     }
 
-                    Some([Syntax::Identifier { ident, span, .. }, _, .., Syntax::Null { .. }])
-                        if ident == "define" =>
-                    {
+                    Some(
+                        [
+                            Syntax::Identifier { ident, span, .. },
+                            _,
+                            ..,
+                            Syntax::Null { .. },
+                        ],
+                    ) if ident == "define" => {
                         if !permissive && !exprs.is_empty() {
                             return Err(ParseAstError::UnexpectedDefinition(span.clone()));
                         }
@@ -1202,8 +1280,13 @@ async fn parse_let_syntax(
     let new_env = env.new_let_syntax_contour(recursive);
 
     for binding in keyword_bindings {
-        if let Some([Syntax::Identifier { ident: keyword, .. }, expr, Syntax::Null { .. }]) =
-            binding.as_list()
+        if let Some(
+            [
+                Syntax::Identifier { ident: keyword, .. },
+                expr,
+                Syntax::Null { .. },
+            ],
+        ) = binding.as_list()
         {
             define_syntax(runtime, keyword.clone(), expr.clone(), &new_env).await?;
         } else {

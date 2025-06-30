@@ -98,72 +98,80 @@ enum FieldDefinitionKind {
 
 fn parse_field(field: &[Syntax], span: &Span) -> Result<FieldDefinition, ParseAstError> {
     match field {
-        [Syntax::Identifier {
-            ident: mutability, ..
-        }, Syntax::Identifier {
-            ident: field_name, ..
-        }, Syntax::Null { .. }]
-            if mutability.name == "mutable" =>
-        {
+        [
+            Syntax::Identifier {
+                ident: mutability, ..
+            },
+            Syntax::Identifier {
+                ident: field_name, ..
+            },
+            Syntax::Null { .. },
+        ] if mutability.name == "mutable" => {
             Ok(FieldDefinition::new_mut(field_name, None, None, span))
         }
-        [Syntax::Identifier {
-            ident: mutability, ..
-        }, Syntax::Identifier {
-            ident: field_name, ..
-        }, Syntax::Identifier {
-            ident: accessor_name,
-            ..
-        }, Syntax::Null { .. }]
-            if mutability.name == "mutable" =>
-        {
-            Ok(FieldDefinition::new_mut(
-                field_name,
-                Some(accessor_name),
-                None,
-                span,
-            ))
-        }
-        [Syntax::Identifier {
-            ident: mutability, ..
-        }, Syntax::Identifier {
-            ident: field_name, ..
-        }, Syntax::Identifier {
-            ident: accessor_name,
-            ..
-        }, Syntax::Identifier {
-            ident: mutator_name,
-            ..
-        }, Syntax::Null { .. }]
-            if mutability.name == "mutable" =>
-        {
-            Ok(FieldDefinition::new_mut(
-                field_name,
-                Some(accessor_name),
-                Some(mutator_name),
-                span,
-            ))
-        }
+        [
+            Syntax::Identifier {
+                ident: mutability, ..
+            },
+            Syntax::Identifier {
+                ident: field_name, ..
+            },
+            Syntax::Identifier {
+                ident: accessor_name,
+                ..
+            },
+            Syntax::Null { .. },
+        ] if mutability.name == "mutable" => Ok(FieldDefinition::new_mut(
+            field_name,
+            Some(accessor_name),
+            None,
+            span,
+        )),
+        [
+            Syntax::Identifier {
+                ident: mutability, ..
+            },
+            Syntax::Identifier {
+                ident: field_name, ..
+            },
+            Syntax::Identifier {
+                ident: accessor_name,
+                ..
+            },
+            Syntax::Identifier {
+                ident: mutator_name,
+                ..
+            },
+            Syntax::Null { .. },
+        ] if mutability.name == "mutable" => Ok(FieldDefinition::new_mut(
+            field_name,
+            Some(accessor_name),
+            Some(mutator_name),
+            span,
+        )),
 
-        [Syntax::Identifier {
-            ident: mutability, ..
-        }, Syntax::Identifier {
-            ident: field_name, ..
-        }, Syntax::Null { .. }]
-            if mutability.name == "immutable" =>
-        {
-            Ok(FieldDefinition::new(field_name, None, span))
-        }
-        [Syntax::Identifier {
-            ident: mutability, ..
-        }, Syntax::Identifier {
-            ident: field_name, ..
-        }, Syntax::Identifier {
-            ident: accessor_name,
-            ..
-        }, Syntax::Null { .. }]
-            if mutability.name == "immutable" =>
-        {
+        [
+            Syntax::Identifier {
+                ident: mutability, ..
+            },
+            Syntax::Identifier {
+                ident: field_name, ..
+            },
+            Syntax::Null { .. },
+        ] if mutability.name == "immutable" => Ok(FieldDefinition::new(field_name, None, span)),
+        [
+            Syntax::Identifier {
+                ident: mutability, ..
+            },
+            Syntax::Identifier {
+                ident: field_name, ..
+            },
+            Syntax::Identifier {
+                ident: accessor_name,
+                ..
+            },
+            Syntax::Null { .. },
+        ] if mutability.name == "immutable" => {
             Ok(FieldDefinition::new(field_name, Some(accessor_name), span))
         }
         _ => Err(ParseAstError::BadForm(span.clone())),
@@ -191,11 +199,16 @@ impl DefineRecordType {
                 let (name, constructor, predicate) = match first_arg {
                     Syntax::Identifier { ident: name, .. } => (name.clone(), None, None),
                     Syntax::List { list, span, .. } => {
-                        if let [Syntax::Identifier { ident: name, .. }, Syntax::Identifier {
-                            ident: constructor, ..
-                        }, Syntax::Identifier {
-                            ident: predicate, ..
-                        }, Syntax::Null { .. }] = list.as_slice()
+                        if let [
+                            Syntax::Identifier { ident: name, .. },
+                            Syntax::Identifier {
+                                ident: constructor, ..
+                            },
+                            Syntax::Identifier {
+                                ident: predicate, ..
+                            },
+                            Syntax::Null { .. },
+                        ] = list.as_slice()
                         {
                             (
                                 name.clone(),
@@ -215,13 +228,17 @@ impl DefineRecordType {
                 for arg in args {
                     match arg.as_list() {
                         Some(
-                            [Syntax::Identifier {
-                                ident,
-                                span: second,
-                                ..
-                            }, Syntax::Identifier {
-                                ident: parent_name, ..
-                            }, Syntax::Null { .. }],
+                            [
+                                Syntax::Identifier {
+                                    ident,
+                                    span: second,
+                                    ..
+                                },
+                                Syntax::Identifier {
+                                    ident: parent_name, ..
+                                },
+                                Syntax::Null { .. },
+                            ],
                         ) if ident.name == "parent" => {
                             if let Some((_, first)) = parent {
                                 return Err(ParseAstError::ParentSpecifiedMultipleTimes {
@@ -232,11 +249,15 @@ impl DefineRecordType {
                             parent = Some((parent_name.clone(), second.clone()));
                         }
                         Some(
-                            [Syntax::Identifier {
-                                ident,
-                                span: second,
-                                ..
-                            }, unparsed_fields @ .., Syntax::Null { .. }],
+                            [
+                                Syntax::Identifier {
+                                    ident,
+                                    span: second,
+                                    ..
+                                },
+                                unparsed_fields @ ..,
+                                Syntax::Null { .. },
+                            ],
                         ) if ident == "fields" => {
                             if let Some((_, first)) = fields {
                                 return Err(ParseAstError::ParentSpecifiedMultipleTimes {
