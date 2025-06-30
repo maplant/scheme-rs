@@ -1,9 +1,9 @@
 use rustyline::{
+    Completer, Config, Editor, Helper, Highlighter, Hinter, Validator,
     error::ReadlineError,
     highlight::MatchingBracketHighlighter,
     history::DefaultHistory,
     validate::{ValidationContext, ValidationResult, Validator},
-    Completer, Config, Editor, Helper, Highlighter, Hinter, Validator,
 };
 use scheme_rs::{
     ast::{DefinitionBody, ParseAstError},

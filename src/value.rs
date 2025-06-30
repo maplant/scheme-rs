@@ -270,11 +270,13 @@ impl fmt::Debug for Value {
 
 unsafe impl Trace for Value {
     unsafe fn visit_children(&self, visitor: unsafe fn(crate::gc::OpaqueGcPtr)) {
-        self.unpacked_ref().visit_children(visitor);
+        unsafe {
+            self.unpacked_ref().visit_children(visitor);
+        }
     }
 
     unsafe fn finalize(&mut self) {
-        ManuallyDrop::new(Self(self.0).unpack()).finalize()
+        unsafe { ManuallyDrop::new(Self(self.0).unpack()).finalize() }
     }
 }
 
@@ -589,7 +591,7 @@ impl_try_from_value_for!(Gc<lists::Pair>, Pair, "pair");
 impl_try_from_value_for!(Gc<OtherData>, OtherData, "record");
 
 macro_rules! impl_from_wrapped_for {
-    ($ty:ty, $variant:ident, $wrapper:expr) => {
+    ($ty:ty, $variant:ident, $wrapper:expr_2021) => {
         impl From<$ty> for UnpackedValue {
             fn from(v: $ty) -> Self {
                 Self::$variant(($wrapper)(v))

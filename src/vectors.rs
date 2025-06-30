@@ -179,10 +179,12 @@ pub async fn vector_ref(vec: &Value, index: &Value) -> Result<Vec<Value>, Condit
     let index: usize = try_to_usize(index)?;
     let vec_read = vec.read();
 
-    Ok(vec![vec_read
-        .get(index)
-        .ok_or_else(|| Condition::invalid_index(index, vec_read.len()))?
-        .clone()])
+    Ok(vec![
+        vec_read
+            .get(index)
+            .ok_or_else(|| Condition::invalid_index(index, vec_read.len()))?
+            .clone(),
+    ])
 }
 
 #[bridge(name = "vector-length", lib = "(base)")]

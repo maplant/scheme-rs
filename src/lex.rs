@@ -1,5 +1,6 @@
-use malachite::{rational::Rational, Integer, Natural};
+use malachite::{Integer, Natural, rational::Rational};
 use nom::{
+    IResult, Parser,
     branch::alt,
     bytes::complete::{is_not, tag, tag_no_case, take, take_while, take_while1},
     character::{
@@ -9,9 +10,8 @@ use nom::{
     combinator::{map, not, opt, value, verify},
     multi::{fold_many0, many0},
     sequence::{delimited, preceded, tuple},
-    IResult, Parser,
 };
-use nom_locate::{position, LocatedSpan};
+use nom_locate::{LocatedSpan, position};
 use std::{
     borrow::Cow,
     fmt,
@@ -350,7 +350,7 @@ fn number(i: InputSpan<'_>) -> IResult<InputSpan<'_>, Number<'_>> {
 
 fn number_inner<'a>(i: InputSpan<'a>) -> IResult<InputSpan<'a>, Number<'a>> {
     macro_rules! gen_radix_parser {
-        ($head:expr, $radix:expr) => {
+        ($head:expr_2021, $radix:expr_2021) => {
             tuple((
                 tag_no_case($head).map(|_| $radix),
                 opt(match_char('-')).map(|neg| neg.is_some()),
@@ -589,11 +589,7 @@ impl<'a> TryFrom<Number<'a>> for f64 {
         let num = format!("{}.{frac}", num.integer_or_numerator);
         let num: f64 = num.parse()?;
 
-        if negative {
-            Ok(-num)
-        } else {
-            Ok(num)
-        }
+        if negative { Ok(-num) } else { Ok(num) }
     }
 }
 

@@ -5,6 +5,7 @@ use crate::{
     value::{Value, ValueType},
 };
 use malachite::{
+    Integer,
     base::{
         num::{
             arithmetic::traits::Parity,
@@ -12,10 +13,9 @@ use malachite::{
         },
         rounding_modes::RoundingMode,
     },
-    rational::{conversion::from_primitive_float::RationalFromPrimitiveFloatError, Rational},
-    Integer,
+    rational::{Rational, conversion::from_primitive_float::RationalFromPrimitiveFloatError},
 };
-use num::{complex::Complex64, Complex, FromPrimitive, Zero};
+use num::{Complex, FromPrimitive, Zero, complex::Complex64};
 use ordered_float::OrderedFloat;
 use std::{
     cmp::Ordering,

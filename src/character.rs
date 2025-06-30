@@ -141,15 +141,17 @@ impl_char_predicate![
 pub async fn digit_value(ch: &Value) -> Result<Vec<Value>, Condition> {
     let ch: char = ch.clone().try_into()?;
 
-    Ok(vec![digit_to_num(ch)
-        .map(<u32 as Into<i64>>::into)
-        .map(Number::FixedInteger)
-        .map(Value::from)
-        .unwrap_or(Value::from(false))])
+    Ok(vec![
+        digit_to_num(ch)
+            .map(<u32 as Into<i64>>::into)
+            .map(Number::FixedInteger)
+            .map(Value::from)
+            .unwrap_or(Value::from(false)),
+    ])
 }
 
 macro_rules! impl_char_case_converter {
-    ($(($bridge_name:literal, $function_name:ident, $converter:expr)),* $(,)?) => {
+    ($(($bridge_name:literal, $function_name:ident, $converter:expr_2021)),* $(,)?) => {
         $(#[bridge(name = $bridge_name, lib = "(base)")]
         pub async fn $function_name(ch: &Value) -> Result<Vec<Value>, Condition> {
             let ch: char = ch.clone().try_into()?;

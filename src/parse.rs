@@ -7,7 +7,7 @@ use crate::{
     num::Number,
     syntax::Syntax,
 };
-use malachite::{rational::Rational, Integer};
+use malachite::{Integer, rational::Rational};
 use std::{char::CharTryFromError, error::Error as StdError, fmt, num::TryFromIntError};
 
 #[derive(Debug)]
@@ -140,10 +140,13 @@ pub fn expression<'a, 'b>(
         [c @ token!(Lexeme::Character(_)), tail @ ..] => {
             Ok((tail, Syntax::new_literal(character(c)?, c.span.clone())))
         }
-        [Token {
-            lexeme: Lexeme::Number(n),
-            span,
-        }, tail @ ..] => Ok((tail, Syntax::new_literal(number(n)?, span.clone()))),
+        [
+            Token {
+                lexeme: Lexeme::Number(n),
+                span,
+            },
+            tail @ ..,
+        ] => Ok((tail, Syntax::new_literal(number(n)?, span.clone()))),
         [s @ token!(Lexeme::String(_)), tail @ ..] => {
             Ok((tail, Syntax::new_literal(string(s)?, s.span.clone())))
         }
@@ -153,12 +156,16 @@ pub fn expression<'a, 'b>(
             Syntax::new_identifier(i.lexeme.to_ident(), i.span.clone()),
         )),
         // Lists:
-        [n @ token!(Lexeme::LParen), token!(Lexeme::RParen), tail @ ..] => {
-            Ok((tail, Syntax::new_null(n.span.clone())))
-        }
-        [n @ token!(Lexeme::LBracket), token!(Lexeme::RBracket), tail @ ..] => {
-            Ok((tail, Syntax::new_null(n.span.clone())))
-        }
+        [
+            n @ token!(Lexeme::LParen),
+            token!(Lexeme::RParen),
+            tail @ ..,
+        ] => Ok((tail, Syntax::new_null(n.span.clone()))),
+        [
+            n @ token!(Lexeme::LBracket),
+            token!(Lexeme::RBracket),
+            tail @ ..,
+        ] => Ok((tail, Syntax::new_null(n.span.clone()))),
         [p @ token!(Lexeme::LParen), tail @ ..] => match list(tail, p.span.clone(), Lexeme::RParen)
         {
             Err(ParseListError::UnclosedParen) => Err(ParseSyntaxError::unclosed_paren(p)),
@@ -263,10 +270,20 @@ fn list<'a, 'b>(
                 output.push(Syntax::new_null(token.span.clone()));
                 return Ok((tail, Syntax::new_list(output, span)));
             }
-            [token!(Lexeme::Period), end @ token!(Lexeme::LParen), token!(Lexeme::RParen), token, tail @ ..]
-            | [token!(Lexeme::Period), end @ token!(Lexeme::LBracket), token!(Lexeme::RBracket), token, tail @ ..]
-                if token.lexeme == closing =>
-            {
+            [
+                token!(Lexeme::Period),
+                end @ token!(Lexeme::LParen),
+                token!(Lexeme::RParen),
+                token,
+                tail @ ..,
+            ]
+            | [
+                token!(Lexeme::Period),
+                end @ token!(Lexeme::LBracket),
+                token!(Lexeme::RBracket),
+                token,
+                tail @ ..,
+            ] if token.lexeme == closing => {
                 output.push(Syntax::new_null(end.span.clone()));
                 return Ok((tail, Syntax::new_list(output, span)));
             }

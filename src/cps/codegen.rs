@@ -2,19 +2,19 @@
 
 use indexmap::IndexMap;
 use inkwell::{
+    AddressSpace, IntPredicate,
     builder::{Builder, BuilderError},
     context::Context,
     execution_engine::ExecutionEngine,
     module::Module,
     values::{BasicValueEnum, FunctionValue, IntValue, PointerValue},
-    AddressSpace, IntPredicate,
 };
 use std::{collections::HashMap, rc::Rc};
 
 use crate::{
     gc::Gc,
     proc::{Closure, ContinuationPtr, FuncPtr},
-    runtime::{Runtime, IGNORE_CALL_SITE, IGNORE_FUNCTION},
+    runtime::{IGNORE_CALL_SITE, IGNORE_FUNCTION, Runtime},
     value::{ReflexiveValue, Value as SchemeValue},
 };
 

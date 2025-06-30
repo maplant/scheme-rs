@@ -1,6 +1,6 @@
 use crate::lexer::{Line, NumberGroup};
 use std::{
-    collections::{hash_map, HashMap},
+    collections::{HashMap, hash_map},
     fmt::{Display, Formatter},
     num::ParseIntError,
     ops::Range,
