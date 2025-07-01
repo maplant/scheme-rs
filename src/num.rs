@@ -15,7 +15,7 @@ use malachite::{
     },
     rational::{Rational, conversion::from_primitive_float::RationalFromPrimitiveFloatError},
 };
-use num::{complex::Complex64, Complex, FromPrimitive, Zero};
+use num::{Complex, FromPrimitive, Zero, complex::Complex64};
 use ordered_float::OrderedFloat;
 use std::{
     cmp::Ordering,
@@ -104,7 +104,7 @@ impl From<usize> for Number {
     fn from(u: usize) -> Self {
         match u.try_into() {
             Ok(i) => Number::FixedInteger(i),
-            Err(_) => Number::BigInteger(Integer::from(u))
+            Err(_) => Number::BigInteger(Integer::from(u)),
         }
     }
 }
