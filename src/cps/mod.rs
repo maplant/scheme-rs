@@ -142,7 +142,7 @@ pub struct ClosureArgs {
 }
 
 impl ClosureArgs {
-    fn new(args: Vec<Local>, variadic: bool, continuation: Option<Local>) -> Self {
+    pub fn new(args: Vec<Local>, variadic: bool, continuation: Option<Local>) -> Self {
         Self {
             args,
             variadic,

@@ -100,6 +100,15 @@ impl TryFrom<&Number> for usize {
     }
 }
 
+impl From<usize> for Number {
+    fn from(u: usize) -> Self {
+        match u.try_into() {
+            Ok(i) => Number::FixedInteger(i),
+            Err(_) => Number::BigInteger(Integer::from(u)),
+        }
+    }
+}
+
 impl From<i64> for Number {
     fn from(i: i64) -> Self {
         Self::FixedInteger(i)
