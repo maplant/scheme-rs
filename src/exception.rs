@@ -3,7 +3,13 @@
 use futures::future::BoxFuture;
 
 use crate::{
-    ast::ParseAstError, gc::{Gc, GcInner, Trace}, proc::{Application, Closure, DynamicWind, FuncPtr}, registry::{BridgeFn, BridgeFnDebugInfo}, runtime::{Runtime, IGNORE_FUNCTION}, syntax::{Identifier, Span}, value::Value
+    ast::ParseAstError,
+    gc::{Gc, GcInner, Trace},
+    proc::{Application, Closure, DynamicWind, FuncPtr},
+    registry::{BridgeFn, BridgeFnDebugInfo},
+    runtime::{IGNORE_FUNCTION, Runtime},
+    syntax::{Identifier, Span},
+    value::Value,
 };
 use std::{error::Error as StdError, fmt, ops::Range};
 
@@ -264,7 +270,7 @@ pub fn raise<'a>(
 
         // TODO: Make condition non-continuable when it is re-raised
 
-        let Some(ref handler) = exception_handler else {
+        let Some(handler) = exception_handler else {
             return Err(condition.clone());
         };
 
@@ -320,31 +326,33 @@ unsafe extern "C" fn reraise_exception(
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition> {
-    let runtime = Gc::from_raw_inc_rc(runtime);
+    unsafe {
+        let runtime = Gc::from_raw_inc_rc(runtime);
 
-    // env[0] is the exception
-    let exception = Gc::from_raw_inc_rc(env.read());
-    let exception = exception.read().clone();
+        // env[0] is the exception
+        let exception = Gc::from_raw_inc_rc(env.read());
+        let exception = exception.read().clone();
 
-    // env[1] is the continuation
-    let cont = Gc::from_raw_inc_rc(env.add(1).read());
-    let cont = cont.read().clone();
+        // env[1] is the continuation
+        let cont = Gc::from_raw_inc_rc(env.add(1).read());
+        let cont = cont.read().clone();
 
-    Box::into_raw(Box::new(Ok(Application::new(
-        Gc::new(Closure::new(
-            runtime,
-            Vec::new(),
-            Vec::new(),
-            FuncPtr::Bridge(raise),
-            1,
-            false,
-            Some(IGNORE_FUNCTION),
-        )),
-        vec![exception, cont],
-        ExceptionHandler::from_ptr(exception_handler),
-        dynamic_wind.as_ref().unwrap().clone(),
-        None,
-    ))))
+        Box::into_raw(Box::new(Ok(Application::new(
+            Gc::new(Closure::new(
+                runtime,
+                Vec::new(),
+                Vec::new(),
+                FuncPtr::Bridge(raise),
+                1,
+                false,
+                Some(IGNORE_FUNCTION),
+            )),
+            vec![exception, cont],
+            ExceptionHandler::from_ptr(exception_handler),
+            dynamic_wind.as_ref().unwrap().clone(),
+            None,
+        ))))
+    }
 }
 
 /// Raises an exception to the current exception handler and coninues with the
@@ -362,7 +370,7 @@ pub fn raise_continuable<'a>(
             return Err(Condition::wrong_num_of_args(1, args.len()).into());
         };
 
-        let Some(ref handler) = exception_handler else {
+        let Some(handler) = exception_handler else {
             return Err(condition.clone());
         };
 

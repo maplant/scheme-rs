@@ -1,10 +1,10 @@
 use nom::{
+    IResult,
     branch::alt,
     bytes::complete::{tag, take_while},
     character::complete::{digit1, hex_digit1, line_ending, not_line_ending, space0},
     combinator::{map, opt},
     sequence::{delimited, preceded, terminated, tuple},
-    IResult,
 };
 
 pub fn lex(src: &str) -> IResult<&str, Vec<Line<'_>>> {

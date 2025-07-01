@@ -8,7 +8,7 @@ use scheme_rs::{
     env::{Environment, Top},
     exception::Condition,
     gc::Gc,
-    registry::{bridge, Registry},
+    registry::{Registry, bridge},
     runtime::Runtime,
     syntax::{Span, Syntax},
     value::Value,

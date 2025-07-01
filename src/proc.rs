@@ -6,7 +6,7 @@ use crate::{
     gc::{Gc, GcInner, Trace},
     lists::{list_to_vec, slice_to_list},
     registry::{BridgeFn, BridgeFnDebugInfo},
-    runtime::{FunctionDebugInfoId, Runtime, IGNORE_FUNCTION},
+    runtime::{FunctionDebugInfoId, IGNORE_FUNCTION, Runtime},
     syntax::Span,
     value::{UnpackedValue, Value, ValueType},
 };
@@ -236,7 +236,7 @@ impl Gc<Closure> {
             _exception_handler: *mut GcInner<ExceptionHandler>,
             _dynamic_wind: *const DynamicWind,
         ) -> *mut Result<Application, Condition> {
-            crate::runtime::halt(Value::into_raw(args.read()) as i64)
+            unsafe { crate::runtime::halt(Value::into_raw(args.read()) as i64) }
         }
 
         let mut args = args.to_vec();
@@ -586,51 +586,54 @@ unsafe extern "C" fn call_consumer_with_values(
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition> {
-    // env[0] is the consumer
-    let consumer = Gc::from_raw_inc_rc(env.read());
-    let consumer = {
-        let consumer_read = consumer.read();
-        let consumer: Gc<Closure> = if let Ok(consumer) = consumer_read.clone().try_into() {
-            consumer
-        } else {
-            return Box::into_raw(Box::new(Err(Condition::invalid_operator_type(
-                consumer_read.type_name(),
-            ))));
+    unsafe {
+        // env[0] is the consumer
+        let consumer = Gc::from_raw_inc_rc(env.read());
+        let consumer = {
+            let consumer_read = consumer.read();
+            let consumer: Gc<Closure> = match consumer_read.clone().try_into() {
+                Ok(consumer) => consumer,
+                _ => {
+                    return Box::into_raw(Box::new(Err(Condition::invalid_operator_type(
+                        consumer_read.type_name(),
+                    ))));
+                }
+            };
+            consumer.clone()
         };
-        consumer.clone()
-    };
 
-    let consumer_read = consumer.read();
+        let consumer_read = consumer.read();
 
-    // env[1] is the continuation
-    let cont = Gc::from_raw_inc_rc(env.add(1).read());
+        // env[1] is the continuation
+        let cont = Gc::from_raw_inc_rc(env.add(1).read());
 
-    let mut collected_args: Vec<_> = (0..consumer_read.num_required_args)
-        .map(|i| args.add(i).as_ref().unwrap().clone())
-        .collect();
+        let mut collected_args: Vec<_> = (0..consumer_read.num_required_args)
+            .map(|i| args.add(i).as_ref().unwrap().clone())
+            .collect();
 
-    // I hate this constant going back and forth from variadic to list. I have
-    // to figure out a way to make it consistent
-    if consumer_read.variadic {
-        let rest_args = args
-            .add(consumer_read.num_required_args)
-            .as_ref()
-            .unwrap()
-            .clone();
-        let mut vec = Vec::new();
-        list_to_vec(&rest_args, &mut vec);
-        collected_args.extend(vec);
+        // I hate this constant going back and forth from variadic to list. I have
+        // to figure out a way to make it consistent
+        if consumer_read.variadic {
+            let rest_args = args
+                .add(consumer_read.num_required_args)
+                .as_ref()
+                .unwrap()
+                .clone();
+            let mut vec = Vec::new();
+            list_to_vec(&rest_args, &mut vec);
+            collected_args.extend(vec);
+        }
+
+        collected_args.push(cont.read().clone());
+
+        Box::into_raw(Box::new(Ok(Application::new(
+            consumer.clone(),
+            collected_args,
+            ExceptionHandler::from_ptr(exception_handler),
+            dynamic_wind.as_ref().unwrap().clone(),
+            None,
+        ))))
     }
-
-    collected_args.push(cont.read().clone());
-
-    Box::into_raw(Box::new(Ok(Application::new(
-        consumer.clone(),
-        collected_args,
-        ExceptionHandler::from_ptr(exception_handler),
-        dynamic_wind.as_ref().unwrap().clone(),
-        None,
-    ))))
 }
 
 pub fn call_with_values<'a>(
@@ -765,44 +768,46 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition> {
-    // env[0] is the in thunk
-    let in_thunk = Gc::from_raw_inc_rc(env.read());
-    // env[1] is the body thunk
-    let body_thunk: Gc<Closure> = Gc::from_raw_inc_rc(env.add(1).read())
-        .read()
-        .clone()
-        .try_into()
-        .unwrap();
-    // env[2] is the out thunk
-    let out_thunk = Gc::from_raw_inc_rc(env.add(2).read());
-    // env[3] is k, the continuation
-    let k = Gc::from_raw_inc_rc(env.add(3).read());
+    unsafe {
+        // env[0] is the in thunk
+        let in_thunk = Gc::from_raw_inc_rc(env.read());
+        // env[1] is the body thunk
+        let body_thunk: Gc<Closure> = Gc::from_raw_inc_rc(env.add(1).read())
+            .read()
+            .clone()
+            .try_into()
+            .unwrap();
+        // env[2] is the out thunk
+        let out_thunk = Gc::from_raw_inc_rc(env.add(2).read());
+        // env[3] is k, the continuation
+        let k = Gc::from_raw_inc_rc(env.add(3).read());
 
-    let mut new_extent = dynamic_wind.as_ref().unwrap().clone();
-    new_extent.winders.push((
-        in_thunk.read().clone().try_into().unwrap(),
-        out_thunk.read().clone().try_into().unwrap(),
-    ));
+        let mut new_extent = dynamic_wind.as_ref().unwrap().clone();
+        new_extent.winders.push((
+            in_thunk.read().clone().try_into().unwrap(),
+            out_thunk.read().clone().try_into().unwrap(),
+        ));
 
-    let cont = Closure::new(
-        Gc::from_raw_inc_rc(runtime),
-        vec![out_thunk, k],
-        Vec::new(),
-        FuncPtr::Continuation(call_out_thunks),
-        0,
-        true,
-        None,
-    );
+        let cont = Closure::new(
+            Gc::from_raw_inc_rc(runtime),
+            vec![out_thunk, k],
+            Vec::new(),
+            FuncPtr::Continuation(call_out_thunks),
+            0,
+            true,
+            None,
+        );
 
-    let app = Application::new(
-        body_thunk,
-        vec![Value::from(cont)],
-        ExceptionHandler::from_ptr(exception_handler),
-        new_extent,
-        None,
-    );
+        let app = Application::new(
+            body_thunk,
+            vec![Value::from(cont)],
+            ExceptionHandler::from_ptr(exception_handler),
+            new_extent,
+            None,
+        );
 
-    Box::into_raw(Box::new(Ok(app)))
+        Box::into_raw(Box::new(Ok(app)))
+    }
 }
 
 pub(crate) unsafe extern "C" fn call_out_thunks(
@@ -813,40 +818,42 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition> {
-    // env[0] is the out thunk
-    let out_thunk: Gc<Closure> = Gc::from_raw_inc_rc(env.read())
-        .read()
-        .clone()
-        .try_into()
-        .unwrap();
-    // env[1] is k, the remaining continuation
-    let k = Gc::from_raw_inc_rc(env.add(1).read());
+    unsafe {
+        // env[0] is the out thunk
+        let out_thunk: Gc<Closure> = Gc::from_raw_inc_rc(env.read())
+            .read()
+            .clone()
+            .try_into()
+            .unwrap();
+        // env[1] is k, the remaining continuation
+        let k = Gc::from_raw_inc_rc(env.add(1).read());
 
-    // args[0] is the result of the body thunk
-    let body_thunk_res = Gc::new(args.as_ref().unwrap().clone());
+        // args[0] is the result of the body thunk
+        let body_thunk_res = Gc::new(args.as_ref().unwrap().clone());
 
-    let mut new_extent = dynamic_wind.as_ref().unwrap().clone();
-    new_extent.winders.pop();
+        let mut new_extent = dynamic_wind.as_ref().unwrap().clone();
+        new_extent.winders.pop();
 
-    let cont = Closure::new(
-        Gc::from_raw_inc_rc(runtime),
-        vec![body_thunk_res, k],
-        Vec::new(),
-        FuncPtr::Continuation(forward_body_thunk_result),
-        0,
-        true,
-        None,
-    );
+        let cont = Closure::new(
+            Gc::from_raw_inc_rc(runtime),
+            vec![body_thunk_res, k],
+            Vec::new(),
+            FuncPtr::Continuation(forward_body_thunk_result),
+            0,
+            true,
+            None,
+        );
 
-    let app = Application::new(
-        out_thunk,
-        vec![Value::from(cont)],
-        ExceptionHandler::from_ptr(exception_handler),
-        new_extent,
-        None,
-    );
+        let app = Application::new(
+            out_thunk,
+            vec![Value::from(cont)],
+            ExceptionHandler::from_ptr(exception_handler),
+            new_extent,
+            None,
+        );
 
-    Box::into_raw(Box::new(Ok(app)))
+        Box::into_raw(Box::new(Ok(app)))
+    }
 }
 
 unsafe extern "C" fn forward_body_thunk_result(
@@ -857,25 +864,27 @@ unsafe extern "C" fn forward_body_thunk_result(
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition> {
-    // env[0] is the result of the body thunk
-    let body_thunk_res = Gc::from_raw_inc_rc(env.read()).read().clone();
-    // env[1] is k, the continuation.
-    let k: Gc<Closure> = Gc::from_raw_inc_rc(env.add(1).read())
-        .read()
-        .clone()
-        .try_into()
-        .unwrap();
+    unsafe {
+        // env[0] is the result of the body thunk
+        let body_thunk_res = Gc::from_raw_inc_rc(env.read()).read().clone();
+        // env[1] is k, the continuation.
+        let k: Gc<Closure> = Gc::from_raw_inc_rc(env.add(1).read())
+            .read()
+            .clone()
+            .try_into()
+            .unwrap();
 
-    let mut args = Vec::new();
-    list_to_vec(&body_thunk_res, &mut args);
+        let mut args = Vec::new();
+        list_to_vec(&body_thunk_res, &mut args);
 
-    let app = Application::new(
-        k,
-        args,
-        ExceptionHandler::from_ptr(exception_handler),
-        dynamic_wind.as_ref().unwrap().clone(),
-        None,
-    );
+        let app = Application::new(
+            k,
+            args,
+            ExceptionHandler::from_ptr(exception_handler),
+            dynamic_wind.as_ref().unwrap().clone(),
+            None,
+        );
 
-    Box::into_raw(Box::new(Ok(app)))
+        Box::into_raw(Box::new(Ok(app)))
+    }
 }

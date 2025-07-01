@@ -23,7 +23,7 @@ impl Cps {
     // TODO: Have this function return a Cow<'_, HashSet<Local>>
     pub(super) fn free_variables(&self) -> HashSet<Local> {
         match self {
-            Cps::PrimOp(PrimOp::AllocCell, _, ref bind, cexpr) => {
+            Cps::PrimOp(PrimOp::AllocCell, _, bind, cexpr) => {
                 let mut free = cexpr.free_variables();
                 free.remove(bind);
                 free
@@ -160,11 +160,10 @@ impl Cps {
                 // really stretching the definition of "escaping", but it's easy
                 // to put in here for now.
                 let mut escaping_args = cexp.need_cells(local_args, escaping_arg_cache);
-                match from.to_local() {
-                    Some(local) if !local_args.contains(&local) => {
-                        escaping_args.insert(local);
-                    }
-                    _ => (),
+                if let Some(local) = from.to_local()
+                    && !local_args.contains(&local)
+                {
+                    escaping_args.insert(local);
                 }
                 escaping_args.extend(to.to_local());
                 escaping_args
@@ -182,11 +181,10 @@ impl Cps {
                     .union(&failure.need_cells(local_args, escaping_arg_cache))
                     .copied()
                     .collect();
-                match cond.to_local() {
-                    Some(local) if !local_args.contains(&local) => {
-                        escaping_args.insert(local);
-                    }
-                    _ => (),
+                if let Some(local) = cond.to_local()
+                    && !local_args.contains(&local)
+                {
+                    escaping_args.insert(local);
                 }
                 escaping_args
             }
@@ -205,27 +203,24 @@ impl Cps {
             }
             Cps::Forward(op, val) => {
                 let mut escaping_args = HashSet::new();
-                match val.to_local() {
-                    Some(local) if !local_args.contains(&local) => {
-                        escaping_args.insert(local);
-                    }
-                    _ => (),
+                if let Some(local) = val.to_local()
+                    && !local_args.contains(&local)
+                {
+                    escaping_args.insert(local);
                 }
-                match op.to_local() {
-                    Some(local) if !local_args.contains(&local) => {
-                        escaping_args.insert(local);
-                    }
-                    _ => (),
+                if let Some(local) = op.to_local()
+                    && !local_args.contains(&local)
+                {
+                    escaping_args.insert(local);
                 }
                 escaping_args
             }
             Cps::Halt(val) => {
                 let mut escaping_args = HashSet::new();
-                match val.to_local() {
-                    Some(local) if !local_args.contains(&local) => {
-                        escaping_args.insert(local);
-                    }
-                    _ => (),
+                if let Some(local) = val.to_local()
+                    && !local_args.contains(&local)
+                {
+                    escaping_args.insert(local);
                 }
                 escaping_args
             }

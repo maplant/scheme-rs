@@ -76,11 +76,11 @@ impl Cps {
     ) -> bool {
         let new = match self {
             Cps::PrimOp(_, _, _, cexp) => {
-                return cexp.reduce_function(func, args, func_body, uses_cache)
+                return cexp.reduce_function(func, args, func_body, uses_cache);
             }
             Cps::If(_, succ, fail) => {
                 return succ.reduce_function(func, args, func_body, uses_cache)
-                    || fail.reduce_function(func, args, func_body, uses_cache)
+                    || fail.reduce_function(func, args, func_body, uses_cache);
             }
             Cps::Closure {
                 val, body, cexp, ..

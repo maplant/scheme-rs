@@ -1,9 +1,9 @@
 use rustyline::{
+    Completer, Config, Editor, Helper, Highlighter, Hinter, Validator,
     error::ReadlineError,
     highlight::MatchingBracketHighlighter,
     history::DefaultHistory,
     validate::{ValidationContext, ValidationResult, Validator},
-    Completer, Config, Editor, Helper, Highlighter, Hinter, Validator,
 };
 use scheme_rs::{
     ast::{DefinitionBody, ParseAstError},
@@ -51,7 +51,7 @@ async fn main() -> ExitCode {
     let mut editor = match Editor::with_history(config, DefaultHistory::new()) {
         Ok(e) => e,
         Err(err) => {
-            eprintln!("Error creating line editor: {}", err);
+            eprintln!("Error creating line editor: {err}");
             return ExitCode::FAILURE;
         }
     };
@@ -76,7 +76,7 @@ async fn main() -> ExitCode {
             Ok(line) => line,
             Err(ReadlineError::Eof) => break,
             Err(err) => {
-                eprintln!("Error while reading input: {}", err);
+                eprintln!("Error while reading input: {err}");
                 return ExitCode::FAILURE;
             }
         };
@@ -85,7 +85,7 @@ async fn main() -> ExitCode {
         match compile_and_run_str(&runtime, &top, &input).await {
             Ok(results) => {
                 for result in results.into_iter() {
-                    println!("${n_results} = {:?}", result);
+                    println!("${n_results} = {result:?}");
                     n_results += 1;
                 }
             }

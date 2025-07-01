@@ -29,7 +29,7 @@ use std::{
     marker::PhantomData,
     mem::ManuallyDrop,
     ops::{Deref, DerefMut},
-    ptr::{drop_in_place, NonNull},
+    ptr::{NonNull, drop_in_place},
     sync::{RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
@@ -298,59 +298,67 @@ impl<T: ?Sized> From<NonNull<GcInner<T>>> for OpaqueGcPtr {
 
 impl OpaqueGcPtr {
     unsafe fn rc(&self) -> usize {
-        (*self.header.as_ref().get()).rc
+        unsafe { (*self.header.as_ref().get()).rc }
     }
 
     unsafe fn set_rc(&self, rc: usize) {
-        (*self.header.as_ref().get()).rc = rc;
+        unsafe {
+            (*self.header.as_ref().get()).rc = rc;
+        }
     }
 
     unsafe fn crc(&self) -> isize {
-        (*self.header.as_ref().get()).crc
+        unsafe { (*self.header.as_ref().get()).crc }
     }
 
     unsafe fn set_crc(&self, crc: isize) {
-        (*self.header.as_ref().get()).crc = crc;
+        unsafe {
+            (*self.header.as_ref().get()).crc = crc;
+        }
     }
 
     unsafe fn color(&self) -> Color {
-        (*self.header.as_ref().get()).color
+        unsafe { (*self.header.as_ref().get()).color }
     }
 
     unsafe fn set_color(&self, color: Color) {
-        (*self.header.as_ref().get()).color = color;
+        unsafe {
+            (*self.header.as_ref().get()).color = color;
+        }
     }
 
     unsafe fn buffered(&self) -> bool {
-        (*self.header.as_ref().get()).buffered
+        unsafe { (*self.header.as_ref().get()).buffered }
     }
 
     unsafe fn set_buffered(&self, buffered: bool) {
-        (*self.header.as_ref().get()).buffered = buffered;
+        unsafe {
+            (*self.header.as_ref().get()).buffered = buffered;
+        }
     }
 
     unsafe fn lock(&self) -> &RwLock<()> {
-        &(*self.header.as_ref().get()).lock
+        unsafe { &(*self.header.as_ref().get()).lock }
     }
 
     unsafe fn visit_children(&self) -> unsafe fn(this: *const (), visitor: unsafe fn(OpaqueGcPtr)) {
-        (*self.header.as_ref().get()).visit_children
+        unsafe { (*self.header.as_ref().get()).visit_children }
     }
 
     unsafe fn finalize(&self) -> unsafe fn(this: *mut ()) {
-        (*self.header.as_ref().get()).finalize
+        unsafe { (*self.header.as_ref().get()).finalize }
     }
 
     unsafe fn layout(&self) -> Layout {
-        (*self.header.as_ref().get()).layout
+        unsafe { (*self.header.as_ref().get()).layout }
     }
 
     unsafe fn data(&self) -> *const () {
-        self.data.as_ref().get() as *const ()
+        unsafe { self.data.as_ref().get() as *const () }
     }
 
     unsafe fn data_mut(&self) -> *mut () {
-        self.data.as_ref().get()
+        unsafe { self.data.as_ref().get() }
     }
 }
 
@@ -449,7 +457,9 @@ pub unsafe trait Trace: 'static {
     ///
     /// **DO NOT CALL THIS FUNCTION!!**
     unsafe fn finalize(&mut self) {
-        drop_in_place(self as *mut Self);
+        unsafe {
+            drop_in_place(self as *mut Self);
+        }
     }
 }
 
@@ -501,7 +511,7 @@ unsafe trait GcOrTrace: 'static {
 
 unsafe impl<T: ?Sized + 'static> GcOrTrace for Gc<T> {
     unsafe fn visit_or_recurse(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        visitor(self.as_opaque())
+        unsafe { visitor(self.as_opaque()) }
     }
 
     unsafe fn finalize_or_skip(&mut self) {}
@@ -509,11 +519,15 @@ unsafe impl<T: ?Sized + 'static> GcOrTrace for Gc<T> {
 
 unsafe impl<T: Trace + ?Sized> GcOrTrace for T {
     unsafe fn visit_or_recurse(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        self.visit_children(visitor);
+        unsafe {
+            self.visit_children(visitor);
+        }
     }
 
     unsafe fn finalize_or_skip(&mut self) {
-        self.finalize();
+        unsafe {
+            self.finalize();
+        }
     }
 }
 
@@ -523,13 +537,17 @@ where
     B: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        self.0.visit_or_recurse(visitor);
-        self.1.visit_or_recurse(visitor);
+        unsafe {
+            self.0.visit_or_recurse(visitor);
+            self.1.visit_or_recurse(visitor);
+        }
     }
 
     unsafe fn finalize(&mut self) {
-        self.0.finalize_or_skip();
-        self.1.finalize_or_skip();
+        unsafe {
+            self.0.finalize_or_skip();
+            self.1.finalize_or_skip();
+        }
     }
 }
 
@@ -538,14 +556,18 @@ where
     T: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        for child in self {
-            child.visit_or_recurse(visitor);
+        unsafe {
+            for child in self {
+                child.visit_or_recurse(visitor);
+            }
         }
     }
 
     unsafe fn finalize(&mut self) {
-        for mut child in std::mem::take(self).into_iter().map(ManuallyDrop::new) {
-            child.finalize_or_skip();
+        unsafe {
+            for mut child in std::mem::take(self).into_iter().map(ManuallyDrop::new) {
+                child.finalize_or_skip();
+            }
         }
     }
 }
@@ -555,14 +577,18 @@ where
     K: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        for k in self {
-            k.visit_or_recurse(visitor);
+        unsafe {
+            for k in self {
+                k.visit_or_recurse(visitor);
+            }
         }
     }
 
     unsafe fn finalize(&mut self) {
-        for mut k in std::mem::take(self).into_iter().map(ManuallyDrop::new) {
-            k.finalize_or_skip();
+        unsafe {
+            for mut k in std::mem::take(self).into_iter().map(ManuallyDrop::new) {
+                k.finalize_or_skip();
+            }
         }
     }
 }
@@ -573,18 +599,22 @@ where
     V: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        for (k, v) in self {
-            k.visit_or_recurse(visitor);
-            v.visit_or_recurse(visitor);
+        unsafe {
+            for (k, v) in self {
+                k.visit_or_recurse(visitor);
+                v.visit_or_recurse(visitor);
+            }
         }
     }
 
     unsafe fn finalize(&mut self) {
-        for (k, v) in std::mem::take(self) {
-            let mut k = ManuallyDrop::new(k);
-            let mut v = ManuallyDrop::new(v);
-            k.finalize_or_skip();
-            v.finalize_or_skip();
+        unsafe {
+            for (k, v) in std::mem::take(self) {
+                let mut k = ManuallyDrop::new(k);
+                let mut v = ManuallyDrop::new(v);
+                k.finalize_or_skip();
+                v.finalize_or_skip();
+            }
         }
     }
 }
@@ -594,14 +624,18 @@ where
     K: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        for k in self {
-            k.visit_or_recurse(visitor);
+        unsafe {
+            for k in self {
+                k.visit_or_recurse(visitor);
+            }
         }
     }
 
     unsafe fn finalize(&mut self) {
-        for mut k in std::mem::take(self).into_iter().map(ManuallyDrop::new) {
-            k.finalize_or_skip();
+        unsafe {
+            for mut k in std::mem::take(self).into_iter().map(ManuallyDrop::new) {
+                k.finalize_or_skip();
+            }
         }
     }
 }
@@ -612,18 +646,22 @@ where
     V: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        for (k, v) in self {
-            k.visit_or_recurse(visitor);
-            v.visit_or_recurse(visitor);
+        unsafe {
+            for (k, v) in self {
+                k.visit_or_recurse(visitor);
+                v.visit_or_recurse(visitor);
+            }
         }
     }
 
     unsafe fn finalize(&mut self) {
-        for (k, v) in std::mem::take(self) {
-            let mut k = ManuallyDrop::new(k);
-            let mut v = ManuallyDrop::new(v);
-            k.finalize_or_skip();
-            v.finalize_or_skip();
+        unsafe {
+            for (k, v) in std::mem::take(self) {
+                let mut k = ManuallyDrop::new(k);
+                let mut v = ManuallyDrop::new(v);
+                k.finalize_or_skip();
+                v.finalize_or_skip();
+            }
         }
     }
 }
@@ -633,14 +671,18 @@ where
     K: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        for k in self {
-            k.visit_or_recurse(visitor);
+        unsafe {
+            for k in self {
+                k.visit_or_recurse(visitor);
+            }
         }
     }
 
     unsafe fn finalize(&mut self) {
-        for mut k in std::mem::take(self).into_iter().map(ManuallyDrop::new) {
-            k.finalize_or_skip();
+        unsafe {
+            for mut k in std::mem::take(self).into_iter().map(ManuallyDrop::new) {
+                k.finalize_or_skip();
+            }
         }
     }
 }
@@ -651,18 +693,22 @@ where
     V: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        for (k, v) in self {
-            k.visit_or_recurse(visitor);
-            v.visit_or_recurse(visitor);
+        unsafe {
+            for (k, v) in self {
+                k.visit_or_recurse(visitor);
+                v.visit_or_recurse(visitor);
+            }
         }
     }
 
     unsafe fn finalize(&mut self) {
-        for (k, v) in std::mem::take(self).into_iter() {
-            let mut k = ManuallyDrop::new(k);
-            let mut v = ManuallyDrop::new(v);
-            k.finalize_or_skip();
-            v.finalize_or_skip();
+        unsafe {
+            for (k, v) in std::mem::take(self).into_iter() {
+                let mut k = ManuallyDrop::new(k);
+                let mut v = ManuallyDrop::new(v);
+                k.finalize_or_skip();
+                v.finalize_or_skip();
+            }
         }
     }
 }
@@ -672,14 +718,18 @@ where
     T: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        if let Some(inner) = self {
-            inner.visit_or_recurse(visitor);
+        unsafe {
+            if let Some(inner) = self {
+                inner.visit_or_recurse(visitor);
+            }
         }
     }
 
     unsafe fn finalize(&mut self) {
-        if let Some(inner) = self {
-            inner.finalize_or_skip();
+        unsafe {
+            if let Some(inner) = self {
+                inner.finalize_or_skip();
+            }
         }
     }
 }
@@ -690,16 +740,20 @@ where
     E: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        match self {
-            Ok(inner) => inner.visit_or_recurse(visitor),
-            Err(inner) => inner.visit_or_recurse(visitor),
+        unsafe {
+            match self {
+                Ok(inner) => inner.visit_or_recurse(visitor),
+                Err(inner) => inner.visit_or_recurse(visitor),
+            }
         }
     }
 
     unsafe fn finalize(&mut self) {
-        match self {
-            Ok(ref mut inner) => inner.finalize_or_skip(),
-            Err(ref mut inner) => inner.finalize_or_skip(),
+        unsafe {
+            match self {
+                Ok(inner) => inner.finalize_or_skip(),
+                Err(inner) => inner.finalize_or_skip(),
+            }
         }
     }
 }
@@ -710,16 +764,20 @@ where
     R: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        match self {
-            Either::Left(inner) => inner.visit_or_recurse(visitor),
-            Either::Right(inner) => inner.visit_or_recurse(visitor),
+        unsafe {
+            match self {
+                Either::Left(inner) => inner.visit_or_recurse(visitor),
+                Either::Right(inner) => inner.visit_or_recurse(visitor),
+            }
         }
     }
 
     unsafe fn finalize(&mut self) {
-        match self {
-            Either::Left(ref mut inner) => inner.finalize_or_skip(),
-            Either::Right(ref mut inner) => inner.finalize_or_skip(),
+        unsafe {
+            match self {
+                Either::Left(inner) => inner.finalize_or_skip(),
+                Either::Right(inner) => inner.finalize_or_skip(),
+            }
         }
     }
 }
@@ -766,11 +824,11 @@ where
     T: ?Sized + GcOrTrace + Deref,
 {
     unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        self.0.visit_or_recurse(visitor)
+        unsafe { self.0.visit_or_recurse(visitor) }
     }
 
     unsafe fn finalize(&mut self) {
-        self.0.finalize_or_skip()
+        unsafe { self.0.finalize_or_skip() }
     }
 }
 
@@ -808,10 +866,12 @@ where
     T: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        // TODO: Think really hard as to if this is correct
-        // This _should_ be fine, while not optimally efficient.
-        let lock = self.blocking_lock();
-        lock.visit_or_recurse(visitor);
+        unsafe {
+            // TODO: Think really hard as to if this is correct
+            // This _should_ be fine, while not optimally efficient.
+            let lock = self.blocking_lock();
+            lock.visit_or_recurse(visitor);
+        }
     }
 }
 
@@ -820,11 +880,13 @@ where
     T: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        // TODO: Think really hard as to if this is correct
-        loop {
-            if let Ok(read_lock) = self.try_read() {
-                read_lock.visit_or_recurse(visitor);
-                return;
+        unsafe {
+            // TODO: Think really hard as to if this is correct
+            loop {
+                if let Ok(read_lock) = self.try_read() {
+                    read_lock.visit_or_recurse(visitor);
+                    return;
+                }
             }
         }
     }
@@ -842,8 +904,10 @@ where
     T: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        // TODO: Think really hard as to if this is correct
-        let lock = self.lock().unwrap();
-        lock.visit_or_recurse(visitor);
+        unsafe {
+            // TODO: Think really hard as to if this is correct
+            let lock = self.lock().unwrap();
+            lock.visit_or_recurse(visitor);
+        }
     }
 }

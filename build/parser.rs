@@ -1,6 +1,6 @@
 use crate::lexer::{Line, NumberGroup};
 use std::{
-    collections::{hash_map, HashMap},
+    collections::{HashMap, hash_map},
     fmt::{Display, Formatter},
     num::ParseIntError,
     ops::Range,
@@ -174,7 +174,7 @@ pub fn to_foldcase(ch: char) -> ToFoldcase {{
             .try_for_each(|(from, (to, name))| {
                 debug_assert!(!to.is_empty());
 
-                write!(f, "       '\\u{{{:x}}}' => ", from)?;
+                write!(f, "       '\\u{{{from:x}}}' => ")?;
                 if to.len() == 1 {
                     write!(
                         f,
@@ -183,11 +183,10 @@ pub fn to_foldcase(ch: char) -> ToFoldcase {{
                     )?;
                 } else {
                     write!(f, "FoldcaseChars::Variadic(&[ ")?;
-                    to.iter()
-                        .try_for_each(|t| write!(f, "'\\u{{{:x}}}', ", t))?;
+                    to.iter().try_for_each(|t| write!(f, "'\\u{{{t:x}}}', "))?;
                     write!(f, "]),")?;
                 }
-                writeln!(f, " // {}", name)?;
+                writeln!(f, " // {name}")?;
 
                 Ok(())
             })?;

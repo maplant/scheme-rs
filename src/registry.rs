@@ -24,10 +24,14 @@ impl LibraryName {
     fn parse(syn: &Syntax) -> Result<Self, ParseAstError> {
         match syn.as_list() {
             Some(
-                [name @ .., Syntax::List {
-                    list: version,
-                    span,
-                }, Syntax::Null { .. }],
+                [
+                    name @ ..,
+                    Syntax::List {
+                        list: version,
+                        span,
+                    },
+                    Syntax::Null { .. },
+                ],
             ) => Ok(Self {
                 name: list_to_name(name)?,
                 version: Version::parse(version, span)?,

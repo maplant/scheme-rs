@@ -2,19 +2,19 @@
 
 use indexmap::IndexMap;
 use inkwell::{
+    AddressSpace, IntPredicate,
     builder::{Builder, BuilderError},
     context::Context,
     execution_engine::ExecutionEngine,
     module::Module,
     values::{BasicValueEnum, FunctionValue, IntValue, PointerValue},
-    AddressSpace, IntPredicate,
 };
 use std::{collections::HashMap, rc::Rc};
 
 use crate::{
     gc::Gc,
     proc::{Closure, ContinuationPtr, FuncPtr},
-    runtime::{Runtime, IGNORE_CALL_SITE, IGNORE_FUNCTION},
+    runtime::{IGNORE_CALL_SITE, IGNORE_FUNCTION, Runtime},
     value::{ReflexiveValue, Value as SchemeValue},
 };
 
@@ -265,12 +265,6 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 self.get_call_transformer_codegen(&env, res)?;
                 self.cps_codegen(*cexpr, allocs, deferred)?;
             }
-            Cps::PrimOp(PrimOp::IsSubType, args, res, cexpr) => {
-                let [val, rt] = args.as_slice() else {
-                    unreachable!()
-                };
-                self.is_subtype_of_codegen(val, rt, res, *cexpr, allocs, deferred)?;
-            }
             Cps::PrimOp(primop, vals, result, cexpr) => {
                 self.simple_primop_codegen(primop, &vals, result, *cexpr, allocs, deferred)?
             }
@@ -399,39 +393,6 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
 
         Ok(())
     }
-
-    fn is_subtype_of_codegen(
-        &mut self,
-        val: &Value,
-        rt: &Value,
-        result: Local,
-        cexpr: Cps,
-        allocs: Option<Rc<Allocs<'ctx>>>,
-        deferred: &mut Vec<ClosureBundle<'ctx>>,
-    ) -> Result<(), BuilderError> {
-        let val = self.value_codegen(val);
-        let rt = self.value_codegen(rt);
-        let is_subtype_of_fn = self.module.get_function("is_subtype_of").unwrap();
-        let is_subtype_of = self.builder.build_call(
-            is_subtype_of_fn,
-            &[
-                val.into(),
-                rt.into()
-            ],
-            "is_subtype_of",
-        )?
-            .try_as_basic_value()
-            .left()
-            .unwrap();
-
-        self.rebinds.rebind(Var::Local(result), is_subtype_of);
-        let new_alloc = Allocs::new(allocs, is_subtype_of);
-
-        self.cps_codegen(cexpr, new_alloc, deferred)?;
-
-        Ok(())
-    }
-    
     fn simple_primop_codegen(
         &mut self,
         primop: PrimOp,
