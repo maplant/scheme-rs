@@ -7,7 +7,7 @@ use crate::{
     lists,
     num::{Number, ReflexiveNumber},
     proc::Closure,
-    records::{Record, RecordType},
+    records::{Record, RecordTypeDescriptor},
     registry::bridge,
     strings::AlignedString,
     syntax::Syntax,
@@ -72,7 +72,7 @@ impl Value {
                 ValueType::Record => {
                     Gc::increment_reference_count(untagged as *mut GcInner<Record>)
                 }
-                ValueType::RecordType => Arc::increment_strong_count(untagged as *const RecordType),
+                ValueType::RecordTypeDescriptor => Arc::increment_strong_count(untagged as *const RecordTypeDescriptor),
                 ValueType::Pair => {
                     Gc::increment_reference_count(untagged as *mut GcInner<lists::Pair>)
                 }
@@ -211,9 +211,9 @@ impl Value {
                 let rec = unsafe { Gc::from_raw(untagged as *mut GcInner<Record>) };
                 UnpackedValue::Record(rec)
             }
-            ValueType::RecordType => {
-                let rt = unsafe { Arc::from_raw(untagged as *const RecordType) };
-                UnpackedValue::RecordType(rt)
+            ValueType::RecordTypeDescriptor => {
+                let rt = unsafe { Arc::from_raw(untagged as *const RecordTypeDescriptor) };
+                UnpackedValue::RecordTypeDescriptor(rt)
             }
             ValueType::Pair => {
                 let pair = unsafe { Gc::from_raw(untagged as *mut GcInner<lists::Pair>) };
@@ -235,6 +235,7 @@ impl Value {
         }
     }
 
+    // Symbol should be its own type.
     pub fn try_into_sym(self) -> Result<Arc<AlignedString>, Condition> {
         match self.unpack() {
             UnpackedValue::Symbol(sym) => Ok(sym),
@@ -328,7 +329,7 @@ pub enum ValueType {
     Syntax = 9,
     Closure = 10,
     Record = 11,
-    RecordType = 12,
+    RecordTypeDescriptor = 12,
     Pair = 13,
     Any = 14,
     Reserved = 15,
@@ -350,7 +351,7 @@ impl From<u64> for ValueType {
             9 => Self::Syntax,
             10 => Self::Closure,
             11 => Self::Record,
-            12 => Self::RecordType,
+            12 => Self::RecordTypeDescriptor,
             13 => Self::Pair,
             14 => Self::Any,
             tag => panic!("Invalid tag: {tag}"),
@@ -378,7 +379,7 @@ pub enum UnpackedValue {
     Closure(Gc<Closure>),
     Record(Gc<Record>),
     // Condition(Gc<Condition>),
-    RecordType(Arc<RecordType>),
+    RecordTypeDescriptor(Arc<RecordTypeDescriptor>),
     Pair(Gc<lists::Pair>),
     Any(Gc<Gc<dyn Any>>),
     // HashTable,
@@ -424,9 +425,9 @@ impl UnpackedValue {
                 let untagged = Gc::into_raw(rec);
                 Value::from_mut_ptr_and_tag(untagged, ValueType::Record)
             }
-            Self::RecordType(rt) => {
+            Self::RecordTypeDescriptor(rt) => {
                 let untagged = Arc::into_raw(rt);
-                Value::from_ptr_and_tag(untagged, ValueType::RecordType)
+                Value::from_ptr_and_tag(untagged, ValueType::RecordTypeDescriptor)
             }
             Self::Pair(pair) => {
                 let untagged = Gc::into_raw(pair);
@@ -452,7 +453,7 @@ impl UnpackedValue {
             Self::ByteVector(_) => "byte vector",
             Self::Syntax(_) => "syntax",
             Self::Closure(_) => "procedure",
-            Self::Record(_) | Self::RecordType(_) | Self::Any(_) => "record",
+            Self::Record(_) | Self::RecordTypeDescriptor(_) | Self::Any(_) => "record",
         }
     }
 }
@@ -596,7 +597,7 @@ impl_try_from_value_for!(Arc<Syntax>, Syntax, "syntax");
 impl_try_from_value_for!(Gc<Closure>, Closure, "procedure");
 impl_try_from_value_for!(Gc<lists::Pair>, Pair, "pair");
 impl_try_from_value_for!(Gc<Record>, Record, "record");
-impl_try_from_value_for!(Arc<RecordType>, RecordType, "rt");
+impl_try_from_value_for!(Arc<RecordTypeDescriptor>, RecordTypeDescriptor, "rt");
 impl_try_from_value_for!(Gc<Gc<dyn Any>>, Any, "record");
 // impl_try_from_value_for!(Gc<OtherData>, OtherData, "record");
 
@@ -674,6 +675,22 @@ impl_try_from_for_any!(Condition, "condition");
 impl_try_from_for_any!(CapturedEnv, "captured-env");
 impl_try_from_for_any!(Transformer, "transformer");
 
+impl TryFrom<UnpackedValue> for (Value, Value) {
+    type Error = Condition;
+
+    fn try_from(_val: UnpackedValue) -> Result<Self, Self::Error> {
+        todo!()
+    }
+}
+
+impl TryFrom<Value> for (Value, Value) {
+    type Error = Condition;
+
+    fn try_from(val: Value) -> Result<Self, Self::Error> {
+        Self::try_from(val.unpack())
+    }
+}
+
 #[derive(Clone, Debug, Trace)]
 pub(crate) struct ReflexiveValue(pub(crate) Value);
 
@@ -707,7 +724,7 @@ impl Hash for ReflexiveValue {
             UnpackedValue::Syntax(s) => Arc::as_ptr(s).hash(state),
             UnpackedValue::Closure(c) => Gc::as_ptr(c).hash(state),
             UnpackedValue::Record(r) => Gc::as_ptr(r).hash(state),
-            UnpackedValue::RecordType(rt) => Arc::as_ptr(rt).hash(state),
+            UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
             UnpackedValue::Any(a) => Gc::as_ptr(a).hash(state),
             // UnpackedValue::Condition(c) => Gc::as_ptr(c).hash(state),
             // UnpackedValue::OtherData(o) => Gc::as_ptr(o).hash(state),
@@ -753,7 +770,7 @@ impl PartialEq for ReflexiveValue {
             (UnpackedValue::Syntax(a), UnpackedValue::Syntax(b)) => Arc::ptr_eq(a, b),
             (UnpackedValue::Closure(a), UnpackedValue::Closure(b)) => Gc::ptr_eq(a, b),
             (UnpackedValue::Record(a), UnpackedValue::Record(b)) => Gc::ptr_eq(a, b),
-            (UnpackedValue::RecordType(a), UnpackedValue::RecordType(b)) => Arc::ptr_eq(a, b),
+            (UnpackedValue::RecordTypeDescriptor(a), UnpackedValue::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
             (UnpackedValue::Any(a), UnpackedValue::Any(b)) => Gc::ptr_eq(a, b),
             _ => false,
         }

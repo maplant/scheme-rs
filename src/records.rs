@@ -6,13 +6,11 @@ use by_address::ByAddress;
 use futures::future::BoxFuture;
 
 use crate::{
-    ast::ParseAstError,
     exception::{Condition, ExceptionHandler},
     gc::{Gc, Trace},
     num::Number,
     proc::{Application, Closure, DynamicWind, FuncPtr},
     registry::{BridgeFn, BridgeFnDebugInfo, bridge},
-    syntax::{Identifier, Span, Syntax},
     value::{UnpackedValue, Value, ValueType},
     vectors,
 };
@@ -20,60 +18,47 @@ use crate::{
 /// Type declaration for a record.
 #[derive(Debug, Trace, Clone)]
 #[repr(align(16))]
-pub struct RecordType {
+pub struct RecordTypeDescriptor {
     name: String, // Make Arc<AlignedString>?
     sealed: bool,
     opaque: bool,
     /// Parent is most recently inserted record type, if one exists.
-    inherits: indexmap::IndexSet<ByAddress<Arc<RecordType>>>,
+    inherits: indexmap::IndexSet<ByAddress<Arc<RecordTypeDescriptor>>>,
     field_index_offset: usize,
     fields: Vec<Field>,
 }
 
 #[derive(Debug, Trace, Clone)]
 pub enum Field {
-    Immutable(Identifier),
-    Mutable(Identifier),
+    Immutable(String),
+    Mutable(String),
 }
 
 impl Field {
-    fn parse(field: &Syntax, span: &Span) -> Result<Self, ParseAstError> {
-        match field.as_list() {
-            Some(
-                [
-                    Syntax::Identifier {
-                        ident: mutability, ..
-                    },
-                    Syntax::Identifier {
-                        ident: field_name, ..
-                    },
-                    Syntax::Null { .. },
-                ],
-            ) => match mutability.name.as_str() {
-                "mutable" => Ok(Field::Mutable(field_name.clone())),
-                "immutable" => Ok(Field::Immutable(field_name.clone())),
-                _ => Err(ParseAstError::BadForm(span.clone())),
-            },
-            _ => Err(ParseAstError::BadForm(span.clone())),
+    fn parse(field: &Value) -> Result<Self, Condition> {
+        let (mutability, field_name) = field.clone().try_into()?;
+        let mutability = mutability.try_into_sym()?;
+        let field_name = field_name.try_into_sym()?;
+        match mutability.as_str() {
+            "mutable" => Ok(Field::Mutable(field_name.0.clone())),
+            "immutable" => Ok(Field::Immutable(field_name.0.clone())),
+            _ => Err(Condition::Error),
         }
     }
 
-    fn parse_fields(fields: &Syntax) -> Result<Vec<Self>, ParseAstError> {
-        let span = fields.span();
-        if let Some([fields @ .., Syntax::Null { .. }]) = fields.as_list() {
-            fields
-                .iter()
-                .map(|field| Self::parse(field, span))
-                .collect()
-        } else {
-            Err(ParseAstError::BadForm(span.clone()))
-        }
+    fn parse_fields(fields: &Value) -> Result<Vec<Self>, Condition> {
+        let fields: Gc<vectors::AlignedVector<Value>> = fields.clone().try_into()?;
+        fields
+            .read()
+            .iter()
+            .map(|field| Self::parse(field))
+            .collect()
     }
 }
 
-/// The record type for the "record type" type.
-pub const RECORD_TYPE_RT: LazyCell<Arc<RecordType>> = LazyCell::new(|| {
-    Arc::new(RecordType {
+/// The record type descriptor for the "record type descriptor" type.
+pub const RECORD_TYPE_DESCRIPTOR_RTD: LazyCell<Arc<RecordTypeDescriptor>> = LazyCell::new(|| {
+    Arc::new(RecordTypeDescriptor {
         name: "rt".to_string(),
         sealed: true,
         opaque: true,
@@ -82,26 +67,6 @@ pub const RECORD_TYPE_RT: LazyCell<Arc<RecordType>> = LazyCell::new(|| {
         fields: vec![],
     })
 });
-
-/*
-impl RecordType {
-    pub fn new(name: &str, parent: Option<&RecordType>, sealed: bool, opaque: bool) -> Self {
-        Self {
-            name: name.to_string(),
-            inherits: indexmap::IndexSet::new(),
-            fields: Vec::new(),
-        }
-    }
-}
-
- */
-
-#[derive(Debug, Trace, Clone)]
-#[repr(align(16))]
-pub struct Record {
-    pub(crate) record_type: Arc<RecordType>,
-    pub(crate) fields: Vec<Value>,
-}
 
 #[bridge(name = "make-record-type-descriptor", lib = "(base)")]
 pub async fn make_record_type_descriptor(
@@ -113,7 +78,7 @@ pub async fn make_record_type_descriptor(
     fields: &Value,
 ) -> Result<Vec<Value>, Condition> {
     let name = name.clone().try_into_sym()?;
-    let parent: Option<Arc<RecordType>> = parent
+    let parent: Option<Arc<RecordTypeDescriptor>> = parent
         .is_true()
         .then(|| parent.clone().try_into())
         .transpose()?;
@@ -129,21 +94,61 @@ pub async fn make_record_type_descriptor(
     });
     let sealed = sealed.is_true();
     let opaque = opaque.is_true();
-    let fields: Gc<vectors::AlignedVector<Value>> = fields.clone().try_into()?;
-    Ok(vec![Value::from(Arc::new(RecordType {
+    let fields = Field::parse_fields(fields)?;
+    Ok(vec![Value::from(Arc::new(RecordTypeDescriptor {
         name: name.to_string(),
         sealed,
         opaque,
         inherits,
         field_index_offset,
-        fields: vec![],
-        // fields: Field::parse_fields(&fields)?,
+        fields,
     }))])
 }
 
 #[bridge(name = "record-type-descriptor?", lib = "(base)")]
 pub async fn record_type_descriptor_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
-    Ok(vec![Value::from(obj.type_of() == ValueType::RecordType)])
+    Ok(vec![Value::from(obj.type_of() == ValueType::RecordTypeDescriptor)])
+}
+
+#[derive(Trace, Clone)]
+pub struct RecordConstructorDescriptor {
+    rtd: Arc<RecordTypeDescriptor>,
+    protocol: Closure,
+}
+
+#[bridge(name = "make-record-constructor-descriptor", lib = "(base)")]
+pub async fn make_record_constructor_descriptor(
+    rtd: &Value,
+    parent_constructor_descriptor: &Value,
+    protocol: &Value,
+) -> Result<Vec<Value>, Condition> {
+    todo!()
+}
+
+#[bridge(name = "record-constructor", lib = "(base)")]
+pub async fn record_constructor(constructor_descriptor: &Value) -> Result<Vec<Value>, Condition> {
+    todo!()
+}
+
+/*
+impl RecordType {
+    pub fn new(name: &str, parent: Option<&RecordType>, sealed: bool, opaque: bool) -> Self {
+        Self {
+            name: name.to_string(),
+            inherits: indexmap::IndexSet::new(),
+            fields: Vec::new(),
+        }
+    }
+}
+*/
+
+#[derive(Debug, Trace, Clone)]
+#[repr(align(16))]
+pub struct Record {
+    // Possibly need the following:
+    // pub(crate) opaque_parent: Option<Gc<dyn Any>>,
+    pub(crate) record_type: Arc<RecordTypeDescriptor>,
+    pub(crate) fields: Vec<Value>,
 }
 
 /*
@@ -160,7 +165,7 @@ pub fn is_subtype_of(val: &Value, rt: &Value) -> Result<bool, Condition> {
         return Ok(false);
     };
     let rec_read = rec.read();
-    let rt: Arc<RecordType> = rt.clone().try_into()?;
+    let rt: Arc<RecordTypeDescriptor> = rt.clone().try_into()?;
     Ok(Arc::ptr_eq(&rec_read.record_type, &rt)
         || rec_read.record_type.inherits.contains(&ByAddress::from(rt)))
 }
@@ -283,7 +288,7 @@ pub fn record_accessor<'a>(
         let [rtd, k] = args else {
             return Err(Condition::wrong_num_of_args(2, args.len()).into());
         };
-        let rtd: Arc<RecordType> = rtd.clone().try_into()?;
+        let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
         let k: Arc<Number> = k.clone().try_into()?;
         let k: usize = k.as_ref().try_into().map_err(Condition::from)?;
         let k = k + rtd.field_index_offset;
@@ -370,7 +375,7 @@ pub fn record_mutator<'a>(
         let [rtd, k] = args else {
             return Err(Condition::wrong_num_of_args(2, args.len()).into());
         };
-        let rtd: Arc<RecordType> = rtd.clone().try_into()?;
+        let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
         let k: Arc<Number> = k.clone().try_into()?;
         let k: usize = k.as_ref().try_into().map_err(Condition::from)?;
         let k = k + rtd.field_index_offset;
