@@ -1,6 +1,6 @@
 //! Rudimentary structure support.
 
-use std::{cell::LazyCell, sync::Arc};
+use std::{any::Any, cell::LazyCell, sync::Arc};
 
 use by_address::ByAddress;
 use futures::future::BoxFuture;
@@ -107,7 +107,9 @@ pub async fn make_record_type_descriptor(
 
 #[bridge(name = "record-type-descriptor?", lib = "(base)")]
 pub async fn record_type_descriptor_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
-    Ok(vec![Value::from(obj.type_of() == ValueType::RecordTypeDescriptor)])
+    Ok(vec![Value::from(
+        obj.type_of() == ValueType::RecordTypeDescriptor,
+    )])
 }
 
 #[derive(Trace, Clone)]
@@ -127,6 +129,24 @@ pub async fn make_record_constructor_descriptor(
 
 #[bridge(name = "record-constructor", lib = "(base)")]
 pub async fn record_constructor(constructor_descriptor: &Value) -> Result<Vec<Value>, Condition> {
+    let any: Gc<Gc<dyn Any>> = constructor_descriptor.clone().try_into()?;
+    let rcd: Gc<RecordConstructorDescriptor> = any
+        .read()
+        .clone()
+        .downcast()
+        .map_err(|_| Condition::Error)?;
+
+    todo!()
+}
+
+pub fn default_constructor<'a>(
+    args: &'a [Value],
+    _rest_args: &'a [Value],
+    cont: &'a Value,
+    _env: &'a [Gc<Value>],
+    exception_handler: &'a Option<Gc<ExceptionHandler>>,
+    dynamic_wind: &'a DynamicWind,
+) -> BoxFuture<'a, Result<Application, Value>> {
     todo!()
 }
 
