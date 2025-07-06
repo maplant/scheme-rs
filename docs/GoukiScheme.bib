@@ -1,3 +1,17 @@
+@Online{gouki,
+author="Matthew Plant",
+title="Embedded Scheme for the Async Rust Ecosystem",
+year="2023",
+url="https://github.com/maplant/scheme-rs"
+}
+
+@Online{steel,
+author="Matthew Paras",
+title="An embeddable and extensible scheme dialect built in Rust",
+year="2020",
+url="https://github.com/mattwparas/steel"
+}
+
 @InProceedings{cc,
 author="Bacon, David F.
 and Rajan, V. T.",
@@ -47,4 +61,65 @@ pages="3--24",
 year="1991",
 publisher="The MIT Press",
 isbn="978-0262121514"
+}
+
+@Online{cancellation,
+author="Yoshua Wuyts",
+title="Async Cancellation I",
+url="https://blog.yoshuawuyts.com/async-cancellation-1",
+year="2021",
+urldate="2021-11-10"
+}
+
+@book{cwc,
+author = {Appel, Andrew W.},
+title = {Compiling with Continuations},
+year = {2007},
+isbn = {052103311X},
+publisher = {Cambridge University Press},
+address = {USA},
+abstract = {This book shows how continuation-passing style is used as an intermediate representation to perform optimizations and program transformations. Continuations can be used to compile most programming languages. The method is illustrated in a compiler for the programming language Standard ML. Prior knowledge of ML, however, is not necessary, as the author carefully explains each concept as it arises. This is the first book to show how concepts from the theory of programming languages can be applied to the production of practical optimizing compilers for modern languages like ML. All the details of compiling are covered, including the interface to a runtime system and garbage collector.}
+}
+
+@Online{derive,
+url="https://doc.rust-lang.org/reference/procedural-macros.html#derive-macros"
+}
+
+@Online{orphan,
+url="https://doc.rust-lang.org/reference/items/implementations.html#r-items.impl.trait.orphan-rule.intro"
+}
+
+@Online{arc,
+url="https://doc.rust-lang.org/std/sync/struct.Arc.html"
+}
+
+@Online{serde,
+url="https://serde.rs/data-model.html"
+}
+
+@Online{inventory,
+url="https://github.com/dtolnay/inventory"
+}
+
+@inproceedings{llvm,
+author = {Lattner, Chris and Adve, Vikram},
+title = {LLVM: A Compilation Framework for Lifelong Program Analysis \& Transformation},
+year = {2004},
+isbn = {0769521029},
+publisher = {IEEE Computer Society},
+address = {USA},
+abstract = {This paper describes LLVM (Low Level Virtual Machine),a compiler framework designed to support transparent, lifelongprogram analysis and transformation for arbitrary programs,by providing high-level information to compilertransformations at compile-time, link-time, run-time, and inidle time between runs.LLVM defines a common, low-levelcode representation in Static Single Assignment (SSA) form,with several novel features: a simple, language-independenttype-system that exposes the primitives commonly used toimplement high-level language features; an instruction fortyped address arithmetic; and a simple mechanism that canbe used to implement the exception handling features ofhigh-level languages (and setjmp/longjmp in C) uniformlyand efficiently.The LLVM compiler framework and coderepresentation together provide a combination of key capabilitiesthat are important for practical, lifelong analysis andtransformation of programs.To our knowledge, no existingcompilation approach provides all these capabilities.We describethe design of the LLVM representation and compilerframework, and evaluate the design in three ways: (a) thesize and effectiveness of the representation, including thetype information it provides; (b) compiler performance forseveral interprocedural problems; and (c) illustrative examplesof the benefits LLVM provides for several challengingcompiler problems.},
+booktitle = {Proceedings of the International Symposium on Code Generation and Optimization: Feedback-Directed and Runtime Optimization},
+pages = {75},
+location = {Palo Alto, California},
+series = {CGO '04}
+}
+
+@Online{cranelift,
+url="https://cranelift.dev/"
+}
+
+@Online{context,
+note="To quote the documentation: ``LLVMContext itself provides no locking guarantees, so you should be careful to have one context per thread.''", 
+url="https://llvm.org/doxygen/classllvm_1_1LLVMContext.html#details"
 }
