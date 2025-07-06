@@ -28,6 +28,12 @@ pub struct RecordTypeDescriptor {
     fields: Vec<Field>,
 }
 
+impl RecordTypeDescriptor {
+    pub fn is_base_record_type(&self) -> bool {
+        self.inherits.is_empty()
+    }
+}
+
 #[derive(Debug, Trace, Clone)]
 pub enum Field {
     Immutable(String),
@@ -124,7 +130,46 @@ pub async fn make_record_constructor_descriptor(
     parent_constructor_descriptor: &Value,
     protocol: &Value,
 ) -> Result<Vec<Value>, Condition> {
+    let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
+    if rtd.is_base_record_type() && protocol.is_true() {
+        if parent_constructor_descriptor.is_true() {
+            return Err(Condition::error(
+                "parent-constructor-descriptor is not false with protocol and base record type"
+                    .to_string(),
+            ));
+        }
+        let protocol: Gc<Closure> = protocol.clone().try_into()?;
+        /*
+        let default_constructor = Gc::new(Closure::new(
+            protocol.read().runtime.clone(),
+            vec![Gc::new(Value::from(rtd.clone()))],
+            vec![],
+            FuncPtr::Bridge(default_constructor),
+            0,
+            false,
+            None,
+        ));
+        */
+        let constructor_type_descriptor = Gc::new(RecordConstructorDescriptor {
+            rtd,
+            protocol: protocol.read().clone(),
+        });
+        return Ok(vec![Value::from(Gc::new(Gc::into_any(
+            constructor_type_descriptor,
+        )))]);
+    }
     todo!()
+}
+
+pub fn chain_protocols<'a>(
+    args: &'a [Value],
+    _rest_args: &'a [Value],
+    cont: &'a Value,
+    env: &'a [Gc<Value>],
+    exception_handler: &'a Option<Gc<ExceptionHandler>>,
+    dynamic_wind: &'a DynamicWind,
+) -> BoxFuture<'a, Result<Application, Value>> {
+    Box::pin(async { todo!() })
 }
 
 #[bridge(name = "record-constructor", lib = "(base)")]
@@ -143,11 +188,27 @@ pub fn default_constructor<'a>(
     args: &'a [Value],
     _rest_args: &'a [Value],
     cont: &'a Value,
-    _env: &'a [Gc<Value>],
+    env: &'a [Gc<Value>],
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {
-    todo!()
+    Box::pin(async {
+        let cont: Gc<Closure> = cont.clone().try_into()?;
+        let rtd: Arc<RecordTypeDescriptor> = env[0].read().clone().try_into()?;
+        let num_args = rtd.field_index_offset + rtd.fields.len();
+        if args.len() != num_args {
+            return Err(Condition::wrong_num_of_args(num_args, args.len()).into());
+        }
+        let fields = args.iter().take(num_args).cloned().collect();
+        let record = Value::from(Gc::new(Record { rtd, fields }));
+        Ok(Application::new(
+            cont,
+            vec![record],
+            exception_handler.clone(),
+            dynamic_wind.clone(),
+            None,
+        ))
+    })
 }
 
 /*
@@ -167,7 +228,7 @@ impl RecordType {
 pub struct Record {
     // Possibly need the following:
     // pub(crate) opaque_parent: Option<Gc<dyn Any>>,
-    pub(crate) record_type: Arc<RecordTypeDescriptor>,
+    pub(crate) rtd: Arc<RecordTypeDescriptor>,
     pub(crate) fields: Vec<Value>,
 }
 
@@ -186,8 +247,7 @@ pub fn is_subtype_of(val: &Value, rt: &Value) -> Result<bool, Condition> {
     };
     let rec_read = rec.read();
     let rt: Arc<RecordTypeDescriptor> = rt.clone().try_into()?;
-    Ok(Arc::ptr_eq(&rec_read.record_type, &rt)
-        || rec_read.record_type.inherits.contains(&ByAddress::from(rt)))
+    Ok(Arc::ptr_eq(&rec_read.rtd, &rt) || rec_read.rtd.inherits.contains(&ByAddress::from(rt)))
 }
 
 fn record_predicate_fn<'a>(
