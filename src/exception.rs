@@ -3,6 +3,7 @@
 use futures::future::BoxFuture;
 
 use crate::{
+    ast::ParseAstError,
     gc::{Gc, GcInner, Trace},
     proc::{Application, Closure, DynamicWind, FuncPtr},
     registry::{BridgeFn, BridgeFnDebugInfo},
@@ -126,6 +127,13 @@ impl Condition {
         Self::error(format!(
             "Expected {expected:?} arguments, provided {provided}"
         ))
+    }
+}
+
+impl From<ParseAstError> for Condition {
+    fn from(_value: ParseAstError) -> Self {
+        // TODO: We can do better than this
+        Condition::syntax_error()
     }
 }
 
