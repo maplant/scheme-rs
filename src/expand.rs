@@ -1,10 +1,11 @@
 use crate::{
     ast::{Expression, Literal},
     cps::Compile,
-    env::CapturedEnv,
+    env::{CapturedEnv, Environment, Local},
     exception::{Condition, ExceptionHandler},
     gc::{Gc, Trace},
     proc::{Application, Closure, DynamicWind},
+    runtime::Runtime,
     syntax::{Identifier, Span, Syntax},
     value::Value,
 };
@@ -21,39 +22,74 @@ pub struct Transformer {
 }
 
 impl Transformer {
-    pub fn expand(&self, expr: &Syntax) -> Option<Syntax> {
+    pub async fn eval(
+        &self,
+        expr: &Syntax,
+        runtime: &Gc<Runtime>,
+        env: &Environment,
+        env_map: &IndexMap<Local, Gc<Value>>,
+    ) -> Result<Option<Vec<Value>>, Condition> {
         for rule in &self.rules {
-            if let expansion @ Some(_) = rule.expand(expr) {
-                return expansion;
+            if let value @ Some(_) = rule.eval(expr, runtime, env, env_map).await? {
+                return Ok(value);
             }
         }
-        None
+        Ok(None)
     }
 }
 
 #[derive(Clone, Debug, Trace)]
 pub struct SyntaxRule {
     pub pattern: Pattern,
+    pub fender: Option<Template>,
     pub template: Template,
 }
 
 impl SyntaxRule {
-    pub fn compile(keywords: &HashSet<String>, pattern: &Syntax, template: &Syntax) -> Self {
+    pub fn compile(
+        keywords: &HashSet<String>,
+        pattern: &Syntax,
+        fender: Option<&Syntax>,
+        template: &Syntax,
+    ) -> Self {
         let mut variables = HashSet::new();
         let pattern = Pattern::compile(pattern, keywords, &mut variables);
+        let fender = fender.map(|fender| Template::compile(fender, &variables));
         let template = Template::compile(template, &variables);
-        Self { pattern, template }
+        Self {
+            pattern,
+            fender,
+            template,
+        }
     }
 
-    fn expand(&self, expr: &Syntax) -> Option<Syntax> {
+    async fn eval(
+        &self,
+        expr: &Syntax,
+        runtime: &Gc<Runtime>,
+        env: &Environment,
+        env_map: &IndexMap<Local, Gc<Value>>,
+    ) -> Result<Option<Vec<Value>>, Condition> {
         let mut top_expansion_level = ExpansionLevel::default();
         let curr_span = expr.span().clone();
-        self.pattern
-            .matches(expr, &mut top_expansion_level)
-            .then(|| {
-                let binds = Binds::new_top(&top_expansion_level);
-                self.template.execute(&binds, curr_span).unwrap()
-            })
+        if self.pattern.matches(expr, &mut top_expansion_level) {
+            let binds = Binds::new_top(&top_expansion_level);
+            let passes_fender = match &self.fender {
+                Some(fender) => fender
+                    .eval(runtime, env, env_map, &binds, curr_span.clone())
+                    .await?[0]
+                    .is_true(),
+                None => true,
+            };
+            if passes_fender {
+                return self
+                    .template
+                    .eval(runtime, env, env_map, &binds, curr_span.clone())
+                    .await
+                    .map(Some);
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -333,15 +369,15 @@ impl Template {
         output
     }
 
-    fn execute(&self, binds: &Binds<'_>, curr_span: Span) -> Option<Syntax> {
+    fn expand(&self, binds: &Binds<'_>, curr_span: Span) -> Option<Syntax> {
         let syn = match self {
             Self::Null => Syntax::new_null(curr_span),
             Self::List(list) => {
-                let executed = execute_list(list, binds, curr_span.clone())?;
+                let executed = expand_list(list, binds, curr_span.clone())?;
                 Syntax::new_list(executed, curr_span).normalize()
             }
             Self::Vector(vec) => {
-                Syntax::new_vector(execute_vec(vec, binds, curr_span.clone())?, curr_span)
+                Syntax::new_vector(expand_vec(vec, binds, curr_span.clone())?, curr_span)
             }
             Self::Identifier(ident) => Syntax::Identifier {
                 ident: ident.clone(),
@@ -354,16 +390,40 @@ impl Template {
         };
         Some(syn)
     }
+
+    async fn eval(
+        &self,
+        runtime: &Gc<Runtime>,
+        env: &Environment,
+        env_map: &IndexMap<Local, Gc<Value>>,
+        binds: &Binds<'_>,
+        curr_span: Span,
+    ) -> Result<Vec<Value>, Condition> {
+        // Expand the template:
+        let expanded = self.expand(binds, curr_span).unwrap();
+
+        // Parse and compile the expanded input in the captured environment:
+        let parsed = Expression::parse(runtime, expanded, env).await?;
+        let cps_expr = parsed.compile_top_level();
+        let compiled = runtime
+            .compile_expr_with_env(cps_expr, env_map.clone())
+            .await
+            .unwrap();
+
+        // Evaluate the expression:
+        // TODO: Fix this map_err
+        compiled.call(&[]).await.map_err(|_| Condition::Error)
+    }
 }
 
-fn execute_list(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<Vec<Syntax>> {
+fn expand_list(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<Vec<Syntax>> {
     let mut output = Vec::new();
     for item in items {
         match item {
             Template::Ellipsis(template) => {
                 for expansion in &binds.curr_expansion_level.expansions {
                     let new_level = binds.new_level(expansion);
-                    let Some(result) = template.execute(&new_level, curr_span.clone()) else {
+                    let Some(result) = template.expand(&new_level, curr_span.clone()) else {
                         break;
                     };
                     output.push(result);
@@ -376,26 +436,26 @@ fn execute_list(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Optio
                     output.push(Syntax::new_null(curr_span.clone()));
                 }
             }
-            _ => output.push(item.execute(binds, curr_span.clone())?),
+            _ => output.push(item.expand(binds, curr_span.clone())?),
         }
     }
     Some(output)
 }
 
-fn execute_vec(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<Vec<Syntax>> {
+fn expand_vec(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<Vec<Syntax>> {
     let mut output = Vec::new();
     for item in items {
         match item {
             Template::Ellipsis(template) => {
                 for expansion in &binds.curr_expansion_level.expansions {
                     let new_level = binds.new_level(expansion);
-                    let Some(result) = template.execute(&new_level, curr_span.clone()) else {
+                    let Some(result) = template.expand(&new_level, curr_span.clone()) else {
                         break;
                     };
                     output.push(result);
                 }
             }
-            item => output.push(item.execute(binds, curr_span.clone())?),
+            item => output.push(item.expand(binds, curr_span.clone())?),
         }
     }
     Some(output)
@@ -470,14 +530,7 @@ pub fn call_transformer<'a>(
         };
 
         let transformer: Gc<Transformer> = transformer.clone().try_into()?;
-
-        // Expand the input:
-
-        let syn = Syntax::syntax_from_datum(&BTreeSet::default(), arg.clone());
-        let expanded = transformer
-            .read()
-            .expand(&syn)
-            .ok_or_else(Condition::syntax_error)?;
+        let transformer = { transformer.read().clone() };
 
         // Collect the environment:
 
@@ -486,17 +539,14 @@ pub fn call_transformer<'a>(
             collected_env.insert(local, env[i].clone());
         }
 
-        // Parse and compile the expanded input in the captured environment:
-        // TODO: Get rid of these unwraps
-        let parsed = Expression::parse(&runtime, expanded, &captured_env.env)
-            .await
-            .unwrap();
-        let cps_expr = parsed.compile_top_level();
-        let compiled = runtime
-            .compile_expr_with_env(cps_expr, collected_env)
-            .await
-            .unwrap();
-        let transformer_result = compiled.call(&[]).await?;
+        // Expand the input:
+
+        let syn = Syntax::syntax_from_datum(&BTreeSet::default(), arg.clone());
+        let transformer_result = transformer
+            .eval(&syn, &runtime, &captured_env.env, &collected_env)
+            .await?
+            .ok_or_else(Condition::syntax_error)?;
+
         let app = Application::new(
             cont,
             transformer_result,

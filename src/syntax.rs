@@ -551,3 +551,59 @@ pub async fn datum_to_syntax(template_id: &Value, datum: &Value) -> Result<Vec<V
         datum.clone(),
     ))])
 }
+
+#[bridge(name = "identifier?", lib = "(base)")]
+pub async fn identifier_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
+    let Ok(syn) = Arc::<Syntax>::try_from(obj.clone()) else {
+        return Ok(vec![Value::from(false)]);
+    };
+    Ok(vec![Value::from(syn.is_identifier())])
+}
+
+#[bridge(name = "bound-identifier=?", lib = "(base)")]
+pub async fn bound_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, Condition> {
+    let id1: Arc<Syntax> = id1.clone().try_into()?;
+    let id2: Arc<Syntax> = id2.clone().try_into()?;
+    let Syntax::Identifier {
+        ident: id1,
+        bound: bound_id1,
+        ..
+    } = id1.as_ref()
+    else {
+        return Err(Condition::invalid_type("identifier", "syntax"));
+    };
+    let Syntax::Identifier {
+        ident: id2,
+        bound: bound_id2,
+        ..
+    } = id2.as_ref()
+    else {
+        return Err(Condition::invalid_type("identifier", "syntax"));
+    };
+    Ok(vec![Value::from(*bound_id1 && *bound_id2 && id1 == id2)])
+}
+
+#[bridge(name = "free-identifier=?", lib = "(base)")]
+pub async fn free_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, Condition> {
+    let id1: Arc<Syntax> = id1.clone().try_into()?;
+    let id2: Arc<Syntax> = id2.clone().try_into()?;
+    let Syntax::Identifier {
+        ident: id1,
+        bound: bound_id1,
+        ..
+    } = id1.as_ref()
+    else {
+        return Err(Condition::invalid_type("identifier", "syntax"));
+    };
+    let Syntax::Identifier {
+        ident: id2,
+        bound: bound_id2,
+        ..
+    } = id2.as_ref()
+    else {
+        return Err(Condition::invalid_type("identifier", "syntax"));
+    };
+    Ok(vec![Value::from(
+        !bound_id1 && !bound_id2 && id1.name == id2.name,
+    )])
+}
