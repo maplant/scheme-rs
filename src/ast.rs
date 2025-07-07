@@ -1408,7 +1408,16 @@ impl SyntaxCase {
                 [] => break,
                 [Syntax::List { list, .. }, tail @ ..] => match &list[..] {
                     [pattern, template, Syntax::Null { .. }] => {
-                        syntax_rules.push(SyntaxRule::compile(&keywords, pattern, template));
+                        syntax_rules.push(SyntaxRule::compile(&keywords, pattern, None, template));
+                        rules = tail;
+                    }
+                    [pattern, fender, template, Syntax::Null { .. }] => {
+                        syntax_rules.push(SyntaxRule::compile(
+                            &keywords,
+                            pattern,
+                            Some(fender),
+                            template,
+                        ));
                         rules = tail;
                     }
                     _ => return Err(ParseAstError::BadForm(span.clone())),
