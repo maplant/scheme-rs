@@ -502,8 +502,14 @@ impl fmt::Display for UnpackedValue {
             // Self::Condition(cond) => write!(f, "<{cond:?}>"),
             Self::Record(record) => write!(f, "<{record:?}>"),
             Self::Syntax(syntax) => write!(f, "{syntax:?}"),
-            _ => write!(f, "<record>"),
-            // TODO: Add custom display for Condition
+            Self::RecordTypeDescriptor(rtd) => write!(f, "<{rtd:?}>"),
+            Self::Any(any) => {
+                let any = any.read().clone();
+                let Ok(cond) = any.downcast::<Condition>() else {
+                    return write!(f, "<record>");
+                };
+                write!(f, "<{cond:?}>")
+            }
         }
     }
 }
@@ -531,9 +537,15 @@ impl fmt::Debug for UnpackedValue {
             Self::ByteVector(v) => vectors::display_vec("#u8(", v, f),
             Self::Syntax(syntax) => write!(f, "{syntax:?}"),
             Self::Closure(proc) => write!(f, "#<procedure {proc:?}>"),
-            Self::Record(record) => write!(f, "<{record:?}>"),
-            _ => write!(f, "<record>"),
-            // TODO: Add custom display for Condition
+            Self::Record(record) => write!(f, "<{record:#?}>"),
+            Self::RecordTypeDescriptor(rtd) => write!(f, "<{rtd:?}>"),
+            Self::Any(any) => {
+                let any = any.read().clone();
+                let Ok(cond) = any.downcast::<Condition>() else {
+                    return write!(f, "<record>");
+                };
+                write!(f, "<{cond:?}>")
+            }
         }
     }
 }
@@ -599,7 +611,6 @@ impl_try_from_value_for!(Gc<lists::Pair>, Pair, "pair");
 impl_try_from_value_for!(Gc<Record>, Record, "record");
 impl_try_from_value_for!(Arc<RecordTypeDescriptor>, RecordTypeDescriptor, "rt");
 impl_try_from_value_for!(Gc<Gc<dyn Any>>, Any, "record");
-// impl_try_from_value_for!(Gc<OtherData>, OtherData, "record");
 
 macro_rules! impl_from_wrapped_for {
     ($ty:ty, $variant:ident, $wrapper:expr_2021) => {
@@ -678,8 +689,14 @@ impl_try_from_for_any!(Transformer, "transformer");
 impl TryFrom<UnpackedValue> for (Value, Value) {
     type Error = Condition;
 
-    fn try_from(_val: UnpackedValue) -> Result<Self, Self::Error> {
-        todo!()
+    fn try_from(val: UnpackedValue) -> Result<Self, Self::Error> {
+        match val {
+            UnpackedValue::Pair(pair) => {
+                let pair = pair.read();
+                Ok((pair.0.clone(), pair.1.clone()))
+            },
+            e => Err(Condition::invalid_type("pair", e.type_name())),
+        }
     }
 }
 
