@@ -21,10 +21,10 @@ That is obviously a long way away.
 - Exceptions and error handling (`raise`, `raise-continuable`, `with-exception-handler`)
 - `dynamic-wind`
 - Defining async bridge functions in Rust
+- Records and conditions
 
 ## Features currently unsupported by scheme-rs: 
 
-- Records and conditions 
 - Ports and IO operations
 - Most API functions are not implemented
 - A large portion of lexical structures are missing; there's no way to specify recursive data structures
