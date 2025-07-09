@@ -1,6 +1,7 @@
 \documentclass[sigplan,authordraft]{acmart}
 \usepackage{minted}
 \usepackage{algorithm2e}
+\usepackage{natbib}
 
 \begin{document}
 
@@ -12,8 +13,9 @@
 \begin{abstract}
 
   GoukiScheme is the first-of-its-kind JIT compiler for the R6RS dialect of
-  Scheme that supports call-with-current-continuation while being embeddable
-  within a compiled language that supports async: Rust.
+  Scheme that supports \
+  call-with-current-continuation while being embeddable
+  within a compiled language with first class support for async/await.
 
 \end{abstract}
 
@@ -24,19 +26,21 @@
 Over the last decade Rust has become an increasingly popular choice for systems
 programming. Since the introduction of async runtimes to the Rust language,
 async Rust programs have also become increasingly popular for writing highly
-IO bound applications such as web servers. While Rust is extremely performant
-for such applications, async Rust applications tend to be difficult to develop
-and debug with. Part of the problem is long compilation times; Rust applications
-must be stopped, rebuilt, and restarted, extending development time and reducing
-the ability for developers to iterate.
+IO bound applications such as web servers or embedded programming. While Rust
+is extremely performant for such applications\cite{embedded}, async Rust
+applications tend to be difficult to develop and debug with\footnote{\citet{debugger} claims: the debugging story is not great. In particular, answering the question “why isn’t my program currently doing anything” is very hard.}
+. Part of the problem
+is long compilation times\cite{slow}; Rust applications must be stopped, rebuilt, and
+restarted, extending development time and reducing the ability for developers to
+iterate.
 
 Glue code written in a dynamic language has long been a solution for enabling
 rapid prototyping and interoperability in a language with long build times. Under
-this model, the performance critical code that does not often need to be rebuilt
-is written in the slower compiled language, while a dynamic perhaps interpreted
-language is embedded into the built to allow for gluing components together
-without the need for slow rebuilds. Changes to the glue code can be seen just be
-re-loading the applications, or perhaps a hot reloading mechanism can bring them
+this model, the performance critical code that does not  need to be rebuilt is
+written in the slower compiled language, while a dynamic perhaps interpreted
+language is embedded into the build to allow for gluing components together
+without the need for slow rebuilds. Changes to the glue code can be seen just by
+re-loading the application, or perhaps a hot reloading mechanism can bring them
 into the application simply by saving to a file. In either case, iteration
 speeds are improved dramatically.
 
@@ -45,16 +49,17 @@ application can provide a Read-Eval-Print-Loop, or REPL. Interactive prompts can
 expand the debugging capabilities of a application by allowing for inspection of
 the application while it is live. The application can be debugged, inspected, and
 orchestrated as a plastic system rather than a rigid daemon that can only be
-started, stopped or interacted with in small fixed languages.
+started, stopped or interacted with in small fixed commands.
 
 Scheme has shown success as a embedded dynamic language, but its use has been
 limited to synchronous (but perhaps multithreaded) applications. Scheme
 implementations exist for embedding within Rust, but they are limited to running
-sync Rust code and cannot be async themselves. Since async is a Rust language
-feature that touches all parts of the code base, a new implementation of Scheme
+sync Rust code and cannot be async themselves or they require the overhead of an
+interpreter or bytecode virtual machine. Since async is a Rust language feature
+that touches all parts of the code base, a new implementation of Scheme
 is required that is built with async Rust in mind to take full advantage of the
 async runtime and more importantly integrate frictionlessly into the async
-application.
+application while also maximizing performance with JIT compilation.
 
 GoukiScheme\cite{gouki} is a Scheme implementation designed to integrate
 flawlessly with async Rust; GoukiScheme code can execute asynchronously embedded
@@ -67,7 +72,7 @@ to LLVM SSA. GoukiScheme does this while providing a completely Safe API.
 
 This integration allows for Scheme programs to be written that take advantage
 of the Rust async ecosystem, such as this example of an echo server adapted
-from tokio:
+from Tokio\cite{tokio}:
 
 \begin{minted}[frame=lines]{scheme}
 (define (echo socket)
@@ -86,7 +91,8 @@ from tokio:
 In this example, the functions \texttt{read-all}, \texttt{write-all},
 \texttt{accept}, and \texttt{bind-tcp} are all Rust functions accessible via
 Scheme that call the appropriate tokio functions. \texttt{await} is also
-a builtin that checks that its argument is a Future and awaits it.
+a builtin that checks that its argument is a \texttt{Future}\cite{future} and
+awaits it.
 
 \section{Alternatives}
 
@@ -151,15 +157,16 @@ creating a new copy of the pointer to that object is done via the \texttt{Clone}
 method.
 
 Additionally, the \texttt{Gc} type provides a \texttt{write} and \texttt{read}
-method in order to provide thread-safe mutations and reads to the allocated
+methods in order to provide thread-safe mutations and accesses to the allocated
 data. Since GoukiScheme can arbitrarily spawn threads that reference shared or
 global variables, it is important for all writes and reads to variables to be safe
-and atomic. This is acheived by embedded \texttt{RwLock} in the Gc type.
+and atomic. This is achieved by embedded reader-writer lock in the Gc type.
 
 After the \texttt{init\_gc} function is called once, GoukiScheme spawns a task
 dedicated to collecting garbage. This task is shut down automatically when the
 main function returns. This provides a smooth and intuitive interface to the
-memory manager that is also performant.
+memory manager that is also performant. Subsequent calls to \texttt{init\_gc}
+are a no-op
 
 \begin{minted}[frame=lines]{rust}
 #[tokio::main]
@@ -173,9 +180,6 @@ fn main() {
   assert_eq!(b.read(), "world");
 }
 \end{minted}
-
-No signal needs to be sent to shutdown the collector thread. This interface is
-only possible with async Rust.
 
 Whenever a \texttt{Gc} is cloned or dropped, the change in reference count is
 sent to the collector task over an unbounded channel called the mutation buffer.
@@ -291,7 +295,7 @@ Since these algorithms can be clearly implemented from the syntactic form of the
 data type (or rather it nearly can; we can assume the type of a field is equal to
 a \texttt{Gc} if it is spelled \texttt{Gc} - while this is not true in some
 pathological cases, such as when a local \texttt{Gc} type is defined, it is a
-good enough heuristic for nearly all cases), they are a prime candidate to be
+good enough heuristic for nearly all cases), they are a prime candidates to be
 implemented with a procedural macro, or more specifically a derive
 macro\cite{derive}:
 
@@ -319,8 +323,8 @@ references.
 Because we are running the garbage collector concurrently and are sending
 mutations to the collector over an unbounded channel, the allocating tasks
 receive no back pressure from the collector task. As a result should the pace
-of new allocations out pace the collectors ability to free garbage, the process
-would exhibit what appears to be a memory leak. While rare, it can satill occur
+of new allocations outpace the collectors ability to free garbage, the process
+would exhibit what appears to be a memory leak. While rare, it can still occur
 and thus we allow for a way to convert the unbounded channel into backpressure:
 
 \begin{minted}[frame=lines]{rust}
@@ -338,12 +342,12 @@ mutations.
 
 \section{Values}
 
-The \texttt{Value} type represents a Scheme Value. It has the dual responsibility
-of story any possible Scheme value while also allowing for the storage of any
-Rust values. Additionally, if a Scheme value has a reasonable native equivalent
+The \texttt{Value} type represents a Scheme value. It has the dual responsibility
+of store any possible Scheme value while also allowing for the storage of any
+Rust value. Additionally, if a Scheme value has a reasonable native equivalent
 in Rust (which almost all of them do), conversion should be convenient and
-efficient. The Value type should also be convenient to pass to and use in our
-JIT compiled functions.
+efficient. The \texttt{Value} type should also be convenient to pass to and use in our
+JIT compiled functions:
 
 \begin{minted}[frame=lines]{rust}
 #[repr(transparent)]
@@ -380,9 +384,9 @@ variable that has not been defined, is a Pair with a null pointer, or a value
 of $12$.
 
 This large number of tags allows us to map all of the primitive values in the
-serde data model\cite{serde} into a single Value without an extra level of
+serde data model\cite{serde} into a single \texttt{Value} without an extra level of
 indirection. As a result, any Rust type that implements Serialize can
-automatically be converted into a Value.
+automatically be converted into a \texttt{Value}.
 
 We also utilize Rust's dynamic dispatch to allow for the storing of any type that
 implements the \texttt{SchemeCompatible} and \texttt{Trace} traits. Using this
@@ -419,7 +423,7 @@ struct Closure {
 \end{minted}
 
 The env field points to an array of variables that can be accessed from the
-function. It includes all non-local variables that are captured as part of the
+function. It includes all non-local variables that are captured as part of
 reifying a function definition into a closure.
 
 The function pointer type \texttt{FuncPtr} is the heart of the bridge between
@@ -505,14 +509,14 @@ GoukiScheme's notion of a package registry.
 
 \section{JIT Compilation}
 
-After the macro expansion phase, Scheme code is converted to a simple, reduced
+After the macro expansion phase, Scheme code is converted into a simple, reduced
 CPS mid level IR using the algorithm described in Compiling with
 Continuations\cite{cwc}. After optimization the CPS IR is converted to
 LLVM SSA\cite{llvm} for JIT compilation. LLVM was chosen due to its relative
 familiarity and large set of supported platforms, but the relative simplicity of
 the CPS mid level IR does not rule out the adding of additional backends such
 as Cranelift\cite{cranelift} which may have different performance
-characteristics.
+characteristics and trade-offs.
 
 Interacting with the LLVM JIT compiler to produce an object that can easily be
 interacted with in Rust (i.e. a \texttt{Closure} object described earlier)
@@ -538,10 +542,10 @@ those functions back to the caller, via function pointers. In Rust function
 pointers are of the static lifetime, which is to say they have the lifetime of
 the entire program. This is obviously incorrect in this instance as the lifetime
 of \texttt{Runtime} is not guaranteed to last the entire program - a user could
-create a \texttt{Runtime}, create a \texttt{Closure} and summarily drop the
-given \texttt{Runtime} while continuing to use \texttt{Closure}. Therefore,
-we need to add a pointer from the Closure back to the Runtime from which it was
-created:
+create a \texttt{Runtime}, create a \texttt{Closure} from that runtime and
+summarily drop the given \texttt{Runtime} while continuing to use the
+\texttt{Closure}. Therefore, we need to add a pointer from the Closure back to
+the Runtime from which it was created:
 
 \begin{minted}[frame=lines]{rust}
 struct Closure {
@@ -561,8 +565,7 @@ that compiles and executes async Scheme code at runtime:
 
 \begin{minted}[frame=lines]{rust}
 let rt = Runtime::new();
-let registry =
-  Registry::new(&runtime).await;
+let registry = Registry::new(&runtime).await;
 let env = Environment::from(
   registry.import("(base)")
 );
@@ -577,8 +580,10 @@ println!("{value}");
 \section{Conclusion}
 
 GoukiScheme provides a purely safe, easy-to-use interface for interacting with
-async Scheme code from within async Rust. It does this by implementing a novel
-JIT compilation and evaluation scheme. 
+async Scheme code from within async Rust. It does this without sacrificing
+performance by implementing a novel JIT compilation and evaluation scheme
+that takes advantage of an async trampoline and eschewing typical tracing
+garbage collectors for a concurrent cycle collection scheme. 
 
 \bibliographystyle{ACM-Reference-Format}
 \bibliography{GoukiScheme}
