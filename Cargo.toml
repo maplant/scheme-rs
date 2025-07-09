@@ -12,6 +12,7 @@ repository = "https://github.com/maplant/scheme-rs"
 
 [dependencies]
 async-trait = "0.1"
+by_address = "1.2"
 derive_more = { version = "1.0", features = ["debug", "from"]}
 dyn-clone = "1.0.13"
 either = "1"

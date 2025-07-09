@@ -8,7 +8,6 @@ use crate::{
     gc::{Gc, Trace},
     num::{Number, NumberToUsizeError},
     proc::{Closure, FunctionDebugInfo},
-    records::DefineRecordType,
     runtime::{CallSiteId, FunctionDebugInfoId, Runtime},
     syntax::{FullyExpanded, Identifier},
     syntax::{Span, Syntax},
@@ -80,7 +79,7 @@ impl From<Value> for ParseAstError {
 pub enum Definition {
     DefineVar(DefineVar),
     DefineFunc(DefineFunc),
-    DefineRecordType(DefineRecordType),
+    // DefineRecordType(DefineRecordType),
 }
 
 #[derive(Debug, Clone, Trace)]
@@ -110,7 +109,6 @@ impl Definition {
                 def_func.next = Some(next);
                 Self::DefineFunc(def_func)
             }
-            _ => todo!(),
         }
     }
 
@@ -1053,7 +1051,7 @@ impl DefinitionBody {
 
             // Mark all of the defs as defined:
             for def in defs.iter() {
-                if let Some([_, def, ..]) = def.as_ref().left().and_then(|d| d.expanded.as_list()) {
+                if let Some([_, def, ..]) = def.expanded.as_list() {
                     let ident = match def.as_list() {
                         Some([Syntax::Identifier { ident, .. }, ..]) => ident,
                         _ => def
@@ -1065,20 +1063,14 @@ impl DefinitionBody {
             }
 
             for def in defs.into_iter() {
-                let def = match def {
-                    Either::Left(def) => {
-                        Definition::parse(
-                            runtime,
-                            def.expanded.as_list().unwrap(),
-                            &def.expansion_env,
-                            def.expanded.span(),
-                            /* cont */
-                        )
-                        .await?
-                        // expansion_env.def_var(ident.clone());
-                    }
-                    Either::Right(def_record) => Definition::DefineRecordType(def_record),
-                };
+                let def = Definition::parse(
+                    runtime,
+                    def.expanded.as_list().unwrap(),
+                    &def.expansion_env,
+                    def.expanded.span(),
+                    /* cont */
+                )
+                .await?;
                 defs_parsed.push(def);
             }
 
@@ -1141,7 +1133,7 @@ fn splice_in<'a>(
     body: &'a [Syntax],
     env: &'a Environment,
     span: &'a Span,
-    defs: &'a mut Vec<Either<FullyExpanded, DefineRecordType>>,
+    defs: &'a mut Vec<FullyExpanded>,
     exprs: &'a mut Vec<FullyExpanded>,
     // cont: &Closure
 ) -> BoxFuture<'a, Result<(), ParseAstError>> {
@@ -1236,16 +1228,6 @@ fn splice_in<'a>(
                         }
                         true
                     }
-                    /*
-                    Some(
-                        [Syntax::Identifier { ident, span, .. }, body @ .., Syntax::Null { .. }],
-                    ) if ident == "define-record-type" => {
-                        let record_type = DefineRecordType::parse(body, env, span)?;
-                        record_type.define(&env.lexical_contour);
-                        defs.push(Err(record_type));
-                        continue;
-                    }
-                    */
                     Some([Syntax::Identifier { ident, span, .. }, ..])
                         if ident == "define-syntax" =>
                     {
@@ -1257,7 +1239,7 @@ fn splice_in<'a>(
 
             let expanded = FullyExpanded::new(expansion_env, expanded);
             if is_def {
-                defs.push(Either::Left(expanded));
+                defs.push(expanded);
             } else {
                 exprs.push(expanded);
             }

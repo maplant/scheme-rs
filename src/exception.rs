@@ -132,8 +132,8 @@ impl Condition {
 
 impl From<ParseAstError> for Condition {
     fn from(_value: ParseAstError) -> Self {
-        // TODO: We can do better than this
-        Condition::syntax_error()
+        // TODO: Make this more descriptive
+        Self::syntax_error()
     }
 }
 

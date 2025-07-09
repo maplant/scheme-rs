@@ -393,7 +393,6 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
 
         Ok(())
     }
-
     fn simple_primop_codegen(
         &mut self,
         primop: PrimOp,

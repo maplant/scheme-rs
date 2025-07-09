@@ -1,13 +1,13 @@
 use crate::{
     ast::{Expression, Literal},
     cps::Compile,
-    env::{Environment, Local},
+    env::{CapturedEnv, Environment, Local},
     exception::{Condition, ExceptionHandler},
     gc::{Gc, Trace},
     proc::{Application, Closure, DynamicWind},
     runtime::Runtime,
     syntax::{Identifier, Span, Syntax},
-    value::{OtherData, Value},
+    value::Value,
 };
 use futures::future::BoxFuture;
 use indexmap::IndexMap;
@@ -524,22 +524,13 @@ pub fn call_transformer<'a>(
         };
 
         let captured_env = {
-            let captured_env: Gc<OtherData> = captured_env.clone().try_into()?;
+            let captured_env: Gc<CapturedEnv> = captured_env.clone().try_into()?;
             let captured_env_read = captured_env.read();
-            let OtherData::CapturedEnv(env) = captured_env_read.as_ref() else {
-                unreachable!()
-            };
-            env.clone()
+            captured_env_read.clone()
         };
 
-        let transformer = {
-            let transformer: Gc<OtherData> = transformer.clone().try_into()?;
-            let transformer_read = transformer.read();
-            let OtherData::Transformer(trans) = transformer_read.as_ref() else {
-                unreachable!()
-            };
-            trans.clone()
-        };
+        let transformer: Gc<Transformer> = transformer.clone().try_into()?;
+        let transformer = { transformer.read().clone() };
 
         // Collect the environment:
 

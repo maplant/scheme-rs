@@ -37,6 +37,8 @@ pub type ClosurePtr = unsafe extern "C" fn(
 ) -> *mut Result<Application, Condition>;
 
 /// A function pointer to an async Rust bridge function.
+// TODO: The ordering of these arguments is inconsistent with the other two; env
+// should be the first argument.
 pub type BridgePtr = for<'a> fn(
     args: &'a [Value],
     rest_args: &'a [Value],
@@ -183,7 +185,7 @@ impl Closure {
             .await
         } else {
             // For LLVM functions, we need to convert our args into raw pointers
-            // and make sure any freshly allocated rest_args are disposed of poperly.
+            // and make sure any freshly allocated rest_args are disposed of properly.
 
             let env = cells_to_vec_of_ptrs(&self.env);
             let globals = cells_to_vec_of_ptrs(&self.globals);
@@ -259,8 +261,17 @@ impl Gc<Closure> {
 
 impl fmt::Debug for Closure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let Some(debug_info_id) = self.debug_info else {
+        if self.is_continuation() {
             return write!(f, "continuation");
+        }
+
+        let Some(debug_info_id) = self.debug_info else {
+            return write!(
+                f,
+                "<lambda> (takes {}{} args)",
+                if self.variadic { "at least " } else { "" },
+                self.num_required_args
+            );
         };
 
         let runtime_ref = self.runtime.read();

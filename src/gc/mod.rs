@@ -21,6 +21,7 @@ pub use scheme_rs_macros::Trace;
 
 use std::{
     alloc::Layout,
+    any::Any,
     cell::UnsafeCell,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     future::Future,
@@ -38,13 +39,24 @@ pub struct Gc<T: ?Sized> {
     marker: PhantomData<GcInner<T>>,
 }
 
-impl<T: Trace> Gc<T> {
+#[allow(private_bounds)]
+impl<T: GcOrTrace + 'static> Gc<T> {
     pub fn new(data: T) -> Gc<T> {
         Self {
             ptr: NonNull::from(Box::leak(Box::new(GcInner {
                 header: UnsafeCell::new(GcHeader::new::<T>()),
                 data: UnsafeCell::new(data),
             }))),
+            marker: PhantomData,
+        }
+    }
+
+    /// We have to make this a function since coerce unsized is unstable.
+    pub fn into_any(this: Self) -> Gc<dyn Any> {
+        let this = ManuallyDrop::new(this);
+        let any: NonNull<GcInner<dyn Any>> = this.ptr;
+        Gc {
+            ptr: any,
             marker: PhantomData,
         }
     }
@@ -128,13 +140,29 @@ impl<T: ?Sized> Gc<T> {
     }
 }
 
+impl Gc<dyn Any> {
+    pub fn downcast<T: Any>(self) -> Result<Gc<T>, Self> {
+        if self.read().as_ref().is::<T>() {
+            let this = ManuallyDrop::new(self);
+            let ptr = this.ptr.as_ptr() as *mut GcInner<T>;
+            let ptr = unsafe { NonNull::new_unchecked(ptr) };
+            Ok(Gc {
+                ptr,
+                marker: PhantomData,
+            })
+        } else {
+            Err(self)
+        }
+    }
+}
+
 impl<T: Trace> From<T> for Gc<T> {
     fn from(t: T) -> Self {
         Gc::new(t)
     }
 }
 
-impl<T: Trace> std::fmt::Display for Gc<T>
+impl<T: ?Sized> std::fmt::Display for Gc<T>
 where
     T: std::fmt::Display,
 {
@@ -143,7 +171,7 @@ where
     }
 }
 
-impl<T: Trace> std::fmt::Debug for Gc<T>
+impl<T: ?Sized> std::fmt::Debug for Gc<T>
 where
     T: std::fmt::Debug,
 {
@@ -152,7 +180,7 @@ where
     }
 }
 
-impl<T: Trace> Clone for Gc<T> {
+impl<T: ?Sized> Clone for Gc<T> {
     fn clone(&self) -> Gc<T> {
         inc_rc(self.ptr);
         Self {
@@ -168,13 +196,13 @@ impl<T: ?Sized> Drop for Gc<T> {
     }
 }
 
-impl<T: Trace + Hash> Hash for Gc<T> {
+impl<T: ?Sized + Hash> Hash for Gc<T> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.read().hash(state);
     }
 }
 
-impl<T: Trace + PartialEq> PartialEq for Gc<T> {
+impl<T: ?Sized + PartialEq> PartialEq for Gc<T> {
     fn eq(&self, other: &Self) -> bool {
         let self_read = self.read();
         let other_read = other.read();
@@ -182,10 +210,10 @@ impl<T: Trace + PartialEq> PartialEq for Gc<T> {
     }
 }
 
-impl<T: Trace + Eq> Eq for Gc<T> {}
+impl<T: ?Sized + Eq> Eq for Gc<T> {}
 
-unsafe impl<T: Trace + Send> Send for Gc<T> {}
-unsafe impl<T: Trace + Sync> Sync for Gc<T> {}
+unsafe impl<T: ?Sized + Send> Send for Gc<T> {}
+unsafe impl<T: ?Sized + Sync> Sync for Gc<T> {}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum Color {
@@ -216,7 +244,7 @@ pub struct GcHeader {
 }
 
 impl GcHeader {
-    fn new<T: Trace>() -> Self {
+    fn new<T: GcOrTrace>() -> Self {
         Self {
             rc: 1,
             crc: 1,
@@ -225,11 +253,11 @@ impl GcHeader {
             lock: RwLock::new(()),
             visit_children: |this, visitor| unsafe {
                 let this = this as *const T;
-                T::visit_children(this.as_ref().unwrap(), visitor);
+                T::visit_or_recurse(this.as_ref().unwrap(), visitor);
             },
             finalize: |this| unsafe {
                 let this = this as *mut T;
-                T::finalize(this.as_mut().unwrap());
+                T::finalize_or_skip(this.as_mut().unwrap());
             },
             layout: Layout::new::<GcInner<T>>(),
         }
@@ -363,6 +391,23 @@ pub struct GcWriteGuard<'a, T: ?Sized> {
     marker: PhantomData<&'a mut T>,
 }
 
+/*
+impl<'a, T: ?Sized> GcWriteGuard<'a, T> {
+    pub fn try_map<U, E, F>(mut orig: Self, f: F) -> Result<GcWriteGuard<'a, U>, E>
+    where
+        F: FnOnce(&mut T) -> Result<&mut U, E>,
+        U: ?Sized,
+    {
+        let data = NonNull::from(f(orig.as_mut())?).as_ptr();
+        Ok(GcWriteGuard {
+            _permit: orig._permit,
+            data,
+            marker: PhantomData,
+        })
+    }
+}
+*/
+
 impl<T: ?Sized> Deref for GcWriteGuard<'_, T> {
     type Target = T;
 
@@ -464,7 +509,7 @@ unsafe trait GcOrTrace: 'static {
     unsafe fn finalize_or_skip(&mut self);
 }
 
-unsafe impl<T: Trace> GcOrTrace for Gc<T> {
+unsafe impl<T: ?Sized + 'static> GcOrTrace for Gc<T> {
     unsafe fn visit_or_recurse(&self, visitor: unsafe fn(OpaqueGcPtr)) {
         unsafe { visitor(self.as_opaque()) }
     }
@@ -772,7 +817,20 @@ where
         }
     }
 }
-*/
+ */
+
+unsafe impl<T> Trace for by_address::ByAddress<T>
+where
+    T: ?Sized + GcOrTrace + Deref,
+{
+    unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
+        unsafe { self.0.visit_or_recurse(visitor) }
+    }
+
+    unsafe fn finalize(&mut self) {
+        unsafe { self.0.finalize_or_skip() }
+    }
+}
 
 unsafe impl<T> Trace for std::sync::Arc<T>
 where

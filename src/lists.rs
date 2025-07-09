@@ -179,7 +179,7 @@ pub async fn set_cdr(var: &Value, val: &Value) -> Result<Vec<Value>, Condition> 
 
 #[bridge(name = "length", lib = "(base)")]
 pub async fn length(arg: &Value) -> Result<Vec<Value>, Condition> {
-    let mut length = 0;
+    let mut length = 0usize;
     let mut arg = arg.clone();
     loop {
         arg = {
