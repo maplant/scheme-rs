@@ -8,7 +8,7 @@
 
 ;; The following are omitted because they don't really show anything:
 ;; (assert-eq #t #t)
- ;; (assert-eq 23 23)
+;; (assert-eq 23 23)
 
 (assert-eq (+ 23 42) 65)
 (assert-eq (+ 14 (* 23 42)) 980)
@@ -254,7 +254,7 @@
                  '()
                  (cons n (loopv (+ n 1)))))
            '(1 2 3 4 5 6 7 8 9 10))
-           
+
 (define-syntax loop
   (lambda (x)
     (syntax-case x ()
@@ -391,13 +391,13 @@
 (define-syntax defconst
   (lambda (x)
     (syntax-case x ()
-        [(_ name val)
-         (syntax (begin
-                   (define t val)
-                   (define-syntax name
-                     (lambda (x)
-                       (syntax-case x ()
-                           ([_] #'t))))))])))
+      [(_ name val)
+       (syntax (begin
+                 (define t val)
+                 (define-syntax name
+                   (lambda (x)
+                     (syntax-case x ()
+                     ([_] #'t))))))])))
 
 ;; foo is already bound to a macro in this scope
 (defconst newfoo 42)
@@ -408,3 +408,62 @@
 
 ;; Realized this was an issue when doing escape analysis:
 (define (test a) (set! a '()))
+
+;; r6rs-lib:
+
+;; 6.3. Procedural layer
+
+(define :point
+  (make-record-type-descriptor
+   'point #f
+   #f #f #f
+   '#((mutable x) (mutable y))))
+(define :point-cd
+  (make-record-constructor-descriptor :point #f #f))
+
+(define make-point (record-constructor :point-cd))
+(define point? (record-predicate :point))
+(define point-x (record-accessor :point 0))
+(define point-y (record-accessor :point 1))
+(define point-x-set! (record-mutator :point 0))
+(define point-y-set! (record-mutator :point 1))
+
+(define p1 (make-point 1 2))
+
+(assert-eq (point? p1) #t)
+(assert-eq (point-x p1) 1)
+(assert-eq (point-y p1) 2)
+(point-x-set! p1 5)
+(assert-eq (point-x p1) 5)
+
+(define :point2
+  (make-record-type-descriptor
+   'point2 :point
+   #f #f #f '#((mutable x) (mutable y))))
+(define make-point2
+  (record-constructor
+   (make-record-constructor-descriptor :point2
+                                       #f #f)))
+(define point2? (record-predicate :point2))
+(define point2-xx (record-accessor :point2 0))
+(define point2-yy (record-accessor :point2 1))
+
+(define p2 (make-point2 1 2 3 4))
+(assert-eq (point? p2) #t)
+(assert-eq (point-x p2) 1)
+(assert-eq (point-y p2) 2)
+(assert-eq (point2-xx p2) 3)
+(assert-eq (point2-yy p2) 4)
+
+(define :point-cd/abs
+  (make-record-constructor-descriptor
+   :point #f
+   (lambda (new)
+     (lambda (x y)
+       (new (abs x) (abs y))))))
+
+(define make-point/abs
+  (record-constructor :point-cd/abs))
+
+(assert-eq (point-x (make-point/abs -1 -2)) 1)
+(assert-eq (point-y (make-point/abs -1 -2)) 2)
