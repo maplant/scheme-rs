@@ -1,4 +1,4 @@
-\documentclass[sigplan,authordraft]{acmart}
+\documentclass[sigplan,review,anonymous]{acmart}
 \usepackage{minted}
 \usepackage{algorithm2e}
 \usepackage{natbib}
@@ -8,6 +8,12 @@
 \title{Gouki Scheme: An embedded Scheme implementation for Async Rust}
 
 \author{Matthew Plant}
+\affiliation{%
+  \institution{OneChronos}
+  \city{New York}
+  \state{New York}
+  \country{USA}
+}
 \email{maplant@protonmail.com}
 
 \begin{abstract}
@@ -61,7 +67,7 @@ is required that is built with async Rust in mind to take full advantage of the
 async runtime and more importantly integrate frictionlessly into the async
 application while also maximizing performance with JIT compilation.
 
-GoukiScheme\cite{gouki} is a Scheme implementation designed to integrate
+GoukiScheme is a Scheme implementation designed to integrate
 flawlessly with async Rust; GoukiScheme code can execute asynchronously embedded
 in an async Rust application and can in turn execute async Rust functions. Arbitrary Rust
 objects can be stored in GoukiScheme variables and passed to GoukiScheme
