@@ -72,7 +72,9 @@ impl Value {
                 ValueType::Record => {
                     Gc::increment_reference_count(untagged as *mut GcInner<Record>)
                 }
-                ValueType::RecordTypeDescriptor => Arc::increment_strong_count(untagged as *const RecordTypeDescriptor),
+                ValueType::RecordTypeDescriptor => {
+                    Arc::increment_strong_count(untagged as *const RecordTypeDescriptor)
+                }
                 ValueType::Pair => {
                     Gc::increment_reference_count(untagged as *mut GcInner<lists::Pair>)
                 }
@@ -694,7 +696,7 @@ impl TryFrom<UnpackedValue> for (Value, Value) {
             UnpackedValue::Pair(pair) => {
                 let pair = pair.read();
                 Ok((pair.0.clone(), pair.1.clone()))
-            },
+            }
             e => Err(Condition::invalid_type("pair", e.type_name())),
         }
     }
@@ -787,7 +789,9 @@ impl PartialEq for ReflexiveValue {
             (UnpackedValue::Syntax(a), UnpackedValue::Syntax(b)) => Arc::ptr_eq(a, b),
             (UnpackedValue::Closure(a), UnpackedValue::Closure(b)) => Gc::ptr_eq(a, b),
             (UnpackedValue::Record(a), UnpackedValue::Record(b)) => Gc::ptr_eq(a, b),
-            (UnpackedValue::RecordTypeDescriptor(a), UnpackedValue::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
+            (UnpackedValue::RecordTypeDescriptor(a), UnpackedValue::RecordTypeDescriptor(b)) => {
+                Arc::ptr_eq(a, b)
+            }
             (UnpackedValue::Any(a), UnpackedValue::Any(b)) => Gc::ptr_eq(a, b),
             _ => false,
         }

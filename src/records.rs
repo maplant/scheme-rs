@@ -1,6 +1,9 @@
 //! Rudimentary structure support.
 
-use std::{any::Any, cell::LazyCell, sync::Arc};
+use std::{
+    any::Any,
+    sync::{Arc, LazyLock},
+};
 
 use by_address::ByAddress;
 use futures::future::BoxFuture;
@@ -56,16 +59,12 @@ impl Field {
 
     fn parse_fields(fields: &Value) -> Result<Vec<Self>, Condition> {
         let fields: Gc<vectors::AlignedVector<Value>> = fields.clone().try_into()?;
-        fields
-            .read()
-            .iter()
-            .map(|field| Self::parse(field))
-            .collect()
+        fields.read().iter().map(Self::parse).collect()
     }
 }
 
 /// The record type descriptor for the "record type descriptor" type.
-pub const RECORD_TYPE_DESCRIPTOR_RTD: LazyCell<Arc<RecordTypeDescriptor>> = LazyCell::new(|| {
+pub static RECORD_TYPE_DESCRIPTOR_RTD: LazyLock<Arc<RecordTypeDescriptor>> = LazyLock::new(|| {
     Arc::new(RecordTypeDescriptor {
         name: "rt".to_string(),
         sealed: true,
@@ -277,7 +276,7 @@ pub fn record_constructor<'a>(
             &[],
             &[],
             &chain_protocols,
-            &vec![Gc::new(Value::from(rtds))],
+            &[Gc::new(Value::from(rtds))],
             exception_handler,
             dynamic_wind,
         )
@@ -587,7 +586,7 @@ fn record_predicate_fn<'a>(
         // RTD is the first environment variable:
         Ok(Application::new(
             cont,
-            vec![Value::from(is_subtype_of(&val, &env[0].read())?)],
+            vec![Value::from(is_subtype_of(val, &env[0].read())?)],
             exception_handler.clone(),
             dynamic_wind.clone(),
             None,
@@ -660,7 +659,7 @@ fn record_accessor_fn<'a>(
         };
         let record: Gc<Record> = val.clone().try_into()?;
         // RTD is the first environment variable, field index is the second
-        if !is_subtype_of(&val, &env[0].read())? {
+        if !is_subtype_of(val, &env[0].read())? {
             return Err(Condition::error("not a child of this record type".to_string()).into());
         }
         let k: Arc<Number> = env[1].read().clone().try_into()?;
@@ -692,6 +691,9 @@ pub fn record_accessor<'a>(
         let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
         let k: Arc<Number> = k.clone().try_into()?;
         let k: usize = k.as_ref().try_into().map_err(Condition::from)?;
+        if k > rtd.fields.len() {
+            return Err(Condition::Assertion.into());
+        }
         let k = k + rtd.field_index_offset;
         let accessor_fn = Closure::new(
             cont.read().runtime.clone(),
@@ -747,7 +749,7 @@ fn record_mutator_fn<'a>(
         };
         let record: Gc<Record> = rec.clone().try_into()?;
         // RTD is the first environment variable, field index is the second
-        if !is_subtype_of(&rec, &env[0].read())? {
+        if !is_subtype_of(rec, &env[0].read())? {
             return Err(Condition::error("not a child of this record type".to_string()).into());
         }
         let k: Arc<Number> = env[1].read().clone().try_into()?;
@@ -779,8 +781,11 @@ pub fn record_mutator<'a>(
         let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
         let k: Arc<Number> = k.clone().try_into()?;
         let k: usize = k.as_ref().try_into().map_err(Condition::from)?;
+        if k > rtd.fields.len() || matches!(rtd.fields[k], Field::Immutable(_)) {
+            return Err(Condition::Assertion.into());
+        }
         let k = k + rtd.field_index_offset;
-        let accessor_fn = Closure::new(
+        let mutator_fn = Closure::new(
             cont.read().runtime.clone(),
             vec![
                 Gc::new(Value::from(rtd)),
@@ -788,13 +793,13 @@ pub fn record_mutator<'a>(
             ],
             Vec::new(),
             FuncPtr::Bridge(record_mutator_fn),
-            1,
+            2,
             false,
             None,
         );
         Ok(Application::new(
             cont,
-            vec![Value::from(accessor_fn)],
+            vec![Value::from(mutator_fn)],
             exception_handler.clone(),
             dynamic_wind.clone(),
             None,
