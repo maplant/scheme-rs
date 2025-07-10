@@ -87,6 +87,7 @@ impl<'ctx> Allocs<'ctx> {
 }
 
 impl Cps {
+    #[allow(clippy::too_many_arguments)]
     pub fn into_closure<'ctx, 'b>(
         self,
         runtime: Gc<Runtime>,
