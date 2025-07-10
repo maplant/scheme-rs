@@ -2,7 +2,9 @@ use proc_macro::{self, TokenStream};
 use proc_macro2::{Literal, Span};
 use quote::{format_ident, quote};
 use syn::{
-    parse_macro_input, parse_quote, punctuated::Punctuated, DataEnum, DataStruct, DeriveInput, Fields, FnArg, GenericParam, Generics, Ident, ItemFn, LitStr, Member, Pat, PatIdent, PatType, Token, Type, TypePath, TypeReference
+    DataEnum, DataStruct, DeriveInput, Fields, FnArg, GenericParam, Generics, Ident, ItemFn,
+    LitStr, Member, Pat, PatIdent, PatType, Token, Type, TypePath, TypeReference,
+    parse_macro_input, parse_quote, punctuated::Punctuated,
 };
 
 #[proc_macro_attribute]
@@ -429,21 +431,6 @@ fn rust_type_to_llvm_type(ty: &Type) -> Ident {
 pub fn runtime_fn(_args: TokenStream, item: TokenStream) -> TokenStream {
     let runtime_fn = parse_macro_input!(item as ItemFn);
 
-    /*
-    // We know these functions are unsafe and such:
-    runtime_fn.sig.unsafety = Some(Token![unsafe](Span::call_site()));
-    runtime_fn.sig.abi = Some(Abi { extern_token: Token![extern](Span::call_site()), name: Some(LitStr::new("C", Span::call_site()))});
-    let stmts = runtime_fn.block.stmts;
-    runtime_fn.block = 
-        /*
-        Box::new(parse_quote! {
-        { unsafe {
-        #( #stmts )*
-        }
-        }
-    });
-    */
-     */
     let name_ident = runtime_fn.sig.ident.clone();
     let name_lit = Literal::string(&runtime_fn.sig.ident.to_string());
     let ret = match runtime_fn.sig.output {
