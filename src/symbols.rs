@@ -6,7 +6,9 @@ use std::{
 };
 
 use indexmap::IndexSet;
-use scheme_rs_macros::Trace;
+use scheme_rs_macros::{Trace, bridge};
+
+use crate::{exception::Condition, strings, value::Value};
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Trace)]
 pub struct Symbol(pub(crate) u32);
@@ -49,4 +51,10 @@ impl PartialEq<&'_ str> for Symbol {
     fn eq(&self, rhs: &&str) -> bool {
         self.to_str().as_ref() == *rhs
     }
+}
+
+#[bridge(name = "string->symbol", lib = "(base)")]
+pub async fn string_to_symbol(s: &Value) -> Result<Vec<Value>, Condition> {
+    let s: Arc<strings::AlignedString> = s.clone().try_into()?;
+    Ok(vec![Value::from(Symbol::intern(&*s))])
 }
