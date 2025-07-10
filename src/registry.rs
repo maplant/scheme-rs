@@ -8,6 +8,7 @@ use crate::{
     parse::ParseSyntaxError,
     proc::{BridgePtr, Closure, FuncPtr},
     runtime::Runtime,
+    symbols::Symbol,
     syntax::{Identifier, Span, Syntax},
     value::Value,
 };
@@ -16,7 +17,7 @@ use std::collections::HashMap;
 
 #[derive(Clone, Default, PartialEq, Eq, Hash)]
 pub struct LibraryName {
-    name: Vec<String>,
+    name: Vec<Symbol>,
     version: Version,
 }
 
@@ -53,11 +54,11 @@ impl LibraryName {
     }
 }
 
-fn list_to_name(name: &[Syntax]) -> Result<Vec<String>, ParseAstError> {
+fn list_to_name(name: &[Syntax]) -> Result<Vec<Symbol>, ParseAstError> {
     name.iter()
         .map(|name| {
             if let Syntax::Identifier { ident, .. } = name {
-                Ok(ident.name.clone())
+                Ok(ident.sym)
             } else {
                 Err(ParseAstError::ExpectedIdentifier(name.span().clone()))
             }
@@ -221,7 +222,7 @@ impl Registry {
                 .or_insert_with(|| Gc::new(Top::library()));
             let mut lib = lib.write();
             lib.def_var(
-                Identifier::new(bridge_fn.name.to_string()),
+                Identifier::new(bridge_fn.name),
                 Value::from(Closure::new(
                     runtime.clone(),
                     Vec::new(),

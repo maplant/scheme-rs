@@ -10,6 +10,7 @@ use crate::{
     records::{Record, RecordTypeDescriptor},
     registry::bridge,
     strings::AlignedString,
+    symbols,
     syntax::Syntax,
     vectors,
 };
@@ -60,7 +61,6 @@ impl Value {
             match tag {
                 ValueType::Number => Arc::increment_strong_count(untagged as *const Number),
                 ValueType::String => Arc::increment_strong_count(untagged as *const AlignedString),
-                ValueType::Symbol => Arc::increment_strong_count(untagged as *const AlignedString),
                 ValueType::Vector => Gc::increment_reference_count(
                     untagged as *mut GcInner<vectors::AlignedVector<Self>>,
                 ),
@@ -83,6 +83,7 @@ impl Value {
                 }
                 ValueType::Reserved => todo!(),
                 ValueType::Undefined
+                | ValueType::Symbol
                 | ValueType::Null
                 | ValueType::Boolean
                 | ValueType::Character => (),
@@ -137,9 +138,7 @@ impl Value {
             ),
             Syntax::ByteVector { vector, .. } => Self::from(vector.clone()),
             Syntax::Literal { literal, .. } => Self::from(literal.clone()),
-            Syntax::Identifier { ident, .. } => Self::new(UnpackedValue::Symbol(Arc::new(
-                AlignedString(ident.name.clone()),
-            ))),
+            Syntax::Identifier { ident, .. } => Self::new(UnpackedValue::Symbol(ident.sym)),
         }
     }
 
@@ -189,8 +188,8 @@ impl Value {
                 UnpackedValue::String(str)
             }
             ValueType::Symbol => {
-                let sym = unsafe { Arc::from_raw(untagged as *const AlignedString) };
-                UnpackedValue::Symbol(sym)
+                let untagged = (untagged >> TAG_BITS) as u32;
+                UnpackedValue::Symbol(symbols::Symbol(untagged))
             }
             ValueType::Vector => {
                 let vec =
@@ -234,14 +233,6 @@ impl Value {
         UnpackedValueRef {
             unpacked,
             marker: PhantomData,
-        }
-    }
-
-    // Symbol should be its own type.
-    pub fn try_into_sym(self) -> Result<Arc<AlignedString>, Condition> {
-        match self.unpack() {
-            UnpackedValue::Symbol(sym) => Ok(sym),
-            e => Err(Condition::invalid_type("symbol", e.type_name())),
         }
     }
 }
@@ -374,18 +365,15 @@ pub enum UnpackedValue {
     Character(char),
     Number(Arc<Number>),
     String(Arc<AlignedString>),
-    Symbol(Arc<AlignedString>),
+    Symbol(symbols::Symbol),
     Vector(Gc<vectors::AlignedVector<Value>>),
     ByteVector(Arc<vectors::AlignedVector<u8>>),
     Syntax(Arc<Syntax>),
     Closure(Gc<Closure>),
     Record(Gc<Record>),
-    // Condition(Gc<Condition>),
     RecordTypeDescriptor(Arc<RecordTypeDescriptor>),
     Pair(Gc<lists::Pair>),
     Any(Gc<Gc<dyn Any>>),
-    // HashTable,
-    // OtherData(Gc<OtherData>),
 }
 
 impl UnpackedValue {
@@ -403,10 +391,7 @@ impl UnpackedValue {
                 let untagged = Arc::into_raw(str);
                 Value::from_ptr_and_tag(untagged, ValueType::String)
             }
-            Self::Symbol(sym) => {
-                let untagged = Arc::into_raw(sym);
-                Value::from_ptr_and_tag(untagged, ValueType::Symbol)
-            }
+            Self::Symbol(sym) => Value((sym.0 as u64) << TAG_BITS | ValueType::Symbol as u64),
             Self::Vector(vec) => {
                 let untagged = Gc::into_raw(vec);
                 Value::from_mut_ptr_and_tag(untagged, ValueType::Vector)
@@ -501,7 +486,6 @@ impl fmt::Display for UnpackedValue {
             }
             Self::ByteVector(v) => vectors::display_vec("#u8(", v, f),
             Self::Closure(_) => write!(f, "<procedure>"),
-            // Self::Condition(cond) => write!(f, "<{cond:?}>"),
             Self::Record(record) => write!(f, "<{record:?}>"),
             Self::Syntax(syntax) => write!(f, "{syntax:?}"),
             Self::RecordTypeDescriptor(rtd) => write!(f, "<{rtd:?}>"),
@@ -605,6 +589,7 @@ impl_try_from_value_for!(bool, Boolean, "bool");
 impl_try_from_value_for!(char, Character, "char");
 impl_try_from_value_for!(Arc<Number>, Number, "number");
 impl_try_from_value_for!(Arc<AlignedString>, String, "string");
+impl_try_from_value_for!(symbols::Symbol, Symbol, "symbol");
 impl_try_from_value_for!(Gc<vectors::AlignedVector<Value>>, Vector, "vector");
 impl_try_from_value_for!(Arc<vectors::AlignedVector<u8>>, ByteVector, "byte-vector");
 impl_try_from_value_for!(Arc<Syntax>, Syntax, "syntax");

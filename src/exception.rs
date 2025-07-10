@@ -8,6 +8,7 @@ use crate::{
     proc::{Application, Closure, DynamicWind, FuncPtr},
     registry::{BridgeFn, BridgeFnDebugInfo},
     runtime::{IGNORE_FUNCTION, Runtime},
+    symbols::Symbol,
     syntax::{Identifier, Span},
     value::Value,
 };
@@ -85,7 +86,7 @@ impl Condition {
     }
 
     pub fn undefined_variable(ident: Identifier) -> Self {
-        Self::error(format!("Undefined variable {}", ident.name))
+        Self::error(format!("Undefined variable {}", ident.sym))
     }
 
     pub fn invalid_type(expected: &str, provided: &str) -> Self {
@@ -153,13 +154,13 @@ impl_into_condition_for!(std::num::TryFromIntError);
 
 #[derive(Debug, Clone, Trace)]
 pub struct Frame {
-    pub proc: String,
+    pub proc: Symbol,
     pub call_site_span: Option<Span>,
     // pub repeated: usize,
 }
 
 impl Frame {
-    pub fn new(proc: String, call_site_span: Option<Span>) -> Self {
+    pub fn new(proc: Symbol, call_site_span: Option<Span>) -> Self {
         Self {
             proc,
             call_site_span,

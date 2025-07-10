@@ -173,7 +173,7 @@ impl Definition {
                                     };
                                     bound.insert(ident.clone(), span.clone());
                                     fixed.push(sym);
-                                    arg_names.push(ident.name.clone());
+                                    arg_names.push(ident.sym);
                                 }
                                 x => {
                                     return Err(ParseAstError::ExpectedIdentifier(
@@ -201,7 +201,7 @@ impl Definition {
                                         unreachable!()
                                     };
                                     bound.insert(ident.clone(), span.clone());
-                                    arg_names.push(ident.name.clone());
+                                    arg_names.push(ident.sym);
                                     Formals::VarArgs {
                                         fixed: fixed.into_iter().collect(),
                                         remaining,
@@ -226,11 +226,7 @@ impl Definition {
 
                         // Create the new debug info:
                         let debug_info_id = runtime.write().debug_info.new_function_debug_info(
-                            FunctionDebugInfo::new(
-                                Some(func_name.name.clone()),
-                                arg_names,
-                                span.clone(),
-                            ),
+                            FunctionDebugInfo::new(Some(func_name.sym), arg_names, span.clone()),
                         );
 
                         Ok(Self::DefineFunc(DefineFunc {
@@ -320,7 +316,7 @@ impl Expression {
                 Syntax::Null { span } => Err(ParseAstError::UnexpectedEmptyList(span)),
 
                 // Special Identifiers:
-                Syntax::Identifier { ident, .. } if ident.name == "<undefined>" => {
+                Syntax::Identifier { ident, .. } if ident.sym == "<undefined>" => {
                     Ok(Self::Undefined)
                 }
 
@@ -575,15 +571,14 @@ impl Apply {
     ) -> Result<Self, ParseAstError> {
         let location = operator.span().clone();
         let call_site_id = runtime.write().debug_info.new_call_site(location);
-        let proc_name = match operator {
-            Syntax::Identifier { ref ident, .. } => ident.name.clone(),
-            _ => String::from(""),
-        };
-        let operator = match proc_name.parse::<PrimOp>() {
-            Ok(prim_op) => Either::Right(prim_op),
-            _ => Either::Left(Box::new(
+        let operator = if let Syntax::Identifier { ident, .. } = &operator
+            && let Some(prim_op) = PrimOp::from_sym(ident.sym)
+        {
+            Either::Right(prim_op)
+        } else {
+            Either::Left(Box::new(
                 Expression::parse(runtime, operator, env /* cont */).await?,
-            )),
+            ))
         };
         let mut parsed_args = Vec::new();
         for arg in args {
@@ -656,7 +651,7 @@ async fn parse_lambda(
                         unreachable!()
                     };
                     fixed.push(arg);
-                    arg_names.push(ident.name.clone());
+                    arg_names.push(ident.sym);
                     bound.insert(ident.clone(), span.clone());
                 }
                 x => return Err(ParseAstError::ExpectedIdentifier(x.span().clone())),
@@ -675,7 +670,7 @@ async fn parse_lambda(
                         second: span.clone(),
                     });
                 }
-                arg_names.push(ident.name.clone());
+                arg_names.push(ident.sym);
                 let Var::Local(remaining) = new_contour.def_var(ident.clone()) else {
                     unreachable!()
                 };
@@ -783,7 +778,7 @@ async fn parse_let(
                 let Var::Local(var) = new_contour.def_var(binding.ident.clone()) else {
                     unreachable!()
                 };
-                binding_names.push(binding.ident.name.clone());
+                binding_names.push(binding.ident.sym);
                 parsed_bindings.push((var, binding));
             }
         }
@@ -821,7 +816,7 @@ async fn parse_let(
                 .write()
                 .debug_info
                 .new_function_debug_info(FunctionDebugInfo::new(
-                    Some(name.as_ref().unwrap().name.clone()),
+                    Some(name.as_ref().unwrap().sym),
                     binding_names,
                     span.clone(),
                 ));
@@ -1374,7 +1369,7 @@ impl SyntaxCase {
                 // TODO: ensure keywords_list is proper
                 for keyword in &list[..list.len() - 1] {
                     if let Syntax::Identifier { ident, .. } = keyword {
-                        keywords.insert(ident.name.clone());
+                        keywords.insert(ident.sym);
                     } else {
                         return Err(ParseAstError::BadForm(keyword.span().clone()));
                     }

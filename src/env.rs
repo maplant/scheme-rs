@@ -445,7 +445,7 @@ impl Global {
 
 impl fmt::Debug for Global {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "${}", self.name.name)
+        write!(f, "${}", self.name.sym)
     }
 }
 
