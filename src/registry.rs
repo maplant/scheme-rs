@@ -6,14 +6,14 @@ use crate::{
     env::{Environment, Top},
     gc::Gc,
     parse::ParseSyntaxError,
-    proc::{BridgePtr, Closure, FuncPtr},
+    proc::{BridgePtr, Closure, FuncDebugInfo, FuncPtr},
     runtime::Runtime,
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax},
     value::Value,
 };
 pub use scheme_rs_macros::bridge;
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 #[derive(Clone, Default, PartialEq, Eq, Hash)]
 pub struct LibraryName {
@@ -210,12 +210,10 @@ impl Registry {
         // Import the bridge functions:
 
         for bridge_fn in inventory::iter::<BridgeFn>() {
-            let debug_info_id = runtime.write().debug_info.new_function_debug_info(
-                crate::proc::FunctionDebugInfo::from_bridge_fn(
-                    bridge_fn.name,
-                    bridge_fn.debug_info,
-                ),
-            );
+            let debug_info = Arc::new(FuncDebugInfo::from_bridge_fn(
+                bridge_fn.name,
+                bridge_fn.debug_info,
+            ));
             let lib_name = LibraryName::from_str(bridge_fn.lib_name, None).unwrap();
             let lib = libs
                 .entry(lib_name)
@@ -230,7 +228,7 @@ impl Registry {
                     FuncPtr::Bridge(bridge_fn.wrapper),
                     bridge_fn.num_args,
                     bridge_fn.variadic,
-                    Some(debug_info_id),
+                    Some(debug_info),
                 )),
             );
         }

@@ -7,12 +7,12 @@ use crate::{
     gc::{Gc, GcInner, Trace},
     proc::{Application, Closure, DynamicWind, FuncPtr},
     registry::{BridgeFn, BridgeFnDebugInfo},
-    runtime::{IGNORE_FUNCTION, Runtime},
+    runtime::Runtime,
     symbols::Symbol,
     syntax::{Identifier, Span},
     value::Value,
 };
-use std::{error::Error as StdError, fmt, ops::Range};
+use std::{error::Error as StdError, fmt, ops::Range, sync::Arc};
 
 #[derive(Debug, Clone, Trace)]
 pub struct Exception {
@@ -168,12 +168,12 @@ impl_into_condition_for!(std::num::TryFromIntError);
 #[derive(Debug, Clone, Trace)]
 pub struct Frame {
     pub proc: Symbol,
-    pub call_site_span: Option<Span>,
+    pub call_site_span: Option<Arc<Span>>,
     // pub repeated: usize,
 }
 
 impl Frame {
-    pub fn new(proc: Symbol, call_site_span: Option<Span>) -> Self {
+    pub fn new(proc: Symbol, call_site_span: Option<Arc<Span>>) -> Self {
         Self {
             proc,
             call_site_span,
@@ -305,7 +305,7 @@ pub fn raise<'a>(
                     FuncPtr::Continuation(reraise_exception),
                     0,
                     true,
-                    Some(IGNORE_FUNCTION),
+                    None,
                 )),
             ],
             handler.prev_handler.clone(),
@@ -359,7 +359,7 @@ unsafe extern "C" fn reraise_exception(
                 FuncPtr::Bridge(raise),
                 1,
                 false,
-                Some(IGNORE_FUNCTION),
+                None,
             )),
             vec![exception, cont],
             ExceptionHandler::from_ptr(exception_handler),

@@ -38,7 +38,7 @@ impl Cps {
                 body,
                 val,
                 cexp,
-                debug,
+                span,
             } => {
                 let body = body.beta_reduction(uses_cache);
                 let mut cexp = cexp.beta_reduction(uses_cache);
@@ -60,7 +60,7 @@ impl Cps {
                     body: Box::new(body),
                     val,
                     cexp: Box::new(cexp),
-                    debug,
+                    span,
                 }
             }
             cexp => cexp,
@@ -137,13 +137,13 @@ impl Cps {
                 body,
                 val,
                 cexp,
-                debug,
+                span,
             } => Cps::Closure {
                 args,
                 body: Box::new(body.dead_code_elimination(uses_cache)),
                 val,
                 cexp: Box::new(cexp.dead_code_elimination(uses_cache)),
-                debug,
+                span,
             },
             cexp => cexp,
         }
