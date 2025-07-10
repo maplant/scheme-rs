@@ -15,8 +15,8 @@
 use crate::{
     env::{Global, Local, Var},
     gc::Trace,
-    runtime::{CallSiteId, FunctionDebugInfoId},
     symbols::Symbol,
+    syntax::Span,
     value::Value as RuntimeValue,
 };
 use std::{
@@ -132,19 +132,6 @@ impl PrimOp {
     }
 }
 
-/*
-impl FromStr for PrimOp {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, ()> {
-        match s {
-            "&call/cc" => Ok(Self::CallWithCurrentContinuation),
-            _ => Err(()),
-        }
-    }
-}
-*/
-
 #[derive(Debug, Clone)]
 pub struct ClosureArgs {
     args: Vec<Local>,
@@ -165,6 +152,15 @@ impl ClosureArgs {
         self.args.iter_mut().chain(self.continuation.as_mut())
     }
 
+    fn iter(&self) -> impl Iterator<Item = &Local> {
+        self.args.iter().chain(self.continuation.as_ref())
+    }
+
+    fn to_vec(&self) -> Vec<Local> {
+        self.iter().copied().collect()
+    }
+
+    /*
     fn to_vec(&self) -> Vec<Local> {
         self.args
             .clone()
@@ -172,6 +168,7 @@ impl ClosureArgs {
             .chain(self.continuation)
             .collect()
     }
+    */
 
     fn num_required(&self) -> usize {
         self.args.len().saturating_sub(self.variadic as usize)
@@ -184,7 +181,7 @@ pub enum Cps {
     PrimOp(PrimOp, Vec<Value>, Local, Box<Cps>),
 
     /// Function application.
-    App(Value, Vec<Value>, Option<CallSiteId>),
+    App(Value, Vec<Value>, Option<Span>),
 
     /// Forward a list of values into an application.
     // TODO: I think we can get rid of this with better primitive operators, maybe.
@@ -193,13 +190,13 @@ pub enum Cps {
     /// Branching.
     If(Value, Box<Cps>, Box<Cps>),
 
-    /// Closure generation. The result of this operation is a *const Value::Closure
+    /// Function creation.
     Closure {
         args: ClosureArgs,
         body: Box<Cps>,
         val: Local,
         cexp: Box<Cps>,
-        debug: Option<FunctionDebugInfoId>,
+        span: Option<Span>,
     },
 
     /// Halt execution and return the values
@@ -239,8 +236,8 @@ impl Cps {
 }
 
 fn substitute_value(value: &mut Value, substitutions: &HashMap<Local, Value>) {
-    if let Value::Var(Var::Local(local)) = value {
-        if let Some(substitution) = substitutions.get(local) {
+    if let Some(local) = value.to_local() {
+        if let Some(substitution) = substitutions.get(&local) {
             *value = substitution.clone();
         }
     }

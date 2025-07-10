@@ -17,7 +17,7 @@ use std::{
     sync::Arc,
 };
 
-#[derive(Debug, Clone, PartialEq, Trace)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Trace)]
 pub struct Span {
     pub line: u32,
     pub column: usize,

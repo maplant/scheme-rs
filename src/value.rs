@@ -487,7 +487,7 @@ impl fmt::Display for UnpackedValue {
             Self::ByteVector(v) => vectors::display_vec("#u8(", v, f),
             Self::Closure(_) => write!(f, "<procedure>"),
             Self::Record(record) => write!(f, "<{record:?}>"),
-            Self::Syntax(syntax) => write!(f, "{syntax:?}"),
+            Self::Syntax(syntax) => write!(f, "{syntax:#?}"),
             Self::RecordTypeDescriptor(rtd) => write!(f, "<{rtd:?}>"),
             Self::Any(any) => {
                 let any = any.read().clone();
@@ -521,7 +521,7 @@ impl fmt::Debug for UnpackedValue {
                 vectors::display_vec("#(", v_read.as_ref(), f)
             }
             Self::ByteVector(v) => vectors::display_vec("#u8(", v, f),
-            Self::Syntax(syntax) => write!(f, "{syntax:?}"),
+            Self::Syntax(syntax) => write!(f, "{syntax:#?}"),
             Self::Closure(proc) => write!(f, "#<procedure {proc:?}>"),
             Self::Record(record) => write!(f, "<{record:#?}>"),
             Self::RecordTypeDescriptor(rtd) => write!(f, "<{rtd:?}>"),

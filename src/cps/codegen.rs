@@ -9,12 +9,12 @@ use inkwell::{
     module::Module,
     values::{BasicValueEnum, FunctionValue, IntValue, PointerValue},
 };
-use std::{collections::HashMap, rc::Rc};
+use std::{collections::HashMap, rc::Rc, sync::Arc};
 
 use crate::{
     gc::Gc,
-    proc::{Closure, ContinuationPtr, FuncPtr},
-    runtime::{IGNORE_CALL_SITE, IGNORE_FUNCTION, Runtime},
+    proc::{Closure, ContinuationPtr, FuncDebugInfo, FuncPtr},
+    runtime::{DebugInfo, Runtime},
     value::{ReflexiveValue, Value as SchemeValue},
 };
 
@@ -87,6 +87,7 @@ impl<'ctx> Allocs<'ctx> {
 }
 
 impl Cps {
+    #[allow(clippy::too_many_arguments)]
     pub fn into_closure<'ctx, 'b>(
         self,
         runtime: Gc<Runtime>,
@@ -95,6 +96,7 @@ impl Cps {
         module: &'b Module<'ctx>,
         ee: &ExecutionEngine<'ctx>,
         builder: &'b Builder<'ctx>,
+        debug_info: &'b mut DebugInfo,
     ) -> Result<Closure, BuilderError>
     where
         'ctx: 'b,
@@ -119,7 +121,8 @@ impl Cps {
         let fn_name = fn_value.to_func_name();
         let function = module.add_function(&fn_name, fn_type, None);
 
-        let mut cu = CompilationUnit::new(runtime.clone(), ctx, module, builder, function);
+        let mut cu =
+            CompilationUnit::new(runtime.clone(), ctx, module, builder, function, debug_info);
         let entry = ctx.append_basic_block(function, "entry");
         builder.position_at_end(entry);
 
@@ -167,7 +170,7 @@ impl Cps {
         cu.cps_codegen(self, None, &mut deferred)?;
 
         while let Some(next) = deferred.pop() {
-            next.codegen(ctx, module, builder, &mut deferred)?;
+            next.codegen(ctx, module, builder, debug_info, &mut deferred)?;
         }
 
         assert!(function.verify(true));
@@ -201,6 +204,7 @@ struct CompilationUnit<'ctx, 'b> {
     builder: &'b Builder<'ctx>,
     function: FunctionValue<'ctx>,
     rebinds: Rebinds<'ctx>,
+    debug_info: &'b mut DebugInfo,
 }
 
 // Everything returns a pointer allocated from a Gc, so everything is a Gc<Value>.
@@ -218,6 +222,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         module: &'b Module<'ctx>,
         builder: &'b Builder<'ctx>,
         function: FunctionValue<'ctx>,
+        debug_info: &'b mut DebugInfo,
     ) -> Self {
         Self {
             runtime,
@@ -226,6 +231,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             builder,
             function,
             rebinds: Rebinds::new(),
+            debug_info,
         }
     }
 
@@ -239,13 +245,10 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             Cps::If(cond, success, failure) => {
                 self.if_codegen(&cond, *success, *failure, allocs, deferred)?
             }
-            Cps::App(operator, args, call_site_id) => {
-                self.app_codegen(&operator, &args, call_site_id, allocs)?
-            }
+            Cps::App(operator, args, loc) => self.app_codegen(&operator, &args, loc, allocs)?,
             Cps::Forward(operator, arg) => self.forward_codegen(&operator, &arg, allocs)?,
             Cps::PrimOp(PrimOp::Set, args, _, cexpr) => {
-                self.store_codegen(&args[1], &args[0])?;
-                self.cps_codegen(*cexpr, allocs, deferred)?;
+                self.store_codegen(&args[1], &args[0], *cexpr, allocs, deferred)?;
             }
             Cps::PrimOp(PrimOp::AllocCell, _, into, cexpr) => {
                 self.alloc_cell_codegen(into, *cexpr, allocs, deferred)?;
@@ -273,7 +276,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 body,
                 val,
                 cexp,
-                debug: debug_info_id,
+                span: loc,
             } => {
                 let bundle = ClosureBundle::new(
                     self.runtime.clone(),
@@ -282,8 +285,9 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                     val,
                     args.clone(),
                     body.as_ref().clone(),
+                    loc,
                 );
-                self.make_closure_codegen(&bundle, *cexp, debug_info_id, allocs, deferred)?;
+                self.make_closure_codegen(&bundle, *cexp, allocs, deferred)?;
                 deferred.push(bundle);
             }
             Cps::Halt(value) => self.halt_codegen(&value, allocs)?,
@@ -291,20 +295,71 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         Ok(())
     }
 
-    fn value_codegen(&self, value: &Value) -> BasicValueEnum<'ctx> {
+    fn value_codegen(
+        &self,
+        value: &Value,
+        allocs: &Option<Rc<Allocs<'ctx>>>,
+    ) -> Result<BasicValueEnum<'ctx>, BuilderError> {
         match value {
             Value::Var(var) => {
                 let cell = *self.rebinds.fetch_bind(var);
                 if cell.is_int_value() {
-                    return cell;
+                    return Ok(cell);
                 }
                 let read_cell = self.module.get_function("read_cell").unwrap();
-                self.builder
+                let read_value = self
+                    .builder
                     .build_call(read_cell, &[cell.into()], "read_value")
                     .unwrap()
                     .try_as_basic_value()
                     .left()
-                    .unwrap()
+                    .unwrap();
+
+                // Check if the cell is undefined:
+                let is_undef_bb = self.ctx.append_basic_block(self.function, "is_undef");
+                let success_bb = self.ctx.append_basic_block(self.function, "success");
+
+                let undef = self.ctx.i64_type().const_int(0, false);
+                let is_undef = self.builder.build_int_compare(
+                    IntPredicate::EQ,
+                    read_value.into_int_value(),
+                    undef,
+                    "is_undef",
+                )?;
+                self.builder
+                    .build_conditional_branch(is_undef, is_undef_bb, success_bb)?;
+
+                self.builder.position_at_end(is_undef_bb);
+                self.drops_codegen(allocs.clone())?;
+                let unbound_var_error = self.module.get_function("unbound_variable").unwrap();
+                let error = self
+                    .builder
+                    .build_call(
+                        unbound_var_error,
+                        &[self
+                            .ctx
+                            .i32_type()
+                            .const_int(
+                                match var {
+                                    Var::Global(glob) => glob.name.sym.0,
+                                    Var::Local(Local {
+                                        name: Some(sym), ..
+                                    }) => sym.0,
+                                    _ => Symbol::intern("(unknown)").0,
+                                } as u64,
+                                false,
+                            )
+                            .into()],
+                        "unbound_var_error",
+                    )?
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap();
+                self.builder.build_return(Some(&error))?;
+
+                self.builder.position_at_end(success_bb);
+
+                Ok(read_value)
             }
             Value::Const(val) => {
                 let mut runtime_write = self.runtime.write();
@@ -320,7 +375,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                         .as_ref(),
                 );
                 let i64_type = self.ctx.i64_type();
-                i64_type.const_int(raw, false).into()
+                Ok(i64_type.const_int(raw, false).into())
             }
         }
     }
@@ -365,8 +420,8 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         allocs: Option<Rc<Allocs<'ctx>>>,
         deferred: &mut Vec<ClosureBundle<'ctx>>,
     ) -> Result<(), BuilderError> {
-        let cont = self.value_codegen(cont);
-        let winders = self.value_codegen(winders);
+        let cont = self.value_codegen(cont, &allocs)?;
+        let winders = self.value_codegen(winders, &allocs)?;
         let prepare_continuation = self.module.get_function("prepare_continuation").unwrap();
         let prepared = self
             .builder
@@ -417,7 +472,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                     "vals_elem",
                 )?
             };
-            let val = self.value_codegen(val);
+            let val = self.value_codegen(val, &allocs)?;
             self.builder.build_store(ep, val)?;
         }
 
@@ -464,7 +519,6 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             undef,
             "is_undef",
         )?;
-        // let is_undef = self.builder.build_is_null(result_val, "is_undef")?;
         self.builder
             .build_conditional_branch(is_undef, is_undef_bb, success_bb)?;
 
@@ -540,17 +594,18 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
     }
 
     fn app_codegen(
-        &self,
+        &mut self,
         operator: &Value,
         args: &[Value],
-        call_site_id: Option<CallSiteId>,
+        loc: Option<Span>,
         allocs: Option<Rc<Allocs<'ctx>>>,
     ) -> Result<(), BuilderError> {
-        let operator = self.value_codegen(operator);
+        let operator = self.value_codegen(operator, &allocs)?;
 
         // Allocate space for the args to be passed to make_application
         let ptr_type = self.ctx.ptr_type(AddressSpace::default());
         let i32_type = self.ctx.i32_type();
+        let i64_type = self.ctx.i64_type();
         let array_type = ptr_type.array_type(args.len() as u32);
         let args_alloca = self.builder.build_alloca(array_type, "args")?;
         for (i, arg) in args.iter().enumerate() {
@@ -562,7 +617,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                     "alloca_elem",
                 )?
             };
-            let val = self.value_codegen(arg);
+            let val = self.value_codegen(arg, &allocs)?;
             self.builder.build_store(ep, val)?;
         }
 
@@ -572,11 +627,6 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             .build_call(
                 make_app,
                 &[
-                    self.function
-                        .get_nth_param(RUNTIME_PARAM)
-                        .unwrap()
-                        .into_pointer_value()
-                        .into(),
                     operator.into(),
                     args_alloca.into(),
                     i32_type.const_int(args.len() as u64, false).into(),
@@ -590,9 +640,22 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                         .unwrap()
                         .into_pointer_value()
                         .into(),
-                    i32_type
-                        .const_int(call_site_id.unwrap_or(IGNORE_CALL_SITE) as u64, false)
-                        .into(),
+                    {
+                        if let Some(loc) = loc {
+                            let span = Arc::new(loc);
+                            let span_ptr = Arc::as_ptr(&span);
+                            self.debug_info.store_span(span);
+                            self.builder
+                                .build_int_to_ptr(
+                                    i64_type.const_int(span_ptr as u64, false),
+                                    ptr_type,
+                                    "span_ptr",
+                                )?
+                                .into()
+                        } else {
+                            ptr_type.const_null().into()
+                        }
+                    },
                 ],
                 "apply",
             )?
@@ -610,13 +673,13 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
     }
 
     fn forward_codegen(
-        &self,
+        &mut self,
         operator: &Value,
         arg: &Value,
         allocs: Option<Rc<Allocs<'ctx>>>,
     ) -> Result<(), BuilderError> {
-        let operator = self.value_codegen(operator);
-        let arg = self.value_codegen(arg);
+        let operator = self.value_codegen(operator, &allocs)?;
+        let arg = self.value_codegen(arg, &allocs)?;
 
         let make_forward = self.module.get_function("forward").unwrap();
         let app = self
@@ -657,7 +720,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         args: &Value,
         allocs: Option<Rc<Allocs<'ctx>>>,
     ) -> Result<(), BuilderError> {
-        let val = self.value_codegen(args);
+        let val = self.value_codegen(args, &allocs)?;
         let make_app = self.module.get_function("halt").unwrap();
         let app = self
             .builder
@@ -681,7 +744,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         allocs: Option<Rc<Allocs<'ctx>>>,
         deferred: &mut Vec<ClosureBundle<'ctx>>,
     ) -> Result<(), BuilderError> {
-        let cond = self.value_codegen(cond);
+        let cond = self.value_codegen(cond, &allocs)?;
         let truthy = self.module.get_function("truthy").unwrap();
         let cond = self
             .builder
@@ -707,13 +770,20 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         Ok(())
     }
 
-    fn store_codegen(&self, from: &Value, to: &Value) -> Result<(), BuilderError> {
-        let from = self.value_codegen(from).into();
+    fn store_codegen(
+        &mut self,
+        from: &Value,
+        to: &Value,
+        cexpr: Cps,
+        allocs: Option<Rc<Allocs<'ctx>>>,
+        deferred: &mut Vec<ClosureBundle<'ctx>>,
+    ) -> Result<(), BuilderError> {
+        let from = self.value_codegen(from, &allocs)?.into();
         let Value::Var(to) = to else { unreachable!() };
         let to = self.rebinds.fetch_bind(to).into_pointer_value().into();
         let store = self.module.get_function("store").unwrap();
         let _ = self.builder.build_call(store, &[from, to], "")?;
-        Ok(())
+        self.cps_codegen(cexpr, allocs, deferred)
     }
 
     fn get_call_transformer_codegen(
@@ -774,11 +844,11 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         &mut self,
         bundle: &ClosureBundle<'ctx>,
         cexp: Cps,
-        debug_info_id: Option<FunctionDebugInfoId>,
         allocs: Option<Rc<Allocs<'ctx>>>,
         deferred: &mut Vec<ClosureBundle<'ctx>>,
     ) -> Result<(), BuilderError> {
         let i32_type = self.ctx.i32_type();
+        let i64_type = self.ctx.i64_type();
         let bool_type = self.ctx.bool_type();
         let ptr_type = self.ctx.ptr_type(AddressSpace::default());
 
@@ -842,12 +912,25 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         ];
 
         let make_closure = if bundle.args.continuation.is_some() {
-            args.push(
-                i32_type
-                    .const_int(debug_info_id.unwrap_or(IGNORE_FUNCTION) as u64, false)
-                    .into(),
-            );
-            self.module.get_function("make_closure").unwrap()
+            args.push(if let Some(ref loc) = bundle.loc {
+                let debug_info = Arc::new(FuncDebugInfo::new(
+                    bundle.val.name,
+                    bundle.args.to_vec(),
+                    loc.clone(),
+                ));
+                let debug_info_ptr = Arc::as_ptr(&debug_info);
+                self.debug_info.store_func_info(debug_info);
+                self.builder
+                    .build_int_to_ptr(
+                        i64_type.const_int(debug_info_ptr as u64, false),
+                        ptr_type,
+                        "debug_info_ptr",
+                    )?
+                    .into()
+            } else {
+                ptr_type.const_null().into()
+            });
+            self.module.get_function("make_user").unwrap()
         } else {
             self.module.get_function("make_continuation").unwrap()
         };
@@ -894,6 +977,7 @@ pub struct ClosureBundle<'ctx> {
     args: ClosureArgs,
     body: Cps,
     function: FunctionValue<'ctx>,
+    loc: Option<Span>,
 }
 
 const RUNTIME_PARAM: u32 = 0;
@@ -912,11 +996,12 @@ impl<'ctx> ClosureBundle<'ctx> {
         val: Local,
         args: ClosureArgs,
         body: Cps,
+        loc: Option<Span>,
     ) -> Self {
         // TODO: These calls need to be cached and also calculated at the same time.
         let env = body
             .free_variables()
-            .difference(&args.to_vec().into_iter().collect::<HashSet<_>>())
+            .difference(&args.iter().cloned().collect::<HashSet<_>>())
             .cloned()
             .collect::<Vec<_>>();
         let globals = body.globals().into_iter().collect::<Vec<_>>();
@@ -959,6 +1044,7 @@ impl<'ctx> ClosureBundle<'ctx> {
             args,
             body,
             function,
+            loc,
         }
     }
 
@@ -967,6 +1053,7 @@ impl<'ctx> ClosureBundle<'ctx> {
         ctx: &'ctx Context,
         module: &'b Module<'ctx>,
         builder: &'b Builder<'ctx>,
+        debug_info: &'b mut DebugInfo,
         deferred: &mut Vec<Self>,
     ) -> Result<(), BuilderError> {
         let i64_type = ctx.i64_type();
@@ -975,8 +1062,14 @@ impl<'ctx> ClosureBundle<'ctx> {
 
         builder.position_at_end(entry);
 
-        let mut cu =
-            CompilationUnit::new(self.runtime.clone(), ctx, module, builder, self.function);
+        let mut cu = CompilationUnit::new(
+            self.runtime.clone(),
+            ctx,
+            module,
+            builder,
+            self.function,
+            debug_info,
+        );
 
         let env_param = self
             .function

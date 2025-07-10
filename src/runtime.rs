@@ -7,25 +7,28 @@ use crate::{
     lists::{self, list_to_vec},
     num,
     proc::{
-        Application, Closure, ClosurePtr, ContinuationPtr, DynamicWind, FuncPtr, FunctionDebugInfo,
+        Application, Closure, ContinuationPtr, DynamicWind, FuncDebugInfo, FuncPtr, UserPtr,
         clone_continuation_env,
     },
+    symbols::Symbol,
     syntax::Span,
     value::{ReflexiveValue, UnpackedValue, Value},
     vectors,
 };
 use indexmap::IndexMap;
 use inkwell::{
-    AddressSpace, OptimizationLevel,
+    OptimizationLevel,
     builder::BuilderError,
     context::Context,
     execution_engine::ExecutionEngine,
     module::Module,
     targets::{InitializationConfig, Target},
 };
+use scheme_rs_macros::runtime_fn;
 use std::{
     collections::{HashMap, HashSet},
     mem::ManuallyDrop,
+    sync::Arc,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -62,11 +65,12 @@ impl Default for Runtime {
 
 impl Runtime {
     pub fn new() -> Self {
+        // Ensure the GC is initialized:
         init_gc();
         let (compilation_buffer_tx, compilation_buffer_rx) = mpsc::channel(MAX_COMPILATION_TASKS);
-        // According the inkwell (and therefore LLVM docs), one LlvmContext may be
-        // present per thread. Thus, we spawn a new thread and a  new compilation
-        // task for every Runtime.
+        // According the inkwell (and therefore LLVM docs), one LlvmContext may
+        // be present per thread. Thus, we spawn a new thread and a new
+        // compilation task for every Runtime:
         std::thread::spawn(move || compilation_task(compilation_buffer_rx));
         Runtime {
             compilation_buffer_tx,
@@ -102,44 +106,19 @@ impl Gc<Runtime> {
 
 #[derive(Trace, Clone, Debug, Default)]
 pub struct DebugInfo {
-    /// Location of function applications
-    pub(crate) call_sites: Vec<Span>,
-    /// Functions and their debug information
-    pub(crate) function_debug_info: Vec<FunctionDebugInfo>,
+    /// Stored locations:
+    stored_spans: Vec<Arc<Span>>,
+    /// Stored user function debug information:
+    stored_func_info: Vec<Arc<FuncDebugInfo>>,
 }
 
-pub type CallSiteId = u32;
-pub type FunctionDebugInfoId = u32;
-
-pub const IGNORE_CALL_SITE: CallSiteId = u32::MAX;
-pub const IGNORE_FUNCTION: FunctionDebugInfoId = u32::MAX;
-
 impl DebugInfo {
-    pub fn new_call_site(&mut self, span: Span) -> CallSiteId {
-        let id = self.call_sites.len();
-        self.call_sites.push(span);
-        id as CallSiteId
+    pub fn store_span(&mut self, span: Arc<Span>) {
+        self.stored_spans.push(span);
     }
 
-    pub fn new_function_debug_info(
-        &mut self,
-        function_debug_info: FunctionDebugInfo,
-    ) -> FunctionDebugInfoId {
-        let id = self.function_debug_info.len();
-        self.function_debug_info.push(function_debug_info);
-        id as FunctionDebugInfoId
-    }
-
-    pub fn get_function_debug_info(
-        &self,
-        function_debug_info_id: FunctionDebugInfoId,
-    ) -> Option<&FunctionDebugInfo> {
-        if function_debug_info_id == IGNORE_FUNCTION {
-            None
-        } else {
-            self.function_debug_info
-                .get(function_debug_info_id as usize)
-        }
+    pub fn store_func_info(&mut self, debug_info: Arc<FuncDebugInfo>) {
+        self.stored_func_info.push(debug_info);
     }
 }
 
@@ -147,10 +126,10 @@ struct CompilationTask {
     env: IndexMap<Local, Gc<Value>>,
     compilation_unit: Cps,
     completion_tx: oneshot::Sender<CompilationResult>,
-    /// Since Contexts are per-thread, we will only ever see the same Runtime. However,
-    /// we can't cache the Runtime, as that would cause a ref cycle that would prevent
-    /// the last compilation buffer sender to drop. Therefore, its lifetime is that of
-    /// the compilation task
+    /// Since Contexts are per-thread, we will only ever see the same Runtime.
+    /// However, we can't cache the Runtime, as that would cause a ref cycle
+    /// that would prevent the last compilation buffer sender to drop.
+    /// Therefore, its lifetime is that of the compilation task
     runtime: Gc<Runtime>,
 }
 
@@ -159,9 +138,15 @@ type CompilationResult = Result<Gc<Closure>, BuilderError>;
 fn compilation_task(mut compilation_queue_rx: mpsc::Receiver<CompilationTask>) {
     Target::initialize_native(&InitializationConfig::default()).unwrap();
 
-    // Create an LLVM context, module and execution engine. All of these should live for
-    // the lifetime of the program.
+    // Create an LLVM context, module and execution engine. All of these should
+    // live for the maximum lifetime of the generated functions. This contains
+    // all of the allocated memory for the functions.
     let context = Context::create();
+
+    // By storing all of the debug information in the same lifetime as the
+    // Context, we can directly put pointers referencing the debug information
+    // in our JIT compiled functions:
+    let mut debug_info = DebugInfo::default();
 
     let mut modules = Vec::new();
 
@@ -185,7 +170,15 @@ fn compilation_task(mut compilation_queue_rx: mpsc::Receiver<CompilationTask>) {
         install_runtime(&context, &module, &execution_engine);
 
         let closure = compilation_unit
-            .into_closure(runtime, env, &context, &module, &execution_engine, &builder)
+            .into_closure(
+                runtime,
+                env,
+                &context,
+                &module,
+                &execution_engine,
+                &builder,
+                &mut debug_info,
+            )
             .map(Gc::new);
 
         modules.push(module);
@@ -194,179 +187,44 @@ fn compilation_task(mut compilation_queue_rx: mpsc::Receiver<CompilationTask>) {
     }
 }
 
+struct RuntimeFn {
+    install: for<'ctx> fn(&'ctx Context, module: &Module<'ctx>, ee: &ExecutionEngine<'ctx>),
+}
+
+impl RuntimeFn {
+    const fn new(
+        install: for<'ctx> fn(&'ctx Context, module: &Module<'ctx>, ee: &ExecutionEngine<'ctx>),
+    ) -> Self {
+        Self { install }
+    }
+}
+
+inventory::collect!(RuntimeFn);
+
 fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &ExecutionEngine<'ctx>) {
-    let i32_type = ctx.i32_type();
-    let i64_type = ctx.i64_type();
-    let bool_type = ctx.bool_type();
-    let void_type = ctx.void_type();
-    let ptr_type = ctx.ptr_type(AddressSpace::default());
+    for runtime_fn in inventory::iter::<RuntimeFn> {
+        (runtime_fn.install)(ctx, module, ee);
+    }
+}
 
-    // alloc_cell:
-    let sig = ptr_type.fn_type(&[], false);
-    let f = module.add_function("alloc_cell", sig, None);
-    ee.add_global_mapping(&f, alloc_cell as usize);
-
-    // read_cell:
-    let sig = i64_type.fn_type(&[ptr_type.into()], false);
-    let f = module.add_function("read_cell", sig, None);
-    ee.add_global_mapping(&f, read_cell as usize);
-
-    // dropc:
-    let sig = void_type.fn_type(&[ptr_type.into()], false);
-    let f = module.add_function("dropc", sig, None);
-    ee.add_global_mapping(&f, dropc as usize);
-
-    // dropv:
-    let sig = void_type.fn_type(&[i64_type.into()], false);
-    let f = module.add_function("dropv", sig, None);
-    ee.add_global_mapping(&f, dropv as usize);
-
-    // apply:
-    let sig = ptr_type.fn_type(
-        &[
-            ptr_type.into(), // runtime
-            i64_type.into(), // operator
-            ptr_type.into(), // args
-            i32_type.into(), // num args
-            ptr_type.into(), // exception handler
-            ptr_type.into(), // dynamic wind
-            i32_type.into(), // call site id
-        ],
-        false,
-    );
-    let f = module.add_function("apply", sig, None);
-    ee.add_global_mapping(&f, apply as usize);
-
-    // forward:
-    let sig = ptr_type.fn_type(
-        &[
-            i64_type.into(), // operator
-            i64_type.into(), // args
-            ptr_type.into(), // exception handler
-            ptr_type.into(), // dynamic_wind
-        ],
-        false,
-    );
-    let f = module.add_function("forward", sig, None);
-    ee.add_global_mapping(&f, forward as usize);
-
-    // halt:
-    let sig = ptr_type.fn_type(&[i64_type.into()], false);
-    let f = module.add_function("halt", sig, None);
-    ee.add_global_mapping(&f, halt as usize);
-
-    // truthy:
-    let sig = bool_type.fn_type(&[i64_type.into()], false);
-    let f = module.add_function("truthy", sig, None);
-    ee.add_global_mapping(&f, truthy as usize);
-
-    // store:
-    let sig = void_type.fn_type(&[i64_type.into(), ptr_type.into()], false);
-    let f = module.add_function("store", sig, None);
-    ee.add_global_mapping(&f, store as usize);
-
-    // make_continuation
-    let sig = ptr_type.fn_type(
-        &[
-            ptr_type.into(),  // Runtime
-            ptr_type.into(),  // Continuation Ptr
-            ptr_type.into(),  // Env
-            i32_type.into(),  // Num envs
-            ptr_type.into(),  // Globals
-            i32_type.into(),  // Num globals
-            i32_type.into(),  // Num required args
-            bool_type.into(), // Variadic?
-        ],
-        false,
-    );
-    let f = module.add_function("make_continuation", sig, None);
-    ee.add_global_mapping(&f, make_continuation as usize);
-
-    // make_closure:
-    let sig = ptr_type.fn_type(
-        &[
-            ptr_type.into(),  // Runtime
-            ptr_type.into(),  // Closure Ptr
-            ptr_type.into(),  // Env
-            i32_type.into(),  // Num envs
-            ptr_type.into(),  // Globals
-            i32_type.into(),  // Num globals
-            i32_type.into(),  // Num required args
-            bool_type.into(), // Variadic?
-            i32_type.into(),  // Debug info
-        ],
-        false,
-    );
-    let f = module.add_function("make_closure", sig, None);
-    ee.add_global_mapping(&f, make_closure as usize);
-
-    // get_call_transformer_fn:
-    let sig = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into(), i32_type.into()], false);
-    let f = module.add_function("get_call_transformer_fn", sig, None);
-    ee.add_global_mapping(&f, get_call_transformer_fn as usize);
-
-    // extract_winders:
-    let sig = ptr_type.fn_type(&[ptr_type.into()], false);
-    let f = module.add_function("extract_winders", sig, None);
-    ee.add_global_mapping(&f, extract_winders as usize);
-
-    // prepare_continuation:
-    let sig = i64_type.fn_type(&[i64_type.into(), i64_type.into(), ptr_type.into()], false);
-    let f = module.add_function("prepare_continuation", sig, None);
-    ee.add_global_mapping(&f, prepare_continuation as usize);
-
-    // add:
-    let sig = i64_type.fn_type(&[ptr_type.into(), i32_type.into(), ptr_type.into()], false);
-    let f = module.add_function("add", sig, None);
-    ee.add_global_mapping(&f, add as usize);
-
-    // sub:
-    let sig = i64_type.fn_type(&[ptr_type.into(), i32_type.into(), ptr_type.into()], false);
-    let f = module.add_function("sub", sig, None);
-    ee.add_global_mapping(&f, sub as usize);
-
-    // mul:
-    let sig = i64_type.fn_type(&[ptr_type.into(), i32_type.into(), ptr_type.into()], false);
-    let f = module.add_function("mul", sig, None);
-    ee.add_global_mapping(&f, mul as usize);
-
-    // div:
-    let sig = i64_type.fn_type(&[ptr_type.into(), i32_type.into(), ptr_type.into()], false);
-    let f = module.add_function("div", sig, None);
-    ee.add_global_mapping(&f, div as usize);
-
-    // equal:
-    let sig = i64_type.fn_type(&[ptr_type.into(), i32_type.into(), ptr_type.into()], false);
-    let f = module.add_function("equal", sig, None);
-    ee.add_global_mapping(&f, equal as usize);
-
-    // greater:
-    let sig = i64_type.fn_type(&[ptr_type.into(), i32_type.into(), ptr_type.into()], false);
-    let f = module.add_function("greater", sig, None);
-    ee.add_global_mapping(&f, greater as usize);
-
-    // greater_equal:
-    let sig = i64_type.fn_type(&[ptr_type.into(), i32_type.into(), ptr_type.into()], false);
-    let f = module.add_function("greater_equal", sig, None);
-    ee.add_global_mapping(&f, greater_equal as usize);
-
-    // lesser:
-    let sig = i64_type.fn_type(&[ptr_type.into(), i32_type.into(), ptr_type.into()], false);
-    let f = module.add_function("lesser", sig, None);
-    ee.add_global_mapping(&f, lesser as usize);
-
-    // lesser_equal:
-    let sig = i64_type.fn_type(&[ptr_type.into(), i32_type.into(), ptr_type.into()], false);
-    let f = module.add_function("lesser_equal", sig, None);
-    ee.add_global_mapping(&f, lesser_equal as usize);
+unsafe fn arc_from_ptr<T>(ptr: *const T) -> Option<Arc<T>> {
+    unsafe {
+        if ptr.is_null() {
+            return None;
+        }
+        Arc::increment_strong_count(ptr);
+        Some(Arc::from_raw(ptr))
+    }
 }
 
 /// Allocate a new Gc with a value of undefined
+#[runtime_fn]
 unsafe extern "C" fn alloc_cell() -> *mut GcInner<Value> {
     Gc::into_raw(Gc::new(Value::undefined()))
 }
 
 /// Read the value of a Cell
+#[runtime_fn]
 unsafe extern "C" fn read_cell(cell: *mut GcInner<Value>) -> i64 {
     unsafe {
         // We do not need to increment the reference count of the cell, it is going to
@@ -379,11 +237,13 @@ unsafe extern "C" fn read_cell(cell: *mut GcInner<Value>) -> i64 {
 }
 
 /// Decrement the reference count of a cell
+#[runtime_fn]
 unsafe extern "C" fn dropc(cell: *mut GcInner<Value>) {
     unsafe { Gc::decrement_reference_count(cell) }
 }
 
 /// Decrement the reference count of a value
+#[runtime_fn]
 unsafe extern "C" fn dropv(val: i64) {
     unsafe { drop(Value::from_raw(val as u64)) }
 }
@@ -391,14 +251,14 @@ unsafe extern "C" fn dropv(val: i64) {
 /// Create a boxed application
 /// TODO: Take error handler as argument, return application with error handler
 /// if operator is not a closure.
+#[runtime_fn]
 unsafe extern "C" fn apply(
-    runtime: *mut GcInner<Runtime>,
     op: i64,
     args: *const i64,
     num_args: u32,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
-    call_site_id: u32,
+    span: *const Span,
 ) -> *mut Result<Application, Condition> {
     unsafe {
         let args: Vec<_> = (0..num_args)
@@ -414,20 +274,12 @@ unsafe extern "C" fn apply(
             }
         };
 
-        let call_site = (call_site_id != u32::MAX).then(|| {
-            // No need to increment the ref count for runtime here, it is dropped
-            // immediately.
-            let runtime = ManuallyDrop::new(Gc::from_raw(runtime));
-            let runtime_read = runtime.read();
-            runtime_read.debug_info.call_sites[call_site_id as usize].clone()
-        });
-
         let app = Application::new(
             op,
             args,
             ExceptionHandler::from_ptr(exception_handler),
             dynamic_wind.as_ref().unwrap().clone(),
-            call_site,
+            arc_from_ptr(span),
         );
 
         Box::into_raw(Box::new(Ok(app)))
@@ -435,6 +287,7 @@ unsafe extern "C" fn apply(
 }
 
 /// Create a boxed application that forwards a list of values to the operator
+#[runtime_fn]
 unsafe extern "C" fn forward(
     op: i64,
     args: i64,
@@ -470,6 +323,7 @@ unsafe extern "C" fn forward(
 }
 
 /// Create a boxed application that simply returns its arguments
+#[runtime_fn]
 pub(crate) unsafe extern "C" fn halt(args: i64) -> *mut Result<Application, Condition> {
     unsafe {
         // We do not need to increment the rc here, it will be incremented in list_to_vec
@@ -483,6 +337,7 @@ pub(crate) unsafe extern "C" fn halt(args: i64) -> *mut Result<Application, Cond
 
 /// Evaluate a `Gc<Value>` as "truthy" or not, as in whether it triggers a
 /// conditional.
+#[runtime_fn]
 unsafe extern "C" fn truthy(val: i64) -> bool {
     unsafe {
         // No need to increment the reference count here:
@@ -491,6 +346,7 @@ unsafe extern "C" fn truthy(val: i64) -> bool {
 }
 
 /// Replace the value pointed to at to with the value contained in from.
+#[runtime_fn]
 unsafe extern "C" fn store(from: i64, to: *mut GcInner<Value>) {
     unsafe {
         // We do not need to increment the ref count for to, it is dropped
@@ -502,6 +358,7 @@ unsafe extern "C" fn store(from: i64, to: *mut GcInner<Value>) {
 }
 
 /// Allocate a closure
+#[runtime_fn]
 unsafe extern "C" fn make_continuation(
     runtime: *mut GcInner<Runtime>,
     fn_ptr: ContinuationPtr,
@@ -541,16 +398,17 @@ unsafe extern "C" fn make_continuation(
 }
 
 /// Allocate a closure for a function that takes a continuation
-unsafe extern "C" fn make_closure(
+#[runtime_fn]
+unsafe extern "C" fn make_user(
     runtime: *mut GcInner<Runtime>,
-    fn_ptr: ClosurePtr,
+    fn_ptr: UserPtr,
     env: *const *mut GcInner<Value>,
     num_envs: u32,
     globals: *const *mut GcInner<Value>,
     num_globals: u32,
     num_required_args: u32,
     variadic: bool,
-    debug_info_id: u32,
+    debug_info: *const FuncDebugInfo,
 ) -> *mut GcInner<Value> {
     unsafe {
         // Collect the environment:
@@ -570,10 +428,10 @@ unsafe extern "C" fn make_closure(
             Gc::from_raw_inc_rc(runtime),
             env,
             globals,
-            FuncPtr::Closure(fn_ptr),
+            FuncPtr::User(fn_ptr),
             num_required_args as usize,
             variadic,
-            Some(debug_info_id),
+            arc_from_ptr(debug_info),
         );
 
         Gc::into_raw(Gc::new(Value::from(closure)))
@@ -581,6 +439,7 @@ unsafe extern "C" fn make_closure(
 }
 
 /// Call a transformer with the given argument and return the expansion
+#[runtime_fn]
 unsafe extern "C" fn get_call_transformer_fn(
     runtime: *mut GcInner<Runtime>,
     env: *const *mut GcInner<Value>,
@@ -599,11 +458,18 @@ unsafe extern "C" fn get_call_transformer_fn(
             FuncPtr::Bridge(expand::call_transformer),
             3,
             false,
-            Some(IGNORE_FUNCTION),
+            None,
         );
 
         Gc::into_raw(Gc::new(Value::from(closure)))
     }
+}
+
+/// Return an error in the case that a value is undefined
+#[runtime_fn]
+unsafe extern "C" fn unbound_variable(symbol: u32) -> *mut Result<Application, Condition> {
+    let sym = Symbol(symbol);
+    Box::into_raw(Box::new(Err(Condition::error(format!("{sym} is unbound")))))
 }
 
 /*
@@ -620,6 +486,7 @@ unsafe extern "C" fn cons(
 
 /// Extract the current winders from the environment and return them as a vec.
 /// This has to return a Gc since this is added to the environment of the continuation.
+#[runtime_fn]
 unsafe extern "C" fn extract_winders(dynamic_wind: *const DynamicWind) -> *mut GcInner<Value> {
     unsafe {
         let dynamic_wind = dynamic_wind.as_ref().unwrap();
@@ -640,6 +507,7 @@ unsafe extern "C" fn extract_winders(dynamic_wind: *const DynamicWind) -> *mut G
 ///
 /// Expects that the continuation and winders will be provided in the form of a
 /// pair of the continuation and vector of pairs of in/out winders.
+#[runtime_fn]
 unsafe extern "C" fn prepare_continuation(
     cont: i64,
     winders: i64,
@@ -847,6 +715,7 @@ unsafe extern "C" fn call_thunks_pass_args(
     }
 }
 
+#[runtime_fn]
 unsafe extern "C" fn add(
     vals: *const i64,
     num_vals: u32,
@@ -867,6 +736,7 @@ unsafe extern "C" fn add(
     }
 }
 
+#[runtime_fn]
 unsafe extern "C" fn sub(
     vals: *const i64,
     num_vals: u32,
@@ -886,6 +756,7 @@ unsafe extern "C" fn sub(
     }
 }
 
+#[runtime_fn]
 unsafe extern "C" fn mul(
     vals: *const i64,
     num_vals: u32,
@@ -905,6 +776,7 @@ unsafe extern "C" fn mul(
     }
 }
 
+#[runtime_fn]
 unsafe extern "C" fn div(
     vals: *const i64,
     num_vals: u32,
@@ -926,6 +798,7 @@ unsafe extern "C" fn div(
 
 macro_rules! define_comparison_fn {
     ( $name:ident ) => {
+        #[runtime_fn]
         unsafe extern "C" fn $name(
             vals: *const i64,
             num_vals: u32,

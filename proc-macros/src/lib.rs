@@ -1,10 +1,10 @@
 use proc_macro::{self, TokenStream};
-use proc_macro2::Span;
-use quote::quote;
+use proc_macro2::{Literal, Span};
+use quote::{format_ident, quote};
 use syn::{
     DataEnum, DataStruct, DeriveInput, Fields, FnArg, GenericParam, Generics, Ident, ItemFn,
-    LitStr, Member, Pat, PatIdent, PatType, Token, Type, TypeReference, parse_macro_input,
-    parse_quote, punctuated::Punctuated,
+    LitStr, Member, Pat, PatIdent, PatType, Token, Type, TypePath, TypeReference,
+    parse_macro_input, parse_quote, punctuated::Punctuated,
 };
 
 #[proc_macro_attribute]
@@ -400,4 +400,69 @@ fn is_gc(arg: &Type) -> bool {
             == Some("Gc");
     }
     false
+}
+
+fn is_primitive(path: &TypePath, ty: &'static str) -> bool {
+    path.path
+        .segments
+        .last()
+        .map(|p| p.ident.to_string())
+        .as_deref()
+        == Some(ty)
+}
+
+fn rust_type_to_llvm_type(ty: &Type) -> Ident {
+    match ty {
+        Type::Path(path) if is_primitive(path, "ContinuationPtr") => format_ident!("ptr_type"),
+        Type::Path(path) if is_primitive(path, "UserPtr") => format_ident!("ptr_type"),
+        Type::Path(path) if is_primitive(path, "BridgePtr") => format_ident!("ptr_type"),
+        Type::Path(path) if is_primitive(path, "bool") => format_ident!("bool_type"),
+        Type::Path(path) if is_primitive(path, "i32") => format_ident!("i32_type"),
+        Type::Path(path) if is_primitive(path, "i64") => format_ident!("i64_type"),
+        Type::Path(path) if is_primitive(path, "u32") => format_ident!("i32_type"),
+        Type::Path(path) if is_primitive(path, "u64") => format_ident!("i64_type"),
+        Type::Ptr(_) => format_ident!("ptr_type"),
+        Type::Tuple(_) => format_ident!("void_type"),
+        x => unreachable!("bad type: {x:?}"),
+    }
+}
+
+#[proc_macro_attribute]
+pub fn runtime_fn(_args: TokenStream, item: TokenStream) -> TokenStream {
+    let runtime_fn = parse_macro_input!(item as ItemFn);
+
+    let name_ident = runtime_fn.sig.ident.clone();
+    let name_lit = Literal::string(&runtime_fn.sig.ident.to_string());
+    let ret = match runtime_fn.sig.output {
+        syn::ReturnType::Default => format_ident!("void_type"),
+        syn::ReturnType::Type(_, ref ty) => rust_type_to_llvm_type(&ty),
+    };
+    let args: Vec<_> = runtime_fn
+        .sig
+        .inputs
+        .iter()
+        .map(|arg| {
+            let FnArg::Typed(pat) = arg else {
+                unreachable!("here: {arg:?}");
+            };
+            rust_type_to_llvm_type(&pat.ty)
+        })
+        .collect();
+
+    quote! {
+        #[allow(unused)]
+        inventory::submit!(RuntimeFn::new(|ctx, module, ee| {
+            let i32_type = ctx.i32_type();
+            let i64_type = ctx.i64_type();
+            let bool_type = ctx.bool_type();
+            let void_type = ctx.void_type();
+            let ptr_type = ctx.ptr_type(inkwell::AddressSpace::default());
+            let sig = #ret.fn_type(&[ #( #args.into(), )* ], false);
+            let f = module.add_function(#name_lit, sig, None);
+            ee.add_global_mapping(&f, #name_ident as usize);
+        }));
+
+        #runtime_fn
+    }
+    .into()
 }

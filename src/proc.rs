@@ -2,17 +2,18 @@
 //! Contains the main trampoline.
 
 use crate::{
+    env::Local,
     exception::{Condition, Exception, ExceptionHandler, Frame},
     gc::{Gc, GcInner, Trace},
     lists::{list_to_vec, slice_to_list},
     registry::{BridgeFn, BridgeFnDebugInfo},
-    runtime::{FunctionDebugInfoId, IGNORE_FUNCTION, Runtime},
+    runtime::Runtime,
     symbols::Symbol,
     syntax::Span,
     value::{UnpackedValue, Value, ValueType},
 };
 use futures::future::BoxFuture;
-use std::{borrow::Cow, collections::HashMap, fmt, hash::Hash, ptr::null_mut};
+use std::{borrow::Cow, collections::HashMap, fmt, hash::Hash, ptr::null_mut, sync::Arc};
 
 pub type Record = Vec<Gc<Value>>;
 
@@ -26,8 +27,8 @@ pub type ContinuationPtr = unsafe extern "C" fn(
     dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition>;
 
-/// A function pointer to a generated closure function.
-pub type ClosurePtr = unsafe extern "C" fn(
+/// A function pointer to a generated user function.
+pub type UserPtr = unsafe extern "C" fn(
     runtime: *mut GcInner<Runtime>,
     env: *const *mut GcInner<Value>,
     globals: *const *mut GcInner<Value>,
@@ -52,7 +53,7 @@ pub type BridgePtr = for<'a> fn(
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum FuncPtr {
     Continuation(ContinuationPtr),
-    Closure(ClosurePtr),
+    User(UserPtr),
     Bridge(BridgePtr),
 }
 
@@ -87,7 +88,7 @@ pub struct Closure {
     pub is_variable_transformer: bool,
     /// Debug information for this function. Only applicable if the function is
     /// a user function, i.e. not a continuation.
-    pub debug_info: Option<FunctionDebugInfoId>,
+    pub debug_info: Option<Arc<FuncDebugInfo>>,
 }
 
 impl Closure {
@@ -98,7 +99,7 @@ impl Closure {
         func: FuncPtr,
         num_required_args: usize,
         variadic: bool,
-        debug_info: Option<FunctionDebugInfoId>,
+        debug_info: Option<Arc<FuncDebugInfo>>,
     ) -> Self {
         Self {
             runtime,
@@ -207,7 +208,7 @@ impl Closure {
                     );
                     *Box::from_raw(app)
                 },
-                FuncPtr::Closure(sync_fn) => unsafe {
+                FuncPtr::User(sync_fn) => unsafe {
                     let app = (sync_fn)(
                         Gc::as_ptr(&self.runtime),
                         env.as_ptr(),
@@ -266,28 +267,11 @@ impl fmt::Debug for Closure {
             return write!(f, "continuation");
         }
 
-        let Some(debug_info_id) = self.debug_info else {
-            return write!(
-                f,
-                "<lambda> (takes {}{} args)",
-                if self.variadic { "at least " } else { "" },
-                self.num_required_args
-            );
-        };
-
-        let runtime_ref = self.runtime.read();
-        let Some(debug_info) = runtime_ref
-            .debug_info
-            .get_function_debug_info(debug_info_id)
-        else {
+        let Some(ref debug_info) = self.debug_info else {
             return write!(f, "unknown-function");
         };
 
-        if let Some(ref proc_name) = debug_info.name {
-            write!(f, "({proc_name}")?;
-        } else {
-            write!(f, "(<lambda>")?;
-        }
+        write!(f, "({}", debug_info.name)?;
 
         if let Some((last, args)) = debug_info.args.split_last() {
             for arg in args {
@@ -324,7 +308,7 @@ pub struct Application {
     /// The dynamic extend of the application.
     dynamic_wind: DynamicWind,
     /// The call site of this application, if it exists.
-    call_site: Option<Span>,
+    call_site: Option<Arc<Span>>,
 }
 
 impl Application {
@@ -333,7 +317,7 @@ impl Application {
         args: Vec<Value>,
         exception_handler: Option<Gc<ExceptionHandler>>,
         dynamic_wind: DynamicWind,
-        call_site: Option<Span>,
+        call_site: Option<Arc<Span>>,
     ) -> Self {
         Self {
             // We really gotta figure out how to deal with this better
@@ -369,7 +353,7 @@ impl Application {
         } = self
         {
             let op = { op.read().as_ref().clone() };
-            stack_trace.collect_application(&op.runtime, op.debug_info, call_site);
+            stack_trace.collect_application(op.debug_info.clone(), call_site);
             self = match op.apply(&args, exception_handler, &dynamic_wind).await {
                 Err(exception) => {
                     return Err(Exception::new(stack_trace.into_frames(), exception));
@@ -394,56 +378,24 @@ impl StackTraceCollector {
     }
 
     fn into_frames(self) -> Vec<Frame> {
-        let mut frames = Vec::new();
-        let mut last_call_site = None;
-
-        for trace in self.stack_trace.into_iter() {
-            match trace {
-                StackTrace::CallSite(new_call_site) => {
-                    last_call_site = last_call_site.or(new_call_site);
-                }
-                StackTrace::UserFuncCall {
-                    runtime,
-                    user_func_info_id,
-                    call_site,
-                } => {
-                    if let Some(debug_info) = runtime
-                        .read()
-                        .debug_info
-                        .get_function_debug_info(user_func_info_id)
-                    {
-                        let proc = debug_info
-                            .name
-                            .unwrap_or_else(|| Symbol::intern("<lambda>"));
-                        last_call_site = call_site.or(last_call_site);
-                        frames.push(Frame::new(proc, last_call_site.clone()));
-                    }
-                }
-            }
-        }
-
-        frames
+        self.stack_trace
+            .into_iter()
+            .map(|trace| Frame::new(trace.debug_info.name, trace.call_site))
+            .collect()
     }
 
     fn collect_application(
         &mut self,
-        runtime: &Gc<Runtime>,
-        user_func_info: Option<FunctionDebugInfoId>,
-        call_site: Option<Span>,
+        debug_info: Option<Arc<FuncDebugInfo>>,
+        call_site: Option<Arc<Span>>,
     ) {
-        if let Some(user_func_info_id) = user_func_info {
+        if let Some(debug_info) = debug_info {
             // This is a user func, and therefore we should push to the
             // current stack trace.
-            let trace = if user_func_info_id != IGNORE_FUNCTION {
-                StackTrace::UserFuncCall {
-                    runtime: runtime.clone(),
-                    user_func_info_id,
-                    call_site,
-                }
-            } else {
-                StackTrace::CallSite(call_site)
-            };
-            self.stack_trace.push(trace);
+            self.stack_trace.push(StackTrace {
+                debug_info,
+                call_site,
+            });
         } else {
             // If this is not user func, we are returning from one via a
             // continuation and should pop the stack frame:
@@ -453,30 +405,25 @@ impl StackTraceCollector {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
-enum StackTrace {
-    CallSite(Option<Span>),
-    UserFuncCall {
-        runtime: Gc<Runtime>,
-        user_func_info_id: FunctionDebugInfoId,
-        call_site: Option<Span>,
-    },
-}
-
-#[derive(Clone, Debug, Trace)]
-pub struct FunctionDebugInfo {
-    /// The name of the function, or None if the function is a lambda
-    pub name: Option<Symbol>,
-    /// Named arguments for the function
-    pub args: Vec<Symbol>,
+pub struct FuncDebugInfo {
+    /// The name of the function.
+    name: Symbol,
+    /// Named arguments for the function.
+    args: Vec<Local>,
     /// Location of the function definition
-    pub location: Span,
+    location: Span,
 }
 
-impl FunctionDebugInfo {
-    pub fn new(name: Option<Symbol>, args: Vec<Symbol>, location: Span) -> Self {
+#[derive(Debug)]
+struct StackTrace {
+    debug_info: Arc<FuncDebugInfo>,
+    call_site: Option<Arc<Span>>,
+}
+
+impl FuncDebugInfo {
+    pub fn new(name: Option<Symbol>, args: Vec<Local>, location: Span) -> Self {
         Self {
-            name,
+            name: name.unwrap_or_else(|| Symbol::intern("<lambda>")),
             args,
             location,
         }
@@ -484,11 +431,11 @@ impl FunctionDebugInfo {
 
     pub fn from_bridge_fn(name: &'static str, debug_info: BridgeFnDebugInfo) -> Self {
         Self {
-            name: Some(Symbol::intern(name)),
+            name: Symbol::intern(name),
             args: debug_info
                 .args
                 .iter()
-                .map(|arg| Symbol::intern(arg))
+                .map(|arg| Local::gensym_with_name(Symbol::intern(arg)))
                 .collect(),
             location: Span {
                 line: debug_info.line,

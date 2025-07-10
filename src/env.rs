@@ -8,6 +8,7 @@ use std::{
 use crate::{
     gc::{Gc, Trace},
     proc::Closure,
+    symbols::Symbol,
     syntax::{Identifier, Mark},
     value::Value,
 };
@@ -395,37 +396,78 @@ impl Clone for Environment {
     }
 }
 
-#[derive(Copy, Clone, Trace, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Local(usize);
+#[derive(Copy, Clone, Trace /*, Hash, PartialEq, Eq, PartialOrd, Ord*/)]
+pub struct Local {
+    id: usize,
+    pub(crate) name: Option<Symbol>,
+}
+
+impl Hash for Local {
+    fn hash<H>(&self, state: &mut H)
+    where
+        H: Hasher,
+    {
+        self.id.hash(state);
+    }
+}
+
+impl PartialEq for Local {
+    fn eq(&self, rhs: &Self) -> bool {
+        self.id == rhs.id
+    }
+}
+
+impl Eq for Local {}
 
 impl Local {
     /// Create a new temporary value.
     pub fn gensym() -> Self {
         static NEXT_SYM: AtomicUsize = AtomicUsize::new(0);
-        Self(NEXT_SYM.fetch_add(1, Ordering::Relaxed))
+        Self {
+            id: NEXT_SYM.fetch_add(1, Ordering::Relaxed),
+            name: None,
+        }
+    }
+
+    pub fn gensym_with_name(name: Symbol) -> Self {
+        let mut sym = Self::gensym();
+        sym.name = Some(name);
+        sym
     }
 
     pub fn to_func_name(&self) -> String {
-        format!("f{}", self.0)
+        if let Some(name) = self.name {
+            format!("{name}")
+        } else {
+            format!("f{}", self.id)
+        }
     }
 }
 
 impl fmt::Display for Local {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "%{}", self.0)
+        if let Some(name) = self.name {
+            write!(f, "{name}")
+        } else {
+            write!(f, "%{}", self.id)
+        }
     }
 }
 
 impl fmt::Debug for Local {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "%{}", self.0)
+        if let Some(name) = self.name {
+            write!(f, "{name}")
+        } else {
+            write!(f, "%{}", self.id)
+        }
     }
 }
 
 // TODO: Do we need to make this pointer eq?
 #[derive(Clone, Trace)]
 pub struct Global {
-    name: Identifier,
+    pub(crate) name: Identifier,
     val: Gc<Value>,
 }
 
@@ -455,6 +497,8 @@ impl PartialEq for Global {
     }
 }
 
+impl Eq for Global {}
+
 impl Hash for Global {
     fn hash<H>(&self, state: &mut H)
     where
@@ -465,12 +509,19 @@ impl Hash for Global {
     }
 }
 
-impl Eq for Global {}
-
 #[derive(Clone, Trace, Hash, PartialEq, Eq)]
 pub enum Var {
     Global(Global),
     Local(Local),
+}
+
+impl Var {
+    pub fn symbol(&self) -> Option<Symbol> {
+        match self {
+            Var::Global(global) => Some(global.name.sym),
+            Var::Local(local) => local.name,
+        }
+    }
 }
 
 impl fmt::Debug for Var {
