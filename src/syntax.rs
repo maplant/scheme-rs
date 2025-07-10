@@ -148,6 +148,7 @@ impl Syntax {
     pub fn syntax_from_datum(marks: &BTreeSet<Mark>, datum: Value) -> Self {
         // TODO: conjure up better values for Span
         match datum.unpack() {
+            UnpackedValue::Boolean(b) => Syntax::new_literal(Literal::Boolean(b), Span::default()),
             UnpackedValue::Null => Syntax::new_null(Span::default()),
             UnpackedValue::Pair(pair) => {
                 let pair_read = pair.read();
@@ -178,7 +179,7 @@ impl Syntax {
                     span: Span::default(),
                 }
             }
-            _ => unimplemented!(),
+            x => unimplemented!("{x:?}"),
         }
     }
 

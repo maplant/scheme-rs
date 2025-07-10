@@ -131,6 +131,19 @@ impl Condition {
     }
 }
 
+impl From<Exception> for Condition {
+    fn from(e: Exception) -> Self {
+        // For now just drop the back trace:
+        let Ok(v) = Gc::<Gc<dyn std::any::Any>>::try_from(e.obj) else {
+            return Condition::Error;
+        };
+        let Ok(c) = v.read().clone().downcast::<Self>() else {
+            return Condition::Error;
+        };
+        c.read().clone()
+    }
+}
+
 impl From<ParseAstError> for Condition {
     fn from(_value: ParseAstError) -> Self {
         // TODO: Make this more descriptive

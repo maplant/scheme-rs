@@ -408,31 +408,23 @@ impl Template {
 
         // Evaluate the expression:
         // TODO: Fix this map_err
-        compiled.call(&[]).await.map_err(|_| Condition::Error)
+        compiled.call(&[]).await.map_err(Condition::from)
     }
 }
 
 fn expand_list(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<Vec<Syntax>> {
     let mut output = Vec::new();
     for item in items {
-        match item {
-            Template::Ellipsis(template) => {
-                for expansion in &binds.curr_expansion_level.expansions {
-                    let new_level = binds.new_level(expansion);
-                    let Some(result) = template.expand(&new_level, curr_span.clone()) else {
-                        break;
-                    };
-                    output.push(result);
-                }
+        if let Template::Ellipsis(template) = item {
+            for expansion in &binds.curr_expansion_level.expansions {
+                let new_level = binds.new_level(expansion);
+                let Some(result) = template.expand(&new_level, curr_span.clone()) else {
+                    break;
+                };
+                output.push(result);
             }
-            Template::Null => {
-                if let Some(Syntax::Null { .. }) = output.last() {
-                    continue;
-                } else {
-                    output.push(Syntax::new_null(curr_span.clone()));
-                }
-            }
-            _ => output.push(item.expand(binds, curr_span.clone())?),
+        } else {
+            output.push(item.expand(binds, curr_span.clone())?);
         }
     }
     Some(output)

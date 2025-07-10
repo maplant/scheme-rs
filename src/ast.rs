@@ -426,13 +426,13 @@ impl Expression {
                     {
                         Quote::parse(tail, span).await.map(Expression::Quote)
                     }
-                    [
-                        Syntax::Identifier { ident, span, bound },
-                        tail @ ..,
-                        Syntax::Null { .. },
-                    ] if ident == "syntax" && !bound => SyntaxQuote::parse(tail, span)
-                        .await
-                        .map(Expression::SyntaxQuote),
+                    [Syntax::Identifier { ident, span, bound }, tail @ ..]
+                        if ident == "syntax" && !bound =>
+                    {
+                        SyntaxQuote::parse(tail, span)
+                            .await
+                            .map(Expression::SyntaxQuote)
+                    }
                     [
                         Syntax::Identifier { ident, span, bound },
                         tail @ ..,
@@ -529,7 +529,6 @@ impl Quote {
     async fn parse(exprs: &[Syntax], span: &Span) -> Result<Self, ParseAstError> {
         match exprs {
             [] => Err(ParseAstError::ExpectedArgument(span.clone())),
-            [Syntax::Null { .. }] => Ok(Quote { val: Value::null() }),
             [expr, Syntax::Null { .. }] => Ok(Quote {
                 val: Value::datum_from_syntax(expr),
             }),
@@ -548,8 +547,9 @@ impl SyntaxQuote {
     async fn parse(exprs: &[Syntax], span: &Span) -> Result<Self, ParseAstError> {
         match exprs {
             [] => Err(ParseAstError::ExpectedArgument(span.clone())),
-            [expr] => Ok(SyntaxQuote { syn: expr.clone() }),
+            [expr, Syntax::Null { .. }] => Ok(SyntaxQuote { syn: expr.clone() }),
             [_, arg, ..] => Err(ParseAstError::UnexpectedArgument(arg.span().clone())),
+            _ => Err(ParseAstError::BadForm(span.clone())),
         }
     }
 }

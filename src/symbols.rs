@@ -56,7 +56,7 @@ impl PartialEq<&'_ str> for Symbol {
 #[bridge(name = "string->symbol", lib = "(base)")]
 pub async fn string_to_symbol(s: &Value) -> Result<Vec<Value>, Condition> {
     let s: Arc<strings::AlignedString> = s.clone().try_into()?;
-    Ok(vec![Value::from(Symbol::intern(&*s))])
+    Ok(vec![Value::from(Symbol::intern(&s))])
 }
 
 #[bridge(name = "symbol->string", lib = "(base)")]
