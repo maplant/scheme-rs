@@ -7,6 +7,7 @@ use crate::{
     lists::{list_to_vec, slice_to_list},
     registry::{BridgeFn, BridgeFnDebugInfo},
     runtime::{FunctionDebugInfoId, IGNORE_FUNCTION, Runtime},
+    symbols::Symbol,
     syntax::Span,
     value::{UnpackedValue, Value, ValueType},
 };
@@ -413,8 +414,7 @@ impl StackTraceCollector {
                     {
                         let proc = debug_info
                             .name
-                            .clone()
-                            .unwrap_or_else(|| "<lambda>".to_string());
+                            .unwrap_or_else(|| Symbol::intern("<lambda>"));
                         last_call_site = call_site.or(last_call_site);
                         frames.push(Frame::new(proc, last_call_site.clone()));
                     }
@@ -466,16 +466,15 @@ enum StackTrace {
 #[derive(Clone, Debug, Trace)]
 pub struct FunctionDebugInfo {
     /// The name of the function, or None if the function is a lambda
-    // TODO(map): Make this an Arc<String> so we aren't constantly cloning strings.
-    pub name: Option<String>,
+    pub name: Option<Symbol>,
     /// Named arguments for the function
-    pub args: Vec<String>,
+    pub args: Vec<Symbol>,
     /// Location of the function definition
     pub location: Span,
 }
 
 impl FunctionDebugInfo {
-    pub fn new(name: Option<String>, args: Vec<String>, location: Span) -> Self {
+    pub fn new(name: Option<Symbol>, args: Vec<Symbol>, location: Span) -> Self {
         Self {
             name,
             args,
@@ -485,8 +484,12 @@ impl FunctionDebugInfo {
 
     pub fn from_bridge_fn(name: &'static str, debug_info: BridgeFnDebugInfo) -> Self {
         Self {
-            name: Some(name.to_string()),
-            args: debug_info.args.iter().map(|arg| arg.to_string()).collect(),
+            name: Some(Symbol::intern(name)),
+            args: debug_info
+                .args
+                .iter()
+                .map(|arg| Symbol::intern(arg))
+                .collect(),
             location: Span {
                 line: debug_info.line,
                 column: debug_info.column as usize,

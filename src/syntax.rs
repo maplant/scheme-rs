@@ -7,6 +7,7 @@ use crate::{
     lists::{self, list_to_vec_with_null},
     parse::ParseSyntaxError,
     registry::bridge,
+    symbols::Symbol,
     value::{UnpackedValue, Value},
 };
 use futures::future::BoxFuture;
@@ -147,6 +148,7 @@ impl Syntax {
     pub fn syntax_from_datum(marks: &BTreeSet<Mark>, datum: Value) -> Self {
         // TODO: conjure up better values for Span
         match datum.unpack() {
+            UnpackedValue::Boolean(b) => Syntax::new_literal(Literal::Boolean(b), Span::default()),
             UnpackedValue::Null => Syntax::new_null(Span::default()),
             UnpackedValue::Pair(pair) => {
                 let pair_read = pair.read();
@@ -168,7 +170,7 @@ impl Syntax {
             }
             UnpackedValue::Symbol(sym) => {
                 let ident = Identifier {
-                    name: sym.0.clone(),
+                    sym,
                     marks: marks.clone(),
                 };
                 Syntax::Identifier {
@@ -177,7 +179,7 @@ impl Syntax {
                     span: Span::default(),
                 }
             }
-            _ => unimplemented!(),
+            x => unimplemented!("{x:?}"),
         }
     }
 
@@ -252,13 +254,13 @@ impl Syntax {
 
                     // Check for set! macro
                     match &list.as_slice()[1..] {
-                        [Syntax::Identifier { ident: var, .. }, ..] if ident.name == "set!" => {
+                        [Syntax::Identifier { ident: var, .. }, ..] if ident == "set!" => {
                             // Look for a variable transformer:
                             if let Some(mac) = env.fetch_macro(var) {
                                 if !mac.transformer.read().is_variable_transformer {
                                     return Err(Condition::error(format!(
                                         "{} not a variable transformer",
-                                        var.name
+                                        var.sym
                                     ))
                                     .into());
                                 }
@@ -339,7 +341,6 @@ impl Syntax {
     }
 }
 
-// #[derive(derive_more::Debug)]
 pub enum Expansion {
     /// Syntax remained unchanged after expansion
     Unexpanded,
@@ -395,7 +396,7 @@ impl Default for Mark {
 
 #[derive(Clone, Hash, PartialEq, Eq, Trace)]
 pub struct Identifier {
-    pub name: String,
+    pub sym: Symbol,
     pub marks: BTreeSet<Mark>,
 }
 
@@ -404,7 +405,7 @@ impl fmt::Debug for Identifier {
         write!(
             f,
             "{} ({})",
-            self.name,
+            self.sym,
             self.marks
                 .iter()
                 .map(|m| m.0.to_string() + " ")
@@ -414,9 +415,9 @@ impl fmt::Debug for Identifier {
 }
 
 impl Identifier {
-    pub fn new(name: String) -> Self {
+    pub fn new(name: &str) -> Self {
         Self {
-            name,
+            sym: Symbol::intern(name),
             marks: BTreeSet::default(),
         }
     }
@@ -436,7 +437,7 @@ impl Identifier {
 
 impl PartialEq<str> for Identifier {
     fn eq(&self, rhs: &str) -> bool {
-        self.name == rhs
+        self.sym.to_str().as_ref() == rhs
     }
 }
 
@@ -520,7 +521,7 @@ impl Syntax {
 
     pub fn new_identifier(name: &str, span: impl Into<Span>) -> Self {
         Self::Identifier {
-            ident: Identifier::new(name.to_string()),
+            ident: Identifier::new(name),
             span: span.into(),
             bound: false,
         }
@@ -604,6 +605,6 @@ pub async fn free_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Val
         return Err(Condition::invalid_type("identifier", "syntax"));
     };
     Ok(vec![Value::from(
-        !bound_id1 && !bound_id2 && id1.name == id2.name,
+        !bound_id1 && !bound_id2 && id1.sym == id2.sym,
     )])
 }

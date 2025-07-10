@@ -16,12 +16,12 @@ use crate::{
     env::{Global, Local, Var},
     gc::Trace,
     runtime::{CallSiteId, FunctionDebugInfoId},
+    symbols::Symbol,
     value::Value as RuntimeValue,
 };
 use std::{
     collections::{HashMap, HashSet},
     fmt,
-    str::FromStr,
 };
 
 mod analysis;
@@ -123,6 +123,16 @@ pub enum PrimOp {
     ExtractWinders,
 }
 
+impl PrimOp {
+    pub fn from_sym(s: Symbol) -> Option<Self> {
+        match s.to_str().as_ref() {
+            "&call/cc" => Some(Self::CallWithCurrentContinuation),
+            _ => None,
+        }
+    }
+}
+
+/*
 impl FromStr for PrimOp {
     type Err = ();
 
@@ -133,6 +143,7 @@ impl FromStr for PrimOp {
         }
     }
 }
+*/
 
 #[derive(Debug, Clone)]
 pub struct ClosureArgs {

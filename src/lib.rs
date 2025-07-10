@@ -16,6 +16,7 @@ pub mod records;
 pub mod registry;
 pub mod runtime;
 pub mod strings;
+pub mod symbols;
 pub mod syntax;
 pub mod value;
 pub mod vectors;

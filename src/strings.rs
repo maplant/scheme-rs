@@ -3,7 +3,12 @@
 use std::{
     fmt,
     ops::{Deref, DerefMut},
+    sync::Arc,
 };
+
+use scheme_rs_macros::bridge;
+
+use crate::{exception::Condition, value::Value};
 
 #[repr(align(16))]
 pub struct AlignedString(pub String);
@@ -50,4 +55,14 @@ impl fmt::Debug for AlignedString {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
+}
+
+#[bridge(name = "string-append", lib = "(base)")]
+pub async fn list(args: &[Value]) -> Result<Vec<Value>, Condition> {
+    let mut output = String::new();
+    for arg in args.iter().cloned() {
+        let arg: Arc<AlignedString> = arg.try_into()?;
+        output += arg.as_str();
+    }
+    Ok(vec![Value::from(output)])
 }

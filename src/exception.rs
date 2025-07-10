@@ -8,6 +8,7 @@ use crate::{
     proc::{Application, Closure, DynamicWind, FuncPtr},
     registry::{BridgeFn, BridgeFnDebugInfo},
     runtime::{IGNORE_FUNCTION, Runtime},
+    symbols::Symbol,
     syntax::{Identifier, Span},
     value::Value,
 };
@@ -85,7 +86,7 @@ impl Condition {
     }
 
     pub fn undefined_variable(ident: Identifier) -> Self {
-        Self::error(format!("Undefined variable {}", ident.name))
+        Self::error(format!("Undefined variable {}", ident.sym))
     }
 
     pub fn invalid_type(expected: &str, provided: &str) -> Self {
@@ -130,6 +131,19 @@ impl Condition {
     }
 }
 
+impl From<Exception> for Condition {
+    fn from(e: Exception) -> Self {
+        // For now just drop the back trace:
+        let Ok(v) = Gc::<Gc<dyn std::any::Any>>::try_from(e.obj) else {
+            return Condition::Error;
+        };
+        let Ok(c) = v.read().clone().downcast::<Self>() else {
+            return Condition::Error;
+        };
+        c.read().clone()
+    }
+}
+
 impl From<ParseAstError> for Condition {
     fn from(_value: ParseAstError) -> Self {
         // TODO: Make this more descriptive
@@ -153,13 +167,13 @@ impl_into_condition_for!(std::num::TryFromIntError);
 
 #[derive(Debug, Clone, Trace)]
 pub struct Frame {
-    pub proc: String,
+    pub proc: Symbol,
     pub call_site_span: Option<Span>,
     // pub repeated: usize,
 }
 
 impl Frame {
-    pub fn new(proc: String, call_site_span: Option<Span>) -> Self {
+    pub fn new(proc: Symbol, call_site_span: Option<Span>) -> Self {
         Self {
             proc,
             call_site_span,

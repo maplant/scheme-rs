@@ -15,6 +15,7 @@ use crate::{
     proc::{Application, Closure, DynamicWind, FuncPtr},
     registry::{BridgeFn, BridgeFnDebugInfo, bridge},
     runtime::Runtime,
+    symbols::Symbol,
     value::{UnpackedValue, Value, ValueType},
     vectors,
 };
@@ -40,19 +41,19 @@ impl RecordTypeDescriptor {
 
 #[derive(Debug, Trace, Clone)]
 pub enum Field {
-    Immutable(String),
-    Mutable(String),
+    Immutable(Symbol),
+    Mutable(Symbol),
 }
 
 impl Field {
     fn parse(field: &Value) -> Result<Self, Condition> {
         let (mutability, field_name) = field.clone().try_into()?;
-        let mutability = mutability.try_into_sym()?;
+        let mutability: Symbol = mutability.try_into()?;
         let (field_name, _) = field_name.clone().try_into()?;
-        let field_name = field_name.try_into_sym()?;
-        match mutability.as_str() {
-            "mutable" => Ok(Field::Mutable(field_name.0.clone())),
-            "immutable" => Ok(Field::Immutable(field_name.0.clone())),
+        let field_name: Symbol = field_name.try_into()?;
+        match &*mutability.to_str() {
+            "mutable" => Ok(Field::Mutable(field_name)),
+            "immutable" => Ok(Field::Immutable(field_name)),
             _ => Err(Condition::Error),
         }
     }
@@ -84,7 +85,7 @@ pub async fn make_record_type_descriptor(
     opaque: &Value,
     fields: &Value,
 ) -> Result<Vec<Value>, Condition> {
-    let name = name.clone().try_into_sym()?;
+    let name: Symbol = name.clone().try_into()?;
     let parent: Option<Arc<RecordTypeDescriptor>> = parent
         .is_true()
         .then(|| parent.clone().try_into())
