@@ -58,3 +58,9 @@ pub async fn string_to_symbol(s: &Value) -> Result<Vec<Value>, Condition> {
     let s: Arc<strings::AlignedString> = s.clone().try_into()?;
     Ok(vec![Value::from(Symbol::intern(&*s))])
 }
+
+#[bridge(name = "symbol->string", lib = "(base)")]
+pub async fn symbol_to_string(s: &Value) -> Result<Vec<Value>, Condition> {
+    let sym: Symbol = s.clone().try_into()?;
+    Ok(vec![Value::from(sym.to_str().to_string())])
+}
