@@ -5,6 +5,20 @@
 
 \begin{document}
 
+\keywords{Scheme, Rust, JIT Compilation}
+
+\begin{CCSXML}
+<ccs2012>
+   <concept>
+       <concept_id>10011007.10011006.10011041.10011044</concept_id>
+       <concept_desc>Software and its engineering~Just-in-time compilers</concept_desc>
+       <concept_significance>500</concept_significance>
+       </concept>
+ </ccs2012>
+\end{CCSXML}
+
+\ccsdesc[500]{Software and its engineering~Just-in-time compilers}
+
 \title{Gouki Scheme: An embedded Scheme implementation for Async Rust}
 
 \author{Matthew Plant}
@@ -21,7 +35,8 @@
   GoukiScheme is the first-of-its-kind JIT compiler for the R6RS dialect of
   Scheme that supports \
   call-with-current-continuation while being embeddable
-  within a compiled language with first class support for async/await.
+  within and seamlessly integrating with a compiled language with first class
+  support for async/await (Rust).
 
 \end{abstract}
 
@@ -42,20 +57,20 @@ iterate.
 
 Glue code written in a dynamic language has long been a solution for enabling
 rapid prototyping and interoperability in a language with long build times. Under
-this model, the performance critical code that does not  need to be rebuilt is
-written in the slower compiled language, while a dynamic perhaps interpreted
-language is embedded into the build to allow for gluing components together
-without the need for slow rebuilds. Changes to the glue code can be seen just by
-re-loading the application, or perhaps a hot reloading mechanism can bring them
-into the application simply by saving to a file. In either case, iteration
-speeds are improved dramatically.
+this model, the performance critical code that does not need to be rebuilt as
+often is written in the slower compiled language, while a dynamic perhaps
+interpreted language is embedded into the build to allow for gluing components
+together without the need for slow rebuilds. Changes to the glue code can be
+seen just by re-loading the application, or perhaps a hot reloading mechanism
+can bring them into the application whenever changes are committed to a file. In
+either case, iteration speeds are improved dramatically.
 
 Another advantage of embedding a dynamic language in an application is that the
 application can provide a Read-Eval-Print-Loop, or REPL. Interactive prompts can
-expand the debugging capabilities of a application by allowing for inspection of
+expand the debugging capabilities of an application by allowing for inspection of
 the application while it is live. The application can be debugged, inspected, and
 orchestrated as a plastic system rather than a rigid daemon that can only be
-started, stopped or interacted with in small fixed commands.
+started, stopped or interacted with in a small number of fixed commands.
 
 Scheme has shown success as a embedded dynamic language, but its use has been
 limited to synchronous (but perhaps multithreaded) applications. Scheme
@@ -64,17 +79,18 @@ sync Rust code and cannot be async themselves or they require the overhead of an
 interpreter or bytecode virtual machine. Since async is a Rust language feature
 that touches all parts of the code base, a new implementation of Scheme
 is required that is built with async Rust in mind to take full advantage of the
-async runtime and more importantly integrate frictionlessly into the async
-application while also maximizing performance with JIT compilation.
+async runtime and more importantly integrate frictionlessly into the application
+while also maximizing performance with JIT compilation.
 
-GoukiScheme is a Scheme implementation designed to integrate
+GoukiScheme\cite{gouki} is a Scheme implementation designed to integrate
 flawlessly with async Rust; GoukiScheme code can execute asynchronously embedded
-in an async Rust application and can in turn execute async Rust functions. Arbitrary Rust
-objects can be stored in GoukiScheme variables and passed to GoukiScheme
-functions with little modification. This is done without sacrificing potential
-performance by architecting GoukiScheme as a tree-walking AST; indeed GoukiScheme
-is fully JIT compiled and takes advantage of a CPS based mid-level IR to compile
-to LLVM SSA. GoukiScheme does this while providing a completely Safe API.
+in an async Rust application and can in turn execute async Rust functions.
+Arbitrary Rust objects can be stored in GoukiScheme variables and passed to
+GoukiScheme functions with little modification. This is done without sacrificing
+potential performance by architecting GoukiScheme as a tree-walking AST
+interpreter or bytecode VM; indeed GoukiScheme is fully JIT compiled and takes
+advantage of a CPS based mid-level IR to compile to LLVM SSA. GoukiScheme does
+this while providing a completely Safe API.
 
 This integration allows for Scheme programs to be written that take advantage
 of the Rust async ecosystem, such as this example of an echo server adapted
@@ -96,44 +112,45 @@ from Tokio\cite{tokio}:
 
 In this example, the functions \texttt{read-all}, \texttt{write-all},
 \texttt{accept}, and \texttt{bind-tcp} are all Rust functions accessible via
-Scheme that call the appropriate tokio functions. \texttt{await} is also
-a builtin that checks that its argument is a \texttt{Future}\cite{future} and
+Scheme that call the appropriate Tokio functions. \texttt{await} is also
+a Rust that checks that its argument is a \texttt{Future}\cite{future} and
 awaits it.
 
 \section{Alternatives}
 
 There are several solutions currently available for embedding Scheme in Rust,
-one of the most straightforward is to use the C bindings provided by the Guile
-implementation, of which there are several bindings available in the Rust
-registry, although most of them are fairly rudimentary and incomplete.
-Additionally, none of these implementations provide any support for async Rust,
-since no such support is available from Guile.
+one of the most straightforward is to use the C bindings provided by Guile, of
+which there are several bindings available in the Rust package registry,
+although most of them are fairly rudimentary and incomplete. Additionally, none
+of these implementations provide any support for async Rust, since no such
+support is available from Guile.
 
 Steel\cite{steel} is a pure Rust interpreter for Scheme that has support for
 calling async functions and utilizing async runtimes. Gouki and Steel differ in
 two primary ways. The first is in implementation: Steel is implemented via a
 bytecode interpreter, while Gouki is JIT compiled. The second is to what degree
 async is required by the implementation: Steel allows for an async runtime to
-be provided optionally, while Gouki requires an async runtime as that is its
-primary use case.
+be provided optionally, while Gouki requires an async runtime as it is entirely
+built around it.
 
 At the time of publication, Gouki Scheme is the only JIT compiled implementation
 of a language with support for \texttt{call-with-current-continuation} that can
-be embedded in a compiled language with support for async programming.
+be embedded in and integrate with a compiled language with support for async
+programming.
 
 \section{Memory Management}
 
 In order to properly implement the Scheme programming language, some form of
 garbage collection must be implemented by the system. One very popular algorithm
-for garbage collection is known as tracing, in which objects that are not
-determined to be reachable from so-called ``root'' objects are retained while 
-the remaining objects are considered garbage and deallocated\cite{lisptracing}.
+for garbage collection is known as tracing, in which objects that are determined
+to be reachable from so-called ``root'' objects are retained while the remaining
+objects are considered garbage and deallocated\cite{lisptracing}.
 
-The root objects of a Scheme program are local and global variables active on the
-current Scheme call-stack, which is easy for our implementation to collect.
-However, when values escape into Rust code, the root objects for the entire
-program must be expanded to include that of the Rust code as well. Unfortunately,
-determining the roots of Rust program is not feasible\cite{rusttracing}.
+The root objects of a Scheme program are the local and global variables active on
+the current Scheme call-stack, which are easy for our implementation to collect.
+However, when values escape into Rust code, the root objects must be expanded to
+include that of the Rust code as well. Unfortunately, determining the roots of a
+Rust program is not feasible\cite{rusttracing}.
 
 A common Rust technique for automatic memory management is to use reference
 counting, which does not require knowing the roots of a program. However, this
@@ -143,7 +160,9 @@ technique to support all valid Scheme programs by utilizing concurrent cycle
 collection\cite{cc}.
 
 The API for garbage collection in GoukiScheme is simple. GoukiScheme provides a
-\texttt{Gc} type that implements the same interface as Arc:
+\texttt{Gc} type that implements the same interface as \texttt{Arc}\cite{arc},
+the thread-safe reference counted smart pointer provided by the Rust standard
+library, with a few additions:
 
 \begin{minted}[frame=lines]{rust}
 pub struct Gc<T>
@@ -155,24 +174,24 @@ where
 \end{minted}
 
 Fundamentally the \texttt{Gc} type intends to mimic the behavior of a scheme variable.
-It can be read from and written to and arbitrarily passed around as a
-reference. Scheme variables can be passed to Rust code as a Gc. 
+It can be read from,  written to and arbitrarily passed around as a reference. Scheme
+variables can be passed to Rust code as a Gc. 
 
-Allocating a new garbage-collected T is done via the \texttt{Gc::new} function, and
+Allocating a new garbage-collected type is done via the \texttt{Gc::new} function, and
 creating a new copy of the pointer to that object is done via the \texttt{Clone}
 method.
 
-Additionally, the \texttt{Gc} type provides a \texttt{write} and \texttt{read}
+Additionally, the \texttt{Gc} type provides \texttt{write} and \texttt{read}
 methods in order to provide thread-safe mutations and accesses to the allocated
 data. Since GoukiScheme can arbitrarily spawn threads that reference shared or
 global variables, it is important for all writes and reads to variables to be safe
-and atomic. This is achieved by embedded reader-writer lock in the Gc type.
+and atomic. This is achieved by and embedded reader-writer lock in the Gc type.
 
 After the \texttt{init\_gc} function is called once, GoukiScheme spawns a task
 dedicated to collecting garbage. This task is shut down automatically when the
 main function returns. This provides a smooth and intuitive interface to the
 memory manager that is also performant. Subsequent calls to \texttt{init\_gc}
-are a no-op
+are a no-op.
 
 \begin{minted}[frame=lines]{rust}
 #[tokio::main]
@@ -198,9 +217,7 @@ fn init_gc() {
   let _ = spawn(async move {
     let mut mutations = Vec::new();
     loop {
-       BUFFER.recv_many(
-         &mut mutations
-       ).await;
+       BUFFER.recv_many(&mut mutations).await;
        process_mutation(mutation);
        mutations.clear();
     } 
@@ -239,8 +256,8 @@ unsafe trait Trace: 'static {
 
 Implementing this function is tedious and requires the user to implement
 potentially memory unsafe code. However, it is not difficult to implement based
-on the syntactic form of the data type being implemented from. For example, here
-is the corresponding \texttt{Trace} implementation for a sample struct:
+on the syntactic form of the data type being implemented for. For example, here
+is the corresponding \texttt{Trace} implementation for an example struct:
 
 \begin{minted}[frame=lines]{rust}
 struct Example {
@@ -300,10 +317,10 @@ we can implement \texttt{Trace} as follows:
 Since these algorithms can be clearly implemented from the syntactic form of the
 data type (or rather it nearly can; we can assume the type of a field is equal to
 a \texttt{Gc} if it is spelled \texttt{Gc} - while this is not true in some
-pathological cases, such as when a local \texttt{Gc} type is defined, it is a
-good enough heuristic for nearly all cases), they are a prime candidates to be
-implemented with a procedural macro, or more specifically a derive
-macro\cite{derive}:
+pathological cases, such as when a local \texttt{Gc} type is defined and shadows
+ours, it is a good enough heuristic for nearly all cases), they are a prime
+candidates to be implemented with a procedural macro, or more specifically a
+derive macro\cite{derive}:
 
 \begin{minted}[frame=lines]{rust}
 #[derive(Trace)]
@@ -320,7 +337,7 @@ While this covers a large number of cases, some types can never implement
 already implement \texttt{Trace}; such types cannot implement \texttt{Trace} due
 to the orphan rule\cite{orphan}. Storing these types requires an extra level of
 indirection through Rust's built-in reference counted type, the
-\texttt{Arc}\cite{arc}. Extra care must be taken when using this escape hatch as
+\texttt{Arc}. Extra care must be taken when using this escape hatch as
 previously mentioned these types do not provide any way to collect cyclical
 references.
 
@@ -330,8 +347,8 @@ Because we are running the garbage collector concurrently and are sending
 mutations to the collector over an unbounded channel, the allocating tasks
 receive no back pressure from the collector task. As a result should the pace
 of new allocations outpace the collectors ability to free garbage, the process
-would exhibit what appears to be a memory leak. While rare, it can still occur
-and thus we allow for a way to convert the unbounded channel into backpressure:
+would exhibit what appears to be a memory leak. To address this, we provide a
+a way to convert the unbounded channel into backpressure:
 
 \begin{minted}[frame=lines]{rust}
 async fn yield_until_gc_cleared() {
@@ -349,11 +366,12 @@ mutations.
 \section{Values}
 
 The \texttt{Value} type represents a Scheme value. It has the dual responsibility
-of store any possible Scheme value while also allowing for the storage of any
+of storing any possible Scheme value while also allowing for the storage of any
 Rust value. Additionally, if a Scheme value has a reasonable native equivalent
 in Rust (which almost all of them do), conversion should be convenient and
-efficient. The \texttt{Value} type should also be convenient to pass to and use in our
-JIT compiled functions:
+efficient. The \texttt{Value} type should also be convenient to pass to and
+use in our JIT compiled functions. To do this, our \texttt{Value} type must fit
+into a single machine word:
 
 \begin{minted}[frame=lines]{rust}
 #[repr(transparent)]
@@ -386,20 +404,22 @@ pub enum ValueType {
 \end{minted}
 
 As a small optimization, an extra "Undefined" value, the result of reading a
-variable that has not been defined, is a Pair with a null pointer, or a value
-of $12$.
+variable that is unbound, is defined as a Pair with a null pointer, or a value
+of $12$ in this case.
 
 This large number of tags allows us to map all of the primitive values in the
 serde data model\cite{serde} into a single \texttt{Value} without an extra level of
 indirection. As a result, any Rust type that implements Serialize can
-automatically be converted into a \texttt{Value}.
+automatically be converted into a \texttt{Value}. This represents a large number of
+types in the Rust ecosystem, as a lot of crates implement Serde for their data types
+compulsorily.
 
 We also utilize Rust's dynamic dispatch to allow for the storing of any type that
 implements the \texttt{SchemeCompatible} and \texttt{Trace} traits. Using this
 trait we can create new Scheme values that present themselves as sealed records.
 
 \begin{minted}[frame=lines]{rust}
-trait SchemeCompatible: Any {
+trait SchemeCompatible: Trace + Any {
   fn record_type(&self) -> Arc<RecordType>;
 
   fn eqv(&self, rhs: &Value) -> bool;
@@ -439,12 +459,12 @@ types:
 \begin{minted}[frame=lines]{rust}
 pub enum FuncPtr {
   Continuation(ContinuationPtr),
-  Closure(ClosurePtr),
+  User(UserPtr),
   Bridge(BridgePtr),
 }
 \end{minted}
 
-The \texttt{ContinuationPtr} and \texttt{ClosurePtr} types are JIT compiled
+The \texttt{ContinuationPtr} and \texttt{UserPtr} types are JIT compiled
 Scheme functions and the \texttt{BridgePtr} type is a Rust function that has
 been cast to a function pointer. Therefore all Scheme code is treated
 synchronously but can switch over to async Rust whenever it needs to await the
@@ -480,7 +500,7 @@ impl Application {
 \end{minted}
 
 This allows for the JIT compiled \texttt{ContinuationPtr} and
-\texttt{ClosurePtr}s and for the Rust bridge functions to seamlessly interact
+\texttt{UserPtr}s and for the Rust bridge functions to seamlessly interact
 with each other. The synchronous JIT compiled function pass their continuation
 to the async Rust code to evaluate the async result after it is awaited in the
 CPS trampoline.
@@ -586,9 +606,9 @@ println!("{value}");
 \section{Conclusion}
 
 GoukiScheme provides a purely safe, easy-to-use interface for interacting with
-async Scheme code from within async Rust. It does this without sacrificing
-performance by implementing a novel JIT compilation and evaluation scheme
-that takes advantage of an async trampoline and eschewing typical tracing
+async Scheme code from within async Rust and vice-versa. It does this without
+sacrificing performance by implementing a novel JIT compilation and evaluation
+scheme that takes advantage of an async trampoline and eschewing typical tracing
 garbage collectors for a concurrent cycle collection scheme. 
 
 \bibliographystyle{ACM-Reference-Format}
