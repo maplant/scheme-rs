@@ -397,7 +397,7 @@
                  (define-syntax name
                    (lambda (x)
                      (syntax-case x ()
-                     ([_] #'t))))))])))
+                      ([_] #'t))))))])))
 
 ;; foo is already bound to a macro in this scope
 (defconst newfoo 42)
@@ -467,3 +467,19 @@
 
 (assert-eq (point-x (make-point/abs -1 -2)) 1)
 (assert-eq (point-y (make-point/abs -1 -2)) 2)
+
+;; Test from make the define-record-type macro:
+(define (get-clause id ls)
+  (syntax-case ls ()
+    [() #f]
+    [((x . rest) . ls)
+     (if (free-identifier=? id #'x)
+         #'(x . rest)
+         (get-clause id #'ls))]))
+
+(define (test x)
+  (syntax-case x ()
+    [(_ field-spec* ...) #t]
+    [_ #f]))
+
+(assert-eq (test (get-clause #'fields #'((fields x y)))) #t)

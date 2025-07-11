@@ -129,22 +129,6 @@ impl Syntax {
         }
     }
 
-    // I do not like the fact that this function exists.
-    pub fn normalize(self) -> Self {
-        match self {
-            Self::List { mut list, span } => {
-                if let [Syntax::Null { .. }] = list.as_slice() {
-                    list.pop().unwrap()
-                } else if list.is_empty() {
-                    Syntax::Null { span }
-                } else {
-                    Self::List { list, span }
-                }
-            }
-            x => x,
-        }
-    }
-
     pub fn syntax_from_datum(marks: &BTreeSet<Mark>, datum: Value) -> Self {
         // TODO: conjure up better values for Span
         match datum.unpack() {
@@ -167,6 +151,13 @@ impl Syntax {
                 let mut syntax = syntax.as_ref().clone();
                 syntax.mark_many(marks);
                 syntax
+            }
+            UnpackedValue::Vector(vec) => {
+                let mut out_vec = Vec::new();
+                for item in vec.read().iter() {
+                    out_vec.push(Syntax::syntax_from_datum(marks, item.clone()));
+                }
+                Syntax::new_vector(out_vec, Span::default())
             }
             UnpackedValue::Symbol(sym) => {
                 let ident = Identifier {
@@ -234,11 +225,7 @@ impl Syntax {
         Ok(Expansion::new_expanded(new_env, output))
     }
 
-    fn expand_once<'a>(
-        &'a self,
-        env: &'a Environment,
-        // cont: &Closure,
-    ) -> BoxFuture<'a, Result<Expansion, Value>> {
+    fn expand_once<'a>(&'a self, env: &'a Environment) -> BoxFuture<'a, Result<Expansion, Value>> {
         Box::pin(async move {
             match self {
                 Self::List { list, .. } => {
@@ -282,11 +269,7 @@ impl Syntax {
     }
 
     /// Fully expand the outermost syntax object.
-    pub async fn expand(
-        mut self,
-        env: &Environment,
-        // cont: &Closure,
-    ) -> Result<FullyExpanded, Value> {
+    pub async fn expand(mut self, env: &Environment) -> Result<FullyExpanded, Value> {
         let mut curr_env = env.clone();
         loop {
             match self.expand_once(&curr_env).await? {
