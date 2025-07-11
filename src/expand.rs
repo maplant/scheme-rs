@@ -368,10 +368,7 @@ impl Template {
     fn expand(&self, binds: &Binds<'_>, curr_span: Span) -> Option<Syntax> {
         let syn = match self {
             Self::Null => Syntax::new_null(curr_span),
-            Self::List(list) => {
-                let executed = expand_list(list, binds, curr_span.clone())?;
-                Syntax::new_list(executed, curr_span).normalize()
-            }
+            Self::List(list) => expand_list(list, binds, curr_span.clone())?,
             Self::Vector(vec) => {
                 Syntax::new_vector(expand_vec(vec, binds, curr_span.clone())?, curr_span)
             }
@@ -396,6 +393,8 @@ impl Template {
         curr_span: Span,
     ) -> Result<Vec<Value>, Condition> {
         // Expand the template:
+        // TODO: This can return None if a variable is used with the wrong
+        // expansion level. This needs to be made into a proper error.
         let expanded = self.expand(binds, curr_span).unwrap();
 
         // Parse and compile the expanded input in the captured environment:
@@ -412,7 +411,7 @@ impl Template {
     }
 }
 
-fn expand_list(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<Vec<Syntax>> {
+fn expand_list(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<Syntax> {
     let mut output = Vec::new();
     for item in items {
         if let Template::Ellipsis(template) = item {
@@ -427,7 +426,30 @@ fn expand_list(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option
             output.push(item.expand(binds, curr_span.clone())?);
         }
     }
-    Some(output)
+    Some(normalize_list(output, curr_span))
+}
+
+/// Because we flatten lists into vectors for syntax objects, its necessary to
+/// normalize the list after expansion. Specifically, after expansion, if the
+/// last element of a list is another list, the list needs to be flattened. After
+/// flattening if the vec is empty or a single Null long, it can be replaced with
+/// just a Null.
+fn normalize_list(mut list: Vec<Syntax>, span: Span) -> Syntax {
+    // Check for flattening:
+    if matches!(list.as_slice(), &[.., Syntax::List { .. }]) {
+        let Some(Syntax::List { list: tail, .. }) = list.pop() else {
+            unreachable!()
+        };
+        list.extend(tail);
+    }
+    // We should only have to do this once, if a list is the last element after
+    // flattening something has gone wrong.
+    assert!(!matches!(list.last(), Some(Syntax::List { .. })));
+    // Check for empty/null list:
+    match list.as_slice() {
+        [] | [Syntax::Null { .. }] => Syntax::Null { span },
+        _ => Syntax::new_list(list, span),
+    }
 }
 
 fn expand_vec(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<Vec<Syntax>> {
