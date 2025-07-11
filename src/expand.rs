@@ -431,9 +431,9 @@ fn expand_list(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option
 
 /// Because we flatten lists into vectors for syntax objects, its necessary to
 /// normalize the list after expansion. Specifically, after expansion, if the
-/// last element of a list is another list, the list needs to be flatten. After
-/// flattening if the vec is empty of a single Null, it can be replaced with a
-/// Null.
+/// last element of a list is another list, the list needs to be flattened. After
+/// flattening if the vec is empty or a single Null long, it can be replaced with
+/// just a Null.
 fn normalize_list(mut list: Vec<Syntax>, span: Span) -> Syntax {
     // Check for flattening:
     if matches!(list.as_slice(), &[.., Syntax::List { .. }]) {
