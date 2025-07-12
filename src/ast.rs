@@ -290,7 +290,7 @@ impl Expression {
             expansion_env,
             expanded,
         } = syn.expand(env).await?;
-        Self::parse_expanded(runtime, expanded, &expansion_env /* cont*/).await
+        Self::parse_expanded(runtime, expanded, &expansion_env).await
     }
 
     fn parse_expanded<'a>(
