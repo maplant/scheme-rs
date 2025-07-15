@@ -511,6 +511,22 @@ impl Quote {
     }
 }
 
+fn qq_expand(expr: &Syntax, depth: usize) {
+    if let Syntax::List { list, .. } = expr {
+        match list.as_slice() {
+            [ Syntax::Identifier { ident, .. }, tail @ .. ] if ident == "quasiquote" => {
+                todo!()
+            },
+            [ Syntax::Identifier { ident, .. }, tail @ .. ] if ident == "unquote" || ident == "unquote-splicing" => {
+                todo!()
+            },
+            _ => (),
+        }
+    } else {
+        todo!()
+    }
+}
+
 #[derive(Debug, Clone, Trace)]
 pub struct SyntaxQuote {
     pub syn: Syntax,

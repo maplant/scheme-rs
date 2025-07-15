@@ -26,7 +26,7 @@
     (syntax-case x ()
       ((_ ((p e0) ...) e1 e2 ...)
        (syntax (syntax-case (list e0 ...) ()
-		 ((p ...) (let () e1 e2 ...))))))))
+                 ((p ...) (let () e1 e2 ...))))))))
 
 (define-syntax cond
   (syntax-rules (else =>)
@@ -275,6 +275,32 @@
     ((_ args n (r b1 b2 ...) more ...)
      (apply (lambda r b1 b2 ...) args))))
 
+
+(define-syntax quasiquote
+  (define (qq-expand x depth)
+    (if (pair? x)
+        (case (car x)
+          ((quasiquote)
+            `(cons 'quasiquote
+                   ,(qq-expand (cdr x) (+ depth 1))))
+          ((unquote unquote-splicing)
+           (cond ((> depth 0)
+                  `(const ',(car x)
+                          ,(qq-expand (cdr x) (- depth 1))))
+                 ((and (eq? 'unquote (car x))
+                         (not (null? (cdr x)))
+                         (null? (cddr x)))
+                  (cadr x))
+                 (else (error "Illegal"))))
+          (else `(append ,(qq-expand-list (car x) depth)
+                         ,(qq-expand-list (cdr x) depth))))
+        `',x))
+  (lambda (x)
+    (syntax-case x (unquote unquote-splicing)
+        ((_ x) (syntax (qq-expand x 0))))))
+           
+  
+
 ;;
 ;; Aliases and function definitions: 
 ;;
@@ -407,3 +433,4 @@
               (if (> (car xs) biggest)
                   (car xs)
                   biggest)))))
+
