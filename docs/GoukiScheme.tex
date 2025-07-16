@@ -493,8 +493,9 @@ impl Application {
        args,
     } = self
     {
-      self = op.apply(&args).await;
+      self = op.apply(&args).await?;
     }
+    Ok(self.args)
   }
 }
 \end{minted}
