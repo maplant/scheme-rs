@@ -197,6 +197,17 @@ pub async fn vector_len(vec: &Value) -> Result<Vec<Value>, Condition> {
     })])
 }
 
+#[bridge(name = "bytevector-length", lib = "(base)")]
+pub async fn bytevector_len(vec: &Value) -> Result<Vec<Value>, Condition> {
+    let vec: Arc<AlignedVector<u8>> = vec.clone().try_into()?;
+    let len = vec.len();
+
+    Ok(vec![Value::from(match i64::try_from(len) {
+        Ok(len) => Number::FixedInteger(len),
+        Err(_) => Number::BigInteger(Integer::from(len)),
+    })])
+}
+
 #[bridge(name = "vector-set!", lib = "(base)")]
 pub async fn vector_set(vec: &Value, index: &Value, with: &Value) -> Result<Vec<Value>, Condition> {
     let vec: Gc<AlignedVector<Value>> = vec.clone().try_into()?;
