@@ -271,7 +271,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             Cps::PrimOp(primop, vals, result, cexpr) => {
                 self.simple_primop_codegen(primop, &vals, result, *cexpr, allocs, deferred)?
             }
-            Cps::Closure {
+            Cps::Lambda {
                 args,
                 body,
                 val,

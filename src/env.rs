@@ -100,6 +100,7 @@ pub struct LexicalContour {
     up: Environment,
     vars: HashMap<Identifier, Local>,
     macros: HashMap<Identifier, Gc<Closure>>,
+    // imports: HashMap<
 }
 
 impl LexicalContour {
@@ -469,11 +470,12 @@ impl fmt::Debug for Local {
 pub struct Global {
     pub(crate) name: Identifier,
     val: Gc<Value>,
+    constant: bool,
 }
 
 impl Global {
     pub fn new(name: Identifier, val: Gc<Value>) -> Self {
-        Global { name, val }
+        Global { name, val, constant: false }
     }
 
     pub fn value(self) -> Gc<Value> {

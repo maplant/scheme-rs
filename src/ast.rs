@@ -1,17 +1,7 @@
 //! Data structures for expanding and representing Scheme code.
 
 use crate::{
-    cps::{Compile, PrimOp},
-    env::{CapturedEnv, Environment, Local, Var},
-    expand::SyntaxRule,
-    expand::Transformer,
-    gc::{Gc, Trace},
-    num::{Number, NumberToUsizeError},
-    proc::Closure,
-    runtime::Runtime,
-    syntax::{FullyExpanded, Identifier},
-    syntax::{Span, Syntax},
-    value::Value,
+    cps::{Compile, PrimOp}, env::{CapturedEnv, Environment, Local, Var}, expand::{SyntaxRule, Transformer}, gc::{Gc, Trace}, num::{Number, NumberToUsizeError}, parse::ParseSyntaxError, proc::Closure, runtime::Runtime, symbols::Symbol, syntax::{FullyExpanded, Identifier, Span, Syntax}, value::Value
 };
 use either::Either;
 
@@ -75,11 +65,163 @@ impl From<Value> for ParseAstError {
     }
 }
 
+pub struct LibrarySpec {
+    name: LibraryName,
+    export: Vec<ExportSpec>,
+    import: Vec<ImportSpec>,
+    body: DefinitionBody,
+}
+
+#[derive(Clone, Default, PartialEq, Eq, Hash)]
+pub struct LibraryName {
+    name: Vec<Symbol>,
+    version: Version,
+}
+
+impl LibraryName {
+    pub fn parse(syn: &Syntax) -> Result<Self, ParseAstError> {
+        match syn.as_list() {
+            Some(
+                [
+                    name @ ..,
+                    Syntax::List {
+                        list: version,
+                        span,
+                    },
+                    Syntax::Null { .. },
+                ],
+            ) => Ok(Self {
+                name: list_to_name(name)?,
+                version: Version::parse(version, span)?,
+            }),
+            Some([name @ .., Syntax::Null { .. }]) => Ok(Self {
+                name: list_to_name(name)?,
+                version: Version::default(),
+            }),
+            _ => Err(ParseAstError::BadForm(syn.span().clone())),
+        }
+    }
+
+    pub fn from_str<'a>(
+        s: &'a str,
+        file_name: Option<&str>,
+    ) -> Result<Self, ParseLibraryNameError<'a>> {
+        let syn = Syntax::from_str(s, file_name)?;
+        Ok(Self::parse(&syn[0])?)
+    }
+}
+
+fn list_to_name(name: &[Syntax]) -> Result<Vec<Symbol>, ParseAstError> {
+    name.iter()
+        .map(|name| {
+            if let Syntax::Identifier { ident, .. } = name {
+                Ok(ident.sym)
+            } else {
+                Err(ParseAstError::ExpectedIdentifier(name.span().clone()))
+            }
+        })
+        .collect()
+}
+
+#[derive(Debug)]
+pub enum ParseLibraryNameError<'a> {
+    ParseSyntaxError(ParseSyntaxError<'a>),
+    ParseAstError(ParseAstError),
+}
+
+impl<'a> From<ParseSyntaxError<'a>> for ParseLibraryNameError<'a> {
+    fn from(pse: ParseSyntaxError<'a>) -> Self {
+        Self::ParseSyntaxError(pse)
+    }
+}
+
+impl From<ParseAstError> for ParseLibraryNameError<'_> {
+    fn from(pae: ParseAstError) -> Self {
+        Self::ParseAstError(pae)
+    }
+}
+
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Hash, Default)]
+pub struct Version {
+    version: Vec<usize>,
+}
+
+impl Version {
+    fn parse(syn: &[Syntax], span: &Span) -> Result<Self, ParseAstError> {
+        match syn {
+            [version @ .., Syntax::Null { .. }] => {
+                let version: Result<Vec<usize>, _> = version
+                    .iter()
+                    .map(|subvers| {
+                        if let Syntax::Literal {
+                            literal: Literal::Number(num),
+                            ..
+                        } = subvers
+                        {
+                            num.try_into().map_err(ParseAstError::ExpectedInteger)
+                        } else {
+                            Err(ParseAstError::ExpectedNumber(subvers.span().clone()))
+                        }
+                    })
+                    .collect();
+                Ok(Self { version: version? })
+            }
+            _ => Err(ParseAstError::BadForm(span.clone())),
+        }
+    }
+}
+
+pub enum VersionReference {
+    SubVersions(Vec<SubVersionReference>),
+    And(Vec<VersionReference>),
+    Or(Vec<VersionReference>),
+    Not(Box<VersionReference>),
+}
+
+pub enum SubVersionReference {
+    SubVersion(u32),
+    Gte(Vec<SubVersionReference>),
+    Lte(Vec<SubVersionReference>),
+    And(Vec<SubVersionReference>),
+    Or(Vec<SubVersionReference>),
+    Not(Box<SubVersionReference>),
+}
+
+pub struct ExportSpec {
+    rename: Option<Identifier>,
+    ident: Identifier,
+}
+
+
+pub struct ImportSpec {
+    import_sets: Vec<ImportSet>,
+}
+
+pub enum ImportSet {
+    Library(LibraryName),
+    Only {
+        set: Box<ImportSet>,
+        idents: Vec<Identifier>,
+    },
+    Except {
+        set: Box<ImportSet>,
+        idents: Vec<Identifier>,
+    },
+    Prefix {
+        set: Box<ImportSet>,
+        prefix: Identifier,
+    },
+    Rename {
+        set: Box<ImportSet>,
+        /// Imported identifiers to rename (from, to).
+        renames: Vec<(Identifier, Identifier)>,
+    }
+}
+
 #[derive(Debug, Clone, Trace)]
 pub enum Definition {
     DefineVar(DefineVar),
     DefineFunc(DefineFunc),
-    // DefineRecordType(DefineRecordType),
 }
 
 #[derive(Debug, Clone, Trace)]
@@ -112,7 +254,7 @@ impl Definition {
         }
     }
 
-    async fn parse(
+    pub async fn parse(
         runtime: &Gc<Runtime>,
         syn: &[Syntax],
         env: &Environment,

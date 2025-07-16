@@ -1,134 +1,11 @@
 //! A Registry is a collection of libraries.
 
 use crate::{
-    ast::{DefinitionBody, Literal, ParseAstError},
-    cps::Compile,
-    env::{Environment, Top},
-    gc::Gc,
-    parse::ParseSyntaxError,
-    proc::{BridgePtr, Closure, FuncDebugInfo, FuncPtr},
-    runtime::Runtime,
-    symbols::Symbol,
-    syntax::{Identifier, Span, Syntax},
-    value::Value,
+    ast::{Definition, DefinitionBody, LibraryName, Literal, ParseAstError}, cps::Compile, env::{Environment, Macro, Top}, exception::Condition, gc::{Gc, Trace}, parse::ParseSyntaxError, proc::{BridgePtr, Closure, FuncDebugInfo, FuncPtr}, runtime::Runtime, symbols::Symbol, syntax::{Identifier, Span, Syntax}, value::Value
 };
+use std::{collections::{HashMap, HashSet}, sync::Arc};
+
 pub use scheme_rs_macros::bridge;
-use std::{collections::HashMap, sync::Arc};
-
-#[derive(Clone, Default, PartialEq, Eq, Hash)]
-pub struct LibraryName {
-    name: Vec<Symbol>,
-    version: Version,
-}
-
-impl LibraryName {
-    fn parse(syn: &Syntax) -> Result<Self, ParseAstError> {
-        match syn.as_list() {
-            Some(
-                [
-                    name @ ..,
-                    Syntax::List {
-                        list: version,
-                        span,
-                    },
-                    Syntax::Null { .. },
-                ],
-            ) => Ok(Self {
-                name: list_to_name(name)?,
-                version: Version::parse(version, span)?,
-            }),
-            Some([name @ .., Syntax::Null { .. }]) => Ok(Self {
-                name: list_to_name(name)?,
-                version: Version::default(),
-            }),
-            _ => Err(ParseAstError::BadForm(syn.span().clone())),
-        }
-    }
-
-    fn from_str<'a>(
-        s: &'a str,
-        file_name: Option<&str>,
-    ) -> Result<Self, ParseLibraryNameError<'a>> {
-        let syn = Syntax::from_str(s, file_name)?;
-        Ok(Self::parse(&syn[0])?)
-    }
-}
-
-fn list_to_name(name: &[Syntax]) -> Result<Vec<Symbol>, ParseAstError> {
-    name.iter()
-        .map(|name| {
-            if let Syntax::Identifier { ident, .. } = name {
-                Ok(ident.sym)
-            } else {
-                Err(ParseAstError::ExpectedIdentifier(name.span().clone()))
-            }
-        })
-        .collect()
-}
-
-#[derive(Debug)]
-pub enum ParseLibraryNameError<'a> {
-    ParseSyntaxError(ParseSyntaxError<'a>),
-    ParseAstError(ParseAstError),
-}
-
-impl<'a> From<ParseSyntaxError<'a>> for ParseLibraryNameError<'a> {
-    fn from(pse: ParseSyntaxError<'a>) -> Self {
-        Self::ParseSyntaxError(pse)
-    }
-}
-
-impl From<ParseAstError> for ParseLibraryNameError<'_> {
-    fn from(pae: ParseAstError) -> Self {
-        Self::ParseAstError(pae)
-    }
-}
-
-#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Hash, Default)]
-pub struct Version {
-    version: Vec<usize>,
-}
-
-impl Version {
-    fn parse(syn: &[Syntax], span: &Span) -> Result<Self, ParseAstError> {
-        match syn {
-            [version @ .., Syntax::Null { .. }] => {
-                let version: Result<Vec<usize>, _> = version
-                    .iter()
-                    .map(|subvers| {
-                        if let Syntax::Literal {
-                            literal: Literal::Number(num),
-                            ..
-                        } = subvers
-                        {
-                            num.try_into().map_err(ParseAstError::ExpectedInteger)
-                        } else {
-                            Err(ParseAstError::ExpectedNumber(subvers.span().clone()))
-                        }
-                    })
-                    .collect();
-                Ok(Self { version: version? })
-            }
-            _ => Err(ParseAstError::BadForm(span.clone())),
-        }
-    }
-}
-
-pub enum VersionReference {
-    SubVersions(Vec<SubVersionReference>),
-    And(Vec<VersionReference>),
-    Or(Vec<VersionReference>),
-    Not(Box<VersionReference>),
-}
-
-pub enum SubVersionReference {
-    SubVersion(u32),
-    Gte(Vec<SubVersionReference>),
-    Lte(Vec<SubVersionReference>),
-    And(Vec<SubVersionReference>),
-    Or(Vec<SubVersionReference>),
-    Not(Box<SubVersionReference>),
-}
 
 pub struct BridgeFn {
     name: &'static str,
@@ -194,6 +71,7 @@ pub struct Initializer {
     initializer: fn(lib: &Gc<Top>),
 }
 
+#[derive(Trace)]
 pub struct Registry {
     libs: HashMap<LibraryName, Gc<Top>>,
 }
@@ -264,4 +142,58 @@ impl Registry {
         let lib_name = LibraryName::from_str(lib, None).unwrap();
         self.libs.get(&lib_name).cloned()
     }
+}
+
+/*
+#[derive(Trace)]
+pub struct Imports {
+    // registry: Gc<Registry>,
+    imports: HashMap<Identifier, Gc<Library>>,
+}
+*/
+
+#[derive(Trace)]
+pub struct Library {
+    imports: HashMap<Identifier, Gc<Library>>,
+    exports: HashSet<Identifier>,
+    state: LibraryState, 
+    vars: HashMap<Identifier, Gc<Value>>,
+    keywords: HashMap<Identifier, Macro>,
+}
+
+impl Library {
+    pub fn new(
+        imports: HashMap<Identifier, Gc<Library>>,
+        exports: HashSet<Identifier>,
+        body: Vec<Syntax>
+    ) -> Self {
+        Self {
+            imports,
+            exports,
+            state: LibraryState::Unexpanded(body),
+            vars: HashMap::default(),
+            keywords: HashMap::default(),
+        }
+    }
+
+    pub async fn maybe_expand(&mut self) -> Result<(), ParseAstError> {
+        if let LibraryState::Unexpanded(ref body) = self.state {
+            let expanded = Definition::parse(todo!(), body.as_slice(), todo!(), todo!()).await?;
+            self.state = LibraryState::Expanded(expanded);
+        }
+        Ok(())
+    }
+
+    pub async fn maybe_invoke(&mut self) -> Result<(), Condition> {
+        self.maybe_expand()?;
+        if let LibraryState::Expanded(ref defs) = self.state {
+            
+        }
+    }
+}
+
+pub enum LibraryState {
+    Unexpanded(Vec<Syntax>),
+    Expanded(Definition),
+    Invoked,
 }

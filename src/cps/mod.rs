@@ -94,7 +94,7 @@ pub enum PrimOp {
     Set,
 
     // Cell operations:
-    /// Allocate a cell, returning a Gc<Value>.
+    /// Allocate a cell, returning a Gc<Value>:
     AllocCell,
 
     // List operators:
@@ -160,16 +160,6 @@ impl ClosureArgs {
         self.iter().copied().collect()
     }
 
-    /*
-    fn to_vec(&self) -> Vec<Local> {
-        self.args
-            .clone()
-            .into_iter()
-            .chain(self.continuation)
-            .collect()
-    }
-    */
-
     fn num_required(&self) -> usize {
         self.args.len().saturating_sub(self.variadic as usize)
     }
@@ -177,21 +167,21 @@ impl ClosureArgs {
 
 #[derive(derive_more::Debug, Clone)]
 pub enum Cps {
-    /// Call to a primitive operator.
+    /// Call to a primitive operator:
     PrimOp(PrimOp, Vec<Value>, Local, Box<Cps>),
 
-    /// Function application.
+    /// Function application:
     App(Value, Vec<Value>, Option<Span>),
 
-    /// Forward a list of values into an application.
+    /// Forward a list of values into an application:
     // TODO: I think we can get rid of this with better primitive operators, maybe.
     Forward(Value, Value),
 
-    /// Branching.
+    /// Branching:
     If(Value, Box<Cps>, Box<Cps>),
 
-    /// Function creation.
-    Closure {
+    /// Function creation:
+    Lambda {
         args: ClosureArgs,
         body: Box<Cps>,
         val: Local,
@@ -199,7 +189,7 @@ pub enum Cps {
         span: Option<Span>,
     },
 
-    /// Halt execution and return the values
+    /// Halt execution and return the values:
     Halt(Value),
 }
 
@@ -224,7 +214,7 @@ impl Cps {
                 success.substitute(substitutions);
                 failure.substitute(substitutions);
             }
-            Self::Closure { body, cexp, .. } => {
+            Self::Lambda { body, cexp, .. } => {
                 body.substitute(substitutions);
                 cexp.substitute(substitutions);
             }

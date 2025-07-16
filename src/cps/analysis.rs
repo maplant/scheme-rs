@@ -51,7 +51,7 @@ impl Cps {
                 .into_iter()
                 .flatten()
                 .collect(),
-            Cps::Closure {
+            Cps::Lambda {
                 args,
                 body,
                 val,
@@ -59,7 +59,7 @@ impl Cps {
                 ..
             } => {
                 let mut free_body = body.free_variables();
-                for arg in args.to_vec() {
+                for arg in args.iter() {
                     free_body.remove(&arg);
                 }
                 let mut free_variables: HashSet<_> =
@@ -98,7 +98,7 @@ impl Cps {
                 .into_iter()
                 .flatten()
                 .collect(),
-            Cps::Closure { body, cexp, .. } => {
+            Cps::Lambda { body, cexp, .. } => {
                 body.globals().union(&cexp.globals()).cloned().collect()
             }
             Cps::Halt(val) => val.to_global().into_iter().collect(),
@@ -124,7 +124,7 @@ impl Cps {
                 add_value_use(uses, op)
             }
             Cps::Forward(op, arg) => add_value_use(add_value_use(HashMap::new(), op), arg),
-            Cps::Closure {
+            Cps::Lambda {
                 body, val, cexp, ..
             } => {
                 if !uses_cache.contains_key(val) {
@@ -224,7 +224,7 @@ impl Cps {
                 }
                 escaping_args
             }
-            Cps::Closure {
+            Cps::Lambda {
                 args,
                 body,
                 val,
@@ -232,7 +232,7 @@ impl Cps {
                 ..
             } => {
                 if !escaping_arg_cache.contains_key(val) {
-                    let new_local_args: HashSet<_> = args.to_vec().into_iter().collect();
+                    let new_local_args: HashSet<_> = args.iter().copied().collect();
                     let escaping_args = body
                         .need_cells(&new_local_args, escaping_arg_cache)
                         .union(&cexp.need_cells(local_args, escaping_arg_cache))
