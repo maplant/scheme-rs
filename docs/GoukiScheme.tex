@@ -98,23 +98,30 @@ from Tokio\cite{tokio}:
 
 \begin{minted}[frame=lines]{scheme}
 (define (echo socket)
-  (let ((buff (await (read-all socket))))
-    (await (write-all socket buff))
-    (echo socket)))
+  (let ((buff (read socket 1024)))
+    (if (> (bytevector-length buff) 0)
+        (begin
+          (write socket buff)
+          (echo socket))
+        (display "Connection closed\n"))))
 
 (define (listen listener)
-  (let-values (((socket _) (await (accept listener))))
+  (let-values (((socket addr) (accept listener)))
+    (display "Connected to ")
+    (display addr)
+    (display "\n")
     (spawn (lambda () (echo socket)))
     (listen listener)))
 
-(listen (await (bind-tcp "127.0.0.1:8080")))
+(listen (bind-tcp "127.0.0.1:8080"))
 \end{minted}
 
-In this example, the functions \texttt{read-all}, \texttt{write-all},
+In this example, the functions \texttt{spawn}, \texttt{read}, \texttt{write},
 \texttt{accept}, and \texttt{bind-tcp} are all Rust functions accessible via
-Scheme that call the appropriate Tokio functions. \texttt{await} is also
-a Rust that checks that its argument is a \texttt{Future}\cite{future} and
-awaits it.
+Scheme that call and await the appropriate async Tokio functions. \texttt{spawn}
+returns a \texttt{Future}\cite{future} that we could await via the
+\texttt{await} function, but we discard the future and allow it to run in
+parallel instead. 
 
 \section{Alternatives}
 
