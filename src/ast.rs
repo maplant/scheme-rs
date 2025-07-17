@@ -1,7 +1,17 @@
 //! Data structures for expanding and representing Scheme code.
 
 use crate::{
-    cps::{Compile, PrimOp}, env::{CapturedEnv, Environment, Local, Var}, expand::{SyntaxRule, Transformer}, gc::{Gc, Trace}, num::{Number, NumberToUsizeError}, parse::ParseSyntaxError, proc::Closure, runtime::Runtime, symbols::Symbol, syntax::{FullyExpanded, Identifier, Span, Syntax}, value::Value
+    cps::{Compile, PrimOp},
+    env::{CapturedEnv, Environment, Local, Var},
+    expand::{SyntaxRule, Transformer},
+    gc::{Gc, Trace},
+    num::{Number, NumberToUsizeError},
+    parse::ParseSyntaxError,
+    proc::Closure,
+    runtime::Runtime,
+    symbols::Symbol,
+    syntax::{FullyExpanded, Identifier, Span, Syntax},
+    value::Value,
 };
 use either::Either;
 
@@ -72,7 +82,7 @@ pub struct LibrarySpec {
     body: DefinitionBody,
 }
 
-#[derive(Clone, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Default, PartialEq, Eq, Hash, Trace)]
 pub struct LibraryName {
     name: Vec<Symbol>,
     version: Version,
@@ -141,7 +151,7 @@ impl From<ParseAstError> for ParseLibraryNameError<'_> {
     }
 }
 
-#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Hash, Default)]
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Hash, Default, Trace)]
 pub struct Version {
     version: Vec<usize>,
 }
@@ -192,7 +202,6 @@ pub struct ExportSpec {
     ident: Identifier,
 }
 
-
 pub struct ImportSpec {
     import_sets: Vec<ImportSet>,
 }
@@ -215,7 +224,7 @@ pub enum ImportSet {
         set: Box<ImportSet>,
         /// Imported identifiers to rename (from, to).
         renames: Vec<(Identifier, Identifier)>,
-    }
+    },
 }
 
 #[derive(Debug, Clone, Trace)]
@@ -255,7 +264,7 @@ impl Definition {
     }
 
     pub async fn parse(
-        runtime: &Gc<Runtime>,
+        runtime: &Runtime,
         syn: &[Syntax],
         env: &Environment,
         span: &Span,
@@ -267,7 +276,7 @@ impl Definition {
                 expr,
                 Syntax::Null { .. },
             ] => Ok(Definition::DefineVar(DefineVar {
-                var: env.fetch_var(ident).unwrap(),
+                var: env.fetch_var(ident).await.unwrap(),
                 val: Arc::new(Expression::parse(runtime, expr.clone(), env).await?),
                 next: None,
             })),
@@ -289,7 +298,7 @@ impl Definition {
                         },
                         args @ ..,
                     ] => {
-                        let var = env.fetch_var(func_name).unwrap();
+                        let var = env.fetch_var(func_name).await.unwrap();
 
                         let mut bound = HashMap::<Identifier, Span>::new();
                         let mut fixed = Vec::new();
@@ -378,7 +387,7 @@ impl Definition {
 }
 
 pub(super) async fn define_syntax(
-    runtime: &Gc<Runtime>,
+    runtime: &Runtime,
     ident: Identifier,
     expr: Syntax,
     env: &Environment,
@@ -397,7 +406,7 @@ pub(super) async fn define_syntax(
         .await
         .map_err(|err| ParseAstError::RaisedValue(err.into()))?;
     let transformer: Gc<Closure> = mac[0].clone().try_into().unwrap();
-    env.def_macro(ident, transformer);
+    env.def_keyword(ident, transformer);
 
     Ok(())
 }
@@ -424,7 +433,7 @@ pub enum Expression {
 
 impl Expression {
     pub async fn parse(
-        runtime: &Gc<Runtime>,
+        runtime: &Runtime,
         syn: Syntax,
         env: &Environment,
     ) -> Result<Self, ParseAstError> {
@@ -436,7 +445,7 @@ impl Expression {
     }
 
     fn parse_expanded<'a>(
-        runtime: &'a Gc<Runtime>,
+        runtime: &'a Runtime,
         syn: Syntax,
         env: &'a Environment,
     ) -> BoxFuture<'a, Result<Self, ParseAstError>> {
@@ -452,11 +461,11 @@ impl Expression {
                 // Regular identifiers:
                 Syntax::Identifier { ident, .. } => Ok(Self::Var(
                     env.fetch_var(&ident)
+                        .await
                         .or_else(|| {
                             let top = env.fetch_top();
-                            let is_repl = { top.read().is_repl() };
-                            is_repl.then(|| {
-                                Var::Global(top.write().def_var(ident.clone(), Value::undefined()))
+                            top.is_repl().then(|| {
+                                Var::Global(top.def_var(ident.clone(), Value::undefined()))
                             })
                         })
                         .ok_or_else(|| ParseAstError::UndefinedVariable(ident.clone()))?,
@@ -678,7 +687,7 @@ pub struct Apply {
 
 impl Apply {
     async fn parse(
-        runtime: &Gc<Runtime>,
+        runtime: &Runtime,
         operator: Syntax,
         args: &[Syntax],
         env: &Environment,
@@ -712,7 +721,7 @@ pub struct Lambda {
 
 impl Lambda {
     async fn parse(
-        runtime: &Gc<Runtime>,
+        runtime: &Runtime,
         sexprs: &[Syntax],
         env: &Environment,
         span: &Span,
@@ -732,7 +741,7 @@ impl Lambda {
 }
 
 async fn parse_lambda(
-    runtime: &Gc<Runtime>,
+    runtime: &Runtime,
     args: &[Syntax],
     body: &[Syntax],
     env: &Environment,
@@ -814,7 +823,7 @@ impl Let {
     }
 
     async fn parse(
-        runtime: &Gc<Runtime>,
+        runtime: &Runtime,
         syn: &[Syntax],
         env: &Environment,
         span: &Span,
@@ -843,7 +852,7 @@ impl Let {
 }
 
 async fn parse_let(
-    runtime: &Gc<Runtime>,
+    runtime: &Runtime,
     name: Option<&Identifier>,
     bindings: &[Syntax],
     body: &[Syntax],
@@ -919,7 +928,7 @@ struct LetBinding {
 
 impl LetBinding {
     async fn parse(
-        runtime: &Gc<Runtime>,
+        runtime: &Runtime,
         form: &Syntax,
         env: &Environment,
         previously_bound: &HashMap<Identifier, Span>,
@@ -965,7 +974,7 @@ pub struct Set {
 
 impl Set {
     async fn parse(
-        runtime: &Gc<Runtime>,
+        runtime: &Runtime,
         exprs: &[Syntax],
         env: &Environment,
         span: &Span,
@@ -975,6 +984,7 @@ impl Set {
             [Syntax::Identifier { ident, .. }, expr] => Ok(Set {
                 var: env
                     .fetch_var(ident)
+                    .await
                     .ok_or_else(|| ParseAstError::UndefinedVariable(ident.clone()))?,
                 val: Arc::new(Expression::parse(runtime, expr.clone(), env).await?),
             }),
@@ -994,7 +1004,7 @@ pub struct If {
 
 impl If {
     async fn parse(
-        runtime: &Gc<Runtime>,
+        runtime: &Runtime,
         exprs: &[Syntax],
         env: &Environment,
         span: &Span,
@@ -1055,8 +1065,8 @@ impl DefinitionBody {
         Self { first }
     }
 
-    pub async fn parse_program_body(
-        runtime: &Gc<Runtime>,
+    pub async fn parse_lib_body(
+        runtime: &Runtime,
         body: &[Syntax],
         env: &Environment,
         span: &Span,
@@ -1065,7 +1075,7 @@ impl DefinitionBody {
     }
 
     pub async fn parse(
-        runtime: &Gc<Runtime>,
+        runtime: &Runtime,
         body: &[Syntax],
         env: &Environment,
         span: &Span,
@@ -1076,7 +1086,7 @@ impl DefinitionBody {
     /// Parse the body. body is expected to be a list of valid syntax objects, and should not include
     /// _any_ nulls, including one at the end.
     fn parse_helper<'a>(
-        runtime: &'a Gc<Runtime>,
+        runtime: &'a Runtime,
         body: &'a [Syntax],
         permissive: bool,
         env: &'a Environment,
@@ -1149,7 +1159,7 @@ impl ExprBody {
 
     /// Differs from Body by being purely expression based. No definitions allowed.
     async fn parse(
-        runtime: &Gc<Runtime>,
+        runtime: &Runtime,
         body: &[Syntax],
         env: &Environment,
     ) -> Result<Self, ParseAstError> {
@@ -1163,7 +1173,7 @@ impl ExprBody {
 }
 
 fn splice_in<'a>(
-    runtime: &'a Gc<Runtime>,
+    runtime: &'a Runtime,
     permissive: bool,
     body: &'a [Syntax],
     env: &'a Environment,
@@ -1270,7 +1280,7 @@ fn splice_in<'a>(
 }
 
 async fn parse_let_syntax(
-    runtime: &Gc<Runtime>,
+    runtime: &Runtime,
     recursive: bool,
     bindings: &Syntax,
     env: &Environment,
@@ -1312,7 +1322,7 @@ impl And {
 
 impl And {
     async fn parse(
-        runtime: &Gc<Runtime>,
+        runtime: &Runtime,
         exprs: &[Syntax],
         env: &Environment,
     ) -> Result<Self, ParseAstError> {
@@ -1336,7 +1346,7 @@ impl Or {
     }
 
     async fn parse(
-        runtime: &Gc<Runtime>,
+        runtime: &Runtime,
         exprs: &[Syntax],
         env: &Environment,
     ) -> Result<Self, ParseAstError> {
@@ -1375,7 +1385,7 @@ pub struct SyntaxCase {
 
 impl SyntaxCase {
     async fn parse(
-        runtime: &Gc<Runtime>,
+        runtime: &Runtime,
         exprs: &[Syntax],
         env: &Environment,
         span: &Span,

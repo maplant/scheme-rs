@@ -43,6 +43,7 @@ struct InputHelper {
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    /*
     let runtime = Gc::new(Runtime::new());
     let registry = Registry::new(&runtime).await;
     let base = registry.import("(base)").unwrap();
@@ -97,6 +98,7 @@ async fn main() -> ExitCode {
             }
         }
     }
+    */
 
     ExitCode::SUCCESS
 }
@@ -110,7 +112,7 @@ pub enum EvalError<'e> {
 }
 
 async fn compile_and_run_str<'e>(
-    runtime: &Gc<Runtime>,
+    runtime: &Runtime,
     env: &Environment,
     input: &'e str,
 ) -> Result<Vec<Value>, EvalError<'e>> {

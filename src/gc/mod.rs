@@ -51,7 +51,8 @@ impl<T: GcOrTrace + 'static> Gc<T> {
         }
     }
 
-    /// We have to make this a function since coerce unsized is unstable.
+    /// Convert a `Gc<T>` into a `Gc<dyn Any>`. This is a separate function
+    /// since [CoerceUnsized] is unstable.
     pub fn into_any(this: Self) -> Gc<dyn Any> {
         let this = ManuallyDrop::new(this);
         let any: NonNull<GcInner<dyn Any>> = this.ptr;
@@ -101,11 +102,11 @@ impl<T: ?Sized> Gc<T> {
         std::ptr::addr_eq(lhs.ptr.as_ptr(), rhs.ptr.as_ptr())
     }
 
-    pub fn as_ptr(this: &Self) -> *mut GcInner<T> {
+    pub(crate) fn as_ptr(this: &Self) -> *mut GcInner<T> {
         this.ptr.as_ptr()
     }
 
-    pub fn into_raw(gc: Self) -> *mut GcInner<T> {
+    pub(crate) fn into_raw(gc: Self) -> *mut GcInner<T> {
         ManuallyDrop::new(gc).ptr.as_ptr()
     }
 
@@ -231,7 +232,7 @@ enum Color {
     Orange,
 }
 
-pub struct GcHeader {
+pub(crate) struct GcHeader {
     rc: usize,
     crc: isize,
     color: Color,
@@ -267,7 +268,7 @@ impl GcHeader {
 unsafe impl Send for GcHeader {}
 unsafe impl Sync for GcHeader {}
 
-pub struct GcInner<T: ?Sized> {
+pub(crate) struct GcInner<T: ?Sized> {
     header: UnsafeCell<GcHeader>,
     data: UnsafeCell<T>,
 }
@@ -437,6 +438,8 @@ impl<T: ?Sized> AsMut<T> for GcWriteGuard<'_, T> {
 // impl<T: ?Sized> !Send for GcWriteGuard<'_, T> {}
 // unsafe impl<T: ?Sized + Sync> Sync for GcWriteGuard<'_, T> {}
 
+/// A type that can be traced for garbage collection.
+///
 /// # Safety
 ///
 /// This trait should _not_ be manually implemented!

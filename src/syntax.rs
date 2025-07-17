@@ -235,7 +235,7 @@ impl Syntax {
                         Some(Self::Identifier { ident, .. }) => ident,
                         _ => return Ok(Expansion::Unexpanded),
                     };
-                    if let Some(mac) = env.fetch_macro(ident) {
+                    if let Some(mac) = env.fetch_keyword(ident).await {
                         return self.apply_transformer(env, mac).await;
                     }
 
@@ -243,7 +243,7 @@ impl Syntax {
                     match &list.as_slice()[1..] {
                         [Syntax::Identifier { ident: var, .. }, ..] if ident == "set!" => {
                             // Look for a variable transformer:
-                            if let Some(mac) = env.fetch_macro(var) {
+                            if let Some(mac) = env.fetch_keyword(var).await {
                                 if !mac.transformer.read().is_variable_transformer {
                                     return Err(Condition::error(format!(
                                         "{} not a variable transformer",
@@ -258,7 +258,7 @@ impl Syntax {
                     }
                 }
                 Self::Identifier { ident, .. } => {
-                    if let Some(mac) = env.fetch_macro(ident) {
+                    if let Some(mac) = env.fetch_keyword(ident).await {
                         return self.apply_transformer(env, mac).await;
                     }
                 }

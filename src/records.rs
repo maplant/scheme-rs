@@ -14,7 +14,7 @@ use crate::{
     num::Number,
     proc::{Application, Closure, DynamicWind, FuncPtr},
     registry::{BridgeFn, BridgeFnDebugInfo, bridge},
-    runtime::Runtime,
+    runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
     value::{UnpackedValue, Value, ValueType},
     vectors,
@@ -128,7 +128,7 @@ pub struct RecordConstructorDescriptor {
 }
 
 fn make_default_record_constructor_descriptor(
-    runtime: Gc<Runtime>,
+    runtime: Runtime,
     rtd: Arc<RecordTypeDescriptor>,
 ) -> Gc<RecordConstructorDescriptor> {
     let parent = rtd.inherits.last().map(|parent| {
@@ -315,7 +315,7 @@ fn rcd_to_protocols_and_rtds(rcd: &Gc<RecordConstructorDescriptor>) -> (Vec<Valu
 }
 
 pub(crate) unsafe extern "C" fn chain_protocols(
-    runtime: *mut GcInner<Runtime>,
+    runtime: *mut GcInner<RuntimeInner>,
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
     args: *const Value,
@@ -350,7 +350,7 @@ pub(crate) unsafe extern "C" fn chain_protocols(
 
         // Otherwise, turn the remaining chain into the continuation:
         let new_k = Closure::new(
-            Gc::from_raw_inc_rc(runtime),
+            Runtime::from_raw_inc_rc(runtime),
             vec![Gc::new(Value::from(remaining_protocols)), k],
             Vec::new(),
             FuncPtr::Continuation(chain_protocols),
@@ -524,7 +524,7 @@ pub fn default_protocol_constructor<'a>(
 }
 
 pub(crate) unsafe extern "C" fn call_constructor_continuation(
-    _runtime: *mut GcInner<Runtime>,
+    _runtime: *mut GcInner<RuntimeInner>,
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
     args: *const Value,

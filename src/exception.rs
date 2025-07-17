@@ -7,7 +7,7 @@ use crate::{
     gc::{Gc, GcInner, Trace},
     proc::{Application, Closure, DynamicWind, FuncPtr},
     registry::{BridgeFn, BridgeFnDebugInfo},
-    runtime::Runtime,
+    runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
     syntax::{Identifier, Span},
     value::Value,
@@ -210,7 +210,7 @@ pub struct ExceptionHandler {
 impl ExceptionHandler {
     /// # Safety
     /// Exception handler must point to a valid Gc'd object.
-    pub unsafe fn from_ptr(ptr: *mut GcInner<Self>) -> Option<Gc<Self>> {
+    pub(crate) unsafe fn from_ptr(ptr: *mut GcInner<Self>) -> Option<Gc<Self>> {
         use std::ops::Not;
         ptr.is_null()
             .not()
@@ -333,7 +333,7 @@ inventory::submit! {
 }
 
 unsafe extern "C" fn reraise_exception(
-    runtime: *mut GcInner<Runtime>,
+    runtime: *mut GcInner<RuntimeInner>,
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
     _args: *const Value,
@@ -341,7 +341,7 @@ unsafe extern "C" fn reraise_exception(
     dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition> {
     unsafe {
-        let runtime = Gc::from_raw_inc_rc(runtime);
+        let runtime = Runtime(Gc::from_raw_inc_rc(runtime));
 
         // env[0] is the exception
         let exception = Gc::from_raw_inc_rc(env.read());

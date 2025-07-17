@@ -4,14 +4,14 @@ use scheme_rs::{
     env::{Environment, Top},
     gc::Gc,
     registry::Registry,
-    runtime::Runtime,
+    runtime::RuntimeInner,
     syntax::{Span, Syntax},
 };
 
 use criterion::*;
 
 async fn fib_fn() -> Gc<scheme_rs::proc::Closure> {
-    let runtime = Gc::new(Runtime::new());
+    let runtime = Gc::new(RuntimeInner::new());
     let registry = Registry::new(&runtime).await;
     let base = registry.import("(base)").unwrap();
     let mut test_top = Top::program();

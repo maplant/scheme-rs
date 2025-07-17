@@ -93,11 +93,8 @@ impl Cps {
                 return reduced;
             }
             Cps::App(Value::Var(Var::Local(operator)), applied, _) if *operator == func => {
-                let substitutions: HashMap<_, _> = args
-                    .iter()
-                    .copied()
-                    .zip(applied.iter().cloned())
-                    .collect();
+                let substitutions: HashMap<_, _> =
+                    args.iter().copied().zip(applied.iter().cloned()).collect();
                 let mut body = func_body.clone();
                 body.substitute(&substitutions);
                 body

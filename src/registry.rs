@@ -1,10 +1,24 @@
 //! A Registry is a collection of libraries.
 
 use crate::{
-    ast::{Definition, DefinitionBody, LibraryName, Literal, ParseAstError}, cps::Compile, env::{Environment, Macro, Top}, exception::Condition, gc::{Gc, Trace}, parse::ParseSyntaxError, proc::{BridgePtr, Closure, FuncDebugInfo, FuncPtr}, runtime::Runtime, symbols::Symbol, syntax::{Identifier, Span, Syntax}, value::Value
+    ast::{Definition, DefinitionBody, LibraryName, Literal, ParseAstError},
+    cps::Compile,
+    env::{self, Environment, Global, Macro},
+    exception::Condition,
+    gc::{Gc, Trace},
+    parse::ParseSyntaxError,
+    proc::{Application, BridgePtr, Closure, DynamicWind, FuncDebugInfo, FuncPtr},
+    runtime::Runtime,
+    symbols::Symbol,
+    syntax::{Identifier, Span, Syntax},
+    value::Value,
 };
-use std::{collections::{HashMap, HashSet}, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet, hash_map::Entry},
+    sync::Arc,
+};
 
+use futures::future::BoxFuture;
 pub use scheme_rs_macros::bridge;
 
 pub struct BridgeFn {
@@ -68,22 +82,28 @@ inventory::collect!(BridgeFn);
 #[derive(Copy, Clone)]
 pub struct Initializer {
     lib_name: &'static str,
-    initializer: fn(lib: &Gc<Top>),
+    initializer: fn(lib: &Library),
 }
 
-#[derive(Trace)]
+#[derive(Trace, Default)]
 pub struct Registry {
-    libs: HashMap<LibraryName, Gc<Top>>,
+    libs: HashMap<LibraryName, Library>,
 }
 
 inventory::collect!(Initializer);
 
 impl Registry {
+    /// Construct an empty registry
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
     /// Construct a Registry with all of the available bridge functions present but no external libraries imported.
     // TODO: This should probably return a result.
-    pub async fn new(runtime: &Gc<Runtime>) -> Self {
+    pub async fn new(runtime: &Runtime) -> Self {
+        /*
         // This should probably be moved to a once cell.
-        let mut libs = HashMap::<LibraryName, Gc<Top>>::default();
+        let mut libs = HashMap::<LibraryName, Gc<dyn Top>>::default();
 
         // Import the bridge functions:
 
@@ -95,7 +115,7 @@ impl Registry {
             let lib_name = LibraryName::from_str(bridge_fn.lib_name, None).unwrap();
             let lib = libs
                 .entry(lib_name)
-                .or_insert_with(|| Gc::new(Top::library()));
+                .or_insert_with(|| todo!());// Gc::new(Top::library()));
             let mut lib = lib.write();
             lib.def_var(
                 Identifier::new(bridge_fn.name),
@@ -136,12 +156,16 @@ impl Registry {
         closure.call(&[]).await.unwrap();
 
         Self { libs }
+         */
+        todo!()
     }
 
+    /*
     pub fn import(&self, lib: &str) -> Option<Gc<Top>> {
         let lib_name = LibraryName::from_str(lib, None).unwrap();
         self.libs.get(&lib_name).cloned()
     }
+    */
 }
 
 /*
@@ -153,21 +177,24 @@ pub struct Imports {
 */
 
 #[derive(Trace)]
-pub struct Library {
-    imports: HashMap<Identifier, Gc<Library>>,
+pub(crate) struct LibraryInner {
+    rt: Runtime,
+    imports: HashMap<Identifier, Library>,
     exports: HashSet<Identifier>,
-    state: LibraryState, 
+    state: LibraryState,
     vars: HashMap<Identifier, Gc<Value>>,
     keywords: HashMap<Identifier, Macro>,
 }
 
-impl Library {
-    pub fn new(
-        imports: HashMap<Identifier, Gc<Library>>,
+impl LibraryInner {
+    pub(crate) fn new(
+        rt: &Runtime,
+        imports: HashMap<Identifier, Library>,
         exports: HashSet<Identifier>,
-        body: Vec<Syntax>
+        body: Vec<Syntax>,
     ) -> Self {
         Self {
+            rt: rt.clone(),
             imports,
             exports,
             state: LibraryState::Unexpanded(body),
@@ -175,25 +202,120 @@ impl Library {
             keywords: HashMap::default(),
         }
     }
+}
 
-    pub async fn maybe_expand(&mut self) -> Result<(), ParseAstError> {
-        if let LibraryState::Unexpanded(ref body) = self.state {
-            let expanded = Definition::parse(todo!(), body.as_slice(), todo!(), todo!()).await?;
-            self.state = LibraryState::Expanded(expanded);
-        }
+#[derive(Trace, Clone)]
+pub struct Library(pub(crate) Gc<LibraryInner>);
+
+impl Library {
+    pub async fn maybe_expand(&self) -> Result<(), ParseAstError> {
+        let body = {
+            let mut this = self.0.write();
+            if let LibraryState::Unexpanded(body) = &mut this.state {
+                std::mem::take(body)
+            } else {
+                return Ok(());
+            }
+        };
+        let rt = { self.0.read().rt.clone() };
+        let env = Environment::from(self.clone());
+        let expanded = DefinitionBody::parse_lib_body(&rt, &body, &env, body[0].span()).await?;
+        self.0.write().state = LibraryState::Expanded(expanded);
         Ok(())
     }
 
-    pub async fn maybe_invoke(&mut self) -> Result<(), Condition> {
-        self.maybe_expand()?;
-        if let LibraryState::Expanded(ref defs) = self.state {
-            
+    pub async fn maybe_invoke(&self) -> Result<(), Condition> {
+        self.maybe_expand().await?;
+        let defn_body = {
+            let mut this = self.0.write();
+            match std::mem::replace(&mut this.state, LibraryState::Invalid) {
+                LibraryState::Expanded(defn_body) => defn_body,
+                x => {
+                    this.state = x;
+                    return Ok(());
+                }
+            }
+        };
+        let compiled = defn_body.compile_top_level();
+        let rt = { self.0.read().rt.clone() };
+        let closure = rt.compile_expr(compiled).await.unwrap();
+        let _ = Application::new(closure, Vec::new(), None, DynamicWind::default(), None)
+            .eval()
+            .await?;
+        self.0.write().state = LibraryState::Invoked;
+        Ok(())
+    }
+
+    pub fn is_repl(&self) -> bool {
+        false
+    }
+
+    pub fn def_var(&self, name: Identifier, value: Value) -> env::Global {
+        let mut this = self.0.write();
+        match this.vars.entry(name.clone()) {
+            Entry::Occupied(occup) => Global::new(name, occup.get().clone()),
+            Entry::Vacant(vacant) => Global::new(name, vacant.insert(Gc::new(value)).clone()),
         }
+    }
+
+    pub fn def_keyword(&self, keyword: Identifier, mac: Macro) {
+        let mut this = self.0.write();
+        this.keywords.insert(keyword, mac);
+    }
+
+    pub fn fetch_var<'a>(&'a self, name: &'a Identifier) -> BoxFuture<'a, Option<env::Global>> {
+        // Check this library
+        let this = self.0.read();
+        if let Some(var) = this.vars.get(name) {
+            let var = var.clone();
+            return Box::pin(async move { Some(Global::new(name.clone(), var)) });
+        }
+
+        // Check our imports
+        let Some(import) = this.imports.get(name) else {
+            return Box::pin(async { None });
+        };
+
+        let import = import.clone();
+        Box::pin(async move {
+            import
+                .maybe_invoke()
+                .await
+                .expect("Oh geez, fetching variables can error now");
+
+            import.fetch_var(name).await
+        })
+    }
+
+    pub fn fetch_keyword<'a>(&'a self, keyword: &'a Identifier) -> BoxFuture<'a, Option<Macro>> {
+        // Check this library
+        let this = self.0.read();
+        if let Some(mac) = this.keywords.get(keyword) {
+            let mac = mac.clone();
+            return Box::pin(async move { Some(mac) });
+        }
+
+        // Check our imports
+        let Some(import) = this.imports.get(keyword) else {
+            return Box::pin(async { None });
+        };
+
+        let import = import.clone();
+        Box::pin(async move {
+            import
+                .maybe_invoke()
+                .await
+                .expect("Oh geez, fetching variables can error now");
+
+            import.fetch_keyword(keyword).await
+        })
     }
 }
 
+#[derive(Trace)]
 pub enum LibraryState {
+    Invalid,
     Unexpanded(Vec<Syntax>),
-    Expanded(Definition),
+    Expanded(DefinitionBody),
     Invoked,
 }

@@ -10,6 +10,7 @@ use crate::{
         Application, Closure, ContinuationPtr, DynamicWind, FuncDebugInfo, FuncPtr, UserPtr,
         clone_continuation_env,
     },
+    registry::Registry,
     symbols::Symbol,
     syntax::Span,
     value::{ReflexiveValue, UnpackedValue, Value},
@@ -47,40 +48,14 @@ use tokio::sync::{mpsc, oneshot};
 ///
 /// In order to remedy this it is vitally important the closure has a back pointer to
 /// the runtime. Probably also want to make it immutable
-#[derive(Trace, Clone, Debug)]
-pub struct Runtime {
-    compilation_buffer_tx: mpsc::Sender<CompilationTask>,
-    // TODO: Make this something better than just a vec
-    pub(crate) constants_pool: HashSet<ReflexiveValue>,
-    pub(crate) debug_info: DebugInfo,
-}
-
-const MAX_COMPILATION_TASKS: usize = 5; // Shrug
-
-impl Default for Runtime {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+#[derive(Trace, Clone)]
+pub struct Runtime(pub(crate) Gc<RuntimeInner>);
 
 impl Runtime {
     pub fn new() -> Self {
-        // Ensure the GC is initialized:
-        init_gc();
-        let (compilation_buffer_tx, compilation_buffer_rx) = mpsc::channel(MAX_COMPILATION_TASKS);
-        // According the inkwell (and therefore LLVM docs), one LlvmContext may
-        // be present per thread. Thus, we spawn a new thread and a new
-        // compilation task for every Runtime:
-        std::thread::spawn(move || compilation_task(compilation_buffer_rx));
-        Runtime {
-            compilation_buffer_tx,
-            constants_pool: HashSet::new(),
-            debug_info: DebugInfo::default(),
-        }
+        Self(Gc::new(RuntimeInner::default()))
     }
-}
 
-impl Gc<Runtime> {
     pub async fn compile_expr(&self, expr: Cps) -> Result<Gc<Closure>, BuilderError> {
         self.compile_expr_with_env(expr, IndexMap::default()).await
     }
@@ -97,10 +72,51 @@ impl Gc<Runtime> {
             compilation_unit: expr,
             runtime: self.clone(),
         };
-        let sender = { self.read().compilation_buffer_tx.clone() };
+        let sender = { self.0.read().compilation_buffer_tx.clone() };
         sender.send(task).await.unwrap();
         // Wait for the compilation task to complete:
         completion_rx.await.unwrap()
+    }
+
+    pub(crate) unsafe fn from_raw_inc_rc(rt: *mut GcInner<RuntimeInner>) -> Self {
+        unsafe { Self(Gc::from_raw_inc_rc(rt)) }
+    }
+}
+
+#[derive(Trace)]
+pub(crate) struct RuntimeInner {
+    /// Package registry
+    pub(crate) registry: Registry,
+    /// Channel to compilation task
+    compilation_buffer_tx: mpsc::Sender<CompilationTask>,
+    // TODO: Make this something better than just a vec
+    pub(crate) constants_pool: HashSet<ReflexiveValue>,
+    pub(crate) debug_info: DebugInfo,
+}
+
+impl Default for RuntimeInner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+const MAX_COMPILATION_TASKS: usize = 5; // Shrug
+
+impl RuntimeInner {
+    fn new() -> Self {
+        // Ensure the GC is initialized:
+        init_gc();
+        let (compilation_buffer_tx, compilation_buffer_rx) = mpsc::channel(MAX_COMPILATION_TASKS);
+        // According the inkwell (and therefore LLVM docs), one LlvmContext may
+        // be present per thread. Thus, we spawn a new thread and a new
+        // compilation task for every Runtime:
+        std::thread::spawn(move || compilation_task(compilation_buffer_rx));
+        RuntimeInner {
+            registry: Registry::empty(),
+            compilation_buffer_tx,
+            constants_pool: HashSet::new(),
+            debug_info: DebugInfo::default(),
+        }
     }
 }
 
@@ -130,7 +146,7 @@ struct CompilationTask {
     /// However, we can't cache the Runtime, as that would cause a ref cycle
     /// that would prevent the last compilation buffer sender to drop.
     /// Therefore, its lifetime is that of the compilation task
-    runtime: Gc<Runtime>,
+    runtime: Runtime,
 }
 
 type CompilationResult = Result<Gc<Closure>, BuilderError>;
@@ -360,7 +376,7 @@ unsafe extern "C" fn store(from: i64, to: *mut GcInner<Value>) {
 /// Allocate a closure
 #[runtime_fn]
 unsafe extern "C" fn make_continuation(
-    runtime: *mut GcInner<Runtime>,
+    runtime: *mut GcInner<RuntimeInner>,
     fn_ptr: ContinuationPtr,
     env: *const *mut GcInner<Value>,
     num_envs: u32,
@@ -384,7 +400,7 @@ unsafe extern "C" fn make_continuation(
             .collect();
 
         let closure = Closure::new(
-            Gc::from_raw_inc_rc(runtime),
+            Runtime::from_raw_inc_rc(runtime),
             env,
             globals,
             FuncPtr::Continuation(fn_ptr),
@@ -400,7 +416,7 @@ unsafe extern "C" fn make_continuation(
 /// Allocate a closure for a function that takes a continuation
 #[runtime_fn]
 unsafe extern "C" fn make_user(
-    runtime: *mut GcInner<Runtime>,
+    runtime: *mut GcInner<RuntimeInner>,
     fn_ptr: UserPtr,
     env: *const *mut GcInner<Value>,
     num_envs: u32,
@@ -425,7 +441,7 @@ unsafe extern "C" fn make_user(
             .collect();
 
         let closure = Closure::new(
-            Gc::from_raw_inc_rc(runtime),
+            Runtime::from_raw_inc_rc(runtime),
             env,
             globals,
             FuncPtr::User(fn_ptr),
@@ -441,7 +457,7 @@ unsafe extern "C" fn make_user(
 /// Call a transformer with the given argument and return the expansion
 #[runtime_fn]
 unsafe extern "C" fn get_call_transformer_fn(
-    runtime: *mut GcInner<Runtime>,
+    runtime: *mut GcInner<RuntimeInner>,
     env: *const *mut GcInner<Value>,
     num_envs: u32,
 ) -> *mut GcInner<Value> {
@@ -452,7 +468,7 @@ unsafe extern "C" fn get_call_transformer_fn(
             .collect();
 
         let closure = Closure::new(
-            Gc::from_raw_inc_rc(runtime),
+            Runtime::from_raw_inc_rc(runtime),
             env,
             Vec::new(),
             FuncPtr::Bridge(expand::call_transformer),
@@ -538,7 +554,6 @@ unsafe extern "C" fn prepare_continuation(
         };
 
         Value::into_raw(Value::from(Closure::new(
-            //     ManuallyDrop::new(Gc::new(Value::Closure(Closure::new(
             runtime,
             vec![Gc::new(thunks), Gc::new(Value::from(cont))],
             Vec::new(),
@@ -556,7 +571,7 @@ fn compute_winders(from_extent: &DynamicWind, to_extent: &[Value]) -> Value {
     let mut split_point = 0;
     #[allow(clippy::needless_range_loop)]
     for i in 0..len {
-        let UnpackedValue::Pair(pair /* ref to_in, _*/) = &*to_extent[i].unpacked_ref() else {
+        let UnpackedValue::Pair(pair) = &*to_extent[i].unpacked_ref() else {
             unreachable!()
         };
         let pair_read = pair.read();
@@ -591,14 +606,13 @@ fn compute_winders(from_extent: &DynamicWind, to_extent: &[Value]) -> Value {
         )
     {
         thunks = Value::from((thunk, thunks));
-        // Gc::new(Value::Pair(thunk, thunks));
     }
 
     thunks
 }
 
 unsafe extern "C" fn call_thunks(
-    runtime: *mut GcInner<Runtime>,
+    runtime: *mut GcInner<RuntimeInner>,
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
     args: *const Value,
@@ -635,7 +649,7 @@ unsafe extern "C" fn call_thunks(
         };
 
         let thunks = Closure::new(
-            Gc::from_raw_inc_rc(runtime),
+            Runtime::from_raw_inc_rc(runtime),
             vec![thunks, Gc::new(collected_args), Gc::new(Value::from(k))],
             Vec::new(),
             FuncPtr::Continuation(call_thunks_pass_args),
@@ -657,7 +671,7 @@ unsafe extern "C" fn call_thunks(
 }
 
 unsafe extern "C" fn call_thunks_pass_args(
-    runtime: *mut GcInner<Runtime>,
+    runtime: *mut GcInner<RuntimeInner>,
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
     _args: *const Value,
@@ -679,7 +693,7 @@ unsafe extern "C" fn call_thunks_pass_args(
                 let lists::Pair(head_thunk, tail) = &*pair.read();
                 let head_thunk: Gc<Closure> = head_thunk.clone().try_into().unwrap();
                 let cont = Closure::new(
-                    Gc::from_raw_inc_rc(runtime),
+                    Runtime::from_raw_inc_rc(runtime),
                     vec![Gc::new(tail.clone()), args, k],
                     Vec::new(),
                     FuncPtr::Continuation(call_thunks_pass_args),

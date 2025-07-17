@@ -26,7 +26,7 @@ impl Transformer {
     pub async fn eval(
         &self,
         expr: &Syntax,
-        runtime: &Gc<Runtime>,
+        runtime: &Runtime,
         env: &Environment,
         env_map: &IndexMap<Local, Gc<Value>>,
     ) -> Result<Option<Vec<Value>>, Condition> {
@@ -67,7 +67,7 @@ impl SyntaxRule {
     async fn eval(
         &self,
         expr: &Syntax,
-        runtime: &Gc<Runtime>,
+        runtime: &Runtime,
         env: &Environment,
         env_map: &IndexMap<Local, Gc<Value>>,
     ) -> Result<Option<Vec<Value>>, Condition> {
@@ -386,7 +386,7 @@ impl Template {
 
     async fn eval(
         &self,
-        runtime: &Gc<Runtime>,
+        runtime: &Runtime,
         env: &Environment,
         env_map: &IndexMap<Local, Gc<Value>>,
         binds: &Binds<'_>,
@@ -523,7 +523,7 @@ pub fn call_transformer<'a>(
             panic!("wrong args");
         };
 
-        let cont: Gc<Closure> = cont.clone().try_into().expect("huh");
+        let cont: Gc<Closure> = cont.clone().try_into()?;
 
         // Fetch a runtime from the continuation. It doesn't really matter
         // _which_ runtime we use, in fact we could create a new one, but it

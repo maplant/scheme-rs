@@ -9,19 +9,19 @@ use scheme_rs::{
     exception::Condition,
     gc::Gc,
     registry::{Registry, bridge},
-    runtime::Runtime,
+    runtime::RuntimeInner,
     syntax::{Span, Syntax},
     value::Value,
 };
 use std::error::Error as StdError;
 
 pub struct TestRuntime {
-    runtime: Gc<Runtime>,
+    runtime: Gc<RuntimeInner>,
     test_top: Environment,
 }
 impl TestRuntime {
     pub async fn new() -> Self {
-        let runtime = Gc::new(Runtime::new());
+        let runtime = Gc::new(RuntimeInner::new());
         let registry = Registry::new(&runtime).await;
         let base = registry.import("(base)").unwrap();
         let mut test_top = Top::program();
