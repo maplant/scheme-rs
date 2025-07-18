@@ -354,14 +354,6 @@ impl FullyExpanded {
     }
 }
 
-#[derive(Debug)]
-pub struct ParsedSyntax {
-    pub doc_comment: Option<String>,
-    pub syntax: Syntax,
-}
-
-impl ParsedSyntax {}
-
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Trace)]
 pub struct Mark(usize);
 
@@ -402,6 +394,15 @@ impl Identifier {
         Self {
             sym: Symbol::intern(name),
             marks: BTreeSet::default(),
+        }
+    }
+
+    /// Return this identifier prefixed with the given string
+    pub fn prefix(self, prefix: &str) -> Self {
+        let sym = Symbol::intern(&format!("{prefix}{}", self.sym.to_str()));
+        Self {
+            sym,
+            marks: self.marks,
         }
     }
 

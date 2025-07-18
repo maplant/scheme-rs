@@ -27,8 +27,9 @@ use std::{
 pub enum ParseAstError {
     /// The most general error. Something just looks bad.
     ///
-    /// This error type should be avoided, and instead one should use a more specific error type,
-    /// or create one.
+    /// This error type should be avoided, and instead one should use a more
+    /// specific error type, or create one. Lord knows I have not really taken
+    /// that advice.
     BadForm(Span),
 
     ExpectedArgument(Span),
@@ -37,6 +38,8 @@ pub enum ParseAstError {
     ExpectedNumber(Span),
     ExpectedVariableTransformer,
     ExpectedInteger(NumberToUsizeError),
+    ExpectedExportSpec(Span),
+    ExpectedLibraryKeyword(Span),
 
     UnexpectedArgument(Span),
     UnexpectedDefinition(Span),
@@ -77,9 +80,43 @@ impl From<Value> for ParseAstError {
 
 pub struct LibrarySpec {
     name: LibraryName,
-    export: Vec<ExportSpec>,
-    import: Vec<ImportSpec>,
-    body: DefinitionBody,
+    exports: ExportSpec,
+    imports: ImportSpec,
+    body: Vec<Syntax>,
+}
+
+impl LibrarySpec {
+    pub fn parse(syn: &Syntax) -> Result<Self, ParseAstError> {
+        match syn.as_list() {
+            Some(
+                [
+                    Syntax::Identifier {
+                        ident: library_decl,
+                        span: library_decl_span,
+                        ..
+                    },
+                    library_name,
+                    exports,
+                    imports,
+                    body @ ..,
+                    Syntax::Null { .. },
+                ],
+            ) => {
+                if library_decl != "library" {
+                    return Err(ParseAstError::ExpectedLibraryKeyword(
+                        library_decl_span.clone(),
+                    ));
+                }
+                Ok(Self {
+                    name: LibraryName::parse(library_name)?,
+                    exports: ExportSpec::parse(exports)?,
+                    imports: ImportSpec::parse(imports)?,
+                    body: body.to_vec(),
+                })
+            }
+            _ => Err(ParseAstError::BadForm(syn.span().clone())),
+        }
+    }
 }
 
 #[derive(Clone, Default, PartialEq, Eq, Hash, Trace)]
@@ -197,24 +234,102 @@ pub enum SubVersionReference {
     Not(Box<SubVersionReference>),
 }
 
-pub struct ExportSpec {
+pub struct ExportSet {
     rename: Option<Identifier>,
     ident: Identifier,
+}
+
+impl ExportSet {
+    pub fn parse_rename(syn: &Syntax) -> Result<Self, ParseAstError> {
+        match syn.as_list() {
+            Some([
+                Syntax::Identifier { ident: from, .. },
+                Syntax::Identifier { ident: to, .. },
+                Syntax::Null { .. }
+            ]) => {
+                Ok(ExportSet {
+                    rename: Some(to.clone()),
+                    ident: from.clone(),
+                })
+            }
+            _ => Err(ParseAstError::BadForm(syn.span().clone())),
+        }
+    }
+
+    pub fn parse(syn: &Syntax) -> Result<Vec<Self>, ParseAstError> {
+        match syn {
+            Syntax::Identifier { ident, .. } => Ok(vec![Self {
+                rename: None,
+                ident: ident.clone(),
+            }]),
+            Syntax::List { list, .. } => {
+                if let [
+                    Syntax::Identifier { ident, .. },
+                    renames @ ..,
+                    Syntax::Null { .. },
+                ] = list.as_slice()
+                    && ident == "rename"
+                {
+                    Ok(renames
+                        .iter()
+                        .map(Self::parse_rename)
+                        .collect::<Result<Vec<_>, _>>()?)
+                } else {
+                    Err(ParseAstError::BadForm(syn.span().clone()))
+                }
+            }
+            _ => Err(ParseAstError::BadForm(syn.span().clone())),
+        }
+    }
+}
+
+pub struct ExportSpec {
+    export_sets: Vec<ExportSet>,
+}
+
+impl ExportSpec {
+    pub fn parse(syn: &Syntax) -> Result<Self, ParseAstError> {
+        match syn.as_list() {
+            Some(
+                [
+                    Syntax::Identifier {
+                        ident: export_decl, ..
+                    },
+                    exports @ ..,
+                    Syntax::Null { .. },
+                ],
+            ) if export_decl == "export" => {
+                Ok(ExportSpec {
+                    export_sets: exports.iter().map(ExportSet::parse).collect::<Result<Vec<_>, _>>()?
+                        .into_iter()
+                        .flatten()
+                        .collect(),
+                })
+            }
+            _ => Err(ParseAstError::ExpectedExportSpec(syn.span().clone())),
+        }
+    }
 }
 
 pub struct ImportSpec {
     import_sets: Vec<ImportSet>,
 }
 
+impl ImportSpec {
+    pub fn parse(syn: &Syntax) -> Result<Self, ParseAstError> {
+        todo!()
+    }
+}
+
 pub enum ImportSet {
     Library(LibraryName),
     Only {
         set: Box<ImportSet>,
-        idents: Vec<Identifier>,
+        allowed: HashSet<Identifier>,
     },
     Except {
         set: Box<ImportSet>,
-        idents: Vec<Identifier>,
+        disallowed: HashSet<Identifier>,
     },
     Prefix {
         set: Box<ImportSet>,
@@ -223,7 +338,7 @@ pub enum ImportSet {
     Rename {
         set: Box<ImportSet>,
         /// Imported identifiers to rename (from, to).
-        renames: Vec<(Identifier, Identifier)>,
+        renames: HashMap<Identifier, Identifier>,
     },
 }
 

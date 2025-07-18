@@ -1,7 +1,9 @@
-//! A Registry is a collection of libraries.
+//! a Registry is a collection of libraries.
 
 use crate::{
-    ast::{Definition, DefinitionBody, LibraryName, Literal, ParseAstError},
+    ast::{
+        Definition, DefinitionBody, ImportSet, LibraryName, LibrarySpec, Literal, ParseAstError,
+    },
     cps::Compile,
     env::{self, Environment, Global, Macro},
     exception::Condition,
@@ -85,14 +87,14 @@ pub struct Initializer {
     initializer: fn(lib: &Library),
 }
 
+inventory::collect!(Initializer);
+
 #[derive(Trace, Default)]
-pub struct Registry {
+pub struct RegistryInner {
     libs: HashMap<LibraryName, Library>,
 }
 
-inventory::collect!(Initializer);
-
-impl Registry {
+impl RegistryInner {
     /// Construct an empty registry
     pub fn empty() -> Self {
         Self::default()
@@ -160,6 +162,52 @@ impl Registry {
         todo!()
     }
 
+    fn import<'b, 'a: 'b>(
+        &'a self,
+        import_set: ImportSet,
+    ) -> Result<Box<dyn Iterator<Item = (Identifier, Import)> + 'a>, ImportError> {
+        match import_set {
+            ImportSet::Library(lib) => {
+                // TODO: Load the library if it doesn't exist
+                let lib = self.libs.get(&lib).ok_or(ImportError::LibraryNotFound)?;
+                let exports = { lib.0.read().exports.values().cloned().collect::<Vec<_>>() };
+                Ok(Box::new(exports.into_iter().map(move |exp| {
+                    (
+                        exp.rename.clone(),
+                        Import {
+                            rename: exp.rename.clone(),
+                            origin: if let Some(redirect) = exp.origin {
+                                redirect.clone()
+                            } else {
+                                lib.clone()
+                            },
+                        },
+                    )
+                })))
+            }
+            ImportSet::Only { set, allowed } => Ok(Box::new(
+                self.import(*set)?
+                    .filter(move |(import, _)| allowed.contains(import)),
+            )),
+            ImportSet::Except { set, disallowed } => Ok(Box::new(
+                self.import(*set)?
+                    .filter(move |(import, _)| !disallowed.contains(import)),
+            )),
+            ImportSet::Prefix { set, prefix } => {
+                let prefix = prefix.sym.to_str();
+                Ok(Box::new(
+                    self.import(*set)?
+                        .map(move |(name, import)| (name.prefix(&prefix), import)),
+                ))
+            }
+            ImportSet::Rename { set, mut renames } => {
+                Ok(Box::new(self.import(*set)?.map(move |(name, import)| {
+                    (renames.remove(&name).unwrap_or(name), import)
+                })))
+            }
+        }
+    }
+
     /*
     pub fn import(&self, lib: &str) -> Option<Gc<Top>> {
         let lib_name = LibraryName::from_str(lib, None).unwrap();
@@ -167,6 +215,13 @@ impl Registry {
     }
     */
 }
+
+pub enum ImportError {
+    LibraryNotFound,
+}
+
+#[derive(Trace, Clone)]
+pub struct Registry(pub(crate) Gc<RegistryInner>);
 
 /*
 #[derive(Trace)]
@@ -179,8 +234,8 @@ pub struct Imports {
 #[derive(Trace)]
 pub(crate) struct LibraryInner {
     rt: Runtime,
-    imports: HashMap<Identifier, Library>,
-    exports: HashSet<Identifier>,
+    exports: HashMap<Identifier, Export>,
+    imports: HashMap<Identifier, Import>,
     state: LibraryState,
     vars: HashMap<Identifier, Gc<Value>>,
     keywords: HashMap<Identifier, Macro>,
@@ -190,12 +245,20 @@ impl LibraryInner {
     pub(crate) fn new(
         rt: &Runtime,
         imports: HashMap<Identifier, Library>,
-        exports: HashSet<Identifier>,
+        exports: HashMap<Identifier, Identifier>,
         body: Vec<Syntax>,
     ) -> Self {
+        let exports = exports
+            .into_iter()
+            .map(|(name, rename)| {
+                let origin = imports.get(&name).cloned();
+                (name, Export { rename, origin })
+            })
+            .collect();
+
         Self {
             rt: rt.clone(),
-            imports,
+            imports: HashMap::default(),
             exports,
             state: LibraryState::Unexpanded(body),
             vars: HashMap::default(),
@@ -204,11 +267,27 @@ impl LibraryInner {
     }
 }
 
+#[derive(Trace)]
+pub struct Import {
+    rename: Identifier,
+    origin: Library,
+}
+
+#[derive(Trace, Clone)]
+pub struct Export {
+    rename: Identifier,
+    origin: Option<Library>,
+}
+
 #[derive(Trace, Clone)]
 pub struct Library(pub(crate) Gc<LibraryInner>);
 
 impl Library {
-    pub async fn maybe_expand(&self) -> Result<(), ParseAstError> {
+    pub fn new(rt: &Runtime, spec: LibrarySpec) -> Self {
+        todo!()
+    }
+
+    pub(crate) async fn maybe_expand(&self) -> Result<(), ParseAstError> {
         let body = {
             let mut this = self.0.write();
             if let LibraryState::Unexpanded(body) = &mut this.state {
@@ -224,7 +303,7 @@ impl Library {
         Ok(())
     }
 
-    pub async fn maybe_invoke(&self) -> Result<(), Condition> {
+    pub(crate) async fn maybe_invoke(&self) -> Result<(), Condition> {
         self.maybe_expand().await?;
         let defn_body = {
             let mut this = self.0.write();
@@ -250,7 +329,7 @@ impl Library {
         false
     }
 
-    pub fn def_var(&self, name: Identifier, value: Value) -> env::Global {
+    pub(crate) fn def_var(&self, name: Identifier, value: Value) -> env::Global {
         let mut this = self.0.write();
         match this.vars.entry(name.clone()) {
             Entry::Occupied(occup) => Global::new(name, occup.get().clone()),
@@ -258,12 +337,15 @@ impl Library {
         }
     }
 
-    pub fn def_keyword(&self, keyword: Identifier, mac: Macro) {
+    pub(crate) fn def_keyword(&self, keyword: Identifier, mac: Macro) {
         let mut this = self.0.write();
         this.keywords.insert(keyword, mac);
     }
 
-    pub fn fetch_var<'a>(&'a self, name: &'a Identifier) -> BoxFuture<'a, Option<env::Global>> {
+    pub(crate) fn fetch_var<'a>(
+        &'a self,
+        name: &'a Identifier,
+    ) -> BoxFuture<'a, Option<env::Global>> {
         // Check this library
         let this = self.0.read();
         if let Some(var) = this.vars.get(name) {
@@ -272,22 +354,27 @@ impl Library {
         }
 
         // Check our imports
-        let Some(import) = this.imports.get(name) else {
+        let Some(Import { origin, rename }) = this.imports.get(name) else {
             return Box::pin(async { None });
         };
 
-        let import = import.clone();
+        let rename = rename.clone();
+        let import = origin.clone();
         Box::pin(async move {
             import
                 .maybe_invoke()
                 .await
                 .expect("Oh geez, fetching variables can error now");
 
-            import.fetch_var(name).await
+            let Export { rename, .. } = import.0.read().exports.get(&rename).unwrap().clone();
+            import.fetch_var(&rename).await
         })
     }
 
-    pub fn fetch_keyword<'a>(&'a self, keyword: &'a Identifier) -> BoxFuture<'a, Option<Macro>> {
+    pub(crate) fn fetch_keyword<'a>(
+        &'a self,
+        keyword: &'a Identifier,
+    ) -> BoxFuture<'a, Option<Macro>> {
         // Check this library
         let this = self.0.read();
         if let Some(mac) = this.keywords.get(keyword) {
@@ -296,22 +383,25 @@ impl Library {
         }
 
         // Check our imports
-        let Some(import) = this.imports.get(keyword) else {
+        let Some(Import { origin, rename }) = this.imports.get(keyword) else {
             return Box::pin(async { None });
         };
 
-        let import = import.clone();
+        let rename = rename.clone();
+        let import = origin.clone();
         Box::pin(async move {
             import
                 .maybe_invoke()
                 .await
                 .expect("Oh geez, fetching variables can error now");
 
-            import.fetch_keyword(keyword).await
+            let Export { rename, .. } = import.0.read().exports.get(&rename).unwrap().clone();
+            import.fetch_keyword(&rename).await
         })
     }
 }
 
+// TODO: Use these states to detect circular dependencies when we do our DFS
 #[derive(Trace)]
 pub enum LibraryState {
     Invalid,
