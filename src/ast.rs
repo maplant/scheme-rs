@@ -121,8 +121,8 @@ impl LibrarySpec {
 
 #[derive(Clone, Default, PartialEq, Eq, Hash, Trace)]
 pub struct LibraryName {
-    name: Vec<Symbol>,
-    version: Version,
+    pub name: Vec<Symbol>,
+    pub version: Version,
 }
 
 impl LibraryName {

@@ -31,6 +31,7 @@ use std::{
     ops::{Deref, DerefMut},
     ptr::{NonNull, drop_in_place},
     sync::{RwLock, RwLockReadGuard, RwLockWriteGuard},
+    path::PathBuf,
 };
 
 /// A Garbage-Collected smart pointer with interior mutability.
@@ -500,7 +501,8 @@ impl_empty_trace! {
     u128,
     usize,
     &'static str,
-    String
+    String,
+    PathBuf
 }
 
 /// # Safety
@@ -856,6 +858,7 @@ where
         // Let it handle its own ref count.
     }
 }
+
 
 unsafe impl<T> Trace for Shared<T>
 where

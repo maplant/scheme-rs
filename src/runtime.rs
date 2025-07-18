@@ -52,6 +52,8 @@ use tokio::sync::{mpsc, oneshot};
 pub struct Runtime(pub(crate) Gc<RuntimeInner>);
 
 impl Runtime {
+    /// Creates a new runtime. Also initializes the garbage collector and
+    /// creates a default registry with the bridge functions populated.
     pub fn new() -> Self {
         Self(Gc::new(RuntimeInner::default()))
     }

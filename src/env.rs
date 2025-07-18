@@ -543,15 +543,15 @@ impl fmt::Debug for Local {
 pub struct Global {
     pub(crate) name: Identifier,
     val: Gc<Value>,
-    constant: bool,
+    mutable: bool,
 }
 
 impl Global {
-    pub fn new(name: Identifier, val: Gc<Value>) -> Self {
+    pub fn new(name: Identifier, val: Gc<Value>, mutable: bool) -> Self {
         Global {
             name,
             val,
-            constant: false,
+            mutable
         }
     }
 

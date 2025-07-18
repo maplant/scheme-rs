@@ -17,6 +17,7 @@ use crate::{
 };
 use std::{
     collections::{HashMap, HashSet, hash_map::Entry},
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -90,8 +91,8 @@ pub struct Initializer {
 inventory::collect!(Initializer);
 
 #[derive(Trace, Default)]
-pub struct RegistryInner {
-    libs: HashMap<LibraryName, Library>,
+pub(crate) struct RegistryInner {
+    libs: HashMap<Vec<Symbol>, Library>,
 }
 
 impl RegistryInner {
@@ -162,50 +163,72 @@ impl RegistryInner {
         todo!()
     }
 
+    async fn load_lib_from_dir(
+        &mut self,
+        path: &Path,
+        name: &[Symbol],
+    ) -> Result<Library, ImportError> {
+        todo!()
+    }
+
+    async fn load_lib(
+        &mut self,
+        curr_path: &Path,
+        name: &[Symbol],
+    ) -> Result<Library, ImportError> {
+        todo!()
+    }
+
     fn import<'b, 'a: 'b>(
-        &'a self,
+        &'a mut self,
+        curr_path: &'b Path,
         import_set: ImportSet,
-    ) -> Result<Box<dyn Iterator<Item = (Identifier, Import)> + 'a>, ImportError> {
-        match import_set {
-            ImportSet::Library(lib) => {
-                // TODO: Load the library if it doesn't exist
-                let lib = self.libs.get(&lib).ok_or(ImportError::LibraryNotFound)?;
-                let exports = { lib.0.read().exports.values().cloned().collect::<Vec<_>>() };
-                Ok(Box::new(exports.into_iter().map(move |exp| {
-                    (
-                        exp.rename.clone(),
-                        Import {
-                            rename: exp.rename.clone(),
-                            origin: if let Some(redirect) = exp.origin {
-                                redirect.clone()
-                            } else {
-                                lib.clone()
+    ) -> BoxFuture<'b, Result<Box<dyn Iterator<Item = (Identifier, Import)> + 'b>, ImportError>>
+    {
+        Box::pin(async move {
+            match import_set {
+                ImportSet::Library(lib) => {
+                    let lib = self.load_lib(curr_path, &lib.name).await?;
+                    let exports = { lib.0.read().exports.values().cloned().collect::<Vec<_>>() };
+                    Ok(Box::new(exports.into_iter().map(move |exp| {
+                        (
+                            exp.rename.clone(),
+                            Import {
+                                rename: exp.rename.clone(),
+                                origin: if let Some(redirect) = exp.origin {
+                                    redirect.clone()
+                                } else {
+                                    lib.clone()
+                                },
                             },
-                        },
-                    )
-                })))
+                        )
+                    })) as DynIter<'b>)
+                }
+                ImportSet::Only { set, allowed } => Ok(Box::new(
+                    self.import(curr_path, *set)
+                        .await?
+                        .filter(move |(import, _)| allowed.contains(import)),
+                ) as DynIter<'b>),
+                ImportSet::Except { set, disallowed } => Ok(Box::new(
+                    self.import(curr_path, *set)
+                        .await?
+                        .filter(move |(import, _)| !disallowed.contains(import)),
+                ) as DynIter<'b>),
+                ImportSet::Prefix { set, prefix } => {
+                    let prefix = prefix.sym.to_str();
+                    Ok(Box::new(
+                        self.import(curr_path, *set)
+                            .await?
+                            .map(move |(name, import)| (name.prefix(&prefix), import)),
+                    ) as DynIter<'b>)
+                }
+                ImportSet::Rename { set, mut renames } => Ok(Box::new(
+                    self.import(curr_path, *set)
+                        .await?
+                        .map(move |(name, import)| (renames.remove(&name).unwrap_or(name), import)),
+                ) as DynIter<'b>),
             }
-            ImportSet::Only { set, allowed } => Ok(Box::new(
-                self.import(*set)?
-                    .filter(move |(import, _)| allowed.contains(import)),
-            )),
-            ImportSet::Except { set, disallowed } => Ok(Box::new(
-                self.import(*set)?
-                    .filter(move |(import, _)| !disallowed.contains(import)),
-            )),
-            ImportSet::Prefix { set, prefix } => {
-                let prefix = prefix.sym.to_str();
-                Ok(Box::new(
-                    self.import(*set)?
-                        .map(move |(name, import)| (name.prefix(&prefix), import)),
-                ))
-            }
-            ImportSet::Rename { set, mut renames } => {
-                Ok(Box::new(self.import(*set)?.map(move |(name, import)| {
-                    (renames.remove(&name).unwrap_or(name), import)
-                })))
-            }
-        }
+        })
     }
 
     /*
@@ -215,6 +238,8 @@ impl RegistryInner {
     }
     */
 }
+
+type DynIter<'a> = Box<dyn Iterator<Item = (Identifier, Import)> + 'a>;
 
 pub enum ImportError {
     LibraryNotFound,
@@ -234,6 +259,8 @@ pub struct Imports {
 #[derive(Trace)]
 pub(crate) struct LibraryInner {
     rt: Runtime,
+    name: LibraryName,
+    path: PathBuf,
     exports: HashMap<Identifier, Export>,
     imports: HashMap<Identifier, Import>,
     state: LibraryState,
@@ -331,9 +358,12 @@ impl Library {
 
     pub(crate) fn def_var(&self, name: Identifier, value: Value) -> env::Global {
         let mut this = self.0.write();
+        let mutable = !this.exports.contains_key(&name);
         match this.vars.entry(name.clone()) {
-            Entry::Occupied(occup) => Global::new(name, occup.get().clone()),
-            Entry::Vacant(vacant) => Global::new(name, vacant.insert(Gc::new(value)).clone()),
+            Entry::Occupied(occup) => Global::new(name, occup.get().clone(), mutable),
+            Entry::Vacant(vacant) => {
+                Global::new(name, vacant.insert(Gc::new(value)).clone(), mutable)
+            }
         }
     }
 
@@ -350,7 +380,9 @@ impl Library {
         let this = self.0.read();
         if let Some(var) = this.vars.get(name) {
             let var = var.clone();
-            return Box::pin(async move { Some(Global::new(name.clone(), var)) });
+            // Fetching this every time is kind of slow.
+            let mutable = !this.exports.contains_key(&name);
+            return Box::pin(async move { Some(Global::new(name.clone(), var, mutable)) });
         }
 
         // Check our imports
