@@ -123,29 +123,7 @@ returns a \texttt{Future}\cite{future} that we could await via the
 \texttt{await} function, but we discard the future and allow it to run in
 parallel instead. 
 
-\section{Alternatives}
-
-There are several solutions currently available for embedding Scheme in Rust,
-one of the most straightforward is to use the C bindings provided by Guile, of
-which there are several bindings available in the Rust package registry,
-although most of them are fairly rudimentary and incomplete. Additionally, none
-of these implementations provide any support for async Rust, since no such
-support is available from Guile.
-
-Steel\cite{steel} is a pure Rust interpreter for Scheme that has support for
-calling async functions and utilizing async runtimes. Gouki and Steel differ in
-two primary ways. The first is in implementation: Steel is implemented via a
-bytecode interpreter, while Gouki is JIT compiled. The second is to what degree
-async is required by the implementation: Steel allows for an async runtime to
-be provided optionally, while Gouki requires an async runtime as it is entirely
-built around it.
-
-At the time of publication, Gouki Scheme is the only JIT compiled implementation
-of a language with support for \texttt{call-with-current-continuation} that can
-be embedded in and integrate with a compiled language with support for async
-programming.
-
-\section{Memory Management}
+\section{Memory management}
 
 In order to properly implement the Scheme programming language, some form of
 garbage collection must be implemented by the system. One very popular algorithm
@@ -241,7 +219,7 @@ i.e. when the main function returns. Therefore, no manual intervention is
 required by the user to shut down the garbage collection task, as it will
 properly shut down at the end of the program's lifetime.
 
-\subsection{Tracing and Finalizing}
+\subsection{Tracing and finalizing}
 
 One limitation of the cycle collection scheme (and indeed even tracing garbage
 collection schemes) and therefore the \texttt{Gc} smart pointer is the
@@ -348,7 +326,7 @@ indirection through Rust's built-in reference counted type, the
 previously mentioned these types do not provide any way to collect cyclical
 references.
 
-\subsection{Enabling Back-Pressure from the Garbage Collector}
+\subsection{Enabling back-pressure from the garbage collector}
 
 Because we are running the garbage collector concurrently and are sending
 mutations to the collector over an unbounded channel, the allocating tasks
@@ -513,7 +491,7 @@ with each other. The synchronous JIT compiled function pass their continuation
 to the async Rust code to evaluate the async result after it is awaited in the
 CPS trampoline.
 
-\section{Registering Bridge Functions}
+\section{Registering bridge functions}
 
 Using the inventory\cite{inventory} crate we can create a global registry of Rust
 functions which can be imported into Scheme code. Functions with the signature of
@@ -541,7 +519,7 @@ Every function that registers with this inventory will be available automaticall
 defined in their respective library in any \texttt{Registry} object created,
 GoukiScheme's notion of a package registry.
 
-\section{JIT Compilation}
+\section{JIT compilation}
 
 After the macro expansion phase, Scheme code is converted into a simple, reduced
 CPS mid level IR using the algorithm described in Compiling with
@@ -592,7 +570,7 @@ This is ensures that if the \texttt{Runtime} is dropped before the
 \texttt{Closure}, there will still be a live reference preventing the function
 pointers from being deallocated.
 
-\section{Putting It All Together}
+\section{Putting it all together}
 
 Now that we have all of the requisite pieces, we can construct a Rust program
 that compiles and executes async Scheme code at runtime:
@@ -610,6 +588,28 @@ let value = rt.eval(
 ).await.unwrap();
 println!("{value}");
 \end{minted}
+
+\section{Related work}
+
+There are several solutions currently available for embedding Scheme in Rust,
+one of the most straightforward is to use the C bindings provided by Guile, of
+which there are several wrappers available in the Rust package registry,
+although most of them are fairly rudimentary and incomplete. Additionally, none
+of these implementations provide any support for async Rust, since no such
+support is available from Guile.
+
+Steel\cite{steel} is a pure Rust interpreter for Scheme that has support for
+calling async functions and utilizing async runtimes. Gouki and Steel differ in
+two primary ways. The first is in implementation: Steel is implemented via a
+bytecode interpreter, while Gouki is JIT compiled. The second is to what degree
+async is required by the implementation: Steel allows for an async runtime to
+be provided optionally, while Gouki requires an async runtime as it is entirely
+built around it.
+
+At the time of publication, Gouki Scheme is the only JIT compiled implementation
+of a language with support for \texttt{call-with-current-continuation} that can
+be embedded in and integrate with a compiled language with support for async
+programming.
 
 \section{Conclusion}
 
