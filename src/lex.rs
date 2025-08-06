@@ -21,6 +21,7 @@ use std::{
 };
 use unicode_categories::UnicodeCategories;
 
+// TODO: Just make the contents an Arc.
 pub type InputSpan<'a> = LocatedSpan<&'a str, Arc<String>>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

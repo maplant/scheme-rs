@@ -93,6 +93,7 @@ inventory::collect!(Initializer);
 #[derive(Trace, Default)]
 pub(crate) struct RegistryInner {
     libs: HashMap<Vec<Symbol>, Library>,
+    loading: HashSet<Vec<Symbol>>,
 }
 
 impl RegistryInner {
@@ -103,7 +104,7 @@ impl RegistryInner {
 
     /// Construct a Registry with all of the available bridge functions present but no external libraries imported.
     // TODO: This should probably return a result.
-    pub async fn new(runtime: &Runtime) -> Self {
+    pub fn new(/*runtime: &Runtime*/) -> Self {
         /*
         // This should probably be moved to a once cell.
         let mut libs = HashMap::<LibraryName, Gc<dyn Top>>::default();
@@ -162,25 +163,59 @@ impl RegistryInner {
          */
         todo!()
     }
+}
 
-    async fn load_lib_from_dir(
-        &mut self,
-        path: &Path,
-        name: &[Symbol],
-    ) -> Result<Library, ImportError> {
-        todo!()
+#[derive(Trace, Clone)]
+pub struct Registry(pub(crate) Gc<RegistryInner>);
+
+impl Registry {
+    pub(crate) fn new() -> Self {
+        Self(Gc::new(RegistryInner::new()))
+    }
+
+    fn mark_as_loading(&self, name: &[Symbol]) {
+        self.0.write().loading.insert(name.to_vec());
     }
 
     async fn load_lib(
-        &mut self,
+        &self,
+        rt: &Runtime,
         curr_path: &Path,
         name: &[Symbol],
     ) -> Result<Library, ImportError> {
-        todo!()
+        if let Some(lib) = self.0.read().libs.get(name) {
+            return Ok(lib.clone());
+        }
+        // Check to see that we're not currently loading the library. Circular
+        // dependencies are not allowed.
+        if self.0.read().loading.contains(name) {
+            return Err(ImportError::CircularDependency);
+        }
+        // Load the library and insert it into the registry.
+        self.mark_as_loading(name);
+        const DEFAULT_LOAD_PATH: &'static str = "~/.gouki";
+        // Check the current path first:
+        let lib = match load_lib_from_dir(rt, curr_path, name).await {
+            Ok(lib) => lib,
+            Err(ImportError::LibraryNotFound(_)) => {
+                // Try from the load path
+                let path = PathBuf::from(
+                    std::env::var("GOUKI_LOAD_PATH")
+                        .unwrap_or_else(|_| DEFAULT_LOAD_PATH.to_string()),
+                );
+                load_lib_from_dir(rt, &path, name).await?
+            }
+            x => return x,
+        };
+        let mut this_mut = self.0.write();
+        this_mut.libs.insert(name.to_vec(), lib.clone());
+        this_mut.loading.remove(name);
+        Ok(lib)
     }
 
     fn import<'b, 'a: 'b>(
-        &'a mut self,
+        &'a self,
+        rt: &'b Runtime,
         curr_path: &'b Path,
         import_set: ImportSet,
     ) -> BoxFuture<'b, Result<Box<dyn Iterator<Item = (Identifier, Import)> + 'b>, ImportError>>
@@ -188,7 +223,7 @@ impl RegistryInner {
         Box::pin(async move {
             match import_set {
                 ImportSet::Library(lib) => {
-                    let lib = self.load_lib(curr_path, &lib.name).await?;
+                    let lib = self.load_lib(rt, curr_path, &lib.name).await?;
                     let exports = { lib.0.read().exports.values().cloned().collect::<Vec<_>>() };
                     Ok(Box::new(exports.into_iter().map(move |exp| {
                         (
@@ -205,48 +240,75 @@ impl RegistryInner {
                     })) as DynIter<'b>)
                 }
                 ImportSet::Only { set, allowed } => Ok(Box::new(
-                    self.import(curr_path, *set)
+                    self.import(rt, curr_path, *set)
                         .await?
                         .filter(move |(import, _)| allowed.contains(import)),
                 ) as DynIter<'b>),
                 ImportSet::Except { set, disallowed } => Ok(Box::new(
-                    self.import(curr_path, *set)
+                    self.import(rt, curr_path, *set)
                         .await?
                         .filter(move |(import, _)| !disallowed.contains(import)),
                 ) as DynIter<'b>),
                 ImportSet::Prefix { set, prefix } => {
                     let prefix = prefix.sym.to_str();
                     Ok(Box::new(
-                        self.import(curr_path, *set)
+                        self.import(rt, curr_path, *set)
                             .await?
                             .map(move |(name, import)| (name.prefix(&prefix), import)),
                     ) as DynIter<'b>)
                 }
                 ImportSet::Rename { set, mut renames } => Ok(Box::new(
-                    self.import(curr_path, *set)
+                    self.import(rt, curr_path, *set)
                         .await?
                         .map(move |(name, import)| (renames.remove(&name).unwrap_or(name), import)),
                 ) as DynIter<'b>),
             }
         })
     }
+}
 
-    /*
-    pub fn import(&self, lib: &str) -> Option<Gc<Top>> {
-        let lib_name = LibraryName::from_str(lib, None).unwrap();
-        self.libs.get(&lib_name).cloned()
+async fn load_lib_from_dir(
+    rt: &Runtime,
+    path: &Path,
+    name: &[Symbol],
+) -> Result<Library, ImportError> {
+    let path_suffix = name
+        .iter()
+        .copied()
+        .map(Symbol::to_str)
+        .fold(String::new(), |s, sym| s + &format!("/{sym}"));
+
+    for ext in ["ss", "scm"] {
+        let path = path.join(&format!("{path_suffix}.{ext}"));
+        if let Ok(false) = tokio::fs::try_exists(&path).await {
+            continue;
+        }
+        let contents = tokio::fs::read_to_string(&path).await.unwrap();
+        let file_name = path.file_name().unwrap().to_string_lossy();
+        let syntax = Syntax::from_str(&contents, Some(&file_name)).unwrap();
+        let [syntax] = syntax.as_slice() else {
+            panic!("Has to be one item");
+        };
+        let spec = LibrarySpec::parse(syntax).unwrap();
+        return Library::new(&rt, spec, Some(path)).await;
     }
-    */
+    Err(ImportError::LibraryNotFound(name.to_vec()))
 }
 
 type DynIter<'a> = Box<dyn Iterator<Item = (Identifier, Import)> + 'a>;
 
+#[derive(Debug, thiserror::Error)]
 pub enum ImportError {
-    LibraryNotFound,
+    #[error("Library not found")]
+    LibraryNotFound(Vec<Symbol>),
+    // ParseSyntaxError (how? returns a reference)
+    #[error("Error reading library: {0}")]
+    IoError(#[from] std::io::Error),
+    #[error("Import identifier `{0}` bound multiple times")]
+    DuplicateIdentifier(Symbol),
+    #[error("Circular dependency found")]
+    CircularDependency,
 }
-
-#[derive(Trace, Clone)]
-pub struct Registry(pub(crate) Gc<RegistryInner>);
 
 /*
 #[derive(Trace)]
@@ -260,7 +322,7 @@ pub struct Imports {
 pub(crate) struct LibraryInner {
     rt: Runtime,
     name: LibraryName,
-    path: PathBuf,
+    path: Option<PathBuf>,
     exports: HashMap<Identifier, Export>,
     imports: HashMap<Identifier, Import>,
     state: LibraryState,
@@ -271,21 +333,25 @@ pub(crate) struct LibraryInner {
 impl LibraryInner {
     pub(crate) fn new(
         rt: &Runtime,
-        imports: HashMap<Identifier, Library>,
+        name: LibraryName,
+        path: Option<PathBuf>,
+        imports: HashMap<Identifier, Import>,
         exports: HashMap<Identifier, Identifier>,
         body: Vec<Syntax>,
     ) -> Self {
         let exports = exports
             .into_iter()
             .map(|(name, rename)| {
-                let origin = imports.get(&name).cloned();
+                let origin = imports.get(&name).map(|import| import.origin.clone());
                 (name, Export { rename, origin })
             })
             .collect();
 
         Self {
             rt: rt.clone(),
-            imports: HashMap::default(),
+            name,
+            path,
+            imports,
             exports,
             state: LibraryState::Unexpanded(body),
             vars: HashMap::default(),
@@ -309,9 +375,58 @@ pub struct Export {
 #[derive(Trace, Clone)]
 pub struct Library(pub(crate) Gc<LibraryInner>);
 
+impl PartialEq for Library {
+    fn eq(&self, rhs: &Self) -> bool {
+        Gc::ptr_eq(&self.0, &rhs.0)
+    }
+}
+
 impl Library {
-    pub fn new(rt: &Runtime, spec: LibrarySpec) -> Self {
-        todo!()
+    pub async fn new(
+        rt: &Runtime,
+        spec: LibrarySpec,
+        path: Option<PathBuf>,
+    ) -> Result<Self, ImportError> {
+        // Import libraries:
+        let current_dir = std::env::current_dir()
+            .expect("If we can't get the current working directory, we can't really do much");
+        let mut imports = HashMap::<Identifier, Import>::default();
+        let registry = rt.get_registry();
+        for lib_import in spec.imports.import_sets.into_iter() {
+            for (ident, import) in registry.import(rt, &current_dir, lib_import).await? {
+                match imports.entry(ident) {
+                    Entry::Occupied(prev_imported)
+                        if prev_imported.get().origin != import.origin =>
+                    {
+                        return Err(ImportError::DuplicateIdentifier(todo!()));
+                    }
+                    Entry::Vacant(slot) => {
+                        slot.insert(import);
+                    }
+                    _ => (),
+                }
+            }
+        }
+
+        Ok(Self(Gc::new(LibraryInner::new(
+            rt,
+            spec.name,
+            path,
+            imports,
+            spec.exports
+                .export_sets
+                .into_iter()
+                .map(|export| {
+                    let rename = if let Some(rename) = export.rename {
+                        rename
+                    } else {
+                        export.ident.clone()
+                    };
+                    (export.ident, rename)
+                })
+                .collect(),
+            spec.body,
+        ))))
     }
 
     pub(crate) async fn maybe_expand(&self) -> Result<(), ParseAstError> {

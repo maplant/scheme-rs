@@ -79,10 +79,10 @@ impl From<Value> for ParseAstError {
 }
 
 pub struct LibrarySpec {
-    name: LibraryName,
-    exports: ExportSpec,
-    imports: ImportSpec,
-    body: Vec<Syntax>,
+    pub(crate) name: LibraryName,
+    pub(crate) exports: ExportSpec,
+    pub(crate) imports: ImportSpec,
+    pub(crate) body: Vec<Syntax>,
 }
 
 impl LibrarySpec {
@@ -235,8 +235,8 @@ pub enum SubVersionReference {
 }
 
 pub struct ExportSet {
-    rename: Option<Identifier>,
-    ident: Identifier,
+    pub(crate) rename: Option<Identifier>,
+    pub(crate) ident: Identifier,
 }
 
 impl ExportSet {
@@ -284,7 +284,7 @@ impl ExportSet {
 }
 
 pub struct ExportSpec {
-    export_sets: Vec<ExportSet>,
+    pub(crate) export_sets: Vec<ExportSet>,
 }
 
 impl ExportSpec {
@@ -312,7 +312,7 @@ impl ExportSpec {
 }
 
 pub struct ImportSpec {
-    import_sets: Vec<ImportSet>,
+    pub(crate) import_sets: Vec<ImportSet>,
 }
 
 impl ImportSpec {

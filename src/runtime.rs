@@ -58,11 +58,15 @@ impl Runtime {
         Self(Gc::new(RuntimeInner::default()))
     }
 
+    pub fn get_registry(&self) -> Registry {
+        self.0.read().registry.clone()
+    }
+
     pub async fn compile_expr(&self, expr: Cps) -> Result<Gc<Closure>, BuilderError> {
         self.compile_expr_with_env(expr, IndexMap::default()).await
     }
 
-    pub async fn compile_expr_with_env(
+    pub(crate) async fn compile_expr_with_env(
         &self,
         expr: Cps,
         env: IndexMap<Local, Gc<Value>>,
@@ -114,7 +118,7 @@ impl RuntimeInner {
         // compilation task for every Runtime:
         std::thread::spawn(move || compilation_task(compilation_buffer_rx));
         RuntimeInner {
-            registry: Registry::empty(),
+            registry: Registry::new(),
             compilation_buffer_tx,
             constants_pool: HashSet::new(),
             debug_info: DebugInfo::default(),
