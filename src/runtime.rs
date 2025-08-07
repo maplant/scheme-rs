@@ -55,7 +55,10 @@ impl Runtime {
     /// Creates a new runtime. Also initializes the garbage collector and
     /// creates a default registry with the bridge functions populated.
     pub fn new() -> Self {
-        Self(Gc::new(RuntimeInner::default()))
+        let this = Self(Gc::new(RuntimeInner::default()));
+        let new_registry = Registry::new(&this);
+        this.0.write().registry = new_registry;
+        this
     }
 
     pub fn get_registry(&self) -> Registry {
@@ -118,7 +121,7 @@ impl RuntimeInner {
         // compilation task for every Runtime:
         std::thread::spawn(move || compilation_task(compilation_buffer_rx));
         RuntimeInner {
-            registry: Registry::new(),
+            registry: Registry::empty(),
             compilation_buffer_tx,
             constants_pool: HashSet::new(),
             debug_info: DebugInfo::default(),

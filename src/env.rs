@@ -10,6 +10,7 @@ use std::{
 use futures::future::BoxFuture;
 
 use crate::{
+    exception::Condition,
     gc::{Gc, GcInner, Trace},
     proc::Closure,
     registry::Library,
@@ -133,7 +134,6 @@ pub struct LexicalContour {
     up: Environment,
     vars: HashMap<Identifier, Local>,
     macros: HashMap<Identifier, Gc<Closure>>,
-    // imports: HashMap<
 }
 
 impl LexicalContour {
@@ -157,10 +157,13 @@ impl LexicalContour {
         self.macros.insert(name, closure);
     }
 
-    pub fn fetch_var<'a>(&self, name: &'a Identifier) -> BoxFuture<'a, Option<Var>> {
+    pub fn fetch_var<'a>(
+        &self,
+        name: &'a Identifier,
+    ) -> BoxFuture<'a, Result<Option<Var>, Condition>> {
         if let Some(local) = self.vars.get(name) {
             let local = *local;
-            return Box::pin(async move { Some(Var::Local(local)) });
+            return Box::pin(async move { Ok(Some(Var::Local(local))) });
         }
         let up = self.up.clone();
         Box::pin(async move { up.fetch_var(name).await })
@@ -176,17 +179,27 @@ impl LexicalContour {
     pub fn fetch_top(&self) -> Library {
         self.up.fetch_top()
     }
+
+    pub fn is_bound(&self, name: &Identifier) -> bool {
+        self.vars.contains_key(name) || self.up.is_bound(name)
+    }
 }
 
 impl Gc<LexicalContour> {
-    pub fn fetch_keyword<'a>(&self, name: &'a Identifier) -> BoxFuture<'a, Option<Macro>> {
+    pub fn fetch_keyword<'a>(
+        &self,
+        name: &'a Identifier,
+    ) -> BoxFuture<'a, Result<Option<Keyword>, Condition>> {
         let up = {
             let this = self.read();
             if let Some(trans) = this.macros.get(name) {
                 let this_clone = self.clone();
                 let trans = trans.clone();
                 return Box::pin(async move {
-                    Some(Macro::new(Environment::LexicalContour(this_clone), trans))
+                    Ok(Some(Keyword::new(
+                        Environment::LexicalContour(this_clone),
+                        trans,
+                    )))
                 });
             }
             this.up.clone()
@@ -221,7 +234,10 @@ impl LetSyntaxContour {
         self.macros.insert(name, closure);
     }
 
-    pub fn fetch_var<'a>(&self, name: &'a Identifier) -> BoxFuture<'a, Option<Var>> {
+    pub fn fetch_var<'a>(
+        &self,
+        name: &'a Identifier,
+    ) -> BoxFuture<'a, Result<Option<Var>, Condition>> {
         let up = self.up.clone();
         Box::pin(async move { up.fetch_var(name).await })
     }
@@ -236,7 +252,10 @@ impl LetSyntaxContour {
 }
 
 impl Gc<LetSyntaxContour> {
-    pub fn fetch_keyword<'a>(&self, name: &'a Identifier) -> BoxFuture<'a, Option<Macro>> {
+    pub fn fetch_keyword<'a>(
+        &self,
+        name: &'a Identifier,
+    ) -> BoxFuture<'a, Result<Option<Keyword>, Condition>> {
         let up = {
             let this = self.read();
             if let Some(trans) = this.macros.get(name) {
@@ -246,7 +265,7 @@ impl Gc<LetSyntaxContour> {
                 } else {
                     this.up.clone()
                 };
-                return Box::pin(async move { Some(Macro::new(env, trans)) });
+                return Box::pin(async move { Ok(Some(Keyword::new(env, trans))) });
             }
             this.up.clone()
         };
@@ -282,15 +301,18 @@ impl MacroExpansion {
         self.up.def_keyword(name, closure);
     }
 
-    pub fn fetch_var<'a>(&self, name: &'a Identifier) -> BoxFuture<'a, Option<Var>> {
+    pub fn fetch_var<'a>(
+        &self,
+        name: &'a Identifier,
+    ) -> BoxFuture<'a, Result<Option<Var>, Condition>> {
         let up = self.up.clone();
         let source = self.source.clone();
         let mark = self.mark;
         Box::pin(async move {
             // Attempt to check the up scope first:
-            let var = up.fetch_var(name).await;
+            let var = up.fetch_var(name).await?;
             if var.is_some() {
-                return var;
+                return Ok(var);
             }
             // If the current expansion context contains the mark, remove it and check the
             // expansion source scope.
@@ -299,7 +321,7 @@ impl MacroExpansion {
                 unmarked.mark(mark);
                 source.fetch_var(&unmarked).await
             } else {
-                None
+                Ok(None)
             }
         })
     }
@@ -322,15 +344,18 @@ impl MacroExpansion {
             .flatten()
     }
 
-    pub fn fetch_keyword<'a>(&self, name: &'a Identifier) -> BoxFuture<'a, Option<Macro>> {
+    pub fn fetch_keyword<'a>(
+        &self,
+        name: &'a Identifier,
+    ) -> BoxFuture<'a, Result<Option<Keyword>, Condition>> {
         let up = self.up.clone();
         let source = self.source.clone();
         let mark = self.mark;
         Box::pin(async move {
             // Attempt to check the up scope first:
-            let mac = up.fetch_keyword(name).await;
-            if mac.is_some() {
-                return mac;
+            let key = up.fetch_keyword(name).await?;
+            if key.is_some() {
+                return Ok(key);
             }
             // If the current expansion context contains the mark, remove it and check the
             // expansion source scope.
@@ -339,13 +364,22 @@ impl MacroExpansion {
                 unmarked.mark(mark);
                 source.fetch_keyword(&unmarked).await
             } else {
-                None
+                Ok(None)
             }
         })
     }
 
     pub fn fetch_top(&self) -> Library {
         self.up.fetch_top()
+    }
+
+    pub fn is_bound(&self, name: &Identifier) -> bool {
+        self.up.is_bound(name)
+            || name.marks.contains(&self.mark) && {
+                let mut unmarked = name.clone();
+                unmarked.mark(self.mark);
+                self.source.is_bound(&unmarked)
+            }
     }
 }
 
@@ -378,17 +412,16 @@ impl Environment {
 
     pub fn def_keyword(&self, name: Identifier, val: Gc<Closure>) {
         match self {
-            Self::Top(top) => top.def_keyword(name, Macro::new(self.clone(), val)),
+            Self::Top(top) => top.def_keyword(name, Keyword::new(self.clone(), val)),
             Self::LexicalContour(lex) => lex.write().def_macro(name, val),
             Self::LetSyntaxContour(ls) => ls.write().def_keyword(name, val),
             Self::MacroExpansion(me) => me.read().def_keyword(name, val),
         }
     }
 
-    pub async fn fetch_var(&self, name: &Identifier) -> Option<Var> {
-        //Box::pin(async move {
+    pub async fn fetch_var(&self, name: &Identifier) -> Result<Option<Var>, Condition> {
         match self {
-            Self::Top(top) => top.fetch_var(name).await.map(Var::Global),
+            Self::Top(top) => Ok(top.fetch_var(name).await?.map(Var::Global)),
             Self::LexicalContour(lex) => {
                 let fetch_fut = { lex.read().fetch_var(name) };
                 fetch_fut.await
@@ -402,7 +435,6 @@ impl Environment {
                 fetch_fut.await
             }
         }
-        // })
     }
 
     pub fn fetch_local(&self, name: &Identifier) -> Option<Local> {
@@ -414,7 +446,7 @@ impl Environment {
         }
     }
 
-    pub async fn fetch_keyword(&self, name: &Identifier) -> Option<Macro> {
+    pub async fn fetch_keyword(&self, name: &Identifier) -> Result<Option<Keyword>, Condition> {
         match self {
             Self::Top(top) => top.fetch_keyword(name).await,
             Self::LexicalContour(lex) => {
@@ -433,8 +465,12 @@ impl Environment {
     }
 
     pub fn is_bound(&self, name: &Identifier) -> bool {
-        todo!()
-        // self.fetch_var(name).await.is_some()
+        match self {
+            Self::Top(lib) => lib.is_bound(name),
+            Self::LexicalContour(lex) => lex.read().is_bound(name),
+            Self::LetSyntaxContour(ls) => ls.read().up.is_bound(name),
+            Self::MacroExpansion(me) => me.read().is_bound(name),
+        }
     }
 
     pub fn new_lexical_contour(&self) -> Self {
@@ -548,11 +584,7 @@ pub struct Global {
 
 impl Global {
     pub fn new(name: Identifier, val: Gc<Value>, mutable: bool) -> Self {
-        Global {
-            name,
-            val,
-            mutable
-        }
+        Global { name, val, mutable }
     }
 
     pub fn value(self) -> Gc<Value> {
@@ -613,12 +645,12 @@ impl fmt::Debug for Var {
 }
 
 #[derive(Clone, Trace)]
-pub struct Macro {
+pub struct Keyword {
     pub source_env: Environment,
     pub transformer: Gc<Closure>,
 }
 
-impl Macro {
+impl Keyword {
     pub fn new(source_env: Environment, transformer: Gc<Closure>) -> Self {
         Self {
             source_env,

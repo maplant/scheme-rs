@@ -29,9 +29,9 @@ use std::{
     marker::PhantomData,
     mem::ManuallyDrop,
     ops::{Deref, DerefMut},
+    path::PathBuf,
     ptr::{NonNull, drop_in_place},
     sync::{RwLock, RwLockReadGuard, RwLockWriteGuard},
-    path::PathBuf,
 };
 
 /// A Garbage-Collected smart pointer with interior mutability.
@@ -858,7 +858,6 @@ where
         // Let it handle its own ref count.
     }
 }
-
 
 unsafe impl<T> Trace for Shared<T>
 where

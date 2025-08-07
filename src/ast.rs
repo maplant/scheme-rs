@@ -3,6 +3,7 @@
 use crate::{
     cps::{Compile, PrimOp},
     env::{CapturedEnv, Environment, Local, Var},
+    exception::Condition,
     expand::{SyntaxRule, Transformer},
     gc::{Gc, Trace},
     num::{Number, NumberToUsizeError},
@@ -39,6 +40,7 @@ pub enum ParseAstError {
     ExpectedVariableTransformer,
     ExpectedInteger(NumberToUsizeError),
     ExpectedExportSpec(Span),
+    ExpectedImportSpec(Span),
     ExpectedLibraryKeyword(Span),
 
     UnexpectedArgument(Span),
@@ -75,6 +77,12 @@ impl From<BuilderError> for ParseAstError {
 impl From<Value> for ParseAstError {
     fn from(raised: Value) -> Self {
         Self::RaisedValue(raised)
+    }
+}
+
+impl From<Condition> for ParseAstError {
+    fn from(raised: Condition) -> Self {
+        Self::RaisedValue(Value::from(raised))
     }
 }
 
@@ -242,16 +250,16 @@ pub struct ExportSet {
 impl ExportSet {
     pub fn parse_rename(syn: &Syntax) -> Result<Self, ParseAstError> {
         match syn.as_list() {
-            Some([
-                Syntax::Identifier { ident: from, .. },
-                Syntax::Identifier { ident: to, .. },
-                Syntax::Null { .. }
-            ]) => {
-                Ok(ExportSet {
-                    rename: Some(to.clone()),
-                    ident: from.clone(),
-                })
-            }
+            Some(
+                [
+                    Syntax::Identifier { ident: from, .. },
+                    Syntax::Identifier { ident: to, .. },
+                    Syntax::Null { .. },
+                ],
+            ) => Ok(ExportSet {
+                rename: Some(to.clone()),
+                ident: from.clone(),
+            }),
             _ => Err(ParseAstError::BadForm(syn.span().clone())),
         }
     }
@@ -298,14 +306,15 @@ impl ExportSpec {
                     exports @ ..,
                     Syntax::Null { .. },
                 ],
-            ) if export_decl == "export" => {
-                Ok(ExportSpec {
-                    export_sets: exports.iter().map(ExportSet::parse).collect::<Result<Vec<_>, _>>()?
-                        .into_iter()
-                        .flatten()
-                        .collect(),
-                })
-            }
+            ) if export_decl == "export" => Ok(ExportSpec {
+                export_sets: exports
+                    .iter()
+                    .map(ExportSet::parse)
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .flatten()
+                    .collect(),
+            }),
             _ => Err(ParseAstError::ExpectedExportSpec(syn.span().clone())),
         }
     }
@@ -317,12 +326,29 @@ pub struct ImportSpec {
 
 impl ImportSpec {
     pub fn parse(syn: &Syntax) -> Result<Self, ParseAstError> {
-        todo!()
+        match syn.as_list() {
+            Some(
+                [
+                    Syntax::Identifier {
+                        ident: import_decl,
+                        bound,
+                        span,
+                    },
+                    imports @ ..,
+                    Syntax::Null { .. },
+                ],
+            ) if import_decl == "import" => {
+                Ok(ImportSpec {
+                    import_sets: todo!(), // imports.iter().map()
+                })
+            }
+            _ => Err(ParseAstError::ExpectedImportSpec(syn.span().clone())),
+        }
     }
 }
 
 pub enum ImportSet {
-    Library(LibraryName),
+    Library(LibraryReference),
     Only {
         set: Box<ImportSet>,
         allowed: HashSet<Identifier>,
@@ -340,6 +366,128 @@ pub enum ImportSet {
         /// Imported identifiers to rename (from, to).
         renames: HashMap<Identifier, Identifier>,
     },
+}
+
+impl ImportSet {
+    fn parse(syn: &Syntax) -> Result<Self, ParseAstError> {
+        match syn.as_list() {
+            Some(
+                [
+                    Syntax::Identifier {
+                        ident: import_type, ..
+                    },
+                    lib_ref,
+                    Syntax::Null { .. },
+                ],
+            ) if import_type == "library" => Ok(Self::Library(LibraryReference::parse(lib_ref)?)),
+            Some(
+                [
+                    Syntax::Identifier {
+                        ident: import_type, ..
+                    },
+                    import_set,
+                    imports @ ..,
+                    Syntax::Null { .. },
+                ],
+            ) if import_type == "only" => {
+                let import_set = ImportSet::parse(import_set)?;
+                let allowed = imports
+                    .iter()
+                    .map(|allowed| match allowed {
+                        Syntax::Identifier { ident, .. } => Ok(ident.clone()),
+                        _ => Err(ParseAstError::ExpectedIdentifier(allowed.span().clone())),
+                    })
+                    .collect::<Result<HashSet<_>, _>>()?;
+                Ok(Self::Only {
+                    set: Box::new(import_set),
+                    allowed,
+                })
+            }
+            Some(
+                [
+                    Syntax::Identifier {
+                        ident: import_type, ..
+                    },
+                    import_set,
+                    exceptions @ ..,
+                    Syntax::Null { .. },
+                ],
+            ) if import_type == "except" => {
+                let import_set = ImportSet::parse(import_set)?;
+                let disallowed = exceptions
+                    .iter()
+                    .map(|disallowed| match disallowed {
+                        Syntax::Identifier { ident, .. } => Ok(ident.clone()),
+                        _ => Err(ParseAstError::ExpectedIdentifier(disallowed.span().clone())),
+                    })
+                    .collect::<Result<HashSet<_>, _>>()?;
+                Ok(Self::Except {
+                    set: Box::new(import_set),
+                    disallowed,
+                })
+            }
+            Some(
+                [
+                    Syntax::Identifier {
+                        ident: import_type, ..
+                    },
+                    import_set,
+                    Syntax::Identifier { ident: prefix, .. },
+                    Syntax::Null { .. },
+                ],
+            ) if import_type == "prefix" => {
+                let import_set = ImportSet::parse(import_set)?;
+                Ok(Self::Prefix {
+                    set: Box::new(import_set),
+                    prefix: prefix.clone(),
+                })
+            }
+            Some(
+                [
+                    Syntax::Identifier {
+                        ident: import_type, ..
+                    },
+                    import_set,
+                    renames @ ..,
+                    Syntax::Null { .. },
+                ],
+            ) if import_type == "rename" => {
+                let import_set = ImportSet::parse(import_set)?;
+                let renames = renames
+                    .iter()
+                    .map(|rename| match rename.as_list() {
+                        Some(
+                            [
+                                Syntax::Identifier { ident: from, .. },
+                                Syntax::Identifier { ident: to, .. },
+                                Syntax::Null { .. },
+                            ],
+                        ) => Ok((from.clone(), to.clone())),
+                        _ => Err(ParseAstError::BadForm(rename.span().clone())),
+                    })
+                    .collect::<Result<HashMap<_, _>, _>>()?;
+                Ok(Self::Rename {
+                    set: Box::new(import_set),
+                    renames,
+                })
+            }
+            Some([lib_ref, Syntax::Null { .. }]) => {
+                Ok(Self::Library(LibraryReference::parse(lib_ref)?))
+            }
+            _ => Err(todo!()),
+        }
+    }
+}
+
+pub struct LibraryReference {
+    pub(crate) name: Vec<Symbol>,
+    pub(crate) version_ref: VersionReference,
+}
+
+impl LibraryReference {
+    fn parse(syn: &Syntax) -> Result<Self, ParseAstError> {
+        todo!()
+    }
 }
 
 #[derive(Debug, Clone, Trace)]
@@ -391,7 +539,7 @@ impl Definition {
                 expr,
                 Syntax::Null { .. },
             ] => Ok(Definition::DefineVar(DefineVar {
-                var: env.fetch_var(ident).await.unwrap(),
+                var: env.fetch_var(ident).await?.unwrap(),
                 val: Arc::new(Expression::parse(runtime, expr.clone(), env).await?),
                 next: None,
             })),
@@ -413,7 +561,7 @@ impl Definition {
                         },
                         args @ ..,
                     ] => {
-                        let var = env.fetch_var(func_name).await.unwrap();
+                        let var = env.fetch_var(func_name).await?.unwrap();
 
                         let mut bound = HashMap::<Identifier, Span>::new();
                         let mut fixed = Vec::new();
@@ -576,7 +724,7 @@ impl Expression {
                 // Regular identifiers:
                 Syntax::Identifier { ident, .. } => Ok(Self::Var(
                     env.fetch_var(&ident)
-                        .await
+                        .await?
                         .or_else(|| {
                             let top = env.fetch_top();
                             top.is_repl().then(|| {
@@ -1099,7 +1247,7 @@ impl Set {
             [Syntax::Identifier { ident, .. }, expr] => Ok(Set {
                 var: env
                     .fetch_var(ident)
-                    .await
+                    .await?
                     .ok_or_else(|| ParseAstError::UndefinedVariable(ident.clone()))?,
                 val: Arc::new(Expression::parse(runtime, expr.clone(), env).await?),
             }),

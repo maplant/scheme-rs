@@ -1,6 +1,6 @@
 use crate::{
     ast::Literal,
-    env::{Environment, Macro},
+    env::{Environment, Keyword},
     exception::Condition,
     gc::Trace,
     lex::{InputSpan, Token},
@@ -17,6 +17,7 @@ use std::{
     sync::Arc,
 };
 
+/// Source location for an s-expression.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Trace)]
 pub struct Span {
     pub line: u32,
@@ -53,9 +54,11 @@ impl From<InputSpan<'_>> for Span {
     }
 }
 
+/// Representation of a Scheme syntax object, or s-expression.
 #[derive(Clone, derive_more::Debug, Trace, PartialEq)]
 #[repr(align(16))]
-// TODO: Make cloning this struct as fast as possible.
+// TODO: Make cloning this struct as fast as possible. Realistically that means
+// moving nested data into Arc<[Syntax]>
 pub enum Syntax {
     /// An empty list.
     Null {
@@ -195,13 +198,7 @@ impl Syntax {
         }
     }
 
-    #[allow(dead_code)]
-    async fn apply_transformer(
-        &self,
-        env: &Environment,
-        mac: Macro,
-        // cont: &Closure,
-    ) -> Result<Expansion, Value> {
+    async fn apply_transformer(&self, env: &Environment, mac: Keyword) -> Result<Expansion, Value> {
         // Create a new mark for the expansion context
         let new_mark = Mark::new();
 
@@ -235,7 +232,7 @@ impl Syntax {
                         Some(Self::Identifier { ident, .. }) => ident,
                         _ => return Ok(Expansion::Unexpanded),
                     };
-                    if let Some(mac) = env.fetch_keyword(ident).await {
+                    if let Some(mac) = env.fetch_keyword(ident).await? {
                         return self.apply_transformer(env, mac).await;
                     }
 
@@ -243,7 +240,7 @@ impl Syntax {
                     match &list.as_slice()[1..] {
                         [Syntax::Identifier { ident: var, .. }, ..] if ident == "set!" => {
                             // Look for a variable transformer:
-                            if let Some(mac) = env.fetch_keyword(var).await {
+                            if let Some(mac) = env.fetch_keyword(var).await? {
                                 if !mac.transformer.read().is_variable_transformer {
                                     return Err(Condition::error(format!(
                                         "{} not a variable transformer",
@@ -258,7 +255,7 @@ impl Syntax {
                     }
                 }
                 Self::Identifier { ident, .. } => {
-                    if let Some(mac) = env.fetch_keyword(ident).await {
+                    if let Some(mac) = env.fetch_keyword(ident).await? {
                         return self.apply_transformer(env, mac).await;
                     }
                 }
@@ -306,6 +303,15 @@ impl Syntax {
         file_name: Option<&str>,
     ) -> Result<Vec<Self>, ParseSyntaxError<'a>> {
         let tokens = Token::tokenize(s, file_name)?;
+        Self::parse(&tokens)
+    }
+
+    pub fn from_str_with_line_offset<'a>(
+        s: &'a str,
+        file_name: Option<&str>,
+        line_offset: u32,
+    ) -> Result<Vec<Self>, ParseSyntaxError<'a>> {
+        let tokens = Token::tokenize_with_line_offset(s, file_name, line_offset)?;
         Self::parse(&tokens)
     }
 
@@ -436,8 +442,6 @@ impl Syntax {
             Self::Identifier { span, .. } => span,
         }
     }
-
-    // There's got to be a better way:
 
     pub fn new_null(span: impl Into<Span>) -> Self {
         Self::Null { span: span.into() }

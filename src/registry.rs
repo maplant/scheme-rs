@@ -5,7 +5,7 @@ use crate::{
         Definition, DefinitionBody, ImportSet, LibraryName, LibrarySpec, Literal, ParseAstError,
     },
     cps::Compile,
-    env::{self, Environment, Global, Macro},
+    env::{Environment, Global, Keyword},
     exception::Condition,
     gc::{Gc, Trace},
     parse::ParseSyntaxError,
@@ -82,6 +82,7 @@ impl BridgeFnDebugInfo {
 
 inventory::collect!(BridgeFn);
 
+/*
 #[derive(Copy, Clone)]
 pub struct Initializer {
     lib_name: &'static str,
@@ -89,6 +90,7 @@ pub struct Initializer {
 }
 
 inventory::collect!(Initializer);
+*/
 
 #[derive(Trace, Default)]
 pub(crate) struct RegistryInner {
@@ -103,40 +105,64 @@ impl RegistryInner {
     }
 
     /// Construct a Registry with all of the available bridge functions present but no external libraries imported.
-    // TODO: This should probably return a result.
-    pub fn new(/*runtime: &Runtime*/) -> Self {
-        /*
-        // This should probably be moved to a once cell.
-        let mut libs = HashMap::<LibraryName, Gc<dyn Top>>::default();
+    pub fn new(rt: &Runtime) -> Self {
+        let mut libs = HashMap::<LibraryName, HashMap<Identifier, Gc<Value>>>::default();
 
         // Import the bridge functions:
-
         for bridge_fn in inventory::iter::<BridgeFn>() {
             let debug_info = Arc::new(FuncDebugInfo::from_bridge_fn(
                 bridge_fn.name,
                 bridge_fn.debug_info,
             ));
             let lib_name = LibraryName::from_str(bridge_fn.lib_name, None).unwrap();
-            let lib = libs
-                .entry(lib_name)
-                .or_insert_with(|| todo!());// Gc::new(Top::library()));
-            let mut lib = lib.write();
-            lib.def_var(
+            let lib = libs.entry(lib_name).or_default();
+            lib.insert(
                 Identifier::new(bridge_fn.name),
-                Value::from(Closure::new(
-                    runtime.clone(),
+                Gc::new(Value::from(Closure::new(
+                    rt.clone(),
                     Vec::new(),
                     Vec::new(),
                     FuncPtr::Bridge(bridge_fn.wrapper),
                     bridge_fn.num_args,
                     bridge_fn.variadic,
                     Some(debug_info),
-                )),
+                ))),
             );
         }
 
-        // Run the initializers:
+        let libs = libs
+            .into_iter()
+            .map(|(name, vars)| {
+                let exports = vars
+                    .keys()
+                    .map(|export| {
+                        (
+                            export.clone(),
+                            Export {
+                                rename: export.clone(),
+                                origin: None,
+                            },
+                        )
+                    })
+                    .collect();
+                let lib_inner = LibraryInner {
+                    rt: rt.clone(),
+                    kind: LibraryKind::Libary {
+                        name: name.clone(),
+                        path: None,
+                    },
+                    imports: HashMap::default(),
+                    exports,
+                    vars,
+                    keywords: HashMap::default(),
+                    state: LibraryState::Invoked,
+                };
+                (name.name, Library(Gc::new(lib_inner)))
+            })
+            .collect();
 
+        /*
+        // Run the initializers:
         for initializer in inventory::iter::<Initializer>() {
             let lib_name = LibraryName::from_str(initializer.lib_name, None).unwrap();
             let lib = libs
@@ -144,9 +170,10 @@ impl RegistryInner {
                 .or_insert_with(|| Gc::new(Top::library()));
             (initializer.initializer)(lib);
         }
+        */
 
+        /*
         // Import the stdlib:
-
         let base_lib = libs
             .entry(LibraryName::from_str("(base)", None).unwrap())
             .or_insert_with(|| Gc::new(Top::library()));
@@ -161,7 +188,11 @@ impl RegistryInner {
 
         Self { libs }
          */
-        todo!()
+
+        Self {
+            libs,
+            loading: HashSet::default(),
+        }
     }
 }
 
@@ -169,20 +200,19 @@ impl RegistryInner {
 pub struct Registry(pub(crate) Gc<RegistryInner>);
 
 impl Registry {
-    pub(crate) fn new() -> Self {
-        Self(Gc::new(RegistryInner::new()))
+    pub(crate) fn empty() -> Self {
+        Self(Gc::new(RegistryInner::empty()))
+    }
+
+    pub(crate) fn new(rt: &Runtime) -> Self {
+        Self(Gc::new(RegistryInner::new(rt)))
     }
 
     fn mark_as_loading(&self, name: &[Symbol]) {
         self.0.write().loading.insert(name.to_vec());
     }
 
-    async fn load_lib(
-        &self,
-        rt: &Runtime,
-        curr_path: &Path,
-        name: &[Symbol],
-    ) -> Result<Library, ImportError> {
+    async fn load_lib(&self, rt: &Runtime, name: &[Symbol]) -> Result<Library, ImportError> {
         if let Some(lib) = self.0.read().libs.get(name) {
             return Ok(lib.clone());
         }
@@ -195,7 +225,9 @@ impl Registry {
         self.mark_as_loading(name);
         const DEFAULT_LOAD_PATH: &'static str = "~/.gouki";
         // Check the current path first:
-        let lib = match load_lib_from_dir(rt, curr_path, name).await {
+        let curr_path = std::env::current_dir()
+            .expect("If we can't get the current working directory, we can't really do much");
+        let lib = match load_lib_from_dir(rt, &curr_path, name).await {
             Ok(lib) => lib,
             Err(ImportError::LibraryNotFound(_)) => {
                 // Try from the load path
@@ -216,14 +248,13 @@ impl Registry {
     fn import<'b, 'a: 'b>(
         &'a self,
         rt: &'b Runtime,
-        curr_path: &'b Path,
         import_set: ImportSet,
     ) -> BoxFuture<'b, Result<Box<dyn Iterator<Item = (Identifier, Import)> + 'b>, ImportError>>
     {
         Box::pin(async move {
             match import_set {
                 ImportSet::Library(lib) => {
-                    let lib = self.load_lib(rt, curr_path, &lib.name).await?;
+                    let lib = self.load_lib(rt, &lib.name).await?;
                     let exports = { lib.0.read().exports.values().cloned().collect::<Vec<_>>() };
                     Ok(Box::new(exports.into_iter().map(move |exp| {
                         (
@@ -240,25 +271,25 @@ impl Registry {
                     })) as DynIter<'b>)
                 }
                 ImportSet::Only { set, allowed } => Ok(Box::new(
-                    self.import(rt, curr_path, *set)
+                    self.import(rt, *set)
                         .await?
                         .filter(move |(import, _)| allowed.contains(import)),
                 ) as DynIter<'b>),
                 ImportSet::Except { set, disallowed } => Ok(Box::new(
-                    self.import(rt, curr_path, *set)
+                    self.import(rt, *set)
                         .await?
                         .filter(move |(import, _)| !disallowed.contains(import)),
                 ) as DynIter<'b>),
                 ImportSet::Prefix { set, prefix } => {
                     let prefix = prefix.sym.to_str();
                     Ok(Box::new(
-                        self.import(rt, curr_path, *set)
+                        self.import(rt, *set)
                             .await?
                             .map(move |(name, import)| (name.prefix(&prefix), import)),
                     ) as DynIter<'b>)
                 }
                 ImportSet::Rename { set, mut renames } => Ok(Box::new(
-                    self.import(rt, curr_path, *set)
+                    self.import(rt, *set)
                         .await?
                         .map(move |(name, import)| (renames.remove(&name).unwrap_or(name), import)),
                 ) as DynIter<'b>),
@@ -278,20 +309,22 @@ async fn load_lib_from_dir(
         .map(Symbol::to_str)
         .fold(String::new(), |s, sym| s + &format!("/{sym}"));
 
-    for ext in ["ss", "scm"] {
+    for ext in ["sls", "ss", "scm"] {
         let path = path.join(&format!("{path_suffix}.{ext}"));
         if let Ok(false) = tokio::fs::try_exists(&path).await {
             continue;
         }
-        let contents = tokio::fs::read_to_string(&path).await.unwrap();
+        let contents = tokio::fs::read_to_string(&path).await?;
         let file_name = path.file_name().unwrap().to_string_lossy();
-        let syntax = Syntax::from_str(&contents, Some(&file_name)).unwrap();
+        let syntax = Syntax::from_str(&contents, Some(&file_name))
+            .map_err(|err| ImportError::ParseSyntaxError(format!("{err:?}")))?;
         let [syntax] = syntax.as_slice() else {
             panic!("Has to be one item");
         };
         let spec = LibrarySpec::parse(syntax).unwrap();
-        return Library::new(&rt, spec, Some(path)).await;
+        return Library::from_spec(&rt, spec, path).await;
     }
+
     Err(ImportError::LibraryNotFound(name.to_vec()))
 }
 
@@ -301,7 +334,8 @@ type DynIter<'a> = Box<dyn Iterator<Item = (Identifier, Import)> + 'a>;
 pub enum ImportError {
     #[error("Library not found")]
     LibraryNotFound(Vec<Symbol>),
-    // ParseSyntaxError (how? returns a reference)
+    #[error("Error parsing into s-expression: {0}")]
+    ParseSyntaxError(String),
     #[error("Error reading library: {0}")]
     IoError(#[from] std::io::Error),
     #[error("Import identifier `{0}` bound multiple times")]
@@ -310,31 +344,21 @@ pub enum ImportError {
     CircularDependency,
 }
 
-/*
-#[derive(Trace)]
-pub struct Imports {
-    // registry: Gc<Registry>,
-    imports: HashMap<Identifier, Gc<Library>>,
-}
-*/
-
 #[derive(Trace)]
 pub(crate) struct LibraryInner {
     rt: Runtime,
-    name: LibraryName,
-    path: Option<PathBuf>,
+    kind: LibraryKind,
     exports: HashMap<Identifier, Export>,
     imports: HashMap<Identifier, Import>,
     state: LibraryState,
     vars: HashMap<Identifier, Gc<Value>>,
-    keywords: HashMap<Identifier, Macro>,
+    keywords: HashMap<Identifier, Keyword>,
 }
 
 impl LibraryInner {
     pub(crate) fn new(
         rt: &Runtime,
-        name: LibraryName,
-        path: Option<PathBuf>,
+        kind: LibraryKind,
         imports: HashMap<Identifier, Import>,
         exports: HashMap<Identifier, Identifier>,
         body: Vec<Syntax>,
@@ -349,8 +373,7 @@ impl LibraryInner {
 
         Self {
             rt: rt.clone(),
-            name,
-            path,
+            kind,
             imports,
             exports,
             state: LibraryState::Unexpanded(body),
@@ -361,7 +384,19 @@ impl LibraryInner {
 }
 
 #[derive(Trace)]
+pub enum LibraryKind {
+    /// A Repl is a library that does not have a name.
+    Repl,
+    /// A library has a name and an (optional) path.
+    Libary {
+        name: LibraryName,
+        path: Option<PathBuf>,
+    },
+}
+
+#[derive(Trace)]
 pub struct Import {
+    /// The original name of the identifier before being renamed.
     rename: Identifier,
     origin: Library,
 }
@@ -382,23 +417,33 @@ impl PartialEq for Library {
 }
 
 impl Library {
-    pub async fn new(
+    pub fn new_repl(rt: &Runtime) -> Self {
+        let mut inner = LibraryInner::new(
+            rt,
+            LibraryKind::Repl,
+            HashMap::default(),
+            HashMap::default(),
+            Vec::new(),
+        );
+        inner.state = LibraryState::Invoked;
+        Self(Gc::new(inner))
+    }
+
+    pub async fn from_spec(
         rt: &Runtime,
         spec: LibrarySpec,
-        path: Option<PathBuf>,
+        path: PathBuf,
     ) -> Result<Self, ImportError> {
         // Import libraries:
-        let current_dir = std::env::current_dir()
-            .expect("If we can't get the current working directory, we can't really do much");
         let mut imports = HashMap::<Identifier, Import>::default();
         let registry = rt.get_registry();
         for lib_import in spec.imports.import_sets.into_iter() {
-            for (ident, import) in registry.import(rt, &current_dir, lib_import).await? {
+            for (ident, import) in registry.import(rt, lib_import).await? {
                 match imports.entry(ident) {
                     Entry::Occupied(prev_imported)
                         if prev_imported.get().origin != import.origin =>
                     {
-                        return Err(ImportError::DuplicateIdentifier(todo!()));
+                        return Err(ImportError::DuplicateIdentifier(prev_imported.key().sym));
                     }
                     Entry::Vacant(slot) => {
                         slot.insert(import);
@@ -410,8 +455,10 @@ impl Library {
 
         Ok(Self(Gc::new(LibraryInner::new(
             rt,
-            spec.name,
-            path,
+            LibraryKind::Libary {
+                name: spec.name,
+                path: Some(path),
+            },
             imports,
             spec.exports
                 .export_sets
@@ -468,10 +515,15 @@ impl Library {
     }
 
     pub fn is_repl(&self) -> bool {
-        false
+        matches!(self.0.read().kind, LibraryKind::Repl)
     }
 
-    pub(crate) fn def_var(&self, name: Identifier, value: Value) -> env::Global {
+    pub fn is_bound(&self, name: &Identifier) -> bool {
+        let this = self.0.read();
+        this.vars.contains_key(name) || this.imports.contains_key(name)
+    }
+
+    pub(crate) fn def_var(&self, name: Identifier, value: Value) -> Global {
         let mut this = self.0.write();
         let mutable = !this.exports.contains_key(&name);
         match this.vars.entry(name.clone()) {
@@ -482,7 +534,7 @@ impl Library {
         }
     }
 
-    pub(crate) fn def_keyword(&self, keyword: Identifier, mac: Macro) {
+    pub(crate) fn def_keyword(&self, keyword: Identifier, mac: Keyword) {
         let mut this = self.0.write();
         this.keywords.insert(keyword, mac);
     }
@@ -490,28 +542,25 @@ impl Library {
     pub(crate) fn fetch_var<'a>(
         &'a self,
         name: &'a Identifier,
-    ) -> BoxFuture<'a, Option<env::Global>> {
+    ) -> BoxFuture<'a, Result<Option<Global>, Condition>> {
         // Check this library
         let this = self.0.read();
         if let Some(var) = this.vars.get(name) {
             let var = var.clone();
             // Fetching this every time is kind of slow.
             let mutable = !this.exports.contains_key(&name);
-            return Box::pin(async move { Some(Global::new(name.clone(), var, mutable)) });
+            return Box::pin(async move { Ok(Some(Global::new(name.clone(), var, mutable))) });
         }
 
         // Check our imports
         let Some(Import { origin, rename }) = this.imports.get(name) else {
-            return Box::pin(async { None });
+            return Box::pin(async { Ok(None) });
         };
 
         let rename = rename.clone();
         let import = origin.clone();
         Box::pin(async move {
-            import
-                .maybe_invoke()
-                .await
-                .expect("Oh geez, fetching variables can error now");
+            import.maybe_invoke().await?;
 
             let Export { rename, .. } = import.0.read().exports.get(&rename).unwrap().clone();
             import.fetch_var(&rename).await
@@ -521,26 +570,23 @@ impl Library {
     pub(crate) fn fetch_keyword<'a>(
         &'a self,
         keyword: &'a Identifier,
-    ) -> BoxFuture<'a, Option<Macro>> {
+    ) -> BoxFuture<'a, Result<Option<Keyword>, Condition>> {
         // Check this library
         let this = self.0.read();
-        if let Some(mac) = this.keywords.get(keyword) {
-            let mac = mac.clone();
-            return Box::pin(async move { Some(mac) });
+        if let Some(key) = this.keywords.get(keyword) {
+            let key = key.clone();
+            return Box::pin(async move { Ok(Some(key)) });
         }
 
         // Check our imports
         let Some(Import { origin, rename }) = this.imports.get(keyword) else {
-            return Box::pin(async { None });
+            return Box::pin(async { Ok(None) });
         };
 
         let rename = rename.clone();
         let import = origin.clone();
         Box::pin(async move {
-            import
-                .maybe_invoke()
-                .await
-                .expect("Oh geez, fetching variables can error now");
+            import.maybe_invoke().await?;
 
             let Export { rename, .. } = import.0.read().exports.get(&rename).unwrap().clone();
             import.fetch_keyword(&rename).await
