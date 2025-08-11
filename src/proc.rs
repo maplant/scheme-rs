@@ -50,7 +50,7 @@ pub type BridgePtr = for<'a> fn(
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>>;
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug)]
 pub(crate) enum FuncPtr {
     Continuation(ContinuationPtr),
     User(UserPtr),
@@ -477,7 +477,7 @@ pub fn apply<'a>(
 inventory::submit! {
     BridgeFn::new(
         "apply",
-        "(base)",
+        "(rnrs base builtins (6))",
         1,
         true,
         apply,
@@ -642,7 +642,7 @@ pub fn call_with_values<'a>(
 inventory::submit! {
     BridgeFn::new(
         "call-with-values",
-        "(base)",
+        "(rnrs base builtins (6))",
         2,
         false,
         call_with_values,
@@ -707,7 +707,7 @@ pub fn dynamic_wind<'a>(
 inventory::submit! {
     BridgeFn::new(
         "dynamic-wind",
-        "(base)",
+        "(rnrs base builtins (6))",
         3,
         false,
         dynamic_wind,

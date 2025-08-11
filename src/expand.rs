@@ -502,7 +502,7 @@ impl<'a> Binds<'a> {
     }
 }
 
-#[bridge(name = "make-variable-transformer", lib = "(base)")]
+#[bridge(name = "make-variable-transformer", lib = "(rnrs base builtins (6))")]
 pub async fn make_variable_transformer(proc: &Value) -> Result<Vec<Value>, Condition> {
     let proc: Gc<Closure> = proc.clone().try_into()?;
     let mut var_transformer = proc.read().clone();

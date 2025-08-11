@@ -145,9 +145,8 @@ impl From<Exception> for Condition {
 }
 
 impl From<ParseAstError> for Condition {
-    fn from(_value: ParseAstError) -> Self {
-        // TODO: Make this more descriptive
-        Self::syntax_error()
+    fn from(value: ParseAstError) -> Self {
+        Condition::error(format!("Error parsing: {value:?}"))
     }
 }
 
@@ -254,7 +253,7 @@ pub fn with_exception_handler<'a>(
 inventory::submit! {
     BridgeFn::new(
         "with-exception-handler",
-        "(base)",
+        "(rnrs base builtins (6))",
         2,
         false,
         with_exception_handler,
@@ -318,7 +317,7 @@ pub fn raise<'a>(
 inventory::submit! {
     BridgeFn::new(
         "raise",
-        "(base)",
+        "(rnrs base builtins (6))",
         1,
         false,
         raise,
@@ -403,7 +402,7 @@ pub fn raise_continuable<'a>(
 inventory::submit! {
     BridgeFn::new(
         "raise-continuable",
-        "(base)",
+        "(rnrs base builtins (6))",
         1,
         false,
         raise_continuable,

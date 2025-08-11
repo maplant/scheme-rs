@@ -42,10 +42,15 @@ pub enum ParseAstError {
     ExpectedExportSpec(Span),
     ExpectedImportSpec(Span),
     ExpectedLibraryKeyword(Span),
-
+    ExpectedList(Span),
     UnexpectedArgument(Span),
     UnexpectedDefinition(Span),
     UnexpectedEmptyList(Span),
+
+    NumberToUsizeError {
+        span: Span,
+        error: NumberToUsizeError,
+    },
 
     UndefinedVariable(Identifier),
 
@@ -104,8 +109,6 @@ impl LibrarySpec {
                         ..
                     },
                     library_name,
-                    exports,
-                    imports,
                     body @ ..,
                     Syntax::Null { .. },
                 ],
@@ -115,10 +118,23 @@ impl LibrarySpec {
                         library_decl_span.clone(),
                     ));
                 }
+                let mut exports = ExportSpec::default();
+                let mut imports = ImportSpec::default();
+                let mut body = &body[..];
+                while let Some(spec) = body.first() {
+                    if spec.has_car("export") {
+                        exports.join(ExportSpec::parse(spec).unwrap());
+                    } else if spec.has_car("import") {
+                        imports.join(ImportSpec::parse(spec).unwrap());
+                    } else {
+                        break;
+                    }
+                    body = &body[1..];
+                }
                 Ok(Self {
                     name: LibraryName::parse(library_name)?,
-                    exports: ExportSpec::parse(exports)?,
-                    imports: ImportSpec::parse(imports)?,
+                    exports,
+                    imports,
                     body: body.to_vec(),
                 })
             }
@@ -127,7 +143,7 @@ impl LibrarySpec {
     }
 }
 
-#[derive(Clone, Default, PartialEq, Eq, Hash, Trace)]
+#[derive(Clone, Default, PartialEq, Eq, Hash, Trace, Debug)]
 pub struct LibraryName {
     pub name: Vec<Symbol>,
     pub version: Version,
@@ -196,7 +212,7 @@ impl From<ParseAstError> for ParseLibraryNameError<'_> {
     }
 }
 
-#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Hash, Default, Trace)]
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Hash, Default, Trace, Debug)]
 pub struct Version {
     version: Vec<usize>,
 }
@@ -233,18 +249,159 @@ pub enum VersionReference {
     Not(Box<VersionReference>),
 }
 
+impl VersionReference {
+    fn parse(syn: &Syntax) -> Result<Self, ParseAstError> {
+        match syn.as_list() {
+            Some(
+                [
+                    Syntax::Identifier { ident: kw, .. },
+                    version_refs @ ..,
+                    Syntax::Null { .. },
+                ],
+            ) if kw == "and" => {
+                let version_refs = version_refs
+                    .iter()
+                    .map(|vref| VersionReference::parse(vref))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Self::And(version_refs))
+            }
+            Some(
+                [
+                    Syntax::Identifier { ident: kw, .. },
+                    version_refs @ ..,
+                    Syntax::Null { .. },
+                ],
+            ) if kw == "or" => {
+                let version_refs = version_refs
+                    .iter()
+                    .map(|vref| VersionReference::parse(vref))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Self::Or(version_refs))
+            }
+            Some(
+                [
+                    Syntax::Identifier { ident: kw, .. },
+                    version_ref,
+                    Syntax::Null { .. },
+                ],
+            ) if kw == "not" => {
+                let version_ref = VersionReference::parse(version_ref)?;
+                Ok(Self::Not(Box::new(version_ref)))
+            }
+            Some([subversion_refs @ .., Syntax::Null { .. }]) => {
+                let subversion_refs = subversion_refs
+                    .iter()
+                    .map(|svref| SubVersionReference::parse(svref))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Self::SubVersions(subversion_refs))
+            }
+            None => Err(ParseAstError::ExpectedList(syn.span().clone())),
+            _ => Err(ParseAstError::BadForm(syn.span().clone())),
+        }
+    }
+}
+
 pub enum SubVersionReference {
-    SubVersion(u32),
-    Gte(Vec<SubVersionReference>),
-    Lte(Vec<SubVersionReference>),
+    SubVersion(usize),
+    Gte(usize),
+    Lte(usize),
     And(Vec<SubVersionReference>),
     Or(Vec<SubVersionReference>),
     Not(Box<SubVersionReference>),
 }
 
-pub struct ExportSet {
-    pub(crate) rename: Option<Identifier>,
-    pub(crate) ident: Identifier,
+impl SubVersionReference {
+    fn parse(syn: &Syntax) -> Result<Self, ParseAstError> {
+        match syn {
+            Syntax::Literal {
+                literal: Literal::Number(num),
+                ..
+            } => Ok(Self::SubVersion(num.try_into().map_err(|error| {
+                ParseAstError::NumberToUsizeError {
+                    span: syn.span().clone(),
+                    error,
+                }
+            })?)),
+            _ => match syn.as_list() {
+                Some(
+                    [
+                        Syntax::Identifier { ident: kw, .. },
+                        Syntax::Literal {
+                            literal: Literal::Number(num),
+                            ..
+                        },
+                        Syntax::Null { .. },
+                    ],
+                ) if kw == ">=" => Ok(Self::Gte(num.try_into().map_err(|error| {
+                    ParseAstError::NumberToUsizeError {
+                        span: syn.span().clone(),
+                        error,
+                    }
+                })?)),
+                Some(
+                    [
+                        Syntax::Identifier { ident: kw, .. },
+                        Syntax::Literal {
+                            literal: Literal::Number(num),
+                            ..
+                        },
+                        Syntax::Null { .. },
+                    ],
+                ) if kw == "<=" => Ok(Self::Lte(num.try_into().map_err(|error| {
+                    ParseAstError::NumberToUsizeError {
+                        span: syn.span().clone(),
+                        error,
+                    }
+                })?)),
+                Some(
+                    [
+                        Syntax::Identifier { ident: kw, .. },
+                        subversion_refs @ ..,
+                        Syntax::Null { .. },
+                    ],
+                ) if kw == "and" => {
+                    let subversion_refs = subversion_refs
+                        .iter()
+                        .map(|svref| SubVersionReference::parse(svref))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok(Self::And(subversion_refs))
+                }
+                Some(
+                    [
+                        Syntax::Identifier { ident: kw, .. },
+                        subversion_refs @ ..,
+                        Syntax::Null { .. },
+                    ],
+                ) if kw == "or" => {
+                    let subversion_refs = subversion_refs
+                        .iter()
+                        .map(|svref| SubVersionReference::parse(svref))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok(Self::Or(subversion_refs))
+                }
+                Some(
+                    [
+                        Syntax::Identifier { ident: kw, .. },
+                        subversion_ref,
+                        Syntax::Null { .. },
+                    ],
+                ) if kw == "not" => {
+                    let subversion_ref = SubVersionReference::parse(subversion_ref)?;
+                    Ok(Self::Not(Box::new(subversion_ref)))
+                }
+                None => Err(ParseAstError::ExpectedList(syn.span().clone())),
+                _ => Err(ParseAstError::BadForm(syn.span().clone())),
+            },
+        }
+    }
+}
+
+pub enum ExportSet {
+    Internal {
+        rename: Option<Identifier>,
+        ident: Identifier,
+    },
+    External(ImportSpec),
 }
 
 impl ExportSet {
@@ -256,7 +413,7 @@ impl ExportSet {
                     Syntax::Identifier { ident: to, .. },
                     Syntax::Null { .. },
                 ],
-            ) => Ok(ExportSet {
+            ) => Ok(Self::Internal {
                 rename: Some(to.clone()),
                 ident: from.clone(),
             }),
@@ -266,31 +423,32 @@ impl ExportSet {
 
     pub fn parse(syn: &Syntax) -> Result<Vec<Self>, ParseAstError> {
         match syn {
-            Syntax::Identifier { ident, .. } => Ok(vec![Self {
+            Syntax::Identifier { ident, .. } => Ok(vec![Self::Internal {
                 rename: None,
                 ident: ident.clone(),
             }]),
-            Syntax::List { list, .. } => {
-                if let [
+            Syntax::List { list, .. } => match list.as_slice() {
+                [
                     Syntax::Identifier { ident, .. },
                     renames @ ..,
                     Syntax::Null { .. },
-                ] = list.as_slice()
-                    && ident == "rename"
+                ] if ident == "rename" => Ok(renames
+                    .iter()
+                    .map(Self::parse_rename)
+                    .collect::<Result<Vec<_>, _>>()?),
+                [Syntax::Identifier { ident, .. }, .., Syntax::Null { .. }]
+                    if ident == "import" =>
                 {
-                    Ok(renames
-                        .iter()
-                        .map(Self::parse_rename)
-                        .collect::<Result<Vec<_>, _>>()?)
-                } else {
-                    Err(ParseAstError::BadForm(syn.span().clone()))
+                    Ok(vec![Self::External(ImportSpec::parse(syn)?)])
                 }
-            }
+                _ => Err(ParseAstError::BadForm(syn.span().clone())),
+            },
             _ => Err(ParseAstError::BadForm(syn.span().clone())),
         }
     }
 }
 
+#[derive(Default)]
 pub struct ExportSpec {
     pub(crate) export_sets: Vec<ExportSet>,
 }
@@ -318,8 +476,13 @@ impl ExportSpec {
             _ => Err(ParseAstError::ExpectedExportSpec(syn.span().clone())),
         }
     }
+
+    pub fn join(&mut self, rhs: ExportSpec) {
+        self.export_sets.extend(rhs.export_sets);
+    }
 }
 
+#[derive(Default)]
 pub struct ImportSpec {
     pub(crate) import_sets: Vec<ImportSet>,
 }
@@ -330,20 +493,41 @@ impl ImportSpec {
             Some(
                 [
                     Syntax::Identifier {
-                        ident: import_decl,
-                        bound,
-                        span,
+                        ident: import_decl, ..
                     },
                     imports @ ..,
                     Syntax::Null { .. },
                 ],
-            ) if import_decl == "import" => {
-                Ok(ImportSpec {
-                    import_sets: todo!(), // imports.iter().map()
-                })
-            }
+            ) if import_decl == "import" => Ok(ImportSpec {
+                import_sets: imports
+                    .iter()
+                    .map(|import| ImportSet::parse(discard_for(import)))
+                    .collect::<Result<Vec<_>, _>>()?,
+            }),
             _ => Err(ParseAstError::ExpectedImportSpec(syn.span().clone())),
         }
+    }
+
+    pub fn join(&mut self, rhs: ImportSpec) {
+        self.import_sets.extend(rhs.import_sets);
+    }
+}
+
+fn discard_for(syn: &Syntax) -> &Syntax {
+    match syn.as_list() {
+        Some(
+            [
+                Syntax::Identifier { ident: for_kw, .. },
+                import_set,
+                _import_level @ ..,
+                Syntax::Null { .. },
+            ],
+        ) if for_kw == "for" => {
+            // We should eventually check the import levels for being well
+            // formed, even if we ignore them.
+            import_set
+        }
+        _ => syn,
     }
 }
 
@@ -471,22 +655,76 @@ impl ImportSet {
                     renames,
                 })
             }
-            Some([lib_ref, Syntax::Null { .. }]) => {
-                Ok(Self::Library(LibraryReference::parse(lib_ref)?))
-            }
-            _ => Err(todo!()),
+            Some(_) => Ok(Self::Library(LibraryReference::parse(syn)?)),
+            _ => Err(ParseAstError::ExpectedList(syn.span().clone())),
         }
+    }
+
+    pub fn from_str<'a>(s: &'a str) -> Result<Self, ParseImportSetError<'a>> {
+        let syn = Syntax::from_str(s, None)?;
+        Ok(Self::parse(&syn[0])?)
+    }
+}
+
+#[derive(Debug)]
+pub enum ParseImportSetError<'a> {
+    ParseSyntaxError(ParseSyntaxError<'a>),
+    ParseAstError(ParseAstError),
+}
+
+impl<'a> From<ParseSyntaxError<'a>> for ParseImportSetError<'a> {
+    fn from(pse: ParseSyntaxError<'a>) -> Self {
+        Self::ParseSyntaxError(pse)
+    }
+}
+
+impl From<ParseAstError> for ParseImportSetError<'_> {
+    fn from(pae: ParseAstError) -> Self {
+        Self::ParseAstError(pae)
     }
 }
 
 pub struct LibraryReference {
     pub(crate) name: Vec<Symbol>,
-    pub(crate) version_ref: VersionReference,
+    pub(crate) _version_ref: VersionReference,
 }
 
 impl LibraryReference {
     fn parse(syn: &Syntax) -> Result<Self, ParseAstError> {
-        todo!()
+        match syn.as_list() {
+            Some(
+                [
+                    syms @ ..,
+                    version_ref @ Syntax::List { .. },
+                    Syntax::Null { .. },
+                ],
+            ) => {
+                let name = syms
+                    .iter()
+                    .map(|atom| match atom {
+                        Syntax::Identifier { ident, .. } => Ok(ident.sym),
+                        _ => Err(ParseAstError::ExpectedIdentifier(atom.span().clone())),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let _version_ref = VersionReference::parse(version_ref)?;
+                Ok(LibraryReference { name, _version_ref })
+            }
+            Some([syms @ .., Syntax::Null { .. }]) => {
+                let name = syms
+                    .iter()
+                    .map(|atom| match atom {
+                        Syntax::Identifier { ident, .. } => Ok(ident.sym),
+                        _ => Err(ParseAstError::ExpectedIdentifier(atom.span().clone())),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(LibraryReference {
+                    name,
+                    _version_ref: VersionReference::SubVersions(Vec::new()),
+                })
+            }
+            None => Err(ParseAstError::ExpectedList(syn.span().clone())),
+            _ => Err(ParseAstError::BadForm(syn.span().clone())),
+        }
     }
 }
 

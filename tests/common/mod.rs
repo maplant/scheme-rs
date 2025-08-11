@@ -58,7 +58,7 @@ impl TestRuntime {
     }
 }
 
-#[bridge(name = "assert-eq", lib = "(base)")]
+#[bridge(name = "assert-eqv?", lib = "(test)")]
 pub async fn test_assert(arg1: &Value, arg2: &Value) -> Result<Vec<Value>, Condition> {
     if arg1 != arg2 {
         let arg1 = format!("{arg1:?}");

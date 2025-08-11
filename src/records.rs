@@ -76,7 +76,7 @@ pub static RECORD_TYPE_DESCRIPTOR_RTD: LazyLock<Arc<RecordTypeDescriptor>> = Laz
     })
 });
 
-#[bridge(name = "make-record-type-descriptor", lib = "(base)")]
+#[bridge(name = "make-record-type-descriptor", lib = "(rnrs base builtins (6))")]
 pub async fn make_record_type_descriptor(
     name: &Value,
     parent: &Value,
@@ -113,7 +113,7 @@ pub async fn make_record_type_descriptor(
     }))])
 }
 
-#[bridge(name = "record-type-descriptor?", lib = "(base)")]
+#[bridge(name = "record-type-descriptor?", lib = "(rnrs base builtins (6))")]
 pub async fn record_type_descriptor_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(
         obj.type_of() == ValueType::RecordTypeDescriptor,
@@ -167,7 +167,9 @@ pub fn make_record_constructor_descriptor<'a>(
         let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
         let parent_rcd = if parent_rcd.is_true() {
             let Some(parent_rtd) = rtd.inherits.last() else {
-                return Err(Condition::error("RTD is a base type".to_string()).into());
+                return Err(
+                    Condition::error("RTD is a rnrs base builtins (6) type".to_string()).into(),
+                );
             };
             let any: Gc<Gc<dyn Any>> = parent_rcd.clone().try_into()?;
             let parent_rcd: Gc<RecordConstructorDescriptor> = any
@@ -223,7 +225,7 @@ pub fn make_record_constructor_descriptor<'a>(
 inventory::submit! {
     BridgeFn::new(
         "make-record-constructor-descriptor",
-        "(base)",
+        "(rnrs base builtins (6))",
         3,
         false,
         make_record_constructor_descriptor,
@@ -288,7 +290,7 @@ pub fn record_constructor<'a>(
 inventory::submit! {
     BridgeFn::new(
         "record-constructor",
-        "(base)",
+        "(rnrs base builtins (6))",
         1,
         false,
         record_constructor,
@@ -631,7 +633,7 @@ pub fn record_predicate<'a>(
 inventory::submit! {
     BridgeFn::new(
         "record-predicate",
-        "(base)",
+        "(rnrs base builtins (6))",
         1,
         false,
         record_predicate,
@@ -721,7 +723,7 @@ pub fn record_accessor<'a>(
 inventory::submit! {
     BridgeFn::new(
         "record-accessor",
-        "(base)",
+        "(rnrs base builtins (6))",
         2,
         false,
         record_accessor,
@@ -811,7 +813,7 @@ pub fn record_mutator<'a>(
 inventory::submit! {
     BridgeFn::new(
         "record-mutator",
-        "(base)",
+        "(rnrs base builtins (6))",
         2,
         false,
         record_mutator,

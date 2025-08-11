@@ -1,9 +1,7 @@
 use std::{
-    collections::{HashMap, hash_map::Entry},
+    collections::HashMap,
     fmt,
     hash::{Hash, Hasher},
-    mem::ManuallyDrop,
-    ptr::NonNull,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
@@ -11,123 +9,13 @@ use futures::future::BoxFuture;
 
 use crate::{
     exception::Condition,
-    gc::{Gc, GcInner, Trace},
+    gc::{Gc, Trace},
     proc::Closure,
     registry::Library,
     symbols::Symbol,
     syntax::{Identifier, Mark},
     value::Value,
 };
-
-/*
-/// A Top level environment
-#[derive(Trace)]
-pub struct Top {
-    kind: TopLevelEnvKind,
-    vars: HashMap<Identifier, Gc<Value>>,
-    macros: HashMap<Identifier, Macro>,
-}
-
-#[derive(Trace)]
-pub enum TopLevelEnvKind {
-    Library,
-    Program,
-    Repl,
-}
-
-impl Top {
-    pub fn library() -> Self {
-        Self {
-            kind: TopLevelEnvKind::Library,
-            vars: HashMap::new(),
-            macros: HashMap::new(),
-        }
-    }
-
-    pub fn program() -> Self {
-        Self {
-            kind: TopLevelEnvKind::Program,
-            vars: HashMap::new(),
-            macros: HashMap::new(),
-        }
-    }
-
-    pub fn repl() -> Self {
-        Self {
-            kind: TopLevelEnvKind::Repl,
-            vars: HashMap::new(),
-            macros: HashMap::new(),
-        }
-    }
-
-    pub fn is_repl(&self) -> bool {
-        matches!(self.kind, TopLevelEnvKind::Repl)
-    }
-
-    pub fn import(&mut self, lib: &Top) {
-        for (name, val) in lib.vars.iter() {
-            self.vars.insert(name.clone(), val.clone());
-        }
-        for (name, mac) in lib.macros.iter() {
-            self.macros.insert(name.clone(), mac.clone());
-        }
-    }
-
-    pub fn def_var(&mut self, name: Identifier, value: Value) -> Global {
-        let global = Gc::new(value);
-        match self.vars.entry(name.clone()) {
-            Entry::Occupied(occup) => Global::new(name, occup.get().clone()),
-            Entry::Vacant(vacant) => Global::new(name, vacant.insert(global).clone()),
-        }
-    }
-
-    pub fn def_keyword(&mut self, name: Identifier, mac: Macro) {
-        self.macros.insert(name, mac);
-    }
-
-    pub fn fetch_var(&mut self, name: &Identifier) -> Option<Global> {
-        self.vars
-            .get(name)
-            .map(|val| Global::new(name.clone(), val.clone()))
-    }
-
-    pub fn fetch_keyword(&self, name: &Identifier) -> Option<Macro> {
-        self.macros.get(name).cloned()
-    }
-}
-
-impl fmt::Debug for Top {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Top")
-    }
-}
-*/
-
-/*
-/// A Top level environment
-pub trait Top: Send + Sync + 'static {
-    fn is_repl(&self) -> bool {
-        false
-    }
-
-    fn def_var(&mut self, name: Identifier, value: Value) -> Global;
-
-    fn def_keyword(&mut self, keyword: Identifier, mac: Macro);
-
-    fn fetch_var(&self, name: &Identifier) -> BoxFuture<'static, Option<Global>>;
-
-    fn fetch_keyword(&self, keyword: &Identifier) -> BoxFuture<'static, Option<Macro>>;
-}
-
-pub fn type_erase_top(top: Gc<impl Top>) -> Gc<dyn Top> {
-    let top = ManuallyDrop::new(top);
-    let top: NonNull<GcInner<dyn Top>> = top.ptr;
-    Gc {
-        ptr: top,
-        marker: std::marker::PhantomData,
-    }
-}
-*/
 
 #[derive(Trace)]
 pub struct LexicalContour {
@@ -644,9 +532,11 @@ impl fmt::Debug for Var {
     }
 }
 
-#[derive(Clone, Trace)]
+#[derive(Clone, Trace, derive_more::Debug)]
 pub struct Keyword {
+    #[debug(skip)]
     pub source_env: Environment,
+    #[debug(skip)]
     pub transformer: Gc<Closure>,
 }
 

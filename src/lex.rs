@@ -451,7 +451,7 @@ impl<'a> Token<'a> {
     }
 
     pub fn tokenize(s: &'a str, file_name: Option<&str>) -> Result<Vec<Self>, LexError<'a>> {
-        Self::tokenize_with_line_offset(s, file_name, 0)
+        Self::tokenize_with_line_offset(s, file_name, 1)
     }
 }
 

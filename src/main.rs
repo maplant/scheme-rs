@@ -6,7 +6,7 @@ use rustyline::{
     validate::{ValidationContext, ValidationResult, Validator},
 };
 use scheme_rs::{
-    ast::{DefinitionBody, ParseAstError},
+    ast::{DefinitionBody, ImportSet, ParseAstError},
     cps::Compile,
     env::Environment,
     exception::Exception,
@@ -44,6 +44,10 @@ struct InputHelper {
 async fn main() -> ExitCode {
     let runtime = Runtime::new();
     let repl = Library::new_repl(&runtime);
+
+    repl.import(ImportSet::from_str("(library (rnrs))").unwrap())
+        .await
+        .expect("Failed to import standard library");
 
     let config = Config::builder().auto_add_history(true).build();
     let mut editor = match Editor::with_history(config, DefaultHistory::new()) {

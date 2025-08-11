@@ -574,25 +574,25 @@ impl Hash for ReflexiveNumber {
     }
 }
 
-#[bridge(name = "zero?", lib = "(base)")]
+#[bridge(name = "zero?", lib = "(rnrs base builtins (6))")]
 pub async fn zero(arg: &Value) -> Result<Vec<Value>, Condition> {
     let num: Arc<Number> = arg.clone().try_into()?;
     Ok(vec![Value::from(num.is_zero())])
 }
 
-#[bridge(name = "even?", lib = "(base)")]
+#[bridge(name = "even?", lib = "(rnrs base builtins (6))")]
 pub async fn even(arg: &Value) -> Result<Vec<Value>, Condition> {
     let num: Arc<Number> = arg.clone().try_into()?;
     Ok(vec![Value::from(num.is_even())])
 }
 
-#[bridge(name = "odd?", lib = "(base)")]
+#[bridge(name = "odd?", lib = "(rnrs base builtins (6))")]
 pub async fn odd(arg: &Value) -> Result<Vec<Value>, Condition> {
     let num: Arc<Number> = arg.clone().try_into()?;
     Ok(vec![Value::from(num.is_odd())])
 }
 
-#[bridge(name = "+", lib = "(base)")]
+#[bridge(name = "+", lib = "(rnrs base builtins (6))")]
 pub async fn add_builtin(args: &[Value]) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(add(args)?)])
 }
@@ -606,7 +606,7 @@ pub(crate) fn add(vals: &[Value]) -> Result<Number, Condition> {
     Ok(result)
 }
 
-#[bridge(name = "-", lib = "(base)")]
+#[bridge(name = "-", lib = "(rnrs base builtins (6))")]
 pub async fn sub_builtin(arg1: &Value, args: &[Value]) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(sub(arg1, args)?)])
 }
@@ -625,7 +625,7 @@ pub(crate) fn sub(val1: &Value, vals: &[Value]) -> Result<Number, Condition> {
     }
 }
 
-#[bridge(name = "*", lib = "(base)")]
+#[bridge(name = "*", lib = "(rnrs base builtins (6))")]
 pub async fn mul_builtin(args: &[Value]) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(mul(args)?)])
 }
@@ -639,7 +639,7 @@ pub(crate) fn mul(vals: &[Value]) -> Result<Number, Condition> {
     Ok(result)
 }
 
-#[bridge(name = "/", lib = "(base)")]
+#[bridge(name = "/", lib = "(rnrs base builtins (6))")]
 pub async fn div_builtin(arg1: &Value, args: &[Value]) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(div(arg1, args)?)])
 }
@@ -657,7 +657,7 @@ pub(crate) fn div(val1: &Value, vals: &[Value]) -> Result<Number, Condition> {
     Ok(result)
 }
 
-#[bridge(name = "=", lib = "(base)")]
+#[bridge(name = "=", lib = "(rnrs base builtins (6))")]
 pub async fn equal_builtin(args: &[Value]) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(equal(args)?)])
 }
@@ -675,7 +675,7 @@ pub(crate) fn equal(vals: &[Value]) -> Result<bool, Condition> {
     Ok(true)
 }
 
-#[bridge(name = ">", lib = "(base)")]
+#[bridge(name = ">", lib = "(rnrs base builtins (6))")]
 pub async fn greater_builtin(args: &[Value]) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(greater(args)?)])
 }
@@ -705,7 +705,7 @@ pub(crate) fn greater(vals: &[Value]) -> Result<bool, Condition> {
     Ok(true)
 }
 
-#[bridge(name = ">=", lib = "(base)")]
+#[bridge(name = ">=", lib = "(rnrs base builtins (6))")]
 pub async fn greater_equal_builtin(args: &[Value]) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(greater_equal(args)?)])
 }
@@ -733,7 +733,7 @@ pub(crate) fn greater_equal(vals: &[Value]) -> Result<bool, Condition> {
     Ok(true)
 }
 
-#[bridge(name = "<", lib = "(base)")]
+#[bridge(name = "<", lib = "(rnrs base builtins (6))")]
 pub async fn lesser_builtin(args: &[Value]) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(lesser(args)?)])
 }
@@ -761,7 +761,7 @@ pub(crate) fn lesser(vals: &[Value]) -> Result<bool, Condition> {
     Ok(true)
 }
 
-#[bridge(name = "<=", lib = "(base)")]
+#[bridge(name = "<=", lib = "(rnrs base builtins (6))")]
 pub async fn lesser_equal_builtin(args: &[Value]) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(lesser_equal(args)?)])
 }
@@ -789,12 +789,12 @@ pub(crate) fn lesser_equal(vals: &[Value]) -> Result<bool, Condition> {
     Ok(true)
 }
 
-#[bridge(name = "number?", lib = "(base)")]
+#[bridge(name = "number?", lib = "(rnrs base builtins (6))")]
 pub async fn is_number(arg: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(arg.type_of() == ValueType::Number)])
 }
 
-#[bridge(name = "integer?", lib = "(base)")]
+#[bridge(name = "integer?", lib = "(rnrs base builtins (6))")]
 pub async fn is_integer(arg: &Value) -> Result<Vec<Value>, Condition> {
     let arg: Arc<Number> = match arg.clone().try_into() {
         Ok(arg) => arg,
@@ -806,7 +806,7 @@ pub async fn is_integer(arg: &Value) -> Result<Vec<Value>, Condition> {
     ))])
 }
 
-#[bridge(name = "rational?", lib = "(base)")]
+#[bridge(name = "rational?", lib = "(rnrs base builtins (6))")]
 pub async fn is_rational(arg: &Value) -> Result<Vec<Value>, Condition> {
     let arg: Arc<Number> = match arg.clone().try_into() {
         Ok(arg) => arg,
@@ -818,7 +818,7 @@ pub async fn is_rational(arg: &Value) -> Result<Vec<Value>, Condition> {
     ))])
 }
 
-#[bridge(name = "real?", lib = "(base)")]
+#[bridge(name = "real?", lib = "(rnrs base builtins (6))")]
 pub async fn is_real(arg: &Value) -> Result<Vec<Value>, Condition> {
     let arg: Arc<Number> = match arg.clone().try_into() {
         Ok(arg) => arg,
@@ -827,7 +827,7 @@ pub async fn is_real(arg: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(matches!(arg.as_ref(), Number::Real(_)))])
 }
 
-#[bridge(name = "complex?", lib = "(base)")]
+#[bridge(name = "complex?", lib = "(rnrs base builtins (6))")]
 pub async fn is_complex(arg: &Value) -> Result<Vec<Value>, Condition> {
     let arg: Arc<Number> = match arg.clone().try_into() {
         Ok(arg) => arg,
