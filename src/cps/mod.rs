@@ -226,10 +226,10 @@ impl Cps {
 }
 
 fn substitute_value(value: &mut Value, substitutions: &HashMap<Local, Value>) {
-    if let Some(local) = value.to_local() {
-        if let Some(substitution) = substitutions.get(&local) {
-            *value = substitution.clone();
-        }
+    if let Some(local) = value.to_local()
+        && let Some(substitution) = substitutions.get(&local)
+    {
+        *value = substitution.clone();
     }
 }
 

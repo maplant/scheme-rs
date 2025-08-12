@@ -60,7 +60,7 @@ impl Cps {
             } => {
                 let mut free_body = body.free_variables();
                 for arg in args.iter() {
-                    free_body.remove(&arg);
+                    free_body.remove(arg);
                 }
                 let mut free_variables: HashSet<_> =
                     free_body.union(&cexp.free_variables()).copied().collect();

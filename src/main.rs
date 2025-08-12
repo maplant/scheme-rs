@@ -45,7 +45,7 @@ async fn main() -> ExitCode {
     let runtime = Runtime::new();
     let repl = Library::new_repl(&runtime);
 
-    repl.import(ImportSet::from_str("(library (rnrs))").unwrap())
+    repl.import(ImportSet::parse_from_str("(library (rnrs))").unwrap())
         .await
         .expect("Failed to import standard library");
 

@@ -162,6 +162,7 @@ impl RegistryInner {
                     ("syntax", SpecialKeyword::Syntax),
                     ("set!", SpecialKeyword::Set),
                     ("define", SpecialKeyword::Define),
+                    ("define-syntax", SpecialKeyword::DefineSyntax),
                     ("import", SpecialKeyword::Import),
                     ("$call/cc", SpecialKeyword::CallWithCurrentContinuation),
                     ("$undefined", SpecialKeyword::Undefined),
@@ -185,7 +186,7 @@ impl RegistryInner {
                     kind: LibraryKind::Libary {
                         name: LibraryName {
                             version: Version::from([6]),
-                            name: name,
+                            name,
                         },
                         path: None,
                     },
@@ -301,7 +302,7 @@ impl Registry {
 
         // Load the library and insert it into the registry.
         self.mark_as_loading(name);
-        const DEFAULT_LOAD_PATH: &'static str = "~/.gouki";
+        const DEFAULT_LOAD_PATH: &str = "~/.gouki";
 
         // Get the suffix:
         let path_suffix = name.iter().copied().map(Symbol::to_str).collect::<Vec<_>>();
@@ -328,14 +329,14 @@ impl Registry {
                             return Err(ImportError::LibraryNotFound);
                         };
                         let contents = std::str::from_utf8(&lib.data).unwrap();
-                        let syntax = Syntax::from_str(&contents, Some(&file_name))
+                        let syntax = Syntax::from_str(contents, Some(&file_name))
                             .map_err(|err| ImportError::ParseSyntaxError(format!("{err:?}")))?;
                         let [syntax] = syntax.as_slice() else {
                             unreachable!()
                         };
                         let spec =
                             LibrarySpec::parse(syntax).map_err(ImportError::ParseAstError)?;
-                        Library::from_spec(&rt, spec, path).await?
+                        Library::from_spec(rt, spec, PathBuf::from(file_name)).await?
                     }
                     x => return x,
                 }
@@ -353,8 +354,7 @@ impl Registry {
         &'a self,
         rt: &'b Runtime,
         import_set: ImportSet,
-    ) -> BoxFuture<'b, Result<Box<dyn Iterator<Item = (Identifier, Import)> + 'b>, ImportError>>
-    {
+    ) -> ImportIterFuture<'a, 'b> {
         Box::pin(async move {
             match import_set {
                 ImportSet::Library(lib) => {
@@ -413,13 +413,16 @@ impl Registry {
     }
 }
 
+type ImportIterFuture<'a, 'b> =
+    BoxFuture<'b, Result<Box<dyn Iterator<Item = (Identifier, Import)> + 'b>, ImportError>>;
+
 async fn load_lib_from_dir(
     rt: &Runtime,
     path: &Path,
     path_suffix: &str,
 ) -> Result<Library, ImportError> {
     for ext in ["sls", "ss", "scm"] {
-        let path = path.join(&format!("{path_suffix}.{ext}"));
+        let path = path.join(format!("{path_suffix}.{ext}"));
         if let Ok(false) = tokio::fs::try_exists(&path).await {
             continue;
         }
@@ -431,7 +434,7 @@ async fn load_lib_from_dir(
             panic!("Has to be one item");
         };
         let spec = LibrarySpec::parse(syntax).unwrap();
-        return Library::from_spec(&rt, spec, path).await;
+        return Library::from_spec(rt, spec, path).await;
     }
 
     Err(ImportError::LibraryNotFound)
@@ -715,7 +718,7 @@ impl Library {
         if let Some(var) = this.vars.get(name) {
             let var = var.clone();
             // Fetching this every time is kind of slow.
-            let mutable = !this.exports.contains_key(&name);
+            let mutable = !this.exports.contains_key(name);
             return Box::pin(async move { Ok(Some(Global::new(name.clone(), var, mutable))) });
         }
 
@@ -766,9 +769,7 @@ impl Library {
         }
 
         // Check our imports:
-        let Some(Import { origin, rename }) = this.imports.get(keyword) else {
-            return None;
-        };
+        let Import { origin, rename } = this.imports.get(keyword)?;
 
         let rename = rename.clone();
         let import = origin.clone();

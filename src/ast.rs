@@ -148,7 +148,7 @@ impl LibrarySpec {
                 }
                 let mut exports = ExportSpec::default();
                 let mut imports = ImportSpec::default();
-                let mut body = &body[..];
+                let mut body = body;
                 while let Some(spec) = body.first() {
                     if spec.has_car("export") {
                         exports.join(ExportSpec::parse(spec).unwrap());
@@ -297,7 +297,7 @@ impl VersionReference {
             ) if kw == "and" => {
                 let version_refs = version_refs
                     .iter()
-                    .map(|vref| VersionReference::parse(vref))
+                    .map(VersionReference::parse)
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(Self::And(version_refs))
             }
@@ -310,7 +310,7 @@ impl VersionReference {
             ) if kw == "or" => {
                 let version_refs = version_refs
                     .iter()
-                    .map(|vref| VersionReference::parse(vref))
+                    .map(VersionReference::parse)
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(Self::Or(version_refs))
             }
@@ -327,7 +327,7 @@ impl VersionReference {
             Some([subversion_refs @ .., Syntax::Null { .. }]) => {
                 let subversion_refs = subversion_refs
                     .iter()
-                    .map(|svref| SubVersionReference::parse(svref))
+                    .map(SubVersionReference::parse)
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(Self::SubVersions(subversion_refs))
             }
@@ -398,7 +398,7 @@ impl SubVersionReference {
                 ) if kw == "and" => {
                     let subversion_refs = subversion_refs
                         .iter()
-                        .map(|svref| SubVersionReference::parse(svref))
+                        .map(SubVersionReference::parse)
                         .collect::<Result<Vec<_>, _>>()?;
                     Ok(Self::And(subversion_refs))
                 }
@@ -411,7 +411,7 @@ impl SubVersionReference {
                 ) if kw == "or" => {
                     let subversion_refs = subversion_refs
                         .iter()
-                        .map(|svref| SubVersionReference::parse(svref))
+                        .map(SubVersionReference::parse)
                         .collect::<Result<Vec<_>, _>>()?;
                     Ok(Self::Or(subversion_refs))
                 }
@@ -696,7 +696,7 @@ impl ImportSet {
         }
     }
 
-    pub fn from_str<'a>(s: &'a str) -> Result<Self, ParseImportSetError<'a>> {
+    pub fn parse_from_str<'a>(s: &'a str) -> Result<Self, ParseImportSetError<'a>> {
         let syn = Syntax::from_str(s, None)?;
         Ok(Self::parse(&syn[0])?)
     }
@@ -1106,13 +1106,13 @@ impl Expression {
                         Some(Either::Left(SpecialKeyword::Import)) => todo!(),
                         Some(Either::Left(SpecialKeyword::DefineSyntax)) => unreachable!(),
                         Some(Either::Left(SpecialKeyword::Define)) => {
-                            return Err(ParseAstError::UnexpectedDefinition(span.clone()));
+                            Err(ParseAstError::UnexpectedDefinition(span.clone()))
                         }
                         None => {
-                            return Err(ParseAstError::UndefinedVariable {
+                            Err(ParseAstError::UndefinedVariable {
                                 span: span.clone(),
                                 ident: ident.clone(),
-                            });
+                            })
                         }
                         _ => Err(ParseAstError::BadForm(span.clone())),
                     },
@@ -1283,7 +1283,7 @@ impl Lambda {
                 parse_lambda(runtime, args, body, env, span).await
             }
             [ident @ Syntax::Identifier { .. }, body @ ..] => {
-                let args = &[ident.clone()];
+                let args = std::slice::from_ref(ident);
                 parse_lambda(runtime, args, body, env, span).await
             }
             _ => Err(ParseAstError::BadForm(span.clone())),
@@ -1688,7 +1688,6 @@ impl DefinitionBody {
             }
 
             for expr in exprs.into_iter() {
-                // let new_expansion_env = env.push_expansion_env(expr.expansion_ctxs);
                 exprs_parsed.push(
                     Expression::parse_expanded(runtime, expr.expanded, &expr.expansion_env).await?,
                 );
@@ -1754,6 +1753,61 @@ fn splice_in<'a>(
                 expanded,
             } = unexpanded.clone().expand(env).await?;
             let is_def = {
+                if let Some(
+                    [
+                        Syntax::Identifier { ident, span, .. },
+                        tail @ ..,
+                        Syntax::Null { .. },
+                    ],
+                ) = expanded.as_list()
+                {
+                    let keyword = expansion_env.fetch_special_keyword_or_var(ident).await?;
+                    match (keyword, tail) {
+                        (Some(Either::Left(SpecialKeyword::Begin)), body) => {
+                            splice_in(runtime, permissive, body, &expansion_env, span, defs, exprs)
+                                .await?;
+                            continue;
+                        }
+                        (
+                            Some(Either::Left(SpecialKeyword::DefineSyntax)),
+                            [Syntax::Identifier { ident: name, .. }, expr],
+                        ) => {
+                            define_syntax(runtime, name.clone(), expr.clone(), &expansion_env)
+                                .await?;
+                            continue;
+                        }
+                        (Some(Either::Left(SpecialKeyword::DefineSyntax)), _) => {
+                            return Err(ParseAstError::BadForm(span.clone()));
+                        }
+                        (Some(Either::Left(SpecialKeyword::LetSyntax)), [bindings, form @ ..]) => {
+                            let new_env =
+                                parse_let_syntax(runtime, false, bindings, &expansion_env).await?;
+                            splice_in(runtime, permissive, form, &new_env, span, defs, exprs)
+                                .await?;
+                            continue;
+                        }
+                        (
+                            Some(Either::Left(SpecialKeyword::LetRecSyntax)),
+                            [bindings, form @ ..],
+                        ) => {
+                            let new_env =
+                                parse_let_syntax(runtime, true, bindings, &expansion_env).await?;
+                            splice_in(runtime, permissive, form, &new_env, span, defs, exprs)
+                                .await?;
+                            continue;
+                        }
+                        (Some(Either::Left(SpecialKeyword::Define)), _) => {
+                            if !permissive && !exprs.is_empty() {
+                                return Err(ParseAstError::UnexpectedDefinition(span.clone()));
+                            }
+                            true
+                        }
+                        _ => false,
+                    }
+                } else {
+                    false
+                }
+                /*
                 match expanded.as_list() {
                     Some(
                         [
@@ -1827,6 +1881,7 @@ fn splice_in<'a>(
                     }
                     _ => false,
                 }
+                 */
             };
 
             let expanded = FullyExpanded::new(expansion_env, expanded);

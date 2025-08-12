@@ -32,10 +32,10 @@ pub async fn char_to_integer(ch: &Value) -> Result<Vec<Value>, Condition> {
 pub async fn integer_to_char(int: &Value) -> Result<Vec<Value>, Condition> {
     let int: Arc<Number> = int.clone().try_into()?;
     let int: usize = int.as_ref().try_into()?;
-    if let Ok(int) = <usize as TryInto<u32>>::try_into(int) {
-        if let Some(ch) = char::from_u32(int) {
-            return Ok(vec![Value::from(ch)]);
-        }
+    if let Ok(int) = <usize as TryInto<u32>>::try_into(int)
+        && let Some(ch) = char::from_u32(int)
+    {
+        return Ok(vec![Value::from(ch)]);
     }
 
     // char->integer returns a number larger than 0x10FFFF if integer is not an unicode scalar
