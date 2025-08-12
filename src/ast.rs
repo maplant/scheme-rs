@@ -47,13 +47,18 @@ pub enum ParseAstError {
     UnexpectedDefinition(Span),
     UnexpectedEmptyList(Span),
 
+    CannotSetImmutableVar {
+        span: Span,
+        name: Identifier,
+    },
     NumberToUsizeError {
         span: Span,
         error: NumberToUsizeError,
     },
-
-    UndefinedVariable(Identifier),
-
+    UndefinedVariable {
+        span: Span,
+        ident: Identifier,
+    },
     ParentSpecifiedMultipleTimes {
         first: Span,
         second: Span,
@@ -89,6 +94,29 @@ impl From<Condition> for ParseAstError {
     fn from(raised: Condition) -> Self {
         Self::RaisedValue(Value::from(raised))
     }
+}
+
+/// Special keywords are keywords that the compiler needs to know about in order
+/// to create an AST.
+#[derive(Copy, Clone, Trace, Debug)]
+pub enum SpecialKeyword {
+    Undefined,
+    Begin,
+    Lambda,
+    Let,
+    LetSyntax,
+    LetRecSyntax,
+    If,
+    And,
+    Or,
+    Quote,
+    Syntax,
+    SyntaxCase,
+    Set,
+    Define,
+    DefineSyntax,
+    Import,
+    CallWithCurrentContinuation,
 }
 
 pub struct LibrarySpec {
@@ -238,6 +266,14 @@ impl Version {
                 Ok(Self { version: version? })
             }
             _ => Err(ParseAstError::BadForm(span.clone())),
+        }
+    }
+}
+
+impl<const N: usize> From<[usize; N]> for Version {
+    fn from(value: [usize; N]) -> Self {
+        Self {
+            version: Vec::from(value),
         }
     }
 }
@@ -942,7 +978,7 @@ impl Expression {
             expansion_env,
             expanded,
         } = syn.expand(env).await?;
-        Self::parse_expanded(runtime, expanded, &expansion_env /* cont*/).await
+        Self::parse_expanded(runtime, expanded, &expansion_env).await
     }
 
     fn parse_expanded<'a>(
@@ -954,23 +990,27 @@ impl Expression {
             match syn {
                 Syntax::Null { span } => Err(ParseAstError::UnexpectedEmptyList(span)),
 
-                // Special Identifiers:
-                Syntax::Identifier { ident, .. } if ident.sym == "<undefined>" => {
-                    Ok(Self::Undefined)
-                }
-
                 // Regular identifiers:
-                Syntax::Identifier { ident, .. } => Ok(Self::Var(
-                    env.fetch_var(&ident)
-                        .await?
-                        .or_else(|| {
+                Syntax::Identifier { ident, span, .. } => {
+                    match env.fetch_special_keyword_or_var(&ident).await? {
+                        Some(Either::Left(SpecialKeyword::Undefined)) => Ok(Self::Undefined),
+                        Some(Either::Left(_)) => Err(ParseAstError::BadForm(span.clone())),
+                        Some(Either::Right(var)) => Ok(Self::Var(var)),
+                        None => {
                             let top = env.fetch_top();
-                            top.is_repl().then(|| {
-                                Var::Global(top.def_var(ident.clone(), Value::undefined()))
-                            })
-                        })
-                        .ok_or_else(|| ParseAstError::UndefinedVariable(ident.clone()))?,
-                )),
+                            if top.is_repl() {
+                                Ok(Self::Var(Var::Global(
+                                    top.def_var(ident.clone(), Value::undefined()),
+                                )))
+                            } else {
+                                Err(ParseAstError::UndefinedVariable {
+                                    span: span.clone(),
+                                    ident: ident.clone(),
+                                })
+                            }
+                        }
+                    }
+                }
 
                 // Literals:
                 Syntax::Literal { literal, .. } => Ok(Self::Literal(literal)),
@@ -985,116 +1025,108 @@ impl Expression {
                 } => match exprs.as_slice() {
                     // Special forms:
                     [
-                        Syntax::Identifier { ident, bound, .. },
+                        Syntax::Identifier { ident, span, .. },
                         tail @ ..,
                         Syntax::Null { .. },
-                    ] if ident == "begin" && !bound => ExprBody::parse(runtime, tail, env)
-                        .await
-                        .map(Expression::Begin),
-                    [
-                        Syntax::Identifier { ident, span, bound },
-                        tail @ ..,
-                        Syntax::Null { .. },
-                    ] if ident == "lambda" && !bound => Lambda::parse(runtime, tail, env, span)
-                        .await
-                        .map(Expression::Lambda),
-                    [
-                        Syntax::Identifier { ident, span, bound },
-                        tail @ ..,
-                        Syntax::Null { .. },
-                    ] if ident == "let" && !bound => Let::parse(runtime, tail, env, span)
-                        .await
-                        .map(Expression::Let),
-                    [
-                        Syntax::Identifier { ident, bound, .. },
-                        bindings,
-                        tail @ ..,
-                        Syntax::Null { .. },
-                    ] if ident == "let-syntax" && !bound => {
-                        let new_env = parse_let_syntax(runtime, false, bindings, env).await?;
-                        ExprBody::parse(runtime, tail, &new_env)
-                            .await
-                            .map(Expression::Begin)
-                    }
-                    [
-                        Syntax::Identifier { ident, bound, .. },
-                        bindings,
-                        tail @ ..,
-                        Syntax::Null { .. },
-                    ] if ident == "letrec-syntax" && !bound => {
-                        let new_env = parse_let_syntax(runtime, true, bindings, env).await?;
-                        ExprBody::parse(runtime, tail, &new_env)
-                            .await
-                            .map(Expression::Begin)
-                    }
-                    [
-                        Syntax::Identifier { ident, span, bound },
-                        tail @ ..,
-                        Syntax::Null { .. },
-                    ] if ident == "if" && !bound => If::parse(runtime, tail, env, span)
-                        .await
-                        .map(Expression::If),
-                    [
-                        Syntax::Identifier { ident, bound, .. },
-                        tail @ ..,
-                        Syntax::Null { .. },
-                    ] if ident == "and" && !bound => {
-                        And::parse(runtime, tail, env).await.map(Expression::And)
-                    }
-                    [
-                        Syntax::Identifier { ident, bound, .. },
-                        tail @ ..,
-                        Syntax::Null { .. },
-                    ] if ident == "or" && !bound => {
-                        Or::parse(runtime, tail, env).await.map(Expression::Or)
-                    }
-                    [Syntax::Identifier { ident, span, bound }, tail @ ..]
-                        if ident == "quote" && !bound =>
-                    {
-                        Quote::parse(tail, span).await.map(Expression::Quote)
-                    }
-                    [Syntax::Identifier { ident, span, bound }, tail @ ..]
-                        if ident == "syntax" && !bound =>
-                    {
-                        SyntaxQuote::parse(tail, span)
-                            .await
-                            .map(Expression::SyntaxQuote)
-                    }
-                    [
-                        Syntax::Identifier { ident, span, bound },
-                        tail @ ..,
-                        Syntax::Null { .. },
-                    ] if ident == "syntax-case" && !bound => {
-                        SyntaxCase::parse(runtime, tail, env, span)
-                            .await
-                            .map(Expression::SyntaxCase)
-                    }
-
-                    // Extra special form (set!):
-                    [
-                        Syntax::Identifier { ident, span, bound },
-                        tail @ ..,
-                        Syntax::Null { .. },
-                    ] if ident == "set!" && !bound => Set::parse(runtime, tail, env, span)
-                        .await
-                        .map(Expression::Set),
-
-                    // Definition in expression context is illegal:
-                    [
-                        Syntax::Identifier { ident, span, bound },
-                        ..,
-                        Syntax::Null { .. },
-                    ] if !bound && ident == "define" => {
-                        Err(ParseAstError::UnexpectedDefinition(span.clone()))
-                    }
-
-                    // Regular old function call:
-                    [operator, args @ .., Syntax::Null { .. }] => {
-                        Apply::parse(runtime, operator.clone(), args, env)
+                    ] => match env.fetch_special_keyword_or_var(ident).await? {
+                        Some(Either::Left(SpecialKeyword::Begin)) => {
+                            ExprBody::parse(runtime, tail, env)
+                                .await
+                                .map(Expression::Begin)
+                        }
+                        Some(Either::Left(SpecialKeyword::Lambda)) => {
+                            Lambda::parse(runtime, tail, env, span)
+                                .await
+                                .map(Expression::Lambda)
+                        }
+                        Some(Either::Left(SpecialKeyword::Let)) => {
+                            Let::parse(runtime, tail, env, span)
+                                .await
+                                .map(Expression::Let)
+                        }
+                        Some(Either::Left(SpecialKeyword::If)) => {
+                            If::parse(runtime, tail, env, span)
+                                .await
+                                .map(Expression::If)
+                        }
+                        Some(Either::Left(SpecialKeyword::And)) => {
+                            And::parse(runtime, tail, env).await.map(Expression::And)
+                        }
+                        Some(Either::Left(SpecialKeyword::Or)) => {
+                            Or::parse(runtime, tail, env).await.map(Expression::Or)
+                        }
+                        Some(Either::Left(SpecialKeyword::Quote)) => {
+                            Quote::parse(tail, span).map(Expression::Quote)
+                        }
+                        Some(Either::Left(SpecialKeyword::Syntax)) => {
+                            SyntaxQuote::parse(tail, span).map(Expression::SyntaxQuote)
+                        }
+                        Some(Either::Left(SpecialKeyword::SyntaxCase)) => {
+                            SyntaxCase::parse(runtime, tail, env, span)
+                                .await
+                                .map(Expression::SyntaxCase)
+                        }
+                        Some(Either::Left(SpecialKeyword::Set)) => {
+                            Set::parse(runtime, tail, env, span)
+                                .await
+                                .map(Expression::Set)
+                        }
+                        Some(Either::Left(SpecialKeyword::LetSyntax)) if tail.len() > 1 => {
+                            let new_env = parse_let_syntax(runtime, false, &tail[0], env).await?;
+                            ExprBody::parse(runtime, &tail[1..], &new_env)
+                                .await
+                                .map(Expression::Begin)
+                        }
+                        Some(Either::Left(SpecialKeyword::LetRecSyntax)) if tail.len() > 1 => {
+                            let new_env = parse_let_syntax(runtime, true, &tail[0], env).await?;
+                            ExprBody::parse(runtime, &tail[1..], &new_env)
+                                .await
+                                .map(Expression::Begin)
+                        }
+                        Some(Either::Left(SpecialKeyword::CallWithCurrentContinuation)) => {
+                            Apply::parse(
+                                runtime,
+                                Either::Right(PrimOp::CallWithCurrentContinuation),
+                                tail,
+                                env,
+                                span,
+                            )
                             .await
                             .map(Expression::Apply)
-                    }
-
+                        }
+                        Some(Either::Right(var)) => Apply::parse(
+                            runtime,
+                            Either::Left(Box::new(Expression::Var(var))),
+                            tail,
+                            env,
+                            span,
+                        )
+                        .await
+                        .map(Expression::Apply),
+                        Some(Either::Left(SpecialKeyword::Import)) => todo!(),
+                        Some(Either::Left(SpecialKeyword::DefineSyntax)) => unreachable!(),
+                        Some(Either::Left(SpecialKeyword::Define)) => {
+                            return Err(ParseAstError::UnexpectedDefinition(span.clone()));
+                        }
+                        None => {
+                            return Err(ParseAstError::UndefinedVariable {
+                                span: span.clone(),
+                                ident: ident.clone(),
+                            });
+                        }
+                        _ => Err(ParseAstError::BadForm(span.clone())),
+                    },
+                    [expr, args @ .., Syntax::Null { .. }] => Apply::parse(
+                        runtime,
+                        Either::Left(Box::new(
+                            Expression::parse(runtime, expr.clone(), env).await?,
+                        )),
+                        args,
+                        env,
+                        expr.span(),
+                    )
+                    .await
+                    .map(Expression::Apply),
                     _ => Err(ParseAstError::BadForm(span.clone())),
                 },
             }
@@ -1151,14 +1183,13 @@ pub struct Quote {
 }
 
 impl Quote {
-    async fn parse(exprs: &[Syntax], span: &Span) -> Result<Self, ParseAstError> {
+    fn parse(exprs: &[Syntax], span: &Span) -> Result<Self, ParseAstError> {
         match exprs {
             [] => Err(ParseAstError::ExpectedArgument(span.clone())),
-            [expr, Syntax::Null { .. }] => Ok(Quote {
+            [expr] => Ok(Quote {
                 val: Value::datum_from_syntax(expr),
             }),
             [_, arg, ..] => Err(ParseAstError::UnexpectedArgument(arg.span().clone())),
-            _ => Err(ParseAstError::BadForm(span.clone())),
         }
     }
 }
@@ -1169,12 +1200,11 @@ pub struct SyntaxQuote {
 }
 
 impl SyntaxQuote {
-    async fn parse(exprs: &[Syntax], span: &Span) -> Result<Self, ParseAstError> {
+    fn parse(exprs: &[Syntax], span: &Span) -> Result<Self, ParseAstError> {
         match exprs {
             [] => Err(ParseAstError::ExpectedArgument(span.clone())),
-            [expr, Syntax::Null { .. }] => Ok(SyntaxQuote { syn: expr.clone() }),
+            [expr] => Ok(SyntaxQuote { syn: expr.clone() }),
             [_, arg, ..] => Err(ParseAstError::UnexpectedArgument(arg.span().clone())),
-            _ => Err(ParseAstError::BadForm(span.clone())),
         }
     }
 }
@@ -1187,6 +1217,7 @@ pub struct Apply {
 }
 
 impl Apply {
+    /*
     async fn parse(
         runtime: &Runtime,
         operator: Syntax,
@@ -1209,6 +1240,25 @@ impl Apply {
             operator,
             args: parsed_args,
             span,
+        })
+    }
+     */
+
+    async fn parse(
+        rt: &Runtime,
+        operator: Either<Box<Expression>, PrimOp>,
+        args: &[Syntax],
+        env: &Environment,
+        span: &Span,
+    ) -> Result<Self, ParseAstError> {
+        let mut parsed_args = Vec::new();
+        for arg in args {
+            parsed_args.push(Expression::parse(rt, arg.clone(), env).await?);
+        }
+        Ok(Apply {
+            operator,
+            args: parsed_args,
+            span: span.clone(),
         })
     }
 }
@@ -1482,11 +1532,22 @@ impl Set {
     ) -> Result<Self, ParseAstError> {
         match exprs {
             [] => Err(ParseAstError::ExpectedArgument(span.clone())),
-            [Syntax::Identifier { ident, .. }, expr] => Ok(Set {
-                var: env
-                    .fetch_var(ident)
-                    .await?
-                    .ok_or_else(|| ParseAstError::UndefinedVariable(ident.clone()))?,
+            [Syntax::Identifier { ident, span, .. }, expr] => Ok(Set {
+                var: match env.fetch_var(ident).await? {
+                    Some(Var::Global(global)) if !global.mutable => {
+                        return Err(ParseAstError::CannotSetImmutableVar {
+                            span: span.clone(),
+                            name: ident.clone(),
+                        });
+                    }
+                    Some(var) => var,
+                    None => {
+                        return Err(ParseAstError::UndefinedVariable {
+                            span: span.clone(),
+                            ident: ident.clone(),
+                        });
+                    }
+                },
                 val: Arc::new(Expression::parse(runtime, expr.clone(), env).await?),
             }),
             [arg1, _] => Err(ParseAstError::ExpectedIdentifier(arg1.span().clone())),

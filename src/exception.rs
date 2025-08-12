@@ -9,7 +9,7 @@ use crate::{
     registry::{BridgeFn, BridgeFnDebugInfo},
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
-    syntax::{Identifier, Span},
+    syntax::{Identifier, Span, Syntax},
     value::Value,
 };
 use std::{error::Error as StdError, fmt, ops::Range, sync::Arc};
@@ -71,11 +71,10 @@ impl Condition {
         Self::Message { message }
     }
 
-    pub fn syntax_error() -> Self {
-        // TODO: Expand on these
+    pub fn syntax_error(form: Syntax, subform: Option<Syntax>) -> Self {
         Self::Syntax {
-            form: Value::null(),
-            subform: Value::from(false),
+            form: Value::from(form),
+            subform: subform.map(Value::from).unwrap_or_else(|| Value::from(false)),
         }
     }
 

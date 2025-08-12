@@ -5,9 +5,11 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+use either::Either;
 use futures::future::BoxFuture;
 
 use crate::{
+    ast::SpecialKeyword,
     exception::Condition,
     gc::{Gc, Trace},
     proc::Closure,
@@ -56,6 +58,18 @@ impl LexicalContour {
         let up = self.up.clone();
         Box::pin(async move { up.fetch_var(name).await })
     }
+
+    pub fn fetch_special_keyword_or_var<'a>(
+        &self,
+        name: &'a Identifier,
+    ) -> BoxFuture<'a, Result<Option<Either<SpecialKeyword, Var>>, Condition>> {
+        if let Some(local) = self.vars.get(name) {
+            let local = *local;
+            return Box::pin(async move { Ok(Some(Either::Right(Var::Local(local)))) });
+        }
+        let up = self.up.clone();
+        Box::pin(async move { up.fetch_special_keyword_or_var(name).await })
+    }   
 
     pub fn fetch_local(&self, name: &Identifier) -> Option<Local> {
         if let Some(local) = self.vars.get(name) {
@@ -128,6 +142,14 @@ impl LetSyntaxContour {
     ) -> BoxFuture<'a, Result<Option<Var>, Condition>> {
         let up = self.up.clone();
         Box::pin(async move { up.fetch_var(name).await })
+    }
+
+    pub fn fetch_special_keyword_or_var<'a>(
+        &self,
+        name: &'a Identifier,
+    ) -> BoxFuture<'a, Result<Option<Either<SpecialKeyword, Var>>, Condition>> {
+        let up = self.up.clone();
+        Box::pin(async move { up.fetch_special_keyword_or_var(name).await })
     }
 
     pub fn fetch_local(&self, name: &Identifier) -> Option<Local> {
@@ -257,6 +279,31 @@ impl MacroExpansion {
         })
     }
 
+    pub fn fetch_special_keyword_or_var<'a>(
+        &self,
+        name: &'a Identifier,
+    ) -> BoxFuture<'a, Result<Option<Either<SpecialKeyword, Var>>, Condition>> {
+        let up = self.up.clone();
+        let source = self.source.clone();
+        let mark = self.mark;
+        Box::pin(async move {
+            // Attempt to check the up scope first:
+            let var = up.fetch_special_keyword_or_var(name).await?;
+            if var.is_some() {
+                return Ok(var);
+            }
+            // If the current expansion context contains the mark, remove it and check the
+            // expansion source scope.
+            if name.marks.contains(&mark) {
+                let mut unmarked = name.clone();
+                unmarked.mark(mark);
+                source.fetch_special_keyword_or_var(&unmarked).await
+            } else {
+                Ok(None)
+            }
+        })
+    }
+
     pub fn fetch_top(&self) -> Library {
         self.up.fetch_top()
     }
@@ -349,6 +396,34 @@ impl Environment {
                 let fetch_fut = { me.read().fetch_keyword(name) };
                 fetch_fut.await
             }
+        }
+    }
+
+    pub async fn fetch_special_keyword_or_var(
+        &self,
+        name: &Identifier,
+    ) -> Result<Option<Either<SpecialKeyword, Var>>, Condition> {
+        match self {
+            Self::Top(top) => {
+                if let Some(var) = top.fetch_var(name).await? {
+                    return Ok(Some(Either::Right(Var::Global(var))));
+                }
+                Ok(top
+                    .fetch_special_keyword(name)
+                    .map(Either::Left))
+            },
+            Self::LexicalContour(lex) => {
+                let fetch_fut = { lex.read().fetch_special_keyword_or_var(name) };
+                fetch_fut.await
+            }
+            Self::LetSyntaxContour(ls) => {
+                let fetch_fut = { ls.read().fetch_special_keyword_or_var(name) };
+                fetch_fut.await
+            }
+            Self::MacroExpansion(me) => {
+                let fetch_fut = { me.read().fetch_special_keyword_or_var(name) };
+                fetch_fut.await
+            }            
         }
     }
 
@@ -466,8 +541,8 @@ impl fmt::Debug for Local {
 #[derive(Clone, Trace)]
 pub struct Global {
     pub(crate) name: Identifier,
-    val: Gc<Value>,
-    mutable: bool,
+    pub(crate) val: Gc<Value>,
+    pub(crate) mutable: bool,
 }
 
 impl Global {

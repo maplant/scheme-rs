@@ -4,6 +4,9 @@
 ;; given in the r6rs spec and runs them, asserting the values to
 ;; be the ones given in the spec.
 
+(import (rnrs)
+        (test))
+
 ;; 1.2. Expressions
 
 ;; The following are omitted because they don't really show anything:

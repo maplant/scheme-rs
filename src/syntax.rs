@@ -526,13 +526,13 @@ impl Syntax {
     }
 }
 
-#[bridge(name = "syntax->datum", lib = "(rnrs base builtins (6))")]
+#[bridge(name = "syntax->datum", lib = "(rnrs syntax-case builtins (6))")]
 pub async fn syntax_to_datum(syn: &Value) -> Result<Vec<Value>, Condition> {
     let syn: Arc<Syntax> = syn.clone().try_into()?;
     Ok(vec![Value::datum_from_syntax(syn.as_ref())])
 }
 
-#[bridge(name = "datum->syntax", lib = "(rnrs base builtins (6))")]
+#[bridge(name = "datum->syntax", lib = "(rnrs syntax-case builtins (6))")]
 pub async fn datum_to_syntax(template_id: &Value, datum: &Value) -> Result<Vec<Value>, Condition> {
     let syntax: Arc<Syntax> = template_id.clone().try_into()?;
     let Syntax::Identifier {
@@ -547,7 +547,7 @@ pub async fn datum_to_syntax(template_id: &Value, datum: &Value) -> Result<Vec<V
     ))])
 }
 
-#[bridge(name = "identifier?", lib = "(rnrs base builtins (6))")]
+#[bridge(name = "identifier?", lib = "(rnrs syntax-case builtins (6))")]
 pub async fn identifier_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
     let Ok(syn) = Arc::<Syntax>::try_from(obj.clone()) else {
         return Ok(vec![Value::from(false)]);
@@ -555,7 +555,7 @@ pub async fn identifier_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(syn.is_identifier())])
 }
 
-#[bridge(name = "bound-identifier=?", lib = "(rnrs base builtins (6))")]
+#[bridge(name = "bound-identifier=?", lib = "(rnrs syntax-case builtins (6))")]
 pub async fn bound_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, Condition> {
     let id1: Arc<Syntax> = id1.clone().try_into()?;
     let id2: Arc<Syntax> = id2.clone().try_into()?;
@@ -578,7 +578,7 @@ pub async fn bound_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Va
     Ok(vec![Value::from(*bound_id1 && *bound_id2 && id1 == id2)])
 }
 
-#[bridge(name = "free-identifier=?", lib = "(rnrs base builtins (6))")]
+#[bridge(name = "free-identifier=?", lib = "(rnrs syntax-case builtins (6))")]
 pub async fn free_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, Condition> {
     let id1: Arc<Syntax> = id1.clone().try_into()?;
     let id2: Arc<Syntax> = id2.clone().try_into()?;

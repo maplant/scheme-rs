@@ -1,3 +1,3 @@
 mod common;
 
-common::assert_file!(r6rs);
+common::run_test!(r6rs);

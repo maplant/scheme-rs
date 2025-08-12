@@ -1,7 +1,10 @@
 //! a Registry is a collection of libraries.
 
 use crate::{
-    ast::{DefinitionBody, ExportSet, ImportSet, LibraryName, LibrarySpec, ParseAstError, Version},
+    ast::{
+        DefinitionBody, ExportSet, ImportSet, LibraryName, LibrarySpec, ParseAstError,
+        SpecialKeyword, Version,
+    },
     cps::Compile,
     env::{Environment, Global, Keyword},
     exception::Condition,
@@ -106,7 +109,7 @@ impl RegistryInner {
         Self::default()
     }
 
-    /// Construct a Registry with all of the available bridge functions present but no external libraries imported.
+    /// Construct a Registry with all of the available bridge functions and special keywords.
     pub fn new(rt: &Runtime) -> Self {
         struct Lib {
             version: Version,
@@ -142,6 +145,75 @@ impl RegistryInner {
             );
         }
 
+        // Define the special keyword libraries:
+        let special_keyword_libs = [
+            (
+                ["rnrs", "base", "special-keywords"],
+                &[
+                    ("begin", SpecialKeyword::Begin),
+                    ("lambda", SpecialKeyword::Lambda),
+                    ("let", SpecialKeyword::Let),
+                    ("let-syntax", SpecialKeyword::LetSyntax),
+                    ("letrec-syntax", SpecialKeyword::LetRecSyntax),
+                    ("if", SpecialKeyword::If),
+                    ("and", SpecialKeyword::And),
+                    ("or", SpecialKeyword::Or),
+                    ("quote", SpecialKeyword::Quote),
+                    ("syntax", SpecialKeyword::Syntax),
+                    ("set!", SpecialKeyword::Set),
+                    ("define", SpecialKeyword::Define),
+                    ("import", SpecialKeyword::Import),
+                    ("$call/cc", SpecialKeyword::CallWithCurrentContinuation),
+                    ("$undefined", SpecialKeyword::Undefined),
+                ][..],
+            ),
+            (
+                ["rnrs", "syntax-case", "special-keywords"],
+                &[("syntax-case", SpecialKeyword::SyntaxCase)],
+            ),
+        ]
+        .into_iter()
+        .map(|(name, special_keywords)| {
+            let name = name
+                .iter()
+                .map(|name| Symbol::intern(name))
+                .collect::<Vec<_>>();
+            (
+                name.clone(),
+                Library(Gc::new(LibraryInner {
+                    rt: rt.clone(),
+                    kind: LibraryKind::Libary {
+                        name: LibraryName {
+                            version: Version::from([6]),
+                            name: name,
+                        },
+                        path: None,
+                    },
+                    imports: HashMap::default(),
+                    exports: special_keywords
+                        .iter()
+                        .map(|(name, _)| {
+                            let name = Identifier::new(name);
+                            (
+                                name.clone(),
+                                Export {
+                                    rename: name.clone(),
+                                    origin: None,
+                                },
+                            )
+                        })
+                        .collect(),
+                    vars: HashMap::default(),
+                    keywords: HashMap::default(),
+                    special_keywords: special_keywords
+                        .iter()
+                        .map(|(name, kw)| (Identifier::new(name), *kw))
+                        .collect(),
+                    state: LibraryState::Invoked,
+                })),
+            )
+        });
+
         let libs = libs
             .into_iter()
             .map(|(name, lib)| {
@@ -171,10 +243,12 @@ impl RegistryInner {
                     exports,
                     vars: lib.syms,
                     keywords: HashMap::default(),
+                    special_keywords: HashMap::default(),
                     state: LibraryState::Invoked,
                 };
                 (name, Library(Gc::new(lib_inner)))
             })
+            .chain(special_keyword_libs)
             .collect();
 
         /*
@@ -187,23 +261,6 @@ impl RegistryInner {
             (initializer.initializer)(lib);
         }
         */
-
-        /*
-        // Import the stdlib:
-        let base_lib = libs
-            .entry(LibraryName::from_str("(base)", None).unwrap())
-            .or_insert_with(|| Gc::new(Top::library()));
-        let base_env = Environment::Top(base_lib.clone());
-        let sexprs = Syntax::from_str(include_str!("stdlib.scm"), Some("stdlib.scm")).unwrap();
-        let base = DefinitionBody::parse(runtime, &sexprs, &base_env, &Span::default())
-            .await
-            .unwrap();
-        let compiled = base.compile_top_level();
-        let closure = runtime.compile_expr(compiled).await.unwrap();
-        closure.call(&[]).await.unwrap();
-
-        Self { libs }
-         */
 
         Self {
             libs,
@@ -234,19 +291,22 @@ impl Registry {
         if let Some(lib) = self.0.read().libs.get(name) {
             return Ok(lib.clone());
         }
+
         // Check to see that we're not currently loading the library. Circular
         // dependencies are not allowed. We should probably support them at some
         // point to some degree.
         if self.0.read().loading.contains(name) {
             return Err(ImportError::CircularDependency);
         }
+
         // Load the library and insert it into the registry.
         self.mark_as_loading(name);
         const DEFAULT_LOAD_PATH: &'static str = "~/.gouki";
+
         // Get the suffix:
         let path_suffix = name.iter().copied().map(Symbol::to_str).collect::<Vec<_>>();
         let path_suffix = path_suffix.join("/");
-        // .fold(String::new(), |s, sym| s + &format!("{sym}/"));
+
         // Check the current path first:
         let curr_path = std::env::current_dir()
             .expect("If we can't get the current working directory, we can't really do much");
@@ -258,6 +318,7 @@ impl Registry {
                     std::env::var("GOUKI_LOAD_PATH")
                         .unwrap_or_else(|_| DEFAULT_LOAD_PATH.to_string()),
                 );
+
                 match load_lib_from_dir(rt, &path, &path_suffix).await {
                     Ok(lib) => lib,
                     Err(ImportError::LibraryNotFound) => {
@@ -298,12 +359,23 @@ impl Registry {
             match import_set {
                 ImportSet::Library(lib) => {
                     let lib = self.load_lib(rt, &lib.name).await?;
-                    let exports = { lib.0.read().exports.values().cloned().collect::<Vec<_>>() };
-                    Ok(Box::new(exports.into_iter().map(move |exp| {
+                    let exports = {
+                        lib.0
+                            .read()
+                            .exports
+                            .iter()
+                            .map(|(orign, exp)| (orign.clone(), exp.clone()))
+                            .collect::<Vec<_>>()
+                    };
+                    Ok(Box::new(exports.into_iter().map(move |(orign, exp)| {
                         (
-                            exp.rename.clone(),
+                            exp.rename,
                             Import {
-                                rename: exp.rename.clone(),
+                                rename: if let Some(import) = lib.0.read().imports.get(&orign) {
+                                    import.rename.clone()
+                                } else {
+                                    orign
+                                },
                                 origin: if let Some(redirect) = exp.origin {
                                     redirect.clone()
                                 } else {
@@ -393,6 +465,7 @@ pub(crate) struct LibraryInner {
     state: LibraryState,
     vars: HashMap<Identifier, Gc<Value>>,
     keywords: HashMap<Identifier, Keyword>,
+    special_keywords: HashMap<Identifier, SpecialKeyword>,
 }
 
 impl LibraryInner {
@@ -419,6 +492,7 @@ impl LibraryInner {
             state: LibraryState::Unexpanded(body),
             vars: HashMap::default(),
             keywords: HashMap::default(),
+            special_keywords: HashMap::default(),
         }
     }
 }
@@ -652,10 +726,9 @@ impl Library {
 
         let rename = rename.clone();
         let import = origin.clone();
+        drop(this);
         Box::pin(async move {
             import.maybe_invoke().await?;
-
-            let Export { rename, .. } = import.0.read().exports.get(&rename).unwrap().clone();
             import.fetch_var(&rename).await
         })
     }
@@ -678,12 +751,29 @@ impl Library {
 
         let rename = rename.clone();
         let import = origin.clone();
+        drop(this);
         Box::pin(async move {
             import.maybe_invoke().await?;
-
-            let Export { rename, .. } = import.0.read().exports.get(&rename).unwrap().clone();
             import.fetch_keyword(&rename).await
         })
+    }
+
+    pub(crate) fn fetch_special_keyword(&self, keyword: &Identifier) -> Option<SpecialKeyword> {
+        // Check this library:
+        let this = self.0.read();
+        if let Some(special_keyword) = this.special_keywords.get(keyword) {
+            return Some(*special_keyword);
+        }
+
+        // Check our imports:
+        let Some(Import { origin, rename }) = this.imports.get(keyword) else {
+            return None;
+        };
+
+        let rename = rename.clone();
+        let import = origin.clone();
+        drop(this);
+        import.fetch_special_keyword(&rename)
     }
 }
 

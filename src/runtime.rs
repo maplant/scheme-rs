@@ -1,14 +1,13 @@
 use crate::{
     cps::Cps,
     env::Local,
-    exception::{Condition, ExceptionHandler},
+    exception::{Condition, Exception, ExceptionHandler},
     expand,
-    gc::{Gc, GcInner, Trace, init_gc},
+    gc::{init_gc, Gc, GcInner, Trace},
     lists::{self, list_to_vec},
     num,
     proc::{
-        Application, Closure, ContinuationPtr, DynamicWind, FuncDebugInfo, FuncPtr, UserPtr,
-        clone_continuation_env,
+        clone_continuation_env, Application, Closure, ContinuationPtr, DynamicWind, FuncDebugInfo, FuncPtr, UserPtr
     },
     registry::Registry,
     symbols::Symbol,
@@ -27,9 +26,7 @@ use inkwell::{
 };
 use scheme_rs_macros::runtime_fn;
 use std::{
-    collections::{HashMap, HashSet},
-    mem::ManuallyDrop,
-    sync::Arc,
+    collections::{HashMap, HashSet}, mem::ManuallyDrop, path::Path, sync::Arc
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -59,6 +56,10 @@ impl Runtime {
         let new_registry = Registry::new(&this);
         this.0.write().registry = new_registry;
         this
+    }
+
+    pub fn run_program(&self, _path: &Path) -> Result<(), Exception> {
+        todo!()
     }
 
     pub fn get_registry(&self) -> Registry {
@@ -98,7 +99,6 @@ pub(crate) struct RuntimeInner {
     pub(crate) registry: Registry,
     /// Channel to compilation task
     compilation_buffer_tx: mpsc::Sender<CompilationTask>,
-    // TODO: Make this something better than just a vec
     pub(crate) constants_pool: HashSet<ReflexiveValue>,
     pub(crate) debug_info: DebugInfo,
 }

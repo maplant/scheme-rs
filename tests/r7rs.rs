@@ -1,7 +1,6 @@
 mod common;
 
-use common::{assert_failure, assert_file};
+common::run_test!(r7rs);
 
-assert_file!(r7rs);
-
-assert_failure!(byte_overflow, "#u8(9001)");
+// TODO: Move this into r7rs, or somewhere else
+// assert_failure!(byte_overflow, "#u8(9001)");

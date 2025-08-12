@@ -1,65 +1,9 @@
-#![allow(dead_code, unused_macros, unused_imports)]
+//! Scaffolding for R*RS specification tests
 
-//! Test to see whether or not passes r*rs specifications
-
-use scheme_rs::{
-    ast::DefinitionBody,
-    cps::Compile,
-    env::{Environment, Top},
-    exception::Condition,
-    gc::Gc,
-    registry::{Registry, bridge},
-    runtime::RuntimeInner,
-    syntax::{Span, Syntax},
-    value::Value,
-};
-use std::error::Error as StdError;
-
-pub struct TestRuntime {
-    runtime: Gc<RuntimeInner>,
-    test_top: Environment,
-}
-impl TestRuntime {
-    pub async fn new() -> Self {
-        let runtime = Gc::new(RuntimeInner::new());
-        let registry = Registry::new(&runtime).await;
-        let base = registry.import("(base)").unwrap();
-        let mut test_top = Top::program();
-        {
-            let base = base.read();
-            test_top.import(&base);
-        }
-        let test_top = Environment::from(Gc::new(test_top));
-
-        Self { runtime, test_top }
-    }
-
-    pub async fn exec_syn(&self, sexprs: &[Syntax]) -> Result<(), Box<dyn StdError>> {
-        let base = DefinitionBody::parse_program_body(
-            &self.runtime,
-            sexprs,
-            &self.test_top,
-            &Span::default(),
-        )
-        .await
-        .unwrap();
-        let compiled = base.compile_top_level();
-        let closure = self
-            .runtime
-            .compile_expr(compiled)
-            .await
-            .map_err(Box::new)?;
-        Ok(closure.call(&[]).await.map(drop).map_err(Box::new)?)
-    }
-
-    pub async fn exec_str<'a>(&self, src: &'a str) -> Result<(), Box<dyn StdError + 'a>> {
-        let sexprs = Syntax::from_str(src, None).map_err(Box::new)?;
-        self.exec_syn(&sexprs).await
-    }
-}
+use scheme_rs::{exception::Condition, registry::bridge, value::Value};
 
 #[bridge(name = "assert-eqv?", lib = "(test)")]
-pub async fn test_assert(arg1: &Value, arg2: &Value) -> Result<Vec<Value>, Condition> {
+async fn test_assert(arg1: &Value, arg2: &Value) -> Result<Vec<Value>, Condition> {
     if arg1 != arg2 {
         let arg1 = format!("{arg1:?}");
         let arg2 = format!("{arg2:?}");
@@ -69,30 +13,19 @@ pub async fn test_assert(arg1: &Value, arg2: &Value) -> Result<Vec<Value>, Condi
     }
 }
 
-macro_rules! assert_file {
+macro_rules! run_test {
     ($name:ident) => {
         #[::tokio::test]
         async fn $name() {
-            let rt = $crate::common::TestRuntime::new().await;
-            let sexprs = scheme_rs::syntax::Syntax::from_str(
-                include_str!(concat!(stringify!($name), ".scm")),
-                Some(concat!(stringify!($name), ".scm")),
-            )
-            .unwrap();
-            rt.exec_syn(&sexprs).await.unwrap();
+            use scheme_rs::runtime::Runtime;
+            use std::path::Path;
+
+            let test_path = Path::new(concat!(stringify!($name), ".scm"));
+            let rt = Runtime::new();
+            rt.run_program(test_path)
+                .expect(&format!("Test {} failed", stringify!($name)));
         }
     };
 }
 
-macro_rules! assert_failure {
-    ($name:ident, $expr:literal) => {
-        #[::tokio::test]
-        async fn $name() {
-            let rt = $crate::common::TestRuntime::new().await;
-            assert!(rt.exec_str($expr).await.is_err())
-        }
-    };
-}
-
-pub(crate) use assert_failure;
-pub(crate) use assert_file;
+pub(crate) use run_test;

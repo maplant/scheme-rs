@@ -543,19 +543,17 @@ pub fn call_transformer<'a>(
         let transformer = { transformer.read().clone() };
 
         // Collect the environment:
-
         let mut collected_env = IndexMap::new();
         for (i, local) in captured_env.captured.into_iter().enumerate() {
             collected_env.insert(local, env[i].clone());
         }
 
         // Expand the input:
-
         let syn = Syntax::syntax_from_datum(&BTreeSet::default(), arg.clone());
         let transformer_result = transformer
             .eval(&syn, &runtime, &captured_env.env, &collected_env)
             .await?
-            .ok_or_else(Condition::syntax_error)?;
+            .ok_or_else(|| Condition::syntax_error(syn, None))?;
 
         let app = Application::new(
             cont,
