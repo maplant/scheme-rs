@@ -14,7 +14,7 @@ use crate::{
     num::Number,
     proc::{Application, Closure, DynamicWind, FuncPtr},
     registry::{BridgeFn, BridgeFnDebugInfo, bridge},
-    runtime::Runtime,
+    runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
     value::{UnpackedValue, Value, ValueType},
     vectors,
@@ -76,7 +76,7 @@ pub static RECORD_TYPE_DESCRIPTOR_RTD: LazyLock<Arc<RecordTypeDescriptor>> = Laz
     })
 });
 
-#[bridge(name = "make-record-type-descriptor", lib = "(base)")]
+#[bridge(name = "make-record-type-descriptor", lib = "(rnrs base builtins (6))")]
 pub async fn make_record_type_descriptor(
     name: &Value,
     parent: &Value,
@@ -113,7 +113,7 @@ pub async fn make_record_type_descriptor(
     }))])
 }
 
-#[bridge(name = "record-type-descriptor?", lib = "(base)")]
+#[bridge(name = "record-type-descriptor?", lib = "(rnrs base builtins (6))")]
 pub async fn record_type_descriptor_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(
         obj.type_of() == ValueType::RecordTypeDescriptor,
@@ -128,7 +128,7 @@ pub struct RecordConstructorDescriptor {
 }
 
 fn make_default_record_constructor_descriptor(
-    runtime: Gc<Runtime>,
+    runtime: Runtime,
     rtd: Arc<RecordTypeDescriptor>,
 ) -> Gc<RecordConstructorDescriptor> {
     let parent = rtd.inherits.last().map(|parent| {
@@ -167,7 +167,9 @@ pub fn make_record_constructor_descriptor<'a>(
         let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
         let parent_rcd = if parent_rcd.is_true() {
             let Some(parent_rtd) = rtd.inherits.last() else {
-                return Err(Condition::error("RTD is a base type".to_string()).into());
+                return Err(
+                    Condition::error("RTD is a rnrs base builtins (6) type".to_string()).into(),
+                );
             };
             let any: Gc<Gc<dyn Any>> = parent_rcd.clone().try_into()?;
             let parent_rcd: Gc<RecordConstructorDescriptor> = any
@@ -223,7 +225,7 @@ pub fn make_record_constructor_descriptor<'a>(
 inventory::submit! {
     BridgeFn::new(
         "make-record-constructor-descriptor",
-        "(base)",
+        "(rnrs base builtins (6))",
         3,
         false,
         make_record_constructor_descriptor,
@@ -288,7 +290,7 @@ pub fn record_constructor<'a>(
 inventory::submit! {
     BridgeFn::new(
         "record-constructor",
-        "(base)",
+        "(rnrs base builtins (6))",
         1,
         false,
         record_constructor,
@@ -315,7 +317,7 @@ fn rcd_to_protocols_and_rtds(rcd: &Gc<RecordConstructorDescriptor>) -> (Vec<Valu
 }
 
 pub(crate) unsafe extern "C" fn chain_protocols(
-    runtime: *mut GcInner<Runtime>,
+    runtime: *mut GcInner<RuntimeInner>,
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
     args: *const Value,
@@ -350,7 +352,7 @@ pub(crate) unsafe extern "C" fn chain_protocols(
 
         // Otherwise, turn the remaining chain into the continuation:
         let new_k = Closure::new(
-            Gc::from_raw_inc_rc(runtime),
+            Runtime::from_raw_inc_rc(runtime),
             vec![Gc::new(Value::from(remaining_protocols)), k],
             Vec::new(),
             FuncPtr::Continuation(chain_protocols),
@@ -524,7 +526,7 @@ pub fn default_protocol_constructor<'a>(
 }
 
 pub(crate) unsafe extern "C" fn call_constructor_continuation(
-    _runtime: *mut GcInner<Runtime>,
+    _runtime: *mut GcInner<RuntimeInner>,
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
     args: *const Value,
@@ -631,7 +633,7 @@ pub fn record_predicate<'a>(
 inventory::submit! {
     BridgeFn::new(
         "record-predicate",
-        "(base)",
+        "(rnrs base builtins (6))",
         1,
         false,
         record_predicate,
@@ -721,7 +723,7 @@ pub fn record_accessor<'a>(
 inventory::submit! {
     BridgeFn::new(
         "record-accessor",
-        "(base)",
+        "(rnrs base builtins (6))",
         2,
         false,
         record_accessor,
@@ -811,7 +813,7 @@ pub fn record_mutator<'a>(
 inventory::submit! {
     BridgeFn::new(
         "record-mutator",
-        "(base)",
+        "(rnrs base builtins (6))",
         2,
         false,
         record_mutator,

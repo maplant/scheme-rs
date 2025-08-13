@@ -26,7 +26,7 @@ impl Transformer {
     pub async fn eval(
         &self,
         expr: &Syntax,
-        runtime: &Gc<Runtime>,
+        runtime: &Runtime,
         env: &Environment,
         env_map: &IndexMap<Local, Gc<Value>>,
     ) -> Result<Option<Vec<Value>>, Condition> {
@@ -67,7 +67,7 @@ impl SyntaxRule {
     async fn eval(
         &self,
         expr: &Syntax,
-        runtime: &Gc<Runtime>,
+        runtime: &Runtime,
         env: &Environment,
         env_map: &IndexMap<Local, Gc<Value>>,
     ) -> Result<Option<Vec<Value>>, Condition> {
@@ -386,7 +386,7 @@ impl Template {
 
     async fn eval(
         &self,
-        runtime: &Gc<Runtime>,
+        runtime: &Runtime,
         env: &Environment,
         env_map: &IndexMap<Local, Gc<Value>>,
         binds: &Binds<'_>,
@@ -502,7 +502,7 @@ impl<'a> Binds<'a> {
     }
 }
 
-#[bridge(name = "make-variable-transformer", lib = "(base)")]
+#[bridge(name = "make-variable-transformer", lib = "(rnrs base builtins (6))")]
 pub async fn make_variable_transformer(proc: &Value) -> Result<Vec<Value>, Condition> {
     let proc: Gc<Closure> = proc.clone().try_into()?;
     let mut var_transformer = proc.read().clone();
@@ -523,7 +523,7 @@ pub fn call_transformer<'a>(
             panic!("wrong args");
         };
 
-        let cont: Gc<Closure> = cont.clone().try_into().expect("huh");
+        let cont: Gc<Closure> = cont.clone().try_into()?;
 
         // Fetch a runtime from the continuation. It doesn't really matter
         // _which_ runtime we use, in fact we could create a new one, but it
@@ -543,19 +543,17 @@ pub fn call_transformer<'a>(
         let transformer = { transformer.read().clone() };
 
         // Collect the environment:
-
         let mut collected_env = IndexMap::new();
         for (i, local) in captured_env.captured.into_iter().enumerate() {
             collected_env.insert(local, env[i].clone());
         }
 
         // Expand the input:
-
         let syn = Syntax::syntax_from_datum(&BTreeSet::default(), arg.clone());
         let transformer_result = transformer
             .eval(&syn, &runtime, &captured_env.env, &collected_env)
             .await?
-            .ok_or_else(Condition::syntax_error)?;
+            .ok_or_else(|| Condition::syntax_error(syn, None))?;
 
         let app = Application::new(
             cont,

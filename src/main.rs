@@ -6,15 +6,14 @@ use rustyline::{
     validate::{ValidationContext, ValidationResult, Validator},
 };
 use scheme_rs::{
-    ast::{DefinitionBody, ParseAstError},
+    ast::{DefinitionBody, ImportSet, ParseAstError},
     cps::Compile,
-    env::{Environment, Top},
+    env::Environment,
     exception::Exception,
-    gc::Gc,
     lex::LexError,
     parse::ParseSyntaxError,
     proc::{Application, DynamicWind},
-    registry::Registry,
+    registry::Library,
     runtime::Runtime,
     syntax::Syntax,
     value::Value,
@@ -43,9 +42,12 @@ struct InputHelper {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let runtime = Gc::new(Runtime::new());
-    let registry = Registry::new(&runtime).await;
-    let base = registry.import("(base)").unwrap();
+    let runtime = Runtime::new();
+    let repl = Library::new_repl(&runtime);
+
+    repl.import(ImportSet::parse_from_str("(library (rnrs))").unwrap())
+        .await
+        .expect("Failed to import standard library");
 
     let config = Config::builder().auto_add_history(true).build();
     let mut editor = match Editor::with_history(config, DefaultHistory::new()) {
@@ -64,13 +66,7 @@ async fn main() -> ExitCode {
     editor.set_helper(Some(helper));
 
     let mut n_results = 1;
-    let mut repl = Top::repl();
-    {
-        let base = base.read();
-        repl.import(&base);
-    }
-    let top = Environment::from(Gc::new(repl));
-
+    let mut curr_line = 1;
     loop {
         let input = match editor.readline("> ") {
             Ok(line) => line,
@@ -81,8 +77,7 @@ async fn main() -> ExitCode {
             }
         };
 
-        //input.push('\n');
-        match compile_and_run_str(&runtime, &top, &input).await {
+        match compile_and_run_str(&runtime, &repl, &input, curr_line).await {
             Ok(results) => {
                 for result in results.into_iter() {
                     println!("${n_results} = {result:?}");
@@ -96,6 +91,8 @@ async fn main() -> ExitCode {
                 println!("Error: {err:?}");
             }
         }
+
+        curr_line += input.chars().filter(|c| *c == '\n').count() as u32 + 1;
     }
 
     ExitCode::SUCCESS
@@ -110,20 +107,18 @@ pub enum EvalError<'e> {
 }
 
 async fn compile_and_run_str<'e>(
-    runtime: &Gc<Runtime>,
-    env: &Environment,
+    runtime: &Runtime,
+    repl: &Library,
     input: &'e str,
+    curr_line: u32,
 ) -> Result<Vec<Value>, EvalError<'e>> {
-    let sexprs = Syntax::from_str(input, None)?;
+    let sexprs = Syntax::from_str_with_line_offset(input, None, curr_line)?;
     let mut output = Vec::new();
+    let env = Environment::Top(repl.clone());
     for sexpr in sexprs {
         let span = sexpr.span().clone();
-        let expr = DefinitionBody::parse(runtime, &[sexpr], env, &span).await?;
-
-        // println!("Parsed: {expr:#?}");
+        let expr = DefinitionBody::parse(runtime, &[sexpr], &env, &span).await?;
         let compiled = expr.compile_top_level();
-        // println!("Compiled: {compiled:#?}");
-
         let closure = runtime.compile_expr(compiled).await.unwrap();
         let result = Application::new(closure, Vec::new(), None, DynamicWind::default(), None)
             .eval()
