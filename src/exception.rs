@@ -74,7 +74,9 @@ impl Condition {
     pub fn syntax_error(form: Syntax, subform: Option<Syntax>) -> Self {
         Self::Syntax {
             form: Value::from(form),
-            subform: subform.map(Value::from).unwrap_or_else(|| Value::from(false)),
+            subform: subform
+                .map(Value::from)
+                .unwrap_or_else(|| Value::from(false)),
         }
     }
 

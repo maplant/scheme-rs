@@ -350,7 +350,7 @@ impl Registry {
     }
 
     /// Load a set of symbols from a library with the given import set.
-    fn import<'b, 'a: 'b>(
+    pub(crate) fn import<'b, 'a: 'b>(
         &'a self,
         rt: &'b Runtime,
         import_set: ImportSet,
@@ -461,7 +461,7 @@ pub enum ImportError {
 #[derive(Trace, derive_more::Debug)]
 pub(crate) struct LibraryInner {
     #[debug(skip)]
-    rt: Runtime,
+    pub(crate) rt: Runtime,
     kind: LibraryKind,
     exports: HashMap<Identifier, Export>,
     imports: HashMap<Identifier, Import>,
@@ -509,19 +509,21 @@ pub enum LibraryKind {
         name: LibraryName,
         path: Option<PathBuf>,
     },
+    /// A program has a path
+    Program { path: PathBuf },
 }
 
 #[derive(Trace, Debug)]
 pub struct Import {
     /// The original name of the identifier before being renamed.
-    rename: Identifier,
-    origin: Library,
+    pub(crate) rename: Identifier,
+    pub(crate) origin: Library,
 }
 
 #[derive(Trace, Clone, Debug)]
 pub struct Export {
-    rename: Identifier,
-    origin: Option<Library>,
+    pub(crate) rename: Identifier,
+    pub(crate) origin: Option<Library>,
 }
 
 #[derive(Trace, Clone)]
@@ -549,6 +551,25 @@ impl Library {
             Vec::new(),
         );
         inner.state = LibraryState::Invoked;
+        Self(Gc::new(inner))
+    }
+
+    pub fn new_program(rt: &Runtime, path: &Path) -> Self {
+        // Programs are given the import keyword, free of charge.
+        let inner = LibraryInner {
+            rt: rt.clone(),
+            kind: LibraryKind::Program {
+                path: path.to_path_buf(),
+            },
+            exports: HashMap::default(),
+            imports: HashMap::default(),
+            state: LibraryState::Invoked,
+            vars: HashMap::default(),
+            keywords: HashMap::default(),
+            special_keywords: [(Identifier::new("import"), SpecialKeyword::Import)]
+                .into_iter()
+                .collect(),
+        };
         Self(Gc::new(inner))
     }
 

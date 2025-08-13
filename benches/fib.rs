@@ -1,32 +1,28 @@
+use std::path::Path;
+
 use scheme_rs::{
     ast::DefinitionBody,
     cps::Compile,
-    env::{Environment, Top},
+    env::Environment,
     gc::Gc,
-    registry::Registry,
-    runtime::RuntimeInner,
+    registry::Library,
+    runtime::Runtime,
     syntax::{Span, Syntax},
 };
 
 use criterion::*;
 
 async fn fib_fn() -> Gc<scheme_rs::proc::Closure> {
-    let runtime = Gc::new(RuntimeInner::new());
-    let registry = Registry::new(&runtime).await;
-    let base = registry.import("(base)").unwrap();
-    let mut test_top = Top::program();
-    {
-        let base = base.read();
-        test_top.import(&base);
-    }
-    let test_top = Environment::from(Gc::new(test_top));
+    let rt = Runtime::new();
+    let prog = Library::new_program(&rt, Path::new("fib.scm"));
+    let env = Environment::Top(prog);
 
     let sexprs = Syntax::from_str(include_str!("fib.scm"), Some("fib.scm")).unwrap();
-    let base = DefinitionBody::parse_program_body(&runtime, &sexprs, &test_top, &Span::default())
+    let base = DefinitionBody::parse_lib_body(&rt, &sexprs, &env, &Span::default())
         .await
         .unwrap();
     let compiled = base.compile_top_level();
-    runtime.compile_expr(compiled).await.unwrap()
+    rt.compile_expr(compiled).await.unwrap()
 }
 
 fn fib_benchmark(c: &mut Criterion) {

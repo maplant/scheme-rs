@@ -1,17 +1,19 @@
 use crate::{
-    cps::Cps,
-    env::Local,
+    ast::DefinitionBody,
+    cps::{Compile, Cps},
+    env::{Environment, Local},
     exception::{Condition, Exception, ExceptionHandler},
     expand,
-    gc::{init_gc, Gc, GcInner, Trace},
+    gc::{Gc, GcInner, Trace, init_gc},
     lists::{self, list_to_vec},
     num,
     proc::{
-        clone_continuation_env, Application, Closure, ContinuationPtr, DynamicWind, FuncDebugInfo, FuncPtr, UserPtr
+        Application, Closure, ContinuationPtr, DynamicWind, FuncDebugInfo, FuncPtr, UserPtr,
+        clone_continuation_env,
     },
-    registry::Registry,
+    registry::{ImportError, Library, Registry},
     symbols::Symbol,
-    syntax::Span,
+    syntax::{Span, Syntax},
     value::{ReflexiveValue, UnpackedValue, Value},
     vectors,
 };
@@ -26,7 +28,10 @@ use inkwell::{
 };
 use scheme_rs_macros::runtime_fn;
 use std::{
-    collections::{HashMap, HashSet}, mem::ManuallyDrop, path::Path, sync::Arc
+    collections::{HashMap, HashSet},
+    mem::ManuallyDrop,
+    path::Path,
+    sync::Arc,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -64,8 +69,22 @@ impl Runtime {
         this
     }
 
-    pub fn run_program(&self, _path: &Path) -> Result<(), Exception> {
-        todo!()
+    pub async fn run_program(&self, path: &Path) -> Result<Vec<Value>, Exception> {
+        let progm = Library::new_program(self, path);
+        let env = Environment::Top(progm);
+        let contents = tokio::fs::read_to_string(path).await.unwrap();
+        let file_name = path.file_name().unwrap().to_string_lossy();
+        let sexprs = Syntax::from_str(&contents, Some(&file_name))
+            .map_err(|err| ImportError::ParseSyntaxError(format!("{err:?}")))
+            .unwrap();
+        let body = DefinitionBody::parse_lib_body(self, &sexprs, &env, sexprs[0].span())
+            .await
+            .unwrap();
+        let compiled = body.compile_top_level();
+        let closure = self.compile_expr(compiled).await.unwrap();
+        Application::new(closure, Vec::new(), None, DynamicWind::default(), None)
+            .eval()
+            .await
     }
 
     pub fn get_registry(&self) -> Registry {

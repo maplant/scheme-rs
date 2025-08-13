@@ -9,6 +9,7 @@ use crate::{
     num::{Number, NumberToUsizeError},
     parse::ParseSyntaxError,
     proc::Closure,
+    registry::ImportError,
     runtime::Runtime,
     symbols::Symbol,
     syntax::{FullyExpanded, Identifier, Span, Syntax},
@@ -45,8 +46,13 @@ pub enum ParseAstError {
     ExpectedList(Span),
     UnexpectedArgument(Span),
     UnexpectedDefinition(Span),
+    UnexpectedImport(Span),
     UnexpectedEmptyList(Span),
 
+    ImportError {
+        span: Span,
+        error: Box<ImportError>,
+    },
     CannotSetImmutableVar {
         span: Span,
         name: Identifier,
@@ -1103,17 +1109,17 @@ impl Expression {
                         )
                         .await
                         .map(Expression::Apply),
-                        Some(Either::Left(SpecialKeyword::Import)) => todo!(),
                         Some(Either::Left(SpecialKeyword::DefineSyntax)) => unreachable!(),
+                        Some(Either::Left(SpecialKeyword::Import)) => {
+                            Err(ParseAstError::UnexpectedImport(span.clone()))
+                        }
                         Some(Either::Left(SpecialKeyword::Define)) => {
                             Err(ParseAstError::UnexpectedDefinition(span.clone()))
                         }
-                        None => {
-                            Err(ParseAstError::UndefinedVariable {
-                                span: span.clone(),
-                                ident: ident.clone(),
-                            })
-                        }
+                        None => Err(ParseAstError::UndefinedVariable {
+                            span: span.clone(),
+                            ident: ident.clone(),
+                        }),
                         _ => Err(ParseAstError::BadForm(span.clone())),
                     },
                     [expr, args @ .., Syntax::Null { .. }] => Apply::parse(
@@ -1796,6 +1802,21 @@ fn splice_in<'a>(
                                 .await?;
                             continue;
                         }
+                        (Some(Either::Left(SpecialKeyword::Import)), imports) => {
+                            if !permissive && !exprs.is_empty() {
+                                return Err(ParseAstError::UnexpectedImport(span.clone()));
+                            }
+                            for import in imports {
+                                let import_set = ImportSet::parse(discard_for(import))?;
+                                expansion_env.import(import_set).await.map_err(|err| {
+                                    ParseAstError::ImportError {
+                                        span: span.clone(),
+                                        error: Box::new(err),
+                                    }
+                                })?;
+                            }
+                            continue;
+                        }
                         (Some(Either::Left(SpecialKeyword::Define)), _) => {
                             if !permissive && !exprs.is_empty() {
                                 return Err(ParseAstError::UnexpectedDefinition(span.clone()));
@@ -1807,81 +1828,6 @@ fn splice_in<'a>(
                 } else {
                     false
                 }
-                /*
-                match expanded.as_list() {
-                    Some(
-                        [
-                            Syntax::Identifier { ident, .. },
-                            body @ ..,
-                            Syntax::Null { .. },
-                        ],
-                    ) if ident == "begin" => {
-                        splice_in(runtime, permissive, body, &expansion_env, span, defs, exprs)
-                            .await?;
-                        continue;
-                    }
-
-                    Some(
-                        [
-                            Syntax::Identifier { ident, .. },
-                            Syntax::Identifier { ident: name, .. },
-                            expr,
-                            Syntax::Null { .. },
-                        ],
-                    ) if ident == "define-syntax" => {
-                        define_syntax(runtime, name.clone(), expr.clone(), &expansion_env).await?;
-                        continue;
-                    }
-
-                    Some(
-                        [
-                            Syntax::Identifier { ident, span, .. },
-                            bindings,
-                            form @ ..,
-                            Syntax::Null { .. },
-                        ],
-                    ) if ident == "let-syntax" => {
-                        let new_env =
-                            parse_let_syntax(runtime, false, bindings, &expansion_env).await?;
-                        splice_in(runtime, permissive, form, &new_env, span, defs, exprs).await?;
-                        continue;
-                    }
-
-                    Some(
-                        [
-                            Syntax::Identifier { ident, span, .. },
-                            bindings,
-                            form @ ..,
-                            Syntax::Null { .. },
-                        ],
-                    ) if ident == "letrec-syntax" => {
-                        let new_env =
-                            parse_let_syntax(runtime, true, bindings, &expansion_env).await?;
-                        splice_in(runtime, permissive, form, &new_env, span, defs, exprs).await?;
-                        continue;
-                    }
-
-                    Some(
-                        [
-                            Syntax::Identifier { ident, span, .. },
-                            _,
-                            ..,
-                            Syntax::Null { .. },
-                        ],
-                    ) if ident == "define" => {
-                        if !permissive && !exprs.is_empty() {
-                            return Err(ParseAstError::UnexpectedDefinition(span.clone()));
-                        }
-                        true
-                    }
-                    Some([Syntax::Identifier { ident, span, .. }, ..])
-                        if ident == "define-syntax" =>
-                    {
-                        return Err(ParseAstError::BadForm(span.clone()));
-                    }
-                    _ => false,
-                }
-                 */
             };
 
             let expanded = FullyExpanded::new(expansion_env, expanded);

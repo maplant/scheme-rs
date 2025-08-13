@@ -20,9 +20,10 @@ macro_rules! run_test {
             use scheme_rs::runtime::Runtime;
             use std::path::Path;
 
-            let test_path = Path::new(concat!(stringify!($name), ".scm"));
+            let test_path = Path::new(concat!("tests/", stringify!($name), ".scm"));
             let rt = Runtime::new();
             rt.run_program(test_path)
+                .await
                 .expect(&format!("Test {} failed", stringify!($name)));
         }
     };

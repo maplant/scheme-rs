@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, hash_map::Entry},
     fmt,
     hash::{Hash, Hasher},
     sync::atomic::{AtomicUsize, Ordering},
@@ -9,11 +9,11 @@ use either::Either;
 use futures::future::BoxFuture;
 
 use crate::{
-    ast::SpecialKeyword,
+    ast::{ImportSet, SpecialKeyword},
     exception::Condition,
     gc::{Gc, Trace},
     proc::Closure,
-    registry::Library,
+    registry::{Import, ImportError, Library},
     symbols::Symbol,
     syntax::{Identifier, Mark},
     value::Value,
@@ -23,7 +23,8 @@ use crate::{
 pub struct LexicalContour {
     up: Environment,
     vars: HashMap<Identifier, Local>,
-    macros: HashMap<Identifier, Gc<Closure>>,
+    keywords: HashMap<Identifier, Gc<Closure>>,
+    imports: HashMap<Identifier, Import>,
 }
 
 impl LexicalContour {
@@ -31,7 +32,8 @@ impl LexicalContour {
         Self {
             up: env.clone(),
             vars: Default::default(),
-            macros: Default::default(),
+            keywords: Default::default(),
+            imports: Default::default(),
         }
     }
 }
@@ -43,8 +45,8 @@ impl LexicalContour {
         local
     }
 
-    pub fn def_macro(&mut self, name: Identifier, closure: Gc<Closure>) {
-        self.macros.insert(name, closure);
+    pub fn def_keyword(&mut self, name: Identifier, closure: Gc<Closure>) {
+        self.keywords.insert(name, closure);
     }
 
     pub fn fetch_var<'a>(
@@ -69,7 +71,7 @@ impl LexicalContour {
         }
         let up = self.up.clone();
         Box::pin(async move { up.fetch_special_keyword_or_var(name).await })
-    }   
+    }
 
     pub fn fetch_local(&self, name: &Identifier) -> Option<Local> {
         if let Some(local) = self.vars.get(name) {
@@ -94,7 +96,7 @@ impl Gc<LexicalContour> {
     ) -> BoxFuture<'a, Result<Option<Keyword>, Condition>> {
         let up = {
             let this = self.read();
-            if let Some(trans) = this.macros.get(name) {
+            if let Some(trans) = this.keywords.get(name) {
                 let this_clone = self.clone();
                 let trans = trans.clone();
                 return Box::pin(async move {
@@ -108,12 +110,34 @@ impl Gc<LexicalContour> {
         };
         Box::pin(async move { up.fetch_keyword(name).await })
     }
+
+    pub async fn import(&self, import_set: ImportSet) -> Result<(), ImportError> {
+        let (rt, registry) = {
+            let top = self.read().fetch_top();
+            let top = top.0.read();
+            (top.rt.clone(), top.rt.get_registry())
+        };
+        let imports = registry.import(&rt, import_set).await?;
+        let mut this = self.write();
+        for (ident, import) in imports {
+            match this.imports.entry(ident) {
+                Entry::Occupied(prev_imported) if prev_imported.get().origin != import.origin => {
+                    return Err(ImportError::DuplicateIdentifier(prev_imported.key().sym));
+                }
+                Entry::Vacant(slot) => {
+                    slot.insert(import);
+                }
+                _ => (),
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Trace)]
 pub struct LetSyntaxContour {
     up: Environment,
-    macros: HashMap<Identifier, Gc<Closure>>,
+    keywords: HashMap<Identifier, Gc<Closure>>,
     recursive: bool,
 }
 
@@ -121,7 +145,7 @@ impl LetSyntaxContour {
     fn new(env: &Environment, recursive: bool) -> Self {
         Self {
             up: env.clone(),
-            macros: Default::default(),
+            keywords: Default::default(),
             recursive,
         }
     }
@@ -133,7 +157,7 @@ impl LetSyntaxContour {
     }
 
     pub fn def_keyword(&mut self, name: Identifier, closure: Gc<Closure>) {
-        self.macros.insert(name, closure);
+        self.keywords.insert(name, closure);
     }
 
     pub fn fetch_var<'a>(
@@ -159,6 +183,11 @@ impl LetSyntaxContour {
     pub fn fetch_top(&self) -> Library {
         self.up.fetch_top()
     }
+
+    pub fn import(&self, import_set: ImportSet) -> BoxFuture<'static, Result<(), ImportError>> {
+        let up = self.up.clone();
+        Box::pin(async move { up.import(import_set).await })
+    }
 }
 
 impl Gc<LetSyntaxContour> {
@@ -168,7 +197,7 @@ impl Gc<LetSyntaxContour> {
     ) -> BoxFuture<'a, Result<Option<Keyword>, Condition>> {
         let up = {
             let this = self.read();
-            if let Some(trans) = this.macros.get(name) {
+            if let Some(trans) = this.keywords.get(name) {
                 let trans = trans.clone();
                 let env = if this.recursive {
                     Environment::LetSyntaxContour(self.clone())
@@ -316,6 +345,11 @@ impl MacroExpansion {
                 self.source.is_bound(&unmarked)
             }
     }
+
+    pub fn import(&self, import_set: ImportSet) -> BoxFuture<'static, Result<(), ImportError>> {
+        let up = self.up.clone();
+        Box::pin(async move { up.import(import_set).await })
+    }
 }
 
 #[derive(Trace)]
@@ -348,7 +382,7 @@ impl Environment {
     pub fn def_keyword(&self, name: Identifier, val: Gc<Closure>) {
         match self {
             Self::Top(top) => top.def_keyword(name, Keyword::new(self.clone(), val)),
-            Self::LexicalContour(lex) => lex.write().def_macro(name, val),
+            Self::LexicalContour(lex) => lex.write().def_keyword(name, val),
             Self::LetSyntaxContour(ls) => ls.write().def_keyword(name, val),
             Self::MacroExpansion(me) => me.read().def_keyword(name, val),
         }
@@ -408,10 +442,8 @@ impl Environment {
                 if let Some(var) = top.fetch_var(name).await? {
                     return Ok(Some(Either::Right(Var::Global(var))));
                 }
-                Ok(top
-                    .fetch_special_keyword(name)
-                    .map(Either::Left))
-            },
+                Ok(top.fetch_special_keyword(name).map(Either::Left))
+            }
             Self::LexicalContour(lex) => {
                 let fetch_fut = { lex.read().fetch_special_keyword_or_var(name) };
                 fetch_fut.await
@@ -423,13 +455,28 @@ impl Environment {
             Self::MacroExpansion(me) => {
                 let fetch_fut = { me.read().fetch_special_keyword_or_var(name) };
                 fetch_fut.await
-            }            
+            }
+        }
+    }
+
+    pub async fn import(&self, import: ImportSet) -> Result<(), ImportError> {
+        match self {
+            Self::Top(top) => top.import(import).await,
+            Self::LexicalContour(lex) => lex.import(import).await,
+            Self::LetSyntaxContour(ls) => {
+                let import_fut = { ls.read().import(import) };
+                import_fut.await
+            }
+            Self::MacroExpansion(me) => {
+                let import_fut = { me.read().import(import) };
+                import_fut.await
+            }
         }
     }
 
     pub fn is_bound(&self, name: &Identifier) -> bool {
         match self {
-            Self::Top(lib) => lib.is_bound(name),
+            Self::Top(top) => top.is_bound(name),
             Self::LexicalContour(lex) => lex.read().is_bound(name),
             Self::LetSyntaxContour(ls) => ls.read().up.is_bound(name),
             Self::MacroExpansion(me) => me.read().is_bound(name),
