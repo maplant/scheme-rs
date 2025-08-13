@@ -7,9 +7,9 @@ use crate::{
     gc::{Gc, GcInner, Trace},
     proc::{Application, Closure, DynamicWind, FuncPtr},
     registry::{BridgeFn, BridgeFnDebugInfo},
-    runtime::Runtime,
+    runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
-    syntax::{Identifier, Span},
+    syntax::{Identifier, Span, Syntax},
     value::Value,
 };
 use std::{error::Error as StdError, fmt, ops::Range, sync::Arc};
@@ -71,11 +71,12 @@ impl Condition {
         Self::Message { message }
     }
 
-    pub fn syntax_error() -> Self {
-        // TODO: Expand on these
+    pub fn syntax_error(form: Syntax, subform: Option<Syntax>) -> Self {
         Self::Syntax {
-            form: Value::null(),
-            subform: Value::from(false),
+            form: Value::from(form),
+            subform: subform
+                .map(Value::from)
+                .unwrap_or_else(|| Value::from(false)),
         }
     }
 
@@ -145,9 +146,8 @@ impl From<Exception> for Condition {
 }
 
 impl From<ParseAstError> for Condition {
-    fn from(_value: ParseAstError) -> Self {
-        // TODO: Make this more descriptive
-        Self::syntax_error()
+    fn from(value: ParseAstError) -> Self {
+        Condition::error(format!("Error parsing: {value:?}"))
     }
 }
 
@@ -210,7 +210,7 @@ pub struct ExceptionHandler {
 impl ExceptionHandler {
     /// # Safety
     /// Exception handler must point to a valid Gc'd object.
-    pub unsafe fn from_ptr(ptr: *mut GcInner<Self>) -> Option<Gc<Self>> {
+    pub(crate) unsafe fn from_ptr(ptr: *mut GcInner<Self>) -> Option<Gc<Self>> {
         use std::ops::Not;
         ptr.is_null()
             .not()
@@ -254,7 +254,7 @@ pub fn with_exception_handler<'a>(
 inventory::submit! {
     BridgeFn::new(
         "with-exception-handler",
-        "(base)",
+        "(rnrs base builtins (6))",
         2,
         false,
         with_exception_handler,
@@ -318,7 +318,7 @@ pub fn raise<'a>(
 inventory::submit! {
     BridgeFn::new(
         "raise",
-        "(base)",
+        "(rnrs base builtins (6))",
         1,
         false,
         raise,
@@ -333,7 +333,7 @@ inventory::submit! {
 }
 
 unsafe extern "C" fn reraise_exception(
-    runtime: *mut GcInner<Runtime>,
+    runtime: *mut GcInner<RuntimeInner>,
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
     _args: *const Value,
@@ -341,7 +341,7 @@ unsafe extern "C" fn reraise_exception(
     dynamic_wind: *const DynamicWind,
 ) -> *mut Result<Application, Condition> {
     unsafe {
-        let runtime = Gc::from_raw_inc_rc(runtime);
+        let runtime = Runtime(Gc::from_raw_inc_rc(runtime));
 
         // env[0] is the exception
         let exception = Gc::from_raw_inc_rc(env.read());
@@ -403,7 +403,7 @@ pub fn raise_continuable<'a>(
 inventory::submit! {
     BridgeFn::new(
         "raise-continuable",
-        "(base)",
+        "(rnrs base builtins (6))",
         1,
         false,
         raise_continuable,

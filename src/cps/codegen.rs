@@ -90,7 +90,7 @@ impl Cps {
     #[allow(clippy::too_many_arguments)]
     pub fn into_closure<'ctx, 'b>(
         self,
-        runtime: Gc<Runtime>,
+        runtime: Runtime,
         env: IndexMap<Local, Gc<SchemeValue>>,
         ctx: &'ctx Context,
         module: &'b Module<'ctx>,
@@ -198,7 +198,7 @@ impl Cps {
 }
 
 struct CompilationUnit<'ctx, 'b> {
-    runtime: Gc<Runtime>,
+    runtime: Runtime,
     ctx: &'ctx Context,
     module: &'b Module<'ctx>,
     builder: &'b Builder<'ctx>,
@@ -217,7 +217,7 @@ struct CompilationUnit<'ctx, 'b> {
 
 impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
     fn new(
-        runtime: Gc<Runtime>,
+        runtime: Runtime,
         ctx: &'ctx Context,
         module: &'b Module<'ctx>,
         builder: &'b Builder<'ctx>,
@@ -271,7 +271,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             Cps::PrimOp(primop, vals, result, cexpr) => {
                 self.simple_primop_codegen(primop, &vals, result, *cexpr, allocs, deferred)?
             }
-            Cps::Closure {
+            Cps::Lambda {
                 args,
                 body,
                 val,
@@ -362,7 +362,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 Ok(read_value)
             }
             Value::Const(val) => {
-                let mut runtime_write = self.runtime.write();
+                let mut runtime_write = self.runtime.0.write();
                 let reflexive_val = ReflexiveValue(val.clone());
                 if !runtime_write.constants_pool.contains(&reflexive_val) {
                     runtime_write.constants_pool.insert(reflexive_val.clone());
@@ -968,9 +968,8 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
     }
 }
 
-#[derive(Debug)]
 pub struct ClosureBundle<'ctx> {
-    runtime: Gc<Runtime>,
+    runtime: Runtime,
     val: Local,
     env: Vec<Local>,
     globals: Vec<Global>,
@@ -990,7 +989,7 @@ const CONTINUATION_PARAM: u32 = 6;
 
 impl<'ctx> ClosureBundle<'ctx> {
     fn new(
-        runtime: Gc<Runtime>,
+        runtime: Runtime,
         ctx: &'ctx Context,
         module: &Module<'ctx>,
         val: Local,

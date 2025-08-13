@@ -1,6 +1,6 @@
 use crate::{
     ast::Literal,
-    env::{Environment, Macro},
+    env::{Environment, Keyword},
     exception::Condition,
     gc::Trace,
     lex::{InputSpan, Token},
@@ -17,6 +17,7 @@ use std::{
     sync::Arc,
 };
 
+/// Source location for an s-expression.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Trace)]
 pub struct Span {
     pub line: u32,
@@ -53,9 +54,11 @@ impl From<InputSpan<'_>> for Span {
     }
 }
 
+/// Representation of a Scheme syntax object, or s-expression.
 #[derive(Clone, derive_more::Debug, Trace, PartialEq)]
 #[repr(align(16))]
-// TODO: Make cloning this struct as fast as possible.
+// TODO: Make cloning this struct as fast as possible. Realistically that means
+// moving nested data into Arc<[Syntax]>
 pub enum Syntax {
     /// An empty list.
     Null {
@@ -195,13 +198,7 @@ impl Syntax {
         }
     }
 
-    #[allow(dead_code)]
-    async fn apply_transformer(
-        &self,
-        env: &Environment,
-        mac: Macro,
-        // cont: &Closure,
-    ) -> Result<Expansion, Value> {
+    async fn apply_transformer(&self, env: &Environment, mac: Keyword) -> Result<Expansion, Value> {
         // Create a new mark for the expansion context
         let new_mark = Mark::new();
 
@@ -235,7 +232,7 @@ impl Syntax {
                         Some(Self::Identifier { ident, .. }) => ident,
                         _ => return Ok(Expansion::Unexpanded),
                     };
-                    if let Some(mac) = env.fetch_macro(ident) {
+                    if let Some(mac) = env.fetch_keyword(ident).await? {
                         return self.apply_transformer(env, mac).await;
                     }
 
@@ -243,7 +240,7 @@ impl Syntax {
                     match &list.as_slice()[1..] {
                         [Syntax::Identifier { ident: var, .. }, ..] if ident == "set!" => {
                             // Look for a variable transformer:
-                            if let Some(mac) = env.fetch_macro(var) {
+                            if let Some(mac) = env.fetch_keyword(var).await? {
                                 if !mac.transformer.read().is_variable_transformer {
                                     return Err(Condition::error(format!(
                                         "{} not a variable transformer",
@@ -258,7 +255,7 @@ impl Syntax {
                     }
                 }
                 Self::Identifier { ident, .. } => {
-                    if let Some(mac) = env.fetch_macro(ident) {
+                    if let Some(mac) = env.fetch_keyword(ident).await? {
                         return self.apply_transformer(env, mac).await;
                     }
                 }
@@ -309,6 +306,15 @@ impl Syntax {
         Self::parse(&tokens)
     }
 
+    pub fn from_str_with_line_offset<'a>(
+        s: &'a str,
+        file_name: Option<&str>,
+        line_offset: u32,
+    ) -> Result<Vec<Self>, ParseSyntaxError<'a>> {
+        let tokens = Token::tokenize_with_line_offset(s, file_name, line_offset)?;
+        Self::parse(&tokens)
+    }
+
     pub fn fetch_all_identifiers(&self, idents: &mut HashSet<Identifier>) {
         match self {
             Self::List { list: syns, .. } | Self::Vector { vector: syns, .. } => {
@@ -321,6 +327,12 @@ impl Syntax {
             }
             _ => (),
         }
+    }
+
+    /// Returns true if the syntax item is a list with a car that is an
+    /// identifier equal to the passed argument.
+    pub(crate) fn has_car(&self, car: &str) -> bool {
+        matches!(self.as_list(), Some([Self::Identifier { ident, .. }, .. ]) if ident == car)
     }
 }
 
@@ -353,14 +365,6 @@ impl FullyExpanded {
         }
     }
 }
-
-#[derive(Debug)]
-pub struct ParsedSyntax {
-    pub doc_comment: Option<String>,
-    pub syntax: Syntax,
-}
-
-impl ParsedSyntax {}
 
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Trace)]
 pub struct Mark(usize);
@@ -405,6 +409,15 @@ impl Identifier {
         }
     }
 
+    /// Return this identifier prefixed with the given string
+    pub fn prefix(self, prefix: &str) -> Self {
+        let sym = Symbol::intern(&format!("{prefix}{}", self.sym.to_str()));
+        Self {
+            sym,
+            marks: self.marks,
+        }
+    }
+
     pub fn mark(&mut self, mark: Mark) {
         if self.marks.contains(&mark) {
             self.marks.remove(&mark);
@@ -435,8 +448,6 @@ impl Syntax {
             Self::Identifier { span, .. } => span,
         }
     }
-
-    // There's got to be a better way:
 
     pub fn new_null(span: impl Into<Span>) -> Self {
         Self::Null { span: span.into() }
@@ -515,13 +526,13 @@ impl Syntax {
     }
 }
 
-#[bridge(name = "syntax->datum", lib = "(base)")]
+#[bridge(name = "syntax->datum", lib = "(rnrs syntax-case builtins (6))")]
 pub async fn syntax_to_datum(syn: &Value) -> Result<Vec<Value>, Condition> {
     let syn: Arc<Syntax> = syn.clone().try_into()?;
     Ok(vec![Value::datum_from_syntax(syn.as_ref())])
 }
 
-#[bridge(name = "datum->syntax", lib = "(base)")]
+#[bridge(name = "datum->syntax", lib = "(rnrs syntax-case builtins (6))")]
 pub async fn datum_to_syntax(template_id: &Value, datum: &Value) -> Result<Vec<Value>, Condition> {
     let syntax: Arc<Syntax> = template_id.clone().try_into()?;
     let Syntax::Identifier {
@@ -536,7 +547,7 @@ pub async fn datum_to_syntax(template_id: &Value, datum: &Value) -> Result<Vec<V
     ))])
 }
 
-#[bridge(name = "identifier?", lib = "(base)")]
+#[bridge(name = "identifier?", lib = "(rnrs syntax-case builtins (6))")]
 pub async fn identifier_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
     let Ok(syn) = Arc::<Syntax>::try_from(obj.clone()) else {
         return Ok(vec![Value::from(false)]);
@@ -544,7 +555,7 @@ pub async fn identifier_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(syn.is_identifier())])
 }
 
-#[bridge(name = "bound-identifier=?", lib = "(base)")]
+#[bridge(name = "bound-identifier=?", lib = "(rnrs syntax-case builtins (6))")]
 pub async fn bound_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, Condition> {
     let id1: Arc<Syntax> = id1.clone().try_into()?;
     let id2: Arc<Syntax> = id2.clone().try_into()?;
@@ -567,7 +578,7 @@ pub async fn bound_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Va
     Ok(vec![Value::from(*bound_id1 && *bound_id2 && id1 == id2)])
 }
 
-#[bridge(name = "free-identifier=?", lib = "(base)")]
+#[bridge(name = "free-identifier=?", lib = "(rnrs syntax-case builtins (6))")]
 pub async fn free_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, Condition> {
     let id1: Arc<Syntax> = id1.clone().try_into()?;
     let id2: Arc<Syntax> = id2.clone().try_into()?;

@@ -26,11 +26,10 @@ num = "0.4"
 ordered-float = "5"
 scheme-rs-macros = { version = "0.1.0-alpha.1", path = "proc-macros" }
 rand = "0.8"
+rust-embed = { version = "8", features = ["debug-embed"] }
 thiserror = "1"
 tokio = { version = "1.41", features = ["full"] }
 unicode_categories = "0.1"
-# TODO: Get rid of this dependency
-derivative = "2"
 malachite = { version = "0.5.1", features = ["floats"] }
 rustyline = { version = "15.0.0", features = ["derive"] }
 

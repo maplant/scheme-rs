@@ -411,20 +411,6 @@ fn is_valid_numeric_char(ch: char) -> bool {
     ch.is_ascii_digit() || ch == '-' || ch == '/' || ch == '.' || is_constituent(ch)
 }
 
-/*
-fn doc_comment(i: InputSpan) -> IResult<InputSpan, String> {
-    fold_many1(
-        delimited(tag(";;"), take_until("\n"), many0(whitespace)),
-        String::new,
-        |mut comment, line| {
-            comment.push_str(&line);
-            comment.push('\n');
-            comment
-        },
-    )(i)
-}
-*/
-
 #[derive(Clone, Debug)]
 pub struct Token<'a> {
     pub lexeme: Lexeme<'a>,
@@ -434,9 +420,19 @@ pub struct Token<'a> {
 pub type LexError<'a> = nom::Err<nom::error::Error<InputSpan<'a>>>;
 
 impl<'a> Token<'a> {
-    pub fn tokenize(s: &'a str, file_name: Option<&str>) -> Result<Vec<Self>, LexError<'a>> {
-        let mut span =
-            InputSpan::new_extra(s, Arc::new(file_name.unwrap_or("<stdin>").to_string()));
+    pub fn tokenize_with_line_offset(
+        s: &'a str,
+        file_name: Option<&str>,
+        line_offset: u32,
+    ) -> Result<Vec<Self>, LexError<'a>> {
+        let mut span = unsafe {
+            InputSpan::new_from_raw_offset(
+                0,
+                line_offset,
+                s,
+                Arc::new(file_name.unwrap_or("<stdin>").to_string()),
+            )
+        };
         let mut output = Vec::new();
         while !span.is_empty() {
             let (remaining, ()) = interlexeme_space(span)?;
@@ -452,6 +448,10 @@ impl<'a> Token<'a> {
             span = remaining;
         }
         Ok(output)
+    }
+
+    pub fn tokenize(s: &'a str, file_name: Option<&str>) -> Result<Vec<Self>, LexError<'a>> {
+        Self::tokenize_with_line_offset(s, file_name, 1)
     }
 }
 

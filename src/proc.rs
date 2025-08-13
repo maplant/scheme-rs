@@ -7,7 +7,7 @@ use crate::{
     gc::{Gc, GcInner, Trace},
     lists::{list_to_vec, slice_to_list},
     registry::{BridgeFn, BridgeFnDebugInfo},
-    runtime::Runtime,
+    runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
     syntax::Span,
     value::{UnpackedValue, Value, ValueType},
@@ -18,8 +18,8 @@ use std::{borrow::Cow, collections::HashMap, fmt, hash::Hash, ptr::null_mut, syn
 pub type Record = Vec<Gc<Value>>;
 
 /// A function pointer to a generated continuation.
-pub type ContinuationPtr = unsafe extern "C" fn(
-    runtime: *mut GcInner<Runtime>,
+pub(crate) type ContinuationPtr = unsafe extern "C" fn(
+    runtime: *mut GcInner<RuntimeInner>,
     env: *const *mut GcInner<Value>,
     globals: *const *mut GcInner<Value>,
     args: *const Value,
@@ -28,8 +28,8 @@ pub type ContinuationPtr = unsafe extern "C" fn(
 ) -> *mut Result<Application, Condition>;
 
 /// A function pointer to a generated user function.
-pub type UserPtr = unsafe extern "C" fn(
-    runtime: *mut GcInner<Runtime>,
+pub(crate) type UserPtr = unsafe extern "C" fn(
+    runtime: *mut GcInner<RuntimeInner>,
     env: *const *mut GcInner<Value>,
     globals: *const *mut GcInner<Value>,
     args: *const Value,
@@ -50,8 +50,8 @@ pub type BridgePtr = for<'a> fn(
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>>;
 
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub enum FuncPtr {
+#[derive(Copy, Clone, Debug)]
+pub(crate) enum FuncPtr {
     Continuation(ContinuationPtr),
     User(UserPtr),
     Bridge(BridgePtr),
@@ -73,27 +73,27 @@ pub struct Closure {
     /// The runtime the Closure is defined in. This is necessary to ensure that
     /// dropping the runtime does not de-allocate the function pointer for this
     /// closure.
-    pub runtime: Gc<Runtime>,
+    pub(crate) runtime: Runtime,
     /// Environmental variables used by the closure.
-    pub env: Record,
+    pub(crate) env: Record,
     /// Global variables used by this closure.
-    pub globals: Record,
+    pub(crate) globals: Record,
     /// Fuction pointer to the body of the closure.
-    pub func: FuncPtr,
+    pub(crate) func: FuncPtr,
     /// Number of required arguments to this closure.
-    pub num_required_args: usize,
+    pub(crate) num_required_args: usize,
     /// Whether or not this is a variadic function.
-    pub variadic: bool,
+    pub(crate) variadic: bool,
     /// Whether or not this function is a variable transformer.
-    pub is_variable_transformer: bool,
+    pub(crate) is_variable_transformer: bool,
     /// Debug information for this function. Only applicable if the function is
     /// a user function, i.e. not a continuation.
-    pub debug_info: Option<Arc<FuncDebugInfo>>,
+    pub(crate) debug_info: Option<Arc<FuncDebugInfo>>,
 }
 
 impl Closure {
-    pub fn new(
-        runtime: Gc<Runtime>,
+    pub(crate) fn new(
+        runtime: Runtime,
         env: impl Into<Record>,
         globals: impl Into<Record>,
         func: FuncPtr,
@@ -199,7 +199,7 @@ impl Closure {
             let app = match self.func {
                 FuncPtr::Continuation(sync_fn) => unsafe {
                     let app = (sync_fn)(
-                        Gc::as_ptr(&self.runtime),
+                        Gc::as_ptr(&self.runtime.0),
                         env.as_ptr(),
                         globals.as_ptr(),
                         args.as_ptr(),
@@ -210,7 +210,7 @@ impl Closure {
                 },
                 FuncPtr::User(sync_fn) => unsafe {
                     let app = (sync_fn)(
-                        Gc::as_ptr(&self.runtime),
+                        Gc::as_ptr(&self.runtime.0),
                         env.as_ptr(),
                         globals.as_ptr(),
                         args.as_ptr(),
@@ -233,7 +233,7 @@ impl Closure {
 impl Gc<Closure> {
     pub async fn call(self, args: &[Value]) -> Result<Vec<Value>, Exception> {
         unsafe extern "C" fn halt(
-            _runtime: *mut GcInner<Runtime>,
+            _runtime: *mut GcInner<RuntimeInner>,
             _env: *const *mut GcInner<Value>,
             _globals: *const *mut GcInner<Value>,
             args: *const Value,
@@ -477,7 +477,7 @@ pub fn apply<'a>(
 inventory::submit! {
     BridgeFn::new(
         "apply",
-        "(base)",
+        "(rnrs base builtins (6))",
         1,
         true,
         apply,
@@ -540,7 +540,7 @@ impl PartialEq for ClonedContinuation {
 impl Eq for ClonedContinuation {}
 
 unsafe extern "C" fn call_consumer_with_values(
-    _runtime: *mut GcInner<Runtime>,
+    _runtime: *mut GcInner<RuntimeInner>,
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
     args: *const Value,
@@ -642,7 +642,7 @@ pub fn call_with_values<'a>(
 inventory::submit! {
     BridgeFn::new(
         "call-with-values",
-        "(base)",
+        "(rnrs base builtins (6))",
         2,
         false,
         call_with_values,
@@ -707,7 +707,7 @@ pub fn dynamic_wind<'a>(
 inventory::submit! {
     BridgeFn::new(
         "dynamic-wind",
-        "(base)",
+        "(rnrs base builtins (6))",
         3,
         false,
         dynamic_wind,
@@ -722,7 +722,7 @@ inventory::submit! {
 }
 
 pub(crate) unsafe extern "C" fn call_body_thunk(
-    runtime: *mut GcInner<Runtime>,
+    runtime: *mut GcInner<RuntimeInner>,
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
     _args: *const Value,
@@ -750,7 +750,7 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
         ));
 
         let cont = Closure::new(
-            Gc::from_raw_inc_rc(runtime),
+            Runtime::from_raw_inc_rc(runtime),
             vec![out_thunk, k],
             Vec::new(),
             FuncPtr::Continuation(call_out_thunks),
@@ -772,7 +772,7 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
 }
 
 pub(crate) unsafe extern "C" fn call_out_thunks(
-    runtime: *mut GcInner<Runtime>,
+    runtime: *mut GcInner<RuntimeInner>,
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
     args: *const Value,
@@ -796,7 +796,7 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
         new_extent.winders.pop();
 
         let cont = Closure::new(
-            Gc::from_raw_inc_rc(runtime),
+            Runtime::from_raw_inc_rc(runtime),
             vec![body_thunk_res, k],
             Vec::new(),
             FuncPtr::Continuation(forward_body_thunk_result),
@@ -818,7 +818,7 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
 }
 
 unsafe extern "C" fn forward_body_thunk_result(
-    _runtime: *mut GcInner<Runtime>,
+    _runtime: *mut GcInner<RuntimeInner>,
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
     _args: *const Value,

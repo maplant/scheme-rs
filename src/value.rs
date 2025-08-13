@@ -718,14 +718,6 @@ impl Hash for ReflexiveValue {
             UnpackedValue::Number(n) => ReflexiveNumber(n.clone()).hash(state),
             UnpackedValue::String(s) => s.hash(state),
             UnpackedValue::Symbol(s) => s.hash(state),
-            /*
-            UnpackedValue::Vector(v) => {
-                let v_read = v.read();
-                for val in v_read.as_ref().iter() {
-                    ReflexiveValue(val.clone()).hash(state);
-                }
-            }
-            */
             UnpackedValue::ByteVector(v) => v.hash(state),
             UnpackedValue::Syntax(s) => Arc::as_ptr(s).hash(state),
             UnpackedValue::Closure(c) => Gc::as_ptr(c).hash(state),
@@ -787,27 +779,27 @@ impl PartialEq for ReflexiveValue {
 
 impl Eq for ReflexiveValue {}
 
-#[bridge(name = "not", lib = "(base)")]
+#[bridge(name = "not", lib = "(rnrs base builtins (6))")]
 pub async fn not(a: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(a.0 == ValueType::Boolean as u64)])
 }
 
-#[bridge(name = "eqv?", lib = "(base)")]
+#[bridge(name = "eqv?", lib = "(rnrs base builtins (6))")]
 pub async fn eqv(a: &Value, b: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(a == b)])
 }
 
-#[bridge(name = "eq?", lib = "(base)")]
+#[bridge(name = "eq?", lib = "(rnrs base builtins (6))")]
 pub async fn eq(a: &Value, b: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(a.0 == b.0)])
 }
 
-#[bridge(name = "boolean?", lib = "(base)")]
+#[bridge(name = "boolean?", lib = "(rnrs base builtins (6))")]
 pub async fn boolean_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(arg.type_of() == ValueType::Boolean)])
 }
 
-#[bridge(name = "boolean=?", lib = "(base)")]
+#[bridge(name = "boolean=?", lib = "(rnrs base builtins (6))")]
 pub async fn boolean_eq_pred(a: &Value, args: &[Value]) -> Result<Vec<Value>, Condition> {
     let res = if a.type_of() == ValueType::Boolean {
         args.iter().all(|arg| arg == a)
@@ -817,53 +809,42 @@ pub async fn boolean_eq_pred(a: &Value, args: &[Value]) -> Result<Vec<Value>, Co
     Ok(vec![Value::from(res)])
 }
 
-#[bridge(name = "symbol?", lib = "(base)")]
+#[bridge(name = "symbol?", lib = "(rnrs base builtins (6))")]
 pub async fn symbol_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(arg.type_of() == ValueType::Symbol)])
 }
 
-#[bridge(name = "char?", lib = "(base)")]
+#[bridge(name = "char?", lib = "(rnrs base builtins (6))")]
 pub async fn char_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(arg.type_of() == ValueType::Character)])
 }
 
-#[bridge(name = "vector?", lib = "(base)")]
+#[bridge(name = "vector?", lib = "(rnrs base builtins (6))")]
 pub async fn vector_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(arg.type_of() == ValueType::Vector)])
 }
 
-#[bridge(name = "null?", lib = "(base)")]
+#[bridge(name = "null?", lib = "(rnrs base builtins (6))")]
 pub async fn null_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(arg.type_of() == ValueType::Null)])
 }
 
-#[bridge(name = "pair?", lib = "(base)")]
+#[bridge(name = "pair?", lib = "(rnrs base builtins (6))")]
 pub async fn pair_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(arg.type_of() == ValueType::Pair)])
 }
 
-#[bridge(name = "string?", lib = "(base)")]
+#[bridge(name = "string?", lib = "(rnrs base builtins (6))")]
 pub async fn string_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(arg.type_of() == ValueType::String)])
 }
 
-#[bridge(name = "procedure?", lib = "(base)")]
+#[bridge(name = "procedure?", lib = "(rnrs base builtins (6))")]
 pub async fn procedure_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(arg.type_of() == ValueType::Closure)])
 }
 
-/*
-#[bridge(name = "future?", lib = "(base)")]
-pub async fn future_pred(arg: &Gc<Value>) -> Result<Vec<Gc<Value>>, Condition> {
-    let arg = arg.read();
-    Ok(vec![Gc::new(Value::Boolean(matches!(
-        &*arg,
-        Value::Future(_)
-    )))])
-}
-*/
-
-#[bridge(name = "display", lib = "(base)")]
+#[bridge(name = "display", lib = "(rnrs base builtins (6))")]
 pub async fn display(arg: &Value) -> Result<Vec<Value>, Condition> {
     print!("{arg}");
     let _ = std::io::stdout().flush();

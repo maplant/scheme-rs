@@ -33,7 +33,7 @@ impl Cps {
                 Box::new(success.beta_reduction(uses_cache)),
                 Box::new(failure.beta_reduction(uses_cache)),
             ),
-            Cps::Closure {
+            Cps::Lambda {
                 args,
                 body,
                 val,
@@ -55,7 +55,7 @@ impl Cps {
                     }
                 }
 
-                Cps::Closure {
+                Cps::Lambda {
                     args,
                     body: Box::new(body),
                     val,
@@ -82,7 +82,7 @@ impl Cps {
                 return succ.reduce_function(func, args, func_body, uses_cache)
                     || fail.reduce_function(func, args, func_body, uses_cache);
             }
-            Cps::Closure {
+            Cps::Lambda {
                 val, body, cexp, ..
             } => {
                 let reduced = body.reduce_function(func, args, func_body, uses_cache)
@@ -93,11 +93,8 @@ impl Cps {
                 return reduced;
             }
             Cps::App(Value::Var(Var::Local(operator)), applied, _) if *operator == func => {
-                let substitutions: HashMap<_, _> = args
-                    .to_vec()
-                    .into_iter()
-                    .zip(applied.iter().cloned())
-                    .collect();
+                let substitutions: HashMap<_, _> =
+                    args.iter().copied().zip(applied.iter().cloned()).collect();
                 let mut body = func_body.clone();
                 body.substitute(&substitutions);
                 body
@@ -112,7 +109,7 @@ impl Cps {
     #[allow(dead_code)]
     fn dead_code_elimination(self, uses_cache: &mut HashMap<Local, HashMap<Local, usize>>) -> Self {
         match self {
-            Cps::Closure { val, cexp, .. } if !cexp.uses(uses_cache).contains_key(&val) => {
+            Cps::Lambda { val, cexp, .. } if !cexp.uses(uses_cache).contains_key(&val) => {
                 // Unused closure can be eliminated
                 cexp.dead_code_elimination(uses_cache)
             }
@@ -132,13 +129,13 @@ impl Cps {
                 Box::new(success.dead_code_elimination(uses_cache)),
                 Box::new(failure.dead_code_elimination(uses_cache)),
             ),
-            Cps::Closure {
+            Cps::Lambda {
                 args,
                 body,
                 val,
                 cexp,
                 span,
-            } => Cps::Closure {
+            } => Cps::Lambda {
                 args,
                 body: Box::new(body.dead_code_elimination(uses_cache)),
                 val,

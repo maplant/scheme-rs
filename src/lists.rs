@@ -128,7 +128,7 @@ pub fn list_to_vec_with_null(curr: &Value, out: &mut Vec<Value>) {
     }
 }
 
-#[bridge(name = "list", lib = "(base)")]
+#[bridge(name = "list", lib = "(rnrs base builtins (6))")]
 pub async fn list(args: &[Value]) -> Result<Vec<Value>, Condition> {
     // Construct the list in reverse
     let mut cdr = Value::null();
@@ -138,12 +138,12 @@ pub async fn list(args: &[Value]) -> Result<Vec<Value>, Condition> {
     Ok(vec![cdr])
 }
 
-#[bridge(name = "cons", lib = "(base)")]
+#[bridge(name = "cons", lib = "(rnrs base builtins (6))")]
 pub async fn cons(car: &Value, cdr: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(Gc::new(Pair(car.clone(), cdr.clone())))])
 }
 
-#[bridge(name = "car", lib = "(base)")]
+#[bridge(name = "car", lib = "(rnrs base builtins (6))")]
 pub async fn car(val: &Value) -> Result<Vec<Value>, Condition> {
     let pair: Gc<Pair> = val.clone().try_into()?;
     let pair_read = pair.read();
@@ -151,7 +151,7 @@ pub async fn car(val: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![car.clone()])
 }
 
-#[bridge(name = "cdr", lib = "(base)")]
+#[bridge(name = "cdr", lib = "(rnrs base builtins (6))")]
 pub async fn cdr(val: &Value) -> Result<Vec<Value>, Condition> {
     let pair: Gc<Pair> = val.clone().try_into()?;
     let pair_read = pair.read();
@@ -159,7 +159,7 @@ pub async fn cdr(val: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![cdr.clone()])
 }
 
-#[bridge(name = "set-car!", lib = "(base)")]
+#[bridge(name = "set-car!", lib = "(rnrs base builtins (6))")]
 pub async fn set_car(var: &Value, val: &Value) -> Result<Vec<Value>, Condition> {
     let pair: Gc<Pair> = var.clone().try_into()?;
     let mut pair_write = pair.write();
@@ -168,7 +168,7 @@ pub async fn set_car(var: &Value, val: &Value) -> Result<Vec<Value>, Condition> 
     Ok(Vec::new())
 }
 
-#[bridge(name = "set-cdr!", lib = "(base)")]
+#[bridge(name = "set-cdr!", lib = "(rnrs base builtins (6))")]
 pub async fn set_cdr(var: &Value, val: &Value) -> Result<Vec<Value>, Condition> {
     let pair: Gc<Pair> = var.clone().try_into()?;
     let mut pair_write = pair.write();
@@ -177,7 +177,7 @@ pub async fn set_cdr(var: &Value, val: &Value) -> Result<Vec<Value>, Condition> 
     Ok(Vec::new())
 }
 
-#[bridge(name = "length", lib = "(base)")]
+#[bridge(name = "length", lib = "(rnrs base builtins (6))")]
 pub async fn length(arg: &Value) -> Result<Vec<Value>, Condition> {
     let mut length = 0usize;
     let mut arg = arg.clone();
@@ -197,7 +197,7 @@ pub async fn length(arg: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(Number::from(length))])
 }
 
-#[bridge(name = "list->vector", lib = "(base)")]
+#[bridge(name = "list->vector", lib = "(rnrs base builtins (6))")]
 pub async fn list_to_vector(list: &Value) -> Result<Vec<Value>, Condition> {
     let mut vec = Vec::new();
     list_to_vec(list, &mut vec);

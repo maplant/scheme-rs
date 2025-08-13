@@ -3,14 +3,16 @@
 use crate::{
     cps::{Compile, PrimOp},
     env::{CapturedEnv, Environment, Local, Var},
-    expand::SyntaxRule,
-    expand::Transformer,
+    exception::Condition,
+    expand::{SyntaxRule, Transformer},
     gc::{Gc, Trace},
     num::{Number, NumberToUsizeError},
+    parse::ParseSyntaxError,
     proc::Closure,
+    registry::ImportError,
     runtime::Runtime,
-    syntax::{FullyExpanded, Identifier},
-    syntax::{Span, Syntax},
+    symbols::Symbol,
+    syntax::{FullyExpanded, Identifier, Span, Syntax},
     value::Value,
 };
 use either::Either;
@@ -27,8 +29,9 @@ use std::{
 pub enum ParseAstError {
     /// The most general error. Something just looks bad.
     ///
-    /// This error type should be avoided, and instead one should use a more specific error type,
-    /// or create one.
+    /// This error type should be avoided, and instead one should use a more
+    /// specific error type, or create one. Lord knows I have not really taken
+    /// that advice.
     BadForm(Span),
 
     ExpectedArgument(Span),
@@ -37,13 +40,31 @@ pub enum ParseAstError {
     ExpectedNumber(Span),
     ExpectedVariableTransformer,
     ExpectedInteger(NumberToUsizeError),
-
+    ExpectedExportSpec(Span),
+    ExpectedImportSpec(Span),
+    ExpectedLibraryKeyword(Span),
+    ExpectedList(Span),
     UnexpectedArgument(Span),
     UnexpectedDefinition(Span),
+    UnexpectedImport(Span),
     UnexpectedEmptyList(Span),
 
-    UndefinedVariable(Identifier),
-
+    ImportError {
+        span: Span,
+        error: Box<ImportError>,
+    },
+    CannotSetImmutableVar {
+        span: Span,
+        name: Identifier,
+    },
+    NumberToUsizeError {
+        span: Span,
+        error: NumberToUsizeError,
+    },
+    UndefinedVariable {
+        span: Span,
+        ident: Identifier,
+    },
     ParentSpecifiedMultipleTimes {
         first: Span,
         second: Span,
@@ -75,11 +96,684 @@ impl From<Value> for ParseAstError {
     }
 }
 
+impl From<Condition> for ParseAstError {
+    fn from(raised: Condition) -> Self {
+        Self::RaisedValue(Value::from(raised))
+    }
+}
+
+/// Special keywords are keywords that the compiler needs to know about in order
+/// to create an AST.
+#[derive(Copy, Clone, Trace, Debug)]
+pub enum SpecialKeyword {
+    Undefined,
+    Begin,
+    Lambda,
+    Let,
+    LetSyntax,
+    LetRecSyntax,
+    If,
+    And,
+    Or,
+    Quote,
+    Syntax,
+    SyntaxCase,
+    Set,
+    Define,
+    DefineSyntax,
+    Import,
+    CallWithCurrentContinuation,
+}
+
+pub struct LibrarySpec {
+    pub(crate) name: LibraryName,
+    pub(crate) exports: ExportSpec,
+    pub(crate) imports: ImportSpec,
+    pub(crate) body: Vec<Syntax>,
+}
+
+impl LibrarySpec {
+    pub fn parse(syn: &Syntax) -> Result<Self, ParseAstError> {
+        match syn.as_list() {
+            Some(
+                [
+                    Syntax::Identifier {
+                        ident: library_decl,
+                        span: library_decl_span,
+                        ..
+                    },
+                    library_name,
+                    body @ ..,
+                    Syntax::Null { .. },
+                ],
+            ) => {
+                if library_decl != "library" {
+                    return Err(ParseAstError::ExpectedLibraryKeyword(
+                        library_decl_span.clone(),
+                    ));
+                }
+                let mut exports = ExportSpec::default();
+                let mut imports = ImportSpec::default();
+                let mut body = body;
+                while let Some(spec) = body.first() {
+                    if spec.has_car("export") {
+                        exports.join(ExportSpec::parse(spec).unwrap());
+                    } else if spec.has_car("import") {
+                        imports.join(ImportSpec::parse(spec).unwrap());
+                    } else {
+                        break;
+                    }
+                    body = &body[1..];
+                }
+                Ok(Self {
+                    name: LibraryName::parse(library_name)?,
+                    exports,
+                    imports,
+                    body: body.to_vec(),
+                })
+            }
+            _ => Err(ParseAstError::BadForm(syn.span().clone())),
+        }
+    }
+}
+
+#[derive(Clone, Default, PartialEq, Eq, Hash, Trace, Debug)]
+pub struct LibraryName {
+    pub name: Vec<Symbol>,
+    pub version: Version,
+}
+
+impl LibraryName {
+    pub fn parse(syn: &Syntax) -> Result<Self, ParseAstError> {
+        match syn.as_list() {
+            Some(
+                [
+                    name @ ..,
+                    Syntax::List {
+                        list: version,
+                        span,
+                    },
+                    Syntax::Null { .. },
+                ],
+            ) => Ok(Self {
+                name: list_to_name(name)?,
+                version: Version::parse(version, span)?,
+            }),
+            Some([name @ .., Syntax::Null { .. }]) => Ok(Self {
+                name: list_to_name(name)?,
+                version: Version::default(),
+            }),
+            _ => Err(ParseAstError::BadForm(syn.span().clone())),
+        }
+    }
+
+    pub fn from_str<'a>(
+        s: &'a str,
+        file_name: Option<&str>,
+    ) -> Result<Self, ParseLibraryNameError<'a>> {
+        let syn = Syntax::from_str(s, file_name)?;
+        Ok(Self::parse(&syn[0])?)
+    }
+}
+
+fn list_to_name(name: &[Syntax]) -> Result<Vec<Symbol>, ParseAstError> {
+    name.iter()
+        .map(|name| {
+            if let Syntax::Identifier { ident, .. } = name {
+                Ok(ident.sym)
+            } else {
+                Err(ParseAstError::ExpectedIdentifier(name.span().clone()))
+            }
+        })
+        .collect()
+}
+
+#[derive(Debug)]
+pub enum ParseLibraryNameError<'a> {
+    ParseSyntaxError(ParseSyntaxError<'a>),
+    ParseAstError(ParseAstError),
+}
+
+impl<'a> From<ParseSyntaxError<'a>> for ParseLibraryNameError<'a> {
+    fn from(pse: ParseSyntaxError<'a>) -> Self {
+        Self::ParseSyntaxError(pse)
+    }
+}
+
+impl From<ParseAstError> for ParseLibraryNameError<'_> {
+    fn from(pae: ParseAstError) -> Self {
+        Self::ParseAstError(pae)
+    }
+}
+
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Hash, Default, Trace, Debug)]
+pub struct Version {
+    version: Vec<usize>,
+}
+
+impl Version {
+    fn parse(syn: &[Syntax], span: &Span) -> Result<Self, ParseAstError> {
+        match syn {
+            [version @ .., Syntax::Null { .. }] => {
+                let version: Result<Vec<usize>, _> = version
+                    .iter()
+                    .map(|subvers| {
+                        if let Syntax::Literal {
+                            literal: Literal::Number(num),
+                            ..
+                        } = subvers
+                        {
+                            num.try_into().map_err(ParseAstError::ExpectedInteger)
+                        } else {
+                            Err(ParseAstError::ExpectedNumber(subvers.span().clone()))
+                        }
+                    })
+                    .collect();
+                Ok(Self { version: version? })
+            }
+            _ => Err(ParseAstError::BadForm(span.clone())),
+        }
+    }
+}
+
+impl<const N: usize> From<[usize; N]> for Version {
+    fn from(value: [usize; N]) -> Self {
+        Self {
+            version: Vec::from(value),
+        }
+    }
+}
+
+pub enum VersionReference {
+    SubVersions(Vec<SubVersionReference>),
+    And(Vec<VersionReference>),
+    Or(Vec<VersionReference>),
+    Not(Box<VersionReference>),
+}
+
+impl VersionReference {
+    fn parse(syn: &Syntax) -> Result<Self, ParseAstError> {
+        match syn.as_list() {
+            Some(
+                [
+                    Syntax::Identifier { ident: kw, .. },
+                    version_refs @ ..,
+                    Syntax::Null { .. },
+                ],
+            ) if kw == "and" => {
+                let version_refs = version_refs
+                    .iter()
+                    .map(VersionReference::parse)
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Self::And(version_refs))
+            }
+            Some(
+                [
+                    Syntax::Identifier { ident: kw, .. },
+                    version_refs @ ..,
+                    Syntax::Null { .. },
+                ],
+            ) if kw == "or" => {
+                let version_refs = version_refs
+                    .iter()
+                    .map(VersionReference::parse)
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Self::Or(version_refs))
+            }
+            Some(
+                [
+                    Syntax::Identifier { ident: kw, .. },
+                    version_ref,
+                    Syntax::Null { .. },
+                ],
+            ) if kw == "not" => {
+                let version_ref = VersionReference::parse(version_ref)?;
+                Ok(Self::Not(Box::new(version_ref)))
+            }
+            Some([subversion_refs @ .., Syntax::Null { .. }]) => {
+                let subversion_refs = subversion_refs
+                    .iter()
+                    .map(SubVersionReference::parse)
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Self::SubVersions(subversion_refs))
+            }
+            None => Err(ParseAstError::ExpectedList(syn.span().clone())),
+            _ => Err(ParseAstError::BadForm(syn.span().clone())),
+        }
+    }
+}
+
+pub enum SubVersionReference {
+    SubVersion(usize),
+    Gte(usize),
+    Lte(usize),
+    And(Vec<SubVersionReference>),
+    Or(Vec<SubVersionReference>),
+    Not(Box<SubVersionReference>),
+}
+
+impl SubVersionReference {
+    fn parse(syn: &Syntax) -> Result<Self, ParseAstError> {
+        match syn {
+            Syntax::Literal {
+                literal: Literal::Number(num),
+                ..
+            } => Ok(Self::SubVersion(num.try_into().map_err(|error| {
+                ParseAstError::NumberToUsizeError {
+                    span: syn.span().clone(),
+                    error,
+                }
+            })?)),
+            _ => match syn.as_list() {
+                Some(
+                    [
+                        Syntax::Identifier { ident: kw, .. },
+                        Syntax::Literal {
+                            literal: Literal::Number(num),
+                            ..
+                        },
+                        Syntax::Null { .. },
+                    ],
+                ) if kw == ">=" => Ok(Self::Gte(num.try_into().map_err(|error| {
+                    ParseAstError::NumberToUsizeError {
+                        span: syn.span().clone(),
+                        error,
+                    }
+                })?)),
+                Some(
+                    [
+                        Syntax::Identifier { ident: kw, .. },
+                        Syntax::Literal {
+                            literal: Literal::Number(num),
+                            ..
+                        },
+                        Syntax::Null { .. },
+                    ],
+                ) if kw == "<=" => Ok(Self::Lte(num.try_into().map_err(|error| {
+                    ParseAstError::NumberToUsizeError {
+                        span: syn.span().clone(),
+                        error,
+                    }
+                })?)),
+                Some(
+                    [
+                        Syntax::Identifier { ident: kw, .. },
+                        subversion_refs @ ..,
+                        Syntax::Null { .. },
+                    ],
+                ) if kw == "and" => {
+                    let subversion_refs = subversion_refs
+                        .iter()
+                        .map(SubVersionReference::parse)
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok(Self::And(subversion_refs))
+                }
+                Some(
+                    [
+                        Syntax::Identifier { ident: kw, .. },
+                        subversion_refs @ ..,
+                        Syntax::Null { .. },
+                    ],
+                ) if kw == "or" => {
+                    let subversion_refs = subversion_refs
+                        .iter()
+                        .map(SubVersionReference::parse)
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok(Self::Or(subversion_refs))
+                }
+                Some(
+                    [
+                        Syntax::Identifier { ident: kw, .. },
+                        subversion_ref,
+                        Syntax::Null { .. },
+                    ],
+                ) if kw == "not" => {
+                    let subversion_ref = SubVersionReference::parse(subversion_ref)?;
+                    Ok(Self::Not(Box::new(subversion_ref)))
+                }
+                None => Err(ParseAstError::ExpectedList(syn.span().clone())),
+                _ => Err(ParseAstError::BadForm(syn.span().clone())),
+            },
+        }
+    }
+}
+
+pub enum ExportSet {
+    Internal {
+        rename: Option<Identifier>,
+        ident: Identifier,
+    },
+    External(ImportSpec),
+}
+
+impl ExportSet {
+    pub fn parse_rename(syn: &Syntax) -> Result<Self, ParseAstError> {
+        match syn.as_list() {
+            Some(
+                [
+                    Syntax::Identifier { ident: from, .. },
+                    Syntax::Identifier { ident: to, .. },
+                    Syntax::Null { .. },
+                ],
+            ) => Ok(Self::Internal {
+                rename: Some(to.clone()),
+                ident: from.clone(),
+            }),
+            _ => Err(ParseAstError::BadForm(syn.span().clone())),
+        }
+    }
+
+    pub fn parse(syn: &Syntax) -> Result<Vec<Self>, ParseAstError> {
+        match syn {
+            Syntax::Identifier { ident, .. } => Ok(vec![Self::Internal {
+                rename: None,
+                ident: ident.clone(),
+            }]),
+            Syntax::List { list, .. } => match list.as_slice() {
+                [
+                    Syntax::Identifier { ident, .. },
+                    renames @ ..,
+                    Syntax::Null { .. },
+                ] if ident == "rename" => Ok(renames
+                    .iter()
+                    .map(Self::parse_rename)
+                    .collect::<Result<Vec<_>, _>>()?),
+                [Syntax::Identifier { ident, .. }, .., Syntax::Null { .. }]
+                    if ident == "import" =>
+                {
+                    Ok(vec![Self::External(ImportSpec::parse(syn)?)])
+                }
+                _ => Err(ParseAstError::BadForm(syn.span().clone())),
+            },
+            _ => Err(ParseAstError::BadForm(syn.span().clone())),
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct ExportSpec {
+    pub(crate) export_sets: Vec<ExportSet>,
+}
+
+impl ExportSpec {
+    pub fn parse(syn: &Syntax) -> Result<Self, ParseAstError> {
+        match syn.as_list() {
+            Some(
+                [
+                    Syntax::Identifier {
+                        ident: export_decl, ..
+                    },
+                    exports @ ..,
+                    Syntax::Null { .. },
+                ],
+            ) if export_decl == "export" => Ok(ExportSpec {
+                export_sets: exports
+                    .iter()
+                    .map(ExportSet::parse)
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .flatten()
+                    .collect(),
+            }),
+            _ => Err(ParseAstError::ExpectedExportSpec(syn.span().clone())),
+        }
+    }
+
+    pub fn join(&mut self, rhs: ExportSpec) {
+        self.export_sets.extend(rhs.export_sets);
+    }
+}
+
+#[derive(Default)]
+pub struct ImportSpec {
+    pub(crate) import_sets: Vec<ImportSet>,
+}
+
+impl ImportSpec {
+    pub fn parse(syn: &Syntax) -> Result<Self, ParseAstError> {
+        match syn.as_list() {
+            Some(
+                [
+                    Syntax::Identifier {
+                        ident: import_decl, ..
+                    },
+                    imports @ ..,
+                    Syntax::Null { .. },
+                ],
+            ) if import_decl == "import" => Ok(ImportSpec {
+                import_sets: imports
+                    .iter()
+                    .map(|import| ImportSet::parse(discard_for(import)))
+                    .collect::<Result<Vec<_>, _>>()?,
+            }),
+            _ => Err(ParseAstError::ExpectedImportSpec(syn.span().clone())),
+        }
+    }
+
+    pub fn join(&mut self, rhs: ImportSpec) {
+        self.import_sets.extend(rhs.import_sets);
+    }
+}
+
+fn discard_for(syn: &Syntax) -> &Syntax {
+    match syn.as_list() {
+        Some(
+            [
+                Syntax::Identifier { ident: for_kw, .. },
+                import_set,
+                _import_level @ ..,
+                Syntax::Null { .. },
+            ],
+        ) if for_kw == "for" => {
+            // We should eventually check the import levels for being well
+            // formed, even if we ignore them.
+            import_set
+        }
+        _ => syn,
+    }
+}
+
+pub enum ImportSet {
+    Library(LibraryReference),
+    Only {
+        set: Box<ImportSet>,
+        allowed: HashSet<Identifier>,
+    },
+    Except {
+        set: Box<ImportSet>,
+        disallowed: HashSet<Identifier>,
+    },
+    Prefix {
+        set: Box<ImportSet>,
+        prefix: Identifier,
+    },
+    Rename {
+        set: Box<ImportSet>,
+        /// Imported identifiers to rename (from, to).
+        renames: HashMap<Identifier, Identifier>,
+    },
+}
+
+impl ImportSet {
+    fn parse(syn: &Syntax) -> Result<Self, ParseAstError> {
+        match syn.as_list() {
+            Some(
+                [
+                    Syntax::Identifier {
+                        ident: import_type, ..
+                    },
+                    lib_ref,
+                    Syntax::Null { .. },
+                ],
+            ) if import_type == "library" => Ok(Self::Library(LibraryReference::parse(lib_ref)?)),
+            Some(
+                [
+                    Syntax::Identifier {
+                        ident: import_type, ..
+                    },
+                    import_set,
+                    imports @ ..,
+                    Syntax::Null { .. },
+                ],
+            ) if import_type == "only" => {
+                let import_set = ImportSet::parse(import_set)?;
+                let allowed = imports
+                    .iter()
+                    .map(|allowed| match allowed {
+                        Syntax::Identifier { ident, .. } => Ok(ident.clone()),
+                        _ => Err(ParseAstError::ExpectedIdentifier(allowed.span().clone())),
+                    })
+                    .collect::<Result<HashSet<_>, _>>()?;
+                Ok(Self::Only {
+                    set: Box::new(import_set),
+                    allowed,
+                })
+            }
+            Some(
+                [
+                    Syntax::Identifier {
+                        ident: import_type, ..
+                    },
+                    import_set,
+                    exceptions @ ..,
+                    Syntax::Null { .. },
+                ],
+            ) if import_type == "except" => {
+                let import_set = ImportSet::parse(import_set)?;
+                let disallowed = exceptions
+                    .iter()
+                    .map(|disallowed| match disallowed {
+                        Syntax::Identifier { ident, .. } => Ok(ident.clone()),
+                        _ => Err(ParseAstError::ExpectedIdentifier(disallowed.span().clone())),
+                    })
+                    .collect::<Result<HashSet<_>, _>>()?;
+                Ok(Self::Except {
+                    set: Box::new(import_set),
+                    disallowed,
+                })
+            }
+            Some(
+                [
+                    Syntax::Identifier {
+                        ident: import_type, ..
+                    },
+                    import_set,
+                    Syntax::Identifier { ident: prefix, .. },
+                    Syntax::Null { .. },
+                ],
+            ) if import_type == "prefix" => {
+                let import_set = ImportSet::parse(import_set)?;
+                Ok(Self::Prefix {
+                    set: Box::new(import_set),
+                    prefix: prefix.clone(),
+                })
+            }
+            Some(
+                [
+                    Syntax::Identifier {
+                        ident: import_type, ..
+                    },
+                    import_set,
+                    renames @ ..,
+                    Syntax::Null { .. },
+                ],
+            ) if import_type == "rename" => {
+                let import_set = ImportSet::parse(import_set)?;
+                let renames = renames
+                    .iter()
+                    .map(|rename| match rename.as_list() {
+                        Some(
+                            [
+                                Syntax::Identifier { ident: from, .. },
+                                Syntax::Identifier { ident: to, .. },
+                                Syntax::Null { .. },
+                            ],
+                        ) => Ok((from.clone(), to.clone())),
+                        _ => Err(ParseAstError::BadForm(rename.span().clone())),
+                    })
+                    .collect::<Result<HashMap<_, _>, _>>()?;
+                Ok(Self::Rename {
+                    set: Box::new(import_set),
+                    renames,
+                })
+            }
+            Some(_) => Ok(Self::Library(LibraryReference::parse(syn)?)),
+            _ => Err(ParseAstError::ExpectedList(syn.span().clone())),
+        }
+    }
+
+    pub fn parse_from_str<'a>(s: &'a str) -> Result<Self, ParseImportSetError<'a>> {
+        let syn = Syntax::from_str(s, None)?;
+        Ok(Self::parse(&syn[0])?)
+    }
+}
+
+#[derive(Debug)]
+pub enum ParseImportSetError<'a> {
+    ParseSyntaxError(ParseSyntaxError<'a>),
+    ParseAstError(ParseAstError),
+}
+
+impl<'a> From<ParseSyntaxError<'a>> for ParseImportSetError<'a> {
+    fn from(pse: ParseSyntaxError<'a>) -> Self {
+        Self::ParseSyntaxError(pse)
+    }
+}
+
+impl From<ParseAstError> for ParseImportSetError<'_> {
+    fn from(pae: ParseAstError) -> Self {
+        Self::ParseAstError(pae)
+    }
+}
+
+pub struct LibraryReference {
+    pub(crate) name: Vec<Symbol>,
+    pub(crate) _version_ref: VersionReference,
+}
+
+impl LibraryReference {
+    fn parse(syn: &Syntax) -> Result<Self, ParseAstError> {
+        match syn.as_list() {
+            Some(
+                [
+                    syms @ ..,
+                    version_ref @ Syntax::List { .. },
+                    Syntax::Null { .. },
+                ],
+            ) => {
+                let name = syms
+                    .iter()
+                    .map(|atom| match atom {
+                        Syntax::Identifier { ident, .. } => Ok(ident.sym),
+                        _ => Err(ParseAstError::ExpectedIdentifier(atom.span().clone())),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let _version_ref = VersionReference::parse(version_ref)?;
+                Ok(LibraryReference { name, _version_ref })
+            }
+            Some([syms @ .., Syntax::Null { .. }]) => {
+                let name = syms
+                    .iter()
+                    .map(|atom| match atom {
+                        Syntax::Identifier { ident, .. } => Ok(ident.sym),
+                        _ => Err(ParseAstError::ExpectedIdentifier(atom.span().clone())),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(LibraryReference {
+                    name,
+                    _version_ref: VersionReference::SubVersions(Vec::new()),
+                })
+            }
+            None => Err(ParseAstError::ExpectedList(syn.span().clone())),
+            _ => Err(ParseAstError::BadForm(syn.span().clone())),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Trace)]
 pub enum Definition {
     DefineVar(DefineVar),
     DefineFunc(DefineFunc),
-    // DefineRecordType(DefineRecordType),
 }
 
 #[derive(Debug, Clone, Trace)]
@@ -112,8 +806,8 @@ impl Definition {
         }
     }
 
-    async fn parse(
-        runtime: &Gc<Runtime>,
+    pub async fn parse(
+        runtime: &Runtime,
         syn: &[Syntax],
         env: &Environment,
         span: &Span,
@@ -125,7 +819,7 @@ impl Definition {
                 expr,
                 Syntax::Null { .. },
             ] => Ok(Definition::DefineVar(DefineVar {
-                var: env.fetch_var(ident).unwrap(),
+                var: env.fetch_var(ident).await?.unwrap(),
                 val: Arc::new(Expression::parse(runtime, expr.clone(), env).await?),
                 next: None,
             })),
@@ -147,7 +841,7 @@ impl Definition {
                         },
                         args @ ..,
                     ] => {
-                        let var = env.fetch_var(func_name).unwrap();
+                        let var = env.fetch_var(func_name).await?.unwrap();
 
                         let mut bound = HashMap::<Identifier, Span>::new();
                         let mut fixed = Vec::new();
@@ -236,7 +930,7 @@ impl Definition {
 }
 
 pub(super) async fn define_syntax(
-    runtime: &Gc<Runtime>,
+    runtime: &Runtime,
     ident: Identifier,
     expr: Syntax,
     env: &Environment,
@@ -255,7 +949,7 @@ pub(super) async fn define_syntax(
         .await
         .map_err(|err| ParseAstError::RaisedValue(err.into()))?;
     let transformer: Gc<Closure> = mac[0].clone().try_into().unwrap();
-    env.def_macro(ident, transformer);
+    env.def_keyword(ident, transformer);
 
     Ok(())
 }
@@ -282,7 +976,7 @@ pub enum Expression {
 
 impl Expression {
     pub async fn parse(
-        runtime: &Gc<Runtime>,
+        runtime: &Runtime,
         syn: Syntax,
         env: &Environment,
     ) -> Result<Self, ParseAstError> {
@@ -290,11 +984,11 @@ impl Expression {
             expansion_env,
             expanded,
         } = syn.expand(env).await?;
-        Self::parse_expanded(runtime, expanded, &expansion_env /* cont*/).await
+        Self::parse_expanded(runtime, expanded, &expansion_env).await
     }
 
     fn parse_expanded<'a>(
-        runtime: &'a Gc<Runtime>,
+        runtime: &'a Runtime,
         syn: Syntax,
         env: &'a Environment,
     ) -> BoxFuture<'a, Result<Self, ParseAstError>> {
@@ -302,23 +996,27 @@ impl Expression {
             match syn {
                 Syntax::Null { span } => Err(ParseAstError::UnexpectedEmptyList(span)),
 
-                // Special Identifiers:
-                Syntax::Identifier { ident, .. } if ident.sym == "<undefined>" => {
-                    Ok(Self::Undefined)
-                }
-
                 // Regular identifiers:
-                Syntax::Identifier { ident, .. } => Ok(Self::Var(
-                    env.fetch_var(&ident)
-                        .or_else(|| {
+                Syntax::Identifier { ident, span, .. } => {
+                    match env.fetch_special_keyword_or_var(&ident).await? {
+                        Some(Either::Left(SpecialKeyword::Undefined)) => Ok(Self::Undefined),
+                        Some(Either::Left(_)) => Err(ParseAstError::BadForm(span.clone())),
+                        Some(Either::Right(var)) => Ok(Self::Var(var)),
+                        None => {
                             let top = env.fetch_top();
-                            let is_repl = { top.read().is_repl() };
-                            is_repl.then(|| {
-                                Var::Global(top.write().def_var(ident.clone(), Value::undefined()))
-                            })
-                        })
-                        .ok_or_else(|| ParseAstError::UndefinedVariable(ident.clone()))?,
-                )),
+                            if top.is_repl() {
+                                Ok(Self::Var(Var::Global(
+                                    top.def_var(ident.clone(), Value::undefined()),
+                                )))
+                            } else {
+                                Err(ParseAstError::UndefinedVariable {
+                                    span: span.clone(),
+                                    ident: ident.clone(),
+                                })
+                            }
+                        }
+                    }
+                }
 
                 // Literals:
                 Syntax::Literal { literal, .. } => Ok(Self::Literal(literal)),
@@ -333,116 +1031,108 @@ impl Expression {
                 } => match exprs.as_slice() {
                     // Special forms:
                     [
-                        Syntax::Identifier { ident, bound, .. },
+                        Syntax::Identifier { ident, span, .. },
                         tail @ ..,
                         Syntax::Null { .. },
-                    ] if ident == "begin" && !bound => ExprBody::parse(runtime, tail, env)
-                        .await
-                        .map(Expression::Begin),
-                    [
-                        Syntax::Identifier { ident, span, bound },
-                        tail @ ..,
-                        Syntax::Null { .. },
-                    ] if ident == "lambda" && !bound => Lambda::parse(runtime, tail, env, span)
-                        .await
-                        .map(Expression::Lambda),
-                    [
-                        Syntax::Identifier { ident, span, bound },
-                        tail @ ..,
-                        Syntax::Null { .. },
-                    ] if ident == "let" && !bound => Let::parse(runtime, tail, env, span)
-                        .await
-                        .map(Expression::Let),
-                    [
-                        Syntax::Identifier { ident, bound, .. },
-                        bindings,
-                        tail @ ..,
-                        Syntax::Null { .. },
-                    ] if ident == "let-syntax" && !bound => {
-                        let new_env = parse_let_syntax(runtime, false, bindings, env).await?;
-                        ExprBody::parse(runtime, tail, &new_env)
-                            .await
-                            .map(Expression::Begin)
-                    }
-                    [
-                        Syntax::Identifier { ident, bound, .. },
-                        bindings,
-                        tail @ ..,
-                        Syntax::Null { .. },
-                    ] if ident == "letrec-syntax" && !bound => {
-                        let new_env = parse_let_syntax(runtime, true, bindings, env).await?;
-                        ExprBody::parse(runtime, tail, &new_env)
-                            .await
-                            .map(Expression::Begin)
-                    }
-                    [
-                        Syntax::Identifier { ident, span, bound },
-                        tail @ ..,
-                        Syntax::Null { .. },
-                    ] if ident == "if" && !bound => If::parse(runtime, tail, env, span)
-                        .await
-                        .map(Expression::If),
-                    [
-                        Syntax::Identifier { ident, bound, .. },
-                        tail @ ..,
-                        Syntax::Null { .. },
-                    ] if ident == "and" && !bound => {
-                        And::parse(runtime, tail, env).await.map(Expression::And)
-                    }
-                    [
-                        Syntax::Identifier { ident, bound, .. },
-                        tail @ ..,
-                        Syntax::Null { .. },
-                    ] if ident == "or" && !bound => {
-                        Or::parse(runtime, tail, env).await.map(Expression::Or)
-                    }
-                    [Syntax::Identifier { ident, span, bound }, tail @ ..]
-                        if ident == "quote" && !bound =>
-                    {
-                        Quote::parse(tail, span).await.map(Expression::Quote)
-                    }
-                    [Syntax::Identifier { ident, span, bound }, tail @ ..]
-                        if ident == "syntax" && !bound =>
-                    {
-                        SyntaxQuote::parse(tail, span)
-                            .await
-                            .map(Expression::SyntaxQuote)
-                    }
-                    [
-                        Syntax::Identifier { ident, span, bound },
-                        tail @ ..,
-                        Syntax::Null { .. },
-                    ] if ident == "syntax-case" && !bound => {
-                        SyntaxCase::parse(runtime, tail, env, span)
-                            .await
-                            .map(Expression::SyntaxCase)
-                    }
-
-                    // Extra special form (set!):
-                    [
-                        Syntax::Identifier { ident, span, bound },
-                        tail @ ..,
-                        Syntax::Null { .. },
-                    ] if ident == "set!" && !bound => Set::parse(runtime, tail, env, span)
-                        .await
-                        .map(Expression::Set),
-
-                    // Definition in expression context is illegal:
-                    [
-                        Syntax::Identifier { ident, span, bound },
-                        ..,
-                        Syntax::Null { .. },
-                    ] if !bound && ident == "define" => {
-                        Err(ParseAstError::UnexpectedDefinition(span.clone()))
-                    }
-
-                    // Regular old function call:
-                    [operator, args @ .., Syntax::Null { .. }] => {
-                        Apply::parse(runtime, operator.clone(), args, env)
+                    ] => match env.fetch_special_keyword_or_var(ident).await? {
+                        Some(Either::Left(SpecialKeyword::Begin)) => {
+                            ExprBody::parse(runtime, tail, env)
+                                .await
+                                .map(Expression::Begin)
+                        }
+                        Some(Either::Left(SpecialKeyword::Lambda)) => {
+                            Lambda::parse(runtime, tail, env, span)
+                                .await
+                                .map(Expression::Lambda)
+                        }
+                        Some(Either::Left(SpecialKeyword::Let)) => {
+                            Let::parse(runtime, tail, env, span)
+                                .await
+                                .map(Expression::Let)
+                        }
+                        Some(Either::Left(SpecialKeyword::If)) => {
+                            If::parse(runtime, tail, env, span)
+                                .await
+                                .map(Expression::If)
+                        }
+                        Some(Either::Left(SpecialKeyword::And)) => {
+                            And::parse(runtime, tail, env).await.map(Expression::And)
+                        }
+                        Some(Either::Left(SpecialKeyword::Or)) => {
+                            Or::parse(runtime, tail, env).await.map(Expression::Or)
+                        }
+                        Some(Either::Left(SpecialKeyword::Quote)) => {
+                            Quote::parse(tail, span).map(Expression::Quote)
+                        }
+                        Some(Either::Left(SpecialKeyword::Syntax)) => {
+                            SyntaxQuote::parse(tail, span).map(Expression::SyntaxQuote)
+                        }
+                        Some(Either::Left(SpecialKeyword::SyntaxCase)) => {
+                            SyntaxCase::parse(runtime, tail, env, span)
+                                .await
+                                .map(Expression::SyntaxCase)
+                        }
+                        Some(Either::Left(SpecialKeyword::Set)) => {
+                            Set::parse(runtime, tail, env, span)
+                                .await
+                                .map(Expression::Set)
+                        }
+                        Some(Either::Left(SpecialKeyword::LetSyntax)) if tail.len() > 1 => {
+                            let new_env = parse_let_syntax(runtime, false, &tail[0], env).await?;
+                            ExprBody::parse(runtime, &tail[1..], &new_env)
+                                .await
+                                .map(Expression::Begin)
+                        }
+                        Some(Either::Left(SpecialKeyword::LetRecSyntax)) if tail.len() > 1 => {
+                            let new_env = parse_let_syntax(runtime, true, &tail[0], env).await?;
+                            ExprBody::parse(runtime, &tail[1..], &new_env)
+                                .await
+                                .map(Expression::Begin)
+                        }
+                        Some(Either::Left(SpecialKeyword::CallWithCurrentContinuation)) => {
+                            Apply::parse(
+                                runtime,
+                                Either::Right(PrimOp::CallWithCurrentContinuation),
+                                tail,
+                                env,
+                                span,
+                            )
                             .await
                             .map(Expression::Apply)
-                    }
-
+                        }
+                        Some(Either::Right(var)) => Apply::parse(
+                            runtime,
+                            Either::Left(Box::new(Expression::Var(var))),
+                            tail,
+                            env,
+                            span,
+                        )
+                        .await
+                        .map(Expression::Apply),
+                        Some(Either::Left(SpecialKeyword::DefineSyntax)) => unreachable!(),
+                        Some(Either::Left(SpecialKeyword::Import)) => {
+                            Err(ParseAstError::UnexpectedImport(span.clone()))
+                        }
+                        Some(Either::Left(SpecialKeyword::Define)) => {
+                            Err(ParseAstError::UnexpectedDefinition(span.clone()))
+                        }
+                        None => Err(ParseAstError::UndefinedVariable {
+                            span: span.clone(),
+                            ident: ident.clone(),
+                        }),
+                        _ => Err(ParseAstError::BadForm(span.clone())),
+                    },
+                    [expr, args @ .., Syntax::Null { .. }] => Apply::parse(
+                        runtime,
+                        Either::Left(Box::new(
+                            Expression::parse(runtime, expr.clone(), env).await?,
+                        )),
+                        args,
+                        env,
+                        expr.span(),
+                    )
+                    .await
+                    .map(Expression::Apply),
                     _ => Err(ParseAstError::BadForm(span.clone())),
                 },
             }
@@ -499,14 +1189,13 @@ pub struct Quote {
 }
 
 impl Quote {
-    async fn parse(exprs: &[Syntax], span: &Span) -> Result<Self, ParseAstError> {
+    fn parse(exprs: &[Syntax], span: &Span) -> Result<Self, ParseAstError> {
         match exprs {
             [] => Err(ParseAstError::ExpectedArgument(span.clone())),
-            [expr, Syntax::Null { .. }] => Ok(Quote {
+            [expr] => Ok(Quote {
                 val: Value::datum_from_syntax(expr),
             }),
             [_, arg, ..] => Err(ParseAstError::UnexpectedArgument(arg.span().clone())),
-            _ => Err(ParseAstError::BadForm(span.clone())),
         }
     }
 }
@@ -517,12 +1206,11 @@ pub struct SyntaxQuote {
 }
 
 impl SyntaxQuote {
-    async fn parse(exprs: &[Syntax], span: &Span) -> Result<Self, ParseAstError> {
+    fn parse(exprs: &[Syntax], span: &Span) -> Result<Self, ParseAstError> {
         match exprs {
             [] => Err(ParseAstError::ExpectedArgument(span.clone())),
-            [expr, Syntax::Null { .. }] => Ok(SyntaxQuote { syn: expr.clone() }),
+            [expr] => Ok(SyntaxQuote { syn: expr.clone() }),
             [_, arg, ..] => Err(ParseAstError::UnexpectedArgument(arg.span().clone())),
-            _ => Err(ParseAstError::BadForm(span.clone())),
         }
     }
 }
@@ -535,8 +1223,9 @@ pub struct Apply {
 }
 
 impl Apply {
+    /*
     async fn parse(
-        runtime: &Gc<Runtime>,
+        runtime: &Runtime,
         operator: Syntax,
         args: &[Syntax],
         env: &Environment,
@@ -559,6 +1248,25 @@ impl Apply {
             span,
         })
     }
+     */
+
+    async fn parse(
+        rt: &Runtime,
+        operator: Either<Box<Expression>, PrimOp>,
+        args: &[Syntax],
+        env: &Environment,
+        span: &Span,
+    ) -> Result<Self, ParseAstError> {
+        let mut parsed_args = Vec::new();
+        for arg in args {
+            parsed_args.push(Expression::parse(rt, arg.clone(), env).await?);
+        }
+        Ok(Apply {
+            operator,
+            args: parsed_args,
+            span: span.clone(),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Trace)]
@@ -570,7 +1278,7 @@ pub struct Lambda {
 
 impl Lambda {
     async fn parse(
-        runtime: &Gc<Runtime>,
+        runtime: &Runtime,
         sexprs: &[Syntax],
         env: &Environment,
         span: &Span,
@@ -581,7 +1289,7 @@ impl Lambda {
                 parse_lambda(runtime, args, body, env, span).await
             }
             [ident @ Syntax::Identifier { .. }, body @ ..] => {
-                let args = &[ident.clone()];
+                let args = std::slice::from_ref(ident);
                 parse_lambda(runtime, args, body, env, span).await
             }
             _ => Err(ParseAstError::BadForm(span.clone())),
@@ -590,7 +1298,7 @@ impl Lambda {
 }
 
 async fn parse_lambda(
-    runtime: &Gc<Runtime>,
+    runtime: &Runtime,
     args: &[Syntax],
     body: &[Syntax],
     env: &Environment,
@@ -672,7 +1380,7 @@ impl Let {
     }
 
     async fn parse(
-        runtime: &Gc<Runtime>,
+        runtime: &Runtime,
         syn: &[Syntax],
         env: &Environment,
         span: &Span,
@@ -701,7 +1409,7 @@ impl Let {
 }
 
 async fn parse_let(
-    runtime: &Gc<Runtime>,
+    runtime: &Runtime,
     name: Option<&Identifier>,
     bindings: &[Syntax],
     body: &[Syntax],
@@ -777,7 +1485,7 @@ struct LetBinding {
 
 impl LetBinding {
     async fn parse(
-        runtime: &Gc<Runtime>,
+        runtime: &Runtime,
         form: &Syntax,
         env: &Environment,
         previously_bound: &HashMap<Identifier, Span>,
@@ -823,17 +1531,29 @@ pub struct Set {
 
 impl Set {
     async fn parse(
-        runtime: &Gc<Runtime>,
+        runtime: &Runtime,
         exprs: &[Syntax],
         env: &Environment,
         span: &Span,
     ) -> Result<Self, ParseAstError> {
         match exprs {
             [] => Err(ParseAstError::ExpectedArgument(span.clone())),
-            [Syntax::Identifier { ident, .. }, expr] => Ok(Set {
-                var: env
-                    .fetch_var(ident)
-                    .ok_or_else(|| ParseAstError::UndefinedVariable(ident.clone()))?,
+            [Syntax::Identifier { ident, span, .. }, expr] => Ok(Set {
+                var: match env.fetch_var(ident).await? {
+                    Some(Var::Global(global)) if !global.mutable => {
+                        return Err(ParseAstError::CannotSetImmutableVar {
+                            span: span.clone(),
+                            name: ident.clone(),
+                        });
+                    }
+                    Some(var) => var,
+                    None => {
+                        return Err(ParseAstError::UndefinedVariable {
+                            span: span.clone(),
+                            ident: ident.clone(),
+                        });
+                    }
+                },
                 val: Arc::new(Expression::parse(runtime, expr.clone(), env).await?),
             }),
             [arg1, _] => Err(ParseAstError::ExpectedIdentifier(arg1.span().clone())),
@@ -852,7 +1572,7 @@ pub struct If {
 
 impl If {
     async fn parse(
-        runtime: &Gc<Runtime>,
+        runtime: &Runtime,
         exprs: &[Syntax],
         env: &Environment,
         span: &Span,
@@ -913,8 +1633,8 @@ impl DefinitionBody {
         Self { first }
     }
 
-    pub async fn parse_program_body(
-        runtime: &Gc<Runtime>,
+    pub async fn parse_lib_body(
+        runtime: &Runtime,
         body: &[Syntax],
         env: &Environment,
         span: &Span,
@@ -923,7 +1643,7 @@ impl DefinitionBody {
     }
 
     pub async fn parse(
-        runtime: &Gc<Runtime>,
+        runtime: &Runtime,
         body: &[Syntax],
         env: &Environment,
         span: &Span,
@@ -934,7 +1654,7 @@ impl DefinitionBody {
     /// Parse the body. body is expected to be a list of valid syntax objects, and should not include
     /// _any_ nulls, including one at the end.
     fn parse_helper<'a>(
-        runtime: &'a Gc<Runtime>,
+        runtime: &'a Runtime,
         body: &'a [Syntax],
         permissive: bool,
         env: &'a Environment,
@@ -974,7 +1694,6 @@ impl DefinitionBody {
             }
 
             for expr in exprs.into_iter() {
-                // let new_expansion_env = env.push_expansion_env(expr.expansion_ctxs);
                 exprs_parsed.push(
                     Expression::parse_expanded(runtime, expr.expanded, &expr.expansion_env).await?,
                 );
@@ -1007,7 +1726,7 @@ impl ExprBody {
 
     /// Differs from Body by being purely expression based. No definitions allowed.
     async fn parse(
-        runtime: &Gc<Runtime>,
+        runtime: &Runtime,
         body: &[Syntax],
         env: &Environment,
     ) -> Result<Self, ParseAstError> {
@@ -1021,7 +1740,7 @@ impl ExprBody {
 }
 
 fn splice_in<'a>(
-    runtime: &'a Gc<Runtime>,
+    runtime: &'a Runtime,
     permissive: bool,
     body: &'a [Syntax],
     env: &'a Environment,
@@ -1040,78 +1759,74 @@ fn splice_in<'a>(
                 expanded,
             } = unexpanded.clone().expand(env).await?;
             let is_def = {
-                match expanded.as_list() {
-                    Some(
-                        [
-                            Syntax::Identifier { ident, .. },
-                            body @ ..,
-                            Syntax::Null { .. },
-                        ],
-                    ) if ident == "begin" => {
-                        splice_in(runtime, permissive, body, &expansion_env, span, defs, exprs)
-                            .await?;
-                        continue;
-                    }
-
-                    Some(
-                        [
-                            Syntax::Identifier { ident, .. },
-                            Syntax::Identifier { ident: name, .. },
-                            expr,
-                            Syntax::Null { .. },
-                        ],
-                    ) if ident == "define-syntax" => {
-                        define_syntax(runtime, name.clone(), expr.clone(), &expansion_env).await?;
-                        continue;
-                    }
-
-                    Some(
-                        [
-                            Syntax::Identifier { ident, span, .. },
-                            bindings,
-                            form @ ..,
-                            Syntax::Null { .. },
-                        ],
-                    ) if ident == "let-syntax" => {
-                        let new_env =
-                            parse_let_syntax(runtime, false, bindings, &expansion_env).await?;
-                        splice_in(runtime, permissive, form, &new_env, span, defs, exprs).await?;
-                        continue;
-                    }
-
-                    Some(
-                        [
-                            Syntax::Identifier { ident, span, .. },
-                            bindings,
-                            form @ ..,
-                            Syntax::Null { .. },
-                        ],
-                    ) if ident == "letrec-syntax" => {
-                        let new_env =
-                            parse_let_syntax(runtime, true, bindings, &expansion_env).await?;
-                        splice_in(runtime, permissive, form, &new_env, span, defs, exprs).await?;
-                        continue;
-                    }
-
-                    Some(
-                        [
-                            Syntax::Identifier { ident, span, .. },
-                            _,
-                            ..,
-                            Syntax::Null { .. },
-                        ],
-                    ) if ident == "define" => {
-                        if !permissive && !exprs.is_empty() {
-                            return Err(ParseAstError::UnexpectedDefinition(span.clone()));
+                if let Some(
+                    [
+                        Syntax::Identifier { ident, span, .. },
+                        tail @ ..,
+                        Syntax::Null { .. },
+                    ],
+                ) = expanded.as_list()
+                {
+                    let keyword = expansion_env.fetch_special_keyword_or_var(ident).await?;
+                    match (keyword, tail) {
+                        (Some(Either::Left(SpecialKeyword::Begin)), body) => {
+                            splice_in(runtime, permissive, body, &expansion_env, span, defs, exprs)
+                                .await?;
+                            continue;
                         }
-                        true
+                        (
+                            Some(Either::Left(SpecialKeyword::DefineSyntax)),
+                            [Syntax::Identifier { ident: name, .. }, expr],
+                        ) => {
+                            define_syntax(runtime, name.clone(), expr.clone(), &expansion_env)
+                                .await?;
+                            continue;
+                        }
+                        (Some(Either::Left(SpecialKeyword::DefineSyntax)), _) => {
+                            return Err(ParseAstError::BadForm(span.clone()));
+                        }
+                        (Some(Either::Left(SpecialKeyword::LetSyntax)), [bindings, form @ ..]) => {
+                            let new_env =
+                                parse_let_syntax(runtime, false, bindings, &expansion_env).await?;
+                            splice_in(runtime, permissive, form, &new_env, span, defs, exprs)
+                                .await?;
+                            continue;
+                        }
+                        (
+                            Some(Either::Left(SpecialKeyword::LetRecSyntax)),
+                            [bindings, form @ ..],
+                        ) => {
+                            let new_env =
+                                parse_let_syntax(runtime, true, bindings, &expansion_env).await?;
+                            splice_in(runtime, permissive, form, &new_env, span, defs, exprs)
+                                .await?;
+                            continue;
+                        }
+                        (Some(Either::Left(SpecialKeyword::Import)), imports) => {
+                            if !permissive && !exprs.is_empty() {
+                                return Err(ParseAstError::UnexpectedImport(span.clone()));
+                            }
+                            for import in imports {
+                                let import_set = ImportSet::parse(discard_for(import))?;
+                                expansion_env.import(import_set).await.map_err(|err| {
+                                    ParseAstError::ImportError {
+                                        span: span.clone(),
+                                        error: Box::new(err),
+                                    }
+                                })?;
+                            }
+                            continue;
+                        }
+                        (Some(Either::Left(SpecialKeyword::Define)), _) => {
+                            if !permissive && !exprs.is_empty() {
+                                return Err(ParseAstError::UnexpectedDefinition(span.clone()));
+                            }
+                            true
+                        }
+                        _ => false,
                     }
-                    Some([Syntax::Identifier { ident, span, .. }, ..])
-                        if ident == "define-syntax" =>
-                    {
-                        return Err(ParseAstError::BadForm(span.clone()));
-                    }
-                    _ => false,
+                } else {
+                    false
                 }
             };
 
@@ -1128,7 +1843,7 @@ fn splice_in<'a>(
 }
 
 async fn parse_let_syntax(
-    runtime: &Gc<Runtime>,
+    runtime: &Runtime,
     recursive: bool,
     bindings: &Syntax,
     env: &Environment,
@@ -1170,7 +1885,7 @@ impl And {
 
 impl And {
     async fn parse(
-        runtime: &Gc<Runtime>,
+        runtime: &Runtime,
         exprs: &[Syntax],
         env: &Environment,
     ) -> Result<Self, ParseAstError> {
@@ -1194,7 +1909,7 @@ impl Or {
     }
 
     async fn parse(
-        runtime: &Gc<Runtime>,
+        runtime: &Runtime,
         exprs: &[Syntax],
         env: &Environment,
     ) -> Result<Self, ParseAstError> {
@@ -1233,7 +1948,7 @@ pub struct SyntaxCase {
 
 impl SyntaxCase {
     async fn parse(
-        runtime: &Gc<Runtime>,
+        runtime: &Runtime,
         exprs: &[Syntax],
         env: &Environment,
         span: &Span,
