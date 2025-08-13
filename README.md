@@ -65,6 +65,30 @@ $1 = (1 2 3 4 5 6 7 8 9 10)
 @*@**@***@****@*****@******@*******@********@*********@**********@***********@**********...^C
 ```
 
+### Async Example:
+
+Here is the Tokio echo server example converted to Scheme-rs:
+
+```scheme
+(define (echo socket)
+  (let ((buff (read socket 1024)))
+    (if (> (bytevector-length buff) 0)
+        (begin
+          (write socket buff)
+          (echo socket))
+        (display "Connection closed\n"))))
+
+(define (listen listener)
+  (let-values (((socket addr) (accept listener)))
+    (display "Accepting addr ")
+    (display addr)
+    (display "\n")
+    (spawn (lambda () (echo socket)))
+    (listen listener)))
+
+(listen (bind-tcp "127.0.0.1:8080"))
+```
+
 ### Creating Builtin Functions:
 
 Scheme-rs provides a `bridge` function attribute macro to allow you to easily define builtins. Here is 

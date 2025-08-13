@@ -64,7 +64,9 @@ impl Value {
                 ValueType::Vector => Gc::increment_reference_count(
                     untagged as *mut GcInner<vectors::AlignedVector<Self>>,
                 ),
-                ValueType::ByteVector => Arc::increment_strong_count(untagged as *const Vec<u8>),
+                ValueType::ByteVector => {
+                    Arc::increment_strong_count(untagged as *const vectors::AlignedVector<u8>)
+                }
                 ValueType::Syntax => Arc::increment_strong_count(untagged as *const Syntax),
                 ValueType::Closure => {
                     Gc::increment_reference_count(untagged as *mut GcInner<Closure>)
