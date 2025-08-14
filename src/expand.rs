@@ -15,6 +15,10 @@ use indexmap::IndexMap;
 use scheme_rs_macros::bridge;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
+// TODO: This code needs _a lot_ more error checking: error checking for missing
+// ellipsis, error checking for too many ellipsis. It makes debugging extremely
+// confusing!
+
 #[derive(Clone, Trace, Debug)]
 #[repr(align(16))]
 pub struct Transformer {
@@ -94,7 +98,7 @@ impl SyntaxRule {
     }
 }
 
-#[derive(Clone, Debug, Trace)]
+#[derive(Clone, Debug, Trace, PartialEq)]
 pub enum Pattern {
     Null,
     Underscore,
@@ -102,7 +106,7 @@ pub enum Pattern {
     List(Vec<Pattern>),
     Vector(Vec<Pattern>),
     ByteVector(Vec<u8>),
-    Variable(Symbol),
+    Variable(Identifier),
     Keyword(Symbol),
     Literal(Literal),
 }
@@ -111,7 +115,7 @@ impl Pattern {
     pub fn compile(
         expr: &Syntax,
         keywords: &HashSet<Symbol>,
-        variables: &mut HashSet<Symbol>,
+        variables: &mut HashSet<Identifier>,
     ) -> Self {
         match expr {
             Syntax::Null { .. } => Self::Null,
@@ -120,8 +124,8 @@ impl Pattern {
                 Self::Keyword(ident.sym)
             }
             Syntax::Identifier { ident, .. } => {
-                variables.insert(ident.sym);
-                Self::Variable(ident.sym)
+                variables.insert(ident.clone());
+                Self::Variable(ident.clone())
             }
             Syntax::List { list, .. } => Self::List(Self::compile_slice(list, keywords, variables)),
             Syntax::Vector { vector, .. } => {
@@ -135,7 +139,7 @@ impl Pattern {
     fn compile_slice(
         mut expr: &[Syntax],
         keywords: &HashSet<Symbol>,
-        variables: &mut HashSet<Symbol>,
+        variables: &mut HashSet<Identifier>,
     ) -> Vec<Self> {
         let mut output = Vec::new();
         loop {
@@ -166,7 +170,12 @@ impl Pattern {
         match self {
             Self::Underscore => !expr.is_null(),
             Self::Variable(sym) => {
-                assert!(expansion_level.binds.insert(*sym, expr.clone()).is_none());
+                assert!(
+                    expansion_level
+                        .binds
+                        .insert(sym.clone(), expr.clone())
+                        .is_none()
+                );
                 true
             }
             Self::Literal(lhs) => {
@@ -237,7 +246,7 @@ fn match_list(patterns: &[Pattern], expr: &Syntax, expansion_level: &mut Expansi
 
     let exprs = match expr {
         Syntax::List { list, .. } => list,
-        Syntax::Null { .. } => return true,
+        Syntax::Null { .. } => std::slice::from_ref(expr),
         _ => return false,
     };
 
@@ -308,7 +317,7 @@ fn match_vec(patterns: &[Pattern], expr: &Syntax, expansion_level: &mut Expansio
 
 #[derive(Debug, Default)]
 pub struct ExpansionLevel {
-    binds: HashMap<Symbol, Syntax>,
+    binds: HashMap<Identifier, Syntax>,
     expansions: Vec<ExpansionLevel>,
 }
 
@@ -325,21 +334,51 @@ pub enum Template {
 }
 
 impl Template {
-    pub fn compile(expr: &Syntax, variables: &HashSet<Symbol>) -> Self {
+    pub fn compile(expr: &Syntax, variables: &HashSet<Identifier>) -> Self {
         match expr {
             Syntax::Null { .. } => Self::Null,
-            Syntax::List { list, .. } => Self::List(Self::compile_slice(list, variables)),
+            Syntax::List { list, .. } => {
+                if let [
+                    Syntax::Identifier {
+                        ident: ellipsis, ..
+                    },
+                    template,
+                    Syntax::Null { .. },
+                ] = list.as_slice()
+                    && ellipsis.sym == "..."
+                {
+                    Self::compile_escaped(template, variables)
+                } else {
+                    Self::List(Self::compile_slice(list, variables))
+                }
+            }
             Syntax::Vector { vector, .. } => Self::Vector(Self::compile_slice(vector, variables)),
             Syntax::ByteVector { vector, .. } => Self::ByteVector(vector.clone()),
             Syntax::Literal { literal, .. } => Self::Literal(literal.clone()),
-            Syntax::Identifier { ident, .. } if variables.contains(&ident.sym) => {
+            Syntax::Identifier { ident, .. } if variables.contains(&ident) => {
                 Self::Variable(ident.clone())
             }
             Syntax::Identifier { ident, .. } => Self::Identifier(ident.clone()),
         }
     }
 
-    fn compile_slice(mut expr: &[Syntax], variables: &HashSet<Symbol>) -> Vec<Self> {
+    pub fn compile_escaped(expr: &Syntax, variables: &HashSet<Identifier>) -> Self {
+        match expr {
+            Syntax::Null { .. } => Self::Null,
+            Syntax::List { list, .. } => Self::List(Self::compile_slice_escaped(list, variables)),
+            Syntax::Vector { vector, .. } => {
+                Self::Vector(Self::compile_slice_escaped(vector, variables))
+            }
+            Syntax::ByteVector { vector, .. } => Self::ByteVector(vector.clone()),
+            Syntax::Literal { literal, .. } => Self::Literal(literal.clone()),
+            Syntax::Identifier { ident, .. } if variables.contains(&ident) => {
+                Self::Variable(ident.clone())
+            }
+            Syntax::Identifier { ident, .. } => Self::Identifier(ident.clone()),
+        }
+    }
+
+    fn compile_slice(mut expr: &[Syntax], variables: &HashSet<Identifier>) -> Vec<Self> {
         let mut output = Vec::new();
         loop {
             match expr {
@@ -350,7 +389,7 @@ impl Template {
                         ident: ellipsis, ..
                     },
                     tail @ ..,
-                ] if ellipsis.sym == "..." => {
+                ] if ellipsis.sym == "..." && contains_pattern_variables(template, variables) => {
                     output.push(Self::Ellipsis(Box::new(Template::compile(
                         template, variables,
                     ))));
@@ -365,6 +404,13 @@ impl Template {
         output
     }
 
+    fn compile_slice_escaped(exprs: &[Syntax], variables: &HashSet<Identifier>) -> Vec<Self> {
+        exprs
+            .iter()
+            .map(|expr| Self::compile_escaped(expr, variables))
+            .collect()
+    }
+
     fn expand(&self, binds: &Binds<'_>, curr_span: Span) -> Option<Syntax> {
         let syn = match self {
             Self::Null => Syntax::new_null(curr_span),
@@ -377,7 +423,7 @@ impl Template {
                 span: curr_span,
                 bound: false,
             },
-            Self::Variable(ident) => binds.get_bind(ident.sym)?,
+            Self::Variable(ident) => binds.get_bind(ident)?,
             Self::Literal(literal) => Syntax::new_literal(literal.clone(), curr_span),
             _ => unreachable!(),
         };
@@ -395,7 +441,9 @@ impl Template {
         // Expand the template:
         // TODO: This can return None if a variable is used with the wrong
         // expansion level. This needs to be made into a proper error.
-        let expanded = self.expand(binds, curr_span).unwrap();
+        let Some(expanded) = self.expand(binds, curr_span) else {
+            return Err(Condition::error("Bad pattern variables".to_string()));
+        };
 
         // Parse and compile the expanded input in the captured environment:
         let parsed = Expression::parse(runtime, expanded, env).await?;
@@ -408,6 +456,16 @@ impl Template {
         // Evaluate the expression:
         // TODO: Fix this map_err
         compiled.call(&[]).await.map_err(Condition::from)
+    }
+}
+
+fn contains_pattern_variables(syn: &Syntax, variables: &HashSet<Identifier>) -> bool {
+    match syn {
+        Syntax::Identifier { ident, .. } if variables.contains(&ident) => true,
+        Syntax::List { list, .. } => list
+            .iter()
+            .any(|item| contains_pattern_variables(item, variables)),
+        _ => false,
     }
 }
 
@@ -471,6 +529,7 @@ fn expand_vec(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<
     Some(output)
 }
 
+#[derive(Debug)]
 pub struct Binds<'a> {
     curr_expansion_level: &'a ExpansionLevel,
     parent_expansion_level: Option<&'a Binds<'a>>,
@@ -491,11 +550,11 @@ impl<'a> Binds<'a> {
         }
     }
 
-    fn get_bind(&self, sym: Symbol) -> Option<Syntax> {
-        if let bind @ Some(_) = self.curr_expansion_level.binds.get(&sym) {
+    fn get_bind(&self, ident: &Identifier) -> Option<Syntax> {
+        if let bind @ Some(_) = self.curr_expansion_level.binds.get(ident) {
             bind.cloned()
         } else if let Some(up) = self.parent_expansion_level {
-            up.get_bind(sym)
+            up.get_bind(ident)
         } else {
             None
         }

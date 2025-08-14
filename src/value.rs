@@ -545,9 +545,11 @@ impl From<ast::Literal> for UnpackedValue {
             ast::Literal::Boolean(b) => Self::Boolean(b),
             ast::Literal::String(s) => Self::String(Arc::new(AlignedString(s.clone()))),
             ast::Literal::Character(c) => Self::Character(c),
+            /*
             ast::Literal::ByteVector(v) => {
                 Self::ByteVector(Arc::new(vectors::AlignedVector(v.clone())))
             }
+            */
         }
     }
 }
@@ -826,7 +828,12 @@ pub async fn vector_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
 
 #[bridge(name = "null?", lib = "(rnrs base builtins (6))")]
 pub async fn null_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
-    Ok(vec![Value::from(arg.type_of() == ValueType::Null)])
+    let is_null = match arg.clone().unpack() {
+        UnpackedValue::Null => true,
+        UnpackedValue::Syntax(syn) => matches!(&*syn, Syntax::Null { .. }),
+        _ => false,
+    };
+    Ok(vec![Value::from(is_null)])
 }
 
 #[bridge(name = "pair?", lib = "(rnrs base builtins (6))")]

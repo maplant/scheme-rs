@@ -43,6 +43,7 @@ pub enum Lexeme<'a> {
     Period,
     HashQuote,
     HashTick,
+    HashBackquote,
     HashComma,
     HashCommaAt,
 }
@@ -99,6 +100,9 @@ fn lexeme(i: InputSpan) -> IResult<InputSpan, Lexeme> {
         map(tag("#("), |_| Lexeme::HashParen),
         map(tag("#u8("), |_| Lexeme::Vu8Paren),
         map(tag("#'"), |_| Lexeme::HashTick),
+        map(tag("#`"), |_| Lexeme::HashBackquote),
+        map(tag("#,@"), |_| Lexeme::HashCommaAt),
+        map(tag("#,"), |_| Lexeme::HashComma),
         map(tag(",@"), |_| Lexeme::CommaAt),
     ))(i)
 }

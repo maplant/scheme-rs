@@ -21,8 +21,7 @@ use derive_more::From;
 use futures::future::BoxFuture;
 use inkwell::builder::BuilderError;
 use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
+    collections::{HashMap, HashSet}, fmt, sync::Arc
 };
 
 #[derive(Debug)]
@@ -1174,13 +1173,23 @@ impl Expression {
 }
 
 #[derive(Debug, Clone, PartialEq, Trace)]
-// Vector should be in here too. Oh well.
 pub enum Literal {
     Number(Number),
     Boolean(bool),
     Character(char),
     String(String),
-    ByteVector(Vec<u8>),
+}
+
+impl fmt::Display for Literal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Number(num) => write!(f, "{num}"),
+            Self::Boolean(true) => write!(f, "#t"),
+            Self::Boolean(false) => write!(f, "#f"),
+            Self::Character(chr) => write!(f, "{chr}"),
+            Self::String(str) => write!(f, "{str:?}"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Trace)]
@@ -1197,22 +1206,6 @@ impl Quote {
             }),
             [_, arg, ..] => Err(ParseAstError::UnexpectedArgument(arg.span().clone())),
         }
-    }
-}
-
-fn qq_expand(expr: &Syntax, depth: usize) {
-    if let Syntax::List { list, .. } = expr {
-        match list.as_slice() {
-            [ Syntax::Identifier { ident, .. }, tail @ .. ] if ident == "quasiquote" => {
-                todo!()
-            },
-            [ Syntax::Identifier { ident, .. }, tail @ .. ] if ident == "unquote" || ident == "unquote-splicing" => {
-                todo!()
-            },
-            _ => (),
-        }
-    } else {
-        todo!()
     }
 }
 
