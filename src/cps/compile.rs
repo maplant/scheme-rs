@@ -801,16 +801,14 @@ impl Compile for SyntaxCase {
                 let arg = Local::gensym();
                 Cps::Lambda {
                     args: ClosureArgs::new(vec![arg], false, None),
-                    body: Box::new(
-                        compile_syntax_rules(
-                            &self.rules,
-                            arg,
-                            Box::new(|expanded| Cps::App(expanded, vec![Value::from(k2)], None)),
-                        )
-                    ),
+                    body: Box::new(compile_syntax_rules(
+                        &self.rules,
+                        arg,
+                        Box::new(|expanded| Cps::App(expanded, vec![Value::from(k2)], None)),
+                    )),
                     val: k3,
                     cexp: Box::new(Cps::App(expr_result, vec![Value::from(k3)], None)),
-                    span: None
+                    span: None,
                 }
 
                 /*
@@ -936,11 +934,17 @@ impl Cps {
     /// Convert arguments for closures into cells if they are written to or escape.
     fn args_to_cells(self, needs_cell_cache: &mut HashMap<Local, HashSet<Local>>) -> Self {
         match self {
+            Self::PrimOp(PrimOp::AllocCell, vals, local, cexpr) => Self::PrimOp(
+                PrimOp::AllocCell,
+                vals,
+                local,
+                Box::new(cexpr.args_to_cells(needs_cell_cache)),
+            ),
             Self::PrimOp(op, vals, mut local, cexpr) => {
                 let cexpr = Box::new(cexpr.args_to_cells(needs_cell_cache));
                 let escaping_args =
                     cexpr.need_cells(&[local].into_iter().collect(), needs_cell_cache);
-                let cexpr = if escaping_args.contains(&mut local) {
+                let cexpr = if escaping_args.contains(&local) {
                     arg_to_cell(&mut local, cexpr)
                 } else {
                     cexpr
