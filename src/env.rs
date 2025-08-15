@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, hash_map::Entry},
+    collections::{HashMap, HashSet, hash_map::Entry},
     fmt,
     hash::{Hash, Hasher},
     sync::atomic::{AtomicUsize, Ordering},
@@ -19,11 +19,15 @@ use crate::{
     value::Value,
 };
 
+// TODO: We need to aggressively add caching to basically every data structure
+// in here. It's a pain, but will eventually be necessary for compiling large
+// projects.
+
 #[derive(Trace)]
 pub struct LexicalContour {
     up: Environment,
     vars: HashMap<Identifier, Local>,
-    keywords: HashMap<Identifier, Gc<Closure>>,
+    keywords: HashMap<Identifier, Closure>,
     imports: HashMap<Identifier, Import>,
 }
 
@@ -45,7 +49,7 @@ impl LexicalContour {
         local
     }
 
-    pub fn def_keyword(&mut self, name: Identifier, closure: Gc<Closure>) {
+    pub fn def_keyword(&mut self, name: Identifier, closure: Closure) {
         self.keywords.insert(name, closure);
     }
 
@@ -137,7 +141,7 @@ impl Gc<LexicalContour> {
 #[derive(Trace)]
 pub struct LetSyntaxContour {
     up: Environment,
-    keywords: HashMap<Identifier, Gc<Closure>>,
+    keywords: HashMap<Identifier, Closure>,
     recursive: bool,
 }
 
@@ -156,7 +160,7 @@ impl LetSyntaxContour {
         self.up.def_var(name)
     }
 
-    pub fn def_keyword(&mut self, name: Identifier, closure: Gc<Closure>) {
+    pub fn def_keyword(&mut self, name: Identifier, closure: Closure) {
         self.keywords.insert(name, closure);
     }
 
@@ -236,7 +240,7 @@ impl MacroExpansion {
         self.up.def_var(name)
     }
 
-    pub fn def_keyword(&self, name: Identifier, closure: Gc<Closure>) {
+    pub fn def_keyword(&self, name: Identifier, closure: Closure) {
         self.up.def_keyword(name, closure);
     }
 
@@ -279,6 +283,21 @@ impl MacroExpansion {
                 let mut unmarked = name.clone();
                 unmarked.mark(self.mark);
                 self.source.fetch_local(&unmarked)
+            })
+            .flatten()
+    }
+
+    pub fn fetch_pattern_variable(&self, name: &Identifier) -> Option<Local> {
+        let var = self.up.fetch_pattern_variable(name);
+        if var.is_some() {
+            return var;
+        }
+        name.marks
+            .contains(&self.mark)
+            .then(|| {
+                let mut unmarked = name.clone();
+                unmarked.mark(self.mark);
+                self.source.fetch_pattern_variable(&unmarked)
             })
             .flatten()
     }
@@ -352,12 +371,87 @@ impl MacroExpansion {
     }
 }
 
+#[derive(Trace, derive_more::Debug)]
+struct SyntaxCaseExpr {
+    #[debug(skip)]
+    up: Environment,
+    expansions_store: Local,
+    pattern_vars: HashSet<Identifier>,
+}
+
+impl SyntaxCaseExpr {
+    fn new(env: &Environment, expansions_store: Local, pattern_vars: HashSet<Identifier>) -> Self {
+        Self {
+            up: env.clone(),
+            expansions_store,
+            pattern_vars,
+        }
+    }
+    
+    fn fetch_top(&self) -> Library {
+        self.up.fetch_top()
+    }
+
+    fn def_var(&self, name: Identifier) -> Var {
+        self.up.def_var(name)
+    }
+
+    fn def_keyword(&self, name: Identifier, val: Closure) {
+        self.up.def_keyword(name, val);
+    }
+
+    fn fetch_var<'a>(&self, name: &'a Identifier) -> BoxFuture<'a, Result<Option<Var>, Condition>> {
+        let up = self.up.clone();
+        Box::pin(async move {
+            up.fetch_var(name).await
+        })
+    }
+
+    fn fetch_local(&self, name: &Identifier) -> Option<Local> {
+        self.up.fetch_local(name)
+    }
+
+    fn fetch_keyword<'a>(
+        &self,
+        name: &'a Identifier,
+    ) -> BoxFuture<'a, Result<Option<Keyword>, Condition>> {
+        let up = self.up.clone();
+        Box::pin(async move { up.fetch_keyword(name).await })
+    }
+
+    fn fetch_special_keyword_or_var<'a>(
+        &self,
+        name: &'a Identifier,
+    ) -> BoxFuture<'a, Result<Option<Either<SpecialKeyword, Var>>, Condition>> {
+        let up = self.up.clone();
+        Box::pin(async move { up.fetch_special_keyword_or_var(name).await })
+    }
+
+    fn import(&self, import: ImportSet) -> BoxFuture<'static, Result<(), ImportError>> {
+        let up = self.up.clone();
+        Box::pin(async move { up.import(import).await })
+    }
+
+    fn fetch_pattern_variable(&self, name: &Identifier) -> Option<Local> {
+        if self.pattern_vars.contains(name) {
+            Some(self.expansions_store)
+        } else {
+            self.up.fetch_pattern_variable(name)
+        }
+    }
+
+    fn is_bound(&self, name: &Identifier) -> bool {
+        self.up.is_bound(name)
+    }
+}
+
 #[derive(Trace)]
 pub enum Environment {
     Top(Library),
     LexicalContour(Gc<LexicalContour>),
     LetSyntaxContour(Gc<LetSyntaxContour>),
     MacroExpansion(Gc<MacroExpansion>),
+    SyntaxCaseExpr(Gc<SyntaxCaseExpr>),
 }
 
 impl Environment {
@@ -367,6 +461,7 @@ impl Environment {
             Self::LexicalContour(lex) => lex.read().fetch_top(),
             Self::LetSyntaxContour(ls) => ls.read().fetch_top(),
             Self::MacroExpansion(me) => me.read().fetch_top(),
+            Self::SyntaxCaseExpr(me) => me.read().fetch_top(),
         }
     }
 
@@ -376,15 +471,17 @@ impl Environment {
             Self::LexicalContour(lex) => Var::Local(lex.write().def_var(name)),
             Self::LetSyntaxContour(ls) => ls.read().def_var(name),
             Self::MacroExpansion(me) => me.read().def_var(name),
+            Self::SyntaxCaseExpr(me) => me.read().def_var(name),
         }
     }
 
-    pub fn def_keyword(&self, name: Identifier, val: Gc<Closure>) {
+    pub fn def_keyword(&self, name: Identifier, val: Closure) {
         match self {
             Self::Top(top) => top.def_keyword(name, Keyword::new(self.clone(), val)),
             Self::LexicalContour(lex) => lex.write().def_keyword(name, val),
             Self::LetSyntaxContour(ls) => ls.write().def_keyword(name, val),
             Self::MacroExpansion(me) => me.read().def_keyword(name, val),
+            Self::SyntaxCaseExpr(me) => me.read().def_keyword(name, val),
         }
     }
 
@@ -403,6 +500,10 @@ impl Environment {
                 let fetch_fut = { me.read().fetch_var(name) };
                 fetch_fut.await
             }
+            Self::SyntaxCaseExpr(sc) => {
+                let fetch_fut = { sc.read().fetch_var(name) };
+                fetch_fut.await
+            }
         }
     }
 
@@ -412,6 +513,7 @@ impl Environment {
             Self::LexicalContour(lex) => lex.read().fetch_local(name),
             Self::LetSyntaxContour(ls) => ls.read().fetch_local(name),
             Self::MacroExpansion(me) => me.read().fetch_local(name),
+            Self::SyntaxCaseExpr(sc) => sc.read().fetch_local(name),
         }
     }
 
@@ -428,6 +530,10 @@ impl Environment {
             }
             Self::MacroExpansion(me) => {
                 let fetch_fut = { me.read().fetch_keyword(name) };
+                fetch_fut.await
+            }
+            Self::SyntaxCaseExpr(sc) => {
+                let fetch_fut = { sc.read().fetch_keyword(name) };
                 fetch_fut.await
             }
         }
@@ -456,6 +562,10 @@ impl Environment {
                 let fetch_fut = { me.read().fetch_special_keyword_or_var(name) };
                 fetch_fut.await
             }
+            Self::SyntaxCaseExpr(sc) => {
+                let fetch_fut = { sc.read().fetch_special_keyword_or_var(name) };
+                fetch_fut.await
+            }
         }
     }
 
@@ -471,6 +581,20 @@ impl Environment {
                 let import_fut = { me.read().import(import) };
                 import_fut.await
             }
+            Self::SyntaxCaseExpr(sc) => {
+                let import_fut = { sc.read().import(import) };
+                import_fut.await
+            }
+        }
+    }
+
+    pub fn fetch_pattern_variable(&self, name: &Identifier) -> Option<Local> {
+        match self {
+            Self::Top(top) => None,
+            Self::LexicalContour(lex) => lex.read().up.fetch_pattern_variable(name),
+            Self::LetSyntaxContour(ls) => ls.read().up.fetch_pattern_variable(name),
+            Self::MacroExpansion(me) => me.read().fetch_pattern_variable(name),
+            Self::SyntaxCaseExpr(sc) => sc.read().fetch_pattern_variable(name),
         }
     }
 
@@ -480,6 +604,7 @@ impl Environment {
             Self::LexicalContour(lex) => lex.read().is_bound(name),
             Self::LetSyntaxContour(ls) => ls.read().up.is_bound(name),
             Self::MacroExpansion(me) => me.read().is_bound(name),
+            Self::SyntaxCaseExpr(sc) => sc.read().is_bound(name),
         }
     }
 
@@ -497,6 +622,15 @@ impl Environment {
         let new_macro_expansion = MacroExpansion::new(self, mark, source);
         Self::MacroExpansion(Gc::new(new_macro_expansion))
     }
+
+    pub fn new_syntax_case_expr(
+        &self,
+        expansions_store: Local,
+        pattern_vars: HashSet<Identifier>,
+    ) -> Self {
+        let syntax_case_expr = SyntaxCaseExpr::new(self, expansions_store, pattern_vars);
+        Self::SyntaxCaseExpr(Gc::new(dbg!(syntax_case_expr)))
+    }
 }
 
 impl From<Library> for Environment {
@@ -512,6 +646,7 @@ impl Clone for Environment {
             Self::LexicalContour(lex) => Self::LexicalContour(lex.clone()),
             Self::LetSyntaxContour(ls) => Self::LetSyntaxContour(ls.clone()),
             Self::MacroExpansion(mac) => Self::MacroExpansion(mac.clone()),
+            Self::SyntaxCaseExpr(sc) => Self::SyntaxCaseExpr(sc.clone()),
         }
     }
 }
@@ -659,11 +794,11 @@ pub struct Keyword {
     #[debug(skip)]
     pub source_env: Environment,
     #[debug(skip)]
-    pub transformer: Gc<Closure>,
+    pub transformer: Closure,
 }
 
 impl Keyword {
-    pub fn new(source_env: Environment, transformer: Gc<Closure>) -> Self {
+    pub fn new(source_env: Environment, transformer: Closure) -> Self {
         Self {
             source_env,
             transformer,

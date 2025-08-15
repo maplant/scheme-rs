@@ -451,7 +451,7 @@ pub fn runtime_fn(_args: TokenStream, item: TokenStream) -> TokenStream {
 
     quote! {
         #[allow(unused)]
-        inventory::submit!(RuntimeFn::new(|ctx, module, ee| {
+        inventory::submit!(crate::runtime::RuntimeFn::new(|ctx, module, ee| {
             let i32_type = ctx.i32_type();
             let i64_type = ctx.i64_type();
             let bool_type = ctx.bool_type();

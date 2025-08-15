@@ -1,7 +1,7 @@
 use crate::{
-    ast::{Expression, Literal},
+    ast::{DefinitionBody, ExprBody, Expression, Formals, Lambda, Literal, ParseAstError},
     cps::Compile,
-    env::{CapturedEnv, Environment, Local},
+    env::{Environment, Local},
     exception::{Condition, ExceptionHandler},
     gc::{Gc, Trace},
     proc::{Application, Closure, DynamicWind},
@@ -9,94 +9,121 @@ use crate::{
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax},
     value::Value,
+    vectors,
 };
+use either::Either;
 use futures::future::BoxFuture;
-use indexmap::IndexMap;
-use scheme_rs_macros::bridge;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use indexmap::{IndexMap, IndexSet};
+use scheme_rs_macros::{bridge, runtime_fn};
+use std::{
+    any::Any,
+    collections::{BTreeSet, HashMap, HashSet},
+    sync::Arc,
+};
 
 // TODO: This code needs _a lot_ more error checking: error checking for missing
 // ellipsis, error checking for too many ellipsis. It makes debugging extremely
 // confusing!
-
+/*
 #[derive(Clone, Trace, Debug)]
 #[repr(align(16))]
 pub struct Transformer {
     pub rules: Vec<SyntaxRule>,
-    pub is_variable_transformer: bool,
 }
-
+*/
+/*
 impl Transformer {
-    pub async fn eval(
-        &self,
-        expr: &Syntax,
-        runtime: &Runtime,
-        env: &Environment,
-        env_map: &IndexMap<Local, Gc<Value>>,
-    ) -> Result<Option<Vec<Value>>, Condition> {
+    pub async fn eval(&self, expr: &Syntax) -> Result<Option<Vec<Value>>, Condition> {
         for rule in &self.rules {
-            if let value @ Some(_) = rule.eval(expr, runtime, env, env_map).await? {
+            if let value @ Some(_) = rule.eval(expr).await? {
                 return Ok(value);
             }
         }
         Ok(None)
     }
 }
+*/
 
-#[derive(Clone, Debug, Trace)]
+#[derive(Clone, Trace, Debug)]
 pub struct SyntaxRule {
     pub pattern: Pattern,
-    pub fender: Option<Template>,
-    pub template: Template,
+    pub binds: Local,
+    pub fender: Option<Expression>,
+    pub output_expression: Expression,
 }
 
 impl SyntaxRule {
-    pub fn compile(
+    pub async fn compile(
+        rt: &Runtime,
         keywords: &HashSet<Symbol>,
         pattern: &Syntax,
         fender: Option<&Syntax>,
-        template: &Syntax,
-    ) -> Self {
+        output_expression: &Syntax,
+        env: &Environment,
+    ) -> Result<Self, ParseAstError> {
         let mut variables = HashSet::new();
         let pattern = Pattern::compile(pattern, keywords, &mut variables);
-        let fender = fender.map(|fender| Template::compile(fender, &variables));
-        let template = Template::compile(template, &variables);
-        Self {
+        let binds = Local::gensym();
+        let env = env.new_syntax_case_expr(binds, variables);
+        let fender = if let Some(fender) = fender {
+            Some(Expression::parse(rt, fender.clone(), &env).await?)
+        } else {
+            None
+        };
+        let output_expression = Expression::parse(rt, output_expression.clone(), &env).await?;
+        Ok(Self {
             pattern,
+            binds,
             fender,
-            template,
-        }
+            output_expression,
+        })
     }
 
-    async fn eval(
-        &self,
-        expr: &Syntax,
-        runtime: &Runtime,
-        env: &Environment,
-        env_map: &IndexMap<Local, Gc<Value>>,
-    ) -> Result<Option<Vec<Value>>, Condition> {
+    /*
+    async fn eval(&self, expr: &Syntax) -> Result<Option<Vec<Value>>, Condition> {
         let mut top_expansion_level = ExpansionLevel::default();
-        let curr_span = expr.span().clone();
+        let _curr_span = expr.span().clone();
         if self.pattern.matches(expr, &mut top_expansion_level) {
-            let binds = Binds::new_top(&top_expansion_level);
+            let expansions = Value::from(Gc::new(Gc::into_any(Gc::new(top_expansion_level))));
             let passes_fender = match &self.fender {
-                Some(fender) => fender
-                    .eval(runtime, env, env_map, &binds, curr_span.clone())
-                    .await?[0]
-                    .is_true(),
+                Some(fender) => fender.call(&[expansions.clone()]).await?[0].is_true(),
                 None => true,
             };
             if passes_fender {
-                return self
-                    .template
-                    .eval(runtime, env, env_map, &binds, curr_span.clone())
+                println!("Evaluating: {self:?}");
+                return Ok(self
+                    .output_expression
+                    .call(&[expansions.clone()])
                     .await
-                    .map(Some);
+                    .map(Some)?);
             }
         }
         Ok(None)
     }
+     */
 }
+
+/*
+#[derive(Trace, Debug, Clone)]
+pub struct OutputExpression {
+    binds: Local,
+    expr: Expression,
+}
+
+impl OutputExpression {
+    async fn compile(
+        rt: &Runtime,
+        syn: &Syntax,
+        pattern_variables: HashSet<Identifier>,
+        env: &Environment,
+    ) -> Result<Self, ParseAstError> {
+        let binds = Local::gensym();
+        let env = env.new_syntax_case_expr(binds, pattern_variables);
+        let expr = Expression::parse(rt, syn.clone(), &env).await?;
+        Ok(Self { binds, expr })
+    }
+}
+*/
 
 #[derive(Clone, Debug, Trace, PartialEq)]
 pub enum Pattern {
@@ -315,10 +342,74 @@ fn match_vec(patterns: &[Pattern], expr: &Syntax, expansion_level: &mut Expansio
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default, Trace)]
 pub struct ExpansionLevel {
     binds: HashMap<Identifier, Syntax>,
     expansions: Vec<ExpansionLevel>,
+}
+
+#[derive(Trace, Debug)]
+pub struct ExpansionCombiner {
+    pub(crate) uses: HashMap<Identifier, usize>,
+}
+
+#[runtime_fn]
+unsafe extern "C" fn matches(pattern: i64, syntax: i64) -> i64 {
+    let pattern = unsafe { dbg!(Value::from_raw_inc_rc(pattern as u64)) };
+    let pattern: Gc<Gc<dyn Any>> = pattern.try_into().unwrap();
+    let Ok(pattern) = pattern.read().clone().downcast::<Pattern>() else {
+        panic!()
+    };
+
+    let syntax = unsafe { Value::from_raw_inc_rc(syntax as u64) };
+    // This isn't a great way to do this, but it'll work for now:
+    let syntax = Syntax::syntax_from_datum(&BTreeSet::default(), syntax);
+
+    let mut expansions = ExpansionLevel::default();
+    if pattern.read().matches(&syntax, &mut expansions) {
+        let expansions = Gc::into_any(Gc::new(expansions));
+        Value::into_raw(Value::from(Gc::new(expansions))) as i64
+    } else {
+        Value::into_raw(Value::from(false)) as i64
+    }
+}
+
+impl ExpansionCombiner {
+    fn combine_expansions(&self, expansions: &[ExpansionLevel]) -> ExpansionLevel {
+        println!("combiner: {self:#?}");
+        println!("expansions: {expansions:#?}");
+        let binds = self
+            .uses
+            .iter()
+            .filter_map(|(ident, idx)| {
+                expansions[*idx]
+                    .binds
+                    .get(ident)
+                    .map(|expansion| (ident.clone(), expansion.clone()))
+            })
+            .collect::<HashMap<_, _>>();
+        let max_expansions = expansions
+            .iter()
+            .map(|exp| exp.expansions.len())
+            .max()
+            .unwrap_or(0);
+        let expansions = (0..max_expansions)
+            .map(|i| {
+                let expansions = expansions
+                    .iter()
+                    .map(|exp| {
+                        if exp.expansions.len() <= i {
+                            ExpansionLevel::default()
+                        } else {
+                            exp.expansions[i].clone()
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                self.combine_expansions(&expansions)
+            })
+            .collect::<Vec<_>>();
+        dbg!(ExpansionLevel { binds, expansions })
+    }
 }
 
 #[derive(Clone, Debug, Trace)]
@@ -334,7 +425,11 @@ pub enum Template {
 }
 
 impl Template {
-    pub fn compile(expr: &Syntax, variables: &HashSet<Identifier>) -> Self {
+    pub fn compile(
+        expr: &Syntax,
+        env: &Environment,
+        expansions: &mut HashMap<Identifier, Local>,
+    ) -> Self {
         match expr {
             Syntax::Null { .. } => Self::Null,
             Syntax::List { list, .. } => {
@@ -347,38 +442,61 @@ impl Template {
                 ] = list.as_slice()
                     && ellipsis.sym == "..."
                 {
-                    Self::compile_escaped(template, variables)
+                    Self::compile_escaped(template, env, expansions)
                 } else {
-                    Self::List(Self::compile_slice(list, variables))
+                    Self::List(Self::compile_slice(list, env, expansions))
                 }
             }
-            Syntax::Vector { vector, .. } => Self::Vector(Self::compile_slice(vector, variables)),
+            Syntax::Vector { vector, .. } => {
+                Self::Vector(Self::compile_slice(vector, env, expansions))
+            }
             Syntax::ByteVector { vector, .. } => Self::ByteVector(vector.clone()),
             Syntax::Literal { literal, .. } => Self::Literal(literal.clone()),
-            Syntax::Identifier { ident, .. } if variables.contains(&ident) => {
-                Self::Variable(ident.clone())
+            // Syntax::Identifier { ident, .. } if variables.contains(&ident) => {
+            //     Self::Variable(ident.clone())
+            // }
+            Syntax::Identifier { ident, .. } => {
+                if let Some(expansion) = env.fetch_pattern_variable(ident) {
+                    expansions.insert(ident.clone(), expansion);
+                    Self::Variable(ident.clone())
+                } else {
+                    Self::Identifier(ident.clone())
+                }
             }
-            Syntax::Identifier { ident, .. } => Self::Identifier(ident.clone()),
         }
     }
 
-    pub fn compile_escaped(expr: &Syntax, variables: &HashSet<Identifier>) -> Self {
+    pub fn compile_escaped(
+        expr: &Syntax,
+        env: &Environment,
+        expansions: &mut HashMap<Identifier, Local>,
+    ) -> Self {
         match expr {
             Syntax::Null { .. } => Self::Null,
-            Syntax::List { list, .. } => Self::List(Self::compile_slice_escaped(list, variables)),
+            Syntax::List { list, .. } => {
+                Self::List(Self::compile_slice_escaped(list, env, expansions))
+            }
             Syntax::Vector { vector, .. } => {
-                Self::Vector(Self::compile_slice_escaped(vector, variables))
+                Self::Vector(Self::compile_slice_escaped(vector, env, expansions))
             }
             Syntax::ByteVector { vector, .. } => Self::ByteVector(vector.clone()),
             Syntax::Literal { literal, .. } => Self::Literal(literal.clone()),
-            Syntax::Identifier { ident, .. } if variables.contains(&ident) => {
-                Self::Variable(ident.clone())
+            Syntax::Identifier { ident, .. } => {
+                if let Some(expansion) = env.fetch_pattern_variable(ident) {
+                    expansions.insert(ident.clone(), expansion);
+                    Self::Variable(ident.clone())
+                } else {
+                    Self::Identifier(ident.clone())
+                }
             }
-            Syntax::Identifier { ident, .. } => Self::Identifier(ident.clone()),
         }
     }
 
-    fn compile_slice(mut expr: &[Syntax], variables: &HashSet<Identifier>) -> Vec<Self> {
+    fn compile_slice(
+        mut expr: &[Syntax],
+        env: &Environment,
+        expansions: &mut HashMap<Identifier, Local>,
+    ) -> Vec<Self> {
         let mut output = Vec::new();
         loop {
             match expr {
@@ -389,14 +507,14 @@ impl Template {
                         ident: ellipsis, ..
                     },
                     tail @ ..,
-                ] if ellipsis.sym == "..." && contains_pattern_variables(template, variables) => {
+                ] if ellipsis.sym == "..." => {
                     output.push(Self::Ellipsis(Box::new(Template::compile(
-                        template, variables,
+                        template, env, expansions,
                     ))));
                     expr = tail;
                 }
                 [head, tail @ ..] => {
-                    output.push(Self::compile(head, variables));
+                    output.push(Self::compile(head, env, expansions));
                     expr = tail;
                 }
             }
@@ -404,10 +522,14 @@ impl Template {
         output
     }
 
-    fn compile_slice_escaped(exprs: &[Syntax], variables: &HashSet<Identifier>) -> Vec<Self> {
+    fn compile_slice_escaped(
+        exprs: &[Syntax],
+        env: &Environment,
+        expansions: &mut HashMap<Identifier, Local>,
+    ) -> Vec<Self> {
         exprs
             .iter()
-            .map(|expr| Self::compile_escaped(expr, variables))
+            .map(|expr| Self::compile_escaped(expr, env, expansions))
             .collect()
     }
 
@@ -423,13 +545,14 @@ impl Template {
                 span: curr_span,
                 bound: false,
             },
-            Self::Variable(ident) => binds.get_bind(ident)?,
+            Self::Variable(name) => binds.get_bind(name)?,
             Self::Literal(literal) => Syntax::new_literal(literal.clone(), curr_span),
             _ => unreachable!(),
         };
         Some(syn)
     }
 
+    /*
     async fn eval(
         &self,
         runtime: &Runtime,
@@ -438,6 +561,7 @@ impl Template {
         binds: &Binds<'_>,
         curr_span: Span,
     ) -> Result<Vec<Value>, Condition> {
+        /*
         // Expand the template:
         // TODO: This can return None if a variable is used with the wrong
         // expansion level. This needs to be made into a proper error.
@@ -456,9 +580,67 @@ impl Template {
         // Evaluate the expression:
         // TODO: Fix this map_err
         compiled.call(&[]).await.map_err(Condition::from)
+         */
+        todo!()
     }
+     */
 }
 
+#[runtime_fn]
+unsafe extern "C" fn expand_template(
+    template: i64,
+    expansion_combiner: i64,
+    expansions: *const i64,
+    num_expansions: u32,
+) -> i64 {
+    // A lot of probably unnecessary cloning here, we'll need to fix it up
+    // eventually
+
+    let template = unsafe { Value::from_raw_inc_rc(template as u64) };
+    let template: Gc<Gc<dyn Any>> = template.try_into().unwrap();
+    let Ok(template) = template.read().clone().downcast::<Template>() else {
+        panic!()
+    };
+
+    let expansion_combiner = unsafe { Value::from_raw_inc_rc(expansion_combiner as u64) };
+    let expansion_combiner: Gc<Gc<dyn Any>> = expansion_combiner.try_into().unwrap();
+    let Ok(expansion_combiner) = expansion_combiner
+        .read()
+        .clone()
+        .downcast::<ExpansionCombiner>()
+    else {
+        panic!()
+    };
+
+    // let expansions = unsafe { Value::from_raw_inc_rc(expansions as u64) };
+    // let expansions: Gc<vectors::AlignedVector<Value>> = expansions.try_into().unwrap();
+    let expansions = (0..num_expansions)
+        .map(|i| {
+            let expansion =
+                unsafe { Value::from_raw_inc_rc(expansions.add(i as usize).read() as u64) };
+            let expansion: Gc<Gc<dyn Any>> = expansion.clone().try_into().unwrap();
+            let Ok(expansion) = expansion.read().clone().downcast::<ExpansionLevel>() else {
+                panic!()
+            };
+            expansion.read().clone()
+        })
+        .collect::<Vec<_>>();
+
+    println!("expanding");
+    println!("template {template:?}");
+    println!("combiner: {expansion_combiner:?}");
+    println!("expansions: {expansions:?}");
+
+    let combined_expansions = expansion_combiner.read().combine_expansions(&expansions);
+    let binds = Binds::new_top(&combined_expansions);
+
+    // TODO: get a real span in here
+    let expanded = template.read().expand(&binds, Span::default()).unwrap();
+
+    Value::into_raw(Value::from(expanded)) as i64
+}
+
+/*
 fn contains_pattern_variables(syn: &Syntax, variables: &HashSet<Identifier>) -> bool {
     match syn {
         Syntax::Identifier { ident, .. } if variables.contains(&ident) => true,
@@ -468,6 +650,7 @@ fn contains_pattern_variables(syn: &Syntax, variables: &HashSet<Identifier>) -> 
         _ => false,
     }
 }
+*/
 
 fn expand_list(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<Syntax> {
     let mut output = Vec::new();
@@ -561,56 +744,45 @@ impl<'a> Binds<'a> {
     }
 }
 
+#[runtime_fn]
+unsafe extern "C" fn error_no_patterns_match() -> *mut Result<Application, Condition> {
+    let condition = Condition::error("No patterns match!".to_string());
+    Box::into_raw(Box::new(Err(condition)))
+}
+
+/*
 #[bridge(name = "make-variable-transformer", lib = "(rnrs base builtins (6))")]
 pub async fn make_variable_transformer(proc: &Value) -> Result<Vec<Value>, Condition> {
-    let proc: Gc<Closure> = proc.clone().try_into()?;
+    let proc: Gc<ClosureInner> = proc.clone().try_into()?;
     let mut var_transformer = proc.read().clone();
     var_transformer.is_variable_transformer = true;
     Ok(vec![Value::from(var_transformer)])
 }
+*/
 
+/*
 pub fn call_transformer<'a>(
     args: &'a [Value],
     _rest_args: &'a [Value],
     cont: &'a Value,
-    env: &'a [Gc<Value>],
+    _env: &'a [Gc<Value>],
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {
     Box::pin(async move {
-        let [captured_env, transformer, arg] = args else {
+        let [transformer, arg] = args else {
             panic!("wrong args");
         };
 
-        let cont: Gc<Closure> = cont.clone().try_into()?;
-
-        // Fetch a runtime from the continuation. It doesn't really matter
-        // _which_ runtime we use, in fact we could create a new one, but it
-        // behooves us to use one that already exists.
-        let runtime = {
-            let cont_read = cont.read();
-            cont_read.runtime.clone()
-        };
-
-        let captured_env = {
-            let captured_env: Gc<CapturedEnv> = captured_env.clone().try_into()?;
-            let captured_env_read = captured_env.read();
-            captured_env_read.clone()
-        };
+        let cont: Closure = cont.clone().try_into()?;
 
         let transformer: Gc<Transformer> = transformer.clone().try_into()?;
         let transformer = { transformer.read().clone() };
 
-        // Collect the environment:
-        let mut collected_env = IndexMap::new();
-        for (i, local) in captured_env.captured.into_iter().enumerate() {
-            collected_env.insert(local, env[i].clone());
-        }
-
         // Expand the input:
         let syn = Syntax::syntax_from_datum(&BTreeSet::default(), arg.clone());
         let transformer_result = transformer
-            .eval(&syn, &runtime, &captured_env.env, &collected_env)
+            .eval(&syn)
             .await?
             .ok_or_else(|| Condition::syntax_error(syn, None))?;
 
@@ -625,3 +797,4 @@ pub fn call_transformer<'a>(
         Ok(app)
     })
 }
+*/

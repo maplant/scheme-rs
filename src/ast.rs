@@ -2,13 +2,13 @@
 
 use crate::{
     cps::{Compile, PrimOp},
-    env::{CapturedEnv, Environment, Local, Var},
+    env::{Environment, Local, Var},
     exception::Condition,
-    expand::{SyntaxRule, Transformer},
+    expand::{SyntaxRule, Template},
     gc::{Gc, Trace},
     num::{Number, NumberToUsizeError},
     parse::ParseSyntaxError,
-    proc::Closure,
+    proc::{Closure, ClosureInner},
     registry::ImportError,
     runtime::Runtime,
     symbols::Symbol,
@@ -21,7 +21,9 @@ use derive_more::From;
 use futures::future::BoxFuture;
 use inkwell::builder::BuilderError;
 use std::{
-    collections::{HashMap, HashSet}, fmt, sync::Arc
+    collections::{HashMap, HashSet},
+    fmt,
+    sync::Arc,
 };
 
 #[derive(Debug)]
@@ -947,7 +949,7 @@ pub(super) async fn define_syntax(
         .call(&[])
         .await
         .map_err(|err| ParseAstError::RaisedValue(err.into()))?;
-    let transformer: Gc<Closure> = mac[0].clone().try_into().unwrap();
+    let transformer: Closure = mac[0].clone().try_into().unwrap();
     env.def_keyword(ident, transformer);
 
     Ok(())
@@ -1064,7 +1066,7 @@ impl Expression {
                             Quote::parse(tail, span).map(Expression::Quote)
                         }
                         Some(Either::Left(SpecialKeyword::Syntax)) => {
-                            SyntaxQuote::parse(tail, span).map(Expression::SyntaxQuote)
+                            SyntaxQuote::parse(tail, env, span).map(Expression::SyntaxQuote)
                         }
                         Some(Either::Left(SpecialKeyword::SyntaxCase)) => {
                             SyntaxCase::parse(runtime, tail, env, span)
@@ -1152,8 +1154,8 @@ impl Expression {
 
         if let Expression::Var(Var::Global(global)) = self {
             let val = global.value_ref().read().clone();
-            let val: Gc<Closure> = val.try_into().ok()?;
-            let val_read = val.read();
+            let val: Closure = val.try_into().ok()?;
+            let val_read = val.0.read();
             match val_read.func {
                 Bridge(ptr) if ptr == add_builtin => Some(PrimOp::Add),
                 Bridge(ptr) if ptr == sub_builtin => Some(PrimOp::Sub),
@@ -1211,14 +1213,22 @@ impl Quote {
 
 #[derive(Debug, Clone, Trace)]
 pub struct SyntaxQuote {
-    pub syn: Syntax,
+    pub template: Template,
+    pub expansions: HashMap<Identifier, Local>,
 }
 
 impl SyntaxQuote {
-    fn parse(exprs: &[Syntax], span: &Span) -> Result<Self, ParseAstError> {
+    fn parse(exprs: &[Syntax], env: &Environment, span: &Span) -> Result<Self, ParseAstError> {
         match exprs {
             [] => Err(ParseAstError::ExpectedArgument(span.clone())),
-            [expr] => Ok(SyntaxQuote { syn: expr.clone() }),
+            [expr] => {
+                let mut expansions = HashMap::new();
+                let template = Template::compile(expr, env, &mut expansions);
+                Ok(SyntaxQuote {
+                    template,
+                    expansions,
+                })
+            }
             [_, arg, ..] => Err(ParseAstError::UnexpectedArgument(arg.span().clone())),
         }
     }
@@ -1232,33 +1242,6 @@ pub struct Apply {
 }
 
 impl Apply {
-    /*
-    async fn parse(
-        runtime: &Runtime,
-        operator: Syntax,
-        args: &[Syntax],
-        env: &Environment,
-    ) -> Result<Self, ParseAstError> {
-        let span = operator.span().clone();
-        let operator = if let Syntax::Identifier { ident, .. } = &operator
-            && let Some(prim_op) = PrimOp::from_sym(ident.sym)
-        {
-            Either::Right(prim_op)
-        } else {
-            Either::Left(Box::new(Expression::parse(runtime, operator, env).await?))
-        };
-        let mut parsed_args = Vec::new();
-        for arg in args {
-            parsed_args.push(Expression::parse(runtime, arg.clone(), env).await?);
-        }
-        Ok(Apply {
-            operator,
-            args: parsed_args,
-            span,
-        })
-    }
-     */
-
     async fn parse(
         rt: &Runtime,
         operator: Either<Box<Expression>, PrimOp>,
@@ -1947,12 +1930,10 @@ impl Vector {
     }
 }
 
-#[derive(derive_more::Debug, Clone, Trace)]
+#[derive(Clone, Trace, Debug)]
 pub struct SyntaxCase {
     pub arg: Arc<Expression>,
-    pub transformer: Transformer,
-    #[debug(skip)]
-    pub captured_env: CapturedEnv,
+    pub rules: Vec<SyntaxRule>,
 }
 
 impl SyntaxCase {
@@ -1962,11 +1943,6 @@ impl SyntaxCase {
         env: &Environment,
         span: &Span,
     ) -> Result<Self, ParseAstError> {
-        // Get every possible variable referenced by the transformer:
-        let captured_locals = fetch_all_identifiers(exprs)
-            .into_iter()
-            .flat_map(|ident| env.fetch_local(&ident))
-            .collect();
         let (arg, keywords, mut rules) = match exprs {
             [arg, Syntax::List { list, .. }, rules @ ..] => {
                 let mut keywords = HashSet::default();
@@ -1988,17 +1964,32 @@ impl SyntaxCase {
             match rules {
                 [] => break,
                 [Syntax::List { list, .. }, tail @ ..] => match &list[..] {
-                    [pattern, template, Syntax::Null { .. }] => {
-                        syntax_rules.push(SyntaxRule::compile(&keywords, pattern, None, template));
+                    [pattern, output_expression, Syntax::Null { .. }] => {
+                        syntax_rules.push(
+                            SyntaxRule::compile(
+                                runtime,
+                                &keywords,
+                                pattern,
+                                None,
+                                output_expression,
+                                &env,
+                            )
+                            .await?,
+                        );
                         rules = tail;
                     }
-                    [pattern, fender, template, Syntax::Null { .. }] => {
-                        syntax_rules.push(SyntaxRule::compile(
-                            &keywords,
-                            pattern,
-                            Some(fender),
-                            template,
-                        ));
+                    [pattern, fender, output_expression, Syntax::Null { .. }] => {
+                        syntax_rules.push(
+                            SyntaxRule::compile(
+                                runtime,
+                                &keywords,
+                                pattern,
+                                Some(fender),
+                                output_expression,
+                                &env,
+                            )
+                            .await?,
+                        );
                         rules = tail;
                     }
                     _ => return Err(ParseAstError::BadForm(span.clone())),
@@ -2008,19 +1999,7 @@ impl SyntaxCase {
         }
         Ok(SyntaxCase {
             arg: Arc::new(Expression::parse(runtime, arg.clone(), env).await?),
-            transformer: Transformer {
-                rules: syntax_rules,
-                is_variable_transformer: false,
-            },
-            captured_env: CapturedEnv::new(env.clone(), captured_locals),
+            rules: syntax_rules,
         })
     }
-}
-
-fn fetch_all_identifiers(syn: &[Syntax]) -> HashSet<Identifier> {
-    let mut idents = HashSet::new();
-    for syn in syn {
-        syn.fetch_all_identifiers(&mut idents);
-    }
-    idents
 }

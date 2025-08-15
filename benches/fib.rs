@@ -12,7 +12,7 @@ use scheme_rs::{
 
 use criterion::*;
 
-async fn fib_fn() -> Gc<scheme_rs::proc::Closure> {
+async fn fib_fn() -> Gc<scheme_rs::proc::ClosureInner> {
     let rt = Runtime::new();
     let prog = Library::new_program(&rt, Path::new("fib.scm"));
     let env = Environment::Top(prog);

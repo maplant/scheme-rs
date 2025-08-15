@@ -4,12 +4,11 @@ use crate::{
     env::{Environment, Local},
     exception::{Condition, Exception, ExceptionHandler},
     expand,
-    gc::{Gc, GcInner, Trace, init_gc},
+    gc::{init_gc, Gc, GcInner, Trace},
     lists::{self, list_to_vec},
     num,
     proc::{
-        Application, Closure, ContinuationPtr, DynamicWind, FuncDebugInfo, FuncPtr, UserPtr,
-        clone_continuation_env,
+        clone_continuation_env, Application, Closure, ContinuationPtr, DynamicWind, FuncDebugInfo, FuncPtr, UserPtr
     },
     registry::{ImportError, Library, Registry},
     symbols::Symbol,
@@ -91,18 +90,9 @@ impl Runtime {
         self.0.read().registry.clone()
     }
 
-    pub async fn compile_expr(&self, expr: Cps) -> Result<Gc<Closure>, BuilderError> {
-        self.compile_expr_with_env(expr, IndexMap::default()).await
-    }
-
-    pub(crate) async fn compile_expr_with_env(
-        &self,
-        expr: Cps,
-        env: IndexMap<Local, Gc<Value>>,
-    ) -> Result<Gc<Closure>, BuilderError> {
+    pub async fn compile_expr(&self, expr: Cps) -> Result<Closure, BuilderError> {
         let (completion_tx, completion_rx) = oneshot::channel();
         let task = CompilationTask {
-            env,
             completion_tx,
             compilation_unit: expr,
             runtime: self.clone(),
@@ -173,7 +163,6 @@ impl DebugInfo {
 }
 
 struct CompilationTask {
-    env: IndexMap<Local, Gc<Value>>,
     compilation_unit: Cps,
     completion_tx: oneshot::Sender<CompilationResult>,
     /// Since Contexts are per-thread, we will only ever see the same Runtime.
@@ -183,7 +172,7 @@ struct CompilationTask {
     runtime: Runtime,
 }
 
-type CompilationResult = Result<Gc<Closure>, BuilderError>;
+type CompilationResult = Result<Closure, BuilderError>;
 
 fn compilation_task(mut compilation_queue_rx: mpsc::Receiver<CompilationTask>) {
     Target::initialize_native(&InitializationConfig::default()).unwrap();
@@ -202,7 +191,6 @@ fn compilation_task(mut compilation_queue_rx: mpsc::Receiver<CompilationTask>) {
 
     while let Some(task) = compilation_queue_rx.blocking_recv() {
         let CompilationTask {
-            env,
             completion_tx,
             compilation_unit,
             runtime,
@@ -222,14 +210,13 @@ fn compilation_task(mut compilation_queue_rx: mpsc::Receiver<CompilationTask>) {
         let closure = compilation_unit
             .into_closure(
                 runtime,
-                env,
                 &context,
                 &module,
                 &execution_engine,
                 &builder,
                 &mut debug_info,
             )
-            .map(Gc::new);
+            .map(|inner| Closure(Gc::new(inner)));
 
         modules.push(module);
 
@@ -237,12 +224,12 @@ fn compilation_task(mut compilation_queue_rx: mpsc::Receiver<CompilationTask>) {
     }
 }
 
-struct RuntimeFn {
+pub(crate) struct RuntimeFn {
     install: for<'ctx> fn(&'ctx Context, module: &Module<'ctx>, ee: &ExecutionEngine<'ctx>),
 }
 
 impl RuntimeFn {
-    const fn new(
+    pub(crate) const fn new(
         install: for<'ctx> fn(&'ctx Context, module: &Module<'ctx>, ee: &ExecutionEngine<'ctx>),
     ) -> Self {
         Self { install }
@@ -488,6 +475,7 @@ unsafe extern "C" fn make_user(
     }
 }
 
+/*
 /// Call a transformer with the given argument and return the expansion
 #[runtime_fn]
 unsafe extern "C" fn get_call_transformer_fn(
@@ -514,6 +502,7 @@ unsafe extern "C" fn get_call_transformer_fn(
         Gc::into_raw(Gc::new(Value::from(closure)))
     }
 }
+*/
 
 /// Return an error in the case that a value is undefined
 #[runtime_fn]
@@ -576,10 +565,10 @@ unsafe extern "C" fn prepare_continuation(
 
         // Clone the continuation
         let cont = clone_continuation_env(&cont, &mut HashMap::default());
-        let cont: Gc<Closure> = cont.try_into().unwrap();
+        let cont: Closure = cont.try_into().unwrap();
 
         let (runtime, req_args, variadic) = {
-            let cont_read = cont.read();
+            let cont_read = cont.0.read();
             (
                 cont_read.runtime.clone(),
                 cont_read.num_required_args,
@@ -610,8 +599,8 @@ fn compute_winders(from_extent: &DynamicWind, to_extent: &[Value]) -> Value {
         };
         let pair_read = pair.read();
         let lists::Pair(to_in, _) = pair_read.as_ref();
-        let to_in: Gc<Closure> = to_in.clone().try_into().unwrap();
-        if Gc::ptr_eq(&from_extent.winders[i].0, &to_in) {
+        let to_in: Closure = to_in.clone().try_into().unwrap();
+        if Gc::ptr_eq(&from_extent.winders[i].0.0, &to_in.0) {
             split_point = i + 1;
         } else {
             break;
@@ -657,7 +646,7 @@ unsafe extern "C" fn call_thunks(
         // env[0] are the thunks:
         let thunks = Gc::from_raw_inc_rc(env.read());
         // env[1] is the continuation:
-        let k: Gc<Closure> = Gc::from_raw_inc_rc(env.add(1).read())
+        let k: Closure = Gc::from_raw_inc_rc(env.add(1).read())
             .read()
             .clone()
             .try_into()
@@ -665,7 +654,7 @@ unsafe extern "C" fn call_thunks(
 
         // k determines the number of arguments:
         let collected_args = {
-            let k_read = k.read();
+            let k_read = k.0.read();
             let num_args = k_read.num_required_args;
 
             let mut collected_args = if k_read.variadic {
@@ -693,7 +682,7 @@ unsafe extern "C" fn call_thunks(
         );
 
         let app = Application::new(
-            Gc::new(thunks),
+            thunks,
             Vec::new(),
             ExceptionHandler::from_ptr(exception_handler),
             dynamic_wind.as_ref().unwrap().clone(),
@@ -725,7 +714,7 @@ unsafe extern "C" fn call_thunks_pass_args(
             // UnpackedValue::Pair(head_thunk, tail) => {
             UnpackedValue::Pair(pair) => {
                 let lists::Pair(head_thunk, tail) = &*pair.read();
-                let head_thunk: Gc<Closure> = head_thunk.clone().try_into().unwrap();
+                let head_thunk: Closure = head_thunk.clone().try_into().unwrap();
                 let cont = Closure::new(
                     Runtime::from_raw_inc_rc(runtime),
                     vec![Gc::new(tail.clone()), args, k],

@@ -207,7 +207,9 @@ impl Syntax {
         input.mark(new_mark);
 
         // Call the transformer with the input:
+        println!("Attempting to call transformer");
         let transformer_output = mac.transformer.call(&[Value::from(input)]).await?;
+        println!("Success!");
 
         // Output must be syntax:
         let output: Arc<Syntax> = transformer_output[0].clone().try_into()?;
@@ -232,6 +234,7 @@ impl Syntax {
                         _ => return Ok(Expansion::Unexpanded),
                     };
                     if let Some(mac) = env.fetch_keyword(ident).await? {
+                        println!("expanding: {self:?}");
                         return self.apply_transformer(env, mac).await;
                     }
 
@@ -240,7 +243,7 @@ impl Syntax {
                         [Syntax::Identifier { ident: var, .. }, ..] if ident == "set!" => {
                             // Look for a variable transformer:
                             if let Some(mac) = env.fetch_keyword(var).await? {
-                                if !mac.transformer.read().is_variable_transformer {
+                                if !mac.transformer.is_variable_transformer() {
                                     return Err(Condition::error(format!(
                                         "{} not a variable transformer",
                                         var.sym

@@ -144,6 +144,7 @@ impl Cps {
         escaping_arg_cache: &mut HashMap<Local, HashSet<Local>>,
     ) -> HashSet<Local> {
         match self {
+            /*
             Cps::PrimOp(PrimOp::GetCallTransformerFn, args, _, cexp) => {
                 // The GetCallTransformerFn requires that all arguments to it are
                 // cells. We should fix this at some point.
@@ -152,6 +153,7 @@ impl Cps {
                     .copied()
                     .collect()
             }
+            */
             Cps::PrimOp(PrimOp::Set, args, _, cexp) => {
                 let [to, from] = args.as_slice() else {
                     unreachable!()
