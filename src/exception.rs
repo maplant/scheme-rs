@@ -202,7 +202,7 @@ pub struct ExceptionHandler {
     /// None, we return the condition as an Error.
     prev_handler: Option<Gc<ExceptionHandler>>,
     /// The currently installed handler.
-    curr_handler: Gc<Closure>,
+    curr_handler: Closure,
     /// The dynamic extent of the exception handler.
     dynamic_extent: DynamicWind,
 }
@@ -231,9 +231,8 @@ pub fn with_exception_handler<'a>(
             return Err(Condition::wrong_num_of_args(2, args.len()).into());
         };
 
-        let handler: Gc<Closure> = handler.clone().try_into()?;
-
-        let thunk: Gc<Closure> = thunk.clone().try_into()?;
+        let handler: Closure = handler.clone().try_into()?;
+        let thunk: Closure = thunk.clone().try_into()?;
 
         let exception_handler = ExceptionHandler {
             prev_handler: exception_handler.clone(),
@@ -289,10 +288,7 @@ pub fn raise<'a>(
         };
 
         let handler = handler.read();
-        let runtime = {
-            let curr_handler = handler.curr_handler.read();
-            curr_handler.runtime.clone()
-        };
+        let runtime = handler.curr_handler.get_runtime();
 
         Ok(Application::new(
             handler.curr_handler.clone(),
@@ -352,7 +348,7 @@ unsafe extern "C" fn reraise_exception(
         let cont = cont.read().clone();
 
         Box::into_raw(Box::new(Ok(Application::new(
-            Gc::new(Closure::new(
+            Closure::new(
                 runtime,
                 Vec::new(),
                 Vec::new(),
@@ -360,7 +356,7 @@ unsafe extern "C" fn reraise_exception(
                 1,
                 false,
                 None,
-            )),
+            ),
             vec![exception, cont],
             ExceptionHandler::from_ptr(exception_handler),
             dynamic_wind.as_ref().unwrap().clone(),

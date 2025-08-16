@@ -1,6 +1,5 @@
 //! LLVM SSA Codegen from CPS.
 
-use indexmap::IndexMap;
 use inkwell::{
     AddressSpace, IntPredicate,
     builder::{Builder, BuilderError},
@@ -12,8 +11,7 @@ use inkwell::{
 use std::{collections::HashMap, rc::Rc, sync::Arc};
 
 use crate::{
-    gc::Gc,
-    proc::{Closure, ContinuationPtr, FuncDebugInfo, FuncPtr},
+    proc::{ClosureInner, ContinuationPtr, FuncDebugInfo, FuncPtr},
     runtime::{DebugInfo, Runtime},
     value::{ReflexiveValue, Value as SchemeValue},
 };
@@ -33,10 +31,6 @@ impl<'ctx> Rebinds<'ctx> {
         self.rebinds
             .get(var)
             .unwrap_or_else(|| panic!("could not find {var:?}"))
-    }
-
-    fn fetch_bind_opt(&self, var: &Var) -> Option<&BasicValueEnum<'ctx>> {
-        self.rebinds.get(var)
     }
 
     fn new() -> Self {
@@ -88,20 +82,19 @@ impl<'ctx> Allocs<'ctx> {
 
 impl Cps {
     #[allow(clippy::too_many_arguments)]
-    pub fn into_closure<'ctx, 'b>(
+    pub(crate) fn into_closure<'ctx, 'b>(
         self,
         runtime: Runtime,
-        env: IndexMap<Local, Gc<SchemeValue>>,
         ctx: &'ctx Context,
         module: &'b Module<'ctx>,
         ee: &ExecutionEngine<'ctx>,
         builder: &'b Builder<'ctx>,
         debug_info: &'b mut DebugInfo,
-    ) -> Result<Closure, BuilderError>
+    ) -> Result<ClosureInner, BuilderError>
     where
         'ctx: 'b,
     {
-        if std::env::var("SCHEME_RS_DEBUG").is_ok() {
+        if std::env::var("GOUKI_DEBUG").is_ok() {
             eprintln!("compiling: {self:#?}");
         }
 
@@ -126,28 +119,7 @@ impl Cps {
         let entry = ctx.append_basic_block(function, "entry");
         builder.position_at_end(entry);
 
-        // Collect the provided environment:
-
-        let env_param = function
-            .get_nth_param(ENV_PARAM)
-            .unwrap()
-            .into_pointer_value();
-        let array_type = ptr_type.array_type(env.len() as u32);
-        let env_load = builder
-            .build_load(array_type, env_param, "env_load")?
-            .into_array_value();
-
-        let mut collected_env = Vec::new();
-        for (i, (local, val)) in env.into_iter().enumerate() {
-            collected_env.push(val);
-            let res = builder
-                .build_extract_value(env_load, i as u32, "extract_env")
-                .unwrap();
-            cu.rebinds.rebind(Var::Local(local), res);
-        }
-
         // Collect the provided globals:
-
         let globals = self.globals().into_iter().collect::<Vec<_>>();
 
         let globals_param = function
@@ -175,7 +147,7 @@ impl Cps {
 
         assert!(function.verify(true));
 
-        if std::env::var("SCHEME_RS_DEBUG").is_ok() {
+        if std::env::var("GOUKI_DEBUG").is_ok() {
             function.print_to_stderr();
         }
 
@@ -185,9 +157,9 @@ impl Cps {
                 .into_raw()
         };
 
-        Ok(Closure::new(
+        Ok(ClosureInner::new(
             runtime,
-            collected_env,
+            Vec::new(),
             globals.into_iter().map(Global::value).collect::<Vec<_>>(),
             FuncPtr::Continuation(func),
             0,
@@ -264,9 +236,28 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                     cont, winders, prepare_to, *cexpr, allocs, deferred,
                 )?;
             }
-            Cps::PrimOp(PrimOp::GetCallTransformerFn, env, res, cexpr) => {
-                self.get_call_transformer_codegen(&env, res)?;
-                self.cps_codegen(*cexpr, allocs, deferred)?;
+            Cps::PrimOp(PrimOp::Matches, args, bind_to, cexpr) => {
+                let [pattern, expr] = args.as_slice() else {
+                    unreachable!()
+                };
+                self.matches_codegen(pattern, expr, bind_to, *cexpr, allocs, deferred)?;
+            }
+            Cps::PrimOp(PrimOp::ExpandTemplate, args, expand_to, cexpr) => {
+                let [template, expansion_combiner, expansions @ ..] = args.as_slice() else {
+                    unreachable!()
+                };
+                self.expand_template_codegen(
+                    template,
+                    expansion_combiner,
+                    expansions,
+                    expand_to,
+                    *cexpr,
+                    allocs,
+                    deferred,
+                )?;
+            }
+            Cps::PrimOp(PrimOp::ErrorNoPatternsMatch, _, _, _) => {
+                self.error_no_patterns_match_codegen(allocs)?;
             }
             Cps::PrimOp(primop, vals, result, cexpr) => {
                 self.simple_primop_codegen(primop, &vals, result, *cexpr, allocs, deferred)?
@@ -345,7 +336,14 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                                     Var::Local(Local {
                                         name: Some(sym), ..
                                     }) => sym.0,
-                                    _ => Symbol::intern("(unknown)").0,
+                                    _ => {
+                                        Symbol::intern(&format!(
+                                            "{}_{}",
+                                            self.function.get_name().to_string_lossy(),
+                                            cell.get_name().to_string_lossy()
+                                        ))
+                                        .0
+                                    }
                                 } as u64,
                                 false,
                             )
@@ -411,6 +409,89 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         Ok(())
     }
 
+    fn matches_codegen(
+        &mut self,
+        pattern: &Value,
+        expr: &Value,
+        binds: Local,
+        cexpr: Cps,
+        allocs: Option<Rc<Allocs<'ctx>>>,
+        deferred: &mut Vec<ClosureBundle<'ctx>>,
+    ) -> Result<(), BuilderError> {
+        let pattern = self.value_codegen(pattern, &allocs)?;
+        let expr = self.value_codegen(expr, &allocs)?;
+        let matches_fn = self.module.get_function("matches").unwrap();
+        let match_result = self
+            .builder
+            .build_call(matches_fn, &[pattern.into(), expr.into()], "binds")?
+            .try_as_basic_value()
+            .left()
+            .unwrap();
+
+        self.rebinds.rebind(Var::Local(binds), match_result);
+        let new_alloc = Allocs::new(allocs, match_result);
+        self.cps_codegen(cexpr, new_alloc, deferred)?;
+
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn expand_template_codegen(
+        &mut self,
+        template: &Value,
+        expansion_combiner: &Value,
+        expansions: &[Value],
+        expand_to: Local,
+        cexpr: Cps,
+        allocs: Option<Rc<Allocs<'ctx>>>,
+        deferred: &mut Vec<ClosureBundle<'ctx>>,
+    ) -> Result<(), BuilderError> {
+        let template = self.value_codegen(template, &allocs)?;
+        let expansion_combiner = self.value_codegen(expansion_combiner, &allocs)?;
+
+        // Put the expansions into an array:
+        let ptr_type = self.ctx.ptr_type(AddressSpace::default());
+        let i32_type = self.ctx.i32_type();
+        let num_expansions = expansions.len();
+        let array_type = ptr_type.array_type(num_expansions as u32);
+        let expansions_alloca = self.builder.build_alloca(array_type, "vals")?;
+        for (i, expansion) in expansions.iter().enumerate() {
+            let ep = unsafe {
+                self.builder.build_gep(
+                    ptr_type,
+                    expansions_alloca,
+                    &[i32_type.const_int(i as u64, false)],
+                    "expansions_elem",
+                )?
+            };
+            let expansion = self.value_codegen(expansion, &allocs)?;
+            self.builder.build_store(ep, expansion)?;
+        }
+
+        let expand_fn = self.module.get_function("expand_template").unwrap();
+        let expanded = self
+            .builder
+            .build_call(
+                expand_fn,
+                &[
+                    template.into(),
+                    expansion_combiner.into(),
+                    expansions_alloca.into(),
+                    i32_type.const_int(num_expansions as u64, false).into(),
+                ],
+                "expand_template",
+            )?
+            .try_as_basic_value()
+            .left()
+            .unwrap();
+
+        self.rebinds.rebind(Var::Local(expand_to), expanded);
+        let new_alloc = Allocs::new(allocs, expanded);
+        self.cps_codegen(cexpr, new_alloc, deferred)?;
+
+        Ok(())
+    }
+
     fn prepare_continuation_codegen(
         &mut self,
         cont: &Value,
@@ -448,6 +529,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
 
         Ok(())
     }
+
     fn simple_primop_codegen(
         &mut self,
         primop: PrimOp,
@@ -535,6 +617,23 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         let new_alloc = Allocs::new(allocs, result_val);
 
         self.cps_codegen(cexpr, new_alloc, deferred)?;
+
+        Ok(())
+    }
+
+    fn error_no_patterns_match_codegen(
+        &self,
+        allocs: Option<Rc<Allocs<'ctx>>>,
+    ) -> Result<(), BuilderError> {
+        self.drops_codegen(allocs)?;
+        let error_fn = self.module.get_function("error_no_patterns_match").unwrap();
+        let error = self
+            .builder
+            .build_call(error_fn, &[], "error")?
+            .try_as_basic_value()
+            .left()
+            .unwrap();
+        self.builder.build_return(Some(&error))?;
 
         Ok(())
     }
@@ -786,60 +885,6 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         self.cps_codegen(cexpr, allocs, deferred)
     }
 
-    fn get_call_transformer_codegen(
-        &mut self,
-        env: &[Value],
-        result: Local,
-    ) -> Result<(), BuilderError> {
-        let i32_type = self.ctx.i32_type();
-        let ptr_type = self.ctx.ptr_type(AddressSpace::default());
-
-        let num_envs = i32_type.const_int(env.len() as u64, false);
-        let env_type = ptr_type.array_type(env.len() as u32);
-        let env_alloca = self.builder.build_alloca(env_type, "env_alloca")?;
-
-        for (i, env_var) in env.iter().enumerate() {
-            let ep = unsafe {
-                self.builder.build_gep(
-                    ptr_type,
-                    env_alloca,
-                    &[i32_type.const_int(i as u64, false)],
-                    "alloca_elem",
-                )?
-            };
-            let Value::Var(var) = env_var else {
-                unreachable!()
-            };
-            let val = self.fetch_bind_or_undefined(var)?;
-            if !val.is_pointer_value() {
-                panic!("{env_var:?} is not a pointer");
-            }
-            self.builder.build_store(ep, val)?;
-        }
-
-        let get_call_transformer_fn = self.module.get_function("get_call_transformer_fn").unwrap();
-        let expanded = self
-            .builder
-            .build_call(
-                get_call_transformer_fn,
-                &[
-                    self.function
-                        .get_nth_param(RUNTIME_PARAM)
-                        .unwrap()
-                        .into_pointer_value()
-                        .into(),
-                    env_alloca.into(),
-                    num_envs.into(),
-                ],
-                "call_transformer",
-            )?
-            .try_as_basic_value()
-            .left()
-            .unwrap();
-        self.rebinds.rebind(Var::Local(result), expanded);
-        Ok(())
-    }
-
     fn make_closure_codegen(
         &mut self,
         bundle: &ClosureBundle<'ctx>,
@@ -866,7 +911,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                     "alloca_elem",
                 )?
             };
-            let val = self.fetch_bind_or_undefined(&Var::Local(*env_var))?;
+            let val = *self.rebinds.fetch_bind(&Var::Local(*env_var));
             if !val.is_pointer_value() {
                 panic!("{env_var:?} is not a pointer");
             }
@@ -949,22 +994,6 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         self.cps_codegen(cexp, new_alloc, deferred)?;
 
         Ok(())
-    }
-
-    fn fetch_bind_or_undefined(&self, var: &Var) -> Result<BasicValueEnum<'ctx>, BuilderError> {
-        if let Some(val) = self.rebinds.fetch_bind_opt(var) {
-            Ok(*val)
-        } else {
-            // This variable is not available to the macro transformer (or
-            // whatever else, but most likely a macro transformer)
-            let alloc_cell = self.module.get_function("alloc_cell").unwrap();
-            Ok(self
-                .builder
-                .build_call(alloc_cell, &[], "cell")?
-                .try_as_basic_value()
-                .left()
-                .unwrap())
-        }
     }
 }
 
@@ -1133,7 +1162,7 @@ impl<'ctx> ClosureBundle<'ctx> {
 
         cu.cps_codegen(self.body, None, deferred)?;
 
-        if std::env::var("SCHEME_RS_DEBUG").is_ok() {
+        if std::env::var("GOUKI_DEBUG").is_ok() {
             self.function.print_to_stderr();
         }
 

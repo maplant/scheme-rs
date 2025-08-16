@@ -191,36 +191,25 @@ pub fn expression<'a, 'b>(
             Ok(ok) => Ok(ok),
         },
         // Quote:
-        [q @ token!(Lexeme::Quote), tail @ ..] => {
-            let (tail, expr) = expression(tail)?;
-            let expr_span = expr.span().clone();
-            Ok((
-                tail,
-                Syntax::new_list(
-                    vec![
-                        Syntax::new_identifier("quote", q.span.clone()),
-                        expr,
-                        Syntax::new_null(expr_span),
-                    ],
-                    q.span.clone(),
-                ),
-            ))
+        [q @ token!(Lexeme::Quote), tail @ ..] => alias("quote", tail, q.span.clone()),
+        // Quasiquote:
+        [qq @ token!(Lexeme::Backquote), tail @ ..] => alias("quasiquote", tail, qq.span.clone()),
+        // Unquote:
+        [c @ token!(Lexeme::Comma), tail @ ..] => alias("unquote", tail, c.span.clone()),
+        // Unquote splicing:
+        [ca @ token!(Lexeme::CommaAt), tail @ ..] => {
+            alias("unquote-splicing", tail, ca.span.clone())
         }
         // Syntax:
-        [s @ token!(Lexeme::HashTick), tail @ ..] => {
-            let (tail, expr) = expression(tail)?;
-            let expr_span = expr.span().clone();
-            Ok((
-                tail,
-                Syntax::new_list(
-                    vec![
-                        Syntax::new_identifier("syntax", s.span.clone()),
-                        expr,
-                        Syntax::new_null(expr_span),
-                    ],
-                    s.span.clone(),
-                ),
-            ))
+        [s @ token!(Lexeme::HashTick), tail @ ..] => alias("syntax", tail, s.span.clone()),
+        // Quasisyntax:
+        [qs @ token!(Lexeme::HashBackquote), tail @ ..] => {
+            alias("quasisyntax", tail, qs.span.clone())
+        }
+        // Unsyntax:
+        [us @ token!(Lexeme::HashComma), tail @ ..] => alias("unsyntax", tail, us.span.clone()),
+        [ca @ token!(Lexeme::HashCommaAt), tail @ ..] => {
+            alias("unsyntax-splicing", tail, ca.span.clone())
         }
         [paren @ token!(Lexeme::RParen), ..] => {
             Err(ParseSyntaxError::unexpected_closing_paren(paren))
@@ -235,6 +224,26 @@ pub fn expression<'a, 'b>(
             token: token.clone(),
         }),
     }
+}
+
+fn alias<'a, 'b>(
+    alias: &str,
+    tail: &'b [Token<'a>],
+    span: InputSpan<'a>,
+) -> Result<(&'b [Token<'a>], Syntax), ParseSyntaxError<'a>> {
+    let (tail, expr) = expression(tail)?;
+    let expr_span = expr.span().clone();
+    Ok((
+        tail,
+        Syntax::new_list(
+            vec![
+                Syntax::new_identifier(alias, span.clone()),
+                expr,
+                Syntax::new_null(expr_span),
+            ],
+            span,
+        ),
+    ))
 }
 
 #[derive(Debug)]

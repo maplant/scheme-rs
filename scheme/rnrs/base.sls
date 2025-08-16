@@ -3,11 +3,13 @@
           let-values let*-values when unless do case-lambda equal? member memv
           memq caar cadr memp call/cc call-with-current-continuation for-each
           append make-list list-copy list-tail list-ref assoc map reverse
-          positive? negative? abs min max
+          positive? negative? abs min max quasiquote
+          (import (rnrs lists (6)))
           (import (rnrs base builtins (6))
                   (except (rnrs base special-keywords (6)) $call/cc $undefined)
                   (rnrs syntax-case special-keywords (6))))
-  (import (only (rnrs base special-keywords (6)) $call/cc $undefined))
+  (import (rnrs syntax-case (6))
+          (only (rnrs base special-keywords (6)) $call/cc $undefined))
 
   ;; Define syntax-rules in terms of syntax case 
   (define-syntax syntax-rules
@@ -286,6 +288,7 @@
   ;; TODO: All of the car/cdr combinations
   (define caar (lambda (x) (car (car x))))
   (define cadr (lambda (x) (car (cdr x))))
+  (define cddr (lambda (x) (cdr (cdr x))))
 
   (define (memp proc list)
     (if (and (pair? list)
@@ -311,10 +314,6 @@
     (if (not (null? remaining))
         (begin
           (apply for-each (cons func remaining)))))
-
-  (define (append l m)
-    (if (null? l) m
-        (cons (car l) (append (cdr l) m))))
 
   (define (make-list n)
     (if (> n 0)
@@ -344,29 +343,6 @@
           (if (equal? (car pair) k)
               pair
               (assoc k (cdr lst))))))
-
-  (define (map function list1 . more-lists)
-    (define (some? function list)
-      ;; returns #f if (function x) returns #t for 
-      ;; some x in the list
-      (and (pair? list)
-           (or (function (car list))
-               (some? function (cdr list)))))
-    (define (map1 function list)
-      ;; non-variadic map.  Returns a list whose elements are
-      ;; the result of calling function with corresponding
-      ;; elements of list
-      (if (null? list)
-          '()
-          (cons (function (car list))
-                (map1 function (cdr list)))))
-    ;; Variadic map implementation terminates
-    ;; when any of the argument lists is empty
-    (let ((lists (cons list1 more-lists)))
-      (if (some? null? lists)
-          '()
-          (cons (apply function (map1 car lists)) 
-                (apply map function (map1 cdr lists))))))
 
   (define (reverse ls)
     (define (reverse ls acc)
@@ -400,4 +376,139 @@
           (loop (cdr xs)
                 (if (> (car xs) biggest)
                     (car xs)
-                    biggest))))))
+                    biggest)))))
+
+  ;; quasiquote is Copyright (c) 2006 Andre van Tonder
+  ;; 
+  ;; Copyright statement at http://srfi.schemers.org/srfi-process.html
+  ;;
+  ;; Optimised version copied from portable syntax-case (Dybvig)
+  (define-syntax quasiquote
+     (let ()
+       (define (quasi p lev)
+         (syntax-case p (unquote quasiquote)
+           ((unquote p)
+            (if (= lev 0)
+              (syntax ("value" p))
+                (quasicons (syntax ("quote" unquote))
+                           (quasi (syntax (p)) (- lev 1)))))
+           ((quasiquote p) (quasicons (syntax ("quote" quasiquote))
+                                      (quasi (syntax (p)) (+ lev 1))))
+           ((p . q)
+            (syntax-case (syntax p) (unquote unquote-splicing)
+              ((unquote p ...)
+               (if (= lev 0)
+                   (quasilist* (syntax (("value" p) ...))
+                               (quasi (syntax q) lev))
+                   (quasicons
+                    (quasicons (syntax ("quote" unquote))
+                               (quasi (syntax (p ...)) (- lev 1)))
+                    (quasi (syntax q) lev))))
+              ((unquote-splicing p ...)
+               (if (= lev 0)
+                   (quasiappend (syntax (("value" p) ...))
+                                (quasi (syntax q) lev))
+                   (quasicons
+                    (quasicons (syntax ("quote" unquote-splicing))
+                               (quasi (syntax (p ...)) (- lev 1)))
+                    (quasi (syntax q) lev))))
+              (_ (quasicons (quasi (syntax p) lev) (quasi (syntax q) lev)))))
+           (#(x ...) (quasivector (vquasi (syntax (x ...)) lev)))
+           (p (syntax ("quote" p)))))
+       (define (vquasi p lev)
+         (syntax-case p ()
+           ((p . q)
+            (syntax-case (syntax p) (unquote unquote-splicing)
+              ((unquote p ...)
+               (if (= lev 0)
+                   (quasilist* (syntax (("value" p) ...))
+                               (vquasi (syntax q) lev))
+                   (quasicons
+                    (quasicons (syntax ("quote" unquote))
+                               (quasi (syntax (p ...)) (- lev 1)))
+                    (vquasi (syntax q) lev))))
+              ((unquote-splicing p ...)
+               (if (= lev 0)
+                   (quasiappend (syntax (("value" p) ...))
+                                (vquasi (syntax q) lev))
+                   (quasicons
+                    (quasicons
+                     (syntax ("quote" unquote-splicing))
+                     (quasi (syntax (p ...)) (- lev 1)))
+                    (vquasi (syntax q) lev))))
+              (_ (quasicons (quasi (syntax p) lev) (vquasi (syntax q) lev)))))
+           (() (syntax ("quote" ())))))
+       (define (quasicons x y)
+         (with-syntax ((x x) (y y))
+           (syntax-case (syntax y) ()
+             (("quote" dy)
+              (syntax-case (syntax x) ()
+                (("quote" dx) (syntax ("quote" (dx . dy))))
+                (_ (if (null? (syntax dy))
+                       (syntax ("list" x))
+                       (syntax ("list*" x y))))))
+             (("list" . stuff) (syntax ("list" x . stuff)))
+             (("list*" . stuff) (syntax ("list*" x . stuff)))
+             (_ (syntax ("list*" x y))))))
+       (define (quasiappend x y)
+         (syntax-case y ()
+           (("quote" ())
+            (cond
+              ((null? x) (syntax ("quote" ())))
+            ((null? (cdr x)) (car x))
+              (else (with-syntax (((p ...) x)) (syntax ("append" p ...))))))
+           (_
+            (cond
+              ((null? x) y)
+              (else (with-syntax (((p ...) x) (y y))
+                     (syntax ("append" p ... y))))))))
+       (define (quasilist* x y)
+         (let f ((x x))
+           (if (null? x)
+               y
+               (quasicons (car x) (f (cdr x))))))
+       (define (quasivector x)
+         (syntax-case x ()
+           (("quote" (x ...)) (syntax ("quote" #(x ...))))
+           (_
+            (let f ((y x) (k (lambda (ls)
+                               (quasisyntax
+                                ("vector" (unsyntax-splicing ls))))))
+              (syntax-case y ()
+                (("quote" (y ...)) (k (syntax (("quote" y) ...))))
+                (("list" y ...) (k (syntax (y ...))))
+                (("list*" y ... z)
+                 (f (syntax z) (lambda (ls) (k (append (syntax (y ...)) ls)))))
+                (else (quasisyntax ("list->vector" (unsyntax x)))))))))
+       (define (emit x)
+         (syntax-case x ()
+           (("quote" x) (syntax 'x))
+           (("list" x ...)
+            (quasisyntax
+             (list (unsyntax-splicing (map emit (syntax (x ...)))))))
+           ;; could emit list* for 3+ arguments if implementation supports list*
+           (("list*" x ... y)
+            (let f ((x* (syntax (x ...))))
+              (if (null? x*)
+                  (begin
+                    (emit (syntax y)))
+                  (begin
+                    (quasisyntax
+                     (cons (unsyntax (emit (car x*))) (unsyntax (f (cdr x*)))))))))
+           (("append" x ...)
+            (quasisyntax
+             (append (unsyntax-splicing (map emit (syntax (x ...)))))))
+           (("vector" x ...)
+            (quasisyntax
+             (vector (unsyntax-splicing (map emit (syntax (x ...)))))))
+           (("list->vector" x)
+            (quasisyntax (list->vector (unsyntax (emit (syntax x))))))
+           (("value" x) (syntax x))))
+       (lambda (x)
+         (syntax-case x ()
+           ;; convert to intermediate language, combining introduced (but not
+           ;; unquoted source) quote expressions where possible and choosing
+           ;; optimal construction code otherwise, then emit Scheme code
+           ;; corresponding to the intermediate language forms.
+           ((_ e) (emit (quasi (syntax e) 0)))))))
+  )

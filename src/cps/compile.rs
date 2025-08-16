@@ -1,12 +1,16 @@
-use std::iter::once;
-
 use super::*;
-use crate::{ast::*, value::Value as RuntimeValue};
+use crate::{
+    ast::*,
+    expand::{ExpansionCombiner, SyntaxRule},
+    gc::Gc,
+    value::Value as RuntimeValue,
+};
 use either::Either;
+use indexmap::IndexSet;
 
 /// There's not too much reason that this is a trait, other than I wanted to
 /// see all of the Compile implementations in one place.
-pub trait Compile {
+pub trait Compile: std::fmt::Debug {
     fn compile(&self, meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps;
 
     /// The top level function takes no arguments.
@@ -747,12 +751,36 @@ impl Compile for SyntaxQuote {
     fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
         let k1 = Local::gensym();
         let k2 = Local::gensym();
+        let expanded = Local::gensym();
+
+        let mut expansions_seen = IndexSet::new();
+        let mut uses = HashMap::new();
+
+        for (ident, expansion) in self.expansions.iter() {
+            let (idx, _) = expansions_seen.insert_full(expansion);
+            uses.insert(ident.clone(), idx);
+        }
+
+        let mut args = vec![
+            Value::from(RuntimeValue::from(Gc::new(Gc::into_any(Gc::new(
+                self.template.clone(),
+            ))))),
+            Value::from(RuntimeValue::from(Gc::new(Gc::into_any(Gc::new(
+                ExpansionCombiner { uses },
+            ))))),
+        ];
+
+        for expansion in expansions_seen.iter() {
+            args.push(Value::from(**expansion));
+        }
+
         Cps::Lambda {
             args: ClosureArgs::new(vec![k2], false, None),
-            body: Box::new(Cps::App(
-                Value::from(k2),
-                vec![Value::from(RuntimeValue::from(self.syn.clone()))],
-                None,
+            body: Box::new(Cps::PrimOp(
+                PrimOp::ExpandTemplate,
+                args,
+                expanded,
+                Box::new(Cps::App(Value::from(k2), vec![Value::from(expanded)], None)),
             )),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
@@ -766,45 +794,99 @@ impl Compile for SyntaxCase {
         let k1 = Local::gensym();
         let k2 = Local::gensym();
         Cps::Lambda {
-            args: ClosureArgs::new(vec![k1], false, None),
-            body: Box::new(self.arg.compile(Box::new(|arg_result| {
+            args: ClosureArgs::new(vec![k2], false, None),
+            body: Box::new(self.arg.compile(Box::new(|expr_result| {
                 let k3 = Local::gensym();
-                let to_expand = Local::gensym();
-                let call_transformer = Local::gensym();
+                let arg = Local::gensym();
                 Cps::Lambda {
-                    args: ClosureArgs::new(vec![to_expand], false, None),
-                    body: Box::new(Cps::PrimOp(
-                        PrimOp::GetCallTransformerFn,
-                        self.captured_env
-                            .captured
-                            .iter()
-                            .copied()
-                            .map(Value::from)
-                            .collect(),
-                        call_transformer,
-                        Box::new(Cps::App(
-                            Value::from(call_transformer),
-                            vec![
-                                Value::from(RuntimeValue::from(self.captured_env.clone())),
-                                Value::from(RuntimeValue::from(self.transformer.clone())),
-                                Value::from(to_expand),
-                            ]
-                            .into_iter()
-                            // .chain(
-                            .chain(once(Value::from(k1)))
-                            .collect(),
-                            None,
-                        )),
+                    args: ClosureArgs::new(vec![arg], false, None),
+                    body: Box::new(compile_syntax_rules(
+                        &self.rules,
+                        arg,
+                        Box::new(|expanded| Cps::App(expanded, vec![Value::from(k2)], None)),
                     )),
                     val: k3,
-                    cexp: Box::new(Cps::App(arg_result, vec![Value::from(k3)], None)),
+                    cexp: Box::new(Cps::App(expr_result, vec![Value::from(k3)], None)),
                     span: None,
                 }
             }))),
-            val: k2,
-            cexp: Box::new(meta_cont(Value::from(k2))),
+            val: k1,
+            cexp: Box::new(meta_cont(Value::from(k1))),
             span: None,
         }
+    }
+}
+fn compile_syntax_rules(
+    rules: &[SyntaxRule],
+    arg: Local,
+    mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>,
+) -> Cps {
+    let k1 = Local::gensym();
+    let k2 = Local::gensym();
+    Cps::Lambda {
+        args: ClosureArgs::new(vec![k2], false, None),
+        body: match rules {
+            [] => Box::new(Cps::PrimOp(
+                PrimOp::ErrorNoPatternsMatch,
+                Vec::new(),
+                Local::gensym(),
+                Box::new(Cps::App(Value::from(k2), Vec::new(), None)),
+            )),
+            [rule, tail @ ..] => {
+                let pattern = Gc::new(Gc::into_any(Gc::new(rule.pattern.clone())));
+                Box::new(Cps::PrimOp(
+                    PrimOp::Matches,
+                    vec![Value::from(RuntimeValue::from(pattern)), Value::from(arg)],
+                    rule.binds,
+                    {
+                        let match_result = if rule.fender.is_some() {
+                            Local::gensym()
+                        } else {
+                            rule.binds
+                        };
+                        let inner = Box::new(Cps::If(
+                            Value::from(match_result),
+                            Box::new(rule.output_expression.compile(Box::new(|matches| {
+                                Cps::App(matches, vec![Value::from(k2)], None)
+                            }))),
+                            Box::new(compile_syntax_rules(
+                                tail,
+                                arg,
+                                Box::new(|next_pattern| {
+                                    Cps::App(next_pattern, vec![Value::from(k2)], None)
+                                }),
+                            )),
+                        ));
+                        if let Some(fender) = &rule.fender {
+                            let k3 = Local::gensym();
+                            Box::new(Cps::Lambda {
+                                args: ClosureArgs::new(vec![match_result], false, None),
+                                body: inner,
+                                val: k3,
+                                cexp: Box::new(Cps::If(
+                                    Value::from(rule.binds),
+                                    // Check the fender
+                                    Box::new(fender.compile(Box::new(|fender| {
+                                        Cps::App(fender, vec![Value::from(k3)], None)
+                                    }))),
+                                    Box::new(Cps::App(
+                                        Value::from(k3),
+                                        vec![Value::from(RuntimeValue::from(false))],
+                                        None,
+                                    )),
+                                )),
+                                span: None,
+                            })
+                        } else {
+                            inner
+                        }
+                    },
+                ))
+            }
+        },
+        val: k1,
+        cexp: Box::new(meta_cont(Value::from(k1))),
+        span: None,
     }
 }
 
@@ -849,12 +931,23 @@ impl Cps {
     /// Convert arguments for closures into cells if they are written to or escape.
     fn args_to_cells(self, needs_cell_cache: &mut HashMap<Local, HashSet<Local>>) -> Self {
         match self {
-            Self::PrimOp(op, vals, local, cexpr) => Self::PrimOp(
-                op,
+            Self::PrimOp(PrimOp::AllocCell, vals, local, cexpr) => Self::PrimOp(
+                PrimOp::AllocCell,
                 vals,
                 local,
                 Box::new(cexpr.args_to_cells(needs_cell_cache)),
             ),
+            Self::PrimOp(op, vals, mut local, cexpr) => {
+                let cexpr = Box::new(cexpr.args_to_cells(needs_cell_cache));
+                let escaping_args =
+                    cexpr.need_cells(&[local].into_iter().collect(), needs_cell_cache);
+                let cexpr = if escaping_args.contains(&local) {
+                    arg_to_cell(&mut local, cexpr)
+                } else {
+                    cexpr
+                };
+                Self::PrimOp(op, vals, local, cexpr)
+            }
             Self::If(val, succ, fail) => Self::If(
                 val,
                 Box::new(succ.args_to_cells(needs_cell_cache)),

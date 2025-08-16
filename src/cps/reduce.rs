@@ -6,8 +6,9 @@ use super::*;
 impl Cps {
     pub(super) fn reduce(self) -> Self {
         // Perform beta reduction twice. This seems like the sweet spot for now
-        self.beta_reduction(&mut HashMap::default())
-            .beta_reduction(&mut HashMap::default())
+        let mut uses_cache = HashMap::default();
+        self.beta_reduction(&mut uses_cache)
+            .beta_reduction(&mut uses_cache)
             .dead_code_elimination(&mut HashMap::default())
     }
 
@@ -50,7 +51,10 @@ impl Cps {
                 if !args.variadic && !is_recursive && uses == 1 {
                     let reduced = cexp.reduce_function(val, &args, &body, uses_cache);
                     if reduced {
-                        uses_cache.remove(&val);
+                        // We can probably do better than just destroying the
+                        // whole cache, but this works and doesn't hurt perf
+                        // too much.
+                        uses_cache.clear();
                         return cexp;
                     }
                 }

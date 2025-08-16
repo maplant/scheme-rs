@@ -3,6 +3,7 @@ use crate::{
     gc::{Gc, Trace},
     num::Number,
     registry::bridge,
+    syntax::Syntax,
     value::{UnpackedValue, Value},
 };
 use std::fmt;
@@ -145,18 +146,40 @@ pub async fn cons(car: &Value, cdr: &Value) -> Result<Vec<Value>, Condition> {
 
 #[bridge(name = "car", lib = "(rnrs base builtins (6))")]
 pub async fn car(val: &Value) -> Result<Vec<Value>, Condition> {
-    let pair: Gc<Pair> = val.clone().try_into()?;
-    let pair_read = pair.read();
-    let Pair(car, _) = pair_read.as_ref();
-    Ok(vec![car.clone()])
+    match val.clone().unpack() {
+        UnpackedValue::Pair(pair) => {
+            let pair_read = pair.read();
+            let Pair(car, _) = pair_read.as_ref();
+            Ok(vec![car.clone()])
+        }
+        UnpackedValue::Syntax(syn) if syn.is_list() => {
+            let Some([car, ..]) = syn.as_list() else {
+                unreachable!()
+            };
+            Ok(vec![Value::from(car.clone())])
+        }
+        _ => Err(Condition::invalid_type("list", val.type_name())),
+    }
 }
 
 #[bridge(name = "cdr", lib = "(rnrs base builtins (6))")]
 pub async fn cdr(val: &Value) -> Result<Vec<Value>, Condition> {
-    let pair: Gc<Pair> = val.clone().try_into()?;
-    let pair_read = pair.read();
-    let Pair(_, cdr) = pair_read.as_ref();
-    Ok(vec![cdr.clone()])
+    match val.clone().unpack() {
+        UnpackedValue::Pair(pair) => {
+            let pair_read = pair.read();
+            let Pair(_, cdr) = pair_read.as_ref();
+            Ok(vec![cdr.clone()])
+        }
+        UnpackedValue::Syntax(syn) if syn.is_list() => match syn.as_list() {
+            Some([_, null @ Syntax::Null { .. }]) => Ok(vec![Value::from(null.clone())]),
+            Some([_, cdr @ ..]) => Ok(vec![Value::from(Syntax::List {
+                list: cdr.to_vec(),
+                span: syn.span().clone(),
+            })]),
+            _ => unreachable!(),
+        },
+        _ => Err(Condition::invalid_type("list", val.type_name())),
+    }
 }
 
 #[bridge(name = "set-car!", lib = "(rnrs base builtins (6))")]
@@ -178,7 +201,11 @@ pub async fn set_cdr(var: &Value, val: &Value) -> Result<Vec<Value>, Condition> 
 }
 
 #[bridge(name = "length", lib = "(rnrs base builtins (6))")]
-pub async fn length(arg: &Value) -> Result<Vec<Value>, Condition> {
+pub async fn length_builtin(arg: &Value) -> Result<Vec<Value>, Condition> {
+    Ok(vec![Value::from(Number::from(length(arg)?))])
+}
+
+pub fn length(arg: &Value) -> Result<usize, Condition> {
     let mut length = 0usize;
     let mut arg = arg.clone();
     loop {
@@ -189,12 +216,13 @@ pub async fn length(arg: &Value) -> Result<Vec<Value>, Condition> {
                     let Pair(_, cdr) = pair_read.as_ref();
                     cdr.clone()
                 }
-                _ => break,
+                UnpackedValue::Null => break,
+                _ => return Err(Condition::error("list must be proper".to_string())),
             }
         };
         length += 1;
     }
-    Ok(vec![Value::from(Number::from(length))])
+    Ok(length)
 }
 
 #[bridge(name = "list->vector", lib = "(rnrs base builtins (6))")]

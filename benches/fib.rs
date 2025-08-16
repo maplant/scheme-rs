@@ -4,7 +4,7 @@ use scheme_rs::{
     ast::DefinitionBody,
     cps::Compile,
     env::Environment,
-    gc::Gc,
+    proc::Closure,
     registry::Library,
     runtime::Runtime,
     syntax::{Span, Syntax},
@@ -12,7 +12,7 @@ use scheme_rs::{
 
 use criterion::*;
 
-async fn fib_fn() -> Gc<scheme_rs::proc::Closure> {
+async fn fib_fn() -> Closure {
     let rt = Runtime::new();
     let prog = Library::new_program(&rt, Path::new("fib.scm"));
     let env = Environment::Top(prog);

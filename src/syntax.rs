@@ -8,7 +8,7 @@ use crate::{
     parse::ParseSyntaxError,
     registry::bridge,
     symbols::Symbol,
-    value::{UnpackedValue, Value},
+    value::{UnpackedValue, Value, ValueType},
 };
 use futures::future::BoxFuture;
 use std::{
@@ -55,14 +55,13 @@ impl From<InputSpan<'_>> for Span {
 }
 
 /// Representation of a Scheme syntax object, or s-expression.
-#[derive(Clone, derive_more::Debug, Trace, PartialEq)]
+#[derive(Clone, Trace, PartialEq)]
 #[repr(align(16))]
 // TODO: Make cloning this struct as fast as possible. Realistically that means
 // moving nested data into Arc<[Syntax]>
 pub enum Syntax {
     /// An empty list.
     Null {
-        #[debug(skip)]
         span: Span,
     },
     /// A nested grouping of pairs. If the expression is a proper list, then the
@@ -70,29 +69,23 @@ pub enum Syntax {
     /// at least two elements.
     List {
         list: Vec<Syntax>,
-        #[debug(skip)]
         span: Span,
     },
     Vector {
         vector: Vec<Syntax>,
-        #[debug(skip)]
         span: Span,
     },
     ByteVector {
         vector: Vec<u8>,
-        #[debug(skip)]
         span: Span,
     },
     Literal {
         literal: Literal,
-        #[debug(skip)]
         span: Span,
     },
     Identifier {
         ident: Identifier,
-        #[debug(skip)]
         bound: bool,
-        #[debug(skip)]
         span: Span,
     },
 }
@@ -173,6 +166,10 @@ impl Syntax {
                     span: Span::default(),
                 }
             }
+            UnpackedValue::Number(num) => Syntax::Literal {
+                literal: Literal::Number(num.as_ref().clone()),
+                span: Span::default(),
+            },
             x => unimplemented!("{x:?}"),
         }
     }
@@ -227,7 +224,6 @@ impl Syntax {
             match self {
                 Self::List { list, .. } => {
                     // TODO: If list head is a list, do we expand this in here or in proc call?
-
                     let ident = match list.first() {
                         Some(Self::Identifier { ident, .. }) => ident,
                         _ => return Ok(Expansion::Unexpanded),
@@ -241,7 +237,7 @@ impl Syntax {
                         [Syntax::Identifier { ident: var, .. }, ..] if ident == "set!" => {
                             // Look for a variable transformer:
                             if let Some(mac) = env.fetch_keyword(var).await? {
-                                if !mac.transformer.read().is_variable_transformer {
+                                if !mac.transformer.is_variable_transformer() {
                                     return Err(Condition::error(format!(
                                         "{} not a variable transformer",
                                         var.sym
@@ -336,6 +332,61 @@ impl Syntax {
     }
 }
 
+impl fmt::Debug for Syntax {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Syntax::Null { .. } => write!(f, "()"),
+            Syntax::List { list, .. } => {
+                // Proper list
+                let proper_list = matches!(list.last(), Some(Syntax::Null { .. }));
+                let len = list.len();
+                write!(f, "(")?;
+                for (i, item) in list.iter().enumerate() {
+                    if i == len - 1 {
+                        if proper_list {
+                            break;
+                        } else {
+                            write!(f, " . {item:?}")?;
+                        }
+                    } else {
+                        if i > 0 {
+                            write!(f, " ")?;
+                        }
+                        write!(f, "{item:?}")?;
+                    }
+                }
+                write!(f, ")")
+            }
+            Syntax::Vector { vector, .. } => {
+                write!(f, "#(")?;
+                for (i, item) in vector.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
+                    write!(f, "{item:?}")?;
+                }
+                write!(f, ")")
+            }
+            Syntax::ByteVector { vector, .. } => {
+                write!(f, "#u8(")?;
+                for (i, item) in vector.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
+                    write!(f, "{item:x}")?;
+                }
+                write!(f, ")")
+            }
+            Syntax::Literal { literal, .. } => {
+                write!(f, "{literal}")
+            }
+            Syntax::Identifier { ident, .. } => {
+                write!(f, "{}", ident.sym)
+            }
+        }
+    }
+}
+
 pub enum Expansion {
     /// Syntax remained unchanged after expansion
     Unexpanded,
@@ -389,7 +440,8 @@ pub struct Identifier {
 
 impl fmt::Debug for Identifier {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
+        write!(f, "{}", self.sym)
+        /*
             f,
             "{} ({})",
             self.sym,
@@ -398,6 +450,7 @@ impl fmt::Debug for Identifier {
                 .map(|m| m.0.to_string() + " ")
                 .collect::<String>()
         )
+         */
     }
 }
 
@@ -601,4 +654,41 @@ pub async fn free_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Val
     Ok(vec![Value::from(
         !bound_id1 && !bound_id2 && id1.sym == id2.sym,
     )])
+}
+
+#[bridge(name = "generate-temporaries", lib = "(rnrs syntax-case builtins (6))")]
+pub async fn generate_temporaries(list: &Value) -> Result<Vec<Value>, Condition> {
+    let length = match list.type_of() {
+        ValueType::Pair => crate::lists::length(list)?,
+        ValueType::Syntax => {
+            let syntax: Arc<Syntax> = list.clone().try_into()?;
+            match &*syntax {
+                // TODO: Check for proper list?
+                Syntax::List { list, .. } => list.len() - 1,
+                _ => return Err(Condition::error("Syntax object must be a list".to_string())),
+            }
+        }
+        _ => return Err(Condition::error("argument must be a list".to_string())),
+    };
+
+    // We can use marks to create unique temporaries
+    let mark = Mark::new();
+    let mut idents = (0..length)
+        .map(|i| {
+            let mut ident = Identifier::new(&format!("${i}"));
+            ident.mark(mark);
+            Syntax::Identifier {
+                ident,
+                bound: false,
+                span: Span::default(),
+            }
+        })
+        .collect::<Vec<_>>();
+    idents.push(Syntax::Null {
+        span: Span::default(),
+    });
+    Ok(vec![Value::from(Syntax::List {
+        list: idents,
+        span: Span::default(),
+    })])
 }
