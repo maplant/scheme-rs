@@ -123,30 +123,7 @@ impl Cps {
         let entry = ctx.append_basic_block(function, "entry");
         builder.position_at_end(entry);
 
-        // Collect the provided environment:
-
-        /*
-        let env_param = function
-            .get_nth_param(ENV_PARAM)
-            .unwrap()
-            .into_pointer_value();
-        let array_type = ptr_type.array_type(env.len() as u32);
-        let env_load = builder
-            .build_load(array_type, env_param, "env_load")?
-            .into_array_value();
-
-        let mut collected_env = Vec::new();
-        for (i, (local, val)) in env.into_iter().enumerate() {
-            collected_env.push(val);
-            let res = builder
-                .build_extract_value(env_load, i as u32, "extract_env")
-                .unwrap();
-            cu.rebinds.rebind(Var::Local(local), res);
-        }
-        */
-
         // Collect the provided globals:
-
         let globals = self.globals().into_iter().collect::<Vec<_>>();
 
         let globals_param = function
@@ -938,7 +915,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                     "alloca_elem",
                 )?
             };
-            let val = self.fetch_bind_or_undefined(&Var::Local(*env_var))?;
+            let val = *self.rebinds.fetch_bind(&Var::Local(*env_var));
             if !val.is_pointer_value() {
                 panic!("{env_var:?} is not a pointer");
             }
@@ -1021,22 +998,6 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         self.cps_codegen(cexp, new_alloc, deferred)?;
 
         Ok(())
-    }
-
-    fn fetch_bind_or_undefined(&self, var: &Var) -> Result<BasicValueEnum<'ctx>, BuilderError> {
-        if let Some(val) = self.rebinds.fetch_bind_opt(var) {
-            Ok(*val)
-        } else {
-            // This variable is not available to the macro transformer (or
-            // whatever else, but most likely a macro transformer)
-            let alloc_cell = self.module.get_function("alloc_cell").unwrap();
-            Ok(self
-                .builder
-                .build_call(alloc_cell, &[], "cell")?
-                .try_as_basic_value()
-                .left()
-                .unwrap())
-        }
     }
 }
 

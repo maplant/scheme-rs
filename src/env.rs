@@ -651,7 +651,7 @@ impl Clone for Environment {
 
 #[derive(Copy, Clone, Trace)]
 pub struct Local {
-    id: usize,
+    pub(crate) id: usize,
     pub(crate) name: Option<Symbol>,
 }
 

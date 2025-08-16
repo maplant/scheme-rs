@@ -809,36 +809,6 @@ impl Compile for SyntaxCase {
                     cexp: Box::new(Cps::App(expr_result, vec![Value::from(k3)], None)),
                     span: None,
                 }
-
-                /*
-                let k3 = Local::gensym();
-                let to_expand = Local::gensym();
-                Cps::Lambda {
-                    args: ClosureArgs::new(vec![to_expand], false, None),
-                    body: Box::new(Cps::App(
-                        // TODO: We really need to figure out a way to avoid creating
-                        // this uniquely so often.
-                        Value::from(RuntimeValue::from(Closure::new(
-                            self.rt.clone(),
-                            Vec::new(),
-                            Vec::new(),
-                            FuncPtr::Bridge(expand::call_transformer),
-                            2,
-                            false,
-                            None
-                        ))),
-                        vec![
-                            Value::from(RuntimeValue::from(self.transformer.clone())),
-                            Value::from(to_expand),
-                            Value::from(k2),
-                        ],
-                        None,
-                    )),
-                    val: k3,
-                    cexp: Box::new(Cps::App(arg_result, vec![Value::from(k3)], None)),
-                    span: None,
-                }
-                 */
             }))),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
@@ -846,7 +816,6 @@ impl Compile for SyntaxCase {
         }
     }
 }
-
 fn compile_syntax_rules(
     rules: &[SyntaxRule],
     arg: Local,
@@ -865,24 +834,53 @@ fn compile_syntax_rules(
             )),
             [rule, tail @ ..] => {
                 let pattern = Gc::new(Gc::into_any(Gc::new(rule.pattern.clone())));
-                // TODO: add fender
                 Box::new(Cps::PrimOp(
                     PrimOp::Matches,
                     vec![Value::from(RuntimeValue::from(pattern)), Value::from(arg)],
                     rule.binds,
-                    Box::new(Cps::If(
-                        Value::from(rule.binds),
-                        Box::new(rule.output_expression.compile(Box::new(|matches| {
-                            Cps::App(matches, vec![Value::from(k2)], None)
-                        }))),
-                        Box::new(compile_syntax_rules(
-                            tail,
-                            arg,
-                            Box::new(|next_pattern| {
-                                Cps::App(next_pattern, vec![Value::from(k2)], None)
-                            }),
-                        )),
-                    )),
+                    {
+                        let match_result = if rule.fender.is_some() {
+                            Local::gensym()
+                        } else {
+                            rule.binds
+                        };
+                        let inner = Box::new(Cps::If(
+                            Value::from(match_result),
+                            Box::new(rule.output_expression.compile(Box::new(|matches| {
+                                Cps::App(matches, vec![Value::from(k2)], None)
+                            }))),
+                            Box::new(compile_syntax_rules(
+                                tail,
+                                arg,
+                                Box::new(|next_pattern| {
+                                    Cps::App(next_pattern, vec![Value::from(k2)], None)
+                                }),
+                            )),
+                        ));
+                        if let Some(fender) = &rule.fender {
+                            let k3 = Local::gensym();
+                            Box::new(Cps::Lambda {
+                                args: ClosureArgs::new(vec![match_result], false, None),
+                                body: inner,
+                                val: k3,
+                                cexp: Box::new(Cps::If(
+                                    Value::from(rule.binds),
+                                    // Check the fender
+                                    Box::new(fender.compile(Box::new(|fender| {
+                                        Cps::App(fender, vec![Value::from(k3)], None)
+                                    }))),
+                                    Box::new(Cps::App(
+                                        Value::from(k3),
+                                        vec![Value::from(RuntimeValue::from(false))],
+                                        None,
+                                    )),
+                                )),
+                                span: None,
+                            })
+                        } else {
+                            inner
+                        }
+                    },
                 ))
             }
         },
