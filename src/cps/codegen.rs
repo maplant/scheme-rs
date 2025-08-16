@@ -33,10 +33,6 @@ impl<'ctx> Rebinds<'ctx> {
             .unwrap_or_else(|| panic!("could not find {var:?}"))
     }
 
-    fn fetch_bind_opt(&self, var: &Var) -> Option<&BasicValueEnum<'ctx>> {
-        self.rebinds.get(var)
-    }
-
     fn new() -> Self {
         Self {
             rebinds: HashMap::default(),
