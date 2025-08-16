@@ -147,7 +147,6 @@ impl From<Exception> for Condition {
 
 impl From<ParseAstError> for Condition {
     fn from(value: ParseAstError) -> Self {
-        panic!("error parsing: {value:?}");
         Condition::error(format!("Error parsing: {value:?}"))
     }
 }

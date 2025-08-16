@@ -166,12 +166,10 @@ impl Syntax {
                     span: Span::default(),
                 }
             }
-            UnpackedValue::Number(num) => {
-                Syntax::Literal {
-                    literal: Literal::Number(num.as_ref().clone()),
-                    span: Span::default(),
-                }
-            }
+            UnpackedValue::Number(num) => Syntax::Literal {
+                literal: Literal::Number(num.as_ref().clone()),
+                span: Span::default(),
+            },
             x => unimplemented!("{x:?}"),
         }
     }
@@ -207,9 +205,7 @@ impl Syntax {
         input.mark(new_mark);
 
         // Call the transformer with the input:
-        println!("Attempting to call transformer");
         let transformer_output = mac.transformer.call(&[Value::from(input)]).await?;
-        println!("Success!");
 
         // Output must be syntax:
         let output: Arc<Syntax> = transformer_output[0].clone().try_into()?;
@@ -228,13 +224,11 @@ impl Syntax {
             match self {
                 Self::List { list, .. } => {
                     // TODO: If list head is a list, do we expand this in here or in proc call?
-
                     let ident = match list.first() {
                         Some(Self::Identifier { ident, .. }) => ident,
                         _ => return Ok(Expansion::Unexpanded),
                     };
                     if let Some(mac) = env.fetch_keyword(ident).await? {
-                        println!("expanding: {self:?}");
                         return self.apply_transformer(env, mac).await;
                     }
 

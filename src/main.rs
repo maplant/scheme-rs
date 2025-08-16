@@ -116,7 +116,6 @@ async fn compile_and_run_str<'e>(
     let mut output = Vec::new();
     let env = Environment::Top(repl.clone());
     for sexpr in sexprs {
-        println!("sexpr: {sexpr:#?}");
         let span = sexpr.span().clone();
         let expr = DefinitionBody::parse(runtime, &[sexpr], &env, &span).await?;
         let compiled = expr.compile_top_level();

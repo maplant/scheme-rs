@@ -92,6 +92,7 @@ fn lexeme(i: InputSpan) -> IResult<InputSpan, Lexeme> {
         map(match_char('.'), |_| Lexeme::Period),
         map(match_char('\''), |_| Lexeme::Quote),
         map(match_char('`'), |_| Lexeme::Backquote),
+        map(tag(",@"), |_| Lexeme::CommaAt),
         map(match_char(','), |_| Lexeme::Comma),
         map(match_char('('), |_| Lexeme::LParen),
         map(match_char(')'), |_| Lexeme::RParen),
@@ -103,7 +104,6 @@ fn lexeme(i: InputSpan) -> IResult<InputSpan, Lexeme> {
         map(tag("#`"), |_| Lexeme::HashBackquote),
         map(tag("#,@"), |_| Lexeme::HashCommaAt),
         map(tag("#,"), |_| Lexeme::HashComma),
-        map(tag(",@"), |_| Lexeme::CommaAt),
     ))(i)
 }
 

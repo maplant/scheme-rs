@@ -5,10 +5,10 @@ use crate::{
     env::{Environment, Local, Var},
     exception::Condition,
     expand::{SyntaxRule, Template},
-    gc::{Gc, Trace},
+    gc::Trace,
     num::{Number, NumberToUsizeError},
     parse::ParseSyntaxError,
-    proc::{Closure, ClosureInner},
+    proc::Closure,
     registry::ImportError,
     runtime::Runtime,
     symbols::Symbol,
@@ -1972,7 +1972,7 @@ impl SyntaxCase {
                                 pattern,
                                 None,
                                 output_expression,
-                                &env,
+                                env,
                             )
                             .await?,
                         );
@@ -1986,7 +1986,7 @@ impl SyntaxCase {
                                 pattern,
                                 Some(fender),
                                 output_expression,
-                                &env,
+                                env,
                             )
                             .await?,
                         );

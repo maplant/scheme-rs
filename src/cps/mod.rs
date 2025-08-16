@@ -113,13 +113,13 @@ pub enum PrimOp {
 
     // Macro expansion primitive operators:
     /// Matches the pattern against the syntax object, returning the bindings if
-    /// it does and false otherwise. 
+    /// it does and false otherwise.
     Matches,
     /// Expands a syntax template with the current set of bindings.
     ExpandTemplate,
     /// Return an error indicating a failure to match the pattern.
     ErrorNoPatternsMatch,
-    
+
     // Continuation primitive operators:
     CallWithCurrentContinuation,
     /// Converts a continuation to a callable user function

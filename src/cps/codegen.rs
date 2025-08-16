@@ -1,6 +1,5 @@
 //! LLVM SSA Codegen from CPS.
 
-use indexmap::IndexMap;
 use inkwell::{
     AddressSpace, IntPredicate,
     builder::{Builder, BuilderError},
@@ -12,7 +11,6 @@ use inkwell::{
 use std::{collections::HashMap, rc::Rc, sync::Arc};
 
 use crate::{
-    gc::Gc,
     proc::{ClosureInner, ContinuationPtr, FuncDebugInfo, FuncPtr},
     runtime::{DebugInfo, Runtime},
     value::{ReflexiveValue, Value as SchemeValue},
@@ -269,14 +267,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 let [pattern, expr] = args.as_slice() else {
                     unreachable!()
                 };
-                self.matches_codegen(
-                    pattern,
-                    expr,
-                    bind_to,
-                    *cexpr,
-                    allocs,
-                    deferred
-                )?;
+                self.matches_codegen(pattern, expr, bind_to, *cexpr, allocs, deferred)?;
             }
             Cps::PrimOp(PrimOp::ExpandTemplate, args, expand_to, cexpr) => {
                 let [template, expansion_combiner, expansions @ ..] = args.as_slice() else {
@@ -457,15 +448,9 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         let pattern = self.value_codegen(pattern, &allocs)?;
         let expr = self.value_codegen(expr, &allocs)?;
         let matches_fn = self.module.get_function("matches").unwrap();
-        let match_result = self.builder
-            .build_call(
-                matches_fn,
-                &[
-                    pattern.into(),
-                    expr.into(),
-                ],
-                "binds"
-            )?
+        let match_result = self
+            .builder
+            .build_call(matches_fn, &[pattern.into(), expr.into()], "binds")?
             .try_as_basic_value()
             .left()
             .unwrap();
@@ -477,6 +462,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn expand_template_codegen(
         &mut self,
         template: &Value,
@@ -1089,7 +1075,6 @@ impl<'ctx> ClosureBundle<'ctx> {
             .difference(&args.iter().cloned().collect::<HashSet<_>>())
             .cloned()
             .collect::<Vec<_>>();
-        println!("For func {val}, free_variables:  env: {env:?}");
         let globals = body.globals().into_iter().collect::<Vec<_>>();
 
         let ptr_type = ctx.ptr_type(AddressSpace::default());

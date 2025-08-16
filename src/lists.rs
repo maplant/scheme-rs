@@ -146,7 +146,6 @@ pub async fn cons(car: &Value, cdr: &Value) -> Result<Vec<Value>, Condition> {
 
 #[bridge(name = "car", lib = "(rnrs base builtins (6))")]
 pub async fn car(val: &Value) -> Result<Vec<Value>, Condition> {
-    println!("car: {val:?}");
     match val.clone().unpack() {
         UnpackedValue::Pair(pair) => {
             let pair_read = pair.read();
@@ -157,7 +156,7 @@ pub async fn car(val: &Value) -> Result<Vec<Value>, Condition> {
             let Some([car, ..]) = syn.as_list() else {
                 unreachable!()
             };
-            Ok(vec![dbg!(Value::from(car.clone()))])
+            Ok(vec![Value::from(car.clone())])
         }
         _ => Err(Condition::invalid_type("list", val.type_name())),
     }
@@ -165,7 +164,6 @@ pub async fn car(val: &Value) -> Result<Vec<Value>, Condition> {
 
 #[bridge(name = "cdr", lib = "(rnrs base builtins (6))")]
 pub async fn cdr(val: &Value) -> Result<Vec<Value>, Condition> {
-    println!("cdr: {val:?}");
     match val.clone().unpack() {
         UnpackedValue::Pair(pair) => {
             let pair_read = pair.read();
@@ -173,11 +171,11 @@ pub async fn cdr(val: &Value) -> Result<Vec<Value>, Condition> {
             Ok(vec![cdr.clone()])
         }
         UnpackedValue::Syntax(syn) if syn.is_list() => match syn.as_list() {
-            Some([_, null @ Syntax::Null { .. }]) => Ok(vec![dbg!(Value::from(null.clone()))]),
-            Some([_, cdr @ ..]) => Ok(vec![dbg!(Value::from(Syntax::List {
+            Some([_, null @ Syntax::Null { .. }]) => Ok(vec![Value::from(null.clone())]),
+            Some([_, cdr @ ..]) => Ok(vec![Value::from(Syntax::List {
                 list: cdr.to_vec(),
                 span: syn.span().clone(),
-            }))]),
+            })]),
             _ => unreachable!(),
         },
         _ => Err(Condition::invalid_type("list", val.type_name())),

@@ -203,10 +203,14 @@ pub fn expression<'a, 'b>(
         // Syntax:
         [s @ token!(Lexeme::HashTick), tail @ ..] => alias("syntax", tail, s.span.clone()),
         // Quasisyntax:
-        [qs @ token!(Lexeme::HashBackquote), tail @ ..] => alias("quasisyntax", tail, qs.span.clone()),
+        [qs @ token!(Lexeme::HashBackquote), tail @ ..] => {
+            alias("quasisyntax", tail, qs.span.clone())
+        }
         // Unsyntax:
         [us @ token!(Lexeme::HashComma), tail @ ..] => alias("unsyntax", tail, us.span.clone()),
-        [ca @ token!(Lexeme::HashCommaAt), tail @ ..] => alias("unsyntax-splicing", tail, ca.span.clone()),
+        [ca @ token!(Lexeme::HashCommaAt), tail @ ..] => {
+            alias("unsyntax-splicing", tail, ca.span.clone())
+        }
         [paren @ token!(Lexeme::RParen), ..] => {
             Err(ParseSyntaxError::unexpected_closing_paren(paren))
         }

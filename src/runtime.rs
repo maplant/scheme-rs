@@ -1,14 +1,14 @@
 use crate::{
     ast::DefinitionBody,
     cps::{Compile, Cps},
-    env::{Environment, Local},
+    env::Environment,
     exception::{Condition, Exception, ExceptionHandler},
-    expand,
-    gc::{init_gc, Gc, GcInner, Trace},
+    gc::{Gc, GcInner, Trace, init_gc},
     lists::{self, list_to_vec},
     num,
     proc::{
-        clone_continuation_env, Application, Closure, ContinuationPtr, DynamicWind, FuncDebugInfo, FuncPtr, UserPtr
+        Application, Closure, ContinuationPtr, DynamicWind, FuncDebugInfo, FuncPtr, UserPtr,
+        clone_continuation_env,
     },
     registry::{ImportError, Library, Registry},
     symbols::Symbol,
@@ -16,7 +16,6 @@ use crate::{
     value::{ReflexiveValue, UnpackedValue, Value},
     vectors,
 };
-use indexmap::IndexMap;
 use inkwell::{
     OptimizationLevel,
     builder::BuilderError,

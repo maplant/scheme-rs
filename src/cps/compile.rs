@@ -1,9 +1,8 @@
 use super::*;
 use crate::{
     ast::*,
-    expand::{self, ExpansionCombiner, SyntaxRule},
+    expand::{ExpansionCombiner, SyntaxRule},
     gc::Gc,
-    proc::{Closure, FuncPtr},
     value::Value as RuntimeValue,
 };
 use either::Either;

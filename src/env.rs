@@ -372,7 +372,7 @@ impl MacroExpansion {
 }
 
 #[derive(Trace, derive_more::Debug)]
-struct SyntaxCaseExpr {
+pub struct SyntaxCaseExpr {
     #[debug(skip)]
     up: Environment,
     expansions_store: Local,
@@ -387,7 +387,7 @@ impl SyntaxCaseExpr {
             pattern_vars,
         }
     }
-    
+
     fn fetch_top(&self) -> Library {
         self.up.fetch_top()
     }
@@ -402,9 +402,7 @@ impl SyntaxCaseExpr {
 
     fn fetch_var<'a>(&self, name: &'a Identifier) -> BoxFuture<'a, Result<Option<Var>, Condition>> {
         let up = self.up.clone();
-        Box::pin(async move {
-            up.fetch_var(name).await
-        })
+        Box::pin(async move { up.fetch_var(name).await })
     }
 
     fn fetch_local(&self, name: &Identifier) -> Option<Local> {
@@ -590,7 +588,7 @@ impl Environment {
 
     pub fn fetch_pattern_variable(&self, name: &Identifier) -> Option<Local> {
         match self {
-            Self::Top(top) => None,
+            Self::Top(_) => None,
             Self::LexicalContour(lex) => lex.read().up.fetch_pattern_variable(name),
             Self::LetSyntaxContour(ls) => ls.read().up.fetch_pattern_variable(name),
             Self::MacroExpansion(me) => me.read().fetch_pattern_variable(name),
@@ -629,7 +627,7 @@ impl Environment {
         pattern_vars: HashSet<Identifier>,
     ) -> Self {
         let syntax_case_expr = SyntaxCaseExpr::new(self, expansions_store, pattern_vars);
-        Self::SyntaxCaseExpr(Gc::new(dbg!(syntax_case_expr)))
+        Self::SyntaxCaseExpr(Gc::new(syntax_case_expr))
     }
 }
 
