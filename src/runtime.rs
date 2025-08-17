@@ -200,7 +200,7 @@ fn compilation_task(mut compilation_queue_rx: mpsc::Receiver<CompilationTask>) {
         let module = context.create_module("scheme_rs");
         ExecutionEngine::link_in_mc_jit();
         let execution_engine = module
-            .create_jit_execution_engine(OptimizationLevel::default())
+            .create_jit_execution_engine(OptimizationLevel::None)
             .unwrap();
         let builder = context.create_builder();
 

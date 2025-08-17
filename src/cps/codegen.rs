@@ -80,6 +80,72 @@ impl<'ctx> Allocs<'ctx> {
     }
 }
 
+struct RuntimeFunctions<'ctx> {
+    apply: FunctionValue<'ctx>,
+    forward: FunctionValue<'ctx>,
+    halt: FunctionValue<'ctx>,
+    make_user: FunctionValue<'ctx>,
+    make_continuation: FunctionValue<'ctx>,
+    truthy: FunctionValue<'ctx>,
+    alloc_cell: FunctionValue<'ctx>,
+    read_cell: FunctionValue<'ctx>,
+    store: FunctionValue<'ctx>,
+    unbound_variable: FunctionValue<'ctx>,
+    extract_winders: FunctionValue<'ctx>,
+    matches: FunctionValue<'ctx>,
+    expand_template: FunctionValue<'ctx>,
+    prepare_continuation: FunctionValue<'ctx>,
+    error_no_patterns_match: FunctionValue<'ctx>,
+    dropv: FunctionValue<'ctx>,
+    dropc: FunctionValue<'ctx>,
+
+    // Math primops:
+    add: FunctionValue<'ctx>,
+    sub: FunctionValue<'ctx>,
+    mul: FunctionValue<'ctx>,
+    div: FunctionValue<'ctx>,
+    equal: FunctionValue<'ctx>,
+    greater: FunctionValue<'ctx>,
+    greater_equal: FunctionValue<'ctx>,
+    lesser: FunctionValue<'ctx>,
+    lesser_equal: FunctionValue<'ctx>,
+}
+
+impl<'ctx> RuntimeFunctions<'ctx> {
+    fn new(module: &Module<'ctx>) -> Self {
+        Self {
+            apply: module.get_function("apply").unwrap(),
+            forward: module.get_function("forward").unwrap(),
+            halt: module.get_function("halt").unwrap(),
+            make_user: module.get_function("make_user").unwrap(),
+            make_continuation: module.get_function("make_continuation").unwrap(),
+            truthy: module.get_function("truthy").unwrap(),
+            alloc_cell: module.get_function("alloc_cell").unwrap(),
+            read_cell: module.get_function("read_cell").unwrap(),
+            store: module.get_function("store").unwrap(),
+            unbound_variable: module.get_function("unbound_variable").unwrap(),
+            extract_winders: module.get_function("extract_winders").unwrap(),
+            matches: module.get_function("matches").unwrap(),
+            expand_template: module.get_function("expand_template").unwrap(),
+            prepare_continuation: module.get_function("prepare_continuation").unwrap(),
+            error_no_patterns_match: module.get_function("error_no_patterns_match").unwrap(),
+            dropv: module.get_function("dropv").unwrap(),
+            dropc: module.get_function("dropc").unwrap(),
+
+            // Math primops:
+            add: module.get_function("add").unwrap(),
+            sub: module.get_function("sub").unwrap(),
+            mul: module.get_function("mul").unwrap(),
+            div: module.get_function("div").unwrap(),
+            equal: module.get_function("equal").unwrap(),
+            greater: module.get_function("greater").unwrap(),
+            greater_equal: module.get_function("greater_equal").unwrap(),
+            lesser: module.get_function("lesser").unwrap(),
+            lesser_equal: module.get_function("lesser_equal").unwrap(),
+        }
+    }
+}
+
 impl Cps {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn into_closure<'ctx, 'b>(
@@ -114,8 +180,17 @@ impl Cps {
         let fn_name = fn_value.to_func_name();
         let function = module.add_function(&fn_name, fn_type, None);
 
-        let mut cu =
-            CompilationUnit::new(runtime.clone(), ctx, module, builder, function, debug_info);
+        let runtime_funcs = RuntimeFunctions::new(module);
+
+        let mut cu = CompilationUnit::new(
+            runtime.clone(),
+            ctx,
+            module,
+            builder,
+            &runtime_funcs,
+            function,
+            debug_info,
+        );
         let entry = ctx.append_basic_block(function, "entry");
         builder.position_at_end(entry);
 
@@ -142,7 +217,14 @@ impl Cps {
         cu.cps_codegen(self, None, &mut deferred)?;
 
         while let Some(next) = deferred.pop() {
-            next.codegen(ctx, module, builder, debug_info, &mut deferred)?;
+            next.codegen(
+                ctx,
+                module,
+                builder,
+                &runtime_funcs,
+                debug_info,
+                &mut deferred,
+            )?;
         }
 
         assert!(function.verify(true));
@@ -174,6 +256,7 @@ struct CompilationUnit<'ctx, 'b> {
     ctx: &'ctx Context,
     module: &'b Module<'ctx>,
     builder: &'b Builder<'ctx>,
+    runtime_funcs: &'b RuntimeFunctions<'ctx>,
     function: FunctionValue<'ctx>,
     rebinds: Rebinds<'ctx>,
     debug_info: &'b mut DebugInfo,
@@ -193,6 +276,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         ctx: &'ctx Context,
         module: &'b Module<'ctx>,
         builder: &'b Builder<'ctx>,
+        runtime_funcs: &'b RuntimeFunctions<'ctx>,
         function: FunctionValue<'ctx>,
         debug_info: &'b mut DebugInfo,
     ) -> Self {
@@ -201,6 +285,7 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             ctx,
             module,
             builder,
+            runtime_funcs,
             function,
             rebinds: Rebinds::new(),
             debug_info,
@@ -297,10 +382,9 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
                 if cell.is_int_value() {
                     return Ok(cell);
                 }
-                let read_cell = self.module.get_function("read_cell").unwrap();
                 let read_value = self
                     .builder
-                    .build_call(read_cell, &[cell.into()], "read_value")
+                    .build_call(self.runtime_funcs.read_cell, &[cell.into()], "read_value")
                     .unwrap()
                     .try_as_basic_value()
                     .left()
@@ -322,11 +406,10 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
 
                 self.builder.position_at_end(is_undef_bb);
                 self.drops_codegen(allocs.clone())?;
-                let unbound_var_error = self.module.get_function("unbound_variable").unwrap();
                 let error = self
                     .builder
                     .build_call(
-                        unbound_var_error,
+                        self.runtime_funcs.unbound_variable,
                         &[self
                             .ctx
                             .i32_type()
@@ -385,11 +468,10 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         allocs: Option<Rc<Allocs<'ctx>>>,
         deferred: &mut Vec<ClosureBundle<'ctx>>,
     ) -> Result<(), BuilderError> {
-        let extract_winders = self.module.get_function("extract_winders").unwrap();
         let winders = self
             .builder
             .build_call(
-                extract_winders,
+                self.runtime_funcs.extract_winders,
                 &[self
                     .function
                     .get_nth_param(DYNAMIC_WIND_PARAM)
@@ -420,10 +502,13 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
     ) -> Result<(), BuilderError> {
         let pattern = self.value_codegen(pattern, &allocs)?;
         let expr = self.value_codegen(expr, &allocs)?;
-        let matches_fn = self.module.get_function("matches").unwrap();
         let match_result = self
             .builder
-            .build_call(matches_fn, &[pattern.into(), expr.into()], "binds")?
+            .build_call(
+                self.runtime_funcs.matches,
+                &[pattern.into(), expr.into()],
+                "binds",
+            )?
             .try_as_basic_value()
             .left()
             .unwrap();
@@ -468,11 +553,10 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             self.builder.build_store(ep, expansion)?;
         }
 
-        let expand_fn = self.module.get_function("expand_template").unwrap();
         let expanded = self
             .builder
             .build_call(
-                expand_fn,
+                self.runtime_funcs.expand_template,
                 &[
                     template.into(),
                     expansion_combiner.into(),
@@ -503,11 +587,10 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
     ) -> Result<(), BuilderError> {
         let cont = self.value_codegen(cont, &allocs)?;
         let winders = self.value_codegen(winders, &allocs)?;
-        let prepare_continuation = self.module.get_function("prepare_continuation").unwrap();
         let prepared = self
             .builder
             .build_call(
-                prepare_continuation,
+                self.runtime_funcs.prepare_continuation,
                 &[
                     cont.into(),
                     winders.into(),
@@ -559,32 +642,31 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         }
 
         // Call the respective runtime function:
-        let runtime_fn_name = match primop {
-            PrimOp::Add => "add",
-            PrimOp::Sub => "sub",
-            PrimOp::Mul => "mul",
-            PrimOp::Div => "div",
-            PrimOp::Equal => "equal",
-            PrimOp::Greater => "greater",
-            PrimOp::GreaterEqual => "greater_equal",
-            PrimOp::Lesser => "lesser",
-            PrimOp::LesserEqual => "lesser_equal",
+        let runtime_func = match primop {
+            PrimOp::Add => self.runtime_funcs.add,
+            PrimOp::Sub => self.runtime_funcs.sub,
+            PrimOp::Mul => self.runtime_funcs.mul,
+            PrimOp::Div => self.runtime_funcs.div,
+            PrimOp::Equal => self.runtime_funcs.equal,
+            PrimOp::Greater => self.runtime_funcs.greater,
+            PrimOp::GreaterEqual => self.runtime_funcs.greater_equal,
+            PrimOp::Lesser => self.runtime_funcs.lesser,
+            PrimOp::LesserEqual => self.runtime_funcs.lesser_equal,
             _ => unreachable!(),
         };
 
         let error_val = self.builder.build_alloca(ptr_type, "error")?;
 
-        let runtime_fn = self.module.get_function(runtime_fn_name).unwrap();
         let result_val = self
             .builder
             .build_call(
-                runtime_fn,
+                runtime_func,
                 &[
                     vals_alloca.into(),
                     i32_type.const_int(num_vals as u64, false).into(),
                     error_val.into(),
                 ],
-                runtime_fn_name,
+                "primop",
             )?
             .try_as_basic_value()
             .left()
@@ -626,10 +708,9 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         allocs: Option<Rc<Allocs<'ctx>>>,
     ) -> Result<(), BuilderError> {
         self.drops_codegen(allocs)?;
-        let error_fn = self.module.get_function("error_no_patterns_match").unwrap();
         let error = self
             .builder
-            .build_call(error_fn, &[], "error")?
+            .build_call(self.runtime_funcs.error_no_patterns_match, &[], "error")?
             .try_as_basic_value()
             .left()
             .unwrap();
@@ -646,10 +727,9 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         deferred: &mut Vec<ClosureBundle<'ctx>>,
     ) -> Result<(), BuilderError> {
         // Get a newly allocated undefined value
-        let alloc_cell = self.module.get_function("alloc_cell").unwrap();
         let cell = self
             .builder
-            .build_call(alloc_cell, &[], "cell")?
+            .build_call(self.runtime_funcs.alloc_cell, &[], "cell")?
             .try_as_basic_value()
             .left()
             .unwrap();
@@ -673,9 +753,9 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
     fn drop_values_codgen(&self, drops: Option<Rc<Allocs<'ctx>>>) -> Result<(), BuilderError> {
         let vals = drops.as_ref().map_or_else(Vec::new, |x| x.to_values());
 
-        let dropv = self.module.get_function("dropv").unwrap();
         for val in vals.into_iter() {
-            self.builder.build_call(dropv, &[val.into()], "_")?;
+            self.builder
+                .build_call(self.runtime_funcs.dropv, &[val.into()], "_")?;
         }
 
         Ok(())
@@ -684,9 +764,9 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
     fn drop_cells_codegen(&self, drops: Option<Rc<Allocs<'ctx>>>) -> Result<(), BuilderError> {
         let cells = drops.as_ref().map_or_else(Vec::new, |x| x.to_cells());
 
-        let dropc = self.module.get_function("dropc").unwrap();
         for cell in cells.into_iter() {
-            self.builder.build_call(dropc, &[cell.into()], "_")?;
+            self.builder
+                .build_call(self.runtime_funcs.dropc, &[cell.into()], "_")?;
         }
 
         Ok(())
@@ -720,11 +800,10 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             self.builder.build_store(ep, val)?;
         }
 
-        let make_app = self.module.get_function("apply").unwrap();
         let app = self
             .builder
             .build_call(
-                make_app,
+                self.runtime_funcs.apply,
                 &[
                     operator.into(),
                     args_alloca.into(),
@@ -780,11 +859,10 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         let operator = self.value_codegen(operator, &allocs)?;
         let arg = self.value_codegen(arg, &allocs)?;
 
-        let make_forward = self.module.get_function("forward").unwrap();
         let app = self
             .builder
             .build_call(
-                make_forward,
+                self.runtime_funcs.forward,
                 &[
                     operator.into(),
                     arg.into(),
@@ -820,10 +898,9 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         allocs: Option<Rc<Allocs<'ctx>>>,
     ) -> Result<(), BuilderError> {
         let val = self.value_codegen(args, &allocs)?;
-        let make_app = self.module.get_function("halt").unwrap();
         let app = self
             .builder
-            .build_call(make_app, &[val.into()], "halt")?
+            .build_call(self.runtime_funcs.halt, &[val.into()], "halt")?
             .try_as_basic_value()
             .left()
             .unwrap();
@@ -844,10 +921,9 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         deferred: &mut Vec<ClosureBundle<'ctx>>,
     ) -> Result<(), BuilderError> {
         let cond = self.value_codegen(cond, &allocs)?;
-        let truthy = self.module.get_function("truthy").unwrap();
         let cond = self
             .builder
-            .build_call(truthy, &[cond.into()], "truthy")?
+            .build_call(self.runtime_funcs.truthy, &[cond.into()], "truthy")?
             .try_as_basic_value()
             .left()
             .unwrap();
@@ -880,8 +956,9 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
         let from = self.value_codegen(from, &allocs)?.into();
         let Value::Var(to) = to else { unreachable!() };
         let to = self.rebinds.fetch_bind(to).into_pointer_value().into();
-        let store = self.module.get_function("store").unwrap();
-        let _ = self.builder.build_call(store, &[from, to], "")?;
+        let _ = self
+            .builder
+            .build_call(self.runtime_funcs.store, &[from, to], "")?;
         self.cps_codegen(cexpr, allocs, deferred)
     }
 
@@ -975,9 +1052,9 @@ impl<'ctx, 'b> CompilationUnit<'ctx, 'b> {
             } else {
                 ptr_type.const_null().into()
             });
-            self.module.get_function("make_user").unwrap()
+            self.runtime_funcs.make_user
         } else {
-            self.module.get_function("make_continuation").unwrap()
+            self.runtime_funcs.make_continuation
         };
 
         let closure = self
@@ -1081,6 +1158,7 @@ impl<'ctx> ClosureBundle<'ctx> {
         ctx: &'ctx Context,
         module: &'b Module<'ctx>,
         builder: &'b Builder<'ctx>,
+        runtime_funcs: &'b RuntimeFunctions<'ctx>,
         debug_info: &'b mut DebugInfo,
         deferred: &mut Vec<Self>,
     ) -> Result<(), BuilderError> {
@@ -1095,6 +1173,7 @@ impl<'ctx> ClosureBundle<'ctx> {
             ctx,
             module,
             builder,
+            runtime_funcs,
             self.function,
             debug_info,
         );
