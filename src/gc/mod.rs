@@ -577,9 +577,10 @@ where
     }
 }
 
-unsafe impl<K> Trace for HashSet<K>
+unsafe impl<K, S> Trace for HashSet<K, S>
 where
     K: GcOrTrace,
+    S: Default + 'static 
 {
     unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
         unsafe {
@@ -598,10 +599,11 @@ where
     }
 }
 
-unsafe impl<K, V> Trace for HashMap<K, V>
+unsafe impl<K, V, S> Trace for HashMap<K, V, S>
 where
     K: GcOrTrace,
     V: GcOrTrace,
+    S: Default + 'static, 
 {
     unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
         unsafe {

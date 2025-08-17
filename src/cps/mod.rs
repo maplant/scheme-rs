@@ -19,10 +19,8 @@ use crate::{
     syntax::Span,
     value::Value as RuntimeValue,
 };
-use std::{
-    collections::{HashMap, HashSet},
-    fmt,
-};
+use std::fmt;
+use ahash::{AHashMap, AHashSet};
 
 mod analysis;
 mod codegen;
@@ -200,7 +198,7 @@ pub enum Cps {
 
 impl Cps {
     /// Perform substitutions on local variables.
-    fn substitute(&mut self, substitutions: &HashMap<Local, Value>) {
+    fn substitute(&mut self, substitutions: &AHashMap<Local, Value>) {
         match self {
             Self::PrimOp(_, args, _, cexp) => {
                 substitute_values(args, substitutions);
@@ -230,7 +228,7 @@ impl Cps {
     }
 }
 
-fn substitute_value(value: &mut Value, substitutions: &HashMap<Local, Value>) {
+fn substitute_value(value: &mut Value, substitutions: &AHashMap<Local, Value>) {
     if let Some(local) = value.to_local()
         && let Some(substitution) = substitutions.get(&local)
     {
@@ -238,7 +236,7 @@ fn substitute_value(value: &mut Value, substitutions: &HashMap<Local, Value>) {
     }
 }
 
-fn substitute_values(values: &mut [Value], substitutions: &HashMap<Local, Value>) {
+fn substitute_values(values: &mut [Value], substitutions: &AHashMap<Local, Value>) {
     values
         .iter_mut()
         .for_each(|value| substitute_value(value, substitutions))

@@ -1106,7 +1106,7 @@ impl<'ctx> ClosureBundle<'ctx> {
         // TODO: These calls need to be cached and also calculated at the same time.
         let env = body
             .free_variables()
-            .difference(&args.iter().cloned().collect::<HashSet<_>>())
+            .difference(&args.iter().cloned().collect::<AHashSet<_>>())
             .cloned()
             .collect::<Vec<_>>();
         let globals = body.globals().into_iter().collect::<Vec<_>>();

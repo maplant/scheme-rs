@@ -12,8 +12,9 @@ use crate::{
 use scheme_rs_macros::{bridge, runtime_fn};
 use std::{
     any::Any,
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::BTreeSet,
 };
+use ahash::{AHashMap, AHashSet};
 
 // TODO: This code needs _a lot_ more error checking: error checking for missing
 // ellipsis, error checking for too many ellipsis. It makes debugging extremely
@@ -30,13 +31,13 @@ pub struct SyntaxRule {
 impl SyntaxRule {
     pub async fn compile(
         rt: &Runtime,
-        keywords: &HashSet<Symbol>,
+        keywords: &AHashSet<Symbol>,
         pattern: &Syntax,
         fender: Option<&Syntax>,
         output_expression: &Syntax,
         env: &Environment,
     ) -> Result<Self, ParseAstError> {
-        let mut variables = HashSet::new();
+        let mut variables = AHashSet::new();
         let pattern = Pattern::compile(pattern, keywords, &mut variables);
         let binds = Local::gensym();
         let env = env.new_syntax_case_expr(binds, variables);
@@ -71,8 +72,8 @@ pub enum Pattern {
 impl Pattern {
     pub fn compile(
         expr: &Syntax,
-        keywords: &HashSet<Symbol>,
-        variables: &mut HashSet<Identifier>,
+        keywords: &AHashSet<Symbol>,
+        variables: &mut AHashSet<Identifier>,
     ) -> Self {
         match expr {
             Syntax::Null { .. } => Self::Null,
@@ -95,8 +96,8 @@ impl Pattern {
 
     fn compile_slice(
         mut expr: &[Syntax],
-        keywords: &HashSet<Symbol>,
-        variables: &mut HashSet<Identifier>,
+        keywords: &AHashSet<Symbol>,
+        variables: &mut AHashSet<Identifier>,
     ) -> Vec<Self> {
         let mut output = Vec::new();
         loop {
@@ -274,13 +275,13 @@ fn match_vec(patterns: &[Pattern], expr: &Syntax, expansion_level: &mut Expansio
 
 #[derive(Clone, Debug, Default, Trace)]
 pub struct ExpansionLevel {
-    binds: HashMap<Identifier, Syntax>,
+    binds: AHashMap<Identifier, Syntax>,
     expansions: Vec<ExpansionLevel>,
 }
 
 #[derive(Trace, Debug)]
 pub struct ExpansionCombiner {
-    pub(crate) uses: HashMap<Identifier, usize>,
+    pub(crate) uses: AHashMap<Identifier, usize>,
 }
 
 #[runtime_fn]
@@ -315,7 +316,7 @@ impl ExpansionCombiner {
                     .get(ident)
                     .map(|expansion| (ident.clone(), expansion.clone()))
             })
-            .collect::<HashMap<_, _>>();
+            .collect::<AHashMap<_, _>>();
         let max_expansions = expansions
             .iter()
             .map(|exp| exp.expansions.len())
@@ -356,7 +357,7 @@ impl Template {
     pub fn compile(
         expr: &Syntax,
         env: &Environment,
-        expansions: &mut HashMap<Identifier, Local>,
+        expansions: &mut AHashMap<Identifier, Local>,
     ) -> Self {
         match expr {
             Syntax::Null { .. } => Self::Null,
@@ -397,7 +398,7 @@ impl Template {
     pub fn compile_escaped(
         expr: &Syntax,
         env: &Environment,
-        expansions: &mut HashMap<Identifier, Local>,
+        expansions: &mut AHashMap<Identifier, Local>,
     ) -> Self {
         match expr {
             Syntax::Null { .. } => Self::Null,
@@ -423,7 +424,7 @@ impl Template {
     fn compile_slice(
         mut expr: &[Syntax],
         env: &Environment,
-        expansions: &mut HashMap<Identifier, Local>,
+        expansions: &mut AHashMap<Identifier, Local>,
     ) -> Vec<Self> {
         let mut output = Vec::new();
         loop {
@@ -453,7 +454,7 @@ impl Template {
     fn compile_slice_escaped(
         exprs: &[Syntax],
         env: &Environment,
-        expansions: &mut HashMap<Identifier, Local>,
+        expansions: &mut AHashMap<Identifier, Local>,
     ) -> Vec<Self> {
         exprs
             .iter()

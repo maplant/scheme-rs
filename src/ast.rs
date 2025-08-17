@@ -20,8 +20,8 @@ use either::Either;
 use derive_more::From;
 use futures::future::BoxFuture;
 use inkwell::builder::BuilderError;
+use ahash::{AHashMap, AHashSet};
 use std::{
-    collections::{HashMap, HashSet},
     fmt,
     sync::Arc,
 };
@@ -578,11 +578,11 @@ pub enum ImportSet {
     Library(LibraryReference),
     Only {
         set: Box<ImportSet>,
-        allowed: HashSet<Identifier>,
+        allowed: AHashSet<Identifier>,
     },
     Except {
         set: Box<ImportSet>,
-        disallowed: HashSet<Identifier>,
+        disallowed: AHashSet<Identifier>,
     },
     Prefix {
         set: Box<ImportSet>,
@@ -591,7 +591,7 @@ pub enum ImportSet {
     Rename {
         set: Box<ImportSet>,
         /// Imported identifiers to rename (from, to).
-        renames: HashMap<Identifier, Identifier>,
+        renames: AHashMap<Identifier, Identifier>,
     },
 }
 
@@ -624,7 +624,7 @@ impl ImportSet {
                         Syntax::Identifier { ident, .. } => Ok(ident.clone()),
                         _ => Err(ParseAstError::ExpectedIdentifier(allowed.span().clone())),
                     })
-                    .collect::<Result<HashSet<_>, _>>()?;
+                    .collect::<Result<AHashSet<_>, _>>()?;
                 Ok(Self::Only {
                     set: Box::new(import_set),
                     allowed,
@@ -647,7 +647,7 @@ impl ImportSet {
                         Syntax::Identifier { ident, .. } => Ok(ident.clone()),
                         _ => Err(ParseAstError::ExpectedIdentifier(disallowed.span().clone())),
                     })
-                    .collect::<Result<HashSet<_>, _>>()?;
+                    .collect::<Result<AHashSet<_>, _>>()?;
                 Ok(Self::Except {
                     set: Box::new(import_set),
                     disallowed,
@@ -692,7 +692,7 @@ impl ImportSet {
                         ) => Ok((from.clone(), to.clone())),
                         _ => Err(ParseAstError::BadForm(rename.span().clone())),
                     })
-                    .collect::<Result<HashMap<_, _>, _>>()?;
+                    .collect::<Result<AHashMap<_, _>, _>>()?;
                 Ok(Self::Rename {
                     set: Box::new(import_set),
                     renames,
@@ -844,7 +844,7 @@ impl Definition {
                     ] => {
                         let var = env.fetch_var(func_name).await?.unwrap();
 
-                        let mut bound = HashMap::<Identifier, Span>::new();
+                        let mut bound = AHashMap::<Identifier, Span>::new();
                         let mut fixed = Vec::new();
                         let new_env = env.new_lexical_contour();
                         let mut arg_names = Vec::new();
@@ -1214,7 +1214,7 @@ impl Quote {
 #[derive(Debug, Clone, Trace)]
 pub struct SyntaxQuote {
     pub template: Template,
-    pub expansions: HashMap<Identifier, Local>,
+    pub expansions: AHashMap<Identifier, Local>,
 }
 
 impl SyntaxQuote {
@@ -1222,7 +1222,7 @@ impl SyntaxQuote {
         match exprs {
             [] => Err(ParseAstError::ExpectedArgument(span.clone())),
             [expr] => {
-                let mut expansions = HashMap::new();
+                let mut expansions = AHashMap::new();
                 let template = Template::compile(expr, env, &mut expansions);
                 Ok(SyntaxQuote {
                     template,
@@ -1296,7 +1296,7 @@ async fn parse_lambda(
     env: &Environment,
     span: &Span,
 ) -> Result<Lambda, ParseAstError> {
-    let mut bound = HashMap::<Identifier, Span>::new();
+    let mut bound = AHashMap::<Identifier, Span>::new();
     let mut fixed = Vec::new();
     let new_contour = env.new_lexical_contour();
     let mut arg_names = Vec::new();
@@ -1408,7 +1408,7 @@ async fn parse_let(
     env: &Environment,
     span: &Span,
 ) -> Result<Let, ParseAstError> {
-    let mut previously_bound = HashMap::new();
+    let mut previously_bound = AHashMap::new();
     let mut parsed_bindings = Vec::new();
     let mut binding_names = Vec::new();
     let new_contour = env.new_lexical_contour();
@@ -1480,7 +1480,7 @@ impl LetBinding {
         runtime: &Runtime,
         form: &Syntax,
         env: &Environment,
-        previously_bound: &HashMap<Identifier, Span>,
+        previously_bound: &AHashMap<Identifier, Span>,
     ) -> Result<LetBinding, ParseAstError> {
         if let Some(
             [
@@ -1945,7 +1945,7 @@ impl SyntaxCase {
     ) -> Result<Self, ParseAstError> {
         let (arg, keywords, mut rules) = match exprs {
             [arg, Syntax::List { list, .. }, rules @ ..] => {
-                let mut keywords = HashSet::default();
+                let mut keywords = AHashSet::default();
                 // TODO: ensure keywords_list is proper
                 for keyword in &list[..list.len() - 1] {
                     if let Syntax::Identifier { ident, .. } = keyword {
@@ -1956,7 +1956,7 @@ impl SyntaxCase {
                 }
                 (arg, keywords, rules)
             }
-            [arg, Syntax::Null { .. }, rules @ ..] => (arg, HashSet::default(), rules),
+            [arg, Syntax::Null { .. }, rules @ ..] => (arg, AHashSet::default(), rules),
             _ => return Err(ParseAstError::BadForm(span.clone())),
         };
         let mut syntax_rules = Vec::new();
