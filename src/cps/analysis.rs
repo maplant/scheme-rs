@@ -255,11 +255,21 @@ fn values_to_globals(vals: &[Value]) -> AHashSet<Global> {
     vals.iter().flat_map(|val| val.to_global()).collect()
 }
 
-fn merge_uses(mut l: AHashMap<Local, usize>, r: AHashMap<Local, usize>) -> AHashMap<Local, usize> {
-    for (local, uses) in r.into_iter() {
-        *l.entry(local).or_default() += uses;
+fn merge_uses(
+    mut l: AHashMap<Local, usize>,
+    mut r: AHashMap<Local, usize>,
+) -> AHashMap<Local, usize> {
+    if r.len() > l.len() {
+        for (local, uses) in l.into_iter() {
+            *r.entry(local).or_default() += uses;
+        }
+        r
+    } else {
+        for (local, uses) in r.into_iter() {
+            *l.entry(local).or_default() += uses;
+        }
+        l
     }
-    l
 }
 fn add_value_use(mut uses: AHashMap<Local, usize>, value: &Value) -> AHashMap<Local, usize> {
     if let Some(local) = value.to_local() {

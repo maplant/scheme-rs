@@ -111,7 +111,10 @@ impl Cps {
 
     /// Removes any closures and allocated cells that are left unused.
     #[allow(dead_code)]
-    fn dead_code_elimination(self, uses_cache: &mut AHashMap<Local, AHashMap<Local, usize>>) -> Self {
+    fn dead_code_elimination(
+        self,
+        uses_cache: &mut AHashMap<Local, AHashMap<Local, usize>>,
+    ) -> Self {
         match self {
             Cps::Lambda { val, cexp, .. } if !cexp.uses(uses_cache).contains_key(&val) => {
                 // Unused closure can be eliminated
