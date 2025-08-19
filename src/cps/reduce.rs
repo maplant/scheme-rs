@@ -84,13 +84,13 @@ impl Cps {
             }
             Cps::If(_, succ, fail) => {
                 return succ.reduce_function(func, args, func_body, uses_cache)
-                    | fail.reduce_function(func, args, func_body, uses_cache);
+                    || fail.reduce_function(func, args, func_body, uses_cache);
             }
             Cps::Lambda {
                 val, body, cexp, ..
             } => {
                 let reduced = body.reduce_function(func, args, func_body, uses_cache)
-                    | cexp.reduce_function(func, args, func_body, uses_cache);
+                    || cexp.reduce_function(func, args, func_body, uses_cache);
                 if reduced {
                     uses_cache.remove(val);
                 }
