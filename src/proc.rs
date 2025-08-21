@@ -42,10 +42,10 @@ pub(crate) type UserPtr = unsafe extern "C" fn(
 // TODO: The ordering of these arguments is inconsistent with the other two; env
 // should be the first argument.
 pub type BridgePtr = for<'a> fn(
+    env: &'a [Gc<Value>],
     args: &'a [Value],
     rest_args: &'a [Value],
     cont: &'a Value,
-    env: &'a [Gc<Value>],
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>>;
@@ -174,10 +174,10 @@ impl ClosureInner {
                 unreachable!()
             };
             (async_fn)(
+                &self.env,
                 args.as_ref(),
                 rest_args.unwrap_or(&[]),
                 cont.as_ref().unwrap(),
-                &self.env,
                 &exception_handler,
                 dynamic_wind,
             )
@@ -321,10 +321,6 @@ impl fmt::Debug for ClosureInner {
 fn cells_to_vec_of_ptrs(cells: &[Gc<Value>]) -> Vec<*mut GcInner<Value>> {
     cells.iter().map(Gc::as_ptr).collect()
 }
-
-// fn values_to_vec_of_cells(vals: &[Value]) -> Vec<Gc<Value>> {
-//     vals.iter().map(|val| Gc::new(val.clone())).collect()
-// }
 
 /// An application of a function to a given set of values.
 pub struct Application {
@@ -478,10 +474,10 @@ impl FuncDebugInfo {
 }
 
 pub fn apply<'a>(
+    _env: &'a [Gc<Value>],
     args: &'a [Value],
     rest_args: &'a [Value],
     cont: &'a Value,
-    _env: &'a [Gc<Value>],
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {
@@ -628,10 +624,10 @@ unsafe extern "C" fn call_consumer_with_values(
 }
 
 pub fn call_with_values<'a>(
+    _env: &'a [Gc<Value>],
     args: &'a [Value],
     _rest_args: &'a [Value],
     cont: &'a Value,
-    _env: &'a [Gc<Value>],
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {
@@ -692,10 +688,10 @@ pub struct DynamicWind {
 }
 
 pub fn dynamic_wind<'a>(
+    _env: &'a [Gc<Value>],
     args: &'a [Value],
     _rest_args: &'a [Value],
     cont: &'a Value,
-    _env: &'a [Gc<Value>],
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {
@@ -762,14 +758,17 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
     unsafe {
         // env[0] is the in thunk
         let in_thunk = Gc::from_raw_inc_rc(env.read());
+
         // env[1] is the body thunk
         let body_thunk: Closure = Gc::from_raw_inc_rc(env.add(1).read())
             .read()
             .clone()
             .try_into()
             .unwrap();
+
         // env[2] is the out thunk
         let out_thunk = Gc::from_raw_inc_rc(env.add(2).read());
+
         // env[3] is k, the continuation
         let k = Gc::from_raw_inc_rc(env.add(3).read());
 
@@ -816,6 +815,7 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
             .clone()
             .try_into()
             .unwrap();
+
         // env[1] is k, the remaining continuation
         let k = Gc::from_raw_inc_rc(env.add(1).read());
 

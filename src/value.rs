@@ -12,13 +12,10 @@ use crate::{
     syntax::Syntax,
     vectors,
 };
-// use futures::future::{BoxFuture, Shared};
 use std::{
     any::Any, fmt, hash::Hash, io::Write, marker::PhantomData, mem::ManuallyDrop, ops::Deref,
     sync::Arc,
 };
-
-// type Future = Shared<BoxFuture<'static, Result<Vec<Gc<Value>>, Gc<Value>>>>;
 
 const ALIGNMENT: u64 = 16;
 const TAG_BITS: u64 = ALIGNMENT.ilog2() as u64;
@@ -112,11 +109,11 @@ impl Value {
         Self(ptr as u64 | tag as u64)
     }
 
-    pub fn undefined() -> Self {
+    pub const fn undefined() -> Self {
         Self(ValueType::Undefined as u64)
     }
 
-    pub fn null() -> Self {
+    pub const fn null() -> Self {
         Self(ValueType::Null as u64)
     }
 
@@ -458,7 +455,9 @@ impl PartialEq for UnpackedValue {
             (Self::Vector(a), Self::Vector(b)) => a == b,
             (Self::ByteVector(a), Self::ByteVector(b)) => a == b,
             (Self::Closure(a), Self::Closure(b)) => Gc::ptr_eq(&a.0, &b.0),
-            // TODO: Syntax
+            (Self::Syntax(a), Self::Syntax(b)) => Arc::ptr_eq(a, b),
+            (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(a, b),
+            (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -745,18 +744,6 @@ impl PartialEq for ReflexiveValue {
             // See comment above in hash function
             (UnpackedValue::Pair(a), UnpackedValue::Pair(b)) => Gc::ptr_eq(a, b),
             (UnpackedValue::Vector(a), UnpackedValue::Vector(b)) => Gc::ptr_eq(a, b),
-            /*
-            (UnpackedValue::Vector(a), UnpackedValue::Vector(b)) => {
-                let a_read = a.read();
-                let b_read = b.read();
-                a_read.as_ref().len() == b_read.as_ref().len()
-                    && a_read
-                        .as_ref()
-                        .iter()
-                        .zip(b_read.as_ref().iter())
-                        .any(|(l, r)| ReflexiveValue(l.clone()) != ReflexiveValue(r.clone()))
-            }
-            */
             (UnpackedValue::ByteVector(a), UnpackedValue::ByteVector(b)) => a == b,
             (UnpackedValue::Syntax(a), UnpackedValue::Syntax(b)) => Arc::ptr_eq(a, b),
             (UnpackedValue::Closure(a), UnpackedValue::Closure(b)) => Gc::ptr_eq(&a.0, &b.0),
@@ -784,7 +771,7 @@ pub async fn eqv(a: &Value, b: &Value) -> Result<Vec<Value>, Condition> {
 
 #[bridge(name = "eq?", lib = "(rnrs base builtins (6))")]
 pub async fn eq(a: &Value, b: &Value) -> Result<Vec<Value>, Condition> {
-    Ok(vec![Value::from(a.0 == b.0)])
+    Ok(vec![Value::from(a == b)])
 }
 
 #[bridge(name = "boolean?", lib = "(rnrs base builtins (6))")]

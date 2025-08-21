@@ -603,7 +603,7 @@ fn compute_winders(from_extent: &DynamicWind, to_extent: &[Value]) -> Value {
     thunks
 }
 
-unsafe extern "C" fn call_thunks(
+pub(crate) unsafe extern "C" fn call_thunks(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
@@ -614,6 +614,7 @@ unsafe extern "C" fn call_thunks(
     unsafe {
         // env[0] are the thunks:
         let thunks = Gc::from_raw_inc_rc(env.read());
+
         // env[1] is the continuation:
         let k: Closure = Gc::from_raw_inc_rc(env.add(1).read())
             .read()
@@ -624,7 +625,11 @@ unsafe extern "C" fn call_thunks(
         // k determines the number of arguments:
         let collected_args = {
             let k_read = k.0.read();
-            let num_args = k_read.num_required_args;
+            let mut num_args = k_read.num_required_args;
+
+            if k_read.is_user_func() {
+                num_args += 1;
+            }
 
             let mut collected_args = if k_read.variadic {
                 args.add(num_args).as_ref().unwrap().clone()
@@ -673,8 +678,10 @@ unsafe extern "C" fn call_thunks_pass_args(
     unsafe {
         // env[0] are the thunks:
         let thunks = Gc::from_raw_inc_rc(env.read());
+
         // env[1] are the collected arguments
         let args = Gc::from_raw_inc_rc(env.add(1).read());
+
         // env[2] is k1, the current continuation
         let k = Gc::from_raw_inc_rc(env.add(2).read());
 

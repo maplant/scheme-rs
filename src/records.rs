@@ -1,8 +1,7 @@
 //! Rudimentary structure support.
 
 use std::{
-    any::Any,
-    sync::{Arc, LazyLock},
+    any::Any, fmt, sync::{Arc, LazyLock}
 };
 
 use by_address::ByAddress;
@@ -27,6 +26,7 @@ pub struct RecordTypeDescriptor {
     name: String, // Make Arc<AlignedString>?
     sealed: bool,
     opaque: bool,
+    opaque_parent_constructor: Option<OpaqueParentConstructor>,
     /// Parent is most recently inserted record type, if one exists.
     inherits: indexmap::IndexSet<ByAddress<Arc<RecordTypeDescriptor>>>,
     field_index_offset: usize,
@@ -70,6 +70,7 @@ pub static RECORD_TYPE_DESCRIPTOR_RTD: LazyLock<Arc<RecordTypeDescriptor>> = Laz
         name: "rt".to_string(),
         sealed: true,
         opaque: true,
+        opaque_parent_constructor: None,
         inherits: indexmap::IndexSet::new(),
         field_index_offset: 0,
         fields: vec![],
@@ -107,6 +108,7 @@ pub async fn make_record_type_descriptor(
         name: name.to_string(),
         sealed,
         opaque,
+        opaque_parent_constructor: None,
         inherits,
         field_index_offset,
         fields,
@@ -151,10 +153,10 @@ fn make_default_record_constructor_descriptor(
 }
 
 pub fn make_record_constructor_descriptor<'a>(
+    _env: &'a [Gc<Value>],
     args: &'a [Value],
     _rest_args: &'a [Value],
     cont: &'a Value,
-    _env: &'a [Gc<Value>],
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {
@@ -240,10 +242,10 @@ inventory::submit! {
 }
 
 pub fn record_constructor<'a>(
+    _env: &'a [Gc<Value>],
     args: &'a [Value],
     _rest_args: &'a [Value],
     cont: &'a Value,
-    _env: &'a [Gc<Value>],
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {
@@ -276,10 +278,10 @@ pub fn record_constructor<'a>(
         ));
 
         chain_constructors(
+            &[Gc::new(Value::from(rtds))],
             &[],
             &[],
             &chain_protocols,
-            &[Gc::new(Value::from(rtds))],
             exception_handler,
             dynamic_wind,
         )
@@ -372,10 +374,10 @@ pub(crate) unsafe extern "C" fn chain_protocols(
 }
 
 pub fn chain_constructors<'a>(
+    env: &'a [Gc<Value>],
     args: &'a [Value],
     _rest_args: &'a [Value],
     cont: &'a Value,
-    env: &'a [Gc<Value>],
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {
@@ -423,10 +425,10 @@ pub fn chain_constructors<'a>(
 }
 
 pub fn constructor<'a>(
+    env: &'a [Gc<Value>],
     args: &'a [Value],
     _rest_args: &'a [Value],
     cont: &'a Value,
-    env: &'a [Gc<Value>],
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {
@@ -440,7 +442,7 @@ pub fn constructor<'a>(
             .map(|var| var.read().clone())
             .chain(args.iter().cloned())
             .collect::<Vec<_>>();
-        let record = Value::from(Gc::new(Record { rtd, fields }));
+        let record = Value::from(Gc::new(Record { opaque_parent: None, rtd, fields }));
         Ok(Application::new(
             cont,
             vec![record],
@@ -452,10 +454,10 @@ pub fn constructor<'a>(
 }
 
 pub fn default_protocol<'a>(
+    env: &'a [Gc<Value>],
     args: &'a [Value],
     _rest_args: &'a [Value],
     cont: &'a Value,
-    env: &'a [Gc<Value>],
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {
@@ -485,10 +487,10 @@ pub fn default_protocol<'a>(
 }
 
 pub fn default_protocol_constructor<'a>(
+    env: &'a [Gc<Value>],
     args: &'a [Value],
     _rest_args: &'a [Value],
     cont: &'a Value,
-    env: &'a [Gc<Value>],
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {
@@ -554,13 +556,32 @@ pub(crate) unsafe extern "C" fn call_constructor_continuation(
     }
 }
 
+/// A Scheme record type. Effectively a tuple of a fixed size array and some type
+/// information.
 #[derive(Debug, Trace, Clone)]
 #[repr(align(16))]
 pub struct Record {
-    // Possibly need the following:
-    // pub(crate) opaque_parent: Option<Gc<dyn Any>>,
+    pub(crate) opaque_parent: Option<Gc<dyn SchemeCompatible>>,
     pub(crate) rtd: Arc<RecordTypeDescriptor>,
     pub(crate) fields: Vec<Value>,
+}
+
+/// A Rust value that can present itself as a Scheme record.
+pub trait SchemeCompatible: fmt::Debug + fmt::Display + Trace {
+    /// The Record Type Descriptor of the value. Can be constructed at runtime,
+    /// but cannot change.
+    fn rtd(&self) -> Arc<RecordTypeDescriptor>;
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct OpaqueParentConstructor {
+    _required_args: usize,
+    _variadic: bool,
+    _constructor: fn(&[Value]) -> Result<Gc<dyn SchemeCompatible>, Condition>,
+}
+
+unsafe impl Trace for OpaqueParentConstructor {
+    unsafe fn visit_children(&self, _visitor: unsafe fn(crate::gc::OpaqueGcPtr)) {}
 }
 
 pub fn is_subtype_of(val: &Value, rt: &Value) -> Result<bool, Condition> {
@@ -573,10 +594,10 @@ pub fn is_subtype_of(val: &Value, rt: &Value) -> Result<bool, Condition> {
 }
 
 fn record_predicate_fn<'a>(
+    env: &'a [Gc<Value>],
     args: &'a [Value],
     _rest_args: &'a [Value],
     cont: &'a Value,
-    env: &'a [Gc<Value>],
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {
@@ -597,10 +618,10 @@ fn record_predicate_fn<'a>(
 }
 
 pub fn record_predicate<'a>(
+    _env: &'a [Gc<Value>],
     args: &'a [Value],
     _rest_args: &'a [Value],
     cont: &'a Value,
-    _env: &'a [Gc<Value>],
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {
@@ -647,10 +668,10 @@ inventory::submit! {
 }
 
 fn record_accessor_fn<'a>(
+    env: &'a [Gc<Value>],
     args: &'a [Value],
     _rest_args: &'a [Value],
     cont: &'a Value,
-    env: &'a [Gc<Value>],
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {
@@ -678,10 +699,10 @@ fn record_accessor_fn<'a>(
 }
 
 pub fn record_accessor<'a>(
+    _env: &'a [Gc<Value>],
     args: &'a [Value],
     _rest_args: &'a [Value],
     cont: &'a Value,
-    _env: &'a [Gc<Value>],
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {
@@ -737,10 +758,10 @@ inventory::submit! {
 }
 
 fn record_mutator_fn<'a>(
+    env: &'a [Gc<Value>],
     args: &'a [Value],
     _rest_args: &'a [Value],
     cont: &'a Value,
-    env: &'a [Gc<Value>],
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {
@@ -768,10 +789,10 @@ fn record_mutator_fn<'a>(
 }
 
 pub fn record_mutator<'a>(
+    _env: &'a [Gc<Value>],
     args: &'a [Value],
     _rest_args: &'a [Value],
     cont: &'a Value,
-    _env: &'a [Gc<Value>],
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {
