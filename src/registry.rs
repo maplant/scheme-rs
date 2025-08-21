@@ -697,7 +697,7 @@ impl Library {
         };
         let compiled = defn_body.compile_top_level();
         let rt = { self.0.read().rt.clone() };
-        let closure = rt.compile_expr(compiled).await.unwrap();
+        let closure = rt.compile_expr(compiled).await;
         let _ = Application::new(closure, Vec::new(), None, DynamicWind::default(), None)
             .eval()
             .await?;

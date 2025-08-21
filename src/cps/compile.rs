@@ -27,7 +27,7 @@ pub trait Compile: std::fmt::Debug {
             span: None,
         }
         .reduce()
-        .args_to_cells(&mut HashMap::default())
+        .args_to_cells(&mut AHashMap::default())
     }
 }
 
@@ -754,7 +754,7 @@ impl Compile for SyntaxQuote {
         let expanded = Local::gensym();
 
         let mut expansions_seen = IndexSet::new();
-        let mut uses = HashMap::new();
+        let mut uses = AHashMap::new();
 
         for (ident, expansion) in self.expansions.iter() {
             let (idx, _) = expansions_seen.insert_full(expansion);
@@ -929,7 +929,7 @@ impl Compile for Vec<u8> {
 
 impl Cps {
     /// Convert arguments for closures into cells if they are written to or escape.
-    fn args_to_cells(self, needs_cell_cache: &mut HashMap<Local, HashSet<Local>>) -> Self {
+    fn args_to_cells(self, needs_cell_cache: &mut AHashMap<Local, AHashSet<Local>>) -> Self {
         match self {
             Self::PrimOp(PrimOp::AllocCell, vals, local, cexpr) => Self::PrimOp(
                 PrimOp::AllocCell,
@@ -960,7 +960,7 @@ impl Cps {
                 cexp,
                 span: loc,
             } => {
-                let local_args: HashSet<_> = args.iter().copied().collect();
+                let local_args: AHashSet<_> = args.iter().copied().collect();
                 let escaping_args = body.need_cells(&local_args, needs_cell_cache);
 
                 let mut body = Box::new(body.args_to_cells(needs_cell_cache));

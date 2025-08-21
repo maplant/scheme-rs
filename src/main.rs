@@ -119,7 +119,7 @@ async fn compile_and_run_str<'e>(
         let span = sexpr.span().clone();
         let expr = DefinitionBody::parse(runtime, &[sexpr], &env, &span).await?;
         let compiled = expr.compile_top_level();
-        let closure = runtime.compile_expr(compiled).await.unwrap();
+        let closure = runtime.compile_expr(compiled).await;
         let result = Application::new(closure, Vec::new(), None, DynamicWind::default(), None)
             .eval()
             .await?;

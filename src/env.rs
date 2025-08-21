@@ -1,10 +1,11 @@
 use std::{
-    collections::{HashMap, HashSet, hash_map::Entry},
+    collections::hash_map::Entry,
     fmt,
     hash::{Hash, Hasher},
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+use ahash::{AHashMap, AHashSet};
 use either::Either;
 use futures::future::BoxFuture;
 
@@ -26,9 +27,9 @@ use crate::{
 #[derive(Trace)]
 pub struct LexicalContour {
     up: Environment,
-    vars: HashMap<Identifier, Local>,
-    keywords: HashMap<Identifier, Closure>,
-    imports: HashMap<Identifier, Import>,
+    vars: AHashMap<Identifier, Local>,
+    keywords: AHashMap<Identifier, Closure>,
+    imports: AHashMap<Identifier, Import>,
 }
 
 impl LexicalContour {
@@ -141,7 +142,7 @@ impl Gc<LexicalContour> {
 #[derive(Trace)]
 pub struct LetSyntaxContour {
     up: Environment,
-    keywords: HashMap<Identifier, Closure>,
+    keywords: AHashMap<Identifier, Closure>,
     recursive: bool,
 }
 
@@ -376,11 +377,11 @@ pub struct SyntaxCaseExpr {
     #[debug(skip)]
     up: Environment,
     expansions_store: Local,
-    pattern_vars: HashSet<Identifier>,
+    pattern_vars: AHashSet<Identifier>,
 }
 
 impl SyntaxCaseExpr {
-    fn new(env: &Environment, expansions_store: Local, pattern_vars: HashSet<Identifier>) -> Self {
+    fn new(env: &Environment, expansions_store: Local, pattern_vars: AHashSet<Identifier>) -> Self {
         Self {
             up: env.clone(),
             expansions_store,
@@ -624,7 +625,7 @@ impl Environment {
     pub fn new_syntax_case_expr(
         &self,
         expansions_store: Local,
-        pattern_vars: HashSet<Identifier>,
+        pattern_vars: AHashSet<Identifier>,
     ) -> Self {
         let syntax_case_expr = SyntaxCaseExpr::new(self, expansions_store, pattern_vars);
         Self::SyntaxCaseExpr(Gc::new(syntax_case_expr))

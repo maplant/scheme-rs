@@ -1,6 +1,6 @@
 use crate::{
     ast::DefinitionBody,
-    cps::{Compile, Cps},
+    cps::{Compile, Cps, codegen::RuntimeFunctionsBuilder},
     env::Environment,
     exception::{Condition, Exception, ExceptionHandler},
     gc::{Gc, GcInner, Trace, init_gc},
@@ -15,14 +15,6 @@ use crate::{
     syntax::{Span, Syntax},
     value::{ReflexiveValue, UnpackedValue, Value},
     vectors,
-};
-use inkwell::{
-    OptimizationLevel,
-    builder::BuilderError,
-    context::Context,
-    execution_engine::ExecutionEngine,
-    module::Module,
-    targets::{InitializationConfig, Target},
 };
 use scheme_rs_macros::runtime_fn;
 use std::{
@@ -79,7 +71,7 @@ impl Runtime {
             .await
             .unwrap();
         let compiled = body.compile_top_level();
-        let closure = self.compile_expr(compiled).await.unwrap();
+        let closure = self.compile_expr(compiled).await;
         Application::new(closure, Vec::new(), None, DynamicWind::default(), None)
             .eval()
             .await
@@ -89,7 +81,7 @@ impl Runtime {
         self.0.read().registry.clone()
     }
 
-    pub async fn compile_expr(&self, expr: Cps) -> Result<Closure, BuilderError> {
+    pub async fn compile_expr(&self, expr: Cps) -> Closure {
         let (completion_tx, completion_rx) = oneshot::channel();
         let task = CompilationTask {
             completion_tx,
@@ -163,7 +155,7 @@ impl DebugInfo {
 
 struct CompilationTask {
     compilation_unit: Cps,
-    completion_tx: oneshot::Sender<CompilationResult>,
+    completion_tx: oneshot::Sender<Closure>,
     /// Since Contexts are per-thread, we will only ever see the same Runtime.
     /// However, we can't cache the Runtime, as that would cause a ref cycle
     /// that would prevent the last compilation buffer sender to drop.
@@ -171,22 +163,40 @@ struct CompilationTask {
     runtime: Runtime,
 }
 
-type CompilationResult = Result<Closure, BuilderError>;
-
 fn compilation_task(mut compilation_queue_rx: mpsc::Receiver<CompilationTask>) {
-    Target::initialize_native(&InitializationConfig::default()).unwrap();
+    use cranelift::prelude::*;
+    use cranelift_jit::{JITBuilder, JITModule};
 
-    // Create an LLVM context, module and execution engine. All of these should
-    // live for the maximum lifetime of the generated functions. This contains
-    // all of the allocated memory for the functions.
-    let context = Context::create();
+    let mut flag_builder = settings::builder();
+    flag_builder.set("use_colocated_libcalls", "false").unwrap();
+    // FIXME set back to true once the x64 backend supports it.
+    flag_builder.set("is_pic", "false").unwrap();
+    let isa_builder = cranelift_native::builder().unwrap_or_else(|msg| {
+        panic!("host machine is not supported: {msg}");
+    });
+    let isa = isa_builder
+        .finish(settings::Flags::new(flag_builder))
+        .unwrap();
+
+    let mut jit_builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+
+    for runtime_fn in inventory::iter::<RuntimeFn> {
+        (runtime_fn.install_symbol)(&mut jit_builder);
+    }
+
+    let mut module = JITModule::new(jit_builder);
+    let mut runtime_funcs_builder = RuntimeFunctionsBuilder::default();
+
+    for runtime_fn in inventory::iter::<RuntimeFn> {
+        (runtime_fn.install_decl)(&mut runtime_funcs_builder, &mut module);
+    }
+
+    let runtime_funcs = runtime_funcs_builder.build().unwrap();
 
     // By storing all of the debug information in the same lifetime as the
     // Context, we can directly put pointers referencing the debug information
     // in our JIT compiled functions:
     let mut debug_info = DebugInfo::default();
-
-    let mut modules = Vec::new();
 
     while let Some(task) = compilation_queue_rx.blocking_recv() {
         let CompilationTask {
@@ -195,53 +205,35 @@ fn compilation_task(mut compilation_queue_rx: mpsc::Receiver<CompilationTask>) {
             runtime,
         } = task;
 
-        // I don't really know a way to do this beyond just creating a new module every time.
+        let closure =
+            compilation_unit.into_closure(runtime, &runtime_funcs, &mut module, &mut debug_info);
 
-        let module = context.create_module("scheme_rs");
-        ExecutionEngine::link_in_mc_jit();
-        let execution_engine = module
-            .create_jit_execution_engine(OptimizationLevel::default())
-            .unwrap();
-        let builder = context.create_builder();
-
-        install_runtime(&context, &module, &execution_engine);
-
-        let closure = compilation_unit
-            .into_closure(
-                runtime,
-                &context,
-                &module,
-                &execution_engine,
-                &builder,
-                &mut debug_info,
-            )
-            .map(|inner| Closure(Gc::new(inner)));
-
-        modules.push(module);
-
-        let _ = completion_tx.send(closure);
+        let _ = completion_tx.send(Closure(Gc::new(closure)));
     }
 }
 
 pub(crate) struct RuntimeFn {
-    install: for<'ctx> fn(&'ctx Context, module: &Module<'ctx>, ee: &ExecutionEngine<'ctx>),
+    install_decl:
+        for<'a> fn(&'a mut RuntimeFunctionsBuilder, module: &'a mut cranelift_jit::JITModule),
+    install_symbol: for<'a> fn(&'a mut cranelift_jit::JITBuilder),
 }
 
 impl RuntimeFn {
     pub(crate) const fn new(
-        install: for<'ctx> fn(&'ctx Context, module: &Module<'ctx>, ee: &ExecutionEngine<'ctx>),
+        install_decl: for<'a> fn(
+            &'a mut RuntimeFunctionsBuilder,
+            module: &'a mut cranelift_jit::JITModule,
+        ),
+        install_symbol: for<'a> fn(&'a mut cranelift_jit::JITBuilder),
     ) -> Self {
-        Self { install }
+        Self {
+            install_decl,
+            install_symbol,
+        }
     }
 }
 
 inventory::collect!(RuntimeFn);
-
-fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &ExecutionEngine<'ctx>) {
-    for runtime_fn in inventory::iter::<RuntimeFn> {
-        (runtime_fn.install)(ctx, module, ee);
-    }
-}
 
 unsafe fn arc_from_ptr<T>(ptr: *const T) -> Option<Arc<T>> {
     unsafe {
@@ -274,14 +266,22 @@ unsafe extern "C" fn read_cell(cell: *mut GcInner<Value>) -> i64 {
 
 /// Decrement the reference count of a cell
 #[runtime_fn]
-unsafe extern "C" fn dropc(cell: *mut GcInner<Value>) {
-    unsafe { Gc::decrement_reference_count(cell) }
+unsafe extern "C" fn dropc(cell: *const *mut GcInner<Value>, num_drops: u32) {
+    unsafe {
+        for i in 0..num_drops {
+            Gc::decrement_reference_count(cell.add(i as usize).read());
+        }
+    }
 }
 
 /// Decrement the reference count of a value
 #[runtime_fn]
-unsafe extern "C" fn dropv(val: i64) {
-    unsafe { drop(Value::from_raw(val as u64)) }
+unsafe extern "C" fn dropv(val: *const i64, num_drops: u32) {
+    unsafe {
+        for i in 0..num_drops {
+            drop(Value::from_raw(val.add(i as usize).read() as u64));
+        }
+    }
 }
 
 /// Create a boxed application
@@ -474,38 +474,9 @@ unsafe extern "C" fn make_user(
     }
 }
 
-/*
-/// Call a transformer with the given argument and return the expansion
-#[runtime_fn]
-unsafe extern "C" fn get_call_transformer_fn(
-    runtime: *mut GcInner<RuntimeInner>,
-    env: *const *mut GcInner<Value>,
-    num_envs: u32,
-) -> *mut GcInner<Value> {
-    unsafe {
-        // Collect the environment:
-        let env: Vec<_> = (0..num_envs)
-            .map(|i| Gc::from_raw_inc_rc(env.add(i as usize).read()))
-            .collect();
-
-        let closure = Closure::new(
-            Runtime::from_raw_inc_rc(runtime),
-            env,
-            Vec::new(),
-            FuncPtr::Bridge(expand::call_transformer),
-            3,
-            false,
-            None,
-        );
-
-        Gc::into_raw(Gc::new(Value::from(closure)))
-    }
-}
-*/
-
 /// Return an error in the case that a value is undefined
 #[runtime_fn]
-unsafe extern "C" fn unbound_variable(symbol: u32) -> *mut Result<Application, Condition> {
+unsafe extern "C" fn error_unbound_variable(symbol: u32) -> *mut Result<Application, Condition> {
     let sym = Symbol(symbol);
     Box::into_raw(Box::new(Err(Condition::error(format!("{sym} is unbound")))))
 }
@@ -523,9 +494,8 @@ unsafe extern "C" fn cons(
 */
 
 /// Extract the current winders from the environment and return them as a vec.
-/// This has to return a Gc since this is added to the environment of the continuation.
 #[runtime_fn]
-unsafe extern "C" fn extract_winders(dynamic_wind: *const DynamicWind) -> *mut GcInner<Value> {
+unsafe extern "C" fn extract_winders(dynamic_wind: *const DynamicWind) -> i64 {
     unsafe {
         let dynamic_wind = dynamic_wind.as_ref().unwrap();
         let winders: Vec<_> = dynamic_wind
@@ -536,7 +506,7 @@ unsafe extern "C" fn extract_winders(dynamic_wind: *const DynamicWind) -> *mut G
                 Value::from((Value::from(in_winder), Value::from(out_winder)))
             })
             .collect();
-        Gc::into_raw(Gc::new(Value::from(winders)))
+        Value::into_raw(Value::from(winders)) as i64
     }
 }
 
