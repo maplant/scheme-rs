@@ -28,23 +28,24 @@ impl<'err> EvalError<'err> {
     }
 }
 
-impl<'err> ErrRender<'err> for LexError<'err> {
-    // damn these errors suck, guess matthew gotta handroll his lexer so we can get some better
-    // errors
-    fn render_into(&self, builder: &mut Builder, source_name: &'err str) {
-        builder.write_str("-> ");
-        builder.write_str(source_name);
-        // TODO: match on source.code and find out what these codes even mean
-        builder.write_string(format!("{self:?}"))
-    }
-}
-
 struct ErrorContext<'s> {
     msg: &'s str,
     line: Option<u32>,
     column: Option<usize>,
     end: Option<usize>,
     // TODO: how do we get the source?
+}
+
+impl<'err> ErrRender<'err> for LexError<'err> {
+    // damn these errors suck, guess matthew gotta handroll his lexer so we can get some better
+    // errors
+    fn render_into(&self, builder: &mut Builder, source_name: &'err str) {
+        // TODO: nom::error::Error<_> has some sort of undocumented cause for lexer errors, i just
+        // found 'Tag' - idk what that means; So i guess we gotta find out what they mean and put
+        // this into here
+        let ctx: ErrorContext = ("Lexer error", None).into();
+        ctx.render(builder, source_name);
+    }
 }
 
 impl<'s> ErrorContext<'s> {
