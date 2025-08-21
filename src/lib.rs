@@ -4,6 +4,7 @@ pub mod ast;
 pub mod character;
 pub mod cps;
 pub mod env;
+pub mod err;
 pub mod exception;
 pub mod expand;
 pub mod futures;

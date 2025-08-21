@@ -6,11 +6,10 @@ use rustyline::{
     validate::{ValidationContext, ValidationResult, Validator},
 };
 use scheme_rs::{
-    ast::{DefinitionBody, ImportSet, ParseAstError},
+    ast::{DefinitionBody, ImportSet},
     cps::Compile,
     env::Environment,
-    exception::Exception,
-    lex::LexError,
+    err::EvalError,
     parse::ParseSyntaxError,
     proc::{Application, DynamicWind},
     registry::Library,
@@ -96,14 +95,6 @@ async fn main() -> ExitCode {
     }
 
     ExitCode::SUCCESS
-}
-
-#[derive(derive_more::From, Debug)]
-pub enum EvalError<'e> {
-    LexError(LexError<'e>),
-    ParseError(ParseSyntaxError<'e>),
-    ParseAstError(ParseAstError),
-    Exception(Exception),
 }
 
 async fn compile_and_run_str<'e>(
