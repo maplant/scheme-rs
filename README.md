@@ -33,7 +33,7 @@ That is obviously a long way away.
 ## Implementation details:
 
 `scheme-rs` is JIT compiled, compiling the expanded Scheme code into a [CPS](https://en.wikipedia.org/wiki/Continuation-passing_style) 
-mid-level IR, and then converting that into LLVM IR. 
+mid-level IR, and then converting that into Cranelift IR.
 
 At present the code produced by `scheme-rs` is of pretty poor quality. Very few optimizations are performed, all variables 
 are boxed. Focus was spent on making this project as correct as possible, and to that end this is a JIT compiler for 

@@ -20,8 +20,6 @@ use either::Either;
 use ahash::{AHashMap, AHashSet};
 use derive_more::From;
 use futures::future::BoxFuture;
-#[cfg(feature = "llvm")]
-use inkwell::builder::BuilderError;
 use std::{fmt, sync::Arc};
 
 #[derive(Debug)]
@@ -78,17 +76,7 @@ pub enum ParseAstError {
         second: Span,
     },
 
-    #[cfg(feature = "llvm")]
-    BuilderError(BuilderError),
-
     RaisedValue(Value),
-}
-
-#[cfg(feature = "llvm")]
-impl From<BuilderError> for ParseAstError {
-    fn from(be: BuilderError) -> Self {
-        Self::BuilderError(be)
-    }
 }
 
 impl From<Value> for ParseAstError {

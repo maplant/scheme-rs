@@ -1,8 +1,6 @@
-#[cfg(feature = "cranelift")]
-use crate::cps::cranelift_codegen::RuntimeFunctionsBuilder;
 use crate::{
     ast::DefinitionBody,
-    cps::{Compile, Cps},
+    cps::{Compile, Cps, codegen::RuntimeFunctionsBuilder},
     env::Environment,
     exception::{Condition, Exception, ExceptionHandler},
     gc::{Gc, GcInner, Trace, init_gc},
@@ -17,15 +15,6 @@ use crate::{
     syntax::{Span, Syntax},
     value::{ReflexiveValue, UnpackedValue, Value},
     vectors,
-};
-#[cfg(feature = "llvm")]
-use inkwell::{
-    OptimizationLevel,
-    builder::BuilderError,
-    context::Context,
-    execution_engine::ExecutionEngine,
-    module::Module,
-    targets::{InitializationConfig, Target},
 };
 use scheme_rs_macros::runtime_fn;
 use std::{
@@ -174,58 +163,6 @@ struct CompilationTask {
     runtime: Runtime,
 }
 
-#[cfg(feature = "llvm")]
-fn compilation_task(mut compilation_queue_rx: mpsc::Receiver<CompilationTask>) {
-    Target::initialize_native(&InitializationConfig::default()).unwrap();
-
-    // Create an LLVM context, module and execution engine. All of these should
-    // live for the maximum lifetime of the generated functions. This contains
-    // all of the allocated memory for the functions.
-    let context = Context::create();
-
-    // By storing all of the debug information in the same lifetime as the
-    // Context, we can directly put pointers referencing the debug information
-    // in our JIT compiled functions:
-    let mut debug_info = DebugInfo::default();
-
-    let mut modules = Vec::new();
-
-    while let Some(task) = compilation_queue_rx.blocking_recv() {
-        let CompilationTask {
-            completion_tx,
-            compilation_unit,
-            runtime,
-        } = task;
-
-        // I don't really know a way to do this beyond just creating a new module every time.
-
-        let module = context.create_module("scheme_rs");
-        ExecutionEngine::link_in_mc_jit();
-        let execution_engine = module
-            .create_jit_execution_engine(OptimizationLevel::None)
-            .unwrap();
-        let builder = context.create_builder();
-
-        install_runtime(&context, &module, &execution_engine);
-
-        let closure = compilation_unit
-            .into_closure(
-                runtime,
-                &context,
-                &module,
-                &execution_engine,
-                &builder,
-                &mut debug_info,
-            )
-            .map(|inner| Closure(Gc::new(inner)));
-
-        modules.push(module);
-
-        let _ = completion_tx.send(closure.unwrap());
-    }
-}
-
-#[cfg(feature = "cranelift")]
 fn compilation_task(mut compilation_queue_rx: mpsc::Receiver<CompilationTask>) {
     use cranelift::prelude::*;
     use cranelift_jit::{JITBuilder, JITModule};
@@ -251,7 +188,7 @@ fn compilation_task(mut compilation_queue_rx: mpsc::Receiver<CompilationTask>) {
     let mut runtime_funcs_builder = RuntimeFunctionsBuilder::default();
 
     for runtime_fn in inventory::iter::<RuntimeFn> {
-        (runtime_fn.install)(&mut runtime_funcs_builder, &mut module);
+        (runtime_fn.install_decl)(&mut runtime_funcs_builder, &mut module);
     }
 
     let runtime_funcs = runtime_funcs_builder.build().unwrap();
@@ -268,58 +205,35 @@ fn compilation_task(mut compilation_queue_rx: mpsc::Receiver<CompilationTask>) {
             runtime,
         } = task;
 
-        let closure = compilation_unit
-            .into_closure(runtime, &runtime_funcs, &mut module, &mut debug_info)
-            .unwrap();
+        let closure =
+            compilation_unit.into_closure(runtime, &runtime_funcs, &mut module, &mut debug_info);
 
         let _ = completion_tx.send(Closure(Gc::new(closure)));
     }
-    //use cranelift::prelude::settings::builder;
-
-    // let mut flag_builder = builder();
-    // flag_builder.set(
 }
 
 pub(crate) struct RuntimeFn {
-    #[cfg(feature = "llvm")]
-    install: for<'ctx> fn(&'ctx Context, module: &Module<'ctx>, ee: &ExecutionEngine<'ctx>),
-    #[cfg(feature = "cranelift")]
-    install: for<'a> fn(&'a mut RuntimeFunctionsBuilder, module: &'a mut cranelift_jit::JITModule),
-    #[cfg(feature = "cranelift")]
+    install_decl:
+        for<'a> fn(&'a mut RuntimeFunctionsBuilder, module: &'a mut cranelift_jit::JITModule),
     install_symbol: for<'a> fn(&'a mut cranelift_jit::JITBuilder),
 }
 
 impl RuntimeFn {
-    #[cfg(feature = "llvm")]
     pub(crate) const fn new(
-        install: for<'ctx> fn(&'ctx Context, module: &Module<'ctx>, ee: &ExecutionEngine<'ctx>),
-    ) -> Self {
-        Self { install }
-    }
-
-    #[cfg(feature = "cranelift")]
-    pub(crate) const fn new(
-        install: for<'a> fn(
+        install_decl: for<'a> fn(
             &'a mut RuntimeFunctionsBuilder,
             module: &'a mut cranelift_jit::JITModule,
         ),
         install_symbol: for<'a> fn(&'a mut cranelift_jit::JITBuilder),
     ) -> Self {
         Self {
-            install,
+            install_decl,
             install_symbol,
         }
     }
 }
 
 inventory::collect!(RuntimeFn);
-
-#[cfg(feature = "llvm")]
-fn install_runtime<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>, ee: &ExecutionEngine<'ctx>) {
-    for runtime_fn in inventory::iter::<RuntimeFn> {
-        (runtime_fn.install)(ctx, module, ee);
-    }
-}
 
 unsafe fn arc_from_ptr<T>(ptr: *const T) -> Option<Arc<T>> {
     unsafe {
@@ -516,9 +430,6 @@ unsafe extern "C" fn make_continuation(
         );
 
         Gc::into_raw(Gc::new(Value::from(closure)))
-        //        let raw = Value::into_raw(Value::from(closure)) as i64;
-        //        println!("cont: {raw:x}");
-        //        raw
     }
 }
 
@@ -560,41 +471,8 @@ unsafe extern "C" fn make_user(
         );
 
         Gc::into_raw(Gc::new(Value::from(closure)))
-        // dbg!(Value::into_raw(Value::from(closure)) as i64)
-        // let raw = Value::into_raw(Value::from(closure)) as i64;
-        // println!("user: {raw:x}");
-        // raw
     }
 }
-
-/*
-/// Call a transformer with the given argument and return the expansion
-#[runtime_fn]
-unsafe extern "C" fn get_call_transformer_fn(
-    runtime: *mut GcInner<RuntimeInner>,
-    env: *const *mut GcInner<Value>,
-    num_envs: u32,
-) -> *mut GcInner<Value> {
-    unsafe {
-        // Collect the environment:
-        let env: Vec<_> = (0..num_envs)
-            .map(|i| Gc::from_raw_inc_rc(env.add(i as usize).read()))
-            .collect();
-
-        let closure = Closure::new(
-            Runtime::from_raw_inc_rc(runtime),
-            env,
-            Vec::new(),
-            FuncPtr::Bridge(expand::call_transformer),
-            3,
-            false,
-            None,
-        );
-
-        Gc::into_raw(Gc::new(Value::from(closure)))
-    }
-}
-*/
 
 /// Return an error in the case that a value is undefined
 #[runtime_fn]

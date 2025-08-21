@@ -188,11 +188,7 @@ impl ClosureInner {
 
             let env = cells_to_vec_of_ptrs(&self.env);
             let globals = cells_to_vec_of_ptrs(&self.globals);
-
-            // let args_cells = values_to_vec_of_cells(&args);
-            // let args = cells_to_vec_of_ptrs(&args_cells);
-
-            let cont = cont.map(|v| Gc::new(v));
+            let cont = cont.map(Gc::new);
 
             // Finally: call the function pointer
             let app = match self.func {

@@ -34,24 +34,12 @@ unicode_categories = "0.1"
 malachite = { version = "0.5.1", features = ["floats"] }
 rustyline = { version = "15.0.0", features = ["derive"] }
 
-# LLVM dependencies
-inkwell = { version = "0.6", features = ["llvm18-1"], optional = true }
-
 # Cranelift dependencies
-cranelift = { version = "0.122", optional = true }
-cranelift-jit = { version = "0.122", optional = true }
-cranelift-native = { version = "0.122", optional = true } 
-cranelift-module = { version = "0.122", optional = true }
+cranelift = "0.122"
+cranelift-jit = "0.122"
+cranelift-native = "0.122"
+cranelift-module = "0.122"
  
-[features]
-default = ["cranelift"]
-cranelift = [
-  "dep:cranelift",
-  "dep:cranelift-jit",
-  "dep:cranelift-native",
-  "dep:cranelift-module"
-]
-llvm = ["dep:inkwell"]
 
 [profile.release]
 lto = true

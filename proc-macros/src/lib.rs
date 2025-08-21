@@ -411,22 +411,6 @@ fn is_primitive(path: &TypePath, ty: &'static str) -> bool {
         == Some(ty)
 }
 
-fn rust_type_to_llvm_type(ty: &Type) -> Ident {
-    match ty {
-        Type::Path(path) if is_primitive(path, "ContinuationPtr") => format_ident!("ptr_type"),
-        Type::Path(path) if is_primitive(path, "UserPtr") => format_ident!("ptr_type"),
-        Type::Path(path) if is_primitive(path, "BridgePtr") => format_ident!("ptr_type"),
-        Type::Path(path) if is_primitive(path, "bool") => format_ident!("bool_type"),
-        Type::Path(path) if is_primitive(path, "i32") => format_ident!("i32_type"),
-        Type::Path(path) if is_primitive(path, "i64") => format_ident!("i64_type"),
-        Type::Path(path) if is_primitive(path, "u32") => format_ident!("i32_type"),
-        Type::Path(path) if is_primitive(path, "u64") => format_ident!("i64_type"),
-        Type::Ptr(_) => format_ident!("ptr_type"),
-        Type::Tuple(_) => format_ident!("void_type"),
-        x => unreachable!("bad type: {x:?}"),
-    }
-}
-
 fn rust_type_to_cranelift_type(ty: &Type) -> Option<Ident> {
     match ty {
         Type::Path(path) if is_primitive(path, "bool") => Some(format_ident!("I8")),
@@ -445,22 +429,7 @@ pub fn runtime_fn(_args: TokenStream, item: TokenStream) -> TokenStream {
 
     let name_ident = runtime_fn.sig.ident.clone();
     let name_lit = Literal::string(&runtime_fn.sig.ident.to_string());
-    let llvm_ret = match runtime_fn.sig.output {
-        syn::ReturnType::Default => format_ident!("void_type"),
-        syn::ReturnType::Type(_, ref ty) => rust_type_to_llvm_type(&ty),
-    };
-    let llvm_args: Vec<_> = runtime_fn
-        .sig
-        .inputs
-        .iter()
-        .map(|arg| {
-            let FnArg::Typed(pat) = arg else {
-                unreachable!("here: {arg:?}");
-            };
-            rust_type_to_llvm_type(&pat.ty)
-        })
-        .collect();
-    let cranelift_ret = if let Some(ret_type) = match runtime_fn.sig.output {
+    let ret = if let Some(ret_type) = match runtime_fn.sig.output {
         syn::ReturnType::Default => None,
         syn::ReturnType::Type(_, ref ty) => Some(rust_type_to_cranelift_type(&ty)),
     }.flatten() {
@@ -468,14 +437,13 @@ pub fn runtime_fn(_args: TokenStream, item: TokenStream) -> TokenStream {
     } else {
         quote! {}
     };
-
-    let cranelift_args: Vec<_> = runtime_fn
+    let args: Vec<_> = runtime_fn
         .sig
         .inputs
         .iter()
         .filter_map(|arg| {
             let FnArg::Typed(pat) = arg else {
-                unreachable!("here: {arg:?}");
+                unreachable!();
             };
             rust_type_to_cranelift_type(&pat.ty)
         })
@@ -484,29 +452,15 @@ pub fn runtime_fn(_args: TokenStream, item: TokenStream) -> TokenStream {
 
     quote! {
         #[allow(unused)]
-        #[cfg(feature = "llvm")]
-        inventory::submit!(crate::runtime::RuntimeFn::new(|ctx, module, ee| {
-            let i32_type = ctx.i32_type();
-            let i64_type = ctx.i64_type();
-            let bool_type = ctx.bool_type();
-            let void_type = ctx.void_type();
-            let ptr_type = ctx.ptr_type(inkwell::AddressSpace::default());
-            let sig = #llvm_ret.fn_type(&[ #( #llvm_args.into(), )* ], false);
-            let f = module.add_function(#name_lit, sig, None);
-            ee.add_global_mapping(&f, #name_ident as usize);
-        }));
-
-        #[allow(unused)]
-        #[cfg(feature = "cranelift")]
         inventory::submit!(crate::runtime::RuntimeFn::new(
             |runtime_fns, module| {
                 use cranelift::prelude::*;
                 use cranelift_module::{Module, Linkage};
                 let mut sig = module.make_signature();
                 #(
-                    sig.params.push(AbiParam::new(types::#cranelift_args));
+                    sig.params.push(AbiParam::new(types::#args));
                 )*
-                #cranelift_ret
+                #ret
                 let func = module.declare_function(#name_lit, Linkage::Import, &sig).unwrap();
                 runtime_fns.#name_ident(func);
             },
