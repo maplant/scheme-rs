@@ -14,13 +14,13 @@ repository = "https://github.com/maplant/scheme-rs"
 ahash = "0.8"
 async-trait = "0.1"
 by_address = "1.2"
+derive_builder = "0.20"
 derive_more = { version = "1.0", features = ["debug", "from"]}
 dyn-clone = "1.0.13"
 either = "1"
 futures = "0.3"
 indexmap = "2"
 inventory = "0.3"
-inkwell = { version = "0.6", features = ["llvm18-1"] }
 nom = "7"
 nom_locate = "4"
 num = "0.4"
@@ -33,6 +33,25 @@ tokio = { version = "1.41", features = ["full"] }
 unicode_categories = "0.1"
 malachite = { version = "0.5.1", features = ["floats"] }
 rustyline = { version = "15.0.0", features = ["derive"] }
+
+# LLVM dependencies
+inkwell = { version = "0.6", features = ["llvm18-1"], optional = true }
+
+# Cranelift dependencies
+cranelift = { version = "0.122", optional = true }
+cranelift-jit = { version = "0.122", optional = true }
+cranelift-native = { version = "0.122", optional = true } 
+cranelift-module = { version = "0.122", optional = true }
+ 
+[features]
+default = ["cranelift"]
+cranelift = [
+  "dep:cranelift",
+  "dep:cranelift-jit",
+  "dep:cranelift-native",
+  "dep:cranelift-module"
+]
+llvm = ["dep:inkwell"]
 
 [profile.release]
 lto = true

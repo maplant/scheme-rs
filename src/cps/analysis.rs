@@ -137,6 +137,47 @@ impl Cps {
         }
     }
 
+    pub(super) fn max_drops(&self) -> MaxDrops {
+        match self {
+            // Cps::AllocCell(_, cexpr) => cexpr.uses(uses_cache).clone(),
+            Cps::PrimOp(PrimOp::AllocCell, _, _, cexpr) => {
+                let mut max_drops = cexpr.max_drops();
+                max_drops.cell_drops += 1;
+                max_drops
+            }
+            Cps::PrimOp(
+                PrimOp::Cons
+                | PrimOp::Add
+                | PrimOp::Sub
+                | PrimOp::Mul
+                | PrimOp::Div
+                | PrimOp::Equal
+                | PrimOp::Greater
+                | PrimOp::GreaterEqual
+                | PrimOp::Lesser
+                | PrimOp::LesserEqual
+                | PrimOp::Matches
+                | PrimOp::ExpandTemplate
+                | PrimOp::ExtractWinders,
+                _,
+                _,
+                cexpr,
+            ) => {
+                let mut max_drops = cexpr.max_drops();
+                max_drops.value_drops += 1;
+                max_drops
+            }
+            Cps::Lambda { cexp, .. } => {
+                let mut max_drops = cexp.max_drops();
+                max_drops.cell_drops += 1;
+                max_drops
+            }
+            Cps::PrimOp(_, _, _, cexpr) => cexpr.max_drops(),
+            Cps::If(_, success, failure) => success.max_drops().max(failure.max_drops()),
+            _ => MaxDrops::default(),
+        }
+    }
+
     // TODO: Clean up this function!
     pub(super) fn need_cells(
         &self,
@@ -276,4 +317,19 @@ fn add_value_use(mut uses: AHashMap<Local, usize>, value: &Value) -> AHashMap<Lo
         *uses.entry(local).or_default() += 1;
     }
     uses
+}
+
+#[derive(Copy, Clone, Default)]
+pub struct MaxDrops {
+    pub(super) value_drops: usize,
+    pub(super) cell_drops: usize,
+}
+
+impl MaxDrops {
+    fn max(self, rhs: Self) -> Self {
+        Self {
+            value_drops: self.value_drops.max(rhs.value_drops),
+            cell_drops: self.cell_drops.max(rhs.cell_drops),
+        }
+    }
 }

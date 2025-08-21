@@ -35,7 +35,7 @@ pub(crate) type UserPtr = unsafe extern "C" fn(
     args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
-    cont: *const Value,
+    cont: *mut GcInner<Value>,
 ) -> *mut Result<Application, Condition>;
 
 /// A function pointer to an async Rust bridge function.
@@ -192,6 +192,8 @@ impl ClosureInner {
             // let args_cells = values_to_vec_of_cells(&args);
             // let args = cells_to_vec_of_ptrs(&args_cells);
 
+            let cont = cont.map(|v| Gc::new(v));
+
             // Finally: call the function pointer
             let app = match self.func {
                 FuncPtr::Continuation(sync_fn) => unsafe {
@@ -213,7 +215,7 @@ impl ClosureInner {
                         args.as_ptr(),
                         exception_handler.as_ref().map_or_else(null_mut, Gc::as_ptr),
                         dynamic_wind as *const DynamicWind,
-                        cont.as_ref().map(|v| v as *const Value).unwrap(),
+                        Gc::as_ptr(cont.as_ref().unwrap()),
                     );
                     *Box::from_raw(app)
                 },

@@ -19,15 +19,26 @@ use crate::{
     syntax::Span,
     value::Value as RuntimeValue,
 };
-use std::fmt;
 use ahash::{AHashMap, AHashSet};
+use std::fmt;
 
 mod analysis;
-mod codegen;
 mod compile;
 mod reduce;
 
 pub use compile::Compile;
+
+#[cfg(all(feature = "cranelift", feature = "llvm"))]
+compile_error!("Cannot enable LLVM and Cranelift at the same time");
+
+#[cfg(all(not(feature = "cranelift"), not(feature = "llvm")))]
+compile_error!("Must enable one of LLVM or Cranelift features");
+
+#[cfg(feature = "cranelift")]
+pub mod cranelift_codegen;
+
+#[cfg(feature = "llvm")]
+mod llvm_codegen;
 
 #[derive(Clone, PartialEq)]
 pub enum Value {

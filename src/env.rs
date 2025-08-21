@@ -5,9 +5,9 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+use ahash::{AHashMap, AHashSet};
 use either::Either;
 use futures::future::BoxFuture;
-use ahash::{AHashMap, AHashSet};
 
 use crate::{
     ast::{ImportSet, SpecialKeyword},

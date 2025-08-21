@@ -9,12 +9,9 @@ use crate::{
     syntax::{Identifier, Span, Syntax},
     value::Value,
 };
-use scheme_rs_macros::{bridge, runtime_fn};
-use std::{
-    any::Any,
-    collections::BTreeSet,
-};
 use ahash::{AHashMap, AHashSet};
+use scheme_rs_macros::{bridge, runtime_fn};
+use std::{any::Any, collections::BTreeSet};
 
 // TODO: This code needs _a lot_ more error checking: error checking for missing
 // ellipsis, error checking for too many ellipsis. It makes debugging extremely

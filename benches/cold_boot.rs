@@ -23,12 +23,7 @@ fn cold_boot_benchmark(c: &mut Criterion) {
                 .await
                 .unwrap();
             let compiled = base.compile_top_level();
-            rt.compile_expr(compiled)
-                .await
-                .unwrap()
-                .call(&[])
-                .await
-                .unwrap();
+            rt.compile_expr(compiled).await.call(&[]).await.unwrap();
         })
     });
 }

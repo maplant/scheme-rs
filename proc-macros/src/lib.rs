@@ -427,17 +427,29 @@ fn rust_type_to_llvm_type(ty: &Type) -> Ident {
     }
 }
 
+fn rust_type_to_cranelift_type(ty: &Type) -> Option<Ident> {
+    match ty {
+        Type::Path(path) if is_primitive(path, "bool") => Some(format_ident!("I8")),
+        Type::Path(path) if is_primitive(path, "i32") => Some(format_ident!("I32")),
+        Type::Path(path) if is_primitive(path, "u32") => Some(format_ident!("I32")),
+        Type::Path(_) => Some(format_ident!("I64")),
+        Type::Ptr(_) => Some(format_ident!("I64")),
+        Type::Tuple(_) => None,
+        _ => unreachable!(),
+    }
+}
+
 #[proc_macro_attribute]
 pub fn runtime_fn(_args: TokenStream, item: TokenStream) -> TokenStream {
     let runtime_fn = parse_macro_input!(item as ItemFn);
 
     let name_ident = runtime_fn.sig.ident.clone();
     let name_lit = Literal::string(&runtime_fn.sig.ident.to_string());
-    let ret = match runtime_fn.sig.output {
+    let llvm_ret = match runtime_fn.sig.output {
         syn::ReturnType::Default => format_ident!("void_type"),
         syn::ReturnType::Type(_, ref ty) => rust_type_to_llvm_type(&ty),
     };
-    let args: Vec<_> = runtime_fn
+    let llvm_args: Vec<_> = runtime_fn
         .sig
         .inputs
         .iter()
@@ -448,19 +460,61 @@ pub fn runtime_fn(_args: TokenStream, item: TokenStream) -> TokenStream {
             rust_type_to_llvm_type(&pat.ty)
         })
         .collect();
+    let cranelift_ret = if let Some(ret_type) = match runtime_fn.sig.output {
+        syn::ReturnType::Default => None,
+        syn::ReturnType::Type(_, ref ty) => Some(rust_type_to_cranelift_type(&ty)),
+    }.flatten() {
+        quote! { sig.returns.push(AbiParam::new(types::#ret_type)); }
+    } else {
+        quote! {}
+    };
+
+    let cranelift_args: Vec<_> = runtime_fn
+        .sig
+        .inputs
+        .iter()
+        .filter_map(|arg| {
+            let FnArg::Typed(pat) = arg else {
+                unreachable!("here: {arg:?}");
+            };
+            rust_type_to_cranelift_type(&pat.ty)
+        })
+        .collect();
+
 
     quote! {
         #[allow(unused)]
+        #[cfg(feature = "llvm")]
         inventory::submit!(crate::runtime::RuntimeFn::new(|ctx, module, ee| {
             let i32_type = ctx.i32_type();
             let i64_type = ctx.i64_type();
             let bool_type = ctx.bool_type();
             let void_type = ctx.void_type();
             let ptr_type = ctx.ptr_type(inkwell::AddressSpace::default());
-            let sig = #ret.fn_type(&[ #( #args.into(), )* ], false);
+            let sig = #llvm_ret.fn_type(&[ #( #llvm_args.into(), )* ], false);
             let f = module.add_function(#name_lit, sig, None);
             ee.add_global_mapping(&f, #name_ident as usize);
         }));
+
+        #[allow(unused)]
+        #[cfg(feature = "cranelift")]
+        inventory::submit!(crate::runtime::RuntimeFn::new(
+            |runtime_fns, module| {
+                use cranelift::prelude::*;
+                use cranelift_module::{Module, Linkage};
+                let mut sig = module.make_signature();
+                #(
+                    sig.params.push(AbiParam::new(types::#cranelift_args));
+                )*
+                #cranelift_ret
+                let func = module.declare_function(#name_lit, Linkage::Import, &sig).unwrap();
+                runtime_fns.#name_ident(func);
+            },
+            |jit_builder| {
+                jit_builder.symbol(#name_lit, #name_ident as *const u8);
+            }
+        ));
+        
 
         #runtime_fn
     }

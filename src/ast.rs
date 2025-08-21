@@ -17,14 +17,12 @@ use crate::{
 };
 use either::Either;
 
+use ahash::{AHashMap, AHashSet};
 use derive_more::From;
 use futures::future::BoxFuture;
+#[cfg(feature = "llvm")]
 use inkwell::builder::BuilderError;
-use ahash::{AHashMap, AHashSet};
-use std::{
-    fmt,
-    sync::Arc,
-};
+use std::{fmt, sync::Arc};
 
 #[derive(Debug)]
 pub enum ParseAstError {
@@ -80,11 +78,13 @@ pub enum ParseAstError {
         second: Span,
     },
 
+    #[cfg(feature = "llvm")]
     BuilderError(BuilderError),
 
     RaisedValue(Value),
 }
 
+#[cfg(feature = "llvm")]
 impl From<BuilderError> for ParseAstError {
     fn from(be: BuilderError) -> Self {
         Self::BuilderError(be)
@@ -945,7 +945,7 @@ pub(super) async fn define_syntax(
     let cps_expr = expr.compile_top_level();
     let mac = runtime
         .compile_expr(cps_expr)
-        .await?
+        .await
         .call(&[])
         .await
         .map_err(|err| ParseAstError::RaisedValue(err.into()))?;

@@ -22,7 +22,7 @@ async fn fib_fn() -> Closure {
         .await
         .unwrap();
     let compiled = base.compile_top_level();
-    rt.compile_expr(compiled).await.unwrap()
+    rt.compile_expr(compiled).await
 }
 
 fn fib_benchmark(c: &mut Criterion) {
