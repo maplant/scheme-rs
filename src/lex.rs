@@ -162,6 +162,7 @@ fn whitespace(i: InputSpan) -> IResult<InputSpan, ()> {
             satisfy(UnicodeCategories::is_separator),
             match_char('\t'),
             match_char('\n'),
+            match_char('\r'),
         )),
         |_| (),
     )(i)
