@@ -44,6 +44,30 @@ struct ErrorContext<'s> {
     line: Option<u32>,
     column: Option<usize>,
     end: Option<usize>,
+    // TODO: how do we get the source?
+}
+
+impl<'s> ErrorContext<'s> {
+    pub fn render(&self, builder: &mut Builder, source_name: &'s str) {
+        // Error: <msg / description of the failure>\n
+        builder.write_str("Error: ");
+        builder.write_str(self.msg);
+        builder.write_char('\n');
+
+        // ~> <source (can be stdin or a filename)>:<line>:<column>
+        builder.write_str("~> ");
+        builder.write_str(source_name);
+        if let Some(l) = self.line {
+            builder.write_char(':');
+            builder.write_int(l);
+            // we only print the column if we also have the line
+            if let Some(c) = self.column {
+                builder.write_char(':');
+                builder.write_int(c);
+            }
+        }
+        builder.write_char('\n')
+    }
 }
 
 impl<'s, 'a> From<(&'s str, Option<&InputSpan<'a>>)> for ErrorContext<'s> {
@@ -68,9 +92,7 @@ impl<'s, 'a> From<(&'s str, Option<&InputSpan<'a>>)> for ErrorContext<'s> {
 
 impl<'err> ErrRender<'err> for ParseSyntaxError<'err> {
     fn render_into(&self, builder: &mut Builder, source_name: &'err str) {
-        let ErrorContext {
-            msg, line, column, ..
-        } = match self {
+        let ctx: ErrorContext = match self {
             ParseSyntaxError::EmptyInput => ("Empty Input", None),
             ParseSyntaxError::UnexpectedEndOfFile => ("Unexpected EOF", None),
             ParseSyntaxError::ExpectedClosingParen { span } => {
@@ -94,23 +116,6 @@ impl<'err> ErrRender<'err> for ParseSyntaxError<'err> {
         }
         .into();
 
-        // Error: <msg / description of the failure>\n
-        builder.write_str("Error: ");
-        builder.write_str(msg);
-        builder.write_char('\n');
-
-        // ~> <source (can be stdin or a filename)>:<line>:<column>
-        builder.write_str("~> ");
-        builder.write_str(source_name);
-        if let Some(l) = line {
-            builder.write_char(':');
-            builder.write_int(l);
-            // we only print the column if we also have the line
-            if let Some(c) = column {
-                builder.write_char(':');
-                builder.write_int(c);
-            }
-        }
-        builder.write_char('\n')
+        ctx.render(builder, source_name);
     }
 }
