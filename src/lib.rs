@@ -4,6 +4,7 @@ pub mod ast;
 pub mod character;
 pub mod cps;
 pub mod env;
+pub mod err;
 pub mod exception;
 pub mod expand;
 pub mod futures;
@@ -16,6 +17,8 @@ pub mod proc;
 pub mod records;
 pub mod registry;
 pub mod runtime;
+/// adapted from https://github.com/xnacly/sqleibniz/blob/master/src/highlight/builder.rs
+pub mod string_builder;
 pub mod strings;
 pub mod symbols;
 pub mod syntax;
