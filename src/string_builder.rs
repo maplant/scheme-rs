@@ -6,6 +6,10 @@ pub struct Builder {
 }
 
 impl Builder {
+    pub fn new() -> Self {
+        Self::with_capacity(64)
+    }
+
     pub fn with_capacity(cap: usize) -> Self {
         Builder {
             buffer: Vec::with_capacity(cap),
@@ -33,7 +37,16 @@ impl Builder {
         self.buffer.append(&mut b)
     }
 
-    pub fn string(self) -> String {
+    // This is slow, but probably fine for fancy error reporting, DO NOT USE in any hotpaths
+    pub fn write_int<T: std::fmt::Display>(&mut self, i: T) {
+        self.write_string(i.to_string());
+    }
+
+    pub fn reset(&mut self) {
+        self.buffer.clear();
+    }
+
+    pub fn to_string(self) -> String {
         match String::from_utf8(self.buffer) {
             Ok(string) => string,
             Err(_) => String::from("<failed to stringify Builder::buffer>"),

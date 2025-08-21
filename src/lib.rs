@@ -17,6 +17,7 @@ pub mod proc;
 pub mod records;
 pub mod registry;
 pub mod runtime;
+/// adapted from https://github.com/xnacly/sqleibniz/blob/master/src/highlight/builder.rs
 pub mod string_builder;
 pub mod strings;
 pub mod symbols;
