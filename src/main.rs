@@ -14,6 +14,7 @@ use scheme_rs::{
     proc::{Application, DynamicWind},
     registry::Library,
     runtime::Runtime,
+    string_builder,
     syntax::Syntax,
     value::Value,
 };
@@ -76,6 +77,8 @@ async fn main() -> ExitCode {
             }
         };
 
+        let mut error_builder = string_builder::Builder::new();
+
         match compile_and_run_str(&runtime, &repl, &input, curr_line).await {
             Ok(results) => {
                 for result in results.into_iter() {
@@ -87,7 +90,9 @@ async fn main() -> ExitCode {
                 print!("{exception}");
             }
             Err(err) => {
-                println!("Error: {err:?}");
+                err.render(&mut error_builder, "<stdin>");
+                println!("{error_builder}");
+                error_builder.reset();
             }
         }
 
