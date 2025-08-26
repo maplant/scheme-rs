@@ -384,31 +384,11 @@ impl<T: ?Sized> AsRef<T> for GcReadGuard<'_, T> {
     }
 }
 
-// unsafe impl<T: ?Sized + Send> Send for GcReadGuard<'_, T> {}
-// unsafe impl<T: ?Sized + Sync> Sync for GcReadGuard<'_, T> {}
-
 pub struct GcWriteGuard<'a, T: ?Sized> {
     _permit: RwLockWriteGuard<'a, ()>,
     data: *mut T,
     marker: PhantomData<&'a mut T>,
 }
-
-/*
-impl<'a, T: ?Sized> GcWriteGuard<'a, T> {
-    pub fn try_map<U, E, F>(mut orig: Self, f: F) -> Result<GcWriteGuard<'a, U>, E>
-    where
-        F: FnOnce(&mut T) -> Result<&mut U, E>,
-        U: ?Sized,
-    {
-        let data = NonNull::from(f(orig.as_mut())?).as_ptr();
-        Ok(GcWriteGuard {
-            _permit: orig._permit,
-            data,
-            marker: PhantomData,
-        })
-    }
-}
-*/
 
 impl<T: ?Sized> Deref for GcWriteGuard<'_, T> {
     type Target = T;
@@ -435,9 +415,6 @@ impl<T: ?Sized> AsMut<T> for GcWriteGuard<'_, T> {
         self
     }
 }
-
-// impl<T: ?Sized> !Send for GcWriteGuard<'_, T> {}
-// unsafe impl<T: ?Sized + Sync> Sync for GcWriteGuard<'_, T> {}
 
 /// A type that can be traced for garbage collection.
 ///
@@ -503,6 +480,15 @@ impl_empty_trace! {
     &'static str,
     String,
     PathBuf
+}
+
+// Function pointer impls:
+unsafe impl<A, B> Trace for fn(A) -> B
+where
+    A: ?Sized + 'static,
+    B: ?Sized + 'static,
+{
+    unsafe fn visit_children(&self, _visitor: unsafe fn(OpaqueGcPtr)) {}
 }
 
 /// # Safety

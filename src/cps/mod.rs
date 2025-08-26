@@ -115,7 +115,7 @@ pub enum PrimOp {
     Matches,
     /// Expands a syntax template with the current set of bindings.
     ExpandTemplate,
-    /// Return an error indicating a failure to match the pattern.
+    /// Raise an error indicating a failure to match the pattern.
     ErrorNoPatternsMatch,
 
     // Continuation primitive operators:

@@ -2,9 +2,9 @@ use proc_macro::{self, TokenStream};
 use proc_macro2::{Literal, Span};
 use quote::{format_ident, quote};
 use syn::{
-    DataEnum, DataStruct, DeriveInput, Fields, FnArg, GenericParam, Generics, Ident, ItemFn,
-    LitStr, Member, Pat, PatIdent, PatType, Token, Type, TypePath, TypeReference,
-    parse_macro_input, parse_quote, punctuated::Punctuated,
+    DataEnum, DataStruct, DeriveInput, Error, Fields, FnArg, GenericParam, Generics, Ident, ItemFn,
+    LitStr, Member, Pat, PatIdent, PatType, Token, Type, TypePath, TypeReference, Visibility,
+    parse_macro_input, punctuated::Punctuated,
 };
 
 #[proc_macro_attribute]
@@ -33,10 +33,12 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     let wrapper_name = impl_name.to_string();
     let wrapper_name = Ident::new(&wrapper_name, Span::call_site());
 
-    let is_variadic = if let Some(last_arg) = bridge.sig.inputs.last() {
-        is_slice(last_arg)
+    let (rest_args, is_variadic) = if let Some(last_arg) = bridge.sig.inputs.last()
+        && is_slice(&last_arg)
+    {
+        (quote!(rest_args), true)
     } else {
-        false
+        (quote!(), false)
     };
 
     let num_args = if is_variadic {
@@ -52,7 +54,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         .enumerate()
         .map(|(i, arg)| {
             if let FnArg::Typed(PatType { pat, .. }) = arg {
-                if let Pat::Ident(PatIdent { ref ident, .. }) = pat.as_ref() {
+                if let Pat::Ident(PatIdent { ident, .. }) = pat.as_ref() {
                     return ident.to_string();
                 }
             }
@@ -60,68 +62,48 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         })
         .collect();
 
-    let wrapper: ItemFn = if !is_variadic {
-        let arg_indices: Vec<_> = (0..num_args).collect();
-        parse_quote! {
-            pub(crate) fn #wrapper_name<'a>(
-                args: &'a [::scheme_rs::value::Value],
-                rest_args: &'a [::scheme_rs::value::Value],
-                cont: &'a ::scheme_rs::value::Value,
-                _env: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
-                exception_handler: &'a Option<::scheme_rs::gc::Gc<::scheme_rs::exception::ExceptionHandler>>,
-                dynamic_wind: &'a ::scheme_rs::proc::DynamicWind,
-            ) -> futures::future::BoxFuture<'a, Result<scheme_rs::proc::Application, ::scheme_rs::value::Value>> {
-                #bridge
+    let arg_indices: Vec<_> = (0..num_args).collect();
 
-                Box::pin(
-                    async move {
-                        let cont = cont.clone().try_into()?;
-                        Ok(::scheme_rs::proc::Application::new(
-                            cont,
-                            #impl_name(
-                                #( &args[#arg_indices], )*
-                            ).await?,
-                            exception_handler.clone(),
-                            dynamic_wind.clone(),
-                            None // TODO
-                        ))
-                    }
-                )
-            }
-        }
-    } else {
-        let arg_indices: Vec<_> = (0..num_args).collect();
-        parse_quote! {
-            pub(crate) fn #wrapper_name<'a>(
-                args: &'a [::scheme_rs::value::Value],
-                rest_args: &'a [::scheme_rs::value::Value],
-                cont: &'a ::scheme_rs::value::Value,
-                _env: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
-                exception_handler: &'a Option<::scheme_rs::gc::Gc<::scheme_rs::exception::ExceptionHandler>>,
-                dynamic_wind: &'a ::scheme_rs::proc::DynamicWind,
-            ) -> futures::future::BoxFuture<'a, Result<scheme_rs::proc::Application, ::scheme_rs::value::Value>> {
-                #bridge
-
-                Box::pin(
-                    async move {
-                        let cont = cont.clone().try_into()?;
-                        Ok(::scheme_rs::proc::Application::new(
-                            cont,
-                            #impl_name(
-                                #( &args[#arg_indices], )*
-                                rest_args
-                            ).await?,
-                            exception_handler.clone(),
-                            dynamic_wind.clone(),
-                            None // TODO
-                        ))
-                    }
-                )
-            }
-        }
-    };
     quote! {
-        #wrapper
+        pub(crate) fn #wrapper_name<'a>(
+            runtime: &'a ::scheme_rs::runtime::Runtime,
+            _env: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
+            args: &'a [::scheme_rs::value::Value],
+            rest_args: &'a [::scheme_rs::value::Value],
+            cont: &'a ::scheme_rs::value::Value,
+            exception_handler: &'a Option<::scheme_rs::gc::Gc<::scheme_rs::exception::ExceptionHandler>>,
+            dynamic_wind: &'a ::scheme_rs::proc::DynamicWind,
+        ) -> futures::future::BoxFuture<'a, scheme_rs::proc::Application> {
+            #bridge
+
+            Box::pin(
+                async move {
+                    let result = #impl_name(
+                        #( &args[#arg_indices], )*
+                        #rest_args
+                    ).await;
+                    // If the function returned an error, we want to raise
+                    // it.
+                    let result = match result {
+                        Err(err) => return ::scheme_rs::exception::raise(
+                            runtime.clone(),
+                            err.into(),
+                            exception_handler.clone(),
+                            dynamic_wind,
+                        ),
+                        Ok(result) => result,
+                    };
+                    let cont = cont.clone().try_into().unwrap();
+                    ::scheme_rs::proc::Application::new(
+                        cont,
+                        result,
+                        exception_handler.clone(),
+                        dynamic_wind.clone(),
+                        None // TODO
+                    )
+                }
+            )
+        }
 
         inventory::submit! {
             ::scheme_rs::registry::BridgeFn::new(
@@ -139,6 +121,138 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 )
             )
         }
+    }
+    .into()
+}
+
+#[proc_macro_attribute]
+pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
+    let mut name: Option<LitStr> = None;
+    let mut lib: Option<LitStr> = None;
+    let mut arg_names: Option<LitStr> = None;
+    let bridge_attr_parser = syn::meta::parser(|meta| {
+        if meta.path.is_ident("name") {
+            name = Some(meta.value()?.parse()?);
+            Ok(())
+        } else if meta.path.is_ident("lib") {
+            lib = Some(meta.value()?.parse()?);
+            Ok(())
+        } else if meta.path.is_ident("args") {
+            arg_names = Some(meta.value()?.parse()?);
+            Ok(())
+        } else {
+            Err(meta.error("unsupported bridge property"))
+        }
+    });
+
+    parse_macro_input!(args with bridge_attr_parser);
+
+    let mut bridge = parse_macro_input!(item as ItemFn);
+    let wrapper_name = Ident::new(&bridge.sig.ident.to_string(), Span::call_site());
+    bridge.sig.ident = Ident::new("inner", Span::call_site());
+    let impl_name = bridge.sig.ident.clone();
+
+    let (vis, inventory) = if matches!(bridge.vis, Visibility::Public(_)) {
+        let name = name.unwrap().value();
+        let vis = std::mem::replace(&mut bridge.vis, Visibility::Inherited);
+        let lib = lib.unwrap().value();
+        let args = arg_names.unwrap().value();
+        let mut is_variadic = false;
+        let arg_names = args
+            .split(" ")
+            .filter_map(|x| {
+                if x == "." {
+                    is_variadic = true;
+                    None
+                } else {
+                    Some(x)
+                }
+            })
+            .collect::<Vec<_>>();
+        let num_args = arg_names.len() - is_variadic as usize;
+        let inventory = quote! {
+            inventory::submit! {
+                ::scheme_rs::registry::BridgeFn::new(
+                    #name,
+                    #lib,
+                    #num_args,
+                    #is_variadic,
+                    #wrapper_name,
+                    ::scheme_rs::registry::BridgeFnDebugInfo::new(
+                        ::std::file!(),
+                        ::std::line!(),
+                        ::std::column!(),
+                        0,
+                        &[ #( #arg_names, )* ],
+                )
+                )
+            }
+        };
+        (vis, inventory)
+    } else {
+        if let Some(name) = name {
+            return Error::new(
+                name.span(),
+                "name attribute is not supported for private functions",
+            )
+            .into_compile_error()
+            .into();
+        }
+        if let Some(lib) = lib {
+            return Error::new(
+                lib.span(),
+                "lib attribute is not supported for private functions",
+            )
+            .into_compile_error()
+            .into();
+        }
+        if let Some(args) = arg_names {
+            return Error::new(
+                args.span(),
+                "args attribute is not supported for private functions",
+            )
+            .into_compile_error()
+            .into();
+        }
+        let vis = std::mem::replace(&mut bridge.vis, Visibility::Inherited);
+        (vis, quote!())
+    };
+
+    quote! {
+        #vis fn #wrapper_name<'a>(
+            runtime: &'a ::scheme_rs::runtime::Runtime,
+            env: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
+            args: &'a [::scheme_rs::value::Value],
+            rest_args: &'a [::scheme_rs::value::Value],
+            cont: &'a ::scheme_rs::value::Value,
+            exception_handler: &'a Option<::scheme_rs::gc::Gc<::scheme_rs::exception::ExceptionHandler>>,
+            dynamic_wind: &'a ::scheme_rs::proc::DynamicWind,
+        ) -> futures::future::BoxFuture<'a, scheme_rs::proc::Application> {
+            #bridge
+
+            Box::pin(async move {
+                let result = #impl_name(
+                    runtime,
+                    env,
+                    args,
+                    rest_args,
+                    cont,
+                    exception_handler,
+                    dynamic_wind,
+                ).await;
+                match result {
+                    Err(err) => ::scheme_rs::exception::raise(
+                        runtime.clone(),
+                        err.into(),
+                        exception_handler.clone(),
+                        dynamic_wind,
+                    ),
+                    Ok(result) => result,
+                }
+            })
+        }
+
+        #inventory
     }
     .into()
 }
@@ -190,7 +304,7 @@ fn derive_trace_struct(
 
     for param in params.iter_mut() {
         match param {
-            GenericParam::Type(ref mut ty) => {
+            GenericParam::Type(ty) => {
                 ty.bounds.push(syn::TypeParamBound::Verbatim(
                     quote! { ::scheme_rs::gc::Trace },
                 ));
@@ -320,13 +434,13 @@ fn derive_trace_enum(
                 .collect();
             let field_name = fields.iter().map(|(_, field)| field);
             let fields_destructured = match variant.fields {
-                Fields::Named(..) => quote! { { #( ref #field_name, )* .. } },
-                _ => quote! { ( #( ref #field_name ),* ) },
+                Fields::Named(..) => quote! { { #( #field_name, )* .. } },
+                _ => quote! { ( #( #field_name ),* ) },
             };
             let field_name = fields.iter().map(|(_, field)| field);
             let fields_destructured_mut = match variant.fields {
-                Fields::Named(..) => quote! { { #( ref mut #field_name, )* .. } },
-                _ => quote! { ( #( ref mut #field_name ),* ) },
+                Fields::Named(..) => quote! { { #( #field_name, )* .. } },
+                _ => quote! { ( #( #field_name ),* ) },
             };
             let variant_name = variant.ident;
             Some((
@@ -358,7 +472,7 @@ fn derive_trace_enum(
 
     for param in params.iter_mut() {
         match param {
-            GenericParam::Type(ref mut ty) => {
+            GenericParam::Type(ty) => {
                 ty.bounds.push(syn::TypeParamBound::Verbatim(
                     quote! { ::scheme_rs::gc::Trace },
                 ));
@@ -390,7 +504,7 @@ fn derive_trace_enum(
 }
 
 fn is_gc(arg: &Type) -> bool {
-    if let Type::Path(ref path) = arg {
+    if let Type::Path(path) = arg {
         return path
             .path
             .segments
@@ -432,7 +546,9 @@ pub fn runtime_fn(_args: TokenStream, item: TokenStream) -> TokenStream {
     let ret = if let Some(ret_type) = match runtime_fn.sig.output {
         syn::ReturnType::Default => None,
         syn::ReturnType::Type(_, ref ty) => Some(rust_type_to_cranelift_type(&ty)),
-    }.flatten() {
+    }
+    .flatten()
+    {
         quote! { sig.returns.push(AbiParam::new(types::#ret_type)); }
     } else {
         quote! {}
@@ -448,7 +564,6 @@ pub fn runtime_fn(_args: TokenStream, item: TokenStream) -> TokenStream {
             rust_type_to_cranelift_type(&pat.ty)
         })
         .collect();
-
 
     quote! {
         #[allow(unused)]
@@ -468,7 +583,7 @@ pub fn runtime_fn(_args: TokenStream, item: TokenStream) -> TokenStream {
                 jit_builder.symbol(#name_lit, #name_ident as *const u8);
             }
         ));
-        
+
 
         #runtime_fn
     }
