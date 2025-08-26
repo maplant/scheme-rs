@@ -64,6 +64,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         let arg_indices: Vec<_> = (0..num_args).collect();
         parse_quote! {
             pub(crate) fn #wrapper_name<'a>(
+                runtime: &'a ::scheme_rs::runtime::Runtime,
                 _env: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
                 args: &'a [::scheme_rs::value::Value],
                 rest_args: &'a [::scheme_rs::value::Value],
@@ -75,12 +76,24 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
 
                 Box::pin(
                     async move {
+                        let result = #impl_name(
+                            #( &args[#arg_indices], )*
+                        ).await;
+                        // If the function returned an error, we want to raise
+                        // it.
+                        let result = match result {
+                            Err(err) => return Ok(::scheme_rs::exception::raise(
+                                runtime.clone(),
+                                err.into(),
+                                exception_handler.clone(),
+                                dynamic_wind,
+                            )),
+                            Ok(result) => result,
+                        };
                         let cont = cont.clone().try_into()?;
                         Ok(::scheme_rs::proc::Application::new(
                             cont,
-                            #impl_name(
-                                #( &args[#arg_indices], )*
-                            ).await?,
+                            result,
                             exception_handler.clone(),
                             dynamic_wind.clone(),
                             None // TODO
@@ -93,6 +106,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         let arg_indices: Vec<_> = (0..num_args).collect();
         parse_quote! {
             pub(crate) fn #wrapper_name<'a>(
+                runtime: &'a ::scheme_rs::runtime::Runtime,
                 _env: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
                 args: &'a [::scheme_rs::value::Value],
                 rest_args: &'a [::scheme_rs::value::Value],
@@ -104,13 +118,25 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
 
                 Box::pin(
                     async move {
+                        let result = #impl_name(
+                            #( &args[#arg_indices], )*
+                            rest_args
+                        ).await;
+                        // If the function returned an error, we want to raise
+                        // it.
+                        let result = match result {
+                            Err(err) => return Ok(::scheme_rs::exception::raise(
+                                runtime.clone(),
+                                err.into(),
+                                exception_handler.clone(),
+                                dynamic_wind,
+                            )),
+                            Ok(result) => result,
+                        };
                         let cont = cont.clone().try_into()?;
                         Ok(::scheme_rs::proc::Application::new(
                             cont,
-                            #impl_name(
-                                #( &args[#arg_indices], )*
-                                rest_args
-                            ).await?,
+                            result,
                             exception_handler.clone(),
                             dynamic_wind.clone(),
                             None // TODO
@@ -432,7 +458,9 @@ pub fn runtime_fn(_args: TokenStream, item: TokenStream) -> TokenStream {
     let ret = if let Some(ret_type) = match runtime_fn.sig.output {
         syn::ReturnType::Default => None,
         syn::ReturnType::Type(_, ref ty) => Some(rust_type_to_cranelift_type(&ty)),
-    }.flatten() {
+    }
+    .flatten()
+    {
         quote! { sig.returns.push(AbiParam::new(types::#ret_type)); }
     } else {
         quote! {}
@@ -448,7 +476,6 @@ pub fn runtime_fn(_args: TokenStream, item: TokenStream) -> TokenStream {
             rust_type_to_cranelift_type(&pat.ty)
         })
         .collect();
-
 
     quote! {
         #[allow(unused)]
@@ -468,7 +495,7 @@ pub fn runtime_fn(_args: TokenStream, item: TokenStream) -> TokenStream {
                 jit_builder.symbol(#name_lit, #name_ident as *const u8);
             }
         ));
-        
+
 
         #runtime_fn
     }

@@ -1,18 +1,20 @@
 //! Rudimentary structure support.
 
 use std::{
-    any::Any, fmt, sync::{Arc, LazyLock}
+    any::Any,
+    fmt,
+    sync::{Arc, LazyLock},
 };
 
 use by_address::ByAddress;
 use futures::future::BoxFuture;
 
 use crate::{
-    exception::{Condition, ExceptionHandler},
+    exception::{raise, Condition, ExceptionHandler},
     gc::{Gc, GcInner, Trace},
     num::Number,
     proc::{Application, Closure, DynamicWind, FuncPtr},
-    registry::{BridgeFn, BridgeFnDebugInfo, bridge},
+    registry::{bridge, BridgeFn, BridgeFnDebugInfo},
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
     value::{UnpackedValue, Value, ValueType},
@@ -153,6 +155,7 @@ fn make_default_record_constructor_descriptor(
 }
 
 pub fn make_record_constructor_descriptor<'a>(
+    runtime: &'a Runtime,
     _env: &'a [Gc<Value>],
     args: &'a [Value],
     _rest_args: &'a [Value],
@@ -163,14 +166,14 @@ pub fn make_record_constructor_descriptor<'a>(
     Box::pin(async move {
         let cont: Closure = cont.clone().try_into()?;
         let [rtd, parent_rcd, protocol] = args else {
-            return Err(Condition::wrong_num_of_args(1, args.len()).into());
+            unreachable!();
         };
 
         let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
         let parent_rcd = if parent_rcd.is_true() {
             let Some(parent_rtd) = rtd.inherits.last() else {
                 return Err(
-                    Condition::error("RTD is a rnrs base builtins (6) type".to_string()).into(),
+                    Condition::error("RTD is a base type".to_string()).into(),
                 );
             };
             let any: Gc<Gc<dyn Any>> = parent_rcd.clone().try_into()?;
@@ -187,7 +190,7 @@ pub fn make_record_constructor_descriptor<'a>(
             Some(parent_rcd)
         } else if !rtd.is_base_record_type() {
             Some(make_default_record_constructor_descriptor(
-                cont.get_runtime(),
+                runtime.clone(),
                 rtd.inherits.last().unwrap().clone().0,
             ))
         } else {
@@ -198,7 +201,7 @@ pub fn make_record_constructor_descriptor<'a>(
             protocol.clone().try_into()?
         } else {
             Closure::new(
-                cont.get_runtime(),
+                runtime.clone(),
                 vec![Gc::new(Value::from(rtd.clone()))],
                 Vec::new(),
                 FuncPtr::Bridge(default_protocol),
@@ -242,6 +245,7 @@ inventory::submit! {
 }
 
 pub fn record_constructor<'a>(
+    runtime: &'a Runtime,
     _env: &'a [Gc<Value>],
     args: &'a [Value],
     _rest_args: &'a [Value],
@@ -252,7 +256,7 @@ pub fn record_constructor<'a>(
     Box::pin(async move {
         let cont: Closure = cont.clone().try_into()?;
         let [rcd] = args else {
-            return Err(Condition::wrong_num_of_args(1, args.len()).into());
+            unreachable!();
         };
         let rcd = {
             let any: Gc<Gc<dyn Any>> = rcd.clone().try_into()?;
@@ -265,7 +269,7 @@ pub fn record_constructor<'a>(
         let (protocols, rtds) = rcd_to_protocols_and_rtds(&rcd);
 
         let chain_protocols = Value::from(Closure::new(
-            cont.get_runtime(),
+            runtime.clone(),
             vec![
                 Gc::new(Value::from(protocols)),
                 Gc::new(Value::from(cont.clone())),
@@ -278,6 +282,7 @@ pub fn record_constructor<'a>(
         ));
 
         chain_constructors(
+            runtime,
             &[Gc::new(Value::from(rtds))],
             &[],
             &[],
@@ -325,7 +330,7 @@ pub(crate) unsafe extern "C" fn chain_protocols(
     args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
-) -> *mut Result<Application, Condition> {
+) -> *mut Application {
     unsafe {
         // env[0] is a vector of protocols
         let protocols: Gc<vectors::AlignedVector<Value>> = Gc::from_raw_inc_rc(env.read())
@@ -343,13 +348,13 @@ pub(crate) unsafe extern "C" fn chain_protocols(
         // If there are no more remaining protocols after the current, call the
         // protocol with arg[0] and the continuation.
         if remaining_protocols.is_empty() {
-            return Box::into_raw(Box::new(Ok(Application::new(
+            return Box::into_raw(Box::new(Application::new(
                 curr_protocol,
                 vec![args.as_ref().unwrap().clone(), k.read().clone()],
                 ExceptionHandler::from_ptr(exception_handler),
                 dynamic_wind.as_ref().unwrap().clone(),
                 None,
-            ))));
+            )));
         }
 
         // Otherwise, turn the remaining chain into the continuation:
@@ -363,17 +368,18 @@ pub(crate) unsafe extern "C" fn chain_protocols(
             None,
         );
 
-        Box::into_raw(Box::new(Ok(Application::new(
+        Box::into_raw(Box::new(Application::new(
             curr_protocol,
             vec![args.as_ref().unwrap().clone(), Value::from(new_k)],
             ExceptionHandler::from_ptr(exception_handler),
             dynamic_wind.as_ref().unwrap().clone(),
             None,
-        ))))
+        )))
     }
 }
 
 pub fn chain_constructors<'a>(
+    runtime: &'a Runtime,
     env: &'a [Gc<Value>],
     args: &'a [Value],
     _rest_args: &'a [Value],
@@ -402,7 +408,7 @@ pub fn chain_constructors<'a>(
         .chain(args.iter().cloned().map(Gc::new))
         .collect::<Vec<_>>();
         let next_closure = Closure::new(
-            cont.get_runtime(),
+            runtime.clone(),
             env,
             Vec::new(),
             if rtds_remain {
@@ -425,6 +431,7 @@ pub fn chain_constructors<'a>(
 }
 
 pub fn constructor<'a>(
+    runtime: &'a Runtime,
     env: &'a [Gc<Value>],
     args: &'a [Value],
     _rest_args: &'a [Value],
@@ -442,7 +449,11 @@ pub fn constructor<'a>(
             .map(|var| var.read().clone())
             .chain(args.iter().cloned())
             .collect::<Vec<_>>();
-        let record = Value::from(Gc::new(Record { opaque_parent: None, rtd, fields }));
+        let record = Value::from(Gc::new(Record {
+            opaque_parent: None,
+            rtd,
+            fields,
+        }));
         Ok(Application::new(
             cont,
             vec![record],
@@ -454,6 +465,7 @@ pub fn constructor<'a>(
 }
 
 pub fn default_protocol<'a>(
+    runtime: &'a Runtime,
     env: &'a [Gc<Value>],
     args: &'a [Value],
     _rest_args: &'a [Value],
@@ -467,7 +479,7 @@ pub fn default_protocol<'a>(
         let num_args = rtd.field_index_offset + rtd.fields.len();
 
         let constructor = Closure::new(
-            cont.get_runtime(),
+            runtime.clone(),
             vec![Gc::new(args[0].clone()), Gc::new(Value::from(rtd))],
             Vec::new(),
             FuncPtr::Bridge(default_protocol_constructor),
@@ -487,6 +499,7 @@ pub fn default_protocol<'a>(
 }
 
 pub fn default_protocol_constructor<'a>(
+    runtime: &'a Runtime,
     env: &'a [Gc<Value>],
     args: &'a [Value],
     _rest_args: &'a [Value],
@@ -503,7 +516,7 @@ pub fn default_protocol_constructor<'a>(
         let cont = if let Some(parent) = rtd.inherits.last() {
             let remaining = args.split_off(parent.field_index_offset + parent.fields.len());
             Value::from(Closure::new(
-                cont.get_runtime(),
+                runtime.clone(),
                 vec![Gc::new(Value::from(remaining)), Gc::new(Value::from(cont))],
                 Vec::new(),
                 FuncPtr::Continuation(call_constructor_continuation),
@@ -533,7 +546,7 @@ pub(crate) unsafe extern "C" fn call_constructor_continuation(
     args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
-) -> *mut Result<Application, Condition> {
+) -> *mut Application {
     unsafe {
         let constructor: Closure = args.as_ref().unwrap().clone().try_into().unwrap();
         let args: Gc<vectors::AlignedVector<Value>> = Gc::from_raw_inc_rc(env.read())
@@ -546,13 +559,13 @@ pub(crate) unsafe extern "C" fn call_constructor_continuation(
         args.push(cont);
 
         // Call the constructor
-        Box::into_raw(Box::new(Ok(Application::new(
+        Box::into_raw(Box::new(Application::new(
             constructor,
             args,
             ExceptionHandler::from_ptr(exception_handler),
             dynamic_wind.as_ref().unwrap().clone(),
             None,
-        ))))
+        )))
     }
 }
 
@@ -594,6 +607,7 @@ pub fn is_subtype_of(val: &Value, rt: &Value) -> Result<bool, Condition> {
 }
 
 fn record_predicate_fn<'a>(
+    runtime: &'a Runtime,
     env: &'a [Gc<Value>],
     args: &'a [Value],
     _rest_args: &'a [Value],
@@ -604,7 +618,7 @@ fn record_predicate_fn<'a>(
     Box::pin(async move {
         let cont: Closure = cont.clone().try_into()?;
         let [val] = args else {
-            return Err(Condition::wrong_num_of_args(1, args.len()).into());
+            unreachable!();
         };
         // RTD is the first environment variable:
         Ok(Application::new(
@@ -618,6 +632,7 @@ fn record_predicate_fn<'a>(
 }
 
 pub fn record_predicate<'a>(
+    runtime: &'a Runtime,
     _env: &'a [Gc<Value>],
     args: &'a [Value],
     _rest_args: &'a [Value],
@@ -628,11 +643,11 @@ pub fn record_predicate<'a>(
     Box::pin(async move {
         let cont: Closure = cont.clone().try_into()?;
         let [rtd] = args else {
-            return Err(Condition::wrong_num_of_args(1, args.len()).into());
+            unreachable!();
         };
         // TODO: Check if RTD is a record type.
         let pred_fn = Closure::new(
-            cont.get_runtime(),
+            runtime.clone(),
             vec![Gc::new(rtd.clone())],
             Vec::new(),
             FuncPtr::Bridge(record_predicate_fn),
@@ -668,6 +683,7 @@ inventory::submit! {
 }
 
 fn record_accessor_fn<'a>(
+    runtime: &'a Runtime,
     env: &'a [Gc<Value>],
     args: &'a [Value],
     _rest_args: &'a [Value],
@@ -678,12 +694,17 @@ fn record_accessor_fn<'a>(
     Box::pin(async move {
         let cont: Closure = cont.clone().try_into()?;
         let [val] = args else {
-            return Err(Condition::wrong_num_of_args(1, args.len()).into());
+            unreachable!();
         };
         let record: Gc<Record> = val.clone().try_into()?;
         // RTD is the first environment variable, field index is the second
         if !is_subtype_of(val, &env[0].read())? {
-            return Err(Condition::error("not a child of this record type".to_string()).into());
+                        return Ok(raise(
+                runtime.clone(),
+                Condition::error("not a child of this record type".to_string()).into(),
+                exception_handler.clone(),
+                dynamic_wind,
+            ));
         }
         let k: Arc<Number> = env[1].read().clone().try_into()?;
         let k: usize = k.as_ref().try_into().map_err(Condition::from)?;
@@ -699,6 +720,7 @@ fn record_accessor_fn<'a>(
 }
 
 pub fn record_accessor<'a>(
+    runtime: &'a Runtime,
     _env: &'a [Gc<Value>],
     args: &'a [Value],
     _rest_args: &'a [Value],
@@ -709,17 +731,22 @@ pub fn record_accessor<'a>(
     Box::pin(async move {
         let cont: Closure = cont.clone().try_into()?;
         let [rtd, k] = args else {
-            return Err(Condition::wrong_num_of_args(2, args.len()).into());
+            unreachable!();
         };
         let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
         let k: Arc<Number> = k.clone().try_into()?;
         let k: usize = k.as_ref().try_into().map_err(Condition::from)?;
         if k > rtd.fields.len() {
-            return Err(Condition::Assertion.into());
+            return Ok(raise(
+                 runtime.clone(),
+                 Condition::Assertion.into(),
+                 exception_handler.clone(),
+                 dynamic_wind,
+            ));
         }
         let k = k + rtd.field_index_offset;
         let accessor_fn = Closure::new(
-            cont.get_runtime(),
+            runtime.clone(),
             vec![
                 Gc::new(Value::from(rtd)),
                 Gc::new(Value::from(Number::from(k))),
@@ -758,6 +785,7 @@ inventory::submit! {
 }
 
 fn record_mutator_fn<'a>(
+    runtime: &'a Runtime,
     env: &'a [Gc<Value>],
     args: &'a [Value],
     _rest_args: &'a [Value],
@@ -768,12 +796,17 @@ fn record_mutator_fn<'a>(
     Box::pin(async move {
         let cont: Closure = cont.clone().try_into()?;
         let [rec, new_val] = args else {
-            return Err(Condition::wrong_num_of_args(1, args.len()).into());
+            unreachable!();
         };
         let record: Gc<Record> = rec.clone().try_into()?;
         // RTD is the first environment variable, field index is the second
         if !is_subtype_of(rec, &env[0].read())? {
-            return Err(Condition::error("not a child of this record type".to_string()).into());
+            return Ok(raise(
+                runtime.clone(),
+                Condition::error("not a child of this record type".to_string()).into(),
+                exception_handler.clone(),
+                dynamic_wind,
+            ));
         }
         let k: Arc<Number> = env[1].read().clone().try_into()?;
         let k: usize = k.as_ref().try_into().map_err(Condition::from)?;
@@ -789,6 +822,7 @@ fn record_mutator_fn<'a>(
 }
 
 pub fn record_mutator<'a>(
+    runtime: &'a Runtime,
     _env: &'a [Gc<Value>],
     args: &'a [Value],
     _rest_args: &'a [Value],
@@ -799,17 +833,22 @@ pub fn record_mutator<'a>(
     Box::pin(async move {
         let cont: Closure = cont.clone().try_into()?;
         let [rtd, k] = args else {
-            return Err(Condition::wrong_num_of_args(2, args.len()).into());
+            unreachable!();
         };
         let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
         let k: Arc<Number> = k.clone().try_into()?;
         let k: usize = k.as_ref().try_into().map_err(Condition::from)?;
         if k > rtd.fields.len() || matches!(rtd.fields[k], Field::Immutable(_)) {
-            return Err(Condition::Assertion.into());
+             return Ok(raise(
+                 runtime.clone(),
+                 Condition::Assertion.into(),
+                 exception_handler.clone(),
+                 dynamic_wind,
+            ));
         }
         let k = k + rtd.field_index_offset;
         let mutator_fn = Closure::new(
-            cont.get_runtime(),
+            runtime.clone(),
             vec![
                 Gc::new(Value::from(rtd)),
                 Gc::new(Value::from(Number::from(k))),

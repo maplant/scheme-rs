@@ -619,9 +619,9 @@ impl<'a> Binds<'a> {
 }
 
 #[runtime_fn]
-unsafe extern "C" fn error_no_patterns_match() -> *mut Result<Application, Condition> {
+unsafe extern "C" fn error_no_patterns_match() -> i64 {
     let condition = Condition::error("No patterns match!".to_string());
-    Box::into_raw(Box::new(Err(condition)))
+    Value::into_raw(Value::from(condition)) as i64
 }
 
 #[bridge(name = "make-variable-transformer", lib = "(rnrs base builtins (6))")]

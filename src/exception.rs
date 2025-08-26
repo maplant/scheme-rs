@@ -1,6 +1,7 @@
 //! Exceptional situations and conditions
 
 use futures::future::BoxFuture;
+use scheme_rs_macros::runtime_fn;
 
 use crate::{
     ast::ParseAstError,
@@ -92,7 +93,6 @@ impl Condition {
     }
 
     pub fn invalid_type(expected: &str, provided: &str) -> Self {
-        // panic!();
         Self::error(format!(
             "Expected value of type {expected}, provided {provided}"
         ))
@@ -195,8 +195,8 @@ impl fmt::Display for Frame {
 
 /// An exception handler includes the current handler - a function to call with
 /// any condition that is raised - and the previous handler.
-// TODO: We need to determine include the dynamic extent with the exception handler
-// so that we can call the proper winders.
+// TODO: Rename ExceptionHandlerInner, make
+// struct ExceptionHandler(Option<Gc<ExceptionHandlerInner>>)
 #[derive(Clone, Debug, Trace)]
 pub struct ExceptionHandler {
     /// The previously installed handler. If the previously installed handler is
@@ -220,6 +220,7 @@ impl ExceptionHandler {
 }
 
 pub fn with_exception_handler<'a>(
+    _runtime: &'a Runtime,
     _env: &'a [Gc<Value>],
     args: &'a [Value],
     _rest_args: &'a [Value],
@@ -269,57 +270,77 @@ inventory::submit! {
 }
 
 /// Raises a non-continuable exception to the current exception handler.
-pub fn raise<'a>(
+fn raise_builtin<'a>(
+    runtime: &'a Runtime,
     _env: &'a [Gc<Value>],
     args: &'a [Value],
     _rest_args: &'a [Value],
-    cont: &'a Value,
+    _cont: &'a Value,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {
     Box::pin(async move {
-        let [raised] = args else {
-            return Err(Condition::wrong_num_of_args(1, args.len()).into());
-        };
-
-        let (parent_wind, handler, parent_handler) =
-            if let Some(exception_handler) = exception_handler {
-                let handler = exception_handler.read();
-                (
-                    handler.dynamic_extent.clone(),
-                    Value::from(handler.curr_handler.clone()),
-                    handler.prev_handler.clone(),
-                )
-            } else {
-                (DynamicWind::default(), Value::from(false), None)
-            };
-
-        let thunks = exit_winders(dynamic_wind, &parent_wind);
-        let cont: Closure = cont.clone().try_into().unwrap();
-
-        let calls = Closure::new(
-            cont.get_runtime(),
-            vec![
-                Gc::new(thunks),
-                Gc::new(raised.clone()),
-                Gc::new(handler),
-                Gc::new(Value::from(cont.clone())),
-            ],
-            Vec::new(),
-            FuncPtr::Continuation(call_exits_and_exception_handler_reraise),
-            0,
-            false,
-            None,
-        );
-
-        Ok(Application::new(
-            calls,
-            Vec::new(),
-            parent_handler,
-            parent_wind,
-            None,
+        // The exception is non-continuable and thus the current continuation
+        Ok(raise(
+            runtime.clone(),
+            args[0].clone(),
+            exception_handler.clone(),
+            dynamic_wind,
         ))
     })
+}
+
+pub fn raise(
+    runtime: Runtime,
+    raised: Value,
+    exception_handler: Option<Gc<ExceptionHandler>>,
+    dynamic_wind: &DynamicWind,
+) -> Application {
+    let (parent_wind, handler, parent_handler) = if let Some(exception_handler) = exception_handler
+    {
+        let handler = exception_handler.read();
+        (
+            handler.dynamic_extent.clone(),
+            Value::from(handler.curr_handler.clone()),
+            handler.prev_handler.clone(),
+        )
+    } else {
+        (DynamicWind::default(), Value::from(false), None)
+    };
+
+    let thunks = exit_winders(dynamic_wind, &parent_wind);
+    let calls = Closure::new(
+        runtime,
+        vec![Gc::new(thunks), Gc::new(raised.clone()), Gc::new(handler)],
+        Vec::new(),
+        FuncPtr::Continuation(call_exits_and_exception_handler_reraise),
+        0,
+        false,
+        None,
+    );
+
+    Application::new(calls, Vec::new(), parent_handler, parent_wind, None)
+}
+
+#[runtime_fn]
+unsafe extern "C" fn raise_rt(
+    runtime: *mut GcInner<RuntimeInner>,
+    raised: i64,
+    exception_handler: *mut GcInner<ExceptionHandler>,
+    dynamic_wind: *const DynamicWind,
+) -> *mut Application {
+    unsafe {
+        let runtime = Runtime::from_raw_inc_rc(runtime);
+        let raised = Value::from_raw(raised as u64);
+        let exception_handler = ExceptionHandler::from_ptr(exception_handler);
+        let dynamic_wind = dynamic_wind.as_ref().unwrap();
+        Box::into_raw(Box::new(raise(
+            runtime,
+            raised,
+            exception_handler,
+            dynamic_wind,
+        )))
+    }
 }
 
 inventory::submit! {
@@ -328,7 +349,7 @@ inventory::submit! {
         "(rnrs base builtins (6))",
         1,
         false,
-        raise,
+        raise_builtin,
         BridgeFnDebugInfo::new(
             "exception.rs",
             231,
@@ -346,7 +367,7 @@ unsafe extern "C" fn call_exits_and_exception_handler_reraise(
     _args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
-) -> *mut Result<Application, Condition> {
+) -> *mut Application {
     unsafe {
         let runtime = Runtime::from_raw_inc_rc(runtime);
 
@@ -359,20 +380,16 @@ unsafe extern "C" fn call_exits_and_exception_handler_reraise(
         // env[2] is the next exception handler
         let curr_handler = Gc::from_raw_inc_rc(env.add(2).read()).read().clone();
 
-        // env[3] is the current continuation;
-        let k = Gc::from_raw_inc_rc(env.add(3).read());
-
         let app = match thunks.unpack() {
             UnpackedValue::Pair(pair) => {
                 let lists::Pair(head_thunk, tail) = &*pair.read();
                 let head_thunk: Closure = head_thunk.clone().try_into().unwrap();
                 let cont = Closure::new(
-                    head_thunk.get_runtime(),
+                    runtime.clone(),
                     vec![
                         Gc::new(tail.clone()),
                         Gc::new(raised),
                         Gc::new(curr_handler),
-                        k,
                     ],
                     Vec::new(),
                     FuncPtr::Continuation(call_exits_and_exception_handler_reraise),
@@ -402,12 +419,12 @@ unsafe extern "C" fn call_exits_and_exception_handler_reraise(
                             false,
                             None,
                         ),
-                        vec![raised.clone(), k.read().clone()],
+                        vec![raised.clone(), Value::undefined()],
                         ExceptionHandler::from_ptr(exception_handler),
                         dynamic_wind.as_ref().unwrap().clone(),
                         None,
                     );
-                    return Box::into_raw(Box::new(Ok(app)));
+                    return Box::into_raw(Box::new(app));
                 }
 
                 let curr_handler: Closure = curr_handler.try_into().unwrap();
@@ -418,7 +435,7 @@ unsafe extern "C" fn call_exits_and_exception_handler_reraise(
                         raised.clone(),
                         Value::from(Closure::new(
                             runtime,
-                            vec![Gc::new(raised), k],
+                            vec![Gc::new(raised)],
                             Vec::new(),
                             FuncPtr::Continuation(reraise_exception),
                             0,
@@ -434,11 +451,12 @@ unsafe extern "C" fn call_exits_and_exception_handler_reraise(
             _ => unreachable!(),
         };
 
-        Box::into_raw(Box::new(Ok(app)))
+        Box::into_raw(Box::new(app))
     }
 }
 
 fn return_error<'a>(
+    _runtime: &'a Runtime,
     _env: &'a [Gc<Value>],
     args: &'a [Value],
     _rest_args: &'a [Value],
@@ -447,8 +465,7 @@ fn return_error<'a>(
     _dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {
     Box::pin(async move {
-        let [raised] = args else { unreachable!() };
-        return Err(raised.clone());
+        return Err(args[0].clone());
     })
 }
 
@@ -459,7 +476,7 @@ unsafe extern "C" fn reraise_exception(
     _args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
-) -> *mut Result<Application, Condition> {
+) -> *mut Application {
     unsafe {
         let runtime = Runtime(Gc::from_raw_inc_rc(runtime));
 
@@ -467,31 +484,28 @@ unsafe extern "C" fn reraise_exception(
         let exception = Gc::from_raw_inc_rc(env.read());
         let exception = exception.read().clone();
 
-        // env[1] is the continuation
-        let cont = Gc::from_raw_inc_rc(env.add(1).read());
-        let cont = cont.read().clone();
-
-        Box::into_raw(Box::new(Ok(Application::new(
+        Box::into_raw(Box::new(Application::new(
             Closure::new(
                 runtime,
                 Vec::new(),
                 Vec::new(),
-                FuncPtr::Bridge(raise),
+                FuncPtr::Bridge(raise_builtin),
                 1,
                 false,
                 None,
             ),
-            vec![exception, cont],
+            vec![exception, Value::undefined()],
             ExceptionHandler::from_ptr(exception_handler),
             dynamic_wind.as_ref().unwrap().clone(),
             None,
-        ))))
+        )))
     }
 }
 
 /// Raises an exception to the current exception handler and coninues with the
 /// value returned by the handler.
 pub fn raise_continuable<'a>(
+    _runtime: &Runtime,
     _env: &'a [Gc<Value>],
     args: &'a [Value],
     _rest_args: &'a [Value],
@@ -501,7 +515,7 @@ pub fn raise_continuable<'a>(
 ) -> BoxFuture<'a, Result<Application, Value>> {
     Box::pin(async move {
         let [condition] = args else {
-            return Err(Condition::wrong_num_of_args(1, args.len()).into());
+            unreachable!();
         };
 
         let Some(handler) = exception_handler else {

@@ -25,6 +25,8 @@ const TAG: u64 = 0b1111;
 #[repr(transparent)]
 pub struct Value(u64);
 
+pub(crate) const FALSE_VALUE: u64 = ValueType::Boolean as u64;
+
 impl Value {
     pub fn new(v: UnpackedValue) -> Self {
         v.into_value()
@@ -32,7 +34,7 @@ impl Value {
 
     /// #f is false, everything else is true
     pub fn is_true(&self) -> bool {
-        self.0 != ValueType::Boolean as u64
+        self.0 != FALSE_VALUE
     }
 
     /// Creates a new Value from a raw u64.
@@ -771,7 +773,7 @@ pub async fn eqv(a: &Value, b: &Value) -> Result<Vec<Value>, Condition> {
 
 #[bridge(name = "eq?", lib = "(rnrs base builtins (6))")]
 pub async fn eq(a: &Value, b: &Value) -> Result<Vec<Value>, Condition> {
-    Ok(vec![Value::from(a == b)])
+    Ok(vec![Value::from(a.0 == b.0)])
 }
 
 #[bridge(name = "boolean?", lib = "(rnrs base builtins (6))")]

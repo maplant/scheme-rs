@@ -1,14 +1,13 @@
 use crate::{
     ast::DefinitionBody,
-    cps::{Compile, Cps, codegen::RuntimeFunctionsBuilder},
+    cps::{codegen::RuntimeFunctionsBuilder, Compile, Cps},
     env::Environment,
-    exception::{Condition, Exception, ExceptionHandler},
-    gc::{Gc, GcInner, Trace, init_gc},
+    exception::{raise, Condition, Exception, ExceptionHandler},
+    gc::{init_gc, Gc, GcInner, Trace},
     lists::{self, list_to_vec},
     num,
     proc::{
-        Application, Closure, ContinuationPtr, DynamicWind, FuncDebugInfo, FuncPtr, UserPtr,
-        clone_continuation_env,
+        clone_continuation_env, Application, Closure, ContinuationPtr, DynamicWind, FuncDebugInfo, FuncPtr, UserPtr
     },
     registry::{ImportError, Library, Registry},
     symbols::Symbol,
@@ -289,13 +288,14 @@ unsafe extern "C" fn dropv(val: *const i64, num_drops: u32) {
 /// if operator is not a closure.
 #[runtime_fn]
 unsafe extern "C" fn apply(
+    runtime: *mut GcInner<RuntimeInner>,
     op: i64,
     args: *const i64,
     num_args: u32,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
     span: *const Span,
-) -> *mut Result<Application, Condition> {
+) -> *mut Application {
     unsafe {
         let args: Vec<_> = (0..num_args)
             .map(|i| Value::from_raw_inc_rc(args.add(i as usize).read() as u64))
@@ -304,9 +304,15 @@ unsafe extern "C" fn apply(
         let op = match Value::from_raw_inc_rc(op as u64).unpack() {
             UnpackedValue::Closure(op) => op,
             x => {
-                return Box::into_raw(Box::new(Err(Condition::invalid_operator_type(
-                    x.type_name(),
-                ))));
+                let raised = raise(
+                    Runtime::from_raw_inc_rc(runtime),
+                    Condition::invalid_operator_type(
+                        x.type_name(),
+                    ).into(),
+                    ExceptionHandler::from_ptr(exception_handler),
+                    dynamic_wind.as_ref().unwrap(),
+                );
+                return Box::into_raw(Box::new(raised));
             }
         };
 
@@ -318,25 +324,32 @@ unsafe extern "C" fn apply(
             arc_from_ptr(span),
         );
 
-        Box::into_raw(Box::new(Ok(app)))
+        Box::into_raw(Box::new(app))
     }
 }
 
 /// Create a boxed application that forwards a list of values to the operator
 #[runtime_fn]
 unsafe extern "C" fn forward(
+    runtime: *mut GcInner<RuntimeInner>,
     op: i64,
     args: i64,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
-) -> *mut Result<Application, Condition> {
+) -> *mut Application {
     unsafe {
         let op = match Value::from_raw_inc_rc(op as u64).unpack() {
             UnpackedValue::Closure(op) => op,
             x => {
-                return Box::into_raw(Box::new(Err(Condition::invalid_operator_type(
-                    x.type_name(),
-                ))));
+                let raised = raise(
+                    Runtime::from_raw_inc_rc(runtime),
+                    Condition::invalid_operator_type(
+                        x.type_name(),
+                    ).into(),
+                    ExceptionHandler::from_ptr(exception_handler),
+                    dynamic_wind.as_ref().unwrap(),
+                );
+                return Box::into_raw(Box::new(raised));
             }
         };
 
@@ -354,20 +367,20 @@ unsafe extern "C" fn forward(
             None,
         );
 
-        Box::into_raw(Box::new(Ok(app)))
+        Box::into_raw(Box::new(app))
     }
 }
 
 /// Create a boxed application that simply returns its arguments
 #[runtime_fn]
-pub(crate) unsafe extern "C" fn halt(args: i64) -> *mut Result<Application, Condition> {
+pub(crate) unsafe extern "C" fn halt(args: i64) -> *mut Application {
     unsafe {
         // We do not need to increment the rc here, it will be incremented in list_to_vec
         let args = ManuallyDrop::new(Value::from_raw(args as u64));
         let mut flattened = Vec::new();
         list_to_vec(&args, &mut flattened);
         let app = Application::halt(flattened);
-        Box::into_raw(Box::new(Ok(app)))
+        Box::into_raw(Box::new(app))
     }
 }
 
@@ -476,9 +489,10 @@ unsafe extern "C" fn make_user(
 
 /// Return an error in the case that a value is undefined
 #[runtime_fn]
-unsafe extern "C" fn error_unbound_variable(symbol: u32) -> *mut Result<Application, Condition> {
+unsafe extern "C" fn error_unbound_variable(symbol: u32) -> i64 {
     let sym = Symbol(symbol);
-    Box::into_raw(Box::new(Err(Condition::error(format!("{sym} is unbound")))))
+    let condition = Condition::error(format!("{sym} is unbound"));
+    Value::into_raw(Value::from(condition)) as i64
 }
 
 /*
@@ -560,6 +574,7 @@ unsafe extern "C" fn prepare_continuation(
 fn compute_winders(from_extent: &DynamicWind, to_extent: &[Value]) -> Value {
     let len = from_extent.winders.len().min(to_extent.len());
 
+    // TODO: Clean this up so it's like exit_winders in exception.rs
     let mut split_point = 0;
     #[allow(clippy::needless_range_loop)]
     for i in 0..len {
@@ -610,7 +625,7 @@ pub(crate) unsafe extern "C" fn call_thunks(
     args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
-) -> *mut Result<Application, Condition> {
+) -> *mut Application {
     unsafe {
         // env[0] are the thunks:
         let thunks = Gc::from_raw_inc_rc(env.read());
@@ -663,7 +678,7 @@ pub(crate) unsafe extern "C" fn call_thunks(
             None,
         );
 
-        Box::into_raw(Box::new(Ok(app)))
+        Box::into_raw(Box::new(app))
     }
 }
 
@@ -674,7 +689,7 @@ unsafe extern "C" fn call_thunks_pass_args(
     _args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
-) -> *mut Result<Application, Condition> {
+) -> *mut Application {
     unsafe {
         // env[0] are the thunks:
         let thunks = Gc::from_raw_inc_rc(env.read());
@@ -724,7 +739,7 @@ unsafe extern "C" fn call_thunks_pass_args(
             _ => unreachable!(),
         };
 
-        Box::into_raw(Box::new(Ok(app)))
+        Box::into_raw(Box::new(app))
     }
 }
 
@@ -732,7 +747,7 @@ unsafe extern "C" fn call_thunks_pass_args(
 unsafe extern "C" fn add(
     vals: *const i64,
     num_vals: u32,
-    error: *mut *mut Result<Application, Condition>,
+    error: *mut Value,
 ) -> i64 {
     unsafe {
         let vals: Vec<_> = (0..num_vals)
@@ -742,7 +757,7 @@ unsafe extern "C" fn add(
         match num::add(&vals) {
             Ok(num) => Value::into_raw(Value::from(num)) as i64,
             Err(condition) => {
-                error.write(Box::into_raw(Box::new(Err(condition))));
+                error.write(condition.into());
                 Value::into_raw(Value::undefined()) as i64
             }
         }
@@ -753,7 +768,7 @@ unsafe extern "C" fn add(
 unsafe extern "C" fn sub(
     vals: *const i64,
     num_vals: u32,
-    error: *mut *mut Result<Application, Condition>,
+    error: *mut Value,
 ) -> i64 {
     unsafe {
         let vals: Vec<_> = (0..num_vals)
@@ -762,7 +777,7 @@ unsafe extern "C" fn sub(
         match num::sub(&vals[0], &vals[1..]) {
             Ok(num) => Value::into_raw(Value::from(num)) as i64,
             Err(condition) => {
-                error.write(Box::into_raw(Box::new(Err(condition))));
+                error.write(condition.into());
                 Value::into_raw(Value::undefined()) as i64
             }
         }
@@ -773,7 +788,7 @@ unsafe extern "C" fn sub(
 unsafe extern "C" fn mul(
     vals: *const i64,
     num_vals: u32,
-    error: *mut *mut Result<Application, Condition>,
+    error: *mut Value,
 ) -> i64 {
     unsafe {
         let vals: Vec<_> = (0..num_vals)
@@ -782,7 +797,7 @@ unsafe extern "C" fn mul(
         match num::mul(&vals) {
             Ok(num) => Value::into_raw(Value::from(num)) as i64,
             Err(condition) => {
-                error.write(Box::into_raw(Box::new(Err(condition))));
+                error.write(condition.into());
                 Value::into_raw(Value::undefined()) as i64
             }
         }
@@ -793,7 +808,7 @@ unsafe extern "C" fn mul(
 unsafe extern "C" fn div(
     vals: *const i64,
     num_vals: u32,
-    error: *mut *mut Result<Application, Condition>,
+    error: *mut Value,
 ) -> i64 {
     unsafe {
         let vals: Vec<_> = (0..num_vals)
@@ -802,7 +817,7 @@ unsafe extern "C" fn div(
         match num::div(&vals[0], &vals[1..]) {
             Ok(num) => Value::into_raw(Value::from(num)) as i64,
             Err(condition) => {
-                error.write(Box::into_raw(Box::new(Err(condition))));
+                error.write(condition.into());
                 Value::into_raw(Value::undefined()) as i64
             }
         }
@@ -815,7 +830,7 @@ macro_rules! define_comparison_fn {
         unsafe extern "C" fn $name(
             vals: *const i64,
             num_vals: u32,
-            error: *mut *mut Result<Application, Condition>,
+            error: *mut Value,
         ) -> i64 {
             unsafe {
                 let vals: Vec<_> = (0..num_vals)
@@ -824,7 +839,7 @@ macro_rules! define_comparison_fn {
                 match num::$name(&vals) {
                     Ok(res) => Value::into_raw(Value::from(res)) as i64,
                     Err(condition) => {
-                        error.write(Box::into_raw(Box::new(Err(condition))));
+                        error.write(condition.into());
                         Value::into_raw(Value::undefined()) as i64
                     }
                 }
