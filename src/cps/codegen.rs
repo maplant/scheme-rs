@@ -551,7 +551,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         self.builder.switch_to_block(failure_block);
         self.builder.seal_block(failure_block);
 
-        let error_val = self.array_load(error_slot, 0);        
+        let error_val = self.array_load(error_slot, 0);
         self.drops_codegen();
         self.raise_codegen(error_val);
 

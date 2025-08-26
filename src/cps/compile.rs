@@ -69,11 +69,11 @@ fn compile_lambda(
             }))),
             val: k4,
             cexp: Box::new(Cps::App(Value::from(k2), vec![Value::from(k4)], None)),
-            span: Some(span),
+            span: Some(span.clone()),
         }),
         val: k1,
         cexp: Box::new(meta_cont(Value::from(k1))),
-        span: None,
+        span: Some(span),
     }
 }
 

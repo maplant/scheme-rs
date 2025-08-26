@@ -1,13 +1,14 @@
 use crate::{
     ast::DefinitionBody,
-    cps::{codegen::RuntimeFunctionsBuilder, Compile, Cps},
+    cps::{Compile, Cps, codegen::RuntimeFunctionsBuilder},
     env::Environment,
-    exception::{raise, Condition, Exception, ExceptionHandler},
-    gc::{init_gc, Gc, GcInner, Trace},
+    exception::{Condition, Exception, ExceptionHandler, raise},
+    gc::{Gc, GcInner, Trace, init_gc},
     lists::{self, list_to_vec},
     num,
     proc::{
-        clone_continuation_env, Application, Closure, ContinuationPtr, DynamicWind, FuncDebugInfo, FuncPtr, UserPtr
+        Application, Closure, ContinuationPtr, DynamicWind, FuncDebugInfo, FuncPtr, UserPtr,
+        clone_continuation_env,
     },
     registry::{ImportError, Library, Registry},
     symbols::Symbol,
@@ -306,9 +307,7 @@ unsafe extern "C" fn apply(
             x => {
                 let raised = raise(
                     Runtime::from_raw_inc_rc(runtime),
-                    Condition::invalid_operator_type(
-                        x.type_name(),
-                    ).into(),
+                    Condition::invalid_operator_type(x.type_name()).into(),
                     ExceptionHandler::from_ptr(exception_handler),
                     dynamic_wind.as_ref().unwrap(),
                 );
@@ -343,9 +342,7 @@ unsafe extern "C" fn forward(
             x => {
                 let raised = raise(
                     Runtime::from_raw_inc_rc(runtime),
-                    Condition::invalid_operator_type(
-                        x.type_name(),
-                    ).into(),
+                    Condition::invalid_operator_type(x.type_name()).into(),
                     ExceptionHandler::from_ptr(exception_handler),
                     dynamic_wind.as_ref().unwrap(),
                 );
@@ -744,11 +741,7 @@ unsafe extern "C" fn call_thunks_pass_args(
 }
 
 #[runtime_fn]
-unsafe extern "C" fn add(
-    vals: *const i64,
-    num_vals: u32,
-    error: *mut Value,
-) -> i64 {
+unsafe extern "C" fn add(vals: *const i64, num_vals: u32, error: *mut Value) -> i64 {
     unsafe {
         let vals: Vec<_> = (0..num_vals)
             // Can't easily wrap these in a ManuallyDrop, so we dec the rc.
@@ -765,11 +758,7 @@ unsafe extern "C" fn add(
 }
 
 #[runtime_fn]
-unsafe extern "C" fn sub(
-    vals: *const i64,
-    num_vals: u32,
-    error: *mut Value,
-) -> i64 {
+unsafe extern "C" fn sub(vals: *const i64, num_vals: u32, error: *mut Value) -> i64 {
     unsafe {
         let vals: Vec<_> = (0..num_vals)
             .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read() as u64))
@@ -785,11 +774,7 @@ unsafe extern "C" fn sub(
 }
 
 #[runtime_fn]
-unsafe extern "C" fn mul(
-    vals: *const i64,
-    num_vals: u32,
-    error: *mut Value,
-) -> i64 {
+unsafe extern "C" fn mul(vals: *const i64, num_vals: u32, error: *mut Value) -> i64 {
     unsafe {
         let vals: Vec<_> = (0..num_vals)
             .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read() as u64))
@@ -805,11 +790,7 @@ unsafe extern "C" fn mul(
 }
 
 #[runtime_fn]
-unsafe extern "C" fn div(
-    vals: *const i64,
-    num_vals: u32,
-    error: *mut Value,
-) -> i64 {
+unsafe extern "C" fn div(vals: *const i64, num_vals: u32, error: *mut Value) -> i64 {
     unsafe {
         let vals: Vec<_> = (0..num_vals)
             .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read() as u64))
@@ -827,11 +808,7 @@ unsafe extern "C" fn div(
 macro_rules! define_comparison_fn {
     ( $name:ident ) => {
         #[runtime_fn]
-        unsafe extern "C" fn $name(
-            vals: *const i64,
-            num_vals: u32,
-            error: *mut Value,
-        ) -> i64 {
+        unsafe extern "C" fn $name(vals: *const i64, num_vals: u32, error: *mut Value) -> i64 {
             unsafe {
                 let vals: Vec<_> = (0..num_vals)
                     .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read() as u64))

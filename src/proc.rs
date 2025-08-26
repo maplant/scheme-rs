@@ -13,6 +13,7 @@ use crate::{
     value::{UnpackedValue, Value, ValueType},
 };
 use futures::future::BoxFuture;
+use scheme_rs_macros::cps_bridge;
 use std::{borrow::Cow, collections::HashMap, fmt, hash::Hash, ptr::null_mut, sync::Arc};
 
 pub type Record = Vec<Gc<Value>>;
@@ -52,7 +53,7 @@ pub type BridgePtr = for<'a> fn(
     cont: &'a Value,
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
-) -> BoxFuture<'a, Result<Application, Value>>;
+) -> BoxFuture<'a, Application>;
 
 #[derive(Copy, Clone, Debug)]
 pub(crate) enum FuncPtr {
@@ -141,7 +142,7 @@ impl ClosureInner {
         // Handle arguments:
 
         // Extract the continuation, if it is required
-        let cont = !matches!(self.func, FuncPtr::Continuation(_));
+        let cont = matches!(self.func, FuncPtr::Bridge(_) | FuncPtr::User(_));
         let (cont, args) = if cont {
             let (cont, args) = args.split_last().unwrap();
             (Some(cont.clone()), args)
@@ -192,7 +193,7 @@ impl ClosureInner {
             let FuncPtr::Bridge(async_fn) = self.func else {
                 unreachable!()
             };
-            (async_fn)(
+            Ok((async_fn)(
                 &self.runtime,
                 &self.env,
                 args.as_ref(),
@@ -201,7 +202,7 @@ impl ClosureInner {
                 &exception_handler,
                 dynamic_wind,
             )
-            .await
+            .await)
         } else if let FuncPtr::HaltError = self.func {
             return Err(args[0].clone());
         } else {
@@ -495,49 +496,31 @@ impl FuncDebugInfo {
     }
 }
 
-pub fn apply<'a>(
+#[cps_bridge(name = "apply", lib = "(rnrs base builtins (6))", args = "arg1 . args")]
+async fn apply(
     _runtime: &Runtime,
-    _env: &'a [Gc<Value>],
-    args: &'a [Value],
-    rest_args: &'a [Value],
-    cont: &'a Value,
-    exception_handler: &'a Option<Gc<ExceptionHandler>>,
-    dynamic_wind: &'a DynamicWind,
-) -> BoxFuture<'a, Result<Application, Value>> {
-    Box::pin(async move {
-        if rest_args.is_empty() {
-            return Err(Condition::wrong_num_of_args(2, args.len()).into());
-        }
-        let op: Closure = args[0].clone().try_into()?;
-        let (last, args) = rest_args.split_last().unwrap();
-        let mut args = args.to_vec();
-        list_to_vec(last, &mut args);
-        args.push(cont.clone());
-        Ok(Application::new(
-            op.clone(),
-            args,
-            exception_handler.clone(),
-            dynamic_wind.clone(),
-            None,
-        ))
-    })
-}
-
-inventory::submit! {
-    BridgeFn::new(
-        "apply",
-        "(rnrs base builtins (6))",
-        1,
-        true,
-        apply,
-        BridgeFnDebugInfo::new(
-            "proc.rs",
-            490,
-            7,
-            0,
-            &[ "arg1", "args" ],
-        )
-    )
+    _env: &[Gc<Value>],
+    args: &[Value],
+    rest_args: &[Value],
+    cont: &Value,
+    exception_handler: &Option<Gc<ExceptionHandler>>,
+    dynamic_wind: &DynamicWind,
+) -> Result<Application, Condition> {
+    if rest_args.is_empty() {
+        return Err(Condition::wrong_num_of_args(2, args.len()).into());
+    }
+    let op: Closure = args[0].clone().try_into()?;
+    let (last, args) = rest_args.split_last().unwrap();
+    let mut args = args.to_vec();
+    list_to_vec(last, &mut args);
+    args.push(cont.clone());
+    Ok(Application::new(
+        op.clone(),
+        args,
+        exception_handler.clone(),
+        dynamic_wind.clone(),
+        None,
+    ))
 }
 
 pub(crate) fn clone_continuation_env(
@@ -650,64 +633,50 @@ unsafe extern "C" fn call_consumer_with_values(
     }
 }
 
-pub fn call_with_values<'a>(
-    runtime: &'a Runtime,
-    _env: &'a [Gc<Value>],
-    args: &'a [Value],
-    _rest_args: &'a [Value],
-    cont: &'a Value,
-    exception_handler: &'a Option<Gc<ExceptionHandler>>,
-    dynamic_wind: &'a DynamicWind,
-) -> BoxFuture<'a, Result<Application, Value>> {
-    Box::pin(async move {
-        let [producer, consumer] = args else {
-            return Err(Condition::wrong_num_of_args(2, args.len()).into());
-        };
+#[cps_bridge(
+    name = "call-with-values",
+    lib = "(rnrs base builtins (6))",
+    args = "producer consumer"
+)]
+async fn call_with_values(
+    runtime: &Runtime,
+    _env: &[Gc<Value>],
+    args: &[Value],
+    _rest_args: &[Value],
+    cont: &Value,
+    exception_handler: &Option<Gc<ExceptionHandler>>,
+    dynamic_wind: &DynamicWind,
+) -> Result<Application, Condition> {
+    let [producer, consumer] = args else {
+        return Err(Condition::wrong_num_of_args(2, args.len()));
+    };
 
-        let producer: Closure = producer.clone().try_into()?;
-        let consumer: Closure = consumer.clone().try_into()?;
+    let producer: Closure = producer.clone().try_into()?;
+    let consumer: Closure = consumer.clone().try_into()?;
 
-        // Get the details of the consumer:
-        let (num_required_args, variadic) = {
-            let consumer_read = consumer.0.read();
-            (consumer_read.num_required_args, consumer_read.variadic)
-        };
+    // Get the details of the consumer:
+    let (num_required_args, variadic) = {
+        let consumer_read = consumer.0.read();
+        (consumer_read.num_required_args, consumer_read.variadic)
+    };
 
-        let call_consumer_closure = Closure::new(
-            runtime.clone(),
-            vec![Gc::new(Value::from(consumer)), Gc::new(cont.clone())],
-            Vec::new(),
-            FuncPtr::Continuation(call_consumer_with_values),
-            num_required_args,
-            variadic,
-            None,
-        );
+    let call_consumer_closure = Closure::new(
+        runtime.clone(),
+        vec![Gc::new(Value::from(consumer)), Gc::new(cont.clone())],
+        Vec::new(),
+        FuncPtr::Continuation(call_consumer_with_values),
+        num_required_args,
+        variadic,
+        None,
+    );
 
-        Ok(Application::new(
-            producer,
-            vec![Value::from(call_consumer_closure)],
-            exception_handler.clone(),
-            dynamic_wind.clone(),
-            None,
-        ))
-    })
-}
-
-inventory::submit! {
-    BridgeFn::new(
-        "call-with-values",
-        "(rnrs base builtins (6))",
-        2,
-        false,
-        call_with_values,
-        BridgeFnDebugInfo::new(
-            "proc.rs",
-            587,
-            7,
-            0,
-            &["producer", "consumer"]
-        )
-    )
+    Ok(Application::new(
+        producer,
+        vec![Value::from(call_consumer_closure)],
+        exception_handler.clone(),
+        dynamic_wind.clone(),
+        None,
+    ))
 }
 
 #[derive(Clone, Debug, Default, Trace)]
@@ -715,63 +684,49 @@ pub struct DynamicWind {
     pub(crate) winders: Vec<(Closure, Closure)>,
 }
 
-pub fn dynamic_wind<'a>(
-    runtime: &'a Runtime,
-    _env: &'a [Gc<Value>],
-    args: &'a [Value],
-    _rest_args: &'a [Value],
-    cont: &'a Value,
-    exception_handler: &'a Option<Gc<ExceptionHandler>>,
-    dynamic_wind: &'a DynamicWind,
-) -> BoxFuture<'a, Result<Application, Value>> {
-    Box::pin(async move {
-        let [in_thunk_val, body_thunk_val, out_thunk_val] = args else {
-            return Err(Condition::wrong_num_of_args(3, args.len()).into());
-        };
+#[cps_bridge(
+    name = "dynamic-wind",
+    lib = "(rnrs base builtins (6))",
+    args = "in body out"
+)]
+async fn dynamic_wind(
+    runtime: &Runtime,
+    _env: &[Gc<Value>],
+    args: &[Value],
+    _rest_args: &[Value],
+    cont: &Value,
+    exception_handler: &Option<Gc<ExceptionHandler>>,
+    dynamic_wind: &DynamicWind,
+) -> Result<Application, Condition> {
+    let [in_thunk_val, body_thunk_val, out_thunk_val] = args else {
+        return Err(Condition::wrong_num_of_args(3, args.len()));
+    };
 
-        let in_thunk: Closure = in_thunk_val.clone().try_into()?;
-        let _: Closure = body_thunk_val.clone().try_into()?;
+    let in_thunk: Closure = in_thunk_val.clone().try_into()?;
+    let _: Closure = body_thunk_val.clone().try_into()?;
 
-        let call_body_thunk_cont = Closure::new(
-            runtime.clone(),
-            vec![
-                Gc::new(in_thunk_val.clone()),
-                Gc::new(body_thunk_val.clone()),
-                Gc::new(out_thunk_val.clone()),
-                Gc::new(cont.clone()),
-            ],
-            Vec::new(),
-            FuncPtr::Continuation(call_body_thunk),
-            0,
-            true,
-            None,
-        );
+    let call_body_thunk_cont = Closure::new(
+        runtime.clone(),
+        vec![
+            Gc::new(in_thunk_val.clone()),
+            Gc::new(body_thunk_val.clone()),
+            Gc::new(out_thunk_val.clone()),
+            Gc::new(cont.clone()),
+        ],
+        Vec::new(),
+        FuncPtr::Continuation(call_body_thunk),
+        0,
+        true,
+        None,
+    );
 
-        Ok(Application::new(
-            in_thunk,
-            vec![Value::from(call_body_thunk_cont)],
-            exception_handler.clone(),
-            dynamic_wind.clone(),
-            None,
-        ))
-    })
-}
-
-inventory::submit! {
-    BridgeFn::new(
-        "dynamic-wind",
-        "(rnrs base builtins (6))",
-        3,
-        false,
-        dynamic_wind,
-        BridgeFnDebugInfo::new(
-            "proc.rs",
-            0,
-            0,
-            0,
-            &["in", "body", "out"]
-        )
-    )
+    Ok(Application::new(
+        in_thunk,
+        vec![Value::from(call_body_thunk_cont)],
+        exception_handler.clone(),
+        dynamic_wind.clone(),
+        None,
+    ))
 }
 
 pub(crate) unsafe extern "C" fn call_body_thunk(

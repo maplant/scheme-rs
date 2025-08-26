@@ -2,9 +2,9 @@ use proc_macro::{self, TokenStream};
 use proc_macro2::{Literal, Span};
 use quote::{format_ident, quote};
 use syn::{
-    DataEnum, DataStruct, DeriveInput, Fields, FnArg, GenericParam, Generics, Ident, ItemFn,
-    LitStr, Member, Pat, PatIdent, PatType, Token, Type, TypePath, TypeReference,
-    parse_macro_input, parse_quote, punctuated::Punctuated,
+    parse_macro_input, punctuated::Punctuated, DataEnum, DataStruct, DeriveInput, Fields, FnArg,
+    GenericParam, Generics, Ident, ItemFn, LitStr, Member, Pat, PatIdent, PatType, Token, Type,
+    TypePath, TypeReference,
 };
 
 #[proc_macro_attribute]
@@ -33,7 +33,9 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     let wrapper_name = impl_name.to_string();
     let wrapper_name = Ident::new(&wrapper_name, Span::call_site());
 
-    let (rest_args, is_variadic) = if let Some(last_arg) = bridge.sig.inputs.last() && is_slice(last_args){
+    let (rest_args, is_variadic) = if let Some(last_arg) = bridge.sig.inputs.last()
+        && is_slice(&last_arg)
+    {
         (quote!(rest_args), true)
     } else {
         (quote!(), false)
@@ -52,14 +54,14 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         .enumerate()
         .map(|(i, arg)| {
             if let FnArg::Typed(PatType { pat, .. }) = arg {
-                if let Pat::Ident(PatIdent { ref ident, .. }) = pat.as_ref() {
+                if let Pat::Ident(PatIdent { ident, .. }) = pat.as_ref() {
                     return ident.to_string();
                 }
             }
             format!("arg{i}")
         })
         .collect();
-    
+
     let arg_indices: Vec<_> = (0..num_args).collect();
 
     quote! {
@@ -83,15 +85,15 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                     // If the function returned an error, we want to raise
                     // it.
                     let result = match result {
-                        Err(err) => return Ok(::scheme_rs::exception::raise(
+                        Err(err) => return ::scheme_rs::exception::raise(
                             runtime.clone(),
                             err.into(),
                             exception_handler.clone(),
                             dynamic_wind,
-                        )),
+                        ),
                         Ok(result) => result,
                     };
-                    let cont = cont.clone().try_into()?;
+                    let cont = cont.clone().try_into().unwrap();
                     ::scheme_rs::proc::Application::new(
                         cont,
                         result,
@@ -127,8 +129,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
 pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     let mut name: Option<LitStr> = None;
     let mut lib: Option<LitStr> = None;
-    let mut num_args: Option<Literal> = None;
-    let mut variadic: Option<Ident> = None;
+    let mut arg_names: Option<LitStr> = None;
     let bridge_attr_parser = syn::meta::parser(|meta| {
         if meta.path.is_ident("name") {
             name = Some(meta.value()?.parse()?);
@@ -136,11 +137,8 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         } else if meta.path.is_ident("lib") {
             lib = Some(meta.value()?.parse()?);
             Ok(())
-        } else if meta.path.is_ident("num_args") {
-            num_args = Some(meta.value()?.parse()?);
-            Ok(())
-        } else if meta.path.is_ident("variadic") {
-            variadic = Some(meta.value()?.parse()?);
+        } else if meta.path.is_ident("args") {
+            arg_names = Some(meta.value()?.parse()?);
             Ok(())
         } else {
             Err(meta.error("unsupported bridge property"))
@@ -151,13 +149,26 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
 
     let name = name.unwrap().value();
     let lib = lib.unwrap().value();
-    let num_args = num_args.unwrap();
-    let is_variadic = variadic.unwrap_or_else(|| Ident::new("false", Span::call_site()));
-    let bridge = parse_macro_input!(item as ItemFn);
+    let args = arg_names.unwrap().value();
+    let mut is_variadic = false;
+    let arg_names = args
+        .split(" ")
+        .filter_map(|x| {
+            if x == "." {
+                is_variadic = true;
+                None
+            } else {
+                Some(x)
+            }
+        })
+        .collect::<Vec<_>>();
+    let num_args = arg_names.len() - is_variadic as usize;
+    // let is_variadic = variadic.unwrap_or_else(|| Ident::new("false", Span::call_site()));
+    let mut bridge = parse_macro_input!(item as ItemFn);
 
+    let wrapper_name = Ident::new(&bridge.sig.ident.to_string(), Span::call_site());
+    bridge.sig.ident = Ident::new("inner", Span::call_site());
     let impl_name = bridge.sig.ident.clone();
-    let wrapper_name = impl_name.to_string();
-    let wrapper_name = Ident::new(&wrapper_name, Span::call_site());
 
     quote! {
         pub(crate) fn #wrapper_name<'a>(
@@ -181,23 +192,15 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                     exception_handler,
                     dynamic_wind,
                 ).await;
-                let result = match result {
-                    Err(err) => return Ok(::scheme_rs::exception::raise(
+                match result {
+                    Err(err) => ::scheme_rs::exception::raise(
                         runtime.clone(),
                         err.into(),
                         exception_handler.clone(),
                         dynamic_wind,
-                    )),
+                    ),
                     Ok(result) => result,
-                };
-                let cont = cont.clone().try_into()?;
-                ::scheme_rs::proc::Application::new(
-                    cont,
-                    result,
-                    exception_handler.clone(),
-                    dynamic_wind.clone(),
-                    None // TODO
-                )
+                }
             })
         }
 
@@ -268,7 +271,7 @@ fn derive_trace_struct(
 
     for param in params.iter_mut() {
         match param {
-            GenericParam::Type(ref mut ty) => {
+            GenericParam::Type(ty) => {
                 ty.bounds.push(syn::TypeParamBound::Verbatim(
                     quote! { ::scheme_rs::gc::Trace },
                 ));
@@ -398,13 +401,13 @@ fn derive_trace_enum(
                 .collect();
             let field_name = fields.iter().map(|(_, field)| field);
             let fields_destructured = match variant.fields {
-                Fields::Named(..) => quote! { { #( ref #field_name, )* .. } },
-                _ => quote! { ( #( ref #field_name ),* ) },
+                Fields::Named(..) => quote! { { #( #field_name, )* .. } },
+                _ => quote! { ( #( #field_name ),* ) },
             };
             let field_name = fields.iter().map(|(_, field)| field);
             let fields_destructured_mut = match variant.fields {
-                Fields::Named(..) => quote! { { #( ref mut #field_name, )* .. } },
-                _ => quote! { ( #( ref mut #field_name ),* ) },
+                Fields::Named(..) => quote! { { #( #field_name, )* .. } },
+                _ => quote! { ( #( #field_name ),* ) },
             };
             let variant_name = variant.ident;
             Some((
@@ -436,7 +439,7 @@ fn derive_trace_enum(
 
     for param in params.iter_mut() {
         match param {
-            GenericParam::Type(ref mut ty) => {
+            GenericParam::Type(ty) => {
                 ty.bounds.push(syn::TypeParamBound::Verbatim(
                     quote! { ::scheme_rs::gc::Trace },
                 ));
@@ -468,7 +471,7 @@ fn derive_trace_enum(
 }
 
 fn is_gc(arg: &Type) -> bool {
-    if let Type::Path(ref path) = arg {
+    if let Type::Path(path) = arg {
         return path
             .path
             .segments

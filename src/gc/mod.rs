@@ -491,7 +491,6 @@ where
     unsafe fn visit_children(&self, _visitor: unsafe fn(OpaqueGcPtr)) {}
 }
 
-
 /// # Safety
 ///
 /// This function is _not_ safe to implement!
