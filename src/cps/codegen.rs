@@ -13,7 +13,7 @@ use crate::{
     cps::{Value as CpsValue, analysis::MaxDrops},
     proc::{ClosureInner, ContinuationPtr, FuncDebugInfo, FuncPtr},
     runtime::{DebugInfo, Runtime},
-    value::{self, ReflexiveValue, Value as SchemeValue},
+    value::{ReflexiveValue, Value as SchemeValue},
 };
 
 use super::*;

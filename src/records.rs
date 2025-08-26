@@ -7,15 +7,13 @@ use std::{
 };
 
 use by_address::ByAddress;
-use futures::future::BoxFuture;
-use scheme_rs_macros::cps_bridge;
 
 use crate::{
-    exception::{Condition, ExceptionHandler, raise},
+    exception::{Condition, ExceptionHandler},
     gc::{Gc, GcInner, Trace},
     num::Number,
     proc::{Application, Closure, DynamicWind, FuncPtr},
-    registry::{BridgeFn, BridgeFnDebugInfo, bridge},
+    registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
     value::{UnpackedValue, Value, ValueType},
@@ -163,7 +161,7 @@ fn make_default_record_constructor_descriptor(
     lib = "(rnrs records procedural (6))",
     args = "rtd parent-constructor-descriptor protocol"
 )]
-async fn make_record_constructor_descriptor(
+pub async fn make_record_constructor_descriptor(
     runtime: &Runtime,
     _env: &[Gc<Value>],
     args: &[Value],
@@ -180,7 +178,7 @@ async fn make_record_constructor_descriptor(
     let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
     let parent_rcd = if parent_rcd.is_true() {
         let Some(parent_rtd) = rtd.inherits.last() else {
-            return Err(Condition::error("RTD is a base type".to_string()).into());
+            return Err(Condition::error("RTD is a base type".to_string()));
         };
         let any: Gc<Gc<dyn Any>> = parent_rcd.clone().try_into()?;
         let parent_rcd: Gc<RecordConstructorDescriptor> = any
@@ -189,9 +187,9 @@ async fn make_record_constructor_descriptor(
             .downcast()
             .map_err(|_| Condition::Error)?;
         if !Arc::ptr_eq(&parent_rcd.read().rtd, parent_rtd) {
-            return Err(
-                Condition::error("Parent RTD does not match parent RCD".to_string()).into(),
-            );
+            return Err(Condition::error(
+                "Parent RTD does not match parent RCD".to_string(),
+            ));
         }
         Some(parent_rcd)
     } else if !rtd.is_base_record_type() {
@@ -237,7 +235,7 @@ async fn make_record_constructor_descriptor(
     lib = "(rnrs records procedural (6))",
     args = "rcd"
 )]
-async fn record_constructor(
+pub async fn record_constructor(
     runtime: &Runtime,
     _env: &[Gc<Value>],
     args: &[Value],
@@ -352,11 +350,7 @@ pub(crate) unsafe extern "C" fn chain_protocols(
     }
 }
 
-#[cps_bridge(
-    name = "chain_constructors",
-    lib = "(rnrs records procedural (6))",
-    args = "<cannot-call>"
-)]
+#[cps_bridge]
 async fn chain_constructors(
     runtime: &Runtime,
     env: &[Gc<Value>],
@@ -407,13 +401,9 @@ async fn chain_constructors(
     ))
 }
 
-#[cps_bridge(
-    name = "constructor",
-    lib = "(rnrs records procedural (6))",
-    args = "<cannot-call>"
-)]
+#[cps_bridge]
 async fn constructor(
-    runtime: &Runtime,
+    _runtime: &Runtime,
     env: &[Gc<Value>],
     args: &[Value],
     _rest_args: &[Value],
@@ -444,11 +434,7 @@ async fn constructor(
     ))
 }
 
-#[cps_bridge(
-    name = "default-protocol",
-    lib = "(rnrs records procedural (6))",
-    args = "<cannot-call>"
-)]
+#[cps_bridge]
 async fn default_protocol(
     runtime: &Runtime,
     env: &[Gc<Value>],
@@ -481,11 +467,7 @@ async fn default_protocol(
     ))
 }
 
-#[cps_bridge(
-    name = "default-protocol-constructor",
-    lib = "(rnrs records procedural (6))",
-    args = "<cannot-call>"
-)]
+#[cps_bridge]
 async fn default_protocol_constructor(
     runtime: &Runtime,
     env: &[Gc<Value>],
@@ -576,8 +558,10 @@ pub trait SchemeCompatible: fmt::Debug + fmt::Display + Trace {
 pub struct OpaqueParentConstructor {
     _required_args: usize,
     _variadic: bool,
-    _constructor: fn(&[Value]) -> Result<Gc<dyn SchemeCompatible>, Condition>,
+    _constructor: ParentConstructor,
 }
+
+type ParentConstructor = fn(&[Value]) -> Result<Gc<dyn SchemeCompatible>, Condition>;
 
 unsafe impl Trace for OpaqueParentConstructor {
     unsafe fn visit_children(&self, _visitor: unsafe fn(crate::gc::OpaqueGcPtr)) {}
@@ -592,11 +576,7 @@ pub fn is_subtype_of(val: &Value, rt: &Value) -> Result<bool, Condition> {
     Ok(Arc::ptr_eq(&rec_read.rtd, &rt) || rec_read.rtd.inherits.contains(&ByAddress::from(rt)))
 }
 
-#[cps_bridge(
-    name = "record-predicate-fn",
-    lib = "(rnrs records procedural (6))",
-    args = "<cannot-call>"
-)]
+#[cps_bridge]
 async fn record_predicate_fn(
     _runtime: &Runtime,
     env: &[Gc<Value>],
@@ -625,7 +605,7 @@ async fn record_predicate_fn(
     lib = "(rnrs records procedural (6))",
     args = "rtd"
 )]
-async fn record_predicate(
+pub async fn record_predicate(
     runtime: &Runtime,
     _env: &[Gc<Value>],
     args: &[Value],
@@ -657,11 +637,7 @@ async fn record_predicate(
     ))
 }
 
-#[cps_bridge(
-    name = "record-accessor-fn",
-    lib = "(rnrs records procedural (6))",
-    args = "<cannot-call>"
-)]
+#[cps_bridge]
 async fn record_accessor_fn(
     _runtime: &Runtime,
     env: &[Gc<Value>],
@@ -699,7 +675,7 @@ async fn record_accessor_fn(
     lib = "(rnrs records procedural (6))",
     args = "rtd k"
 )]
-async fn record_accessor(
+pub async fn record_accessor(
     runtime: &Runtime,
     _env: &[Gc<Value>],
     args: &[Value],
@@ -740,11 +716,7 @@ async fn record_accessor(
     ))
 }
 
-#[cps_bridge(
-    name = "record-mutator-fn",
-    lib = "(rnrs records procedural (6))",
-    args = "<cannot-call>"
-)]
+#[cps_bridge]
 async fn record_mutator_fn(
     _runtime: &Runtime,
     env: &[Gc<Value>],
@@ -782,7 +754,7 @@ async fn record_mutator_fn(
     lib = "(rnrs records procedural (6))",
     args = "rtd k"
 )]
-async fn record_mutator(
+pub async fn record_mutator(
     runtime: &Runtime,
     _env: &[Gc<Value>],
     args: &[Value],

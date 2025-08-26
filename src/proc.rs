@@ -6,7 +6,7 @@ use crate::{
     exception::{Condition, Exception, ExceptionHandler, Frame, raise},
     gc::{Gc, GcInner, Trace},
     lists::{list_to_vec, slice_to_list},
-    registry::{BridgeFn, BridgeFnDebugInfo},
+    registry::BridgeFnDebugInfo,
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
     syntax::Span,
@@ -204,7 +204,7 @@ impl ClosureInner {
             )
             .await)
         } else if let FuncPtr::HaltError = self.func {
-            return Err(args[0].clone());
+            Err(args[0].clone())
         } else {
             // For LLVM functions, we need to convert our args into raw pointers
             // and make sure any freshly allocated rest_args are disposed of properly.
@@ -497,7 +497,7 @@ impl FuncDebugInfo {
 }
 
 #[cps_bridge(name = "apply", lib = "(rnrs base builtins (6))", args = "arg1 . args")]
-async fn apply(
+pub async fn apply(
     _runtime: &Runtime,
     _env: &[Gc<Value>],
     args: &[Value],
@@ -507,7 +507,7 @@ async fn apply(
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     if rest_args.is_empty() {
-        return Err(Condition::wrong_num_of_args(2, args.len()).into());
+        return Err(Condition::wrong_num_of_args(2, args.len()));
     }
     let op: Closure = args[0].clone().try_into()?;
     let (last, args) = rest_args.split_last().unwrap();
@@ -638,7 +638,7 @@ unsafe extern "C" fn call_consumer_with_values(
     lib = "(rnrs base builtins (6))",
     args = "producer consumer"
 )]
-async fn call_with_values(
+pub async fn call_with_values(
     runtime: &Runtime,
     _env: &[Gc<Value>],
     args: &[Value],
@@ -689,7 +689,7 @@ pub struct DynamicWind {
     lib = "(rnrs base builtins (6))",
     args = "in body out"
 )]
-async fn dynamic_wind(
+pub async fn dynamic_wind(
     runtime: &Runtime,
     _env: &[Gc<Value>],
     args: &[Value],

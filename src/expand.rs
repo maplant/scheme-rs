@@ -3,7 +3,7 @@ use crate::{
     env::{Environment, Local},
     exception::Condition,
     gc::{Gc, Trace},
-    proc::{Application, Closure},
+    proc::Closure,
     runtime::Runtime,
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax},

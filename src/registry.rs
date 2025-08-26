@@ -23,7 +23,7 @@ use std::{
 };
 
 use futures::future::BoxFuture;
-pub use scheme_rs_macros::bridge;
+pub use scheme_rs_macros::{bridge, cps_bridge};
 
 pub struct BridgeFn {
     name: &'static str,

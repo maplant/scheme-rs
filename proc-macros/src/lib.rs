@@ -2,9 +2,9 @@ use proc_macro::{self, TokenStream};
 use proc_macro2::{Literal, Span};
 use quote::{format_ident, quote};
 use syn::{
-    parse_macro_input, punctuated::Punctuated, DataEnum, DataStruct, DeriveInput, Fields, FnArg,
-    GenericParam, Generics, Ident, ItemFn, LitStr, Member, Pat, PatIdent, PatType, Token, Type,
-    TypePath, TypeReference,
+    DataEnum, DataStruct, DeriveInput, Error, Fields, FnArg, GenericParam, Generics, Ident, ItemFn,
+    LitStr, Member, Pat, PatIdent, PatType, Token, Type, TypePath, TypeReference, Visibility,
+    parse_macro_input, punctuated::Punctuated,
 };
 
 #[proc_macro_attribute]
@@ -147,31 +147,79 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
 
     parse_macro_input!(args with bridge_attr_parser);
 
-    let name = name.unwrap().value();
-    let lib = lib.unwrap().value();
-    let args = arg_names.unwrap().value();
-    let mut is_variadic = false;
-    let arg_names = args
-        .split(" ")
-        .filter_map(|x| {
-            if x == "." {
-                is_variadic = true;
-                None
-            } else {
-                Some(x)
-            }
-        })
-        .collect::<Vec<_>>();
-    let num_args = arg_names.len() - is_variadic as usize;
-    // let is_variadic = variadic.unwrap_or_else(|| Ident::new("false", Span::call_site()));
     let mut bridge = parse_macro_input!(item as ItemFn);
-
     let wrapper_name = Ident::new(&bridge.sig.ident.to_string(), Span::call_site());
     bridge.sig.ident = Ident::new("inner", Span::call_site());
     let impl_name = bridge.sig.ident.clone();
 
+    let (vis, inventory) = if matches!(bridge.vis, Visibility::Public(_)) {
+        let name = name.unwrap().value();
+        let vis = std::mem::replace(&mut bridge.vis, Visibility::Inherited);
+        let lib = lib.unwrap().value();
+        let args = arg_names.unwrap().value();
+        let mut is_variadic = false;
+        let arg_names = args
+            .split(" ")
+            .filter_map(|x| {
+                if x == "." {
+                    is_variadic = true;
+                    None
+                } else {
+                    Some(x)
+                }
+            })
+            .collect::<Vec<_>>();
+        let num_args = arg_names.len() - is_variadic as usize;
+        let inventory = quote! {
+            inventory::submit! {
+                ::scheme_rs::registry::BridgeFn::new(
+                    #name,
+                    #lib,
+                    #num_args,
+                    #is_variadic,
+                    #wrapper_name,
+                    ::scheme_rs::registry::BridgeFnDebugInfo::new(
+                        ::std::file!(),
+                        ::std::line!(),
+                        ::std::column!(),
+                        0,
+                        &[ #( #arg_names, )* ],
+                )
+                )
+            }
+        };
+        (vis, inventory)
+    } else {
+        if let Some(name) = name {
+            return Error::new(
+                name.span(),
+                "name attribute is not supported for private functions",
+            )
+            .into_compile_error()
+            .into();
+        }
+        if let Some(lib) = lib {
+            return Error::new(
+                lib.span(),
+                "lib attribute is not supported for private functions",
+            )
+            .into_compile_error()
+            .into();
+        }
+        if let Some(args) = arg_names {
+            return Error::new(
+                args.span(),
+                "args attribute is not supported for private functions",
+            )
+            .into_compile_error()
+            .into();
+        }
+        let vis = std::mem::replace(&mut bridge.vis, Visibility::Inherited);
+        (vis, quote!())
+    };
+
     quote! {
-        pub(crate) fn #wrapper_name<'a>(
+        #vis fn #wrapper_name<'a>(
             runtime: &'a ::scheme_rs::runtime::Runtime,
             env: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
             args: &'a [::scheme_rs::value::Value],
@@ -204,22 +252,7 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
             })
         }
 
-        inventory::submit! {
-            ::scheme_rs::registry::BridgeFn::new(
-                #name,
-                #lib,
-                #num_args,
-                #is_variadic,
-                #wrapper_name,
-                ::scheme_rs::registry::BridgeFnDebugInfo::new(
-                    ::std::file!(),
-                    ::std::line!(),
-                    ::std::column!(),
-                    0,
-                    &[ #( #arg_names, )* ],
-                )
-            )
-        }
+        #inventory
     }
     .into()
 }

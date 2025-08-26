@@ -1,6 +1,5 @@
 //! Exceptional situations and conditions
 
-use futures::future::BoxFuture;
 use scheme_rs_macros::{cps_bridge, runtime_fn};
 
 use crate::{
@@ -8,7 +7,6 @@ use crate::{
     gc::{Gc, GcInner, Trace},
     lists,
     proc::{Application, Closure, DynamicWind, FuncPtr},
-    registry::{BridgeFn, BridgeFnDebugInfo},
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax},
@@ -256,7 +254,7 @@ pub async fn with_exception_handler(
 }
 
 #[cps_bridge(name = "raise", lib = "(rnrs base builtins (6))", args = "obj")]
-async fn raise_builtin(
+pub async fn raise_builtin(
     runtime: &Runtime,
     _env: &[Gc<Value>],
     args: &[Value],
