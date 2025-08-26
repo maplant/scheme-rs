@@ -10,6 +10,7 @@ use by_address::ByAddress;
 use futures::future::BoxFuture;
 
 use crate::{
+    raise_on_err,
     exception::{raise, Condition, ExceptionHandler},
     gc::{Gc, GcInner, Trace},
     num::Number,
@@ -164,6 +165,12 @@ pub fn make_record_constructor_descriptor<'a>(
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Result<Application, Value>> {
     Box::pin(async move {
+        raise_on_err! {
+            runtime,
+            exception_handler,
+            dynamic_wind,
+            {
+            
         let cont: Closure = cont.clone().try_into()?;
         let [rtd, parent_rcd, protocol] = args else {
             unreachable!();
@@ -224,6 +231,8 @@ pub fn make_record_constructor_descriptor<'a>(
             dynamic_wind.clone(),
             None,
         ))
+            }
+        }
     })
 }
 
@@ -607,7 +616,7 @@ pub fn is_subtype_of(val: &Value, rt: &Value) -> Result<bool, Condition> {
 }
 
 fn record_predicate_fn<'a>(
-    runtime: &'a Runtime,
+    _runtime: &'a Runtime,
     env: &'a [Gc<Value>],
     args: &'a [Value],
     _rest_args: &'a [Value],

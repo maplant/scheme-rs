@@ -414,7 +414,7 @@ unsafe extern "C" fn call_exits_and_exception_handler_reraise(
                             runtime,
                             Vec::new(),
                             Vec::new(),
-                            FuncPtr::Bridge(return_error),
+                            FuncPtr::HaltError,
                             1,
                             false,
                             None,
@@ -455,6 +455,7 @@ unsafe extern "C" fn call_exits_and_exception_handler_reraise(
     }
 }
 
+/*
 fn return_error<'a>(
     _runtime: &'a Runtime,
     _env: &'a [Gc<Value>],
@@ -468,6 +469,7 @@ fn return_error<'a>(
         return Err(args[0].clone());
     })
 }
+*/
 
 unsafe extern "C" fn reraise_exception(
     runtime: *mut GcInner<RuntimeInner>,
@@ -574,4 +576,26 @@ pub fn exit_winders(from_extent: &DynamicWind, to_extent: &DynamicWind) -> Value
     }
 
     thunks
+}
+
+#[macro_export]
+macro_rules! raise_on_err {
+    (
+        $rt:expr,
+        $exception_handler:expr,
+        $dynamic_wind:expr,
+        $code:block
+    ) => {
+        match (move || -> Result<_, Condition> { $code })() {
+            Ok(ok) => Ok(ok),
+            Err(err) => {
+                return Ok($crate::exception::raise(
+                    $rt.clone(),
+                    err.into(),
+                    $exception_handler.clone(),
+                    $dynamic_wind,
+                ));
+            }
+        }
+    };
 }

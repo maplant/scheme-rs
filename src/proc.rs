@@ -59,6 +59,8 @@ pub(crate) enum FuncPtr {
     Continuation(ContinuationPtr),
     User(UserPtr),
     Bridge(BridgePtr),
+    /// Special type to indicate that we should return the argument as an Err.
+    HaltError,
 }
 
 unsafe impl Trace for FuncPtr {
@@ -200,6 +202,8 @@ impl ClosureInner {
                 dynamic_wind,
             )
             .await
+        } else if let FuncPtr::HaltError = self.func {
+            return Err(args[0].clone());
         } else {
             // For LLVM functions, we need to convert our args into raw pointers
             // and make sure any freshly allocated rest_args are disposed of properly.

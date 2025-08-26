@@ -33,10 +33,10 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     let wrapper_name = impl_name.to_string();
     let wrapper_name = Ident::new(&wrapper_name, Span::call_site());
 
-    let is_variadic = if let Some(last_arg) = bridge.sig.inputs.last() {
-        is_slice(last_arg)
+    let (rest_args, is_variadic) = if let Some(last_arg) = bridge.sig.inputs.last() && is_slice(last_args){
+        (quote!(rest_args), true)
     } else {
-        false
+        (quote!(), false)
     };
 
     let num_args = if is_variadic {
@@ -59,95 +59,147 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
             format!("arg{i}")
         })
         .collect();
+    
+    let arg_indices: Vec<_> = (0..num_args).collect();
 
-    let wrapper: ItemFn = if !is_variadic {
-        let arg_indices: Vec<_> = (0..num_args).collect();
-        parse_quote! {
-            pub(crate) fn #wrapper_name<'a>(
-                runtime: &'a ::scheme_rs::runtime::Runtime,
-                _env: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
-                args: &'a [::scheme_rs::value::Value],
-                rest_args: &'a [::scheme_rs::value::Value],
-                cont: &'a ::scheme_rs::value::Value,
-                exception_handler: &'a Option<::scheme_rs::gc::Gc<::scheme_rs::exception::ExceptionHandler>>,
-                dynamic_wind: &'a ::scheme_rs::proc::DynamicWind,
-            ) -> futures::future::BoxFuture<'a, Result<scheme_rs::proc::Application, ::scheme_rs::value::Value>> {
-                #bridge
-
-                Box::pin(
-                    async move {
-                        let result = #impl_name(
-                            #( &args[#arg_indices], )*
-                        ).await;
-                        // If the function returned an error, we want to raise
-                        // it.
-                        let result = match result {
-                            Err(err) => return Ok(::scheme_rs::exception::raise(
-                                runtime.clone(),
-                                err.into(),
-                                exception_handler.clone(),
-                                dynamic_wind,
-                            )),
-                            Ok(result) => result,
-                        };
-                        let cont = cont.clone().try_into()?;
-                        Ok(::scheme_rs::proc::Application::new(
-                            cont,
-                            result,
-                            exception_handler.clone(),
-                            dynamic_wind.clone(),
-                            None // TODO
-                        ))
-                    }
-                )
-            }
-        }
-    } else {
-        let arg_indices: Vec<_> = (0..num_args).collect();
-        parse_quote! {
-            pub(crate) fn #wrapper_name<'a>(
-                runtime: &'a ::scheme_rs::runtime::Runtime,
-                _env: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
-                args: &'a [::scheme_rs::value::Value],
-                rest_args: &'a [::scheme_rs::value::Value],
-                cont: &'a ::scheme_rs::value::Value,
-                exception_handler: &'a Option<::scheme_rs::gc::Gc<::scheme_rs::exception::ExceptionHandler>>,
-                dynamic_wind: &'a ::scheme_rs::proc::DynamicWind,
-            ) -> futures::future::BoxFuture<'a, Result<scheme_rs::proc::Application, ::scheme_rs::value::Value>> {
-                #bridge
-
-                Box::pin(
-                    async move {
-                        let result = #impl_name(
-                            #( &args[#arg_indices], )*
-                            rest_args
-                        ).await;
-                        // If the function returned an error, we want to raise
-                        // it.
-                        let result = match result {
-                            Err(err) => return Ok(::scheme_rs::exception::raise(
-                                runtime.clone(),
-                                err.into(),
-                                exception_handler.clone(),
-                                dynamic_wind,
-                            )),
-                            Ok(result) => result,
-                        };
-                        let cont = cont.clone().try_into()?;
-                        Ok(::scheme_rs::proc::Application::new(
-                            cont,
-                            result,
-                            exception_handler.clone(),
-                            dynamic_wind.clone(),
-                            None // TODO
-                        ))
-                    }
-                )
-            }
-        }
-    };
     quote! {
-        #wrapper
+        pub(crate) fn #wrapper_name<'a>(
+            runtime: &'a ::scheme_rs::runtime::Runtime,
+            _env: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
+            args: &'a [::scheme_rs::value::Value],
+            rest_args: &'a [::scheme_rs::value::Value],
+            cont: &'a ::scheme_rs::value::Value,
+            exception_handler: &'a Option<::scheme_rs::gc::Gc<::scheme_rs::exception::ExceptionHandler>>,
+            dynamic_wind: &'a ::scheme_rs::proc::DynamicWind,
+        ) -> futures::future::BoxFuture<'a, scheme_rs::proc::Application> {
+            #bridge
+
+            Box::pin(
+                async move {
+                    let result = #impl_name(
+                        #( &args[#arg_indices], )*
+                        #rest_args
+                    ).await;
+                    // If the function returned an error, we want to raise
+                    // it.
+                    let result = match result {
+                        Err(err) => return Ok(::scheme_rs::exception::raise(
+                            runtime.clone(),
+                            err.into(),
+                            exception_handler.clone(),
+                            dynamic_wind,
+                        )),
+                        Ok(result) => result,
+                    };
+                    let cont = cont.clone().try_into()?;
+                    ::scheme_rs::proc::Application::new(
+                        cont,
+                        result,
+                        exception_handler.clone(),
+                        dynamic_wind.clone(),
+                        None // TODO
+                    )
+                }
+            )
+        }
+
+        inventory::submit! {
+            ::scheme_rs::registry::BridgeFn::new(
+                #name,
+                #lib,
+                #num_args,
+                #is_variadic,
+                #wrapper_name,
+                ::scheme_rs::registry::BridgeFnDebugInfo::new(
+                    ::std::file!(),
+                    ::std::line!(),
+                    ::std::column!(),
+                    0,
+                    &[ #( #arg_names, )* ],
+                )
+            )
+        }
+    }
+    .into()
+}
+
+#[proc_macro_attribute]
+pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
+    let mut name: Option<LitStr> = None;
+    let mut lib: Option<LitStr> = None;
+    let mut num_args: Option<Literal> = None;
+    let mut variadic: Option<Ident> = None;
+    let bridge_attr_parser = syn::meta::parser(|meta| {
+        if meta.path.is_ident("name") {
+            name = Some(meta.value()?.parse()?);
+            Ok(())
+        } else if meta.path.is_ident("lib") {
+            lib = Some(meta.value()?.parse()?);
+            Ok(())
+        } else if meta.path.is_ident("num_args") {
+            num_args = Some(meta.value()?.parse()?);
+            Ok(())
+        } else if meta.path.is_ident("variadic") {
+            variadic = Some(meta.value()?.parse()?);
+            Ok(())
+        } else {
+            Err(meta.error("unsupported bridge property"))
+        }
+    });
+
+    parse_macro_input!(args with bridge_attr_parser);
+
+    let name = name.unwrap().value();
+    let lib = lib.unwrap().value();
+    let num_args = num_args.unwrap();
+    let is_variadic = variadic.unwrap_or_else(|| Ident::new("false", Span::call_site()));
+    let bridge = parse_macro_input!(item as ItemFn);
+
+    let impl_name = bridge.sig.ident.clone();
+    let wrapper_name = impl_name.to_string();
+    let wrapper_name = Ident::new(&wrapper_name, Span::call_site());
+
+    quote! {
+        pub(crate) fn #wrapper_name<'a>(
+            runtime: &'a ::scheme_rs::runtime::Runtime,
+            env: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
+            args: &'a [::scheme_rs::value::Value],
+            rest_args: &'a [::scheme_rs::value::Value],
+            cont: &'a ::scheme_rs::value::Value,
+            exception_handler: &'a Option<::scheme_rs::gc::Gc<::scheme_rs::exception::ExceptionHandler>>,
+            dynamic_wind: &'a ::scheme_rs::proc::DynamicWind,
+        ) -> futures::future::BoxFuture<'a, scheme_rs::proc::Application> {
+            #bridge
+
+            Box::pin(async move {
+                let result = #impl_name(
+                    runtime,
+                    env,
+                    args,
+                    rest_args,
+                    cont,
+                    exception_handler,
+                    dynamic_wind,
+                ).await;
+                let result = match result {
+                    Err(err) => return Ok(::scheme_rs::exception::raise(
+                        runtime.clone(),
+                        err.into(),
+                        exception_handler.clone(),
+                        dynamic_wind,
+                    )),
+                    Ok(result) => result,
+                };
+                let cont = cont.clone().try_into()?;
+                ::scheme_rs::proc::Application::new(
+                    cont,
+                    result,
+                    exception_handler.clone(),
+                    dynamic_wind.clone(),
+                    None // TODO
+                )
+            })
+        }
 
         inventory::submit! {
             ::scheme_rs::registry::BridgeFn::new(
