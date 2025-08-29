@@ -7,8 +7,7 @@ use crate::{
     proc::{Closure, ClosureInner},
     records::{Record, RecordTypeDescriptor},
     registry::bridge,
-    strings,
-    symbols,
+    strings, symbols,
     syntax::Syntax,
     vectors,
 };
@@ -56,7 +55,9 @@ impl Value {
         unsafe {
             match tag {
                 ValueType::Number => Arc::increment_strong_count(untagged as *const Number),
-                ValueType::String => Arc::increment_strong_count(untagged as *const strings::AlignedString),
+                ValueType::String => {
+                    Arc::increment_strong_count(untagged as *const strings::AlignedString)
+                }
                 ValueType::Vector => Gc::increment_reference_count(
                     untagged as *mut GcInner<vectors::AlignedVector<Self>>,
                 ),
@@ -491,20 +492,15 @@ impl PartialEq for Value {
 /// Equality Checking for Trees and Graphs by Michael D. Adams and R. Kent
 /// Dybvig.
 pub fn equal(obj1: &Value, obj2: &Value) -> bool {
-    todo!()
+    interleave(&mut HashMap::default(), obj1, obj2, K0)
 }
 
 const K0: i64 = 400;
 const KB: i64 = -40;
 
 pub fn interleave(ht: &mut HashMap<EqvValue, Value>, obj1: &Value, obj2: &Value, k: i64) -> bool {
-    let obj1 = obj1.unpacked_ref();
-    let obj2 = obj2.unpacked_ref();
-    
-
-    todo!()
+    e(ht, obj1, obj2, k).is_some()
 }
-
 
 fn e(ht: &mut HashMap<EqvValue, Value>, obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
     match k {
@@ -514,9 +510,18 @@ fn e(ht: &mut HashMap<EqvValue, Value>, obj1: &Value, obj2: &Value, k: i64) -> O
     }
 }
 
-
 fn fast(ht: &mut HashMap<EqvValue, Value>, obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
-    todo!()
+    let k = k - 1;
+    if obj1.eqv(obj2) {
+        return Some(k);
+    }
+    match (obj1.type_of(), obj2.type_of()) {
+        (ValueType::Pair, ValueType::Pair) => pair_eq(ht, obj1, obj2, k),
+        (ValueType::Vector, ValueType::Vector) => vector_eq(ht, obj1, obj2, k),
+        (ValueType::ByteVector, ValueType::ByteVector) => bytevector_eq(obj1, obj2, k),
+        (ValueType::String, ValueType::String) => string_eq(obj1, obj2, k),
+        _ => None,
+    }
 }
 
 fn slow(ht: &mut HashMap<EqvValue, Value>, obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
@@ -527,49 +532,59 @@ fn slow(ht: &mut HashMap<EqvValue, Value>, obj1: &Value, obj2: &Value, k: i64) -
         (ValueType::Pair, ValueType::Pair) => {
             if union_find(ht, obj1, obj2) {
                 return Some(0);
-            } 
-            let obj1: Gc<lists::Pair> = obj1.clone().try_into().unwrap();
-            let obj2: Gc<lists::Pair> = obj2.clone().try_into().unwrap();
-            let obj1 = obj1.read();
-            let obj2 = obj2.read();
-            let lists::Pair(car_x, cdr_x) = obj1.as_ref();
-            let lists::Pair(car_y, cdr_y) = obj2.as_ref();
-            e(ht, car_x, car_y, k - 1).and_then(|k| {
-                e(ht, cdr_x, cdr_y, k)
-            })
+            }
+            pair_eq(ht, obj1, obj2, k)
         }
         (ValueType::Vector, ValueType::Vector) => {
-            let vobj1: Gc<vectors::AlignedVector<Value>> = obj1.clone().try_into().unwrap();
-            let vobj2: Gc<vectors::AlignedVector<Value>> = obj2.clone().try_into().unwrap();
-            let vobj1 = vobj1.read();
-            let vobj2 = vobj2.read();
-            if vobj1.len() != vobj2.len() {
-                return None;
-            }
             if union_find(ht, obj1, obj2) {
                 return Some(0);
             }
-            let mut k = k - 1;
-            for (x, y) in vobj1.iter().zip(vobj2.iter()) {
-                let Some(kp) = e(ht, x, y, k) else {
-                    return None;
-                };
-                k = kp;
-            }
-            Some(k)
+            vector_eq(ht, obj1, obj2, k)
         }
-        (ValueType::ByteVector, ValueType::ByteVector) => {
-            let obj1: Arc<vectors::AlignedVector<u8>> = obj1.clone().try_into().unwrap();
-            let obj2: Arc<vectors::AlignedVector<u8>> = obj2.clone().try_into().unwrap();
-            (obj1 == obj2).then_some(k)
-        }
-        (ValueType::String, ValueType::String) => {
-            let obj1: Arc<strings::AlignedString> = obj1.clone().try_into().unwrap();
-            let obj2: Arc<strings::AlignedString> = obj2.clone().try_into().unwrap();
-            (obj1 == obj2).then_some(k)
-        }
-        _ => None
+        (ValueType::ByteVector, ValueType::ByteVector) => bytevector_eq(obj1, obj2, k),
+        (ValueType::String, ValueType::String) => string_eq(obj1, obj2, k),
+        _ => None,
     }
+}
+
+fn pair_eq(ht: &mut HashMap<EqvValue, Value>, obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
+    let obj1: Gc<lists::Pair> = obj1.clone().try_into().unwrap();
+    let obj2: Gc<lists::Pair> = obj2.clone().try_into().unwrap();
+    let obj1 = obj1.read();
+    let obj2 = obj2.read();
+    let lists::Pair(car_x, cdr_x) = obj1.as_ref();
+    let lists::Pair(car_y, cdr_y) = obj2.as_ref();
+    e(ht, car_x, car_y, k - 1).and_then(|k| e(ht, cdr_x, cdr_y, k))
+}
+
+fn vector_eq(ht: &mut HashMap<EqvValue, Value>, obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
+    let vobj1: Gc<vectors::AlignedVector<Value>> = obj1.clone().try_into().unwrap();
+    let vobj2: Gc<vectors::AlignedVector<Value>> = obj2.clone().try_into().unwrap();
+    let vobj1 = vobj1.read();
+    let vobj2 = vobj2.read();
+    if vobj1.len() != vobj2.len() {
+        return None;
+    }
+    let mut k = k - 1;
+    for (x, y) in vobj1.iter().zip(vobj2.iter()) {
+        let Some(kp) = e(ht, x, y, k) else {
+            return None;
+        };
+        k = kp;
+    }
+    Some(k)
+}
+
+fn bytevector_eq(obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
+    let obj1: Arc<vectors::AlignedVector<u8>> = obj1.clone().try_into().unwrap();
+    let obj2: Arc<vectors::AlignedVector<u8>> = obj2.clone().try_into().unwrap();
+    (obj1 == obj2).then_some(k)
+}
+
+fn string_eq(obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
+    let obj1: Arc<strings::AlignedString> = obj1.clone().try_into().unwrap();
+    let obj2: Arc<strings::AlignedString> = obj2.clone().try_into().unwrap();
+    (obj1 == obj2).then_some(k)
 }
 
 fn union_find(ht: &mut HashMap<EqvValue, Value>, x: &Value, y: &Value) -> bool {
@@ -633,19 +648,23 @@ fn boxv(v: Value) -> Value {
 }
 
 fn unbox(v: &Value) -> Value {
-    todo!()
+    let pair: Gc<lists::Pair> = v.clone().try_into().unwrap();
+    pair.read().0.clone()
 }
 
 fn unbox_to_num(v: &Value) -> Number {
-    todo!()
+    let pair: Gc<lists::Pair> = v.clone().try_into().unwrap();
+    let num: Arc<Number> = pair.read().0.clone().try_into().unwrap();
+    num.as_ref().clone()
 }
 
 fn is_box(v: &Value) -> bool {
-    todo!()
+    v.type_of() == ValueType::Pair
 }
 
 fn set_box(b: &Value, val: impl Into<Value>) {
-    todo!()
+    let pair: Gc<lists::Pair> = b.clone().try_into().unwrap();
+    pair.write().0 = val.into();
 }
 
 impl fmt::Display for UnpackedValue {
@@ -797,7 +816,9 @@ macro_rules! impl_from_wrapped_for {
 }
 
 impl_from_wrapped_for!(Number, Number, Arc::new);
-impl_from_wrapped_for!(String, String, |str| Arc::new(strings::AlignedString::new(str)));
+impl_from_wrapped_for!(String, String, |str| Arc::new(strings::AlignedString::new(
+    str
+)));
 impl_from_wrapped_for!(Vec<Value>, Vector, |vec| Gc::new(
     vectors::AlignedVector::new(vec)
 ));
@@ -909,23 +930,7 @@ impl PartialEq for EqvValue {
 
 impl Eq for EqvValue {}
 
-#[derive(Clone, Debug, Trace)]
-pub(crate) struct ReflexiveValue(pub(crate) Value);
 
-impl PartialEq for ReflexiveValue {
-    fn eq(&self, rhs: &Self) -> bool {
-        let obj1 = self.0.unpacked_ref();
-        let obj2 = rhs.0.unpacked_ref();
-        match (&*obj1, &*obj2) {
-            (UnpackedValue::Number(obj1), UnpackedValue::Number(obj2)) => {
-                ReflexiveNumber(obj1.clone()) == ReflexiveNumber(obj2.clone())
-            }
-            (obj1, obj2) => obj1 == obj2,
-        }
-    }
-}
-
-/*
 #[derive(Clone, Debug, Trace)]
 pub(crate) struct ReflexiveValue(pub(crate) Value);
 
@@ -993,7 +998,6 @@ impl PartialEq for ReflexiveValue {
         }
     }
 }
-*/
 
 impl Eq for ReflexiveValue {}
 
@@ -1010,6 +1014,11 @@ pub async fn eqv(a: &Value, b: &Value) -> Result<Vec<Value>, Condition> {
 #[bridge(name = "eq?", lib = "(rnrs base builtins (6))")]
 pub async fn eq(a: &Value, b: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(a.eqv(b))])
+}
+
+#[bridge(name = "equal?", lib = "(rnrs base builtins (6))")]
+pub async fn equal_pred(a: &Value, b: &Value) -> Result<Vec<Value>, Condition> {
+    Ok(vec![Value::from(a == b)])
 }
 
 #[bridge(name = "boolean?", lib = "(rnrs base builtins (6))")]

@@ -14,7 +14,7 @@ use futures::future::BoxFuture;
 use std::{
     collections::{BTreeSet, HashSet},
     fmt,
-    sync::Arc,
+    sync::{atomic::{AtomicUsize, Ordering}, Arc},
 };
 
 /// Source location for an s-expression.
@@ -422,7 +422,8 @@ pub struct Mark(usize);
 
 impl Mark {
     pub fn new() -> Self {
-        Self(rand::random())
+        static NEXT_MARK: AtomicUsize = AtomicUsize::new(0);
+        Self(NEXT_MARK.fetch_add(1, Ordering::Relaxed))
     }
 }
 
@@ -441,16 +442,6 @@ pub struct Identifier {
 impl fmt::Debug for Identifier {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.sym)
-        /*
-            f,
-            "{} ({})",
-            self.sym,
-            self.marks
-                .iter()
-                .map(|m| m.0.to_string() + " ")
-                .collect::<String>()
-        )
-         */
     }
 }
 
