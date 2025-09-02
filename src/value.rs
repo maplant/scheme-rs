@@ -235,6 +235,12 @@ impl Value {
         }
     }
 
+    pub fn eq(&self, rhs: &Self) -> bool {
+        let obj1 = self.unpacked_ref();
+        let obj2 = rhs.unpacked_ref();
+        obj1.eq(&*obj2)
+    }
+
     /// The eqv? predicate as defined by the R6RS specification.
     pub fn eqv(&self, rhs: &Self) -> bool {
         let obj1 = self.unpacked_ref();
@@ -432,6 +438,25 @@ impl UnpackedValue {
                 let untagged = Gc::into_raw(any);
                 Value::from_mut_ptr_and_tag(untagged, ValueType::Any)
             }
+        }
+    }
+
+    pub fn eq(&self, rhs: &Self) -> bool {
+        match (self, rhs) {
+            (Self::Boolean(a), Self::Boolean(b)) => a == b,
+            (Self::Symbol(a), Self::Symbol(b)) => a == b,
+            (Self::Number(a), Self::Number(b)) => Arc::ptr_eq(&a, &b),
+            (Self::Character(a), Self::Character(b)) => a == b,
+            (Self::Null, Self::Null) => true,
+            (Self::String(a), Self::String(b)) => Arc::ptr_eq(&a, &b),
+            (Self::Pair(a), Self::Pair(b)) => Gc::ptr_eq(&a, &b),
+            (Self::Vector(a), Self::Vector(b)) => Gc::ptr_eq(&a, &b),
+            (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(&a, &b),
+            (Self::Closure(a), Self::Closure(b)) => Gc::ptr_eq(&a.0, &b.0),
+            (Self::Syntax(a), Self::Syntax(b)) => Arc::ptr_eq(a, b),
+            (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(a, b),
+            (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
+            _ => false,
         }
     }
 
