@@ -37,7 +37,10 @@ pub enum Number {
 
 impl Number {
     pub fn is_exact(&self) -> bool {
-        matches!(self, Self::FixedInteger(_) | Self::BigInteger(_) | Self::Rational(_))
+        matches!(
+            self,
+            Self::FixedInteger(_) | Self::BigInteger(_) | Self::Rational(_)
+        )
     }
 
     pub fn is_zero(&self) -> bool {
@@ -108,7 +111,6 @@ impl From<usize> for Number {
         }
     }
 }
-
 
 impl From<i32> for Number {
     fn from(i: i32) -> Self {

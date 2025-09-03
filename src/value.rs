@@ -1,3 +1,5 @@
+use indexmap::{IndexMap, IndexSet};
+
 use crate::{
     ast,
     exception::{Condition, Exception},
@@ -235,17 +237,19 @@ impl Value {
         }
     }
 
+    /// The eq? predicate as defined by the R6RS specification.
+    #[allow(clippy::should_implement_trait)]
     pub fn eq(&self, rhs: &Self) -> bool {
         let obj1 = self.unpacked_ref();
         let obj2 = rhs.unpacked_ref();
-        obj1.eq(&*obj2)
+        obj1.eq(&obj2)
     }
 
     /// The eqv? predicate as defined by the R6RS specification.
     pub fn eqv(&self, rhs: &Self) -> bool {
         let obj1 = self.unpacked_ref();
         let obj2 = rhs.unpacked_ref();
-        obj1.eqv(&*obj2)
+        obj1.eqv(&obj2)
     }
 }
 
@@ -272,13 +276,19 @@ impl Drop for Value {
 
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        <UnpackedValue as fmt::Display>::fmt(&*self.unpacked_ref(), f)
+        let mut circular_values = IndexSet::default();
+        determine_circularity(self, &mut IndexSet::default(), &mut circular_values);
+        let mut circular_values = circular_values.into_iter().map(|k| (k, false)).collect();
+        write_value(self, display_value, &mut circular_values, f)
     }
 }
 
 impl fmt::Debug for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        <UnpackedValue as fmt::Debug>::fmt(&*self.unpacked_ref(), f)
+        let mut circular_values = IndexSet::default();
+        determine_circularity(self, &mut IndexSet::default(), &mut circular_values);
+        let mut circular_values = circular_values.into_iter().map(|k| (k, false)).collect();
+        write_value(self, debug_value, &mut circular_values, f)
     }
 }
 
@@ -441,17 +451,18 @@ impl UnpackedValue {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn eq(&self, rhs: &Self) -> bool {
         match (self, rhs) {
             (Self::Boolean(a), Self::Boolean(b)) => a == b,
             (Self::Symbol(a), Self::Symbol(b)) => a == b,
-            (Self::Number(a), Self::Number(b)) => Arc::ptr_eq(&a, &b),
+            (Self::Number(a), Self::Number(b)) => Arc::ptr_eq(a, b),
             (Self::Character(a), Self::Character(b)) => a == b,
             (Self::Null, Self::Null) => true,
-            (Self::String(a), Self::String(b)) => Arc::ptr_eq(&a, &b),
-            (Self::Pair(a), Self::Pair(b)) => Gc::ptr_eq(&a, &b),
-            (Self::Vector(a), Self::Vector(b)) => Gc::ptr_eq(&a, &b),
-            (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(&a, &b),
+            (Self::String(a), Self::String(b)) => Arc::ptr_eq(a, b),
+            (Self::Pair(a), Self::Pair(b)) => Gc::ptr_eq(a, b),
+            (Self::Vector(a), Self::Vector(b)) => Gc::ptr_eq(a, b),
+            (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(a, b),
             (Self::Closure(a), Self::Closure(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Syntax(a), Self::Syntax(b)) => Arc::ptr_eq(a, b),
             (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(a, b),
@@ -473,10 +484,10 @@ impl UnpackedValue {
             // Both obj1 and obj2 are the empty list
             (Self::Null, Self::Null) => true,
             // Everything else is pointer equivalence
-            (Self::String(a), Self::String(b)) => Arc::ptr_eq(&a, &b),
-            (Self::Pair(a), Self::Pair(b)) => Gc::ptr_eq(&a, &b),
-            (Self::Vector(a), Self::Vector(b)) => Gc::ptr_eq(&a, &b),
-            (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(&a, &b),
+            (Self::String(a), Self::String(b)) => Arc::ptr_eq(a, b),
+            (Self::Pair(a), Self::Pair(b)) => Gc::ptr_eq(a, b),
+            (Self::Vector(a), Self::Vector(b)) => Gc::ptr_eq(a, b),
+            (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(a, b),
             (Self::Closure(a), Self::Closure(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Syntax(a), Self::Syntax(b)) => Arc::ptr_eq(a, b),
             (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(a, b),
@@ -523,7 +534,7 @@ pub fn equal(obj1: &Value, obj2: &Value) -> bool {
 const K0: i64 = 400;
 const KB: i64 = -40;
 
-pub fn interleave(ht: &mut HashMap<EqvValue, Value>, obj1: &Value, obj2: &Value, k: i64) -> bool {
+fn interleave(ht: &mut HashMap<EqvValue, Value>, obj1: &Value, obj2: &Value, k: i64) -> bool {
     e(ht, obj1, obj2, k).is_some()
 }
 
@@ -592,10 +603,7 @@ fn vector_eq(ht: &mut HashMap<EqvValue, Value>, obj1: &Value, obj2: &Value, k: i
     }
     let mut k = k - 1;
     for (x, y) in vobj1.iter().zip(vobj2.iter()) {
-        let Some(kp) = e(ht, x, y, k) else {
-            return None;
-        };
-        k = kp;
+        k = e(ht, x, y, k)?;
     }
     Some(k)
 }
@@ -690,78 +698,6 @@ fn is_box(v: &Value) -> bool {
 fn set_box(b: &Value, val: impl Into<Value>) {
     let pair: Gc<lists::Pair> = b.clone().try_into().unwrap();
     pair.write().0 = val.into();
-}
-
-impl fmt::Display for UnpackedValue {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Undefined => write!(f, "<undefined>"),
-            Self::Null => write!(f, "()"),
-            Self::Boolean(true) => write!(f, "#t"),
-            Self::Boolean(false) => write!(f, "#f"),
-            Self::Number(number) => write!(f, "{number}"),
-            Self::Character(c) => write!(f, "#\\{c}"),
-            Self::String(string) => write!(f, "{string}"),
-            Self::Symbol(symbol) => write!(f, "{symbol}"),
-            Self::Pair(pair) => {
-                let pair_read = pair.read();
-                let lists::Pair(car, cdr) = pair_read.as_ref();
-                lists::display_list(car, cdr, f)
-            }
-            Self::Vector(v) => {
-                let v_read = v.read();
-                vectors::display_vec("#(", v_read.as_ref(), f)
-            }
-            Self::ByteVector(v) => vectors::display_vec("#u8(", v, f),
-            Self::Closure(_) => write!(f, "<procedure>"),
-            Self::Record(record) => write!(f, "<{record:?}>"),
-            Self::Syntax(syntax) => write!(f, "{syntax:#?}"),
-            Self::RecordTypeDescriptor(rtd) => write!(f, "<{rtd:?}>"),
-            Self::Any(any) => {
-                let any = any.read().clone();
-                let Ok(cond) = any.downcast::<Condition>() else {
-                    return write!(f, "<record>");
-                };
-                write!(f, "<{cond:?}>")
-            }
-        }
-    }
-}
-
-impl fmt::Debug for UnpackedValue {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Undefined => write!(f, "<undefined>"),
-            Self::Null => write!(f, "()"),
-            Self::Boolean(true) => write!(f, "#t"),
-            Self::Boolean(false) => write!(f, "#f"),
-            Self::Number(number) => write!(f, "{number:?}"),
-            Self::Character(c) => write!(f, "#\\{c}"),
-            Self::String(string) => write!(f, "{string:?}"),
-            Self::Symbol(symbol) => write!(f, "{symbol}"),
-            Self::Pair(pair) => {
-                let pair_read = pair.read();
-                let lists::Pair(car, cdr) = pair_read.as_ref();
-                lists::debug_list(car, cdr, f)
-            }
-            Self::Vector(v) => {
-                let v_read = v.read();
-                vectors::display_vec("#(", v_read.as_ref(), f)
-            }
-            Self::ByteVector(v) => vectors::display_vec("#u8(", v, f),
-            Self::Syntax(syntax) => write!(f, "{syntax:#?}"),
-            Self::Closure(proc) => write!(f, "#<procedure {proc:?}>"),
-            Self::Record(record) => write!(f, "<{record:#?}>"),
-            Self::RecordTypeDescriptor(rtd) => write!(f, "<{rtd:?}>"),
-            Self::Any(any) => {
-                let any = any.read().clone();
-                let Ok(cond) = any.downcast::<Condition>() else {
-                    return write!(f, "<record>");
-                };
-                write!(f, "<{cond:?}>")
-            }
-        }
-    }
 }
 
 impl From<ast::Literal> for UnpackedValue {
@@ -921,7 +857,7 @@ impl TryFrom<Value> for (Value, Value) {
 }
 
 /// A Value for which the implementation of PartialEq uses eqv rather than equal
-pub(crate) struct EqvValue(Value);
+pub(crate) struct EqvValue(pub(crate) Value);
 
 impl Hash for EqvValue {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
@@ -954,7 +890,6 @@ impl PartialEq for EqvValue {
 }
 
 impl Eq for EqvValue {}
-
 
 #[derive(Clone, Debug, Trace)]
 pub(crate) struct ReflexiveValue(pub(crate) Value);
@@ -1026,6 +961,131 @@ impl PartialEq for ReflexiveValue {
 
 impl Eq for ReflexiveValue {}
 
+/// Determines which children of the given list are circular, i.e. have children
+/// that refer to back to them. This is just a depth-first search.
+fn determine_circularity(
+    curr: &Value,
+    visited: &mut IndexSet<EqvValue>,
+    circular: &mut IndexSet<EqvValue>,
+) {
+    match curr.type_of() {
+        ValueType::Pair | ValueType::Vector => {
+            let eqv_value = EqvValue(curr.clone());
+            if visited.contains(&eqv_value) {
+                circular.insert(eqv_value);
+                return;
+            }
+
+            visited.insert(eqv_value);
+        }
+        _ => (),
+    }
+
+    match curr.clone().unpack() {
+        UnpackedValue::Pair(pair) => {
+            let pair_read = pair.read();
+            let lists::Pair(car, cdr) = pair_read.as_ref();
+            determine_circularity(car, visited, circular);
+            determine_circularity(cdr, visited, circular);
+        }
+        UnpackedValue::Vector(vec) => {
+            let vec_read = vec.read();
+            for item in &vec_read.0 {
+                determine_circularity(item, visited, circular);
+            }
+        }
+        _ => (),
+    }
+}
+
+pub(crate) fn write_value(
+    val: &Value,
+    fmt: fn(&Value, &mut IndexMap<EqvValue, bool>, &mut fmt::Formatter<'_>) -> fmt::Result,
+    circular_values: &mut IndexMap<EqvValue, bool>,
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
+    if let Some((idx, _, seen)) = circular_values.get_full_mut(&EqvValue(val.clone())) {
+        if *seen {
+            write!(f, "#{idx}#")?;
+            return Ok(());
+        } else {
+            write!(f, "#{idx}=")?;
+            *seen = true;
+        }
+    }
+
+    fmt(val, circular_values, f)
+}
+
+fn display_value(
+    val: &Value,
+    circular_values: &mut IndexMap<EqvValue, bool>,
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
+    match val.clone().unpack() {
+        UnpackedValue::Undefined => write!(f, "<undefined>"),
+        UnpackedValue::Null => write!(f, "()"),
+        UnpackedValue::Boolean(true) => write!(f, "#t"),
+        UnpackedValue::Boolean(false) => write!(f, "#f"),
+        UnpackedValue::Number(number) => write!(f, "{number}"),
+        UnpackedValue::Character(c) => write!(f, "#\\{c}"),
+        UnpackedValue::String(string) => write!(f, "{string}"),
+        UnpackedValue::Symbol(symbol) => write!(f, "{symbol}"),
+        UnpackedValue::Pair(pair) => {
+            let pair_read = pair.read();
+            let lists::Pair(car, cdr) = pair_read.as_ref();
+            lists::write_list(car, cdr, display_value, circular_values, f)
+        }
+        UnpackedValue::Vector(v) => vectors::write_vec(&v, display_value, circular_values, f),
+        UnpackedValue::ByteVector(v) => vectors::write_bytevec(&v, f),
+        UnpackedValue::Closure(_) => write!(f, "<procedure>"),
+        UnpackedValue::Record(record) => write!(f, "<{record:?}>"),
+        UnpackedValue::Syntax(syntax) => write!(f, "{syntax:#?}"),
+        UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "<{rtd:?}>"),
+        UnpackedValue::Any(any) => {
+            let any = any.read().clone();
+            let Ok(cond) = any.downcast::<Condition>() else {
+                return write!(f, "<record>");
+            };
+            write!(f, "<{cond:?}>")
+        }
+    }
+}
+
+fn debug_value(
+    val: &Value,
+    circular_values: &mut IndexMap<EqvValue, bool>,
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
+    match val.clone().unpack() {
+        UnpackedValue::Undefined => write!(f, "<undefined>"),
+        UnpackedValue::Null => write!(f, "()"),
+        UnpackedValue::Boolean(true) => write!(f, "#t"),
+        UnpackedValue::Boolean(false) => write!(f, "#f"),
+        UnpackedValue::Number(number) => write!(f, "{number:?}"),
+        UnpackedValue::Character(c) => write!(f, "#\\{c}"),
+        UnpackedValue::String(string) => write!(f, "{string:?}"),
+        UnpackedValue::Symbol(symbol) => write!(f, "{symbol}"),
+        UnpackedValue::Pair(pair) => {
+            let pair_read = pair.read();
+            let lists::Pair(car, cdr) = pair_read.as_ref();
+            lists::write_list(car, cdr, debug_value, circular_values, f)
+        }
+        UnpackedValue::Vector(v) => vectors::write_vec(&v, debug_value, circular_values, f),
+        UnpackedValue::ByteVector(v) => vectors::write_bytevec(&v, f),
+        UnpackedValue::Syntax(syntax) => write!(f, "{syntax:#?}"),
+        UnpackedValue::Closure(proc) => write!(f, "#<procedure {proc:?}>"),
+        UnpackedValue::Record(record) => write!(f, "<{record:#?}>"),
+        UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "<{rtd:?}>"),
+        UnpackedValue::Any(any) => {
+            let any = any.read().clone();
+            let Ok(cond) = any.downcast::<Condition>() else {
+                return write!(f, "<record>");
+            };
+            write!(f, "<{cond:?}>")
+        }
+    }
+}
 #[bridge(name = "not", lib = "(rnrs base builtins (6))")]
 pub async fn not(a: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(a.0 == ValueType::Boolean as u64)])

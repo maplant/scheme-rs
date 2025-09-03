@@ -14,7 +14,10 @@ use futures::future::BoxFuture;
 use std::{
     collections::{BTreeSet, HashSet},
     fmt,
-    sync::{atomic::{AtomicUsize, Ordering}, Arc},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 /// Source location for an s-expression.
@@ -170,7 +173,7 @@ impl Syntax {
                 literal: Literal::Number(num.as_ref().clone()),
                 span: Span::default(),
             },
-            x => unimplemented!("{x:?}"),
+            x => unimplemented!("{:?}", x.into_value()),
         }
     }
 
