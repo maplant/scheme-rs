@@ -2,7 +2,7 @@
 
 use scheme_rs::{exception::Condition, registry::bridge, value::Value};
 
-#[bridge(name = "assert-eqv?", lib = "(test)")]
+#[bridge(name = "assert-equal?", lib = "(test)")]
 async fn test_assert(arg1: &Value, arg2: &Value) -> Result<Vec<Value>, Condition> {
     if arg1 != arg2 {
         let arg1 = format!("{arg1:?}");

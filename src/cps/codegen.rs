@@ -80,7 +80,6 @@ pub(crate) struct RuntimeFunctions {
 }
 
 impl Cps {
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn into_closure(
         self,
         runtime: Runtime,
