@@ -193,7 +193,7 @@ unsafe fn decrement(s: OpaqueGcPtr) {
 
 unsafe fn release(s: OpaqueGcPtr) {
     unsafe {
-        for_each_child(s, decrement);
+        for_each_child(s, &mut |c| decrement(c));
         s.set_color(Color::Black);
         if !s.buffered() {
             free(s);
@@ -272,30 +272,51 @@ unsafe fn collect_roots() {
     }
 }
 
+enum MarkGrayPhase {
+    MarkGray(OpaqueGcPtr),
+    SetCrc(OpaqueGcPtr),
+}
+
 unsafe fn mark_gray(s: OpaqueGcPtr) {
     unsafe {
+        let mut stack = Vec::new();
         if s.color() != Color::Gray {
             s.set_color(Color::Gray);
             s.set_crc(s.rc() as isize);
-            for_each_child(s, |t| {
-                mark_gray(t);
-                let t_crc = t.crc();
-                if t_crc > 0 {
-                    t.set_crc(t_crc - 1);
+            for_each_child(s, &mut |t| stack.push(MarkGrayPhase::MarkGray(t)))
+        }
+        while let Some(s) = stack.pop() {
+            match s {
+                MarkGrayPhase::MarkGray(s) => {
+                    if s.color() != Color::Gray {
+                        s.set_color(Color::Gray);
+                        s.set_crc(s.rc() as isize);
+                        for_each_child(s, &mut |t| stack.push(MarkGrayPhase::MarkGray(t)))
+                    }
+                    stack.push(MarkGrayPhase::SetCrc(s))
                 }
-            });
+                MarkGrayPhase::SetCrc(s) => {
+                    let s_crc = s.crc();
+                    if s_crc > 0 {
+                        s.set_crc(s_crc - 1);
+                    }
+                }
+            }
         }
     }
 }
 
 unsafe fn scan(s: OpaqueGcPtr) {
     unsafe {
-        if s.color() == Color::Gray {
-            if s.crc() == 0 {
-                s.set_color(Color::White);
-                for_each_child(s, scan);
-            } else {
-                scan_black(s);
+        let mut stack = vec![s];
+        while let Some(s) = stack.pop() {
+            if s.color() == Color::Gray {
+                if s.crc() == 0 {
+                    s.set_color(Color::White);
+                    for_each_child(s, &mut |c| stack.push(c));
+                } else {
+                    scan_black(s);
+                }
             }
         }
     }
@@ -303,20 +324,26 @@ unsafe fn scan(s: OpaqueGcPtr) {
 
 unsafe fn scan_black(s: OpaqueGcPtr) {
     unsafe {
-        if s.color() != Color::Black {
-            s.set_color(Color::Black);
-            for_each_child(s, scan_black);
+        let mut stack = vec![s];
+        while let Some(s) = stack.pop() {
+            if s.color() != Color::Black {
+                s.set_color(Color::Black);
+                for_each_child(s, &mut |c| stack.push(c));
+            }
         }
     }
 }
 
 unsafe fn collect_white(s: OpaqueGcPtr) {
     unsafe {
-        if s.color() == Color::White {
-            s.set_color(Color::Orange);
-            s.set_buffered(true);
-            (&raw mut CURRENT_CYCLE).as_mut().unwrap().push(s);
-            for_each_child(s, collect_white);
+        let mut stack = vec![s];
+        while let Some(s) = stack.pop() {
+            if s.color() == Color::White {
+                s.set_color(Color::Orange);
+                s.set_buffered(true);
+                (&raw mut CURRENT_CYCLE).as_mut().unwrap().push(s);
+                for_each_child(s, &mut |c| stack.push(c));
+            }
         }
     }
 }
@@ -329,7 +356,7 @@ unsafe fn sigma_preparation() {
                 n.set_crc(n.rc() as isize);
             }
             for n in c {
-                for_each_child(*n, |m| {
+                for_each_child(*n, &mut |m| {
                     if m.color() == Color::Red && m.crc() > 0 {
                         m.set_crc(m.crc() - 1);
                     }
@@ -414,7 +441,7 @@ unsafe fn free_cycle(c: &[OpaqueGcPtr]) {
             n.set_color(Color::Red);
         }
         for n in c {
-            for_each_child(*n, cyclic_decrement);
+            for_each_child(*n, &mut |c| cyclic_decrement(c));
         }
         for n in c {
             free(*n);
@@ -435,7 +462,7 @@ unsafe fn cyclic_decrement(m: OpaqueGcPtr) {
     }
 }
 
-unsafe fn for_each_child(s: OpaqueGcPtr, visitor: unsafe fn(OpaqueGcPtr)) {
+unsafe fn for_each_child(s: OpaqueGcPtr, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
     unsafe {
         let lock = s.lock().read().unwrap();
         (s.visit_children())(s.data(), visitor);

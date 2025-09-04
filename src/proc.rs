@@ -65,7 +65,7 @@ pub(crate) enum FuncPtr {
 }
 
 unsafe impl Trace for FuncPtr {
-    unsafe fn visit_children(&self, _visitor: unsafe fn(crate::gc::OpaqueGcPtr)) {}
+    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(crate::gc::OpaqueGcPtr)) {}
 
     unsafe fn finalize(&mut self) {}
 }
