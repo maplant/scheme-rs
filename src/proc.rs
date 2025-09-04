@@ -2,55 +2,66 @@
 //! Contains the main trampoline.
 
 use crate::{
-    exception::{Condition, Exception, ExceptionHandler, Frame},
-    gc::{yield_until_gc_cleared, Gc, GcInner, Trace},
+    env::Local,
+    exception::{Condition, Exception, ExceptionHandler, Frame, raise},
+    gc::{Gc, GcInner, Trace, yield_until_gc_cleared},
     lists::{list_to_vec, slice_to_list},
-    registry::{BridgeFn, BridgeFnDebugInfo},
-    runtime::{FunctionDebugInfoId, Runtime, IGNORE_FUNCTION},
+    registry::BridgeFnDebugInfo,
+    runtime::{Runtime, RuntimeInner},
+    symbols::Symbol,
     syntax::Span,
     value::{UnpackedValue, Value, ValueType},
 };
 use futures::future::BoxFuture;
-use std::{borrow::Cow, collections::HashMap, fmt, hash::Hash, ptr::null_mut};
+use scheme_rs_macros::cps_bridge;
+use std::{borrow::Cow, collections::HashMap, fmt, hash::Hash, ptr::null_mut, sync::Arc};
 
 pub type Record = Vec<Gc<Value>>;
 
-/// A function pointer to a generated continuation.
-pub type ContinuationPtr = unsafe extern "C" fn(
-    runtime: *mut GcInner<Runtime>,
-    env: *const *mut GcInner<Value>,
-    globals: *const *mut GcInner<Value>,
-    args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandler>,
-    dynamic_wind: *const DynamicWind,
-) -> *mut Result<Application, Condition>;
+// TODO: These two should not return Results, they should return only
+// Applications.
 
-/// A function pointer to a generated closure function.
-pub type ClosurePtr = unsafe extern "C" fn(
-    runtime: *mut GcInner<Runtime>,
+/// A function pointer to a generated continuation.
+pub(crate) type ContinuationPtr = unsafe extern "C" fn(
+    runtime: *mut GcInner<RuntimeInner>,
     env: *const *mut GcInner<Value>,
     globals: *const *mut GcInner<Value>,
     args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
-    cont: *const Value,
-) -> *mut Result<Application, Condition>;
+) -> *mut Application;
+
+/// A function pointer to a generated user function.
+pub(crate) type UserPtr = unsafe extern "C" fn(
+    runtime: *mut GcInner<RuntimeInner>,
+    env: *const *mut GcInner<Value>,
+    globals: *const *mut GcInner<Value>,
+    args: *const Value,
+    exception_handler: *mut GcInner<ExceptionHandler>,
+    dynamic_wind: *const DynamicWind,
+    cont: *mut GcInner<Value>,
+) -> *mut Application;
 
 /// A function pointer to an async Rust bridge function.
+// TODO: The ordering of these arguments is inconsistent with the other two; env
+// should be the first argument.
 pub type BridgePtr = for<'a> fn(
+    runtime: &'a Runtime,
+    env: &'a [Gc<Value>],
     args: &'a [Value],
     rest_args: &'a [Value],
     cont: &'a Value,
-    env: &'a [Gc<Value>],
     exception_handler: &'a Option<Gc<ExceptionHandler>>,
     dynamic_wind: &'a DynamicWind,
-) -> BoxFuture<'a, Result<Application, Value>>;
+) -> BoxFuture<'a, Application>;
 
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub enum FuncPtr {
+#[derive(Copy, Clone, Debug)]
+pub(crate) enum FuncPtr {
     Continuation(ContinuationPtr),
-    Closure(ClosurePtr),
+    User(UserPtr),
     Bridge(BridgePtr),
+    /// Special type to indicate that we should return the argument as an Err.
+    HaltError,
 }
 
 unsafe impl Trace for FuncPtr {
@@ -59,43 +70,40 @@ unsafe impl Trace for FuncPtr {
     unsafe fn finalize(&mut self) {}
 }
 
-/// The runtime representation of a Closure, which can be either a user function
-/// or a continuation. Contains a reference to all of the globals and
-/// environmental variables used in the body, along with a function pointer to
-/// the body of the closure.
 #[derive(Clone, Trace)]
 #[repr(align(16))]
-pub struct Closure {
+pub(crate) struct ClosureInner {
     /// The runtime the Closure is defined in. This is necessary to ensure that
     /// dropping the runtime does not de-allocate the function pointer for this
     /// closure.
-    pub runtime: Gc<Runtime>,
+    // TODO: Do we make this optional in the case of bridge functions?
+    pub(crate) runtime: Runtime,
     /// Environmental variables used by the closure.
-    pub env: Record,
+    pub(crate) env: Record,
     /// Global variables used by this closure.
-    pub globals: Record,
+    pub(crate) globals: Record,
     /// Fuction pointer to the body of the closure.
-    pub func: FuncPtr,
+    pub(crate) func: FuncPtr,
     /// Number of required arguments to this closure.
-    pub num_required_args: usize,
+    pub(crate) num_required_args: usize,
     /// Whether or not this is a variadic function.
-    pub variadic: bool,
+    pub(crate) variadic: bool,
     /// Whether or not this function is a variable transformer.
-    pub is_variable_transformer: bool,
+    pub(crate) is_variable_transformer: bool,
     /// Debug information for this function. Only applicable if the function is
     /// a user function, i.e. not a continuation.
-    pub debug_info: Option<FunctionDebugInfoId>,
+    pub(crate) debug_info: Option<Arc<FuncDebugInfo>>,
 }
 
-impl Closure {
-    pub fn new(
-        runtime: Gc<Runtime>,
+impl ClosureInner {
+    pub(crate) fn new(
+        runtime: Runtime,
         env: impl Into<Record>,
         globals: impl Into<Record>,
         func: FuncPtr,
         num_required_args: usize,
         variadic: bool,
-        debug_info: Option<FunctionDebugInfoId>,
+        debug_info: Option<Arc<FuncDebugInfo>>,
     ) -> Self {
         Self {
             runtime,
@@ -134,7 +142,7 @@ impl Closure {
         // Handle arguments:
 
         // Extract the continuation, if it is required
-        let cont = !matches!(self.func, FuncPtr::Continuation(_));
+        let cont = matches!(self.func, FuncPtr::Bridge(_) | FuncPtr::User(_));
         let (cont, args) = if cont {
             let (cont, args) = args.split_last().unwrap();
             (Some(cont.clone()), args)
@@ -144,10 +152,23 @@ impl Closure {
 
         // Error if the number of arguments provided is incorrect
         if args.len() < self.num_required_args {
-            return Err(Condition::wrong_num_of_args(self.num_required_args, args.len()).into());
+            return Ok(raise(
+                self.runtime.clone(),
+                Condition::wrong_num_of_args(self.num_required_args, args.len()).into(),
+                exception_handler,
+                dynamic_wind,
+            ));
+            // return Err(Condition::wrong_num_of_args(self.num_required_args, args.len()).into());
         }
         if !self.variadic && args.len() > self.num_required_args {
-            return Err(Condition::wrong_num_of_args(self.num_required_args, args.len()).into());
+            return Ok(raise(
+                self.runtime.clone(),
+                Condition::wrong_num_of_args(self.num_required_args, args.len()).into(),
+                // Condition::wrong_num_of_args(self.num_required_args, args.len()).into(),
+                exception_handler,
+                dynamic_wind,
+            ));
+            // return Err(Condition::wrong_num_of_args(self.num_required_args, args.len()).into());
         }
 
         // If this function is variadic, create a list to put any extra arguments
@@ -172,30 +193,31 @@ impl Closure {
             let FuncPtr::Bridge(async_fn) = self.func else {
                 unreachable!()
             };
-            (async_fn)(
+            Ok((async_fn)(
+                &self.runtime,
+                &self.env,
                 args.as_ref(),
                 rest_args.unwrap_or(&[]),
                 cont.as_ref().unwrap(),
-                &self.env,
                 &exception_handler,
                 dynamic_wind,
             )
-            .await
+            .await)
+        } else if let FuncPtr::HaltError = self.func {
+            Err(args[0].clone())
         } else {
             // For LLVM functions, we need to convert our args into raw pointers
             // and make sure any freshly allocated rest_args are disposed of properly.
 
             let env = cells_to_vec_of_ptrs(&self.env);
             let globals = cells_to_vec_of_ptrs(&self.globals);
-
-            // let args_cells = values_to_vec_of_cells(&args);
-            // let args = cells_to_vec_of_ptrs(&args_cells);
+            let cont = cont.map(Gc::new);
 
             // Finally: call the function pointer
             let app = match self.func {
                 FuncPtr::Continuation(sync_fn) => unsafe {
                     let app = (sync_fn)(
-                        Gc::as_ptr(&self.runtime),
+                        Gc::as_ptr(&self.runtime.0),
                         env.as_ptr(),
                         globals.as_ptr(),
                         args.as_ptr(),
@@ -204,15 +226,15 @@ impl Closure {
                     );
                     *Box::from_raw(app)
                 },
-                FuncPtr::Closure(sync_fn) => unsafe {
+                FuncPtr::User(sync_fn) => unsafe {
                     let app = (sync_fn)(
-                        Gc::as_ptr(&self.runtime),
+                        Gc::as_ptr(&self.runtime.0),
                         env.as_ptr(),
                         globals.as_ptr(),
                         args.as_ptr(),
                         exception_handler.as_ref().map_or_else(null_mut, Gc::as_ptr),
                         dynamic_wind as *const DynamicWind,
-                        cont.as_ref().map(|v| v as *const Value).unwrap(),
+                        Gc::as_ptr(cont.as_ref().unwrap()),
                     );
                     *Box::from_raw(app)
                 },
@@ -221,61 +243,89 @@ impl Closure {
 
             drop(cont);
 
-            Ok(app?)
+            Ok(app)
         }
     }
 }
 
-impl Gc<Closure> {
-    pub async fn call(self, args: &[Value]) -> Result<Vec<Value>, Exception> {
+/// The runtime representation of a Closure, which can be either a user function
+/// or a continuation. Contains a reference to all of the globals and
+/// environmental variables used in the body, along with a function pointer to
+/// the body of the closure.
+#[derive(Clone, Trace, Debug)]
+pub struct Closure(pub(crate) Gc<ClosureInner>);
+
+impl Closure {
+    pub(crate) fn new(
+        runtime: Runtime,
+        env: impl Into<Record>,
+        globals: impl Into<Record>,
+        func: FuncPtr,
+        num_required_args: usize,
+        variadic: bool,
+        debug_info: Option<Arc<FuncDebugInfo>>,
+    ) -> Self {
+        Self(Gc::new(ClosureInner {
+            runtime,
+            env: env.into(),
+            globals: globals.into(),
+            func,
+            num_required_args,
+            variadic,
+            is_variable_transformer: false,
+            debug_info,
+        }))
+    }
+
+    pub fn get_runtime(&self) -> Runtime {
+        self.0.read().runtime.clone()
+    }
+
+    pub fn is_variable_transformer(&self) -> bool {
+        self.0.read().is_variable_transformer
+    }
+
+    pub async fn call(&self, args: &[Value]) -> Result<Vec<Value>, Exception> {
         unsafe extern "C" fn halt(
-            _runtime: *mut GcInner<Runtime>,
+            _runtime: *mut GcInner<RuntimeInner>,
             _env: *const *mut GcInner<Value>,
             _globals: *const *mut GcInner<Value>,
             args: *const Value,
             _exception_handler: *mut GcInner<ExceptionHandler>,
             _dynamic_wind: *const DynamicWind,
-        ) -> *mut Result<Application, Condition> {
-            crate::runtime::halt(Value::into_raw(args.read()) as i64)
+        ) -> *mut Application {
+            unsafe { crate::runtime::halt(Value::into_raw(args.read()) as i64) }
         }
 
         let mut args = args.to_vec();
         // TODO: We don't need to create a new one of these every time, we should just have
         // one
-        args.push(Value::from(Closure::new(
-            self.read().runtime.clone(),
+        args.push(Value::from(Self(Gc::new(ClosureInner::new(
+            self.0.read().runtime.clone(),
             Vec::new(),
             Vec::new(),
             FuncPtr::Continuation(halt),
             0,
             true,
             None,
-        )));
+        )))));
         Application::new(self.clone(), args, None, DynamicWind::default(), None)
             .eval()
             .await
     }
 }
 
-impl fmt::Debug for Closure {
+impl fmt::Debug for ClosureInner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let Some(debug_info_id) = self.debug_info else {
+        if self.is_continuation() {
             return write!(f, "continuation");
-        };
+        }
 
-        let runtime_ref = self.runtime.read();
-        let Some(debug_info) = runtime_ref
-            .debug_info
-            .get_function_debug_info(debug_info_id)
-        else {
+        let Some(ref debug_info) = self.debug_info else {
             return write!(f, "unknown-function");
         };
 
-        if let Some(ref proc_name) = debug_info.name {
-            write!(f, "({proc_name}")?;
-        } else {
-            write!(f, "(<lambda>")?;
-        }
+        write!(f, "({}", debug_info.name)?;
 
         if let Some((last, args)) = debug_info.args.split_last() {
             for arg in args {
@@ -295,16 +345,11 @@ fn cells_to_vec_of_ptrs(cells: &[Gc<Value>]) -> Vec<*mut GcInner<Value>> {
     cells.iter().map(Gc::as_ptr).collect()
 }
 
-// fn values_to_vec_of_cells(vals: &[Value]) -> Vec<Gc<Value>> {
-//     vals.iter().map(|val| Gc::new(val.clone())).collect()
-// }
-
 /// An application of a function to a given set of values.
-#[derive(Debug)]
 pub struct Application {
     /// The operator being applied to. If None, we return the values to the Rust
     /// caller.
-    op: Option<Gc<Closure>>,
+    op: Option<Closure>,
     /// The arguments being applied to the operator.
     args: Vec<Value>,
     /// The current exception handler to be passed to the operator.
@@ -312,16 +357,16 @@ pub struct Application {
     /// The dynamic extend of the application.
     dynamic_wind: DynamicWind,
     /// The call site of this application, if it exists.
-    call_site: Option<Span>,
+    call_site: Option<Arc<Span>>,
 }
 
 impl Application {
     pub fn new(
-        op: Gc<Closure>,
+        op: Closure,
         args: Vec<Value>,
         exception_handler: Option<Gc<ExceptionHandler>>,
         dynamic_wind: DynamicWind,
-        call_site: Option<Span>,
+        call_site: Option<Arc<Span>>,
     ) -> Self {
         Self {
             // We really gotta figure out how to deal with this better
@@ -356,8 +401,8 @@ impl Application {
             call_site,
         } = self
         {
-            let op = { op.read().as_ref().clone() };
-            stack_trace.collect_application(&op.runtime, op.debug_info, call_site);
+            let op = { op.0.read().as_ref().clone() };
+            stack_trace.collect_application(op.debug_info.clone(), call_site);
             self = match op.apply(&args, exception_handler, &dynamic_wind).await {
                 Err(exception) => {
                     return Err(Exception::new(stack_trace.into_frames(), exception));
@@ -383,57 +428,24 @@ impl StackTraceCollector {
     }
 
     fn into_frames(self) -> Vec<Frame> {
-        let mut frames = Vec::new();
-        let mut last_call_site = None;
-
-        for trace in self.stack_trace.into_iter() {
-            match trace {
-                StackTrace::CallSite(new_call_site) => {
-                    last_call_site = last_call_site.or(new_call_site);
-                }
-                StackTrace::UserFuncCall {
-                    runtime,
-                    user_func_info_id,
-                    call_site,
-                } => {
-                    if let Some(debug_info) = runtime
-                        .read()
-                        .debug_info
-                        .get_function_debug_info(user_func_info_id)
-                    {
-                        let proc = debug_info
-                            .name
-                            .clone()
-                            .unwrap_or_else(|| "<lambda>".to_string());
-                        last_call_site = call_site.or(last_call_site);
-                        frames.push(Frame::new(proc, last_call_site.clone()));
-                    }
-                }
-            }
-        }
-
-        frames
+        self.stack_trace
+            .into_iter()
+            .map(|trace| Frame::new(trace.debug_info.name, trace.call_site))
+            .collect()
     }
 
     fn collect_application(
         &mut self,
-        runtime: &Gc<Runtime>,
-        user_func_info: Option<FunctionDebugInfoId>,
-        call_site: Option<Span>,
+        debug_info: Option<Arc<FuncDebugInfo>>,
+        call_site: Option<Arc<Span>>,
     ) {
-        if let Some(user_func_info_id) = user_func_info {
+        if let Some(debug_info) = debug_info {
             // This is a user func, and therefore we should push to the
             // current stack trace.
-            let trace = if user_func_info_id != IGNORE_FUNCTION {
-                StackTrace::UserFuncCall {
-                    runtime: runtime.clone(),
-                    user_func_info_id,
-                    call_site,
-                }
-            } else {
-                StackTrace::CallSite(call_site)
-            };
-            self.stack_trace.push(trace);
+            self.stack_trace.push(StackTrace {
+                debug_info,
+                call_site,
+            });
         } else {
             // If this is not user func, we are returning from one via a
             // continuation and should pop the stack frame:
@@ -443,31 +455,25 @@ impl StackTraceCollector {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
-enum StackTrace {
-    CallSite(Option<Span>),
-    UserFuncCall {
-        runtime: Gc<Runtime>,
-        user_func_info_id: FunctionDebugInfoId,
-        call_site: Option<Span>,
-    },
-}
-
-#[derive(Clone, Debug, Trace)]
-pub struct FunctionDebugInfo {
-    /// The name of the function, or None if the function is a lambda
-    // TODO(map): Make this an Arc<String> so we aren't constantly cloning strings.
-    pub name: Option<String>,
-    /// Named arguments for the function
-    pub args: Vec<String>,
+pub struct FuncDebugInfo {
+    /// The name of the function.
+    name: Symbol,
+    /// Named arguments for the function.
+    args: Vec<Local>,
     /// Location of the function definition
-    pub location: Span,
+    location: Span,
 }
 
-impl FunctionDebugInfo {
-    pub fn new(name: Option<String>, args: Vec<String>, location: Span) -> Self {
+#[derive(Debug)]
+struct StackTrace {
+    debug_info: Arc<FuncDebugInfo>,
+    call_site: Option<Arc<Span>>,
+}
+
+impl FuncDebugInfo {
+    pub fn new(name: Option<Symbol>, args: Vec<Local>, location: Span) -> Self {
         Self {
-            name,
+            name: name.unwrap_or_else(|| Symbol::intern("<lambda>")),
             args,
             location,
         }
@@ -475,8 +481,12 @@ impl FunctionDebugInfo {
 
     pub fn from_bridge_fn(name: &'static str, debug_info: BridgeFnDebugInfo) -> Self {
         Self {
-            name: Some(name.to_string()),
-            args: debug_info.args.iter().map(|arg| arg.to_string()).collect(),
+            name: Symbol::intern(name),
+            args: debug_info
+                .args
+                .iter()
+                .map(|arg| Local::gensym_with_name(Symbol::intern(arg)))
+                .collect(),
             location: Span {
                 line: debug_info.line,
                 column: debug_info.column as usize,
@@ -487,48 +497,31 @@ impl FunctionDebugInfo {
     }
 }
 
-pub fn apply<'a>(
-    args: &'a [Value],
-    rest_args: &'a [Value],
-    cont: &'a Value,
-    _env: &'a [Gc<Value>],
-    exception_handler: &'a Option<Gc<ExceptionHandler>>,
-    dynamic_wind: &'a DynamicWind,
-) -> BoxFuture<'a, Result<Application, Value>> {
-    Box::pin(async move {
-        if rest_args.is_empty() {
-            return Err(Condition::wrong_num_of_args(2, args.len()).into());
-        }
-        let op: Gc<Closure> = args[0].clone().try_into()?;
-        let (last, args) = rest_args.split_last().unwrap();
-        let mut args = args.to_vec();
-        list_to_vec(last, &mut args);
-        args.push(cont.clone());
-        Ok(Application::new(
-            op.clone(),
-            args,
-            exception_handler.clone(),
-            dynamic_wind.clone(),
-            None,
-        ))
-    })
-}
-
-inventory::submit! {
-    BridgeFn::new(
-        "apply",
-        "(base)",
-        1,
-        true,
-        apply,
-        BridgeFnDebugInfo::new(
-            "proc.rs",
-            490,
-            7,
-            0,
-            &[ "arg1", "args" ],
-        )
-    )
+#[cps_bridge(name = "apply", lib = "(rnrs base builtins (6))", args = "arg1 . args")]
+pub async fn apply(
+    _runtime: &Runtime,
+    _env: &[Gc<Value>],
+    args: &[Value],
+    rest_args: &[Value],
+    cont: &Value,
+    exception_handler: &Option<Gc<ExceptionHandler>>,
+    dynamic_wind: &DynamicWind,
+) -> Result<Application, Condition> {
+    if rest_args.is_empty() {
+        return Err(Condition::wrong_num_of_args(2, args.len()));
+    }
+    let op: Closure = args[0].clone().try_into()?;
+    let (last, args) = rest_args.split_last().unwrap();
+    let mut args = args.to_vec();
+    list_to_vec(last, &mut args);
+    args.push(cont.clone());
+    Ok(Application::new(
+        op.clone(),
+        args,
+        exception_handler.clone(),
+        dynamic_wind.clone(),
+        None,
+    ))
 }
 
 pub(crate) fn clone_continuation_env(
@@ -542,7 +535,7 @@ pub(crate) fn clone_continuation_env(
         unreachable!()
     };
 
-    if clos.read().is_user_func() {
+    if clos.0.read().is_user_func() {
         return value.clone();
     }
 
@@ -552,331 +545,320 @@ pub(crate) fn clone_continuation_env(
         return cloned.clone();
     }
 
-    let clos_cloned = Gc::new(to_clone.0.read().clone());
+    let clos_cloned = Closure(Gc::new(to_clone.0.0.read().clone()));
     cloned.insert(to_clone, Value::from(clos_cloned.clone()));
 
     {
-        let mut clos_mut = clos_cloned.write();
+        let mut clos_mut = clos_cloned.0.write();
         clos_mut.deep_clone(cloned);
     }
 
     Value::from(clos_cloned)
 }
 
-pub(crate) struct ClonedContinuation(Gc<Closure>);
+pub(crate) struct ClonedContinuation(Closure);
 
 impl Hash for ClonedContinuation {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        Gc::as_ptr(&self.0).hash(state);
+        Gc::as_ptr(&self.0.0).hash(state);
     }
 }
 
 impl PartialEq for ClonedContinuation {
     fn eq(&self, rhs: &Self) -> bool {
-        Gc::ptr_eq(&self.0, &rhs.0)
+        Gc::ptr_eq(&self.0.0, &rhs.0.0)
     }
 }
 
 impl Eq for ClonedContinuation {}
 
 unsafe extern "C" fn call_consumer_with_values(
-    _runtime: *mut GcInner<Runtime>,
+    runtime: *mut GcInner<RuntimeInner>,
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
     args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
-) -> *mut Result<Application, Condition> {
-    // env[0] is the consumer
-    let consumer = Gc::from_raw_inc_rc(env.read());
-    let consumer = {
-        let consumer_read = consumer.read();
-        let consumer: Gc<Closure> = if let Ok(consumer) = consumer_read.clone().try_into() {
-            consumer
-        } else {
-            return Box::into_raw(Box::new(Err(Condition::invalid_operator_type(
-                consumer_read.type_name(),
-            ))));
+) -> *mut Application {
+    unsafe {
+        // env[0] is the consumer
+        let consumer = Gc::from_raw_inc_rc(env.read());
+        let consumer = {
+            let consumer_read = consumer.read();
+            let consumer: Closure = match consumer_read.clone().try_into() {
+                Ok(consumer) => consumer,
+                _ => {
+                    let raised = raise(
+                        Runtime::from_raw_inc_rc(runtime),
+                        Condition::invalid_operator_type(consumer_read.type_name()).into(),
+                        ExceptionHandler::from_ptr(exception_handler),
+                        dynamic_wind.as_ref().unwrap(),
+                    );
+                    return Box::into_raw(Box::new(raised));
+                }
+            };
+            consumer.clone()
         };
-        consumer.clone()
+
+        let consumer_read = consumer.0.read();
+
+        // env[1] is the continuation
+        let cont = Gc::from_raw_inc_rc(env.add(1).read());
+
+        let mut collected_args: Vec<_> = (0..consumer_read.num_required_args)
+            .map(|i| args.add(i).as_ref().unwrap().clone())
+            .collect();
+
+        // I hate this constant going back and forth from variadic to list. I have
+        // to figure out a way to make it consistent
+        if consumer_read.variadic {
+            let rest_args = args
+                .add(consumer_read.num_required_args)
+                .as_ref()
+                .unwrap()
+                .clone();
+            let mut vec = Vec::new();
+            list_to_vec(&rest_args, &mut vec);
+            collected_args.extend(vec);
+        }
+
+        collected_args.push(cont.read().clone());
+
+        Box::into_raw(Box::new(Application::new(
+            consumer.clone(),
+            collected_args,
+            ExceptionHandler::from_ptr(exception_handler),
+            dynamic_wind.as_ref().unwrap().clone(),
+            None,
+        )))
+    }
+}
+
+#[cps_bridge(
+    name = "call-with-values",
+    lib = "(rnrs base builtins (6))",
+    args = "producer consumer"
+)]
+pub async fn call_with_values(
+    runtime: &Runtime,
+    _env: &[Gc<Value>],
+    args: &[Value],
+    _rest_args: &[Value],
+    cont: &Value,
+    exception_handler: &Option<Gc<ExceptionHandler>>,
+    dynamic_wind: &DynamicWind,
+) -> Result<Application, Condition> {
+    let [producer, consumer] = args else {
+        return Err(Condition::wrong_num_of_args(2, args.len()));
     };
 
-    let consumer_read = consumer.read();
+    let producer: Closure = producer.clone().try_into()?;
+    let consumer: Closure = consumer.clone().try_into()?;
 
-    // env[1] is the continuation
-    let cont = Gc::from_raw_inc_rc(env.add(1).read());
+    // Get the details of the consumer:
+    let (num_required_args, variadic) = {
+        let consumer_read = consumer.0.read();
+        (consumer_read.num_required_args, consumer_read.variadic)
+    };
 
-    let mut collected_args: Vec<_> = (0..consumer_read.num_required_args)
-        .map(|i| args.add(i).as_ref().unwrap().clone())
-        .collect();
-
-    // I hate this constant going back and forth from variadic to list. I have
-    // to figure out a way to make it consistent
-    if consumer_read.variadic {
-        let rest_args = args
-            .add(consumer_read.num_required_args)
-            .as_ref()
-            .unwrap()
-            .clone();
-        let mut vec = Vec::new();
-        list_to_vec(&rest_args, &mut vec);
-        collected_args.extend(vec);
-    }
-
-    collected_args.push(cont.read().clone());
-
-    Box::into_raw(Box::new(Ok(Application::new(
-        consumer.clone(),
-        collected_args,
-        ExceptionHandler::from_ptr(exception_handler),
-        dynamic_wind.as_ref().unwrap().clone(),
+    let call_consumer_closure = Closure::new(
+        runtime.clone(),
+        vec![Gc::new(Value::from(consumer)), Gc::new(cont.clone())],
+        Vec::new(),
+        FuncPtr::Continuation(call_consumer_with_values),
+        num_required_args,
+        variadic,
         None,
-    ))))
-}
+    );
 
-pub fn call_with_values<'a>(
-    args: &'a [Value],
-    _rest_args: &'a [Value],
-    cont: &'a Value,
-    _env: &'a [Gc<Value>],
-    exception_handler: &'a Option<Gc<ExceptionHandler>>,
-    dynamic_wind: &'a DynamicWind,
-) -> BoxFuture<'a, Result<Application, Value>> {
-    Box::pin(async move {
-        let [producer, consumer] = args else {
-            return Err(Condition::wrong_num_of_args(2, args.len()).into());
-        };
-
-        let producer: Gc<Closure> = producer.clone().try_into()?;
-        let consumer: Gc<Closure> = consumer.clone().try_into()?;
-
-        // Get the details of the consumer:
-        let (num_required_args, variadic) = {
-            let consumer_read = consumer.read();
-            (consumer_read.num_required_args, consumer_read.variadic)
-        };
-
-        let call_consumer_closure = Closure::new(
-            producer.read().runtime.clone(),
-            vec![Gc::new(Value::from(consumer)), Gc::new(cont.clone())],
-            Vec::new(),
-            FuncPtr::Continuation(call_consumer_with_values),
-            num_required_args,
-            variadic,
-            None,
-        );
-
-        Ok(Application::new(
-            producer,
-            vec![Value::from(call_consumer_closure)],
-            exception_handler.clone(),
-            dynamic_wind.clone(),
-            None,
-        ))
-    })
-}
-
-inventory::submit! {
-    BridgeFn::new(
-        "call-with-values",
-        "(base)",
-        2,
-        false,
-        call_with_values,
-        BridgeFnDebugInfo::new(
-            "proc.rs",
-            587,
-            7,
-            0,
-            &["producer", "consumer"]
-        )
-    )
+    Ok(Application::new(
+        producer,
+        vec![Value::from(call_consumer_closure)],
+        exception_handler.clone(),
+        dynamic_wind.clone(),
+        None,
+    ))
 }
 
 #[derive(Clone, Debug, Default, Trace)]
 pub struct DynamicWind {
-    pub(crate) winders: Vec<(Gc<Closure>, Gc<Closure>)>,
+    pub(crate) winders: Vec<(Closure, Closure)>,
 }
 
-pub fn dynamic_wind<'a>(
-    args: &'a [Value],
-    _rest_args: &'a [Value],
-    cont: &'a Value,
-    _env: &'a [Gc<Value>],
-    exception_handler: &'a Option<Gc<ExceptionHandler>>,
-    dynamic_wind: &'a DynamicWind,
-) -> BoxFuture<'a, Result<Application, Value>> {
-    Box::pin(async move {
-        let [in_thunk_val, body_thunk_val, out_thunk_val] = args else {
-            return Err(Condition::wrong_num_of_args(3, args.len()).into());
-        };
+#[cps_bridge(
+    name = "dynamic-wind",
+    lib = "(rnrs base builtins (6))",
+    args = "in body out"
+)]
+pub async fn dynamic_wind(
+    runtime: &Runtime,
+    _env: &[Gc<Value>],
+    args: &[Value],
+    _rest_args: &[Value],
+    cont: &Value,
+    exception_handler: &Option<Gc<ExceptionHandler>>,
+    dynamic_wind: &DynamicWind,
+) -> Result<Application, Condition> {
+    let [in_thunk_val, body_thunk_val, out_thunk_val] = args else {
+        return Err(Condition::wrong_num_of_args(3, args.len()));
+    };
 
-        let in_thunk: Gc<Closure> = in_thunk_val.clone().try_into()?;
-        let _: Gc<Closure> = body_thunk_val.clone().try_into()?;
+    let in_thunk: Closure = in_thunk_val.clone().try_into()?;
+    let _: Closure = body_thunk_val.clone().try_into()?;
 
-        let runtime = in_thunk.read().runtime.clone();
+    let call_body_thunk_cont = Closure::new(
+        runtime.clone(),
+        vec![
+            Gc::new(in_thunk_val.clone()),
+            Gc::new(body_thunk_val.clone()),
+            Gc::new(out_thunk_val.clone()),
+            Gc::new(cont.clone()),
+        ],
+        Vec::new(),
+        FuncPtr::Continuation(call_body_thunk),
+        0,
+        true,
+        None,
+    );
 
-        let call_body_thunk_cont = Closure::new(
-            runtime,
-            vec![
-                Gc::new(in_thunk_val.clone()),
-                Gc::new(body_thunk_val.clone()),
-                Gc::new(out_thunk_val.clone()),
-                Gc::new(cont.clone()),
-            ],
+    Ok(Application::new(
+        in_thunk,
+        vec![Value::from(call_body_thunk_cont)],
+        exception_handler.clone(),
+        dynamic_wind.clone(),
+        None,
+    ))
+}
+
+pub(crate) unsafe extern "C" fn call_body_thunk(
+    runtime: *mut GcInner<RuntimeInner>,
+    env: *const *mut GcInner<Value>,
+    _globals: *const *mut GcInner<Value>,
+    _args: *const Value,
+    exception_handler: *mut GcInner<ExceptionHandler>,
+    dynamic_wind: *const DynamicWind,
+) -> *mut Application {
+    unsafe {
+        // env[0] is the in thunk
+        let in_thunk = Gc::from_raw_inc_rc(env.read());
+
+        // env[1] is the body thunk
+        let body_thunk: Closure = Gc::from_raw_inc_rc(env.add(1).read())
+            .read()
+            .clone()
+            .try_into()
+            .unwrap();
+
+        // env[2] is the out thunk
+        let out_thunk = Gc::from_raw_inc_rc(env.add(2).read());
+
+        // env[3] is k, the continuation
+        let k = Gc::from_raw_inc_rc(env.add(3).read());
+
+        let mut new_extent = dynamic_wind.as_ref().unwrap().clone();
+        new_extent.winders.push((
+            in_thunk.read().clone().try_into().unwrap(),
+            out_thunk.read().clone().try_into().unwrap(),
+        ));
+
+        let cont = Closure::new(
+            Runtime::from_raw_inc_rc(runtime),
+            vec![out_thunk, k],
             Vec::new(),
-            FuncPtr::Continuation(call_body_thunk),
+            FuncPtr::Continuation(call_out_thunks),
             0,
             true,
             None,
         );
 
-        Ok(Application::new(
-            in_thunk,
-            vec![Value::from(call_body_thunk_cont)],
-            exception_handler.clone(),
-            dynamic_wind.clone(),
+        let app = Application::new(
+            body_thunk,
+            vec![Value::from(cont)],
+            ExceptionHandler::from_ptr(exception_handler),
+            new_extent,
             None,
-        ))
-    })
-}
+        );
 
-inventory::submit! {
-    BridgeFn::new(
-        "dynamic-wind",
-        "(base)",
-        3,
-        false,
-        dynamic_wind,
-        BridgeFnDebugInfo::new(
-            "proc.rs",
-            0,
-            0,
-            0,
-            &["in", "body", "out"]
-        )
-    )
-}
-
-pub(crate) unsafe extern "C" fn call_body_thunk(
-    runtime: *mut GcInner<Runtime>,
-    env: *const *mut GcInner<Value>,
-    _globals: *const *mut GcInner<Value>,
-    _args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandler>,
-    dynamic_wind: *const DynamicWind,
-) -> *mut Result<Application, Condition> {
-    // env[0] is the in thunk
-    let in_thunk = Gc::from_raw_inc_rc(env.read());
-    // env[1] is the body thunk
-    let body_thunk: Gc<Closure> = Gc::from_raw_inc_rc(env.add(1).read())
-        .read()
-        .clone()
-        .try_into()
-        .unwrap();
-    // env[2] is the out thunk
-    let out_thunk = Gc::from_raw_inc_rc(env.add(2).read());
-    // env[3] is k, the continuation
-    let k = Gc::from_raw_inc_rc(env.add(3).read());
-
-    let mut new_extent = dynamic_wind.as_ref().unwrap().clone();
-    new_extent.winders.push((
-        in_thunk.read().clone().try_into().unwrap(),
-        out_thunk.read().clone().try_into().unwrap(),
-    ));
-
-    let cont = Closure::new(
-        Gc::from_raw_inc_rc(runtime),
-        vec![out_thunk, k],
-        Vec::new(),
-        FuncPtr::Continuation(call_out_thunks),
-        0,
-        true,
-        None,
-    );
-
-    let app = Application::new(
-        body_thunk,
-        vec![Value::from(cont)],
-        ExceptionHandler::from_ptr(exception_handler),
-        new_extent,
-        None,
-    );
-
-    Box::into_raw(Box::new(Ok(app)))
+        Box::into_raw(Box::new(app))
+    }
 }
 
 pub(crate) unsafe extern "C" fn call_out_thunks(
-    runtime: *mut GcInner<Runtime>,
+    runtime: *mut GcInner<RuntimeInner>,
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
     args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
-) -> *mut Result<Application, Condition> {
-    // env[0] is the out thunk
-    let out_thunk: Gc<Closure> = Gc::from_raw_inc_rc(env.read())
-        .read()
-        .clone()
-        .try_into()
-        .unwrap();
-    // env[1] is k, the remaining continuation
-    let k = Gc::from_raw_inc_rc(env.add(1).read());
+) -> *mut Application {
+    unsafe {
+        // env[0] is the out thunk
+        let out_thunk: Closure = Gc::from_raw_inc_rc(env.read())
+            .read()
+            .clone()
+            .try_into()
+            .unwrap();
 
-    // args[0] is the result of the body thunk
-    let body_thunk_res = Gc::new(args.as_ref().unwrap().clone());
+        // env[1] is k, the remaining continuation
+        let k = Gc::from_raw_inc_rc(env.add(1).read());
 
-    let mut new_extent = dynamic_wind.as_ref().unwrap().clone();
-    new_extent.winders.pop();
+        // args[0] is the result of the body thunk
+        let body_thunk_res = Gc::new(args.as_ref().unwrap().clone());
 
-    let cont = Closure::new(
-        Gc::from_raw_inc_rc(runtime),
-        vec![body_thunk_res, k],
-        Vec::new(),
-        FuncPtr::Continuation(forward_body_thunk_result),
-        0,
-        true,
-        None,
-    );
+        let mut new_extent = dynamic_wind.as_ref().unwrap().clone();
+        new_extent.winders.pop();
 
-    let app = Application::new(
-        out_thunk,
-        vec![Value::from(cont)],
-        ExceptionHandler::from_ptr(exception_handler),
-        new_extent,
-        None,
-    );
+        let cont = Closure(Gc::new(ClosureInner::new(
+            Runtime::from_raw_inc_rc(runtime),
+            vec![body_thunk_res, k],
+            Vec::new(),
+            FuncPtr::Continuation(forward_body_thunk_result),
+            0,
+            true,
+            None,
+        )));
 
-    Box::into_raw(Box::new(Ok(app)))
+        let app = Application::new(
+            out_thunk,
+            vec![Value::from(cont)],
+            ExceptionHandler::from_ptr(exception_handler),
+            new_extent,
+            None,
+        );
+
+        Box::into_raw(Box::new(app))
+    }
 }
 
 unsafe extern "C" fn forward_body_thunk_result(
-    _runtime: *mut GcInner<Runtime>,
+    _runtime: *mut GcInner<RuntimeInner>,
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
     _args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandler>,
     dynamic_wind: *const DynamicWind,
-) -> *mut Result<Application, Condition> {
-    // env[0] is the result of the body thunk
-    let body_thunk_res = Gc::from_raw_inc_rc(env.read()).read().clone();
-    // env[1] is k, the continuation.
-    let k: Gc<Closure> = Gc::from_raw_inc_rc(env.add(1).read())
-        .read()
-        .clone()
-        .try_into()
-        .unwrap();
+) -> *mut Application {
+    unsafe {
+        // env[0] is the result of the body thunk
+        let body_thunk_res = Gc::from_raw_inc_rc(env.read()).read().clone();
+        // env[1] is k, the continuation.
+        let k: Closure = Gc::from_raw_inc_rc(env.add(1).read())
+            .read()
+            .clone()
+            .try_into()
+            .unwrap();
 
-    let mut args = Vec::new();
-    list_to_vec(&body_thunk_res, &mut args);
+        let mut args = Vec::new();
+        list_to_vec(&body_thunk_res, &mut args);
 
-    let app = Application::new(
-        k,
-        args,
-        ExceptionHandler::from_ptr(exception_handler),
-        dynamic_wind.as_ref().unwrap().clone(),
-        None,
-    );
+        let app = Application::new(
+            k,
+            args,
+            ExceptionHandler::from_ptr(exception_handler),
+            dynamic_wind.as_ref().unwrap().clone(),
+            None,
+        );
 
-    Box::into_raw(Box::new(Ok(app)))
+        Box::into_raw(Box::new(app))
+    }
 }

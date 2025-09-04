@@ -6,9 +6,10 @@ use super::*;
 impl Cps {
     pub(super) fn reduce(self) -> Self {
         // Perform beta reduction twice. This seems like the sweet spot for now
-        self.beta_reduction(&mut HashMap::default())
-            .beta_reduction(&mut HashMap::default())
-            .dead_code_elimination(&mut HashMap::default())
+        let mut uses_cache = AHashMap::default();
+        self.beta_reduction(&mut uses_cache)
+            .beta_reduction(&mut uses_cache)
+            .dead_code_elimination(&mut uses_cache)
     }
 
     /// Beta-reduction optimization step. This function replaces applications to
@@ -20,7 +21,7 @@ impl Cps {
     ///
     /// The uses analysis cache is absolutely demolished and dangerous to use by
     /// the end of this function.
-    fn beta_reduction(self, uses_cache: &mut HashMap<Local, HashMap<Local, usize>>) -> Self {
+    fn beta_reduction(self, uses_cache: &mut AHashMap<Local, AHashMap<Local, usize>>) -> Self {
         match self {
             Cps::PrimOp(prim_op, values, result, cexp) => Cps::PrimOp(
                 prim_op,
@@ -33,12 +34,12 @@ impl Cps {
                 Box::new(success.beta_reduction(uses_cache)),
                 Box::new(failure.beta_reduction(uses_cache)),
             ),
-            Cps::Closure {
+            Cps::Lambda {
                 args,
                 body,
                 val,
                 cexp,
-                debug,
+                span,
             } => {
                 let body = body.beta_reduction(uses_cache);
                 let mut cexp = cexp.beta_reduction(uses_cache);
@@ -50,17 +51,20 @@ impl Cps {
                 if !args.variadic && !is_recursive && uses == 1 {
                     let reduced = cexp.reduce_function(val, &args, &body, uses_cache);
                     if reduced {
-                        uses_cache.remove(&val);
+                        // We can probably do better than just destroying the
+                        // whole cache, but this works and doesn't hurt perf
+                        // too much.
+                        uses_cache.clear();
                         return cexp;
                     }
                 }
 
-                Cps::Closure {
+                Cps::Lambda {
                     args,
                     body: Box::new(body),
                     val,
                     cexp: Box::new(cexp),
-                    debug,
+                    span,
                 }
             }
             cexp => cexp,
@@ -72,17 +76,17 @@ impl Cps {
         func: Local,
         args: &ClosureArgs,
         func_body: &Cps,
-        uses_cache: &mut HashMap<Local, HashMap<Local, usize>>,
+        uses_cache: &mut AHashMap<Local, AHashMap<Local, usize>>,
     ) -> bool {
         let new = match self {
             Cps::PrimOp(_, _, _, cexp) => {
-                return cexp.reduce_function(func, args, func_body, uses_cache)
+                return cexp.reduce_function(func, args, func_body, uses_cache);
             }
             Cps::If(_, succ, fail) => {
                 return succ.reduce_function(func, args, func_body, uses_cache)
-                    || fail.reduce_function(func, args, func_body, uses_cache)
+                    || fail.reduce_function(func, args, func_body, uses_cache);
             }
-            Cps::Closure {
+            Cps::Lambda {
                 val, body, cexp, ..
             } => {
                 let reduced = body.reduce_function(func, args, func_body, uses_cache)
@@ -93,11 +97,8 @@ impl Cps {
                 return reduced;
             }
             Cps::App(Value::Var(Var::Local(operator)), applied, _) if *operator == func => {
-                let substitutions: HashMap<_, _> = args
-                    .to_vec()
-                    .into_iter()
-                    .zip(applied.iter().cloned())
-                    .collect();
+                let substitutions: AHashMap<_, _> =
+                    args.iter().copied().zip(applied.iter().cloned()).collect();
                 let mut body = func_body.clone();
                 body.substitute(&substitutions);
                 body
@@ -110,9 +111,12 @@ impl Cps {
 
     /// Removes any closures and allocated cells that are left unused.
     #[allow(dead_code)]
-    fn dead_code_elimination(self, uses_cache: &mut HashMap<Local, HashMap<Local, usize>>) -> Self {
+    fn dead_code_elimination(
+        self,
+        uses_cache: &mut AHashMap<Local, AHashMap<Local, usize>>,
+    ) -> Self {
         match self {
-            Cps::Closure { val, cexp, .. } if !cexp.uses(uses_cache).contains_key(&val) => {
+            Cps::Lambda { val, cexp, .. } if !cexp.uses(uses_cache).contains_key(&val) => {
                 // Unused closure can be eliminated
                 cexp.dead_code_elimination(uses_cache)
             }
@@ -132,18 +136,18 @@ impl Cps {
                 Box::new(success.dead_code_elimination(uses_cache)),
                 Box::new(failure.dead_code_elimination(uses_cache)),
             ),
-            Cps::Closure {
+            Cps::Lambda {
                 args,
                 body,
                 val,
                 cexp,
-                debug,
-            } => Cps::Closure {
+                span,
+            } => Cps::Lambda {
                 args,
                 body: Box::new(body.dead_code_elimination(uses_cache)),
                 val,
                 cexp: Box::new(cexp.dead_code_elimination(uses_cache)),
-                debug,
+                span,
             },
             cexp => cexp,
         }

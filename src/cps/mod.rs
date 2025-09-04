@@ -15,17 +15,15 @@
 use crate::{
     env::{Global, Local, Var},
     gc::Trace,
-    runtime::{CallSiteId, FunctionDebugInfoId},
+    symbols::Symbol,
+    syntax::Span,
     value::Value as RuntimeValue,
 };
-use std::{
-    collections::{HashMap, HashSet},
-    fmt,
-    str::FromStr,
-};
+use ahash::{AHashMap, AHashSet};
+use std::fmt;
 
 mod analysis;
-mod codegen;
+pub(crate) mod codegen;
 mod compile;
 mod reduce;
 
@@ -94,7 +92,7 @@ pub enum PrimOp {
     Set,
 
     // Cell operations:
-    /// Allocate a cell, returning a Gc<Value>.
+    /// Allocate a cell, returning a Gc<Value>:
     AllocCell,
 
     // List operators:
@@ -112,8 +110,13 @@ pub enum PrimOp {
     LesserEqual,
 
     // Macro expansion primitive operators:
-    CaptureEnvironment,
-    GetCallTransformerFn,
+    /// Matches the pattern against the syntax object, returning the bindings if
+    /// it does and false otherwise.
+    Matches,
+    /// Expands a syntax template with the current set of bindings.
+    ExpandTemplate,
+    /// Raise an error indicating a failure to match the pattern.
+    ErrorNoPatternsMatch,
 
     // Continuation primitive operators:
     CallWithCurrentContinuation,
@@ -123,13 +126,11 @@ pub enum PrimOp {
     ExtractWinders,
 }
 
-impl FromStr for PrimOp {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, ()> {
-        match s {
-            "&call/cc" => Ok(Self::CallWithCurrentContinuation),
-            _ => Err(()),
+impl PrimOp {
+    pub fn from_sym(s: Symbol) -> Option<Self> {
+        match s.to_str().as_ref() {
+            "&call/cc" => Some(Self::CallWithCurrentContinuation),
+            _ => None,
         }
     }
 }
@@ -142,7 +143,7 @@ pub struct ClosureArgs {
 }
 
 impl ClosureArgs {
-    fn new(args: Vec<Local>, variadic: bool, continuation: Option<Local>) -> Self {
+    pub fn new(args: Vec<Local>, variadic: bool, continuation: Option<Local>) -> Self {
         Self {
             args,
             variadic,
@@ -154,12 +155,12 @@ impl ClosureArgs {
         self.args.iter_mut().chain(self.continuation.as_mut())
     }
 
+    fn iter(&self) -> impl Iterator<Item = &Local> {
+        self.args.iter().chain(self.continuation.as_ref())
+    }
+
     fn to_vec(&self) -> Vec<Local> {
-        self.args
-            .clone()
-            .into_iter()
-            .chain(self.continuation)
-            .collect()
+        self.iter().copied().collect()
     }
 
     fn num_required(&self) -> usize {
@@ -169,35 +170,35 @@ impl ClosureArgs {
 
 #[derive(derive_more::Debug, Clone)]
 pub enum Cps {
-    /// Call to a primitive operator.
+    /// Call to a primitive operator:
     PrimOp(PrimOp, Vec<Value>, Local, Box<Cps>),
 
-    /// Function application.
-    App(Value, Vec<Value>, Option<CallSiteId>),
+    /// Function application:
+    App(Value, Vec<Value>, Option<Span>),
 
-    /// Forward a list of values into an application.
+    /// Forward a list of values into an application:
     // TODO: I think we can get rid of this with better primitive operators, maybe.
     Forward(Value, Value),
 
-    /// Branching.
+    /// Branching:
     If(Value, Box<Cps>, Box<Cps>),
 
-    /// Closure generation. The result of this operation is a *const Value::Closure
-    Closure {
+    /// Function creation:
+    Lambda {
         args: ClosureArgs,
         body: Box<Cps>,
         val: Local,
         cexp: Box<Cps>,
-        debug: Option<FunctionDebugInfoId>,
+        span: Option<Span>,
     },
 
-    /// Halt execution and return the values
+    /// Halt execution and return the values:
     Halt(Value),
 }
 
 impl Cps {
     /// Perform substitutions on local variables.
-    fn substitute(&mut self, substitutions: &HashMap<Local, Value>) {
+    fn substitute(&mut self, substitutions: &AHashMap<Local, Value>) {
         match self {
             Self::PrimOp(_, args, _, cexp) => {
                 substitute_values(args, substitutions);
@@ -216,7 +217,7 @@ impl Cps {
                 success.substitute(substitutions);
                 failure.substitute(substitutions);
             }
-            Self::Closure { body, cexp, .. } => {
+            Self::Lambda { body, cexp, .. } => {
                 body.substitute(substitutions);
                 cexp.substitute(substitutions);
             }
@@ -227,15 +228,15 @@ impl Cps {
     }
 }
 
-fn substitute_value(value: &mut Value, substitutions: &HashMap<Local, Value>) {
-    if let Value::Var(Var::Local(local)) = value {
-        if let Some(substitution) = substitutions.get(local) {
-            *value = substitution.clone();
-        }
+fn substitute_value(value: &mut Value, substitutions: &AHashMap<Local, Value>) {
+    if let Some(local) = value.to_local()
+        && let Some(substitution) = substitutions.get(&local)
+    {
+        *value = substitution.clone();
     }
 }
 
-fn substitute_values(values: &mut [Value], substitutions: &HashMap<Local, Value>) {
+fn substitute_values(values: &mut [Value], substitutions: &AHashMap<Local, Value>) {
     values
         .iter_mut()
         .for_each(|value| substitute_value(value, substitutions))

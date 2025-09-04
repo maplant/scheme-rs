@@ -22,6 +22,7 @@ pub use scheme_rs_macros::Trace;
 
 use std::{
     alloc::Layout,
+    any::Any,
     cell::UnsafeCell,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     future::Future,
@@ -29,7 +30,8 @@ use std::{
     marker::PhantomData,
     mem::ManuallyDrop,
     ops::{Deref, DerefMut},
-    ptr::{drop_in_place, NonNull},
+    path::PathBuf,
+    ptr::{NonNull, drop_in_place},
     sync::{RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
@@ -39,13 +41,25 @@ pub struct Gc<T: ?Sized> {
     marker: PhantomData<GcInner<T>>,
 }
 
-impl<T: Trace> Gc<T> {
+#[allow(private_bounds)]
+impl<T: GcOrTrace + 'static> Gc<T> {
     pub fn new(data: T) -> Gc<T> {
         Self {
             ptr: NonNull::from(Box::leak(Box::new(GcInner {
                 header: UnsafeCell::new(GcHeader::new::<T>()),
                 data: UnsafeCell::new(data),
             }))),
+            marker: PhantomData,
+        }
+    }
+
+    /// Convert a `Gc<T>` into a `Gc<dyn Any>`. This is a separate function
+    /// since [CoerceUnsized] is unstable.
+    pub fn into_any(this: Self) -> Gc<dyn Any> {
+        let this = ManuallyDrop::new(this);
+        let any: NonNull<GcInner<dyn Any>> = this.ptr;
+        Gc {
+            ptr: any,
             marker: PhantomData,
         }
     }
@@ -90,11 +104,11 @@ impl<T: ?Sized> Gc<T> {
         std::ptr::addr_eq(lhs.ptr.as_ptr(), rhs.ptr.as_ptr())
     }
 
-    pub fn as_ptr(this: &Self) -> *mut GcInner<T> {
+    pub(crate) fn as_ptr(this: &Self) -> *mut GcInner<T> {
         this.ptr.as_ptr()
     }
 
-    pub fn into_raw(gc: Self) -> *mut GcInner<T> {
+    pub(crate) fn into_raw(gc: Self) -> *mut GcInner<T> {
         ManuallyDrop::new(gc).ptr.as_ptr()
     }
 
@@ -129,13 +143,29 @@ impl<T: ?Sized> Gc<T> {
     }
 }
 
+impl Gc<dyn Any> {
+    pub fn downcast<T: Any>(self) -> Result<Gc<T>, Self> {
+        if self.read().as_ref().is::<T>() {
+            let this = ManuallyDrop::new(self);
+            let ptr = this.ptr.as_ptr() as *mut GcInner<T>;
+            let ptr = unsafe { NonNull::new_unchecked(ptr) };
+            Ok(Gc {
+                ptr,
+                marker: PhantomData,
+            })
+        } else {
+            Err(self)
+        }
+    }
+}
+
 impl<T: Trace> From<T> for Gc<T> {
     fn from(t: T) -> Self {
         Gc::new(t)
     }
 }
 
-impl<T: Trace> std::fmt::Display for Gc<T>
+impl<T: ?Sized> std::fmt::Display for Gc<T>
 where
     T: std::fmt::Display,
 {
@@ -144,7 +174,7 @@ where
     }
 }
 
-impl<T: Trace> std::fmt::Debug for Gc<T>
+impl<T: ?Sized> std::fmt::Debug for Gc<T>
 where
     T: std::fmt::Debug,
 {
@@ -153,7 +183,7 @@ where
     }
 }
 
-impl<T: Trace> Clone for Gc<T> {
+impl<T: ?Sized> Clone for Gc<T> {
     fn clone(&self) -> Gc<T> {
         inc_rc(self.ptr);
         Self {
@@ -169,13 +199,13 @@ impl<T: ?Sized> Drop for Gc<T> {
     }
 }
 
-impl<T: Trace + Hash> Hash for Gc<T> {
+impl<T: ?Sized + Hash> Hash for Gc<T> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.read().hash(state);
     }
 }
 
-impl<T: Trace + PartialEq> PartialEq for Gc<T> {
+impl<T: ?Sized + PartialEq> PartialEq for Gc<T> {
     fn eq(&self, other: &Self) -> bool {
         let self_read = self.read();
         let other_read = other.read();
@@ -183,10 +213,10 @@ impl<T: Trace + PartialEq> PartialEq for Gc<T> {
     }
 }
 
-impl<T: Trace + Eq> Eq for Gc<T> {}
+impl<T: ?Sized + Eq> Eq for Gc<T> {}
 
-unsafe impl<T: Trace + Send> Send for Gc<T> {}
-unsafe impl<T: Trace + Sync> Sync for Gc<T> {}
+unsafe impl<T: ?Sized + Send> Send for Gc<T> {}
+unsafe impl<T: ?Sized + Sync> Sync for Gc<T> {}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum Color {
@@ -204,7 +234,7 @@ enum Color {
     Orange,
 }
 
-pub struct GcHeader {
+pub(crate) struct GcHeader {
     rc: usize,
     crc: isize,
     color: Color,
@@ -217,7 +247,7 @@ pub struct GcHeader {
 }
 
 impl GcHeader {
-    fn new<T: Trace>() -> Self {
+    fn new<T: GcOrTrace>() -> Self {
         Self {
             rc: 1,
             crc: 1,
@@ -226,11 +256,11 @@ impl GcHeader {
             lock: RwLock::new(()),
             visit_children: |this, visitor| unsafe {
                 let this = this as *const T;
-                T::visit_children(this.as_ref().unwrap(), visitor);
+                T::visit_or_recurse(this.as_ref().unwrap(), visitor);
             },
             finalize: |this| unsafe {
                 let this = this as *mut T;
-                T::finalize(this.as_mut().unwrap());
+                T::finalize_or_skip(this.as_mut().unwrap());
             },
             layout: Layout::new::<GcInner<T>>(),
         }
@@ -240,7 +270,7 @@ impl GcHeader {
 unsafe impl Send for GcHeader {}
 unsafe impl Sync for GcHeader {}
 
-pub struct GcInner<T: ?Sized> {
+pub(crate) struct GcInner<T: ?Sized> {
     header: UnsafeCell<GcHeader>,
     data: UnsafeCell<T>,
 }
@@ -271,59 +301,67 @@ impl<T: ?Sized> From<NonNull<GcInner<T>>> for OpaqueGcPtr {
 
 impl OpaqueGcPtr {
     unsafe fn rc(&self) -> usize {
-        (*self.header.as_ref().get()).rc
+        unsafe { (*self.header.as_ref().get()).rc }
     }
 
     unsafe fn set_rc(&self, rc: usize) {
-        (*self.header.as_ref().get()).rc = rc;
+        unsafe {
+            (*self.header.as_ref().get()).rc = rc;
+        }
     }
 
     unsafe fn crc(&self) -> isize {
-        (*self.header.as_ref().get()).crc
+        unsafe { (*self.header.as_ref().get()).crc }
     }
 
     unsafe fn set_crc(&self, crc: isize) {
-        (*self.header.as_ref().get()).crc = crc;
+        unsafe {
+            (*self.header.as_ref().get()).crc = crc;
+        }
     }
 
     unsafe fn color(&self) -> Color {
-        (*self.header.as_ref().get()).color
+        unsafe { (*self.header.as_ref().get()).color }
     }
 
     unsafe fn set_color(&self, color: Color) {
-        (*self.header.as_ref().get()).color = color;
+        unsafe {
+            (*self.header.as_ref().get()).color = color;
+        }
     }
 
     unsafe fn buffered(&self) -> bool {
-        (*self.header.as_ref().get()).buffered
+        unsafe { (*self.header.as_ref().get()).buffered }
     }
 
     unsafe fn set_buffered(&self, buffered: bool) {
-        (*self.header.as_ref().get()).buffered = buffered;
+        unsafe {
+            (*self.header.as_ref().get()).buffered = buffered;
+        }
     }
 
     unsafe fn lock(&self) -> &RwLock<()> {
-        &(*self.header.as_ref().get()).lock
+        unsafe { &(*self.header.as_ref().get()).lock }
     }
 
     unsafe fn visit_children(&self) -> unsafe fn(this: *const (), visitor: unsafe fn(OpaqueGcPtr)) {
-        (*self.header.as_ref().get()).visit_children
+        unsafe { (*self.header.as_ref().get()).visit_children }
     }
 
     unsafe fn finalize(&self) -> unsafe fn(this: *mut ()) {
-        (*self.header.as_ref().get()).finalize
+        unsafe { (*self.header.as_ref().get()).finalize }
     }
 
     unsafe fn layout(&self) -> Layout {
-        (*self.header.as_ref().get()).layout
+        unsafe { (*self.header.as_ref().get()).layout }
     }
 
     unsafe fn data(&self) -> *const () {
-        self.data.as_ref().get() as *const ()
+        unsafe { self.data.as_ref().get() as *const () }
     }
 
     unsafe fn data_mut(&self) -> *mut () {
-        self.data.as_ref().get()
+        unsafe { self.data.as_ref().get() }
     }
 }
 
@@ -346,9 +384,6 @@ impl<T: ?Sized> AsRef<T> for GcReadGuard<'_, T> {
         self
     }
 }
-
-// unsafe impl<T: ?Sized + Send> Send for GcReadGuard<'_, T> {}
-// unsafe impl<T: ?Sized + Sync> Sync for GcReadGuard<'_, T> {}
 
 pub struct GcWriteGuard<'a, T: ?Sized> {
     _permit: RwLockWriteGuard<'a, ()>,
@@ -382,9 +417,8 @@ impl<T: ?Sized> AsMut<T> for GcWriteGuard<'_, T> {
     }
 }
 
-// impl<T: ?Sized> !Send for GcWriteGuard<'_, T> {}
-// unsafe impl<T: ?Sized + Sync> Sync for GcWriteGuard<'_, T> {}
-
+/// A type that can be traced for garbage collection.
+///
 /// # Safety
 ///
 /// This trait should _not_ be manually implemented!
@@ -405,7 +439,9 @@ pub unsafe trait Trace: 'static {
     ///
     /// **DO NOT CALL THIS FUNCTION!!**
     unsafe fn finalize(&mut self) {
-        drop_in_place(self as *mut Self);
+        unsafe {
+            drop_in_place(self as *mut Self);
+        }
     }
 }
 
@@ -443,7 +479,17 @@ impl_empty_trace! {
     u128,
     usize,
     &'static str,
-    String
+    String,
+    PathBuf
+}
+
+// Function pointer impls:
+unsafe impl<A, B> Trace for fn(A) -> B
+where
+    A: ?Sized + 'static,
+    B: ?Sized + 'static,
+{
+    unsafe fn visit_children(&self, _visitor: unsafe fn(OpaqueGcPtr)) {}
 }
 
 /// # Safety
@@ -455,9 +501,9 @@ unsafe trait GcOrTrace: 'static {
     unsafe fn finalize_or_skip(&mut self);
 }
 
-unsafe impl<T: Trace> GcOrTrace for Gc<T> {
+unsafe impl<T: ?Sized + 'static> GcOrTrace for Gc<T> {
     unsafe fn visit_or_recurse(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        visitor(self.as_opaque())
+        unsafe { visitor(self.as_opaque()) }
     }
 
     unsafe fn finalize_or_skip(&mut self) {}
@@ -465,11 +511,15 @@ unsafe impl<T: Trace> GcOrTrace for Gc<T> {
 
 unsafe impl<T: Trace + ?Sized> GcOrTrace for T {
     unsafe fn visit_or_recurse(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        self.visit_children(visitor);
+        unsafe {
+            self.visit_children(visitor);
+        }
     }
 
     unsafe fn finalize_or_skip(&mut self) {
-        self.finalize();
+        unsafe {
+            self.finalize();
+        }
     }
 }
 
@@ -479,13 +529,17 @@ where
     B: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        self.0.visit_or_recurse(visitor);
-        self.1.visit_or_recurse(visitor);
+        unsafe {
+            self.0.visit_or_recurse(visitor);
+            self.1.visit_or_recurse(visitor);
+        }
     }
 
     unsafe fn finalize(&mut self) {
-        self.0.finalize_or_skip();
-        self.1.finalize_or_skip();
+        unsafe {
+            self.0.finalize_or_skip();
+            self.1.finalize_or_skip();
+        }
     }
 }
 
@@ -494,53 +548,67 @@ where
     T: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        for child in self {
-            child.visit_or_recurse(visitor);
+        unsafe {
+            for child in self {
+                child.visit_or_recurse(visitor);
+            }
         }
     }
 
     unsafe fn finalize(&mut self) {
-        for mut child in std::mem::take(self).into_iter().map(ManuallyDrop::new) {
-            child.finalize_or_skip();
+        unsafe {
+            for mut child in std::mem::take(self).into_iter().map(ManuallyDrop::new) {
+                child.finalize_or_skip();
+            }
         }
     }
 }
 
-unsafe impl<K> Trace for HashSet<K>
+unsafe impl<K, S> Trace for HashSet<K, S>
 where
     K: GcOrTrace,
+    S: Default + 'static,
 {
     unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        for k in self {
-            k.visit_or_recurse(visitor);
+        unsafe {
+            for k in self {
+                k.visit_or_recurse(visitor);
+            }
         }
     }
 
     unsafe fn finalize(&mut self) {
-        for mut k in std::mem::take(self).into_iter().map(ManuallyDrop::new) {
-            k.finalize_or_skip();
+        unsafe {
+            for mut k in std::mem::take(self).into_iter().map(ManuallyDrop::new) {
+                k.finalize_or_skip();
+            }
         }
     }
 }
 
-unsafe impl<K, V> Trace for HashMap<K, V>
+unsafe impl<K, V, S> Trace for HashMap<K, V, S>
 where
     K: GcOrTrace,
     V: GcOrTrace,
+    S: Default + 'static,
 {
     unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        for (k, v) in self {
-            k.visit_or_recurse(visitor);
-            v.visit_or_recurse(visitor);
+        unsafe {
+            for (k, v) in self {
+                k.visit_or_recurse(visitor);
+                v.visit_or_recurse(visitor);
+            }
         }
     }
 
     unsafe fn finalize(&mut self) {
-        for (k, v) in std::mem::take(self) {
-            let mut k = ManuallyDrop::new(k);
-            let mut v = ManuallyDrop::new(v);
-            k.finalize_or_skip();
-            v.finalize_or_skip();
+        unsafe {
+            for (k, v) in std::mem::take(self) {
+                let mut k = ManuallyDrop::new(k);
+                let mut v = ManuallyDrop::new(v);
+                k.finalize_or_skip();
+                v.finalize_or_skip();
+            }
         }
     }
 }
@@ -550,14 +618,18 @@ where
     K: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        for k in self {
-            k.visit_or_recurse(visitor);
+        unsafe {
+            for k in self {
+                k.visit_or_recurse(visitor);
+            }
         }
     }
 
     unsafe fn finalize(&mut self) {
-        for mut k in std::mem::take(self).into_iter().map(ManuallyDrop::new) {
-            k.finalize_or_skip();
+        unsafe {
+            for mut k in std::mem::take(self).into_iter().map(ManuallyDrop::new) {
+                k.finalize_or_skip();
+            }
         }
     }
 }
@@ -568,18 +640,22 @@ where
     V: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        for (k, v) in self {
-            k.visit_or_recurse(visitor);
-            v.visit_or_recurse(visitor);
+        unsafe {
+            for (k, v) in self {
+                k.visit_or_recurse(visitor);
+                v.visit_or_recurse(visitor);
+            }
         }
     }
 
     unsafe fn finalize(&mut self) {
-        for (k, v) in std::mem::take(self) {
-            let mut k = ManuallyDrop::new(k);
-            let mut v = ManuallyDrop::new(v);
-            k.finalize_or_skip();
-            v.finalize_or_skip();
+        unsafe {
+            for (k, v) in std::mem::take(self) {
+                let mut k = ManuallyDrop::new(k);
+                let mut v = ManuallyDrop::new(v);
+                k.finalize_or_skip();
+                v.finalize_or_skip();
+            }
         }
     }
 }
@@ -589,14 +665,18 @@ where
     K: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        for k in self {
-            k.visit_or_recurse(visitor);
+        unsafe {
+            for k in self {
+                k.visit_or_recurse(visitor);
+            }
         }
     }
 
     unsafe fn finalize(&mut self) {
-        for mut k in std::mem::take(self).into_iter().map(ManuallyDrop::new) {
-            k.finalize_or_skip();
+        unsafe {
+            for mut k in std::mem::take(self).into_iter().map(ManuallyDrop::new) {
+                k.finalize_or_skip();
+            }
         }
     }
 }
@@ -607,18 +687,22 @@ where
     V: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        for (k, v) in self {
-            k.visit_or_recurse(visitor);
-            v.visit_or_recurse(visitor);
+        unsafe {
+            for (k, v) in self {
+                k.visit_or_recurse(visitor);
+                v.visit_or_recurse(visitor);
+            }
         }
     }
 
     unsafe fn finalize(&mut self) {
-        for (k, v) in std::mem::take(self).into_iter() {
-            let mut k = ManuallyDrop::new(k);
-            let mut v = ManuallyDrop::new(v);
-            k.finalize_or_skip();
-            v.finalize_or_skip();
+        unsafe {
+            for (k, v) in std::mem::take(self).into_iter() {
+                let mut k = ManuallyDrop::new(k);
+                let mut v = ManuallyDrop::new(v);
+                k.finalize_or_skip();
+                v.finalize_or_skip();
+            }
         }
     }
 }
@@ -628,14 +712,18 @@ where
     T: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        if let Some(inner) = self {
-            inner.visit_or_recurse(visitor);
+        unsafe {
+            if let Some(inner) = self {
+                inner.visit_or_recurse(visitor);
+            }
         }
     }
 
     unsafe fn finalize(&mut self) {
-        if let Some(inner) = self {
-            inner.finalize_or_skip();
+        unsafe {
+            if let Some(inner) = self {
+                inner.finalize_or_skip();
+            }
         }
     }
 }
@@ -646,16 +734,20 @@ where
     E: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        match self {
-            Ok(inner) => inner.visit_or_recurse(visitor),
-            Err(inner) => inner.visit_or_recurse(visitor),
+        unsafe {
+            match self {
+                Ok(inner) => inner.visit_or_recurse(visitor),
+                Err(inner) => inner.visit_or_recurse(visitor),
+            }
         }
     }
 
     unsafe fn finalize(&mut self) {
-        match self {
-            Ok(ref mut inner) => inner.finalize_or_skip(),
-            Err(ref mut inner) => inner.finalize_or_skip(),
+        unsafe {
+            match self {
+                Ok(inner) => inner.finalize_or_skip(),
+                Err(inner) => inner.finalize_or_skip(),
+            }
         }
     }
 }
@@ -666,16 +758,20 @@ where
     R: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        match self {
-            Either::Left(inner) => inner.visit_or_recurse(visitor),
-            Either::Right(inner) => inner.visit_or_recurse(visitor),
+        unsafe {
+            match self {
+                Either::Left(inner) => inner.visit_or_recurse(visitor),
+                Either::Right(inner) => inner.visit_or_recurse(visitor),
+            }
         }
     }
 
     unsafe fn finalize(&mut self) {
-        match self {
-            Either::Left(ref mut inner) => inner.finalize_or_skip(),
-            Either::Right(ref mut inner) => inner.finalize_or_skip(),
+        unsafe {
+            match self {
+                Either::Left(inner) => inner.finalize_or_skip(),
+                Either::Right(inner) => inner.finalize_or_skip(),
+            }
         }
     }
 }
@@ -715,7 +811,20 @@ where
         }
     }
 }
-*/
+ */
+
+unsafe impl<T> Trace for by_address::ByAddress<T>
+where
+    T: ?Sized + GcOrTrace + Deref,
+{
+    unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
+        unsafe { self.0.visit_or_recurse(visitor) }
+    }
+
+    unsafe fn finalize(&mut self) {
+        unsafe { self.0.finalize_or_skip() }
+    }
+}
 
 unsafe impl<T> Trace for std::sync::Arc<T>
 where
@@ -751,10 +860,12 @@ where
     T: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        // TODO: Think really hard as to if this is correct
-        // This _should_ be fine, while not optimally efficient.
-        let lock = self.blocking_lock();
-        lock.visit_or_recurse(visitor);
+        unsafe {
+            // TODO: Think really hard as to if this is correct
+            // This _should_ be fine, while not optimally efficient.
+            let lock = self.blocking_lock();
+            lock.visit_or_recurse(visitor);
+        }
     }
 }
 
@@ -763,11 +874,13 @@ where
     T: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        // TODO: Think really hard as to if this is correct
-        loop {
-            if let Ok(read_lock) = self.try_read() {
-                read_lock.visit_or_recurse(visitor);
-                return;
+        unsafe {
+            // TODO: Think really hard as to if this is correct
+            loop {
+                if let Ok(read_lock) = self.try_read() {
+                    read_lock.visit_or_recurse(visitor);
+                    return;
+                }
             }
         }
     }
@@ -785,8 +898,10 @@ where
     T: GcOrTrace,
 {
     unsafe fn visit_children(&self, visitor: unsafe fn(OpaqueGcPtr)) {
-        // TODO: Think really hard as to if this is correct
-        let lock = self.lock().unwrap();
-        lock.visit_or_recurse(visitor);
+        unsafe {
+            // TODO: Think really hard as to if this is correct
+            let lock = self.lock().unwrap();
+            lock.visit_or_recurse(visitor);
+        }
     }
 }

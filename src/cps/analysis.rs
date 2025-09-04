@@ -21,9 +21,9 @@ use super::*;
 
 impl Cps {
     // TODO: Have this function return a Cow<'_, HashSet<Local>>
-    pub(super) fn free_variables(&self) -> HashSet<Local> {
+    pub(super) fn free_variables(&self) -> AHashSet<Local> {
         match self {
-            Cps::PrimOp(PrimOp::AllocCell, _, ref bind, cexpr) => {
+            Cps::PrimOp(PrimOp::AllocCell, _, bind, cexpr) => {
                 let mut free = cexpr.free_variables();
                 free.remove(bind);
                 free
@@ -34,7 +34,7 @@ impl Cps {
                 free.union(&values_to_locals(args)).copied().collect()
             }
             Cps::If(cond, success, failure) => {
-                let mut free: HashSet<_> = success
+                let mut free: AHashSet<_> = success
                     .free_variables()
                     .union(&failure.free_variables())
                     .copied()
@@ -51,7 +51,7 @@ impl Cps {
                 .into_iter()
                 .flatten()
                 .collect(),
-            Cps::Closure {
+            Cps::Lambda {
                 args,
                 body,
                 val,
@@ -59,10 +59,10 @@ impl Cps {
                 ..
             } => {
                 let mut free_body = body.free_variables();
-                for arg in args.to_vec() {
-                    free_body.remove(&arg);
+                for arg in args.iter() {
+                    free_body.remove(arg);
                 }
-                let mut free_variables: HashSet<_> =
+                let mut free_variables: AHashSet<_> =
                     free_body.union(&cexp.free_variables()).copied().collect();
                 free_variables.remove(val);
                 free_variables
@@ -72,7 +72,7 @@ impl Cps {
     }
 
     // TODO: Have this function return a Cow<'_, HashSet<Local>>
-    pub(super) fn globals(&self) -> HashSet<Global> {
+    pub(super) fn globals(&self) -> AHashSet<Global> {
         match self {
             Cps::PrimOp(PrimOp::AllocCell, _, _, cexpr) => cexpr.globals(),
             Cps::PrimOp(_, args, _, cexpr) => cexpr
@@ -81,7 +81,7 @@ impl Cps {
                 .cloned()
                 .collect(),
             Cps::If(cond, success, failure) => {
-                let mut globals: HashSet<_> = success
+                let mut globals: AHashSet<_> = success
                     .globals()
                     .union(&failure.globals())
                     .cloned()
@@ -98,7 +98,7 @@ impl Cps {
                 .into_iter()
                 .flatten()
                 .collect(),
-            Cps::Closure { body, cexp, .. } => {
+            Cps::Lambda { body, cexp, .. } => {
                 body.globals().union(&cexp.globals()).cloned().collect()
             }
             Cps::Halt(val) => val.to_global().into_iter().collect(),
@@ -108,8 +108,8 @@ impl Cps {
     // TODO: Have this function return a Cow
     pub(super) fn uses(
         &self,
-        uses_cache: &mut HashMap<Local, HashMap<Local, usize>>,
-    ) -> HashMap<Local, usize> {
+        uses_cache: &mut AHashMap<Local, AHashMap<Local, usize>>,
+    ) -> AHashMap<Local, usize> {
         match self {
             // Cps::AllocCell(_, cexpr) => cexpr.uses(uses_cache).clone(),
             Cps::PrimOp(_, args, _, cexpr) => {
@@ -123,8 +123,8 @@ impl Cps {
                 let uses = values_to_uses(vals);
                 add_value_use(uses, op)
             }
-            Cps::Forward(op, arg) => add_value_use(add_value_use(HashMap::new(), op), arg),
-            Cps::Closure {
+            Cps::Forward(op, arg) => add_value_use(add_value_use(AHashMap::new(), op), arg),
+            Cps::Lambda {
                 body, val, cexp, ..
             } => {
                 if !uses_cache.contains_key(val) {
@@ -133,25 +133,58 @@ impl Cps {
                 }
                 uses_cache.get(val).unwrap().clone()
             }
-            Cps::Halt(value) => add_value_use(HashMap::new(), value),
+            Cps::Halt(value) => add_value_use(AHashMap::new(), value),
+        }
+    }
+
+    pub(super) fn max_drops(&self) -> MaxDrops {
+        match self {
+            // Cps::AllocCell(_, cexpr) => cexpr.uses(uses_cache).clone(),
+            Cps::PrimOp(PrimOp::AllocCell, _, _, cexpr) => {
+                let mut max_drops = cexpr.max_drops();
+                max_drops.cell_drops += 1;
+                max_drops
+            }
+            Cps::PrimOp(
+                PrimOp::Cons
+                | PrimOp::Add
+                | PrimOp::Sub
+                | PrimOp::Mul
+                | PrimOp::Div
+                | PrimOp::Equal
+                | PrimOp::Greater
+                | PrimOp::GreaterEqual
+                | PrimOp::Lesser
+                | PrimOp::LesserEqual
+                | PrimOp::Matches
+                | PrimOp::ExpandTemplate
+                | PrimOp::ExtractWinders,
+                _,
+                _,
+                cexpr,
+            ) => {
+                let mut max_drops = cexpr.max_drops();
+                max_drops.value_drops += 1;
+                max_drops
+            }
+            Cps::Lambda { cexp, .. } => {
+                let mut max_drops = cexp.max_drops();
+                max_drops.cell_drops += 1;
+                max_drops
+            }
+            Cps::PrimOp(_, _, _, cexpr) => cexpr.max_drops(),
+            Cps::If(_, success, failure) => success.max_drops().max(failure.max_drops()),
+            _ => MaxDrops::default(),
         }
     }
 
     // TODO: Clean up this function!
     pub(super) fn need_cells(
         &self,
-        local_args: &HashSet<Local>,
-        escaping_arg_cache: &mut HashMap<Local, HashSet<Local>>,
-    ) -> HashSet<Local> {
+        local_args: &AHashSet<Local>,
+        escaping_arg_cache: &mut AHashMap<Local, AHashSet<Local>>,
+    ) -> AHashSet<Local> {
         match self {
-            Cps::PrimOp(PrimOp::GetCallTransformerFn, args, _, cexp) => {
-                // The GetCallTransformerFn requires that all arguments to it are
-                // cells. We should fix this at some point.
-                cexp.need_cells(local_args, escaping_arg_cache)
-                    .union(&values_to_locals(args))
-                    .copied()
-                    .collect()
-            }
             Cps::PrimOp(PrimOp::Set, args, _, cexp) => {
                 let [to, from] = args.as_slice() else {
                     unreachable!()
@@ -160,11 +193,10 @@ impl Cps {
                 // really stretching the definition of "escaping", but it's easy
                 // to put in here for now.
                 let mut escaping_args = cexp.need_cells(local_args, escaping_arg_cache);
-                match from.to_local() {
-                    Some(local) if !local_args.contains(&local) => {
-                        escaping_args.insert(local);
-                    }
-                    _ => (),
+                if let Some(local) = from.to_local()
+                    && !local_args.contains(&local)
+                {
+                    escaping_args.insert(local);
                 }
                 escaping_args.extend(to.to_local());
                 escaping_args
@@ -172,26 +204,25 @@ impl Cps {
             Cps::PrimOp(_, args, _, cexp) => values_to_locals(args)
                 .difference(local_args)
                 .copied()
-                .collect::<HashSet<_>>()
+                .collect::<AHashSet<_>>()
                 .union(&cexp.need_cells(local_args, escaping_arg_cache))
                 .copied()
-                .collect::<HashSet<_>>(),
+                .collect::<AHashSet<_>>(),
             Cps::If(cond, success, failure) => {
-                let mut escaping_args: HashSet<_> = success
+                let mut escaping_args: AHashSet<_> = success
                     .need_cells(local_args, escaping_arg_cache)
                     .union(&failure.need_cells(local_args, escaping_arg_cache))
                     .copied()
                     .collect();
-                match cond.to_local() {
-                    Some(local) if !local_args.contains(&local) => {
-                        escaping_args.insert(local);
-                    }
-                    _ => (),
+                if let Some(local) = cond.to_local()
+                    && !local_args.contains(&local)
+                {
+                    escaping_args.insert(local);
                 }
                 escaping_args
             }
             Cps::App(op, vals, _) => {
-                let mut escaping_args: HashSet<_> = values_to_locals(vals)
+                let mut escaping_args: AHashSet<_> = values_to_locals(vals)
                     .difference(local_args)
                     .copied()
                     .collect();
@@ -204,32 +235,29 @@ impl Cps {
                 escaping_args
             }
             Cps::Forward(op, val) => {
-                let mut escaping_args = HashSet::new();
-                match val.to_local() {
-                    Some(local) if !local_args.contains(&local) => {
-                        escaping_args.insert(local);
-                    }
-                    _ => (),
+                let mut escaping_args = AHashSet::new();
+                if let Some(local) = val.to_local()
+                    && !local_args.contains(&local)
+                {
+                    escaping_args.insert(local);
                 }
-                match op.to_local() {
-                    Some(local) if !local_args.contains(&local) => {
-                        escaping_args.insert(local);
-                    }
-                    _ => (),
+                if let Some(local) = op.to_local()
+                    && !local_args.contains(&local)
+                {
+                    escaping_args.insert(local);
                 }
                 escaping_args
             }
             Cps::Halt(val) => {
-                let mut escaping_args = HashSet::new();
-                match val.to_local() {
-                    Some(local) if !local_args.contains(&local) => {
-                        escaping_args.insert(local);
-                    }
-                    _ => (),
+                let mut escaping_args = AHashSet::new();
+                if let Some(local) = val.to_local()
+                    && !local_args.contains(&local)
+                {
+                    escaping_args.insert(local);
                 }
                 escaping_args
             }
-            Cps::Closure {
+            Cps::Lambda {
                 args,
                 body,
                 val,
@@ -237,7 +265,7 @@ impl Cps {
                 ..
             } => {
                 if !escaping_arg_cache.contains_key(val) {
-                    let new_local_args: HashSet<_> = args.to_vec().into_iter().collect();
+                    let new_local_args: AHashSet<_> = args.iter().copied().collect();
                     let escaping_args = body
                         .need_cells(&new_local_args, escaping_arg_cache)
                         .union(&cexp.need_cells(local_args, escaping_arg_cache))
@@ -252,31 +280,56 @@ impl Cps {
     }
 }
 
-fn values_to_locals(vals: &[Value]) -> HashSet<Local> {
+fn values_to_locals(vals: &[Value]) -> AHashSet<Local> {
     vals.iter().flat_map(|val| val.to_local()).collect()
 }
 
-fn values_to_uses(vals: &[Value]) -> HashMap<Local, usize> {
-    let mut uses = HashMap::new();
+fn values_to_uses(vals: &[Value]) -> AHashMap<Local, usize> {
+    let mut uses = AHashMap::new();
     for local in vals.iter().flat_map(|val| val.to_local()) {
         *uses.entry(local).or_default() += 1;
     }
     uses
 }
 
-fn values_to_globals(vals: &[Value]) -> HashSet<Global> {
+fn values_to_globals(vals: &[Value]) -> AHashSet<Global> {
     vals.iter().flat_map(|val| val.to_global()).collect()
 }
 
-fn merge_uses(mut l: HashMap<Local, usize>, r: HashMap<Local, usize>) -> HashMap<Local, usize> {
-    for (local, uses) in r.into_iter() {
-        *l.entry(local).or_default() += uses;
+fn merge_uses(
+    mut l: AHashMap<Local, usize>,
+    mut r: AHashMap<Local, usize>,
+) -> AHashMap<Local, usize> {
+    if r.len() > l.len() {
+        for (local, uses) in l.into_iter() {
+            *r.entry(local).or_default() += uses;
+        }
+        r
+    } else {
+        for (local, uses) in r.into_iter() {
+            *l.entry(local).or_default() += uses;
+        }
+        l
     }
-    l
 }
-fn add_value_use(mut uses: HashMap<Local, usize>, value: &Value) -> HashMap<Local, usize> {
+fn add_value_use(mut uses: AHashMap<Local, usize>, value: &Value) -> AHashMap<Local, usize> {
     if let Some(local) = value.to_local() {
         *uses.entry(local).or_default() += 1;
     }
     uses
+}
+
+#[derive(Copy, Clone, Default)]
+pub struct MaxDrops {
+    pub(super) value_drops: usize,
+    pub(super) cell_drops: usize,
+}
+
+impl MaxDrops {
+    fn max(self, rhs: Self) -> Self {
+        Self {
+            value_drops: self.value_drops.max(rhs.value_drops),
+            cell_drops: self.cell_drops.max(rhs.cell_drops),
+        }
+    }
 }

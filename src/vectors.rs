@@ -5,8 +5,9 @@ use crate::{
     num::{Number, NumberToUsizeError},
     registry::bridge,
     strings,
-    value::Value,
+    value::{EqvValue, Value, write_value},
 };
+use indexmap::IndexMap;
 use malachite::Integer;
 use std::{
     clone::Clone,
@@ -46,16 +47,35 @@ impl<T: Trace + PartialEq> PartialEq for AlignedVector<T> {
     }
 }
 
-pub fn display_vec<T: fmt::Display>(
-    head: &str,
-    v: &[T],
+pub(crate) fn write_vec(
+    v: &Gc<AlignedVector<Value>>,
+    fmt: fn(&Value, &mut IndexMap<EqvValue, bool>, &mut fmt::Formatter<'_>) -> fmt::Result,
+    circular_values: &mut IndexMap<EqvValue, bool>,
     f: &mut fmt::Formatter<'_>,
 ) -> Result<(), fmt::Error> {
-    write!(f, "{}", head)?;
+    write!(f, "#(")?;
+
+    let v = v.read();
+    let mut iter = v.iter().peekable();
+    while let Some(next) = iter.next() {
+        write_value(next, fmt, circular_values, f)?;
+        if iter.peek().is_some() {
+            write!(f, " ")?;
+        }
+    }
+
+    write!(f, ")")
+}
+
+pub(crate) fn write_bytevec(
+    v: &AlignedVector<u8>,
+    f: &mut fmt::Formatter<'_>,
+) -> Result<(), fmt::Error> {
+    write!(f, "#u8(")?;
 
     let mut iter = v.iter().peekable();
     while let Some(next) = iter.next() {
-        write!(f, "{}", next)?;
+        write!(f, "{next}")?;
         if iter.peek().is_some() {
             write!(f, " ")?;
         }
@@ -67,8 +87,7 @@ pub fn display_vec<T: fmt::Display>(
 fn try_make_range(start: usize, end: usize) -> Result<Range<usize>, Condition> {
     if end < start {
         Err(Condition::error(format!(
-            "Range end {} cannot be less than start {}",
-            end, start
+            "Range end {end} cannot be less than start {start}",
         )))
     } else {
         Ok(start..end)
@@ -156,7 +175,7 @@ impl Indexer for VectorIndexer {
     }
 }
 
-#[bridge(name = "make-vector", lib = "(base)")]
+#[bridge(name = "make-vector", lib = "(rnrs base builtins (6))")]
 pub async fn make_vector(n: &Value, with: &[Value]) -> Result<Vec<Value>, Condition> {
     let n: Arc<Number> = n.clone().try_into()?;
     let n: usize = n.as_ref().try_into()?;
@@ -168,24 +187,26 @@ pub async fn make_vector(n: &Value, with: &[Value]) -> Result<Vec<Value>, Condit
     )])
 }
 
-#[bridge(name = "vector", lib = "(base)")]
+#[bridge(name = "vector", lib = "(rnrs base builtins (6))")]
 pub async fn vector(args: &[Value]) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(args.to_vec())])
 }
 
-#[bridge(name = "vector-ref", lib = "(base)")]
+#[bridge(name = "vector-ref", lib = "(rnrs base builtins (6))")]
 pub async fn vector_ref(vec: &Value, index: &Value) -> Result<Vec<Value>, Condition> {
     let vec: Gc<AlignedVector<Value>> = vec.clone().try_into()?;
     let index: usize = try_to_usize(index)?;
     let vec_read = vec.read();
 
-    Ok(vec![vec_read
-        .get(index)
-        .ok_or_else(|| Condition::invalid_index(index, vec_read.len()))?
-        .clone()])
+    Ok(vec![
+        vec_read
+            .get(index)
+            .ok_or_else(|| Condition::invalid_index(index, vec_read.len()))?
+            .clone(),
+    ])
 }
 
-#[bridge(name = "vector-length", lib = "(base)")]
+#[bridge(name = "vector-length", lib = "(rnrs base builtins (6))")]
 pub async fn vector_len(vec: &Value) -> Result<Vec<Value>, Condition> {
     let vec: Gc<AlignedVector<Value>> = vec.clone().try_into()?;
     let len = vec.read().len();
@@ -196,7 +217,18 @@ pub async fn vector_len(vec: &Value) -> Result<Vec<Value>, Condition> {
     })])
 }
 
-#[bridge(name = "vector-set!", lib = "(base)")]
+#[bridge(name = "bytevector-length", lib = "(rnrs base builtins (6))")]
+pub async fn bytevector_len(vec: &Value) -> Result<Vec<Value>, Condition> {
+    let vec: Arc<AlignedVector<u8>> = vec.clone().try_into()?;
+    let len = vec.len();
+
+    Ok(vec![Value::from(match i64::try_from(len) {
+        Ok(len) => Number::FixedInteger(len),
+        Err(_) => Number::BigInteger(Integer::from(len)),
+    })])
+}
+
+#[bridge(name = "vector-set!", lib = "(rnrs base builtins (6))")]
 pub async fn vector_set(vec: &Value, index: &Value, with: &Value) -> Result<Vec<Value>, Condition> {
     let vec: Gc<AlignedVector<Value>> = vec.clone().try_into()?;
     let vec_len = vec.read().len();
@@ -210,14 +242,14 @@ pub async fn vector_set(vec: &Value, index: &Value, with: &Value) -> Result<Vec<
     Ok(vec![])
 }
 
-#[bridge(name = "vector->list", lib = "(base)")]
+#[bridge(name = "vector->list", lib = "(rnrs base builtins (6))")]
 pub async fn vector_to_list(from: &Value, range: &[Value]) -> Result<Vec<Value>, Condition> {
     let vec = VectorIndexer::index(from, range)?;
     let vec_read = vec.read();
     Ok(vec![slice_to_list(&vec_read)])
 }
 
-#[bridge(name = "vector->string", lib = "(base)")]
+#[bridge(name = "vector->string", lib = "(rnrs base builtins (6))")]
 pub async fn vector_to_string(from: &Value, range: &[Value]) -> Result<Vec<Value>, Condition> {
     let vec = VectorIndexer::index(from, range)?;
     let vec_read = vec.read();
@@ -230,7 +262,7 @@ pub async fn vector_to_string(from: &Value, range: &[Value]) -> Result<Vec<Value
     )])
 }
 
-#[bridge(name = "string->vector", lib = "(base)")]
+#[bridge(name = "string->vector", lib = "(rnrs base builtins (6))")]
 pub async fn string_to_vector(from: &Value, range: &[Value]) -> Result<Vec<Value>, Condition> {
     let str = StringIndexer::index(from, range)?;
     Ok(vec![Value::from(
@@ -238,12 +270,12 @@ pub async fn string_to_vector(from: &Value, range: &[Value]) -> Result<Vec<Value
     )])
 }
 
-#[bridge(name = "vector-copy", lib = "(base)")]
+#[bridge(name = "vector-copy", lib = "(rnrs base builtins (6))")]
 pub async fn vector_copy(from: &Value, range: &[Value]) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(VectorIndexer::index(from, range)?)])
 }
 
-#[bridge(name = "vector-copy!", lib = "(base)")]
+#[bridge(name = "vector-copy!", lib = "(rnrs base builtins (6))")]
 pub async fn vector_copy_to(
     to: &Value,
     at: &Value,
@@ -278,7 +310,7 @@ pub async fn vector_copy_to(
     Ok(vec![])
 }
 
-#[bridge(name = "vector-append", lib = "(base)")]
+#[bridge(name = "vector-append", lib = "(rnrs base builtins (6))")]
 pub async fn vector_append(args: &[Value]) -> Result<Vec<Value>, Condition> {
     if args.is_empty() {
         return Err(Condition::wrong_num_of_variadic_args(1..usize::MAX, 0));
@@ -298,7 +330,7 @@ pub async fn vector_append(args: &[Value]) -> Result<Vec<Value>, Condition> {
     )])
 }
 
-#[bridge(name = "vector-fill!", lib = "(base)")]
+#[bridge(name = "vector-fill!", lib = "(rnrs base builtins (6))")]
 pub async fn vector_fill(
     vector: &Value,
     with: &Value,

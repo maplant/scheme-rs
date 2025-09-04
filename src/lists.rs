@@ -1,9 +1,12 @@
+use indexmap::IndexMap;
+
 use crate::{
     exception::Condition,
     gc::{Gc, Trace},
     num::Number,
     registry::bridge,
-    value::{UnpackedValue, Value},
+    syntax::Syntax,
+    value::{EqvValue, UnpackedValue, Value, ValueType, write_value},
 };
 use std::fmt;
 
@@ -24,21 +27,40 @@ impl PartialEq for Pair {
     }
 }
 
-pub fn display_list(car: &Value, cdr: &Value, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    // TODO(map): If the list is circular, DO NOT print infinitely!
-    match &*cdr.unpacked_ref() {
-        UnpackedValue::Pair(_) | UnpackedValue::Null => (),
-        cdr => {
+pub(crate) fn write_list(
+    car: &Value,
+    cdr: &Value,
+    fmt: fn(&Value, &mut IndexMap<EqvValue, bool>, &mut fmt::Formatter<'_>) -> fmt::Result,
+    circular_values: &mut IndexMap<EqvValue, bool>,
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
+    match cdr.type_of() {
+        ValueType::Pair | ValueType::Null => (),
+        _ => {
             // This is not a proper list
-            return write!(f, "({car} . {cdr})");
+            write!(f, "(")?;
+            write_value(car, fmt, circular_values, f)?;
+            write!(f, " . ")?;
+            write_value(cdr, fmt, circular_values, f)?;
+            write!(f, ")")?;
+            return Ok(());
         }
     }
 
-    write!(f, "({car}")?;
-
+    write!(f, "(")?;
+    write_value(car, fmt, circular_values, f)?;
     let mut stack = vec![cdr.clone()];
 
     while let Some(head) = stack.pop() {
+        if let Some((idx, _, seen)) = circular_values.get_full_mut(&EqvValue(head.clone())) {
+            if *seen {
+                write!(f, " . #{idx}#")?;
+                continue;
+            } else {
+                write!(f, " #{idx}=")?;
+                *seen = true;
+            }
+        }
         match &*head.unpacked_ref() {
             UnpackedValue::Null => {
                 if !stack.is_empty() {
@@ -48,47 +70,15 @@ pub fn display_list(car: &Value, cdr: &Value, f: &mut fmt::Formatter<'_>) -> fmt
             UnpackedValue::Pair(pair) => {
                 let pair_read = pair.read();
                 let Pair(car, cdr) = pair_read.as_ref();
-                write!(f, " {car}")?;
+                write!(f, " ")?;
+                write_value(car, fmt, circular_values, f)?;
+                // write!(f, " {car}")?;
                 stack.push(cdr.clone());
             }
             x => {
-                write!(f, " {x}")?;
-            }
-        }
-    }
-
-    write!(f, ")")
-}
-
-pub fn debug_list(car: &Value, cdr: &Value, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    // TODO(map): If the list is circular, DO NOT print infinitely!
-    match &*cdr.unpacked_ref() {
-        UnpackedValue::Pair(_) | UnpackedValue::Null => (),
-        cdr => {
-            // This is not a proper list
-            return write!(f, "({car:?} . {cdr:?})");
-        }
-    }
-
-    write!(f, "({car:?}")?;
-
-    let mut stack = vec![cdr.clone()];
-
-    while let Some(head) = stack.pop() {
-        match &*head.unpacked_ref() {
-            UnpackedValue::Null => {
-                if !stack.is_empty() {
-                    write!(f, " ()")?;
-                }
-            }
-            UnpackedValue::Pair(pair) => {
-                let pair_read = pair.read();
-                let Pair(car, cdr) = pair_read.as_ref();
-                write!(f, " {car:?}")?;
-                stack.push(cdr.clone());
-            }
-            x => {
-                write!(f, " {x:?}")?;
+                let val = x.clone().into_value();
+                write!(f, " ")?;
+                write_value(&val, fmt, circular_values, f)?;
             }
         }
     }
@@ -128,7 +118,7 @@ pub fn list_to_vec_with_null(curr: &Value, out: &mut Vec<Value>) {
     }
 }
 
-#[bridge(name = "list", lib = "(base)")]
+#[bridge(name = "list", lib = "(rnrs base builtins (6))")]
 pub async fn list(args: &[Value]) -> Result<Vec<Value>, Condition> {
     // Construct the list in reverse
     let mut cdr = Value::null();
@@ -138,48 +128,74 @@ pub async fn list(args: &[Value]) -> Result<Vec<Value>, Condition> {
     Ok(vec![cdr])
 }
 
-#[bridge(name = "cons", lib = "(base)")]
+#[bridge(name = "cons", lib = "(rnrs base builtins (6))")]
 pub async fn cons(car: &Value, cdr: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(Gc::new(Pair(car.clone(), cdr.clone())))])
 }
 
-#[bridge(name = "car", lib = "(base)")]
+#[bridge(name = "car", lib = "(rnrs base builtins (6))")]
 pub async fn car(val: &Value) -> Result<Vec<Value>, Condition> {
-    let pair: Gc<Pair> = val.clone().try_into()?;
-    let pair_read = pair.read();
-    let Pair(car, _) = pair_read.as_ref();
-    Ok(vec![car.clone()])
+    match val.clone().unpack() {
+        UnpackedValue::Pair(pair) => {
+            let pair_read = pair.read();
+            let Pair(car, _) = pair_read.as_ref();
+            Ok(vec![car.clone()])
+        }
+        UnpackedValue::Syntax(syn) if syn.is_list() => {
+            let Some([car, ..]) = syn.as_list() else {
+                unreachable!()
+            };
+            Ok(vec![Value::from(car.clone())])
+        }
+        _ => Err(Condition::invalid_type("list", val.type_name())),
+    }
 }
 
-#[bridge(name = "cdr", lib = "(base)")]
+#[bridge(name = "cdr", lib = "(rnrs base builtins (6))")]
 pub async fn cdr(val: &Value) -> Result<Vec<Value>, Condition> {
-    let pair: Gc<Pair> = val.clone().try_into()?;
-    let pair_read = pair.read();
-    let Pair(_, cdr) = pair_read.as_ref();
-    Ok(vec![cdr.clone()])
+    match val.clone().unpack() {
+        UnpackedValue::Pair(pair) => {
+            let pair_read = pair.read();
+            let Pair(_, cdr) = pair_read.as_ref();
+            Ok(vec![cdr.clone()])
+        }
+        UnpackedValue::Syntax(syn) if syn.is_list() => match syn.as_list() {
+            Some([_, null @ Syntax::Null { .. }]) => Ok(vec![Value::from(null.clone())]),
+            Some([_, cdr @ ..]) => Ok(vec![Value::from(Syntax::List {
+                list: cdr.to_vec(),
+                span: syn.span().clone(),
+            })]),
+            _ => unreachable!(),
+        },
+        _ => Err(Condition::invalid_type("list", val.type_name())),
+    }
 }
 
-#[bridge(name = "set-car!", lib = "(base)")]
+#[bridge(name = "set-car!", lib = "(rnrs base builtins (6))")]
 pub async fn set_car(var: &Value, val: &Value) -> Result<Vec<Value>, Condition> {
     let pair: Gc<Pair> = var.clone().try_into()?;
     let mut pair_write = pair.write();
-    let Pair(ref mut car, _) = pair_write.as_mut();
+    let Pair(car, _) = pair_write.as_mut();
     *car = val.clone();
     Ok(Vec::new())
 }
 
-#[bridge(name = "set-cdr!", lib = "(base)")]
+#[bridge(name = "set-cdr!", lib = "(rnrs base builtins (6))")]
 pub async fn set_cdr(var: &Value, val: &Value) -> Result<Vec<Value>, Condition> {
     let pair: Gc<Pair> = var.clone().try_into()?;
     let mut pair_write = pair.write();
-    let Pair(_, ref mut cdr) = pair_write.as_mut();
+    let Pair(_, cdr) = pair_write.as_mut();
     *cdr = val.clone();
     Ok(Vec::new())
 }
 
-#[bridge(name = "length", lib = "(base)")]
-pub async fn length(arg: &Value) -> Result<Vec<Value>, Condition> {
-    let mut length = 0;
+#[bridge(name = "length", lib = "(rnrs base builtins (6))")]
+pub async fn length_builtin(arg: &Value) -> Result<Vec<Value>, Condition> {
+    Ok(vec![Value::from(Number::from(length(arg)?))])
+}
+
+pub fn length(arg: &Value) -> Result<usize, Condition> {
+    let mut length = 0usize;
     let mut arg = arg.clone();
     loop {
         arg = {
@@ -189,15 +205,16 @@ pub async fn length(arg: &Value) -> Result<Vec<Value>, Condition> {
                     let Pair(_, cdr) = pair_read.as_ref();
                     cdr.clone()
                 }
-                _ => break,
+                UnpackedValue::Null => break,
+                _ => return Err(Condition::error("list must be proper".to_string())),
             }
         };
         length += 1;
     }
-    Ok(vec![Value::from(Number::from(length))])
+    Ok(length)
 }
 
-#[bridge(name = "list->vector", lib = "(base)")]
+#[bridge(name = "list->vector", lib = "(rnrs base builtins (6))")]
 pub async fn list_to_vector(list: &Value) -> Result<Vec<Value>, Condition> {
     let mut vec = Vec::new();
     list_to_vec(list, &mut vec);

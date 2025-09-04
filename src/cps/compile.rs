@@ -1,29 +1,33 @@
-use std::iter::once;
-
 use super::*;
-use crate::{ast::*, value::Value as RuntimeValue};
+use crate::{
+    ast::*,
+    expand::{ExpansionCombiner, SyntaxRule},
+    gc::Gc,
+    value::Value as RuntimeValue,
+};
 use either::Either;
+use indexmap::IndexSet;
 
 /// There's not too much reason that this is a trait, other than I wanted to
 /// see all of the Compile implementations in one place.
-pub trait Compile {
+pub trait Compile: std::fmt::Debug {
     fn compile(&self, meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps;
 
     /// The top level function takes no arguments.
     fn compile_top_level(&self) -> Cps {
         let k = Local::gensym();
         let result = Local::gensym();
-        Cps::Closure {
+        Cps::Lambda {
             args: ClosureArgs::new(vec![result], true, None),
             body: Box::new(Cps::Halt(Value::from(result))),
             val: k,
             cexp: Box::new(self.compile(Box::new(|value| {
                 Cps::App(value, vec![Value::from(k)], None)
             }))),
-            debug: None,
+            span: None,
         }
         .reduce()
-        .args_to_cells(&mut HashMap::default())
+        .args_to_cells(&mut AHashMap::default())
     }
 }
 
@@ -35,7 +39,8 @@ impl Compile for Lambda {
             self.args.iter().cloned().collect(),
             self.args.is_variadic(),
             &self.body,
-            self.debug_info_id,
+            self.span.clone(),
+            None,
             meta_cont,
         )
     }
@@ -45,28 +50,30 @@ fn compile_lambda(
     args: Vec<Local>,
     is_variadic: bool,
     body: &DefinitionBody,
-    debug_info_id: FunctionDebugInfoId,
+    span: Span,
+    name: Option<Symbol>,
     mut meta_cont: impl FnMut(Value) -> Cps,
 ) -> Cps {
     let k1 = Local::gensym();
     let k2 = Local::gensym();
     let k3 = Local::gensym();
-    let k4 = Local::gensym();
+    let mut k4 = Local::gensym();
+    k4.name = name;
 
-    Cps::Closure {
+    Cps::Lambda {
         args: ClosureArgs::new(vec![k2], false, None),
-        body: Box::new(Cps::Closure {
+        body: Box::new(Cps::Lambda {
             args: ClosureArgs::new(args, is_variadic, Some(k3)),
             body: Box::new(body.compile(Box::new(|result| {
                 Cps::App(result, vec![Value::from(k3)], None)
             }))),
             val: k4,
             cexp: Box::new(Cps::App(Value::from(k2), vec![Value::from(k4)], None)),
-            debug: Some(debug_info_id),
+            span: Some(span.clone()),
         }),
         val: k1,
         cexp: Box::new(meta_cont(Value::from(k1))),
-        debug: None,
+        span: Some(span),
     }
 }
 
@@ -86,13 +93,13 @@ fn compile_let(
         let k1 = Local::gensym();
         let k2 = Local::gensym();
         let k3 = Local::gensym();
-        Cps::Closure {
+        Cps::Lambda {
             args: ClosureArgs::new(vec![k2], false, None),
             body: Box::new(Cps::PrimOp(
                 PrimOp::AllocCell,
                 Vec::new(),
                 *curr_bind,
-                Box::new(Cps::Closure {
+                Box::new(Cps::Lambda {
                     args: ClosureArgs::new(vec![expr_result], false, None),
                     body: Box::new(Cps::PrimOp(
                         PrimOp::Set,
@@ -111,12 +118,12 @@ fn compile_let(
                     cexp: Box::new(curr_expr.compile(Box::new(move |result| {
                         Cps::App(result, vec![Value::from(k3)], None)
                     }))),
-                    debug: None,
+                    span: None,
                 }),
             )),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
-            debug: None,
+            span: None,
         }
     } else {
         body.compile(meta_cont)
@@ -150,7 +157,7 @@ impl Compile for Var {
     fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
         let k1 = Local::gensym();
         let k2 = Local::gensym();
-        Cps::Closure {
+        Cps::Lambda {
             args: ClosureArgs::new(vec![k2], false, None),
             body: Box::new(Cps::App(
                 Value::from(k2),
@@ -159,7 +166,7 @@ impl Compile for Var {
             )),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
-            debug: None,
+            span: None,
         }
     }
 }
@@ -170,26 +177,26 @@ impl Compile for &[Expression] {
             [] => {
                 let k1 = Local::gensym();
                 let k2 = Local::gensym();
-                Cps::Closure {
+                Cps::Lambda {
                     args: ClosureArgs::new(vec![k2], false, None),
-                    body: Box::new(Cps::App(Value::from(k2), vec![], None)),
+                    body: Box::new(Cps::App(Value::from(k2), Vec::new(), None)),
                     val: k1,
                     cexp: Box::new(meta_cont(Value::from(k1))),
-                    debug: None,
+                    span: None,
                 }
             }
             [last_expr] => last_expr.compile(Box::new(meta_cont) as Box<dyn FnMut(Value) -> Cps>),
             [head, tail @ ..] => {
                 let k1 = Local::gensym();
                 let k2 = Local::gensym();
-                Cps::Closure {
+                Cps::Lambda {
                     args: ClosureArgs::new(vec![k1], true, None),
                     body: Box::new(tail.compile(meta_cont)),
                     val: k2,
                     cexp: Box::new(head.compile(Box::new(move |result| {
                         Cps::App(result, vec![Value::from(k2)], None)
                     }))),
-                    debug: None,
+                    span: None,
                 }
             }
         }
@@ -199,7 +206,7 @@ impl Compile for &[Expression] {
 fn compile_undefined(mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
     let k1 = Local::gensym();
     let k2 = Local::gensym();
-    Cps::Closure {
+    Cps::Lambda {
         args: ClosureArgs::new(vec![k2], false, None),
         body: Box::new(Cps::App(
             Value::from(k2),
@@ -208,7 +215,7 @@ fn compile_undefined(mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
         )),
         val: k1,
         cexp: Box::new(meta_cont(Value::from(k1))),
-        debug: None,
+        span: None,
     }
 }
 
@@ -216,7 +223,7 @@ impl Compile for Literal {
     fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
         let k1 = Local::gensym();
         let k2 = Local::gensym();
-        Cps::Closure {
+        Cps::Lambda {
             args: ClosureArgs::new(vec![k2], false, None),
             body: Box::new(Cps::App(
                 Value::from(k2),
@@ -225,7 +232,7 @@ impl Compile for Literal {
             )),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
-            debug: None,
+            span: None,
         }
     }
 }
@@ -239,7 +246,7 @@ impl Compile for ExprBody {
 impl Compile for Apply {
     fn compile(&self, meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
         match self.operator {
-            Either::Left(ref op) => compile_apply(op, &self.args, self.call_site_id, meta_cont),
+            Either::Left(ref op) => compile_apply(op, &self.args, self.span.clone(), meta_cont),
             Either::Right(PrimOp::CallWithCurrentContinuation) => {
                 compile_call_with_cc(&self.args[0], meta_cont)
             }
@@ -251,35 +258,35 @@ impl Compile for Apply {
 fn compile_apply(
     operator: &Expression,
     args: &[Expression],
-    call_site_id: CallSiteId,
+    span: Span,
     mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>,
 ) -> Cps {
     let k1 = Local::gensym();
     let k2 = Local::gensym();
     let k3 = Local::gensym();
     let k4 = Local::gensym();
-    Cps::Closure {
+    Cps::Lambda {
         args: ClosureArgs::new(vec![k2], false, None),
         body: Box::new(if let Some(primop) = operator.to_primop() {
             compile_primop(Value::from(k2), primop, Vec::new(), args)
         } else {
-            operator.compile(Box::new(move |op_result| Cps::Closure {
+            operator.compile(Box::new(move |op_result| Cps::Lambda {
                 args: ClosureArgs::new(vec![k3], false, None),
                 body: Box::new(compile_apply_args(
                     Value::from(k2),
                     Value::from(k3),
                     Vec::new(),
                     args,
-                    call_site_id,
+                    span.clone(),
                 )),
                 val: k4,
                 cexp: Box::new(Cps::App(op_result, vec![Value::from(k4)], None)),
-                debug: None,
+                span: None,
             }))
         }),
         val: k1,
         cexp: Box::new(meta_cont(Value::from(k1))),
-        debug: None,
+        span: None,
     }
 }
 
@@ -288,29 +295,29 @@ fn compile_apply_args(
     op: Value,
     mut collected_args: Vec<Value>,
     remaining_args: &[Expression],
-    call_site_id: CallSiteId,
+    span: Span,
 ) -> Cps {
     let (arg, tail) = match remaining_args {
         [] => {
             collected_args.push(cont);
-            return Cps::App(op, collected_args, Some(call_site_id));
+            return Cps::App(op, collected_args, Some(span));
         }
         [arg, tail @ ..] => (arg, tail),
     };
 
     let k1 = Local::gensym();
     let k2 = Local::gensym();
-    Cps::Closure {
+    Cps::Lambda {
         args: ClosureArgs::new(vec![k2], false, None),
         body: Box::new({
             collected_args.push(Value::from(k2));
-            compile_apply_args(cont, op, collected_args, tail, call_site_id)
+            compile_apply_args(cont, op, collected_args, tail, span)
         }),
         val: k1,
         cexp: Box::new(arg.compile(Box::new(|result| {
             Cps::App(result, vec![Value::from(k1)], None)
         }))),
-        debug: None,
+        span: None,
     }
 }
 
@@ -335,7 +342,7 @@ fn compile_primop(
 
     let k1 = Local::gensym();
     let k2 = Local::gensym();
-    Cps::Closure {
+    Cps::Lambda {
         args: ClosureArgs::new(vec![k2], false, None),
         body: Box::new({
             collected_args.push(Value::from(k2));
@@ -345,7 +352,7 @@ fn compile_primop(
         cexp: Box::new(arg.compile(Box::new(|result| {
             Cps::App(result, vec![Value::from(k1)], None)
         }))),
-        debug: None,
+        span: None,
     }
 }
 
@@ -362,13 +369,13 @@ fn compile_call_with_cc(
     let escape_procedure = Local::gensym();
     let prepared_cont = Local::gensym();
 
-    Cps::Closure {
+    Cps::Lambda {
         args: ClosureArgs::new(vec![k1], false, None),
         body: Box::new(Cps::PrimOp(
             PrimOp::ExtractWinders,
             Vec::new(),
             winders,
-            Box::new(Cps::Closure {
+            Box::new(Cps::Lambda {
                 args: ClosureArgs::new(vec![arg], true, Some(Local::gensym())),
                 body: Box::new(Cps::PrimOp(
                     PrimOp::PrepareContinuation,
@@ -377,7 +384,7 @@ fn compile_call_with_cc(
                     Box::new(Cps::Forward(Value::from(prepared_cont), Value::from(arg))),
                 )),
                 val: escape_procedure,
-                cexp: Box::new(Cps::Closure {
+                cexp: Box::new(Cps::Lambda {
                     args: ClosureArgs::new(vec![k3], false, None),
                     body: Box::new(Cps::App(
                         Value::from(k3),
@@ -388,14 +395,14 @@ fn compile_call_with_cc(
                     cexp: Box::new(thunk.compile(Box::new(|thunk_result| {
                         Cps::App(thunk_result, vec![Value::from(k4)], None)
                     }))),
-                    debug: None,
+                    span: None,
                 }),
-                debug: None,
+                span: None,
             }),
         )),
         val: k2,
         cexp: Box::new(meta_cont(Value::from(k2))),
-        debug: None,
+        span: None,
     }
 }
 
@@ -403,12 +410,12 @@ impl Compile for If {
     fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
         let k1 = Local::gensym();
         let k2 = Local::gensym();
-        Cps::Closure {
+        Cps::Lambda {
             args: ClosureArgs::new(vec![k1], false, None),
             body: Box::new(self.cond.compile(Box::new(|cond_result| {
                 let k3 = Local::gensym();
                 let cond_arg = Local::gensym();
-                Cps::Closure {
+                Cps::Lambda {
                     args: ClosureArgs::new(vec![cond_arg], false, None),
                     body: Box::new(Cps::If(
                         Value::from(cond_arg),
@@ -425,12 +432,12 @@ impl Compile for If {
                     )),
                     val: k3,
                     cexp: Box::new(Cps::App(cond_result, vec![Value::from(k3)], None)),
-                    debug: None,
+                    span: None,
                 }
             }))),
             val: k2,
             cexp: Box::new(meta_cont(Value::from(k2))),
-            debug: None,
+            span: None,
         }
     }
 }
@@ -450,12 +457,12 @@ fn compile_and(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps 
 
     let k1 = Local::gensym();
     let k2 = Local::gensym();
-    Cps::Closure {
+    Cps::Lambda {
         args: ClosureArgs::new(vec![k1], false, None),
         body: Box::new(expr.compile(Box::new(|expr_result| {
             let k3 = Local::gensym();
             let cond_arg = Local::gensym();
-            Cps::Closure {
+            Cps::Lambda {
                 args: ClosureArgs::new(vec![cond_arg], false, None),
                 body: Box::new(Cps::If(
                     Value::from(cond_arg),
@@ -479,12 +486,12 @@ fn compile_and(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps 
                 )),
                 val: k3,
                 cexp: Box::new(Cps::App(expr_result, vec![Value::from(k3)], None)),
-                debug: None,
+                span: None,
             }
         }))),
         val: k2,
         cexp: Box::new(meta_cont(Value::from(k2))),
-        debug: None,
+        span: None,
     }
 }
 
@@ -503,12 +510,12 @@ fn compile_or(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps +
 
     let k1 = Local::gensym();
     let k2 = Local::gensym();
-    Cps::Closure {
+    Cps::Lambda {
         args: ClosureArgs::new(vec![k1], false, None),
         body: Box::new(expr.compile(Box::new(|expr_result| {
             let k3 = Local::gensym();
             let cond_arg = Local::gensym();
-            Cps::Closure {
+            Cps::Lambda {
                 args: ClosureArgs::new(vec![cond_arg], false, None),
                 body: Box::new(Cps::If(
                     Value::from(cond_arg),
@@ -532,12 +539,12 @@ fn compile_or(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps +
                 )),
                 val: k3,
                 cexp: Box::new(Cps::App(expr_result, vec![Value::from(k3)], None)),
-                debug: None,
+                span: None,
             }
         }))),
         val: k2,
         cexp: Box::new(meta_cont(Value::from(k2))),
-        debug: None,
+        span: None,
     }
 }
 
@@ -546,7 +553,6 @@ impl Compile for Definition {
         match self {
             Self::DefineVar(var) => var.compile(meta_cont),
             Self::DefineFunc(func) => func.compile(meta_cont),
-            _ => todo!(),
         }
     }
 }
@@ -554,9 +560,8 @@ impl Compile for Definition {
 impl Definition {
     fn alloc_cells(&self, wrap: Cps) -> Cps {
         match self {
-            Self::DefineVar(ref def) => def.alloc_cells(wrap),
-            Self::DefineFunc(ref func) => func.alloc_cells(wrap),
-            _ => todo!(),
+            Self::DefineVar(def) => def.alloc_cells(wrap),
+            Self::DefineFunc(func) => func.alloc_cells(wrap),
         }
     }
 }
@@ -600,17 +605,17 @@ fn next_or_wrap(next: &Option<Either<Box<Definition>, ExprBody>>, wrap: Cps) -> 
 impl Compile for Option<Either<Box<Definition>, ExprBody>> {
     fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
         match self {
-            Some(Either::Left(ref def)) => def.compile(meta_cont),
-            Some(Either::Right(ref exprs)) => exprs.compile(meta_cont),
+            Some(Either::Left(def)) => def.compile(meta_cont),
+            Some(Either::Right(exprs)) => exprs.compile(meta_cont),
             _ => {
                 let k1 = Local::gensym();
                 let k2 = Local::gensym();
-                Cps::Closure {
+                Cps::Lambda {
                     args: ClosureArgs::new(vec![k1], false, None),
                     body: Box::new(Cps::App(Value::from(k1), Vec::new(), None)),
                     val: k2,
                     cexp: Box::new(meta_cont(Value::from(k2))),
-                    debug: None,
+                    span: None,
                 }
             }
         }
@@ -624,9 +629,9 @@ impl Compile for Set {
         let k2 = Local::gensym();
         let k3 = Local::gensym();
         // let k4 = Local::gensym();
-        Cps::Closure {
+        Cps::Lambda {
             args: ClosureArgs::new(vec![k2], false, None),
-            body: Box::new(Cps::Closure {
+            body: Box::new(Cps::Lambda {
                 args: ClosureArgs::new(vec![expr_result], false, None),
                 body: Box::new(Cps::PrimOp(
                     PrimOp::Set,
@@ -636,22 +641,16 @@ impl Compile for Set {
                     ],
                     Local::gensym(),
                     Box::new(Cps::App(Value::from(k2), Vec::new(), None)),
-                    /*
-                        // TODO: We should not return the value of the variable.
-                        Box::new(self.var.compile(Box::new(move |result| {
-                            Cps::App(result, vec![Value::from(k2)], None)
-                    }))),
-                        */
                 )),
                 val: k3,
                 cexp: Box::new(self.val.compile(Box::new(move |result| {
-                    Cps::App(result, vec![Value::from(k3)], None) // Value::from(k3), vec![result, Value::from(k2)])
+                    Cps::App(result, vec![Value::from(k3)], None)
                 }))),
-                debug: None,
+                span: None,
             }),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
-            debug: None,
+            span: None,
         }
     }
 }
@@ -663,9 +662,9 @@ impl Compile for DefineVar {
         let k2 = Local::gensym();
         let k3 = Local::gensym();
         // let k4 = Local::gensym();
-        Cps::Closure {
+        Cps::Lambda {
             args: ClosureArgs::new(vec![k2], false, None),
-            body: Box::new(Cps::Closure {
+            body: Box::new(Cps::Lambda {
                 args: ClosureArgs::new(vec![expr_result], false, None),
                 body: Box::new(Cps::PrimOp(
                     PrimOp::Set,
@@ -682,11 +681,11 @@ impl Compile for DefineVar {
                 cexp: Box::new(self.val.compile(Box::new(move |result| {
                     Cps::App(result, vec![Value::from(k3)], None)
                 }))),
-                debug: None,
+                span: None,
             }),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
-            debug: None,
+            span: None,
         }
     }
 }
@@ -697,9 +696,9 @@ impl Compile for DefineFunc {
         let k1 = Local::gensym();
         let k2 = Local::gensym();
         let k3 = Local::gensym();
-        Cps::Closure {
+        Cps::Lambda {
             args: ClosureArgs::new(vec![k2], false, None),
-            body: Box::new(Cps::Closure {
+            body: Box::new(Cps::Lambda {
                 args: ClosureArgs::new(vec![lambda_result], false, None),
                 body: Box::new(Cps::PrimOp(
                     PrimOp::Set,
@@ -717,14 +716,15 @@ impl Compile for DefineFunc {
                     self.args.iter().cloned().collect(),
                     self.args.is_variadic(),
                     &self.body,
-                    self.debug_info_id,
+                    self.span.clone(),
+                    self.var.symbol(),
                     |lambda_result| Cps::App(lambda_result, vec![Value::from(k3)], None),
                 )),
-                debug: None,
+                span: None,
             }),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
-            debug: None,
+            span: None,
         }
     }
 }
@@ -733,7 +733,7 @@ impl Compile for Quote {
     fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
         let k1 = Local::gensym();
         let k2 = Local::gensym();
-        Cps::Closure {
+        Cps::Lambda {
             args: ClosureArgs::new(vec![k2], false, None),
             body: Box::new(Cps::App(
                 Value::from(k2),
@@ -742,7 +742,7 @@ impl Compile for Quote {
             )),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
-            debug: None,
+            span: None,
         }
     }
 }
@@ -751,16 +751,40 @@ impl Compile for SyntaxQuote {
     fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
         let k1 = Local::gensym();
         let k2 = Local::gensym();
-        Cps::Closure {
+        let expanded = Local::gensym();
+
+        let mut expansions_seen = IndexSet::new();
+        let mut uses = AHashMap::new();
+
+        for (ident, expansion) in self.expansions.iter() {
+            let (idx, _) = expansions_seen.insert_full(expansion);
+            uses.insert(ident.clone(), idx);
+        }
+
+        let mut args = vec![
+            Value::from(RuntimeValue::from(Gc::new(Gc::into_any(Gc::new(
+                self.template.clone(),
+            ))))),
+            Value::from(RuntimeValue::from(Gc::new(Gc::into_any(Gc::new(
+                ExpansionCombiner { uses },
+            ))))),
+        ];
+
+        for expansion in expansions_seen.iter() {
+            args.push(Value::from(**expansion));
+        }
+
+        Cps::Lambda {
             args: ClosureArgs::new(vec![k2], false, None),
-            body: Box::new(Cps::App(
-                Value::from(k2),
-                vec![Value::from(RuntimeValue::from(self.syn.clone()))],
-                None,
+            body: Box::new(Cps::PrimOp(
+                PrimOp::ExpandTemplate,
+                args,
+                expanded,
+                Box::new(Cps::App(Value::from(k2), vec![Value::from(expanded)], None)),
             )),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
-            debug: None,
+            span: None,
         }
     }
 }
@@ -769,46 +793,100 @@ impl Compile for SyntaxCase {
     fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
         let k1 = Local::gensym();
         let k2 = Local::gensym();
-        Cps::Closure {
-            args: ClosureArgs::new(vec![k1], false, None),
-            body: Box::new(self.arg.compile(Box::new(|arg_result| {
+        Cps::Lambda {
+            args: ClosureArgs::new(vec![k2], false, None),
+            body: Box::new(self.arg.compile(Box::new(|expr_result| {
                 let k3 = Local::gensym();
-                let to_expand = Local::gensym();
-                let call_transformer = Local::gensym();
-                Cps::Closure {
-                    args: ClosureArgs::new(vec![to_expand], false, None),
-                    body: Box::new(Cps::PrimOp(
-                        PrimOp::GetCallTransformerFn,
-                        self.captured_env
-                            .captured
-                            .iter()
-                            .copied()
-                            .map(Value::from)
-                            .collect(),
-                        call_transformer,
-                        Box::new(Cps::App(
-                            Value::from(call_transformer),
-                            vec![
-                                Value::from(RuntimeValue::from(self.captured_env.clone())),
-                                Value::from(RuntimeValue::from(self.transformer.clone())),
-                                Value::from(to_expand),
-                            ]
-                            .into_iter()
-                            // .chain(
-                            .chain(once(Value::from(k1)))
-                            .collect(),
-                            None,
-                        )),
+                let arg = Local::gensym();
+                Cps::Lambda {
+                    args: ClosureArgs::new(vec![arg], false, None),
+                    body: Box::new(compile_syntax_rules(
+                        &self.rules,
+                        arg,
+                        Box::new(|expanded| Cps::App(expanded, vec![Value::from(k2)], None)),
                     )),
                     val: k3,
-                    cexp: Box::new(Cps::App(arg_result, vec![Value::from(k3)], None)),
-                    debug: None,
+                    cexp: Box::new(Cps::App(expr_result, vec![Value::from(k3)], None)),
+                    span: None,
                 }
             }))),
-            val: k2,
-            cexp: Box::new(meta_cont(Value::from(k2))),
-            debug: None,
+            val: k1,
+            cexp: Box::new(meta_cont(Value::from(k1))),
+            span: None,
         }
+    }
+}
+fn compile_syntax_rules(
+    rules: &[SyntaxRule],
+    arg: Local,
+    mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>,
+) -> Cps {
+    let k1 = Local::gensym();
+    let k2 = Local::gensym();
+    Cps::Lambda {
+        args: ClosureArgs::new(vec![k2], false, None),
+        body: match rules {
+            [] => Box::new(Cps::PrimOp(
+                PrimOp::ErrorNoPatternsMatch,
+                Vec::new(),
+                Local::gensym(),
+                Box::new(Cps::App(Value::from(k2), Vec::new(), None)),
+            )),
+            [rule, tail @ ..] => {
+                let pattern = Gc::new(Gc::into_any(Gc::new(rule.pattern.clone())));
+                Box::new(Cps::PrimOp(
+                    PrimOp::Matches,
+                    vec![Value::from(RuntimeValue::from(pattern)), Value::from(arg)],
+                    rule.binds,
+                    {
+                        let match_result = if rule.fender.is_some() {
+                            Local::gensym()
+                        } else {
+                            rule.binds
+                        };
+                        let inner = Box::new(Cps::If(
+                            Value::from(match_result),
+                            Box::new(rule.output_expression.compile(Box::new(|matches| {
+                                Cps::App(matches, vec![Value::from(k2)], None)
+                            }))),
+                            Box::new(compile_syntax_rules(
+                                tail,
+                                arg,
+                                Box::new(|next_pattern| {
+                                    Cps::App(next_pattern, vec![Value::from(k2)], None)
+                                }),
+                            )),
+                        ));
+                        if let Some(fender) = &rule.fender {
+                            let k3 = Local::gensym();
+                            Box::new(Cps::Lambda {
+                                args: ClosureArgs::new(vec![match_result], false, None),
+                                body: inner,
+                                val: k3,
+                                cexp: Box::new(Cps::If(
+                                    Value::from(rule.binds),
+                                    // Check the fender
+                                    Box::new(fender.compile(Box::new(|fender| {
+                                        Cps::App(fender, vec![Value::from(k3)], None)
+                                    }))),
+                                    Box::new(Cps::App(
+                                        Value::from(k3),
+                                        vec![Value::from(RuntimeValue::from(false))],
+                                        None,
+                                    )),
+                                )),
+                                span: None,
+                            })
+                        } else {
+                            inner
+                        }
+                    },
+                ))
+            }
+        },
+        val: k1,
+        cexp: Box::new(meta_cont(Value::from(k1))),
+        span: None,
     }
 }
 
@@ -817,7 +895,7 @@ impl Compile for Vector {
         let k1 = Local::gensym();
         let k2 = Local::gensym();
 
-        Cps::Closure {
+        Cps::Lambda {
             args: ClosureArgs::new(vec![k2], false, None),
             body: Box::new(Cps::App(
                 Value::from(k2),
@@ -826,7 +904,7 @@ impl Compile for Vector {
             )),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
-            debug: None,
+            span: None,
         }
     }
 }
@@ -835,7 +913,7 @@ impl Compile for Vec<u8> {
         let k1 = Local::gensym();
         let k2 = Local::gensym();
 
-        Cps::Closure {
+        Cps::Lambda {
             args: ClosureArgs::new(vec![k2], false, None),
             body: Box::new(Cps::App(
                 Value::from(k2),
@@ -844,34 +922,45 @@ impl Compile for Vec<u8> {
             )),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
-            debug: None,
+            span: None,
         }
     }
 }
 
 impl Cps {
     /// Convert arguments for closures into cells if they are written to or escape.
-    fn args_to_cells(self, needs_cell_cache: &mut HashMap<Local, HashSet<Local>>) -> Self {
+    fn args_to_cells(self, needs_cell_cache: &mut AHashMap<Local, AHashSet<Local>>) -> Self {
         match self {
-            Self::PrimOp(op, vals, local, cexpr) => Self::PrimOp(
-                op,
+            Self::PrimOp(PrimOp::AllocCell, vals, local, cexpr) => Self::PrimOp(
+                PrimOp::AllocCell,
                 vals,
                 local,
                 Box::new(cexpr.args_to_cells(needs_cell_cache)),
             ),
+            Self::PrimOp(op, vals, mut local, cexpr) => {
+                let cexpr = Box::new(cexpr.args_to_cells(needs_cell_cache));
+                let escaping_args =
+                    cexpr.need_cells(&[local].into_iter().collect(), needs_cell_cache);
+                let cexpr = if escaping_args.contains(&local) {
+                    arg_to_cell(&mut local, cexpr)
+                } else {
+                    cexpr
+                };
+                Self::PrimOp(op, vals, local, cexpr)
+            }
             Self::If(val, succ, fail) => Self::If(
                 val,
                 Box::new(succ.args_to_cells(needs_cell_cache)),
                 Box::new(fail.args_to_cells(needs_cell_cache)),
             ),
-            Self::Closure {
+            Self::Lambda {
                 mut args,
                 body,
                 val,
                 cexp,
-                debug,
+                span: loc,
             } => {
-                let local_args: HashSet<_> = args.to_vec().into_iter().collect();
+                let local_args: AHashSet<_> = args.iter().copied().collect();
                 let escaping_args = body.need_cells(&local_args, needs_cell_cache);
 
                 let mut body = Box::new(body.args_to_cells(needs_cell_cache));
@@ -883,12 +972,12 @@ impl Cps {
                     }
                 }
 
-                Self::Closure {
+                Self::Lambda {
                     args,
                     body,
                     val,
                     cexp,
-                    debug,
+                    span: loc,
                 }
             }
             done => done,

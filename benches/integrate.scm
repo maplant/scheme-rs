@@ -1,3 +1,5 @@
+(import (rnrs))
+
 (define integrate-system
   (lambda (system-derivative initial-state h)
     (let ((next (runge-kutta-4 system-derivative h)))
@@ -80,4 +82,4 @@
             (cond ((= i 0) (head s))
                   (else
                    (loop (tail s) (- i 1)))))))
-  (loop the-states 50)); 100))
+  (loop the-states 50))

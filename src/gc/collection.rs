@@ -4,11 +4,11 @@
 
 use std::{
     ptr::NonNull,
-    sync::{atomic::AtomicUsize, Mutex, OnceLock},
+    sync::{Mutex, OnceLock, atomic::AtomicUsize},
     time::{Duration, Instant},
 };
 use tokio::{
-    sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
+    sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
     task::JoinHandle,
 };
 
@@ -99,22 +99,24 @@ const MIN_MUTATIONS_PER_EPOCH: usize = 1_000;
 const AVG_MUTATIONS_PER_EPOCH: usize = MAX_PENDING_MUTATIONS_ALLOWED >> 1; // 10_000; // No idea what a good value is here.
 
 async unsafe fn run_garbage_collector() {
-    let mut last_epoch = Instant::now();
-    let mut mutation_buffer: Vec<_> = Vec::with_capacity(AVG_MUTATIONS_PER_EPOCH);
-    let mut mutation_buffer_rx = MUTATION_BUFFER
-        .get_or_init(MutationBuffer::default)
-        .mutation_buffer_rx
-        .lock()
-        .unwrap()
-        .take()
-        .unwrap();
-    while epoch(
-        &mut last_epoch,
-        &mut mutation_buffer_rx,
-        &mut mutation_buffer,
-    )
-    .await
-    {}
+    unsafe {
+        let mut last_epoch = Instant::now();
+        let mut mutation_buffer: Vec<_> = Vec::with_capacity(AVG_MUTATIONS_PER_EPOCH);
+        let mut mutation_buffer_rx = MUTATION_BUFFER
+            .get_or_init(MutationBuffer::default)
+            .mutation_buffer_rx
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap();
+        while epoch(
+            &mut last_epoch,
+            &mut mutation_buffer_rx,
+            &mut mutation_buffer,
+        )
+        .await
+        {}
+    }
 }
 
 // Run a collection epoch. Returns false if we've been cancelled and should exit.
@@ -123,7 +125,9 @@ async unsafe fn epoch(
     mutation_buffer_rx: &mut UnboundedReceiver<Mutation>,
     mutation_buffer: &mut Vec<Mutation>,
 ) -> bool {
-    process_mutation_buffer(mutation_buffer_rx, mutation_buffer).await;
+    unsafe {
+        process_mutation_buffer(mutation_buffer_rx, mutation_buffer).await;
+    }
     let duration_since_last_epoch = Instant::now() - *last_epoch;
     if duration_since_last_epoch > Duration::from_millis(100) {
         if tokio::task::spawn_blocking(|| unsafe { process_cycles() })
@@ -155,9 +159,11 @@ async unsafe fn process_mutation_buffer(
 
     mutation_buffer_rx.recv_many(mutation_buffer, to_recv).await;
     for mutation in mutation_buffer.drain(..) {
-        match mutation.kind {
-            MutationKind::Inc => increment(mutation.gc),
-            MutationKind::Dec => decrement(mutation.gc),
+        unsafe {
+            match mutation.kind {
+                MutationKind::Inc => increment(mutation.gc),
+                MutationKind::Dec => decrement(mutation.gc),
+            }
         }
     }
 }
@@ -168,243 +174,285 @@ static mut CYCLE_BUFFER: Vec<Vec<OpaqueGcPtr>> = Vec::new();
 static mut CURRENT_CYCLE: Vec<OpaqueGcPtr> = Vec::new();
 
 unsafe fn increment(s: OpaqueGcPtr) {
-    s.set_rc(s.rc() + 1);
-    scan_black(s);
+    unsafe {
+        s.set_rc(s.rc() + 1);
+        scan_black(s);
+    }
 }
 
 unsafe fn decrement(s: OpaqueGcPtr) {
-    s.set_rc(s.rc() - 1);
-    if s.rc() == 0 {
-        release(s);
-    } else {
-        possible_root(s);
+    unsafe {
+        s.set_rc(s.rc() - 1);
+        if s.rc() == 0 {
+            release(s);
+        } else {
+            possible_root(s);
+        }
     }
 }
 
 unsafe fn release(s: OpaqueGcPtr) {
-    for_each_child(s, decrement);
-    s.set_color(Color::Black);
-    if !s.buffered() {
-        free(s);
+    unsafe {
+        for_each_child(s, decrement);
+        s.set_color(Color::Black);
+        if !s.buffered() {
+            free(s);
+        }
     }
 }
 
 unsafe fn possible_root(s: OpaqueGcPtr) {
-    scan_black(s);
-    s.set_color(Color::Purple);
-    if !s.buffered() {
-        s.set_buffered(true);
-        (&raw mut ROOTS).as_mut().unwrap().push(s);
+    unsafe {
+        scan_black(s);
+        s.set_color(Color::Purple);
+        if !s.buffered() {
+            s.set_buffered(true);
+            (&raw mut ROOTS).as_mut().unwrap().push(s);
+        }
     }
 }
 
 unsafe fn process_cycles() {
-    free_cycles();
-    collect_cycles();
-    sigma_preparation();
+    unsafe {
+        free_cycles();
+        collect_cycles();
+        sigma_preparation();
+    }
 }
 
 unsafe fn collect_cycles() {
-    mark_roots();
-    scan_roots();
-    collect_roots();
+    unsafe {
+        mark_roots();
+        scan_roots();
+        collect_roots();
+    }
 }
 
 // SAFETY: No function called by mark_roots may access ROOTS
 unsafe fn mark_roots() {
-    let mut new_roots = Vec::new();
-    for s in (&raw const ROOTS).as_ref().unwrap().iter() {
-        if s.color() == Color::Purple && s.rc() > 0 {
-            mark_gray(*s);
-            new_roots.push(*s);
-        } else {
-            s.set_buffered(false);
-            if s.rc() == 0 {
-                free(*s);
+    unsafe {
+        let mut new_roots = Vec::new();
+        for s in (&raw const ROOTS).as_ref().unwrap().iter() {
+            if s.color() == Color::Purple && s.rc() > 0 {
+                mark_gray(*s);
+                new_roots.push(*s);
+            } else {
+                s.set_buffered(false);
+                if s.rc() == 0 {
+                    free(*s);
+                }
             }
         }
+        ROOTS = new_roots;
     }
-    ROOTS = new_roots;
 }
 
 unsafe fn scan_roots() {
-    for s in (&raw const ROOTS).as_ref().unwrap().iter() {
-        scan(*s)
+    unsafe {
+        for s in (&raw const ROOTS).as_ref().unwrap().iter() {
+            scan(*s)
+        }
     }
 }
 
 unsafe fn collect_roots() {
-    for s in std::mem::take((&raw mut ROOTS).as_mut().unwrap()) {
-        if s.color() == Color::White {
-            collect_white(s);
-            let current_cycle = std::mem::take((&raw mut CURRENT_CYCLE).as_mut().unwrap());
-            (&raw mut CYCLE_BUFFER)
-                .as_mut()
-                .unwrap()
-                .push(current_cycle);
-        } else {
-            s.set_buffered(false);
+    unsafe {
+        for s in std::mem::take((&raw mut ROOTS).as_mut().unwrap()) {
+            if s.color() == Color::White {
+                collect_white(s);
+                let current_cycle = std::mem::take((&raw mut CURRENT_CYCLE).as_mut().unwrap());
+                (&raw mut CYCLE_BUFFER)
+                    .as_mut()
+                    .unwrap()
+                    .push(current_cycle);
+            } else {
+                s.set_buffered(false);
+            }
         }
     }
 }
 
 unsafe fn mark_gray(s: OpaqueGcPtr) {
-    if s.color() != Color::Gray {
-        s.set_color(Color::Gray);
-        s.set_crc(s.rc() as isize);
-        for_each_child(s, |t| {
-            mark_gray(t);
-            let t_crc = t.crc();
-            if t_crc > 0 {
-                t.set_crc(t_crc - 1);
-            }
-        });
+    unsafe {
+        if s.color() != Color::Gray {
+            s.set_color(Color::Gray);
+            s.set_crc(s.rc() as isize);
+            for_each_child(s, |t| {
+                mark_gray(t);
+                let t_crc = t.crc();
+                if t_crc > 0 {
+                    t.set_crc(t_crc - 1);
+                }
+            });
+        }
     }
 }
 
 unsafe fn scan(s: OpaqueGcPtr) {
-    if s.color() == Color::Gray {
-        if s.crc() == 0 {
-            s.set_color(Color::White);
-            for_each_child(s, scan);
-        } else {
-            scan_black(s);
+    unsafe {
+        if s.color() == Color::Gray {
+            if s.crc() == 0 {
+                s.set_color(Color::White);
+                for_each_child(s, scan);
+            } else {
+                scan_black(s);
+            }
         }
     }
 }
 
 unsafe fn scan_black(s: OpaqueGcPtr) {
-    if s.color() != Color::Black {
-        s.set_color(Color::Black);
-        for_each_child(s, scan_black);
+    unsafe {
+        if s.color() != Color::Black {
+            s.set_color(Color::Black);
+            for_each_child(s, scan_black);
+        }
     }
 }
 
 unsafe fn collect_white(s: OpaqueGcPtr) {
-    if s.color() == Color::White {
-        s.set_color(Color::Orange);
-        s.set_buffered(true);
-        (&raw mut CURRENT_CYCLE).as_mut().unwrap().push(s);
-        for_each_child(s, collect_white);
+    unsafe {
+        if s.color() == Color::White {
+            s.set_color(Color::Orange);
+            s.set_buffered(true);
+            (&raw mut CURRENT_CYCLE).as_mut().unwrap().push(s);
+            for_each_child(s, collect_white);
+        }
     }
 }
 
 unsafe fn sigma_preparation() {
-    for c in (&raw const CYCLE_BUFFER).as_ref().unwrap() {
-        for n in c {
-            n.set_color(Color::Red);
-            n.set_crc(n.rc() as isize);
-        }
-        for n in c {
-            for_each_child(*n, |m| {
-                if m.color() == Color::Red && m.crc() > 0 {
-                    m.set_crc(m.crc() - 1);
-                }
-            });
-        }
-        for n in c {
-            n.set_color(Color::Orange);
+    unsafe {
+        for c in (&raw const CYCLE_BUFFER).as_ref().unwrap() {
+            for n in c {
+                n.set_color(Color::Red);
+                n.set_crc(n.rc() as isize);
+            }
+            for n in c {
+                for_each_child(*n, |m| {
+                    if m.color() == Color::Red && m.crc() > 0 {
+                        m.set_crc(m.crc() - 1);
+                    }
+                });
+            }
+            for n in c {
+                n.set_color(Color::Orange);
+            }
         }
     }
 }
 
 unsafe fn free_cycles() {
-    for c in std::mem::take((&raw mut CYCLE_BUFFER).as_mut().unwrap())
-        .into_iter()
-        .rev()
-    {
-        if delta_test(&c) && sigma_test(&c) {
-            free_cycle(&c);
-        } else {
-            refurbish(&c);
+    unsafe {
+        for c in std::mem::take((&raw mut CYCLE_BUFFER).as_mut().unwrap())
+            .into_iter()
+            .rev()
+        {
+            if delta_test(&c) && sigma_test(&c) {
+                free_cycle(&c);
+            } else {
+                refurbish(&c);
+            }
         }
     }
 }
 
 unsafe fn delta_test(c: &[OpaqueGcPtr]) -> bool {
-    for n in c {
-        if n.color() != Color::Orange {
-            return false;
+    unsafe {
+        for n in c {
+            if n.color() != Color::Orange {
+                return false;
+            }
         }
+        true
     }
-    true
 }
 
 unsafe fn sigma_test(c: &[OpaqueGcPtr]) -> bool {
-    let mut sum = 0;
-    for n in c {
-        sum += n.crc();
-    }
-    sum == 0
-    // TODO: I think this is still correct. Make CRC a usize and uncomment
-    // out this code.
-    /*
-    // NOTE: This is the only function so far that I have not implemented
-    // _exactly_ as the text reads. I do not understand why I would have to
-    // continue iterating if I see a CRC > 0, as CRCs cannot be negative.
-    for n in c {
-        if *crc(*n) > 0 {
-            return false;
+    unsafe {
+        let mut sum = 0;
+        for n in c {
+            sum += n.crc();
         }
+        sum == 0
+        // TODO: I think this is still correct. Make CRC a usize and uncomment
+        // out this code.
+        /*
+        // NOTE: This is the only function so far that I have not implemented
+        // _exactly_ as the text reads. I do not understand why I would have to
+        // continue iterating if I see a CRC > 0, as CRCs cannot be negative.
+        for n in c {
+            if *crc(*n) > 0 {
+                return false;
+            }
+        }
+        true
+        */
     }
-    true
-    */
 }
 
 unsafe fn refurbish(c: &[OpaqueGcPtr]) {
-    for (i, n) in c.iter().enumerate() {
-        match (i, n.color()) {
-            (0, Color::Orange) | (_, Color::Purple) => {
-                n.set_color(Color::Purple);
-                unsafe {
+    unsafe {
+        for (i, n) in c.iter().enumerate() {
+            match (i, n.color()) {
+                (0, Color::Orange) | (_, Color::Purple) => {
+                    n.set_color(Color::Purple);
                     (&raw mut ROOTS).as_mut().unwrap().push(*n);
                 }
-            }
-            _ => {
-                n.set_color(Color::Black);
-                n.set_buffered(false);
+                _ => {
+                    n.set_color(Color::Black);
+                    n.set_buffered(false);
+                }
             }
         }
     }
 }
 
 unsafe fn free_cycle(c: &[OpaqueGcPtr]) {
-    for n in c {
-        n.set_color(Color::Red);
-    }
-    for n in c {
-        for_each_child(*n, cyclic_decrement);
-    }
-    for n in c {
-        free(*n);
+    unsafe {
+        for n in c {
+            n.set_color(Color::Red);
+        }
+        for n in c {
+            for_each_child(*n, cyclic_decrement);
+        }
+        for n in c {
+            free(*n);
+        }
     }
 }
 
 unsafe fn cyclic_decrement(m: OpaqueGcPtr) {
-    if m.color() != Color::Red {
-        if m.color() == Color::Orange {
-            m.set_rc(m.rc() - 1);
-            m.set_crc(m.crc() - 1);
-        } else {
-            decrement(m);
+    unsafe {
+        if m.color() != Color::Red {
+            if m.color() == Color::Orange {
+                m.set_rc(m.rc() - 1);
+                m.set_crc(m.crc() - 1);
+            } else {
+                decrement(m);
+            }
         }
     }
 }
 
 unsafe fn for_each_child(s: OpaqueGcPtr, visitor: unsafe fn(OpaqueGcPtr)) {
-    let lock = s.lock().read().unwrap();
-    (s.visit_children())(s.data(), visitor);
-    drop(lock);
+    unsafe {
+        let lock = s.lock().read().unwrap();
+        (s.visit_children())(s.data(), visitor);
+        drop(lock);
+    }
 }
 
 unsafe fn free(s: OpaqueGcPtr) {
-    // Safety: No need to acquire a permit, s is guaranteed to be garbage.
+    unsafe {
+        // Safety: No need to acquire a permit, s is guaranteed to be garbage.
 
-    // Finalize the object:
-    (s.finalize())(s.data_mut());
+        // Finalize the object:
+        (s.finalize())(s.data_mut());
 
-    // Deallocate the object:
-    std::alloc::dealloc(s.header.as_ptr() as *mut u8, s.layout());
+        // Deallocate the object:
+        std::alloc::dealloc(s.header.as_ptr() as *mut u8, s.layout());
+    }
 }
 
 #[cfg(test)]

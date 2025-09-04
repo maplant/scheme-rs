@@ -21,10 +21,10 @@ That is obviously a long way away.
 - Exceptions and error handling (`raise`, `raise-continuable`, `with-exception-handler`)
 - `dynamic-wind`
 - Defining async bridge functions in Rust
+- Records and conditions
 
 ## Features currently unsupported by scheme-rs: 
 
-- Records and conditions 
 - Ports and IO operations
 - Most API functions are not implemented
 - A large portion of lexical structures are missing; there's no way to specify recursive data structures
@@ -33,7 +33,7 @@ That is obviously a long way away.
 ## Implementation details:
 
 `scheme-rs` is JIT compiled, compiling the expanded Scheme code into a [CPS](https://en.wikipedia.org/wiki/Continuation-passing_style) 
-mid-level IR, and then converting that into LLVM IR. 
+mid-level IR, and then converting that into Cranelift IR.
 
 At present the code produced by `scheme-rs` is of pretty poor quality. Very few optimizations are performed, all variables 
 are boxed. Focus was spent on making this project as correct as possible, and to that end this is a JIT compiler for 
@@ -63,6 +63,30 @@ $1 = (1 2 3 4 5 6 7 8 9 10)
             ((lambda (cc) (display "*") cc) (call-with-current-continuation (lambda (c) c)))))
      (yin yang))
 @*@**@***@****@*****@******@*******@********@*********@**********@***********@**********...^C
+```
+
+### Async Example:
+
+Here is the Tokio echo server example converted to Scheme-rs:
+
+```scheme
+(define (echo socket)
+  (let ((buff (read socket 1024)))
+    (if (> (bytevector-length buff) 0)
+        (begin
+          (write socket buff)
+          (echo socket))
+        (display "Connection closed\n"))))
+
+(define (listen listener)
+  (let-values (((socket addr) (accept listener)))
+    (display "Accepting addr ")
+    (display addr)
+    (display "\n")
+    (spawn (lambda () (echo socket)))
+    (listen listener)))
+
+(listen (bind-tcp "127.0.0.1:8080"))
 ```
 
 ### Creating Builtin Functions:

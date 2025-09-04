@@ -5,6 +5,7 @@ use crate::{
     value::{Value, ValueType},
 };
 use malachite::{
+    Integer,
     base::{
         num::{
             arithmetic::traits::Parity,
@@ -12,10 +13,9 @@ use malachite::{
         },
         rounding_modes::RoundingMode,
     },
-    rational::{conversion::from_primitive_float::RationalFromPrimitiveFloatError, Rational},
-    Integer,
+    rational::{Rational, conversion::from_primitive_float::RationalFromPrimitiveFloatError},
 };
-use num::{complex::Complex64, Complex, FromPrimitive, Zero};
+use num::{Complex, FromPrimitive, Zero, complex::Complex64};
 use ordered_float::OrderedFloat;
 use std::{
     cmp::Ordering,
@@ -36,8 +36,14 @@ pub enum Number {
 }
 
 impl Number {
-    #[allow(dead_code)]
-    fn is_zero(&self) -> bool {
+    pub fn is_exact(&self) -> bool {
+        matches!(
+            self,
+            Self::FixedInteger(_) | Self::BigInteger(_) | Self::Rational(_)
+        )
+    }
+
+    pub fn is_zero(&self) -> bool {
         match self {
             Self::FixedInteger(i) => i.is_zero(),
             Self::BigInteger(i) => i.eq(&0),
@@ -47,8 +53,7 @@ impl Number {
         }
     }
 
-    #[allow(dead_code)]
-    fn is_even(&self) -> bool {
+    pub fn is_even(&self) -> bool {
         match self {
             Self::FixedInteger(i) => i.even(),
             Self::BigInteger(i) => i.even(),
@@ -58,8 +63,7 @@ impl Number {
         }
     }
 
-    #[allow(dead_code)]
-    fn is_odd(&self) -> bool {
+    pub fn is_odd(&self) -> bool {
         match self {
             Self::FixedInteger(i) => i.odd(),
             Self::BigInteger(i) => i.odd(),
@@ -69,8 +73,7 @@ impl Number {
         }
     }
 
-    #[allow(dead_code)]
-    fn is_complex(&self) -> bool {
+    pub fn is_complex(&self) -> bool {
         matches!(self, Self::Complex(_))
     }
 }
@@ -97,6 +100,21 @@ impl TryFrom<&Number> for usize {
                 .ok_or_else(|| make_err(NumberToUsizeErrorKind::TooLarge)),
             _ => Err(make_err(NumberToUsizeErrorKind::NotInteger)),
         }
+    }
+}
+
+impl From<usize> for Number {
+    fn from(u: usize) -> Self {
+        match u.try_into() {
+            Ok(i) => Number::FixedInteger(i),
+            Err(_) => Number::BigInteger(Integer::from(u)),
+        }
+    }
+}
+
+impl From<i32> for Number {
+    fn from(i: i32) -> Self {
+        Self::FixedInteger(i as i64)
     }
 }
 
@@ -133,11 +151,11 @@ impl From<Complex64> for Number {
 impl fmt::Display for Number {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Self::FixedInteger(i) => write!(f, "{}", i),
-            Self::BigInteger(i) => write!(f, "{}", i),
-            Self::Rational(r) => write!(f, "{}", r),
-            Self::Real(r) => write!(f, "{}", r),
-            Self::Complex(c) => write!(f, "{}", c),
+            Self::FixedInteger(i) => write!(f, "{i}"),
+            Self::BigInteger(i) => write!(f, "{i}"),
+            Self::Rational(r) => write!(f, "{r}"),
+            Self::Real(r) => write!(f, "{r}"),
+            Self::Complex(c) => write!(f, "{c}"),
         }
     }
 }
@@ -145,11 +163,11 @@ impl fmt::Display for Number {
 impl fmt::Debug for Number {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Self::FixedInteger(i) => write!(f, "{}", i),
-            Self::BigInteger(i) => write!(f, "{}", i),
-            Self::Rational(r) => write!(f, "{}", r),
-            Self::Real(r) => write!(f, "{}", r),
-            Self::Complex(c) => write!(f, "{}", c),
+            Self::FixedInteger(i) => write!(f, "{i}"),
+            Self::BigInteger(i) => write!(f, "{i}"),
+            Self::Rational(r) => write!(f, "{r}"),
+            Self::Real(r) => write!(f, "{r}"),
+            Self::Complex(c) => write!(f, "{c}"),
         }
     }
 }
@@ -474,7 +492,7 @@ impl Display for ArithmeticError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::DivisionByZero => write!(f, "division by zero"),
-            Self::Overflow(op, l, r) => write!(f, "overflow when calculating ({} {} {})", op, l, r),
+            Self::Overflow(op, l, r) => write!(f, "overflow when calculating ({op} {l} {r})"),
             Self::RationalFromPrimitiveFloat(_) => {
                 write!(f, "failed to convert imaginary float to a rational")
             }
@@ -565,25 +583,25 @@ impl Hash for ReflexiveNumber {
     }
 }
 
-#[bridge(name = "zero?", lib = "(base)")]
+#[bridge(name = "zero?", lib = "(rnrs base builtins (6))")]
 pub async fn zero(arg: &Value) -> Result<Vec<Value>, Condition> {
     let num: Arc<Number> = arg.clone().try_into()?;
     Ok(vec![Value::from(num.is_zero())])
 }
 
-#[bridge(name = "even?", lib = "(base)")]
+#[bridge(name = "even?", lib = "(rnrs base builtins (6))")]
 pub async fn even(arg: &Value) -> Result<Vec<Value>, Condition> {
     let num: Arc<Number> = arg.clone().try_into()?;
     Ok(vec![Value::from(num.is_even())])
 }
 
-#[bridge(name = "odd?", lib = "(base)")]
+#[bridge(name = "odd?", lib = "(rnrs base builtins (6))")]
 pub async fn odd(arg: &Value) -> Result<Vec<Value>, Condition> {
     let num: Arc<Number> = arg.clone().try_into()?;
     Ok(vec![Value::from(num.is_odd())])
 }
 
-#[bridge(name = "+", lib = "(base)")]
+#[bridge(name = "+", lib = "(rnrs base builtins (6))")]
 pub async fn add_builtin(args: &[Value]) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(add(args)?)])
 }
@@ -597,7 +615,7 @@ pub(crate) fn add(vals: &[Value]) -> Result<Number, Condition> {
     Ok(result)
 }
 
-#[bridge(name = "-", lib = "(base)")]
+#[bridge(name = "-", lib = "(rnrs base builtins (6))")]
 pub async fn sub_builtin(arg1: &Value, args: &[Value]) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(sub(arg1, args)?)])
 }
@@ -616,7 +634,7 @@ pub(crate) fn sub(val1: &Value, vals: &[Value]) -> Result<Number, Condition> {
     }
 }
 
-#[bridge(name = "*", lib = "(base)")]
+#[bridge(name = "*", lib = "(rnrs base builtins (6))")]
 pub async fn mul_builtin(args: &[Value]) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(mul(args)?)])
 }
@@ -630,7 +648,7 @@ pub(crate) fn mul(vals: &[Value]) -> Result<Number, Condition> {
     Ok(result)
 }
 
-#[bridge(name = "/", lib = "(base)")]
+#[bridge(name = "/", lib = "(rnrs base builtins (6))")]
 pub async fn div_builtin(arg1: &Value, args: &[Value]) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(div(arg1, args)?)])
 }
@@ -648,7 +666,7 @@ pub(crate) fn div(val1: &Value, vals: &[Value]) -> Result<Number, Condition> {
     Ok(result)
 }
 
-#[bridge(name = "=", lib = "(base)")]
+#[bridge(name = "=", lib = "(rnrs base builtins (6))")]
 pub async fn equal_builtin(args: &[Value]) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(equal(args)?)])
 }
@@ -666,7 +684,7 @@ pub(crate) fn equal(vals: &[Value]) -> Result<bool, Condition> {
     Ok(true)
 }
 
-#[bridge(name = ">", lib = "(base)")]
+#[bridge(name = ">", lib = "(rnrs base builtins (6))")]
 pub async fn greater_builtin(args: &[Value]) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(greater(args)?)])
 }
@@ -696,7 +714,7 @@ pub(crate) fn greater(vals: &[Value]) -> Result<bool, Condition> {
     Ok(true)
 }
 
-#[bridge(name = ">=", lib = "(base)")]
+#[bridge(name = ">=", lib = "(rnrs base builtins (6))")]
 pub async fn greater_equal_builtin(args: &[Value]) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(greater_equal(args)?)])
 }
@@ -724,7 +742,7 @@ pub(crate) fn greater_equal(vals: &[Value]) -> Result<bool, Condition> {
     Ok(true)
 }
 
-#[bridge(name = "<", lib = "(base)")]
+#[bridge(name = "<", lib = "(rnrs base builtins (6))")]
 pub async fn lesser_builtin(args: &[Value]) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(lesser(args)?)])
 }
@@ -752,7 +770,7 @@ pub(crate) fn lesser(vals: &[Value]) -> Result<bool, Condition> {
     Ok(true)
 }
 
-#[bridge(name = "<=", lib = "(base)")]
+#[bridge(name = "<=", lib = "(rnrs base builtins (6))")]
 pub async fn lesser_equal_builtin(args: &[Value]) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(lesser_equal(args)?)])
 }
@@ -780,12 +798,12 @@ pub(crate) fn lesser_equal(vals: &[Value]) -> Result<bool, Condition> {
     Ok(true)
 }
 
-#[bridge(name = "number?", lib = "(base)")]
+#[bridge(name = "number?", lib = "(rnrs base builtins (6))")]
 pub async fn is_number(arg: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(arg.type_of() == ValueType::Number)])
 }
 
-#[bridge(name = "integer?", lib = "(base)")]
+#[bridge(name = "integer?", lib = "(rnrs base builtins (6))")]
 pub async fn is_integer(arg: &Value) -> Result<Vec<Value>, Condition> {
     let arg: Arc<Number> = match arg.clone().try_into() {
         Ok(arg) => arg,
@@ -797,7 +815,7 @@ pub async fn is_integer(arg: &Value) -> Result<Vec<Value>, Condition> {
     ))])
 }
 
-#[bridge(name = "rational?", lib = "(base)")]
+#[bridge(name = "rational?", lib = "(rnrs base builtins (6))")]
 pub async fn is_rational(arg: &Value) -> Result<Vec<Value>, Condition> {
     let arg: Arc<Number> = match arg.clone().try_into() {
         Ok(arg) => arg,
@@ -809,7 +827,7 @@ pub async fn is_rational(arg: &Value) -> Result<Vec<Value>, Condition> {
     ))])
 }
 
-#[bridge(name = "real?", lib = "(base)")]
+#[bridge(name = "real?", lib = "(rnrs base builtins (6))")]
 pub async fn is_real(arg: &Value) -> Result<Vec<Value>, Condition> {
     let arg: Arc<Number> = match arg.clone().try_into() {
         Ok(arg) => arg,
@@ -818,7 +836,7 @@ pub async fn is_real(arg: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(matches!(arg.as_ref(), Number::Real(_)))])
 }
 
-#[bridge(name = "complex?", lib = "(base)")]
+#[bridge(name = "complex?", lib = "(rnrs base builtins (6))")]
 pub async fn is_complex(arg: &Value) -> Result<Vec<Value>, Condition> {
     let arg: Arc<Number> = match arg.clone().try_into() {
         Ok(arg) => arg,

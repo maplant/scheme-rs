@@ -1,5 +1,6 @@
-use malachite::{rational::Rational, Integer, Natural};
+use malachite::{Integer, Natural, rational::Rational};
 use nom::{
+    IResult, Parser,
     branch::alt,
     bytes::complete::{is_not, tag, tag_no_case, take, take_while, take_while1},
     character::{
@@ -9,9 +10,8 @@ use nom::{
     combinator::{map, not, opt, value, verify},
     multi::{fold_many0, many0},
     sequence::{delimited, preceded, tuple},
-    IResult, Parser,
 };
-use nom_locate::{position, LocatedSpan};
+use nom_locate::{LocatedSpan, position};
 use std::{
     borrow::Cow,
     fmt,
@@ -37,12 +37,13 @@ pub enum Lexeme<'a> {
     HashParen,
     Vu8Paren,
     Quote,
-    Tick,
+    Backquote,
     Comma,
     CommaAt,
     Period,
     HashQuote,
     HashTick,
+    HashBackquote,
     HashComma,
     HashCommaAt,
 }
@@ -90,6 +91,9 @@ fn lexeme(i: InputSpan) -> IResult<InputSpan, Lexeme> {
         map(string, Lexeme::String),
         map(match_char('.'), |_| Lexeme::Period),
         map(match_char('\''), |_| Lexeme::Quote),
+        map(match_char('`'), |_| Lexeme::Backquote),
+        map(tag(",@"), |_| Lexeme::CommaAt),
+        map(match_char(','), |_| Lexeme::Comma),
         map(match_char('('), |_| Lexeme::LParen),
         map(match_char(')'), |_| Lexeme::RParen),
         map(match_char('['), |_| Lexeme::LBracket),
@@ -97,6 +101,9 @@ fn lexeme(i: InputSpan) -> IResult<InputSpan, Lexeme> {
         map(tag("#("), |_| Lexeme::HashParen),
         map(tag("#u8("), |_| Lexeme::Vu8Paren),
         map(tag("#'"), |_| Lexeme::HashTick),
+        map(tag("#`"), |_| Lexeme::HashBackquote),
+        map(tag("#,@"), |_| Lexeme::HashCommaAt),
+        map(tag("#,"), |_| Lexeme::HashComma),
     ))(i)
 }
 
@@ -155,6 +162,7 @@ fn whitespace(i: InputSpan) -> IResult<InputSpan, ()> {
             satisfy(UnicodeCategories::is_separator),
             match_char('\t'),
             match_char('\n'),
+            match_char('\r'),
         )),
         |_| (),
     )(i)
@@ -350,7 +358,7 @@ fn number(i: InputSpan<'_>) -> IResult<InputSpan<'_>, Number<'_>> {
 
 fn number_inner<'a>(i: InputSpan<'a>) -> IResult<InputSpan<'a>, Number<'a>> {
     macro_rules! gen_radix_parser {
-        ($head:expr, $radix:expr) => {
+        ($head:expr_2021, $radix:expr_2021) => {
             tuple((
                 tag_no_case($head).map(|_| $radix),
                 opt(match_char('-')).map(|neg| neg.is_some()),
@@ -411,20 +419,6 @@ fn is_valid_numeric_char(ch: char) -> bool {
     ch.is_ascii_digit() || ch == '-' || ch == '/' || ch == '.' || is_constituent(ch)
 }
 
-/*
-fn doc_comment(i: InputSpan) -> IResult<InputSpan, String> {
-    fold_many1(
-        delimited(tag(";;"), take_until("\n"), many0(whitespace)),
-        String::new,
-        |mut comment, line| {
-            comment.push_str(&line);
-            comment.push('\n');
-            comment
-        },
-    )(i)
-}
-*/
-
 #[derive(Clone, Debug)]
 pub struct Token<'a> {
     pub lexeme: Lexeme<'a>,
@@ -434,9 +428,19 @@ pub struct Token<'a> {
 pub type LexError<'a> = nom::Err<nom::error::Error<InputSpan<'a>>>;
 
 impl<'a> Token<'a> {
-    pub fn tokenize(s: &'a str, file_name: Option<&str>) -> Result<Vec<Self>, LexError<'a>> {
-        let mut span =
-            InputSpan::new_extra(s, Arc::new(file_name.unwrap_or("<stdin>").to_string()));
+    pub fn tokenize_with_line_offset(
+        s: &'a str,
+        file_name: Option<&str>,
+        line_offset: u32,
+    ) -> Result<Vec<Self>, LexError<'a>> {
+        let mut span = unsafe {
+            InputSpan::new_from_raw_offset(
+                0,
+                line_offset,
+                s,
+                Arc::new(file_name.unwrap_or("<stdin>").to_string()),
+            )
+        };
         let mut output = Vec::new();
         while !span.is_empty() {
             let (remaining, ()) = interlexeme_space(span)?;
@@ -452,6 +456,10 @@ impl<'a> Token<'a> {
             span = remaining;
         }
         Ok(output)
+    }
+
+    pub fn tokenize(s: &'a str, file_name: Option<&str>) -> Result<Vec<Self>, LexError<'a>> {
+        Self::tokenize_with_line_offset(s, file_name, 1)
     }
 }
 
@@ -589,11 +597,7 @@ impl<'a> TryFrom<Number<'a>> for f64 {
         let num = format!("{}.{frac}", num.integer_or_numerator);
         let num: f64 = num.parse()?;
 
-        if negative {
-            Ok(-num)
-        } else {
-            Ok(num)
-        }
+        if negative { Ok(-num) } else { Ok(num) }
     }
 }
 

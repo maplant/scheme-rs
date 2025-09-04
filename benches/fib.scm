@@ -1,3 +1,5 @@
+(import (rnrs))
+
 (define (fib n)
    (define (iter a b count)
      (if (<= count 0)

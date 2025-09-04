@@ -1,22 +1,27 @@
 use crate::{
     ast::Literal,
-    env::{Environment, Macro},
+    env::{Environment, Keyword},
     exception::Condition,
     gc::Trace,
     lex::{InputSpan, Token},
     lists::{self, list_to_vec_with_null},
     parse::ParseSyntaxError,
     registry::bridge,
-    value::{UnpackedValue, Value},
+    symbols::Symbol,
+    value::{UnpackedValue, Value, ValueType},
 };
 use futures::future::BoxFuture;
 use std::{
     collections::{BTreeSet, HashSet},
     fmt,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
-#[derive(Debug, Clone, PartialEq, Trace)]
+/// Source location for an s-expression.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Trace)]
 pub struct Span {
     pub line: u32,
     pub column: usize,
@@ -52,13 +57,14 @@ impl From<InputSpan<'_>> for Span {
     }
 }
 
-#[derive(Clone, derive_more::Debug, Trace, PartialEq)]
+/// Representation of a Scheme syntax object, or s-expression.
+#[derive(Clone, Trace, PartialEq)]
 #[repr(align(16))]
-// TODO: Make cloning this struct as fast as possible.
+// TODO: Make cloning this struct as fast as possible. Realistically that means
+// moving nested data into Arc<[Syntax]>
 pub enum Syntax {
     /// An empty list.
     Null {
-        #[debug(skip)]
         span: Span,
     },
     /// A nested grouping of pairs. If the expression is a proper list, then the
@@ -66,29 +72,23 @@ pub enum Syntax {
     /// at least two elements.
     List {
         list: Vec<Syntax>,
-        #[debug(skip)]
         span: Span,
     },
     Vector {
         vector: Vec<Syntax>,
-        #[debug(skip)]
         span: Span,
     },
     ByteVector {
         vector: Vec<u8>,
-        #[debug(skip)]
         span: Span,
     },
     Literal {
         literal: Literal,
-        #[debug(skip)]
         span: Span,
     },
     Identifier {
         ident: Identifier,
-        #[debug(skip)]
         bound: bool,
-        #[debug(skip)]
         span: Span,
     },
 }
@@ -96,12 +96,12 @@ pub enum Syntax {
 impl Syntax {
     pub fn mark(&mut self, mark: Mark) {
         match self {
-            Self::List { ref mut list, .. } => {
+            Self::List { list, .. } => {
                 for item in list {
                     item.mark(mark);
                 }
             }
-            Self::Vector { ref mut vector, .. } => {
+            Self::Vector { vector, .. } => {
                 for item in vector {
                     item.mark(mark);
                 }
@@ -113,12 +113,12 @@ impl Syntax {
 
     pub fn mark_many(&mut self, marks: &BTreeSet<Mark>) {
         match self {
-            Self::List { ref mut list, .. } => {
+            Self::List { list, .. } => {
                 for item in list {
                     item.mark_many(marks);
                 }
             }
-            Self::Vector { ref mut vector, .. } => {
+            Self::Vector { vector, .. } => {
                 for item in vector {
                     item.mark_many(marks);
                 }
@@ -128,25 +128,10 @@ impl Syntax {
         }
     }
 
-    // I do not like the fact that this function exists.
-    pub fn normalize(self) -> Self {
-        match self {
-            Self::List { mut list, span } => {
-                if let [Syntax::Null { .. }] = list.as_slice() {
-                    list.pop().unwrap()
-                } else if list.is_empty() {
-                    Syntax::Null { span }
-                } else {
-                    Self::List { list, span }
-                }
-            }
-            x => x,
-        }
-    }
-
     pub fn syntax_from_datum(marks: &BTreeSet<Mark>, datum: Value) -> Self {
         // TODO: conjure up better values for Span
         match datum.unpack() {
+            UnpackedValue::Boolean(b) => Syntax::new_literal(Literal::Boolean(b), Span::default()),
             UnpackedValue::Null => Syntax::new_null(Span::default()),
             UnpackedValue::Pair(pair) => {
                 let pair_read = pair.read();
@@ -166,9 +151,16 @@ impl Syntax {
                 syntax.mark_many(marks);
                 syntax
             }
+            UnpackedValue::Vector(vec) => {
+                let mut out_vec = Vec::new();
+                for item in vec.read().iter() {
+                    out_vec.push(Syntax::syntax_from_datum(marks, item.clone()));
+                }
+                Syntax::new_vector(out_vec, Span::default())
+            }
             UnpackedValue::Symbol(sym) => {
                 let ident = Identifier {
-                    name: sym.0.clone(),
+                    sym,
                     marks: marks.clone(),
                 };
                 Syntax::Identifier {
@@ -177,23 +169,27 @@ impl Syntax {
                     span: Span::default(),
                 }
             }
-            _ => unimplemented!(),
+            UnpackedValue::Number(num) => Syntax::Literal {
+                literal: Literal::Number(num.as_ref().clone()),
+                span: Span::default(),
+            },
+            x => unimplemented!("{:?}", x.into_value()),
         }
     }
 
     pub fn resolve_bindings(&mut self, env: &Environment) {
         match self {
-            Self::List { ref mut list, .. } => {
+            Self::List { list, .. } => {
                 for item in list {
                     item.resolve_bindings(env);
                 }
             }
-            Self::Vector { ref mut vector, .. } => {
+            Self::Vector { vector, .. } => {
                 for item in vector {
                     item.resolve_bindings(env);
                 }
             }
-            Self::Identifier {
+            &mut Self::Identifier {
                 ref ident,
                 ref mut bound,
                 ..
@@ -202,13 +198,7 @@ impl Syntax {
         }
     }
 
-    #[allow(dead_code)]
-    async fn apply_transformer(
-        &self,
-        env: &Environment,
-        mac: Macro,
-        // cont: &Closure,
-    ) -> Result<Expansion, Value> {
+    async fn apply_transformer(&self, env: &Environment, mac: Keyword) -> Result<Expansion, Value> {
         // Create a new mark for the expansion context
         let new_mark = Mark::new();
 
@@ -223,7 +213,7 @@ impl Syntax {
         // Output must be syntax:
         let output: Arc<Syntax> = transformer_output
             .first()
-            .ok_or_else(Condition::syntax_error)?
+            .ok_or_else(|| Condition::syntax_error(self.clone(), None))?
             .clone()
             .try_into()?;
 
@@ -236,33 +226,28 @@ impl Syntax {
         Ok(Expansion::new_expanded(new_env, output))
     }
 
-    fn expand_once<'a>(
-        &'a self,
-        env: &'a Environment,
-        // cont: &Closure,
-    ) -> BoxFuture<'a, Result<Expansion, Value>> {
+    fn expand_once<'a>(&'a self, env: &'a Environment) -> BoxFuture<'a, Result<Expansion, Value>> {
         Box::pin(async move {
             match self {
                 Self::List { list, .. } => {
                     // TODO: If list head is a list, do we expand this in here or in proc call?
-
                     let ident = match list.first() {
                         Some(Self::Identifier { ident, .. }) => ident,
                         _ => return Ok(Expansion::Unexpanded),
                     };
-                    if let Some(mac) = env.fetch_macro(ident) {
+                    if let Some(mac) = env.fetch_keyword(ident).await? {
                         return self.apply_transformer(env, mac).await;
                     }
 
                     // Check for set! macro
                     match &list.as_slice()[1..] {
-                        [Syntax::Identifier { ident: var, .. }, ..] if ident.name == "set!" => {
+                        [Syntax::Identifier { ident: var, .. }, ..] if ident == "set!" => {
                             // Look for a variable transformer:
-                            if let Some(mac) = env.fetch_macro(var) {
-                                if !mac.transformer.read().is_variable_transformer {
+                            if let Some(mac) = env.fetch_keyword(var).await? {
+                                if !mac.transformer.is_variable_transformer() {
                                     return Err(Condition::error(format!(
                                         "{} not a variable transformer",
-                                        var.name
+                                        var.sym
                                     ))
                                     .into());
                                 }
@@ -273,7 +258,7 @@ impl Syntax {
                     }
                 }
                 Self::Identifier { ident, .. } => {
-                    if let Some(mac) = env.fetch_macro(ident) {
+                    if let Some(mac) = env.fetch_keyword(ident).await? {
                         return self.apply_transformer(env, mac).await;
                     }
                 }
@@ -284,11 +269,7 @@ impl Syntax {
     }
 
     /// Fully expand the outermost syntax object.
-    pub async fn expand(
-        mut self,
-        env: &Environment,
-        // cont: &Closure,
-    ) -> Result<FullyExpanded, Value> {
+    pub async fn expand(mut self, env: &Environment) -> Result<FullyExpanded, Value> {
         let mut curr_env = env.clone();
         loop {
             match self.expand_once(&curr_env).await? {
@@ -328,6 +309,15 @@ impl Syntax {
         Self::parse(&tokens)
     }
 
+    pub fn from_str_with_line_offset<'a>(
+        s: &'a str,
+        file_name: Option<&str>,
+        line_offset: u32,
+    ) -> Result<Vec<Self>, ParseSyntaxError<'a>> {
+        let tokens = Token::tokenize_with_line_offset(s, file_name, line_offset)?;
+        Self::parse(&tokens)
+    }
+
     pub fn fetch_all_identifiers(&self, idents: &mut HashSet<Identifier>) {
         match self {
             Self::List { list: syns, .. } | Self::Vector { vector: syns, .. } => {
@@ -341,9 +331,69 @@ impl Syntax {
             _ => (),
         }
     }
+
+    /// Returns true if the syntax item is a list with a car that is an
+    /// identifier equal to the passed argument.
+    pub(crate) fn has_car(&self, car: &str) -> bool {
+        matches!(self.as_list(), Some([Self::Identifier { ident, .. }, .. ]) if ident == car)
+    }
 }
 
-// #[derive(derive_more::Debug)]
+impl fmt::Debug for Syntax {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Syntax::Null { .. } => write!(f, "()"),
+            Syntax::List { list, .. } => {
+                // Proper list
+                let proper_list = matches!(list.last(), Some(Syntax::Null { .. }));
+                let len = list.len();
+                write!(f, "(")?;
+                for (i, item) in list.iter().enumerate() {
+                    if i == len - 1 {
+                        if proper_list {
+                            break;
+                        } else {
+                            write!(f, " . {item:?}")?;
+                        }
+                    } else {
+                        if i > 0 {
+                            write!(f, " ")?;
+                        }
+                        write!(f, "{item:?}")?;
+                    }
+                }
+                write!(f, ")")
+            }
+            Syntax::Vector { vector, .. } => {
+                write!(f, "#(")?;
+                for (i, item) in vector.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
+                    write!(f, "{item:?}")?;
+                }
+                write!(f, ")")
+            }
+            Syntax::ByteVector { vector, .. } => {
+                write!(f, "#u8(")?;
+                for (i, item) in vector.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
+                    write!(f, "{item:x}")?;
+                }
+                write!(f, ")")
+            }
+            Syntax::Literal { literal, .. } => {
+                write!(f, "{literal}")
+            }
+            Syntax::Identifier { ident, .. } => {
+                write!(f, "{}", ident.sym)
+            }
+        }
+    }
+}
+
 pub enum Expansion {
     /// Syntax remained unchanged after expansion
     Unexpanded,
@@ -374,20 +424,13 @@ impl FullyExpanded {
     }
 }
 
-#[derive(Debug)]
-pub struct ParsedSyntax {
-    pub doc_comment: Option<String>,
-    pub syntax: Syntax,
-}
-
-impl ParsedSyntax {}
-
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Trace)]
 pub struct Mark(usize);
 
 impl Mark {
     pub fn new() -> Self {
-        Self(rand::random())
+        static NEXT_MARK: AtomicUsize = AtomicUsize::new(0);
+        Self(NEXT_MARK.fetch_add(1, Ordering::Relaxed))
     }
 }
 
@@ -399,29 +442,30 @@ impl Default for Mark {
 
 #[derive(Clone, Hash, PartialEq, Eq, Trace)]
 pub struct Identifier {
-    pub name: String,
+    pub sym: Symbol,
     pub marks: BTreeSet<Mark>,
 }
 
 impl fmt::Debug for Identifier {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{} ({})",
-            self.name,
-            self.marks
-                .iter()
-                .map(|m| m.0.to_string() + " ")
-                .collect::<String>()
-        )
+        write!(f, "{}", self.sym)
     }
 }
 
 impl Identifier {
-    pub fn new(name: String) -> Self {
+    pub fn new(name: &str) -> Self {
         Self {
-            name,
+            sym: Symbol::intern(name),
             marks: BTreeSet::default(),
+        }
+    }
+
+    /// Return this identifier prefixed with the given string
+    pub fn prefix(self, prefix: &str) -> Self {
+        let sym = Symbol::intern(&format!("{prefix}{}", self.sym.to_str()));
+        Self {
+            sym,
+            marks: self.marks,
         }
     }
 
@@ -440,7 +484,7 @@ impl Identifier {
 
 impl PartialEq<str> for Identifier {
     fn eq(&self, rhs: &str) -> bool {
-        self.name == rhs
+        self.sym.to_str().as_ref() == rhs
     }
 }
 
@@ -455,8 +499,6 @@ impl Syntax {
             Self::Identifier { span, .. } => span,
         }
     }
-
-    // There's got to be a better way:
 
     pub fn new_null(span: impl Into<Span>) -> Self {
         Self::Null { span: span.into() }
@@ -524,7 +566,7 @@ impl Syntax {
 
     pub fn new_identifier(name: &str, span: impl Into<Span>) -> Self {
         Self::Identifier {
-            ident: Identifier::new(name.to_string()),
+            ident: Identifier::new(name),
             span: span.into(),
             bound: false,
         }
@@ -535,13 +577,13 @@ impl Syntax {
     }
 }
 
-#[bridge(name = "syntax->datum", lib = "(base)")]
+#[bridge(name = "syntax->datum", lib = "(rnrs syntax-case builtins (6))")]
 pub async fn syntax_to_datum(syn: &Value) -> Result<Vec<Value>, Condition> {
     let syn: Arc<Syntax> = syn.clone().try_into()?;
     Ok(vec![Value::datum_from_syntax(syn.as_ref())])
 }
 
-#[bridge(name = "datum->syntax", lib = "(base)")]
+#[bridge(name = "datum->syntax", lib = "(rnrs syntax-case builtins (6))")]
 pub async fn datum_to_syntax(template_id: &Value, datum: &Value) -> Result<Vec<Value>, Condition> {
     let syntax: Arc<Syntax> = template_id.clone().try_into()?;
     let Syntax::Identifier {
@@ -554,4 +596,97 @@ pub async fn datum_to_syntax(template_id: &Value, datum: &Value) -> Result<Vec<V
         &template_id.marks,
         datum.clone(),
     ))])
+}
+
+#[bridge(name = "identifier?", lib = "(rnrs syntax-case builtins (6))")]
+pub async fn identifier_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
+    let Ok(syn) = Arc::<Syntax>::try_from(obj.clone()) else {
+        return Ok(vec![Value::from(false)]);
+    };
+    Ok(vec![Value::from(syn.is_identifier())])
+}
+
+#[bridge(name = "bound-identifier=?", lib = "(rnrs syntax-case builtins (6))")]
+pub async fn bound_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, Condition> {
+    let id1: Arc<Syntax> = id1.clone().try_into()?;
+    let id2: Arc<Syntax> = id2.clone().try_into()?;
+    let Syntax::Identifier {
+        ident: id1,
+        bound: bound_id1,
+        ..
+    } = id1.as_ref()
+    else {
+        return Err(Condition::invalid_type("identifier", "syntax"));
+    };
+    let Syntax::Identifier {
+        ident: id2,
+        bound: bound_id2,
+        ..
+    } = id2.as_ref()
+    else {
+        return Err(Condition::invalid_type("identifier", "syntax"));
+    };
+    Ok(vec![Value::from(*bound_id1 && *bound_id2 && id1 == id2)])
+}
+
+#[bridge(name = "free-identifier=?", lib = "(rnrs syntax-case builtins (6))")]
+pub async fn free_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, Condition> {
+    let id1: Arc<Syntax> = id1.clone().try_into()?;
+    let id2: Arc<Syntax> = id2.clone().try_into()?;
+    let Syntax::Identifier {
+        ident: id1,
+        bound: bound_id1,
+        ..
+    } = id1.as_ref()
+    else {
+        return Err(Condition::invalid_type("identifier", "syntax"));
+    };
+    let Syntax::Identifier {
+        ident: id2,
+        bound: bound_id2,
+        ..
+    } = id2.as_ref()
+    else {
+        return Err(Condition::invalid_type("identifier", "syntax"));
+    };
+    Ok(vec![Value::from(
+        !bound_id1 && !bound_id2 && id1.sym == id2.sym,
+    )])
+}
+
+#[bridge(name = "generate-temporaries", lib = "(rnrs syntax-case builtins (6))")]
+pub async fn generate_temporaries(list: &Value) -> Result<Vec<Value>, Condition> {
+    let length = match list.type_of() {
+        ValueType::Pair => crate::lists::length(list)?,
+        ValueType::Syntax => {
+            let syntax: Arc<Syntax> = list.clone().try_into()?;
+            match &*syntax {
+                // TODO: Check for proper list?
+                Syntax::List { list, .. } => list.len() - 1,
+                _ => return Err(Condition::error("Syntax object must be a list".to_string())),
+            }
+        }
+        _ => return Err(Condition::error("argument must be a list".to_string())),
+    };
+
+    // We can use marks to create unique temporaries
+    let mark = Mark::new();
+    let mut idents = (0..length)
+        .map(|i| {
+            let mut ident = Identifier::new(&format!("${i}"));
+            ident.mark(mark);
+            Syntax::Identifier {
+                ident,
+                bound: false,
+                span: Span::default(),
+            }
+        })
+        .collect::<Vec<_>>();
+    idents.push(Syntax::Null {
+        span: Span::default(),
+    });
+    Ok(vec![Value::from(Syntax::List {
+        list: idents,
+        span: Span::default(),
+    })])
 }
