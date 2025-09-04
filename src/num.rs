@@ -478,7 +478,7 @@ impl Display for Operation {
 }
 
 unsafe impl Trace for Number {
-    unsafe fn visit_children(&self, _visitor: unsafe fn(crate::gc::OpaqueGcPtr)) {}
+    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(crate::gc::OpaqueGcPtr)) {}
 }
 
 #[derive(Debug)]

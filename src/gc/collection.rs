@@ -4,7 +4,7 @@
 
 use std::{
     ptr::NonNull,
-    sync::{Mutex, OnceLock},
+    sync::{Mutex, OnceLock, atomic::AtomicUsize},
     time::{Duration, Instant},
 };
 use tokio::{
@@ -42,6 +42,8 @@ struct MutationBuffer {
     mutation_buffer_rx: Mutex<Option<UnboundedReceiver<Mutation>>>,
 }
 
+static PENDING_MUTATIONS: AtomicUsize = AtomicUsize::new(0);
+
 unsafe impl Sync for MutationBuffer {}
 
 impl Default for MutationBuffer {
@@ -55,6 +57,16 @@ impl Default for MutationBuffer {
 }
 
 static MUTATION_BUFFER: OnceLock<MutationBuffer> = OnceLock::new();
+
+static MAX_PENDING_MUTATIONS_ALLOWED: usize = 100_000;
+
+pub(crate) async fn yield_until_gc_cleared() {
+    while PENDING_MUTATIONS.load(std::sync::atomic::Ordering::Relaxed)
+        > MAX_PENDING_MUTATIONS_ALLOWED
+    {
+        tokio::task::yield_now().await
+    }
+}
 
 pub(super) fn inc_rc<T: ?Sized>(gc: NonNull<GcInner<T>>) {
     // Disregard any send errors. If the receiver was dropped then the process
@@ -83,13 +95,13 @@ pub fn init_gc() {
         .get_or_init(|| tokio::task::spawn(async { unsafe { run_garbage_collector().await } }));
 }
 
-const MIN_MUTATIONS_PER_EPOCH: usize = 10;
-const MAX_MUTATIONS_PER_EPOCH: usize = 10_000; // No idea what a good value is here.
+const MIN_MUTATIONS_PER_EPOCH: usize = 1_000;
+const AVG_MUTATIONS_PER_EPOCH: usize = MAX_PENDING_MUTATIONS_ALLOWED >> 1; // 10_000; // No idea what a good value is here.
 
 async unsafe fn run_garbage_collector() {
     unsafe {
         let mut last_epoch = Instant::now();
-        let mut mutation_buffer: Vec<_> = Vec::with_capacity(MAX_MUTATIONS_PER_EPOCH);
+        let mut mutation_buffer: Vec<_> = Vec::with_capacity(AVG_MUTATIONS_PER_EPOCH);
         let mut mutation_buffer_rx = MUTATION_BUFFER
             .get_or_init(MutationBuffer::default)
             .mutation_buffer_rx
@@ -138,6 +150,11 @@ async unsafe fn process_mutation_buffer(
 ) {
     // It is very important that we do not delay any mutations that
     // have occurred at this point by an extra epoch.
+    PENDING_MUTATIONS.store(
+        mutation_buffer_rx.len(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+
     let to_recv = mutation_buffer_rx.len().max(MIN_MUTATIONS_PER_EPOCH);
 
     mutation_buffer_rx.recv_many(mutation_buffer, to_recv).await;
@@ -176,7 +193,7 @@ unsafe fn decrement(s: OpaqueGcPtr) {
 
 unsafe fn release(s: OpaqueGcPtr) {
     unsafe {
-        for_each_child(s, decrement);
+        for_each_child(s, &mut |c| decrement(c));
         s.set_color(Color::Black);
         if !s.buffered() {
             free(s);
@@ -255,30 +272,51 @@ unsafe fn collect_roots() {
     }
 }
 
+enum MarkGrayPhase {
+    MarkGray(OpaqueGcPtr),
+    SetCrc(OpaqueGcPtr),
+}
+
 unsafe fn mark_gray(s: OpaqueGcPtr) {
     unsafe {
+        let mut stack = Vec::new();
         if s.color() != Color::Gray {
             s.set_color(Color::Gray);
             s.set_crc(s.rc() as isize);
-            for_each_child(s, |t| {
-                mark_gray(t);
-                let t_crc = t.crc();
-                if t_crc > 0 {
-                    t.set_crc(t_crc - 1);
+            for_each_child(s, &mut |t| stack.push(MarkGrayPhase::MarkGray(t)))
+        }
+        while let Some(s) = stack.pop() {
+            match s {
+                MarkGrayPhase::MarkGray(s) => {
+                    if s.color() != Color::Gray {
+                        s.set_color(Color::Gray);
+                        s.set_crc(s.rc() as isize);
+                        for_each_child(s, &mut |t| stack.push(MarkGrayPhase::MarkGray(t)))
+                    }
+                    stack.push(MarkGrayPhase::SetCrc(s))
                 }
-            });
+                MarkGrayPhase::SetCrc(s) => {
+                    let s_crc = s.crc();
+                    if s_crc > 0 {
+                        s.set_crc(s_crc - 1);
+                    }
+                }
+            }
         }
     }
 }
 
 unsafe fn scan(s: OpaqueGcPtr) {
     unsafe {
-        if s.color() == Color::Gray {
-            if s.crc() == 0 {
-                s.set_color(Color::White);
-                for_each_child(s, scan);
-            } else {
-                scan_black(s);
+        let mut stack = vec![s];
+        while let Some(s) = stack.pop() {
+            if s.color() == Color::Gray {
+                if s.crc() == 0 {
+                    s.set_color(Color::White);
+                    for_each_child(s, &mut |c| stack.push(c));
+                } else {
+                    scan_black(s);
+                }
             }
         }
     }
@@ -286,20 +324,26 @@ unsafe fn scan(s: OpaqueGcPtr) {
 
 unsafe fn scan_black(s: OpaqueGcPtr) {
     unsafe {
-        if s.color() != Color::Black {
-            s.set_color(Color::Black);
-            for_each_child(s, scan_black);
+        let mut stack = vec![s];
+        while let Some(s) = stack.pop() {
+            if s.color() != Color::Black {
+                s.set_color(Color::Black);
+                for_each_child(s, &mut |c| stack.push(c));
+            }
         }
     }
 }
 
 unsafe fn collect_white(s: OpaqueGcPtr) {
     unsafe {
-        if s.color() == Color::White {
-            s.set_color(Color::Orange);
-            s.set_buffered(true);
-            (&raw mut CURRENT_CYCLE).as_mut().unwrap().push(s);
-            for_each_child(s, collect_white);
+        let mut stack = vec![s];
+        while let Some(s) = stack.pop() {
+            if s.color() == Color::White {
+                s.set_color(Color::Orange);
+                s.set_buffered(true);
+                (&raw mut CURRENT_CYCLE).as_mut().unwrap().push(s);
+                for_each_child(s, &mut |c| stack.push(c));
+            }
         }
     }
 }
@@ -312,7 +356,7 @@ unsafe fn sigma_preparation() {
                 n.set_crc(n.rc() as isize);
             }
             for n in c {
-                for_each_child(*n, |m| {
+                for_each_child(*n, &mut |m| {
                     if m.color() == Color::Red && m.crc() > 0 {
                         m.set_crc(m.crc() - 1);
                     }
@@ -397,7 +441,7 @@ unsafe fn free_cycle(c: &[OpaqueGcPtr]) {
             n.set_color(Color::Red);
         }
         for n in c {
-            for_each_child(*n, cyclic_decrement);
+            for_each_child(*n, &mut |c| cyclic_decrement(c));
         }
         for n in c {
             free(*n);
@@ -418,7 +462,7 @@ unsafe fn cyclic_decrement(m: OpaqueGcPtr) {
     }
 }
 
-unsafe fn for_each_child(s: OpaqueGcPtr, visitor: unsafe fn(OpaqueGcPtr)) {
+unsafe fn for_each_child(s: OpaqueGcPtr, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
     unsafe {
         let lock = s.lock().read().unwrap();
         (s.visit_children())(s.data(), visitor);

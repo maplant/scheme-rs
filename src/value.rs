@@ -253,14 +253,6 @@ impl Value {
     }
 }
 
-/*
-impl PartialEq for Value {
-    fn eq(&self, rhs: &Self) -> bool {
-        *self.unpacked_ref() == *rhs.unpacked_ref()
-    }
-}
-*/
-
 impl Clone for Value {
     fn clone(&self) -> Self {
         unsafe { Self::from_raw_inc_rc(self.0) }
@@ -293,7 +285,7 @@ impl fmt::Debug for Value {
 }
 
 unsafe impl Trace for Value {
-    unsafe fn visit_children(&self, visitor: unsafe fn(crate::gc::OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(crate::gc::OpaqueGcPtr)) {
         unsafe {
             self.unpacked_ref().visit_children(visitor);
         }
@@ -857,6 +849,7 @@ impl TryFrom<Value> for (Value, Value) {
 }
 
 /// A Value for which the implementation of PartialEq uses eqv rather than equal
+#[derive(Clone)]
 pub(crate) struct EqvValue(pub(crate) Value);
 
 impl Hash for EqvValue {
@@ -968,18 +961,13 @@ fn determine_circularity(
     visited: &mut IndexSet<EqvValue>,
     circular: &mut IndexSet<EqvValue>,
 ) {
-    match curr.type_of() {
-        ValueType::Pair | ValueType::Vector => {
-            let eqv_value = EqvValue(curr.clone());
-            if visited.contains(&eqv_value) {
-                circular.insert(eqv_value);
-                return;
-            }
-
-            visited.insert(eqv_value);
-        }
-        _ => (),
+    let eqv_value = EqvValue(curr.clone());
+    if visited.contains(&eqv_value) {
+        circular.insert(eqv_value);
+        return;
     }
+
+    visited.insert(eqv_value.clone());
 
     match curr.clone().unpack() {
         UnpackedValue::Pair(pair) => {
@@ -996,6 +984,8 @@ fn determine_circularity(
         }
         _ => (),
     }
+
+    visited.swap_remove(&eqv_value);
 }
 
 pub(crate) fn write_value(

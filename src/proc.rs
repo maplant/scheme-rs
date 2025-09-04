@@ -4,7 +4,7 @@
 use crate::{
     env::Local,
     exception::{Condition, Exception, ExceptionHandler, Frame, raise},
-    gc::{Gc, GcInner, Trace},
+    gc::{Gc, GcInner, Trace, yield_until_gc_cleared},
     lists::{list_to_vec, slice_to_list},
     registry::BridgeFnDebugInfo,
     runtime::{Runtime, RuntimeInner},
@@ -65,7 +65,7 @@ pub(crate) enum FuncPtr {
 }
 
 unsafe impl Trace for FuncPtr {
-    unsafe fn visit_children(&self, _visitor: unsafe fn(crate::gc::OpaqueGcPtr)) {}
+    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(crate::gc::OpaqueGcPtr)) {}
 
     unsafe fn finalize(&mut self) {}
 }
@@ -409,6 +409,7 @@ impl Application {
                 }
                 Ok(app) => app,
             };
+            yield_until_gc_cleared().await
         }
 
         // If we have no operator left, return the arguments as the final values:

@@ -55,5 +55,9 @@ name = "fib"
 harness = false
 
 [[bench]]
+name = "integrate"
+harness = false
+
+[[bench]]
 name = "cold_boot"
 harness = false
