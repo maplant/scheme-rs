@@ -255,30 +255,51 @@ unsafe fn collect_roots() {
     }
 }
 
+enum MarkGrayPhase {
+    MarkGray(OpaqueGcPtr),
+    SetCrc(OpaqueGcPtr),
+}
+
 unsafe fn mark_gray(s: OpaqueGcPtr) {
     unsafe {
+        let mut stack = Vec::new();
         if s.color() != Color::Gray {
             s.set_color(Color::Gray);
             s.set_crc(s.rc() as isize);
-            for_each_child(s, &mut |t| {
-                mark_gray(t);
-                let t_crc = t.crc();
-                if t_crc > 0 {
-                    t.set_crc(t_crc - 1);
+            for_each_child(s, &mut |t| stack.push(MarkGrayPhase::MarkGray(t)))
+        }
+        while let Some(s) = stack.pop() {
+            match s {
+                MarkGrayPhase::MarkGray(s) => {
+                    if s.color() != Color::Gray {
+                        s.set_color(Color::Gray);
+                        s.set_crc(s.rc() as isize);
+                        for_each_child(s, &mut |t| stack.push(MarkGrayPhase::MarkGray(t)))
+                    }
+                    stack.push(MarkGrayPhase::SetCrc(s))
                 }
-            });
+                MarkGrayPhase::SetCrc(s) => {
+                    let s_crc = s.crc();
+                    if s_crc > 0 {
+                        s.set_crc(s_crc - 1);
+                    }
+                }
+            }
         }
     }
 }
 
 unsafe fn scan(s: OpaqueGcPtr) {
     unsafe {
-        if s.color() == Color::Gray {
-            if s.crc() == 0 {
-                s.set_color(Color::White);
-                for_each_child(s, &mut |c| scan(c));
-            } else {
-                scan_black(s);
+        let mut stack = vec![s];
+        while let Some(s) = stack.pop() {
+            if s.color() == Color::Gray {
+                if s.crc() == 0 {
+                    s.set_color(Color::White);
+                    for_each_child(s, &mut |c| stack.push(c));
+                } else {
+                    scan_black(s);
+                }
             }
         }
     }
@@ -286,20 +307,26 @@ unsafe fn scan(s: OpaqueGcPtr) {
 
 unsafe fn scan_black(s: OpaqueGcPtr) {
     unsafe {
-        if s.color() != Color::Black {
-            s.set_color(Color::Black);
-            for_each_child(s, &mut |c| scan_black(c));
+        let mut stack = vec![s];
+        while let Some(s) = stack.pop() {
+            if s.color() != Color::Black {
+                s.set_color(Color::Black);
+                for_each_child(s, &mut |c| stack.push(c));
+            }
         }
     }
 }
 
 unsafe fn collect_white(s: OpaqueGcPtr) {
     unsafe {
-        if s.color() == Color::White {
-            s.set_color(Color::Orange);
-            s.set_buffered(true);
-            (&raw mut CURRENT_CYCLE).as_mut().unwrap().push(s);
-            for_each_child(s, &mut |c| collect_white(c));
+        let mut stack = vec![s];
+        while let Some(s) = stack.pop() {
+            if s.color() == Color::White {
+                s.set_color(Color::Orange);
+                s.set_buffered(true);
+                (&raw mut CURRENT_CYCLE).as_mut().unwrap().push(s);
+                for_each_child(s, &mut |c| stack.push(c));
+            }
         }
     }
 }
