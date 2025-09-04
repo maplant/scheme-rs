@@ -285,7 +285,7 @@ impl fmt::Debug for Value {
 }
 
 unsafe impl Trace for Value {
-    unsafe fn visit_children(&self, visitor: unsafe fn(crate::gc::OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(crate::gc::OpaqueGcPtr)) {
         unsafe {
             self.unpacked_ref().visit_children(visitor);
         }
