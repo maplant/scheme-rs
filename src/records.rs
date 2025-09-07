@@ -564,7 +564,7 @@ pub struct OpaqueParentConstructor {
 type ParentConstructor = fn(&[Value]) -> Result<Gc<dyn SchemeCompatible>, Condition>;
 
 unsafe impl Trace for OpaqueParentConstructor {
-    unsafe fn visit_children(&self, _visitor: unsafe fn(crate::gc::OpaqueGcPtr)) {}
+    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(crate::gc::OpaqueGcPtr)) {}
 }
 
 pub fn is_subtype_of(val: &Value, rt: &Value) -> Result<bool, Condition> {
