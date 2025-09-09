@@ -4,14 +4,18 @@ use crate::{
     exception::Condition,
     gc::{Gc, Trace},
     proc::Closure,
+    records::{Record, RecordTypeDescriptor, SchemeCompatible},
     runtime::Runtime,
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax},
     value::Value,
 };
-use ahash::{AHashMap, AHashSet};
 use scheme_rs_macros::{bridge, runtime_fn};
-use std::{any::Any, collections::BTreeSet};
+use std::{
+    any::Any,
+    collections::{BTreeSet, HashMap, HashSet},
+    sync::Arc,
+};
 
 // TODO: This code needs _a lot_ more error checking: error checking for missing
 // ellipsis, error checking for too many ellipsis. It makes debugging extremely
@@ -28,13 +32,13 @@ pub struct SyntaxRule {
 impl SyntaxRule {
     pub async fn compile(
         rt: &Runtime,
-        keywords: &AHashSet<Symbol>,
+        keywords: &HashSet<Symbol>,
         pattern: &Syntax,
         fender: Option<&Syntax>,
         output_expression: &Syntax,
         env: &Environment,
     ) -> Result<Self, ParseAstError> {
-        let mut variables = AHashSet::new();
+        let mut variables = HashSet::new();
         let pattern = Pattern::compile(pattern, keywords, &mut variables);
         let binds = Local::gensym();
         let env = env.new_syntax_case_expr(binds, variables);
@@ -69,8 +73,8 @@ pub enum Pattern {
 impl Pattern {
     pub fn compile(
         expr: &Syntax,
-        keywords: &AHashSet<Symbol>,
-        variables: &mut AHashSet<Identifier>,
+        keywords: &HashSet<Symbol>,
+        variables: &mut HashSet<Identifier>,
     ) -> Self {
         match expr {
             Syntax::Null { .. } => Self::Null,
@@ -93,8 +97,8 @@ impl Pattern {
 
     fn compile_slice(
         mut expr: &[Syntax],
-        keywords: &AHashSet<Symbol>,
-        variables: &mut AHashSet<Identifier>,
+        keywords: &HashSet<Symbol>,
+        variables: &mut HashSet<Identifier>,
     ) -> Vec<Self> {
         let mut output = Vec::new();
         loop {
@@ -270,24 +274,39 @@ fn match_vec(patterns: &[Pattern], expr: &Syntax, expansion_level: &mut Expansio
     }
 }
 
+impl SchemeCompatible for Pattern {
+    fn rtd(&self) -> Arc<RecordTypeDescriptor> {
+        todo!()
+    }
+}
+
 #[derive(Clone, Debug, Default, Trace)]
 pub struct ExpansionLevel {
-    binds: AHashMap<Identifier, Syntax>,
+    binds: HashMap<Identifier, Syntax>,
     expansions: Vec<ExpansionLevel>,
+}
+
+impl SchemeCompatible for ExpansionLevel {
+    fn rtd(&self) -> Arc<RecordTypeDescriptor> {
+        todo!()
+    }
 }
 
 #[derive(Trace, Debug)]
 pub struct ExpansionCombiner {
-    pub(crate) uses: AHashMap<Identifier, usize>,
+    pub(crate) uses: HashMap<Identifier, usize>,
+}
+
+impl SchemeCompatible for ExpansionCombiner {
+    fn rtd(&self) -> Arc<RecordTypeDescriptor> {
+        todo!()
+    }
 }
 
 #[runtime_fn]
 unsafe extern "C" fn matches(pattern: i64, syntax: i64) -> i64 {
     let pattern = unsafe { Value::from_raw_inc_rc(pattern as u64) };
-    let pattern: Gc<Gc<dyn Any>> = pattern.try_into().unwrap();
-    let Ok(pattern) = pattern.read().clone().downcast::<Pattern>() else {
-        panic!()
-    };
+    let pattern = pattern.try_into_rust_type::<Pattern>().unwrap();
 
     let syntax = unsafe { Value::from_raw_inc_rc(syntax as u64) };
     // This isn't a great way to do this, but it'll work for now:
@@ -295,8 +314,7 @@ unsafe extern "C" fn matches(pattern: i64, syntax: i64) -> i64 {
 
     let mut expansions = ExpansionLevel::default();
     if pattern.read().matches(&syntax, &mut expansions) {
-        let expansions = Gc::into_any(Gc::new(expansions));
-        Value::into_raw(Value::from(Gc::new(expansions))) as i64
+        Value::into_raw(Value::from(Record::from_rust_type(expansions))) as i64
     } else {
         Value::into_raw(Value::from(false)) as i64
     }
@@ -313,7 +331,7 @@ impl ExpansionCombiner {
                     .get(ident)
                     .map(|expansion| (ident.clone(), expansion.clone()))
             })
-            .collect::<AHashMap<_, _>>();
+            .collect::<HashMap<_, _>>();
         let max_expansions = expansions
             .iter()
             .map(|exp| exp.expansions.len())
@@ -354,7 +372,7 @@ impl Template {
     pub fn compile(
         expr: &Syntax,
         env: &Environment,
-        expansions: &mut AHashMap<Identifier, Local>,
+        expansions: &mut HashMap<Identifier, Local>,
     ) -> Self {
         match expr {
             Syntax::Null { .. } => Self::Null,
@@ -378,9 +396,6 @@ impl Template {
             }
             Syntax::ByteVector { vector, .. } => Self::ByteVector(vector.clone()),
             Syntax::Literal { literal, .. } => Self::Literal(literal.clone()),
-            // Syntax::Identifier { ident, .. } if variables.contains(&ident) => {
-            //     Self::Variable(ident.clone())
-            // }
             Syntax::Identifier { ident, .. } => {
                 if let Some(expansion) = env.fetch_pattern_variable(ident) {
                     expansions.insert(ident.clone(), expansion);
@@ -395,7 +410,7 @@ impl Template {
     pub fn compile_escaped(
         expr: &Syntax,
         env: &Environment,
-        expansions: &mut AHashMap<Identifier, Local>,
+        expansions: &mut HashMap<Identifier, Local>,
     ) -> Self {
         match expr {
             Syntax::Null { .. } => Self::Null,
@@ -421,7 +436,7 @@ impl Template {
     fn compile_slice(
         mut expr: &[Syntax],
         env: &Environment,
-        expansions: &mut AHashMap<Identifier, Local>,
+        expansions: &mut HashMap<Identifier, Local>,
     ) -> Vec<Self> {
         let mut output = Vec::new();
         loop {
@@ -451,7 +466,7 @@ impl Template {
     fn compile_slice_escaped(
         exprs: &[Syntax],
         env: &Environment,
-        expansions: &mut AHashMap<Identifier, Local>,
+        expansions: &mut HashMap<Identifier, Local>,
     ) -> Vec<Self> {
         exprs
             .iter()
@@ -479,6 +494,12 @@ impl Template {
     }
 }
 
+impl SchemeCompatible for Template {
+    fn rtd(&self) -> Arc<RecordTypeDescriptor> {
+        todo!()
+    }
+}
+
 #[runtime_fn]
 unsafe extern "C" fn expand_template(
     template: i64,
@@ -490,29 +511,18 @@ unsafe extern "C" fn expand_template(
     // eventually
 
     let template = unsafe { Value::from_raw_inc_rc(template as u64) };
-    let template: Gc<Gc<dyn Any>> = template.try_into().unwrap();
-    let Ok(template) = template.read().clone().downcast::<Template>() else {
-        panic!()
-    };
+    let template = template.try_into_rust_type::<Template>().unwrap();
 
     let expansion_combiner = unsafe { Value::from_raw_inc_rc(expansion_combiner as u64) };
-    let expansion_combiner: Gc<Gc<dyn Any>> = expansion_combiner.try_into().unwrap();
-    let Ok(expansion_combiner) = expansion_combiner
-        .read()
-        .clone()
-        .downcast::<ExpansionCombiner>()
-    else {
-        panic!()
-    };
+    let expansion_combiner = expansion_combiner
+        .try_into_rust_type::<ExpansionCombiner>()
+        .unwrap();
 
     let expansions = (0..num_expansions)
         .map(|i| {
             let expansion =
                 unsafe { Value::from_raw_inc_rc(expansions.add(i as usize).read() as u64) };
-            let expansion: Gc<Gc<dyn Any>> = expansion.clone().try_into().unwrap();
-            let Ok(expansion) = expansion.read().clone().downcast::<ExpansionLevel>() else {
-                panic!()
-            };
+            let expansion = expansion.try_into_rust_type::<ExpansionLevel>().unwrap();
             expansion.read().clone()
         })
         .collect::<Vec<_>>();

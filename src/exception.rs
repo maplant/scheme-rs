@@ -7,6 +7,7 @@ use crate::{
     gc::{Gc, GcInner, Trace},
     lists,
     proc::{Application, Closure, DynamicWind, FuncPtr},
+    records::{RecordTypeDescriptor, SchemeCompatible},
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax},
@@ -131,16 +132,25 @@ impl Condition {
     }
 }
 
+impl fmt::Display for Condition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        <Self as fmt::Debug>::fmt(self, f)
+    }
+}
+
+impl SchemeCompatible for Condition {
+    fn rtd(&self) -> Arc<RecordTypeDescriptor> {
+        todo!()
+    }
+}
+
 impl From<Exception> for Condition {
     fn from(e: Exception) -> Self {
         // For now just drop the back trace:
-        let Ok(v) = Gc::<Gc<dyn std::any::Any>>::try_from(e.obj) else {
+        let Ok(v) = Gc::<Self>::try_from(e.obj) else {
             return Condition::Error;
         };
-        let Ok(c) = v.read().clone().downcast::<Self>() else {
-            return Condition::Error;
-        };
-        c.read().clone()
+        v.read().clone()
     }
 }
 
