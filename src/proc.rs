@@ -3,7 +3,7 @@
 
 use crate::{
     env::Local,
-    exception::{Condition, Exception, ExceptionHandler, Frame, raise},
+    exceptions::{Condition, Exception, ExceptionHandler, Frame, raise},
     gc::{Gc, GcInner, Trace},
     lists::{list_to_vec, slice_to_list},
     registry::BridgeFnDebugInfo,

@@ -3,7 +3,7 @@
 use crate::{
     cps::{Compile, PrimOp},
     env::{Environment, Local, Var},
-    exception::Condition,
+    exceptions::Condition,
     expand::{SyntaxRule, Template},
     gc::Trace,
     num::{Number, NumberToUsizeError},

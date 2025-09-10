@@ -10,7 +10,7 @@ use futures::future::BoxFuture;
 
 use crate::{
     ast::{ImportSet, SpecialKeyword},
-    exception::Condition,
+    exceptions::Condition,
     gc::{Gc, Trace},
     proc::Closure,
     registry::{Import, ImportError, Library},

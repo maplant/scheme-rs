@@ -1,5 +1,5 @@
 use crate::{
-    exception::Condition,
+    exceptions::Condition,
     gc::Trace,
     registry::bridge,
     value::{Value, ValueType},

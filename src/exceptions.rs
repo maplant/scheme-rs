@@ -7,7 +7,8 @@ use crate::{
     gc::{Gc, GcInner, Trace},
     lists,
     proc::{Application, Closure, DynamicWind, FuncPtr},
-    records::{RecordTypeDescriptor, SchemeCompatible},
+    records::{into_scheme_compatible, Record, RecordTypeDescriptor, SchemeCompatible},
+    rtd,
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax},
@@ -139,7 +140,7 @@ impl fmt::Display for Condition {
 }
 
 impl SchemeCompatible for Condition {
-    fn rtd(&self) -> Arc<RecordTypeDescriptor> {
+    fn rtd() -> Arc<RecordTypeDescriptor> {
         todo!()
     }
 }
@@ -173,6 +174,129 @@ macro_rules! impl_into_condition_for {
 impl_into_condition_for!(Box<crate::num::ArithmeticError>);
 impl_into_condition_for!(crate::num::NumberToUsizeError);
 impl_into_condition_for!(std::num::TryFromIntError);
+
+pub struct Condition2(Value);
+
+impl From<SimpleCondition> for Condition2 {
+    fn from(simple: SimpleCondition) -> Self {
+        Self(Value::from(Record::from_rust_type(simple)))
+    }
+}
+
+impl From<Warning> for Condition2 {
+    fn from(warning: Warning) -> Self {
+        Self(Value::from(Record::from_rust_type(warning)))
+    }
+}
+
+impl From<Serious> for Condition2 {
+    fn from(serious: Serious) -> Self {
+        Self(Value::from(Record::from_rust_type(serious)))
+    }
+}
+
+#[derive(Copy, Clone, Debug, Trace)]
+pub struct SimpleCondition;
+
+impl SchemeCompatible for SimpleCondition {
+    fn rtd() -> Arc<RecordTypeDescriptor> {
+        rtd!("&condition")
+    }
+}
+
+#[derive(Clone, Debug, Trace)]
+pub struct Warning(Gc<SimpleCondition>);
+
+impl SchemeCompatible for Warning {
+    fn rtd() -> Arc<RecordTypeDescriptor> {
+        rtd!("&warning", parent: SimpleCondition::rtd())
+    }
+
+    fn extract_embedded_record(
+        &self,
+        rtd: &Arc<RecordTypeDescriptor>,
+    ) -> Option<Gc<dyn SchemeCompatible>> {
+        SimpleCondition::rtd()
+            .is_subtype_of(rtd)
+            .then(|| into_scheme_compatible(self.0.clone()))
+    }
+}
+
+#[derive(Clone, Debug, Trace)]
+pub struct Serious(Gc<SimpleCondition>);
+
+impl SchemeCompatible for Serious {
+    fn rtd() -> Arc<RecordTypeDescriptor> {
+        rtd!("&serious", parent: SimpleCondition::rtd())
+    }
+
+    fn extract_embedded_record(
+        &self,
+        rtd: &Arc<RecordTypeDescriptor>,
+    ) -> Option<Gc<dyn SchemeCompatible>> {
+        SimpleCondition::rtd()
+            .is_subtype_of(rtd)
+            .then(|| into_scheme_compatible(self.0.clone()))
+    }
+}
+
+#[derive(Clone, Debug, Trace)]
+pub struct Message {
+    parent: Gc<SimpleCondition>,
+    message: String,
+}
+
+impl SchemeCompatible for Message {
+    fn rtd() -> Arc<RecordTypeDescriptor> {
+        rtd!("&message", parent: SimpleCondition::rtd())
+    }
+
+    fn extract_embedded_record(&self, rtd: &Arc<RecordTypeDescriptor>) -> Option<Gc<dyn SchemeCompatible>> {
+        SimpleCondition::rtd()
+            .is_subtype_of(rtd)
+            .then(|| into_scheme_compatible(self.parent.clone()))
+    }
+}
+
+#[derive(Clone, Debug, Trace)]
+pub struct Violation(Gc<Serious>);
+
+impl SchemeCompatible for Violation {
+    fn rtd() -> Arc<RecordTypeDescriptor> {
+        rtd!("&violation", parent: Serious::rtd())
+    }
+
+    fn extract_embedded_record(
+        &self,
+        rtd: &Arc<RecordTypeDescriptor>,
+    ) -> Option<Gc<dyn SchemeCompatible>> {
+        Serious::rtd()
+            .is_subtype_of(rtd)
+            .then(|| into_scheme_compatible(self.0.clone()))
+    }
+}
+
+#[derive(Clone, Debug, Trace)]
+pub struct SyntaxViolation {
+    parent: Gc<Serious>,
+    form: Value,
+    subform: Value,
+}
+
+impl SchemeCompatible for SyntaxViolation {
+    fn rtd() -> Arc<RecordTypeDescriptor> {
+        rtd!("&syntax", parent: Violation::rtd())
+    }
+
+    fn extract_embedded_record(
+        &self,
+        rtd: &Arc<RecordTypeDescriptor>,
+    ) -> Option<Gc<dyn SchemeCompatible>> {
+        Violation::rtd()
+            .is_subtype_of(rtd)
+            .then(|| into_scheme_compatible(self.parent.clone()))
+    }
+}
 
 #[derive(Debug, Clone, Trace)]
 pub struct Frame {

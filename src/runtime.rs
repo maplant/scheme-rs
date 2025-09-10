@@ -2,7 +2,7 @@ use crate::{
     ast::DefinitionBody,
     cps::{Compile, Cps, codegen::RuntimeFunctionsBuilder},
     env::Environment,
-    exception::{Condition, Exception, ExceptionHandler, raise},
+    exceptions::{Condition, Exception, ExceptionHandler, raise},
     gc::{Gc, GcInner, Trace, init_gc},
     lists::{self, list_to_vec},
     num,

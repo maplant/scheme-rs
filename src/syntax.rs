@@ -1,7 +1,7 @@
 use crate::{
     ast::Literal,
     env::{Environment, Keyword},
-    exception::Condition,
+    exceptions::Condition,
     gc::Trace,
     lex::{InputSpan, Token},
     lists::{self, list_to_vec_with_null},

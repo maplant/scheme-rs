@@ -1,7 +1,7 @@
 use indexmap::IndexMap;
 
 use crate::{
-    exception::Condition,
+    exceptions::Condition,
     gc::{Gc, Trace},
     num::Number,
     registry::bridge,

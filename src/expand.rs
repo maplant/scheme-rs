@@ -1,7 +1,8 @@
 use crate::{
+    rtd,
     ast::{Expression, Literal, ParseAstError},
     env::{Environment, Local},
-    exception::Condition,
+    exceptions::Condition,
     gc::{Gc, Trace},
     proc::Closure,
     records::{Record, RecordTypeDescriptor, SchemeCompatible},
@@ -275,8 +276,8 @@ fn match_vec(patterns: &[Pattern], expr: &Syntax, expansion_level: &mut Expansio
 }
 
 impl SchemeCompatible for Pattern {
-    fn rtd(&self) -> Arc<RecordTypeDescriptor> {
-        todo!()
+    fn rtd() -> Arc<RecordTypeDescriptor> {
+        rtd!("pattern")
     }
 }
 
@@ -287,8 +288,8 @@ pub struct ExpansionLevel {
 }
 
 impl SchemeCompatible for ExpansionLevel {
-    fn rtd(&self) -> Arc<RecordTypeDescriptor> {
-        todo!()
+    fn rtd() -> Arc<RecordTypeDescriptor> {
+        rtd!("expansion-level")
     }
 }
 
@@ -298,8 +299,8 @@ pub struct ExpansionCombiner {
 }
 
 impl SchemeCompatible for ExpansionCombiner {
-    fn rtd(&self) -> Arc<RecordTypeDescriptor> {
-        todo!()
+    fn rtd() -> Arc<RecordTypeDescriptor> {
+        rtd!("expansion-combiner")
     }
 }
 
@@ -495,8 +496,8 @@ impl Template {
 }
 
 impl SchemeCompatible for Template {
-    fn rtd(&self) -> Arc<RecordTypeDescriptor> {
-        todo!()
+    fn rtd() -> Arc<RecordTypeDescriptor> {
+        rtd!("template")
     }
 }
 

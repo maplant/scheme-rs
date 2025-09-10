@@ -2,7 +2,7 @@ use indexmap::{IndexMap, IndexSet};
 
 use crate::{
     ast,
-    exception::{Condition, Exception},
+    exceptions::{Condition, Exception},
     gc::{Gc, GcInner, Trace},
     lists,
     num::{Number, ReflexiveNumber},

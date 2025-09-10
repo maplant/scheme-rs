@@ -12,13 +12,20 @@ use tokio::{
 };
 
 use crate::{
-    exception::Condition, gc::Gc, num::Number, proc::Closure, records::{Record, RecordTypeDescriptor, SchemeCompatible}, strings::AlignedString, value::Value, vectors::AlignedVector
+    exceptions::Condition,
+    gc::Gc,
+    num::Number,
+    proc::Closure,
+    records::{Record, RecordTypeDescriptor, SchemeCompatible},
+    strings::AlignedString,
+    value::Value,
+    vectors::AlignedVector,
 };
 
 type Future = Shared<BoxFuture<'static, Result<Vec<Value>, Condition>>>;
 
 impl SchemeCompatible for Future {
-    fn rtd(&self) -> Arc<RecordTypeDescriptor> {
+    fn rtd() -> Arc<RecordTypeDescriptor> {
         todo!()
     }
 }
@@ -60,7 +67,6 @@ pub async fn bind_tcp(addr: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![listener])
      */
     todo!()
-
 }
 
 #[bridge(name = "accept", lib = "(base)")]
@@ -84,7 +90,6 @@ pub async fn accept(listener: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![socket, addr])
      */
     todo!()
-
 }
 
 #[bridge(name = "read", lib = "(base)")]

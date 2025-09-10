@@ -1,5 +1,5 @@
 use crate::{
-    exception::Condition,
+    exceptions::Condition,
     gc::{Gc, Trace},
     lists::slice_to_list,
     num::{Number, NumberToUsizeError},

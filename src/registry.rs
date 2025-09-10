@@ -7,7 +7,7 @@ use crate::{
     },
     cps::Compile,
     env::{Environment, Global, Keyword},
-    exception::Condition,
+    exceptions::Condition,
     gc::{Gc, Trace},
     proc::{Application, BridgePtr, Closure, DynamicWind, FuncDebugInfo, FuncPtr},
     runtime::Runtime,
@@ -86,16 +86,6 @@ inventory::collect!(BridgeFn);
 #[derive(rust_embed::Embed)]
 #[folder = "scheme"]
 pub struct Stdlib;
-
-/*
-#[derive(Copy, Clone)]
-pub struct Initializer {
-    lib_name: &'static str,
-    initializer: fn(lib: &Library),
-}
-
-inventory::collect!(Initializer);
-*/
 
 #[derive(Trace, Default)]
 pub(crate) struct RegistryInner {
@@ -251,17 +241,6 @@ impl RegistryInner {
             })
             .chain(special_keyword_libs)
             .collect();
-
-        /*
-        // Run the initializers:
-        for initializer in inventory::iter::<Initializer>() {
-            let lib_name = LibraryName::from_str(initializer.lib_name, None).unwrap();
-            let lib = libs
-                .entry(lib_name)
-                .or_insert_with(|| Gc::new(Top::library()));
-            (initializer.initializer)(lib);
-        }
-        */
 
         Self {
             libs,
@@ -469,6 +448,8 @@ pub(crate) struct LibraryInner {
     vars: HashMap<Identifier, Gc<Value>>,
     keywords: HashMap<Identifier, Keyword>,
     special_keywords: HashMap<Identifier, SpecialKeyword>,
+    // TODO: Needs to be a struct so we can implement an empty Trace
+    // invocation_fns: Box<[InvocationFn]>,
 }
 
 impl LibraryInner {
@@ -496,6 +477,7 @@ impl LibraryInner {
             vars: HashMap::default(),
             keywords: HashMap::default(),
             special_keywords: HashMap::default(),
+            // invocation_fns: Box::new([]),
         }
     }
 }
@@ -512,6 +494,14 @@ pub enum LibraryKind {
     /// A program has a path
     Program { path: PathBuf },
 }
+
+/*
+struct InvocationsFuncs {
+    
+}
+
+type InvocationFn = fn(&mut LibraryInner);
+*/
 
 #[derive(Trace, Debug)]
 pub struct Import {
