@@ -177,6 +177,14 @@ impl_into_condition_for!(std::num::TryFromIntError);
 
 pub struct Condition2(Value);
 
+impl Condition2 {
+    pub fn syntax(form: Syntax, subform: Option<Syntax>) -> Self {
+        Self(Value::from(Record::from_rust_type(SyntaxViolation::new(
+            form, subform,
+        ))))
+    }
+}
+
 impl From<SimpleCondition> for Condition2 {
     fn from(simple: SimpleCondition) -> Self {
         Self(Value::from(Record::from_rust_type(simple)))
@@ -225,6 +233,12 @@ impl SchemeCompatible for Warning {
 #[derive(Clone, Debug, Trace)]
 pub struct Serious(Gc<SimpleCondition>);
 
+impl Serious {
+    pub fn new() -> Self {
+        Self(Gc::new(SimpleCondition))
+    }
+}
+
 impl SchemeCompatible for Serious {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!("&serious", parent: SimpleCondition::rtd())
@@ -251,7 +265,10 @@ impl SchemeCompatible for Message {
         rtd!("&message", parent: SimpleCondition::rtd())
     }
 
-    fn extract_embedded_record(&self, rtd: &Arc<RecordTypeDescriptor>) -> Option<Gc<dyn SchemeCompatible>> {
+    fn extract_embedded_record(
+        &self,
+        rtd: &Arc<RecordTypeDescriptor>,
+    ) -> Option<Gc<dyn SchemeCompatible>> {
         SimpleCondition::rtd()
             .is_subtype_of(rtd)
             .then(|| into_scheme_compatible(self.parent.clone()))
@@ -260,6 +277,12 @@ impl SchemeCompatible for Message {
 
 #[derive(Clone, Debug, Trace)]
 pub struct Violation(Gc<Serious>);
+
+impl Violation {
+    pub fn new() -> Self {
+        Self(Gc::new(Serious::new()))
+    }
+}
 
 impl SchemeCompatible for Violation {
     fn rtd() -> Arc<RecordTypeDescriptor> {
@@ -278,9 +301,21 @@ impl SchemeCompatible for Violation {
 
 #[derive(Clone, Debug, Trace)]
 pub struct SyntaxViolation {
-    parent: Gc<Serious>,
+    parent: Gc<Violation>,
     form: Value,
     subform: Value,
+}
+
+impl SyntaxViolation {
+    fn new(form: Syntax, subform: Option<Syntax>) -> Self {
+        Self {
+            parent: Gc::new(Violation::new()),
+            form: Value::from(form),
+            subform: subform
+                .map(Value::from)
+                .unwrap_or_else(|| Value::from(false)),
+        }
+    }
 }
 
 impl SchemeCompatible for SyntaxViolation {
@@ -298,11 +333,19 @@ impl SchemeCompatible for SyntaxViolation {
     }
 }
 
+#[derive(Clone, Debug, Trace)]
+pub struct CompoundCondition(Vec<Value>);
+
+impl SchemeCompatible for CompoundCondition {
+    fn rtd() -> Arc<RecordTypeDescriptor> {
+        rtd!("&compound-condition")
+    }
+}
+
 #[derive(Debug, Clone, Trace)]
 pub struct Frame {
     pub proc: Symbol,
     pub call_site_span: Option<Arc<Span>>,
-    // pub repeated: usize,
 }
 
 impl Frame {
@@ -310,7 +353,6 @@ impl Frame {
         Self {
             proc,
             call_site_span,
-            // repeated: 0,
         }
     }
 }
@@ -468,7 +510,7 @@ fn exit_winders(from_extent: &DynamicWind, to_extent: &DynamicWind) -> Value {
             return Value::null();
         };
 
-        if !Gc::ptr_eq(&from_first.1.0, &to_first.1.0) {
+        if !Gc::ptr_eq(&from_first.1 .0, &to_first.1 .0) {
             break;
         }
 
