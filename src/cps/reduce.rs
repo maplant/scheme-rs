@@ -6,7 +6,7 @@ use super::*;
 impl Cps {
     pub(super) fn reduce(self) -> Self {
         // Perform beta reduction twice. This seems like the sweet spot for now
-        let mut uses_cache = AHashMap::default();
+        let mut uses_cache = HashMap::default();
         self.beta_reduction(&mut uses_cache)
             .beta_reduction(&mut uses_cache)
             .dead_code_elimination(&mut uses_cache)
@@ -21,7 +21,7 @@ impl Cps {
     ///
     /// The uses analysis cache is absolutely demolished and dangerous to use by
     /// the end of this function.
-    fn beta_reduction(self, uses_cache: &mut AHashMap<Local, AHashMap<Local, usize>>) -> Self {
+    fn beta_reduction(self, uses_cache: &mut HashMap<Local, HashMap<Local, usize>>) -> Self {
         match self {
             Cps::PrimOp(prim_op, values, result, cexp) => Cps::PrimOp(
                 prim_op,
@@ -76,7 +76,7 @@ impl Cps {
         func: Local,
         args: &ClosureArgs,
         func_body: &Cps,
-        uses_cache: &mut AHashMap<Local, AHashMap<Local, usize>>,
+        uses_cache: &mut HashMap<Local, HashMap<Local, usize>>,
     ) -> bool {
         let new = match self {
             Cps::PrimOp(_, _, _, cexp) => {
@@ -97,7 +97,7 @@ impl Cps {
                 return reduced;
             }
             Cps::App(Value::Var(Var::Local(operator)), applied, _) if *operator == func => {
-                let substitutions: AHashMap<_, _> =
+                let substitutions: HashMap<_, _> =
                     args.iter().copied().zip(applied.iter().cloned()).collect();
                 let mut body = func_body.clone();
                 body.substitute(&substitutions);
@@ -111,10 +111,7 @@ impl Cps {
 
     /// Removes any closures and allocated cells that are left unused.
     #[allow(dead_code)]
-    fn dead_code_elimination(
-        self,
-        uses_cache: &mut AHashMap<Local, AHashMap<Local, usize>>,
-    ) -> Self {
+    fn dead_code_elimination(self, uses_cache: &mut HashMap<Local, HashMap<Local, usize>>) -> Self {
         match self {
             Cps::Lambda { val, cexp, .. } if !cexp.uses(uses_cache).contains_key(&val) => {
                 // Unused closure can be eliminated

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::{exception::Condition, num::Number, registry::bridge, value::Value};
+use crate::{exceptions::Condition, num::Number, registry::bridge, value::Value};
 use unicode_categories::UnicodeCategories;
 
 mod unicode;

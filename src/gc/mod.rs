@@ -36,8 +36,8 @@ use std::{
 
 /// A Garbage-Collected smart pointer with interior mutability.
 pub struct Gc<T: ?Sized> {
-    ptr: NonNull<GcInner<T>>,
-    marker: PhantomData<GcInner<T>>,
+    pub(crate) ptr: NonNull<GcInner<T>>,
+    pub(crate) marker: PhantomData<GcInner<T>>,
 }
 
 #[allow(private_bounds)]

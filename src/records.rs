@@ -3,13 +3,16 @@
 use std::{
     any::Any,
     fmt,
+    mem::ManuallyDrop,
+    ptr::NonNull,
     sync::{Arc, LazyLock},
 };
 
 use by_address::ByAddress;
+use futures::future::BoxFuture;
 
 use crate::{
-    exception::{Condition, ExceptionHandler},
+    exceptions::{Condition, ExceptionHandler, ExceptionHandlerInner},
     gc::{Gc, GcInner, Trace},
     num::Number,
     proc::{Application, Closure, DynamicWind, FuncPtr},
@@ -24,20 +27,64 @@ use crate::{
 #[derive(Debug, Trace, Clone)]
 #[repr(align(16))]
 pub struct RecordTypeDescriptor {
-    name: String, // Make Arc<AlignedString>?
-    sealed: bool,
-    opaque: bool,
-    opaque_parent_constructor: Option<OpaqueParentConstructor>,
+    pub name: String, // Make Arc<AlignedString>?
+    pub sealed: bool,
+    pub opaque: bool,
+    pub opaque_parent_constructor: Option<OpaqueParentConstructor>,
     /// Parent is most recently inserted record type, if one exists.
-    inherits: indexmap::IndexSet<ByAddress<Arc<RecordTypeDescriptor>>>,
-    field_index_offset: usize,
-    fields: Vec<Field>,
+    pub inherits: indexmap::IndexSet<ByAddress<Arc<RecordTypeDescriptor>>>,
+    pub field_index_offset: usize,
+    pub fields: Vec<Field>,
 }
 
 impl RecordTypeDescriptor {
     pub fn is_base_record_type(&self) -> bool {
         self.inherits.is_empty()
     }
+
+    pub fn is_subtype_of(self: &Arc<Self>, rtd: &Arc<Self>) -> bool {
+        Arc::ptr_eq(self, rtd) || self.inherits.contains(&ByAddress(rtd.clone()))
+    }
+}
+
+#[macro_export]
+macro_rules! rtd {
+    ( $name:literal ) => {{
+        static RTD: std::sync::LazyLock<Arc<RecordTypeDescriptor>> =
+            std::sync::LazyLock::new(|| {
+                // TODO: All the other stuff
+                Arc::new(RecordTypeDescriptor {
+                    name: $name.to_string(),
+                    sealed: true,
+                    opaque: false,
+                    opaque_parent_constructor: None,
+                    inherits: indexmap::IndexSet::new(),
+                    field_index_offset: 0,
+                    fields: Vec::new(),
+                })
+            });
+        RTD.clone()
+    }};
+
+    ( $name:literal, parent: $parent:expr ) => {{
+        static RTD: std::sync::LazyLock<Arc<RecordTypeDescriptor>> =
+            std::sync::LazyLock::new(|| {
+                let parent = $parent.clone();
+                let mut inherits = parent.inherits.clone();
+                inherits.insert(::by_address::ByAddress(parent));
+                // TODO: All the other stuff
+                Arc::new(RecordTypeDescriptor {
+                    name: $name.to_string(),
+                    sealed: true,
+                    opaque: false,
+                    opaque_parent_constructor: None,
+                    inherits,
+                    field_index_offset: 0,
+                    fields: Vec::new(),
+                })
+            });
+        RTD.clone()
+    }};
 }
 
 #[derive(Debug, Trace, Clone)]
@@ -55,7 +102,9 @@ impl Field {
         match &*mutability.to_str() {
             "mutable" => Ok(Field::Mutable(field_name)),
             "immutable" => Ok(Field::Immutable(field_name)),
-            _ => Err(Condition::Error),
+            _ => Err(Condition::error(
+                "mutability specifier must be mutable or immutable".to_string(),
+            )),
         }
     }
 
@@ -126,11 +175,17 @@ pub async fn record_type_descriptor_pred(obj: &Value) -> Result<Vec<Value>, Cond
     )])
 }
 
-#[derive(Trace, Clone)]
+#[derive(Trace, Clone, Debug)]
 pub struct RecordConstructorDescriptor {
     parent: Option<Gc<RecordConstructorDescriptor>>,
     rtd: Arc<RecordTypeDescriptor>,
     protocol: Closure,
+}
+
+impl SchemeCompatible for RecordConstructorDescriptor {
+    fn rtd() -> Arc<RecordTypeDescriptor> {
+        rtd!("record-constructor-descriptor")
+    }
 }
 
 fn make_default_record_constructor_descriptor(
@@ -167,7 +222,7 @@ pub async fn make_record_constructor_descriptor(
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
-    exception_handler: &Option<Gc<ExceptionHandler>>,
+    exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let cont: Closure = cont.clone().try_into()?;
@@ -180,12 +235,7 @@ pub async fn make_record_constructor_descriptor(
         let Some(parent_rtd) = rtd.inherits.last() else {
             return Err(Condition::error("RTD is a base type".to_string()));
         };
-        let any: Gc<Gc<dyn Any>> = parent_rcd.clone().try_into()?;
-        let parent_rcd: Gc<RecordConstructorDescriptor> = any
-            .read()
-            .clone()
-            .downcast()
-            .map_err(|_| Condition::Error)?;
+        let parent_rcd = parent_rcd.try_into_rust_type::<RecordConstructorDescriptor>()?;
         if !Arc::ptr_eq(&parent_rcd.read().rtd, parent_rtd) {
             return Err(Condition::error(
                 "Parent RTD does not match parent RCD".to_string(),
@@ -223,7 +273,7 @@ pub async fn make_record_constructor_descriptor(
 
     Ok(Application::new(
         cont,
-        vec![Value::from(Gc::new(Gc::into_any(Gc::new(rcd))))],
+        vec![Value::from(Record::from_rust_type(rcd))],
         exception_handler.clone(),
         dynamic_wind.clone(),
         None,
@@ -241,20 +291,14 @@ pub async fn record_constructor(
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
-    exception_handler: &Option<Gc<ExceptionHandler>>,
+    exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let cont: Closure = cont.clone().try_into()?;
     let [rcd] = args else {
         unreachable!();
     };
-    let rcd = {
-        let any: Gc<Gc<dyn Any>> = rcd.clone().try_into()?;
-        any.read()
-            .clone()
-            .downcast()
-            .map_err(|_| Condition::Error)?
-    };
+    let rcd = rcd.try_into_rust_type::<RecordConstructorDescriptor>()?;
 
     let (protocols, rtds) = rcd_to_protocols_and_rtds(&rcd);
 
@@ -300,7 +344,7 @@ pub(crate) unsafe extern "C" fn chain_protocols(
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
     args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandler>,
+    exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Application {
     unsafe {
@@ -357,7 +401,7 @@ async fn chain_constructors(
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
-    exception_handler: &Option<Gc<ExceptionHandler>>,
+    exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let cont: Closure = cont.clone().try_into()?;
@@ -408,7 +452,7 @@ async fn constructor(
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
-    exception_handler: &Option<Gc<ExceptionHandler>>,
+    exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let cont: Closure = cont.clone().try_into()?;
@@ -420,11 +464,11 @@ async fn constructor(
         .map(|var| var.read().clone())
         .chain(args.iter().cloned())
         .collect::<Vec<_>>();
-    let record = Value::from(Gc::new(Record {
+    let record = Value::from(Record(Gc::new(RecordInner {
         opaque_parent: None,
         rtd,
         fields,
-    }));
+    })));
     Ok(Application::new(
         cont,
         vec![record],
@@ -441,7 +485,7 @@ async fn default_protocol(
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
-    exception_handler: &Option<Gc<ExceptionHandler>>,
+    exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let cont: Closure = cont.clone().try_into()?;
@@ -474,7 +518,7 @@ async fn default_protocol_constructor(
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
-    exception_handler: &Option<Gc<ExceptionHandler>>,
+    exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let cont: Closure = cont.clone().try_into()?;
@@ -512,7 +556,7 @@ pub(crate) unsafe extern "C" fn call_constructor_continuation(
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
     args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandler>,
+    exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Application {
     unsafe {
@@ -539,19 +583,107 @@ pub(crate) unsafe extern "C" fn call_constructor_continuation(
 
 /// A Scheme record type. Effectively a tuple of a fixed size array and some type
 /// information.
-#[derive(Debug, Trace, Clone)]
+#[derive(Trace, Clone)]
+pub struct Record(pub(crate) Gc<RecordInner>);
+
+impl Record {
+    /// Convert any Rust type that implements [SchemeCompatible] into an opaque
+    /// record.
+    pub fn from_rust_type<T: SchemeCompatible>(t: T) -> Self {
+        let opaque_parent = Some(into_scheme_compatible(Gc::new(t)));
+        let rtd = T::rtd();
+        Self(Gc::new(RecordInner {
+            opaque_parent,
+            rtd,
+            fields: Vec::new(),
+        }))
+    }
+
+    /// Attempt to convert the record into a Rust type that implements
+    /// [SchemeCompatible].
+    pub fn try_into_rust_type<T: SchemeCompatible>(&self) -> Option<Gc<T>> {
+        let Some(ref opaque_parent) = self.0.read().opaque_parent else {
+            return None;
+        };
+
+        // Attempt to extract any embedded records
+        let rtd = T::rtd();
+        let mut t = opaque_parent.clone();
+        while let Some(embedded) = { t.read().extract_embedded_record(&rtd) } {
+            t = embedded;
+        }
+
+        let t = ManuallyDrop::new(t);
+
+        // Second, convert the opaque_parent type into a Gc<dyn Any>
+        let any: NonNull<GcInner<dyn Any>> = t.ptr;
+        let gc_any = Gc {
+            ptr: any,
+            marker: std::marker::PhantomData,
+        };
+
+        // Then, convert that back into the desired type
+        match Gc::downcast::<T>(gc_any) {
+            Ok(t) => Some(t),
+            Err(_) => None,
+        }
+    }
+}
+
+impl fmt::Debug for Record {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.read().fmt(f)
+    }
+}
+
+#[derive(Trace, Clone)]
 #[repr(align(16))]
-pub struct Record {
+pub(crate) struct RecordInner {
     pub(crate) opaque_parent: Option<Gc<dyn SchemeCompatible>>,
     pub(crate) rtd: Arc<RecordTypeDescriptor>,
     pub(crate) fields: Vec<Value>,
 }
 
+impl fmt::Debug for RecordInner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<{}", self.rtd.name)?;
+        if let Some(parent) = &self.opaque_parent {
+            write!(f, "{parent:?}")?;
+        }
+        for field in &self.fields {
+            write!(f, " {field:?}")?;
+        }
+        write!(f, ">")
+    }
+}
+
 /// A Rust value that can present itself as a Scheme record.
-pub trait SchemeCompatible: fmt::Debug + fmt::Display + Trace {
+pub trait SchemeCompatible: fmt::Debug + Trace + Any {
     /// The Record Type Descriptor of the value. Can be constructed at runtime,
     /// but cannot change.
-    fn rtd(&self) -> Arc<RecordTypeDescriptor>;
+    fn rtd() -> Arc<RecordTypeDescriptor>
+    where
+        Self: Sized;
+
+    /// Extract the embedded record type with the matching record type
+    /// descriptor if it exists.
+    fn extract_embedded_record(
+        &self,
+        _rtd: &Arc<RecordTypeDescriptor>,
+    ) -> Option<Gc<dyn SchemeCompatible>> {
+        None
+    }
+}
+
+pub fn into_scheme_compatible(t: Gc<impl SchemeCompatible>) -> Gc<dyn SchemeCompatible> {
+    // Convert t into a Gc<dyn SchemeCompatible>. This has to be done
+    // manually since [CoerceUnsized] is unstable.
+    let t = ManuallyDrop::new(t);
+    let any: NonNull<GcInner<dyn SchemeCompatible>> = t.ptr;
+    Gc {
+        ptr: any,
+        marker: std::marker::PhantomData,
+    }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -561,7 +693,8 @@ pub struct OpaqueParentConstructor {
     _constructor: ParentConstructor,
 }
 
-type ParentConstructor = fn(&[Value]) -> Result<Gc<dyn SchemeCompatible>, Condition>;
+type ParentConstructor =
+    for<'a> fn(&'a [Value]) -> BoxFuture<'a, Result<Gc<dyn SchemeCompatible>, Condition>>;
 
 unsafe impl Trace for OpaqueParentConstructor {
     unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(crate::gc::OpaqueGcPtr)) {}
@@ -571,7 +704,7 @@ pub fn is_subtype_of(val: &Value, rt: &Value) -> Result<bool, Condition> {
     let UnpackedValue::Record(rec) = val.clone().unpack() else {
         return Ok(false);
     };
-    let rec_read = rec.read();
+    let rec_read = rec.0.read();
     let rt: Arc<RecordTypeDescriptor> = rt.clone().try_into()?;
     Ok(Arc::ptr_eq(&rec_read.rtd, &rt) || rec_read.rtd.inherits.contains(&ByAddress::from(rt)))
 }
@@ -583,7 +716,7 @@ async fn record_predicate_fn(
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
-    exception_handler: &Option<Gc<ExceptionHandler>>,
+    exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let cont: Closure = cont.clone().try_into()?;
@@ -611,7 +744,7 @@ pub async fn record_predicate(
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
-    exception_handler: &Option<Gc<ExceptionHandler>>,
+    exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let cont: Closure = cont.clone().try_into()?;
@@ -644,14 +777,14 @@ async fn record_accessor_fn(
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
-    exception_handler: &Option<Gc<ExceptionHandler>>,
+    exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let cont: Closure = cont.clone().try_into()?;
     let [val] = args else {
         unreachable!();
     };
-    let record: Gc<Record> = val.clone().try_into()?;
+    let record: Record = val.clone().try_into()?;
     // RTD is the first environment variable, field index is the second
     if !is_subtype_of(val, &env[0].read())? {
         return Err(Condition::error(
@@ -660,7 +793,7 @@ async fn record_accessor_fn(
     }
     let k: Arc<Number> = env[1].read().clone().try_into()?;
     let k: usize = k.as_ref().try_into().map_err(Condition::from)?;
-    let val = record.read().fields[k].clone();
+    let val = record.0.read().fields[k].clone();
     Ok(Application::new(
         cont,
         vec![val],
@@ -681,7 +814,7 @@ pub async fn record_accessor(
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
-    exception_handler: &Option<Gc<ExceptionHandler>>,
+    exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let cont: Closure = cont.clone().try_into()?;
@@ -692,7 +825,10 @@ pub async fn record_accessor(
     let k: Arc<Number> = k.clone().try_into()?;
     let k: usize = k.as_ref().try_into().map_err(Condition::from)?;
     if k > rtd.fields.len() {
-        return Err(Condition::Assertion);
+        return Err(Condition::error(format!(
+            "{k} is out of range {}",
+            rtd.fields.len()
+        )));
     }
     let k = k + rtd.field_index_offset;
     let accessor_fn = Closure::new(
@@ -723,14 +859,14 @@ async fn record_mutator_fn(
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
-    exception_handler: &Option<Gc<ExceptionHandler>>,
+    exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let cont: Closure = cont.clone().try_into()?;
     let [rec, new_val] = args else {
         unreachable!();
     };
-    let record: Gc<Record> = rec.clone().try_into()?;
+    let record: Record = rec.clone().try_into()?;
     // RTD is the first environment variable, field index is the second
     if !is_subtype_of(rec, &env[0].read())? {
         return Err(Condition::error(
@@ -739,7 +875,7 @@ async fn record_mutator_fn(
     }
     let k: Arc<Number> = env[1].read().clone().try_into()?;
     let k: usize = k.as_ref().try_into().map_err(Condition::from)?;
-    record.write().fields[k] = new_val.clone();
+    record.0.write().fields[k] = new_val.clone();
     Ok(Application::new(
         cont,
         vec![],
@@ -760,7 +896,7 @@ pub async fn record_mutator(
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
-    exception_handler: &Option<Gc<ExceptionHandler>>,
+    exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let cont: Closure = cont.clone().try_into()?;
@@ -770,8 +906,14 @@ pub async fn record_mutator(
     let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
     let k: Arc<Number> = k.clone().try_into()?;
     let k: usize = k.as_ref().try_into().map_err(Condition::from)?;
-    if k > rtd.fields.len() || matches!(rtd.fields[k], Field::Immutable(_)) {
-        return Err(Condition::Assertion);
+    if k > rtd.fields.len() {
+        return Err(Condition::error(format!(
+            "{k} is out of range {}",
+            rtd.fields.len()
+        )));
+    }
+    if matches!(rtd.fields[k], Field::Immutable(_)) {
+        return Err(Condition::error(format!("{k} is immutable")));
     }
     let k = k + rtd.field_index_offset;
     let mutator_fn = Closure::new(

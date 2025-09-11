@@ -9,7 +9,7 @@ use scheme_rs::{
     ast::{DefinitionBody, ImportSet, ParseAstError},
     cps::Compile,
     env::Environment,
-    exception::Exception,
+    exceptions::{Exception, ExceptionHandler},
     lex::LexError,
     parse::ParseSyntaxError,
     proc::{Application, DynamicWind},
@@ -120,9 +120,15 @@ async fn compile_and_run_str<'e>(
         let expr = DefinitionBody::parse(runtime, &[sexpr], &env, &span).await?;
         let compiled = expr.compile_top_level();
         let closure = runtime.compile_expr(compiled).await;
-        let result = Application::new(closure, Vec::new(), None, DynamicWind::default(), None)
-            .eval()
-            .await?;
+        let result = Application::new(
+            closure,
+            Vec::new(),
+            ExceptionHandler::default(),
+            DynamicWind::default(),
+            None,
+        )
+        .eval()
+        .await?;
         output.extend(result)
     }
     Ok(output)

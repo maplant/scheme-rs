@@ -8,7 +8,7 @@ use std::{
 
 use scheme_rs_macros::bridge;
 
-use crate::{exception::Condition, value::Value};
+use crate::{exceptions::Condition, value::Value};
 
 #[repr(align(16))]
 pub struct AlignedString(pub String);

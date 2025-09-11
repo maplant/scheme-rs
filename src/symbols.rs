@@ -8,7 +8,7 @@ use std::{
 use indexmap::IndexSet;
 use scheme_rs_macros::{Trace, bridge};
 
-use crate::{exception::Condition, strings, value::Value};
+use crate::{exceptions::Condition, strings, value::Value};
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Trace)]
 pub struct Symbol(pub(crate) u32);

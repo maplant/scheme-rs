@@ -1,13 +1,12 @@
 //! Cranelift Codegen from CPS.
 
-use ahash::AHashMap;
 use cranelift::{
     codegen::ir::{StackSlot, entities::Value},
     prelude::*,
 };
 use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Linkage, Module};
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use crate::{
     cps::{Value as CpsValue, analysis::MaxDrops},
@@ -25,7 +24,7 @@ enum IrValue {
 }
 
 struct Rebinds {
-    rebinds: AHashMap<Var, IrValue>,
+    rebinds: HashMap<Var, IrValue>,
 }
 
 impl Rebinds {
@@ -41,7 +40,7 @@ impl Rebinds {
 
     fn new() -> Self {
         Self {
-            rebinds: AHashMap::default(),
+            rebinds: HashMap::default(),
         }
     }
 }
@@ -922,7 +921,7 @@ impl ClosureBundle {
 
         let env = body
             .free_variables()
-            .difference(&args.iter().cloned().collect::<AHashSet<_>>())
+            .difference(&args.iter().cloned().collect::<HashSet<_>>())
             .cloned()
             .collect::<Vec<_>>();
         let globals = body.globals().into_iter().collect::<Vec<_>>();
