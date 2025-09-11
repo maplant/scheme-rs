@@ -313,7 +313,7 @@ pub async fn vector_copy_to(
 #[bridge(name = "vector-append", lib = "(rnrs base builtins (6))")]
 pub async fn vector_append(args: &[Value]) -> Result<Vec<Value>, Condition> {
     if args.is_empty() {
-        return Err(Condition::wrong_num_of_variadic_args(1..usize::MAX, 0));
+        return Err(Condition::wrong_num_of_var_args(1..usize::MAX, 0));
     }
 
     Ok(vec![Value::from(

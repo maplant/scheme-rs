@@ -7,7 +7,7 @@ use crate::{
     gc::{Gc, GcInner, Trace},
     lists,
     proc::{Application, Closure, DynamicWind, FuncPtr},
-    records::{into_scheme_compatible, Record, RecordTypeDescriptor, SchemeCompatible},
+    records::{Record, RecordTypeDescriptor, SchemeCompatible, into_scheme_compatible},
     rtd,
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
@@ -49,109 +49,137 @@ impl fmt::Display for Exception {
 
 impl StdError for Exception {}
 
-#[derive(Debug, Clone, Trace)]
-pub enum Condition {
-    Condition,
-    Message { message: String },
-    Warning,
-    Serious,
-    Error,
-    Violation,
-    Assertion,
-    NonContinuable,
-    ImplementationRestriction,
-    Lexical,
-    Syntax { form: Value, subform: Value },
-    Undefined,
-    Irritants { irritants: Value },
-    Who { who: Value },
-    CompoundCondition { simple_conditions: Vec<Value> },
-}
-
-impl Condition {
-    pub fn error(message: String) -> Self {
-        Self::Message { message }
-    }
-
-    pub fn syntax_error(form: Syntax, subform: Option<Syntax>) -> Self {
-        Self::Syntax {
-            form: Value::from(form),
-            subform: subform
-                .map(Value::from)
-                .unwrap_or_else(|| Value::from(false)),
-        }
-    }
-
-    pub fn assert_eq_failed(expected: &str, actual: &str) -> Self {
-        Self::error(format!(
-            "Assertion failed, expected: {expected}, actual: {actual}"
-        ))
-    }
-
-    pub fn undefined_variable(ident: Identifier) -> Self {
-        Self::error(format!("Undefined variable {}", ident.sym))
-    }
-
-    pub fn invalid_type(expected: &str, provided: &str) -> Self {
-        Self::error(format!(
-            "Expected value of type {expected}, provided {provided}"
-        ))
-    }
-
-    pub fn invalid_operator_type(provided: &str) -> Self {
-        Self::error(format!(
-            "Invalid operator, expected procedure, provided {provided}"
-        ))
-    }
-
-    pub fn invalid_index(index: usize, len: usize) -> Self {
-        Self::error(format!(
-            "Invalid index of {index} into collection of size {len}"
-        ))
-    }
-    pub fn invalid_range(range: Range<usize>, len: usize) -> Self {
-        Self::error(format!(
-            "Invalid range of {range:?} into collection of size {len}"
-        ))
-    }
-
-    pub fn wrong_num_of_unicode_chars(expected: usize, provided: usize) -> Self {
-        Self::error(format!(
-            "Expected to receive {expected} unicode characters from transform, received {provided}"
-        ))
-    }
-
-    pub fn wrong_num_of_args(expected: usize, provided: usize) -> Self {
-        Self::error(format!(
-            "Expected {expected} arguments, provided {provided}"
-        ))
-    }
-    pub fn wrong_num_of_variadic_args(expected: Range<usize>, provided: usize) -> Self {
-        Self::error(format!(
-            "Expected {expected:?} arguments, provided {provided}"
-        ))
-    }
-}
-
 impl fmt::Display for Condition {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        <Self as fmt::Debug>::fmt(self, f)
-    }
-}
-
-impl SchemeCompatible for Condition {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
-        todo!()
+        <Value as fmt::Debug>::fmt(&self.0, f)
     }
 }
 
 impl From<Exception> for Condition {
     fn from(e: Exception) -> Self {
         // For now just drop the back trace:
-        let Ok(v) = Gc::<Self>::try_from(e.obj) else {
-            return Condition::Error;
-        };
-        v.read().clone()
+        Self(e.obj)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Condition(pub Value);
+
+impl Condition {
+    pub fn error(message: String) -> Self {
+        Self(Value::from(Record::from_rust_type(
+            CompoundCondition::from((Assertion::new(), Message::new(message))),
+        )))
+    }
+
+    pub fn syntax(form: Syntax, subform: Option<Syntax>) -> Self {
+        Self(Value::from(Record::from_rust_type(SyntaxViolation::new(
+            form, subform,
+        ))))
+    }
+
+    pub fn undefined(ident: Identifier) -> Self {
+        Self(Value::from(Record::from_rust_type(
+            CompoundCondition::from((
+                Undefined::new(),
+                Message::new(format!("Undefined variable {}", ident.sym)),
+            )),
+        )))
+    }
+
+    pub fn type_error(expected: &str, provided: &str) -> Self {
+        Self(Value::from(Record::from_rust_type(
+            CompoundCondition::from((
+                Assertion::new(),
+                Message::new(format!(
+                    "Expected value of type {expected}, provided {provided}"
+                )),
+            )),
+        )))
+    }
+
+    pub fn invalid_operator(provided: &str) -> Self {
+        Self(Value::from(Record::from_rust_type(
+            CompoundCondition::from((
+                Assertion::new(),
+                Message::new(format!(
+                    "Invalid operator, expected procedure, provided {provided}"
+                )),
+            )),
+        )))
+    }
+
+    pub fn invalid_index(index: usize, len: usize) -> Self {
+        Self(Value::from(Record::from_rust_type(
+            CompoundCondition::from((
+                Assertion::new(),
+                Message::new(format!(
+                    "Invalid index of {index} into collection of size {len}"
+                )),
+            )),
+        )))
+    }
+
+    pub fn invalid_range(range: Range<usize>, len: usize) -> Self {
+        Self(Value::from(Record::from_rust_type(
+            CompoundCondition::from((
+                Assertion::new(),
+                Message::new(format!(
+                    "Invalid range of {range:?} into collection of size {len}"
+                )),
+            )),
+        )))
+    }
+
+    pub fn wrong_num_of_unicode_chars(expected: usize, provided: usize) -> Self {
+        Self(Value::from(Record::from_rust_type(
+            CompoundCondition::from((
+                Assertion::new(),
+                Message::new(format!(
+                    "Expected to receive {expected} unicode characters from transform, received {provided}"
+                )),
+            )),
+        )))
+    }
+
+    pub fn wrong_num_of_args(expected: usize, provided: usize) -> Self {
+        Self(Value::from(Record::from_rust_type(
+            CompoundCondition::from((
+                Assertion::new(),
+                Message::new(format!(
+                    "Expected {expected} arguments, provided {provided}"
+                )),
+            )),
+        )))
+    }
+
+    pub fn wrong_num_of_var_args(expected: Range<usize>, provided: usize) -> Self {
+        Self(Value::from(Record::from_rust_type(
+            CompoundCondition::from((
+                Assertion::new(),
+                Message::new(format!(
+                    "Expected {expected:?} arguments, provided {provided}"
+                )),
+            )),
+        )))
+    }
+}
+
+impl From<SimpleCondition> for Condition {
+    fn from(simple: SimpleCondition) -> Self {
+        Self(Value::from(Record::from_rust_type(simple)))
+    }
+}
+
+impl From<Warning> for Condition {
+    fn from(warning: Warning) -> Self {
+        Self(Value::from(Record::from_rust_type(warning)))
+    }
+}
+
+impl From<Serious> for Condition {
+    fn from(serious: Serious) -> Self {
+        Self(Value::from(Record::from_rust_type(serious)))
     }
 }
 
@@ -175,36 +203,14 @@ impl_into_condition_for!(Box<crate::num::ArithmeticError>);
 impl_into_condition_for!(crate::num::NumberToUsizeError);
 impl_into_condition_for!(std::num::TryFromIntError);
 
-pub struct Condition2(Value);
-
-impl Condition2 {
-    pub fn syntax(form: Syntax, subform: Option<Syntax>) -> Self {
-        Self(Value::from(Record::from_rust_type(SyntaxViolation::new(
-            form, subform,
-        ))))
-    }
-}
-
-impl From<SimpleCondition> for Condition2 {
-    fn from(simple: SimpleCondition) -> Self {
-        Self(Value::from(Record::from_rust_type(simple)))
-    }
-}
-
-impl From<Warning> for Condition2 {
-    fn from(warning: Warning) -> Self {
-        Self(Value::from(Record::from_rust_type(warning)))
-    }
-}
-
-impl From<Serious> for Condition2 {
-    fn from(serious: Serious) -> Self {
-        Self(Value::from(Record::from_rust_type(serious)))
-    }
-}
-
 #[derive(Copy, Clone, Debug, Trace)]
 pub struct SimpleCondition;
+
+impl SimpleCondition {
+    pub fn new() -> Self {
+        Self
+    }
+}
 
 impl SchemeCompatible for SimpleCondition {
     fn rtd() -> Arc<RecordTypeDescriptor> {
@@ -254,10 +260,19 @@ impl SchemeCompatible for Serious {
     }
 }
 
-#[derive(Clone, Debug, Trace)]
+#[derive(Clone, Trace)]
 pub struct Message {
     parent: Gc<SimpleCondition>,
     message: String,
+}
+
+impl Message {
+    pub fn new(message: String) -> Self {
+        Self {
+            parent: Gc::new(SimpleCondition::new()),
+            message,
+        }
+    }
 }
 
 impl SchemeCompatible for Message {
@@ -275,7 +290,14 @@ impl SchemeCompatible for Message {
     }
 }
 
-#[derive(Clone, Debug, Trace)]
+impl fmt::Debug for Message {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, " ")?;
+        self.message.fmt(f)
+    }
+}
+
+#[derive(Clone, Trace)]
 pub struct Violation(Gc<Serious>);
 
 impl Violation {
@@ -294,6 +316,30 @@ impl SchemeCompatible for Violation {
         rtd: &Arc<RecordTypeDescriptor>,
     ) -> Option<Gc<dyn SchemeCompatible>> {
         Serious::rtd()
+            .is_subtype_of(rtd)
+            .then(|| into_scheme_compatible(self.0.clone()))
+    }
+}
+
+#[derive(Clone, Trace)]
+pub struct Assertion(Gc<Serious>);
+
+impl Assertion {
+    pub fn new() -> Self {
+        Assertion(Gc::new(Serious::new()))
+    }
+}
+
+impl SchemeCompatible for Assertion {
+    fn rtd() -> Arc<RecordTypeDescriptor> {
+        rtd!("&assertion", parent: Violation::rtd())
+    }
+
+    fn extract_embedded_record(
+        &self,
+        rtd: &Arc<RecordTypeDescriptor>,
+    ) -> Option<Gc<dyn SchemeCompatible>> {
+        Violation::rtd()
             .is_subtype_of(rtd)
             .then(|| into_scheme_compatible(self.0.clone()))
     }
@@ -333,14 +379,90 @@ impl SchemeCompatible for SyntaxViolation {
     }
 }
 
-#[derive(Clone, Debug, Trace)]
+#[derive(Clone, Trace)]
+pub struct Undefined(Gc<Violation>);
+
+impl Undefined {
+    pub fn new() -> Self {
+        Self(Gc::new(Violation::new()))
+    }
+}
+
+impl SchemeCompatible for Undefined {
+    fn rtd() -> Arc<RecordTypeDescriptor> {
+        rtd!("&undefined", parent: Violation::rtd())
+    }
+
+    fn extract_embedded_record(
+        &self,
+        rtd: &Arc<RecordTypeDescriptor>,
+    ) -> Option<Gc<dyn SchemeCompatible>> {
+        Violation::rtd()
+            .is_subtype_of(rtd)
+            .then(|| into_scheme_compatible(self.0.clone()))
+    }
+}
+
+#[derive(Clone, Trace)]
 pub struct CompoundCondition(Vec<Value>);
 
 impl SchemeCompatible for CompoundCondition {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!("&compound-condition")
+        rtd!("compound-condition")
     }
 }
+
+impl fmt::Debug for CompoundCondition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for cond in self.0.iter() {
+            write!(f, " ")?;
+            cond.fmt(f)?;
+        }
+        Ok(())
+    }
+}
+
+impl<A, B> From<(A, B)> for CompoundCondition
+where
+    A: SchemeCompatible,
+    B: SchemeCompatible,
+{
+    fn from(value: (A, B)) -> Self {
+        Self(vec![
+            Value::from(Record::from_rust_type(value.0)),
+            Value::from(Record::from_rust_type(value.1)),
+        ])
+    }
+}
+
+impl<A, B, C> From<(A, B, C)> for CompoundCondition
+where
+    A: SchemeCompatible,
+    B: SchemeCompatible,
+    C: SchemeCompatible,
+{
+    fn from(value: (A, B, C)) -> Self {
+        Self(vec![
+            Value::from(Record::from_rust_type(value.0)),
+            Value::from(Record::from_rust_type(value.1)),
+            Value::from(Record::from_rust_type(value.2)),
+        ])
+    }
+}
+
+macro_rules! impl_empty_debug {
+    ( $t:ty ) => {
+        impl fmt::Debug for $t {
+            fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                Ok(())
+            }
+        }
+    };
+}
+
+impl_empty_debug!(Assertion);
+impl_empty_debug!(Violation);
+impl_empty_debug!(Undefined);
 
 #[derive(Debug, Clone, Trace)]
 pub struct Frame {
@@ -510,7 +632,7 @@ fn exit_winders(from_extent: &DynamicWind, to_extent: &DynamicWind) -> Value {
             return Value::null();
         };
 
-        if !Gc::ptr_eq(&from_first.1 .0, &to_first.1 .0) {
+        if !Gc::ptr_eq(&from_first.1.0, &to_first.1.0) {
             break;
         }
 

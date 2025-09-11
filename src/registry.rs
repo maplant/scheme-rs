@@ -497,7 +497,7 @@ pub enum LibraryKind {
 
 /*
 struct InvocationsFuncs {
-    
+
 }
 
 type InvocationFn = fn(&mut LibraryInner);

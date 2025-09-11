@@ -586,7 +586,7 @@ pub async fn datum_to_syntax(template_id: &Value, datum: &Value) -> Result<Vec<V
         ident: template_id, ..
     } = syntax.as_ref()
     else {
-        return Err(Condition::invalid_type("template_id", "syntax"));
+        return Err(Condition::type_error("template_id", "syntax"));
     };
     Ok(vec![Value::from(Syntax::syntax_from_datum(
         &template_id.marks,
@@ -612,7 +612,7 @@ pub async fn bound_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Va
         ..
     } = id1.as_ref()
     else {
-        return Err(Condition::invalid_type("identifier", "syntax"));
+        return Err(Condition::type_error("identifier", "syntax"));
     };
     let Syntax::Identifier {
         ident: id2,
@@ -620,7 +620,7 @@ pub async fn bound_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Va
         ..
     } = id2.as_ref()
     else {
-        return Err(Condition::invalid_type("identifier", "syntax"));
+        return Err(Condition::type_error("identifier", "syntax"));
     };
     Ok(vec![Value::from(*bound_id1 && *bound_id2 && id1 == id2)])
 }
@@ -635,7 +635,7 @@ pub async fn free_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Val
         ..
     } = id1.as_ref()
     else {
-        return Err(Condition::invalid_type("identifier", "syntax"));
+        return Err(Condition::type_error("identifier", "syntax"));
     };
     let Syntax::Identifier {
         ident: id2,
@@ -643,7 +643,7 @@ pub async fn free_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Val
         ..
     } = id2.as_ref()
     else {
-        return Err(Condition::invalid_type("identifier", "syntax"));
+        return Err(Condition::type_error("identifier", "syntax"));
     };
     Ok(vec![Value::from(
         !bound_id1 && !bound_id2 && id1.sym == id2.sym,

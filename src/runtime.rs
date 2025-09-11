@@ -307,7 +307,7 @@ unsafe extern "C" fn apply(
             x => {
                 let raised = raise(
                     Runtime::from_raw_inc_rc(runtime),
-                    Condition::invalid_operator_type(x.type_name()).into(),
+                    Condition::invalid_operator(x.type_name()).into(),
                     ExceptionHandler::from_ptr(exception_handler),
                     dynamic_wind.as_ref().unwrap(),
                 );
@@ -342,7 +342,7 @@ unsafe extern "C" fn forward(
             x => {
                 let raised = raise(
                     Runtime::from_raw_inc_rc(runtime),
-                    Condition::invalid_operator_type(x.type_name()).into(),
+                    Condition::invalid_operator(x.type_name()).into(),
                     ExceptionHandler::from_ptr(exception_handler),
                     dynamic_wind.as_ref().unwrap(),
                 );

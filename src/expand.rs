@@ -1,11 +1,11 @@
 use crate::{
-    rtd,
     ast::{Expression, Literal, ParseAstError},
     env::{Environment, Local},
     exceptions::Condition,
     gc::{Gc, Trace},
     proc::Closure,
     records::{Record, RecordTypeDescriptor, SchemeCompatible},
+    rtd,
     runtime::Runtime,
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax},
@@ -13,7 +13,6 @@ use crate::{
 };
 use scheme_rs_macros::{bridge, runtime_fn};
 use std::{
-    any::Any,
     collections::{BTreeSet, HashMap, HashSet},
     sync::Arc,
 };

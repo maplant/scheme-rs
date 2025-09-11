@@ -2,7 +2,6 @@ use super::*;
 use crate::{
     ast::*,
     expand::{ExpansionCombiner, SyntaxRule},
-    gc::Gc,
     records::Record,
     value::Value as RuntimeValue,
 };

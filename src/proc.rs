@@ -158,17 +158,14 @@ impl ClosureInner {
                 exception_handler,
                 dynamic_wind,
             ));
-            // return Err(Condition::wrong_num_of_args(self.num_required_args, args.len()).into());
         }
         if !self.variadic && args.len() > self.num_required_args {
             return Ok(raise(
                 self.runtime.clone(),
                 Condition::wrong_num_of_args(self.num_required_args, args.len()).into(),
-                // Condition::wrong_num_of_args(self.num_required_args, args.len()).into(),
                 exception_handler,
                 dynamic_wind,
             ));
-            // return Err(Condition::wrong_num_of_args(self.num_required_args, args.len()).into());
         }
 
         // If this function is variadic, create a list to put any extra arguments
@@ -589,7 +586,7 @@ unsafe extern "C" fn call_consumer_with_values(
                 _ => {
                     let raised = raise(
                         Runtime::from_raw_inc_rc(runtime),
-                        Condition::invalid_operator_type(consumer_read.type_name()).into(),
+                        Condition::invalid_operator(consumer_read.type_name()).into(),
                         ExceptionHandler::from_ptr(exception_handler),
                         dynamic_wind.as_ref().unwrap(),
                     );

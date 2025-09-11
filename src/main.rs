@@ -9,7 +9,7 @@ use scheme_rs::{
     ast::{DefinitionBody, ImportSet, ParseAstError},
     cps::Compile,
     env::Environment,
-    exception::Exception,
+    exceptions::Exception,
     lex::LexError,
     parse::ParseSyntaxError,
     proc::{Application, DynamicWind},

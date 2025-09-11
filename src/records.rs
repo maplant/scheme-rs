@@ -43,16 +43,15 @@ impl RecordTypeDescriptor {
     }
 
     pub fn is_subtype_of(self: &Arc<Self>, rtd: &Arc<Self>) -> bool {
-        Arc::ptr_eq(self, rtd) ||
-            self.inherits.contains(&ByAddress(rtd.clone()))
+        Arc::ptr_eq(self, rtd) || self.inherits.contains(&ByAddress(rtd.clone()))
     }
 }
 
 #[macro_export]
 macro_rules! rtd {
-    ( $name:literal ) => {
-        {
-            static RTD: std::sync::LazyLock<Arc<RecordTypeDescriptor>> = std::sync::LazyLock::new(|| {
+    ( $name:literal ) => {{
+        static RTD: std::sync::LazyLock<Arc<RecordTypeDescriptor>> =
+            std::sync::LazyLock::new(|| {
                 // TODO: All the other stuff
                 Arc::new(RecordTypeDescriptor {
                     name: $name.to_string(),
@@ -64,13 +63,12 @@ macro_rules! rtd {
                     fields: Vec::new(),
                 })
             });
-            RTD.clone()
-        }
-    };
+        RTD.clone()
+    }};
 
-    ( $name:literal, parent: $parent:expr ) => {
-        {
-            static RTD: std::sync::LazyLock<Arc<RecordTypeDescriptor>> = std::sync::LazyLock::new(|| {
+    ( $name:literal, parent: $parent:expr ) => {{
+        static RTD: std::sync::LazyLock<Arc<RecordTypeDescriptor>> =
+            std::sync::LazyLock::new(|| {
                 let parent = $parent.clone();
                 let mut inherits = parent.inherits.clone();
                 inherits.insert(::by_address::ByAddress(parent));
@@ -85,9 +83,8 @@ macro_rules! rtd {
                     fields: Vec::new(),
                 })
             });
-            RTD.clone()
-        }
-    };
+        RTD.clone()
+    }};
 }
 
 #[derive(Debug, Trace, Clone)]
@@ -105,7 +102,9 @@ impl Field {
         match &*mutability.to_str() {
             "mutable" => Ok(Field::Mutable(field_name)),
             "immutable" => Ok(Field::Immutable(field_name)),
-            _ => Err(Condition::Error),
+            _ => Err(Condition::error(
+                "mutability specifier must be mutable or immutable".to_string(),
+            )),
         }
     }
 
@@ -584,22 +583,15 @@ pub(crate) unsafe extern "C" fn call_constructor_continuation(
 
 /// A Scheme record type. Effectively a tuple of a fixed size array and some type
 /// information.
-#[derive(Debug, Trace, Clone)]
+#[derive(Trace, Clone)]
 pub struct Record(pub(crate) Gc<RecordInner>);
 
 impl Record {
     /// Convert any Rust type that implements [SchemeCompatible] into an opaque
     /// record.
     pub fn from_rust_type<T: SchemeCompatible>(t: T) -> Self {
-        // Convert t into a Gc<dyn SchemeCompatible>. This has to be done
-        // manually since [CoerceUnsized] is unstable.
+        let opaque_parent = Some(into_scheme_compatible(Gc::new(t)));
         let rtd = T::rtd();
-        let t = ManuallyDrop::new(Gc::new(t));
-        let any: NonNull<GcInner<dyn SchemeCompatible>> = t.ptr;
-        let opaque_parent = Some(Gc {
-            ptr: any,
-            marker: std::marker::PhantomData,
-        });
         Self(Gc::new(RecordInner {
             opaque_parent,
             rtd,
@@ -614,7 +606,7 @@ impl Record {
             return None;
         };
 
-        // First, attempt to extract any embedded records
+        // Attempt to extract any embedded records
         let rtd = T::rtd();
         let mut t = opaque_parent.clone();
         while let Some(embedded) = { t.read().extract_embedded_record(&rtd) } {
@@ -638,7 +630,13 @@ impl Record {
     }
 }
 
-#[derive(Debug, Trace, Clone)]
+impl fmt::Debug for Record {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.read().fmt(f)
+    }
+}
+
+#[derive(Trace, Clone)]
 #[repr(align(16))]
 pub(crate) struct RecordInner {
     pub(crate) opaque_parent: Option<Gc<dyn SchemeCompatible>>,
@@ -646,22 +644,46 @@ pub(crate) struct RecordInner {
     pub(crate) fields: Vec<Value>,
 }
 
+impl fmt::Debug for RecordInner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<{}", self.rtd.name)?;
+        if let Some(parent) = &self.opaque_parent {
+            write!(f, "{parent:?}")?;
+        }
+        for field in &self.fields {
+            write!(f, " {field:?}")?;
+        }
+        write!(f, ">")
+    }
+}
+
 /// A Rust value that can present itself as a Scheme record.
-pub trait SchemeCompatible: fmt::Debug /* + fmt::Display*/ + Trace + Any {
+pub trait SchemeCompatible: fmt::Debug + Trace + Any {
     /// The Record Type Descriptor of the value. Can be constructed at runtime,
     /// but cannot change.
-    fn rtd() -> Arc<RecordTypeDescriptor> where Self: Sized;
-    // fn rtd(&self) -> Arc<RecordTypeDescriptor>;
+    fn rtd() -> Arc<RecordTypeDescriptor>
+    where
+        Self: Sized;
 
     /// Extract the embedded record type with the matching record type
     /// descriptor if it exists.
-    fn extract_embedded_record(&self, _rtd: &Arc<RecordTypeDescriptor>) -> Option<Gc<dyn SchemeCompatible>> {
+    fn extract_embedded_record(
+        &self,
+        _rtd: &Arc<RecordTypeDescriptor>,
+    ) -> Option<Gc<dyn SchemeCompatible>> {
         None
     }
 }
 
-pub fn into_scheme_compatible(_t: Gc<impl SchemeCompatible>) -> Gc<dyn SchemeCompatible> {
-    todo!()
+pub fn into_scheme_compatible(t: Gc<impl SchemeCompatible>) -> Gc<dyn SchemeCompatible> {
+    // Convert t into a Gc<dyn SchemeCompatible>. This has to be done
+    // manually since [CoerceUnsized] is unstable.
+    let t = ManuallyDrop::new(t);
+    let any: NonNull<GcInner<dyn SchemeCompatible>> = t.ptr;
+    Gc {
+        ptr: any,
+        marker: std::marker::PhantomData,
+    }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -803,7 +825,10 @@ pub async fn record_accessor(
     let k: Arc<Number> = k.clone().try_into()?;
     let k: usize = k.as_ref().try_into().map_err(Condition::from)?;
     if k > rtd.fields.len() {
-        return Err(Condition::Assertion);
+        return Err(Condition::error(format!(
+            "{k} is out of range {}",
+            rtd.fields.len()
+        )));
     }
     let k = k + rtd.field_index_offset;
     let accessor_fn = Closure::new(
@@ -881,8 +906,14 @@ pub async fn record_mutator(
     let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
     let k: Arc<Number> = k.clone().try_into()?;
     let k: usize = k.as_ref().try_into().map_err(Condition::from)?;
-    if k > rtd.fields.len() || matches!(rtd.fields[k], Field::Immutable(_)) {
-        return Err(Condition::Assertion);
+    if k > rtd.fields.len() {
+        return Err(Condition::error(format!(
+            "{k} is out of range {}",
+            rtd.fields.len()
+        )));
+    }
+    if matches!(rtd.fields[k], Field::Immutable(_)) {
+        return Err(Condition::error(format!("{k} is immutable")));
     }
     let k = k + rtd.field_index_offset;
     let mutator_fn = Closure::new(

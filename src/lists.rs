@@ -147,7 +147,7 @@ pub async fn car(val: &Value) -> Result<Vec<Value>, Condition> {
             };
             Ok(vec![Value::from(car.clone())])
         }
-        _ => Err(Condition::invalid_type("list", val.type_name())),
+        _ => Err(Condition::type_error("list", val.type_name())),
     }
 }
 
@@ -167,7 +167,7 @@ pub async fn cdr(val: &Value) -> Result<Vec<Value>, Condition> {
             })]),
             _ => unreachable!(),
         },
-        _ => Err(Condition::invalid_type("list", val.type_name())),
+        _ => Err(Condition::type_error("list", val.type_name())),
     }
 }
 

@@ -159,6 +159,7 @@ impl Value {
             ValueType::ByteVector => "byte vector",
             ValueType::Syntax => "syntax",
             ValueType::Closure => "procedure",
+            ValueType::HashTable => "hashtable",
             _ => "record",
         }
     }
@@ -167,12 +168,12 @@ impl Value {
         let this = self.clone().unpack();
         let record = match this {
             UnpackedValue::Record(record) => record,
-            e => return Err(Condition::invalid_type("record-todo", e.type_name())),
+            e => return Err(Condition::type_error("record-todo", e.type_name())),
         };
 
         record
             .try_into_rust_type::<T>()
-            .ok_or_else(|| Condition::invalid_type("record-todo", "record"))
+            .ok_or_else(|| Condition::type_error("record-todo", "record"))
     }
 
     pub fn unpack(self) -> UnpackedValue {
@@ -327,6 +328,12 @@ impl From<Exception> for Value {
         // Until we can decide on a good method for including the stack trace with
         // the new condition, just return the object.
         exception.obj
+    }
+}
+
+impl From<Condition> for Value {
+    fn from(value: Condition) -> Self {
+        value.0
     }
 }
 
@@ -724,7 +731,7 @@ macro_rules! impl_try_from_value_for {
             fn try_from(v: UnpackedValue) -> Result<Self, Self::Error> {
                 match v {
                     UnpackedValue::$variant(v) => Ok(v),
-                    e => Err(Condition::invalid_type($type_name, e.type_name())),
+                    e => Err(Condition::type_error($type_name, e.type_name())),
                 }
             }
         }
@@ -779,62 +786,9 @@ impl_from_wrapped_for!(Vec<u8>, ByteVector, |vec| Arc::new(
     vectors::AlignedVector::new(vec)
 ));
 impl_from_wrapped_for!(Syntax, Syntax, Arc::new);
-// impl_from_wrapped_for!(ClosureInner, Closure, Gc::from);
 impl_from_wrapped_for!((Value, Value), Pair, |(car, cdr)| Gc::new(
     lists::Pair::new(car, cdr)
 ));
-
-macro_rules! impl_try_from_for_any {
-    ($ty:ty, $name:literal) => {
-        impl From<$ty> for UnpackedValue {
-            fn from(val: $ty) -> Self {
-                Self::Record(Record::from_rust_type(val))
-            }
-        }
-
-        impl From<$ty> for Value {
-            fn from(val: $ty) -> Self {
-                UnpackedValue::from(val).into_value()
-            }
-        }
-
-        impl TryFrom<UnpackedValue> for Gc<$ty> {
-            type Error = Condition;
-
-            fn try_from(val: UnpackedValue) -> Result<Self, Self::Error> {
-                let record = match val {
-                    UnpackedValue::Record(record) => record,
-                    e => return Err(Condition::invalid_type($name, e.type_name())),
-                };
-
-                record
-                    .try_into_rust_type::<$ty>()
-                    .ok_or_else(|| Condition::invalid_type($name, "record"))
-                /*
-                let any = match val {
-                    UnpackedValue::Any(v) => v,
-                    e => return Err(Condition::invalid_type($name, e.type_name())),
-                };
-                let any = any.read().clone();
-                match any.downcast::<$ty>() {
-                    Ok(ok) => Ok(ok),
-                    Err(_) => Err(Condition::invalid_type($name, "record")),
-                }
-                */
-            }
-        }
-
-        impl TryFrom<Value> for Gc<$ty> {
-            type Error = Condition;
-
-            fn try_from(val: Value) -> Result<Self, Self::Error> {
-                Self::try_from(val.unpack())
-            }
-        }
-    };
-}
-
-impl_try_from_for_any!(Condition, "condition");
 
 impl TryFrom<UnpackedValue> for (Value, Value) {
     type Error = Condition;
@@ -845,7 +799,7 @@ impl TryFrom<UnpackedValue> for (Value, Value) {
                 let pair = pair.read();
                 Ok((pair.0.clone(), pair.1.clone()))
             }
-            e => Err(Condition::invalid_type("pair", e.type_name())),
+            e => Err(Condition::type_error("pair", e.type_name())),
         }
     }
 }
@@ -1037,7 +991,7 @@ fn display_value(
         UnpackedValue::Vector(v) => vectors::write_vec(&v, display_value, circular_values, f),
         UnpackedValue::ByteVector(v) => vectors::write_bytevec(&v, f),
         UnpackedValue::Closure(_) => write!(f, "<procedure>"),
-        UnpackedValue::Record(record) => write!(f, "<{record:?}>"),
+        UnpackedValue::Record(record) => write!(f, "{record:?}"),
         UnpackedValue::Syntax(syntax) => write!(f, "{syntax:#?}"),
         UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "<{rtd:?}>"),
     }
@@ -1066,7 +1020,7 @@ fn debug_value(
         UnpackedValue::ByteVector(v) => vectors::write_bytevec(&v, f),
         UnpackedValue::Syntax(syntax) => write!(f, "{syntax:#?}"),
         UnpackedValue::Closure(proc) => write!(f, "#<procedure {proc:?}>"),
-        UnpackedValue::Record(record) => write!(f, "<{record:#?}>"),
+        UnpackedValue::Record(record) => write!(f, "{record:#?}"),
         UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "<{rtd:?}>"),
     }
 }

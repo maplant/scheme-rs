@@ -296,10 +296,7 @@ fn values_to_globals(vals: &[Value]) -> HashSet<Global> {
     vals.iter().flat_map(|val| val.to_global()).collect()
 }
 
-fn merge_uses(
-    mut l: HashMap<Local, usize>,
-    mut r: HashMap<Local, usize>,
-) -> HashMap<Local, usize> {
+fn merge_uses(mut l: HashMap<Local, usize>, mut r: HashMap<Local, usize>) -> HashMap<Local, usize> {
     if r.len() > l.len() {
         for (local, uses) in l.into_iter() {
             *r.entry(local).or_default() += uses;
