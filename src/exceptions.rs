@@ -14,7 +14,7 @@ use crate::{
     syntax::{Identifier, Span, Syntax},
     value::{UnpackedValue, Value},
 };
-use std::{error::Error as StdError, fmt, ops::Range, sync::Arc};
+use std::{error::Error as StdError, fmt, ops::Range, ptr::null_mut, sync::Arc};
 
 #[derive(Debug, Clone, Trace)]
 pub struct Exception {
@@ -491,13 +491,14 @@ impl fmt::Display for Frame {
 
 /// An exception handler includes the current handler - a function to call with
 /// any condition that is raised - and the previous handler.
-// TODO: Rename ExceptionHandlerInner, make
-// struct ExceptionHandler(Option<Gc<ExceptionHandlerInner>>)
+#[derive(Clone, Debug, Default, Trace)]
+pub struct ExceptionHandler(pub(crate) Option<Gc<ExceptionHandlerInner>>);
+
 #[derive(Clone, Debug, Trace)]
-pub struct ExceptionHandler {
+pub(crate) struct ExceptionHandlerInner {
     /// The previously installed handler. If the previously installed handler is
     /// None, we return the condition as an Error.
-    prev_handler: Option<Gc<ExceptionHandler>>,
+    prev_handler: ExceptionHandler,
     /// The currently installed handler.
     curr_handler: Closure,
     /// The dynamic extent of the exception handler.
@@ -507,11 +508,12 @@ pub struct ExceptionHandler {
 impl ExceptionHandler {
     /// # Safety
     /// Exception handler must point to a valid Gc'd object.
-    pub(crate) unsafe fn from_ptr(ptr: *mut GcInner<Self>) -> Option<Gc<Self>> {
-        use std::ops::Not;
-        ptr.is_null()
-            .not()
-            .then(|| unsafe { Gc::from_raw_inc_rc(ptr) })
+    pub(crate) unsafe fn from_ptr(ptr: *mut GcInner<ExceptionHandlerInner>) -> Self {
+        Self((!ptr.is_null()).then(|| unsafe { Gc::from_raw_inc_rc(ptr) }))
+    }
+
+    pub(crate) fn as_ptr(&self) -> *mut GcInner<ExceptionHandlerInner> {
+        self.0.as_ref().map_or_else(null_mut, Gc::as_ptr)
     }
 }
 
@@ -526,7 +528,7 @@ pub async fn with_exception_handler(
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
-    exception_handler: &Option<Gc<ExceptionHandler>>,
+    exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let [handler, thunk] = args else {
@@ -536,16 +538,18 @@ pub async fn with_exception_handler(
     let handler: Closure = handler.clone().try_into()?;
     let thunk: Closure = thunk.clone().try_into()?;
 
-    let exception_handler = ExceptionHandler {
+    let exception_handler_inner = ExceptionHandlerInner {
         prev_handler: exception_handler.clone(),
         curr_handler: handler.clone(),
         dynamic_extent: dynamic_wind.clone(),
     };
 
+    let exception_handler = ExceptionHandler(Some(Gc::new(exception_handler_inner)));
+
     Ok(Application::new(
         thunk.clone(),
         vec![cont.clone()],
-        Some(Gc::new(exception_handler)),
+        exception_handler,
         dynamic_wind.clone(),
         None,
     ))
@@ -558,7 +562,7 @@ pub async fn raise_builtin(
     args: &[Value],
     _rest_args: &[Value],
     _cont: &Value,
-    exception_handler: &Option<Gc<ExceptionHandler>>,
+    exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     Ok(raise(
@@ -573,20 +577,24 @@ pub async fn raise_builtin(
 pub fn raise(
     runtime: Runtime,
     raised: Value,
-    exception_handler: Option<Gc<ExceptionHandler>>,
+    exception_handler: ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Application {
-    let (parent_wind, handler, parent_handler) = if let Some(exception_handler) = exception_handler
-    {
-        let handler = exception_handler.read();
-        (
-            handler.dynamic_extent.clone(),
-            Value::from(handler.curr_handler.clone()),
-            handler.prev_handler.clone(),
-        )
-    } else {
-        (DynamicWind::default(), Value::from(false), None)
-    };
+    let (parent_wind, handler, parent_handler) =
+        if let Some(exception_handler) = exception_handler.0 {
+            let handler = exception_handler.read();
+            (
+                handler.dynamic_extent.clone(),
+                Value::from(handler.curr_handler.clone()),
+                handler.prev_handler.clone(),
+            )
+        } else {
+            (
+                DynamicWind::default(),
+                Value::from(false),
+                ExceptionHandler::default(),
+            )
+        };
 
     let thunks = exit_winders(dynamic_wind, &parent_wind);
     let calls = Closure::new(
@@ -606,7 +614,7 @@ pub fn raise(
 unsafe extern "C" fn raise_rt(
     runtime: *mut GcInner<RuntimeInner>,
     raised: i64,
-    exception_handler: *mut GcInner<ExceptionHandler>,
+    exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Application {
     unsafe {
@@ -653,7 +661,7 @@ unsafe extern "C" fn call_exits_and_exception_handler_reraise(
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
     _args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandler>,
+    exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Application {
     unsafe {
@@ -748,7 +756,7 @@ unsafe extern "C" fn reraise_exception(
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
     _args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandler>,
+    exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Application {
     unsafe {
@@ -789,14 +797,14 @@ pub async fn raise_continuable(
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
-    exception_handler: &Option<Gc<ExceptionHandler>>,
+    exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let [condition] = args else {
         unreachable!();
     };
 
-    let Some(handler) = exception_handler else {
+    let Some(handler) = &exception_handler.0 else {
         return Ok(Application::new(
             Closure::new(
                 runtime.clone(),
@@ -808,7 +816,7 @@ pub async fn raise_continuable(
                 None,
             ),
             vec![condition.clone()],
-            None,
+            ExceptionHandler::default(),
             dynamic_wind.clone(),
             None,
         ));

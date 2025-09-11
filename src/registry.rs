@@ -7,7 +7,7 @@ use crate::{
     },
     cps::Compile,
     env::{Environment, Global, Keyword},
-    exceptions::Condition,
+    exceptions::{Condition, ExceptionHandler},
     gc::{Gc, Trace},
     proc::{Application, BridgePtr, Closure, DynamicWind, FuncDebugInfo, FuncPtr},
     runtime::Runtime,
@@ -688,9 +688,15 @@ impl Library {
         let compiled = defn_body.compile_top_level();
         let rt = { self.0.read().rt.clone() };
         let closure = rt.compile_expr(compiled).await;
-        let _ = Application::new(closure, Vec::new(), None, DynamicWind::default(), None)
-            .eval()
-            .await?;
+        let _ = Application::new(
+            closure,
+            Vec::new(),
+            ExceptionHandler::default(),
+            DynamicWind::default(),
+            None,
+        )
+        .eval()
+        .await?;
         self.0.write().state = LibraryState::Invoked;
         Ok(())
     }

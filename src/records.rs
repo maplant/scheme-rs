@@ -12,7 +12,7 @@ use by_address::ByAddress;
 use futures::future::BoxFuture;
 
 use crate::{
-    exceptions::{Condition, ExceptionHandler},
+    exceptions::{Condition, ExceptionHandler, ExceptionHandlerInner},
     gc::{Gc, GcInner, Trace},
     num::Number,
     proc::{Application, Closure, DynamicWind, FuncPtr},
@@ -222,7 +222,7 @@ pub async fn make_record_constructor_descriptor(
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
-    exception_handler: &Option<Gc<ExceptionHandler>>,
+    exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let cont: Closure = cont.clone().try_into()?;
@@ -291,7 +291,7 @@ pub async fn record_constructor(
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
-    exception_handler: &Option<Gc<ExceptionHandler>>,
+    exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let cont: Closure = cont.clone().try_into()?;
@@ -344,7 +344,7 @@ pub(crate) unsafe extern "C" fn chain_protocols(
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
     args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandler>,
+    exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Application {
     unsafe {
@@ -401,7 +401,7 @@ async fn chain_constructors(
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
-    exception_handler: &Option<Gc<ExceptionHandler>>,
+    exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let cont: Closure = cont.clone().try_into()?;
@@ -452,7 +452,7 @@ async fn constructor(
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
-    exception_handler: &Option<Gc<ExceptionHandler>>,
+    exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let cont: Closure = cont.clone().try_into()?;
@@ -485,7 +485,7 @@ async fn default_protocol(
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
-    exception_handler: &Option<Gc<ExceptionHandler>>,
+    exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let cont: Closure = cont.clone().try_into()?;
@@ -518,7 +518,7 @@ async fn default_protocol_constructor(
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
-    exception_handler: &Option<Gc<ExceptionHandler>>,
+    exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let cont: Closure = cont.clone().try_into()?;
@@ -556,7 +556,7 @@ pub(crate) unsafe extern "C" fn call_constructor_continuation(
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
     args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandler>,
+    exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Application {
     unsafe {
@@ -716,7 +716,7 @@ async fn record_predicate_fn(
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
-    exception_handler: &Option<Gc<ExceptionHandler>>,
+    exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let cont: Closure = cont.clone().try_into()?;
@@ -744,7 +744,7 @@ pub async fn record_predicate(
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
-    exception_handler: &Option<Gc<ExceptionHandler>>,
+    exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let cont: Closure = cont.clone().try_into()?;
@@ -777,7 +777,7 @@ async fn record_accessor_fn(
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
-    exception_handler: &Option<Gc<ExceptionHandler>>,
+    exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let cont: Closure = cont.clone().try_into()?;
@@ -814,7 +814,7 @@ pub async fn record_accessor(
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
-    exception_handler: &Option<Gc<ExceptionHandler>>,
+    exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let cont: Closure = cont.clone().try_into()?;
@@ -859,7 +859,7 @@ async fn record_mutator_fn(
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
-    exception_handler: &Option<Gc<ExceptionHandler>>,
+    exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let cont: Closure = cont.clone().try_into()?;
@@ -896,7 +896,7 @@ pub async fn record_mutator(
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
-    exception_handler: &Option<Gc<ExceptionHandler>>,
+    exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let cont: Closure = cont.clone().try_into()?;

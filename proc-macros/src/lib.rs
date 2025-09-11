@@ -71,7 +71,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
             args: &'a [::scheme_rs::value::Value],
             rest_args: &'a [::scheme_rs::value::Value],
             cont: &'a ::scheme_rs::value::Value,
-            exception_handler: &'a Option<::scheme_rs::gc::Gc<::scheme_rs::exceptions::ExceptionHandler>>,
+            exception_handler: &'a ::scheme_rs::exceptions::ExceptionHandler,
             dynamic_wind: &'a ::scheme_rs::proc::DynamicWind,
         ) -> futures::future::BoxFuture<'a, scheme_rs::proc::Application> {
             #bridge
@@ -225,7 +225,7 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
             args: &'a [::scheme_rs::value::Value],
             rest_args: &'a [::scheme_rs::value::Value],
             cont: &'a ::scheme_rs::value::Value,
-            exception_handler: &'a Option<::scheme_rs::gc::Gc<::scheme_rs::exceptions::ExceptionHandler>>,
+            exception_handler: &'a ::scheme_rs::exceptions::ExceptionHandler,
             dynamic_wind: &'a ::scheme_rs::proc::DynamicWind,
         ) -> futures::future::BoxFuture<'a, scheme_rs::proc::Application> {
             #bridge

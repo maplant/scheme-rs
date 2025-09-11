@@ -2,7 +2,7 @@ use crate::{
     ast::DefinitionBody,
     cps::{Compile, Cps, codegen::RuntimeFunctionsBuilder},
     env::Environment,
-    exceptions::{Condition, Exception, ExceptionHandler, raise},
+    exceptions::{Condition, Exception, ExceptionHandler, ExceptionHandlerInner, raise},
     gc::{Gc, GcInner, Trace, init_gc},
     lists::{self, list_to_vec},
     num,
@@ -72,9 +72,15 @@ impl Runtime {
             .unwrap();
         let compiled = body.compile_top_level();
         let closure = self.compile_expr(compiled).await;
-        Application::new(closure, Vec::new(), None, DynamicWind::default(), None)
-            .eval()
-            .await
+        Application::new(
+            closure,
+            Vec::new(),
+            ExceptionHandler::default(),
+            DynamicWind::default(),
+            None,
+        )
+        .eval()
+        .await
     }
 
     pub fn get_registry(&self) -> Registry {
@@ -293,7 +299,7 @@ unsafe extern "C" fn apply(
     op: i64,
     args: *const i64,
     num_args: u32,
-    exception_handler: *mut GcInner<ExceptionHandler>,
+    exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
     span: *const Span,
 ) -> *mut Application {
@@ -333,7 +339,7 @@ unsafe extern "C" fn forward(
     runtime: *mut GcInner<RuntimeInner>,
     op: i64,
     args: i64,
-    exception_handler: *mut GcInner<ExceptionHandler>,
+    exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Application {
     unsafe {
@@ -620,7 +626,7 @@ pub(crate) unsafe extern "C" fn call_thunks(
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
     args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandler>,
+    exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Application {
     unsafe {
@@ -684,7 +690,7 @@ unsafe extern "C" fn call_thunks_pass_args(
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
     _args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandler>,
+    exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Application {
     unsafe {

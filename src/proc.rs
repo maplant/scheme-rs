@@ -3,7 +3,7 @@
 
 use crate::{
     env::Local,
-    exceptions::{Condition, Exception, ExceptionHandler, Frame, raise},
+    exceptions::{Condition, Exception, ExceptionHandler, ExceptionHandlerInner, Frame, raise},
     gc::{Gc, GcInner, Trace},
     lists::{list_to_vec, slice_to_list},
     registry::BridgeFnDebugInfo,
@@ -14,7 +14,7 @@ use crate::{
 };
 use futures::future::BoxFuture;
 use scheme_rs_macros::cps_bridge;
-use std::{borrow::Cow, collections::HashMap, fmt, hash::Hash, ptr::null_mut, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, fmt, hash::Hash, sync::Arc};
 
 pub type Record = Vec<Gc<Value>>;
 
@@ -27,7 +27,7 @@ pub(crate) type ContinuationPtr = unsafe extern "C" fn(
     env: *const *mut GcInner<Value>,
     globals: *const *mut GcInner<Value>,
     args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandler>,
+    exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Application;
 
@@ -37,21 +37,19 @@ pub(crate) type UserPtr = unsafe extern "C" fn(
     env: *const *mut GcInner<Value>,
     globals: *const *mut GcInner<Value>,
     args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandler>,
+    exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
     cont: *mut GcInner<Value>,
 ) -> *mut Application;
 
 /// A function pointer to an async Rust bridge function.
-// TODO: The ordering of these arguments is inconsistent with the other two; env
-// should be the first argument.
 pub type BridgePtr = for<'a> fn(
     runtime: &'a Runtime,
     env: &'a [Gc<Value>],
     args: &'a [Value],
     rest_args: &'a [Value],
     cont: &'a Value,
-    exception_handler: &'a Option<Gc<ExceptionHandler>>,
+    exception_handler: &'a ExceptionHandler,
     dynamic_wind: &'a DynamicWind,
 ) -> BoxFuture<'a, Application>;
 
@@ -136,7 +134,7 @@ impl ClosureInner {
     pub async fn apply(
         &self,
         args: &[Value],
-        exception_handler: Option<Gc<ExceptionHandler>>,
+        exception_handler: ExceptionHandler,
         dynamic_wind: &DynamicWind,
     ) -> Result<Application, Value> {
         // Handle arguments:
@@ -203,7 +201,7 @@ impl ClosureInner {
         } else if let FuncPtr::HaltError = self.func {
             Err(args[0].clone())
         } else {
-            // For LLVM functions, we need to convert our args into raw pointers
+            // For JIT functions, we need to convert our args into raw pointers
             // and make sure any freshly allocated rest_args are disposed of properly.
 
             let env = cells_to_vec_of_ptrs(&self.env);
@@ -218,7 +216,7 @@ impl ClosureInner {
                         env.as_ptr(),
                         globals.as_ptr(),
                         args.as_ptr(),
-                        exception_handler.as_ref().map_or_else(null_mut, Gc::as_ptr),
+                        exception_handler.as_ptr(),
                         dynamic_wind as *const DynamicWind,
                     );
                     *Box::from_raw(app)
@@ -229,7 +227,7 @@ impl ClosureInner {
                         env.as_ptr(),
                         globals.as_ptr(),
                         args.as_ptr(),
-                        exception_handler.as_ref().map_or_else(null_mut, Gc::as_ptr),
+                        exception_handler.as_ptr(),
                         dynamic_wind as *const DynamicWind,
                         Gc::as_ptr(cont.as_ref().unwrap()),
                     );
@@ -288,7 +286,7 @@ impl Closure {
             _env: *const *mut GcInner<Value>,
             _globals: *const *mut GcInner<Value>,
             args: *const Value,
-            _exception_handler: *mut GcInner<ExceptionHandler>,
+            _exception_handler: *mut GcInner<ExceptionHandlerInner>,
             _dynamic_wind: *const DynamicWind,
         ) -> *mut Application {
             unsafe { crate::runtime::halt(Value::into_raw(args.read()) as i64) }
@@ -306,9 +304,15 @@ impl Closure {
             true,
             None,
         )))));
-        Application::new(self.clone(), args, None, DynamicWind::default(), None)
-            .eval()
-            .await
+        Application::new(
+            self.clone(),
+            args,
+            ExceptionHandler::default(),
+            DynamicWind::default(),
+            None,
+        )
+        .eval()
+        .await
     }
 }
 
@@ -350,7 +354,7 @@ pub struct Application {
     /// The arguments being applied to the operator.
     args: Vec<Value>,
     /// The current exception handler to be passed to the operator.
-    exception_handler: Option<Gc<ExceptionHandler>>,
+    exception_handler: ExceptionHandler,
     /// The dynamic extend of the application.
     dynamic_wind: DynamicWind,
     /// The call site of this application, if it exists.
@@ -361,7 +365,7 @@ impl Application {
     pub fn new(
         op: Closure,
         args: Vec<Value>,
-        exception_handler: Option<Gc<ExceptionHandler>>,
+        exception_handler: ExceptionHandler,
         dynamic_wind: DynamicWind,
         call_site: Option<Arc<Span>>,
     ) -> Self {
@@ -379,7 +383,7 @@ impl Application {
         Self {
             op: None,
             args,
-            exception_handler: None,
+            exception_handler: ExceptionHandler::default(),
             dynamic_wind: DynamicWind::default(),
             call_site: None,
         }
@@ -500,7 +504,7 @@ pub async fn apply(
     args: &[Value],
     rest_args: &[Value],
     cont: &Value,
-    exception_handler: &Option<Gc<ExceptionHandler>>,
+    exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     if rest_args.is_empty() {
@@ -573,7 +577,7 @@ unsafe extern "C" fn call_consumer_with_values(
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
     args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandler>,
+    exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Application {
     unsafe {
@@ -641,7 +645,7 @@ pub async fn call_with_values(
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
-    exception_handler: &Option<Gc<ExceptionHandler>>,
+    exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let [producer, consumer] = args else {
@@ -692,7 +696,7 @@ pub async fn dynamic_wind(
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
-    exception_handler: &Option<Gc<ExceptionHandler>>,
+    exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let [in_thunk_val, body_thunk_val, out_thunk_val] = args else {
@@ -731,7 +735,7 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
     _args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandler>,
+    exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Application {
     unsafe {
@@ -784,7 +788,7 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
     args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandler>,
+    exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Application {
     unsafe {
@@ -831,7 +835,7 @@ unsafe extern "C" fn forward_body_thunk_result(
     env: *const *mut GcInner<Value>,
     _globals: *const *mut GcInner<Value>,
     _args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandler>,
+    exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Application {
     unsafe {
