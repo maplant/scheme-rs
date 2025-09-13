@@ -78,7 +78,7 @@ pub static RECORD_TYPE_DESCRIPTOR_RTD: LazyLock<Arc<RecordTypeDescriptor>> = Laz
     })
 });
 
-#[bridge(name = "make-record-type-descriptor", lib = "(rnrs base builtins (6))")]
+#[bridge(name = "make-record-type-descriptor", lib = "(rnrs records procedural (6))")]
 pub async fn make_record_type_descriptor(
     name: &Value,
     parent: &Value,

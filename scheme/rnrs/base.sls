@@ -7,7 +7,9 @@
           (import (rnrs lists (6)))
           (import (rnrs base builtins (6))
                   (except (rnrs base special-keywords (6)) $call/cc $undefined)
-                  (rnrs syntax-case special-keywords (6))))
+                  (rnrs syntax-case special-keywords (6)))
+          (import (rnrs records procedural (6)))
+          (import (rnrs records syntactic (6))))
   (import (rnrs syntax-case (6))
           (only (rnrs base special-keywords (6)) $call/cc $undefined))
 
@@ -26,7 +28,7 @@
       (syntax-case x ()
         ((_ ((p e0) ...) e1 e2 ...)
          (syntax (syntax-case (list e0 ...) ()
-		   ((p ...) (let () e1 e2 ...))))))))
+                   ((p ...) (let () e1 e2 ...))))))))
 
   (define-syntax cond
     (syntax-rules (else =>)
