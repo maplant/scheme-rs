@@ -24,13 +24,13 @@ use crate::{
 };
 
 /// Type declaration for a record.
-#[derive(Debug, Trace, Clone)]
+#[derive(Debug, Trace, Clone, Default)]
 #[repr(align(16))]
 pub struct RecordTypeDescriptor {
     pub name: String, // Make Arc<AlignedString>?
     pub sealed: bool,
     pub opaque: bool,
-    pub opaque_parent_constructor: Option<OpaqueParentConstructor>,
+    pub rust_parent_constructor: Option<RustParentConstructor>,
     /// Parent is most recently inserted record type, if one exists.
     pub inherits: indexmap::IndexSet<ByAddress<Arc<RecordTypeDescriptor>>>,
     pub field_index_offset: usize,
@@ -49,35 +49,16 @@ impl RecordTypeDescriptor {
 
 #[macro_export]
 macro_rules! rtd {
-    ( $name:literal ) => {{
-        static RTD: std::sync::LazyLock<Arc<RecordTypeDescriptor>> =
-            std::sync::LazyLock::new(|| {
-                // TODO: All the other stuff
-                Arc::new(RecordTypeDescriptor {
-                    name: $name.to_string(),
-                    sealed: true,
-                    opaque: false,
-                    opaque_parent_constructor: None,
-                    inherits: indexmap::IndexSet::new(),
-                    field_index_offset: 0,
-                    fields: Vec::new(),
-                })
-            });
-        RTD.clone()
-    }};
-
-    ( $name:literal, parent: $parent:expr ) => {{
+    ( $name:literal, parent: $parent:expr, $(, $field_name:ident : $val:expr )* ) => {{
         static RTD: std::sync::LazyLock<Arc<RecordTypeDescriptor>> =
             std::sync::LazyLock::new(|| {
                 let parent = $parent.clone();
                 let mut inherits = parent.inherits.clone();
                 inherits.insert(::by_address::ByAddress(parent));
-                // TODO: All the other stuff
                 Arc::new(RecordTypeDescriptor {
                     name: $name.to_string(),
-                    sealed: true,
-                    opaque: false,
-                    opaque_parent_constructor: None,
+                    $( $field_name : $val, )*
+                    rust_parent_constructor: None,
                     inherits,
                     field_index_offset: 0,
                     fields: Vec::new(),
@@ -85,6 +66,23 @@ macro_rules! rtd {
             });
         RTD.clone()
     }};
+
+    ( $name:literal $(, $field_name:ident : $val:expr )* ) => {{
+        static RTD: std::sync::LazyLock<Arc<RecordTypeDescriptor>> =
+            std::sync::LazyLock::new(|| {
+                Arc::new(RecordTypeDescriptor {
+                    name: $name.to_string(),
+                    $( $field_name : $val, )*
+                    rust_parent_constructor: None,
+                    inherits: indexmap::IndexSet::new(),
+                    field_index_offset: 0,
+                    fields: Vec::new(),
+                    ..Default::default()
+                })
+            });
+        RTD.clone()
+    }};
+
 }
 
 #[derive(Debug, Trace, Clone)]
@@ -120,7 +118,7 @@ pub static RECORD_TYPE_DESCRIPTOR_RTD: LazyLock<Arc<RecordTypeDescriptor>> = Laz
         name: "rt".to_string(),
         sealed: true,
         opaque: true,
-        opaque_parent_constructor: None,
+        rust_parent_constructor: None,
         inherits: indexmap::IndexSet::new(),
         field_index_offset: 0,
         fields: vec![],
@@ -158,7 +156,7 @@ pub async fn make_record_type_descriptor(
         name: name.to_string(),
         sealed,
         opaque,
-        opaque_parent_constructor: None,
+        rust_parent_constructor: None,
         inherits,
         field_index_offset,
         fields,
@@ -646,7 +644,7 @@ pub(crate) struct RecordInner {
 
 impl fmt::Debug for RecordInner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "<{}", self.rtd.name)?;
+        write!(f, "#<{}", self.rtd.name)?;
         if let Some(parent) = &self.opaque_parent {
             write!(f, "{parent:?}")?;
         }
@@ -673,6 +671,11 @@ pub trait SchemeCompatible: fmt::Debug + Trace + Any {
     ) -> Option<Gc<dyn SchemeCompatible>> {
         None
     }
+
+    /// Return the fields of the record
+    fn fields(&self) -> &'static [Symbol] {
+        &[]
+    }
 }
 
 pub fn into_scheme_compatible(t: Gc<impl SchemeCompatible>) -> Gc<dyn SchemeCompatible> {
@@ -687,16 +690,14 @@ pub fn into_scheme_compatible(t: Gc<impl SchemeCompatible>) -> Gc<dyn SchemeComp
 }
 
 #[derive(Copy, Clone, Debug)]
-pub struct OpaqueParentConstructor {
-    _required_args: usize,
-    _variadic: bool,
+pub struct RustParentConstructor {
     _constructor: ParentConstructor,
 }
 
 type ParentConstructor =
     for<'a> fn(&'a [Value]) -> BoxFuture<'a, Result<Gc<dyn SchemeCompatible>, Condition>>;
 
-unsafe impl Trace for OpaqueParentConstructor {
+unsafe impl Trace for RustParentConstructor {
     unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(crate::gc::OpaqueGcPtr)) {}
 }
 

@@ -8,7 +8,7 @@ use crate::{
     cps::Compile,
     env::{Environment, Global, Keyword},
     exceptions::{Condition, ExceptionHandler},
-    gc::{Gc, Trace},
+    gc::{Gc, GcReadOnly, Trace},
     proc::{Application, BridgePtr, Closure, DynamicWind, FuncDebugInfo, FuncPtr},
     runtime::Runtime,
     symbols::Symbol,
@@ -19,7 +19,7 @@ use std::{
     collections::{HashMap, HashSet, hash_map::Entry},
     fmt,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 use futures::future::BoxFuture;
@@ -495,13 +495,38 @@ pub enum LibraryKind {
     Program { path: PathBuf },
 }
 
-/*
-struct InvocationsFuncs {
-
+pub struct BridgeGlobal {
+    lib: &'static str,
+    scheme_name: &'static str,
+    init: fn() -> Value,
 }
 
-type InvocationFn = fn(&mut LibraryInner);
-*/
+impl BridgeGlobal {
+    pub const fn new(lib: &'static str, scheme_name: &'static str, init: fn() -> Value) -> Self {
+        Self {
+            lib,
+            scheme_name,
+            init,
+        }
+    }
+}
+
+inventory::collect!(Global);
+
+#[macro_export]
+macro_rules! globals {
+    (
+        $lib:literal,
+        $( $scheme_name:literal = $e:expr; )+
+    ) => {
+        $(
+            // static $rust_name: std::sync::OnceLock<$crate::gc::GcReadOnly> = std::sync::OnceLock::new();
+            inventory::submit! {
+                $crate::registry::Global::new($lib, $scheme_name, || $e)
+            }
+        )+
+    };
+}
 
 #[derive(Trace, Debug)]
 pub struct Import {

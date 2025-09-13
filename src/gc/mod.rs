@@ -418,6 +418,19 @@ impl<T: ?Sized> AsMut<T> for GcWriteGuard<'_, T> {
     }
 }
 
+/// A copy of a Gc that is ready only.
+pub struct GcReadOnly<T>(Gc<T>);
+
+impl<T> GcReadOnly<T> {
+    pub fn new(gc: Gc<T>) -> Self {
+        Self(gc)
+    }
+
+    pub fn read(&self) -> GcReadGuard<'_, T> {
+        self.0.read()
+    }
+}
+
 /// A type that can be traced for garbage collection.
 ///
 /// # Safety
