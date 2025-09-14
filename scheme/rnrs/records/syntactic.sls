@@ -1,6 +1,5 @@
-
 (library (rnrs records syntactic (6))
-  (export define-record-type)
+  (export define-record-type record-constructor-descriptor record-type-descriptor)
   (import (rnrs lists (6))
           (rnrs base builtins (6))
           (rnrs base special-keywords (6))
@@ -14,6 +13,20 @@
          (syntax (syntax-case (list e0 ...) ()
                    ((p ...) (let () e1 e2 ...))))))))
 
+  (define-syntax record-type-descriptor
+    (lambda (x)
+      (syntax-case x ()
+        [(_ record-name) #'(record-name rtd)])))
+
+  (define-syntax record-constructor-descriptor
+    (lambda (x)
+      (syntax-case x ()
+        [(_ record-name) #'(record-name rcd)])))
+
+  ;; Derived from the macro definition found in Ikarus by Abdulaziz Ghuloum.
+  ;; The original macro is largely incomplete, so this extends and modifies that
+  ;; heavily.
+
   (define-syntax define-record-type
     (lambda (x)
       (define (id ctxt . str*)
@@ -25,18 +38,26 @@
                          (symbol->string x)
                          (if (string? x) x)))
                    str*)))))
-      (define (get-record-name spec)
-        (syntax-case spec ()
-          [(foo make-foo foo?) #'foo]
-          [foo #'foo]))
-      (define (get-record-constructor-name spec ctxt)
-        (syntax-case spec ()
-          [(foo make-foo foo?) #'make-foo]
-          [foo (id ctxt "make-" (syntax->datum #'foo))]))
-      (define (get-record-predicate-name spec ctxt)
-        (syntax-case spec ()
-          [(foo make-foo foo?) #'foo?]
-          [foo (id ctxt (syntax->datum #'foo) "?")]))
+
+      ;; Fetch the record name from the name spec
+      (define (get-record-name name-spec)
+        (syntax-case name-spec ()
+          [(record-name constructor-name predicate-name) #'record-name]
+          [record-name #'record-name]))
+
+      ;; Fetch the constructor name from the name spec
+      (define (get-constructor-name name-spec ctxt)
+        (syntax-case name-spec ()
+          [(record-name constructor-name predicate-name) #'constructor-name]
+          [record-name (id ctxt "make-" (syntax->datum #'record-name))]))
+
+      ;; Fetch the predicate name from the name spec
+      (define (get-predicate-name name-spec ctxt)
+        (syntax-case name-spec ()
+          [(record-name constructor-name predicate-name) #'predicate-name]
+          [record-name (id ctxt (syntax->datum #'record-name) "?")]))
+
+      ;; Get a specific clause from ls with a name id
       (define (get-clause id ls)
         (syntax-case ls ()
           [() #f]
@@ -44,7 +65,70 @@
            (if (free-identifier=? id #'x) 
                #'(x . rest)
                (get-clause id #'ls))]))
-      (define (foo-rtd-code ctxt name clause*) 
+
+      (define (field-specs-to-list x)
+        (map (lambda (x) 
+               (syntax->datum (syntax-case x (mutable immutable)
+                                [(mutable name . rest) #'(mutable name . rest)]
+                                [(immutable name . rest) #'(immutable name . rest)]
+                                [name #'(immutable name)])))
+             x))
+      
+      (define (field-specs-to-accessors record-name ctxt x)
+        (with-syntax ([((accessor-name . k) ...) (field-specs-to-accessor-names ctxt x)]
+                      [record-name record-name])
+          #'(begin
+              (define accessor-name (record-accessor (record-type-descriptor record-name) k)) ...)))
+
+      (define (field-specs-to-accessor-names ctxt x)
+       (let loop ([x (field-specs-to-list x)] [fields '()] [offset 0])
+         (if (null? x)
+             fields
+             (loop (cdr x)
+                   (append fields (list (cons (field-spec-to-accessor-name ctxt (cdr (car x))) offset)))
+                   (+ offset 1)))))
+
+      (define (field-spec-to-accessor-name ctxt spec)
+        (let ([accessor (cdr spec)])
+          (datum->syntax
+           ctxt
+           (string->symbol
+            (if (null? accessor)
+                (string-append "get-" (symbol->string (car spec)))
+                (symbol->string (car accessor)))))))
+
+      (define (cdr-or-null x)
+        (if (not (pair? x))
+            '()
+            (cdr x)))
+
+      (define (field-specs-to-mutators record-name ctxt x)
+        (with-syntax ([((mutator-name . k) ...) (field-specs-to-mutator-names ctxt x)]
+                      [record-name record-name])
+          #'(begin
+              (define mutator-name (record-mutator (record-type-descriptor record-name) k)) ...)))
+
+      (define (field-specs-to-mutator-names ctxt x)
+        (let loop ([x (field-specs-to-list x)] [fields '()] [offset 0])
+          (if (null? x)
+              fields
+              (loop (cdr x)
+                    (if (eqv? (car (car x)) 'mutable)
+                        (append fields (list (cons (field-spec-to-mutator-name ctxt (cdr (car x))) offset)))
+                        fields)
+                    (+ offset 1)))))
+
+      (define (field-spec-to-mutator-name ctxt spec)
+        (let ([accessor (cdr-or-null (cdr spec))])
+          (datum->syntax
+           ctxt
+           (string->symbol
+            (if (null? accessor)
+                (string-append "set-" (symbol->string (car spec)) "!")
+                (symbol->string (car accessor)))))))
+
+      ;; Construct the proper call to make-record-type-descriptor
+      (define (rtd-code ctxt name clause*) 
         (define (convert-field-spec* ls)
           (list #'quote
             (list->vector
@@ -65,11 +149,11 @@
                          [(_ uid) #''uid]
                          [_ #'#f])]
                       [sealed?
-                       (syntax-case (get-clause #'sealed? clause*) ()
+                       (syntax-case (get-clause #'sealed clause*) ()
                          [(_ #t) #'#t]
                          [_      #'#f])]
                       [opaque?
-                       (syntax-case (get-clause #'opaque? clause*) ()
+                       (syntax-case (get-clause #'opaque clause*) ()
                          [(_ #t) #'#t]
                          [_      #'#f])]
                       [fields 
@@ -80,34 +164,44 @@
           #'(make-record-type-descriptor 'name
                parent-rtd-code 
                uid-code sealed? opaque? fields)))
-      (define (foo-rcd-code clause*) 
+
+      ;; Construct the proper call to make-record-constructor-descriptor
+      (define (rcd-code clause*) 
         (with-syntax ([parent-rcd-code 
                        (syntax-case (get-clause #'parent clause*) ()
                          [(_ name) #'(record-constructor-descriptor name)]
-                         [_ #'#f])])
-          #'(make-record-constructor-descriptor foo-rtd
+                         [_ #'#f])]
+                      [protocol (get-protocol-code clause*)])
+          #'(make-record-constructor-descriptor record-rtd
                parent-rcd-code protocol)))
+
       (define (get-protocol-code clause*)
         (syntax-case (get-clause #'protocol clause*) ()
           [(_ expr) #'expr]
           [_        #'#f]))
-      (define (do-define-record ctxt namespec clause*)
-        (let ([name (get-record-name namespec)])
-          (with-syntax ([make-foo (get-record-constructor-name namespec ctxt)] 
-                        [foo? (get-record-predicate-name namespec ctxt)]
-                        [foo-rtd-code (foo-rtd-code ctxt name clause*)]
-                        [protocol-code (get-protocol-code clause*)])
+
+      (define (do-define-record ctxt name-spec clause*)
+        (let ([name (get-record-name name-spec)])
+          (with-syntax ([record-name (get-record-name name-spec)]
+                        [record-constructor-name (get-constructor-name name-spec ctxt)] 
+                        [record-predicate-name (get-predicate-name name-spec ctxt)]
+                        [record-make-rtd (rtd-code ctxt name clause*)]
+                        [record-make-rcd (rcd-code clause*)]
+                        [record-accessor-defns (field-specs-to-accessors name ctxt (cdr (get-clause #'fields clause*)))]
+                        [record-mutator-defns (field-specs-to-mutators name ctxt (cdr (get-clause #'fields clause*)))])
             #'(begin
-                (define foo-rtd foo-rtd-code)
-                (define protocol protocol-code)
-                (define foo-rcd foo-rcd-code)
-                (define-syntax foo (list '$rtd #'foo-rtd #'foo-rcd))
-                (define foo? (record-predicate foo-rtd))
-                (define make-foo (record-constructor foo-rcd))
-                (define foo-x* (record-accessor foo-rtd idx*))
-                ...
-                (define set-foo-x!* (record-mutator foo-rtd mutable-idx*))
-                ...))))
+                (define record-rtd record-make-rtd)
+                (define record-rcd record-make-rcd)
+                (define-syntax record-name
+                  (lambda (x)
+                    (syntax-case x (rtd rcd)
+                      [(_ rtd) #'record-rtd]
+                      [(_ rcd) #'record-rcd])))
+                (define record-predicate-name (record-predicate record-rtd))
+                (define record-constructor-name (record-constructor record-rcd))
+                record-accessor-defns
+                record-mutator-defns))))
+
       (syntax-case x ()
-        [(ctxt namespec clause* ...)
-         (do-define-record #'ctxt #'namespec #'(clause* ...))]))))
+        [(ctxt name-spec clause* ...)
+         (do-define-record #'ctxt #'name-spec #'(clause* ...))]))))

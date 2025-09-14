@@ -7,9 +7,7 @@
           (import (rnrs lists (6)))
           (import (rnrs base builtins (6))
                   (except (rnrs base special-keywords (6)) $call/cc $undefined)
-                  (rnrs syntax-case special-keywords (6)))
-          (import (rnrs records procedural (6)))
-          (import (rnrs records syntactic (6))))
+                  (rnrs syntax-case special-keywords (6))))
   (import (rnrs syntax-case (6))
           (only (rnrs base special-keywords (6)) $call/cc $undefined))
 
