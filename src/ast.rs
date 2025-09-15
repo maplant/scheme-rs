@@ -1752,7 +1752,7 @@ fn splice_in<'a>(
                 {
                     let keyword = expansion_env.fetch_special_keyword_or_var(ident).await?;
                     match (keyword, tail) {
-                        (Some(Either::Left(SpecialKeyword::Begin)), body) if body.is_empty() => {
+                        (Some(Either::Left(SpecialKeyword::Begin)), []) => {
                             continue;
                         }
                         (Some(Either::Left(SpecialKeyword::Begin)), body) => {
