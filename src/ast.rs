@@ -276,6 +276,7 @@ impl<const N: usize> From<[usize; N]> for Version {
     }
 }
 
+#[derive(Debug)]
 pub enum VersionReference {
     SubVersions(Vec<SubVersionReference>),
     And(Vec<VersionReference>),
@@ -335,6 +336,7 @@ impl VersionReference {
     }
 }
 
+#[derive(Debug)]
 pub enum SubVersionReference {
     SubVersion(usize),
     Gte(usize),
@@ -565,6 +567,7 @@ fn discard_for(syn: &Syntax) -> &Syntax {
     }
 }
 
+#[derive(Debug)]
 pub enum ImportSet {
     Library(LibraryReference),
     Only {
@@ -718,6 +721,7 @@ impl From<ParseAstError> for ParseImportSetError<'_> {
     }
 }
 
+#[derive(Debug)]
 pub struct LibraryReference {
     pub(crate) name: Vec<Symbol>,
     pub(crate) _version_ref: VersionReference,
@@ -940,7 +944,7 @@ pub(super) async fn define_syntax(
         .call(&[])
         .await
         .map_err(|err| ParseAstError::RaisedValue(err.into()))?;
-    let transformer: Closure = mac[0].clone().try_into().unwrap();
+    let transformer: Closure = mac[0].clone().try_into()?;
     env.def_keyword(ident, transformer);
 
     Ok(())
@@ -1735,7 +1739,6 @@ fn splice_in<'a>(
         if body.is_empty() {
             return Err(ParseAstError::ExpectedBody(span.clone()));
         }
-
         for unexpanded in body {
             let FullyExpanded {
                 expansion_env,
@@ -1752,6 +1755,9 @@ fn splice_in<'a>(
                 {
                     let keyword = expansion_env.fetch_special_keyword_or_var(ident).await?;
                     match (keyword, tail) {
+                        (Some(Either::Left(SpecialKeyword::Begin)), []) => {
+                            continue;
+                        }
                         (Some(Either::Left(SpecialKeyword::Begin)), body) => {
                             splice_in(runtime, permissive, body, &expansion_env, span, defs, exprs)
                                 .await?;

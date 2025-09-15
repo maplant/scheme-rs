@@ -6,6 +6,7 @@ use std::{
 };
 
 use indexmap::IndexSet;
+use rand::distr::{Alphabetic, SampleString};
 use scheme_rs_macros::{Trace, bridge};
 
 use crate::{exceptions::Condition, strings, value::Value};
@@ -63,4 +64,10 @@ pub async fn string_to_symbol(s: &Value) -> Result<Vec<Value>, Condition> {
 pub async fn symbol_to_string(s: &Value) -> Result<Vec<Value>, Condition> {
     let sym: Symbol = s.clone().try_into()?;
     Ok(vec![Value::from(sym.to_str().to_string())])
+}
+
+#[bridge(name = "gensym", lib = "(rnrs base builtins (6))")]
+pub async fn gensym() -> Result<Vec<Value>, Condition> {
+    let string = Alphabetic.sample_string(&mut rand::rng(), 32);
+    Ok(vec![Value::from(Symbol::intern(&string))])
 }
