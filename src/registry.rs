@@ -17,7 +17,6 @@ use crate::{
 };
 use std::{
     collections::{HashMap, HashSet, hash_map::Entry},
-    fmt,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -97,7 +96,7 @@ pub struct Initializer {
 inventory::collect!(Initializer);
 */
 
-#[derive(Trace, Default)]
+#[derive(Trace, Default, Debug)]
 pub(crate) struct RegistryInner {
     libs: HashMap<Vec<Symbol>, Library>,
     loading: HashSet<Vec<Symbol>>,
@@ -270,7 +269,7 @@ impl RegistryInner {
     }
 }
 
-#[derive(Trace, Clone)]
+#[derive(Trace, Clone, Debug)]
 pub struct Registry(pub(crate) Gc<RegistryInner>);
 
 impl Registry {
@@ -513,20 +512,22 @@ pub enum LibraryKind {
     Program { path: PathBuf },
 }
 
-#[derive(Trace, Debug)]
+#[derive(Trace, derive_more::Debug)]
 pub struct Import {
     /// The original name of the identifier before being renamed.
     pub(crate) rename: Identifier,
+    #[debug(skip)]
     pub(crate) origin: Library,
 }
 
-#[derive(Trace, Clone, Debug)]
+#[derive(Trace, Clone, derive_more::Debug)]
 pub struct Export {
     pub(crate) rename: Identifier,
+    #[debug(skip)]
     pub(crate) origin: Option<Library>,
 }
 
-#[derive(Trace, Clone)]
+#[derive(Trace, Clone, Debug)]
 pub struct Library(pub(crate) Gc<LibraryInner>);
 
 impl PartialEq for Library {
@@ -535,11 +536,13 @@ impl PartialEq for Library {
     }
 }
 
+/*
 impl fmt::Debug for Library {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Library({:p})", Gc::as_ptr(&self.0))
     }
 }
+*/
 
 impl Library {
     pub fn new_repl(rt: &Runtime) -> Self {

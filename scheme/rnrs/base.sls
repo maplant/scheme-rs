@@ -26,7 +26,7 @@
       (syntax-case x ()
         ((_ ((p e0) ...) e1 e2 ...)
          (syntax (syntax-case (list e0 ...) ()
-		   ((p ...) (let () e1 e2 ...))))))))
+                   ((p ...) (let () e1 e2 ...))))))))
 
   (define-syntax cond
     (syntax-rules (else =>)
