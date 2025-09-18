@@ -203,7 +203,7 @@ impl_into_condition_for!(Box<crate::num::ArithmeticError>);
 impl_into_condition_for!(crate::num::NumberToUsizeError);
 impl_into_condition_for!(std::num::TryFromIntError);
 
-#[derive(Copy, Clone, Debug, Trace)]
+#[derive(Copy, Clone, Default, Debug, Trace)]
 pub struct SimpleCondition;
 
 impl SimpleCondition {
@@ -242,6 +242,12 @@ pub struct Serious(Gc<SimpleCondition>);
 impl Serious {
     pub fn new() -> Self {
         Self(Gc::new(SimpleCondition))
+    }
+}
+
+impl Default for Serious {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -316,6 +322,12 @@ impl Violation {
     }
 }
 
+impl Default for Violation {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SchemeCompatible for Violation {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(name: "&violation", parent: Serious::rtd())
@@ -337,6 +349,12 @@ pub struct Assertion(Gc<Serious>);
 impl Assertion {
     pub fn new() -> Self {
         Assertion(Gc::new(Serious::new()))
+    }
+}
+
+impl Default for Assertion {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -420,6 +438,12 @@ pub struct Undefined(Gc<Violation>);
 impl Undefined {
     pub fn new() -> Self {
         Self(Gc::new(Violation::new()))
+    }
+}
+
+impl Default for Undefined {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

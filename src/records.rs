@@ -643,9 +643,8 @@ impl Record {
     /// Attempt to convert the record into a Rust type that implements
     /// [SchemeCompatible].
     pub fn try_into_rust_type<T: SchemeCompatible>(&self) -> Option<Gc<T>> {
-        let Some(ref opaque_parent) = self.0.read().rust_parent else {
-            return None;
-        };
+        let this = self.0.read();
+        let opaque_parent = this.rust_parent.as_ref()?;
 
         // Attempt to extract any embedded records
         let rtd = T::rtd();
@@ -664,10 +663,7 @@ impl Record {
         };
 
         // Then, convert that back into the desired type
-        match Gc::downcast::<T>(gc_any) {
-            Ok(t) => Some(t),
-            Err(_) => None,
-        }
+        Gc::downcast::<T>(gc_any).ok()
     }
 }
 
