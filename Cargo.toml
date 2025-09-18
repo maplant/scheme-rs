@@ -11,7 +11,6 @@ homepage = "https://github.com/maplant/scheme-rs"
 repository = "https://github.com/maplant/scheme-rs"
 
 [dependencies]
-ahash = "0.8"
 async-trait = "0.1"
 by_address = "1.2"
 derive_builder = "0.20"

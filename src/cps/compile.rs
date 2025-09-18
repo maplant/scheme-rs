@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     ast::*,
     expand::{ExpansionCombiner, SyntaxRule},
-    gc::Gc,
+    records::Record,
     value::Value as RuntimeValue,
 };
 use either::Either;
@@ -27,7 +27,7 @@ pub trait Compile: std::fmt::Debug {
             span: None,
         }
         .reduce()
-        .args_to_cells(&mut AHashMap::default())
+        .args_to_cells(&mut HashMap::default())
     }
 }
 
@@ -754,7 +754,7 @@ impl Compile for SyntaxQuote {
         let expanded = Local::gensym();
 
         let mut expansions_seen = IndexSet::new();
-        let mut uses = AHashMap::new();
+        let mut uses = HashMap::new();
 
         for (ident, expansion) in self.expansions.iter() {
             let (idx, _) = expansions_seen.insert_full(expansion);
@@ -762,12 +762,12 @@ impl Compile for SyntaxQuote {
         }
 
         let mut args = vec![
-            Value::from(RuntimeValue::from(Gc::new(Gc::into_any(Gc::new(
+            Value::from(RuntimeValue::from(Record::from_rust_type(
                 self.template.clone(),
-            ))))),
-            Value::from(RuntimeValue::from(Gc::new(Gc::into_any(Gc::new(
+            ))),
+            Value::from(RuntimeValue::from(Record::from_rust_type(
                 ExpansionCombiner { uses },
-            ))))),
+            ))),
         ];
 
         for expansion in expansions_seen.iter() {
@@ -833,7 +833,7 @@ fn compile_syntax_rules(
                 Box::new(Cps::App(Value::from(k2), Vec::new(), None)),
             )),
             [rule, tail @ ..] => {
-                let pattern = Gc::new(Gc::into_any(Gc::new(rule.pattern.clone())));
+                let pattern = Record::from_rust_type(rule.pattern.clone());
                 Box::new(Cps::PrimOp(
                     PrimOp::Matches,
                     vec![Value::from(RuntimeValue::from(pattern)), Value::from(arg)],
@@ -929,7 +929,7 @@ impl Compile for Vec<u8> {
 
 impl Cps {
     /// Convert arguments for closures into cells if they are written to or escape.
-    fn args_to_cells(self, needs_cell_cache: &mut AHashMap<Local, AHashSet<Local>>) -> Self {
+    fn args_to_cells(self, needs_cell_cache: &mut HashMap<Local, HashSet<Local>>) -> Self {
         match self {
             Self::PrimOp(PrimOp::AllocCell, vals, local, cexpr) => Self::PrimOp(
                 PrimOp::AllocCell,
@@ -960,7 +960,7 @@ impl Cps {
                 cexp,
                 span: loc,
             } => {
-                let local_args: AHashSet<_> = args.iter().copied().collect();
+                let local_args: HashSet<_> = args.iter().copied().collect();
                 let escaping_args = body.need_cells(&local_args, needs_cell_cache);
 
                 let mut body = Box::new(body.args_to_cells(needs_cell_cache));

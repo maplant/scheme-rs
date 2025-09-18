@@ -2,20 +2,20 @@ use indexmap::{IndexMap, IndexSet};
 
 use crate::{
     ast,
-    exception::{Condition, Exception},
+    exceptions::{Condition, Exception},
     gc::{Gc, GcInner, Trace},
     lists,
     num::{Number, ReflexiveNumber},
     proc::{Closure, ClosureInner},
-    records::{Record, RecordTypeDescriptor},
+    records::{Record, RecordInner, RecordTypeDescriptor, SchemeCompatible},
     registry::bridge,
     strings, symbols,
     syntax::Syntax,
     vectors,
 };
 use std::{
-    any::Any, collections::HashMap, fmt, hash::Hash, io::Write, marker::PhantomData,
-    mem::ManuallyDrop, ops::Deref, sync::Arc,
+    collections::HashMap, fmt, hash::Hash, io::Write, marker::PhantomData, mem::ManuallyDrop,
+    ops::Deref, sync::Arc,
 };
 
 const ALIGNMENT: u64 = 16;
@@ -71,7 +71,7 @@ impl Value {
                     Gc::increment_reference_count(untagged as *mut GcInner<ClosureInner>)
                 }
                 ValueType::Record => {
-                    Gc::increment_reference_count(untagged as *mut GcInner<Record>)
+                    Gc::increment_reference_count(untagged as *mut GcInner<RecordInner>)
                 }
                 ValueType::RecordTypeDescriptor => {
                     Arc::increment_strong_count(untagged as *const RecordTypeDescriptor)
@@ -79,9 +79,7 @@ impl Value {
                 ValueType::Pair => {
                     Gc::increment_reference_count(untagged as *mut GcInner<lists::Pair>)
                 }
-                ValueType::Any => {
-                    Gc::increment_reference_count(untagged as *mut GcInner<Gc<dyn Any>>)
-                }
+                ValueType::HashTable => todo!(),
                 ValueType::Reserved => todo!(),
                 ValueType::Undefined
                 | ValueType::Symbol
@@ -161,8 +159,21 @@ impl Value {
             ValueType::ByteVector => "byte vector",
             ValueType::Syntax => "syntax",
             ValueType::Closure => "procedure",
+            ValueType::HashTable => "hashtable",
             _ => "record",
         }
+    }
+
+    pub fn try_into_rust_type<T: SchemeCompatible>(&self) -> Result<Gc<T>, Condition> {
+        let this = self.clone().unpack();
+        let record = match this {
+            UnpackedValue::Record(record) => record,
+            e => return Err(Condition::type_error("record-todo", e.type_name())),
+        };
+
+        record
+            .try_into_rust_type::<T>()
+            .ok_or_else(|| Condition::type_error("record-todo", "record"))
     }
 
     pub fn unpack(self) -> UnpackedValue {
@@ -210,8 +221,8 @@ impl Value {
                 UnpackedValue::Closure(Closure(clos))
             }
             ValueType::Record => {
-                let rec = unsafe { Gc::from_raw(untagged as *mut GcInner<Record>) };
-                UnpackedValue::Record(rec)
+                let rec = unsafe { Gc::from_raw(untagged as *mut GcInner<RecordInner>) };
+                UnpackedValue::Record(Record(rec))
             }
             ValueType::RecordTypeDescriptor => {
                 let rt = unsafe { Arc::from_raw(untagged as *const RecordTypeDescriptor) };
@@ -221,10 +232,7 @@ impl Value {
                 let pair = unsafe { Gc::from_raw(untagged as *mut GcInner<lists::Pair>) };
                 UnpackedValue::Pair(pair)
             }
-            ValueType::Any => {
-                let any = unsafe { Gc::from_raw(untagged as *mut GcInner<Gc<dyn Any>>) };
-                UnpackedValue::Any(any)
-            }
+            ValueType::HashTable => todo!(),
             ValueType::Reserved => todo!(),
         }
     }
@@ -323,6 +331,12 @@ impl From<Exception> for Value {
     }
 }
 
+impl From<Condition> for Value {
+    fn from(value: Condition) -> Self {
+        value.0
+    }
+}
+
 #[repr(u64)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ValueType {
@@ -340,7 +354,7 @@ pub enum ValueType {
     Record = 11,
     RecordTypeDescriptor = 12,
     Pair = 13,
-    Any = 14,
+    HashTable = 14,
     Reserved = 15,
 }
 
@@ -362,7 +376,6 @@ impl From<u64> for ValueType {
             11 => Self::Record,
             12 => Self::RecordTypeDescriptor,
             13 => Self::Pair,
-            14 => Self::Any,
             tag => panic!("Invalid tag: {tag}"),
         }
     }
@@ -386,10 +399,9 @@ pub enum UnpackedValue {
     ByteVector(Arc<vectors::AlignedVector<u8>>),
     Syntax(Arc<Syntax>),
     Closure(Closure),
-    Record(Gc<Record>),
+    Record(Record),
     RecordTypeDescriptor(Arc<RecordTypeDescriptor>),
     Pair(Gc<lists::Pair>),
-    Any(Gc<Gc<dyn Any>>),
 }
 
 impl UnpackedValue {
@@ -425,7 +437,7 @@ impl UnpackedValue {
                 Value::from_mut_ptr_and_tag(untagged, ValueType::Closure)
             }
             Self::Record(rec) => {
-                let untagged = Gc::into_raw(rec);
+                let untagged = Gc::into_raw(rec.0);
                 Value::from_mut_ptr_and_tag(untagged, ValueType::Record)
             }
             Self::RecordTypeDescriptor(rt) => {
@@ -435,10 +447,6 @@ impl UnpackedValue {
             Self::Pair(pair) => {
                 let untagged = Gc::into_raw(pair);
                 Value::from_mut_ptr_and_tag(untagged, ValueType::Pair)
-            }
-            Self::Any(any) => {
-                let untagged = Gc::into_raw(any);
-                Value::from_mut_ptr_and_tag(untagged, ValueType::Any)
             }
         }
     }
@@ -457,7 +465,7 @@ impl UnpackedValue {
             (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(a, b),
             (Self::Closure(a), Self::Closure(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Syntax(a), Self::Syntax(b)) => Arc::ptr_eq(a, b),
-            (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(a, b),
+            (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
@@ -482,7 +490,7 @@ impl UnpackedValue {
             (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(a, b),
             (Self::Closure(a), Self::Closure(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Syntax(a), Self::Syntax(b)) => Arc::ptr_eq(a, b),
-            (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(a, b),
+            (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
@@ -501,7 +509,7 @@ impl UnpackedValue {
             Self::ByteVector(_) => "byte vector",
             Self::Syntax(_) => "syntax",
             Self::Closure(_) => "procedure",
-            Self::Record(_) | Self::RecordTypeDescriptor(_) | Self::Any(_) => "record",
+            Self::Record(_) | Self::RecordTypeDescriptor(_) => "record",
         }
     }
 }
@@ -723,7 +731,7 @@ macro_rules! impl_try_from_value_for {
             fn try_from(v: UnpackedValue) -> Result<Self, Self::Error> {
                 match v {
                     UnpackedValue::$variant(v) => Ok(v),
-                    e => Err(Condition::invalid_type($type_name, e.type_name())),
+                    e => Err(Condition::type_error($type_name, e.type_name())),
                 }
             }
         }
@@ -748,9 +756,8 @@ impl_try_from_value_for!(Arc<vectors::AlignedVector<u8>>, ByteVector, "byte-vect
 impl_try_from_value_for!(Arc<Syntax>, Syntax, "syntax");
 impl_try_from_value_for!(Closure, Closure, "procedure");
 impl_try_from_value_for!(Gc<lists::Pair>, Pair, "pair");
-impl_try_from_value_for!(Gc<Record>, Record, "record");
+impl_try_from_value_for!(Record, Record, "record");
 impl_try_from_value_for!(Arc<RecordTypeDescriptor>, RecordTypeDescriptor, "rt");
-impl_try_from_value_for!(Gc<Gc<dyn Any>>, Any, "record");
 
 macro_rules! impl_from_wrapped_for {
     ($ty:ty, $variant:ident, $wrapper:expr_2021) => {
@@ -779,52 +786,9 @@ impl_from_wrapped_for!(Vec<u8>, ByteVector, |vec| Arc::new(
     vectors::AlignedVector::new(vec)
 ));
 impl_from_wrapped_for!(Syntax, Syntax, Arc::new);
-// impl_from_wrapped_for!(ClosureInner, Closure, Gc::from);
 impl_from_wrapped_for!((Value, Value), Pair, |(car, cdr)| Gc::new(
     lists::Pair::new(car, cdr)
 ));
-
-macro_rules! impl_try_from_for_any {
-    ($ty:ty, $name:literal) => {
-        impl From<$ty> for UnpackedValue {
-            fn from(val: $ty) -> Self {
-                Self::Any(Gc::new(Gc::into_any(Gc::new(val))))
-            }
-        }
-
-        impl From<$ty> for Value {
-            fn from(val: $ty) -> Self {
-                UnpackedValue::from(val).into_value()
-            }
-        }
-
-        impl TryFrom<UnpackedValue> for Gc<$ty> {
-            type Error = Condition;
-
-            fn try_from(val: UnpackedValue) -> Result<Self, Self::Error> {
-                let any = match val {
-                    UnpackedValue::Any(v) => v,
-                    e => return Err(Condition::invalid_type($name, e.type_name())),
-                };
-                let any = any.read().clone();
-                match any.downcast::<$ty>() {
-                    Ok(ok) => Ok(ok),
-                    Err(_) => Err(Condition::invalid_type($name, "record")),
-                }
-            }
-        }
-
-        impl TryFrom<Value> for Gc<$ty> {
-            type Error = Condition;
-
-            fn try_from(val: Value) -> Result<Self, Self::Error> {
-                Self::try_from(val.unpack())
-            }
-        }
-    };
-}
-
-impl_try_from_for_any!(Condition, "condition");
 
 impl TryFrom<UnpackedValue> for (Value, Value) {
     type Error = Condition;
@@ -835,7 +799,7 @@ impl TryFrom<UnpackedValue> for (Value, Value) {
                 let pair = pair.read();
                 Ok((pair.0.clone(), pair.1.clone()))
             }
-            e => Err(Condition::invalid_type("pair", e.type_name())),
+            e => Err(Condition::type_error("pair", e.type_name())),
         }
     }
 }
@@ -845,6 +809,15 @@ impl TryFrom<Value> for (Value, Value) {
 
     fn try_from(val: Value) -> Result<Self, Self::Error> {
         Self::try_from(val.unpack())
+    }
+}
+
+impl TryFrom<Value> for String {
+    type Error = Condition;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        let string: Arc<strings::AlignedString> = value.try_into()?;
+        Ok(string.0.clone())
     }
 }
 
@@ -867,9 +840,8 @@ impl Hash for EqvValue {
             UnpackedValue::ByteVector(v) => v.hash(state),
             UnpackedValue::Syntax(s) => Arc::as_ptr(s).hash(state),
             UnpackedValue::Closure(c) => Gc::as_ptr(&c.0).hash(state),
-            UnpackedValue::Record(r) => Gc::as_ptr(r).hash(state),
+            UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
             UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
-            UnpackedValue::Any(a) => Gc::as_ptr(a).hash(state),
             UnpackedValue::Pair(p) => Gc::as_ptr(p).hash(state),
             UnpackedValue::Vector(v) => Gc::as_ptr(v).hash(state),
         }
@@ -908,9 +880,9 @@ impl Hash for ReflexiveValue {
             UnpackedValue::ByteVector(v) => v.hash(state),
             UnpackedValue::Syntax(s) => Arc::as_ptr(s).hash(state),
             UnpackedValue::Closure(c) => Gc::as_ptr(&c.0).hash(state),
-            UnpackedValue::Record(r) => Gc::as_ptr(r).hash(state),
+            UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
             UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
-            UnpackedValue::Any(a) => Gc::as_ptr(a).hash(state),
+            // UnpackedValue::Any(a) => Gc::as_ptr(a).hash(state),
             // UnpackedValue::Condition(c) => Gc::as_ptr(c).hash(state),
             // UnpackedValue::OtherData(o) => Gc::as_ptr(o).hash(state),
             // TODO: We can make this better by checking the vectors and list
@@ -942,11 +914,10 @@ impl PartialEq for ReflexiveValue {
             (UnpackedValue::ByteVector(a), UnpackedValue::ByteVector(b)) => a == b,
             (UnpackedValue::Syntax(a), UnpackedValue::Syntax(b)) => Arc::ptr_eq(a, b),
             (UnpackedValue::Closure(a), UnpackedValue::Closure(b)) => Gc::ptr_eq(&a.0, &b.0),
-            (UnpackedValue::Record(a), UnpackedValue::Record(b)) => Gc::ptr_eq(a, b),
+            (UnpackedValue::Record(a), UnpackedValue::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
             (UnpackedValue::RecordTypeDescriptor(a), UnpackedValue::RecordTypeDescriptor(b)) => {
                 Arc::ptr_eq(a, b)
             }
-            (UnpackedValue::Any(a), UnpackedValue::Any(b)) => Gc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -1029,16 +1000,9 @@ fn display_value(
         UnpackedValue::Vector(v) => vectors::write_vec(&v, display_value, circular_values, f),
         UnpackedValue::ByteVector(v) => vectors::write_bytevec(&v, f),
         UnpackedValue::Closure(_) => write!(f, "<procedure>"),
-        UnpackedValue::Record(record) => write!(f, "<{record:?}>"),
+        UnpackedValue::Record(record) => write!(f, "{record:?}"),
         UnpackedValue::Syntax(syntax) => write!(f, "{syntax:#?}"),
-        UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "<{rtd:?}>"),
-        UnpackedValue::Any(any) => {
-            let any = any.read().clone();
-            let Ok(cond) = any.downcast::<Condition>() else {
-                return write!(f, "<record>");
-            };
-            write!(f, "<{cond:?}>")
-        }
+        UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
     }
 }
 
@@ -1065,15 +1029,8 @@ fn debug_value(
         UnpackedValue::ByteVector(v) => vectors::write_bytevec(&v, f),
         UnpackedValue::Syntax(syntax) => write!(f, "{syntax:#?}"),
         UnpackedValue::Closure(proc) => write!(f, "#<procedure {proc:?}>"),
-        UnpackedValue::Record(record) => write!(f, "<{record:#?}>"),
-        UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "<{rtd:?}>"),
-        UnpackedValue::Any(any) => {
-            let any = any.read().clone();
-            let Ok(cond) = any.downcast::<Condition>() else {
-                return write!(f, "<record>");
-            };
-            write!(f, "<{cond:?}>")
-        }
+        UnpackedValue::Record(record) => write!(f, "{record:#?}"),
+        UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
     }
 }
 #[bridge(name = "not", lib = "(rnrs base builtins (6))")]
