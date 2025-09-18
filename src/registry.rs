@@ -1,4 +1,4 @@
-//! a Registry is a collection of libraries.
+//! A Registry is a collection of libraries.
 
 use crate::{
     ast::{
@@ -8,7 +8,7 @@ use crate::{
     cps::Compile,
     env::{Environment, Global, Keyword},
     exceptions::{Condition, ExceptionHandler},
-    gc::{Gc, GcReadOnly, Trace},
+    gc::{Gc, Trace},
     proc::{Application, BridgePtr, Closure, DynamicWind, FuncDebugInfo, FuncPtr},
     runtime::Runtime,
     symbols::Symbol,
@@ -18,7 +18,7 @@ use crate::{
 use std::{
     collections::{HashMap, HashSet, hash_map::Entry},
     path::{Path, PathBuf},
-    sync::{Arc, OnceLock},
+    sync::Arc,
 };
 
 use futures::future::BoxFuture;
@@ -447,8 +447,6 @@ pub(crate) struct LibraryInner {
     vars: HashMap<Identifier, Gc<Value>>,
     keywords: HashMap<Identifier, Keyword>,
     special_keywords: HashMap<Identifier, SpecialKeyword>,
-    // TODO: Needs to be a struct so we can implement an empty Trace
-    // invocation_fns: Box<[InvocationFn]>,
 }
 
 impl LibraryInner {
@@ -476,7 +474,6 @@ impl LibraryInner {
             vars: HashMap::default(),
             keywords: HashMap::default(),
             special_keywords: HashMap::default(),
-            // invocation_fns: Box::new([]),
         }
     }
 }
@@ -492,39 +489,6 @@ pub enum LibraryKind {
     },
     /// A program has a path
     Program { path: PathBuf },
-}
-
-pub struct BridgeGlobal {
-    lib: &'static str,
-    scheme_name: &'static str,
-    init: fn() -> Value,
-}
-
-impl BridgeGlobal {
-    pub const fn new(lib: &'static str, scheme_name: &'static str, init: fn() -> Value) -> Self {
-        Self {
-            lib,
-            scheme_name,
-            init,
-        }
-    }
-}
-
-inventory::collect!(Global);
-
-#[macro_export]
-macro_rules! globals {
-    (
-        $lib:literal,
-        $( $scheme_name:literal = $e:expr; )+
-    ) => {
-        $(
-            // static $rust_name: std::sync::OnceLock<$crate::gc::GcReadOnly> = std::sync::OnceLock::new();
-            inventory::submit! {
-                $crate::registry::Global::new($lib, $scheme_name, || $e)
-            }
-        )+
-    };
 }
 
 #[derive(Trace, derive_more::Debug)]

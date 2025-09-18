@@ -7,8 +7,8 @@ use crate::{
     gc::{Gc, GcInner, Trace},
     lists,
     proc::{Application, Closure, DynamicWind, FuncPtr},
-    records::{Record, RecordTypeDescriptor, SchemeCompatible, into_scheme_compatible},
-    rtd,
+    records::{Record, RecordTypeDescriptor, SchemeCompatible, into_scheme_compatible, rtd},
+    registry::bridge,
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax},
@@ -214,7 +214,7 @@ impl SimpleCondition {
 
 impl SchemeCompatible for SimpleCondition {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!("&condition")
+        rtd!(name: "&condition")
     }
 }
 
@@ -223,7 +223,7 @@ pub struct Warning(Gc<SimpleCondition>);
 
 impl SchemeCompatible for Warning {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!("&warning", parent: SimpleCondition::rtd())
+        rtd!(name: "&warning", parent: SimpleCondition::rtd())
     }
 
     fn extract_embedded_record(
@@ -247,7 +247,7 @@ impl Serious {
 
 impl SchemeCompatible for Serious {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!("&serious", parent: SimpleCondition::rtd())
+        rtd!(name: "&serious", parent: SimpleCondition::rtd())
     }
 
     fn extract_embedded_record(
@@ -277,7 +277,17 @@ impl Message {
 
 impl SchemeCompatible for Message {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!("&message", parent: SimpleCondition::rtd())
+        rtd!(
+            name: "&message",
+            parent: SimpleCondition::rtd(),
+            fields: ["msg"],
+            constructor: |vals| Box::pin(async move {
+                let [ msg ] = vals else {
+                    unreachable!();
+                };
+                Ok(into_scheme_compatible(Gc::new(Message::new(msg.clone().try_into()?))))
+            })
+        )
     }
 
     fn extract_embedded_record(
@@ -308,7 +318,7 @@ impl Violation {
 
 impl SchemeCompatible for Violation {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!("&violation", parent: Serious::rtd())
+        rtd!(name: "&violation", parent: Serious::rtd())
     }
 
     fn extract_embedded_record(
@@ -332,7 +342,7 @@ impl Assertion {
 
 impl SchemeCompatible for Assertion {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!("&assertion", parent: Violation::rtd())
+        rtd!(name: "&assertion", parent: Violation::rtd())
     }
 
     fn extract_embedded_record(
@@ -345,7 +355,7 @@ impl SchemeCompatible for Assertion {
     }
 }
 
-#[derive(Clone, Debug, Trace)]
+#[derive(Clone, Trace)]
 pub struct SyntaxViolation {
     parent: Gc<Violation>,
     form: Value,
@@ -366,7 +376,21 @@ impl SyntaxViolation {
 
 impl SchemeCompatible for SyntaxViolation {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!("&syntax", parent: Violation::rtd())
+        rtd!(
+            name: "&syntax",
+            parent: Violation::rtd(),
+            fields: [ "form", "subform" ],
+            constructor: |vals| Box::pin(async move {
+                let [ form, subform ] = vals else {
+                    unreachable!();
+                };
+                Ok(into_scheme_compatible(Gc::new(SyntaxViolation {
+                    parent: Gc::new(Violation::new()),
+                    form: form.clone(),
+                    subform: subform.clone(),
+                })))
+            })
+        )
     }
 
     fn extract_embedded_record(
@@ -376,6 +400,17 @@ impl SchemeCompatible for SyntaxViolation {
         Violation::rtd()
             .is_subtype_of(rtd)
             .then(|| into_scheme_compatible(self.parent.clone()))
+    }
+}
+
+#[bridge(name = "&syntax-rtd", lib = "(rnrs conditions builtins (6))")]
+pub async fn syntax_rtd() -> Result<Vec<Value>, Condition> {
+    Ok(vec![Value::from(SyntaxViolation::rtd())])
+}
+
+impl fmt::Debug for SyntaxViolation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, " form: {} subform: {}", self.form, self.subform)
     }
 }
 
@@ -390,7 +425,7 @@ impl Undefined {
 
 impl SchemeCompatible for Undefined {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!("&undefined", parent: Violation::rtd())
+        rtd!(name: "&undefined", parent: Violation::rtd())
     }
 
     fn extract_embedded_record(
@@ -408,7 +443,7 @@ pub struct CompoundCondition(Vec<Value>);
 
 impl SchemeCompatible for CompoundCondition {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!("compound-condition")
+        rtd!(name: "compound-condition")
     }
 }
 

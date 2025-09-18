@@ -812,6 +812,15 @@ impl TryFrom<Value> for (Value, Value) {
     }
 }
 
+impl TryFrom<Value> for String {
+    type Error = Condition;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        let string: Arc<strings::AlignedString> = value.try_into()?;
+        Ok(string.0.clone())
+    }
+}
+
 /// A Value for which the implementation of PartialEq uses eqv rather than equal
 #[derive(Clone)]
 pub(crate) struct EqvValue(pub(crate) Value);
@@ -993,7 +1002,7 @@ fn display_value(
         UnpackedValue::Closure(_) => write!(f, "<procedure>"),
         UnpackedValue::Record(record) => write!(f, "{record:?}"),
         UnpackedValue::Syntax(syntax) => write!(f, "{syntax:#?}"),
-        UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "<{rtd:?}>"),
+        UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
     }
 }
 
@@ -1021,7 +1030,7 @@ fn debug_value(
         UnpackedValue::Syntax(syntax) => write!(f, "{syntax:#?}"),
         UnpackedValue::Closure(proc) => write!(f, "#<procedure {proc:?}>"),
         UnpackedValue::Record(record) => write!(f, "{record:#?}"),
-        UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "<{rtd:?}>"),
+        UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
     }
 }
 #[bridge(name = "not", lib = "(rnrs base builtins (6))")]

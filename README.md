@@ -20,7 +20,7 @@ That is obviously a long way away.
 - Spawning tasks and awaiting futures
 - Exceptions and error handling (`raise`, `raise-continuable`, `with-exception-handler`)
 - `dynamic-wind`
-- Defining async bridge functions in Rust
+- Defining async bridge functions in Rust and importing Rust structs into Scheme
 - Records and conditions
 
 ## Features currently unsupported by scheme-rs: 
@@ -70,6 +70,8 @@ $1 = (1 2 3 4 5 6 7 8 9 10)
 Here is the Tokio echo server example converted to Scheme-rs:
 
 ```scheme
+(import (tokio))
+
 (define (echo socket)
   (let ((buff (read socket 1024)))
     (if (> (bytevector-length buff) 0)

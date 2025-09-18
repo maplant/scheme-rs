@@ -4,8 +4,7 @@ use crate::{
     exceptions::Condition,
     gc::{Gc, Trace},
     proc::Closure,
-    records::{Record, RecordTypeDescriptor, SchemeCompatible},
-    rtd,
+    records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     runtime::Runtime,
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax},
@@ -276,7 +275,7 @@ fn match_vec(patterns: &[Pattern], expr: &Syntax, expansion_level: &mut Expansio
 
 impl SchemeCompatible for Pattern {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!("pattern")
+        rtd!(name: "pattern")
     }
 }
 
@@ -288,7 +287,7 @@ pub struct ExpansionLevel {
 
 impl SchemeCompatible for ExpansionLevel {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!("expansion-level")
+        rtd!(name: "expansion-level")
     }
 }
 
@@ -299,7 +298,7 @@ pub struct ExpansionCombiner {
 
 impl SchemeCompatible for ExpansionCombiner {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!("expansion-combiner")
+        rtd!(name: "expansion-combiner")
     }
 }
 
@@ -496,7 +495,7 @@ impl Template {
 
 impl SchemeCompatible for Template {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!("template")
+        rtd!(name: "template")
     }
 }
 

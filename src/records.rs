@@ -23,8 +23,10 @@ use crate::{
     vectors,
 };
 
+pub use scheme_rs_macros::rtd;
+
 /// Type declaration for a record.
-#[derive(Debug, Trace, Clone, Default)]
+#[derive(Trace, Clone, Default)]
 #[repr(align(16))]
 pub struct RecordTypeDescriptor {
     pub name: String, // Make Arc<AlignedString>?
@@ -47,45 +49,33 @@ impl RecordTypeDescriptor {
     }
 }
 
-#[macro_export]
-macro_rules! rtd {
-    ( $name:literal, parent: $parent:expr, $(, $field_name:ident : $val:expr )* ) => {{
-        static RTD: std::sync::LazyLock<Arc<RecordTypeDescriptor>> =
-            std::sync::LazyLock::new(|| {
-                let parent = $parent.clone();
-                let mut inherits = parent.inherits.clone();
-                inherits.insert(::by_address::ByAddress(parent));
-                Arc::new(RecordTypeDescriptor {
-                    name: $name.to_string(),
-                    $( $field_name : $val, )*
-                    rust_parent_constructor: None,
-                    inherits,
-                    field_index_offset: 0,
-                    fields: Vec::new(),
-                })
-            });
-        RTD.clone()
-    }};
-
-    ( $name:literal $(, $field_name:ident : $val:expr )* ) => {{
-        static RTD: std::sync::LazyLock<Arc<RecordTypeDescriptor>> =
-            std::sync::LazyLock::new(|| {
-                Arc::new(RecordTypeDescriptor {
-                    name: $name.to_string(),
-                    $( $field_name : $val, )*
-                    rust_parent_constructor: None,
-                    inherits: indexmap::IndexSet::new(),
-                    field_index_offset: 0,
-                    fields: Vec::new(),
-                    ..Default::default()
-                })
-            });
-        RTD.clone()
-    }};
-
+impl fmt::Debug for RecordTypeDescriptor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "#<rtd name: {} sealed: {} opaque: {} rust: {} ",
+            self.name,
+            self.sealed,
+            self.opaque,
+            self.rust_parent_constructor.is_some()
+        )?;
+        if !self.inherits.is_empty() {
+            let parent = self.inherits.last().unwrap();
+            write!(f, "parent: {} ", parent.name)?;
+        }
+        write!(f, "fields: (")?;
+        for (i, field) in self.fields.iter().enumerate() {
+            if i > 0 {
+                write!(f, " ")?;
+            }
+            field.fmt(f)?;
+        }
+        write!(f, ")>")?;
+        Ok(())
+    }
 }
 
-#[derive(Debug, Trace, Clone)]
+#[derive(Trace, Clone)]
 pub enum Field {
     Immutable(Symbol),
     Mutable(Symbol),
@@ -109,6 +99,21 @@ impl Field {
     fn parse_fields(fields: &Value) -> Result<Vec<Self>, Condition> {
         let fields: Gc<vectors::AlignedVector<Value>> = fields.clone().try_into()?;
         fields.read().iter().map(Self::parse).collect()
+    }
+
+    fn name(&self) -> Symbol {
+        match self {
+            Self::Immutable(sym) | Self::Mutable(sym) => *sym,
+        }
+    }
+}
+
+impl fmt::Debug for Field {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Immutable(sym) => write!(f, "(immutable {sym})"),
+            Self::Mutable(sym) => write!(f, "(mutable {sym})"),
+        }
     }
 }
 
@@ -176,7 +181,7 @@ pub async fn record_type_descriptor_pred(obj: &Value) -> Result<Vec<Value>, Cond
     )])
 }
 
-#[derive(Trace, Clone, Debug)]
+#[derive(Trace, Clone)]
 pub struct RecordConstructorDescriptor {
     parent: Option<Gc<RecordConstructorDescriptor>>,
     rtd: Arc<RecordTypeDescriptor>,
@@ -185,7 +190,13 @@ pub struct RecordConstructorDescriptor {
 
 impl SchemeCompatible for RecordConstructorDescriptor {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!("record-constructor-descriptor")
+        rtd!(name: "record-constructor-descriptor")
+    }
+}
+
+impl fmt::Debug for RecordConstructorDescriptor {
+    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Ok(())
     }
 }
 
@@ -303,6 +314,14 @@ pub async fn record_constructor(
 
     let (protocols, rtds) = rcd_to_protocols_and_rtds(&rcd);
 
+    // See if there is a rust contrustor available
+    let rust_constructor = rtds
+        .iter()
+        .find(|rtd| rtd.rust_parent_constructor.is_some())
+        .map_or_else(|| Value::from(false), |rtd| Value::from(rtd.clone()));
+
+    let protocols = protocols.into_iter().map(Value::from).collect::<Vec<_>>();
+    let rtds = rtds.into_iter().map(Value::from).collect::<Vec<_>>();
     let chain_protocols = Value::from(Closure::new(
         runtime.clone(),
         vec![
@@ -318,7 +337,7 @@ pub async fn record_constructor(
 
     Ok(chain_constructors(
         runtime,
-        &[Gc::new(Value::from(rtds))],
+        &[Gc::new(Value::from(rtds)), Gc::new(rust_constructor)],
         &[],
         &[],
         &chain_protocols,
@@ -328,15 +347,17 @@ pub async fn record_constructor(
     .await)
 }
 
-fn rcd_to_protocols_and_rtds(rcd: &Gc<RecordConstructorDescriptor>) -> (Vec<Value>, Vec<Value>) {
+fn rcd_to_protocols_and_rtds(
+    rcd: &Gc<RecordConstructorDescriptor>,
+) -> (Vec<Closure>, Vec<Arc<RecordTypeDescriptor>>) {
     let rcd = rcd.read();
     let (mut protocols, mut rtds) = if let Some(ref parent) = rcd.parent {
         rcd_to_protocols_and_rtds(parent)
     } else {
         (Vec::new(), Vec::new())
     };
-    protocols.push(Value::from(rcd.protocol.clone()));
-    rtds.push(Value::from(rcd.rtd.clone()));
+    protocols.push(rcd.protocol.clone());
+    rtds.push(rcd.rtd.clone());
     (protocols, rtds)
 }
 
@@ -408,19 +429,21 @@ async fn chain_constructors(
     let cont: Closure = cont.clone().try_into()?;
     // env[0] is a vector of RTDs
     let rtds: Gc<vectors::AlignedVector<Value>> = env[0].read().clone().try_into()?;
+    // env[1] is the possible rust constructor
+    let rust_constructor = env[1].clone();
     let mut rtds = rtds.read().clone();
     let remaining_rtds = rtds.split_off(1);
     let curr_rtd: Arc<RecordTypeDescriptor> = rtds[0].clone().try_into()?;
     let rtds_remain = !remaining_rtds.is_empty();
     let num_args = curr_rtd.fields.len();
     let env = if rtds_remain {
-        Some(Gc::new(Value::from(remaining_rtds)))
+        vec![Gc::new(Value::from(remaining_rtds)), rust_constructor]
     } else {
-        Some(Gc::new(Value::from(curr_rtd)))
+        vec![Gc::new(Value::from(curr_rtd)), rust_constructor]
     }
     .into_iter()
     // Chain the current environment:
-    .chain(env[1..].iter().cloned())
+    .chain(env[2..].iter().cloned())
     // Chain the arguments passed to this function:
     .chain(args.iter().cloned().map(Gc::new))
     .collect::<Vec<_>>();
@@ -460,13 +483,30 @@ async fn constructor(
     let rtd: Arc<RecordTypeDescriptor> = env[0].read().clone().try_into()?;
     // The fields of the record are all of the env variables chained with
     // the arguments to this function.
-    let fields = env[1..]
+    let mut fields = env[2..]
         .iter()
         .map(|var| var.read().clone())
         .chain(args.iter().cloned())
         .collect::<Vec<_>>();
+    // Check for a rust constructor
+    let rust_constructor = env[1].read().clone();
+    let (rust_parent, fields) = if rust_constructor.is_true() {
+        let rust_rtd: Arc<RecordTypeDescriptor> = rust_constructor.try_into()?;
+        let num_fields: usize = rust_rtd
+            .inherits
+            .iter()
+            .map(|parent| parent.fields.len())
+            .sum();
+        let remaining_fields = fields.split_off(num_fields + rust_rtd.fields.len());
+        (
+            Some((rust_rtd.rust_parent_constructor.unwrap().constructor)(&fields).await?),
+            remaining_fields,
+        )
+    } else {
+        (None, fields)
+    };
     let record = Value::from(Record(Gc::new(RecordInner {
-        opaque_parent: None,
+        rust_parent,
         rtd,
         fields,
     })));
@@ -594,7 +634,7 @@ impl Record {
         let opaque_parent = Some(into_scheme_compatible(Gc::new(t)));
         let rtd = T::rtd();
         Self(Gc::new(RecordInner {
-            opaque_parent,
+            rust_parent: opaque_parent,
             rtd,
             fields: Vec::new(),
         }))
@@ -603,7 +643,7 @@ impl Record {
     /// Attempt to convert the record into a Rust type that implements
     /// [SchemeCompatible].
     pub fn try_into_rust_type<T: SchemeCompatible>(&self) -> Option<Gc<T>> {
-        let Some(ref opaque_parent) = self.0.read().opaque_parent else {
+        let Some(ref opaque_parent) = self.0.read().rust_parent else {
             return None;
         };
 
@@ -640,7 +680,7 @@ impl fmt::Debug for Record {
 #[derive(Trace, Clone)]
 #[repr(align(16))]
 pub(crate) struct RecordInner {
-    pub(crate) opaque_parent: Option<Gc<dyn SchemeCompatible>>,
+    pub(crate) rust_parent: Option<Gc<dyn SchemeCompatible>>,
     pub(crate) rtd: Arc<RecordTypeDescriptor>,
     pub(crate) fields: Vec<Value>,
 }
@@ -648,11 +688,19 @@ pub(crate) struct RecordInner {
 impl fmt::Debug for RecordInner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "#<{}", self.rtd.name)?;
-        if let Some(parent) = &self.opaque_parent {
+        if let Some(parent) = &self.rust_parent {
             write!(f, "{parent:?}")?;
         }
+        let mut field_names = self
+            .rtd
+            .inherits
+            .iter()
+            .cloned()
+            .chain(Some(ByAddress(self.rtd.clone())))
+            .flat_map(|rtd| rtd.fields.clone());
         for field in &self.fields {
-            write!(f, " {field:?}")?;
+            let name = field_names.next().unwrap().name();
+            write!(f, " {name}: {field:?}")?;
         }
         write!(f, ">")
     }
@@ -675,9 +723,14 @@ pub trait SchemeCompatible: fmt::Debug + Trace + Any {
         None
     }
 
-    /// Return the fields of the record
-    fn fields(&self) -> &'static [Symbol] {
-        &[]
+    /// Fetch the kth field of the record.
+    fn get_field(&self, k: usize) -> Value {
+        panic!("{k} is out of bounds")
+    }
+
+    /// Set the kth field of the record.
+    fn set_field(&mut self, k: usize, _val: Value) {
+        panic!("{k} is out of bounds")
     }
 }
 
@@ -694,7 +747,13 @@ pub fn into_scheme_compatible(t: Gc<impl SchemeCompatible>) -> Gc<dyn SchemeComp
 
 #[derive(Copy, Clone, Debug)]
 pub struct RustParentConstructor {
-    _constructor: ParentConstructor,
+    constructor: ParentConstructor,
+}
+
+impl RustParentConstructor {
+    pub fn new(constructor: ParentConstructor) -> Self {
+        Self { constructor }
+    }
 }
 
 type ParentConstructor =
