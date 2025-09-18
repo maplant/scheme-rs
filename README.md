@@ -20,7 +20,7 @@ That is obviously a long way away.
 - Spawning tasks and awaiting futures
 - Exceptions and error handling (`raise`, `raise-continuable`, `with-exception-handler`)
 - `dynamic-wind`
-- Defining async bridge functions in Rust and importing Rust structs into Scheme
+- Defining async bridge functions in Rust and importing Rust types into Scheme
 - Records and conditions
 
 ## Features currently unsupported by scheme-rs: 
