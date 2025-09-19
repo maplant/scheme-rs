@@ -247,7 +247,7 @@ impl ClosureInner {
 /// or a continuation. Contains a reference to all of the globals and
 /// environmental variables used in the body, along with a function pointer to
 /// the body of the closure.
-#[derive(Clone, Trace, Debug)]
+#[derive(Clone, Trace)]
 pub struct Closure(pub(crate) Gc<ClosureInner>);
 
 impl Closure {
@@ -316,6 +316,13 @@ impl Closure {
     }
 }
 
+
+impl fmt::Debug for Closure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.read().fmt(f)
+    }
+}
+
 impl fmt::Debug for ClosureInner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_continuation() {
@@ -323,7 +330,14 @@ impl fmt::Debug for ClosureInner {
         }
 
         let Some(ref debug_info) = self.debug_info else {
-            return write!(f, "unknown-function");
+            write!(f, "(unknown-function")?;
+            for i in 0..self.num_required_args {
+                write!(f, " ${i}")?;
+            }
+            if self.variadic {
+                write!(f, " . ${})", self.num_required_args)?;
+            }
+            return Ok(());
         };
 
         write!(f, "({}", debug_info.name)?;
