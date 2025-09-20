@@ -987,7 +987,7 @@ impl Cps {
 
 fn arg_to_cell(arg: &mut Local, body: Box<Cps>) -> Box<Cps> {
     let mut val_arg = Local::gensym();
-    val_arg.name = arg.name.clone();
+    val_arg.name = arg.name;
     let cell_arg = std::mem::replace(arg, val_arg);
     Box::new(Cps::PrimOp(
         PrimOp::AllocCell,
