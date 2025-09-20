@@ -316,7 +316,6 @@ impl Closure {
     }
 }
 
-
 impl fmt::Debug for Closure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.read().fmt(f)
