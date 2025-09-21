@@ -161,10 +161,6 @@ impl ClosureArgs {
         self.args.iter().chain(self.continuation.as_ref())
     }
 
-    fn to_vec(&self) -> Vec<Local> {
-        self.iter().copied().collect()
-    }
-
     fn num_required(&self) -> usize {
         self.args.len().saturating_sub(self.variadic as usize)
     }

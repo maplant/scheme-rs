@@ -843,7 +843,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
             args.push(if let Some(ref loc) = bundle.loc {
                 let debug_info = Arc::new(FuncDebugInfo::new(
                     bundle.val.name,
-                    bundle.args.to_vec(),
+                    bundle.args.args.clone(),
                     loc.clone(),
                 ));
                 let debug_info_ptr = Arc::as_ptr(&debug_info);

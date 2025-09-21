@@ -44,7 +44,7 @@ impl LexicalContour {
 
 impl LexicalContour {
     pub fn def_var(&mut self, name: Identifier) -> Local {
-        let local = Local::gensym();
+        let local = Local::gensym_with_name(name.sym);
         self.vars.insert(name, local);
         local
     }
