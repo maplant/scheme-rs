@@ -133,7 +133,9 @@ pub static RECORD_TYPE_DESCRIPTOR_RTD: LazyLock<Arc<RecordTypeDescriptor>> = Laz
     })
 });
 
-pub static NONGENERATIVE: LazyLock<Arc<Mutex<HashMap<Symbol, Arc<RecordTypeDescriptor>>>>> =
+type NonGenerativeStore = LazyLock<Arc<Mutex<HashMap<Symbol, Arc<RecordTypeDescriptor>>>>>;
+
+pub static NONGENERATIVE: NonGenerativeStore =
     LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
 
 #[bridge(
@@ -156,10 +158,10 @@ pub async fn make_record_type_descriptor(
 
     // If the record is non-generative, check to see if it has already been
     // instanciated.
-    if let Some(ref uid) = uid {
-        if let Some(rtd) = NONGENERATIVE.lock().unwrap().get(uid) {
-            return Ok(vec![Value::from(rtd.clone())]);
-        }
+    if let Some(ref uid) = uid
+        && let Some(rtd) = NONGENERATIVE.lock().unwrap().get(uid)
+    {
+        return Ok(vec![Value::from(rtd.clone())]);
     }
 
     let name: Symbol = name.clone().try_into()?;
@@ -1077,7 +1079,7 @@ pub async fn record_type_uid(rtd: &Value) -> Result<Vec<Value>, Condition> {
 )]
 pub async fn record_type_generative_pred(rtd: &Value) -> Result<Vec<Value>, Condition> {
     let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
-    Ok(vec![Value::from(!rtd.uid.is_some())])
+    Ok(vec![Value::from(rtd.uid.is_none())])
 }
 
 #[bridge(name = "record-type-sealed?", lib = "(rnrs records inspection (6))")]
