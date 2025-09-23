@@ -92,7 +92,8 @@ async fn main() -> ExitCode {
                 print!("{exception}");
             }
             Err(err) => {
-                err.render(&mut error_builder, "<stdin>");
+                let lines: Vec<String> = input.lines().map(String::from).collect();
+                err.render(&lines, &mut error_builder, "<stdin>");
                 println!("{error_builder}");
                 error_builder.reset();
             }
