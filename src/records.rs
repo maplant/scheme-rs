@@ -2,10 +2,11 @@
 
 use std::{
     any::Any,
+    collections::HashMap,
     fmt,
     mem::ManuallyDrop,
     ptr::NonNull,
-    sync::{Arc, LazyLock},
+    sync::{Arc, LazyLock, Mutex},
 };
 
 use by_address::ByAddress;
@@ -26,12 +27,13 @@ use crate::{
 pub use scheme_rs_macros::rtd;
 
 /// Type declaration for a record.
-#[derive(Trace, Clone, Default)]
+#[derive(Trace, Clone)]
 #[repr(align(16))]
 pub struct RecordTypeDescriptor {
-    pub name: String, // Make Arc<AlignedString>?
+    pub name: Symbol,
     pub sealed: bool,
     pub opaque: bool,
+    pub uid: Option<Symbol>,
     pub rust_parent_constructor: Option<RustParentConstructor>,
     /// Parent is most recently inserted record type, if one exists.
     pub inherits: indexmap::IndexSet<ByAddress<Arc<RecordTypeDescriptor>>>,
@@ -120,15 +122,19 @@ impl fmt::Debug for Field {
 /// The record type descriptor for the "record type descriptor" type.
 pub static RECORD_TYPE_DESCRIPTOR_RTD: LazyLock<Arc<RecordTypeDescriptor>> = LazyLock::new(|| {
     Arc::new(RecordTypeDescriptor {
-        name: "rt".to_string(),
+        name: Symbol::intern("rtd"),
         sealed: true,
         opaque: true,
+        uid: None,
         rust_parent_constructor: None,
         inherits: indexmap::IndexSet::new(),
         field_index_offset: 0,
         fields: vec![],
     })
 });
+
+pub static NONGENERATIVE: LazyLock<Arc<Mutex<HashMap<Symbol, Arc<RecordTypeDescriptor>>>>> =
+    LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
 
 #[bridge(
     name = "make-record-type-descriptor",
@@ -137,11 +143,25 @@ pub static RECORD_TYPE_DESCRIPTOR_RTD: LazyLock<Arc<RecordTypeDescriptor>> = Laz
 pub async fn make_record_type_descriptor(
     name: &Value,
     parent: &Value,
-    _uid: &Value,
+    uid: &Value,
     sealed: &Value,
     opaque: &Value,
     fields: &Value,
 ) -> Result<Vec<Value>, Condition> {
+    let uid: Option<Symbol> = if uid.is_true() {
+        Some(uid.clone().try_into()?)
+    } else {
+        None
+    };
+
+    // If the record is non-generative, check to see if it has already been
+    // instanciated.
+    if let Some(ref uid) = uid {
+        if let Some(rtd) = NONGENERATIVE.lock().unwrap().get(uid) {
+            return Ok(vec![Value::from(rtd.clone())]);
+        }
+    }
+
     let name: Symbol = name.clone().try_into()?;
     let parent: Option<Arc<RecordTypeDescriptor>> = parent
         .is_true()
@@ -160,15 +180,22 @@ pub async fn make_record_type_descriptor(
     let sealed = sealed.is_true();
     let opaque = opaque.is_true();
     let fields = Field::parse_fields(fields)?;
-    Ok(vec![Value::from(Arc::new(RecordTypeDescriptor {
-        name: name.to_string(),
+    let rtd = Arc::new(RecordTypeDescriptor {
+        name,
         sealed,
         opaque,
+        uid,
         rust_parent_constructor: None,
         inherits,
         field_index_offset,
         fields,
-    }))])
+    });
+
+    if let Some(uid) = uid {
+        NONGENERATIVE.lock().unwrap().insert(uid, rtd.clone());
+    }
+
+    Ok(vec![Value::from(rtd)])
 }
 
 #[bridge(
@@ -994,4 +1021,104 @@ pub async fn record_mutator(
         dynamic_wind.clone(),
         None,
     ))
+}
+
+// Inspection library:
+
+#[bridge(name = "record?", lib = "(rnrs records inspection (6))")]
+pub async fn record_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
+    match &*obj.unpacked_ref() {
+        UnpackedValue::Record(rec) => Ok(vec![Value::from(!rec.0.read().rtd.opaque)]),
+        _ => Ok(vec![Value::from(false)]),
+    }
+}
+
+#[bridge(name = "record-rtd", lib = "(rnrs records inspection (6))")]
+pub async fn record_rtd(record: &Value) -> Result<Vec<Value>, Condition> {
+    match &*record.unpacked_ref() {
+        UnpackedValue::Record(rec) if !rec.0.read().rtd.opaque => {
+            Ok(vec![Value::from(rec.0.read().rtd.clone())])
+        }
+        _ => Err(Condition::error(
+            "expected a non-opaque record type".to_string(),
+        )),
+    }
+}
+
+#[bridge(name = "record-type-name", lib = "(rnrs records inspection (6))")]
+pub async fn record_type_name(rtd: &Value) -> Result<Vec<Value>, Condition> {
+    let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
+    Ok(vec![Value::from(rtd.name)])
+}
+
+#[bridge(name = "record-type-parent", lib = "(rnrs records inspection (6))")]
+pub async fn record_type_parent(rtd: &Value) -> Result<Vec<Value>, Condition> {
+    let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
+    if let Some(parent) = rtd.inherits.last() {
+        Ok(vec![Value::from(parent.0.clone())])
+    } else {
+        Ok(vec![Value::from(false)])
+    }
+}
+
+#[bridge(name = "record-type-uid", lib = "(rnrs records inspection (6))")]
+pub async fn record_type_uid(rtd: &Value) -> Result<Vec<Value>, Condition> {
+    let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
+    if let Some(uid) = rtd.uid {
+        Ok(vec![Value::from(uid)])
+    } else {
+        Ok(vec![Value::from(false)])
+    }
+}
+
+#[bridge(
+    name = "record-type-generative?",
+    lib = "(rnrs records inspection (6))"
+)]
+pub async fn record_type_generative_pred(rtd: &Value) -> Result<Vec<Value>, Condition> {
+    let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
+    Ok(vec![Value::from(!rtd.uid.is_some())])
+}
+
+#[bridge(name = "record-type-sealed?", lib = "(rnrs records inspection (6))")]
+pub async fn record_type_sealed_pred(rtd: &Value) -> Result<Vec<Value>, Condition> {
+    let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
+    Ok(vec![Value::from(rtd.sealed)])
+}
+
+#[bridge(name = "record-type-opaque?", lib = "(rnrs records inspection (6))")]
+pub async fn record_type_opaque_pred(rtd: &Value) -> Result<Vec<Value>, Condition> {
+    let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
+    Ok(vec![Value::from(rtd.opaque)])
+}
+
+#[bridge(
+    name = "record-type-field-names",
+    lib = "(rnrs records inspection (6))"
+)]
+pub async fn record_type_field_names(rtd: &Value) -> Result<Vec<Value>, Condition> {
+    let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
+    let fields = rtd
+        .fields
+        .iter()
+        .map(Field::name)
+        .map(Value::from)
+        .collect::<Vec<_>>();
+    Ok(vec![Value::from(fields)])
+}
+
+#[bridge(name = "record-field-mutable?", lib = "(rnrs records inspection (6))")]
+pub async fn record_field_mutable_pred(rtd: &Value, k: &Value) -> Result<Vec<Value>, Condition> {
+    let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
+    let k: Arc<Number> = k.clone().try_into()?;
+    let k: usize = k.as_ref().try_into()?;
+
+    if k >= rtd.fields.len() {
+        return Err(Condition::invalid_index(k, rtd.fields.len()));
+    }
+
+    Ok(vec![Value::from(matches!(
+        rtd.fields[k],
+        Field::Mutable(_)
+    ))])
 }
