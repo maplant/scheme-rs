@@ -19,8 +19,10 @@ use crate::{
     syntax::Span,
     value::Value as RuntimeValue,
 };
-use ahash::{AHashMap, AHashSet};
-use std::fmt;
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+};
 
 mod analysis;
 pub(crate) mod codegen;
@@ -115,7 +117,7 @@ pub enum PrimOp {
     Matches,
     /// Expands a syntax template with the current set of bindings.
     ExpandTemplate,
-    /// Return an error indicating a failure to match the pattern.
+    /// Raise an error indicating a failure to match the pattern.
     ErrorNoPatternsMatch,
 
     // Continuation primitive operators:
@@ -159,10 +161,6 @@ impl ClosureArgs {
         self.args.iter().chain(self.continuation.as_ref())
     }
 
-    fn to_vec(&self) -> Vec<Local> {
-        self.iter().copied().collect()
-    }
-
     fn num_required(&self) -> usize {
         self.args.len().saturating_sub(self.variadic as usize)
     }
@@ -198,7 +196,7 @@ pub enum Cps {
 
 impl Cps {
     /// Perform substitutions on local variables.
-    fn substitute(&mut self, substitutions: &AHashMap<Local, Value>) {
+    fn substitute(&mut self, substitutions: &HashMap<Local, Value>) {
         match self {
             Self::PrimOp(_, args, _, cexp) => {
                 substitute_values(args, substitutions);
@@ -228,7 +226,7 @@ impl Cps {
     }
 }
 
-fn substitute_value(value: &mut Value, substitutions: &AHashMap<Local, Value>) {
+fn substitute_value(value: &mut Value, substitutions: &HashMap<Local, Value>) {
     if let Some(local) = value.to_local()
         && let Some(substitution) = substitutions.get(&local)
     {
@@ -236,7 +234,7 @@ fn substitute_value(value: &mut Value, substitutions: &AHashMap<Local, Value>) {
     }
 }
 
-fn substitute_values(values: &mut [Value], substitutions: &AHashMap<Local, Value>) {
+fn substitute_values(values: &mut [Value], substitutions: &HashMap<Local, Value>) {
     values
         .iter_mut()
         .for_each(|value| substitute_value(value, substitutions))

@@ -1,12 +1,13 @@
 use crate::{
-    exception::Condition,
+    exceptions::Condition,
     gc::{Gc, Trace},
     lists::slice_to_list,
     num::{Number, NumberToUsizeError},
     registry::bridge,
     strings,
-    value::Value,
+    value::{EqvValue, Value, write_value},
 };
+use indexmap::IndexMap;
 use malachite::Integer;
 use std::{
     clone::Clone,
@@ -46,12 +47,31 @@ impl<T: Trace + PartialEq> PartialEq for AlignedVector<T> {
     }
 }
 
-pub fn display_vec<T: fmt::Display>(
-    head: &str,
-    v: &[T],
+pub(crate) fn write_vec(
+    v: &Gc<AlignedVector<Value>>,
+    fmt: fn(&Value, &mut IndexMap<EqvValue, bool>, &mut fmt::Formatter<'_>) -> fmt::Result,
+    circular_values: &mut IndexMap<EqvValue, bool>,
     f: &mut fmt::Formatter<'_>,
 ) -> Result<(), fmt::Error> {
-    write!(f, "{head}")?;
+    write!(f, "#(")?;
+
+    let v = v.read();
+    let mut iter = v.iter().peekable();
+    while let Some(next) = iter.next() {
+        write_value(next, fmt, circular_values, f)?;
+        if iter.peek().is_some() {
+            write!(f, " ")?;
+        }
+    }
+
+    write!(f, ")")
+}
+
+pub(crate) fn write_bytevec(
+    v: &AlignedVector<u8>,
+    f: &mut fmt::Formatter<'_>,
+) -> Result<(), fmt::Error> {
+    write!(f, "#u8(")?;
 
     let mut iter = v.iter().peekable();
     while let Some(next) = iter.next() {
@@ -293,7 +313,7 @@ pub async fn vector_copy_to(
 #[bridge(name = "vector-append", lib = "(rnrs base builtins (6))")]
 pub async fn vector_append(args: &[Value]) -> Result<Vec<Value>, Condition> {
     if args.is_empty() {
-        return Err(Condition::wrong_num_of_variadic_args(1..usize::MAX, 0));
+        return Err(Condition::wrong_num_of_var_args(1..usize::MAX, 0));
     }
 
     Ok(vec![Value::from(

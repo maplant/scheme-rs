@@ -1,7 +1,7 @@
 use crate::{
     ast::Literal,
     env::{Environment, Keyword},
-    exception::Condition,
+    exceptions::Condition,
     gc::Trace,
     lex::{InputSpan, Token},
     lists::{self, list_to_vec_with_null},
@@ -14,7 +14,10 @@ use futures::future::BoxFuture;
 use std::{
     collections::{BTreeSet, HashSet},
     fmt,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 /// Source location for an s-expression.
@@ -170,7 +173,7 @@ impl Syntax {
                 literal: Literal::Number(num.as_ref().clone()),
                 span: Span::default(),
             },
-            x => unimplemented!("{x:?}"),
+            x => unimplemented!("{:?}", x.into_value()),
         }
     }
 
@@ -422,7 +425,8 @@ pub struct Mark(usize);
 
 impl Mark {
     pub fn new() -> Self {
-        Self(rand::random())
+        static NEXT_MARK: AtomicUsize = AtomicUsize::new(0);
+        Self(NEXT_MARK.fetch_add(1, Ordering::Relaxed))
     }
 }
 
@@ -441,16 +445,6 @@ pub struct Identifier {
 impl fmt::Debug for Identifier {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.sym)
-        /*
-            f,
-            "{} ({})",
-            self.sym,
-            self.marks
-                .iter()
-                .map(|m| m.0.to_string() + " ")
-                .collect::<String>()
-        )
-         */
     }
 }
 
@@ -592,7 +586,7 @@ pub async fn datum_to_syntax(template_id: &Value, datum: &Value) -> Result<Vec<V
         ident: template_id, ..
     } = syntax.as_ref()
     else {
-        return Err(Condition::invalid_type("template_id", "syntax"));
+        return Err(Condition::type_error("template_id", "syntax"));
     };
     Ok(vec![Value::from(Syntax::syntax_from_datum(
         &template_id.marks,
@@ -618,7 +612,7 @@ pub async fn bound_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Va
         ..
     } = id1.as_ref()
     else {
-        return Err(Condition::invalid_type("identifier", "syntax"));
+        return Err(Condition::type_error("identifier", "syntax"));
     };
     let Syntax::Identifier {
         ident: id2,
@@ -626,7 +620,7 @@ pub async fn bound_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Va
         ..
     } = id2.as_ref()
     else {
-        return Err(Condition::invalid_type("identifier", "syntax"));
+        return Err(Condition::type_error("identifier", "syntax"));
     };
     Ok(vec![Value::from(*bound_id1 && *bound_id2 && id1 == id2)])
 }
@@ -641,7 +635,7 @@ pub async fn free_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Val
         ..
     } = id1.as_ref()
     else {
-        return Err(Condition::invalid_type("identifier", "syntax"));
+        return Err(Condition::type_error("identifier", "syntax"));
     };
     let Syntax::Identifier {
         ident: id2,
@@ -649,7 +643,7 @@ pub async fn free_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Val
         ..
     } = id2.as_ref()
     else {
-        return Err(Condition::invalid_type("identifier", "syntax"));
+        return Err(Condition::type_error("identifier", "syntax"));
     };
     Ok(vec![Value::from(
         !bound_id1 && !bound_id2 && id1.sym == id2.sym,

@@ -1,13 +1,12 @@
 //! Cranelift Codegen from CPS.
 
-use ahash::AHashMap;
 use cranelift::{
     codegen::ir::{StackSlot, entities::Value},
     prelude::*,
 };
 use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Linkage, Module};
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use crate::{
     cps::{Value as CpsValue, analysis::MaxDrops},
@@ -20,12 +19,12 @@ use super::*;
 
 #[derive(Copy, Clone, Debug)]
 enum IrValue {
-    Ptr(Value),
-    Int(Value),
+    Cell(Value),
+    Value(Value),
 }
 
 struct Rebinds {
-    rebinds: AHashMap<Var, IrValue>,
+    rebinds: HashMap<Var, IrValue>,
 }
 
 impl Rebinds {
@@ -41,7 +40,7 @@ impl Rebinds {
 
     fn new() -> Self {
         Self {
-            rebinds: AHashMap::default(),
+            rebinds: HashMap::default(),
         }
     }
 }
@@ -65,6 +64,7 @@ pub(crate) struct RuntimeFunctions {
     error_no_patterns_match: FuncId,
     dropv: FuncId,
     dropc: FuncId,
+    raise_rt: FuncId,
 
     // Math primops:
     add: FuncId,
@@ -79,7 +79,6 @@ pub(crate) struct RuntimeFunctions {
 }
 
 impl Cps {
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn into_closure(
         self,
         runtime: Runtime,
@@ -145,7 +144,7 @@ impl Cps {
                 builder
                     .ins()
                     .load(types::I64, MemFlags::new(), globals_param, (i * 8) as i32);
-            rebinds.rebind(Var::Global(global.clone()), IrValue::Ptr(var));
+            rebinds.rebind(Var::Global(global.clone()), IrValue::Cell(var));
         }
 
         let mut deferred = Vec::new();
@@ -315,8 +314,8 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         match value {
             CpsValue::Var(var) => {
                 let cell = match *self.rebinds.fetch_bind(var) {
-                    IrValue::Ptr(cell) => cell,
-                    IrValue::Int(int) => return int,
+                    IrValue::Cell(cell) => cell,
+                    IrValue::Value(int) => return int,
                 };
 
                 let read_cell = self
@@ -354,7 +353,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
                 );
                 let call = self.builder.ins().call(error_unbound_variable, &[symbol]);
                 let unbound_variable_error = self.builder.inst_results(call)[0];
-                self.builder.ins().return_(&[unbound_variable_error]);
+                self.raise_codegen(unbound_variable_error);
 
                 self.builder.switch_to_block(defined_block);
                 self.builder.seal_block(defined_block);
@@ -393,7 +392,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
 
         let winders = self.builder.inst_results(call)[0];
         self.rebinds
-            .rebind(Var::Local(extract_to), IrValue::Int(winders));
+            .rebind(Var::Local(extract_to), IrValue::Value(winders));
         self.push_val_alloc(winders);
         self.cps_codegen(cexpr, deferred);
     }
@@ -414,7 +413,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         let call = self.builder.ins().call(matches, &[pattern, expr]);
         let match_result = self.builder.inst_results(call)[0];
         self.rebinds
-            .rebind(Var::Local(binds), IrValue::Int(match_result));
+            .rebind(Var::Local(binds), IrValue::Value(match_result));
         self.push_val_alloc(match_result);
         self.cps_codegen(cexpr, deferred);
     }
@@ -461,7 +460,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         );
         let expanded = self.builder.inst_results(call)[0];
         self.rebinds
-            .rebind(Var::Local(dest), IrValue::Int(expanded));
+            .rebind(Var::Local(dest), IrValue::Value(expanded));
         self.push_val_alloc(expanded);
         self.cps_codegen(cexpr, deferred);
     }
@@ -486,7 +485,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
             .call(prepare_continuation, &[cont, winders, dynamic_wind]);
         let prepared = self.builder.inst_results(call)[0];
         self.rebinds
-            .rebind(Var::Local(dest), IrValue::Int(prepared));
+            .rebind(Var::Local(dest), IrValue::Value(prepared));
         self.push_val_alloc(prepared);
         self.cps_codegen(cexpr, deferred);
     }
@@ -530,7 +529,6 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
 
         let error_slot = self.alloc_array(1);
         let error_addr = self.builder.ins().stack_addr(types::I64, error_slot, 0);
-
         let primop_call = self
             .builder
             .ins()
@@ -553,12 +551,13 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
 
         let error_val = self.array_load(error_slot, 0);
         self.drops_codegen();
-        self.builder.ins().return_(&[error_val]);
+        self.raise_codegen(error_val);
 
         // Otherwise continue with the correct value
         self.builder.switch_to_block(success_block);
         self.builder.seal_block(success_block);
-        self.rebinds.rebind(Var::Local(dest), IrValue::Int(result));
+        self.rebinds
+            .rebind(Var::Local(dest), IrValue::Value(result));
         self.push_val_alloc(result);
         self.cps_codegen(cexpr, deferred);
     }
@@ -571,7 +570,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         );
         let call = self.builder.ins().call(error_no_patterns_match, &[]);
         let error = self.builder.inst_results(call)[0];
-        self.builder.ins().return_(&[error]);
+        self.raise_codegen(error);
     }
 
     fn alloc_cell_codegen(&mut self, var: Local, cexpr: Cps, deferred: &mut Vec<ClosureBundle>) {
@@ -580,7 +579,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
             .declare_func_in_func(self.runtime_funcs.alloc_cell, self.builder.func);
         let call = self.builder.ins().call(alloc_cell, &[]);
         let cell = self.builder.inst_results(call)[0];
-        self.rebinds.rebind(Var::Local(var), IrValue::Ptr(cell));
+        self.rebinds.rebind(Var::Local(var), IrValue::Cell(cell));
         self.push_cell_alloc(cell);
         self.cps_codegen(cexpr, deferred);
     }
@@ -613,6 +612,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
     }
 
     fn app_codegen(&mut self, operator: &CpsValue, args: &[CpsValue], loc: Option<Span>) {
+        let runtime = self.get_runtime();
         let operator = self.value_codegen(operator);
 
         // Allocate space for the args to be passed to make_application
@@ -640,6 +640,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         let call = self.builder.ins().call(
             apply,
             &[
+                runtime,
                 operator,
                 args_addr,
                 args_len,
@@ -654,6 +655,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
     }
 
     fn forward_codegen(&mut self, operator: &CpsValue, arg: &CpsValue) {
+        let runtime = self.get_runtime();
         let operator = self.value_codegen(operator);
         let arg = self.value_codegen(arg);
         let exception_handler = self.get_exception_handler();
@@ -662,10 +664,10 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         let forward = self
             .module
             .declare_func_in_func(self.runtime_funcs.forward, self.builder.func);
-        let call = self
-            .builder
-            .ins()
-            .call(forward, &[operator, arg, exception_handler, dynamic_wind]);
+        let call = self.builder.ins().call(
+            forward,
+            &[runtime, operator, arg, exception_handler, dynamic_wind],
+        );
         let result = self.builder.inst_results(call)[0];
         self.drops_codegen();
         self.builder.ins().return_(&[result]);
@@ -721,6 +723,21 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         self.cps_codegen(failure, deferred);
     }
 
+    fn raise_codegen(&mut self, val: Value) {
+        let runtime = self.get_runtime();
+        let exception_handler = self.get_exception_handler();
+        let dynamic_wind = self.get_dynamic_wind();
+        let raise = self
+            .module
+            .declare_func_in_func(self.runtime_funcs.raise_rt, self.builder.func);
+        let call = self
+            .builder
+            .ins()
+            .call(raise, &[runtime, val, exception_handler, dynamic_wind]);
+        let result = self.builder.inst_results(call)[0];
+        self.builder.ins().return_(&[result]);
+    }
+
     fn store_codegen(
         &mut self,
         from: &CpsValue,
@@ -732,7 +749,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         let CpsValue::Var(to) = to else {
             unreachable!()
         };
-        let IrValue::Ptr(to) = self.rebinds.fetch_bind(to) else {
+        let IrValue::Cell(to) = self.rebinds.fetch_bind(to) else {
             panic!("{to:?} is not a pointer");
         };
         let store = self
@@ -770,8 +787,8 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         let env = self.alloc_array(bundle.env.len());
         for (i, env_var) in bundle.env.iter().enumerate() {
             let val = match *self.rebinds.fetch_bind(&Var::Local(*env_var)) {
-                IrValue::Ptr(ptr) => ptr,
-                IrValue::Int(val) => panic!("{val:?} is not a pointer"),
+                IrValue::Cell(ptr) => ptr,
+                IrValue::Value(val) => panic!("{val:?} is not a pointer"),
             };
             self.array_store(env, i, val);
         }
@@ -780,8 +797,8 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         let globals = self.alloc_array(bundle.globals.len());
         for (i, global_var) in bundle.globals.iter().enumerate() {
             let val = match *self.rebinds.fetch_bind(&Var::Global(global_var.clone())) {
-                IrValue::Ptr(ptr) => ptr,
-                IrValue::Int(val) => panic!("{val:?} is not a pointer"),
+                IrValue::Cell(ptr) => ptr,
+                IrValue::Value(val) => panic!("{val:?} is not a pointer"),
             };
             self.array_store(globals, i, val);
         }
@@ -826,7 +843,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
             args.push(if let Some(ref loc) = bundle.loc {
                 let debug_info = Arc::new(FuncDebugInfo::new(
                     bundle.val.name,
-                    bundle.args.to_vec(),
+                    bundle.args.args.clone(),
                     loc.clone(),
                 ));
                 let debug_info_ptr = Arc::as_ptr(&debug_info);
@@ -846,7 +863,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         let call = self.builder.ins().call(make_closure, &args);
         let closure = self.builder.inst_results(call)[0];
         self.rebinds
-            .rebind(Var::Local(bundle.val), IrValue::Ptr(closure));
+            .rebind(Var::Local(bundle.val), IrValue::Cell(closure));
         self.push_cell_alloc(closure);
         self.cps_codegen(cexp, deferred);
     }
@@ -904,7 +921,7 @@ impl ClosureBundle {
 
         let env = body
             .free_variables()
-            .difference(&args.iter().cloned().collect::<AHashSet<_>>())
+            .difference(&args.iter().cloned().collect::<HashSet<_>>())
             .cloned()
             .collect::<Vec<_>>();
         let globals = body.globals().into_iter().collect::<Vec<_>>();
@@ -971,7 +988,7 @@ impl ClosureBundle {
             let var = builder
                 .ins()
                 .load(types::I64, MemFlags::new(), env_param, (i * 8) as i32);
-            rebinds.rebind(Var::Local(env_var), IrValue::Ptr(var));
+            rebinds.rebind(Var::Local(env_var), IrValue::Cell(var));
         }
 
         // Load globals:
@@ -981,7 +998,7 @@ impl ClosureBundle {
                 builder
                     .ins()
                     .load(types::I64, MemFlags::new(), globals_param, (i * 8) as i32);
-            rebinds.rebind(Var::Global(global), IrValue::Ptr(var));
+            rebinds.rebind(Var::Global(global), IrValue::Cell(var));
         }
 
         // Load args:
@@ -990,13 +1007,13 @@ impl ClosureBundle {
             let var = builder
                 .ins()
                 .load(types::I64, MemFlags::new(), args_param, (i * 8) as i32);
-            rebinds.rebind(Var::Local(*arg), IrValue::Int(var));
+            rebinds.rebind(Var::Local(*arg), IrValue::Value(var));
         }
 
         // Load continuation:
         if let Some(cont) = self.args.continuation {
             let cont_param = builder.block_params(entry_block)[CONTINUATION_PARAM];
-            rebinds.rebind(Var::Local(cont), IrValue::Ptr(cont_param));
+            rebinds.rebind(Var::Local(cont), IrValue::Cell(cont_param));
         }
 
         {

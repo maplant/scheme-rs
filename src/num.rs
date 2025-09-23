@@ -1,5 +1,5 @@
 use crate::{
-    exception::Condition,
+    exceptions::Condition,
     gc::Trace,
     registry::bridge,
     value::{Value, ValueType},
@@ -36,8 +36,14 @@ pub enum Number {
 }
 
 impl Number {
-    #[allow(dead_code)]
-    fn is_zero(&self) -> bool {
+    pub fn is_exact(&self) -> bool {
+        matches!(
+            self,
+            Self::FixedInteger(_) | Self::BigInteger(_) | Self::Rational(_)
+        )
+    }
+
+    pub fn is_zero(&self) -> bool {
         match self {
             Self::FixedInteger(i) => i.is_zero(),
             Self::BigInteger(i) => i.eq(&0),
@@ -47,8 +53,7 @@ impl Number {
         }
     }
 
-    #[allow(dead_code)]
-    fn is_even(&self) -> bool {
+    pub fn is_even(&self) -> bool {
         match self {
             Self::FixedInteger(i) => i.even(),
             Self::BigInteger(i) => i.even(),
@@ -58,8 +63,7 @@ impl Number {
         }
     }
 
-    #[allow(dead_code)]
-    fn is_odd(&self) -> bool {
+    pub fn is_odd(&self) -> bool {
         match self {
             Self::FixedInteger(i) => i.odd(),
             Self::BigInteger(i) => i.odd(),
@@ -69,8 +73,7 @@ impl Number {
         }
     }
 
-    #[allow(dead_code)]
-    fn is_complex(&self) -> bool {
+    pub fn is_complex(&self) -> bool {
         matches!(self, Self::Complex(_))
     }
 }
@@ -106,6 +109,12 @@ impl From<usize> for Number {
             Ok(i) => Number::FixedInteger(i),
             Err(_) => Number::BigInteger(Integer::from(u)),
         }
+    }
+}
+
+impl From<i32> for Number {
+    fn from(i: i32) -> Self {
+        Self::FixedInteger(i as i64)
     }
 }
 
@@ -469,7 +478,7 @@ impl Display for Operation {
 }
 
 unsafe impl Trace for Number {
-    unsafe fn visit_children(&self, _visitor: unsafe fn(crate::gc::OpaqueGcPtr)) {}
+    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(crate::gc::OpaqueGcPtr)) {}
 }
 
 #[derive(Debug)]
@@ -690,10 +699,10 @@ pub(crate) fn greater(vals: &[Value]) -> Result<bool, Condition> {
                 // This is somewhat less efficient for small numbers but avoids
                 // cloning big ones
                 if prev.is_complex() {
-                    return Err(Condition::invalid_type("number", "complex"));
+                    return Err(Condition::type_error("number", "complex"));
                 }
                 if next.is_complex() {
-                    return Err(Condition::invalid_type("number", "complex"));
+                    return Err(Condition::type_error("number", "complex"));
                 }
                 if prev <= next {
                     return Ok(false);
@@ -718,10 +727,10 @@ pub(crate) fn greater_equal(vals: &[Value]) -> Result<bool, Condition> {
                 let prev: Arc<Number> = prev.clone().try_into()?;
                 let next: Arc<Number> = next.clone().try_into()?;
                 if prev.is_complex() {
-                    return Err(Condition::invalid_type("number", "complex"));
+                    return Err(Condition::type_error("number", "complex"));
                 }
                 if next.is_complex() {
-                    return Err(Condition::invalid_type("number", "complex"));
+                    return Err(Condition::type_error("number", "complex"));
                 }
                 if prev < next {
                     return Ok(false);
@@ -746,10 +755,10 @@ pub(crate) fn lesser(vals: &[Value]) -> Result<bool, Condition> {
                 let prev: Arc<Number> = prev.clone().try_into()?;
                 let next: Arc<Number> = next.clone().try_into()?;
                 if prev.is_complex() {
-                    return Err(Condition::invalid_type("number", "complex"));
+                    return Err(Condition::type_error("number", "complex"));
                 }
                 if next.is_complex() {
-                    return Err(Condition::invalid_type("number", "complex"));
+                    return Err(Condition::type_error("number", "complex"));
                 }
                 if prev >= next {
                     return Ok(false);
@@ -774,10 +783,10 @@ pub(crate) fn lesser_equal(vals: &[Value]) -> Result<bool, Condition> {
                 let prev: Arc<Number> = prev.clone().try_into()?;
                 let next: Arc<Number> = next.clone().try_into()?;
                 if prev.is_complex() {
-                    return Err(Condition::invalid_type("number", "complex"));
+                    return Err(Condition::type_error("number", "complex"));
                 }
                 if next.is_complex() {
-                    return Err(Condition::invalid_type("number", "complex"));
+                    return Err(Condition::type_error("number", "complex"));
                 }
                 if prev > next {
                     return Ok(false);

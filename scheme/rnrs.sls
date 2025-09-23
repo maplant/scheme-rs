@@ -1,4 +1,8 @@
 (library (rnrs (6))
   (export (import (rnrs base))
-          (import (rnrs syntax-case))))
+          (import (rnrs syntax-case))
+          (import (rnrs records syntactic (6)))
+          (import (rnrs records procedural (6)))
+          (import (rnrs records inspection (6)))))
+
    

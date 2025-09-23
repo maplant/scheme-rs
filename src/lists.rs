@@ -1,10 +1,12 @@
+use indexmap::IndexMap;
+
 use crate::{
-    exception::Condition,
+    exceptions::Condition,
     gc::{Gc, Trace},
     num::Number,
     registry::bridge,
     syntax::Syntax,
-    value::{UnpackedValue, Value},
+    value::{EqvValue, UnpackedValue, Value, ValueType, write_value},
 };
 use std::fmt;
 
@@ -25,21 +27,40 @@ impl PartialEq for Pair {
     }
 }
 
-pub fn display_list(car: &Value, cdr: &Value, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    // TODO(map): If the list is circular, DO NOT print infinitely!
-    match &*cdr.unpacked_ref() {
-        UnpackedValue::Pair(_) | UnpackedValue::Null => (),
-        cdr => {
+pub(crate) fn write_list(
+    car: &Value,
+    cdr: &Value,
+    fmt: fn(&Value, &mut IndexMap<EqvValue, bool>, &mut fmt::Formatter<'_>) -> fmt::Result,
+    circular_values: &mut IndexMap<EqvValue, bool>,
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
+    match cdr.type_of() {
+        ValueType::Pair | ValueType::Null => (),
+        _ => {
             // This is not a proper list
-            return write!(f, "({car} . {cdr})");
+            write!(f, "(")?;
+            write_value(car, fmt, circular_values, f)?;
+            write!(f, " . ")?;
+            write_value(cdr, fmt, circular_values, f)?;
+            write!(f, ")")?;
+            return Ok(());
         }
     }
 
-    write!(f, "({car}")?;
-
+    write!(f, "(")?;
+    write_value(car, fmt, circular_values, f)?;
     let mut stack = vec![cdr.clone()];
 
     while let Some(head) = stack.pop() {
+        if let Some((idx, _, seen)) = circular_values.get_full_mut(&EqvValue(head.clone())) {
+            if *seen {
+                write!(f, " . #{idx}#")?;
+                continue;
+            } else {
+                write!(f, " #{idx}=")?;
+                *seen = true;
+            }
+        }
         match &*head.unpacked_ref() {
             UnpackedValue::Null => {
                 if !stack.is_empty() {
@@ -49,47 +70,15 @@ pub fn display_list(car: &Value, cdr: &Value, f: &mut fmt::Formatter<'_>) -> fmt
             UnpackedValue::Pair(pair) => {
                 let pair_read = pair.read();
                 let Pair(car, cdr) = pair_read.as_ref();
-                write!(f, " {car}")?;
+                write!(f, " ")?;
+                write_value(car, fmt, circular_values, f)?;
+                // write!(f, " {car}")?;
                 stack.push(cdr.clone());
             }
             x => {
-                write!(f, " {x}")?;
-            }
-        }
-    }
-
-    write!(f, ")")
-}
-
-pub fn debug_list(car: &Value, cdr: &Value, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    // TODO(map): If the list is circular, DO NOT print infinitely!
-    match &*cdr.unpacked_ref() {
-        UnpackedValue::Pair(_) | UnpackedValue::Null => (),
-        cdr => {
-            // This is not a proper list
-            return write!(f, "({car:?} . {cdr:?})");
-        }
-    }
-
-    write!(f, "({car:?}")?;
-
-    let mut stack = vec![cdr.clone()];
-
-    while let Some(head) = stack.pop() {
-        match &*head.unpacked_ref() {
-            UnpackedValue::Null => {
-                if !stack.is_empty() {
-                    write!(f, " ()")?;
-                }
-            }
-            UnpackedValue::Pair(pair) => {
-                let pair_read = pair.read();
-                let Pair(car, cdr) = pair_read.as_ref();
-                write!(f, " {car:?}")?;
-                stack.push(cdr.clone());
-            }
-            x => {
-                write!(f, " {x:?}")?;
+                let val = x.clone().into_value();
+                write!(f, " ")?;
+                write_value(&val, fmt, circular_values, f)?;
             }
         }
     }
@@ -158,7 +147,7 @@ pub async fn car(val: &Value) -> Result<Vec<Value>, Condition> {
             };
             Ok(vec![Value::from(car.clone())])
         }
-        _ => Err(Condition::invalid_type("list", val.type_name())),
+        _ => Err(Condition::type_error("list", val.type_name())),
     }
 }
 
@@ -178,7 +167,7 @@ pub async fn cdr(val: &Value) -> Result<Vec<Value>, Condition> {
             })]),
             _ => unreachable!(),
         },
-        _ => Err(Condition::invalid_type("list", val.type_name())),
+        _ => Err(Condition::type_error("list", val.type_name())),
     }
 }
 

@@ -1,4 +1,4 @@
-//! a Registry is a collection of libraries.
+//! A Registry is a collection of libraries.
 
 use crate::{
     ast::{
@@ -7,7 +7,7 @@ use crate::{
     },
     cps::Compile,
     env::{Environment, Global, Keyword},
-    exception::Condition,
+    exceptions::{Condition, ExceptionHandler},
     gc::{Gc, Trace},
     proc::{Application, BridgePtr, Closure, DynamicWind, FuncDebugInfo, FuncPtr},
     runtime::Runtime,
@@ -17,13 +17,12 @@ use crate::{
 };
 use std::{
     collections::{HashMap, HashSet, hash_map::Entry},
-    fmt,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use futures::future::BoxFuture;
-pub use scheme_rs_macros::bridge;
+pub use scheme_rs_macros::{bridge, cps_bridge};
 
 pub struct BridgeFn {
     name: &'static str,
@@ -87,17 +86,7 @@ inventory::collect!(BridgeFn);
 #[folder = "scheme"]
 pub struct Stdlib;
 
-/*
-#[derive(Copy, Clone)]
-pub struct Initializer {
-    lib_name: &'static str,
-    initializer: fn(lib: &Library),
-}
-
-inventory::collect!(Initializer);
-*/
-
-#[derive(Trace, Default)]
+#[derive(Trace, Default, Debug)]
 pub(crate) struct RegistryInner {
     libs: HashMap<Vec<Symbol>, Library>,
     loading: HashSet<Vec<Symbol>>,
@@ -252,17 +241,6 @@ impl RegistryInner {
             .chain(special_keyword_libs)
             .collect();
 
-        /*
-        // Run the initializers:
-        for initializer in inventory::iter::<Initializer>() {
-            let lib_name = LibraryName::from_str(initializer.lib_name, None).unwrap();
-            let lib = libs
-                .entry(lib_name)
-                .or_insert_with(|| Gc::new(Top::library()));
-            (initializer.initializer)(lib);
-        }
-        */
-
         Self {
             libs,
             loading: HashSet::default(),
@@ -270,7 +248,7 @@ impl RegistryInner {
     }
 }
 
-#[derive(Trace, Clone)]
+#[derive(Trace, Clone, Debug)]
 pub struct Registry(pub(crate) Gc<RegistryInner>);
 
 impl Registry {
@@ -513,20 +491,22 @@ pub enum LibraryKind {
     Program { path: PathBuf },
 }
 
-#[derive(Trace, Debug)]
+#[derive(Trace, derive_more::Debug)]
 pub struct Import {
     /// The original name of the identifier before being renamed.
     pub(crate) rename: Identifier,
+    #[debug(skip)]
     pub(crate) origin: Library,
 }
 
-#[derive(Trace, Clone, Debug)]
+#[derive(Trace, Clone, derive_more::Debug)]
 pub struct Export {
     pub(crate) rename: Identifier,
+    #[debug(skip)]
     pub(crate) origin: Option<Library>,
 }
 
-#[derive(Trace, Clone)]
+#[derive(Trace, Clone, Debug)]
 pub struct Library(pub(crate) Gc<LibraryInner>);
 
 impl PartialEq for Library {
@@ -535,11 +515,13 @@ impl PartialEq for Library {
     }
 }
 
+/*
 impl fmt::Debug for Library {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Library({:p})", Gc::as_ptr(&self.0))
     }
 }
+*/
 
 impl Library {
     pub fn new_repl(rt: &Runtime) -> Self {
@@ -698,9 +680,15 @@ impl Library {
         let compiled = defn_body.compile_top_level();
         let rt = { self.0.read().rt.clone() };
         let closure = rt.compile_expr(compiled).await;
-        let _ = Application::new(closure, Vec::new(), None, DynamicWind::default(), None)
-            .eval()
-            .await?;
+        let _ = Application::new(
+            closure,
+            Vec::new(),
+            ExceptionHandler::default(),
+            DynamicWind::default(),
+            None,
+        )
+        .eval()
+        .await?;
         self.0.write().state = LibraryState::Invoked;
         Ok(())
     }
