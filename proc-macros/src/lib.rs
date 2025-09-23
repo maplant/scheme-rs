@@ -637,6 +637,7 @@ struct Rtd {
     parent: Option<Expr>,
     opaque: Option<Expr>,
     sealed: Option<Expr>,
+    uid: Option<LitStr>,
     constructor: Option<Expr>,
     fields: Option<Vec<Field>>,
 }
@@ -648,6 +649,7 @@ impl Parse for Rtd {
         let mut opaque = None;
         let mut sealed = None;
         let mut fields = None;
+        let mut uid = None;
         let mut constructor = None;
         while !input.is_empty() {
             let keyword: Ident = input.parse()?;
@@ -681,6 +683,12 @@ impl Parse for Rtd {
                 }
                 let _: Token![:] = input.parse()?;
                 sealed = Some(input.parse()?);
+            } else if keyword == "uid" {
+                if uid.is_some() {
+                    return Err(Error::new(keyword.span(), "duplicate definition of uid"));
+                }
+                let _: Token![:] = input.parse()?;
+                uid = Some(input.parse()?);
             } else if keyword == "fields" {
                 if fields.is_some() {
                     return Err(Error::new(keyword.span(), "duplicate definition of fields"));
@@ -708,6 +716,7 @@ impl Parse for Rtd {
             parent,
             opaque,
             sealed,
+            uid,
             constructor, 
             fields,
         })
@@ -721,6 +730,7 @@ pub fn rtd(tokens: TokenStream) -> TokenStream {
         parent,
         opaque,
         sealed,
+        uid,
         constructor, 
         fields,
     } = parse_macro_input!(tokens as Rtd);
@@ -745,16 +755,21 @@ pub fn rtd(tokens: TokenStream) -> TokenStream {
     };
     let opaque = opaque.unwrap_or_else(|| parse_quote!(false));
     let sealed = sealed.unwrap_or_else(|| parse_quote!(false));
+    let uid = match uid {
+        Some(uid) => quote!(Some(::scheme_rs::symbols::Symbol::intern(#uid))),
+        None => quote!(None),
+    };
 
     quote! {
         {
             static RTD: std::sync::LazyLock<std::sync::Arc<::scheme_rs::records::RecordTypeDescriptor>> =
                 std::sync::LazyLock::new(|| {
                     std::sync::Arc::new(::scheme_rs::records::RecordTypeDescriptor {
-                        name: #name.to_string(),
+                        name: ::scheme_rs::symbols::Symbol::intern(#name),
                         inherits: #inherits,
                         opaque: #opaque,
                         sealed: #sealed,
+                        uid: #uid,
                         field_index_offset: 0,
                         fields: vec![ #( #fields, )* ],
                         rust_parent_constructor: #rust_parent_constructor,
