@@ -6,15 +6,17 @@ use rustyline::{
     validate::{ValidationContext, ValidationResult, Validator},
 };
 use scheme_rs::{
-    ast::{DefinitionBody, ImportSet, ParseAstError},
+    ast::{DefinitionBody, ImportSet},
     cps::Compile,
     env::Environment,
+    err::EvalError,
     exceptions::{Exception, ExceptionHandler},
     lex::LexError,
     parse::ParseSyntaxError,
     proc::{Application, DynamicWind},
     registry::Library,
     runtime::Runtime,
+    string_builder,
     syntax::Syntax,
     value::Value,
 };
@@ -77,6 +79,8 @@ async fn main() -> ExitCode {
             }
         };
 
+        let mut error_builder = string_builder::Builder::new();
+
         match compile_and_run_str(&runtime, &repl, &input, curr_line).await {
             Ok(results) => {
                 for result in results.into_iter() {
@@ -88,7 +92,10 @@ async fn main() -> ExitCode {
                 print!("{exception}");
             }
             Err(err) => {
-                println!("Error: {err:?}");
+                let lines: Vec<String> = input.lines().map(String::from).collect();
+                err.render(&lines, &mut error_builder, "<stdin>");
+                println!("{error_builder}");
+                error_builder.reset();
             }
         }
 
@@ -96,14 +103,6 @@ async fn main() -> ExitCode {
     }
 
     ExitCode::SUCCESS
-}
-
-#[derive(derive_more::From, Debug)]
-pub enum EvalError<'e> {
-    LexError(LexError<'e>),
-    ParseError(ParseSyntaxError<'e>),
-    ParseAstError(ParseAstError),
-    Exception(Exception),
 }
 
 async fn compile_and_run_str<'e>(
