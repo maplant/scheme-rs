@@ -45,13 +45,6 @@ impl Builder {
     pub fn reset(&mut self) {
         self.buffer.clear();
     }
-
-    pub fn to_string(self) -> String {
-        match String::from_utf8(self.buffer) {
-            Ok(string) => string,
-            Err(_) => String::from("<failed to stringify Builder::buffer>"),
-        }
-    }
 }
 
 impl std::fmt::Display for Builder {

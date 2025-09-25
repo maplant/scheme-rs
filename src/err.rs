@@ -203,7 +203,7 @@ impl<'err> ErrRender<'err> for ParseAstError {
     ) {
         let ctx: ErrorContext = match self {
             ParseAstError::BadForm(span) => ("Bad Form", Some(span)),
-            _ => todo!(),
+            _ => todo!("{:?}", self),
         }
         .into();
 
