@@ -355,7 +355,7 @@ pub enum ValueType {
     RecordTypeDescriptor = 12,
     Pair = 13,
     HashTable = 14,
-    Reserved = 15,
+    Port = 15,
 }
 
 // TODO: Make TryFrom with error
@@ -376,6 +376,8 @@ impl From<u64> for ValueType {
             11 => Self::Record,
             12 => Self::RecordTypeDescriptor,
             13 => Self::Pair,
+            14 => Self::HashTable,
+            15 => Self::Port,
             tag => panic!("Invalid tag: {tag}"),
         }
     }

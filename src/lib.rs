@@ -12,6 +12,7 @@ pub mod lex;
 pub mod lists;
 pub mod num;
 pub mod parse;
+pub mod ports;
 pub mod proc;
 pub mod records;
 pub mod registry;

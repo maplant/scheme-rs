@@ -272,6 +272,7 @@ pub enum Character {
     /// `#\xcafe` characters
     Unicode(String),
 }
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EscapedCharacter {
     Alarm,
@@ -284,6 +285,7 @@ pub enum EscapedCharacter {
     Space,
     Tab,
 }
+
 impl From<EscapedCharacter> for char {
     fn from(c: EscapedCharacter) -> char {
         // from r7rs 6.6

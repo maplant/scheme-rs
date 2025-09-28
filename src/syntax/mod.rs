@@ -20,6 +20,8 @@ use std::{
     },
 };
 
+mod lex;
+
 /// Source location for an s-expression.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Trace)]
 pub struct Span {
