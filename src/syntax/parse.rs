@@ -124,11 +124,11 @@ impl Parser<'_> {
 
                 // Handle some erroneous situations:
                 token!(Lexeme::RParen, span) | token!(Lexeme::RBracket, span) => {
-                    return Err(ParseSyntaxError::UnexpectedClosingParen { span });
+                    Err(ParseSyntaxError::UnexpectedClosingParen { span })
                 }
 
                 token!(Lexeme::Period, span) => {
-                    return Err(ParseSyntaxError::InvalidPeriodLocation { span });
+                    Err(ParseSyntaxError::InvalidPeriodLocation { span })
                 }
             }
         })
@@ -228,11 +228,11 @@ impl Parser<'_> {
         loop {
             match self.next_token().await? {
                 token!(Lexeme::Number(num), span) => {
-                    if let Number::FixedInteger(i) = num.try_into()? {
-                        if let Ok(byte) = u8::try_from(i) {
-                            output.push(byte);
-                            continue;
-                        }
+                    if let Number::FixedInteger(i) = num.try_into()?
+                        && let Ok(byte) = u8::try_from(i)
+                    {
+                        output.push(byte);
+                        continue;
                     }
                     return Err(ParseSyntaxError::NonByte { span });
                 }
@@ -269,7 +269,7 @@ pub enum ParseSyntaxError {
     CharTryFrom(CharTryFromError),
     Lex(LexerError),
     ParseNumberError(ParseNumberError),
-    UnexpectedToken { token: Token },
+    UnexpectedToken { token: Box<Token> },
 }
 
 impl fmt::Display for ParseSyntaxError {

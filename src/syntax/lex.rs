@@ -3,9 +3,9 @@
 use super::Span;
 use futures::future::BoxFuture;
 use malachite::{Integer, base::num::conversion::traits::*, rational::Rational};
+use std::sync::Arc;
 use tokio::sync::MappedMutexGuard;
 use unicode_categories::UnicodeCategories;
-use std::sync::Arc;
 
 use crate::{
     num,
@@ -211,7 +211,7 @@ impl<'a> Lexer<'a> {
                 Character::Literal('x')
             } else {
                 let mut unicode = String::new();
-                while let Some(chr) = self.match_pred(|c| c.is_digit(16)).await? {
+                while let Some(chr) = self.match_pred(|c| c.is_ascii_hexdigit()).await? {
                     unicode.push(chr);
                 }
                 Character::Unicode(unicode)
@@ -395,13 +395,14 @@ impl<'a> Lexer<'a> {
 
     async fn suffix(&mut self) -> Result<Option<isize>, ReadError> {
         let pos = self.pos;
-        if let Some(_) = self
+        if self
             .match_pred(|chr| matches!(chr.to_ascii_lowercase(), 'e' | 's' | 'f' | 'd' | 'l'))
             .await?
+            .is_some()
         {
             let neg = !self.match_char('+').await? && self.match_char('-').await?;
             let mut suffix = String::new();
-            while let Some(chr) = self.match_pred(|chr| chr.is_digit(10)).await? {
+            while let Some(chr) = self.match_pred(|chr| chr.is_ascii_digit()).await? {
                 suffix.push(chr);
             }
             if !suffix.is_empty() {
@@ -518,7 +519,7 @@ impl<'a> Lexer<'a> {
                 buff.clear();
             }
         }
-        if buff.len() > 0 {
+        if !buff.is_empty() {
             escaped.push(u8::from_str_radix(&buff, 16).unwrap() as char);
         }
         Ok(escaped)
@@ -690,11 +691,9 @@ impl Part {
     fn try_into_i64(&self, radix: u32) -> Option<i64> {
         let num = match &self.real {
             Real::Num(num) => i64::from_str_radix(num, radix).ok()?,
-            Real::Decimal(base, fract, None) if fract.is_empty() => {
-                i64::from_str_radix(base, 10).ok()?
-            }
+            Real::Decimal(base, fract, None) if fract.is_empty() => base.parse().ok()?,
             Real::Decimal(base, fract, Some(exp)) if fract.is_empty() => {
-                let base = i64::from_str_radix(base, 10).ok()?;
+                let base: i64 = base.parse().ok()?;
                 let exp = 10_i64.checked_pow((*exp).try_into().ok()?)?;
                 base.checked_mul(exp)?
             }

@@ -21,7 +21,7 @@ use std::{
     },
 };
 
-pub(self) mod lex;
+pub mod lex;
 pub mod parse;
 
 /// Source location for an s-expression.
@@ -277,7 +277,7 @@ impl Syntax {
         let file_name = file_name.unwrap_or("<unknown>");
         let bytes = Cursor::new(s.as_bytes().to_vec());
         futures::executor::block_on(async move {
-            let port = Port::from_reader(&file_name, bytes);
+            let port = Port::from_reader(file_name, bytes);
             let mut parser = Parser::new(&port).await;
             parser.all_datums().await
         })

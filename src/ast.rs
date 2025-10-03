@@ -11,7 +11,7 @@ use crate::{
     registry::ImportError,
     runtime::Runtime,
     symbols::Symbol,
-    syntax::{parse::ParseSyntaxError, FullyExpanded, Identifier, Span, Syntax},
+    syntax::{FullyExpanded, Identifier, Span, Syntax, parse::ParseSyntaxError},
     value::Value,
 };
 use either::Either;
@@ -198,10 +198,7 @@ impl LibraryName {
         }
     }
 
-    pub fn from_str(
-        s: &str,
-        file_name: Option<&str>,
-    ) -> Result<Self, ParseLibraryNameError> {
+    pub fn from_str(s: &str, file_name: Option<&str>) -> Result<Self, ParseLibraryNameError> {
         let syn = Syntax::from_str(s, file_name)?;
         Ok(Self::parse(&syn[0])?)
     }

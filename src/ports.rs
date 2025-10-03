@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, LazyLock},
 };
 use tokio::{
-    io::{self, AsyncRead, AsyncReadExt },
+    io::{self, AsyncRead, AsyncReadExt},
     sync::{
         MappedMutexGuard, Mutex, MutexGuard,
         mpsc::{Receiver, Sender},
@@ -138,7 +138,7 @@ impl Port {
         }
     }
      */
-    pub fn from_reader(name: &str, reader: impl  AsyncRead + Send + Sync + 'static) -> Self {
+    pub fn from_reader(name: &str, reader: impl AsyncRead + Send + Sync + 'static) -> Self {
         Self {
             name: name.to_string(),
             inner: Arc::new(Mutex::new(PortInner::InputPort(InputPort::from_reader(
