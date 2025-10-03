@@ -3,17 +3,18 @@ use crate::{
     env::{Environment, Keyword},
     exceptions::Condition,
     gc::Trace,
-    lex::{InputSpan, Token},
     lists::{self, list_to_vec_with_null},
-    parse::ParseSyntaxError,
+    ports::Port,
     registry::bridge,
     symbols::Symbol,
+    syntax::parse::{ParseSyntaxError, Parser},
     value::{UnpackedValue, Value, ValueType},
 };
 use futures::future::BoxFuture;
 use std::{
     collections::{BTreeSet, HashSet},
     fmt,
+    io::Cursor,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -45,17 +46,6 @@ impl Default for Span {
             column: 0,
             offset: 0,
             file: Arc::new(String::new()),
-        }
-    }
-}
-
-impl From<InputSpan<'_>> for Span {
-    fn from(span: InputSpan<'_>) -> Self {
-        Span {
-            line: span.location_line(),
-            column: span.get_column(),
-            offset: span.location_offset(),
-            file: span.extra.clone(),
         }
     }
 }
@@ -283,38 +273,14 @@ impl Syntax {
         }
     }
 
-    fn parse_fragment<'a, 'b>(
-        i: &'b [Token<'a>],
-    ) -> Result<(&'b [Token<'a>], Self), ParseSyntaxError<'a>> {
-        let (remaining, syntax) = crate::parse::expression(i)?;
-        Ok((remaining, syntax))
-    }
-
-    pub fn parse<'a>(mut i: &[Token<'a>]) -> Result<Vec<Self>, ParseSyntaxError<'a>> {
-        let mut output = Vec::new();
-        while !i.is_empty() {
-            let (remaining, expr) = Self::parse_fragment(i)?;
-            output.push(expr);
-            i = remaining
-        }
-        Ok(output)
-    }
-
-    pub fn from_str<'a>(
-        s: &'a str,
-        file_name: Option<&str>,
-    ) -> Result<Vec<Self>, ParseSyntaxError<'a>> {
-        let tokens = Token::tokenize(s, file_name)?;
-        Self::parse(&tokens)
-    }
-
-    pub fn from_str_with_line_offset<'a>(
-        s: &'a str,
-        file_name: Option<&str>,
-        line_offset: u32,
-    ) -> Result<Vec<Self>, ParseSyntaxError<'a>> {
-        let tokens = Token::tokenize_with_line_offset(s, file_name, line_offset)?;
-        Self::parse(&tokens)
+    pub fn from_str(s: &str, file_name: Option<&str>) -> Result<Vec<Self>, ParseSyntaxError> {
+        let file_name = file_name.unwrap_or("<unknown>");
+        let bytes = Cursor::new(s.as_bytes().to_vec());
+        futures::executor::block_on(async move {
+            let port = Port::from_reader(&file_name, bytes);
+            let mut parser = Parser::new(&port).await;
+            parser.all_datums().await
+        })
     }
 
     pub fn fetch_all_identifiers(&self, idents: &mut HashSet<Identifier>) {

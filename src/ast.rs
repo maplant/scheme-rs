@@ -7,12 +7,11 @@ use crate::{
     expand::{SyntaxRule, Template},
     gc::Trace,
     num::{Number, NumberToUsizeError},
-    parse::ParseSyntaxError,
     proc::Closure,
     registry::ImportError,
     runtime::Runtime,
     symbols::Symbol,
-    syntax::{FullyExpanded, Identifier, Span, Syntax},
+    syntax::{parse::ParseSyntaxError, FullyExpanded, Identifier, Span, Syntax},
     value::Value,
 };
 use either::Either;
@@ -199,10 +198,10 @@ impl LibraryName {
         }
     }
 
-    pub fn from_str<'a>(
-        s: &'a str,
+    pub fn from_str(
+        s: &str,
         file_name: Option<&str>,
-    ) -> Result<Self, ParseLibraryNameError<'a>> {
+    ) -> Result<Self, ParseLibraryNameError> {
         let syn = Syntax::from_str(s, file_name)?;
         Ok(Self::parse(&syn[0])?)
     }
@@ -221,18 +220,18 @@ fn list_to_name(name: &[Syntax]) -> Result<Vec<Symbol>, ParseAstError> {
 }
 
 #[derive(Debug)]
-pub enum ParseLibraryNameError<'a> {
-    ParseSyntaxError(ParseSyntaxError<'a>),
+pub enum ParseLibraryNameError {
+    ParseSyntaxError(ParseSyntaxError),
     ParseAstError(ParseAstError),
 }
 
-impl<'a> From<ParseSyntaxError<'a>> for ParseLibraryNameError<'a> {
-    fn from(pse: ParseSyntaxError<'a>) -> Self {
+impl From<ParseSyntaxError> for ParseLibraryNameError {
+    fn from(pse: ParseSyntaxError) -> Self {
         Self::ParseSyntaxError(pse)
     }
 }
 
-impl From<ParseAstError> for ParseLibraryNameError<'_> {
+impl From<ParseAstError> for ParseLibraryNameError {
     fn from(pae: ParseAstError) -> Self {
         Self::ParseAstError(pae)
     }
@@ -697,25 +696,25 @@ impl ImportSet {
         }
     }
 
-    pub fn parse_from_str<'a>(s: &'a str) -> Result<Self, ParseImportSetError<'a>> {
+    pub fn parse_from_str(s: &str) -> Result<Self, ParseImportSetError> {
         let syn = Syntax::from_str(s, None)?;
         Ok(Self::parse(&syn[0])?)
     }
 }
 
 #[derive(Debug)]
-pub enum ParseImportSetError<'a> {
-    ParseSyntaxError(ParseSyntaxError<'a>),
+pub enum ParseImportSetError {
+    ParseSyntaxError(ParseSyntaxError),
     ParseAstError(ParseAstError),
 }
 
-impl<'a> From<ParseSyntaxError<'a>> for ParseImportSetError<'a> {
-    fn from(pse: ParseSyntaxError<'a>) -> Self {
+impl From<ParseSyntaxError> for ParseImportSetError {
+    fn from(pse: ParseSyntaxError) -> Self {
         Self::ParseSyntaxError(pse)
     }
 }
 
-impl From<ParseAstError> for ParseImportSetError<'_> {
+impl From<ParseAstError> for ParseImportSetError {
     fn from(pae: ParseAstError) -> Self {
         Self::ParseAstError(pae)
     }

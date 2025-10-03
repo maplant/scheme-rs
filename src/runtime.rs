@@ -6,13 +6,14 @@ use crate::{
     gc::{Gc, GcInner, Trace, init_gc},
     lists::{self, list_to_vec},
     num,
+    ports::Port,
     proc::{
         Application, Closure, ContinuationPtr, DynamicWind, FuncDebugInfo, FuncPtr, UserPtr,
         clone_continuation_env,
     },
     registry::{ImportError, Library, Registry},
     symbols::Symbol,
-    syntax::{Span, Syntax},
+    syntax::{Span, parse::Parser},
     value::{ReflexiveValue, UnpackedValue, Value},
     vectors,
 };
@@ -23,7 +24,11 @@ use std::{
     path::Path,
     sync::Arc,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::{
+    fs::File,
+    io::BufReader,
+    sync::{mpsc, oneshot},
+};
 
 /// Scheme-rs Runtime
 ///
@@ -62,11 +67,21 @@ impl Runtime {
     pub async fn run_program(&self, path: &Path) -> Result<Vec<Value>, Exception> {
         let progm = Library::new_program(self, path);
         let env = Environment::Top(progm);
-        let contents = tokio::fs::read_to_string(path).await.unwrap();
         let file_name = path.file_name().unwrap().to_string_lossy();
-        let sexprs = Syntax::from_str(&contents, Some(&file_name))
+        let reader = BufReader::new(File::open(path).await.unwrap());
+        let port = Port::from_reader(&file_name, reader);
+        let mut parser = Parser::new(&port).await;
+        let sexprs = parser
+            .all_datums()
+            .await
             .map_err(|err| ImportError::ParseSyntaxError(format!("{err:?}")))
             .unwrap();
+        /*
+        let contents = tokio::fs::read_to_string(path).await.unwrap();
+        let sexprs = Syntax::from_str(&contents, Some(&file_name))
+            .map_err(|err| ImportError::ParseSyntaxError(format!("{err:?}")))
+        .unwrap();
+        */
         let body = DefinitionBody::parse_lib_body(self, &sexprs, &env, sexprs[0].span())
             .await
             .unwrap();

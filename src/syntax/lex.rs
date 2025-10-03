@@ -1,13 +1,11 @@
 //! Lexical analysis of symbolic expressions
 
-use std::borrow::Cow;
-
 use super::Span;
-// use futures::future::LocalBoxFuture;
 use futures::future::BoxFuture;
 use malachite::{Integer, base::num::conversion::traits::*, rational::Rational};
-use tokio::{io, sync::MappedMutexGuard};
+use tokio::sync::MappedMutexGuard;
 use unicode_categories::UnicodeCategories;
+use std::sync::Arc;
 
 use crate::{
     num,
@@ -17,26 +15,24 @@ use crate::{
 pub struct Lexer<'a> {
     pos: usize,
     port: MappedMutexGuard<'a, InputPort>,
-    curr_line: usize,
+    curr_line: u32,
     curr_column: usize,
+    file: Arc<String>,
 }
 
 impl<'a> Lexer<'a> {
     pub async fn new(input_port: &'a Port) -> Self {
         Self {
             pos: 0,
-            port: input_port.try_lock_input_port().await.unwrap(),
+            file: Arc::new(input_port.name.clone()),
             curr_line: 0,
             curr_column: 0,
+            port: input_port.try_lock_input_port().await.unwrap(),
         }
     }
-    
+
     async fn peek(&mut self) -> Result<char, ReadError> {
         self.port.peekn(self.pos).await
-    }
-
-    async fn peekn(&mut self, idx: usize) -> Result<char, ReadError> {
-        self.port.peekn(self.pos + idx).await
     }
 
     fn skip(&mut self) {
@@ -78,14 +74,6 @@ impl<'a> Lexer<'a> {
             if self.port.peekn(offset + self.pos).await? != chr {
                 return Ok(false);
             }
-            /*
-            if offset + self.pos >= self.buff.len() {
-                self.buff.push(self.port.read_char().await);
-            }
-            if self.buff[offset + self.pos] != chr {
-                return false;
-            }
-            */
             offset += 1;
         }
         // tag cannot contain newlines
@@ -157,11 +145,11 @@ impl<'a> Lexer<'a> {
                 }
                 '#' if self.match_tag("#(").await? => Lexeme::HashParen,
                 '#' if self.match_tag("#u8(").await? => Lexeme::Vu8Paren,
-                '#' if self.match_tag("#'").await? => Lexeme::HashTick,
+                '#' if self.match_tag("#'").await? => Lexeme::HashQuote,
                 '#' if self.match_tag("#`").await? => Lexeme::HashBackquote,
                 '#' if self.match_tag("#,@").await? => Lexeme::HashCommaAt,
                 '#' if self.match_tag("#,").await? => Lexeme::HashComma,
-                x => todo!("{x:?}"),
+                chr => return Err(LexerError::UnexpectedCharacter { chr, span }),
             }
         };
 
@@ -253,7 +241,7 @@ impl<'a> Lexer<'a> {
             peeked == '+' || peeked == '-'
         };
 
-        let first_part = dbg!(self.part(radix).await?);
+        let first_part = self.part(radix).await?;
 
         if first_part.is_none() {
             self.pos = saved_pos;
@@ -294,9 +282,17 @@ impl<'a> Lexer<'a> {
             }
         };
 
-        if is_subsequent(dbg!(self.peek().await?)) {
-            self.pos = saved_pos;
-            return Ok(None);
+        match self.peek().await {
+            Err(ReadError::Eof) => {
+                self.pos = saved_pos;
+                return Ok(None);
+            }
+            Ok(chr) if is_subsequent(chr) => {
+                self.pos = saved_pos;
+                return Ok(None);
+            }
+            Err(err) => return Err(err),
+            Ok(_) => (),
         }
 
         Ok(Some(number))
@@ -316,9 +312,6 @@ impl<'a> Lexer<'a> {
             while let Some(ch) = self.match_pred(|chr| chr.is_digit(radix)).await? {
                 num.push(ch);
             }
-
-            println!("num = {num}");
-
             if !num.is_empty() && self.match_char('/').await? {
                 // Rational number
                 let mut denom = String::new();
@@ -438,8 +431,28 @@ impl<'a> Lexer<'a> {
                     'f' => '\u{0C}',
                     '"' => '"',
                     '\\' => '\\',
-                    // TODO: escape whitespace
-                    x => todo!("error, bad escape char"),
+                    '\n' => {
+                        while self.match_pred(is_intraline_whitespace).await?.is_some() {}
+                        continue;
+                    }
+                    chr if is_intraline_whitespace(chr) => {
+                        while self
+                            .match_pred(|chr| chr != '\n' && is_intraline_whitespace(chr))
+                            .await?
+                            .is_some()
+                        {}
+                        let chr = self.take().await?;
+                        if chr != '\n' {
+                            let span = self.curr_span();
+                            return Err(LexerError::UnexpectedCharacter { chr, span });
+                        }
+                        while self.match_pred(is_intraline_whitespace).await?.is_some() {}
+                        continue;
+                    }
+                    chr => {
+                        let span = self.curr_span();
+                        return Err(LexerError::BadEscapeCharacter { chr, span });
+                    }
                 };
                 output.push(escaped);
             } else {
@@ -481,7 +494,12 @@ impl<'a> Lexer<'a> {
     }
 
     fn curr_span(&self) -> Span {
-        Span::default()
+        Span {
+            line: self.curr_line,
+            column: self.curr_column,
+            offset: self.pos,
+            file: self.file.clone(),
+        }
     }
 
     async fn inline_hex_escape(&mut self) -> Result<String, LexerError> {
@@ -527,6 +545,10 @@ fn is_delimiter(chr: char) -> bool {
 
 fn is_whitespace(chr: char) -> bool {
     chr.is_separator() || matches!(chr, '\t' | '\n' | '\r')
+}
+
+fn is_intraline_whitespace(chr: char) -> bool {
+    chr == '\t' || chr.is_separator()
 }
 
 fn is_initial(chr: char) -> bool {
@@ -596,7 +618,6 @@ pub enum Lexeme {
     CommaAt,
     Period,
     HashQuote,
-    HashTick,
     HashBackquote,
     HashComma,
     HashCommaAt,
@@ -789,13 +810,6 @@ impl From<EscapedCharacter> for char {
             EscapedCharacter::Tab => '\u{0009}',
         }
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Fragment {
-    HexValue(String),
-    Escaped(char),
-    Unescaped(String),
 }
 
 #[cfg(test)]
