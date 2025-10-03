@@ -3,66 +3,45 @@
 use std::borrow::Cow;
 
 use super::Span;
-use futures::future::LocalBoxFuture;
+// use futures::future::LocalBoxFuture;
+use futures::future::BoxFuture;
+use tokio::{io, sync::MappedMutexGuard};
 use unicode_categories::UnicodeCategories;
 
 use crate::ports::InputPort;
 
-pub struct Lexer {
+pub struct Lexer<'a> {
     pos: usize,
-    port: InputPort,
+    port: MappedMutexGuard<'a, InputPort>,
     curr_line: usize,
     curr_column: usize,
 }
 
-impl Lexer {
-    async fn peek(&mut self) -> char {
-        /*
-        if self.pos >= self.buff.len() {
-            self.buff.push(self.port.read_char().await);
-        }
-        self.buff[self.pos]
-         */
+impl<'a> Lexer<'a> {
+    async fn peek(&mut self) -> io::Result<char> {
         self.port.peekn(self.pos).await
     }
 
-    async fn peekn(&mut self, idx: usize) -> char {
+    async fn peekn(&mut self, idx: usize) -> io::Result<char> {
         self.port.peekn(self.pos + idx).await
     }
 
     fn skip(&mut self) {
-        // if self.pos >= self.buff.len() {
-        //     panic!("skipping when we didn't peek!");
-        // }
         self.pos += 1;
     }
 
-    async fn take(&mut self) -> char {
-        let chr = self.peek().await;
+    async fn take(&mut self) -> io::Result<char> {
+        let chr = self.peek().await?;
         self.pos += 1;
-        chr
+        Ok(chr)
     }
 
-    /*
-    async fn take(&mut self) -> char {
-        let chr = self.peek().await;
-        if chr == '\n' {
-            self.curr_line += 1;
-            self.curr_column = 0;
-        } else {
-            self.curr_column += 1;
-        }
-        self.pos += 1;
-        chr
-    }
-    */
-
-    async fn match_char(&mut self, chr: char) -> bool {
-        self.match_pred(|peek| peek == chr).await.is_some()
+    async fn match_char(&mut self, chr: char) -> io::Result<bool> {
+        Ok(self.match_pred(|peek| peek == chr).await?.is_some())
     }
 
-    async fn match_pred(&mut self, pred: impl FnOnce(char) -> bool) -> Option<char> {
-        let chr = self.peek().await;
+    async fn match_pred(&mut self, pred: impl FnOnce(char) -> bool) -> io::Result<Option<char>> {
+        let chr = self.peek().await?;
         if pred(chr) {
             if chr == '\n' {
                 self.curr_line += 1;
@@ -71,17 +50,17 @@ impl Lexer {
                 self.curr_column += 1;
             }
             self.pos += 1;
-            Some(chr)
+            Ok(Some(chr))
         } else {
-            None
+            Ok(None)
         }
     }
 
-    async fn match_tag(&mut self, tag: &str) -> bool {
+    async fn match_tag(&mut self, tag: &str) -> io::Result<bool> {
         let mut offset = 0;
         for chr in tag.chars() {
-            if self.port.peekn(offset + self.pos).await != chr {
-                return false;
+            if self.port.peekn(offset + self.pos).await? != chr {
+                return Ok(false);
             }
             /*
             if offset + self.pos >= self.buff.len() {
@@ -96,121 +75,179 @@ impl Lexer {
         // tag cannot contain newlines
         self.curr_column += offset;
         self.pos += offset;
-        true
+        Ok(true)
     }
 
-    async fn next_token(&mut self) -> Result<Token, LexerError> {
+    pub async fn next_token(&mut self) -> Result<Token, LexerError> {
         // TODO: Check if the port is empty
 
         // Check for any interlexeme space:
-        self.interlexeme_space().await;
+        self.interlexeme_space().await?;
 
         // Get the current span:
         let span = self.curr_span();
 
         // Check for various special characters:
-        let lexeme = match self.peek().await {
-            '.' => {
-                self.skip();
-                Lexeme::Period
+        let lexeme = if let Some(number) = self.number().await? {
+            Lexeme::Number(number)
+        } else if let Some(identifier) = self.identifier().await? {
+            Lexeme::Identifier(identifier)
+        } else {
+            match self.peek().await? {
+                '.' => {
+                    self.skip();
+                    Lexeme::Period
+                }
+                '\'' => {
+                    self.skip();
+                    Lexeme::Quote
+                }
+                '`' => {
+                    self.skip();
+                    Lexeme::Backquote
+                }
+                ',' if self.match_tag(",@").await? => Lexeme::CommaAt,
+                ',' => {
+                    self.skip();
+                    Lexeme::Comma
+                }
+                '(' => {
+                    self.skip();
+                    Lexeme::LParen
+                }
+                ')' => {
+                    self.skip();
+                    Lexeme::RParen
+                }
+                '[' => {
+                    self.skip();
+                    Lexeme::LBracket
+                }
+                ']' => {
+                    self.skip();
+                    Lexeme::RBracket
+                }
+                '"' => {
+                    self.skip();
+                    Lexeme::String(self.string().await?)
+                }
+                '#' if self.match_tag("#;").await? => Lexeme::DatumComment,
+                '#' if self.match_tag("#\\").await? => Lexeme::Character(self.character().await?),
+                '#' if self.match_tag("#F").await? || self.match_tag("#f").await? => {
+                    Lexeme::Boolean(false)
+                }
+                '#' if self.match_tag("#T").await? || self.match_tag("#t").await? => {
+                    Lexeme::Boolean(true)
+                }
+                '#' if self.match_tag("#(").await? => Lexeme::HashParen,
+                '#' if self.match_tag("#u8(").await? => Lexeme::Vu8Paren,
+                '#' if self.match_tag("#'").await? => Lexeme::HashTick,
+                '#' if self.match_tag("#`").await? => Lexeme::HashBackquote,
+                '#' if self.match_tag("#,@").await? => Lexeme::HashCommaAt,
+                '#' if self.match_tag("#,").await? => Lexeme::HashComma,
+                _ => todo!(),
             }
-            '\'' => {
-                self.skip();
-                Lexeme::Quote
-            }
-            '`' => {
-                self.skip();
-                Lexeme::Backquote
-            }
-            ',' if self.match_tag(",@").await => Lexeme::CommaAt,
-            ',' => {
-                self.skip();
-                Lexeme::Comma
-            }
-            '(' => {
-                self.skip();
-                Lexeme::LParen
-            }
-            ')' => {
-                self.skip();
-                Lexeme::RParen
-            }
-            '[' => {
-                self.skip();
-                Lexeme::LBracket
-            }
-            ']' => {
-                self.skip();
-                Lexeme::RBracket
-            }
-            '"' => {
-                self.skip();
-                Lexeme::String(self.string().await?)
-            }
-            '#' if self.match_tag("#(").await => Lexeme::HashParen,
-            '#' if self.match_tag("#u8(").await => Lexeme::Vu8Paren,
-            '#' if self.match_tag("#'").await => Lexeme::HashTick,
-            '#' if self.match_tag("#`").await => Lexeme::HashBackquote,
-            '#' if self.match_tag("#,@").await => Lexeme::HashCommaAt,
-            '#' if self.match_tag("#,").await => Lexeme::HashComma,
-            _ => todo!(),
         };
 
         Ok(Token { lexeme, span })
     }
 
-    async fn interlexeme_space(&mut self) {
+    async fn interlexeme_space(&mut self) -> io::Result<()> {
         loop {
-            if self.match_char(';').await {
-                self.comment().await
-            } else if self.match_tag("#|").await {
-                self.nested_comment().await;
-            } else if self.match_pred(is_whitespace).await.is_some() {
+            if self.match_char(';').await? {
+                self.comment().await?;
+            } else if self.match_tag("#|").await? {
+                self.nested_comment().await?;
+            } else if self.match_pred(is_whitespace).await?.is_some() {
                 break;
             }
         }
+        Ok(())
     }
 
-    async fn comment(&mut self) {
-        while let Some(_) = self.match_pred(|chr| chr != '\n').await {}
+    async fn comment(&mut self) -> io::Result<()> {
+        while self.match_pred(|chr| chr != '\n').await?.is_some() {}
+        Ok(())
     }
 
-    fn nested_comment(&mut self) -> LocalBoxFuture<'_, ()> {
+    fn nested_comment(&mut self) -> BoxFuture<'_, io::Result<()>> {
         Box::pin(async move {
-            while !self.match_tag("|#").await {
-                if self.match_tag("#|").await {
-                    self.nested_comment().await;
+            while !self.match_tag("|#").await? {
+                if self.match_tag("#|").await? {
+                    self.nested_comment().await?;
                 } else {
                     self.skip();
                 }
             }
+            Ok(())
         })
     }
 
-    async fn number(&mut self) -> Option<Number> {
+    async fn character(&mut self) -> Result<Character, LexerError> {
+        let chr = if self.match_tag("alarm").await? {
+            Character::Escaped(EscapedCharacter::Alarm)
+        } else if self.match_tag("backspace").await? {
+            Character::Escaped(EscapedCharacter::Backspace)
+        } else if self.match_tag("delete").await? {
+            Character::Escaped(EscapedCharacter::Delete)
+        } else if self.match_tag("escape").await? {
+            Character::Escaped(EscapedCharacter::Escape)
+        } else if self.match_tag("newline").await? {
+            Character::Escaped(EscapedCharacter::Newline)
+        } else if self.match_tag("null").await? {
+            Character::Escaped(EscapedCharacter::Null)
+        } else if self.match_tag("return").await? {
+            Character::Escaped(EscapedCharacter::Return)
+        } else if self.match_tag("space").await? {
+            Character::Escaped(EscapedCharacter::Space)
+        } else if self.match_tag("tab").await? {
+            Character::Escaped(EscapedCharacter::Tab)
+        } else if self.match_char('x').await? {
+            if is_delimiter(self.peek().await?) {
+                Character::Literal('#')
+            } else {
+                let mut unicode = String::new();
+                while let Some(chr) = self.match_pred(|c| c.is_digit(16)).await? {
+                    unicode.push(chr);
+                }
+                Character::Unicode(unicode)
+            }
+        } else {
+            Character::Literal(self.take().await?)
+        };
+        let peeked = self.peek().await?;
+        if !is_delimiter(peeked) {
+            let span = self.curr_span();
+            Err(LexerError::UnexpectedCharacter { chr: peeked, span })
+        } else {
+            Ok(chr)
+        }
+    }
+
+    async fn number(&mut self) -> io::Result<Option<Number>> {
         let saved_pos = self.pos;
 
-        let (radix, exactness) = self.radix_and_exactness().await;
+        let (radix, exactness) = self.radix_and_exactness().await?;
 
         let radix = radix.unwrap_or(10);
 
         // Need this because "10i" is not a valid number.
         let has_sign = {
-            let peeked = self.peek().await;
+            let peeked = self.peek().await?;
             peeked == '+' || peeked == '-'
         };
 
-        let first_part = self.part(radix).await;
+        let first_part = self.part(radix).await?;
 
         if first_part.is_none() {
             self.pos = saved_pos;
-            return None;
+            return Ok(None);
         }
 
-        let number = if self.match_char('i').await {
+        let number = if self.match_char('i').await? {
             if !has_sign {
                 self.pos = saved_pos;
-                return None;
+                return Ok(None);
             }
             Number {
                 radix,
@@ -219,15 +256,15 @@ impl Lexer {
                 imag_part: first_part,
             }
         } else {
-            let matched_at = !self.match_char('@').await;
+            let matched_at = !self.match_char('@').await?;
             let imag_part = if matched_at || {
-                let peeked = self.peek().await;
+                let peeked = self.peek().await?;
                 peeked == '+' || peeked == '-'
             } {
-                let second_part = self.part(radix).await;
-                if second_part.is_none() || !matched_at && !self.match_char('i').await {
+                let second_part = self.part(radix).await?;
+                if second_part.is_none() || !matched_at && !self.match_char('i').await? {
                     self.pos = saved_pos;
-                    return None;
+                    return Ok(None);
                 }
                 second_part
             } else {
@@ -241,135 +278,139 @@ impl Lexer {
             }
         };
 
-        if is_subsequent(self.peek().await) {
+        if is_subsequent(self.peek().await?) {
             self.pos = saved_pos;
-            return None;
+            return Ok(None);
         }
 
-        Some(number)
+        Ok(Some(number))
     }
 
-    async fn part(&mut self, radix: u32) -> Option<Part> {
-        let neg = !self.match_char('+').await && self.match_char('-').await;
+    async fn part(&mut self, radix: u32) -> io::Result<Option<Part>> {
+        let neg = !self.match_char('+').await? && self.match_char('-').await?;
         let mut mantissa_width = None;
 
         // Check for special nan/inf
-        let real = if self.match_tag("nan.0").await {
+        let real = if self.match_tag("nan.0").await? {
             Real::Nan
-        } else if self.match_tag("inf.0").await {
+        } else if self.match_tag("inf.0").await? {
             Real::Inf
         } else {
             let mut num = String::new();
-            while let Some(ch) = self.match_pred(|chr| chr.is_digit(radix)).await {
+            while let Some(ch) = self.match_pred(|chr| chr.is_digit(radix)).await? {
                 num.push(ch);
             }
 
-            if !num.is_empty() && self.match_char('/').await {
+            if !num.is_empty() && self.match_char('/').await? {
                 // Rational number
                 let mut denom = String::new();
-                while let Some(ch) = self.match_pred(|chr| chr.is_digit(radix)).await {
+                while let Some(ch) = self.match_pred(|chr| chr.is_digit(radix)).await? {
                     denom.push(ch);
                 }
                 if denom.is_empty() {
-                    return None;
+                    return Ok(None);
                 }
                 Real::Rational(num, denom)
             } else if radix == 10 {
-                if self.match_char('.').await {
+                if self.match_char('.').await? {
                     num.push('.');
-                    while let Some(ch) = self.match_pred(|chr| chr.is_digit(radix)).await {
+                    while let Some(ch) = self.match_pred(|chr| chr.is_digit(radix)).await? {
                         num.push(ch);
                     }
                 }
                 if num.is_empty() {
-                    return None;
+                    return Ok(None);
                 }
-                let suffix = self.suffix().await;
-                if self.match_char('|').await {
+                let suffix = self.suffix().await?;
+                if self.match_char('|').await? {
                     let mut width = 0;
-                    while let Some(chr) = self.match_pred(|chr| chr.is_ascii_digit()).await {
+                    while let Some(chr) = self.match_pred(|chr| chr.is_ascii_digit()).await? {
                         width = width * 10 + chr.to_digit(10).unwrap() as usize;
                     }
                     mantissa_width = Some(width);
                 }
                 Real::Decimal(num, suffix)
             } else if num.is_empty() {
-                return None;
+                return Ok(None);
             } else {
                 Real::Num(num)
             }
         };
 
-        Some(Part {
+        Ok(Some(Part {
             neg,
             real,
             mantissa_width,
-        })
+        }))
     }
 
-    async fn exactness(&mut self) -> Option<Exactness> {
-        if self.match_tag("#i").await || self.match_tag("#I").await {
-            Some(Exactness::Inexact)
-        } else if self.match_tag("#e").await || self.match_tag("#E").await {
-            Some(Exactness::Exact)
-        } else {
-            None
-        }
+    async fn exactness(&mut self) -> io::Result<Option<Exactness>> {
+        Ok(
+            if self.match_tag("#i").await? || self.match_tag("#I").await? {
+                Some(Exactness::Inexact)
+            } else if self.match_tag("#e").await? || self.match_tag("#E").await? {
+                Some(Exactness::Exact)
+            } else {
+                None
+            },
+        )
     }
 
-    async fn radix(&mut self) -> Option<u32> {
-        if self.match_tag("#b").await || self.match_tag("#B").await {
-            Some(2)
-        } else if self.match_tag("#o").await || self.match_tag("#O").await {
-            Some(8)
-        } else if self.match_tag("#x").await || self.match_tag("#X").await {
-            Some(16)
-        } else if self.match_tag("#d").await || self.match_tag("#D").await {
-            Some(10)
-        } else {
-            None
-        }
+    async fn radix(&mut self) -> io::Result<Option<u32>> {
+        Ok(
+            if self.match_tag("#b").await? || self.match_tag("#B").await? {
+                Some(2)
+            } else if self.match_tag("#o").await? || self.match_tag("#O").await? {
+                Some(8)
+            } else if self.match_tag("#x").await? || self.match_tag("#X").await? {
+                Some(16)
+            } else if self.match_tag("#d").await? || self.match_tag("#D").await? {
+                Some(10)
+            } else {
+                None
+            },
+        )
     }
 
-    async fn radix_and_exactness(&mut self) -> (Option<u32>, Option<Exactness>) {
-        let exactness = self.exactness().await;
-        let radix = self.radix().await;
+    async fn radix_and_exactness(&mut self) -> io::Result<(Option<u32>, Option<Exactness>)> {
+        let exactness = self.exactness().await?;
+        let radix = self.radix().await?;
         if exactness.is_some() {
-            (radix, exactness)
+            Ok((radix, exactness))
         } else {
-            (radix, self.exactness().await)
+            Ok((radix, self.exactness().await?))
         }
     }
 
-    async fn suffix(&mut self) -> Option<isize> {
+    async fn suffix(&mut self) -> io::Result<Option<isize>> {
         let pos = self.pos;
         if let Some(_) = self
             .match_pred(|chr| matches!(chr.to_ascii_lowercase(), 'e' | 's' | 'f' | 'd' | 'l'))
-            .await
+            .await?
         {
-            let neg = !self.match_char('+').await && self.match_char('-').await;
+            let neg = !self.match_char('+').await? && self.match_char('-').await?;
             let mut suffix = String::new();
-            while let Some(chr) = self.match_pred(|chr| chr.is_digit(10)).await {
+            while let Some(chr) = self.match_pred(|chr| chr.is_digit(10)).await? {
                 suffix.push(chr);
             }
             if !suffix.is_empty() {
                 let val: isize = suffix.parse().unwrap();
                 if neg {
-                    return Some(-val);
+                    return Ok(Some(-val));
                 } else {
-                    return Some(val);
+                    return Ok(Some(val));
                 }
             }
         }
         self.pos = pos;
-        None
+        Ok(None)
     }
 
     async fn string(&mut self) -> Result<String, LexerError> {
         let mut output = String::new();
-        while let Some(chr) = self.match_pred(|chr| chr != '"').await {
+        while let Some(chr) = self.match_pred(|chr| chr != '"').await? {
             if chr == '\\' {
-                let escaped = match self.take().await {
+                let escaped = match self.take().await? {
                     'x' => todo!(),
                     'a' => '\u{07}',
                     'b' => '\u{08}',
@@ -379,6 +420,7 @@ impl Lexer {
                     'f' => '\u{0C}',
                     '"' => '"',
                     '\\' => '\\',
+                    // TODO: escape whitespace
                     x => todo!("error, bad escape char"),
                 };
                 output.push(escaped);
@@ -392,15 +434,15 @@ impl Lexer {
     }
 
     async fn identifier(&mut self) -> Result<Option<String>, LexerError> {
-        let mut ident = if self.match_tag("\\x").await {
+        let mut ident = if self.match_tag("\\x").await? {
             self.inline_hex_escape().await?
-        } else if self.match_tag("...").await {
+        } else if self.match_tag("...").await? {
             String::from("...")
-        } else if self.match_tag("->").await {
+        } else if self.match_tag("->").await? {
             String::from("->")
         } else if let Some(initial) = self
             .match_pred(|chr| is_initial(chr) || is_peculiar_initial(chr))
-            .await
+            .await?
         {
             String::from(initial)
         } else {
@@ -408,9 +450,9 @@ impl Lexer {
         };
 
         loop {
-            if self.match_tag("\\x").await {
+            if self.match_tag("\\x").await? {
                 ident.push_str(&self.inline_hex_escape().await?);
-            } else if let Some(next) = self.match_pred(is_subsequent).await {
+            } else if let Some(next) = self.match_pred(is_subsequent).await? {
                 ident.push(next);
             } else {
                 break;
@@ -427,7 +469,7 @@ impl Lexer {
     async fn inline_hex_escape(&mut self) -> Result<String, LexerError> {
         let mut escaped = String::new();
         let mut buff = String::with_capacity(2);
-        while let Some(chr) = self.match_pred(|chr| chr != ';').await {
+        while let Some(chr) = self.match_pred(|chr| chr != ';').await? {
             if !chr.is_ascii_hexdigit() {
                 return Err(LexerError::InvalidCharacterInHexEscape {
                     chr,
@@ -454,11 +496,23 @@ impl Lexer {
     }
 }
 
-enum LexerError {
+#[derive(Debug)]
+pub enum LexerError {
     InvalidCharacterInHexEscape { chr: char, span: Span },
-    InvalidCharacter { chr: char, span: Span },
+    UnexpectedCharacter { chr: char, span: Span },
     BadEscapeCharacter { chr: char, span: Span },
     UnexpectedEof { span: Span },
+    IoError(io::Error),
+}
+
+impl From<io::Error> for LexerError {
+    fn from(value: io::Error) -> Self {
+        Self::IoError(value)
+    }
+}
+
+fn is_delimiter(chr: char) -> bool {
+    is_whitespace(chr) || matches!(chr, '(' | ')' | '[' | ']' | '"' | ';' | '#')
 }
 
 fn is_whitespace(chr: char) -> bool {
@@ -507,12 +561,13 @@ fn is_subsequent(chr: char) -> bool {
         || is_special_subsequent(chr)
 }
 
-// #[derive(Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct Token {
     pub lexeme: Lexeme,
     pub span: super::Span,
 }
 
+#[derive(Clone, Debug, PartialEq)]
 pub enum Lexeme {
     Identifier(String),
     Boolean(bool),
@@ -535,10 +590,11 @@ pub enum Lexeme {
     HashBackquote,
     HashComma,
     HashCommaAt,
+    DatumComment,
 }
 
 // #[derive(Clone, Debug, PartialEq, Eq)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Number {
     radix: u32,
     exactness: Option<Exactness>,
@@ -551,7 +607,7 @@ pub struct Number {
     */
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct Part {
     neg: bool,
     real: Real,
@@ -566,7 +622,7 @@ enum FractionalOrDenominator {
 }
 */
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 enum Exactness {
     Exact,
     Inexact,
@@ -585,7 +641,7 @@ impl Number {
 }
 */
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 enum Real {
     Nan,
     Inf,
@@ -639,4 +695,14 @@ pub enum Fragment {
     HexValue(String),
     Escaped(char),
     Unescaped(String),
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn is_hash_identifier_char() {
+        assert!(!is_initial('#') && !is_peculiar_initial('#'))
+    }
 }

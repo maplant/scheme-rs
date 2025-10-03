@@ -80,7 +80,7 @@ impl Value {
                     Gc::increment_reference_count(untagged as *mut GcInner<lists::Pair>)
                 }
                 ValueType::HashTable => todo!(),
-                ValueType::Reserved => todo!(),
+                ValueType::Port => todo!(),
                 ValueType::Undefined
                 | ValueType::Symbol
                 | ValueType::Null
@@ -233,7 +233,7 @@ impl Value {
                 UnpackedValue::Pair(pair)
             }
             ValueType::HashTable => todo!(),
-            ValueType::Reserved => todo!(),
+            ValueType::Port => todo!(),
         }
     }
 

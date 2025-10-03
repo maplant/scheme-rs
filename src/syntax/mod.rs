@@ -20,7 +20,8 @@ use std::{
     },
 };
 
-mod lex;
+pub(self) mod lex;
+mod parse;
 
 /// Source location for an s-expression.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Trace)]
