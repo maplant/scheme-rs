@@ -1,8 +1,7 @@
 //! Input and Output handling
 
-use rustyline::Editor;
+use rustyline::{ Editor, error::ReadlineError };
 use std::{
-    io::Cursor,
     pin::Pin,
     sync::{Arc, LazyLock},
 };
@@ -14,8 +13,6 @@ use tokio::{
     },
     task::JoinHandle,
 };
-
-// use crate::gc::Trace;
 
 pub struct Utf8Buffer {
     buff: [u8; 4],
@@ -51,9 +48,13 @@ pub struct CharBuffer {
 type Reader = Pin<Box<dyn AsyncRead + Send + Sync + 'static>>;
 
 impl CharBuffer {
-    pub async fn peekn(&mut self, idx: usize, reader: &mut Reader) -> io::Result<char> {
+    pub async fn peekn(&mut self, idx: usize, reader: &mut Reader) -> Result<char, ReadError> {
         while self.buff.len() <= idx {
-            let next_byte = reader.read_u8().await?;
+            let next_byte = match reader.read_u8().await {
+                Ok(chr) => chr,
+                Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => return Err(ReadError::Eof),
+                Err(err) => return Err(ReadError::Io(err)),
+            };
             if let Some(next_chr) = self.byte_decoder.push_and_decode(next_byte) {
                 self.buff.push(next_chr);
             }
@@ -73,27 +74,33 @@ pub enum InputPort {
 }
 
 impl InputPort {
-    pub async fn read_char(&mut self) -> io::Result<char> {
+    pub async fn read_char(&mut self) -> Result<char, ReadError> {
         match self {
             Self::Reader { buffer, reader } => {
                 let chr = buffer.peekn(0, reader).await?;
                 buffer.skip(1);
                 Ok(chr)
             }
-            Self::Prompt { prompt } => {
-                todo!()
-            }
+            Self::Prompt { prompt } => prompt.read_char().await
         }
     }
 
-    pub async fn peekn(&mut self, idx: usize) -> io::Result<char> {
+    pub async fn peekn(&mut self, idx: usize) -> Result<char, ReadError> {
         match self {
             Self::Reader { buffer, reader } => buffer.peekn(idx, reader).await,
-            Self::Prompt { prompt } => {
-                todo!()
-            }
+            Self::Prompt { prompt } => prompt.peekn(idx).await,
         }
     }
+}
+
+#[derive(Debug)]
+pub enum ReadError {
+    /// End of file reached
+    Eof,
+    /// IO error
+    Io(std::io::Error),
+    /// Rustyline error
+    Prompt,
 }
 
 pub(crate) enum PortInner {
@@ -104,6 +111,10 @@ pub(crate) enum PortInner {
 pub struct Port(pub(crate) Arc<Mutex<PortInner>>);
 
 impl Port {
+    pub fn new_prompt(editor: impl Readline) -> Self {
+        Self(Arc::new(Mutex::new(PortInner::InputPort(InputPort::Prompt { prompt: Prompt::new(editor) }))))
+    }
+    
     pub async fn try_lock_input_port(&self) -> Option<MappedMutexGuard<'_, InputPort>> {
         MutexGuard::try_map(self.0.lock().await, |port| match port {
             PortInner::InputPort(input) => Some(input),
@@ -120,8 +131,33 @@ pub struct Prompt {
 }
 
 impl Prompt {
-    async fn read_char(&mut self) -> rustyline::Result<char> {
-        if self.pos >= self.buffer.len() {
+    fn new(editor: impl Readline) -> Self {
+        let editor = Arc::new(std::sync::Mutex::new(editor));
+        Self {
+            buffer: Vec::new(),
+            pos: 0,
+            editor,
+        }
+    }
+
+    async fn read_char(&mut self) -> Result<char, ReadError> {
+        let chr = self.peekn(0).await?;
+        self.pos += 1;
+        Ok(chr)
+    }
+    
+    async fn peekn(&mut self, idx: usize) -> Result<char, ReadError> {
+        while self.pos + idx >= self.buffer.len() {
+            /*
+
+            // Some garbage collection:
+            if self.pos > self.buffer.len() {
+                self.pos -= self.buffer.len();
+                self.buffer.clear();
+            }
+
+             */
+            
             let (tx, rx) = tokio::sync::oneshot::channel();
             PROMPT_TASK
                 .tx
@@ -132,11 +168,15 @@ impl Prompt {
                 })
                 .await
                 .unwrap();
-            self.buffer = rx.await.unwrap()?.chars().collect();
+            self.buffer.extend(rx.await.unwrap().map_err(|err| match err {
+                ReadlineError::Eof => ReadError::Eof,
+                ReadlineError::Io(io) => ReadError::Io(io),
+                _ => ReadError::Prompt,
+            })?.chars());
+            self.buffer.push('\n');
             self.pos = 0;
         }
-        let chr = self.buffer[self.pos];
-        self.pos += 1;
+        let chr = self.buffer[self.pos + idx];
         Ok(chr)
     }
 }
@@ -147,14 +187,14 @@ pub struct InputRequest {
     tx: tokio::sync::oneshot::Sender<rustyline::Result<String>>,
 }
 
-pub trait Readline: Send {
+pub trait Readline: Send + 'static {
     fn readline(&mut self, prompt: &str) -> rustyline::Result<String>;
 }
 
 impl<H, I> Readline for Editor<H, I>
 where
-    H: rustyline::Helper + Send,
-    I: rustyline::history::History + Send,
+    H: rustyline::Helper + Send + 'static,
+    I: rustyline::history::History + Send + 'static,
 {
     fn readline(&mut self, prompt: &str) -> rustyline::Result<String> {
         self.readline(prompt)

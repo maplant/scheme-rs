@@ -6,17 +6,7 @@ use rustyline::{
     validate::{ValidationContext, ValidationResult, Validator},
 };
 use scheme_rs::{
-    ast::{DefinitionBody, ImportSet, ParseAstError},
-    cps::Compile,
-    env::Environment,
-    exceptions::{Exception, ExceptionHandler},
-    lex::LexError,
-    parse::ParseSyntaxError,
-    proc::{Application, DynamicWind},
-    registry::Library,
-    runtime::Runtime,
-    syntax::Syntax,
-    value::Value,
+    ast::{DefinitionBody, ImportSet, ParseAstError}, cps::Compile, env::Environment, exceptions::{Exception, ExceptionHandler}, lex::LexError, parse::ParseSyntaxError, ports::Port, proc::{Application, DynamicWind}, registry::Library, runtime::Runtime, syntax::{parse::Parser, Syntax}, value::Value
 };
 use std::process::ExitCode;
 
@@ -25,10 +15,13 @@ struct InputValidator;
 
 impl Validator for InputValidator {
     fn validate(&self, ctx: &mut ValidationContext<'_>) -> rustyline::Result<ValidationResult> {
+        /*
         match Syntax::from_str(ctx.input(), None) {
             Err(ParseSyntaxError::UnclosedParen { .. }) => Ok(ValidationResult::Incomplete),
             _ => Ok(ValidationResult::Valid(None)),
         }
+         */
+        Ok(ValidationResult::Valid(None))
     }
 }
 
@@ -63,8 +56,24 @@ async fn main() -> ExitCode {
         highlighter: MatchingBracketHighlighter::new(),
     };
 
+
     editor.set_helper(Some(helper));
 
+    let input_prompt = Port::new_prompt(editor);
+    let mut sexpr_parser = Parser::new(&input_prompt).await;
+
+    loop {
+        let datum = match sexpr_parser.get_datum().await {
+            Ok(datum) => datum,
+            Err(err) => {
+                println!("error: {err:?}");
+                break;
+            }
+        };
+        println!("datum: {datum:?}");
+    }
+
+    /*
     let mut n_results = 1;
     let mut curr_line = 1;
     loop {
@@ -95,8 +104,11 @@ async fn main() -> ExitCode {
         curr_line += input.chars().filter(|c| *c == '\n').count() as u32 + 1;
     }
 
+    */
+
     ExitCode::SUCCESS
 }
+/*
 
 #[derive(derive_more::From, Debug)]
 pub enum EvalError<'e> {
@@ -133,3 +145,4 @@ async fn compile_and_run_str<'e>(
     }
     Ok(output)
 }
+*/

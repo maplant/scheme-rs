@@ -8,15 +8,16 @@
 };
 */
 
-use crate::ast::Literal;
+use crate::{ast::Literal, num::Number, ports::{InputPort, Port}, syntax::lex::ParseNumberError};
 
 use super::{
     Span, Syntax,
     lex::{Character, Lexeme, Lexer, LexerError, Token},
 };
 use futures::future::BoxFuture;
-use malachite::{Integer, rational::Rational};
-use std::{char::CharTryFromError, error::Error as StdError, fmt, num::TryFromIntError};
+use tokio::sync::Mutex;
+// use malachite::{Integer, rational::Rational};
+use std::{char::CharTryFromError, error::Error as StdError, fmt, num::TryFromIntError, sync::Arc};
 
 pub struct Parser<'a> {
     /// We only ever need one token of lookahead probably, but this is more
@@ -40,9 +41,16 @@ macro_rules! token {
     };
 }
 
+impl<'a> Parser<'a> {
+    pub async fn new(input_port: &'a Port) -> Self {
+        Parser {
+            lookahead: Vec::new(),
+            lexer: Lexer::new(input_port).await,
+        }
+    }
+}
+
 impl Parser<'_> {
-    // pub fn new(input_port: 
-    
     async fn next_token(&mut self) -> Result<Token, LexerError> {
         if let Some(next) = self.lookahead.pop() {
             Ok(next)
@@ -60,14 +68,16 @@ impl Parser<'_> {
             match self.next_token().await? {
                 // Literals:
                 token!(Lexeme::Boolean(b), span) => {
-                    Ok(Some(Syntax::new_literal(Literal::Boolean(b), span.clone())))
+                    Ok(Some(Syntax::new_literal(Literal::Boolean(b), span)))
                 }
                 token!(Lexeme::Character(Character::Literal(c)), span) => Ok(Some(
-                    Syntax::new_literal(Literal::Character(c), span.clone()),
+                    Syntax::new_literal(Literal::Character(c), span),
                 )),
                 token!(Lexeme::Character(Character::Escaped(e)), span) => Ok(Some(
-                    Syntax::new_literal(Literal::Character(e.into()), span.clone()),
+                    Syntax::new_literal(Literal::Character(e.into()), span),
                 )),
+                token!(Lexeme::String(s), span) => Ok(Some(Syntax::new_literal(Literal::String(s), span))),
+                token!(Lexeme::Number(n), span) => Ok(Some(Syntax::new_literal(Literal::Number(Number::try_from(n)?), span))),
 
                 // Identifiers:
                 token!(Lexeme::Identifier(ident), span) => {
@@ -96,10 +106,10 @@ impl Parser<'_> {
         })
     }
 
-    async fn require_expression(&mut self) -> Result<Syntax, ParseSyntaxError> {
+    pub async fn get_datum(&mut self) -> Result<Syntax, ParseSyntaxError> {
         loop {
             if let Some(expr) = self.expression().await? {
-                return Ok(expr);
+                return Ok(dbg!(expr));
             }
         }
     }
@@ -108,7 +118,7 @@ impl Parser<'_> {
         match self.next_token().await? {
             // We allow for (. expr) to resolve to expr, just because it's
             // easier. Maybe we'll disallow this eventualy
-            token!(Lexeme::Period) => return self.require_expression().await,
+            token!(Lexeme::Period) => return self.get_datum().await,
             // If the first token is a closing paren, then this is an empty
             // list
             token if token.lexeme == closing => return Ok(Syntax::new_null(token.span)),
@@ -144,7 +154,7 @@ impl Parser<'_> {
                             self.return_token(peek1);
                         }
                     }
-                    output.push(self.require_expression().await?);
+                    output.push(self.get_datum().await?);
                     let last = self.next_token().await?;
                     if last.lexeme == closing {
                         return Ok(Syntax::new_list(output, span));
@@ -177,7 +187,7 @@ impl Parser<'_> {
     }
 
     async fn alias(&mut self, alias: &str, span: Span) -> Result<Syntax, ParseSyntaxError> {
-        let expr = self.require_expression().await?;
+        let expr = self.get_datum().await?;
         let expr_span = expr.span().clone();
         Ok(Syntax::new_list(
             vec![
@@ -202,8 +212,9 @@ pub enum ParseSyntaxError {
     UnclosedParen { span: Span },
     CharTryFrom(CharTryFromError),
     Lex(LexerError),
-    TryFromInt(TryFromIntError),
+    // TryFromInt(TryFromIntError),
     // TryFromNumber(TryFromNumberError),
+    ParseNumberError(ParseNumberError),
     UnexpectedToken { token: Token },
 }
 
@@ -233,7 +244,7 @@ impl fmt::Display for ParseSyntaxError {
             }
             Self::CharTryFrom(e) => write!(f, "{e}"),
             Self::Lex(e) => write!(f, "{e:?}"),
-            Self::TryFromInt(e) => write!(f, "{e}"),
+            Self::ParseNumberError(e) => write!(f, "{e:?}"),
             // Self::TryFromNumber(e) => write!(f, "{e}"),
             Self::UnexpectedToken { token } => {
                 write!(
@@ -247,11 +258,13 @@ impl fmt::Display for ParseSyntaxError {
 }
 impl StdError for ParseSyntaxError {}
 
+/*
 impl From<TryFromIntError> for ParseSyntaxError {
     fn from(e: TryFromIntError) -> Self {
         Self::TryFromInt(e)
     }
 }
+*/
 
 impl From<LexerError> for ParseSyntaxError {
     fn from(lex: LexerError) -> Self {
@@ -262,6 +275,12 @@ impl From<LexerError> for ParseSyntaxError {
 impl From<CharTryFromError> for ParseSyntaxError {
     fn from(e: CharTryFromError) -> Self {
         Self::CharTryFrom(e)
+    }
+}
+
+impl From<ParseNumberError> for ParseSyntaxError {
+    fn from(e: ParseNumberError) -> Self {
+        Self::ParseNumberError(e)
     }
 }
 

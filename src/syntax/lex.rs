@@ -5,10 +5,14 @@ use std::borrow::Cow;
 use super::Span;
 // use futures::future::LocalBoxFuture;
 use futures::future::BoxFuture;
+use malachite::{Integer, base::num::conversion::traits::*, rational::Rational};
 use tokio::{io, sync::MappedMutexGuard};
 use unicode_categories::UnicodeCategories;
 
-use crate::ports::InputPort;
+use crate::{
+    num,
+    ports::{InputPort, Port, ReadError},
+};
 
 pub struct Lexer<'a> {
     pos: usize,
@@ -18,11 +22,20 @@ pub struct Lexer<'a> {
 }
 
 impl<'a> Lexer<'a> {
-    async fn peek(&mut self) -> io::Result<char> {
+    pub async fn new(input_port: &'a Port) -> Self {
+        Self {
+            pos: 0,
+            port: input_port.try_lock_input_port().await.unwrap(),
+            curr_line: 0,
+            curr_column: 0,
+        }
+    }
+    
+    async fn peek(&mut self) -> Result<char, ReadError> {
         self.port.peekn(self.pos).await
     }
 
-    async fn peekn(&mut self, idx: usize) -> io::Result<char> {
+    async fn peekn(&mut self, idx: usize) -> Result<char, ReadError> {
         self.port.peekn(self.pos + idx).await
     }
 
@@ -30,17 +43,20 @@ impl<'a> Lexer<'a> {
         self.pos += 1;
     }
 
-    async fn take(&mut self) -> io::Result<char> {
+    async fn take(&mut self) -> Result<char, ReadError> {
         let chr = self.peek().await?;
         self.pos += 1;
         Ok(chr)
     }
 
-    async fn match_char(&mut self, chr: char) -> io::Result<bool> {
+    async fn match_char(&mut self, chr: char) -> Result<bool, ReadError> {
         Ok(self.match_pred(|peek| peek == chr).await?.is_some())
     }
 
-    async fn match_pred(&mut self, pred: impl FnOnce(char) -> bool) -> io::Result<Option<char>> {
+    async fn match_pred(
+        &mut self,
+        pred: impl FnOnce(char) -> bool,
+    ) -> Result<Option<char>, ReadError> {
         let chr = self.peek().await?;
         if pred(chr) {
             if chr == '\n' {
@@ -56,7 +72,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    async fn match_tag(&mut self, tag: &str) -> io::Result<bool> {
+    async fn match_tag(&mut self, tag: &str) -> Result<bool, ReadError> {
         let mut offset = 0;
         for chr in tag.chars() {
             if self.port.peekn(offset + self.pos).await? != chr {
@@ -145,32 +161,32 @@ impl<'a> Lexer<'a> {
                 '#' if self.match_tag("#`").await? => Lexeme::HashBackquote,
                 '#' if self.match_tag("#,@").await? => Lexeme::HashCommaAt,
                 '#' if self.match_tag("#,").await? => Lexeme::HashComma,
-                _ => todo!(),
+                x => todo!("{x:?}"),
             }
         };
 
         Ok(Token { lexeme, span })
     }
 
-    async fn interlexeme_space(&mut self) -> io::Result<()> {
+    async fn interlexeme_space(&mut self) -> Result<(), ReadError> {
         loop {
             if self.match_char(';').await? {
                 self.comment().await?;
             } else if self.match_tag("#|").await? {
                 self.nested_comment().await?;
-            } else if self.match_pred(is_whitespace).await?.is_some() {
+            } else if self.match_pred(is_whitespace).await?.is_none() {
                 break;
             }
         }
         Ok(())
     }
 
-    async fn comment(&mut self) -> io::Result<()> {
+    async fn comment(&mut self) -> Result<(), ReadError> {
         while self.match_pred(|chr| chr != '\n').await?.is_some() {}
         Ok(())
     }
 
-    fn nested_comment(&mut self) -> BoxFuture<'_, io::Result<()>> {
+    fn nested_comment(&mut self) -> BoxFuture<'_, Result<(), ReadError>> {
         Box::pin(async move {
             while !self.match_tag("|#").await? {
                 if self.match_tag("#|").await? {
@@ -204,7 +220,7 @@ impl<'a> Lexer<'a> {
             Character::Escaped(EscapedCharacter::Tab)
         } else if self.match_char('x').await? {
             if is_delimiter(self.peek().await?) {
-                Character::Literal('#')
+                Character::Literal('x')
             } else {
                 let mut unicode = String::new();
                 while let Some(chr) = self.match_pred(|c| c.is_digit(16)).await? {
@@ -224,7 +240,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    async fn number(&mut self) -> io::Result<Option<Number>> {
+    async fn number(&mut self) -> Result<Option<Number>, ReadError> {
         let saved_pos = self.pos;
 
         let (radix, exactness) = self.radix_and_exactness().await?;
@@ -237,7 +253,7 @@ impl<'a> Lexer<'a> {
             peeked == '+' || peeked == '-'
         };
 
-        let first_part = self.part(radix).await?;
+        let first_part = dbg!(self.part(radix).await?);
 
         if first_part.is_none() {
             self.pos = saved_pos;
@@ -256,7 +272,7 @@ impl<'a> Lexer<'a> {
                 imag_part: first_part,
             }
         } else {
-            let matched_at = !self.match_char('@').await?;
+            let matched_at = self.match_char('@').await?;
             let imag_part = if matched_at || {
                 let peeked = self.peek().await?;
                 peeked == '+' || peeked == '-'
@@ -278,7 +294,7 @@ impl<'a> Lexer<'a> {
             }
         };
 
-        if is_subsequent(self.peek().await?) {
+        if is_subsequent(dbg!(self.peek().await?)) {
             self.pos = saved_pos;
             return Ok(None);
         }
@@ -286,7 +302,7 @@ impl<'a> Lexer<'a> {
         Ok(Some(number))
     }
 
-    async fn part(&mut self, radix: u32) -> io::Result<Option<Part>> {
+    async fn part(&mut self, radix: u32) -> Result<Option<Part>, ReadError> {
         let neg = !self.match_char('+').await? && self.match_char('-').await?;
         let mut mantissa_width = None;
 
@@ -301,6 +317,8 @@ impl<'a> Lexer<'a> {
                 num.push(ch);
             }
 
+            println!("num = {num}");
+
             if !num.is_empty() && self.match_char('/').await? {
                 // Rational number
                 let mut denom = String::new();
@@ -312,13 +330,13 @@ impl<'a> Lexer<'a> {
                 }
                 Real::Rational(num, denom)
             } else if radix == 10 {
+                let mut fractional = String::new();
                 if self.match_char('.').await? {
-                    num.push('.');
                     while let Some(ch) = self.match_pred(|chr| chr.is_digit(radix)).await? {
-                        num.push(ch);
+                        fractional.push(ch);
                     }
                 }
-                if num.is_empty() {
+                if num.is_empty() && fractional.is_empty() {
                     return Ok(None);
                 }
                 let suffix = self.suffix().await?;
@@ -329,7 +347,7 @@ impl<'a> Lexer<'a> {
                     }
                     mantissa_width = Some(width);
                 }
-                Real::Decimal(num, suffix)
+                Real::Decimal(num, fractional, suffix)
             } else if num.is_empty() {
                 return Ok(None);
             } else {
@@ -344,7 +362,7 @@ impl<'a> Lexer<'a> {
         }))
     }
 
-    async fn exactness(&mut self) -> io::Result<Option<Exactness>> {
+    async fn exactness(&mut self) -> Result<Option<Exactness>, ReadError> {
         Ok(
             if self.match_tag("#i").await? || self.match_tag("#I").await? {
                 Some(Exactness::Inexact)
@@ -356,7 +374,7 @@ impl<'a> Lexer<'a> {
         )
     }
 
-    async fn radix(&mut self) -> io::Result<Option<u32>> {
+    async fn radix(&mut self) -> Result<Option<u32>, ReadError> {
         Ok(
             if self.match_tag("#b").await? || self.match_tag("#B").await? {
                 Some(2)
@@ -372,7 +390,7 @@ impl<'a> Lexer<'a> {
         )
     }
 
-    async fn radix_and_exactness(&mut self) -> io::Result<(Option<u32>, Option<Exactness>)> {
+    async fn radix_and_exactness(&mut self) -> Result<(Option<u32>, Option<Exactness>), ReadError> {
         let exactness = self.exactness().await?;
         let radix = self.radix().await?;
         if exactness.is_some() {
@@ -382,7 +400,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    async fn suffix(&mut self) -> io::Result<Option<isize>> {
+    async fn suffix(&mut self) -> Result<Option<isize>, ReadError> {
         let pos = self.pos;
         if let Some(_) = self
             .match_pred(|chr| matches!(chr.to_ascii_lowercase(), 'e' | 's' | 'f' | 'd' | 'l'))
@@ -463,7 +481,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn curr_span(&self) -> Span {
-        todo!()
+        Span::default()
     }
 
     async fn inline_hex_escape(&mut self) -> Result<String, LexerError> {
@@ -486,13 +504,6 @@ impl<'a> Lexer<'a> {
             escaped.push(u8::from_str_radix(&buff, 16).unwrap() as char);
         }
         Ok(escaped)
-        /*
-        loop {
-            let chr = self.take();
-            if chr == ';' {
-                break;
-            }
-        */
     }
 }
 
@@ -501,13 +512,12 @@ pub enum LexerError {
     InvalidCharacterInHexEscape { chr: char, span: Span },
     UnexpectedCharacter { chr: char, span: Span },
     BadEscapeCharacter { chr: char, span: Span },
-    UnexpectedEof { span: Span },
-    IoError(io::Error),
+    ReadError(ReadError),
 }
 
-impl From<io::Error> for LexerError {
-    fn from(value: io::Error) -> Self {
-        Self::IoError(value)
+impl From<ReadError> for LexerError {
+    fn from(value: ReadError) -> Self {
+        Self::ReadError(value)
     }
 }
 
@@ -593,18 +603,59 @@ pub enum Lexeme {
     DatumComment,
 }
 
-// #[derive(Clone, Debug, PartialEq, Eq)]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Number {
     radix: u32,
     exactness: Option<Exactness>,
     real_part: Option<Part>,
     imag_part: Option<Part>,
-    /*
-    negative: bool,
-    integer_or_numerator: String,
-    fractional_or_denominator: Option<(FractionalOrDenominator, String)>,
-    */
+}
+
+impl TryFrom<Number> for num::Number {
+    type Error = ParseNumberError;
+
+    fn try_from(value: Number) -> Result<Self, Self::Error> {
+        // Ignore exactness for now
+        if let Some(imag_part) = value.imag_part {
+            // This is a complex number:
+            let imag_part = imag_part
+                .try_into_f64(value.radix)
+                .ok_or(ParseNumberError::NoValidRepresentation)?;
+            let real_part = if let Some(real_part) = value.real_part {
+                real_part
+                    .try_into_f64(value.radix)
+                    .ok_or(ParseNumberError::NoValidRepresentation)?
+            } else {
+                0.0
+            };
+            return Ok(num::Number::Complex(::num::Complex::new(
+                real_part, imag_part,
+            )));
+        }
+
+        let part = value
+            .real_part
+            .as_ref()
+            .ok_or(ParseNumberError::NoValidRepresentation)?;
+
+        part.try_into_i64(value.radix)
+            .map(num::Number::FixedInteger)
+            .or_else(|| {
+                part.try_into_integer(value.radix)
+                    .map(num::Number::BigInteger)
+            })
+            .or_else(|| {
+                part.try_into_rational(value.radix)
+                    .map(num::Number::Rational)
+            })
+            .or_else(|| part.try_into_f64(value.radix).map(num::Number::Real))
+            .ok_or(ParseNumberError::NoValidRepresentation)
+    }
+}
+
+#[derive(Debug)]
+pub enum ParseNumberError {
+    NoValidRepresentation,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -614,13 +665,76 @@ struct Part {
     mantissa_width: Option<usize>,
 }
 
-/*
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FractionalOrDenominator {
-    Fractional,
-    Denominator,
+impl Part {
+    fn try_into_i64(&self, radix: u32) -> Option<i64> {
+        let num = match &self.real {
+            Real::Num(num) => i64::from_str_radix(num, radix).ok()?,
+            Real::Decimal(base, fract, None) if fract.is_empty() => {
+                i64::from_str_radix(base, 10).ok()?
+            }
+            Real::Decimal(base, fract, Some(exp)) if fract.is_empty() => {
+                let base = i64::from_str_radix(base, 10).ok()?;
+                let exp = 10_i64.checked_pow((*exp).try_into().ok()?)?;
+                base.checked_mul(exp)?
+            }
+            _ => return None,
+        };
+        Some(if self.neg { -num } else { num })
+    }
+
+    fn try_into_integer(&self, radix: u32) -> Option<Integer> {
+        let num = match &self.real {
+            Real::Num(num) => Integer::from_string_base(radix as u8, num)?,
+            Real::Decimal(base, fract, None) if fract.is_empty() => {
+                Integer::from_string_base(10, base)?
+            }
+            Real::Decimal(base, fract, Some(exp)) if fract.is_empty() => {
+                Integer::from_sci_string(&format!("{base}e{exp}"))?
+            }
+            _ => return None,
+        };
+        Some(if self.neg { -num } else { num })
+    }
+
+    fn try_into_rational(&self, radix: u32) -> Option<Rational> {
+        let num = match &self.real {
+            Real::Rational(num, denom) => {
+                let num = Integer::from_string_base(radix as u8, num)?;
+                let den = Integer::from_string_base(radix as u8, denom)?;
+                Rational::from_integers(num, den)
+            }
+            _ => return None,
+        };
+        Some(if self.neg { -num } else { num })
+    }
+
+    fn try_into_f64(&self, radix: u32) -> Option<f64> {
+        match &self.real {
+            Real::Nan => Some(f64::NAN),
+            Real::Inf if !self.neg => Some(f64::INFINITY),
+            Real::Inf if self.neg => Some(f64::NEG_INFINITY),
+            Real::Num(s) if radix == 10 => {
+                let num: f64 = s.parse().ok()?;
+                Some(if self.neg { -num } else { num })
+            }
+            Real::Rational(num, den) if radix == 10 => {
+                let num: f64 = num.parse().ok()?;
+                let den: f64 = den.parse().ok()?;
+                let num = num / den;
+                Some(if self.neg { -num } else { num })
+            }
+            Real::Decimal(base, fract, None) => {
+                let num: f64 = format!("{base}.{fract}").parse().ok()?;
+                Some(if self.neg { -num } else { num })
+            }
+            Real::Decimal(base, fract, Some(exp)) => {
+                let num: f64 = format!("{base}.{fract}e{exp}").parse().ok()?;
+                Some(if self.neg { -num } else { num })
+            }
+            _ => None,
+        }
+    }
 }
-*/
 
 #[derive(Clone, Debug, PartialEq)]
 enum Exactness {
@@ -628,26 +742,13 @@ enum Exactness {
     Inexact,
 }
 
-/*
-impl Number {
-    pub const fn new(radix: u32, negative: bool, integer_or_numerator: String) -> Self {
-        Self {
-            radix,
-            negative,
-            integer_or_numerator,
-            fractional_or_denominator: None,
-        }
-    }
-}
-*/
-
 #[derive(Clone, Debug, PartialEq)]
 enum Real {
     Nan,
     Inf,
     Num(String),
     Rational(String, String),
-    Decimal(String, Option<isize>),
+    Decimal(String, String, Option<isize>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
