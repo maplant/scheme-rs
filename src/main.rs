@@ -1,6 +1,5 @@
 use rustyline::{
     Completer, Config, Editor, Helper, Highlighter, Hinter, Validator,
-    error::ReadlineError,
     highlight::MatchingBracketHighlighter,
     history::DefaultHistory,
     validate::{ValidationContext, ValidationResult, Validator},
@@ -10,24 +9,33 @@ use scheme_rs::{
     cps::Compile,
     env::Environment,
     exceptions::{Exception, ExceptionHandler},
-    lex::LexError,
-    parse::ParseSyntaxError,
+    ports::{Port, ReadError},
     proc::{Application, DynamicWind},
     registry::Library,
     runtime::Runtime,
-    syntax::Syntax,
+    syntax::{
+        Syntax,
+        parse::{LexerError, ParseSyntaxError, Parser},
+    },
     value::Value,
 };
-use std::process::ExitCode;
+use std::{io::Cursor, process::ExitCode};
 
 #[derive(Default)]
 struct InputValidator;
 
 impl Validator for InputValidator {
     fn validate(&self, ctx: &mut ValidationContext<'_>) -> rustyline::Result<ValidationResult> {
-        match Syntax::from_str(ctx.input(), None) {
-            Err(ParseSyntaxError::UnclosedParen { .. }) => Ok(ValidationResult::Incomplete),
-            _ => Ok(ValidationResult::Valid(None)),
+        let bytes = Cursor::new(ctx.input().as_bytes().to_vec());
+        let is_valid = futures::executor::block_on(async move {
+            let port = Port::from_reader("<prompt>", bytes);
+            let mut parser = Parser::new(&port).await;
+            parser.all_datums().await.is_ok()
+        });
+        if is_valid {
+            Ok(ValidationResult::Valid(None))
+        } else {
+            Ok(ValidationResult::Incomplete)
         }
     }
 }
@@ -65,19 +73,34 @@ async fn main() -> ExitCode {
 
     editor.set_helper(Some(helper));
 
-    let mut n_results = 1;
-    let mut curr_line = 1;
+    let input_prompt = Port::from_prompt(editor);
+    let mut sexpr_parser = Parser::new(&input_prompt).await;
+
+    /*
     loop {
-        let input = match editor.readline("> ") {
-            Ok(line) => line,
-            Err(ReadlineError::Eof) => break,
+        let datum = match sexpr_parser.get_datum().await {
+            Ok(datum) => datum,
+            Err(err) => {
+                println!("error: {err:?}");
+                break;
+            }
+        };
+        println!("datum: {datum:?}");
+    }
+    */
+
+    let mut n_results = 1;
+    loop {
+        let sexpr = match sexpr_parser.get_datum().await {
+            Ok(sexpr) => sexpr,
+            Err(ParseSyntaxError::Lex(LexerError::ReadError(ReadError::Eof))) => break,
             Err(err) => {
                 eprintln!("Error while reading input: {err}");
                 return ExitCode::FAILURE;
             }
         };
 
-        match compile_and_run_str(&runtime, &repl, &input, curr_line).await {
+        match compile_and_run_str(&runtime, &repl, sexpr).await {
             Ok(results) => {
                 for result in results.into_iter() {
                     println!("${n_results} = {result:?}");
@@ -91,45 +114,36 @@ async fn main() -> ExitCode {
                 println!("Error: {err:?}");
             }
         }
-
-        curr_line += input.chars().filter(|c| *c == '\n').count() as u32 + 1;
     }
 
     ExitCode::SUCCESS
 }
 
 #[derive(derive_more::From, Debug)]
-pub enum EvalError<'e> {
-    LexError(LexError<'e>),
-    ParseError(ParseSyntaxError<'e>),
+pub enum EvalError {
     ParseAstError(ParseAstError),
     Exception(Exception),
 }
 
-async fn compile_and_run_str<'e>(
+async fn compile_and_run_str(
     runtime: &Runtime,
     repl: &Library,
-    input: &'e str,
-    curr_line: u32,
-) -> Result<Vec<Value>, EvalError<'e>> {
-    let sexprs = Syntax::from_str_with_line_offset(input, None, curr_line)?;
-    let mut output = Vec::new();
+    sexpr: Syntax,
+) -> Result<Vec<Value>, EvalError> {
     let env = Environment::Top(repl.clone());
-    for sexpr in sexprs {
-        let span = sexpr.span().clone();
-        let expr = DefinitionBody::parse(runtime, &[sexpr], &env, &span).await?;
-        let compiled = expr.compile_top_level();
-        let closure = runtime.compile_expr(compiled).await;
-        let result = Application::new(
-            closure,
-            Vec::new(),
-            ExceptionHandler::default(),
-            DynamicWind::default(),
-            None,
-        )
-        .eval()
-        .await?;
-        output.extend(result)
-    }
-    Ok(output)
+    // for sexpr in sexprs {
+    let span = sexpr.span().clone();
+    let expr = DefinitionBody::parse(runtime, &[sexpr], &env, &span).await?;
+    let compiled = expr.compile_top_level();
+    let closure = runtime.compile_expr(compiled).await;
+    let result = Application::new(
+        closure,
+        Vec::new(),
+        ExceptionHandler::default(),
+        DynamicWind::default(),
+        None,
+    )
+    .eval()
+    .await?;
+    Ok(result)
 }

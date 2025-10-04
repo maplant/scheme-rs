@@ -11,17 +11,13 @@ homepage = "https://github.com/maplant/scheme-rs"
 repository = "https://github.com/maplant/scheme-rs"
 
 [dependencies]
-async-trait = "0.1"
 by_address = "1.2"
 derive_builder = "0.20"
 derive_more = { version = "1.0", features = ["debug", "from"]}
-dyn-clone = "1.0.13"
 either = "1"
 futures = "0.3"
 indexmap = "2"
 inventory = "0.3"
-nom = "7"
-nom_locate = "4"
 num = "0.4"
 ordered-float = "5"
 scheme-rs-macros = { version = "0.1.0-alpha.1", path = "proc-macros" }
@@ -38,7 +34,6 @@ cranelift = "0.122"
 cranelift-jit = "0.122"
 cranelift-native = "0.122"
 cranelift-module = "0.122"
- 
 
 [profile.release]
 lto = true
