@@ -19,7 +19,10 @@ use scheme_rs::{
     },
     value::Value,
 };
-use std::{io::Cursor, process::ExitCode};
+use std::{
+    io::Cursor,
+    process::{ExitCode, exit},
+};
 
 #[derive(Default)]
 struct InputValidator;
@@ -76,19 +79,6 @@ async fn main() -> ExitCode {
     let input_prompt = Port::from_prompt(editor);
     let mut sexpr_parser = Parser::new(&input_prompt).await;
 
-    /*
-    loop {
-        let datum = match sexpr_parser.get_datum().await {
-            Ok(datum) => datum,
-            Err(err) => {
-                println!("error: {err:?}");
-                break;
-            }
-        };
-        println!("datum: {datum:?}");
-    }
-    */
-
     let mut n_results = 1;
     loop {
         let sexpr = match sexpr_parser.get_datum().await {
@@ -116,7 +106,7 @@ async fn main() -> ExitCode {
         }
     }
 
-    ExitCode::SUCCESS
+    exit(0);
 }
 
 #[derive(derive_more::From, Debug)]
