@@ -2,15 +2,13 @@
 //! Cycle Collection in Reference Counted Systems by David F. Bacon and
 //! V.T. Rajan.
 
+use kanal::{AsyncReceiver, AsyncSender, unbounded_async};
 use std::{
     ptr::NonNull,
     sync::{Mutex, OnceLock},
     time::{Duration, Instant},
 };
-use tokio::{
-    sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
-    task::JoinHandle,
-};
+use tokio::task::JoinHandle;
 
 use super::{Color, GcInner, OpaqueGcPtr};
 
@@ -38,15 +36,15 @@ pub enum MutationKind {
 /// Instead of mutations being atomic (via an atomic variable), they're buffered into
 /// "epochs", and handled by precisely one thread.
 struct MutationBuffer {
-    mutation_buffer_tx: UnboundedSender<Mutation>,
-    mutation_buffer_rx: Mutex<Option<UnboundedReceiver<Mutation>>>,
+    mutation_buffer_tx: AsyncSender<Mutation>,
+    mutation_buffer_rx: Mutex<Option<AsyncReceiver<Mutation>>>,
 }
 
 unsafe impl Sync for MutationBuffer {}
 
 impl Default for MutationBuffer {
     fn default() -> Self {
-        let (mutation_buffer_tx, mutation_buffer_rx) = unbounded_channel();
+        let (mutation_buffer_tx, mutation_buffer_rx) = unbounded_async();
         Self {
             mutation_buffer_tx,
             mutation_buffer_rx: Mutex::new(Some(mutation_buffer_rx)),
@@ -59,19 +57,24 @@ static MUTATION_BUFFER: OnceLock<MutationBuffer> = OnceLock::new();
 pub(super) fn inc_rc<T: ?Sized>(gc: NonNull<GcInner<T>>) {
     // Disregard any send errors. If the receiver was dropped then the process
     // is exiting and we don't care if we leak.
-    let _ = MUTATION_BUFFER
+    while !MUTATION_BUFFER
         .get_or_init(MutationBuffer::default)
         .mutation_buffer_tx
-        .send(Mutation::new(MutationKind::Inc, OpaqueGcPtr::from(gc)));
+        .try_send(Mutation::new(MutationKind::Inc, OpaqueGcPtr::from(gc)))
+        .unwrap_or(true)
+    {}
 }
 
 pub(super) fn dec_rc<T: ?Sized>(gc: NonNull<GcInner<T>>) {
     // Disregard any send errors. If the receiver was dropped then the process
     // is exiting and we don't care if we leak.
-    let _ = MUTATION_BUFFER
+
+    while !MUTATION_BUFFER
         .get_or_init(MutationBuffer::default)
         .mutation_buffer_tx
-        .send(Mutation::new(MutationKind::Dec, OpaqueGcPtr::from(gc)));
+        .try_send(Mutation::new(MutationKind::Dec, OpaqueGcPtr::from(gc)))
+        .unwrap_or(true)
+    {}
 }
 
 static COLLECTOR_TASK: OnceLock<JoinHandle<()>> = OnceLock::new();
@@ -83,13 +86,12 @@ pub fn init_gc() {
         .get_or_init(|| tokio::task::spawn(async { unsafe { run_garbage_collector().await } }));
 }
 
-const MIN_MUTATIONS_PER_EPOCH: usize = 10;
-const MAX_MUTATIONS_PER_EPOCH: usize = 10_000; // No idea what a good value is here.
+// const MIN_MUTATIONS_PER_EPOCH: usize = 10;
+// const MAX_MUTATIONS_PER_EPOCH: usize = 10_000; // No idea what a good value is here.
 
 async unsafe fn run_garbage_collector() {
     unsafe {
         let mut last_epoch = Instant::now();
-        let mut mutation_buffer: Vec<_> = Vec::with_capacity(MAX_MUTATIONS_PER_EPOCH);
         let mut mutation_buffer_rx = MUTATION_BUFFER
             .get_or_init(MutationBuffer::default)
             .mutation_buffer_rx
@@ -97,24 +99,17 @@ async unsafe fn run_garbage_collector() {
             .unwrap()
             .take()
             .unwrap();
-        while epoch(
-            &mut last_epoch,
-            &mut mutation_buffer_rx,
-            &mut mutation_buffer,
-        )
-        .await
-        {}
+        while epoch(&mut last_epoch, &mut mutation_buffer_rx).await {}
     }
 }
 
 // Run a collection epoch. Returns false if we've been cancelled and should exit.
 async unsafe fn epoch(
     last_epoch: &mut Instant,
-    mutation_buffer_rx: &mut UnboundedReceiver<Mutation>,
-    mutation_buffer: &mut Vec<Mutation>,
+    mutation_buffer_rx: &mut AsyncReceiver<Mutation>,
 ) -> bool {
     unsafe {
-        process_mutation_buffer(mutation_buffer_rx, mutation_buffer).await;
+        process_mutation_buffer(mutation_buffer_rx).await;
     }
     let duration_since_last_epoch = Instant::now() - *last_epoch;
     if duration_since_last_epoch > Duration::from_millis(100) {
@@ -132,16 +127,16 @@ async unsafe fn epoch(
 
 /// SAFETY: this function is _not reentrant_, may only be called by once per epoch,
 /// and must _complete_ before the next epoch.
-async unsafe fn process_mutation_buffer(
-    mutation_buffer_rx: &mut UnboundedReceiver<Mutation>,
-    mutation_buffer: &mut Vec<Mutation>,
-) {
+async unsafe fn process_mutation_buffer(mutation_buffer_rx: &mut AsyncReceiver<Mutation>) {
+    // let to_recv = mutation_buffer_rx.len();
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
     // It is very important that we do not delay any mutations that
     // have occurred at this point by an extra epoch.
-    let to_recv = mutation_buffer_rx.len().max(MIN_MUTATIONS_PER_EPOCH);
+    let to_recv = mutation_buffer_rx.len();
 
-    mutation_buffer_rx.recv_many(mutation_buffer, to_recv).await;
-    for mutation in mutation_buffer.drain(..) {
+    for _ in 0..to_recv {
+        let mutation = mutation_buffer_rx.recv().await.unwrap();
         unsafe {
             match mutation.kind {
                 MutationKind::Inc => increment(mutation.gc),
@@ -504,9 +499,8 @@ mod test {
             .unwrap()
             .take()
             .unwrap();
-        let mut mutation_buffer = Vec::new();
         unsafe {
-            process_mutation_buffer(&mut mutation_buffer_rx, &mut mutation_buffer).await;
+            process_mutation_buffer(&mut mutation_buffer_rx).await;
             process_cycles();
             process_cycles();
         }

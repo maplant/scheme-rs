@@ -11,11 +11,11 @@ use crate::{
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
     syntax::Span,
-    value::{UnpackedValue, Value, ValueType},
+    value::{UnpackedValue, Value},
 };
 use futures::future::BoxFuture;
 use scheme_rs_macros::cps_bridge;
-use std::{borrow::Cow, collections::HashMap, fmt, hash::Hash, sync::Arc};
+use std::{borrow::Cow, fmt, sync::Arc};
 
 /// A function pointer to a generated continuation.
 pub(crate) type ContinuationPtr = unsafe extern "C" fn(
@@ -117,14 +117,6 @@ impl ClosureInner {
 
     pub fn is_user_func(&self) -> bool {
         !self.is_continuation()
-    }
-
-    pub(crate) fn deep_clone(&mut self, cloned: &mut HashMap<ClonedContinuation, Value>) {
-        let new_env: Vec<_> = std::mem::take(&mut self.env)
-            .into_iter()
-            .map(|env| Gc::new(clone_continuation_env(&env.read(), cloned)))
-            .collect();
-        self.env = new_env;
     }
 
     pub async fn apply(
@@ -603,7 +595,7 @@ async fn escape_procedure(
     let thunks = entry_winders(from_extent, &to_extent.read());
 
     // Clone the continuation
-    let cont = clone_continuation_env(&cont, &mut HashMap::default());
+    let cont = maybe_clone_continuation(&cont, &mut Vec::new()).unwrap();
     let cont: Closure = cont.try_into().unwrap();
 
     let (req_args, variadic) = {
@@ -659,53 +651,53 @@ fn entry_winders(from_extent: &DynamicWind, to_extent: &DynamicWind) -> Value {
     thunks
 }
 
-pub(crate) fn clone_continuation_env(
+fn prepare_env_variable(value: &Value, cloned: &mut Vec<(ContinuationPtr, Value)>) -> Value {
+    maybe_clone_continuation(value, cloned).unwrap_or_else(|| value.clone())
+}
+
+fn maybe_clone_continuation(
     value: &Value,
-    cloned: &mut HashMap<ClonedContinuation, Value>,
-) -> Value {
-    if value.type_of() != ValueType::Closure {
-        return value.clone();
-    }
-    let UnpackedValue::Closure(clos) = value.clone().unpack() else {
-        unreachable!()
+    cloned: &mut Vec<(ContinuationPtr, Value)>,
+) -> Option<Value> {
+    let k: Closure = value.clone().try_into().ok()?;
+
+    let func_ptr = {
+        match k.0.read().func {
+            FuncPtr::Continuation(cont) => cont,
+            _ => return None,
+        }
     };
 
-    if clos.0.read().is_user_func() {
-        return value.clone();
-    }
-
-    let to_clone = ClonedContinuation(clos);
-
-    if let Some(cloned) = cloned.get(&to_clone) {
-        return cloned.clone();
-    }
-
-    let clos_cloned = Closure(Gc::new(to_clone.0.0.read().clone()));
-    cloned.insert(to_clone, Value::from(clos_cloned.clone()));
-
+    if let Some(cont) = cloned
+        .iter()
+        .find(|(k, _)| std::ptr::fn_addr_eq(*k, func_ptr))
     {
-        let mut clos_mut = clos_cloned.0.write();
-        clos_mut.deep_clone(cloned);
+        return Some(cont.1.clone());
     }
 
-    Value::from(clos_cloned)
+    let new_k = {
+        let k = k.0.read();
+        let new_env = k
+            .env
+            .iter()
+            .map(|var| Gc::new(prepare_env_variable(&var.read(), cloned)))
+            .collect::<Vec<_>>();
+        Closure::new(
+            k.runtime.clone(),
+            new_env,
+            k.globals.clone(),
+            k.func,
+            k.num_required_args,
+            k.variadic,
+            k.debug_info.clone(),
+        )
+    };
+
+    let new_k = Value::from(new_k);
+    cloned.push((func_ptr, new_k.clone()));
+
+    Some(new_k)
 }
-
-pub(crate) struct ClonedContinuation(Closure);
-
-impl Hash for ClonedContinuation {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        Gc::as_ptr(&self.0.0).hash(state);
-    }
-}
-
-impl PartialEq for ClonedContinuation {
-    fn eq(&self, rhs: &Self) -> bool {
-        Gc::ptr_eq(&self.0.0, &rhs.0.0)
-    }
-}
-
-impl Eq for ClonedContinuation {}
 
 pub(crate) unsafe extern "C" fn call_thunks(
     runtime: *mut GcInner<RuntimeInner>,

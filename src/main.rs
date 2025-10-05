@@ -106,7 +106,7 @@ async fn main() -> ExitCode {
         }
     }
 
-    exit(0);
+    exit(0)
 }
 
 #[derive(derive_more::From, Debug)]
