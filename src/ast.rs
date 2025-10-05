@@ -1080,15 +1080,11 @@ impl Expression {
                                 .await
                                 .map(Expression::Begin)
                         }
-                        Some(Either::Right(var)) => Apply::parse(
-                            runtime,
-                            Expression::Var(var),
-                            tail,
-                            env,
-                            span,
-                        )
-                        .await
-                        .map(Expression::Apply),
+                        Some(Either::Right(var)) => {
+                            Apply::parse(runtime, Expression::Var(var), tail, env, span)
+                                .await
+                                .map(Expression::Apply)
+                        }
                         Some(Either::Left(SpecialKeyword::DefineSyntax)) => unreachable!(),
                         Some(Either::Left(SpecialKeyword::Import)) => {
                             Err(ParseAstError::UnexpectedImport(span.clone()))

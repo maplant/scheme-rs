@@ -350,7 +350,6 @@ fn compile_primop(
     }
 }
 
-
 impl Compile for If {
     fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
         let k1 = Local::gensym();

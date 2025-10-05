@@ -7,21 +7,14 @@ use crate::{
     lists::list_to_vec,
     num,
     ports::Port,
-    proc::{
-        Application, Closure, ContinuationPtr, DynamicWind, FuncDebugInfo, FuncPtr, UserPtr,
-    },
+    proc::{Application, Closure, ContinuationPtr, DynamicWind, FuncDebugInfo, FuncPtr, UserPtr},
     registry::{ImportError, Library, Registry},
     symbols::Symbol,
     syntax::{Span, parse::Parser},
     value::{ReflexiveValue, UnpackedValue, Value},
 };
 use scheme_rs_macros::runtime_fn;
-use std::{
-    collections::HashSet,
-    mem::ManuallyDrop,
-    path::Path,
-    sync::Arc,
-};
+use std::{collections::HashSet, mem::ManuallyDrop, path::Path, sync::Arc};
 use tokio::{
     fs::File,
     io::BufReader,

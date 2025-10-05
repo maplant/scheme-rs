@@ -5,7 +5,7 @@ use crate::{
     env::Local,
     exceptions::{Condition, Exception, ExceptionHandler, ExceptionHandlerInner, Frame, raise},
     gc::{Gc, GcInner, Trace},
-    lists::{list_to_vec, slice_to_list, self},
+    lists::{self, list_to_vec, slice_to_list},
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::BridgeFnDebugInfo,
     runtime::{Runtime, RuntimeInner},
@@ -578,7 +578,6 @@ pub async fn call_with_current_continuation(
 
     Ok(app)
 }
-
 
 /// Prepare the continuation for call/cc. Clones the continuation environment
 /// and creates a closure that calls the appropriate winders.
