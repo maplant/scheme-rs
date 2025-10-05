@@ -18,6 +18,7 @@ either = "1"
 futures = "0.3"
 indexmap = "2"
 inventory = "0.3"
+kanal = "0.1"
 num = "0.4"
 ordered-float = "5"
 scheme-rs-macros = { version = "0.1.0-alpha.1", path = "proc-macros" }
@@ -45,9 +46,13 @@ nom = "7"
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 
 [[bench]]
+name = "cold_boot"
+harness = false
+
+[[bench]]
 name = "fib"
 harness = false
 
 [[bench]]
-name = "cold_boot"
+name = "yin_yang"
 harness = false

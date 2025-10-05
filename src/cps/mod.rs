@@ -119,22 +119,6 @@ pub enum PrimOp {
     ExpandTemplate,
     /// Raise an error indicating a failure to match the pattern.
     ErrorNoPatternsMatch,
-
-    // Continuation primitive operators:
-    CallWithCurrentContinuation,
-    /// Converts a continuation to a callable user function
-    PrepareContinuation,
-    /// Extract the current winders from the environment into a value
-    ExtractWinders,
-}
-
-impl PrimOp {
-    pub fn from_sym(s: Symbol) -> Option<Self> {
-        match s.to_str().as_ref() {
-            "&call/cc" => Some(Self::CallWithCurrentContinuation),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

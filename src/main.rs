@@ -106,7 +106,7 @@ async fn main() -> ExitCode {
         }
     }
 
-    exit(0);
+    exit(0)
 }
 
 #[derive(derive_more::From, Debug)]
@@ -121,7 +121,6 @@ async fn compile_and_run_str(
     sexpr: Syntax,
 ) -> Result<Vec<Value>, EvalError> {
     let env = Environment::Top(repl.clone());
-    // for sexpr in sexprs {
     let span = sexpr.span().clone();
     let expr = DefinitionBody::parse(runtime, &[sexpr], &env, &span).await?;
     let compiled = expr.compile_top_level();

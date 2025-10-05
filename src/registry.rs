@@ -153,7 +153,6 @@ impl RegistryInner {
                     ("define", SpecialKeyword::Define),
                     ("define-syntax", SpecialKeyword::DefineSyntax),
                     ("import", SpecialKeyword::Import),
-                    ("$call/cc", SpecialKeyword::CallWithCurrentContinuation),
                     ("$undefined", SpecialKeyword::Undefined),
                 ][..],
             ),

@@ -1,15 +1,15 @@
 (library (rnrs base (6))
   (export syntax-rules with-syntax cond case let* letrec letrec* values
           let-values let*-values when unless do case-lambda equal? member memv
-          memq caar cadr memp call/cc call-with-current-continuation for-each
+          memq caar cadr memp call/cc for-each
           append make-list list-copy list-tail list-ref assoc map reverse
           positive? negative? abs min max quasiquote
           (import (rnrs lists (6)))
           (import (rnrs base builtins (6))
-                  (except (rnrs base special-keywords (6)) $call/cc $undefined)
+                  (except (rnrs base special-keywords (6)) $undefined)
                   (rnrs syntax-case special-keywords (6))))
   (import (rnrs syntax-case (6))
-          (only (rnrs base special-keywords (6)) $call/cc $undefined))
+          (only (rnrs base special-keywords (6)) $undefined))
 
   ;; Define syntax-rules in terms of syntax case 
   (define-syntax syntax-rules
@@ -296,12 +296,17 @@
         list
         (if (null? list) #f (memp proc (cdr list)))))
 
+  ;; call/cc is an alias of call-with-current-continuation
+  (define call/cc call-with-current-continuation)
+
+  #|
   ;; Define call/cc and call-with-current-continuation in terms of its primitive
   (define (call/cc x)
     ($call/cc x));
 
   (define (call-with-current-continuation x)
-    ($call/cc x))
+  ($call/cc x))
+  |#
 
   ;; TODO: a lot of these should be made into rust functions, as of right now
   ;; these are quite slow.

@@ -157,8 +157,7 @@ impl Cps {
                 | PrimOp::Lesser
                 | PrimOp::LesserEqual
                 | PrimOp::Matches
-                | PrimOp::ExpandTemplate
-                | PrimOp::ExtractWinders,
+                | PrimOp::ExpandTemplate,
                 _,
                 _,
                 cexpr,
