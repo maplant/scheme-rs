@@ -97,58 +97,31 @@ impl<'a> Lexer<'a> {
         } else if let Some(identifier) = self.identifier().await? {
             Lexeme::Identifier(identifier)
         } else {
-            match self.peek().await? {
-                '.' => {
-                    self.skip();
-                    Lexeme::Period
-                }
-                '\'' => {
-                    self.skip();
-                    Lexeme::Quote
-                }
-                '`' => {
-                    self.skip();
-                    Lexeme::Backquote
-                }
-                ',' if self.match_tag(",@").await? => Lexeme::CommaAt,
-                ',' => {
-                    self.skip();
-                    Lexeme::Comma
-                }
-                '(' => {
-                    self.skip();
-                    Lexeme::LParen
-                }
-                ')' => {
-                    self.skip();
-                    Lexeme::RParen
-                }
-                '[' => {
-                    self.skip();
-                    Lexeme::LBracket
-                }
-                ']' => {
-                    self.skip();
-                    Lexeme::RBracket
-                }
-                '"' => {
-                    self.skip();
-                    Lexeme::String(self.string().await?)
-                }
-                '#' if self.match_tag("#;").await? => Lexeme::DatumComment,
-                '#' if self.match_tag("#\\").await? => Lexeme::Character(self.character().await?),
-                '#' if self.match_tag("#F").await? || self.match_tag("#f").await? => {
+            match self.take().await? {
+                '.' => Lexeme::Period,
+                '\'' => Lexeme::Quote,
+                '`' => Lexeme::Backquote,
+                ',' if self.match_tag("@").await? => Lexeme::CommaAt,
+                ',' => Lexeme::Comma,
+                '(' => Lexeme::LParen,
+                ')' => Lexeme::RParen,
+                '[' => Lexeme::LBracket,
+                ']' => Lexeme::RBracket,
+                '"' => Lexeme::String(self.string().await?),
+                '#' if self.match_tag(";").await? => Lexeme::DatumComment,
+                '#' if self.match_tag("\\").await? => Lexeme::Character(self.character().await?),
+                '#' if self.match_tag("F").await? || self.match_tag("f").await? => {
                     Lexeme::Boolean(false)
                 }
-                '#' if self.match_tag("#T").await? || self.match_tag("#t").await? => {
+                '#' if self.match_tag("T").await? || self.match_tag("t").await? => {
                     Lexeme::Boolean(true)
                 }
-                '#' if self.match_tag("#(").await? => Lexeme::HashParen,
-                '#' if self.match_tag("#u8(").await? => Lexeme::Vu8Paren,
-                '#' if self.match_tag("#'").await? => Lexeme::HashQuote,
-                '#' if self.match_tag("#`").await? => Lexeme::HashBackquote,
-                '#' if self.match_tag("#,@").await? => Lexeme::HashCommaAt,
-                '#' if self.match_tag("#,").await? => Lexeme::HashComma,
+                '#' if self.match_tag("(").await? => Lexeme::HashParen,
+                '#' if self.match_tag("u8(").await? => Lexeme::Vu8Paren,
+                '#' if self.match_tag("'").await? => Lexeme::HashQuote,
+                '#' if self.match_tag("`").await? => Lexeme::HashBackquote,
+                '#' if self.match_tag(",@").await? => Lexeme::HashCommaAt,
+                '#' if self.match_tag(",").await? => Lexeme::HashComma,
                 chr => return Err(LexerError::UnexpectedCharacter { chr, span }),
             }
         };

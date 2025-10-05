@@ -145,13 +145,14 @@ impl Parser<'_> {
     pub async fn all_datums(&mut self) -> Result<Vec<Syntax>, ParseSyntaxError> {
         let mut datums = Vec::new();
         loop {
-            match self.get_datum().await {
-                Ok(datum) => datums.push(datum),
-                Err(ParseSyntaxError::Lex(LexerError::ReadError(ReadError::Eof))) => {
-                    return Ok(datums);
-                }
-                Err(err) => return Err(err),
+            // Check for EOF
+            match self.next_token().await {
+                Err(LexerError::ReadError(ReadError::Eof)) => return Ok(datums),
+                Err(err) => return Err(ParseSyntaxError::Lex(err)),
+                Ok(token) => self.return_token(token),
             }
+
+            datums.push(self.get_datum().await?);
         }
     }
 
