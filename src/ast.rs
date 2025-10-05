@@ -113,7 +113,6 @@ pub enum SpecialKeyword {
     Define,
     DefineSyntax,
     Import,
-    CallWithCurrentContinuation,
 }
 
 pub struct LibrarySpec {
@@ -1081,20 +1080,9 @@ impl Expression {
                                 .await
                                 .map(Expression::Begin)
                         }
-                        Some(Either::Left(SpecialKeyword::CallWithCurrentContinuation)) => {
-                            Apply::parse(
-                                runtime,
-                                Either::Right(PrimOp::CallWithCurrentContinuation),
-                                tail,
-                                env,
-                                span,
-                            )
-                            .await
-                            .map(Expression::Apply)
-                        }
                         Some(Either::Right(var)) => Apply::parse(
                             runtime,
-                            Either::Left(Box::new(Expression::Var(var))),
+                            Expression::Var(var),
                             tail,
                             env,
                             span,
@@ -1116,9 +1104,7 @@ impl Expression {
                     },
                     [expr, args @ .., Syntax::Null { .. }] => Apply::parse(
                         runtime,
-                        Either::Left(Box::new(
-                            Expression::parse(runtime, expr.clone(), env).await?,
-                        )),
+                        Expression::parse(runtime, expr.clone(), env).await?,
                         args,
                         env,
                         expr.span(),
@@ -1227,7 +1213,7 @@ impl SyntaxQuote {
 
 #[derive(Debug, Clone, Trace)]
 pub struct Apply {
-    pub operator: Either<Box<Expression>, PrimOp>,
+    pub operator: Box<Expression>,
     pub args: Vec<Expression>,
     pub span: Span,
 }
@@ -1235,7 +1221,7 @@ pub struct Apply {
 impl Apply {
     async fn parse(
         rt: &Runtime,
-        operator: Either<Box<Expression>, PrimOp>,
+        operator: Expression,
         args: &[Syntax],
         env: &Environment,
         span: &Span,
@@ -1245,7 +1231,7 @@ impl Apply {
             parsed_args.push(Expression::parse(rt, arg.clone(), env).await?);
         }
         Ok(Apply {
-            operator,
+            operator: Box::new(operator),
             args: parsed_args,
             span: span.clone(),
         })

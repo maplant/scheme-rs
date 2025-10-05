@@ -57,10 +57,8 @@ pub(crate) struct RuntimeFunctions {
     read_cell: FuncId,
     store: FuncId,
     error_unbound_variable: FuncId,
-    extract_winders: FuncId,
     matches: FuncId,
     expand_template: FuncId,
-    prepare_continuation: FuncId,
     error_no_patterns_match: FuncId,
     dropv: FuncId,
     dropc: FuncId,
@@ -254,15 +252,6 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
             Cps::PrimOp(PrimOp::AllocCell, _, into, cexpr) => {
                 self.alloc_cell_codegen(into, *cexpr, deferred);
             }
-            Cps::PrimOp(PrimOp::ExtractWinders, _, extract_to, cexpr) => {
-                self.extract_winders_codegen(extract_to, *cexpr, deferred);
-            }
-            Cps::PrimOp(PrimOp::PrepareContinuation, args, prepare_to, cexpr) => {
-                let [cont, winders] = args.as_slice() else {
-                    unreachable!()
-                };
-                self.prepare_continuation_codegen(cont, winders, prepare_to, *cexpr, deferred);
-            }
             Cps::PrimOp(PrimOp::Matches, args, bind_to, cexpr) => {
                 let [pattern, expr] = args.as_slice() else {
                     unreachable!()
@@ -378,25 +367,6 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         }
     }
 
-    fn extract_winders_codegen(
-        &mut self,
-        extract_to: Local,
-        cexpr: Cps,
-        deferred: &mut Vec<ClosureBundle>,
-    ) {
-        let dynamic_wind = self.get_dynamic_wind();
-        let extract_winders = self
-            .module
-            .declare_func_in_func(self.runtime_funcs.extract_winders, self.builder.func);
-        let call = self.builder.ins().call(extract_winders, &[dynamic_wind]);
-
-        let winders = self.builder.inst_results(call)[0];
-        self.rebinds
-            .rebind(Var::Local(extract_to), IrValue::Value(winders));
-        self.push_val_alloc(winders);
-        self.cps_codegen(cexpr, deferred);
-    }
-
     fn matches_codegen(
         &mut self,
         pattern: &CpsValue,
@@ -462,31 +432,6 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         self.rebinds
             .rebind(Var::Local(dest), IrValue::Value(expanded));
         self.push_val_alloc(expanded);
-        self.cps_codegen(cexpr, deferred);
-    }
-
-    fn prepare_continuation_codegen(
-        &mut self,
-        cont: &CpsValue,
-        winders: &CpsValue,
-        dest: Local,
-        cexpr: Cps,
-        deferred: &mut Vec<ClosureBundle>,
-    ) {
-        let cont = self.value_codegen(cont);
-        let winders = self.value_codegen(winders);
-        let dynamic_wind = self.get_dynamic_wind();
-        let prepare_continuation = self
-            .module
-            .declare_func_in_func(self.runtime_funcs.prepare_continuation, self.builder.func);
-        let call = self
-            .builder
-            .ins()
-            .call(prepare_continuation, &[cont, winders, dynamic_wind]);
-        let prepared = self.builder.inst_results(call)[0];
-        self.rebinds
-            .rebind(Var::Local(dest), IrValue::Value(prepared));
-        self.push_val_alloc(prepared);
         self.cps_codegen(cexpr, deferred);
     }
 

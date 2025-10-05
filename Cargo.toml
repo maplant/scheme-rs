@@ -45,9 +45,13 @@ nom = "7"
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 
 [[bench]]
+name = "cold_boot"
+harness = false
+
+[[bench]]
 name = "fib"
 harness = false
 
 [[bench]]
-name = "cold_boot"
+name = "yin_yang"
 harness = false

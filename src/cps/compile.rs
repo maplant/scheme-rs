@@ -245,13 +245,7 @@ impl Compile for ExprBody {
 
 impl Compile for Apply {
     fn compile(&self, meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
-        match self.operator {
-            Either::Left(ref op) => compile_apply(op, &self.args, self.span.clone(), meta_cont),
-            Either::Right(PrimOp::CallWithCurrentContinuation) => {
-                compile_call_with_cc(&self.args[0], meta_cont)
-            }
-            _ => todo!(),
-        }
+        compile_apply(&self.operator, &self.args, self.span.clone(), meta_cont)
     }
 }
 
@@ -356,55 +350,6 @@ fn compile_primop(
     }
 }
 
-fn compile_call_with_cc(
-    thunk: &Expression,
-    mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>,
-) -> Cps {
-    let k1 = Local::gensym();
-    let k2 = Local::gensym();
-    let k3 = Local::gensym();
-    let k4 = Local::gensym();
-    let arg = Local::gensym();
-    let winders = Local::gensym();
-    let escape_procedure = Local::gensym();
-    let prepared_cont = Local::gensym();
-
-    Cps::Lambda {
-        args: ClosureArgs::new(vec![k1], false, None),
-        body: Box::new(Cps::PrimOp(
-            PrimOp::ExtractWinders,
-            Vec::new(),
-            winders,
-            Box::new(Cps::Lambda {
-                args: ClosureArgs::new(vec![arg], true, Some(Local::gensym())),
-                body: Box::new(Cps::PrimOp(
-                    PrimOp::PrepareContinuation,
-                    vec![Value::from(k1), Value::from(winders)],
-                    prepared_cont,
-                    Box::new(Cps::Forward(Value::from(prepared_cont), Value::from(arg))),
-                )),
-                val: escape_procedure,
-                cexp: Box::new(Cps::Lambda {
-                    args: ClosureArgs::new(vec![k3], false, None),
-                    body: Box::new(Cps::App(
-                        Value::from(k3),
-                        vec![Value::from(escape_procedure), Value::from(k1)],
-                        None,
-                    )),
-                    val: k4,
-                    cexp: Box::new(thunk.compile(Box::new(|thunk_result| {
-                        Cps::App(thunk_result, vec![Value::from(k4)], None)
-                    }))),
-                    span: None,
-                }),
-                span: None,
-            }),
-        )),
-        val: k2,
-        cexp: Box::new(meta_cont(Value::from(k2))),
-        span: None,
-    }
-}
 
 impl Compile for If {
     fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
