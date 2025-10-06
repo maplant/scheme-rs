@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     ast::*,
     expand::{ExpansionCombiner, SyntaxRule},
-    gc::Gc,
+    records::Record,
     value::Value as RuntimeValue,
 };
 use either::Either;
@@ -27,7 +27,7 @@ pub trait Compile: std::fmt::Debug {
             span: None,
         }
         .reduce()
-        .args_to_cells(&mut AHashMap::default())
+        .args_to_cells(&mut HashMap::default())
     }
 }
 
@@ -245,13 +245,7 @@ impl Compile for ExprBody {
 
 impl Compile for Apply {
     fn compile(&self, meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
-        match self.operator {
-            Either::Left(ref op) => compile_apply(op, &self.args, self.span.clone(), meta_cont),
-            Either::Right(PrimOp::CallWithCurrentContinuation) => {
-                compile_call_with_cc(&self.args[0], meta_cont)
-            }
-            _ => todo!(),
-        }
+        compile_apply(&self.operator, &self.args, self.span.clone(), meta_cont)
     }
 }
 
@@ -352,56 +346,6 @@ fn compile_primop(
         cexp: Box::new(arg.compile(Box::new(|result| {
             Cps::App(result, vec![Value::from(k1)], None)
         }))),
-        span: None,
-    }
-}
-
-fn compile_call_with_cc(
-    thunk: &Expression,
-    mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>,
-) -> Cps {
-    let k1 = Local::gensym();
-    let k2 = Local::gensym();
-    let k3 = Local::gensym();
-    let k4 = Local::gensym();
-    let arg = Local::gensym();
-    let winders = Local::gensym();
-    let escape_procedure = Local::gensym();
-    let prepared_cont = Local::gensym();
-
-    Cps::Lambda {
-        args: ClosureArgs::new(vec![k1], false, None),
-        body: Box::new(Cps::PrimOp(
-            PrimOp::ExtractWinders,
-            Vec::new(),
-            winders,
-            Box::new(Cps::Lambda {
-                args: ClosureArgs::new(vec![arg], true, Some(Local::gensym())),
-                body: Box::new(Cps::PrimOp(
-                    PrimOp::PrepareContinuation,
-                    vec![Value::from(k1), Value::from(winders)],
-                    prepared_cont,
-                    Box::new(Cps::Forward(Value::from(prepared_cont), Value::from(arg))),
-                )),
-                val: escape_procedure,
-                cexp: Box::new(Cps::Lambda {
-                    args: ClosureArgs::new(vec![k3], false, None),
-                    body: Box::new(Cps::App(
-                        Value::from(k3),
-                        vec![Value::from(escape_procedure), Value::from(k1)],
-                        None,
-                    )),
-                    val: k4,
-                    cexp: Box::new(thunk.compile(Box::new(|thunk_result| {
-                        Cps::App(thunk_result, vec![Value::from(k4)], None)
-                    }))),
-                    span: None,
-                }),
-                span: None,
-            }),
-        )),
-        val: k2,
-        cexp: Box::new(meta_cont(Value::from(k2))),
         span: None,
     }
 }
@@ -754,7 +698,7 @@ impl Compile for SyntaxQuote {
         let expanded = Local::gensym();
 
         let mut expansions_seen = IndexSet::new();
-        let mut uses = AHashMap::new();
+        let mut uses = HashMap::new();
 
         for (ident, expansion) in self.expansions.iter() {
             let (idx, _) = expansions_seen.insert_full(expansion);
@@ -762,12 +706,12 @@ impl Compile for SyntaxQuote {
         }
 
         let mut args = vec![
-            Value::from(RuntimeValue::from(Gc::new(Gc::into_any(Gc::new(
+            Value::from(RuntimeValue::from(Record::from_rust_type(
                 self.template.clone(),
-            ))))),
-            Value::from(RuntimeValue::from(Gc::new(Gc::into_any(Gc::new(
+            ))),
+            Value::from(RuntimeValue::from(Record::from_rust_type(
                 ExpansionCombiner { uses },
-            ))))),
+            ))),
         ];
 
         for expansion in expansions_seen.iter() {
@@ -833,7 +777,7 @@ fn compile_syntax_rules(
                 Box::new(Cps::App(Value::from(k2), Vec::new(), None)),
             )),
             [rule, tail @ ..] => {
-                let pattern = Gc::new(Gc::into_any(Gc::new(rule.pattern.clone())));
+                let pattern = Record::from_rust_type(rule.pattern.clone());
                 Box::new(Cps::PrimOp(
                     PrimOp::Matches,
                     vec![Value::from(RuntimeValue::from(pattern)), Value::from(arg)],
@@ -929,7 +873,7 @@ impl Compile for Vec<u8> {
 
 impl Cps {
     /// Convert arguments for closures into cells if they are written to or escape.
-    fn args_to_cells(self, needs_cell_cache: &mut AHashMap<Local, AHashSet<Local>>) -> Self {
+    fn args_to_cells(self, needs_cell_cache: &mut HashMap<Local, HashSet<Local>>) -> Self {
         match self {
             Self::PrimOp(PrimOp::AllocCell, vals, local, cexpr) => Self::PrimOp(
                 PrimOp::AllocCell,
@@ -960,7 +904,7 @@ impl Cps {
                 cexp,
                 span: loc,
             } => {
-                let local_args: AHashSet<_> = args.iter().copied().collect();
+                let local_args: HashSet<_> = args.iter().copied().collect();
                 let escaping_args = body.need_cells(&local_args, needs_cell_cache);
 
                 let mut body = Box::new(body.args_to_cells(needs_cell_cache));
@@ -986,7 +930,8 @@ impl Cps {
 }
 
 fn arg_to_cell(arg: &mut Local, body: Box<Cps>) -> Box<Cps> {
-    let val_arg = Local::gensym();
+    let mut val_arg = Local::gensym();
+    val_arg.name = arg.name;
     let cell_arg = std::mem::replace(arg, val_arg);
     Box::new(Cps::PrimOp(
         PrimOp::AllocCell,

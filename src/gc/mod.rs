@@ -37,8 +37,8 @@ use std::{
 
 /// A Garbage-Collected smart pointer with interior mutability.
 pub struct Gc<T: ?Sized> {
-    ptr: NonNull<GcInner<T>>,
-    marker: PhantomData<GcInner<T>>,
+    pub(crate) ptr: NonNull<GcInner<T>>,
+    pub(crate) marker: PhantomData<GcInner<T>>,
 }
 
 #[allow(private_bounds)]
@@ -416,6 +416,19 @@ impl<T: ?Sized> AsRef<T> for GcWriteGuard<'_, T> {
 impl<T: ?Sized> AsMut<T> for GcWriteGuard<'_, T> {
     fn as_mut(&mut self) -> &mut T {
         self
+    }
+}
+
+/// A copy of a Gc that is ready only.
+pub struct GcReadOnly<T>(Gc<T>);
+
+impl<T> GcReadOnly<T> {
+    pub fn new(gc: Gc<T>) -> Self {
+        Self(gc)
+    }
+
+    pub fn read(&self) -> GcReadGuard<'_, T> {
+        self.0.read()
     }
 }
 

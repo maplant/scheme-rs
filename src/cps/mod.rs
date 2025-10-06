@@ -19,8 +19,10 @@ use crate::{
     syntax::Span,
     value::Value as RuntimeValue,
 };
-use ahash::{AHashMap, AHashSet};
-use std::fmt;
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+};
 
 mod analysis;
 pub(crate) mod codegen;
@@ -117,22 +119,6 @@ pub enum PrimOp {
     ExpandTemplate,
     /// Raise an error indicating a failure to match the pattern.
     ErrorNoPatternsMatch,
-
-    // Continuation primitive operators:
-    CallWithCurrentContinuation,
-    /// Converts a continuation to a callable user function
-    PrepareContinuation,
-    /// Extract the current winders from the environment into a value
-    ExtractWinders,
-}
-
-impl PrimOp {
-    pub fn from_sym(s: Symbol) -> Option<Self> {
-        match s.to_str().as_ref() {
-            "&call/cc" => Some(Self::CallWithCurrentContinuation),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -157,10 +143,6 @@ impl ClosureArgs {
 
     fn iter(&self) -> impl Iterator<Item = &Local> {
         self.args.iter().chain(self.continuation.as_ref())
-    }
-
-    fn to_vec(&self) -> Vec<Local> {
-        self.iter().copied().collect()
     }
 
     fn num_required(&self) -> usize {
@@ -198,7 +180,7 @@ pub enum Cps {
 
 impl Cps {
     /// Perform substitutions on local variables.
-    fn substitute(&mut self, substitutions: &AHashMap<Local, Value>) {
+    fn substitute(&mut self, substitutions: &HashMap<Local, Value>) {
         match self {
             Self::PrimOp(_, args, _, cexp) => {
                 substitute_values(args, substitutions);
@@ -228,7 +210,7 @@ impl Cps {
     }
 }
 
-fn substitute_value(value: &mut Value, substitutions: &AHashMap<Local, Value>) {
+fn substitute_value(value: &mut Value, substitutions: &HashMap<Local, Value>) {
     if let Some(local) = value.to_local()
         && let Some(substitution) = substitutions.get(&local)
     {
@@ -236,7 +218,7 @@ fn substitute_value(value: &mut Value, substitutions: &AHashMap<Local, Value>) {
     }
 }
 
-fn substitute_values(values: &mut [Value], substitutions: &AHashMap<Local, Value>) {
+fn substitute_values(values: &mut [Value], substitutions: &HashMap<Local, Value>) {
     values
         .iter_mut()
         .for_each(|value| substitute_value(value, substitutions))

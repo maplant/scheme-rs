@@ -1,24 +1,28 @@
 use crate::{
     ast::Literal,
     env::{Environment, Keyword},
-    exception::Condition,
+    exceptions::Condition,
     gc::Trace,
-    lex::{InputSpan, Token},
     lists::{self, list_to_vec_with_null},
-    parse::ParseSyntaxError,
+    ports::Port,
     registry::bridge,
     symbols::Symbol,
+    syntax::parse::{ParseSyntaxError, Parser},
     value::{UnpackedValue, Value, ValueType},
 };
 use futures::future::BoxFuture;
 use std::{
     collections::{BTreeSet, HashSet},
     fmt,
+    io::Cursor,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
 };
+
+pub mod lex;
+pub mod parse;
 
 /// Source location for an s-expression.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Trace)]
@@ -42,17 +46,6 @@ impl Default for Span {
             column: 0,
             offset: 0,
             file: Arc::new(String::new()),
-        }
-    }
-}
-
-impl From<InputSpan<'_>> for Span {
-    fn from(span: InputSpan<'_>) -> Self {
-        Span {
-            line: span.location_line(),
-            column: span.get_column(),
-            offset: span.location_offset(),
-            file: span.extra.clone(),
         }
     }
 }
@@ -213,7 +206,7 @@ impl Syntax {
         // Output must be syntax:
         let output: Arc<Syntax> = transformer_output
             .first()
-            .ok_or_else(|| Condition::syntax_error(self.clone(), None))?
+            .ok_or_else(|| Condition::syntax(self.clone(), None))?
             .clone()
             .try_into()?;
 
@@ -284,38 +277,14 @@ impl Syntax {
         }
     }
 
-    fn parse_fragment<'a, 'b>(
-        i: &'b [Token<'a>],
-    ) -> Result<(&'b [Token<'a>], Self), ParseSyntaxError<'a>> {
-        let (remaining, syntax) = crate::parse::expression(i)?;
-        Ok((remaining, syntax))
-    }
-
-    pub fn parse<'a>(mut i: &[Token<'a>]) -> Result<Vec<Self>, ParseSyntaxError<'a>> {
-        let mut output = Vec::new();
-        while !i.is_empty() {
-            let (remaining, expr) = Self::parse_fragment(i)?;
-            output.push(expr);
-            i = remaining
-        }
-        Ok(output)
-    }
-
-    pub fn from_str<'a>(
-        s: &'a str,
-        file_name: Option<&str>,
-    ) -> Result<Vec<Self>, ParseSyntaxError<'a>> {
-        let tokens = Token::tokenize(s, file_name)?;
-        Self::parse(&tokens)
-    }
-
-    pub fn from_str_with_line_offset<'a>(
-        s: &'a str,
-        file_name: Option<&str>,
-        line_offset: u32,
-    ) -> Result<Vec<Self>, ParseSyntaxError<'a>> {
-        let tokens = Token::tokenize_with_line_offset(s, file_name, line_offset)?;
-        Self::parse(&tokens)
+    pub fn from_str(s: &str, file_name: Option<&str>) -> Result<Vec<Self>, ParseSyntaxError> {
+        let file_name = file_name.unwrap_or("<unknown>");
+        let bytes = Cursor::new(s.as_bytes().to_vec());
+        futures::executor::block_on(async move {
+            let port = Port::from_reader(file_name, bytes);
+            let mut parser = Parser::new(&port).await;
+            parser.all_datums().await
+        })
     }
 
     pub fn fetch_all_identifiers(&self, idents: &mut HashSet<Identifier>) {
@@ -590,7 +559,7 @@ pub async fn datum_to_syntax(template_id: &Value, datum: &Value) -> Result<Vec<V
         ident: template_id, ..
     } = syntax.as_ref()
     else {
-        return Err(Condition::invalid_type("template_id", "syntax"));
+        return Err(Condition::type_error("template_id", "syntax"));
     };
     Ok(vec![Value::from(Syntax::syntax_from_datum(
         &template_id.marks,
@@ -616,7 +585,7 @@ pub async fn bound_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Va
         ..
     } = id1.as_ref()
     else {
-        return Err(Condition::invalid_type("identifier", "syntax"));
+        return Err(Condition::type_error("identifier", "syntax"));
     };
     let Syntax::Identifier {
         ident: id2,
@@ -624,7 +593,7 @@ pub async fn bound_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Va
         ..
     } = id2.as_ref()
     else {
-        return Err(Condition::invalid_type("identifier", "syntax"));
+        return Err(Condition::type_error("identifier", "syntax"));
     };
     Ok(vec![Value::from(*bound_id1 && *bound_id2 && id1 == id2)])
 }
@@ -639,7 +608,7 @@ pub async fn free_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Val
         ..
     } = id1.as_ref()
     else {
-        return Err(Condition::invalid_type("identifier", "syntax"));
+        return Err(Condition::type_error("identifier", "syntax"));
     };
     let Syntax::Identifier {
         ident: id2,
@@ -647,7 +616,7 @@ pub async fn free_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Val
         ..
     } = id2.as_ref()
     else {
-        return Err(Condition::invalid_type("identifier", "syntax"));
+        return Err(Condition::type_error("identifier", "syntax"));
     };
     Ok(vec![Value::from(
         !bound_id1 && !bound_id2 && id1.sym == id2.sym,
