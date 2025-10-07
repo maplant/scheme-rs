@@ -4,7 +4,7 @@
 use crate::{
     env::Local,
     exceptions::{Condition, Exception, ExceptionHandler, ExceptionHandlerInner, Frame, raise},
-    gc::{Gc, GcInner, Trace, yield_until_gc_cleared},
+    gc::{Gc, GcInner, Trace/*, yield_until_gc_cleared*/},
     lists::{self, list_to_vec, slice_to_list},
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::BridgeFnDebugInfo,
@@ -411,7 +411,7 @@ impl Application {
                 }
                 Ok(app) => app,
             };
-            yield_until_gc_cleared().await
+            // yield_until_gc_cleared().await
         }
 
         // If we have no operator left, return the arguments as the final values:

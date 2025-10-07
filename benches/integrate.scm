@@ -81,5 +81,7 @@
           (lambda (s i)
             (cond ((= i 0) (head s))
                   (else
+                   #;(display (head s))
+                   #;(display "\n")
                    (loop (tail s) (- i 1)))))))
   (loop the-states 50))
