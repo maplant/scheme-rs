@@ -14,6 +14,7 @@
 mod collection;
 
 pub use collection::{OpaqueGcPtr, init_gc};
+pub(crate) use collection::alloc_n_gc_objects;
 use either::Either;
 use futures::future::Shared;
 pub use scheme_rs_macros::Trace;

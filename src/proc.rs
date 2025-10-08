@@ -4,7 +4,7 @@
 use crate::{
     env::Local,
     exceptions::{Condition, Exception, ExceptionHandler, ExceptionHandlerInner, Frame, raise},
-    gc::{Gc, GcInner, Trace},
+    gc::{Gc, GcInner, Trace, alloc_n_gc_objects},
     lists::{self, list_to_vec, slice_to_list},
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::BridgeFnDebugInfo,
@@ -15,7 +15,7 @@ use crate::{
 };
 use futures::future::BoxFuture;
 use scheme_rs_macros::cps_bridge;
-use std::{borrow::Cow, fmt, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, fmt, sync::Arc};
 
 /// A function pointer to a generated continuation.
 pub(crate) type ContinuationPtr = unsafe extern "C" fn(
@@ -322,9 +322,9 @@ impl fmt::Debug for ClosureInner {
                 write!(f, " ${i}")?;
             }
             if self.variadic {
-                write!(f, " . ${})", self.num_required_args)?;
+                write!(f, " . ${}", self.num_required_args)?;
             }
-            return Ok(());
+            return write!(f, ")");
         };
 
         write!(f, "({}", debug_info.name)?;
@@ -595,7 +595,7 @@ async fn escape_procedure(
     let thunks = entry_winders(from_extent, &to_extent.read());
 
     // Clone the continuation
-    let cont = maybe_clone_continuation(&cont, &mut Vec::new()).unwrap();
+    let cont = maybe_clone_continuation(&cont, &mut HashMap::new()).unwrap();
     let cont: Closure = cont.try_into().unwrap();
 
     let (req_args, variadic) = {
@@ -651,13 +651,13 @@ fn entry_winders(from_extent: &DynamicWind, to_extent: &DynamicWind) -> Value {
     thunks
 }
 
-fn prepare_env_variable(value: &Value, cloned: &mut Vec<(ContinuationPtr, Value)>) -> Value {
+fn prepare_env_variable(value: &Value, cloned: &mut HashMap<ContinuationPtr, Value>) -> Value {
     maybe_clone_continuation(value, cloned).unwrap_or_else(|| value.clone())
 }
 
 fn maybe_clone_continuation(
     value: &Value,
-    cloned: &mut Vec<(ContinuationPtr, Value)>,
+    cloned: &mut HashMap<ContinuationPtr, Value>,
 ) -> Option<Value> {
     let k: Closure = value.clone().try_into().ok()?;
 
@@ -668,20 +668,16 @@ fn maybe_clone_continuation(
         }
     };
 
-    if let Some(cont) = cloned
-        .iter()
-        .find(|(k, _)| std::ptr::fn_addr_eq(*k, func_ptr))
-    {
-        return Some(cont.1.clone());
+    if let Some(cont) = cloned.get(&func_ptr) {
+        return Some(cont.clone());
     }
 
     let new_k = {
         let k = k.0.read();
-        let new_env = k
-            .env
-            .iter()
-            .map(|var| Gc::new(prepare_env_variable(&var.read(), cloned)))
-            .collect::<Vec<_>>();
+        let new_env = alloc_n_gc_objects(Value::undefined(), k.env.len());
+        for (i, var) in k.env.iter().enumerate() {
+            *new_env[i].write() = prepare_env_variable(&var.read(), cloned);
+        }
         Closure::new(
             k.runtime.clone(),
             new_env,
@@ -694,7 +690,7 @@ fn maybe_clone_continuation(
     };
 
     let new_k = Value::from(new_k);
-    cloned.push((func_ptr, new_k.clone()));
+    cloned.insert(func_ptr, new_k.clone());
 
     Some(new_k)
 }
