@@ -12,17 +12,13 @@
 //! Rust type (no need to root/unroot).
 
 mod collection;
-mod pool;
 
 pub use collection::{OpaqueGcPtr, init_gc};
-// pub(crate) use collection::yield_until_gc_cleared;
-// use collection::{dec_rc, inc_rc};
 use either::Either;
 use futures::future::Shared;
 pub use scheme_rs_macros::Trace;
 
 use std::{
-    alloc::Layout,
     any::Any,
     cell::UnsafeCell,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -33,10 +29,10 @@ use std::{
     ops::{Deref, DerefMut},
     path::PathBuf,
     ptr::{NonNull, drop_in_place},
-    sync::{RwLock, RwLockReadGuard, RwLockWriteGuard},
+    sync::{RwLockReadGuard, RwLockWriteGuard},
 };
 
-use crate::gc::collection::{alloc_gc_object, GcHeader};
+use crate::gc::collection::{GcHeader, alloc_gc_object};
 
 /// A Garbage-Collected smart pointer with interior mutability.
 pub struct Gc<T: ?Sized> {
@@ -47,15 +43,6 @@ pub struct Gc<T: ?Sized> {
 #[allow(private_bounds)]
 impl<T: GcOrTrace + 'static> Gc<T> {
     pub fn new(data: T) -> Gc<T> {
-        /*
-        Self {
-            ptr: NonNull::from(Box::leak(Box::new(GcInner {
-                header: UnsafeCell::new(GcHeader::new::<T>()),
-                data: UnsafeCell::new(data),
-            }))),
-            marker: PhantomData,
-        }
-         */
         alloc_gc_object(data)
     }
 
