@@ -18,7 +18,6 @@ either = "1"
 futures = "0.3"
 indexmap = "2"
 inventory = "0.3"
-kanal = "0.1"
 num = "0.4"
 ordered-float = "5"
 scheme-rs-macros = { version = "0.1.0-alpha.1", path = "proc-macros" }
@@ -51,6 +50,10 @@ harness = false
 
 [[bench]]
 name = "fib"
+harness = false
+
+[[bench]]
+name = "integrate"
 harness = false
 
 [[bench]]

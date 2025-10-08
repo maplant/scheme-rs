@@ -204,7 +204,11 @@ impl Syntax {
         let transformer_output = mac.transformer.call(&[Value::from(input)]).await?;
 
         // Output must be syntax:
-        let output: Arc<Syntax> = transformer_output[0].clone().try_into()?;
+        let output: Arc<Syntax> = transformer_output
+            .first()
+            .ok_or_else(|| Condition::syntax(self.clone(), None))?
+            .clone()
+            .try_into()?;
 
         // Apply the new mark to the output
         let mut output = output.as_ref().clone();

@@ -13,14 +13,12 @@
 
 mod collection;
 
-pub use collection::init_gc;
-use collection::{dec_rc, inc_rc};
+pub use collection::{OpaqueGcPtr, init_gc};
 use either::Either;
 use futures::future::Shared;
 pub use scheme_rs_macros::Trace;
 
 use std::{
-    alloc::Layout,
     any::Any,
     cell::UnsafeCell,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -31,8 +29,10 @@ use std::{
     ops::{Deref, DerefMut},
     path::PathBuf,
     ptr::{NonNull, drop_in_place},
-    sync::{RwLock, RwLockReadGuard, RwLockWriteGuard},
+    sync::{RwLockReadGuard, RwLockWriteGuard},
 };
+
+use crate::gc::collection::{GcHeader, alloc_gc_object};
 
 /// A Garbage-Collected smart pointer with interior mutability.
 pub struct Gc<T: ?Sized> {
@@ -43,13 +43,7 @@ pub struct Gc<T: ?Sized> {
 #[allow(private_bounds)]
 impl<T: GcOrTrace + 'static> Gc<T> {
     pub fn new(data: T) -> Gc<T> {
-        Self {
-            ptr: NonNull::from(Box::leak(Box::new(GcInner {
-                header: UnsafeCell::new(GcHeader::new::<T>()),
-                data: UnsafeCell::new(data),
-            }))),
-            marker: PhantomData,
-        }
+        alloc_gc_object(data)
     }
 
     /// Convert a `Gc<T>` into a `Gc<dyn Any>`. This is a separate function
@@ -70,7 +64,15 @@ impl<T: ?Sized> Gc<T> {
     /// This function is not safe and basically useless for anything outside of
     /// the Trace proc macro's generated code.
     pub unsafe fn as_opaque(&self) -> OpaqueGcPtr {
-        OpaqueGcPtr::from(self.ptr)
+        unsafe {
+            OpaqueGcPtr {
+                header: NonNull::from_ref(&self.ptr.as_ref().header),
+                data: NonNull::new(UnsafeCell::from_mut(
+                    &mut *(self.ptr.as_ref().data.get() as *mut ()),
+                ))
+                .unwrap(),
+            }
+        }
     }
 
     /// Acquire a read lock for the object
@@ -217,58 +219,28 @@ impl<T: ?Sized + Eq> Eq for Gc<T> {}
 unsafe impl<T: ?Sized + Send> Send for Gc<T> {}
 unsafe impl<T: ?Sized + Sync> Sync for Gc<T> {}
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum Color {
-    /// In use or free
-    Black,
-    /// Possible member of a cycle
-    Gray,
-    /// Member of a garbage cycle
-    White,
-    /// Possible root of cycle
-    Purple,
-    /// Candidate cycle undergoing Σ-computation
-    Red,
-    /// Candidate cycle awaiting epoch boundary
-    Orange,
-}
-
-pub(crate) struct GcHeader {
-    rc: usize,
-    crc: isize,
-    color: Color,
-    buffered: bool,
-    lock: RwLock<()>,
-    // Vtable for Trace:
-    visit_children: unsafe fn(this: *const (), visitor: &mut dyn FnMut(OpaqueGcPtr)),
-    finalize: unsafe fn(this: *mut ()),
-    layout: Layout,
-}
-
-impl GcHeader {
-    fn new<T: GcOrTrace>() -> Self {
-        Self {
-            rc: 1,
-            crc: 1,
-            color: Color::Black,
-            buffered: false,
-            lock: RwLock::new(()),
-            visit_children: |this, visitor| unsafe {
-                let this = this as *const T;
-                T::visit_or_recurse(this.as_ref().unwrap(), visitor);
-            },
-            finalize: |this| unsafe {
-                let this = this as *mut T;
-                T::finalize_or_skip(this.as_mut().unwrap());
-            },
-            layout: Layout::new::<GcInner<T>>(),
-        }
+fn inc_rc<T: ?Sized>(ptr: NonNull<GcInner<T>>) {
+    unsafe {
+        (*ptr.as_ref().header.get())
+            .shared_rc
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
+fn dec_rc<T: ?Sized>(ptr: NonNull<GcInner<T>>) {
+    unsafe {
+        (*ptr.as_ref().header.get())
+            .shared_rc
+            .fetch_sub(1, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/*
 unsafe impl Send for GcHeader {}
 unsafe impl Sync for GcHeader {}
+*/
 
+#[repr(C)]
 pub(crate) struct GcInner<T: ?Sized> {
     header: UnsafeCell<GcHeader>,
     data: UnsafeCell<T>,
@@ -277,6 +249,7 @@ pub(crate) struct GcInner<T: ?Sized> {
 unsafe impl<T: ?Sized + Send> Send for GcInner<T> {}
 unsafe impl<T: ?Sized + Sync> Sync for GcInner<T> {}
 
+/*
 /// Fat pointer to the header and data of the Gc
 #[derive(Clone, Copy)]
 pub struct OpaqueGcPtr {
@@ -365,6 +338,7 @@ impl OpaqueGcPtr {
         unsafe { self.data.as_ref().get() }
     }
 }
+*/
 
 pub struct GcReadGuard<'a, T: ?Sized> {
     _permit: RwLockReadGuard<'a, ()>,
