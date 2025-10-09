@@ -71,41 +71,6 @@ impl Cps {
         }
     }
 
-    // TODO: Have this function return a Cow<'_, HashSet<Local>>
-    pub(super) fn globals(&self) -> HashSet<Global> {
-        match self {
-            Cps::PrimOp(PrimOp::AllocCell, _, _, cexpr) => cexpr.globals(),
-            Cps::PrimOp(_, args, _, cexpr) => cexpr
-                .globals()
-                .union(&values_to_globals(args))
-                .cloned()
-                .collect(),
-            Cps::If(cond, success, failure) => {
-                let mut globals: HashSet<_> = success
-                    .globals()
-                    .union(&failure.globals())
-                    .cloned()
-                    .collect();
-                globals.extend(cond.to_global());
-                globals
-            }
-            Cps::App(op, vals, _) => {
-                let mut globals = values_to_globals(vals);
-                globals.extend(op.to_global());
-                globals
-            }
-            Cps::Forward(op, arg) => vec![op.to_global(), arg.to_global()]
-                .into_iter()
-                .flatten()
-                .collect(),
-            Cps::Lambda { body, cexp, .. } => {
-                body.globals().union(&cexp.globals()).cloned().collect()
-            }
-            Cps::Halt(val) => val.to_global().into_iter().collect(),
-        }
-    }
-
-    // TODO: Have this function return a Cow
     pub(super) fn uses(
         &self,
         uses_cache: &mut HashMap<Local, HashMap<Local, usize>>,
@@ -290,10 +255,6 @@ fn values_to_uses(vals: &[Value]) -> HashMap<Local, usize> {
         *uses.entry(local).or_default() += 1;
     }
     uses
-}
-
-fn values_to_globals(vals: &[Value]) -> HashSet<Global> {
-    vals.iter().flat_map(|val| val.to_global()).collect()
 }
 
 fn merge_uses(mut l: HashMap<Local, usize>, mut r: HashMap<Local, usize>) -> HashMap<Local, usize> {

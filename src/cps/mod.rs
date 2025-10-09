@@ -45,14 +45,6 @@ impl Value {
             None
         }
     }
-
-    fn to_global(&self) -> Option<Global> {
-        if let Self::Var(Var::Global(global)) = self {
-            Some(global.clone())
-        } else {
-            None
-        }
-    }
 }
 
 impl From<RuntimeValue> for Value {

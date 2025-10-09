@@ -1,16 +1,16 @@
 use crate::{
     ast::DefinitionBody,
-    cps::{Compile, Cps, codegen::RuntimeFunctionsBuilder},
-    env::Environment,
-    exceptions::{Condition, Exception, ExceptionHandler, ExceptionHandlerInner, raise},
-    gc::{Gc, GcInner, Trace, init_gc},
+    cps::{codegen::RuntimeFunctionsBuilder, Compile, Cps},
+    env::{Environment, Global},
+    exceptions::{raise, Condition, Exception, ExceptionHandler, ExceptionHandlerInner},
+    gc::{init_gc, Gc, GcInner, Trace},
     lists::{self, list_to_vec},
     num,
     ports::Port,
     proc::{Application, Closure, ContinuationPtr, DynamicWind, FuncDebugInfo, FuncPtr, UserPtr},
     registry::{ImportError, Library, Registry},
     symbols::Symbol,
-    syntax::{Span, parse::Parser},
+    syntax::{parse::Parser, Span},
     value::{ReflexiveValue, UnpackedValue, Value},
 };
 use scheme_rs_macros::runtime_fn;
@@ -118,6 +118,7 @@ pub(crate) struct RuntimeInner {
     /// Channel to compilation task
     compilation_buffer_tx: mpsc::Sender<CompilationTask>,
     pub(crate) constants_pool: HashSet<ReflexiveValue>,
+    pub(crate) globals_pool: HashSet<Global>,
     pub(crate) debug_info: DebugInfo,
 }
 
@@ -142,6 +143,7 @@ impl RuntimeInner {
             registry: Registry::empty(),
             compilation_buffer_tx,
             constants_pool: HashSet::new(),
+            globals_pool: HashSet::new(),
             debug_info: DebugInfo::default(),
         }
     }
@@ -452,8 +454,6 @@ unsafe extern "C" fn make_continuation(
     fn_ptr: ContinuationPtr,
     env: *const *mut GcInner<Value>,
     num_envs: u32,
-    globals: *const *mut GcInner<Value>,
-    num_globals: u32,
     num_required_args: u32,
     variadic: bool,
 ) -> *mut GcInner<Value> {
@@ -463,18 +463,9 @@ unsafe extern "C" fn make_continuation(
             .map(|i| Gc::from_raw_inc_rc(env.add(i as usize).read()))
             .collect();
 
-        // Collect the globals:
-        let globals: Vec<_> = (0..num_globals)
-            .map(|i| {
-                let raw = globals.add(i as usize).read();
-                Gc::from_raw_inc_rc(raw)
-            })
-            .collect();
-
         let closure = Closure::new(
             Runtime::from_raw_inc_rc(runtime),
             env,
-            globals,
             FuncPtr::Continuation(fn_ptr),
             num_required_args as usize,
             variadic,
@@ -492,8 +483,6 @@ unsafe extern "C" fn make_user(
     fn_ptr: UserPtr,
     env: *const *mut GcInner<Value>,
     num_envs: u32,
-    globals: *const *mut GcInner<Value>,
-    num_globals: u32,
     num_required_args: u32,
     variadic: bool,
     debug_info: *const FuncDebugInfo,
@@ -504,18 +493,9 @@ unsafe extern "C" fn make_user(
             .map(|i| Gc::from_raw_inc_rc(env.add(i as usize).read()))
             .collect();
 
-        // Collect the globals:
-        let globals: Vec<_> = (0..num_globals)
-            .map(|i| {
-                let raw = globals.add(i as usize).read();
-                Gc::from_raw_inc_rc(raw)
-            })
-            .collect();
-
         let closure = Closure::new(
             Runtime::from_raw_inc_rc(runtime),
             env,
-            globals,
             FuncPtr::User(fn_ptr),
             num_required_args as usize,
             variadic,

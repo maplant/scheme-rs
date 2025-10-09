@@ -239,7 +239,6 @@ fn make_default_record_constructor_descriptor(
     let protocol = Closure::new(
         runtime,
         vec![Gc::new(Value::from(rtd.clone()))],
-        Vec::new(),
         FuncPtr::Bridge(default_protocol),
         1,
         false,
@@ -298,7 +297,6 @@ pub async fn make_record_constructor_descriptor(
         Closure::new(
             runtime.clone(),
             vec![Gc::new(Value::from(rtd.clone()))],
-            Vec::new(),
             FuncPtr::Bridge(default_protocol),
             1,
             false,
@@ -357,7 +355,6 @@ pub async fn record_constructor(
             Gc::new(Value::from(protocols)),
             Gc::new(Value::from(cont.clone())),
         ],
-        Vec::new(),
         FuncPtr::Continuation(chain_protocols),
         1,
         false,
@@ -393,7 +390,6 @@ fn rcd_to_protocols_and_rtds(
 pub(crate) unsafe extern "C" fn chain_protocols(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const *mut GcInner<Value>,
-    _globals: *const *mut GcInner<Value>,
     args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
@@ -428,7 +424,6 @@ pub(crate) unsafe extern "C" fn chain_protocols(
         let new_k = Closure::new(
             Runtime::from_raw_inc_rc(runtime),
             vec![Gc::new(Value::from(remaining_protocols)), k],
-            Vec::new(),
             FuncPtr::Continuation(chain_protocols),
             1,
             false,
@@ -479,7 +474,6 @@ async fn chain_constructors(
     let next_closure = Closure::new(
         runtime.clone(),
         env,
-        Vec::new(),
         if rtds_remain {
             FuncPtr::Bridge(chain_constructors)
         } else {
@@ -565,7 +559,6 @@ async fn default_protocol(
     let constructor = Closure::new(
         runtime.clone(),
         vec![Gc::new(args[0].clone()), Gc::new(Value::from(rtd))],
-        Vec::new(),
         FuncPtr::Bridge(default_protocol_constructor),
         num_args,
         false,
@@ -601,7 +594,6 @@ async fn default_protocol_constructor(
         Value::from(Closure::new(
             runtime.clone(),
             vec![Gc::new(Value::from(remaining)), Gc::new(Value::from(cont))],
-            Vec::new(),
             FuncPtr::Continuation(call_constructor_continuation),
             1,
             false,
@@ -624,7 +616,6 @@ async fn default_protocol_constructor(
 pub(crate) unsafe extern "C" fn call_constructor_continuation(
     _runtime: *mut GcInner<RuntimeInner>,
     env: *const *mut GcInner<Value>,
-    _globals: *const *mut GcInner<Value>,
     args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
@@ -843,7 +834,6 @@ pub async fn record_predicate(
     let pred_fn = Closure::new(
         runtime.clone(),
         vec![Gc::new(rtd.clone())],
-        Vec::new(),
         FuncPtr::Bridge(record_predicate_fn),
         1,
         false,
@@ -925,7 +915,6 @@ pub async fn record_accessor(
             Gc::new(Value::from(rtd)),
             Gc::new(Value::from(Number::from(k))),
         ],
-        Vec::new(),
         FuncPtr::Bridge(record_accessor_fn),
         1,
         false,
@@ -1010,7 +999,6 @@ pub async fn record_mutator(
             Gc::new(Value::from(rtd)),
             Gc::new(Value::from(Number::from(k))),
         ],
-        Vec::new(),
         FuncPtr::Bridge(record_mutator_fn),
         2,
         false,

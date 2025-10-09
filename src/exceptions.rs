@@ -659,7 +659,6 @@ pub fn raise(
     let calls = Closure::new(
         runtime,
         vec![Gc::new(thunks), Gc::new(raised.clone()), Gc::new(handler)],
-        Vec::new(),
         FuncPtr::Continuation(call_exits_and_exception_handler_reraise),
         0,
         false,
@@ -718,7 +717,6 @@ fn exit_winders(from_extent: &DynamicWind, to_extent: &DynamicWind) -> Value {
 unsafe extern "C" fn call_exits_and_exception_handler_reraise(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const *mut GcInner<Value>,
-    _globals: *const *mut GcInner<Value>,
     _args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
@@ -746,7 +744,6 @@ unsafe extern "C" fn call_exits_and_exception_handler_reraise(
                         Gc::new(raised),
                         Gc::new(curr_handler),
                     ],
-                    Vec::new(),
                     FuncPtr::Continuation(call_exits_and_exception_handler_reraise),
                     0,
                     false,
@@ -767,7 +764,6 @@ unsafe extern "C" fn call_exits_and_exception_handler_reraise(
                     let app = Application::new(
                         Closure::new(
                             runtime,
-                            Vec::new(),
                             Vec::new(),
                             FuncPtr::HaltError,
                             1,
@@ -791,7 +787,6 @@ unsafe extern "C" fn call_exits_and_exception_handler_reraise(
                         Value::from(Closure::new(
                             runtime,
                             vec![Gc::new(raised)],
-                            Vec::new(),
                             FuncPtr::Continuation(reraise_exception),
                             0,
                             true,
@@ -813,7 +808,6 @@ unsafe extern "C" fn call_exits_and_exception_handler_reraise(
 unsafe extern "C" fn reraise_exception(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const *mut GcInner<Value>,
-    _globals: *const *mut GcInner<Value>,
     _args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
@@ -828,7 +822,6 @@ unsafe extern "C" fn reraise_exception(
         Box::into_raw(Box::new(Application::new(
             Closure::new(
                 runtime,
-                Vec::new(),
                 Vec::new(),
                 FuncPtr::Bridge(raise_builtin),
                 1,
@@ -867,7 +860,6 @@ pub async fn raise_continuable(
         return Ok(Application::new(
             Closure::new(
                 runtime.clone(),
-                Vec::new(),
                 Vec::new(),
                 FuncPtr::HaltError,
                 1,

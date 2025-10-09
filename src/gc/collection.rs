@@ -637,8 +637,7 @@ mod test {
 
         let mut collector = Collector::new();
 
-        collector.recv_new_allocs().await;
-
+        collector.recv_new_allocs();
         collector.epoch();
 
         drop(a);
@@ -647,8 +646,7 @@ mod test {
 
         collector.epoch();
         collector.epoch();
-        collector.epoch();
-
+        
         assert_eq!(Arc::strong_count(&out_ptr), 1);
     }
 }

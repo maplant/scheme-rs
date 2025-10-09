@@ -10,6 +10,7 @@ use std::{collections::HashSet, sync::Arc};
 
 use crate::{
     cps::{Value as CpsValue, analysis::MaxDrops},
+    gc::Gc,
     proc::{ClosureInner, ContinuationPtr, FuncDebugInfo, FuncPtr},
     runtime::{DebugInfo, Runtime},
     value::{ReflexiveValue, Value as SchemeValue},
@@ -24,17 +25,17 @@ enum IrValue {
 }
 
 struct Rebinds {
-    rebinds: HashMap<Var, IrValue>,
+    rebinds: HashMap<Local, IrValue>,
 }
 
 impl Rebinds {
-    fn rebind(&mut self, old_var: Var, new_var: IrValue) {
+    fn rebind(&mut self, old_var: Local, new_var: IrValue) {
         self.rebinds.insert(old_var, new_var);
     }
 
-    fn fetch_bind(&self, var: &Var) -> &IrValue {
+    fn fetch_bind(&self, var: &Local) -> &IrValue {
         self.rebinds
-            .get(var)
+            .get(&var)
             .unwrap_or_else(|| panic!("could not find {var:?}"))
     }
 
@@ -134,28 +135,14 @@ impl Cps {
             ]
         };
 
-        let mut rebinds = Rebinds::new();
-
-        // Top level cannot inherit environmental variables, by defintion.
-
-        // Load globals:
-        let globals = self.globals().into_iter().collect::<Vec<_>>();
-        let globals_param = builder.block_params(entry_block)[GLOBALS_PARAM];
-        for (i, global) in globals.iter().enumerate() {
-            let var =
-                builder
-                    .ins()
-                    .load(types::I64, MemFlags::new(), globals_param, (i * 8) as i32);
-            rebinds.rebind(Var::Global(global.clone()), IrValue::Cell(var));
-        }
-
         let mut deferred = Vec::new();
 
         {
             let mut cu = CompilationUnit {
                 runtime: runtime.clone(),
                 builder,
-                rebinds,
+                // Top level cannot inherit environmental variables, by defintion.
+                rebinds: Rebinds::new(),
                 vals,
                 curr_val: 0,
                 cells,
@@ -193,7 +180,6 @@ impl Cps {
         ClosureInner::new(
             runtime,
             Vec::new(),
-            globals.into_iter().map(Global::value).collect::<Vec<_>>(),
             FuncPtr::Continuation(func),
             0,
             true,
@@ -304,54 +290,27 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
     }
 
     fn value_codegen(&mut self, value: &CpsValue) -> Value {
-        match value {
-            CpsValue::Var(var) => {
+        let (cell, symbol) = match value {
+            CpsValue::Var(Var::Local(var)) => {
                 let cell = match *self.rebinds.fetch_bind(var) {
                     IrValue::Cell(cell) => cell,
                     IrValue::Value(int) => return int,
                 };
-
-                let read_cell = self
-                    .module
-                    .declare_func_in_func(self.runtime_funcs.read_cell, self.builder.func);
-                let call = self.builder.ins().call(read_cell, &[cell]);
-                let cell_value = self.builder.inst_results(call)[0];
-
-                // Check if the cell is undefined:
-                let cond = self.builder.ins().icmp_imm(IntCC::Equal, cell_value, 0);
-
-                let undefined_block = self.builder.create_block();
-                let defined_block = self.builder.create_block();
-
-                self.builder
+                let symbol = if let Some(sym) = var.name {
+                    sym.0
+                } else {
+                    Symbol::intern(&format!("{}:{cell}", self.builder.func.name,)).0
+                };
+                (cell, symbol)
+            }
+            CpsValue::Var(Var::Global(global)) => {
+                let mut runtime_write = self.runtime.0.write();
+                runtime_write.globals_pool.insert(global.clone());
+                let cell = self
+                    .builder
                     .ins()
-                    .brif(cond, undefined_block, &[], defined_block, &[]);
-
-                // Throw undefined variable error:
-                self.builder.switch_to_block(undefined_block);
-                self.builder.seal_block(undefined_block);
-
-                self.drops_codegen();
-                let symbol = match var {
-                    Var::Global(glob) => glob.name.sym.0,
-                    Var::Local(Local {
-                        name: Some(sym), ..
-                    }) => sym.0,
-                    _ => Symbol::intern(&format!("{}:{cell}", self.builder.func.name,)).0,
-                } as i64;
-                let symbol = self.builder.ins().iconst(types::I32, symbol);
-                let error_unbound_variable = self.module.declare_func_in_func(
-                    self.runtime_funcs.error_unbound_variable,
-                    self.builder.func,
-                );
-                let call = self.builder.ins().call(error_unbound_variable, &[symbol]);
-                let unbound_variable_error = self.builder.inst_results(call)[0];
-                self.raise_codegen(unbound_variable_error);
-
-                self.builder.switch_to_block(defined_block);
-                self.builder.seal_block(defined_block);
-
-                cell_value
+                    .iconst(types::I64, Gc::as_ptr(&global.val) as i64);
+                (cell, global.name.sym.0)
             }
             CpsValue::Const(val) => {
                 let mut runtime_write = self.runtime.0.write();
@@ -366,9 +325,43 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
                         .unwrap()
                         .as_ref(),
                 );
-                self.builder.ins().iconst(types::I64, raw as i64)
+                return self.builder.ins().iconst(types::I64, raw as i64);
             }
-        }
+        };
+
+        let read_cell = self
+            .module
+            .declare_func_in_func(self.runtime_funcs.read_cell, self.builder.func);
+        let call = self.builder.ins().call(read_cell, &[cell]);
+        let cell_value = self.builder.inst_results(call)[0];
+
+        // Check if the cell is undefined:
+        let cond = self.builder.ins().icmp_imm(IntCC::Equal, cell_value, 0);
+
+        let undefined_block = self.builder.create_block();
+        let defined_block = self.builder.create_block();
+
+        self.builder
+            .ins()
+            .brif(cond, undefined_block, &[], defined_block, &[]);
+
+        // Throw undefined variable error:
+        self.builder.switch_to_block(undefined_block);
+        self.builder.seal_block(undefined_block);
+
+        self.drops_codegen();
+        let symbol = self.builder.ins().iconst(types::I32, symbol as i64);
+        let error_unbound_variable = self
+            .module
+            .declare_func_in_func(self.runtime_funcs.error_unbound_variable, self.builder.func);
+        let call = self.builder.ins().call(error_unbound_variable, &[symbol]);
+        let unbound_variable_error = self.builder.inst_results(call)[0];
+        self.raise_codegen(unbound_variable_error);
+
+        self.builder.switch_to_block(defined_block);
+        self.builder.seal_block(defined_block);
+
+        cell_value
     }
 
     fn matches_codegen(
@@ -386,8 +379,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
             .declare_func_in_func(self.runtime_funcs.matches, self.builder.func);
         let call = self.builder.ins().call(matches, &[pattern, expr]);
         let match_result = self.builder.inst_results(call)[0];
-        self.rebinds
-            .rebind(Var::Local(binds), IrValue::Value(match_result));
+        self.rebinds.rebind(binds, IrValue::Value(match_result));
         self.push_val_alloc(match_result);
         self.cps_codegen(cexpr, deferred);
     }
@@ -433,8 +425,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
             ],
         );
         let expanded = self.builder.inst_results(call)[0];
-        self.rebinds
-            .rebind(Var::Local(dest), IrValue::Value(expanded));
+        self.rebinds.rebind(dest, IrValue::Value(expanded));
         self.push_val_alloc(expanded);
         self.cps_codegen(cexpr, deferred);
     }
@@ -507,8 +498,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         // Otherwise continue with the correct value
         self.builder.switch_to_block(success_block);
         self.builder.seal_block(success_block);
-        self.rebinds
-            .rebind(Var::Local(dest), IrValue::Value(result));
+        self.rebinds.rebind(dest, IrValue::Value(result));
         self.push_val_alloc(result);
         self.cps_codegen(cexpr, deferred);
     }
@@ -530,7 +520,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
             .declare_func_in_func(self.runtime_funcs.alloc_cell, self.builder.func);
         let call = self.builder.ins().call(alloc_cell, &[]);
         let cell = self.builder.inst_results(call)[0];
-        self.rebinds.rebind(Var::Local(var), IrValue::Cell(cell));
+        self.rebinds.rebind(var, IrValue::Cell(cell));
         self.push_cell_alloc(cell);
         self.cps_codegen(cexpr, deferred);
     }
@@ -697,16 +687,24 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         deferred: &mut Vec<ClosureBundle>,
     ) {
         let from = self.value_codegen(from);
-        let CpsValue::Var(to) = to else {
-            unreachable!()
-        };
-        let IrValue::Cell(to) = self.rebinds.fetch_bind(to) else {
-            panic!("{to:?} is not a pointer");
+        let to = match to {
+            CpsValue::Var(Var::Global(global)) => {
+                let mut runtime_write = self.runtime.0.write();
+                runtime_write.globals_pool.insert(global.clone());
+                self.builder
+                    .ins()
+                    .iconst(types::I64, Gc::as_ptr(&global.val) as i64)
+            }
+            CpsValue::Var(Var::Local(local)) => match self.rebinds.fetch_bind(local) {
+                IrValue::Cell(to) => *to,
+                _ => panic!("{to:?} is not a pointer"),
+            },
+            _ => panic!("{to:?} is not a pointer"),
         };
         let store = self
             .module
             .declare_func_in_func(self.runtime_funcs.store, self.builder.func);
-        self.builder.ins().call(store, &[from, *to]);
+        self.builder.ins().call(store, &[from, to]);
         self.cps_codegen(cexpr, deferred)
     }
 
@@ -737,21 +735,11 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         // Construct the envs array:
         let env = self.alloc_array(bundle.env.len());
         for (i, env_var) in bundle.env.iter().enumerate() {
-            let val = match *self.rebinds.fetch_bind(&Var::Local(*env_var)) {
+            let val = match *self.rebinds.fetch_bind(env_var) {
                 IrValue::Cell(ptr) => ptr,
                 IrValue::Value(val) => panic!("{val:?} is not a pointer"),
             };
             self.array_store(env, i, val);
-        }
-
-        // Construct the globals array:
-        let globals = self.alloc_array(bundle.globals.len());
-        for (i, global_var) in bundle.globals.iter().enumerate() {
-            let val = match *self.rebinds.fetch_bind(&Var::Global(global_var.clone())) {
-                IrValue::Cell(ptr) => ptr,
-                IrValue::Value(val) => panic!("{val:?} is not a pointer"),
-            };
-            self.array_store(globals, i, val);
         }
 
         let runtime_param = self.get_runtime();
@@ -764,11 +752,6 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
             .builder
             .ins()
             .iconst(types::I32, bundle.env.len() as i64);
-        let globals_addr = self.builder.ins().stack_addr(types::I64, globals, 0);
-        let globals_len = self
-            .builder
-            .ins()
-            .iconst(types::I32, bundle.globals.len() as i64);
         let num_required = self
             .builder
             .ins()
@@ -784,8 +767,6 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
             func_ptr,
             env_addr,
             env_len,
-            globals_addr,
-            globals_len,
             num_required,
             is_variadic,
         ];
@@ -813,8 +794,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
             .declare_func_in_func(make_closure, self.builder.func);
         let call = self.builder.ins().call(make_closure, &args);
         let closure = self.builder.inst_results(call)[0];
-        self.rebinds
-            .rebind(Var::Local(bundle.val), IrValue::Cell(closure));
+        self.rebinds.rebind(bundle.val, IrValue::Cell(closure));
         self.push_cell_alloc(closure);
         self.cps_codegen(cexp, deferred);
     }
@@ -825,7 +805,6 @@ pub struct ClosureBundle {
     func_id: FuncId,
     val: Local,
     env: Vec<Local>,
-    globals: Vec<Global>,
     args: ClosureArgs,
     body: Cps,
     loc: Option<Span>,
@@ -833,16 +812,14 @@ pub struct ClosureBundle {
 
 const RUNTIME_PARAM: usize = 0;
 const ENV_PARAM: usize = 1;
-const GLOBALS_PARAM: usize = 2;
-const ARGS_PARAM: usize = 3;
-const EXCEPTION_HANDLER_PARAM: usize = 4;
-const DYNAMIC_WIND_PARAM: usize = 5;
-const CONTINUATION_PARAM: usize = 6;
+const ARGS_PARAM: usize = 2;
+const EXCEPTION_HANDLER_PARAM: usize = 3;
+const DYNAMIC_WIND_PARAM: usize = 4;
+const CONTINUATION_PARAM: usize = 5;
 
 fn make_sig(sig: &mut Signature, has_continuation: bool) {
     sig.params.push(AbiParam::new(types::I64)); // Runtime
     sig.params.push(AbiParam::new(types::I64)); // Env
-    sig.params.push(AbiParam::new(types::I64)); // Globals
     sig.params.push(AbiParam::new(types::I64)); // Args
     sig.params.push(AbiParam::new(types::I64)); // Exception handler
     sig.params.push(AbiParam::new(types::I64)); // Dynamic wind
@@ -875,14 +852,12 @@ impl ClosureBundle {
             .difference(&args.iter().cloned().collect::<HashSet<_>>())
             .cloned()
             .collect::<Vec<_>>();
-        let globals = body.globals().into_iter().collect::<Vec<_>>();
 
         Self {
             runtime,
             func_id,
             val,
             env,
-            globals,
             args,
             body,
             loc,
@@ -939,17 +914,7 @@ impl ClosureBundle {
             let var = builder
                 .ins()
                 .load(types::I64, MemFlags::new(), env_param, (i * 8) as i32);
-            rebinds.rebind(Var::Local(env_var), IrValue::Cell(var));
-        }
-
-        // Load globals:
-        let globals_param = builder.block_params(entry_block)[GLOBALS_PARAM];
-        for (i, global) in self.globals.into_iter().enumerate() {
-            let var =
-                builder
-                    .ins()
-                    .load(types::I64, MemFlags::new(), globals_param, (i * 8) as i32);
-            rebinds.rebind(Var::Global(global), IrValue::Cell(var));
+            rebinds.rebind(env_var, IrValue::Cell(var));
         }
 
         // Load args:
@@ -958,13 +923,13 @@ impl ClosureBundle {
             let var = builder
                 .ins()
                 .load(types::I64, MemFlags::new(), args_param, (i * 8) as i32);
-            rebinds.rebind(Var::Local(*arg), IrValue::Value(var));
+            rebinds.rebind(*arg, IrValue::Value(var));
         }
 
         // Load continuation:
         if let Some(cont) = self.args.continuation {
             let cont_param = builder.block_params(entry_block)[CONTINUATION_PARAM];
-            rebinds.rebind(Var::Local(cont), IrValue::Cell(cont_param));
+            rebinds.rebind(cont, IrValue::Cell(cont_param));
         }
 
         {
