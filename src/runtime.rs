@@ -1,16 +1,16 @@
 use crate::{
     ast::DefinitionBody,
-    cps::{codegen::RuntimeFunctionsBuilder, Compile, Cps},
+    cps::{Compile, Cps, codegen::RuntimeFunctionsBuilder},
     env::{Environment, Global},
-    exceptions::{raise, Condition, Exception, ExceptionHandler, ExceptionHandlerInner},
-    gc::{init_gc, Gc, GcInner, Trace},
+    exceptions::{Condition, Exception, ExceptionHandler, ExceptionHandlerInner, raise},
+    gc::{Gc, GcInner, Trace, init_gc},
     lists::{self, list_to_vec},
     num,
     ports::Port,
     proc::{Application, Closure, ContinuationPtr, DynamicWind, FuncDebugInfo, FuncPtr, UserPtr},
     registry::{ImportError, Library, Registry},
     symbols::Symbol,
-    syntax::{parse::Parser, Span},
+    syntax::{Span, parse::Parser},
     value::{ReflexiveValue, UnpackedValue, Value},
 };
 use scheme_rs_macros::runtime_fn;
@@ -299,8 +299,6 @@ unsafe extern "C" fn dropv(val: *const i64, num_drops: u32) {
 }
 
 /// Create a boxed application
-/// TODO: Take error handler as argument, return application with error handler
-/// if operator is not a closure.
 #[runtime_fn]
 unsafe extern "C" fn apply(
     runtime: *mut GcInner<RuntimeInner>,
@@ -427,7 +425,7 @@ unsafe extern "C" fn cons(vals: *const i64, num_vals: u32, error: *mut Value) ->
         }
         let car = Value::from_raw_inc_rc(vals.read() as u64);
         let cdr = Value::from_raw_inc_rc(vals.add(1).read() as u64);
-        let raw  = Value::into_raw(Value::from(Gc::new(lists::Pair(car, cdr))));
+        let raw = Value::into_raw(Value::from(Gc::new(lists::Pair(car, cdr))));
         raw as i64
     }
 }

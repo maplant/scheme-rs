@@ -929,32 +929,30 @@ impl ClosureBundle {
         // Load continuation:
         if let Some(cont) = self.args.continuation {
             let cont_param = builder.block_params(entry_block)[CONTINUATION_PARAM];
-            rebinds.rebind(cont, IrValue::Cell(cont_param));
+            rebinds.rebind(cont, IrValue::Value(cont_param));
         }
 
-        {
-            let mut cu = CompilationUnit {
-                runtime: self.runtime,
-                builder,
-                rebinds,
-                vals,
-                curr_val: 0,
-                cells,
-                curr_cell: 0,
-                runtime_funcs,
-                params,
-                module,
-                debug_info,
-            };
+        let mut cu = CompilationUnit {
+            runtime: self.runtime,
+            builder,
+            rebinds,
+            vals,
+            curr_val: 0,
+            cells,
+            curr_cell: 0,
+            runtime_funcs,
+            params,
+            module,
+            debug_info,
+        };
 
-            cu.cps_codegen(self.body, deferred);
+        cu.cps_codegen(self.body, deferred);
 
-            if std::env::var("GOUKI_DEBUG").is_ok() {
-                eprintln!("(bundle) compiled: {}", cu.builder.func.display());
-            }
-
-            cu.builder.finalize();
+        if std::env::var("GOUKI_DEBUG").is_ok() {
+            eprintln!("(bundle) compiled: {}", cu.builder.func.display());
         }
+
+        cu.builder.finalize();
 
         module.define_function(self.func_id, &mut ctx).unwrap();
         module.clear_context(&mut ctx);

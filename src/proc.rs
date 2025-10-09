@@ -15,7 +15,12 @@ use crate::{
 };
 use futures::future::BoxFuture;
 use scheme_rs_macros::cps_bridge;
-use std::{borrow::Cow, collections::HashMap, fmt, sync::{atomic::AtomicUsize, Arc}};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    fmt,
+    sync::{Arc, atomic::AtomicUsize},
+};
 
 /// A function pointer to a generated continuation.
 pub(crate) type ContinuationPtr = unsafe extern "C" fn(
@@ -33,7 +38,7 @@ pub(crate) type UserPtr = unsafe extern "C" fn(
     args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
-    cont: *mut GcInner<Value>,
+    cont: Value,
 ) -> *mut Application;
 
 /// A function pointer to an async Rust bridge function.
@@ -116,21 +121,16 @@ impl ClosureInner {
         !self.is_continuation()
     }
 
-    pub async fn apply(
+    pub fn is_sync(&self) -> bool {
+        matches!(self.func, FuncPtr::Continuation(_) | FuncPtr::User(_))
+    }
+
+    pub(crate) fn prepare_args<'a>(
         &self,
-        args: &[Value],
-        exception_handler: ExceptionHandler,
+        args: &'a [Value],
+        exception_handler: &ExceptionHandler,
         dynamic_wind: &DynamicWind,
-    ) -> Result<Application, Value> {
-
-        if self.env.is_empty() {
-            PROCS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        } else {
-            CLOSURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-
-        // Handle arguments:
-
+    ) -> Result<(&'a [Value], Option<Value>), Application> {
         // Extract the continuation, if it is required
         let cont = matches!(self.func, FuncPtr::Bridge(_) | FuncPtr::User(_));
         let (cont, args) = if cont {
@@ -142,92 +142,117 @@ impl ClosureInner {
 
         // Error if the number of arguments provided is incorrect
         if args.len() < self.num_required_args {
-            return Ok(raise(
+            return Err(raise(
                 self.runtime.clone(),
                 Condition::wrong_num_of_args(self.num_required_args, args.len()).into(),
-                exception_handler,
-                dynamic_wind,
-            ));
-        }
-        if !self.variadic && args.len() > self.num_required_args {
-            return Ok(raise(
-                self.runtime.clone(),
-                Condition::wrong_num_of_args(self.num_required_args, args.len()).into(),
-                exception_handler,
+                exception_handler.clone(),
                 dynamic_wind,
             ));
         }
 
-        // If this function is variadic, create a list to put any extra arguments
-        // into
-        let bridge = matches!(self.func, FuncPtr::Bridge(_));
-        let (args, rest_args) = if self.variadic {
-            let (args, rest_args) = args.split_at(self.num_required_args);
-            // If this is a bridge function, vector is more natural to work with:
-            if bridge {
-                (Cow::Borrowed(args), Some(rest_args))
-            } else {
-                let mut args = args.to_owned();
-                args.push(slice_to_list(rest_args));
-                (Cow::Owned(args), None)
-            }
-        } else {
-            (Cow::Borrowed(args), None)
+        if !self.variadic && args.len() > self.num_required_args {
+            return Err(raise(
+                self.runtime.clone(),
+                Condition::wrong_num_of_args(self.num_required_args, args.len()).into(),
+                exception_handler.clone(),
+                dynamic_wind,
+            ));
+        }
+
+        Ok((args, cont))
+    }
+
+    async fn apply_async(
+        &self,
+        args: &[Value],
+        cont: Value,
+        exception_handler: &ExceptionHandler,
+        dynamic_wind: &DynamicWind,
+    ) -> Application {
+        let FuncPtr::Bridge(async_fn) = self.func else {
+            unreachable!()
         };
 
-        if bridge {
-            // If this a bridge functiuon, calling it is relatively simple:
-            let FuncPtr::Bridge(async_fn) = self.func else {
-                unreachable!()
-            };
-            Ok((async_fn)(
-                &self.runtime,
-                &self.env,
-                args.as_ref(),
-                rest_args.unwrap_or(&[]),
-                cont.as_ref().unwrap(),
-                &exception_handler,
-                dynamic_wind,
-            )
-            .await)
-        } else if let FuncPtr::HaltError = self.func {
-            Err(args[0].clone())
+        let (args, rest_args) = if self.variadic {
+            args.split_at(self.num_required_args)
         } else {
-            // For JIT functions, we need to convert our args into raw pointers
-            // and make sure any freshly allocated rest_args are disposed of properly.
+            (args, &[] as &[Value])
+        };
 
-            let env = cells_to_vec_of_ptrs(&self.env);
-            let cont = cont.map(Gc::new);
+        (async_fn)(
+            &self.runtime,
+            &self.env,
+            args.as_ref(),
+            rest_args,
+            &cont,
+            exception_handler,
+            dynamic_wind,
+        )
+        .await
+    }
 
-            // Finally: call the function pointer
-            let app = match self.func {
-                FuncPtr::Continuation(sync_fn) => unsafe {
-                    let app = (sync_fn)(
-                        Gc::as_ptr(&self.runtime.0),
-                        env.as_ptr(),
-                        args.as_ptr(),
-                        exception_handler.as_ptr(),
-                        dynamic_wind as *const DynamicWind,
-                    );
-                    *Box::from_raw(app)
-                },
-                FuncPtr::User(sync_fn) => unsafe {
-                    let app = (sync_fn)(
-                        Gc::as_ptr(&self.runtime.0),
-                        env.as_ptr(),
-                        args.as_ptr(),
-                        exception_handler.as_ptr(),
-                        dynamic_wind as *const DynamicWind,
-                        Gc::as_ptr(cont.as_ref().unwrap()),
-                    );
-                    *Box::from_raw(app)
-                },
-                _ => unreachable!(),
-            };
+    pub(crate) fn apply_sync(
+        &self,
+        args: &[Value],
+        cont: Option<Value>,
+        exception_handler: &ExceptionHandler,
+        dynamic_wind: &DynamicWind,
+    ) -> Application {
+        let args = if self.variadic {
+            let (args, rest_args) = args.split_at(self.num_required_args);
+            let mut args = args.to_owned();
+            args.push(slice_to_list(rest_args));
+            Cow::Owned(args)
+        } else {
+            Cow::Borrowed(args)
+        };
 
-            drop(cont);
+        let env = cells_to_vec_of_ptrs(&self.env);
+        let app = match self.func {
+            FuncPtr::Continuation(sync_fn) => unsafe {
+                (sync_fn)(
+                    Gc::as_ptr(&self.runtime.0),
+                    env.as_ptr(),
+                    args.as_ptr(),
+                    exception_handler.as_ptr(),
+                    dynamic_wind as *const DynamicWind,
+                )
+            },
+            FuncPtr::User(sync_fn) => unsafe {
+                (sync_fn)(
+                    Gc::as_ptr(&self.runtime.0),
+                    env.as_ptr(),
+                    args.as_ptr(),
+                    exception_handler.as_ptr(),
+                    dynamic_wind as *const DynamicWind,
+                    Value::from_raw(Value::as_raw(cont.as_ref().unwrap())),
+                )
+            },
+            _ => unreachable!(),
+        };
 
-            Ok(app)
+        unsafe { *Box::from_raw(app) }
+    }
+
+    pub async fn apply(
+        &self,
+        args: &[Value],
+        exception_handler: &ExceptionHandler,
+        dynamic_wind: &DynamicWind,
+    ) -> Result<Application, Value> {
+        if let FuncPtr::HaltError = self.func {
+            return Err(args[0].clone());
+        }
+
+        let (args, cont) = match self.prepare_args(args, exception_handler, dynamic_wind) {
+            Ok(args) => args,
+            Err(raised) => return Ok(raised),
+        };
+
+        if self.is_sync() {
+            Ok(self.apply_sync(args, cont, exception_handler, dynamic_wind))
+        } else {
+            Ok(self.apply_async(args, cont.unwrap(), exception_handler, dynamic_wind).await)
         }
     }
 }
@@ -402,7 +427,7 @@ impl Application {
         {
             let op = { op.0.read().as_ref().clone() };
             stack_trace.collect_application(op.debug_info.clone(), call_site);
-            self = match op.apply(&args, exception_handler, &dynamic_wind).await {
+            self = match op.apply(&args, &exception_handler, &dynamic_wind).await {
                 Err(exception) => {
                     return Err(Exception::new(stack_trace.into_frames(), exception));
                 }
