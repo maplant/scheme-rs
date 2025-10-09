@@ -4,7 +4,7 @@ use crate::{
     env::Environment,
     exceptions::{Condition, Exception, ExceptionHandler, ExceptionHandlerInner, raise},
     gc::{Gc, GcInner, Trace, init_gc},
-    lists::list_to_vec,
+    lists::{self, list_to_vec},
     num,
     ports::Port,
     proc::{Application, Closure, ContinuationPtr, DynamicWind, FuncDebugInfo, FuncPtr, UserPtr},
@@ -413,6 +413,36 @@ unsafe extern "C" fn store(from: i64, to: *mut GcInner<Value>) {
         let to = ManuallyDrop::new(Gc::from_raw(to));
         *to.write() = from;
     }
+}
+
+/// Return the cons of the two arguments
+#[runtime_fn]
+unsafe extern "C" fn cons(vals: *const i64, num_vals: u32, error: *mut Value) -> i64 {
+    unsafe {
+        if num_vals != 2 {
+            error.write(Condition::wrong_num_of_args(2, num_vals as usize).into());
+            return Value::into_raw(Value::undefined()) as i64;
+        }
+        let car = Value::from_raw_inc_rc(vals.read() as u64);
+        let cdr = Value::from_raw_inc_rc(vals.add(1).read() as u64);
+        let raw  = Value::into_raw(Value::from(Gc::new(lists::Pair(car, cdr))));
+        raw as i64
+    }
+}
+
+/// Return the proper list of the arguments
+#[runtime_fn]
+unsafe extern "C" fn list(vals: *const i64, num_vals: u32, _error: *mut Value) -> i64 {
+    let mut list = Value::null();
+    unsafe {
+        for i in (0..num_vals).rev() {
+            list = Value::from(Gc::new(lists::Pair(
+                Value::from_raw_inc_rc(vals.add(i as usize).read() as u64),
+                list,
+            )));
+        }
+    }
+    Value::into_raw(list) as i64
 }
 
 /// Allocate a closure

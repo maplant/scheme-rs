@@ -1122,6 +1122,7 @@ impl Expression {
                 add_builtin, div_builtin, equal_builtin, greater_builtin, greater_equal_builtin,
                 lesser_builtin, lesser_equal_builtin, mul_builtin, sub_builtin,
             },
+            lists::{list, cons},
             proc::{Closure, FuncPtr::Bridge},
         };
 
@@ -1139,6 +1140,8 @@ impl Expression {
                 Bridge(ptr) if ptr == greater_equal_builtin => Some(PrimOp::GreaterEqual),
                 Bridge(ptr) if ptr == lesser_builtin => Some(PrimOp::Lesser),
                 Bridge(ptr) if ptr == lesser_equal_builtin => Some(PrimOp::LesserEqual),
+                Bridge(ptr) if ptr == cons => Some(PrimOp::Cons),
+                Bridge(ptr) if ptr == list => Some(PrimOp::List),
                 _ => None,
             }
         } else {

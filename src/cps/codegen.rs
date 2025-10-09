@@ -64,6 +64,10 @@ pub(crate) struct RuntimeFunctions {
     dropc: FuncId,
     raise_rt: FuncId,
 
+    // List primops:
+    cons: FuncId,
+    list: FuncId,
+
     // Math primops:
     add: FuncId,
     sub: FuncId,
@@ -465,6 +469,8 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
             PrimOp::GreaterEqual => self.runtime_funcs.greater_equal,
             PrimOp::Lesser => self.runtime_funcs.lesser,
             PrimOp::LesserEqual => self.runtime_funcs.lesser_equal,
+            PrimOp::Cons => self.runtime_funcs.cons,
+            PrimOp::List => self.runtime_funcs.list,
             _ => unreachable!(),
         };
 

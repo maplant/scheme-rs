@@ -8,13 +8,10 @@ use std::{
     collections::HashSet,
     marker::PhantomData,
     ptr::NonNull,
-    sync::{LazyLock, Mutex, OnceLock, RwLock, atomic::AtomicUsize},
+    sync::{Mutex, OnceLock, RwLock, atomic::AtomicUsize},
     time::Duration,
 };
-use tokio::{
-    // sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
-    task::JoinHandle,
-};
+use tokio::{task::JoinHandle, time::Instant};
 
 use crate::gc::GcInner;
 
@@ -188,12 +185,6 @@ pub(super) fn alloc_gc_object<T: super::GcOrTrace>(data: T) -> super::Gc<T> {
         marker: PhantomData,
     };
 
-    /*
-    let _ = NEW_ALLOCS_BUFFER
-        .new_allocs_buffer_tx
-    .send(unsafe { new_gc.as_opaque() });
-     */
-
     NEW_ALLOCS_BUFFER
         .lock()
         .unwrap()
@@ -202,6 +193,7 @@ pub(super) fn alloc_gc_object<T: super::GcOrTrace>(data: T) -> super::Gc<T> {
     new_gc
 }
 
+#[allow(private_bounds)]
 pub(crate) fn alloc_n_gc_objects<T: super::GcOrTrace + Clone>(
     data: T,
     n: usize,
@@ -227,7 +219,7 @@ pub(crate) fn alloc_n_gc_objects<T: super::GcOrTrace + Clone>(
     to_return
 }
 
-static NEW_ALLOCS_BUFFER: Mutex<Vec<OpaqueGcPtr>> = Mutex::new(Vec::new()); 
+static NEW_ALLOCS_BUFFER: Mutex<Vec<OpaqueGcPtr>> = Mutex::new(Vec::new());
 static COLLECTOR_TASK: OnceLock<JoinHandle<()>> = OnceLock::new();
 
 pub fn init_gc() {
@@ -236,6 +228,7 @@ pub fn init_gc() {
 
 #[derive(Debug)]
 pub struct Collector {
+    swap_buffer: Vec<OpaqueGcPtr>,
     heap: HashSet<OpaqueGcPtr>,
     roots: HashSet<OpaqueGcPtr>,
     cycles: Vec<Vec<OpaqueGcPtr>>,
@@ -244,6 +237,7 @@ pub struct Collector {
 impl Collector {
     fn new() -> Self {
         Self {
+            swap_buffer: Vec::new(),
             heap: HashSet::new(),
             roots: HashSet::new(),
             cycles: Vec::new(),
@@ -252,49 +246,40 @@ impl Collector {
 
     fn run(mut self) -> JoinHandle<()> {
         tokio::task::spawn(async move {
-            while self.recv_new_allocs().await {
+            loop {
+                self.recv_new_allocs();
+                let now = Instant::now();
                 tokio::task::block_in_place(|| self.epoch());
+                let elapsed = now.elapsed();
+
+                // This allows us to cleanly detect the shutdown of the Runtime without
+                // panicking.
+                let result = tokio::task::spawn(async move {
+                    if elapsed >= Duration::from_millis(10) {
+                        tokio::task::yield_now().await;
+                    } else {
+                        tokio::time::sleep(Duration::from_millis(10) - elapsed).await
+                    }
+                })
+                .await;
+
+                if result.is_err() {
+                    break;
+                }
             }
         })
     }
 
-    async fn recv_new_allocs(&mut self) -> bool {
-        // let mut new_allocs_buffer = self.new_allocs_buffer.take().unwrap();
-
-        // This allows us to cleanly detect the shutdown of the Runtime without
-        // panicking.
-        let recv_result = tokio::task::spawn(async move {
-            loop {
-                let recvd = { std::mem::take(&mut *NEW_ALLOCS_BUFFER.lock().unwrap()) };
-
-                if recvd.is_empty() {
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                    continue;
-                }
-
-                // Maybe only allocate this once
-                // let mut recvd = Vec::new();
-                // new_allocs_buffer.recv_many(&mut recvd, to_recv).await;
-                // (new_allocs_buffer, recvd)
-                return recvd;
+    fn recv_new_allocs(&mut self) {
+        std::mem::swap(
+            &mut *NEW_ALLOCS_BUFFER.lock().unwrap(),
+            &mut self.swap_buffer,
+        );
+        for new_alloc in self.swap_buffer.drain(..) {
+            unsafe {
+                new_alloc.set_buffered(false);
             }
-        })
-        .await;
-
-        match recv_result {
-            Ok(recvd) => {
-                // self.new_allocs_buffer = Some(new_allocs_buffer);
-
-                for new_alloc in recvd.into_iter() {
-                    unsafe {
-                        new_alloc.set_buffered(false);
-                    }
-                    self.heap.insert(new_alloc);
-                }
-
-                true
-            }
-            Err(_) => false,
+            self.heap.insert(new_alloc);
         }
     }
 
@@ -302,6 +287,8 @@ impl Collector {
         // Collect obvious garbage; i.e. heap objects that have a ref count of zero,
         // and potential candidates for cycles.
         let mut garbage = Vec::new();
+
+        // println!("running epoch, heap size = {}", self.heap.len());
 
         for heap_object in self.heap.iter() {
             unsafe {

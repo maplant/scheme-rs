@@ -147,6 +147,7 @@ impl Cps {
             }
             Cps::PrimOp(
                 PrimOp::Cons
+                | PrimOp::List
                 | PrimOp::Add
                 | PrimOp::Sub
                 | PrimOp::Mul

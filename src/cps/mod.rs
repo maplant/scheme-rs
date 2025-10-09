@@ -97,8 +97,9 @@ pub enum PrimOp {
     /// Allocate a cell, returning a Gc<Value>:
     AllocCell,
 
-    // List operators:
+    // List/pair operators:
     Cons,
+    List,
 
     // Math primitive operators:
     Add,
