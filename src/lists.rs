@@ -6,7 +6,7 @@ use crate::{
     num::Number,
     registry::bridge,
     syntax::Syntax,
-    value::{EqvValue, UnpackedValue, Value, ValueType, write_value},
+    value::{write_value, EqvValue, UnpackedValue, Value, ValueType},
 };
 use std::fmt;
 

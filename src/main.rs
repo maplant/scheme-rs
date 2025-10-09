@@ -10,12 +10,11 @@ use scheme_rs::{
     env::Environment,
     exceptions::{Exception, ExceptionHandler},
     ports::{Port, ReadError},
-    proc::{Application, DynamicWind},
+    proc::{Application, DynamicWind, CLOSURES, PROCS},
     registry::Library,
     runtime::Runtime,
     syntax::{
-        Syntax,
-        parse::{LexerError, ParseSyntaxError, Parser},
+        parse::{LexerError, ParseSyntaxError, Parser}, Syntax
     },
     value::Value,
 };
@@ -102,6 +101,9 @@ async fn main() -> ExitCode {
             }
         }
     }
+
+    println!("procs: {}", PROCS.load(std::sync::atomic::Ordering::Relaxed));
+    println!("closures: {}", CLOSURES.load(std::sync::atomic::Ordering::Relaxed));
 
     exit(0)
 }
