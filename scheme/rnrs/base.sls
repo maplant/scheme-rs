@@ -4,7 +4,6 @@
           memq caar cadr memp call/cc for-each
           append make-list list-copy list-tail list-ref assoc map reverse
           positive? negative? abs min max quasiquote
-          (import (rnrs lists (6)))
           (import (rnrs base builtins (6))
                   (except (rnrs base special-keywords (6)) $undefined)
                   (rnrs syntax-case special-keywords (6))))

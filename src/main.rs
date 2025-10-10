@@ -10,15 +10,19 @@ use scheme_rs::{
     env::Environment,
     exceptions::{Exception, ExceptionHandler},
     ports::{Port, ReadError},
-    proc::{Application, DynamicWind, CLOSURES, PROCS},
+    proc::{Application, CLOSURES, DynamicWind, PROCS},
     registry::Library,
     runtime::Runtime,
     syntax::{
-        parse::{LexerError, ParseSyntaxError, Parser}, Syntax
+        Syntax,
+        parse::{LexerError, ParseSyntaxError, Parser},
     },
     value::Value,
 };
-use std::{io::Cursor, process::{exit, ExitCode}};
+use std::{
+    io::Cursor,
+    process::{ExitCode, exit},
+};
 
 #[derive(Default)]
 struct InputValidator;
@@ -102,8 +106,14 @@ async fn main() -> ExitCode {
         }
     }
 
-    println!("procs: {}", PROCS.load(std::sync::atomic::Ordering::Relaxed));
-    println!("closures: {}", CLOSURES.load(std::sync::atomic::Ordering::Relaxed));
+    println!(
+        "procs: {}",
+        PROCS.load(std::sync::atomic::Ordering::Relaxed)
+    );
+    println!(
+        "closures: {}",
+        CLOSURES.load(std::sync::atomic::Ordering::Relaxed)
+    );
 
     exit(0)
 }

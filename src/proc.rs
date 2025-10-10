@@ -252,7 +252,9 @@ impl ClosureInner {
         if self.is_sync() {
             Ok(self.apply_sync(args, cont, exception_handler, dynamic_wind))
         } else {
-            Ok(self.apply_async(args, cont.unwrap(), exception_handler, dynamic_wind).await)
+            Ok(self
+                .apply_async(args, cont.unwrap(), exception_handler, dynamic_wind)
+                .await)
         }
     }
 }
@@ -267,7 +269,7 @@ pub struct Closure(pub(crate) Gc<ClosureInner>);
 impl Closure {
     pub(crate) fn new(
         runtime: Runtime,
-        env: impl Into<Vec<Gc<Value>>>,
+        env: Vec<Gc<Value>>,
         func: FuncPtr,
         num_required_args: usize,
         variadic: bool,
@@ -275,7 +277,7 @@ impl Closure {
     ) -> Self {
         Self(Gc::new(ClosureInner {
             runtime,
-            env: env.into(),
+            env,
             func,
             num_required_args,
             variadic,

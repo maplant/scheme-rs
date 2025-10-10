@@ -1118,11 +1118,11 @@ impl Expression {
     #[allow(unpredictable_function_pointer_comparisons)]
     pub fn to_primop(&self) -> Option<PrimOp> {
         use crate::{
+            lists::{cons, list},
             num::{
                 add_builtin, div_builtin, equal_builtin, greater_builtin, greater_equal_builtin,
                 lesser_builtin, lesser_equal_builtin, mul_builtin, sub_builtin,
             },
-            lists::{list, cons},
             proc::{Closure, FuncPtr::Bridge},
         };
 

@@ -762,14 +762,7 @@ unsafe extern "C" fn call_exits_and_exception_handler_reraise(
                 // error.
                 if !curr_handler.is_true() {
                     let app = Application::new(
-                        Closure::new(
-                            runtime,
-                            Vec::new(),
-                            FuncPtr::HaltError,
-                            1,
-                            false,
-                            None,
-                        ),
+                        Closure::new(runtime, Vec::new(), FuncPtr::HaltError, 1, false, None),
                         vec![raised.clone()],
                         ExceptionHandler::from_ptr(exception_handler),
                         dynamic_wind.as_ref().unwrap().clone(),

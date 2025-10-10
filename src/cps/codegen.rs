@@ -805,7 +805,7 @@ pub struct ClosureBundle {
     func_id: FuncId,
     val: Local,
     env: Vec<Local>,
-    args: ClosureArgs,
+    args: LambdaArgs,
     body: Cps,
     loc: Option<Span>,
 }
@@ -835,7 +835,7 @@ impl ClosureBundle {
     fn new(
         runtime: Runtime,
         val: Local,
-        args: ClosureArgs,
+        args: LambdaArgs,
         body: Cps,
         loc: Option<Span>,
         module: &mut JITModule,

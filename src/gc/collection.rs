@@ -646,7 +646,7 @@ mod test {
 
         collector.epoch();
         collector.epoch();
-        
+
         assert_eq!(Arc::strong_count(&out_ptr), 1);
     }
 }

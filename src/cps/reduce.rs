@@ -48,7 +48,9 @@ impl Cps {
                 let uses = cexp.uses(uses_cache).get(&val).copied().unwrap_or(0);
 
                 // TODO: When we get more list primops, allow for variadic substitutions
-                if /* !args.variadic && */ !is_recursive && uses == 1 {
+                if
+                /* !args.variadic && */
+                !is_recursive && uses == 1 {
                     let reduced = cexp.reduce_function(val, &args, &body, uses_cache);
                     if reduced {
                         // We can probably do better than just destroying the
@@ -74,7 +76,7 @@ impl Cps {
     fn reduce_function(
         &mut self,
         func: Local,
-        args: &ClosureArgs,
+        args: &LambdaArgs,
         func_body: &Cps,
         uses_cache: &mut HashMap<Local, HashMap<Local, usize>>,
     ) -> bool {
@@ -162,7 +164,7 @@ impl Cps {
     }
 }
 
-fn substitute(mut body: Cps, args: &ClosureArgs, applied: impl Iterator<Item = Value>) -> Cps {
+fn substitute(mut body: Cps, args: &LambdaArgs, applied: impl Iterator<Item = Value>) -> Cps {
     let substitutions = args.iter().copied().zip(applied).collect::<HashMap<_, _>>();
     body.substitute(&substitutions);
     body

@@ -115,13 +115,13 @@ pub enum PrimOp {
 }
 
 #[derive(Debug, Clone)]
-pub struct ClosureArgs {
+pub struct LambdaArgs {
     args: Vec<Local>,
     variadic: bool,
     continuation: Option<Local>,
 }
 
-impl ClosureArgs {
+impl LambdaArgs {
     pub fn new(args: Vec<Local>, variadic: bool, continuation: Option<Local>) -> Self {
         Self {
             args,
@@ -160,7 +160,7 @@ pub enum Cps {
 
     /// Function creation:
     Lambda {
-        args: ClosureArgs,
+        args: LambdaArgs,
         body: Box<Cps>,
         val: Local,
         cexp: Box<Cps>,
