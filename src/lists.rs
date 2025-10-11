@@ -4,7 +4,7 @@ use crate::{
     exceptions::{Condition, ExceptionHandler, ExceptionHandlerInner},
     gc::{Gc, GcInner, Trace},
     num::Number,
-    proc::{Application, Closure, DynamicWind},
+    proc::{Application, DynamicWind, Procedure},
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
     syntax::Syntax,
@@ -256,7 +256,7 @@ pub async fn map(
     let [mapper, list_1] = args else {
         unreachable!()
     };
-    let mapper_proc: Closure = mapper.clone().try_into()?;
+    let mapper_proc: Procedure = mapper.clone().try_into()?;
     let mut inputs = Some(list_1.clone())
         .into_iter()
         .chain(list_n.iter().cloned())
@@ -282,7 +282,7 @@ pub async fn map(
         *input = cdr.clone();
     }
 
-    let map_k = Closure::new(
+    let map_k = Procedure::new(
         runtime.clone(),
         vec![
             Gc::new(Value::from(Vec::<Value>::new())),
@@ -328,10 +328,10 @@ unsafe extern "C" fn map_k(
             inputs.read().clone().try_into().unwrap();
         // env[2] is the mapper function
         let mapper = Gc::from_raw_inc_rc(env.add(2).read());
-        let mapper_proc: Closure = mapper.read().clone().try_into().unwrap();
+        let mapper_proc: Procedure = mapper.read().clone().try_into().unwrap();
         // env[3] is the continuation
         let cont = Gc::from_raw_inc_rc(env.add(3).read());
-        let cont_proc: Closure = cont.read().clone().try_into().unwrap();
+        let cont_proc: Procedure = cont.read().clone().try_into().unwrap();
 
         let mut args = Vec::new();
 
@@ -356,7 +356,7 @@ unsafe extern "C" fn map_k(
             *input = cdr.clone();
         }
 
-        let map_k = Closure::new(
+        let map_k = Procedure::new(
             Runtime::from_raw_inc_rc(runtime),
             vec![output, inputs, mapper, cont],
             crate::proc::FuncPtr::Continuation(map_k),

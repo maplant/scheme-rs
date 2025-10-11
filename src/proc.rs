@@ -1,5 +1,5 @@
 //! Procedures, continuation and user, and applying values to those procedures.
-//! Contains the main trampoline.
+//! Contains the main evaluation trampoline.
 
 use crate::{
     env::Local,
@@ -15,12 +15,7 @@ use crate::{
 };
 use futures::future::BoxFuture;
 use scheme_rs_macros::cps_bridge;
-use std::{
-    borrow::Cow,
-    collections::HashMap,
-    fmt,
-    sync::{Arc, atomic::AtomicUsize},
-};
+use std::{borrow::Cow, collections::HashMap, fmt, sync::Arc};
 
 /// A function pointer to a generated continuation.
 pub(crate) type ContinuationPtr = unsafe extern "C" fn(
@@ -69,17 +64,17 @@ unsafe impl Trace for FuncPtr {
 
 #[derive(Clone, Trace)]
 #[repr(align(16))]
-pub(crate) struct ClosureInner {
-    /// The runtime the Closure is defined in. This is necessary to ensure that
+pub(crate) struct ProcedureInner {
+    /// The runtime the Procedure is defined in. This is necessary to ensure that
     /// dropping the runtime does not de-allocate the function pointer for this
-    /// closure.
+    /// procedure.
     // TODO: Do we make this optional in the case of bridge functions?
     pub(crate) runtime: Runtime,
-    /// Environmental variables used by the closure.
+    /// Environmental variables used by the procedure.
     pub(crate) env: Vec<Gc<Value>>,
-    /// Fuction pointer to the body of the closure.
+    /// Fuction pointer to the body of the procecure.
     pub(crate) func: FuncPtr,
-    /// Number of required arguments to this closure.
+    /// Number of required arguments to this procedure.
     pub(crate) num_required_args: usize,
     /// Whether or not this is a variadic function.
     pub(crate) variadic: bool,
@@ -90,10 +85,7 @@ pub(crate) struct ClosureInner {
     pub(crate) debug_info: Option<Arc<FuncDebugInfo>>,
 }
 
-pub static PROCS: AtomicUsize = AtomicUsize::new(0);
-pub static CLOSURES: AtomicUsize = AtomicUsize::new(0);
-
-impl ClosureInner {
+impl ProcedureInner {
     pub(crate) fn new(
         runtime: Runtime,
         env: impl Into<Vec<Gc<Value>>>,
@@ -182,7 +174,7 @@ impl ClosureInner {
         (async_fn)(
             &self.runtime,
             &self.env,
-            args.as_ref(),
+            args,
             rest_args,
             &cont,
             exception_handler,
@@ -259,14 +251,14 @@ impl ClosureInner {
     }
 }
 
-/// The runtime representation of a Closure, which can be either a user function
-/// or a continuation. Contains a reference to all of the globals and
-/// environmental variables used in the body, along with a function pointer to
-/// the body of the closure.
+/// The runtime representation of a Procedure, which can be either a user
+/// function or a continuation. Contains a reference to all of the environmental
+/// variables used in the body, along with a function pointer to the body of the
+/// procedure.
 #[derive(Clone, Trace)]
-pub struct Closure(pub(crate) Gc<ClosureInner>);
+pub struct Procedure(pub(crate) Gc<ProcedureInner>);
 
-impl Closure {
+impl Procedure {
     pub(crate) fn new(
         runtime: Runtime,
         env: Vec<Gc<Value>>,
@@ -275,7 +267,7 @@ impl Closure {
         variadic: bool,
         debug_info: Option<Arc<FuncDebugInfo>>,
     ) -> Self {
-        Self(Gc::new(ClosureInner {
+        Self(Gc::new(ProcedureInner {
             runtime,
             env,
             func,
@@ -308,7 +300,7 @@ impl Closure {
         let mut args = args.to_vec();
         // TODO: We don't need to create a new one of these every time, we should just have
         // one
-        args.push(Value::from(Self(Gc::new(ClosureInner::new(
+        args.push(Value::from(Self(Gc::new(ProcedureInner::new(
             self.0.read().runtime.clone(),
             Vec::new(),
             FuncPtr::Continuation(halt),
@@ -328,13 +320,13 @@ impl Closure {
     }
 }
 
-impl fmt::Debug for Closure {
+impl fmt::Debug for Procedure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.read().fmt(f)
     }
 }
 
-impl fmt::Debug for ClosureInner {
+impl fmt::Debug for ProcedureInner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_continuation() {
             return write!(f, "continuation");
@@ -375,7 +367,7 @@ fn cells_to_vec_of_ptrs(cells: &[Gc<Value>]) -> Vec<*mut GcInner<Value>> {
 pub struct Application {
     /// The operator being applied to. If None, we return the values to the Rust
     /// caller.
-    op: Option<Closure>,
+    op: Option<Procedure>,
     /// The arguments being applied to the operator.
     args: Vec<Value>,
     /// The current exception handler to be passed to the operator.
@@ -388,7 +380,7 @@ pub struct Application {
 
 impl Application {
     pub fn new(
-        op: Closure,
+        op: Procedure,
         args: Vec<Value>,
         exception_handler: ExceptionHandler,
         dynamic_wind: DynamicWind,
@@ -535,7 +527,7 @@ pub async fn apply(
     if rest_args.is_empty() {
         return Err(Condition::wrong_num_of_args(2, args.len()));
     }
-    let op: Closure = args[0].clone().try_into()?;
+    let op: Procedure = args[0].clone().try_into()?;
     let (last, args) = rest_args.split_last().unwrap();
     let mut args = args.to_vec();
     list_to_vec(last, &mut args);
@@ -564,17 +556,17 @@ pub async fn call_with_current_continuation(
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let [proc] = args else { unreachable!() };
-    let proc: Closure = proc.clone().try_into()?;
+    let proc: Procedure = proc.clone().try_into()?;
 
     let (req_args, variadic) = {
-        let cont: Closure = cont.clone().try_into()?;
+        let cont: Procedure = cont.clone().try_into()?;
         let cont_read = cont.0.read();
         (cont_read.num_required_args, cont_read.variadic)
     };
 
     let dynamic_wind_value = Value::from(Record::from_rust_type(dynamic_wind.clone()));
 
-    let escape_procedure = Closure::new(
+    let escape_procedure = Procedure::new(
         runtime.clone(),
         vec![Gc::new(cont.clone()), Gc::new(dynamic_wind_value)],
         FuncPtr::Bridge(escape_procedure),
@@ -619,7 +611,7 @@ async fn escape_procedure(
 
     // Clone the continuation
     let cont = maybe_clone_continuation(&cont, &mut HashMap::new()).unwrap();
-    let cont: Closure = cont.try_into().unwrap();
+    let cont: Procedure = cont.try_into().unwrap();
 
     let (req_args, variadic) = {
         let cont_read = cont.0.read();
@@ -628,7 +620,7 @@ async fn escape_procedure(
 
     let args = args.iter().chain(rest_args).cloned().collect::<Vec<_>>();
 
-    let cont = Closure::new(
+    let cont = Procedure::new(
         runtime.clone(),
         vec![Gc::new(thunks), Gc::new(Value::from(cont))],
         FuncPtr::Continuation(call_thunks),
@@ -681,7 +673,7 @@ fn maybe_clone_continuation(
     value: &Value,
     cloned: &mut HashMap<ContinuationPtr, Value>,
 ) -> Option<Value> {
-    let k: Closure = value.clone().try_into().ok()?;
+    let k: Procedure = value.clone().try_into().ok()?;
 
     let func_ptr = {
         match k.0.read().func {
@@ -700,7 +692,7 @@ fn maybe_clone_continuation(
         for (i, var) in k.env.iter().enumerate() {
             *new_env[i].write() = prepare_env_variable(&var.read(), cloned);
         }
-        Closure::new(
+        Procedure::new(
             k.runtime.clone(),
             new_env,
             k.func,
@@ -728,7 +720,7 @@ pub(crate) unsafe extern "C" fn call_thunks(
         let thunks = Gc::from_raw_inc_rc(env.read());
 
         // env[1] is the continuation:
-        let k: Closure = Gc::from_raw_inc_rc(env.add(1).read())
+        let k: Procedure = Gc::from_raw_inc_rc(env.add(1).read())
             .read()
             .clone()
             .try_into()
@@ -757,7 +749,7 @@ pub(crate) unsafe extern "C" fn call_thunks(
             collected_args
         };
 
-        let thunks = Closure::new(
+        let thunks = Procedure::new(
             Runtime::from_raw_inc_rc(runtime),
             vec![thunks, Gc::new(collected_args), Gc::new(Value::from(k))],
             FuncPtr::Continuation(call_thunks_pass_args),
@@ -800,8 +792,8 @@ unsafe extern "C" fn call_thunks_pass_args(
             // UnpackedValue::Pair(head_thunk, tail) => {
             UnpackedValue::Pair(pair) => {
                 let lists::Pair(head_thunk, tail) = &*pair.read();
-                let head_thunk: Closure = head_thunk.clone().try_into().unwrap();
-                let cont = Closure::new(
+                let head_thunk: Procedure = head_thunk.clone().try_into().unwrap();
+                let cont = Procedure::new(
                     Runtime::from_raw_inc_rc(runtime),
                     vec![Gc::new(tail.clone()), args, k],
                     FuncPtr::Continuation(call_thunks_pass_args),
@@ -848,7 +840,7 @@ unsafe extern "C" fn call_consumer_with_values(
         let consumer = Gc::from_raw_inc_rc(env.read());
         let consumer = {
             let consumer_read = consumer.read();
-            let consumer: Closure = match consumer_read.clone().try_into() {
+            let consumer: Procedure = match consumer_read.clone().try_into() {
                 Ok(consumer) => consumer,
                 _ => {
                     let raised = raise(
@@ -915,8 +907,8 @@ pub async fn call_with_values(
         return Err(Condition::wrong_num_of_args(2, args.len()));
     };
 
-    let producer: Closure = producer.clone().try_into()?;
-    let consumer: Closure = consumer.clone().try_into()?;
+    let producer: Procedure = producer.clone().try_into()?;
+    let consumer: Procedure = consumer.clone().try_into()?;
 
     // Get the details of the consumer:
     let (num_required_args, variadic) = {
@@ -924,7 +916,7 @@ pub async fn call_with_values(
         (consumer_read.num_required_args, consumer_read.variadic)
     };
 
-    let call_consumer_closure = Closure::new(
+    let call_consumer_closure = Procedure::new(
         runtime.clone(),
         vec![Gc::new(Value::from(consumer)), Gc::new(cont.clone())],
         FuncPtr::Continuation(call_consumer_with_values),
@@ -944,7 +936,7 @@ pub async fn call_with_values(
 
 #[derive(Clone, Debug, Default, Trace)]
 pub struct DynamicWind {
-    pub(crate) winders: Vec<(Closure, Closure)>,
+    pub(crate) winders: Vec<(Procedure, Procedure)>,
 }
 
 impl SchemeCompatible for DynamicWind {
@@ -971,10 +963,10 @@ pub async fn dynamic_wind(
         return Err(Condition::wrong_num_of_args(3, args.len()));
     };
 
-    let in_thunk: Closure = in_thunk_val.clone().try_into()?;
-    let _: Closure = body_thunk_val.clone().try_into()?;
+    let in_thunk: Procedure = in_thunk_val.clone().try_into()?;
+    let _: Procedure = body_thunk_val.clone().try_into()?;
 
-    let call_body_thunk_cont = Closure::new(
+    let call_body_thunk_cont = Procedure::new(
         runtime.clone(),
         vec![
             Gc::new(in_thunk_val.clone()),
@@ -1009,7 +1001,7 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
         let in_thunk = Gc::from_raw_inc_rc(env.read());
 
         // env[1] is the body thunk
-        let body_thunk: Closure = Gc::from_raw_inc_rc(env.add(1).read())
+        let body_thunk: Procedure = Gc::from_raw_inc_rc(env.add(1).read())
             .read()
             .clone()
             .try_into()
@@ -1027,7 +1019,7 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
             out_thunk.read().clone().try_into().unwrap(),
         ));
 
-        let cont = Closure::new(
+        let cont = Procedure::new(
             Runtime::from_raw_inc_rc(runtime),
             vec![out_thunk, k],
             FuncPtr::Continuation(call_out_thunks),
@@ -1057,7 +1049,7 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
 ) -> *mut Application {
     unsafe {
         // env[0] is the out thunk
-        let out_thunk: Closure = Gc::from_raw_inc_rc(env.read())
+        let out_thunk: Procedure = Gc::from_raw_inc_rc(env.read())
             .read()
             .clone()
             .try_into()
@@ -1072,7 +1064,7 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
         let mut new_extent = dynamic_wind.as_ref().unwrap().clone();
         new_extent.winders.pop();
 
-        let cont = Closure(Gc::new(ClosureInner::new(
+        let cont = Procedure(Gc::new(ProcedureInner::new(
             Runtime::from_raw_inc_rc(runtime),
             vec![body_thunk_res, k],
             FuncPtr::Continuation(forward_body_thunk_result),
@@ -1104,7 +1096,7 @@ unsafe extern "C" fn forward_body_thunk_result(
         // env[0] is the result of the body thunk
         let body_thunk_res = Gc::from_raw_inc_rc(env.read()).read().clone();
         // env[1] is k, the continuation.
-        let k: Closure = Gc::from_raw_inc_rc(env.add(1).read())
+        let k: Procedure = Gc::from_raw_inc_rc(env.add(1).read())
             .read()
             .clone()
             .try_into()

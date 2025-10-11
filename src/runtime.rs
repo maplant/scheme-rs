@@ -7,7 +7,7 @@ use crate::{
     lists::{self, list_to_vec},
     num,
     ports::Port,
-    proc::{Application, Closure, ContinuationPtr, DynamicWind, FuncDebugInfo, FuncPtr, UserPtr},
+    proc::{Application, ContinuationPtr, DynamicWind, FuncDebugInfo, FuncPtr, Procedure, UserPtr},
     registry::{ImportError, Library, Registry},
     symbols::Symbol,
     syntax::{Span, parse::Parser},
@@ -25,17 +25,18 @@ use tokio::{
 ///
 /// # Safety:
 ///
-/// The runtime contains the only live references to the LLVM Context and therefore
-/// modules and allocated functions in the form a Sender of compilation tasks.
+/// The runtime contains the only live references to the LLVM Context and
+/// therefore modules and allocated functions in the form a Sender of compilation
+/// tasks.
 ///
-/// When that sender's ref count is zero, it will cause the receiver to fail and the
-/// compilation task will exit, allowing for a graceful shutdown.
+/// When that sender's ref count is zero, it will cause the receiver to fail and
+/// the compilation task will exit, allowing for a graceful shutdown.
 ///
-/// However, this is dropping a lifetime. If we clone a closure and drop the runtime
-/// from whence it was cleaved, we're left with a dangling pointer.
+/// However, this is dropping a lifetime. If we clone a procedure and drop the
+/// runtime from whence it was cleaved, we're left with a dangling pointer.
 ///
-/// In order to remedy this it is vitally important the closure has a back pointer to
-/// the runtime. Probably also want to make it immutable
+/// In order to remedy this it is vitally important the closure has a back
+/// pointer to the runtime.
 #[derive(Trace, Clone)]
 pub struct Runtime(pub(crate) Gc<RuntimeInner>);
 
@@ -93,7 +94,7 @@ impl Runtime {
         self.0.read().registry.clone()
     }
 
-    pub async fn compile_expr(&self, expr: Cps) -> Closure {
+    pub async fn compile_expr(&self, expr: Cps) -> Procedure {
         let (completion_tx, completion_rx) = oneshot::channel();
         let task = CompilationTask {
             completion_tx,
@@ -169,7 +170,7 @@ impl DebugInfo {
 
 struct CompilationTask {
     compilation_unit: Cps,
-    completion_tx: oneshot::Sender<Closure>,
+    completion_tx: oneshot::Sender<Procedure>,
     /// Since Contexts are per-thread, we will only ever see the same Runtime.
     /// However, we can't cache the Runtime, as that would cause a ref cycle
     /// that would prevent the last compilation buffer sender to drop.
@@ -219,10 +220,10 @@ fn compilation_task(mut compilation_queue_rx: mpsc::Receiver<CompilationTask>) {
             runtime,
         } = task;
 
-        let closure =
-            compilation_unit.into_closure(runtime, &runtime_funcs, &mut module, &mut debug_info);
+        let proc =
+            compilation_unit.into_procedure(runtime, &runtime_funcs, &mut module, &mut debug_info);
 
-        let _ = completion_tx.send(Closure(Gc::new(closure)));
+        let _ = completion_tx.send(proc);
     }
 }
 
@@ -315,7 +316,7 @@ unsafe extern "C" fn apply(
             .collect();
 
         let op = match Value::from_raw_inc_rc(op as u64).unpack() {
-            UnpackedValue::Closure(op) => op,
+            UnpackedValue::Procedure(op) => op,
             x => {
                 let raised = raise(
                     Runtime::from_raw_inc_rc(runtime),
@@ -350,7 +351,7 @@ unsafe extern "C" fn forward(
 ) -> *mut Application {
     unsafe {
         let op = match Value::from_raw_inc_rc(op as u64).unpack() {
-            UnpackedValue::Closure(op) => op,
+            UnpackedValue::Procedure(op) => op,
             x => {
                 let raised = raise(
                     Runtime::from_raw_inc_rc(runtime),
@@ -445,7 +446,7 @@ unsafe extern "C" fn list(vals: *const i64, num_vals: u32, _error: *mut Value) -
     Value::into_raw(list) as i64
 }
 
-/// Allocate a closure
+/// Allocate a continuation
 #[runtime_fn]
 unsafe extern "C" fn make_continuation(
     runtime: *mut GcInner<RuntimeInner>,
@@ -461,7 +462,7 @@ unsafe extern "C" fn make_continuation(
             .map(|i| Gc::from_raw_inc_rc(env.add(i as usize).read()))
             .collect();
 
-        let closure = Closure::new(
+        let proc = Procedure::new(
             Runtime::from_raw_inc_rc(runtime),
             env,
             FuncPtr::Continuation(fn_ptr),
@@ -470,11 +471,11 @@ unsafe extern "C" fn make_continuation(
             None,
         );
 
-        Gc::into_raw(Gc::new(Value::from(closure)))
+        Gc::into_raw(Gc::new(Value::from(proc)))
     }
 }
 
-/// Allocate a closure for a function that takes a continuation
+/// Allocate a user function
 #[runtime_fn]
 unsafe extern "C" fn make_user(
     runtime: *mut GcInner<RuntimeInner>,
@@ -491,7 +492,7 @@ unsafe extern "C" fn make_user(
             .map(|i| Gc::from_raw_inc_rc(env.add(i as usize).read()))
             .collect();
 
-        let closure = Closure::new(
+        let proc = Procedure::new(
             Runtime::from_raw_inc_rc(runtime),
             env,
             FuncPtr::User(fn_ptr),
@@ -500,7 +501,7 @@ unsafe extern "C" fn make_user(
             arc_from_ptr(debug_info),
         );
 
-        Gc::into_raw(Gc::new(Value::from(closure)))
+        Gc::into_raw(Gc::new(Value::from(proc)))
     }
 }
 

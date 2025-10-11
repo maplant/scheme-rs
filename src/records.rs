@@ -16,7 +16,7 @@ use crate::{
     exceptions::{Condition, ExceptionHandler, ExceptionHandlerInner},
     gc::{Gc, GcInner, Trace},
     num::Number,
-    proc::{Application, Closure, DynamicWind, FuncPtr},
+    proc::{Application, DynamicWind, FuncPtr, Procedure},
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
@@ -214,7 +214,7 @@ pub async fn record_type_descriptor_pred(obj: &Value) -> Result<Vec<Value>, Cond
 pub struct RecordConstructorDescriptor {
     parent: Option<Gc<RecordConstructorDescriptor>>,
     rtd: Arc<RecordTypeDescriptor>,
-    protocol: Closure,
+    protocol: Procedure,
 }
 
 impl SchemeCompatible for RecordConstructorDescriptor {
@@ -236,7 +236,7 @@ fn make_default_record_constructor_descriptor(
     let parent = rtd.inherits.last().map(|parent| {
         make_default_record_constructor_descriptor(runtime.clone(), parent.0.clone())
     });
-    let protocol = Closure::new(
+    let protocol = Procedure::new(
         runtime,
         vec![Gc::new(Value::from(rtd.clone()))],
         FuncPtr::Bridge(default_protocol),
@@ -265,7 +265,7 @@ pub async fn make_record_constructor_descriptor(
     exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
-    let cont: Closure = cont.clone().try_into()?;
+    let cont: Procedure = cont.clone().try_into()?;
     let [rtd, parent_rcd, protocol] = args else {
         unreachable!();
     };
@@ -294,7 +294,7 @@ pub async fn make_record_constructor_descriptor(
     let protocol = if protocol.is_true() {
         protocol.clone().try_into()?
     } else {
-        Closure::new(
+        Procedure::new(
             runtime.clone(),
             vec![Gc::new(Value::from(rtd.clone()))],
             FuncPtr::Bridge(default_protocol),
@@ -333,7 +333,7 @@ pub async fn record_constructor(
     exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
-    let cont: Closure = cont.clone().try_into()?;
+    let cont: Procedure = cont.clone().try_into()?;
     let [rcd] = args else {
         unreachable!();
     };
@@ -349,7 +349,7 @@ pub async fn record_constructor(
 
     let protocols = protocols.into_iter().map(Value::from).collect::<Vec<_>>();
     let rtds = rtds.into_iter().map(Value::from).collect::<Vec<_>>();
-    let chain_protocols = Value::from(Closure::new(
+    let chain_protocols = Value::from(Procedure::new(
         runtime.clone(),
         vec![
             Gc::new(Value::from(protocols)),
@@ -375,7 +375,7 @@ pub async fn record_constructor(
 
 fn rcd_to_protocols_and_rtds(
     rcd: &Gc<RecordConstructorDescriptor>,
-) -> (Vec<Closure>, Vec<Arc<RecordTypeDescriptor>>) {
+) -> (Vec<Procedure>, Vec<Arc<RecordTypeDescriptor>>) {
     let rcd = rcd.read();
     let (mut protocols, mut rtds) = if let Some(ref parent) = rcd.parent {
         rcd_to_protocols_and_rtds(parent)
@@ -406,7 +406,7 @@ pub(crate) unsafe extern "C" fn chain_protocols(
 
         let mut protocols = protocols.read().clone();
         let remaining_protocols = protocols.split_off(1);
-        let curr_protocol: Closure = protocols[0].clone().try_into().unwrap();
+        let curr_protocol: Procedure = protocols[0].clone().try_into().unwrap();
 
         // If there are no more remaining protocols after the current, call the
         // protocol with arg[0] and the continuation.
@@ -421,7 +421,7 @@ pub(crate) unsafe extern "C" fn chain_protocols(
         }
 
         // Otherwise, turn the remaining chain into the continuation:
-        let new_k = Closure::new(
+        let new_k = Procedure::new(
             Runtime::from_raw_inc_rc(runtime),
             vec![Gc::new(Value::from(remaining_protocols)), k],
             FuncPtr::Continuation(chain_protocols),
@@ -450,7 +450,7 @@ async fn chain_constructors(
     exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
-    let cont: Closure = cont.clone().try_into()?;
+    let cont: Procedure = cont.clone().try_into()?;
     // env[0] is a vector of RTDs
     let rtds: Gc<vectors::AlignedVector<Value>> = env[0].read().clone().try_into()?;
     // env[1] is the possible rust constructor
@@ -471,7 +471,7 @@ async fn chain_constructors(
     // Chain the arguments passed to this function:
     .chain(args.iter().cloned().map(Gc::new))
     .collect::<Vec<_>>();
-    let next_closure = Closure::new(
+    let next_proc = Procedure::new(
         runtime.clone(),
         env,
         if rtds_remain {
@@ -485,7 +485,7 @@ async fn chain_constructors(
     );
     Ok(Application::new(
         cont,
-        vec![Value::from(next_closure)],
+        vec![Value::from(next_proc)],
         exception_handler.clone(),
         dynamic_wind.clone(),
         None,
@@ -502,7 +502,7 @@ async fn constructor(
     exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
-    let cont: Closure = cont.clone().try_into()?;
+    let cont: Procedure = cont.clone().try_into()?;
     let rtd: Arc<RecordTypeDescriptor> = env[0].read().clone().try_into()?;
     // The fields of the record are all of the env variables chained with
     // the arguments to this function.
@@ -552,11 +552,11 @@ async fn default_protocol(
     exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
-    let cont: Closure = cont.clone().try_into()?;
+    let cont: Procedure = cont.clone().try_into()?;
     let rtd: Arc<RecordTypeDescriptor> = env[0].read().clone().try_into()?;
     let num_args = rtd.field_index_offset + rtd.fields.len();
 
-    let constructor = Closure::new(
+    let constructor = Procedure::new(
         runtime.clone(),
         vec![Gc::new(args[0].clone()), Gc::new(Value::from(rtd))],
         FuncPtr::Bridge(default_protocol_constructor),
@@ -584,14 +584,14 @@ async fn default_protocol_constructor(
     exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
-    let cont: Closure = cont.clone().try_into()?;
-    let constructor: Closure = env[0].read().clone().try_into()?;
+    let cont: Procedure = cont.clone().try_into()?;
+    let constructor: Procedure = env[0].read().clone().try_into()?;
     let rtd: Arc<RecordTypeDescriptor> = env[1].read().clone().try_into()?;
     let mut args = args.to_vec();
 
     let cont = if let Some(parent) = rtd.inherits.last() {
         let remaining = args.split_off(parent.field_index_offset + parent.fields.len());
-        Value::from(Closure::new(
+        Value::from(Procedure::new(
             runtime.clone(),
             vec![Gc::new(Value::from(remaining)), Gc::new(Value::from(cont))],
             FuncPtr::Continuation(call_constructor_continuation),
@@ -621,7 +621,7 @@ pub(crate) unsafe extern "C" fn call_constructor_continuation(
     dynamic_wind: *const DynamicWind,
 ) -> *mut Application {
     unsafe {
-        let constructor: Closure = args.as_ref().unwrap().clone().try_into().unwrap();
+        let constructor: Procedure = args.as_ref().unwrap().clone().try_into().unwrap();
         let args: Gc<vectors::AlignedVector<Value>> = Gc::from_raw_inc_rc(env.read())
             .read()
             .clone()
@@ -798,7 +798,7 @@ async fn record_predicate_fn(
     exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
-    let cont: Closure = cont.clone().try_into()?;
+    let cont: Procedure = cont.clone().try_into()?;
     let [val] = args else {
         unreachable!();
     };
@@ -826,12 +826,12 @@ pub async fn record_predicate(
     exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
-    let cont: Closure = cont.clone().try_into()?;
+    let cont: Procedure = cont.clone().try_into()?;
     let [rtd] = args else {
         unreachable!();
     };
     // TODO: Check if RTD is a record type.
-    let pred_fn = Closure::new(
+    let pred_fn = Procedure::new(
         runtime.clone(),
         vec![Gc::new(rtd.clone())],
         FuncPtr::Bridge(record_predicate_fn),
@@ -858,7 +858,7 @@ async fn record_accessor_fn(
     exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
-    let cont: Closure = cont.clone().try_into()?;
+    let cont: Procedure = cont.clone().try_into()?;
     let [val] = args else {
         unreachable!();
     };
@@ -895,7 +895,7 @@ pub async fn record_accessor(
     exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
-    let cont: Closure = cont.clone().try_into()?;
+    let cont: Procedure = cont.clone().try_into()?;
     let [rtd, k] = args else {
         unreachable!();
     };
@@ -909,7 +909,7 @@ pub async fn record_accessor(
         )));
     }
     let k = k + rtd.field_index_offset;
-    let accessor_fn = Closure::new(
+    let accessor_fn = Procedure::new(
         runtime.clone(),
         vec![
             Gc::new(Value::from(rtd)),
@@ -939,7 +939,7 @@ async fn record_mutator_fn(
     exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
-    let cont: Closure = cont.clone().try_into()?;
+    let cont: Procedure = cont.clone().try_into()?;
     let [rec, new_val] = args else {
         unreachable!();
     };
@@ -976,7 +976,7 @@ pub async fn record_mutator(
     exception_handler: &ExceptionHandler,
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
-    let cont: Closure = cont.clone().try_into()?;
+    let cont: Procedure = cont.clone().try_into()?;
     let [rtd, k] = args else {
         unreachable!();
     };
@@ -993,7 +993,7 @@ pub async fn record_mutator(
         return Err(Condition::error(format!("{k} is immutable")));
     }
     let k = k + rtd.field_index_offset;
-    let mutator_fn = Closure::new(
+    let mutator_fn = Procedure::new(
         runtime.clone(),
         vec![
             Gc::new(Value::from(rtd)),

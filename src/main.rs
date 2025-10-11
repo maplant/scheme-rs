@@ -10,7 +10,7 @@ use scheme_rs::{
     env::Environment,
     exceptions::{Exception, ExceptionHandler},
     ports::{Port, ReadError},
-    proc::{Application, CLOSURES, DynamicWind, PROCS},
+    proc::{Application, DynamicWind},
     registry::Library,
     runtime::Runtime,
     syntax::{
@@ -105,15 +105,6 @@ async fn main() -> ExitCode {
             }
         }
     }
-
-    println!(
-        "procs: {}",
-        PROCS.load(std::sync::atomic::Ordering::Relaxed)
-    );
-    println!(
-        "closures: {}",
-        CLOSURES.load(std::sync::atomic::Ordering::Relaxed)
-    );
 
     exit(0)
 }

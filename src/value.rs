@@ -6,7 +6,7 @@ use crate::{
     gc::{Gc, GcInner, Trace},
     lists,
     num::{Number, ReflexiveNumber},
-    proc::{Closure, ClosureInner},
+    proc::{Procedure, ProcedureInner},
     records::{Record, RecordInner, RecordTypeDescriptor, SchemeCompatible},
     registry::bridge,
     strings, symbols,
@@ -67,8 +67,8 @@ impl Value {
                     Arc::increment_strong_count(untagged as *const vectors::AlignedVector<u8>)
                 }
                 Tag::Syntax => Arc::increment_strong_count(untagged as *const Syntax),
-                Tag::Closure => {
-                    Gc::increment_reference_count(untagged as *mut GcInner<ClosureInner>)
+                Tag::Procedure => {
+                    Gc::increment_reference_count(untagged as *mut GcInner<ProcedureInner>)
                 }
                 Tag::Record => Gc::increment_reference_count(untagged as *mut GcInner<RecordInner>),
                 Tag::RecordTypeDescriptor => {
@@ -196,9 +196,9 @@ impl Value {
                 let syn = unsafe { Arc::from_raw(untagged as *const Syntax) };
                 UnpackedValue::Syntax(syn)
             }
-            Tag::Closure => {
-                let clos = unsafe { Gc::from_raw(untagged as *mut GcInner<ClosureInner>) };
-                UnpackedValue::Closure(Closure(clos))
+            Tag::Procedure => {
+                let clos = unsafe { Gc::from_raw(untagged as *mut GcInner<ProcedureInner>) };
+                UnpackedValue::Procedure(Procedure(clos))
             }
             Tag::Record => {
                 let rec = unsafe { Gc::from_raw(untagged as *mut GcInner<RecordInner>) };
@@ -334,7 +334,7 @@ enum Tag {
     Vector = 7,
     ByteVector = 8,
     Syntax = 9,
-    Closure = 10,
+    Procedure = 10,
     Record = 11,
     RecordTypeDescriptor = 12,
     HashTable = 13,
@@ -355,7 +355,7 @@ impl From<u64> for Tag {
             7 => Self::Vector,
             8 => Self::ByteVector,
             9 => Self::Syntax,
-            10 => Self::Closure,
+            10 => Self::Procedure,
             11 => Self::Record,
             12 => Self::RecordTypeDescriptor,
             13 => Self::HashTable,
@@ -402,7 +402,7 @@ pub enum UnpackedValue {
     Vector(Gc<vectors::AlignedVector<Value>>),
     ByteVector(Arc<vectors::AlignedVector<u8>>),
     Syntax(Arc<Syntax>),
-    Closure(Closure),
+    Procedure(Procedure),
     Record(Record),
     RecordTypeDescriptor(Arc<RecordTypeDescriptor>),
     Pair(Gc<lists::Pair>),
@@ -436,9 +436,9 @@ impl UnpackedValue {
                 let untagged = Arc::into_raw(syn);
                 Value::from_ptr_and_tag(untagged, Tag::Syntax)
             }
-            Self::Closure(clos) => {
+            Self::Procedure(clos) => {
                 let untagged = Gc::into_raw(clos.0);
-                Value::from_mut_ptr_and_tag(untagged, Tag::Closure)
+                Value::from_mut_ptr_and_tag(untagged, Tag::Procedure)
             }
             Self::Record(rec) => {
                 let untagged = Gc::into_raw(rec.0);
@@ -467,7 +467,7 @@ impl UnpackedValue {
             (Self::Pair(a), Self::Pair(b)) => Gc::ptr_eq(a, b),
             (Self::Vector(a), Self::Vector(b)) => Gc::ptr_eq(a, b),
             (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(a, b),
-            (Self::Closure(a), Self::Closure(b)) => Gc::ptr_eq(&a.0, &b.0),
+            (Self::Procedure(a), Self::Procedure(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Syntax(a), Self::Syntax(b)) => Arc::ptr_eq(a, b),
             (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
@@ -492,7 +492,7 @@ impl UnpackedValue {
             (Self::Pair(a), Self::Pair(b)) => Gc::ptr_eq(a, b),
             (Self::Vector(a), Self::Vector(b)) => Gc::ptr_eq(a, b),
             (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(a, b),
-            (Self::Closure(a), Self::Closure(b)) => Gc::ptr_eq(&a.0, &b.0),
+            (Self::Procedure(a), Self::Procedure(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Syntax(a), Self::Syntax(b)) => Arc::ptr_eq(a, b),
             (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
@@ -512,7 +512,7 @@ impl UnpackedValue {
             Self::Vector(_) => "vector",
             Self::ByteVector(_) => "byte vector",
             Self::Syntax(_) => "syntax",
-            Self::Closure(_) => "procedure",
+            Self::Procedure(_) => "procedure",
             Self::Record(_) | Self::RecordTypeDescriptor(_) => "record",
         }
     }
@@ -530,7 +530,7 @@ impl UnpackedValue {
             Self::Vector(_) => ValueType::Vector,
             Self::ByteVector(_) => ValueType::ByteVector,
             Self::Syntax(_) => ValueType::Syntax,
-            Self::Closure(_) => ValueType::Procedure,
+            Self::Procedure(_) => ValueType::Procedure,
             Self::Record(_) => ValueType::Record,
             Self::RecordTypeDescriptor(_) => ValueType::RecordTypeDescriptor,
         }
@@ -777,7 +777,7 @@ impl_try_from_value_for!(symbols::Symbol, Symbol, "symbol");
 impl_try_from_value_for!(Gc<vectors::AlignedVector<Value>>, Vector, "vector");
 impl_try_from_value_for!(Arc<vectors::AlignedVector<u8>>, ByteVector, "byte-vector");
 impl_try_from_value_for!(Arc<Syntax>, Syntax, "syntax");
-impl_try_from_value_for!(Closure, Closure, "procedure");
+impl_try_from_value_for!(Procedure, Procedure, "procedure");
 impl_try_from_value_for!(Gc<lists::Pair>, Pair, "pair");
 impl_try_from_value_for!(Record, Record, "record");
 impl_try_from_value_for!(Arc<RecordTypeDescriptor>, RecordTypeDescriptor, "rt");
@@ -862,7 +862,7 @@ impl Hash for EqvValue {
             UnpackedValue::Symbol(s) => s.hash(state),
             UnpackedValue::ByteVector(v) => v.hash(state),
             UnpackedValue::Syntax(s) => Arc::as_ptr(s).hash(state),
-            UnpackedValue::Closure(c) => Gc::as_ptr(&c.0).hash(state),
+            UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
             UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
             UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
             UnpackedValue::Pair(p) => Gc::as_ptr(p).hash(state),
@@ -902,7 +902,7 @@ impl Hash for ReflexiveValue {
             UnpackedValue::Symbol(s) => s.hash(state),
             UnpackedValue::ByteVector(v) => v.hash(state),
             UnpackedValue::Syntax(s) => Arc::as_ptr(s).hash(state),
-            UnpackedValue::Closure(c) => Gc::as_ptr(&c.0).hash(state),
+            UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
             UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
             UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
             // UnpackedValue::Any(a) => Gc::as_ptr(a).hash(state),
@@ -936,7 +936,7 @@ impl PartialEq for ReflexiveValue {
             (UnpackedValue::Vector(a), UnpackedValue::Vector(b)) => Gc::ptr_eq(a, b),
             (UnpackedValue::ByteVector(a), UnpackedValue::ByteVector(b)) => a == b,
             (UnpackedValue::Syntax(a), UnpackedValue::Syntax(b)) => Arc::ptr_eq(a, b),
-            (UnpackedValue::Closure(a), UnpackedValue::Closure(b)) => Gc::ptr_eq(&a.0, &b.0),
+            (UnpackedValue::Procedure(a), UnpackedValue::Procedure(b)) => Gc::ptr_eq(&a.0, &b.0),
             (UnpackedValue::Record(a), UnpackedValue::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
             (UnpackedValue::RecordTypeDescriptor(a), UnpackedValue::RecordTypeDescriptor(b)) => {
                 Arc::ptr_eq(a, b)
@@ -1022,7 +1022,7 @@ fn display_value(
         }
         UnpackedValue::Vector(v) => vectors::write_vec(&v, display_value, circular_values, f),
         UnpackedValue::ByteVector(v) => vectors::write_bytevec(&v, f),
-        UnpackedValue::Closure(_) => write!(f, "<procedure>"),
+        UnpackedValue::Procedure(_) => write!(f, "<procedure>"),
         UnpackedValue::Record(record) => write!(f, "{record:?}"),
         UnpackedValue::Syntax(syntax) => write!(f, "{syntax:#?}"),
         UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
@@ -1051,7 +1051,7 @@ fn debug_value(
         UnpackedValue::Vector(v) => vectors::write_vec(&v, debug_value, circular_values, f),
         UnpackedValue::ByteVector(v) => vectors::write_bytevec(&v, f),
         UnpackedValue::Syntax(syntax) => write!(f, "{syntax:#?}"),
-        UnpackedValue::Closure(proc) => write!(f, "#<procedure {proc:?}>"),
+        UnpackedValue::Procedure(proc) => write!(f, "#<procedure {proc:?}>"),
         UnpackedValue::Record(record) => write!(f, "{record:#?}"),
         UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
     }

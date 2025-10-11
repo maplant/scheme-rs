@@ -11,7 +11,7 @@ use std::{collections::HashSet, sync::Arc};
 use crate::{
     cps::{Value as CpsValue, analysis::MaxDrops},
     gc::Gc,
-    proc::{ClosureInner, ContinuationPtr, FuncDebugInfo, FuncPtr},
+    proc::{ContinuationPtr, FuncDebugInfo, FuncPtr, Procedure},
     runtime::{DebugInfo, Runtime},
     value::{ReflexiveValue, Value as SchemeValue},
 };
@@ -35,7 +35,7 @@ impl Rebinds {
 
     fn fetch_bind(&self, var: &Local) -> &IrValue {
         self.rebinds
-            .get(&var)
+            .get(var)
             .unwrap_or_else(|| panic!("could not find {var:?}"))
     }
 
@@ -82,13 +82,13 @@ pub(crate) struct RuntimeFunctions {
 }
 
 impl Cps {
-    pub(crate) fn into_closure(
+    pub(crate) fn into_procedure(
         self,
         runtime: Runtime,
         runtime_funcs: &RuntimeFunctions,
         module: &mut JITModule,
         debug_info: &mut DebugInfo,
-    ) -> ClosureInner {
+    ) -> Procedure {
         if std::env::var("GOUKI_DEBUG").is_ok() {
             eprintln!("compiling: {self:#?}");
         }
@@ -137,30 +137,28 @@ impl Cps {
 
         let mut deferred = Vec::new();
 
-        {
-            let mut cu = CompilationUnit {
-                runtime: runtime.clone(),
-                builder,
-                // Top level cannot inherit environmental variables, by defintion.
-                rebinds: Rebinds::new(),
-                vals,
-                curr_val: 0,
-                cells,
-                curr_cell: 0,
-                runtime_funcs,
-                params,
-                module,
-                debug_info,
-            };
+        let mut cu = CompilationUnit {
+            runtime: runtime.clone(),
+            builder,
+            // Top level cannot inherit environmental variables, by defintion.
+            rebinds: Rebinds::new(),
+            vals,
+            curr_val: 0,
+            cells,
+            curr_cell: 0,
+            runtime_funcs,
+            params,
+            module,
+            debug_info,
+        };
 
-            cu.cps_codegen(self, &mut deferred);
+        cu.cps_codegen(self, &mut deferred);
 
-            if std::env::var("GOUKI_DEBUG").is_ok() {
-                eprintln!("compiled: {}", cu.builder.func.display());
-            }
-
-            cu.builder.finalize();
+        if std::env::var("GOUKI_DEBUG").is_ok() {
+            eprintln!("compiled: {}", cu.builder.func.display());
         }
+
+        cu.builder.finalize();
 
         module.define_function(entry_func, &mut ctx).unwrap();
         module.clear_context(&mut ctx);
@@ -177,7 +175,7 @@ impl Cps {
             )
         };
 
-        ClosureInner::new(
+        Procedure::new(
             runtime,
             Vec::new(),
             FuncPtr::Continuation(func),
@@ -229,7 +227,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         self.params[2]
     }
 
-    fn cps_codegen(&mut self, cps: Cps, deferred: &mut Vec<ClosureBundle>) {
+    fn cps_codegen(&mut self, cps: Cps, deferred: &mut Vec<ProcedureBundle>) {
         match cps {
             Cps::If(cond, success, failure) => {
                 self.if_codegen(&cond, *success, *failure, deferred);
@@ -274,7 +272,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
                 cexp,
                 span: loc,
             } => {
-                let bundle = ClosureBundle::new(
+                let bundle = ProcedureBundle::new(
                     self.runtime.clone(),
                     val,
                     args.clone(),
@@ -282,7 +280,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
                     loc,
                     self.module,
                 );
-                self.make_closure_codegen(&bundle, *cexp, deferred);
+                self.make_procedure_codegen(&bundle, *cexp, deferred);
                 deferred.push(bundle);
             }
             Cps::Halt(value) => self.halt_codegen(&value),
@@ -370,7 +368,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         expr: &CpsValue,
         binds: Local,
         cexpr: Cps,
-        deferred: &mut Vec<ClosureBundle>,
+        deferred: &mut Vec<ProcedureBundle>,
     ) {
         let pattern = self.value_codegen(pattern);
         let expr = self.value_codegen(expr);
@@ -391,7 +389,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         expansions: &[CpsValue],
         dest: Local,
         cexpr: Cps,
-        deferred: &mut Vec<ClosureBundle>,
+        deferred: &mut Vec<ProcedureBundle>,
     ) {
         let template = self.value_codegen(template);
         let expansion_combiner = self.value_codegen(expansion_combiner);
@@ -436,7 +434,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         vals: &[CpsValue],
         dest: Local,
         cexpr: Cps,
-        deferred: &mut Vec<ClosureBundle>,
+        deferred: &mut Vec<ProcedureBundle>,
     ) {
         // Put the values into an array:
         let args = self.alloc_array(vals.len());
@@ -514,7 +512,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         self.raise_codegen(error);
     }
 
-    fn alloc_cell_codegen(&mut self, var: Local, cexpr: Cps, deferred: &mut Vec<ClosureBundle>) {
+    fn alloc_cell_codegen(&mut self, var: Local, cexpr: Cps, deferred: &mut Vec<ProcedureBundle>) {
         let alloc_cell = self
             .module
             .declare_func_in_func(self.runtime_funcs.alloc_cell, self.builder.func);
@@ -630,7 +628,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         cond: &CpsValue,
         success: Cps,
         failure: Cps,
-        deferred: &mut Vec<ClosureBundle>,
+        deferred: &mut Vec<ProcedureBundle>,
     ) {
         let cond = self.value_codegen(cond);
         let truthy = self
@@ -684,7 +682,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         from: &CpsValue,
         to: &CpsValue,
         cexpr: Cps,
-        deferred: &mut Vec<ClosureBundle>,
+        deferred: &mut Vec<ProcedureBundle>,
     ) {
         let from = self.value_codegen(from);
         let to = match to {
@@ -726,11 +724,11 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
             .stack_load(types::I64, slot, i as i32 * 8)
     }
 
-    fn make_closure_codegen(
+    fn make_procedure_codegen(
         &mut self,
-        bundle: &ClosureBundle,
+        bundle: &ProcedureBundle,
         cexp: Cps,
-        deferred: &mut Vec<ClosureBundle>,
+        deferred: &mut Vec<ProcedureBundle>,
     ) {
         // Construct the envs array:
         let env = self.alloc_array(bundle.env.len());
@@ -771,7 +769,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
             is_variadic,
         ];
 
-        let make_closure = if bundle.args.continuation.is_some() {
+        let make_proc = if bundle.args.continuation.is_some() {
             args.push(if let Some(ref loc) = bundle.loc {
                 let debug_info = Arc::new(FuncDebugInfo::new(
                     bundle.val.name,
@@ -789,18 +787,18 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
             self.runtime_funcs.make_continuation
         };
 
-        let make_closure = self
+        let make_proc = self
             .module
-            .declare_func_in_func(make_closure, self.builder.func);
-        let call = self.builder.ins().call(make_closure, &args);
-        let closure = self.builder.inst_results(call)[0];
-        self.rebinds.rebind(bundle.val, IrValue::Cell(closure));
-        self.push_cell_alloc(closure);
+            .declare_func_in_func(make_proc, self.builder.func);
+        let call = self.builder.ins().call(make_proc, &args);
+        let proc = self.builder.inst_results(call)[0];
+        self.rebinds.rebind(bundle.val, IrValue::Cell(proc));
+        self.push_cell_alloc(proc);
         self.cps_codegen(cexp, deferred);
     }
 }
 
-pub struct ClosureBundle {
+pub struct ProcedureBundle {
     runtime: Runtime,
     func_id: FuncId,
     val: Local,
@@ -831,7 +829,7 @@ fn make_sig(sig: &mut Signature, has_continuation: bool) {
     sig.returns.push(AbiParam::new(types::I64)); // Application    
 }
 
-impl ClosureBundle {
+impl ProcedureBundle {
     fn new(
         runtime: Runtime,
         val: Local,
