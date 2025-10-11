@@ -12,7 +12,7 @@ use crate::{
     ast::{ImportSet, SpecialKeyword},
     exceptions::Condition,
     gc::{Gc, Trace},
-    proc::Closure,
+    proc::Procedure,
     registry::{Import, ImportError, Library},
     symbols::Symbol,
     syntax::{Identifier, Mark},
@@ -27,7 +27,7 @@ use crate::{
 pub struct LexicalContour {
     up: Environment,
     vars: HashMap<Identifier, Local>,
-    keywords: HashMap<Identifier, Closure>,
+    keywords: HashMap<Identifier, Procedure>,
     imports: HashMap<Identifier, Import>,
 }
 
@@ -49,8 +49,8 @@ impl LexicalContour {
         local
     }
 
-    pub fn def_keyword(&mut self, name: Identifier, closure: Closure) {
-        self.keywords.insert(name, closure);
+    pub fn def_keyword(&mut self, name: Identifier, proc: Procedure) {
+        self.keywords.insert(name, proc);
     }
 
     pub fn fetch_var<'a>(
@@ -141,7 +141,7 @@ impl Gc<LexicalContour> {
 #[derive(Trace)]
 pub struct LetSyntaxContour {
     up: Environment,
-    keywords: HashMap<Identifier, Closure>,
+    keywords: HashMap<Identifier, Procedure>,
     recursive: bool,
 }
 
@@ -160,8 +160,8 @@ impl LetSyntaxContour {
         self.up.def_var(name)
     }
 
-    pub fn def_keyword(&mut self, name: Identifier, closure: Closure) {
-        self.keywords.insert(name, closure);
+    pub fn def_keyword(&mut self, name: Identifier, proc: Procedure) {
+        self.keywords.insert(name, proc);
     }
 
     pub fn fetch_var<'a>(
@@ -240,8 +240,8 @@ impl MacroExpansion {
         self.up.def_var(name)
     }
 
-    pub fn def_keyword(&self, name: Identifier, closure: Closure) {
-        self.up.def_keyword(name, closure);
+    pub fn def_keyword(&self, name: Identifier, proc: Procedure) {
+        self.up.def_keyword(name, proc);
     }
 
     pub fn fetch_var<'a>(
@@ -396,7 +396,7 @@ impl SyntaxCaseExpr {
         self.up.def_var(name)
     }
 
-    fn def_keyword(&self, name: Identifier, val: Closure) {
+    fn def_keyword(&self, name: Identifier, val: Procedure) {
         self.up.def_keyword(name, val);
     }
 
@@ -473,7 +473,7 @@ impl Environment {
         }
     }
 
-    pub fn def_keyword(&self, name: Identifier, val: Closure) {
+    pub fn def_keyword(&self, name: Identifier, val: Procedure) {
         match self {
             Self::Top(top) => top.def_keyword(name, Keyword::new(self.clone(), val)),
             Self::LexicalContour(lex) => lex.write().def_keyword(name, val),
@@ -792,11 +792,11 @@ pub struct Keyword {
     #[debug(skip)]
     pub source_env: Environment,
     #[debug(skip)]
-    pub transformer: Closure,
+    pub transformer: Procedure,
 }
 
 impl Keyword {
-    pub fn new(source_env: Environment, transformer: Closure) -> Self {
+    pub fn new(source_env: Environment, transformer: Procedure) -> Self {
         Self {
             source_env,
             transformer,

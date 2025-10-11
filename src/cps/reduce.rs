@@ -48,7 +48,9 @@ impl Cps {
                 let uses = cexp.uses(uses_cache).get(&val).copied().unwrap_or(0);
 
                 // TODO: When we get more list primops, allow for variadic substitutions
-                if !args.variadic && !is_recursive && uses == 1 {
+                if
+                /* !args.variadic && */
+                !is_recursive && uses == 1 {
                     let reduced = cexp.reduce_function(val, &args, &body, uses_cache);
                     if reduced {
                         // We can probably do better than just destroying the
@@ -74,7 +76,7 @@ impl Cps {
     fn reduce_function(
         &mut self,
         func: Local,
-        args: &ClosureArgs,
+        args: &LambdaArgs,
         func_body: &Cps,
         uses_cache: &mut HashMap<Local, HashMap<Local, usize>>,
     ) -> bool {
@@ -97,11 +99,22 @@ impl Cps {
                 return reduced;
             }
             Cps::App(Value::Var(Var::Local(operator)), applied, _) if *operator == func => {
-                let substitutions: HashMap<_, _> =
-                    args.iter().copied().zip(applied.iter().cloned()).collect();
-                let mut body = func_body.clone();
-                body.substitute(&substitutions);
-                body
+                if args.variadic {
+                    let (req, var) = applied.split_at(args.num_required());
+                    let var_args = Local::gensym();
+                    Cps::PrimOp(
+                        PrimOp::List,
+                        var.to_vec(),
+                        var_args,
+                        Box::new(substitute(
+                            func_body.clone(),
+                            args,
+                            req.iter().cloned().chain(Some(Value::from(var_args))),
+                        )),
+                    )
+                } else {
+                    substitute(func_body.clone(), args, applied.iter().cloned())
+                }
             }
             Cps::App(_, _, _) | Cps::Forward(_, _) | Cps::Halt(_) => return false,
         };
@@ -149,4 +162,10 @@ impl Cps {
             cexp => cexp,
         }
     }
+}
+
+fn substitute(mut body: Cps, args: &LambdaArgs, applied: impl Iterator<Item = Value>) -> Cps {
+    let substitutions = args.iter().copied().zip(applied).collect::<HashMap<_, _>>();
+    body.substitute(&substitutions);
+    body
 }

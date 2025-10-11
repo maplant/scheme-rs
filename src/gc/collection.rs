@@ -8,13 +8,10 @@ use std::{
     collections::HashSet,
     marker::PhantomData,
     ptr::NonNull,
-    sync::{LazyLock, Mutex, OnceLock, RwLock, atomic::AtomicUsize},
+    sync::{Mutex, OnceLock, RwLock, atomic::AtomicUsize},
     time::Duration,
 };
-use tokio::{
-    sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
-    task::JoinHandle,
-};
+use tokio::{task::JoinHandle, time::Instant};
 
 use crate::gc::GcInner;
 
@@ -188,37 +185,41 @@ pub(super) fn alloc_gc_object<T: super::GcOrTrace>(data: T) -> super::Gc<T> {
         marker: PhantomData,
     };
 
-    let _ = NEW_ALLOCS_BUFFER
-        .new_allocs_buffer_tx
-        .send(unsafe { new_gc.as_opaque() });
+    NEW_ALLOCS_BUFFER
+        .lock()
+        .unwrap()
+        .push(unsafe { new_gc.as_opaque() });
 
     new_gc
 }
 
-struct NewAllocsBuffer {
-    new_allocs_buffer_tx: UnboundedSender<HeapObject<()>>,
-    new_allocs_buffer_rx: Mutex<Option<UnboundedReceiver<HeapObject<()>>>>,
-}
+#[allow(private_bounds)]
+pub(crate) fn alloc_n_gc_objects<T: super::GcOrTrace + Clone>(
+    data: T,
+    n: usize,
+) -> Vec<super::Gc<T>> {
+    let mut to_buffer = Vec::new();
+    let mut to_return = Vec::new();
 
-impl NewAllocsBuffer {
-    fn take_new_allocs_buffer(&self) -> UnboundedReceiver<HeapObject<()>> {
-        self.new_allocs_buffer_rx.lock().unwrap().take().unwrap()
+    for _ in 0..n {
+        let new_gc = super::Gc {
+            ptr: NonNull::from(Box::leak(Box::new(GcInner {
+                header: UnsafeCell::new(GcHeader::new::<T>()),
+                data: UnsafeCell::new(data.clone()),
+            }))),
+            marker: PhantomData,
+        };
+
+        to_buffer.push(unsafe { new_gc.as_opaque() });
+        to_return.push(new_gc);
     }
+
+    NEW_ALLOCS_BUFFER.lock().unwrap().extend(to_buffer);
+
+    to_return
 }
 
-unsafe impl Sync for NewAllocsBuffer {}
-
-impl Default for NewAllocsBuffer {
-    fn default() -> Self {
-        let (new_allocs_buffer_tx, new_allocs_buffer_rx) = unbounded_channel();
-        Self {
-            new_allocs_buffer_tx,
-            new_allocs_buffer_rx: Mutex::new(Some(new_allocs_buffer_rx)),
-        }
-    }
-}
-
-static NEW_ALLOCS_BUFFER: LazyLock<NewAllocsBuffer> = LazyLock::new(NewAllocsBuffer::default);
+static NEW_ALLOCS_BUFFER: Mutex<Vec<OpaqueGcPtr>> = Mutex::new(Vec::new());
 static COLLECTOR_TASK: OnceLock<JoinHandle<()>> = OnceLock::new();
 
 pub fn init_gc() {
@@ -227,7 +228,7 @@ pub fn init_gc() {
 
 #[derive(Debug)]
 pub struct Collector {
-    new_allocs_buffer: Option<UnboundedReceiver<OpaqueGcPtr>>,
+    swap_buffer: Vec<OpaqueGcPtr>,
     heap: HashSet<OpaqueGcPtr>,
     roots: HashSet<OpaqueGcPtr>,
     cycles: Vec<Vec<OpaqueGcPtr>>,
@@ -235,9 +236,8 @@ pub struct Collector {
 
 impl Collector {
     fn new() -> Self {
-        let new_allocs_buffer = NEW_ALLOCS_BUFFER.take_new_allocs_buffer();
         Self {
-            new_allocs_buffer: Some(new_allocs_buffer),
+            swap_buffer: Vec::new(),
             heap: HashSet::new(),
             roots: HashSet::new(),
             cycles: Vec::new(),
@@ -246,45 +246,40 @@ impl Collector {
 
     fn run(mut self) -> JoinHandle<()> {
         tokio::task::spawn(async move {
-            while self.recv_new_allocs().await {
+            loop {
+                self.recv_new_allocs();
+                let now = Instant::now();
                 tokio::task::block_in_place(|| self.epoch());
+                let elapsed = now.elapsed();
+
+                // This allows us to cleanly detect the shutdown of the Runtime without
+                // panicking.
+                let result = tokio::task::spawn(async move {
+                    if elapsed >= Duration::from_millis(10) {
+                        tokio::task::yield_now().await;
+                    } else {
+                        tokio::time::sleep(Duration::from_millis(10) - elapsed).await
+                    }
+                })
+                .await;
+
+                if result.is_err() {
+                    break;
+                }
             }
         })
     }
 
-    async fn recv_new_allocs(&mut self) -> bool {
-        let mut new_allocs_buffer = self.new_allocs_buffer.take().unwrap();
-
-        // This allows us to cleanly detect the shutdown of the Runtime without
-        // panicking.
-        let recv_result = tokio::task::spawn(async move {
-            let to_recv = new_allocs_buffer.len();
-
-            if to_recv == 0 {
-                tokio::time::sleep(Duration::from_millis(10)).await;
+    fn recv_new_allocs(&mut self) {
+        std::mem::swap(
+            &mut *NEW_ALLOCS_BUFFER.lock().unwrap(),
+            &mut self.swap_buffer,
+        );
+        for new_alloc in self.swap_buffer.drain(..) {
+            unsafe {
+                new_alloc.set_buffered(false);
             }
-
-            // Maybe only allocate this once
-            let mut recvd = Vec::new();
-            new_allocs_buffer.recv_many(&mut recvd, to_recv).await;
-            (new_allocs_buffer, recvd)
-        })
-        .await;
-
-        match recv_result {
-            Ok((new_allocs_buffer, recvd)) => {
-                self.new_allocs_buffer = Some(new_allocs_buffer);
-
-                for new_alloc in recvd.into_iter() {
-                    unsafe {
-                        new_alloc.set_buffered(false);
-                    }
-                    self.heap.insert(new_alloc);
-                }
-
-                true
-            }
-            Err(_) => false,
+            self.heap.insert(new_alloc);
         }
     }
 
@@ -292,6 +287,8 @@ impl Collector {
         // Collect obvious garbage; i.e. heap objects that have a ref count of zero,
         // and potential candidates for cycles.
         let mut garbage = Vec::new();
+
+        // println!("running epoch, heap size = {}", self.heap.len());
 
         for heap_object in self.heap.iter() {
             unsafe {
@@ -640,15 +637,13 @@ mod test {
 
         let mut collector = Collector::new();
 
-        collector.recv_new_allocs().await;
-
+        collector.recv_new_allocs();
         collector.epoch();
 
         drop(a);
         drop(b);
         drop(c);
 
-        collector.epoch();
         collector.epoch();
         collector.epoch();
 

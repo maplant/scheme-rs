@@ -3,7 +3,7 @@ use crate::{
     env::{Environment, Local},
     exceptions::Condition,
     gc::{Gc, Trace},
-    proc::Closure,
+    proc::Procedure,
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     runtime::Runtime,
     symbols::Symbol,
@@ -635,8 +635,8 @@ unsafe extern "C" fn error_no_patterns_match() -> i64 {
 
 #[bridge(name = "make-variable-transformer", lib = "(rnrs base builtins (6))")]
 pub async fn make_variable_transformer(proc: &Value) -> Result<Vec<Value>, Condition> {
-    let proc: Closure = proc.clone().try_into()?;
+    let proc: Procedure = proc.clone().try_into()?;
     let mut var_transformer = proc.0.read().clone();
     var_transformer.is_variable_transformer = true;
-    Ok(vec![Value::from(Closure(Gc::new(var_transformer)))])
+    Ok(vec![Value::from(Procedure(Gc::new(var_transformer)))])
 }

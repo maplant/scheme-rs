@@ -7,7 +7,7 @@ use crate::{
     expand::{SyntaxRule, Template},
     gc::Trace,
     num::{Number, NumberToUsizeError},
-    proc::Closure,
+    proc::Procedure,
     registry::ImportError,
     runtime::Runtime,
     symbols::Symbol,
@@ -939,7 +939,7 @@ pub(super) async fn define_syntax(
         .call(&[])
         .await
         .map_err(|err| ParseAstError::RaisedValue(err.into()))?;
-    let transformer: Closure = mac[0].clone().try_into()?;
+    let transformer: Procedure = mac[0].clone().try_into()?;
     env.def_keyword(ident, transformer);
 
     Ok(())
@@ -1118,16 +1118,17 @@ impl Expression {
     #[allow(unpredictable_function_pointer_comparisons)]
     pub fn to_primop(&self) -> Option<PrimOp> {
         use crate::{
+            lists::{cons, list},
             num::{
                 add_builtin, div_builtin, equal_builtin, greater_builtin, greater_equal_builtin,
                 lesser_builtin, lesser_equal_builtin, mul_builtin, sub_builtin,
             },
-            proc::{Closure, FuncPtr::Bridge},
+            proc::{FuncPtr::Bridge, Procedure},
         };
 
         if let Expression::Var(Var::Global(global)) = self {
             let val = global.value_ref().read().clone();
-            let val: Closure = val.try_into().ok()?;
+            let val: Procedure = val.try_into().ok()?;
             let val_read = val.0.read();
             match val_read.func {
                 Bridge(ptr) if ptr == add_builtin => Some(PrimOp::Add),
@@ -1139,6 +1140,8 @@ impl Expression {
                 Bridge(ptr) if ptr == greater_equal_builtin => Some(PrimOp::GreaterEqual),
                 Bridge(ptr) if ptr == lesser_builtin => Some(PrimOp::Lesser),
                 Bridge(ptr) if ptr == lesser_equal_builtin => Some(PrimOp::LesserEqual),
+                Bridge(ptr) if ptr == cons => Some(PrimOp::Cons),
+                Bridge(ptr) if ptr == list => Some(PrimOp::List),
                 _ => None,
             }
         } else {

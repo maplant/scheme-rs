@@ -1,7 +1,6 @@
 (library (rnrs records syntactic (6))
   (export define-record-type record-constructor-descriptor record-type-descriptor)
-  (import (rnrs lists (6))
-          (rnrs base builtins (6))
+  (import (rnrs base builtins (6))
           (rnrs base special-keywords (6))
           (rnrs syntax-case (6))
           (rnrs records procedural (6)))
