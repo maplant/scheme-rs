@@ -6,7 +6,7 @@ use crate::{
     ast::ParseAstError,
     gc::{Gc, GcInner, Trace},
     lists,
-    proc::{Application, Closure, DynamicWind, FuncPtr},
+    proc::{Application, DynamicWind, FuncPtr, Procedure},
     records::{Record, RecordTypeDescriptor, SchemeCompatible, into_scheme_compatible, rtd},
     registry::bridge,
     runtime::{Runtime, RuntimeInner},
@@ -559,7 +559,7 @@ pub(crate) struct ExceptionHandlerInner {
     /// None, we return the condition as an Error.
     prev_handler: ExceptionHandler,
     /// The currently installed handler.
-    curr_handler: Closure,
+    curr_handler: Procedure,
     /// The dynamic extent of the exception handler.
     dynamic_extent: DynamicWind,
 }
@@ -594,8 +594,8 @@ pub async fn with_exception_handler(
         unreachable!();
     };
 
-    let handler: Closure = handler.clone().try_into()?;
-    let thunk: Closure = thunk.clone().try_into()?;
+    let handler: Procedure = handler.clone().try_into()?;
+    let thunk: Procedure = thunk.clone().try_into()?;
 
     let exception_handler_inner = ExceptionHandlerInner {
         prev_handler: exception_handler.clone(),
@@ -656,10 +656,9 @@ pub fn raise(
         };
 
     let thunks = exit_winders(dynamic_wind, &parent_wind);
-    let calls = Closure::new(
+    let calls = Procedure::new(
         runtime,
         vec![Gc::new(thunks), Gc::new(raised.clone()), Gc::new(handler)],
-        Vec::new(),
         FuncPtr::Continuation(call_exits_and_exception_handler_reraise),
         0,
         false,
@@ -718,7 +717,6 @@ fn exit_winders(from_extent: &DynamicWind, to_extent: &DynamicWind) -> Value {
 unsafe extern "C" fn call_exits_and_exception_handler_reraise(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const *mut GcInner<Value>,
-    _globals: *const *mut GcInner<Value>,
     _args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
@@ -738,15 +736,14 @@ unsafe extern "C" fn call_exits_and_exception_handler_reraise(
         let app = match thunks.unpack() {
             UnpackedValue::Pair(pair) => {
                 let lists::Pair(head_thunk, tail) = &*pair.read();
-                let head_thunk: Closure = head_thunk.clone().try_into().unwrap();
-                let cont = Closure::new(
+                let head_thunk: Procedure = head_thunk.clone().try_into().unwrap();
+                let cont = Procedure::new(
                     runtime.clone(),
                     vec![
                         Gc::new(tail.clone()),
                         Gc::new(raised),
                         Gc::new(curr_handler),
                     ],
-                    Vec::new(),
                     FuncPtr::Continuation(call_exits_and_exception_handler_reraise),
                     0,
                     false,
@@ -765,15 +762,7 @@ unsafe extern "C" fn call_exits_and_exception_handler_reraise(
                 // error.
                 if !curr_handler.is_true() {
                     let app = Application::new(
-                        Closure::new(
-                            runtime,
-                            Vec::new(),
-                            Vec::new(),
-                            FuncPtr::HaltError,
-                            1,
-                            false,
-                            None,
-                        ),
+                        Procedure::new(runtime, Vec::new(), FuncPtr::HaltError, 1, false, None),
                         vec![raised.clone()],
                         ExceptionHandler::from_ptr(exception_handler),
                         dynamic_wind.as_ref().unwrap().clone(),
@@ -782,16 +771,15 @@ unsafe extern "C" fn call_exits_and_exception_handler_reraise(
                     return Box::into_raw(Box::new(app));
                 }
 
-                let curr_handler: Closure = curr_handler.try_into().unwrap();
+                let curr_handler: Procedure = curr_handler.try_into().unwrap();
 
                 Application::new(
                     curr_handler,
                     vec![
                         raised.clone(),
-                        Value::from(Closure::new(
+                        Value::from(Procedure::new(
                             runtime,
                             vec![Gc::new(raised)],
-                            Vec::new(),
                             FuncPtr::Continuation(reraise_exception),
                             0,
                             true,
@@ -813,7 +801,6 @@ unsafe extern "C" fn call_exits_and_exception_handler_reraise(
 unsafe extern "C" fn reraise_exception(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const *mut GcInner<Value>,
-    _globals: *const *mut GcInner<Value>,
     _args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
@@ -826,9 +813,8 @@ unsafe extern "C" fn reraise_exception(
         let exception = exception.read().clone();
 
         Box::into_raw(Box::new(Application::new(
-            Closure::new(
+            Procedure::new(
                 runtime,
-                Vec::new(),
                 Vec::new(),
                 FuncPtr::Bridge(raise_builtin),
                 1,
@@ -865,9 +851,8 @@ pub async fn raise_continuable(
 
     let Some(handler) = &exception_handler.0 else {
         return Ok(Application::new(
-            Closure::new(
+            Procedure::new(
                 runtime.clone(),
-                Vec::new(),
                 Vec::new(),
                 FuncPtr::HaltError,
                 1,

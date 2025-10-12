@@ -9,7 +9,7 @@ use crate::{
     env::{Environment, Global, Keyword},
     exceptions::{Condition, ExceptionHandler},
     gc::{Gc, Trace},
-    proc::{Application, BridgePtr, Closure, DynamicWind, FuncDebugInfo, FuncPtr},
+    proc::{Application, BridgePtr, DynamicWind, FuncDebugInfo, FuncPtr, Procedure},
     runtime::Runtime,
     symbols::Symbol,
     syntax::{Identifier, Syntax},
@@ -122,9 +122,8 @@ impl RegistryInner {
 
             lib.syms.insert(
                 Identifier::new(bridge_fn.name),
-                Gc::new(Value::from(Closure::new(
+                Gc::new(Value::from(Procedure::new(
                     rt.clone(),
-                    Vec::new(),
                     Vec::new(),
                     FuncPtr::Bridge(bridge_fn.wrapper),
                     bridge_fn.num_args,
@@ -678,9 +677,9 @@ impl Library {
         };
         let compiled = defn_body.compile_top_level();
         let rt = { self.0.read().rt.clone() };
-        let closure = rt.compile_expr(compiled).await;
+        let proc = rt.compile_expr(compiled).await;
         let _ = Application::new(
-            closure,
+            proc,
             Vec::new(),
             ExceptionHandler::default(),
             DynamicWind::default(),

@@ -4,7 +4,7 @@ use scheme_rs::{
     ast::DefinitionBody,
     cps::Compile,
     env::Environment,
-    proc::Closure,
+    proc::Procedure,
     registry::Library,
     runtime::Runtime,
     syntax::{Span, Syntax},
@@ -12,7 +12,7 @@ use scheme_rs::{
 
 use criterion::*;
 
-async fn yin_yang_fn() -> Closure {
+async fn yin_yang_fn() -> Procedure {
     let rt = Runtime::new();
     let prog = Library::new_program(&rt, Path::new("yin-yang.scm"));
     let env = Environment::Top(prog);
@@ -28,11 +28,11 @@ async fn yin_yang_fn() -> Closure {
 fn yin_yang_benchmark(c: &mut Criterion) {
     // Set up and compile the closure
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let closure = runtime.block_on(async move { yin_yang_fn().await });
+    let proc = runtime.block_on(async move { yin_yang_fn().await });
 
     c.bench_function("yin_yang", |b| {
         b.to_async(&runtime).iter(|| {
-            let val = closure.clone();
+            let val = proc.clone();
             async move { val.call(&[]).await }
         })
     });

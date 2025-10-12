@@ -13,6 +13,7 @@
 
 mod collection;
 
+pub(crate) use collection::alloc_n_gc_objects;
 pub use collection::{OpaqueGcPtr, init_gc};
 use either::Either;
 use futures::future::Shared;

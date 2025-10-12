@@ -19,7 +19,10 @@ use scheme_rs::{
     },
     value::Value,
 };
-use std::{io::Cursor, process::ExitCode};
+use std::{
+    io::Cursor,
+    process::{ExitCode, exit},
+};
 
 #[derive(Default)]
 struct InputValidator;
@@ -103,7 +106,7 @@ async fn main() -> ExitCode {
         }
     }
 
-    ExitCode::SUCCESS
+    exit(0)
 }
 
 #[derive(derive_more::From, Debug)]

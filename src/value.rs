@@ -6,7 +6,7 @@ use crate::{
     gc::{Gc, GcInner, Trace},
     lists,
     num::{Number, ReflexiveNumber},
-    proc::{Closure, ClosureInner},
+    proc::{Procedure, ProcedureInner},
     records::{Record, RecordInner, RecordTypeDescriptor, SchemeCompatible},
     registry::bridge,
     strings, symbols,
@@ -21,7 +21,7 @@ use std::{
 const ALIGNMENT: u64 = 16;
 const TAG_BITS: u64 = ALIGNMENT.ilog2() as u64;
 const TAG: u64 = 0b1111;
-const FALSE_VALUE: u64 = ValueType::Boolean as u64;
+const FALSE_VALUE: u64 = Tag::Boolean as u64;
 
 /// A Scheme value. Represented as a tagged pointer.
 #[repr(transparent)]
@@ -52,40 +52,36 @@ impl Value {
     /// Calling this function is undefined behavior if the raw u64 was not obtained
     /// via [into_raw]
     pub unsafe fn from_raw_inc_rc(raw: u64) -> Self {
-        let tag = ValueType::from(raw & TAG);
+        let tag = Tag::from(raw & TAG);
         let untagged = raw & !TAG;
         unsafe {
             match tag {
-                ValueType::Number => Arc::increment_strong_count(untagged as *const Number),
-                ValueType::String => {
+                Tag::Number => Arc::increment_strong_count(untagged as *const Number),
+                Tag::String => {
                     Arc::increment_strong_count(untagged as *const strings::AlignedString)
                 }
-                ValueType::Vector => Gc::increment_reference_count(
+                Tag::Vector => Gc::increment_reference_count(
                     untagged as *mut GcInner<vectors::AlignedVector<Self>>,
                 ),
-                ValueType::ByteVector => {
+                Tag::ByteVector => {
                     Arc::increment_strong_count(untagged as *const vectors::AlignedVector<u8>)
                 }
-                ValueType::Syntax => Arc::increment_strong_count(untagged as *const Syntax),
-                ValueType::Closure => {
-                    Gc::increment_reference_count(untagged as *mut GcInner<ClosureInner>)
+                Tag::Syntax => Arc::increment_strong_count(untagged as *const Syntax),
+                Tag::Procedure => {
+                    Gc::increment_reference_count(untagged as *mut GcInner<ProcedureInner>)
                 }
-                ValueType::Record => {
-                    Gc::increment_reference_count(untagged as *mut GcInner<RecordInner>)
-                }
-                ValueType::RecordTypeDescriptor => {
+                Tag::Record => Gc::increment_reference_count(untagged as *mut GcInner<RecordInner>),
+                Tag::RecordTypeDescriptor => {
                     Arc::increment_strong_count(untagged as *const RecordTypeDescriptor)
                 }
-                ValueType::Pair => {
-                    Gc::increment_reference_count(untagged as *mut GcInner<lists::Pair>)
+                Tag::Pair => {
+                    if untagged != 0 {
+                        Gc::increment_reference_count(untagged as *mut GcInner<lists::Pair>)
+                    }
                 }
-                ValueType::HashTable => todo!(),
-                ValueType::Port => todo!(),
-                ValueType::Undefined
-                | ValueType::Symbol
-                | ValueType::Null
-                | ValueType::Boolean
-                | ValueType::Character => (),
+                Tag::HashTable => todo!(),
+                Tag::Port => todo!(),
+                Tag::Undefined | Tag::Symbol | Tag::Boolean | Tag::Character => (),
             }
         }
         Self(raw)
@@ -103,20 +99,20 @@ impl Value {
         this.0
     }
 
-    fn from_ptr_and_tag<T>(ptr: *const T, tag: ValueType) -> Self {
+    fn from_ptr_and_tag<T>(ptr: *const T, tag: Tag) -> Self {
         Self(ptr as u64 | tag as u64)
     }
 
-    fn from_mut_ptr_and_tag<T>(ptr: *mut T, tag: ValueType) -> Self {
+    fn from_mut_ptr_and_tag<T>(ptr: *mut T, tag: Tag) -> Self {
         Self(ptr as u64 | tag as u64)
     }
 
     pub const fn undefined() -> Self {
-        Self(ValueType::Undefined as u64)
+        Self(Tag::Undefined as u64)
     }
 
     pub const fn null() -> Self {
-        Self(ValueType::Null as u64)
+        Self(Tag::Pair as u64)
     }
 
     pub fn datum_from_syntax(syntax: &Syntax) -> Self {
@@ -142,26 +138,11 @@ impl Value {
     }
 
     pub fn type_of(&self) -> ValueType {
-        ValueType::from(self.0 & TAG)
+        self.unpacked_ref().type_of()
     }
 
     pub fn type_name(&self) -> &'static str {
-        match self.type_of() {
-            ValueType::Undefined => "undefined",
-            ValueType::Null => "null",
-            ValueType::Boolean => "bool",
-            ValueType::Number => "number",
-            ValueType::Character => "character",
-            ValueType::String => "string",
-            ValueType::Symbol => "symbol",
-            ValueType::Pair => "pair",
-            ValueType::Vector => "vector",
-            ValueType::ByteVector => "byte vector",
-            ValueType::Syntax => "syntax",
-            ValueType::Closure => "procedure",
-            ValueType::HashTable => "hashtable",
-            _ => "record",
-        }
+        self.unpacked_ref().type_name()
     }
 
     pub fn try_into_rust_type<T: SchemeCompatible>(&self) -> Result<Gc<T>, Condition> {
@@ -178,62 +159,65 @@ impl Value {
 
     pub fn unpack(self) -> UnpackedValue {
         let raw = ManuallyDrop::new(self).0;
-        let tag = ValueType::from(raw & TAG);
+        let tag = Tag::from(raw & TAG);
         let untagged = raw & !TAG;
         match tag {
-            ValueType::Undefined => UnpackedValue::Undefined,
-            ValueType::Null => UnpackedValue::Null,
-            ValueType::Boolean => {
+            Tag::Undefined => UnpackedValue::Undefined,
+            Tag::Boolean => {
                 let untagged = untagged >> TAG_BITS;
                 UnpackedValue::Boolean(untagged != 0)
             }
-            ValueType::Character => {
+            Tag::Character => {
                 let untagged = (untagged >> TAG_BITS) as u32;
                 UnpackedValue::Character(char::from_u32(untagged).unwrap())
             }
-            ValueType::Number => {
+            Tag::Number => {
                 let number = unsafe { Arc::from_raw(untagged as *const Number) };
                 UnpackedValue::Number(number)
             }
-            ValueType::String => {
+            Tag::String => {
                 let str = unsafe { Arc::from_raw(untagged as *const strings::AlignedString) };
                 UnpackedValue::String(str)
             }
-            ValueType::Symbol => {
+            Tag::Symbol => {
                 let untagged = (untagged >> TAG_BITS) as u32;
                 UnpackedValue::Symbol(symbols::Symbol(untagged))
             }
-            ValueType::Vector => {
+            Tag::Vector => {
                 let vec =
                     unsafe { Gc::from_raw(untagged as *mut GcInner<vectors::AlignedVector<Self>>) };
                 UnpackedValue::Vector(vec)
             }
-            ValueType::ByteVector => {
+            Tag::ByteVector => {
                 let bvec = unsafe { Arc::from_raw(untagged as *const vectors::AlignedVector<u8>) };
                 UnpackedValue::ByteVector(bvec)
             }
-            ValueType::Syntax => {
+            Tag::Syntax => {
                 let syn = unsafe { Arc::from_raw(untagged as *const Syntax) };
                 UnpackedValue::Syntax(syn)
             }
-            ValueType::Closure => {
-                let clos = unsafe { Gc::from_raw(untagged as *mut GcInner<ClosureInner>) };
-                UnpackedValue::Closure(Closure(clos))
+            Tag::Procedure => {
+                let clos = unsafe { Gc::from_raw(untagged as *mut GcInner<ProcedureInner>) };
+                UnpackedValue::Procedure(Procedure(clos))
             }
-            ValueType::Record => {
+            Tag::Record => {
                 let rec = unsafe { Gc::from_raw(untagged as *mut GcInner<RecordInner>) };
                 UnpackedValue::Record(Record(rec))
             }
-            ValueType::RecordTypeDescriptor => {
+            Tag::RecordTypeDescriptor => {
                 let rt = unsafe { Arc::from_raw(untagged as *const RecordTypeDescriptor) };
                 UnpackedValue::RecordTypeDescriptor(rt)
             }
-            ValueType::Pair => {
-                let pair = unsafe { Gc::from_raw(untagged as *mut GcInner<lists::Pair>) };
-                UnpackedValue::Pair(pair)
+            Tag::Pair => {
+                if untagged == 0 {
+                    UnpackedValue::Null
+                } else {
+                    let pair = unsafe { Gc::from_raw(untagged as *mut GcInner<lists::Pair>) };
+                    UnpackedValue::Pair(pair)
+                }
             }
-            ValueType::HashTable => todo!(),
-            ValueType::Port => todo!(),
+            Tag::HashTable => todo!(),
+            Tag::Port => todo!(),
         }
     }
 
@@ -339,9 +323,9 @@ impl From<Condition> for Value {
 
 #[repr(u64)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum ValueType {
+enum Tag {
     Undefined = 0,
-    Null = 1,
+    Pair = 1,
     Boolean = 2,
     Character = 3,
     Number = 4,
@@ -350,20 +334,19 @@ pub enum ValueType {
     Vector = 7,
     ByteVector = 8,
     Syntax = 9,
-    Closure = 10,
+    Procedure = 10,
     Record = 11,
     RecordTypeDescriptor = 12,
-    Pair = 13,
-    HashTable = 14,
-    Port = 15,
+    HashTable = 13,
+    Port = 14,
 }
 
 // TODO: Make TryFrom with error
-impl From<u64> for ValueType {
+impl From<u64> for Tag {
     fn from(tag: u64) -> Self {
         match tag {
             0 => Self::Undefined,
-            1 => Self::Null,
+            1 => Self::Pair,
             2 => Self::Boolean,
             3 => Self::Character,
             4 => Self::Number,
@@ -372,15 +355,34 @@ impl From<u64> for ValueType {
             7 => Self::Vector,
             8 => Self::ByteVector,
             9 => Self::Syntax,
-            10 => Self::Closure,
+            10 => Self::Procedure,
             11 => Self::Record,
             12 => Self::RecordTypeDescriptor,
-            13 => Self::Pair,
-            14 => Self::HashTable,
-            15 => Self::Port,
+            13 => Self::HashTable,
+            14 => Self::Port,
             tag => panic!("Invalid tag: {tag}"),
         }
     }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ValueType {
+    Undefined,
+    Null,
+    Pair,
+    Boolean,
+    Character,
+    Number,
+    String,
+    Symbol,
+    Vector,
+    ByteVector,
+    Syntax,
+    Procedure,
+    Record,
+    RecordTypeDescriptor,
+    HashTable,
+    Port,
 }
 
 /// The external, unpacked representation of a scheme value.
@@ -400,7 +402,7 @@ pub enum UnpackedValue {
     Vector(Gc<vectors::AlignedVector<Value>>),
     ByteVector(Arc<vectors::AlignedVector<u8>>),
     Syntax(Arc<Syntax>),
-    Closure(Closure),
+    Procedure(Procedure),
     Record(Record),
     RecordTypeDescriptor(Arc<RecordTypeDescriptor>),
     Pair(Gc<lists::Pair>),
@@ -411,44 +413,44 @@ impl UnpackedValue {
         match self {
             Self::Undefined => Value::undefined(),
             Self::Null => Value::null(),
-            Self::Boolean(b) => Value((b as u64) << TAG_BITS | ValueType::Boolean as u64),
-            Self::Character(c) => Value((c as u64) << TAG_BITS | ValueType::Character as u64),
+            Self::Boolean(b) => Value((b as u64) << TAG_BITS | Tag::Boolean as u64),
+            Self::Character(c) => Value((c as u64) << TAG_BITS | Tag::Character as u64),
             Self::Number(num) => {
                 let untagged = Arc::into_raw(num);
-                Value::from_ptr_and_tag(untagged, ValueType::Number)
+                Value::from_ptr_and_tag(untagged, Tag::Number)
             }
             Self::String(str) => {
                 let untagged = Arc::into_raw(str);
-                Value::from_ptr_and_tag(untagged, ValueType::String)
+                Value::from_ptr_and_tag(untagged, Tag::String)
             }
-            Self::Symbol(sym) => Value((sym.0 as u64) << TAG_BITS | ValueType::Symbol as u64),
+            Self::Symbol(sym) => Value((sym.0 as u64) << TAG_BITS | Tag::Symbol as u64),
             Self::Vector(vec) => {
                 let untagged = Gc::into_raw(vec);
-                Value::from_mut_ptr_and_tag(untagged, ValueType::Vector)
+                Value::from_mut_ptr_and_tag(untagged, Tag::Vector)
             }
             Self::ByteVector(b_vec) => {
                 let untagged = Arc::into_raw(b_vec);
-                Value::from_ptr_and_tag(untagged, ValueType::ByteVector)
+                Value::from_ptr_and_tag(untagged, Tag::ByteVector)
             }
             Self::Syntax(syn) => {
                 let untagged = Arc::into_raw(syn);
-                Value::from_ptr_and_tag(untagged, ValueType::Syntax)
+                Value::from_ptr_and_tag(untagged, Tag::Syntax)
             }
-            Self::Closure(clos) => {
+            Self::Procedure(clos) => {
                 let untagged = Gc::into_raw(clos.0);
-                Value::from_mut_ptr_and_tag(untagged, ValueType::Closure)
+                Value::from_mut_ptr_and_tag(untagged, Tag::Procedure)
             }
             Self::Record(rec) => {
                 let untagged = Gc::into_raw(rec.0);
-                Value::from_mut_ptr_and_tag(untagged, ValueType::Record)
+                Value::from_mut_ptr_and_tag(untagged, Tag::Record)
             }
             Self::RecordTypeDescriptor(rt) => {
                 let untagged = Arc::into_raw(rt);
-                Value::from_ptr_and_tag(untagged, ValueType::RecordTypeDescriptor)
+                Value::from_ptr_and_tag(untagged, Tag::RecordTypeDescriptor)
             }
             Self::Pair(pair) => {
                 let untagged = Gc::into_raw(pair);
-                Value::from_mut_ptr_and_tag(untagged, ValueType::Pair)
+                Value::from_mut_ptr_and_tag(untagged, Tag::Pair)
             }
         }
     }
@@ -465,7 +467,7 @@ impl UnpackedValue {
             (Self::Pair(a), Self::Pair(b)) => Gc::ptr_eq(a, b),
             (Self::Vector(a), Self::Vector(b)) => Gc::ptr_eq(a, b),
             (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(a, b),
-            (Self::Closure(a), Self::Closure(b)) => Gc::ptr_eq(&a.0, &b.0),
+            (Self::Procedure(a), Self::Procedure(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Syntax(a), Self::Syntax(b)) => Arc::ptr_eq(a, b),
             (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
@@ -490,7 +492,7 @@ impl UnpackedValue {
             (Self::Pair(a), Self::Pair(b)) => Gc::ptr_eq(a, b),
             (Self::Vector(a), Self::Vector(b)) => Gc::ptr_eq(a, b),
             (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(a, b),
-            (Self::Closure(a), Self::Closure(b)) => Gc::ptr_eq(&a.0, &b.0),
+            (Self::Procedure(a), Self::Procedure(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Syntax(a), Self::Syntax(b)) => Arc::ptr_eq(a, b),
             (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
@@ -510,8 +512,27 @@ impl UnpackedValue {
             Self::Vector(_) => "vector",
             Self::ByteVector(_) => "byte vector",
             Self::Syntax(_) => "syntax",
-            Self::Closure(_) => "procedure",
+            Self::Procedure(_) => "procedure",
             Self::Record(_) | Self::RecordTypeDescriptor(_) => "record",
+        }
+    }
+
+    pub fn type_of(&self) -> ValueType {
+        match self {
+            Self::Undefined => ValueType::Undefined,
+            Self::Null => ValueType::Null,
+            Self::Boolean(_) => ValueType::Boolean,
+            Self::Number(_) => ValueType::Number,
+            Self::Character(_) => ValueType::Character,
+            Self::String(_) => ValueType::String,
+            Self::Symbol(_) => ValueType::Symbol,
+            Self::Pair(_) => ValueType::Pair,
+            Self::Vector(_) => ValueType::Vector,
+            Self::ByteVector(_) => ValueType::ByteVector,
+            Self::Syntax(_) => ValueType::Syntax,
+            Self::Procedure(_) => ValueType::Procedure,
+            Self::Record(_) => ValueType::Record,
+            Self::RecordTypeDescriptor(_) => ValueType::RecordTypeDescriptor,
         }
     }
 }
@@ -756,7 +777,7 @@ impl_try_from_value_for!(symbols::Symbol, Symbol, "symbol");
 impl_try_from_value_for!(Gc<vectors::AlignedVector<Value>>, Vector, "vector");
 impl_try_from_value_for!(Arc<vectors::AlignedVector<u8>>, ByteVector, "byte-vector");
 impl_try_from_value_for!(Arc<Syntax>, Syntax, "syntax");
-impl_try_from_value_for!(Closure, Closure, "procedure");
+impl_try_from_value_for!(Procedure, Procedure, "procedure");
 impl_try_from_value_for!(Gc<lists::Pair>, Pair, "pair");
 impl_try_from_value_for!(Record, Record, "record");
 impl_try_from_value_for!(Arc<RecordTypeDescriptor>, RecordTypeDescriptor, "rt");
@@ -841,7 +862,7 @@ impl Hash for EqvValue {
             UnpackedValue::Symbol(s) => s.hash(state),
             UnpackedValue::ByteVector(v) => v.hash(state),
             UnpackedValue::Syntax(s) => Arc::as_ptr(s).hash(state),
-            UnpackedValue::Closure(c) => Gc::as_ptr(&c.0).hash(state),
+            UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
             UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
             UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
             UnpackedValue::Pair(p) => Gc::as_ptr(p).hash(state),
@@ -881,7 +902,7 @@ impl Hash for ReflexiveValue {
             UnpackedValue::Symbol(s) => s.hash(state),
             UnpackedValue::ByteVector(v) => v.hash(state),
             UnpackedValue::Syntax(s) => Arc::as_ptr(s).hash(state),
-            UnpackedValue::Closure(c) => Gc::as_ptr(&c.0).hash(state),
+            UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
             UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
             UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
             // UnpackedValue::Any(a) => Gc::as_ptr(a).hash(state),
@@ -915,7 +936,7 @@ impl PartialEq for ReflexiveValue {
             (UnpackedValue::Vector(a), UnpackedValue::Vector(b)) => Gc::ptr_eq(a, b),
             (UnpackedValue::ByteVector(a), UnpackedValue::ByteVector(b)) => a == b,
             (UnpackedValue::Syntax(a), UnpackedValue::Syntax(b)) => Arc::ptr_eq(a, b),
-            (UnpackedValue::Closure(a), UnpackedValue::Closure(b)) => Gc::ptr_eq(&a.0, &b.0),
+            (UnpackedValue::Procedure(a), UnpackedValue::Procedure(b)) => Gc::ptr_eq(&a.0, &b.0),
             (UnpackedValue::Record(a), UnpackedValue::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
             (UnpackedValue::RecordTypeDescriptor(a), UnpackedValue::RecordTypeDescriptor(b)) => {
                 Arc::ptr_eq(a, b)
@@ -1001,7 +1022,7 @@ fn display_value(
         }
         UnpackedValue::Vector(v) => vectors::write_vec(&v, display_value, circular_values, f),
         UnpackedValue::ByteVector(v) => vectors::write_bytevec(&v, f),
-        UnpackedValue::Closure(_) => write!(f, "<procedure>"),
+        UnpackedValue::Procedure(_) => write!(f, "<procedure>"),
         UnpackedValue::Record(record) => write!(f, "{record:?}"),
         UnpackedValue::Syntax(syntax) => write!(f, "{syntax:#?}"),
         UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
@@ -1030,14 +1051,14 @@ fn debug_value(
         UnpackedValue::Vector(v) => vectors::write_vec(&v, debug_value, circular_values, f),
         UnpackedValue::ByteVector(v) => vectors::write_bytevec(&v, f),
         UnpackedValue::Syntax(syntax) => write!(f, "{syntax:#?}"),
-        UnpackedValue::Closure(proc) => write!(f, "#<procedure {proc:?}>"),
+        UnpackedValue::Procedure(proc) => write!(f, "#<procedure {proc:?}>"),
         UnpackedValue::Record(record) => write!(f, "{record:#?}"),
         UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
     }
 }
 #[bridge(name = "not", lib = "(rnrs base builtins (6))")]
 pub async fn not(a: &Value) -> Result<Vec<Value>, Condition> {
-    Ok(vec![Value::from(a.0 == ValueType::Boolean as u64)])
+    Ok(vec![Value::from(a.0 == Tag::Boolean as u64)])
 }
 
 #[bridge(name = "eqv?", lib = "(rnrs base builtins (6))")]
@@ -1087,9 +1108,9 @@ pub async fn vector_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
 
 #[bridge(name = "null?", lib = "(rnrs base builtins (6))")]
 pub async fn null_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
-    let is_null = match arg.clone().unpack() {
+    let is_null = match &*arg.unpacked_ref() {
         UnpackedValue::Null => true,
-        UnpackedValue::Syntax(syn) => matches!(&*syn, Syntax::Null { .. }),
+        UnpackedValue::Syntax(syn) => matches!(syn.as_ref(), Syntax::Null { .. }),
         _ => false,
     };
     Ok(vec![Value::from(is_null)])
@@ -1097,7 +1118,10 @@ pub async fn null_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
 
 #[bridge(name = "pair?", lib = "(rnrs base builtins (6))")]
 pub async fn pair_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
-    Ok(vec![Value::from(arg.type_of() == ValueType::Pair)])
+    Ok(vec![Value::from(matches!(
+        *arg.unpacked_ref(),
+        UnpackedValue::Pair(_)
+    ))])
 }
 
 #[bridge(name = "string?", lib = "(rnrs base builtins (6))")]
@@ -1107,7 +1131,7 @@ pub async fn string_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
 
 #[bridge(name = "procedure?", lib = "(rnrs base builtins (6))")]
 pub async fn procedure_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
-    Ok(vec![Value::from(arg.type_of() == ValueType::Closure)])
+    Ok(vec![Value::from(arg.type_of() == ValueType::Procedure)])
 }
 
 #[bridge(name = "display", lib = "(rnrs base builtins (6))")]

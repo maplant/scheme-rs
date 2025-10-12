@@ -45,14 +45,6 @@ impl Value {
             None
         }
     }
-
-    fn to_global(&self) -> Option<Global> {
-        if let Self::Var(Var::Global(global)) = self {
-            Some(global.clone())
-        } else {
-            None
-        }
-    }
 }
 
 impl From<RuntimeValue> for Value {
@@ -97,8 +89,9 @@ pub enum PrimOp {
     /// Allocate a cell, returning a Gc<Value>:
     AllocCell,
 
-    // List operators:
+    // List/pair operators:
     Cons,
+    List,
 
     // Math primitive operators:
     Add,
@@ -122,13 +115,13 @@ pub enum PrimOp {
 }
 
 #[derive(Debug, Clone)]
-pub struct ClosureArgs {
+pub struct LambdaArgs {
     args: Vec<Local>,
     variadic: bool,
     continuation: Option<Local>,
 }
 
-impl ClosureArgs {
+impl LambdaArgs {
     pub fn new(args: Vec<Local>, variadic: bool, continuation: Option<Local>) -> Self {
         Self {
             args,
@@ -167,7 +160,7 @@ pub enum Cps {
 
     /// Function creation:
     Lambda {
-        args: ClosureArgs,
+        args: LambdaArgs,
         body: Box<Cps>,
         val: Local,
         cexp: Box<Cps>,
