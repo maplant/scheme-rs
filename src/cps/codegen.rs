@@ -9,11 +9,10 @@ use cranelift_module::{FuncId, Linkage, Module};
 use std::{collections::HashSet, sync::Arc};
 
 use crate::{
-    cps::{Value as CpsValue, analysis::MaxDrops},
-    gc::Gc,
+    cps::Value as CpsValue,
     proc::{ContinuationPtr, FuncDebugInfo, FuncPtr, Procedure},
     runtime::{DebugInfo, Runtime},
-    value::{ReflexiveValue, Value as SchemeValue},
+    value::{Cell, ReflexiveValue, Value as SchemeValue},
 };
 
 use super::*;
@@ -62,7 +61,6 @@ pub(crate) struct RuntimeFunctions {
     expand_template: FuncId,
     error_no_patterns_match: FuncId,
     dropv: FuncId,
-    dropc: FuncId,
     raise_rt: FuncId,
 
     // List primops:
@@ -93,6 +91,7 @@ impl Cps {
             eprintln!("compiling: {self:#?}");
         }
 
+        let cells = self.cells();
         let mut builder_context = FunctionBuilderContext::new();
         let mut ctx = module.make_context();
 
@@ -105,19 +104,11 @@ impl Cps {
             .unwrap();
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_context);
 
-        let MaxDrops {
-            value_drops,
-            cell_drops,
-        } = self.max_drops();
+        let num_drops = self.max_drops();
 
         let vals = builder.create_sized_stack_slot(StackSlotData::new(
             StackSlotKind::ExplicitSlot,
-            value_drops as u32 * 8,
-            0,
-        ));
-        let cells = builder.create_sized_stack_slot(StackSlotData::new(
-            StackSlotKind::ExplicitSlot,
-            cell_drops as u32 * 8,
+            num_drops as u32 * 8,
             0,
         ));
 
@@ -142,10 +133,8 @@ impl Cps {
             builder,
             // Top level cannot inherit environmental variables, by defintion.
             rebinds: Rebinds::new(),
-            vals,
-            curr_val: 0,
-            cells,
-            curr_cell: 0,
+            allocs: vals,
+            curr_allocs: 0,
             runtime_funcs,
             params,
             module,
@@ -164,7 +153,7 @@ impl Cps {
         module.clear_context(&mut ctx);
 
         while let Some(next) = deferred.pop() {
-            next.codegen(runtime_funcs, module, debug_info, &mut deferred);
+            next.codegen(runtime_funcs, &cells, module, debug_info, &mut deferred);
         }
 
         module.finalize_definitions().unwrap();
@@ -190,10 +179,8 @@ struct CompilationUnit<'m, 'f, 'd> {
     runtime: Runtime,
     builder: FunctionBuilder<'m>,
     rebinds: Rebinds,
-    vals: StackSlot,
-    curr_val: usize,
-    cells: StackSlot,
-    curr_cell: usize,
+    allocs: StackSlot,
+    curr_allocs: usize,
     runtime_funcs: &'f RuntimeFunctions,
     params: [Value; 3],
     module: &'m mut JITModule,
@@ -201,18 +188,11 @@ struct CompilationUnit<'m, 'f, 'd> {
 }
 
 impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
-    fn push_val_alloc(&mut self, val: Value) {
+    fn push_alloc(&mut self, val: Value) {
         self.builder
             .ins()
-            .stack_store(val, self.vals, self.curr_val as i32 * 8);
-        self.curr_val += 1;
-    }
-
-    fn push_cell_alloc(&mut self, val: Value) {
-        self.builder
-            .ins()
-            .stack_store(val, self.cells, self.curr_cell as i32 * 8);
-        self.curr_cell += 1;
+            .stack_store(val, self.allocs, self.curr_allocs as i32 * 8);
+        self.curr_allocs += 1;
     }
 
     fn get_runtime(&self) -> Value {
@@ -304,10 +284,10 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
             CpsValue::Var(Var::Global(global)) => {
                 let mut runtime_write = self.runtime.0.write();
                 runtime_write.globals_pool.insert(global.clone());
-                let cell = self
-                    .builder
-                    .ins()
-                    .iconst(types::I64, Gc::as_ptr(&global.val) as i64);
+                let cell = self.builder.ins().iconst(
+                    types::I64,
+                    SchemeValue::as_raw(&SchemeValue::from(Cell(global.val.clone()))) as i64,
+                );
                 (cell, global.name.sym.0)
             }
             CpsValue::Const(val) => {
@@ -378,7 +358,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         let call = self.builder.ins().call(matches, &[pattern, expr]);
         let match_result = self.builder.inst_results(call)[0];
         self.rebinds.rebind(binds, IrValue::Value(match_result));
-        self.push_val_alloc(match_result);
+        self.push_alloc(match_result);
         self.cps_codegen(cexpr, deferred);
     }
 
@@ -424,7 +404,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         );
         let expanded = self.builder.inst_results(call)[0];
         self.rebinds.rebind(dest, IrValue::Value(expanded));
-        self.push_val_alloc(expanded);
+        self.push_alloc(expanded);
         self.cps_codegen(cexpr, deferred);
     }
 
@@ -497,7 +477,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         self.builder.switch_to_block(success_block);
         self.builder.seal_block(success_block);
         self.rebinds.rebind(dest, IrValue::Value(result));
-        self.push_val_alloc(result);
+        self.push_alloc(result);
         self.cps_codegen(cexpr, deferred);
     }
 
@@ -519,34 +499,21 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         let call = self.builder.ins().call(alloc_cell, &[]);
         let cell = self.builder.inst_results(call)[0];
         self.rebinds.rebind(var, IrValue::Cell(cell));
-        self.push_cell_alloc(cell);
+        self.push_alloc(cell);
         self.cps_codegen(cexpr, deferred);
     }
 
     fn drops_codegen(&mut self) {
-        self.drop_values_codegen();
-        self.drop_cells_codegen();
-    }
-
-    fn drop_values_codegen(&mut self) {
-        if self.curr_val > 0 {
-            let vals = self.builder.ins().stack_addr(types::I64, self.vals, 0);
-            let num_vals = self.builder.ins().iconst(types::I32, self.curr_val as i64);
+        if self.curr_allocs > 0 {
+            let vals = self.builder.ins().stack_addr(types::I64, self.allocs, 0);
+            let num_vals = self
+                .builder
+                .ins()
+                .iconst(types::I32, self.curr_allocs as i64);
             let dropv = self
                 .module
                 .declare_func_in_func(self.runtime_funcs.dropv, self.builder.func);
             self.builder.ins().call(dropv, &[vals, num_vals]);
-        }
-    }
-
-    fn drop_cells_codegen(&mut self) {
-        if self.curr_cell > 0 {
-            let cells = self.builder.ins().stack_addr(types::I64, self.cells, 0);
-            let num_cells = self.builder.ins().iconst(types::I32, self.curr_cell as i64);
-            let dropc = self
-                .module
-                .declare_func_in_func(self.runtime_funcs.dropc, self.builder.func);
-            self.builder.ins().call(dropc, &[cells, num_cells]);
         }
     }
 
@@ -648,15 +615,13 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
             .brif(cond, success_block, &[], failure_block, &[]);
 
         // Generate success block:
-        let num_vals = self.curr_val;
-        let num_cells = self.curr_cell;
+        let num_allocs = self.curr_allocs;
         self.builder.switch_to_block(success_block);
         self.builder.seal_block(success_block);
         self.cps_codegen(success, deferred);
 
         // Generate failure block:
-        self.curr_val = num_vals;
-        self.curr_cell = num_cells;
+        self.curr_allocs = num_allocs;
         self.builder.switch_to_block(failure_block);
         self.builder.seal_block(failure_block);
         self.cps_codegen(failure, deferred);
@@ -689,9 +654,10 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
             CpsValue::Var(Var::Global(global)) => {
                 let mut runtime_write = self.runtime.0.write();
                 runtime_write.globals_pool.insert(global.clone());
-                self.builder
-                    .ins()
-                    .iconst(types::I64, Gc::as_ptr(&global.val) as i64)
+                self.builder.ins().iconst(
+                    types::I64,
+                    SchemeValue::as_raw(&SchemeValue::from(Cell(global.val.clone()))) as i64,
+                )
             }
             CpsValue::Var(Var::Local(local)) => match self.rebinds.fetch_bind(local) {
                 IrValue::Cell(to) => *to,
@@ -735,7 +701,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         for (i, env_var) in bundle.env.iter().enumerate() {
             let val = match *self.rebinds.fetch_bind(env_var) {
                 IrValue::Cell(ptr) => ptr,
-                IrValue::Value(val) => panic!("{val:?} is not a pointer"),
+                IrValue::Value(val) => val,
             };
             self.array_store(env, i, val);
         }
@@ -792,8 +758,8 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
             .declare_func_in_func(make_proc, self.builder.func);
         let call = self.builder.ins().call(make_proc, &args);
         let proc = self.builder.inst_results(call)[0];
-        self.rebinds.rebind(bundle.val, IrValue::Cell(proc));
-        self.push_cell_alloc(proc);
+        self.rebinds.rebind(bundle.val, IrValue::Value(proc));
+        self.push_alloc(proc);
         self.cps_codegen(cexp, deferred);
     }
 }
@@ -826,7 +792,7 @@ fn make_sig(sig: &mut Signature, has_continuation: bool) {
         sig.params.push(AbiParam::new(types::I64)); // Continuation
     }
 
-    sig.returns.push(AbiParam::new(types::I64)); // Application    
+    sig.returns.push(AbiParam::new(types::I64)); // Application
 }
 
 impl ProcedureBundle {
@@ -865,6 +831,7 @@ impl ProcedureBundle {
     fn codegen(
         self,
         runtime_funcs: &RuntimeFunctions,
+        cells: &HashSet<Local>,
         module: &mut JITModule,
         debug_info: &mut DebugInfo,
         deferred: &mut Vec<Self>,
@@ -874,19 +841,11 @@ impl ProcedureBundle {
         make_sig(&mut ctx.func.signature, self.args.continuation.is_some());
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_context);
 
-        let MaxDrops {
-            value_drops,
-            cell_drops,
-        } = self.body.max_drops();
+        let max_drops = self.body.max_drops();
 
-        let vals = builder.create_sized_stack_slot(StackSlotData::new(
+        let allocs = builder.create_sized_stack_slot(StackSlotData::new(
             StackSlotKind::ExplicitSlot,
-            value_drops as u32 * 8,
-            0,
-        ));
-        let cells = builder.create_sized_stack_slot(StackSlotData::new(
-            StackSlotKind::ExplicitSlot,
-            cell_drops as u32 * 8,
+            max_drops as u32 * 8,
             0,
         ));
 
@@ -912,7 +871,12 @@ impl ProcedureBundle {
             let var = builder
                 .ins()
                 .load(types::I64, MemFlags::new(), env_param, (i * 8) as i32);
-            rebinds.rebind(env_var, IrValue::Cell(var));
+            let var = if cells.contains(&env_var) {
+                IrValue::Cell(var)
+            } else {
+                IrValue::Value(var)
+            };
+            rebinds.rebind(env_var, var);
         }
 
         // Load args:
@@ -934,10 +898,8 @@ impl ProcedureBundle {
             runtime: self.runtime,
             builder,
             rebinds,
-            vals,
-            curr_val: 0,
-            cells,
-            curr_cell: 0,
+            allocs,
+            curr_allocs: 0,
             runtime_funcs,
             params,
             module,
@@ -947,7 +909,7 @@ impl ProcedureBundle {
         cu.cps_codegen(self.body, deferred);
 
         if std::env::var("GOUKI_DEBUG").is_ok() {
-            eprintln!("(bundle) compiled: {}", cu.builder.func.display());
+            eprintln!("compiled: {}", cu.builder.func.display());
         }
 
         cu.builder.finalize();

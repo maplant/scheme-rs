@@ -238,7 +238,7 @@ fn make_default_record_constructor_descriptor(
     });
     let protocol = Procedure::new(
         runtime,
-        vec![Gc::new(Value::from(rtd.clone()))],
+        vec![Value::from(rtd.clone())],
         FuncPtr::Bridge(default_protocol),
         1,
         false,
@@ -258,7 +258,7 @@ fn make_default_record_constructor_descriptor(
 )]
 pub async fn make_record_constructor_descriptor(
     runtime: &Runtime,
-    _env: &[Gc<Value>],
+    _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
@@ -296,7 +296,7 @@ pub async fn make_record_constructor_descriptor(
     } else {
         Procedure::new(
             runtime.clone(),
-            vec![Gc::new(Value::from(rtd.clone()))],
+            vec![Value::from(rtd.clone())],
             FuncPtr::Bridge(default_protocol),
             1,
             false,
@@ -326,7 +326,7 @@ pub async fn make_record_constructor_descriptor(
 )]
 pub async fn record_constructor(
     runtime: &Runtime,
-    _env: &[Gc<Value>],
+    _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
@@ -351,10 +351,7 @@ pub async fn record_constructor(
     let rtds = rtds.into_iter().map(Value::from).collect::<Vec<_>>();
     let chain_protocols = Value::from(Procedure::new(
         runtime.clone(),
-        vec![
-            Gc::new(Value::from(protocols)),
-            Gc::new(Value::from(cont.clone())),
-        ],
+        vec![Value::from(protocols), Value::from(cont.clone())],
         FuncPtr::Continuation(chain_protocols),
         1,
         false,
@@ -363,7 +360,7 @@ pub async fn record_constructor(
 
     Ok(chain_constructors(
         runtime,
-        &[Gc::new(Value::from(rtds)), Gc::new(rust_constructor)],
+        &[Value::from(rtds), rust_constructor],
         &[],
         &[],
         &chain_protocols,
@@ -389,20 +386,17 @@ fn rcd_to_protocols_and_rtds(
 
 pub(crate) unsafe extern "C" fn chain_protocols(
     runtime: *mut GcInner<RuntimeInner>,
-    env: *const *mut GcInner<Value>,
+    env: *const Value,
     args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Application {
     unsafe {
         // env[0] is a vector of protocols
-        let protocols: Gc<vectors::AlignedVector<Value>> = Gc::from_raw_inc_rc(env.read())
-            .read()
-            .clone()
-            .try_into()
-            .unwrap();
+        let protocols: Gc<vectors::AlignedVector<Value>> =
+            env.as_ref().unwrap().clone().try_into().unwrap();
         // env[1] is k, the continuation
-        let k = Gc::from_raw_inc_rc(env.add(1).read());
+        let k = env.add(1).as_ref().unwrap().clone();
 
         let mut protocols = protocols.read().clone();
         let remaining_protocols = protocols.split_off(1);
@@ -413,7 +407,7 @@ pub(crate) unsafe extern "C" fn chain_protocols(
         if remaining_protocols.is_empty() {
             return Box::into_raw(Box::new(Application::new(
                 curr_protocol,
-                vec![args.as_ref().unwrap().clone(), k.read().clone()],
+                vec![args.as_ref().unwrap().clone(), k.clone()],
                 ExceptionHandler::from_ptr(exception_handler),
                 dynamic_wind.as_ref().unwrap().clone(),
                 None,
@@ -423,7 +417,7 @@ pub(crate) unsafe extern "C" fn chain_protocols(
         // Otherwise, turn the remaining chain into the continuation:
         let new_k = Procedure::new(
             Runtime::from_raw_inc_rc(runtime),
-            vec![Gc::new(Value::from(remaining_protocols)), k],
+            vec![Value::from(remaining_protocols), k],
             FuncPtr::Continuation(chain_protocols),
             1,
             false,
@@ -443,7 +437,7 @@ pub(crate) unsafe extern "C" fn chain_protocols(
 #[cps_bridge]
 async fn chain_constructors(
     runtime: &Runtime,
-    env: &[Gc<Value>],
+    env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
@@ -452,7 +446,7 @@ async fn chain_constructors(
 ) -> Result<Application, Condition> {
     let cont: Procedure = cont.clone().try_into()?;
     // env[0] is a vector of RTDs
-    let rtds: Gc<vectors::AlignedVector<Value>> = env[0].read().clone().try_into()?;
+    let rtds: Gc<vectors::AlignedVector<Value>> = env[0].clone().try_into()?;
     // env[1] is the possible rust constructor
     let rust_constructor = env[1].clone();
     let mut rtds = rtds.read().clone();
@@ -461,15 +455,15 @@ async fn chain_constructors(
     let rtds_remain = !remaining_rtds.is_empty();
     let num_args = curr_rtd.fields.len();
     let env = if rtds_remain {
-        vec![Gc::new(Value::from(remaining_rtds)), rust_constructor]
+        vec![Value::from(remaining_rtds), rust_constructor]
     } else {
-        vec![Gc::new(Value::from(curr_rtd)), rust_constructor]
+        vec![Value::from(curr_rtd), rust_constructor]
     }
     .into_iter()
     // Chain the current environment:
     .chain(env[2..].iter().cloned())
     // Chain the arguments passed to this function:
-    .chain(args.iter().cloned().map(Gc::new))
+    .chain(args.iter().cloned())
     .collect::<Vec<_>>();
     let next_proc = Procedure::new(
         runtime.clone(),
@@ -495,7 +489,7 @@ async fn chain_constructors(
 #[cps_bridge]
 async fn constructor(
     _runtime: &Runtime,
-    env: &[Gc<Value>],
+    env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
@@ -503,16 +497,16 @@ async fn constructor(
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let cont: Procedure = cont.clone().try_into()?;
-    let rtd: Arc<RecordTypeDescriptor> = env[0].read().clone().try_into()?;
+    let rtd: Arc<RecordTypeDescriptor> = env[0].clone().try_into()?;
     // The fields of the record are all of the env variables chained with
     // the arguments to this function.
     let mut fields = env[2..]
         .iter()
-        .map(|var| var.read().clone())
+        .map(|var| var.clone())
         .chain(args.iter().cloned())
         .collect::<Vec<_>>();
     // Check for a rust constructor
-    let rust_constructor = env[1].read().clone();
+    let rust_constructor = env[1].clone();
     let (rust_parent, fields) = if rust_constructor.is_true() {
         let rust_rtd: Arc<RecordTypeDescriptor> = rust_constructor.try_into()?;
         let num_fields: usize = rust_rtd
@@ -545,7 +539,7 @@ async fn constructor(
 #[cps_bridge]
 async fn default_protocol(
     runtime: &Runtime,
-    env: &[Gc<Value>],
+    env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
@@ -553,12 +547,12 @@ async fn default_protocol(
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let cont: Procedure = cont.clone().try_into()?;
-    let rtd: Arc<RecordTypeDescriptor> = env[0].read().clone().try_into()?;
+    let rtd: Arc<RecordTypeDescriptor> = env[0].clone().try_into()?;
     let num_args = rtd.field_index_offset + rtd.fields.len();
 
     let constructor = Procedure::new(
         runtime.clone(),
-        vec![Gc::new(args[0].clone()), Gc::new(Value::from(rtd))],
+        vec![args[0].clone(), Value::from(rtd)],
         FuncPtr::Bridge(default_protocol_constructor),
         num_args,
         false,
@@ -577,7 +571,7 @@ async fn default_protocol(
 #[cps_bridge]
 async fn default_protocol_constructor(
     runtime: &Runtime,
-    env: &[Gc<Value>],
+    env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
@@ -585,15 +579,15 @@ async fn default_protocol_constructor(
     dynamic_wind: &DynamicWind,
 ) -> Result<Application, Condition> {
     let cont: Procedure = cont.clone().try_into()?;
-    let constructor: Procedure = env[0].read().clone().try_into()?;
-    let rtd: Arc<RecordTypeDescriptor> = env[1].read().clone().try_into()?;
+    let constructor: Procedure = env[0].clone().try_into()?;
+    let rtd: Arc<RecordTypeDescriptor> = env[1].clone().try_into()?;
     let mut args = args.to_vec();
 
     let cont = if let Some(parent) = rtd.inherits.last() {
         let remaining = args.split_off(parent.field_index_offset + parent.fields.len());
         Value::from(Procedure::new(
             runtime.clone(),
-            vec![Gc::new(Value::from(remaining)), Gc::new(Value::from(cont))],
+            vec![Value::from(remaining), Value::from(cont)],
             FuncPtr::Continuation(call_constructor_continuation),
             1,
             false,
@@ -615,20 +609,17 @@ async fn default_protocol_constructor(
 
 pub(crate) unsafe extern "C" fn call_constructor_continuation(
     _runtime: *mut GcInner<RuntimeInner>,
-    env: *const *mut GcInner<Value>,
+    env: *const Value,
     args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Application {
     unsafe {
         let constructor: Procedure = args.as_ref().unwrap().clone().try_into().unwrap();
-        let args: Gc<vectors::AlignedVector<Value>> = Gc::from_raw_inc_rc(env.read())
-            .read()
-            .clone()
-            .try_into()
-            .unwrap();
+        let args: Gc<vectors::AlignedVector<Value>> =
+            env.as_ref().unwrap().clone().try_into().unwrap();
         let mut args = args.read().clone();
-        let cont = Gc::from_raw_inc_rc(env.add(1).read()).read().clone();
+        let cont = env.add(1).as_ref().unwrap().clone();
         args.push(cont);
 
         // Call the constructor
@@ -791,7 +782,7 @@ pub fn is_subtype_of(val: &Value, rt: &Value) -> Result<bool, Condition> {
 #[cps_bridge]
 async fn record_predicate_fn(
     _runtime: &Runtime,
-    env: &[Gc<Value>],
+    env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
@@ -805,7 +796,7 @@ async fn record_predicate_fn(
     // RTD is the first environment variable:
     Ok(Application::new(
         cont,
-        vec![Value::from(is_subtype_of(val, &env[0].read())?)],
+        vec![Value::from(is_subtype_of(val, &env[0])?)],
         exception_handler.clone(),
         dynamic_wind.clone(),
         None,
@@ -819,7 +810,7 @@ async fn record_predicate_fn(
 )]
 pub async fn record_predicate(
     runtime: &Runtime,
-    _env: &[Gc<Value>],
+    _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
@@ -833,7 +824,7 @@ pub async fn record_predicate(
     // TODO: Check if RTD is a record type.
     let pred_fn = Procedure::new(
         runtime.clone(),
-        vec![Gc::new(rtd.clone())],
+        vec![rtd.clone()],
         FuncPtr::Bridge(record_predicate_fn),
         1,
         false,
@@ -851,7 +842,7 @@ pub async fn record_predicate(
 #[cps_bridge]
 async fn record_accessor_fn(
     _runtime: &Runtime,
-    env: &[Gc<Value>],
+    env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
@@ -864,12 +855,12 @@ async fn record_accessor_fn(
     };
     let record: Record = val.clone().try_into()?;
     // RTD is the first environment variable, field index is the second
-    if !is_subtype_of(val, &env[0].read())? {
+    if !is_subtype_of(val, &env[0])? {
         return Err(Condition::error(
             "not a child of this record type".to_string(),
         ));
     }
-    let k: Arc<Number> = env[1].read().clone().try_into()?;
+    let k: Arc<Number> = env[1].clone().try_into()?;
     let k: usize = k.as_ref().try_into().map_err(Condition::from)?;
     let val = record.0.read().fields[k].clone();
     Ok(Application::new(
@@ -888,7 +879,7 @@ async fn record_accessor_fn(
 )]
 pub async fn record_accessor(
     runtime: &Runtime,
-    _env: &[Gc<Value>],
+    _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
@@ -911,10 +902,7 @@ pub async fn record_accessor(
     let k = k + rtd.field_index_offset;
     let accessor_fn = Procedure::new(
         runtime.clone(),
-        vec![
-            Gc::new(Value::from(rtd)),
-            Gc::new(Value::from(Number::from(k))),
-        ],
+        vec![Value::from(rtd), Value::from(Number::from(k))],
         FuncPtr::Bridge(record_accessor_fn),
         1,
         false,
@@ -932,7 +920,7 @@ pub async fn record_accessor(
 #[cps_bridge]
 async fn record_mutator_fn(
     _runtime: &Runtime,
-    env: &[Gc<Value>],
+    env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
@@ -945,12 +933,12 @@ async fn record_mutator_fn(
     };
     let record: Record = rec.clone().try_into()?;
     // RTD is the first environment variable, field index is the second
-    if !is_subtype_of(rec, &env[0].read())? {
+    if !is_subtype_of(rec, &env[0])? {
         return Err(Condition::error(
             "not a child of this record type".to_string(),
         ));
     }
-    let k: Arc<Number> = env[1].read().clone().try_into()?;
+    let k: Arc<Number> = env[1].clone().try_into()?;
     let k: usize = k.as_ref().try_into().map_err(Condition::from)?;
     record.0.write().fields[k] = new_val.clone();
     Ok(Application::new(
@@ -969,7 +957,7 @@ async fn record_mutator_fn(
 )]
 pub async fn record_mutator(
     runtime: &Runtime,
-    _env: &[Gc<Value>],
+    _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
@@ -995,10 +983,7 @@ pub async fn record_mutator(
     let k = k + rtd.field_index_offset;
     let mutator_fn = Procedure::new(
         runtime.clone(),
-        vec![
-            Gc::new(Value::from(rtd)),
-            Gc::new(Value::from(Number::from(k))),
-        ],
+        vec![Value::from(rtd), Value::from(Number::from(k))],
         FuncPtr::Bridge(record_mutator_fn),
         2,
         false,

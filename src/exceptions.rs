@@ -583,7 +583,7 @@ impl ExceptionHandler {
 )]
 pub async fn with_exception_handler(
     _runtime: &Runtime,
-    _env: &[Gc<Value>],
+    _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
@@ -617,7 +617,7 @@ pub async fn with_exception_handler(
 #[cps_bridge(name = "raise", lib = "(rnrs base builtins (6))", args = "obj")]
 pub async fn raise_builtin(
     runtime: &Runtime,
-    _env: &[Gc<Value>],
+    _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
     _cont: &Value,
@@ -658,7 +658,7 @@ pub fn raise(
     let thunks = exit_winders(dynamic_wind, &parent_wind);
     let calls = Procedure::new(
         runtime,
-        vec![Gc::new(thunks), Gc::new(raised.clone()), Gc::new(handler)],
+        vec![thunks, raised.clone(), handler],
         FuncPtr::Continuation(call_exits_and_exception_handler_reraise),
         0,
         false,
@@ -716,7 +716,7 @@ fn exit_winders(from_extent: &DynamicWind, to_extent: &DynamicWind) -> Value {
 
 unsafe extern "C" fn call_exits_and_exception_handler_reraise(
     runtime: *mut GcInner<RuntimeInner>,
-    env: *const *mut GcInner<Value>,
+    env: *const Value,
     _args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
@@ -725,13 +725,13 @@ unsafe extern "C" fn call_exits_and_exception_handler_reraise(
         let runtime = Runtime::from_raw_inc_rc(runtime);
 
         // env[0] are the thunks:
-        let thunks = Gc::from_raw_inc_rc(env.read()).read().clone();
+        let thunks = env.as_ref().unwrap().clone();
 
         // env[1] is the raised value:
-        let raised = Gc::from_raw_inc_rc(env.add(1).read()).read().clone();
+        let raised = env.add(1).as_ref().unwrap().clone();
 
         // env[2] is the next exception handler
-        let curr_handler = Gc::from_raw_inc_rc(env.add(2).read()).read().clone();
+        let curr_handler = env.add(2).as_ref().unwrap().clone();
 
         let app = match thunks.unpack() {
             UnpackedValue::Pair(pair) => {
@@ -739,11 +739,7 @@ unsafe extern "C" fn call_exits_and_exception_handler_reraise(
                 let head_thunk: Procedure = head_thunk.clone().try_into().unwrap();
                 let cont = Procedure::new(
                     runtime.clone(),
-                    vec![
-                        Gc::new(tail.clone()),
-                        Gc::new(raised),
-                        Gc::new(curr_handler),
-                    ],
+                    vec![tail.clone(), raised, curr_handler],
                     FuncPtr::Continuation(call_exits_and_exception_handler_reraise),
                     0,
                     false,
@@ -779,7 +775,7 @@ unsafe extern "C" fn call_exits_and_exception_handler_reraise(
                         raised.clone(),
                         Value::from(Procedure::new(
                             runtime,
-                            vec![Gc::new(raised)],
+                            vec![raised],
                             FuncPtr::Continuation(reraise_exception),
                             0,
                             true,
@@ -800,7 +796,7 @@ unsafe extern "C" fn call_exits_and_exception_handler_reraise(
 
 unsafe extern "C" fn reraise_exception(
     runtime: *mut GcInner<RuntimeInner>,
-    env: *const *mut GcInner<Value>,
+    env: *const Value,
     _args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
@@ -809,8 +805,7 @@ unsafe extern "C" fn reraise_exception(
         let runtime = Runtime(Gc::from_raw_inc_rc(runtime));
 
         // env[0] is the exception
-        let exception = Gc::from_raw_inc_rc(env.read());
-        let exception = exception.read().clone();
+        let exception = env.as_ref().unwrap().clone();
 
         Box::into_raw(Box::new(Application::new(
             Procedure::new(
@@ -838,7 +833,7 @@ unsafe extern "C" fn reraise_exception(
 )]
 pub async fn raise_continuable(
     runtime: &Runtime,
-    _env: &[Gc<Value>],
+    _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,

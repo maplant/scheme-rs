@@ -70,7 +70,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     quote! {
         pub(crate) fn #wrapper_name<'a>(
             runtime: &'a ::scheme_rs::runtime::Runtime,
-            _env: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
+            _env: &'a [::scheme_rs::value::Value],
             args: &'a [::scheme_rs::value::Value],
             rest_args: &'a [::scheme_rs::value::Value],
             cont: &'a ::scheme_rs::value::Value,
@@ -224,7 +224,7 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     quote! {
         #vis fn #wrapper_name<'a>(
             runtime: &'a ::scheme_rs::runtime::Runtime,
-            env: &'a [::scheme_rs::gc::Gc<::scheme_rs::value::Value>],
+            env: &'a [::scheme_rs::value::Value],
             args: &'a [::scheme_rs::value::Value],
             rest_args: &'a [::scheme_rs::value::Value],
             cont: &'a ::scheme_rs::value::Value,

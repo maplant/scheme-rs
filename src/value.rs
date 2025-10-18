@@ -81,6 +81,9 @@ impl Value {
                 }
                 Tag::HashTable => todo!(),
                 Tag::Port => todo!(),
+                Tag::Cell => {
+                    Gc::increment_reference_count(untagged as *mut GcInner<Value>);
+                }
                 Tag::Undefined | Tag::Symbol | Tag::Boolean | Tag::Character => (),
             }
         }
@@ -218,6 +221,10 @@ impl Value {
             }
             Tag::HashTable => todo!(),
             Tag::Port => todo!(),
+            Tag::Cell => {
+                let cell = unsafe { Gc::from_raw(untagged as *mut GcInner<Value>) };
+                UnpackedValue::Cell(Cell(cell))
+            }
         }
     }
 
@@ -288,6 +295,10 @@ unsafe impl Trace for Value {
     }
 }
 
+/// A Cell is a value that is mutable, essentially a variable.
+#[derive(Clone, Trace)]
+pub struct Cell(pub(crate) Gc<Value>);
+
 pub struct UnpackedValueRef<'a> {
     unpacked: ManuallyDrop<UnpackedValue>,
     marker: PhantomData<&'a UnpackedValue>,
@@ -339,6 +350,7 @@ enum Tag {
     RecordTypeDescriptor = 12,
     HashTable = 13,
     Port = 14,
+    Cell = 15,
 }
 
 // TODO: Make TryFrom with error
@@ -360,6 +372,7 @@ impl From<u64> for Tag {
             12 => Self::RecordTypeDescriptor,
             13 => Self::HashTable,
             14 => Self::Port,
+            15 => Self::Cell,
             tag => panic!("Invalid tag: {tag}"),
         }
     }
@@ -406,6 +419,7 @@ pub enum UnpackedValue {
     Record(Record),
     RecordTypeDescriptor(Arc<RecordTypeDescriptor>),
     Pair(Gc<lists::Pair>),
+    Cell(Cell),
 }
 
 impl UnpackedValue {
@@ -452,6 +466,10 @@ impl UnpackedValue {
                 let untagged = Gc::into_raw(pair);
                 Value::from_mut_ptr_and_tag(untagged, Tag::Pair)
             }
+            Self::Cell(cell) => {
+                let untagged = Gc::into_raw(cell.0);
+                Value::from_mut_ptr_and_tag(untagged, Tag::Cell)
+            }
         }
     }
 
@@ -471,6 +489,8 @@ impl UnpackedValue {
             (Self::Syntax(a), Self::Syntax(b)) => Arc::ptr_eq(a, b),
             (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
+            (Self::Cell(a), b) => a.0.read().unpacked_ref().eq(b),
+            (a, Self::Cell(b)) => a.eq(&b.0.read().unpacked_ref()),
             _ => false,
         }
     }
@@ -496,6 +516,8 @@ impl UnpackedValue {
             (Self::Syntax(a), Self::Syntax(b)) => Arc::ptr_eq(a, b),
             (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
+            (Self::Cell(a), b) => a.0.read().unpacked_ref().eqv(b),
+            (a, Self::Cell(b)) => a.eqv(&b.0.read().unpacked_ref()),
             _ => false,
         }
     }
@@ -513,7 +535,9 @@ impl UnpackedValue {
             Self::ByteVector(_) => "byte vector",
             Self::Syntax(_) => "syntax",
             Self::Procedure(_) => "procedure",
-            Self::Record(_) | Self::RecordTypeDescriptor(_) => "record",
+            Self::Record(_) => "record",
+            Self::RecordTypeDescriptor(_) => "rtd",
+            Self::Cell(cell) => cell.0.read().type_name(),
         }
     }
 
@@ -533,6 +557,7 @@ impl UnpackedValue {
             Self::Procedure(_) => ValueType::Procedure,
             Self::Record(_) => ValueType::Record,
             Self::RecordTypeDescriptor(_) => ValueType::RecordTypeDescriptor,
+            Self::Cell(cell) => cell.0.read().type_of(),
         }
     }
 }
@@ -754,6 +779,7 @@ macro_rules! impl_try_from_value_for {
             fn try_from(v: UnpackedValue) -> Result<Self, Self::Error> {
                 match v {
                     UnpackedValue::$variant(v) => Ok(v),
+                    UnpackedValue::Cell(cell) => cell.0.read().clone().try_into(),
                     e => Err(Condition::type_error($type_name, e.type_name())),
                 }
             }
@@ -767,6 +793,37 @@ macro_rules! impl_try_from_value_for {
             }
         }
     };
+}
+
+impl From<Cell> for UnpackedValue {
+    fn from(cell: Cell) -> Self {
+        Self::Cell(cell)
+    }
+}
+
+impl From<Cell> for Value {
+    fn from(cell: Cell) -> Self {
+        UnpackedValue::from(cell).into_value()
+    }
+}
+
+impl TryFrom<UnpackedValue> for Cell {
+    type Error = Condition;
+
+    fn try_from(v: UnpackedValue) -> Result<Self, Self::Error> {
+        match v {
+            UnpackedValue::Cell(cell) => Ok(cell.clone()),
+            e => Err(Condition::type_error("cell", e.type_name())),
+        }
+    }
+}
+
+impl TryFrom<Value> for Cell {
+    type Error = Condition;
+
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        v.unpack().try_into()
+    }
 }
 
 impl_try_from_value_for!(bool, Boolean, "bool");
@@ -867,6 +924,7 @@ impl Hash for EqvValue {
             UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
             UnpackedValue::Pair(p) => Gc::as_ptr(p).hash(state),
             UnpackedValue::Vector(v) => Gc::as_ptr(v).hash(state),
+            UnpackedValue::Cell(c) => EqvValue(c.0.read().clone()).hash(state),
         }
     }
 }
@@ -913,6 +971,7 @@ impl Hash for ReflexiveValue {
             // sure that constants cannot be set.
             UnpackedValue::Pair(p) => Gc::as_ptr(p).hash(state),
             UnpackedValue::Vector(v) => Gc::as_ptr(v).hash(state),
+            UnpackedValue::Cell(c) => ReflexiveValue(c.0.read().clone()).hash(state),
         }
     }
 }
@@ -940,6 +999,12 @@ impl PartialEq for ReflexiveValue {
             (UnpackedValue::Record(a), UnpackedValue::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
             (UnpackedValue::RecordTypeDescriptor(a), UnpackedValue::RecordTypeDescriptor(b)) => {
                 Arc::ptr_eq(a, b)
+            }
+            (UnpackedValue::Cell(a), b) => {
+                ReflexiveValue(a.0.read().clone()) == ReflexiveValue(b.clone().into_value())
+            }
+            (a, UnpackedValue::Cell(b)) => {
+                ReflexiveValue(a.clone().into_value()) == ReflexiveValue(b.0.read().clone())
             }
             _ => false,
         }
@@ -1026,6 +1091,7 @@ fn display_value(
         UnpackedValue::Record(record) => write!(f, "{record:?}"),
         UnpackedValue::Syntax(syntax) => write!(f, "{syntax:#?}"),
         UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
+        UnpackedValue::Cell(cell) => display_value(&cell.0.read(), circular_values, f),
     }
 }
 
@@ -1054,6 +1120,7 @@ fn debug_value(
         UnpackedValue::Procedure(proc) => write!(f, "#<procedure {proc:?}>"),
         UnpackedValue::Record(record) => write!(f, "{record:#?}"),
         UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
+        UnpackedValue::Cell(cell) => debug_value(&cell.0.read(), circular_values, f),
     }
 }
 #[bridge(name = "not", lib = "(rnrs base builtins (6))")]

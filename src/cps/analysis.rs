@@ -20,7 +20,6 @@
 use super::*;
 
 impl Cps {
-    // TODO: Have this function return a Cow<'_, HashSet<Local>>
     pub(super) fn free_variables(&self) -> HashSet<Local> {
         match self {
             Cps::PrimOp(PrimOp::AllocCell, _, bind, cexpr) => {
@@ -102,14 +101,9 @@ impl Cps {
         }
     }
 
-    pub(super) fn max_drops(&self) -> MaxDrops {
+    pub(super) fn max_drops(&self) -> usize {
         match self {
-            // Cps::AllocCell(_, cexpr) => cexpr.uses(uses_cache).clone(),
-            Cps::PrimOp(PrimOp::AllocCell, _, _, cexpr) => {
-                let mut max_drops = cexpr.max_drops();
-                max_drops.cell_drops += 1;
-                max_drops
-            }
+            Cps::PrimOp(PrimOp::AllocCell, _, _, cexpr) => cexpr.max_drops() + 1,
             Cps::PrimOp(
                 PrimOp::Cons
                 | PrimOp::List
@@ -127,28 +121,62 @@ impl Cps {
                 _,
                 _,
                 cexpr,
-            ) => {
-                let mut max_drops = cexpr.max_drops();
-                max_drops.value_drops += 1;
-                max_drops
-            }
-            Cps::Lambda { cexp, .. } => {
-                let mut max_drops = cexp.max_drops();
-                max_drops.cell_drops += 1;
-                max_drops
-            }
+            ) => cexpr.max_drops() + 1,
+            Cps::Lambda { cexp, .. } => cexp.max_drops() + 1,
             Cps::PrimOp(_, _, _, cexpr) => cexpr.max_drops(),
             Cps::If(_, success, failure) => success.max_drops().max(failure.max_drops()),
-            _ => MaxDrops::default(),
+            _ => 0,
         }
     }
 
+    /// Returns a all of the variables that set within the cexpr
+    pub(super) fn mutable_vars(&self) -> HashSet<Local> {
+        match self {
+            Cps::PrimOp(PrimOp::Set, args, _, cexp) => {
+                let [to, _] = args.as_slice() else {
+                    unreachable!()
+                };
+                let mut mutables = cexp.mutable_vars();
+                mutables.extend(to.to_local());
+                mutables
+            }
+            Cps::PrimOp(_, _, _, cexp) => cexp.mutable_vars(),
+            Cps::If(_, succ, fail) => succ
+                .mutable_vars()
+                .union(&fail.mutable_vars())
+                .copied()
+                .collect(),
+            Cps::Lambda { body, cexp, .. } => body
+                .mutable_vars()
+                .union(&cexp.mutable_vars())
+                .copied()
+                .collect(),
+            _ => HashSet::new(),
+        }
+    }
+
+    pub(super) fn cells(&self) -> HashSet<Local> {
+        match self {
+            Cps::PrimOp(PrimOp::AllocCell, _, val, cexp) => {
+                let mut cells = cexp.cells();
+                cells.insert(*val);
+                cells
+            }
+            Cps::PrimOp(_, _, _, cexp) => cexp.cells(),
+            Cps::If(_, succ, fail) => succ.cells().union(&fail.cells()).copied().collect(),
+            Cps::Lambda { body, cexp, .. } => body.cells().union(&cexp.cells()).copied().collect(),
+            _ => HashSet::new(),
+        }
+    }
+
+    /*
     // TODO: Clean up this function!
     pub(super) fn need_cells(
         &self,
         local_args: &HashSet<Local>,
         escaping_arg_cache: &mut HashMap<Local, HashSet<Local>>,
     ) -> HashSet<Local> {
+        /*
         match self {
             Cps::PrimOp(PrimOp::Set, args, _, cexp) => {
                 let [to, from] = args.as_slice() else {
@@ -242,7 +270,10 @@ impl Cps {
                 escaping_arg_cache.get(val).unwrap().clone()
             }
         }
+         */
+        todo!()
     }
+    */
 }
 
 fn values_to_locals(vals: &[Value]) -> HashSet<Local> {
@@ -275,19 +306,4 @@ fn add_value_use(mut uses: HashMap<Local, usize>, value: &Value) -> HashMap<Loca
         *uses.entry(local).or_default() += 1;
     }
     uses
-}
-
-#[derive(Copy, Clone, Default)]
-pub struct MaxDrops {
-    pub(super) value_drops: usize,
-    pub(super) cell_drops: usize,
-}
-
-impl MaxDrops {
-    fn max(self, rhs: Self) -> Self {
-        Self {
-            value_drops: self.value_drops.max(rhs.value_drops),
-            cell_drops: self.cell_drops.max(rhs.cell_drops),
-        }
-    }
 }

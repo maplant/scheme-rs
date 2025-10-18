@@ -193,6 +193,7 @@ pub(super) fn alloc_gc_object<T: super::GcOrTrace>(data: T) -> super::Gc<T> {
     new_gc
 }
 
+/*
 #[allow(private_bounds)]
 pub(crate) fn alloc_n_gc_objects<T: super::GcOrTrace + Clone>(
     data: T,
@@ -218,6 +219,7 @@ pub(crate) fn alloc_n_gc_objects<T: super::GcOrTrace + Clone>(
 
     to_return
 }
+*/
 
 static NEW_ALLOCS_BUFFER: Mutex<Vec<OpaqueGcPtr>> = Mutex::new(Vec::new());
 static COLLECTOR_TASK: OnceLock<JoinHandle<()>> = OnceLock::new();

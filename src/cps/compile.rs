@@ -17,7 +17,7 @@ pub trait Compile: std::fmt::Debug {
     fn compile_top_level(&self) -> Cps {
         let k = Local::gensym();
         let result = Local::gensym();
-        Cps::Lambda {
+        let compiled = Cps::Lambda {
             args: LambdaArgs::new(vec![result], true, None),
             body: Box::new(Cps::Halt(Value::from(result))),
             val: k,
@@ -26,8 +26,9 @@ pub trait Compile: std::fmt::Debug {
             }))),
             span: None,
         }
-        .reduce()
-        .args_to_cells(&mut HashMap::default())
+        .reduce();
+        let mutable_vars = compiled.mutable_vars();
+        compiled.vals_to_cells(&mutable_vars)
     }
 }
 
@@ -872,6 +873,69 @@ impl Compile for Vec<u8> {
 }
 
 impl Cps {
+    /// Convert arguments for closures into cells if they are written to
+    fn vals_to_cells(self, mutable_vars: &HashSet<Local>) -> Self {
+        match self {
+            Self::PrimOp(PrimOp::AllocCell, vals, local, cexpr) => Self::PrimOp(
+                PrimOp::AllocCell,
+                vals,
+                local,
+                Box::new(cexpr.vals_to_cells(mutable_vars)),
+            ),
+            Self::PrimOp(op, vals, local, cexpr) => {
+                let cexpr = Box::new(cexpr.vals_to_cells(mutable_vars));
+                /*
+                /*
+                let escaping_args =
+                cexpr.need_cells(&[local].into_iter().collect(), needs_cell_cache);
+                */
+                let cexpr = if escaping_args.contains(&local) {
+                    arg_to_cell(&mut local, cexpr)
+                } else {
+                    cexpr
+                };
+                */
+                Self::PrimOp(op, vals, local, cexpr)
+            }
+            Self::If(val, succ, fail) => Self::If(
+                val,
+                Box::new(succ.vals_to_cells(mutable_vars)),
+                Box::new(fail.vals_to_cells(mutable_vars)),
+            ),
+            Self::Lambda {
+                mut args,
+                body,
+                val,
+                cexp,
+                span,
+            } => {
+                /*
+                let local_args: HashSet<_> = args.iter().copied().collect();
+                let escaping_args = body.need_cells(&local_args, needs_cell_cache);
+                */
+
+                let mut body = Box::new(body.vals_to_cells(mutable_vars));
+                let cexp = Box::new(cexp.vals_to_cells(mutable_vars));
+
+                for arg in args.iter_mut() {
+                    if mutable_vars.contains(arg) {
+                        body = val_to_cell(arg, body);
+                    }
+                }
+
+                Self::Lambda {
+                    args,
+                    body,
+                    val,
+                    cexp,
+                    span,
+                }
+            }
+            done => done,
+        }
+    }
+
+    /*
     /// Convert arguments for closures into cells if they are written to or escape.
     fn args_to_cells(self, needs_cell_cache: &mut HashMap<Local, HashSet<Local>>) -> Self {
         match self {
@@ -927,9 +991,10 @@ impl Cps {
             done => done,
         }
     }
+    */
 }
 
-fn arg_to_cell(arg: &mut Local, body: Box<Cps>) -> Box<Cps> {
+fn val_to_cell(arg: &mut Local, body: Box<Cps>) -> Box<Cps> {
     let mut val_arg = Local::gensym();
     val_arg.name = arg.name;
     let cell_arg = std::mem::replace(arg, val_arg);

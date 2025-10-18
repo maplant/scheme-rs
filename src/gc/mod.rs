@@ -13,7 +13,7 @@
 
 mod collection;
 
-pub(crate) use collection::alloc_n_gc_objects;
+// pub(crate) use collection::alloc_n_gc_objects;
 pub use collection::{OpaqueGcPtr, init_gc};
 use either::Either;
 use futures::future::Shared;
@@ -119,10 +119,12 @@ impl<T: ?Sized> Gc<T> {
         inc_rc(ptr);
     }
 
+    /*
     pub(crate) unsafe fn decrement_reference_count(ptr: *mut GcInner<T>) {
         let ptr = NonNull::new(ptr).unwrap();
         dec_rc(ptr);
     }
+    */
 
     /// Create a new Gc from the raw pointer. Does not increment the reference
     /// count.
