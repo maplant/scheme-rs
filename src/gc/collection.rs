@@ -2,13 +2,14 @@
 //! Cycle Collection in Reference Counted Systems by David F. Bacon and
 //! V.T. Rajan.
 
+use parking_lot::RwLock;
 use std::{
     alloc::Layout,
     cell::UnsafeCell,
     collections::HashSet,
     marker::PhantomData,
     ptr::NonNull,
-    sync::{Mutex, OnceLock, RwLock, atomic::AtomicUsize},
+    sync::{Mutex, OnceLock, atomic::AtomicUsize},
     time::Duration,
 };
 use tokio::{task::JoinHandle, time::Instant};
@@ -493,7 +494,7 @@ impl Collector {
 
 unsafe fn for_each_child(s: OpaqueGcPtr, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
     unsafe {
-        let lock = s.lock().read().unwrap();
+        let lock = s.lock().read();
         (s.visit_children())(s.data(), visitor);
         drop(lock);
     }

@@ -682,7 +682,11 @@ fn maybe_clone_continuation(
     cloned_k: &mut HashMap<ContinuationPtr, Value>,
     cloned_cells: &mut HashMap<*mut GcInner<Value>, Value>,
 ) -> Option<Value> {
-    let k: Procedure = value.clone().try_into().ok()?;
+    if value.tag_of() != crate::value::Tag::Procedure {
+        return None;
+    }
+
+    let k: Procedure = value.clone().try_into().unwrap();
 
     let func_ptr = {
         match k.0.read().func {
@@ -722,17 +726,19 @@ fn maybe_clone_cell(
     value: &Value,
     cloned: &mut HashMap<*mut GcInner<Value>, Value>,
 ) -> Option<Value> {
-    let cell: Cell = value.clone().try_into().ok()?;
-    let cell_ptr = Gc::as_ptr(&cell.0);
-
-    if let Some(cell) = cloned.get(&cell_ptr) {
-        return Some(cell.clone());
+    if value.tag_of() != crate::value::Tag::Cell {
+        return None;
     }
 
-    let new_cell = Value::from(Cell(Gc::new(cell.0.read().clone())));
-    cloned.insert(cell_ptr, new_cell.clone());
+    let cell: Cell = value.clone().try_into().unwrap();
+    let cell_ptr = Gc::as_ptr(&cell.0);
 
-    Some(new_cell)
+    Some(
+        cloned
+            .entry(cell_ptr)
+            .or_insert_with(|| Value::from(Cell(Gc::new(cell.0.read().clone()))))
+            .clone(),
+    )
 }
 
 pub(crate) unsafe extern "C" fn call_thunks(

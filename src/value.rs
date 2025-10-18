@@ -160,6 +160,11 @@ impl Value {
             .ok_or_else(|| Condition::type_error("record-todo", "record"))
     }
 
+    pub(crate) fn tag_of(&self) -> Tag {
+        let tag = Tag::from(self.0 & TAG);
+        tag
+    }
+
     pub fn unpack(self) -> UnpackedValue {
         let raw = ManuallyDrop::new(self).0;
         let tag = Tag::from(raw & TAG);
@@ -334,7 +339,7 @@ impl From<Condition> for Value {
 
 #[repr(u64)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-enum Tag {
+pub(crate) enum Tag {
     Undefined = 0,
     Pair = 1,
     Boolean = 2,

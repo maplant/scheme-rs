@@ -19,6 +19,7 @@ use either::Either;
 use futures::future::Shared;
 pub use scheme_rs_macros::Trace;
 
+use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
 use std::{
     any::Any,
     cell::UnsafeCell,
@@ -30,7 +31,6 @@ use std::{
     ops::{Deref, DerefMut},
     path::PathBuf,
     ptr::{NonNull, drop_in_place},
-    sync::{RwLockReadGuard, RwLockWriteGuard},
 };
 
 use crate::gc::collection::{GcHeader, alloc_gc_object};
@@ -79,7 +79,7 @@ impl<T: ?Sized> Gc<T> {
     /// Acquire a read lock for the object
     pub fn read(&self) -> GcReadGuard<'_, T> {
         unsafe {
-            let _permit = (*self.ptr.as_ref().header.get()).lock.read().unwrap();
+            let _permit = (*self.ptr.as_ref().header.get()).lock.read();
             let data = &*self.ptr.as_ref().data.get() as *const T;
             GcReadGuard {
                 _permit,
@@ -92,7 +92,7 @@ impl<T: ?Sized> Gc<T> {
     /// Acquire a write lock for the object
     pub fn write(&self) -> GcWriteGuard<'_, T> {
         unsafe {
-            let _permit = (*self.ptr.as_ref().header.get()).lock.write().unwrap();
+            let _permit = (*self.ptr.as_ref().header.get()).lock.write();
             let data = &mut *self.ptr.as_ref().data.get() as *mut T;
             GcWriteGuard {
                 _permit,
