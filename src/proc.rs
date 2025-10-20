@@ -11,7 +11,7 @@ use crate::{
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
     syntax::Span,
-    value::{Cell, UnpackedValue, Value},
+    value::{Cell, UnpackedValue, UnpackedValueRef, Value},
 };
 use futures::future::BoxFuture;
 use scheme_rs_macros::cps_bridge;
@@ -590,9 +590,6 @@ pub async fn call_with_current_continuation(
 
 /// Prepare the continuation for call/cc. Clones the continuation environment
 /// and creates a closure that calls the appropriate winders.
-///
-/// Expects that the continuation and winders will be provided in the form of a
-/// pair of the continuation and vector of pairs of in/out winders.
 #[cps_bridge]
 async fn escape_procedure(
     runtime: &Runtime,
@@ -612,24 +609,29 @@ async fn escape_procedure(
     let thunks = entry_winders(from_extent, &to_extent.read());
 
     // Clone the continuation
+    let cont = cont.unpacked_ref();
     let cont = maybe_clone_continuation(&cont, &mut HashMap::new(), &mut HashMap::new()).unwrap();
     let cont: Procedure = cont.try_into().unwrap();
 
-    let (req_args, variadic) = {
-        let cont_read = cont.0.read();
-        (cont_read.num_required_args, cont_read.variadic)
-    };
-
     let args = args.iter().chain(rest_args).cloned().collect::<Vec<_>>();
 
-    let cont = Procedure::new(
-        runtime.clone(),
-        vec![thunks, Value::from(cont)],
-        FuncPtr::Continuation(call_thunks),
-        req_args,
-        variadic,
-        None,
-    );
+    let cont = if thunks.is_null() {
+        cont
+    } else {
+        let (req_args, variadic) = {
+            let cont_read = cont.0.read();
+            (cont_read.num_required_args, cont_read.variadic)
+        };
+
+        Procedure::new(
+            runtime.clone(),
+            vec![thunks, Value::from(cont)],
+            FuncPtr::Continuation(call_thunks),
+            req_args,
+            variadic,
+            None,
+        )
+    };
 
     let app = Application::new(
         cont,
@@ -672,21 +674,20 @@ fn prepare_env_variable(
     cloned_k: &mut HashMap<ContinuationPtr, Value>,
     cloned_cells: &mut HashMap<*mut GcInner<Value>, Value>,
 ) -> Value {
-    maybe_clone_continuation(value, cloned_k, cloned_cells)
-        .or_else(|| maybe_clone_cell(value, cloned_cells))
+    let value_ref = value.unpacked_ref();
+    maybe_clone_continuation(&value_ref, cloned_k, cloned_cells)
+        .or_else(|| maybe_clone_cell(&value_ref, cloned_cells))
         .unwrap_or_else(|| value.clone())
 }
 
 fn maybe_clone_continuation(
-    value: &Value,
+    value: &UnpackedValueRef<'_>,
     cloned_k: &mut HashMap<ContinuationPtr, Value>,
     cloned_cells: &mut HashMap<*mut GcInner<Value>, Value>,
 ) -> Option<Value> {
-    if value.tag_of() != crate::value::Tag::Procedure {
+    let UnpackedValue::Procedure(k) = value.as_ref() else {
         return None;
-    }
-
-    let k: Procedure = value.clone().try_into().unwrap();
+    };
 
     let func_ptr = {
         match k.0.read().func {
@@ -723,14 +724,13 @@ fn maybe_clone_continuation(
 }
 
 fn maybe_clone_cell(
-    value: &Value,
+    value: &UnpackedValueRef<'_>,
     cloned: &mut HashMap<*mut GcInner<Value>, Value>,
 ) -> Option<Value> {
-    if value.tag_of() != crate::value::Tag::Cell {
+    let UnpackedValue::Cell(cell) = value.as_ref() else {
         return None;
-    }
+    };
 
-    let cell: Cell = value.clone().try_into().unwrap();
     let cell_ptr = Gc::as_ptr(&cell.0);
 
     Some(

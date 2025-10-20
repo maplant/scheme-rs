@@ -68,10 +68,9 @@ impl<T: ?Sized> Gc<T> {
         unsafe {
             OpaqueGcPtr {
                 header: NonNull::from_ref(&self.ptr.as_ref().header),
-                data: NonNull::new(UnsafeCell::from_mut(
+                data: NonNull::new_unchecked(UnsafeCell::from_mut(
                     &mut *(self.ptr.as_ref().data.get() as *mut ()),
-                ))
-                .unwrap(),
+                )),
             }
         }
     }
@@ -114,8 +113,15 @@ impl<T: ?Sized> Gc<T> {
         ManuallyDrop::new(gc).ptr.as_ptr()
     }
 
+    #[cfg(debug_assertions)]
     pub(crate) unsafe fn increment_reference_count(ptr: *mut GcInner<T>) {
         let ptr = NonNull::new(ptr).unwrap();
+        inc_rc(ptr);
+    }
+
+    #[cfg(not(debug_assertions))]
+    pub(crate) unsafe fn increment_reference_count(ptr: *mut GcInner<T>) {
+        let ptr = unsafe { NonNull::new_unchecked(ptr) };
         inc_rc(ptr);
     }
 
@@ -128,6 +134,7 @@ impl<T: ?Sized> Gc<T> {
 
     /// Create a new Gc from the raw pointer. Does not increment the reference
     /// count.
+    #[cfg(debug_assertions)]
     pub(crate) unsafe fn from_raw(ptr: *mut GcInner<T>) -> Self {
         let ptr = NonNull::new(ptr).unwrap();
         Self {
@@ -136,9 +143,29 @@ impl<T: ?Sized> Gc<T> {
         }
     }
 
+    #[cfg(not(debug_assertions))]
+    pub(crate) unsafe fn from_raw(ptr: *mut GcInner<T>) -> Self {
+        let ptr = unsafe { NonNull::new_unchecked(ptr) };
+        Self {
+            ptr,
+            marker: PhantomData,
+        }
+    }
+
     /// The same as from_raw, but increments the reference count.
+    #[cfg(debug_assertions)]
     pub(crate) unsafe fn from_raw_inc_rc(ptr: *mut GcInner<T>) -> Self {
         let ptr = NonNull::new(ptr).unwrap();
+        inc_rc(ptr);
+        Self {
+            ptr,
+            marker: PhantomData,
+        }
+    }
+
+    #[cfg(not(debug_assertions))]
+    pub(crate) unsafe fn from_raw_inc_rc(ptr: *mut GcInner<T>) -> Self {
+        let ptr = unsafe { NonNull::new_unchecked(ptr) };
         inc_rc(ptr);
         Self {
             ptr,

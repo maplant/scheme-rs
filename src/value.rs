@@ -37,6 +37,10 @@ impl Value {
         self.0 != FALSE_VALUE
     }
 
+    pub fn is_null(&self) -> bool {
+        self.0 == Tag::Pair as u64
+    }
+
     /// Creates a new Value from a raw u64.
     ///
     /// # Safety
@@ -158,11 +162,6 @@ impl Value {
         record
             .try_into_rust_type::<T>()
             .ok_or_else(|| Condition::type_error("record-todo", "record"))
-    }
-
-    pub(crate) fn tag_of(&self) -> Tag {
-        let tag = Tag::from(self.0 & TAG);
-        tag
     }
 
     pub fn unpack(self) -> UnpackedValue {
@@ -313,6 +312,12 @@ impl Deref for UnpackedValueRef<'_> {
     type Target = UnpackedValue;
 
     fn deref(&self) -> &Self::Target {
+        &self.unpacked
+    }
+}
+
+impl AsRef<UnpackedValue> for UnpackedValueRef<'_> {
+    fn as_ref(&self) -> &UnpackedValue {
         &self.unpacked
     }
 }
