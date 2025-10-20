@@ -15,7 +15,7 @@ use crate::{
 };
 use futures::future::BoxFuture;
 use scheme_rs_macros::cps_bridge;
-use std::{borrow::Cow, collections::HashMap, fmt, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, fmt, hash::Hash, mem::MaybeUninit, sync::Arc};
 
 /// A function pointer to a generated continuation.
 pub(crate) type ContinuationPtr = unsafe extern "C" fn(
@@ -359,12 +359,6 @@ impl fmt::Debug for ProcedureInner {
     }
 }
 
-/*
-fn cells_to_vec_of_ptrs(cells: &[Gc<Value>]) -> Vec<*mut GcInner<Value>> {
-    cells.iter().map(Gc::as_ptr).collect()
-}
-*/
-
 /// An application of a function to a given set of values.
 pub struct Application {
     /// The operator being applied to. If None, we return the values to the Rust
@@ -609,8 +603,9 @@ async fn escape_procedure(
     let thunks = entry_winders(from_extent, &to_extent.read());
 
     // Clone the continuation
-    let cont = cont.unpacked_ref();
-    let cont = maybe_clone_continuation(&cont, &mut HashMap::new(), &mut HashMap::new()).unwrap();
+    let cont_ref = cont.unpacked_ref();
+    let cont = maybe_clone_continuation(&cont_ref, &mut StackClone::default(), &mut StackClone::default())
+        .unwrap_or_else(|| cont.clone());
     let cont: Procedure = cont.try_into().unwrap();
 
     let args = args.iter().chain(rest_args).cloned().collect::<Vec<_>>();
@@ -671,8 +666,8 @@ fn entry_winders(from_extent: &DynamicWind, to_extent: &DynamicWind) -> Value {
 
 fn prepare_env_variable(
     value: &Value,
-    cloned_k: &mut HashMap<ContinuationPtr, Value>,
-    cloned_cells: &mut HashMap<*mut GcInner<Value>, Value>,
+    cloned_k: &mut StackClone<ContinuationPtr>,
+    cloned_cells: &mut StackClone<*mut GcInner<Value>>,
 ) -> Value {
     let value_ref = value.unpacked_ref();
     maybe_clone_continuation(&value_ref, cloned_k, cloned_cells)
@@ -682,16 +677,17 @@ fn prepare_env_variable(
 
 fn maybe_clone_continuation(
     value: &UnpackedValueRef<'_>,
-    cloned_k: &mut HashMap<ContinuationPtr, Value>,
-    cloned_cells: &mut HashMap<*mut GcInner<Value>, Value>,
+    cloned_k: &mut StackClone<ContinuationPtr>,
+    cloned_cells: &mut StackClone<*mut GcInner<Value>>,
 ) -> Option<Value> {
     let UnpackedValue::Procedure(k) = value.as_ref() else {
         return None;
     };
 
     let func_ptr = {
-        match k.0.read().func {
-            FuncPtr::Continuation(cont) => cont,
+        let k_read = k.0.read();
+        match k_read.func {
+            FuncPtr::Continuation(cont) if !k_read.env.is_empty() => cont,
             _ => return None,
         }
     };
@@ -725,7 +721,7 @@ fn maybe_clone_continuation(
 
 fn maybe_clone_cell(
     value: &UnpackedValueRef<'_>,
-    cloned: &mut HashMap<*mut GcInner<Value>, Value>,
+    cloned: &mut StackClone<*mut GcInner<Value>>,
 ) -> Option<Value> {
     let UnpackedValue::Cell(cell) = value.as_ref() else {
         return None;
@@ -733,12 +729,82 @@ fn maybe_clone_cell(
 
     let cell_ptr = Gc::as_ptr(&cell.0);
 
+    if let Some(cloned) = cloned.get(&cell_ptr) {
+        return Some(cloned);
+    }
+
+    let new_cell = Value::from(Cell(Gc::new(cell.0.read().clone())));
+    cloned.insert(cell_ptr, new_cell.clone());
+    Some(new_cell)
+    
+    /*
     Some(
         cloned
             .entry(cell_ptr)
-            .or_insert_with(|| Value::from(Cell(Gc::new(cell.0.read().clone()))))
+            .or_insert_with(|| 
             .clone(),
     )
+    */
+}
+
+const MAX_ON_STACK: usize = 10;
+
+enum StackClone<K> {
+    Stack {
+        len: usize,
+        stack: [MaybeUninit<(K, Value)>; MAX_ON_STACK],
+    },
+    Heap(HashMap<K, Value>),
+}
+
+impl<K> Default for StackClone<K> {
+    fn default() -> Self {
+        StackClone::Stack {
+            len: 0,
+            stack: [const { MaybeUninit::uninit() }; MAX_ON_STACK],
+        }
+    }
+}
+
+impl<K> StackClone<K>
+where
+    K: PartialEq + Eq + Hash,
+{
+    fn get(&self, key: &K) -> Option<Value> {
+        match self {
+            Self::Stack { len, stack } => {
+                for i in 0..*len {
+                    let elem = unsafe { stack[i].assume_init_ref() };
+                    if &elem.0 == key {
+                        return Some(elem.1.clone());
+                    }
+                }
+                None
+            }
+            Self::Heap(heap) => heap.get(key).cloned(),
+        }
+    }
+
+    fn insert(&mut self, key: K, val: Value) {
+        match self {
+            Self::Stack { len, stack } if *len == MAX_ON_STACK => {
+                let mut heap =
+                    std::mem::replace(stack, [const { MaybeUninit::uninit() }; MAX_ON_STACK])
+                        .into_iter()
+                        .map(|x| unsafe { x.assume_init() })
+                        .collect::<HashMap<_, _>>();
+                heap.insert(key, val);
+                *self = Self::Heap(heap);
+            }
+            Self::Stack { len, stack } => {
+                stack[*len] = MaybeUninit::new((key, val));
+                *len += 1;
+            }
+            Self::Heap(heap) => {
+                heap.insert(key, val);
+            }
+        }
+    }
 }
 
 pub(crate) unsafe extern "C" fn call_thunks(

@@ -265,11 +265,6 @@ fn dec_rc<T: ?Sized>(ptr: NonNull<GcInner<T>>) {
     }
 }
 
-/*
-unsafe impl Send for GcHeader {}
-unsafe impl Sync for GcHeader {}
-*/
-
 #[repr(C)]
 pub(crate) struct GcInner<T: ?Sized> {
     header: UnsafeCell<GcHeader>,
@@ -278,97 +273,6 @@ pub(crate) struct GcInner<T: ?Sized> {
 
 unsafe impl<T: ?Sized + Send> Send for GcInner<T> {}
 unsafe impl<T: ?Sized + Sync> Sync for GcInner<T> {}
-
-/*
-/// Fat pointer to the header and data of the Gc
-#[derive(Clone, Copy)]
-pub struct OpaqueGcPtr {
-    header: NonNull<UnsafeCell<GcHeader>>,
-    data: NonNull<UnsafeCell<()>>,
-}
-
-impl<T: ?Sized> From<NonNull<GcInner<T>>> for OpaqueGcPtr {
-    fn from(mut value: NonNull<GcInner<T>>) -> Self {
-        unsafe {
-            let value_mut = value.as_mut();
-            let header = NonNull::new(value_mut.header.get() as *mut _).unwrap();
-            let data = NonNull::new(UnsafeCell::from_mut(
-                &mut *(value_mut.data.get() as *mut ()),
-            ))
-            .unwrap();
-            Self { header, data }
-        }
-    }
-}
-
-impl OpaqueGcPtr {
-    unsafe fn rc(&self) -> usize {
-        unsafe { (*self.header.as_ref().get()).rc }
-    }
-
-    unsafe fn set_rc(&self, rc: usize) {
-        unsafe {
-            (*self.header.as_ref().get()).rc = rc;
-        }
-    }
-
-    unsafe fn crc(&self) -> isize {
-        unsafe { (*self.header.as_ref().get()).crc }
-    }
-
-    unsafe fn set_crc(&self, crc: isize) {
-        unsafe {
-            (*self.header.as_ref().get()).crc = crc;
-        }
-    }
-
-    unsafe fn color(&self) -> Color {
-        unsafe { (*self.header.as_ref().get()).color }
-    }
-
-    unsafe fn set_color(&self, color: Color) {
-        unsafe {
-            (*self.header.as_ref().get()).color = color;
-        }
-    }
-
-    unsafe fn buffered(&self) -> bool {
-        unsafe { (*self.header.as_ref().get()).buffered }
-    }
-
-    unsafe fn set_buffered(&self, buffered: bool) {
-        unsafe {
-            (*self.header.as_ref().get()).buffered = buffered;
-        }
-    }
-
-    unsafe fn lock(&self) -> &RwLock<()> {
-        unsafe { &(*self.header.as_ref().get()).lock }
-    }
-
-    unsafe fn visit_children(
-        &self,
-    ) -> unsafe fn(this: *const (), visitor: &mut dyn FnMut(OpaqueGcPtr)) {
-        unsafe { (*self.header.as_ref().get()).visit_children }
-    }
-
-    unsafe fn finalize(&self) -> unsafe fn(this: *mut ()) {
-        unsafe { (*self.header.as_ref().get()).finalize }
-    }
-
-    unsafe fn layout(&self) -> Layout {
-        unsafe { (*self.header.as_ref().get()).layout }
-    }
-
-    unsafe fn data(&self) -> *const () {
-        unsafe { self.data.as_ref().get() as *const () }
-    }
-
-    unsafe fn data_mut(&self) -> *mut () {
-        unsafe { self.data.as_ref().get() }
-    }
-}
-*/
 
 pub struct GcReadGuard<'a, T: ?Sized> {
     _permit: RwLockReadGuard<'a, ()>,
