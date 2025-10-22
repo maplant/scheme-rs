@@ -604,8 +604,12 @@ async fn escape_procedure(
 
     // Clone the continuation
     let cont_ref = cont.unpacked_ref();
-    let cont = maybe_clone_continuation(&cont_ref, &mut StackClone::default(), &mut StackClone::default())
-        .unwrap_or_else(|| cont.clone());
+    let cont = maybe_clone_continuation(
+        &cont_ref,
+        &mut StackClone::default(),
+        &mut StackClone::default(),
+    )
+    .unwrap_or_else(|| cont.clone());
     let cont: Procedure = cont.try_into().unwrap();
 
     let args = args.iter().chain(rest_args).cloned().collect::<Vec<_>>();
@@ -736,15 +740,6 @@ fn maybe_clone_cell(
     let new_cell = Value::from(Cell(Gc::new(cell.0.read().clone())));
     cloned.insert(cell_ptr, new_cell.clone());
     Some(new_cell)
-    
-    /*
-    Some(
-        cloned
-            .entry(cell_ptr)
-            .or_insert_with(|| 
-            .clone(),
-    )
-    */
 }
 
 const MAX_ON_STACK: usize = 10;
@@ -773,8 +768,8 @@ where
     fn get(&self, key: &K) -> Option<Value> {
         match self {
             Self::Stack { len, stack } => {
-                for i in 0..*len {
-                    let elem = unsafe { stack[i].assume_init_ref() };
+                for elem in stack.iter().take(*len) {
+                    let elem = unsafe { elem.assume_init_ref() };
                     if &elem.0 == key {
                         return Some(elem.1.clone());
                     }

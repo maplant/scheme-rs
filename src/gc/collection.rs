@@ -10,9 +10,8 @@ use std::{
     marker::PhantomData,
     ptr::NonNull,
     sync::{Mutex, OnceLock, atomic::AtomicUsize},
-    time::Duration,
+    thread::JoinHandle,
 };
-use tokio::{task::JoinHandle, time::Instant};
 
 use crate::gc::GcInner;
 
@@ -194,34 +193,6 @@ pub(super) fn alloc_gc_object<T: super::GcOrTrace>(data: T) -> super::Gc<T> {
     new_gc
 }
 
-/*
-#[allow(private_bounds)]
-pub(crate) fn alloc_n_gc_objects<T: super::GcOrTrace + Clone>(
-    data: T,
-    n: usize,
-) -> Vec<super::Gc<T>> {
-    let mut to_buffer = Vec::new();
-    let mut to_return = Vec::new();
-
-    for _ in 0..n {
-        let new_gc = super::Gc {
-            ptr: NonNull::from(Box::leak(Box::new(GcInner {
-                header: UnsafeCell::new(GcHeader::new::<T>()),
-                data: UnsafeCell::new(data.clone()),
-            }))),
-            marker: PhantomData,
-        };
-
-        to_buffer.push(unsafe { new_gc.as_opaque() });
-        to_return.push(new_gc);
-    }
-
-    NEW_ALLOCS_BUFFER.lock().unwrap().extend(to_buffer);
-
-    to_return
-}
-*/
-
 static NEW_ALLOCS_BUFFER: Mutex<Vec<OpaqueGcPtr>> = Mutex::new(Vec::new());
 static COLLECTOR_TASK: OnceLock<JoinHandle<()>> = OnceLock::new();
 
@@ -248,27 +219,10 @@ impl Collector {
     }
 
     fn run(mut self) -> JoinHandle<()> {
-        tokio::task::spawn(async move {
+        std::thread::spawn(move || {
             loop {
                 self.recv_new_allocs();
-                let now = Instant::now();
-                tokio::task::block_in_place(|| self.epoch());
-                let elapsed = now.elapsed();
-
-                // This allows us to cleanly detect the shutdown of the Runtime without
-                // panicking.
-                let result = tokio::task::spawn(async move {
-                    if elapsed >= Duration::from_millis(10) {
-                        tokio::task::yield_now().await;
-                    } else {
-                        tokio::time::sleep(Duration::from_millis(10) - elapsed).await
-                    }
-                })
-                .await;
-
-                if result.is_err() {
-                    break;
-                }
+                self.epoch();
             }
         })
     }
@@ -290,8 +244,6 @@ impl Collector {
         // Collect obvious garbage; i.e. heap objects that have a ref count of zero,
         // and potential candidates for cycles.
         let mut garbage = Vec::new();
-
-        // println!("running epoch, heap size = {}", self.heap.len());
 
         for heap_object in self.heap.iter() {
             unsafe {

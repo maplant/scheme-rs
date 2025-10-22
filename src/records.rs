@@ -502,7 +502,7 @@ async fn constructor(
     // the arguments to this function.
     let mut fields = env[2..]
         .iter()
-        .map(|var| var.clone())
+        .cloned()
         .chain(args.iter().cloned())
         .collect::<Vec<_>>();
     // Check for a rust constructor
