@@ -13,12 +13,13 @@
 
 mod collection;
 
-pub(crate) use collection::alloc_n_gc_objects;
+// pub(crate) use collection::alloc_n_gc_objects;
 pub use collection::{OpaqueGcPtr, init_gc};
 use either::Either;
 use futures::future::Shared;
 pub use scheme_rs_macros::Trace;
 
+use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
 use std::{
     any::Any,
     cell::UnsafeCell,
@@ -30,7 +31,6 @@ use std::{
     ops::{Deref, DerefMut},
     path::PathBuf,
     ptr::{NonNull, drop_in_place},
-    sync::{RwLockReadGuard, RwLockWriteGuard},
 };
 
 use crate::gc::collection::{GcHeader, alloc_gc_object};
@@ -68,10 +68,9 @@ impl<T: ?Sized> Gc<T> {
         unsafe {
             OpaqueGcPtr {
                 header: NonNull::from_ref(&self.ptr.as_ref().header),
-                data: NonNull::new(UnsafeCell::from_mut(
+                data: NonNull::new_unchecked(UnsafeCell::from_mut(
                     &mut *(self.ptr.as_ref().data.get() as *mut ()),
-                ))
-                .unwrap(),
+                )),
             }
         }
     }
@@ -79,7 +78,7 @@ impl<T: ?Sized> Gc<T> {
     /// Acquire a read lock for the object
     pub fn read(&self) -> GcReadGuard<'_, T> {
         unsafe {
-            let _permit = (*self.ptr.as_ref().header.get()).lock.read().unwrap();
+            let _permit = (*self.ptr.as_ref().header.get()).lock.read();
             let data = &*self.ptr.as_ref().data.get() as *const T;
             GcReadGuard {
                 _permit,
@@ -92,7 +91,7 @@ impl<T: ?Sized> Gc<T> {
     /// Acquire a write lock for the object
     pub fn write(&self) -> GcWriteGuard<'_, T> {
         unsafe {
-            let _permit = (*self.ptr.as_ref().header.get()).lock.write().unwrap();
+            let _permit = (*self.ptr.as_ref().header.get()).lock.write();
             let data = &mut *self.ptr.as_ref().data.get() as *mut T;
             GcWriteGuard {
                 _permit,
@@ -114,18 +113,28 @@ impl<T: ?Sized> Gc<T> {
         ManuallyDrop::new(gc).ptr.as_ptr()
     }
 
+    #[cfg(debug_assertions)]
     pub(crate) unsafe fn increment_reference_count(ptr: *mut GcInner<T>) {
         let ptr = NonNull::new(ptr).unwrap();
         inc_rc(ptr);
     }
 
+    #[cfg(not(debug_assertions))]
+    pub(crate) unsafe fn increment_reference_count(ptr: *mut GcInner<T>) {
+        let ptr = unsafe { NonNull::new_unchecked(ptr) };
+        inc_rc(ptr);
+    }
+
+    /*
     pub(crate) unsafe fn decrement_reference_count(ptr: *mut GcInner<T>) {
         let ptr = NonNull::new(ptr).unwrap();
         dec_rc(ptr);
     }
+    */
 
     /// Create a new Gc from the raw pointer. Does not increment the reference
     /// count.
+    #[cfg(debug_assertions)]
     pub(crate) unsafe fn from_raw(ptr: *mut GcInner<T>) -> Self {
         let ptr = NonNull::new(ptr).unwrap();
         Self {
@@ -134,9 +143,29 @@ impl<T: ?Sized> Gc<T> {
         }
     }
 
+    #[cfg(not(debug_assertions))]
+    pub(crate) unsafe fn from_raw(ptr: *mut GcInner<T>) -> Self {
+        let ptr = unsafe { NonNull::new_unchecked(ptr) };
+        Self {
+            ptr,
+            marker: PhantomData,
+        }
+    }
+
     /// The same as from_raw, but increments the reference count.
+    #[cfg(debug_assertions)]
     pub(crate) unsafe fn from_raw_inc_rc(ptr: *mut GcInner<T>) -> Self {
         let ptr = NonNull::new(ptr).unwrap();
+        inc_rc(ptr);
+        Self {
+            ptr,
+            marker: PhantomData,
+        }
+    }
+
+    #[cfg(not(debug_assertions))]
+    pub(crate) unsafe fn from_raw_inc_rc(ptr: *mut GcInner<T>) -> Self {
+        let ptr = unsafe { NonNull::new_unchecked(ptr) };
         inc_rc(ptr);
         Self {
             ptr,
@@ -236,11 +265,6 @@ fn dec_rc<T: ?Sized>(ptr: NonNull<GcInner<T>>) {
     }
 }
 
-/*
-unsafe impl Send for GcHeader {}
-unsafe impl Sync for GcHeader {}
-*/
-
 #[repr(C)]
 pub(crate) struct GcInner<T: ?Sized> {
     header: UnsafeCell<GcHeader>,
@@ -249,97 +273,6 @@ pub(crate) struct GcInner<T: ?Sized> {
 
 unsafe impl<T: ?Sized + Send> Send for GcInner<T> {}
 unsafe impl<T: ?Sized + Sync> Sync for GcInner<T> {}
-
-/*
-/// Fat pointer to the header and data of the Gc
-#[derive(Clone, Copy)]
-pub struct OpaqueGcPtr {
-    header: NonNull<UnsafeCell<GcHeader>>,
-    data: NonNull<UnsafeCell<()>>,
-}
-
-impl<T: ?Sized> From<NonNull<GcInner<T>>> for OpaqueGcPtr {
-    fn from(mut value: NonNull<GcInner<T>>) -> Self {
-        unsafe {
-            let value_mut = value.as_mut();
-            let header = NonNull::new(value_mut.header.get() as *mut _).unwrap();
-            let data = NonNull::new(UnsafeCell::from_mut(
-                &mut *(value_mut.data.get() as *mut ()),
-            ))
-            .unwrap();
-            Self { header, data }
-        }
-    }
-}
-
-impl OpaqueGcPtr {
-    unsafe fn rc(&self) -> usize {
-        unsafe { (*self.header.as_ref().get()).rc }
-    }
-
-    unsafe fn set_rc(&self, rc: usize) {
-        unsafe {
-            (*self.header.as_ref().get()).rc = rc;
-        }
-    }
-
-    unsafe fn crc(&self) -> isize {
-        unsafe { (*self.header.as_ref().get()).crc }
-    }
-
-    unsafe fn set_crc(&self, crc: isize) {
-        unsafe {
-            (*self.header.as_ref().get()).crc = crc;
-        }
-    }
-
-    unsafe fn color(&self) -> Color {
-        unsafe { (*self.header.as_ref().get()).color }
-    }
-
-    unsafe fn set_color(&self, color: Color) {
-        unsafe {
-            (*self.header.as_ref().get()).color = color;
-        }
-    }
-
-    unsafe fn buffered(&self) -> bool {
-        unsafe { (*self.header.as_ref().get()).buffered }
-    }
-
-    unsafe fn set_buffered(&self, buffered: bool) {
-        unsafe {
-            (*self.header.as_ref().get()).buffered = buffered;
-        }
-    }
-
-    unsafe fn lock(&self) -> &RwLock<()> {
-        unsafe { &(*self.header.as_ref().get()).lock }
-    }
-
-    unsafe fn visit_children(
-        &self,
-    ) -> unsafe fn(this: *const (), visitor: &mut dyn FnMut(OpaqueGcPtr)) {
-        unsafe { (*self.header.as_ref().get()).visit_children }
-    }
-
-    unsafe fn finalize(&self) -> unsafe fn(this: *mut ()) {
-        unsafe { (*self.header.as_ref().get()).finalize }
-    }
-
-    unsafe fn layout(&self) -> Layout {
-        unsafe { (*self.header.as_ref().get()).layout }
-    }
-
-    unsafe fn data(&self) -> *const () {
-        unsafe { self.data.as_ref().get() as *const () }
-    }
-
-    unsafe fn data_mut(&self) -> *mut () {
-        unsafe { self.data.as_ref().get() }
-    }
-}
-*/
 
 pub struct GcReadGuard<'a, T: ?Sized> {
     _permit: RwLockReadGuard<'a, ()>,

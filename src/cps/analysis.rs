@@ -20,7 +20,6 @@
 use super::*;
 
 impl Cps {
-    // TODO: Have this function return a Cow<'_, HashSet<Local>>
     pub(super) fn free_variables(&self) -> HashSet<Local> {
         match self {
             Cps::PrimOp(PrimOp::AllocCell, _, bind, cexpr) => {
@@ -76,7 +75,6 @@ impl Cps {
         uses_cache: &mut HashMap<Local, HashMap<Local, usize>>,
     ) -> HashMap<Local, usize> {
         match self {
-            // Cps::AllocCell(_, cexpr) => cexpr.uses(uses_cache).clone(),
             Cps::PrimOp(_, args, _, cexpr) => {
                 merge_uses(values_to_uses(args), cexpr.uses(uses_cache))
             }
@@ -102,14 +100,9 @@ impl Cps {
         }
     }
 
-    pub(super) fn max_drops(&self) -> MaxDrops {
+    pub(super) fn max_drops(&self) -> usize {
         match self {
-            // Cps::AllocCell(_, cexpr) => cexpr.uses(uses_cache).clone(),
-            Cps::PrimOp(PrimOp::AllocCell, _, _, cexpr) => {
-                let mut max_drops = cexpr.max_drops();
-                max_drops.cell_drops += 1;
-                max_drops
-            }
+            Cps::PrimOp(PrimOp::AllocCell, _, _, cexpr) => cexpr.max_drops() + 1,
             Cps::PrimOp(
                 PrimOp::Cons
                 | PrimOp::List
@@ -127,120 +120,51 @@ impl Cps {
                 _,
                 _,
                 cexpr,
-            ) => {
-                let mut max_drops = cexpr.max_drops();
-                max_drops.value_drops += 1;
-                max_drops
-            }
-            Cps::Lambda { cexp, .. } => {
-                let mut max_drops = cexp.max_drops();
-                max_drops.cell_drops += 1;
-                max_drops
-            }
+            ) => cexpr.max_drops() + 1,
+            Cps::Lambda { cexp, .. } => cexp.max_drops() + 1,
             Cps::PrimOp(_, _, _, cexpr) => cexpr.max_drops(),
             Cps::If(_, success, failure) => success.max_drops().max(failure.max_drops()),
-            _ => MaxDrops::default(),
+            _ => 0,
         }
     }
 
-    // TODO: Clean up this function!
-    pub(super) fn need_cells(
-        &self,
-        local_args: &HashSet<Local>,
-        escaping_arg_cache: &mut HashMap<Local, HashSet<Local>>,
-    ) -> HashSet<Local> {
+    /// Returns a all of the variables that set within the cexpr
+    pub(super) fn mutable_vars(&self) -> HashSet<Local> {
         match self {
             Cps::PrimOp(PrimOp::Set, args, _, cexp) => {
-                let [to, from] = args.as_slice() else {
+                let [to, _] = args.as_slice() else {
                     unreachable!()
                 };
-                // From should always escape so that it can be set. This is
-                // really stretching the definition of "escaping", but it's easy
-                // to put in here for now.
-                let mut escaping_args = cexp.need_cells(local_args, escaping_arg_cache);
-                if let Some(local) = from.to_local()
-                    && !local_args.contains(&local)
-                {
-                    escaping_args.insert(local);
-                }
-                escaping_args.extend(to.to_local());
-                escaping_args
+                let mut mutables = cexp.mutable_vars();
+                mutables.extend(to.to_local());
+                mutables
             }
-            Cps::PrimOp(_, args, _, cexp) => values_to_locals(args)
-                .difference(local_args)
+            Cps::PrimOp(_, _, _, cexp) => cexp.mutable_vars(),
+            Cps::If(_, succ, fail) => succ
+                .mutable_vars()
+                .union(&fail.mutable_vars())
                 .copied()
-                .collect::<HashSet<_>>()
-                .union(&cexp.need_cells(local_args, escaping_arg_cache))
+                .collect(),
+            Cps::Lambda { body, cexp, .. } => body
+                .mutable_vars()
+                .union(&cexp.mutable_vars())
                 .copied()
-                .collect::<HashSet<_>>(),
-            Cps::If(cond, success, failure) => {
-                let mut escaping_args: HashSet<_> = success
-                    .need_cells(local_args, escaping_arg_cache)
-                    .union(&failure.need_cells(local_args, escaping_arg_cache))
-                    .copied()
-                    .collect();
-                if let Some(local) = cond.to_local()
-                    && !local_args.contains(&local)
-                {
-                    escaping_args.insert(local);
-                }
-                escaping_args
-            }
-            Cps::App(op, vals, _) => {
-                let mut escaping_args: HashSet<_> = values_to_locals(vals)
-                    .difference(local_args)
-                    .copied()
-                    .collect();
-                match op.to_local() {
-                    Some(local) if !local_args.contains(&local) => {
-                        escaping_args.insert(local);
-                    }
-                    _ => (),
-                }
-                escaping_args
-            }
-            Cps::Forward(op, val) => {
-                let mut escaping_args = HashSet::new();
-                if let Some(local) = val.to_local()
-                    && !local_args.contains(&local)
-                {
-                    escaping_args.insert(local);
-                }
-                if let Some(local) = op.to_local()
-                    && !local_args.contains(&local)
-                {
-                    escaping_args.insert(local);
-                }
-                escaping_args
-            }
-            Cps::Halt(val) => {
-                let mut escaping_args = HashSet::new();
-                if let Some(local) = val.to_local()
-                    && !local_args.contains(&local)
-                {
-                    escaping_args.insert(local);
-                }
-                escaping_args
-            }
-            Cps::Lambda {
-                args,
-                body,
-                val,
-                cexp,
-                ..
-            } => {
-                if !escaping_arg_cache.contains_key(val) {
-                    let new_local_args: HashSet<_> = args.iter().copied().collect();
-                    let escaping_args = body
-                        .need_cells(&new_local_args, escaping_arg_cache)
-                        .union(&cexp.need_cells(local_args, escaping_arg_cache))
-                        .copied()
-                        .collect();
+                .collect(),
+            _ => HashSet::new(),
+        }
+    }
 
-                    escaping_arg_cache.insert(*val, escaping_args);
-                }
-                escaping_arg_cache.get(val).unwrap().clone()
+    pub(super) fn cells(&self) -> HashSet<Local> {
+        match self {
+            Cps::PrimOp(PrimOp::AllocCell, _, val, cexp) => {
+                let mut cells = cexp.cells();
+                cells.insert(*val);
+                cells
             }
+            Cps::PrimOp(_, _, _, cexp) => cexp.cells(),
+            Cps::If(_, succ, fail) => succ.cells().union(&fail.cells()).copied().collect(),
+            Cps::Lambda { body, cexp, .. } => body.cells().union(&cexp.cells()).copied().collect(),
+            _ => HashSet::new(),
         }
     }
 }
@@ -275,19 +199,4 @@ fn add_value_use(mut uses: HashMap<Local, usize>, value: &Value) -> HashMap<Loca
         *uses.entry(local).or_default() += 1;
     }
     uses
-}
-
-#[derive(Copy, Clone, Default)]
-pub struct MaxDrops {
-    pub(super) value_drops: usize,
-    pub(super) cell_drops: usize,
-}
-
-impl MaxDrops {
-    fn max(self, rhs: Self) -> Self {
-        Self {
-            value_drops: self.value_drops.max(rhs.value_drops),
-            cell_drops: self.cell_drops.max(rhs.cell_drops),
-        }
-    }
 }

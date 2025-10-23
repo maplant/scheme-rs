@@ -4,23 +4,23 @@
 use crate::{
     env::Local,
     exceptions::{Condition, Exception, ExceptionHandler, ExceptionHandlerInner, Frame, raise},
-    gc::{Gc, GcInner, Trace, alloc_n_gc_objects},
+    gc::{Gc, GcInner, Trace},
     lists::{self, list_to_vec, slice_to_list},
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::BridgeFnDebugInfo,
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
     syntax::Span,
-    value::{UnpackedValue, Value},
+    value::{Cell, UnpackedValue, UnpackedValueRef, Value},
 };
 use futures::future::BoxFuture;
 use scheme_rs_macros::cps_bridge;
-use std::{borrow::Cow, collections::HashMap, fmt, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, fmt, hash::Hash, mem::MaybeUninit, sync::Arc};
 
 /// A function pointer to a generated continuation.
 pub(crate) type ContinuationPtr = unsafe extern "C" fn(
     runtime: *mut GcInner<RuntimeInner>,
-    env: *const *mut GcInner<Value>,
+    env: *const Value,
     args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
@@ -29,7 +29,7 @@ pub(crate) type ContinuationPtr = unsafe extern "C" fn(
 /// A function pointer to a generated user function.
 pub(crate) type UserPtr = unsafe extern "C" fn(
     runtime: *mut GcInner<RuntimeInner>,
-    env: *const *mut GcInner<Value>,
+    env: *const Value,
     args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
@@ -39,7 +39,7 @@ pub(crate) type UserPtr = unsafe extern "C" fn(
 /// A function pointer to an async Rust bridge function.
 pub type BridgePtr = for<'a> fn(
     runtime: &'a Runtime,
-    env: &'a [Gc<Value>],
+    env: &'a [Value],
     args: &'a [Value],
     rest_args: &'a [Value],
     cont: &'a Value,
@@ -71,7 +71,7 @@ pub(crate) struct ProcedureInner {
     // TODO: Do we make this optional in the case of bridge functions?
     pub(crate) runtime: Runtime,
     /// Environmental variables used by the procedure.
-    pub(crate) env: Vec<Gc<Value>>,
+    pub(crate) env: Vec<Value>,
     /// Fuction pointer to the body of the procecure.
     pub(crate) func: FuncPtr,
     /// Number of required arguments to this procedure.
@@ -88,7 +88,7 @@ pub(crate) struct ProcedureInner {
 impl ProcedureInner {
     pub(crate) fn new(
         runtime: Runtime,
-        env: impl Into<Vec<Gc<Value>>>,
+        env: Vec<Value>,
         func: FuncPtr,
         num_required_args: usize,
         variadic: bool,
@@ -96,7 +96,7 @@ impl ProcedureInner {
     ) -> Self {
         Self {
             runtime,
-            env: env.into(),
+            env,
             func,
             num_required_args,
             variadic,
@@ -199,12 +199,12 @@ impl ProcedureInner {
             Cow::Borrowed(args)
         };
 
-        let env = cells_to_vec_of_ptrs(&self.env);
+        // let env = cells_to_vec_of_ptrs(&self.env);
         let app = match self.func {
             FuncPtr::Continuation(sync_fn) => unsafe {
                 (sync_fn)(
                     Gc::as_ptr(&self.runtime.0),
-                    env.as_ptr(),
+                    self.env.as_ptr(),
                     args.as_ptr(),
                     exception_handler.as_ptr(),
                     dynamic_wind as *const DynamicWind,
@@ -213,7 +213,7 @@ impl ProcedureInner {
             FuncPtr::User(sync_fn) => unsafe {
                 (sync_fn)(
                     Gc::as_ptr(&self.runtime.0),
-                    env.as_ptr(),
+                    self.env.as_ptr(),
                     args.as_ptr(),
                     exception_handler.as_ptr(),
                     dynamic_wind as *const DynamicWind,
@@ -261,7 +261,7 @@ pub struct Procedure(pub(crate) Gc<ProcedureInner>);
 impl Procedure {
     pub(crate) fn new(
         runtime: Runtime,
-        env: Vec<Gc<Value>>,
+        env: Vec<Value>,
         func: FuncPtr,
         num_required_args: usize,
         variadic: bool,
@@ -289,7 +289,7 @@ impl Procedure {
     pub async fn call(&self, args: &[Value]) -> Result<Vec<Value>, Exception> {
         unsafe extern "C" fn halt(
             _runtime: *mut GcInner<RuntimeInner>,
-            _env: *const *mut GcInner<Value>,
+            _env: *const Value,
             args: *const Value,
             _exception_handler: *mut GcInner<ExceptionHandlerInner>,
             _dynamic_wind: *const DynamicWind,
@@ -357,10 +357,6 @@ impl fmt::Debug for ProcedureInner {
 
         write!(f, ") at {}", debug_info.location)
     }
-}
-
-fn cells_to_vec_of_ptrs(cells: &[Gc<Value>]) -> Vec<*mut GcInner<Value>> {
-    cells.iter().map(Gc::as_ptr).collect()
 }
 
 /// An application of a function to a given set of values.
@@ -517,7 +513,7 @@ impl FuncDebugInfo {
 #[cps_bridge(name = "apply", lib = "(rnrs base builtins (6))", args = "arg1 . args")]
 pub async fn apply(
     _runtime: &Runtime,
-    _env: &[Gc<Value>],
+    _env: &[Value],
     args: &[Value],
     rest_args: &[Value],
     cont: &Value,
@@ -548,7 +544,7 @@ pub async fn apply(
 )]
 pub async fn call_with_current_continuation(
     runtime: &Runtime,
-    _env: &[Gc<Value>],
+    _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
@@ -568,7 +564,7 @@ pub async fn call_with_current_continuation(
 
     let escape_procedure = Procedure::new(
         runtime.clone(),
-        vec![Gc::new(cont.clone()), Gc::new(dynamic_wind_value)],
+        vec![cont.clone(), dynamic_wind_value],
         FuncPtr::Bridge(escape_procedure),
         req_args,
         variadic,
@@ -588,13 +584,10 @@ pub async fn call_with_current_continuation(
 
 /// Prepare the continuation for call/cc. Clones the continuation environment
 /// and creates a closure that calls the appropriate winders.
-///
-/// Expects that the continuation and winders will be provided in the form of a
-/// pair of the continuation and vector of pairs of in/out winders.
 #[cps_bridge]
 async fn escape_procedure(
     runtime: &Runtime,
-    env: &[Gc<Value>],
+    env: &[Value],
     args: &[Value],
     rest_args: &[Value],
     _cont: &Value,
@@ -602,32 +595,42 @@ async fn escape_procedure(
     from_extent: &DynamicWind,
 ) -> Result<Application, Condition> {
     // env[0] is the continuation
-    let cont = env[0].read().clone();
+    let cont = env[0].clone();
     // env[1] is the dynamic extend of the continuation
-    let to_extent = env[1].read().clone();
+    let to_extent = env[1].clone();
     let to_extent = to_extent.try_into_rust_type::<DynamicWind>()?;
 
     let thunks = entry_winders(from_extent, &to_extent.read());
 
     // Clone the continuation
-    let cont = maybe_clone_continuation(&cont, &mut HashMap::new()).unwrap();
+    let cont_ref = cont.unpacked_ref();
+    let cont = maybe_clone_continuation(
+        &cont_ref,
+        &mut StackClone::default(),
+        &mut StackClone::default(),
+    )
+    .unwrap_or_else(|| cont.clone());
     let cont: Procedure = cont.try_into().unwrap();
-
-    let (req_args, variadic) = {
-        let cont_read = cont.0.read();
-        (cont_read.num_required_args, cont_read.variadic)
-    };
 
     let args = args.iter().chain(rest_args).cloned().collect::<Vec<_>>();
 
-    let cont = Procedure::new(
-        runtime.clone(),
-        vec![Gc::new(thunks), Gc::new(Value::from(cont))],
-        FuncPtr::Continuation(call_thunks),
-        req_args,
-        variadic,
-        None,
-    );
+    let cont = if thunks.is_null() {
+        cont
+    } else {
+        let (req_args, variadic) = {
+            let cont_read = cont.0.read();
+            (cont_read.num_required_args, cont_read.variadic)
+        };
+
+        Procedure::new(
+            runtime.clone(),
+            vec![thunks, Value::from(cont)],
+            FuncPtr::Continuation(call_thunks),
+            req_args,
+            variadic,
+            None,
+        )
+    };
 
     let app = Application::new(
         cont,
@@ -665,33 +668,45 @@ fn entry_winders(from_extent: &DynamicWind, to_extent: &DynamicWind) -> Value {
     thunks
 }
 
-fn prepare_env_variable(value: &Value, cloned: &mut HashMap<ContinuationPtr, Value>) -> Value {
-    maybe_clone_continuation(value, cloned).unwrap_or_else(|| value.clone())
+fn prepare_env_variable(
+    value: &Value,
+    cloned_k: &mut StackClone<ContinuationPtr>,
+    cloned_cells: &mut StackClone<*mut GcInner<Value>>,
+) -> Value {
+    let value_ref = value.unpacked_ref();
+    maybe_clone_continuation(&value_ref, cloned_k, cloned_cells)
+        .or_else(|| maybe_clone_cell(&value_ref, cloned_cells))
+        .unwrap_or_else(|| value.clone())
 }
 
 fn maybe_clone_continuation(
-    value: &Value,
-    cloned: &mut HashMap<ContinuationPtr, Value>,
+    value: &UnpackedValueRef<'_>,
+    cloned_k: &mut StackClone<ContinuationPtr>,
+    cloned_cells: &mut StackClone<*mut GcInner<Value>>,
 ) -> Option<Value> {
-    let k: Procedure = value.clone().try_into().ok()?;
+    let UnpackedValue::Procedure(k) = value.as_ref() else {
+        return None;
+    };
 
     let func_ptr = {
-        match k.0.read().func {
-            FuncPtr::Continuation(cont) => cont,
+        let k_read = k.0.read();
+        match k_read.func {
+            FuncPtr::Continuation(cont) if !k_read.env.is_empty() => cont,
             _ => return None,
         }
     };
 
-    if let Some(cont) = cloned.get(&func_ptr) {
-        return Some(cont.clone());
+    if let Some(k) = cloned_k.get(&func_ptr) {
+        return Some(k.clone());
     }
 
     let new_k = {
         let k = k.0.read();
-        let new_env = alloc_n_gc_objects(Value::undefined(), k.env.len());
-        for (i, var) in k.env.iter().enumerate() {
-            *new_env[i].write() = prepare_env_variable(&var.read(), cloned);
-        }
+        let new_env = k
+            .env
+            .iter()
+            .map(|var| prepare_env_variable(var, cloned_k, cloned_cells))
+            .collect::<Vec<_>>();
         Procedure::new(
             k.runtime.clone(),
             new_env,
@@ -703,28 +718,103 @@ fn maybe_clone_continuation(
     };
 
     let new_k = Value::from(new_k);
-    cloned.insert(func_ptr, new_k.clone());
+    cloned_k.insert(func_ptr, new_k.clone());
 
     Some(new_k)
 }
 
+fn maybe_clone_cell(
+    value: &UnpackedValueRef<'_>,
+    cloned: &mut StackClone<*mut GcInner<Value>>,
+) -> Option<Value> {
+    let UnpackedValue::Cell(cell) = value.as_ref() else {
+        return None;
+    };
+
+    let cell_ptr = Gc::as_ptr(&cell.0);
+
+    if let Some(cloned) = cloned.get(&cell_ptr) {
+        return Some(cloned);
+    }
+
+    let new_cell = Value::from(Cell(Gc::new(cell.0.read().clone())));
+    cloned.insert(cell_ptr, new_cell.clone());
+    Some(new_cell)
+}
+
+const MAX_ON_STACK: usize = 10;
+
+enum StackClone<K> {
+    Stack {
+        len: usize,
+        stack: [MaybeUninit<(K, Value)>; MAX_ON_STACK],
+    },
+    Heap(HashMap<K, Value>),
+}
+
+impl<K> Default for StackClone<K> {
+    fn default() -> Self {
+        StackClone::Stack {
+            len: 0,
+            stack: [const { MaybeUninit::uninit() }; MAX_ON_STACK],
+        }
+    }
+}
+
+impl<K> StackClone<K>
+where
+    K: PartialEq + Eq + Hash,
+{
+    fn get(&self, key: &K) -> Option<Value> {
+        match self {
+            Self::Stack { len, stack } => {
+                for elem in stack.iter().take(*len) {
+                    let elem = unsafe { elem.assume_init_ref() };
+                    if &elem.0 == key {
+                        return Some(elem.1.clone());
+                    }
+                }
+                None
+            }
+            Self::Heap(heap) => heap.get(key).cloned(),
+        }
+    }
+
+    fn insert(&mut self, key: K, val: Value) {
+        match self {
+            Self::Stack { len, stack } if *len == MAX_ON_STACK => {
+                let mut heap =
+                    std::mem::replace(stack, [const { MaybeUninit::uninit() }; MAX_ON_STACK])
+                        .into_iter()
+                        .map(|x| unsafe { x.assume_init() })
+                        .collect::<HashMap<_, _>>();
+                heap.insert(key, val);
+                *self = Self::Heap(heap);
+            }
+            Self::Stack { len, stack } => {
+                stack[*len] = MaybeUninit::new((key, val));
+                *len += 1;
+            }
+            Self::Heap(heap) => {
+                heap.insert(key, val);
+            }
+        }
+    }
+}
+
 pub(crate) unsafe extern "C" fn call_thunks(
     runtime: *mut GcInner<RuntimeInner>,
-    env: *const *mut GcInner<Value>,
+    env: *const Value,
     args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Application {
     unsafe {
         // env[0] are the thunks:
-        let thunks = Gc::from_raw_inc_rc(env.read());
+        let thunks = env.as_ref().unwrap().clone();
 
         // env[1] is the continuation:
-        let k: Procedure = Gc::from_raw_inc_rc(env.add(1).read())
-            .read()
-            .clone()
-            .try_into()
-            .unwrap();
+        let k: Procedure = env.add(1).as_ref().unwrap().clone().try_into().unwrap();
 
         // k determines the number of arguments:
         let collected_args = {
@@ -751,7 +841,7 @@ pub(crate) unsafe extern "C" fn call_thunks(
 
         let thunks = Procedure::new(
             Runtime::from_raw_inc_rc(runtime),
-            vec![thunks, Gc::new(collected_args), Gc::new(Value::from(k))],
+            vec![thunks, collected_args, Value::from(k)],
             FuncPtr::Continuation(call_thunks_pass_args),
             0,
             false,
@@ -772,22 +862,21 @@ pub(crate) unsafe extern "C" fn call_thunks(
 
 unsafe extern "C" fn call_thunks_pass_args(
     runtime: *mut GcInner<RuntimeInner>,
-    env: *const *mut GcInner<Value>,
+    env: *const Value,
     _args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Application {
     unsafe {
         // env[0] are the thunks:
-        let thunks = Gc::from_raw_inc_rc(env.read());
+        let thunks = env.as_ref().unwrap().clone();
 
         // env[1] are the collected arguments
-        let args = Gc::from_raw_inc_rc(env.add(1).read());
+        let args = env.add(1).as_ref().unwrap().clone();
 
         // env[2] is k1, the current continuation
-        let k = Gc::from_raw_inc_rc(env.add(2).read());
+        let k = env.add(2).as_ref().unwrap().clone();
 
-        let thunks = thunks.read();
         let app = match &*thunks.unpacked_ref() {
             // UnpackedValue::Pair(head_thunk, tail) => {
             UnpackedValue::Pair(pair) => {
@@ -795,7 +884,7 @@ unsafe extern "C" fn call_thunks_pass_args(
                 let head_thunk: Procedure = head_thunk.clone().try_into().unwrap();
                 let cont = Procedure::new(
                     Runtime::from_raw_inc_rc(runtime),
-                    vec![Gc::new(tail.clone()), args, k],
+                    vec![tail.clone(), args, k],
                     FuncPtr::Continuation(call_thunks_pass_args),
                     0,
                     false,
@@ -811,10 +900,9 @@ unsafe extern "C" fn call_thunks_pass_args(
             }
             UnpackedValue::Null => {
                 let mut collected_args = Vec::new();
-                let args = args.read();
                 list_to_vec(&args, &mut collected_args);
                 Application::new(
-                    k.read().clone().try_into().unwrap(),
+                    k.try_into().unwrap(),
                     collected_args,
                     ExceptionHandler::from_ptr(exception_handler),
                     dynamic_wind.as_ref().unwrap().clone(),
@@ -830,45 +918,40 @@ unsafe extern "C" fn call_thunks_pass_args(
 
 unsafe extern "C" fn call_consumer_with_values(
     runtime: *mut GcInner<RuntimeInner>,
-    env: *const *mut GcInner<Value>,
+    env: *const Value,
     args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Application {
     unsafe {
         // env[0] is the consumer
-        let consumer = Gc::from_raw_inc_rc(env.read());
-        let consumer = {
-            let consumer_read = consumer.read();
-            let consumer: Procedure = match consumer_read.clone().try_into() {
-                Ok(consumer) => consumer,
-                _ => {
-                    let raised = raise(
-                        Runtime::from_raw_inc_rc(runtime),
-                        Condition::invalid_operator(consumer_read.type_name()).into(),
-                        ExceptionHandler::from_ptr(exception_handler),
-                        dynamic_wind.as_ref().unwrap(),
-                    );
-                    return Box::into_raw(Box::new(raised));
-                }
-            };
-            consumer.clone()
+        let consumer = env.as_ref().unwrap().clone();
+        let type_name = consumer.type_name();
+        let consumer: Procedure = match consumer.try_into() {
+            Ok(consumer) => consumer,
+            _ => {
+                let raised = raise(
+                    Runtime::from_raw_inc_rc(runtime),
+                    Condition::invalid_operator(type_name).into(),
+                    ExceptionHandler::from_ptr(exception_handler),
+                    dynamic_wind.as_ref().unwrap(),
+                );
+                return Box::into_raw(Box::new(raised));
+            }
         };
 
-        let consumer_read = consumer.0.read();
-
         // env[1] is the continuation
-        let cont = Gc::from_raw_inc_rc(env.add(1).read());
+        let k = env.add(1).as_ref().unwrap().clone();
 
-        let mut collected_args: Vec<_> = (0..consumer_read.num_required_args)
+        let mut collected_args: Vec<_> = (0..consumer.0.read().num_required_args)
             .map(|i| args.add(i).as_ref().unwrap().clone())
             .collect();
 
         // I hate this constant going back and forth from variadic to list. I have
         // to figure out a way to make it consistent
-        if consumer_read.variadic {
+        if consumer.0.read().variadic {
             let rest_args = args
-                .add(consumer_read.num_required_args)
+                .add(consumer.0.read().num_required_args)
                 .as_ref()
                 .unwrap()
                 .clone();
@@ -877,7 +960,7 @@ unsafe extern "C" fn call_consumer_with_values(
             collected_args.extend(vec);
         }
 
-        collected_args.push(cont.read().clone());
+        collected_args.push(k);
 
         Box::into_raw(Box::new(Application::new(
             consumer.clone(),
@@ -896,7 +979,7 @@ unsafe extern "C" fn call_consumer_with_values(
 )]
 pub async fn call_with_values(
     runtime: &Runtime,
-    _env: &[Gc<Value>],
+    _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
@@ -918,7 +1001,7 @@ pub async fn call_with_values(
 
     let call_consumer_closure = Procedure::new(
         runtime.clone(),
-        vec![Gc::new(Value::from(consumer)), Gc::new(cont.clone())],
+        vec![Value::from(consumer), cont.clone()],
         FuncPtr::Continuation(call_consumer_with_values),
         num_required_args,
         variadic,
@@ -952,7 +1035,7 @@ impl SchemeCompatible for DynamicWind {
 )]
 pub async fn dynamic_wind(
     runtime: &Runtime,
-    _env: &[Gc<Value>],
+    _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
     cont: &Value,
@@ -969,10 +1052,10 @@ pub async fn dynamic_wind(
     let call_body_thunk_cont = Procedure::new(
         runtime.clone(),
         vec![
-            Gc::new(in_thunk_val.clone()),
-            Gc::new(body_thunk_val.clone()),
-            Gc::new(out_thunk_val.clone()),
-            Gc::new(cont.clone()),
+            in_thunk_val.clone(),
+            body_thunk_val.clone(),
+            out_thunk_val.clone(),
+            cont.clone(),
         ],
         FuncPtr::Continuation(call_body_thunk),
         0,
@@ -991,32 +1074,28 @@ pub async fn dynamic_wind(
 
 pub(crate) unsafe extern "C" fn call_body_thunk(
     runtime: *mut GcInner<RuntimeInner>,
-    env: *const *mut GcInner<Value>,
+    env: *const Value,
     _args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Application {
     unsafe {
         // env[0] is the in thunk
-        let in_thunk = Gc::from_raw_inc_rc(env.read());
+        let in_thunk = env.as_ref().unwrap().clone();
 
         // env[1] is the body thunk
-        let body_thunk: Procedure = Gc::from_raw_inc_rc(env.add(1).read())
-            .read()
-            .clone()
-            .try_into()
-            .unwrap();
+        let body_thunk: Procedure = env.add(1).as_ref().unwrap().clone().try_into().unwrap();
 
         // env[2] is the out thunk
-        let out_thunk = Gc::from_raw_inc_rc(env.add(2).read());
+        let out_thunk = env.add(2).as_ref().unwrap().clone();
 
         // env[3] is k, the continuation
-        let k = Gc::from_raw_inc_rc(env.add(3).read());
+        let k = env.add(3).as_ref().unwrap().clone();
 
         let mut new_extent = dynamic_wind.as_ref().unwrap().clone();
         new_extent.winders.push((
-            in_thunk.read().clone().try_into().unwrap(),
-            out_thunk.read().clone().try_into().unwrap(),
+            in_thunk.clone().try_into().unwrap(),
+            out_thunk.clone().try_into().unwrap(),
         ));
 
         let cont = Procedure::new(
@@ -1042,24 +1121,20 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
 
 pub(crate) unsafe extern "C" fn call_out_thunks(
     runtime: *mut GcInner<RuntimeInner>,
-    env: *const *mut GcInner<Value>,
+    env: *const Value,
     args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Application {
     unsafe {
         // env[0] is the out thunk
-        let out_thunk: Procedure = Gc::from_raw_inc_rc(env.read())
-            .read()
-            .clone()
-            .try_into()
-            .unwrap();
+        let out_thunk: Procedure = env.as_ref().unwrap().clone().try_into().unwrap();
 
         // env[1] is k, the remaining continuation
-        let k = Gc::from_raw_inc_rc(env.add(1).read());
+        let k = env.add(1).as_ref().unwrap().clone();
 
         // args[0] is the result of the body thunk
-        let body_thunk_res = Gc::new(args.as_ref().unwrap().clone());
+        let body_thunk_res = args.as_ref().unwrap().clone();
 
         let mut new_extent = dynamic_wind.as_ref().unwrap().clone();
         new_extent.winders.pop();
@@ -1087,20 +1162,16 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
 
 unsafe extern "C" fn forward_body_thunk_result(
     _runtime: *mut GcInner<RuntimeInner>,
-    env: *const *mut GcInner<Value>,
+    env: *const Value,
     _args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Application {
     unsafe {
         // env[0] is the result of the body thunk
-        let body_thunk_res = Gc::from_raw_inc_rc(env.read()).read().clone();
+        let body_thunk_res = env.as_ref().unwrap().clone();
         // env[1] is k, the continuation.
-        let k: Procedure = Gc::from_raw_inc_rc(env.add(1).read())
-            .read()
-            .clone()
-            .try_into()
-            .unwrap();
+        let k: Procedure = env.add(1).as_ref().unwrap().clone().try_into().unwrap();
 
         let mut args = Vec::new();
         list_to_vec(&body_thunk_res, &mut args);

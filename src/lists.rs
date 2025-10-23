@@ -246,7 +246,7 @@ pub async fn append(list: &Value, to_append: &Value) -> Result<Vec<Value>, Condi
 )]
 pub async fn map(
     runtime: &Runtime,
-    _env: &[Gc<Value>],
+    _env: &[Value],
     args: &[Value],
     list_n: &[Value],
     cont: &Value,
@@ -285,10 +285,10 @@ pub async fn map(
     let map_k = Procedure::new(
         runtime.clone(),
         vec![
-            Gc::new(Value::from(Vec::<Value>::new())),
-            Gc::new(Value::from(inputs)),
-            Gc::new(mapper.clone()),
-            Gc::new(cont.clone()),
+            Value::from(Vec::<Value>::new()),
+            Value::from(inputs),
+            mapper.clone(),
+            cont.clone(),
         ],
         crate::proc::FuncPtr::Continuation(map_k),
         1,
@@ -309,38 +309,39 @@ pub async fn map(
 
 unsafe extern "C" fn map_k(
     runtime: *mut GcInner<RuntimeInner>,
-    env: *const *mut GcInner<Value>,
+    env: *const Value,
     args: *const Value,
     exception_handler: *mut GcInner<ExceptionHandlerInner>,
     dynamic_wind: *const DynamicWind,
 ) -> *mut Application {
     unsafe {
-        // env[0] is the output list
-        let output = Gc::from_raw_inc_rc(env.read());
-        let output_vec: Gc<vectors::AlignedVector<Value>> =
-            output.read().clone().try_into().unwrap();
+        // TODO: Probably need to do this in a way that avoids mutable variables
 
-        output_vec.write().push(args.as_ref().unwrap().clone());
+        // env[0] is the output list
+        let output: Gc<vectors::AlignedVector<Value>> =
+            env.as_ref().unwrap().clone().try_into().unwrap();
+
+        output.write().push(args.as_ref().unwrap().clone());
 
         // env[1] is the input lists
-        let inputs = Gc::from_raw_inc_rc(env.add(1).read());
-        let inputs_vec: Gc<vectors::AlignedVector<Value>> =
-            inputs.read().clone().try_into().unwrap();
+        let inputs: Gc<vectors::AlignedVector<Value>> =
+            env.add(1).as_ref().unwrap().clone().try_into().unwrap();
+
         // env[2] is the mapper function
-        let mapper = Gc::from_raw_inc_rc(env.add(2).read());
-        let mapper_proc: Procedure = mapper.read().clone().try_into().unwrap();
+        let mapper: Procedure = env.add(2).as_ref().unwrap().clone().try_into().unwrap();
+
         // env[3] is the continuation
-        let cont = Gc::from_raw_inc_rc(env.add(3).read());
-        let cont_proc: Procedure = cont.read().clone().try_into().unwrap();
+        let k: Procedure = env.add(3).as_ref().unwrap().clone().try_into().unwrap();
 
         let mut args = Vec::new();
 
-        for input in inputs_vec.write().iter_mut() {
+        // TODO: We need to collect a new list
+        for input in inputs.write().iter_mut() {
             if input.type_of() == ValueType::Null {
                 // TODO: Check if the rest are also empty and args is empty
-                let output = slice_to_list(&output_vec.read());
+                let output = slice_to_list(&output.read());
                 let app = Application::new(
-                    cont_proc,
+                    k,
                     vec![output],
                     ExceptionHandler::from_ptr(exception_handler),
                     dynamic_wind.as_ref().unwrap().clone(),
@@ -358,7 +359,12 @@ unsafe extern "C" fn map_k(
 
         let map_k = Procedure::new(
             Runtime::from_raw_inc_rc(runtime),
-            vec![output, inputs, mapper, cont],
+            vec![
+                Value::from(output),
+                Value::from(inputs),
+                Value::from(mapper.clone()),
+                Value::from(k),
+            ],
             crate::proc::FuncPtr::Continuation(map_k),
             1,
             false,
@@ -368,7 +374,7 @@ unsafe extern "C" fn map_k(
         args.push(Value::from(map_k));
 
         let app = Application::new(
-            mapper_proc,
+            mapper,
             args,
             ExceptionHandler::from_ptr(exception_handler),
             dynamic_wind.as_ref().unwrap().clone(),

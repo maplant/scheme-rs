@@ -11,7 +11,7 @@ use crate::{
     registry::{ImportError, Library, Registry},
     symbols::Symbol,
     syntax::{Span, parse::Parser},
-    value::{ReflexiveValue, UnpackedValue, Value},
+    value::{Cell, ReflexiveValue, UnpackedValue, Value},
 };
 use scheme_rs_macros::runtime_fn;
 use std::{collections::HashSet, mem::ManuallyDrop, path::Path, sync::Arc};
@@ -262,30 +262,22 @@ unsafe fn arc_from_ptr<T>(ptr: *const T) -> Option<Arc<T>> {
 
 /// Allocate a new Gc with a value of undefined
 #[runtime_fn]
-unsafe extern "C" fn alloc_cell() -> *mut GcInner<Value> {
-    Gc::into_raw(Gc::new(Value::undefined()))
+unsafe extern "C" fn alloc_cell() -> i64 {
+    Value::into_raw(Value::from(Cell(Gc::new(Value::undefined())))) as i64
 }
 
 /// Read the value of a Cell
 #[runtime_fn]
-unsafe extern "C" fn read_cell(cell: *mut GcInner<Value>) -> i64 {
+unsafe extern "C" fn read_cell(cell: i64) -> i64 {
     unsafe {
+        let cell = Value::from_raw(cell as u64);
+        let cell: Cell = cell.try_into().unwrap();
         // We do not need to increment the reference count of the cell, it is going to
         // be decremented at the end of this function.
-        let cell = ManuallyDrop::new(Gc::from_raw(cell));
-        let cell_read = cell.read();
+        let cell = ManuallyDrop::new(cell);
+        let cell_read = cell.0.read();
         let raw = Value::as_raw(&cell_read);
         raw as i64
-    }
-}
-
-/// Decrement the reference count of a cell
-#[runtime_fn]
-unsafe extern "C" fn dropc(cell: *const *mut GcInner<Value>, num_drops: u32) {
-    unsafe {
-        for i in 0..num_drops {
-            Gc::decrement_reference_count(cell.add(i as usize).read());
-        }
     }
 }
 
@@ -406,13 +398,14 @@ unsafe extern "C" fn truthy(val: i64) -> bool {
 
 /// Replace the value pointed to at to with the value contained in from.
 #[runtime_fn]
-unsafe extern "C" fn store(from: i64, to: *mut GcInner<Value>) {
+unsafe extern "C" fn store(from: i64, to: i64) {
     unsafe {
         // We do not need to increment the ref count for to, it is dropped
         // immediately.
         let from = Value::from_raw_inc_rc(from as u64);
-        let to = ManuallyDrop::new(Gc::from_raw(to));
-        *to.write() = from;
+        let to: ManuallyDrop<Cell> =
+            ManuallyDrop::new(Value::from_raw(to as u64).try_into().unwrap());
+        *to.0.write() = from;
     }
 }
 
@@ -451,15 +444,15 @@ unsafe extern "C" fn list(vals: *const i64, num_vals: u32, _error: *mut Value) -
 unsafe extern "C" fn make_continuation(
     runtime: *mut GcInner<RuntimeInner>,
     fn_ptr: ContinuationPtr,
-    env: *const *mut GcInner<Value>,
+    env: *const i64,
     num_envs: u32,
     num_required_args: u32,
     variadic: bool,
-) -> *mut GcInner<Value> {
+) -> i64 {
     unsafe {
         // Collect the environment:
         let env: Vec<_> = (0..num_envs)
-            .map(|i| Gc::from_raw_inc_rc(env.add(i as usize).read()))
+            .map(|i| Value::from_raw_inc_rc(env.add(i as usize).read() as u64))
             .collect();
 
         let proc = Procedure::new(
@@ -471,7 +464,7 @@ unsafe extern "C" fn make_continuation(
             None,
         );
 
-        Gc::into_raw(Gc::new(Value::from(proc)))
+        Value::into_raw(Value::from(proc)) as i64
     }
 }
 
@@ -480,16 +473,16 @@ unsafe extern "C" fn make_continuation(
 unsafe extern "C" fn make_user(
     runtime: *mut GcInner<RuntimeInner>,
     fn_ptr: UserPtr,
-    env: *const *mut GcInner<Value>,
+    env: *const i64,
     num_envs: u32,
     num_required_args: u32,
     variadic: bool,
     debug_info: *const FuncDebugInfo,
-) -> *mut GcInner<Value> {
+) -> i64 {
     unsafe {
         // Collect the environment:
         let env: Vec<_> = (0..num_envs)
-            .map(|i| Gc::from_raw_inc_rc(env.add(i as usize).read()))
+            .map(|i| Value::from_raw_inc_rc(env.add(i as usize).read() as u64))
             .collect();
 
         let proc = Procedure::new(
@@ -501,7 +494,7 @@ unsafe extern "C" fn make_user(
             arc_from_ptr(debug_info),
         );
 
-        Gc::into_raw(Gc::new(Value::from(proc)))
+        Value::into_raw(Value::from(proc)) as i64
     }
 }
 
