@@ -14,12 +14,15 @@ use crate::{
     value::{Cell, ReflexiveValue, UnpackedValue, Value},
 };
 use scheme_rs_macros::runtime_fn;
-use std::{collections::HashSet, mem::ManuallyDrop, path::Path, sync::Arc};
-use tokio::{
-    fs::File,
-    io::BufReader,
-    sync::{mpsc, oneshot},
+use std::{
+    any::Any,
+    collections::HashSet,
+    mem::ManuallyDrop,
+    path::Path,
+    pin::Pin,
+    sync::{Arc, mpsc},
 };
+use tokio::{fs::File, io::BufReader};
 
 /// Scheme-rs Runtime
 ///
@@ -40,20 +43,26 @@ use tokio::{
 #[derive(Trace, Clone)]
 pub struct Runtime(pub(crate) Gc<RuntimeInner>);
 
+/*
 impl Default for Runtime {
     fn default() -> Self {
         Self::new()
     }
 }
+*/
 
 impl Runtime {
     /// Creates a new runtime. Also initializes the garbage collector and
     /// creates a default registry with the bridge functions populated.
-    pub fn new() -> Self {
-        let this = Self(Gc::new(RuntimeInner::default()));
+    pub fn new(async_runtime: Arc<impl AsyncRuntime>) -> Self {
+        let this = Self(Gc::new(RuntimeInner::new(async_runtime)));
         let new_registry = Registry::new(&this);
         this.0.write().registry = new_registry;
         this
+    }
+
+    pub fn async_runtime(&self) -> Arc<dyn AsyncRuntime> {
+        self.0.read().async_runtime.clone()
     }
 
     pub async fn run_program(&self, path: &Path) -> Result<Vec<Value>, Exception> {
@@ -68,17 +77,9 @@ impl Runtime {
             .await
             .map_err(|err| ImportError::ParseSyntaxError(format!("{err:?}")))
             .unwrap();
-        /*
-        let contents = tokio::fs::read_to_string(path).await.unwrap();
-        let sexprs = Syntax::from_str(&contents, Some(&file_name))
-            .map_err(|err| ImportError::ParseSyntaxError(format!("{err:?}")))
-        .unwrap();
-        */
-        let body = DefinitionBody::parse_lib_body(self, &sexprs, &env, sexprs[0].span())
-            .await
-            .unwrap();
+        let body = DefinitionBody::parse_lib_body(self, &sexprs, &env, sexprs[0].span()).unwrap();
         let compiled = body.compile_top_level();
-        let closure = self.compile_expr(compiled).await;
+        let closure = self.compile_expr(compiled);
         Application::new(
             closure,
             Vec::new(),
@@ -90,21 +91,36 @@ impl Runtime {
         .await
     }
 
+    pub fn eval_blocking(&self, app: Application) -> Result<Vec<Value>, Exception> {
+        let async_runtime = self.async_runtime();
+        let Ok(result) = std::thread::spawn(move || {
+            async_runtime.block_on(
+                Box::pin(async move { Box::new(app.eval().await) as Box<dyn Any + Send> }).as_mut(),
+            )
+        })
+        .join()
+        .unwrap()
+        .downcast::<Result<Vec<Value>, Exception>>() else {
+            unreachable!()
+        };
+        *result
+    }
+
     pub fn get_registry(&self) -> Registry {
         self.0.read().registry.clone()
     }
 
-    pub async fn compile_expr(&self, expr: Cps) -> Procedure {
-        let (completion_tx, completion_rx) = oneshot::channel();
+    pub fn compile_expr(&self, expr: Cps) -> Procedure {
+        let (completion_tx, completion_rx) = mpsc::sync_channel(1);
         let task = CompilationTask {
             completion_tx,
             compilation_unit: expr,
             runtime: self.clone(),
         };
         let sender = { self.0.read().compilation_buffer_tx.clone() };
-        sender.send(task).await.unwrap();
+        sender.send(task).unwrap();
         // Wait for the compilation task to complete:
-        completion_rx.await.unwrap()
+        completion_rx.recv().unwrap()
     }
 
     pub(crate) unsafe fn from_raw_inc_rc(rt: *mut GcInner<RuntimeInner>) -> Self {
@@ -117,25 +133,29 @@ pub(crate) struct RuntimeInner {
     /// Package registry
     pub(crate) registry: Registry,
     /// Channel to compilation task
-    compilation_buffer_tx: mpsc::Sender<CompilationTask>,
+    compilation_buffer_tx: mpsc::SyncSender<CompilationTask>,
     pub(crate) constants_pool: HashSet<ReflexiveValue>,
     pub(crate) globals_pool: HashSet<Global>,
     pub(crate) debug_info: DebugInfo,
+    pub(crate) async_runtime: Arc<dyn AsyncRuntime>,
 }
 
+/*
 impl Default for RuntimeInner {
     fn default() -> Self {
         Self::new()
     }
 }
+*/
 
 const MAX_COMPILATION_TASKS: usize = 5; // Shrug
 
 impl RuntimeInner {
-    fn new() -> Self {
+    fn new(async_runtime: Arc<impl AsyncRuntime>) -> Self {
         // Ensure the GC is initialized:
         init_gc();
-        let (compilation_buffer_tx, compilation_buffer_rx) = mpsc::channel(MAX_COMPILATION_TASKS);
+        let (compilation_buffer_tx, compilation_buffer_rx) =
+            mpsc::sync_channel(MAX_COMPILATION_TASKS);
         // According the inkwell (and therefore LLVM docs), one LlvmContext may
         // be present per thread. Thus, we spawn a new thread and a new
         // compilation task for every Runtime:
@@ -146,9 +166,34 @@ impl RuntimeInner {
             constants_pool: HashSet::new(),
             globals_pool: HashSet::new(),
             debug_info: DebugInfo::default(),
+            async_runtime,
         }
     }
 }
+
+pub trait AsyncRuntime: Any + Send + Sync + 'static {
+    fn block_on(
+        &self,
+        future: Pin<&mut dyn Future<Output = Box<dyn Any + Send + 'static>>>,
+    ) -> Box<dyn Any + Send + 'static>;
+}
+
+impl AsyncRuntime for tokio::runtime::Runtime {
+    fn block_on(
+        &self,
+        future: Pin<&mut dyn Future<Output = Box<dyn Any + Send + 'static>>>,
+    ) -> Box<dyn Any + Send + 'static> {
+        self.block_on(future)
+    }
+}
+
+/*
+impl AsyncRuntime for tokio::runtime::Handle {
+    fn block_on<F: Future>(&self, future: F) -> F::Output {
+        self.block_on(future)
+    }
+}
+*/
 
 #[derive(Trace, Clone, Debug, Default)]
 pub struct DebugInfo {
@@ -170,7 +215,7 @@ impl DebugInfo {
 
 struct CompilationTask {
     compilation_unit: Cps,
-    completion_tx: oneshot::Sender<Procedure>,
+    completion_tx: mpsc::SyncSender<Procedure>,
     /// Since Contexts are per-thread, we will only ever see the same Runtime.
     /// However, we can't cache the Runtime, as that would cause a ref cycle
     /// that would prevent the last compilation buffer sender to drop.
@@ -178,7 +223,7 @@ struct CompilationTask {
     runtime: Runtime,
 }
 
-fn compilation_task(mut compilation_queue_rx: mpsc::Receiver<CompilationTask>) {
+fn compilation_task(compilation_queue_rx: mpsc::Receiver<CompilationTask>) {
     use cranelift::prelude::*;
     use cranelift_jit::{JITBuilder, JITModule};
 
@@ -213,7 +258,7 @@ fn compilation_task(mut compilation_queue_rx: mpsc::Receiver<CompilationTask>) {
     // in our JIT compiled functions:
     let mut debug_info = DebugInfo::default();
 
-    while let Some(task) = compilation_queue_rx.blocking_recv() {
+    while let Ok(task) = compilation_queue_rx.recv() {
         let CompilationTask {
             completion_tx,
             compilation_unit,

@@ -6,7 +6,6 @@ use std::{
 };
 
 use either::Either;
-use futures::future::BoxFuture;
 
 use crate::{
     ast::{ImportSet, SpecialKeyword},
@@ -53,28 +52,25 @@ impl LexicalContour {
         self.keywords.insert(name, proc);
     }
 
-    pub fn fetch_var<'a>(
-        &self,
-        name: &'a Identifier,
-    ) -> BoxFuture<'a, Result<Option<Var>, Condition>> {
+    pub fn fetch_var(&self, name: &Identifier) -> Result<Option<Var>, Condition> {
         if let Some(local) = self.vars.get(name) {
             let local = *local;
-            return Box::pin(async move { Ok(Some(Var::Local(local))) });
+            return Ok(Some(Var::Local(local)));
         }
         let up = self.up.clone();
-        Box::pin(async move { up.fetch_var(name).await })
+        up.fetch_var(name)
     }
 
-    pub fn fetch_special_keyword_or_var<'a>(
+    pub fn fetch_special_keyword_or_var(
         &self,
-        name: &'a Identifier,
-    ) -> BoxFuture<'a, Result<Option<Either<SpecialKeyword, Var>>, Condition>> {
+        name: &Identifier,
+    ) -> Result<Option<Either<SpecialKeyword, Var>>, Condition> {
         if let Some(local) = self.vars.get(name) {
             let local = *local;
-            return Box::pin(async move { Ok(Some(Either::Right(Var::Local(local)))) });
+            return Ok(Some(Either::Right(Var::Local(local))));
         }
         let up = self.up.clone();
-        Box::pin(async move { up.fetch_special_keyword_or_var(name).await })
+        up.fetch_special_keyword_or_var(name)
     }
 
     pub fn fetch_local(&self, name: &Identifier) -> Option<Local> {
@@ -94,34 +90,26 @@ impl LexicalContour {
 }
 
 impl Gc<LexicalContour> {
-    pub fn fetch_keyword<'a>(
-        &self,
-        name: &'a Identifier,
-    ) -> BoxFuture<'a, Result<Option<Keyword>, Condition>> {
-        let up = {
-            let this = self.read();
-            if let Some(trans) = this.keywords.get(name) {
-                let this_clone = self.clone();
-                let trans = trans.clone();
-                return Box::pin(async move {
-                    Ok(Some(Keyword::new(
-                        Environment::LexicalContour(this_clone),
-                        trans,
-                    )))
-                });
-            }
-            this.up.clone()
-        };
-        Box::pin(async move { up.fetch_keyword(name).await })
+    pub fn fetch_keyword(&self, name: &Identifier) -> Result<Option<Keyword>, Condition> {
+        let this = self.read();
+        if let Some(trans) = this.keywords.get(name) {
+            let this_clone = self.clone();
+            let trans = trans.clone();
+            return Ok(Some(Keyword::new(
+                Environment::LexicalContour(this_clone),
+                trans,
+            )));
+        }
+        this.up.fetch_keyword(name)
     }
 
-    pub async fn import(&self, import_set: ImportSet) -> Result<(), ImportError> {
+    pub fn import(&self, import_set: ImportSet) -> Result<(), ImportError> {
         let (rt, registry) = {
             let top = self.read().fetch_top();
             let top = top.0.read();
             (top.rt.clone(), top.rt.get_registry())
         };
-        let imports = registry.import(&rt, import_set).await?;
+        let imports = registry.import(&rt, import_set)?;
         let mut this = self.write();
         for (ident, import) in imports {
             match this.imports.entry(ident) {
@@ -164,20 +152,15 @@ impl LetSyntaxContour {
         self.keywords.insert(name, proc);
     }
 
-    pub fn fetch_var<'a>(
-        &self,
-        name: &'a Identifier,
-    ) -> BoxFuture<'a, Result<Option<Var>, Condition>> {
-        let up = self.up.clone();
-        Box::pin(async move { up.fetch_var(name).await })
+    pub fn fetch_var(&self, name: &Identifier) -> Result<Option<Var>, Condition> {
+        self.up.fetch_var(name)
     }
 
-    pub fn fetch_special_keyword_or_var<'a>(
+    pub fn fetch_special_keyword_or_var(
         &self,
-        name: &'a Identifier,
-    ) -> BoxFuture<'a, Result<Option<Either<SpecialKeyword, Var>>, Condition>> {
-        let up = self.up.clone();
-        Box::pin(async move { up.fetch_special_keyword_or_var(name).await })
+        name: &Identifier,
+    ) -> Result<Option<Either<SpecialKeyword, Var>>, Condition> {
+        self.up.fetch_special_keyword_or_var(name)
     }
 
     pub fn fetch_local(&self, name: &Identifier) -> Option<Local> {
@@ -188,31 +171,24 @@ impl LetSyntaxContour {
         self.up.fetch_top()
     }
 
-    pub fn import(&self, import_set: ImportSet) -> BoxFuture<'static, Result<(), ImportError>> {
-        let up = self.up.clone();
-        Box::pin(async move { up.import(import_set).await })
+    pub fn import(&self, import_set: ImportSet) -> Result<(), ImportError> {
+        self.up.import(import_set)
     }
 }
 
 impl Gc<LetSyntaxContour> {
-    pub fn fetch_keyword<'a>(
-        &self,
-        name: &'a Identifier,
-    ) -> BoxFuture<'a, Result<Option<Keyword>, Condition>> {
-        let up = {
-            let this = self.read();
-            if let Some(trans) = this.keywords.get(name) {
-                let trans = trans.clone();
-                let env = if this.recursive {
-                    Environment::LetSyntaxContour(self.clone())
-                } else {
-                    this.up.clone()
-                };
-                return Box::pin(async move { Ok(Some(Keyword::new(env, trans))) });
-            }
-            this.up.clone()
-        };
-        Box::pin(async move { up.fetch_keyword(name).await })
+    pub fn fetch_keyword(&self, name: &Identifier) -> Result<Option<Keyword>, Condition> {
+        let this = self.read();
+        if let Some(trans) = this.keywords.get(name) {
+            let trans = trans.clone();
+            let env = if this.recursive {
+                Environment::LetSyntaxContour(self.clone())
+            } else {
+                this.up.clone()
+            };
+            return Ok(Some(Keyword::new(env, trans)));
+        }
+        this.up.fetch_keyword(name)
     }
 }
 
@@ -244,29 +220,21 @@ impl MacroExpansion {
         self.up.def_keyword(name, proc);
     }
 
-    pub fn fetch_var<'a>(
-        &self,
-        name: &'a Identifier,
-    ) -> BoxFuture<'a, Result<Option<Var>, Condition>> {
-        let up = self.up.clone();
-        let source = self.source.clone();
-        let mark = self.mark;
-        Box::pin(async move {
-            // Attempt to check the up scope first:
-            let var = up.fetch_var(name).await?;
-            if var.is_some() {
-                return Ok(var);
-            }
-            // If the current expansion context contains the mark, remove it and check the
-            // expansion source scope.
-            if name.marks.contains(&mark) {
-                let mut unmarked = name.clone();
-                unmarked.mark(mark);
-                source.fetch_var(&unmarked).await
-            } else {
-                Ok(None)
-            }
-        })
+    pub fn fetch_var(&self, name: &Identifier) -> Result<Option<Var>, Condition> {
+        // Attempt to check the up scope first:
+        let var = self.up.fetch_var(name)?;
+        if var.is_some() {
+            return Ok(var);
+        }
+        // If the current expansion context contains the mark, remove it and check the
+        // expansion source scope.
+        if name.marks.contains(&self.mark) {
+            let mut unmarked = name.clone();
+            unmarked.mark(self.mark);
+            self.source.fetch_var(&unmarked)
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn fetch_local(&self, name: &Identifier) -> Option<Local> {
@@ -302,54 +270,41 @@ impl MacroExpansion {
             .flatten()
     }
 
-    pub fn fetch_keyword<'a>(
-        &self,
-        name: &'a Identifier,
-    ) -> BoxFuture<'a, Result<Option<Keyword>, Condition>> {
-        let up = self.up.clone();
-        let source = self.source.clone();
-        let mark = self.mark;
-        Box::pin(async move {
-            // Attempt to check the up scope first:
-            let key = up.fetch_keyword(name).await?;
-            if key.is_some() {
-                return Ok(key);
-            }
-            // If the current expansion context contains the mark, remove it and check the
-            // expansion source scope.
-            if name.marks.contains(&mark) {
-                let mut unmarked = name.clone();
-                unmarked.mark(mark);
-                source.fetch_keyword(&unmarked).await
-            } else {
-                Ok(None)
-            }
-        })
+    pub fn fetch_keyword(&self, name: &Identifier) -> Result<Option<Keyword>, Condition> {
+        // Attempt to check the up scope first:
+        let key = self.up.fetch_keyword(name)?;
+        if key.is_some() {
+            return Ok(key);
+        }
+        // If the current expansion context contains the mark, remove it and check the
+        // expansion source scope.
+        if name.marks.contains(&self.mark) {
+            let mut unmarked = name.clone();
+            unmarked.mark(self.mark);
+            self.source.fetch_keyword(&unmarked)
+        } else {
+            Ok(None)
+        }
     }
 
-    pub fn fetch_special_keyword_or_var<'a>(
+    pub fn fetch_special_keyword_or_var(
         &self,
-        name: &'a Identifier,
-    ) -> BoxFuture<'a, Result<Option<Either<SpecialKeyword, Var>>, Condition>> {
-        let up = self.up.clone();
-        let source = self.source.clone();
-        let mark = self.mark;
-        Box::pin(async move {
-            // Attempt to check the up scope first:
-            let var = up.fetch_special_keyword_or_var(name).await?;
-            if var.is_some() {
-                return Ok(var);
-            }
-            // If the current expansion context contains the mark, remove it and check the
-            // expansion source scope.
-            if name.marks.contains(&mark) {
-                let mut unmarked = name.clone();
-                unmarked.mark(mark);
-                source.fetch_special_keyword_or_var(&unmarked).await
-            } else {
-                Ok(None)
-            }
-        })
+        name: &Identifier,
+    ) -> Result<Option<Either<SpecialKeyword, Var>>, Condition> {
+        // Attempt to check the up scope first:
+        let var = self.up.fetch_special_keyword_or_var(name)?;
+        if var.is_some() {
+            return Ok(var);
+        }
+        // If the current expansion context contains the mark, remove it and check the
+        // expansion source scope.
+        if name.marks.contains(&self.mark) {
+            let mut unmarked = name.clone();
+            unmarked.mark(self.mark);
+            self.source.fetch_special_keyword_or_var(&unmarked)
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn fetch_top(&self) -> Library {
@@ -365,9 +320,8 @@ impl MacroExpansion {
             }
     }
 
-    pub fn import(&self, import_set: ImportSet) -> BoxFuture<'static, Result<(), ImportError>> {
-        let up = self.up.clone();
-        Box::pin(async move { up.import(import_set).await })
+    pub fn import(&self, import_set: ImportSet) -> Result<(), ImportError> {
+        self.up.import(import_set)
     }
 }
 
@@ -400,34 +354,27 @@ impl SyntaxCaseExpr {
         self.up.def_keyword(name, val);
     }
 
-    fn fetch_var<'a>(&self, name: &'a Identifier) -> BoxFuture<'a, Result<Option<Var>, Condition>> {
-        let up = self.up.clone();
-        Box::pin(async move { up.fetch_var(name).await })
+    fn fetch_var(&self, name: &Identifier) -> Result<Option<Var>, Condition> {
+        self.up.fetch_var(name)
     }
 
     fn fetch_local(&self, name: &Identifier) -> Option<Local> {
         self.up.fetch_local(name)
     }
 
-    fn fetch_keyword<'a>(
-        &self,
-        name: &'a Identifier,
-    ) -> BoxFuture<'a, Result<Option<Keyword>, Condition>> {
-        let up = self.up.clone();
-        Box::pin(async move { up.fetch_keyword(name).await })
+    fn fetch_keyword(&self, name: &Identifier) -> Result<Option<Keyword>, Condition> {
+        self.up.fetch_keyword(name)
     }
 
-    fn fetch_special_keyword_or_var<'a>(
+    fn fetch_special_keyword_or_var(
         &self,
-        name: &'a Identifier,
-    ) -> BoxFuture<'a, Result<Option<Either<SpecialKeyword, Var>>, Condition>> {
-        let up = self.up.clone();
-        Box::pin(async move { up.fetch_special_keyword_or_var(name).await })
+        name: &Identifier,
+    ) -> Result<Option<Either<SpecialKeyword, Var>>, Condition> {
+        self.up.fetch_special_keyword_or_var(name)
     }
 
-    fn import(&self, import: ImportSet) -> BoxFuture<'static, Result<(), ImportError>> {
-        let up = self.up.clone();
-        Box::pin(async move { up.import(import).await })
+    fn import(&self, import: ImportSet) -> Result<(), ImportError> {
+        self.up.import(import)
     }
 
     fn fetch_pattern_variable(&self, name: &Identifier) -> Option<Local> {
@@ -483,25 +430,13 @@ impl Environment {
         }
     }
 
-    pub async fn fetch_var(&self, name: &Identifier) -> Result<Option<Var>, Condition> {
+    pub fn fetch_var(&self, name: &Identifier) -> Result<Option<Var>, Condition> {
         match self {
-            Self::Top(top) => Ok(top.fetch_var(name).await?.map(Var::Global)),
-            Self::LexicalContour(lex) => {
-                let fetch_fut = { lex.read().fetch_var(name) };
-                fetch_fut.await
-            }
-            Self::LetSyntaxContour(ls) => {
-                let fetch_fut = { ls.read().fetch_var(name) };
-                fetch_fut.await
-            }
-            Self::MacroExpansion(me) => {
-                let fetch_fut = { me.read().fetch_var(name) };
-                fetch_fut.await
-            }
-            Self::SyntaxCaseExpr(sc) => {
-                let fetch_fut = { sc.read().fetch_var(name) };
-                fetch_fut.await
-            }
+            Self::Top(top) => Ok(top.fetch_var(name)?.map(Var::Global)),
+            Self::LexicalContour(lex) => lex.read().fetch_var(name),
+            Self::LetSyntaxContour(ls) => ls.read().fetch_var(name),
+            Self::MacroExpansion(me) => me.read().fetch_var(name),
+            Self::SyntaxCaseExpr(sc) => sc.read().fetch_var(name),
         }
     }
 
@@ -515,74 +450,41 @@ impl Environment {
         }
     }
 
-    pub async fn fetch_keyword(&self, name: &Identifier) -> Result<Option<Keyword>, Condition> {
+    pub fn fetch_keyword(&self, name: &Identifier) -> Result<Option<Keyword>, Condition> {
         match self {
-            Self::Top(top) => top.fetch_keyword(name).await,
-            Self::LexicalContour(lex) => {
-                let fetch_fut = { lex.fetch_keyword(name) };
-                fetch_fut.await
-            }
-            Self::LetSyntaxContour(ls) => {
-                let fetch_fut = { ls.fetch_keyword(name) };
-                fetch_fut.await
-            }
-            Self::MacroExpansion(me) => {
-                let fetch_fut = { me.read().fetch_keyword(name) };
-                fetch_fut.await
-            }
-            Self::SyntaxCaseExpr(sc) => {
-                let fetch_fut = { sc.read().fetch_keyword(name) };
-                fetch_fut.await
-            }
+            Self::Top(top) => top.fetch_keyword(name),
+            Self::LexicalContour(lex) => lex.fetch_keyword(name),
+            Self::LetSyntaxContour(ls) => ls.fetch_keyword(name),
+            Self::MacroExpansion(me) => me.read().fetch_keyword(name),
+            Self::SyntaxCaseExpr(sc) => sc.read().fetch_keyword(name),
         }
     }
 
-    pub async fn fetch_special_keyword_or_var(
+    pub fn fetch_special_keyword_or_var(
         &self,
         name: &Identifier,
     ) -> Result<Option<Either<SpecialKeyword, Var>>, Condition> {
         match self {
             Self::Top(top) => {
-                if let Some(var) = top.fetch_var(name).await? {
+                if let Some(var) = top.fetch_var(name)? {
                     return Ok(Some(Either::Right(Var::Global(var))));
                 }
                 Ok(top.fetch_special_keyword(name).map(Either::Left))
             }
-            Self::LexicalContour(lex) => {
-                let fetch_fut = { lex.read().fetch_special_keyword_or_var(name) };
-                fetch_fut.await
-            }
-            Self::LetSyntaxContour(ls) => {
-                let fetch_fut = { ls.read().fetch_special_keyword_or_var(name) };
-                fetch_fut.await
-            }
-            Self::MacroExpansion(me) => {
-                let fetch_fut = { me.read().fetch_special_keyword_or_var(name) };
-                fetch_fut.await
-            }
-            Self::SyntaxCaseExpr(sc) => {
-                let fetch_fut = { sc.read().fetch_special_keyword_or_var(name) };
-                fetch_fut.await
-            }
+            Self::LexicalContour(lex) => lex.read().fetch_special_keyword_or_var(name),
+            Self::LetSyntaxContour(ls) => ls.read().fetch_special_keyword_or_var(name),
+            Self::MacroExpansion(me) => me.read().fetch_special_keyword_or_var(name),
+            Self::SyntaxCaseExpr(sc) => sc.read().fetch_special_keyword_or_var(name),
         }
     }
 
-    pub async fn import(&self, import: ImportSet) -> Result<(), ImportError> {
+    pub fn import(&self, import: ImportSet) -> Result<(), ImportError> {
         match self {
-            Self::Top(top) => top.import(import).await,
-            Self::LexicalContour(lex) => lex.import(import).await,
-            Self::LetSyntaxContour(ls) => {
-                let import_fut = { ls.read().import(import) };
-                import_fut.await
-            }
-            Self::MacroExpansion(me) => {
-                let import_fut = { me.read().import(import) };
-                import_fut.await
-            }
-            Self::SyntaxCaseExpr(sc) => {
-                let import_fut = { sc.read().import(import) };
-                import_fut.await
-            }
+            Self::Top(top) => top.import(import),
+            Self::LexicalContour(lex) => lex.import(import),
+            Self::LetSyntaxContour(ls) => ls.read().import(import),
+            Self::MacroExpansion(me) => me.read().import(import),
+            Self::SyntaxCaseExpr(sc) => sc.read().import(import),
         }
     }
 
@@ -721,6 +623,8 @@ impl fmt::Debug for Local {
 #[derive(Clone, Trace)]
 pub struct Global {
     pub(crate) name: Identifier,
+    // TODO: This needs to be just Value, and a Cell if the value is not
+    // exported
     pub(crate) val: Gc<Value>,
     pub(crate) mutable: bool,
 }

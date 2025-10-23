@@ -29,7 +29,7 @@ pub struct SyntaxRule {
 }
 
 impl SyntaxRule {
-    pub async fn compile(
+    pub fn compile(
         rt: &Runtime,
         keywords: &HashSet<Symbol>,
         pattern: &Syntax,
@@ -42,11 +42,11 @@ impl SyntaxRule {
         let binds = Local::gensym();
         let env = env.new_syntax_case_expr(binds, variables);
         let fender = if let Some(fender) = fender {
-            Some(Expression::parse(rt, fender.clone(), &env).await?)
+            Some(Expression::parse(rt, fender.clone(), &env)?)
         } else {
             None
         };
-        let output_expression = Expression::parse(rt, output_expression.clone(), &env).await?;
+        let output_expression = Expression::parse(rt, output_expression.clone(), &env)?;
         Ok(Self {
             pattern,
             binds,

@@ -13,7 +13,6 @@
 
 mod collection;
 
-// pub(crate) use collection::alloc_n_gc_objects;
 pub use collection::{OpaqueGcPtr, init_gc};
 use either::Either;
 use futures::future::Shared;
@@ -773,6 +772,20 @@ where
 unsafe impl<T> Trace for Shared<T>
 where
     T: Future + 'static,
+{
+    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
+}
+
+unsafe impl<T> Trace for std::sync::mpsc::Sender<T>
+where
+    T: 'static,
+{
+    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
+}
+
+unsafe impl<T> Trace for std::sync::mpsc::SyncSender<T>
+where
+    T: 'static,
 {
     unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
 }

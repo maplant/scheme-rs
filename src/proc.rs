@@ -15,7 +15,9 @@ use crate::{
 };
 use futures::future::BoxFuture;
 use scheme_rs_macros::cps_bridge;
-use std::{borrow::Cow, collections::HashMap, fmt, hash::Hash, mem::MaybeUninit, sync::Arc};
+use std::{
+    any::Any, borrow::Cow, collections::HashMap, fmt, hash::Hash, mem::MaybeUninit, sync::Arc,
+};
 
 /// A function pointer to a generated continuation.
 pub(crate) type ContinuationPtr = unsafe extern "C" fn(
@@ -36,8 +38,19 @@ pub(crate) type UserPtr = unsafe extern "C" fn(
     cont: Value,
 ) -> *mut Application;
 
+/// A function pointer to a sync Rust bridge function.
+pub type SyncBridgePtr = for<'a> fn(
+    runtime: &'a Runtime,
+    env: &'a [Value],
+    args: &'a [Value],
+    rest_args: &'a [Value],
+    cont: &'a Value,
+    exception_handler: &'a ExceptionHandler,
+    dynamic_wind: &'a DynamicWind,
+) -> Application;
+
 /// A function pointer to an async Rust bridge function.
-pub type BridgePtr = for<'a> fn(
+pub type AsyncBridgePtr = for<'a> fn(
     runtime: &'a Runtime,
     env: &'a [Value],
     args: &'a [Value],
@@ -51,9 +64,15 @@ pub type BridgePtr = for<'a> fn(
 pub(crate) enum FuncPtr {
     Continuation(ContinuationPtr),
     User(UserPtr),
-    Bridge(BridgePtr),
+    SyncBridge(SyncBridgePtr),
+    AsyncBridge(AsyncBridgePtr),
     /// Special type to indicate that we should return the argument as an Err.
     HaltError,
+}
+
+enum JitFuncPtr {
+    Continuation(ContinuationPtr),
+    User(UserPtr),
 }
 
 unsafe impl Trace for FuncPtr {
@@ -113,10 +132,6 @@ impl ProcedureInner {
         !self.is_continuation()
     }
 
-    pub fn is_sync(&self) -> bool {
-        matches!(self.func, FuncPtr::Continuation(_) | FuncPtr::User(_))
-    }
-
     pub(crate) fn prepare_args<'a>(
         &self,
         args: &'a [Value],
@@ -124,8 +139,8 @@ impl ProcedureInner {
         dynamic_wind: &DynamicWind,
     ) -> Result<(&'a [Value], Option<Value>), Application> {
         // Extract the continuation, if it is required
-        let cont = matches!(self.func, FuncPtr::Bridge(_) | FuncPtr::User(_));
-        let (cont, args) = if cont {
+        let requires_cont = !matches!(self.func, FuncPtr::Continuation(_));
+        let (cont, args) = if requires_cont {
             let (cont, args) = args.split_last().unwrap();
             (Some(cont.clone()), args)
         } else {
@@ -154,24 +169,21 @@ impl ProcedureInner {
         Ok((args, cont))
     }
 
-    async fn apply_async(
+    async fn apply_async_bridge(
         &self,
+        func: AsyncBridgePtr,
         args: &[Value],
         cont: Value,
         exception_handler: &ExceptionHandler,
         dynamic_wind: &DynamicWind,
     ) -> Application {
-        let FuncPtr::Bridge(async_fn) = self.func else {
-            unreachable!()
-        };
-
         let (args, rest_args) = if self.variadic {
             args.split_at(self.num_required_args)
         } else {
             (args, &[] as &[Value])
         };
 
-        (async_fn)(
+        (func)(
             &self.runtime,
             &self.env,
             args,
@@ -183,8 +195,34 @@ impl ProcedureInner {
         .await
     }
 
-    pub(crate) fn apply_sync(
+    fn apply_sync_bridge(
         &self,
+        func: SyncBridgePtr,
+        args: &[Value],
+        cont: Value,
+        exception_handler: &ExceptionHandler,
+        dynamic_wind: &DynamicWind,
+    ) -> Application {
+        let (args, rest_args) = if self.variadic {
+            args.split_at(self.num_required_args)
+        } else {
+            (args, &[] as &[Value])
+        };
+
+        (func)(
+            &self.runtime,
+            &self.env,
+            args,
+            rest_args,
+            &cont,
+            exception_handler,
+            dynamic_wind,
+        )
+    }
+
+    fn apply_jit(
+        &self,
+        func: JitFuncPtr,
         args: &[Value],
         cont: Option<Value>,
         exception_handler: &ExceptionHandler,
@@ -199,9 +237,8 @@ impl ProcedureInner {
             Cow::Borrowed(args)
         };
 
-        // let env = cells_to_vec_of_ptrs(&self.env);
-        let app = match self.func {
-            FuncPtr::Continuation(sync_fn) => unsafe {
+        let app = match func {
+            JitFuncPtr::Continuation(sync_fn) => unsafe {
                 (sync_fn)(
                     Gc::as_ptr(&self.runtime.0),
                     self.env.as_ptr(),
@@ -210,7 +247,7 @@ impl ProcedureInner {
                     dynamic_wind as *const DynamicWind,
                 )
             },
-            FuncPtr::User(sync_fn) => unsafe {
+            JitFuncPtr::User(sync_fn) => unsafe {
                 (sync_fn)(
                     Gc::as_ptr(&self.runtime.0),
                     self.env.as_ptr(),
@@ -220,7 +257,6 @@ impl ProcedureInner {
                     Value::from_raw(Value::as_raw(cont.as_ref().unwrap())),
                 )
             },
-            _ => unreachable!(),
         };
 
         unsafe { *Box::from_raw(app) }
@@ -236,18 +272,37 @@ impl ProcedureInner {
             return Err(args[0].clone());
         }
 
-        let (args, cont) = match self.prepare_args(args, exception_handler, dynamic_wind) {
+        let (args, k) = match self.prepare_args(args, exception_handler, dynamic_wind) {
             Ok(args) => args,
             Err(raised) => return Ok(raised),
         };
 
-        if self.is_sync() {
-            Ok(self.apply_sync(args, cont, exception_handler, dynamic_wind))
-        } else {
-            Ok(self
-                .apply_async(args, cont.unwrap(), exception_handler, dynamic_wind)
-                .await)
-        }
+        let app = match self.func {
+            FuncPtr::Continuation(cont) => self.apply_jit(
+                JitFuncPtr::Continuation(cont),
+                args,
+                k,
+                exception_handler,
+                dynamic_wind,
+            ),
+            FuncPtr::User(user) => self.apply_jit(
+                JitFuncPtr::User(user),
+                args,
+                k,
+                exception_handler,
+                dynamic_wind,
+            ),
+            FuncPtr::SyncBridge(sbridge) => {
+                self.apply_sync_bridge(sbridge, args, k.unwrap(), exception_handler, dynamic_wind)
+            }
+            FuncPtr::AsyncBridge(abridge) => {
+                self.apply_async_bridge(abridge, args, k.unwrap(), exception_handler, dynamic_wind)
+                    .await
+            }
+            FuncPtr::HaltError => unreachable!(),
+        };
+
+        Ok(app)
     }
 }
 
@@ -317,6 +372,24 @@ impl Procedure {
         )
         .eval()
         .await
+    }
+
+    pub(crate) fn call_blocking(&self, args: &[Value]) -> Result<Vec<Value>, Exception> {
+        let async_runtime = self.get_runtime().async_runtime();
+        let Ok(result) = std::thread::scope(move |s| {
+            s.spawn(move || {
+                let mut future = Box::pin(async move {
+                    Box::new(self.call(args).await) as Box<dyn Any + Send + 'static>
+                });
+                async_runtime.block_on(future.as_mut())
+            })
+            .join()
+            .unwrap()
+        })
+        .downcast::<Result<Vec<Value>, Exception>>() else {
+            unreachable!()
+        };
+        *result
     }
 }
 
@@ -565,7 +638,7 @@ pub async fn call_with_current_continuation(
     let escape_procedure = Procedure::new(
         runtime.clone(),
         vec![cont.clone(), dynamic_wind_value],
-        FuncPtr::Bridge(escape_procedure),
+        FuncPtr::AsyncBridge(escape_procedure),
         req_args,
         variadic,
         None,

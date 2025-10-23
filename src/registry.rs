@@ -9,7 +9,9 @@ use crate::{
     env::{Environment, Global, Keyword},
     exceptions::{Condition, ExceptionHandler},
     gc::{Gc, Trace},
-    proc::{Application, BridgePtr, DynamicWind, FuncDebugInfo, FuncPtr, Procedure},
+    proc::{
+        Application, AsyncBridgePtr, DynamicWind, FuncDebugInfo, FuncPtr, Procedure, SyncBridgePtr,
+    },
     runtime::Runtime,
     symbols::Symbol,
     syntax::{Identifier, Syntax},
@@ -21,8 +23,12 @@ use std::{
     sync::Arc,
 };
 
-use futures::future::BoxFuture;
 pub use scheme_rs_macros::{bridge, cps_bridge};
+
+pub enum BridgePtr {
+    Sync(SyncBridgePtr),
+    Async(AsyncBridgePtr),
+}
 
 pub struct BridgeFn {
     name: &'static str,
@@ -125,7 +131,10 @@ impl RegistryInner {
                 Gc::new(Value::from(Procedure::new(
                     rt.clone(),
                     Vec::new(),
-                    FuncPtr::Bridge(bridge_fn.wrapper),
+                    match bridge_fn.wrapper {
+                        BridgePtr::Sync(sbridge) => FuncPtr::SyncBridge(sbridge),
+                        BridgePtr::Async(abridge) => FuncPtr::AsyncBridge(abridge),
+                    },
                     bridge_fn.num_args,
                     bridge_fn.variadic,
                     Some(debug_info),
@@ -264,7 +273,7 @@ impl Registry {
 
     // TODO: This function is quite messy, so it would be nice to do a little
     // clean up on it.
-    async fn load_lib(&self, rt: &Runtime, name: &[Symbol]) -> Result<Library, ImportError> {
+    fn load_lib(&self, rt: &Runtime, name: &[Symbol]) -> Result<Library, ImportError> {
         if let Some(lib) = self.0.read().libs.get(name) {
             return Ok(lib.clone());
         }
@@ -287,7 +296,7 @@ impl Registry {
         // Check the current path first:
         let curr_path = std::env::current_dir()
             .expect("If we can't get the current working directory, we can't really do much");
-        let lib = match load_lib_from_dir(rt, &curr_path, &path_suffix).await {
+        let lib = match load_lib_from_dir(rt, &curr_path, &path_suffix) {
             Ok(lib) => lib,
             Err(ImportError::LibraryNotFound) => {
                 // Try from the load path
@@ -296,7 +305,7 @@ impl Registry {
                         .unwrap_or_else(|_| DEFAULT_LOAD_PATH.to_string()),
                 );
 
-                match load_lib_from_dir(rt, &path, &path_suffix).await {
+                match load_lib_from_dir(rt, &path, &path_suffix) {
                     Ok(lib) => lib,
                     Err(ImportError::LibraryNotFound) => {
                         // Finally, try the embedded Stdlib
@@ -312,7 +321,7 @@ impl Registry {
                         };
                         let spec =
                             LibrarySpec::parse(syntax).map_err(ImportError::ParseAstError)?;
-                        Library::from_spec(rt, spec, PathBuf::from(file_name)).await?
+                        Library::from_spec(rt, spec, PathBuf::from(file_name))?
                     }
                     x => return x,
                 }
@@ -330,79 +339,69 @@ impl Registry {
         &'a self,
         rt: &'b Runtime,
         import_set: ImportSet,
-    ) -> ImportIterFuture<'a, 'b> {
-        Box::pin(async move {
-            match import_set {
-                ImportSet::Library(lib) => {
-                    let lib = self.load_lib(rt, &lib.name).await?;
-                    let exports = {
-                        lib.0
-                            .read()
-                            .exports
-                            .iter()
-                            .map(|(orign, exp)| (orign.clone(), exp.clone()))
-                            .collect::<Vec<_>>()
-                    };
-                    Ok(Box::new(exports.into_iter().map(move |(orign, exp)| {
-                        (
-                            exp.rename,
-                            Import {
-                                rename: if let Some(import) = lib.0.read().imports.get(&orign) {
-                                    import.rename.clone()
-                                } else {
-                                    orign
-                                },
-                                origin: if let Some(redirect) = exp.origin {
-                                    redirect.clone()
-                                } else {
-                                    lib.clone()
-                                },
+    ) -> ImportIter<'b> {
+        match import_set {
+            ImportSet::Library(lib) => {
+                let lib = self.load_lib(rt, &lib.name)?;
+                let exports = {
+                    lib.0
+                        .read()
+                        .exports
+                        .iter()
+                        .map(|(orign, exp)| (orign.clone(), exp.clone()))
+                        .collect::<Vec<_>>()
+                };
+                Ok(Box::new(exports.into_iter().map(move |(orign, exp)| {
+                    (
+                        exp.rename,
+                        Import {
+                            rename: if let Some(import) = lib.0.read().imports.get(&orign) {
+                                import.rename.clone()
+                            } else {
+                                orign
                             },
-                        )
-                    })) as DynIter<'b>)
-                }
-                ImportSet::Only { set, allowed } => Ok(Box::new(
-                    self.import(rt, *set)
-                        .await?
-                        .filter(move |(import, _)| allowed.contains(import)),
-                ) as DynIter<'b>),
-                ImportSet::Except { set, disallowed } => Ok(Box::new(
-                    self.import(rt, *set)
-                        .await?
-                        .filter(move |(import, _)| !disallowed.contains(import)),
-                ) as DynIter<'b>),
-                ImportSet::Prefix { set, prefix } => {
-                    let prefix = prefix.sym.to_str();
-                    Ok(Box::new(
-                        self.import(rt, *set)
-                            .await?
-                            .map(move |(name, import)| (name.prefix(&prefix), import)),
-                    ) as DynIter<'b>)
-                }
-                ImportSet::Rename { set, mut renames } => Ok(Box::new(
-                    self.import(rt, *set)
-                        .await?
-                        .map(move |(name, import)| (renames.remove(&name).unwrap_or(name), import)),
-                ) as DynIter<'b>),
+                            origin: if let Some(redirect) = exp.origin {
+                                redirect.clone()
+                            } else {
+                                lib.clone()
+                            },
+                        },
+                    )
+                })) as DynIter<'b>)
             }
-        })
+            ImportSet::Only { set, allowed } => Ok(Box::new(
+                self.import(rt, *set)?
+                    .filter(move |(import, _)| allowed.contains(import)),
+            ) as DynIter<'b>),
+            ImportSet::Except { set, disallowed } => Ok(Box::new(
+                self.import(rt, *set)?
+                    .filter(move |(import, _)| !disallowed.contains(import)),
+            ) as DynIter<'b>),
+            ImportSet::Prefix { set, prefix } => {
+                let prefix = prefix.sym.to_str();
+                Ok(Box::new(
+                    self.import(rt, *set)?
+                        .map(move |(name, import)| (name.prefix(&prefix), import)),
+                ) as DynIter<'b>)
+            }
+            ImportSet::Rename { set, mut renames } => Ok(Box::new(
+                self.import(rt, *set)?
+                    .map(move |(name, import)| (renames.remove(&name).unwrap_or(name), import)),
+            ) as DynIter<'b>),
+        }
     }
 }
 
-type ImportIterFuture<'a, 'b> =
-    BoxFuture<'b, Result<Box<dyn Iterator<Item = (Identifier, Import)> + 'b>, ImportError>>;
+type ImportIter<'a> = Result<Box<dyn Iterator<Item = (Identifier, Import)> + 'a>, ImportError>;
+type DynIter<'a> = Box<dyn Iterator<Item = (Identifier, Import)> + 'a>;
 
-async fn load_lib_from_dir(
-    rt: &Runtime,
-    path: &Path,
-    path_suffix: &str,
-) -> Result<Library, ImportError> {
+fn load_lib_from_dir(rt: &Runtime, path: &Path, path_suffix: &str) -> Result<Library, ImportError> {
     for ext in ["sls", "ss", "scm"] {
         let path = path.join(format!("{path_suffix}.{ext}"));
-        if let Ok(false) = tokio::fs::try_exists(&path).await {
+        if let Ok(false) = path.try_exists() {
             continue;
         }
-        let contents = tokio::fs::read_to_string(&path).await?;
+        let contents = std::fs::read_to_string(&path)?;
         let file_name = path.file_name().unwrap().to_string_lossy();
         let syntax = Syntax::from_str(&contents, Some(&file_name))
             .map_err(|err| ImportError::ParseSyntaxError(format!("{err:?}")))?;
@@ -410,13 +409,11 @@ async fn load_lib_from_dir(
             panic!("Has to be one item");
         };
         let spec = LibrarySpec::parse(syntax).unwrap();
-        return Library::from_spec(rt, spec, path).await;
+        return Library::from_spec(rt, spec, path);
     }
 
     Err(ImportError::LibraryNotFound)
 }
-
-type DynIter<'a> = Box<dyn Iterator<Item = (Identifier, Import)> + 'a>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ImportError {
@@ -489,7 +486,7 @@ pub enum LibraryKind {
     Program { path: PathBuf },
 }
 
-#[derive(Trace, derive_more::Debug)]
+#[derive(Clone, Trace, derive_more::Debug)]
 pub struct Import {
     /// The original name of the identifier before being renamed.
     pub(crate) rename: Identifier,
@@ -512,14 +509,6 @@ impl PartialEq for Library {
         Gc::ptr_eq(&self.0, &rhs.0)
     }
 }
-
-/*
-impl fmt::Debug for Library {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Library({:p})", Gc::as_ptr(&self.0))
-    }
-}
-*/
 
 impl Library {
     pub fn new_repl(rt: &Runtime) -> Self {
@@ -553,11 +542,7 @@ impl Library {
         Self(Gc::new(inner))
     }
 
-    pub async fn from_spec(
-        rt: &Runtime,
-        spec: LibrarySpec,
-        path: PathBuf,
-    ) -> Result<Self, ImportError> {
+    pub fn from_spec(rt: &Runtime, spec: LibrarySpec, path: PathBuf) -> Result<Self, ImportError> {
         let registry = rt.get_registry();
 
         // Import libraries:
@@ -565,7 +550,7 @@ impl Library {
         let mut exports = HashMap::<Identifier, Identifier>::default();
 
         for lib_import in spec.imports.import_sets.into_iter() {
-            for (ident, import) in registry.import(rt, lib_import).await? {
+            for (ident, import) in registry.import(rt, lib_import)? {
                 match imports.entry(ident) {
                     Entry::Occupied(prev_imported)
                         if prev_imported.get().origin != import.origin =>
@@ -592,7 +577,7 @@ impl Library {
                 }
                 ExportSet::External(lib_import) => {
                     for lib_import in lib_import.import_sets.into_iter() {
-                        for (ident, import) in registry.import(rt, lib_import).await? {
+                        for (ident, import) in registry.import(rt, lib_import)? {
                             match imports.entry(ident.clone()) {
                                 Entry::Occupied(prev_imported)
                                     if prev_imported.get().origin != import.origin =>
@@ -625,12 +610,12 @@ impl Library {
         ))))
     }
 
-    pub async fn import(&self, import_set: ImportSet) -> Result<(), ImportError> {
+    pub fn import(&self, import_set: ImportSet) -> Result<(), ImportError> {
         let (rt, registry) = {
             let this = self.0.read();
             (this.rt.clone(), this.rt.get_registry())
         };
-        let imports = registry.import(&rt, import_set).await?;
+        let imports = registry.import(&rt, import_set)?;
         let mut this = self.0.write();
         for (ident, import) in imports {
             match this.imports.entry(ident) {
@@ -646,7 +631,7 @@ impl Library {
         Ok(())
     }
 
-    pub(crate) async fn maybe_expand(&self) -> Result<(), ParseAstError> {
+    pub(crate) fn maybe_expand(&self) -> Result<(), ParseAstError> {
         let body = {
             let mut this = self.0.write();
             if let LibraryState::Unexpanded(body) = &mut this.state {
@@ -658,13 +643,13 @@ impl Library {
         };
         let rt = { self.0.read().rt.clone() };
         let env = Environment::from(self.clone());
-        let expanded = DefinitionBody::parse_lib_body(&rt, &body, &env, body[0].span()).await?;
+        let expanded = DefinitionBody::parse_lib_body(&rt, &body, &env, body[0].span())?;
         self.0.write().state = LibraryState::Expanded(expanded);
         Ok(())
     }
 
-    pub(crate) async fn maybe_invoke(&self) -> Result<(), Condition> {
-        self.maybe_expand().await?;
+    pub(crate) fn maybe_invoke(&self) -> Result<(), Condition> {
+        self.maybe_expand()?;
         let defn_body = {
             let mut this = self.0.write();
             match std::mem::replace(&mut this.state, LibraryState::Invalid) {
@@ -677,16 +662,14 @@ impl Library {
         };
         let compiled = defn_body.compile_top_level();
         let rt = { self.0.read().rt.clone() };
-        let proc = rt.compile_expr(compiled).await;
-        let _ = Application::new(
+        let proc = rt.compile_expr(compiled);
+        rt.eval_blocking(Application::new(
             proc,
             Vec::new(),
             ExceptionHandler::default(),
             DynamicWind::default(),
             None,
-        )
-        .eval()
-        .await?;
+        ))?;
         self.0.write().state = LibraryState::Invoked;
         Ok(())
     }
@@ -716,72 +699,63 @@ impl Library {
         this.keywords.insert(keyword, mac);
     }
 
-    pub(crate) fn fetch_var<'a>(
-        &'a self,
-        name: &'a Identifier,
-    ) -> BoxFuture<'a, Result<Option<Global>, Condition>> {
+    pub(crate) fn fetch_var(&self, name: &Identifier) -> Result<Option<Global>, Condition> {
         // Check this library
-        let this = self.0.read();
-        if let Some(var) = this.vars.get(name) {
-            let var = var.clone();
-            // Fetching this every time is kind of slow.
-            let mutable = !this.exports.contains_key(name);
-            return Box::pin(async move { Ok(Some(Global::new(name.clone(), var, mutable))) });
-        }
+        let Import { origin, rename } = {
+            let this = self.0.read();
+            if let Some(var) = this.vars.get(name) {
+                let var = var.clone();
+                // Fetching this every time is kind of slow.
+                let mutable = !this.exports.contains_key(name);
+                return Ok(Some(Global::new(name.clone(), var, mutable)));
+            }
 
-        // Check our imports
-        let Some(Import { origin, rename }) = this.imports.get(name) else {
-            return Box::pin(async { Ok(None) });
+            // Check our imports
+            let Some(import) = this.imports.get(name) else {
+                return Ok(None);
+            };
+
+            import.clone()
         };
 
-        let rename = rename.clone();
-        let import = origin.clone();
-        drop(this);
-        Box::pin(async move {
-            import.maybe_invoke().await?;
-            import.fetch_var(&rename).await
-        })
+        origin.maybe_invoke()?;
+        origin.fetch_var(&rename)
     }
 
-    pub(crate) fn fetch_keyword<'a>(
-        &'a self,
-        keyword: &'a Identifier,
-    ) -> BoxFuture<'a, Result<Option<Keyword>, Condition>> {
+    pub(crate) fn fetch_keyword(&self, keyword: &Identifier) -> Result<Option<Keyword>, Condition> {
         // Check this library
-        let this = self.0.read();
-        if let Some(key) = this.keywords.get(keyword) {
-            let key = key.clone();
-            return Box::pin(async move { Ok(Some(key)) });
-        }
+        let Import { origin, rename } = {
+            let this = self.0.read();
+            if let Some(key) = this.keywords.get(keyword) {
+                let key = key.clone();
+                return Ok(Some(key));
+            }
 
-        // Check our imports
-        let Some(Import { origin, rename }) = this.imports.get(keyword) else {
-            return Box::pin(async { Ok(None) });
+            // Check our imports
+            let Some(import) = this.imports.get(keyword) else {
+                return Ok(None);
+            };
+
+            import.clone()
         };
 
-        let rename = rename.clone();
-        let import = origin.clone();
-        drop(this);
-        Box::pin(async move {
-            import.maybe_invoke().await?;
-            import.fetch_keyword(&rename).await
-        })
+        origin.maybe_invoke()?;
+        origin.fetch_keyword(&rename)
     }
 
     pub(crate) fn fetch_special_keyword(&self, keyword: &Identifier) -> Option<SpecialKeyword> {
         // Check this library:
-        let this = self.0.read();
-        if let Some(special_keyword) = this.special_keywords.get(keyword) {
-            return Some(*special_keyword);
-        }
+        let Import { origin, rename } = {
+            let this = self.0.read();
+            if let Some(special_keyword) = this.special_keywords.get(keyword) {
+                return Some(*special_keyword);
+            }
 
-        // Check our imports:
-        let Import { origin, rename } = this.imports.get(keyword)?;
+            // Check our imports:
+            this.imports.get(keyword)?.clone()
+        };
 
-        let rename = rename.clone();
-        let import = origin.clone();
-        drop(this);
-        import.fetch_special_keyword(&rename)
+        origin.fetch_special_keyword(&rename)
     }
 }
 

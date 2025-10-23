@@ -239,7 +239,7 @@ fn make_default_record_constructor_descriptor(
     let protocol = Procedure::new(
         runtime,
         vec![Value::from(rtd.clone())],
-        FuncPtr::Bridge(default_protocol),
+        FuncPtr::AsyncBridge(default_protocol),
         1,
         false,
         None,
@@ -297,7 +297,7 @@ pub async fn make_record_constructor_descriptor(
         Procedure::new(
             runtime.clone(),
             vec![Value::from(rtd.clone())],
-            FuncPtr::Bridge(default_protocol),
+            FuncPtr::AsyncBridge(default_protocol),
             1,
             false,
             None,
@@ -469,9 +469,9 @@ async fn chain_constructors(
         runtime.clone(),
         env,
         if rtds_remain {
-            FuncPtr::Bridge(chain_constructors)
+            FuncPtr::AsyncBridge(chain_constructors)
         } else {
-            FuncPtr::Bridge(constructor)
+            FuncPtr::AsyncBridge(constructor)
         },
         num_args,
         false,
@@ -553,7 +553,7 @@ async fn default_protocol(
     let constructor = Procedure::new(
         runtime.clone(),
         vec![args[0].clone(), Value::from(rtd)],
-        FuncPtr::Bridge(default_protocol_constructor),
+        FuncPtr::AsyncBridge(default_protocol_constructor),
         num_args,
         false,
         None,
@@ -825,7 +825,7 @@ pub async fn record_predicate(
     let pred_fn = Procedure::new(
         runtime.clone(),
         vec![rtd.clone()],
-        FuncPtr::Bridge(record_predicate_fn),
+        FuncPtr::AsyncBridge(record_predicate_fn),
         1,
         false,
         None,
@@ -903,7 +903,7 @@ pub async fn record_accessor(
     let accessor_fn = Procedure::new(
         runtime.clone(),
         vec![Value::from(rtd), Value::from(Number::from(k))],
-        FuncPtr::Bridge(record_accessor_fn),
+        FuncPtr::AsyncBridge(record_accessor_fn),
         1,
         false,
         None,
@@ -984,7 +984,7 @@ pub async fn record_mutator(
     let mutator_fn = Procedure::new(
         runtime.clone(),
         vec![Value::from(rtd), Value::from(Number::from(k))],
-        FuncPtr::Bridge(record_mutator_fn),
+        FuncPtr::AsyncBridge(record_mutator_fn),
         2,
         false,
         None,

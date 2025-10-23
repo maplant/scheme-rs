@@ -811,7 +811,7 @@ unsafe extern "C" fn reraise_exception(
             Procedure::new(
                 runtime,
                 Vec::new(),
-                FuncPtr::Bridge(raise_builtin),
+                FuncPtr::AsyncBridge(raise_builtin),
                 1,
                 false,
                 None,

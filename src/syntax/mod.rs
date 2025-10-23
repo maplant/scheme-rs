@@ -10,7 +10,6 @@ use crate::{
     syntax::parse::{ParseSyntaxError, Parser},
     value::{UnpackedValue, Value, ValueType},
 };
-use futures::future::BoxFuture;
 use std::{
     collections::{BTreeSet, HashSet},
     fmt,
@@ -191,7 +190,7 @@ impl Syntax {
         }
     }
 
-    async fn apply_transformer(&self, env: &Environment, mac: Keyword) -> Result<Expansion, Value> {
+    fn apply_transformer(&self, env: &Environment, mac: Keyword) -> Result<Expansion, Value> {
         // Create a new mark for the expansion context
         let new_mark = Mark::new();
 
@@ -201,7 +200,7 @@ impl Syntax {
         input.mark(new_mark);
 
         // Call the transformer with the input:
-        let transformer_output = mac.transformer.call(&[Value::from(input)]).await?;
+        let transformer_output = mac.transformer.call_blocking(&[Value::from(input)])?;
 
         // Output must be syntax:
         let output: Arc<Syntax> = transformer_output
@@ -219,53 +218,51 @@ impl Syntax {
         Ok(Expansion::new_expanded(new_env, output))
     }
 
-    fn expand_once<'a>(&'a self, env: &'a Environment) -> BoxFuture<'a, Result<Expansion, Value>> {
-        Box::pin(async move {
-            match self {
-                Self::List { list, .. } => {
-                    // TODO: If list head is a list, do we expand this in here or in proc call?
-                    let ident = match list.first() {
-                        Some(Self::Identifier { ident, .. }) => ident,
-                        _ => return Ok(Expansion::Unexpanded),
-                    };
-                    if let Some(mac) = env.fetch_keyword(ident).await? {
-                        return self.apply_transformer(env, mac).await;
-                    }
+    fn expand_once(&self, env: &Environment) -> Result<Expansion, Value> {
+        match self {
+            Self::List { list, .. } => {
+                // TODO: If list head is a list, do we expand this in here or in proc call?
+                let ident = match list.first() {
+                    Some(Self::Identifier { ident, .. }) => ident,
+                    _ => return Ok(Expansion::Unexpanded),
+                };
+                if let Some(mac) = env.fetch_keyword(ident)? {
+                    return self.apply_transformer(env, mac);
+                }
 
-                    // Check for set! macro
-                    match &list.as_slice()[1..] {
-                        [Syntax::Identifier { ident: var, .. }, ..] if ident == "set!" => {
-                            // Look for a variable transformer:
-                            if let Some(mac) = env.fetch_keyword(var).await? {
-                                if !mac.transformer.is_variable_transformer() {
-                                    return Err(Condition::error(format!(
-                                        "{} not a variable transformer",
-                                        var.sym
-                                    ))
-                                    .into());
-                                }
-                                return self.apply_transformer(env, mac).await;
+                // Check for set! macro
+                match &list.as_slice()[1..] {
+                    [Syntax::Identifier { ident: var, .. }, ..] if ident == "set!" => {
+                        // Look for a variable transformer:
+                        if let Some(mac) = env.fetch_keyword(var)? {
+                            if !mac.transformer.is_variable_transformer() {
+                                return Err(Condition::error(format!(
+                                    "{} not a variable transformer",
+                                    var.sym
+                                ))
+                                .into());
                             }
+                            return self.apply_transformer(env, mac);
                         }
-                        _ => (),
                     }
+                    _ => (),
                 }
-                Self::Identifier { ident, .. } => {
-                    if let Some(mac) = env.fetch_keyword(ident).await? {
-                        return self.apply_transformer(env, mac).await;
-                    }
-                }
-                _ => (),
             }
-            Ok(Expansion::Unexpanded)
-        })
+            Self::Identifier { ident, .. } => {
+                if let Some(mac) = env.fetch_keyword(ident)? {
+                    return self.apply_transformer(env, mac);
+                }
+            }
+            _ => (),
+        }
+        Ok(Expansion::Unexpanded)
     }
 
     /// Fully expand the outermost syntax object.
-    pub async fn expand(mut self, env: &Environment) -> Result<FullyExpanded, Value> {
+    pub fn expand(mut self, env: &Environment) -> Result<FullyExpanded, Value> {
         let mut curr_env = env.clone();
         loop {
-            match self.expand_once(&curr_env).await? {
+            match self.expand_once(&curr_env)? {
                 Expansion::Unexpanded => {
                     return Ok(FullyExpanded::new(curr_env, self));
                 }
