@@ -75,7 +75,6 @@ impl Cps {
         uses_cache: &mut HashMap<Local, HashMap<Local, usize>>,
     ) -> HashMap<Local, usize> {
         match self {
-            // Cps::AllocCell(_, cexpr) => cexpr.uses(uses_cache).clone(),
             Cps::PrimOp(_, args, _, cexpr) => {
                 merge_uses(values_to_uses(args), cexpr.uses(uses_cache))
             }

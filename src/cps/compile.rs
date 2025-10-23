@@ -884,17 +884,6 @@ impl Cps {
             ),
             Self::PrimOp(op, vals, local, cexpr) => {
                 let cexpr = Box::new(cexpr.vals_to_cells(mutable_vars));
-                /*
-                /*
-                let escaping_args =
-                cexpr.need_cells(&[local].into_iter().collect(), needs_cell_cache);
-                */
-                let cexpr = if escaping_args.contains(&local) {
-                    arg_to_cell(&mut local, cexpr)
-                } else {
-                    cexpr
-                };
-                */
                 Self::PrimOp(op, vals, local, cexpr)
             }
             Self::If(val, succ, fail) => Self::If(
@@ -909,11 +898,6 @@ impl Cps {
                 cexp,
                 span,
             } => {
-                /*
-                let local_args: HashSet<_> = args.iter().copied().collect();
-                let escaping_args = body.need_cells(&local_args, needs_cell_cache);
-                */
-
                 let mut body = Box::new(body.vals_to_cells(mutable_vars));
                 let cexp = Box::new(cexp.vals_to_cells(mutable_vars));
 
@@ -934,64 +918,6 @@ impl Cps {
             done => done,
         }
     }
-
-    /*
-    /// Convert arguments for closures into cells if they are written to or escape.
-    fn args_to_cells(self, needs_cell_cache: &mut HashMap<Local, HashSet<Local>>) -> Self {
-        match self {
-            Self::PrimOp(PrimOp::AllocCell, vals, local, cexpr) => Self::PrimOp(
-                PrimOp::AllocCell,
-                vals,
-                local,
-                Box::new(cexpr.args_to_cells(needs_cell_cache)),
-            ),
-            Self::PrimOp(op, vals, mut local, cexpr) => {
-                let cexpr = Box::new(cexpr.args_to_cells(needs_cell_cache));
-                let escaping_args =
-                    cexpr.need_cells(&[local].into_iter().collect(), needs_cell_cache);
-                let cexpr = if escaping_args.contains(&local) {
-                    arg_to_cell(&mut local, cexpr)
-                } else {
-                    cexpr
-                };
-                Self::PrimOp(op, vals, local, cexpr)
-            }
-            Self::If(val, succ, fail) => Self::If(
-                val,
-                Box::new(succ.args_to_cells(needs_cell_cache)),
-                Box::new(fail.args_to_cells(needs_cell_cache)),
-            ),
-            Self::Lambda {
-                mut args,
-                body,
-                val,
-                cexp,
-                span: loc,
-            } => {
-                let local_args: HashSet<_> = args.iter().copied().collect();
-                let escaping_args = body.need_cells(&local_args, needs_cell_cache);
-
-                let mut body = Box::new(body.args_to_cells(needs_cell_cache));
-                let cexp = Box::new(cexp.args_to_cells(needs_cell_cache));
-
-                for arg in args.iter_mut() {
-                    if escaping_args.contains(arg) {
-                        body = arg_to_cell(arg, body);
-                    }
-                }
-
-                Self::Lambda {
-                    args,
-                    body,
-                    val,
-                    cexp,
-                    span: loc,
-                }
-            }
-            done => done,
-        }
-    }
-    */
 }
 
 fn val_to_cell(arg: &mut Local, body: Box<Cps>) -> Box<Cps> {
