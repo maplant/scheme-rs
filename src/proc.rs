@@ -13,8 +13,9 @@ use crate::{
     syntax::Span,
     value::{Cell, UnpackedValue, UnpackedValueRef, Value},
 };
+#[cfg(feature = "async")]
 use futures::future::BoxFuture;
-use scheme_rs_macros::cps_bridge;
+use scheme_rs_macros::{cps_bridge, maybe_async, maybe_await};
 use std::{
     any::Any, borrow::Cow, collections::HashMap, fmt, hash::Hash, mem::MaybeUninit, sync::Arc,
 };
@@ -50,6 +51,7 @@ pub type SyncBridgePtr = for<'a> fn(
 ) -> Application;
 
 /// A function pointer to an async Rust bridge function.
+#[cfg(feature = "async")]
 pub type AsyncBridgePtr = for<'a> fn(
     runtime: &'a Runtime,
     env: &'a [Value],
@@ -65,6 +67,7 @@ pub(crate) enum FuncPtr {
     Continuation(ContinuationPtr),
     User(UserPtr),
     SyncBridge(SyncBridgePtr),
+    #[cfg(feature = "async")]
     AsyncBridge(AsyncBridgePtr),
     /// Special type to indicate that we should return the argument as an Err.
     HaltError,
@@ -169,6 +172,7 @@ impl ProcedureInner {
         Ok((args, cont))
     }
 
+    #[cfg(feature = "async")]
     async fn apply_async_bridge(
         &self,
         func: AsyncBridgePtr,
@@ -262,6 +266,7 @@ impl ProcedureInner {
         unsafe { *Box::from_raw(app) }
     }
 
+    #[maybe_async]
     pub async fn apply(
         &self,
         args: &[Value],
@@ -295,6 +300,7 @@ impl ProcedureInner {
             FuncPtr::SyncBridge(sbridge) => {
                 self.apply_sync_bridge(sbridge, args, k.unwrap(), exception_handler, dynamic_wind)
             }
+            #[cfg(feature = "async")]
             FuncPtr::AsyncBridge(abridge) => {
                 self.apply_async_bridge(abridge, args, k.unwrap(), exception_handler, dynamic_wind)
                     .await
@@ -341,7 +347,8 @@ impl Procedure {
         self.0.read().is_variable_transformer
     }
 
-    pub async fn call(&self, args: &[Value]) -> Result<Vec<Value>, Exception> {
+    #[maybe_async]
+    pub fn call(&self, args: &[Value]) -> Result<Vec<Value>, Exception> {
         unsafe extern "C" fn halt(
             _runtime: *mut GcInner<RuntimeInner>,
             _env: *const Value,
@@ -363,17 +370,19 @@ impl Procedure {
             true,
             None,
         )))));
-        Application::new(
-            self.clone(),
-            args,
-            ExceptionHandler::default(),
-            DynamicWind::default(),
-            None,
+        maybe_await!(
+            Application::new(
+                self.clone(),
+                args,
+                ExceptionHandler::default(),
+                DynamicWind::default(),
+                None,
+            )
+            .eval()
         )
-        .eval()
-        .await
     }
 
+    #[cfg(feature = "async")]
     pub(crate) fn call_blocking(&self, args: &[Value]) -> Result<Vec<Value>, Exception> {
         let async_runtime = self.get_runtime().async_runtime();
         let Ok(result) = std::thread::scope(move |s| {
@@ -477,7 +486,8 @@ impl Application {
 
     /// Evaluate the application - and all subsequent application - until all that
     /// remains are values. This is the main trampoline of the evaluation engine.
-    pub async fn eval(mut self) -> Result<Vec<Value>, Exception> {
+    #[maybe_async]
+    pub fn eval(mut self) -> Result<Vec<Value>, Exception> {
         let mut stack_trace = StackTraceCollector::new();
 
         while let Application {
@@ -490,7 +500,7 @@ impl Application {
         {
             let op = { op.0.read().as_ref().clone() };
             stack_trace.collect_application(op.debug_info.clone(), call_site);
-            self = match op.apply(&args, &exception_handler, &dynamic_wind).await {
+            self = match maybe_await!(op.apply(&args, &exception_handler, &dynamic_wind)) {
                 Err(exception) => {
                     return Err(Exception::new(stack_trace.into_frames(), exception));
                 }
@@ -1050,7 +1060,7 @@ unsafe extern "C" fn call_consumer_with_values(
     lib = "(rnrs base builtins (6))",
     args = "producer consumer"
 )]
-pub async fn call_with_values(
+pub fn call_with_values(
     runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
@@ -1106,7 +1116,7 @@ impl SchemeCompatible for DynamicWind {
     lib = "(rnrs base builtins (6))",
     args = "in body out"
 )]
-pub async fn dynamic_wind(
+pub fn dynamic_wind(
     runtime: &Runtime,
     _env: &[Value],
     args: &[Value],

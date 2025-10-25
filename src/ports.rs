@@ -120,7 +120,6 @@ pub(crate) enum PortInner {
 }
 
 pub struct Port {
-    pub(crate) name: String,
     pub(crate) inner: Arc<Mutex<PortInner>>,
 }
 
@@ -138,9 +137,8 @@ impl Port {
         }
     }
      */
-    pub fn from_reader(name: &str, reader: impl AsyncRead + Send + Sync + 'static) -> Self {
+    pub fn from_reader(reader: impl AsyncRead + Send + Sync + 'static) -> Self {
         Self {
-            name: name.to_string(),
             inner: Arc::new(Mutex::new(PortInner::InputPort(InputPort::from_reader(
                 reader,
             )))),
@@ -149,7 +147,6 @@ impl Port {
 
     pub fn from_prompt(editor: impl Readline) -> Self {
         Self {
-            name: "<prompt>".to_string(),
             inner: Arc::new(Mutex::new(PortInner::InputPort(InputPort::Prompt {
                 prompt: Prompt::new(editor),
             }))),

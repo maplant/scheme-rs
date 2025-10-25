@@ -22,6 +22,11 @@ use std::{
     pin::Pin,
     sync::{Arc, mpsc},
 };
+
+#[cfg(not(feature = "async"))]
+use std::{fs::File, io::BufReader};
+
+#[cfg(feature = "tokio")]
 use tokio::{fs::File, io::BufReader};
 
 /// Scheme-rs Runtime
@@ -54,24 +59,33 @@ impl Default for Runtime {
 impl Runtime {
     /// Creates a new runtime. Also initializes the garbage collector and
     /// creates a default registry with the bridge functions populated.
-    pub fn new(async_runtime: Arc<impl AsyncRuntime>) -> Self {
-        let this = Self(Gc::new(RuntimeInner::new(async_runtime)));
+    pub fn new(
+        #[cfg(feature = "async")]
+        async_runtime: Arc<impl AsyncRuntime>
+    ) -> Self {
+        let this = Self(Gc::new(RuntimeInner::new(
+            #[cfg(feature = "async")]
+            async_runtime
+        )));
         let new_registry = Registry::new(&this);
         this.0.write().registry = new_registry;
         this
     }
 
+    #[cfg(feature = "async")]
     pub fn async_runtime(&self) -> Arc<dyn AsyncRuntime> {
         self.0.read().async_runtime.clone()
     }
 
+    #[cfg(feature = "tokio")]
     pub async fn run_program(&self, path: &Path) -> Result<Vec<Value>, Exception> {
         let progm = Library::new_program(self, path);
         let env = Environment::Top(progm);
         let file_name = path.file_name().unwrap().to_string_lossy();
         let reader = BufReader::new(File::open(path).await.unwrap());
-        let port = Port::from_reader(&file_name, reader);
-        let mut parser = Parser::new(&port).await;
+        let port = Port::from_reader(reader);
+        let mut input_port = port.try_lock_input_port().await.unwrap();
+        let mut parser = Parser::new(&file_name, &mut input_port);
         let sexprs = parser
             .all_datums()
             .await
@@ -91,6 +105,32 @@ impl Runtime {
         .await
     }
 
+    #[cfg(not(feature = "async"))]
+    pub fn run_program(&self, path: &Path) -> Result<Vec<Value>, Exception> {
+        let progm = Library::new_program(self, path);
+        let env = Environment::Top(progm);
+        let file_name = path.file_name().unwrap().to_string_lossy();
+        let reader = BufReader::new(File::open(path).unwrap());
+        let port = Port::from_reader(&file_name, reader);
+        let mut parser = Parser::new(&port);
+        let sexprs = parser
+            .all_datums()
+            .map_err(|err| ImportError::ParseSyntaxError(format!("{err:?}")))
+            .unwrap();
+        let body = DefinitionBody::parse_lib_body(self, &sexprs, &env, sexprs[0].span()).unwrap();
+        let compiled = body.compile_top_level();
+        let closure = self.compile_expr(compiled);
+        Application::new(
+            closure,
+            Vec::new(),
+            ExceptionHandler::default(),
+            DynamicWind::default(),
+            None,
+        )
+        .eval()
+    }
+
+    #[cfg(feature = "async")]
     pub fn eval_blocking(&self, app: Application) -> Result<Vec<Value>, Exception> {
         let async_runtime = self.async_runtime();
         let Ok(result) = std::thread::spawn(move || {
@@ -137,6 +177,7 @@ pub(crate) struct RuntimeInner {
     pub(crate) constants_pool: HashSet<ReflexiveValue>,
     pub(crate) globals_pool: HashSet<Global>,
     pub(crate) debug_info: DebugInfo,
+    #[cfg(feature = "async")]
     pub(crate) async_runtime: Arc<dyn AsyncRuntime>,
 }
 
@@ -151,7 +192,10 @@ impl Default for RuntimeInner {
 const MAX_COMPILATION_TASKS: usize = 5; // Shrug
 
 impl RuntimeInner {
-    fn new(async_runtime: Arc<impl AsyncRuntime>) -> Self {
+    fn new(
+        #[cfg(feature = "async")]
+        async_runtime: Arc<impl AsyncRuntime>
+    ) -> Self {
         // Ensure the GC is initialized:
         init_gc();
         let (compilation_buffer_tx, compilation_buffer_rx) =
@@ -166,11 +210,13 @@ impl RuntimeInner {
             constants_pool: HashSet::new(),
             globals_pool: HashSet::new(),
             debug_info: DebugInfo::default(),
+            #[cfg(feature = "async")]
             async_runtime,
         }
     }
 }
 
+#[cfg(feature = "async")]
 pub trait AsyncRuntime: Any + Send + Sync + 'static {
     fn block_on(
         &self,
@@ -178,6 +224,7 @@ pub trait AsyncRuntime: Any + Send + Sync + 'static {
     ) -> Box<dyn Any + Send + 'static>;
 }
 
+#[cfg(feature = "tokio")]
 impl AsyncRuntime for tokio::runtime::Runtime {
     fn block_on(
         &self,

@@ -888,3 +888,37 @@ pub fn rtd(tokens: TokenStream) -> TokenStream {
         }
     }.into()
 }
+
+// Internal use only:
+
+#[proc_macro_attribute]
+pub fn maybe_async(_args: TokenStream, item: TokenStream) -> TokenStream {
+    let func = parse_macro_input!(item as ItemFn);
+    let mut async_func = func.clone();
+    async_func.sig.asyncness = Some(Token![async](Span::call_site()));
+    quote! {
+        #[cfg(not(feature = "async"))]
+        #func
+
+        #[cfg(feature = "async")]
+        #async_func
+    }
+    .into()
+}
+
+#[proc_macro]
+pub fn maybe_await(tokens: TokenStream) -> TokenStream {
+    let tokens = proc_macro2::TokenStream::from(tokens);
+    quote! {
+        {
+            #[cfg(not(feature = "async"))]
+            let result = #tokens ;
+
+            #[cfg(feature = "async")]
+            let result = #tokens .await;
+
+            result
+        }
+    }
+    .into()
+}

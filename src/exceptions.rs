@@ -287,12 +287,12 @@ impl SchemeCompatible for Message {
             name: "&message",
             parent: SimpleCondition::rtd(),
             fields: ["msg"],
-            constructor: |vals| Box::pin(async move {
+            constructor: |vals| {
                 let [ msg ] = vals else {
                     unreachable!();
                 };
                 Ok(into_scheme_compatible(Gc::new(Message::new(msg.clone().try_into()?))))
-            })
+            }
         )
     }
 
@@ -398,7 +398,7 @@ impl SchemeCompatible for SyntaxViolation {
             name: "&syntax",
             parent: Violation::rtd(),
             fields: [ "form", "subform" ],
-            constructor: |vals| Box::pin(async move {
+            constructor: |vals| {
                 let [ form, subform ] = vals else {
                     unreachable!();
                 };
@@ -407,7 +407,7 @@ impl SchemeCompatible for SyntaxViolation {
                     form: form.clone(),
                     subform: subform.clone(),
                 })))
-            })
+            }
         )
     }
 

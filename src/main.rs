@@ -28,8 +28,9 @@ impl Validator for InputValidator {
     fn validate(&self, ctx: &mut ValidationContext<'_>) -> rustyline::Result<ValidationResult> {
         let bytes = Cursor::new(ctx.input().as_bytes().to_vec());
         let is_valid = futures::executor::block_on(async move {
-            let port = Port::from_reader("<prompt>", bytes);
-            let mut parser = Parser::new(&port).await;
+            let port = Port::from_reader(bytes);
+            let mut input_port = port.try_lock_input_port().await.unwrap();
+            let mut parser = Parser::new("<prompt>", &mut input_port);
             parser.all_datums().await.is_ok()
         });
         if is_valid {
@@ -78,7 +79,8 @@ fn main() -> ExitCode {
         editor.set_helper(Some(helper));
 
         let input_prompt = Port::from_prompt(editor);
-        let mut sexpr_parser = Parser::new(&input_prompt).await;
+        let mut input_port = input_prompt.try_lock_input_port().await.unwrap();
+        let mut sexpr_parser = Parser::new("<prompt>", &mut input_port);
 
         let mut n_results = 1;
         loop {

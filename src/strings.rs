@@ -58,7 +58,7 @@ impl fmt::Debug for AlignedString {
 }
 
 #[bridge(name = "string-append", lib = "(rnrs base builtins (6))")]
-pub async fn list(args: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn list(args: &[Value]) -> Result<Vec<Value>, Condition> {
     let mut output = String::new();
     for arg in args.iter().cloned() {
         let arg: Arc<AlignedString> = arg.try_into()?;

@@ -278,8 +278,9 @@ impl Syntax {
         let file_name = file_name.unwrap_or("<unknown>");
         let bytes = Cursor::new(s.as_bytes().to_vec());
         futures::executor::block_on(async move {
-            let port = Port::from_reader(file_name, bytes);
-            let mut parser = Parser::new(&port).await;
+            let port = Port::from_reader(bytes);
+            let mut input_port = port.try_lock_input_port().await.unwrap();
+            let mut parser = Parser::new(file_name, &mut input_port);
             parser.all_datums().await
         })
     }
