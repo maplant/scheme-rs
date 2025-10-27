@@ -13,7 +13,7 @@ use crate::{
     syntax::{Span, parse::Parser},
     value::{Cell, ReflexiveValue, UnpackedValue, Value},
 };
-use scheme_rs_macros::runtime_fn;
+use scheme_rs_macros::{maybe_async, maybe_await, runtime_fn};
 use std::{
     any::Any,
     collections::HashSet,
@@ -48,33 +48,20 @@ use tokio::{fs::File, io::BufReader};
 #[derive(Trace, Clone)]
 pub struct Runtime(pub(crate) Gc<RuntimeInner>);
 
-/*
 impl Default for Runtime {
     fn default() -> Self {
         Self::new()
     }
 }
-*/
 
 impl Runtime {
     /// Creates a new runtime. Also initializes the garbage collector and
     /// creates a default registry with the bridge functions populated.
-    pub fn new(
-        #[cfg(feature = "async")]
-        async_runtime: Arc<impl AsyncRuntime>
-    ) -> Self {
-        let this = Self(Gc::new(RuntimeInner::new(
-            #[cfg(feature = "async")]
-            async_runtime
-        )));
+    pub fn new() -> Self {
+        let this = Self(Gc::new(RuntimeInner::new()));
         let new_registry = Registry::new(&this);
         this.0.write().registry = new_registry;
         this
-    }
-
-    #[cfg(feature = "async")]
-    pub fn async_runtime(&self) -> Arc<dyn AsyncRuntime> {
-        self.0.read().async_runtime.clone()
     }
 
     #[cfg(feature = "tokio")]
@@ -91,9 +78,9 @@ impl Runtime {
             .await
             .map_err(|err| ImportError::ParseSyntaxError(format!("{err:?}")))
             .unwrap();
-        let body = DefinitionBody::parse_lib_body(self, &sexprs, &env, sexprs[0].span()).unwrap();
+        let body = DefinitionBody::parse_lib_body(self, &sexprs, &env, sexprs[0].span()).await.unwrap();
         let compiled = body.compile_top_level();
-        let closure = self.compile_expr(compiled);
+        let closure = self.compile_expr(compiled).await;
         Application::new(
             closure,
             Vec::new(),
@@ -105,62 +92,22 @@ impl Runtime {
         .await
     }
 
-    #[cfg(not(feature = "async"))]
-    pub fn run_program(&self, path: &Path) -> Result<Vec<Value>, Exception> {
-        let progm = Library::new_program(self, path);
-        let env = Environment::Top(progm);
-        let file_name = path.file_name().unwrap().to_string_lossy();
-        let reader = BufReader::new(File::open(path).unwrap());
-        let port = Port::from_reader(&file_name, reader);
-        let mut parser = Parser::new(&port);
-        let sexprs = parser
-            .all_datums()
-            .map_err(|err| ImportError::ParseSyntaxError(format!("{err:?}")))
-            .unwrap();
-        let body = DefinitionBody::parse_lib_body(self, &sexprs, &env, sexprs[0].span()).unwrap();
-        let compiled = body.compile_top_level();
-        let closure = self.compile_expr(compiled);
-        Application::new(
-            closure,
-            Vec::new(),
-            ExceptionHandler::default(),
-            DynamicWind::default(),
-            None,
-        )
-        .eval()
-    }
-
-    #[cfg(feature = "async")]
-    pub fn eval_blocking(&self, app: Application) -> Result<Vec<Value>, Exception> {
-        let async_runtime = self.async_runtime();
-        let Ok(result) = std::thread::spawn(move || {
-            async_runtime.block_on(
-                Box::pin(async move { Box::new(app.eval().await) as Box<dyn Any + Send> }).as_mut(),
-            )
-        })
-        .join()
-        .unwrap()
-        .downcast::<Result<Vec<Value>, Exception>>() else {
-            unreachable!()
-        };
-        *result
-    }
-
     pub fn get_registry(&self) -> Registry {
         self.0.read().registry.clone()
     }
 
+    #[maybe_async]
     pub fn compile_expr(&self, expr: Cps) -> Procedure {
-        let (completion_tx, completion_rx) = mpsc::sync_channel(1);
+        let (completion_tx, completion_rx) = completion();
         let task = CompilationTask {
             completion_tx,
             compilation_unit: expr,
             runtime: self.clone(),
         };
         let sender = { self.0.read().compilation_buffer_tx.clone() };
-        sender.send(task).unwrap();
+        let _ = maybe_await!(sender.send(task));
         // Wait for the compilation task to complete:
-        completion_rx.recv().unwrap()
+        maybe_await!(recv_procedure(completion_rx))
     }
 
     pub(crate) unsafe fn from_raw_inc_rc(rt: *mut GcInner<RuntimeInner>) -> Self {
@@ -168,38 +115,50 @@ impl Runtime {
     }
 }
 
+#[cfg(not(feature = "async"))]
+type CompilationBufferTx = std::sync::mpsc::SyncSender<CompilationTask>;
+#[cfg(not(feature = "async"))]
+type CompilationBufferRx = std::sync::mpsc::Receiver<CompilationTask>;
+
+#[cfg(feature = "async")]
+type CompilationBufferTx = tokio::sync::mpsc::Sender<CompilationTask>;
+#[cfg(feature = "async")]
+type CompilationBufferRx = tokio::sync::mpsc::Receiver<CompilationTask>;
+
 #[derive(Trace)]
 pub(crate) struct RuntimeInner {
     /// Package registry
     pub(crate) registry: Registry,
     /// Channel to compilation task
-    compilation_buffer_tx: mpsc::SyncSender<CompilationTask>,
+    compilation_buffer_tx: CompilationBufferTx,
     pub(crate) constants_pool: HashSet<ReflexiveValue>,
     pub(crate) globals_pool: HashSet<Global>,
     pub(crate) debug_info: DebugInfo,
-    #[cfg(feature = "async")]
-    pub(crate) async_runtime: Arc<dyn AsyncRuntime>,
 }
 
-/*
 impl Default for RuntimeInner {
     fn default() -> Self {
         Self::new()
     }
 }
-*/
 
 const MAX_COMPILATION_TASKS: usize = 5; // Shrug
 
+#[cfg(not(feature = "async"))]
+fn compilation_buffer() -> (CompilationBufferTx, CompilationBufferRx) {
+    std::sync::mpsc::sync_channel(MAX_COMPILATION_TASKS)
+}
+
+#[cfg(feature = "async")]
+fn compilation_buffer() -> (CompilationBufferTx, CompilationBufferRx) {
+    tokio::sync::mpsc::channel(MAX_COMPILATION_TASKS)
+}
+
 impl RuntimeInner {
-    fn new(
-        #[cfg(feature = "async")]
-        async_runtime: Arc<impl AsyncRuntime>
-    ) -> Self {
+    fn new() -> Self {
         // Ensure the GC is initialized:
         init_gc();
-        let (compilation_buffer_tx, compilation_buffer_rx) =
-            mpsc::sync_channel(MAX_COMPILATION_TASKS);
+        let (compilation_buffer_tx, compilation_buffer_rx) = compilation_buffer();
         // According the inkwell (and therefore LLVM docs), one LlvmContext may
         // be present per thread. Thus, we spawn a new thread and a new
         // compilation task for every Runtime:
@@ -210,37 +169,9 @@ impl RuntimeInner {
             constants_pool: HashSet::new(),
             globals_pool: HashSet::new(),
             debug_info: DebugInfo::default(),
-            #[cfg(feature = "async")]
-            async_runtime,
         }
     }
 }
-
-#[cfg(feature = "async")]
-pub trait AsyncRuntime: Any + Send + Sync + 'static {
-    fn block_on(
-        &self,
-        future: Pin<&mut dyn Future<Output = Box<dyn Any + Send + 'static>>>,
-    ) -> Box<dyn Any + Send + 'static>;
-}
-
-#[cfg(feature = "tokio")]
-impl AsyncRuntime for tokio::runtime::Runtime {
-    fn block_on(
-        &self,
-        future: Pin<&mut dyn Future<Output = Box<dyn Any + Send + 'static>>>,
-    ) -> Box<dyn Any + Send + 'static> {
-        self.block_on(future)
-    }
-}
-
-/*
-impl AsyncRuntime for tokio::runtime::Handle {
-    fn block_on<F: Future>(&self, future: F) -> F::Output {
-        self.block_on(future)
-    }
-}
-*/
 
 #[derive(Trace, Clone, Debug, Default)]
 pub struct DebugInfo {
@@ -260,9 +191,39 @@ impl DebugInfo {
     }
 }
 
+#[cfg(not(feature = "async"))]
+type CompletionTx = std::sync::mpsc::SyncSender<CompilationTask>;
+#[cfg(not(feature = "async"))]
+type CompletionRx = std::sync::mpsc::Receiver<CompilationTask>;
+
+#[cfg(feature = "async")]
+type CompletionTx = tokio::sync::oneshot::Sender<Procedure>;
+#[cfg(feature = "async")]
+type CompletionRx = tokio::sync::oneshot::Receiver<Procedure>;
+
+#[cfg(not(feature = "async"))]
+fn completion() -> (CompletionTx, CompletionRx) {
+    std::sync::mpsc::sync_channel(1)
+}
+
+#[cfg(feature = "async")]
+fn completion() -> (CompletionTx, CompletionRx) {
+    tokio::sync::oneshot::channel()
+}
+
+#[cfg(not(feature = "async"))]
+fn recv_procedure(rx: CompletionRx) -> Procedure {
+    rx.recv().unwrap()
+}
+
+#[cfg(feature = "async")]
+async fn recv_procedure(rx: CompletionRx) -> Procedure {
+    rx.await.unwrap()
+}
+
 struct CompilationTask {
     compilation_unit: Cps,
-    completion_tx: mpsc::SyncSender<Procedure>,
+    completion_tx: CompletionTx,
     /// Since Contexts are per-thread, we will only ever see the same Runtime.
     /// However, we can't cache the Runtime, as that would cause a ref cycle
     /// that would prevent the last compilation buffer sender to drop.
@@ -270,7 +231,17 @@ struct CompilationTask {
     runtime: Runtime,
 }
 
-fn compilation_task(compilation_queue_rx: mpsc::Receiver<CompilationTask>) {
+#[cfg(not(feature = "async"))]
+fn recv_compilation_task(rx: &mut CompilationBufferRx) -> Option<CompilationTask> {
+    rx.recv().ok()
+}
+
+#[cfg(feature = "async")]
+fn recv_compilation_task(rx: &mut CompilationBufferRx) -> Option<CompilationTask> {
+    rx.blocking_recv()
+}
+
+fn compilation_task(mut compilation_queue_rx: CompilationBufferRx) {
     use cranelift::prelude::*;
     use cranelift_jit::{JITBuilder, JITModule};
 
@@ -305,7 +276,7 @@ fn compilation_task(compilation_queue_rx: mpsc::Receiver<CompilationTask>) {
     // in our JIT compiled functions:
     let mut debug_info = DebugInfo::default();
 
-    while let Ok(task) = compilation_queue_rx.recv() {
+    while let Some(task) = recv_compilation_task(&mut compilation_queue_rx) {
         let CompilationTask {
             completion_tx,
             compilation_unit,
