@@ -124,7 +124,7 @@ pub fn list_to_vec_with_null(curr: &Value, out: &mut Vec<Value>) {
 }
 
 #[bridge(name = "list", lib = "(rnrs base builtins (6))")]
-pub async fn list(args: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn list(args: &[Value]) -> Result<Vec<Value>, Condition> {
     // Construct the list in reverse
     let mut cdr = Value::null();
     for arg in args.iter().rev() {
@@ -134,12 +134,12 @@ pub async fn list(args: &[Value]) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "cons", lib = "(rnrs base builtins (6))")]
-pub async fn cons(car: &Value, cdr: &Value) -> Result<Vec<Value>, Condition> {
+pub fn cons(car: &Value, cdr: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(Gc::new(Pair(car.clone(), cdr.clone())))])
 }
 
 #[bridge(name = "car", lib = "(rnrs base builtins (6))")]
-pub async fn car(val: &Value) -> Result<Vec<Value>, Condition> {
+pub fn car(val: &Value) -> Result<Vec<Value>, Condition> {
     match val.clone().unpack() {
         UnpackedValue::Pair(pair) => {
             let pair_read = pair.read();
@@ -157,7 +157,7 @@ pub async fn car(val: &Value) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "cdr", lib = "(rnrs base builtins (6))")]
-pub async fn cdr(val: &Value) -> Result<Vec<Value>, Condition> {
+pub fn cdr(val: &Value) -> Result<Vec<Value>, Condition> {
     match val.clone().unpack() {
         UnpackedValue::Pair(pair) => {
             let pair_read = pair.read();
@@ -177,7 +177,7 @@ pub async fn cdr(val: &Value) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "set-car!", lib = "(rnrs base builtins (6))")]
-pub async fn set_car(var: &Value, val: &Value) -> Result<Vec<Value>, Condition> {
+pub fn set_car(var: &Value, val: &Value) -> Result<Vec<Value>, Condition> {
     let pair: Gc<Pair> = var.clone().try_into()?;
     let mut pair_write = pair.write();
     let Pair(car, _) = pair_write.as_mut();
@@ -186,7 +186,7 @@ pub async fn set_car(var: &Value, val: &Value) -> Result<Vec<Value>, Condition> 
 }
 
 #[bridge(name = "set-cdr!", lib = "(rnrs base builtins (6))")]
-pub async fn set_cdr(var: &Value, val: &Value) -> Result<Vec<Value>, Condition> {
+pub fn set_cdr(var: &Value, val: &Value) -> Result<Vec<Value>, Condition> {
     let pair: Gc<Pair> = var.clone().try_into()?;
     let mut pair_write = pair.write();
     let Pair(_, cdr) = pair_write.as_mut();
@@ -195,7 +195,7 @@ pub async fn set_cdr(var: &Value, val: &Value) -> Result<Vec<Value>, Condition> 
 }
 
 #[bridge(name = "length", lib = "(rnrs base builtins (6))")]
-pub async fn length_builtin(arg: &Value) -> Result<Vec<Value>, Condition> {
+pub fn length_builtin(arg: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(Number::from(length(arg)?))])
 }
 
@@ -220,7 +220,7 @@ pub fn length(arg: &Value) -> Result<usize, Condition> {
 }
 
 #[bridge(name = "list->vector", lib = "(rnrs base builtins (6))")]
-pub async fn list_to_vector(list: &Value) -> Result<Vec<Value>, Condition> {
+pub fn list_to_vector(list: &Value) -> Result<Vec<Value>, Condition> {
     let mut vec = Vec::new();
     list_to_vec(list, &mut vec);
 
@@ -228,7 +228,7 @@ pub async fn list_to_vector(list: &Value) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "append", lib = "(rnrs base builtins (6))")]
-pub async fn append(list: &Value, to_append: &Value) -> Result<Vec<Value>, Condition> {
+pub fn append(list: &Value, to_append: &Value) -> Result<Vec<Value>, Condition> {
     let mut vec = Vec::new();
     list_to_vec(list, &mut vec);
     println!("vec = {vec:#?}");
@@ -244,7 +244,7 @@ pub async fn append(list: &Value, to_append: &Value) -> Result<Vec<Value>, Condi
     lib = "(rnrs base builtins (6))",
     args = "proc list1 . listn"
 )]
-pub async fn map(
+pub fn map(
     runtime: &Runtime,
     _env: &[Value],
     args: &[Value],

@@ -13,8 +13,7 @@ use crate::{
     syntax::Span,
     value::{Cell, UnpackedValue, UnpackedValueRef, Value},
 };
-use futures::future::BoxFuture;
-use scheme_rs_macros::cps_bridge;
+use scheme_rs_macros::{cps_bridge, maybe_async, maybe_await};
 use std::{borrow::Cow, collections::HashMap, fmt, hash::Hash, mem::MaybeUninit, sync::Arc};
 
 /// A function pointer to a generated continuation.
@@ -36,8 +35,8 @@ pub(crate) type UserPtr = unsafe extern "C" fn(
     cont: Value,
 ) -> *mut Application;
 
-/// A function pointer to an async Rust bridge function.
-pub type BridgePtr = for<'a> fn(
+/// A function pointer to a sync Rust bridge function.
+pub type SyncBridgePtr = for<'a> fn(
     runtime: &'a Runtime,
     env: &'a [Value],
     args: &'a [Value],
@@ -45,15 +44,34 @@ pub type BridgePtr = for<'a> fn(
     cont: &'a Value,
     exception_handler: &'a ExceptionHandler,
     dynamic_wind: &'a DynamicWind,
-) -> BoxFuture<'a, Application>;
+) -> Application;
+
+/// A function pointer to an async Rust bridge function.
+#[cfg(feature = "async")]
+pub type AsyncBridgePtr = for<'a> fn(
+    runtime: &'a Runtime,
+    env: &'a [Value],
+    args: &'a [Value],
+    rest_args: &'a [Value],
+    cont: &'a Value,
+    exception_handler: &'a ExceptionHandler,
+    dynamic_wind: &'a DynamicWind,
+) -> futures::future::BoxFuture<'a, Application>;
 
 #[derive(Copy, Clone, Debug)]
 pub(crate) enum FuncPtr {
     Continuation(ContinuationPtr),
     User(UserPtr),
-    Bridge(BridgePtr),
+    Bridge(SyncBridgePtr),
+    #[cfg(feature = "async")]
+    AsyncBridge(AsyncBridgePtr),
     /// Special type to indicate that we should return the argument as an Err.
     HaltError,
+}
+
+enum JitFuncPtr {
+    Continuation(ContinuationPtr),
+    User(UserPtr),
 }
 
 unsafe impl Trace for FuncPtr {
@@ -113,10 +131,6 @@ impl ProcedureInner {
         !self.is_continuation()
     }
 
-    pub fn is_sync(&self) -> bool {
-        matches!(self.func, FuncPtr::Continuation(_) | FuncPtr::User(_))
-    }
-
     pub(crate) fn prepare_args<'a>(
         &self,
         args: &'a [Value],
@@ -124,8 +138,8 @@ impl ProcedureInner {
         dynamic_wind: &DynamicWind,
     ) -> Result<(&'a [Value], Option<Value>), Application> {
         // Extract the continuation, if it is required
-        let cont = matches!(self.func, FuncPtr::Bridge(_) | FuncPtr::User(_));
-        let (cont, args) = if cont {
+        let requires_cont = !matches!(self.func, FuncPtr::Continuation(_));
+        let (cont, args) = if requires_cont {
             let (cont, args) = args.split_last().unwrap();
             (Some(cont.clone()), args)
         } else {
@@ -154,24 +168,22 @@ impl ProcedureInner {
         Ok((args, cont))
     }
 
-    async fn apply_async(
+    #[cfg(feature = "async")]
+    async fn apply_async_bridge(
         &self,
+        func: AsyncBridgePtr,
         args: &[Value],
         cont: Value,
         exception_handler: &ExceptionHandler,
         dynamic_wind: &DynamicWind,
     ) -> Application {
-        let FuncPtr::Bridge(async_fn) = self.func else {
-            unreachable!()
-        };
-
         let (args, rest_args) = if self.variadic {
             args.split_at(self.num_required_args)
         } else {
             (args, &[] as &[Value])
         };
 
-        (async_fn)(
+        (func)(
             &self.runtime,
             &self.env,
             args,
@@ -183,8 +195,34 @@ impl ProcedureInner {
         .await
     }
 
-    pub(crate) fn apply_sync(
+    fn apply_sync_bridge(
         &self,
+        func: SyncBridgePtr,
+        args: &[Value],
+        cont: Value,
+        exception_handler: &ExceptionHandler,
+        dynamic_wind: &DynamicWind,
+    ) -> Application {
+        let (args, rest_args) = if self.variadic {
+            args.split_at(self.num_required_args)
+        } else {
+            (args, &[] as &[Value])
+        };
+
+        (func)(
+            &self.runtime,
+            &self.env,
+            args,
+            rest_args,
+            &cont,
+            exception_handler,
+            dynamic_wind,
+        )
+    }
+
+    fn apply_jit(
+        &self,
+        func: JitFuncPtr,
         args: &[Value],
         cont: Option<Value>,
         exception_handler: &ExceptionHandler,
@@ -199,9 +237,8 @@ impl ProcedureInner {
             Cow::Borrowed(args)
         };
 
-        // let env = cells_to_vec_of_ptrs(&self.env);
-        let app = match self.func {
-            FuncPtr::Continuation(sync_fn) => unsafe {
+        let app = match func {
+            JitFuncPtr::Continuation(sync_fn) => unsafe {
                 (sync_fn)(
                     Gc::as_ptr(&self.runtime.0),
                     self.env.as_ptr(),
@@ -210,7 +247,7 @@ impl ProcedureInner {
                     dynamic_wind as *const DynamicWind,
                 )
             },
-            FuncPtr::User(sync_fn) => unsafe {
+            JitFuncPtr::User(sync_fn) => unsafe {
                 (sync_fn)(
                     Gc::as_ptr(&self.runtime.0),
                     self.env.as_ptr(),
@@ -220,13 +257,13 @@ impl ProcedureInner {
                     Value::from_raw(Value::as_raw(cont.as_ref().unwrap())),
                 )
             },
-            _ => unreachable!(),
         };
 
         unsafe { *Box::from_raw(app) }
     }
 
-    pub async fn apply(
+    #[maybe_async]
+    pub fn apply(
         &self,
         args: &[Value],
         exception_handler: &ExceptionHandler,
@@ -236,18 +273,38 @@ impl ProcedureInner {
             return Err(args[0].clone());
         }
 
-        let (args, cont) = match self.prepare_args(args, exception_handler, dynamic_wind) {
+        let (args, k) = match self.prepare_args(args, exception_handler, dynamic_wind) {
             Ok(args) => args,
             Err(raised) => return Ok(raised),
         };
 
-        if self.is_sync() {
-            Ok(self.apply_sync(args, cont, exception_handler, dynamic_wind))
-        } else {
-            Ok(self
-                .apply_async(args, cont.unwrap(), exception_handler, dynamic_wind)
-                .await)
-        }
+        let app = match self.func {
+            FuncPtr::Continuation(cont) => self.apply_jit(
+                JitFuncPtr::Continuation(cont),
+                args,
+                k,
+                exception_handler,
+                dynamic_wind,
+            ),
+            FuncPtr::User(user) => self.apply_jit(
+                JitFuncPtr::User(user),
+                args,
+                k,
+                exception_handler,
+                dynamic_wind,
+            ),
+            FuncPtr::Bridge(sbridge) => {
+                self.apply_sync_bridge(sbridge, args, k.unwrap(), exception_handler, dynamic_wind)
+            }
+            #[cfg(feature = "async")]
+            FuncPtr::AsyncBridge(abridge) => {
+                self.apply_async_bridge(abridge, args, k.unwrap(), exception_handler, dynamic_wind)
+                    .await
+            }
+            FuncPtr::HaltError => unreachable!(),
+        };
+
+        Ok(app)
     }
 }
 
@@ -286,7 +343,8 @@ impl Procedure {
         self.0.read().is_variable_transformer
     }
 
-    pub async fn call(&self, args: &[Value]) -> Result<Vec<Value>, Exception> {
+    #[maybe_async]
+    pub fn call(&self, args: &[Value]) -> Result<Vec<Value>, Exception> {
         unsafe extern "C" fn halt(
             _runtime: *mut GcInner<RuntimeInner>,
             _env: *const Value,
@@ -298,6 +356,7 @@ impl Procedure {
         }
 
         let mut args = args.to_vec();
+
         // TODO: We don't need to create a new one of these every time, we should just have
         // one
         args.push(Value::from(Self(Gc::new(ProcedureInner::new(
@@ -308,15 +367,17 @@ impl Procedure {
             true,
             None,
         )))));
-        Application::new(
-            self.clone(),
-            args,
-            ExceptionHandler::default(),
-            DynamicWind::default(),
-            None,
+
+        maybe_await!(
+            Application::new(
+                self.clone(),
+                args,
+                ExceptionHandler::default(),
+                DynamicWind::default(),
+                None,
+            )
+            .eval()
         )
-        .eval()
-        .await
     }
 }
 
@@ -404,7 +465,8 @@ impl Application {
 
     /// Evaluate the application - and all subsequent application - until all that
     /// remains are values. This is the main trampoline of the evaluation engine.
-    pub async fn eval(mut self) -> Result<Vec<Value>, Exception> {
+    #[maybe_async]
+    pub fn eval(mut self) -> Result<Vec<Value>, Exception> {
         let mut stack_trace = StackTraceCollector::new();
 
         while let Application {
@@ -417,7 +479,7 @@ impl Application {
         {
             let op = { op.0.read().as_ref().clone() };
             stack_trace.collect_application(op.debug_info.clone(), call_site);
-            self = match op.apply(&args, &exception_handler, &dynamic_wind).await {
+            self = match maybe_await!(op.apply(&args, &exception_handler, &dynamic_wind)) {
                 Err(exception) => {
                     return Err(Exception::new(stack_trace.into_frames(), exception));
                 }
@@ -511,7 +573,7 @@ impl FuncDebugInfo {
 }
 
 #[cps_bridge(name = "apply", lib = "(rnrs base builtins (6))", args = "arg1 . args")]
-pub async fn apply(
+pub fn apply(
     _runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
@@ -542,7 +604,7 @@ pub async fn apply(
     lib = "(rnrs base builtins (6))",
     args = "proc"
 )]
-pub async fn call_with_current_continuation(
+pub fn call_with_current_continuation(
     runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
@@ -585,7 +647,7 @@ pub async fn call_with_current_continuation(
 /// Prepare the continuation for call/cc. Clones the continuation environment
 /// and creates a closure that calls the appropriate winders.
 #[cps_bridge]
-async fn escape_procedure(
+fn escape_procedure(
     runtime: &Runtime,
     env: &[Value],
     args: &[Value],
@@ -977,7 +1039,7 @@ unsafe extern "C" fn call_consumer_with_values(
     lib = "(rnrs base builtins (6))",
     args = "producer consumer"
 )]
-pub async fn call_with_values(
+pub fn call_with_values(
     runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
@@ -1033,7 +1095,7 @@ impl SchemeCompatible for DynamicWind {
     lib = "(rnrs base builtins (6))",
     args = "in body out"
 )]
-pub async fn dynamic_wind(
+pub fn dynamic_wind(
     runtime: &Runtime,
     _env: &[Value],
     args: &[Value],

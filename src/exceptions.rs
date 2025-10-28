@@ -287,12 +287,12 @@ impl SchemeCompatible for Message {
             name: "&message",
             parent: SimpleCondition::rtd(),
             fields: ["msg"],
-            constructor: |vals| Box::pin(async move {
+            constructor: |vals| {
                 let [ msg ] = vals else {
                     unreachable!();
                 };
                 Ok(into_scheme_compatible(Gc::new(Message::new(msg.clone().try_into()?))))
-            })
+            }
         )
     }
 
@@ -398,7 +398,7 @@ impl SchemeCompatible for SyntaxViolation {
             name: "&syntax",
             parent: Violation::rtd(),
             fields: [ "form", "subform" ],
-            constructor: |vals| Box::pin(async move {
+            constructor: |vals| {
                 let [ form, subform ] = vals else {
                     unreachable!();
                 };
@@ -407,7 +407,7 @@ impl SchemeCompatible for SyntaxViolation {
                     form: form.clone(),
                     subform: subform.clone(),
                 })))
-            })
+            }
         )
     }
 
@@ -422,7 +422,7 @@ impl SchemeCompatible for SyntaxViolation {
 }
 
 #[bridge(name = "&syntax-rtd", lib = "(rnrs conditions builtins (6))")]
-pub async fn syntax_rtd() -> Result<Vec<Value>, Condition> {
+pub fn syntax_rtd() -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(SyntaxViolation::rtd())])
 }
 
@@ -581,7 +581,7 @@ impl ExceptionHandler {
     lib = "(rnrs base builtins (6))",
     args = "handler thunk"
 )]
-pub async fn with_exception_handler(
+pub fn with_exception_handler(
     _runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
@@ -615,7 +615,7 @@ pub async fn with_exception_handler(
 }
 
 #[cps_bridge(name = "raise", lib = "(rnrs base builtins (6))", args = "obj")]
-pub async fn raise_builtin(
+pub fn raise_builtin(
     runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
@@ -831,7 +831,7 @@ unsafe extern "C" fn reraise_exception(
     lib = "(rnrs base builtins (6))",
     args = "obj"
 )]
-pub async fn raise_continuable(
+pub fn raise_continuable(
     runtime: &Runtime,
     _env: &[Value],
     args: &[Value],

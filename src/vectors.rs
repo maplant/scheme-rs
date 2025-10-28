@@ -176,7 +176,7 @@ impl Indexer for VectorIndexer {
 }
 
 #[bridge(name = "make-vector", lib = "(rnrs base builtins (6))")]
-pub async fn make_vector(n: &Value, with: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn make_vector(n: &Value, with: &[Value]) -> Result<Vec<Value>, Condition> {
     let n: Arc<Number> = n.clone().try_into()?;
     let n: usize = n.as_ref().try_into()?;
 
@@ -188,12 +188,12 @@ pub async fn make_vector(n: &Value, with: &[Value]) -> Result<Vec<Value>, Condit
 }
 
 #[bridge(name = "vector", lib = "(rnrs base builtins (6))")]
-pub async fn vector(args: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn vector(args: &[Value]) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(args.to_vec())])
 }
 
 #[bridge(name = "vector-ref", lib = "(rnrs base builtins (6))")]
-pub async fn vector_ref(vec: &Value, index: &Value) -> Result<Vec<Value>, Condition> {
+pub fn vector_ref(vec: &Value, index: &Value) -> Result<Vec<Value>, Condition> {
     let vec: Gc<AlignedVector<Value>> = vec.clone().try_into()?;
     let index: usize = try_to_usize(index)?;
     let vec_read = vec.read();
@@ -207,7 +207,7 @@ pub async fn vector_ref(vec: &Value, index: &Value) -> Result<Vec<Value>, Condit
 }
 
 #[bridge(name = "vector-length", lib = "(rnrs base builtins (6))")]
-pub async fn vector_len(vec: &Value) -> Result<Vec<Value>, Condition> {
+pub fn vector_len(vec: &Value) -> Result<Vec<Value>, Condition> {
     let vec: Gc<AlignedVector<Value>> = vec.clone().try_into()?;
     let len = vec.read().len();
 
@@ -218,7 +218,7 @@ pub async fn vector_len(vec: &Value) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "bytevector-length", lib = "(rnrs base builtins (6))")]
-pub async fn bytevector_len(vec: &Value) -> Result<Vec<Value>, Condition> {
+pub fn bytevector_len(vec: &Value) -> Result<Vec<Value>, Condition> {
     let vec: Arc<AlignedVector<u8>> = vec.clone().try_into()?;
     let len = vec.len();
 
@@ -229,7 +229,7 @@ pub async fn bytevector_len(vec: &Value) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "vector-set!", lib = "(rnrs base builtins (6))")]
-pub async fn vector_set(vec: &Value, index: &Value, with: &Value) -> Result<Vec<Value>, Condition> {
+pub fn vector_set(vec: &Value, index: &Value, with: &Value) -> Result<Vec<Value>, Condition> {
     let vec: Gc<AlignedVector<Value>> = vec.clone().try_into()?;
     let vec_len = vec.read().len();
 
@@ -243,14 +243,14 @@ pub async fn vector_set(vec: &Value, index: &Value, with: &Value) -> Result<Vec<
 }
 
 #[bridge(name = "vector->list", lib = "(rnrs base builtins (6))")]
-pub async fn vector_to_list(from: &Value, range: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn vector_to_list(from: &Value, range: &[Value]) -> Result<Vec<Value>, Condition> {
     let vec = VectorIndexer::index(from, range)?;
     let vec_read = vec.read();
     Ok(vec![slice_to_list(&vec_read)])
 }
 
 #[bridge(name = "vector->string", lib = "(rnrs base builtins (6))")]
-pub async fn vector_to_string(from: &Value, range: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn vector_to_string(from: &Value, range: &[Value]) -> Result<Vec<Value>, Condition> {
     let vec = VectorIndexer::index(from, range)?;
     let vec_read = vec.read();
     Ok(vec![Value::from(
@@ -263,7 +263,7 @@ pub async fn vector_to_string(from: &Value, range: &[Value]) -> Result<Vec<Value
 }
 
 #[bridge(name = "string->vector", lib = "(rnrs base builtins (6))")]
-pub async fn string_to_vector(from: &Value, range: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn string_to_vector(from: &Value, range: &[Value]) -> Result<Vec<Value>, Condition> {
     let str = StringIndexer::index(from, range)?;
     Ok(vec![Value::from(
         str.chars().map(Value::from).collect::<Vec<_>>(),
@@ -271,12 +271,12 @@ pub async fn string_to_vector(from: &Value, range: &[Value]) -> Result<Vec<Value
 }
 
 #[bridge(name = "vector-copy", lib = "(rnrs base builtins (6))")]
-pub async fn vector_copy(from: &Value, range: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn vector_copy(from: &Value, range: &[Value]) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(VectorIndexer::index(from, range)?)])
 }
 
 #[bridge(name = "vector-copy!", lib = "(rnrs base builtins (6))")]
-pub async fn vector_copy_to(
+pub fn vector_copy_to(
     to: &Value,
     at: &Value,
     from: &Value,
@@ -311,7 +311,7 @@ pub async fn vector_copy_to(
 }
 
 #[bridge(name = "vector-append", lib = "(rnrs base builtins (6))")]
-pub async fn vector_append(args: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn vector_append(args: &[Value]) -> Result<Vec<Value>, Condition> {
     if args.is_empty() {
         return Err(Condition::wrong_num_of_var_args(1..usize::MAX, 0));
     }
@@ -331,7 +331,7 @@ pub async fn vector_append(args: &[Value]) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "vector-fill!", lib = "(rnrs base builtins (6))")]
-pub async fn vector_fill(
+pub fn vector_fill(
     vector: &Value,
     with: &Value,
     start: &Value,

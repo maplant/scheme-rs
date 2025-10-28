@@ -6,7 +6,6 @@ pub mod cps;
 pub mod env;
 pub mod exceptions;
 pub mod expand;
-pub mod futures;
 pub mod gc;
 pub mod lists;
 pub mod num;
@@ -20,3 +19,10 @@ pub mod symbols;
 pub mod syntax;
 pub mod value;
 pub mod vectors;
+
+#[cfg(feature = "tokio")]
+pub mod futures;
+
+// Require tokio (for now) if the async feature is enabled
+#[cfg(all(feature = "async", not(feature = "tokio")))]
+compile_error!("async features requires the tokio feature to be enabled");

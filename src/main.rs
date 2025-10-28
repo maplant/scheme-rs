@@ -19,20 +19,37 @@ use scheme_rs::{
     },
     value::Value,
 };
-use std::{
-    io::Cursor,
-    process::{ExitCode, exit},
-};
+use scheme_rs_macros::{maybe_async, maybe_await};
+use std::{io::Cursor, process::ExitCode};
 
 #[derive(Default)]
 struct InputValidator;
 
+#[cfg(not(feature = "async"))]
+impl Validator for InputValidator {
+    fn validate(&self, ctx: &mut ValidationContext<'_>) -> rustyline::Result<ValidationResult> {
+        let bytes = Cursor::new(ctx.input().as_bytes().to_vec());
+        let port = Port::from_reader(bytes);
+        let input_port = port.get_input_port().unwrap();
+        let mut input_port = input_port.lock().unwrap();
+        let mut parser = Parser::new("<prompt>", &mut input_port);
+        if parser.all_datums().is_ok() {
+            Ok(ValidationResult::Valid(None))
+        } else {
+            Ok(ValidationResult::Incomplete)
+        }
+    }
+}
+
+#[cfg(feature = "async")]
 impl Validator for InputValidator {
     fn validate(&self, ctx: &mut ValidationContext<'_>) -> rustyline::Result<ValidationResult> {
         let bytes = Cursor::new(ctx.input().as_bytes().to_vec());
         let is_valid = futures::executor::block_on(async move {
-            let port = Port::from_reader("<prompt>", bytes);
-            let mut parser = Parser::new(&port).await;
+            let port = Port::from_reader(bytes);
+            let input_port = port.get_input_port().unwrap();
+            let mut input_port = input_port.lock().await;
+            let mut parser = Parser::new("<prompt>", &mut input_port);
             parser.all_datums().await.is_ok()
         });
         if is_valid {
@@ -51,13 +68,13 @@ struct InputHelper {
     highlighter: MatchingBracketHighlighter,
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
+#[maybe_async]
+#[cfg_attr(feature = "async", tokio::main)]
+fn main() -> ExitCode {
     let runtime = Runtime::new();
     let repl = Library::new_repl(&runtime);
 
-    repl.import(ImportSet::parse_from_str("(library (rnrs))").unwrap())
-        .await
+    maybe_await!(repl.import(ImportSet::parse_from_str("(library (rnrs))").unwrap()))
         .expect("Failed to import standard library");
 
     let config = Config::builder().auto_add_history(true).build();
@@ -77,11 +94,19 @@ async fn main() -> ExitCode {
     editor.set_helper(Some(helper));
 
     let input_prompt = Port::from_prompt(editor);
-    let mut sexpr_parser = Parser::new(&input_prompt).await;
+    let input_port = input_prompt.get_input_port().unwrap();
+
+    #[cfg(not(feature = "async"))]
+    let mut input_port = input_port.lock().unwrap();
+
+    #[cfg(feature = "tokio")]
+    let mut input_port = input_port.lock().await;
+
+    let mut sexpr_parser = Parser::new("<prompt>", &mut input_port);
 
     let mut n_results = 1;
     loop {
-        let sexpr = match sexpr_parser.get_datum().await {
+        let sexpr = match maybe_await!(sexpr_parser.get_datum()) {
             Ok(sexpr) => sexpr,
             Err(ParseSyntaxError::Lex(LexerError::ReadError(ReadError::Eof))) => break,
             Err(err) => {
@@ -90,7 +115,7 @@ async fn main() -> ExitCode {
             }
         };
 
-        match compile_and_run_str(&runtime, &repl, sexpr).await {
+        match maybe_await!(compile_and_run_str(&runtime, &repl, sexpr)) {
             Ok(results) => {
                 for result in results.into_iter() {
                     println!("${n_results} = {result:?}");
@@ -106,7 +131,7 @@ async fn main() -> ExitCode {
         }
     }
 
-    exit(0)
+    ExitCode::SUCCESS
 }
 
 #[derive(derive_more::From, Debug)]
@@ -115,24 +140,26 @@ pub enum EvalError {
     Exception(Exception),
 }
 
-async fn compile_and_run_str(
+#[maybe_async]
+fn compile_and_run_str(
     runtime: &Runtime,
     repl: &Library,
     sexpr: Syntax,
 ) -> Result<Vec<Value>, EvalError> {
     let env = Environment::Top(repl.clone());
     let span = sexpr.span().clone();
-    let expr = DefinitionBody::parse(runtime, &[sexpr], &env, &span).await?;
+    let expr = maybe_await!(DefinitionBody::parse(runtime, &[sexpr], &env, &span))?;
     let compiled = expr.compile_top_level();
-    let closure = runtime.compile_expr(compiled).await;
-    let result = Application::new(
-        closure,
-        Vec::new(),
-        ExceptionHandler::default(),
-        DynamicWind::default(),
-        None,
-    )
-    .eval()
-    .await?;
+    let closure = maybe_await!(runtime.compile_expr(compiled));
+    let result = maybe_await!(
+        Application::new(
+            closure,
+            Vec::new(),
+            ExceptionHandler::default(),
+            DynamicWind::default(),
+            None,
+        )
+        .eval()
+    )?;
     Ok(result)
 }

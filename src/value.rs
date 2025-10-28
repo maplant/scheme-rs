@@ -1134,32 +1134,32 @@ fn debug_value(
     }
 }
 #[bridge(name = "not", lib = "(rnrs base builtins (6))")]
-pub async fn not(a: &Value) -> Result<Vec<Value>, Condition> {
+pub fn not(a: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(a.0 == Tag::Boolean as u64)])
 }
 
 #[bridge(name = "eqv?", lib = "(rnrs base builtins (6))")]
-pub async fn eqv(a: &Value, b: &Value) -> Result<Vec<Value>, Condition> {
+pub fn eqv(a: &Value, b: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(a.eqv(b))])
 }
 
 #[bridge(name = "eq?", lib = "(rnrs base builtins (6))")]
-pub async fn eq(a: &Value, b: &Value) -> Result<Vec<Value>, Condition> {
+pub fn eq(a: &Value, b: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(a.eqv(b))])
 }
 
 #[bridge(name = "equal?", lib = "(rnrs base builtins (6))")]
-pub async fn equal_pred(a: &Value, b: &Value) -> Result<Vec<Value>, Condition> {
+pub fn equal_pred(a: &Value, b: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(a == b)])
 }
 
 #[bridge(name = "boolean?", lib = "(rnrs base builtins (6))")]
-pub async fn boolean_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
+pub fn boolean_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(arg.type_of() == ValueType::Boolean)])
 }
 
 #[bridge(name = "boolean=?", lib = "(rnrs base builtins (6))")]
-pub async fn boolean_eq_pred(a: &Value, args: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn boolean_eq_pred(a: &Value, args: &[Value]) -> Result<Vec<Value>, Condition> {
     let res = if a.type_of() == ValueType::Boolean {
         args.iter().all(|arg| arg == a)
     } else {
@@ -1169,22 +1169,22 @@ pub async fn boolean_eq_pred(a: &Value, args: &[Value]) -> Result<Vec<Value>, Co
 }
 
 #[bridge(name = "symbol?", lib = "(rnrs base builtins (6))")]
-pub async fn symbol_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
+pub fn symbol_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(arg.type_of() == ValueType::Symbol)])
 }
 
 #[bridge(name = "char?", lib = "(rnrs base builtins (6))")]
-pub async fn char_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
+pub fn char_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(arg.type_of() == ValueType::Character)])
 }
 
 #[bridge(name = "vector?", lib = "(rnrs base builtins (6))")]
-pub async fn vector_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
+pub fn vector_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(arg.type_of() == ValueType::Vector)])
 }
 
 #[bridge(name = "null?", lib = "(rnrs base builtins (6))")]
-pub async fn null_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
+pub fn null_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
     let is_null = match &*arg.unpacked_ref() {
         UnpackedValue::Null => true,
         UnpackedValue::Syntax(syn) => matches!(syn.as_ref(), Syntax::Null { .. }),
@@ -1194,7 +1194,7 @@ pub async fn null_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "pair?", lib = "(rnrs base builtins (6))")]
-pub async fn pair_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
+pub fn pair_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(matches!(
         *arg.unpacked_ref(),
         UnpackedValue::Pair(_)
@@ -1202,17 +1202,17 @@ pub async fn pair_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "string?", lib = "(rnrs base builtins (6))")]
-pub async fn string_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
+pub fn string_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(arg.type_of() == ValueType::String)])
 }
 
 #[bridge(name = "procedure?", lib = "(rnrs base builtins (6))")]
-pub async fn procedure_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
+pub fn procedure_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(arg.type_of() == ValueType::Procedure)])
 }
 
 #[bridge(name = "display", lib = "(rnrs base builtins (6))")]
-pub async fn display(arg: &Value) -> Result<Vec<Value>, Condition> {
+pub fn display(arg: &Value) -> Result<Vec<Value>, Condition> {
     print!("{arg}");
     let _ = std::io::stdout().flush();
     Ok(Vec::new())

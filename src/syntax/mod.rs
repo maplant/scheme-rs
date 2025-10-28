@@ -10,7 +10,7 @@ use crate::{
     syntax::parse::{ParseSyntaxError, Parser},
     value::{UnpackedValue, Value, ValueType},
 };
-use futures::future::BoxFuture;
+use scheme_rs_macros::{maybe_async, maybe_await};
 use std::{
     collections::{BTreeSet, HashSet},
     fmt,
@@ -20,6 +20,9 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
+
+#[cfg(feature = "async")]
+use futures::future::BoxFuture;
 
 pub mod lex;
 pub mod parse;
@@ -191,7 +194,8 @@ impl Syntax {
         }
     }
 
-    async fn apply_transformer(&self, env: &Environment, mac: Keyword) -> Result<Expansion, Value> {
+    #[maybe_async]
+    fn apply_transformer(&self, env: &Environment, mac: Keyword) -> Result<Expansion, Value> {
         // Create a new mark for the expansion context
         let new_mark = Mark::new();
 
@@ -201,7 +205,7 @@ impl Syntax {
         input.mark(new_mark);
 
         // Call the transformer with the input:
-        let transformer_output = mac.transformer.call(&[Value::from(input)]).await?;
+        let transformer_output = maybe_await!(mac.transformer.call(&[Value::from(input)]))?;
 
         // Output must be syntax:
         let output: Arc<Syntax> = transformer_output
@@ -219,53 +223,63 @@ impl Syntax {
         Ok(Expansion::new_expanded(new_env, output))
     }
 
-    fn expand_once<'a>(&'a self, env: &'a Environment) -> BoxFuture<'a, Result<Expansion, Value>> {
-        Box::pin(async move {
-            match self {
-                Self::List { list, .. } => {
-                    // TODO: If list head is a list, do we expand this in here or in proc call?
-                    let ident = match list.first() {
-                        Some(Self::Identifier { ident, .. }) => ident,
-                        _ => return Ok(Expansion::Unexpanded),
-                    };
-                    if let Some(mac) = env.fetch_keyword(ident).await? {
-                        return self.apply_transformer(env, mac).await;
-                    }
+    #[cfg(not(feature = "async"))]
+    fn expand_once(&self, env: &Environment) -> Result<Expansion, Value> {
+        self.expand_once_inner(env)
+    }
 
-                    // Check for set! macro
-                    match &list.as_slice()[1..] {
-                        [Syntax::Identifier { ident: var, .. }, ..] if ident == "set!" => {
-                            // Look for a variable transformer:
-                            if let Some(mac) = env.fetch_keyword(var).await? {
-                                if !mac.transformer.is_variable_transformer() {
-                                    return Err(Condition::error(format!(
-                                        "{} not a variable transformer",
-                                        var.sym
-                                    ))
-                                    .into());
-                                }
-                                return self.apply_transformer(env, mac).await;
+    #[cfg(feature = "async")]
+    fn expand_once<'a>(&'a self, env: &'a Environment) -> BoxFuture<'a, Result<Expansion, Value>> {
+        Box::pin(self.expand_once_inner(env))
+    }
+
+    #[maybe_async]
+    fn expand_once_inner(&self, env: &Environment) -> Result<Expansion, Value> {
+        match self {
+            Self::List { list, .. } => {
+                // TODO: If list head is a list, do we expand this in here or in proc call?
+                let ident = match list.first() {
+                    Some(Self::Identifier { ident, .. }) => ident,
+                    _ => return Ok(Expansion::Unexpanded),
+                };
+                if let Some(mac) = maybe_await!(env.fetch_keyword(ident))? {
+                    return maybe_await!(self.apply_transformer(env, mac));
+                }
+
+                // Check for set! macro
+                match &list.as_slice()[1..] {
+                    [Syntax::Identifier { ident: var, .. }, ..] if ident == "set!" => {
+                        // Look for a variable transformer:
+                        if let Some(mac) = maybe_await!(env.fetch_keyword(var))? {
+                            if !mac.transformer.is_variable_transformer() {
+                                return Err(Condition::error(format!(
+                                    "{} not a variable transformer",
+                                    var.sym
+                                ))
+                                .into());
                             }
+                            return maybe_await!(self.apply_transformer(env, mac));
                         }
-                        _ => (),
                     }
+                    _ => (),
                 }
-                Self::Identifier { ident, .. } => {
-                    if let Some(mac) = env.fetch_keyword(ident).await? {
-                        return self.apply_transformer(env, mac).await;
-                    }
-                }
-                _ => (),
             }
-            Ok(Expansion::Unexpanded)
-        })
+            Self::Identifier { ident, .. } => {
+                if let Some(mac) = maybe_await!(env.fetch_keyword(ident))? {
+                    return maybe_await!(self.apply_transformer(env, mac));
+                }
+            }
+            _ => (),
+        }
+        Ok(Expansion::Unexpanded)
     }
 
     /// Fully expand the outermost syntax object.
-    pub async fn expand(mut self, env: &Environment) -> Result<FullyExpanded, Value> {
+    #[maybe_async]
+    pub fn expand(mut self, env: &Environment) -> Result<FullyExpanded, Value> {
         let mut curr_env = env.clone();
         loop {
-            match self.expand_once(&curr_env).await? {
+            match maybe_await!(self.expand_once(&curr_env))? {
                 Expansion::Unexpanded => {
                     return Ok(FullyExpanded::new(curr_env, self));
                 }
@@ -277,12 +291,26 @@ impl Syntax {
         }
     }
 
+    #[cfg(not(feature = "async"))]
+    pub fn from_str(s: &str, file_name: Option<&str>) -> Result<Vec<Self>, ParseSyntaxError> {
+        let file_name = file_name.unwrap_or("<unknown>");
+        let bytes = Cursor::new(s.as_bytes().to_vec());
+        let port = Port::from_reader(bytes);
+        let input_port = port.get_input_port().unwrap();
+        let mut input_port = input_port.lock().unwrap();
+        let mut parser = Parser::new(file_name, &mut input_port);
+        parser.all_datums()
+    }
+
+    #[cfg(feature = "async")]
     pub fn from_str(s: &str, file_name: Option<&str>) -> Result<Vec<Self>, ParseSyntaxError> {
         let file_name = file_name.unwrap_or("<unknown>");
         let bytes = Cursor::new(s.as_bytes().to_vec());
         futures::executor::block_on(async move {
-            let port = Port::from_reader(file_name, bytes);
-            let mut parser = Parser::new(&port).await;
+            let port = Port::from_reader(bytes);
+            let input_port = port.get_input_port().unwrap();
+            let mut input_port = input_port.lock().await;
+            let mut parser = Parser::new(file_name, &mut input_port);
             parser.all_datums().await
         })
     }
@@ -547,13 +575,13 @@ impl Syntax {
 }
 
 #[bridge(name = "syntax->datum", lib = "(rnrs syntax-case builtins (6))")]
-pub async fn syntax_to_datum(syn: &Value) -> Result<Vec<Value>, Condition> {
+pub fn syntax_to_datum(syn: &Value) -> Result<Vec<Value>, Condition> {
     let syn: Arc<Syntax> = syn.clone().try_into()?;
     Ok(vec![Value::datum_from_syntax(syn.as_ref())])
 }
 
 #[bridge(name = "datum->syntax", lib = "(rnrs syntax-case builtins (6))")]
-pub async fn datum_to_syntax(template_id: &Value, datum: &Value) -> Result<Vec<Value>, Condition> {
+pub fn datum_to_syntax(template_id: &Value, datum: &Value) -> Result<Vec<Value>, Condition> {
     let syntax: Arc<Syntax> = template_id.clone().try_into()?;
     let Syntax::Identifier {
         ident: template_id, ..
@@ -568,7 +596,7 @@ pub async fn datum_to_syntax(template_id: &Value, datum: &Value) -> Result<Vec<V
 }
 
 #[bridge(name = "identifier?", lib = "(rnrs syntax-case builtins (6))")]
-pub async fn identifier_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
+pub fn identifier_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
     let Ok(syn) = Arc::<Syntax>::try_from(obj.clone()) else {
         return Ok(vec![Value::from(false)]);
     };
@@ -576,7 +604,7 @@ pub async fn identifier_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "bound-identifier=?", lib = "(rnrs syntax-case builtins (6))")]
-pub async fn bound_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, Condition> {
+pub fn bound_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, Condition> {
     let id1: Arc<Syntax> = id1.clone().try_into()?;
     let id2: Arc<Syntax> = id2.clone().try_into()?;
     let Syntax::Identifier {
@@ -599,7 +627,7 @@ pub async fn bound_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Va
 }
 
 #[bridge(name = "free-identifier=?", lib = "(rnrs syntax-case builtins (6))")]
-pub async fn free_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, Condition> {
+pub fn free_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, Condition> {
     let id1: Arc<Syntax> = id1.clone().try_into()?;
     let id2: Arc<Syntax> = id2.clone().try_into()?;
     let Syntax::Identifier {
@@ -624,7 +652,7 @@ pub async fn free_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Val
 }
 
 #[bridge(name = "generate-temporaries", lib = "(rnrs syntax-case builtins (6))")]
-pub async fn generate_temporaries(list: &Value) -> Result<Vec<Value>, Condition> {
+pub fn generate_temporaries(list: &Value) -> Result<Vec<Value>, Condition> {
     let length = match list.type_of() {
         ValueType::Pair => crate::lists::length(list)?,
         ValueType::Syntax => {

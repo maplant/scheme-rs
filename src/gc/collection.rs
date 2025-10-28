@@ -567,8 +567,8 @@ mod test {
     use crate::gc::*;
     use std::sync::Arc;
 
-    #[tokio::test]
-    async fn cycles() {
+    #[test]
+    fn cycles() {
         #[derive(Default, Trace)]
         struct Cyclic {
             next: Option<Gc<Cyclic>>,

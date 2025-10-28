@@ -1,7 +1,7 @@
 use crate::{
     ast::Literal,
     num::Number,
-    ports::{Port, ReadError},
+    ports::{InputPort, ReadError},
     syntax::lex::ParseNumberError,
 };
 
@@ -10,8 +10,11 @@ use super::{
     Span, Syntax,
     lex::{Character, Lexeme, Lexer, Token},
 };
-use futures::future::BoxFuture;
+use scheme_rs_macros::{maybe_async, maybe_await};
 use std::{char::CharTryFromError, error::Error as StdError, fmt};
+
+#[cfg(feature = "async")]
+use futures::future::BoxFuture;
 
 pub struct Parser<'a> {
     /// We only ever need one token of lookahead probably, but this is more
@@ -36,20 +39,21 @@ macro_rules! token {
 }
 
 impl<'a> Parser<'a> {
-    pub async fn new(input_port: &'a Port) -> Self {
+    pub fn new(file_name: &str, input_port: &'a mut InputPort) -> Self {
         Parser {
             lookahead: Vec::new(),
-            lexer: Lexer::new(input_port).await,
+            lexer: Lexer::new(file_name, input_port),
         }
     }
 }
 
 impl Parser<'_> {
-    async fn next_token(&mut self) -> Result<Token, LexerError> {
+    #[maybe_async]
+    fn next_token(&mut self) -> Result<Token, LexerError> {
         if let Some(next) = self.lookahead.pop() {
             Ok(next)
         } else {
-            self.lexer.next_token().await
+            maybe_await!(self.lexer.next_token())
         }
     }
 
@@ -57,110 +61,126 @@ impl Parser<'_> {
         self.lookahead.push(token)
     }
 
+    #[cfg(feature = "async")]
     pub fn expression(&mut self) -> BoxFuture<'_, Result<Option<Syntax>, ParseSyntaxError>> {
-        Box::pin(async move {
-            match self.next_token().await? {
-                // Literals:
-                token!(Lexeme::Boolean(b), span) => {
-                    Ok(Some(Syntax::new_literal(Literal::Boolean(b), span)))
-                }
-                token!(Lexeme::Character(Character::Literal(c)), span) => {
-                    Ok(Some(Syntax::new_literal(Literal::Character(c), span)))
-                }
-                token!(Lexeme::Character(Character::Escaped(e)), span) => Ok(Some(
-                    Syntax::new_literal(Literal::Character(e.into()), span),
-                )),
-                token!(Lexeme::Character(Character::Unicode(u)), span) => {
-                    Ok(Some(Syntax::new_literal(
-                        Literal::Character(char::try_from(u32::from_str_radix(&u, 16).unwrap())?),
-                        span,
-                    )))
-                }
-                token!(Lexeme::String(s), span) => {
-                    Ok(Some(Syntax::new_literal(Literal::String(s), span)))
-                }
-                token!(Lexeme::Number(n), span) => Ok(Some(Syntax::new_literal(
-                    Literal::Number(Number::try_from(n)?),
-                    span,
-                ))),
-
-                // Identifiers:
-                token!(Lexeme::Identifier(ident), span) => {
-                    Ok(Some(Syntax::new_identifier(&ident, span)))
-                }
-
-                // Lists:
-                token!(Lexeme::LParen, span) => Ok(Some(self.list(span, Lexeme::RParen).await?)),
-                token!(Lexeme::LBracket, span) => {
-                    Ok(Some(self.list(span, Lexeme::RBracket).await?))
-                }
-
-                // Vectors:
-                token!(Lexeme::HashParen, span) => Ok(Some(self.vector(span).await?)),
-                token!(Lexeme::Vu8Paren, span) => Ok(Some(self.byte_vector(span).await?)),
-
-                // Various aliases:
-                token!(Lexeme::Quote, span) => Ok(Some(self.alias("quote", span).await?)),
-                token!(Lexeme::Backquote, span) => Ok(Some(self.alias("quasiquote", span).await?)),
-                token!(Lexeme::Comma, span) => Ok(Some(self.alias("unquote", span).await?)),
-                token!(Lexeme::CommaAt, span) => {
-                    Ok(Some(self.alias("unquote-splicing", span).await?))
-                }
-                token!(Lexeme::HashQuote, span) => Ok(Some(self.alias("syntax", span).await?)),
-                token!(Lexeme::HashBackquote, span) => {
-                    Ok(Some(self.alias("quasisyntax", span).await?))
-                }
-                token!(Lexeme::HashComma, span) => Ok(Some(self.alias("unsyntax", span).await?)),
-                token!(Lexeme::HashCommaAt, span) => {
-                    Ok(Some(self.alias("unsyntax-splicing", span).await?))
-                }
-
-                // Datum comments:
-                token!(Lexeme::DatumComment) => {
-                    // Discard next expression:
-                    let _ = self.expression().await?;
-                    Ok(None)
-                }
-
-                // Handle some erroneous situations:
-                token!(Lexeme::RParen, span) | token!(Lexeme::RBracket, span) => {
-                    Err(ParseSyntaxError::UnexpectedClosingParen { span })
-                }
-
-                token!(Lexeme::Period, span) => {
-                    Err(ParseSyntaxError::InvalidPeriodLocation { span })
-                }
-            }
-        })
+        Box::pin(self.expression_inner())
     }
 
-    pub async fn get_datum(&mut self) -> Result<Syntax, ParseSyntaxError> {
+    #[cfg(not(feature = "async"))]
+    pub fn expression(&mut self) -> Result<Option<Syntax>, ParseSyntaxError> {
+        self.expression_inner()
+    }
+
+    #[maybe_async]
+    fn expression_inner(&mut self) -> Result<Option<Syntax>, ParseSyntaxError> {
+        match maybe_await!(self.next_token())? {
+            // Literals:
+            token!(Lexeme::Boolean(b), span) => {
+                Ok(Some(Syntax::new_literal(Literal::Boolean(b), span)))
+            }
+            token!(Lexeme::Character(Character::Literal(c)), span) => {
+                Ok(Some(Syntax::new_literal(Literal::Character(c), span)))
+            }
+            token!(Lexeme::Character(Character::Escaped(e)), span) => Ok(Some(
+                Syntax::new_literal(Literal::Character(e.into()), span),
+            )),
+            token!(Lexeme::Character(Character::Unicode(u)), span) => {
+                Ok(Some(Syntax::new_literal(
+                    Literal::Character(char::try_from(u32::from_str_radix(&u, 16).unwrap())?),
+                    span,
+                )))
+            }
+            token!(Lexeme::String(s), span) => {
+                Ok(Some(Syntax::new_literal(Literal::String(s), span)))
+            }
+            token!(Lexeme::Number(n), span) => Ok(Some(Syntax::new_literal(
+                Literal::Number(Number::try_from(n)?),
+                span,
+            ))),
+
+            // Identifiers:
+            token!(Lexeme::Identifier(ident), span) => {
+                Ok(Some(Syntax::new_identifier(&ident, span)))
+            }
+
+            // Lists:
+            token!(Lexeme::LParen, span) => {
+                Ok(Some(maybe_await!(self.list(span, Lexeme::RParen))?))
+            }
+            token!(Lexeme::LBracket, span) => {
+                Ok(Some(maybe_await!(self.list(span, Lexeme::RBracket))?))
+            }
+
+            // Vectors:
+            token!(Lexeme::HashParen, span) => Ok(Some(maybe_await!(self.vector(span))?)),
+            token!(Lexeme::Vu8Paren, span) => Ok(Some(maybe_await!(self.byte_vector(span))?)),
+
+            // Various aliases:
+            token!(Lexeme::Quote, span) => Ok(Some(maybe_await!(self.alias("quote", span))?)),
+            token!(Lexeme::Backquote, span) => {
+                Ok(Some(maybe_await!(self.alias("quasiquote", span))?))
+            }
+            token!(Lexeme::Comma, span) => Ok(Some(maybe_await!(self.alias("unquote", span))?)),
+            token!(Lexeme::CommaAt, span) => {
+                Ok(Some(maybe_await!(self.alias("unquote-splicing", span))?))
+            }
+            token!(Lexeme::HashQuote, span) => Ok(Some(maybe_await!(self.alias("syntax", span))?)),
+            token!(Lexeme::HashBackquote, span) => {
+                Ok(Some(maybe_await!(self.alias("quasisyntax", span))?))
+            }
+            token!(Lexeme::HashComma, span) => {
+                Ok(Some(maybe_await!(self.alias("unsyntax", span))?))
+            }
+            token!(Lexeme::HashCommaAt, span) => {
+                Ok(Some(maybe_await!(self.alias("unsyntax-splicing", span))?))
+            }
+
+            // Datum comments:
+            token!(Lexeme::DatumComment) => {
+                // Discard next expression:
+                let _ = maybe_await!(self.expression())?;
+                Ok(None)
+            }
+
+            // Handle some erroneous situations:
+            token!(Lexeme::RParen, span) | token!(Lexeme::RBracket, span) => {
+                Err(ParseSyntaxError::UnexpectedClosingParen { span })
+            }
+
+            token!(Lexeme::Period, span) => Err(ParseSyntaxError::InvalidPeriodLocation { span }),
+        }
+    }
+
+    #[maybe_async]
+    pub fn get_datum(&mut self) -> Result<Syntax, ParseSyntaxError> {
         loop {
-            if let Some(expr) = self.expression().await? {
+            if let Some(expr) = maybe_await!(self.expression())? {
                 return Ok(expr);
             }
         }
     }
 
-    pub async fn all_datums(&mut self) -> Result<Vec<Syntax>, ParseSyntaxError> {
+    #[maybe_async]
+    pub fn all_datums(&mut self) -> Result<Vec<Syntax>, ParseSyntaxError> {
         let mut datums = Vec::new();
         loop {
             // Check for EOF
-            match self.next_token().await {
+            match maybe_await!(self.next_token()) {
                 Err(LexerError::ReadError(ReadError::Eof)) => return Ok(datums),
                 Err(err) => return Err(ParseSyntaxError::Lex(err)),
                 Ok(token) => self.return_token(token),
             }
 
-            datums.push(self.get_datum().await?);
+            datums.push(maybe_await!(self.get_datum())?);
         }
     }
 
-    async fn list(&mut self, span: Span, closing: Lexeme) -> Result<Syntax, ParseSyntaxError> {
-        match self.next_token().await? {
+    #[maybe_async]
+    fn list(&mut self, span: Span, closing: Lexeme) -> Result<Syntax, ParseSyntaxError> {
+        match maybe_await!(self.next_token())? {
             // We allow for (. expr) to resolve to expr, just because it's
             // easier. Maybe we'll disallow this eventualy
-            token!(Lexeme::Period) => return self.get_datum().await,
+            token!(Lexeme::Period) => return maybe_await!(self.get_datum()),
             // If the first token is a closing paren, then this is an empty
             // list
             token if token.lexeme == closing => return Ok(Syntax::new_null(token.span)),
@@ -172,17 +192,17 @@ impl Parser<'_> {
 
         let mut output = Vec::new();
         loop {
-            if let Some(expr) = self.expression().await? {
+            if let Some(expr) = maybe_await!(self.expression())? {
                 output.push(expr);
             }
-            match self.next_token().await? {
+            match maybe_await!(self.next_token())? {
                 token if token.lexeme == closing => {
                     output.push(Syntax::new_null(token.span));
                     return Ok(Syntax::new_list(output, span));
                 }
                 token!(Lexeme::Period) => {
-                    let peek1 = self.next_token().await?;
-                    let peek2 = self.next_token().await?;
+                    let peek1 = maybe_await!(self.next_token())?;
+                    let peek2 = maybe_await!(self.next_token())?;
                     match (peek1, peek2) {
                         // Proper list with period:
                         (token!(Lexeme::LParen, end_span), token!(Lexeme::RParen))
@@ -196,8 +216,8 @@ impl Parser<'_> {
                             self.return_token(peek1);
                         }
                     }
-                    output.push(self.get_datum().await?);
-                    let last = self.next_token().await?;
+                    output.push(maybe_await!(self.get_datum())?);
+                    let last = maybe_await!(self.next_token())?;
                     if last.lexeme == closing {
                         return Ok(Syntax::new_list(output, span));
                     } else {
@@ -209,14 +229,15 @@ impl Parser<'_> {
         }
     }
 
-    async fn vector(&mut self, span: Span) -> Result<Syntax, ParseSyntaxError> {
+    #[maybe_async]
+    fn vector(&mut self, span: Span) -> Result<Syntax, ParseSyntaxError> {
         let mut output = Vec::new();
         loop {
-            match self.next_token().await? {
+            match maybe_await!(self.next_token())? {
                 token!(Lexeme::RParen) => return Ok(Syntax::new_vector(output, span)),
                 token => {
                     self.return_token(token);
-                    if let Some(expr) = self.expression().await? {
+                    if let Some(expr) = maybe_await!(self.expression())? {
                         output.push(expr);
                     }
                 }
@@ -224,10 +245,11 @@ impl Parser<'_> {
         }
     }
 
-    async fn byte_vector(&mut self, span: Span) -> Result<Syntax, ParseSyntaxError> {
+    #[maybe_async]
+    fn byte_vector(&mut self, span: Span) -> Result<Syntax, ParseSyntaxError> {
         let mut output = Vec::new();
         loop {
-            match self.next_token().await? {
+            match maybe_await!(self.next_token())? {
                 token!(Lexeme::Number(num), span) => {
                     if let Number::FixedInteger(i) = num.try_into()?
                         && let Ok(byte) = u8::try_from(i)
@@ -245,8 +267,9 @@ impl Parser<'_> {
         }
     }
 
-    async fn alias(&mut self, alias: &str, span: Span) -> Result<Syntax, ParseSyntaxError> {
-        let expr = self.get_datum().await?;
+    #[maybe_async]
+    fn alias(&mut self, alias: &str, span: Span) -> Result<Syntax, ParseSyntaxError> {
+        let expr = maybe_await!(self.get_datum())?;
         let expr_span = expr.span().clone();
         Ok(Syntax::new_list(
             vec![

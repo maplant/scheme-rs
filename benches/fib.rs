@@ -11,20 +11,34 @@ use scheme_rs::{
 };
 
 use criterion::*;
+use scheme_rs_macros::{maybe_async, maybe_await};
 
-async fn fib_fn() -> Procedure {
+#[maybe_async]
+fn fib_fn() -> Procedure {
     let rt = Runtime::new();
     let prog = Library::new_program(&rt, Path::new("fib.scm"));
     let env = Environment::Top(prog);
 
     let sexprs = Syntax::from_str(include_str!("fib.scm"), Some("fib.scm")).unwrap();
-    let base = DefinitionBody::parse_lib_body(&rt, &sexprs, &env, &Span::default())
-        .await
-        .unwrap();
+    let base = maybe_await!(DefinitionBody::parse_lib_body(
+        &rt,
+        &sexprs,
+        &env,
+        &Span::default()
+    ))
+    .unwrap();
     let compiled = base.compile_top_level();
-    rt.compile_expr(compiled).await
+    maybe_await!(rt.compile_expr(compiled))
 }
 
+#[cfg(not(feature = "async"))]
+fn fib_benchmark(c: &mut Criterion) {
+    let proc = fib_fn();
+
+    c.bench_function("fib 10000", |b| b.iter(|| proc.call(&[])));
+}
+
+#[cfg(feature = "async")]
 fn fib_benchmark(c: &mut Criterion) {
     // Set up and compile the closure
     let runtime = tokio::runtime::Runtime::new().unwrap();

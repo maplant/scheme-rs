@@ -10,7 +10,7 @@ use crate::{
     syntax::{Identifier, Span, Syntax},
     value::Value,
 };
-use scheme_rs_macros::{bridge, runtime_fn};
+use scheme_rs_macros::{bridge, maybe_async, maybe_await, runtime_fn};
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
     sync::Arc,
@@ -29,7 +29,8 @@ pub struct SyntaxRule {
 }
 
 impl SyntaxRule {
-    pub async fn compile(
+    #[maybe_async]
+    pub fn compile(
         rt: &Runtime,
         keywords: &HashSet<Symbol>,
         pattern: &Syntax,
@@ -42,11 +43,12 @@ impl SyntaxRule {
         let binds = Local::gensym();
         let env = env.new_syntax_case_expr(binds, variables);
         let fender = if let Some(fender) = fender {
-            Some(Expression::parse(rt, fender.clone(), &env).await?)
+            Some(maybe_await!(Expression::parse(rt, fender.clone(), &env))?)
         } else {
             None
         };
-        let output_expression = Expression::parse(rt, output_expression.clone(), &env).await?;
+        let output_expression =
+            maybe_await!(Expression::parse(rt, output_expression.clone(), &env))?;
         Ok(Self {
             pattern,
             binds,
@@ -634,7 +636,7 @@ unsafe extern "C" fn error_no_patterns_match() -> i64 {
 }
 
 #[bridge(name = "make-variable-transformer", lib = "(rnrs base builtins (6))")]
-pub async fn make_variable_transformer(proc: &Value) -> Result<Vec<Value>, Condition> {
+pub fn make_variable_transformer(proc: &Value) -> Result<Vec<Value>, Condition> {
     let proc: Procedure = proc.clone().try_into()?;
     let mut var_transformer = proc.0.read().clone();
     var_transformer.is_variable_transformer = true;

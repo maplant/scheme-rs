@@ -10,7 +10,6 @@ use std::{
 };
 
 use by_address::ByAddress;
-use futures::future::BoxFuture;
 
 use crate::{
     exceptions::{Condition, ExceptionHandler, ExceptionHandlerInner},
@@ -142,7 +141,7 @@ pub static NONGENERATIVE: NonGenerativeStore =
     name = "make-record-type-descriptor",
     lib = "(rnrs records procedural (6))"
 )]
-pub async fn make_record_type_descriptor(
+pub fn make_record_type_descriptor(
     name: &Value,
     parent: &Value,
     uid: &Value,
@@ -204,7 +203,7 @@ pub async fn make_record_type_descriptor(
     name = "record-type-descriptor?",
     lib = "(rnrs records procedural (6))"
 )]
-pub async fn record_type_descriptor_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
+pub fn record_type_descriptor_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(
         obj.type_of() == ValueType::RecordTypeDescriptor,
     )])
@@ -256,7 +255,7 @@ fn make_default_record_constructor_descriptor(
     lib = "(rnrs records procedural (6))",
     args = "rtd parent-constructor-descriptor protocol"
 )]
-pub async fn make_record_constructor_descriptor(
+pub fn make_record_constructor_descriptor(
     runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
@@ -324,7 +323,7 @@ pub async fn make_record_constructor_descriptor(
     lib = "(rnrs records procedural (6))",
     args = "rcd"
 )]
-pub async fn record_constructor(
+pub fn record_constructor(
     runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
@@ -366,8 +365,7 @@ pub async fn record_constructor(
         &chain_protocols,
         exception_handler,
         dynamic_wind,
-    )
-    .await)
+    ))
 }
 
 fn rcd_to_protocols_and_rtds(
@@ -435,7 +433,7 @@ pub(crate) unsafe extern "C" fn chain_protocols(
 }
 
 #[cps_bridge]
-async fn chain_constructors(
+fn chain_constructors(
     runtime: &Runtime,
     env: &[Value],
     args: &[Value],
@@ -487,7 +485,7 @@ async fn chain_constructors(
 }
 
 #[cps_bridge]
-async fn constructor(
+fn constructor(
     _runtime: &Runtime,
     env: &[Value],
     args: &[Value],
@@ -516,7 +514,9 @@ async fn constructor(
             .sum();
         let remaining_fields = fields.split_off(num_fields + rust_rtd.fields.len());
         (
-            Some((rust_rtd.rust_parent_constructor.unwrap().constructor)(&fields).await?),
+            Some((rust_rtd.rust_parent_constructor.unwrap().constructor)(
+                &fields,
+            )?),
             remaining_fields,
         )
     } else {
@@ -537,7 +537,7 @@ async fn constructor(
 }
 
 #[cps_bridge]
-async fn default_protocol(
+fn default_protocol(
     runtime: &Runtime,
     env: &[Value],
     args: &[Value],
@@ -569,7 +569,7 @@ async fn default_protocol(
 }
 
 #[cps_bridge]
-async fn default_protocol_constructor(
+fn default_protocol_constructor(
     runtime: &Runtime,
     env: &[Value],
     args: &[Value],
@@ -763,8 +763,7 @@ impl RustParentConstructor {
     }
 }
 
-type ParentConstructor =
-    for<'a> fn(&'a [Value]) -> BoxFuture<'a, Result<Gc<dyn SchemeCompatible>, Condition>>;
+type ParentConstructor = fn(&[Value]) -> Result<Gc<dyn SchemeCompatible>, Condition>;
 
 unsafe impl Trace for RustParentConstructor {
     unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(crate::gc::OpaqueGcPtr)) {}
@@ -780,7 +779,7 @@ pub fn is_subtype_of(val: &Value, rt: &Value) -> Result<bool, Condition> {
 }
 
 #[cps_bridge]
-async fn record_predicate_fn(
+fn record_predicate_fn(
     _runtime: &Runtime,
     env: &[Value],
     args: &[Value],
@@ -808,7 +807,7 @@ async fn record_predicate_fn(
     lib = "(rnrs records procedural (6))",
     args = "rtd"
 )]
-pub async fn record_predicate(
+pub fn record_predicate(
     runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
@@ -840,7 +839,7 @@ pub async fn record_predicate(
 }
 
 #[cps_bridge]
-async fn record_accessor_fn(
+fn record_accessor_fn(
     _runtime: &Runtime,
     env: &[Value],
     args: &[Value],
@@ -877,7 +876,7 @@ async fn record_accessor_fn(
     lib = "(rnrs records procedural (6))",
     args = "rtd k"
 )]
-pub async fn record_accessor(
+pub fn record_accessor(
     runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
@@ -918,7 +917,7 @@ pub async fn record_accessor(
 }
 
 #[cps_bridge]
-async fn record_mutator_fn(
+fn record_mutator_fn(
     _runtime: &Runtime,
     env: &[Value],
     args: &[Value],
@@ -955,7 +954,7 @@ async fn record_mutator_fn(
     lib = "(rnrs records procedural (6))",
     args = "rtd k"
 )]
-pub async fn record_mutator(
+pub fn record_mutator(
     runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
@@ -1001,7 +1000,7 @@ pub async fn record_mutator(
 // Inspection library:
 
 #[bridge(name = "record?", lib = "(rnrs records inspection (6))")]
-pub async fn record_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
+pub fn record_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
     match &*obj.unpacked_ref() {
         UnpackedValue::Record(rec) => Ok(vec![Value::from(!rec.0.read().rtd.opaque)]),
         _ => Ok(vec![Value::from(false)]),
@@ -1009,7 +1008,7 @@ pub async fn record_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "record-rtd", lib = "(rnrs records inspection (6))")]
-pub async fn record_rtd(record: &Value) -> Result<Vec<Value>, Condition> {
+pub fn record_rtd(record: &Value) -> Result<Vec<Value>, Condition> {
     match &*record.unpacked_ref() {
         UnpackedValue::Record(rec) if !rec.0.read().rtd.opaque => {
             Ok(vec![Value::from(rec.0.read().rtd.clone())])
@@ -1021,13 +1020,13 @@ pub async fn record_rtd(record: &Value) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "record-type-name", lib = "(rnrs records inspection (6))")]
-pub async fn record_type_name(rtd: &Value) -> Result<Vec<Value>, Condition> {
+pub fn record_type_name(rtd: &Value) -> Result<Vec<Value>, Condition> {
     let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
     Ok(vec![Value::from(rtd.name)])
 }
 
 #[bridge(name = "record-type-parent", lib = "(rnrs records inspection (6))")]
-pub async fn record_type_parent(rtd: &Value) -> Result<Vec<Value>, Condition> {
+pub fn record_type_parent(rtd: &Value) -> Result<Vec<Value>, Condition> {
     let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
     if let Some(parent) = rtd.inherits.last() {
         Ok(vec![Value::from(parent.0.clone())])
@@ -1037,7 +1036,7 @@ pub async fn record_type_parent(rtd: &Value) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "record-type-uid", lib = "(rnrs records inspection (6))")]
-pub async fn record_type_uid(rtd: &Value) -> Result<Vec<Value>, Condition> {
+pub fn record_type_uid(rtd: &Value) -> Result<Vec<Value>, Condition> {
     let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
     if let Some(uid) = rtd.uid {
         Ok(vec![Value::from(uid)])
@@ -1050,19 +1049,19 @@ pub async fn record_type_uid(rtd: &Value) -> Result<Vec<Value>, Condition> {
     name = "record-type-generative?",
     lib = "(rnrs records inspection (6))"
 )]
-pub async fn record_type_generative_pred(rtd: &Value) -> Result<Vec<Value>, Condition> {
+pub fn record_type_generative_pred(rtd: &Value) -> Result<Vec<Value>, Condition> {
     let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
     Ok(vec![Value::from(rtd.uid.is_none())])
 }
 
 #[bridge(name = "record-type-sealed?", lib = "(rnrs records inspection (6))")]
-pub async fn record_type_sealed_pred(rtd: &Value) -> Result<Vec<Value>, Condition> {
+pub fn record_type_sealed_pred(rtd: &Value) -> Result<Vec<Value>, Condition> {
     let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
     Ok(vec![Value::from(rtd.sealed)])
 }
 
 #[bridge(name = "record-type-opaque?", lib = "(rnrs records inspection (6))")]
-pub async fn record_type_opaque_pred(rtd: &Value) -> Result<Vec<Value>, Condition> {
+pub fn record_type_opaque_pred(rtd: &Value) -> Result<Vec<Value>, Condition> {
     let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
     Ok(vec![Value::from(rtd.opaque)])
 }
@@ -1071,7 +1070,7 @@ pub async fn record_type_opaque_pred(rtd: &Value) -> Result<Vec<Value>, Conditio
     name = "record-type-field-names",
     lib = "(rnrs records inspection (6))"
 )]
-pub async fn record_type_field_names(rtd: &Value) -> Result<Vec<Value>, Condition> {
+pub fn record_type_field_names(rtd: &Value) -> Result<Vec<Value>, Condition> {
     let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
     let fields = rtd
         .fields
@@ -1083,7 +1082,7 @@ pub async fn record_type_field_names(rtd: &Value) -> Result<Vec<Value>, Conditio
 }
 
 #[bridge(name = "record-field-mutable?", lib = "(rnrs records inspection (6))")]
-pub async fn record_field_mutable_pred(rtd: &Value, k: &Value) -> Result<Vec<Value>, Condition> {
+pub fn record_field_mutable_pred(rtd: &Value, k: &Value) -> Result<Vec<Value>, Condition> {
     let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
     let k: Arc<Number> = k.clone().try_into()?;
     let k: usize = k.as_ref().try_into()?;
