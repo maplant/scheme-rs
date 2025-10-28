@@ -13,7 +13,7 @@ use scheme_rs_macros::{maybe_async, maybe_await};
 
 #[cfg(not(feature = "async"))]
 fn cold_boot_benchmark(c: &mut Criterion) {
-    c.bench_function("cold boot", |b| b.iter(|| run_bench()));
+    c.bench_function("cold boot", |b| b.iter(run_bench));
 }
 
 #[cfg(feature = "async")]
