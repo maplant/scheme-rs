@@ -47,7 +47,8 @@ impl SyntaxRule {
         } else {
             None
         };
-        let output_expression = maybe_await!(Expression::parse(rt, output_expression.clone(), &env))?;
+        let output_expression =
+            maybe_await!(Expression::parse(rt, output_expression.clone(), &env))?;
         Ok(Self {
             pattern,
             binds,

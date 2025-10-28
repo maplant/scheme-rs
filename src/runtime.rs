@@ -14,12 +14,7 @@ use crate::{
     value::{Cell, ReflexiveValue, UnpackedValue, Value},
 };
 use scheme_rs_macros::{maybe_async, maybe_await, runtime_fn};
-use std::{
-    collections::HashSet,
-    mem::ManuallyDrop,
-    path::Path,
-    sync::Arc,
-};
+use std::{collections::HashSet, mem::ManuallyDrop, path::Path, sync::Arc};
 
 /// Scheme-rs Runtime
 ///
@@ -63,7 +58,6 @@ impl Runtime {
 
         #[cfg(feature = "tokio")]
         use tokio::{fs::File, io::BufReader};
-        
 
         let progm = Library::new_program(self, path);
         let env = Environment::Top(progm);
@@ -79,22 +73,29 @@ impl Runtime {
         let mut input_port = input_port.lock().await;
 
         let mut parser = Parser::new(&file_name, &mut input_port);
-        let sexprs = maybe_await!(parser
-            .all_datums())
+        let sexprs = maybe_await!(parser.all_datums())
             .map_err(|err| ImportError::ParseSyntaxError(format!("{err:?}")))
             .unwrap();
-        let body = maybe_await!(DefinitionBody::parse_lib_body(self, &sexprs, &env, sexprs[0].span())).unwrap();
+        let body = maybe_await!(DefinitionBody::parse_lib_body(
+            self,
+            &sexprs,
+            &env,
+            sexprs[0].span()
+        ))
+        .unwrap();
         let compiled = body.compile_top_level();
         let closure = maybe_await!(self.compile_expr(compiled));
 
-        maybe_await!(Application::new(
-            closure,
-            Vec::new(),
-            ExceptionHandler::default(),
-            DynamicWind::default(),
-            None,
+        maybe_await!(
+            Application::new(
+                closure,
+                Vec::new(),
+                ExceptionHandler::default(),
+                DynamicWind::default(),
+                None,
+            )
+            .eval()
         )
-        .eval())
     }
 
     pub fn get_registry(&self) -> Registry {

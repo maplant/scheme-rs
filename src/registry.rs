@@ -9,9 +9,7 @@ use crate::{
     env::{Environment, Global, Keyword},
     exceptions::{Condition, ExceptionHandler},
     gc::{Gc, Trace},
-    proc::{
-        Application, DynamicWind, FuncDebugInfo, FuncPtr, Procedure, SyncBridgePtr,
-    },
+    proc::{Application, DynamicWind, FuncDebugInfo, FuncPtr, Procedure, SyncBridgePtr},
     runtime::Runtime,
     symbols::Symbol,
     syntax::{Identifier, Syntax},

@@ -3,7 +3,7 @@
 use scheme_rs::{exceptions::Condition, registry::bridge, value::Value};
 
 #[bridge(name = "assert-equal?", lib = "(test)")]
-async fn test_assert(arg1: &Value, arg2: &Value) -> Result<Vec<Value>, Condition> {
+fn test_assert(arg1: &Value, arg2: &Value) -> Result<Vec<Value>, Condition> {
     if arg1 != arg2 {
         Err(Condition::error(format!(
             "assert-equal? failed: {arg1:?} != {arg2:?}"
@@ -15,15 +15,15 @@ async fn test_assert(arg1: &Value, arg2: &Value) -> Result<Vec<Value>, Condition
 
 macro_rules! run_test {
     ($name:ident) => {
-        #[::tokio::test]
-        async fn $name() {
+        #[scheme_rs_macros::maybe_async]
+        #[cfg_attr(feature = "async", ::tokio::test)]
+        fn $name() {
             use scheme_rs::runtime::Runtime;
             use std::path::Path;
 
             let test_path = Path::new(concat!("tests/", stringify!($name), ".scm"));
             let rt = Runtime::new();
-            rt.run_program(test_path)
-                .await
+            scheme_rs_macros::maybe_await!(rt.run_program(test_path))
                 .expect(&format!("Test {} failed", stringify!($name)));
         }
     };

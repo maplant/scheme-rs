@@ -5,10 +5,7 @@ use scheme_rs_macros::{maybe_async, maybe_await};
 use std::sync::Arc;
 
 #[cfg(not(feature = "async"))]
-use std::{
-    io::Read,
-    sync::Mutex,
-};
+use std::{io::Read, sync::Mutex};
 
 #[cfg(feature = "tokio")]
 use tokio::{
@@ -56,7 +53,6 @@ type Reader = std::pin::Pin<Box<dyn AsyncRead + Send + Sync + 'static>>;
 type Reader = Box<dyn Read + Send + Sync + 'static>;
 
 impl CharBuffer {
-    
     #[cfg(not(feature = "async"))]
     pub fn peekn(&mut self, idx: usize, reader: &mut Reader) -> Result<char, ReadError> {
         while self.buff.len() <= idx {

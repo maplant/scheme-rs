@@ -40,7 +40,6 @@ tokio = { version = "1.47", features = ["full"], optional = true }
 
 [features]
 default = []
-# default = ["async", "tokio"]
 async = ["dep:futures"]
 
 [profile.release]

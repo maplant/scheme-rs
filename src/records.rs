@@ -514,7 +514,9 @@ fn constructor(
             .sum();
         let remaining_fields = fields.split_off(num_fields + rust_rtd.fields.len());
         (
-            Some((rust_rtd.rust_parent_constructor.unwrap().constructor)(&fields)?),
+            Some((rust_rtd.rust_parent_constructor.unwrap().constructor)(
+                &fields,
+            )?),
             remaining_fields,
         )
     } else {
@@ -761,8 +763,7 @@ impl RustParentConstructor {
     }
 }
 
-type ParentConstructor =
-    fn(&[Value]) -> Result<Gc<dyn SchemeCompatible>, Condition>;
+type ParentConstructor = fn(&[Value]) -> Result<Gc<dyn SchemeCompatible>, Condition>;
 
 unsafe impl Trace for RustParentConstructor {
     unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(crate::gc::OpaqueGcPtr)) {}
