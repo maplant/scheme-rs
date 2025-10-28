@@ -17,6 +17,7 @@ macro_rules! run_test {
     ($name:ident) => {
         #[scheme_rs_macros::maybe_async]
         #[cfg_attr(feature = "async", ::tokio::test)]
+        #[cfg_attr(not(feature = "async"), test)]
         fn $name() {
             use scheme_rs::runtime::Runtime;
             use std::path::Path;
