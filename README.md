@@ -72,16 +72,16 @@ $ cargo install --path . --features "tokio,async"
 scheme-rs embeds all of its libraries within its executable, so the binary is all you need
 to run scheme programs.
 
-### Embedding 
+## Embedding 
 
 Scheme-rs can be embedded into any Rust application. 
 
-#### Feature flags
+### Feature flags
 
 Scheme-rs supports both sync and async contexts. By default scheme-rs is sync, but can be made async
 via the `tokio` and `async` feature flags. 
 
-#### Creating bridge Functions:
+### Creating bridge Functions:
 
 Scheme-rs provides a `bridge` function attribute macro to allow you to easily define builtins. The 
 following example defines the numeric equal function and includes it in the `(rnrs base builtins (6))` 
@@ -119,7 +119,7 @@ pub async fn sleep(seconds: &Value) -> Result<Vec<Value>, Condition> {
 }
 ```
 
-#### Embedding Rust types in Scheme
+### Embedding Rust types in Scheme
 
 Any Rust type that can implement `Trace` can be converted in to a Scheme value by 
 implementing the `SchemeCompatible` trait:

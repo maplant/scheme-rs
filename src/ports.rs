@@ -246,7 +246,7 @@ mod prompt {
             while self.pos + idx >= self.buffer.len() {
                 self.buffer.extend(
                     self.editor
-                        .readline(&"> ")
+                        .readline("> ")
                         .map_err(|err| match err {
                             ReadlineError::Eof => ReadError::Eof,
                             ReadlineError::Io(io) => ReadError::Io(io),
