@@ -1,6 +1,6 @@
 //! Garbage-Collected smart pointers with interior mutability.
 //!
-//! `Gc<T>` is conceptually similar to `Arc<tokio::sync::RwLock<T>>`, but garbage
+//! `Gc<T>` is conceptually similar to `Arc<std::sync::RwLock<T>>`, but garbage
 //! collection occurs concurrently at a fixed cadence or whenever a threshold
 //! of memory has been allocated as opposed to when the type is Dropped.
 //!
@@ -15,7 +15,6 @@ mod collection;
 
 pub use collection::{OpaqueGcPtr, init_gc};
 use either::Either;
-use futures::future::Shared;
 pub use scheme_rs_macros::Trace;
 
 use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
@@ -23,7 +22,6 @@ use std::{
     any::Any,
     cell::UnsafeCell,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    future::Future,
     hash::Hash,
     marker::PhantomData,
     mem::ManuallyDrop,
@@ -769,9 +767,10 @@ where
     }
 }
 
-unsafe impl<T> Trace for Shared<T>
+#[cfg(feature = "async")]
+unsafe impl<T> Trace for futures::future::Shared<T>
 where
-    T: Future + 'static,
+    T: std::future::Future + 'static,
 {
     unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
 }
@@ -790,6 +789,7 @@ where
     unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
 }
 
+#[cfg(feature = "tokio")]
 unsafe impl<T> Trace for tokio::sync::Mutex<T>
 where
     T: GcOrTrace,
@@ -804,6 +804,7 @@ where
     }
 }
 
+#[cfg(feature = "tokio")]
 unsafe impl<T> Trace for tokio::sync::RwLock<T>
 where
     T: GcOrTrace,
@@ -821,6 +822,7 @@ where
     }
 }
 
+#[cfg(feature = "tokio")]
 unsafe impl<T> Trace for tokio::sync::mpsc::Sender<T>
 where
     T: 'static,

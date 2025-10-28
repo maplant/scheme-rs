@@ -15,19 +15,11 @@ use crate::{
 };
 use scheme_rs_macros::{maybe_async, maybe_await, runtime_fn};
 use std::{
-    any::Any,
     collections::HashSet,
     mem::ManuallyDrop,
     path::Path,
-    pin::Pin,
-    sync::{Arc, mpsc},
+    sync::Arc,
 };
-
-#[cfg(not(feature = "async"))]
-use std::{fs::File, io::BufReader};
-
-#[cfg(feature = "tokio")]
-use tokio::{fs::File, io::BufReader};
 
 /// Scheme-rs Runtime
 ///
@@ -64,32 +56,45 @@ impl Runtime {
         this
     }
 
-    #[cfg(feature = "tokio")]
-    pub async fn run_program(&self, path: &Path) -> Result<Vec<Value>, Exception> {
+    #[maybe_async]
+    pub fn run_program(&self, path: &Path) -> Result<Vec<Value>, Exception> {
+        #[cfg(not(feature = "async"))]
+        use std::{fs::File, io::BufReader};
+
+        #[cfg(feature = "tokio")]
+        use tokio::{fs::File, io::BufReader};
+        
+
         let progm = Library::new_program(self, path);
         let env = Environment::Top(progm);
         let file_name = path.file_name().unwrap().to_string_lossy();
-        let reader = BufReader::new(File::open(path).await.unwrap());
+        let reader = BufReader::new(maybe_await!(File::open(path)).unwrap());
         let port = Port::from_reader(reader);
-        let mut input_port = port.try_lock_input_port().await.unwrap();
+        let input_port = port.get_input_port().unwrap();
+
+        #[cfg(not(feature = "async"))]
+        let mut input_port = input_port.lock().unwrap();
+
+        #[cfg(feature = "tokio")]
+        let mut input_port = input_port.lock().await;
+
         let mut parser = Parser::new(&file_name, &mut input_port);
-        let sexprs = parser
-            .all_datums()
-            .await
+        let sexprs = maybe_await!(parser
+            .all_datums())
             .map_err(|err| ImportError::ParseSyntaxError(format!("{err:?}")))
             .unwrap();
-        let body = DefinitionBody::parse_lib_body(self, &sexprs, &env, sexprs[0].span()).await.unwrap();
+        let body = maybe_await!(DefinitionBody::parse_lib_body(self, &sexprs, &env, sexprs[0].span())).unwrap();
         let compiled = body.compile_top_level();
-        let closure = self.compile_expr(compiled).await;
-        Application::new(
+        let closure = maybe_await!(self.compile_expr(compiled));
+
+        maybe_await!(Application::new(
             closure,
             Vec::new(),
             ExceptionHandler::default(),
             DynamicWind::default(),
             None,
         )
-        .eval()
-        .await
+        .eval())
     }
 
     pub fn get_registry(&self) -> Registry {
@@ -192,9 +197,9 @@ impl DebugInfo {
 }
 
 #[cfg(not(feature = "async"))]
-type CompletionTx = std::sync::mpsc::SyncSender<CompilationTask>;
+type CompletionTx = std::sync::mpsc::SyncSender<Procedure>;
 #[cfg(not(feature = "async"))]
-type CompletionRx = std::sync::mpsc::Receiver<CompilationTask>;
+type CompletionRx = std::sync::mpsc::Receiver<Procedure>;
 
 #[cfg(feature = "async")]
 type CompletionTx = tokio::sync::oneshot::Sender<Procedure>;

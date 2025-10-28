@@ -13,12 +13,8 @@ use crate::{
     syntax::Span,
     value::{Cell, UnpackedValue, UnpackedValueRef, Value},
 };
-#[cfg(feature = "async")]
-use futures::future::BoxFuture;
 use scheme_rs_macros::{cps_bridge, maybe_async, maybe_await};
-use std::{
-    any::Any, borrow::Cow, collections::HashMap, fmt, hash::Hash, mem::MaybeUninit, sync::Arc,
-};
+use std::{borrow::Cow, collections::HashMap, fmt, hash::Hash, mem::MaybeUninit, sync::Arc};
 
 /// A function pointer to a generated continuation.
 pub(crate) type ContinuationPtr = unsafe extern "C" fn(
@@ -60,13 +56,13 @@ pub type AsyncBridgePtr = for<'a> fn(
     cont: &'a Value,
     exception_handler: &'a ExceptionHandler,
     dynamic_wind: &'a DynamicWind,
-) -> BoxFuture<'a, Application>;
+) -> futures::future::BoxFuture<'a, Application>;
 
 #[derive(Copy, Clone, Debug)]
 pub(crate) enum FuncPtr {
     Continuation(ContinuationPtr),
     User(UserPtr),
-    SyncBridge(SyncBridgePtr),
+    Bridge(SyncBridgePtr),
     #[cfg(feature = "async")]
     AsyncBridge(AsyncBridgePtr),
     /// Special type to indicate that we should return the argument as an Err.
@@ -267,7 +263,7 @@ impl ProcedureInner {
     }
 
     #[maybe_async]
-    pub async fn apply(
+    pub fn apply(
         &self,
         args: &[Value],
         exception_handler: &ExceptionHandler,
@@ -297,7 +293,7 @@ impl ProcedureInner {
                 exception_handler,
                 dynamic_wind,
             ),
-            FuncPtr::SyncBridge(sbridge) => {
+            FuncPtr::Bridge(sbridge) => {
                 self.apply_sync_bridge(sbridge, args, k.unwrap(), exception_handler, dynamic_wind)
             }
             #[cfg(feature = "async")]
@@ -360,6 +356,7 @@ impl Procedure {
         }
 
         let mut args = args.to_vec();
+
         // TODO: We don't need to create a new one of these every time, we should just have
         // one
         args.push(Value::from(Self(Gc::new(ProcedureInner::new(
@@ -370,6 +367,7 @@ impl Procedure {
             true,
             None,
         )))));
+
         maybe_await!(
             Application::new(
                 self.clone(),
@@ -380,25 +378,6 @@ impl Procedure {
             )
             .eval()
         )
-    }
-
-    #[cfg(feature = "async")]
-    pub(crate) fn call_blocking(&self, args: &[Value]) -> Result<Vec<Value>, Exception> {
-        let async_runtime = self.get_runtime().async_runtime();
-        let Ok(result) = std::thread::scope(move |s| {
-            s.spawn(move || {
-                let mut future = Box::pin(async move {
-                    Box::new(self.call(args).await) as Box<dyn Any + Send + 'static>
-                });
-                async_runtime.block_on(future.as_mut())
-            })
-            .join()
-            .unwrap()
-        })
-        .downcast::<Result<Vec<Value>, Exception>>() else {
-            unreachable!()
-        };
-        *result
     }
 }
 
@@ -594,7 +573,7 @@ impl FuncDebugInfo {
 }
 
 #[cps_bridge(name = "apply", lib = "(rnrs base builtins (6))", args = "arg1 . args")]
-pub async fn apply(
+pub fn apply(
     _runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
@@ -625,7 +604,7 @@ pub async fn apply(
     lib = "(rnrs base builtins (6))",
     args = "proc"
 )]
-pub async fn call_with_current_continuation(
+pub fn call_with_current_continuation(
     runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
@@ -648,7 +627,7 @@ pub async fn call_with_current_continuation(
     let escape_procedure = Procedure::new(
         runtime.clone(),
         vec![cont.clone(), dynamic_wind_value],
-        FuncPtr::AsyncBridge(escape_procedure),
+        FuncPtr::Bridge(escape_procedure),
         req_args,
         variadic,
         None,
@@ -668,7 +647,7 @@ pub async fn call_with_current_continuation(
 /// Prepare the continuation for call/cc. Clones the continuation environment
 /// and creates a closure that calls the appropriate winders.
 #[cps_bridge]
-async fn escape_procedure(
+fn escape_procedure(
     runtime: &Runtime,
     env: &[Value],
     args: &[Value],

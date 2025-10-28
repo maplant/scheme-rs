@@ -1,15 +1,17 @@
 //! Lexical analysis of symbolic expressions
 
 use super::Span;
-use futures::future::BoxFuture;
 use malachite::{Integer, base::num::conversion::traits::*, rational::Rational};
 use scheme_rs_macros::{maybe_async, maybe_await};
 use std::sync::Arc;
 use unicode_categories::UnicodeCategories;
 
+#[cfg(feature = "async")]
+use futures::future::BoxFuture;
+
 use crate::{
     num,
-    ports::{InputPort, Port, ReadError},
+    ports::{InputPort, ReadError},
 };
 
 pub struct Lexer<'a> {

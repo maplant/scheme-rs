@@ -10,9 +10,11 @@ use super::{
     Span, Syntax,
     lex::{Character, Lexeme, Lexer, Token},
 };
-use futures::future::BoxFuture;
 use scheme_rs_macros::{maybe_async, maybe_await};
 use std::{char::CharTryFromError, error::Error as StdError, fmt};
+
+#[cfg(feature = "async")]
+use futures::future::BoxFuture;
 
 pub struct Parser<'a> {
     /// We only ever need one token of lookahead probably, but this is more
@@ -102,29 +104,41 @@ impl Parser<'_> {
             }
 
             // Lists:
-            token!(Lexeme::LParen, span) => Ok(Some(self.list(span, Lexeme::RParen).await?)),
-            token!(Lexeme::LBracket, span) => Ok(Some(self.list(span, Lexeme::RBracket).await?)),
+            token!(Lexeme::LParen, span) => {
+                Ok(Some(maybe_await!(self.list(span, Lexeme::RParen))?))
+            }
+            token!(Lexeme::LBracket, span) => {
+                Ok(Some(maybe_await!(self.list(span, Lexeme::RBracket))?))
+            }
 
             // Vectors:
-            token!(Lexeme::HashParen, span) => Ok(Some(self.vector(span).await?)),
-            token!(Lexeme::Vu8Paren, span) => Ok(Some(self.byte_vector(span).await?)),
+            token!(Lexeme::HashParen, span) => Ok(Some(maybe_await!(self.vector(span))?)),
+            token!(Lexeme::Vu8Paren, span) => Ok(Some(maybe_await!(self.byte_vector(span))?)),
 
             // Various aliases:
-            token!(Lexeme::Quote, span) => Ok(Some(self.alias("quote", span).await?)),
-            token!(Lexeme::Backquote, span) => Ok(Some(self.alias("quasiquote", span).await?)),
-            token!(Lexeme::Comma, span) => Ok(Some(self.alias("unquote", span).await?)),
-            token!(Lexeme::CommaAt, span) => Ok(Some(self.alias("unquote-splicing", span).await?)),
-            token!(Lexeme::HashQuote, span) => Ok(Some(self.alias("syntax", span).await?)),
-            token!(Lexeme::HashBackquote, span) => Ok(Some(self.alias("quasisyntax", span).await?)),
-            token!(Lexeme::HashComma, span) => Ok(Some(self.alias("unsyntax", span).await?)),
+            token!(Lexeme::Quote, span) => Ok(Some(maybe_await!(self.alias("quote", span))?)),
+            token!(Lexeme::Backquote, span) => {
+                Ok(Some(maybe_await!(self.alias("quasiquote", span))?))
+            }
+            token!(Lexeme::Comma, span) => Ok(Some(maybe_await!(self.alias("unquote", span))?)),
+            token!(Lexeme::CommaAt, span) => {
+                Ok(Some(maybe_await!(self.alias("unquote-splicing", span))?))
+            }
+            token!(Lexeme::HashQuote, span) => Ok(Some(maybe_await!(self.alias("syntax", span))?)),
+            token!(Lexeme::HashBackquote, span) => {
+                Ok(Some(maybe_await!(self.alias("quasisyntax", span))?))
+            }
+            token!(Lexeme::HashComma, span) => {
+                Ok(Some(maybe_await!(self.alias("unsyntax", span))?))
+            }
             token!(Lexeme::HashCommaAt, span) => {
-                Ok(Some(self.alias("unsyntax-splicing", span).await?))
+                Ok(Some(maybe_await!(self.alias("unsyntax-splicing", span))?))
             }
 
             // Datum comments:
             token!(Lexeme::DatumComment) => {
                 // Discard next expression:
-                let _ = self.expression().await?;
+                let _ = maybe_await!(self.expression())?;
                 Ok(None)
             }
 

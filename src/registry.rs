@@ -10,7 +10,7 @@ use crate::{
     exceptions::{Condition, ExceptionHandler},
     gc::{Gc, Trace},
     proc::{
-        Application, AsyncBridgePtr, DynamicWind, FuncDebugInfo, FuncPtr, Procedure, SyncBridgePtr,
+        Application, DynamicWind, FuncDebugInfo, FuncPtr, Procedure, SyncBridgePtr,
     },
     runtime::Runtime,
     symbols::Symbol,
@@ -32,7 +32,7 @@ use scheme_rs_macros::{maybe_async, maybe_await};
 pub enum BridgePtr {
     Sync(SyncBridgePtr),
     #[cfg(feature = "async")]
-    Async(AsyncBridgePtr),
+    Async(crate::proc::AsyncBridgePtr),
 }
 
 pub struct BridgeFn {
@@ -137,7 +137,8 @@ impl RegistryInner {
                     rt.clone(),
                     Vec::new(),
                     match bridge_fn.wrapper {
-                        BridgePtr::Sync(func) => FuncPtr::SyncBridge(func),
+                        BridgePtr::Sync(func) => FuncPtr::Bridge(func),
+                        #[cfg(feature = "async")]
                         BridgePtr::Async(func) => FuncPtr::AsyncBridge(func),
                     },
                     bridge_fn.num_args,

@@ -10,7 +10,6 @@ use crate::{
     syntax::parse::{ParseSyntaxError, Parser},
     value::{UnpackedValue, Value, ValueType},
 };
-use futures::future::BoxFuture;
 use scheme_rs_macros::{maybe_async, maybe_await};
 use std::{
     collections::{BTreeSet, HashSet},
@@ -21,6 +20,9 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
+
+#[cfg(feature = "async")]
+use futures::future::BoxFuture;
 
 pub mod lex;
 pub mod parse;
@@ -289,17 +291,28 @@ impl Syntax {
         }
     }
 
-    pub fn from_str(_s: &str, _file_name: Option<&str>) -> Result<Vec<Self>, ParseSyntaxError> {
-        /*
+    #[cfg(not(feature = "async"))]
+    pub fn from_str(s: &str, file_name: Option<&str>) -> Result<Vec<Self>, ParseSyntaxError> {
+        let file_name = file_name.unwrap_or("<unknown>");
+        let bytes = Cursor::new(s.as_bytes().to_vec());
+        let port = Port::from_reader(bytes);
+        let input_port = port.get_input_port().unwrap();
+        let mut input_port = input_port.lock().unwrap();
+        let mut parser = Parser::new(file_name, &mut input_port);
+        parser.all_datums()
+    }
+
+    #[cfg(feature = "async")]
+    pub fn from_str(s: &str, file_name: Option<&str>) -> Result<Vec<Self>, ParseSyntaxError> {
         let file_name = file_name.unwrap_or("<unknown>");
         let bytes = Cursor::new(s.as_bytes().to_vec());
         futures::executor::block_on(async move {
-            let port = Port::from_reader(file_name, bytes);
-            let mut parser = Parser::new(&port).await;
+            let port = Port::from_reader(bytes);
+            let input_port = port.get_input_port().unwrap();
+            let mut input_port = input_port.lock().await;
+            let mut parser = Parser::new(file_name, &mut input_port);
             parser.all_datums().await
         })
-         */
-        todo!()
     }
 
     pub fn fetch_all_identifiers(&self, idents: &mut HashSet<Identifier>) {

@@ -6,8 +6,10 @@ use std::{
 };
 
 use either::Either;
-use futures::future::BoxFuture;
 use scheme_rs_macros::{maybe_async, maybe_await};
+
+#[cfg(feature = "async")]
+use futures::future::BoxFuture;
 
 use crate::{
     ast::{ImportSet, SpecialKeyword},
@@ -116,6 +118,12 @@ impl LexicalContour {
 }
 
 impl Gc<LexicalContour> {
+    #[cfg(not(feature = "async"))]
+    pub fn fetch_keyword(&self, name: &Identifier) -> Result<Option<Keyword>, Condition> {
+        self.clone().fetch_keyword_inner(name)
+    }
+
+    #[cfg(feature = "async")]
     pub fn fetch_keyword<'a>(
         &self,
         name: &'a Identifier,
@@ -241,7 +249,7 @@ impl LetSyntaxContour {
 impl Gc<LetSyntaxContour> {
     #[cfg(not(feature = "async"))]
     pub fn fetch_keyword(&self, name: &Identifier) -> Result<Option<Keyword>, Condition> {
-        self.fetch_keyword_inner(name)
+        self.clone().fetch_keyword_inner(name)
     }
 
     #[cfg(feature = "async")]
@@ -293,7 +301,7 @@ macro_rules! macro_resolver_fn {
     ( $outer:ident, $inner:ident -> $ret:ty ) => {
         #[cfg(not(feature = "async"))]
         pub fn $outer(&self, name: &Identifier) -> Result<Option<$ret>, Condition> {
-            Self::inner(&self.up, &self.source, self.mark, name)
+            Self::$inner(&self.up, &self.source, self.mark, name)
         }
 
         #[cfg(feature = "async")]
@@ -402,6 +410,12 @@ impl MacroExpansion {
             }
     }
 
+    #[cfg(not(feature = "async"))]
+    pub fn import(&self, import_set: ImportSet) -> Result<(), ImportError> {
+        self.up.import(import_set)
+    }
+
+    #[cfg(feature = "async")]
     pub fn import(&self, import_set: ImportSet) -> BoxFuture<'static, Result<(), ImportError>> {
         let up = self.up.clone();
         Box::pin(async move { up.import(import_set).await })

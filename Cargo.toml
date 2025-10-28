@@ -39,7 +39,8 @@ cranelift-module = "0.122"
 tokio = { version = "1.47", features = ["full"], optional = true }
 
 [features]
-default = ["async", "tokio"]
+default = []
+# default = ["async", "tokio"]
 async = ["dep:futures"]
 
 [profile.release]

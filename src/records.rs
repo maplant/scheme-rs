@@ -238,7 +238,7 @@ fn make_default_record_constructor_descriptor(
     let protocol = Procedure::new(
         runtime,
         vec![Value::from(rtd.clone())],
-        FuncPtr::SyncBridge(default_protocol),
+        FuncPtr::Bridge(default_protocol),
         1,
         false,
         None,
@@ -296,7 +296,7 @@ pub fn make_record_constructor_descriptor(
         Procedure::new(
             runtime.clone(),
             vec![Value::from(rtd.clone())],
-            FuncPtr::SyncBridge(default_protocol),
+            FuncPtr::Bridge(default_protocol),
             1,
             false,
             None,
@@ -467,9 +467,9 @@ fn chain_constructors(
         runtime.clone(),
         env,
         if rtds_remain {
-            FuncPtr::SyncBridge(chain_constructors)
+            FuncPtr::Bridge(chain_constructors)
         } else {
-            FuncPtr::SyncBridge(constructor)
+            FuncPtr::Bridge(constructor)
         },
         num_args,
         false,
@@ -551,7 +551,7 @@ fn default_protocol(
     let constructor = Procedure::new(
         runtime.clone(),
         vec![args[0].clone(), Value::from(rtd)],
-        FuncPtr::SyncBridge(default_protocol_constructor),
+        FuncPtr::Bridge(default_protocol_constructor),
         num_args,
         false,
         None,
@@ -823,7 +823,7 @@ pub fn record_predicate(
     let pred_fn = Procedure::new(
         runtime.clone(),
         vec![rtd.clone()],
-        FuncPtr::SyncBridge(record_predicate_fn),
+        FuncPtr::Bridge(record_predicate_fn),
         1,
         false,
         None,
@@ -901,7 +901,7 @@ pub fn record_accessor(
     let accessor_fn = Procedure::new(
         runtime.clone(),
         vec![Value::from(rtd), Value::from(Number::from(k))],
-        FuncPtr::SyncBridge(record_accessor_fn),
+        FuncPtr::Bridge(record_accessor_fn),
         1,
         false,
         None,
@@ -982,7 +982,7 @@ pub fn record_mutator(
     let mutator_fn = Procedure::new(
         runtime.clone(),
         vec![Value::from(rtd), Value::from(Number::from(k))],
-        FuncPtr::SyncBridge(record_mutator_fn),
+        FuncPtr::Bridge(record_mutator_fn),
         2,
         false,
         None,
