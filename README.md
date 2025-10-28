@@ -1,8 +1,9 @@
-# <picture><source media="(prefers-color-scheme: dark)" srcset="logo-dark.png"><img align="left" width="150px" src="logo-light.png"></picture> Scheme-rs: Embedded Scheme for the Async Rust Ecosystem
+# <picture><source media="(prefers-color-scheme: dark)" srcset="logo-dark.png"><img align="left" width="150px" src="logo-light.png"></picture> Scheme-rs: Embedded R6RS Scheme for the Rust Ecosystem
 
 Scheme-rs is a work-in-progress implementation of the [R6RS](https://www.r6rs.org/final/r6rs.pdf) specification
-of the scheme programming language that is designed to work with async Rust runtimes like [tokio](https://tokio.rs/).
-In essence, it is a embedded scripting language for the async Rust ecosystem.
+of the scheme programming language that is designed to embedded within sync and  async Rust
+
+In essence, it is a embedded scripting language for the Rust ecosystem.
 
 Scheme-rs is intended to be fully compliant with R6RS, and R7RS large when it is eventually released. To that end
 the bones are mostly there but some key issues remain. 
@@ -13,32 +14,21 @@ That is obviously a long way away.
 ## Features currently supported by scheme-rs:
 
 - Tail-call optimizations are fully supported 
-- Garbage Collected via [Bacon-Rajan Concurrent Cycle Collection](https://pages.cs.wisc.edu/~cymen/misc/interests/Bacon01Concurrent.pdf)
-- Most key forms (let/let*/letrec/lambda/define etc)
-- Call by current continuation
+- Concurrent garbage collection via [Bacon-Rajan Concurrent Cycle Collection](https://pages.cs.wisc.edu/~cymen/misc/interests/Bacon01Concurrent.pdf)
+- All key forms
+- Call-by-current-continuation
 - Hygienic macros and syntax transformers (`define-syntax`, `syntax-case`, `datum->syntax` and `syntax->datum`) 
 - Spawning tasks and awaiting futures
 - Exceptions and error handling (`raise`, `raise-continuable`, `with-exception-handler`)
 - `dynamic-wind`
-- Defining async bridge functions in Rust and importing Rust types into Scheme
+- Defining sync/async bridge functions in Rust and importing Rust types into Scheme
 - Records and conditions
+- Libraries and all import forms
 
-## Features currently unsupported by scheme-rs: 
+## Features currently in development
 
 - Ports and IO operations
-- Most API functions are not implemented
-- A large portion of lexical structures are missing; there's no way to specify recursive data structures
-- And many more that I cannot think of off the top of my head
-
-## Implementation details:
-
-`scheme-rs` is JIT compiled, compiling the expanded Scheme code into a [CPS](https://en.wikipedia.org/wiki/Continuation-passing_style) 
-mid-level IR, and then converting that into Cranelift IR.
-
-At present the code produced by `scheme-rs` is of pretty poor quality. Very few optimizations are performed, all variables 
-are boxed. Focus was spent on making this project as correct as possible, and to that end this is a JIT compiler for 
-scheme that fully supports syntax-case, proper tail recursion, and interaction with async Rust. Contributions are more than
-welcome if you would like to add optimizations passes to the compiler.
+- Hash maps 
 
 ## Usage:
 
@@ -65,52 +55,104 @@ $1 = (1 2 3 4 5 6 7 8 9 10)
 @*@**@***@****@*****@******@*******@********@*********@**********@***********@**********...^C
 ```
 
-### Async Example:
+### Installing the CLI
 
-Here is the Tokio echo server example converted to Scheme-rs:
+The REPL CLI can be installed via navigating to the scheme-rs repository root and running:
 
-```scheme
-(import (tokio))
-
-(define (echo socket)
-  (let ((buff (read socket 1024)))
-    (if (> (bytevector-length buff) 0)
-        (begin
-          (write socket buff)
-          (echo socket))
-        (display "Connection closed\n"))))
-
-(define (listen listener)
-  (let-values (((socket addr) (accept listener)))
-    (display "Accepting addr ")
-    (display addr)
-    (display "\n")
-    (spawn (lambda () (echo socket)))
-    (listen listener)))
-
-(listen (bind-tcp "127.0.0.1:8080"))
+```console
+$ cargo install --path .
 ```
 
-### Creating Builtin Functions:
+To enable scheme-rs's async features, install with the `tokio` and `async` feature flags:
 
-Scheme-rs provides a `bridge` function attribute macro to allow you to easily define builtins. Here is 
-an example of a function that reads a file into a string using tokio's `read_to_string` function:
+```console
+$ cargo install --path . --features "tokio,async"
+```
+
+scheme-rs embeds all of its libraries within its executable, so the binary is all you need
+to run scheme programs.
+
+### Embedding 
+
+Scheme-rs can be embedded into any Rust application. 
+
+#### Feature flags
+
+Scheme-rs supports both sync and async contexts. By default scheme-rs is sync, but can be made async
+via the `tokio` and `async` feature flags. 
+
+#### Creating bridge Functions:
+
+Scheme-rs provides a `bridge` function attribute macro to allow you to easily define builtins. The 
+following example defines the numeric equal function and includes it in the `(rnrs base builtins (6))` 
+library:
 
 ```rust
-#[bridge(name = "read-file-to-string", lib = "(base)")]
-pub async fn read_file(file: &Value) -> Result<Vec<Value>, Condition> {
-    let file = file.to_string();
-    let contents = tokio::fs::read_to_string(&file)
-        .await
-        .map_err(|err| Condition::error(format!("failed to read file {file}: {err:?}")))?;
-    Ok(vec![Value::from(contents)])
+#[bridge(name = "=", lib = "(rnrs base builtins (6))")]
+pub fn equal_builtin(args: &[Value]) -> Result<Vec<Value>, Condition> {
+    if let Some((first, rest)) = vals.split_first() {
+        let first: Arc<Number> = first.clone().try_into()?;
+        for next in rest {
+            let next: Arc<Number> = next.clone().try_into()?;
+            if first != next {
+                return Ok(vec![Value::from(false)]);
+            }
+        }
+    }
+    Ok(vec![Value::from(true)])
 }
 ```
 
-## Contributing
+If the `tokio` and `async` feature flags are enabled, bridge functions can be async:
 
-If you are an intrepid scheme compiler optimizer, this project is for you! Lots of work needs to be done
-to bring this project up to snuff. The initial focus was on correctness, so if you would like to take a
-stab at improving perf or add features anywhere in this project, feel free!
+```rust
+#[bridge(name = "sleep", lib = "(tokio)")]
+pub async fn sleep(seconds: &Value) -> Result<Vec<Value>, Condition> {
+    use tokio::time::{sleep, Duration};
+
+    let seconds: Arc<Number> = seconds.clone().try_into()?;
+    let seconds: usize = seconds.as_ref().try_into()?;
+
+    sleep(Duration::from_millis(100)).await;
+
+    Ok(Vec::new())
+}
+```
+
+#### Embedding Rust types in Scheme
+
+Any Rust type that can implement `Trace` can be converted in to a Scheme value by 
+implementing the `SchemeCompatible` trait:
+
+```rust
+#[derive(Copy, Clone, Default, Debug, Trace)]
+pub struct SimpleCondition;
+
+impl SimpleCondition {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl SchemeCompatible for SimpleCondition {
+    fn rtd() -> Arc<RecordTypeDescriptor> {
+        rtd!(name: "&condition")
+    }
+}
+```
+
+
+## Implementation details:
+
+`scheme-rs` is JIT compiled, compiling the expanded Scheme code into a [CPS](https://en.wikipedia.org/wiki/Continuation-passing_style) 
+mid-level IR, and then converting that into Cranelift IR.
+
+At present the code produced by `scheme-rs` is of pretty poor quality. Very few optimizations are performed, all variables 
+are boxed. Focus was spent on making this project as correct as possible, and to that end this is a JIT compiler for 
+scheme that fully supports syntax-case, proper tail recursion, and interaction with async Rust. Contributions are more than
+welcome if you would like to add optimizations passes to the compiler.
+
+
+## Contributing
 
 If you have any questions or comments about the project, feel free to join [the scheme-rs discord server here](https://discord.gg/sR4TttzGv5).
