@@ -2,7 +2,7 @@
 
 use rustyline::{Editor, error::ReadlineError};
 use scheme_rs_macros::{maybe_async, maybe_await};
-use std::sync::Arc;
+use std::{any::Any, io::{Seek, SeekFrom, Write}, sync::Arc};
 
 #[cfg(not(feature = "async"))]
 use std::{io::Read, sync::Mutex};
@@ -94,10 +94,12 @@ impl CharBuffer {
     }
 }
 
+/*
 pub enum InputPort {
     Reader { buffer: CharBuffer, reader: Reader },
     Prompt { prompt: Prompt },
 }
+*/
 
 impl InputPort {
     /*
@@ -136,29 +138,121 @@ pub enum ReadError {
     Eof,
     /// IO error
     Io(std::io::Error),
-    /// Rustyline error
-    Prompt,
 }
 
-pub struct Port {
-    pub(crate) input_port: Option<Arc<Mutex<InputPort>>>,
+pub enum WriteError {
+    Io(std::io::Error),
 }
 
-impl Port {
-    // TODO: Error handling
-    /*
-    pub async fn read_file(file: &Path) -> Self {
-        let name = file.file_name().unwrap().to_string_lossy().into_owned();
-        let reader = BufReader::new(File::open(file).await.unwrap());
+pub enum SeekError {
+    Io(std::io::Error),
+}
+
+#[cfg(not(feature = "async"))]
+pub type ReadFn = fn(&mut dyn Any, &mut [u8]) -> Result<usize, ReadError>;
+#[cfg(not(feature = "async"))]
+pub type WriteFn = fn(&mut dyn Any, &[u8]) -> Result<usize, WriteError>;
+#[cfg(not(feature = "async"))]
+pub type SeekFn = fn(&mut dyn Any, u64) -> Result<u64, SeekError>;
+
+#[cfg(feature = "async")]
+pub type ReadFn =
+    for<'a> fn(&'a mut dyn Any, &'a mut [u8]) -> BoxFuture<'a, Result<usize, ReadError>>;
+#[cfg(feature = "async")]
+pub type WriteFn =
+    for<'a> fn(&'a mut dyn Any, &'a [u8]) -> BoxFuture<'a, Result<usize, WriteError>>;
+
+struct PortInner {
+    port: Arc<Mutex<dyn Any + Send + Sync + 'static>>,
+    read: Option<ReadFn>,
+    write: Option<WriteFn>,
+    seek: Option<SeekFn>,
+}
+
+fn read_fn<T>() -> ReadFn
+where
+    T: Read + Any + Sync + Send + 'static,
+{
+    |any, buff| {
+        let concrete = unsafe { any.downcast_mut::<T>().unwrap_unchecked() };
+        concrete.read(buff).map_err(ReadError::Io)
+    }
+}
+
+fn write_fn<T>() -> WriteFn
+where
+    T: Write + Any + Sync + Send + 'static,
+{
+    |any, buff| {
+        let concrete = unsafe { any.downcast_mut::<T>().unwrap_unchecked() };
+        concrete.write(buff).map_err(WriteError::Io)
+    }
+}
+
+fn seek_fn<T>() -> SeekFn
+where
+    T: Seek + Any + Sync + Send + 'static,
+{
+    |any, pos| {
+        let concrete = unsafe { any.downcast_mut::<T>().unwrap_unchecked() };
+        concrete.seek(SeekFrom::Start(pos)).map_err(SeekError::Io)
+    }
+}
+
+impl PortInner {
+    fn new<P>(port: P) -> Self
+    where
+        P: IntoPort,
+    {
         Self {
-            name,
-            inner: Arc::new(Mutex::new(PortInner::InputPort(InputPort::from_reader(
-                reader,
-            )))),
+            port: port.into_port(),
+            read: P::read_fn(),
+            write: P::write_fn(),
+            seek: P::seek_fn(),
         }
     }
-    */
+    
+    #[cfg(not(feature = "async"))]
+    fn lock_port<R>(
+        &self,
+        callback: impl FnOnce(&mut dyn Any, Option<ReadFn>, Option<WriteFn>) -> R,
+    ) -> R {
+        let mut locked_port = self.port.lock().unwrap();
+        callback(&mut *locked_port, self.read, self.write)
+    }
 
+    #[cfg(feature = "async")]
+    async fn lock_port<R>(
+        &self,
+        callback: impl AsyncFnOnce(&mut dyn Any, Option<ReaderFn>, Option<WriterFn>) -> R,
+    ) -> R {
+        let mut locked_port = self.port.lock().unwrap();
+        callback(&mut *locked_port, self.reader, self.writer).await
+    }
+}
+
+pub trait IntoPort: Any + Send + Sync + 'static + Sized {
+    fn into_port(self) -> Arc<Mutex<dyn Any + Send + Sync + 'static>> {
+        Arc::new(Mutex::new(self))
+    }
+
+    fn read_fn() -> Option<ReadFn> {
+        None
+    }
+
+    fn write_fn() -> Option<WriteFn> {
+        None
+    }
+
+    fn seek_fn() -> Option<SeekFn> {
+        None
+    }
+}
+
+pub struct Port(pub(crate) Arc<PortInner>);
+
+impl Port {
+    /*
     #[cfg(not(feature = "async"))]
     pub fn from_reader(reader: impl Read + Sync + Send + 'static) -> Self {
         Self {
@@ -178,64 +272,51 @@ impl Port {
             }))),
         }
     }
-
-    pub fn from_prompt(editor: impl Readline) -> Self {
-        Self {
-            input_port: Some(Arc::new(Mutex::new(InputPort::Prompt {
-                prompt: Prompt::new(editor),
-            }))),
-        }
-    }
-
-    pub fn get_input_port(&self) -> Option<Arc<Mutex<InputPort>>> {
-        self.input_port.clone()
-    }
-
-    /*
-    #[cfg(feature = "async")]
-    pub async fn try_lock_input_port(&self) -> Option<MutexGuard<'_, InputPort>> {
-        if let Some(input_port) = self.input_port {
-            Some(input_port.lock().await)
-        } else {
-            None
-        }
-    }
     */
 }
 
-pub trait Readline: Send + 'static {
+/*
+pub trait Readline: Send + Sync + 'static {
     fn readline(&mut self, prompt: &str) -> rustyline::Result<String>;
 }
 
 impl<H, I> Readline for Editor<H, I>
 where
-    H: rustyline::Helper + Send + 'static,
-    I: rustyline::history::History + Send + 'static,
+    H: rustyline::Helper + Send + Sync + 'static,
+    I: rustyline::history::History + Send + Sync + 'static,
 {
     fn readline(&mut self, prompt: &str) -> rustyline::Result<String> {
         self.readline(prompt)
     }
 }
+*/
 
 #[cfg(not(feature = "async"))]
 mod prompt {
     use super::*;
 
-    pub struct Prompt {
-        buffer: Vec<char>,
-        pos: usize,
-        editor: Box<dyn Readline>,
+    pub struct Prompt<H, I>
+    where
+        H: rustyline::Helper + Send + Sync + 'static,
+        I: rustyline::history::History + Send + Sync + 'static,
+    {
+        leftover: Vec<u8>,
+        editor: Editor<H, I>,
     }
 
-    impl Prompt {
-        pub(super) fn new(editor: impl Readline) -> Self {
+    impl<H, I> Prompt<H, I>
+    where
+        H: rustyline::Helper + Send + Sync + 'static,
+        I: rustyline::history::History + Send + Sync + 'static,
+    {
+        pub(super) fn new(editor: Editor<H, I>) -> Self {
             Self {
-                buffer: Vec::new(),
-                pos: 0,
-                editor: Box::new(editor),
+                leftover: Vec::new(),
+                editor,
             }
         }
 
+        /*
         pub(super) fn read_char(&mut self) -> Result<char, ReadError> {
             let chr = self.peekn(0)?;
             self.pos += 1;
@@ -250,7 +331,7 @@ mod prompt {
                         .map_err(|err| match err {
                             ReadlineError::Eof => ReadError::Eof,
                             ReadlineError::Io(io) => ReadError::Io(io),
-                            _ => ReadError::Prompt,
+                            _ => todo!(),
                         })?
                         .chars(),
                 );
@@ -258,7 +339,43 @@ mod prompt {
             let chr = self.buffer[self.pos + idx];
             Ok(chr)
         }
+        */
     }
+
+    impl<H, I> IntoPort for Prompt<H, I>
+    where
+        H: rustyline::Helper + Send + Sync + 'static,
+        I: rustyline::history::History + Send + Sync + 'static,
+    {
+        fn read_fn() -> Option<ReadFn> {
+            Some(|any, buff| {
+                let concrete = unsafe { any.downcast_mut::<Self>().unwrap_unchecked() };
+                let input = concrete.editor.readline("> ");
+                todo!()
+            })
+        }
+    }
+}
+
+pub enum Codec {
+    Latin1,
+    Utf8,
+    Utf16,
+}
+
+pub enum EolStyle {
+    /// Linefeed
+    Lf,
+    /// Carriage return
+    Cr,
+    /// Carriage return linefeed
+    Crlf,
+    /// Next line
+    Nel,
+    /// Carriage return next line
+    Crnel,
+    /// Line separator
+    Ls
 }
 
 #[cfg(feature = "tokio")]
