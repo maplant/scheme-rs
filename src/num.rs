@@ -25,14 +25,14 @@ use std::{
     sync::Arc,
 };
 
-#[derive(Clone)]
+#[derive(Clone, Trace)]
 #[repr(align(16))]
 pub enum Number {
-    FixedInteger(i64),
-    BigInteger(Integer),
-    Rational(Rational),
-    Real(f64),
-    Complex(Complex64),
+    FixedInteger(#[trace(skip)] i64),
+    BigInteger(#[trace(skip)] Integer),
+    Rational(#[trace(skip)] Rational),
+    Real(#[trace(skip)] f64),
+    Complex(#[trace(skip)] Complex64),
 }
 
 impl Number {
@@ -475,10 +475,6 @@ impl Display for Operation {
             }
         )
     }
-}
-
-unsafe impl Trace for Number {
-    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(crate::gc::OpaqueGcPtr)) {}
 }
 
 #[derive(Debug)]

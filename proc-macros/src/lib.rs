@@ -2,12 +2,13 @@ use proc_macro::{self, TokenStream};
 use proc_macro2::{Literal, Span};
 use quote::{format_ident, quote};
 use syn::{
-    DataEnum, DataStruct, DeriveInput, Error, Expr, Fields, FnArg, GenericParam, Generics, Ident,
-    ItemFn, LitStr, Member, Pat, PatIdent, PatType, Result, Token, Type, TypePath, TypeReference,
-    Visibility, bracketed, parenthesized,
+    Attribute, DataEnum, DataStruct, DeriveInput, Error, Expr, Fields, FnArg, GenericParam,
+    Generics, Ident, ItemFn, LitStr, Member, Meta, Pat, PatIdent, PatType, Result, Token, Type,
+    TypePath, TypeReference, Visibility, bracketed, parenthesized,
     parse::{Parse, ParseStream},
     parse_macro_input, parse_quote,
     punctuated::Punctuated,
+    spanned::Spanned,
 };
 
 #[proc_macro_attribute]
@@ -368,36 +369,43 @@ fn is_slice(arg: &FnArg) -> bool {
     matches!(arg, FnArg::Typed(PatType { ty, ..}) if matches!(ty.as_ref(), Type::Reference(TypeReference { elem, .. }) if matches!(elem.as_ref(), Type::Slice(_))))
 }
 
-#[proc_macro_derive(Trace)]
+#[proc_macro_derive(Trace, attributes(trace))]
 pub fn derive_trace(input: TokenStream) -> TokenStream {
     let DeriveInput {
+        attrs,
         ident,
         data,
         generics,
         ..
     } = parse_macro_input!(input);
 
-    match data {
-        syn::Data::Struct(data_struct) => derive_trace_struct(ident, data_struct, generics).into(),
-        syn::Data::Enum(data_enum) => derive_trace_enum(ident, data_enum, generics).into(),
-        _ => panic!("Union types are not supported."),
-    }
+    let tokens = match data {
+        syn::Data::Struct(data_struct) => derive_trace_struct(&attrs, ident, data_struct, generics),
+        syn::Data::Enum(data_enum) => derive_trace_enum(&attrs, ident, data_enum, generics),
+        syn::Data::Union(union) => Err(Error::new(
+            union.union_token.span(),
+            "unions are not supported by Trace",
+        )),
+    };
+
+    tokens.unwrap_or_else(syn::Error::into_compile_error).into()
 }
 
 fn derive_trace_struct(
+    attrs: &[Attribute],
     name: Ident,
     record: DataStruct,
     generics: Generics,
-) -> proc_macro2::TokenStream {
+) -> syn::Result<proc_macro2::TokenStream> {
     let fields = match record.fields {
         Fields::Named(fields) => fields.named,
         Fields::Unnamed(fields) => fields.unnamed,
         _ => {
-            return quote! {
+            return Ok(quote! {
                 unsafe impl ::scheme_rs::gc::Trace for #name {
                     unsafe fn visit_children(&self, visitor: &mut dyn FnMut(::scheme_rs::gc::OpaqueGcPtr)) {}
                 }
-            };
+            });
         }
     };
 
@@ -409,19 +417,22 @@ fn derive_trace_struct(
 
     let mut unbound_params = Punctuated::<GenericParam, Token![,]>::new();
 
-    for param in params.iter_mut() {
-        match param {
-            GenericParam::Type(ty) => {
-                ty.bounds.push(syn::TypeParamBound::Verbatim(
-                    quote! { ::scheme_rs::gc::Trace },
-                ));
-                unbound_params.push(GenericParam::Type(syn::TypeParam::from(ty.ident.clone())));
+    // TODO: Factor this out
+    if !skip_bounds(attrs)? {
+        for param in params.iter_mut() {
+            match param {
+                GenericParam::Type(ty) => {
+                    ty.bounds.push(syn::TypeParamBound::Verbatim(
+                        quote! { ::scheme_rs::gc::Trace },
+                    ));
+                    unbound_params.push(GenericParam::Type(syn::TypeParam::from(ty.ident.clone())));
+                }
+                param => unbound_params.push(param.clone()),
             }
-            param => unbound_params.push(param.clone()),
         }
     }
 
-    let field_visits = fields
+    let (field_visits, field_drops): (Vec<_>, Vec<_>) = fields
         .iter()
         .enumerate()
         .map(|(i, f)| {
@@ -434,42 +445,36 @@ fn derive_trace_struct(
                 },
                 Member::Named,
             );
-            if is_gc(&f.ty) {
+            let ty = &f.ty;
+            let is_gc = is_gc(ty);
+            let skip_field = skip_field(&f.attrs)?;
+            let visit = if skip_field {
+                quote! {}
+            } else if is_gc {
                 quote! {
                     visitor(self.#ident.as_opaque());
                 }
             } else {
                 quote! {
-                    self. #ident .visit_children(visitor);
+                    <#ty as ::scheme_rs::gc::Trace>::visit_children(&self. #ident, visitor);
                 }
-            }
-        })
-        .collect::<Vec<_>>();
-
-    let field_drops = fields
-        .iter()
-        .enumerate()
-        .flat_map(|(i, f)| {
-            let ident = f.ident.clone().map_or_else(
-                || {
-                    Member::Unnamed(syn::Index {
-                        index: i as u32,
-                        span: Span::call_site(),
-                    })
-                },
-                Member::Named,
-            );
-            if !is_gc(&f.ty) {
-                Some(quote! {
-                        self.#ident.finalize();
-                })
+            };
+            let finalize = if skip_field {
+                quote! {
+                    core::ptr::drop_in_place(&mut self. #ident as *mut #ty);
+                }
+            } else if is_gc {
+                quote! {}
             } else {
-                None
-            }
+                quote! { <#ty as ::scheme_rs::gc::Trace>::finalize(&mut self. #ident); }
+            };
+            Ok((visit, finalize))
         })
-        .collect::<Vec<_>>();
+        .collect::<syn::Result<Vec<_>>>()?
+        .into_iter()
+        .unzip();
 
-    quote! {
+    Ok(quote! {
         #[automatically_derived]
         unsafe impl<#params> ::scheme_rs::gc::Trace for #name <#unbound_params>
         #where_clause
@@ -486,15 +491,15 @@ fn derive_trace_struct(
                 )*
             }
         }
-    }
+    })
 }
 
-// TODO: Add generics here
 fn derive_trace_enum(
+    attrs: &[Attribute],
     name: Ident,
     data_enum: DataEnum,
     generics: Generics,
-) -> proc_macro2::TokenStream {
+) -> syn::Result<proc_macro2::TokenStream> {
     let (visit_match_clauses, finalize_match_clauses): (Vec<_>, Vec<_>) = data_enum
         .variants
         .into_iter()
@@ -503,7 +508,13 @@ fn derive_trace_enum(
                 Fields::Named(ref named) => named
                     .named
                     .iter()
-                    .map(|field| (field.ty.clone(), field.ident.as_ref().unwrap().clone()))
+                    .map(|field| {
+                        (
+                            field.attrs.clone(),
+                            field.ty.clone(),
+                            field.ident.as_ref().unwrap().clone(),
+                        )
+                    })
                     .collect(),
                 Fields::Unnamed(ref unnamed) => unnamed
                     .unnamed
@@ -511,50 +522,69 @@ fn derive_trace_enum(
                     .enumerate()
                     .map(|(i, field)| {
                         let ident = Ident::new(&format!("t{i}"), Span::call_site());
-                        (field.ty.clone(), ident)
+                        (field.attrs.clone(), field.ty.clone(), ident)
                     })
                     .collect(),
                 _ => return None,
             };
-            let visits: Vec<_> = fields
+            Some((variant, fields))
+        })
+        .map(|(variant, fields)| {
+            let visits = fields
                 .iter()
-                .map(|(ty, accessor)| {
-                    if is_gc(ty) {
+                .map(|(attrs, ty, accessor)| {
+                    let skip_field = skip_field(&attrs)?;
+
+                    let visit = if skip_field {
                         quote! {
-                            visitor(#accessor.as_opaque())
+                            let _ = #accessor;
+                        }
+                    } else if is_gc(ty) {
+                        quote! {
+                            visitor(#accessor.as_opaque());
                         }
                     } else {
                         quote! {
-                            #accessor.visit_children(visitor)
+                            <#ty as ::scheme_rs::gc::Trace>::visit_children(#accessor, visitor);
+                        }
+                    };
+                    Ok(visit)
+                })
+                .collect::<syn::Result<Vec<_>>>()?;
+            let drops: Vec<_> = fields
+                .iter()
+                .map(|(attrs, ty, accessor)| {
+                    let skip_field = skip_field(&attrs).unwrap();
+
+                    if skip_field {
+                        quote! {
+                            core::ptr::drop_in_place(#accessor as *mut #ty);
+                        }
+                    } else if is_gc(ty) {
+                        quote! {}
+                    } else {
+                        quote! {
+                            <#ty as ::scheme_rs::gc::Trace>::finalize(#accessor);
                         }
                     }
                 })
                 .collect();
-            let drops: Vec<_> = fields
-                .iter()
-                .filter(|(ty, _)| !is_gc(ty))
-                .map(|(_, accessor)| {
-                    quote! {
-                        #accessor.finalize();
-                    }
-                })
-                .collect();
-            let field_name = fields.iter().map(|(_, field)| field);
+            let field_name = fields.iter().map(|(_, _, field)| field);
             let fields_destructured = match variant.fields {
                 Fields::Named(..) => quote! { { #( #field_name, )* .. } },
                 _ => quote! { ( #( #field_name ),* ) },
             };
-            let field_name = fields.iter().map(|(_, field)| field);
+            let field_name = fields.iter().map(|(_, _, field)| field);
             let fields_destructured_mut = match variant.fields {
                 Fields::Named(..) => quote! { { #( #field_name, )* .. } },
                 _ => quote! { ( #( #field_name ),* ) },
             };
             let variant_name = variant.ident;
-            Some((
+            Ok((
                 quote! {
                     Self::#variant_name #fields_destructured => {
                         #(
-                            #visits;
+                            #visits
                         )*
                     }
                 },
@@ -567,6 +597,8 @@ fn derive_trace_enum(
                 },
             ))
         })
+        .collect::<syn::Result<Vec<_>>>()?
+        .into_iter()
         .unzip();
 
     let Generics {
@@ -577,19 +609,22 @@ fn derive_trace_enum(
 
     let mut unbound_params = Punctuated::<GenericParam, Token![,]>::new();
 
-    for param in params.iter_mut() {
-        match param {
-            GenericParam::Type(ty) => {
-                ty.bounds.push(syn::TypeParamBound::Verbatim(
-                    quote! { ::scheme_rs::gc::Trace },
-                ));
-                unbound_params.push(GenericParam::Type(syn::TypeParam::from(ty.ident.clone())));
+    if !skip_bounds(attrs)? {
+        for param in params.iter_mut() {
+            match param {
+                GenericParam::Type(ty) => {
+                    ty.bounds.push(syn::TypeParamBound::Verbatim(
+                        quote! { ::scheme_rs::gc::Trace },
+                    ));
+                    unbound_params.push(GenericParam::Type(syn::TypeParam::from(ty.ident.clone())));
+                }
+                param => unbound_params.push(param.clone()),
             }
-            param => unbound_params.push(param.clone()),
         }
     }
 
-    quote! {
+    Ok(quote! {
+        #[automatically_derived]
         unsafe impl<#params> ::scheme_rs::gc::Trace for #name <#unbound_params>
         #where_clause
         {
@@ -607,7 +642,55 @@ fn derive_trace_enum(
                 }
             }
         }
+    })
+}
+
+fn skip_field(attrs: &[Attribute]) -> syn::Result<bool> {
+    let mut skip_field = false;
+
+    for attr in attrs.iter() {
+        if attr.path().is_ident("trace") {
+            let nested = attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
+            for meta in nested.into_iter() {
+                if meta.path().is_ident("skip") {
+                    skip_field = true;
+                } else if meta.path().is_ident("skip_bounds") {
+                    return Err(Error::new(
+                        meta.path().span(),
+                        "skip_bounds attribute is unsupported in this position",
+                    ));
+                } else {
+                    return Err(Error::new(meta.path().span(), "unrecognized attribute"));
+                }
+            }
+        }
     }
+
+    Ok(skip_field)
+}
+
+fn skip_bounds(attrs: &[Attribute]) -> syn::Result<bool> {
+    let mut skip_bounds = false;
+
+    for attr in attrs.iter() {
+        if attr.path().is_ident("trace") {
+            let nested = attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
+            for meta in nested.into_iter() {
+                if meta.path().is_ident("skip_bounds") {
+                    skip_bounds = true;
+                } else if meta.path().is_ident("skip") {
+                    return Err(Error::new(
+                        meta.path().span(),
+                        "skip attribute is unsupported in this position",
+                    ));
+                } else {
+                    return Err(Error::new(meta.path().span(), "unrecognized attribute"));
+                }
+            }
+        }
+    }
+
+    Ok(skip_bounds)
 }
 
 fn is_gc(arg: &Type) -> bool {
