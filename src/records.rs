@@ -752,8 +752,9 @@ pub fn into_scheme_compatible(t: Gc<impl SchemeCompatible>) -> Gc<dyn SchemeComp
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Trace)]
 pub struct RustParentConstructor {
+    #[trace(skip)]
     constructor: ParentConstructor,
 }
 
@@ -764,10 +765,6 @@ impl RustParentConstructor {
 }
 
 type ParentConstructor = fn(&[Value]) -> Result<Gc<dyn SchemeCompatible>, Condition>;
-
-unsafe impl Trace for RustParentConstructor {
-    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(crate::gc::OpaqueGcPtr)) {}
-}
 
 pub fn is_subtype_of(val: &Value, rt: &Value) -> Result<bool, Condition> {
     let UnpackedValue::Record(rec) = val.clone().unpack() else {

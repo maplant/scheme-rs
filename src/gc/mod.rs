@@ -348,7 +348,6 @@ pub unsafe trait Trace: 'static {
     /// function **ANYWHERE ELSE** is a **RACE CONDITION**!
     ///
     /// **DO NOT CALL THIS FUNCTION!!**
-    // TODO(map): Make this function async
     unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr));
 
     /// # Safety
