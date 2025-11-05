@@ -1,11 +1,22 @@
 //! Input and Output handling
 
+use either::Either;
+use memchr::{memchr, memmem};
 use rustyline::{Editor, error::ReadlineError};
 use scheme_rs_macros::{maybe_async, maybe_await};
-use std::{any::Any, io::{Seek, SeekFrom, Write}, sync::Arc};
+use std::{
+    any::Any,
+    io::{Seek, SeekFrom, Write},
+    iter::Peekable,
+    slice,
+    sync::Arc,
+};
 
 #[cfg(not(feature = "async"))]
-use std::{io::Read, sync::Mutex};
+use std::{
+    io::{self, Read},
+    sync::Mutex,
+};
 
 #[cfg(feature = "tokio")]
 use tokio::{
@@ -13,147 +24,281 @@ use tokio::{
     sync::Mutex,
 };
 
-#[derive(Default)]
 pub struct Utf8Buffer {
     buff: [u8; 4],
     len: u8,
+    error_mode: ErrorHandlingMode,
 }
 
 impl Utf8Buffer {
-    fn push_and_decode(&mut self, byte: u8) -> Option<char> {
+    fn new(error_mode: ErrorHandlingMode) -> Self {
+        Self {
+            buff: [0; 4],
+            len: 0,
+            error_mode,
+        }
+    }
+}
+
+impl Decode for Utf8Buffer {
+    fn push_and_decode(&mut self, byte: u8) -> Result<Option<char>, Condition> {
         self.buff[self.len as usize] = byte;
         match str::from_utf8(&self.buff[..(self.len as usize + 1)]) {
             Ok(s) => {
                 self.len = 0;
-                s.chars().next()
+                Ok(s.chars().next())
             }
             Err(err) if err.error_len().is_none() => {
                 self.len += 1;
-                None
+                Ok(None)
             }
             Err(_) => {
                 self.len = 0;
-                Some('\u{FFFD}')
-            }
-        }
-    }
-}
-
-// This is pretty poorly optimized, but we'll get to that eventually.
-#[derive(Default)]
-pub struct CharBuffer {
-    buff: Vec<char>,
-    byte_decoder: Utf8Buffer,
-}
-
-#[cfg(feature = "async")]
-type Reader = std::pin::Pin<Box<dyn AsyncRead + Send + Sync + 'static>>;
-
-#[cfg(not(feature = "async"))]
-type Reader = Box<dyn Read + Send + Sync + 'static>;
-
-impl CharBuffer {
-    #[cfg(not(feature = "async"))]
-    pub fn peekn(&mut self, idx: usize, reader: &mut Reader) -> Result<char, ReadError> {
-        while self.buff.len() <= idx {
-            let mut buff = [0_u8; 1024];
-            let num_read = reader.read(&mut buff[..]).map_err(ReadError::Io)?;
-            if num_read == 0 {
-                return Err(ReadError::Eof);
-            }
-            for byte in buff.into_iter().take(num_read) {
-                if let Some(next_chr) = self.byte_decoder.push_and_decode(byte) {
-                    self.buff.push(next_chr);
+                match self.error_mode {
+                    ErrorHandlingMode::Ignore => Ok(None),
+                    ErrorHandlingMode::Replace => Ok(Some('\u{FFFD}')),
+                    ErrorHandlingMode::Raise => panic!("raise error here"),
                 }
             }
         }
-
-        Ok(self.buff[idx])
     }
+}
 
-    #[cfg(feature = "async")]
-    pub async fn peekn(&mut self, idx: usize, reader: &mut Reader) -> Result<char, ReadError> {
-        while self.buff.len() <= idx {
-            let next_byte = match reader.read_u8().await {
-                Ok(chr) => chr,
-                Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => {
-                    return Err(ReadError::Eof);
-                }
-                Err(err) => return Err(ReadError::Io(err)),
-            };
-            if let Some(next_chr) = self.byte_decoder.push_and_decode(next_byte) {
-                self.buff.push(next_chr);
-            }
+pub struct Utf16Buffer {
+    buff: [u8; 4],
+    len: u8,
+    endianness: Endianness,
+    error_mode: ErrorHandlingMode,
+}
+
+#[derive(Copy, Clone)]
+enum Endianness {
+    Le,
+    Be,
+}
+
+impl Utf16Buffer {
+    fn new(error_mode: ErrorHandlingMode, endianness: Endianness) -> Self {
+        Self {
+            buff: [0; 4],
+            len: 0,
+            endianness,
+            error_mode,
+        }
+    }
+}
+
+impl Decode for Utf16Buffer {
+    fn push_and_decode(&mut self, byte: u8) -> Result<Option<char>, Condition> {
+        self.buff[self.len as usize] = byte;
+        self.len += 1;
+        if self.len == 1 || self.len == 3 {
+            return Ok(None);
         }
 
-        Ok(self.buff[idx])
-    }
+        let chars = char::decode_utf16(self.buff.chunks(2).map(|bytes| {
+            let [a, b] = bytes else { unreachable!() };
+            match self.endianness {
+                Endianness::Le => u16::from_le_bytes([*a, *b]),
+                Endianness::Be => u16::from_be_bytes([*a, *b]),
+            }
+        }))
+        .collect::<Vec<_>>();
 
-    pub fn skip(&mut self, n: usize) {
-        self.buff = self.buff.split_off(n);
+        match chars.as_slice() {
+            [Ok(chr), ..] => {
+                self.buff[0] = self.buff[2];
+                self.buff[1] = self.buff[3];
+                self.len = 0;
+                Ok(Some(*chr))
+            }
+            [Err(_), _, ..] => {
+                self.buff[0] = self.buff[2];
+                self.buff[1] = self.buff[3];
+                self.len = 0;
+                match self.error_mode {
+                    ErrorHandlingMode::Ignore => Ok(None),
+                    ErrorHandlingMode::Replace => Ok(Some('\u{FFFD}')),
+                    ErrorHandlingMode::Raise => panic!("raise error here"),
+                }
+            }
+            [Err(_)] => Ok(None),
+            [] => unreachable!(),
+        }
     }
 }
 
-/*
-pub enum InputPort {
-    Reader { buffer: CharBuffer, reader: Reader },
-    Prompt { prompt: Prompt },
+trait Decode {
+    fn push_and_decode(&mut self, byte: u8) -> Result<Option<char>, Condition>;
 }
-*/
 
-impl InputPort {
+pub struct Decoder<'a, D> {
+    port: &'a mut PortInner,
+    decode: D,
+    pos: Either<usize, Condition>,
+}
+
+impl<'a, D> Decoder<'a, D> {
+    fn new(port: &'a mut PortInner, decode: D) -> Self {
+        Self {
+            port,
+            decode,
+            pos: Either::Left(0),
+        }
+    }
+}
+
+impl<D> Iterator for Decoder<'_, D>
+where
+    D: Decode,
+{
+    type Item = Result<(usize, char), Condition>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut pos = match self.pos {
+            Either::Left(pos) => pos,
+            Either::Right(ref err) => return Some(Err(err.clone())),
+        };
+        loop {
+            match self
+                .port
+                .peekn_bytes(pos)
+                .transpose()?
+                .and_then(|byte| self.decode.push_and_decode(byte))
+            {
+                Ok(Some(chr)) => {
+                    self.pos = Either::Left(pos + 1);
+                    return Some(Ok((pos, chr)));
+                }
+                Ok(None) => {
+                    pos += 1;
+                    self.pos = Either::Left(pos);
+                }
+                Err(err) => {
+                    self.pos = Either::Right(err.clone());
+                    return Some(Err(err));
+                }
+            }
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum BufferMode {
+    None,
+    Line,
+    Block,
+}
+
+impl BufferMode {
+    fn new_input_buffer(&self, text: bool) -> Box<[u8]> {
+        match self {
+            Self::None if text => Box::from(vec![0u8; 4]),
+            Self::None => Box::from(vec![0]),
+            Self::Line | Self::Block => Box::from(vec![0u8; BUFFER_SIZE]),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct Transcoder {
+    codec: Codec,
+    eol_type: EolStyle,
+    error_handling_mode: ErrorHandlingMode,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum Codec {
+    Latin1,
+    Utf8,
+    Utf16,
+}
+
+impl Codec {
+    fn byte_len(&self, chr: char) -> usize {
+        match self {
+            Self::Latin1 => 1,
+            Self::Utf8 => chr.len_utf8(),
+            Self::Utf16 => chr.len_utf16(),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum EolStyle {
+    /// Linefeed
+    Lf,
+    /// Carriage return
+    Cr,
+    /// Carriage return linefeed
+    Crlf,
+    /// Next line
+    Nel,
+    /// Carriage return next line
+    Crnel,
+    /// Line separator
+    Ls,
+}
+
+impl EolStyle {
+    fn convert_eol_style(
+        &self,
+        mut iter: Peekable<impl Iterator<Item = Result<(usize, char), Condition>>>,
+    ) -> impl Iterator<Item = Result<(usize, char), Condition>> {
+        std::iter::from_fn(move || {
+            let next_chr = iter.next()?;
+            match (self, next_chr) {
+                (Self::Lf, x) => Some(x),
+                (Self::Cr, Ok((idx, '\r'))) => Some(Ok((idx, '\n'))),
+                (Self::Crlf, Ok((idx, '\r'))) => {
+                    if let Some(Ok((idx, '\n'))) = iter.peek() {
+                        Some(Ok((*idx, '\n')))
+                    } else {
+                        Some(Ok((idx, '\r')))
+                    }
+                }
+                (Self::Nel, Ok((idx, '\u{0085}'))) => Some(Ok((idx, '\n'))),
+                (Self::Crnel, Ok((idx, '\r'))) => {
+                    if let Some(Ok((idx, '\u{0085}'))) = iter.peek() {
+                        Some(Ok((*idx, '\n')))
+                    } else {
+                        Some(Ok((idx, '\r')))
+                    }
+                }
+                (Self::Ls, Ok((idx, '\u{2028}'))) => Some(Ok((idx, '\n'))),
+                (_, err) => Some(err),
+            }
+        })
+    }
+
     /*
-    pub fn from_reader(reader: impl AsyncRead + Send + Sync + 'static) -> Self {
-        Self::Reader {
-            buffer: CharBuffer::default(),
-            reader: Box::pin(reader),
+    /// Finds the index past the end of line, if it exists
+    fn find_next_line(&self, bytes: &[u8]) -> Option<usize> {
+        match self {
+            Self::Lf => memchr(b'\n', bytes).map(|i| i + 1),
+            Self::Cr => memchr(b'\r', bytes).map(|i| i + 1),
+            Self::Crlf => memmem::find(bytes, b"\r\n").map(|i| i + 2),
+            Self::Nel => memchr(b'\x85', bytes).map(|i| i + 1),
+            Self::Crnel => memem::find(bytes, b"\r\x85").map(|i| i + 2),
+
         }
     }
     */
-
-    #[maybe_async]
-    pub fn read_char(&mut self) -> Result<char, ReadError> {
-        match self {
-            Self::Reader { buffer, reader } => {
-                let chr = maybe_await!(buffer.peekn(0, reader))?;
-                buffer.skip(1);
-                Ok(chr)
-            }
-            Self::Prompt { prompt } => maybe_await!(prompt.read_char()),
-        }
-    }
-
-    #[maybe_async]
-    pub fn peekn(&mut self, idx: usize) -> Result<char, ReadError> {
-        match self {
-            Self::Reader { buffer, reader } => maybe_await!(buffer.peekn(idx, reader)),
-            Self::Prompt { prompt } => maybe_await!(prompt.peekn(idx)),
-        }
-    }
 }
 
-#[derive(Debug)]
-pub enum ReadError {
-    /// End of file reached
-    Eof,
-    /// IO error
-    Io(std::io::Error),
-}
-
-pub enum WriteError {
-    Io(std::io::Error),
-}
-
-pub enum SeekError {
-    Io(std::io::Error),
+#[derive(Copy, Clone, Debug)]
+pub enum ErrorHandlingMode {
+    Ignore,
+    Raise,
+    Replace,
 }
 
 #[cfg(not(feature = "async"))]
-pub type ReadFn = fn(&mut dyn Any, &mut [u8]) -> Result<usize, ReadError>;
+pub type ReadFn = fn(&mut dyn Any, &mut [u8]) -> io::Result<usize>;
 #[cfg(not(feature = "async"))]
-pub type WriteFn = fn(&mut dyn Any, &[u8]) -> Result<usize, WriteError>;
+pub type WriteFn = fn(&mut dyn Any, &[u8]) -> io::Result<()>;
 #[cfg(not(feature = "async"))]
-pub type SeekFn = fn(&mut dyn Any, u64) -> Result<u64, SeekError>;
+pub type SeekFn = fn(&mut dyn Any, SeekFrom) -> io::Result<u64>;
 
 #[cfg(feature = "async")]
 pub type ReadFn =
@@ -163,10 +308,19 @@ pub type WriteFn =
     for<'a> fn(&'a mut dyn Any, &'a [u8]) -> BoxFuture<'a, Result<usize, WriteError>>;
 
 struct PortInner {
-    port: Arc<Mutex<dyn Any + Send + Sync + 'static>>,
+    // TODO: make this optional to indicate closing
+    port: Box<dyn Any + Send + Sync + 'static>,
     read: Option<ReadFn>,
     write: Option<WriteFn>,
     seek: Option<SeekFn>,
+    text: bool,
+    buffer_mode: BufferMode,
+    transcoder: Transcoder,
+    input_buffer: Box<[u8]>,
+    pos: usize,
+    bytes_read: usize,
+    output_buffer: Vec<u8>,
+    utf16_endianness: Option<Endianness>,
 }
 
 fn read_fn<T>() -> ReadFn
@@ -175,7 +329,7 @@ where
 {
     |any, buff| {
         let concrete = unsafe { any.downcast_mut::<T>().unwrap_unchecked() };
-        concrete.read(buff).map_err(ReadError::Io)
+        concrete.read(buff)
     }
 }
 
@@ -185,7 +339,8 @@ where
 {
     |any, buff| {
         let concrete = unsafe { any.downcast_mut::<T>().unwrap_unchecked() };
-        concrete.write(buff).map_err(WriteError::Io)
+        concrete.write_all(buff)?;
+        concrete.flush()
     }
 }
 
@@ -195,27 +350,205 @@ where
 {
     |any, pos| {
         let concrete = unsafe { any.downcast_mut::<T>().unwrap_unchecked() };
-        concrete.seek(SeekFrom::Start(pos)).map_err(SeekError::Io)
+        concrete.seek(pos)
     }
 }
 
+pub const BUFFER_SIZE: usize = 8192;
+
 impl PortInner {
-    fn new<P>(port: P) -> Self
+    fn new<P>(port: P, text: bool, buffer_mode: BufferMode, transcoder: Transcoder) -> Self
     where
         P: IntoPort,
     {
+        let read = P::read_fn();
+        let write = P::write_fn();
+        let seek = P::seek_fn();
+
         Self {
             port: port.into_port(),
-            read: P::read_fn(),
-            write: P::write_fn(),
-            seek: P::seek_fn(),
+            read,
+            write,
+            seek,
+            text,
+            buffer_mode,
+            transcoder,
+            input_buffer: buffer_mode.new_input_buffer(text),
+            pos: 0,
+            bytes_read: 0,
+            output_buffer: if matches!(buffer_mode, BufferMode::None) {
+                Vec::new()
+            } else {
+                Vec::with_capacity(BUFFER_SIZE)
+            },
+            utf16_endianness: None,
         }
     }
-    
+
+    fn read_byte(&mut self) -> Result<Option<u8>, Condition> {
+        let next_byte = self.peekn_bytes(0)?;
+        self.consume_bytes(1)?;
+        Ok(next_byte)
+    }
+
+    fn read_char(&mut self) -> Result<Option<char>, Condition> {
+        let Some(next_char) = self.peekn_chars(0)? else {
+            return Ok(None);
+        };
+        let byte_len = self.transcoder.codec.byte_len(next_char);
+        self.consume_bytes(byte_len)?;
+        Ok(Some(next_char))
+    }
+
+    fn peekn_bytes(&mut self, n: usize) -> Result<Option<u8>, Condition> {
+        // TODO: If we have a non-empty output buffer, flush that first before reading.
+
+        let Some(read) = self.read else {
+            todo!();
+        };
+
+        if n > self.input_buffer.len() {
+            panic!("attempt to lookahead further than the buffer allows");
+        }
+
+        while self.bytes_read < n {
+            match self.buffer_mode {
+                BufferMode::None => {
+                    let read = (read)(
+                        self.port.as_mut(),
+                        &mut self.input_buffer[self.bytes_read..],
+                    )?;
+                    if read == 1 {
+                        self.bytes_read += 1;
+                    } else {
+                        return Ok(None);
+                    }
+                }
+                BufferMode::Line | BufferMode::Block => {
+                    let read = (read)(
+                        self.port.as_mut(),
+                        &mut self.input_buffer[self.bytes_read..],
+                    )?;
+                    if read == 0 {
+                        return Ok(None);
+                    }
+                    self.bytes_read += read;
+                }
+            }
+        }
+
+        Ok(Some(self.input_buffer[n + self.pos]))
+    }
+
+    fn transcode(&mut self) -> impl Iterator<Item = Result<(usize, char), Condition>> {
+        let decoder = match self.transcoder.codec {
+            Codec::Latin1 => {
+                let mut i = 0;
+                Box::new(std::iter::from_fn(move || match self.peekn_bytes(i) {
+                    Ok(Some(byte)) => {
+                        let res = (i, char::from(byte));
+                        i += 1;
+                        Some(Ok(res))
+                    }
+                    Ok(None) => None,
+                    Err(err) => Some(Err(err)),
+                })) as Box<dyn Iterator<Item = Result<(usize, char), Condition>>>
+            }
+            Codec::Utf16 => Box::new(Decoder::new(
+                self,
+                Utf16Buffer::new(
+                    self.transcoder.error_handling_mode,
+                    self.utf16_endianness.unwrap(),
+                ),
+            ))
+                as Box<dyn Iterator<Item = Result<(usize, char), Condition>>>,
+            Codec::Utf8 => Box::new(Decoder::new(
+                self,
+                Utf8Buffer::new(self.transcoder.error_handling_mode),
+            )),
+        };
+        self.transcoder
+            .eol_type
+            .convert_eol_style(decoder.peekable())
+    }
+
+    fn peekn_chars(&mut self, n: usize) -> Result<Option<char>, Condition> {
+        // TODO: If this a binary port, throw an error.
+
+        // If this is a utf16 port and we have not assigned endiannes, check for
+        // the BOM
+        if matches!(self.transcoder.codec, Codec::Utf16) && self.utf16_endianness.is_none() {
+            let b1 = self.peekn_bytes(0)?;
+            let b2 = self.peekn_bytes(1)?;
+            self.utf16_endianness = match (b1, b2) {
+                (Some(b'\xFF'), Some(b'\xFE')) => {
+                    self.consume_bytes(2)?;
+                    Some(Endianness::Le)
+                }
+                (Some(b'\xFE'), Some(b'\xFF')) => {
+                    self.consume_bytes(2)?;
+                    Some(Endianness::Be)
+                }
+                _ => Some(Endianness::Le),
+            };
+        }
+
+        Ok(self.transcode().nth(n).transpose()?.map(|(_, chr)| chr))
+        /*
+        match self.transcoder.codec {
+            Codec::Latin1 => {
+                // If this is ASCII, we can just peekn_bytes
+                Ok(self.peekn_bytes(n)?.map(char::from))
+            }
+            Codec::Utf16 =>
+            Codec::Utf8 => Ok(
+        }
+        */
+    }
+
+    fn consume_bytes(&mut self, n: usize) -> Result<(), Condition> {
+        if self.bytes_read < n {
+            let _ = self.peekn_bytes(n - self.bytes_read)?;
+        }
+
+        self.pos += n;
+
+        if self.pos >= self.input_buffer.len() {
+            self.pos -= self.input_buffer.len();
+            self.bytes_read = 0;
+        }
+
+        Ok(())
+    }
+
+    fn consume_chars(&mut self, n: usize) -> Result<(), Condition> {
+        let Some((bytes_to_skip, last_char)) = self.transcode().take(n).last().transpose()? else {
+            return Ok(());
+        };
+        self.consume_bytes(bytes_to_skip + self.transcoder.codec.byte_len(last_char))
+    }
+
+    fn put_bytes(&mut self, bytes: &[u8]) -> Result<(), Condition> {
+        let Some(write) = self.write else {
+            todo!();
+        };
+
+        match self.buffer_mode {
+            BufferMode::None => write(self.port.as_mut(), bytes)?,
+            BufferMode::Line => todo!(),
+            BufferMode::Block => {
+                todo!()
+            }
+        }
+
+        Ok(())
+    }
+
+    /*
     #[cfg(not(feature = "async"))]
     fn lock_port<R>(
         &self,
-        callback: impl FnOnce(&mut dyn Any, Option<ReadFn>, Option<WriteFn>) -> R,
+        callback: impl FnOnce(&mut dyn Any, Option<ReadFn>, Option<WriteFn>, Option<SeekFn>) -> R,
     ) -> R {
         let mut locked_port = self.port.lock().unwrap();
         callback(&mut *locked_port, self.read, self.write)
@@ -229,11 +562,12 @@ impl PortInner {
         let mut locked_port = self.port.lock().unwrap();
         callback(&mut *locked_port, self.reader, self.writer).await
     }
+    */
 }
 
 pub trait IntoPort: Any + Send + Sync + 'static + Sized {
-    fn into_port(self) -> Arc<Mutex<dyn Any + Send + Sync + 'static>> {
-        Arc::new(Mutex::new(self))
+    fn into_port(self) -> Box<dyn Any + Send + Sync + 'static> {
+        Box::new(self)
     }
 
     fn read_fn() -> Option<ReadFn> {
@@ -249,7 +583,7 @@ pub trait IntoPort: Any + Send + Sync + 'static + Sized {
     }
 }
 
-pub struct Port(pub(crate) Arc<PortInner>);
+pub struct Port(pub(crate) Arc<Mutex<PortInner>>);
 
 impl Port {
     /*
@@ -356,28 +690,6 @@ mod prompt {
         }
     }
 }
-
-pub enum Codec {
-    Latin1,
-    Utf8,
-    Utf16,
-}
-
-pub enum EolStyle {
-    /// Linefeed
-    Lf,
-    /// Carriage return
-    Cr,
-    /// Carriage return linefeed
-    Crlf,
-    /// Next line
-    Nel,
-    /// Carriage return next line
-    Crnel,
-    /// Line separator
-    Ls
-}
-
 #[cfg(feature = "tokio")]
 mod prompt {
     use super::*;
@@ -478,3 +790,5 @@ mod prompt {
 }
 
 use prompt::*;
+
+use crate::exceptions::Condition;

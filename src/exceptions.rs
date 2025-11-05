@@ -165,6 +165,12 @@ impl Condition {
     }
 }
 
+impl From<std::io::Error> for Condition {
+    fn from(value: std::io::Error) -> Self {
+        todo!()
+    }
+}
+
 impl From<SimpleCondition> for Condition {
     fn from(simple: SimpleCondition) -> Self {
         Self(Value::from(Record::from_rust_type(simple)))
