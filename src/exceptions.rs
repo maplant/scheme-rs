@@ -3,11 +3,21 @@
 use scheme_rs_macros::{cps_bridge, runtime_fn};
 
 use crate::{
-    ast::ParseAstError, gc::{Gc, GcInner, Trace}, lists, ports::ReadError, proc::{Application, DynamicWind, FuncPtr, Procedure}, records::{into_scheme_compatible, rtd, Record, RecordTypeDescriptor, SchemeCompatible}, registry::bridge, runtime::{Runtime, RuntimeInner}, symbols::Symbol, syntax::{parse::ParseSyntaxError, Identifier, Span, Syntax}, value::{UnpackedValue, Value}
+    ast::ParseAstError,
+    gc::{Gc, GcInner, Trace},
+    lists,
+    ports::{ReadError, WriteError},
+    proc::{Application, DynamicWind, FuncPtr, Procedure},
+    records::{Record, RecordTypeDescriptor, SchemeCompatible, into_scheme_compatible, rtd},
+    registry::bridge,
+    runtime::{Runtime, RuntimeInner},
+    symbols::Symbol,
+    syntax::{Identifier, Span, Syntax, parse::ParseSyntaxError},
+    value::{UnpackedValue, Value},
 };
 use std::{error::Error as StdError, fmt, ops::Range, ptr::null_mut, sync::Arc};
 
-#[derive(Debug, Clone, Trace)]
+#[derive(Clone, Trace)]
 pub struct Exception {
     pub backtrace: Vec<Frame>,
     pub obj: Value,
@@ -19,8 +29,14 @@ impl Exception {
     }
 }
 
-// TODO: This shouldn't be the display impl for Exception, I don' t think.
 impl fmt::Display for Exception {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "Uncaught exception: {}", self.obj)?;
+        Ok(())
+    }
+}
+
+impl fmt::Debug for Exception {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         const MAX_BACKTRACE_LEN: usize = 20;
         writeln!(f, "Uncaught exception: {}", self.obj)?;
@@ -56,13 +72,19 @@ impl fmt::Display for Condition {
 }
 
 impl From<ParseSyntaxError> for Condition {
-    fn from(error: ParseSyntaxError) -> Self {
+    fn from(_error: ParseSyntaxError) -> Self {
         todo!()
     }
 }
 
 impl From<ReadError> for Condition {
-    fn from(error: ReadError) -> Self {
+    fn from(_error: ReadError) -> Self {
+        todo!()
+    }
+}
+
+impl From<WriteError> for Condition {
+    fn from(_error: WriteError) -> Self {
         todo!()
     }
 }

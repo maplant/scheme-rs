@@ -8,9 +8,9 @@ use crate::{
     num,
     ports::{BufferMode, Port, Transcoder},
     proc::{Application, ContinuationPtr, DynamicWind, FuncDebugInfo, FuncPtr, Procedure, UserPtr},
-    registry::{ImportError, Library, Registry},
+    registry::{Library, Registry},
     symbols::Symbol,
-    syntax::{Span, parse::Parser},
+    syntax::Span,
     value::{Cell, ReflexiveValue, UnpackedValue, Value},
 };
 use scheme_rs_macros::{maybe_async, maybe_await, runtime_fn};
@@ -61,7 +61,6 @@ impl Runtime {
 
         let progm = Library::new_program(self, path);
         let env = Environment::Top(progm);
-        // let file_name = path.file_name().unwrap().to_string_lossy();
         let sexprs = {
             let port = Port::new(
                 maybe_await!(File::open(path)).unwrap(),
@@ -69,7 +68,9 @@ impl Runtime {
                 BufferMode::Block,
                 Transcoder::native(),
             );
-            maybe_await!(port.all_sexprs()).map_err(Condition::from)?
+            let file_name = path.file_name().unwrap().to_str().unwrap_or("<unknown>");
+            let span = Span::new(file_name);
+            maybe_await!(port.all_sexprs(span)).map_err(Condition::from)?
         };
         /*
         let input_port = port.get_input_port().unwrap();

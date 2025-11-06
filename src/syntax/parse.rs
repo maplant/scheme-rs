@@ -1,9 +1,4 @@
-use crate::{
-    ast::Literal,
-    num::Number,
-    ports::{PortInner, ReadError},
-    syntax::lex::ParseNumberError,
-};
+use crate::{ast::Literal, num::Number, ports::PortInner, syntax::lex::ParseNumberError};
 
 pub use super::lex::LexerError;
 use super::{
@@ -39,10 +34,10 @@ macro_rules! token {
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(file_name: &str, input_port: &'a mut PortInner) -> Self {
+    pub(crate) fn new(port: &'a mut PortInner, span: Span) -> Self {
         Parser {
             lookahead: Vec::new(),
-            lexer: Lexer::new(file_name, input_port),
+            lexer: Lexer::new(port, span),
         }
     }
 }
@@ -55,6 +50,10 @@ impl Parser<'_> {
         } else {
             maybe_await!(self.lexer.next_token())
         }
+    }
+
+    pub(crate) fn curr_span(&self) -> Span {
+        self.lexer.curr_span()
     }
 
     fn return_token(&mut self, token: Token) {
@@ -159,7 +158,7 @@ impl Parser<'_> {
             }
         }
     }
-    
+
     #[maybe_async]
     pub fn get_sexpr_or_eof(&mut self) -> Result<Option<Syntax>, ParseSyntaxError> {
         loop {
@@ -175,7 +174,6 @@ impl Parser<'_> {
             }
         }
     }
-
 
     #[maybe_async]
     pub fn all_sexprs(&mut self) -> Result<Vec<Syntax>, ParseSyntaxError> {
@@ -218,8 +216,10 @@ impl Parser<'_> {
                     return Ok(Syntax::new_list(output, span));
                 }
                 token!(Lexeme::Period) => {
-                    let peek1 = maybe_await!(self.next_token())?.ok_or(ParseSyntaxError::UnexpectedEof)?;
-                    let peek2 = maybe_await!(self.next_token())?.ok_or(ParseSyntaxError::UnexpectedEof)?;
+                    let peek1 =
+                        maybe_await!(self.next_token())?.ok_or(ParseSyntaxError::UnexpectedEof)?;
+                    let peek2 =
+                        maybe_await!(self.next_token())?.ok_or(ParseSyntaxError::UnexpectedEof)?;
                     match (peek1, peek2) {
                         // Proper list with period:
                         (token!(Lexeme::LParen, end_span), token!(Lexeme::RParen))
@@ -234,7 +234,8 @@ impl Parser<'_> {
                         }
                     }
                     output.push(maybe_await!(self.get_sexpr())?);
-                    let last = maybe_await!(self.next_token())?.ok_or(ParseSyntaxError::UnexpectedEof)?;
+                    let last =
+                        maybe_await!(self.next_token())?.ok_or(ParseSyntaxError::UnexpectedEof)?;
                     if last.lexeme == closing {
                         return Ok(Syntax::new_list(output, span));
                     } else {

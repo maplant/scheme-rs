@@ -2,14 +2,24 @@
 
 use either::Either;
 use memchr::{memchr, memmem};
-use rustyline::{Editor, error::ReadlineError};
-use scheme_rs_macros::{maybe_async, maybe_await};
+use rustyline::Editor;
+use scheme_rs_macros::{bridge, maybe_async, maybe_await};
 use std::{
     any::Any,
+    borrow::Cow,
     io::{Cursor, Seek, SeekFrom, Write},
     iter::Peekable,
-    slice,
     sync::Arc,
+};
+
+use crate::{
+    exceptions::Condition,
+    gc::Trace,
+    syntax::{
+        Span, Syntax,
+        parse::{ParseSyntaxError, Parser},
+    },
+    value::Value,
 };
 
 #[cfg(not(feature = "async"))]
@@ -43,6 +53,18 @@ pub enum WriteError {
 }
 
 impl From<io::Error> for WriteError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(Arc::new(error))
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum SeekError {
+    Io(Arc<io::Error>),
+    NotSeekable,
+}
+
+impl From<io::Error> for SeekError {
     fn from(error: io::Error) -> Self {
         Self::Io(Arc::new(error))
     }
@@ -300,7 +322,7 @@ pub enum EolStyle {
 }
 
 impl EolStyle {
-    fn convert_eol_style(
+    fn convert_eol_style_to_linefeed(
         self,
         mut iter: Peekable<impl Iterator<Item = Result<(usize, char), ReadError>>>,
     ) -> impl Iterator<Item = Result<(usize, char), ReadError>> {
@@ -330,16 +352,40 @@ impl EolStyle {
         })
     }
 
+    fn convert_linefeed_to_eol_style(
+        self,
+        iter: impl Iterator<Item = char>,
+    ) -> impl Iterator<Item = char> {
+        iter.map(move |chr| {
+            if chr == '\n' {
+                match self {
+                    Self::Lf => [Some('\n'), None],
+                    Self::Cr => [Some('\r'), None],
+                    Self::Crlf => [Some('\r'), Some('\n')],
+                    Self::Nel => [Some('\u{0085}'), None],
+                    Self::Crnel => [Some('\r'), Some('\u{0085}')],
+                    Self::Ls => [Some('\u{2028}'), None],
+                }
+            } else {
+                [Some(chr), None]
+            }
+        })
+        .flatten()
+        .filter_map(|x| x)
+    }
+
     /// Finds the index past the end of line, if it exists
-    fn contains_eol(&self, ls_needle: &[u8], bytes: &[u8]) -> bool {
+    fn find_next_line(&self, ls_needle: &[u8], bytes: &[u8]) -> Option<usize> {
         match self {
-            Self::Lf => memchr(b'\n', bytes).is_some(),
-            Self::Cr => memchr(b'\r', bytes).is_some(),
-            Self::Crlf => memmem::find(bytes, b"\r\n").is_some(),
-            Self::Nel => memchr(b'\x85', bytes).is_some(),
-            Self::Crnel => memmem::find(bytes, b"\r\x85").is_some(),
-            Self::Ls if !ls_needle.is_empty() => memmem::find(bytes, ls_needle).is_some(),
-            Self::Ls => false,
+            Self::Lf => memchr(b'\n', bytes).map(|i| i + 1),
+            Self::Cr => memchr(b'\r', bytes).map(|i| i + 1),
+            Self::Crlf => memmem::find(bytes, b"\r\n").map(|i| i + 2),
+            Self::Nel => memchr(b'\x85', bytes).map(|i| i + 1),
+            Self::Crnel => memmem::find(bytes, b"\r\x85").map(|i| i + 2),
+            Self::Ls if !ls_needle.is_empty() => {
+                memmem::find(bytes, ls_needle).map(|i| i + ls_needle.len())
+            }
+            Self::Ls => None,
         }
     }
 }
@@ -371,6 +417,7 @@ pub(crate) struct PortInner {
     read: Option<ReadFn>,
     write: Option<WriteFn>,
     seek: Option<SeekFn>,
+    #[allow(unused)]
     text: bool,
     buffer_mode: BufferMode,
     transcoder: Transcoder,
@@ -398,7 +445,8 @@ where
     |any, buff| {
         let concrete = unsafe { any.downcast_mut::<T>().unwrap_unchecked() };
         concrete.write_all(buff)?;
-        concrete.flush()
+        concrete.flush()?;
+        Ok(())
     }
 }
 
@@ -439,6 +487,7 @@ impl PortInner {
         }
     }
 
+    #[expect(unused)]
     fn read_byte(&mut self) -> Result<Option<u8>, ReadError> {
         let next_byte = self.peekn_bytes(0)?;
         self.consume_bytes(1)?;
@@ -456,11 +505,16 @@ impl PortInner {
     }
 
     fn peekn_bytes(&mut self, n: usize) -> Result<Option<u8>, ReadError> {
-        // TODO: If we have a non-empty output buffer, flush that first before reading.
-
         let Some(read) = self.read else {
-            todo!();
+            return Err(ReadError::NotAnInputPort);
         };
+
+        if let Some(write) = self.write
+            && !self.output_buffer.is_empty()
+        {
+            write(self.port.as_mut(), &self.output_buffer[..])?;
+            self.output_buffer.clear();
+        }
 
         if n + self.input_pos > self.input_buffer.len() {
             panic!("attempt to lookahead further than the buffer allows");
@@ -489,10 +543,15 @@ impl PortInner {
                             return Ok(None);
                         }
                         // Attempt to find the line ending:
-                        if self.transcoder.eol_type.contains_eol(
-                            self.transcoder.codec.ls_needle(self.utf16_endianness),
-                            &self.input_buffer[self.bytes_read..],
-                        ) {
+                        if self
+                            .transcoder
+                            .eol_type
+                            .find_next_line(
+                                self.transcoder.codec.ls_needle(self.utf16_endianness),
+                                &self.input_buffer[self.bytes_read..],
+                            )
+                            .is_some()
+                        {
                             self.bytes_read += read;
                             break;
                         } else {
@@ -554,7 +613,7 @@ impl PortInner {
                 Utf8Buffer::new(self.transcoder.error_handling_mode),
             )),
         };
-        eol_type.convert_eol_style(decoder.peekable())
+        eol_type.convert_eol_style_to_linefeed(decoder.peekable())
     }
 
     pub(crate) fn peekn_chars(&mut self, n: usize) -> Result<Option<char>, ReadError> {
@@ -597,30 +656,37 @@ impl PortInner {
     }
 
     pub(crate) fn consume_chars(&mut self, n: usize) -> Result<(), ReadError> {
-        for _ in 0..n {
-            self.read_char()?;
-        }
-        Ok(())
-        /*
         let Some((bytes_to_skip, last_char)) = self.transcode().take(n).last().transpose()? else {
-            // println!("early return");
             return Ok(());
         };
-        self.consume_bytes(dbg!(bytes_to_skip + self.transcoder.codec.byte_len(last_char)))
-        */
+        self.consume_bytes(bytes_to_skip + self.transcoder.codec.byte_len(last_char))
     }
 
     fn put_bytes(&mut self, mut bytes: &[u8]) -> Result<(), WriteError> {
         let Some(write) = self.write else {
-            todo!();
+            return Err(WriteError::NotAnOutputPort);
         };
+
+        // If we can, seek back
+        if let Some(seek) = self.seek
+            && self.bytes_read > 0
+        {
+            let seek_to = (self.bytes_read - self.input_pos) as i64;
+            seek(self.port.as_mut(), SeekFrom::Current(-seek_to))?;
+            self.bytes_read = 0;
+            self.input_pos = 0;
+        }
 
         match self.buffer_mode {
             BufferMode::None => write(self.port.as_mut(), bytes)?,
             BufferMode::Line => loop {
-                if let Some(line_end) = memchr(b'\n', bytes) {
-                    self.output_buffer.extend_from_slice(&bytes[..line_end + 1]);
-                    bytes = &bytes[line_end + 1..];
+                // TODO: use transcoder eol style
+                if let Some(next_line) = self.transcoder.eol_type.find_next_line(
+                    self.transcoder.codec.ls_needle(self.utf16_endianness),
+                    bytes,
+                ) {
+                    self.output_buffer.extend_from_slice(&bytes[..next_line]);
+                    bytes = &bytes[next_line..];
                     write(self.port.as_mut(), &self.output_buffer[..])?;
                     self.output_buffer.clear();
                 } else {
@@ -646,25 +712,60 @@ impl PortInner {
         Ok(())
     }
 
-    /*
-    #[cfg(not(feature = "async"))]
-    fn lock_port<R>(
-        &self,
-        callback: impl FnOnce(&mut dyn Any, Option<ReadFn>, Option<WriteFn>, Option<SeekFn>) -> R,
-    ) -> R {
-        let mut locked_port = self.port.lock().unwrap();
-        callback(&mut *locked_port, self.read, self.write)
+    fn put_str(&mut self, s: &str) -> Result<(), WriteError> {
+        let s = if matches!(self.transcoder.eol_type, EolStyle::Lf) {
+            Cow::Borrowed(s)
+        } else {
+            Cow::Owned(
+                self.transcoder
+                    .eol_type
+                    .convert_linefeed_to_eol_style(s.chars())
+                    .collect::<String>(),
+            )
+        };
+        match self.transcoder.codec {
+            Codec::Latin1 | Codec::Utf8 => {
+                // Probably should do a check here to ensure the string is ascii
+                // if our codec is latin1
+                self.put_bytes(s.as_bytes())?;
+            }
+            Codec::Utf16 => {
+                let endianness = self.utf16_endianness.unwrap_or(Endianness::Le);
+                let bytes = s
+                    .encode_utf16()
+                    .map(|codepoint| match endianness {
+                        Endianness::Le => codepoint.to_le_bytes(),
+                        Endianness::Be => codepoint.to_be_bytes(),
+                    })
+                    .flatten()
+                    .collect::<Vec<_>>();
+                self.put_bytes(&bytes)?;
+            }
+        }
+        Ok(())
     }
 
-    #[cfg(feature = "async")]
-    async fn lock_port<R>(
-        &self,
-        callback: impl AsyncFnOnce(&mut dyn Any, Option<ReaderFn>, Option<WriterFn>) -> R,
-    ) -> R {
-        let mut locked_port = self.port.lock().unwrap();
-        callback(&mut *locked_port, self.reader, self.writer).await
+    fn flush(&mut self) -> Result<(), WriteError> {
+        let Some(write) = self.write else {
+            return Err(WriteError::NotAnOutputPort);
+        };
+
+        write(self.port.as_mut(), &self.output_buffer[..])?;
+        self.output_buffer.clear();
+
+        Ok(())
     }
-    */
+
+    #[expect(unused)]
+    fn seek(&mut self, pos: u64) -> Result<u64, SeekError> {
+        let Some(seek) = self.seek else {
+            return Err(SeekError::NotSeekable);
+        };
+
+        let pos = seek(self.port.as_mut(), SeekFrom::Start(pos))?;
+
+        Ok(pos)
+    }
 }
 
 pub trait IntoPort: Any + Send + 'static + Sized {
@@ -696,7 +797,7 @@ impl IntoPort for Cursor<Vec<u8>> {
 
     fn seek_fn() -> Option<SeekFn> {
         Some(seek_fn::<Self>())
-    }    
+    }
 }
 
 #[cfg(not(feature = "async"))]
@@ -714,6 +815,21 @@ impl IntoPort for std::fs::File {
     }
 }
 
+#[cfg(not(feature = "async"))]
+impl IntoPort for std::io::Stdout {
+    fn write_fn() -> Option<WriteFn> {
+        Some(write_fn::<Self>())
+    }
+}
+
+#[cfg(not(feature = "async"))]
+impl IntoPort for std::io::Stderr {
+    fn write_fn() -> Option<WriteFn> {
+        Some(write_fn::<Self>())
+    }
+}
+
+#[derive(Trace, Clone)]
 pub struct Port(pub(crate) Arc<Mutex<PortInner>>);
 
 impl Port {
@@ -730,29 +846,54 @@ impl Port {
     }
 
     #[maybe_async]
-    pub fn get_sexpr(&self) -> Result<Option<Syntax>, ParseSyntaxError> {
+    pub fn get_sexpr(&self, span: Span) -> Result<Option<(Syntax, Span)>, ParseSyntaxError> {
         #[cfg(not(feature = "async"))]
         let mut port = self.0.lock().unwrap();
 
         #[cfg(feature = "async")]
         let mut port = self.0.lock().await;
 
-        let mut parser = Parser::new("<todo>", &mut port);
+        let mut parser = Parser::new(&mut port, span);
 
-        Ok(maybe_await!(parser.get_sexpr_or_eof())?)
+        let sexpr_or_eof = maybe_await!(parser.get_sexpr_or_eof())?;
+        let ending_span = parser.curr_span();
+
+        Ok(sexpr_or_eof.map(|sexpr| (sexpr, ending_span)))
     }
 
     #[maybe_async]
-    pub fn all_sexprs(&self) -> Result<Vec<Syntax>, ParseSyntaxError> {
+    pub fn all_sexprs(&self, span: Span) -> Result<Vec<Syntax>, ParseSyntaxError> {
         #[cfg(not(feature = "async"))]
         let mut port = self.0.lock().unwrap();
 
         #[cfg(feature = "async")]
         let mut port = self.0.lock().await;
 
-        let mut parser = Parser::new("<todo>", &mut port);
+        let mut parser = Parser::new(&mut port, span);
 
         Ok(maybe_await!(parser.all_sexprs())?)
+    }
+
+    #[maybe_async]
+    pub fn put_str(&self, s: &str) -> Result<(), WriteError> {
+        #[cfg(not(feature = "async"))]
+        let mut port = self.0.lock().unwrap();
+
+        #[cfg(feature = "async")]
+        let mut port = self.0.lock().await;
+
+        maybe_await!(port.put_str(s))
+    }
+
+    #[maybe_async]
+    pub fn flush(&self) -> Result<(), WriteError> {
+        #[cfg(not(feature = "async"))]
+        let mut port = self.0.lock().unwrap();
+
+        #[cfg(feature = "async")]
+        let mut port = self.0.lock().await;
+
+        maybe_await!(port.flush())
     }
 
     /*
@@ -820,31 +961,6 @@ mod prompt {
                 closed: false,
             }
         }
-
-        /*
-        pub(super) fn read_char(&mut self) -> Result<char, ReadError> {
-            let chr = self.peekn(0)?;
-            self.pos += 1;
-            Ok(chr)
-        }
-
-        pub(super) fn peekn(&mut self, idx: usize) -> Result<char, ReadError> {
-            while self.pos + idx >= self.buffer.len() {
-                self.buffer.extend(
-                    self.editor
-                        .readline("> ")
-                        .map_err(|err| match err {
-                            ReadlineError::Eof => ReadError::Eof,
-                            ReadlineError::Io(io) => ReadError::Io(io),
-                            _ => todo!(),
-                        })?
-                        .chars(),
-                );
-            }
-            let chr = self.buffer[self.pos + idx];
-            Ok(chr)
-        }
-        */
     }
 
     impl<H, I> IntoPort for Prompt<H, I>
@@ -989,7 +1105,22 @@ mod prompt {
 
 pub use prompt::*;
 
-use crate::{
-    exceptions::Condition,
-    syntax::{parse::{ParseSyntaxError, Parser}, Syntax},
-};
+#[bridge(name = "standard-output-port", lib = "(rnrs io ports (6))")]
+pub fn standard_output_port() -> Result<Vec<Value>, Condition> {
+    let port = Port::new(
+        std::io::stdout(),
+        true,
+        BufferMode::None,
+        Transcoder::native(),
+    );
+    Ok(vec![Value::from(port)])
+}
+
+#[bridge(name = "put-datum", lib = "(rnrs io ports (6))")]
+#[maybe_async]
+pub fn put_datum(port: &Value, datum: &Value) -> Result<Vec<Value>, Condition> {
+    let port: Port = port.clone().try_into()?;
+    let datum = format!("{datum}");
+    maybe_await!(port.put_str(&datum))?;
+    Ok(Vec::new())
+}

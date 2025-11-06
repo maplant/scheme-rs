@@ -9,13 +9,11 @@ use scheme_rs::{
     cps::Compile,
     env::Environment,
     exceptions::{Exception, ExceptionHandler},
-    ports::{BufferMode, Port, Prompt, ReadError, Transcoder},
+    ports::{BufferMode, Port, Prompt, Transcoder},
     proc::{Application, DynamicWind},
     registry::Library,
     runtime::Runtime,
-    syntax::{
-        parse::{LexerError, ParseSyntaxError, Parser}, Syntax
-    },
+    syntax::{Span, Syntax},
     value::Value,
 };
 use scheme_rs_macros::{maybe_async, maybe_await};
@@ -32,7 +30,7 @@ impl Validator for InputValidator {
         // let input_port = port.get_input_port().unwrap();
         // let mut input_port = input_port.lock().unwrap();
         // let mut parser = Parser::new("<prompt>", &mut input_port);
-        if port.all_sexprs().is_ok() {
+        if port.all_sexprs(Span::default()).is_ok() {
             Ok(ValidationResult::Valid(None))
         } else {
             Ok(ValidationResult::Incomplete)
@@ -76,7 +74,10 @@ fn main() -> ExitCode {
     maybe_await!(repl.import(ImportSet::parse_from_str("(library (rnrs))").unwrap()))
         .expect("Failed to import standard library");
 
-    let config = Config::builder().auto_add_history(true).build();
+    let config = Config::builder()
+        .auto_add_history(true)
+        .check_cursor_position(true)
+        .build();
     let mut editor = match Editor::with_history(config, DefaultHistory::new()) {
         Ok(e) => e,
         Err(err) => {
@@ -94,12 +95,16 @@ fn main() -> ExitCode {
 
     let prompt = Prompt::new(editor);
 
+    let mut span = Span::new("<prompt>");
     let input_port = Port::new(prompt, true, BufferMode::Block, Transcoder::native());
 
     let mut n_results = 1;
     loop {
-        let sexpr = match maybe_await!(input_port.get_sexpr()) {
-            Ok(Some(sexpr)) => sexpr,
+        let sexpr = match maybe_await!(input_port.get_sexpr(span)) {
+            Ok(Some((sexpr, new_span))) => {
+                span = new_span;
+                sexpr
+            }
             Ok(None) => break,
             Err(err) => {
                 eprintln!("Error while reading input: {err}");
@@ -115,7 +120,7 @@ fn main() -> ExitCode {
                 }
             }
             Err(EvalError::Exception(exception)) => {
-                print!("{exception}");
+                print!("{exception:?}");
             }
             Err(err) => {
                 println!("Error: {err:?}");

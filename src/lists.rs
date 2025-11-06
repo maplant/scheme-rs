@@ -7,7 +7,6 @@ use crate::{
     proc::{Application, DynamicWind, Procedure},
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
-    syntax::Syntax,
     value::{EqvValue, UnpackedValue, Value, ValueType, write_value},
     vectors,
 };
@@ -146,12 +145,7 @@ pub fn car(val: &Value) -> Result<Vec<Value>, Condition> {
             let Pair(car, _) = pair_read.as_ref();
             Ok(vec![car.clone()])
         }
-        UnpackedValue::Syntax(syn) if syn.is_list() => {
-            let Some([car, ..]) = syn.as_list() else {
-                unreachable!()
-            };
-            Ok(vec![Value::from(car.clone())])
-        }
+        UnpackedValue::Syntax(syn) => Ok(vec![Value::from(syn.car()?)]),
         _ => Err(Condition::type_error("list", val.type_name())),
     }
 }
@@ -164,14 +158,7 @@ pub fn cdr(val: &Value) -> Result<Vec<Value>, Condition> {
             let Pair(_, cdr) = pair_read.as_ref();
             Ok(vec![cdr.clone()])
         }
-        UnpackedValue::Syntax(syn) if syn.is_list() => match syn.as_list() {
-            Some([_, null @ Syntax::Null { .. }]) => Ok(vec![Value::from(null.clone())]),
-            Some([_, cdr @ ..]) => Ok(vec![Value::from(Syntax::List {
-                list: cdr.to_vec(),
-                span: syn.span().clone(),
-            })]),
-            _ => unreachable!(),
-        },
+        UnpackedValue::Syntax(syn) => Ok(vec![Value::from(syn.cdr()?)]),
         _ => Err(Condition::type_error("list", val.type_name())),
     }
 }
@@ -275,11 +262,18 @@ pub fn map(
             ));
         }
 
-        let pair: Gc<Pair> = input.clone().try_into().unwrap();
-        let pair_read = pair.read();
-        let Pair(car, cdr) = pair_read.as_ref();
-        args.push(car.clone());
-        *input = cdr.clone();
+        let (car, cdr) = match &*input.unpacked_ref() {
+            UnpackedValue::Pair(pair) => {
+                let pair_read = pair.read();
+                let Pair(car, cdr) = pair_read.as_ref();
+                (car.clone(), cdr.clone())
+            }
+            UnpackedValue::Syntax(syn) => (Value::from(syn.car()?), Value::from(syn.cdr()?)),
+            _ => return Err(Condition::type_error("list", input.type_name())),
+        };
+
+        args.push(car);
+        *input = cdr;
     }
 
     let map_k = Procedure::new(
@@ -350,11 +344,21 @@ unsafe extern "C" fn map_k(
                 return Box::into_raw(Box::new(app));
             }
 
-            let pair: Gc<Pair> = input.clone().try_into().unwrap();
-            let pair_read = pair.read();
-            let Pair(car, cdr) = pair_read.as_ref();
-            args.push(car.clone());
-            *input = cdr.clone();
+            let (car, cdr) = match &*input.unpacked_ref() {
+                UnpackedValue::Pair(pair) => {
+                    let pair_read = pair.read();
+                    let Pair(car, cdr) = pair_read.as_ref();
+                    (car.clone(), cdr.clone())
+                }
+                UnpackedValue::Syntax(syn) => (
+                    Value::from(syn.car().unwrap()),
+                    Value::from(syn.cdr().unwrap()),
+                ),
+                _ => unreachable!(),
+            };
+
+            args.push(car);
+            *input = cdr;
         }
 
         let map_k = Procedure::new(

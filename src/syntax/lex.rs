@@ -3,7 +3,6 @@
 use super::Span;
 use malachite::{Integer, base::num::conversion::traits::*, rational::Rational};
 use scheme_rs_macros::{maybe_async, maybe_await};
-use std::{io, sync::Arc};
 use unicode_categories::UnicodeCategories;
 
 #[cfg(feature = "async")]
@@ -11,49 +10,32 @@ use futures::future::BoxFuture;
 
 use crate::{
     num,
-    ports::{ReadError, PortInner},
+    ports::{PortInner, ReadError},
 };
 
 pub struct Lexer<'a> {
+    port: &'a mut PortInner,
     pos: usize,
     buff: Vec<char>,
-    port: &'a mut PortInner,
-    curr_line: u32,
-    curr_column: usize,
-    file: Arc<String>,
+    curr_span: Span,
 }
 
 impl<'a> Lexer<'a> {
-    /*
-    #[cfg(feature = "async")]
-    pub async fn new(input_port: &'a Port) -> Self {
+    pub(crate) fn new(port: &'a mut PortInner, span: Span) -> Self {
         Self {
-            pos: 0,
-            file: Arc::new(input_port.name.clone()),
-            curr_line: 0,
-            curr_column: 0,
-            port: input_port.try_lock_input_port().await.unwrap(),
-        }
-    }
-    */
-
-    pub fn new(name: &str, port: &'a mut PortInner) -> Self {
-        Self {
-            pos: 0, // TODO: Need to set to port's current position
-            buff: Vec::new(),
-            file: Arc::new(name.to_string()),
-            curr_line: 0,
-            curr_column: 0,
             port,
+            pos: 0,
+            buff: Vec::new(),
+            curr_span: span,
         }
     }
 
-    fn curr_span(&self) -> Span {
+    pub(crate) fn curr_span(&self) -> Span {
         Span {
-            line: self.curr_line,
-            column: self.curr_column,
-            offset: self.pos,
-            file: self.file.clone(),
+            line: self.curr_span.line,
+            column: self.curr_span.column,
+            offset: self.curr_span.offset + self.pos,
+            file: self.curr_span.file.clone(),
         }
     }
 
@@ -92,12 +74,14 @@ impl<'a> Lexer<'a> {
     #[maybe_async]
     fn match_pred(&mut self, pred: impl FnOnce(char) -> bool) -> Result<Option<char>, ReadError> {
         let chr = maybe_await!(self.peek())?;
-        if let Some(chr) = chr && pred(chr) {
+        if let Some(chr) = chr
+            && pred(chr)
+        {
             if chr == '\n' {
-                self.curr_line += 1;
-                self.curr_column = 0;
+                self.curr_span.line += 1;
+                self.curr_span.column = 0;
             } else {
-                self.curr_column += 1;
+                self.curr_span.column += 1;
             }
             self.pos += 1;
             Ok(Some(chr))
@@ -116,7 +100,7 @@ impl<'a> Lexer<'a> {
             }
         }
         // tag cannot contain newlines
-        self.curr_column += self.pos;
+        self.curr_span.column += self.pos;
         Ok(true)
     }
 
@@ -175,8 +159,19 @@ impl<'a> Lexer<'a> {
                 '#' if maybe_await!(self.match_tag("`"))? => Lexeme::HashBackquote,
                 '#' if maybe_await!(self.match_tag(",@"))? => Lexeme::HashCommaAt,
                 '#' if maybe_await!(self.match_tag(","))? => Lexeme::HashComma,
+                '#' => {
+                    let next_chr = maybe_await!(self.take())?;
+                    if let Some(chr) = next_chr {
+                        return Err(LexerError::UnexpectedCharacter {
+                            chr,
+                            span: self.curr_span(),
+                        });
+                    } else {
+                        return Err(LexerError::UnexpectedEof);
+                    }
+                }
                 '\0' => return Ok(None),
-                chr => panic!("unexpected char: {chr:?}"), // return Err(LexerError::UnexpectedCharacter { chr, span }),
+                chr => return Err(LexerError::UnexpectedCharacter { chr, span }),
             }
         } else {
             return Ok(None);
@@ -263,7 +258,9 @@ impl<'a> Lexer<'a> {
             Character::Literal(maybe_await!(self.take())?.ok_or(LexerError::UnexpectedEof)?)
         };
         let peeked = maybe_await!(self.peek())?;
-        if let Some(peeked) = peeked && !is_delimiter(peeked) {
+        if let Some(peeked) = peeked
+            && !is_delimiter(peeked)
+        {
             let span = self.curr_span();
             Err(LexerError::UnexpectedCharacter { chr: peeked, span })
         } else {

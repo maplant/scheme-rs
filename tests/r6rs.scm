@@ -486,3 +486,6 @@
     [_ #f]))
 
 (assert-equal? (test (get-clause #'fields #'((fields x y)))) #t)
+
+;; Test quasiquoting
+(assert-equal? `(1 2 3 ,(+ 1 2 3)) (list 1 2 3 7))
