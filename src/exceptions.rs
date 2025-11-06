@@ -186,7 +186,8 @@ impl Condition {
             CompoundCondition::from( (
                 Assertion::new(),
                 Message::new(format!(
-                    "Could not represent '{value}' in {r#type} type"
+                    "Could not represent '{value}' in {} type",
+                    r#type
                 )),
             )),
         )))

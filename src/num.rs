@@ -155,17 +155,18 @@ macro_rules! number_try_into_impl_integer {
             fn try_into(self) -> Result<$ty, Self::Error> {
                 match self {
                     Number::FixedInteger(i) => {
-                        if i < $ty::MAX as i64 && i > $ty::MIN as i64 {
+                        if i <= $ty::MAX as i64 && i >= $ty::MIN as i64 {
                             Ok(i as $ty)
                         } else {
                             Err(Condition::not_representable(&format!("{i}"), stringify!($ty)))
                         }
                     }
                     Number::BigInteger(bigint) => {
-                        if bigint < $ty::MAX && bigint > $ty::MIN {
-                            Ok(bigint.try_into().unwrap())
+                        if bigint <= $ty::MAX && bigint >= $ty::MIN {
+                            let vec = bigint.into_twos_complement_limbs_asc();
+                            Ok(vec[0] as $ty)
                         } else {
-                            Err(Condition::not_representable(&format!("{i}"), stringify!($ty)))
+                            Err(Condition::not_representable(&format!("{bigint}"), stringify!($ty)))
                         }
                     }
                     Number::Rational(r) => {
