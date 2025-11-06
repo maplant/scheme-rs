@@ -148,6 +148,54 @@ impl From<Complex64> for Number {
     }
 }
 
+macro_rules! number_try_into_impl_integer {
+    ($ty:tt) => {
+        impl TryInto<$ty> for Number {
+            type Error = Condition;
+            fn try_into(self) -> Result<$ty, Self::Error> {
+                match self {
+                    Number::FixedInteger(i) => {
+                        if i < $ty::MAX as i64 && i > $ty::MIN as i64 {
+                            Ok(i as $ty)
+                        } else {
+                            Err(Condition::not_representable(&format!("{i}"), stringify!($ty)))
+                        }
+                    }
+                    Number::BigInteger(bigint) => {
+                        if bigint < $ty::MAX && bigint > $ty::MIN {
+                            Ok(bigint.try_into().unwrap())
+                        } else {
+                            Err(Condition::not_representable(&format!("{i}"), stringify!($ty)))
+                        }
+                    }
+                    Number::Rational(r) => {
+                        Err(Condition::conversion_error(stringify!($ty), "Rational"))
+                    }
+                    Number::Real(r) => {
+                        Err(Condition::conversion_error(stringify!($ty), "Real"))
+                    }
+                    Number::Complex(c) => {
+                        Err(Condition::conversion_error(stringify!($ty), "Complex"))
+                    }
+                }
+            }
+        }
+    };
+}
+
+number_try_into_impl_integer!(u8);
+number_try_into_impl_integer!(u16);
+number_try_into_impl_integer!(u32);
+number_try_into_impl_integer!(u64);
+number_try_into_impl_integer!(u128);
+number_try_into_impl_integer!(i8);
+number_try_into_impl_integer!(i16);
+number_try_into_impl_integer!(i32);
+number_try_into_impl_integer!(i64);
+number_try_into_impl_integer!(i128);
+
+
+
 impl fmt::Display for Number {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
