@@ -169,13 +169,13 @@ macro_rules! number_try_into_impl_integer {
                             Err(Condition::not_representable(&format!("{bigint}"), stringify!($ty)))
                         }
                     }
-                    Number::Rational(r) => {
+                    Number::Rational(_) => {
                         Err(Condition::conversion_error(stringify!($ty), "Rational"))
                     }
-                    Number::Real(r) => {
+                    Number::Real(_) => {
                         Err(Condition::conversion_error(stringify!($ty), "Real"))
                     }
-                    Number::Complex(c) => {
+                    Number::Complex(_) => {
                         Err(Condition::conversion_error(stringify!($ty), "Complex"))
                     }
                 }
@@ -195,7 +195,28 @@ number_try_into_impl_integer!(i32);
 number_try_into_impl_integer!(i64);
 number_try_into_impl_integer!(i128);
 
-
+impl TryInto<Integer> for Number {
+    type Error = Condition;
+    fn try_into(self) -> Result<Integer, Self::Error> {
+        match self {
+            Number::FixedInteger(i) => {
+                Ok(Integer::from(i))
+            }
+            Number::BigInteger(i) => {
+                Ok(i)
+            }
+            Number::Rational(_) => {
+                Err(Condition::conversion_error("Integer", "Rational"))
+            }
+            Number::Real(_) => {
+                Err(Condition::conversion_error("Integer", "Real"))
+            }
+            Number::Complex(_) => {
+                Err(Condition::conversion_error("Integer", "Complex"))
+            }
+        }
+    }
+}
 
 impl fmt::Display for Number {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
