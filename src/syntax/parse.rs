@@ -1,7 +1,7 @@
 use crate::{
     ast::Literal,
     num::Number,
-    ports::{InputPort, ReadError},
+    ports::{PortInner, ReadError},
     syntax::lex::ParseNumberError,
 };
 
@@ -39,7 +39,7 @@ macro_rules! token {
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(file_name: &str, input_port: &'a mut InputPort) -> Self {
+    pub fn new(file_name: &str, input_port: &'a mut PortInner) -> Self {
         Parser {
             lookahead: Vec::new(),
             lexer: Lexer::new(file_name, input_port),
@@ -49,9 +49,9 @@ impl<'a> Parser<'a> {
 
 impl Parser<'_> {
     #[maybe_async]
-    fn next_token(&mut self) -> Result<Token, LexerError> {
+    fn next_token(&mut self) -> Result<Option<Token>, LexerError> {
         if let Some(next) = self.lookahead.pop() {
-            Ok(next)
+            Ok(Some(next))
         } else {
             maybe_await!(self.lexer.next_token())
         }
@@ -73,7 +73,7 @@ impl Parser<'_> {
 
     #[maybe_async]
     fn expression_inner(&mut self) -> Result<Option<Syntax>, ParseSyntaxError> {
-        match maybe_await!(self.next_token())? {
+        match maybe_await!(self.next_token())?.ok_or(ParseSyntaxError::UnexpectedEof)? {
             // Literals:
             token!(Lexeme::Boolean(b), span) => {
                 Ok(Some(Syntax::new_literal(Literal::Boolean(b), span)))
@@ -152,35 +152,52 @@ impl Parser<'_> {
     }
 
     #[maybe_async]
-    pub fn get_datum(&mut self) -> Result<Syntax, ParseSyntaxError> {
+    pub fn get_sexpr(&mut self) -> Result<Syntax, ParseSyntaxError> {
         loop {
             if let Some(expr) = maybe_await!(self.expression())? {
                 return Ok(expr);
             }
         }
     }
+    
+    #[maybe_async]
+    pub fn get_sexpr_or_eof(&mut self) -> Result<Option<Syntax>, ParseSyntaxError> {
+        loop {
+            // Check for EOF
+            match dbg!(maybe_await!(self.next_token())) {
+                Ok(None) => return Ok(None),
+                Err(err) => return Err(ParseSyntaxError::Lex(err)),
+                Ok(Some(token)) => self.return_token(token),
+            }
+
+            if let Some(expr) = maybe_await!(self.expression())? {
+                return Ok(Some(expr));
+            }
+        }
+    }
+
 
     #[maybe_async]
-    pub fn all_datums(&mut self) -> Result<Vec<Syntax>, ParseSyntaxError> {
-        let mut datums = Vec::new();
+    pub fn all_sexprs(&mut self) -> Result<Vec<Syntax>, ParseSyntaxError> {
+        let mut sexprs = Vec::new();
         loop {
             // Check for EOF
             match maybe_await!(self.next_token()) {
-                Err(LexerError::ReadError(ReadError::Eof)) => return Ok(datums),
+                Ok(None) => return Ok(dbg!(sexprs)),
                 Err(err) => return Err(ParseSyntaxError::Lex(err)),
-                Ok(token) => self.return_token(token),
+                Ok(Some(token)) => self.return_token(token),
             }
 
-            datums.push(maybe_await!(self.get_datum())?);
+            sexprs.push(maybe_await!(self.get_sexpr())?);
         }
     }
 
     #[maybe_async]
     fn list(&mut self, span: Span, closing: Lexeme) -> Result<Syntax, ParseSyntaxError> {
-        match maybe_await!(self.next_token())? {
+        match maybe_await!(self.next_token())?.ok_or(ParseSyntaxError::UnexpectedEof)? {
             // We allow for (. expr) to resolve to expr, just because it's
             // easier. Maybe we'll disallow this eventualy
-            token!(Lexeme::Period) => return maybe_await!(self.get_datum()),
+            token!(Lexeme::Period) => return maybe_await!(self.get_sexpr()),
             // If the first token is a closing paren, then this is an empty
             // list
             token if token.lexeme == closing => return Ok(Syntax::new_null(token.span)),
@@ -195,14 +212,14 @@ impl Parser<'_> {
             if let Some(expr) = maybe_await!(self.expression())? {
                 output.push(expr);
             }
-            match maybe_await!(self.next_token())? {
+            match maybe_await!(self.next_token())?.ok_or(ParseSyntaxError::UnexpectedEof)? {
                 token if token.lexeme == closing => {
                     output.push(Syntax::new_null(token.span));
                     return Ok(Syntax::new_list(output, span));
                 }
                 token!(Lexeme::Period) => {
-                    let peek1 = maybe_await!(self.next_token())?;
-                    let peek2 = maybe_await!(self.next_token())?;
+                    let peek1 = maybe_await!(self.next_token())?.ok_or(ParseSyntaxError::UnexpectedEof)?;
+                    let peek2 = maybe_await!(self.next_token())?.ok_or(ParseSyntaxError::UnexpectedEof)?;
                     match (peek1, peek2) {
                         // Proper list with period:
                         (token!(Lexeme::LParen, end_span), token!(Lexeme::RParen))
@@ -216,8 +233,8 @@ impl Parser<'_> {
                             self.return_token(peek1);
                         }
                     }
-                    output.push(maybe_await!(self.get_datum())?);
-                    let last = maybe_await!(self.next_token())?;
+                    output.push(maybe_await!(self.get_sexpr())?);
+                    let last = maybe_await!(self.next_token())?.ok_or(ParseSyntaxError::UnexpectedEof)?;
                     if last.lexeme == closing {
                         return Ok(Syntax::new_list(output, span));
                     } else {
@@ -233,7 +250,7 @@ impl Parser<'_> {
     fn vector(&mut self, span: Span) -> Result<Syntax, ParseSyntaxError> {
         let mut output = Vec::new();
         loop {
-            match maybe_await!(self.next_token())? {
+            match maybe_await!(self.next_token())?.ok_or(ParseSyntaxError::UnexpectedEof)? {
                 token!(Lexeme::RParen) => return Ok(Syntax::new_vector(output, span)),
                 token => {
                     self.return_token(token);
@@ -249,7 +266,7 @@ impl Parser<'_> {
     fn byte_vector(&mut self, span: Span) -> Result<Syntax, ParseSyntaxError> {
         let mut output = Vec::new();
         loop {
-            match maybe_await!(self.next_token())? {
+            match maybe_await!(self.next_token())?.ok_or(ParseSyntaxError::UnexpectedEof)? {
                 token!(Lexeme::Number(num), span) => {
                     if let Number::FixedInteger(i) = num.try_into()?
                         && let Ok(byte) = u8::try_from(i)
@@ -269,7 +286,7 @@ impl Parser<'_> {
 
     #[maybe_async]
     fn alias(&mut self, alias: &str, span: Span) -> Result<Syntax, ParseSyntaxError> {
-        let expr = maybe_await!(self.get_datum())?;
+        let expr = maybe_await!(self.get_sexpr())?;
         let expr_span = expr.span().clone();
         Ok(Syntax::new_list(
             vec![
@@ -284,7 +301,7 @@ impl Parser<'_> {
 
 #[derive(Debug)]
 pub enum ParseSyntaxError {
-    // UnexpectedEndOfFile,
+    UnexpectedEof,
     ExpectedClosingParen { span: Span },
     UnexpectedClosingParen { span: Span },
     InvalidPeriodLocation { span: Span },
@@ -300,7 +317,7 @@ impl fmt::Display for ParseSyntaxError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             // Self::EmptyInput => write!(f, "cannot parse an empty list"),
-            // Self::UnexpectedEndOfFile => write!(f, "unexpected end of file"),
+            Self::UnexpectedEof => write!(f, "unexpected end of file"),
             Self::ExpectedClosingParen { span } => {
                 write!(f, "closing parenthesis not found at `{span}`")
             }

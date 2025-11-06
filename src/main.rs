@@ -9,13 +9,12 @@ use scheme_rs::{
     cps::Compile,
     env::Environment,
     exceptions::{Exception, ExceptionHandler},
-    ports::{Port, ReadError},
+    ports::{BufferMode, Port, Prompt, ReadError, Transcoder},
     proc::{Application, DynamicWind},
     registry::Library,
     runtime::Runtime,
     syntax::{
-        Syntax,
-        parse::{LexerError, ParseSyntaxError, Parser},
+        parse::{LexerError, ParseSyntaxError, Parser}, Syntax
     },
     value::Value,
 };
@@ -29,11 +28,11 @@ struct InputValidator;
 impl Validator for InputValidator {
     fn validate(&self, ctx: &mut ValidationContext<'_>) -> rustyline::Result<ValidationResult> {
         let bytes = Cursor::new(ctx.input().as_bytes().to_vec());
-        let port = Port::from_reader(bytes);
-        let input_port = port.get_input_port().unwrap();
-        let mut input_port = input_port.lock().unwrap();
-        let mut parser = Parser::new("<prompt>", &mut input_port);
-        if parser.all_datums().is_ok() {
+        let port = Port::new(bytes, true, BufferMode::Block, Transcoder::native());
+        // let input_port = port.get_input_port().unwrap();
+        // let mut input_port = input_port.lock().unwrap();
+        // let mut parser = Parser::new("<prompt>", &mut input_port);
+        if port.all_sexprs().is_ok() {
             Ok(ValidationResult::Valid(None))
         } else {
             Ok(ValidationResult::Incomplete)
@@ -93,22 +92,15 @@ fn main() -> ExitCode {
 
     editor.set_helper(Some(helper));
 
-    let input_prompt = Port::from_prompt(editor);
-    let input_port = input_prompt.get_input_port().unwrap();
+    let prompt = Prompt::new(editor);
 
-    #[cfg(not(feature = "async"))]
-    let mut input_port = input_port.lock().unwrap();
-
-    #[cfg(feature = "tokio")]
-    let mut input_port = input_port.lock().await;
-
-    let mut sexpr_parser = Parser::new("<prompt>", &mut input_port);
+    let input_port = Port::new(prompt, true, BufferMode::Block, Transcoder::native());
 
     let mut n_results = 1;
     loop {
-        let sexpr = match maybe_await!(sexpr_parser.get_datum()) {
-            Ok(sexpr) => sexpr,
-            Err(ParseSyntaxError::Lex(LexerError::ReadError(ReadError::Eof))) => break,
+        let sexpr = match maybe_await!(input_port.get_sexpr()) {
+            Ok(Some(sexpr)) => sexpr,
+            Ok(None) => break,
             Err(err) => {
                 eprintln!("Error while reading input: {err}");
                 return ExitCode::FAILURE;

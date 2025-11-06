@@ -3,16 +3,7 @@
 use scheme_rs_macros::{cps_bridge, runtime_fn};
 
 use crate::{
-    ast::ParseAstError,
-    gc::{Gc, GcInner, Trace},
-    lists,
-    proc::{Application, DynamicWind, FuncPtr, Procedure},
-    records::{Record, RecordTypeDescriptor, SchemeCompatible, into_scheme_compatible, rtd},
-    registry::bridge,
-    runtime::{Runtime, RuntimeInner},
-    symbols::Symbol,
-    syntax::{Identifier, Span, Syntax},
-    value::{UnpackedValue, Value},
+    ast::ParseAstError, gc::{Gc, GcInner, Trace}, lists, ports::ReadError, proc::{Application, DynamicWind, FuncPtr, Procedure}, records::{into_scheme_compatible, rtd, Record, RecordTypeDescriptor, SchemeCompatible}, registry::bridge, runtime::{Runtime, RuntimeInner}, symbols::Symbol, syntax::{parse::ParseSyntaxError, Identifier, Span, Syntax}, value::{UnpackedValue, Value}
 };
 use std::{error::Error as StdError, fmt, ops::Range, ptr::null_mut, sync::Arc};
 
@@ -49,9 +40,30 @@ impl fmt::Display for Exception {
 
 impl StdError for Exception {}
 
+impl From<Condition> for Exception {
+    fn from(cond: Condition) -> Self {
+        Self {
+            backtrace: Vec::new(),
+            obj: cond.0,
+        }
+    }
+}
+
 impl fmt::Display for Condition {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         <Value as fmt::Debug>::fmt(&self.0, f)
+    }
+}
+
+impl From<ParseSyntaxError> for Condition {
+    fn from(error: ParseSyntaxError) -> Self {
+        todo!()
+    }
+}
+
+impl From<ReadError> for Condition {
+    fn from(error: ReadError) -> Self {
+        todo!()
     }
 }
 
@@ -66,7 +78,7 @@ impl From<Exception> for Condition {
 pub struct Condition(pub Value);
 
 impl Condition {
-    pub fn error(message: String) -> Self {
+    pub fn error(message: impl fmt::Display) -> Self {
         Self(Value::from(Record::from_rust_type(
             CompoundCondition::from((Assertion::new(), Message::new(message))),
         )))
@@ -162,12 +174,6 @@ impl Condition {
                 )),
             )),
         )))
-    }
-}
-
-impl From<std::io::Error> for Condition {
-    fn from(value: std::io::Error) -> Self {
-        todo!()
     }
 }
 
@@ -279,10 +285,10 @@ pub struct Message {
 }
 
 impl Message {
-    pub fn new(message: String) -> Self {
+    pub fn new(message: impl fmt::Display) -> Self {
         Self {
             parent: Gc::new(SimpleCondition::new()),
-            message,
+            message: message.to_string(),
         }
     }
 }
@@ -297,7 +303,7 @@ impl SchemeCompatible for Message {
                 let [ msg ] = vals else {
                     unreachable!();
                 };
-                Ok(into_scheme_compatible(Gc::new(Message::new(msg.clone().try_into()?))))
+                Ok(into_scheme_compatible(Gc::new(Message::new(msg))))
             }
         )
     }

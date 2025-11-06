@@ -292,14 +292,14 @@ impl Syntax {
     }
 
     #[cfg(not(feature = "async"))]
-    pub fn from_str(s: &str, file_name: Option<&str>) -> Result<Vec<Self>, ParseSyntaxError> {
-        let file_name = file_name.unwrap_or("<unknown>");
+    pub fn from_str(s: &str, _file_name: Option<&str>) -> Result<Vec<Self>, ParseSyntaxError> {
+        use crate::ports::{BufferMode, Transcoder};
+
+        // let file_name = file_name.unwrap_or("<unknown>");
         let bytes = Cursor::new(s.as_bytes().to_vec());
-        let port = Port::from_reader(bytes);
-        let input_port = port.get_input_port().unwrap();
-        let mut input_port = input_port.lock().unwrap();
-        let mut parser = Parser::new(file_name, &mut input_port);
-        parser.all_datums()
+        let port = Port::new(bytes, true, BufferMode::Block, Transcoder::native());
+        port.all_sexprs()
+        
     }
 
     #[cfg(feature = "async")]
