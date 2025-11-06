@@ -164,7 +164,7 @@ impl Parser<'_> {
     pub fn get_sexpr_or_eof(&mut self) -> Result<Option<Syntax>, ParseSyntaxError> {
         loop {
             // Check for EOF
-            match dbg!(maybe_await!(self.next_token())) {
+            match maybe_await!(self.next_token()) {
                 Ok(None) => return Ok(None),
                 Err(err) => return Err(ParseSyntaxError::Lex(err)),
                 Ok(Some(token)) => self.return_token(token),
@@ -183,7 +183,7 @@ impl Parser<'_> {
         loop {
             // Check for EOF
             match maybe_await!(self.next_token()) {
-                Ok(None) => return Ok(dbg!(sexprs)),
+                Ok(None) => return Ok(sexprs),
                 Err(err) => return Err(ParseSyntaxError::Lex(err)),
                 Ok(Some(token)) => self.return_token(token),
             }

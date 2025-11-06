@@ -578,7 +578,7 @@ impl PortInner {
             };
         }
 
-        Ok(self.transcode()/*.map(|c| {println!("c = {c:?}"); c })*/.nth(n).transpose()?.map(|(_, chr)| chr))
+        Ok(self.transcode().nth(n).transpose()?.map(|(_, chr)| chr))
     }
 
     fn consume_bytes(&mut self, n: usize) -> Result<(), ReadError> {

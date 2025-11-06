@@ -137,7 +137,7 @@ impl<'a> Lexer<'a> {
         // Check for any interlexeme space:
         maybe_await!(self.interlexeme_space())?;
 
-        self.consume_chars()?;
+        // self.consume_chars()?;
 
         // Get the current span:
         let span = self.curr_span();
@@ -327,10 +327,6 @@ impl<'a> Lexer<'a> {
         };
 
         match maybe_await!(self.peek()) {
-            Ok(None) => {
-                self.pos = saved_pos;
-                return Ok(None);
-            }
             Ok(Some(chr)) if is_subsequent(chr) => {
                 self.pos = saved_pos;
                 return Ok(None);
