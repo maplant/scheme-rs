@@ -241,6 +241,33 @@ impl TryInto<f64> for Number {
     }
 }
 
+impl TryInto<Complex64> for Number {
+    type Error = Condition;
+    fn try_into(self) -> Result<Complex64, Self::Error> {
+        match self {
+            Number::Complex(c) => Ok(c),
+            Number::Rational(r) => {
+                Err(Condition::conversion_error("Complex", "Rational"))
+            }
+            Number::BigInteger(_) => {
+                Err(Condition::conversion_error("Complex", "BigInteger"))
+            }
+            Number::Real(r) => {
+                let Some(c) = Complex64::from_f64(r) else {
+                    return Err(Condition::not_representable(&format!("{r}"), "Real"));
+                };
+                Ok(c)
+            }
+            Number::FixedInteger(i) => {
+                let Some(c) = Complex64::from_i64(i) else {
+                    return Err(Condition::not_representable(&format!("{i}"), "Integer"));
+                };
+                Ok(c)
+            }
+        }
+    }
+}
+
 impl fmt::Display for Number {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
