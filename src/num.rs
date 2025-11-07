@@ -189,11 +189,13 @@ number_try_into_impl_integer!(u16);
 number_try_into_impl_integer!(u32);
 number_try_into_impl_integer!(u64);
 number_try_into_impl_integer!(u128);
+number_try_into_impl_integer!(usize);
 number_try_into_impl_integer!(i8);
 number_try_into_impl_integer!(i16);
 number_try_into_impl_integer!(i32);
 number_try_into_impl_integer!(i64);
 number_try_into_impl_integer!(i128);
+number_try_into_impl_integer!(isize);
 
 impl TryInto<Integer> for Number {
     type Error = Condition;
@@ -246,7 +248,7 @@ impl TryInto<Complex64> for Number {
     fn try_into(self) -> Result<Complex64, Self::Error> {
         match self {
             Number::Complex(c) => Ok(c),
-            Number::Rational(r) => {
+            Number::Rational(_) => {
                 Err(Condition::conversion_error("Complex", "Rational"))
             }
             Number::BigInteger(_) => {
