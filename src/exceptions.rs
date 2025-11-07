@@ -5,7 +5,7 @@ use scheme_rs_macros::{cps_bridge, runtime_fn};
 use crate::{
     ast::ParseAstError,
     gc::{Gc, GcInner, Trace},
-    lists,
+    lists::{self, list_to_vec},
     proc::{Application, DynamicWind, FuncPtr, Procedure},
     records::{Record, RecordTypeDescriptor, SchemeCompatible, into_scheme_compatible, rtd},
     registry::bridge,
@@ -582,7 +582,7 @@ impl ExceptionHandler {
     args = "handler thunk"
 )]
 pub fn with_exception_handler(
-    _runtime: &Runtime,
+    runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
@@ -605,13 +605,75 @@ pub fn with_exception_handler(
 
     let exception_handler = ExceptionHandler(Some(Gc::new(exception_handler_inner)));
 
+    let cont_proc: Procedure = cont.clone().try_into().unwrap();
+    let (req_args, var) = {
+        let cont_proc_read = cont_proc.0.read();
+        (cont_proc_read.num_required_args, cont_proc_read.variadic)
+    };
+
+    let k = Procedure::new(
+        runtime.clone(),
+        vec![cont.clone()],
+        FuncPtr::Continuation(reset_exception_handler),
+        req_args,
+        var,
+        None,
+    );
+
     Ok(Application::new(
         thunk.clone(),
-        vec![cont.clone()],
+        vec![Value::from(k)],
         exception_handler,
         dynamic_wind.clone(),
         None,
     ))
+}
+
+pub(crate) unsafe extern "C" fn reset_exception_handler(
+    _runtime: *mut GcInner<RuntimeInner>,
+    env: *const Value,
+    args: *const Value,
+    exception_handler: *mut GcInner<ExceptionHandlerInner>,
+    dynamic_wind: *const DynamicWind,
+) -> *mut Application {
+    unsafe {
+        // env[0] is the continuation
+        let k: Procedure = env.as_ref().unwrap().clone().try_into().unwrap();
+
+        // Pop the exception handler
+        let curr_handler = ExceptionHandler::from_ptr(exception_handler);
+        let prev_handler = curr_handler
+            .0
+            .map(|handler| handler.read().prev_handler.clone())
+            .unwrap_or_default();
+
+        // Ugh:
+
+        let mut collected_args: Vec<_> = (0..k.0.read().num_required_args)
+            .map(|i| args.add(i).as_ref().unwrap().clone())
+            .collect();
+
+        if k.0.read().variadic {
+            let rest_args = args
+                .add(k.0.read().num_required_args)
+                .as_ref()
+                .unwrap()
+                .clone();
+            let mut vec = Vec::new();
+            list_to_vec(&rest_args, &mut vec);
+            collected_args.extend(vec);
+        }
+
+        let app = Application::new(
+            k,
+            collected_args,
+            prev_handler,
+            dynamic_wind.as_ref().unwrap().clone(),
+            None,
+        );
+
+        Box::into_raw(Box::new(app))
+    }
 }
 
 #[cps_bridge(name = "raise", lib = "(rnrs base builtins (6))", args = "obj")]

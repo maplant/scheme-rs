@@ -224,7 +224,9 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         let arg_names = args
             .split(" ")
             .filter_map(|x| {
-                if x == "." {
+                if x.is_empty() {
+                    None
+                } else if x == "." {
                     is_variadic = true;
                     None
                 } else {
