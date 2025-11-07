@@ -218,6 +218,29 @@ impl TryInto<Integer> for Number {
     }
 }
 
+impl TryInto<f64> for Number {
+    type Error = Condition;
+    fn try_into(self) -> Result<f64, Self::Error> {
+        match self {
+            Number::FixedInteger(i) => Ok(i as f64),
+            Number::Real(r) => Ok(r),
+            Number::Complex(_) => {
+                Err(Condition::conversion_error("f64", "Complex"))
+            }
+            Number::Rational(r) => {
+                if let Some((float, _, _)) = r.sci_mantissa_and_exponent_round_ref(RoundingMode::Nearest) {
+                    Ok(float)
+                } else {
+                    Err(Condition::not_representable(&format!("{r}"), "f64"))
+                }
+            }
+            Number::BigInteger(_) => {
+                Err(Condition::conversion_error("f64", "BigInteger"))
+            }
+        }
+    }
+}
+
 impl fmt::Display for Number {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
