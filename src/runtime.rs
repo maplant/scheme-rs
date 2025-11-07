@@ -450,7 +450,7 @@ pub(crate) unsafe extern "C" fn halt(args: i64) -> *mut Application {
         let args = ManuallyDrop::new(Value::from_raw(args as u64));
         let mut flattened = Vec::new();
         list_to_vec(&args, &mut flattened);
-        let app = Application::halt(flattened);
+        let app = Application::halt_ok(flattened);
         Box::into_raw(Box::new(app))
     }
 }

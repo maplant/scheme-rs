@@ -757,14 +757,7 @@ unsafe extern "C" fn call_exits_and_exception_handler_reraise(
                 // If the exception handler is null, we want to return it as an
                 // error.
                 if !curr_handler.is_true() {
-                    let app = Application::new(
-                        Procedure::new(runtime, Vec::new(), FuncPtr::HaltError, 1, false, None),
-                        vec![raised.clone()],
-                        ExceptionHandler::from_ptr(exception_handler),
-                        dynamic_wind.as_ref().unwrap().clone(),
-                        None,
-                    );
-                    return Box::into_raw(Box::new(app));
+                    return Box::into_raw(Box::new(Application::halt_err(raised.clone())));
                 }
 
                 let curr_handler: Procedure = curr_handler.try_into().unwrap();
@@ -832,7 +825,7 @@ unsafe extern "C" fn reraise_exception(
     args = "obj"
 )]
 pub fn raise_continuable(
-    runtime: &Runtime,
+    _runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
@@ -845,20 +838,7 @@ pub fn raise_continuable(
     };
 
     let Some(handler) = &exception_handler.0 else {
-        return Ok(Application::new(
-            Procedure::new(
-                runtime.clone(),
-                Vec::new(),
-                FuncPtr::HaltError,
-                1,
-                false,
-                None,
-            ),
-            vec![condition.clone()],
-            ExceptionHandler::default(),
-            dynamic_wind.clone(),
-            None,
-        ));
+        return Ok(Application::halt_err(condition.clone()));
     };
 
     let handler = handler.read().clone();

@@ -5,7 +5,7 @@ use crate::{
     env::Local,
     exceptions::{Condition, Exception, ExceptionHandler, ExceptionHandlerInner, Frame, raise},
     gc::{Gc, GcInner, Trace},
-    lists::{self, list_to_vec, slice_to_list},
+    lists::{self, Pair, list_to_vec},
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::BridgeFnDebugInfo,
     runtime::{Runtime, RuntimeInner},
@@ -14,7 +14,7 @@ use crate::{
     value::{Cell, UnpackedValue, UnpackedValueRef, Value},
 };
 use scheme_rs_macros::{cps_bridge, maybe_async, maybe_await};
-use std::{borrow::Cow, collections::HashMap, fmt, hash::Hash, mem::MaybeUninit, sync::Arc};
+use std::{collections::HashMap, fmt, hash::Hash, mem::MaybeUninit, sync::Arc};
 
 /// A function pointer to a generated continuation.
 pub(crate) type ContinuationPtr = unsafe extern "C" fn(
@@ -65,19 +65,11 @@ pub(crate) enum FuncPtr {
     Bridge(SyncBridgePtr),
     #[cfg(feature = "async")]
     AsyncBridge(AsyncBridgePtr),
-    /// Special type to indicate that we should return the argument as an Err.
-    HaltError,
 }
 
 enum JitFuncPtr {
     Continuation(ContinuationPtr),
     User(UserPtr),
-}
-
-unsafe impl Trace for FuncPtr {
-    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(crate::gc::OpaqueGcPtr)) {}
-
-    unsafe fn finalize(&mut self) {}
 }
 
 #[derive(Clone, Trace)]
@@ -91,6 +83,7 @@ pub(crate) struct ProcedureInner {
     /// Environmental variables used by the procedure.
     pub(crate) env: Vec<Value>,
     /// Fuction pointer to the body of the procecure.
+    #[trace(skip)]
     pub(crate) func: FuncPtr,
     /// Number of required arguments to this procedure.
     pub(crate) num_required_args: usize,
@@ -131,20 +124,14 @@ impl ProcedureInner {
         !self.is_continuation()
     }
 
-    pub(crate) fn prepare_args<'a>(
+    pub(crate) fn prepare_args(
         &self,
-        args: &'a [Value],
+        mut args: Vec<Value>,
         exception_handler: &ExceptionHandler,
         dynamic_wind: &DynamicWind,
-    ) -> Result<(&'a [Value], Option<Value>), Application> {
+    ) -> Result<(Vec<Value>, Option<Value>), Application> {
         // Extract the continuation, if it is required
-        let requires_cont = !matches!(self.func, FuncPtr::Continuation(_));
-        let (cont, args) = if requires_cont {
-            let (cont, args) = args.split_last().unwrap();
-            (Some(cont.clone()), args)
-        } else {
-            (None, args)
-        };
+        let cont = (!matches!(self.func, FuncPtr::Continuation(_))).then(|| args.pop().unwrap());
 
         // Error if the number of arguments provided is incorrect
         if args.len() < self.num_required_args {
@@ -223,19 +210,19 @@ impl ProcedureInner {
     fn apply_jit(
         &self,
         func: JitFuncPtr,
-        args: &[Value],
+        mut args: Vec<Value>,
         cont: Option<Value>,
         exception_handler: &ExceptionHandler,
         dynamic_wind: &DynamicWind,
     ) -> Application {
-        let args = if self.variadic {
-            let (args, rest_args) = args.split_at(self.num_required_args);
-            let mut args = args.to_owned();
-            args.push(slice_to_list(rest_args));
-            Cow::Owned(args)
-        } else {
-            Cow::Borrowed(args)
-        };
+        if self.variadic {
+            let mut rest_args = Value::null();
+            let extra_args = args.len() - self.num_required_args;
+            for _ in 0..extra_args {
+                rest_args = Value::from(Gc::new(Pair::new(args.pop().unwrap(), rest_args)));
+            }
+            args.push(rest_args);
+        }
 
         let app = match func {
             JitFuncPtr::Continuation(sync_fn) => unsafe {
@@ -265,20 +252,16 @@ impl ProcedureInner {
     #[maybe_async]
     pub fn apply(
         &self,
-        args: &[Value],
+        args: Vec<Value>,
         exception_handler: &ExceptionHandler,
         dynamic_wind: &DynamicWind,
-    ) -> Result<Application, Value> {
-        if let FuncPtr::HaltError = self.func {
-            return Err(args[0].clone());
-        }
-
+    ) -> Application {
         let (args, k) = match self.prepare_args(args, exception_handler, dynamic_wind) {
             Ok(args) => args,
-            Err(raised) => return Ok(raised),
+            Err(raised) => return raised,
         };
 
-        let app = match self.func {
+        match self.func {
             FuncPtr::Continuation(cont) => self.apply_jit(
                 JitFuncPtr::Continuation(cont),
                 args,
@@ -294,17 +277,14 @@ impl ProcedureInner {
                 dynamic_wind,
             ),
             FuncPtr::Bridge(sbridge) => {
-                self.apply_sync_bridge(sbridge, args, k.unwrap(), exception_handler, dynamic_wind)
+                self.apply_sync_bridge(sbridge, &args, k.unwrap(), exception_handler, dynamic_wind)
             }
             #[cfg(feature = "async")]
             FuncPtr::AsyncBridge(abridge) => {
-                self.apply_async_bridge(abridge, args, k.unwrap(), exception_handler, dynamic_wind)
+                self.apply_async_bridge(abridge, &args, k.unwrap(), exception_handler, dynamic_wind)
                     .await
             }
-            FuncPtr::HaltError => unreachable!(),
-        };
-
-        Ok(app)
+        }
     }
 }
 
@@ -420,11 +400,16 @@ impl fmt::Debug for ProcedureInner {
     }
 }
 
+enum OpType {
+    Proc(Procedure),
+    HaltOk,
+    HaltErr,
+}
+
 /// An application of a function to a given set of values.
 pub struct Application {
-    /// The operator being applied to. If None, we return the values to the Rust
-    /// caller.
-    op: Option<Procedure>,
+    /// The operator being applied to.
+    op: OpType,
     /// The arguments being applied to the operator.
     args: Vec<Value>,
     /// The current exception handler to be passed to the operator.
@@ -445,7 +430,7 @@ impl Application {
     ) -> Self {
         Self {
             // We really gotta figure out how to deal with this better
-            op: Some(op),
+            op: OpType::Proc(op),
             args,
             exception_handler,
             dynamic_wind,
@@ -453,10 +438,20 @@ impl Application {
         }
     }
 
-    pub fn halt(args: Vec<Value>) -> Self {
+    pub fn halt_ok(args: Vec<Value>) -> Self {
         Self {
-            op: None,
+            op: OpType::HaltOk,
             args,
+            exception_handler: ExceptionHandler::default(),
+            dynamic_wind: DynamicWind::default(),
+            call_site: None,
+        }
+    }
+
+    pub fn halt_err(arg: Value) -> Self {
+        Self {
+            op: OpType::HaltErr,
+            args: vec![arg],
             exception_handler: ExceptionHandler::default(),
             dynamic_wind: DynamicWind::default(),
             call_site: None,
@@ -469,26 +464,21 @@ impl Application {
     pub fn eval(mut self) -> Result<Vec<Value>, Exception> {
         let mut stack_trace = StackTraceCollector::new();
 
-        while let Application {
-            op: Some(op),
-            args,
-            exception_handler,
-            dynamic_wind,
-            call_site,
-        } = self
-        {
-            let op = { op.0.read().as_ref().clone() };
-            stack_trace.collect_application(op.debug_info.clone(), call_site);
-            self = match maybe_await!(op.apply(&args, &exception_handler, &dynamic_wind)) {
-                Err(exception) => {
-                    return Err(Exception::new(stack_trace.into_frames(), exception));
+        loop {
+            let op = match self.op {
+                OpType::Proc(proc) => proc,
+                OpType::HaltOk => return Ok(self.args),
+                OpType::HaltErr => {
+                    return Err(Exception::new(
+                        stack_trace.into_frames(),
+                        self.args.pop().unwrap(),
+                    ));
                 }
-                Ok(app) => app,
             };
+            let op = { op.0.read().as_ref().clone() };
+            stack_trace.collect_application(op.debug_info.clone(), self.call_site);
+            self = maybe_await!(op.apply(self.args, &self.exception_handler, &self.dynamic_wind));
         }
-
-        // If we have no operator left, return the arguments as the final values:
-        Ok(self.args)
     }
 }
 
