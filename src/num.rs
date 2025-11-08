@@ -1048,3 +1048,98 @@ pub fn is_complex(arg: &Value) -> Result<Vec<Value>, Condition> {
         Number::Complex(_)
     ))])
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_fixed_integer_try_into_numeric_types() {
+        let number = Number::FixedInteger(1);
+        assert!(matches!(
+            std::convert::TryInto::<u8>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<u16>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<u32>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<u64>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<u128>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<i8>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<i16>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<i32>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<i64>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<i128>::try_into(number.clone()),
+            Ok(1)
+        ));
+    }
+
+    #[test]
+    fn test_big_integer_try_into_numeric_types() {
+        let number = Number::BigInteger(Integer::from(1));
+        assert!(matches!(
+            std::convert::TryInto::<u8>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<u16>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<u32>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<u64>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<u128>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<i8>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<i16>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<i32>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<i64>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<i128>::try_into(number.clone()),
+            Ok(1)
+        ));
+    }
+}
