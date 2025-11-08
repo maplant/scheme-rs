@@ -155,6 +155,9 @@ macro_rules! number_try_into_impl_integer {
             fn try_into(self) -> Result<$ty, Self::Error> {
                 match self {
                     Number::FixedInteger(i) => {
+                        // Since FixedInteger is i64, we can just check for
+                        // greater than size_of::<u32>() to know if we should just
+                        // cast the value to the type or check for the right size.
                         if size_of::<$ty>() > size_of::<u32>() {
                             Ok(i as $ty)
                         } else {
@@ -169,8 +172,12 @@ macro_rules! number_try_into_impl_integer {
                         }
                     }
                     Number::BigInteger(bigint) => {
+                        // BigInteger is simpler.
+                        // Since it is based off limbs, we can just check if it is
+                        // representable or not by checking if the BigInt fits the size.
                         if bigint <= $ty::MAX && bigint >= $ty::MIN {
                             let vec = bigint.into_twos_complement_limbs_asc();
+                            // I am not sure if this check is needed or not
                             if vec.len() == 0 {
                                 return Ok(0);
                             }
@@ -214,27 +221,29 @@ impl TryInto<u128> for Number {
             Number::BigInteger(bigint) => {
                 if bigint <= u128::MAX && bigint >= u128::MIN {
                     let vec = bigint.into_twos_complement_limbs_asc();
+                    // I am not sure if this check is needed or not
                     if vec.len() == 0 {
                         return Ok(0);
                     }
                     if vec.len() == 2 {
+                        // Two limbs are needed to form an u128
                         let le_bytes = [
-                            vec[0].to_ne_bytes()[0],
-                            vec[0].to_ne_bytes()[1],
-                            vec[0].to_ne_bytes()[2],
-                            vec[0].to_ne_bytes()[3],
-                            vec[0].to_ne_bytes()[4],
-                            vec[0].to_ne_bytes()[5],
-                            vec[0].to_ne_bytes()[6],
-                            vec[0].to_ne_bytes()[7],
-                            vec[1].to_ne_bytes()[0],
-                            vec[1].to_ne_bytes()[1],
-                            vec[1].to_ne_bytes()[2],
-                            vec[1].to_ne_bytes()[3],
-                            vec[1].to_ne_bytes()[4],
-                            vec[1].to_ne_bytes()[5],
-                            vec[1].to_ne_bytes()[6],
-                            vec[1].to_ne_bytes()[7],
+                            vec[0].to_le_bytes()[0],
+                            vec[0].to_le_bytes()[1],
+                            vec[0].to_le_bytes()[2],
+                            vec[0].to_le_bytes()[3],
+                            vec[0].to_le_bytes()[4],
+                            vec[0].to_le_bytes()[5],
+                            vec[0].to_le_bytes()[6],
+                            vec[0].to_le_bytes()[7],
+                            vec[1].to_le_bytes()[0],
+                            vec[1].to_le_bytes()[1],
+                            vec[1].to_le_bytes()[2],
+                            vec[1].to_le_bytes()[3],
+                            vec[1].to_le_bytes()[4],
+                            vec[1].to_le_bytes()[5],
+                            vec[1].to_le_bytes()[6],
+                            vec[1].to_le_bytes()[7],
                         ];
                         Ok(u128::from_le_bytes(le_bytes))
                     } else {
@@ -259,27 +268,29 @@ impl TryInto<i128> for Number {
             Number::BigInteger(bigint) => {
                 if bigint <= i128::MAX && bigint >= i128::MIN {
                     let vec = bigint.into_twos_complement_limbs_asc();
+                    // I am not sure if this check is needed or not
                     if vec.len() == 0 {
                         return Ok(0);
                     }
                     if vec.len() == 2 {
+                        // Two limbs are needed to form an u128
                         let le_bytes = [
-                            vec[0].to_ne_bytes()[0],
-                            vec[0].to_ne_bytes()[1],
-                            vec[0].to_ne_bytes()[2],
-                            vec[0].to_ne_bytes()[3],
-                            vec[0].to_ne_bytes()[4],
-                            vec[0].to_ne_bytes()[5],
-                            vec[0].to_ne_bytes()[6],
-                            vec[0].to_ne_bytes()[7],
-                            vec[1].to_ne_bytes()[0],
-                            vec[1].to_ne_bytes()[1],
-                            vec[1].to_ne_bytes()[2],
-                            vec[1].to_ne_bytes()[3],
-                            vec[1].to_ne_bytes()[4],
-                            vec[1].to_ne_bytes()[5],
-                            vec[1].to_ne_bytes()[6],
-                            vec[1].to_ne_bytes()[7],
+                            vec[0].to_le_bytes()[0],
+                            vec[0].to_le_bytes()[1],
+                            vec[0].to_le_bytes()[2],
+                            vec[0].to_le_bytes()[3],
+                            vec[0].to_le_bytes()[4],
+                            vec[0].to_le_bytes()[5],
+                            vec[0].to_le_bytes()[6],
+                            vec[0].to_le_bytes()[7],
+                            vec[1].to_le_bytes()[0],
+                            vec[1].to_le_bytes()[1],
+                            vec[1].to_le_bytes()[2],
+                            vec[1].to_le_bytes()[3],
+                            vec[1].to_le_bytes()[4],
+                            vec[1].to_le_bytes()[5],
+                            vec[1].to_le_bytes()[6],
+                            vec[1].to_le_bytes()[7],
                         ];
                         Ok(i128::from_le_bytes(le_bytes))
                     } else {
