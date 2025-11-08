@@ -15,7 +15,7 @@ use crate::{
     exceptions::Condition,
     gc::{Gc, GcInner, Trace},
     num::Number,
-    proc::{Application, FuncPtr, Parameters, ParametersInner, Procedure},
+    proc::{Application, FuncPtr, Parameters, Procedure},
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
@@ -381,7 +381,7 @@ pub(crate) unsafe extern "C" fn chain_protocols(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     args: *const Value,
-    params: *mut GcInner<ParametersInner>,
+    params: *const Parameters,
 ) -> *mut Application {
     unsafe {
         // env[0] is a vector of protocols
@@ -394,13 +394,15 @@ pub(crate) unsafe extern "C" fn chain_protocols(
         let remaining_protocols = protocols.split_off(1);
         let curr_protocol: Procedure = protocols[0].clone().try_into().unwrap();
 
+        let params = params.read();
+
         // If there are no more remaining protocols after the current, call the
         // protocol with arg[0] and the continuation.
         if remaining_protocols.is_empty() {
             return Box::into_raw(Box::new(Application::new(
                 curr_protocol,
                 vec![args.as_ref().unwrap().clone(), k.clone()],
-                Parameters::from_ptr(params),
+                params,
                 None,
             )));
         }
@@ -418,7 +420,7 @@ pub(crate) unsafe extern "C" fn chain_protocols(
         Box::into_raw(Box::new(Application::new(
             curr_protocol,
             vec![args.as_ref().unwrap().clone(), Value::from(new_k)],
-            Parameters::from_ptr(params),
+            params,
             None,
         )))
     }
@@ -594,7 +596,7 @@ pub(crate) unsafe extern "C" fn call_constructor_continuation(
     _runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     args: *const Value,
-    params: *mut GcInner<ParametersInner>,
+    params: *const Parameters,
 ) -> *mut Application {
     unsafe {
         let constructor: Procedure = args.as_ref().unwrap().clone().try_into().unwrap();
@@ -608,7 +610,7 @@ pub(crate) unsafe extern "C" fn call_constructor_continuation(
         Box::into_raw(Box::new(Application::new(
             constructor,
             args,
-            Parameters::from_ptr(params),
+            params.read(),
             None,
         )))
     }

@@ -6,7 +6,7 @@ use crate::{
     ast::ParseAstError,
     gc::{Gc, GcInner, Trace},
     lists,
-    proc::{Application, DynamicWind, FuncPtr, Parameters, ParametersInner, Procedure},
+    proc::{Application, DynamicWind, FuncPtr, Parameters, Procedure},
     records::{into_scheme_compatible, rtd, Record, RecordTypeDescriptor, SchemeCompatible},
     registry::bridge,
     runtime::{Runtime, RuntimeInner},
@@ -14,7 +14,7 @@ use crate::{
     syntax::{Identifier, Span, Syntax},
     value::{UnpackedValue, Value},
 };
-use std::{error::Error as StdError, fmt, ops::Range, ptr::null_mut, sync::Arc};
+use std::{error::Error as StdError, fmt, ops::Range, sync::Arc};
 
 #[derive(Debug, Clone, Trace)]
 pub struct Exception {
@@ -587,7 +587,7 @@ pub fn with_exception_handler(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    params: Parameters,
+    mut params: Parameters,
     k: Value,
 ) -> Result<Application, Condition> {
     let [handler, thunk] = args else {
@@ -597,21 +597,21 @@ pub fn with_exception_handler(
     let handler: Procedure = handler.clone().try_into()?;
     let thunk: Procedure = thunk.clone().try_into()?;
 
-    let exception_handler = params.exception_handler();
-    let dynamic_wind = params.0.read().dynamic_winders.clone();
+    // let exception_handler = params.exception_handler;
+    // let dynamic_wind = params.0.read().dynamic_winders.clone();
     
-    let exception_handler_inner = ExceptionHandlerInner {
-        prev_handler: exception_handler.clone(),
+    let exception_handler = ExceptionHandlerInner {
+        prev_handler: params.exception_handler.clone(),
         curr_handler: handler.clone(),
-        dynamic_extent: dynamic_wind.clone(),
+        dynamic_extent: params.dynamic_winders.clone(),
     };
 
-    let exception_handler = ExceptionHandler(Some(Gc::new(exception_handler_inner)));
+    params.exception_handler = ExceptionHandler(Some(Gc::new(exception_handler)));
 
     Ok(Application::new(
         thunk.clone(),
         vec![k],
-        Parameters::new(exception_handler,  dynamic_wind),
+        params,
         None,
     ))
 }
@@ -638,7 +638,7 @@ pub fn raise(
     raised: Value,
     params: Parameters,
 ) -> Application {
-    let exception_handler = params.exception_handler();
+    let exception_handler = params.exception_handler;
 
     let (parent_wind, handler, parent_handler) =
         if let Some(exception_handler) = exception_handler.0 {
@@ -656,7 +656,7 @@ pub fn raise(
             )
         };
 
-    let thunks = exit_winders(&params.0.read().dynamic_winders, &parent_wind);
+    let thunks = exit_winders(&params.dynamic_winders, &parent_wind);
     let calls = Procedure::new(
         runtime,
         vec![thunks, raised.clone(), handler],
@@ -673,12 +673,12 @@ pub fn raise(
 unsafe extern "C" fn raise_rt(
     runtime: *mut GcInner<RuntimeInner>,
     raised: i64,
-    params: *mut GcInner<ParametersInner>,
+    params: *const Parameters,
 ) -> *mut Application {
     unsafe {
         let runtime = Runtime::from_raw_inc_rc(runtime);
         let raised = Value::from_raw(raised as u64);
-        let params = Parameters::from_ptr(params);
+        let params = params.read();
         Box::into_raw(Box::new(raise(
             runtime,
             raised,
@@ -716,7 +716,7 @@ unsafe extern "C" fn call_exits_and_exception_handler_reraise(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     _args: *const Value,
-    params: *mut GcInner<ParametersInner>,
+    params: *const Parameters,
 ) -> *mut Application {
     unsafe {
         let runtime = Runtime::from_raw_inc_rc(runtime);
@@ -729,6 +729,8 @@ unsafe extern "C" fn call_exits_and_exception_handler_reraise(
 
         // env[2] is the next exception handler
         let curr_handler = env.add(2).as_ref().unwrap().clone();
+
+        let params = params.read();
 
         let app = match thunks.unpack() {
             UnpackedValue::Pair(pair) => {
@@ -745,7 +747,7 @@ unsafe extern "C" fn call_exits_and_exception_handler_reraise(
                 Application::new(
                     head_thunk,
                     vec![Value::from(k)],
-                    Parameters::from_ptr(params),
+                    params,
                     None,
                 )
             }
@@ -771,7 +773,7 @@ unsafe extern "C" fn call_exits_and_exception_handler_reraise(
                             None,
                         )),
                     ],
-                    Parameters::from_ptr(params),
+                    params,
                     None,
                 )
             }
@@ -786,7 +788,7 @@ unsafe extern "C" fn reraise_exception(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     _args: *const Value,
-    params: *mut GcInner<ParametersInner>
+    params: *const Parameters,
 ) -> *mut Application {
     unsafe {
         let runtime = Runtime(Gc::from_raw_inc_rc(runtime));
@@ -804,7 +806,7 @@ unsafe extern "C" fn reraise_exception(
                 None,
             ),
             vec![exception, Value::undefined()],
-            Parameters::from_ptr(params),
+            params.read(),
             None,
         )))
     }
@@ -829,7 +831,7 @@ pub fn raise_continuable(
         unreachable!();
     };
 
-    let Some(handler) = params.exception_handler().0 else {
+    let Some(handler) = &params.exception_handler.0 else {
         return Ok(Application::halt_err(condition.clone()));
     };
 

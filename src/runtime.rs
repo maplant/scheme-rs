@@ -8,7 +8,7 @@ use crate::{
     num,
     ports::Port,
     proc::{
-        Application, ContinuationPtr, FuncDebugInfo, FuncPtr, Parameters, ParametersInner,
+        Application, ContinuationPtr, FuncDebugInfo, FuncPtr, Parameters,
         Procedure, UserPtr,
     },
     registry::{ImportError, Library, Registry},
@@ -361,7 +361,7 @@ unsafe extern "C" fn apply(
     op: i64,
     args: *const i64,
     num_args: u32,
-    params: *mut GcInner<ParametersInner>,
+    params: *const Parameters,
     span: *const Span,
 ) -> *mut Application {
     unsafe {
@@ -375,13 +375,13 @@ unsafe extern "C" fn apply(
                 let raised = raise(
                     Runtime::from_raw_inc_rc(runtime),
                     Condition::invalid_operator(x.type_name()).into(),
-                    Parameters::from_ptr(params),
+                    params.read(),
                 );
                 return Box::into_raw(Box::new(raised));
             }
         };
 
-        let app = Application::new(op, args, Parameters::from_ptr(params), arc_from_ptr(span));
+        let app = Application::new(op, args, params.read(), arc_from_ptr(span));
 
         Box::into_raw(Box::new(app))
     }
@@ -393,7 +393,7 @@ unsafe extern "C" fn forward(
     runtime: *mut GcInner<RuntimeInner>,
     op: i64,
     args: i64,
-    params: *mut GcInner<ParametersInner>,
+    params: *const Parameters,
 ) -> *mut Application {
     unsafe {
         let op = match Value::from_raw_inc_rc(op as u64).unpack() {
@@ -402,7 +402,7 @@ unsafe extern "C" fn forward(
                 let raised = raise(
                     Runtime::from_raw_inc_rc(runtime),
                     Condition::invalid_operator(x.type_name()).into(),
-                    Parameters::from_ptr(params),
+                    params.read(),
                 );
                 return Box::into_raw(Box::new(raised));
             }
@@ -414,7 +414,7 @@ unsafe extern "C" fn forward(
         let mut flattened = Vec::new();
         list_to_vec(&args, &mut flattened);
 
-        let app = Application::new(op, flattened, Parameters::from_ptr(params), None);
+        let app = Application::new(op, flattened, params.read(), None);
 
         Box::into_raw(Box::new(app))
     }

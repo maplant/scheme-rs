@@ -4,7 +4,7 @@ use crate::{
     exceptions::Condition,
     gc::{Gc, GcInner, Trace},
     num::Number,
-    proc::{Application, Parameters, ParametersInner, Procedure},
+    proc::{Application, Parameters, Procedure},
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
     syntax::Syntax,
@@ -308,7 +308,7 @@ unsafe extern "C" fn map_k(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     args: *const Value,
-    params: *mut GcInner<ParametersInner>,
+    params: *const Parameters,
 ) -> *mut Application {
     unsafe {
         // TODO: Probably need to do this in a way that avoids mutable variables
@@ -331,6 +331,8 @@ unsafe extern "C" fn map_k(
 
         let mut args = Vec::new();
 
+        let params = params.read();
+
         // TODO: We need to collect a new list
         for input in inputs.write().iter_mut() {
             if input.type_of() == ValueType::Null {
@@ -339,7 +341,7 @@ unsafe extern "C" fn map_k(
                 let app = Application::new(
                     k,
                     vec![output],
-                    Parameters::from_ptr(params),
+                    params,
                     None,
                 );
                 return Box::into_raw(Box::new(app));
@@ -371,7 +373,7 @@ unsafe extern "C" fn map_k(
         let app = Application::new(
             mapper,
             args,
-            Parameters::from_ptr(params),
+            params,
             None,
         );
 
