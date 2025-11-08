@@ -7,9 +7,9 @@ use crate::{
     },
     cps::Compile,
     env::{Environment, Global, Keyword},
-    exceptions::{Condition, ExceptionHandler},
+    exceptions::Condition,
     gc::{Gc, Trace},
-    proc::{Application, DynamicWind, FuncDebugInfo, FuncPtr, Procedure, SyncBridgePtr},
+    proc::{Application, DynamicWind, FuncDebugInfo, FuncPtr, Parameters, Procedure, SyncBridgePtr},
     runtime::Runtime,
     symbols::Symbol,
     syntax::{Identifier, Syntax},
@@ -724,8 +724,7 @@ impl Library {
             Application::new(
                 proc,
                 Vec::new(),
-                ExceptionHandler::default(),
-                DynamicWind::default(),
+                Parameters::default(),
                 None,
             )
             .eval()

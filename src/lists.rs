@@ -1,14 +1,14 @@
 use indexmap::IndexMap;
 
 use crate::{
-    exceptions::{Condition, ExceptionHandler, ExceptionHandlerInner},
+    exceptions::Condition,
     gc::{Gc, GcInner, Trace},
     num::Number,
-    proc::{Application, DynamicWind, Procedure},
+    proc::{Application, Parameters, ParametersInner, Procedure},
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
     syntax::Syntax,
-    value::{EqvValue, UnpackedValue, Value, ValueType, write_value},
+    value::{write_value, EqvValue, UnpackedValue, Value, ValueType},
     vectors,
 };
 use std::fmt;
@@ -249,9 +249,8 @@ pub fn map(
     _env: &[Value],
     args: &[Value],
     list_n: &[Value],
-    cont: &Value,
-    exception_handler: &ExceptionHandler,
-    dynamic_wind: &DynamicWind,
+    params: Parameters,
+    k: Value,
 ) -> Result<Application, Condition> {
     let [mapper, list_1] = args else {
         unreachable!()
@@ -267,10 +266,9 @@ pub fn map(
         if input.type_of() == ValueType::Null {
             // TODO: Check if the rest are also empty and args is empty
             return Ok(Application::new(
-                cont.clone().try_into()?,
+                k.try_into()?,
                 vec![Value::null()],
-                exception_handler.clone(),
-                dynamic_wind.clone(),
+                params,
                 None,
             ));
         }
@@ -288,7 +286,7 @@ pub fn map(
             Value::from(Vec::<Value>::new()),
             Value::from(inputs),
             mapper.clone(),
-            cont.clone(),
+            k,
         ],
         crate::proc::FuncPtr::Continuation(map_k),
         1,
@@ -301,8 +299,7 @@ pub fn map(
     Ok(Application::new(
         mapper_proc,
         args,
-        exception_handler.clone(),
-        dynamic_wind.clone(),
+        params,
         None,
     ))
 }
@@ -311,8 +308,7 @@ unsafe extern "C" fn map_k(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandlerInner>,
-    dynamic_wind: *const DynamicWind,
+    params: *mut GcInner<ParametersInner>,
 ) -> *mut Application {
     unsafe {
         // TODO: Probably need to do this in a way that avoids mutable variables
@@ -343,8 +339,7 @@ unsafe extern "C" fn map_k(
                 let app = Application::new(
                     k,
                     vec![output],
-                    ExceptionHandler::from_ptr(exception_handler),
-                    dynamic_wind.as_ref().unwrap().clone(),
+                    Parameters::from_ptr(params),
                     None,
                 );
                 return Box::into_raw(Box::new(app));
@@ -376,8 +371,7 @@ unsafe extern "C" fn map_k(
         let app = Application::new(
             mapper,
             args,
-            ExceptionHandler::from_ptr(exception_handler),
-            dynamic_wind.as_ref().unwrap().clone(),
+            Parameters::from_ptr(params),
             None,
         );
 

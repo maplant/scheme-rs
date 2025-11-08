@@ -10,12 +10,11 @@ use scheme_rs::{
     env::Environment,
     exceptions::{Exception, ExceptionHandler},
     ports::{Port, ReadError},
-    proc::{Application, DynamicWind},
+    proc::{Application, DynamicWind, Parameters},
     registry::Library,
     runtime::Runtime,
     syntax::{
-        Syntax,
-        parse::{LexerError, ParseSyntaxError, Parser},
+        parse::{LexerError, ParseSyntaxError, Parser}, Syntax
     },
     value::Value,
 };
@@ -155,8 +154,7 @@ fn compile_and_run_str(
         Application::new(
             closure,
             Vec::new(),
-            ExceptionHandler::default(),
-            DynamicWind::default(),
+            Parameters::default(),
             None,
         )
         .eval()

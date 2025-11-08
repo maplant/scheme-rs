@@ -193,6 +193,12 @@ impl<T: Trace> From<T> for Gc<T> {
     }
 }
 
+impl<T: Trace + Default> Default for Gc<T> {
+    fn default() -> Self {
+        Gc::new(T::default())
+    }
+}
+
 impl<T: ?Sized> std::fmt::Display for Gc<T>
 where
     T: std::fmt::Display,

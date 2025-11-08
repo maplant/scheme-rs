@@ -68,6 +68,8 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
 
     let arg_indices: Vec<_> = (0..num_args).collect();
 
+    // let arg_idents: Vec<_> = (0..num_args).map(|i| format_ident!("a{i}")).collect();
+
     if bridge.sig.asyncness.is_some() {
         quote! {
             pub(crate) fn #wrapper_name<'a>(
@@ -75,9 +77,8 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 _env: &'a [::scheme_rs::value::Value],
                 args: &'a [::scheme_rs::value::Value],
                 rest_args: &'a [::scheme_rs::value::Value],
-                cont: &'a ::scheme_rs::value::Value,
-                exception_handler: &'a ::scheme_rs::exceptions::ExceptionHandler,
-                dynamic_wind: &'a ::scheme_rs::proc::DynamicWind,
+                params: ::scheme_rs::proc::Parameters,
+                k: ::scheme_rs::value::Value,
             ) -> futures::future::BoxFuture<'a, scheme_rs::proc::Application> {
                 #bridge
 
@@ -98,12 +99,11 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                             ),
                             Ok(result) => result,
                         };
-                        let cont = cont.clone().try_into().unwrap();
+                        let k = unsafe { k.try_into().unwrap_unchecked() };
                         ::scheme_rs::proc::Application::new(
-                            cont,
+                            k,
                             result,
-                            exception_handler.clone(),
-                            dynamic_wind.clone(),
+                            params,
                             None // TODO
                         )
                     }
@@ -134,9 +134,8 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 _env: &[::scheme_rs::value::Value],
                 args: &[::scheme_rs::value::Value],
                 rest_args: &[::scheme_rs::value::Value],
-                cont: &::scheme_rs::value::Value,
-                exception_handler: &::scheme_rs::exceptions::ExceptionHandler,
-                dynamic_wind: &::scheme_rs::proc::DynamicWind,
+                params: ::scheme_rs::proc::Parameters,
+                k: ::scheme_rs::value::Value,
             ) -> scheme_rs::proc::Application {
                 #bridge
 
@@ -151,18 +150,16 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                     Err(err) => return ::scheme_rs::exceptions::raise(
                         runtime.clone(),
                         err.into(),
-                        exception_handler.clone(),
-                        dynamic_wind,
+                        params,
                     ),
                     Ok(result) => result,
                 };
 
-                let cont = cont.clone().try_into().unwrap();
+                let k = unsafe { k.try_into().unwrap_unchecked() };
                 ::scheme_rs::proc::Application::new(
-                    cont,
+                    k,
                     result,
-                    exception_handler.clone(),
-                    dynamic_wind.clone(),
+                    params,
                     None // TODO
                 )
             }
@@ -295,9 +292,8 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 env: &'a [::scheme_rs::value::Value],
                 args: &'a [::scheme_rs::value::Value],
                 rest_args: &'a [::scheme_rs::value::Value],
-                cont: &'a ::scheme_rs::value::Value,
-                exception_handler: &'a ::scheme_rs::exceptions::ExceptionHandler,
-                dynamic_wind: &'a ::scheme_rs::proc::DynamicWind,
+                params: ::scheme_rs::proc::Parameters,
+                k: ::scheme_rs::value::Value,
             ) -> futures::future::BoxFuture<'a, scheme_rs::proc::Application> {
                 #bridge
 
@@ -307,16 +303,14 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                         env,
                         args,
                         rest_args,
-                        cont,
-                        exception_handler,
-                        dynamic_wind,
+                        params,
+                        k
                     ).await;
                     match result {
                         Err(err) => ::scheme_rs::exceptions::raise(
                             runtime.clone(),
                             err.into(),
-                            exception_handler.clone(),
-                            dynamic_wind,
+                            params
                         ),
                         Ok(result) => result,
                     }
@@ -332,9 +326,8 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 env: &[::scheme_rs::value::Value],
                 args: &[::scheme_rs::value::Value],
                 rest_args: &[::scheme_rs::value::Value],
-                cont: &::scheme_rs::value::Value,
-                exception_handler: &::scheme_rs::exceptions::ExceptionHandler,
-                dynamic_wind: &::scheme_rs::proc::DynamicWind,
+                params: ::scheme_rs::proc::Parameters,
+                k: ::scheme_rs::value::Value,
             ) -> scheme_rs::proc::Application {
                 #bridge
 
@@ -343,17 +336,15 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                     env,
                     args,
                     rest_args,
-                    cont,
-                    exception_handler,
-                    dynamic_wind,
+                    params.clone(),
+                    k
                 );
 
                 match result {
                     Err(err) => ::scheme_rs::exceptions::raise(
                         runtime.clone(),
                         err.into(),
-                        exception_handler.clone(),
-                        dynamic_wind,
+                        params,
                     ),
                     Ok(result) => result,
                 }

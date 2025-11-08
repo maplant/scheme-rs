@@ -3,7 +3,7 @@
 
 use crate::{
     env::Local,
-    exceptions::{Condition, Exception, ExceptionHandler, ExceptionHandlerInner, Frame, raise},
+    exceptions::{Condition, Exception, ExceptionHandler, Frame, raise},
     gc::{Gc, GcInner, Trace},
     lists::{self, Pair, list_to_vec},
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
@@ -21,8 +21,7 @@ pub(crate) type ContinuationPtr = unsafe extern "C" fn(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandlerInner>,
-    dynamic_wind: *const DynamicWind,
+    params: *mut GcInner<ParametersInner>,
 ) -> *mut Application;
 
 /// A function pointer to a generated user function.
@@ -30,20 +29,19 @@ pub(crate) type UserPtr = unsafe extern "C" fn(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandlerInner>,
-    dynamic_wind: *const DynamicWind,
-    cont: Value,
+    params: *mut GcInner<ParametersInner>,
+    k: Value,
 ) -> *mut Application;
 
 /// A function pointer to a sync Rust bridge function.
 pub type SyncBridgePtr = for<'a> fn(
     runtime: &'a Runtime,
     env: &'a [Value],
+    // TODO: Make this a Vec
     args: &'a [Value],
     rest_args: &'a [Value],
-    cont: &'a Value,
-    exception_handler: &'a ExceptionHandler,
-    dynamic_wind: &'a DynamicWind,
+    params: Parameters,
+    k: Value,
 ) -> Application;
 
 /// A function pointer to an async Rust bridge function.
@@ -53,9 +51,8 @@ pub type AsyncBridgePtr = for<'a> fn(
     env: &'a [Value],
     args: &'a [Value],
     rest_args: &'a [Value],
-    cont: &'a Value,
-    exception_handler: &'a ExceptionHandler,
-    dynamic_wind: &'a DynamicWind,
+    params: Parameters,
+    k: Value,
 ) -> futures::future::BoxFuture<'a, Application>;
 
 #[derive(Copy, Clone, Debug)]
@@ -127,8 +124,7 @@ impl ProcedureInner {
     pub(crate) fn prepare_args(
         &self,
         mut args: Vec<Value>,
-        exception_handler: &ExceptionHandler,
-        dynamic_wind: &DynamicWind,
+        params: &Parameters,
     ) -> Result<(Vec<Value>, Option<Value>), Application> {
         // Extract the continuation, if it is required
         let cont = (!matches!(self.func, FuncPtr::Continuation(_))).then(|| args.pop().unwrap());
@@ -138,8 +134,7 @@ impl ProcedureInner {
             return Err(raise(
                 self.runtime.clone(),
                 Condition::wrong_num_of_args(self.num_required_args, args.len()).into(),
-                exception_handler.clone(),
-                dynamic_wind,
+                params.clone(),
             ));
         }
 
@@ -147,8 +142,7 @@ impl ProcedureInner {
             return Err(raise(
                 self.runtime.clone(),
                 Condition::wrong_num_of_args(self.num_required_args, args.len()).into(),
-                exception_handler.clone(),
-                dynamic_wind,
+                params.clone(),
             ));
         }
 
@@ -160,9 +154,8 @@ impl ProcedureInner {
         &self,
         func: AsyncBridgePtr,
         args: &[Value],
-        cont: Value,
-        exception_handler: &ExceptionHandler,
-        dynamic_wind: &DynamicWind,
+        params: Parameters,
+        k: Value,
     ) -> Application {
         let (args, rest_args) = if self.variadic {
             args.split_at(self.num_required_args)
@@ -186,9 +179,8 @@ impl ProcedureInner {
         &self,
         func: SyncBridgePtr,
         args: &[Value],
-        cont: Value,
-        exception_handler: &ExceptionHandler,
-        dynamic_wind: &DynamicWind,
+        params: Parameters,
+        k: Value,
     ) -> Application {
         let (args, rest_args) = if self.variadic {
             args.split_at(self.num_required_args)
@@ -196,24 +188,15 @@ impl ProcedureInner {
             (args, &[] as &[Value])
         };
 
-        (func)(
-            &self.runtime,
-            &self.env,
-            args,
-            rest_args,
-            &cont,
-            exception_handler,
-            dynamic_wind,
-        )
+        (func)(&self.runtime, &self.env, args, rest_args, params, k)
     }
 
     fn apply_jit(
         &self,
         func: JitFuncPtr,
         mut args: Vec<Value>,
-        cont: Option<Value>,
-        exception_handler: &ExceptionHandler,
-        dynamic_wind: &DynamicWind,
+        params: Parameters,
+        k: Option<Value>,
     ) -> Application {
         if self.variadic {
             let mut rest_args = Value::null();
@@ -230,8 +213,7 @@ impl ProcedureInner {
                     Gc::as_ptr(&self.runtime.0),
                     self.env.as_ptr(),
                     args.as_ptr(),
-                    exception_handler.as_ptr(),
-                    dynamic_wind as *const DynamicWind,
+                    params.as_ptr(),
                 )
             },
             JitFuncPtr::User(sync_fn) => unsafe {
@@ -239,9 +221,8 @@ impl ProcedureInner {
                     Gc::as_ptr(&self.runtime.0),
                     self.env.as_ptr(),
                     args.as_ptr(),
-                    exception_handler.as_ptr(),
-                    dynamic_wind as *const DynamicWind,
-                    Value::from_raw(Value::as_raw(cont.as_ref().unwrap())),
+                    params.as_ptr(),
+                    Value::from_raw(Value::as_raw(k.as_ref().unwrap())),
                 )
             },
         };
@@ -250,38 +231,21 @@ impl ProcedureInner {
     }
 
     #[maybe_async]
-    pub fn apply(
-        &self,
-        args: Vec<Value>,
-        exception_handler: &ExceptionHandler,
-        dynamic_wind: &DynamicWind,
-    ) -> Application {
-        let (args, k) = match self.prepare_args(args, exception_handler, dynamic_wind) {
+    pub fn apply(&self, args: Vec<Value>, params: Parameters) -> Application {
+        let (args, k) = match self.prepare_args(args, &params) {
             Ok(args) => args,
             Err(raised) => return raised,
         };
 
         match self.func {
-            FuncPtr::Continuation(cont) => self.apply_jit(
-                JitFuncPtr::Continuation(cont),
-                args,
-                k,
-                exception_handler,
-                dynamic_wind,
-            ),
-            FuncPtr::User(user) => self.apply_jit(
-                JitFuncPtr::User(user),
-                args,
-                k,
-                exception_handler,
-                dynamic_wind,
-            ),
-            FuncPtr::Bridge(sbridge) => {
-                self.apply_sync_bridge(sbridge, &args, k.unwrap(), exception_handler, dynamic_wind)
+            FuncPtr::Continuation(cont) => {
+                self.apply_jit(JitFuncPtr::Continuation(cont), args, params, k)
             }
+            FuncPtr::User(user) => self.apply_jit(JitFuncPtr::User(user), args, params, k),
+            FuncPtr::Bridge(sbridge) => self.apply_sync_bridge(sbridge, &args, params, k.unwrap()),
             #[cfg(feature = "async")]
             FuncPtr::AsyncBridge(abridge) => {
-                self.apply_async_bridge(abridge, &args, k.unwrap(), exception_handler, dynamic_wind)
+                self.apply_async_bridge(abridge, &args, params, k.unwrap())
                     .await
             }
         }
@@ -329,8 +293,7 @@ impl Procedure {
             _runtime: *mut GcInner<RuntimeInner>,
             _env: *const Value,
             args: *const Value,
-            _exception_handler: *mut GcInner<ExceptionHandlerInner>,
-            _dynamic_wind: *const DynamicWind,
+            _params: *mut GcInner<ParametersInner>,
         ) -> *mut Application {
             unsafe { crate::runtime::halt(Value::into_raw(args.read()) as i64) }
         }
@@ -348,16 +311,7 @@ impl Procedure {
             None,
         )))));
 
-        maybe_await!(
-            Application::new(
-                self.clone(),
-                args,
-                ExceptionHandler::default(),
-                DynamicWind::default(),
-                None,
-            )
-            .eval()
-        )
+        maybe_await!(Application::new(self.clone(), args, Parameters::default(), None,).eval())
     }
 }
 
@@ -412,10 +366,8 @@ pub struct Application {
     op: OpType,
     /// The arguments being applied to the operator.
     args: Vec<Value>,
-    /// The current exception handler to be passed to the operator.
-    exception_handler: ExceptionHandler,
-    /// The dynamic extend of the application.
-    dynamic_wind: DynamicWind,
+    /// Dynamic parameters
+    params: Parameters,
     /// The call site of this application, if it exists.
     call_site: Option<Arc<Span>>,
 }
@@ -424,16 +376,14 @@ impl Application {
     pub fn new(
         op: Procedure,
         args: Vec<Value>,
-        exception_handler: ExceptionHandler,
-        dynamic_wind: DynamicWind,
+        params: Parameters,
         call_site: Option<Arc<Span>>,
     ) -> Self {
         Self {
             // We really gotta figure out how to deal with this better
             op: OpType::Proc(op),
             args,
-            exception_handler,
-            dynamic_wind,
+            params,
             call_site,
         }
     }
@@ -442,8 +392,7 @@ impl Application {
         Self {
             op: OpType::HaltOk,
             args,
-            exception_handler: ExceptionHandler::default(),
-            dynamic_wind: DynamicWind::default(),
+            params: Parameters::default(),
             call_site: None,
         }
     }
@@ -452,8 +401,7 @@ impl Application {
         Self {
             op: OpType::HaltErr,
             args: vec![arg],
-            exception_handler: ExceptionHandler::default(),
-            dynamic_wind: DynamicWind::default(),
+            params: Parameters::default(),
             call_site: None,
         }
     }
@@ -477,9 +425,49 @@ impl Application {
             };
             let op = { op.0.read().as_ref().clone() };
             stack_trace.collect_application(op.debug_info.clone(), self.call_site);
-            self = maybe_await!(op.apply(self.args, &self.exception_handler, &self.dynamic_wind));
+            self = maybe_await!(op.apply(self.args, self.params));
         }
     }
+}
+
+/// Parameters passed through the dynamic extent of the functions
+#[derive(Clone, Default)]
+pub struct Parameters(pub(crate) Gc<ParametersInner>);
+
+impl Parameters {
+    pub(crate) fn new(exception_handler: ExceptionHandler, dynamic_winders: DynamicWind) -> Self {
+        Self(Gc::new(ParametersInner {
+            exception_handler,
+            dynamic_winders,
+        }))
+    }
+
+    /// # Safety
+    /// `ptr` must point to a valid Gc'd object.
+    pub(crate) unsafe fn from_ptr(ptr: *mut GcInner<ParametersInner>) -> Self {
+        Self(unsafe { Gc::from_raw_inc_rc(ptr) })
+    }
+
+    pub(crate) fn as_ptr(&self) -> *mut GcInner<ParametersInner> {
+        Gc::as_ptr(&self.0)
+    }
+
+    pub(crate) fn exception_handler(&self) -> ExceptionHandler {
+        self.0.read().exception_handler.clone()
+    }
+
+    // TODO: have this return a ref to the dynamic winders
+    /*
+    pub(crate) fn dynamic_winders(&self) -> DynamicWind {
+        self.0.read().dynamic_winders.clone()
+    }
+    */
+}
+
+#[derive(Trace, Default)]
+pub(crate) struct ParametersInner {
+    pub(crate) exception_handler: ExceptionHandler,
+    pub(crate) dynamic_winders: DynamicWind,
 }
 
 #[derive(Default)]
@@ -568,9 +556,8 @@ pub fn apply(
     _env: &[Value],
     args: &[Value],
     rest_args: &[Value],
-    cont: &Value,
-    exception_handler: &ExceptionHandler,
-    dynamic_wind: &DynamicWind,
+    params: Parameters,
+    k: Value,
 ) -> Result<Application, Condition> {
     if rest_args.is_empty() {
         return Err(Condition::wrong_num_of_args(2, args.len()));
@@ -579,14 +566,8 @@ pub fn apply(
     let (last, args) = rest_args.split_last().unwrap();
     let mut args = args.to_vec();
     list_to_vec(last, &mut args);
-    args.push(cont.clone());
-    Ok(Application::new(
-        op.clone(),
-        args,
-        exception_handler.clone(),
-        dynamic_wind.clone(),
-        None,
-    ))
+    args.push(k);
+    Ok(Application::new(op.clone(), args, params, None))
 }
 
 #[cps_bridge(
@@ -599,37 +580,32 @@ pub fn call_with_current_continuation(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    cont: &Value,
-    exception_handler: &ExceptionHandler,
-    dynamic_wind: &DynamicWind,
+    params: Parameters,
+    k: Value,
 ) -> Result<Application, Condition> {
     let [proc] = args else { unreachable!() };
     let proc: Procedure = proc.clone().try_into()?;
 
     let (req_args, variadic) = {
-        let cont: Procedure = cont.clone().try_into()?;
-        let cont_read = cont.0.read();
-        (cont_read.num_required_args, cont_read.variadic)
+        let k: Procedure = k.clone().try_into()?;
+        let k_read = k.0.read();
+        (k_read.num_required_args, k_read.variadic)
     };
 
-    let dynamic_wind_value = Value::from(Record::from_rust_type(dynamic_wind.clone()));
+    let dynamic_wind_value = Value::from(Record::from_rust_type(
+        params.0.read().dynamic_winders.clone(),
+    ));
 
     let escape_procedure = Procedure::new(
         runtime.clone(),
-        vec![cont.clone(), dynamic_wind_value],
+        vec![k.clone(), dynamic_wind_value],
         FuncPtr::Bridge(escape_procedure),
         req_args,
         variadic,
         None,
     );
 
-    let app = Application::new(
-        proc,
-        vec![Value::from(escape_procedure), cont.clone()],
-        exception_handler.clone(),
-        dynamic_wind.clone(),
-        None,
-    );
+    let app = Application::new(proc, vec![Value::from(escape_procedure), k], params, None);
 
     Ok(app)
 }
@@ -642,41 +618,40 @@ fn escape_procedure(
     env: &[Value],
     args: &[Value],
     rest_args: &[Value],
-    _cont: &Value,
-    exception_handler: &ExceptionHandler,
-    from_extent: &DynamicWind,
+    params: Parameters,
+    _k: Value,
 ) -> Result<Application, Condition> {
     // env[0] is the continuation
-    let cont = env[0].clone();
+    let k = env[0].clone();
     // env[1] is the dynamic extend of the continuation
     let to_extent = env[1].clone();
     let to_extent = to_extent.try_into_rust_type::<DynamicWind>()?;
 
-    let thunks = entry_winders(from_extent, &to_extent.read());
+    let thunks = entry_winders(&params.0.read().dynamic_winders, &to_extent.read());
 
     // Clone the continuation
-    let cont_ref = cont.unpacked_ref();
-    let cont = maybe_clone_continuation(
-        &cont_ref,
+    let k_ref = k.unpacked_ref();
+    let k = maybe_clone_continuation(
+        &k_ref,
         &mut StackClone::default(),
         &mut StackClone::default(),
     )
-    .unwrap_or_else(|| cont.clone());
-    let cont: Procedure = cont.try_into().unwrap();
+    .unwrap_or_else(|| k.clone());
+    let k: Procedure = k.try_into().unwrap();
 
     let args = args.iter().chain(rest_args).cloned().collect::<Vec<_>>();
 
-    let cont = if thunks.is_null() {
-        cont
+    let k = if thunks.is_null() {
+        k
     } else {
         let (req_args, variadic) = {
-            let cont_read = cont.0.read();
-            (cont_read.num_required_args, cont_read.variadic)
+            let k_read = k.0.read();
+            (k_read.num_required_args, k_read.variadic)
         };
 
         Procedure::new(
             runtime.clone(),
-            vec![thunks, Value::from(cont)],
+            vec![thunks, Value::from(k)],
             FuncPtr::Continuation(call_thunks),
             req_args,
             variadic,
@@ -684,13 +659,7 @@ fn escape_procedure(
         )
     };
 
-    let app = Application::new(
-        cont,
-        args,
-        exception_handler.clone(),
-        from_extent.clone(),
-        None,
-    );
+    let app = Application::new(k, args, params, None);
 
     Ok(app)
 }
@@ -858,8 +827,7 @@ pub(crate) unsafe extern "C" fn call_thunks(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandlerInner>,
-    dynamic_wind: *const DynamicWind,
+    params: *mut GcInner<ParametersInner>,
 ) -> *mut Application {
     unsafe {
         // env[0] are the thunks:
@@ -900,13 +868,7 @@ pub(crate) unsafe extern "C" fn call_thunks(
             None,
         );
 
-        let app = Application::new(
-            thunks,
-            Vec::new(),
-            ExceptionHandler::from_ptr(exception_handler),
-            dynamic_wind.as_ref().unwrap().clone(),
-            None,
-        );
+        let app = Application::new(thunks, Vec::new(), Parameters::from_ptr(params), None);
 
         Box::into_raw(Box::new(app))
     }
@@ -916,8 +878,7 @@ unsafe extern "C" fn call_thunks_pass_args(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     _args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandlerInner>,
-    dynamic_wind: *const DynamicWind,
+    params: *mut GcInner<ParametersInner>,
 ) -> *mut Application {
     unsafe {
         // env[0] are the thunks:
@@ -945,8 +906,7 @@ unsafe extern "C" fn call_thunks_pass_args(
                 Application::new(
                     head_thunk.clone(),
                     vec![Value::from(cont)],
-                    ExceptionHandler::from_ptr(exception_handler),
-                    dynamic_wind.as_ref().unwrap().clone(),
+                    Parameters::from_ptr(params),
                     None,
                 )
             }
@@ -956,8 +916,7 @@ unsafe extern "C" fn call_thunks_pass_args(
                 Application::new(
                     k.try_into().unwrap(),
                     collected_args,
-                    ExceptionHandler::from_ptr(exception_handler),
-                    dynamic_wind.as_ref().unwrap().clone(),
+                    Parameters::from_ptr(params),
                     None,
                 )
             }
@@ -972,8 +931,7 @@ unsafe extern "C" fn call_consumer_with_values(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandlerInner>,
-    dynamic_wind: *const DynamicWind,
+    params: *mut GcInner<ParametersInner>,
 ) -> *mut Application {
     unsafe {
         // env[0] is the consumer
@@ -985,8 +943,7 @@ unsafe extern "C" fn call_consumer_with_values(
                 let raised = raise(
                     Runtime::from_raw_inc_rc(runtime),
                     Condition::invalid_operator(type_name).into(),
-                    ExceptionHandler::from_ptr(exception_handler),
-                    dynamic_wind.as_ref().unwrap(),
+                    Parameters::from_ptr(params),
                 );
                 return Box::into_raw(Box::new(raised));
             }
@@ -1017,8 +974,7 @@ unsafe extern "C" fn call_consumer_with_values(
         Box::into_raw(Box::new(Application::new(
             consumer.clone(),
             collected_args,
-            ExceptionHandler::from_ptr(exception_handler),
-            dynamic_wind.as_ref().unwrap().clone(),
+            Parameters::from_ptr(params),
             None,
         )))
     }
@@ -1034,9 +990,8 @@ pub fn call_with_values(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    cont: &Value,
-    exception_handler: &ExceptionHandler,
-    dynamic_wind: &DynamicWind,
+    params: Parameters,
+    k: Value,
 ) -> Result<Application, Condition> {
     let [producer, consumer] = args else {
         return Err(Condition::wrong_num_of_args(2, args.len()));
@@ -1053,7 +1008,7 @@ pub fn call_with_values(
 
     let call_consumer_closure = Procedure::new(
         runtime.clone(),
-        vec![Value::from(consumer), cont.clone()],
+        vec![Value::from(consumer), k],
         FuncPtr::Continuation(call_consumer_with_values),
         num_required_args,
         variadic,
@@ -1063,8 +1018,7 @@ pub fn call_with_values(
     Ok(Application::new(
         producer,
         vec![Value::from(call_consumer_closure)],
-        exception_handler.clone(),
-        dynamic_wind.clone(),
+        params,
         None,
     ))
 }
@@ -1090,9 +1044,8 @@ pub fn dynamic_wind(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    cont: &Value,
-    exception_handler: &ExceptionHandler,
-    dynamic_wind: &DynamicWind,
+    params: Parameters,
+    k: Value,
 ) -> Result<Application, Condition> {
     let [in_thunk_val, body_thunk_val, out_thunk_val] = args else {
         return Err(Condition::wrong_num_of_args(3, args.len()));
@@ -1107,7 +1060,7 @@ pub fn dynamic_wind(
             in_thunk_val.clone(),
             body_thunk_val.clone(),
             out_thunk_val.clone(),
-            cont.clone(),
+            k,
         ],
         FuncPtr::Continuation(call_body_thunk),
         0,
@@ -1118,8 +1071,7 @@ pub fn dynamic_wind(
     Ok(Application::new(
         in_thunk,
         vec![Value::from(call_body_thunk_cont)],
-        exception_handler.clone(),
-        dynamic_wind.clone(),
+        params,
         None,
     ))
 }
@@ -1128,8 +1080,7 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     _args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandlerInner>,
-    dynamic_wind: *const DynamicWind,
+    params: *mut GcInner<ParametersInner>,
 ) -> *mut Application {
     unsafe {
         // env[0] is the in thunk
@@ -1144,7 +1095,9 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
         // env[3] is k, the continuation
         let k = env.add(3).as_ref().unwrap().clone();
 
-        let mut new_extent = dynamic_wind.as_ref().unwrap().clone();
+        let params = Parameters::from_ptr(params);
+
+        let mut new_extent = params.0.read().dynamic_winders.clone();
         new_extent.winders.push((
             in_thunk.clone().try_into().unwrap(),
             out_thunk.clone().try_into().unwrap(),
@@ -1162,8 +1115,7 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
         let app = Application::new(
             body_thunk,
             vec![Value::from(cont)],
-            ExceptionHandler::from_ptr(exception_handler),
-            new_extent,
+            Parameters::new(params.exception_handler(), new_extent),
             None,
         );
 
@@ -1175,8 +1127,7 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandlerInner>,
-    dynamic_wind: *const DynamicWind,
+    params: *mut GcInner<ParametersInner>,
 ) -> *mut Application {
     unsafe {
         // env[0] is the out thunk
@@ -1188,7 +1139,9 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
         // args[0] is the result of the body thunk
         let body_thunk_res = args.as_ref().unwrap().clone();
 
-        let mut new_extent = dynamic_wind.as_ref().unwrap().clone();
+        let params = Parameters::from_ptr(params);
+
+        let mut new_extent = params.0.read().dynamic_winders.clone();
         new_extent.winders.pop();
 
         let cont = Procedure(Gc::new(ProcedureInner::new(
@@ -1203,8 +1156,7 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
         let app = Application::new(
             out_thunk,
             vec![Value::from(cont)],
-            ExceptionHandler::from_ptr(exception_handler),
-            new_extent,
+            Parameters::new(params.exception_handler(), new_extent),
             None,
         );
 
@@ -1216,8 +1168,7 @@ unsafe extern "C" fn forward_body_thunk_result(
     _runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     _args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandlerInner>,
-    dynamic_wind: *const DynamicWind,
+    params: *mut GcInner<ParametersInner>,
 ) -> *mut Application {
     unsafe {
         // env[0] is the result of the body thunk
@@ -1228,13 +1179,7 @@ unsafe extern "C" fn forward_body_thunk_result(
         let mut args = Vec::new();
         list_to_vec(&body_thunk_res, &mut args);
 
-        let app = Application::new(
-            k,
-            args,
-            ExceptionHandler::from_ptr(exception_handler),
-            dynamic_wind.as_ref().unwrap().clone(),
-            None,
-        );
+        let app = Application::new(k, args, Parameters::from_ptr(params), None);
 
         Box::into_raw(Box::new(app))
     }
