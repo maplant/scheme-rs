@@ -155,18 +155,25 @@ macro_rules! number_try_into_impl_integer {
             fn try_into(self) -> Result<$ty, Self::Error> {
                 match self {
                     Number::FixedInteger(i) => {
-                        if i <= $ty::MAX as i64 && i >= $ty::MIN as i64 {
+                        if size_of::<$ty>() > size_of::<u32>() {
                             Ok(i as $ty)
                         } else {
-                            Err(Condition::not_representable(
-                                &format!("{i}"),
-                                stringify!($ty),
-                            ))
+                            if i <= $ty::MAX as i64 && i >= $ty::MIN as i64 {
+                                Ok(i as $ty)
+                            } else {
+                                Err(Condition::not_representable(
+                                    &format!("{i}"),
+                                    stringify!($ty),
+                                ))
+                            }
                         }
                     }
                     Number::BigInteger(bigint) => {
                         if bigint <= $ty::MAX && bigint >= $ty::MIN {
                             let vec = bigint.into_twos_complement_limbs_asc();
+                            if vec.len() == 0 {
+                                return Ok(0);
+                            }
                             Ok(vec[0] as $ty)
                         } else {
                             Err(Condition::not_representable(
@@ -192,14 +199,102 @@ number_try_into_impl_integer!(u8);
 number_try_into_impl_integer!(u16);
 number_try_into_impl_integer!(u32);
 number_try_into_impl_integer!(u64);
-number_try_into_impl_integer!(u128);
 number_try_into_impl_integer!(usize);
 number_try_into_impl_integer!(i8);
 number_try_into_impl_integer!(i16);
 number_try_into_impl_integer!(i32);
 number_try_into_impl_integer!(i64);
-number_try_into_impl_integer!(i128);
 number_try_into_impl_integer!(isize);
+
+impl TryInto<u128> for Number {
+    type Error = Condition;
+    fn try_into(self) -> Result<u128, Self::Error> {
+        match self {
+            Number::FixedInteger(i) => Ok(i as u128),
+            Number::BigInteger(bigint) => {
+                if bigint <= u128::MAX && bigint >= u128::MIN {
+                    let vec = bigint.into_twos_complement_limbs_asc();
+                    if vec.len() == 0 {
+                        return Ok(0);
+                    }
+                    if vec.len() == 2 {
+                        let le_bytes = [
+                            vec[0].to_ne_bytes()[0],
+                            vec[0].to_ne_bytes()[1],
+                            vec[0].to_ne_bytes()[2],
+                            vec[0].to_ne_bytes()[3],
+                            vec[0].to_ne_bytes()[4],
+                            vec[0].to_ne_bytes()[5],
+                            vec[0].to_ne_bytes()[6],
+                            vec[0].to_ne_bytes()[7],
+                            vec[1].to_ne_bytes()[0],
+                            vec[1].to_ne_bytes()[1],
+                            vec[1].to_ne_bytes()[2],
+                            vec[1].to_ne_bytes()[3],
+                            vec[1].to_ne_bytes()[4],
+                            vec[1].to_ne_bytes()[5],
+                            vec[1].to_ne_bytes()[6],
+                            vec[1].to_ne_bytes()[7],
+                        ];
+                        Ok(u128::from_le_bytes(le_bytes))
+                    } else {
+                        Ok(vec[0] as u128)
+                    }
+                } else {
+                    Err(Condition::not_representable(&format!("{bigint}"), "u128"))
+                }
+            }
+            Number::Rational(_) => Err(Condition::conversion_error("u128", "Rational")),
+            Number::Real(_) => Err(Condition::conversion_error("u128", "Real")),
+            Number::Complex(_) => Err(Condition::conversion_error("u128", "Complex")),
+        }
+    }
+}
+
+impl TryInto<i128> for Number {
+    type Error = Condition;
+    fn try_into(self) -> Result<i128, Self::Error> {
+        match self {
+            Number::FixedInteger(i) => Ok(i as i128),
+            Number::BigInteger(bigint) => {
+                if bigint <= i128::MAX && bigint >= i128::MIN {
+                    let vec = bigint.into_twos_complement_limbs_asc();
+                    if vec.len() == 0 {
+                        return Ok(0);
+                    }
+                    if vec.len() == 2 {
+                        let le_bytes = [
+                            vec[0].to_ne_bytes()[0],
+                            vec[0].to_ne_bytes()[1],
+                            vec[0].to_ne_bytes()[2],
+                            vec[0].to_ne_bytes()[3],
+                            vec[0].to_ne_bytes()[4],
+                            vec[0].to_ne_bytes()[5],
+                            vec[0].to_ne_bytes()[6],
+                            vec[0].to_ne_bytes()[7],
+                            vec[1].to_ne_bytes()[0],
+                            vec[1].to_ne_bytes()[1],
+                            vec[1].to_ne_bytes()[2],
+                            vec[1].to_ne_bytes()[3],
+                            vec[1].to_ne_bytes()[4],
+                            vec[1].to_ne_bytes()[5],
+                            vec[1].to_ne_bytes()[6],
+                            vec[1].to_ne_bytes()[7],
+                        ];
+                        Ok(i128::from_le_bytes(le_bytes))
+                    } else {
+                        Ok(vec[0] as i128)
+                    }
+                } else {
+                    Err(Condition::not_representable(&format!("{bigint}"), "i128"))
+                }
+            }
+            Number::Rational(_) => Err(Condition::conversion_error("i128", "Rational")),
+            Number::Real(_) => Err(Condition::conversion_error("i128", "Real")),
+            Number::Complex(_) => Err(Condition::conversion_error("i128", "Complex")),
+        }
+    }
+}
 
 impl TryInto<Integer> for Number {
     type Error = Condition;
