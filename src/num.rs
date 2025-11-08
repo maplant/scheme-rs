@@ -158,7 +158,10 @@ macro_rules! number_try_into_impl_integer {
                         if i <= $ty::MAX as i64 && i >= $ty::MIN as i64 {
                             Ok(i as $ty)
                         } else {
-                            Err(Condition::not_representable(&format!("{i}"), stringify!($ty)))
+                            Err(Condition::not_representable(
+                                &format!("{i}"),
+                                stringify!($ty),
+                            ))
                         }
                     }
                     Number::BigInteger(bigint) => {
@@ -166,15 +169,16 @@ macro_rules! number_try_into_impl_integer {
                             let vec = bigint.into_twos_complement_limbs_asc();
                             Ok(vec[0] as $ty)
                         } else {
-                            Err(Condition::not_representable(&format!("{bigint}"), stringify!($ty)))
+                            Err(Condition::not_representable(
+                                &format!("{bigint}"),
+                                stringify!($ty),
+                            ))
                         }
                     }
                     Number::Rational(_) => {
                         Err(Condition::conversion_error(stringify!($ty), "Rational"))
                     }
-                    Number::Real(_) => {
-                        Err(Condition::conversion_error(stringify!($ty), "Real"))
-                    }
+                    Number::Real(_) => Err(Condition::conversion_error(stringify!($ty), "Real")),
                     Number::Complex(_) => {
                         Err(Condition::conversion_error(stringify!($ty), "Complex"))
                     }
@@ -201,21 +205,11 @@ impl TryInto<Integer> for Number {
     type Error = Condition;
     fn try_into(self) -> Result<Integer, Self::Error> {
         match self {
-            Number::FixedInteger(i) => {
-                Ok(Integer::from(i))
-            }
-            Number::BigInteger(i) => {
-                Ok(i)
-            }
-            Number::Rational(_) => {
-                Err(Condition::conversion_error("Integer", "Rational"))
-            }
-            Number::Real(_) => {
-                Err(Condition::conversion_error("Integer", "Real"))
-            }
-            Number::Complex(_) => {
-                Err(Condition::conversion_error("Integer", "Complex"))
-            }
+            Number::FixedInteger(i) => Ok(Integer::from(i)),
+            Number::BigInteger(i) => Ok(i),
+            Number::Rational(_) => Err(Condition::conversion_error("Integer", "Rational")),
+            Number::Real(_) => Err(Condition::conversion_error("Integer", "Real")),
+            Number::Complex(_) => Err(Condition::conversion_error("Integer", "Complex")),
         }
     }
 }
@@ -226,19 +220,17 @@ impl TryInto<f64> for Number {
         match self {
             Number::FixedInteger(i) => Ok(i as f64),
             Number::Real(r) => Ok(r),
-            Number::Complex(_) => {
-                Err(Condition::conversion_error("f64", "Complex"))
-            }
+            Number::Complex(_) => Err(Condition::conversion_error("f64", "Complex")),
             Number::Rational(r) => {
-                if let Some((float, _, _)) = r.sci_mantissa_and_exponent_round_ref(RoundingMode::Nearest) {
+                if let Some((float, _, _)) =
+                    r.sci_mantissa_and_exponent_round_ref(RoundingMode::Nearest)
+                {
                     Ok(float)
                 } else {
                     Err(Condition::not_representable(&format!("{r}"), "f64"))
                 }
             }
-            Number::BigInteger(_) => {
-                Err(Condition::conversion_error("f64", "BigInteger"))
-            }
+            Number::BigInteger(_) => Err(Condition::conversion_error("f64", "BigInteger")),
         }
     }
 }
@@ -248,12 +240,8 @@ impl TryInto<Complex64> for Number {
     fn try_into(self) -> Result<Complex64, Self::Error> {
         match self {
             Number::Complex(c) => Ok(c),
-            Number::Rational(_) => {
-                Err(Condition::conversion_error("Complex", "Rational"))
-            }
-            Number::BigInteger(_) => {
-                Err(Condition::conversion_error("Complex", "BigInteger"))
-            }
+            Number::Rational(_) => Err(Condition::conversion_error("Complex", "Rational")),
+            Number::BigInteger(_) => Err(Condition::conversion_error("Complex", "BigInteger")),
             Number::Real(r) => {
                 let Some(c) = Complex64::from_f64(r) else {
                     return Err(Condition::not_representable(&format!("{r}"), "Real"));

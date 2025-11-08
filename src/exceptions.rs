@@ -163,32 +163,27 @@ impl Condition {
             )),
         )))
     }
-    
+
     /// For when we cannot convert a value into the requested type.
-    /// 
+    ///
     /// Example: Integer to a Complex
     pub fn conversion_error(expected: &str, provided: &str) -> Self {
         Self(Value::from(Record::from_rust_type(
-            CompoundCondition::from( (
+            CompoundCondition::from((
                 Assertion::new(),
-                Message::new(format!(
-                    "Could not convert {provided} into {expected}"
-                )),
+                Message::new(format!("Could not convert {provided} into {expected}")),
             )),
         )))
     }
-    
+
     /// For when we cannot represent the value into the requested type.
-    /// 
+    ///
     /// Example: an u128 number as an u8
     pub fn not_representable(value: &str, r#type: &str) -> Self {
         Self(Value::from(Record::from_rust_type(
-            CompoundCondition::from( (
+            CompoundCondition::from((
                 Assertion::new(),
-                Message::new(format!(
-                    "Could not represent '{value}' in {} type",
-                    r#type
-                )),
+                Message::new(format!("Could not represent '{value}' in {} type", r#type)),
             )),
         )))
     }
