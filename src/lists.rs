@@ -8,7 +8,7 @@ use crate::{
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
     syntax::Syntax,
-    value::{write_value, EqvValue, UnpackedValue, Value, ValueType},
+    value::{EqvValue, UnpackedValue, Value, ValueType, write_value},
     vectors,
 };
 use std::fmt;
@@ -249,7 +249,7 @@ pub fn map(
     _env: &[Value],
     args: &[Value],
     list_n: &[Value],
-    params: Parameters,
+    _params: &mut Parameters,
     k: Value,
 ) -> Result<Application, Condition> {
     let [mapper, list_1] = args else {
@@ -265,12 +265,7 @@ pub fn map(
     for input in inputs.iter_mut() {
         if input.type_of() == ValueType::Null {
             // TODO: Check if the rest are also empty and args is empty
-            return Ok(Application::new(
-                k.try_into()?,
-                vec![Value::null()],
-                params,
-                None,
-            ));
+            return Ok(Application::new(k.try_into()?, vec![Value::null()], None));
         }
 
         let pair: Gc<Pair> = input.clone().try_into().unwrap();
@@ -296,19 +291,14 @@ pub fn map(
 
     args.push(Value::from(map_k));
 
-    Ok(Application::new(
-        mapper_proc,
-        args,
-        params,
-        None,
-    ))
+    Ok(Application::new(mapper_proc, args, None))
 }
 
 unsafe extern "C" fn map_k(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     args: *const Value,
-    params: *const Parameters,
+    _params: *mut Parameters,
 ) -> *mut Application {
     unsafe {
         // TODO: Probably need to do this in a way that avoids mutable variables
@@ -331,19 +321,12 @@ unsafe extern "C" fn map_k(
 
         let mut args = Vec::new();
 
-        let params = params.read();
-
         // TODO: We need to collect a new list
         for input in inputs.write().iter_mut() {
             if input.type_of() == ValueType::Null {
                 // TODO: Check if the rest are also empty and args is empty
                 let output = slice_to_list(&output.read());
-                let app = Application::new(
-                    k,
-                    vec![output],
-                    params,
-                    None,
-                );
+                let app = Application::new(k, vec![output], None);
                 return Box::into_raw(Box::new(app));
             }
 
@@ -370,12 +353,7 @@ unsafe extern "C" fn map_k(
 
         args.push(Value::from(map_k));
 
-        let app = Application::new(
-            mapper,
-            args,
-            params,
-            None,
-        );
+        let app = Application::new(mapper, args, None);
 
         Box::into_raw(Box::new(app))
     }

@@ -77,7 +77,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 _env: &'a [::scheme_rs::value::Value],
                 args: &'a [::scheme_rs::value::Value],
                 rest_args: &'a [::scheme_rs::value::Value],
-                params: ::scheme_rs::proc::Parameters,
+                params: &'a mut ::scheme_rs::proc::Parameters,
                 k: ::scheme_rs::value::Value,
             ) -> futures::future::BoxFuture<'a, scheme_rs::proc::Application> {
                 #bridge
@@ -94,8 +94,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                             Err(err) => return ::scheme_rs::exceptions::raise(
                                 runtime.clone(),
                                 err.into(),
-                                exception_handler.clone(),
-                                dynamic_wind,
+                                params,
                             ),
                             Ok(result) => result,
                         };
@@ -103,7 +102,6 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                         ::scheme_rs::proc::Application::new(
                             k,
                             result,
-                            params,
                             None // TODO
                         )
                     }
@@ -129,12 +127,12 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         }
     } else {
         quote! {
-            pub(crate) fn #wrapper_name(
+            pub(crate) fn #wrapper_name<'a>(
                 runtime: &::scheme_rs::runtime::Runtime,
                 _env: &[::scheme_rs::value::Value],
                 args: &[::scheme_rs::value::Value],
                 rest_args: &[::scheme_rs::value::Value],
-                params: ::scheme_rs::proc::Parameters,
+                params: &mut ::scheme_rs::proc::Parameters,
                 k: ::scheme_rs::value::Value,
             ) -> scheme_rs::proc::Application {
                 #bridge
@@ -159,7 +157,6 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 ::scheme_rs::proc::Application::new(
                     k,
                     result,
-                    params,
                     None // TODO
                 )
             }
@@ -292,27 +289,26 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 env: &'a [::scheme_rs::value::Value],
                 args: &'a [::scheme_rs::value::Value],
                 rest_args: &'a [::scheme_rs::value::Value],
-                params: ::scheme_rs::proc::Parameters,
+                params: &'a mut ::scheme_rs::proc::Parameters,
                 k: ::scheme_rs::value::Value,
             ) -> futures::future::BoxFuture<'a, scheme_rs::proc::Application> {
                 #bridge
 
                 Box::pin(async move {
-                    let result = #impl_name(
+                    match #impl_name(
                         runtime,
                         env,
                         args,
                         rest_args,
                         params,
                         k
-                    ).await;
-                    match result {
+                    ).await {
+                        Ok(app) => app,
                         Err(err) => ::scheme_rs::exceptions::raise(
                             runtime.clone(),
                             err.into(),
                             params
                         ),
-                        Ok(result) => result,
                     }
                 })
             }
@@ -326,27 +322,25 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 env: &[::scheme_rs::value::Value],
                 args: &[::scheme_rs::value::Value],
                 rest_args: &[::scheme_rs::value::Value],
-                params: ::scheme_rs::proc::Parameters,
+                params: &mut ::scheme_rs::proc::Parameters,
                 k: ::scheme_rs::value::Value,
             ) -> scheme_rs::proc::Application {
                 #bridge
 
-                let result = #impl_name(
+                match #impl_name(
                     runtime,
                     env,
                     args,
                     rest_args,
-                    params.clone(),
+                    params,
                     k
-                );
-
-                match result {
+                ) {
+                    Ok(app) => app,
                     Err(err) => ::scheme_rs::exceptions::raise(
                         runtime.clone(),
                         err.into(),
                         params,
-                    ),
-                    Ok(result) => result,
+                    )
                 }
             }
 

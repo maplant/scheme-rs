@@ -8,13 +8,14 @@ use scheme_rs::{
     ast::{DefinitionBody, ImportSet, ParseAstError},
     cps::Compile,
     env::Environment,
-    exceptions::{Exception, ExceptionHandler},
+    exceptions::Exception,
     ports::{Port, ReadError},
-    proc::{Application, DynamicWind, Parameters},
+    proc::{Application, Parameters},
     registry::Library,
     runtime::Runtime,
     syntax::{
-        parse::{LexerError, ParseSyntaxError, Parser}, Syntax
+        Syntax,
+        parse::{LexerError, ParseSyntaxError, Parser},
     },
     value::Value,
 };
@@ -151,13 +152,7 @@ fn compile_and_run_str(
     let compiled = expr.compile_top_level();
     let closure = maybe_await!(runtime.compile_expr(compiled));
     let result = maybe_await!(
-        Application::new(
-            closure,
-            Vec::new(),
-            Parameters::default(),
-            None,
-        )
-        .eval()
+        Application::new(closure, Vec::new(), None,).eval(&mut Parameters::default())
     )?;
     Ok(result)
 }

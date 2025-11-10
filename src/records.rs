@@ -260,7 +260,7 @@ pub fn make_record_constructor_descriptor(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    params: Parameters,
+    _params: &mut Parameters,
     k: Value,
 ) -> Result<Application, Condition> {
     let k: Procedure = k.try_into()?;
@@ -311,7 +311,6 @@ pub fn make_record_constructor_descriptor(
     Ok(Application::new(
         k,
         vec![Value::from(Record::from_rust_type(rcd))],
-        params,
         None,
     ))
 }
@@ -326,7 +325,7 @@ pub fn record_constructor(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    params: Parameters,
+    params: &mut Parameters,
     k: Value,
 ) -> Result<Application, Condition> {
     let [rcd] = args else {
@@ -381,7 +380,7 @@ pub(crate) unsafe extern "C" fn chain_protocols(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     args: *const Value,
-    params: *const Parameters,
+    _params: *mut Parameters,
 ) -> *mut Application {
     unsafe {
         // env[0] is a vector of protocols
@@ -394,15 +393,12 @@ pub(crate) unsafe extern "C" fn chain_protocols(
         let remaining_protocols = protocols.split_off(1);
         let curr_protocol: Procedure = protocols[0].clone().try_into().unwrap();
 
-        let params = params.read();
-
         // If there are no more remaining protocols after the current, call the
         // protocol with arg[0] and the continuation.
         if remaining_protocols.is_empty() {
             return Box::into_raw(Box::new(Application::new(
                 curr_protocol,
                 vec![args.as_ref().unwrap().clone(), k.clone()],
-                params,
                 None,
             )));
         }
@@ -420,7 +416,6 @@ pub(crate) unsafe extern "C" fn chain_protocols(
         Box::into_raw(Box::new(Application::new(
             curr_protocol,
             vec![args.as_ref().unwrap().clone(), Value::from(new_k)],
-            params,
             None,
         )))
     }
@@ -432,7 +427,7 @@ fn chain_constructors(
     env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    params: Parameters,
+    _params: &mut Parameters,
     k: Value,
 ) -> Result<Application, Condition> {
     let k: Procedure = k.try_into()?;
@@ -468,12 +463,7 @@ fn chain_constructors(
         false,
         None,
     );
-    Ok(Application::new(
-        k,
-        vec![Value::from(next_proc)],
-        params,
-        None,
-    ))
+    Ok(Application::new(k, vec![Value::from(next_proc)], None))
 }
 
 #[cps_bridge]
@@ -482,7 +472,7 @@ fn constructor(
     env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    params: Parameters,
+    _params: &mut Parameters,
     k: Value,
 ) -> Result<Application, Condition> {
     let k: Procedure = k.try_into()?;
@@ -518,12 +508,7 @@ fn constructor(
         rtd,
         fields,
     })));
-    Ok(Application::new(
-        k,
-        vec![record],
-        params,
-        None,
-    ))
+    Ok(Application::new(k, vec![record], None))
 }
 
 #[cps_bridge]
@@ -532,7 +517,7 @@ fn default_protocol(
     env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    params: Parameters,
+    _params: &mut Parameters,
     k: Value,
 ) -> Result<Application, Condition> {
     let k: Procedure = k.try_into()?;
@@ -548,12 +533,7 @@ fn default_protocol(
         None,
     );
 
-    Ok(Application::new(
-        k,
-        vec![Value::from(constructor)],
-        params,
-        None,
-    ))
+    Ok(Application::new(k, vec![Value::from(constructor)], None))
 }
 
 #[cps_bridge]
@@ -562,7 +542,7 @@ fn default_protocol_constructor(
     env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    params: Parameters,
+    _params: &mut Parameters,
     k: Value,
 ) -> Result<Application, Condition> {
     let constructor: Procedure = env[0].clone().try_into()?;
@@ -584,19 +564,14 @@ fn default_protocol_constructor(
     };
 
     args.push(k);
-    Ok(Application::new(
-        constructor,
-        args,
-        params,
-        None,
-    ))
+    Ok(Application::new(constructor, args, None))
 }
 
 pub(crate) unsafe extern "C" fn call_constructor_continuation(
     _runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     args: *const Value,
-    params: *const Parameters,
+    _params: *mut Parameters,
 ) -> *mut Application {
     unsafe {
         let constructor: Procedure = args.as_ref().unwrap().clone().try_into().unwrap();
@@ -607,12 +582,7 @@ pub(crate) unsafe extern "C" fn call_constructor_continuation(
         args.push(cont);
 
         // Call the constructor
-        Box::into_raw(Box::new(Application::new(
-            constructor,
-            args,
-            params.read(),
-            None,
-        )))
+        Box::into_raw(Box::new(Application::new(constructor, args, None)))
     }
 }
 
@@ -759,12 +729,12 @@ pub fn is_subtype_of(val: &Value, rt: &Value) -> Result<bool, Condition> {
 }
 
 #[cps_bridge]
-fn record_predicate_fn(
+fn record_predicate_fn<'a>(
     _runtime: &Runtime,
     env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    params: Parameters,
+    _params: &mut Parameters,
     k: Value,
 ) -> Result<Application, Condition> {
     let k: Procedure = k.try_into()?;
@@ -775,7 +745,6 @@ fn record_predicate_fn(
     Ok(Application::new(
         k,
         vec![Value::from(is_subtype_of(val, &env[0])?)],
-        params,
         None,
     ))
 }
@@ -790,7 +759,7 @@ pub fn record_predicate(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    params: Parameters,
+    _params: &mut Parameters,
     k: Value,
 ) -> Result<Application, Condition> {
     let k: Procedure = k.try_into()?;
@@ -806,12 +775,7 @@ pub fn record_predicate(
         false,
         None,
     );
-    Ok(Application::new(
-        k,
-        vec![Value::from(pred_fn)],
-        params,
-        None,
-    ))
+    Ok(Application::new(k, vec![Value::from(pred_fn)], None))
 }
 
 #[cps_bridge]
@@ -820,7 +784,7 @@ fn record_accessor_fn(
     env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    params: Parameters,
+    _params: &mut Parameters,
     k: Value,
 ) -> Result<Application, Condition> {
     let k: Procedure = k.try_into()?;
@@ -837,12 +801,7 @@ fn record_accessor_fn(
     let idx: Arc<Number> = env[1].clone().try_into()?;
     let idx: usize = idx.as_ref().try_into().map_err(Condition::from)?;
     let val = record.0.read().fields[idx].clone();
-    Ok(Application::new(
-        k,
-        vec![val],
-        params,
-        None,
-    ))
+    Ok(Application::new(k, vec![val], None))
 }
 
 #[cps_bridge(
@@ -855,7 +814,7 @@ pub fn record_accessor(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    params: Parameters,
+    _params: &mut Parameters,
     k: Value,
 ) -> Result<Application, Condition> {
     let k: Procedure = k.try_into()?;
@@ -880,12 +839,7 @@ pub fn record_accessor(
         false,
         None,
     );
-    Ok(Application::new(
-        k,
-        vec![Value::from(accessor_fn)],
-        params,
-        None,
-    ))
+    Ok(Application::new(k, vec![Value::from(accessor_fn)], None))
 }
 
 #[cps_bridge]
@@ -894,7 +848,7 @@ fn record_mutator_fn(
     env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    params: Parameters,
+    _params: &mut Parameters,
     k: Value,
 ) -> Result<Application, Condition> {
     let k: Procedure = k.try_into()?;
@@ -911,12 +865,7 @@ fn record_mutator_fn(
     let idx: Arc<Number> = env[1].clone().try_into()?;
     let idx: usize = idx.as_ref().try_into().map_err(Condition::from)?;
     record.0.write().fields[idx] = new_val.clone();
-    Ok(Application::new(
-        k,
-        vec![],
-        params,
-        None,
-    ))
+    Ok(Application::new(k, vec![], None))
 }
 
 #[cps_bridge(
@@ -929,7 +878,7 @@ pub fn record_mutator(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    params: Parameters,
+    _params: &mut Parameters,
     k: Value,
 ) -> Result<Application, Condition> {
     let k: Procedure = k.try_into()?;
@@ -957,12 +906,7 @@ pub fn record_mutator(
         false,
         None,
     );
-    Ok(Application::new(
-        k,
-        vec![Value::from(mutator_fn)],
-        params,
-        None,
-    ))
+    Ok(Application::new(k, vec![Value::from(mutator_fn)], None))
 }
 
 // Inspection library:

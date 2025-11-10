@@ -119,10 +119,7 @@ impl Cps {
 
         let params = {
             let block_params = builder.block_params(entry_block);
-            [
-                block_params[RUNTIME_PARAM],
-                block_params[PARAMETERS_PARAM],
-            ]
+            [block_params[RUNTIME_PARAM], block_params[PARAMETERS_PARAM]]
         };
 
         let mut deferred = Vec::new();
@@ -539,14 +536,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
             .declare_func_in_func(self.runtime_funcs.apply, self.builder.func);
         let call = self.builder.ins().call(
             apply,
-            &[
-                runtime,
-                operator,
-                args_addr,
-                args_len,
-                parameters,
-                span,
-            ],
+            &[runtime, operator, args_addr, args_len, parameters, span],
         );
         let app = self.builder.inst_results(call)[0];
         self.drops_codegen();
@@ -562,10 +552,10 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         let forward = self
             .module
             .declare_func_in_func(self.runtime_funcs.forward, self.builder.func);
-        let call = self.builder.ins().call(
-            forward,
-            &[runtime, operator, arg, parameters],
-        );
+        let call = self
+            .builder
+            .ins()
+            .call(forward, &[runtime, operator, arg, parameters]);
         let result = self.builder.inst_results(call)[0];
         self.drops_codegen();
         self.builder.ins().return_(&[result]);
@@ -625,10 +615,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         let raise = self
             .module
             .declare_func_in_func(self.runtime_funcs.raise_rt, self.builder.func);
-        let call = self
-            .builder
-            .ins()
-            .call(raise, &[runtime, val, parameters]);
+        let call = self.builder.ins().call(raise, &[runtime, val, parameters]);
         let result = self.builder.inst_results(call)[0];
         self.builder.ins().return_(&[result]);
     }
@@ -845,10 +832,7 @@ impl ProcedureBundle {
 
         let params = {
             let block_params = builder.block_params(entry_block);
-            [
-                block_params[RUNTIME_PARAM],
-                block_params[PARAMETERS_PARAM],
-            ]
+            [block_params[RUNTIME_PARAM], block_params[PARAMETERS_PARAM]]
         };
 
         let mut rebinds = Rebinds::new();

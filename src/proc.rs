@@ -14,14 +14,14 @@ use crate::{
     value::{Cell, UnpackedValue, UnpackedValueRef, Value},
 };
 use scheme_rs_macros::{cps_bridge, maybe_async, maybe_await};
-use std::{collections::HashMap, fmt, hash::Hash, mem::{ManuallyDrop, MaybeUninit}, sync::Arc};
+use std::{collections::HashMap, fmt, hash::Hash, mem::MaybeUninit, sync::Arc};
 
 /// A function pointer to a generated continuation.
 pub(crate) type ContinuationPtr = unsafe extern "C" fn(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     args: *const Value,
-    params: *const Parameters,
+    params: *mut Parameters,
 ) -> *mut Application;
 
 /// A function pointer to a generated user function.
@@ -29,7 +29,7 @@ pub(crate) type UserPtr = unsafe extern "C" fn(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     args: *const Value,
-    params: *const Parameters,
+    params: *mut Parameters,
     k: Value,
 ) -> *mut Application;
 
@@ -40,7 +40,7 @@ pub type SyncBridgePtr = for<'a> fn(
     // TODO: Make this a Vec
     args: &'a [Value],
     rest_args: &'a [Value],
-    params: Parameters,
+    params: &mut Parameters,
     k: Value,
 ) -> Application;
 
@@ -51,7 +51,7 @@ pub type AsyncBridgePtr = for<'a> fn(
     env: &'a [Value],
     args: &'a [Value],
     rest_args: &'a [Value],
-    params: Parameters,
+    params: &'a mut Parameters,
     k: Value,
 ) -> futures::future::BoxFuture<'a, Application>;
 
@@ -124,7 +124,7 @@ impl ProcedureInner {
     pub(crate) fn prepare_args(
         &self,
         mut args: Vec<Value>,
-        params: &Parameters,
+        params: &mut Parameters,
     ) -> Result<(Vec<Value>, Option<Value>), Application> {
         // Extract the continuation, if it is required
         let cont = (!matches!(self.func, FuncPtr::Continuation(_))).then(|| args.pop().unwrap());
@@ -134,7 +134,7 @@ impl ProcedureInner {
             return Err(raise(
                 self.runtime.clone(),
                 Condition::wrong_num_of_args(self.num_required_args, args.len()).into(),
-                params.clone(),
+                params,
             ));
         }
 
@@ -142,7 +142,7 @@ impl ProcedureInner {
             return Err(raise(
                 self.runtime.clone(),
                 Condition::wrong_num_of_args(self.num_required_args, args.len()).into(),
-                params.clone(),
+                params,
             ));
         }
 
@@ -154,7 +154,7 @@ impl ProcedureInner {
         &self,
         func: AsyncBridgePtr,
         args: &[Value],
-        params: Parameters,
+        params: &mut Parameters,
         k: Value,
     ) -> Application {
         let (args, rest_args) = if self.variadic {
@@ -163,22 +163,14 @@ impl ProcedureInner {
             (args, &[] as &[Value])
         };
 
-        (func)(
-            &self.runtime,
-            &self.env,
-            args,
-            rest_args,
-            params,
-            k,
-        )
-        .await
+        (func)(&self.runtime, &self.env, args, rest_args, params, k).await
     }
 
     fn apply_sync_bridge(
         &self,
         func: SyncBridgePtr,
         args: &[Value],
-        params: Parameters,
+        params: &mut Parameters,
         k: Value,
     ) -> Application {
         let (args, rest_args) = if self.variadic {
@@ -194,7 +186,7 @@ impl ProcedureInner {
         &self,
         func: JitFuncPtr,
         mut args: Vec<Value>,
-        params: Parameters,
+        params: &mut Parameters,
         k: Option<Value>,
     ) -> Application {
         if self.variadic {
@@ -206,16 +198,13 @@ impl ProcedureInner {
             args.push(rest_args);
         }
 
-        // Params is moved into the JIT functions
-        let params = ManuallyDrop::new(params);
-
         let app = match func {
             JitFuncPtr::Continuation(sync_fn) => unsafe {
                 (sync_fn)(
                     Gc::as_ptr(&self.runtime.0),
                     self.env.as_ptr(),
                     args.as_ptr(),
-                    &*params as *const Parameters,
+                    params as *mut Parameters,
                 )
             },
             JitFuncPtr::User(sync_fn) => unsafe {
@@ -223,7 +212,7 @@ impl ProcedureInner {
                     Gc::as_ptr(&self.runtime.0),
                     self.env.as_ptr(),
                     args.as_ptr(),
-                    &*params as *const Parameters,
+                    params as *mut Parameters,
                     Value::from_raw(Value::as_raw(k.as_ref().unwrap())),
                 )
             },
@@ -233,8 +222,8 @@ impl ProcedureInner {
     }
 
     #[maybe_async]
-    pub fn apply(&self, args: Vec<Value>, params: Parameters) -> Application {
-        let (args, k) = match self.prepare_args(args, &params) {
+    pub fn apply<'a>(&self, args: Vec<Value>, params: &mut Parameters) -> Application {
+        let (args, k) = match self.prepare_args(args, params) {
             Ok(args) => args,
             Err(raised) => return raised,
         };
@@ -295,7 +284,7 @@ impl Procedure {
             _runtime: *mut GcInner<RuntimeInner>,
             _env: *const Value,
             args: *const Value,
-            _params: *const Parameters,
+            _params: *mut Parameters,
         ) -> *mut Application {
             unsafe { crate::runtime::halt(Value::into_raw(args.read()) as i64) }
         }
@@ -313,7 +302,7 @@ impl Procedure {
             None,
         )))));
 
-        maybe_await!(Application::new(self.clone(), args, Parameters::default(), None,).eval())
+        maybe_await!(Application::new(self.clone(), args, None,).eval(&mut Parameters::default(),))
     }
 }
 
@@ -356,7 +345,7 @@ impl fmt::Debug for ProcedureInner {
     }
 }
 
-enum OpType {
+pub enum OpType {
     Proc(Procedure),
     HaltOk,
     HaltErr,
@@ -365,27 +354,19 @@ enum OpType {
 /// An application of a function to a given set of values.
 pub struct Application {
     /// The operator being applied to.
-    op: OpType,
+    pub op: OpType,
     /// The arguments being applied to the operator.
-    args: Vec<Value>,
-    /// Dynamic parameters
-    params: Parameters,
+    pub args: Vec<Value>,
     /// The call site of this application, if it exists.
-    call_site: Option<Arc<Span>>,
+    pub call_site: Option<Arc<Span>>,
 }
 
 impl Application {
-    pub fn new(
-        op: Procedure,
-        args: Vec<Value>,
-        params: Parameters,
-        call_site: Option<Arc<Span>>,
-    ) -> Self {
+    pub fn new(op: Procedure, args: Vec<Value>, call_site: Option<Arc<Span>>) -> Self {
         Self {
             // We really gotta figure out how to deal with this better
             op: OpType::Proc(op),
             args,
-            params,
             call_site,
         }
     }
@@ -394,7 +375,6 @@ impl Application {
         Self {
             op: OpType::HaltOk,
             args,
-            params: Parameters::default(),
             call_site: None,
         }
     }
@@ -403,7 +383,6 @@ impl Application {
         Self {
             op: OpType::HaltErr,
             args: vec![arg],
-            params: Parameters::default(),
             call_site: None,
         }
     }
@@ -411,7 +390,7 @@ impl Application {
     /// Evaluate the application - and all subsequent application - until all that
     /// remains are values. This is the main trampoline of the evaluation engine.
     #[maybe_async]
-    pub fn eval(mut self) -> Result<Vec<Value>, Exception> {
+    pub fn eval(mut self, params: &mut Parameters) -> Result<Vec<Value>, Exception> {
         let mut stack_trace = StackTraceCollector::new();
 
         loop {
@@ -427,48 +406,16 @@ impl Application {
             };
             let op = { op.0.read().as_ref().clone() };
             stack_trace.collect_application(op.debug_info.clone(), self.call_site);
-            self = maybe_await!(op.apply(self.args, self.params));
+            self = maybe_await!(op.apply(self.args, params));
         }
     }
 }
 
 /// Parameters passed through the dynamic extent of the functions
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default, Trace)]
 pub struct Parameters {
     pub(crate) exception_handler: ExceptionHandler,
     pub(crate) dynamic_winders: DynamicWind,
-}
-
-impl Parameters {
-    pub(crate) fn new(exception_handler: ExceptionHandler, dynamic_winders: DynamicWind) -> Self {
-        Self {
-            exception_handler,
-            dynamic_winders,
-        }
-    }
-
-    /*
-    /// # Safety
-    /// `ptr` must point to a valid Gc'd object.
-    pub(crate) unsafe fn from_ptr(ptr: *mut GcInner<ParametersInner>) -> Self {
-        Self(unsafe { Gc::from_raw_inc_rc(ptr) })
-    }
-
-    pub(crate) fn as_ptr(&self) -> *mut GcInner<ParametersInner> {
-        Gc::as_ptr(&self.0)
-    }
-
-    pub(crate) fn exception_handler(&self) -> ExceptionHandler {
-        self.0.read().exception_handler.clone()
-    }
-    */
-
-    // TODO: have this return a ref to the dynamic winders
-    /*
-    pub(crate) fn dynamic_winders(&self) -> DynamicWind {
-        self.0.read().dynamic_winders.clone()
-    }
-    */
 }
 
 #[derive(Default)]
@@ -557,7 +504,7 @@ pub fn apply(
     _env: &[Value],
     args: &[Value],
     rest_args: &[Value],
-    params: Parameters,
+    _params: &mut Parameters,
     k: Value,
 ) -> Result<Application, Condition> {
     if rest_args.is_empty() {
@@ -568,7 +515,7 @@ pub fn apply(
     let mut args = args.to_vec();
     list_to_vec(last, &mut args);
     args.push(k);
-    Ok(Application::new(op.clone(), args, params, None))
+    Ok(Application::new(op.clone(), args, None))
 }
 
 #[cps_bridge(
@@ -581,7 +528,7 @@ pub fn call_with_current_continuation(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    params: Parameters,
+    params: &mut Parameters,
     k: Value,
 ) -> Result<Application, Condition> {
     let [proc] = args else { unreachable!() };
@@ -604,7 +551,7 @@ pub fn call_with_current_continuation(
         None,
     );
 
-    let app = Application::new(proc, vec![Value::from(escape_procedure), k], params, None);
+    let app = Application::new(proc, vec![Value::from(escape_procedure), k], None);
 
     Ok(app)
 }
@@ -617,7 +564,7 @@ fn escape_procedure(
     env: &[Value],
     args: &[Value],
     rest_args: &[Value],
-    params: Parameters,
+    params: &mut Parameters,
     _k: Value,
 ) -> Result<Application, Condition> {
     // env[0] is the continuation
@@ -658,7 +605,7 @@ fn escape_procedure(
         )
     };
 
-    let app = Application::new(k, args, params, None);
+    let app = Application::new(k, args, None);
 
     Ok(app)
 }
@@ -826,7 +773,7 @@ pub(crate) unsafe extern "C" fn call_thunks(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     args: *const Value,
-    params: *const Parameters,
+    _params: *mut Parameters,
 ) -> *mut Application {
     unsafe {
         // env[0] are the thunks:
@@ -867,7 +814,7 @@ pub(crate) unsafe extern "C" fn call_thunks(
             None,
         );
 
-        let app = Application::new(thunks, Vec::new(), params.read(), None);
+        let app = Application::new(thunks, Vec::new(), None);
 
         Box::into_raw(Box::new(app))
     }
@@ -877,7 +824,7 @@ unsafe extern "C" fn call_thunks_pass_args(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     _args: *const Value,
-    params: *const Parameters,
+    _params: *mut Parameters,
 ) -> *mut Application {
     unsafe {
         // env[0] are the thunks:
@@ -888,8 +835,6 @@ unsafe extern "C" fn call_thunks_pass_args(
 
         // env[2] is k1, the current continuation
         let k = env.add(2).as_ref().unwrap().clone();
-
-        let params = params.read();
 
         let app = match &*thunks.unpacked_ref() {
             // UnpackedValue::Pair(head_thunk, tail) => {
@@ -904,12 +849,12 @@ unsafe extern "C" fn call_thunks_pass_args(
                     false,
                     None,
                 );
-                Application::new(head_thunk.clone(), vec![Value::from(cont)], params, None)
+                Application::new(head_thunk.clone(), vec![Value::from(cont)], None)
             }
             UnpackedValue::Null => {
                 let mut collected_args = Vec::new();
                 list_to_vec(&args, &mut collected_args);
-                Application::new(k.try_into().unwrap(), collected_args, params, None)
+                Application::new(k.try_into().unwrap(), collected_args, None)
             }
             _ => unreachable!(),
         };
@@ -922,13 +867,13 @@ unsafe extern "C" fn call_consumer_with_values(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     args: *const Value,
-    params: *const Parameters,
+    params: *mut Parameters,
 ) -> *mut Application {
     unsafe {
         // env[0] is the consumer
         let consumer = env.as_ref().unwrap().clone();
         let type_name = consumer.type_name();
-        let params = params.read();
+        let params = params.as_mut().unwrap_unchecked();
 
         let consumer: Procedure = match consumer.try_into() {
             Ok(consumer) => consumer,
@@ -967,7 +912,6 @@ unsafe extern "C" fn call_consumer_with_values(
         Box::into_raw(Box::new(Application::new(
             consumer.clone(),
             collected_args,
-            params,
             None,
         )))
     }
@@ -983,7 +927,7 @@ pub fn call_with_values(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    params: Parameters,
+    _params: &mut Parameters,
     k: Value,
 ) -> Result<Application, Condition> {
     let [producer, consumer] = args else {
@@ -1011,7 +955,6 @@ pub fn call_with_values(
     Ok(Application::new(
         producer,
         vec![Value::from(call_consumer_closure)],
-        params,
         None,
     ))
 }
@@ -1032,12 +975,12 @@ impl SchemeCompatible for DynamicWind {
     lib = "(rnrs base builtins (6))",
     args = "in body out"
 )]
-pub fn dynamic_wind(
+pub fn dynamic_wind<'a>(
     runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    params: Parameters,
+    _params: &mut Parameters,
     k: Value,
 ) -> Result<Application, Condition> {
     let [in_thunk_val, body_thunk_val, out_thunk_val] = args else {
@@ -1064,7 +1007,6 @@ pub fn dynamic_wind(
     Ok(Application::new(
         in_thunk,
         vec![Value::from(call_body_thunk_cont)],
-        params,
         None,
     ))
 }
@@ -1073,7 +1015,7 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     _args: *const Value,
-    params: *const Parameters,
+    params: *mut Parameters,
 ) -> *mut Application {
     unsafe {
         // env[0] is the in thunk
@@ -1088,7 +1030,7 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
         // env[3] is k, the continuation
         let k = env.add(3).as_ref().unwrap().clone();
 
-        let mut params = params.read();
+        let params = params.as_mut().unwrap_unchecked();
 
         params.dynamic_winders.winders.push((
             in_thunk.clone().try_into().unwrap(),
@@ -1104,7 +1046,7 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
             None,
         );
 
-        let app = Application::new(body_thunk, vec![Value::from(cont)], params, None);
+        let app = Application::new(body_thunk, vec![Value::from(cont)], None);
 
         Box::into_raw(Box::new(app))
     }
@@ -1114,7 +1056,7 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     args: *const Value,
-    params: *const Parameters,
+    params: *mut Parameters,
 ) -> *mut Application {
     unsafe {
         // env[0] is the out thunk
@@ -1126,7 +1068,7 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
         // args[0] is the result of the body thunk
         let body_thunk_res = args.as_ref().unwrap().clone();
 
-        let mut params = params.read();
+        let params = params.as_mut().unwrap_unchecked();
         params.dynamic_winders.winders.pop();
 
         let cont = Procedure(Gc::new(ProcedureInner::new(
@@ -1138,7 +1080,7 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
             None,
         )));
 
-        let app = Application::new(out_thunk, vec![Value::from(cont)], params, None);
+        let app = Application::new(out_thunk, vec![Value::from(cont)], None);
 
         Box::into_raw(Box::new(app))
     }
@@ -1148,7 +1090,7 @@ unsafe extern "C" fn forward_body_thunk_result(
     _runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     _args: *const Value,
-    params: *const Parameters,
+    _params: *mut Parameters,
 ) -> *mut Application {
     unsafe {
         // env[0] is the result of the body thunk
@@ -1159,7 +1101,7 @@ unsafe extern "C" fn forward_body_thunk_result(
         let mut args = Vec::new();
         list_to_vec(&body_thunk_res, &mut args);
 
-        let app = Application::new(k, args, params.read(), None);
+        let app = Application::new(k, args, None);
 
         Box::into_raw(Box::new(app))
     }

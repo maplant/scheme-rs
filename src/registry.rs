@@ -9,7 +9,7 @@ use crate::{
     env::{Environment, Global, Keyword},
     exceptions::Condition,
     gc::{Gc, Trace},
-    proc::{Application, DynamicWind, FuncDebugInfo, FuncPtr, Parameters, Procedure, SyncBridgePtr},
+    proc::{Application, FuncDebugInfo, FuncPtr, Parameters, Procedure, SyncBridgePtr},
     runtime::Runtime,
     symbols::Symbol,
     syntax::{Identifier, Syntax},
@@ -721,13 +721,7 @@ impl Library {
         let rt = { self.0.read().rt.clone() };
         let proc = maybe_await!(rt.compile_expr(compiled));
         let _ = maybe_await!(
-            Application::new(
-                proc,
-                Vec::new(),
-                Parameters::default(),
-                None,
-            )
-            .eval()
+            Application::new(proc, Vec::new(), None).eval(&mut Parameters::default())
         )?;
         self.0.write().state = LibraryState::Invoked;
         Ok(())
