@@ -222,7 +222,7 @@ impl ProcedureInner {
     }
 
     #[maybe_async]
-    pub fn apply<'a>(&self, args: Vec<Value>, params: &mut Parameters) -> Application {
+    pub fn apply(&self, args: Vec<Value>, params: &mut Parameters) -> Application {
         let (args, k) = match self.prepare_args(args, params) {
             Ok(args) => args,
             Err(raised) => return raised,
@@ -975,7 +975,7 @@ impl SchemeCompatible for DynamicWind {
     lib = "(rnrs base builtins (6))",
     args = "in body out"
 )]
-pub fn dynamic_wind<'a>(
+pub fn dynamic_wind(
     runtime: &Runtime,
     _env: &[Value],
     args: &[Value],

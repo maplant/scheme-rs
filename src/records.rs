@@ -729,7 +729,7 @@ pub fn is_subtype_of(val: &Value, rt: &Value) -> Result<bool, Condition> {
 }
 
 #[cps_bridge]
-fn record_predicate_fn<'a>(
+fn record_predicate_fn(
     _runtime: &Runtime,
     env: &[Value],
     args: &[Value],
