@@ -163,6 +163,30 @@ impl Condition {
             )),
         )))
     }
+
+    /// For when we cannot convert a value into the requested type.
+    ///
+    /// Example: Integer to a Complex
+    pub fn conversion_error(expected: &str, provided: &str) -> Self {
+        Self(Value::from(Record::from_rust_type(
+            CompoundCondition::from((
+                Assertion::new(),
+                Message::new(format!("Could not convert {provided} into {expected}")),
+            )),
+        )))
+    }
+
+    /// For when we cannot represent the value into the requested type.
+    ///
+    /// Example: an u128 number as an u8
+    pub fn not_representable(value: &str, r#type: &str) -> Self {
+        Self(Value::from(Record::from_rust_type(
+            CompoundCondition::from((
+                Assertion::new(),
+                Message::new(format!("Could not represent '{value}' in {} type", r#type)),
+            )),
+        )))
+    }
 }
 
 impl From<SimpleCondition> for Condition {
@@ -567,7 +591,7 @@ pub(crate) struct ExceptionHandlerInner {
     args = "handler thunk"
 )]
 pub fn with_exception_handler(
-    _runtime: &Runtime,
+    runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
@@ -588,7 +612,64 @@ pub fn with_exception_handler(
 
     params.exception_handler = ExceptionHandler(Some(Gc::new(exception_handler)));
 
-    Ok(Application::new(thunk.clone(), vec![k], None))
+    let k_proc: Procedure = k.clone().try_into().unwrap();
+    let (req_args, var) = {
+        let k_proc_read = k_proc.0.read();
+        (k_proc_read.num_required_args, k_proc_read.variadic)
+    };
+
+    let k = Procedure::new(
+        runtime.clone(),
+        vec![k.clone()],
+        FuncPtr::Continuation(reset_exception_handler),
+        req_args,
+        var,
+        None,
+    );
+
+    Ok(Application::new(thunk.clone(), vec![Value::from(k)], None))
+}
+
+pub(crate) unsafe extern "C" fn reset_exception_handler(
+    _runtime: *mut GcInner<RuntimeInner>,
+    env: *const Value,
+    args: *const Value,
+    params: *mut Parameters,
+) -> *mut Application {
+    unsafe {
+        // env[0] is the continuation
+        let k: Procedure = env.as_ref().unwrap().clone().try_into().unwrap();
+
+        // Pop the exception handler
+        let params = params.as_mut().unwrap_unchecked();
+        params.exception_handler = params
+            .exception_handler
+            .0
+            .as_ref()
+            .map(|handler| handler.read().params.exception_handler.clone())
+            .unwrap_or_default();
+
+        // Ugh:
+
+        let mut collected_args: Vec<_> = (0..k.0.read().num_required_args)
+            .map(|i| args.add(i).as_ref().unwrap().clone())
+            .collect();
+
+        if k.0.read().variadic {
+            let rest_args = args
+                .add(k.0.read().num_required_args)
+                .as_ref()
+                .unwrap()
+                .clone();
+            let mut vec = Vec::new();
+            lists::list_to_vec(&rest_args, &mut vec);
+            collected_args.extend(vec);
+        }
+
+        let app = Application::new(k, collected_args, None);
+
+        Box::into_raw(Box::new(app))
+    }
 }
 
 #[cps_bridge(name = "raise", lib = "(rnrs base builtins (6))", args = "obj")]
