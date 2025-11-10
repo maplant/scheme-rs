@@ -8,9 +8,9 @@ use scheme_rs::{
     ast::{DefinitionBody, ImportSet, ParseAstError},
     cps::Compile,
     env::Environment,
-    exceptions::{Exception, ExceptionHandler},
+    exceptions::Exception,
     ports::{Port, ReadError},
-    proc::{Application, DynamicWind},
+    proc::{Application, Parameters},
     registry::Library,
     runtime::Runtime,
     syntax::{
@@ -152,14 +152,7 @@ fn compile_and_run_str(
     let compiled = expr.compile_top_level();
     let closure = maybe_await!(runtime.compile_expr(compiled));
     let result = maybe_await!(
-        Application::new(
-            closure,
-            Vec::new(),
-            ExceptionHandler::default(),
-            DynamicWind::default(),
-            None,
-        )
-        .eval()
+        Application::new(closure, Vec::new(), None,).eval(&mut Parameters::default())
     )?;
     Ok(result)
 }

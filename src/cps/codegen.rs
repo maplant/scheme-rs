@@ -119,11 +119,7 @@ impl Cps {
 
         let params = {
             let block_params = builder.block_params(entry_block);
-            [
-                block_params[RUNTIME_PARAM],
-                block_params[EXCEPTION_HANDLER_PARAM],
-                block_params[DYNAMIC_WIND_PARAM],
-            ]
+            [block_params[RUNTIME_PARAM], block_params[PARAMETERS_PARAM]]
         };
 
         let mut deferred = Vec::new();
@@ -182,7 +178,7 @@ struct CompilationUnit<'m, 'f, 'd> {
     allocs: StackSlot,
     curr_allocs: usize,
     runtime_funcs: &'f RuntimeFunctions,
-    params: [Value; 3],
+    params: [Value; 2],
     module: &'m mut JITModule,
     debug_info: &'d mut DebugInfo,
 }
@@ -199,12 +195,8 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         self.params[0]
     }
 
-    fn get_exception_handler(&self) -> Value {
+    fn get_parameters(&self) -> Value {
         self.params[1]
-    }
-
-    fn get_dynamic_wind(&self) -> Value {
-        self.params[2]
     }
 
     fn cps_codegen(&mut self, cps: Cps, deferred: &mut Vec<ProcedureBundle>) {
@@ -530,8 +522,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
 
         let args_addr = self.builder.ins().stack_addr(types::I64, args_slot, 0);
         let args_len = self.builder.ins().iconst(types::I32, args.len() as i64);
-        let exception_handler = self.get_exception_handler();
-        let dynamic_wind = self.get_dynamic_wind();
+        let parameters = self.get_parameters();
         let span = if let Some(loc) = loc {
             let span = Arc::new(loc);
             let span_ptr = Arc::as_ptr(&span);
@@ -545,15 +536,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
             .declare_func_in_func(self.runtime_funcs.apply, self.builder.func);
         let call = self.builder.ins().call(
             apply,
-            &[
-                runtime,
-                operator,
-                args_addr,
-                args_len,
-                exception_handler,
-                dynamic_wind,
-                span,
-            ],
+            &[runtime, operator, args_addr, args_len, parameters, span],
         );
         let app = self.builder.inst_results(call)[0];
         self.drops_codegen();
@@ -564,16 +547,15 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         let runtime = self.get_runtime();
         let operator = self.value_codegen(operator);
         let arg = self.value_codegen(arg);
-        let exception_handler = self.get_exception_handler();
-        let dynamic_wind = self.get_dynamic_wind();
+        let parameters = self.get_parameters();
 
         let forward = self
             .module
             .declare_func_in_func(self.runtime_funcs.forward, self.builder.func);
-        let call = self.builder.ins().call(
-            forward,
-            &[runtime, operator, arg, exception_handler, dynamic_wind],
-        );
+        let call = self
+            .builder
+            .ins()
+            .call(forward, &[runtime, operator, arg, parameters]);
         let result = self.builder.inst_results(call)[0];
         self.drops_codegen();
         self.builder.ins().return_(&[result]);
@@ -629,15 +611,11 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
 
     fn raise_codegen(&mut self, val: Value) {
         let runtime = self.get_runtime();
-        let exception_handler = self.get_exception_handler();
-        let dynamic_wind = self.get_dynamic_wind();
+        let parameters = self.get_parameters();
         let raise = self
             .module
             .declare_func_in_func(self.runtime_funcs.raise_rt, self.builder.func);
-        let call = self
-            .builder
-            .ins()
-            .call(raise, &[runtime, val, exception_handler, dynamic_wind]);
+        let call = self.builder.ins().call(raise, &[runtime, val, parameters]);
         let result = self.builder.inst_results(call)[0];
         self.builder.ins().return_(&[result]);
     }
@@ -777,16 +755,14 @@ pub struct ProcedureBundle {
 const RUNTIME_PARAM: usize = 0;
 const ENV_PARAM: usize = 1;
 const ARGS_PARAM: usize = 2;
-const EXCEPTION_HANDLER_PARAM: usize = 3;
-const DYNAMIC_WIND_PARAM: usize = 4;
-const CONTINUATION_PARAM: usize = 5;
+const PARAMETERS_PARAM: usize = 3;
+const CONTINUATION_PARAM: usize = 4;
 
 fn make_sig(sig: &mut Signature, has_continuation: bool) {
     sig.params.push(AbiParam::new(types::I64)); // Runtime
     sig.params.push(AbiParam::new(types::I64)); // Env
     sig.params.push(AbiParam::new(types::I64)); // Args
-    sig.params.push(AbiParam::new(types::I64)); // Exception handler
-    sig.params.push(AbiParam::new(types::I64)); // Dynamic wind
+    sig.params.push(AbiParam::new(types::I64)); // Parameters
 
     if has_continuation {
         sig.params.push(AbiParam::new(types::I64)); // Continuation
@@ -856,11 +832,7 @@ impl ProcedureBundle {
 
         let params = {
             let block_params = builder.block_params(entry_block);
-            [
-                block_params[RUNTIME_PARAM],
-                block_params[EXCEPTION_HANDLER_PARAM],
-                block_params[DYNAMIC_WIND_PARAM],
-            ]
+            [block_params[RUNTIME_PARAM], block_params[PARAMETERS_PARAM]]
         };
 
         let mut rebinds = Rebinds::new();
