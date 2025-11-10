@@ -175,7 +175,7 @@ macro_rules! number_try_into_impl_integer {
                         // BigInteger is simpler.
                         // Since it is based off limbs, we can just check if it is
                         // representable or not by checking if the BigInt fits the size.
-                        if bigint <= $ty::MAX && bigint >= $ty::MIN {
+                        if ($ty::MIN..=$ty::MAX).contains(&bigint) {
                             let vec = bigint.into_twos_complement_limbs_asc();
                             // I am not sure if this check is needed or not
                             if vec.len() == 0 {
@@ -219,10 +219,10 @@ impl TryInto<u128> for Number {
         match self {
             Number::FixedInteger(i) => Ok(i as u128),
             Number::BigInteger(bigint) => {
-                if bigint <= u128::MAX && bigint >= u128::MIN {
+                if (u128::MIN..=u128::MAX).contains(&bigint) {
                     let vec = bigint.into_twos_complement_limbs_asc();
                     // I am not sure if this check is needed or not
-                    if vec.len() == 0 {
+                    if vec.is_empty() {
                         return Ok(0);
                     }
                     if vec.len() == 2 {
@@ -266,10 +266,10 @@ impl TryInto<i128> for Number {
         match self {
             Number::FixedInteger(i) => Ok(i as i128),
             Number::BigInteger(bigint) => {
-                if bigint <= i128::MAX && bigint >= i128::MIN {
+                if (i128::MIN..=i128::MAX).contains(&bigint) {
                     let vec = bigint.into_twos_complement_limbs_asc();
                     // I am not sure if this check is needed or not
-                    if vec.len() == 0 {
+                    if vec.is_empty() {
                         return Ok(0);
                     }
                     if vec.len() == 2 {
