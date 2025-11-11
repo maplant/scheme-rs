@@ -279,7 +279,7 @@ impl Procedure {
         (this.num_required_args, this.variadic)
     }
 
-    /// # Safety:
+    /// # Safety
     /// `args` must be a valid pointer and contain num_required_args + variadic entries.
     pub unsafe fn collect_args(&self, args: *const Value) -> Vec<Value> {
         // I don't really like this, but what are you gonna do?
