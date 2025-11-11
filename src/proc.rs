@@ -229,8 +229,8 @@ impl ProcedureInner {
         };
 
         match self.func {
-            FuncPtr::Continuation(cont) => {
-                self.apply_jit(JitFuncPtr::Continuation(cont), args, params, k)
+            FuncPtr::Continuation(k) => {
+                self.apply_jit(JitFuncPtr::Continuation(k), args, params, None)
             }
             FuncPtr::User(user) => self.apply_jit(JitFuncPtr::User(user), args, params, k),
             FuncPtr::Bridge(sbridge) => self.apply_sync_bridge(sbridge, &args, params, k.unwrap()),
@@ -272,6 +272,33 @@ impl Procedure {
 
     pub fn get_runtime(&self) -> Runtime {
         self.0.read().runtime.clone()
+    }
+
+    pub fn get_formals(&self) -> (usize, bool) {
+        let this = self.0.read();
+        (this.num_required_args, this.variadic)
+    }
+
+    /// # Safety:
+    /// `args` must be a valid pointer and contain num_required_args + variadic entries.
+    pub unsafe fn collect_args(&self, args: *const Value) -> Vec<Value> {
+        // I don't really like this, but what are you gonna do?
+        let (num_required_args, variadic) = self.get_formals();
+
+        unsafe {
+            let mut collected_args: Vec<_> = (0..num_required_args)
+                .map(|i| args.add(i).as_ref().unwrap().clone())
+                .collect();
+
+            if variadic {
+                let rest_args = args.add(num_required_args).as_ref().unwrap().clone();
+                let mut vec = Vec::new();
+                lists::list_to_vec(&rest_args, &mut vec);
+                collected_args.extend(vec);
+            }
+
+            collected_args
+        }
     }
 
     pub fn is_variable_transformer(&self) -> bool {
@@ -415,7 +442,13 @@ impl Application {
 #[derive(Clone, Debug, Default, Trace)]
 pub struct Parameters {
     pub(crate) exception_handler: ExceptionHandler,
-    pub(crate) dynamic_winders: DynamicWind,
+    pub(crate) dynamic_wind: DynamicWind,
+}
+
+impl SchemeCompatible for Parameters {
+    fn rtd() -> Arc<RecordTypeDescriptor> {
+        rtd!(name: "$parameters", opaque: true, sealed: true)
+    }
 }
 
 #[derive(Default)]
@@ -518,6 +551,11 @@ pub fn apply(
     Ok(Application::new(op.clone(), args, None))
 }
 
+////////////////////////////////////////////////////////////////////////////////
+//
+// Call with current continuation
+//
+
 #[cps_bridge(
     name = "call-with-current-continuation",
     lib = "(rnrs base builtins (6))",
@@ -540,11 +578,11 @@ pub fn call_with_current_continuation(
         (k_read.num_required_args, k_read.variadic)
     };
 
-    let dynamic_wind_value = Value::from(Record::from_rust_type(params.dynamic_winders.clone()));
+    let params = Value::from(Record::from_rust_type(params.clone()));
 
     let escape_procedure = Procedure::new(
         runtime.clone(),
-        vec![k.clone(), dynamic_wind_value],
+        vec![k.clone(), params],
         FuncPtr::Bridge(escape_procedure),
         req_args,
         variadic,
@@ -569,11 +607,11 @@ fn escape_procedure(
 ) -> Result<Application, Condition> {
     // env[0] is the continuation
     let k = env[0].clone();
-    // env[1] is the dynamic extend of the continuation
-    let to_extent = env[1].clone();
-    let to_extent = to_extent.try_into_rust_type::<DynamicWind>()?;
+    // env[1] are the parameters of the continuation
+    let saved_params = env[1].clone();
+    let saved_params = saved_params.try_into_rust_type::<Parameters>()?;
 
-    let thunks = entry_winders(&params.dynamic_winders, &to_extent.read());
+    let thunks = entry_winders(&params.dynamic_wind, &saved_params.read().dynamic_wind);
 
     // Clone the continuation
     let k_ref = k.unpacked_ref();
@@ -588,6 +626,7 @@ fn escape_procedure(
     let args = args.iter().chain(rest_args).cloned().collect::<Vec<_>>();
 
     let k = if thunks.is_null() {
+        *params = saved_params.read().clone();
         k
     } else {
         let (req_args, variadic) = {
@@ -597,7 +636,7 @@ fn escape_procedure(
 
         Procedure::new(
             runtime.clone(),
-            vec![thunks, Value::from(k)],
+            vec![thunks, env[1].clone(), Value::from(k)],
             FuncPtr::Continuation(call_thunks),
             req_args,
             variadic,
@@ -619,7 +658,7 @@ fn entry_winders(from_extent: &DynamicWind, to_extent: &DynamicWind) -> Value {
             break;
         };
 
-        if !Gc::ptr_eq(&from_first.0.0, &to_first.0.0) {
+        if !Gc::ptr_eq(&from_first.in_thunk.0, &to_first.in_thunk.0) {
             break;
         }
 
@@ -629,7 +668,10 @@ fn entry_winders(from_extent: &DynamicWind, to_extent: &DynamicWind) -> Value {
 
     let mut thunks = Value::null();
     for thunk in from_winders.iter().chain(to_winders).rev() {
-        thunks = Value::from((Value::from(thunk.0.clone()), thunks));
+        thunks = Value::from((
+            Value::from((Value::from(thunk.in_thunk.clone()), thunk.params.clone())),
+            thunks,
+        ));
     }
 
     thunks
@@ -779,8 +821,11 @@ pub(crate) unsafe extern "C" fn call_thunks(
         // env[0] are the thunks:
         let thunks = env.as_ref().unwrap().clone();
 
-        // env[1] is the continuation:
-        let k: Procedure = env.add(1).as_ref().unwrap().clone().try_into().unwrap();
+        // env[1] are the saved params:
+        let params = env.add(1).as_ref().unwrap().clone();
+
+        // env[2] is the continuation:
+        let k: Procedure = env.add(2).as_ref().unwrap().clone().try_into().unwrap();
 
         // k determines the number of arguments:
         let collected_args = {
@@ -807,7 +852,7 @@ pub(crate) unsafe extern "C" fn call_thunks(
 
         let thunks = Procedure::new(
             Runtime::from_raw_inc_rc(runtime),
-            vec![thunks, collected_args, Value::from(k)],
+            vec![thunks, collected_args, params, Value::from(k)],
             FuncPtr::Continuation(call_thunks_pass_args),
             0,
             false,
@@ -824,7 +869,7 @@ unsafe extern "C" fn call_thunks_pass_args(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     _args: *const Value,
-    _params: *mut Parameters,
+    params: *mut Parameters,
 ) -> *mut Application {
     unsafe {
         // env[0] are the thunks:
@@ -833,27 +878,42 @@ unsafe extern "C" fn call_thunks_pass_args(
         // env[1] are the collected arguments
         let args = env.add(1).as_ref().unwrap().clone();
 
-        // env[2] is k1, the current continuation
-        let k = env.add(2).as_ref().unwrap().clone();
+        // env[2] are the saved params:
+        let saved_params = env.add(2).as_ref().unwrap().clone();
+
+        // env[3] is k1, the current continuation
+        let k = env.add(3).as_ref().unwrap().clone();
 
         let app = match &*thunks.unpacked_ref() {
-            // UnpackedValue::Pair(head_thunk, tail) => {
             UnpackedValue::Pair(pair) => {
-                let lists::Pair(head_thunk, tail) = &*pair.read();
+                let lists::Pair(head, tail) = &*pair.read();
+                let into_thunk: Gc<lists::Pair> = head.clone().try_into().unwrap();
+                let lists::Pair(head_thunk, head_params) = &*into_thunk.read();
                 let head_thunk: Procedure = head_thunk.clone().try_into().unwrap();
-                let cont = Procedure::new(
+                *params.as_mut().unwrap() = head_params
+                    .try_into_rust_type::<Parameters>()
+                    .unwrap()
+                    .read()
+                    .clone();
+                let k = Procedure::new(
                     Runtime::from_raw_inc_rc(runtime),
-                    vec![tail.clone(), args, k],
+                    vec![tail.clone(), args, saved_params, k],
                     FuncPtr::Continuation(call_thunks_pass_args),
                     0,
                     false,
                     None,
                 );
-                Application::new(head_thunk.clone(), vec![Value::from(cont)], None)
+                Application::new(head_thunk.clone(), vec![Value::from(k)], None)
             }
             UnpackedValue::Null => {
                 let mut collected_args = Vec::new();
                 list_to_vec(&args, &mut collected_args);
+                // Restore the saved params:
+                *params.as_mut().unwrap() = saved_params
+                    .try_into_rust_type::<Parameters>()
+                    .unwrap()
+                    .read()
+                    .clone();
                 Application::new(k.try_into().unwrap(), collected_args, None)
             }
             _ => unreachable!(),
@@ -959,15 +1019,21 @@ pub fn call_with_values(
     ))
 }
 
+////////////////////////////////////////////////////////////////////////////////
+//
+// Dynamic wind
+//
+
 #[derive(Clone, Debug, Default, Trace)]
 pub struct DynamicWind {
-    pub(crate) winders: Vec<(Procedure, Procedure)>,
+    pub(crate) winders: Vec<Winder>,
 }
 
-impl SchemeCompatible for DynamicWind {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "dynamic-wind", opaque: true, sealed: true)
-    }
+#[derive(Clone, Debug, Trace)]
+pub struct Winder {
+    pub(crate) in_thunk: Procedure,
+    pub(crate) out_thunk: Procedure,
+    pub(crate) params: Value,
 }
 
 #[cps_bridge(
@@ -1032,12 +1098,13 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
 
         let params = params.as_mut().unwrap_unchecked();
 
-        params.dynamic_winders.winders.push((
-            in_thunk.clone().try_into().unwrap(),
-            out_thunk.clone().try_into().unwrap(),
-        ));
+        params.dynamic_wind.winders.push(Winder {
+            in_thunk: in_thunk.clone().try_into().unwrap(),
+            out_thunk: out_thunk.clone().try_into().unwrap(),
+            params: Value::from(Record::from_rust_type(params.clone())),
+        });
 
-        let cont = Procedure::new(
+        let k = Procedure::new(
             Runtime::from_raw_inc_rc(runtime),
             vec![out_thunk, k],
             FuncPtr::Continuation(call_out_thunks),
@@ -1046,7 +1113,7 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
             None,
         );
 
-        let app = Application::new(body_thunk, vec![Value::from(cont)], None);
+        let app = Application::new(body_thunk, vec![Value::from(k)], None);
 
         Box::into_raw(Box::new(app))
     }
@@ -1069,7 +1136,7 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
         let body_thunk_res = args.as_ref().unwrap().clone();
 
         let params = params.as_mut().unwrap_unchecked();
-        params.dynamic_winders.winders.pop();
+        params.dynamic_wind.winders.pop();
 
         let cont = Procedure(Gc::new(ProcedureInner::new(
             Runtime::from_raw_inc_rc(runtime),
