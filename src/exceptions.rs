@@ -582,7 +582,7 @@ pub(crate) struct ExceptionHandlerInner {
     /// The currently installed handler.
     handler: Procedure,
     /// The parameters at the time of installation.
-    params: Parameters,
+    params: Value,
 }
 
 #[cps_bridge(
@@ -607,7 +607,7 @@ pub fn with_exception_handler(
 
     let exception_handler = ExceptionHandlerInner {
         handler,
-        params: params.clone(),
+        params: Value::from(Record::from_rust_type(params.clone())),
     };
 
     params.exception_handler = ExceptionHandler(Some(Gc::new(exception_handler)));
@@ -646,27 +646,20 @@ pub(crate) unsafe extern "C" fn reset_exception_handler(
             .exception_handler
             .0
             .as_ref()
-            .map(|handler| handler.read().params.exception_handler.clone())
+            .map(|handler| {
+                handler
+                    .read()
+                    .params
+                    .try_into_rust_type::<Parameters>()
+                    .unwrap()
+                    .read()
+                    .exception_handler
+                    .clone()
+            })
             .unwrap_or_default();
 
-        // Ugh:
-
-        let mut collected_args: Vec<_> = (0..k.0.read().num_required_args)
-            .map(|i| args.add(i).as_ref().unwrap().clone())
-            .collect();
-
-        if k.0.read().variadic {
-            let rest_args = args
-                .add(k.0.read().num_required_args)
-                .as_ref()
-                .unwrap()
-                .clone();
-            let mut vec = Vec::new();
-            lists::list_to_vec(&rest_args, &mut vec);
-            collected_args.extend(vec);
-        }
-
-        let app = Application::new(k, collected_args, None);
+        let args = k.collect_args(args);
+        let app = Application::new(k, args, None);
 
         Box::into_raw(Box::new(app))
     }
@@ -690,20 +683,30 @@ pub fn raise(runtime: Runtime, raised: Value, params: &mut Parameters) -> Applic
         let handler = exception_handler.read();
         (handler.params.clone(), Value::from(handler.handler.clone()))
     } else {
-        (Parameters::default(), Value::from(false))
+        (Value::from(false), Value::from(false))
     };
 
-    let thunks = exit_winders(&params.dynamic_winders, &parent_params.dynamic_winders);
+    let thunks = if parent_params.is_true() {
+        exit_winders(
+            &params.dynamic_wind,
+            &parent_params
+                .try_into_rust_type::<Parameters>()
+                .unwrap()
+                .read()
+                .dynamic_wind,
+        )
+    } else {
+        Value::null()
+    };
+
     let calls = Procedure::new(
         runtime,
-        vec![thunks, raised.clone(), handler],
+        vec![thunks, raised.clone(), parent_params, handler],
         FuncPtr::Continuation(call_exits_and_exception_handler_reraise),
         0,
         false,
         None,
     );
-
-    *params = parent_params;
 
     Application::new(calls, Vec::new(), None)
 }
@@ -731,7 +734,7 @@ fn exit_winders(from_extent: &DynamicWind, to_extent: &DynamicWind) -> Value {
             return Value::null();
         };
 
-        if !Gc::ptr_eq(&from_first.1.0, &to_first.1.0) {
+        if !Gc::ptr_eq(&from_first.out_thunk.0, &to_first.out_thunk.0) {
             break;
         }
 
@@ -741,7 +744,10 @@ fn exit_winders(from_extent: &DynamicWind, to_extent: &DynamicWind) -> Value {
 
     let mut thunks = Value::null();
     for thunk in from_winders.iter() {
-        thunks = Value::from((Value::from(thunk.1.clone()), thunks));
+        thunks = Value::from((
+            Value::from((Value::from(thunk.out_thunk.clone()), thunk.params.clone())),
+            thunks,
+        ));
     }
 
     thunks
@@ -751,7 +757,7 @@ unsafe extern "C" fn call_exits_and_exception_handler_reraise(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     _args: *const Value,
-    _params: *mut Parameters,
+    params: *mut Parameters,
 ) -> *mut Application {
     unsafe {
         let runtime = Runtime::from_raw_inc_rc(runtime);
@@ -762,16 +768,26 @@ unsafe extern "C" fn call_exits_and_exception_handler_reraise(
         // env[1] is the raised value:
         let raised = env.add(1).as_ref().unwrap().clone();
 
-        // env[2] is the next exception handler
-        let curr_handler = env.add(2).as_ref().unwrap().clone();
+        // env[2] are the parent params
+        let saved_params = env.add(2).as_ref().unwrap().clone();
+
+        // env[3] is the next exception handler
+        let curr_handler = env.add(3).as_ref().unwrap().clone();
 
         let app = match thunks.unpack() {
             UnpackedValue::Pair(pair) => {
-                let lists::Pair(head_thunk, tail) = &*pair.read();
+                let lists::Pair(head, tail) = &*pair.read();
+                let into_thunk: Gc<lists::Pair> = head.clone().try_into().unwrap();
+                let lists::Pair(head_thunk, head_params) = &*into_thunk.read();
                 let head_thunk: Procedure = head_thunk.clone().try_into().unwrap();
+                *params.as_mut().unwrap() = head_params
+                    .try_into_rust_type::<Parameters>()
+                    .unwrap()
+                    .read()
+                    .clone();
                 let k = Procedure::new(
                     runtime.clone(),
-                    vec![tail.clone(), raised, curr_handler],
+                    vec![tail.clone(), raised, saved_params, curr_handler],
                     FuncPtr::Continuation(call_exits_and_exception_handler_reraise),
                     0,
                     false,
@@ -785,6 +801,9 @@ unsafe extern "C" fn call_exits_and_exception_handler_reraise(
                 if !curr_handler.is_true() {
                     return Box::into_raw(Box::new(Application::halt_err(raised.clone())));
                 }
+
+                let saved_params = saved_params.try_into_rust_type::<Parameters>().unwrap();
+                *params.as_mut().unwrap() = saved_params.read().clone();
 
                 let curr_handler: Procedure = curr_handler.try_into().unwrap();
 
