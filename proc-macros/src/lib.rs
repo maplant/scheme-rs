@@ -77,7 +77,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 _env: &'a [::scheme_rs::value::Value],
                 args: &'a [::scheme_rs::value::Value],
                 rest_args: &'a [::scheme_rs::value::Value],
-                params: &'a mut ::scheme_rs::proc::Parameters,
+                params: &'a mut ::scheme_rs::proc::DynStack,
                 k: ::scheme_rs::value::Value,
             ) -> futures::future::BoxFuture<'a, scheme_rs::proc::Application> {
                 #bridge
@@ -114,7 +114,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                     #lib,
                     #num_args,
                     #is_variadic,
-                    ::scheme_rs::registry::BridgePtr::Async(#wrapper_name),
+                    ::scheme_rs::registry::Bridge::Async(#wrapper_name),
                     ::scheme_rs::registry::BridgeFnDebugInfo::new(
                         ::std::file!(),
                         ::std::line!(),
@@ -132,7 +132,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 _env: &[::scheme_rs::value::Value],
                 args: &[::scheme_rs::value::Value],
                 rest_args: &[::scheme_rs::value::Value],
-                params: &mut ::scheme_rs::proc::Parameters,
+                params: &mut ::scheme_rs::proc::DynStack,
                 k: ::scheme_rs::value::Value,
             ) -> scheme_rs::proc::Application {
                 #bridge
@@ -167,7 +167,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                     #lib,
                     #num_args,
                     #is_variadic,
-                    ::scheme_rs::registry::BridgePtr::Sync(#wrapper_name),
+                    ::scheme_rs::registry::Bridge::Sync(#wrapper_name),
                     ::scheme_rs::registry::BridgeFnDebugInfo::new(
                         ::std::file!(),
                         ::std::line!(),
@@ -231,9 +231,9 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         let num_args = arg_names.len() - is_variadic as usize;
 
         let bridge_ptr = if bridge.sig.asyncness.is_some() {
-            quote!(::scheme_rs::registry::BridgePtr::Async(#wrapper_name))
+            quote!(::scheme_rs::registry::Bridge::Async(#wrapper_name))
         } else {
-            quote!(::scheme_rs::registry::BridgePtr::Sync(#wrapper_name))
+            quote!(::scheme_rs::registry::Bridge::Sync(#wrapper_name))
         };
 
         let inventory = quote! {
@@ -291,7 +291,7 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 env: &'a [::scheme_rs::value::Value],
                 args: &'a [::scheme_rs::value::Value],
                 rest_args: &'a [::scheme_rs::value::Value],
-                params: &'a mut ::scheme_rs::proc::Parameters,
+                params: &'a mut ::scheme_rs::proc::DynStack,
                 k: ::scheme_rs::value::Value,
             ) -> futures::future::BoxFuture<'a, scheme_rs::proc::Application> {
                 #bridge
@@ -324,7 +324,7 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 env: &[::scheme_rs::value::Value],
                 args: &[::scheme_rs::value::Value],
                 rest_args: &[::scheme_rs::value::Value],
-                params: &mut ::scheme_rs::proc::Parameters,
+                params: &mut ::scheme_rs::proc::DynStack,
                 k: ::scheme_rs::value::Value,
             ) -> scheme_rs::proc::Application {
                 #bridge

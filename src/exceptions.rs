@@ -5,14 +5,13 @@ use scheme_rs_macros::{cps_bridge, runtime_fn};
 use crate::{
     ast::ParseAstError,
     gc::{Gc, GcInner, Trace},
-    lists,
-    proc::{Application, FuncPtr, Parameters, Procedure},
+    proc::{Application, DynStack, DynStackElem, FuncPtr, Procedure, pop_dyn_stack},
     records::{Record, RecordTypeDescriptor, SchemeCompatible, into_scheme_compatible, rtd},
     registry::bridge,
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax},
-    value::{UnpackedValue, Value},
+    value::Value,
 };
 use std::{error::Error as StdError, fmt, ops::Range, sync::Arc};
 
@@ -572,19 +571,6 @@ impl fmt::Display for Frame {
     }
 }
 
-/// An exception handler includes the current handler - a function to call with
-/// any condition that is raised - and the previous handler.
-#[derive(Clone, Debug, Default, Trace)]
-pub struct ExceptionHandler(pub(crate) Option<Gc<ExceptionHandlerInner>>);
-
-#[derive(Clone, Debug, Trace)]
-pub(crate) struct ExceptionHandlerInner {
-    /// The currently installed handler.
-    handler: Procedure,
-    /// The parameters at the time of installation.
-    params: Value,
-}
-
 #[cps_bridge(
     name = "with-exception-handler",
     lib = "(rnrs base builtins (6))",
@@ -595,7 +581,7 @@ pub fn with_exception_handler(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    params: &mut Parameters,
+    dyn_stack: &mut DynStack,
     k: Value,
 ) -> Result<Application, Condition> {
     let [handler, thunk] = args else {
@@ -605,23 +591,15 @@ pub fn with_exception_handler(
     let handler: Procedure = handler.clone().try_into()?;
     let thunk: Procedure = thunk.clone().try_into()?;
 
-    let exception_handler = ExceptionHandlerInner {
-        handler,
-        params: Value::from(Record::from_rust_type(params.clone())),
-    };
-
-    params.exception_handler = ExceptionHandler(Some(Gc::new(exception_handler)));
+    dyn_stack.push(DynStackElem::ExceptionHandler(handler));
 
     let k_proc: Procedure = k.clone().try_into().unwrap();
-    let (req_args, var) = {
-        let k_proc_read = k_proc.0.read();
-        (k_proc_read.num_required_args, k_proc_read.variadic)
-    };
+    let (req_args, var) = k_proc.get_formals();
 
     let k = Procedure::new(
         runtime.clone(),
         vec![k.clone()],
-        FuncPtr::Continuation(reset_exception_handler),
+        FuncPtr::Continuation(pop_dyn_stack),
         req_args,
         var,
         None,
@@ -630,160 +608,87 @@ pub fn with_exception_handler(
     Ok(Application::new(thunk.clone(), vec![Value::from(k)], None))
 }
 
-pub(crate) unsafe extern "C" fn reset_exception_handler(
-    _runtime: *mut GcInner<RuntimeInner>,
-    env: *const Value,
-    args: *const Value,
-    params: *mut Parameters,
-) -> *mut Application {
-    unsafe {
-        // env[0] is the continuation
-        let k: Procedure = env.as_ref().unwrap().clone().try_into().unwrap();
-
-        // Pop the exception handler
-        let params = params.as_mut().unwrap_unchecked();
-        params.exception_handler = params
-            .exception_handler
-            .0
-            .as_ref()
-            .map(|handler| {
-                handler
-                    .read()
-                    .params
-                    .try_into_rust_type::<Parameters>()
-                    .unwrap()
-                    .read()
-                    .exception_handler
-                    .clone()
-            })
-            .unwrap_or_default();
-
-        let args = k.collect_args(args);
-        let app = Application::new(k, args, None);
-
-        Box::into_raw(Box::new(app))
-    }
-}
-
 #[cps_bridge(name = "raise", lib = "(rnrs base builtins (6))", args = "obj")]
 pub fn raise_builtin(
     runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    params: &mut Parameters,
+    dyn_stack: &mut DynStack,
     _k: Value,
 ) -> Result<Application, Condition> {
-    Ok(raise(runtime.clone(), args[0].clone(), params))
+    Ok(raise(runtime.clone(), args[0].clone(), dyn_stack))
 }
 
 /// Raises a non-continuable exception to the current exception handler.
-pub fn raise(runtime: Runtime, raised: Value, params: &mut Parameters) -> Application {
-    let (parent_params, handler) = if let Some(exception_handler) = &params.exception_handler.0 {
-        let handler = exception_handler.read();
-        (handler.params.clone(), Value::from(handler.handler.clone()))
-    } else {
-        (Value::from(false), Value::from(false))
-    };
-
-    let thunks = if parent_params.is_true() {
-        params.dynamic_wind.exit_winders(
-            &parent_params
-                .try_into_rust_type::<Parameters>()
-                .unwrap()
-                .read()
-                .dynamic_wind,
-        )
-    } else {
-        Value::null()
-    };
-
-    let calls = Procedure::new(
-        runtime,
-        vec![thunks, raised.clone(), parent_params, handler],
-        FuncPtr::Continuation(call_exits_and_exception_handler_reraise),
-        0,
-        false,
+pub fn raise(runtime: Runtime, raised: Value, dyn_stack: &mut DynStack) -> Application {
+    Application::new(
+        Procedure::new(
+            runtime,
+            vec![raised],
+            FuncPtr::Continuation(unwind_to_exception_handler),
+            0,
+            false,
+            None,
+        ),
+        Vec::new(),
         None,
-    );
-
-    Application::new(calls, Vec::new(), None)
+    )
 }
 
 #[runtime_fn]
 unsafe extern "C" fn raise_rt(
     runtime: *mut GcInner<RuntimeInner>,
     raised: i64,
-    params: *mut Parameters,
+    dyn_stack: *mut DynStack,
 ) -> *mut Application {
     unsafe {
         let runtime = Runtime::from_raw_inc_rc(runtime);
         let raised = Value::from_raw(raised as u64);
-        let params = params.as_mut().unwrap_unchecked();
-        Box::into_raw(Box::new(raise(runtime, raised, params)))
+        let dyn_stack = dyn_stack.as_mut().unwrap_unchecked();
+        Box::into_raw(Box::new(raise(runtime, raised, dyn_stack)))
     }
 }
 
-unsafe extern "C" fn call_exits_and_exception_handler_reraise(
+unsafe extern "C" fn unwind_to_exception_handler(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     _args: *const Value,
-    params: *mut Parameters,
+    dyn_stack: *mut DynStack,
 ) -> *mut Application {
     unsafe {
-        let runtime = Runtime::from_raw_inc_rc(runtime);
+        // env[0] is the raised value:
+        let raised = env.as_ref().unwrap().clone();
 
-        // env[0] are the thunks:
-        let thunks = env.as_ref().unwrap().clone();
+        let dyn_stack = dyn_stack.as_mut().unwrap_unchecked();
 
-        // env[1] is the raised value:
-        let raised = env.add(1).as_ref().unwrap().clone();
-
-        // env[2] are the parent params
-        let saved_params = env.add(2).as_ref().unwrap().clone();
-
-        // env[3] is the next exception handler
-        let curr_handler = env.add(3).as_ref().unwrap().clone();
-
-        let app = match thunks.unpack() {
-            UnpackedValue::Pair(pair) => {
-                let lists::Pair(head, tail) = &*pair.read();
-                let into_thunk: Gc<lists::Pair> = head.clone().try_into().unwrap();
-                let lists::Pair(head_thunk, head_params) = &*into_thunk.read();
-                let head_thunk: Procedure = head_thunk.clone().try_into().unwrap();
-                *params.as_mut().unwrap() = head_params
-                    .try_into_rust_type::<Parameters>()
-                    .unwrap()
-                    .read()
-                    .clone();
-                let k = Procedure::new(
-                    runtime.clone(),
-                    vec![tail.clone(), raised, saved_params, curr_handler],
-                    FuncPtr::Continuation(call_exits_and_exception_handler_reraise),
-                    0,
-                    false,
-                    None,
-                );
-                Application::new(head_thunk, vec![Value::from(k)], None)
-            }
-            UnpackedValue::Null => {
-                // If the exception handler is null, we want to return it as an
-                // error.
-                if !curr_handler.is_true() {
-                    return Box::into_raw(Box::new(Application::halt_err(raised.clone())));
+        loop {
+            let app = match dyn_stack.pop() {
+                None => {
+                    // If the stack is empty, we should return the error
+                    Application::halt_err(raised)
                 }
-
-                let saved_params = saved_params.try_into_rust_type::<Parameters>().unwrap();
-                *params.as_mut().unwrap() = saved_params.read().clone();
-
-                let curr_handler: Procedure = curr_handler.try_into().unwrap();
-
-                Application::new(
-                    curr_handler,
+                Some(DynStackElem::Winder(winder)) => {
+                    // If this is a winder, we should call the out winder while unwinding
+                    Application::new(
+                        winder.out_thunk,
+                        vec![Value::from(Procedure::new(
+                            Runtime::from_raw_inc_rc(runtime),
+                            vec![raised],
+                            FuncPtr::Continuation(unwind_to_exception_handler),
+                            0,
+                            false,
+                            None,
+                        ))],
+                        None,
+                    )
+                }
+                Some(DynStackElem::ExceptionHandler(handler)) => Application::new(
+                    handler,
                     vec![
                         raised.clone(),
                         Value::from(Procedure::new(
-                            runtime,
+                            Runtime::from_raw_inc_rc(runtime),
                             vec![raised],
                             FuncPtr::Continuation(reraise_exception),
                             0,
@@ -792,12 +697,11 @@ unsafe extern "C" fn call_exits_and_exception_handler_reraise(
                         )),
                     ],
                     None,
-                )
-            }
-            _ => unreachable!(),
-        };
-
-        Box::into_raw(Box::new(app))
+                ),
+                _ => continue,
+            };
+            return Box::into_raw(Box::new(app));
+        }
     }
 }
 
@@ -805,7 +709,7 @@ unsafe extern "C" fn reraise_exception(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     _args: *const Value,
-    _params: *mut Parameters,
+    _dyn_stack: *mut DynStack,
 ) -> *mut Application {
     unsafe {
         let runtime = Runtime(Gc::from_raw_inc_rc(runtime));
@@ -840,22 +744,16 @@ pub fn raise_continuable(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    params: &mut Parameters,
+    dyn_stack: &mut DynStack,
     k: Value,
 ) -> Result<Application, Condition> {
     let [condition] = args else {
         unreachable!();
     };
 
-    let Some(handler) = &params.exception_handler.0 else {
+    let Some(handler) = dyn_stack.current_exception_handler() else {
         return Ok(Application::halt_err(condition.clone()));
     };
 
-    let handler = handler.read().clone();
-
-    Ok(Application::new(
-        handler.handler,
-        vec![condition.clone(), k],
-        None,
-    ))
+    Ok(Application::new(handler, vec![condition.clone(), k], None))
 }

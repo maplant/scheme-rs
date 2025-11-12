@@ -10,7 +10,7 @@ use scheme_rs::{
     env::Environment,
     exceptions::Exception,
     ports::{Port, ReadError},
-    proc::{Application, Parameters},
+    proc::{Application, DynStack},
     registry::Library,
     runtime::Runtime,
     syntax::{
@@ -151,8 +151,7 @@ fn compile_and_run_str(
     let expr = maybe_await!(DefinitionBody::parse(runtime, &[sexpr], &env, &span))?;
     let compiled = expr.compile_top_level();
     let closure = maybe_await!(runtime.compile_expr(compiled));
-    let result = maybe_await!(
-        Application::new(closure, Vec::new(), None,).eval(&mut Parameters::default())
-    )?;
+    let result =
+        maybe_await!(Application::new(closure, Vec::new(), None,).eval(&mut DynStack::default()))?;
     Ok(result)
 }

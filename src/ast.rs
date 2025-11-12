@@ -1125,11 +1125,11 @@ impl Expression {
                 add_builtin, div_builtin, equal_builtin, greater_builtin, greater_equal_builtin,
                 lesser_builtin, lesser_equal_builtin, mul_builtin, sub_builtin,
             },
-            proc::{FuncPtr::Bridge, Procedure, SyncBridgePtr},
+            proc::{BridgePtr, FuncPtr::Bridge, Procedure},
         };
         use std::ptr::fn_addr_eq;
 
-        const PRIMOP_TAB: &[(SyncBridgePtr, PrimOp)] = &[
+        const PRIMOP_TAB: &[(BridgePtr, PrimOp)] = &[
             (add_builtin, PrimOp::Add),
             (sub_builtin, PrimOp::Sub),
             (mul_builtin, PrimOp::Mul),

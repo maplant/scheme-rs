@@ -4,7 +4,7 @@ use crate::{
     exceptions::Condition,
     gc::{Gc, GcInner, Trace},
     num::Number,
-    proc::{Application, Parameters, Procedure},
+    proc::{Application, DynStack, Procedure},
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
     syntax::Syntax,
@@ -249,7 +249,7 @@ pub fn map(
     _env: &[Value],
     args: &[Value],
     list_n: &[Value],
-    _params: &mut Parameters,
+    _params: &mut DynStack,
     k: Value,
 ) -> Result<Application, Condition> {
     let [mapper, list_1] = args else {
@@ -298,7 +298,7 @@ unsafe extern "C" fn map_k(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     args: *const Value,
-    _params: *mut Parameters,
+    _params: *mut DynStack,
 ) -> *mut Application {
     unsafe {
         // TODO: Probably need to do this in a way that avoids mutable variables
