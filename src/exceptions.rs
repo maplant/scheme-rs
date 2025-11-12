@@ -6,7 +6,7 @@ use crate::{
     ast::ParseAstError,
     gc::{Gc, GcInner, Trace},
     lists,
-    proc::{Application, DynamicWind, FuncPtr, Parameters, Procedure},
+    proc::{Application, FuncPtr, Parameters, Procedure},
     records::{Record, RecordTypeDescriptor, SchemeCompatible, into_scheme_compatible, rtd},
     registry::bridge,
     runtime::{Runtime, RuntimeInner},
@@ -687,8 +687,7 @@ pub fn raise(runtime: Runtime, raised: Value, params: &mut Parameters) -> Applic
     };
 
     let thunks = if parent_params.is_true() {
-        exit_winders(
-            &params.dynamic_wind,
+        params.dynamic_wind.exit_winders(
             &parent_params
                 .try_into_rust_type::<Parameters>()
                 .unwrap()
@@ -723,34 +722,6 @@ unsafe extern "C" fn raise_rt(
         let params = params.as_mut().unwrap_unchecked();
         Box::into_raw(Box::new(raise(runtime, raised, params)))
     }
-}
-
-fn exit_winders(from_extent: &DynamicWind, to_extent: &DynamicWind) -> Value {
-    let mut from_winders = from_extent.winders.as_slice();
-    let mut to_winders = to_extent.winders.as_slice();
-
-    while let Some((to_first, to_remaining)) = to_winders.split_first() {
-        let Some((from_first, from_remaining)) = from_winders.split_first() else {
-            return Value::null();
-        };
-
-        if !Gc::ptr_eq(&from_first.out_thunk.0, &to_first.out_thunk.0) {
-            break;
-        }
-
-        from_winders = from_remaining;
-        to_winders = to_remaining;
-    }
-
-    let mut thunks = Value::null();
-    for thunk in from_winders.iter() {
-        thunks = Value::from((
-            Value::from((Value::from(thunk.out_thunk.clone()), thunk.params.clone())),
-            thunks,
-        ));
-    }
-
-    thunks
 }
 
 unsafe extern "C" fn call_exits_and_exception_handler_reraise(
