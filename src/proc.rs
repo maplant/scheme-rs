@@ -1027,6 +1027,7 @@ impl DynamicWind {
             from_winders
                 .iter()
                 .map(|wind| Value::from((Value::from(wind.out_thunk.clone()), wind.params.clone())))
+                .rev()
                 .chain(to_winders.iter().map(|wind| {
                     Value::from((Value::from(wind.in_thunk.clone()), wind.params.clone()))
                 }))
