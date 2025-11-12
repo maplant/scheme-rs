@@ -443,6 +443,7 @@ impl Application {
 pub struct Parameters {
     pub(crate) exception_handler: ExceptionHandler,
     pub(crate) dynamic_wind: DynamicWind,
+    // pub(crate) prompts: Prompts,
 }
 
 impl SchemeCompatible for Parameters {
@@ -611,7 +612,9 @@ fn escape_procedure(
     let saved_params = env[1].clone();
     let saved_params = saved_params.try_into_rust_type::<Parameters>()?;
 
-    let thunks = entry_winders(&params.dynamic_wind, &saved_params.read().dynamic_wind);
+    let thunks = params
+        .dynamic_wind
+        .thunks_to_extent(&saved_params.read().dynamic_wind);
 
     // Clone the continuation
     let k_ref = k.unpacked_ref();
@@ -647,34 +650,6 @@ fn escape_procedure(
     let app = Application::new(k, args, None);
 
     Ok(app)
-}
-
-fn entry_winders(from_extent: &DynamicWind, to_extent: &DynamicWind) -> Value {
-    let mut from_winders = from_extent.winders.as_slice();
-    let mut to_winders = to_extent.winders.as_slice();
-
-    while let Some((to_first, to_remaining)) = to_winders.split_first() {
-        let Some((from_first, from_remaining)) = from_winders.split_first() else {
-            break;
-        };
-
-        if !Gc::ptr_eq(&from_first.in_thunk.0, &to_first.in_thunk.0) {
-            break;
-        }
-
-        from_winders = from_remaining;
-        to_winders = to_remaining;
-    }
-
-    let mut thunks = Value::null();
-    for thunk in from_winders.iter().chain(to_winders).rev() {
-        thunks = Value::from((
-            Value::from((Value::from(thunk.in_thunk.clone()), thunk.params.clone())),
-            thunks,
-        ));
-    }
-
-    thunks
 }
 
 fn prepare_env_variable(
@@ -1027,6 +1002,70 @@ pub fn call_with_values(
 #[derive(Clone, Debug, Default, Trace)]
 pub struct DynamicWind {
     pub(crate) winders: Vec<Winder>,
+}
+
+impl DynamicWind {
+    pub(crate) fn thunks_to_extent(&self, to_extent: &Self) -> Value {
+        let mut from_winders = self.winders.as_slice();
+        let mut to_winders = to_extent.winders.as_slice();
+
+        while let Some((to_first, to_remaining)) = to_winders.split_first() {
+            let Some((from_first, from_remaining)) = from_winders.split_first() else {
+                break;
+            };
+
+            if !Gc::ptr_eq(&from_first.in_thunk.0, &to_first.in_thunk.0) {
+                break;
+            }
+
+            from_winders = from_remaining;
+            to_winders = to_remaining;
+        }
+
+        let mut thunks = Value::null();
+        for thunk in
+            from_winders
+                .iter()
+                .map(|wind| Value::from((Value::from(wind.out_thunk.clone()), wind.params.clone())))
+                .rev()
+                .chain(to_winders.iter().map(|wind| {
+                    Value::from((Value::from(wind.in_thunk.clone()), wind.params.clone()))
+                }))
+                .rev()
+        {
+            thunks = Value::from((thunk, thunks));
+        }
+
+        thunks
+    }
+
+    pub(crate) fn exit_winders(&self, to_extent: &Self) -> Value {
+        let mut from_winders = self.winders.as_slice();
+        let mut to_winders = to_extent.winders.as_slice();
+
+        while let Some((to_first, to_remaining)) = to_winders.split_first() {
+            let Some((from_first, from_remaining)) = from_winders.split_first() else {
+                return Value::null();
+            };
+
+            if !Gc::ptr_eq(&from_first.out_thunk.0, &to_first.out_thunk.0) {
+                break;
+            }
+
+            from_winders = from_remaining;
+            to_winders = to_remaining;
+        }
+
+        let mut thunks = Value::null();
+        for thunk in from_winders.iter() {
+            thunks = Value::from((
+                Value::from((Value::from(thunk.out_thunk.clone()), thunk.params.clone())),
+                thunks,
+            ));
+        }
+
+        thunks
+    }
 }
 
 #[derive(Clone, Debug, Trace)]
