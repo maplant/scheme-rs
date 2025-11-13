@@ -1,10 +1,10 @@
 use indexmap::IndexMap;
 
 use crate::{
-    exceptions::{Condition, ExceptionHandler, ExceptionHandlerInner},
+    exceptions::Condition,
     gc::{Gc, GcInner, Trace},
     num::Number,
-    proc::{Application, DynamicWind, Procedure},
+    proc::{Application, DynStack, Procedure},
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
     value::{EqvValue, UnpackedValue, Value, ValueType, write_value},
@@ -236,9 +236,8 @@ pub fn map(
     _env: &[Value],
     args: &[Value],
     list_n: &[Value],
-    cont: &Value,
-    exception_handler: &ExceptionHandler,
-    dynamic_wind: &DynamicWind,
+    _params: &mut DynStack,
+    k: Value,
 ) -> Result<Application, Condition> {
     let [mapper, list_1] = args else {
         unreachable!()
@@ -253,13 +252,7 @@ pub fn map(
     for input in inputs.iter_mut() {
         if input.type_of() == ValueType::Null {
             // TODO: Check if the rest are also empty and args is empty
-            return Ok(Application::new(
-                cont.clone().try_into()?,
-                vec![Value::null()],
-                exception_handler.clone(),
-                dynamic_wind.clone(),
-                None,
-            ));
+            return Ok(Application::new(k.try_into()?, vec![Value::null()], None));
         }
 
         let (car, cdr) = match &*input.unpacked_ref() {
@@ -282,7 +275,7 @@ pub fn map(
             Value::from(Vec::<Value>::new()),
             Value::from(inputs),
             mapper.clone(),
-            cont.clone(),
+            k,
         ],
         crate::proc::FuncPtr::Continuation(map_k),
         1,
@@ -292,21 +285,14 @@ pub fn map(
 
     args.push(Value::from(map_k));
 
-    Ok(Application::new(
-        mapper_proc,
-        args,
-        exception_handler.clone(),
-        dynamic_wind.clone(),
-        None,
-    ))
+    Ok(Application::new(mapper_proc, args, None))
 }
 
 unsafe extern "C" fn map_k(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandlerInner>,
-    dynamic_wind: *const DynamicWind,
+    _params: *mut DynStack,
 ) -> *mut Application {
     unsafe {
         // TODO: Probably need to do this in a way that avoids mutable variables
@@ -334,13 +320,7 @@ unsafe extern "C" fn map_k(
             if input.type_of() == ValueType::Null {
                 // TODO: Check if the rest are also empty and args is empty
                 let output = slice_to_list(&output.read());
-                let app = Application::new(
-                    k,
-                    vec![output],
-                    ExceptionHandler::from_ptr(exception_handler),
-                    dynamic_wind.as_ref().unwrap().clone(),
-                    None,
-                );
+                let app = Application::new(k, vec![output], None);
                 return Box::into_raw(Box::new(app));
             }
 
@@ -377,13 +357,7 @@ unsafe extern "C" fn map_k(
 
         args.push(Value::from(map_k));
 
-        let app = Application::new(
-            mapper,
-            args,
-            ExceptionHandler::from_ptr(exception_handler),
-            dynamic_wind.as_ref().unwrap().clone(),
-            None,
-        );
+        let app = Application::new(mapper, args, None);
 
         Box::into_raw(Box::new(app))
     }

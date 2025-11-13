@@ -193,6 +193,12 @@ impl<T: Trace> From<T> for Gc<T> {
     }
 }
 
+impl<T: Trace + Default> Default for Gc<T> {
+    fn default() -> Self {
+        Gc::new(T::default())
+    }
+}
+
 impl<T: ?Sized> std::fmt::Display for Gc<T>
 where
     T: std::fmt::Display,
@@ -348,7 +354,6 @@ pub unsafe trait Trace: 'static {
     /// function **ANYWHERE ELSE** is a **RACE CONDITION**!
     ///
     /// **DO NOT CALL THIS FUNCTION!!**
-    // TODO(map): Make this function async
     unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr));
 
     /// # Safety
@@ -458,6 +463,29 @@ where
         unsafe {
             self.0.finalize_or_skip();
             self.1.finalize_or_skip();
+        }
+    }
+}
+
+unsafe impl<A, B, C> Trace for (A, B, C)
+where
+    A: GcOrTrace,
+    B: GcOrTrace,
+    C: GcOrTrace,
+{
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+        unsafe {
+            self.0.visit_or_recurse(visitor);
+            self.1.visit_or_recurse(visitor);
+            self.2.visit_or_recurse(visitor);
+        }
+    }
+
+    unsafe fn finalize(&mut self) {
+        unsafe {
+            self.0.finalize_or_skip();
+            self.1.finalize_or_skip();
+            self.2.finalize_or_skip();
         }
     }
 }

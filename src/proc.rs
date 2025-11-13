@@ -3,26 +3,36 @@
 
 use crate::{
     env::Local,
-    exceptions::{Condition, Exception, ExceptionHandler, ExceptionHandlerInner, Frame, raise},
+    exceptions::{Condition, Exception, Frame, raise},
     gc::{Gc, GcInner, Trace},
-    lists::{self, list_to_vec, slice_to_list},
+    lists::{self, Pair, list_to_vec},
+    num::Number,
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::BridgeFnDebugInfo,
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
     syntax::Span,
     value::{Cell, UnpackedValue, UnpackedValueRef, Value},
+    vectors,
 };
 use scheme_rs_macros::{cps_bridge, maybe_async, maybe_await};
-use std::{borrow::Cow, collections::HashMap, fmt, hash::Hash, mem::MaybeUninit, sync::Arc};
+use std::{
+    collections::HashMap,
+    fmt,
+    hash::Hash,
+    mem::MaybeUninit,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 /// A function pointer to a generated continuation.
 pub(crate) type ContinuationPtr = unsafe extern "C" fn(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandlerInner>,
-    dynamic_wind: *const DynamicWind,
+    dyn_stack: *mut DynStack,
 ) -> *mut Application;
 
 /// A function pointer to a generated user function.
@@ -30,20 +40,19 @@ pub(crate) type UserPtr = unsafe extern "C" fn(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandlerInner>,
-    dynamic_wind: *const DynamicWind,
-    cont: Value,
+    dyn_stack: *mut DynStack,
+    k: Value,
 ) -> *mut Application;
 
 /// A function pointer to a sync Rust bridge function.
-pub type SyncBridgePtr = for<'a> fn(
+pub type BridgePtr = for<'a> fn(
     runtime: &'a Runtime,
     env: &'a [Value],
+    // TODO: Make this a Vec
     args: &'a [Value],
     rest_args: &'a [Value],
-    cont: &'a Value,
-    exception_handler: &'a ExceptionHandler,
-    dynamic_wind: &'a DynamicWind,
+    dyn_stack: &mut DynStack,
+    k: Value,
 ) -> Application;
 
 /// A function pointer to an async Rust bridge function.
@@ -53,31 +62,31 @@ pub type AsyncBridgePtr = for<'a> fn(
     env: &'a [Value],
     args: &'a [Value],
     rest_args: &'a [Value],
-    cont: &'a Value,
-    exception_handler: &'a ExceptionHandler,
-    dynamic_wind: &'a DynamicWind,
+    dyn_stack: &'a mut DynStack,
+    k: Value,
 ) -> futures::future::BoxFuture<'a, Application>;
 
 #[derive(Copy, Clone, Debug)]
 pub(crate) enum FuncPtr {
-    Continuation(ContinuationPtr),
-    User(UserPtr),
-    Bridge(SyncBridgePtr),
+    /// A function defined in Rust
+    Bridge(BridgePtr),
     #[cfg(feature = "async")]
+    /// An async function defined in Rust
     AsyncBridge(AsyncBridgePtr),
-    /// Special type to indicate that we should return the argument as an Err.
-    HaltError,
+    /// A JIT compiled user function
+    User(UserPtr),
+    /// A JIT compiled (or occasionally defined in Rust) continuation
+    Continuation(ContinuationPtr),
+    /// A continuation that exits a prompt. Can be dynamically replaced
+    PromptBarrier {
+        barrier_id: usize,
+        k: ContinuationPtr,
+    },
 }
 
 enum JitFuncPtr {
     Continuation(ContinuationPtr),
     User(UserPtr),
-}
-
-unsafe impl Trace for FuncPtr {
-    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(crate::gc::OpaqueGcPtr)) {}
-
-    unsafe fn finalize(&mut self) {}
 }
 
 #[derive(Clone, Trace)]
@@ -91,6 +100,7 @@ pub(crate) struct ProcedureInner {
     /// Environmental variables used by the procedure.
     pub(crate) env: Vec<Value>,
     /// Fuction pointer to the body of the procecure.
+    #[trace(skip)]
     pub(crate) func: FuncPtr,
     /// Number of required arguments to this procedure.
     pub(crate) num_required_args: usize,
@@ -124,35 +134,24 @@ impl ProcedureInner {
     }
 
     pub fn is_continuation(&self) -> bool {
-        matches!(self.func, FuncPtr::Continuation(_))
+        matches!(
+            self.func,
+            FuncPtr::Continuation(_) | FuncPtr::PromptBarrier { .. }
+        )
     }
 
-    pub fn is_user_func(&self) -> bool {
-        !self.is_continuation()
-    }
-
-    pub(crate) fn prepare_args<'a>(
+    pub(crate) fn prepare_args(
         &self,
-        args: &'a [Value],
-        exception_handler: &ExceptionHandler,
-        dynamic_wind: &DynamicWind,
-    ) -> Result<(&'a [Value], Option<Value>), Application> {
+        mut args: Vec<Value>,
+    ) -> Result<(Vec<Value>, Option<Value>), Application> {
         // Extract the continuation, if it is required
-        let requires_cont = !matches!(self.func, FuncPtr::Continuation(_));
-        let (cont, args) = if requires_cont {
-            let (cont, args) = args.split_last().unwrap();
-            (Some(cont.clone()), args)
-        } else {
-            (None, args)
-        };
+        let cont = (!self.is_continuation()).then(|| args.pop().unwrap());
 
         // Error if the number of arguments provided is incorrect
         if args.len() < self.num_required_args {
             return Err(raise(
                 self.runtime.clone(),
                 Condition::wrong_num_of_args(self.num_required_args, args.len()).into(),
-                exception_handler.clone(),
-                dynamic_wind,
             ));
         }
 
@@ -160,8 +159,6 @@ impl ProcedureInner {
             return Err(raise(
                 self.runtime.clone(),
                 Condition::wrong_num_of_args(self.num_required_args, args.len()).into(),
-                exception_handler.clone(),
-                dynamic_wind,
             ));
         }
 
@@ -173,9 +170,8 @@ impl ProcedureInner {
         &self,
         func: AsyncBridgePtr,
         args: &[Value],
-        cont: Value,
-        exception_handler: &ExceptionHandler,
-        dynamic_wind: &DynamicWind,
+        dyn_stack: &mut DynStack,
+        k: Value,
     ) -> Application {
         let (args, rest_args) = if self.variadic {
             args.split_at(self.num_required_args)
@@ -183,25 +179,15 @@ impl ProcedureInner {
             (args, &[] as &[Value])
         };
 
-        (func)(
-            &self.runtime,
-            &self.env,
-            args,
-            rest_args,
-            &cont,
-            exception_handler,
-            dynamic_wind,
-        )
-        .await
+        (func)(&self.runtime, &self.env, args, rest_args, dyn_stack, k).await
     }
 
     fn apply_sync_bridge(
         &self,
-        func: SyncBridgePtr,
+        func: BridgePtr,
         args: &[Value],
-        cont: Value,
-        exception_handler: &ExceptionHandler,
-        dynamic_wind: &DynamicWind,
+        dyn_stack: &mut DynStack,
+        k: Value,
     ) -> Application {
         let (args, rest_args) = if self.variadic {
             args.split_at(self.num_required_args)
@@ -209,33 +195,24 @@ impl ProcedureInner {
             (args, &[] as &[Value])
         };
 
-        (func)(
-            &self.runtime,
-            &self.env,
-            args,
-            rest_args,
-            &cont,
-            exception_handler,
-            dynamic_wind,
-        )
+        (func)(&self.runtime, &self.env, args, rest_args, dyn_stack, k)
     }
 
     fn apply_jit(
         &self,
         func: JitFuncPtr,
-        args: &[Value],
-        cont: Option<Value>,
-        exception_handler: &ExceptionHandler,
-        dynamic_wind: &DynamicWind,
+        mut args: Vec<Value>,
+        dyn_stack: &mut DynStack,
+        k: Option<Value>,
     ) -> Application {
-        let args = if self.variadic {
-            let (args, rest_args) = args.split_at(self.num_required_args);
-            let mut args = args.to_owned();
-            args.push(slice_to_list(rest_args));
-            Cow::Owned(args)
-        } else {
-            Cow::Borrowed(args)
-        };
+        if self.variadic {
+            let mut rest_args = Value::null();
+            let extra_args = args.len() - self.num_required_args;
+            for _ in 0..extra_args {
+                rest_args = Value::from(Gc::new(Pair::new(args.pop().unwrap(), rest_args)));
+            }
+            args.push(rest_args);
+        }
 
         let app = match func {
             JitFuncPtr::Continuation(sync_fn) => unsafe {
@@ -243,8 +220,7 @@ impl ProcedureInner {
                     Gc::as_ptr(&self.runtime.0),
                     self.env.as_ptr(),
                     args.as_ptr(),
-                    exception_handler.as_ptr(),
-                    dynamic_wind as *const DynamicWind,
+                    dyn_stack as *mut DynStack,
                 )
             },
             JitFuncPtr::User(sync_fn) => unsafe {
@@ -252,9 +228,8 @@ impl ProcedureInner {
                     Gc::as_ptr(&self.runtime.0),
                     self.env.as_ptr(),
                     args.as_ptr(),
-                    exception_handler.as_ptr(),
-                    dynamic_wind as *const DynamicWind,
-                    Value::from_raw(Value::as_raw(cont.as_ref().unwrap())),
+                    dyn_stack as *mut DynStack,
+                    Value::from_raw(Value::as_raw(k.as_ref().unwrap())),
                 )
             },
         };
@@ -263,127 +238,39 @@ impl ProcedureInner {
     }
 
     #[maybe_async]
-    pub fn apply(
-        &self,
-        args: &[Value],
-        exception_handler: &ExceptionHandler,
-        dynamic_wind: &DynamicWind,
-    ) -> Result<Application, Value> {
-        if let FuncPtr::HaltError = self.func {
-            return Err(args[0].clone());
-        }
-
-        let (args, k) = match self.prepare_args(args, exception_handler, dynamic_wind) {
+    pub fn apply(&self, args: Vec<Value>, dyn_stack: &mut DynStack) -> Application {
+        let (args, k) = match self.prepare_args(args) {
             Ok(args) => args,
-            Err(raised) => return Ok(raised),
+            Err(raised) => return raised,
         };
 
-        let app = match self.func {
-            FuncPtr::Continuation(cont) => self.apply_jit(
-                JitFuncPtr::Continuation(cont),
-                args,
-                k,
-                exception_handler,
-                dynamic_wind,
-            ),
-            FuncPtr::User(user) => self.apply_jit(
-                JitFuncPtr::User(user),
-                args,
-                k,
-                exception_handler,
-                dynamic_wind,
-            ),
+        match self.func {
             FuncPtr::Bridge(sbridge) => {
-                self.apply_sync_bridge(sbridge, args, k.unwrap(), exception_handler, dynamic_wind)
+                self.apply_sync_bridge(sbridge, &args, dyn_stack, k.unwrap())
             }
             #[cfg(feature = "async")]
             FuncPtr::AsyncBridge(abridge) => {
-                self.apply_async_bridge(abridge, args, k.unwrap(), exception_handler, dynamic_wind)
+                self.apply_async_bridge(abridge, &args, dyn_stack, k.unwrap())
                     .await
             }
-            FuncPtr::HaltError => unreachable!(),
-        };
-
-        Ok(app)
-    }
-}
-
-/// The runtime representation of a Procedure, which can be either a user
-/// function or a continuation. Contains a reference to all of the environmental
-/// variables used in the body, along with a function pointer to the body of the
-/// procedure.
-#[derive(Clone, Trace)]
-pub struct Procedure(pub(crate) Gc<ProcedureInner>);
-
-impl Procedure {
-    pub(crate) fn new(
-        runtime: Runtime,
-        env: Vec<Value>,
-        func: FuncPtr,
-        num_required_args: usize,
-        variadic: bool,
-        debug_info: Option<Arc<FuncDebugInfo>>,
-    ) -> Self {
-        Self(Gc::new(ProcedureInner {
-            runtime,
-            env,
-            func,
-            num_required_args,
-            variadic,
-            is_variable_transformer: false,
-            debug_info,
-        }))
-    }
-
-    pub fn get_runtime(&self) -> Runtime {
-        self.0.read().runtime.clone()
-    }
-
-    pub fn is_variable_transformer(&self) -> bool {
-        self.0.read().is_variable_transformer
-    }
-
-    #[maybe_async]
-    pub fn call(&self, args: &[Value]) -> Result<Vec<Value>, Exception> {
-        unsafe extern "C" fn halt(
-            _runtime: *mut GcInner<RuntimeInner>,
-            _env: *const Value,
-            args: *const Value,
-            _exception_handler: *mut GcInner<ExceptionHandlerInner>,
-            _dynamic_wind: *const DynamicWind,
-        ) -> *mut Application {
-            unsafe { crate::runtime::halt(Value::into_raw(args.read()) as i64) }
+            FuncPtr::User(user) => self.apply_jit(JitFuncPtr::User(user), args, dyn_stack, k),
+            FuncPtr::Continuation(k) => {
+                self.apply_jit(JitFuncPtr::Continuation(k), args, dyn_stack, None)
+            }
+            FuncPtr::PromptBarrier { barrier_id: id, k } => {
+                match dyn_stack.pop() {
+                    Some(DynStackElem::PromptBarrier(PromptBarrier {
+                        barrier_id,
+                        replaced_k,
+                    })) if barrier_id == id => {
+                        return Application::new(replaced_k, args, None);
+                    }
+                    Some(other) => dyn_stack.push(other),
+                    _ => (),
+                }
+                self.apply_jit(JitFuncPtr::Continuation(k), args, dyn_stack, None)
+            }
         }
-
-        let mut args = args.to_vec();
-
-        // TODO: We don't need to create a new one of these every time, we should just have
-        // one
-        args.push(Value::from(Self(Gc::new(ProcedureInner::new(
-            self.0.read().runtime.clone(),
-            Vec::new(),
-            FuncPtr::Continuation(halt),
-            0,
-            true,
-            None,
-        )))));
-
-        maybe_await!(
-            Application::new(
-                self.clone(),
-                args,
-                ExceptionHandler::default(),
-                DynamicWind::default(),
-                None,
-            )
-            .eval()
-        )
-    }
-}
-
-impl fmt::Debug for Procedure {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.read().fmt(f)
     }
 }
 
@@ -420,45 +307,146 @@ impl fmt::Debug for ProcedureInner {
     }
 }
 
+/// The runtime representation of a Procedure, which can be either a user
+/// function or a continuation. Contains a reference to all of the environmental
+/// variables used in the body, along with a function pointer to the body of the
+/// procedure.
+#[derive(Clone, Trace)]
+pub struct Procedure(pub(crate) Gc<ProcedureInner>);
+
+impl Procedure {
+    pub(crate) fn new(
+        runtime: Runtime,
+        env: Vec<Value>,
+        func: FuncPtr,
+        num_required_args: usize,
+        variadic: bool,
+        debug_info: Option<Arc<FuncDebugInfo>>,
+    ) -> Self {
+        Self(Gc::new(ProcedureInner {
+            runtime,
+            env,
+            func,
+            num_required_args,
+            variadic,
+            is_variable_transformer: false,
+            debug_info,
+        }))
+    }
+
+    pub fn get_runtime(&self) -> Runtime {
+        self.0.read().runtime.clone()
+    }
+
+    pub fn get_formals(&self) -> (usize, bool) {
+        let this = self.0.read();
+        (this.num_required_args, this.variadic)
+    }
+
+    /// # Safety
+    /// `args` must be a valid pointer and contain num_required_args + variadic entries.
+    pub unsafe fn collect_args(&self, args: *const Value) -> Vec<Value> {
+        // I don't really like this, but what are you gonna do?
+        let (num_required_args, variadic) = self.get_formals();
+
+        unsafe {
+            let mut collected_args: Vec<_> = (0..num_required_args)
+                .map(|i| args.add(i).as_ref().unwrap().clone())
+                .collect();
+
+            if variadic {
+                let rest_args = args.add(num_required_args).as_ref().unwrap().clone();
+                let mut vec = Vec::new();
+                lists::list_to_vec(&rest_args, &mut vec);
+                collected_args.extend(vec);
+            }
+
+            collected_args
+        }
+    }
+
+    pub fn is_variable_transformer(&self) -> bool {
+        self.0.read().is_variable_transformer
+    }
+
+    #[maybe_async]
+    pub fn call(&self, args: &[Value]) -> Result<Vec<Value>, Exception> {
+        unsafe extern "C" fn halt(
+            _runtime: *mut GcInner<RuntimeInner>,
+            _env: *const Value,
+            args: *const Value,
+            _dyn_stack: *mut DynStack,
+        ) -> *mut Application {
+            unsafe { crate::runtime::halt(Value::into_raw(args.read()) as i64) }
+        }
+
+        let mut args = args.to_vec();
+
+        // TODO: We don't need to create a new one of these every time, we should just have
+        // one
+        args.push(Value::from(Self(Gc::new(ProcedureInner::new(
+            self.0.read().runtime.clone(),
+            Vec::new(),
+            FuncPtr::Continuation(halt),
+            0,
+            true,
+            None,
+        )))));
+
+        maybe_await!(Application::new(self.clone(), args, None,).eval(&mut DynStack::default(),))
+    }
+}
+
+impl fmt::Debug for Procedure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.read().fmt(f)
+    }
+}
+
+impl PartialEq for Procedure {
+    fn eq(&self, rhs: &Procedure) -> bool {
+        Gc::ptr_eq(&self.0, &rhs.0)
+    }
+}
+
+pub enum OpType {
+    Proc(Procedure),
+    HaltOk,
+    HaltErr,
+}
+
 /// An application of a function to a given set of values.
 pub struct Application {
-    /// The operator being applied to. If None, we return the values to the Rust
-    /// caller.
-    op: Option<Procedure>,
+    /// The operator being applied to.
+    pub op: OpType,
     /// The arguments being applied to the operator.
-    args: Vec<Value>,
-    /// The current exception handler to be passed to the operator.
-    exception_handler: ExceptionHandler,
-    /// The dynamic extend of the application.
-    dynamic_wind: DynamicWind,
+    pub args: Vec<Value>,
     /// The call site of this application, if it exists.
-    call_site: Option<Arc<Span>>,
+    pub call_site: Option<Arc<Span>>,
 }
 
 impl Application {
-    pub fn new(
-        op: Procedure,
-        args: Vec<Value>,
-        exception_handler: ExceptionHandler,
-        dynamic_wind: DynamicWind,
-        call_site: Option<Arc<Span>>,
-    ) -> Self {
+    pub fn new(op: Procedure, args: Vec<Value>, call_site: Option<Arc<Span>>) -> Self {
         Self {
             // We really gotta figure out how to deal with this better
-            op: Some(op),
+            op: OpType::Proc(op),
             args,
-            exception_handler,
-            dynamic_wind,
             call_site,
         }
     }
 
-    pub fn halt(args: Vec<Value>) -> Self {
+    pub fn halt_ok(args: Vec<Value>) -> Self {
         Self {
-            op: None,
+            op: OpType::HaltOk,
             args,
-            exception_handler: ExceptionHandler::default(),
-            dynamic_wind: DynamicWind::default(),
+            call_site: None,
+        }
+    }
+
+    pub fn halt_err(arg: Value) -> Self {
+        Self {
+            op: OpType::HaltErr,
+            args: vec![arg],
             call_site: None,
         }
     }
@@ -466,29 +454,24 @@ impl Application {
     /// Evaluate the application - and all subsequent application - until all that
     /// remains are values. This is the main trampoline of the evaluation engine.
     #[maybe_async]
-    pub fn eval(mut self) -> Result<Vec<Value>, Exception> {
+    pub fn eval(mut self, dyn_stack: &mut DynStack) -> Result<Vec<Value>, Exception> {
         let mut stack_trace = StackTraceCollector::new();
 
-        while let Application {
-            op: Some(op),
-            args,
-            exception_handler,
-            dynamic_wind,
-            call_site,
-        } = self
-        {
-            let op = { op.0.read().as_ref().clone() };
-            stack_trace.collect_application(op.debug_info.clone(), call_site);
-            self = match maybe_await!(op.apply(&args, &exception_handler, &dynamic_wind)) {
-                Err(exception) => {
-                    return Err(Exception::new(stack_trace.into_frames(), exception));
+        loop {
+            let op = match self.op {
+                OpType::Proc(proc) => proc,
+                OpType::HaltOk => return Ok(self.args),
+                OpType::HaltErr => {
+                    return Err(Exception::new(
+                        stack_trace.into_frames(),
+                        self.args.pop().unwrap(),
+                    ));
                 }
-                Ok(app) => app,
             };
+            let op = { op.0.read().as_ref().clone() };
+            stack_trace.collect_application(op.debug_info.clone(), self.call_site);
+            self = maybe_await!(op.apply(self.args, dyn_stack));
         }
-
-        // If we have no operator left, return the arguments as the final values:
-        Ok(self.args)
     }
 }
 
@@ -578,9 +561,8 @@ pub fn apply(
     _env: &[Value],
     args: &[Value],
     rest_args: &[Value],
-    cont: &Value,
-    exception_handler: &ExceptionHandler,
-    dynamic_wind: &DynamicWind,
+    _dyn_stack: &mut DynStack,
+    k: Value,
 ) -> Result<Application, Condition> {
     if rest_args.is_empty() {
         return Err(Condition::wrong_num_of_args(2, args.len()));
@@ -589,15 +571,100 @@ pub fn apply(
     let (last, args) = rest_args.split_last().unwrap();
     let mut args = args.to_vec();
     list_to_vec(last, &mut args);
-    args.push(cont.clone());
-    Ok(Application::new(
-        op.clone(),
-        args,
-        exception_handler.clone(),
-        dynamic_wind.clone(),
-        None,
-    ))
+    args.push(k);
+    Ok(Application::new(op.clone(), args, None))
 }
+
+////////////////////////////////////////////////////////////////////////////////
+//
+// Dynamic stack
+//
+
+/// A dynamic stack, loosely modeled after Guile's
+#[derive(Clone, Default, Debug, Trace)]
+pub struct DynStack {
+    dyn_stack: Vec<DynStackElem>,
+}
+
+impl DynStack {
+    pub fn current_exception_handler(&self) -> Option<Procedure> {
+        self.dyn_stack.iter().rev().find_map(|elem| match elem {
+            DynStackElem::ExceptionHandler(proc) => Some(proc.clone()),
+            _ => None,
+        })
+    }
+
+    /*
+    pub fn find_prompt_barrier(&self, barrier_id: usize) -> Option<Procedure> {
+        self.dyn_stack.iter().rev().find_map(|elem| match elem {
+            DynStackElem::PromptBarrier(barrier) if barrier.barrier_id == barrier_id => Some(barrier.replaced_k.clone()),
+            _ => None,
+        })
+    }
+    */
+
+    pub fn push(&mut self, elem: DynStackElem) {
+        self.dyn_stack.push(elem);
+    }
+
+    pub fn pop(&mut self) -> Option<DynStackElem> {
+        self.dyn_stack.pop()
+    }
+
+    pub fn get(&self, idx: usize) -> Option<&DynStackElem> {
+        self.dyn_stack.get(idx)
+    }
+
+    pub fn last(&self) -> Option<&DynStackElem> {
+        self.dyn_stack.last()
+    }
+
+    pub fn len(&self) -> usize {
+        self.dyn_stack.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.dyn_stack.is_empty()
+    }
+}
+
+impl SchemeCompatible for DynStack {
+    fn rtd() -> Arc<RecordTypeDescriptor> {
+        rtd!(name: "$dyn-stack", sealed: true, opaque: true)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Trace)]
+pub enum DynStackElem {
+    Prompt(Prompt),
+    PromptBarrier(PromptBarrier),
+    Winder(Winder),
+    ExceptionHandler(Procedure),
+}
+
+pub(crate) unsafe extern "C" fn pop_dyn_stack(
+    _runtime: *mut GcInner<RuntimeInner>,
+    env: *const Value,
+    args: *const Value,
+    dyn_stack: *mut DynStack,
+) -> *mut Application {
+    unsafe {
+        // env[0] is the continuation
+        let k: Procedure = env.as_ref().unwrap().clone().try_into().unwrap();
+
+        dyn_stack.as_mut().unwrap_unchecked().pop();
+
+        let args = k.collect_args(args);
+        let app = Application::new(k, args, None);
+
+        Box::into_raw(Box::new(app))
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+//
+// Call with current continuation
+//
 
 #[cps_bridge(
     name = "call-with-current-continuation",
@@ -609,37 +676,29 @@ pub fn call_with_current_continuation(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    cont: &Value,
-    exception_handler: &ExceptionHandler,
-    dynamic_wind: &DynamicWind,
+    dyn_stack: &mut DynStack,
+    k: Value,
 ) -> Result<Application, Condition> {
     let [proc] = args else { unreachable!() };
     let proc: Procedure = proc.clone().try_into()?;
 
     let (req_args, variadic) = {
-        let cont: Procedure = cont.clone().try_into()?;
-        let cont_read = cont.0.read();
-        (cont_read.num_required_args, cont_read.variadic)
+        let k: Procedure = k.clone().try_into()?;
+        k.get_formals()
     };
 
-    let dynamic_wind_value = Value::from(Record::from_rust_type(dynamic_wind.clone()));
+    let dyn_stack = Value::from(Record::from_rust_type(dyn_stack.clone()));
 
     let escape_procedure = Procedure::new(
         runtime.clone(),
-        vec![cont.clone(), dynamic_wind_value],
+        vec![k.clone(), dyn_stack],
         FuncPtr::Bridge(escape_procedure),
         req_args,
         variadic,
         None,
     );
 
-    let app = Application::new(
-        proc,
-        vec![Value::from(escape_procedure), cont.clone()],
-        exception_handler.clone(),
-        dynamic_wind.clone(),
-        None,
-    );
+    let app = Application::new(proc, vec![Value::from(escape_procedure), k], None);
 
     Ok(app)
 }
@@ -652,82 +711,186 @@ fn escape_procedure(
     env: &[Value],
     args: &[Value],
     rest_args: &[Value],
-    _cont: &Value,
-    exception_handler: &ExceptionHandler,
-    from_extent: &DynamicWind,
+    dyn_stack: &mut DynStack,
+    _k: Value,
 ) -> Result<Application, Condition> {
     // env[0] is the continuation
-    let cont = env[0].clone();
-    // env[1] is the dynamic extend of the continuation
-    let to_extent = env[1].clone();
-    let to_extent = to_extent.try_into_rust_type::<DynamicWind>()?;
+    let k = env[0].clone();
 
-    let thunks = entry_winders(from_extent, &to_extent.read());
+    // env[1] is the dyn stack of the continuation
+    let saved_dyn_stack_val = env[1].clone();
+    let saved_dyn_stack = saved_dyn_stack_val
+        .clone()
+        .try_into_rust_type::<DynStack>()
+        .unwrap();
+    let saved_dyn_stack_read = saved_dyn_stack.read();
 
     // Clone the continuation
-    let cont_ref = cont.unpacked_ref();
-    let cont = maybe_clone_continuation(
-        &cont_ref,
+    let k_ref = k.unpacked_ref();
+    let k = maybe_clone_continuation(
+        &k_ref,
         &mut StackClone::default(),
         &mut StackClone::default(),
     )
-    .unwrap_or_else(|| cont.clone());
-    let cont: Procedure = cont.try_into().unwrap();
+    .unwrap_or_else(|| k.clone());
+    let k: Procedure = k.try_into().unwrap();
 
     let args = args.iter().chain(rest_args).cloned().collect::<Vec<_>>();
 
-    let cont = if thunks.is_null() {
-        cont
+    // Simple optimization: check if we're in the same dyn stack
+    if dyn_stack.len() == saved_dyn_stack_read.len()
+        && dyn_stack.last() == saved_dyn_stack_read.last()
+    {
+        Ok(Application::new(k, args, None))
     } else {
-        let (req_args, variadic) = {
-            let cont_read = cont.0.read();
-            (cont_read.num_required_args, cont_read.variadic)
-        };
-
-        Procedure::new(
+        let args = Value::from(args);
+        let k = Procedure::new(
             runtime.clone(),
-            vec![thunks, Value::from(cont)],
-            FuncPtr::Continuation(call_thunks),
-            req_args,
-            variadic,
+            vec![Value::from(k), args, saved_dyn_stack_val],
+            FuncPtr::Continuation(unwind),
+            0,
+            false,
             None,
-        )
-    };
-
-    let app = Application::new(
-        cont,
-        args,
-        exception_handler.clone(),
-        from_extent.clone(),
-        None,
-    );
-
-    Ok(app)
+        );
+        Ok(Application::new(k, Vec::new(), None))
+    }
 }
 
-fn entry_winders(from_extent: &DynamicWind, to_extent: &DynamicWind) -> Value {
-    let mut from_winders = from_extent.winders.as_slice();
-    let mut to_winders = to_extent.winders.as_slice();
+unsafe extern "C" fn unwind(
+    runtime: *mut GcInner<RuntimeInner>,
+    env: *const Value,
+    _args: *const Value,
+    dyn_stack: *mut DynStack,
+) -> *mut Application {
+    unsafe {
+        // env[0] is the ultimate continuation
+        let k = env.as_ref().unwrap().clone();
 
-    while let Some((to_first, to_remaining)) = to_winders.split_first() {
-        let Some((from_first, from_remaining)) = from_winders.split_first() else {
-            break;
-        };
+        // env[1] are the arguments to pass to k
+        let args = env.add(1).as_ref().unwrap().clone();
 
-        if !Gc::ptr_eq(&from_first.0.0, &to_first.0.0) {
-            break;
+        // env[2] is the stack we are trying to reach
+        let dest_stack_val = env.add(2).as_ref().unwrap().clone();
+        let dest_stack = dest_stack_val
+            .clone()
+            .try_into_rust_type::<DynStack>()
+            .unwrap();
+        let dest_stack_read = dest_stack.read();
+
+        let dyn_stack = dyn_stack.as_mut().unwrap_unchecked();
+
+        while !dyn_stack.is_empty()
+            && (dyn_stack.len() > dest_stack_read.len()
+                || dyn_stack.last() != dest_stack_read.get(dyn_stack.len() - 1))
+        {
+            match dyn_stack.pop() {
+                None => {
+                    break;
+                }
+                Some(DynStackElem::Winder(winder)) => {
+                    // Call the out winder while unwinding
+                    let app = Application::new(
+                        winder.out_thunk,
+                        vec![Value::from(Procedure::new(
+                            Runtime::from_raw_inc_rc(runtime),
+                            vec![k, args, dest_stack_val],
+                            FuncPtr::Continuation(unwind),
+                            0,
+                            false,
+                            None,
+                        ))],
+                        None,
+                    );
+                    return Box::into_raw(Box::new(app));
+                }
+                _ => (),
+            };
         }
 
-        from_winders = from_remaining;
-        to_winders = to_remaining;
-    }
+        // Begin winding
+        let app = Application::new(
+            Procedure::new(
+                Runtime::from_raw_inc_rc(runtime),
+                vec![k, args, dest_stack_val, Value::from(false)],
+                FuncPtr::Continuation(wind),
+                0,
+                false,
+                None,
+            ),
+            Vec::new(),
+            None,
+        );
 
-    let mut thunks = Value::null();
-    for thunk in from_winders.iter().chain(to_winders).rev() {
-        thunks = Value::from((Value::from(thunk.0.clone()), thunks));
+        Box::into_raw(Box::new(app))
     }
+}
 
-    thunks
+unsafe extern "C" fn wind(
+    runtime: *mut GcInner<RuntimeInner>,
+    env: *const Value,
+    _args: *const Value,
+    dyn_stack: *mut DynStack,
+) -> *mut Application {
+    unsafe {
+        // env[0] is the ultimate continuation
+        let k = env.as_ref().unwrap().clone();
+
+        // env[1] are the arguments to pass to k
+        let args = env.add(1).as_ref().unwrap().clone();
+
+        // env[2] is the stack we are trying to reach
+        let dest_stack_val = env.add(2).as_ref().unwrap().clone();
+        let dest_stack = dest_stack_val
+            .clone()
+            .try_into_rust_type::<DynStack>()
+            .unwrap();
+        let dest_stack_read = dest_stack.read();
+
+        let dyn_stack = dyn_stack.as_mut().unwrap_unchecked();
+
+        // env[3] is potentially a winder that we should push onto the dyn stack
+        let winder = env.add(3).as_ref().unwrap().clone();
+        if winder.is_true() {
+            let winder = winder.try_into_rust_type::<Winder>().unwrap();
+            dyn_stack.push(DynStackElem::Winder(winder.read().clone()));
+        }
+
+        while dyn_stack.len() < dest_stack_read.len() {
+            match dest_stack_read.get(dyn_stack.len()).cloned() {
+                None => {
+                    break;
+                }
+                Some(DynStackElem::Winder(winder)) => {
+                    // Call the in winder while winding
+                    let app = Application::new(
+                        winder.in_thunk.clone(),
+                        vec![Value::from(Procedure::new(
+                            Runtime::from_raw_inc_rc(runtime),
+                            vec![
+                                k,
+                                args,
+                                dest_stack_val,
+                                Value::from(Record::from_rust_type(winder)),
+                            ],
+                            FuncPtr::Continuation(wind),
+                            0,
+                            false,
+                            None,
+                        ))],
+                        None,
+                    );
+                    return Box::into_raw(Box::new(app));
+                }
+                Some(elem) => dyn_stack.push(elem),
+            }
+        }
+
+        let args: Gc<vectors::AlignedVector<Value>> = args.try_into().unwrap();
+        let args = args.read().0.to_vec();
+
+        let app = Application::new(k.try_into().unwrap(), args, None);
+        Box::into_raw(Box::new(app))
+    }
 }
 
 fn prepare_env_variable(
@@ -864,139 +1027,23 @@ where
     }
 }
 
-pub(crate) unsafe extern "C" fn call_thunks(
-    runtime: *mut GcInner<RuntimeInner>,
-    env: *const Value,
-    args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandlerInner>,
-    dynamic_wind: *const DynamicWind,
-) -> *mut Application {
-    unsafe {
-        // env[0] are the thunks:
-        let thunks = env.as_ref().unwrap().clone();
-
-        // env[1] is the continuation:
-        let k: Procedure = env.add(1).as_ref().unwrap().clone().try_into().unwrap();
-
-        // k determines the number of arguments:
-        let collected_args = {
-            let k_read = k.0.read();
-            let mut num_args = k_read.num_required_args;
-
-            if k_read.is_user_func() {
-                num_args += 1;
-            }
-
-            let mut collected_args = if k_read.variadic {
-                args.add(num_args).as_ref().unwrap().clone()
-            } else {
-                Value::null()
-            };
-
-            for i in (0..num_args).rev() {
-                let arg = args.add(i).as_ref().unwrap().clone();
-                collected_args = Value::from((arg, collected_args));
-            }
-
-            collected_args
-        };
-
-        let thunks = Procedure::new(
-            Runtime::from_raw_inc_rc(runtime),
-            vec![thunks, collected_args, Value::from(k)],
-            FuncPtr::Continuation(call_thunks_pass_args),
-            0,
-            false,
-            None,
-        );
-
-        let app = Application::new(
-            thunks,
-            Vec::new(),
-            ExceptionHandler::from_ptr(exception_handler),
-            dynamic_wind.as_ref().unwrap().clone(),
-            None,
-        );
-
-        Box::into_raw(Box::new(app))
-    }
-}
-
-unsafe extern "C" fn call_thunks_pass_args(
-    runtime: *mut GcInner<RuntimeInner>,
-    env: *const Value,
-    _args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandlerInner>,
-    dynamic_wind: *const DynamicWind,
-) -> *mut Application {
-    unsafe {
-        // env[0] are the thunks:
-        let thunks = env.as_ref().unwrap().clone();
-
-        // env[1] are the collected arguments
-        let args = env.add(1).as_ref().unwrap().clone();
-
-        // env[2] is k1, the current continuation
-        let k = env.add(2).as_ref().unwrap().clone();
-
-        let app = match &*thunks.unpacked_ref() {
-            // UnpackedValue::Pair(head_thunk, tail) => {
-            UnpackedValue::Pair(pair) => {
-                let lists::Pair(head_thunk, tail) = &*pair.read();
-                let head_thunk: Procedure = head_thunk.clone().try_into().unwrap();
-                let cont = Procedure::new(
-                    Runtime::from_raw_inc_rc(runtime),
-                    vec![tail.clone(), args, k],
-                    FuncPtr::Continuation(call_thunks_pass_args),
-                    0,
-                    false,
-                    None,
-                );
-                Application::new(
-                    head_thunk.clone(),
-                    vec![Value::from(cont)],
-                    ExceptionHandler::from_ptr(exception_handler),
-                    dynamic_wind.as_ref().unwrap().clone(),
-                    None,
-                )
-            }
-            UnpackedValue::Null => {
-                let mut collected_args = Vec::new();
-                list_to_vec(&args, &mut collected_args);
-                Application::new(
-                    k.try_into().unwrap(),
-                    collected_args,
-                    ExceptionHandler::from_ptr(exception_handler),
-                    dynamic_wind.as_ref().unwrap().clone(),
-                    None,
-                )
-            }
-            _ => unreachable!(),
-        };
-
-        Box::into_raw(Box::new(app))
-    }
-}
-
 unsafe extern "C" fn call_consumer_with_values(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandlerInner>,
-    dynamic_wind: *const DynamicWind,
+    _dyn_stack: *mut DynStack,
 ) -> *mut Application {
     unsafe {
         // env[0] is the consumer
         let consumer = env.as_ref().unwrap().clone();
         let type_name = consumer.type_name();
+
         let consumer: Procedure = match consumer.try_into() {
             Ok(consumer) => consumer,
             _ => {
                 let raised = raise(
                     Runtime::from_raw_inc_rc(runtime),
                     Condition::invalid_operator(type_name).into(),
-                    ExceptionHandler::from_ptr(exception_handler),
-                    dynamic_wind.as_ref().unwrap(),
                 );
                 return Box::into_raw(Box::new(raised));
             }
@@ -1027,8 +1074,6 @@ unsafe extern "C" fn call_consumer_with_values(
         Box::into_raw(Box::new(Application::new(
             consumer.clone(),
             collected_args,
-            ExceptionHandler::from_ptr(exception_handler),
-            dynamic_wind.as_ref().unwrap().clone(),
             None,
         )))
     }
@@ -1044,9 +1089,8 @@ pub fn call_with_values(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    cont: &Value,
-    exception_handler: &ExceptionHandler,
-    dynamic_wind: &DynamicWind,
+    _dyn_stack: &mut DynStack,
+    k: Value,
 ) -> Result<Application, Condition> {
     let [producer, consumer] = args else {
         return Err(Condition::wrong_num_of_args(2, args.len()));
@@ -1063,7 +1107,7 @@ pub fn call_with_values(
 
     let call_consumer_closure = Procedure::new(
         runtime.clone(),
-        vec![Value::from(consumer), cont.clone()],
+        vec![Value::from(consumer), k],
         FuncPtr::Continuation(call_consumer_with_values),
         num_required_args,
         variadic,
@@ -1073,20 +1117,24 @@ pub fn call_with_values(
     Ok(Application::new(
         producer,
         vec![Value::from(call_consumer_closure)],
-        exception_handler.clone(),
-        dynamic_wind.clone(),
         None,
     ))
 }
 
-#[derive(Clone, Debug, Default, Trace)]
-pub struct DynamicWind {
-    pub(crate) winders: Vec<(Procedure, Procedure)>,
+////////////////////////////////////////////////////////////////////////////////
+//
+// Dynamic wind
+//
+
+#[derive(Clone, Debug, Trace, PartialEq)]
+pub struct Winder {
+    pub(crate) in_thunk: Procedure,
+    pub(crate) out_thunk: Procedure,
 }
 
-impl SchemeCompatible for DynamicWind {
+impl SchemeCompatible for Winder {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "dynamic-wind", opaque: true, sealed: true)
+        rtd!(name: "$winder", sealed: true, opaque: true)
     }
 }
 
@@ -1100,9 +1148,8 @@ pub fn dynamic_wind(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    cont: &Value,
-    exception_handler: &ExceptionHandler,
-    dynamic_wind: &DynamicWind,
+    _dyn_stack: &mut DynStack,
+    k: Value,
 ) -> Result<Application, Condition> {
     let [in_thunk_val, body_thunk_val, out_thunk_val] = args else {
         return Err(Condition::wrong_num_of_args(3, args.len()));
@@ -1117,7 +1164,7 @@ pub fn dynamic_wind(
             in_thunk_val.clone(),
             body_thunk_val.clone(),
             out_thunk_val.clone(),
-            cont.clone(),
+            k,
         ],
         FuncPtr::Continuation(call_body_thunk),
         0,
@@ -1128,8 +1175,6 @@ pub fn dynamic_wind(
     Ok(Application::new(
         in_thunk,
         vec![Value::from(call_body_thunk_cont)],
-        exception_handler.clone(),
-        dynamic_wind.clone(),
         None,
     ))
 }
@@ -1138,8 +1183,7 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     _args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandlerInner>,
-    dynamic_wind: *const DynamicWind,
+    dyn_stack: *mut DynStack,
 ) -> *mut Application {
     unsafe {
         // env[0] is the in thunk
@@ -1154,13 +1198,14 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
         // env[3] is k, the continuation
         let k = env.add(3).as_ref().unwrap().clone();
 
-        let mut new_extent = dynamic_wind.as_ref().unwrap().clone();
-        new_extent.winders.push((
-            in_thunk.clone().try_into().unwrap(),
-            out_thunk.clone().try_into().unwrap(),
-        ));
+        let dyn_stack = dyn_stack.as_mut().unwrap_unchecked();
 
-        let cont = Procedure::new(
+        dyn_stack.push(DynStackElem::Winder(Winder {
+            in_thunk: in_thunk.clone().try_into().unwrap(),
+            out_thunk: out_thunk.clone().try_into().unwrap(),
+        }));
+
+        let k = Procedure::new(
             Runtime::from_raw_inc_rc(runtime),
             vec![out_thunk, k],
             FuncPtr::Continuation(call_out_thunks),
@@ -1169,13 +1214,7 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
             None,
         );
 
-        let app = Application::new(
-            body_thunk,
-            vec![Value::from(cont)],
-            ExceptionHandler::from_ptr(exception_handler),
-            new_extent,
-            None,
-        );
+        let app = Application::new(body_thunk, vec![Value::from(k)], None);
 
         Box::into_raw(Box::new(app))
     }
@@ -1185,8 +1224,7 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandlerInner>,
-    dynamic_wind: *const DynamicWind,
+    dyn_stack: *mut DynStack,
 ) -> *mut Application {
     unsafe {
         // env[0] is the out thunk
@@ -1198,8 +1236,8 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
         // args[0] is the result of the body thunk
         let body_thunk_res = args.as_ref().unwrap().clone();
 
-        let mut new_extent = dynamic_wind.as_ref().unwrap().clone();
-        new_extent.winders.pop();
+        let dyn_stack = dyn_stack.as_mut().unwrap_unchecked();
+        dyn_stack.pop();
 
         let cont = Procedure(Gc::new(ProcedureInner::new(
             Runtime::from_raw_inc_rc(runtime),
@@ -1210,13 +1248,7 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
             None,
         )));
 
-        let app = Application::new(
-            out_thunk,
-            vec![Value::from(cont)],
-            ExceptionHandler::from_ptr(exception_handler),
-            new_extent,
-            None,
-        );
+        let app = Application::new(out_thunk, vec![Value::from(cont)], None);
 
         Box::into_raw(Box::new(app))
     }
@@ -1226,8 +1258,7 @@ unsafe extern "C" fn forward_body_thunk_result(
     _runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     _args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandlerInner>,
-    dynamic_wind: *const DynamicWind,
+    _dyn_stack: *mut DynStack,
 ) -> *mut Application {
     unsafe {
         // env[0] is the result of the body thunk
@@ -1238,14 +1269,364 @@ unsafe extern "C" fn forward_body_thunk_result(
         let mut args = Vec::new();
         list_to_vec(&body_thunk_res, &mut args);
 
-        let app = Application::new(
-            k,
-            args,
-            ExceptionHandler::from_ptr(exception_handler),
-            dynamic_wind.as_ref().unwrap().clone(),
-            None,
-        );
+        let app = Application::new(k, args, None);
 
         Box::into_raw(Box::new(app))
     }
 }
+
+////////////////////////////////////////////////////////////////////////////////
+//
+// Prompts and delimited continuations
+//
+
+#[derive(Clone, Debug, PartialEq, Trace)]
+pub struct Prompt {
+    tag: Symbol,
+    barrier_id: usize,
+    handler: Procedure,
+    handler_k: Procedure,
+}
+
+#[derive(Clone, Debug, PartialEq, Trace)]
+pub struct PromptBarrier {
+    barrier_id: usize,
+    replaced_k: Procedure,
+}
+
+static BARRIER_ID: AtomicUsize = AtomicUsize::new(0);
+
+#[cps_bridge(
+    name = "call-with-prompt",
+    lib = "(rnrs base builtins (6))",
+    args = "tag thunk handler"
+)]
+pub fn call_with_prompt(
+    runtime: &Runtime,
+    _env: &[Value],
+    args: &[Value],
+    _rest_args: &[Value],
+    dyn_stack: &mut DynStack,
+    k: Value,
+) -> Result<Application, Condition> {
+    let [tag, thunk, handler] = args else {
+        unreachable!()
+    };
+
+    let k_proc: Procedure = k.clone().try_into().unwrap();
+    let (req_args, variadic) = k_proc.get_formals();
+    let tag: Symbol = tag.clone().try_into().unwrap();
+
+    let barrier_id = BARRIER_ID.fetch_add(1, Ordering::Relaxed);
+
+    dyn_stack.push(DynStackElem::Prompt(Prompt {
+        tag,
+        handler: handler.clone().try_into().unwrap(),
+        barrier_id,
+        handler_k: k.clone().try_into()?,
+    }));
+
+    let prompt_barrier = Procedure::new(
+        runtime.clone(),
+        vec![k],
+        FuncPtr::PromptBarrier {
+            barrier_id,
+            k: pop_dyn_stack,
+        },
+        req_args,
+        variadic,
+        None,
+    );
+
+    Ok(Application::new(
+        thunk.clone().try_into().unwrap(),
+        vec![Value::from(prompt_barrier)],
+        None,
+    ))
+}
+
+#[cps_bridge(
+    name = "abort-to-prompt",
+    lib = "(rnrs base builtins (6))",
+    args = "tag"
+)]
+pub fn abort_to_prompt(
+    runtime: &Runtime,
+    _env: &[Value],
+    args: &[Value],
+    _rest_args: &[Value],
+    dyn_stack: &mut DynStack,
+    k: Value,
+) -> Result<Application, Condition> {
+    let [tag] = args else { unreachable!() };
+
+    let unwind_to_prompt = Procedure::new(
+        runtime.clone(),
+        vec![
+            k,
+            tag.clone(),
+            Value::from(Record::from_rust_type(dyn_stack.clone())),
+        ],
+        FuncPtr::Continuation(unwind_to_prompt),
+        0,
+        false,
+        None,
+    );
+
+    Ok(Application::new(unwind_to_prompt, Vec::new(), None))
+}
+
+unsafe extern "C" fn unwind_to_prompt(
+    runtime: *mut GcInner<RuntimeInner>,
+    env: *const Value,
+    _args: *const Value,
+    dyn_stack: *mut DynStack,
+) -> *mut Application {
+    unsafe {
+        // env[0] is continuation
+        let k = env.as_ref().unwrap().clone();
+        // env[1] is the prompt tag
+        let tag: Symbol = env.add(1).as_ref().unwrap().clone().try_into().unwrap();
+        // env[2] is the saved dyn stack
+        let saved_dyn_stack = env.add(2).as_ref().unwrap().clone();
+
+        let dyn_stack = dyn_stack.as_mut().unwrap_unchecked();
+
+        loop {
+            let app = match dyn_stack.pop() {
+                None => {
+                    // If the stack is empty, we should return the error
+                    Application::halt_err(Value::from(Condition::error(format!(
+                        "No prompt tag {tag} found"
+                    ))))
+                }
+                Some(DynStackElem::Prompt(Prompt {
+                    tag: prompt_tag,
+                    barrier_id,
+                    handler,
+                    handler_k,
+                })) if prompt_tag == tag => {
+                    let saved_dyn_stack = saved_dyn_stack.try_into_rust_type::<DynStack>().unwrap();
+                    let prompt_delimited_dyn_stack = DynStack {
+                        dyn_stack: saved_dyn_stack.read().dyn_stack[dyn_stack.len() + 1..].to_vec(),
+                    };
+                    let (req_args, var) = {
+                        let k_proc: Procedure = k.clone().try_into().unwrap();
+                        k_proc.get_formals()
+                    };
+                    Application::new(
+                        handler,
+                        vec![
+                            Value::from(Procedure::new(
+                                Runtime::from_raw_inc_rc(runtime),
+                                vec![
+                                    k,
+                                    Value::from(Number::from(barrier_id)),
+                                    Value::from(Record::from_rust_type(prompt_delimited_dyn_stack)),
+                                ],
+                                FuncPtr::Bridge(delimited_continuation),
+                                req_args,
+                                var,
+                                None,
+                            )),
+                            Value::from(handler_k),
+                        ],
+                        None,
+                    )
+                }
+                Some(DynStackElem::Winder(winder)) => {
+                    // If this is a winder, we should call the out winder while unwinding
+                    Application::new(
+                        winder.out_thunk,
+                        vec![Value::from(Procedure::new(
+                            Runtime::from_raw_inc_rc(runtime),
+                            vec![k, Value::from(tag), saved_dyn_stack],
+                            FuncPtr::Continuation(unwind_to_prompt),
+                            0,
+                            false,
+                            None,
+                        ))],
+                        None,
+                    )
+                }
+                _ => continue,
+            };
+            return Box::into_raw(Box::new(app));
+        }
+    }
+}
+
+#[cps_bridge]
+fn delimited_continuation(
+    runtime: &Runtime,
+    env: &[Value],
+    args: &[Value],
+    rest_args: &[Value],
+    dyn_stack: &mut DynStack,
+    k: Value,
+) -> Result<Application, Condition> {
+    // env[0] is the delimited continuation
+    let dk = env[0].clone();
+
+    // env[1] is the barrier Id
+    let barrier_id: Arc<Number> = env[1].clone().try_into()?;
+    let barrier_id: usize = barrier_id.as_ref().try_into()?;
+
+    // env[2] is the dyn stack of the continuation
+    let saved_dyn_stack_val = env[2].clone();
+    let saved_dyn_stack = saved_dyn_stack_val
+        .clone()
+        .try_into_rust_type::<DynStack>()
+        .unwrap();
+    let saved_dyn_stack_read = saved_dyn_stack.read();
+
+    let args = args.iter().chain(rest_args).cloned().collect::<Vec<_>>();
+
+    dyn_stack.push(DynStackElem::PromptBarrier(PromptBarrier {
+        barrier_id,
+        replaced_k: k.try_into()?,
+    }));
+
+    // Simple optimization: if the saved dyn stack is empty, we
+    // can just call the delimited continuation
+    if saved_dyn_stack_read.is_empty() {
+        Ok(Application::new(dk.try_into()?, args, None))
+    } else {
+        let args = Value::from(args);
+        let k = Procedure::new(
+            runtime.clone(),
+            vec![
+                dk,
+                args,
+                saved_dyn_stack_val,
+                Value::from(Number::from(0)),
+                Value::from(false),
+            ],
+            FuncPtr::Continuation(wind_delim),
+            0,
+            false,
+            None,
+        );
+        Ok(Application::new(k, Vec::new(), None))
+    }
+}
+
+unsafe extern "C" fn wind_delim(
+    runtime: *mut GcInner<RuntimeInner>,
+    env: *const Value,
+    _args: *const Value,
+    dyn_stack: *mut DynStack,
+) -> *mut Application {
+    unsafe {
+        // env[0] is the ultimate continuation
+        let k = env.as_ref().unwrap().clone();
+
+        // env[1] are the arguments to pass to k
+        let args = env.add(1).as_ref().unwrap().clone();
+
+        // env[2] is the stack we are trying to reach
+        let dest_stack_val = env.add(2).as_ref().unwrap().clone();
+        let dest_stack = dest_stack_val
+            .clone()
+            .try_into_rust_type::<DynStack>()
+            .unwrap();
+        let dest_stack_read = dest_stack.read();
+
+        // env[3] is the index into the dest stack we're at
+        let idx: Arc<Number> = env.add(3).as_ref().unwrap().clone().try_into().unwrap();
+        let mut idx: usize = idx.as_ref().try_into().unwrap();
+
+        let dyn_stack = dyn_stack.as_mut().unwrap_unchecked();
+
+        // env[4] is potentially a winder that we should push onto the dyn stack
+        let winder = env.add(4).as_ref().unwrap().clone();
+        if winder.is_true() {
+            let winder = winder.try_into_rust_type::<Winder>().unwrap();
+            dyn_stack.push(DynStackElem::Winder(winder.read().clone()));
+        }
+
+        while let Some(elem) = dest_stack_read.get(idx) {
+            idx += 1;
+
+            if let DynStackElem::Winder(winder) = elem {
+                // Call the in winder while winding
+                let app = Application::new(
+                    winder.in_thunk.clone(),
+                    vec![Value::from(Procedure::new(
+                        Runtime::from_raw_inc_rc(runtime),
+                        vec![
+                            k,
+                            args,
+                            dest_stack_val,
+                            Value::from(Record::from_rust_type(winder.clone())),
+                        ],
+                        FuncPtr::Continuation(wind),
+                        0,
+                        false,
+                        None,
+                    ))],
+                    None,
+                );
+                return Box::into_raw(Box::new(app));
+            }
+            dyn_stack.push(elem.clone());
+        }
+
+        let args: Gc<vectors::AlignedVector<Value>> = args.try_into().unwrap();
+        let args = args.read().0.to_vec();
+
+        let app = Application::new(k.try_into().unwrap(), dbg!(args), None);
+        Box::into_raw(Box::new(app))
+    }
+}
+
+/*
+pub(crate) unsafe extern "C" fn remove_prompt(
+    _runtime: *mut GcInner<RuntimeInner>,
+    env: *const Value,
+    args: *const Value,
+    dyn_stack: *mut DynStack,
+) -> *mut Application {
+    unsafe {
+        // env[0] is the continuation
+        let k: Procedure = env.as_ref().unwrap().clone().try_into().unwrap();
+
+        // env[1] is the prompt
+        let prompt: Symbol = env.add(1).as_ref().unwrap().clone().try_into().unwrap();
+
+        // Remove the prompt:
+        dyn_stack.as_mut().unwrap_unchecked().prompts.remove(&prompt);
+
+        let args = k.collect_args(args);
+        let app = Application::new(k, args, None);
+
+        Box::into_raw(Box::new(app))
+    }
+}
+
+/// Calls a delimited continuation saved with [abort_to_prompt]
+#[cps_bridge]
+fn delimited_cotinuation(
+    runtime: &Runtime,
+    env: &[Value],
+    args: &[Value],
+    rest_args: &[Value],
+    dyn_stack: &mut DynStack,
+    k: Value,
+) -> Result<Application, Condition> {
+    // env[0] is the delimited continuation
+    let dk: Procedure = env[0].clone().try_into()?;
+    // env[1] is the barrier Id
+    let barrier_id: Arc<Number> = env[1].clone().try_into()?;
+    let barrier_id: usize = barrier_id.as_ref().try_into()?;
+    // env[2] are the dyn_stack for the continuation
+    let saved_dyn_stack = env[2].try_into_rust_type::<DynStack>()?;
+
+    // TODO: Do we need to modify the parameters of the winders? Yes
+    let thunks = dyn_stack
+        .dynamic_wind
+        .travel_to_extent(&saved_dyn_stack.read().dynamic_wind);
+
+    todo!()
+}
+*/

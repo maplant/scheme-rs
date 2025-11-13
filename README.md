@@ -17,6 +17,7 @@ That is obviously a long way away.
 - Concurrent garbage collection via [Bacon-Rajan Concurrent Cycle Collection](https://pages.cs.wisc.edu/~cymen/misc/interests/Bacon01Concurrent.pdf)
 - All key forms
 - Call-by-current-continuation
+- Delimited continuations (`call-with-prompt`, `abort-to-prompt`)
 - Hygienic macros and syntax transformers (`define-syntax`, `syntax-case`, `datum->syntax` and `syntax->datum`) 
 - Spawning tasks and awaiting futures
 - Exceptions and error handling (`raise`, `raise-continuable`, `with-exception-handler`)

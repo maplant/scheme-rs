@@ -8,9 +8,9 @@ use scheme_rs::{
     ast::{DefinitionBody, ImportSet, ParseAstError},
     cps::Compile,
     env::Environment,
-    exceptions::{Exception, ExceptionHandler},
+    exceptions::Exception, 
     ports::{BufferMode, Port, Prompt, Transcoder},
-    proc::{Application, DynamicWind},
+    proc::{Application, DynStack},
     registry::Library,
     runtime::Runtime,
     syntax::{Span, Syntax},
@@ -148,15 +148,7 @@ fn compile_and_run_str(
     let expr = maybe_await!(DefinitionBody::parse(runtime, &[sexpr], &env, &span))?;
     let compiled = expr.compile_top_level();
     let closure = maybe_await!(runtime.compile_expr(compiled));
-    let result = maybe_await!(
-        Application::new(
-            closure,
-            Vec::new(),
-            ExceptionHandler::default(),
-            DynamicWind::default(),
-            None,
-        )
-        .eval()
-    )?;
+    let result =
+        maybe_await!(Application::new(closure, Vec::new(), None,).eval(&mut DynStack::default()))?;
     Ok(result)
 }

@@ -25,14 +25,14 @@ use std::{
     sync::Arc,
 };
 
-#[derive(Clone)]
+#[derive(Clone, Trace)]
 #[repr(align(16))]
 pub enum Number {
-    FixedInteger(i64),
-    BigInteger(Integer),
-    Rational(Rational),
-    Real(f64),
-    Complex(Complex64),
+    FixedInteger(#[trace(skip)] i64),
+    BigInteger(#[trace(skip)] Integer),
+    Rational(#[trace(skip)] Rational),
+    Real(#[trace(skip)] f64),
+    Complex(#[trace(skip)] Complex64),
 }
 
 impl Number {
@@ -145,6 +145,222 @@ impl From<f64> for Number {
 impl From<Complex64> for Number {
     fn from(c: Complex64) -> Self {
         Self::Complex(c)
+    }
+}
+
+macro_rules! number_try_into_impl_integer {
+    ($ty:tt) => {
+        impl TryInto<$ty> for Number {
+            type Error = Condition;
+            fn try_into(self) -> Result<$ty, Self::Error> {
+                match self {
+                    Number::FixedInteger(i) => {
+                        // Since FixedInteger is i64, we can just check for
+                        // greater than size_of::<u32>() to know if we should just
+                        // cast the value to the type or check for the right size.
+                        if size_of::<$ty>() > size_of::<u32>() {
+                            Ok(i as $ty)
+                        } else {
+                            if i <= $ty::MAX as i64 && i >= $ty::MIN as i64 {
+                                Ok(i as $ty)
+                            } else {
+                                Err(Condition::not_representable(
+                                    &format!("{i}"),
+                                    stringify!($ty),
+                                ))
+                            }
+                        }
+                    }
+                    Number::BigInteger(bigint) => {
+                        // BigInteger is simpler.
+                        // Since it is based off limbs, we can just check if it is
+                        // representable or not by checking if the BigInt fits the size.
+                        if ($ty::MIN..=$ty::MAX).contains(&bigint) {
+                            let vec = bigint.into_twos_complement_limbs_asc();
+                            // I am not sure if this check is needed or not
+                            if vec.len() == 0 {
+                                return Ok(0);
+                            }
+                            Ok(vec[0] as $ty)
+                        } else {
+                            Err(Condition::not_representable(
+                                &format!("{bigint}"),
+                                stringify!($ty),
+                            ))
+                        }
+                    }
+                    Number::Rational(_) => {
+                        Err(Condition::conversion_error(stringify!($ty), "Rational"))
+                    }
+                    Number::Real(_) => Err(Condition::conversion_error(stringify!($ty), "Real")),
+                    Number::Complex(_) => {
+                        Err(Condition::conversion_error(stringify!($ty), "Complex"))
+                    }
+                }
+            }
+        }
+    };
+}
+
+number_try_into_impl_integer!(u8);
+number_try_into_impl_integer!(u16);
+number_try_into_impl_integer!(u32);
+number_try_into_impl_integer!(u64);
+number_try_into_impl_integer!(usize);
+number_try_into_impl_integer!(i8);
+number_try_into_impl_integer!(i16);
+number_try_into_impl_integer!(i32);
+number_try_into_impl_integer!(i64);
+number_try_into_impl_integer!(isize);
+
+impl TryInto<u128> for Number {
+    type Error = Condition;
+    fn try_into(self) -> Result<u128, Self::Error> {
+        match self {
+            Number::FixedInteger(i) => Ok(i as u128),
+            Number::BigInteger(bigint) => {
+                if (u128::MIN..=u128::MAX).contains(&bigint) {
+                    let vec = bigint.into_twos_complement_limbs_asc();
+                    // I am not sure if this check is needed or not
+                    if vec.is_empty() {
+                        return Ok(0);
+                    }
+                    if vec.len() == 2 {
+                        // Two limbs are needed to form an u128
+                        let le_bytes = [
+                            vec[0].to_le_bytes()[0],
+                            vec[0].to_le_bytes()[1],
+                            vec[0].to_le_bytes()[2],
+                            vec[0].to_le_bytes()[3],
+                            vec[0].to_le_bytes()[4],
+                            vec[0].to_le_bytes()[5],
+                            vec[0].to_le_bytes()[6],
+                            vec[0].to_le_bytes()[7],
+                            vec[1].to_le_bytes()[0],
+                            vec[1].to_le_bytes()[1],
+                            vec[1].to_le_bytes()[2],
+                            vec[1].to_le_bytes()[3],
+                            vec[1].to_le_bytes()[4],
+                            vec[1].to_le_bytes()[5],
+                            vec[1].to_le_bytes()[6],
+                            vec[1].to_le_bytes()[7],
+                        ];
+                        Ok(u128::from_le_bytes(le_bytes))
+                    } else {
+                        Ok(vec[0] as u128)
+                    }
+                } else {
+                    Err(Condition::not_representable(&format!("{bigint}"), "u128"))
+                }
+            }
+            Number::Rational(_) => Err(Condition::conversion_error("u128", "Rational")),
+            Number::Real(_) => Err(Condition::conversion_error("u128", "Real")),
+            Number::Complex(_) => Err(Condition::conversion_error("u128", "Complex")),
+        }
+    }
+}
+
+impl TryInto<i128> for Number {
+    type Error = Condition;
+    fn try_into(self) -> Result<i128, Self::Error> {
+        match self {
+            Number::FixedInteger(i) => Ok(i as i128),
+            Number::BigInteger(bigint) => {
+                if (i128::MIN..=i128::MAX).contains(&bigint) {
+                    let vec = bigint.into_twos_complement_limbs_asc();
+                    // I am not sure if this check is needed or not
+                    if vec.is_empty() {
+                        return Ok(0);
+                    }
+                    if vec.len() == 2 {
+                        // Two limbs are needed to form an u128
+                        let le_bytes = [
+                            vec[0].to_le_bytes()[0],
+                            vec[0].to_le_bytes()[1],
+                            vec[0].to_le_bytes()[2],
+                            vec[0].to_le_bytes()[3],
+                            vec[0].to_le_bytes()[4],
+                            vec[0].to_le_bytes()[5],
+                            vec[0].to_le_bytes()[6],
+                            vec[0].to_le_bytes()[7],
+                            vec[1].to_le_bytes()[0],
+                            vec[1].to_le_bytes()[1],
+                            vec[1].to_le_bytes()[2],
+                            vec[1].to_le_bytes()[3],
+                            vec[1].to_le_bytes()[4],
+                            vec[1].to_le_bytes()[5],
+                            vec[1].to_le_bytes()[6],
+                            vec[1].to_le_bytes()[7],
+                        ];
+                        Ok(i128::from_le_bytes(le_bytes))
+                    } else {
+                        Ok(vec[0] as i128)
+                    }
+                } else {
+                    Err(Condition::not_representable(&format!("{bigint}"), "i128"))
+                }
+            }
+            Number::Rational(_) => Err(Condition::conversion_error("i128", "Rational")),
+            Number::Real(_) => Err(Condition::conversion_error("i128", "Real")),
+            Number::Complex(_) => Err(Condition::conversion_error("i128", "Complex")),
+        }
+    }
+}
+
+impl TryInto<Integer> for Number {
+    type Error = Condition;
+    fn try_into(self) -> Result<Integer, Self::Error> {
+        match self {
+            Number::FixedInteger(i) => Ok(Integer::from(i)),
+            Number::BigInteger(i) => Ok(i),
+            Number::Rational(_) => Err(Condition::conversion_error("Integer", "Rational")),
+            Number::Real(_) => Err(Condition::conversion_error("Integer", "Real")),
+            Number::Complex(_) => Err(Condition::conversion_error("Integer", "Complex")),
+        }
+    }
+}
+
+impl TryInto<f64> for Number {
+    type Error = Condition;
+    fn try_into(self) -> Result<f64, Self::Error> {
+        match self {
+            Number::FixedInteger(i) => Ok(i as f64),
+            Number::Real(r) => Ok(r),
+            Number::Complex(_) => Err(Condition::conversion_error("f64", "Complex")),
+            Number::Rational(r) => {
+                if let Some((float, _, _)) =
+                    r.sci_mantissa_and_exponent_round_ref(RoundingMode::Nearest)
+                {
+                    Ok(float)
+                } else {
+                    Err(Condition::not_representable(&format!("{r}"), "f64"))
+                }
+            }
+            Number::BigInteger(_) => Err(Condition::conversion_error("f64", "BigInteger")),
+        }
+    }
+}
+
+impl TryInto<Complex64> for Number {
+    type Error = Condition;
+    fn try_into(self) -> Result<Complex64, Self::Error> {
+        match self {
+            Number::Complex(c) => Ok(c),
+            Number::Rational(_) => Err(Condition::conversion_error("Complex", "Rational")),
+            Number::BigInteger(_) => Err(Condition::conversion_error("Complex", "BigInteger")),
+            Number::Real(r) => {
+                let Some(c) = Complex64::from_f64(r) else {
+                    return Err(Condition::not_representable(&format!("{r}"), "Real"));
+                };
+                Ok(c)
+            }
+            Number::FixedInteger(i) => {
+                let Some(c) = Complex64::from_i64(i) else {
+                    return Err(Condition::not_representable(&format!("{i}"), "Integer"));
+                };
+                Ok(c)
+            }
+        }
     }
 }
 
@@ -475,10 +691,6 @@ impl Display for Operation {
             }
         )
     }
-}
-
-unsafe impl Trace for Number {
-    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(crate::gc::OpaqueGcPtr)) {}
 }
 
 #[derive(Debug)]
@@ -846,4 +1058,99 @@ pub fn is_complex(arg: &Value) -> Result<Vec<Value>, Condition> {
         arg.as_ref(),
         Number::Complex(_)
     ))])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_fixed_integer_try_into_numeric_types() {
+        let number = Number::FixedInteger(1);
+        assert!(matches!(
+            std::convert::TryInto::<u8>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<u16>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<u32>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<u64>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<u128>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<i8>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<i16>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<i32>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<i64>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<i128>::try_into(number.clone()),
+            Ok(1)
+        ));
+    }
+
+    #[test]
+    fn test_big_integer_try_into_numeric_types() {
+        let number = Number::BigInteger(Integer::from(1));
+        assert!(matches!(
+            std::convert::TryInto::<u8>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<u16>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<u32>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<u64>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<u128>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<i8>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<i16>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<i32>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<i64>::try_into(number.clone()),
+            Ok(1)
+        ));
+        assert!(matches!(
+            std::convert::TryInto::<i128>::try_into(number.clone()),
+            Ok(1)
+        ));
+    }
 }

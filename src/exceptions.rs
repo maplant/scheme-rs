@@ -5,17 +5,16 @@ use scheme_rs_macros::{cps_bridge, runtime_fn};
 use crate::{
     ast::ParseAstError,
     gc::{Gc, GcInner, Trace},
-    lists,
     ports::{ReadError, WriteError},
-    proc::{Application, DynamicWind, FuncPtr, Procedure},
+    proc::{Application, DynStack, DynStackElem, FuncPtr, Procedure, pop_dyn_stack},
     records::{Record, RecordTypeDescriptor, SchemeCompatible, into_scheme_compatible, rtd},
     registry::bridge,
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax, parse::ParseSyntaxError},
-    value::{UnpackedValue, Value},
+    value::Value,
 };
-use std::{error::Error as StdError, fmt, ops::Range, ptr::null_mut, sync::Arc};
+use std::{error::Error as StdError, fmt, ops::Range, sync::Arc};
 
 #[derive(Clone, Trace)]
 pub struct Exception {
@@ -194,6 +193,30 @@ impl Condition {
                 Message::new(format!(
                     "Expected {expected:?} arguments, provided {provided}"
                 )),
+            )),
+        )))
+    }
+
+    /// For when we cannot convert a value into the requested type.
+    ///
+    /// Example: Integer to a Complex
+    pub fn conversion_error(expected: &str, provided: &str) -> Self {
+        Self(Value::from(Record::from_rust_type(
+            CompoundCondition::from((
+                Assertion::new(),
+                Message::new(format!("Could not convert {provided} into {expected}")),
+            )),
+        )))
+    }
+
+    /// For when we cannot represent the value into the requested type.
+    ///
+    /// Example: an u128 number as an u8
+    pub fn not_representable(value: &str, r#type: &str) -> Self {
+        Self(Value::from(Record::from_rust_type(
+            CompoundCondition::from((
+                Assertion::new(),
+                Message::new(format!("Could not represent '{value}' in {} type", r#type)),
             )),
         )))
     }
@@ -582,47 +605,18 @@ impl fmt::Display for Frame {
     }
 }
 
-/// An exception handler includes the current handler - a function to call with
-/// any condition that is raised - and the previous handler.
-#[derive(Clone, Debug, Default, Trace)]
-pub struct ExceptionHandler(pub(crate) Option<Gc<ExceptionHandlerInner>>);
-
-#[derive(Clone, Debug, Trace)]
-pub(crate) struct ExceptionHandlerInner {
-    /// The previously installed handler. If the previously installed handler is
-    /// None, we return the condition as an Error.
-    prev_handler: ExceptionHandler,
-    /// The currently installed handler.
-    curr_handler: Procedure,
-    /// The dynamic extent of the exception handler.
-    dynamic_extent: DynamicWind,
-}
-
-impl ExceptionHandler {
-    /// # Safety
-    /// Exception handler must point to a valid Gc'd object.
-    pub(crate) unsafe fn from_ptr(ptr: *mut GcInner<ExceptionHandlerInner>) -> Self {
-        Self((!ptr.is_null()).then(|| unsafe { Gc::from_raw_inc_rc(ptr) }))
-    }
-
-    pub(crate) fn as_ptr(&self) -> *mut GcInner<ExceptionHandlerInner> {
-        self.0.as_ref().map_or_else(null_mut, Gc::as_ptr)
-    }
-}
-
 #[cps_bridge(
     name = "with-exception-handler",
     lib = "(rnrs base builtins (6))",
     args = "handler thunk"
 )]
 pub fn with_exception_handler(
-    _runtime: &Runtime,
+    runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    cont: &Value,
-    exception_handler: &ExceptionHandler,
-    dynamic_wind: &DynamicWind,
+    dyn_stack: &mut DynStack,
+    k: Value,
 ) -> Result<Application, Condition> {
     let [handler, thunk] = args else {
         unreachable!();
@@ -631,21 +625,21 @@ pub fn with_exception_handler(
     let handler: Procedure = handler.clone().try_into()?;
     let thunk: Procedure = thunk.clone().try_into()?;
 
-    let exception_handler_inner = ExceptionHandlerInner {
-        prev_handler: exception_handler.clone(),
-        curr_handler: handler.clone(),
-        dynamic_extent: dynamic_wind.clone(),
-    };
+    dyn_stack.push(DynStackElem::ExceptionHandler(handler));
 
-    let exception_handler = ExceptionHandler(Some(Gc::new(exception_handler_inner)));
+    let k_proc: Procedure = k.clone().try_into().unwrap();
+    let (req_args, var) = k_proc.get_formals();
 
-    Ok(Application::new(
-        thunk.clone(),
-        vec![cont.clone()],
-        exception_handler,
-        dynamic_wind.clone(),
+    let k = Procedure::new(
+        runtime.clone(),
+        vec![k.clone()],
+        FuncPtr::Continuation(pop_dyn_stack),
+        req_args,
+        var,
         None,
-    ))
+    );
+
+    Ok(Application::new(thunk.clone(), vec![Value::from(k)], None))
 }
 
 #[cps_bridge(name = "raise", lib = "(rnrs base builtins (6))", args = "obj")]
@@ -654,161 +648,79 @@ pub fn raise_builtin(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _cont: &Value,
-    exception_handler: &ExceptionHandler,
-    dynamic_wind: &DynamicWind,
+    _dyn_stack: &mut DynStack,
+    _k: Value,
 ) -> Result<Application, Condition> {
-    Ok(raise(
-        runtime.clone(),
-        args[0].clone(),
-        exception_handler.clone(),
-        dynamic_wind,
-    ))
+    Ok(raise(runtime.clone(), args[0].clone()))
 }
 
 /// Raises a non-continuable exception to the current exception handler.
-pub fn raise(
-    runtime: Runtime,
-    raised: Value,
-    exception_handler: ExceptionHandler,
-    dynamic_wind: &DynamicWind,
-) -> Application {
-    let (parent_wind, handler, parent_handler) =
-        if let Some(exception_handler) = exception_handler.0 {
-            let handler = exception_handler.read();
-            (
-                handler.dynamic_extent.clone(),
-                Value::from(handler.curr_handler.clone()),
-                handler.prev_handler.clone(),
-            )
-        } else {
-            (
-                DynamicWind::default(),
-                Value::from(false),
-                ExceptionHandler::default(),
-            )
-        };
-
-    let thunks = exit_winders(dynamic_wind, &parent_wind);
-    let calls = Procedure::new(
-        runtime,
-        vec![thunks, raised.clone(), handler],
-        FuncPtr::Continuation(call_exits_and_exception_handler_reraise),
-        0,
-        false,
+pub fn raise(runtime: Runtime, raised: Value) -> Application {
+    Application::new(
+        Procedure::new(
+            runtime,
+            vec![raised],
+            FuncPtr::Continuation(unwind_to_exception_handler),
+            0,
+            false,
+            None,
+        ),
+        Vec::new(),
         None,
-    );
-
-    Application::new(calls, Vec::new(), parent_handler, parent_wind, None)
+    )
 }
 
 #[runtime_fn]
 unsafe extern "C" fn raise_rt(
     runtime: *mut GcInner<RuntimeInner>,
     raised: i64,
-    exception_handler: *mut GcInner<ExceptionHandlerInner>,
-    dynamic_wind: *const DynamicWind,
 ) -> *mut Application {
     unsafe {
         let runtime = Runtime::from_raw_inc_rc(runtime);
         let raised = Value::from_raw(raised as u64);
-        let exception_handler = ExceptionHandler::from_ptr(exception_handler);
-        let dynamic_wind = dynamic_wind.as_ref().unwrap();
-        Box::into_raw(Box::new(raise(
-            runtime,
-            raised,
-            exception_handler,
-            dynamic_wind,
-        )))
+        Box::into_raw(Box::new(raise(runtime, raised)))
     }
 }
 
-fn exit_winders(from_extent: &DynamicWind, to_extent: &DynamicWind) -> Value {
-    let mut from_winders = from_extent.winders.as_slice();
-    let mut to_winders = to_extent.winders.as_slice();
-
-    while let Some((to_first, to_remaining)) = to_winders.split_first() {
-        let Some((from_first, from_remaining)) = from_winders.split_first() else {
-            return Value::null();
-        };
-
-        if !Gc::ptr_eq(&from_first.1.0, &to_first.1.0) {
-            break;
-        }
-
-        from_winders = from_remaining;
-        to_winders = to_remaining;
-    }
-
-    let mut thunks = Value::null();
-    for thunk in from_winders.iter() {
-        thunks = Value::from((Value::from(thunk.1.clone()), thunks));
-    }
-
-    thunks
-}
-
-unsafe extern "C" fn call_exits_and_exception_handler_reraise(
+unsafe extern "C" fn unwind_to_exception_handler(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     _args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandlerInner>,
-    dynamic_wind: *const DynamicWind,
+    dyn_stack: *mut DynStack,
 ) -> *mut Application {
     unsafe {
-        let runtime = Runtime::from_raw_inc_rc(runtime);
+        // env[0] is the raised value:
+        let raised = env.as_ref().unwrap().clone();
 
-        // env[0] are the thunks:
-        let thunks = env.as_ref().unwrap().clone();
+        let dyn_stack = dyn_stack.as_mut().unwrap_unchecked();
 
-        // env[1] is the raised value:
-        let raised = env.add(1).as_ref().unwrap().clone();
-
-        // env[2] is the next exception handler
-        let curr_handler = env.add(2).as_ref().unwrap().clone();
-
-        let app = match thunks.unpack() {
-            UnpackedValue::Pair(pair) => {
-                let lists::Pair(head_thunk, tail) = &*pair.read();
-                let head_thunk: Procedure = head_thunk.clone().try_into().unwrap();
-                let cont = Procedure::new(
-                    runtime.clone(),
-                    vec![tail.clone(), raised, curr_handler],
-                    FuncPtr::Continuation(call_exits_and_exception_handler_reraise),
-                    0,
-                    false,
-                    None,
-                );
-                Application::new(
-                    head_thunk,
-                    vec![Value::from(cont)],
-                    ExceptionHandler::from_ptr(exception_handler),
-                    dynamic_wind.as_ref().unwrap().clone(),
-                    None,
-                )
-            }
-            UnpackedValue::Null => {
-                // If the exception handler is null, we want to return it as an
-                // error.
-                if !curr_handler.is_true() {
-                    let app = Application::new(
-                        Procedure::new(runtime, Vec::new(), FuncPtr::HaltError, 1, false, None),
-                        vec![raised.clone()],
-                        ExceptionHandler::from_ptr(exception_handler),
-                        dynamic_wind.as_ref().unwrap().clone(),
-                        None,
-                    );
-                    return Box::into_raw(Box::new(app));
+        loop {
+            let app = match dyn_stack.pop() {
+                None => {
+                    // If the stack is empty, we should return the error
+                    Application::halt_err(raised)
                 }
-
-                let curr_handler: Procedure = curr_handler.try_into().unwrap();
-
-                Application::new(
-                    curr_handler,
+                Some(DynStackElem::Winder(winder)) => {
+                    // If this is a winder, we should call the out winder while unwinding
+                    Application::new(
+                        winder.out_thunk,
+                        vec![Value::from(Procedure::new(
+                            Runtime::from_raw_inc_rc(runtime),
+                            vec![raised],
+                            FuncPtr::Continuation(unwind_to_exception_handler),
+                            0,
+                            false,
+                            None,
+                        ))],
+                        None,
+                    )
+                }
+                Some(DynStackElem::ExceptionHandler(handler)) => Application::new(
+                    handler,
                     vec![
                         raised.clone(),
                         Value::from(Procedure::new(
-                            runtime,
+                            Runtime::from_raw_inc_rc(runtime),
                             vec![raised],
                             FuncPtr::Continuation(reraise_exception),
                             0,
@@ -816,15 +728,12 @@ unsafe extern "C" fn call_exits_and_exception_handler_reraise(
                             None,
                         )),
                     ],
-                    ExceptionHandler::from_ptr(exception_handler),
-                    dynamic_wind.as_ref().unwrap().clone(),
                     None,
-                )
-            }
-            _ => unreachable!(),
-        };
-
-        Box::into_raw(Box::new(app))
+                ),
+                _ => continue,
+            };
+            return Box::into_raw(Box::new(app));
+        }
     }
 }
 
@@ -832,8 +741,7 @@ unsafe extern "C" fn reraise_exception(
     runtime: *mut GcInner<RuntimeInner>,
     env: *const Value,
     _args: *const Value,
-    exception_handler: *mut GcInner<ExceptionHandlerInner>,
-    dynamic_wind: *const DynamicWind,
+    _dyn_stack: *mut DynStack,
 ) -> *mut Application {
     unsafe {
         let runtime = Runtime(Gc::from_raw_inc_rc(runtime));
@@ -851,8 +759,6 @@ unsafe extern "C" fn reraise_exception(
                 None,
             ),
             vec![exception, Value::undefined()],
-            ExceptionHandler::from_ptr(exception_handler),
-            dynamic_wind.as_ref().unwrap().clone(),
             None,
         )))
     }
@@ -866,42 +772,20 @@ unsafe extern "C" fn reraise_exception(
     args = "obj"
 )]
 pub fn raise_continuable(
-    runtime: &Runtime,
+    _runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    cont: &Value,
-    exception_handler: &ExceptionHandler,
-    dynamic_wind: &DynamicWind,
+    dyn_stack: &mut DynStack,
+    k: Value,
 ) -> Result<Application, Condition> {
     let [condition] = args else {
         unreachable!();
     };
 
-    let Some(handler) = &exception_handler.0 else {
-        return Ok(Application::new(
-            Procedure::new(
-                runtime.clone(),
-                Vec::new(),
-                FuncPtr::HaltError,
-                1,
-                false,
-                None,
-            ),
-            vec![condition.clone()],
-            ExceptionHandler::default(),
-            dynamic_wind.clone(),
-            None,
-        ));
+    let Some(handler) = dyn_stack.current_exception_handler() else {
+        return Ok(Application::halt_err(condition.clone()));
     };
 
-    let handler = handler.read().clone();
-
-    Ok(Application::new(
-        handler.curr_handler,
-        vec![condition.clone(), cont.clone()],
-        handler.prev_handler,
-        dynamic_wind.clone(),
-        None,
-    ))
+    Ok(Application::new(handler, vec![condition.clone(), k], None))
 }
