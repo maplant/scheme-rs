@@ -45,7 +45,7 @@ impl<'a> Lexer<'a> {
             return Ok(Some(self.buff[self.pos]));
         }
         while self.buff.len() < self.pos {
-            let Some(chr) = maybe_await!(self.port.read_char()?) else {
+            let Some(chr) = maybe_await!(self.port.read_char())? else {
                 return Ok(None);
             };
             self.buff.push(chr);
@@ -104,10 +104,11 @@ impl<'a> Lexer<'a> {
         Ok(true)
     }
 
+    #[maybe_async]
     fn consume_chars(&mut self) -> Result<(), ReadError> {
         // Consume all the characters we need to
         if self.pos > self.buff.len() {
-            self.port.consume_chars(self.pos - self.buff.len())?;
+            maybe_await!(self.port.consume_chars(self.pos - self.buff.len()))?;
         }
         self.pos = 0;
         self.buff.clear();
@@ -177,7 +178,7 @@ impl<'a> Lexer<'a> {
             return Ok(None);
         };
 
-        self.consume_chars()?;
+        maybe_await!(self.consume_chars())?;
 
         Ok(Some(Token { lexeme, span }))
     }

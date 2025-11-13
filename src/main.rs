@@ -8,7 +8,7 @@ use scheme_rs::{
     ast::{DefinitionBody, ImportSet, ParseAstError},
     cps::Compile,
     env::Environment,
-    exceptions::Exception, 
+    exceptions::Exception,
     ports::{BufferMode, Port, Prompt, Transcoder},
     proc::{Application, DynStack},
     registry::Library,
@@ -27,9 +27,6 @@ impl Validator for InputValidator {
     fn validate(&self, ctx: &mut ValidationContext<'_>) -> rustyline::Result<ValidationResult> {
         let bytes = Cursor::new(ctx.input().as_bytes().to_vec());
         let port = Port::new(bytes, true, BufferMode::Block, Transcoder::native());
-        // let input_port = port.get_input_port().unwrap();
-        // let mut input_port = input_port.lock().unwrap();
-        // let mut parser = Parser::new("<prompt>", &mut input_port);
         if port.all_sexprs(Span::default()).is_ok() {
             Ok(ValidationResult::Valid(None))
         } else {
@@ -42,13 +39,11 @@ impl Validator for InputValidator {
 impl Validator for InputValidator {
     fn validate(&self, ctx: &mut ValidationContext<'_>) -> rustyline::Result<ValidationResult> {
         let bytes = Cursor::new(ctx.input().as_bytes().to_vec());
-        let is_valid = futures::executor::block_on(async move {
-            let port = Port::from_reader(bytes);
-            let input_port = port.get_input_port().unwrap();
-            let mut input_port = input_port.lock().await;
-            let mut parser = Parser::new("<prompt>", &mut input_port);
-            parser.all_datums().await.is_ok()
-        });
+        let port = Port::new(bytes, true, BufferMode::Block, Transcoder::native());
+        let is_valid =
+            futures::executor::block_on(
+                async move { port.all_sexprs(Span::default()).await.is_ok() },
+            );
         if is_valid {
             Ok(ValidationResult::Valid(None))
         } else {

@@ -15,15 +15,15 @@ use crate::{
     vectors,
 };
 use std::{
-    collections::HashMap,
-    fmt,
-    hash::Hash,
-    io::Write,
-    marker::PhantomData,
-    mem::ManuallyDrop,
-    ops::Deref,
-    sync::{Arc, Mutex},
+    collections::HashMap, fmt, hash::Hash, io::Write, marker::PhantomData, mem::ManuallyDrop,
+    ops::Deref, sync::Arc,
 };
+
+#[cfg(not(feature = "async"))]
+use std::sync::Mutex;
+
+#[cfg(feature = "tokio")]
+use tokio::sync::Mutex;
 
 const ALIGNMENT: u64 = 16;
 const TAG_BITS: u64 = ALIGNMENT.ilog2() as u64;

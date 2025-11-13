@@ -11,6 +11,7 @@ homepage = "https://github.com/maplant/scheme-rs"
 repository = "https://github.com/maplant/scheme-rs"
 
 [dependencies]
+async-stream = { version = "0.3", optional = true }
 by_address = "1.2"
 derive_builder = "0.20"
 derive_more = { version = "1.0", features = ["debug", "from"]}
@@ -41,7 +42,7 @@ tokio = { version = "1.47", features = ["full"], optional = true }
 
 [features]
 default = []
-async = ["dep:futures"]
+async = ["dep:futures", "dep:async-stream"]
 
 [profile.release]
 lto = true

@@ -57,7 +57,7 @@ impl Runtime {
         use std::fs::File;
 
         #[cfg(feature = "tokio")]
-        use tokio::{fs::File, io::BufReader};
+        use tokio::fs::File;
 
         let progm = Library::new_program(self, path);
         let env = Environment::Top(progm);
@@ -72,21 +72,6 @@ impl Runtime {
             let span = Span::new(file_name);
             maybe_await!(port.all_sexprs(span)).map_err(Condition::from)?
         };
-        /*
-        let input_port = port.get_input_port().unwrap();
-
-        #[cfg(not(feature = "async"))]
-        let mut input_port = input_port.lock().unwrap();
-
-        #[cfg(feature = "tokio")]
-        let mut input_port = input_port.lock().await;
-
-        let mut parser = Parser::new(&file_name, &mut input_port);
-        */
-
-        // let sexprs = maybe_await!(parser.all_datums())
-        //     .map_err(|err| ImportError::ParseSyntaxError(format!("{err:?}")))
-        //     .unwrap();
 
         let body = maybe_await!(DefinitionBody::parse_lib_body(
             self,

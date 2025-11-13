@@ -640,6 +640,8 @@ pub enum DynStackElem {
     PromptBarrier(PromptBarrier),
     Winder(Winder),
     ExceptionHandler(Procedure),
+    CurrentOutputFile(Value),
+    CurrentInputFile(Value),
 }
 
 pub(crate) unsafe extern "C" fn pop_dyn_stack(
