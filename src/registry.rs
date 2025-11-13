@@ -9,7 +9,7 @@ use crate::{
     env::{Environment, Global, Keyword},
     exceptions::Condition,
     gc::{Gc, Trace},
-    proc::{Application, FuncDebugInfo, FuncPtr, Parameters, Procedure, SyncBridgePtr},
+    proc::{Application, BridgePtr, DynStack, FuncDebugInfo, FuncPtr, Procedure},
     runtime::Runtime,
     symbols::Symbol,
     syntax::{Identifier, Syntax},
@@ -27,8 +27,8 @@ use futures::future::BoxFuture;
 pub use scheme_rs_macros::{bridge, cps_bridge};
 use scheme_rs_macros::{maybe_async, maybe_await};
 
-pub enum BridgePtr {
-    Sync(SyncBridgePtr),
+pub enum Bridge {
+    Sync(BridgePtr),
     #[cfg(feature = "async")]
     Async(crate::proc::AsyncBridgePtr),
 }
@@ -38,7 +38,7 @@ pub struct BridgeFn {
     lib_name: &'static str,
     num_args: usize,
     variadic: bool,
-    wrapper: BridgePtr,
+    wrapper: Bridge,
     debug_info: BridgeFnDebugInfo,
 }
 
@@ -48,7 +48,7 @@ impl BridgeFn {
         lib_name: &'static str,
         num_args: usize,
         variadic: bool,
-        wrapper: BridgePtr,
+        wrapper: Bridge,
         debug_info: BridgeFnDebugInfo,
     ) -> Self {
         Self {
@@ -135,9 +135,9 @@ impl RegistryInner {
                     rt.clone(),
                     Vec::new(),
                     match bridge_fn.wrapper {
-                        BridgePtr::Sync(func) => FuncPtr::Bridge(func),
+                        Bridge::Sync(func) => FuncPtr::Bridge(func),
                         #[cfg(feature = "async")]
-                        BridgePtr::Async(func) => FuncPtr::AsyncBridge(func),
+                        Bridge::Async(func) => FuncPtr::AsyncBridge(func),
                     },
                     bridge_fn.num_args,
                     bridge_fn.variadic,
@@ -720,9 +720,8 @@ impl Library {
         let compiled = defn_body.compile_top_level();
         let rt = { self.0.read().rt.clone() };
         let proc = maybe_await!(rt.compile_expr(compiled));
-        let _ = maybe_await!(
-            Application::new(proc, Vec::new(), None).eval(&mut Parameters::default())
-        )?;
+        let _ =
+            maybe_await!(Application::new(proc, Vec::new(), None).eval(&mut DynStack::default()))?;
         self.0.write().state = LibraryState::Invoked;
         Ok(())
     }

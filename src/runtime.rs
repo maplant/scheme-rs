@@ -7,7 +7,7 @@ use crate::{
     lists::{self, list_to_vec},
     num,
     ports::Port,
-    proc::{Application, ContinuationPtr, FuncDebugInfo, FuncPtr, Parameters, Procedure, UserPtr},
+    proc::{Application, ContinuationPtr, DynStack, FuncDebugInfo, FuncPtr, Procedure, UserPtr},
     registry::{ImportError, Library, Registry},
     symbols::Symbol,
     syntax::{Span, parse::Parser},
@@ -86,7 +86,7 @@ impl Runtime {
         let compiled = body.compile_top_level();
         let closure = maybe_await!(self.compile_expr(compiled));
 
-        maybe_await!(Application::new(closure, Vec::new(), None,).eval(&mut Parameters::default(),))
+        maybe_await!(Application::new(closure, Vec::new(), None,).eval(&mut DynStack::default(),))
     }
 
     pub fn get_registry(&self) -> Registry {
@@ -358,7 +358,6 @@ unsafe extern "C" fn apply(
     op: i64,
     args: *const i64,
     num_args: u32,
-    params: *mut Parameters,
     span: *const Span,
 ) -> *mut Application {
     unsafe {
@@ -372,7 +371,6 @@ unsafe extern "C" fn apply(
                 let raised = raise(
                     Runtime::from_raw_inc_rc(runtime),
                     Condition::invalid_operator(x.type_name()).into(),
-                    params.as_mut().unwrap_unchecked(),
                 );
                 return Box::into_raw(Box::new(raised));
             }
@@ -390,7 +388,6 @@ unsafe extern "C" fn forward(
     runtime: *mut GcInner<RuntimeInner>,
     op: i64,
     args: i64,
-    params: *mut Parameters,
 ) -> *mut Application {
     unsafe {
         let op = match Value::from_raw_inc_rc(op as u64).unpack() {
@@ -399,7 +396,6 @@ unsafe extern "C" fn forward(
                 let raised = raise(
                     Runtime::from_raw_inc_rc(runtime),
                     Condition::invalid_operator(x.type_name()).into(),
-                    params.as_mut().unwrap_unchecked(),
                 );
                 return Box::into_raw(Box::new(raised));
             }
