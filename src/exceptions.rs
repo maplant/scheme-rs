@@ -614,14 +614,14 @@ pub fn raise_builtin(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    dyn_stack: &mut DynStack,
+    _dyn_stack: &mut DynStack,
     _k: Value,
 ) -> Result<Application, Condition> {
-    Ok(raise(runtime.clone(), args[0].clone(), dyn_stack))
+    Ok(raise(runtime.clone(), args[0].clone()))
 }
 
 /// Raises a non-continuable exception to the current exception handler.
-pub fn raise(runtime: Runtime, raised: Value, dyn_stack: &mut DynStack) -> Application {
+pub fn raise(runtime: Runtime, raised: Value) -> Application {
     Application::new(
         Procedure::new(
             runtime,
@@ -640,13 +640,11 @@ pub fn raise(runtime: Runtime, raised: Value, dyn_stack: &mut DynStack) -> Appli
 unsafe extern "C" fn raise_rt(
     runtime: *mut GcInner<RuntimeInner>,
     raised: i64,
-    dyn_stack: *mut DynStack,
 ) -> *mut Application {
     unsafe {
         let runtime = Runtime::from_raw_inc_rc(runtime);
         let raised = Value::from_raw(raised as u64);
-        let dyn_stack = dyn_stack.as_mut().unwrap_unchecked();
-        Box::into_raw(Box::new(raise(runtime, raised, dyn_stack)))
+        Box::into_raw(Box::new(raise(runtime, raised)))
     }
 }
 

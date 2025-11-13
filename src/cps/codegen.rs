@@ -119,7 +119,7 @@ impl Cps {
 
         let params = {
             let block_params = builder.block_params(entry_block);
-            [block_params[RUNTIME_PARAM], block_params[PARAMETERS_PARAM]]
+            [block_params[RUNTIME_PARAM], block_params[DYN_STACK_PARAM]]
         };
 
         let mut deferred = Vec::new();
@@ -193,10 +193,6 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
 
     fn get_runtime(&self) -> Value {
         self.params[0]
-    }
-
-    fn get_parameters(&self) -> Value {
-        self.params[1]
     }
 
     fn cps_codegen(&mut self, cps: Cps, deferred: &mut Vec<ProcedureBundle>) {
@@ -522,7 +518,6 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
 
         let args_addr = self.builder.ins().stack_addr(types::I64, args_slot, 0);
         let args_len = self.builder.ins().iconst(types::I32, args.len() as i64);
-        let parameters = self.get_parameters();
         let span = if let Some(loc) = loc {
             let span = Arc::new(loc);
             let span_ptr = Arc::as_ptr(&span);
@@ -534,10 +529,10 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         let apply = self
             .module
             .declare_func_in_func(self.runtime_funcs.apply, self.builder.func);
-        let call = self.builder.ins().call(
-            apply,
-            &[runtime, operator, args_addr, args_len, parameters, span],
-        );
+        let call = self
+            .builder
+            .ins()
+            .call(apply, &[runtime, operator, args_addr, args_len, span]);
         let app = self.builder.inst_results(call)[0];
         self.drops_codegen();
         self.builder.ins().return_(&[app]);
@@ -547,15 +542,11 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         let runtime = self.get_runtime();
         let operator = self.value_codegen(operator);
         let arg = self.value_codegen(arg);
-        let parameters = self.get_parameters();
 
         let forward = self
             .module
             .declare_func_in_func(self.runtime_funcs.forward, self.builder.func);
-        let call = self
-            .builder
-            .ins()
-            .call(forward, &[runtime, operator, arg, parameters]);
+        let call = self.builder.ins().call(forward, &[runtime, operator, arg]);
         let result = self.builder.inst_results(call)[0];
         self.drops_codegen();
         self.builder.ins().return_(&[result]);
@@ -611,11 +602,10 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
 
     fn raise_codegen(&mut self, val: Value) {
         let runtime = self.get_runtime();
-        let parameters = self.get_parameters();
         let raise = self
             .module
             .declare_func_in_func(self.runtime_funcs.raise_rt, self.builder.func);
-        let call = self.builder.ins().call(raise, &[runtime, val, parameters]);
+        let call = self.builder.ins().call(raise, &[runtime, val]);
         let result = self.builder.inst_results(call)[0];
         self.builder.ins().return_(&[result]);
     }
@@ -755,14 +745,14 @@ pub struct ProcedureBundle {
 const RUNTIME_PARAM: usize = 0;
 const ENV_PARAM: usize = 1;
 const ARGS_PARAM: usize = 2;
-const PARAMETERS_PARAM: usize = 3;
+const DYN_STACK_PARAM: usize = 3;
 const CONTINUATION_PARAM: usize = 4;
 
 fn make_sig(sig: &mut Signature, has_continuation: bool) {
     sig.params.push(AbiParam::new(types::I64)); // Runtime
     sig.params.push(AbiParam::new(types::I64)); // Env
     sig.params.push(AbiParam::new(types::I64)); // Args
-    sig.params.push(AbiParam::new(types::I64)); // Parameters
+    sig.params.push(AbiParam::new(types::I64)); // DynStack
 
     if has_continuation {
         sig.params.push(AbiParam::new(types::I64)); // Continuation
@@ -832,7 +822,7 @@ impl ProcedureBundle {
 
         let params = {
             let block_params = builder.block_params(entry_block);
-            [block_params[RUNTIME_PARAM], block_params[PARAMETERS_PARAM]]
+            [block_params[RUNTIME_PARAM], block_params[DYN_STACK_PARAM]]
         };
 
         let mut rebinds = Rebinds::new();
