@@ -1379,22 +1379,22 @@ impl Let {
     ) -> Result<Self, ParseAstError> {
         match syn {
             [Syntax::Null { .. }, body @ ..] => {
-                maybe_await!(parse_let(runtime, None, &[], body, env, span))
+                maybe_await!(parse_let(runtime, &[], body, env, span))
             }
             [Syntax::List { list: bindings, .. }, body @ ..] => {
-                maybe_await!(parse_let(runtime, None, bindings, body, env, span))
+                maybe_await!(parse_let(runtime, bindings, body, env, span))
             }
             // Named let:
             [
                 Syntax::Identifier { ident, .. },
                 Syntax::List { list: bindings, .. },
                 body @ ..,
-            ] => maybe_await!(parse_let(runtime, Some(ident), bindings, body, env, span)),
+            ] => maybe_await!(parse_named_let(runtime, ident, bindings, body, env, span)),
             [
                 Syntax::Identifier { ident, .. },
                 Syntax::Null { .. },
                 body @ ..,
-            ] => maybe_await!(parse_let(runtime, Some(ident), &[], body, env, span)),
+            ] => maybe_await!(parse_named_let(runtime, ident, &[], body, env, span)),
             _ => Err(ParseAstError::BadForm(span.clone())),
         }
     }
@@ -1403,7 +1403,6 @@ impl Let {
 #[maybe_async]
 fn parse_let(
     runtime: &Runtime,
-    name: Option<&Identifier>,
     bindings: &[Syntax],
     body: &[Syntax],
     env: &Environment,
@@ -1412,6 +1411,7 @@ fn parse_let(
     let mut previously_bound = HashMap::new();
     let mut parsed_bindings = Vec::new();
     let mut binding_names = Vec::new();
+
     let new_contour = env.new_lexical_contour();
 
     match bindings {
@@ -1433,41 +1433,77 @@ fn parse_let(
         }
     }
 
-    let lambda_var = name.map(|name| new_contour.def_var(name.clone()));
-
     let ast_body = maybe_await!(DefinitionBody::parse(runtime, body, &new_contour, span))?;
 
     // TODO: Lot of unnecessary cloning here, fix that.
-    let mut bindings: Vec<_> = parsed_bindings
+    let bindings: Vec<_> = parsed_bindings
         .iter()
         .map(|(var, binding)| (*var, binding.expr.clone()))
         .collect();
 
-    // If this is a named let, add a binding for a procedure with the same body
-    // and args of the formals.
-    if let Some(Var::Local(lambda_var)) = lambda_var {
-        let new_new_contour = new_contour.new_lexical_contour();
-        let args = parsed_bindings
-            .iter()
-            .map(|(_, binding)| {
-                let Var::Local(var) = new_new_contour.def_var(binding.ident.clone()) else {
-                    unreachable!()
-                };
-                var
-            })
-            .collect();
-
-        let lambda = Lambda {
-            args: Formals::FixedArgs(args),
-            body: maybe_await!(DefinitionBody::parse(runtime, body, &new_new_contour, span))?,
-            span: span.clone(),
-        };
-        bindings.push((lambda_var, Expression::Lambda(lambda)));
-    }
-
     Ok(Let {
         bindings,
         body: ast_body,
+    })
+}
+
+#[maybe_async]
+fn parse_named_let(
+    runtime: &Runtime,
+    name: &Identifier,
+    bindings: &[Syntax],
+    body: &[Syntax],
+    env: &Environment,
+    span: &Span,
+) -> Result<Let, ParseAstError> {
+    let mut previously_bound = HashMap::new();
+    let mut formals = Vec::new();
+    let mut args = Vec::new();
+
+    let func_contour = env.new_lexical_contour();
+
+    let func = func_contour.def_var(name.clone());
+
+    let body_contour = func_contour.new_lexical_contour();
+
+    match bindings {
+        [] | [Syntax::Null { .. }] => (),
+        [bindings @ .., Syntax::Null { .. }] => {
+            for binding in bindings {
+                let binding =
+                    maybe_await!(LetBinding::parse(runtime, binding, env, &previously_bound))?;
+                previously_bound.insert(binding.ident.clone(), binding.span.clone());
+                let Var::Local(var) = body_contour.def_var(binding.ident.clone()) else {
+                    unreachable!()
+                };
+                formals.push(var);
+                args.push(binding.expr);
+            }
+        }
+        _ => {
+            return Err(ParseAstError::BadForm(span.clone()));
+        }
+    }
+
+    let body = maybe_await!(DefinitionBody::parse(runtime, body, &body_contour, span))?;
+
+    let func = DefineFunc {
+        var: func.clone(),
+        args: Formals::FixedArgs(formals),
+        body: Box::new(body),
+        next: Some(Either::Right(ExprBody::new(vec![Expression::Apply(
+            Apply {
+                operator: Box::new(Expression::Var(func)),
+                args,
+                span: span.clone(),
+            },
+        )]))),
+        span: span.clone(),
+    };
+
+    Ok(Let {
+        bindings: Vec::new(),
+        body: DefinitionBody::new(Either::Left(Definition::DefineFunc(func))),
     })
 }
 

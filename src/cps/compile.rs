@@ -25,10 +25,9 @@ pub trait Compile: std::fmt::Debug {
                 Cps::App(value, vec![Value::from(k)], None)
             }))),
             span: None,
-        }
-        .reduce();
+        };
         let mutable_vars = compiled.mutable_vars();
-        compiled.vals_to_cells(&mutable_vars)
+        compiled.vals_to_cells(&mutable_vars).reduce()
     }
 }
 
@@ -90,38 +89,24 @@ fn compile_let(
     mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>,
 ) -> Cps {
     if let Some(((curr_bind, curr_expr), tail)) = binds.split_first() {
-        let expr_result = Local::gensym();
         let k1 = Local::gensym();
         let k2 = Local::gensym();
         let k3 = Local::gensym();
         Cps::Lambda {
             args: LambdaArgs::new(vec![k2], false, None),
-            body: Box::new(Cps::PrimOp(
-                PrimOp::AllocCell,
-                Vec::new(),
-                *curr_bind,
-                Box::new(Cps::Lambda {
-                    args: LambdaArgs::new(vec![expr_result], false, None),
-                    body: Box::new(Cps::PrimOp(
-                        PrimOp::Set,
-                        vec![
-                            Value::Var(Var::Local(*curr_bind)),
-                            Value::Var(Var::Local(expr_result)),
-                        ],
-                        Local::gensym(),
-                        Box::new(compile_let(
-                            tail,
-                            body,
-                            Box::new(move |result| Cps::App(result, vec![Value::from(k2)], None)),
-                        )),
-                    )),
-                    val: k3,
-                    cexp: Box::new(curr_expr.compile(Box::new(move |result| {
-                        Cps::App(result, vec![Value::from(k3)], None)
-                    }))),
-                    span: None,
-                }),
-            )),
+            body: Box::new(Cps::Lambda {
+                args: LambdaArgs::new(vec![*curr_bind], false, None),
+                body: Box::new(compile_let(
+                    tail,
+                    body,
+                    Box::new(move |result| Cps::App(result, vec![Value::from(k2)], None)),
+                )),
+                val: k3,
+                cexp: Box::new(curr_expr.compile(Box::new(move |result| {
+                    Cps::App(result, vec![Value::from(k3)], None)
+                }))),
+                span: None,
+            }),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
             span: None,
