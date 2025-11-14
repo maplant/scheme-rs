@@ -6,12 +6,13 @@ use parking_lot::RwLock;
 use std::{
     alloc::Layout,
     cell::UnsafeCell,
-    collections::HashSet,
     marker::PhantomData,
     ptr::NonNull,
     sync::{Mutex, OnceLock, atomic::AtomicUsize},
     thread::JoinHandle,
 };
+
+use rustc_hash::FxHashSet as HashSet;
 
 use crate::gc::GcInner;
 
@@ -212,8 +213,8 @@ impl Collector {
     fn new() -> Self {
         Self {
             swap_buffer: Vec::new(),
-            heap: HashSet::new(),
-            roots: HashSet::new(),
+            heap: HashSet::default(),
+            roots: HashSet::default(),
             cycles: Vec::new(),
         }
     }
@@ -232,12 +233,11 @@ impl Collector {
             &mut *NEW_ALLOCS_BUFFER.lock().unwrap(),
             &mut self.swap_buffer,
         );
-        for new_alloc in self.swap_buffer.drain(..) {
-            unsafe {
+        self.heap
+            .extend(self.swap_buffer.drain(..).map(|new_alloc| unsafe {
                 new_alloc.set_buffered(false);
-            }
-            self.heap.insert(new_alloc);
-        }
+                new_alloc
+            }));
     }
 
     fn epoch(&mut self) {
