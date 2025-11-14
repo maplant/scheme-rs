@@ -6,6 +6,7 @@ use crate::{
     gc::{Gc, GcInner, Trace},
     lists,
     num::{Number, ReflexiveNumber},
+    ports::{self, PortInner},
     proc::{Procedure, ProcedureInner},
     records::{Record, RecordInner, RecordTypeDescriptor, SchemeCompatible},
     registry::bridge,
@@ -17,6 +18,12 @@ use std::{
     collections::HashMap, fmt, hash::Hash, io::Write, marker::PhantomData, mem::ManuallyDrop,
     ops::Deref, sync::Arc,
 };
+
+#[cfg(not(feature = "async"))]
+use std::sync::Mutex;
+
+#[cfg(feature = "tokio")]
+use tokio::sync::Mutex;
 
 const ALIGNMENT: u64 = 16;
 const TAG_BITS: u64 = ALIGNMENT.ilog2() as u64;
@@ -83,8 +90,8 @@ impl Value {
                         Gc::increment_reference_count(untagged as *mut GcInner<lists::Pair>)
                     }
                 }
+                Tag::Port => Arc::increment_strong_count(untagged as *const Mutex<PortInner>),
                 Tag::HashTable => todo!(),
-                Tag::Port => todo!(),
                 Tag::Cell => {
                     Gc::increment_reference_count(untagged as *mut GcInner<Value>);
                 }
@@ -223,8 +230,11 @@ impl Value {
                     UnpackedValue::Pair(pair)
                 }
             }
+            Tag::Port => {
+                let port_inner = unsafe { Arc::from_raw(untagged as *const Mutex<PortInner>) };
+                UnpackedValue::Port(ports::Port(port_inner))
+            }
             Tag::HashTable => todo!(),
-            Tag::Port => todo!(),
             Tag::Cell => {
                 let cell = unsafe { Gc::from_raw(untagged as *mut GcInner<Value>) };
                 UnpackedValue::Cell(Cell(cell))
@@ -429,6 +439,7 @@ pub enum UnpackedValue {
     Record(Record),
     RecordTypeDescriptor(Arc<RecordTypeDescriptor>),
     Pair(Gc<lists::Pair>),
+    Port(ports::Port),
     Cell(Cell),
 }
 
@@ -476,6 +487,10 @@ impl UnpackedValue {
                 let untagged = Gc::into_raw(pair);
                 Value::from_mut_ptr_and_tag(untagged, Tag::Pair)
             }
+            Self::Port(port) => {
+                let untagged = Arc::into_raw(port.0);
+                Value::from_ptr_and_tag(untagged, Tag::Port)
+            }
             Self::Cell(cell) => {
                 let untagged = Gc::into_raw(cell.0);
                 Value::from_mut_ptr_and_tag(untagged, Tag::Cell)
@@ -499,6 +514,7 @@ impl UnpackedValue {
             (Self::Syntax(a), Self::Syntax(b)) => Arc::ptr_eq(a, b),
             (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
+            (Self::Port(a), Self::Port(b)) => Arc::ptr_eq(&a.0, &b.0),
             (Self::Cell(a), b) => a.0.read().unpacked_ref().eq(b),
             (a, Self::Cell(b)) => a.eq(&b.0.read().unpacked_ref()),
             _ => false,
@@ -526,6 +542,7 @@ impl UnpackedValue {
             (Self::Syntax(a), Self::Syntax(b)) => Arc::ptr_eq(a, b),
             (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
+            (Self::Port(a), Self::Port(b)) => Arc::ptr_eq(&a.0, &b.0),
             (Self::Cell(a), b) => a.0.read().unpacked_ref().eqv(b),
             (a, Self::Cell(b)) => a.eqv(&b.0.read().unpacked_ref()),
             _ => false,
@@ -547,6 +564,7 @@ impl UnpackedValue {
             Self::Procedure(_) => "procedure",
             Self::Record(_) => "record",
             Self::RecordTypeDescriptor(_) => "rtd",
+            Self::Port(_) => "port",
             Self::Cell(cell) => cell.0.read().type_name(),
         }
     }
@@ -563,10 +581,12 @@ impl UnpackedValue {
             Self::Pair(_) => ValueType::Pair,
             Self::Vector(_) => ValueType::Vector,
             Self::ByteVector(_) => ValueType::ByteVector,
+            Self::Syntax(syn) if matches!(syn.as_ref(), Syntax::Null { .. }) => ValueType::Null,
             Self::Syntax(_) => ValueType::Syntax,
             Self::Procedure(_) => ValueType::Procedure,
             Self::Record(_) => ValueType::Record,
             Self::RecordTypeDescriptor(_) => ValueType::RecordTypeDescriptor,
+            Self::Port(_) => ValueType::Port,
             Self::Cell(cell) => cell.0.read().type_of(),
         }
     }
@@ -847,6 +867,7 @@ impl_try_from_value_for!(Arc<Syntax>, Syntax, "syntax");
 impl_try_from_value_for!(Procedure, Procedure, "procedure");
 impl_try_from_value_for!(Gc<lists::Pair>, Pair, "pair");
 impl_try_from_value_for!(Record, Record, "record");
+impl_try_from_value_for!(ports::Port, Port, "port");
 impl_try_from_value_for!(Arc<RecordTypeDescriptor>, RecordTypeDescriptor, "rt");
 
 macro_rules! impl_from_wrapped_for {
@@ -934,6 +955,7 @@ impl Hash for EqvValue {
             UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
             UnpackedValue::Pair(p) => Gc::as_ptr(p).hash(state),
             UnpackedValue::Vector(v) => Gc::as_ptr(v).hash(state),
+            UnpackedValue::Port(p) => Arc::as_ptr(&p.0).hash(state),
             UnpackedValue::Cell(c) => EqvValue(c.0.read().clone()).hash(state),
         }
     }
@@ -973,14 +995,9 @@ impl Hash for ReflexiveValue {
             UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
             UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
             UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
-            // UnpackedValue::Any(a) => Gc::as_ptr(a).hash(state),
-            // UnpackedValue::Condition(c) => Gc::as_ptr(c).hash(state),
-            // UnpackedValue::OtherData(o) => Gc::as_ptr(o).hash(state),
-            // TODO: We can make this better by checking the vectors and list
-            // for equivalence reflexively. But if we do that, we need to make
-            // sure that constants cannot be set.
             UnpackedValue::Pair(p) => Gc::as_ptr(p).hash(state),
             UnpackedValue::Vector(v) => Gc::as_ptr(v).hash(state),
+            UnpackedValue::Port(p) => Arc::as_ptr(&p.0).hash(state),
             UnpackedValue::Cell(c) => ReflexiveValue(c.0.read().clone()).hash(state),
         }
     }
@@ -1007,6 +1024,7 @@ impl PartialEq for ReflexiveValue {
             (UnpackedValue::Syntax(a), UnpackedValue::Syntax(b)) => Arc::ptr_eq(a, b),
             (UnpackedValue::Procedure(a), UnpackedValue::Procedure(b)) => Gc::ptr_eq(&a.0, &b.0),
             (UnpackedValue::Record(a), UnpackedValue::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
+            (UnpackedValue::Port(a), UnpackedValue::Port(b)) => Arc::ptr_eq(&a.0, &b.0),
             (UnpackedValue::RecordTypeDescriptor(a), UnpackedValue::RecordTypeDescriptor(b)) => {
                 Arc::ptr_eq(a, b)
             }
@@ -1101,6 +1119,7 @@ fn display_value(
         UnpackedValue::Record(record) => write!(f, "{record:?}"),
         UnpackedValue::Syntax(syntax) => write!(f, "{syntax:#?}"),
         UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
+        UnpackedValue::Port(_) => write!(f, "<port>"),
         UnpackedValue::Cell(cell) => display_value(&cell.0.read(), circular_values, f),
     }
 }
@@ -1130,6 +1149,7 @@ fn debug_value(
         UnpackedValue::Procedure(proc) => write!(f, "#<procedure {proc:?}>"),
         UnpackedValue::Record(record) => write!(f, "{record:#?}"),
         UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
+        UnpackedValue::Port(_) => write!(f, "<port>"),
         UnpackedValue::Cell(cell) => debug_value(&cell.0.read(), circular_values, f),
     }
 }
@@ -1185,12 +1205,14 @@ pub fn vector_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
 
 #[bridge(name = "null?", lib = "(rnrs base builtins (6))")]
 pub fn null_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
+    /*
     let is_null = match &*arg.unpacked_ref() {
         UnpackedValue::Null => true,
         UnpackedValue::Syntax(syn) => matches!(syn.as_ref(), Syntax::Null { .. }),
         _ => false,
     };
-    Ok(vec![Value::from(is_null)])
+    */
+    Ok(vec![Value::from(arg.type_of() == ValueType::Null)])
 }
 
 #[bridge(name = "pair?", lib = "(rnrs base builtins (6))")]

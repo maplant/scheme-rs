@@ -7,7 +7,7 @@ use crate::{
     ports::Port,
     registry::bridge,
     symbols::Symbol,
-    syntax::parse::{ParseSyntaxError, Parser},
+    syntax::parse::ParseSyntaxError,
     value::{UnpackedValue, Value, ValueType},
 };
 use scheme_rs_macros::{maybe_async, maybe_await};
@@ -36,6 +36,15 @@ pub struct Span {
     pub file: Arc<String>,
 }
 
+impl Span {
+    pub fn new(file: &str) -> Self {
+        Self {
+            file: Arc::new(file.to_string()),
+            ..Default::default()
+        }
+    }
+}
+
 impl fmt::Display for Span {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}:{}:{}", self.file, self.line, self.column)
@@ -45,7 +54,7 @@ impl fmt::Display for Span {
 impl Default for Span {
     fn default() -> Self {
         Self {
-            line: 0,
+            line: 1,
             column: 0,
             offset: 0,
             file: Arc::new(String::new()),
@@ -122,6 +131,28 @@ impl Syntax {
             Self::Identifier { ident, .. } => ident.mark_many(marks),
             _ => (),
         }
+    }
+
+    pub fn car(&self) -> Result<Self, Condition> {
+        let Some([car, ..]) = self.as_list() else {
+            return Err(Condition::type_error("list", self.syntax_type()));
+        };
+        Ok(car.clone())
+    }
+
+    pub fn cdr(&self) -> Result<Self, Condition> {
+        match self.as_list() {
+            Some([_, null @ Syntax::Null { .. }]) => Ok(null.clone()),
+            Some([_, cdr @ ..]) => Ok(Syntax::List {
+                list: cdr.to_vec(),
+                span: self.span().clone(),
+            }),
+            _ => Err(Condition::type_error("list", self.syntax_type())),
+        }
+    }
+
+    pub fn syntax_type(&self) -> &'static str {
+        "todo"
     }
 
     pub fn syntax_from_datum(marks: &BTreeSet<Mark>, datum: Value) -> Self {
@@ -293,26 +324,23 @@ impl Syntax {
 
     #[cfg(not(feature = "async"))]
     pub fn from_str(s: &str, file_name: Option<&str>) -> Result<Vec<Self>, ParseSyntaxError> {
+        use crate::ports::{BufferMode, Transcoder};
+
         let file_name = file_name.unwrap_or("<unknown>");
         let bytes = Cursor::new(s.as_bytes().to_vec());
-        let port = Port::from_reader(bytes);
-        let input_port = port.get_input_port().unwrap();
-        let mut input_port = input_port.lock().unwrap();
-        let mut parser = Parser::new(file_name, &mut input_port);
-        parser.all_datums()
+        let port = Port::new(bytes, true, BufferMode::Block, Transcoder::native());
+        port.all_sexprs(Span::new(file_name))
     }
 
     #[cfg(feature = "async")]
     pub fn from_str(s: &str, file_name: Option<&str>) -> Result<Vec<Self>, ParseSyntaxError> {
+        use crate::ports::{BufferMode, Transcoder};
+
         let file_name = file_name.unwrap_or("<unknown>");
         let bytes = Cursor::new(s.as_bytes().to_vec());
-        futures::executor::block_on(async move {
-            let port = Port::from_reader(bytes);
-            let input_port = port.get_input_port().unwrap();
-            let mut input_port = input_port.lock().await;
-            let mut parser = Parser::new(file_name, &mut input_port);
-            parser.all_datums().await
-        })
+        let port = Port::new(bytes, true, BufferMode::Block, Transcoder::native());
+
+        futures::executor::block_on(async move { port.all_sexprs(Span::new(file_name)).await })
     }
 
     pub fn fetch_all_identifiers(&self, idents: &mut HashSet<Identifier>) {

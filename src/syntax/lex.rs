@@ -3,7 +3,6 @@
 use super::Span;
 use malachite::{Integer, base::num::conversion::traits::*, rational::Rational};
 use scheme_rs_macros::{maybe_async, maybe_await};
-use std::sync::Arc;
 use unicode_categories::UnicodeCategories;
 
 #[cfg(feature = "async")]
@@ -11,53 +10,47 @@ use futures::future::BoxFuture;
 
 use crate::{
     num,
-    ports::{InputPort, ReadError},
+    ports::{PortInner, ReadError},
 };
 
 pub struct Lexer<'a> {
+    port: &'a mut PortInner,
     pos: usize,
-    port: &'a mut InputPort,
-    curr_line: u32,
-    curr_column: usize,
-    file: Arc<String>,
+    buff: Vec<char>,
+    curr_span: Span,
 }
 
 impl<'a> Lexer<'a> {
-    /*
-    #[cfg(feature = "async")]
-    pub async fn new(input_port: &'a Port) -> Self {
+    pub(crate) fn new(port: &'a mut PortInner, span: Span) -> Self {
         Self {
-            pos: 0,
-            file: Arc::new(input_port.name.clone()),
-            curr_line: 0,
-            curr_column: 0,
-            port: input_port.try_lock_input_port().await.unwrap(),
-        }
-    }
-    */
-
-    pub fn new(name: &str, port: &'a mut InputPort) -> Self {
-        Self {
-            pos: 0,
-            file: Arc::new(name.to_string()),
-            curr_line: 0,
-            curr_column: 0,
             port,
+            pos: 0,
+            buff: Vec::new(),
+            curr_span: span,
         }
     }
 
-    fn curr_span(&self) -> Span {
+    pub(crate) fn curr_span(&self) -> Span {
         Span {
-            line: self.curr_line,
-            column: self.curr_column,
-            offset: self.pos,
-            file: self.file.clone(),
+            line: self.curr_span.line,
+            column: self.curr_span.column,
+            offset: self.curr_span.offset + self.pos,
+            file: self.curr_span.file.clone(),
         }
     }
 
     #[maybe_async]
-    fn peek(&mut self) -> Result<char, ReadError> {
-        maybe_await!(self.port.peekn(self.pos))
+    fn peek(&mut self) -> Result<Option<char>, ReadError> {
+        if self.buff.len() > self.pos {
+            return Ok(Some(self.buff[self.pos]));
+        }
+        while self.buff.len() < self.pos {
+            let Some(chr) = maybe_await!(self.port.read_char())? else {
+                return Ok(None);
+            };
+            self.buff.push(chr);
+        }
+        maybe_await!(self.port.peekn_chars(0))
     }
 
     fn skip(&mut self) {
@@ -65,10 +58,12 @@ impl<'a> Lexer<'a> {
     }
 
     #[maybe_async]
-    fn take(&mut self) -> Result<char, ReadError> {
-        let chr = maybe_await!(self.peek())?;
+    fn take(&mut self) -> Result<Option<char>, ReadError> {
+        let Some(chr) = maybe_await!(self.peek())? else {
+            return Ok(None);
+        };
         self.pos += 1;
-        Ok(chr)
+        Ok(Some(chr))
     }
 
     #[maybe_async]
@@ -79,12 +74,14 @@ impl<'a> Lexer<'a> {
     #[maybe_async]
     fn match_pred(&mut self, pred: impl FnOnce(char) -> bool) -> Result<Option<char>, ReadError> {
         let chr = maybe_await!(self.peek())?;
-        if pred(chr) {
+        if let Some(chr) = chr
+            && pred(chr)
+        {
             if chr == '\n' {
-                self.curr_line += 1;
-                self.curr_column = 0;
+                self.curr_span.line += 1;
+                self.curr_span.column = 0;
             } else {
-                self.curr_column += 1;
+                self.curr_span.column += 1;
             }
             self.pos += 1;
             Ok(Some(chr))
@@ -95,25 +92,37 @@ impl<'a> Lexer<'a> {
 
     #[maybe_async]
     fn match_tag(&mut self, tag: &str) -> Result<bool, ReadError> {
-        let mut offset = 0;
+        let pos = self.pos;
         for chr in tag.chars() {
-            if maybe_await!(self.port.peekn(offset + self.pos))? != chr {
+            if !maybe_await!(self.match_char(chr))? {
+                self.pos = pos;
                 return Ok(false);
             }
-            offset += 1;
         }
         // tag cannot contain newlines
-        self.curr_column += offset;
-        self.pos += offset;
+        self.curr_span.column += self.pos;
         Ok(true)
     }
 
     #[maybe_async]
-    pub fn next_token(&mut self) -> Result<Token, LexerError> {
+    fn consume_chars(&mut self) -> Result<(), ReadError> {
+        // Consume all the characters we need to
+        if self.pos > self.buff.len() {
+            maybe_await!(self.port.consume_chars(self.pos - self.buff.len()))?;
+        }
+        self.pos = 0;
+        self.buff.clear();
+        Ok(())
+    }
+
+    #[maybe_async]
+    pub fn next_token(&mut self) -> Result<Option<Token>, LexerError> {
         // TODO: Check if the port is empty
 
         // Check for any interlexeme space:
         maybe_await!(self.interlexeme_space())?;
+
+        // self.consume_chars()?;
 
         // Get the current span:
         let span = self.curr_span();
@@ -123,8 +132,8 @@ impl<'a> Lexer<'a> {
             Lexeme::Number(number)
         } else if let Some(identifier) = maybe_await!(self.identifier())? {
             Lexeme::Identifier(identifier)
-        } else {
-            match maybe_await!(self.take())? {
+        } else if let Some(chr) = maybe_await!(self.take())? {
+            match chr {
                 '.' => Lexeme::Period,
                 '\'' => Lexeme::Quote,
                 '`' => Lexeme::Backquote,
@@ -151,11 +160,27 @@ impl<'a> Lexer<'a> {
                 '#' if maybe_await!(self.match_tag("`"))? => Lexeme::HashBackquote,
                 '#' if maybe_await!(self.match_tag(",@"))? => Lexeme::HashCommaAt,
                 '#' if maybe_await!(self.match_tag(","))? => Lexeme::HashComma,
+                '#' => {
+                    let next_chr = maybe_await!(self.take())?;
+                    if let Some(chr) = next_chr {
+                        return Err(LexerError::UnexpectedCharacter {
+                            chr,
+                            span: self.curr_span(),
+                        });
+                    } else {
+                        return Err(LexerError::UnexpectedEof);
+                    }
+                }
+                '\0' => return Ok(None),
                 chr => return Err(LexerError::UnexpectedCharacter { chr, span }),
             }
+        } else {
+            return Ok(None);
         };
 
-        Ok(Token { lexeme, span })
+        maybe_await!(self.consume_chars())?;
+
+        Ok(Some(Token { lexeme, span }))
     }
 
     #[maybe_async]
@@ -221,7 +246,7 @@ impl<'a> Lexer<'a> {
         } else if maybe_await!(self.match_tag("tab"))? {
             Character::Escaped(EscapedCharacter::Tab)
         } else if maybe_await!(self.match_char('x'))? {
-            if is_delimiter(maybe_await!(self.peek())?) {
+            if is_delimiter(maybe_await!(self.peek())?.ok_or(LexerError::UnexpectedEof)?) {
                 Character::Literal('x')
             } else {
                 let mut unicode = String::new();
@@ -231,10 +256,12 @@ impl<'a> Lexer<'a> {
                 Character::Unicode(unicode)
             }
         } else {
-            Character::Literal(maybe_await!(self.take())?)
+            Character::Literal(maybe_await!(self.take())?.ok_or(LexerError::UnexpectedEof)?)
         };
         let peeked = maybe_await!(self.peek())?;
-        if !is_delimiter(peeked) {
+        if let Some(peeked) = peeked
+            && !is_delimiter(peeked)
+        {
             let span = self.curr_span();
             Err(LexerError::UnexpectedCharacter { chr: peeked, span })
         } else {
@@ -253,7 +280,7 @@ impl<'a> Lexer<'a> {
         // Need this because "10i" is not a valid number.
         let has_sign = {
             let peeked = maybe_await!(self.peek())?;
-            peeked == '+' || peeked == '-'
+            peeked == Some('+') || peeked == Some('-')
         };
 
         let first_part = maybe_await!(self.part(radix))?;
@@ -278,7 +305,7 @@ impl<'a> Lexer<'a> {
             let matched_at = maybe_await!(self.match_char('@'))?;
             let imag_part = if matched_at || {
                 let peeked = maybe_await!(self.peek())?;
-                peeked == '+' || peeked == '-'
+                peeked == Some('+') || peeked == Some('-')
             } {
                 let second_part = maybe_await!(self.part(radix))?;
                 if second_part.is_none() || !matched_at && !maybe_await!(self.match_char('i'))? {
@@ -298,11 +325,7 @@ impl<'a> Lexer<'a> {
         };
 
         match maybe_await!(self.peek()) {
-            Err(ReadError::Eof) => {
-                self.pos = saved_pos;
-                return Ok(None);
-            }
-            Ok(chr) if is_subsequent(chr) => {
+            Ok(Some(chr)) if is_subsequent(chr) => {
                 self.pos = saved_pos;
                 return Ok(None);
             }
@@ -444,7 +467,7 @@ impl<'a> Lexer<'a> {
         let mut output = String::new();
         while let Some(chr) = maybe_await!(self.match_pred(|chr| chr != '"'))? {
             if chr == '\\' {
-                let escaped = match maybe_await!(self.take())? {
+                let escaped = match maybe_await!(self.take())?.ok_or(LexerError::UnexpectedEof)? {
                     'x' => todo!(),
                     'a' => '\u{07}',
                     'b' => '\u{08}',
@@ -464,7 +487,7 @@ impl<'a> Lexer<'a> {
                         )?
                         .is_some()
                         {}
-                        let chr = maybe_await!(self.take())?;
+                        let chr = maybe_await!(self.take())?.ok_or(LexerError::UnexpectedEof)?;
                         if chr != '\n' {
                             let span = self.curr_span();
                             return Err(LexerError::UnexpectedCharacter { chr, span });
@@ -542,6 +565,7 @@ impl<'a> Lexer<'a> {
 
 #[derive(Debug)]
 pub enum LexerError {
+    UnexpectedEof,
     InvalidCharacterInHexEscape { chr: char, span: Span },
     UnexpectedCharacter { chr: char, span: Span },
     BadEscapeCharacter { chr: char, span: Span },
@@ -549,8 +573,8 @@ pub enum LexerError {
 }
 
 impl From<ReadError> for LexerError {
-    fn from(value: ReadError) -> Self {
-        Self::ReadError(value)
+    fn from(error: ReadError) -> Self {
+        Self::ReadError(error)
     }
 }
 

@@ -6,11 +6,11 @@ use crate::{
     gc::{Gc, GcInner, Trace, init_gc},
     lists::{self, list_to_vec},
     num,
-    ports::Port,
+    ports::{BufferMode, Port, Transcoder},
     proc::{Application, ContinuationPtr, DynStack, FuncDebugInfo, FuncPtr, Procedure, UserPtr},
-    registry::{ImportError, Library, Registry},
+    registry::{Library, Registry},
     symbols::Symbol,
-    syntax::{Span, parse::Parser},
+    syntax::Span,
     value::{Cell, ReflexiveValue, UnpackedValue, Value},
 };
 use scheme_rs_macros::{maybe_async, maybe_await, runtime_fn};
@@ -54,28 +54,25 @@ impl Runtime {
     #[maybe_async]
     pub fn run_program(&self, path: &Path) -> Result<Vec<Value>, Exception> {
         #[cfg(not(feature = "async"))]
-        use std::{fs::File, io::BufReader};
+        use std::fs::File;
 
         #[cfg(feature = "tokio")]
-        use tokio::{fs::File, io::BufReader};
+        use tokio::fs::File;
 
         let progm = Library::new_program(self, path);
         let env = Environment::Top(progm);
-        let file_name = path.file_name().unwrap().to_string_lossy();
-        let reader = BufReader::new(maybe_await!(File::open(path)).unwrap());
-        let port = Port::from_reader(reader);
-        let input_port = port.get_input_port().unwrap();
+        let sexprs = {
+            let port = Port::new(
+                maybe_await!(File::open(path)).unwrap(),
+                true,
+                BufferMode::Block,
+                Transcoder::native(),
+            );
+            let file_name = path.file_name().unwrap().to_str().unwrap_or("<unknown>");
+            let span = Span::new(file_name);
+            maybe_await!(port.all_sexprs(span)).map_err(Condition::from)?
+        };
 
-        #[cfg(not(feature = "async"))]
-        let mut input_port = input_port.lock().unwrap();
-
-        #[cfg(feature = "tokio")]
-        let mut input_port = input_port.lock().await;
-
-        let mut parser = Parser::new(&file_name, &mut input_port);
-        let sexprs = maybe_await!(parser.all_datums())
-            .map_err(|err| ImportError::ParseSyntaxError(format!("{err:?}")))
-            .unwrap();
         let body = maybe_await!(DefinitionBody::parse_lib_body(
             self,
             &sexprs,

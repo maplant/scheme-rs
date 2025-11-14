@@ -3,7 +3,7 @@ name = "scheme-rs"
 version = "0.1.0-alpha.1"
 edition = "2024"
 authors = ["Matthew Plant <maplant@protonmail.com>"]
-description = "Embedded scheme for the async-rust ecosystem"
+description = "Embedded scheme for the Rust ecosystem"
 license = "MPL-2.0"
 
 documentation = "https://docs.rs/crate/scheme-rs"
@@ -11,6 +11,7 @@ homepage = "https://github.com/maplant/scheme-rs"
 repository = "https://github.com/maplant/scheme-rs"
 
 [dependencies]
+async-stream = { version = "0.3", optional = true }
 by_address = "1.2"
 derive_builder = "0.20"
 derive_more = { version = "1.0", features = ["debug", "from"]}
@@ -19,6 +20,7 @@ futures = { version = "0.3", optional = true }
 indexmap = "2"
 inventory = "0.3"
 malachite = { version = "0.7", features = ["floats"] }
+memchr = "2.7"
 num = "0.4"
 ordered-float = "5"
 parking_lot = "0.12.5"
@@ -40,7 +42,7 @@ tokio = { version = "1.47", features = ["full"], optional = true }
 
 [features]
 default = []
-async = ["dep:futures"]
+async = ["dep:futures", "dep:async-stream"]
 
 [profile.release]
 lto = true
