@@ -198,11 +198,11 @@ impl HeapObject<()> {
     }
 
     unsafe fn data(&self) -> *const () {
-        unsafe { self.data.as_ptr() as *const UnsafeCell<()> as *const () }
+        self.data.as_ptr() as *const UnsafeCell<()> as *const ()
     }
 
     unsafe fn data_mut(&self) -> *mut () {
-        unsafe { self.data.as_ref().get() }
+        self.data.as_ptr() as *mut UnsafeCell<()> as *mut ()
     }
 
     unsafe fn next(&self) -> *mut GcHeader {

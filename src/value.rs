@@ -16,7 +16,7 @@ use crate::{
 };
 use std::{
     collections::HashMap, fmt, hash::Hash, io::Write, marker::PhantomData, mem::ManuallyDrop,
-    ops::Deref, sync::Arc,
+    ops::Deref, ptr::null, sync::Arc,
 };
 
 #[cfg(not(feature = "async"))]
@@ -25,14 +25,14 @@ use std::sync::Mutex;
 #[cfg(feature = "tokio")]
 use tokio::sync::Mutex;
 
-const ALIGNMENT: u64 = 16;
-const TAG_BITS: u64 = ALIGNMENT.ilog2() as u64;
-const TAG: u64 = 0b1111;
-const FALSE_VALUE: u64 = Tag::Boolean as u64;
+const ALIGNMENT: usize = 16;
+const TAG_BITS: usize = ALIGNMENT.ilog2() as usize;
+const TAG: usize = 0b1111;
+const FALSE_VALUE: usize = Tag::Boolean as usize;
 
 /// A Scheme value. Represented as a tagged pointer.
 #[repr(transparent)]
-pub struct Value(u64);
+pub struct Value(*const ());
 
 impl Value {
     pub fn new(v: UnpackedValue) -> Self {
@@ -41,11 +41,11 @@ impl Value {
 
     /// #f is false, everything else is true
     pub fn is_true(&self) -> bool {
-        self.0 != FALSE_VALUE
+        self.0 as usize != FALSE_VALUE
     }
 
     pub fn is_null(&self) -> bool {
-        self.0 == Tag::Pair as u64
+        self.0 as usize == Tag::Pair as usize
     }
 
     /// Creates a new Value from a raw u64.
@@ -53,7 +53,7 @@ impl Value {
     /// # Safety
     /// Calling this function is undefined behavior if the raw u64 was not obtained
     /// via [into_raw]
-    pub unsafe fn from_raw(raw: u64) -> Self {
+    pub unsafe fn from_raw(raw: *const ()) -> Self {
         Self(raw)
     }
 
@@ -62,9 +62,9 @@ impl Value {
     /// # Safety
     /// Calling this function is undefined behavior if the raw u64 was not obtained
     /// via [into_raw]
-    pub unsafe fn from_raw_inc_rc(raw: u64) -> Self {
-        let tag = Tag::from(raw & TAG);
-        let untagged = raw & !TAG;
+    pub unsafe fn from_raw_inc_rc(raw: *const ()) -> Self {
+        let tag = Tag::from(raw as usize & TAG);
+        let untagged = raw.map_addr(|raw| raw & !TAG);
         unsafe {
             match tag {
                 Tag::Number => Arc::increment_strong_count(untagged as *const Number),
@@ -86,7 +86,7 @@ impl Value {
                     Arc::increment_strong_count(untagged as *const RecordTypeDescriptor)
                 }
                 Tag::Pair => {
-                    if untagged != 0 {
+                    if !untagged.is_null() {
                         Gc::increment_reference_count(untagged as *mut GcInner<lists::Pair>)
                     }
                 }
@@ -104,29 +104,30 @@ impl Value {
     /// Creates a raw u64 from a Value. Does not decrement the reference count.
     /// Calling this function without turning the raw value into a Value via
     /// [from_raw] is equivalent to calling mem::forget on the value.
-    pub fn into_raw(val: Self) -> u64 {
+    pub fn into_raw(val: Self) -> *const () {
         ManuallyDrop::new(val).0
     }
 
     /// Creates a raw u64 from the Value. Does not decrement the reference count.
-    pub fn as_raw(this: &Self) -> u64 {
+    pub fn as_raw(this: &Self) -> *const () {
         this.0
     }
 
     fn from_ptr_and_tag<T>(ptr: *const T, tag: Tag) -> Self {
-        Self(ptr as u64 | tag as u64)
+        Self(ptr.map_addr(|raw| raw | tag as usize) as *const ())
     }
 
     fn from_mut_ptr_and_tag<T>(ptr: *mut T, tag: Tag) -> Self {
-        Self(ptr as u64 | tag as u64)
+        Self(ptr.map_addr(|raw| raw | tag as usize) as *const ())
+        // Self(ptr as u64 | tag as u64)
     }
 
-    pub const fn undefined() -> Self {
-        Self(Tag::Undefined as u64)
+    pub fn undefined() -> Self {
+        Self(null::<()>().map_addr(|raw| raw | Tag::Undefined as usize))
     }
 
-    pub const fn null() -> Self {
-        Self(Tag::Pair as u64)
+    pub fn null() -> Self {
+        Self(null::<()>().map_addr(|raw| raw | Tag::Pair as usize))
     }
 
     pub fn datum_from_syntax(syntax: &Syntax) -> Self {
@@ -173,16 +174,16 @@ impl Value {
 
     pub fn unpack(self) -> UnpackedValue {
         let raw = ManuallyDrop::new(self).0;
-        let tag = Tag::from(raw & TAG);
-        let untagged = raw & !TAG;
+        let tag = Tag::from(raw as usize & TAG);
+        let untagged = raw.map_addr(|raw| raw & !TAG);
         match tag {
             Tag::Undefined => UnpackedValue::Undefined,
             Tag::Boolean => {
-                let untagged = untagged >> TAG_BITS;
+                let untagged = untagged as usize >> TAG_BITS;
                 UnpackedValue::Boolean(untagged != 0)
             }
             Tag::Character => {
-                let untagged = (untagged >> TAG_BITS) as u32;
+                let untagged = (untagged as usize >> TAG_BITS) as u32;
                 UnpackedValue::Character(char::from_u32(untagged).unwrap())
             }
             Tag::Number => {
@@ -194,7 +195,7 @@ impl Value {
                 UnpackedValue::String(str)
             }
             Tag::Symbol => {
-                let untagged = (untagged >> TAG_BITS) as u32;
+                let untagged = (untagged as usize >> TAG_BITS) as u32;
                 UnpackedValue::Symbol(symbols::Symbol(untagged))
             }
             Tag::Vector => {
@@ -223,7 +224,7 @@ impl Value {
                 UnpackedValue::RecordTypeDescriptor(rt)
             }
             Tag::Pair => {
-                if untagged == 0 {
+                if untagged.is_null() {
                     UnpackedValue::Null
                 } else {
                     let pair = unsafe { Gc::from_raw(untagged as *mut GcInner<lists::Pair>) };
@@ -278,6 +279,9 @@ impl Drop for Value {
         unsafe { ManuallyDrop::drop(&mut ManuallyDrop::new(Self(self.0).unpack())) }
     }
 }
+
+unsafe impl Send for Value {}
+unsafe impl Sync for Value {}
 
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -374,8 +378,8 @@ pub(crate) enum Tag {
 }
 
 // TODO: Make TryFrom with error
-impl From<u64> for Tag {
-    fn from(tag: u64) -> Self {
+impl From<usize> for Tag {
+    fn from(tag: usize) -> Self {
         match tag {
             0 => Self::Undefined,
             1 => Self::Pair,
@@ -448,8 +452,12 @@ impl UnpackedValue {
         match self {
             Self::Undefined => Value::undefined(),
             Self::Null => Value::null(),
-            Self::Boolean(b) => Value((b as u64) << TAG_BITS | Tag::Boolean as u64),
-            Self::Character(c) => Value((c as u64) << TAG_BITS | Tag::Character as u64),
+            Self::Boolean(b) => {
+                Value::from_ptr_and_tag(((b as usize) << TAG_BITS) as *const (), Tag::Boolean)
+            }
+            Self::Character(c) => {
+                Value::from_ptr_and_tag(((c as usize) << TAG_BITS) as *const (), Tag::Character)
+            }
             Self::Number(num) => {
                 let untagged = Arc::into_raw(num);
                 Value::from_ptr_and_tag(untagged, Tag::Number)
@@ -458,7 +466,9 @@ impl UnpackedValue {
                 let untagged = Arc::into_raw(str);
                 Value::from_ptr_and_tag(untagged, Tag::String)
             }
-            Self::Symbol(sym) => Value((sym.0 as u64) << TAG_BITS | Tag::Symbol as u64),
+            Self::Symbol(sym) => {
+                Value::from_ptr_and_tag(((sym.0 as usize) << TAG_BITS) as *const (), Tag::Symbol)
+            }
             Self::Vector(vec) => {
                 let untagged = Gc::into_raw(vec);
                 Value::from_mut_ptr_and_tag(untagged, Tag::Vector)
@@ -1155,7 +1165,7 @@ fn debug_value(
 }
 #[bridge(name = "not", lib = "(rnrs base builtins (6))")]
 pub fn not(a: &Value) -> Result<Vec<Value>, Condition> {
-    Ok(vec![Value::from(a.0 == Tag::Boolean as u64)])
+    Ok(vec![Value::from(a.0 as usize == Tag::Boolean as usize)])
 }
 
 #[bridge(name = "eqv?", lib = "(rnrs base builtins (6))")]
