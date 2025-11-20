@@ -41,6 +41,8 @@ pub(crate) struct GcHeader {
     finalize: unsafe fn(this: *mut ()),
     /// Layout for the underlying data
     layout: Layout,
+    /// Offset into the underlying data
+    offset: usize,
     /// Next item in the heap, or null
     next: *mut GcHeader,
     /// Previous item in the heap, or null
@@ -65,6 +67,7 @@ impl GcHeader {
                 T::finalize_or_skip(this.as_mut().unwrap());
             },
             layout: Layout::new::<super::GcInner<T>>(),
+            offset: offset_of!(super::GcInner<T>, data),
             next: null_mut(),
             prev: null_mut(),
         }
@@ -109,9 +112,11 @@ impl HeapObject<()> {
             return None;
         }
 
-        let data = unsafe { (ptr as *mut ()).byte_add(offset_of!(GcInner<()>, data)) };
+        let header = NonNull::new(ptr as *mut UnsafeCell<GcHeader>).unwrap();
+        let header_offset = unsafe { (*header.as_ref().get()).offset };
+        let data = unsafe { (ptr as *mut ()).byte_add(header_offset) };
         Some(Self {
-            header: NonNull::new(ptr as *mut UnsafeCell<GcHeader>).unwrap(),
+            header,
             data: NonNull::new(data as *mut UnsafeCell<()>).unwrap(),
         })
     }
@@ -257,7 +262,6 @@ pub struct Collector {
     cycles: Vec<Vec<OpaqueGcPtr>>,
     start: *mut GcHeader,
     next: *mut GcHeader,
-    live_objects: usize,
 }
 
 unsafe impl Send for Collector {}
@@ -269,7 +273,6 @@ impl Collector {
             cycles: Vec::new(),
             start: null_mut(),
             next: null_mut(),
-            live_objects: 0,
         }
     }
 
@@ -308,8 +311,6 @@ impl Collector {
         if new_live_objects == 1 {
             std::thread::yield_now();
         }
-
-        self.live_objects += new_live_objects - 1;
 
         self.next = self.start;
 
@@ -527,8 +528,6 @@ impl Collector {
             // possible root:
             let prev = s.prev();
             let next = s.next();
-
-            self.live_objects -= 1;
 
             if self.start == s.as_ptr() {
                 self.start = next;
