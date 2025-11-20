@@ -10,7 +10,7 @@ use std::{
     mem::offset_of,
     ptr::{NonNull, null_mut},
     sync::{
-        Mutex, OnceLock,
+        OnceLock,
         atomic::{AtomicPtr, AtomicUsize, Ordering},
     },
     thread::JoinHandle,
@@ -41,7 +41,6 @@ pub(crate) struct GcHeader {
     finalize: unsafe fn(this: *mut ()),
     /// Layout for the underlying data
     layout: Layout,
-    offset: usize,
     /// Next item in the heap, or null
     next: *mut GcHeader,
     /// Previous item in the heap, or null
@@ -65,7 +64,6 @@ impl GcHeader {
                 let this = this as *mut T;
                 T::finalize_or_skip(this.as_mut().unwrap());
             },
-            offset: offset_of!(super::GcInner<T>, data),
             layout: Layout::new::<super::GcInner<T>>(),
             next: null_mut(),
             prev: null_mut(),
@@ -99,7 +97,6 @@ pub struct HeapObject<T> {
 
 impl std::fmt::Debug for OpaqueGcPtr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // unsafe { (*self.header.as_ref().get()).fmt(f) }
         write!(f, "{:p}", self.header.as_ptr())
     }
 }
@@ -112,13 +109,9 @@ impl HeapObject<()> {
             return None;
         }
 
-        let header = NonNull::new(ptr as *mut UnsafeCell<GcHeader>).unwrap();
-        let header_offset = unsafe { (*header.as_ref().get()).offset };
-        assert_eq!(header_offset, offset_of!(GcInner<()>, data));
-
         let data = unsafe { (ptr as *mut ()).byte_add(offset_of!(GcInner<()>, data)) };
         Some(Self {
-            header,
+            header: NonNull::new(ptr as *mut UnsafeCell<GcHeader>).unwrap(),
             data: NonNull::new(data as *mut UnsafeCell<()>).unwrap(),
         })
     }
@@ -232,7 +225,7 @@ unsafe impl Send for HeapObject<()> {}
 unsafe impl Sync for HeapObject<()> {}
 
 pub(super) fn alloc_gc_object<T: super::GcOrTrace>(data: T) -> super::Gc<T> {
-    let mut new_gc = super::Gc {
+    let new_gc = super::Gc {
         ptr: NonNull::from(Box::leak(Box::new(GcInner {
             header: UnsafeCell::new(GcHeader::new::<T>()),
             data: UnsafeCell::new(data),
@@ -240,45 +233,18 @@ pub(super) fn alloc_gc_object<T: super::GcOrTrace>(data: T) -> super::Gc<T> {
         marker: PhantomData,
     };
 
-    /*
-    NEW_ALLOCS_BUFFER
-        .lock()
-        .unwrap()
-        .push(unsafe { new_gc.as_opaque() });
-     */
-
-    /*
     HEAP_START
         .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |next| unsafe {
             let new_gc_ptr = new_gc.ptr.as_ptr() as *mut GcHeader;
             (*new_gc_ptr).next = next;
             Some(new_gc_ptr)
         })
-    .unwrap();
-     */
-
-    unsafe {
-        let mut heap_start = HEAP_START.lock().unwrap();
-        let new_gc_ptr = new_gc.ptr.as_ptr() as *mut GcHeader;
-        if let Some(start) = OpaqueGcPtr::from_ptr(heap_start.start) {
-            start.set_prev(new_gc_ptr);
-        }
-        (*new_gc_ptr).next = heap_start.start;
-        heap_start.start = new_gc_ptr;
-    }
+        .unwrap();
 
     new_gc
 }
 
-struct HeapStart {
-    start: *mut GcHeader,
-}
-
-unsafe impl Send for HeapStart {}
-unsafe impl Sync for HeapStart {}
-
-// static HEAP_START: AtomicPtr<GcHeader> = AtomicPtr::new(std::ptr::null_mut());
-static HEAP_START: Mutex<HeapStart> = Mutex::new(HeapStart { start: null_mut() });
+static HEAP_START: AtomicPtr<GcHeader> = AtomicPtr::new(std::ptr::null_mut());
 static COLLECTOR_TASK: OnceLock<JoinHandle<()>> = OnceLock::new();
 
 pub fn init_gc() {
@@ -287,13 +253,11 @@ pub fn init_gc() {
 
 #[derive(Debug)]
 pub struct Collector {
-    // swap_buffer: Vec<OpaqueGcPtr>,
-    // heap: HashSet<OpaqueGcPtr>,
     roots: HashSet<OpaqueGcPtr>,
     cycles: Vec<Vec<OpaqueGcPtr>>,
-    // removed: HashSet<OpaqueGcPtr>,
     start: *mut GcHeader,
     next: *mut GcHeader,
+    live_objects: usize,
 }
 
 unsafe impl Send for Collector {}
@@ -301,76 +265,59 @@ unsafe impl Send for Collector {}
 impl Collector {
     fn new() -> Self {
         Self {
-            // swap_buffer: Vec::new(),
-            // heap: HashSet::default(),
             roots: HashSet::default(),
             cycles: Vec::new(),
-            // removed: HashSet::default(),
             start: null_mut(),
             next: null_mut(),
+            live_objects: 0,
         }
     }
 
     fn run(mut self) -> JoinHandle<()> {
         std::thread::spawn(move || {
             loop {
-                // self.recv_new_allocs();
                 self.epoch();
             }
         })
     }
 
-    /*
-    fn recv_new_allocs(&mut self) {
-        /*
-        std::mem::swap(
-            &mut *NEW_ALLOCS_BUFFER.lock().unwrap(),
-            &mut self.swap_buffer,
-        );
-        self.heap
-            .extend(self.swap_buffer.drain(..).map(|new_alloc| unsafe {
-                new_alloc.set_buffered(false);
-                new_alloc
-            }));
-         */
-        todo!()
-    }
-     */
-
     fn epoch(&mut self) {
-        // println!("epoch");
-        // (run 1000)
-        //println!("epoch: {:?}", self.removed);
+        self.start = HEAP_START
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |_| Some(null_mut()))
+            .unwrap();
+
+        // Go through and set the prev ptr for all of the new items:
+        let mut prev = null_mut();
+        let mut next = self.start;
+        let mut new_live_objects = 0;
+        while let Some(curr_heap_object) = unsafe { OpaqueGcPtr::from_ptr(next) } {
+            unsafe {
+                // curr_heap_object.set_prev(prev);
+                if !curr_heap_object.prev().is_null() {
+                    break;
+                }
+
+                new_live_objects += 1;
+
+                curr_heap_object.set_prev(prev);
+                prev = next;
+                next = curr_heap_object.next();
+            }
+        }
+
+        if new_live_objects == 1 {
+            std::thread::yield_now();
+        }
+
+        self.live_objects += new_live_objects - 1;
+
+        self.next = self.start;
 
         // Collect obvious garbage; i.e. heap objects that have a ref count of zero,
         // and potential candidates for cycles.
-        // let mut garbage = Vec::new();
-
-        // for heap_object in self.heap.iter() {
-        /*
-        let mut start = HEAP_START
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |_| Some(null_mut()))
-            .unwrap();
-        */
-
-        self.start = { let mut heap_start = HEAP_START.lock().unwrap();
-                          let start = heap_start.start; heap_start.start = null_mut(); start };
-        // let mut prev = null_mut();
-        self.next = self.start;
-
         while let Some(curr_heap_object) = unsafe { OpaqueGcPtr::from_ptr(self.next) } {
-            //println!("curr_heap_object: {curr_heap_object:?}");
             unsafe {
-                // curr_heap_object.set_prev(prev);
                 curr_heap_object.set_buffered(false);
-
-                /*
-                if self.removed.contains(&curr_heap_object) {
-                    panic!(
-                        "we see a heap object that had previously been freed: {curr_heap_object:?}"
-                    );
-                }
-                */
 
                 let shared_rc = curr_heap_object.shared_rc();
                 let epoch_rc = curr_heap_object.epoch_rc();
@@ -378,7 +325,6 @@ impl Collector {
                 self.next = curr_heap_object.next();
 
                 if shared_rc == 0 {
-                    //println!("releasing");
                     // If shared_rc is zero, then we can release this object
                     self.release(curr_heap_object);
                 } else if shared_rc > epoch_rc {
@@ -413,21 +359,11 @@ impl Collector {
             return;
         }
 
-        /*
-        if self
-            .removed
-            .contains(&unsafe { OpaqueGcPtr::from_ptr(self.start).unwrap() })
+        if let Err(mut curr_ptr) =
+            HEAP_START.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |new_start| {
+                new_start.is_null().then_some(self.start)
+            })
         {
-            panic!("Removed cycles contains start");
-        }
-        */
-
-        let mut heap_start = HEAP_START.lock().unwrap();
-        let mut curr_ptr = heap_start.start;
-        if curr_ptr.is_null() {
-            heap_start.start = self.start;
-            return;
-        }
             // We have a new start, append start to the end of the linked list
             loop {
                 let curr = unsafe { OpaqueGcPtr::from_ptr(curr_ptr) }.unwrap();
@@ -441,35 +377,12 @@ impl Collector {
                 }
                 curr_ptr = next;
             }
-
-        /*
-        if let Err(mut curr_ptr) =
-            HEAP_START.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |new_start| {
-                new_start.is_null().then_some(start)
-            })
-        {
-            // We have a new start, append start to the end of the linked list
-            loop {
-                let curr = unsafe { OpaqueGcPtr::from_ptr(curr_ptr) }.unwrap();
-                let next = unsafe { curr.next() };
-                if next.is_null() {
-                    if let Some(start) = unsafe { OpaqueGcPtr::from_ptr(start) } {
-                        unsafe { start.set_prev(curr_ptr) };
-                    }
-                    unsafe { curr.set_next(start) };
-                    return;
-                }
-                curr_ptr = next;
-            }
         }
-        */
-
     }
 
     unsafe fn decrement(&mut self, s: OpaqueGcPtr) {
         unsafe {
             if s.dec_shared_rc() == 1 && !s.buffered() {
-                //println!("releasing: {s:?}");
                 self.release(s);
             }
         }
@@ -614,6 +527,8 @@ impl Collector {
             // possible root:
             let prev = s.prev();
             let next = s.next();
+
+            self.live_objects -= 1;
 
             if self.start == s.as_ptr() {
                 self.start = next;
