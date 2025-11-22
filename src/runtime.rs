@@ -435,13 +435,12 @@ unsafe extern "C" fn truthy(val: *const ()) -> bool {
 
 /// Replace the value pointed to at to with the value contained in from.
 #[runtime_fn]
-unsafe extern "C" fn store(from: *const (), to: *const()) {
+unsafe extern "C" fn store(from: *const (), to: *const ()) {
     unsafe {
         // We do not need to increment the ref count for to, it is dropped
         // immediately.
         let from = Value::from_raw_inc_rc(from);
-        let to: ManuallyDrop<Cell> =
-            ManuallyDrop::new(Value::from_raw(to).try_into().unwrap());
+        let to: ManuallyDrop<Cell> = ManuallyDrop::new(Value::from_raw(to).try_into().unwrap());
         *to.0.write() = from;
     }
 }
@@ -611,7 +610,11 @@ unsafe extern "C" fn div(vals: *const *const (), num_vals: u32, error: *mut Valu
 macro_rules! define_comparison_fn {
     ( $name:ident ) => {
         #[runtime_fn]
-        unsafe extern "C" fn $name(vals: *const *const (), num_vals: u32, error: *mut Value) -> *const () {
+        unsafe extern "C" fn $name(
+            vals: *const *const (),
+            num_vals: u32,
+            error: *mut Value,
+        ) -> *const () {
             unsafe {
                 let vals: Vec<_> = (0..num_vals)
                     .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read()))

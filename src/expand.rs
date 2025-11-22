@@ -521,8 +521,7 @@ unsafe extern "C" fn expand_template(
 
     let expansions = (0..num_expansions)
         .map(|i| {
-            let expansion =
-                unsafe { Value::from_raw_inc_rc(expansions.add(i as usize).read()) };
+            let expansion = unsafe { Value::from_raw_inc_rc(expansions.add(i as usize).read()) };
             let expansion = expansion.try_into_rust_type::<ExpansionLevel>().unwrap();
             expansion.read().clone()
         })
