@@ -65,9 +65,9 @@ impl<T: ?Sized> Gc<T> {
         unsafe {
             OpaqueGcPtr {
                 header: NonNull::from_ref(&self.ptr.as_ref().header),
-                data: NonNull::new_unchecked(UnsafeCell::from_mut(
-                    &mut *(self.ptr.as_ref().data.get() as *mut ()),
-                )),
+                data: NonNull::new_unchecked(
+                    (*self.ptr.as_ptr()).data.get() as *mut () as *mut UnsafeCell<()>
+                ),
             }
         }
     }

@@ -374,7 +374,7 @@ impl Procedure {
             args: *const Value,
             _dyn_stack: *mut DynStack,
         ) -> *mut Application {
-            unsafe { crate::runtime::halt(Value::into_raw(args.read()) as i64) }
+            unsafe { crate::runtime::halt(Value::into_raw(args.read())) }
         }
 
         let mut args = args.to_vec();

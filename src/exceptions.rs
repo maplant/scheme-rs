@@ -673,11 +673,11 @@ pub fn raise(runtime: Runtime, raised: Value) -> Application {
 #[runtime_fn]
 unsafe extern "C" fn raise_rt(
     runtime: *mut GcInner<RuntimeInner>,
-    raised: i64,
+    raised: *const (),
 ) -> *mut Application {
     unsafe {
         let runtime = Runtime::from_raw_inc_rc(runtime);
-        let raised = Value::from_raw(raised as u64);
+        let raised = Value::from_raw(raised);
         Box::into_raw(Box::new(raise(runtime, raised)))
     }
 }
