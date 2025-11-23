@@ -59,7 +59,7 @@ impl GcHeader {
             color: Color::Black,
             buffered: true,
             visit_children: |this, visitor| unsafe {
-                let this = this as *const T;
+                let this = this as *const UnsafeCell<T> as *const T;
                 T::visit_or_recurse(this.as_ref().unwrap(), visitor);
             },
             finalize: |this| unsafe {
@@ -198,11 +198,11 @@ impl HeapObject<()> {
     }
 
     unsafe fn data(&self) -> *const () {
-        unsafe { self.data.as_ref().get() as *const () }
+        self.data.as_ptr() as *const UnsafeCell<()> as *const ()
     }
 
     unsafe fn data_mut(&self) -> *mut () {
-        unsafe { self.data.as_ref().get() }
+        self.data.as_ptr() as *mut ()
     }
 
     unsafe fn next(&self) -> *mut GcHeader {

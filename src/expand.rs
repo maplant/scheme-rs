@@ -305,19 +305,19 @@ impl SchemeCompatible for ExpansionCombiner {
 }
 
 #[runtime_fn]
-unsafe extern "C" fn matches(pattern: i64, syntax: i64) -> i64 {
-    let pattern = unsafe { Value::from_raw_inc_rc(pattern as u64) };
+unsafe extern "C" fn matches(pattern: *const (), syntax: *const ()) -> *const () {
+    let pattern = unsafe { Value::from_raw_inc_rc(pattern) };
     let pattern = pattern.try_into_rust_type::<Pattern>().unwrap();
 
-    let syntax = unsafe { Value::from_raw_inc_rc(syntax as u64) };
+    let syntax = unsafe { Value::from_raw_inc_rc(syntax) };
     // This isn't a great way to do this, but it'll work for now:
     let syntax = Syntax::syntax_from_datum(&BTreeSet::default(), syntax);
 
     let mut expansions = ExpansionLevel::default();
     if pattern.read().matches(&syntax, &mut expansions) {
-        Value::into_raw(Value::from(Record::from_rust_type(expansions))) as i64
+        Value::into_raw(Value::from(Record::from_rust_type(expansions)))
     } else {
-        Value::into_raw(Value::from(false)) as i64
+        Value::into_raw(Value::from(false))
     }
 }
 
@@ -503,26 +503,25 @@ impl SchemeCompatible for Template {
 
 #[runtime_fn]
 unsafe extern "C" fn expand_template(
-    template: i64,
-    expansion_combiner: i64,
-    expansions: *const i64,
+    template: *const (),
+    expansion_combiner: *const (),
+    expansions: *const *const (),
     num_expansions: u32,
-) -> i64 {
+) -> *const () {
     // TODO: A lot of probably unnecessary cloning here, we'll need to fix it up
     // eventually
 
-    let template = unsafe { Value::from_raw_inc_rc(template as u64) };
+    let template = unsafe { Value::from_raw_inc_rc(template) };
     let template = template.try_into_rust_type::<Template>().unwrap();
 
-    let expansion_combiner = unsafe { Value::from_raw_inc_rc(expansion_combiner as u64) };
+    let expansion_combiner = unsafe { Value::from_raw_inc_rc(expansion_combiner) };
     let expansion_combiner = expansion_combiner
         .try_into_rust_type::<ExpansionCombiner>()
         .unwrap();
 
     let expansions = (0..num_expansions)
         .map(|i| {
-            let expansion =
-                unsafe { Value::from_raw_inc_rc(expansions.add(i as usize).read() as u64) };
+            let expansion = unsafe { Value::from_raw_inc_rc(expansions.add(i as usize).read()) };
             let expansion = expansion.try_into_rust_type::<ExpansionLevel>().unwrap();
             expansion.read().clone()
         })
@@ -534,7 +533,7 @@ unsafe extern "C" fn expand_template(
     // TODO: get a real span in here
     let expanded = template.read().expand(&binds, Span::default()).unwrap();
 
-    Value::into_raw(Value::from(expanded)) as i64
+    Value::into_raw(Value::from(expanded))
 }
 
 fn expand_list(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<Syntax> {
