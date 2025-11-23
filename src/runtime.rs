@@ -333,8 +333,7 @@ unsafe extern "C" fn read_cell(cell: *const ()) -> *const () {
         // be decremented at the end of this function.
         let cell = ManuallyDrop::new(cell);
         let cell_read = cell.0.read();
-        let raw = Value::as_raw(&cell_read);
-        raw
+        Value::as_raw(&cell_read)
     }
 }
 
@@ -455,8 +454,7 @@ unsafe extern "C" fn cons(vals: *const *const (), num_vals: u32, error: *mut Val
         }
         let car = Value::from_raw_inc_rc(vals.read());
         let cdr = Value::from_raw_inc_rc(vals.add(1).read());
-        let raw = Value::into_raw(Value::from(Gc::new(lists::Pair(car, cdr))));
-        raw
+        Value::into_raw(Value::from(Gc::new(lists::Pair(car, cdr))))
     }
 }
 

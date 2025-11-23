@@ -202,7 +202,7 @@ impl HeapObject<()> {
     }
 
     unsafe fn data_mut(&self) -> *mut () {
-        self.data.as_ptr() as *mut UnsafeCell<()> as *mut ()
+        self.data.as_ptr() as *mut ()
     }
 
     unsafe fn next(&self) -> *mut GcHeader {
