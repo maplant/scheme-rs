@@ -629,6 +629,18 @@ impl Record {
         // Then, convert that back into the desired type
         Gc::downcast::<T>(gc_any).ok()
     }
+
+    /*
+    /// # Safety
+    /// Just don't use this
+    pub unsafe fn from_raw_parts(rust_parent: Gc<dyn SchemeCompatible>, rtd: Arc<RecordTypeDescriptor>, fields: Vec<Value>) -> Self {
+        Self(Gc::new(RecordInner {
+            rust_parent,
+            rtd,
+            fields,
+        }))
+    }
+    */
 }
 
 impl fmt::Debug for Record {

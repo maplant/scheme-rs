@@ -336,6 +336,20 @@ impl AsRef<UnpackedValue> for UnpackedValueRef<'_> {
     }
 }
 
+impl<T> From<Option<T>> for Value
+where
+    Value: From<T>,
+    Value: From<bool>,
+{
+    // Probably not the best way to do this, but whatever
+    fn from(value: Option<T>) -> Self {
+        match value {
+            Some(t) => Self::from(t),
+            None => Self::from(false),
+        }
+    }
+}
+
 impl From<ast::Literal> for Value {
     fn from(lit: ast::Literal) -> Self {
         Value::new(lit.into())

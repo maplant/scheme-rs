@@ -7,8 +7,8 @@ use scheme_rs_macros::{bridge, maybe_async, maybe_await};
 use std::{any::Any, borrow::Cow, io::Cursor, sync::Arc};
 
 use crate::{
-    exceptions::Condition,
-    gc::Trace,
+    exceptions::{self, Condition},
+    gc::{Gc, Trace},
     syntax::{
         Span, Syntax,
         parse::{ParseSyntaxError, Parser},
@@ -52,7 +52,21 @@ impl From<io::Error> for SeekError {
     }
 }
 
-pub struct Utf8Buffer {
+pub struct IoError(Gc<exceptions::Error>);
+
+impl IoError {
+    pub fn new() -> Self {
+        Self(Gc::new(exceptions::Error::new()))
+    }
+}
+
+impl Default for IoError {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub(crate) struct Utf8Buffer {
     buff: [u8; 4],
     len: u8,
     error_mode: ErrorHandlingMode,
@@ -899,7 +913,6 @@ impl PortInner {
         match self.buffer_mode {
             BufferMode::None => maybe_await!(write(self.port.as_mut(), bytes))?,
             BufferMode::Line => loop {
-                // TODO: use transcoder eol style
                 if let Some(next_line) = self.transcoder.eol_type.find_next_line(
                     self.transcoder.codec.ls_needle(self.utf16_endianness),
                     bytes,

@@ -8,12 +8,14 @@ use crate::{
     ports::{ReadError, WriteError},
     proc::{Application, DynStack, DynStackElem, FuncPtr, Procedure, pop_dyn_stack},
     records::{Record, RecordTypeDescriptor, SchemeCompatible, into_scheme_compatible, rtd},
-    registry::bridge,
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax, parse::ParseSyntaxError},
     value::Value,
 };
+
+pub use scheme_rs_macros::define_condition_type;
+
 use std::{error::Error as StdError, fmt, ops::Range, sync::Arc};
 
 #[derive(Clone, Trace)]
@@ -101,7 +103,7 @@ pub struct Condition(pub Value);
 impl Condition {
     pub fn error(message: impl fmt::Display) -> Self {
         Self(Value::from(Record::from_rust_type(
-            CompoundCondition::from((Assertion::new(), Message::new(message))),
+            CompoundCondition::from((Assertion::new(), Message::new(message.to_string()))),
         )))
     }
 
@@ -275,6 +277,211 @@ impl SchemeCompatible for SimpleCondition {
     }
 }
 
+define_condition_type!(
+    rust_name: Warning,
+    scheme_name: "&warning",
+    parent: SimpleCondition,
+);
+
+impl Warning {
+    pub fn new() -> Self {
+        Self {
+            parent: Gc::new(SimpleCondition::new()),
+        }
+    }
+}
+
+define_condition_type!(
+    rust_name: Serious,
+    scheme_name: "&serious",
+    parent: SimpleCondition,
+);
+
+impl Serious {
+    pub fn new() -> Self {
+        Self {
+            parent: Gc::new(SimpleCondition::new()),
+        }
+    }
+}
+
+define_condition_type!(
+    rust_name: Message,
+    scheme_name: "&message",
+    parent: SimpleCondition,
+    fields: {
+        message: String,
+    },
+    constructor: |message: Value| -> Result<_, Condition> {
+        Ok(Message { parent: Gc::new(SimpleCondition::new()), message: message.to_string() })
+    },
+    debug: |this: &Message, f: &mut std::fmt::Formatter<'_>| {
+        write!(f, " ")?;
+        this.message.fmt(f)
+    }
+);
+
+impl Message {
+    pub fn new(message: String) -> Self {
+        Self {
+            parent: Gc::new(SimpleCondition::new()),
+            message,
+        }
+    }
+}
+
+define_condition_type!(
+    rust_name: Error,
+    scheme_name: "&error",
+    parent: Serious,
+);
+
+impl Error {
+    pub fn new() -> Self {
+        Self {
+            parent: Gc::new(Serious::new()),
+        }
+    }
+}
+
+define_condition_type!(
+    rust_name: Violation,
+    scheme_name: "&violation",
+    parent: Serious,
+);
+
+impl Violation {
+    pub fn new() -> Self {
+        Self {
+            parent: Gc::new(Serious::new()),
+        }
+    }
+}
+
+define_condition_type!(
+    rust_name: Assertion,
+    scheme_name: "&assertion",
+    parent: Violation
+);
+
+impl Assertion {
+    pub fn new() -> Self {
+        Self {
+            parent: Gc::new(Violation::new()),
+        }
+    }
+}
+
+define_condition_type!(
+    rust_name: SyntaxViolation,
+    scheme_name: "&syntax",
+    parent: Violation,
+    fields: {
+        form: Arc<Syntax>,
+        subform: Option<Arc<Syntax>>,
+    },
+    constructor: |form: Value, subform: Value| -> Result<_, Condition> {
+        let form = form.try_into()?;
+        let subform = if subform.is_true() { Some(subform.try_into()?) } else { None };
+        Ok(SyntaxViolation { parent: Gc::new(Violation::new()), form, subform })
+    },
+    debug: |this: &SyntaxViolation, f: &mut std::fmt::Formatter<'_>| {
+        write!(f, " form: {:?} subform: {:?}", this.form, this.subform)
+    }
+);
+
+impl SyntaxViolation {
+    pub fn new(form: Syntax, subform: Option<Syntax>) -> Self {
+        Self {
+            parent: Gc::new(Violation::new()),
+            form: Arc::new(form),
+            subform: subform.map(Arc::new),
+        }
+    }
+}
+
+define_condition_type!(
+    rust_name: Undefined,
+    scheme_name: "&undefined",
+    parent: Violation
+);
+
+impl Undefined {
+    pub fn new() -> Self {
+        Self {
+            parent: Gc::new(Violation::new()),
+        }
+    }
+}
+
+/*
+
+// TODO: Make this a proc macro
+macro_rules! define_condition_type {
+    (
+        $lib:literal,
+        $scheme_name:literal, $rust_name:ident,
+        $parent:ty,
+        // $scheme_constructor:literal, $rust_constructor:ident,
+        $scheme_predicate:literal, $rust_predicate:ident
+        $(, ( $field:ident : $field_ty:ty, $scheme_accessor:literal, $rust_accessor:ident ) )*
+    ) => {
+        #[derive(Clone, Debug, Trace)]
+        pub struct $rust_name {
+            parent: Gc<$parent>,
+            $($field : $field_ty,)*
+        }
+
+        impl SchemeCompatible for $rust_name {
+            fn rtd() -> Arc<RecordTypeDescriptor> {
+                rtd!(name: $scheme_name, parent: $parent::rtd())
+            }
+
+            fn extract_embedded_record(
+                &self,
+                rtd: &Arc<RecordTypeDescriptor>
+            ) -> Option<Gc<dyn SchemeCompatible>> {
+                <$parent as SchemeCompatible>::rtd()
+                    .is_subtype_of(rtd)
+                    .then(|| into_scheme_compatible(self.parent.clone()))
+            }
+        }
+
+        #[bridge(name = $scheme_predicate, lib = $lib)]
+        pub fn $rust_predicate(obj: &Value) -> Result<Vec<Value>, Condition> {
+            Ok(vec![Value::from(obj.try_into_rust_type::<$rust_name>().is_ok())])
+        }
+
+        $(
+            #[bridge(name = $scheme_accessor, lib = $lib)]
+            pub fn $rust_accessor(obj: &Value) -> Result<Vec<Value>, Condition> {
+                let obj = obj.try_into_rust_type::<$rust_name>()?;
+                Ok(vec![Value::from(obj.$field.clone())])
+            }
+        )*
+    };
+}
+
+define_condition_type!(
+    "(rnrs conditions (6))",
+    "&warning", Warning,
+    SimpleCondition,
+    // "make-warning", make_warning,
+    "warning?", warning_pred,
+    ( message: String, "condition-message" )
+);
+
+define_condition_type!(
+    lib: "(rnrs conditions (6))",
+    scheme_name: "&warning",
+    rust_name: Warning,
+    parent: SimpleCondition,
+    constructor_name: "make-warning",
+    predicate_name: "warning?",
+    fields: [ (message: String, "condition-message") ],
+);
+
+/*
 #[derive(Clone, Debug, Trace)]
 pub struct Warning(Gc<SimpleCondition>);
 
@@ -292,6 +499,7 @@ impl SchemeCompatible for Warning {
             .then(|| into_scheme_compatible(self.0.clone()))
     }
 }
+*/
 
 #[derive(Clone, Debug, Trace)]
 pub struct Serious(Gc<SimpleCondition>);
@@ -367,6 +575,36 @@ impl fmt::Debug for Message {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, " ")?;
         self.message.fmt(f)
+    }
+}
+
+#[derive(Clone, Debug, Trace)]
+pub struct Error(Gc<Serious>);
+
+impl Error {
+    pub fn new() -> Self {
+        Self(Gc::new(Serious::new()))
+    }
+}
+
+impl Default for Error {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SchemeCompatible for Error {
+    fn rtd() -> Arc<RecordTypeDescriptor> {
+        rtd!(name: "&error", parent: Serious::rtd())
+    }
+
+    fn extract_embedded_record(
+        &self,
+        rtd: &Arc<RecordTypeDescriptor>,
+    ) -> Option<Gc<dyn SchemeCompatible>> {
+        Serious::rtd()
+            .is_subtype_of(rtd)
+            .then(|| into_scheme_compatible(self.0.clone()))
     }
 }
 
@@ -518,6 +756,7 @@ impl SchemeCompatible for Undefined {
             .then(|| into_scheme_compatible(self.0.clone()))
     }
 }
+*/
 
 #[derive(Clone, Trace)]
 pub struct CompoundCondition(Vec<Value>);
@@ -566,6 +805,7 @@ where
     }
 }
 
+/*
 macro_rules! impl_empty_debug {
     ( $t:ty ) => {
         impl fmt::Debug for $t {
@@ -579,6 +819,7 @@ macro_rules! impl_empty_debug {
 impl_empty_debug!(Assertion);
 impl_empty_debug!(Violation);
 impl_empty_debug!(Undefined);
+*/
 
 #[derive(Debug, Clone, Trace)]
 pub struct Frame {

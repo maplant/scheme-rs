@@ -2,13 +2,7 @@ use proc_macro::{self, TokenStream};
 use proc_macro2::{Literal, Span};
 use quote::{format_ident, quote};
 use syn::{
-    Attribute, DataEnum, DataStruct, DeriveInput, Error, Expr, Fields, FnArg, GenericParam,
-    Generics, Ident, ItemFn, LitStr, Member, Meta, Pat, PatIdent, PatType, Result, Token, Type,
-    TypePath, TypeReference, Visibility, bracketed, parenthesized,
-    parse::{Parse, ParseStream},
-    parse_macro_input, parse_quote,
-    punctuated::Punctuated,
-    spanned::Spanned,
+    braced, bracketed, parenthesized, parse::{Parse, ParseStream}, parse_macro_input, parse_quote, punctuated::Punctuated, spanned::Spanned, Attribute, DataEnum, DataStruct, DeriveInput, Error, Expr, ExprClosure, Fields, FnArg, GenericParam, Generics, Ident, ItemFn, LitStr, Member, Meta, Pat, PatIdent, PatType, Result, Token, Type, TypePath, TypeReference, Visibility
 };
 
 #[proc_macro_attribute]
@@ -763,23 +757,23 @@ pub fn runtime_fn(_args: TokenStream, item: TokenStream) -> TokenStream {
     .into()
 }
 
-enum Field {
+enum RtdField {
     Immutable(LitStr),
     Mutable(LitStr),
 }
 
-impl Parse for Field {
+impl Parse for RtdField {
     fn parse(input: ParseStream) -> Result<Self> {
         if input.peek(LitStr) {
             Ok(Self::Immutable(input.parse()?))
         } else {
             let mutability: Ident = input.parse()?;
             let constructor = if mutability == "immutable" {
-                Field::Immutable
+                RtdField::Immutable
             } else if mutability == "mutable" {
-                Field::Mutable
+                RtdField::Mutable
             } else {
-                todo!()
+                return Err(Error::new(mutability.span(), format!("invalid mutability '{mutability}'")));
             };
             let content;
             parenthesized!(content in input);
@@ -789,7 +783,7 @@ impl Parse for Field {
     }
 }
 
-impl Field {
+impl RtdField {
     fn into_token_stream(self) -> proc_macro2::TokenStream {
         match self {
             Self::Immutable(name) => quote! {
@@ -809,7 +803,7 @@ struct Rtd {
     sealed: Option<Expr>,
     uid: Option<LitStr>,
     constructor: Option<Expr>,
-    fields: Option<Vec<Field>>,
+    fields: Option<Vec<RtdField>>,
 }
 
 impl Parse for Rtd {
@@ -869,7 +863,7 @@ impl Parse for Rtd {
                 let _: Token![:] = input.parse()?;
                 let content;
                 bracketed!(content in input);
-                let punctuated_fields = content.parse_terminated(Field::parse, Token![,])?;
+                let punctuated_fields = content.parse_terminated(RtdField::parse, Token![,])?;
                 fields = Some(punctuated_fields.into_iter().collect());
             } else {
                 return Err(Error::new(keyword.span(), "unknown field name"));
@@ -911,7 +905,7 @@ pub fn rtd(tokens: TokenStream) -> TokenStream {
     let fields = fields
         .into_iter()
         .flatten()
-        .map(Field::into_token_stream)
+        .map(RtdField::into_token_stream)
         .collect::<Vec<_>>();
     let inherits = match parent {
         Some(parent) => quote!({
@@ -951,6 +945,186 @@ pub fn rtd(tokens: TokenStream) -> TokenStream {
                     })
                 });
             RTD.clone()
+        }
+    }.into()
+}
+
+struct DctField {
+    name: Ident,
+    ty: Type,
+}
+
+impl Parse for DctField {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let name: Ident = input.parse()?;
+        let _: Token![:] = input.parse()?;
+        let ty: Type = input.parse()?;
+        Ok(Self { name, ty, })
+    }
+}
+
+struct DefineConditionType {
+    scheme_name: LitStr,
+    rust_name: Ident,
+    parent: Type,
+    constructor: Option<ExprClosure>,
+    fields: Option<Vec<DctField>>,
+    dbg: Option<ExprClosure>,
+}
+
+impl Parse for DefineConditionType {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let mut scheme_name = None;
+        let mut rust_name = None;
+        let mut parent = None;
+        let mut constructor = None;
+        let mut fields = None;
+        let mut dbg = None;
+
+        while !input.is_empty() {
+            let keyword: Ident = input.parse()?;
+            if keyword == "scheme_name" {
+                if scheme_name.is_some() {
+                    return Err(Error::new(keyword.span(), "duplicate definition of scheme_name"));
+                }
+                let _: Token![:] = input.parse()?;
+                scheme_name = Some(input.parse()?);
+            } else if keyword == "rust_name" {
+                if rust_name.is_some() {
+                    return Err(Error::new(keyword.span(), "duplicate definition of rust_name"));
+                }
+                let _: Token![:] = input.parse()?;
+                rust_name = Some(input.parse()?);
+            } else if keyword == "parent" {
+                if parent.is_some() {
+                    return Err(Error::new(keyword.span(), "duplicate definition of parent"));
+                }
+                let _: Token![:] = input.parse()?;
+                parent = Some(input.parse()?);
+            } else if keyword == "constructor" {
+                if constructor.is_some() {
+                    return Err(Error::new(
+                        keyword.span(),
+                        "duplicate definition of constructor",
+                    ));
+                }
+                let _: Token![:] = input.parse()?;
+                constructor = Some(input.parse()?);
+            } else if keyword == "debug" {
+                if dbg.is_some() {
+                    return Err(Error::new(
+                        keyword.span(),
+                        "duplicate definition of debug",
+                    ));
+                }
+                let _: Token![:] = input.parse()?;
+                dbg = Some(input.parse()?);
+            } else if keyword == "fields" {
+                if fields.is_some() {
+                    return Err(Error::new(keyword.span(), "duplicate definition of fields"));
+                }
+                let _: Token![:] = input.parse()?;
+                let content;
+                braced!(content in input);
+                let punctuated_fields = content.parse_terminated(DctField::parse, Token![,])?;
+                fields = Some(punctuated_fields.into_iter().collect());
+            } else {
+                return Err(Error::new(keyword.span(), "unknown field name"));
+            }
+
+            if !input.is_empty() {
+                let _: Token![,] = input.parse()?;
+            }
+        }
+
+        let Some(scheme_name) = scheme_name else {
+            return Err(Error::new(input.span(), "scheme_name field is required"));
+        };
+
+        let Some(rust_name) = rust_name else {
+            return Err(Error::new(input.span(), "rust_name field is required"));
+        };
+
+        let Some(parent) = parent else {
+            return Err(Error::new(input.span(), "parent field is required"));
+        };
+
+        Ok(DefineConditionType {
+            scheme_name,
+            rust_name,
+            parent,
+            constructor,
+            fields,
+            dbg,
+        })
+    }
+}
+
+#[proc_macro]
+pub fn define_condition_type(tokens: TokenStream) -> TokenStream {
+    let DefineConditionType { scheme_name, rust_name, parent, constructor, fields, dbg } = parse_macro_input!(tokens as DefineConditionType);
+
+    let (field_names, field_tys): (Vec<_>, Vec<_>) = fields.into_iter().flatten().map(|field|
+                                                                                     (field.name, field.ty))
+        .unzip();
+
+    let field_name_strs = field_names.clone().into_iter().map(|field_name| {
+        LitStr::new(&field_name.to_string(), field_name.span())
+    });
+
+    let field_idxs = 0..field_names.len();
+
+    let constructor =  constructor.map(|constructor| {
+        let inputs = 0..constructor.inputs.len();
+        quote!(
+            constructor: |vals| Ok(::scheme_rs::records::into_scheme_compatible(Gc::new((#constructor)(#(vals[#inputs].clone(),)*)?))),
+        )
+    });
+
+    let dbg = dbg.map(|dbg| {
+        quote!((#dbg)(self, f)?;)
+    });
+
+    quote! {
+        #[derive(Clone, ::scheme_rs::gc::Trace)]
+        pub struct #rust_name {
+            parent: ::scheme_rs::gc::Gc<#parent>,
+            #( #field_names: #field_tys, )*
+            
+        }
+
+        impl ::scheme_rs::records::SchemeCompatible for #rust_name {
+            fn rtd() -> std::sync::Arc<::scheme_rs::records::RecordTypeDescriptor> {
+                ::scheme_rs::records::rtd!(
+                    name: #scheme_name,
+                    parent: #parent::rtd(),
+                    fields: [#(#field_name_strs,)*],
+                    #constructor
+                )
+            }
+
+            fn extract_embedded_record(
+                &self,
+                rtd: &std::sync::Arc<RecordTypeDescriptor>
+            ) -> Option<::scheme_rs::gc::Gc<dyn ::scheme_rs::records::SchemeCompatible>> {
+                #parent::rtd()
+                    .is_subtype_of(rtd)
+                    .then(|| into_scheme_compatible(self.parent.clone()))
+            }
+
+            fn get_field(&self, k: usize) -> ::scheme_rs::value::Value {
+                match k {
+                    #(#field_idxs => ::scheme_rs::value::Value::from(self.#field_names.clone()),)*
+                    _ => panic!("{k} is out of bounds"),
+                }
+            }
+        }
+
+        impl std::fmt::Debug for #rust_name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                #dbg
+                Ok(())
+            }
         }
     }.into()
 }
