@@ -910,6 +910,7 @@ macro_rules! impl_from_wrapped_for {
     };
 }
 
+impl_from_wrapped_for!(usize, Number, |val| Arc::new(Number::from(val)));
 impl_from_wrapped_for!(Number, Number, Arc::new);
 impl_from_wrapped_for!(String, String, |str| Arc::new(strings::AlignedString::new(
     str

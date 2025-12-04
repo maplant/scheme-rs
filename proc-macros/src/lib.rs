@@ -2,7 +2,13 @@ use proc_macro::{self, TokenStream};
 use proc_macro2::{Literal, Span};
 use quote::{format_ident, quote};
 use syn::{
-    braced, bracketed, parenthesized, parse::{Parse, ParseStream}, parse_macro_input, parse_quote, punctuated::Punctuated, spanned::Spanned, Attribute, DataEnum, DataStruct, DeriveInput, Error, Expr, ExprClosure, Fields, FnArg, GenericParam, Generics, Ident, ItemFn, LitStr, Member, Meta, Pat, PatIdent, PatType, Result, Token, Type, TypePath, TypeReference, Visibility
+    Attribute, DataEnum, DataStruct, DeriveInput, Error, Expr, ExprClosure, Fields, FnArg,
+    GenericParam, Generics, Ident, ItemFn, LitStr, Member, Meta, Pat, PatIdent, PatType, Result,
+    Token, Type, TypePath, TypeReference, Visibility, braced, bracketed, parenthesized,
+    parse::{Parse, ParseStream},
+    parse_macro_input, parse_quote,
+    punctuated::Punctuated,
+    spanned::Spanned,
 };
 
 #[proc_macro_attribute]
@@ -773,7 +779,10 @@ impl Parse for RtdField {
             } else if mutability == "mutable" {
                 RtdField::Mutable
             } else {
-                return Err(Error::new(mutability.span(), format!("invalid mutability '{mutability}'")));
+                return Err(Error::new(
+                    mutability.span(),
+                    format!("invalid mutability '{mutability}'"),
+                ));
             };
             let content;
             parenthesized!(content in input);
@@ -959,7 +968,7 @@ impl Parse for DctField {
         let name: Ident = input.parse()?;
         let _: Token![:] = input.parse()?;
         let ty: Type = input.parse()?;
-        Ok(Self { name, ty, })
+        Ok(Self { name, ty })
     }
 }
 
@@ -985,13 +994,19 @@ impl Parse for DefineConditionType {
             let keyword: Ident = input.parse()?;
             if keyword == "scheme_name" {
                 if scheme_name.is_some() {
-                    return Err(Error::new(keyword.span(), "duplicate definition of scheme_name"));
+                    return Err(Error::new(
+                        keyword.span(),
+                        "duplicate definition of scheme_name",
+                    ));
                 }
                 let _: Token![:] = input.parse()?;
                 scheme_name = Some(input.parse()?);
             } else if keyword == "rust_name" {
                 if rust_name.is_some() {
-                    return Err(Error::new(keyword.span(), "duplicate definition of rust_name"));
+                    return Err(Error::new(
+                        keyword.span(),
+                        "duplicate definition of rust_name",
+                    ));
                 }
                 let _: Token![:] = input.parse()?;
                 rust_name = Some(input.parse()?);
@@ -1012,10 +1027,7 @@ impl Parse for DefineConditionType {
                 constructor = Some(input.parse()?);
             } else if keyword == "debug" {
                 if dbg.is_some() {
-                    return Err(Error::new(
-                        keyword.span(),
-                        "duplicate definition of debug",
-                    ));
+                    return Err(Error::new(keyword.span(), "duplicate definition of debug"));
                 }
                 let _: Token![:] = input.parse()?;
                 dbg = Some(input.parse()?);
@@ -1062,27 +1074,44 @@ impl Parse for DefineConditionType {
 
 #[proc_macro]
 pub fn define_condition_type(tokens: TokenStream) -> TokenStream {
-    let DefineConditionType { scheme_name, rust_name, parent, constructor, fields, dbg } = parse_macro_input!(tokens as DefineConditionType);
+    let DefineConditionType {
+        scheme_name,
+        rust_name,
+        parent,
+        constructor,
+        fields,
+        dbg,
+    } = parse_macro_input!(tokens as DefineConditionType);
 
-    let (field_names, field_tys): (Vec<_>, Vec<_>) = fields.into_iter().flatten().map(|field|
-                                                                                     (field.name, field.ty))
+    let (field_names, field_tys): (Vec<_>, Vec<_>) = fields
+        .into_iter()
+        .flatten()
+        .map(|field| (field.name, field.ty))
         .unzip();
 
-    let field_name_strs = field_names.clone().into_iter().map(|field_name| {
-        LitStr::new(&field_name.to_string(), field_name.span())
-    });
+    let field_name_strs = field_names
+        .clone()
+        .into_iter()
+        .map(|field_name| LitStr::new(&field_name.to_string(), field_name.span()));
 
     let field_idxs = 0..field_names.len();
 
     let constructor =  constructor.map(|constructor| {
         let inputs = 0..constructor.inputs.len();
+        let types = inputs.clone().map(|_| quote!(::scheme_rs::value::Value));
         quote!(
-            constructor: |vals| Ok(::scheme_rs::records::into_scheme_compatible(Gc::new((#constructor)(#(vals[#inputs].clone(),)*)?))),
+            constructor: |vals| {
+                let constructor: fn(#(#types,)*) -> Result<#rust_name, ::scheme_rs::exceptions::Condition> = #constructor;
+                Ok(::scheme_rs::records::into_scheme_compatible(Gc::new((constructor)(#(vals[#inputs].clone(),)*)?)))
+            },
         )
     });
 
     let dbg = dbg.map(|dbg| {
-        quote!((#dbg)(self, f)?;)
+        quote!(
+            let dbg: fn(&Self, &mut std::fmt::Formatter<'_>) -> std::fmt::Result = #dbg;
+            (dbg)(self, f)?;
+        )
     });
 
     quote! {
@@ -1090,7 +1119,7 @@ pub fn define_condition_type(tokens: TokenStream) -> TokenStream {
         pub struct #rust_name {
             parent: ::scheme_rs::gc::Gc<#parent>,
             #( #field_names: #field_tys, )*
-            
+
         }
 
         impl ::scheme_rs::records::SchemeCompatible for #rust_name {
@@ -1105,11 +1134,11 @@ pub fn define_condition_type(tokens: TokenStream) -> TokenStream {
 
             fn extract_embedded_record(
                 &self,
-                rtd: &std::sync::Arc<RecordTypeDescriptor>
+                rtd: &std::sync::Arc<::scheme_rs::records::RecordTypeDescriptor>
             ) -> Option<::scheme_rs::gc::Gc<dyn ::scheme_rs::records::SchemeCompatible>> {
                 #parent::rtd()
                     .is_subtype_of(rtd)
-                    .then(|| into_scheme_compatible(self.parent.clone()))
+                    .then(|| ::scheme_rs::records::into_scheme_compatible(self.parent.clone()))
             }
 
             fn get_field(&self, k: usize) -> ::scheme_rs::value::Value {
@@ -1126,7 +1155,8 @@ pub fn define_condition_type(tokens: TokenStream) -> TokenStream {
                 Ok(())
             }
         }
-    }.into()
+    }
+    .into()
 }
 
 // Internal use only:

@@ -3,23 +3,20 @@
 use either::Either;
 use memchr::{memchr, memmem};
 use rustyline::Editor;
-use scheme_rs_macros::{bridge, maybe_async, maybe_await};
-use std::{any::Any, borrow::Cow, io::Cursor, sync::Arc};
+use scheme_rs_macros::{bridge, define_condition_type, maybe_async, maybe_await, rtd};
+use std::{any::Any, borrow::Cow, fmt, io::Cursor, sync::{Arc, LazyLock, OnceLock}};
 
 use crate::{
-    exceptions::{self, Condition},
-    gc::{Gc, Trace},
-    syntax::{
-        Span, Syntax,
-        parse::{ParseSyntaxError, Parser},
-    },
-    value::Value,
+    exceptions::{self, Condition, Error}, gc::{Gc, Trace}, records::{Record, RecordTypeDescriptor, SchemeCompatible}, syntax::{
+        parse::{ParseSyntaxError, Parser}, Span, Syntax
+    }, value::{Value, ValueType}
 };
 
 #[derive(Clone, Debug)]
 pub enum ReadError {
     Io(Arc<io::Error>),
     NotAnInputPort,
+    PortIsClosed,
 }
 
 impl From<io::Error> for ReadError {
@@ -32,6 +29,7 @@ impl From<io::Error> for ReadError {
 pub enum WriteError {
     Io(Arc<io::Error>),
     NotAnOutputPort,
+    PortIsClosed,
 }
 
 impl From<io::Error> for WriteError {
@@ -44,25 +42,12 @@ impl From<io::Error> for WriteError {
 pub enum SeekError {
     Io(Arc<io::Error>),
     NotSeekable,
+    PortIsClosed,
 }
 
 impl From<io::Error> for SeekError {
     fn from(error: io::Error) -> Self {
         Self::Io(Arc::new(error))
-    }
-}
-
-pub struct IoError(Gc<exceptions::Error>);
-
-impl IoError {
-    pub fn new() -> Self {
-        Self(Gc::new(exceptions::Error::new()))
-    }
-}
-
-impl Default for IoError {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -617,8 +602,7 @@ mod __impl {
 use __impl::*;
 
 pub(crate) struct PortInner {
-    // TODO: make this optional to indicate closing
-    port: Box<dyn Any + Send + 'static>,
+    port: Option<Box<dyn Any + Send + 'static>>,
     read: Option<ReadFn>,
     write: Option<WriteFn>,
     seek: Option<SeekFn>,
@@ -645,7 +629,7 @@ impl PortInner {
         let seek = P::seek_fn();
 
         Self {
-            port: port.into_port(),
+            port: Some(port.into_port()),
             read,
             write,
             seek,
@@ -685,10 +669,14 @@ impl PortInner {
             return Err(ReadError::NotAnInputPort);
         };
 
+        let Some(port) = self.port.as_deref_mut() else {
+            return Err(ReadError::PortIsClosed);
+        };
+
         if let Some(write) = self.write
             && !self.output_buffer.is_empty()
         {
-            maybe_await!(write(self.port.as_mut(), &self.output_buffer[..]))?;
+            maybe_await!(write(port, &self.output_buffer[..]))?;
             self.output_buffer.clear();
         }
 
@@ -700,7 +688,7 @@ impl PortInner {
             match self.buffer_mode {
                 BufferMode::None => {
                     let read = maybe_await!((read)(
-                        self.port.as_mut(),
+                        port,
                         &mut self.input_buffer[self.bytes_read..],
                     ))?;
                     if read == 1 {
@@ -712,7 +700,7 @@ impl PortInner {
                 BufferMode::Line => {
                     loop {
                         let read = maybe_await!((read)(
-                            self.port.as_mut(),
+                            port,
                             &mut self.input_buffer[self.bytes_read..],
                         ))?;
                         if read == 0 {
@@ -732,10 +720,10 @@ impl PortInner {
                             break;
                         } else {
                             self.bytes_read += read;
-                            // If we can't find it, we need to extend the buffer.
-                            // I don't really like this, but I'm not sure how else
-                            // to go about it. Will probably just comment this out
-                            // for the time being.
+                            // If we can't find it, we need to extend the
+                            // buffer. I don't really like this, but I'm not
+                            // sure how else to go about it. Will probably just
+                            // end up commenting this out.
                             let mut buffer = std::mem::replace(
                                 &mut self.input_buffer,
                                 Vec::new().into_boxed_slice(),
@@ -748,7 +736,7 @@ impl PortInner {
                 }
                 BufferMode::Block => {
                     let read = maybe_await!((read)(
-                        self.port.as_mut(),
+                        port,
                         &mut self.input_buffer[self.bytes_read..],
                     ))?;
                     if read == 0 {
@@ -900,18 +888,22 @@ impl PortInner {
             return Err(WriteError::NotAnOutputPort);
         };
 
+        let Some(port) = self.port.as_deref_mut() else {
+            return Err(WriteError::PortIsClosed);
+        };
+
         // If we can, seek back
         if let Some(seek) = self.seek
             && self.bytes_read > 0
         {
             let seek_to = (self.bytes_read - self.input_pos) as i64;
-            maybe_await!(seek(self.port.as_mut(), SeekFrom::Current(-seek_to)))?;
+            maybe_await!(seek(port, SeekFrom::Current(-seek_to)))?;
             self.bytes_read = 0;
             self.input_pos = 0;
         }
 
         match self.buffer_mode {
-            BufferMode::None => maybe_await!(write(self.port.as_mut(), bytes))?,
+            BufferMode::None => maybe_await!(write(port, bytes))?,
             BufferMode::Line => loop {
                 if let Some(next_line) = self.transcoder.eol_type.find_next_line(
                     self.transcoder.codec.ls_needle(self.utf16_endianness),
@@ -919,7 +911,7 @@ impl PortInner {
                 ) {
                     self.output_buffer.extend_from_slice(&bytes[..next_line]);
                     bytes = &bytes[next_line..];
-                    maybe_await!(write(self.port.as_mut(), &self.output_buffer[..]))?;
+                    maybe_await!(write(port, &self.output_buffer[..]))?;
                     self.output_buffer.clear();
                 } else {
                     self.output_buffer.extend_from_slice(bytes);
@@ -932,7 +924,7 @@ impl PortInner {
                     self.output_buffer
                         .extend_from_slice(&bytes[..num_bytes_to_buffer]);
                     bytes = &bytes[num_bytes_to_buffer..];
-                    maybe_await!(write(self.port.as_mut(), &self.output_buffer[..]))?;
+                    maybe_await!(write(port, &self.output_buffer[..]))?;
                     self.output_buffer.clear();
                 } else {
                     self.output_buffer.extend_from_slice(bytes);
@@ -983,7 +975,11 @@ impl PortInner {
             return Err(WriteError::NotAnOutputPort);
         };
 
-        maybe_await!(write(self.port.as_mut(), &self.output_buffer[..]))?;
+        let Some(port) = self.port.as_deref_mut() else {
+            return Err(WriteError::PortIsClosed);
+        };
+
+        maybe_await!(write(port, &self.output_buffer[..]))?;
         self.output_buffer.clear();
 
         Ok(())
@@ -996,7 +992,11 @@ impl PortInner {
             return Err(SeekError::NotSeekable);
         };
 
-        let pos = maybe_await!(seek(self.port.as_mut(), SeekFrom::Start(pos)))?;
+        let Some(port) = self.port.as_deref_mut() else {
+            return Err(SeekError::PortIsClosed);
+        };
+
+        let pos = maybe_await!(seek(port, SeekFrom::Start(pos)))?;
 
         Ok(pos)
     }
@@ -1299,6 +1299,201 @@ mod prompt {
 }
 
 pub use prompt::*;
+
+// Conditions:
+
+define_condition_type!(
+    rust_name: IoError,
+    scheme_name: "&i/o",
+    parent: Error
+);
+
+impl IoError {
+    pub fn new() -> Self {
+        Self {
+            parent: Gc::new(Error::new()),
+        }
+    }
+}
+
+define_condition_type!(
+    rust_name: IoReadError,
+    scheme_name: "&i/o-read",
+    parent: IoError,
+);
+
+define_condition_type!(
+    rust_name: IoWriteError,
+    scheme_name: "&i/o-write",
+    parent: IoError,
+);
+
+define_condition_type!(
+    rust_name: IoInvalidPositionError,
+    scheme_name: "&i/o-invalid-position",
+    parent: IoError,
+    fields: {
+        position: usize,
+    },
+    constructor: |position| {
+        Ok(IoInvalidPositionError {
+            parent: Gc::new(IoError::new()),
+            position: todo!(),
+        })
+    },
+    debug: |this, f| {
+        write!(f, " position: {}", this.position)
+    }
+);
+
+define_condition_type!(
+    rust_name: IoFilenameError,
+    scheme_name: "&i/o-filename",
+    parent: IoError,
+    fields: {
+        filename: String,
+    },
+    constructor: |filename| {
+        Ok(IoFilenameError {
+            parent: Gc::new(IoError::new()),
+            filename: filename.to_string(),
+        })
+    },
+    debug: |this, f| {
+        write!(f, " filename: {}", this.filename)
+    }
+);
+
+impl IoFilenameError {
+    pub fn new(filename: String) -> Self {
+        Self {
+            parent: Gc::new(IoError::new()),
+            filename: filename.to_string(),
+        }
+    }
+}
+
+define_condition_type!(
+    rust_name: IoFileProtectionError,
+    scheme_name: "&i/o-file-protection",
+    parent: IoFilenameError,
+    constructor: |filename| {
+        Ok(IoFileProtectionError {
+            parent: Gc::new(IoFilenameError::new(filename.to_string()))
+        })
+    },
+    debug: |this, f| {
+        this.parent.read().fmt(f)
+    }
+);
+
+impl IoFileProtectionError {
+    pub fn new(filename: String) -> Self {
+        Self {
+            parent: Gc::new(IoFilenameError::new(filename))
+        }
+    }
+}
+
+define_condition_type!(
+    rust_name: IoFileIsReadOnlyError,
+    scheme_name: "&i/o-file-is-read-only",
+    parent: IoFileProtectionError,
+    constructor: |filename| {
+        Ok(IoFileIsReadOnlyError {
+            parent: Gc::new(IoFileProtectionError::new(filename.to_string()))
+        })
+    },
+    debug: |this, f| {
+        this.parent.read().fmt(f)
+    }
+);
+
+define_condition_type!(
+    rust_name: IoFileAlreadyExistsError,
+    scheme_name: "&i/o-file-already-exists",
+    parent: IoFilenameError,
+    constructor: |filename| {
+        Ok(IoFileAlreadyExistsError {
+            parent: Gc::new(IoFilenameError::new(filename.to_string()))
+        })
+    },
+    debug: |this, f| {
+        this.parent.read().fmt(f)
+    }
+);
+
+define_condition_type!(
+    rust_name: IoFileDoesNotExistError,
+    scheme_name: "&i/o-file-does-not-exist",
+    parent: IoFilenameError,
+    constructor: |filename| {
+        Ok(IoFileDoesNotExistError {
+            parent: Gc::new(IoFilenameError::new(filename.to_string()))
+        })
+    },
+    debug: |this, f| {
+        this.parent.read().fmt(f)
+    }
+);
+
+define_condition_type!(
+    rust_name: IoPortError,
+    scheme_name: "&i/o-port",
+    parent: IoError,
+    fields: {
+        port: Port,
+    },
+    constructor: |port| {
+        Ok(IoPortError {
+            parent: Gc::new(IoError::new()),
+            port: port.try_into()?,
+        })
+    },
+);
+
+#[derive(Copy, Clone, Trace)]
+pub struct EofObject;
+
+impl SchemeCompatible for EofObject {
+    fn rtd() -> Arc<RecordTypeDescriptor> {
+        rtd!(name: "!eof", opaque: true, sealed: true)
+    }
+}
+
+impl fmt::Debug for EofObject {
+    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Ok(())
+    }
+}
+
+static EOF_OBJECT: LazyLock<Value> = LazyLock::new(|| {
+    Value::from(Record::from_rust_type(EofObject))
+});
+
+#[bridge(name = "eof-object", lib = "(rnrs io ports (6))")]
+pub fn eof_object() -> Result<Vec<Value>, Condition> {
+    Ok(vec![EOF_OBJECT.clone()])
+}
+
+#[bridge(name = "port?", lib = "(rnrs io ports (6))")]
+pub fn port_pred(obj: &Value) ->Result<Vec<Value>, Condition> {
+    Ok(vec![Value::from(obj.type_of() == ValueType::Port)])
+}
+
+// TODO: port-transcoder
+
+// TODO: textual-port?
+// TODO: binary-port?
+
+// TODO: transcoded-port
+
+// TODO: has-port-position?
+// TODO: port-position
+
+// TODO: port-has-set-position!?
+// TODO: set-port-position!
+
 
 #[bridge(name = "standard-output-port", lib = "(rnrs io ports (6))")]
 pub fn standard_output_port() -> Result<Vec<Value>, Condition> {
