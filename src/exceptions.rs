@@ -5,15 +5,16 @@ use scheme_rs_macros::{cps_bridge, runtime_fn};
 use crate::{
     ast::ParseAstError,
     gc::{Gc, GcInner, Trace},
-    ports::{ReadError, WriteError},
     proc::{Application, DynStack, DynStackElem, FuncPtr, Procedure, pop_dyn_stack},
-    records::{Record, RecordTypeDescriptor, SchemeCompatible, into_scheme_compatible, rtd},
-    registry::bridge,
+    records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax, parse::ParseSyntaxError},
     value::Value,
 };
+
+pub use scheme_rs_macros::define_condition_type;
+
 use std::{error::Error as StdError, fmt, ops::Range, sync::Arc};
 
 #[derive(Clone, Trace)]
@@ -76,18 +77,6 @@ impl From<ParseSyntaxError> for Condition {
     }
 }
 
-impl From<ReadError> for Condition {
-    fn from(_error: ReadError) -> Self {
-        todo!()
-    }
-}
-
-impl From<WriteError> for Condition {
-    fn from(_error: WriteError) -> Self {
-        todo!()
-    }
-}
-
 impl From<Exception> for Condition {
     fn from(e: Exception) -> Self {
         // For now just drop the back trace:
@@ -101,7 +90,7 @@ pub struct Condition(pub Value);
 impl Condition {
     pub fn error(message: impl fmt::Display) -> Self {
         Self(Value::from(Record::from_rust_type(
-            CompoundCondition::from((Assertion::new(), Message::new(message))),
+            CompoundCondition::from((Assertion::new(), Message::new(message.to_string()))),
         )))
     }
 
@@ -216,7 +205,7 @@ impl Condition {
         Self(Value::from(Record::from_rust_type(
             CompoundCondition::from((
                 Assertion::new(),
-                Message::new(format!("Could not represent '{value}' in {} type", r#type)),
+                Message::new(format!("Could not represent '{value}' in {type} type")),
             )),
         )))
     }
@@ -257,7 +246,6 @@ macro_rules! impl_into_condition_for {
 }
 
 impl_into_condition_for!(Box<crate::num::ArithmeticError>);
-impl_into_condition_for!(crate::num::NumberToUsizeError);
 impl_into_condition_for!(std::num::TryFromIntError);
 
 #[derive(Copy, Clone, Default, Debug, Trace)]
@@ -275,30 +263,37 @@ impl SchemeCompatible for SimpleCondition {
     }
 }
 
-#[derive(Clone, Debug, Trace)]
-pub struct Warning(Gc<SimpleCondition>);
+define_condition_type!(
+    rust_name: Warning,
+    scheme_name: "&warning",
+    parent: SimpleCondition,
+);
 
-impl SchemeCompatible for Warning {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "&warning", parent: SimpleCondition::rtd())
-    }
-
-    fn extract_embedded_record(
-        &self,
-        rtd: &Arc<RecordTypeDescriptor>,
-    ) -> Option<Gc<dyn SchemeCompatible>> {
-        SimpleCondition::rtd()
-            .is_subtype_of(rtd)
-            .then(|| into_scheme_compatible(self.0.clone()))
+impl Warning {
+    pub fn new() -> Self {
+        Self {
+            parent: Gc::new(SimpleCondition::new()),
+        }
     }
 }
 
-#[derive(Clone, Debug, Trace)]
-pub struct Serious(Gc<SimpleCondition>);
+impl Default for Warning {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+define_condition_type!(
+    rust_name: Serious,
+    scheme_name: "&serious",
+    parent: SimpleCondition,
+);
 
 impl Serious {
     pub fn new() -> Self {
-        Self(Gc::new(SimpleCondition))
+        Self {
+            parent: Gc::new(SimpleCondition::new()),
+        }
     }
 }
 
@@ -308,29 +303,24 @@ impl Default for Serious {
     }
 }
 
-impl SchemeCompatible for Serious {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "&serious", parent: SimpleCondition::rtd())
+define_condition_type!(
+    rust_name: Message,
+    scheme_name: "&message",
+    parent: SimpleCondition,
+    fields: {
+        message: String,
+    },
+    constructor: |message| {
+        Ok(Message { parent: Gc::new(SimpleCondition::new()), message: message.to_string() })
+    },
+    debug: |this, f| {
+        write!(f, " ")?;
+        this.message.fmt(f)
     }
-
-    fn extract_embedded_record(
-        &self,
-        rtd: &Arc<RecordTypeDescriptor>,
-    ) -> Option<Gc<dyn SchemeCompatible>> {
-        SimpleCondition::rtd()
-            .is_subtype_of(rtd)
-            .then(|| into_scheme_compatible(self.0.clone()))
-    }
-}
-
-#[derive(Clone, Trace)]
-pub struct Message {
-    parent: Gc<SimpleCondition>,
-    message: String,
-}
+);
 
 impl Message {
-    pub fn new(message: impl fmt::Display) -> Self {
+    pub fn new(message: impl std::fmt::Display) -> Self {
         Self {
             parent: Gc::new(SimpleCondition::new()),
             message: message.to_string(),
@@ -338,44 +328,37 @@ impl Message {
     }
 }
 
-impl SchemeCompatible for Message {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(
-            name: "&message",
-            parent: SimpleCondition::rtd(),
-            fields: ["msg"],
-            constructor: |vals| {
-                let [ msg ] = vals else {
-                    unreachable!();
-                };
-                Ok(into_scheme_compatible(Gc::new(Message::new(msg))))
-            }
-        )
-    }
+define_condition_type!(
+    rust_name: Error,
+    scheme_name: "&error",
+    parent: Serious,
+);
 
-    fn extract_embedded_record(
-        &self,
-        rtd: &Arc<RecordTypeDescriptor>,
-    ) -> Option<Gc<dyn SchemeCompatible>> {
-        SimpleCondition::rtd()
-            .is_subtype_of(rtd)
-            .then(|| into_scheme_compatible(self.parent.clone()))
+impl Error {
+    pub fn new() -> Self {
+        Self {
+            parent: Gc::new(Serious::new()),
+        }
     }
 }
 
-impl fmt::Debug for Message {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, " ")?;
-        self.message.fmt(f)
+impl Default for Error {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
-#[derive(Clone, Trace)]
-pub struct Violation(Gc<Serious>);
+define_condition_type!(
+    rust_name: Violation,
+    scheme_name: "&violation",
+    parent: Serious,
+);
 
 impl Violation {
     pub fn new() -> Self {
-        Self(Gc::new(Serious::new()))
+        Self {
+            parent: Gc::new(Serious::new()),
+        }
     }
 }
 
@@ -385,27 +368,17 @@ impl Default for Violation {
     }
 }
 
-impl SchemeCompatible for Violation {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "&violation", parent: Serious::rtd())
-    }
-
-    fn extract_embedded_record(
-        &self,
-        rtd: &Arc<RecordTypeDescriptor>,
-    ) -> Option<Gc<dyn SchemeCompatible>> {
-        Serious::rtd()
-            .is_subtype_of(rtd)
-            .then(|| into_scheme_compatible(self.0.clone()))
-    }
-}
-
-#[derive(Clone, Trace)]
-pub struct Assertion(Gc<Serious>);
+define_condition_type!(
+    rust_name: Assertion,
+    scheme_name: "&assertion",
+    parent: Violation
+);
 
 impl Assertion {
     pub fn new() -> Self {
-        Assertion(Gc::new(Serious::new()))
+        Self {
+            parent: Gc::new(Violation::new()),
+        }
     }
 }
 
@@ -415,107 +388,51 @@ impl Default for Assertion {
     }
 }
 
-impl SchemeCompatible for Assertion {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "&assertion", parent: Violation::rtd())
+define_condition_type!(
+    rust_name: SyntaxViolation,
+    scheme_name: "&syntax",
+    parent: Violation,
+    fields: {
+        form: Arc<Syntax>,
+        subform: Option<Arc<Syntax>>,
+    },
+    constructor: |form, subform| {
+        let form = form.try_into()?;
+        let subform = if subform.is_true() { Some(subform.try_into()?) } else { None };
+        Ok(SyntaxViolation { parent: Gc::new(Violation::new()), form, subform })
+    },
+    debug: |this, f| {
+        write!(f, " form: {:?} subform: {:?}", this.form, this.subform)
     }
-
-    fn extract_embedded_record(
-        &self,
-        rtd: &Arc<RecordTypeDescriptor>,
-    ) -> Option<Gc<dyn SchemeCompatible>> {
-        Violation::rtd()
-            .is_subtype_of(rtd)
-            .then(|| into_scheme_compatible(self.0.clone()))
-    }
-}
-
-#[derive(Clone, Trace)]
-pub struct SyntaxViolation {
-    parent: Gc<Violation>,
-    form: Value,
-    subform: Value,
-}
+);
 
 impl SyntaxViolation {
-    fn new(form: Syntax, subform: Option<Syntax>) -> Self {
+    pub fn new(form: Syntax, subform: Option<Syntax>) -> Self {
         Self {
             parent: Gc::new(Violation::new()),
-            form: Value::from(form),
-            subform: subform
-                .map(Value::from)
-                .unwrap_or_else(|| Value::from(false)),
+            form: Arc::new(form),
+            subform: subform.map(Arc::new),
         }
     }
 }
 
-impl SchemeCompatible for SyntaxViolation {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(
-            name: "&syntax",
-            parent: Violation::rtd(),
-            fields: [ "form", "subform" ],
-            constructor: |vals| {
-                let [ form, subform ] = vals else {
-                    unreachable!();
-                };
-                Ok(into_scheme_compatible(Gc::new(SyntaxViolation {
-                    parent: Gc::new(Violation::new()),
-                    form: form.clone(),
-                    subform: subform.clone(),
-                })))
-            }
-        )
-    }
-
-    fn extract_embedded_record(
-        &self,
-        rtd: &Arc<RecordTypeDescriptor>,
-    ) -> Option<Gc<dyn SchemeCompatible>> {
-        Violation::rtd()
-            .is_subtype_of(rtd)
-            .then(|| into_scheme_compatible(self.parent.clone()))
-    }
-}
-
-#[bridge(name = "&syntax-rtd", lib = "(rnrs conditions builtins (6))")]
-pub fn syntax_rtd() -> Result<Vec<Value>, Condition> {
-    Ok(vec![Value::from(SyntaxViolation::rtd())])
-}
-
-impl fmt::Debug for SyntaxViolation {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, " form: {} subform: {}", self.form, self.subform)
-    }
-}
-
-#[derive(Clone, Trace)]
-pub struct Undefined(Gc<Violation>);
+define_condition_type!(
+    rust_name: Undefined,
+    scheme_name: "&undefined",
+    parent: Violation
+);
 
 impl Undefined {
     pub fn new() -> Self {
-        Self(Gc::new(Violation::new()))
+        Self {
+            parent: Gc::new(Violation::new()),
+        }
     }
 }
 
 impl Default for Undefined {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl SchemeCompatible for Undefined {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "&undefined", parent: Violation::rtd())
-    }
-
-    fn extract_embedded_record(
-        &self,
-        rtd: &Arc<RecordTypeDescriptor>,
-    ) -> Option<Gc<dyn SchemeCompatible>> {
-        Violation::rtd()
-            .is_subtype_of(rtd)
-            .then(|| into_scheme_compatible(self.0.clone()))
     }
 }
 
@@ -535,6 +452,17 @@ impl fmt::Debug for CompoundCondition {
             cond.fmt(f)?;
         }
         Ok(())
+    }
+}
+
+impl<T> From<T> for Condition
+where
+    CompoundCondition: From<T>,
+{
+    fn from(value: T) -> Self {
+        Self(Value::from(Record::from_rust_type(
+            CompoundCondition::from(value),
+        )))
     }
 }
 
@@ -565,20 +493,6 @@ where
         ])
     }
 }
-
-macro_rules! impl_empty_debug {
-    ( $t:ty ) => {
-        impl fmt::Debug for $t {
-            fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                Ok(())
-            }
-        }
-    };
-}
-
-impl_empty_debug!(Assertion);
-impl_empty_debug!(Violation);
-impl_empty_debug!(Undefined);
 
 #[derive(Debug, Clone, Trace)]
 pub struct Frame {

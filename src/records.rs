@@ -629,6 +629,18 @@ impl Record {
         // Then, convert that back into the desired type
         Gc::downcast::<T>(gc_any).ok()
     }
+
+    /*
+    /// # Safety
+    /// Just don't use this
+    pub unsafe fn from_raw_parts(rust_parent: Gc<dyn SchemeCompatible>, rtd: Arc<RecordTypeDescriptor>, fields: Vec<Value>) -> Self {
+        Self(Gc::new(RecordInner {
+            rust_parent,
+            rtd,
+            fields,
+        }))
+    }
+    */
 }
 
 impl fmt::Debug for Record {
@@ -798,8 +810,7 @@ fn record_accessor_fn(
             "not a child of this record type".to_string(),
         ));
     }
-    let idx: Arc<Number> = env[1].clone().try_into()?;
-    let idx: usize = idx.as_ref().try_into().map_err(Condition::from)?;
+    let idx: usize = env[1].clone().try_into()?;
     let val = record.0.read().fields[idx].clone();
     Ok(Application::new(k, vec![val], None))
 }
@@ -822,8 +833,7 @@ pub fn record_accessor(
         unreachable!();
     };
     let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
-    let idx: Arc<Number> = idx.clone().try_into()?;
-    let idx: usize = idx.as_ref().try_into().map_err(Condition::from)?;
+    let idx: usize = idx.clone().try_into()?;
     if idx > rtd.fields.len() {
         return Err(Condition::error(format!(
             "{idx} is out of range {}",
@@ -862,8 +872,7 @@ fn record_mutator_fn(
             "not a child of this record type".to_string(),
         ));
     }
-    let idx: Arc<Number> = env[1].clone().try_into()?;
-    let idx: usize = idx.as_ref().try_into().map_err(Condition::from)?;
+    let idx: usize = env[1].clone().try_into()?;
     record.0.write().fields[idx] = new_val.clone();
     Ok(Application::new(k, vec![], None))
 }
@@ -886,8 +895,7 @@ pub fn record_mutator(
         unreachable!();
     };
     let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
-    let idx: Arc<Number> = idx.clone().try_into()?;
-    let idx: usize = idx.as_ref().try_into().map_err(Condition::from)?;
+    let idx: usize = idx.clone().try_into()?;
     if idx > rtd.fields.len() {
         return Err(Condition::error(format!(
             "{idx} is out of range {}",

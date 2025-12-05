@@ -19,12 +19,6 @@ use std::{
     ops::Deref, ptr::null, sync::Arc,
 };
 
-#[cfg(not(feature = "async"))]
-use std::sync::Mutex;
-
-#[cfg(feature = "tokio")]
-use tokio::sync::Mutex;
-
 const ALIGNMENT: usize = 16;
 const TAG_BITS: usize = ALIGNMENT.ilog2() as usize;
 const TAG: usize = 0b1111;
@@ -90,7 +84,7 @@ impl Value {
                         Gc::increment_reference_count(untagged as *mut GcInner<lists::Pair>)
                     }
                 }
-                Tag::Port => Arc::increment_strong_count(untagged as *const Mutex<PortInner>),
+                Tag::Port => Arc::increment_strong_count(untagged as *const PortInner),
                 Tag::HashTable => todo!(),
                 Tag::Cell => {
                     Gc::increment_reference_count(untagged as *mut GcInner<Value>);
@@ -232,7 +226,7 @@ impl Value {
                 }
             }
             Tag::Port => {
-                let port_inner = unsafe { Arc::from_raw(untagged as *const Mutex<PortInner>) };
+                let port_inner = unsafe { Arc::from_raw(untagged as *const PortInner) };
                 UnpackedValue::Port(ports::Port(port_inner))
             }
             Tag::HashTable => todo!(),
@@ -333,6 +327,20 @@ impl Deref for UnpackedValueRef<'_> {
 impl AsRef<UnpackedValue> for UnpackedValueRef<'_> {
     fn as_ref(&self) -> &UnpackedValue {
         &self.unpacked
+    }
+}
+
+impl<T> From<Option<T>> for Value
+where
+    Value: From<T>,
+    Value: From<bool>,
+{
+    // Probably not the best way to do this, but whatever
+    fn from(value: Option<T>) -> Self {
+        match value {
+            Some(t) => Self::from(t),
+            None => Self::from(false),
+        }
     }
 }
 
@@ -925,6 +933,49 @@ impl TryFrom<UnpackedValue> for (Value, Value) {
     }
 }
 
+macro_rules! impl_num_conversion {
+    ($ty:ty) => {
+        impl TryInto<$ty> for &Value {
+            type Error = Condition;
+
+            fn try_into(self) -> Result<$ty, Self::Error> {
+                match &*self.unpacked_ref() {
+                    UnpackedValue::Number(num) => num.as_ref().try_into(),
+                    e => Err(Condition::type_error("number", e.type_name())),
+                }
+            }
+        }
+
+        impl TryInto<$ty> for Value {
+            type Error = Condition;
+
+            fn try_into(self) -> Result<$ty, Self::Error> {
+                (&self).try_into()
+            }
+        }
+
+        impl From<$ty> for Value {
+            fn from(n: $ty) -> Self {
+                Self::from(Number::from(n))
+            }
+        }
+    };
+}
+
+impl_num_conversion!(u8);
+impl_num_conversion!(u16);
+impl_num_conversion!(u32);
+impl_num_conversion!(u64);
+impl_num_conversion!(u128);
+impl_num_conversion!(usize);
+impl_num_conversion!(i8);
+impl_num_conversion!(i16);
+impl_num_conversion!(i32);
+impl_num_conversion!(i64);
+impl_num_conversion!(i128);
+impl_num_conversion!(isize);
+impl_num_conversion!(f64);
+
 impl TryFrom<Value> for (Value, Value) {
     type Error = Condition;
 
@@ -1215,13 +1266,6 @@ pub fn vector_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
 
 #[bridge(name = "null?", lib = "(rnrs base builtins (6))")]
 pub fn null_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
-    /*
-    let is_null = match &*arg.unpacked_ref() {
-        UnpackedValue::Null => true,
-        UnpackedValue::Syntax(syn) => matches!(syn.as_ref(), Syntax::Null { .. }),
-        _ => false,
-    };
-    */
     Ok(vec![Value::from(arg.type_of() == ValueType::Null)])
 }
 

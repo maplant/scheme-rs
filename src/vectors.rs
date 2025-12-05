@@ -2,7 +2,7 @@ use crate::{
     exceptions::Condition,
     gc::{Gc, Trace},
     lists::slice_to_list,
-    num::{Number, NumberToUsizeError},
+    num::Number,
     registry::bridge,
     strings,
     value::{EqvValue, Value, write_value},
@@ -95,11 +95,9 @@ fn try_make_range(start: usize, end: usize) -> Result<Range<usize>, Condition> {
 }
 
 fn try_to_usize(n: &Value) -> Result<usize, Condition> {
-    n.clone().try_into().and_then(|n: Arc<Number>| {
-        n.as_ref()
-            .try_into()
-            .map_err(<NumberToUsizeError as Into<Condition>>::into)
-    })
+    n.clone()
+        .try_into()
+        .and_then(|n: Arc<Number>| n.as_ref().try_into())
 }
 
 trait Indexer {

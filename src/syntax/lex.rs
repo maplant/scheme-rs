@@ -10,20 +10,22 @@ use futures::future::BoxFuture;
 
 use crate::{
     num,
-    ports::{PortInner, ReadError},
+    ports::{PortData, PortInfo, ReadError},
 };
 
 pub struct Lexer<'a> {
-    port: &'a mut PortInner,
+    port_data: &'a mut PortData,
+    port_info: PortInfo,
     pos: usize,
     buff: Vec<char>,
     curr_span: Span,
 }
 
 impl<'a> Lexer<'a> {
-    pub(crate) fn new(port: &'a mut PortInner, span: Span) -> Self {
+    pub(crate) fn new(port_data: &'a mut PortData, port_info: PortInfo, span: Span) -> Self {
         Self {
-            port,
+            port_data,
+            port_info,
             pos: 0,
             buff: Vec::new(),
             curr_span: span,
@@ -45,12 +47,12 @@ impl<'a> Lexer<'a> {
             return Ok(Some(self.buff[self.pos]));
         }
         while self.buff.len() < self.pos {
-            let Some(chr) = maybe_await!(self.port.read_char())? else {
+            let Some(chr) = maybe_await!(self.port_data.read_char(&self.port_info))? else {
                 return Ok(None);
             };
             self.buff.push(chr);
         }
-        maybe_await!(self.port.peekn_chars(0))
+        maybe_await!(self.port_data.peekn_chars(&self.port_info, 0))
     }
 
     fn skip(&mut self) {
@@ -108,7 +110,10 @@ impl<'a> Lexer<'a> {
     fn consume_chars(&mut self) -> Result<(), ReadError> {
         // Consume all the characters we need to
         if self.pos > self.buff.len() {
-            maybe_await!(self.port.consume_chars(self.pos - self.buff.len()))?;
+            maybe_await!(
+                self.port_data
+                    .consume_chars(&self.port_info, self.pos - self.buff.len())
+            )?;
         }
         self.pos = 0;
         self.buff.clear();
