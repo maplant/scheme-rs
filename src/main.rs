@@ -17,33 +17,14 @@ use scheme_rs::{
     value::Value,
 };
 use scheme_rs_macros::{maybe_async, maybe_await};
-use std::{io::Cursor, process::ExitCode};
+use std::process::ExitCode;
 
 #[derive(Default)]
 struct InputValidator;
 
-#[cfg(not(feature = "async"))]
 impl Validator for InputValidator {
     fn validate(&self, ctx: &mut ValidationContext<'_>) -> rustyline::Result<ValidationResult> {
-        let bytes = Cursor::new(ctx.input().as_bytes().to_vec());
-        let port = Port::new(bytes, true, BufferMode::Block, Transcoder::native());
-        if port.all_sexprs(Span::default()).is_ok() {
-            Ok(ValidationResult::Valid(None))
-        } else {
-            Ok(ValidationResult::Incomplete)
-        }
-    }
-}
-
-#[cfg(feature = "async")]
-impl Validator for InputValidator {
-    fn validate(&self, ctx: &mut ValidationContext<'_>) -> rustyline::Result<ValidationResult> {
-        let bytes = Cursor::new(ctx.input().as_bytes().to_vec());
-        let port = Port::new(bytes, true, BufferMode::Block, Transcoder::native());
-        let is_valid =
-            futures::executor::block_on(
-                async move { port.all_sexprs(Span::default()).await.is_ok() },
-            );
+        let is_valid = Syntax::from_str(ctx.input(), None).is_ok();
         if is_valid {
             Ok(ValidationResult::Valid(None))
         } else {
@@ -91,7 +72,7 @@ fn main() -> ExitCode {
     let prompt = Prompt::new(editor);
 
     let mut span = Span::new("<prompt>");
-    let input_port = Port::new(prompt, true, BufferMode::Block, Transcoder::native());
+    let input_port = Port::new(prompt, BufferMode::Block, Some(Transcoder::native()));
 
     let mut n_results = 1;
     loop {

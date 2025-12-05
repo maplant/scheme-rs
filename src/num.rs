@@ -78,51 +78,42 @@ impl Number {
     }
 }
 
-impl TryFrom<&Number> for usize {
-    type Error = NumberToUsizeError;
-
-    fn try_from(number: &Number) -> Result<usize, NumberToUsizeError> {
-        let make_err = |kind| NumberToUsizeError::new(number.clone(), kind);
-
-        // using `<` operator would require dereferencing
-        if matches!(
-            number.partial_cmp(&Number::FixedInteger(0)),
-            Some(Ordering::Less) | None
-        ) {
-            return Err(make_err(NumberToUsizeErrorKind::Negative));
+macro_rules! impl_from_int {
+    ($ty:ty) => {
+        impl From<$ty> for Number {
+            fn from(i: $ty) -> Self {
+                Self::FixedInteger(i as i64)
+            }
         }
+    };
+}
 
-        match number {
-            Number::FixedInteger(i) => <i64 as TryInto<usize>>::try_into(*i)
-                .map_err(|_| make_err(NumberToUsizeErrorKind::TooLarge)),
-            Number::BigInteger(i) => usize::convertible_from(i)
-                .then(|| usize::wrapping_from(i))
-                .ok_or_else(|| make_err(NumberToUsizeErrorKind::TooLarge)),
-            _ => Err(make_err(NumberToUsizeErrorKind::NotInteger)),
+impl_from_int!(i8);
+impl_from_int!(i16);
+impl_from_int!(i32);
+impl_from_int!(i64);
+impl_from_int!(u8);
+impl_from_int!(u16);
+impl_from_int!(u32);
+impl_from_int!(u64);
+
+macro_rules! impl_from_large_int {
+    ($ty:ty) => {
+        impl From<$ty> for Number {
+            fn from(u: $ty) -> Self {
+                match u.try_into() {
+                    Ok(i) => Number::FixedInteger(i),
+                    Err(_) => Number::BigInteger(Integer::from(u)),
+                }
+            }
         }
-    }
+    };
 }
 
-impl From<usize> for Number {
-    fn from(u: usize) -> Self {
-        match u.try_into() {
-            Ok(i) => Number::FixedInteger(i),
-            Err(_) => Number::BigInteger(Integer::from(u)),
-        }
-    }
-}
-
-impl From<i32> for Number {
-    fn from(i: i32) -> Self {
-        Self::FixedInteger(i as i64)
-    }
-}
-
-impl From<i64> for Number {
-    fn from(i: i64) -> Self {
-        Self::FixedInteger(i)
-    }
-}
+impl_from_large_int!(i128);
+impl_from_large_int!(isize);
+impl_from_large_int!(u128);
+impl_from_large_int!(usize);
 
 impl From<Integer> for Number {
     fn from(i: Integer) -> Self {
@@ -150,8 +141,9 @@ impl From<Complex64> for Number {
 
 macro_rules! number_try_into_impl_integer {
     ($ty:tt) => {
-        impl TryInto<$ty> for Number {
+        impl TryInto<$ty> for &Number {
             type Error = Condition;
+
             fn try_into(self) -> Result<$ty, Self::Error> {
                 match self {
                     Number::FixedInteger(i) => {
@@ -159,10 +151,10 @@ macro_rules! number_try_into_impl_integer {
                         // greater than size_of::<u32>() to know if we should just
                         // cast the value to the type or check for the right size.
                         if size_of::<$ty>() > size_of::<u32>() {
-                            Ok(i as $ty)
+                            Ok(*i as $ty)
                         } else {
-                            if i <= $ty::MAX as i64 && i >= $ty::MIN as i64 {
-                                Ok(i as $ty)
+                            if *i <= $ty::MAX as i64 && *i >= $ty::MIN as i64 {
+                                Ok(*i as $ty)
                             } else {
                                 Err(Condition::not_representable(
                                     &format!("{i}"),
@@ -171,24 +163,11 @@ macro_rules! number_try_into_impl_integer {
                             }
                         }
                     }
-                    Number::BigInteger(bigint) => {
-                        // BigInteger is simpler.
-                        // Since it is based off limbs, we can just check if it is
-                        // representable or not by checking if the BigInt fits the size.
-                        if ($ty::MIN..=$ty::MAX).contains(&bigint) {
-                            let vec = bigint.into_twos_complement_limbs_asc();
-                            // I am not sure if this check is needed or not
-                            if vec.len() == 0 {
-                                return Ok(0);
-                            }
-                            Ok(vec[0] as $ty)
-                        } else {
-                            Err(Condition::not_representable(
-                                &format!("{bigint}"),
-                                stringify!($ty),
-                            ))
-                        }
-                    }
+                    Number::BigInteger(bigint) => $ty::convertible_from(bigint)
+                        .then(|| $ty::wrapping_from(bigint))
+                        .ok_or_else(|| {
+                            Condition::not_representable(&format!("{bigint}"), stringify!($ty))
+                        }),
                     Number::Rational(_) => {
                         Err(Condition::conversion_error(stringify!($ty), "Rational"))
                     }
@@ -199,6 +178,14 @@ macro_rules! number_try_into_impl_integer {
                 }
             }
         }
+
+        impl TryInto<$ty> for Number {
+            type Error = Condition;
+
+            fn try_into(self) -> Result<$ty, Self::Error> {
+                (&self).try_into()
+            }
+        }
     };
 }
 
@@ -206,113 +193,21 @@ number_try_into_impl_integer!(u8);
 number_try_into_impl_integer!(u16);
 number_try_into_impl_integer!(u32);
 number_try_into_impl_integer!(u64);
+number_try_into_impl_integer!(u128);
 number_try_into_impl_integer!(usize);
 number_try_into_impl_integer!(i8);
 number_try_into_impl_integer!(i16);
 number_try_into_impl_integer!(i32);
 number_try_into_impl_integer!(i64);
+number_try_into_impl_integer!(i128);
 number_try_into_impl_integer!(isize);
 
-impl TryInto<u128> for Number {
-    type Error = Condition;
-    fn try_into(self) -> Result<u128, Self::Error> {
-        match self {
-            Number::FixedInteger(i) => Ok(i as u128),
-            Number::BigInteger(bigint) => {
-                if (u128::MIN..=u128::MAX).contains(&bigint) {
-                    let vec = bigint.into_twos_complement_limbs_asc();
-                    // I am not sure if this check is needed or not
-                    if vec.is_empty() {
-                        return Ok(0);
-                    }
-                    if vec.len() == 2 {
-                        // Two limbs are needed to form an u128
-                        let le_bytes = [
-                            vec[0].to_le_bytes()[0],
-                            vec[0].to_le_bytes()[1],
-                            vec[0].to_le_bytes()[2],
-                            vec[0].to_le_bytes()[3],
-                            vec[0].to_le_bytes()[4],
-                            vec[0].to_le_bytes()[5],
-                            vec[0].to_le_bytes()[6],
-                            vec[0].to_le_bytes()[7],
-                            vec[1].to_le_bytes()[0],
-                            vec[1].to_le_bytes()[1],
-                            vec[1].to_le_bytes()[2],
-                            vec[1].to_le_bytes()[3],
-                            vec[1].to_le_bytes()[4],
-                            vec[1].to_le_bytes()[5],
-                            vec[1].to_le_bytes()[6],
-                            vec[1].to_le_bytes()[7],
-                        ];
-                        Ok(u128::from_le_bytes(le_bytes))
-                    } else {
-                        Ok(vec[0] as u128)
-                    }
-                } else {
-                    Err(Condition::not_representable(&format!("{bigint}"), "u128"))
-                }
-            }
-            Number::Rational(_) => Err(Condition::conversion_error("u128", "Rational")),
-            Number::Real(_) => Err(Condition::conversion_error("u128", "Real")),
-            Number::Complex(_) => Err(Condition::conversion_error("u128", "Complex")),
-        }
-    }
-}
-
-impl TryInto<i128> for Number {
-    type Error = Condition;
-    fn try_into(self) -> Result<i128, Self::Error> {
-        match self {
-            Number::FixedInteger(i) => Ok(i as i128),
-            Number::BigInteger(bigint) => {
-                if (i128::MIN..=i128::MAX).contains(&bigint) {
-                    let vec = bigint.into_twos_complement_limbs_asc();
-                    // I am not sure if this check is needed or not
-                    if vec.is_empty() {
-                        return Ok(0);
-                    }
-                    if vec.len() == 2 {
-                        // Two limbs are needed to form an u128
-                        let le_bytes = [
-                            vec[0].to_le_bytes()[0],
-                            vec[0].to_le_bytes()[1],
-                            vec[0].to_le_bytes()[2],
-                            vec[0].to_le_bytes()[3],
-                            vec[0].to_le_bytes()[4],
-                            vec[0].to_le_bytes()[5],
-                            vec[0].to_le_bytes()[6],
-                            vec[0].to_le_bytes()[7],
-                            vec[1].to_le_bytes()[0],
-                            vec[1].to_le_bytes()[1],
-                            vec[1].to_le_bytes()[2],
-                            vec[1].to_le_bytes()[3],
-                            vec[1].to_le_bytes()[4],
-                            vec[1].to_le_bytes()[5],
-                            vec[1].to_le_bytes()[6],
-                            vec[1].to_le_bytes()[7],
-                        ];
-                        Ok(i128::from_le_bytes(le_bytes))
-                    } else {
-                        Ok(vec[0] as i128)
-                    }
-                } else {
-                    Err(Condition::not_representable(&format!("{bigint}"), "i128"))
-                }
-            }
-            Number::Rational(_) => Err(Condition::conversion_error("i128", "Rational")),
-            Number::Real(_) => Err(Condition::conversion_error("i128", "Real")),
-            Number::Complex(_) => Err(Condition::conversion_error("i128", "Complex")),
-        }
-    }
-}
-
-impl TryInto<Integer> for Number {
+impl TryInto<Integer> for &Number {
     type Error = Condition;
     fn try_into(self) -> Result<Integer, Self::Error> {
         match self {
-            Number::FixedInteger(i) => Ok(Integer::from(i)),
-            Number::BigInteger(i) => Ok(i),
+            Number::FixedInteger(i) => Ok(Integer::from(*i)),
+            Number::BigInteger(i) => Ok(i.clone()),
             Number::Rational(_) => Err(Condition::conversion_error("Integer", "Rational")),
             Number::Real(_) => Err(Condition::conversion_error("Integer", "Real")),
             Number::Complex(_) => Err(Condition::conversion_error("Integer", "Complex")),
@@ -320,12 +215,12 @@ impl TryInto<Integer> for Number {
     }
 }
 
-impl TryInto<f64> for Number {
+impl TryInto<f64> for &Number {
     type Error = Condition;
     fn try_into(self) -> Result<f64, Self::Error> {
         match self {
-            Number::FixedInteger(i) => Ok(i as f64),
-            Number::Real(r) => Ok(r),
+            Number::FixedInteger(i) => Ok(*i as f64),
+            Number::Real(r) => Ok(*r),
             Number::Complex(_) => Err(Condition::conversion_error("f64", "Complex")),
             Number::Rational(r) => {
                 if let Some((float, _, _)) =
@@ -341,21 +236,21 @@ impl TryInto<f64> for Number {
     }
 }
 
-impl TryInto<Complex64> for Number {
+impl TryInto<Complex64> for &Number {
     type Error = Condition;
     fn try_into(self) -> Result<Complex64, Self::Error> {
         match self {
-            Number::Complex(c) => Ok(c),
+            Number::Complex(c) => Ok(*c),
             Number::Rational(_) => Err(Condition::conversion_error("Complex", "Rational")),
             Number::BigInteger(_) => Err(Condition::conversion_error("Complex", "BigInteger")),
             Number::Real(r) => {
-                let Some(c) = Complex64::from_f64(r) else {
+                let Some(c) = Complex64::from_f64(*r) else {
                     return Err(Condition::not_representable(&format!("{r}"), "Real"));
                 };
                 Ok(c)
             }
             Number::FixedInteger(i) => {
-                let Some(c) = Complex64::from_i64(i) else {
+                let Some(c) = Complex64::from_i64(*i) else {
                     return Err(Condition::not_representable(&format!("{i}"), "Integer"));
                 };
                 Ok(c)
@@ -716,44 +611,6 @@ impl From<RationalFromPrimitiveFloatError> for Box<ArithmeticError> {
     fn from(err: RationalFromPrimitiveFloatError) -> Self {
         Box::new(ArithmeticError::RationalFromPrimitiveFloat(err))
     }
-}
-
-#[derive(Debug)]
-pub struct NumberToUsizeError {
-    number: Number,
-    kind: NumberToUsizeErrorKind,
-}
-
-impl NumberToUsizeError {
-    const fn new(number: Number, kind: NumberToUsizeErrorKind) -> Self {
-        Self { number, kind }
-    }
-}
-
-impl Display for NumberToUsizeError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self.kind {
-            NumberToUsizeErrorKind::NotInteger => write!(
-                f,
-                "expected integer, got {}",
-                match self.number {
-                    Number::FixedInteger(_) | Number::BigInteger(_) => "integer",
-                    Number::Rational(_) => "rational",
-                    Number::Real(_) => "float",
-                    Number::Complex(_) => "complex",
-                }
-            ),
-            NumberToUsizeErrorKind::Negative => write!(f, "number `{}` is a negative", self.number),
-            NumberToUsizeErrorKind::TooLarge => write!(f, "number `{}` is too large", self.number),
-        }
-    }
-}
-
-#[derive(Debug)]
-enum NumberToUsizeErrorKind {
-    NotInteger,
-    Negative,
-    TooLarge,
 }
 
 pub(crate) struct ReflexiveNumber(pub(crate) Arc<Number>);

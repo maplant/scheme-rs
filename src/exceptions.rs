@@ -5,9 +5,8 @@ use scheme_rs_macros::{cps_bridge, runtime_fn};
 use crate::{
     ast::ParseAstError,
     gc::{Gc, GcInner, Trace},
-    ports::{ReadError, WriteError},
     proc::{Application, DynStack, DynStackElem, FuncPtr, Procedure, pop_dyn_stack},
-    records::{Record, RecordTypeDescriptor, SchemeCompatible, into_scheme_compatible, rtd},
+    records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax, parse::ParseSyntaxError},
@@ -74,18 +73,6 @@ impl fmt::Display for Condition {
 
 impl From<ParseSyntaxError> for Condition {
     fn from(_error: ParseSyntaxError) -> Self {
-        todo!()
-    }
-}
-
-impl From<ReadError> for Condition {
-    fn from(_error: ReadError) -> Self {
-        todo!()
-    }
-}
-
-impl From<WriteError> for Condition {
-    fn from(_error: WriteError) -> Self {
         todo!()
     }
 }
@@ -218,7 +205,7 @@ impl Condition {
         Self(Value::from(Record::from_rust_type(
             CompoundCondition::from((
                 Assertion::new(),
-                Message::new(format!("Could not represent '{value}' in {} type", r#type)),
+                Message::new(format!("Could not represent '{value}' in {type} type")),
             )),
         )))
     }
@@ -259,7 +246,6 @@ macro_rules! impl_into_condition_for {
 }
 
 impl_into_condition_for!(Box<crate::num::ArithmeticError>);
-impl_into_condition_for!(crate::num::NumberToUsizeError);
 impl_into_condition_for!(std::num::TryFromIntError);
 
 #[derive(Copy, Clone, Default, Debug, Trace)]
@@ -322,10 +308,10 @@ define_condition_type!(
 );
 
 impl Message {
-    pub fn new(message: String) -> Self {
+    pub fn new(message: impl std::fmt::Display) -> Self {
         Self {
             parent: Gc::new(SimpleCondition::new()),
-            message,
+            message: message.to_string(),
         }
     }
 }
@@ -430,6 +416,17 @@ impl fmt::Debug for CompoundCondition {
             cond.fmt(f)?;
         }
         Ok(())
+    }
+}
+
+impl<T> From<T> for Condition
+where
+    CompoundCondition: From<T>,
+{
+    fn from(value: T) -> Self {
+        Self(Value::from(Record::from_rust_type(
+            CompoundCondition::from(value),
+        )))
     }
 }
 

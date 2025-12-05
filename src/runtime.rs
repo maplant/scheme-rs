@@ -64,9 +64,8 @@ impl Runtime {
         let sexprs = {
             let port = Port::new(
                 maybe_await!(File::open(path)).unwrap(),
-                true,
                 BufferMode::Block,
-                Transcoder::native(),
+                Some(Transcoder::native()),
             );
             let file_name = path.file_name().unwrap().to_str().unwrap_or("<unknown>");
             let span = Span::new(file_name);

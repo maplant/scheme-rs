@@ -3,13 +3,26 @@
 use either::Either;
 use memchr::{memchr, memmem};
 use rustyline::Editor;
-use scheme_rs_macros::{bridge, define_condition_type, maybe_async, maybe_await, rtd};
-use std::{any::Any, borrow::Cow, fmt, io::Cursor, sync::{Arc, LazyLock, OnceLock}};
+use scheme_rs_macros::{bridge, cps_bridge, define_condition_type, maybe_async, maybe_await, rtd};
+use std::{
+    any::Any,
+    borrow::Cow,
+    fmt,
+    io::Cursor,
+    sync::{Arc, LazyLock},
+};
 
 use crate::{
-    exceptions::{self, Condition, Error}, gc::{Gc, Trace}, records::{Record, RecordTypeDescriptor, SchemeCompatible}, syntax::{
-        parse::{ParseSyntaxError, Parser}, Span, Syntax
-    }, value::{Value, ValueType}
+    exceptions::{Assertion, Condition, Error, Message},
+    gc::{Gc, Trace},
+    proc::{Application, DynStack},
+    records::{Record, RecordTypeDescriptor, SchemeCompatible},
+    runtime::Runtime,
+    syntax::{
+        Span, Syntax,
+        parse::{ParseSyntaxError, Parser},
+    },
+    value::{Value, ValueType},
 };
 
 #[derive(Clone, Debug)]
@@ -17,6 +30,7 @@ pub enum ReadError {
     Io(Arc<io::Error>),
     NotAnInputPort,
     PortIsClosed,
+    NotTextualPort,
 }
 
 impl From<io::Error> for ReadError {
@@ -25,16 +39,47 @@ impl From<io::Error> for ReadError {
     }
 }
 
+impl From<ReadError> for Condition {
+    fn from(read_error: ReadError) -> Self {
+        Condition::from((
+            IoReadError::new(),
+            Assertion::new(),
+            match read_error {
+                ReadError::Io(io) => Message::new(io.to_string()),
+                ReadError::NotAnInputPort => Message::new("not an input port"),
+                ReadError::PortIsClosed => Message::new("port is closed"),
+                ReadError::NotTextualPort => Message::new("port is not textual"),
+            },
+        ))
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum WriteError {
     Io(Arc<io::Error>),
     NotAnOutputPort,
     PortIsClosed,
+    NotTextualPort,
 }
 
 impl From<io::Error> for WriteError {
     fn from(error: io::Error) -> Self {
         Self::Io(Arc::new(error))
+    }
+}
+
+impl From<WriteError> for Condition {
+    fn from(write_error: WriteError) -> Self {
+        Condition::from((
+            IoWriteError::new(),
+            Assertion::new(),
+            match write_error {
+                WriteError::Io(io) => Message::new(io.to_string()),
+                WriteError::NotAnOutputPort => Message::new("not an output port"),
+                WriteError::PortIsClosed => Message::new("port is closed"),
+                WriteError::NotTextualPort => Message::new("port is not textual"),
+            },
+        ))
     }
 }
 
@@ -160,16 +205,20 @@ trait Decode {
 }
 
 struct Decoder<'a, D> {
-    port: &'a mut PortInner,
+    data: &'a mut PortData,
+    info: PortInfo,
     decode: D,
+    char_idx: usize,
     pos: Either<usize, ReadError>,
 }
 
 impl<'a, D> Decoder<'a, D> {
-    fn new(port: &'a mut PortInner, decode: D) -> Self {
+    fn new(data: &'a mut PortData, info: PortInfo, decode: D) -> Self {
         Self {
-            port,
+            data,
+            info,
             decode,
+            char_idx: 0,
             pos: Either::Left(0),
         }
     }
@@ -186,13 +235,14 @@ where
             Either::Right(ref err) => return Some(Err(err.clone())),
         };
         loop {
-            match maybe_await!(self.port.peekn_bytes(pos))
+            match maybe_await!(self.data.peekn_bytes(&self.info, pos))
                 .transpose()?
                 .and_then(|byte| self.decode.push_and_decode(byte))
             {
                 Ok(Some(chr)) => {
+                    let last_char_idx = std::mem::replace(&mut self.char_idx, pos + 1);
                     self.pos = Either::Left(pos + 1);
-                    return Some(Ok((pos, chr)));
+                    return Some(Ok((last_char_idx, chr)));
                 }
                 Ok(None) => {
                     pos += 1;
@@ -237,28 +287,54 @@ impl BufferMode {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Trace)]
 pub struct Transcoder {
     codec: Codec,
     eol_type: EolStyle,
     error_handling_mode: ErrorHandlingMode,
 }
 
+impl fmt::Debug for Transcoder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            " {:?} {:?} {:?}",
+            self.codec, self.eol_type, self.error_handling_mode
+        )
+    }
+}
+
 impl Transcoder {
     pub fn native() -> Self {
         Self {
             codec: Codec::Utf8,
-            eol_type: EolStyle::Lf,
+            eol_type: EolStyle::None,
             error_handling_mode: ErrorHandlingMode::Replace,
         }
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+impl SchemeCompatible for Transcoder {
+    fn rtd() -> Arc<RecordTypeDescriptor> {
+        rtd!(name: "transcoder", opaque: true, sealed: true)
+    }
+}
+
+#[derive(Copy, Clone, Trace)]
 pub enum Codec {
     Latin1,
     Utf8,
     Utf16,
+}
+
+impl fmt::Debug for Codec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Latin1 => write!(f, "latin-1"),
+            Self::Utf8 => write!(f, "utf-8"),
+            Self::Utf16 => write!(f, "utf-16"),
+        }
+    }
 }
 
 impl Codec {
@@ -283,8 +359,10 @@ impl Codec {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Trace)]
 pub enum EolStyle {
+    /// None
+    None,
     /// Linefeed
     Lf,
     /// Carriage return
@@ -297,6 +375,20 @@ pub enum EolStyle {
     Crnel,
     /// Line separator
     Ls,
+}
+
+impl fmt::Debug for EolStyle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::None => write!(f, "none"),
+            Self::Lf => write!(f, "lf"),
+            Self::Cr => write!(f, "cr"),
+            Self::Crlf => write!(f, "crlf"),
+            Self::Nel => write!(f, "nel"),
+            Self::Crnel => write!(f, "crnel"),
+            Self::Ls => write!(f, "ls"),
+        }
+    }
 }
 
 impl EolStyle {
@@ -364,6 +456,7 @@ impl EolStyle {
                     Self::Nel => [Some('\u{0085}'), None],
                     Self::Crnel => [Some('\r'), Some('\u{0085}')],
                     Self::Ls => [Some('\u{2028}'), None],
+                    Self::None => [Some(chr), None],
                 }
             } else {
                 [Some(chr), None]
@@ -383,16 +476,26 @@ impl EolStyle {
             Self::Ls if !ls_needle.is_empty() => {
                 memmem::find(bytes, ls_needle).map(|i| i + ls_needle.len())
             }
-            Self::Ls => None,
+            Self::None | Self::Ls => None,
         }
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Trace)]
 pub enum ErrorHandlingMode {
     Ignore,
     Raise,
     Replace,
+}
+
+impl fmt::Debug for ErrorHandlingMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Ignore => write!(f, "ignore"),
+            Self::Raise => write!(f, "raise"),
+            Self::Replace => write!(f, "replace"),
+        }
+    }
 }
 
 #[cfg(not(feature = "async"))]
@@ -463,6 +566,12 @@ mod __impl {
 
         fn seek_fn() -> Option<SeekFn> {
             Some(seek_fn::<Self>())
+        }
+    }
+
+    impl IntoPort for std::io::Stdin {
+        fn read_fn() -> Option<ReadFn> {
+            Some(read_fn::<Self>())
         }
     }
 
@@ -558,6 +667,13 @@ mod __impl {
     }
 
     #[cfg(feature = "tokio")]
+    impl IntoPort for tokio::io::Stdin {
+        fn read_fn() -> Option<ReadFn> {
+            Some(read_fn::<Self>())
+        }
+    }
+
+    #[cfg(feature = "tokio")]
     impl IntoPort for tokio::io::Stdout {
         fn write_fn() -> Option<WriteFn> {
             Some(write_fn::<Self>())
@@ -602,14 +718,52 @@ mod __impl {
 use __impl::*;
 
 pub(crate) struct PortInner {
-    port: Option<Box<dyn Any + Send + 'static>>,
+    pub(crate) info: PortInfo,
+    pub(crate) data: Mutex<PortData>,
+}
+
+impl PortInner {
+    fn new<P>(port: P, buffer_mode: BufferMode, transcoder: Option<Transcoder>) -> Self
+    where
+        P: IntoPort,
+    {
+        let read = P::read_fn();
+        let write = P::write_fn();
+        let seek = P::seek_fn();
+
+        Self {
+            info: PortInfo {
+                read,
+                write,
+                seek,
+                buffer_mode,
+                transcoder,
+            },
+            data: Mutex::new(PortData {
+                port: Some(port.into_port()),
+                input_pos: 0,
+                bytes_read: 0,
+                input_buffer: buffer_mode.new_input_buffer(transcoder.is_some(), read.is_some()),
+                output_buffer: buffer_mode.new_output_buffer(write.is_some()),
+                utf16_endianness: None,
+            }),
+        }
+    }
+}
+
+/// Immutable data describing the port.
+#[derive(Copy, Clone)]
+pub(crate) struct PortInfo {
     read: Option<ReadFn>,
     write: Option<WriteFn>,
     seek: Option<SeekFn>,
-    #[allow(unused)]
-    text: bool,
     buffer_mode: BufferMode,
-    transcoder: Transcoder,
+    transcoder: Option<Transcoder>,
+}
+
+/// Mutable data contained in the port.
+pub(crate) struct PortData {
+    port: Option<Box<dyn Any + Send + 'static>>,
     input_pos: usize,
     bytes_read: usize,
     input_buffer: Box<[u8]>,
@@ -619,53 +773,34 @@ pub(crate) struct PortInner {
 
 pub const BUFFER_SIZE: usize = 8192;
 
-impl PortInner {
-    fn new<P>(port: P, text: bool, buffer_mode: BufferMode, transcoder: Transcoder) -> Self
-    where
-        P: IntoPort,
-    {
-        let read = P::read_fn();
-        let write = P::write_fn();
-        let seek = P::seek_fn();
-
-        Self {
-            port: Some(port.into_port()),
-            read,
-            write,
-            seek,
-            text,
-            buffer_mode,
-            transcoder,
-            input_pos: 0,
-            bytes_read: 0,
-            input_buffer: buffer_mode.new_input_buffer(text, read.is_some()),
-            output_buffer: buffer_mode.new_output_buffer(write.is_some()),
-            utf16_endianness: None,
-        }
-    }
-
+impl PortData {
     #[allow(unused)]
     #[maybe_async]
-    fn read_byte(&mut self) -> Result<Option<u8>, ReadError> {
-        let next_byte = maybe_await!(self.peekn_bytes(0))?;
-        maybe_await!(self.consume_bytes(1))?;
+    fn read_byte(&mut self, port_info: &PortInfo) -> Result<Option<u8>, ReadError> {
+        let next_byte = maybe_await!(self.peekn_bytes(port_info, 0))?;
+        maybe_await!(self.consume_bytes(port_info, 1))?;
         Ok(next_byte)
     }
 
     #[maybe_async]
-    pub(crate) fn read_char(&mut self) -> Result<Option<char>, ReadError> {
-        let Some(next_char) = maybe_await!(self.peekn_chars(0))? else {
+    pub(crate) fn read_char(&mut self, port_info: &PortInfo) -> Result<Option<char>, ReadError> {
+        let Some(next_char) = maybe_await!(self.peekn_chars(port_info, 0))? else {
             return Ok(None);
         };
-        let byte_len = self.transcoder.codec.byte_len(next_char);
-        maybe_await!(self.consume_bytes(byte_len))?;
+
+        let Some(transcoder) = port_info.transcoder else {
+            return Err(ReadError::NotTextualPort);
+        };
+
+        let byte_len = transcoder.codec.byte_len(next_char);
+        maybe_await!(self.consume_bytes(port_info, byte_len))?;
 
         Ok(Some(next_char))
     }
 
     #[maybe_async]
-    fn peekn_bytes(&mut self, n: usize) -> Result<Option<u8>, ReadError> {
-        let Some(read) = self.read else {
+    fn peekn_bytes(&mut self, port_info: &PortInfo, n: usize) -> Result<Option<u8>, ReadError> {
+        let Some(read) = port_info.read else {
             return Err(ReadError::NotAnInputPort);
         };
 
@@ -673,7 +808,7 @@ impl PortInner {
             return Err(ReadError::PortIsClosed);
         };
 
-        if let Some(write) = self.write
+        if let Some(write) = port_info.write
             && !self.output_buffer.is_empty()
         {
             maybe_await!(write(port, &self.output_buffer[..]))?;
@@ -685,33 +820,29 @@ impl PortInner {
         }
 
         while self.bytes_read <= n + self.input_pos {
-            match self.buffer_mode {
-                BufferMode::None => {
-                    let read = maybe_await!((read)(
-                        port,
-                        &mut self.input_buffer[self.bytes_read..],
-                    ))?;
+            match (port_info.buffer_mode, port_info.transcoder) {
+                (BufferMode::None, _) => {
+                    let input_buffer = &mut self.input_buffer[self.bytes_read..];
+                    let input_buffer = &mut input_buffer[..1];
+                    let read = maybe_await!((read)(port, input_buffer))?;
                     if read == 1 {
                         self.bytes_read += 1;
                     } else {
                         return Ok(None);
                     }
                 }
-                BufferMode::Line => {
+                (BufferMode::Line, Some(transcoder)) => {
                     loop {
-                        let read = maybe_await!((read)(
-                            port,
-                            &mut self.input_buffer[self.bytes_read..],
-                        ))?;
+                        let read =
+                            maybe_await!((read)(port, &mut self.input_buffer[self.bytes_read..],))?;
                         if read == 0 {
                             return Ok(None);
                         }
                         // Attempt to find the line ending:
-                        if self
-                            .transcoder
+                        if transcoder
                             .eol_type
                             .find_next_line(
-                                self.transcoder.codec.ls_needle(self.utf16_endianness),
+                                transcoder.codec.ls_needle(self.utf16_endianness),
                                 &self.input_buffer[self.bytes_read..],
                             )
                             .is_some()
@@ -734,11 +865,9 @@ impl PortInner {
                         }
                     }
                 }
-                BufferMode::Block => {
-                    let read = maybe_await!((read)(
-                        port,
-                        &mut self.input_buffer[self.bytes_read..],
-                    ))?;
+                (BufferMode::Line | BufferMode::Block, _) => {
+                    let read =
+                        maybe_await!((read)(port, &mut self.input_buffer[self.bytes_read..],))?;
                     if read == 0 {
                         return Ok(None);
                     }
@@ -751,31 +880,39 @@ impl PortInner {
     }
 
     #[cfg(not(feature = "async"))]
-    fn transcode(&mut self) -> impl Iterator<Item = Result<(usize, char), ReadError>> {
-        let eol_type = self.transcoder.eol_type;
-        let decoder = match self.transcoder.codec {
+    fn transcode(
+        &mut self,
+        port_info: PortInfo,
+        transcoder: Transcoder,
+    ) -> impl Iterator<Item = Result<(usize, char), ReadError>> {
+        let eol_type = transcoder.eol_type;
+        let decoder = match transcoder.codec {
             Codec::Latin1 => {
                 let mut i = 0;
-                Box::new(std::iter::from_fn(move || match self.peekn_bytes(i) {
-                    Ok(Some(byte)) => {
-                        let res = (i, char::from(byte));
-                        i += 1;
-                        Some(Ok(res))
+                Box::new(std::iter::from_fn(move || {
+                    match self.peekn_bytes(&port_info, i) {
+                        Ok(Some(byte)) => {
+                            let res = (i, char::from(byte));
+                            i += 1;
+                            Some(Ok(res))
+                        }
+                        Ok(None) => None,
+                        Err(err) => Some(Err(err)),
                     }
-                    Ok(None) => None,
-                    Err(err) => Some(Err(err)),
                 })) as Box<dyn Iterator<Item = Result<(usize, char), ReadError>>>
             }
             Codec::Utf16 => Box::new(Decoder::new(
                 self,
+                port_info,
                 Utf16Buffer::new(
-                    self.transcoder.error_handling_mode,
+                    transcoder.error_handling_mode,
                     self.utf16_endianness.unwrap(),
                 ),
             )),
             Codec::Utf8 => Box::new(Decoder::new(
                 self,
-                Utf8Buffer::new(self.transcoder.error_handling_mode),
+                port_info,
+                Utf8Buffer::new(transcoder.error_handling_mode),
             )),
         };
         eol_type.convert_eol_style_to_linefeed(decoder.peekable())
@@ -784,13 +921,15 @@ impl PortInner {
     #[cfg(feature = "async")]
     fn transcode(
         &mut self,
+        port_info: PortInfo,
+        transcoder: Transcoder,
     ) -> impl futures::stream::Stream<Item = Result<(usize, char), ReadError>> {
-        let eol_type = self.transcoder.eol_type;
-        let decoder = match self.transcoder.codec {
+        let eol_type = transcoder.eol_type;
+        let decoder = match transcoder.codec {
             Codec::Latin1 => async_stream::stream! {
                 let mut i = 0;
                 loop {
-                    match self.peekn_bytes(i).await {
+                    match self.peekn_bytes(&port_info, i).await {
                         Ok(Some(byte)) => {
                             let res = (i, char::from(byte));
                             i += 1;
@@ -805,8 +944,9 @@ impl PortInner {
             Codec::Utf16 => async_stream::stream! {
                 let mut decoder = Decoder::new(
                     self,
+                    port_info,
                     Utf16Buffer::new(
-                        self.transcoder.error_handling_mode,
+                        transcoder.error_handling_mode,
                         self.utf16_endianness.unwrap(),
                     ),
                 );
@@ -818,7 +958,8 @@ impl PortInner {
             Codec::Utf8 => async_stream::stream! {
                 let mut decoder = Decoder::new(
                     self,
-                    Utf8Buffer::new(self.transcoder.error_handling_mode),
+                    port_info,
+                    Utf8Buffer::new(transcoder.error_handling_mode),
                 );
                 while let Some(decoded) = decoder.decode_next().await {
                     yield decoded;
@@ -830,36 +971,43 @@ impl PortInner {
     }
 
     #[maybe_async]
-    pub(crate) fn peekn_chars(&mut self, n: usize) -> Result<Option<char>, ReadError> {
-        // TODO: If this a binary port, throw an error.
+    pub(crate) fn peekn_chars(
+        &mut self,
+        port_info: &PortInfo,
+        n: usize,
+    ) -> Result<Option<char>, ReadError> {
+        let Some(transcoder) = port_info.transcoder else {
+            return Err(ReadError::NotTextualPort);
+        };
 
         // If this is a utf16 port and we have not assigned endiannes, check for
         // the BOM
-        if matches!(self.transcoder.codec, Codec::Utf16) && self.utf16_endianness.is_none() {
-            let b1 = maybe_await!(self.peekn_bytes(0))?;
-            let b2 = maybe_await!(self.peekn_bytes(1))?;
+        if matches!(transcoder.codec, Codec::Utf16) && self.utf16_endianness.is_none() {
+            let b1 = maybe_await!(self.peekn_bytes(port_info, 0))?;
+            let b2 = maybe_await!(self.peekn_bytes(port_info, 1))?;
             self.utf16_endianness = match (b1, b2) {
                 (Some(b'\xFF'), Some(b'\xFE')) => {
-                    maybe_await!(self.consume_bytes(2))?;
+                    maybe_await!(self.consume_bytes(port_info, 2))?;
                     Some(Endianness::Le)
                 }
                 (Some(b'\xFE'), Some(b'\xFF')) => {
-                    maybe_await!(self.consume_bytes(2))?;
+                    maybe_await!(self.consume_bytes(port_info, 2))?;
                     Some(Endianness::Be)
                 }
                 _ => Some(Endianness::Le),
             };
         }
 
-        Ok(maybe_await!(self.transcode().nth(n))
+        Ok(maybe_await!(self.transcode(*port_info, transcoder).nth(n))
             .transpose()?
             .map(|(_, chr)| chr))
     }
 
     #[maybe_async]
-    fn consume_bytes(&mut self, n: usize) -> Result<(), ReadError> {
+    fn consume_bytes(&mut self, port_info: &PortInfo, n: usize) -> Result<(), ReadError> {
         if self.bytes_read < self.input_pos + n {
-            let _ = maybe_await!(self.peekn_bytes(n - self.bytes_read))?;
+            let _ =
+                maybe_await!(self.peekn_bytes(port_info, self.input_pos + n - self.bytes_read))?;
         }
 
         self.input_pos += n;
@@ -873,18 +1021,37 @@ impl PortInner {
     }
 
     #[maybe_async]
-    pub(crate) fn consume_chars(&mut self, n: usize) -> Result<(), ReadError> {
+    pub(crate) fn consume_chars(
+        &mut self,
+        port_info: &PortInfo,
+        n: usize,
+    ) -> Result<(), ReadError> {
+        let Some(transcoder) = port_info.transcoder else {
+            return Err(ReadError::NotTextualPort);
+        };
+
         let Some((bytes_to_skip, last_char)) =
-            maybe_await!(self.transcode().take(n).last()).transpose()?
+            maybe_await!(self.transcode(*port_info, transcoder).take(n).last()).transpose()?
         else {
             return Ok(());
         };
-        maybe_await!(self.consume_bytes(bytes_to_skip + self.transcoder.codec.byte_len(last_char)))
+
+        maybe_await!(self.consume_bytes(
+            port_info,
+            bytes_to_skip + transcoder.codec.byte_len(last_char)
+        ))?;
+
+        if self.input_buffer.len() - self.input_pos < 4 {
+            self.input_buffer.copy_within(self.input_pos.., 0);
+            self.bytes_read -= self.input_pos;
+            self.input_pos = 0;
+        }
+        Ok(())
     }
 
     #[maybe_async]
-    fn put_bytes(&mut self, mut bytes: &[u8]) -> Result<(), WriteError> {
-        let Some(write) = self.write else {
+    fn put_bytes(&mut self, port_info: &PortInfo, mut bytes: &[u8]) -> Result<(), WriteError> {
+        let Some(write) = port_info.write else {
             return Err(WriteError::NotAnOutputPort);
         };
 
@@ -893,7 +1060,7 @@ impl PortInner {
         };
 
         // If we can, seek back
-        if let Some(seek) = self.seek
+        if let Some(seek) = port_info.seek
             && self.bytes_read > 0
         {
             let seek_to = (self.bytes_read - self.input_pos) as i64;
@@ -902,13 +1069,13 @@ impl PortInner {
             self.input_pos = 0;
         }
 
-        match self.buffer_mode {
-            BufferMode::None => maybe_await!(write(port, bytes))?,
-            BufferMode::Line => loop {
-                if let Some(next_line) = self.transcoder.eol_type.find_next_line(
-                    self.transcoder.codec.ls_needle(self.utf16_endianness),
-                    bytes,
-                ) {
+        match (port_info.buffer_mode, port_info.transcoder) {
+            (BufferMode::None, _) => maybe_await!(write(port, bytes))?,
+            (BufferMode::Line, Some(transcoder)) => loop {
+                if let Some(next_line) = transcoder
+                    .eol_type
+                    .find_next_line(transcoder.codec.ls_needle(self.utf16_endianness), bytes)
+                {
                     self.output_buffer.extend_from_slice(&bytes[..next_line]);
                     bytes = &bytes[next_line..];
                     maybe_await!(write(port, &self.output_buffer[..]))?;
@@ -918,7 +1085,7 @@ impl PortInner {
                     break;
                 }
             },
-            BufferMode::Block => loop {
+            (BufferMode::Line | BufferMode::Block, _) => loop {
                 if bytes.len() + self.output_buffer.len() >= BUFFER_SIZE {
                     let num_bytes_to_buffer = BUFFER_SIZE - self.output_buffer.len();
                     self.output_buffer
@@ -937,22 +1104,26 @@ impl PortInner {
     }
 
     #[maybe_async]
-    fn put_str(&mut self, s: &str) -> Result<(), WriteError> {
-        let s = if matches!(self.transcoder.eol_type, EolStyle::Lf) {
+    fn put_str(&mut self, port_info: &PortInfo, s: &str) -> Result<(), WriteError> {
+        let Some(transcoder) = port_info.transcoder else {
+            return Err(WriteError::NotTextualPort);
+        };
+
+        let s = if matches!(transcoder.eol_type, EolStyle::Lf) {
             Cow::Borrowed(s)
         } else {
             Cow::Owned(
-                self.transcoder
+                transcoder
                     .eol_type
                     .convert_linefeeds_to_eol_style(s.chars())
                     .collect::<String>(),
             )
         };
-        match self.transcoder.codec {
+        match transcoder.codec {
             Codec::Latin1 | Codec::Utf8 => {
                 // Probably should do a check here to ensure the string is ascii
                 // if our codec is latin1
-                maybe_await!(self.put_bytes(s.as_bytes()))?;
+                maybe_await!(self.put_bytes(port_info, s.as_bytes()))?;
             }
             Codec::Utf16 => {
                 let endianness = self.utf16_endianness.unwrap_or(Endianness::Le);
@@ -963,15 +1134,15 @@ impl PortInner {
                         Endianness::Be => codepoint.to_be_bytes(),
                     })
                     .collect::<Vec<_>>();
-                maybe_await!(self.put_bytes(&bytes))?;
+                maybe_await!(self.put_bytes(port_info, &bytes))?;
             }
         }
         Ok(())
     }
 
     #[maybe_async]
-    fn flush(&mut self) -> Result<(), WriteError> {
-        let Some(write) = self.write else {
+    fn flush(&mut self, port_info: &PortInfo) -> Result<(), WriteError> {
+        let Some(write) = port_info.write else {
             return Err(WriteError::NotAnOutputPort);
         };
 
@@ -987,8 +1158,8 @@ impl PortInner {
 
     #[allow(unused)]
     #[maybe_async]
-    fn seek(&mut self, pos: u64) -> Result<u64, SeekError> {
-        let Some(seek) = self.seek else {
+    fn seek(&mut self, port_info: &PortInfo, pos: u64) -> Result<u64, SeekError> {
+        let Some(seek) = port_info.seek else {
             return Err(SeekError::NotSeekable);
         };
 
@@ -1035,30 +1206,94 @@ impl IntoPort for Cursor<Vec<u8>> {
 }
 
 #[derive(Trace, Clone)]
-pub struct Port(pub(crate) Arc<Mutex<PortInner>>);
+pub struct Port(pub(crate) Arc<PortInner>);
 
 impl Port {
-    pub fn new<P>(port: P, text: bool, buffer_mode: BufferMode, transcoder: Transcoder) -> Self
+    pub fn new<P>(port: P, buffer_mode: BufferMode, transcoder: Option<Transcoder>) -> Self
     where
         P: IntoPort,
     {
-        Self(Arc::new(Mutex::new(PortInner::new(
-            port,
-            text,
-            buffer_mode,
-            transcoder,
-        ))))
+        Self(Arc::new(PortInner::new(port, buffer_mode, transcoder)))
+    }
+
+    #[maybe_async]
+    pub fn get_u8(&self) -> Result<Option<u8>, ReadError> {
+        #[cfg(not(feature = "async"))]
+        let mut data = self.0.data.lock().unwrap();
+
+        #[cfg(feature = "async")]
+        let mut data = self.0.data.lock().await;
+
+        // TODO: Ensure this is a binary port
+        if let Some(byte) = maybe_await!(data.peekn_bytes(&self.0.info, 0))? {
+            maybe_await!(data.consume_bytes(&self.0.info, 1))?;
+            Ok(Some(byte))
+        } else {
+            Ok(None)
+        }
+    }
+
+    #[maybe_async]
+    pub fn lookahead_u8(&self) -> Result<Option<u8>, ReadError> {
+        #[cfg(not(feature = "async"))]
+        let mut data = self.0.data.lock().unwrap();
+
+        #[cfg(feature = "async")]
+        let mut data = self.0.data.lock().await;
+
+        // TODO: Ensure this is a binary port
+        maybe_await!(data.peekn_bytes(&self.0.info, 0))
+    }
+
+    #[maybe_async]
+    pub fn get_char(&self) -> Result<Option<char>, ReadError> {
+        #[cfg(not(feature = "async"))]
+        let mut data = self.0.data.lock().unwrap();
+
+        #[cfg(feature = "async")]
+        let mut data = self.0.data.lock().await;
+
+        if let Some(chr) = maybe_await!(data.peekn_chars(&self.0.info, 0))? {
+            maybe_await!(data.consume_chars(&self.0.info, 1))?;
+            Ok(Some(chr))
+        } else {
+            Ok(None)
+        }
+    }
+
+    #[maybe_async]
+    pub fn lookahead_char(&self) -> Result<Option<char>, ReadError> {
+        #[cfg(not(feature = "async"))]
+        let mut data = self.0.data.lock().unwrap();
+
+        #[cfg(feature = "async")]
+        let mut data = self.0.data.lock().await;
+
+        maybe_await!(data.peekn_chars(&self.0.info, 0))
+    }
+
+    #[maybe_async]
+    pub fn get_line(&self) -> Result<Option<String>, ReadError> {
+        let mut out = String::new();
+        loop {
+            match maybe_await!(self.get_char())? {
+                Some(chr) if chr == '\n' => return Ok(Some(out)),
+                Some(chr) => out.push(chr),
+                None if out.is_empty() => return Ok(None),
+                None => return Ok(Some(out)),
+            }
+        }
     }
 
     #[maybe_async]
     pub fn get_sexpr(&self, span: Span) -> Result<Option<(Syntax, Span)>, ParseSyntaxError> {
         #[cfg(not(feature = "async"))]
-        let mut port = self.0.lock().unwrap();
+        let mut data = self.0.data.lock().unwrap();
 
         #[cfg(feature = "async")]
-        let mut port = self.0.lock().await;
+        let mut data = self.0.data.lock().await;
 
-        let mut parser = Parser::new(&mut port, span);
+        let mut parser = Parser::new(&mut data, self.0.info, span);
 
         let sexpr_or_eof = maybe_await!(parser.get_sexpr_or_eof())?;
         let ending_span = parser.curr_span();
@@ -1069,12 +1304,12 @@ impl Port {
     #[maybe_async]
     pub fn all_sexprs(&self, span: Span) -> Result<Vec<Syntax>, ParseSyntaxError> {
         #[cfg(not(feature = "async"))]
-        let mut port = self.0.lock().unwrap();
+        let mut data = self.0.data.lock().unwrap();
 
         #[cfg(feature = "async")]
-        let mut port = self.0.lock().await;
+        let mut data = self.0.data.lock().await;
 
-        let mut parser = Parser::new(&mut port, span);
+        let mut parser = Parser::new(&mut data, self.0.info, span);
 
         Ok(maybe_await!(parser.all_sexprs())?)
     }
@@ -1082,23 +1317,35 @@ impl Port {
     #[maybe_async]
     pub fn put_str(&self, s: &str) -> Result<(), WriteError> {
         #[cfg(not(feature = "async"))]
-        let mut port = self.0.lock().unwrap();
+        let mut data = self.0.data.lock().unwrap();
 
         #[cfg(feature = "async")]
-        let mut port = self.0.lock().await;
+        let mut data = self.0.data.lock().await;
 
-        maybe_await!(port.put_str(s))
+        maybe_await!(data.put_str(&self.0.info, s))
     }
 
     #[maybe_async]
     pub fn flush(&self) -> Result<(), WriteError> {
         #[cfg(not(feature = "async"))]
-        let mut port = self.0.lock().unwrap();
+        let mut data = self.0.data.lock().unwrap();
 
         #[cfg(feature = "async")]
-        let mut port = self.0.lock().await;
+        let mut data = self.0.data.lock().await;
 
-        maybe_await!(port.flush())
+        maybe_await!(data.flush(&self.0.info))
+    }
+}
+
+impl fmt::Debug for Port {
+    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Ok(())
+    }
+}
+
+impl PartialEq for Port {
+    fn eq(&self, rhs: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &rhs.0)
     }
 }
 
@@ -1322,11 +1569,27 @@ define_condition_type!(
     parent: IoError,
 );
 
+impl IoReadError {
+    pub fn new() -> Self {
+        Self {
+            parent: Gc::new(IoError::new()),
+        }
+    }
+}
+
 define_condition_type!(
     rust_name: IoWriteError,
     scheme_name: "&i/o-write",
     parent: IoError,
 );
+
+impl IoWriteError {
+    pub fn new() -> Self {
+        Self {
+            parent: Gc::new(IoError::new()),
+        }
+    }
+}
 
 define_condition_type!(
     rust_name: IoInvalidPositionError,
@@ -1338,7 +1601,7 @@ define_condition_type!(
     constructor: |position| {
         Ok(IoInvalidPositionError {
             parent: Gc::new(IoError::new()),
-            position: todo!(),
+            position: position.try_into()?,
         })
     },
     debug: |this, f| {
@@ -1390,7 +1653,7 @@ define_condition_type!(
 impl IoFileProtectionError {
     pub fn new(filename: String) -> Self {
         Self {
-            parent: Gc::new(IoFilenameError::new(filename))
+            parent: Gc::new(IoFilenameError::new(filename)),
         }
     }
 }
@@ -1467,9 +1730,8 @@ impl fmt::Debug for EofObject {
     }
 }
 
-static EOF_OBJECT: LazyLock<Value> = LazyLock::new(|| {
-    Value::from(Record::from_rust_type(EofObject))
-});
+static EOF_OBJECT: LazyLock<Value> =
+    LazyLock::new(|| Value::from(Record::from_rust_type(EofObject)));
 
 #[bridge(name = "eof-object", lib = "(rnrs io ports (6))")]
 pub fn eof_object() -> Result<Vec<Value>, Condition> {
@@ -1477,14 +1739,32 @@ pub fn eof_object() -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "port?", lib = "(rnrs io ports (6))")]
-pub fn port_pred(obj: &Value) ->Result<Vec<Value>, Condition> {
+pub fn port_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(obj.type_of() == ValueType::Port)])
 }
 
-// TODO: port-transcoder
+#[bridge(name = "port-transcoder", lib = "(rnrs io ports (6))")]
+pub fn port_transcoder(port: &Value) -> Result<Vec<Value>, Condition> {
+    let port: Port = port.clone().try_into()?;
+    if let Some(transcoder) = port.0.info.transcoder {
+        let transcoder = Value::from(Record::from_rust_type(transcoder));
+        Ok(vec![transcoder])
+    } else {
+        Ok(vec![Value::from(false)])
+    }
+}
 
-// TODO: textual-port?
-// TODO: binary-port?
+#[bridge(name = "textual-port?", lib = "(rnrs io ports (6))")]
+pub fn textual_port_pred(port: &Value) -> Result<Vec<Value>, Condition> {
+    let port: Port = port.clone().try_into()?;
+    Ok(vec![Value::from(port.0.info.transcoder.is_some())])
+}
+
+#[bridge(name = "binary-port?", lib = "(rnrs io ports (6))")]
+pub fn binary_port_pred(port: &Value) -> Result<Vec<Value>, Condition> {
+    let port: Port = port.clone().try_into()?;
+    Ok(vec![Value::from(!port.0.info.transcoder.is_none())])
+}
 
 // TODO: transcoded-port
 
@@ -1494,20 +1774,161 @@ pub fn port_pred(obj: &Value) ->Result<Vec<Value>, Condition> {
 // TODO: port-has-set-position!?
 // TODO: set-port-position!
 
+#[maybe_async]
+#[bridge(name = "close-port", lib = "(rnrs io ports (6))")]
+pub fn close_port(port: &Value) -> Result<Vec<Value>, Condition> {
+    let port: Port = port.clone().try_into()?;
 
-#[bridge(name = "standard-output-port", lib = "(rnrs io ports (6))")]
-pub fn standard_output_port() -> Result<Vec<Value>, Condition> {
+    #[cfg(not(feature = "async"))]
+    let _ = port.0.data.lock().unwrap().port.take();
+
+    #[cfg(feature = "tokio")]
+    let _ = port.0.data.lock().await.port.take();
+
+    Ok(Vec::new())
+}
+
+// TODO: call-with-port
+
+#[bridge(name = "input-port?", lib = "(rnrs io ports (6))")]
+pub fn input_port_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
+    let Ok(port) = Port::try_from(obj.clone()) else {
+        return Ok(vec![Value::from(false)]);
+    };
+
+    Ok(vec![Value::from(port.0.info.write.is_some())])
+}
+
+#[maybe_async]
+#[bridge(name = "port-eof?", lib = "(rnrs io ports (6))")]
+pub fn port_eof_pred(input_port: &Value) -> Result<Vec<Value>, Condition> {
+    let port: Port = input_port.clone().try_into()?;
+
+    #[cfg(not(feature = "async"))]
+    let mut data = port.0.data.lock().unwrap();
+
+    #[cfg(feature = "tokio")]
+    let mut data = port.0.data.lock().await;
+
+    Ok(vec![Value::from(
+        maybe_await!(data.peekn_bytes(&port.0.info, 0))?.is_none(),
+    )])
+}
+
+#[bridge(name = "standard-input-port", lib = "(rnrs io ports (6))")]
+pub fn standard_input_port() -> Result<Vec<Value>, Condition> {
     let port = Port::new(
         #[cfg(not(feature = "async"))]
-        std::io::stdout(),
+        std::io::stdin(),
         #[cfg(feature = "tokio")]
-        tokio::io::stdout(),
-        true,
+        tokio::io::stdin(),
         BufferMode::None,
-        Transcoder::native(),
+        None,
     );
     Ok(vec![Value::from(port)])
 }
+
+#[cps_bridge(
+    name = "current-input-port",
+    lib = "(rnrs base builtins (6))",
+    args = ""
+)]
+pub fn current_input_port(
+    _runtime: &Runtime,
+    _env: &[Value],
+    _args: &[Value],
+    _rest_args: &[Value],
+    dyn_stack: &mut DynStack,
+    k: Value,
+) -> Result<Application, Condition> {
+    let current_input_port = dyn_stack.current_input_port().unwrap_or_else(|| {
+        Port::new(
+            #[cfg(not(feature = "async"))]
+            std::io::stdin(),
+            #[cfg(feature = "tokio")]
+            tokio::io::stdin(),
+            BufferMode::None,
+            Some(Transcoder::native()),
+        )
+    });
+    Ok(Application::new(
+        k.try_into().unwrap(),
+        vec![Value::from(current_input_port)],
+        None,
+    ))
+}
+
+// 8.2.8. Binary input
+
+#[maybe_async]
+#[bridge(name = "get-u8", lib = "(rnrs io ports (6))")]
+pub fn get_u8(binary_input_port: &Value) -> Result<Vec<Value>, Condition> {
+    let port: Port = binary_input_port.clone().try_into()?;
+    if let Some(byte) = maybe_await!(port.get_u8())? {
+        Ok(vec![Value::from(byte)])
+    } else {
+        Ok(vec![EOF_OBJECT.clone()])
+    }
+}
+
+#[maybe_async]
+#[bridge(name = "lookahead-u8", lib = "(rnrs io ports (6))")]
+pub fn lookahead_u8(binary_input_port: &Value) -> Result<Vec<Value>, Condition> {
+    let port: Port = binary_input_port.clone().try_into()?;
+    if let Some(byte) = maybe_await!(port.lookahead_u8())? {
+        Ok(vec![Value::from(byte)])
+    } else {
+        Ok(vec![EOF_OBJECT.clone()])
+    }
+}
+
+// 8.2.9. Textual input
+
+#[maybe_async]
+#[bridge(name = "get-char", lib = "(rnrs io ports (6))")]
+pub fn get_char(textual_input_port: &Value) -> Result<Vec<Value>, Condition> {
+    let port: Port = textual_input_port.clone().try_into()?;
+    if let Some(chr) = maybe_await!(port.get_char())? {
+        Ok(vec![Value::from(chr)])
+    } else {
+        Ok(vec![EOF_OBJECT.clone()])
+    }
+}
+
+#[maybe_async]
+#[bridge(name = "lookahead-char", lib = "(rnrs io ports (6))")]
+pub fn lookahead_char(textual_input_port: &Value) -> Result<Vec<Value>, Condition> {
+    let port: Port = textual_input_port.clone().try_into()?;
+    if let Some(chr) = maybe_await!(port.lookahead_char())? {
+        Ok(vec![Value::from(chr)])
+    } else {
+        Ok(vec![EOF_OBJECT.clone()])
+    }
+}
+
+#[maybe_async]
+#[bridge(name = "get-line", lib = "(rnrs io ports (6))")]
+pub fn get_line(textual_input_port: &Value) -> Result<Vec<Value>, Condition> {
+    let port: Port = textual_input_port.clone().try_into()?;
+    if let Some(line) = maybe_await!(port.get_line())? {
+        Ok(vec![Value::from(line)])
+    } else {
+        Ok(vec![EOF_OBJECT.clone()])
+    }
+}
+
+#[maybe_async]
+#[bridge(name = "get-datum", lib = "(rnrs io ports (6))")]
+pub fn get_datum(textual_input_port: &Value) -> Result<Vec<Value>, Condition> {
+    let port: Port = textual_input_port.clone().try_into()?;
+    if let Some((syntax, _)) = maybe_await!(port.get_sexpr(Span::default()))? {
+        Ok(vec![Value::datum_from_syntax(&syntax)])
+    } else {
+        Ok(vec![EOF_OBJECT.clone()])
+    }
+}
+
+// 8.2.10. Output ports
 
 #[maybe_async]
 #[bridge(name = "put-datum", lib = "(rnrs io ports (6))")]
@@ -1516,4 +1937,17 @@ pub fn put_datum(port: &Value, datum: &Value) -> Result<Vec<Value>, Condition> {
     let datum = format!("{datum}");
     maybe_await!(port.put_str(&datum))?;
     Ok(Vec::new())
+}
+
+#[bridge(name = "standard-output-port", lib = "(rnrs io ports (6))")]
+pub fn standard_output_port() -> Result<Vec<Value>, Condition> {
+    let port = Port::new(
+        #[cfg(not(feature = "async"))]
+        std::io::stdout(),
+        #[cfg(feature = "tokio")]
+        tokio::io::stdout(),
+        BufferMode::None,
+        None,
+    );
+    Ok(vec![Value::from(port)])
 }

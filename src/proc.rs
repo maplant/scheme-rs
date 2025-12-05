@@ -7,6 +7,7 @@ use crate::{
     gc::{Gc, GcInner, Trace},
     lists::{self, Pair, list_to_vec},
     num::Number,
+    ports::Port,
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::BridgeFnDebugInfo,
     runtime::{Runtime, RuntimeInner},
@@ -591,14 +592,19 @@ impl DynStack {
         })
     }
 
-    /*
-    pub fn find_prompt_barrier(&self, barrier_id: usize) -> Option<Procedure> {
+    pub fn current_output_port(&self) -> Option<Port> {
         self.dyn_stack.iter().rev().find_map(|elem| match elem {
-            DynStackElem::PromptBarrier(barrier) if barrier.barrier_id == barrier_id => Some(barrier.replaced_k.clone()),
+            DynStackElem::CurrentOutputPort(port) => Some(port.clone()),
             _ => None,
         })
     }
-    */
+
+    pub fn current_input_port(&self) -> Option<Port> {
+        self.dyn_stack.iter().rev().find_map(|elem| match elem {
+            DynStackElem::CurrentInputPort(port) => Some(port.clone()),
+            _ => None,
+        })
+    }
 
     pub fn push(&mut self, elem: DynStackElem) {
         self.dyn_stack.push(elem);
@@ -637,8 +643,8 @@ pub enum DynStackElem {
     PromptBarrier(PromptBarrier),
     Winder(Winder),
     ExceptionHandler(Procedure),
-    CurrentOutputFile(Value),
-    CurrentInputFile(Value),
+    CurrentOutputPort(Port),
+    CurrentInputPort(Port),
 }
 
 pub(crate) unsafe extern "C" fn pop_dyn_stack(
