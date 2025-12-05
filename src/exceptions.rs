@@ -277,6 +277,12 @@ impl Warning {
     }
 }
 
+impl Default for Warning {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 define_condition_type!(
     rust_name: Serious,
     scheme_name: "&serious",
@@ -288,6 +294,12 @@ impl Serious {
         Self {
             parent: Gc::new(SimpleCondition::new()),
         }
+    }
+}
+
+impl Default for Serious {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -330,6 +342,12 @@ impl Error {
     }
 }
 
+impl Default for Error {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 define_condition_type!(
     rust_name: Violation,
     scheme_name: "&violation",
@@ -344,6 +362,12 @@ impl Violation {
     }
 }
 
+impl Default for Violation {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 define_condition_type!(
     rust_name: Assertion,
     scheme_name: "&assertion",
@@ -355,6 +379,12 @@ impl Assertion {
         Self {
             parent: Gc::new(Violation::new()),
         }
+    }
+}
+
+impl Default for Assertion {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -397,6 +427,12 @@ impl Undefined {
         Self {
             parent: Gc::new(Violation::new()),
         }
+    }
+}
+
+impl Default for Undefined {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

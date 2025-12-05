@@ -1277,7 +1277,7 @@ impl Port {
         let mut out = String::new();
         loop {
             match maybe_await!(self.get_char())? {
-                Some(chr) if chr == '\n' => return Ok(Some(out)),
+                Some('\n') => return Ok(Some(out)),
                 Some(chr) => out.push(chr),
                 None if out.is_empty() => return Ok(None),
                 None => return Ok(Some(out)),
@@ -1563,6 +1563,12 @@ impl IoError {
     }
 }
 
+impl Default for IoError {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 define_condition_type!(
     rust_name: IoReadError,
     scheme_name: "&i/o-read",
@@ -1577,6 +1583,12 @@ impl IoReadError {
     }
 }
 
+impl Default for IoReadError {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 define_condition_type!(
     rust_name: IoWriteError,
     scheme_name: "&i/o-write",
@@ -1588,6 +1600,12 @@ impl IoWriteError {
         Self {
             parent: Gc::new(IoError::new()),
         }
+    }
+}
+
+impl Default for IoWriteError {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -1763,7 +1781,7 @@ pub fn textual_port_pred(port: &Value) -> Result<Vec<Value>, Condition> {
 #[bridge(name = "binary-port?", lib = "(rnrs io ports (6))")]
 pub fn binary_port_pred(port: &Value) -> Result<Vec<Value>, Condition> {
     let port: Port = port.clone().try_into()?;
-    Ok(vec![Value::from(!port.0.info.transcoder.is_none())])
+    Ok(vec![Value::from(port.0.info.transcoder.is_none())])
 }
 
 // TODO: transcoded-port
