@@ -7,7 +7,7 @@ use crate::{
     proc::{Application, DynStack, Procedure},
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
-    value::{EqvValue, UnpackedValue, Value, ValueType, write_value},
+    value::{UnpackedValue, Value, ValueType, write_value},
     vectors,
 };
 use std::fmt;
@@ -32,8 +32,8 @@ impl PartialEq for Pair {
 pub(crate) fn write_list(
     car: &Value,
     cdr: &Value,
-    fmt: fn(&Value, &mut IndexMap<EqvValue, bool>, &mut fmt::Formatter<'_>) -> fmt::Result,
-    circular_values: &mut IndexMap<EqvValue, bool>,
+    fmt: fn(&Value, &mut IndexMap<Value, bool>, &mut fmt::Formatter<'_>) -> fmt::Result,
+    circular_values: &mut IndexMap<Value, bool>,
     f: &mut fmt::Formatter<'_>,
 ) -> fmt::Result {
     match cdr.type_of() {
@@ -54,7 +54,7 @@ pub(crate) fn write_list(
     let mut stack = vec![cdr.clone()];
 
     while let Some(head) = stack.pop() {
-        if let Some((idx, _, seen)) = circular_values.get_full_mut(&EqvValue(head.clone())) {
+        if let Some((idx, _, seen)) = circular_values.get_full_mut(&head) {
             if *seen {
                 write!(f, " . #{idx}#")?;
                 continue;

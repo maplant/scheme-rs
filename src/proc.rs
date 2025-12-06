@@ -20,7 +20,7 @@ use scheme_rs_macros::{cps_bridge, maybe_async, maybe_await};
 use std::{
     fmt,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicUsize, Ordering},
     },
 };
@@ -270,6 +270,45 @@ impl ProcedureInner {
             }
         }
     }
+
+    #[cfg(feature = "async")]
+    /// Attempt to call the function, and throw an error if is async
+    pub fn apply_sync(&self, args: Vec<Value>, dyn_stack: &mut DynStack) -> Application {
+        let (args, k) = match self.prepare_args(args) {
+            Ok(args) => args,
+            Err(raised) => return raised,
+        };
+
+        match self.func {
+            FuncPtr::Bridge(sbridge) => {
+                self.apply_sync_bridge(sbridge, &args, dyn_stack, k.unwrap())
+            }
+            FuncPtr::AsyncBridge(_) => {
+                return raise(
+                    self.runtime.clone(),
+                    Condition::error("attempt to apply async function in a sync-only context")
+                        .into(),
+                );
+            }
+            FuncPtr::User(user) => self.apply_jit(JitFuncPtr::User(user), args, dyn_stack, k),
+            FuncPtr::Continuation(k) => {
+                self.apply_jit(JitFuncPtr::Continuation(k), args, dyn_stack, None)
+            }
+            FuncPtr::PromptBarrier { barrier_id: id, k } => {
+                match dyn_stack.pop() {
+                    Some(DynStackElem::PromptBarrier(PromptBarrier {
+                        barrier_id,
+                        replaced_k,
+                    })) if barrier_id == id => {
+                        return Application::new(replaced_k, args, None);
+                    }
+                    Some(other) => dyn_stack.push(other),
+                    _ => (),
+                }
+                self.apply_jit(JitFuncPtr::Continuation(k), args, dyn_stack, None)
+            }
+        }
+    }
 }
 
 impl fmt::Debug for ProcedureInner {
@@ -369,30 +408,48 @@ impl Procedure {
 
     #[maybe_async]
     pub fn call(&self, args: &[Value]) -> Result<Vec<Value>, Exception> {
-        unsafe extern "C" fn halt(
-            _runtime: *mut GcInner<RuntimeInner>,
-            _env: *const Value,
-            args: *const Value,
-            _dyn_stack: *mut DynStack,
-        ) -> *mut Application {
-            unsafe { crate::runtime::halt(Value::into_raw(args.read())) }
-        }
-
         let mut args = args.to_vec();
 
-        // TODO: We don't need to create a new one of these every time, we should just have
-        // one
-        args.push(Value::from(Self(Gc::new(ProcedureInner::new(
-            self.0.read().runtime.clone(),
-            Vec::new(),
-            FuncPtr::Continuation(halt),
-            0,
-            true,
-            None,
-        )))));
+        args.push(halt_continuation(self.get_runtime()));
 
-        maybe_await!(Application::new(self.clone(), args, None,).eval(&mut DynStack::default(),))
+        maybe_await!(Application::new(self.clone(), args, None,).eval(&mut DynStack::default()))
     }
+
+    #[cfg(feature = "async")]
+    pub fn call_sync(&self, args: &[Value]) -> Result<Vec<Value>, Exception> {
+        let mut args = args.to_vec();
+
+        args.push(halt_continuation(self.get_runtime()));
+
+        Application::new(self.clone(), args, None).eval_sync(&mut DynStack::default())
+    }
+}
+
+static HALT_CONTINUATION: OnceLock<Value> = OnceLock::new();
+
+/// Return a continuation that returns its expressions.
+pub fn halt_continuation(runtime: Runtime) -> Value {
+    unsafe extern "C" fn halt(
+        _runtime: *mut GcInner<RuntimeInner>,
+        _env: *const Value,
+        args: *const Value,
+        _dyn_stack: *mut DynStack,
+    ) -> *mut Application {
+        unsafe { crate::runtime::halt(Value::into_raw(args.read())) }
+    }
+
+    HALT_CONTINUATION
+        .get_or_init(move || {
+            Value::from(Procedure(Gc::new(ProcedureInner::new(
+                runtime,
+                Vec::new(),
+                FuncPtr::Continuation(halt),
+                0,
+                true,
+                None,
+            ))))
+        })
+        .clone()
 }
 
 impl fmt::Debug for Procedure {
@@ -469,6 +526,28 @@ impl Application {
             let op = { op.0.read().as_ref().clone() };
             stack_trace.collect_application(op.debug_info.clone(), self.call_site);
             self = maybe_await!(op.apply(self.args, dyn_stack));
+        }
+    }
+
+    #[cfg(feature = "async")]
+    /// Just like [eval] but throws an error if we encounter an async function.
+    pub fn eval_sync(mut self, dyn_stack: &mut DynStack) -> Result<Vec<Value>, Exception> {
+        let mut stack_trace = StackTraceCollector::new();
+
+        loop {
+            let op = match self.op {
+                OpType::Proc(proc) => proc,
+                OpType::HaltOk => return Ok(self.args),
+                OpType::HaltErr => {
+                    return Err(Exception::new(
+                        stack_trace.into_frames(),
+                        self.args.pop().unwrap(),
+                    ));
+                }
+            };
+            let op = { op.0.read().as_ref().clone() };
+            stack_trace.collect_application(op.debug_info.clone(), self.call_site);
+            self = op.apply_sync(self.args, dyn_stack);
         }
     }
 }

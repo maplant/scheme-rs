@@ -4,8 +4,9 @@ use crate::{
     ast,
     exceptions::{Condition, Exception},
     gc::{Gc, GcInner, Trace},
+    hashtables::{self, HashTable, HashTableInner},
     lists,
-    num::{Number, ReflexiveNumber},
+    num::Number,
     ports::{self, PortInner},
     proc::{Procedure, ProcedureInner},
     records::{Record, RecordInner, RecordTypeDescriptor, SchemeCompatible},
@@ -85,7 +86,9 @@ impl Value {
                     }
                 }
                 Tag::Port => Arc::increment_strong_count(untagged as *const PortInner),
-                Tag::HashTable => todo!(),
+                Tag::HashTable => Gc::increment_reference_count(
+                    untagged as *mut GcInner<hashtables::HashTableInner>,
+                ),
                 Tag::Cell => {
                     Gc::increment_reference_count(untagged as *mut GcInner<Value>);
                 }
@@ -229,7 +232,10 @@ impl Value {
                 let port_inner = unsafe { Arc::from_raw(untagged as *const PortInner) };
                 UnpackedValue::Port(ports::Port(port_inner))
             }
-            Tag::HashTable => todo!(),
+            Tag::HashTable => {
+                let ht = unsafe { Gc::from_raw(untagged as *mut GcInner<HashTableInner>) };
+                UnpackedValue::HashTable(HashTable(ht))
+            }
             Tag::Cell => {
                 let cell = unsafe { Gc::from_raw(untagged as *mut GcInner<Value>) };
                 UnpackedValue::Cell(Cell(cell))
@@ -259,6 +265,11 @@ impl Value {
         let obj2 = rhs.unpacked_ref();
         obj1.eqv(&obj2)
     }
+
+    /// The equal? predicate as defined by the R6RS specification.
+    pub fn equal(&self, rhs: &Self) -> bool {
+        equal(self, rhs)
+    }
 }
 
 impl Clone for Value {
@@ -273,6 +284,26 @@ impl Drop for Value {
         unsafe { ManuallyDrop::drop(&mut ManuallyDrop::new(Self(self.0).unpack())) }
     }
 }
+
+/// Default Hash implementation for Value is [Value::hash_eqv]. This produces
+/// reasonable hash maps.
+impl Hash for Value {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.eqv_hash(state)
+    }
+}
+
+/// Default PartialEq implementation for Value is [Value::eqv]. This allows us
+/// to implement [Eq].
+impl PartialEq for Value {
+    fn eq(&self, rhs: &Value) -> bool {
+        self.eqv(rhs)
+    }
+}
+
+/// Eq can be implemented reasonably for Value since (eqv? +nan.0 +nan.0) is
+/// true
+impl Eq for Value {}
 
 unsafe impl Send for Value {}
 unsafe impl Sync for Value {}
@@ -452,6 +483,7 @@ pub enum UnpackedValue {
     RecordTypeDescriptor(Arc<RecordTypeDescriptor>),
     Pair(Gc<lists::Pair>),
     Port(ports::Port),
+    HashTable(hashtables::HashTable),
     Cell(Cell),
 }
 
@@ -509,6 +541,10 @@ impl UnpackedValue {
                 let untagged = Arc::into_raw(port.0);
                 Value::from_ptr_and_tag(untagged, Tag::Port)
             }
+            Self::HashTable(ht) => {
+                let untagged = Gc::into_raw(ht.0);
+                Value::from_ptr_and_tag(untagged, Tag::HashTable)
+            }
             Self::Cell(cell) => {
                 let untagged = Gc::into_raw(cell.0);
                 Value::from_mut_ptr_and_tag(untagged, Tag::Cell)
@@ -533,6 +569,7 @@ impl UnpackedValue {
             (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
             (Self::Port(a), Self::Port(b)) => Arc::ptr_eq(&a.0, &b.0),
+            (Self::HashTable(a), Self::HashTable(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Cell(a), b) => a.0.read().unpacked_ref().eq(b),
             (a, Self::Cell(b)) => a.eq(&b.0.read().unpacked_ref()),
             _ => false,
@@ -541,12 +578,18 @@ impl UnpackedValue {
 
     pub fn eqv(&self, rhs: &Self) -> bool {
         match (self, rhs) {
+            // Undefined is equivalent to undefined since it is impossible to
+            // read
+            (Self::Undefined, Self::Undefined) => true,
             // boolean=?
             (Self::Boolean(a), Self::Boolean(b)) => a == b,
             // symbol=?
             (Self::Symbol(a), Self::Symbol(b)) => a == b,
             // Numbers are only equivalent if they're the same exactness
-            (Self::Number(a), Self::Number(b)) => a.is_exact() == b.is_exact() && a == b,
+            // Two NaNs are also treated as equivalent
+            (Self::Number(a), Self::Number(b)) => {
+                (a.is_nan() && b.is_nan()) || (a.is_exact() == b.is_exact() && a == b)
+            }
             // char=?
             (Self::Character(a), Self::Character(b)) => a == b,
             // Both obj1 and obj2 are the empty list
@@ -561,6 +604,7 @@ impl UnpackedValue {
             (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
             (Self::Port(a), Self::Port(b)) => Arc::ptr_eq(&a.0, &b.0),
+            (Self::HashTable(a), Self::HashTable(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Cell(a), b) => a.0.read().unpacked_ref().eqv(b),
             (a, Self::Cell(b)) => a.eqv(&b.0.read().unpacked_ref()),
             _ => false,
@@ -583,6 +627,7 @@ impl UnpackedValue {
             Self::Record(_) => "record",
             Self::RecordTypeDescriptor(_) => "rtd",
             Self::Port(_) => "port",
+            Self::HashTable(_) => "hashtable",
             Self::Cell(cell) => cell.0.read().type_name(),
         }
     }
@@ -605,17 +650,9 @@ impl UnpackedValue {
             Self::Record(_) => ValueType::Record,
             Self::RecordTypeDescriptor(_) => ValueType::RecordTypeDescriptor,
             Self::Port(_) => ValueType::Port,
+            Self::HashTable(_) => ValueType::HashTable,
             Self::Cell(cell) => cell.0.read().type_of(),
         }
-    }
-}
-
-/// The PartialEq implementation for a Value is equivalent to the equal? Scheme
-/// predicate, and is therefore implemented to the standard of the R6RS
-/// specification.
-impl PartialEq for Value {
-    fn eq(&self, rhs: &Self) -> bool {
-        equal(self, rhs)
     }
 }
 
@@ -630,11 +667,11 @@ pub fn equal(obj1: &Value, obj2: &Value) -> bool {
 const K0: i64 = 400;
 const KB: i64 = -40;
 
-fn interleave(ht: &mut HashMap<EqvValue, Value>, obj1: &Value, obj2: &Value, k: i64) -> bool {
+fn interleave(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64) -> bool {
     e(ht, obj1, obj2, k).is_some()
 }
 
-fn e(ht: &mut HashMap<EqvValue, Value>, obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
+fn e(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
     match k {
         KB => fast(ht, obj1, obj2, rand::random_range(0..(K0 * 2))),
         k if k <= 0 => slow(ht, obj1, obj2, k),
@@ -642,7 +679,7 @@ fn e(ht: &mut HashMap<EqvValue, Value>, obj1: &Value, obj2: &Value, k: i64) -> O
     }
 }
 
-fn fast(ht: &mut HashMap<EqvValue, Value>, obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
+fn fast(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
     let k = k - 1;
     if obj1.eqv(obj2) {
         return Some(k);
@@ -656,7 +693,7 @@ fn fast(ht: &mut HashMap<EqvValue, Value>, obj1: &Value, obj2: &Value, k: i64) -
     }
 }
 
-fn slow(ht: &mut HashMap<EqvValue, Value>, obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
+fn slow(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
     if obj1.eqv(obj2) {
         return Some(k);
     }
@@ -679,7 +716,7 @@ fn slow(ht: &mut HashMap<EqvValue, Value>, obj1: &Value, obj2: &Value, k: i64) -
     }
 }
 
-fn pair_eq(ht: &mut HashMap<EqvValue, Value>, obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
+fn pair_eq(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
     let obj1: Gc<lists::Pair> = obj1.clone().try_into().unwrap();
     let obj2: Gc<lists::Pair> = obj2.clone().try_into().unwrap();
     let obj1 = obj1.read();
@@ -689,7 +726,7 @@ fn pair_eq(ht: &mut HashMap<EqvValue, Value>, obj1: &Value, obj2: &Value, k: i64
     e(ht, car_x, car_y, k - 1).and_then(|k| e(ht, cdr_x, cdr_y, k))
 }
 
-fn vector_eq(ht: &mut HashMap<EqvValue, Value>, obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
+fn vector_eq(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
     let vobj1: Gc<vectors::AlignedVector<Value>> = obj1.clone().try_into().unwrap();
     let vobj2: Gc<vectors::AlignedVector<Value>> = obj2.clone().try_into().unwrap();
     let vobj1 = vobj1.read();
@@ -716,24 +753,22 @@ fn string_eq(obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
     (obj1 == obj2).then_some(k)
 }
 
-fn union_find(ht: &mut HashMap<EqvValue, Value>, x: &Value, y: &Value) -> bool {
-    let eqv_x = EqvValue(x.clone());
-    let eqv_y = EqvValue(y.clone());
-    let bx = ht.get(&eqv_x).cloned();
-    let by = ht.get(&eqv_y).cloned();
+fn union_find(ht: &mut HashMap<Value, Value>, x: &Value, y: &Value) -> bool {
+    let bx = ht.get(&x).cloned();
+    let by = ht.get(&y).cloned();
     match (bx, by) {
         (None, None) => {
             let b = boxv(Value::from(Number::from(1)));
-            ht.insert(eqv_x, b.clone());
-            ht.insert(eqv_y, b);
+            ht.insert(x.clone(), b.clone());
+            ht.insert(y.clone(), b);
         }
         (None, Some(by)) => {
             let ry = find(by);
-            ht.insert(eqv_x, ry);
+            ht.insert(x.clone(), ry);
         }
         (Some(bx), None) => {
             let rx = find(bx);
-            ht.insert(eqv_y, rx);
+            ht.insert(y.clone(), rx);
         }
         (Some(bx), Some(by)) => {
             let rx = find(bx);
@@ -886,6 +921,7 @@ impl_try_from_value_for!(Procedure, Procedure, "procedure");
 impl_try_from_value_for!(Gc<lists::Pair>, Pair, "pair");
 impl_try_from_value_for!(Record, Record, "record");
 impl_try_from_value_for!(ports::Port, Port, "port");
+impl_try_from_value_for!(hashtables::HashTable, HashTable, "hashtable");
 impl_try_from_value_for!(Arc<RecordTypeDescriptor>, RecordTypeDescriptor, "rt");
 
 macro_rules! impl_from_wrapped_for {
@@ -993,129 +1029,19 @@ impl TryFrom<Value> for String {
     }
 }
 
-/// A Value for which the implementation of PartialEq uses eqv rather than equal
-#[derive(Clone)]
-pub(crate) struct EqvValue(pub(crate) Value);
-
-impl Hash for EqvValue {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        let unpacked = self.0.unpacked_ref();
-        std::mem::discriminant(&*unpacked).hash(state);
-        match &*unpacked {
-            UnpackedValue::Undefined => (),
-            UnpackedValue::Null => (),
-            UnpackedValue::Boolean(b) => b.hash(state),
-            UnpackedValue::Character(c) => c.hash(state),
-            UnpackedValue::Number(n) => ReflexiveNumber(n.clone()).hash(state),
-            UnpackedValue::String(s) => s.hash(state),
-            UnpackedValue::Symbol(s) => s.hash(state),
-            UnpackedValue::ByteVector(v) => v.hash(state),
-            UnpackedValue::Syntax(s) => Arc::as_ptr(s).hash(state),
-            UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
-            UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
-            UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
-            UnpackedValue::Pair(p) => Gc::as_ptr(p).hash(state),
-            UnpackedValue::Vector(v) => Gc::as_ptr(v).hash(state),
-            UnpackedValue::Port(p) => Arc::as_ptr(&p.0).hash(state),
-            UnpackedValue::Cell(c) => EqvValue(c.0.read().clone()).hash(state),
-        }
-    }
-}
-
-impl PartialEq for EqvValue {
-    fn eq(&self, rhs: &Self) -> bool {
-        self.0.eqv(&rhs.0)
-    }
-}
-
-impl Eq for EqvValue {}
-
-#[derive(Clone, Debug, Trace)]
-pub(crate) struct ReflexiveValue(pub(crate) Value);
-
-impl AsRef<Value> for ReflexiveValue {
-    fn as_ref(&self) -> &Value {
-        &self.0
-    }
-}
-
-impl Hash for ReflexiveValue {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        let unpacked = self.0.unpacked_ref();
-        std::mem::discriminant(&*unpacked).hash(state);
-        match &*unpacked {
-            UnpackedValue::Undefined => (),
-            UnpackedValue::Null => (),
-            UnpackedValue::Boolean(b) => b.hash(state),
-            UnpackedValue::Character(c) => c.hash(state),
-            UnpackedValue::Number(n) => ReflexiveNumber(n.clone()).hash(state),
-            UnpackedValue::String(s) => s.hash(state),
-            UnpackedValue::Symbol(s) => s.hash(state),
-            UnpackedValue::ByteVector(v) => v.hash(state),
-            UnpackedValue::Syntax(s) => Arc::as_ptr(s).hash(state),
-            UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
-            UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
-            UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
-            UnpackedValue::Pair(p) => Gc::as_ptr(p).hash(state),
-            UnpackedValue::Vector(v) => Gc::as_ptr(v).hash(state),
-            UnpackedValue::Port(p) => Arc::as_ptr(&p.0).hash(state),
-            UnpackedValue::Cell(c) => ReflexiveValue(c.0.read().clone()).hash(state),
-        }
-    }
-}
-
-impl PartialEq for ReflexiveValue {
-    fn eq(&self, rhs: &Self) -> bool {
-        let unpacked_lhs = self.0.unpacked_ref();
-        let unpacked_rhs = rhs.0.unpacked_ref();
-        match (&*unpacked_lhs, &*unpacked_rhs) {
-            (UnpackedValue::Undefined, UnpackedValue::Undefined) => true,
-            (UnpackedValue::Null, UnpackedValue::Null) => true,
-            (UnpackedValue::Boolean(a), UnpackedValue::Boolean(b)) => a == b,
-            (UnpackedValue::Number(a), UnpackedValue::Number(b)) => {
-                ReflexiveNumber(a.clone()) == ReflexiveNumber(b.clone())
-            }
-            (UnpackedValue::Character(a), UnpackedValue::Character(b)) => a == b,
-            (UnpackedValue::String(a), UnpackedValue::String(b)) => a == b,
-            (UnpackedValue::Symbol(a), UnpackedValue::Symbol(b)) => a == b,
-            // See comment above in hash function
-            (UnpackedValue::Pair(a), UnpackedValue::Pair(b)) => Gc::ptr_eq(a, b),
-            (UnpackedValue::Vector(a), UnpackedValue::Vector(b)) => Gc::ptr_eq(a, b),
-            (UnpackedValue::ByteVector(a), UnpackedValue::ByteVector(b)) => a == b,
-            (UnpackedValue::Syntax(a), UnpackedValue::Syntax(b)) => Arc::ptr_eq(a, b),
-            (UnpackedValue::Procedure(a), UnpackedValue::Procedure(b)) => Gc::ptr_eq(&a.0, &b.0),
-            (UnpackedValue::Record(a), UnpackedValue::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
-            (UnpackedValue::Port(a), UnpackedValue::Port(b)) => Arc::ptr_eq(&a.0, &b.0),
-            (UnpackedValue::RecordTypeDescriptor(a), UnpackedValue::RecordTypeDescriptor(b)) => {
-                Arc::ptr_eq(a, b)
-            }
-            (UnpackedValue::Cell(a), b) => {
-                ReflexiveValue(a.0.read().clone()) == ReflexiveValue(b.clone().into_value())
-            }
-            (a, UnpackedValue::Cell(b)) => {
-                ReflexiveValue(a.clone().into_value()) == ReflexiveValue(b.0.read().clone())
-            }
-            _ => false,
-        }
-    }
-}
-
-impl Eq for ReflexiveValue {}
-
 /// Determines which children of the given list are circular, i.e. have children
 /// that refer to back to them. This is just a depth-first search.
 fn determine_circularity(
     curr: &Value,
-    visited: &mut IndexSet<EqvValue>,
-    circular: &mut IndexSet<EqvValue>,
+    visited: &mut IndexSet<Value>,
+    circular: &mut IndexSet<Value>,
 ) {
-    let eqv_value = EqvValue(curr.clone());
-    if visited.contains(&eqv_value) {
-        circular.insert(eqv_value);
+    if visited.contains(curr) {
+        circular.insert(curr.clone());
         return;
     }
 
-    visited.insert(eqv_value.clone());
+    visited.insert(curr.clone());
 
     match curr.clone().unpack() {
         UnpackedValue::Pair(pair) => {
@@ -1133,16 +1059,16 @@ fn determine_circularity(
         _ => (),
     }
 
-    visited.swap_remove(&eqv_value);
+    visited.swap_remove(curr);
 }
 
 pub(crate) fn write_value(
     val: &Value,
-    fmt: fn(&Value, &mut IndexMap<EqvValue, bool>, &mut fmt::Formatter<'_>) -> fmt::Result,
-    circular_values: &mut IndexMap<EqvValue, bool>,
+    fmt: fn(&Value, &mut IndexMap<Value, bool>, &mut fmt::Formatter<'_>) -> fmt::Result,
+    circular_values: &mut IndexMap<Value, bool>,
     f: &mut fmt::Formatter<'_>,
 ) -> fmt::Result {
-    if let Some((idx, _, seen)) = circular_values.get_full_mut(&EqvValue(val.clone())) {
+    if let Some((idx, _, seen)) = circular_values.get_full_mut(val) {
         if *seen {
             write!(f, "#{idx}#")?;
             return Ok(());
@@ -1157,7 +1083,7 @@ pub(crate) fn write_value(
 
 fn display_value(
     val: &Value,
-    circular_values: &mut IndexMap<EqvValue, bool>,
+    circular_values: &mut IndexMap<Value, bool>,
     f: &mut fmt::Formatter<'_>,
 ) -> fmt::Result {
     match val.clone().unpack() {
@@ -1181,13 +1107,14 @@ fn display_value(
         UnpackedValue::Syntax(syntax) => write!(f, "{syntax:#?}"),
         UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
         UnpackedValue::Port(_) => write!(f, "<port>"),
+        UnpackedValue::HashTable(hashtable) => write!(f, "{hashtable:?}"),
         UnpackedValue::Cell(cell) => display_value(&cell.0.read(), circular_values, f),
     }
 }
 
 fn debug_value(
     val: &Value,
-    circular_values: &mut IndexMap<EqvValue, bool>,
+    circular_values: &mut IndexMap<Value, bool>,
     f: &mut fmt::Formatter<'_>,
 ) -> fmt::Result {
     match val.clone().unpack() {
@@ -1211,6 +1138,7 @@ fn debug_value(
         UnpackedValue::Record(record) => write!(f, "{record:#?}"),
         UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
         UnpackedValue::Port(_) => write!(f, "<port>"),
+        UnpackedValue::HashTable(hashtable) => write!(f, "{hashtable:?}"),
         UnpackedValue::Cell(cell) => debug_value(&cell.0.read(), circular_values, f),
     }
 }
@@ -1231,7 +1159,7 @@ pub fn eq(a: &Value, b: &Value) -> Result<Vec<Value>, Condition> {
 
 #[bridge(name = "equal?", lib = "(rnrs base builtins (6))")]
 pub fn equal_pred(a: &Value, b: &Value) -> Result<Vec<Value>, Condition> {
-    Ok(vec![Value::from(a == b)])
+    Ok(vec![Value::from(a.equal(b))])
 }
 
 #[bridge(name = "boolean?", lib = "(rnrs base builtins (6))")]
