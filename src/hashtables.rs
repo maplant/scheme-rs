@@ -55,12 +55,12 @@ impl HashTableInner {
 
     #[cfg(not(feature = "async"))]
     pub fn hash(&self, val: Value) -> Result<u64, Condition> {
-        Ok(self.hash.call(&[val])?[0].clone().try_into()?)
+        self.hash.call(&[val])?[0].clone().try_into()
     }
 
     #[cfg(feature = "async")]
     pub fn hash(&self, val: Value) -> Result<u64, Condition> {
-        Ok(self.hash.call_sync(&[val])?[0].clone().try_into()?)
+        self.hash.call_sync(&[val])?[0].clone().try_into()
     }
 
     #[cfg(not(feature = "async"))]
@@ -160,7 +160,7 @@ impl HashTableInner {
                 let updated = proc.call(&[entry.val.clone()])?[0].clone();
 
                 #[cfg(feature = "async")]
-                let updated = proc.call_sync(&[entry.val.clone()])?[0].clone();
+                let updated = proc.call_sync(std::slice::from_ref(&entry.val))?[0].clone();
 
                 entry.val = updated;
                 return Ok(());
@@ -171,7 +171,7 @@ impl HashTableInner {
         let updated = proc.call(&[default.clone()])?[0].clone();
 
         #[cfg(feature = "async")]
-        let updated = proc.call_sync(&[default.clone()])?[0].clone();
+        let updated = proc.call_sync(std::slice::from_ref(default))?[0].clone();
 
         table.insert_unique(
             hash,

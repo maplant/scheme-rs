@@ -280,10 +280,10 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
             }
             CpsValue::Const(val) => {
                 let mut runtime_write = self.runtime.0.write();
-                if !runtime_write.constants_pool.contains(&val) {
+                if !runtime_write.constants_pool.contains(val) {
                     runtime_write.constants_pool.insert(val.clone());
                 }
-                let raw = SchemeValue::as_raw(runtime_write.constants_pool.get(&val).unwrap());
+                let raw = SchemeValue::as_raw(runtime_write.constants_pool.get(val).unwrap());
                 return self.builder.ins().iconst(types::I64, raw as i64);
             }
         };

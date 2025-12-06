@@ -754,8 +754,8 @@ fn string_eq(obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
 }
 
 fn union_find(ht: &mut HashMap<Value, Value>, x: &Value, y: &Value) -> bool {
-    let bx = ht.get(&x).cloned();
-    let by = ht.get(&y).cloned();
+    let bx = ht.get(x).cloned();
+    let by = ht.get(y).cloned();
     match (bx, by) {
         (None, None) => {
             let b = boxv(Value::from(Number::from(1)));

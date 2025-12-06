@@ -283,13 +283,10 @@ impl ProcedureInner {
             FuncPtr::Bridge(sbridge) => {
                 self.apply_sync_bridge(sbridge, &args, dyn_stack, k.unwrap())
             }
-            FuncPtr::AsyncBridge(_) => {
-                return raise(
-                    self.runtime.clone(),
-                    Condition::error("attempt to apply async function in a sync-only context")
-                        .into(),
-                );
-            }
+            FuncPtr::AsyncBridge(_) => raise(
+                self.runtime.clone(),
+                Condition::error("attempt to apply async function in a sync-only context").into(),
+            ),
             FuncPtr::User(user) => self.apply_jit(JitFuncPtr::User(user), args, dyn_stack, k),
             FuncPtr::Continuation(k) => {
                 self.apply_jit(JitFuncPtr::Continuation(k), args, dyn_stack, None)
