@@ -314,7 +314,7 @@ unsafe extern "C" fn matches(pattern: *const (), syntax: *const ()) -> *const ()
     let syntax = Syntax::syntax_from_datum(&BTreeSet::default(), syntax);
 
     let mut expansions = ExpansionLevel::default();
-    if pattern.read().matches(&syntax, &mut expansions) {
+    if pattern.matches(&syntax, &mut expansions) {
         Value::into_raw(Value::from(Record::from_rust_type(expansions)))
     } else {
         Value::into_raw(Value::from(false))
@@ -523,15 +523,15 @@ unsafe extern "C" fn expand_template(
         .map(|i| {
             let expansion = unsafe { Value::from_raw_inc_rc(expansions.add(i as usize).read()) };
             let expansion = expansion.try_into_rust_type::<ExpansionLevel>().unwrap();
-            expansion.read().clone()
+            expansion.as_ref().clone()
         })
         .collect::<Vec<_>>();
 
-    let combined_expansions = expansion_combiner.read().combine_expansions(&expansions);
+    let combined_expansions = expansion_combiner.combine_expansions(&expansions);
     let binds = Binds::new_top(&combined_expansions);
 
     // TODO: get a real span in here
-    let expanded = template.read().expand(&binds, Span::default()).unwrap();
+    let expanded = template.expand(&binds, Span::default()).unwrap();
 
     Value::into_raw(Value::from(expanded))
 }
@@ -637,7 +637,7 @@ unsafe extern "C" fn error_no_patterns_match() -> i64 {
 #[bridge(name = "make-variable-transformer", lib = "(rnrs base builtins (6))")]
 pub fn make_variable_transformer(proc: &Value) -> Result<Vec<Value>, Condition> {
     let proc: Procedure = proc.clone().try_into()?;
-    let mut var_transformer = proc.0.read().clone();
+    let mut var_transformer = proc.0.as_ref().clone();
     var_transformer.is_variable_transformer = true;
     Ok(vec![Value::from(Procedure(Gc::new(var_transformer)))])
 }

@@ -9,12 +9,25 @@ use crate::{
 };
 use indexmap::IndexMap;
 use malachite::Integer;
+use parking_lot::RwLock;
+// use parking_lot::RwLock;
 use std::{
     clone::Clone,
     fmt,
     ops::{Deref, DerefMut, Range},
     sync::Arc,
 };
+
+/*
+#[derive(Trace)]
+#[repr(align(16))]
+pub(crate) struct VectorInner<T: Trace> {
+    /// Inner vector
+    pub(crate) vec: RwLock<Vec<T>>,
+    /// Whether or not the vector is mutable
+    pub(crate) mutable: bool,
+}
+*/
 
 /// A vector aligned to 16 bytes.
 #[derive(Trace)]
@@ -48,7 +61,7 @@ impl<T: Trace + PartialEq> PartialEq for AlignedVector<T> {
 }
 
 pub(crate) fn write_vec(
-    v: &Gc<AlignedVector<Value>>,
+    v: &Gc<RwLock<AlignedVector<Value>>>,
     fmt: fn(&Value, &mut IndexMap<Value, bool>, &mut fmt::Formatter<'_>) -> fmt::Result,
     circular_values: &mut IndexMap<Value, bool>,
     f: &mut fmt::Formatter<'_>,
@@ -151,7 +164,7 @@ impl Indexer for StringIndexer {
 struct VectorIndexer;
 
 impl Indexer for VectorIndexer {
-    type Collection = Gc<AlignedVector<Value>>;
+    type Collection = Gc<RwLock<AlignedVector<Value>>>;
 
     fn get_len(vec: &Self::Collection) -> usize {
         vec.read().len()
@@ -165,7 +178,7 @@ impl Indexer for VectorIndexer {
             .take(range.end - range.start)
             .cloned()
             .collect();
-        Gc::new(AlignedVector::new(subvec))
+        Gc::new(RwLock::new(AlignedVector::new(subvec)))
     }
 
     fn try_get(val: &Value) -> Result<Self::Collection, Condition> {
@@ -192,7 +205,7 @@ pub fn vector(args: &[Value]) -> Result<Vec<Value>, Condition> {
 
 #[bridge(name = "vector-ref", lib = "(rnrs base builtins (6))")]
 pub fn vector_ref(vec: &Value, index: &Value) -> Result<Vec<Value>, Condition> {
-    let vec: Gc<AlignedVector<Value>> = vec.clone().try_into()?;
+    let vec: Gc<RwLock<AlignedVector<Value>>> = vec.clone().try_into()?;
     let index: usize = try_to_usize(index)?;
     let vec_read = vec.read();
 
@@ -206,7 +219,7 @@ pub fn vector_ref(vec: &Value, index: &Value) -> Result<Vec<Value>, Condition> {
 
 #[bridge(name = "vector-length", lib = "(rnrs base builtins (6))")]
 pub fn vector_len(vec: &Value) -> Result<Vec<Value>, Condition> {
-    let vec: Gc<AlignedVector<Value>> = vec.clone().try_into()?;
+    let vec: Gc<RwLock<AlignedVector<Value>>> = vec.clone().try_into()?;
     let len = vec.read().len();
 
     Ok(vec![Value::from(match i64::try_from(len) {
@@ -228,7 +241,7 @@ pub fn bytevector_len(vec: &Value) -> Result<Vec<Value>, Condition> {
 
 #[bridge(name = "vector-set!", lib = "(rnrs base builtins (6))")]
 pub fn vector_set(vec: &Value, index: &Value, with: &Value) -> Result<Vec<Value>, Condition> {
-    let vec: Gc<AlignedVector<Value>> = vec.clone().try_into()?;
+    let vec: Gc<RwLock<AlignedVector<Value>>> = vec.clone().try_into()?;
     let vec_len = vec.read().len();
 
     let index: usize = try_to_usize(index)?;
@@ -280,7 +293,7 @@ pub fn vector_copy_to(
     from: &Value,
     range: &[Value],
 ) -> Result<Vec<Value>, Condition> {
-    let to: Gc<AlignedVector<Value>> = to.clone().try_into()?;
+    let to: Gc<RwLock<AlignedVector<Value>>> = to.clone().try_into()?;
     let mut to = to.write();
 
     let at: usize = try_to_usize(at)?;
@@ -317,7 +330,7 @@ pub fn vector_append(args: &[Value]) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(
         args.iter()
             .map(|arg| {
-                let vec: Gc<AlignedVector<Value>> = arg.clone().try_into()?;
+                let vec: Gc<RwLock<AlignedVector<Value>>> = arg.clone().try_into()?;
                 let vec_read = vec.read();
                 Ok(vec_read.iter().cloned().collect::<Vec<_>>())
             })
@@ -335,7 +348,7 @@ pub fn vector_fill(
     start: &Value,
     end: &[Value],
 ) -> Result<Vec<Value>, Condition> {
-    let vector: Gc<AlignedVector<Value>> = vector.clone().try_into()?;
+    let vector: Gc<RwLock<AlignedVector<Value>>> = vector.clone().try_into()?;
     let mut vector = vector.write();
 
     let start: usize = try_to_usize(start)?;

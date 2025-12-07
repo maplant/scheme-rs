@@ -2,7 +2,6 @@
 //! Cycle Collection in Reference Counted Systems by David F. Bacon and
 //! V.T. Rajan.
 
-use parking_lot::RwLock;
 use std::{
     alloc::Layout,
     cell::UnsafeCell,
@@ -25,8 +24,6 @@ use crate::gc::GcInner;
 pub(crate) struct GcHeader {
     /// Reference count shared with the Gc types
     pub(crate) shared_rc: AtomicUsize,
-    /// Lock for the data
-    pub(crate) lock: RwLock<()>,
     /// Reference count as of the current epoch
     epoch_rc: usize,
     /// Circular reference count
@@ -53,7 +50,6 @@ impl GcHeader {
     pub(crate) fn new<T: super::GcOrTrace>() -> Self {
         Self {
             shared_rc: AtomicUsize::new(1),
-            lock: RwLock::new(()),
             epoch_rc: 1,
             crc: 1,
             color: Color::Black,
@@ -177,10 +173,6 @@ impl HeapObject<()> {
         unsafe {
             (*self.header.as_ref().get()).buffered = buffered;
         }
-    }
-
-    unsafe fn lock(&self) -> &RwLock<()> {
-        unsafe { &(*self.header.as_ref().get()).lock }
     }
 
     unsafe fn visit_children(
@@ -559,9 +551,7 @@ impl Collector {
 
 unsafe fn for_each_child(s: OpaqueGcPtr, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
     unsafe {
-        let lock = s.lock().read();
         (s.visit_children())(s.data(), visitor);
-        drop(lock);
     }
 }
 
@@ -678,21 +668,22 @@ unsafe fn delta_test(c: &[OpaqueGcPtr]) -> bool {
 mod test {
     use super::*;
     use crate::gc::*;
+    use parking_lot::RwLock;
     use std::sync::Arc;
 
     #[test]
     fn cycles() {
         #[derive(Default, Trace)]
         struct Cyclic {
-            next: Option<Gc<Cyclic>>,
+            next: Option<Gc<RwLock<Cyclic>>>,
             out: Option<Arc<()>>,
         }
 
         let out_ptr = Arc::new(());
 
-        let a = Gc::new(Cyclic::default());
-        let b = Gc::new(Cyclic::default());
-        let c = Gc::new(Cyclic::default());
+        let a = Gc::new(RwLock::new(Cyclic::default()));
+        let b = Gc::new(RwLock::new(Cyclic::default()));
+        let c = Gc::new(RwLock::new(Cyclic::default()));
 
         // a -> b -> c -
         // ^----------/

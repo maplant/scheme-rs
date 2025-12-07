@@ -1,4 +1,5 @@
 use indexmap::{IndexMap, IndexSet};
+use parking_lot::RwLock;
 
 use crate::{
     ast,
@@ -67,7 +68,7 @@ impl Value {
                     Arc::increment_strong_count(untagged as *const strings::AlignedString)
                 }
                 Tag::Vector => Gc::increment_reference_count(
-                    untagged as *mut GcInner<vectors::AlignedVector<Self>>,
+                    untagged as *mut GcInner<RwLock<vectors::AlignedVector<Self>>>,
                 ),
                 Tag::ByteVector => {
                     Arc::increment_strong_count(untagged as *const vectors::AlignedVector<u8>)
@@ -197,7 +198,7 @@ impl Value {
             }
             Tag::Vector => {
                 let vec =
-                    unsafe { Gc::from_raw(untagged as *mut GcInner<vectors::AlignedVector<Self>>) };
+                    unsafe { Gc::from_raw(untagged as *mut GcInner<RwLock<vectors::AlignedVector<Self>>>) };
                 UnpackedValue::Vector(vec)
             }
             Tag::ByteVector => {
@@ -237,7 +238,7 @@ impl Value {
                 UnpackedValue::HashTable(HashTable(ht))
             }
             Tag::Cell => {
-                let cell = unsafe { Gc::from_raw(untagged as *mut GcInner<Value>) };
+                let cell = unsafe { Gc::from_raw(untagged as *mut GcInner<RwLock<Value>>) };
                 UnpackedValue::Cell(Cell(cell))
             }
         }
@@ -340,7 +341,7 @@ unsafe impl Trace for Value {
 
 /// A Cell is a value that is mutable, essentially a variable.
 #[derive(Clone, Trace)]
-pub struct Cell(pub(crate) Gc<Value>);
+pub struct Cell(pub(crate) Gc<RwLock<Value>>);
 
 pub struct UnpackedValueRef<'a> {
     unpacked: ManuallyDrop<UnpackedValue>,
@@ -475,7 +476,7 @@ pub enum UnpackedValue {
     Number(Arc<Number>),
     String(Arc<strings::AlignedString>),
     Symbol(symbols::Symbol),
-    Vector(Gc<vectors::AlignedVector<Value>>),
+    Vector(Gc<RwLock<vectors::AlignedVector<Value>>>),
     ByteVector(Arc<vectors::AlignedVector<u8>>),
     Syntax(Arc<Syntax>),
     Procedure(Procedure),
@@ -725,8 +726,8 @@ fn pair_eq(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64) -
 }
 
 fn vector_eq(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
-    let vobj1: Gc<vectors::AlignedVector<Value>> = obj1.clone().try_into().unwrap();
-    let vobj2: Gc<vectors::AlignedVector<Value>> = obj2.clone().try_into().unwrap();
+    let vobj1: Gc<RwLock<vectors::AlignedVector<Value>>> = obj1.clone().try_into().unwrap();
+    let vobj2: Gc<RwLock<vectors::AlignedVector<Value>>> = obj2.clone().try_into().unwrap();
     let vobj1 = vobj1.read();
     let vobj2 = vobj2.read();
     if vobj1.len() != vobj2.len() {
@@ -912,7 +913,7 @@ impl_try_from_value_for!(char, Character, "char");
 impl_try_from_value_for!(Arc<Number>, Number, "number");
 impl_try_from_value_for!(Arc<strings::AlignedString>, String, "string");
 impl_try_from_value_for!(symbols::Symbol, Symbol, "symbol");
-impl_try_from_value_for!(Gc<vectors::AlignedVector<Value>>, Vector, "vector");
+impl_try_from_value_for!(Gc<RwLock<vectors::AlignedVector<Value>>>, Vector, "vector");
 impl_try_from_value_for!(Arc<vectors::AlignedVector<u8>>, ByteVector, "byte-vector");
 impl_try_from_value_for!(Arc<Syntax>, Syntax, "syntax");
 impl_try_from_value_for!(Procedure, Procedure, "procedure");
@@ -942,9 +943,9 @@ impl_from_wrapped_for!(Number, Number, Arc::new);
 impl_from_wrapped_for!(String, String, |str| Arc::new(strings::AlignedString::new(
     str
 )));
-impl_from_wrapped_for!(Vec<Value>, Vector, |vec| Gc::new(
+impl_from_wrapped_for!(Vec<Value>, Vector, |vec| Gc::new(RwLock::new(
     vectors::AlignedVector::new(vec)
-));
+)));
 impl_from_wrapped_for!(Vec<u8>, ByteVector, |vec| Arc::new(
     vectors::AlignedVector::new(vec)
 ));

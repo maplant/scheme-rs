@@ -13,6 +13,7 @@ use crate::{
     syntax::Span,
     value::{Cell, UnpackedValue, Value},
 };
+use parking_lot::RwLock;
 use scheme_rs_macros::{maybe_async, maybe_await, runtime_fn};
 use std::{collections::HashSet, mem::ManuallyDrop, path::Path, sync::Arc};
 
@@ -33,7 +34,7 @@ use std::{collections::HashSet, mem::ManuallyDrop, path::Path, sync::Arc};
 /// In order to remedy this it is vitally important the closure has a back
 /// pointer to the runtime.
 #[derive(Trace, Clone)]
-pub struct Runtime(pub(crate) Gc<RuntimeInner>);
+pub struct Runtime(pub(crate) Gc<RwLock<RuntimeInner>>);
 
 impl Default for Runtime {
     fn default() -> Self {
@@ -45,7 +46,7 @@ impl Runtime {
     /// Creates a new runtime. Also initializes the garbage collector and
     /// creates a default registry with the bridge functions populated.
     pub fn new() -> Self {
-        let this = Self(Gc::new(RuntimeInner::new()));
+        let this = Self(Gc::new(RwLock::new(RuntimeInner::new())));
         let new_registry = Registry::new(&this);
         this.0.write().registry = new_registry;
         this
@@ -103,7 +104,7 @@ impl Runtime {
         maybe_await!(recv_procedure(completion_rx))
     }
 
-    pub(crate) unsafe fn from_raw_inc_rc(rt: *mut GcInner<RuntimeInner>) -> Self {
+    pub(crate) unsafe fn from_raw_inc_rc(rt: *mut GcInner<RwLock<RuntimeInner>>) -> Self {
         unsafe { Self(Gc::from_raw_inc_rc(rt)) }
     }
 }
@@ -319,7 +320,7 @@ unsafe fn arc_from_ptr<T>(ptr: *const T) -> Option<Arc<T>> {
 /// Allocate a new Gc with a value of undefined
 #[runtime_fn]
 unsafe extern "C" fn alloc_cell() -> *const () {
-    Value::into_raw(Value::from(Cell(Gc::new(Value::undefined()))))
+    Value::into_raw(Value::from(Cell(Gc::new(RwLock::new(Value::undefined())))))
 }
 
 /// Read the value of a Cell
@@ -349,7 +350,7 @@ unsafe extern "C" fn dropv(val: *const *const (), num_drops: u32) {
 /// Create a boxed application
 #[runtime_fn]
 unsafe extern "C" fn apply(
-    runtime: *mut GcInner<RuntimeInner>,
+    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     op: *const (),
     args: *const *const (),
     num_args: u32,
@@ -380,7 +381,7 @@ unsafe extern "C" fn apply(
 /// Create a boxed application that forwards a list of values to the operator
 #[runtime_fn]
 unsafe extern "C" fn forward(
-    runtime: *mut GcInner<RuntimeInner>,
+    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     op: *const (),
     args: *const (),
 ) -> *mut Application {
@@ -476,7 +477,7 @@ unsafe extern "C" fn list(vals: *const *const (), num_vals: u32, _error: *mut Va
 /// Allocate a continuation
 #[runtime_fn]
 unsafe extern "C" fn make_continuation(
-    runtime: *mut GcInner<RuntimeInner>,
+    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     fn_ptr: ContinuationPtr,
     env: *const *const (),
     num_envs: u32,
@@ -505,7 +506,7 @@ unsafe extern "C" fn make_continuation(
 /// Allocate a user function
 #[runtime_fn]
 unsafe extern "C" fn make_user(
-    runtime: *mut GcInner<RuntimeInner>,
+    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     fn_ptr: UserPtr,
     env: *const *const (),
     num_envs: u32,

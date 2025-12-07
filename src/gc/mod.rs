@@ -1,8 +1,8 @@
 //! Garbage-Collected smart pointers with interior mutability.
 //!
-//! `Gc<T>` is conceptually similar to `Arc<std::sync::RwLock<T>>`, but garbage
-//! collection occurs concurrently at a fixed cadence or whenever a threshold
-//! of memory has been allocated as opposed to when the type is Dropped.
+//! `Gc<T>` is conceptually similar to `Arc<T>`, but garbage collection occurs
+//! concurrently at a fixed cadence or whenever a threshold of memory has been
+//! allocated as opposed to when the type is Dropped.
 //!
 //! Strictly speaking, `Gc<T>` is not garbage collection per-se but instead uses
 //! "cycle collection".
@@ -17,7 +17,6 @@ pub use collection::{OpaqueGcPtr, init_gc};
 use either::Either;
 pub use scheme_rs_macros::Trace;
 
-use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
 use std::{
     any::Any,
     cell::UnsafeCell,
@@ -25,7 +24,7 @@ use std::{
     hash::Hash,
     marker::PhantomData,
     mem::ManuallyDrop,
-    ops::{Deref, DerefMut},
+    ops::Deref,
     path::PathBuf,
     ptr::{NonNull, drop_in_place},
 };
@@ -72,6 +71,7 @@ impl<T: ?Sized> Gc<T> {
         }
     }
 
+    /*
     /// Acquire a read lock for the object
     pub fn read(&self) -> GcReadGuard<'_, T> {
         unsafe {
@@ -97,6 +97,7 @@ impl<T: ?Sized> Gc<T> {
             }
         }
     }
+    */
 
     pub fn ptr_eq(lhs: &Self, rhs: &Self) -> bool {
         std::ptr::addr_eq(lhs.ptr.as_ptr(), rhs.ptr.as_ptr())
@@ -173,7 +174,7 @@ impl<T: ?Sized> Gc<T> {
 
 impl Gc<dyn Any> {
     pub fn downcast<T: Any>(self) -> Result<Gc<T>, Self> {
-        if self.read().as_ref().is::<T>() {
+        if self.as_ref().is::<T>() {
             let this = ManuallyDrop::new(self);
             let ptr = this.ptr.as_ptr() as *mut GcInner<T>;
             let ptr = unsafe { NonNull::new_unchecked(ptr) };
@@ -184,6 +185,20 @@ impl Gc<dyn Any> {
         } else {
             Err(self)
         }
+    }
+}
+
+impl<T: ?Sized> Deref for Gc<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        unsafe { &*self.ptr.as_ref().data.get() }
+    }
+}
+
+impl<T: ?Sized> AsRef<T> for Gc<T> {
+    fn as_ref(&self) -> &T {
+        self
     }
 }
 
@@ -203,8 +218,9 @@ impl<T: ?Sized> std::fmt::Display for Gc<T>
 where
     T: std::fmt::Display,
 {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.read().fmt(fmt)
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // self.fmt(fmt)
+        self.as_ref().fmt(f)
     }
 }
 
@@ -212,8 +228,8 @@ impl<T: ?Sized> std::fmt::Debug for Gc<T>
 where
     T: std::fmt::Debug,
 {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.read().fmt(fmt)
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.as_ref().fmt(f)
     }
 }
 
@@ -235,15 +251,13 @@ impl<T: ?Sized> Drop for Gc<T> {
 
 impl<T: ?Sized + Hash> Hash for Gc<T> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.read().hash(state);
+        self.as_ref().hash(state);
     }
 }
 
 impl<T: ?Sized + PartialEq> PartialEq for Gc<T> {
     fn eq(&self, other: &Self) -> bool {
-        let self_read = self.read();
-        let other_read = other.read();
-        self_read.as_ref() == other_read.as_ref()
+        self.as_ref() == other.as_ref()
     }
 }
 
@@ -277,6 +291,7 @@ pub(crate) struct GcInner<T: ?Sized> {
 unsafe impl<T: ?Sized + Send> Send for GcInner<T> {}
 unsafe impl<T: ?Sized + Sync> Sync for GcInner<T> {}
 
+/*
 pub struct GcReadGuard<'a, T: ?Sized> {
     _permit: RwLockReadGuard<'a, ()>,
     data: *const T,
@@ -296,7 +311,9 @@ impl<T: ?Sized> AsRef<T> for GcReadGuard<'_, T> {
         self
     }
 }
+*/
 
+/*
 pub struct GcWriteGuard<'a, T: ?Sized> {
     _permit: RwLockWriteGuard<'a, ()>,
     data: *mut T,
@@ -328,19 +345,7 @@ impl<T: ?Sized> AsMut<T> for GcWriteGuard<'_, T> {
         self
     }
 }
-
-/// A copy of a Gc that is ready only.
-pub struct GcReadOnly<T>(Gc<T>);
-
-impl<T> GcReadOnly<T> {
-    pub fn new(gc: Gc<T>) -> Self {
-        Self(gc)
-    }
-
-    pub fn read(&self) -> GcReadGuard<'_, T> {
-        self.0.read()
-    }
-}
+*/
 
 /// A type that can be traced for garbage collection.
 ///

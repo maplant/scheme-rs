@@ -41,7 +41,7 @@ impl Pair {
 
     /// Extract the car (aka the head) from the Pair.
     pub fn car(&self) -> Value {
-        self.0.read().car.read().clone()
+        self.0.car.read().clone()
     }
 
     /// Alias for [car]
@@ -51,7 +51,7 @@ impl Pair {
 
     /// Extract the cdr (aka the tail) from the Pair.
     pub fn cdr(&self) -> Value {
-        self.0.read().cdr.read().clone()
+        self.0.cdr.read().clone()
     }
 
     /// Alias for [cdr]
@@ -61,9 +61,8 @@ impl Pair {
 
     /// Set the car of the Pair. Returns an error if pair is immutable.
     pub fn set_car(&self, new_car: Value) -> Result<(), Condition> {
-        let this = self.0.read();
-        if this.mutable {
-            *this.car.write() = new_car;
+        if self.0.mutable {
+            *self.0.car.write() = new_car;
             Ok(())
         } else {
             Err(Condition::error("pair is not mutable"))
@@ -72,9 +71,8 @@ impl Pair {
 
     /// Set the cdr of the Pair. Returns an error if pair is immutable.
     pub fn set_cdr(&self, new_cdr: Value) -> Result<(), Condition> {
-        let this = self.0.read();
-        if this.mutable {
-            *this.cdr.write() = new_cdr;
+        if self.0.mutable {
+            *self.0.cdr.write() = new_cdr;
             Ok(())
         } else {
             Err(Condition::error("pair is not mutable"))
@@ -324,7 +322,7 @@ pub fn map(
 }
 
 unsafe extern "C" fn map_k(
-    runtime: *mut GcInner<RuntimeInner>,
+    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
     _params: *mut DynStack,
@@ -333,13 +331,13 @@ unsafe extern "C" fn map_k(
         // TODO: Probably need to do this in a way that avoids mutable variables
 
         // env[0] is the output list
-        let output: Gc<vectors::AlignedVector<Value>> =
+        let output: Gc<RwLock<vectors::AlignedVector<Value>>> =
             env.as_ref().unwrap().clone().try_into().unwrap();
 
         output.write().push(args.as_ref().unwrap().clone());
 
         // env[1] is the input lists
-        let inputs: Gc<vectors::AlignedVector<Value>> =
+        let inputs: Gc<RwLock<vectors::AlignedVector<Value>>> =
             env.add(1).as_ref().unwrap().clone().try_into().unwrap();
 
         // env[2] is the mapper function

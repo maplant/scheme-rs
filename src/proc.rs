@@ -16,6 +16,7 @@ use crate::{
     value::Value,
     vectors,
 };
+use parking_lot::RwLock;
 use scheme_rs_macros::{cps_bridge, maybe_async, maybe_await};
 use std::{
     fmt,
@@ -27,7 +28,7 @@ use std::{
 
 /// A function pointer to a generated continuation.
 pub(crate) type ContinuationPtr = unsafe extern "C" fn(
-    runtime: *mut GcInner<RuntimeInner>,
+    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
     dyn_stack: *mut DynStack,
@@ -35,7 +36,7 @@ pub(crate) type ContinuationPtr = unsafe extern "C" fn(
 
 /// A function pointer to a generated user function.
 pub(crate) type UserPtr = unsafe extern "C" fn(
-    runtime: *mut GcInner<RuntimeInner>,
+    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
     dyn_stack: *mut DynStack,
@@ -369,12 +370,11 @@ impl Procedure {
     }
 
     pub fn get_runtime(&self) -> Runtime {
-        self.0.read().runtime.clone()
+        self.0.runtime.clone()
     }
 
     pub fn get_formals(&self) -> (usize, bool) {
-        let this = self.0.read();
-        (this.num_required_args, this.variadic)
+        (self.0.num_required_args, self.0.variadic)
     }
 
     /// # Safety
@@ -400,7 +400,7 @@ impl Procedure {
     }
 
     pub fn is_variable_transformer(&self) -> bool {
-        self.0.read().is_variable_transformer
+        self.0.is_variable_transformer
     }
 
     #[maybe_async]
@@ -427,7 +427,7 @@ static HALT_CONTINUATION: OnceLock<Value> = OnceLock::new();
 /// Return a continuation that returns its expressions.
 pub fn halt_continuation(runtime: Runtime) -> Value {
     unsafe extern "C" fn halt(
-        _runtime: *mut GcInner<RuntimeInner>,
+        _runtime: *mut GcInner<RwLock<RuntimeInner>>,
         _env: *const Value,
         args: *const Value,
         _dyn_stack: *mut DynStack,
@@ -451,7 +451,7 @@ pub fn halt_continuation(runtime: Runtime) -> Value {
 
 impl fmt::Debug for Procedure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.read().fmt(f)
+        self.0.fmt(f)
     }
 }
 
@@ -520,9 +520,8 @@ impl Application {
                     ));
                 }
             };
-            let op = { op.0.read().as_ref().clone() };
-            stack_trace.collect_application(op.debug_info.clone(), self.call_site);
-            self = maybe_await!(op.apply(self.args, dyn_stack));
+            stack_trace.collect_application(op.0.debug_info.clone(), self.call_site);
+            self = maybe_await!(op.0.apply(self.args, dyn_stack));
         }
     }
 
@@ -542,9 +541,8 @@ impl Application {
                     ));
                 }
             };
-            let op = { op.0.read().as_ref().clone() };
-            stack_trace.collect_application(op.debug_info.clone(), self.call_site);
-            self = op.apply_sync(self.args, dyn_stack);
+            stack_trace.collect_application(op.0.debug_info.clone(), self.call_site);
+            self = op.0.apply_sync(self.args, dyn_stack);
         }
     }
 }
@@ -724,7 +722,7 @@ pub enum DynStackElem {
 }
 
 pub(crate) unsafe extern "C" fn pop_dyn_stack(
-    _runtime: *mut GcInner<RuntimeInner>,
+    _runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
     dyn_stack: *mut DynStack,
@@ -804,7 +802,7 @@ fn escape_procedure(
         .clone()
         .try_into_rust_type::<DynStack>()
         .unwrap();
-    let saved_dyn_stack_read = saved_dyn_stack.read();
+    let saved_dyn_stack_read = saved_dyn_stack.as_ref();
 
     // Clone the continuation
     let k: Procedure = k.try_into().unwrap();
@@ -831,7 +829,7 @@ fn escape_procedure(
 }
 
 unsafe extern "C" fn unwind(
-    runtime: *mut GcInner<RuntimeInner>,
+    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
     dyn_stack: *mut DynStack,
@@ -849,7 +847,7 @@ unsafe extern "C" fn unwind(
             .clone()
             .try_into_rust_type::<DynStack>()
             .unwrap();
-        let dest_stack_read = dest_stack.read();
+        let dest_stack_read = dest_stack.as_ref();
 
         let dyn_stack = dyn_stack.as_mut().unwrap_unchecked();
 
@@ -900,7 +898,7 @@ unsafe extern "C" fn unwind(
 }
 
 unsafe extern "C" fn wind(
-    runtime: *mut GcInner<RuntimeInner>,
+    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
     dyn_stack: *mut DynStack,
@@ -918,7 +916,7 @@ unsafe extern "C" fn wind(
             .clone()
             .try_into_rust_type::<DynStack>()
             .unwrap();
-        let dest_stack_read = dest_stack.read();
+        let dest_stack_read = dest_stack.as_ref();
 
         let dyn_stack = dyn_stack.as_mut().unwrap_unchecked();
 
@@ -926,7 +924,7 @@ unsafe extern "C" fn wind(
         let winder = env.add(3).as_ref().unwrap().clone();
         if winder.is_true() {
             let winder = winder.try_into_rust_type::<Winder>().unwrap();
-            dyn_stack.push(DynStackElem::Winder(winder.read().clone()));
+            dyn_stack.push(DynStackElem::Winder(winder.as_ref().clone()));
         }
 
         while dyn_stack.len() < dest_stack_read.len() {
@@ -959,7 +957,7 @@ unsafe extern "C" fn wind(
             }
         }
 
-        let args: Gc<vectors::AlignedVector<Value>> = args.try_into().unwrap();
+        let args: Gc<RwLock<vectors::AlignedVector<Value>>> = args.try_into().unwrap();
         let args = args.read().0.to_vec();
 
         let app = Application::new(k.try_into().unwrap(), args, None);
@@ -968,7 +966,7 @@ unsafe extern "C" fn wind(
 }
 
 unsafe extern "C" fn call_consumer_with_values(
-    runtime: *mut GcInner<RuntimeInner>,
+    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
     _dyn_stack: *mut DynStack,
@@ -992,15 +990,15 @@ unsafe extern "C" fn call_consumer_with_values(
         // env[1] is the continuation
         let k = env.add(1).as_ref().unwrap().clone();
 
-        let mut collected_args: Vec<_> = (0..consumer.0.read().num_required_args)
+        let mut collected_args: Vec<_> = (0..consumer.0.num_required_args)
             .map(|i| args.add(i).as_ref().unwrap().clone())
             .collect();
 
         // I hate this constant going back and forth from variadic to list. I have
         // to figure out a way to make it consistent
-        if consumer.0.read().variadic {
+        if consumer.0.variadic {
             let rest_args = args
-                .add(consumer.0.read().num_required_args)
+                .add(consumer.0.num_required_args)
                 .as_ref()
                 .unwrap()
                 .clone();
@@ -1041,8 +1039,7 @@ pub fn call_with_values(
 
     // Get the details of the consumer:
     let (num_required_args, variadic) = {
-        let consumer_read = consumer.0.read();
-        (consumer_read.num_required_args, consumer_read.variadic)
+        (consumer.0.num_required_args, consumer.0.variadic)
     };
 
     let call_consumer_closure = Procedure::new(
@@ -1120,7 +1117,7 @@ pub fn dynamic_wind(
 }
 
 pub(crate) unsafe extern "C" fn call_body_thunk(
-    runtime: *mut GcInner<RuntimeInner>,
+    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
     dyn_stack: *mut DynStack,
@@ -1161,7 +1158,7 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
 }
 
 pub(crate) unsafe extern "C" fn call_out_thunks(
-    runtime: *mut GcInner<RuntimeInner>,
+    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
     dyn_stack: *mut DynStack,
@@ -1195,7 +1192,7 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
 }
 
 unsafe extern "C" fn forward_body_thunk_result(
-    _runtime: *mut GcInner<RuntimeInner>,
+    _runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
     _dyn_stack: *mut DynStack,
@@ -1317,7 +1314,7 @@ pub fn abort_to_prompt(
 }
 
 unsafe extern "C" fn unwind_to_prompt(
-    runtime: *mut GcInner<RuntimeInner>,
+    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
     dyn_stack: *mut DynStack,
@@ -1348,7 +1345,7 @@ unsafe extern "C" fn unwind_to_prompt(
                 })) if prompt_tag == tag => {
                     let saved_dyn_stack = saved_dyn_stack.try_into_rust_type::<DynStack>().unwrap();
                     let prompt_delimited_dyn_stack = DynStack {
-                        dyn_stack: saved_dyn_stack.read().dyn_stack[dyn_stack.len() + 1..].to_vec(),
+                        dyn_stack: saved_dyn_stack.as_ref().dyn_stack[dyn_stack.len() + 1..].to_vec(),
                     };
                     let (req_args, var) = {
                         let k_proc: Procedure = k.clone().try_into().unwrap();
@@ -1418,7 +1415,7 @@ fn delimited_continuation(
         .clone()
         .try_into_rust_type::<DynStack>()
         .unwrap();
-    let saved_dyn_stack_read = saved_dyn_stack.read();
+    let saved_dyn_stack_read = saved_dyn_stack.as_ref();
 
     let args = args.iter().chain(rest_args).cloned().collect::<Vec<_>>();
 
@@ -1452,7 +1449,7 @@ fn delimited_continuation(
 }
 
 unsafe extern "C" fn wind_delim(
-    runtime: *mut GcInner<RuntimeInner>,
+    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
     dyn_stack: *mut DynStack,
@@ -1470,7 +1467,7 @@ unsafe extern "C" fn wind_delim(
             .clone()
             .try_into_rust_type::<DynStack>()
             .unwrap();
-        let dest_stack_read = dest_stack.read();
+        let dest_stack_read = dest_stack.as_ref();
 
         // env[3] is the index into the dest stack we're at
         let idx: Arc<Number> = env.add(3).as_ref().unwrap().clone().try_into().unwrap();
@@ -1482,7 +1479,7 @@ unsafe extern "C" fn wind_delim(
         let winder = env.add(4).as_ref().unwrap().clone();
         if winder.is_true() {
             let winder = winder.try_into_rust_type::<Winder>().unwrap();
-            dyn_stack.push(DynStackElem::Winder(winder.read().clone()));
+            dyn_stack.push(DynStackElem::Winder(winder.as_ref().clone()));
         }
 
         while let Some(elem) = dest_stack_read.get(idx) {
@@ -1512,61 +1509,10 @@ unsafe extern "C" fn wind_delim(
             dyn_stack.push(elem.clone());
         }
 
-        let args: Gc<vectors::AlignedVector<Value>> = args.try_into().unwrap();
+        let args: Gc<RwLock<vectors::AlignedVector<Value>>> = args.try_into().unwrap();
         let args = args.read().0.to_vec();
 
-        let app = Application::new(k.try_into().unwrap(), dbg!(args), None);
+        let app = Application::new(k.try_into().unwrap(), args, None);
         Box::into_raw(Box::new(app))
     }
 }
-
-/*
-pub(crate) unsafe extern "C" fn remove_prompt(
-    _runtime: *mut GcInner<RuntimeInner>,
-    env: *const Value,
-    args: *const Value,
-    dyn_stack: *mut DynStack,
-) -> *mut Application {
-    unsafe {
-        // env[0] is the continuation
-        let k: Procedure = env.as_ref().unwrap().clone().try_into().unwrap();
-
-        // env[1] is the prompt
-        let prompt: Symbol = env.add(1).as_ref().unwrap().clone().try_into().unwrap();
-
-        // Remove the prompt:
-        dyn_stack.as_mut().unwrap_unchecked().prompts.remove(&prompt);
-
-        let args = k.collect_args(args);
-        let app = Application::new(k, args, None);
-
-        Box::into_raw(Box::new(app))
-    }
-}
-
-/// Calls a delimited continuation saved with [abort_to_prompt]
-#[cps_bridge]
-fn delimited_cotinuation(
-    runtime: &Runtime,
-    env: &[Value],
-    args: &[Value],
-    rest_args: &[Value],
-    dyn_stack: &mut DynStack,
-    k: Value,
-) -> Result<Application, Condition> {
-    // env[0] is the delimited continuation
-    let dk: Procedure = env[0].clone().try_into()?;
-    // env[1] is the barrier Id
-    let barrier_id: Arc<Number> = env[1].clone().try_into()?;
-    let barrier_id: usize = barrier_id.as_ref().try_into()?;
-    // env[2] are the dyn_stack for the continuation
-    let saved_dyn_stack = env[2].try_into_rust_type::<DynStack>()?;
-
-    // TODO: Do we need to modify the parameters of the winders? Yes
-    let thunks = dyn_stack
-        .dynamic_wind
-        .travel_to_extent(&saved_dyn_stack.read().dynamic_wind);
-
-    todo!()
-}
-*/

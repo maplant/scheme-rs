@@ -6,6 +6,7 @@ use std::{
 };
 
 use either::Either;
+use parking_lot::RwLock;
 use scheme_rs_macros::{maybe_async, maybe_await};
 
 #[cfg(feature = "async")]
@@ -118,7 +119,7 @@ impl LexicalContourInner {
 }
 
 #[derive(Clone, Trace)]
-pub struct LexicalContour(Gc<LexicalContourInner>);
+pub struct LexicalContour(Gc<RwLock<LexicalContourInner>>);
 
 impl LexicalContour {
     #[cfg(not(feature = "async"))]
@@ -250,7 +251,7 @@ impl LetSyntaxContourInner {
 }
 
 #[derive(Clone, Trace)]
-pub struct LetSyntaxContour(Gc<LetSyntaxContourInner>);
+pub struct LetSyntaxContour(Gc<RwLock<LetSyntaxContourInner>>);
 
 impl LetSyntaxContour {
     #[cfg(not(feature = "async"))]
@@ -532,8 +533,8 @@ pub enum Environment {
     Top(Library),
     LexicalContour(LexicalContour),
     LetSyntaxContour(LetSyntaxContour),
-    MacroExpansion(Gc<MacroExpansion>),
-    SyntaxCaseExpr(Gc<SyntaxCaseExpr>),
+    MacroExpansion(Gc<RwLock<MacroExpansion>>),
+    SyntaxCaseExpr(Gc<RwLock<SyntaxCaseExpr>>),
 }
 
 impl Environment {
@@ -655,17 +656,17 @@ impl Environment {
 
     pub fn new_lexical_contour(&self) -> Self {
         let new_lexical_contour = LexicalContourInner::new(self);
-        Self::LexicalContour(LexicalContour(Gc::new(new_lexical_contour)))
+        Self::LexicalContour(LexicalContour(Gc::new(RwLock::new(new_lexical_contour))))
     }
 
     pub fn new_let_syntax_contour(&self, recursive: bool) -> Self {
         let new_let_syntax_contour = LetSyntaxContourInner::new(self, recursive);
-        Self::LetSyntaxContour(LetSyntaxContour(Gc::new(new_let_syntax_contour)))
+        Self::LetSyntaxContour(LetSyntaxContour(Gc::new(RwLock::new(new_let_syntax_contour))))
     }
 
     pub fn new_macro_expansion(&self, mark: Mark, source: Environment) -> Self {
         let new_macro_expansion = MacroExpansion::new(self, mark, source);
-        Self::MacroExpansion(Gc::new(new_macro_expansion))
+        Self::MacroExpansion(Gc::new(RwLock::new(new_macro_expansion)))
     }
 
     pub fn new_syntax_case_expr(
@@ -674,7 +675,7 @@ impl Environment {
         pattern_vars: HashSet<Identifier>,
     ) -> Self {
         let syntax_case_expr = SyntaxCaseExpr::new(self, expansions_store, pattern_vars);
-        Self::SyntaxCaseExpr(Gc::new(syntax_case_expr))
+        Self::SyntaxCaseExpr(Gc::new(RwLock::new(syntax_case_expr)))
     }
 }
 
@@ -768,20 +769,20 @@ impl fmt::Debug for Local {
 #[derive(Clone, Trace)]
 pub struct Global {
     pub(crate) name: Identifier,
-    pub(crate) val: Gc<Value>,
+    pub(crate) val: Gc<RwLock<Value>>,
     pub(crate) mutable: bool,
 }
 
 impl Global {
-    pub fn new(name: Identifier, val: Gc<Value>, mutable: bool) -> Self {
+    pub fn new(name: Identifier, val: Gc<RwLock<Value>>, mutable: bool) -> Self {
         Global { name, val, mutable }
     }
 
-    pub fn value(self) -> Gc<Value> {
+    pub fn value(self) -> Gc<RwLock<Value>> {
         self.val
     }
 
-    pub fn value_ref(&self) -> &Gc<Value> {
+    pub fn value_ref(&self) -> &Gc<RwLock<Value>> {
         &self.val
     }
 }
