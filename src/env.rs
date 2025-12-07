@@ -661,7 +661,9 @@ impl Environment {
 
     pub fn new_let_syntax_contour(&self, recursive: bool) -> Self {
         let new_let_syntax_contour = LetSyntaxContourInner::new(self, recursive);
-        Self::LetSyntaxContour(LetSyntaxContour(Gc::new(RwLock::new(new_let_syntax_contour))))
+        Self::LetSyntaxContour(LetSyntaxContour(Gc::new(RwLock::new(
+            new_let_syntax_contour,
+        ))))
     }
 
     pub fn new_macro_expansion(&self, mark: Mark, source: Environment) -> Self {

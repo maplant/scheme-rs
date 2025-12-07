@@ -4,7 +4,6 @@ use crate::{
     lists::slice_to_list,
     num::Number,
     registry::bridge,
-    strings,
     value::{Value, write_value},
 };
 use indexmap::IndexMap;
@@ -138,29 +137,6 @@ trait Indexer {
     }
 }
 
-struct StringIndexer;
-
-impl Indexer for StringIndexer {
-    type Collection = Arc<strings::AlignedString>;
-
-    fn get_len(string: &Self::Collection) -> usize {
-        string.chars().count()
-    }
-
-    fn get_range(string: &Self::Collection, range: Range<usize>) -> Self::Collection {
-        let substr: String = string
-            .chars()
-            .skip(range.start)
-            .take(range.end - range.start)
-            .collect();
-        Arc::new(strings::AlignedString::new(substr))
-    }
-
-    fn try_get(val: &Value) -> Result<Self::Collection, Condition> {
-        val.clone().try_into()
-    }
-}
-
 struct VectorIndexer;
 
 impl Indexer for VectorIndexer {
@@ -270,14 +246,6 @@ pub fn vector_to_string(from: &Value, range: &[Value]) -> Result<Vec<Value>, Con
             .cloned()
             .map(<Value as TryInto<char>>::try_into)
             .collect::<Result<String, _>>()?,
-    )])
-}
-
-#[bridge(name = "string->vector", lib = "(rnrs base builtins (6))")]
-pub fn string_to_vector(from: &Value, range: &[Value]) -> Result<Vec<Value>, Condition> {
-    let str = StringIndexer::index(from, range)?;
-    Ok(vec![Value::from(
-        str.chars().map(Value::from).collect::<Vec<_>>(),
     )])
 }
 

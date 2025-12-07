@@ -506,7 +506,7 @@ fn constructor(
     let record = Value::from(Record(Gc::new(RecordInner {
         rust_parent,
         rtd,
-        fields: fields.into_iter().map(RwLock::new).collect()
+        fields: fields.into_iter().map(RwLock::new).collect(),
     })));
     Ok(Application::new(k, vec![record], None))
 }
@@ -928,9 +928,7 @@ pub fn record_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
 #[bridge(name = "record-rtd", lib = "(rnrs records inspection (6))")]
 pub fn record_rtd(record: &Value) -> Result<Vec<Value>, Condition> {
     match &*record.unpacked_ref() {
-        UnpackedValue::Record(rec) if !rec.0.rtd.opaque => {
-            Ok(vec![Value::from(rec.0.rtd.clone())])
-        }
+        UnpackedValue::Record(rec) if !rec.0.rtd.opaque => Ok(vec![Value::from(rec.0.rtd.clone())]),
         _ => Err(Condition::error(
             "expected a non-opaque record type".to_string(),
         )),

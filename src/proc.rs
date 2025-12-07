@@ -1038,9 +1038,7 @@ pub fn call_with_values(
     let consumer: Procedure = consumer.clone().try_into()?;
 
     // Get the details of the consumer:
-    let (num_required_args, variadic) = {
-        (consumer.0.num_required_args, consumer.0.variadic)
-    };
+    let (num_required_args, variadic) = { (consumer.0.num_required_args, consumer.0.variadic) };
 
     let call_consumer_closure = Procedure::new(
         runtime.clone(),
@@ -1345,7 +1343,8 @@ unsafe extern "C" fn unwind_to_prompt(
                 })) if prompt_tag == tag => {
                     let saved_dyn_stack = saved_dyn_stack.try_into_rust_type::<DynStack>().unwrap();
                     let prompt_delimited_dyn_stack = DynStack {
-                        dyn_stack: saved_dyn_stack.as_ref().dyn_stack[dyn_stack.len() + 1..].to_vec(),
+                        dyn_stack: saved_dyn_stack.as_ref().dyn_stack[dyn_stack.len() + 1..]
+                            .to_vec(),
                     };
                     let (req_args, var) = {
                         let k_proc: Procedure = k.clone().try_into().unwrap();

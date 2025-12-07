@@ -13,7 +13,7 @@ use crate::{
     gc::{Gc, Trace},
     proc::Procedure,
     registry::bridge,
-    strings,
+    strings::WideString,
     symbols::Symbol,
     value::{UnpackedValue, Value, ValueType},
 };
@@ -469,7 +469,7 @@ impl Value {
             UnpackedValue::Boolean(b) => b.hash(state),
             UnpackedValue::Character(c) => c.hash(state),
             UnpackedValue::Number(n) => Arc::as_ptr(n).hash(state),
-            UnpackedValue::String(s) => Arc::as_ptr(s).hash(state),
+            UnpackedValue::String(s) => Arc::as_ptr(&s.0).hash(state),
             UnpackedValue::Symbol(s) => s.hash(state),
             UnpackedValue::ByteVector(v) => Arc::as_ptr(v).hash(state),
             UnpackedValue::Syntax(s) => Arc::as_ptr(s).hash(state),
@@ -494,7 +494,7 @@ impl Value {
             UnpackedValue::Boolean(b) => b.hash(state),
             UnpackedValue::Character(c) => c.hash(state),
             UnpackedValue::Number(n) => n.as_ref().hash(state),
-            UnpackedValue::String(s) => Arc::as_ptr(s).hash(state),
+            UnpackedValue::String(s) => Arc::as_ptr(&s.0).hash(state),
             UnpackedValue::Symbol(s) => s.hash(state),
             UnpackedValue::ByteVector(v) => Arc::as_ptr(v).hash(state),
             UnpackedValue::Syntax(s) => Arc::as_ptr(s).hash(state),
@@ -578,7 +578,7 @@ pub fn equal_hash(obj: &Value) -> Result<Vec<Value>, Condition> {
 
 #[bridge(name = "string-hash", lib = "(rnrs hashtables builtins (6))")]
 pub fn string_hash(string: &Value) -> Result<Vec<Value>, Condition> {
-    let string: Arc<strings::AlignedString> = string.clone().try_into()?;
+    let string: WideString = string.clone().try_into()?;
     let mut hasher = DefaultHasher::new();
     string.hash(&mut hasher);
     Ok(vec![Value::from(hasher.finish())])

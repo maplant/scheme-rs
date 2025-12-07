@@ -12,7 +12,8 @@ use crate::{
     proc::{Procedure, ProcedureInner},
     records::{Record, RecordInner, RecordTypeDescriptor, SchemeCompatible},
     registry::bridge,
-    strings, symbols,
+    strings::{WideString, WideStringInner},
+    symbols,
     syntax::Syntax,
     vectors,
 };
@@ -64,9 +65,7 @@ impl Value {
         unsafe {
             match tag {
                 Tag::Number => Arc::increment_strong_count(untagged as *const Number),
-                Tag::String => {
-                    Arc::increment_strong_count(untagged as *const strings::AlignedString)
-                }
+                Tag::String => Arc::increment_strong_count(untagged as *const WideStringInner),
                 Tag::Vector => Gc::increment_reference_count(
                     untagged as *mut GcInner<RwLock<vectors::AlignedVector<Self>>>,
                 ),
@@ -189,16 +188,17 @@ impl Value {
                 UnpackedValue::Number(number)
             }
             Tag::String => {
-                let str = unsafe { Arc::from_raw(untagged as *const strings::AlignedString) };
-                UnpackedValue::String(str)
+                let str = unsafe { Arc::from_raw(untagged as *const WideStringInner) };
+                UnpackedValue::String(WideString(str))
             }
             Tag::Symbol => {
                 let untagged = (untagged as usize >> TAG_BITS) as u32;
                 UnpackedValue::Symbol(symbols::Symbol(untagged))
             }
             Tag::Vector => {
-                let vec =
-                    unsafe { Gc::from_raw(untagged as *mut GcInner<RwLock<vectors::AlignedVector<Self>>>) };
+                let vec = unsafe {
+                    Gc::from_raw(untagged as *mut GcInner<RwLock<vectors::AlignedVector<Self>>>)
+                };
                 UnpackedValue::Vector(vec)
             }
             Tag::ByteVector => {
@@ -474,7 +474,7 @@ pub enum UnpackedValue {
     Boolean(bool),
     Character(char),
     Number(Arc<Number>),
-    String(Arc<strings::AlignedString>),
+    String(WideString),
     Symbol(symbols::Symbol),
     Vector(Gc<RwLock<vectors::AlignedVector<Value>>>),
     ByteVector(Arc<vectors::AlignedVector<u8>>),
@@ -504,7 +504,7 @@ impl UnpackedValue {
                 Value::from_ptr_and_tag(untagged, Tag::Number)
             }
             Self::String(str) => {
-                let untagged = Arc::into_raw(str);
+                let untagged = Arc::into_raw(str.0);
                 Value::from_ptr_and_tag(untagged, Tag::String)
             }
             Self::Symbol(sym) => {
@@ -561,7 +561,7 @@ impl UnpackedValue {
             (Self::Number(a), Self::Number(b)) => Arc::ptr_eq(a, b),
             (Self::Character(a), Self::Character(b)) => a == b,
             (Self::Null, Self::Null) => true,
-            (Self::String(a), Self::String(b)) => Arc::ptr_eq(a, b),
+            (Self::String(a), Self::String(b)) => Arc::ptr_eq(&a.0, &b.0),
             (Self::Pair(a), Self::Pair(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Vector(a), Self::Vector(b)) => Gc::ptr_eq(a, b),
             (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(a, b),
@@ -596,7 +596,7 @@ impl UnpackedValue {
             // Both obj1 and obj2 are the empty list
             (Self::Null, Self::Null) => true,
             // Everything else is pointer equivalence
-            (Self::String(a), Self::String(b)) => Arc::ptr_eq(a, b),
+            (Self::String(a), Self::String(b)) => Arc::ptr_eq(&a.0, &b.0),
             (Self::Pair(a), Self::Pair(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Vector(a), Self::Vector(b)) => Gc::ptr_eq(a, b),
             (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(a, b),
@@ -747,8 +747,8 @@ fn bytevector_eq(obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
 }
 
 fn string_eq(obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
-    let obj1: Arc<strings::AlignedString> = obj1.clone().try_into().unwrap();
-    let obj2: Arc<strings::AlignedString> = obj2.clone().try_into().unwrap();
+    let obj1: WideString = obj1.clone().try_into().unwrap();
+    let obj2: WideString = obj2.clone().try_into().unwrap();
     (obj1 == obj2).then_some(k)
 }
 
@@ -835,7 +835,7 @@ impl From<ast::Literal> for UnpackedValue {
         match lit {
             ast::Literal::Number(n) => Self::Number(Arc::new(n.clone())),
             ast::Literal::Boolean(b) => Self::Boolean(b),
-            ast::Literal::String(s) => Self::String(Arc::new(strings::AlignedString(s.clone()))),
+            ast::Literal::String(s) => Self::String(WideString::from(s.clone())),
             ast::Literal::Character(c) => Self::Character(c),
         }
     }
@@ -911,7 +911,7 @@ impl TryFrom<Value> for Cell {
 impl_try_from_value_for!(bool, Boolean, "bool");
 impl_try_from_value_for!(char, Character, "char");
 impl_try_from_value_for!(Arc<Number>, Number, "number");
-impl_try_from_value_for!(Arc<strings::AlignedString>, String, "string");
+impl_try_from_value_for!(WideString, String, "string");
 impl_try_from_value_for!(symbols::Symbol, Symbol, "symbol");
 impl_try_from_value_for!(Gc<RwLock<vectors::AlignedVector<Value>>>, Vector, "vector");
 impl_try_from_value_for!(Arc<vectors::AlignedVector<u8>>, ByteVector, "byte-vector");
@@ -940,9 +940,7 @@ macro_rules! impl_from_wrapped_for {
 }
 
 impl_from_wrapped_for!(Number, Number, Arc::new);
-impl_from_wrapped_for!(String, String, |str| Arc::new(strings::AlignedString::new(
-    str
-)));
+impl_from_wrapped_for!(String, String, WideString::new);
 impl_from_wrapped_for!(Vec<Value>, Vector, |vec| Gc::new(RwLock::new(
     vectors::AlignedVector::new(vec)
 )));
@@ -1020,8 +1018,8 @@ impl TryFrom<Value> for String {
     type Error = Condition;
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
-        let string: Arc<strings::AlignedString> = value.try_into()?;
-        Ok(string.0.clone())
+        let string: WideString = value.try_into()?;
+        Ok(string.into())
     }
 }
 
@@ -1196,11 +1194,6 @@ pub fn pair_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
         *arg.unpacked_ref(),
         UnpackedValue::Pair(_)
     ))])
-}
-
-#[bridge(name = "string?", lib = "(rnrs base builtins (6))")]
-pub fn string_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
-    Ok(vec![Value::from(arg.type_of() == ValueType::String)])
 }
 
 #[bridge(name = "procedure?", lib = "(rnrs base builtins (6))")]
