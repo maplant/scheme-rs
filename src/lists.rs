@@ -1,4 +1,5 @@
 use indexmap::IndexMap;
+use parking_lot::RwLock;
 
 use crate::{
     exceptions::Condition,
@@ -12,20 +13,78 @@ use crate::{
 };
 use std::fmt;
 
-/// A pair of scheme values. Has a head and tail.
 #[derive(Trace)]
-pub struct Pair(pub Value, pub Value);
+#[repr(align(16))]
+pub(crate) struct PairInner {
+    /// The head of the pair
+    car: RwLock<Value>,
+    /// The tail of the pair
+    cdr: RwLock<Value>,
+    /// Whether or not the pair can be modified post creation
+    mutable: bool,
+}
+
+/// A pair of Scheme [Values](Value). Has a head (the [car](Value::car)) and a
+/// tail (the [cdr](Value::cdr)).
+#[derive(Clone, Trace)]
+pub struct Pair(pub(crate) Gc<PairInner>);
 
 impl Pair {
-    pub fn new(car: Value, cdr: Value) -> Self {
-        Self(car, cdr)
+    /// Construct a new Pair from a car and cdr
+    pub fn new(car: Value, cdr: Value, mutable: bool) -> Self {
+        Self(Gc::new(PairInner {
+            car: RwLock::new(car),
+            cdr: RwLock::new(cdr),
+            mutable,
+        }))
+    }
+
+    /// Extract the car (aka the head) from the Pair.
+    pub fn car(&self) -> Value {
+        self.0.read().car.read().clone()
+    }
+
+    /// Alias for [car]
+    pub fn head(&self) -> Value {
+        self.car()
+    }
+
+    /// Extract the cdr (aka the tail) from the Pair.
+    pub fn cdr(&self) -> Value {
+        self.0.read().cdr.read().clone()
+    }
+
+    /// Alias for [cdr]
+    pub fn tail(&self) -> Value {
+        self.cdr()
+    }
+
+    /// Set the car of the Pair. Returns an error if pair is immutable.
+    pub fn set_car(&self, new_car: Value) -> Result<(), Condition> {
+        let this = self.0.read();
+        if this.mutable {
+            *this.car.write() = new_car;
+            Ok(())
+        } else {
+            Err(Condition::error("pair is not mutable"))
+        }
+    }
+
+    /// Set the cdr of the Pair. Returns an error if pair is immutable.
+    pub fn set_cdr(&self, new_cdr: Value) -> Result<(), Condition> {
+        let this = self.0.read();
+        if this.mutable {
+            *this.cdr.write() = new_cdr;
+            Ok(())
+        } else {
+            Err(Condition::error("pair is not mutable"))
+        }
     }
 }
 
-impl PartialEq for Pair {
-    fn eq(&self, rhs: &Self) -> bool {
-        // TODO: Avoid circular lists causing an infinite loop
-        self.0 == rhs.0 && self.1 == rhs.1
+impl From<Pair> for (Value, Value) {
+    fn from(value: Pair) -> Self {
+        (value.car(), value.cdr())
     }
 }
 
@@ -70,11 +129,10 @@ pub(crate) fn write_list(
                 }
             }
             UnpackedValue::Pair(pair) => {
-                let pair_read = pair.read();
-                let Pair(car, cdr) = pair_read.as_ref();
+                let (car, cdr) = pair.clone().into();
                 write!(f, " ")?;
-                write_value(car, fmt, circular_values, f)?;
-                stack.push(cdr.clone());
+                write_value(&car, fmt, circular_values, f)?;
+                stack.push(cdr);
             }
             x => {
                 let val = x.clone().into_value();
@@ -93,17 +151,16 @@ pub(crate) fn write_list(
 pub fn slice_to_list(items: &[Value]) -> Value {
     match items {
         [] => Value::null(),
-        [head, tail @ ..] => Value::from(Gc::new(Pair(head.clone(), slice_to_list(tail)))),
+        [head, tail @ ..] => Value::from(Pair::new(head.clone(), slice_to_list(tail), false)),
     }
 }
 
 pub fn list_to_vec(curr: &Value, out: &mut Vec<Value>) {
     match &*curr.unpacked_ref() {
         UnpackedValue::Pair(pair) => {
-            let pair_read = pair.read();
-            let Pair(car, cdr) = pair_read.as_ref();
-            out.push(car.clone());
-            list_to_vec(cdr, out);
+            let (car, cdr) = pair.clone().into();
+            out.push(car);
+            list_to_vec(&cdr, out);
         }
         UnpackedValue::Null => (),
         _ => out.push(curr.clone()),
@@ -113,10 +170,9 @@ pub fn list_to_vec(curr: &Value, out: &mut Vec<Value>) {
 pub fn list_to_vec_with_null(curr: &Value, out: &mut Vec<Value>) {
     match &*curr.unpacked_ref() {
         UnpackedValue::Pair(pair) => {
-            let pair_read = pair.read();
-            let Pair(car, cdr) = pair_read.as_ref();
-            out.push(car.clone());
-            list_to_vec_with_null(cdr, out);
+            let (car, cdr) = pair.clone().into();
+            out.push(car);
+            list_to_vec_with_null(&cdr, out);
         }
         _ => out.push(curr.clone()),
     }
@@ -127,24 +183,20 @@ pub fn list(args: &[Value]) -> Result<Vec<Value>, Condition> {
     // Construct the list in reverse
     let mut cdr = Value::null();
     for arg in args.iter().rev() {
-        cdr = Value::from(Gc::new(Pair(arg.clone(), cdr)));
+        cdr = Value::from(Pair::new(arg.clone(), cdr, true));
     }
     Ok(vec![cdr])
 }
 
 #[bridge(name = "cons", lib = "(rnrs base builtins (6))")]
 pub fn cons(car: &Value, cdr: &Value) -> Result<Vec<Value>, Condition> {
-    Ok(vec![Value::from(Gc::new(Pair(car.clone(), cdr.clone())))])
+    Ok(vec![Value::from(Pair::new(car.clone(), cdr.clone(), true))])
 }
 
 #[bridge(name = "car", lib = "(rnrs base builtins (6))")]
 pub fn car(val: &Value) -> Result<Vec<Value>, Condition> {
-    match val.clone().unpack() {
-        UnpackedValue::Pair(pair) => {
-            let pair_read = pair.read();
-            let Pair(car, _) = pair_read.as_ref();
-            Ok(vec![car.clone()])
-        }
+    match &*val.unpacked_ref() {
+        UnpackedValue::Pair(pair) => Ok(vec![pair.car()]),
         UnpackedValue::Syntax(syn) => Ok(vec![Value::from(syn.car()?)]),
         _ => Err(Condition::type_error("list", val.type_name())),
     }
@@ -152,12 +204,8 @@ pub fn car(val: &Value) -> Result<Vec<Value>, Condition> {
 
 #[bridge(name = "cdr", lib = "(rnrs base builtins (6))")]
 pub fn cdr(val: &Value) -> Result<Vec<Value>, Condition> {
-    match val.clone().unpack() {
-        UnpackedValue::Pair(pair) => {
-            let pair_read = pair.read();
-            let Pair(_, cdr) = pair_read.as_ref();
-            Ok(vec![cdr.clone()])
-        }
+    match &*val.unpacked_ref() {
+        UnpackedValue::Pair(pair) => Ok(vec![pair.cdr()]),
         UnpackedValue::Syntax(syn) => Ok(vec![Value::from(syn.cdr()?)]),
         _ => Err(Condition::type_error("list", val.type_name())),
     }
@@ -165,19 +213,15 @@ pub fn cdr(val: &Value) -> Result<Vec<Value>, Condition> {
 
 #[bridge(name = "set-car!", lib = "(rnrs base builtins (6))")]
 pub fn set_car(var: &Value, val: &Value) -> Result<Vec<Value>, Condition> {
-    let pair: Gc<Pair> = var.clone().try_into()?;
-    let mut pair_write = pair.write();
-    let Pair(car, _) = pair_write.as_mut();
-    *car = val.clone();
+    let pair: Pair = var.clone().try_into()?;
+    pair.set_car(val.clone())?;
     Ok(Vec::new())
 }
 
 #[bridge(name = "set-cdr!", lib = "(rnrs base builtins (6))")]
 pub fn set_cdr(var: &Value, val: &Value) -> Result<Vec<Value>, Condition> {
-    let pair: Gc<Pair> = var.clone().try_into()?;
-    let mut pair_write = pair.write();
-    let Pair(_, cdr) = pair_write.as_mut();
-    *cdr = val.clone();
+    let pair: Pair = var.clone().try_into()?;
+    pair.set_cdr(val.clone())?;
     Ok(Vec::new())
 }
 
@@ -192,11 +236,7 @@ pub fn length(arg: &Value) -> Result<usize, Condition> {
     loop {
         arg = {
             match &*arg.unpacked_ref() {
-                UnpackedValue::Pair(pair) => {
-                    let pair_read = pair.read();
-                    let Pair(_, cdr) = pair_read.as_ref();
-                    cdr.clone()
-                }
+                UnpackedValue::Pair(pair) => pair.cdr(),
                 UnpackedValue::Null => break,
                 _ => return Err(Condition::error("list must be proper".to_string())),
             }
@@ -218,10 +258,9 @@ pub fn list_to_vector(list: &Value) -> Result<Vec<Value>, Condition> {
 pub fn append(list: &Value, to_append: &Value) -> Result<Vec<Value>, Condition> {
     let mut vec = Vec::new();
     list_to_vec(list, &mut vec);
-    println!("vec = {vec:#?}");
     let mut list = to_append.clone();
     for item in vec.into_iter().rev() {
-        list = Value::from(Gc::new(Pair(item, list)));
+        list = Value::from(Pair::new(item, list, true));
     }
     Ok(vec![list])
 }
@@ -256,11 +295,7 @@ pub fn map(
         }
 
         let (car, cdr) = match &*input.unpacked_ref() {
-            UnpackedValue::Pair(pair) => {
-                let pair_read = pair.read();
-                let Pair(car, cdr) = pair_read.as_ref();
-                (car.clone(), cdr.clone())
-            }
+            UnpackedValue::Pair(pair) => pair.clone().into(),
             UnpackedValue::Syntax(syn) => (Value::from(syn.car()?), Value::from(syn.cdr()?)),
             _ => return Err(Condition::type_error("list", input.type_name())),
         };
@@ -325,11 +360,7 @@ unsafe extern "C" fn map_k(
             }
 
             let (car, cdr) = match &*input.unpacked_ref() {
-                UnpackedValue::Pair(pair) => {
-                    let pair_read = pair.read();
-                    let Pair(car, cdr) = pair_read.as_ref();
-                    (car.clone(), cdr.clone())
-                }
+                UnpackedValue::Pair(pair) => pair.clone().into(),
                 UnpackedValue::Syntax(syn) => (
                     Value::from(syn.car().unwrap()),
                     Value::from(syn.cdr().unwrap()),

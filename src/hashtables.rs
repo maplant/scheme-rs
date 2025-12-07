@@ -477,7 +477,7 @@ impl Value {
             UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
             UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
             UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
-            UnpackedValue::Pair(p) => Gc::as_ptr(p).hash(state),
+            UnpackedValue::Pair(p) => Gc::as_ptr(&p.0).hash(state),
             UnpackedValue::Vector(v) => Gc::as_ptr(v).hash(state),
             UnpackedValue::Port(p) => Arc::as_ptr(&p.0).hash(state),
             UnpackedValue::HashTable(ht) => Gc::as_ptr(&ht.0).hash(state),
@@ -502,7 +502,7 @@ impl Value {
             UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
             UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
             UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
-            UnpackedValue::Pair(p) => Gc::as_ptr(p).hash(state),
+            UnpackedValue::Pair(p) => Gc::as_ptr(&p.0).hash(state),
             UnpackedValue::Vector(v) => Gc::as_ptr(v).hash(state),
             UnpackedValue::Port(p) => Arc::as_ptr(&p.0).hash(state),
             UnpackedValue::HashTable(ht) => Gc::as_ptr(&ht.0).hash(state),
@@ -537,9 +537,9 @@ impl Value {
             UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
             UnpackedValue::Pair(p) => {
                 recursive.insert(self.clone());
-                let p_read = p.read();
-                p_read.0.equal_hash(recursive, state);
-                p_read.1.equal_hash(recursive, state);
+                let (car, cdr) = p.clone().into();
+                car.equal_hash(recursive, state);
+                cdr.equal_hash(recursive, state);
             }
             UnpackedValue::Vector(v) => {
                 recursive.insert(self.clone());

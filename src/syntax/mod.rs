@@ -3,7 +3,7 @@ use crate::{
     env::{Environment, Keyword},
     exceptions::Condition,
     gc::Trace,
-    lists::{self, list_to_vec_with_null},
+    lists::list_to_vec_with_null,
     ports::Port,
     registry::bridge,
     symbols::Symbol,
@@ -161,12 +161,10 @@ impl Syntax {
             UnpackedValue::Boolean(b) => Syntax::new_literal(Literal::Boolean(b), Span::default()),
             UnpackedValue::Null => Syntax::new_null(Span::default()),
             UnpackedValue::Pair(pair) => {
-                let pair_read = pair.read();
-                let lists::Pair(lhs, rhs) = pair_read.as_ref();
+                let (lhs, rhs) = pair.into();
                 let mut list = Vec::new();
                 list.push(lhs.clone());
-                list_to_vec_with_null(rhs, &mut list);
-                // TODO: Use futures combinators
+                list_to_vec_with_null(&rhs, &mut list);
                 let mut out_list = Vec::new();
                 for item in list.iter() {
                     out_list.push(Syntax::syntax_from_datum(marks, item.clone()));

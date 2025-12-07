@@ -852,6 +852,12 @@ where
             lock.visit_or_recurse(visitor);
         }
     }
+
+    unsafe fn finalize(&mut self) {
+        unsafe {
+            self.get_mut().finalize_or_skip();
+        }
+    }
 }
 
 unsafe impl<T> Trace for parking_lot::RwLock<T>
@@ -861,6 +867,12 @@ where
     unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
         unsafe {
             self.read().visit_or_recurse(visitor);
+        }
+    }
+
+    unsafe fn finalize(&mut self) {
+        unsafe {
+            self.get_mut().finalize_or_skip();
         }
     }
 }
@@ -879,6 +891,12 @@ where
                     return;
                 }
             }
+        }
+    }
+
+    unsafe fn finalize(&mut self) {
+        unsafe {
+            self.get_mut().finalize_or_skip();
         }
     }
 }

@@ -4,7 +4,7 @@ use crate::{
     env::{Environment, Global},
     exceptions::{Condition, Exception, raise},
     gc::{Gc, GcInner, Trace, init_gc},
-    lists::{self, list_to_vec},
+    lists::{Pair, list_to_vec},
     num,
     ports::{BufferMode, Port, Transcoder},
     proc::{Application, ContinuationPtr, DynStack, FuncDebugInfo, FuncPtr, Procedure, UserPtr},
@@ -453,7 +453,7 @@ unsafe extern "C" fn cons(vals: *const *const (), num_vals: u32, error: *mut Val
         }
         let car = Value::from_raw_inc_rc(vals.read());
         let cdr = Value::from_raw_inc_rc(vals.add(1).read());
-        Value::into_raw(Value::from(Gc::new(lists::Pair(car, cdr))))
+        Value::into_raw(Value::from(Pair::new(car, cdr, true)))
     }
 }
 
@@ -463,10 +463,11 @@ unsafe extern "C" fn list(vals: *const *const (), num_vals: u32, _error: *mut Va
     let mut list = Value::null();
     unsafe {
         for i in (0..num_vals).rev() {
-            list = Value::from(Gc::new(lists::Pair(
+            list = Value::from(Pair::new(
                 Value::from_raw_inc_rc(vals.add(i as usize).read()),
                 list,
-            )));
+                true,
+            ));
         }
     }
     Value::into_raw(list)
