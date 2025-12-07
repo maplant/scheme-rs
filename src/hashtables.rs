@@ -148,6 +148,8 @@ impl HashTableInner {
     }
 
     pub fn update(&self, key: &Value, proc: &Procedure, default: &Value) -> Result<(), Condition> {
+        use std::slice;
+
         if !self.mutable {
             return Err(Condition::error("hashtable is immutable"));
         }
@@ -157,10 +159,10 @@ impl HashTableInner {
         for entry in table.iter_hash_mut(hash) {
             if entry.hash == hash && self.eq(key.clone(), entry.key.clone())? {
                 #[cfg(not(feature = "async"))]
-                let updated = proc.call(&[entry.val.clone()])?[0].clone();
+                let updated = proc.call(slice::from_ref(&entry.val))?[0].clone();
 
                 #[cfg(feature = "async")]
-                let updated = proc.call_sync(std::slice::from_ref(&entry.val))?[0].clone();
+                let updated = proc.call_sync(slice::from_ref(&entry.val))?[0].clone();
 
                 entry.val = updated;
                 return Ok(());
@@ -168,10 +170,10 @@ impl HashTableInner {
         }
 
         #[cfg(not(feature = "async"))]
-        let updated = proc.call(&[default.clone()])?[0].clone();
+        let updated = proc.call(slice::from_ref(default))?[0].clone();
 
         #[cfg(feature = "async")]
-        let updated = proc.call_sync(std::slice::from_ref(default))?[0].clone();
+        let updated = proc.call_sync(slice::from_ref(default))?[0].clone();
 
         table.insert_unique(
             hash,
