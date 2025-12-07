@@ -73,6 +73,10 @@ impl Number {
         }
     }
 
+    pub fn is_nan(&self) -> bool {
+        matches!(self, Self::Real(r) if r.is_nan())
+    }
+
     pub fn is_complex(&self) -> bool {
         matches!(self, Self::Complex(_))
     }
@@ -293,6 +297,21 @@ impl Neg for Number {
             Self::Rational(r) => Self::Rational(-r),
             Self::Real(r) => Self::Real(-r),
             Self::Complex(c) => Self::Complex(-c),
+        }
+    }
+}
+
+impl Hash for Number {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            Number::FixedInteger(i) => i.hash(state),
+            Number::BigInteger(i) => i.hash(state),
+            Number::Rational(r) => r.hash(state),
+            Number::Real(r) => OrderedFloat(*r).hash(state),
+            Number::Complex(c) => {
+                let Complex { im, re } = *c;
+                Complex::new(OrderedFloat(im), OrderedFloat(re)).hash(state);
+            }
         }
     }
 }
@@ -610,45 +629,6 @@ impl Display for ArithmeticError {
 impl From<RationalFromPrimitiveFloatError> for Box<ArithmeticError> {
     fn from(err: RationalFromPrimitiveFloatError) -> Self {
         Box::new(ArithmeticError::RationalFromPrimitiveFloat(err))
-    }
-}
-
-pub(crate) struct ReflexiveNumber(pub(crate) Arc<Number>);
-
-impl PartialEq for ReflexiveNumber {
-    fn eq(&self, rhs: &Self) -> bool {
-        match (self.0.as_ref(), rhs.0.as_ref()) {
-            (Number::FixedInteger(lhs), Number::FixedInteger(rhs)) => lhs == rhs,
-            (Number::BigInteger(lhs), Number::BigInteger(rhs)) => lhs == rhs,
-            (Number::Rational(lhs), Number::Rational(rhs)) => lhs == rhs,
-            (Number::Real(lhs), Number::Real(rhs)) => OrderedFloat(*lhs) == OrderedFloat(*rhs),
-            (Number::Complex(lhs), Number::Complex(rhs)) => {
-                let Complex { im, re } = *lhs;
-                let lhs = Complex::new(OrderedFloat(im), OrderedFloat(re));
-                let Complex { im, re } = *rhs;
-                let rhs = Complex::new(OrderedFloat(im), OrderedFloat(re));
-                lhs == rhs
-            }
-            _ => false,
-        }
-    }
-}
-
-impl Eq for ReflexiveNumber {}
-
-impl Hash for ReflexiveNumber {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        std::mem::discriminant(self.0.as_ref()).hash(state);
-        match self.0.as_ref() {
-            Number::FixedInteger(i) => i.hash(state),
-            Number::BigInteger(i) => i.hash(state),
-            Number::Rational(r) => r.hash(state),
-            Number::Real(r) => OrderedFloat(*r).hash(state),
-            Number::Complex(c) => {
-                let Complex { im, re } = *c;
-                Complex::new(OrderedFloat(im), OrderedFloat(re)).hash(state);
-            }
-        }
     }
 }
 

@@ -5,7 +5,7 @@ use crate::{
     num::Number,
     registry::bridge,
     strings,
-    value::{EqvValue, Value, write_value},
+    value::{Value, write_value},
 };
 use indexmap::IndexMap;
 use malachite::Integer;
@@ -49,8 +49,8 @@ impl<T: Trace + PartialEq> PartialEq for AlignedVector<T> {
 
 pub(crate) fn write_vec(
     v: &Gc<AlignedVector<Value>>,
-    fmt: fn(&Value, &mut IndexMap<EqvValue, bool>, &mut fmt::Formatter<'_>) -> fmt::Result,
-    circular_values: &mut IndexMap<EqvValue, bool>,
+    fmt: fn(&Value, &mut IndexMap<Value, bool>, &mut fmt::Formatter<'_>) -> fmt::Result,
+    circular_values: &mut IndexMap<Value, bool>,
     f: &mut fmt::Formatter<'_>,
 ) -> Result<(), fmt::Error> {
     write!(f, "#(")?;

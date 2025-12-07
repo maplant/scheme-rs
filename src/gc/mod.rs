@@ -560,6 +560,28 @@ where
     }
 }
 
+unsafe impl<K> Trace for hashbrown::HashTable<K>
+where
+    K: GcOrTrace,
+{
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+        unsafe {
+            for k in self {
+                k.visit_or_recurse(visitor);
+            }
+        }
+    }
+
+    unsafe fn finalize(&mut self) {
+        unsafe {
+            for k in std::mem::take(self) {
+                let mut k = ManuallyDrop::new(k);
+                k.finalize_or_skip();
+            }
+        }
+    }
+}
+
 unsafe impl<K> Trace for indexmap::IndexSet<K>
 where
     K: GcOrTrace,
@@ -828,6 +850,17 @@ where
             // This _should_ be fine, while not optimally efficient.
             let lock = self.blocking_lock();
             lock.visit_or_recurse(visitor);
+        }
+    }
+}
+
+unsafe impl<T> Trace for parking_lot::RwLock<T>
+where
+    T: GcOrTrace,
+{
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+        unsafe {
+            self.read().visit_or_recurse(visitor);
         }
     }
 }

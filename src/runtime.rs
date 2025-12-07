@@ -11,7 +11,7 @@ use crate::{
     registry::{Library, Registry},
     symbols::Symbol,
     syntax::Span,
-    value::{Cell, ReflexiveValue, UnpackedValue, Value},
+    value::{Cell, UnpackedValue, Value},
 };
 use scheme_rs_macros::{maybe_async, maybe_await, runtime_fn};
 use std::{collections::HashSet, mem::ManuallyDrop, path::Path, sync::Arc};
@@ -124,7 +124,7 @@ pub(crate) struct RuntimeInner {
     pub(crate) registry: Registry,
     /// Channel to compilation task
     compilation_buffer_tx: CompilationBufferTx,
-    pub(crate) constants_pool: HashSet<ReflexiveValue>,
+    pub(crate) constants_pool: HashSet<Value>,
     pub(crate) globals_pool: HashSet<Global>,
     pub(crate) debug_info: DebugInfo,
 }

@@ -4,7 +4,7 @@ use scheme_rs::{exceptions::Condition, registry::bridge, value::Value};
 
 #[bridge(name = "assert-equal?", lib = "(test)")]
 fn test_assert(arg1: &Value, arg2: &Value) -> Result<Vec<Value>, Condition> {
-    if arg1 != arg2 {
+    if !arg1.equal(arg2) {
         Err(Condition::error(format!(
             "assert-equal? failed: {arg1:?} != {arg2:?}"
         )))
