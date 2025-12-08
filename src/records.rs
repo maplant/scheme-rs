@@ -10,6 +10,7 @@ use std::{
 };
 
 use by_address::ByAddress;
+use parking_lot::RwLock;
 
 use crate::{
     exceptions::Condition,
@@ -20,7 +21,7 @@ use crate::{
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
     value::{UnpackedValue, Value, ValueType},
-    vectors,
+    vectors::Vector,
 };
 
 pub use scheme_rs_macros::rtd;
@@ -98,8 +99,8 @@ impl Field {
     }
 
     fn parse_fields(fields: &Value) -> Result<Vec<Self>, Condition> {
-        let fields: Gc<vectors::AlignedVector<Value>> = fields.clone().try_into()?;
-        fields.read().iter().map(Self::parse).collect()
+        let fields: Vector = fields.clone().try_into()?;
+        fields.0.vec.read().iter().map(Self::parse).collect()
     }
 
     fn name(&self) -> Symbol {
@@ -274,7 +275,7 @@ pub fn make_record_constructor_descriptor(
             return Err(Condition::error("RTD is a base type".to_string()));
         };
         let parent_rcd = parent_rcd.try_into_rust_type::<RecordConstructorDescriptor>()?;
-        if !Arc::ptr_eq(&parent_rcd.read().rtd, parent_rtd) {
+        if !Arc::ptr_eq(&parent_rcd.rtd, parent_rtd) {
             return Err(Condition::error(
                 "Parent RTD does not match parent RCD".to_string(),
             ));
@@ -365,7 +366,6 @@ pub fn record_constructor(
 fn rcd_to_protocols_and_rtds(
     rcd: &Gc<RecordConstructorDescriptor>,
 ) -> (Vec<Procedure>, Vec<Arc<RecordTypeDescriptor>>) {
-    let rcd = rcd.read();
     let (mut protocols, mut rtds) = if let Some(ref parent) = rcd.parent {
         rcd_to_protocols_and_rtds(parent)
     } else {
@@ -377,19 +377,18 @@ fn rcd_to_protocols_and_rtds(
 }
 
 pub(crate) unsafe extern "C" fn chain_protocols(
-    runtime: *mut GcInner<RuntimeInner>,
+    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
     _dyn_stack: *mut DynStack,
 ) -> *mut Application {
     unsafe {
         // env[0] is a vector of protocols
-        let protocols: Gc<vectors::AlignedVector<Value>> =
-            env.as_ref().unwrap().clone().try_into().unwrap();
+        let protocols: Vector = env.as_ref().unwrap().clone().try_into().unwrap();
         // env[1] is k, the continuation
         let k = env.add(1).as_ref().unwrap().clone();
 
-        let mut protocols = protocols.read().clone();
+        let mut protocols = protocols.0.vec.read().clone();
         let remaining_protocols = protocols.split_off(1);
         let curr_protocol: Procedure = protocols[0].clone().try_into().unwrap();
 
@@ -432,10 +431,10 @@ fn chain_constructors(
 ) -> Result<Application, Condition> {
     let k: Procedure = k.try_into()?;
     // env[0] is a vector of RTDs
-    let rtds: Gc<vectors::AlignedVector<Value>> = env[0].clone().try_into()?;
+    let rtds: Vector = env[0].clone().try_into()?;
     // env[1] is the possible rust constructor
     let rust_constructor = env[1].clone();
-    let mut rtds = rtds.read().clone();
+    let mut rtds = rtds.0.vec.read().clone();
     let remaining_rtds = rtds.split_off(1);
     let curr_rtd: Arc<RecordTypeDescriptor> = rtds[0].clone().try_into()?;
     let rtds_remain = !remaining_rtds.is_empty();
@@ -506,7 +505,7 @@ fn constructor(
     let record = Value::from(Record(Gc::new(RecordInner {
         rust_parent,
         rtd,
-        fields,
+        fields: fields.into_iter().map(RwLock::new).collect(),
     })));
     Ok(Application::new(k, vec![record], None))
 }
@@ -568,16 +567,15 @@ fn default_protocol_constructor(
 }
 
 pub(crate) unsafe extern "C" fn call_constructor_continuation(
-    _runtime: *mut GcInner<RuntimeInner>,
+    _runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
     _dyn_stack: *mut DynStack,
 ) -> *mut Application {
     unsafe {
         let constructor: Procedure = args.as_ref().unwrap().clone().try_into().unwrap();
-        let args: Gc<vectors::AlignedVector<Value>> =
-            env.as_ref().unwrap().clone().try_into().unwrap();
-        let mut args = args.read().clone();
+        let args: Vector = env.as_ref().unwrap().clone().try_into().unwrap();
+        let mut args = args.0.vec.read().clone();
         let cont = env.add(1).as_ref().unwrap().clone();
         args.push(cont);
 
@@ -607,13 +605,12 @@ impl Record {
     /// Attempt to convert the record into a Rust type that implements
     /// [SchemeCompatible].
     pub fn try_into_rust_type<T: SchemeCompatible>(&self) -> Option<Gc<T>> {
-        let this = self.0.read();
-        let opaque_parent = this.rust_parent.as_ref()?;
+        let opaque_parent = self.0.rust_parent.as_ref()?;
 
         // Attempt to extract any embedded records
         let rtd = T::rtd();
         let mut t = opaque_parent.clone();
-        while let Some(embedded) = { t.read().extract_embedded_record(&rtd) } {
+        while let Some(embedded) = { t.extract_embedded_record(&rtd) } {
             t = embedded;
         }
 
@@ -645,16 +642,16 @@ impl Record {
 
 impl fmt::Debug for Record {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.read().fmt(f)
+        self.0.fmt(f)
     }
 }
 
-#[derive(Trace, Clone)]
+#[derive(Trace)]
 #[repr(align(16))]
 pub(crate) struct RecordInner {
     pub(crate) rust_parent: Option<Gc<dyn SchemeCompatible>>,
     pub(crate) rtd: Arc<RecordTypeDescriptor>,
-    pub(crate) fields: Vec<Value>,
+    pub(crate) fields: Vec<RwLock<Value>>,
 }
 
 impl fmt::Debug for RecordInner {
@@ -735,9 +732,8 @@ pub fn is_subtype_of(val: &Value, rt: &Value) -> Result<bool, Condition> {
     let UnpackedValue::Record(rec) = val.clone().unpack() else {
         return Ok(false);
     };
-    let rec_read = rec.0.read();
     let rt: Arc<RecordTypeDescriptor> = rt.clone().try_into()?;
-    Ok(Arc::ptr_eq(&rec_read.rtd, &rt) || rec_read.rtd.inherits.contains(&ByAddress::from(rt)))
+    Ok(Arc::ptr_eq(&rec.0.rtd, &rt) || rec.0.rtd.inherits.contains(&ByAddress::from(rt)))
 }
 
 #[cps_bridge]
@@ -811,7 +807,7 @@ fn record_accessor_fn(
         ));
     }
     let idx: usize = env[1].clone().try_into()?;
-    let val = record.0.read().fields[idx].clone();
+    let val = record.0.fields[idx].read().clone();
     Ok(Application::new(k, vec![val], None))
 }
 
@@ -873,7 +869,7 @@ fn record_mutator_fn(
         ));
     }
     let idx: usize = env[1].clone().try_into()?;
-    record.0.write().fields[idx] = new_val.clone();
+    *record.0.fields[idx].write() = new_val.clone();
     Ok(Application::new(k, vec![], None))
 }
 
@@ -922,7 +918,7 @@ pub fn record_mutator(
 #[bridge(name = "record?", lib = "(rnrs records inspection (6))")]
 pub fn record_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
     match &*obj.unpacked_ref() {
-        UnpackedValue::Record(rec) => Ok(vec![Value::from(!rec.0.read().rtd.opaque)]),
+        UnpackedValue::Record(rec) => Ok(vec![Value::from(!rec.0.rtd.opaque)]),
         _ => Ok(vec![Value::from(false)]),
     }
 }
@@ -930,9 +926,7 @@ pub fn record_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
 #[bridge(name = "record-rtd", lib = "(rnrs records inspection (6))")]
 pub fn record_rtd(record: &Value) -> Result<Vec<Value>, Condition> {
     match &*record.unpacked_ref() {
-        UnpackedValue::Record(rec) if !rec.0.read().rtd.opaque => {
-            Ok(vec![Value::from(rec.0.read().rtd.clone())])
-        }
+        UnpackedValue::Record(rec) if !rec.0.rtd.opaque => Ok(vec![Value::from(rec.0.rtd.clone())]),
         _ => Err(Condition::error(
             "expected a non-opaque record type".to_string(),
         )),

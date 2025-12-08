@@ -13,7 +13,7 @@ use crate::{
     gc::{Gc, Trace},
     proc::Procedure,
     registry::bridge,
-    strings,
+    strings::WideString,
     symbols::Symbol,
     value::{UnpackedValue, Value, ValueType},
 };
@@ -255,50 +255,50 @@ impl HashTable {
     }
 
     pub fn size(&self) -> usize {
-        self.0.read().size()
+        self.0.size()
     }
 
     pub fn get(&self, key: &Value, default: &Value) -> Result<Value, Condition> {
-        self.0.read().get(key, default)
+        self.0.get(key, default)
     }
 
     pub fn set(&self, key: &Value, val: &Value) -> Result<(), Condition> {
-        self.0.read().set(key, val)
+        self.0.set(key, val)
     }
 
     pub fn delete(&self, key: &Value) -> Result<(), Condition> {
-        self.0.read().delete(key)
+        self.0.delete(key)
     }
 
     pub fn contains(&self, key: &Value) -> Result<bool, Condition> {
-        self.0.read().contains(key)
+        self.0.contains(key)
     }
 
     pub fn update(&self, key: &Value, proc: &Procedure, default: &Value) -> Result<(), Condition> {
-        self.0.read().update(key, proc, default)
+        self.0.update(key, proc, default)
     }
 
     pub fn copy(&self, mutable: bool) -> Self {
-        Self(Gc::new(self.0.read().copy(mutable)))
+        Self(Gc::new(self.0.copy(mutable)))
     }
 
     pub fn clear(&self) {
-        self.0.read().clear();
+        self.0.clear();
     }
 
     pub fn keys(&self) -> Vec<Value> {
-        self.0.read().keys()
+        self.0.keys()
     }
 
     pub fn entries(&self) -> (Vec<Value>, Vec<Value>) {
-        self.0.read().entries()
+        self.0.entries()
     }
 }
 
 impl fmt::Debug for HashTable {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "#hash(")?;
-        for (i, entry) in self.0.read().table.read().iter().enumerate() {
+        for (i, entry) in self.0.table.read().iter().enumerate() {
             if i > 0 {
                 write!(f, " ")?;
             }
@@ -413,8 +413,7 @@ pub fn hashtable_clear_bang(hashtable: &Value, rest: &[Value]) -> Result<Vec<Val
     hashtable.clear();
 
     if let Some(k) = k {
-        let inner = hashtable.0.read();
-        let mut table = inner.table.write();
+        let mut table = hashtable.0.table.write();
         if table.capacity() < k {
             table.shrink_to(k, TableEntry::get_hash);
         } else {
@@ -445,7 +444,7 @@ pub fn hashtable_entries(hashtable: &Value) -> Result<Vec<Value>, Condition> {
 )]
 pub fn hashtable_equivalence_function(hashtable: &Value) -> Result<Vec<Value>, Condition> {
     let hashtable: HashTable = hashtable.clone().try_into()?;
-    let eqv_func = Value::from(hashtable.0.read().eq.clone());
+    let eqv_func = Value::from(hashtable.0.eq.clone());
     Ok(vec![eqv_func])
 }
 
@@ -455,7 +454,7 @@ pub fn hashtable_equivalence_function(hashtable: &Value) -> Result<Vec<Value>, C
 )]
 pub fn hashtable_hash_function(hashtable: &Value) -> Result<Vec<Value>, Condition> {
     let hashtable: HashTable = hashtable.clone().try_into()?;
-    let hash_func = Value::from(hashtable.0.read().hash.clone());
+    let hash_func = Value::from(hashtable.0.hash.clone());
     Ok(vec![hash_func])
 }
 
@@ -470,15 +469,15 @@ impl Value {
             UnpackedValue::Boolean(b) => b.hash(state),
             UnpackedValue::Character(c) => c.hash(state),
             UnpackedValue::Number(n) => Arc::as_ptr(n).hash(state),
-            UnpackedValue::String(s) => Arc::as_ptr(s).hash(state),
+            UnpackedValue::String(s) => Arc::as_ptr(&s.0).hash(state),
             UnpackedValue::Symbol(s) => s.hash(state),
-            UnpackedValue::ByteVector(v) => Arc::as_ptr(v).hash(state),
+            UnpackedValue::ByteVector(v) => Arc::as_ptr(&v.0).hash(state),
             UnpackedValue::Syntax(s) => Arc::as_ptr(s).hash(state),
             UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
             UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
             UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
-            UnpackedValue::Pair(p) => Gc::as_ptr(p).hash(state),
-            UnpackedValue::Vector(v) => Gc::as_ptr(v).hash(state),
+            UnpackedValue::Pair(p) => Gc::as_ptr(&p.0).hash(state),
+            UnpackedValue::Vector(v) => Gc::as_ptr(&v.0).hash(state),
             UnpackedValue::Port(p) => Arc::as_ptr(&p.0).hash(state),
             UnpackedValue::HashTable(ht) => Gc::as_ptr(&ht.0).hash(state),
             UnpackedValue::Cell(c) => c.0.read().eqv_hash(state),
@@ -495,15 +494,15 @@ impl Value {
             UnpackedValue::Boolean(b) => b.hash(state),
             UnpackedValue::Character(c) => c.hash(state),
             UnpackedValue::Number(n) => n.as_ref().hash(state),
-            UnpackedValue::String(s) => Arc::as_ptr(s).hash(state),
+            UnpackedValue::String(s) => Arc::as_ptr(&s.0).hash(state),
             UnpackedValue::Symbol(s) => s.hash(state),
-            UnpackedValue::ByteVector(v) => Arc::as_ptr(v).hash(state),
+            UnpackedValue::ByteVector(v) => Arc::as_ptr(&v.0).hash(state),
             UnpackedValue::Syntax(s) => Arc::as_ptr(s).hash(state),
             UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
             UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
             UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
-            UnpackedValue::Pair(p) => Gc::as_ptr(p).hash(state),
-            UnpackedValue::Vector(v) => Gc::as_ptr(v).hash(state),
+            UnpackedValue::Pair(p) => Gc::as_ptr(&p.0).hash(state),
+            UnpackedValue::Vector(v) => Gc::as_ptr(&v.0).hash(state),
             UnpackedValue::Port(p) => Arc::as_ptr(&p.0).hash(state),
             UnpackedValue::HashTable(ht) => Gc::as_ptr(&ht.0).hash(state),
             UnpackedValue::Cell(c) => c.0.read().eqv_hash(state),
@@ -537,13 +536,13 @@ impl Value {
             UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
             UnpackedValue::Pair(p) => {
                 recursive.insert(self.clone());
-                let p_read = p.read();
-                p_read.0.equal_hash(recursive, state);
-                p_read.1.equal_hash(recursive, state);
+                let (car, cdr) = p.clone().into();
+                car.equal_hash(recursive, state);
+                cdr.equal_hash(recursive, state);
             }
             UnpackedValue::Vector(v) => {
                 recursive.insert(self.clone());
-                let v_read = v.read();
+                let v_read = v.0.vec.read();
                 state.write_usize(v_read.len());
                 for val in v_read.iter() {
                     val.equal_hash(recursive, state);
@@ -579,7 +578,7 @@ pub fn equal_hash(obj: &Value) -> Result<Vec<Value>, Condition> {
 
 #[bridge(name = "string-hash", lib = "(rnrs hashtables builtins (6))")]
 pub fn string_hash(string: &Value) -> Result<Vec<Value>, Condition> {
-    let string: Arc<strings::AlignedString> = string.clone().try_into()?;
+    let string: WideString = string.clone().try_into()?;
     let mut hasher = DefaultHasher::new();
     string.hash(&mut hasher);
     Ok(vec![Value::from(hasher.finish())])

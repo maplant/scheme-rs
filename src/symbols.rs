@@ -9,7 +9,7 @@ use indexmap::IndexSet;
 use rand::distr::{Alphabetic, SampleString};
 use scheme_rs_macros::{Trace, bridge};
 
-use crate::{exceptions::Condition, strings, value::Value};
+use crate::{exceptions::Condition, strings::WideString, value::Value};
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Trace)]
 pub struct Symbol(pub(crate) u32);
@@ -56,8 +56,8 @@ impl PartialEq<&'_ str> for Symbol {
 
 #[bridge(name = "string->symbol", lib = "(rnrs base builtins (6))")]
 pub fn string_to_symbol(s: &Value) -> Result<Vec<Value>, Condition> {
-    let s: Arc<strings::AlignedString> = s.clone().try_into()?;
-    Ok(vec![Value::from(Symbol::intern(&s))])
+    let s: WideString = s.clone().try_into()?;
+    Ok(vec![Value::from(Symbol::intern(&s.to_string()))])
 }
 
 #[bridge(name = "symbol->string", lib = "(rnrs base builtins (6))")]

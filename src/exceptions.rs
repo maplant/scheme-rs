@@ -1,5 +1,6 @@
 //! Exceptional situations and conditions
 
+use parking_lot::RwLock;
 use scheme_rs_macros::{cps_bridge, runtime_fn};
 
 use crate::{
@@ -586,7 +587,7 @@ pub fn raise(runtime: Runtime, raised: Value) -> Application {
 
 #[runtime_fn]
 unsafe extern "C" fn raise_rt(
-    runtime: *mut GcInner<RuntimeInner>,
+    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     raised: *const (),
 ) -> *mut Application {
     unsafe {
@@ -597,7 +598,7 @@ unsafe extern "C" fn raise_rt(
 }
 
 unsafe extern "C" fn unwind_to_exception_handler(
-    runtime: *mut GcInner<RuntimeInner>,
+    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
     dyn_stack: *mut DynStack,
@@ -652,7 +653,7 @@ unsafe extern "C" fn unwind_to_exception_handler(
 }
 
 unsafe extern "C" fn reraise_exception(
-    runtime: *mut GcInner<RuntimeInner>,
+    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
     _dyn_stack: *mut DynStack,

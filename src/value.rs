@@ -1,19 +1,21 @@
 use indexmap::{IndexMap, IndexSet};
+use parking_lot::RwLock;
 
 use crate::{
     ast,
     exceptions::{Condition, Exception},
     gc::{Gc, GcInner, Trace},
     hashtables::{self, HashTable, HashTableInner},
-    lists,
+    lists::{self, Pair, PairInner},
     num::Number,
-    ports::{self, PortInner},
+    ports::{Port, PortInner},
     proc::{Procedure, ProcedureInner},
     records::{Record, RecordInner, RecordTypeDescriptor, SchemeCompatible},
     registry::bridge,
-    strings, symbols,
+    strings::{WideString, WideStringInner},
+    symbols::Symbol,
     syntax::Syntax,
-    vectors,
+    vectors::{self, ByteVector, Vector, VectorInner},
 };
 use std::{
     collections::HashMap, fmt, hash::Hash, io::Write, marker::PhantomData, mem::ManuallyDrop,
@@ -63,15 +65,11 @@ impl Value {
         unsafe {
             match tag {
                 Tag::Number => Arc::increment_strong_count(untagged as *const Number),
-                Tag::String => {
-                    Arc::increment_strong_count(untagged as *const strings::AlignedString)
+                Tag::String => Arc::increment_strong_count(untagged as *const WideStringInner),
+                Tag::Vector => {
+                    Gc::increment_reference_count(untagged as *mut GcInner<VectorInner<Value>>)
                 }
-                Tag::Vector => Gc::increment_reference_count(
-                    untagged as *mut GcInner<vectors::AlignedVector<Self>>,
-                ),
-                Tag::ByteVector => {
-                    Arc::increment_strong_count(untagged as *const vectors::AlignedVector<u8>)
-                }
+                Tag::ByteVector => Arc::increment_strong_count(untagged as *const VectorInner<u8>),
                 Tag::Syntax => Arc::increment_strong_count(untagged as *const Syntax),
                 Tag::Procedure => {
                     Gc::increment_reference_count(untagged as *mut GcInner<ProcedureInner>)
@@ -82,7 +80,7 @@ impl Value {
                 }
                 Tag::Pair => {
                     if !untagged.is_null() {
-                        Gc::increment_reference_count(untagged as *mut GcInner<lists::Pair>)
+                        Gc::increment_reference_count(untagged as *mut GcInner<PairInner>)
                     }
                 }
                 Tag::Port => Arc::increment_strong_count(untagged as *const PortInner),
@@ -133,7 +131,7 @@ impl Value {
             Syntax::List { list, .. } => {
                 let mut curr = Self::datum_from_syntax(list.last().unwrap());
                 for item in list[..list.len() - 1].iter().rev() {
-                    curr = Self::from(Gc::new(lists::Pair(Self::datum_from_syntax(item), curr)));
+                    curr = Self::from(Pair::new(Self::datum_from_syntax(item), curr, false));
                 }
                 curr
             }
@@ -188,21 +186,20 @@ impl Value {
                 UnpackedValue::Number(number)
             }
             Tag::String => {
-                let str = unsafe { Arc::from_raw(untagged as *const strings::AlignedString) };
-                UnpackedValue::String(str)
+                let str = unsafe { Arc::from_raw(untagged as *const WideStringInner) };
+                UnpackedValue::String(WideString(str))
             }
             Tag::Symbol => {
                 let untagged = (untagged as usize >> TAG_BITS) as u32;
-                UnpackedValue::Symbol(symbols::Symbol(untagged))
+                UnpackedValue::Symbol(Symbol(untagged))
             }
             Tag::Vector => {
-                let vec =
-                    unsafe { Gc::from_raw(untagged as *mut GcInner<vectors::AlignedVector<Self>>) };
-                UnpackedValue::Vector(vec)
+                let vec = unsafe { Gc::from_raw(untagged as *mut GcInner<VectorInner<Self>>) };
+                UnpackedValue::Vector(Vector(vec))
             }
             Tag::ByteVector => {
-                let bvec = unsafe { Arc::from_raw(untagged as *const vectors::AlignedVector<u8>) };
-                UnpackedValue::ByteVector(bvec)
+                let bvec = unsafe { Arc::from_raw(untagged as *const VectorInner<u8>) };
+                UnpackedValue::ByteVector(ByteVector(bvec))
             }
             Tag::Syntax => {
                 let syn = unsafe { Arc::from_raw(untagged as *const Syntax) };
@@ -224,20 +221,20 @@ impl Value {
                 if untagged.is_null() {
                     UnpackedValue::Null
                 } else {
-                    let pair = unsafe { Gc::from_raw(untagged as *mut GcInner<lists::Pair>) };
-                    UnpackedValue::Pair(pair)
+                    let pair = unsafe { Gc::from_raw(untagged as *mut GcInner<PairInner>) };
+                    UnpackedValue::Pair(Pair(pair))
                 }
             }
             Tag::Port => {
                 let port_inner = unsafe { Arc::from_raw(untagged as *const PortInner) };
-                UnpackedValue::Port(ports::Port(port_inner))
+                UnpackedValue::Port(Port(port_inner))
             }
             Tag::HashTable => {
                 let ht = unsafe { Gc::from_raw(untagged as *mut GcInner<HashTableInner>) };
                 UnpackedValue::HashTable(HashTable(ht))
             }
             Tag::Cell => {
-                let cell = unsafe { Gc::from_raw(untagged as *mut GcInner<Value>) };
+                let cell = unsafe { Gc::from_raw(untagged as *mut GcInner<RwLock<Value>>) };
                 UnpackedValue::Cell(Cell(cell))
             }
         }
@@ -340,7 +337,7 @@ unsafe impl Trace for Value {
 
 /// A Cell is a value that is mutable, essentially a variable.
 #[derive(Clone, Trace)]
-pub struct Cell(pub(crate) Gc<Value>);
+pub struct Cell(pub(crate) Gc<RwLock<Value>>);
 
 pub struct UnpackedValueRef<'a> {
     unpacked: ManuallyDrop<UnpackedValue>,
@@ -473,16 +470,16 @@ pub enum UnpackedValue {
     Boolean(bool),
     Character(char),
     Number(Arc<Number>),
-    String(Arc<strings::AlignedString>),
-    Symbol(symbols::Symbol),
-    Vector(Gc<vectors::AlignedVector<Value>>),
-    ByteVector(Arc<vectors::AlignedVector<u8>>),
+    String(WideString),
+    Symbol(Symbol),
+    Vector(Vector),
+    ByteVector(ByteVector),
     Syntax(Arc<Syntax>),
     Procedure(Procedure),
     Record(Record),
     RecordTypeDescriptor(Arc<RecordTypeDescriptor>),
-    Pair(Gc<lists::Pair>),
-    Port(ports::Port),
+    Pair(Pair),
+    Port(Port),
     HashTable(hashtables::HashTable),
     Cell(Cell),
 }
@@ -503,18 +500,18 @@ impl UnpackedValue {
                 Value::from_ptr_and_tag(untagged, Tag::Number)
             }
             Self::String(str) => {
-                let untagged = Arc::into_raw(str);
+                let untagged = Arc::into_raw(str.0);
                 Value::from_ptr_and_tag(untagged, Tag::String)
             }
             Self::Symbol(sym) => {
                 Value::from_ptr_and_tag(((sym.0 as usize) << TAG_BITS) as *const (), Tag::Symbol)
             }
             Self::Vector(vec) => {
-                let untagged = Gc::into_raw(vec);
+                let untagged = Gc::into_raw(vec.0);
                 Value::from_mut_ptr_and_tag(untagged, Tag::Vector)
             }
             Self::ByteVector(b_vec) => {
-                let untagged = Arc::into_raw(b_vec);
+                let untagged = Arc::into_raw(b_vec.0);
                 Value::from_ptr_and_tag(untagged, Tag::ByteVector)
             }
             Self::Syntax(syn) => {
@@ -534,7 +531,7 @@ impl UnpackedValue {
                 Value::from_ptr_and_tag(untagged, Tag::RecordTypeDescriptor)
             }
             Self::Pair(pair) => {
-                let untagged = Gc::into_raw(pair);
+                let untagged = Gc::into_raw(pair.0);
                 Value::from_mut_ptr_and_tag(untagged, Tag::Pair)
             }
             Self::Port(port) => {
@@ -560,10 +557,10 @@ impl UnpackedValue {
             (Self::Number(a), Self::Number(b)) => Arc::ptr_eq(a, b),
             (Self::Character(a), Self::Character(b)) => a == b,
             (Self::Null, Self::Null) => true,
-            (Self::String(a), Self::String(b)) => Arc::ptr_eq(a, b),
-            (Self::Pair(a), Self::Pair(b)) => Gc::ptr_eq(a, b),
-            (Self::Vector(a), Self::Vector(b)) => Gc::ptr_eq(a, b),
-            (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(a, b),
+            (Self::String(a), Self::String(b)) => Arc::ptr_eq(&a.0, &b.0),
+            (Self::Pair(a), Self::Pair(b)) => Gc::ptr_eq(&a.0, &b.0),
+            (Self::Vector(a), Self::Vector(b)) => Gc::ptr_eq(&a.0, &b.0),
+            (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(&a.0, &b.0),
             (Self::Procedure(a), Self::Procedure(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Syntax(a), Self::Syntax(b)) => Arc::ptr_eq(a, b),
             (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
@@ -595,10 +592,10 @@ impl UnpackedValue {
             // Both obj1 and obj2 are the empty list
             (Self::Null, Self::Null) => true,
             // Everything else is pointer equivalence
-            (Self::String(a), Self::String(b)) => Arc::ptr_eq(a, b),
-            (Self::Pair(a), Self::Pair(b)) => Gc::ptr_eq(a, b),
-            (Self::Vector(a), Self::Vector(b)) => Gc::ptr_eq(a, b),
-            (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(a, b),
+            (Self::String(a), Self::String(b)) => Arc::ptr_eq(&a.0, &b.0),
+            (Self::Pair(a), Self::Pair(b)) => Gc::ptr_eq(&a.0, &b.0),
+            (Self::Vector(a), Self::Vector(b)) => Gc::ptr_eq(&a.0, &b.0),
+            (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(&a.0, &b.0),
             (Self::Procedure(a), Self::Procedure(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Syntax(a), Self::Syntax(b)) => Arc::ptr_eq(a, b),
             (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
@@ -717,20 +714,18 @@ fn slow(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64) -> O
 }
 
 fn pair_eq(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
-    let obj1: Gc<lists::Pair> = obj1.clone().try_into().unwrap();
-    let obj2: Gc<lists::Pair> = obj2.clone().try_into().unwrap();
-    let obj1 = obj1.read();
-    let obj2 = obj2.read();
-    let lists::Pair(car_x, cdr_x) = obj1.as_ref();
-    let lists::Pair(car_y, cdr_y) = obj2.as_ref();
-    e(ht, car_x, car_y, k - 1).and_then(|k| e(ht, cdr_x, cdr_y, k))
+    let obj1: Pair = obj1.clone().try_into().unwrap();
+    let obj2: Pair = obj2.clone().try_into().unwrap();
+    let (car_x, cdr_x) = obj1.into();
+    let (car_y, cdr_y) = obj2.into();
+    e(ht, &car_x, &car_y, k - 1).and_then(|k| e(ht, &cdr_x, &cdr_y, k))
 }
 
 fn vector_eq(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
-    let vobj1: Gc<vectors::AlignedVector<Value>> = obj1.clone().try_into().unwrap();
-    let vobj2: Gc<vectors::AlignedVector<Value>> = obj2.clone().try_into().unwrap();
-    let vobj1 = vobj1.read();
-    let vobj2 = vobj2.read();
+    let vobj1: Vector = obj1.clone().try_into().unwrap();
+    let vobj2: Vector = obj2.clone().try_into().unwrap();
+    let vobj1 = vobj1.0.vec.read();
+    let vobj2 = vobj2.0.vec.read();
     if vobj1.len() != vobj2.len() {
         return None;
     }
@@ -742,14 +737,14 @@ fn vector_eq(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64)
 }
 
 fn bytevector_eq(obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
-    let obj1: Arc<vectors::AlignedVector<u8>> = obj1.clone().try_into().unwrap();
-    let obj2: Arc<vectors::AlignedVector<u8>> = obj2.clone().try_into().unwrap();
-    (obj1 == obj2).then_some(k)
+    let obj1: ByteVector = obj1.clone().try_into().unwrap();
+    let obj2: ByteVector = obj2.clone().try_into().unwrap();
+    (*obj1.0.vec.read() == *obj2.0.vec.read()).then_some(k)
 }
 
 fn string_eq(obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
-    let obj1: Arc<strings::AlignedString> = obj1.clone().try_into().unwrap();
-    let obj2: Arc<strings::AlignedString> = obj2.clone().try_into().unwrap();
+    let obj1: WideString = obj1.clone().try_into().unwrap();
+    let obj2: WideString = obj2.clone().try_into().unwrap();
     (obj1 == obj2).then_some(k)
 }
 
@@ -808,17 +803,17 @@ fn find(mut b: Value) -> Value {
 }
 
 fn boxv(v: Value) -> Value {
-    Value::from((v.clone(), Value::null()))
+    Value::from(Pair::new(v.clone(), Value::null(), true))
 }
 
 fn unbox(v: &Value) -> Value {
-    let pair: Gc<lists::Pair> = v.clone().try_into().unwrap();
-    pair.read().0.clone()
+    let pair: Pair = v.clone().try_into().unwrap();
+    pair.car()
 }
 
 fn unbox_to_num(v: &Value) -> Number {
-    let pair: Gc<lists::Pair> = v.clone().try_into().unwrap();
-    let num: Arc<Number> = pair.read().0.clone().try_into().unwrap();
+    let pair: Pair = v.clone().try_into().unwrap();
+    let num: Arc<Number> = pair.car().try_into().unwrap();
     num.as_ref().clone()
 }
 
@@ -827,8 +822,8 @@ fn is_box(v: &Value) -> bool {
 }
 
 fn set_box(b: &Value, val: impl Into<Value>) {
-    let pair: Gc<lists::Pair> = b.clone().try_into().unwrap();
-    pair.write().0 = val.into();
+    let pair: Pair = b.clone().try_into().unwrap();
+    pair.set_car(val.into()).unwrap();
 }
 
 impl From<ast::Literal> for UnpackedValue {
@@ -836,7 +831,7 @@ impl From<ast::Literal> for UnpackedValue {
         match lit {
             ast::Literal::Number(n) => Self::Number(Arc::new(n.clone())),
             ast::Literal::Boolean(b) => Self::Boolean(b),
-            ast::Literal::String(s) => Self::String(Arc::new(strings::AlignedString(s.clone()))),
+            ast::Literal::String(s) => Self::String(WideString::from(s.clone())),
             ast::Literal::Character(c) => Self::Character(c),
         }
     }
@@ -912,16 +907,16 @@ impl TryFrom<Value> for Cell {
 impl_try_from_value_for!(bool, Boolean, "bool");
 impl_try_from_value_for!(char, Character, "char");
 impl_try_from_value_for!(Arc<Number>, Number, "number");
-impl_try_from_value_for!(Arc<strings::AlignedString>, String, "string");
-impl_try_from_value_for!(symbols::Symbol, Symbol, "symbol");
-impl_try_from_value_for!(Gc<vectors::AlignedVector<Value>>, Vector, "vector");
-impl_try_from_value_for!(Arc<vectors::AlignedVector<u8>>, ByteVector, "byte-vector");
+impl_try_from_value_for!(WideString, String, "string");
+impl_try_from_value_for!(Symbol, Symbol, "symbol");
+impl_try_from_value_for!(Vector, Vector, "vector");
+impl_try_from_value_for!(ByteVector, ByteVector, "byte-vector");
 impl_try_from_value_for!(Arc<Syntax>, Syntax, "syntax");
 impl_try_from_value_for!(Procedure, Procedure, "procedure");
-impl_try_from_value_for!(Gc<lists::Pair>, Pair, "pair");
+impl_try_from_value_for!(Pair, Pair, "pair");
 impl_try_from_value_for!(Record, Record, "record");
-impl_try_from_value_for!(ports::Port, Port, "port");
-impl_try_from_value_for!(hashtables::HashTable, HashTable, "hashtable");
+impl_try_from_value_for!(Port, Port, "port");
+impl_try_from_value_for!(HashTable, HashTable, "hashtable");
 impl_try_from_value_for!(Arc<RecordTypeDescriptor>, RecordTypeDescriptor, "rt");
 
 macro_rules! impl_from_wrapped_for {
@@ -941,18 +936,12 @@ macro_rules! impl_from_wrapped_for {
 }
 
 impl_from_wrapped_for!(Number, Number, Arc::new);
-impl_from_wrapped_for!(String, String, |str| Arc::new(strings::AlignedString::new(
-    str
-)));
-impl_from_wrapped_for!(Vec<Value>, Vector, |vec| Gc::new(
-    vectors::AlignedVector::new(vec)
-));
-impl_from_wrapped_for!(Vec<u8>, ByteVector, |vec| Arc::new(
-    vectors::AlignedVector::new(vec)
-));
+impl_from_wrapped_for!(String, String, WideString::new);
+impl_from_wrapped_for!(Vec<Value>, Vector, Vector::new);
+impl_from_wrapped_for!(Vec<u8>, ByteVector, ByteVector::new);
 impl_from_wrapped_for!(Syntax, Syntax, Arc::new);
-impl_from_wrapped_for!((Value, Value), Pair, |(car, cdr)| Gc::new(
-    lists::Pair::new(car, cdr)
+impl_from_wrapped_for!((Value, Value), Pair, |(car, cdr)| Pair::new(
+    car, cdr, false
 ));
 
 impl TryFrom<UnpackedValue> for (Value, Value) {
@@ -960,10 +949,7 @@ impl TryFrom<UnpackedValue> for (Value, Value) {
 
     fn try_from(val: UnpackedValue) -> Result<Self, Self::Error> {
         match val {
-            UnpackedValue::Pair(pair) => {
-                let pair = pair.read();
-                Ok((pair.0.clone(), pair.1.clone()))
-            }
+            UnpackedValue::Pair(pair) => Ok(pair.into()),
             e => Err(Condition::type_error("pair", e.type_name())),
         }
     }
@@ -1024,8 +1010,8 @@ impl TryFrom<Value> for String {
     type Error = Condition;
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
-        let string: Arc<strings::AlignedString> = value.try_into()?;
-        Ok(string.0.clone())
+        let string: WideString = value.try_into()?;
+        Ok(string.into())
     }
 }
 
@@ -1045,14 +1031,13 @@ fn determine_circularity(
 
     match curr.clone().unpack() {
         UnpackedValue::Pair(pair) => {
-            let pair_read = pair.read();
-            let lists::Pair(car, cdr) = pair_read.as_ref();
-            determine_circularity(car, visited, circular);
-            determine_circularity(cdr, visited, circular);
+            let (car, cdr) = pair.into();
+            determine_circularity(&car, visited, circular);
+            determine_circularity(&cdr, visited, circular);
         }
         UnpackedValue::Vector(vec) => {
-            let vec_read = vec.read();
-            for item in &vec_read.0 {
+            let vec_read = vec.0.vec.read();
+            for item in vec_read.iter() {
                 determine_circularity(item, visited, circular);
             }
         }
@@ -1096,9 +1081,8 @@ fn display_value(
         UnpackedValue::String(string) => write!(f, "{string}"),
         UnpackedValue::Symbol(symbol) => write!(f, "{symbol}"),
         UnpackedValue::Pair(pair) => {
-            let pair_read = pair.read();
-            let lists::Pair(car, cdr) = pair_read.as_ref();
-            lists::write_list(car, cdr, display_value, circular_values, f)
+            let (car, cdr) = pair.into();
+            lists::write_list(&car, &cdr, display_value, circular_values, f)
         }
         UnpackedValue::Vector(v) => vectors::write_vec(&v, display_value, circular_values, f),
         UnpackedValue::ByteVector(v) => vectors::write_bytevec(&v, f),
@@ -1127,9 +1111,8 @@ fn debug_value(
         UnpackedValue::String(string) => write!(f, "{string:?}"),
         UnpackedValue::Symbol(symbol) => write!(f, "{symbol}"),
         UnpackedValue::Pair(pair) => {
-            let pair_read = pair.read();
-            let lists::Pair(car, cdr) = pair_read.as_ref();
-            lists::write_list(car, cdr, debug_value, circular_values, f)
+            let (car, cdr) = pair.into();
+            lists::write_list(&car, &cdr, debug_value, circular_values, f)
         }
         UnpackedValue::Vector(v) => vectors::write_vec(&v, debug_value, circular_values, f),
         UnpackedValue::ByteVector(v) => vectors::write_bytevec(&v, f),
@@ -1203,11 +1186,6 @@ pub fn pair_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
         *arg.unpacked_ref(),
         UnpackedValue::Pair(_)
     ))])
-}
-
-#[bridge(name = "string?", lib = "(rnrs base builtins (6))")]
-pub fn string_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
-    Ok(vec![Value::from(arg.type_of() == ValueType::String)])
 }
 
 #[bridge(name = "procedure?", lib = "(rnrs base builtins (6))")]

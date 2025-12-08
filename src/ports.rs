@@ -1664,7 +1664,7 @@ define_condition_type!(
         })
     },
     debug: |this, f| {
-        this.parent.read().fmt(f)
+        this.parent.fmt(f)
     }
 );
 
@@ -1686,7 +1686,7 @@ define_condition_type!(
         })
     },
     debug: |this, f| {
-        this.parent.read().fmt(f)
+        this.parent.fmt(f)
     }
 );
 
@@ -1700,7 +1700,7 @@ define_condition_type!(
         })
     },
     debug: |this, f| {
-        this.parent.read().fmt(f)
+        this.parent.fmt(f)
     }
 );
 
@@ -1714,7 +1714,7 @@ define_condition_type!(
         })
     },
     debug: |this, f| {
-        this.parent.read().fmt(f)
+        this.parent.fmt(f)
     }
 );
 

@@ -1128,8 +1128,8 @@ impl Expression {
         };
         let val = global.value_ref().read().clone();
         let val: Procedure = val.try_into().ok()?;
-        let val_read = val.0.read();
-        let Bridge(ptr) = val_read.func else {
+
+        let Bridge(ptr) = val.0.func else {
             return None;
         };
 
