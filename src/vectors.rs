@@ -177,11 +177,14 @@ pub fn make_vector(n: &Value, with: &[Value]) -> Result<Vec<Value>, Condition> {
     let n: Arc<Number> = n.clone().try_into()?;
     let n: usize = n.as_ref().try_into()?;
 
-    Ok(vec![Value::from(
-        (0..n)
-            .map(|_| with.first().cloned().unwrap_or_else(Value::null))
-            .collect::<Vec<_>>(),
-    )])
+    Ok(vec![Value::from(Vector(Gc::new(VectorInner {
+        vec: RwLock::new(
+            (0..n)
+                .map(|_| with.first().cloned().unwrap_or_else(Value::null))
+                .collect::<Vec<_>>(),
+        ),
+        mutable: true,
+    })))])
 }
 
 #[bridge(name = "vector", lib = "(rnrs base builtins (6))")]
