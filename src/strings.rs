@@ -17,16 +17,10 @@ pub(crate) struct WideStringInner {
     mutable: bool,
 }
 
-impl Hash for WideStringInner {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.chars.read().hash(state);
-    }
-}
-
 /// A string that is a vector of characters, rather than a vector bytes encoding
 /// a utf-8 string. This is because R6RS mandates O(1) lookups of character
 /// indices.
-#[derive(Clone, Trace, Hash)]
+#[derive(Clone, Trace)]
 pub struct WideString(pub(crate) Arc<WideStringInner>);
 
 impl WideString {
@@ -50,9 +44,15 @@ impl From<WideString> for String {
     }
 }
 
+impl Hash for WideString {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.chars.read().hash(state);
+    }
+}
+
 impl PartialEq for WideString {
     fn eq(&self, rhs: &Self) -> bool {
-        &*self.0.chars.read() == &*rhs.0.chars.read()
+        *self.0.chars.read() == *rhs.0.chars.read()
     }
 }
 
@@ -79,8 +79,7 @@ impl fmt::Debug for WideString {
             .chars
             .read()
             .iter()
-            .map(|chr| chr.escape_debug())
-            .flatten()
+            .flat_map(|chr| chr.escape_debug())
         {
             write!(f, "{char}")?;
         }
@@ -144,7 +143,7 @@ pub fn string_eq_pred(
     let string_1_chars = string_1.0.chars.read();
     for string_n in Some(string_2).into_iter().chain(string_n.iter()).cloned() {
         let string_n: WideString = string_n.try_into()?;
-        if &*string_1_chars != &*string_n.0.chars.read() {
+        if *string_1_chars != *string_n.0.chars.read() {
             return Ok(vec![Value::from(false)]);
         }
     }

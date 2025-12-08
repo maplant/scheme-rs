@@ -21,7 +21,7 @@ use crate::{
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
     value::{UnpackedValue, Value, ValueType},
-    vectors,
+    vectors::Vector,
 };
 
 pub use scheme_rs_macros::rtd;
@@ -99,8 +99,8 @@ impl Field {
     }
 
     fn parse_fields(fields: &Value) -> Result<Vec<Self>, Condition> {
-        let fields: Gc<RwLock<vectors::AlignedVector<Value>>> = fields.clone().try_into()?;
-        fields.read().iter().map(Self::parse).collect()
+        let fields: Vector = fields.clone().try_into()?;
+        fields.0.vec.read().iter().map(Self::parse).collect()
     }
 
     fn name(&self) -> Symbol {
@@ -384,12 +384,11 @@ pub(crate) unsafe extern "C" fn chain_protocols(
 ) -> *mut Application {
     unsafe {
         // env[0] is a vector of protocols
-        let protocols: Gc<RwLock<vectors::AlignedVector<Value>>> =
-            env.as_ref().unwrap().clone().try_into().unwrap();
+        let protocols: Vector = env.as_ref().unwrap().clone().try_into().unwrap();
         // env[1] is k, the continuation
         let k = env.add(1).as_ref().unwrap().clone();
 
-        let mut protocols = protocols.read().clone();
+        let mut protocols = protocols.0.vec.read().clone();
         let remaining_protocols = protocols.split_off(1);
         let curr_protocol: Procedure = protocols[0].clone().try_into().unwrap();
 
@@ -432,10 +431,10 @@ fn chain_constructors(
 ) -> Result<Application, Condition> {
     let k: Procedure = k.try_into()?;
     // env[0] is a vector of RTDs
-    let rtds: Gc<RwLock<vectors::AlignedVector<Value>>> = env[0].clone().try_into()?;
+    let rtds: Vector = env[0].clone().try_into()?;
     // env[1] is the possible rust constructor
     let rust_constructor = env[1].clone();
-    let mut rtds = rtds.read().clone();
+    let mut rtds = rtds.0.vec.read().clone();
     let remaining_rtds = rtds.split_off(1);
     let curr_rtd: Arc<RecordTypeDescriptor> = rtds[0].clone().try_into()?;
     let rtds_remain = !remaining_rtds.is_empty();
@@ -575,9 +574,8 @@ pub(crate) unsafe extern "C" fn call_constructor_continuation(
 ) -> *mut Application {
     unsafe {
         let constructor: Procedure = args.as_ref().unwrap().clone().try_into().unwrap();
-        let args: Gc<RwLock<vectors::AlignedVector<Value>>> =
-            env.as_ref().unwrap().clone().try_into().unwrap();
-        let mut args = args.read().clone();
+        let args: Vector = env.as_ref().unwrap().clone().try_into().unwrap();
+        let mut args = args.0.vec.read().clone();
         let cont = env.add(1).as_ref().unwrap().clone();
         args.push(cont);
 

@@ -14,7 +14,7 @@ use crate::{
     symbols::Symbol,
     syntax::Span,
     value::Value,
-    vectors,
+    vectors::Vector,
 };
 use parking_lot::RwLock;
 use scheme_rs_macros::{cps_bridge, maybe_async, maybe_await};
@@ -957,8 +957,8 @@ unsafe extern "C" fn wind(
             }
         }
 
-        let args: Gc<RwLock<vectors::AlignedVector<Value>>> = args.try_into().unwrap();
-        let args = args.read().0.to_vec();
+        let args: Vector = args.try_into().unwrap();
+        let args = args.0.vec.read().to_vec();
 
         let app = Application::new(k.try_into().unwrap(), args, None);
         Box::into_raw(Box::new(app))
@@ -1508,8 +1508,8 @@ unsafe extern "C" fn wind_delim(
             dyn_stack.push(elem.clone());
         }
 
-        let args: Gc<RwLock<vectors::AlignedVector<Value>>> = args.try_into().unwrap();
-        let args = args.read().0.to_vec();
+        let args: Vector = args.try_into().unwrap();
+        let args = args.0.vec.read().to_vec();
 
         let app = Application::new(k.try_into().unwrap(), args, None);
         Box::into_raw(Box::new(app))

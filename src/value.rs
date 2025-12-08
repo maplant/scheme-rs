@@ -8,14 +8,14 @@ use crate::{
     hashtables::{self, HashTable, HashTableInner},
     lists::{self, Pair, PairInner},
     num::Number,
-    ports::{self, Port, PortInner},
+    ports::{Port, PortInner},
     proc::{Procedure, ProcedureInner},
     records::{Record, RecordInner, RecordTypeDescriptor, SchemeCompatible},
     registry::bridge,
     strings::{WideString, WideStringInner},
-    symbols,
+    symbols::Symbol,
     syntax::Syntax,
-    vectors,
+    vectors::{self, ByteVector, Vector, VectorInner},
 };
 use std::{
     collections::HashMap, fmt, hash::Hash, io::Write, marker::PhantomData, mem::ManuallyDrop,
@@ -66,12 +66,10 @@ impl Value {
             match tag {
                 Tag::Number => Arc::increment_strong_count(untagged as *const Number),
                 Tag::String => Arc::increment_strong_count(untagged as *const WideStringInner),
-                Tag::Vector => Gc::increment_reference_count(
-                    untagged as *mut GcInner<RwLock<vectors::AlignedVector<Self>>>,
-                ),
-                Tag::ByteVector => {
-                    Arc::increment_strong_count(untagged as *const vectors::AlignedVector<u8>)
+                Tag::Vector => {
+                    Gc::increment_reference_count(untagged as *mut GcInner<VectorInner<Value>>)
                 }
+                Tag::ByteVector => Arc::increment_strong_count(untagged as *const VectorInner<u8>),
                 Tag::Syntax => Arc::increment_strong_count(untagged as *const Syntax),
                 Tag::Procedure => {
                     Gc::increment_reference_count(untagged as *mut GcInner<ProcedureInner>)
@@ -193,17 +191,15 @@ impl Value {
             }
             Tag::Symbol => {
                 let untagged = (untagged as usize >> TAG_BITS) as u32;
-                UnpackedValue::Symbol(symbols::Symbol(untagged))
+                UnpackedValue::Symbol(Symbol(untagged))
             }
             Tag::Vector => {
-                let vec = unsafe {
-                    Gc::from_raw(untagged as *mut GcInner<RwLock<vectors::AlignedVector<Self>>>)
-                };
-                UnpackedValue::Vector(vec)
+                let vec = unsafe { Gc::from_raw(untagged as *mut GcInner<VectorInner<Self>>) };
+                UnpackedValue::Vector(Vector(vec))
             }
             Tag::ByteVector => {
-                let bvec = unsafe { Arc::from_raw(untagged as *const vectors::AlignedVector<u8>) };
-                UnpackedValue::ByteVector(bvec)
+                let bvec = unsafe { Arc::from_raw(untagged as *const VectorInner<u8>) };
+                UnpackedValue::ByteVector(ByteVector(bvec))
             }
             Tag::Syntax => {
                 let syn = unsafe { Arc::from_raw(untagged as *const Syntax) };
@@ -231,7 +227,7 @@ impl Value {
             }
             Tag::Port => {
                 let port_inner = unsafe { Arc::from_raw(untagged as *const PortInner) };
-                UnpackedValue::Port(ports::Port(port_inner))
+                UnpackedValue::Port(Port(port_inner))
             }
             Tag::HashTable => {
                 let ht = unsafe { Gc::from_raw(untagged as *mut GcInner<HashTableInner>) };
@@ -475,9 +471,9 @@ pub enum UnpackedValue {
     Character(char),
     Number(Arc<Number>),
     String(WideString),
-    Symbol(symbols::Symbol),
-    Vector(Gc<RwLock<vectors::AlignedVector<Value>>>),
-    ByteVector(Arc<vectors::AlignedVector<u8>>),
+    Symbol(Symbol),
+    Vector(Vector),
+    ByteVector(ByteVector),
     Syntax(Arc<Syntax>),
     Procedure(Procedure),
     Record(Record),
@@ -511,11 +507,11 @@ impl UnpackedValue {
                 Value::from_ptr_and_tag(((sym.0 as usize) << TAG_BITS) as *const (), Tag::Symbol)
             }
             Self::Vector(vec) => {
-                let untagged = Gc::into_raw(vec);
+                let untagged = Gc::into_raw(vec.0);
                 Value::from_mut_ptr_and_tag(untagged, Tag::Vector)
             }
             Self::ByteVector(b_vec) => {
-                let untagged = Arc::into_raw(b_vec);
+                let untagged = Arc::into_raw(b_vec.0);
                 Value::from_ptr_and_tag(untagged, Tag::ByteVector)
             }
             Self::Syntax(syn) => {
@@ -563,8 +559,8 @@ impl UnpackedValue {
             (Self::Null, Self::Null) => true,
             (Self::String(a), Self::String(b)) => Arc::ptr_eq(&a.0, &b.0),
             (Self::Pair(a), Self::Pair(b)) => Gc::ptr_eq(&a.0, &b.0),
-            (Self::Vector(a), Self::Vector(b)) => Gc::ptr_eq(a, b),
-            (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(a, b),
+            (Self::Vector(a), Self::Vector(b)) => Gc::ptr_eq(&a.0, &b.0),
+            (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(&a.0, &b.0),
             (Self::Procedure(a), Self::Procedure(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Syntax(a), Self::Syntax(b)) => Arc::ptr_eq(a, b),
             (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
@@ -598,8 +594,8 @@ impl UnpackedValue {
             // Everything else is pointer equivalence
             (Self::String(a), Self::String(b)) => Arc::ptr_eq(&a.0, &b.0),
             (Self::Pair(a), Self::Pair(b)) => Gc::ptr_eq(&a.0, &b.0),
-            (Self::Vector(a), Self::Vector(b)) => Gc::ptr_eq(a, b),
-            (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(a, b),
+            (Self::Vector(a), Self::Vector(b)) => Gc::ptr_eq(&a.0, &b.0),
+            (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(&a.0, &b.0),
             (Self::Procedure(a), Self::Procedure(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Syntax(a), Self::Syntax(b)) => Arc::ptr_eq(a, b),
             (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
@@ -726,10 +722,10 @@ fn pair_eq(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64) -
 }
 
 fn vector_eq(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
-    let vobj1: Gc<RwLock<vectors::AlignedVector<Value>>> = obj1.clone().try_into().unwrap();
-    let vobj2: Gc<RwLock<vectors::AlignedVector<Value>>> = obj2.clone().try_into().unwrap();
-    let vobj1 = vobj1.read();
-    let vobj2 = vobj2.read();
+    let vobj1: Vector = obj1.clone().try_into().unwrap();
+    let vobj2: Vector = obj2.clone().try_into().unwrap();
+    let vobj1 = vobj1.0.vec.read();
+    let vobj2 = vobj2.0.vec.read();
     if vobj1.len() != vobj2.len() {
         return None;
     }
@@ -741,9 +737,9 @@ fn vector_eq(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64)
 }
 
 fn bytevector_eq(obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
-    let obj1: Arc<vectors::AlignedVector<u8>> = obj1.clone().try_into().unwrap();
-    let obj2: Arc<vectors::AlignedVector<u8>> = obj2.clone().try_into().unwrap();
-    (obj1 == obj2).then_some(k)
+    let obj1: ByteVector = obj1.clone().try_into().unwrap();
+    let obj2: ByteVector = obj2.clone().try_into().unwrap();
+    (*obj1.0.vec.read() == *obj2.0.vec.read()).then_some(k)
 }
 
 fn string_eq(obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
@@ -912,15 +908,15 @@ impl_try_from_value_for!(bool, Boolean, "bool");
 impl_try_from_value_for!(char, Character, "char");
 impl_try_from_value_for!(Arc<Number>, Number, "number");
 impl_try_from_value_for!(WideString, String, "string");
-impl_try_from_value_for!(symbols::Symbol, Symbol, "symbol");
-impl_try_from_value_for!(Gc<RwLock<vectors::AlignedVector<Value>>>, Vector, "vector");
-impl_try_from_value_for!(Arc<vectors::AlignedVector<u8>>, ByteVector, "byte-vector");
+impl_try_from_value_for!(Symbol, Symbol, "symbol");
+impl_try_from_value_for!(Vector, Vector, "vector");
+impl_try_from_value_for!(ByteVector, ByteVector, "byte-vector");
 impl_try_from_value_for!(Arc<Syntax>, Syntax, "syntax");
 impl_try_from_value_for!(Procedure, Procedure, "procedure");
 impl_try_from_value_for!(Pair, Pair, "pair");
 impl_try_from_value_for!(Record, Record, "record");
-impl_try_from_value_for!(ports::Port, Port, "port");
-impl_try_from_value_for!(hashtables::HashTable, HashTable, "hashtable");
+impl_try_from_value_for!(Port, Port, "port");
+impl_try_from_value_for!(HashTable, HashTable, "hashtable");
 impl_try_from_value_for!(Arc<RecordTypeDescriptor>, RecordTypeDescriptor, "rt");
 
 macro_rules! impl_from_wrapped_for {
@@ -941,12 +937,8 @@ macro_rules! impl_from_wrapped_for {
 
 impl_from_wrapped_for!(Number, Number, Arc::new);
 impl_from_wrapped_for!(String, String, WideString::new);
-impl_from_wrapped_for!(Vec<Value>, Vector, |vec| Gc::new(RwLock::new(
-    vectors::AlignedVector::new(vec)
-)));
-impl_from_wrapped_for!(Vec<u8>, ByteVector, |vec| Arc::new(
-    vectors::AlignedVector::new(vec)
-));
+impl_from_wrapped_for!(Vec<Value>, Vector, Vector::new);
+impl_from_wrapped_for!(Vec<u8>, ByteVector, ByteVector::new);
 impl_from_wrapped_for!(Syntax, Syntax, Arc::new);
 impl_from_wrapped_for!((Value, Value), Pair, |(car, cdr)| Pair::new(
     car, cdr, false
@@ -1044,8 +1036,8 @@ fn determine_circularity(
             determine_circularity(&cdr, visited, circular);
         }
         UnpackedValue::Vector(vec) => {
-            let vec_read = vec.read();
-            for item in &vec_read.0 {
+            let vec_read = vec.0.vec.read();
+            for item in vec_read.iter() {
                 determine_circularity(item, visited, circular);
             }
         }

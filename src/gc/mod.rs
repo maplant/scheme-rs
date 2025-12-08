@@ -4,8 +4,8 @@
 //! concurrently at a fixed cadence or whenever a threshold of memory has been
 //! allocated as opposed to when the type is Dropped.
 //!
-//! Strictly speaking, `Gc<T>` is not garbage collection per-se but instead uses
-//! "cycle collection".
+//! `Gc<T>` does not use tracing garbage collection but instead uses a technique
+//! where garbage cycles are detected known as "cycle collection".
 //!
 //! Cycle collection was chosen because it has similar characteristics to `Gc`,
 //! providing all of the semantics Scheme expects and also plays nicely as a
@@ -71,34 +71,6 @@ impl<T: ?Sized> Gc<T> {
         }
     }
 
-    /*
-    /// Acquire a read lock for the object
-    pub fn read(&self) -> GcReadGuard<'_, T> {
-        unsafe {
-            let _permit = (*self.ptr.as_ref().header.get()).lock.read();
-            let data = &*self.ptr.as_ref().data.get() as *const T;
-            GcReadGuard {
-                _permit,
-                data,
-                marker: PhantomData,
-            }
-        }
-    }
-
-    /// Acquire a write lock for the object
-    pub fn write(&self) -> GcWriteGuard<'_, T> {
-        unsafe {
-            let _permit = (*self.ptr.as_ref().header.get()).lock.write();
-            let data = &mut *self.ptr.as_ref().data.get() as *mut T;
-            GcWriteGuard {
-                _permit,
-                data,
-                marker: PhantomData,
-            }
-        }
-    }
-    */
-
     pub fn ptr_eq(lhs: &Self, rhs: &Self) -> bool {
         std::ptr::addr_eq(lhs.ptr.as_ptr(), rhs.ptr.as_ptr())
     }
@@ -122,13 +94,6 @@ impl<T: ?Sized> Gc<T> {
         let ptr = unsafe { NonNull::new_unchecked(ptr) };
         inc_rc(ptr);
     }
-
-    /*
-    pub(crate) unsafe fn decrement_reference_count(ptr: *mut GcInner<T>) {
-        let ptr = NonNull::new(ptr).unwrap();
-        dec_rc(ptr);
-    }
-    */
 
     /// Create a new Gc from the raw pointer. Does not increment the reference
     /// count.
@@ -290,62 +255,6 @@ pub(crate) struct GcInner<T: ?Sized> {
 
 unsafe impl<T: ?Sized + Send> Send for GcInner<T> {}
 unsafe impl<T: ?Sized + Sync> Sync for GcInner<T> {}
-
-/*
-pub struct GcReadGuard<'a, T: ?Sized> {
-    _permit: RwLockReadGuard<'a, ()>,
-    data: *const T,
-    marker: PhantomData<&'a T>,
-}
-
-impl<T: ?Sized> Deref for GcReadGuard<'_, T> {
-    type Target = T;
-
-    fn deref(&self) -> &T {
-        unsafe { &*self.data }
-    }
-}
-
-impl<T: ?Sized> AsRef<T> for GcReadGuard<'_, T> {
-    fn as_ref(&self) -> &T {
-        self
-    }
-}
-*/
-
-/*
-pub struct GcWriteGuard<'a, T: ?Sized> {
-    _permit: RwLockWriteGuard<'a, ()>,
-    data: *mut T,
-    marker: PhantomData<&'a mut T>,
-}
-
-impl<T: ?Sized> Deref for GcWriteGuard<'_, T> {
-    type Target = T;
-
-    fn deref(&self) -> &T {
-        unsafe { &*self.data }
-    }
-}
-
-impl<T: ?Sized> DerefMut for GcWriteGuard<'_, T> {
-    fn deref_mut(&mut self) -> &mut T {
-        unsafe { &mut *self.data }
-    }
-}
-
-impl<T: ?Sized> AsRef<T> for GcWriteGuard<'_, T> {
-    fn as_ref(&self) -> &T {
-        self
-    }
-}
-
-impl<T: ?Sized> AsMut<T> for GcWriteGuard<'_, T> {
-    fn as_mut(&mut self) -> &mut T {
-        self
-    }
-}
-*/
 
 /// A type that can be traced for garbage collection.
 ///

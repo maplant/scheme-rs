@@ -471,13 +471,13 @@ impl Value {
             UnpackedValue::Number(n) => Arc::as_ptr(n).hash(state),
             UnpackedValue::String(s) => Arc::as_ptr(&s.0).hash(state),
             UnpackedValue::Symbol(s) => s.hash(state),
-            UnpackedValue::ByteVector(v) => Arc::as_ptr(v).hash(state),
+            UnpackedValue::ByteVector(v) => Arc::as_ptr(&v.0).hash(state),
             UnpackedValue::Syntax(s) => Arc::as_ptr(s).hash(state),
             UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
             UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
             UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
             UnpackedValue::Pair(p) => Gc::as_ptr(&p.0).hash(state),
-            UnpackedValue::Vector(v) => Gc::as_ptr(v).hash(state),
+            UnpackedValue::Vector(v) => Gc::as_ptr(&v.0).hash(state),
             UnpackedValue::Port(p) => Arc::as_ptr(&p.0).hash(state),
             UnpackedValue::HashTable(ht) => Gc::as_ptr(&ht.0).hash(state),
             UnpackedValue::Cell(c) => c.0.read().eqv_hash(state),
@@ -496,13 +496,13 @@ impl Value {
             UnpackedValue::Number(n) => n.as_ref().hash(state),
             UnpackedValue::String(s) => Arc::as_ptr(&s.0).hash(state),
             UnpackedValue::Symbol(s) => s.hash(state),
-            UnpackedValue::ByteVector(v) => Arc::as_ptr(v).hash(state),
+            UnpackedValue::ByteVector(v) => Arc::as_ptr(&v.0).hash(state),
             UnpackedValue::Syntax(s) => Arc::as_ptr(s).hash(state),
             UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
             UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
             UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
             UnpackedValue::Pair(p) => Gc::as_ptr(&p.0).hash(state),
-            UnpackedValue::Vector(v) => Gc::as_ptr(v).hash(state),
+            UnpackedValue::Vector(v) => Gc::as_ptr(&v.0).hash(state),
             UnpackedValue::Port(p) => Arc::as_ptr(&p.0).hash(state),
             UnpackedValue::HashTable(ht) => Gc::as_ptr(&ht.0).hash(state),
             UnpackedValue::Cell(c) => c.0.read().eqv_hash(state),
@@ -542,7 +542,7 @@ impl Value {
             }
             UnpackedValue::Vector(v) => {
                 recursive.insert(self.clone());
-                let v_read = v.read();
+                let v_read = v.0.vec.read();
                 state.write_usize(v_read.len());
                 for val in v_read.iter() {
                     val.equal_hash(recursive, state);

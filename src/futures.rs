@@ -19,7 +19,7 @@ use crate::{
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     strings::WideString,
     value::Value,
-    vectors::AlignedVector,
+    vectors::ByteVector,
 };
 
 type Future = Shared<BoxFuture<'static, Result<Vec<Value>, Condition>>>;
@@ -123,7 +123,7 @@ pub async fn read(socket: &Value, buff_size: &Value) -> Result<Vec<Value>, Condi
 
 #[bridge(name = "write", lib = "(tokio)")]
 pub async fn write(socket: &Value, buffer: &Value) -> Result<Vec<Value>, Condition> {
-    let buffer: Arc<AlignedVector<u8>> = buffer.clone().try_into()?;
+    let buffer: ByteVector = buffer.clone().try_into()?;
     let socket = {
         socket
             .clone()
@@ -131,10 +131,12 @@ pub async fn write(socket: &Value, buffer: &Value) -> Result<Vec<Value>, Conditi
             .clone()
     };
 
+    let buff = buffer.0.vec.read().clone();
+
     socket
         .lock()
         .await
-        .write(&buffer)
+        .write(&buff)
         .await
         .map_err(|e| Condition::error(format!("failed to read from socket: {e:?}")))?;
 

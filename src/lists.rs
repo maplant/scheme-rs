@@ -9,7 +9,7 @@ use crate::{
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
     value::{UnpackedValue, Value, ValueType, write_value},
-    vectors,
+    vectors::Vector,
 };
 use std::fmt;
 
@@ -331,14 +331,12 @@ unsafe extern "C" fn map_k(
         // TODO: Probably need to do this in a way that avoids mutable variables
 
         // env[0] is the output list
-        let output: Gc<RwLock<vectors::AlignedVector<Value>>> =
-            env.as_ref().unwrap().clone().try_into().unwrap();
+        let output: Vector = env.as_ref().unwrap().clone().try_into().unwrap();
 
-        output.write().push(args.as_ref().unwrap().clone());
+        output.0.vec.write().push(args.as_ref().unwrap().clone());
 
         // env[1] is the input lists
-        let inputs: Gc<RwLock<vectors::AlignedVector<Value>>> =
-            env.add(1).as_ref().unwrap().clone().try_into().unwrap();
+        let inputs: Vector = env.add(1).as_ref().unwrap().clone().try_into().unwrap();
 
         // env[2] is the mapper function
         let mapper: Procedure = env.add(2).as_ref().unwrap().clone().try_into().unwrap();
@@ -349,10 +347,10 @@ unsafe extern "C" fn map_k(
         let mut args = Vec::new();
 
         // TODO: We need to collect a new list
-        for input in inputs.write().iter_mut() {
+        for input in inputs.0.vec.write().iter_mut() {
             if input.type_of() == ValueType::Null {
                 // TODO: Check if the rest are also empty and args is empty
-                let output = slice_to_list(&output.read());
+                let output = slice_to_list(&output.0.vec.read());
                 let app = Application::new(k, vec![output], None);
                 return Box::into_raw(Box::new(app));
             }

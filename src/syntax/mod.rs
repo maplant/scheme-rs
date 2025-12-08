@@ -178,7 +178,7 @@ impl Syntax {
             }
             UnpackedValue::Vector(vec) => {
                 let mut out_vec = Vec::new();
-                for item in vec.read().iter() {
+                for item in vec.0.vec.read().iter() {
                     out_vec.push(Syntax::syntax_from_datum(marks, item.clone()));
                 }
                 Syntax::new_vector(out_vec, Span::default())
