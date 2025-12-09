@@ -1,3 +1,24 @@
+//! scheme-rs is an implementation of the
+//! [R6RS](https://www.r6rs.org/final/r6rs.pdf) specification of the [Scheme programming 
+//! language](https://en.wikipedia.org/wiki/Scheme_(programming_language)) that is 
+//! designed to embedded within sync and async Rust.
+//!
+//! # Getting started
+//!
+//! To get started using scheme-rs in your project, create a [Runtime]:
+//!
+//! ```
+//! # use crate::runtime::Runtime;
+//! let runtime = Runtime::new();
+//! ```
+//!
+//! # Feature flags:
+//! - `async`: Enables support for async functions. Requires the `tokio` feature
+//!   flag.
+//! - `tokio`: Enables support for the [tokio](https://tokio.rs/) async
+//!   executor.
+
+
 extern crate self as scheme_rs;
 
 pub mod ast;
