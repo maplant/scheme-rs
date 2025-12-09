@@ -1,0 +1,15 @@
+(library (rnrs hashtables (6))
+  (export (import (rnrs hashtables builtins (6)))
+          make-eq-hashtable make-eqv-hashtable)
+  (import (only (rnrs base builtins (6)) eqv? eq? null? car)
+          (rnrs base special-keywords (6)))
+
+  (define (make-eq-hashtable . k)
+    (if (null? k)
+        (make-hashtable eq-hash eq?)
+        (make-hashtable eq-hash eq? (car k))))
+
+  (define (make-eqv-hashtable . k)
+    (if (null? k)
+        (make-hashtable eqv-hash eqv?)
+        (make-hashtable eqv-hash eqv? (car k)))))

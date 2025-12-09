@@ -24,6 +24,7 @@ use std::{
 
 #[cfg(feature = "async")]
 use futures::future::BoxFuture;
+use parking_lot::RwLock;
 pub use scheme_rs_macros::{bridge, cps_bridge};
 use scheme_rs_macros::{maybe_async, maybe_await};
 
@@ -111,7 +112,7 @@ impl RegistryInner {
     pub fn new(rt: &Runtime) -> Self {
         struct Lib {
             version: Version,
-            syms: HashMap<Identifier, Gc<Value>>,
+            syms: HashMap<Identifier, Gc<RwLock<Value>>>,
         }
         let mut libs = HashMap::<Vec<Symbol>, Lib>::default();
 
@@ -131,7 +132,7 @@ impl RegistryInner {
 
             lib.syms.insert(
                 Identifier::new(bridge_fn.name),
-                Gc::new(Value::from(Procedure::new(
+                Gc::new(RwLock::new(Value::from(Procedure::new(
                     rt.clone(),
                     Vec::new(),
                     match bridge_fn.wrapper {
@@ -142,7 +143,7 @@ impl RegistryInner {
                     bridge_fn.num_args,
                     bridge_fn.variadic,
                     Some(debug_info),
-                ))),
+                )))),
             );
         }
 
@@ -181,7 +182,7 @@ impl RegistryInner {
                 .collect::<Vec<_>>();
             (
                 name.clone(),
-                Library(Gc::new(LibraryInner {
+                Library(Gc::new(RwLock::new(LibraryInner {
                     rt: rt.clone(),
                     kind: LibraryKind::Libary {
                         name: LibraryName {
@@ -211,7 +212,7 @@ impl RegistryInner {
                         .map(|(name, kw)| (Identifier::new(name), *kw))
                         .collect(),
                     state: LibraryState::Invoked,
-                })),
+                }))),
             )
         });
 
@@ -247,7 +248,7 @@ impl RegistryInner {
                     special_keywords: HashMap::default(),
                     state: LibraryState::Invoked,
                 };
-                (name, Library(Gc::new(lib_inner)))
+                (name, Library(Gc::new(RwLock::new(lib_inner))))
             })
             .chain(special_keyword_libs)
             .collect();
@@ -260,15 +261,15 @@ impl RegistryInner {
 }
 
 #[derive(Trace, Clone, Debug)]
-pub struct Registry(pub(crate) Gc<RegistryInner>);
+pub struct Registry(pub(crate) Gc<RwLock<RegistryInner>>);
 
 impl Registry {
     pub(crate) fn empty() -> Self {
-        Self(Gc::new(RegistryInner::empty()))
+        Self(Gc::new(RwLock::new(RegistryInner::empty())))
     }
 
     pub(crate) fn new(rt: &Runtime) -> Self {
-        Self(Gc::new(RegistryInner::new(rt)))
+        Self(Gc::new(RwLock::new(RegistryInner::new(rt))))
     }
 
     fn mark_as_loading(&self, name: &[Symbol]) {
@@ -487,7 +488,7 @@ pub(crate) struct LibraryInner {
     exports: HashMap<Identifier, Export>,
     imports: HashMap<Identifier, Import>,
     state: LibraryState,
-    vars: HashMap<Identifier, Gc<Value>>,
+    vars: HashMap<Identifier, Gc<RwLock<Value>>>,
     keywords: HashMap<Identifier, Keyword>,
     special_keywords: HashMap<Identifier, SpecialKeyword>,
 }
@@ -550,7 +551,7 @@ pub struct Export {
 }
 
 #[derive(Trace, Clone, Debug)]
-pub struct Library(pub(crate) Gc<LibraryInner>);
+pub struct Library(pub(crate) Gc<RwLock<LibraryInner>>);
 
 impl PartialEq for Library {
     fn eq(&self, rhs: &Self) -> bool {
@@ -568,7 +569,7 @@ impl Library {
             Vec::new(),
         );
         inner.state = LibraryState::Invoked;
-        Self(Gc::new(inner))
+        Self(Gc::new(RwLock::new(inner)))
     }
 
     pub fn new_program(rt: &Runtime, path: &Path) -> Self {
@@ -587,7 +588,7 @@ impl Library {
                 .into_iter()
                 .collect(),
         };
-        Self(Gc::new(inner))
+        Self(Gc::new(RwLock::new(inner)))
     }
 
     #[maybe_async]
@@ -647,7 +648,7 @@ impl Library {
             }
         }
 
-        Ok(Self(Gc::new(LibraryInner::new(
+        Ok(Self(Gc::new(RwLock::new(LibraryInner::new(
             rt,
             LibraryKind::Libary {
                 name: spec.name,
@@ -656,7 +657,7 @@ impl Library {
             imports,
             exports,
             spec.body,
-        ))))
+        )))))
     }
 
     #[maybe_async]
@@ -740,9 +741,11 @@ impl Library {
         let mutable = !this.exports.contains_key(&name);
         match this.vars.entry(name.clone()) {
             Entry::Occupied(occup) => Global::new(name, occup.get().clone(), mutable),
-            Entry::Vacant(vacant) => {
-                Global::new(name, vacant.insert(Gc::new(value)).clone(), mutable)
-            }
+            Entry::Vacant(vacant) => Global::new(
+                name,
+                vacant.insert(Gc::new(RwLock::new(value))).clone(),
+                mutable,
+            ),
         }
     }
 

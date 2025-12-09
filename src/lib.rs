@@ -7,6 +7,7 @@ pub mod env;
 pub mod exceptions;
 pub mod expand;
 pub mod gc;
+pub mod hashtables;
 pub mod lists;
 pub mod num;
 pub mod ports;

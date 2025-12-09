@@ -1,4 +1,9 @@
-use crate::{ast::Literal, num::Number, ports::PortInner, syntax::lex::ParseNumberError};
+use crate::{
+    ast::Literal,
+    num::Number,
+    ports::{PortData, PortInfo},
+    syntax::lex::ParseNumberError,
+};
 
 pub use super::lex::LexerError;
 use super::{
@@ -34,10 +39,10 @@ macro_rules! token {
 }
 
 impl<'a> Parser<'a> {
-    pub(crate) fn new(port: &'a mut PortInner, span: Span) -> Self {
+    pub(crate) fn new(port_data: &'a mut PortData, port_info: PortInfo, span: Span) -> Self {
         Parser {
             lookahead: Vec::new(),
-            lexer: Lexer::new(port, span),
+            lexer: Lexer::new(port_data, port_info, span),
         }
     }
 }

@@ -6,7 +6,7 @@ use crate::{
     exceptions::Condition,
     expand::{SyntaxRule, Template},
     gc::Trace,
-    num::{Number, NumberToUsizeError},
+    num::Number,
     proc::Procedure,
     registry::ImportError,
     runtime::Runtime,
@@ -41,7 +41,6 @@ pub enum ParseAstError {
     ExpectedIdentifier(Span),
     ExpectedNumber(Span),
     ExpectedVariableTransformer,
-    ExpectedInteger(NumberToUsizeError),
     ExpectedExportSpec(Span),
     ExpectedImportSpec(Span),
     ExpectedLibraryKeyword(Span),
@@ -58,10 +57,6 @@ pub enum ParseAstError {
     CannotSetImmutableVar {
         span: Span,
         name: Identifier,
-    },
-    NumberToUsizeError {
-        span: Span,
-        error: NumberToUsizeError,
     },
     UndefinedVariable {
         span: Span,
@@ -253,7 +248,7 @@ impl Version {
                             ..
                         } = subvers
                         {
-                            num.try_into().map_err(ParseAstError::ExpectedInteger)
+                            Ok(num.try_into()?)
                         } else {
                             Err(ParseAstError::ExpectedNumber(subvers.span().clone()))
                         }
@@ -350,12 +345,7 @@ impl SubVersionReference {
             Syntax::Literal {
                 literal: Literal::Number(num),
                 ..
-            } => Ok(Self::SubVersion(num.try_into().map_err(|error| {
-                ParseAstError::NumberToUsizeError {
-                    span: syn.span().clone(),
-                    error,
-                }
-            })?)),
+            } => Ok(Self::SubVersion(num.try_into()?)),
             _ => match syn.as_list() {
                 Some(
                     [
@@ -366,12 +356,7 @@ impl SubVersionReference {
                         },
                         Syntax::Null { .. },
                     ],
-                ) if kw == ">=" => Ok(Self::Gte(num.try_into().map_err(|error| {
-                    ParseAstError::NumberToUsizeError {
-                        span: syn.span().clone(),
-                        error,
-                    }
-                })?)),
+                ) if kw == ">=" => Ok(Self::Gte(num.try_into()?)),
                 Some(
                     [
                         Syntax::Identifier { ident: kw, .. },
@@ -381,12 +366,7 @@ impl SubVersionReference {
                         },
                         Syntax::Null { .. },
                     ],
-                ) if kw == "<=" => Ok(Self::Lte(num.try_into().map_err(|error| {
-                    ParseAstError::NumberToUsizeError {
-                        span: syn.span().clone(),
-                        error,
-                    }
-                })?)),
+                ) if kw == "<=" => Ok(Self::Lte(num.try_into()?)),
                 Some(
                     [
                         Syntax::Identifier { ident: kw, .. },
@@ -1148,8 +1128,8 @@ impl Expression {
         };
         let val = global.value_ref().read().clone();
         let val: Procedure = val.try_into().ok()?;
-        let val_read = val.0.read();
-        let Bridge(ptr) = val_read.func else {
+
+        let Bridge(ptr) = val.0.func else {
             return None;
         };
 

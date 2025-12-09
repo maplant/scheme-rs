@@ -3,7 +3,7 @@ use crate::{
     env::{Environment, Keyword},
     exceptions::Condition,
     gc::Trace,
-    lists::{self, list_to_vec_with_null},
+    lists::list_to_vec_with_null,
     ports::Port,
     registry::bridge,
     symbols::Symbol,
@@ -161,12 +161,10 @@ impl Syntax {
             UnpackedValue::Boolean(b) => Syntax::new_literal(Literal::Boolean(b), Span::default()),
             UnpackedValue::Null => Syntax::new_null(Span::default()),
             UnpackedValue::Pair(pair) => {
-                let pair_read = pair.read();
-                let lists::Pair(lhs, rhs) = pair_read.as_ref();
+                let (lhs, rhs) = pair.into();
                 let mut list = Vec::new();
                 list.push(lhs.clone());
-                list_to_vec_with_null(rhs, &mut list);
-                // TODO: Use futures combinators
+                list_to_vec_with_null(&rhs, &mut list);
                 let mut out_list = Vec::new();
                 for item in list.iter() {
                     out_list.push(Syntax::syntax_from_datum(marks, item.clone()));
@@ -180,7 +178,7 @@ impl Syntax {
             }
             UnpackedValue::Vector(vec) => {
                 let mut out_vec = Vec::new();
-                for item in vec.read().iter() {
+                for item in vec.0.vec.read().iter() {
                     out_vec.push(Syntax::syntax_from_datum(marks, item.clone()));
                 }
                 Syntax::new_vector(out_vec, Span::default())
@@ -328,7 +326,7 @@ impl Syntax {
 
         let file_name = file_name.unwrap_or("<unknown>");
         let bytes = Cursor::new(s.as_bytes().to_vec());
-        let port = Port::new(bytes, true, BufferMode::Block, Transcoder::native());
+        let port = Port::new(bytes, BufferMode::Block, Some(Transcoder::native()));
         port.all_sexprs(Span::new(file_name))
     }
 
@@ -338,9 +336,22 @@ impl Syntax {
 
         let file_name = file_name.unwrap_or("<unknown>");
         let bytes = Cursor::new(s.as_bytes().to_vec());
-        let port = Port::new(bytes, true, BufferMode::Block, Transcoder::native());
 
-        futures::executor::block_on(async move { port.all_sexprs(Span::new(file_name)).await })
+        // This is kind of convoluted, but convenient
+        let port =
+            Arc::into_inner(Port::new(bytes, BufferMode::Block, Some(Transcoder::native())).0)
+                .unwrap();
+        let info = port.info;
+        let mut data = port.data.into_inner();
+
+        // This is safe since we don't need the async executor to drive anything
+        // here
+        futures::executor::block_on(async move {
+            use crate::syntax::parse::Parser;
+
+            let mut parser = Parser::new(&mut data, info, Span::new(file_name));
+            parser.all_sexprs().await
+        })
     }
 
     pub fn fetch_all_identifiers(&self, idents: &mut HashSet<Identifier>) {

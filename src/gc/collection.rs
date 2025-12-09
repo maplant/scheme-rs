@@ -2,25 +2,28 @@
 //! Cycle Collection in Reference Counted Systems by David F. Bacon and
 //! V.T. Rajan.
 
-use parking_lot::RwLock;
 use std::{
     alloc::Layout,
     cell::UnsafeCell,
-    collections::HashSet,
     marker::PhantomData,
-    ptr::NonNull,
-    sync::{Mutex, OnceLock, atomic::AtomicUsize},
+    mem::offset_of,
+    ptr::{NonNull, null_mut},
+    sync::{
+        OnceLock,
+        atomic::{AtomicPtr, AtomicUsize, Ordering},
+    },
     thread::JoinHandle,
 };
+
+use rustc_hash::FxHashSet as HashSet;
 
 use crate::gc::GcInner;
 
 #[derive(Debug)]
+#[repr(C)]
 pub(crate) struct GcHeader {
     /// Reference count shared with the Gc types
     pub(crate) shared_rc: AtomicUsize,
-    /// Lock for the data
-    pub(crate) lock: RwLock<()>,
     /// Reference count as of the current epoch
     epoch_rc: usize,
     /// Circular reference count
@@ -35,19 +38,24 @@ pub(crate) struct GcHeader {
     finalize: unsafe fn(this: *mut ()),
     /// Layout for the underlying data
     layout: Layout,
+    /// Offset into the underlying data
+    offset: usize,
+    /// Next item in the heap, or null
+    next: *mut GcHeader,
+    /// Previous item in the heap, or null
+    prev: *mut GcHeader,
 }
 
 impl GcHeader {
     pub(crate) fn new<T: super::GcOrTrace>() -> Self {
         Self {
             shared_rc: AtomicUsize::new(1),
-            lock: RwLock::new(()),
             epoch_rc: 1,
             crc: 1,
             color: Color::Black,
             buffered: true,
             visit_children: |this, visitor| unsafe {
-                let this = this as *const T;
+                let this = this as *const UnsafeCell<T> as *const T;
                 T::visit_or_recurse(this.as_ref().unwrap(), visitor);
             },
             finalize: |this| unsafe {
@@ -55,6 +63,9 @@ impl GcHeader {
                 T::finalize_or_skip(this.as_mut().unwrap());
             },
             layout: Layout::new::<super::GcInner<T>>(),
+            offset: offset_of!(super::GcInner<T>, data),
+            next: null_mut(),
+            prev: null_mut(),
         }
     }
 }
@@ -85,13 +96,31 @@ pub struct HeapObject<T> {
 
 impl std::fmt::Debug for OpaqueGcPtr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        unsafe { (*self.header.as_ref().get()).fmt(f) }
+        write!(f, "{:p}", self.header.as_ptr())
     }
 }
 
 pub type OpaqueGcPtr = HeapObject<()>;
 
 impl HeapObject<()> {
+    unsafe fn from_ptr(ptr: *mut GcHeader) -> Option<Self> {
+        if ptr.is_null() {
+            return None;
+        }
+
+        let header = NonNull::new(ptr as *mut UnsafeCell<GcHeader>).unwrap();
+        let header_offset = unsafe { (*header.as_ref().get()).offset };
+        let data = unsafe { (ptr as *mut ()).byte_add(header_offset) };
+        Some(Self {
+            header,
+            data: NonNull::new(data as *mut UnsafeCell<()>).unwrap(),
+        })
+    }
+
+    unsafe fn as_ptr(&self) -> *mut GcHeader {
+        self.header.as_ptr() as *mut GcHeader
+    }
+
     unsafe fn shared_rc(&self) -> usize {
         unsafe {
             (*self.header.as_ref().get())
@@ -146,10 +175,6 @@ impl HeapObject<()> {
         }
     }
 
-    unsafe fn lock(&self) -> &RwLock<()> {
-        unsafe { &(*self.header.as_ref().get()).lock }
-    }
-
     unsafe fn visit_children(
         &self,
     ) -> unsafe fn(this: *const (), visitor: &mut dyn FnMut(OpaqueGcPtr)) {
@@ -165,11 +190,31 @@ impl HeapObject<()> {
     }
 
     unsafe fn data(&self) -> *const () {
-        unsafe { self.data.as_ref().get() as *const () }
+        self.data.as_ptr() as *const UnsafeCell<()> as *const ()
     }
 
     unsafe fn data_mut(&self) -> *mut () {
-        unsafe { self.data.as_ref().get() }
+        self.data.as_ptr() as *mut ()
+    }
+
+    unsafe fn next(&self) -> *mut GcHeader {
+        unsafe { (*self.header.as_ref().get()).next }
+    }
+
+    unsafe fn set_next(&self, next: *mut GcHeader) {
+        unsafe {
+            (*self.header.as_ref().get()).next = next;
+        }
+    }
+
+    unsafe fn prev(&self) -> *mut GcHeader {
+        unsafe { (*self.header.as_ref().get()).prev }
+    }
+
+    unsafe fn set_prev(&self, prev: *mut GcHeader) {
+        unsafe {
+            (*self.header.as_ref().get()).prev = prev;
+        }
     }
 }
 
@@ -185,15 +230,18 @@ pub(super) fn alloc_gc_object<T: super::GcOrTrace>(data: T) -> super::Gc<T> {
         marker: PhantomData,
     };
 
-    NEW_ALLOCS_BUFFER
-        .lock()
-        .unwrap()
-        .push(unsafe { new_gc.as_opaque() });
+    HEAP_START
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |next| unsafe {
+            let new_gc_ptr = new_gc.ptr.as_ptr() as *mut GcHeader;
+            (*new_gc_ptr).next = next;
+            Some(new_gc_ptr)
+        })
+        .unwrap();
 
     new_gc
 }
 
-static NEW_ALLOCS_BUFFER: Mutex<Vec<OpaqueGcPtr>> = Mutex::new(Vec::new());
+static HEAP_START: AtomicPtr<GcHeader> = AtomicPtr::new(std::ptr::null_mut());
 static COLLECTOR_TASK: OnceLock<JoinHandle<()>> = OnceLock::new();
 
 pub fn init_gc() {
@@ -202,88 +250,126 @@ pub fn init_gc() {
 
 #[derive(Debug)]
 pub struct Collector {
-    swap_buffer: Vec<OpaqueGcPtr>,
-    heap: HashSet<OpaqueGcPtr>,
     roots: HashSet<OpaqueGcPtr>,
     cycles: Vec<Vec<OpaqueGcPtr>>,
+    start: *mut GcHeader,
+    next: *mut GcHeader,
 }
+
+unsafe impl Send for Collector {}
 
 impl Collector {
     fn new() -> Self {
         Self {
-            swap_buffer: Vec::new(),
-            heap: HashSet::new(),
-            roots: HashSet::new(),
+            roots: HashSet::default(),
             cycles: Vec::new(),
+            start: null_mut(),
+            next: null_mut(),
         }
     }
 
     fn run(mut self) -> JoinHandle<()> {
         std::thread::spawn(move || {
             loop {
-                self.recv_new_allocs();
                 self.epoch();
             }
         })
     }
 
-    fn recv_new_allocs(&mut self) {
-        std::mem::swap(
-            &mut *NEW_ALLOCS_BUFFER.lock().unwrap(),
-            &mut self.swap_buffer,
-        );
-        for new_alloc in self.swap_buffer.drain(..) {
-            unsafe {
-                new_alloc.set_buffered(false);
-            }
-            self.heap.insert(new_alloc);
-        }
-    }
-
     fn epoch(&mut self) {
+        self.start = HEAP_START
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |_| Some(null_mut()))
+            .unwrap();
+
+        // Go through and set the prev ptr for all of the new items:
+        let mut prev = null_mut();
+        let mut next = self.start;
+        let mut new_live_objects = 0;
+        while let Some(curr_heap_object) = unsafe { OpaqueGcPtr::from_ptr(next) } {
+            unsafe {
+                // curr_heap_object.set_prev(prev);
+                if !curr_heap_object.prev().is_null() {
+                    break;
+                }
+
+                new_live_objects += 1;
+
+                curr_heap_object.set_prev(prev);
+                prev = next;
+                next = curr_heap_object.next();
+            }
+        }
+
+        if new_live_objects == 1 {
+            std::thread::yield_now();
+        }
+
+        self.next = self.start;
+
         // Collect obvious garbage; i.e. heap objects that have a ref count of zero,
         // and potential candidates for cycles.
-        let mut garbage = Vec::new();
-
-        for heap_object in self.heap.iter() {
+        while let Some(curr_heap_object) = unsafe { OpaqueGcPtr::from_ptr(self.next) } {
             unsafe {
-                let shared_rc = heap_object.shared_rc();
-                let epoch_rc = heap_object.epoch_rc();
+                curr_heap_object.set_buffered(false);
+
+                let shared_rc = curr_heap_object.shared_rc();
+                let epoch_rc = curr_heap_object.epoch_rc();
+
+                self.next = curr_heap_object.next();
 
                 if shared_rc == 0 {
                     // If shared_rc is zero, then we can release this object
-                    garbage.push(*heap_object);
+                    self.release(curr_heap_object);
                 } else if shared_rc > epoch_rc {
                     // If the epoch_rc is less than the shared_rc, we've seen an
                     // increment and can mark the object black.
-                    heap_object.set_epoch_rc(shared_rc);
-                    scan_black(*heap_object);
+                    curr_heap_object.set_epoch_rc(shared_rc);
+                    scan_black(curr_heap_object);
                 } else {
-                    heap_object.set_epoch_rc(shared_rc);
+                    curr_heap_object.set_epoch_rc(shared_rc);
                     // Otherwise, we must assume that object is a possible root
-                    if heap_object.color() == Color::Black {
-                        scan_black(*heap_object);
-                        heap_object.set_color(Color::Purple);
-                        self.roots.insert(*heap_object);
+                    if curr_heap_object.color() == Color::Black {
+                        scan_black(curr_heap_object);
+                        curr_heap_object.set_color(Color::Purple);
+                        self.roots.insert(curr_heap_object);
                     }
                 }
             }
         }
 
-        // Free any garbage
+        // Free any cycles from the previous epoch
         unsafe {
             self.free_cycles();
-        }
-
-        for garbage in garbage.into_iter() {
-            unsafe {
-                self.release(garbage);
-            }
         }
 
         // Process cycles
         unsafe {
             self.process_cycles();
+        }
+
+        // Add the heap back into HEAP_START, unless we freed everything:
+        if self.start.is_null() {
+            return;
+        }
+
+        if let Err(mut curr_ptr) =
+            HEAP_START.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |new_start| {
+                new_start.is_null().then_some(self.start)
+            })
+        {
+            // We have a new start, append start to the end of the linked list
+            loop {
+                let curr = unsafe { OpaqueGcPtr::from_ptr(curr_ptr) }.unwrap();
+                let next = unsafe { curr.next() };
+                if next.is_null() {
+                    if let Some(start) = unsafe { OpaqueGcPtr::from_ptr(self.start) } {
+                        unsafe { start.set_prev(curr_ptr) };
+                    }
+                    unsafe { curr.set_next(self.start) };
+                    return;
+                }
+                curr_ptr = next;
+            }
         }
     }
 
@@ -432,7 +518,26 @@ impl Collector {
 
             // Remove the object from the heap and ensure it is no longer a
             // possible root:
-            self.heap.remove(&s);
+            let prev = s.prev();
+            let next = s.next();
+
+            if self.start == s.as_ptr() {
+                self.start = next;
+            }
+
+            if self.next == s.as_ptr() {
+                self.next = next;
+            }
+
+            if let Some(prev) = OpaqueGcPtr::from_ptr(prev) {
+                prev.set_next(next);
+            }
+
+            if let Some(next) = OpaqueGcPtr::from_ptr(next) {
+                next.set_prev(prev);
+            }
+
+            // self.heap.remove(&s);
             self.roots.remove(&s);
 
             // Finalize the object:
@@ -446,9 +551,7 @@ impl Collector {
 
 unsafe fn for_each_child(s: OpaqueGcPtr, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
     unsafe {
-        let lock = s.lock().read();
         (s.visit_children())(s.data(), visitor);
-        drop(lock);
     }
 }
 
@@ -565,21 +668,22 @@ unsafe fn delta_test(c: &[OpaqueGcPtr]) -> bool {
 mod test {
     use super::*;
     use crate::gc::*;
+    use parking_lot::RwLock;
     use std::sync::Arc;
 
     #[test]
     fn cycles() {
         #[derive(Default, Trace)]
         struct Cyclic {
-            next: Option<Gc<Cyclic>>,
+            next: Option<Gc<RwLock<Cyclic>>>,
             out: Option<Arc<()>>,
         }
 
         let out_ptr = Arc::new(());
 
-        let a = Gc::new(Cyclic::default());
-        let b = Gc::new(Cyclic::default());
-        let c = Gc::new(Cyclic::default());
+        let a = Gc::new(RwLock::new(Cyclic::default()));
+        let b = Gc::new(RwLock::new(Cyclic::default()));
+        let c = Gc::new(RwLock::new(Cyclic::default()));
 
         // a -> b -> c -
         // ^----------/
@@ -592,7 +696,6 @@ mod test {
 
         let mut collector = Collector::new();
 
-        collector.recv_new_allocs();
         collector.epoch();
 
         drop(a);

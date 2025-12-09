@@ -12,7 +12,7 @@ use crate::{
     cps::Value as CpsValue,
     proc::{ContinuationPtr, FuncDebugInfo, FuncPtr, Procedure},
     runtime::{DebugInfo, Runtime},
-    value::{Cell, ReflexiveValue, Value as SchemeValue},
+    value::{Cell, Value as SchemeValue},
 };
 
 use super::*;
@@ -280,17 +280,10 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
             }
             CpsValue::Const(val) => {
                 let mut runtime_write = self.runtime.0.write();
-                let reflexive_val = ReflexiveValue(val.clone());
-                if !runtime_write.constants_pool.contains(&reflexive_val) {
-                    runtime_write.constants_pool.insert(reflexive_val.clone());
+                if !runtime_write.constants_pool.contains(val) {
+                    runtime_write.constants_pool.insert(val.clone());
                 }
-                let raw = SchemeValue::as_raw(
-                    runtime_write
-                        .constants_pool
-                        .get(&reflexive_val)
-                        .unwrap()
-                        .as_ref(),
-                );
+                let raw = SchemeValue::as_raw(runtime_write.constants_pool.get(val).unwrap());
                 return self.builder.ins().iconst(types::I64, raw as i64);
             }
         };

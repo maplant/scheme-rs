@@ -17,9 +17,9 @@ use crate::{
     num::Number,
     proc::Procedure,
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
-    strings::AlignedString,
+    strings::WideString,
     value::Value,
-    vectors::AlignedVector,
+    vectors::ByteVector,
 };
 
 type Future = Shared<BoxFuture<'static, Result<Vec<Value>, Condition>>>;
@@ -45,14 +45,12 @@ pub async fn spawn(task: &Value) -> Result<Vec<Value>, Condition> {
 
 #[bridge(name = "await", lib = "(tokio)")]
 pub async fn await_future(future: &Value) -> Result<Vec<Value>, Condition> {
-    let future = {
-        future
-            .clone()
-            .try_into_rust_type::<Future>()?
-            .read()
-            .clone()
-    };
-    future.await
+    future
+        .clone()
+        .try_into_rust_type::<Future>()?
+        .as_ref()
+        .clone()
+        .await
 }
 
 impl SchemeCompatible for Arc<TcpListener> {
@@ -67,8 +65,8 @@ impl SchemeCompatible for Arc<TcpListener> {
 
 #[bridge(name = "bind-tcp", lib = "(tokio)")]
 pub async fn bind_tcp(addr: &Value) -> Result<Vec<Value>, Condition> {
-    let addr: Arc<AlignedString> = addr.clone().try_into()?;
-    let listener = TcpListener::bind(addr.as_str())
+    let addr: WideString = addr.clone().try_into()?;
+    let listener = TcpListener::bind(&addr.to_string())
         .await
         .map_err(|e| Condition::error(format!("failed to bind to address: {e:?}")))?;
     let listener = Value::from(Record::from_rust_type(Arc::new(listener)));
@@ -91,7 +89,6 @@ pub async fn accept(listener: &Value) -> Result<Vec<Value>, Condition> {
         listener
             .clone()
             .try_into_rust_type::<Arc<TcpListener>>()?
-            .read()
             .clone()
     };
     let (socket, addr) = listener
@@ -108,13 +105,9 @@ pub async fn read(socket: &Value, buff_size: &Value) -> Result<Vec<Value>, Condi
     let buff_size: Arc<Number> = buff_size.clone().try_into()?;
     let buff_size: usize = buff_size.as_ref().try_into()?;
     let mut buffer = vec![0u8; buff_size];
-    let socket = {
-        socket
-            .clone()
-            .try_into_rust_type::<Arc<Mutex<TcpStream>>>()?
-            .read()
-            .clone()
-    };
+    let socket = socket
+        .clone()
+        .try_into_rust_type::<Arc<Mutex<TcpStream>>>()?;
 
     let len = socket
         .lock()
@@ -130,19 +123,20 @@ pub async fn read(socket: &Value, buff_size: &Value) -> Result<Vec<Value>, Condi
 
 #[bridge(name = "write", lib = "(tokio)")]
 pub async fn write(socket: &Value, buffer: &Value) -> Result<Vec<Value>, Condition> {
-    let buffer: Arc<AlignedVector<u8>> = buffer.clone().try_into()?;
+    let buffer: ByteVector = buffer.clone().try_into()?;
     let socket = {
         socket
             .clone()
             .try_into_rust_type::<Arc<Mutex<TcpStream>>>()?
-            .read()
             .clone()
     };
+
+    let buff = buffer.0.vec.read().clone();
 
     socket
         .lock()
         .await
-        .write(&buffer)
+        .write(&buff)
         .await
         .map_err(|e| Condition::error(format!("failed to read from socket: {e:?}")))?;
 

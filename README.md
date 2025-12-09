@@ -24,12 +24,12 @@ That is obviously a long way away.
 - `dynamic-wind`
 - Defining sync/async bridge functions in Rust and importing Rust types into Scheme
 - Records and conditions
+- Hashtables
 - Libraries and all import forms
 
 ## Features currently in development
 
-- Ports and IO operations
-- Hash maps 
+- File I/O API for ports
 
 ## Usage:
 

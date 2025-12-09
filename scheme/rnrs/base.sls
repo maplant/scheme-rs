@@ -1,6 +1,6 @@
 (library (rnrs base (6))
   (export syntax-rules with-syntax cond case let* letrec letrec* values
-          let-values let*-values when unless do case-lambda equal? member memv
+          let-values let*-values when unless do case-lambda member memv
           memq caar cadr memp call/cc for-each
           append make-list list-copy list-tail list-ref assoc map reverse
           positive? negative? abs min max quasiquote
@@ -273,9 +273,6 @@
            (case-lambda-help args n more ...)))
       ((_ args n (r b1 b2 ...) more ...)
        (apply (lambda r b1 b2 ...) args))))
-
-  ;; TODO(map): This is INCORRECT, needs to be fixed!
-  (define equal? eqv?) 
 
   (define (member obj list)
     (memp (lambda (x) (equal? x obj)) list))

@@ -4,15 +4,16 @@ use crate::{
     env::{Environment, Global},
     exceptions::{Condition, Exception, raise},
     gc::{Gc, GcInner, Trace, init_gc},
-    lists::{self, list_to_vec},
+    lists::{Pair, list_to_vec},
     num,
     ports::{BufferMode, Port, Transcoder},
     proc::{Application, ContinuationPtr, DynStack, FuncDebugInfo, FuncPtr, Procedure, UserPtr},
     registry::{Library, Registry},
     symbols::Symbol,
     syntax::Span,
-    value::{Cell, ReflexiveValue, UnpackedValue, Value},
+    value::{Cell, UnpackedValue, Value},
 };
+use parking_lot::RwLock;
 use scheme_rs_macros::{maybe_async, maybe_await, runtime_fn};
 use std::{collections::HashSet, mem::ManuallyDrop, path::Path, sync::Arc};
 
@@ -33,7 +34,7 @@ use std::{collections::HashSet, mem::ManuallyDrop, path::Path, sync::Arc};
 /// In order to remedy this it is vitally important the closure has a back
 /// pointer to the runtime.
 #[derive(Trace, Clone)]
-pub struct Runtime(pub(crate) Gc<RuntimeInner>);
+pub struct Runtime(pub(crate) Gc<RwLock<RuntimeInner>>);
 
 impl Default for Runtime {
     fn default() -> Self {
@@ -45,7 +46,7 @@ impl Runtime {
     /// Creates a new runtime. Also initializes the garbage collector and
     /// creates a default registry with the bridge functions populated.
     pub fn new() -> Self {
-        let this = Self(Gc::new(RuntimeInner::new()));
+        let this = Self(Gc::new(RwLock::new(RuntimeInner::new())));
         let new_registry = Registry::new(&this);
         this.0.write().registry = new_registry;
         this
@@ -64,9 +65,8 @@ impl Runtime {
         let sexprs = {
             let port = Port::new(
                 maybe_await!(File::open(path)).unwrap(),
-                true,
                 BufferMode::Block,
-                Transcoder::native(),
+                Some(Transcoder::native()),
             );
             let file_name = path.file_name().unwrap().to_str().unwrap_or("<unknown>");
             let span = Span::new(file_name);
@@ -104,7 +104,7 @@ impl Runtime {
         maybe_await!(recv_procedure(completion_rx))
     }
 
-    pub(crate) unsafe fn from_raw_inc_rc(rt: *mut GcInner<RuntimeInner>) -> Self {
+    pub(crate) unsafe fn from_raw_inc_rc(rt: *mut GcInner<RwLock<RuntimeInner>>) -> Self {
         unsafe { Self(Gc::from_raw_inc_rc(rt)) }
     }
 }
@@ -125,7 +125,7 @@ pub(crate) struct RuntimeInner {
     pub(crate) registry: Registry,
     /// Channel to compilation task
     compilation_buffer_tx: CompilationBufferTx,
-    pub(crate) constants_pool: HashSet<ReflexiveValue>,
+    pub(crate) constants_pool: HashSet<Value>,
     pub(crate) globals_pool: HashSet<Global>,
     pub(crate) debug_info: DebugInfo,
 }
@@ -319,31 +319,30 @@ unsafe fn arc_from_ptr<T>(ptr: *const T) -> Option<Arc<T>> {
 
 /// Allocate a new Gc with a value of undefined
 #[runtime_fn]
-unsafe extern "C" fn alloc_cell() -> i64 {
-    Value::into_raw(Value::from(Cell(Gc::new(Value::undefined())))) as i64
+unsafe extern "C" fn alloc_cell() -> *const () {
+    Value::into_raw(Value::from(Cell(Gc::new(RwLock::new(Value::undefined())))))
 }
 
 /// Read the value of a Cell
 #[runtime_fn]
-unsafe extern "C" fn read_cell(cell: i64) -> i64 {
+unsafe extern "C" fn read_cell(cell: *const ()) -> *const () {
     unsafe {
-        let cell = Value::from_raw(cell as u64);
+        let cell = Value::from_raw(cell);
         let cell: Cell = cell.try_into().unwrap();
         // We do not need to increment the reference count of the cell, it is going to
         // be decremented at the end of this function.
         let cell = ManuallyDrop::new(cell);
         let cell_read = cell.0.read();
-        let raw = Value::as_raw(&cell_read);
-        raw as i64
+        Value::as_raw(&cell_read)
     }
 }
 
 /// Decrement the reference count of a value
 #[runtime_fn]
-unsafe extern "C" fn dropv(val: *const i64, num_drops: u32) {
+unsafe extern "C" fn dropv(val: *const *const (), num_drops: u32) {
     unsafe {
         for i in 0..num_drops {
-            drop(Value::from_raw(val.add(i as usize).read() as u64));
+            drop(Value::from_raw(val.add(i as usize).read()));
         }
     }
 }
@@ -351,18 +350,18 @@ unsafe extern "C" fn dropv(val: *const i64, num_drops: u32) {
 /// Create a boxed application
 #[runtime_fn]
 unsafe extern "C" fn apply(
-    runtime: *mut GcInner<RuntimeInner>,
-    op: i64,
-    args: *const i64,
+    runtime: *mut GcInner<RwLock<RuntimeInner>>,
+    op: *const (),
+    args: *const *const (),
     num_args: u32,
     span: *const Span,
 ) -> *mut Application {
     unsafe {
         let args: Vec<_> = (0..num_args)
-            .map(|i| Value::from_raw_inc_rc(args.add(i as usize).read() as u64))
+            .map(|i| Value::from_raw_inc_rc(args.add(i as usize).read()))
             .collect();
 
-        let op = match Value::from_raw_inc_rc(op as u64).unpack() {
+        let op = match Value::from_raw_inc_rc(op).unpack() {
             UnpackedValue::Procedure(op) => op,
             x => {
                 let raised = raise(
@@ -382,12 +381,12 @@ unsafe extern "C" fn apply(
 /// Create a boxed application that forwards a list of values to the operator
 #[runtime_fn]
 unsafe extern "C" fn forward(
-    runtime: *mut GcInner<RuntimeInner>,
-    op: i64,
-    args: i64,
+    runtime: *mut GcInner<RwLock<RuntimeInner>>,
+    op: *const (),
+    args: *const (),
 ) -> *mut Application {
     unsafe {
-        let op = match Value::from_raw_inc_rc(op as u64).unpack() {
+        let op = match Value::from_raw_inc_rc(op).unpack() {
             UnpackedValue::Procedure(op) => op,
             x => {
                 let raised = raise(
@@ -400,7 +399,7 @@ unsafe extern "C" fn forward(
 
         // We do not need to increment to forward here, for the same reason as in
         // halt.
-        let args = ManuallyDrop::new(Value::from_raw(args as u64));
+        let args = ManuallyDrop::new(Value::from_raw(args));
         let mut flattened = Vec::new();
         list_to_vec(&args, &mut flattened);
 
@@ -412,10 +411,10 @@ unsafe extern "C" fn forward(
 
 /// Create a boxed application that simply returns its arguments
 #[runtime_fn]
-pub(crate) unsafe extern "C" fn halt(args: i64) -> *mut Application {
+pub(crate) unsafe extern "C" fn halt(args: *const ()) -> *mut Application {
     unsafe {
         // We do not need to increment the rc here, it will be incremented in list_to_vec
-        let args = ManuallyDrop::new(Value::from_raw(args as u64));
+        let args = ManuallyDrop::new(Value::from_raw(args));
         let mut flattened = Vec::new();
         list_to_vec(&args, &mut flattened);
         let app = Application::halt_ok(flattened);
@@ -426,70 +425,69 @@ pub(crate) unsafe extern "C" fn halt(args: i64) -> *mut Application {
 /// Evaluate a `Gc<Value>` as "truthy" or not, as in whether it triggers a
 /// conditional.
 #[runtime_fn]
-unsafe extern "C" fn truthy(val: i64) -> bool {
+unsafe extern "C" fn truthy(val: *const ()) -> bool {
     unsafe {
         // No need to increment the reference count here:
-        ManuallyDrop::new(Value::from_raw(val as u64)).is_true()
+        ManuallyDrop::new(Value::from_raw(val)).is_true()
     }
 }
 
 /// Replace the value pointed to at to with the value contained in from.
 #[runtime_fn]
-unsafe extern "C" fn store(from: i64, to: i64) {
+unsafe extern "C" fn store(from: *const (), to: *const ()) {
     unsafe {
         // We do not need to increment the ref count for to, it is dropped
         // immediately.
-        let from = Value::from_raw_inc_rc(from as u64);
-        let to: ManuallyDrop<Cell> =
-            ManuallyDrop::new(Value::from_raw(to as u64).try_into().unwrap());
+        let from = Value::from_raw_inc_rc(from);
+        let to: ManuallyDrop<Cell> = ManuallyDrop::new(Value::from_raw(to).try_into().unwrap());
         *to.0.write() = from;
     }
 }
 
 /// Return the cons of the two arguments
 #[runtime_fn]
-unsafe extern "C" fn cons(vals: *const i64, num_vals: u32, error: *mut Value) -> i64 {
+unsafe extern "C" fn cons(vals: *const *const (), num_vals: u32, error: *mut Value) -> *const () {
     unsafe {
         if num_vals != 2 {
             error.write(Condition::wrong_num_of_args(2, num_vals as usize).into());
-            return Value::into_raw(Value::undefined()) as i64;
+            return Value::into_raw(Value::undefined());
         }
-        let car = Value::from_raw_inc_rc(vals.read() as u64);
-        let cdr = Value::from_raw_inc_rc(vals.add(1).read() as u64);
-        let raw = Value::into_raw(Value::from(Gc::new(lists::Pair(car, cdr))));
-        raw as i64
+        let car = Value::from_raw_inc_rc(vals.read());
+        let cdr = Value::from_raw_inc_rc(vals.add(1).read());
+        Value::into_raw(Value::from(Pair::new(car, cdr, true)))
     }
 }
 
 /// Return the proper list of the arguments
 #[runtime_fn]
-unsafe extern "C" fn list(vals: *const i64, num_vals: u32, _error: *mut Value) -> i64 {
+unsafe extern "C" fn list(vals: *const *const (), num_vals: u32, _error: *mut Value) -> *const () {
     let mut list = Value::null();
     unsafe {
         for i in (0..num_vals).rev() {
-            list = Value::from(Gc::new(lists::Pair(
-                Value::from_raw_inc_rc(vals.add(i as usize).read() as u64),
+            list = Value::from(Pair::new(
+                Value::from_raw_inc_rc(vals.add(i as usize).read()),
                 list,
-            )));
+                true,
+            ));
         }
     }
-    Value::into_raw(list) as i64
+    Value::into_raw(list)
 }
 
 /// Allocate a continuation
 #[runtime_fn]
 unsafe extern "C" fn make_continuation(
-    runtime: *mut GcInner<RuntimeInner>,
+    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     fn_ptr: ContinuationPtr,
-    env: *const i64,
+    env: *const *const (),
     num_envs: u32,
     num_required_args: u32,
     variadic: bool,
-) -> i64 {
+) -> *const () {
     unsafe {
         // Collect the environment:
         let env: Vec<_> = (0..num_envs)
-            .map(|i| Value::from_raw_inc_rc(env.add(i as usize).read() as u64))
+            .map(|i| Value::from_raw_inc_rc(env.add(i as usize).read()))
             .collect();
 
         let proc = Procedure::new(
@@ -501,25 +499,25 @@ unsafe extern "C" fn make_continuation(
             None,
         );
 
-        Value::into_raw(Value::from(proc)) as i64
+        Value::into_raw(Value::from(proc))
     }
 }
 
 /// Allocate a user function
 #[runtime_fn]
 unsafe extern "C" fn make_user(
-    runtime: *mut GcInner<RuntimeInner>,
+    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     fn_ptr: UserPtr,
-    env: *const i64,
+    env: *const *const (),
     num_envs: u32,
     num_required_args: u32,
     variadic: bool,
     debug_info: *const FuncDebugInfo,
-) -> i64 {
+) -> *const () {
     unsafe {
         // Collect the environment:
         let env: Vec<_> = (0..num_envs)
-            .map(|i| Value::from_raw_inc_rc(env.add(i as usize).read() as u64))
+            .map(|i| Value::from_raw_inc_rc(env.add(i as usize).read()))
             .collect();
 
         let proc = Procedure::new(
@@ -531,78 +529,78 @@ unsafe extern "C" fn make_user(
             arc_from_ptr(debug_info),
         );
 
-        Value::into_raw(Value::from(proc)) as i64
+        Value::into_raw(Value::from(proc))
     }
 }
 
 /// Return an error in the case that a value is undefined
 #[runtime_fn]
-unsafe extern "C" fn error_unbound_variable(symbol: u32) -> i64 {
+unsafe extern "C" fn error_unbound_variable(symbol: u32) -> *const () {
     let sym = Symbol(symbol);
     let condition = Condition::error(format!("{sym} is unbound"));
-    Value::into_raw(Value::from(condition)) as i64
+    Value::into_raw(Value::from(condition))
 }
 
 #[runtime_fn]
-unsafe extern "C" fn add(vals: *const i64, num_vals: u32, error: *mut Value) -> i64 {
+unsafe extern "C" fn add(vals: *const *const (), num_vals: u32, error: *mut Value) -> *const () {
     unsafe {
         let vals: Vec<_> = (0..num_vals)
             // Can't easily wrap these in a ManuallyDrop, so we dec the rc.
-            .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read() as u64))
+            .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read()))
             .collect();
         match num::add(&vals) {
-            Ok(num) => Value::into_raw(Value::from(num)) as i64,
+            Ok(num) => Value::into_raw(Value::from(num)),
             Err(condition) => {
                 error.write(condition.into());
-                Value::into_raw(Value::undefined()) as i64
+                Value::into_raw(Value::undefined())
             }
         }
     }
 }
 
 #[runtime_fn]
-unsafe extern "C" fn sub(vals: *const i64, num_vals: u32, error: *mut Value) -> i64 {
+unsafe extern "C" fn sub(vals: *const *const (), num_vals: u32, error: *mut Value) -> *const () {
     unsafe {
         let vals: Vec<_> = (0..num_vals)
-            .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read() as u64))
+            .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read()))
             .collect();
         match num::sub(&vals[0], &vals[1..]) {
-            Ok(num) => Value::into_raw(Value::from(num)) as i64,
+            Ok(num) => Value::into_raw(Value::from(num)),
             Err(condition) => {
                 error.write(condition.into());
-                Value::into_raw(Value::undefined()) as i64
+                Value::into_raw(Value::undefined())
             }
         }
     }
 }
 
 #[runtime_fn]
-unsafe extern "C" fn mul(vals: *const i64, num_vals: u32, error: *mut Value) -> i64 {
+unsafe extern "C" fn mul(vals: *const *const (), num_vals: u32, error: *mut Value) -> *const () {
     unsafe {
         let vals: Vec<_> = (0..num_vals)
-            .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read() as u64))
+            .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read()))
             .collect();
         match num::mul(&vals) {
-            Ok(num) => Value::into_raw(Value::from(num)) as i64,
+            Ok(num) => Value::into_raw(Value::from(num)),
             Err(condition) => {
                 error.write(condition.into());
-                Value::into_raw(Value::undefined()) as i64
+                Value::into_raw(Value::undefined())
             }
         }
     }
 }
 
 #[runtime_fn]
-unsafe extern "C" fn div(vals: *const i64, num_vals: u32, error: *mut Value) -> i64 {
+unsafe extern "C" fn div(vals: *const *const (), num_vals: u32, error: *mut Value) -> *const () {
     unsafe {
         let vals: Vec<_> = (0..num_vals)
-            .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read() as u64))
+            .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read()))
             .collect();
         match num::div(&vals[0], &vals[1..]) {
-            Ok(num) => Value::into_raw(Value::from(num)) as i64,
+            Ok(num) => Value::into_raw(Value::from(num)),
             Err(condition) => {
                 error.write(condition.into());
-                Value::into_raw(Value::undefined()) as i64
+                Value::into_raw(Value::undefined())
             }
         }
     }
@@ -611,16 +609,20 @@ unsafe extern "C" fn div(vals: *const i64, num_vals: u32, error: *mut Value) -> 
 macro_rules! define_comparison_fn {
     ( $name:ident ) => {
         #[runtime_fn]
-        unsafe extern "C" fn $name(vals: *const i64, num_vals: u32, error: *mut Value) -> i64 {
+        unsafe extern "C" fn $name(
+            vals: *const *const (),
+            num_vals: u32,
+            error: *mut Value,
+        ) -> *const () {
             unsafe {
                 let vals: Vec<_> = (0..num_vals)
-                    .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read() as u64))
+                    .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read()))
                     .collect();
                 match num::$name(&vals) {
-                    Ok(res) => Value::into_raw(Value::from(res)) as i64,
+                    Ok(res) => Value::into_raw(Value::from(res)),
                     Err(condition) => {
                         error.write(condition.into());
-                        Value::into_raw(Value::undefined()) as i64
+                        Value::into_raw(Value::undefined())
                     }
                 }
             }
