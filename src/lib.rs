@@ -90,6 +90,7 @@ pub mod ast;
 pub(crate) mod character;
 pub(crate) mod cps;
 pub mod env;
+pub mod eval;
 pub mod exceptions;
 pub(crate) mod expand;
 pub mod gc;

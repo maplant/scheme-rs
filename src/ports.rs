@@ -1846,11 +1846,7 @@ pub fn standard_input_port() -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(port)])
 }
 
-#[cps_bridge(
-    name = "current-input-port",
-    lib = "(rnrs base builtins (6))",
-    args = ""
-)]
+#[cps_bridge(def = "current-input-port", lib = "(rnrs base builtins (6))")]
 pub fn current_input_port(
     _runtime: &Runtime,
     _env: &[Value],

@@ -724,6 +724,12 @@ impl Clone for Environment {
     }
 }
 
+impl fmt::Debug for Environment {
+    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Ok(())
+    }
+}
+
 #[derive(Copy, Clone, Trace)]
 pub struct Local {
     pub(crate) id: usize,

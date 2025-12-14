@@ -252,9 +252,8 @@ fn make_default_record_constructor_descriptor(
 }
 
 #[cps_bridge(
-    name = "make-record-constructor-descriptor",
-    lib = "(rnrs records procedural (6))",
-    args = "rtd parent-constructor-descriptor protocol"
+    def = "make-record-constructor-descriptor rtd parent-constructor-descriptor protocol",
+    lib = "(rnrs records procedural (6))"
 )]
 pub fn make_record_constructor_descriptor(
     runtime: &Runtime,
@@ -316,11 +315,7 @@ pub fn make_record_constructor_descriptor(
     ))
 }
 
-#[cps_bridge(
-    name = "record-constructor",
-    lib = "(rnrs records procedural (6))",
-    args = "rcd"
-)]
+#[cps_bridge(def = "record-constructor rcd", lib = "(rnrs records procedural (6))")]
 pub fn record_constructor(
     runtime: &Runtime,
     _env: &[Value],
@@ -757,11 +752,7 @@ fn record_predicate_fn(
     ))
 }
 
-#[cps_bridge(
-    name = "record-predicate",
-    lib = "(rnrs records procedural (6))",
-    args = "rtd"
-)]
+#[cps_bridge(def = "record-predicate rtd", lib = "(rnrs records procedural (6))")]
 pub fn record_predicate(
     runtime: &Runtime,
     _env: &[Value],
@@ -811,11 +802,7 @@ fn record_accessor_fn(
     Ok(Application::new(k, vec![val], None))
 }
 
-#[cps_bridge(
-    name = "record-accessor",
-    lib = "(rnrs records procedural (6))",
-    args = "rtd k"
-)]
+#[cps_bridge(def = "record-accessor rtd k", lib = "(rnrs records procedural (6))")]
 pub fn record_accessor(
     runtime: &Runtime,
     _env: &[Value],
@@ -873,11 +860,7 @@ fn record_mutator_fn(
     Ok(Application::new(k, vec![], None))
 }
 
-#[cps_bridge(
-    name = "record-mutator",
-    lib = "(rnrs records procedural (6))",
-    args = "rtd k"
-)]
+#[cps_bridge(def = "record-mutator rtd k", lib = "(rnrs records procedural (6))")]
 pub fn record_mutator(
     runtime: &Runtime,
     _env: &[Value],

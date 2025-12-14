@@ -284,6 +284,11 @@ fn compilation_task(mut compilation_queue_rx: CompilationBufferRx) {
 
         let _ = completion_tx.send(proc);
     }
+
+    // Free the JITed memory
+    unsafe {
+        module.free_memory();
+    }
 }
 
 pub(crate) struct RuntimeFn {

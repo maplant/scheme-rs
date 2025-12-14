@@ -265,11 +265,7 @@ pub fn append(list: &Value, to_append: &Value) -> Result<Vec<Value>, Condition> 
     Ok(vec![list])
 }
 
-#[cps_bridge(
-    name = "map",
-    lib = "(rnrs base builtins (6))",
-    args = "proc list1 . listn"
-)]
+#[cps_bridge(def = "map proc list1 . listn", lib = "(rnrs base builtins (6))")]
 pub fn map(
     runtime: &Runtime,
     _env: &[Value],
