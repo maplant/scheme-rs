@@ -182,18 +182,14 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
 
 #[proc_macro_attribute]
 pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
-    let mut name: Option<LitStr> = None;
+    let mut def: Option<LitStr> = None;
     let mut lib: Option<LitStr> = None;
-    let mut arg_names: Option<LitStr> = None;
     let bridge_attr_parser = syn::meta::parser(|meta| {
-        if meta.path.is_ident("name") {
-            name = Some(meta.value()?.parse()?);
+        if meta.path.is_ident("def") {
+            def = Some(meta.value()?.parse()?);
             Ok(())
         } else if meta.path.is_ident("lib") {
             lib = Some(meta.value()?.parse()?);
-            Ok(())
-        } else if meta.path.is_ident("args") {
-            arg_names = Some(meta.value()?.parse()?);
             Ok(())
         } else {
             Err(meta.error("unsupported bridge property"))
@@ -208,12 +204,12 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     let impl_name = bridge.sig.ident.clone();
 
     let (vis, inventory) = if matches!(bridge.vis, Visibility::Public(_)) {
-        let name = name.unwrap().value();
         let vis = std::mem::replace(&mut bridge.vis, Visibility::Inherited);
         let lib = lib.unwrap().value();
-        let args = arg_names.unwrap().value();
+        let def = def.unwrap().value();
         let mut is_variadic = false;
-        let arg_names = args
+
+        let mut def = def
             .split(" ")
             .filter_map(|x| {
                 if x.is_empty() {
@@ -226,7 +222,10 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 }
             })
             .collect::<Vec<_>>();
-        let num_args = arg_names.len() - is_variadic as usize;
+
+        let name = def.remove(0);
+
+        let num_args = def.len() - is_variadic as usize;
 
         let bridge_ptr = if bridge.sig.asyncness.is_some() {
             quote!(::scheme_rs::registry::Bridge::Async(#wrapper_name))
@@ -247,16 +246,16 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                         ::std::line!(),
                         ::std::column!(),
                         0,
-                        &[ #( #arg_names, )* ],
+                        &[ #( #def, )* ],
                     )
                 )
             }
         };
         (vis, inventory)
     } else {
-        if let Some(name) = name {
+        if let Some(def) = def {
             return Error::new(
-                name.span(),
+                def.span(),
                 "name attribute is not supported for private functions",
             )
             .into_compile_error()
@@ -266,14 +265,6 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
             return Error::new(
                 lib.span(),
                 "lib attribute is not supported for private functions",
-            )
-            .into_compile_error()
-            .into();
-        }
-        if let Some(args) = arg_names {
-            return Error::new(
-                args.span(),
-                "args attribute is not supported for private functions",
             )
             .into_compile_error()
             .into();

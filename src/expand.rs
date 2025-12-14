@@ -1,11 +1,10 @@
 use crate::{
-    ast::{Expression, Literal, ParseAstError},
+    ast::{Expression, Literal, ParseAstError, ParseContext},
     env::{Environment, Local},
     exceptions::Condition,
     gc::{Gc, Trace},
     proc::Procedure,
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
-    runtime::Runtime,
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax},
     value::Value,
@@ -31,7 +30,7 @@ pub struct SyntaxRule {
 impl SyntaxRule {
     #[maybe_async]
     pub fn compile(
-        rt: &Runtime,
+        ctxt: &ParseContext,
         keywords: &HashSet<Symbol>,
         pattern: &Syntax,
         fender: Option<&Syntax>,
@@ -43,12 +42,12 @@ impl SyntaxRule {
         let binds = Local::gensym();
         let env = env.new_syntax_case_expr(binds, variables);
         let fender = if let Some(fender) = fender {
-            Some(maybe_await!(Expression::parse(rt, fender.clone(), &env))?)
+            Some(maybe_await!(Expression::parse(ctxt, fender.clone(), &env))?)
         } else {
             None
         };
         let output_expression =
-            maybe_await!(Expression::parse(rt, output_expression.clone(), &env))?;
+            maybe_await!(Expression::parse(ctxt, output_expression.clone(), &env))?;
         Ok(Self {
             pattern,
             binds,

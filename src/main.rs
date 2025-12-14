@@ -5,7 +5,7 @@ use rustyline::{
     validate::{ValidationContext, ValidationResult, Validator},
 };
 use scheme_rs::{
-    ast::{DefinitionBody, ImportSet, ParseAstError},
+    ast::{DefinitionBody, ImportSet, ParseAstError, ParseContext},
     cps::Compile,
     env::Environment,
     exceptions::Exception,
@@ -121,7 +121,8 @@ fn compile_and_run_str(
 ) -> Result<Vec<Value>, EvalError> {
     let env = Environment::Top(repl.clone());
     let span = sexpr.span().clone();
-    let expr = maybe_await!(DefinitionBody::parse(runtime, &[sexpr], &env, &span))?;
+    let ctxt = ParseContext::new(runtime, true);
+    let expr = maybe_await!(DefinitionBody::parse(&ctxt, &[sexpr], &env, &span))?;
     let compiled = expr.compile_top_level();
     let closure = maybe_await!(runtime.compile_expr(compiled));
     let result =
