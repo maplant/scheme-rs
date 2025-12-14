@@ -1,5 +1,4 @@
 //! Procedures, continuation and user, and applying values to those procedures.
-//! Contains the main evaluation trampoline.
 
 use crate::{
     env::Local,

@@ -1,3 +1,5 @@
+//! Scheme lexical environments.
+
 use std::{
     collections::{HashMap, HashSet, hash_map::Entry},
     fmt,
@@ -14,12 +16,13 @@ use futures::future::BoxFuture;
 
 use crate::{
     ast::{ImportSet, SpecialKeyword},
-    exceptions::Condition,
+    exceptions::{Condition, Exception},
     gc::{Gc, Trace},
     proc::Procedure,
     registry::{Import, ImportError, Library},
+    runtime::Runtime,
     symbols::Symbol,
-    syntax::{Identifier, Mark},
+    syntax::{Identifier, Mark, Syntax},
     value::Value,
 };
 
@@ -538,6 +541,28 @@ pub enum Environment {
 }
 
 impl Environment {
+    /// Create a new top-level environment that can be used in a REPL.
+    pub fn new_repl(runtime: &Runtime) -> Self {
+        Self::Top(Library::new_repl(&runtime))
+    }
+
+    /// Evaluate the scheme expression in the provided environment and return
+    /// the values. If `allow_imports` is false, import expressions are
+    /// disallowed and will cause an error.
+    #[maybe_async]
+    pub fn eval(&self, _allow_imports: bool, _code: &str) -> Result<Vec<Value>, Exception> {
+        todo!()
+    }
+
+    #[maybe_async]
+    pub fn eval_sexpr(
+        &self,
+        _allow_imports: bool,
+        _sexpr: &Syntax,
+    ) -> Result<Vec<Value>, Exception> {
+        todo!()
+    }
+
     pub fn fetch_top(&self) -> Library {
         match self {
             Self::Top(top) => top.clone(),

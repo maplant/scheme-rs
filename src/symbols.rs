@@ -1,4 +1,4 @@
-//! Interned symbols
+//! Interned symbols.
 
 use std::{
     fmt,

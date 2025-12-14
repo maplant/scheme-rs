@@ -1,4 +1,4 @@
-//! R6RS compatible hashtables
+//! Scheme compatible hashtables
 
 use indexmap::IndexSet;
 use parking_lot::RwLock;

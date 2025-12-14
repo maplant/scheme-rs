@@ -1,3 +1,5 @@
+//! Scheme pairs and lists.
+
 use indexmap::IndexMap;
 use parking_lot::RwLock;
 

@@ -1,3 +1,5 @@
+//! Scheme values.
+
 use indexmap::{IndexMap, IndexSet};
 use parking_lot::RwLock;
 

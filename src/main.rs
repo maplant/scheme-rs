@@ -5,16 +5,10 @@ use rustyline::{
     validate::{ValidationContext, ValidationResult, Validator},
 };
 use scheme_rs::{
-    ast::{DefinitionBody, ImportSet, ParseAstError},
-    cps::Compile,
     env::Environment,
-    exceptions::Exception,
     ports::{BufferMode, Port, Prompt, Transcoder},
-    proc::{Application, DynStack},
-    registry::Library,
     runtime::Runtime,
     syntax::{Span, Syntax},
-    value::Value,
 };
 use scheme_rs_macros::{maybe_async, maybe_await};
 use std::process::ExitCode;
@@ -45,9 +39,9 @@ struct InputHelper {
 #[cfg_attr(feature = "async", tokio::main)]
 fn main() -> ExitCode {
     let runtime = Runtime::new();
-    let repl = Library::new_repl(&runtime);
+    let repl = Environment::new_repl(&runtime);
 
-    maybe_await!(repl.import(ImportSet::parse_from_str("(library (rnrs))").unwrap()))
+    maybe_await!(repl.import("(library (rnrs))".parse().unwrap()))
         .expect("Failed to import standard library");
 
     let config = Config::builder()
@@ -88,15 +82,12 @@ fn main() -> ExitCode {
             }
         };
 
-        match maybe_await!(compile_and_run_str(&runtime, &repl, sexpr)) {
+        match maybe_await!(repl.eval_sexpr(true, &sexpr)) {
             Ok(results) => {
                 for result in results.into_iter() {
                     println!("${n_results} = {result:?}");
                     n_results += 1;
                 }
-            }
-            Err(EvalError::Exception(exception)) => {
-                print!("{exception:?}");
             }
             Err(err) => {
                 println!("Error: {err:?}");
@@ -105,26 +96,4 @@ fn main() -> ExitCode {
     }
 
     ExitCode::SUCCESS
-}
-
-#[derive(derive_more::From, Debug)]
-pub enum EvalError {
-    ParseAstError(ParseAstError),
-    Exception(Exception),
-}
-
-#[maybe_async]
-fn compile_and_run_str(
-    runtime: &Runtime,
-    repl: &Library,
-    sexpr: Syntax,
-) -> Result<Vec<Value>, EvalError> {
-    let env = Environment::Top(repl.clone());
-    let span = sexpr.span().clone();
-    let expr = maybe_await!(DefinitionBody::parse(runtime, &[sexpr], &env, &span))?;
-    let compiled = expr.compile_top_level();
-    let closure = maybe_await!(runtime.compile_expr(compiled));
-    let result =
-        maybe_await!(Application::new(closure, Vec::new(), None,).eval(&mut DynStack::default()))?;
-    Ok(result)
 }

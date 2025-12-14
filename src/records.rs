@@ -1,4 +1,4 @@
-//! Rudimentary structure support.
+//! Records (also known as structs).
 
 use std::{
     any::Any,

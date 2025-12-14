@@ -7,12 +7,14 @@ designed to embedded within sync and async Rust.
 
 ## Features:
 
-- **Fast**: scheme-rs uses JIT compilation to provide performance with other 
-  modern scheme implementations.
+- **Fast**: scheme-rs uses JIT compilation to provide performance on par with 
+  other modern scheme implementations.
 - **Modern**: scheme-rs is a modern scheme implementation of R6RS and includes 
   advanced features such as [delimited continuations](https://en.wikipedia.org/wiki/Delimited_continuation)
-- **Easy to use**: scheme-rs make it trivial to define Rust functions and data
-  structures that are accessible from scheme code.
+- **Easy to use**: scheme-rs makes it trivial to define Rust functions and data
+  structures that are accessible from scheme code and vice-versa.
+- **Safe**: scheme-rs provides a completely safe API that is impossible to 
+  misuse.
 - **Supports both async and sync Rust**: by enabling the `async` feature flag 
   it becomes possible (and easy) to define async scheme functions in Rust. 
 

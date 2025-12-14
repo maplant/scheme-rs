@@ -1,4 +1,5 @@
-//! A Registry is a collection of libraries.
+//! Global collection of libraries associated with a
+//! [`Runtime`](runtime::Runtime).
 
 use crate::{
     ast::{

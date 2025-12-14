@@ -33,3 +33,29 @@ in `. variable-name` to express variable arity.
       1
       (* n (fact (- n 1)))))
 ```
+
+## `lambda` syntax
+
+The `lambda` keyword is used to define anonymous procedures. It has three key forms:
+
+- `(lambda (arg1 ... argn) body)` Defines an anonymous procedure that takes `n`
+  arguments and applies them to body.
+- `(lambda (arg1 ... argn . var-args) body)` Defines an anonymous procedure that
+  takes at least `n` arguments and applies them to body. Any extra arguments are
+  bound to `var-args` as a list.
+- `(lambda args body)` Defines an anonymous procedure that takes any number of
+  arguments and binds them to `args`.
+
+`lambda` functions can capture their environment. That is to say, variables 
+bound outside the scope of the lambda are captured.
+
+``` scheme title="Example: captured variables" linenums="1"
+(define g 0)
+
+(define next-g 
+    (lambda ()
+        (let ((curr-g g))
+            (set! g (+ g 1))
+            curr-g)))
+```
+

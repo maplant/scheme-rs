@@ -1,32 +1,97 @@
 //! scheme-rs is an implementation of the
-//! [R6RS](https://www.r6rs.org/final/r6rs.pdf) specification of the [Scheme programming 
-//! language](https://en.wikipedia.org/wiki/Scheme_(programming_language)) that is 
+//! [R6RS](https://www.r6rs.org/final/r6rs.pdf) specification of the [Scheme programming
+//! language](https://en.wikipedia.org/wiki/Scheme_(programming_language)) that is
 //! designed to embedded within sync and async Rust.
-//!
-//! # Getting started
-//!
-//! To get started using scheme-rs in your project, create a [Runtime]:
-//!
-//! ```
-//! # use crate::runtime::Runtime;
-//! let runtime = Runtime::new();
-//! ```
 //!
 //! # Feature flags:
 //! - `async`: Enables support for async functions. Requires the `tokio` feature
 //!   flag.
 //! - `tokio`: Enables support for the [tokio](https://tokio.rs/) async
 //!   executor.
-
+//!
+//! # Getting started
+//!
+//! To get started using scheme-rs in your project, create a [Runtime]:
+//!
+//! ```
+//! # use scheme_rs::runtime::Runtime;
+//! let runtime = Runtime::new();
+//! ```
+//!
+//! The `Runtime` struct initializes the garbage collector and handles the
+//! memory of JIT compiled functions. The `Runtime` struct is automatically
+//! garbage collected so you only need it for as long as you're creating new
+//! scheme procedures.
+//!
+//! # Running Scheme code from Rust
+//!
+//! The simplest way to run scheme code from Rust is to use the
+//! [Environment::eval] function which evaluates a string and returns the
+//! evaluated scheme values. Before you can call `eval`, you need to create an
+//! [`Environment`] which defines the set of imports provided to the scheme
+//! code.
+//!
+//! ```
+//! # use scheme_rs::{runtime::Runtime, env::Environment};
+//! # let runtime = Runtime::new();
+//! let env = Environment::new_repl(&runtime);
+//! env.import("(library (rnrs))".parse().unwrap());
+//! ```
+//!
+//! Now that you have an environment, you can call `eval` on it. The first
+//! argument to eval determines whether or not the code is allowed to import
+//! external packages. If you are running untrusted user code, be sure to pass
+//! false and think careful of the functions you provide.
+//!
+//! ```
+//! # use scheme_rs::{runtime::Runtime, env::Environment};
+//! # let runtime = Runtime::new();
+//! # let env = Environment::new_repl(&runtime);
+//! # env.import("(library (rnrs))".parse().unwrap());
+//! let [factorial] = env.eval(
+//!     false,
+//!     r#"
+//!     (define (fact n)
+//!       (if (= n 1)
+//!           1
+//!           (* n (fact (- n 1)))))
+//!    fact
+//!    "#
+//! )
+//! .unwrap()
+//! .try_into()
+//! .unwrap();
+//! ```
+//!
+//! ## Procedure
+//!
+//! Evaluating the previous code example returns a factorial [`Procedure`]
+//! which can be called from Rust. To do so, use the [`Procedure::call`] method.
+//! Procedures are automatically garbage collected and implement `Send` and
+//! `Sync` and are `'static` so you can hold on to them for as long as you want
+//! and put them anywhere.
+//!
+//! # Running Rust code from Scheme
+//!
+//! ## Embedding Rust structs in Scheme
+//!
+//! # Garbage Collection
+//!
+//!
+//!
+//! See the [gc] module for a more detailed explanation on the garbage collector.
+//!
+//!
+//!
 
 extern crate self as scheme_rs;
 
 pub mod ast;
-pub mod character;
-pub mod cps;
+pub(crate) mod character;
+pub(crate) mod cps;
 pub mod env;
 pub mod exceptions;
-pub mod expand;
+pub(crate) mod expand;
 pub mod gc;
 pub mod hashtables;
 pub mod lists;

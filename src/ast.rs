@@ -21,6 +21,7 @@ use scheme_rs_macros::{maybe_async, maybe_await};
 use std::{
     collections::{HashMap, HashSet},
     fmt,
+    str::FromStr,
     sync::Arc,
 };
 
@@ -674,8 +675,12 @@ impl ImportSet {
             _ => Err(ParseAstError::ExpectedList(syn.span().clone())),
         }
     }
+}
 
-    pub fn parse_from_str(s: &str) -> Result<Self, ParseImportSetError> {
+impl FromStr for ImportSet {
+    type Err = ParseImportSetError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         let syn = Syntax::from_str(s, None)?;
         Ok(Self::parse(&syn[0])?)
     }

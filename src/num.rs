@@ -1,3 +1,5 @@
+//! Numerical tower.
+
 use crate::{
     exceptions::Condition,
     gc::Trace,
