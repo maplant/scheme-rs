@@ -8,6 +8,7 @@ use crate::{
     gc::{Gc, GcInner, Trace},
     proc::{Application, DynStack, DynStackElem, FuncPtr, Procedure, pop_dyn_stack},
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
+    registry::ImportError,
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax, parse::ParseSyntaxError},
@@ -230,9 +231,17 @@ impl From<Serious> for Condition {
     }
 }
 
+// TODO: This needs to be removed and replaced in each place with a custom
+// conversion that takes into account the form/subform.
 impl From<ParseAstError> for Condition {
     fn from(value: ParseAstError) -> Self {
         Condition::error(format!("Error parsing: {value:?}"))
+    }
+}
+
+impl From<ImportError> for Condition {
+    fn from(value: ImportError) -> Self {
+        Condition::error(format!("Error importing: {value:?}"))
     }
 }
 
@@ -521,9 +530,8 @@ impl fmt::Display for Frame {
 }
 
 #[cps_bridge(
-    name = "with-exception-handler",
-    lib = "(rnrs base builtins (6))",
-    args = "handler thunk"
+    def = "with-exception-handler handler thunk",
+    lib = "(rnrs base builtins (6))"
 )]
 pub fn with_exception_handler(
     runtime: &Runtime,
@@ -557,7 +565,7 @@ pub fn with_exception_handler(
     Ok(Application::new(thunk.clone(), vec![Value::from(k)], None))
 }
 
-#[cps_bridge(name = "raise", lib = "(rnrs base builtins (6))", args = "obj")]
+#[cps_bridge(def = "raise obj", lib = "(rnrs base builtins (6))")]
 pub fn raise_builtin(
     runtime: &Runtime,
     _env: &[Value],
@@ -681,11 +689,7 @@ unsafe extern "C" fn reraise_exception(
 
 /// Raises an exception to the current exception handler and coninues with the
 /// value returned by the handler.
-#[cps_bridge(
-    name = "raise-continuable",
-    lib = "(rnrs base builtins (6))",
-    args = "obj"
-)]
+#[cps_bridge(def = "raise-continuable obj", lib = "(rnrs base builtins (6))")]
 pub fn raise_continuable(
     _runtime: &Runtime,
     _env: &[Value],

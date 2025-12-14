@@ -627,7 +627,7 @@ impl FuncDebugInfo {
     }
 }
 
-#[cps_bridge(name = "apply", lib = "(rnrs base builtins (6))", args = "arg1 . args")]
+#[cps_bridge(def = "apply arg1 . args", lib = "(rnrs base builtins (6))")]
 pub fn apply(
     _runtime: &Runtime,
     _env: &[Value],
@@ -746,9 +746,8 @@ pub(crate) unsafe extern "C" fn pop_dyn_stack(
 //
 
 #[cps_bridge(
-    name = "call-with-current-continuation",
-    lib = "(rnrs base builtins (6))",
-    args = "proc"
+    def = "call-with-current-continuation proc",
+    lib = "(rnrs base builtins (6))"
 )]
 pub fn call_with_current_continuation(
     runtime: &Runtime,
@@ -1018,9 +1017,8 @@ unsafe extern "C" fn call_consumer_with_values(
 }
 
 #[cps_bridge(
-    name = "call-with-values",
-    lib = "(rnrs base builtins (6))",
-    args = "producer consumer"
+    def = "call-with-values producer consumer",
+    lib = "(rnrs base builtins (6))"
 )]
 pub fn call_with_values(
     runtime: &Runtime,
@@ -1073,11 +1071,7 @@ impl SchemeCompatible for Winder {
     }
 }
 
-#[cps_bridge(
-    name = "dynamic-wind",
-    lib = "(rnrs base builtins (6))",
-    args = "in body out"
-)]
+#[cps_bridge(def = "dynamic-wind in body out", lib = "(rnrs base builtins (6))")]
 pub fn dynamic_wind(
     runtime: &Runtime,
     _env: &[Value],
@@ -1232,9 +1226,8 @@ pub struct PromptBarrier {
 static BARRIER_ID: AtomicUsize = AtomicUsize::new(0);
 
 #[cps_bridge(
-    name = "call-with-prompt",
-    lib = "(rnrs base builtins (6))",
-    args = "tag thunk handler"
+    def = "call-with-prompt tag thunk handler",
+    lib = "(rnrs base builtins (6))"
 )]
 pub fn call_with_prompt(
     runtime: &Runtime,
@@ -1280,11 +1273,7 @@ pub fn call_with_prompt(
     ))
 }
 
-#[cps_bridge(
-    name = "abort-to-prompt",
-    lib = "(rnrs base builtins (6))",
-    args = "tag"
-)]
+#[cps_bridge(def = "abort-to-prompt tag", lib = "(rnrs base builtins (6))")]
 pub fn abort_to_prompt(
     runtime: &Runtime,
     _env: &[Value],

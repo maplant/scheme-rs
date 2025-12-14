@@ -13,6 +13,7 @@ use std::{
         atomic::{AtomicPtr, AtomicUsize, Ordering},
     },
     thread::JoinHandle,
+    time::Duration,
 };
 
 use rustc_hash::FxHashSet as HashSet;
@@ -287,7 +288,6 @@ impl Collector {
         let mut new_live_objects = 0;
         while let Some(curr_heap_object) = unsafe { OpaqueGcPtr::from_ptr(next) } {
             unsafe {
-                // curr_heap_object.set_prev(prev);
                 if !curr_heap_object.prev().is_null() {
                     break;
                 }
@@ -301,7 +301,7 @@ impl Collector {
         }
 
         if new_live_objects == 1 {
-            std::thread::yield_now();
+            std::thread::sleep(Duration::from_millis(10));
         }
 
         self.next = self.start;
