@@ -1,5 +1,4 @@
-//! Global collection of libraries associated with a
-//! [`Runtime`](runtime::Runtime).
+//! Global collection of libraries associated with a [`Runtime`]
 
 use crate::{
     ast::{

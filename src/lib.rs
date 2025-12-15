@@ -11,7 +11,8 @@
 //!
 //! # Getting started
 //!
-//! To get started using scheme-rs in your project, create a [Runtime]:
+//! To get started using scheme-rs in your project, create a
+//! [`Runtime`](runtime::Runtime):
 //!
 //! ```
 //! # use scheme_rs::runtime::Runtime;
@@ -26,10 +27,10 @@
 //! # Running Scheme code from Rust
 //!
 //! The simplest way to run scheme code from Rust is to use the
-//! [Environment::eval] function which evaluates a string and returns the
-//! evaluated scheme values. Before you can call `eval`, you need to create an
-//! [`Environment`] which defines the set of imports provided to the scheme
-//! code.
+//! [`Environment::eval`](env::Environment::eval) function which evaluates a
+//! string and returns the evaluated scheme values. Before you can call `eval`,
+//! you need to create an [`Environment`](env::Environment) which defines the
+//! set of imports provided to the scheme code.
 //!
 //! ```
 //! # use scheme_rs::{runtime::Runtime, env::Environment};
@@ -63,13 +64,37 @@
 //! .unwrap();
 //! ```
 //!
-//! ## Procedure
+//! ## Procedures
 //!
-//! Evaluating the previous code example returns a factorial [`Procedure`]
-//! which can be called from Rust. To do so, use the [`Procedure::call`] method.
-//! Procedures are automatically garbage collected and implement `Send` and
-//! `Sync` and are `'static` so you can hold on to them for as long as you want
-//! and put them anywhere.
+//! Evaluating the previous code example returns a factorial 
+//! [`Procedure`](proc::Procedure) which can be called from Rust. To do so, use
+//! the [`Procedure::call`](proc::Procedure::call) method. Procedures are 
+//! automatically garbage collected and implement `Send` and `Sync` and are 
+//! `'static` so you can hold on to them for as long as you want and put them
+//! anywhere.
+//!
+//! ```
+//! # use scheme_rs::{runtime::Runtime, env::Environment, value::Value};
+//! # let runtime = Runtime::new();
+//! # let env = Environment::new_repl(&runtime);
+//! # env.import("(library (rnrs))".parse().unwrap());
+//! # let [factorial] = env.eval(
+//! #     false,
+//! #     r#"
+//! #     (define (fact n)
+//! #       (if (= n 1)
+//! #           1
+//! #           (* n (fact (- n 1)))))
+//! #    fact
+//! #    "#
+//! # )
+//! # .unwrap()
+//! # .try_into()
+//! # .unwrap();
+//! let [result] = factorial.call(&[Value::from(5)]).unwrap().try_into().unwrap();
+//! let result: u64 = result.try_into().unwrap();
+//! assert_eq!(result, 120);
+//! ```
 //!
 //! # Running Rust code from Scheme
 //!

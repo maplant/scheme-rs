@@ -26,8 +26,8 @@ pub(crate) struct PairInner {
     mutable: bool,
 }
 
-/// A pair of Scheme [Values](Value). Has a head (the [car](Value::car)) and a
-/// tail (the [cdr](Value::cdr)).
+/// A pair of Scheme [Values](Value). Has a head (the [car](Pair::car())) and a
+/// tail (the [cdr](Pair::cdr())).
 #[derive(Clone, Trace)]
 pub struct Pair(pub(crate) Gc<PairInner>);
 
@@ -46,7 +46,7 @@ impl Pair {
         self.0.car.read().clone()
     }
 
-    /// Alias for [car]
+    /// Alias for [`car`](Pair::car())
     pub fn head(&self) -> Value {
         self.car()
     }
@@ -56,7 +56,7 @@ impl Pair {
         self.0.cdr.read().clone()
     }
 
-    /// Alias for [cdr]
+    /// Alias for [`cdr`](Pair::cdr())
     pub fn tail(&self) -> Value {
         self.cdr()
     }

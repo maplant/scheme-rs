@@ -1,4 +1,57 @@
 //! Scheme values.
+//!
+//! Scheme values are dynamic and can contain essentially any value, similar to
+//! an [`Arc<dyn Any>`](std::any::Any). Converting a Rust primitive or standard
+//! library type can be done simply with the `From` trait:
+//!
+//! ```
+//! # use scheme_rs::value::Value;
+//! let value = Value::from(3.1415926f64);
+//! ```
+//!
+//! Converting a Value back to a concrete rust type can be done via the
+//! [`TryFrom`] trait or by obtaining an enum through the
+//! [`unpack`](Value::unpack) or [`unpacked_ref`](Value::unpacked_ref)
+//! functions:
+//!
+//! ```
+//! # use scheme_rs::value::{Value, UnpackedValue};
+//! # let value = Value::from(3.1415926f64);
+//! let float: f64 = value.clone().try_into().unwrap();
+//! let float: f64 = match value.unpack() {
+//!     UnpackedValue::Number(num) => num.try_into().unwrap(),
+//!     _ => unreachable!(),
+//! };
+//! ```
+//!
+//! It is generally preferrable to use `try_into` as opposed to `unpack` since
+//! `UnpackedValue` is an enumeration that is subject to change.
+//!
+//! ## Converting to/from SchemeCompatible types:
+//! `TODO`
+//!
+//! ## Scheme types:
+//!
+//! Scheme values can inhabit at most one of any of the following types:
+//! - **undefined**: Variables with this value throw an error upon being read.
+//! - **null**: Can only be one possible value which is itself. Conceptually the
+//!   same as the [`()`](https://doc.rust-lang.org/std/primitive.unit.html) type.
+//! - **pair**: A [collection of two Values](Pair). Conceptually similar to a
+//!   Rust [two-tuple](https://doc.rust-lang.org/std/primitive.tuple.html).
+//! - **boolean**: Can either be `true` or `false`.
+//! - **character**: A unicode code point. Same thing as a [`char`](std::char).
+//! - **number**: A numerical value on the numerical tower. Represented by a
+//!   [`Arc<Number>`](crate::num::Number).
+//! - **symbol**: A [`Symbol`].
+//! - **vector**: A [`Vector`].
+//! - **byte-vector**: A [`ByteVector`].
+//! - **syntax**: A [`Syntax`].
+//! - **procedure**: A [`Procedure`].
+//! - **record**: A [`Record`], which can possibly be a [`SchemeCompatible`].
+//! - **rtd**: A [descriptor of a record's type](RecordTypeDescriptor).
+//! - **hashtable**: A [`HashTable`].
+//! - **cell**: A mutable reference to another Value. This type is completely
+//!   transparent and impossible to observe.
 
 use indexmap::{IndexMap, IndexSet};
 use parking_lot::RwLock;
@@ -7,7 +60,7 @@ use crate::{
     ast,
     exceptions::{Condition, Exception},
     gc::{Gc, GcInner, Trace},
-    hashtables::{self, HashTable, HashTableInner},
+    hashtables::{HashTable, HashTableInner},
     lists::{self, Pair, PairInner},
     num::Number,
     ports::{Port, PortInner},
@@ -51,7 +104,7 @@ impl Value {
     ///
     /// # Safety
     /// Calling this function is undefined behavior if the raw u64 was not obtained
-    /// via [into_raw]
+    /// via [into_raw](Value::into_raw)
     pub unsafe fn from_raw(raw: *const ()) -> Self {
         Self(raw)
     }
@@ -60,7 +113,7 @@ impl Value {
     ///
     /// # Safety
     /// Calling this function is undefined behavior if the raw u64 was not obtained
-    /// via [into_raw]
+    /// via [into_raw](Value::into_raw)
     pub unsafe fn from_raw_inc_rc(raw: *const ()) -> Self {
         let tag = Tag::from(raw as usize & TAG);
         let untagged = raw.map_addr(|raw| raw & !TAG);
@@ -87,7 +140,7 @@ impl Value {
                 }
                 Tag::Port => Arc::increment_strong_count(untagged as *const PortInner),
                 Tag::HashTable => Gc::increment_reference_count(
-                    untagged as *mut GcInner<hashtables::HashTableInner>,
+                    untagged as *mut GcInner<HashTableInner>,
                 ),
                 Tag::Cell => {
                     Gc::increment_reference_count(untagged as *mut GcInner<Value>);
@@ -100,7 +153,8 @@ impl Value {
 
     /// Creates a raw u64 from a Value. Does not decrement the reference count.
     /// Calling this function without turning the raw value into a Value via
-    /// [from_raw] is equivalent to calling mem::forget on the value.
+    /// [from_raw](Value::from_raw) is equivalent to calling mem::forget on the
+    /// value.
     pub fn into_raw(val: Self) -> *const () {
         ManuallyDrop::new(val).0
     }
@@ -127,6 +181,7 @@ impl Value {
         Self(null::<()>().map_addr(|raw| raw | Tag::Pair as usize))
     }
 
+    /// Convert a [`Syntax`] into its corresponding datum representation.
     pub fn datum_from_syntax(syntax: &Syntax) -> Self {
         match syntax {
             Syntax::Null { .. } => Self::null(),
@@ -157,6 +212,8 @@ impl Value {
         self.unpacked_ref().type_name()
     }
 
+    /// Attempt to convert the type Value into a T that implements
+    /// [`SchemeCompatible`].
     pub fn try_into_rust_type<T: SchemeCompatible>(&self) -> Result<Gc<T>, Condition> {
         let this = self.clone().unpack();
         let record = match this {
@@ -169,6 +226,7 @@ impl Value {
             .ok_or_else(|| Condition::type_error("record-todo", "record"))
     }
 
+    /// Unpack the value into an enum representation.
     pub fn unpack(self) -> UnpackedValue {
         let raw = ManuallyDrop::new(self).0;
         let tag = Tag::from(raw as usize & TAG);
@@ -284,7 +342,7 @@ impl Drop for Value {
     }
 }
 
-/// Default Hash implementation for Value is [Value::hash_eqv]. This produces
+/// Default Hash implementation for Value is [Value::eqv_hash]. This produces
 /// reasonable hash maps.
 impl Hash for Value {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
@@ -440,6 +498,7 @@ impl From<usize> for Tag {
     }
 }
 
+/// Different possible types that a Value can inhabit.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ValueType {
     Undefined,
@@ -460,7 +519,7 @@ pub enum ValueType {
     Port,
 }
 
-/// The external, unpacked representation of a scheme value.
+/// The external, unpacked, enumeration representation of a scheme value.
 ///
 /// Values that are not potentially cyclical, such as syntax objects and byte
 /// vectors use Arcs as they are much less expensive than Gc types.
@@ -482,7 +541,7 @@ pub enum UnpackedValue {
     RecordTypeDescriptor(Arc<RecordTypeDescriptor>),
     Pair(Pair),
     Port(Port),
-    HashTable(hashtables::HashTable),
+    HashTable(HashTable),
     Cell(Cell),
 }
 
