@@ -221,10 +221,9 @@ impl Syntax {
                 ref mut binding_env,
                 ..
             } => {
-                *binding_env = resolved_bindings
+                *binding_env = *resolved_bindings
                     .entry(ident)
                     .or_insert_with(|| env.binding_env(ident))
-                    .clone()
             }
             _ => (),
         }

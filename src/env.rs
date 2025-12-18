@@ -712,8 +712,8 @@ impl Environment {
             Self::Top(top) => EnvId::new(&top.0),
             Self::LexicalContour(lex) => EnvId::new(&lex.0),
             Self::LetSyntaxContour(ls) => EnvId::new(&ls.0),
-            Self::MacroExpansion(me) => EnvId::new(&me),
-            Self::SyntaxCaseExpr(sc) => EnvId::new(&sc),
+            Self::MacroExpansion(me) => EnvId::new(me),
+            Self::SyntaxCaseExpr(sc) => EnvId::new(sc),
         }
     }
 }

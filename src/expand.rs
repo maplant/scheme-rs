@@ -502,10 +502,9 @@ impl Template {
             Self::Identifier(ident) => Syntax::Identifier {
                 ident: ident.clone(),
                 span: curr_span,
-                binding_env: resolved_bindings
+                binding_env: *resolved_bindings
                     .entry(ident)
-                    .or_insert_with(|| env.binding_env(ident))
-                    .clone(),
+                    .or_insert_with(|| env.binding_env(ident)),
             },
             Self::Variable(name) => binds.get_bind(name)?,
             Self::Literal(literal) => Syntax::new_literal(literal.clone(), curr_span),
