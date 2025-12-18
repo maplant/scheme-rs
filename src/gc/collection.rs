@@ -101,6 +101,7 @@ impl std::fmt::Debug for OpaqueGcPtr {
     }
 }
 
+#[doc(hidden)]
 pub type OpaqueGcPtr = HeapObject<()>;
 
 impl HeapObject<()> {
@@ -245,6 +246,12 @@ pub(super) fn alloc_gc_object<T: super::GcOrTrace>(data: T) -> super::Gc<T> {
 static HEAP_START: AtomicPtr<GcHeader> = AtomicPtr::new(std::ptr::null_mut());
 static COLLECTOR_TASK: OnceLock<JoinHandle<()>> = OnceLock::new();
 
+/// Initializes the garbage collector thread. Calling this function is typically
+/// not required as creating a [`Runtime`](crate::runtime::Runtime)
+/// automatically calls it.
+///
+/// Calling this function multiple times does nothing, there is only one
+/// collector thread allowed at a time.
 pub fn init_gc() {
     let _ = COLLECTOR_TASK.get_or_init(|| Collector::new().run());
 }

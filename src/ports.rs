@@ -1,4 +1,10 @@
-//! Input and Output handling
+//! Input and Output handling.
+//!
+//! The [`Port`] type is a dynamic value that implements at least one of
+//! [`Read`] and [`Write`] and can optionally implement [`Seek`].
+//!
+//! Note: if async is enabled, then these traits switch to their async
+//! equivalents in the runtime you're targeting.
 
 use either::Either;
 use memchr::{memchr, memmem};

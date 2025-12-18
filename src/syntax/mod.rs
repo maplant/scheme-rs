@@ -1,3 +1,5 @@
+//! Rust representation of S-expressions.
+
 use crate::{
     ast::Literal,
     env::{EnvId, Environment, Keyword},
