@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, HashSet, hash_map::Entry},
     fmt,
     hash::{Hash, Hasher},
+    ptr::NonNull,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
@@ -112,10 +113,6 @@ impl LexicalContourInner {
     pub fn fetch_top(&self) -> Library {
         self.up.fetch_top()
     }
-
-    pub fn is_bound(&self, name: &Identifier) -> bool {
-        self.vars.contains_key(name) || self.up.is_bound(name)
-    }
 }
 
 #[derive(Clone, Trace)]
@@ -170,6 +167,15 @@ impl LexicalContour {
             }
         }
         Ok(())
+    }
+
+    fn binding_env(&self, name: &Identifier) -> Option<EnvId> {
+        let this = self.0.read();
+        if this.vars.contains_key(name) || this.keywords.contains_key(name) {
+            Some(EnvId::new(&self.0))
+        } else {
+            this.up.binding_env(name)
+        }
     }
 }
 
@@ -284,6 +290,20 @@ impl LetSyntaxContour {
             this.up.clone()
         };
         maybe_await!(up.fetch_keyword(name))
+    }
+
+    fn binding_env(&self, name: &Identifier) -> Option<EnvId> {
+        let this = self.0.read();
+        if this.keywords.contains_key(name) {
+            let env = if this.recursive {
+                EnvId::new(&self.0)
+            } else {
+                this.up.to_id()
+            };
+            Some(env)
+        } else {
+            this.up.binding_env(name)
+        }
     }
 }
 
@@ -408,15 +428,6 @@ impl MacroExpansion {
         self.up.fetch_top()
     }
 
-    pub fn is_bound(&self, name: &Identifier) -> bool {
-        self.up.is_bound(name)
-            || name.marks.contains(&self.mark) && {
-                let mut unmarked = name.clone();
-                unmarked.mark(self.mark);
-                self.source.is_bound(&unmarked)
-            }
-    }
-
     #[cfg(not(feature = "async"))]
     pub fn import(&self, import_set: ImportSet) -> Result<(), ImportError> {
         self.up.import(import_set)
@@ -426,6 +437,19 @@ impl MacroExpansion {
     pub fn import(&self, import_set: ImportSet) -> BoxFuture<'static, Result<(), ImportError>> {
         let up = self.up.clone();
         Box::pin(async move { up.import(import_set).await })
+    }
+
+    pub(crate) fn binding_env(&self, name: &Identifier) -> Option<EnvId> {
+        self.up.binding_env(name).or_else(|| {
+            name.marks
+                .contains(&self.mark)
+                .then(|| {
+                    let mut unmarked = name.clone();
+                    unmarked.mark(self.mark);
+                    self.source.binding_env(&unmarked)
+                })
+                .flatten()
+        })
     }
 }
 
@@ -523,8 +547,8 @@ impl SyntaxCaseExpr {
         }
     }
 
-    fn is_bound(&self, name: &Identifier) -> bool {
-        self.up.is_bound(name)
+    fn binding_env(&self, name: &Identifier) -> Option<EnvId> {
+        self.up.binding_env(name)
     }
 }
 
@@ -644,13 +668,16 @@ impl Environment {
         }
     }
 
-    pub fn is_bound(&self, name: &Identifier) -> bool {
+    /// Return the binding environment of the variable or keyword, if it exists
+    pub(crate) fn binding_env(&self, name: &Identifier) -> Option<EnvId> {
         match self {
-            Self::Top(top) => top.is_bound(name),
-            Self::LexicalContour(lex) => lex.0.read().is_bound(name),
-            Self::LetSyntaxContour(ls) => ls.0.read().up.is_bound(name),
-            Self::MacroExpansion(me) => me.read().is_bound(name),
-            Self::SyntaxCaseExpr(sc) => sc.read().is_bound(name),
+            Self::Top(top) => top.binding_env(name),
+            Self::LexicalContour(lex) => lex.binding_env(name),
+            Self::LetSyntaxContour(ls) => ls.binding_env(name),
+            Self::MacroExpansion(me) => me.read().binding_env(name),
+            // I don't think this is technically correct; it should probably
+            // return the syntax case expr env if the binding variable is hit
+            Self::SyntaxCaseExpr(sc) => sc.read().binding_env(name),
         }
     }
 
@@ -679,6 +706,16 @@ impl Environment {
         let syntax_case_expr = SyntaxCaseExpr::new(self, expansions_store, pattern_vars);
         Self::SyntaxCaseExpr(Gc::new(RwLock::new(syntax_case_expr)))
     }
+
+    pub(crate) fn to_id(&self) -> EnvId {
+        match self {
+            Self::Top(top) => EnvId::new(&top.0),
+            Self::LexicalContour(lex) => EnvId::new(&lex.0),
+            Self::LetSyntaxContour(ls) => EnvId::new(&ls.0),
+            Self::MacroExpansion(me) => EnvId::new(me),
+            Self::SyntaxCaseExpr(sc) => EnvId::new(sc),
+        }
+    }
 }
 
 impl From<Library> for Environment {
@@ -704,6 +741,37 @@ impl fmt::Debug for Environment {
         Ok(())
     }
 }
+
+impl PartialEq for Environment {
+    fn eq(&self, rhs: &Self) -> bool {
+        match (self, rhs) {
+            (Self::Top(lhs), Self::Top(rhs)) => lhs == rhs,
+            (Self::LexicalContour(lhs), Self::LexicalContour(rhs)) => Gc::ptr_eq(&lhs.0, &rhs.0),
+            (Self::LetSyntaxContour(lhs), Self::LetSyntaxContour(rhs)) => {
+                Gc::ptr_eq(&lhs.0, &rhs.0)
+            }
+            (Self::MacroExpansion(lhs), Self::MacroExpansion(rhs)) => Gc::ptr_eq(lhs, rhs),
+            (Self::SyntaxCaseExpr(lhs), Self::SyntaxCaseExpr(rhs)) => Gc::ptr_eq(lhs, rhs),
+            _ => false,
+        }
+    }
+}
+
+/// A unique identifier for a binding environment.
+#[repr(transparent)]
+#[derive(Copy, Clone, Debug, Trace, PartialEq)]
+pub struct EnvId(#[trace(skip)] NonNull<()>);
+
+impl EnvId {
+    pub(crate) fn new<T>(value: &Gc<T>) -> Self {
+        // Safety: we're converting one non-null to another, so we don't need to
+        // check its validity.
+        Self(unsafe { NonNull::new_unchecked(value.ptr.as_ptr() as *mut ()) })
+    }
+}
+
+unsafe impl Send for EnvId {}
+unsafe impl Sync for EnvId {}
 
 #[derive(Copy, Clone, Trace)]
 pub struct Local {
