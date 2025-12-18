@@ -890,6 +890,7 @@ impl Parse for Rtd {
     }
 }
 
+/// Convenience macro for declaring RecordTypeDescriptors
 #[proc_macro]
 pub fn rtd(tokens: TokenStream) -> TokenStream {
     let Rtd {
