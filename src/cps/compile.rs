@@ -692,6 +692,7 @@ impl Compile for SyntaxQuote {
         }
 
         let mut args = vec![
+            Value::from(RuntimeValue::from(Record::from_rust_type(self.env.clone()))),
             Value::from(RuntimeValue::from(Record::from_rust_type(
                 self.template.clone(),
             ))),

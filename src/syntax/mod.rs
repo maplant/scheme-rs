@@ -2,7 +2,7 @@ use crate::{
     ast::Literal,
     env::{Environment, Keyword},
     exceptions::Condition,
-    gc::Trace,
+    gc::{Trace, Gc},
     lists::list_to_vec_with_null,
     ports::Port,
     registry::bridge,
@@ -12,7 +12,7 @@ use crate::{
 };
 use scheme_rs_macros::{maybe_async, maybe_await};
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::{BTreeSet, HashMap},
     fmt,
     io::Cursor,
     sync::{
@@ -63,10 +63,8 @@ impl Default for Span {
 }
 
 /// Representation of a Scheme syntax object, or s-expression.
-#[derive(Clone, Trace, PartialEq)]
+#[derive(Clone, Trace)]
 #[repr(align(16))]
-// TODO: Make cloning this struct as fast as possible. Realistically that means
-// moving nested data into Arc<[Syntax]>
 pub enum Syntax {
     /// An empty list.
     Null {
@@ -93,7 +91,7 @@ pub enum Syntax {
     },
     Identifier {
         ident: Identifier,
-        bound: bool,
+        binding_env: Option<Environment>,
         span: Span,
     },
 }
@@ -190,7 +188,7 @@ impl Syntax {
                 };
                 Syntax::Identifier {
                     ident,
-                    bound: false,
+                    binding_env: None,
                     span: Span::default(),
                 }
             }
@@ -202,23 +200,32 @@ impl Syntax {
         }
     }
 
-    pub fn resolve_bindings(&mut self, env: &Environment) {
+    fn resolve_bindings<'a>(
+        &'a mut self,
+        env: &Environment,
+        resolved_bindings: &mut HashMap<&'a Identifier, Option<Environment>>,
+    ) {
         match self {
             Self::List { list, .. } => {
                 for item in list {
-                    item.resolve_bindings(env);
+                    item.resolve_bindings(env, resolved_bindings);
                 }
             }
             Self::Vector { vector, .. } => {
                 for item in vector {
-                    item.resolve_bindings(env);
+                    item.resolve_bindings(env, resolved_bindings);
                 }
             }
             &mut Self::Identifier {
                 ref ident,
-                ref mut bound,
+                ref mut binding_env,
                 ..
-            } => *bound = env.is_bound(ident),
+            } => {
+                *binding_env = resolved_bindings
+                    .entry(ident)
+                    .or_insert_with(|| env.binding_env(ident))
+                    .clone()
+            }
             _ => (),
         }
     }
@@ -230,14 +237,14 @@ impl Syntax {
 
         // Apply the new mark to the input and resolve any bindings
         let mut input = self.clone();
-        input.resolve_bindings(env);
+        input.resolve_bindings(env, &mut HashMap::default());
         input.mark(new_mark);
 
         // Call the transformer with the input:
         let transformer_output = maybe_await!(mac.transformer.call(&[Value::from(input)]))?;
 
         // Output must be syntax:
-        let output: Arc<Syntax> = transformer_output
+        let output: Gc<Syntax> = transformer_output
             .first()
             .ok_or_else(|| Condition::syntax(self.clone(), None))?
             .clone()
@@ -352,20 +359,6 @@ impl Syntax {
             let mut parser = Parser::new(&mut data, info, Span::new(file_name));
             parser.all_sexprs().await
         })
-    }
-
-    pub fn fetch_all_identifiers(&self, idents: &mut HashSet<Identifier>) {
-        match self {
-            Self::List { list: syns, .. } | Self::Vector { vector: syns, .. } => {
-                for item in syns {
-                    item.fetch_all_identifiers(idents);
-                }
-            }
-            Self::Identifier { ident, .. } => {
-                idents.insert(ident.clone());
-            }
-            _ => (),
-        }
     }
 
     /// Returns true if the syntax item is a list with a car that is an
@@ -604,7 +597,7 @@ impl Syntax {
         Self::Identifier {
             ident: Identifier::new(name),
             span: span.into(),
-            bound: false,
+            binding_env: None,
         }
     }
 
@@ -615,13 +608,13 @@ impl Syntax {
 
 #[bridge(name = "syntax->datum", lib = "(rnrs syntax-case builtins (6))")]
 pub fn syntax_to_datum(syn: &Value) -> Result<Vec<Value>, Condition> {
-    let syn: Arc<Syntax> = syn.clone().try_into()?;
+    let syn: Gc<Syntax> = syn.clone().try_into()?;
     Ok(vec![Value::datum_from_syntax(syn.as_ref())])
 }
 
 #[bridge(name = "datum->syntax", lib = "(rnrs syntax-case builtins (6))")]
 pub fn datum_to_syntax(template_id: &Value, datum: &Value) -> Result<Vec<Value>, Condition> {
-    let syntax: Arc<Syntax> = template_id.clone().try_into()?;
+    let syntax: Gc<Syntax> = template_id.clone().try_into()?;
     let Syntax::Identifier {
         ident: template_id, ..
     } = syntax.as_ref()
@@ -636,7 +629,7 @@ pub fn datum_to_syntax(template_id: &Value, datum: &Value) -> Result<Vec<Value>,
 
 #[bridge(name = "identifier?", lib = "(rnrs syntax-case builtins (6))")]
 pub fn identifier_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
-    let Ok(syn) = Arc::<Syntax>::try_from(obj.clone()) else {
+    let Ok(syn) = Gc::<Syntax>::try_from(obj.clone()) else {
         return Ok(vec![Value::from(false)]);
     };
     Ok(vec![Value::from(syn.is_identifier())])
@@ -644,34 +637,24 @@ pub fn identifier_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
 
 #[bridge(name = "bound-identifier=?", lib = "(rnrs syntax-case builtins (6))")]
 pub fn bound_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, Condition> {
-    let id1: Arc<Syntax> = id1.clone().try_into()?;
-    let id2: Arc<Syntax> = id2.clone().try_into()?;
-    let Syntax::Identifier {
-        ident: id1,
-        bound: bound_id1,
-        ..
-    } = id1.as_ref()
-    else {
+    let id1: Gc<Syntax> = id1.clone().try_into()?;
+    let id2: Gc<Syntax> = id2.clone().try_into()?;
+    let Syntax::Identifier { ident: id1, .. } = id1.as_ref() else {
         return Err(Condition::type_error("identifier", "syntax"));
     };
-    let Syntax::Identifier {
-        ident: id2,
-        bound: bound_id2,
-        ..
-    } = id2.as_ref()
-    else {
+    let Syntax::Identifier { ident: id2, .. } = id2.as_ref() else {
         return Err(Condition::type_error("identifier", "syntax"));
     };
-    Ok(vec![Value::from(*bound_id1 && *bound_id2 && id1 == id2)])
+    Ok(vec![Value::from(id1 == id2)])
 }
 
 #[bridge(name = "free-identifier=?", lib = "(rnrs syntax-case builtins (6))")]
 pub fn free_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, Condition> {
-    let id1: Arc<Syntax> = id1.clone().try_into()?;
-    let id2: Arc<Syntax> = id2.clone().try_into()?;
+    let id1: Gc<Syntax> = id1.clone().try_into()?;
+    let id2: Gc<Syntax> = id2.clone().try_into()?;
     let Syntax::Identifier {
         ident: id1,
-        bound: bound_id1,
+        binding_env: bound_id1,
         ..
     } = id1.as_ref()
     else {
@@ -679,14 +662,14 @@ pub fn free_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, C
     };
     let Syntax::Identifier {
         ident: id2,
-        bound: bound_id2,
+        binding_env: bound_id2,
         ..
     } = id2.as_ref()
     else {
         return Err(Condition::type_error("identifier", "syntax"));
     };
     Ok(vec![Value::from(
-        !bound_id1 && !bound_id2 && id1.sym == id2.sym,
+        bound_id1 == bound_id2 && id1.sym == id2.sym,
     )])
 }
 
@@ -695,7 +678,7 @@ pub fn generate_temporaries(list: &Value) -> Result<Vec<Value>, Condition> {
     let length = match list.type_of() {
         ValueType::Pair => crate::lists::length(list)?,
         ValueType::Syntax => {
-            let syntax: Arc<Syntax> = list.clone().try_into()?;
+            let syntax: Gc<Syntax> = list.clone().try_into()?;
             match &*syntax {
                 // TODO: Check for proper list?
                 Syntax::List { list, .. } => list.len() - 1,
@@ -713,7 +696,7 @@ pub fn generate_temporaries(list: &Value) -> Result<Vec<Value>, Condition> {
             ident.mark(mark);
             Syntax::Identifier {
                 ident,
-                bound: false,
+                binding_env: None,
                 span: Span::default(),
             }
         })

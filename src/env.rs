@@ -112,10 +112,6 @@ impl LexicalContourInner {
     pub fn fetch_top(&self) -> Library {
         self.up.fetch_top()
     }
-
-    pub fn is_bound(&self, name: &Identifier) -> bool {
-        self.vars.contains_key(name) || self.up.is_bound(name)
-    }
 }
 
 #[derive(Clone, Trace)]
@@ -170,6 +166,15 @@ impl LexicalContour {
             }
         }
         Ok(())
+    }
+
+    fn binding_env(&self, name: &Identifier) -> Option<Environment> {
+        let this = self.0.read();
+        if this.vars.contains_key(name) || this.keywords.contains_key(name) {
+            Some(Environment::LexicalContour(self.clone()))
+        } else {
+            this.up.binding_env(name)
+        }
     }
 }
 
@@ -284,6 +289,21 @@ impl LetSyntaxContour {
             this.up.clone()
         };
         maybe_await!(up.fetch_keyword(name))
+    }
+
+    fn binding_env(&self, name: &Identifier) -> Option<Environment> {
+        let this = self.0.read();
+        if this.keywords.contains_key(name) {
+            let env = if this.recursive {
+                drop(this);
+                Environment::LetSyntaxContour(self.clone())
+            } else {
+                this.up.clone()
+            };
+            Some(env)
+        } else {
+            this.up.binding_env(name)
+        }
     }
 }
 
@@ -408,15 +428,6 @@ impl MacroExpansion {
         self.up.fetch_top()
     }
 
-    pub fn is_bound(&self, name: &Identifier) -> bool {
-        self.up.is_bound(name)
-            || name.marks.contains(&self.mark) && {
-                let mut unmarked = name.clone();
-                unmarked.mark(self.mark);
-                self.source.is_bound(&unmarked)
-            }
-    }
-
     #[cfg(not(feature = "async"))]
     pub fn import(&self, import_set: ImportSet) -> Result<(), ImportError> {
         self.up.import(import_set)
@@ -426,6 +437,19 @@ impl MacroExpansion {
     pub fn import(&self, import_set: ImportSet) -> BoxFuture<'static, Result<(), ImportError>> {
         let up = self.up.clone();
         Box::pin(async move { up.import(import_set).await })
+    }
+
+    pub fn binding_env(&self, name: &Identifier) -> Option<Environment> {
+        self.up.binding_env(name).or_else(|| {
+            name.marks
+                .contains(&self.mark)
+                .then(|| {
+                    let mut unmarked = name.clone();
+                    unmarked.mark(self.mark);
+                    self.source.binding_env(&unmarked)
+                })
+                .flatten()
+        })
     }
 }
 
@@ -523,8 +547,8 @@ impl SyntaxCaseExpr {
         }
     }
 
-    fn is_bound(&self, name: &Identifier) -> bool {
-        self.up.is_bound(name)
+    fn binding_env(&self, name: &Identifier) -> Option<Environment> {
+        self.up.binding_env(name)
     }
 }
 
@@ -644,13 +668,16 @@ impl Environment {
         }
     }
 
-    pub fn is_bound(&self, name: &Identifier) -> bool {
+    /// Return the binding environment of the variable or keyword, if it exists
+    pub fn binding_env(&self, name: &Identifier) -> Option<Environment> {
         match self {
-            Self::Top(top) => top.is_bound(name),
-            Self::LexicalContour(lex) => lex.0.read().is_bound(name),
-            Self::LetSyntaxContour(ls) => ls.0.read().up.is_bound(name),
-            Self::MacroExpansion(me) => me.read().is_bound(name),
-            Self::SyntaxCaseExpr(sc) => sc.read().is_bound(name),
+            Self::Top(top) => top.binding_env(name),
+            Self::LexicalContour(lex) => lex.binding_env(name),
+            Self::LetSyntaxContour(ls) => ls.binding_env(name),
+            Self::MacroExpansion(me) => me.read().binding_env(name),
+            // I don't think this is technically correct; it should probably
+            // return the syntax case expr env if the binding variable is hit
+            Self::SyntaxCaseExpr(sc) => sc.read().binding_env(name),
         }
     }
 
@@ -702,6 +729,21 @@ impl Clone for Environment {
 impl fmt::Debug for Environment {
     fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
         Ok(())
+    }
+}
+
+impl PartialEq for Environment {
+    fn eq(&self, rhs: &Self) -> bool {
+        match (self, rhs) {
+            (Self::Top(lhs), Self::Top(rhs)) => lhs == rhs,
+            (Self::LexicalContour(lhs), Self::LexicalContour(rhs)) => Gc::ptr_eq(&lhs.0, &rhs.0),
+            (Self::LetSyntaxContour(lhs), Self::LetSyntaxContour(rhs)) => {
+                Gc::ptr_eq(&lhs.0, &rhs.0)
+            }
+            (Self::MacroExpansion(lhs), Self::MacroExpansion(rhs)) => Gc::ptr_eq(lhs, rhs),
+            (Self::SyntaxCaseExpr(lhs), Self::SyntaxCaseExpr(rhs)) => Gc::ptr_eq(lhs, rhs),
+            _ => false,
+        }
     }
 }
 

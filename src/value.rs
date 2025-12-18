@@ -70,7 +70,7 @@ impl Value {
                     Gc::increment_reference_count(untagged as *mut GcInner<VectorInner<Value>>)
                 }
                 Tag::ByteVector => Arc::increment_strong_count(untagged as *const VectorInner<u8>),
-                Tag::Syntax => Arc::increment_strong_count(untagged as *const Syntax),
+                Tag::Syntax => Gc::increment_reference_count(untagged as *mut GcInner<Syntax>),
                 Tag::Procedure => {
                     Gc::increment_reference_count(untagged as *mut GcInner<ProcedureInner>)
                 }
@@ -202,7 +202,7 @@ impl Value {
                 UnpackedValue::ByteVector(ByteVector(bvec))
             }
             Tag::Syntax => {
-                let syn = unsafe { Arc::from_raw(untagged as *const Syntax) };
+                let syn = unsafe { Gc::from_raw(untagged as *mut GcInner<Syntax>) };
                 UnpackedValue::Syntax(syn)
             }
             Tag::Procedure => {
@@ -474,7 +474,7 @@ pub enum UnpackedValue {
     Symbol(Symbol),
     Vector(Vector),
     ByteVector(ByteVector),
-    Syntax(Arc<Syntax>),
+    Syntax(Gc<Syntax>),
     Procedure(Procedure),
     Record(Record),
     RecordTypeDescriptor(Arc<RecordTypeDescriptor>),
@@ -515,8 +515,8 @@ impl UnpackedValue {
                 Value::from_ptr_and_tag(untagged, Tag::ByteVector)
             }
             Self::Syntax(syn) => {
-                let untagged = Arc::into_raw(syn);
-                Value::from_ptr_and_tag(untagged, Tag::Syntax)
+                let untagged = Gc::into_raw(syn);
+                Value::from_mut_ptr_and_tag(untagged, Tag::Syntax)
             }
             Self::Procedure(clos) => {
                 let untagged = Gc::into_raw(clos.0);
@@ -562,7 +562,7 @@ impl UnpackedValue {
             (Self::Vector(a), Self::Vector(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(&a.0, &b.0),
             (Self::Procedure(a), Self::Procedure(b)) => Gc::ptr_eq(&a.0, &b.0),
-            (Self::Syntax(a), Self::Syntax(b)) => Arc::ptr_eq(a, b),
+            (Self::Syntax(a), Self::Syntax(b)) => Gc::ptr_eq(a, b),
             (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
             (Self::Port(a), Self::Port(b)) => Arc::ptr_eq(&a.0, &b.0),
@@ -597,7 +597,7 @@ impl UnpackedValue {
             (Self::Vector(a), Self::Vector(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(&a.0, &b.0),
             (Self::Procedure(a), Self::Procedure(b)) => Gc::ptr_eq(&a.0, &b.0),
-            (Self::Syntax(a), Self::Syntax(b)) => Arc::ptr_eq(a, b),
+            (Self::Syntax(a), Self::Syntax(b)) => Gc::ptr_eq(a, b),
             (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
             (Self::Port(a), Self::Port(b)) => Arc::ptr_eq(&a.0, &b.0),
@@ -911,7 +911,7 @@ impl_try_from_value_for!(WideString, String, "string");
 impl_try_from_value_for!(Symbol, Symbol, "symbol");
 impl_try_from_value_for!(Vector, Vector, "vector");
 impl_try_from_value_for!(ByteVector, ByteVector, "byte-vector");
-impl_try_from_value_for!(Arc<Syntax>, Syntax, "syntax");
+impl_try_from_value_for!(Gc<Syntax>, Syntax, "syntax");
 impl_try_from_value_for!(Procedure, Procedure, "procedure");
 impl_try_from_value_for!(Pair, Pair, "pair");
 impl_try_from_value_for!(Record, Record, "record");
@@ -939,7 +939,7 @@ impl_from_wrapped_for!(Number, Number, Arc::new);
 impl_from_wrapped_for!(String, String, WideString::new);
 impl_from_wrapped_for!(Vec<Value>, Vector, Vector::new);
 impl_from_wrapped_for!(Vec<u8>, ByteVector, ByteVector::new);
-impl_from_wrapped_for!(Syntax, Syntax, Arc::new);
+impl_from_wrapped_for!(Syntax, Syntax, Gc::new);
 impl_from_wrapped_for!((Value, Value), Pair, |(car, cdr)| Pair::new(
     car, cdr, false
 ));
