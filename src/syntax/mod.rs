@@ -1,8 +1,8 @@
 use crate::{
     ast::Literal,
-    env::{Environment, Keyword},
+    env::{EnvId, Environment, Keyword},
     exceptions::Condition,
-    gc::{Trace, Gc},
+    gc::Trace,
     lists::list_to_vec_with_null,
     ports::Port,
     registry::bridge,
@@ -91,7 +91,7 @@ pub enum Syntax {
     },
     Identifier {
         ident: Identifier,
-        binding_env: Option<Environment>,
+        binding_env: Option<EnvId>,
         span: Span,
     },
 }
@@ -203,7 +203,7 @@ impl Syntax {
     fn resolve_bindings<'a>(
         &'a mut self,
         env: &Environment,
-        resolved_bindings: &mut HashMap<&'a Identifier, Option<Environment>>,
+        resolved_bindings: &mut HashMap<&'a Identifier, Option<EnvId>>,
     ) {
         match self {
             Self::List { list, .. } => {
@@ -244,14 +244,14 @@ impl Syntax {
         let transformer_output = maybe_await!(mac.transformer.call(&[Value::from(input)]))?;
 
         // Output must be syntax:
-        let output: Gc<Syntax> = transformer_output
+        let output: Arc<Syntax> = transformer_output
             .first()
             .ok_or_else(|| Condition::syntax(self.clone(), None))?
             .clone()
             .try_into()?;
 
         // Apply the new mark to the output
-        let mut output = output.as_ref().clone();
+        let mut output = Arc::try_unwrap(output).unwrap_or_else(|arc| arc.as_ref().clone());
         output.mark(new_mark);
 
         let new_env = env.new_macro_expansion(new_mark, mac.source_env.clone());
@@ -608,13 +608,13 @@ impl Syntax {
 
 #[bridge(name = "syntax->datum", lib = "(rnrs syntax-case builtins (6))")]
 pub fn syntax_to_datum(syn: &Value) -> Result<Vec<Value>, Condition> {
-    let syn: Gc<Syntax> = syn.clone().try_into()?;
+    let syn: Arc<Syntax> = syn.clone().try_into()?;
     Ok(vec![Value::datum_from_syntax(syn.as_ref())])
 }
 
 #[bridge(name = "datum->syntax", lib = "(rnrs syntax-case builtins (6))")]
 pub fn datum_to_syntax(template_id: &Value, datum: &Value) -> Result<Vec<Value>, Condition> {
-    let syntax: Gc<Syntax> = template_id.clone().try_into()?;
+    let syntax: Arc<Syntax> = template_id.clone().try_into()?;
     let Syntax::Identifier {
         ident: template_id, ..
     } = syntax.as_ref()
@@ -629,7 +629,7 @@ pub fn datum_to_syntax(template_id: &Value, datum: &Value) -> Result<Vec<Value>,
 
 #[bridge(name = "identifier?", lib = "(rnrs syntax-case builtins (6))")]
 pub fn identifier_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
-    let Ok(syn) = Gc::<Syntax>::try_from(obj.clone()) else {
+    let Ok(syn) = Arc::<Syntax>::try_from(obj.clone()) else {
         return Ok(vec![Value::from(false)]);
     };
     Ok(vec![Value::from(syn.is_identifier())])
@@ -637,8 +637,8 @@ pub fn identifier_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
 
 #[bridge(name = "bound-identifier=?", lib = "(rnrs syntax-case builtins (6))")]
 pub fn bound_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, Condition> {
-    let id1: Gc<Syntax> = id1.clone().try_into()?;
-    let id2: Gc<Syntax> = id2.clone().try_into()?;
+    let id1: Arc<Syntax> = id1.clone().try_into()?;
+    let id2: Arc<Syntax> = id2.clone().try_into()?;
     let Syntax::Identifier { ident: id1, .. } = id1.as_ref() else {
         return Err(Condition::type_error("identifier", "syntax"));
     };
@@ -650,8 +650,8 @@ pub fn bound_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, 
 
 #[bridge(name = "free-identifier=?", lib = "(rnrs syntax-case builtins (6))")]
 pub fn free_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, Condition> {
-    let id1: Gc<Syntax> = id1.clone().try_into()?;
-    let id2: Gc<Syntax> = id2.clone().try_into()?;
+    let id1: Arc<Syntax> = id1.clone().try_into()?;
+    let id2: Arc<Syntax> = id2.clone().try_into()?;
     let Syntax::Identifier {
         ident: id1,
         binding_env: bound_id1,
@@ -678,7 +678,7 @@ pub fn generate_temporaries(list: &Value) -> Result<Vec<Value>, Condition> {
     let length = match list.type_of() {
         ValueType::Pair => crate::lists::length(list)?,
         ValueType::Syntax => {
-            let syntax: Gc<Syntax> = list.clone().try_into()?;
+            let syntax: Arc<Syntax> = list.clone().try_into()?;
             match &*syntax {
                 // TODO: Check for proper list?
                 Syntax::List { list, .. } => list.len() - 1,

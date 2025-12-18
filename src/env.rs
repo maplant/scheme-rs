@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, HashSet, hash_map::Entry},
     fmt,
     hash::{Hash, Hasher},
+    ptr::NonNull,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
@@ -168,10 +169,10 @@ impl LexicalContour {
         Ok(())
     }
 
-    fn binding_env(&self, name: &Identifier) -> Option<Environment> {
+    fn binding_env(&self, name: &Identifier) -> Option<EnvId> {
         let this = self.0.read();
         if this.vars.contains_key(name) || this.keywords.contains_key(name) {
-            Some(Environment::LexicalContour(self.clone()))
+            Some(EnvId::new(&self.0))
         } else {
             this.up.binding_env(name)
         }
@@ -291,14 +292,13 @@ impl LetSyntaxContour {
         maybe_await!(up.fetch_keyword(name))
     }
 
-    fn binding_env(&self, name: &Identifier) -> Option<Environment> {
+    fn binding_env(&self, name: &Identifier) -> Option<EnvId> {
         let this = self.0.read();
         if this.keywords.contains_key(name) {
             let env = if this.recursive {
-                drop(this);
-                Environment::LetSyntaxContour(self.clone())
+                EnvId::new(&self.0)
             } else {
-                this.up.clone()
+                this.up.to_id()
             };
             Some(env)
         } else {
@@ -439,7 +439,7 @@ impl MacroExpansion {
         Box::pin(async move { up.import(import_set).await })
     }
 
-    pub fn binding_env(&self, name: &Identifier) -> Option<Environment> {
+    pub(crate) fn binding_env(&self, name: &Identifier) -> Option<EnvId> {
         self.up.binding_env(name).or_else(|| {
             name.marks
                 .contains(&self.mark)
@@ -547,7 +547,7 @@ impl SyntaxCaseExpr {
         }
     }
 
-    fn binding_env(&self, name: &Identifier) -> Option<Environment> {
+    fn binding_env(&self, name: &Identifier) -> Option<EnvId> {
         self.up.binding_env(name)
     }
 }
@@ -669,7 +669,7 @@ impl Environment {
     }
 
     /// Return the binding environment of the variable or keyword, if it exists
-    pub fn binding_env(&self, name: &Identifier) -> Option<Environment> {
+    pub(crate) fn binding_env(&self, name: &Identifier) -> Option<EnvId> {
         match self {
             Self::Top(top) => top.binding_env(name),
             Self::LexicalContour(lex) => lex.binding_env(name),
@@ -705,6 +705,16 @@ impl Environment {
     ) -> Self {
         let syntax_case_expr = SyntaxCaseExpr::new(self, expansions_store, pattern_vars);
         Self::SyntaxCaseExpr(Gc::new(RwLock::new(syntax_case_expr)))
+    }
+
+    pub(crate) fn to_id(&self) -> EnvId {
+        match self {
+            Self::Top(top) => EnvId::new(&top.0),
+            Self::LexicalContour(lex) => EnvId::new(&lex.0),
+            Self::LetSyntaxContour(ls) => EnvId::new(&ls.0),
+            Self::MacroExpansion(me) => EnvId::new(&me),
+            Self::SyntaxCaseExpr(sc) => EnvId::new(&sc),
+        }
     }
 }
 
@@ -746,6 +756,22 @@ impl PartialEq for Environment {
         }
     }
 }
+
+/// A unique identifier for a binding environment.
+#[repr(transparent)]
+#[derive(Copy, Clone, Debug, Trace, PartialEq)]
+pub struct EnvId(#[trace(skip)] NonNull<()>);
+
+impl EnvId {
+    pub(crate) fn new<T>(value: &Gc<T>) -> Self {
+        // Safety: we're converting one non-null to another, so we don't need to
+        // check its validity.
+        Self(unsafe { NonNull::new_unchecked(value.ptr.as_ptr() as *mut ()) })
+    }
+}
+
+unsafe impl Send for EnvId {}
+unsafe impl Sync for EnvId {}
 
 #[derive(Copy, Clone, Trace)]
 pub struct Local {

@@ -1,6 +1,6 @@
 use crate::{
     ast::{Expression, Literal, ParseAstError, ParseContext},
-    env::{Environment, Local},
+    env::{EnvId, Environment, Local},
     exceptions::Condition,
     gc::{Gc, Trace},
     proc::Procedure,
@@ -57,10 +57,10 @@ impl SyntaxRule {
     }
 }
 
-#[derive(Clone, Debug, Trace)]
+#[derive(Copy, Clone, Debug, Trace)]
 pub struct Keyword {
     sym: Symbol,
-    binding_env: Option<Environment>,
+    binding_env: Option<EnvId>,
 }
 
 #[derive(Clone, Debug, Trace)]
@@ -89,7 +89,7 @@ impl Pattern {
                 ident, binding_env, ..
             } if keywords.contains(&ident.sym) => Self::Keyword(Keyword {
                 sym: ident.sym,
-                binding_env: binding_env.clone(),
+                binding_env: *binding_env,
             }),
             Syntax::Identifier { ident, .. } => {
                 variables.insert(ident.clone());
@@ -488,7 +488,7 @@ impl Template {
         binds: &Binds<'_>,
         curr_span: Span,
         env: &Environment,
-        resolved_bindings: &mut HashMap<&'a Identifier, Option<Environment>>,
+        resolved_bindings: &mut HashMap<&'a Identifier, Option<EnvId>>,
     ) -> Option<Syntax> {
         let syn = match self {
             Self::Null => Syntax::new_null(curr_span),
@@ -520,7 +520,7 @@ fn expand_list<'a>(
     binds: &Binds<'_>,
     curr_span: Span,
     env: &Environment,
-    resolved_bindings: &mut HashMap<&'a Identifier, Option<Environment>>,
+    resolved_bindings: &mut HashMap<&'a Identifier, Option<EnvId>>,
 ) -> Option<Syntax> {
     let mut output = Vec::new();
     for item in items {
@@ -569,7 +569,7 @@ fn expand_vec<'a>(
     binds: &Binds<'_>,
     curr_span: Span,
     env: &Environment,
-    resolved_bindings: &mut HashMap<&'a Identifier, Option<Environment>>,
+    resolved_bindings: &mut HashMap<&'a Identifier, Option<EnvId>>,
 ) -> Option<Vec<Syntax>> {
     let mut output = Vec::new();
     for item in items {

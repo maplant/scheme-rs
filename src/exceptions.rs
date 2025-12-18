@@ -403,8 +403,8 @@ define_condition_type!(
     scheme_name: "&syntax",
     parent: Violation,
     fields: {
-        form: Gc<Syntax>,
-        subform: Option<Gc<Syntax>>,
+        form: Arc<Syntax>,
+        subform: Option<Arc<Syntax>>,
     },
     constructor: |form, subform| {
         let form = form.try_into()?;
@@ -420,8 +420,8 @@ impl SyntaxViolation {
     pub fn new(form: Syntax, subform: Option<Syntax>) -> Self {
         Self {
             parent: Gc::new(Violation::new()),
-            form: Gc::new(form),
-            subform: subform.map(Gc::new),
+            form: Arc::new(form),
+            subform: subform.map(Arc::new),
         }
     }
 }
