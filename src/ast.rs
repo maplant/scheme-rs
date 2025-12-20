@@ -1199,7 +1199,6 @@ impl Quote {
 pub struct SyntaxQuote {
     pub template: Template,
     pub expansions: HashMap<Identifier, Local>,
-    pub env: Environment,
 }
 
 impl SyntaxQuote {
@@ -1208,11 +1207,11 @@ impl SyntaxQuote {
             [] => Err(ParseAstError::ExpectedArgument(span.clone())),
             [expr] => {
                 let mut expansions = HashMap::new();
-                let template = Template::compile(expr, env, &mut expansions);
+                let template =
+                    Template::compile(expr, env, &mut expansions, &mut HashMap::default());
                 Ok(SyntaxQuote {
                     template,
                     expansions,
-                    env: env.clone(),
                 })
             }
             [_, arg, ..] => Err(ParseAstError::UnexpectedArgument(arg.span().clone())),
