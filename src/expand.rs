@@ -517,7 +517,7 @@ impl Template {
             .collect()
     }
 
-    fn expand<'a>(&'a self, binds: &Binds<'_>, curr_span: Span) -> Option<Syntax> {
+    fn expand(&self, binds: &Binds<'_>, curr_span: Span) -> Option<Syntax> {
         let syn = match self {
             Self::Null => Syntax::new_null(curr_span),
             Self::List(list) => expand_list(list, binds, curr_span.clone())?,
@@ -537,7 +537,7 @@ impl Template {
     }
 }
 
-fn expand_list<'a>(items: &'a [Template], binds: &Binds<'_>, curr_span: Span) -> Option<Syntax> {
+fn expand_list(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<Syntax> {
     let mut output = Vec::new();
     for item in items {
         if let Template::Ellipsis(template) = item {
@@ -578,11 +578,7 @@ fn normalize_list(mut list: Vec<Syntax>, span: Span) -> Syntax {
     }
 }
 
-fn expand_vec<'a>(
-    items: &'a [Template],
-    binds: &Binds<'_>,
-    curr_span: Span,
-) -> Option<Vec<Syntax>> {
+fn expand_vec(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<Vec<Syntax>> {
     let mut output = Vec::new();
     for item in items {
         match item {
