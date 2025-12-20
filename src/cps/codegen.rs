@@ -215,11 +215,10 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
                 self.matches_codegen(pattern, expr, bind_to, *cexpr, deferred);
             }
             Cps::PrimOp(PrimOp::ExpandTemplate, args, expand_to, cexpr) => {
-                let [env, template, expansion_combiner, expansions @ ..] = args.as_slice() else {
+                let [template, expansion_combiner, expansions @ ..] = args.as_slice() else {
                     unreachable!()
                 };
                 self.expand_template_codegen(
-                    env,
                     template,
                     expansion_combiner,
                     expansions,
@@ -344,10 +343,8 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         self.cps_codegen(cexpr, deferred);
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn expand_template_codegen(
         &mut self,
-        env: &CpsValue,
         template: &CpsValue,
         expansion_combiner: &CpsValue,
         expansions: &[CpsValue],
@@ -355,7 +352,6 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         cexpr: Cps,
         deferred: &mut Vec<ProcedureBundle>,
     ) {
-        let env = self.value_codegen(env);
         let template = self.value_codegen(template);
         let expansion_combiner = self.value_codegen(expansion_combiner);
 
@@ -381,7 +377,6 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         let call = self.builder.ins().call(
             expand_template,
             &[
-                env,
                 template,
                 expansion_combiner,
                 expansions_addr,

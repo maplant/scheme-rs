@@ -372,16 +372,20 @@ pub enum Template {
     List(Vec<Template>),
     Vector(Vec<Template>),
     ByteVector(Vec<u8>),
-    Identifier(Identifier),
+    Identifier {
+        ident: Identifier,
+        binding_env: Option<EnvId>,
+    },
     Variable(Identifier),
     Literal(Literal),
 }
 
 impl Template {
-    pub fn compile(
-        expr: &Syntax,
+    pub fn compile<'a>(
+        expr: &'a Syntax,
         env: &Environment,
         expansions: &mut HashMap<Identifier, Local>,
+        resolved_bindings: &mut HashMap<&'a Identifier, Option<EnvId>>,
     ) -> Self {
         match expr {
             Syntax::Null { .. } => Self::Null,
@@ -395,14 +399,22 @@ impl Template {
                 ] = list.as_slice()
                     && ellipsis.sym == "..."
                 {
-                    Self::compile_escaped(template, env, expansions)
+                    Self::compile_escaped(template, env, expansions, resolved_bindings)
                 } else {
-                    Self::List(Self::compile_slice(list, env, expansions))
+                    Self::List(Self::compile_slice(
+                        list,
+                        env,
+                        expansions,
+                        resolved_bindings,
+                    ))
                 }
             }
-            Syntax::Vector { vector, .. } => {
-                Self::Vector(Self::compile_slice(vector, env, expansions))
-            }
+            Syntax::Vector { vector, .. } => Self::Vector(Self::compile_slice(
+                vector,
+                env,
+                expansions,
+                resolved_bindings,
+            )),
             Syntax::ByteVector { vector, .. } => Self::ByteVector(vector.clone()),
             Syntax::Literal { literal, .. } => Self::Literal(literal.clone()),
             Syntax::Identifier { ident, .. } => {
@@ -410,25 +422,37 @@ impl Template {
                     expansions.insert(ident.clone(), expansion);
                     Self::Variable(ident.clone())
                 } else {
-                    Self::Identifier(ident.clone())
+                    Self::Identifier {
+                        ident: ident.clone(),
+                        binding_env: *resolved_bindings
+                            .entry(ident)
+                            .or_insert_with(|| env.binding_env(ident)),
+                    }
                 }
             }
         }
     }
 
-    pub fn compile_escaped(
-        expr: &Syntax,
+    pub fn compile_escaped<'a>(
+        expr: &'a Syntax,
         env: &Environment,
         expansions: &mut HashMap<Identifier, Local>,
+        resolved_bindings: &mut HashMap<&'a Identifier, Option<EnvId>>,
     ) -> Self {
         match expr {
             Syntax::Null { .. } => Self::Null,
-            Syntax::List { list, .. } => {
-                Self::List(Self::compile_slice_escaped(list, env, expansions))
-            }
-            Syntax::Vector { vector, .. } => {
-                Self::Vector(Self::compile_slice_escaped(vector, env, expansions))
-            }
+            Syntax::List { list, .. } => Self::List(Self::compile_slice_escaped(
+                list,
+                env,
+                expansions,
+                resolved_bindings,
+            )),
+            Syntax::Vector { vector, .. } => Self::Vector(Self::compile_slice_escaped(
+                vector,
+                env,
+                expansions,
+                resolved_bindings,
+            )),
             Syntax::ByteVector { vector, .. } => Self::ByteVector(vector.clone()),
             Syntax::Literal { literal, .. } => Self::Literal(literal.clone()),
             Syntax::Identifier { ident, .. } => {
@@ -436,16 +460,22 @@ impl Template {
                     expansions.insert(ident.clone(), expansion);
                     Self::Variable(ident.clone())
                 } else {
-                    Self::Identifier(ident.clone())
+                    Self::Identifier {
+                        ident: ident.clone(),
+                        binding_env: *resolved_bindings
+                            .entry(ident)
+                            .or_insert_with(|| env.binding_env(ident)),
+                    }
                 }
             }
         }
     }
 
-    fn compile_slice(
-        mut expr: &[Syntax],
+    fn compile_slice<'a>(
+        mut expr: &'a [Syntax],
         env: &Environment,
         expansions: &mut HashMap<Identifier, Local>,
+        resolved_bindings: &mut HashMap<&'a Identifier, Option<EnvId>>,
     ) -> Vec<Self> {
         let mut output = Vec::new();
         loop {
@@ -459,12 +489,15 @@ impl Template {
                     tail @ ..,
                 ] if ellipsis.sym == "..." => {
                     output.push(Self::Ellipsis(Box::new(Template::compile(
-                        template, env, expansions,
+                        template,
+                        env,
+                        expansions,
+                        resolved_bindings,
                     ))));
                     expr = tail;
                 }
                 [head, tail @ ..] => {
-                    output.push(Self::compile(head, env, expansions));
+                    output.push(Self::compile(head, env, expansions, resolved_bindings));
                     expr = tail;
                 }
             }
@@ -472,39 +505,29 @@ impl Template {
         output
     }
 
-    fn compile_slice_escaped(
-        exprs: &[Syntax],
+    fn compile_slice_escaped<'a>(
+        exprs: &'a [Syntax],
         env: &Environment,
         expansions: &mut HashMap<Identifier, Local>,
+        resolved_bindings: &mut HashMap<&'a Identifier, Option<EnvId>>,
     ) -> Vec<Self> {
         exprs
             .iter()
-            .map(|expr| Self::compile_escaped(expr, env, expansions))
+            .map(|expr| Self::compile_escaped(expr, env, expansions, resolved_bindings))
             .collect()
     }
 
-    fn expand<'a>(
-        &'a self,
-        binds: &Binds<'_>,
-        curr_span: Span,
-        env: &Environment,
-        resolved_bindings: &mut HashMap<&'a Identifier, Option<EnvId>>,
-    ) -> Option<Syntax> {
+    fn expand<'a>(&'a self, binds: &Binds<'_>, curr_span: Span) -> Option<Syntax> {
         let syn = match self {
             Self::Null => Syntax::new_null(curr_span),
-            Self::List(list) => {
-                expand_list(list, binds, curr_span.clone(), env, resolved_bindings)?
+            Self::List(list) => expand_list(list, binds, curr_span.clone())?,
+            Self::Vector(vec) => {
+                Syntax::new_vector(expand_vec(vec, binds, curr_span.clone())?, curr_span)
             }
-            Self::Vector(vec) => Syntax::new_vector(
-                expand_vec(vec, binds, curr_span.clone(), env, resolved_bindings)?,
-                curr_span,
-            ),
-            Self::Identifier(ident) => Syntax::Identifier {
+            Self::Identifier { ident, binding_env } => Syntax::Identifier {
                 ident: ident.clone(),
                 span: curr_span,
-                binding_env: *resolved_bindings
-                    .entry(ident)
-                    .or_insert_with(|| env.binding_env(ident)),
+                binding_env: *binding_env,
             },
             Self::Variable(name) => binds.get_bind(name)?,
             Self::Literal(literal) => Syntax::new_literal(literal.clone(), curr_span),
@@ -514,27 +537,19 @@ impl Template {
     }
 }
 
-fn expand_list<'a>(
-    items: &'a [Template],
-    binds: &Binds<'_>,
-    curr_span: Span,
-    env: &Environment,
-    resolved_bindings: &mut HashMap<&'a Identifier, Option<EnvId>>,
-) -> Option<Syntax> {
+fn expand_list<'a>(items: &'a [Template], binds: &Binds<'_>, curr_span: Span) -> Option<Syntax> {
     let mut output = Vec::new();
     for item in items {
         if let Template::Ellipsis(template) = item {
             for expansion in &binds.curr_expansion_level.expansions {
                 let new_level = binds.new_level(expansion);
-                let Some(result) =
-                    template.expand(&new_level, curr_span.clone(), env, resolved_bindings)
-                else {
+                let Some(result) = template.expand(&new_level, curr_span.clone()) else {
                     break;
                 };
                 output.push(result);
             }
         } else {
-            output.push(item.expand(binds, curr_span.clone(), env, resolved_bindings)?);
+            output.push(item.expand(binds, curr_span.clone())?);
         }
     }
     Some(normalize_list(output, curr_span))
@@ -567,8 +582,6 @@ fn expand_vec<'a>(
     items: &'a [Template],
     binds: &Binds<'_>,
     curr_span: Span,
-    env: &Environment,
-    resolved_bindings: &mut HashMap<&'a Identifier, Option<EnvId>>,
 ) -> Option<Vec<Syntax>> {
     let mut output = Vec::new();
     for item in items {
@@ -576,15 +589,13 @@ fn expand_vec<'a>(
             Template::Ellipsis(template) => {
                 for expansion in &binds.curr_expansion_level.expansions {
                     let new_level = binds.new_level(expansion);
-                    let Some(result) =
-                        template.expand(&new_level, curr_span.clone(), env, resolved_bindings)
-                    else {
+                    let Some(result) = template.expand(&new_level, curr_span.clone()) else {
                         break;
                     };
                     output.push(result);
                 }
             }
-            item => output.push(item.expand(binds, curr_span.clone(), env, resolved_bindings)?),
+            item => output.push(item.expand(binds, curr_span.clone())?),
         }
     }
     Some(output)
@@ -598,7 +609,6 @@ impl SchemeCompatible for Template {
 
 #[runtime_fn]
 unsafe extern "C" fn expand_template(
-    env: *const (),
     template: *const (),
     expansion_combiner: *const (),
     expansions: *const *const (),
@@ -626,18 +636,8 @@ unsafe extern "C" fn expand_template(
     let combined_expansions = expansion_combiner.combine_expansions(&expansions);
     let binds = Binds::new_top(&combined_expansions);
 
-    let env = unsafe { Value::from_raw_inc_rc(env) };
-    let env = env.try_into_rust_type::<Environment>().unwrap();
-
     // TODO: get a real span in here
-    let expanded = template
-        .expand(
-            &binds,
-            Span::default(),
-            env.as_ref(),
-            &mut HashMap::default(),
-        )
-        .unwrap();
+    let expanded = template.expand(&binds, Span::default()).unwrap();
 
     Value::into_raw(Value::from(expanded))
 }
