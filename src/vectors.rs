@@ -16,9 +16,7 @@ use std::{clone::Clone, fmt, hash::Hash, ops::Range, sync::Arc};
 #[derive(Trace)]
 #[repr(align(16))]
 pub(crate) struct VectorInner<T: Trace> {
-    /// Inner vector
-    // TODO: Maybe make this a tokio RwLock for async, so that byte buffers can
-    // be passed around more easily?
+    /// Inner vector.
     pub(crate) vec: RwLock<Vec<T>>,
     /// Whether or not the vector is mutable
     pub(crate) mutable: bool,

@@ -361,7 +361,7 @@ impl Syntax {
         futures::executor::block_on(async move {
             use crate::syntax::parse::Parser;
 
-            let mut parser = Parser::new(&mut data, info, Span::new(file_name));
+            let mut parser = Parser::new(&mut data, &info, Span::new(file_name));
             parser.all_sexprs().await
         })
     }

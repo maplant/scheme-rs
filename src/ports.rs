@@ -398,8 +398,8 @@ impl EolStyle {
     #[cfg(feature = "async")]
     fn convert_eol_style_to_linefeed(
         self,
-        mut iter: Peekable<impl MaybeStream<Item = Result<(usize, char), ReadError>>>,
-    ) -> impl futures::stream::Stream<Item = Result<(usize, char), ReadError>> {
+        mut iter: Peekable<impl MaybeStream<Item = Result<(usize, char), Condition>>>,
+    ) -> impl futures::stream::Stream<Item = Result<(usize, char), Condition>> {
         async_stream::stream! {
             while let Some(val) = self.convert_eol_style_to_linefeed_inner(&mut iter).await {
                 yield val;
@@ -638,62 +638,203 @@ mod __impl {
     use futures::future::BoxFuture;
     pub(super) use futures::stream::{Peekable, Stream as MaybeStream, StreamExt};
     use std::pin::pin;
-    pub(super) use std::{
-        io::{self, SeekFrom},
-        pin::Pin,
-    };
-    use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
+    pub(super) use std::{io::SeekFrom, pin::Pin};
+    use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
     #[cfg(feature = "tokio")]
     pub(super) use tokio::sync::Mutex;
 
     use super::*;
 
-    pub type ReadFn =
-        for<'a> fn(&'a mut (dyn Any + Send), &'a mut [u8]) -> BoxFuture<'a, io::Result<usize>>;
-    pub type WriteFn =
-        for<'a> fn(&'a mut (dyn Any + Send), &'a [u8]) -> BoxFuture<'a, io::Result<()>>;
-    pub type SeekFn =
-        for<'a> fn(&'a mut (dyn Any + Send), SeekFrom) -> BoxFuture<'a, io::Result<u64>>;
+    pub(super) type ReadFn = Box<
+        dyn for<'a> Fn(
+                &'a mut (dyn Any + Send),
+                &'a ByteVector,
+                usize,
+                usize,
+            ) -> BoxFuture<'a, Result<usize, Condition>>
+            + Send
+            + Sync,
+    >;
+    pub(super) type WriteFn = Box<
+        dyn for<'a> Fn(
+                &'a mut (dyn Any + Send),
+                &'a ByteVector,
+                usize,
+                usize,
+            ) -> BoxFuture<'a, Result<(), Condition>>
+            + Send
+            + Sync,
+    >;
+    pub(super) type GetPosFn = Box<
+        dyn for<'a> Fn(&'a mut (dyn Any + Send)) -> BoxFuture<'a, Result<u64, Condition>>
+            + Send
+            + Sync,
+    >;
+    pub(super) type SetPosFn = Box<
+        dyn for<'a> Fn(&'a mut (dyn Any + Send), u64) -> BoxFuture<'a, Result<(), Condition>>
+            + Send
+            + Sync,
+    >;
+    pub(super) type CloseFn = Box<
+        dyn for<'a> Fn(&'a mut (dyn Any + Send)) -> BoxFuture<'a, Result<(), Condition>>
+            + Send
+            + Sync,
+    >;
+
+    // Annoyingly, we need to double up our buffers here because we put
+    // Bytevectors behind a non-async compatible rwlock. We _could_ put them
+    // behind an async compatible one, but I'm not sure that's worthwhile.
 
     pub(super) fn read_fn<T>() -> ReadFn
     where
         T: AsyncRead + Any + Send + 'static,
     {
-        |any, buff| {
+        // let mut local_buff = Vec::with_capacity(1024);
+        Box::new(move |any, buff, start, count| {
             Box::pin(async move {
                 let concrete = unsafe { any.downcast_mut::<T>().unwrap_unchecked() };
                 let mut concrete: Pin<&mut T> = pin!(concrete);
-                concrete.read(buff).await
+                let mut local_buff = vec![0u8; count];
+                let read = concrete
+                    .read(&mut local_buff) //  buff[start..(start + count)])
+                    .await
+                    .map_err(|err| Condition::io_read_error(format!("{err:?}")))?;
+                buff.as_mut_slice()[start..(start + count)].copy_from_slice(&local_buff);
+
+                Ok(read)
             })
-        }
+        })
     }
 
     pub(super) fn write_fn<T>() -> WriteFn
     where
         T: AsyncWrite + Any + Send + 'static,
     {
-        |any, buff| {
+        Box::new(|any, buff, start, count| {
             Box::pin(async move {
                 let concrete = unsafe { any.downcast_mut::<T>().unwrap_unchecked() };
                 let mut concrete: Pin<&mut T> = pin!(concrete);
-                concrete.write_all(buff).await?;
-                concrete.flush().await?;
+                let local_buff = buff.as_slice()[start..(start + count)].to_vec();
+                concrete
+                    .write_all(&local_buff)
+                    .await
+                    .map_err(|err| Condition::io_write_error(format!("{err:?}")))?;
+                concrete
+                    .flush()
+                    .await
+                    .map_err(|err| Condition::io_write_error(format!("{err:?}")))?;
                 Ok(())
             })
-        }
+        })
     }
 
-    pub(super) fn seek_fn<T>() -> SeekFn
+    pub(super) fn get_pos_fn<T>() -> GetPosFn
     where
-        T: AsyncSeekExt + Any + Send + 'static,
+        T: AsyncSeek + Any + Send + 'static,
     {
-        |any, pos| {
+        Box::new(|any| {
             Box::pin(async move {
                 let concrete = unsafe { any.downcast_mut::<T>().unwrap_unchecked() };
                 let mut concrete: Pin<&mut T> = pin!(concrete);
-                concrete.seek(pos).await
+                concrete
+                    .seek(SeekFrom::Current(0))
+                    .await
+                    .map_err(|err| Condition::io_error(format!("{err:?}")))
             })
-        }
+        })
+    }
+
+    pub(super) fn set_pos_fn<T>() -> SetPosFn
+    where
+        T: AsyncSeek + Any + Send + 'static,
+    {
+        Box::new(|any, pos| {
+            Box::pin(async move {
+                let concrete = unsafe { any.downcast_mut::<T>().unwrap_unchecked() };
+                let mut concrete: Pin<&mut T> = pin!(concrete);
+                let _ = concrete
+                    .seek(SeekFrom::Start(pos))
+                    .await
+                    .map_err(|err| Condition::io_error(format!("{err:?}")))?;
+                Ok(())
+            })
+        })
+    }
+
+    pub(super) fn proc_to_read_fn(read: Procedure) -> ReadFn {
+        Box::new(move |_, buff, start, count| {
+            let read = read.clone();
+            Box::pin(async move {
+                let [read] = read
+                    .call(&[
+                        Value::from(buff.clone()),
+                        Value::from(start),
+                        Value::from(count),
+                    ])
+                    .await
+                    .map_err(|err| err.into_inner().add_condition(IoReadError::new()))?
+                    .try_into()
+                    .map_err(|_| {
+                        Condition::io_read_error(
+                            "invalid number of values returned from read procedure",
+                        )
+                    })?;
+                let read: usize = read.try_into().map_err(|_| {
+                    Condition::io_read_error(
+                        "could not convert read procedure return value to usize",
+                    )
+                })?;
+                Ok(read)
+            })
+        })
+    }
+
+    pub(super) fn proc_to_get_pos_fn(get_pos: Procedure) -> GetPosFn {
+        Box::new(move |_| {
+            let get_pos = get_pos.clone();
+            Box::pin(async move {
+                let [pos] = get_pos
+                    .call(&[])
+                    .await
+                    .map_err(|err| err.into_inner().add_condition(IoError::new()))?
+                    .try_into()
+                    .map_err(|_| {
+                        Condition::io_error("invalid number of values returned get-pos procedure")
+                    })?;
+                let pos: u64 = pos.try_into().map_err(|_| {
+                    Condition::io_read_error(
+                        "could not convert get-pos procedure return value to u64",
+                    )
+                })?;
+                Ok(pos)
+            })
+        })
+    }
+
+    pub(super) fn proc_to_set_pos_fn(set_pos: Procedure) -> SetPosFn {
+        Box::new(move |_, pos| {
+            let set_pos = set_pos.clone();
+            Box::pin(async move {
+                let _ = set_pos
+                    .call(&[Value::from(pos)])
+                    .await
+                    .map_err(|err| err.into_inner().add_condition(IoError::new()))?;
+                Ok(())
+            })
+        })
+    }
+
+    pub(super) fn proc_to_close_fn(close: Procedure) -> CloseFn {
+        Box::new(move |_| {
+            let close = close.clone();
+            Box::pin(async move {
+                let _ = close
+                    .call(&[])
+                    .await
+                    .map_err(|err| err.into_inner().add_condition(IoError::new()))?;
+                Ok(())
+            })
+        })
     }
 
     #[cfg(feature = "tokio")]
@@ -706,8 +847,8 @@ mod __impl {
             Some(write_fn::<Self>())
         }
 
-        fn seek_fn() -> Option<SeekFn> {
-            Some(seek_fn::<Self>())
+        fn seek_fns() -> Option<(GetPosFn, SetPosFn)> {
+            Some((get_pos_fn::<Self>(), set_pos_fn::<Self>()))
         }
     }
 
@@ -997,11 +1138,11 @@ impl PortData {
     }
 
     #[cfg(feature = "async")]
-    fn transcode(
-        &mut self,
-        port_info: PortInfo,
+    fn transcode<'a>(
+        &'a mut self,
+        port_info: &'a PortInfo,
         transcoder: Transcoder,
-    ) -> impl futures::stream::Stream<Item = Result<(usize, char), Condition>> {
+    ) -> impl futures::stream::Stream<Item = Result<(usize, char), Condition>> + use<'a> {
         let eol_type = transcoder.eol_type;
         let decoder = match transcoder.codec {
             Codec::Latin1 => async_stream::stream! {
@@ -1391,6 +1532,10 @@ impl Port {
         )))
     }
 
+    pub fn id(&self) -> &str {
+        &self.0.info.id
+    }
+
     #[maybe_async]
     pub fn get_u8(&self) -> Result<Option<u8>, Condition> {
         #[cfg(not(feature = "async"))]
@@ -1691,7 +1836,7 @@ mod prompt {
 
     impl IntoPort for Prompt {
         fn read_fn() -> Option<ReadFn> {
-            Some(|any, buff| {
+            Some(Box::new(|any, buff, start, count| {
                 Box::pin(async move {
                     use std::cmp::Ordering;
 
@@ -1727,6 +1872,8 @@ mod prompt {
                     } else {
                         std::mem::take(&mut concrete.leftover)
                     };
+
+                    let buff = &mut buff.as_mut_slice()[start..(start + count)];
                     match line.len().cmp(&buff.len()) {
                         Ordering::Less => {
                             buff[..line.len()].copy_from_slice(line.as_slice());
@@ -1741,7 +1888,7 @@ mod prompt {
                     }
                     Ok(line.len())
                 })
-            })
+            }))
         }
     }
 
@@ -2048,10 +2195,12 @@ pub fn close_port(port: &Value) -> Result<Vec<Value>, Condition> {
     let port: Port = port.clone().try_into()?;
 
     #[cfg(not(feature = "async"))]
-    let _ = port.0.data.lock().unwrap().port.take();
+    let mut data = port.0.data.lock().unwrap();
 
     #[cfg(feature = "tokio")]
-    let _ = port.0.data.lock().await.port.take();
+    let mut data = port.0.data.lock().await;
+
+    maybe_await!(data.close(&port.0.info))?;
 
     Ok(Vec::new())
 }
@@ -2083,12 +2232,17 @@ pub fn port_eof_pred(input_port: &Value) -> Result<Vec<Value>, Condition> {
     )])
 }
 
+#[maybe_async]
 #[bridge(name = "open-file-input-port", lib = "(rnrs io ports (6))")]
 pub fn open_file_input_port(
     filename: &Value,
     rest_args: &[Value],
 ) -> Result<Vec<Value>, Condition> {
+    #[cfg(not(feature = "async"))]
     use std::fs::File;
+
+    #[cfg(feature = "tokio")]
+    use tokio::fs::File;
 
     if rest_args.len() > 3 {
         return Err(Condition::wrong_num_of_var_args(1..4, rest_args.len() + 1));
@@ -2125,7 +2279,7 @@ pub fn open_file_input_port(
 
     let filename = filename.to_string();
 
-    let file = File::open(&filename).map_err(map_io_error_to_condition)?;
+    let file = maybe_await!(File::open(&filename)).map_err(map_io_error_to_condition)?;
 
     Ok(vec![Value::from(Port::new_with_fns(
         filename,
@@ -2337,12 +2491,17 @@ pub fn output_port_buffer_mode(output_port: &Value) -> Result<Vec<Value>, Condit
     Ok(vec![Value::from(output_port.0.info.buffer_mode.to_sym())])
 }
 
+#[maybe_async]
 #[bridge(name = "open-file-output-port", lib = "(rnrs io ports (6))")]
 pub fn open_file_output_port(
     filename: &Value,
     rest_args: &[Value],
 ) -> Result<Vec<Value>, Condition> {
+    #[cfg(not(feature = "async"))]
     use std::fs::File;
+
+    #[cfg(feature = "tokio")]
+    use tokio::fs::File;
 
     if rest_args.len() > 3 {
         return Err(Condition::wrong_num_of_var_args(1..4, rest_args.len() + 1));
@@ -2379,14 +2538,16 @@ pub fn open_file_output_port(
 
     let filename = filename.to_string();
 
-    let file = File::options()
-        .read(false)
-        .write(true)
-        .create(!file_options.contains("no-create"))
-        .append(file_options.contains("append"))
-        .truncate(!file_options.contains("no-truncate"))
-        .open(&filename)
-        .map_err(map_io_error_to_condition)?;
+    let file = maybe_await!(
+        File::options()
+            .read(false)
+            .write(true)
+            .create(!file_options.contains("no-create"))
+            .append(file_options.contains("append"))
+            .truncate(!file_options.contains("no-truncate"))
+            .open(&filename)
+    )
+    .map_err(map_io_error_to_condition)?;
 
     Ok(vec![Value::from(Port::new_with_fns(
         filename,
