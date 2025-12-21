@@ -72,7 +72,7 @@ fn main() -> ExitCode {
     let prompt = Prompt::new(editor);
 
     let mut span = Span::new("<prompt>");
-    let input_port = Port::new(prompt, BufferMode::Block, Some(Transcoder::native()));
+    let input_port = Port::new("<prompt", prompt, BufferMode::Block, Some(Transcoder::native()));
 
     let mut n_results = 1;
     loop {

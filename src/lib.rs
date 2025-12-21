@@ -5,6 +5,7 @@ pub mod character;
 pub mod cps;
 pub mod env;
 pub mod eval;
+pub mod enumerations;
 pub mod exceptions;
 pub mod expand;
 pub mod gc;

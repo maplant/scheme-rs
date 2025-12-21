@@ -8,7 +8,9 @@ use crate::{
 };
 use indexmap::IndexMap;
 use malachite::Integer;
-use parking_lot::RwLock;
+use parking_lot::{
+    MappedRwLockReadGuard, MappedRwLockWriteGuard, RwLock, RwLockReadGuard, RwLockWriteGuard,
+};
 use std::{clone::Clone, fmt, hash::Hash, ops::Range, sync::Arc};
 
 #[derive(Trace)]
@@ -50,6 +52,34 @@ pub struct ByteVector(pub(crate) Arc<VectorInner<u8>>);
 impl ByteVector {
     pub fn new(vec: Vec<u8>) -> Self {
         Self::from(vec)
+    }
+
+    pub fn as_slice(&self) -> MappedRwLockReadGuard<'_, [u8]> {
+        RwLockReadGuard::map(self.0.vec.read(), |vec| vec.as_slice())
+    }
+
+    pub fn as_mut_slice(&self) -> MappedRwLockWriteGuard<'_, [u8]> {
+        RwLockWriteGuard::map(self.0.vec.write(), |vec| vec.as_mut_slice())
+    }
+
+    pub fn as_mut_vec(&self) -> RwLockWriteGuard<'_, Vec<u8>> {
+        self.0.vec.write()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.vec.read().len()
+    }
+
+    pub fn clear(&self) {
+        self.0.vec.write().clear();
+    }
+
+    pub fn get(&self, idx: usize) -> Option<u8> {
+        self.0.vec.read().get(idx).copied()
     }
 }
 

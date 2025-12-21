@@ -1106,7 +1106,7 @@ fn debug_value(
         UnpackedValue::Null => write!(f, "()"),
         UnpackedValue::Boolean(true) => write!(f, "#t"),
         UnpackedValue::Boolean(false) => write!(f, "#f"),
-        UnpackedValue::Number(number) => write!(f, "{number:?}"),
+        UnpackedValue::Number(number) => write!(f, "{number}"),
         UnpackedValue::Character(c) => write!(f, "#\\{c}"),
         UnpackedValue::String(string) => write!(f, "{string:?}"),
         UnpackedValue::Symbol(symbol) => write!(f, "{symbol}"),

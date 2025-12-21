@@ -64,6 +64,7 @@ impl Runtime {
         let env = Environment::Top(progm);
         let sexprs = {
             let port = Port::new(
+                path.display(),
                 maybe_await!(File::open(path)).unwrap(),
                 BufferMode::Block,
                 Some(Transcoder::native()),

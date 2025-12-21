@@ -8,7 +8,7 @@ use crate::{
     proc::{Application, DynStack, Procedure},
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
-    value::{UnpackedValue, Value, ValueType, write_value},
+    value::{write_value, UnpackedValue, Value, ValueType},
     vectors::Vector,
 };
 use std::fmt;
