@@ -1,6 +1,6 @@
 use crate::{
     ast::{Expression, Literal, ParseAstError, ParseContext},
-    env::{Environment, Local},
+    env::{EnvId, Environment, Local},
     exceptions::Condition,
     gc::{Gc, Trace},
     proc::Procedure,
@@ -57,7 +57,13 @@ impl SyntaxRule {
     }
 }
 
-#[derive(Clone, Debug, Trace, PartialEq)]
+#[derive(Copy, Clone, Debug, Trace)]
+pub struct Keyword {
+    sym: Symbol,
+    binding_env: Option<EnvId>,
+}
+
+#[derive(Clone, Debug, Trace)]
 pub enum Pattern {
     Null,
     Underscore,
@@ -66,7 +72,7 @@ pub enum Pattern {
     Vector(Vec<Pattern>),
     ByteVector(Vec<u8>),
     Variable(Identifier),
-    Keyword(Symbol),
+    Keyword(Keyword),
     Literal(Literal),
 }
 
@@ -79,9 +85,12 @@ impl Pattern {
         match expr {
             Syntax::Null { .. } => Self::Null,
             Syntax::Identifier { ident, .. } if ident.sym == "_" => Self::Underscore,
-            Syntax::Identifier { ident, .. } if keywords.contains(&ident.sym) => {
-                Self::Keyword(ident.sym)
-            }
+            Syntax::Identifier {
+                ident, binding_env, ..
+            } if keywords.contains(&ident.sym) => Self::Keyword(Keyword {
+                sym: ident.sym,
+                binding_env: *binding_env,
+            }),
             Syntax::Identifier { ident, .. } => {
                 variables.insert(ident.clone());
                 Self::Variable(ident.clone())
@@ -145,7 +154,7 @@ impl Pattern {
                 }
             }
             Self::Keyword(lhs) => {
-                matches!(expr, Syntax::Identifier { ident: rhs, bound: false, .. } if lhs == &rhs.sym)
+                matches!(expr, Syntax::Identifier { ident: rhs, binding_env, .. } if lhs.sym == rhs.sym && lhs.binding_env == *binding_env)
             }
             Self::List(list) => match_list(list, expr, expansion_level),
             Self::Vector(vec) => match_vec(vec, expr, expansion_level),
@@ -474,17 +483,28 @@ impl Template {
             .collect()
     }
 
-    fn expand(&self, binds: &Binds<'_>, curr_span: Span) -> Option<Syntax> {
+    fn expand<'a>(
+        &'a self,
+        binds: &Binds<'_>,
+        curr_span: Span,
+        env: &Environment,
+        resolved_bindings: &mut HashMap<&'a Identifier, Option<EnvId>>,
+    ) -> Option<Syntax> {
         let syn = match self {
             Self::Null => Syntax::new_null(curr_span),
-            Self::List(list) => expand_list(list, binds, curr_span.clone())?,
-            Self::Vector(vec) => {
-                Syntax::new_vector(expand_vec(vec, binds, curr_span.clone())?, curr_span)
+            Self::List(list) => {
+                expand_list(list, binds, curr_span.clone(), env, resolved_bindings)?
             }
+            Self::Vector(vec) => Syntax::new_vector(
+                expand_vec(vec, binds, curr_span.clone(), env, resolved_bindings)?,
+                curr_span,
+            ),
             Self::Identifier(ident) => Syntax::Identifier {
                 ident: ident.clone(),
                 span: curr_span,
-                bound: false,
+                binding_env: *resolved_bindings
+                    .entry(ident)
+                    .or_insert_with(|| env.binding_env(ident)),
             },
             Self::Variable(name) => binds.get_bind(name)?,
             Self::Literal(literal) => Syntax::new_literal(literal.clone(), curr_span),
@@ -494,60 +514,27 @@ impl Template {
     }
 }
 
-impl SchemeCompatible for Template {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "template")
-    }
-}
-
-#[runtime_fn]
-unsafe extern "C" fn expand_template(
-    template: *const (),
-    expansion_combiner: *const (),
-    expansions: *const *const (),
-    num_expansions: u32,
-) -> *const () {
-    // TODO: A lot of probably unnecessary cloning here, we'll need to fix it up
-    // eventually
-
-    let template = unsafe { Value::from_raw_inc_rc(template) };
-    let template = template.try_into_rust_type::<Template>().unwrap();
-
-    let expansion_combiner = unsafe { Value::from_raw_inc_rc(expansion_combiner) };
-    let expansion_combiner = expansion_combiner
-        .try_into_rust_type::<ExpansionCombiner>()
-        .unwrap();
-
-    let expansions = (0..num_expansions)
-        .map(|i| {
-            let expansion = unsafe { Value::from_raw_inc_rc(expansions.add(i as usize).read()) };
-            let expansion = expansion.try_into_rust_type::<ExpansionLevel>().unwrap();
-            expansion.as_ref().clone()
-        })
-        .collect::<Vec<_>>();
-
-    let combined_expansions = expansion_combiner.combine_expansions(&expansions);
-    let binds = Binds::new_top(&combined_expansions);
-
-    // TODO: get a real span in here
-    let expanded = template.expand(&binds, Span::default()).unwrap();
-
-    Value::into_raw(Value::from(expanded))
-}
-
-fn expand_list(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<Syntax> {
+fn expand_list<'a>(
+    items: &'a [Template],
+    binds: &Binds<'_>,
+    curr_span: Span,
+    env: &Environment,
+    resolved_bindings: &mut HashMap<&'a Identifier, Option<EnvId>>,
+) -> Option<Syntax> {
     let mut output = Vec::new();
     for item in items {
         if let Template::Ellipsis(template) = item {
             for expansion in &binds.curr_expansion_level.expansions {
                 let new_level = binds.new_level(expansion);
-                let Some(result) = template.expand(&new_level, curr_span.clone()) else {
+                let Some(result) =
+                    template.expand(&new_level, curr_span.clone(), env, resolved_bindings)
+                else {
                     break;
                 };
                 output.push(result);
             }
         } else {
-            output.push(item.expand(binds, curr_span.clone())?);
+            output.push(item.expand(binds, curr_span.clone(), env, resolved_bindings)?);
         }
     }
     Some(normalize_list(output, curr_span))
@@ -576,23 +563,83 @@ fn normalize_list(mut list: Vec<Syntax>, span: Span) -> Syntax {
     }
 }
 
-fn expand_vec(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<Vec<Syntax>> {
+fn expand_vec<'a>(
+    items: &'a [Template],
+    binds: &Binds<'_>,
+    curr_span: Span,
+    env: &Environment,
+    resolved_bindings: &mut HashMap<&'a Identifier, Option<EnvId>>,
+) -> Option<Vec<Syntax>> {
     let mut output = Vec::new();
     for item in items {
         match item {
             Template::Ellipsis(template) => {
                 for expansion in &binds.curr_expansion_level.expansions {
                     let new_level = binds.new_level(expansion);
-                    let Some(result) = template.expand(&new_level, curr_span.clone()) else {
+                    let Some(result) =
+                        template.expand(&new_level, curr_span.clone(), env, resolved_bindings)
+                    else {
                         break;
                     };
                     output.push(result);
                 }
             }
-            item => output.push(item.expand(binds, curr_span.clone())?),
+            item => output.push(item.expand(binds, curr_span.clone(), env, resolved_bindings)?),
         }
     }
     Some(output)
+}
+
+impl SchemeCompatible for Template {
+    fn rtd() -> Arc<RecordTypeDescriptor> {
+        rtd!(name: "template")
+    }
+}
+
+#[runtime_fn]
+unsafe extern "C" fn expand_template(
+    env: *const (),
+    template: *const (),
+    expansion_combiner: *const (),
+    expansions: *const *const (),
+    num_expansions: u32,
+) -> *const () {
+    // TODO: A lot of probably unnecessary cloning here, we'll need to fix it up
+    // eventually
+
+    let template = unsafe { Value::from_raw_inc_rc(template) };
+    let template = template.try_into_rust_type::<Template>().unwrap();
+
+    let expansion_combiner = unsafe { Value::from_raw_inc_rc(expansion_combiner) };
+    let expansion_combiner = expansion_combiner
+        .try_into_rust_type::<ExpansionCombiner>()
+        .unwrap();
+
+    let expansions = (0..num_expansions)
+        .map(|i| {
+            let expansion = unsafe { Value::from_raw_inc_rc(expansions.add(i as usize).read()) };
+            let expansion = expansion.try_into_rust_type::<ExpansionLevel>().unwrap();
+            expansion.as_ref().clone()
+        })
+        .collect::<Vec<_>>();
+
+    let combined_expansions = expansion_combiner.combine_expansions(&expansions);
+    let binds = Binds::new_top(&combined_expansions);
+
+    let env = unsafe { Value::from_raw_inc_rc(env) };
+    let env = env.try_into_rust_type::<Environment>().unwrap();
+
+    // TODO: get a real span in here
+    let expanded = template
+        .expand(
+            &binds,
+            Span::default(),
+            env.as_ref(),
+            &mut HashMap::default(),
+        )
+        .unwrap();
+
+    Value::into_raw(Value::from(expanded))
 }
 
 #[derive(Debug)]

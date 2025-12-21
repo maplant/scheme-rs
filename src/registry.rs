@@ -6,7 +6,7 @@ use crate::{
         SpecialKeyword, Version,
     },
     cps::Compile,
-    env::{Environment, Global, Keyword},
+    env::{EnvId, Environment, Global, Keyword},
     exceptions::Condition,
     gc::{Gc, Trace},
     proc::{Application, BridgePtr, DynStack, FuncDebugInfo, FuncPtr, Procedure},
@@ -731,9 +731,21 @@ impl Library {
         matches!(self.0.read().kind, LibraryKind::Repl)
     }
 
-    pub fn is_bound(&self, name: &Identifier) -> bool {
+    pub(crate) fn binding_env(&self, name: &Identifier) -> Option<EnvId> {
         let this = self.0.read();
-        this.vars.contains_key(name) || this.imports.contains_key(name)
+        if this.vars.contains_key(name) || this.keywords.contains_key(name) {
+            return Some(EnvId::new(&self.0));
+        }
+        if let Some(Import { origin, rename }) = this.imports.get(name) {
+            origin.binding_env(rename)
+        } else if self.is_repl() {
+            // If this is a repl, there's no other binding this could possibly
+            // refer to, and it may be bound in the future, so we say this is
+            // the current binding environment.
+            Some(EnvId::new(&self.0))
+        } else {
+            None
+        }
     }
 
     pub(crate) fn def_var(&self, name: Identifier, value: Value) -> Global {
