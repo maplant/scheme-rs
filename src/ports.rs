@@ -8,17 +8,18 @@ use std::{
     any::Any,
     borrow::Cow,
     fmt,
-    io::Cursor,
+    io::{Cursor, ErrorKind},
     sync::{Arc, LazyLock},
 };
 
 use crate::{
     enumerations::{EnumerationSet, EnumerationType},
-    exceptions::{Condition, Error},
+    exceptions::{Assertion, Condition, Error},
     gc::{Gc, Trace},
     proc::{Application, DynStack, Procedure},
     records::{Record, RecordTypeDescriptor, SchemeCompatible},
     runtime::Runtime,
+    strings::WideString,
     symbols::Symbol,
     syntax::{
         Span, Syntax,
@@ -167,7 +168,7 @@ where
             Either::Right(ref err) => return Some(Err(err.clone())),
         };
         loop {
-            match maybe_await!(self.data.peekn_bytes(&self.info, pos))
+            match maybe_await!(self.data.peekn_bytes(self.info, pos))
                 .transpose()?
                 .and_then(|byte| self.decode.push_and_decode(byte))
             {
@@ -218,7 +219,7 @@ impl BufferMode {
         }
     }
 
-    fn to_sym(&self) -> Symbol {
+    fn to_sym(self) -> Symbol {
         match self {
             Self::None => Symbol::intern("none"),
             Self::Line => Symbol::intern("line"),
@@ -239,7 +240,7 @@ pub fn buffer_mode(mode: &Value) -> Result<Vec<Value>, Condition> {
     let mode = match &*sym.to_str() {
         "line" => BufferMode::Line,
         "block" => BufferMode::Block,
-        "none" | _ => BufferMode::None,
+        _ => BufferMode::None,
     };
     Ok(vec![Value::from(Record::from_rust_type(mode))])
 }
@@ -931,6 +932,7 @@ impl PortInner {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn new_with_fns<D>(
         id: D,
         port: Box<dyn Any + Send + 'static>,
@@ -1148,7 +1150,7 @@ impl PortData {
             Codec::Latin1 => async_stream::stream! {
                 let mut i = 0;
                 loop {
-                    match self.peekn_bytes(&port_info, i).await {
+                    match self.peekn_bytes(port_info, i).await {
                         Ok(Some(byte)) => {
                             let res = (i, char::from(byte));
                             i += 1;
@@ -1507,6 +1509,7 @@ impl Port {
         Self(Arc::new(PortInner::new(id, port, buffer_mode, transcoder)))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn new_with_fns<D>(
         id: D,
         port: Box<dyn Any + Send + 'static>,
@@ -2046,9 +2049,9 @@ define_condition_type!(
 );
 
 impl IoFileProtectionError {
-    pub fn new(filename: String) -> Self {
+    pub fn new(filename: impl fmt::Display) -> Self {
         Self {
-            parent: Gc::new(IoFilenameError::new(filename)),
+            parent: Gc::new(IoFilenameError::new(filename.to_string())),
         }
     }
 }
@@ -2081,6 +2084,14 @@ define_condition_type!(
     }
 );
 
+impl IoFileAlreadyExistsError {
+    pub fn new(filename: impl fmt::Display) -> Self {
+        Self {
+            parent: Gc::new(IoFilenameError::new(filename.to_string())),
+        }
+    }
+}
+
 define_condition_type!(
     rust_name: IoFileDoesNotExistError,
     scheme_name: "&i/o-file-does-not-exist",
@@ -2094,6 +2105,14 @@ define_condition_type!(
         this.parent.fmt(f)
     }
 );
+
+impl IoFileDoesNotExistError {
+    pub fn new(filename: impl fmt::Display) -> Self {
+        Self {
+            parent: Gc::new(IoFilenameError::new(filename.to_string())),
+        }
+    }
+}
 
 define_condition_type!(
     rust_name: IoPortError,
@@ -2139,6 +2158,108 @@ static FILE_OPTIONS: LazyLock<Gc<EnumerationType>> = LazyLock::new(|| {
 
 fn default_file_options() -> EnumerationSet {
     EnumerationSet::new(&FILE_OPTIONS, [])
+}
+
+#[derive(Copy, Clone, Debug)]
+enum PortKind {
+    Read,
+    Write,
+    ReadWrite,
+}
+
+impl PortKind {
+    fn read(self) -> bool {
+        matches!(self, Self::Read | Self::ReadWrite)
+    }
+
+    fn write(self) -> bool {
+        matches!(self, Self::Write | Self::ReadWrite)
+    }
+}
+
+#[maybe_async]
+fn open_file_port(
+    filename: &Value,
+    rest_args: &[Value],
+    kind: PortKind,
+) -> Result<Port, Condition> {
+    #[cfg(not(feature = "async"))]
+    use std::fs::File;
+
+    #[cfg(feature = "tokio")]
+    use tokio::fs::File;
+
+    if rest_args.len() > 3 {
+        return Err(Condition::wrong_num_of_var_args(1..4, rest_args.len() + 1));
+    }
+
+    // We don't actually use file options for anything in the input case.
+    let (file_options, rest_args) = if let [file_options, rest @ ..] = rest_args {
+        let file_options = file_options
+            .clone()
+            .try_into_rust_type::<EnumerationSet>()?;
+        file_options.type_check(&FILE_OPTIONS)?;
+        (file_options, rest)
+    } else {
+        (Gc::new(default_file_options()), &[] as &[Value])
+    };
+
+    let (buffer_mode, rest_args) = if let [buffer_mode, rest @ ..] = rest_args {
+        let buffer_mode = buffer_mode.clone().try_into_rust_type::<BufferMode>()?;
+        (*buffer_mode, rest)
+    } else {
+        (BufferMode::Block, &[] as &[Value])
+    };
+
+    let transcoder = if let [transcoder] = rest_args {
+        if transcoder.is_true() {
+            let transcoder = transcoder.clone().try_into_rust_type::<Transcoder>()?;
+            Some(*transcoder)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let filename = filename.to_string();
+    let file = maybe_await!(
+        File::options()
+            .read(kind.read())
+            .write(kind.write())
+            .create(!file_options.contains("no-create"))
+            .append(file_options.contains("append"))
+            .truncate(!file_options.contains("no-truncate"))
+            .open(&filename)
+    )
+    .map_err(|err| map_io_error_to_condition(&filename, err))?;
+
+    Ok(Port::new_with_fns(
+        filename,
+        file.into_port(),
+        None,
+        File::write_fn(),
+        transcoder.is_some().then(File::seek_fns).flatten(),
+        File::close_fn(),
+        buffer_mode,
+        transcoder,
+    ))
+}
+
+fn map_io_error_to_condition(filename: &str, err: std::io::Error) -> Condition {
+    match err.kind() {
+        ErrorKind::NotFound => {
+            Condition::from((Assertion::new(), IoFileDoesNotExistError::new(filename)))
+        }
+        ErrorKind::AlreadyExists => {
+            Condition::from((Assertion::new(), IoFileAlreadyExistsError::new(filename)))
+        }
+        ErrorKind::PermissionDenied => {
+            Condition::from((Assertion::new(), IoFileProtectionError::new(filename)))
+        }
+        // TODO: All the rest
+        _ => Condition::io_error(format!("{err:?}")),
+    }
 }
 
 #[bridge(name = "default-file-options", lib = "(rnrs io ports (6))")]
@@ -2238,66 +2359,11 @@ pub fn open_file_input_port(
     filename: &Value,
     rest_args: &[Value],
 ) -> Result<Vec<Value>, Condition> {
-    #[cfg(not(feature = "async"))]
-    use std::fs::File;
-
-    #[cfg(feature = "tokio")]
-    use tokio::fs::File;
-
-    if rest_args.len() > 3 {
-        return Err(Condition::wrong_num_of_var_args(1..4, rest_args.len() + 1));
-    }
-
-    // We don't actually use file options for anything in the input case.
-    let (_file_options, rest_args) = if let [file_options, rest @ ..] = rest_args {
-        let file_options = file_options
-            .clone()
-            .try_into_rust_type::<EnumerationSet>()?;
-        file_options.type_check(&FILE_OPTIONS)?;
-        (file_options, rest)
-    } else {
-        (Gc::new(default_file_options()), &[] as &[Value])
-    };
-
-    let (buffer_mode, rest_args) = if let [buffer_mode, rest @ ..] = rest_args {
-        let buffer_mode = buffer_mode.clone().try_into_rust_type::<BufferMode>()?;
-        (*buffer_mode, rest)
-    } else {
-        (BufferMode::Block, &[] as &[Value])
-    };
-
-    let transcoder = if let [transcoder] = rest_args {
-        if transcoder.is_true() {
-            let transcoder = transcoder.clone().try_into_rust_type::<Transcoder>()?;
-            Some(*transcoder)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    let filename = filename.to_string();
-
-    let file = maybe_await!(File::open(&filename)).map_err(map_io_error_to_condition)?;
-
-    Ok(vec![Value::from(Port::new_with_fns(
+    Ok(vec![Value::from(maybe_await!(open_file_port(
         filename,
-        file.into_port(),
-        File::read_fn(),
-        None,
-        transcoder.is_some().then(File::seek_fns).flatten(),
-        File::close_fn(),
-        buffer_mode,
-        transcoder,
-    ))])
-}
-
-fn map_io_error_to_condition(err: std::io::Error) -> Condition {
-    match err.kind() {
-        // TODO: All the rest
-        _ => Condition::io_read_error(format!("{err:?}")),
-    }
+        rest_args,
+        PortKind::Read
+    ))?)])
 }
 
 #[bridge(name = "make-custom-binary-input-port", lib = "(rnrs io ports (6))")]
@@ -2497,68 +2563,11 @@ pub fn open_file_output_port(
     filename: &Value,
     rest_args: &[Value],
 ) -> Result<Vec<Value>, Condition> {
-    #[cfg(not(feature = "async"))]
-    use std::fs::File;
-
-    #[cfg(feature = "tokio")]
-    use tokio::fs::File;
-
-    if rest_args.len() > 3 {
-        return Err(Condition::wrong_num_of_var_args(1..4, rest_args.len() + 1));
-    }
-
-    // We don't actually use file options for anything in the input case.
-    let (file_options, rest_args) = if let [file_options, rest @ ..] = rest_args {
-        let file_options = file_options
-            .clone()
-            .try_into_rust_type::<EnumerationSet>()?;
-        file_options.type_check(&FILE_OPTIONS)?;
-        (file_options, rest)
-    } else {
-        (Gc::new(default_file_options()), &[] as &[Value])
-    };
-
-    let (buffer_mode, rest_args) = if let [buffer_mode, rest @ ..] = rest_args {
-        let buffer_mode = buffer_mode.clone().try_into_rust_type::<BufferMode>()?;
-        (*buffer_mode, rest)
-    } else {
-        (BufferMode::Block, &[] as &[Value])
-    };
-
-    let transcoder = if let [transcoder] = rest_args {
-        if transcoder.is_true() {
-            let transcoder = transcoder.clone().try_into_rust_type::<Transcoder>()?;
-            Some(*transcoder)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    let filename = filename.to_string();
-
-    let file = maybe_await!(
-        File::options()
-            .read(false)
-            .write(true)
-            .create(!file_options.contains("no-create"))
-            .append(file_options.contains("append"))
-            .truncate(!file_options.contains("no-truncate"))
-            .open(&filename)
-    )
-    .map_err(map_io_error_to_condition)?;
-
-    Ok(vec![Value::from(Port::new_with_fns(
+    Ok(vec![Value::from(maybe_await!(open_file_port(
         filename,
-        file.into_port(),
-        None,
-        File::write_fn(),
-        transcoder.is_some().then(File::seek_fns).flatten(),
-        File::close_fn(),
-        buffer_mode,
-        transcoder,
-    ))])
+        rest_args,
+        PortKind::Write
+    ))?)])
 }
 
 // 8.2.11. Binary output
@@ -2590,4 +2599,19 @@ pub fn put_datum(textual_output_port: &Value, datum: &Value) -> Result<Vec<Value
     let str_rep = format!("{datum:?}");
     maybe_await!(port.put_str(&str_rep))?;
     Ok(Vec::new())
+}
+
+// 8.2.13. Input/output ports
+
+#[maybe_async]
+#[bridge(name = "open-file-input/output-port", lib = "(rnrs io ports (6))")]
+pub fn open_file_input_output_port(
+    filename: &Value,
+    rest_args: &[Value],
+) -> Result<Vec<Value>, Condition> {
+    Ok(vec![Value::from(maybe_await!(open_file_port(
+        filename,
+        rest_args,
+        PortKind::ReadWrite
+    ))?)])
 }

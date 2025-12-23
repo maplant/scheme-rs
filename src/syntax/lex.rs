@@ -48,12 +48,12 @@ impl<'a> Lexer<'a> {
             return Ok(Some(self.buff[self.pos]));
         }
         while self.buff.len() < self.pos {
-            let Some(chr) = maybe_await!(self.port_data.read_char(&self.port_info))? else {
+            let Some(chr) = maybe_await!(self.port_data.read_char(self.port_info))? else {
                 return Ok(None);
             };
             self.buff.push(chr);
         }
-        maybe_await!(self.port_data.peekn_chars(&self.port_info, 0))
+        maybe_await!(self.port_data.peekn_chars(self.port_info, 0))
     }
 
     fn skip(&mut self) {
@@ -113,7 +113,7 @@ impl<'a> Lexer<'a> {
         if self.pos > self.buff.len() {
             maybe_await!(
                 self.port_data
-                    .consume_chars(&self.port_info, self.pos - self.buff.len())
+                    .consume_chars(self.port_info, self.pos - self.buff.len())
             )?;
         }
         self.pos = 0;
