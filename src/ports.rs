@@ -19,7 +19,6 @@ use crate::{
     proc::{Application, DynStack, Procedure},
     records::{Record, RecordTypeDescriptor, SchemeCompatible},
     runtime::Runtime,
-    strings::WideString,
     symbols::Symbol,
     syntax::{
         Span, Syntax,
@@ -516,7 +515,7 @@ mod __impl {
         Box::new(|any| {
             let concrete = unsafe { any.downcast_mut::<T>().unwrap_unchecked() };
             concrete
-                .seek(SeekFrom::Current(0))
+                .stream_position()
                 .map_err(|err| Condition::io_error(format!("{err:?}")))
         })
     }
@@ -738,7 +737,7 @@ mod __impl {
                 let concrete = unsafe { any.downcast_mut::<T>().unwrap_unchecked() };
                 let mut concrete: Pin<&mut T> = pin!(concrete);
                 concrete
-                    .seek(SeekFrom::Current(0))
+                    .stream_position()
                     .await
                     .map_err(|err| Condition::io_error(format!("{err:?}")))
             })
@@ -935,7 +934,7 @@ impl PortInner {
     #[allow(clippy::too_many_arguments)]
     fn new_with_fns<D>(
         id: D,
-        port: Box<dyn Any + Send + 'static>,
+        port: Box<dyn Any + Send + Sync + 'static>,
         read: Option<ReadFn>,
         write: Option<WriteFn>,
         seek: Option<(GetPosFn, SetPosFn)>,
@@ -984,7 +983,7 @@ pub(crate) struct PortInfo {
 
 /// Mutable data contained in the port.
 pub(crate) struct PortData {
-    port: Option<Box<dyn Any + Send + 'static>>,
+    port: Option<Box<dyn Any + Send + Sync + 'static>>,
     input_pos: usize,
     bytes_read: usize,
     input_buffer: ByteVector,
@@ -1456,8 +1455,8 @@ impl PortData {
     }
 }
 
-pub trait IntoPort: Any + Send + 'static + Sized {
-    fn into_port(self) -> Box<dyn Any + Send + 'static> {
+pub trait IntoPort: Any + Send + Sync + 'static + Sized {
+    fn into_port(self) -> Box<dyn Any + Send + Sync + 'static> {
         Box::new(self)
     }
 
@@ -1512,7 +1511,7 @@ impl Port {
     #[allow(clippy::too_many_arguments)]
     fn new_with_fns<D>(
         id: D,
-        port: Box<dyn Any + Send + 'static>,
+        port: Box<dyn Any + Send + Sync + 'static>,
         read: Option<ReadFn>,
         write: Option<WriteFn>,
         seek: Option<(GetPosFn, SetPosFn)>,
