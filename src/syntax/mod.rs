@@ -332,7 +332,12 @@ impl Syntax {
 
         let file_name = file_name.unwrap_or("<unknown>");
         let bytes = Cursor::new(s.as_bytes().to_vec());
-        let port = Port::new(bytes, BufferMode::Block, Some(Transcoder::native()));
+        let port = Port::new(
+            file_name,
+            bytes,
+            BufferMode::Block,
+            Some(Transcoder::native()),
+        );
         port.all_sexprs(Span::new(file_name))
     }
 
@@ -344,9 +349,16 @@ impl Syntax {
         let bytes = Cursor::new(s.as_bytes().to_vec());
 
         // This is kind of convoluted, but convenient
-        let port =
-            Arc::into_inner(Port::new(bytes, BufferMode::Block, Some(Transcoder::native())).0)
-                .unwrap();
+        let port = Arc::into_inner(
+            Port::new(
+                file_name,
+                bytes,
+                BufferMode::Block,
+                Some(Transcoder::native()),
+            )
+            .0,
+        )
+        .unwrap();
         let info = port.info;
         let mut data = port.data.into_inner();
 
@@ -355,7 +367,7 @@ impl Syntax {
         futures::executor::block_on(async move {
             use crate::syntax::parse::Parser;
 
-            let mut parser = Parser::new(&mut data, info, Span::new(file_name));
+            let mut parser = Parser::new(&mut data, &info, Span::new(file_name));
             parser.all_sexprs().await
         })
     }
