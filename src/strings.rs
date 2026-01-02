@@ -13,7 +13,7 @@ use crate::{
 
 #[repr(align(16))]
 pub(crate) struct WideStringInner {
-    chars: RwLock<Vec<char>>,
+    pub(crate) chars: RwLock<Vec<char>>,
     mutable: bool,
 }
 
@@ -26,6 +26,18 @@ pub struct WideString(pub(crate) Arc<WideStringInner>);
 impl WideString {
     pub fn new(s: impl fmt::Display) -> Self {
         Self::from(s.to_string())
+    }
+
+    pub fn clear(&self) {
+        self.0.chars.write().clear()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.chars.read().len()
+    }
+
+    pub fn get(&self, idx: usize) -> Option<char> {
+        self.0.chars.read().get(idx).copied()
     }
 }
 
