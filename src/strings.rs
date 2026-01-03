@@ -36,6 +36,10 @@ impl WideString {
         self.0.chars.read().len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.0.chars.read().is_empty()
+    }
+
     pub fn get(&self, idx: usize) -> Option<char> {
         self.0.chars.read().get(idx).copied()
     }

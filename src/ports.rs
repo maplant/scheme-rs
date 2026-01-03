@@ -473,13 +473,15 @@ mod __impl {
 
     use super::*;
 
-    pub(super) type ReadFn =
-        Box<dyn Fn(&mut dyn Any, &ByteVector, usize, usize) -> Result<usize, Condition>>;
+    pub(super) type ReadFn = Box<
+        dyn Fn(&mut dyn Any, &ByteVector, usize, usize) -> Result<usize, Condition> + Send + Sync,
+    >;
     pub(super) type WriteFn =
-        Box<dyn Fn(&mut dyn Any, &ByteVector, usize, usize) -> Result<(), Condition>>;
-    pub(super) type GetPosFn = Box<dyn Fn(&mut dyn Any) -> Result<u64, Condition>>;
-    pub(super) type SetPosFn = Box<dyn Fn(&mut dyn Any, u64) -> Result<(), Condition>>;
-    pub(super) type CloseFn = Box<dyn Fn(&mut dyn Any) -> Result<(), Condition>>;
+        Box<dyn Fn(&mut dyn Any, &ByteVector, usize, usize) -> Result<(), Condition> + Send + Sync>;
+    pub(super) type GetPosFn = Box<dyn Fn(&mut dyn Any) -> Result<u64, Condition> + Send + Sync>;
+    pub(super) type SetPosFn =
+        Box<dyn Fn(&mut dyn Any, u64) -> Result<(), Condition> + Send + Sync>;
+    pub(super) type CloseFn = Box<dyn Fn(&mut dyn Any) -> Result<(), Condition> + Send + Sync>;
 
     pub(super) fn read_fn<T>() -> ReadFn
     where
@@ -1472,6 +1474,7 @@ pub(crate) struct CustomTextualPortInfo {
     read: Option<Procedure>,
     write: Option<Procedure>,
     seek: Option<(Procedure, Procedure)>,
+    #[expect(unused)]
     close: Option<Procedure>,
     buffer_mode: BufferMode,
 }
@@ -1640,15 +1643,18 @@ impl CustomTextualPortData {
 
 pub(crate) enum PortInfo {
     BinaryPort(BinaryPortInfo),
+    #[expect(unused)]
     CustomTextualPort(CustomTextualPortInfo),
 }
 
 pub(crate) enum PortData {
     BinaryPort(BinaryPortData),
+    #[expect(unused)]
     CustomTextualPort(CustomTextualPortData),
 }
 
 impl PortData {
+    #[allow(dead_code)]
     #[maybe_async]
     fn read_byte(&mut self, port_info: &PortInfo) -> Result<Option<u8>, Condition> {
         match (self, port_info) {
@@ -1907,11 +1913,12 @@ impl Port {
         )))
     }
 
-    /*
     pub fn id(&self) -> &str {
-        &self.0.info.id
+        match &self.0.info {
+            PortInfo::BinaryPort(BinaryPortInfo { id, .. }) => id.as_str(),
+            PortInfo::CustomTextualPort(CustomTextualPortInfo { id, .. }) => id.as_str(),
+        }
     }
-     */
 
     pub fn transcoder(&self) -> Option<Transcoder> {
         match self.0.info {
