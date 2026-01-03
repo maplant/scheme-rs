@@ -198,7 +198,7 @@ pub enum BufferMode {
 }
 
 impl BufferMode {
-    fn new_input_buffer(&self, text: bool, is_input_port: bool) -> ByteVector {
+    fn new_input_byte_buffer(&self, text: bool, is_input_port: bool) -> ByteVector {
         if !is_input_port {
             return ByteVector::new(Vec::new());
         }
@@ -209,13 +209,33 @@ impl BufferMode {
         }
     }
 
-    fn new_output_buffer(&self, is_output_port: bool) -> ByteVector {
+    fn new_input_char_buffer(&self, is_input_port: bool) -> WideString {
+        if !is_input_port {
+            return WideString::from(Vec::new());
+        }
+        match self {
+            Self::None => WideString::from(vec!['\0']),
+            Self::Line | Self::Block => WideString::from(vec!['\0'; BUFFER_SIZE]),
+        }
+    }
+
+    fn new_output_byte_buffer(&self, is_output_port: bool) -> ByteVector {
         if !is_output_port {
             return ByteVector::new(Vec::new());
         }
         match self {
             Self::None => ByteVector::new(Vec::new()),
             Self::Line | Self::Block => ByteVector::new(Vec::with_capacity(BUFFER_SIZE)),
+        }
+    }
+
+    fn new_output_char_buffer(&self, is_output_port: bool) -> WideString {
+        if !is_output_port {
+            return WideString::from(Vec::new());
+        }
+        match self {
+            Self::None => WideString::from(Vec::new()),
+            Self::Line | Self::Block => WideString::from(Vec::with_capacity(BUFFER_SIZE)),
         }
     }
 
@@ -935,8 +955,8 @@ impl PortInner {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn new_with_fns<D>(
-        id: D,
+    fn new_with_fns(
+        id: impl fmt::Display,
         port: PortBox,
         read: Option<ReadFn>,
         write: Option<WriteFn>,
@@ -944,10 +964,7 @@ impl PortInner {
         close: Option<CloseFn>,
         buffer_mode: BufferMode,
         transcoder: Option<Transcoder>,
-    ) -> Self
-    where
-        D: fmt::Display,
-    {
+    ) -> Self {
         let is_read = read.is_some();
         let is_write = write.is_some();
 
@@ -965,9 +982,39 @@ impl PortInner {
                 port: Some(port),
                 input_pos: 0,
                 bytes_read: 0,
-                input_buffer: buffer_mode.new_input_buffer(transcoder.is_some(), is_read),
-                output_buffer: buffer_mode.new_output_buffer(is_write),
+                input_buffer: buffer_mode.new_input_byte_buffer(transcoder.is_some(), is_read),
+                output_buffer: buffer_mode.new_output_byte_buffer(is_write),
                 utf16_endianness: None,
+            })),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_custom_textual(
+        id: impl fmt::Display,
+        read: Option<Procedure>,
+        write: Option<Procedure>,
+        seek: Option<(Procedure, Procedure)>,
+        close: Option<Procedure>,
+        buffer_mode: BufferMode,
+    ) -> Self {
+        let is_read = read.is_some();
+        let is_write = write.is_some();
+
+        Self {
+            info: PortInfo::CustomTextualPort(CustomTextualPortInfo {
+                id: id.to_string(),
+                read,
+                write,
+                seek,
+                close,
+                buffer_mode,
+            }),
+            data: Mutex::new(PortData::CustomTextualPort(CustomTextualPortData {
+                input_pos: 0,
+                chars_read: 0,
+                input_buffer: buffer_mode.new_input_char_buffer(is_read),
+                output_buffer: buffer_mode.new_output_char_buffer(is_write),
             })),
         }
     }
@@ -1643,13 +1690,11 @@ impl CustomTextualPortData {
 
 pub(crate) enum PortInfo {
     BinaryPort(BinaryPortInfo),
-    #[expect(unused)]
     CustomTextualPort(CustomTextualPortInfo),
 }
 
 pub(crate) enum PortData {
     BinaryPort(BinaryPortData),
-    #[expect(unused)]
     CustomTextualPort(CustomTextualPortData),
 }
 
@@ -1888,8 +1933,8 @@ impl Port {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn new_with_fns<D>(
-        id: D,
+    fn new_with_fns(
+        id: impl fmt::Display,
         port: PortBox,
         read: Option<ReadFn>,
         write: Option<WriteFn>,
@@ -1897,10 +1942,7 @@ impl Port {
         close: Option<CloseFn>,
         buffer_mode: BufferMode,
         transcoder: Option<Transcoder>,
-    ) -> Self
-    where
-        D: fmt::Display,
-    {
+    ) -> Self {
         Self(Arc::new(PortInner::new_with_fns(
             id,
             port,
@@ -1910,6 +1952,25 @@ impl Port {
             close,
             buffer_mode,
             transcoder,
+        )))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_custom_textual(
+        id: impl fmt::Display,
+        read: Option<Procedure>,
+        write: Option<Procedure>,
+        seek: Option<(Procedure, Procedure)>,
+        close: Option<Procedure>,
+        buffer_mode: BufferMode,
+    ) -> Self {
+        Self(Arc::new(PortInner::new_custom_textual(
+            id,
+            read,
+            write,
+            seek,
+            close,
+            buffer_mode,
         )))
     }
 
@@ -2821,6 +2882,43 @@ pub fn make_custom_binary_input_port(
         close,
         BufferMode::Block,
         None,
+    );
+
+    Ok(vec![Value::from(port)])
+}
+
+#[bridge(name = "make-custom-textual-input-port", lib = "(rnrs io ports (6))")]
+pub fn make_custom_textual_input_port(
+    id: &Value,
+    read: &Value,
+    get_position: &Value,
+    set_position: &Value,
+    close: &Value,
+) -> Result<Vec<Value>, Condition> {
+    let read: Procedure = read.clone().try_into()?;
+
+    let seek = if get_position.is_true() && set_position.is_true() {
+        let get_pos: Procedure = get_position.clone().try_into()?;
+        let set_pos: Procedure = set_position.clone().try_into()?;
+        Some((get_pos, set_pos))
+    } else {
+        None
+    };
+
+    let close = if close.is_true() {
+        let close: Procedure = close.clone().try_into()?;
+        Some(close)
+    } else {
+        None
+    };
+
+    let port = Port::new_custom_textual(
+        id.to_string(),
+        Some(read),
+        None,
+        seek,
+        close,
+        BufferMode::Block,
     );
 
     Ok(vec![Value::from(port)])

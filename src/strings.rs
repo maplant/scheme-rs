@@ -45,6 +45,15 @@ impl WideString {
     }
 }
 
+impl From<Vec<char>> for WideString {
+    fn from(value: Vec<char>) -> Self {
+        Self(Arc::new(WideStringInner {
+            chars: RwLock::new(value),
+            mutable: false,
+        }))
+    }
+}
+
 impl From<String> for WideString {
     fn from(value: String) -> Self {
         Self(Arc::new(WideStringInner {
