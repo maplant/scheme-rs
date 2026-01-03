@@ -1,5 +1,4 @@
 //! Procedures, continuation and user, and applying values to those procedures.
-//! Contains the main evaluation trampoline.
 
 use crate::{
     env::Local,
@@ -379,7 +378,7 @@ impl Procedure {
 
     /// # Safety
     /// `args` must be a valid pointer and contain num_required_args + variadic entries.
-    pub unsafe fn collect_args(&self, args: *const Value) -> Vec<Value> {
+    unsafe fn collect_args(&self, args: *const Value) -> Vec<Value> {
         // I don't really like this, but what are you gonna do?
         let (num_required_args, variadic) = self.get_formals();
 
@@ -403,6 +402,7 @@ impl Procedure {
         self.0.is_variable_transformer
     }
 
+    /// Applies `args` to the procedure and returns the values it evaluates to.
     #[maybe_async]
     pub fn call(&self, args: &[Value]) -> Result<Vec<Value>, Exception> {
         let mut args = args.to_vec();

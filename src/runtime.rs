@@ -1,3 +1,5 @@
+//! scheme-rs runtime.
+
 use crate::{
     ast::DefinitionBody,
     cps::{Compile, Cps, codegen::RuntimeFunctionsBuilder},

@@ -1,4 +1,4 @@
-//! Garbage-Collected smart pointers with interior mutability.
+//! Garbage collected smart pointers.
 //!
 //! `Gc<T>` is conceptually similar to `Arc<T>`, but garbage collection occurs
 //! concurrently at a fixed cadence or whenever a threshold of memory has been
@@ -31,7 +31,8 @@ use std::{
 
 use crate::gc::collection::{GcHeader, alloc_gc_object};
 
-/// A Garbage-Collected smart pointer with interior mutability.
+/// A heap allocated garbage collected smart pointer. Gc requires that `T`
+/// implements the [`Trace`] trait to properly track references.
 pub struct Gc<T: ?Sized> {
     pub(crate) ptr: NonNull<GcInner<T>>,
     pub(crate) marker: PhantomData<GcInner<T>>,
@@ -39,12 +40,13 @@ pub struct Gc<T: ?Sized> {
 
 #[allow(private_bounds)]
 impl<T: GcOrTrace + 'static> Gc<T> {
+    /// Allocate a new object on the heap.
     pub fn new(data: T) -> Gc<T> {
         alloc_gc_object(data)
     }
 
     /// Convert a `Gc<T>` into a `Gc<dyn Any>`. This is a separate function
-    /// since [CoerceUnsized] is unstable.
+    /// since [`CoerceUnsized`](std::ops::CoerceUnsized) is unstable.
     pub fn into_any(this: Self) -> Gc<dyn Any> {
         let this = ManuallyDrop::new(this);
         let any: NonNull<GcInner<dyn Any>> = this.ptr;
@@ -60,6 +62,7 @@ impl<T: ?Sized> Gc<T> {
     ///
     /// This function is not safe and basically useless for anything outside of
     /// the Trace proc macro's generated code.
+    #[doc(hidden)]
     pub unsafe fn as_opaque(&self) -> OpaqueGcPtr {
         unsafe {
             OpaqueGcPtr {
@@ -260,7 +263,8 @@ unsafe impl<T: ?Sized + Sync> Sync for GcInner<T> {}
 ///
 /// # Safety
 ///
-/// This trait should _not_ be manually implemented!
+/// This trait should _not_ be manually implemented! Instead, use the `Trace`
+/// derive macro.
 pub unsafe trait Trace: 'static {
     /// # Safety
     ///

@@ -1,3 +1,5 @@
+//! Growable mutable vectors.
+
 use crate::{
     exceptions::Condition,
     gc::{Gc, Trace},
