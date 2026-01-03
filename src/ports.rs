@@ -974,7 +974,7 @@ impl PortInner {
 }
 
 #[cfg(not(feature = "async"))]
-type PortBox = Box<dyn Any + 'static>;
+type PortBox = Box<dyn Any + Send + 'static>;
 
 #[cfg(feature = "async")]
 type PortBox = Box<dyn Any + Send + Sync + 'static>;
@@ -1822,14 +1822,14 @@ impl PortData {
 
 #[cfg(not(feature = "async"))]
 #[doc(hidden)]
-pub trait IntoPortReqs: Sized + 'static {}
+pub trait IntoPortReqs: Send + Sized + 'static {}
 
 #[cfg(feature = "async")]
 #[doc(hidden)]
 pub trait IntoPortReqs: Send + Sync + Sized + 'static {}
 
 #[cfg(not(feature = "async"))]
-impl<T> IntoPortReqs for T where T: Sized + 'static {}
+impl<T> IntoPortReqs for T where T: Send + Sized + 'static {}
 
 #[cfg(feature = "async")]
 impl<T> IntoPortReqs for T where T: Send + Sync + Sized + 'static {}

@@ -42,12 +42,15 @@ impl<T: GcOrTrace + 'static> Gc<T> {
     pub fn new(data: T) -> Gc<T> {
         alloc_gc_object(data)
     }
+}
 
+#[allow(private_bounds)]
+impl<T: GcOrTrace + Send + Sync + 'static> Gc<T> {
     /// Convert a `Gc<T>` into a `Gc<dyn Any>`. This is a separate function
     /// since [CoerceUnsized] is unstable.
-    pub fn into_any(this: Self) -> Gc<dyn Any> {
+    pub fn into_any(this: Self) -> Gc<dyn Any + Send + Sync> {
         let this = ManuallyDrop::new(this);
-        let any: NonNull<GcInner<dyn Any>> = this.ptr;
+        let any: NonNull<GcInner<dyn Any + Send + Sync>> = this.ptr;
         Gc {
             ptr: any,
             marker: PhantomData,
@@ -137,8 +140,8 @@ impl<T: ?Sized> Gc<T> {
     }
 }
 
-impl Gc<dyn Any> {
-    pub fn downcast<T: Any>(self) -> Result<Gc<T>, Self> {
+impl Gc<dyn Any + Send + Sync> {
+    pub fn downcast<T: Any + Send + Sync>(self) -> Result<Gc<T>, Self> {
         if self.as_ref().is::<T>() {
             let this = ManuallyDrop::new(self);
             let ptr = this.ptr.as_ptr() as *mut GcInner<T>;

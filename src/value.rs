@@ -108,13 +108,12 @@ impl Value {
         this.0
     }
 
-    fn from_ptr_and_tag<T>(ptr: *const T, tag: Tag) -> Self {
+    fn from_ptr_and_tag<T: Send + Sync>(ptr: *const T, tag: Tag) -> Self {
         Self(ptr.map_addr(|raw| raw | tag as usize) as *const ())
     }
 
-    fn from_mut_ptr_and_tag<T>(ptr: *mut T, tag: Tag) -> Self {
+    fn from_mut_ptr_and_tag<T: Send + Sync>(ptr: *mut T, tag: Tag) -> Self {
         Self(ptr.map_addr(|raw| raw | tag as usize) as *const ())
-        // Self(ptr as u64 | tag as u64)
     }
 
     pub fn undefined() -> Self {

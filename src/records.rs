@@ -612,7 +612,7 @@ impl Record {
         let t = ManuallyDrop::new(t);
 
         // Second, convert the opaque_parent type into a Gc<dyn Any>
-        let any: NonNull<GcInner<dyn Any>> = t.ptr;
+        let any: NonNull<GcInner<dyn Any + Send + Sync>> = t.ptr;
         let gc_any = Gc {
             ptr: any,
             marker: std::marker::PhantomData,
@@ -671,7 +671,7 @@ impl fmt::Debug for RecordInner {
 }
 
 /// A Rust value that can present itself as a Scheme record.
-pub trait SchemeCompatible: fmt::Debug + Trace + Any {
+pub trait SchemeCompatible: fmt::Debug + Trace + Any + Send + Sync + 'static {
     /// The Record Type Descriptor of the value. Can be constructed at runtime,
     /// but cannot change.
     fn rtd() -> Arc<RecordTypeDescriptor>
