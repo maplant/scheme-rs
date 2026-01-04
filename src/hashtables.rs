@@ -15,7 +15,7 @@ use crate::{
     registry::bridge,
     strings::WideString,
     symbols::Symbol,
-    value::{UnpackedValue, Value, ValueType},
+    value::{Expect1, UnpackedValue, Value, ValueType},
 };
 
 #[derive(Clone, Trace)]
@@ -55,22 +55,22 @@ impl HashTableInner {
 
     #[cfg(not(feature = "async"))]
     pub fn hash(&self, val: Value) -> Result<u64, Condition> {
-        self.hash.call(&[val])?[0].clone().try_into()
+        self.hash.call(&[val])?.expect1()
     }
 
     #[cfg(feature = "async")]
     pub fn hash(&self, val: Value) -> Result<u64, Condition> {
-        self.hash.call_sync(&[val])?[0].clone().try_into()
+        self.hash.call_sync(&[val])?.expect1()
     }
 
     #[cfg(not(feature = "async"))]
     pub fn eq(&self, lhs: Value, rhs: Value) -> Result<bool, Condition> {
-        Ok(self.eq.call(&[lhs, rhs])?[0].clone().is_true())
+        self.eq.call(&[lhs, rhs])?.expect1()
     }
 
     #[cfg(feature = "async")]
     pub fn eq(&self, lhs: Value, rhs: Value) -> Result<bool, Condition> {
-        Ok(self.eq.call_sync(&[lhs, rhs])?[0].clone().is_true())
+        self.eq.call_sync(&[lhs, rhs])?.expect1()
     }
 
     /// Equivalent to `hashtable-ref`

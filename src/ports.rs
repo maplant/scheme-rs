@@ -25,7 +25,7 @@ use crate::{
         Span, Syntax,
         parse::{ParseSyntaxError, Parser},
     },
-    value::{Value, ValueType},
+    value::{Expect1, Value, ValueType},
     vectors::ByteVector,
 };
 
@@ -578,6 +578,19 @@ mod __impl {
         })
     }
 
+    pub(super) fn proc_to_write_fn(write: Procedure) -> WriteFn {
+        Box::new(move |_, buff, start, count| {
+            let _ = write
+                .call(&[
+                    Value::from(buff.clone()),
+                    Value::from(start),
+                    Value::from(count),
+                ])
+                .map_err(|err| err.into_inner().add_condition(IoReadError::new()))?;
+            Ok(())
+        })
+    }
+
     pub(super) fn proc_to_get_pos_fn(get_pos: Procedure) -> GetPosFn {
         Box::new(move |_| {
             let [pos] = get_pos
@@ -712,14 +725,13 @@ mod __impl {
     where
         T: AsyncRead + Any + Send + 'static,
     {
-        // let mut local_buff = Vec::with_capacity(1024);
         Box::new(move |any, buff, start, count| {
             Box::pin(async move {
                 let concrete = unsafe { any.downcast_mut::<T>().unwrap_unchecked() };
                 let mut concrete: Pin<&mut T> = pin!(concrete);
                 let mut local_buff = vec![0u8; count];
                 let read = concrete
-                    .read(&mut local_buff) //  buff[start..(start + count)])
+                    .read(&mut local_buff)
                     .await
                     .map_err(|err| Condition::io_read_error(format!("{err:?}")))?;
                 buff.as_mut_slice()[start..(start + count)].copy_from_slice(&local_buff);
@@ -808,6 +820,23 @@ mod __impl {
                     )
                 })?;
                 Ok(read)
+            })
+        })
+    }
+
+    pub(super) fn proc_to_write_fn(write: Procedure) -> WriteFn {
+        Box::new(move |_, buff, start, count| {
+            let write = write.clone();
+            Box::pin(async move {
+                let _ = write
+                    .call(&[
+                        Value::from(buff.clone()),
+                        Value::from(start),
+                        Value::from(count),
+                    ])
+                    .await
+                    .map_err(|err| err.into_inner().add_condition(IoReadError::new()))?;
+                Ok(())
             })
         })
     }
@@ -1011,6 +1040,7 @@ impl PortInner {
                 buffer_mode,
             }),
             data: Mutex::new(PortData::CustomTextualPort(CustomTextualPortData {
+                open: true,
                 input_pos: 0,
                 chars_read: 0,
                 input_buffer: buffer_mode.new_input_char_buffer(is_read),
@@ -1521,13 +1551,13 @@ pub(crate) struct CustomTextualPortInfo {
     read: Option<Procedure>,
     write: Option<Procedure>,
     seek: Option<(Procedure, Procedure)>,
-    #[expect(unused)]
     close: Option<Procedure>,
     buffer_mode: BufferMode,
 }
 
 /// Mutable data contained in a CustomStringPort
 pub(crate) struct CustomTextualPortData {
+    open: bool,
     input_pos: usize,
     chars_read: usize,
     input_buffer: WideString,
@@ -1544,6 +1574,10 @@ impl CustomTextualPortData {
         let Some(read) = port_info.read.as_ref() else {
             return Err(Condition::io_read_error("not an input port"));
         };
+
+        if !self.open {
+            return Err(Condition::io_error("port is closed"));
+        }
 
         if let Some(write) = port_info.write.as_ref()
             && let len = self.output_buffer.len()
@@ -1572,9 +1606,8 @@ impl CustomTextualPortData {
                 Value::from(self.input_buffer.clone()),
                 Value::from(start),
                 Value::from(count)
-            ]))?[0]
-                .clone()
-                .try_into()?;
+            ]))?
+            .expect1()?;
 
             if read == 0 {
                 return Ok(None);
@@ -1619,13 +1652,16 @@ impl CustomTextualPortData {
             return Err(Condition::io_write_error("not an output port"));
         };
 
+        if !self.open {
+            return Err(Condition::io_error("port is closed"));
+        }
+
         // If we can, seek back
         if let Some((get_pos, set_pos)) = port_info.seek.as_ref()
             && self.chars_read > 0
         {
-            let curr_pos: u64 = maybe_await!(get_pos.call(&[]))?[0]
-                .clone()
-                .try_into()
+            let curr_pos: u64 = maybe_await!(get_pos.call(&[]))?
+                .expect1()
                 .map_err(|err: Condition| err.add_condition(IoWriteError::new()))?;
             let seek_to = curr_pos - (self.chars_read as u64 - self.input_pos as u64);
             maybe_await!(set_pos.call(&[Value::from(seek_to)]))?;
@@ -1682,6 +1718,72 @@ impl CustomTextualPortData {
                     self.output_buffer.0.chars.write().push(chr);
                 }
             }
+        }
+
+        Ok(())
+    }
+
+    #[maybe_async]
+    fn flush(&mut self, port_info: &CustomTextualPortInfo) -> Result<(), Condition> {
+        let Some(write) = port_info.write.as_ref() else {
+            return Err(Condition::io_write_error("not an output port"));
+        };
+
+        if !self.open {
+            return Err(Condition::io_error("port is closed"));
+        }
+
+        maybe_await!(write.call(&[
+            Value::from(self.output_buffer.clone()),
+            Value::from(0usize),
+            Value::from(self.output_buffer.len()),
+        ]))?;
+        self.output_buffer.clear();
+
+        Ok(())
+    }
+
+    #[maybe_async]
+    fn get_pos(&mut self, port_info: &CustomTextualPortInfo) -> Result<u64, Condition> {
+        let Some((get_pos, _)) = port_info.seek.as_ref() else {
+            return Err(Condition::io_error("port does not support get-pos"));
+        };
+
+        if !self.open {
+            return Err(Condition::io_error("port is closed"));
+        }
+
+        maybe_await!(get_pos.call(&[]))?.expect1()
+    }
+
+    #[maybe_async]
+    fn set_pos(&mut self, port_info: &CustomTextualPortInfo, pos: u64) -> Result<(), Condition> {
+        let Some((_, set_pos)) = port_info.seek.as_ref() else {
+            return Err(Condition::io_error("port does not support set-pos!"));
+        };
+
+        if !self.open {
+            return Err(Condition::io_error("port is closed"));
+        }
+
+        maybe_await!(set_pos.call(&[Value::from(pos)]))?;
+
+        Ok(())
+    }
+
+    #[maybe_async]
+    fn close(&mut self, port_info: &CustomTextualPortInfo) -> Result<(), Condition> {
+        if !self.open {
+            // TODO: Do we return an error here?
+            return Ok(());
+        }
+
+        self.open = false;
+
+        maybe_await!(self.flush(port_info))?;
+
+        if let Some(close) = port_info.close.as_ref() {
+            maybe_await!(close.call(&[]))?;
         }
 
         Ok(())
@@ -1818,8 +1920,8 @@ impl PortData {
             (Self::BinaryPort(port_data), PortInfo::BinaryPort(port_info)) => {
                 maybe_await!(port_data.flush(port_info))
             }
-            (Self::CustomTextualPort(_port_data), PortInfo::CustomTextualPort(_port_info)) => {
-                todo!()
+            (Self::CustomTextualPort(port_data), PortInfo::CustomTextualPort(port_info)) => {
+                maybe_await!(port_data.flush(port_info))
             }
             _ => unreachable!(),
         }
@@ -1831,8 +1933,8 @@ impl PortData {
             (Self::BinaryPort(port_data), PortInfo::BinaryPort(port_info)) => {
                 maybe_await!(port_data.get_pos(port_info))
             }
-            (Self::CustomTextualPort(_port_data), PortInfo::CustomTextualPort(_port_info)) => {
-                todo!()
+            (Self::CustomTextualPort(port_data), PortInfo::CustomTextualPort(port_info)) => {
+                maybe_await!(port_data.get_pos(port_info))
             }
             _ => unreachable!(),
         }
@@ -1844,8 +1946,8 @@ impl PortData {
             (Self::BinaryPort(port_data), PortInfo::BinaryPort(port_info)) => {
                 maybe_await!(port_data.set_pos(port_info, pos))
             }
-            (Self::CustomTextualPort(_port_data), PortInfo::CustomTextualPort(_port_info)) => {
-                todo!()
+            (Self::CustomTextualPort(port_data), PortInfo::CustomTextualPort(port_info)) => {
+                maybe_await!(port_data.set_pos(port_info, pos))
             }
             _ => unreachable!(),
         }
@@ -1857,8 +1959,8 @@ impl PortData {
             (Self::BinaryPort(port_data), PortInfo::BinaryPort(port_info)) => {
                 maybe_await!(port_data.close(port_info))
             }
-            (Self::CustomTextualPort(_port_data), PortInfo::CustomTextualPort(_port_info)) => {
-                todo!()
+            (Self::CustomTextualPort(port_data), PortInfo::CustomTextualPort(port_info)) => {
+                maybe_await!(port_data.close(port_info))
             }
             _ => unreachable!(),
         }
@@ -3089,6 +3191,82 @@ pub fn open_file_output_port(
     ))?)])
 }
 
+#[bridge(name = "make-custom-binary-output-port", lib = "(rnrs io ports (6))")]
+pub fn make_custom_binary_output_port(
+    id: &Value,
+    write: &Value,
+    get_position: &Value,
+    set_position: &Value,
+    close: &Value,
+) -> Result<Vec<Value>, Condition> {
+    let write: Procedure = write.clone().try_into()?;
+
+    let seek = if get_position.is_true() && set_position.is_true() {
+        let get_pos: Procedure = get_position.clone().try_into()?;
+        let set_pos: Procedure = set_position.clone().try_into()?;
+        Some((proc_to_get_pos_fn(get_pos), proc_to_set_pos_fn(set_pos)))
+    } else {
+        None
+    };
+
+    let close = if close.is_true() {
+        let close: Procedure = close.clone().try_into()?;
+        Some(proc_to_close_fn(close))
+    } else {
+        None
+    };
+
+    let port = Port::new_with_fns(
+        id.to_string(),
+        Box::new(()),
+        None,
+        Some(proc_to_write_fn(write)),
+        seek,
+        close,
+        BufferMode::Block,
+        None,
+    );
+
+    Ok(vec![Value::from(port)])
+}
+
+#[bridge(name = "make-custom-textual-output-port", lib = "(rnrs io ports (6))")]
+pub fn make_custom_textual_output_port(
+    id: &Value,
+    write: &Value,
+    get_position: &Value,
+    set_position: &Value,
+    close: &Value,
+) -> Result<Vec<Value>, Condition> {
+    let write: Procedure = write.clone().try_into()?;
+
+    let seek = if get_position.is_true() && set_position.is_true() {
+        let get_pos: Procedure = get_position.clone().try_into()?;
+        let set_pos: Procedure = set_position.clone().try_into()?;
+        Some((get_pos, set_pos))
+    } else {
+        None
+    };
+
+    let close = if close.is_true() {
+        let close: Procedure = close.clone().try_into()?;
+        Some(close)
+    } else {
+        None
+    };
+
+    let port = Port::new_custom_textual(
+        id.to_string(),
+        None,
+        Some(write),
+        seek,
+        close,
+        BufferMode::Block,
+    );
+
+    Ok(vec![Value::from(port)])
+}
+
 // 8.2.11. Binary output
 
 #[maybe_async]
@@ -3133,4 +3311,90 @@ pub fn open_file_input_output_port(
         rest_args,
         PortKind::ReadWrite
     ))?)])
+}
+
+#[bridge(
+    name = "make-custom-binary-input/output-port",
+    lib = "(rnrs io ports (6))"
+)]
+pub fn make_custom_binary_input_output_port(
+    id: &Value,
+    read: &Value,
+    write: &Value,
+    get_position: &Value,
+    set_position: &Value,
+    close: &Value,
+) -> Result<Vec<Value>, Condition> {
+    let read: Procedure = read.clone().try_into()?;
+    let write: Procedure = write.clone().try_into()?;
+
+    let seek = if get_position.is_true() && set_position.is_true() {
+        let get_pos: Procedure = get_position.clone().try_into()?;
+        let set_pos: Procedure = set_position.clone().try_into()?;
+        Some((proc_to_get_pos_fn(get_pos), proc_to_set_pos_fn(set_pos)))
+    } else {
+        None
+    };
+
+    let close = if close.is_true() {
+        let close: Procedure = close.clone().try_into()?;
+        Some(proc_to_close_fn(close))
+    } else {
+        None
+    };
+
+    let port = Port::new_with_fns(
+        id.to_string(),
+        Box::new(()),
+        Some(proc_to_read_fn(read)),
+        Some(proc_to_write_fn(write)),
+        seek,
+        close,
+        BufferMode::Block,
+        None,
+    );
+
+    Ok(vec![Value::from(port)])
+}
+
+#[bridge(
+    name = "make-custom-textual-input/output-port",
+    lib = "(rnrs io ports (6))"
+)]
+pub fn make_custom_textual_input_output_port(
+    id: &Value,
+    read: &Value,
+    write: &Value,
+    get_position: &Value,
+    set_position: &Value,
+    close: &Value,
+) -> Result<Vec<Value>, Condition> {
+    let read: Procedure = read.clone().try_into()?;
+    let write: Procedure = write.clone().try_into()?;
+
+    let seek = if get_position.is_true() && set_position.is_true() {
+        let get_pos: Procedure = get_position.clone().try_into()?;
+        let set_pos: Procedure = set_position.clone().try_into()?;
+        Some((get_pos, set_pos))
+    } else {
+        None
+    };
+
+    let close = if close.is_true() {
+        let close: Procedure = close.clone().try_into()?;
+        Some(close)
+    } else {
+        None
+    };
+
+    let port = Port::new_custom_textual(
+        id.to_string(),
+        Some(read),
+        Some(write),
+        seek,
+        close,
+        BufferMode::Block,
+    );
+
+    Ok(vec![Value::from(port)])
 }

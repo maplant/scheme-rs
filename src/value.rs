@@ -903,7 +903,26 @@ impl TryFrom<Value> for Cell {
     }
 }
 
-impl_try_from_value_for!(bool, Boolean, "bool");
+impl From<Value> for bool {
+    fn from(value: Value) -> Self {
+        value.is_true()
+    }
+}
+
+impl From<bool> for UnpackedValue {
+    fn from(value: bool) -> Self {
+        Self::Boolean(value)
+    }
+}
+
+impl From<bool> for Value {
+    fn from(value: bool) -> Self {
+        UnpackedValue::from(value).into_value()
+    }
+}
+
+// impl_try_from_value_for!(bool, Boolean, "bool");
+
 impl_try_from_value_for!(char, Character, "char");
 impl_try_from_value_for!(Arc<Number>, Number, "number");
 impl_try_from_value_for!(WideString, String, "string");
@@ -1011,6 +1030,38 @@ impl TryFrom<Value> for String {
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         let string: WideString = value.try_into()?;
         Ok(string.into())
+    }
+}
+
+/// Trait for converting vecs of values into arrays
+pub trait ExpectN<T> {
+    fn expect_n<const N: usize>(self) -> Result<T, Condition>;
+}
+
+impl<T> ExpectN<T> for Vec<Value>
+where
+    T: TryFrom<Value>,
+{
+    fn expect_n<const N: usize>(self) -> Result<T, Condition> {
+        todo!()
+    }
+}
+
+/// Trait for converting vecs of values into one type
+pub trait Expect1<T> {
+    fn expect1(self) -> Result<T, Condition>;
+}
+
+impl<T> Expect1<T> for Vec<Value>
+where
+    Value: TryInto<T>,
+    Condition: From<<Value as TryInto<T>>::Error>,
+{
+    fn expect1(self) -> Result<T, Condition> {
+        let [val] = self
+            .try_into()
+            .map_err(|_| Condition::error("wrong number of values"))?;
+        val.try_into().map_err(Condition::from)
     }
 }
 

@@ -18,7 +18,7 @@ use crate::{
 
 pub use scheme_rs_macros::define_condition_type;
 
-use std::{error::Error as StdError, fmt, ops::Range, sync::Arc};
+use std::{convert::Infallible, error::Error as StdError, fmt, ops::Range, sync::Arc};
 
 #[derive(Clone, Trace)]
 pub struct Exception {
@@ -266,6 +266,12 @@ impl From<Warning> for Condition {
 impl From<Serious> for Condition {
     fn from(serious: Serious) -> Self {
         Self(Value::from(Record::from_rust_type(serious)))
+    }
+}
+
+impl From<Infallible> for Condition {
+    fn from(infallible: Infallible) -> Self {
+        match infallible {}
     }
 }
 
