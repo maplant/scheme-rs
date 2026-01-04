@@ -113,6 +113,7 @@ pub enum SpecialKeyword {
     Import,
 }
 
+#[derive(Debug)]
 pub struct LibrarySpec {
     pub(crate) name: LibraryName,
     pub(crate) exports: ExportSpec,
@@ -410,6 +411,7 @@ impl SubVersionReference {
     }
 }
 
+#[derive(Debug)]
 pub enum ExportSet {
     Internal {
         rename: Option<Identifier>,
@@ -462,7 +464,7 @@ impl ExportSet {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct ExportSpec {
     pub(crate) export_sets: Vec<ExportSet>,
 }
@@ -496,7 +498,7 @@ impl ExportSpec {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct ImportSpec {
     pub(crate) import_sets: Vec<ImportSet>,
 }

@@ -1,7 +1,7 @@
 (library (rnrs base (6))
   (export syntax-rules with-syntax cond case let* letrec letrec* values
           let-values let*-values when unless do case-lambda member memv
-          memq caar cadr memp call/cc for-each
+          memq caar cadr memp call/cc for-each string-for-each vector-for-each
           append make-list list-copy list-tail list-ref assoc map reverse
           positive? negative? abs min max quasiquote identifier-syntax
           (import (rnrs base builtins (6))
@@ -312,26 +312,34 @@
   ;; call/cc is an alias of call-with-current-continuation
   (define call/cc call-with-current-continuation)
 
-  #|
-  ;; Define call/cc and call-with-current-continuation in terms of its primitive
-  (define (call/cc x)
-    ($call/cc x));
-
-  (define (call-with-current-continuation x)
-  ($call/cc x))
-  |#
-
   ;; TODO: a lot of these should be made into rust functions, as of right now
   ;; these are quite slow.
 
-  (define (for-each func lst . remaining)
-    (let loop ((rest lst))
+  (define (for-each proc list1 . listn)
+    (let loop ((rest list1))
       (unless (null? rest)
-        (func (car rest))
+        (proc (car rest))
         (loop (cdr rest))))
-    (if (not (null? remaining))
-        (begin
-          (apply for-each (cons func remaining)))))
+    (unless (null? listn)
+      (apply for-each (cons proc listn))))
+
+  (define (string-for-each proc str1 . strn)
+    (let loop ([i 0]
+               [len (string-length str1)])
+      (when (< i len)
+        (proc (string-ref str1 i))
+        (loop (+ i 1) len)))
+    (unless (null? strn)
+      (apply string-for-each (cons proc strn))))
+
+  (define (vector-for-each proc vector1 . vectorn)
+    (let loop ([i 0]
+               [len (vector-length vector1)])
+      (when (< i len)
+        (proc (vector-ref vector1 i))
+        (loop (+ i 1) len)))
+    (unless (null? vectorn)
+      (apply vector-for-each (cons proc vectorn))))
 
   (define (make-list n)
     (if (> n 0)

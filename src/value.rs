@@ -1035,15 +1035,27 @@ impl TryFrom<Value> for String {
 
 /// Trait for converting vecs of values into arrays
 pub trait ExpectN<T> {
-    fn expect_n<const N: usize>(self) -> Result<T, Condition>;
+    fn expect_n<const N: usize>(self) -> Result<[T; N], Condition>;
 }
 
 impl<T> ExpectN<T> for Vec<Value>
 where
-    T: TryFrom<Value>,
+    Value: TryInto<T>,
+    Condition: From<<Value as TryInto<T>>::Error>,
 {
-    fn expect_n<const N: usize>(self) -> Result<T, Condition> {
-        todo!()
+    fn expect_n<const N: usize>(self) -> Result<[T; N], Condition> {
+        if self.len() != N {
+            return Err(Condition::error("wrong number of values"));
+        }
+        // Safety: we've already determined that self is the correct size, so we
+        // can safely use unwrap_unchecked
+        Ok(unsafe {
+            self.into_iter()
+                .map(Value::try_into)
+                .collect::<Result<Vec<_>, _>>()?
+                .try_into()
+                .unwrap_unchecked()
+        })
     }
 }
 

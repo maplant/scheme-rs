@@ -28,6 +28,15 @@ impl WideString {
         Self::from(s.to_string())
     }
 
+    pub fn new_mutable<V>(value: V) -> Self
+    where
+        Self: From<V>,
+    {
+        let mut this = Self::from(value);
+        Arc::get_mut(&mut this.0).unwrap().mutable = true;
+        this
+    }
+
     pub fn clear(&self) {
         self.0.chars.write().clear()
     }
@@ -145,6 +154,12 @@ pub fn string(char: &Value, chars: &[Value]) -> Result<Vec<Value>, Condition> {
         ),
         mutable: true,
     })))])
+}
+
+#[bridge(name = "string-length", lib = "(rnrs base builtins (6))")]
+pub fn string_length(s: &Value) -> Result<Vec<Value>, Condition> {
+    let s: WideString = s.clone().try_into()?;
+    Ok(vec![Value::from(s.len())])
 }
 
 #[bridge(name = "string-ref", lib = "(rnrs base builtins (6))")]
