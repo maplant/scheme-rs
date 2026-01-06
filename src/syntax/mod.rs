@@ -1,6 +1,6 @@
 use crate::{
     ast::Literal,
-    conditions::Condition,
+    conditions::{Condition, SyntaxViolation},
     env::{EnvId, Environment, Keyword},
     gc::Trace,
     lists::list_to_vec_with_null,
@@ -230,7 +230,7 @@ impl Syntax {
     }
 
     #[maybe_async]
-    fn apply_transformer(&self, env: &Environment, mac: Keyword) -> Result<Expansion, Value> {
+    fn apply_transformer(&self, env: &Environment, mac: Keyword) -> Result<Expansion, Condition> {
         // Create a new mark for the expansion context
         let new_mark = Mark::new();
 
@@ -245,7 +245,7 @@ impl Syntax {
         // Output must be syntax:
         let output: Arc<Syntax> = transformer_output
             .first()
-            .ok_or_else(|| Condition::syntax(self.clone(), None))?
+            .ok_or_else(|| Condition::error("syntax transformer produced no output"))?
             .clone()
             .try_into()?;
 
@@ -259,7 +259,7 @@ impl Syntax {
     }
 
     #[cfg(not(feature = "async"))]
-    fn expand_once(&self, env: &Environment) -> Result<Expansion, Value> {
+    fn expand_once(&self, env: &Environment) -> Result<Expansion, Condition> {
         self.expand_once_inner(env)
     }
 
@@ -269,7 +269,7 @@ impl Syntax {
     }
 
     #[maybe_async]
-    fn expand_once_inner(&self, env: &Environment) -> Result<Expansion, Value> {
+    fn expand_once_inner(&self, env: &Environment) -> Result<Expansion, Condition> {
         match self {
             Self::List { list, .. } => {
                 // TODO: If list head is a list, do we expand this in here or in proc call?
@@ -288,7 +288,7 @@ impl Syntax {
                         if let Some(mac) = maybe_await!(env.fetch_keyword(var))? {
                             if !mac.transformer.is_variable_transformer() {
                                 return Err(Condition::error(format!(
-                                    "{} not a variable transformer",
+                                    "{} is not a variable transformer",
                                     var.sym
                                 ))
                                 .into());
@@ -311,16 +311,19 @@ impl Syntax {
 
     /// Fully expand the outermost syntax object.
     #[maybe_async]
-    pub fn expand(mut self, env: &Environment) -> Result<FullyExpanded, Value> {
+    pub fn expand(mut self, env: &Environment) -> Result<FullyExpanded, Condition> {
         let mut curr_env = env.clone();
         loop {
-            match maybe_await!(self.expand_once(&curr_env))? {
-                Expansion::Unexpanded => {
+            match maybe_await!(self.expand_once(&curr_env)) {
+                Ok(Expansion::Unexpanded) => {
                     return Ok(FullyExpanded::new(curr_env, self));
                 }
-                Expansion::Expanded { new_env, syntax } => {
+                Ok(Expansion::Expanded { new_env, syntax }) => {
                     curr_env = new_env;
                     self = syntax;
+                }
+                Err(condition) => {
+                    return Err(condition.add_condition(SyntaxViolation::new(self, None)));
                 }
             }
         }

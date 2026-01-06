@@ -392,7 +392,7 @@ impl Procedure {
 
     /// # Safety
     /// `args` must be a valid pointer and contain num_required_args + variadic entries.
-    pub unsafe fn collect_args(&self, args: *const Value) -> Vec<Value> {
+    pub(crate) unsafe fn collect_args(&self, args: *const Value) -> Vec<Value> {
         // I don't really like this, but what are you gonna do?
         let (num_required_args, variadic) = self.get_formals();
 
@@ -414,6 +414,10 @@ impl Procedure {
 
     pub fn is_variable_transformer(&self) -> bool {
         self.0.is_variable_transformer
+    }
+
+    pub fn is_continuation(&self) -> bool {
+        matches!(self.0.func, FuncPtr::Continuation(_))
     }
 
     #[maybe_async]
@@ -535,6 +539,7 @@ impl Application {
                     return Err(Condition(self.args.pop().unwrap()));
                 }
             };
+            dyn_stack.collect_frame(&op, self.call_site);
             self = maybe_await!(op.0.apply(self.args, dyn_stack));
         }
     }
@@ -550,6 +555,7 @@ impl Application {
                     return Err(Condition(self.args.pop().unwrap()));
                 }
             };
+            dyn_stack.collect_frame(&op, self.call_site);
             self = op.0.apply_sync(self.args, dyn_stack);
         }
     }
@@ -664,16 +670,34 @@ pub fn apply(
 // Dynamic stack
 //
 
-/// A dynamic stack, loosely modeled after Guile's
+/// A dynamic stack, loosely modeled after Guile's. Allows for dynamically
+/// scoped variables, and keeps track of the stack trace of the program.
 #[derive(Clone, Default, Debug, Trace)]
 pub struct DynStack {
     dyn_stack: Vec<DynStackElem>,
+    /// The current stack trace of the program
+    trace: Vec<Option<Frame>>,
 }
 
 impl DynStack {
     // TODO: We should certainly try to optimize these functions. Linear
     // searching isn't _great_, although in practice I can't imagine this stack
     // will ever get very large.
+
+    fn collect_frame(&mut self, op: &Procedure, call_site: Option<Arc<Span>>) {
+        if op.is_continuation() {
+            self.trace.pop();
+        } else if let Some(func_debug_info) = &op.0.debug_info
+            && let Some(call_site) = call_site
+        {
+            self.trace.push(Some(Frame {
+                func_name: func_debug_info.name,
+                call_site,
+            }));
+        } else {
+            self.trace.push(None);
+        }
+    }
 
     pub fn current_exception_handler(&self) -> Option<Procedure> {
         self.dyn_stack.iter().rev().find_map(|elem| match elem {
@@ -784,6 +808,25 @@ pub(crate) unsafe extern "C" fn pop_dyn_stack(
 
         Box::into_raw(Box::new(app))
     }
+}
+
+#[derive(Clone, Debug, Trace)]
+pub(crate) struct Frame {
+    func_name: Symbol,
+    call_site: Arc<Span>,
+}
+
+#[cps_bridge(def = "print-trace", lib = "(rnrs base builtins (6))")]
+pub fn print_trace(
+    _runtime: &Runtime,
+    _env: &[Value],
+    _args: &[Value],
+    _rest_args: &[Value],
+    dyn_stack: &mut DynStack,
+    k: Value,
+) -> Result<Application, Condition> {
+    println!("trace: {:#?}", dyn_stack.trace);
+    Ok(Application::new(k.try_into()?, vec![]))
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1357,6 +1400,7 @@ unsafe extern "C" fn unwind_to_prompt(
                     let prompt_delimited_dyn_stack = DynStack {
                         dyn_stack: saved_dyn_stack.as_ref().dyn_stack[dyn_stack.len() + 1..]
                             .to_vec(),
+                        trace: saved_dyn_stack.trace.clone(),
                     };
                     let (req_args, var) = {
                         let k_proc: Procedure = k.clone().try_into().unwrap();
