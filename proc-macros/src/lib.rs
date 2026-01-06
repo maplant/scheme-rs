@@ -77,7 +77,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 _env: &'a [::scheme_rs::value::Value],
                 args: &'a [::scheme_rs::value::Value],
                 rest_args: &'a [::scheme_rs::value::Value],
-                _dyn_stack: &'a mut ::scheme_rs::proc::DynStack,
+                dyn_stack: &'a mut ::scheme_rs::proc::DynStack,
                 k: ::scheme_rs::value::Value,
             ) -> futures::future::BoxFuture<'a, scheme_rs::proc::Application> {
                 #bridge
@@ -94,6 +94,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                             Err(err) => return ::scheme_rs::conditions::raise(
                                 runtime.clone(),
                                 err.into(),
+                                dyn_stack,
                             ),
                             Ok(result) => result,
                         };
@@ -127,7 +128,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 _env: &[::scheme_rs::value::Value],
                 args: &[::scheme_rs::value::Value],
                 rest_args: &[::scheme_rs::value::Value],
-                _dyn_stack: &mut ::scheme_rs::proc::DynStack,
+                dyn_stack: &mut ::scheme_rs::proc::DynStack,
                 k: ::scheme_rs::value::Value,
             ) -> scheme_rs::proc::Application {
                 #bridge
@@ -143,6 +144,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                     Err(err) => return ::scheme_rs::conditions::raise(
                         runtime.clone(),
                         err.into(),
+                        dyn_stack,
                     ),
                     Ok(result) => result,
                 };
@@ -290,6 +292,7 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                         Err(err) => ::scheme_rs::conditions::raise(
                             runtime.clone(),
                             err.into(),
+                            dyn_stack
                         ),
                     }
                 })
@@ -321,6 +324,7 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                     Err(err) => ::scheme_rs::conditions::raise(
                         runtime.clone(),
                         err.into(),
+                        dyn_stack
                     )
                 }
             }

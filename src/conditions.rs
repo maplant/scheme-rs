@@ -8,7 +8,7 @@ use crate::{
     registry::cps_bridge,
     runtime::{Runtime, RuntimeInner},
     syntax::{Identifier, Syntax, parse::ParseSyntaxError},
-    value::Value,
+    value::{UnpackedValue, Value},
     vectors::Vector,
 };
 use parking_lot::RwLock;
@@ -168,7 +168,7 @@ impl Condition {
     }
 
     pub fn add_condition(self, condition: impl SchemeCompatible) -> Self {
-        let mut conditions = if let Ok(compound) = self.0.try_into_rust_type::<CompoundCondition>()
+        let mut conditions = if let Some(compound) = self.0.cast_to_rust_type::<CompoundCondition>()
         {
             compound.0.clone()
         } else {
@@ -180,6 +180,20 @@ impl Condition {
         Self(Value::from(Record::from_rust_type(CompoundCondition(
             conditions,
         ))))
+    }
+}
+
+impl From<&'_ Value> for Option<Condition> {
+    fn from(value: &'_ Value) -> Self {
+        if let UnpackedValue::Record(record) = &*value.unpacked_ref()
+            && let rtd = record.rtd()
+            && (RecordTypeDescriptor::is_subtype_of(&rtd, &SimpleCondition::rtd())
+                || RecordTypeDescriptor::is_subtype_of(&rtd, &CompoundCondition::rtd()))
+        {
+            Some(Condition(value.clone()))
+        } else {
+            None
+        }
     }
 }
 
@@ -330,8 +344,23 @@ define_condition_type!(
             parent: Gc::new(SimpleCondition::new()),
             trace: trace.clone().try_into()?,
         })
+    },
+    debug: |this, f| {
+        for trace in &*this.trace.0.vec.read() {
+            write!(f, " {trace}")?;
+        }
+        Ok(())
     }
 );
+
+impl StackTrace {
+    pub fn new(trace: Vec<Syntax>) -> Self {
+        Self {
+            parent: Gc::new(SimpleCondition::new()),
+            trace: Vector::from(trace.into_iter().map(Value::from).collect::<Vec<_>>()),
+        }
+    }
+}
 
 define_condition_type!(
     rust_name: Error,
@@ -584,14 +613,20 @@ pub fn raise_builtin(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _dyn_stack: &mut DynStack,
+    dyn_stack: &mut DynStack,
     _k: Value,
 ) -> Result<Application, Condition> {
-    Ok(raise(runtime.clone(), args[0].clone()))
+    Ok(raise(runtime.clone(), args[0].clone(), dyn_stack))
 }
 
 /// Raises a non-continuable exception to the current exception handler.
-pub fn raise(runtime: Runtime, raised: Value) -> Application {
+pub fn raise(runtime: Runtime, raised: Value, dyn_stack: &mut DynStack) -> Application {
+    let raised = if let Some(condition) = raised.cast_to_scheme_type::<Condition>() {
+        Value::from(condition.add_condition(StackTrace::new(dyn_stack.to_stack_trace())))
+    } else {
+        raised
+    };
+
     Application::new(
         Procedure::new(
             runtime,
@@ -608,11 +643,16 @@ pub fn raise(runtime: Runtime, raised: Value) -> Application {
 unsafe extern "C" fn raise_rt(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     raised: *const (),
+    dyn_stack: *mut DynStack,
 ) -> *mut Application {
     unsafe {
         let runtime = Runtime::from_raw_inc_rc(runtime);
         let raised = Value::from_raw(raised);
-        Box::into_raw(Box::new(raise(runtime, raised)))
+        Box::into_raw(Box::new(raise(
+            runtime,
+            raised,
+            dyn_stack.as_mut().unwrap_unchecked(),
+        )))
     }
 }
 

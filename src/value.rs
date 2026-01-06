@@ -154,16 +154,45 @@ impl Value {
         self.unpacked_ref().type_name()
     }
 
-    pub fn try_into_rust_type<T: SchemeCompatible>(&self) -> Result<Gc<T>, Condition> {
+    /// Attempt to cast the value into a Scheme primitive type.
+    pub fn cast_to_scheme_type<T>(&self) -> Option<T>
+    where
+        for<'a> &'a Self: Into<Option<T>>,
+    {
+        self.into()
+    }
+
+    /// Attempt to cast the value into a Scheme primitive type and return a
+    /// descriptive error on failure.
+    pub fn try_to_scheme_type<T>(&self) -> Result<T, Condition>
+    where
+        T: TryFrom<Self, Error = Condition>,
+    {
+        self.clone().try_into()
+    }
+
+    /// Attempt to cast the value into a Rust type that implements
+    /// [`SchemeCompatible`].
+    pub fn cast_to_rust_type<T: SchemeCompatible>(&self) -> Option<Gc<T>> {
+        let UnpackedValue::Record(record) = self.clone().unpack() else {
+            return None;
+        };
+        record.cast::<T>()
+    }
+
+    /// Attempt to cast the value into a Rust type and return a descriptive
+    /// error on failure.
+    pub fn try_to_rust_type<T: SchemeCompatible>(&self) -> Result<Gc<T>, Condition> {
+        let type_name = T::rtd().name.to_str();
         let this = self.clone().unpack();
         let record = match this {
             UnpackedValue::Record(record) => record,
-            e => return Err(Condition::type_error("record-todo", e.type_name())),
+            e => return Err(Condition::type_error(&type_name, e.type_name())),
         };
 
         record
-            .try_into_rust_type::<T>()
-            .ok_or_else(|| Condition::type_error("record-todo", "record"))
+            .cast::<T>()
+            .ok_or_else(|| Condition::type_error(&type_name, &record.rtd().name.to_str()))
     }
 
     pub fn unpack(self) -> UnpackedValue {
@@ -839,6 +868,27 @@ macro_rules! impl_try_from_value_for {
         impl From<$ty> for Value {
             fn from(v: $ty) -> Self {
                 UnpackedValue::from(v).into_value()
+            }
+        }
+
+        impl From<UnpackedValue> for Option<$ty> {
+            fn from(v: UnpackedValue) -> Self {
+                match v {
+                    UnpackedValue::$variant(v) => Some(v),
+                    _ => None,
+                }
+            }
+        }
+
+        impl From<Value> for Option<$ty> {
+            fn from(v: Value) -> Self {
+                v.unpack().into()
+            }
+        }
+
+        impl From<&'_ Value> for Option<$ty> {
+            fn from(v: &Value) -> Self {
+                v.clone().unpack().into()
             }
         }
 

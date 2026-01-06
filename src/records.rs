@@ -272,7 +272,7 @@ pub fn make_record_constructor_descriptor(
         let Some(parent_rtd) = rtd.inherits.last() else {
             return Err(Condition::error("RTD is a base type".to_string()));
         };
-        let parent_rcd = parent_rcd.try_into_rust_type::<RecordConstructorDescriptor>()?;
+        let parent_rcd = parent_rcd.try_to_rust_type::<RecordConstructorDescriptor>()?;
         if !Arc::ptr_eq(&parent_rcd.rtd, parent_rtd) {
             return Err(Condition::error(
                 "Parent RTD does not match parent RCD".to_string(),
@@ -324,7 +324,7 @@ pub fn record_constructor(
     let [rcd] = args else {
         unreachable!();
     };
-    let rcd = rcd.try_into_rust_type::<RecordConstructorDescriptor>()?;
+    let rcd = rcd.try_to_rust_type::<RecordConstructorDescriptor>()?;
 
     let (protocols, rtds) = rcd_to_protocols_and_rtds(&rcd);
 
@@ -575,6 +575,10 @@ pub(crate) unsafe extern "C" fn call_constructor_continuation(
 pub struct Record(pub(crate) Gc<RecordInner>);
 
 impl Record {
+    pub fn rtd(&self) -> Arc<RecordTypeDescriptor> {
+        self.0.rtd.clone()
+    }
+
     /// Convert any Rust type that implements [SchemeCompatible] into an opaque
     /// record.
     pub fn from_rust_type<T: SchemeCompatible>(t: T) -> Self {
@@ -589,7 +593,7 @@ impl Record {
 
     /// Attempt to convert the record into a Rust type that implements
     /// [SchemeCompatible].
-    pub fn try_into_rust_type<T: SchemeCompatible>(&self) -> Option<Gc<T>> {
+    pub fn cast<T: SchemeCompatible>(&self) -> Option<Gc<T>> {
         let opaque_parent = self.0.rust_parent.as_ref()?;
 
         // Attempt to extract any embedded records

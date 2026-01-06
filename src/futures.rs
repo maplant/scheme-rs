@@ -45,12 +45,7 @@ pub async fn spawn(task: &Value) -> Result<Vec<Value>, Condition> {
 
 #[bridge(name = "await", lib = "(tokio)")]
 pub async fn await_future(future: &Value) -> Result<Vec<Value>, Condition> {
-    future
-        .clone()
-        .try_into_rust_type::<Future>()?
-        .as_ref()
-        .clone()
-        .await
+    future.try_to_rust_type::<Future>()?.as_ref().clone().await
 }
 
 impl SchemeCompatible for Arc<TcpListener> {
@@ -85,12 +80,7 @@ impl SchemeCompatible for Arc<Mutex<TcpStream>> {
 
 #[bridge(name = "accept", lib = "(tokio)")]
 pub async fn accept(listener: &Value) -> Result<Vec<Value>, Condition> {
-    let listener = {
-        listener
-            .clone()
-            .try_into_rust_type::<Arc<TcpListener>>()?
-            .clone()
-    };
+    let listener = { listener.try_to_rust_type::<Arc<TcpListener>>()?.clone() };
     let (socket, addr) = listener
         .accept()
         .await
@@ -105,9 +95,7 @@ pub async fn read(socket: &Value, buff_size: &Value) -> Result<Vec<Value>, Condi
     let buff_size: Arc<Number> = buff_size.clone().try_into()?;
     let buff_size: usize = buff_size.as_ref().try_into()?;
     let mut buffer = vec![0u8; buff_size];
-    let socket = socket
-        .clone()
-        .try_into_rust_type::<Arc<Mutex<TcpStream>>>()?;
+    let socket = socket.try_to_rust_type::<Arc<Mutex<TcpStream>>>()?;
 
     let len = socket
         .lock()
@@ -124,12 +112,7 @@ pub async fn read(socket: &Value, buff_size: &Value) -> Result<Vec<Value>, Condi
 #[bridge(name = "write", lib = "(tokio)")]
 pub async fn write(socket: &Value, buffer: &Value) -> Result<Vec<Value>, Condition> {
     let buffer: ByteVector = buffer.clone().try_into()?;
-    let socket = {
-        socket
-            .clone()
-            .try_into_rust_type::<Arc<Mutex<TcpStream>>>()?
-            .clone()
-    };
+    let socket = { socket.try_to_rust_type::<Arc<Mutex<TcpStream>>>()?.clone() };
 
     let buff = buffer.0.vec.read().clone();
 

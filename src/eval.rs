@@ -30,7 +30,7 @@ pub fn eval(
     let [expression, environment] = args else {
         unreachable!()
     };
-    let env = environment.try_into_rust_type::<Environment>()?;
+    let env = environment.try_to_rust_type::<Environment>()?;
     let expr = Syntax::syntax_from_datum(&BTreeSet::default(), expression.clone());
     let ctxt = ParseContext::new(runtime, false);
     let expr = maybe_await!(Expression::parse(&ctxt, expr, &env))?;

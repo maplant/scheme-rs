@@ -342,7 +342,7 @@ impl Registry {
                 let form = Syntax::from_str(contents, Some(&file_name))?;
                 let form = match form.as_list() {
                     Some([form, Syntax::Null { .. }]) => form,
-                    _ => return Err(Condition::error(format!("library is malformed"))),
+                    _ => return Err(Condition::error("library is malformed")),
                 };
                 let spec = LibrarySpec::parse(form)?;
                 maybe_await!(Library::from_spec(rt, spec, PathBuf::from(file_name)))?
@@ -482,7 +482,7 @@ fn load_lib_from_dir(
         let form = Syntax::from_str(&contents, Some(&file_name))?;
         let form = match form.as_list() {
             Some([form, Syntax::Null { .. }]) => form,
-            _ => return Err(Condition::error(format!("library is malformed"))),
+            _ => return Err(Condition::error("library is malformed")),
         };
         let spec = LibrarySpec::parse(form)?;
         return Ok(Some(maybe_await!(Library::from_spec(rt, spec, path))?));
@@ -490,24 +490,6 @@ fn load_lib_from_dir(
 
     Ok(None)
 }
-
-/*
-#[derive(Debug, thiserror::Error)]
-pub enum ImportError {
-    #[error("Library not found")]
-    LibraryNotFound,
-    #[error("Error parsing into s-expression: {0}")]
-    ParseSyntaxError(String),
-    #[error("Error parsing into AST")]
-    ParseAstError(ParseAstError),
-    #[error("Error reading library: {0}")]
-    IoError(#[from] std::io::Error),
-    #[error("Import identifier `{0}` bound multiple times")]
-    DuplicateIdentifier(Symbol),
-    #[error("Circular dependency found")]
-    CircularDependency,
-}
-*/
 
 #[derive(Trace, derive_more::Debug)]
 pub(crate) struct LibraryInner {

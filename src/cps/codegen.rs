@@ -188,6 +188,10 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         self.params[0]
     }
 
+    fn get_dyn_stack(&self) -> Value {
+        self.params[1]
+    }
+
     fn cps_codegen(&mut self, cps: Cps, deferred: &mut Vec<ProcedureBundle>) {
         match cps {
             Cps::If(cond, success, failure) => {
@@ -493,6 +497,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
 
     fn app_codegen(&mut self, operator: &CpsValue, args: &[CpsValue], loc: Option<Span>) {
         let runtime = self.get_runtime();
+        let dyn_stack = self.get_dyn_stack();
         let operator = self.value_codegen(operator);
 
         // Allocate space for the args to be passed to make_application
@@ -515,10 +520,10 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         let apply = self
             .module
             .declare_func_in_func(self.runtime_funcs.apply, self.builder.func);
-        let call = self
-            .builder
-            .ins()
-            .call(apply, &[runtime, operator, args_addr, args_len, span]);
+        let call = self.builder.ins().call(
+            apply,
+            &[runtime, operator, args_addr, args_len, span, dyn_stack],
+        );
         let app = self.builder.inst_results(call)[0];
         self.drops_codegen();
         self.builder.ins().return_(&[app]);
@@ -526,13 +531,17 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
 
     fn forward_codegen(&mut self, operator: &CpsValue, arg: &CpsValue) {
         let runtime = self.get_runtime();
+        let dyn_stack = self.get_dyn_stack();
         let operator = self.value_codegen(operator);
         let arg = self.value_codegen(arg);
 
         let forward = self
             .module
             .declare_func_in_func(self.runtime_funcs.forward, self.builder.func);
-        let call = self.builder.ins().call(forward, &[runtime, operator, arg]);
+        let call = self
+            .builder
+            .ins()
+            .call(forward, &[runtime, operator, arg, dyn_stack]);
         let result = self.builder.inst_results(call)[0];
         self.drops_codegen();
         self.builder.ins().return_(&[result]);
@@ -588,10 +597,11 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
 
     fn raise_codegen(&mut self, val: Value) {
         let runtime = self.get_runtime();
+        let dyn_stack = self.get_dyn_stack();
         let raise = self
             .module
             .declare_func_in_func(self.runtime_funcs.raise_rt, self.builder.func);
-        let call = self.builder.ins().call(raise, &[runtime, val]);
+        let call = self.builder.ins().call(raise, &[runtime, val, dyn_stack]);
         let result = self.builder.inst_results(call)[0];
         self.builder.ins().return_(&[result]);
     }

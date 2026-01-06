@@ -315,7 +315,7 @@ impl SchemeCompatible for ExpansionCombiner {
 #[runtime_fn]
 unsafe extern "C" fn matches(pattern: *const (), syntax: *const ()) -> *const () {
     let pattern = unsafe { Value::from_raw_inc_rc(pattern) };
-    let pattern = pattern.try_into_rust_type::<Pattern>().unwrap();
+    let pattern = pattern.try_to_rust_type::<Pattern>().unwrap();
 
     let syntax = unsafe { Value::from_raw_inc_rc(syntax) };
     // This isn't a great way to do this, but it'll work for now:
@@ -614,17 +614,17 @@ unsafe extern "C" fn expand_template(
     // eventually
 
     let template = unsafe { Value::from_raw_inc_rc(template) };
-    let template = template.try_into_rust_type::<Template>().unwrap();
+    let template = template.try_to_rust_type::<Template>().unwrap();
 
     let expansion_combiner = unsafe { Value::from_raw_inc_rc(expansion_combiner) };
     let expansion_combiner = expansion_combiner
-        .try_into_rust_type::<ExpansionCombiner>()
+        .try_to_rust_type::<ExpansionCombiner>()
         .unwrap();
 
     let expansions = (0..num_expansions)
         .map(|i| {
             let expansion = unsafe { Value::from_raw_inc_rc(expansions.add(i as usize).read()) };
-            let expansion = expansion.try_into_rust_type::<ExpansionLevel>().unwrap();
+            let expansion = expansion.try_to_rust_type::<ExpansionLevel>().unwrap();
             expansion.as_ref().clone()
         })
         .collect::<Vec<_>>();

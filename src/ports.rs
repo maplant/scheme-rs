@@ -2904,9 +2904,7 @@ fn open_file_port(
 
     // We don't actually use file options for anything in the input case.
     let (file_options, rest_args) = if let [file_options, rest @ ..] = rest_args {
-        let file_options = file_options
-            .clone()
-            .try_into_rust_type::<EnumerationSet>()?;
+        let file_options = file_options.clone().try_to_rust_type::<EnumerationSet>()?;
         file_options.type_check(&FILE_OPTIONS)?;
         (file_options, rest)
     } else {
@@ -2914,7 +2912,7 @@ fn open_file_port(
     };
 
     let (buffer_mode, rest_args) = if let [buffer_mode, rest @ ..] = rest_args {
-        let buffer_mode = buffer_mode.clone().try_into_rust_type::<BufferMode>()?;
+        let buffer_mode = buffer_mode.clone().try_to_rust_type::<BufferMode>()?;
         (*buffer_mode, rest)
     } else {
         (BufferMode::Block, &[] as &[Value])
@@ -2922,7 +2920,7 @@ fn open_file_port(
 
     let transcoder = if let [transcoder] = rest_args {
         if transcoder.is_true() {
-            let transcoder = transcoder.clone().try_into_rust_type::<Transcoder>()?;
+            let transcoder = transcoder.clone().try_to_rust_type::<Transcoder>()?;
             Some(*transcoder)
         } else {
             None
@@ -3957,6 +3955,7 @@ pub fn read_char(
             return Ok(raise(
                 runtime.clone(),
                 Value::from(Condition::wrong_num_of_var_args(0..1, rest_args.len())),
+                dyn_stack,
             ));
         }
     };
@@ -3990,6 +3989,7 @@ pub fn peek_char(
             return Ok(raise(
                 runtime.clone(),
                 Value::from(Condition::wrong_num_of_var_args(0..1, rest_args.len())),
+                dyn_stack,
             ));
         }
     };
@@ -4020,6 +4020,7 @@ pub fn read(
             return Ok(raise(
                 runtime.clone(),
                 Value::from(Condition::wrong_num_of_var_args(0..1, rest_args.len())),
+                dyn_stack,
             ));
         }
     };
@@ -4055,6 +4056,7 @@ pub fn write_char(
             return Ok(raise(
                 runtime.clone(),
                 Value::from(Condition::wrong_num_of_var_args(1..2, rest_args.len())),
+                dyn_stack,
             ));
         }
     };
@@ -4084,6 +4086,7 @@ pub fn newline(
             return Ok(raise(
                 runtime.clone(),
                 Value::from(Condition::wrong_num_of_var_args(0..1, rest_args.len())),
+                dyn_stack,
             ));
         }
     };
@@ -4115,6 +4118,7 @@ pub fn display(
             return Ok(raise(
                 runtime.clone(),
                 Value::from(Condition::wrong_num_of_var_args(1..2, rest_args.len())),
+                dyn_stack,
             ));
         }
     };
@@ -4146,6 +4150,7 @@ pub fn write(
             return Ok(raise(
                 runtime.clone(),
                 Value::from(Condition::wrong_num_of_var_args(1..2, rest_args.len())),
+                dyn_stack,
             ));
         }
     };

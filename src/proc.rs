@@ -144,6 +144,7 @@ impl ProcedureInner {
     pub(crate) fn prepare_args(
         &self,
         mut args: Vec<Value>,
+        dyn_stack: &mut DynStack,
     ) -> Result<(Vec<Value>, Option<Value>), Application> {
         // Extract the continuation, if it is required
         let cont = (!self.is_continuation()).then(|| args.pop().unwrap());
@@ -153,6 +154,7 @@ impl ProcedureInner {
             return Err(raise(
                 self.runtime.clone(),
                 Condition::wrong_num_of_args(self.num_required_args, args.len()).into(),
+                dyn_stack,
             ));
         }
 
@@ -160,6 +162,7 @@ impl ProcedureInner {
             return Err(raise(
                 self.runtime.clone(),
                 Condition::wrong_num_of_args(self.num_required_args, args.len()).into(),
+                dyn_stack,
             ));
         }
 
@@ -240,7 +243,7 @@ impl ProcedureInner {
 
     #[maybe_async]
     pub fn apply(&self, args: Vec<Value>, dyn_stack: &mut DynStack) -> Application {
-        let (args, k) = match self.prepare_args(args) {
+        let (args, k) = match self.prepare_args(args, dyn_stack) {
             Ok(args) => args,
             Err(raised) => return raised,
         };
@@ -277,7 +280,7 @@ impl ProcedureInner {
     #[cfg(feature = "async")]
     /// Attempt to call the function, and throw an error if is async
     pub fn apply_sync(&self, args: Vec<Value>, dyn_stack: &mut DynStack) -> Application {
-        let (args, k) = match self.prepare_args(args) {
+        let (args, k) = match self.prepare_args(args, dyn_stack) {
             Ok(args) => args,
             Err(raised) => return raised,
         };
@@ -289,6 +292,7 @@ impl ProcedureInner {
             FuncPtr::AsyncBridge(_) => raise(
                 self.runtime.clone(),
                 Condition::error("attempt to apply async function in a sync-only context").into(),
+                dyn_stack,
             ),
             FuncPtr::User(user) => self.apply_jit(JitFuncPtr::User(user), args, dyn_stack, k),
             FuncPtr::Continuation(k) => {
@@ -899,10 +903,7 @@ fn escape_procedure(
 
     // env[1] is the dyn stack of the continuation
     let saved_dyn_stack_val = env[1].clone();
-    let saved_dyn_stack = saved_dyn_stack_val
-        .clone()
-        .try_into_rust_type::<DynStack>()
-        .unwrap();
+    let saved_dyn_stack = saved_dyn_stack_val.try_to_rust_type::<DynStack>().unwrap();
     let saved_dyn_stack_read = saved_dyn_stack.as_ref();
 
     // Clone the continuation
@@ -945,7 +946,7 @@ unsafe extern "C" fn unwind(
         let dest_stack_val = env.add(2).as_ref().unwrap().clone();
         let dest_stack = dest_stack_val
             .clone()
-            .try_into_rust_type::<DynStack>()
+            .try_to_rust_type::<DynStack>()
             .unwrap();
         let dest_stack_read = dest_stack.as_ref();
 
@@ -1008,10 +1009,7 @@ unsafe extern "C" fn wind(
 
         // env[2] is the stack we are trying to reach
         let dest_stack_val = env.add(2).as_ref().unwrap().clone();
-        let dest_stack = dest_stack_val
-            .clone()
-            .try_into_rust_type::<DynStack>()
-            .unwrap();
+        let dest_stack = dest_stack_val.try_to_rust_type::<DynStack>().unwrap();
         let dest_stack_read = dest_stack.as_ref();
 
         let dyn_stack = dyn_stack.as_mut().unwrap_unchecked();
@@ -1019,7 +1017,7 @@ unsafe extern "C" fn wind(
         // env[3] is potentially a winder that we should push onto the dyn stack
         let winder = env.add(3).as_ref().unwrap().clone();
         if winder.is_true() {
-            let winder = winder.try_into_rust_type::<Winder>().unwrap();
+            let winder = winder.try_to_rust_type::<Winder>().unwrap();
             dyn_stack.push(DynStackElem::Winder(winder.as_ref().clone()));
         }
 
@@ -1062,7 +1060,7 @@ unsafe extern "C" fn call_consumer_with_values(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
-    _dyn_stack: *mut DynStack,
+    dyn_stack: *mut DynStack,
 ) -> *mut Application {
     unsafe {
         // env[0] is the consumer
@@ -1075,6 +1073,7 @@ unsafe extern "C" fn call_consumer_with_values(
                 let raised = raise(
                     Runtime::from_raw_inc_rc(runtime),
                     Condition::invalid_operator(type_name).into(),
+                    dyn_stack.as_mut().unwrap_unchecked(),
                 );
                 return Box::into_raw(Box::new(raised));
             }
@@ -1410,7 +1409,7 @@ unsafe extern "C" fn unwind_to_prompt(
                     handler,
                     handler_k,
                 })) if prompt_tag == tag => {
-                    let saved_dyn_stack = saved_dyn_stack.try_into_rust_type::<DynStack>().unwrap();
+                    let saved_dyn_stack = saved_dyn_stack.try_to_rust_type::<DynStack>().unwrap();
                     let prompt_delimited_dyn_stack = DynStack {
                         dyn_stack: saved_dyn_stack.as_ref().dyn_stack[dyn_stack.len() + 1..]
                             .to_vec(),
@@ -1476,10 +1475,7 @@ fn delimited_continuation(
 
     // env[2] is the dyn stack of the continuation
     let saved_dyn_stack_val = env[2].clone();
-    let saved_dyn_stack = saved_dyn_stack_val
-        .clone()
-        .try_into_rust_type::<DynStack>()
-        .unwrap();
+    let saved_dyn_stack = saved_dyn_stack_val.try_to_rust_type::<DynStack>().unwrap();
     let saved_dyn_stack_read = saved_dyn_stack.as_ref();
 
     let args = args.iter().chain(rest_args).cloned().collect::<Vec<_>>();
@@ -1527,10 +1523,7 @@ unsafe extern "C" fn wind_delim(
 
         // env[2] is the stack we are trying to reach
         let dest_stack_val = env.add(2).as_ref().unwrap().clone();
-        let dest_stack = dest_stack_val
-            .clone()
-            .try_into_rust_type::<DynStack>()
-            .unwrap();
+        let dest_stack = dest_stack_val.try_to_rust_type::<DynStack>().unwrap();
         let dest_stack_read = dest_stack.as_ref();
 
         // env[3] is the index into the dest stack we're at
@@ -1542,7 +1535,7 @@ unsafe extern "C" fn wind_delim(
         // env[4] is potentially a winder that we should push onto the dyn stack
         let winder = env.add(4).as_ref().unwrap().clone();
         if winder.is_true() {
-            let winder = winder.try_into_rust_type::<Winder>().unwrap();
+            let winder = winder.try_to_rust_type::<Winder>().unwrap();
             dyn_stack.push(DynStackElem::Winder(winder.as_ref().clone()));
         }
 

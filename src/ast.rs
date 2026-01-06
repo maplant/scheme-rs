@@ -227,7 +227,7 @@ impl LibraryName {
     pub fn from_str(s: &str, file_name: Option<&str>) -> Result<Self, Condition> {
         let form = Syntax::from_str(s, file_name)?;
         match form.as_list() {
-            Some([item, Syntax::Null { .. }]) => Self::parse(&item),
+            Some([item, Syntax::Null { .. }]) => Self::parse(item),
             _ => Err(Condition::error(format!("bad form in '{s}'"))),
         }
     }
@@ -713,7 +713,7 @@ impl ImportSet {
     pub fn parse_from_str(s: &str) -> Result<Self, Condition> {
         let form = Syntax::from_str(s, None)?;
         match form.as_list() {
-            Some([item, Syntax::Null { .. }]) => Self::parse(&item),
+            Some([item, Syntax::Null { .. }]) => Self::parse(item),
             _ => Err(Condition::error(format!("bad form in '{s}'"))),
         }
     }
@@ -1643,9 +1643,9 @@ impl DefinitionBody {
         // No explanation needed
         match form.as_list() {
             Some([list @ .., Syntax::Null { .. }]) => {
-                maybe_await!(Self::parse_helper(&ctxt, &list, true, env, &form))
+                maybe_await!(Self::parse_helper(&ctxt, list, true, env, form))
             }
-            _ => Err(error::bad_form(&form, None)),
+            _ => Err(error::bad_form(form, None)),
         }
     }
 

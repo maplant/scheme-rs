@@ -355,6 +355,7 @@ unsafe extern "C" fn apply(
     args: *const *const (),
     num_args: u32,
     span: *const Span,
+    dyn_stack: *mut DynStack,
 ) -> *mut Application {
     unsafe {
         let args: Vec<_> = (0..num_args)
@@ -367,6 +368,7 @@ unsafe extern "C" fn apply(
                 let raised = raise(
                     Runtime::from_raw_inc_rc(runtime),
                     Condition::invalid_operator(x.type_name()).into(),
+                    dyn_stack.as_mut().unwrap_unchecked(),
                 );
                 return Box::into_raw(Box::new(raised));
             }
@@ -384,6 +386,7 @@ unsafe extern "C" fn forward(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     op: *const (),
     args: *const (),
+    dyn_stack: *mut DynStack,
 ) -> *mut Application {
     unsafe {
         let op = match Value::from_raw_inc_rc(op).unpack() {
@@ -392,6 +395,7 @@ unsafe extern "C" fn forward(
                 let raised = raise(
                     Runtime::from_raw_inc_rc(runtime),
                     Condition::invalid_operator(x.type_name()).into(),
+                    dyn_stack.as_mut().unwrap_unchecked(),
                 );
                 return Box::into_raw(Box::new(raised));
             }
