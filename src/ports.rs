@@ -809,7 +809,7 @@ mod __impl {
                         Value::from(count),
                     ])
                     .await
-                    .map_err(|err| err.into_inner().add_condition(IoReadError::new()))?
+                    .map_err(|err| err.add_condition(IoReadError::new()))?
                     .try_into()
                     .map_err(|_| {
                         Condition::io_read_error(
@@ -837,7 +837,7 @@ mod __impl {
                         Value::from(count),
                     ])
                     .await
-                    .map_err(|err| err.into_inner().add_condition(IoReadError::new()))?;
+                    .map_err(|err| err.add_condition(IoReadError::new()))?;
                 Ok(())
             })
         })
@@ -850,7 +850,7 @@ mod __impl {
                 let [pos] = get_pos
                     .call(&[])
                     .await
-                    .map_err(|err| err.into_inner().add_condition(IoError::new()))?
+                    .map_err(|err| err.add_condition(IoError::new()))?
                     .try_into()
                     .map_err(|_| {
                         Condition::io_error("invalid number of values returned get-pos procedure")
@@ -872,7 +872,7 @@ mod __impl {
                 let _ = set_pos
                     .call(&[Value::from(pos)])
                     .await
-                    .map_err(|err| err.into_inner().add_condition(IoError::new()))?;
+                    .map_err(|err| err.add_condition(IoError::new()))?;
                 Ok(())
             })
         })
@@ -885,7 +885,7 @@ mod __impl {
                 let _ = close
                     .call(&[])
                     .await
-                    .map_err(|err| err.into_inner().add_condition(IoError::new()))?;
+                    .map_err(|err| err.add_condition(IoError::new()))?;
                 Ok(())
             })
         })
@@ -3217,7 +3217,6 @@ pub fn current_input_port(
     Ok(Application::new(
         k.try_into().unwrap(),
         vec![Value::from(current_input_port)],
-        None,
     ))
 }
 
@@ -3234,7 +3233,6 @@ pub fn current_output_port(
     Ok(Application::new(
         k.try_into().unwrap(),
         vec![Value::from(current_input_port)],
-        None,
     ))
 }
 
@@ -3259,7 +3257,6 @@ pub fn current_error_port(
     Ok(Application::new(
         k.try_into().unwrap(),
         vec![Value::from(current_error_port)],
-        None,
     ))
 }
 
@@ -3683,13 +3680,11 @@ pub fn call_with_input_file(
         FuncPtr::Continuation(close_port_and_call_k),
         0,
         false,
-        None,
     );
 
     Ok(Application::new(
         proc,
         vec![Value::from(port), Value::from(k)],
-        None,
     ))
 }
 
@@ -3744,13 +3739,11 @@ pub fn call_with_output_file(
         FuncPtr::Continuation(close_port_and_call_k),
         0,
         false,
-        None,
     );
 
     Ok(Application::new(
         proc,
         vec![Value::from(port), Value::from(k)],
-        None,
     ))
 }
 
@@ -3775,9 +3768,8 @@ unsafe extern "C" fn close_port_and_call_k(
         let k = env.add(1).as_ref().unwrap().clone();
 
         Box::into_raw(Box::new(Application::new(
-            Procedure::new(runtime, Vec::new(), bridge(close_port), 1, false, None),
+            Procedure::new(runtime, Vec::new(), bridge(close_port), 1, false),
             vec![port, k],
-            None,
         )))
     }
 }
@@ -3842,7 +3834,6 @@ pub fn with_input_from_file(
         FuncPtr::Continuation(pop_dyn_stack),
         req_args,
         var,
-        None,
     );
 
     let k = Procedure::new(
@@ -3851,10 +3842,9 @@ pub fn with_input_from_file(
         FuncPtr::Continuation(close_port_and_call_k),
         0,
         false,
-        None,
     );
 
-    Ok(Application::new(thunk, vec![Value::from(k)], None))
+    Ok(Application::new(thunk, vec![Value::from(k)]))
 }
 
 #[maybe_async]
@@ -3914,7 +3904,6 @@ pub fn with_output_to_file(
         FuncPtr::Continuation(pop_dyn_stack),
         req_args,
         var,
-        None,
     );
 
     let k = Procedure::new(
@@ -3923,10 +3912,9 @@ pub fn with_output_to_file(
         FuncPtr::Continuation(close_port_and_call_k),
         0,
         false,
-        None,
     );
 
-    Ok(Application::new(thunk, vec![Value::from(k)], None))
+    Ok(Application::new(thunk, vec![Value::from(k)]))
 }
 
 #[maybe_async]
@@ -3979,7 +3967,7 @@ pub fn read_char(
         EOF_OBJECT.clone()
     };
 
-    Ok(Application::new(k.try_into()?, vec![result], None))
+    Ok(Application::new(k.try_into()?, vec![result]))
 }
 
 #[maybe_async]
@@ -4012,7 +4000,7 @@ pub fn peek_char(
         EOF_OBJECT.clone()
     };
 
-    Ok(Application::new(k.try_into()?, vec![result], None))
+    Ok(Application::new(k.try_into()?, vec![result]))
 }
 
 #[maybe_async]
@@ -4042,7 +4030,7 @@ pub fn read(
         EOF_OBJECT.clone()
     };
 
-    Ok(Application::new(k.try_into()?, vec![result], None))
+    Ok(Application::new(k.try_into()?, vec![result]))
 }
 
 #[maybe_async]
@@ -4073,7 +4061,7 @@ pub fn write_char(
 
     maybe_await!(output_port.put_char(chr))?;
 
-    Ok(Application::new(k.try_into()?, Vec::new(), None))
+    Ok(Application::new(k.try_into()?, Vec::new()))
 }
 
 #[maybe_async]
@@ -4102,7 +4090,7 @@ pub fn newline(
 
     maybe_await!(output_port.put_char('\n'))?;
 
-    Ok(Application::new(k.try_into()?, Vec::new(), None))
+    Ok(Application::new(k.try_into()?, Vec::new()))
 }
 
 #[maybe_async]
@@ -4133,7 +4121,7 @@ pub fn display(
 
     maybe_await!(output_port.put_str(&obj))?;
 
-    Ok(Application::new(k.try_into()?, Vec::new(), None))
+    Ok(Application::new(k.try_into()?, Vec::new()))
 }
 
 #[maybe_async]
@@ -4164,7 +4152,7 @@ pub fn write(
 
     maybe_await!(output_port.put_str(&obj))?;
 
-    Ok(Application::new(k.try_into()?, Vec::new(), None))
+    Ok(Application::new(k.try_into()?, Vec::new()))
 }
 
 // 9. File System

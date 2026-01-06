@@ -84,7 +84,7 @@ impl Runtime {
         let compiled = body.compile_top_level();
         let closure = maybe_await!(self.compile_expr(compiled));
 
-        maybe_await!(Application::new(closure, Vec::new(), None,).eval(&mut DynStack::default(),))
+        maybe_await!(Application::new(closure, Vec::new()).eval(&mut DynStack::default(),))
     }
 
     pub fn get_registry(&self) -> Registry {
@@ -378,7 +378,7 @@ unsafe extern "C" fn apply(
             }
         };
 
-        let app = Application::new(op, args, arc_from_ptr(span));
+        let app = Application::with_call_site(op, args, arc_from_ptr(span));
 
         Box::into_raw(Box::new(app))
     }
@@ -409,7 +409,7 @@ unsafe extern "C" fn forward(
         let mut flattened = Vec::new();
         list_to_vec(&args, &mut flattened);
 
-        let app = Application::new(op, flattened, None);
+        let app = Application::new(op, flattened);
 
         Box::into_raw(Box::new(app))
     }
@@ -502,7 +502,6 @@ unsafe extern "C" fn make_continuation(
             FuncPtr::Continuation(fn_ptr),
             num_required_args as usize,
             variadic,
-            None,
         );
 
         Value::into_raw(Value::from(proc))
@@ -526,7 +525,7 @@ unsafe extern "C" fn make_user(
             .map(|i| Value::from_raw_inc_rc(env.add(i as usize).read()))
             .collect();
 
-        let proc = Procedure::new(
+        let proc = Procedure::with_debug_info(
             Runtime::from_raw_inc_rc(runtime),
             env,
             FuncPtr::User(fn_ptr),

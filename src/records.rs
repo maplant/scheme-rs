@@ -242,7 +242,6 @@ fn make_default_record_constructor_descriptor(
         FuncPtr::Bridge(default_protocol),
         1,
         false,
-        None,
     );
     Gc::new(RecordConstructorDescriptor {
         parent,
@@ -298,7 +297,6 @@ pub fn make_record_constructor_descriptor(
             FuncPtr::Bridge(default_protocol),
             1,
             false,
-            None,
         )
     };
 
@@ -311,7 +309,6 @@ pub fn make_record_constructor_descriptor(
     Ok(Application::new(
         k,
         vec![Value::from(Record::from_rust_type(rcd))],
-        None,
     ))
 }
 
@@ -345,7 +342,6 @@ pub fn record_constructor(
         FuncPtr::Continuation(chain_protocols),
         1,
         false,
-        None,
     ));
 
     Ok(chain_constructors(
@@ -393,7 +389,6 @@ pub(crate) unsafe extern "C" fn chain_protocols(
             return Box::into_raw(Box::new(Application::new(
                 curr_protocol,
                 vec![args.as_ref().unwrap().clone(), k.clone()],
-                None,
             )));
         }
 
@@ -404,13 +399,11 @@ pub(crate) unsafe extern "C" fn chain_protocols(
             FuncPtr::Continuation(chain_protocols),
             1,
             false,
-            None,
         );
 
         Box::into_raw(Box::new(Application::new(
             curr_protocol,
             vec![args.as_ref().unwrap().clone(), Value::from(new_k)],
-            None,
         )))
     }
 }
@@ -455,9 +448,8 @@ fn chain_constructors(
         },
         num_args,
         false,
-        None,
     );
-    Ok(Application::new(k, vec![Value::from(next_proc)], None))
+    Ok(Application::new(k, vec![Value::from(next_proc)]))
 }
 
 #[cps_bridge]
@@ -502,7 +494,7 @@ fn constructor(
         rtd,
         fields: fields.into_iter().map(RwLock::new).collect(),
     })));
-    Ok(Application::new(k, vec![record], None))
+    Ok(Application::new(k, vec![record]))
 }
 
 #[cps_bridge]
@@ -524,10 +516,9 @@ fn default_protocol(
         FuncPtr::Bridge(default_protocol_constructor),
         num_args,
         false,
-        None,
     );
 
-    Ok(Application::new(k, vec![Value::from(constructor)], None))
+    Ok(Application::new(k, vec![Value::from(constructor)]))
 }
 
 #[cps_bridge]
@@ -551,14 +542,13 @@ fn default_protocol_constructor(
             FuncPtr::Continuation(call_constructor_continuation),
             1,
             false,
-            None,
         ))
     } else {
         k
     };
 
     args.push(k);
-    Ok(Application::new(constructor, args, None))
+    Ok(Application::new(constructor, args))
 }
 
 pub(crate) unsafe extern "C" fn call_constructor_continuation(
@@ -575,7 +565,7 @@ pub(crate) unsafe extern "C" fn call_constructor_continuation(
         args.push(cont);
 
         // Call the constructor
-        Box::into_raw(Box::new(Application::new(constructor, args, None)))
+        Box::into_raw(Box::new(Application::new(constructor, args)))
     }
 }
 
@@ -748,7 +738,6 @@ fn record_predicate_fn(
     Ok(Application::new(
         k,
         vec![Value::from(is_subtype_of(val, &env[0])?)],
-        None,
     ))
 }
 
@@ -772,9 +761,8 @@ pub fn record_predicate(
         FuncPtr::Bridge(record_predicate_fn),
         1,
         false,
-        None,
     );
-    Ok(Application::new(k, vec![Value::from(pred_fn)], None))
+    Ok(Application::new(k, vec![Value::from(pred_fn)]))
 }
 
 #[cps_bridge]
@@ -799,7 +787,7 @@ fn record_accessor_fn(
     }
     let idx: usize = env[1].clone().try_into()?;
     let val = record.0.fields[idx].read().clone();
-    Ok(Application::new(k, vec![val], None))
+    Ok(Application::new(k, vec![val]))
 }
 
 #[cps_bridge(def = "record-accessor rtd k", lib = "(rnrs records procedural (6))")]
@@ -830,9 +818,8 @@ pub fn record_accessor(
         FuncPtr::Bridge(record_accessor_fn),
         1,
         false,
-        None,
     );
-    Ok(Application::new(k, vec![Value::from(accessor_fn)], None))
+    Ok(Application::new(k, vec![Value::from(accessor_fn)]))
 }
 
 #[cps_bridge]
@@ -857,7 +844,7 @@ fn record_mutator_fn(
     }
     let idx: usize = env[1].clone().try_into()?;
     *record.0.fields[idx].write() = new_val.clone();
-    Ok(Application::new(k, vec![], None))
+    Ok(Application::new(k, vec![]))
 }
 
 #[cps_bridge(def = "record-mutator rtd k", lib = "(rnrs records procedural (6))")]
@@ -891,9 +878,8 @@ pub fn record_mutator(
         FuncPtr::Bridge(record_mutator_fn),
         2,
         false,
-        None,
     );
-    Ok(Application::new(k, vec![Value::from(mutator_fn)], None))
+    Ok(Application::new(k, vec![Value::from(mutator_fn)]))
 }
 
 // Inspection library:

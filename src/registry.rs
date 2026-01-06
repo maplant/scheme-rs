@@ -132,7 +132,7 @@ impl RegistryInner {
 
             lib.syms.insert(
                 Identifier::new(bridge_fn.name),
-                Gc::new(RwLock::new(Value::from(Procedure::new(
+                Gc::new(RwLock::new(Value::from(Procedure::with_debug_info(
                     rt.clone(),
                     Vec::new(),
                     match bridge_fn.wrapper {
@@ -721,8 +721,7 @@ impl Library {
         let compiled = defn_body.compile_top_level();
         let rt = { self.0.read().rt.clone() };
         let proc = maybe_await!(rt.compile_expr(compiled));
-        let _ =
-            maybe_await!(Application::new(proc, Vec::new(), None).eval(&mut DynStack::default()))?;
+        let _ = maybe_await!(Application::new(proc, Vec::new()).eval(&mut DynStack::default()))?;
         self.0.write().state = LibraryState::Invoked;
         Ok(())
     }

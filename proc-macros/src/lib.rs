@@ -98,11 +98,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                             Ok(result) => result,
                         };
                         let k = unsafe { k.try_into().unwrap_unchecked() };
-                        ::scheme_rs::proc::Application::new(
-                            k,
-                            result,
-                            None // TODO
-                        )
+                        ::scheme_rs::proc::Application::new(k, result)
                     }
                 )
             }
@@ -152,11 +148,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 };
 
                 let k = unsafe { k.try_into().unwrap_unchecked() };
-                ::scheme_rs::proc::Application::new(
-                    k,
-                    result,
-                    None // TODO
-                )
+                ::scheme_rs::proc::Application::new(k, result)
             }
 
             inventory::submit! {

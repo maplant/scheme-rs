@@ -285,7 +285,7 @@ pub fn map(
     for input in inputs.iter_mut() {
         if input.type_of() == ValueType::Null {
             // TODO: Check if the rest are also empty and args is empty
-            return Ok(Application::new(k.try_into()?, vec![Value::null()], None));
+            return Ok(Application::new(k.try_into()?, vec![Value::null()]));
         }
 
         let (car, cdr) = match &*input.unpacked_ref() {
@@ -309,12 +309,11 @@ pub fn map(
         crate::proc::FuncPtr::Continuation(map_k),
         1,
         false,
-        None,
     );
 
     args.push(Value::from(map_k));
 
-    Ok(Application::new(mapper_proc, args, None))
+    Ok(Application::new(mapper_proc, args))
 }
 
 unsafe extern "C" fn map_k(
@@ -347,7 +346,7 @@ unsafe extern "C" fn map_k(
             if input.type_of() == ValueType::Null {
                 // TODO: Check if the rest are also empty and args is empty
                 let output = slice_to_list(&output.0.vec.read());
-                let app = Application::new(k, vec![output], None);
+                let app = Application::new(k, vec![output]);
                 return Box::into_raw(Box::new(app));
             }
 
@@ -375,13 +374,10 @@ unsafe extern "C" fn map_k(
             crate::proc::FuncPtr::Continuation(map_k),
             1,
             false,
-            None,
         );
 
         args.push(Value::from(map_k));
 
-        let app = Application::new(mapper, args, None);
-
-        Box::into_raw(Box::new(app))
+        Box::into_raw(Box::new(Application::new(mapper, args)))
     }
 }

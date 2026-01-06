@@ -36,7 +36,7 @@ pub fn eval(
     let expr = maybe_await!(Expression::parse(&ctxt, expr, &env))?;
     let compiled = expr.compile_top_level();
     let proc = maybe_await!(runtime.compile_expr(compiled));
-    Ok(Application::new(proc, vec![k], None))
+    Ok(Application::new(proc, vec![k]))
 }
 
 impl SchemeCompatible for Environment {
@@ -69,5 +69,5 @@ pub fn environment(
         maybe_await!(env.import(import_set))?;
     }
     let env = Value::from(Record::from_rust_type(env));
-    Ok(Application::new(k.try_into().unwrap(), vec![env], None))
+    Ok(Application::new(k.try_into().unwrap(), vec![env]))
 }

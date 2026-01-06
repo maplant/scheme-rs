@@ -160,14 +160,7 @@ impl Cps {
             )
         };
 
-        Procedure::new(
-            runtime,
-            Vec::new(),
-            FuncPtr::Continuation(func),
-            0,
-            true,
-            None,
-        )
+        Procedure::new(runtime, Vec::new(), FuncPtr::Continuation(func), 0, true)
     }
 }
 

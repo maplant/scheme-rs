@@ -2,7 +2,7 @@
 //! Contains the main evaluation trampoline.
 
 use crate::{
-    conditions::{Condition, Frame, raise},
+    conditions::{Condition, raise},
     env::Local,
     gc::{Gc, GcInner, Trace},
     lists::{self, Pair, list_to_vec},
@@ -82,6 +82,8 @@ pub(crate) enum FuncPtr {
         k: ContinuationPtr,
     },
 }
+
+// TODO: Implement From for each of the func ptr types.
 
 enum JitFuncPtr {
     Continuation(ContinuationPtr),
@@ -262,7 +264,7 @@ impl ProcedureInner {
                         barrier_id,
                         replaced_k,
                     })) if barrier_id == id => {
-                        return Application::new(replaced_k, args, None);
+                        return Application::new(replaced_k, args);
                     }
                     Some(other) => dyn_stack.push(other),
                     _ => (),
@@ -298,7 +300,7 @@ impl ProcedureInner {
                         barrier_id,
                         replaced_k,
                     })) if barrier_id == id => {
-                        return Application::new(replaced_k, args, None);
+                        return Application::new(replaced_k, args);
                     }
                     Some(other) => dyn_stack.push(other),
                     _ => (),
@@ -350,7 +352,18 @@ impl fmt::Debug for ProcedureInner {
 pub struct Procedure(pub(crate) Gc<ProcedureInner>);
 
 impl Procedure {
-    pub(crate) fn new(
+    #[allow(private_bounds)]
+    pub fn new(
+        runtime: Runtime,
+        env: Vec<Value>,
+        func: impl Into<FuncPtr>,
+        num_required_args: usize,
+        variadic: bool,
+    ) -> Self {
+        Self::with_debug_info(runtime, env, func.into(), num_required_args, variadic, None)
+    }
+
+    pub(crate) fn with_debug_info(
         runtime: Runtime,
         env: Vec<Value>,
         func: FuncPtr,
@@ -409,7 +422,7 @@ impl Procedure {
 
         args.push(halt_continuation(self.get_runtime()));
 
-        maybe_await!(Application::new(self.clone(), args, None,).eval(&mut DynStack::default()))
+        maybe_await!(Application::new(self.clone(), args).eval(&mut DynStack::default()))
     }
 
     #[cfg(feature = "async")]
@@ -418,7 +431,7 @@ impl Procedure {
 
         args.push(halt_continuation(self.get_runtime()));
 
-        Application::new(self.clone(), args, None).eval_sync(&mut DynStack::default())
+        Application::new(self.clone(), args).eval_sync(&mut DynStack::default())
     }
 }
 
@@ -478,9 +491,16 @@ pub struct Application {
 }
 
 impl Application {
-    pub fn new(op: Procedure, args: Vec<Value>, call_site: Option<Arc<Span>>) -> Self {
+    pub fn new(op: Procedure, args: Vec<Value>) -> Self {
         Self {
-            // We really gotta figure out how to deal with this better
+            op: OpType::Proc(op),
+            args,
+            call_site: None,
+        }
+    }
+
+    pub fn with_call_site(op: Procedure, args: Vec<Value>, call_site: Option<Arc<Span>>) -> Self {
+        Self {
             op: OpType::Proc(op),
             args,
             call_site,
@@ -507,8 +527,6 @@ impl Application {
     /// remains are values. This is the main trampoline of the evaluation engine.
     #[maybe_async]
     pub fn eval(mut self, dyn_stack: &mut DynStack) -> Result<Vec<Value>, Condition> {
-        let mut stack_trace = StackTraceCollector::new();
-
         loop {
             let op = match self.op {
                 OpType::Proc(proc) => proc,
@@ -517,7 +535,6 @@ impl Application {
                     return Err(Condition(self.args.pop().unwrap()));
                 }
             };
-            stack_trace.collect_application(op.0.debug_info.clone(), self.call_site);
             self = maybe_await!(op.0.apply(self.args, dyn_stack));
         }
     }
@@ -525,8 +542,6 @@ impl Application {
     #[cfg(feature = "async")]
     /// Just like [eval] but throws an error if we encounter an async function.
     pub fn eval_sync(mut self, dyn_stack: &mut DynStack) -> Result<Vec<Value>, Condition> {
-        let mut stack_trace = StackTraceCollector::new();
-
         loop {
             let op = match self.op {
                 OpType::Proc(proc) => proc,
@@ -535,12 +550,12 @@ impl Application {
                     return Err(Condition(self.args.pop().unwrap()));
                 }
             };
-            stack_trace.collect_application(op.0.debug_info.clone(), self.call_site);
             self = op.0.apply_sync(self.args, dyn_stack);
         }
     }
 }
 
+/*
 #[derive(Default)]
 struct StackTraceCollector {
     stack_trace: Vec<StackTrace>,
@@ -577,6 +592,7 @@ impl StackTraceCollector {
         }
     }
 }
+*/
 
 #[derive(Debug)]
 pub struct FuncDebugInfo {
@@ -588,11 +604,13 @@ pub struct FuncDebugInfo {
     location: Span,
 }
 
+/*
 #[derive(Debug)]
 struct StackTrace {
     debug_info: Arc<FuncDebugInfo>,
     call_site: Option<Arc<Span>>,
 }
+*/
 
 impl FuncDebugInfo {
     pub fn new(name: Option<Symbol>, args: Vec<Local>, location: Span) -> Self {
@@ -638,7 +656,7 @@ pub fn apply(
     let mut args = args.to_vec();
     list_to_vec(last, &mut args);
     args.push(k);
-    Ok(Application::new(op.clone(), args, None))
+    Ok(Application::new(op.clone(), args))
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -762,7 +780,7 @@ pub(crate) unsafe extern "C" fn pop_dyn_stack(
         dyn_stack.as_mut().unwrap_unchecked().pop();
 
         let args = k.collect_args(args);
-        let app = Application::new(k, args, None);
+        let app = Application::new(k, args);
 
         Box::into_raw(Box::new(app))
     }
@@ -801,10 +819,9 @@ pub fn call_with_current_continuation(
         FuncPtr::Bridge(escape_procedure),
         req_args,
         variadic,
-        None,
     );
 
-    let app = Application::new(proc, vec![Value::from(escape_procedure), k], None);
+    let app = Application::new(proc, vec![Value::from(escape_procedure), k]);
 
     Ok(app)
 }
@@ -840,7 +857,7 @@ fn escape_procedure(
     if dyn_stack.len() == saved_dyn_stack_read.len()
         && dyn_stack.last() == saved_dyn_stack_read.last()
     {
-        Ok(Application::new(k, args, None))
+        Ok(Application::new(k, args))
     } else {
         let args = Value::from(args);
         let k = Procedure::new(
@@ -849,9 +866,8 @@ fn escape_procedure(
             FuncPtr::Continuation(unwind),
             0,
             false,
-            None,
         );
-        Ok(Application::new(k, Vec::new(), None))
+        Ok(Application::new(k, Vec::new()))
     }
 }
 
@@ -896,9 +912,7 @@ unsafe extern "C" fn unwind(
                             FuncPtr::Continuation(unwind),
                             0,
                             false,
-                            None,
                         ))],
-                        None,
                     );
                     return Box::into_raw(Box::new(app));
                 }
@@ -914,10 +928,8 @@ unsafe extern "C" fn unwind(
                 FuncPtr::Continuation(wind),
                 0,
                 false,
-                None,
             ),
             Vec::new(),
-            None,
         );
 
         Box::into_raw(Box::new(app))
@@ -974,9 +986,7 @@ unsafe extern "C" fn wind(
                             FuncPtr::Continuation(wind),
                             0,
                             false,
-                            None,
                         ))],
-                        None,
                     );
                     return Box::into_raw(Box::new(app));
                 }
@@ -987,8 +997,7 @@ unsafe extern "C" fn wind(
         let args: Vector = args.try_into().unwrap();
         let args = args.0.vec.read().to_vec();
 
-        let app = Application::new(k.try_into().unwrap(), args, None);
-        Box::into_raw(Box::new(app))
+        Box::into_raw(Box::new(Application::new(k.try_into().unwrap(), args)))
     }
 }
 
@@ -1036,11 +1045,7 @@ unsafe extern "C" fn call_consumer_with_values(
 
         collected_args.push(k);
 
-        Box::into_raw(Box::new(Application::new(
-            consumer.clone(),
-            collected_args,
-            None,
-        )))
+        Box::into_raw(Box::new(Application::new(consumer.clone(), collected_args)))
     }
 }
 
@@ -1072,13 +1077,11 @@ pub fn call_with_values(
         FuncPtr::Continuation(call_consumer_with_values),
         num_required_args,
         variadic,
-        None,
     );
 
     Ok(Application::new(
         producer,
         vec![Value::from(call_consumer_closure)],
-        None,
     ))
 }
 
@@ -1126,13 +1129,11 @@ pub fn dynamic_wind(
         FuncPtr::Continuation(call_body_thunk),
         0,
         true,
-        None,
     );
 
     Ok(Application::new(
         in_thunk,
         vec![Value::from(call_body_thunk_cont)],
-        None,
     ))
 }
 
@@ -1168,10 +1169,9 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
             FuncPtr::Continuation(call_out_thunks),
             0,
             true,
-            None,
         );
 
-        let app = Application::new(body_thunk, vec![Value::from(k)], None);
+        let app = Application::new(body_thunk, vec![Value::from(k)]);
 
         Box::into_raw(Box::new(app))
     }
@@ -1205,7 +1205,7 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
             None,
         )));
 
-        let app = Application::new(out_thunk, vec![Value::from(cont)], None);
+        let app = Application::new(out_thunk, vec![Value::from(cont)]);
 
         Box::into_raw(Box::new(app))
     }
@@ -1226,9 +1226,7 @@ unsafe extern "C" fn forward_body_thunk_result(
         let mut args = Vec::new();
         list_to_vec(&body_thunk_res, &mut args);
 
-        let app = Application::new(k, args, None);
-
-        Box::into_raw(Box::new(app))
+        Box::into_raw(Box::new(Application::new(k, args)))
     }
 }
 
@@ -1291,13 +1289,11 @@ pub fn call_with_prompt(
         },
         req_args,
         variadic,
-        None,
     );
 
     Ok(Application::new(
         thunk.clone().try_into().unwrap(),
         vec![Value::from(prompt_barrier)],
-        None,
     ))
 }
 
@@ -1322,10 +1318,9 @@ pub fn abort_to_prompt(
         FuncPtr::Continuation(unwind_to_prompt),
         0,
         false,
-        None,
     );
 
-    Ok(Application::new(unwind_to_prompt, Vec::new(), None))
+    Ok(Application::new(unwind_to_prompt, Vec::new()))
 }
 
 unsafe extern "C" fn unwind_to_prompt(
@@ -1380,11 +1375,9 @@ unsafe extern "C" fn unwind_to_prompt(
                                 FuncPtr::Bridge(delimited_continuation),
                                 req_args,
                                 var,
-                                None,
                             )),
                             Value::from(handler_k),
                         ],
-                        None,
                     )
                 }
                 Some(DynStackElem::Winder(winder)) => {
@@ -1397,9 +1390,7 @@ unsafe extern "C" fn unwind_to_prompt(
                             FuncPtr::Continuation(unwind_to_prompt),
                             0,
                             false,
-                            None,
                         ))],
-                        None,
                     )
                 }
                 _ => continue,
@@ -1443,7 +1434,7 @@ fn delimited_continuation(
     // Simple optimization: if the saved dyn stack is empty, we
     // can just call the delimited continuation
     if saved_dyn_stack_read.is_empty() {
-        Ok(Application::new(dk.try_into()?, args, None))
+        Ok(Application::new(dk.try_into()?, args))
     } else {
         let args = Value::from(args);
         let k = Procedure::new(
@@ -1458,9 +1449,8 @@ fn delimited_continuation(
             FuncPtr::Continuation(wind_delim),
             0,
             false,
-            None,
         );
-        Ok(Application::new(k, Vec::new(), None))
+        Ok(Application::new(k, Vec::new()))
     }
 }
 
@@ -1516,9 +1506,7 @@ unsafe extern "C" fn wind_delim(
                         FuncPtr::Continuation(wind),
                         0,
                         false,
-                        None,
                     ))],
-                    None,
                 );
                 return Box::into_raw(Box::new(app));
             }
@@ -1528,7 +1516,6 @@ unsafe extern "C" fn wind_delim(
         let args: Vector = args.try_into().unwrap();
         let args = args.0.vec.read().to_vec();
 
-        let app = Application::new(k.try_into().unwrap(), args, None);
-        Box::into_raw(Box::new(app))
+        Box::into_raw(Box::new(Application::new(k.try_into().unwrap(), args)))
     }
 }

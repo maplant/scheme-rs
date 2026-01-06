@@ -1,4 +1,6 @@
-//! Exceptional situations and conditions
+//! Exceptional situations and conditions.
+//!
+//!
 
 use crate::{
     ast::ParseAstError,
@@ -8,8 +10,7 @@ use crate::{
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::{ImportError, cps_bridge},
     runtime::{Runtime, RuntimeInner},
-    symbols::Symbol,
-    syntax::{Identifier, Span, Syntax, parse::ParseSyntaxError},
+    syntax::{Identifier, Syntax, parse::ParseSyntaxError},
     value::Value,
 };
 use parking_lot::RwLock;
@@ -29,6 +30,7 @@ impl From<ParseSyntaxError> for Condition {
     }
 }
 
+/// A signal of some sort of erroneous condition.
 #[derive(Debug, Clone)]
 pub struct Condition(pub Value);
 
@@ -499,6 +501,7 @@ where
     }
 }
 
+/*
 #[derive(Debug, Clone, Trace)]
 pub struct Frame {
     pub proc: Symbol,
@@ -523,6 +526,7 @@ impl fmt::Display for Frame {
         }
     }
 }
+*/
 
 #[cps_bridge(
     def = "with-exception-handler handler thunk",
@@ -554,10 +558,9 @@ pub fn with_exception_handler(
         FuncPtr::Continuation(pop_dyn_stack),
         req_args,
         var,
-        None,
     );
 
-    Ok(Application::new(thunk, vec![Value::from(k)], None))
+    Ok(Application::new(thunk, vec![Value::from(k)]))
 }
 
 #[cps_bridge(def = "raise obj", lib = "(rnrs base builtins (6))")]
@@ -581,10 +584,8 @@ pub fn raise(runtime: Runtime, raised: Value) -> Application {
             FuncPtr::Continuation(unwind_to_exception_handler),
             0,
             false,
-            None,
         ),
         Vec::new(),
-        None,
     )
 }
 
@@ -628,9 +629,7 @@ unsafe extern "C" fn unwind_to_exception_handler(
                             FuncPtr::Continuation(unwind_to_exception_handler),
                             0,
                             false,
-                            None,
                         ))],
-                        None,
                     )
                 }
                 Some(DynStackElem::ExceptionHandler(handler)) => Application::new(
@@ -643,10 +642,8 @@ unsafe extern "C" fn unwind_to_exception_handler(
                             FuncPtr::Continuation(reraise_exception),
                             0,
                             true,
-                            None,
                         )),
                     ],
-                    None,
                 ),
                 _ => continue,
             };
@@ -674,10 +671,8 @@ unsafe extern "C" fn reraise_exception(
                 FuncPtr::Bridge(raise_builtin),
                 1,
                 false,
-                None,
             ),
             vec![exception, Value::undefined()],
-            None,
         )))
     }
 }
@@ -701,5 +696,5 @@ pub fn raise_continuable(
         return Ok(Application::halt_err(condition.clone()));
     };
 
-    Ok(Application::new(handler, vec![condition.clone(), k], None))
+    Ok(Application::new(handler, vec![condition.clone(), k]))
 }

@@ -13,7 +13,7 @@ use tokio::{
 };
 
 use crate::{
-    exceptions::Condition,
+    conditions::Condition,
     num::Number,
     proc::Procedure,
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
@@ -37,7 +37,7 @@ impl SchemeCompatible for Future {
 #[bridge(name = "spawn", lib = "(tokio)")]
 pub async fn spawn(task: &Value) -> Result<Vec<Value>, Condition> {
     let task: Procedure = task.clone().try_into()?;
-    let task = tokio::task::spawn(async move { Ok(task.call(&[]).await?) });
+    let task = tokio::task::spawn(async move { task.call(&[]).await });
     let future: Future = async move { task.await.unwrap() }.boxed().shared();
     let future = Value::from(Record::from_rust_type(future));
     Ok(vec![future])

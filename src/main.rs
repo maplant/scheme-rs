@@ -131,6 +131,6 @@ fn compile_and_run_str(
     let compiled = expr.compile_top_level();
     let closure = maybe_await!(runtime.compile_expr(compiled));
     let result =
-        maybe_await!(Application::new(closure, Vec::new(), None,).eval(&mut DynStack::default()))?;
+        maybe_await!(Application::new(closure, Vec::new()).eval(&mut DynStack::default()))?;
     Ok(result)
 }
