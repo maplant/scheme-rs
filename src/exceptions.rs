@@ -6,6 +6,7 @@ use scheme_rs_macros::{cps_bridge, runtime_fn};
 use crate::{
     ast::ParseAstError,
     gc::{Gc, GcInner, Trace},
+    ports::{IoError, IoReadError, IoWriteError},
     proc::{Application, DynStack, DynStackElem, FuncPtr, Procedure, pop_dyn_stack},
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::ImportError,
@@ -17,7 +18,7 @@ use crate::{
 
 pub use scheme_rs_macros::define_condition_type;
 
-use std::{error::Error as StdError, fmt, ops::Range, sync::Arc};
+use std::{convert::Infallible, error::Error as StdError, fmt, ops::Range, sync::Arc};
 
 #[derive(Clone, Trace)]
 pub struct Exception {
@@ -28,6 +29,10 @@ pub struct Exception {
 impl Exception {
     pub fn new(backtrace: Vec<Frame>, obj: Value) -> Self {
         Self { backtrace, obj }
+    }
+
+    pub fn into_inner(self) -> Condition {
+        Condition(self.obj)
     }
 }
 
@@ -211,6 +216,39 @@ impl Condition {
             )),
         )))
     }
+
+    pub fn io_error(message: impl fmt::Display) -> Self {
+        Self(Value::from(Record::from_rust_type(
+            CompoundCondition::from((IoError::new(), Assertion::new(), Message::new(message))),
+        )))
+    }
+
+    pub fn io_read_error(message: impl fmt::Display) -> Self {
+        Self(Value::from(Record::from_rust_type(
+            CompoundCondition::from((IoReadError::new(), Assertion::new(), Message::new(message))),
+        )))
+    }
+
+    pub fn io_write_error(message: impl fmt::Display) -> Self {
+        Self(Value::from(Record::from_rust_type(
+            CompoundCondition::from((IoWriteError::new(), Assertion::new(), Message::new(message))),
+        )))
+    }
+
+    pub fn add_condition(self, condition: impl SchemeCompatible) -> Self {
+        let mut conditions = if let Ok(compound) = self.0.try_into_rust_type::<CompoundCondition>()
+        {
+            compound.0.clone()
+        } else {
+            vec![self.0]
+        };
+
+        conditions.push(Value::from(Record::from_rust_type(condition)));
+
+        Self(Value::from(Record::from_rust_type(CompoundCondition(
+            conditions,
+        ))))
+    }
 }
 
 impl From<SimpleCondition> for Condition {
@@ -228,6 +266,12 @@ impl From<Warning> for Condition {
 impl From<Serious> for Condition {
     fn from(serious: Serious) -> Self {
         Self(Value::from(Record::from_rust_type(serious)))
+    }
+}
+
+impl From<Infallible> for Condition {
+    fn from(infallible: Infallible) -> Self {
+        match infallible {}
     }
 }
 
@@ -447,7 +491,7 @@ impl Default for Undefined {
 }
 
 #[derive(Clone, Trace)]
-pub struct CompoundCondition(Vec<Value>);
+pub struct CompoundCondition(pub(crate) Vec<Value>);
 
 impl SchemeCompatible for CompoundCondition {
     fn rtd() -> Arc<RecordTypeDescriptor> {
@@ -562,7 +606,7 @@ pub fn with_exception_handler(
         None,
     );
 
-    Ok(Application::new(thunk.clone(), vec![Value::from(k)], None))
+    Ok(Application::new(thunk, vec![Value::from(k)], None))
 }
 
 #[cps_bridge(def = "raise obj", lib = "(rnrs base builtins (6))")]

@@ -7,7 +7,7 @@ use crate::{
     gc::{Gc, GcInner, Trace},
     lists::{self, Pair, list_to_vec},
     num::Number,
-    ports::Port,
+    ports::{BufferMode, Port, Transcoder},
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::BridgeFnDebugInfo,
     runtime::{Runtime, RuntimeInner},
@@ -659,6 +659,10 @@ pub struct DynStack {
 }
 
 impl DynStack {
+    // TODO: We should certainly try to optimize these functions. Linear
+    // searching isn't _great_, although in practice I can't imagine this stack
+    // will ever get very large.
+
     pub fn current_exception_handler(&self) -> Option<Procedure> {
         self.dyn_stack.iter().rev().find_map(|elem| match elem {
             DynStackElem::ExceptionHandler(proc) => Some(proc.clone()),
@@ -666,41 +670,71 @@ impl DynStack {
         })
     }
 
-    pub fn current_output_port(&self) -> Option<Port> {
-        self.dyn_stack.iter().rev().find_map(|elem| match elem {
-            DynStackElem::CurrentOutputPort(port) => Some(port.clone()),
-            _ => None,
-        })
+    pub fn current_input_port(&self) -> Port {
+        self.dyn_stack
+            .iter()
+            .rev()
+            .find_map(|elem| match elem {
+                DynStackElem::CurrentInputPort(port) => Some(port.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                Port::new(
+                    "<stdin>",
+                    #[cfg(not(feature = "async"))]
+                    std::io::stdin(),
+                    #[cfg(feature = "tokio")]
+                    tokio::io::stdin(),
+                    BufferMode::Line,
+                    Some(Transcoder::native()),
+                )
+            })
     }
 
-    pub fn current_input_port(&self) -> Option<Port> {
-        self.dyn_stack.iter().rev().find_map(|elem| match elem {
-            DynStackElem::CurrentInputPort(port) => Some(port.clone()),
-            _ => None,
-        })
+    pub fn current_output_port(&self) -> Port {
+        self.dyn_stack
+            .iter()
+            .rev()
+            .find_map(|elem| match elem {
+                DynStackElem::CurrentOutputPort(port) => Some(port.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                Port::new(
+                    "<stdout>",
+                    #[cfg(not(feature = "async"))]
+                    std::io::stdout(),
+                    #[cfg(feature = "tokio")]
+                    tokio::io::stdout(),
+                    // TODO: Probably should change this to line, but that
+                    // doesn't play nicely with rustyline
+                    BufferMode::None,
+                    Some(Transcoder::native()),
+                )
+            })
     }
 
-    pub fn push(&mut self, elem: DynStackElem) {
+    pub(crate) fn push(&mut self, elem: DynStackElem) {
         self.dyn_stack.push(elem);
     }
 
-    pub fn pop(&mut self) -> Option<DynStackElem> {
+    pub(crate) fn pop(&mut self) -> Option<DynStackElem> {
         self.dyn_stack.pop()
     }
 
-    pub fn get(&self, idx: usize) -> Option<&DynStackElem> {
+    pub(crate) fn get(&self, idx: usize) -> Option<&DynStackElem> {
         self.dyn_stack.get(idx)
     }
 
-    pub fn last(&self) -> Option<&DynStackElem> {
+    pub(crate) fn last(&self) -> Option<&DynStackElem> {
         self.dyn_stack.last()
     }
 
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.dyn_stack.len()
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.dyn_stack.is_empty()
     }
 }
@@ -712,13 +746,13 @@ impl SchemeCompatible for DynStack {
 }
 
 #[derive(Clone, Debug, PartialEq, Trace)]
-pub enum DynStackElem {
+pub(crate) enum DynStackElem {
     Prompt(Prompt),
     PromptBarrier(PromptBarrier),
     Winder(Winder),
     ExceptionHandler(Procedure),
-    CurrentOutputPort(Port),
     CurrentInputPort(Port),
+    CurrentOutputPort(Port),
 }
 
 pub(crate) unsafe extern "C" fn pop_dyn_stack(

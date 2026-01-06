@@ -13,7 +13,7 @@ use crate::{
 
 #[repr(align(16))]
 pub(crate) struct WideStringInner {
-    chars: RwLock<Vec<char>>,
+    pub(crate) chars: RwLock<Vec<char>>,
     mutable: bool,
 }
 
@@ -26,6 +26,40 @@ pub struct WideString(pub(crate) Arc<WideStringInner>);
 impl WideString {
     pub fn new(s: impl fmt::Display) -> Self {
         Self::from(s.to_string())
+    }
+
+    pub fn new_mutable<V>(value: V) -> Self
+    where
+        Self: From<V>,
+    {
+        let mut this = Self::from(value);
+        Arc::get_mut(&mut this.0).unwrap().mutable = true;
+        this
+    }
+
+    pub fn clear(&self) {
+        self.0.chars.write().clear()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.chars.read().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.chars.read().is_empty()
+    }
+
+    pub fn get(&self, idx: usize) -> Option<char> {
+        self.0.chars.read().get(idx).copied()
+    }
+}
+
+impl From<Vec<char>> for WideString {
+    fn from(value: Vec<char>) -> Self {
+        Self(Arc::new(WideStringInner {
+            chars: RwLock::new(value),
+            mutable: false,
+        }))
     }
 }
 
@@ -120,6 +154,12 @@ pub fn string(char: &Value, chars: &[Value]) -> Result<Vec<Value>, Condition> {
         ),
         mutable: true,
     })))])
+}
+
+#[bridge(name = "string-length", lib = "(rnrs base builtins (6))")]
+pub fn string_length(s: &Value) -> Result<Vec<Value>, Condition> {
+    let s: WideString = s.clone().try_into()?;
+    Ok(vec![Value::from(s.len())])
 }
 
 #[bridge(name = "string-ref", lib = "(rnrs base builtins (6))")]

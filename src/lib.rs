@@ -3,6 +3,7 @@ extern crate self as scheme_rs;
 pub mod ast;
 pub mod character;
 pub mod cps;
+pub mod enumerations;
 pub mod env;
 pub mod eval;
 pub mod exceptions;

@@ -18,8 +18,8 @@ use crate::{
     vectors::{self, ByteVector, Vector, VectorInner},
 };
 use std::{
-    collections::HashMap, fmt, hash::Hash, io::Write, marker::PhantomData, mem::ManuallyDrop,
-    ops::Deref, ptr::null, sync::Arc,
+    collections::HashMap, fmt, hash::Hash, marker::PhantomData, mem::ManuallyDrop, ops::Deref,
+    ptr::null, sync::Arc,
 };
 
 const ALIGNMENT: usize = 16;
@@ -108,13 +108,12 @@ impl Value {
         this.0
     }
 
-    fn from_ptr_and_tag<T>(ptr: *const T, tag: Tag) -> Self {
+    fn from_ptr_and_tag<T: Send + Sync>(ptr: *const T, tag: Tag) -> Self {
         Self(ptr.map_addr(|raw| raw | tag as usize) as *const ())
     }
 
-    fn from_mut_ptr_and_tag<T>(ptr: *mut T, tag: Tag) -> Self {
+    fn from_mut_ptr_and_tag<T: Send + Sync>(ptr: *mut T, tag: Tag) -> Self {
         Self(ptr.map_addr(|raw| raw | tag as usize) as *const ())
-        // Self(ptr as u64 | tag as u64)
     }
 
     pub fn undefined() -> Self {
@@ -904,7 +903,26 @@ impl TryFrom<Value> for Cell {
     }
 }
 
-impl_try_from_value_for!(bool, Boolean, "bool");
+impl From<Value> for bool {
+    fn from(value: Value) -> Self {
+        value.is_true()
+    }
+}
+
+impl From<bool> for UnpackedValue {
+    fn from(value: bool) -> Self {
+        Self::Boolean(value)
+    }
+}
+
+impl From<bool> for Value {
+    fn from(value: bool) -> Self {
+        UnpackedValue::from(value).into_value()
+    }
+}
+
+// impl_try_from_value_for!(bool, Boolean, "bool");
+
 impl_try_from_value_for!(char, Character, "char");
 impl_try_from_value_for!(Arc<Number>, Number, "number");
 impl_try_from_value_for!(WideString, String, "string");
@@ -1015,6 +1033,50 @@ impl TryFrom<Value> for String {
     }
 }
 
+/// Trait for converting vecs of values into arrays
+pub trait ExpectN<T> {
+    fn expect_n<const N: usize>(self) -> Result<[T; N], Condition>;
+}
+
+impl<T> ExpectN<T> for Vec<Value>
+where
+    Value: TryInto<T>,
+    Condition: From<<Value as TryInto<T>>::Error>,
+{
+    fn expect_n<const N: usize>(self) -> Result<[T; N], Condition> {
+        if self.len() != N {
+            return Err(Condition::error("wrong number of values"));
+        }
+        // Safety: we've already determined that self is the correct size, so we
+        // can safely use unwrap_unchecked
+        Ok(unsafe {
+            self.into_iter()
+                .map(Value::try_into)
+                .collect::<Result<Vec<_>, _>>()?
+                .try_into()
+                .unwrap_unchecked()
+        })
+    }
+}
+
+/// Trait for converting vecs of values into one type
+pub trait Expect1<T> {
+    fn expect1(self) -> Result<T, Condition>;
+}
+
+impl<T> Expect1<T> for Vec<Value>
+where
+    Value: TryInto<T>,
+    Condition: From<<Value as TryInto<T>>::Error>,
+{
+    fn expect1(self) -> Result<T, Condition> {
+        let [val] = self
+            .try_into()
+            .map_err(|_| Condition::error("wrong number of values"))?;
+        val.try_into().map_err(Condition::from)
+    }
+}
+
 /// Determines which children of the given list are circular, i.e. have children
 /// that refer to back to them. This is just a depth-first search.
 fn determine_circularity(
@@ -1106,7 +1168,7 @@ fn debug_value(
         UnpackedValue::Null => write!(f, "()"),
         UnpackedValue::Boolean(true) => write!(f, "#t"),
         UnpackedValue::Boolean(false) => write!(f, "#f"),
-        UnpackedValue::Number(number) => write!(f, "{number:?}"),
+        UnpackedValue::Number(number) => write!(f, "{number}"),
         UnpackedValue::Character(c) => write!(f, "#\\{c}"),
         UnpackedValue::String(string) => write!(f, "{string:?}"),
         UnpackedValue::Symbol(symbol) => write!(f, "{symbol}"),
@@ -1191,11 +1253,4 @@ pub fn pair_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
 #[bridge(name = "procedure?", lib = "(rnrs base builtins (6))")]
 pub fn procedure_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(arg.type_of() == ValueType::Procedure)])
-}
-
-#[bridge(name = "display", lib = "(rnrs base builtins (6))")]
-pub fn display(arg: &Value) -> Result<Vec<Value>, Condition> {
-    print!("{arg}");
-    let _ = std::io::stdout().flush();
-    Ok(Vec::new())
 }
