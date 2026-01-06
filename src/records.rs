@@ -13,7 +13,7 @@ use by_address::ByAddress;
 use parking_lot::RwLock;
 
 use crate::{
-    exceptions::Condition,
+    conditions::Condition,
     gc::{Gc, GcInner, Trace},
     num::Number,
     proc::{Application, DynStack, FuncPtr, Procedure},

@@ -5,7 +5,7 @@ use std::{collections::HashSet, sync::Arc};
 use indexmap::IndexSet;
 
 use crate::{
-    exceptions::Condition,
+    conditions::Condition,
     gc::{Gc, Trace},
     records::{RecordTypeDescriptor, SchemeCompatible, rtd},
     symbols::Symbol,

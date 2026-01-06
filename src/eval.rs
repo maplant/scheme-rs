@@ -6,9 +6,9 @@ use scheme_rs_macros::{maybe_async, maybe_await};
 
 use crate::{
     ast::{Expression, ImportSet, ParseContext, discard_for},
+    conditions::Condition,
     cps::Compile,
     env::Environment,
-    exceptions::Condition,
     proc::{Application, DynStack},
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::{Library, cps_bridge},

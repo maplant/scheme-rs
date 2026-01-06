@@ -3,7 +3,7 @@ use parking_lot::RwLock;
 
 use crate::{
     ast,
-    exceptions::{Condition, Exception},
+    conditions::Condition,
     gc::{Gc, GcInner, Trace},
     hashtables::{self, HashTable, HashTableInner},
     lists::{self, Pair, PairInner},
@@ -374,14 +374,6 @@ where
 impl From<ast::Literal> for Value {
     fn from(lit: ast::Literal) -> Self {
         Value::new(lit.into())
-    }
-}
-
-impl From<Exception> for Value {
-    fn from(exception: Exception) -> Self {
-        // Until we can decide on a good method for including the stack trace with
-        // the new condition, just return the object.
-        exception.obj
     }
 }
 
@@ -870,6 +862,37 @@ macro_rules! impl_try_from_value_for {
             }
         }
     };
+}
+
+impl From<()> for UnpackedValue {
+    fn from((): ()) -> Self {
+        Self::Null
+    }
+}
+
+impl From<()> for Value {
+    fn from((): ()) -> Self {
+        UnpackedValue::Null.into_value()
+    }
+}
+
+impl TryFrom<UnpackedValue> for () {
+    type Error = Condition;
+
+    fn try_from(value: UnpackedValue) -> Result<Self, Self::Error> {
+        match value {
+            UnpackedValue::Null => Ok(()),
+            e => Err(Condition::type_error("null", e.type_name())),
+        }
+    }
+}
+
+impl TryFrom<Value> for () {
+    type Error = Condition;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        value.unpack().try_into()
+    }
 }
 
 impl From<Cell> for UnpackedValue {

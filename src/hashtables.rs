@@ -9,7 +9,7 @@ use std::{
 };
 
 use crate::{
-    exceptions::Condition,
+    conditions::Condition,
     gc::{Gc, Trace},
     proc::Procedure,
     registry::bridge,

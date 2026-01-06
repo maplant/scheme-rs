@@ -15,8 +15,8 @@ use std::{
 };
 
 use crate::{
+    conditions::{Assertion, Condition, Error, raise},
     enumerations::{EnumerationSet, EnumerationType},
-    exceptions::{Assertion, Condition, Error, raise},
     gc::{Gc, GcInner, Trace},
     proc::{Application, DynStack, DynStackElem, FuncPtr, Procedure, pop_dyn_stack},
     records::{Record, RecordTypeDescriptor, SchemeCompatible},
@@ -566,7 +566,7 @@ mod __impl {
                     Value::from(start),
                     Value::from(count),
                 ])
-                .map_err(|err| err.into_inner().add_condition(IoReadError::new()))?
+                .map_err(|err| err.add_condition(IoReadError::new()))?
                 .try_into()
                 .map_err(|_| {
                     Condition::io_read_error(
@@ -588,7 +588,7 @@ mod __impl {
                     Value::from(start),
                     Value::from(count),
                 ])
-                .map_err(|err| err.into_inner().add_condition(IoReadError::new()))?;
+                .map_err(|err| err.add_condition(IoReadError::new()))?;
             Ok(())
         })
     }
@@ -597,7 +597,7 @@ mod __impl {
         Box::new(move |_| {
             let [pos] = get_pos
                 .call(&[])
-                .map_err(|err| err.into_inner().add_condition(IoError::new()))?
+                .map_err(|err| err.add_condition(IoError::new()))?
                 .try_into()
                 .map_err(|_| {
                     Condition::io_error("invalid number of values returned get-pos procedure")
@@ -613,7 +613,7 @@ mod __impl {
         Box::new(move |_, pos| {
             let _ = set_pos
                 .call(&[Value::from(pos)])
-                .map_err(|err| err.into_inner().add_condition(IoError::new()))?;
+                .map_err(|err| err.add_condition(IoError::new()))?;
             Ok(())
         })
     }
@@ -622,7 +622,7 @@ mod __impl {
         Box::new(move |_| {
             let _ = close
                 .call(&[])
-                .map_err(|err| err.into_inner().add_condition(IoError::new()))?;
+                .map_err(|err| err.add_condition(IoError::new()))?;
             Ok(())
         })
     }

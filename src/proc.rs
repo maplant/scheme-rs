@@ -2,8 +2,8 @@
 //! Contains the main evaluation trampoline.
 
 use crate::{
+    conditions::{Condition, Frame, raise},
     env::Local,
-    exceptions::{Condition, Exception, Frame, raise},
     gc::{Gc, GcInner, Trace},
     lists::{self, Pair, list_to_vec},
     num::Number,
@@ -404,7 +404,7 @@ impl Procedure {
     }
 
     #[maybe_async]
-    pub fn call(&self, args: &[Value]) -> Result<Vec<Value>, Exception> {
+    pub fn call(&self, args: &[Value]) -> Result<Vec<Value>, Condition> {
         let mut args = args.to_vec();
 
         args.push(halt_continuation(self.get_runtime()));
@@ -413,7 +413,7 @@ impl Procedure {
     }
 
     #[cfg(feature = "async")]
-    pub fn call_sync(&self, args: &[Value]) -> Result<Vec<Value>, Exception> {
+    pub fn call_sync(&self, args: &[Value]) -> Result<Vec<Value>, Condition> {
         let mut args = args.to_vec();
 
         args.push(halt_continuation(self.get_runtime()));
@@ -506,7 +506,7 @@ impl Application {
     /// Evaluate the application - and all subsequent application - until all that
     /// remains are values. This is the main trampoline of the evaluation engine.
     #[maybe_async]
-    pub fn eval(mut self, dyn_stack: &mut DynStack) -> Result<Vec<Value>, Exception> {
+    pub fn eval(mut self, dyn_stack: &mut DynStack) -> Result<Vec<Value>, Condition> {
         let mut stack_trace = StackTraceCollector::new();
 
         loop {
@@ -514,10 +514,7 @@ impl Application {
                 OpType::Proc(proc) => proc,
                 OpType::HaltOk => return Ok(self.args),
                 OpType::HaltErr => {
-                    return Err(Exception::new(
-                        stack_trace.into_frames(),
-                        self.args.pop().unwrap(),
-                    ));
+                    return Err(Condition(self.args.pop().unwrap()));
                 }
             };
             stack_trace.collect_application(op.0.debug_info.clone(), self.call_site);
@@ -527,7 +524,7 @@ impl Application {
 
     #[cfg(feature = "async")]
     /// Just like [eval] but throws an error if we encounter an async function.
-    pub fn eval_sync(mut self, dyn_stack: &mut DynStack) -> Result<Vec<Value>, Exception> {
+    pub fn eval_sync(mut self, dyn_stack: &mut DynStack) -> Result<Vec<Value>, Condition> {
         let mut stack_trace = StackTraceCollector::new();
 
         loop {
@@ -535,10 +532,7 @@ impl Application {
                 OpType::Proc(proc) => proc,
                 OpType::HaltOk => return Ok(self.args),
                 OpType::HaltErr => {
-                    return Err(Exception::new(
-                        stack_trace.into_frames(),
-                        self.args.pop().unwrap(),
-                    ));
+                    return Err(Condition(self.args.pop().unwrap()));
                 }
             };
             stack_trace.collect_application(op.0.debug_info.clone(), self.call_site);

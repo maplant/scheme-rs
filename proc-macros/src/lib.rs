@@ -91,7 +91,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                         // If the function returned an error, we want to raise
                         // it.
                         let result = match result {
-                            Err(err) => return ::scheme_rs::exceptions::raise(
+                            Err(err) => return ::scheme_rs::conditions::raise(
                                 runtime.clone(),
                                 err.into(),
                             ),
@@ -144,7 +144,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 // If the function returned an error, we want to raise
                 // it.
                 let result = match result {
-                    Err(err) => return ::scheme_rs::exceptions::raise(
+                    Err(err) => return ::scheme_rs::conditions::raise(
                         runtime.clone(),
                         err.into(),
                     ),
@@ -295,7 +295,7 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                         k
                     ).await {
                         Ok(app) => app,
-                        Err(err) => ::scheme_rs::exceptions::raise(
+                        Err(err) => ::scheme_rs::conditions::raise(
                             runtime.clone(),
                             err.into(),
                         ),
@@ -326,7 +326,7 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                     k
                 ) {
                     Ok(app) => app,
-                    Err(err) => ::scheme_rs::exceptions::raise(
+                    Err(err) => ::scheme_rs::conditions::raise(
                         runtime.clone(),
                         err.into(),
                     )
@@ -1092,7 +1092,7 @@ pub fn define_condition_type(tokens: TokenStream) -> TokenStream {
         let types = inputs.clone().map(|_| quote!(::scheme_rs::value::Value));
         quote!(
             constructor: |vals| {
-                let constructor: fn(#(#types,)*) -> Result<#rust_name, ::scheme_rs::exceptions::Condition> = #constructor;
+                let constructor: fn(#(#types,)*) -> Result<#rust_name, ::scheme_rs::conditions::Condition> = #constructor;
                 Ok(::scheme_rs::records::into_scheme_compatible(Gc::new((constructor)(#(vals[#inputs].clone(),)*)?)))
             },
         )

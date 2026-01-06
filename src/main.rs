@@ -6,9 +6,9 @@ use rustyline::{
 };
 use scheme_rs::{
     ast::{DefinitionBody, ImportSet, ParseAstError, ParseContext},
+    conditions::Condition,
     cps::Compile,
     env::Environment,
-    exceptions::Exception,
     ports::{BufferMode, Port, Prompt, Transcoder},
     proc::{Application, DynStack},
     registry::Library,
@@ -115,7 +115,7 @@ fn main() -> ExitCode {
 #[derive(derive_more::From, Debug)]
 pub enum EvalError {
     ParseAstError(ParseAstError),
-    Exception(Exception),
+    Exception(Condition),
 }
 
 #[maybe_async]

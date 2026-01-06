@@ -9,7 +9,7 @@ use indexmap::IndexSet;
 use rand::distr::{Alphabetic, SampleString};
 use scheme_rs_macros::{Trace, bridge};
 
-use crate::{exceptions::Condition, strings::WideString, value::Value};
+use crate::{conditions::Condition, strings::WideString, value::Value};
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Trace)]
 pub struct Symbol(pub(crate) u32);

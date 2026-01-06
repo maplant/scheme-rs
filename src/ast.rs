@@ -1,9 +1,9 @@
 //! Data structures for expanding and representing Scheme code.
 
 use crate::{
+    conditions::Condition,
     cps::{Compile, PrimOp},
     env::{Environment, Local, Var},
-    exceptions::Condition,
     expand::{SyntaxRule, Template},
     gc::Trace,
     num::Number,

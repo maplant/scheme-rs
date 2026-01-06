@@ -1,76 +1,21 @@
 //! Exceptional situations and conditions
 
-use parking_lot::RwLock;
-use scheme_rs_macros::{cps_bridge, runtime_fn};
-
 use crate::{
     ast::ParseAstError,
     gc::{Gc, GcInner, Trace},
     ports::{IoError, IoReadError, IoWriteError},
     proc::{Application, DynStack, DynStackElem, FuncPtr, Procedure, pop_dyn_stack},
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
-    registry::ImportError,
+    registry::{ImportError, cps_bridge},
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax, parse::ParseSyntaxError},
     value::Value,
 };
-
+use parking_lot::RwLock;
 pub use scheme_rs_macros::define_condition_type;
-
-use std::{convert::Infallible, error::Error as StdError, fmt, ops::Range, sync::Arc};
-
-#[derive(Clone, Trace)]
-pub struct Exception {
-    pub backtrace: Vec<Frame>,
-    pub obj: Value,
-}
-
-impl Exception {
-    pub fn new(backtrace: Vec<Frame>, obj: Value) -> Self {
-        Self { backtrace, obj }
-    }
-
-    pub fn into_inner(self) -> Condition {
-        Condition(self.obj)
-    }
-}
-
-impl fmt::Display for Exception {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "Uncaught exception: {}", self.obj)?;
-        Ok(())
-    }
-}
-
-impl fmt::Debug for Exception {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        const MAX_BACKTRACE_LEN: usize = 20;
-        writeln!(f, "Uncaught exception: {}", self.obj)?;
-        if !self.backtrace.is_empty() {
-            writeln!(f, "Stack trace:")?;
-            for (i, frame) in self.backtrace.iter().rev().enumerate() {
-                if i >= MAX_BACKTRACE_LEN {
-                    writeln!(f, "(backtrace truncated)")?;
-                    break;
-                }
-                writeln!(f, "{i}: {frame}")?;
-            }
-        }
-        Ok(())
-    }
-}
-
-impl StdError for Exception {}
-
-impl From<Condition> for Exception {
-    fn from(cond: Condition) -> Self {
-        Self {
-            backtrace: Vec::new(),
-            obj: cond.0,
-        }
-    }
-}
+use scheme_rs_macros::runtime_fn;
+use std::{convert::Infallible, fmt, ops::Range, sync::Arc};
 
 impl fmt::Display for Condition {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -81,13 +26,6 @@ impl fmt::Display for Condition {
 impl From<ParseSyntaxError> for Condition {
     fn from(_error: ParseSyntaxError) -> Self {
         todo!()
-    }
-}
-
-impl From<Exception> for Condition {
-    fn from(e: Exception) -> Self {
-        // For now just drop the back trace:
-        Self(e.obj)
     }
 }
 
@@ -381,6 +319,19 @@ impl Message {
         }
     }
 }
+
+define_condition_type!(
+    rust_name: StackTrace,
+    scheme_name: "&trace",
+    parent: SimpleCondition,
+    fields: {
+        // Not quite sure what this should be yet, maybe a vec of syntaxes?
+        trace: Vec<Value>,
+    },
+    constructor: |_trace| {
+        Ok(StackTrace { parent: Gc::new(SimpleCondition::new()), trace: Vec::new() })
+    }
+);
 
 define_condition_type!(
     rust_name: Error,

@@ -5,7 +5,7 @@ use std::{fmt, hash::Hash, sync::Arc};
 use parking_lot::RwLock;
 
 use crate::{
-    exceptions::Condition,
+    conditions::Condition,
     gc::Trace,
     registry::bridge,
     value::{Value, ValueType},

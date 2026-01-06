@@ -9,7 +9,7 @@ use unicode_categories::UnicodeCategories;
 use futures::future::BoxFuture;
 
 use crate::{
-    exceptions::Condition,
+    conditions::Condition,
     num,
     ports::{PortData, PortInfo},
 };

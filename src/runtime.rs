@@ -1,8 +1,8 @@
 use crate::{
     ast::DefinitionBody,
+    conditions::{Condition, raise},
     cps::{Compile, Cps, codegen::RuntimeFunctionsBuilder},
     env::{Environment, Global},
-    exceptions::{Condition, Exception, raise},
     gc::{Gc, GcInner, Trace, init_gc},
     lists::{Pair, list_to_vec},
     num,
@@ -53,7 +53,7 @@ impl Runtime {
     }
 
     #[maybe_async]
-    pub fn run_program(&self, path: &Path) -> Result<Vec<Value>, Exception> {
+    pub fn run_program(&self, path: &Path) -> Result<Vec<Value>, Condition> {
         #[cfg(not(feature = "async"))]
         use std::fs::File;
 
