@@ -62,7 +62,7 @@ impl Runtime {
 
         let progm = Library::new_program(self, path);
         let env = Environment::Top(progm);
-        let sexprs = {
+        let form = {
             let port = Port::new(
                 path.display(),
                 maybe_await!(File::open(path)).unwrap(),
@@ -74,13 +74,7 @@ impl Runtime {
             maybe_await!(port.all_sexprs(span)).map_err(Condition::from)?
         };
 
-        let body = maybe_await!(DefinitionBody::parse_lib_body(
-            self,
-            &sexprs,
-            &env,
-            sexprs[0].span()
-        ))
-        .unwrap();
+        let body = maybe_await!(DefinitionBody::parse_lib_body(self, &form, &env)).unwrap();
         let compiled = body.compile_top_level();
         let closure = maybe_await!(self.compile_expr(compiled));
 

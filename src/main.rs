@@ -5,7 +5,7 @@ use rustyline::{
     validate::{ValidationContext, ValidationResult, Validator},
 };
 use scheme_rs::{
-    ast::{DefinitionBody, ImportSet, ParseAstError, ParseContext},
+    ast::{DefinitionBody, ImportSet, ParseContext},
     conditions::Condition,
     cps::Compile,
     env::Environment,
@@ -46,8 +46,9 @@ struct InputHelper {
 fn main() -> ExitCode {
     let runtime = Runtime::new();
     let repl = Library::new_repl(&runtime);
+    let env = Environment::Top(repl);
 
-    maybe_await!(repl.import(ImportSet::parse_from_str("(library (rnrs))").unwrap()))
+    maybe_await!(env.import(ImportSet::parse_from_str("(library (rnrs))").unwrap()))
         .expect("Failed to import standard library");
 
     let config = Config::builder()
@@ -73,7 +74,7 @@ fn main() -> ExitCode {
 
     let mut span = Span::new("<prompt>");
     let input_port = Port::new(
-        "<prompt",
+        "<prompt>",
         prompt,
         BufferMode::Block,
         Some(Transcoder::native()),
@@ -93,18 +94,15 @@ fn main() -> ExitCode {
             }
         };
 
-        match maybe_await!(compile_and_run_str(&runtime, &repl, sexpr)) {
+        match maybe_await!(compile_and_run_str(&runtime, &env, sexpr)) {
             Ok(results) => {
                 for result in results.into_iter() {
                     println!("${n_results} = {result:?}");
                     n_results += 1;
                 }
             }
-            Err(EvalError::Exception(exception)) => {
-                print!("{exception:?}");
-            }
             Err(err) => {
-                println!("Error: {err:?}");
+                println!("{err:?}");
             }
         }
     }
@@ -112,22 +110,15 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-#[derive(derive_more::From, Debug)]
-pub enum EvalError {
-    ParseAstError(ParseAstError),
-    Exception(Condition),
-}
-
 #[maybe_async]
 fn compile_and_run_str(
     runtime: &Runtime,
-    repl: &Library,
+    repl: &Environment,
     sexpr: Syntax,
-) -> Result<Vec<Value>, EvalError> {
-    let env = Environment::Top(repl.clone());
-    let span = sexpr.span().clone();
+) -> Result<Vec<Value>, Condition> {
     let ctxt = ParseContext::new(runtime, true);
-    let expr = maybe_await!(DefinitionBody::parse(&ctxt, &[sexpr], &env, &span))?;
+    let sexprs = [sexpr];
+    let expr = maybe_await!(DefinitionBody::parse(&ctxt, &sexprs, repl, &sexprs[0]))?;
     let compiled = expr.compile_top_level();
     let closure = maybe_await!(runtime.compile_expr(compiled));
     let result =

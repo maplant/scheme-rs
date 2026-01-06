@@ -18,7 +18,7 @@ use crate::{
     conditions::Condition,
     gc::{Gc, Trace},
     proc::Procedure,
-    registry::{Import, ImportError, Library},
+    registry::{Import, Library},
     symbols::Symbol,
     syntax::{Identifier, Mark},
     value::Value,
@@ -147,7 +147,7 @@ impl LexicalContour {
     }
 
     #[maybe_async]
-    pub fn import(&self, import_set: ImportSet) -> Result<(), ImportError> {
+    pub fn import(&self, import_set: ImportSet) -> Result<(), Condition> {
         let (rt, registry) = {
             let top = self.0.read().fetch_top();
             let top = top.0.read();
@@ -158,7 +158,9 @@ impl LexicalContour {
         for (ident, import) in imports {
             match this.imports.entry(ident) {
                 Entry::Occupied(prev_imported) if prev_imported.get().origin != import.origin => {
-                    return Err(ImportError::DuplicateIdentifier(prev_imported.key().sym));
+                    return Err(crate::registry::error::name_bound_multiple_times(
+                        prev_imported.key().sym,
+                    ));
                 }
                 Entry::Vacant(slot) => {
                     slot.insert(import);
@@ -245,12 +247,12 @@ impl LetSyntaxContourInner {
     }
 
     #[cfg(not(feature = "async"))]
-    pub fn import(&self, import_set: ImportSet) -> Result<(), ImportError> {
+    pub fn import(&self, import_set: ImportSet) -> Result<(), Condition> {
         self.up.import(import_set)
     }
 
     #[cfg(feature = "async")]
-    pub fn import(&self, import_set: ImportSet) -> BoxFuture<'static, Result<(), ImportError>> {
+    pub fn import(&self, import_set: ImportSet) -> BoxFuture<'static, Result<(), Condition>> {
         let up = self.up.clone();
         Box::pin(async move { up.import(import_set).await })
     }
@@ -429,12 +431,12 @@ impl MacroExpansion {
     }
 
     #[cfg(not(feature = "async"))]
-    pub fn import(&self, import_set: ImportSet) -> Result<(), ImportError> {
+    pub fn import(&self, import_set: ImportSet) -> Result<(), Condition> {
         self.up.import(import_set)
     }
 
     #[cfg(feature = "async")]
-    pub fn import(&self, import_set: ImportSet) -> BoxFuture<'static, Result<(), ImportError>> {
+    pub fn import(&self, import_set: ImportSet) -> BoxFuture<'static, Result<(), Condition>> {
         let up = self.up.clone();
         Box::pin(async move { up.import(import_set).await })
     }
@@ -529,12 +531,12 @@ impl SyntaxCaseExpr {
     }
 
     #[cfg(not(feature = "async"))]
-    fn import(&self, import: ImportSet) -> Result<(), ImportError> {
+    fn import(&self, import: ImportSet) -> Result<(), Condition> {
         self.up.import(import)
     }
 
     #[cfg(feature = "async")]
-    fn import(&self, import: ImportSet) -> BoxFuture<'static, Result<(), ImportError>> {
+    fn import(&self, import: ImportSet) -> BoxFuture<'static, Result<(), Condition>> {
         let up = self.up.clone();
         Box::pin(async move { up.import(import).await })
     }
@@ -647,10 +649,14 @@ impl Environment {
     }
 
     #[maybe_async]
-    pub fn import(&self, import: ImportSet) -> Result<(), ImportError> {
+    pub fn import(&self, import: ImportSet) -> Result<(), Condition> {
         let import_result = match self {
-            Self::Top(top) => return maybe_await!(top.import(import)),
-            Self::LexicalContour(lex) => return maybe_await!(lex.import(import)),
+            Self::Top(top) => {
+                return maybe_await!(top.import(import));
+            }
+            Self::LexicalContour(lex) => {
+                return maybe_await!(lex.import(import));
+            }
             Self::LetSyntaxContour(ls) => ls.0.read().import(import),
             Self::MacroExpansion(me) => me.read().import(import),
             Self::SyntaxCaseExpr(sc) => sc.read().import(import),

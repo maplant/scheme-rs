@@ -1,5 +1,5 @@
 use crate::{
-    ast::{Expression, Literal, ParseAstError, ParseContext},
+    ast::{Expression, Literal, ParseContext},
     conditions::Condition,
     env::{EnvId, Environment, Local},
     gc::{Gc, Trace},
@@ -36,7 +36,7 @@ impl SyntaxRule {
         fender: Option<&Syntax>,
         output_expression: &Syntax,
         env: &Environment,
-    ) -> Result<Self, ParseAstError> {
+    ) -> Result<Self, Condition> {
         let mut variables = HashSet::new();
         let pattern = Pattern::compile(pattern, keywords, &mut variables);
         let binds = Local::gensym();

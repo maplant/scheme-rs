@@ -264,7 +264,10 @@ impl Syntax {
     }
 
     #[cfg(feature = "async")]
-    fn expand_once<'a>(&'a self, env: &'a Environment) -> BoxFuture<'a, Result<Expansion, Value>> {
+    fn expand_once<'a>(
+        &'a self,
+        env: &'a Environment,
+    ) -> BoxFuture<'a, Result<Expansion, Condition>> {
         Box::pin(self.expand_once_inner(env))
     }
 
@@ -290,8 +293,7 @@ impl Syntax {
                                 return Err(Condition::error(format!(
                                     "{} is not a variable transformer",
                                     var.sym
-                                ))
-                                .into());
+                                )));
                             }
                             return maybe_await!(self.apply_transformer(env, mac));
                         }
@@ -330,7 +332,7 @@ impl Syntax {
     }
 
     #[cfg(not(feature = "async"))]
-    pub fn from_str(s: &str, file_name: Option<&str>) -> Result<Vec<Self>, ParseSyntaxError> {
+    pub fn from_str(s: &str, file_name: Option<&str>) -> Result<Self, ParseSyntaxError> {
         use crate::ports::{BufferMode, Transcoder};
 
         let file_name = file_name.unwrap_or("<unknown>");
@@ -345,7 +347,7 @@ impl Syntax {
     }
 
     #[cfg(feature = "async")]
-    pub fn from_str(s: &str, file_name: Option<&str>) -> Result<Vec<Self>, ParseSyntaxError> {
+    pub fn from_str(s: &str, file_name: Option<&str>) -> Result<Self, ParseSyntaxError> {
         use crate::ports::{BufferMode, Transcoder};
 
         let file_name = file_name.unwrap_or("<unknown>");
@@ -499,6 +501,13 @@ impl Identifier {
     pub fn new(name: &str) -> Self {
         Self {
             sym: Symbol::intern(name),
+            marks: BTreeSet::default(),
+        }
+    }
+
+    pub fn from_symbol(sym: Symbol) -> Self {
+        Self {
+            sym,
             marks: BTreeSet::default(),
         }
     }

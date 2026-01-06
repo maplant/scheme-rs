@@ -12,7 +12,7 @@ use crate::{
     registry::BridgeFnDebugInfo,
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
-    syntax::Span,
+    syntax::{Identifier, Span, Syntax},
     value::Value,
     vectors::Vector,
 };
@@ -676,6 +676,7 @@ pub fn apply(
 pub struct DynStack {
     dyn_stack: Vec<DynStackElem>,
     /// The current stack trace of the program
+    // TODO: We should limit the number of frames
     trace: Vec<Option<Frame>>,
 }
 
@@ -697,6 +698,19 @@ impl DynStack {
         } else {
             self.trace.push(None);
         }
+    }
+
+    /// Fetch a stack trace from the current dyn stack
+    pub fn to_stack_trace(&self) -> Vec<Syntax> {
+        self.trace
+            .iter()
+            .flatten()
+            .map(|frame| Syntax::Identifier {
+                ident: Identifier::from_symbol(frame.func_name),
+                binding_env: None,
+                span: frame.call_site.as_ref().clone(),
+            })
+            .collect()
     }
 
     pub fn current_exception_handler(&self) -> Option<Procedure> {

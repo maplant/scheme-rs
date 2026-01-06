@@ -1,17 +1,15 @@
 //! Exceptional situations and conditions.
-//!
-//!
 
 use crate::{
-    ast::ParseAstError,
     gc::{Gc, GcInner, Trace},
     ports::{IoError, IoReadError, IoWriteError},
     proc::{Application, DynStack, DynStackElem, FuncPtr, Procedure, pop_dyn_stack},
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
-    registry::{ImportError, cps_bridge},
+    registry::cps_bridge,
     runtime::{Runtime, RuntimeInner},
     syntax::{Identifier, Syntax, parse::ParseSyntaxError},
     value::Value,
+    vectors::Vector,
 };
 use parking_lot::RwLock;
 pub use scheme_rs_macros::define_condition_type;
@@ -21,12 +19,6 @@ use std::{convert::Infallible, fmt, ops::Range, sync::Arc};
 impl fmt::Display for Condition {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         <Value as fmt::Debug>::fmt(&self.0, f)
-    }
-}
-
-impl From<ParseSyntaxError> for Condition {
-    fn from(_error: ParseSyntaxError) -> Self {
-        todo!()
     }
 }
 
@@ -191,6 +183,12 @@ impl Condition {
     }
 }
 
+impl From<std::io::Error> for Condition {
+    fn from(value: std::io::Error) -> Self {
+        Self::from((IoError::new(), Message::new(format!("{value:?}"))))
+    }
+}
+
 impl From<SimpleCondition> for Condition {
     fn from(simple: SimpleCondition) -> Self {
         Self(Value::from(Record::from_rust_type(simple)))
@@ -209,23 +207,21 @@ impl From<Serious> for Condition {
     }
 }
 
+impl From<Message> for Condition {
+    fn from(message: Message) -> Self {
+        Self(Value::from(Record::from_rust_type(message)))
+    }
+}
+
 impl From<Infallible> for Condition {
     fn from(infallible: Infallible) -> Self {
         match infallible {}
     }
 }
 
-// TODO: This needs to be removed and replaced in each place with a custom
-// conversion that takes into account the form/subform.
-impl From<ParseAstError> for Condition {
-    fn from(value: ParseAstError) -> Self {
-        Condition::error(format!("Error parsing: {value:?}"))
-    }
-}
-
-impl From<ImportError> for Condition {
-    fn from(value: ImportError) -> Self {
-        Condition::error(format!("Error importing: {value:?}"))
+impl From<ParseSyntaxError> for Condition {
+    fn from(error: ParseSyntaxError) -> Self {
+        Self::from((Lexical::new(), Message::new(error)))
     }
 }
 
@@ -327,11 +323,13 @@ define_condition_type!(
     scheme_name: "&trace",
     parent: SimpleCondition,
     fields: {
-        // Not quite sure what this should be yet, maybe a vec of syntaxes?
-        trace: Vec<Value>,
+        trace: Vector,
     },
-    constructor: |_trace| {
-        Ok(StackTrace { parent: Gc::new(SimpleCondition::new()), trace: Vec::new() })
+    constructor: |trace| {
+        Ok(StackTrace {
+            parent: Gc::new(SimpleCondition::new()),
+            trace: trace.clone().try_into()?,
+        })
     }
 );
 
@@ -352,6 +350,30 @@ impl Error {
 impl Default for Error {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+define_condition_type!(
+    rust_name: ImportError,
+    scheme_name: "&import",
+    parent: Error,
+    fields: {
+        library: String,
+    },
+    constructor: |lib| {
+        Ok(ImportError {  parent: Gc::new(Error::new()), library: lib.to_string() })
+    },
+    debug: |this, f| {
+        write!(f, " library: {}", this.library)
+    }
+);
+
+impl ImportError {
+    pub fn new(library: String) -> Self {
+        Self {
+            parent: Gc::new(Error::new()),
+            library,
+        }
     }
 }
 
@@ -390,6 +412,26 @@ impl Assertion {
 }
 
 impl Default for Assertion {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+define_condition_type!(
+    rust_name: Lexical,
+    scheme_name: "&lexical",
+    parent: Violation,
+);
+
+impl Lexical {
+    pub fn new() -> Self {
+        Self {
+            parent: Gc::new(Violation::new()),
+        }
+    }
+}
+
+impl Default for Lexical {
     fn default() -> Self {
         Self::new()
     }
@@ -500,33 +542,6 @@ where
         ])
     }
 }
-
-/*
-#[derive(Debug, Clone, Trace)]
-pub struct Frame {
-    pub proc: Symbol,
-    pub call_site_span: Option<Arc<Span>>,
-}
-
-impl Frame {
-    pub fn new(proc: Symbol, call_site_span: Option<Arc<Span>>) -> Self {
-        Self {
-            proc,
-            call_site_span,
-        }
-    }
-}
-
-impl fmt::Display for Frame {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(ref call_site) = self.call_site_span {
-            write!(f, "{} at {call_site}", self.proc)
-        } else {
-            write!(f, "{} at (unknown)", self.proc)
-        }
-    }
-}
-*/
 
 #[cps_bridge(
     def = "with-exception-handler handler thunk",

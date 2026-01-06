@@ -2334,7 +2334,7 @@ impl Port {
     }
 
     #[maybe_async]
-    pub fn all_sexprs(&self, span: Span) -> Result<Vec<Syntax>, ParseSyntaxError> {
+    pub fn all_sexprs(&self, span: Span) -> Result<Syntax, ParseSyntaxError> {
         #[cfg(not(feature = "async"))]
         let mut data = self.0.data.lock().unwrap();
 
