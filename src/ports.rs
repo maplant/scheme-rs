@@ -510,7 +510,7 @@ mod __impl {
         T: Read + Any + Send + 'static,
     {
         Box::new(|any, buff, start, count| {
-            let concrete = unsafe { any.downcast_mut::<T>().unwrap() };
+            let concrete = any.downcast_mut::<T>().unwrap();
             let mut buff = buff.as_mut_slice();
             concrete
                 .read(&mut buff[start..(start + count)])
@@ -523,7 +523,7 @@ mod __impl {
         T: Write + Any + Send + 'static,
     {
         Box::new(|any, buff, start, count| {
-            let concrete = unsafe { any.downcast_mut::<T>().unwrap() };
+            let concrete = any.downcast_mut::<T>().unwrap();
             let buff = buff.as_slice();
             concrete
                 .write_all(&buff[start..(start + count)])
@@ -538,7 +538,7 @@ mod __impl {
         T: Seek + Any + Send + 'static,
     {
         Box::new(|any| {
-            let concrete = unsafe { any.downcast_mut::<T>().unwrap() };
+            let concrete = any.downcast_mut::<T>().unwrap();
             concrete
                 .stream_position()
                 .map_err(|err| Condition::io_error(format!("{err:?}")))
@@ -550,7 +550,7 @@ mod __impl {
         T: Seek + Any + Send + 'static,
     {
         Box::new(|any, pos| {
-            let concrete = unsafe { any.downcast_mut::<T>().unwrap() };
+            let concrete = any.downcast_mut::<T>().unwrap();
             let _ = concrete
                 .seek(SeekFrom::Start(pos))
                 .map_err(|err| Condition::io_error(format!("{err:?}")))?;
@@ -729,7 +729,7 @@ mod __impl {
     {
         Box::new(move |any, buff, start, count| {
             Box::pin(async move {
-                let concrete = unsafe { any.downcast_mut::<T>().unwrap_unchecked() };
+                let concrete = any.downcast_mut::<T>().unwrap();
                 let mut concrete: Pin<&mut T> = pin!(concrete);
                 let mut local_buff = vec![0u8; count];
                 let read = concrete
@@ -749,7 +749,7 @@ mod __impl {
     {
         Box::new(|any, buff, start, count| {
             Box::pin(async move {
-                let concrete = unsafe { any.downcast_mut::<T>().unwrap_unchecked() };
+                let concrete = any.downcast_mut::<T>().unwrap();
                 let mut concrete: Pin<&mut T> = pin!(concrete);
                 let local_buff = buff.as_slice()[start..(start + count)].to_vec();
                 concrete
@@ -771,7 +771,7 @@ mod __impl {
     {
         Box::new(|any| {
             Box::pin(async move {
-                let concrete = unsafe { any.downcast_mut::<T>().unwrap_unchecked() };
+                let concrete = any.downcast_mut::<T>().unwrap();
                 let mut concrete: Pin<&mut T> = pin!(concrete);
                 concrete
                     .stream_position()
@@ -787,7 +787,7 @@ mod __impl {
     {
         Box::new(|any, pos| {
             Box::pin(async move {
-                let concrete = unsafe { any.downcast_mut::<T>().unwrap_unchecked() };
+                let concrete = any.downcast_mut::<T>().unwrap();
                 let mut concrete: Pin<&mut T> = pin!(concrete);
                 let _ = concrete
                     .seek(SeekFrom::Start(pos))
@@ -2468,7 +2468,7 @@ mod prompt {
                 use std::cmp::Ordering;
 
                 let buff = &mut buff.as_mut_slice()[start..(start + count)];
-                let concrete = unsafe { any.downcast_mut::<Self>().unwrap_unchecked() };
+                let concrete = any.downcast_mut::<Self>().unwrap();
 
                 if concrete.closed {
                     return Ok(0);
@@ -2552,7 +2552,7 @@ mod prompt {
                 Box::pin(async move {
                     use std::cmp::Ordering;
 
-                    let concrete = unsafe { any.downcast_mut::<Self>().unwrap_unchecked() };
+                    let concrete = any.downcast_mut::<Self>().unwrap();
                     let mut concrete: Pin<&mut Self> = std::pin::pin!(concrete);
 
                     // TODO: Figure out how to de-duplicate this code
@@ -4181,7 +4181,7 @@ pub fn file_exists_pred(filename: &Value) -> Result<Vec<Value>, Condition> {
     let filename = filename.to_string();
     let path = Path::new(&filename);
 
-    maybe_await!(try_exists(&path)).map_err(|err| Condition::io_error(format!("{err:?}")))?;
+    maybe_await!(try_exists(path)).map_err(|err| Condition::io_error(format!("{err:?}")))?;
 
     Ok(Vec::new())
 }
@@ -4198,7 +4198,7 @@ pub fn delete_file(filename: &Value) -> Result<Vec<Value>, Condition> {
     let filename = filename.to_string();
     let path = Path::new(&filename);
 
-    maybe_await!(remove_file(&path))
+    maybe_await!(remove_file(path))
         .map_err(|_| Condition::from((Assertion::new(), IoFilenameError::new(filename))))?;
 
     Ok(Vec::new())
