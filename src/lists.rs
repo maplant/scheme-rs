@@ -2,7 +2,7 @@ use indexmap::IndexMap;
 use parking_lot::RwLock;
 
 use crate::{
-    conditions::Condition,
+    exceptions::Exception,
     gc::{Gc, GcInner, Trace},
     num::Number,
     proc::{Application, DynStack, Procedure},
@@ -60,22 +60,22 @@ impl Pair {
     }
 
     /// Set the car of the Pair. Returns an error if pair is immutable.
-    pub fn set_car(&self, new_car: Value) -> Result<(), Condition> {
+    pub fn set_car(&self, new_car: Value) -> Result<(), Exception> {
         if self.0.mutable {
             *self.0.car.write() = new_car;
             Ok(())
         } else {
-            Err(Condition::error("pair is not mutable"))
+            Err(Exception::error("pair is not mutable"))
         }
     }
 
     /// Set the cdr of the Pair. Returns an error if pair is immutable.
-    pub fn set_cdr(&self, new_cdr: Value) -> Result<(), Condition> {
+    pub fn set_cdr(&self, new_cdr: Value) -> Result<(), Exception> {
         if self.0.mutable {
             *self.0.cdr.write() = new_cdr;
             Ok(())
         } else {
-            Err(Condition::error("pair is not mutable"))
+            Err(Exception::error("pair is not mutable"))
         }
     }
 }
@@ -177,7 +177,7 @@ pub fn list_to_vec_with_null(curr: &Value, out: &mut Vec<Value>) {
 }
 
 #[bridge(name = "list", lib = "(rnrs base builtins (6))")]
-pub fn list(args: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn list(args: &[Value]) -> Result<Vec<Value>, Exception> {
     // Construct the list in reverse
     let mut cdr = Value::null();
     for arg in args.iter().rev() {
@@ -187,48 +187,48 @@ pub fn list(args: &[Value]) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "cons", lib = "(rnrs base builtins (6))")]
-pub fn cons(car: &Value, cdr: &Value) -> Result<Vec<Value>, Condition> {
+pub fn cons(car: &Value, cdr: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(Pair::new(car.clone(), cdr.clone(), true))])
 }
 
 #[bridge(name = "car", lib = "(rnrs base builtins (6))")]
-pub fn car(val: &Value) -> Result<Vec<Value>, Condition> {
+pub fn car(val: &Value) -> Result<Vec<Value>, Exception> {
     match &*val.unpacked_ref() {
         UnpackedValue::Pair(pair) => Ok(vec![pair.car()]),
         UnpackedValue::Syntax(syn) => Ok(vec![Value::from(syn.car()?)]),
-        _ => Err(Condition::type_error("list", val.type_name())),
+        _ => Err(Exception::type_error("list", val.type_name())),
     }
 }
 
 #[bridge(name = "cdr", lib = "(rnrs base builtins (6))")]
-pub fn cdr(val: &Value) -> Result<Vec<Value>, Condition> {
+pub fn cdr(val: &Value) -> Result<Vec<Value>, Exception> {
     match &*val.unpacked_ref() {
         UnpackedValue::Pair(pair) => Ok(vec![pair.cdr()]),
         UnpackedValue::Syntax(syn) => Ok(vec![Value::from(syn.cdr()?)]),
-        _ => Err(Condition::type_error("list", val.type_name())),
+        _ => Err(Exception::type_error("list", val.type_name())),
     }
 }
 
 #[bridge(name = "set-car!", lib = "(rnrs base builtins (6))")]
-pub fn set_car(var: &Value, val: &Value) -> Result<Vec<Value>, Condition> {
+pub fn set_car(var: &Value, val: &Value) -> Result<Vec<Value>, Exception> {
     let pair: Pair = var.clone().try_into()?;
     pair.set_car(val.clone())?;
     Ok(Vec::new())
 }
 
 #[bridge(name = "set-cdr!", lib = "(rnrs base builtins (6))")]
-pub fn set_cdr(var: &Value, val: &Value) -> Result<Vec<Value>, Condition> {
+pub fn set_cdr(var: &Value, val: &Value) -> Result<Vec<Value>, Exception> {
     let pair: Pair = var.clone().try_into()?;
     pair.set_cdr(val.clone())?;
     Ok(Vec::new())
 }
 
 #[bridge(name = "length", lib = "(rnrs base builtins (6))")]
-pub fn length_builtin(arg: &Value) -> Result<Vec<Value>, Condition> {
+pub fn length_builtin(arg: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(Number::from(length(arg)?))])
 }
 
-pub fn length(arg: &Value) -> Result<usize, Condition> {
+pub fn length(arg: &Value) -> Result<usize, Exception> {
     let mut length = 0usize;
     let mut arg = arg.clone();
     loop {
@@ -236,7 +236,7 @@ pub fn length(arg: &Value) -> Result<usize, Condition> {
             match &*arg.unpacked_ref() {
                 UnpackedValue::Pair(pair) => pair.cdr(),
                 UnpackedValue::Null => break,
-                _ => return Err(Condition::error("list must be proper".to_string())),
+                _ => return Err(Exception::error("list must be proper".to_string())),
             }
         };
         length += 1;
@@ -245,7 +245,7 @@ pub fn length(arg: &Value) -> Result<usize, Condition> {
 }
 
 #[bridge(name = "list->vector", lib = "(rnrs base builtins (6))")]
-pub fn list_to_vector(list: &Value) -> Result<Vec<Value>, Condition> {
+pub fn list_to_vector(list: &Value) -> Result<Vec<Value>, Exception> {
     let mut vec = Vec::new();
     list_to_vec(list, &mut vec);
 
@@ -253,7 +253,7 @@ pub fn list_to_vector(list: &Value) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "append", lib = "(rnrs base builtins (6))")]
-pub fn append(list: &Value, to_append: &Value) -> Result<Vec<Value>, Condition> {
+pub fn append(list: &Value, to_append: &Value) -> Result<Vec<Value>, Exception> {
     let mut vec = Vec::new();
     list_to_vec(list, &mut vec);
     let mut list = to_append.clone();
@@ -271,7 +271,7 @@ pub fn map(
     list_n: &[Value],
     _params: &mut DynStack,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let [mapper, list_1] = args else {
         unreachable!()
     };
@@ -291,7 +291,7 @@ pub fn map(
         let (car, cdr) = match &*input.unpacked_ref() {
             UnpackedValue::Pair(pair) => pair.clone().into(),
             UnpackedValue::Syntax(syn) => (Value::from(syn.car()?), Value::from(syn.cdr()?)),
-            _ => return Err(Condition::type_error("list", input.type_name())),
+            _ => return Err(Exception::type_error("list", input.type_name())),
         };
 
         args.push(car);

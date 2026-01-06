@@ -6,9 +6,9 @@ use scheme_rs_macros::{maybe_async, maybe_await};
 
 use crate::{
     ast::{Expression, ImportSet, ParseContext, discard_for},
-    conditions::Condition,
     cps::Compile,
     env::Environment,
+    exceptions::Exception,
     proc::{Application, DynStack},
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::{Library, cps_bridge},
@@ -26,7 +26,7 @@ pub fn eval(
     _rest_args: &[Value],
     _dyn_stack: &mut DynStack,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let [expression, environment] = args else {
         unreachable!()
     };
@@ -54,7 +54,7 @@ pub fn environment(
     import_spec: &[Value],
     _dyn_stack: &mut DynStack,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let marks = BTreeSet::default();
     let import_sets = import_spec
         .iter()

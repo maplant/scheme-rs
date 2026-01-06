@@ -5,7 +5,7 @@ use std::{collections::HashSet, sync::Arc};
 use indexmap::IndexSet;
 
 use crate::{
-    conditions::Condition,
+    exceptions::Exception,
     gc::{Gc, Trace},
     records::{RecordTypeDescriptor, SchemeCompatible, rtd},
     symbols::Symbol,
@@ -38,9 +38,9 @@ impl EnumerationSet {
         }
     }
 
-    pub fn type_check(&self, ty: &Gc<EnumerationType>) -> Result<(), Condition> {
+    pub fn type_check(&self, ty: &Gc<EnumerationType>) -> Result<(), Exception> {
         if !Gc::ptr_eq(&self.enum_type, ty) {
-            Err(Condition::error("wrong enumeration type"))
+            Err(Exception::error("wrong enumeration type"))
         } else {
             Ok(())
         }

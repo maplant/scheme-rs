@@ -1,7 +1,7 @@
 use crate::{
     ast::Literal,
-    conditions::{Condition, SyntaxViolation},
     env::{EnvId, Environment, Keyword},
+    exceptions::{Exception, SyntaxViolation},
     gc::Trace,
     lists::list_to_vec_with_null,
     ports::Port,
@@ -131,21 +131,21 @@ impl Syntax {
         }
     }
 
-    pub fn car(&self) -> Result<Self, Condition> {
+    pub fn car(&self) -> Result<Self, Exception> {
         let Some([car, ..]) = self.as_list() else {
-            return Err(Condition::type_error("list", self.syntax_type()));
+            return Err(Exception::type_error("list", self.syntax_type()));
         };
         Ok(car.clone())
     }
 
-    pub fn cdr(&self) -> Result<Self, Condition> {
+    pub fn cdr(&self) -> Result<Self, Exception> {
         match self.as_list() {
             Some([_, null @ Syntax::Null { .. }]) => Ok(null.clone()),
             Some([_, cdr @ ..]) => Ok(Syntax::List {
                 list: cdr.to_vec(),
                 span: self.span().clone(),
             }),
-            _ => Err(Condition::type_error("list", self.syntax_type())),
+            _ => Err(Exception::type_error("list", self.syntax_type())),
         }
     }
 
@@ -230,7 +230,7 @@ impl Syntax {
     }
 
     #[maybe_async]
-    fn apply_transformer(&self, env: &Environment, mac: Keyword) -> Result<Expansion, Condition> {
+    fn apply_transformer(&self, env: &Environment, mac: Keyword) -> Result<Expansion, Exception> {
         // Create a new mark for the expansion context
         let new_mark = Mark::new();
 
@@ -245,7 +245,7 @@ impl Syntax {
         // Output must be syntax:
         let output: Arc<Syntax> = transformer_output
             .first()
-            .ok_or_else(|| Condition::error("syntax transformer produced no output"))?
+            .ok_or_else(|| Exception::error("syntax transformer produced no output"))?
             .clone()
             .try_into()?;
 
@@ -259,7 +259,7 @@ impl Syntax {
     }
 
     #[cfg(not(feature = "async"))]
-    fn expand_once(&self, env: &Environment) -> Result<Expansion, Condition> {
+    fn expand_once(&self, env: &Environment) -> Result<Expansion, Exception> {
         self.expand_once_inner(env)
     }
 
@@ -267,12 +267,12 @@ impl Syntax {
     fn expand_once<'a>(
         &'a self,
         env: &'a Environment,
-    ) -> BoxFuture<'a, Result<Expansion, Condition>> {
+    ) -> BoxFuture<'a, Result<Expansion, Exception>> {
         Box::pin(self.expand_once_inner(env))
     }
 
     #[maybe_async]
-    fn expand_once_inner(&self, env: &Environment) -> Result<Expansion, Condition> {
+    fn expand_once_inner(&self, env: &Environment) -> Result<Expansion, Exception> {
         match self {
             Self::List { list, .. } => {
                 // TODO: If list head is a list, do we expand this in here or in proc call?
@@ -290,7 +290,7 @@ impl Syntax {
                         // Look for a variable transformer:
                         if let Some(mac) = maybe_await!(env.fetch_keyword(var))? {
                             if !mac.transformer.is_variable_transformer() {
-                                return Err(Condition::error(format!(
+                                return Err(Exception::error(format!(
                                     "{} is not a variable transformer",
                                     var.sym
                                 )));
@@ -313,7 +313,7 @@ impl Syntax {
 
     /// Fully expand the outermost syntax object.
     #[maybe_async]
-    pub fn expand(mut self, env: &Environment) -> Result<FullyExpanded, Condition> {
+    pub fn expand(mut self, env: &Environment) -> Result<FullyExpanded, Exception> {
         let mut curr_env = env.clone();
         loop {
             match maybe_await!(self.expand_once(&curr_env)) {
@@ -630,19 +630,19 @@ impl Syntax {
 }
 
 #[bridge(name = "syntax->datum", lib = "(rnrs syntax-case builtins (6))")]
-pub fn syntax_to_datum(syn: &Value) -> Result<Vec<Value>, Condition> {
+pub fn syntax_to_datum(syn: &Value) -> Result<Vec<Value>, Exception> {
     let syn: Arc<Syntax> = syn.clone().try_into()?;
     Ok(vec![Value::datum_from_syntax(syn.as_ref())])
 }
 
 #[bridge(name = "datum->syntax", lib = "(rnrs syntax-case builtins (6))")]
-pub fn datum_to_syntax(template_id: &Value, datum: &Value) -> Result<Vec<Value>, Condition> {
+pub fn datum_to_syntax(template_id: &Value, datum: &Value) -> Result<Vec<Value>, Exception> {
     let syntax: Arc<Syntax> = template_id.clone().try_into()?;
     let Syntax::Identifier {
         ident: template_id, ..
     } = syntax.as_ref()
     else {
-        return Err(Condition::type_error("template_id", "syntax"));
+        return Err(Exception::type_error("template_id", "syntax"));
     };
     Ok(vec![Value::from(Syntax::syntax_from_datum(
         &template_id.marks,
@@ -651,7 +651,7 @@ pub fn datum_to_syntax(template_id: &Value, datum: &Value) -> Result<Vec<Value>,
 }
 
 #[bridge(name = "identifier?", lib = "(rnrs syntax-case builtins (6))")]
-pub fn identifier_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
+pub fn identifier_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
     let Ok(syn) = Arc::<Syntax>::try_from(obj.clone()) else {
         return Ok(vec![Value::from(false)]);
     };
@@ -659,20 +659,20 @@ pub fn identifier_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "bound-identifier=?", lib = "(rnrs syntax-case builtins (6))")]
-pub fn bound_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, Condition> {
+pub fn bound_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, Exception> {
     let id1: Arc<Syntax> = id1.clone().try_into()?;
     let id2: Arc<Syntax> = id2.clone().try_into()?;
     let Syntax::Identifier { ident: id1, .. } = id1.as_ref() else {
-        return Err(Condition::type_error("identifier", "syntax"));
+        return Err(Exception::type_error("identifier", "syntax"));
     };
     let Syntax::Identifier { ident: id2, .. } = id2.as_ref() else {
-        return Err(Condition::type_error("identifier", "syntax"));
+        return Err(Exception::type_error("identifier", "syntax"));
     };
     Ok(vec![Value::from(id1 == id2)])
 }
 
 #[bridge(name = "free-identifier=?", lib = "(rnrs syntax-case builtins (6))")]
-pub fn free_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, Condition> {
+pub fn free_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, Exception> {
     let id1: Arc<Syntax> = id1.clone().try_into()?;
     let id2: Arc<Syntax> = id2.clone().try_into()?;
     let Syntax::Identifier {
@@ -681,7 +681,7 @@ pub fn free_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, C
         ..
     } = id1.as_ref()
     else {
-        return Err(Condition::type_error("identifier", "syntax"));
+        return Err(Exception::type_error("identifier", "syntax"));
     };
     let Syntax::Identifier {
         ident: id2,
@@ -689,7 +689,7 @@ pub fn free_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, C
         ..
     } = id2.as_ref()
     else {
-        return Err(Condition::type_error("identifier", "syntax"));
+        return Err(Exception::type_error("identifier", "syntax"));
     };
     Ok(vec![Value::from(
         bound_id1 == bound_id2 && id1.sym == id2.sym,
@@ -697,7 +697,7 @@ pub fn free_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, C
 }
 
 #[bridge(name = "generate-temporaries", lib = "(rnrs syntax-case builtins (6))")]
-pub fn generate_temporaries(list: &Value) -> Result<Vec<Value>, Condition> {
+pub fn generate_temporaries(list: &Value) -> Result<Vec<Value>, Exception> {
     let length = match list.type_of() {
         ValueType::Pair => crate::lists::length(list)?,
         ValueType::Syntax => {
@@ -705,10 +705,10 @@ pub fn generate_temporaries(list: &Value) -> Result<Vec<Value>, Condition> {
             match &*syntax {
                 // TODO: Check for proper list?
                 Syntax::List { list, .. } => list.len() - 1,
-                _ => return Err(Condition::error("Syntax object must be a list".to_string())),
+                _ => return Err(Exception::error("Syntax object must be a list".to_string())),
             }
         }
-        _ => return Err(Condition::error("argument must be a list".to_string())),
+        _ => return Err(Exception::error("argument must be a list".to_string())),
     };
 
     // We can use marks to create unique temporaries

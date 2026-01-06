@@ -4,9 +4,9 @@ use crate::{
     ast::{
         DefinitionBody, ExportSet, ImportSet, LibraryName, LibrarySpec, SpecialKeyword, Version,
     },
-    conditions::{Condition, ImportError},
     cps::Compile,
     env::{EnvId, Environment, Global, Keyword},
+    exceptions::{Exception, ImportError},
     gc::{Gc, Trace},
     proc::{Application, BridgePtr, DynStack, FuncDebugInfo, FuncPtr, Procedure},
     runtime::Runtime,
@@ -28,21 +28,21 @@ pub use scheme_rs_macros::{bridge, cps_bridge};
 use scheme_rs_macros::{maybe_async, maybe_await};
 
 pub(crate) mod error {
-    use crate::{conditions::Message, ports::IoError};
+    use crate::{exceptions::Message, ports::IoError};
 
     use super::*;
 
-    pub(super) fn library_not_found() -> Condition {
-        Condition::from((IoError::new(), Message::new("library not found")))
+    pub(super) fn library_not_found() -> Exception {
+        Exception::from((IoError::new(), Message::new("library not found")))
     }
 
-    pub(crate) fn name_bound_multiple_times(name: Symbol) -> Condition {
-        Condition::from(Message::new(format!("`{name}` bound multiple times")))
+    pub(crate) fn name_bound_multiple_times(name: Symbol) -> Exception {
+        Exception::from(Message::new(format!("`{name}` bound multiple times")))
     }
 
     // TODO: Include dependency chain that lead to this error
-    pub(super) fn circular_dependency() -> Condition {
-        Condition::from(Message::new("circular dependency"))
+    pub(super) fn circular_dependency() -> Exception {
+        Exception::from(Message::new("circular dependency"))
     }
 }
 
@@ -297,7 +297,7 @@ impl Registry {
     // TODO: This function is quite messy, so it would be nice to do a little
     // clean up on it.
     #[maybe_async]
-    fn load_lib(&self, rt: &Runtime, name: &[Symbol]) -> Result<Library, Condition> {
+    fn load_lib(&self, rt: &Runtime, name: &[Symbol]) -> Result<Library, Exception> {
         if let Some(lib) = self.0.read().libs.get(name) {
             return Ok(lib.clone());
         }
@@ -342,7 +342,7 @@ impl Registry {
                 let form = Syntax::from_str(contents, Some(&file_name))?;
                 let form = match form.as_list() {
                     Some([form, Syntax::Null { .. }]) => form,
-                    _ => return Err(Condition::error("library is malformed")),
+                    _ => return Err(Exception::error("library is malformed")),
                 };
                 let spec = LibrarySpec::parse(form)?;
                 maybe_await!(Library::from_spec(rt, spec, PathBuf::from(file_name)))?
@@ -441,7 +441,7 @@ impl Registry {
 }
 
 type DynIter<'a> = Box<dyn Iterator<Item = (Identifier, Import)> + 'a>;
-type ImportIter<'b> = Result<DynIter<'b>, Condition>;
+type ImportIter<'b> = Result<DynIter<'b>, Exception>;
 #[cfg(feature = "async")]
 type ImportIterFuture<'b> = BoxFuture<'b, ImportIter<'b>>;
 
@@ -471,7 +471,7 @@ fn load_lib_from_dir(
     rt: &Runtime,
     path: &Path,
     path_suffix: &str,
-) -> Result<Option<Library>, Condition> {
+) -> Result<Option<Library>, Exception> {
     for ext in ["sls", "ss", "scm"] {
         let path = path.join(format!("{path_suffix}.{ext}"));
         if let Ok(false) = maybe_await!(try_exists(&path)) {
@@ -482,7 +482,7 @@ fn load_lib_from_dir(
         let form = Syntax::from_str(&contents, Some(&file_name))?;
         let form = match form.as_list() {
             Some([form, Syntax::Null { .. }]) => form,
-            _ => return Err(Condition::error("library is malformed")),
+            _ => return Err(Exception::error("library is malformed")),
         };
         let spec = LibrarySpec::parse(form)?;
         return Ok(Some(maybe_await!(Library::from_spec(rt, spec, path))?));
@@ -605,7 +605,7 @@ impl Library {
     }
 
     #[maybe_async]
-    pub fn from_spec(rt: &Runtime, spec: LibrarySpec, path: PathBuf) -> Result<Self, Condition> {
+    pub fn from_spec(rt: &Runtime, spec: LibrarySpec, path: PathBuf) -> Result<Self, Exception> {
         let registry = rt.get_registry();
 
         // Import libraries:
@@ -672,7 +672,7 @@ impl Library {
     }
 
     #[maybe_async]
-    pub(crate) fn import(&self, import_set: ImportSet) -> Result<(), Condition> {
+    pub(crate) fn import(&self, import_set: ImportSet) -> Result<(), Exception> {
         let (rt, registry) = {
             let this = self.0.read();
             (this.rt.clone(), this.rt.get_registry())
@@ -696,7 +696,7 @@ impl Library {
     }
 
     #[maybe_async]
-    pub(crate) fn maybe_expand(&self) -> Result<(), Condition> {
+    pub(crate) fn maybe_expand(&self) -> Result<(), Exception> {
         let body = {
             let mut this = self.0.write();
             if let LibraryState::Unexpanded(body) = &mut this.state {
@@ -714,7 +714,7 @@ impl Library {
     }
 
     #[maybe_async]
-    pub(crate) fn maybe_invoke(&self) -> Result<(), Condition> {
+    pub(crate) fn maybe_invoke(&self) -> Result<(), Exception> {
         maybe_await!(self.maybe_expand())?;
         let defn_body = {
             let mut this = self.0.write();
@@ -774,7 +774,7 @@ impl Library {
     }
 
     #[cfg(not(feature = "async"))]
-    pub(crate) fn fetch_var(&self, name: &Identifier) -> Result<Option<Global>, Condition> {
+    pub(crate) fn fetch_var(&self, name: &Identifier) -> Result<Option<Global>, Exception> {
         self.fetch_var_inner(name)
     }
 
@@ -782,12 +782,12 @@ impl Library {
     pub(crate) fn fetch_var<'a>(
         &'a self,
         name: &'a Identifier,
-    ) -> BoxFuture<'a, Result<Option<Global>, Condition>> {
+    ) -> BoxFuture<'a, Result<Option<Global>, Exception>> {
         Box::pin(self.fetch_var_inner(name))
     }
 
     #[maybe_async]
-    fn fetch_var_inner(&self, name: &Identifier) -> Result<Option<Global>, Condition> {
+    fn fetch_var_inner(&self, name: &Identifier) -> Result<Option<Global>, Exception> {
         let Import { origin, rename } = {
             // Check this library
             let this = self.0.read();
@@ -811,7 +811,7 @@ impl Library {
     }
 
     #[cfg(not(feature = "async"))]
-    pub(crate) fn fetch_keyword(&self, keyword: &Identifier) -> Result<Option<Keyword>, Condition> {
+    pub(crate) fn fetch_keyword(&self, keyword: &Identifier) -> Result<Option<Keyword>, Exception> {
         self.fetch_keyword_inner(keyword)
     }
 
@@ -819,12 +819,12 @@ impl Library {
     pub(crate) fn fetch_keyword<'a>(
         &'a self,
         keyword: &'a Identifier,
-    ) -> BoxFuture<'a, Result<Option<Keyword>, Condition>> {
+    ) -> BoxFuture<'a, Result<Option<Keyword>, Exception>> {
         Box::pin(self.fetch_keyword_inner(keyword))
     }
 
     #[maybe_async]
-    fn fetch_keyword_inner(&self, keyword: &Identifier) -> Result<Option<Keyword>, Condition> {
+    fn fetch_keyword_inner(&self, keyword: &Identifier) -> Result<Option<Keyword>, Exception> {
         let Import { origin, rename } = {
             // Check this library
             let this = self.0.read();

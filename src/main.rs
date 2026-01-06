@@ -6,9 +6,9 @@ use rustyline::{
 };
 use scheme_rs::{
     ast::{DefinitionBody, ImportSet, ParseContext},
-    conditions::Condition,
     cps::Compile,
     env::Environment,
+    exceptions::Exception,
     ports::{BufferMode, Port, Prompt, Transcoder},
     proc::{Application, DynStack},
     registry::Library,
@@ -115,7 +115,7 @@ fn compile_and_run_str(
     runtime: &Runtime,
     repl: &Environment,
     sexpr: Syntax,
-) -> Result<Vec<Value>, Condition> {
+) -> Result<Vec<Value>, Exception> {
     let ctxt = ParseContext::new(runtime, true);
     let sexprs = [sexpr];
     let expr = maybe_await!(DefinitionBody::parse(&ctxt, &sexprs, repl, &sexprs[0]))?;

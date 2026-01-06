@@ -5,7 +5,7 @@ use std::{fmt, hash::Hash, sync::Arc};
 use parking_lot::RwLock;
 
 use crate::{
-    conditions::Condition,
+    exceptions::Exception,
     gc::Trace,
     registry::bridge,
     value::{Value, ValueType},
@@ -122,16 +122,16 @@ impl fmt::Debug for WideString {
 }
 
 #[bridge(name = "string?", lib = "(rnrs base builtins (6))")]
-pub fn string_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
+pub fn string_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(arg.type_of() == ValueType::String)])
 }
 
 #[bridge(name = "make-string", lib = "(rnrs base builtins (6))")]
-pub fn make_string(k: &Value, chr: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn make_string(k: &Value, chr: &[Value]) -> Result<Vec<Value>, Exception> {
     let chr: char = match chr {
         [] => '\0',
         [chr] => chr.clone().try_into()?,
-        x => return Err(Condition::wrong_num_of_args(2, 1 + x.len())),
+        x => return Err(Exception::wrong_num_of_args(2, 1 + x.len())),
     };
     let k: usize = k.clone().try_into()?;
     let ret = Value::from(WideString(Arc::new(WideStringInner {
@@ -142,7 +142,7 @@ pub fn make_string(k: &Value, chr: &[Value]) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "string", lib = "(rnrs base builtins (6))")]
-pub fn string(char: &Value, chars: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn string(char: &Value, chars: &[Value]) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(WideString(Arc::new(WideStringInner {
         chars: RwLock::new(
             Some(char)
@@ -157,18 +157,18 @@ pub fn string(char: &Value, chars: &[Value]) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "string-length", lib = "(rnrs base builtins (6))")]
-pub fn string_length(s: &Value) -> Result<Vec<Value>, Condition> {
+pub fn string_length(s: &Value) -> Result<Vec<Value>, Exception> {
     let s: WideString = s.clone().try_into()?;
     Ok(vec![Value::from(s.len())])
 }
 
 #[bridge(name = "string-ref", lib = "(rnrs base builtins (6))")]
-pub fn string_ref(string: &Value, k: &Value) -> Result<Vec<Value>, Condition> {
+pub fn string_ref(string: &Value, k: &Value) -> Result<Vec<Value>, Exception> {
     let string: WideString = string.clone().try_into()?;
     let k: usize = k.clone().try_into()?;
     let chars = string.0.chars.read();
     if k >= chars.len() {
-        return Err(Condition::invalid_index(k, chars.len()));
+        return Err(Exception::invalid_index(k, chars.len()));
     }
     Ok(vec![Value::from(chars[k])])
 }
@@ -178,7 +178,7 @@ pub fn string_eq_pred(
     string_1: &Value,
     string_2: &Value,
     string_n: &[Value],
-) -> Result<Vec<Value>, Condition> {
+) -> Result<Vec<Value>, Exception> {
     let string_1: WideString = string_1.clone().try_into()?;
     let string_1_chars = string_1.0.chars.read();
     for string_n in Some(string_2).into_iter().chain(string_n.iter()).cloned() {
@@ -191,7 +191,7 @@ pub fn string_eq_pred(
 }
 
 #[bridge(name = "string-append", lib = "(rnrs base builtins (6))")]
-pub fn list(args: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn list(args: &[Value]) -> Result<Vec<Value>, Exception> {
     let mut output = String::new();
     for arg in args.iter().cloned() {
         let arg: String = arg.try_into()?;
@@ -201,7 +201,7 @@ pub fn list(args: &[Value]) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "string->vector", lib = "(rnrs base builtins (6))")]
-pub fn string_to_vector(from: &Value, range: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn string_to_vector(from: &Value, range: &[Value]) -> Result<Vec<Value>, Exception> {
     let string: WideString = from.clone().try_into()?;
 
     let len = string.0.chars.read().len();
@@ -219,11 +219,11 @@ pub fn string_to_vector(from: &Value, range: &[Value]) -> Result<Vec<Value>, Con
         .unwrap_or(len);
 
     if end < start {
-        return Err(Condition::error(format!(
+        return Err(Exception::error(format!(
             "Range end {end} cannot be less than start {start}",
         )));
     } else if end > len {
-        return Err(Condition::invalid_range(start..end, len));
+        return Err(Exception::invalid_range(start..end, len));
     }
 
     Ok(vec![Value::from(
@@ -236,16 +236,16 @@ pub fn string_to_vector(from: &Value, range: &[Value]) -> Result<Vec<Value>, Con
 }
 
 #[bridge(name = "string-set!", lib = "(rnrs mutable-strings (6))")]
-pub fn string_set_bang(string: &Value, k: &Value, chr: &Value) -> Result<Vec<Value>, Condition> {
+pub fn string_set_bang(string: &Value, k: &Value, chr: &Value) -> Result<Vec<Value>, Exception> {
     let string: WideString = string.clone().try_into()?;
     let k: usize = k.clone().try_into()?;
     let chr: char = chr.clone().try_into()?;
     if !string.0.mutable {
-        return Err(Condition::error("string is immutable"));
+        return Err(Exception::error("string is immutable"));
     }
     let mut chars = string.0.chars.write();
     if k >= chars.len() {
-        return Err(Condition::invalid_index(k, chars.len()));
+        return Err(Exception::invalid_index(k, chars.len()));
     }
     chars[k] = chr;
     Ok(vec![])

@@ -1,7 +1,7 @@
 use crate::{
     ast::{Expression, Literal, ParseContext},
-    conditions::Condition,
     env::{EnvId, Environment, Local},
+    exceptions::Exception,
     gc::{Gc, Trace},
     proc::Procedure,
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
@@ -36,7 +36,7 @@ impl SyntaxRule {
         fender: Option<&Syntax>,
         output_expression: &Syntax,
         env: &Environment,
-    ) -> Result<Self, Condition> {
+    ) -> Result<Self, Exception> {
         let mut variables = HashSet::new();
         let pattern = Pattern::compile(pattern, keywords, &mut variables);
         let binds = Local::gensym();
@@ -672,12 +672,12 @@ impl<'a> Binds<'a> {
 
 #[runtime_fn]
 unsafe extern "C" fn error_no_patterns_match() -> i64 {
-    let condition = Condition::error("no patterns match".to_string());
+    let condition = Exception::error("no patterns match".to_string());
     Value::into_raw(Value::from(condition)) as i64
 }
 
 #[bridge(name = "make-variable-transformer", lib = "(rnrs base builtins (6))")]
-pub fn make_variable_transformer(proc: &Value) -> Result<Vec<Value>, Condition> {
+pub fn make_variable_transformer(proc: &Value) -> Result<Vec<Value>, Exception> {
     let proc: Procedure = proc.clone().try_into()?;
     let mut var_transformer = proc.0.as_ref().clone();
     var_transformer.is_variable_transformer = true;

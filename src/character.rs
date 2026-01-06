@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::{conditions::Condition, num::Number, registry::bridge, value::Value};
+use crate::{exceptions::Exception, num::Number, registry::bridge, value::Value};
 use unicode_categories::UnicodeCategories;
 
 mod unicode;
@@ -9,18 +9,18 @@ use unicode::*;
 fn char_switch_case<I: Iterator<Item = char> + ExactSizeIterator>(
     ch: char,
     operation: fn(char) -> I,
-) -> Result<char, Condition> {
+) -> Result<char, Exception> {
     let mut ch = operation(ch);
     let len = ch.len();
     if len == 1 {
         Ok(ch.next().unwrap())
     } else {
-        Err(Condition::wrong_num_of_unicode_chars(1, len))
+        Err(Exception::wrong_num_of_unicode_chars(1, len))
     }
 }
 
 #[bridge(name = "char->integer", lib = "(rnrs base builtins (6))")]
-pub fn char_to_integer(ch: &Value) -> Result<Vec<Value>, Condition> {
+pub fn char_to_integer(ch: &Value) -> Result<Vec<Value>, Exception> {
     let ch: char = ch.clone().try_into()?;
 
     Ok(vec![Value::from(Number::FixedInteger(
@@ -29,7 +29,7 @@ pub fn char_to_integer(ch: &Value) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "integer->char", lib = "(rnrs base builtins (6))")]
-pub fn integer_to_char(int: &Value) -> Result<Vec<Value>, Condition> {
+pub fn integer_to_char(int: &Value) -> Result<Vec<Value>, Exception> {
     let int: Arc<Number> = int.clone().try_into()?;
     let int: usize = int.as_ref().try_into()?;
     if let Ok(int) = <usize as TryInto<u32>>::try_into(int)
@@ -49,14 +49,14 @@ macro_rules! impl_char_operator {
         $cmp_function:ident)),* $(,)?
     ) => {
         $(#[bridge(name = $bridge_name, lib = "(rnrs base builtins (6))")]
-        pub fn $function_name(req_lhs: &Value, req_rhs: &Value, opt_chars: &[Value]) -> Result<Vec<Value>, Condition> {
+        pub fn $function_name(req_lhs: &Value, req_rhs: &Value, opt_chars: &[Value]) -> Result<Vec<Value>, Exception> {
             for window in [req_lhs, req_rhs]
                 .into_iter()
                 .chain(opt_chars)
                 .map(|ch| {
                     ch.clone().try_into()
                 })
-                .collect::<Result<Vec<char>, Condition>>()?
+                .collect::<Result<Vec<char>, Exception>>()?
                 .windows(2) {
 
                 if !window.first()
@@ -87,7 +87,7 @@ macro_rules! impl_char_ci_operator {
         $cmp_function:ident)),* $(,)?
     ) => {
         $(#[bridge(name = $bridge_name, lib = "(rnrs base builtins (6))")]
-        pub fn $function_name(req_lhs: &Value, req_rhs: &Value, opt_chars: &[Value]) -> Result<Vec<Value>, Condition> {
+        pub fn $function_name(req_lhs: &Value, req_rhs: &Value, opt_chars: &[Value]) -> Result<Vec<Value>, Exception> {
             for window in [req_lhs, req_rhs]
                 .into_iter()
                 .chain(opt_chars)
@@ -95,7 +95,7 @@ macro_rules! impl_char_ci_operator {
                     let ch: char = ch.clone().try_into()?;
                     char_switch_case(ch, to_foldcase)
                 })
-                .collect::<Result<Vec<char>, Condition>>()?
+                .collect::<Result<Vec<char>, Exception>>()?
                 .windows(2) {
 
                 if !window.first()
@@ -122,7 +122,7 @@ impl_char_ci_operator![
 macro_rules! impl_char_predicate {
     ($(($bridge_name:literal, $function_name:ident, $predicate:ident)),* $(,)?) => {
         $(#[bridge(name = $bridge_name, lib = "(base)")]
-        pub fn $function_name(ch: &Value) -> Result<Vec<Value>, Condition> {
+        pub fn $function_name(ch: &Value) -> Result<Vec<Value>, Exception> {
             let ch: char = ch.clone().try_into()?;
             Ok(vec![Value::from(ch.$predicate())])
         })*
@@ -138,7 +138,7 @@ impl_char_predicate![
 ];
 
 #[bridge(name = "digit-value", lib = "(rnrs base builtins (6))")]
-pub fn digit_value(ch: &Value) -> Result<Vec<Value>, Condition> {
+pub fn digit_value(ch: &Value) -> Result<Vec<Value>, Exception> {
     let ch: char = ch.clone().try_into()?;
 
     Ok(vec![
@@ -153,7 +153,7 @@ pub fn digit_value(ch: &Value) -> Result<Vec<Value>, Condition> {
 macro_rules! impl_char_case_converter {
     ($(($bridge_name:literal, $function_name:ident, $converter:expr_2021)),* $(,)?) => {
         $(#[bridge(name = $bridge_name, lib = "(rnrs base builtins (6))")]
-        pub fn $function_name(ch: &Value) -> Result<Vec<Value>, Condition> {
+        pub fn $function_name(ch: &Value) -> Result<Vec<Value>, Exception> {
             let ch: char = ch.clone().try_into()?;
             Ok(vec![Value::from(char_switch_case(ch, $converter)?)])
         })*
@@ -166,7 +166,7 @@ impl_char_case_converter![
 ];
 
 #[bridge(name = "char-foldcase", lib = "(rnrs base builtins (6))")]
-pub fn char_foldcase(ch: &Value) -> Result<Vec<Value>, Condition> {
+pub fn char_foldcase(ch: &Value) -> Result<Vec<Value>, Exception> {
     let ch: char = ch.clone().try_into()?;
     Ok(vec![Value::from(char_switch_case(ch, to_foldcase)?)])
 }

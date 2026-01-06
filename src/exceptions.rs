@@ -16,7 +16,7 @@ pub use scheme_rs_macros::define_condition_type;
 use scheme_rs_macros::runtime_fn;
 use std::{convert::Infallible, fmt, ops::Range, sync::Arc};
 
-impl fmt::Display for Condition {
+impl fmt::Display for Exception {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         <Value as fmt::Debug>::fmt(&self.0, f)
     }
@@ -24,9 +24,9 @@ impl fmt::Display for Condition {
 
 /// A signal of some sort of erroneous condition.
 #[derive(Debug, Clone)]
-pub struct Condition(pub Value);
+pub struct Exception(pub Value);
 
-impl Condition {
+impl Exception {
     pub fn error(message: impl fmt::Display) -> Self {
         Self(Value::from(Record::from_rust_type(
             CompoundCondition::from((Assertion::new(), Message::new(message.to_string()))),
@@ -183,57 +183,57 @@ impl Condition {
     }
 }
 
-impl From<&'_ Value> for Option<Condition> {
+impl From<&'_ Value> for Option<Exception> {
     fn from(value: &'_ Value) -> Self {
         if let UnpackedValue::Record(record) = &*value.unpacked_ref()
             && let rtd = record.rtd()
             && (RecordTypeDescriptor::is_subtype_of(&rtd, &SimpleCondition::rtd())
                 || RecordTypeDescriptor::is_subtype_of(&rtd, &CompoundCondition::rtd()))
         {
-            Some(Condition(value.clone()))
+            Some(Exception(value.clone()))
         } else {
             None
         }
     }
 }
 
-impl From<std::io::Error> for Condition {
+impl From<std::io::Error> for Exception {
     fn from(value: std::io::Error) -> Self {
         Self::from((IoError::new(), Message::new(format!("{value:?}"))))
     }
 }
 
-impl From<SimpleCondition> for Condition {
+impl From<SimpleCondition> for Exception {
     fn from(simple: SimpleCondition) -> Self {
         Self(Value::from(Record::from_rust_type(simple)))
     }
 }
 
-impl From<Warning> for Condition {
+impl From<Warning> for Exception {
     fn from(warning: Warning) -> Self {
         Self(Value::from(Record::from_rust_type(warning)))
     }
 }
 
-impl From<Serious> for Condition {
+impl From<Serious> for Exception {
     fn from(serious: Serious) -> Self {
         Self(Value::from(Record::from_rust_type(serious)))
     }
 }
 
-impl From<Message> for Condition {
+impl From<Message> for Exception {
     fn from(message: Message) -> Self {
         Self(Value::from(Record::from_rust_type(message)))
     }
 }
 
-impl From<Infallible> for Condition {
+impl From<Infallible> for Exception {
     fn from(infallible: Infallible) -> Self {
         match infallible {}
     }
 }
 
-impl From<ParseSyntaxError> for Condition {
+impl From<ParseSyntaxError> for Exception {
     fn from(error: ParseSyntaxError) -> Self {
         Self::from((Lexical::new(), Message::new(error)))
     }
@@ -241,7 +241,7 @@ impl From<ParseSyntaxError> for Condition {
 
 macro_rules! impl_into_condition_for {
     ($for:ty) => {
-        impl From<$for> for Condition {
+        impl From<$for> for Exception {
             fn from(e: $for) -> Self {
                 Self::error(e.to_string())
             }
@@ -533,7 +533,7 @@ impl fmt::Debug for CompoundCondition {
     }
 }
 
-impl<T> From<T> for Condition
+impl<T> From<T> for Exception
 where
     CompoundCondition: From<T>,
 {
@@ -583,7 +583,7 @@ pub fn with_exception_handler(
     _rest_args: &[Value],
     dyn_stack: &mut DynStack,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let [handler, thunk] = args else {
         unreachable!();
     };
@@ -615,13 +615,13 @@ pub fn raise_builtin(
     _rest_args: &[Value],
     dyn_stack: &mut DynStack,
     _k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     Ok(raise(runtime.clone(), args[0].clone(), dyn_stack))
 }
 
 /// Raises a non-continuable exception to the current exception handler.
 pub fn raise(runtime: Runtime, raised: Value, dyn_stack: &mut DynStack) -> Application {
-    let raised = if let Some(condition) = raised.cast_to_scheme_type::<Condition>() {
+    let raised = if let Some(condition) = raised.cast_to_scheme_type::<Exception>() {
         Value::from(condition.add_condition(StackTrace::new(dyn_stack.to_stack_trace())))
     } else {
         raised
@@ -742,7 +742,7 @@ pub fn raise_continuable(
     _rest_args: &[Value],
     dyn_stack: &mut DynStack,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let [condition] = args else {
         unreachable!();
     };

@@ -1,8 +1,8 @@
 use crate::{
     ast::DefinitionBody,
-    conditions::{Condition, raise},
     cps::{Compile, Cps, codegen::RuntimeFunctionsBuilder},
     env::{Environment, Global},
+    exceptions::{Exception, raise},
     gc::{Gc, GcInner, Trace, init_gc},
     lists::{Pair, list_to_vec},
     num,
@@ -53,7 +53,7 @@ impl Runtime {
     }
 
     #[maybe_async]
-    pub fn run_program(&self, path: &Path) -> Result<Vec<Value>, Condition> {
+    pub fn run_program(&self, path: &Path) -> Result<Vec<Value>, Exception> {
         #[cfg(not(feature = "async"))]
         use std::fs::File;
 
@@ -71,7 +71,7 @@ impl Runtime {
             );
             let file_name = path.file_name().unwrap().to_str().unwrap_or("<unknown>");
             let span = Span::new(file_name);
-            maybe_await!(port.all_sexprs(span)).map_err(Condition::from)?
+            maybe_await!(port.all_sexprs(span)).map_err(Exception::from)?
         };
 
         let body = maybe_await!(DefinitionBody::parse_lib_body(self, &form, &env)).unwrap();
@@ -367,7 +367,7 @@ unsafe extern "C" fn apply(
             x => {
                 let raised = raise(
                     Runtime::from_raw_inc_rc(runtime),
-                    Condition::invalid_operator(x.type_name()).into(),
+                    Exception::invalid_operator(x.type_name()).into(),
                     dyn_stack.as_mut().unwrap_unchecked(),
                 );
                 return Box::into_raw(Box::new(raised));
@@ -394,7 +394,7 @@ unsafe extern "C" fn forward(
             x => {
                 let raised = raise(
                     Runtime::from_raw_inc_rc(runtime),
-                    Condition::invalid_operator(x.type_name()).into(),
+                    Exception::invalid_operator(x.type_name()).into(),
                     dyn_stack.as_mut().unwrap_unchecked(),
                 );
                 return Box::into_raw(Box::new(raised));
@@ -453,7 +453,7 @@ unsafe extern "C" fn store(from: *const (), to: *const ()) {
 unsafe extern "C" fn cons(vals: *const *const (), num_vals: u32, error: *mut Value) -> *const () {
     unsafe {
         if num_vals != 2 {
-            error.write(Condition::wrong_num_of_args(2, num_vals as usize).into());
+            error.write(Exception::wrong_num_of_args(2, num_vals as usize).into());
             return Value::into_raw(Value::undefined());
         }
         let car = Value::from_raw_inc_rc(vals.read());
@@ -540,7 +540,7 @@ unsafe extern "C" fn make_user(
 #[runtime_fn]
 unsafe extern "C" fn error_unbound_variable(symbol: u32) -> *const () {
     let sym = Symbol(symbol);
-    let condition = Condition::error(format!("{sym} is unbound"));
+    let condition = Exception::error(format!("{sym} is unbound"));
     Value::into_raw(Value::from(condition))
 }
 

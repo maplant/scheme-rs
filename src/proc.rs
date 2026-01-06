@@ -2,8 +2,8 @@
 //! Contains the main evaluation trampoline.
 
 use crate::{
-    conditions::{Condition, raise},
     env::Local,
+    exceptions::{Exception, raise},
     gc::{Gc, GcInner, Trace},
     lists::{self, Pair, list_to_vec},
     num::Number,
@@ -153,7 +153,7 @@ impl ProcedureInner {
         if args.len() < self.num_required_args {
             return Err(raise(
                 self.runtime.clone(),
-                Condition::wrong_num_of_args(self.num_required_args, args.len()).into(),
+                Exception::wrong_num_of_args(self.num_required_args, args.len()).into(),
                 dyn_stack,
             ));
         }
@@ -161,7 +161,7 @@ impl ProcedureInner {
         if !self.variadic && args.len() > self.num_required_args {
             return Err(raise(
                 self.runtime.clone(),
-                Condition::wrong_num_of_args(self.num_required_args, args.len()).into(),
+                Exception::wrong_num_of_args(self.num_required_args, args.len()).into(),
                 dyn_stack,
             ));
         }
@@ -291,7 +291,7 @@ impl ProcedureInner {
             }
             FuncPtr::AsyncBridge(_) => raise(
                 self.runtime.clone(),
-                Condition::error("attempt to apply async function in a sync-only context").into(),
+                Exception::error("attempt to apply async function in a sync-only context").into(),
                 dyn_stack,
             ),
             FuncPtr::User(user) => self.apply_jit(JitFuncPtr::User(user), args, dyn_stack, k),
@@ -425,7 +425,7 @@ impl Procedure {
     }
 
     #[maybe_async]
-    pub fn call(&self, args: &[Value]) -> Result<Vec<Value>, Condition> {
+    pub fn call(&self, args: &[Value]) -> Result<Vec<Value>, Exception> {
         let mut args = args.to_vec();
 
         args.push(halt_continuation(self.get_runtime()));
@@ -434,7 +434,7 @@ impl Procedure {
     }
 
     #[cfg(feature = "async")]
-    pub fn call_sync(&self, args: &[Value]) -> Result<Vec<Value>, Condition> {
+    pub fn call_sync(&self, args: &[Value]) -> Result<Vec<Value>, Exception> {
         let mut args = args.to_vec();
 
         args.push(halt_continuation(self.get_runtime()));
@@ -534,13 +534,13 @@ impl Application {
     /// Evaluate the application - and all subsequent application - until all that
     /// remains are values. This is the main trampoline of the evaluation engine.
     #[maybe_async]
-    pub fn eval(mut self, dyn_stack: &mut DynStack) -> Result<Vec<Value>, Condition> {
+    pub fn eval(mut self, dyn_stack: &mut DynStack) -> Result<Vec<Value>, Exception> {
         loop {
             let op = match self.op {
                 OpType::Proc(proc) => proc,
                 OpType::HaltOk => return Ok(self.args),
                 OpType::HaltErr => {
-                    return Err(Condition(self.args.pop().unwrap()));
+                    return Err(Exception(self.args.pop().unwrap()));
                 }
             };
             dyn_stack.collect_frame(&op, self.call_site);
@@ -550,13 +550,13 @@ impl Application {
 
     #[cfg(feature = "async")]
     /// Just like [eval] but throws an error if we encounter an async function.
-    pub fn eval_sync(mut self, dyn_stack: &mut DynStack) -> Result<Vec<Value>, Condition> {
+    pub fn eval_sync(mut self, dyn_stack: &mut DynStack) -> Result<Vec<Value>, Exception> {
         loop {
             let op = match self.op {
                 OpType::Proc(proc) => proc,
                 OpType::HaltOk => return Ok(self.args),
                 OpType::HaltErr => {
-                    return Err(Condition(self.args.pop().unwrap()));
+                    return Err(Exception(self.args.pop().unwrap()));
                 }
             };
             dyn_stack.collect_frame(&op, self.call_site);
@@ -657,9 +657,9 @@ pub fn apply(
     rest_args: &[Value],
     _dyn_stack: &mut DynStack,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     if rest_args.is_empty() {
-        return Err(Condition::wrong_num_of_args(2, args.len()));
+        return Err(Exception::wrong_num_of_args(2, args.len()));
     }
     let op: Procedure = args[0].clone().try_into()?;
     let (last, args) = rest_args.split_last().unwrap();
@@ -842,7 +842,7 @@ pub fn print_trace(
     _rest_args: &[Value],
     dyn_stack: &mut DynStack,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     println!("trace: {:#?}", dyn_stack.trace);
     Ok(Application::new(k.try_into()?, vec![]))
 }
@@ -863,7 +863,7 @@ pub fn call_with_current_continuation(
     _rest_args: &[Value],
     dyn_stack: &mut DynStack,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let [proc] = args else { unreachable!() };
     let proc: Procedure = proc.clone().try_into()?;
 
@@ -897,7 +897,7 @@ fn escape_procedure(
     rest_args: &[Value],
     dyn_stack: &mut DynStack,
     _k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     // env[0] is the continuation
     let k = env[0].clone();
 
@@ -1072,7 +1072,7 @@ unsafe extern "C" fn call_consumer_with_values(
             _ => {
                 let raised = raise(
                     Runtime::from_raw_inc_rc(runtime),
-                    Condition::invalid_operator(type_name).into(),
+                    Exception::invalid_operator(type_name).into(),
                     dyn_stack.as_mut().unwrap_unchecked(),
                 );
                 return Box::into_raw(Box::new(raised));
@@ -1116,9 +1116,9 @@ pub fn call_with_values(
     _rest_args: &[Value],
     _dyn_stack: &mut DynStack,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let [producer, consumer] = args else {
-        return Err(Condition::wrong_num_of_args(2, args.len()));
+        return Err(Exception::wrong_num_of_args(2, args.len()));
     };
 
     let producer: Procedure = producer.clone().try_into()?;
@@ -1166,9 +1166,9 @@ pub fn dynamic_wind(
     _rest_args: &[Value],
     _dyn_stack: &mut DynStack,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let [in_thunk_val, body_thunk_val, out_thunk_val] = args else {
-        return Err(Condition::wrong_num_of_args(3, args.len()));
+        return Err(Exception::wrong_num_of_args(3, args.len()));
     };
 
     let in_thunk: Procedure = in_thunk_val.clone().try_into()?;
@@ -1318,7 +1318,7 @@ pub fn call_with_prompt(
     _rest_args: &[Value],
     dyn_stack: &mut DynStack,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let [tag, thunk, handler] = args else {
         unreachable!()
     };
@@ -1361,7 +1361,7 @@ pub fn abort_to_prompt(
     _rest_args: &[Value],
     dyn_stack: &mut DynStack,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let [tag] = args else { unreachable!() };
 
     let unwind_to_prompt = Procedure::new(
@@ -1399,7 +1399,7 @@ unsafe extern "C" fn unwind_to_prompt(
             let app = match dyn_stack.pop() {
                 None => {
                     // If the stack is empty, we should return the error
-                    Application::halt_err(Value::from(Condition::error(format!(
+                    Application::halt_err(Value::from(Exception::error(format!(
                         "No prompt tag {tag} found"
                     ))))
                 }
@@ -1465,7 +1465,7 @@ fn delimited_continuation(
     rest_args: &[Value],
     dyn_stack: &mut DynStack,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     // env[0] is the delimited continuation
     let dk = env[0].clone();
 

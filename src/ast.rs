@@ -1,9 +1,9 @@
 //! Data structures for expanding and representing Scheme code.
 
 use crate::{
-    conditions::Condition,
     cps::{Compile, PrimOp},
     env::{Environment, Local, Var},
+    exceptions::Exception,
     expand::{SyntaxRule, Template},
     gc::Trace,
     num::Number,
@@ -29,7 +29,7 @@ use futures::future::BoxFuture;
 /// Collection of errors that can occur while parsing, grouped in functions to
 /// ensure consistency in their error messages.
 mod error {
-    use crate::conditions::{Message, SyntaxViolation};
+    use crate::exceptions::{Message, SyntaxViolation};
 
     use super::*;
 
@@ -37,78 +37,78 @@ mod error {
         form: &Syntax,
         subform: Option<&Syntax>,
         error: impl fmt::Display,
-    ) -> Condition {
-        Condition::from((
+    ) -> Exception {
+        Exception::from((
             SyntaxViolation::new(form.clone(), subform.cloned()),
             Message::new(error),
         ))
     }
 
-    pub(super) fn bad_form(form: &Syntax, subform: Option<&Syntax>) -> Condition {
+    pub(super) fn bad_form(form: &Syntax, subform: Option<&Syntax>) -> Exception {
         syntax_error(form, subform, "bad form")
     }
 
-    pub(super) fn undefined_variable(form: &Syntax, subform: Option<&Syntax>) -> Condition {
+    pub(super) fn undefined_variable(form: &Syntax, subform: Option<&Syntax>) -> Exception {
         syntax_error(form, subform, "undefined variable")
     }
 
-    pub(super) fn immutable_variable(form: &Syntax, subform: &Syntax) -> Condition {
+    pub(super) fn immutable_variable(form: &Syntax, subform: &Syntax) -> Exception {
         syntax_error(form, Some(subform), "cannot set immutable variable")
     }
 
-    pub(super) fn name_previously_bound(form: &Syntax, subform: &Syntax) -> Condition {
+    pub(super) fn name_previously_bound(form: &Syntax, subform: &Syntax) -> Exception {
         syntax_error(form, Some(subform), "name previously bound")
     }
 
-    pub(super) fn expected_list(form: &Syntax) -> Condition {
+    pub(super) fn expected_list(form: &Syntax) -> Exception {
         syntax_error(form, None, "expected list")
     }
 
-    pub(super) fn expected_more_arguments(form: &Syntax) -> Condition {
+    pub(super) fn expected_more_arguments(form: &Syntax) -> Exception {
         syntax_error(form, None, "expected more arguments")
     }
 
-    pub(super) fn expected_identifier(form: &Syntax, subform: Option<&Syntax>) -> Condition {
+    pub(super) fn expected_identifier(form: &Syntax, subform: Option<&Syntax>) -> Exception {
         syntax_error(form, subform, "expected identifier")
     }
 
-    pub(super) fn expected_body(form: &Syntax) -> Condition {
+    pub(super) fn expected_body(form: &Syntax) -> Exception {
         syntax_error(form, None, "expected body")
     }
 
-    pub(super) fn expected_import_spec(form: &Syntax) -> Condition {
+    pub(super) fn expected_import_spec(form: &Syntax) -> Exception {
         syntax_error(form, None, "expected import spec")
     }
 
-    pub(super) fn expected_export_spec(form: &Syntax) -> Condition {
+    pub(super) fn expected_export_spec(form: &Syntax) -> Exception {
         syntax_error(form, None, "expected export spec")
     }
 
-    pub(super) fn expected_number(form: &Syntax, subform: &Syntax) -> Condition {
+    pub(super) fn expected_number(form: &Syntax, subform: &Syntax) -> Exception {
         syntax_error(form, Some(subform), "expected number")
     }
 
-    pub(super) fn expected_keyword(form: &Syntax, subform: &Syntax, keyword: &str) -> Condition {
+    pub(super) fn expected_keyword(form: &Syntax, subform: &Syntax, keyword: &str) -> Exception {
         syntax_error(form, Some(subform), format!("expected `{keyword}` keyword"))
     }
 
-    pub(super) fn unexpected_argument(form: &Syntax, subform: &Syntax) -> Condition {
+    pub(super) fn unexpected_argument(form: &Syntax, subform: &Syntax) -> Exception {
         syntax_error(form, Some(subform), "unexpected argument")
     }
 
-    pub(super) fn unexpected_define(form: &Syntax) -> Condition {
+    pub(super) fn unexpected_define(form: &Syntax) -> Exception {
         syntax_error(form, None, "unexpected define")
     }
 
-    pub(super) fn unexpected_define_syntax(form: &Syntax) -> Condition {
+    pub(super) fn unexpected_define_syntax(form: &Syntax) -> Exception {
         syntax_error(form, None, "unexpected define-syntax")
     }
 
-    pub(super) fn unexpected_import(form: &Syntax) -> Condition {
+    pub(super) fn unexpected_import(form: &Syntax) -> Exception {
         syntax_error(form, None, "illegal import")
     }
 
-    pub(super) fn unexpected_empty_list(form: &Syntax, subform: Option<&Syntax>) -> Condition {
+    pub(super) fn unexpected_empty_list(form: &Syntax, subform: Option<&Syntax>) -> Exception {
         syntax_error(form, subform, "unexpected empty list")
     }
 }
@@ -144,7 +144,7 @@ pub struct LibrarySpec {
 }
 
 impl LibrarySpec {
-    pub fn parse(form: &Syntax) -> Result<Self, Condition> {
+    pub fn parse(form: &Syntax) -> Result<Self, Exception> {
         match form.as_list() {
             Some(
                 [
@@ -204,7 +204,7 @@ pub struct LibraryName {
 }
 
 impl LibraryName {
-    pub fn parse(form: &Syntax) -> Result<Self, Condition> {
+    pub fn parse(form: &Syntax) -> Result<Self, Exception> {
         match form.as_list() {
             Some(
                 [
@@ -224,16 +224,16 @@ impl LibraryName {
         }
     }
 
-    pub fn from_str(s: &str, file_name: Option<&str>) -> Result<Self, Condition> {
+    pub fn from_str(s: &str, file_name: Option<&str>) -> Result<Self, Exception> {
         let form = Syntax::from_str(s, file_name)?;
         match form.as_list() {
             Some([item, Syntax::Null { .. }]) => Self::parse(item),
-            _ => Err(Condition::error(format!("bad form in '{s}'"))),
+            _ => Err(Exception::error(format!("bad form in '{s}'"))),
         }
     }
 }
 
-fn list_to_name(name: &[Syntax], form: &Syntax) -> Result<Vec<Symbol>, Condition> {
+fn list_to_name(name: &[Syntax], form: &Syntax) -> Result<Vec<Symbol>, Exception> {
     name.iter()
         .map(|name| {
             if let Syntax::Identifier { ident, .. } = name {
@@ -271,7 +271,7 @@ pub struct Version {
 }
 
 impl Version {
-    fn parse(version: &[Syntax], form: &Syntax) -> Result<Self, Condition> {
+    fn parse(version: &[Syntax], form: &Syntax) -> Result<Self, Exception> {
         match version {
             [version @ .., Syntax::Null { .. }] => {
                 let version: Result<Vec<usize>, _> = version
@@ -312,7 +312,7 @@ pub enum VersionReference {
 }
 
 impl VersionReference {
-    fn parse(form: &Syntax) -> Result<Self, Condition> {
+    fn parse(form: &Syntax) -> Result<Self, Exception> {
         match form.as_list() {
             Some(
                 [
@@ -374,7 +374,7 @@ pub enum SubVersionReference {
 }
 
 impl SubVersionReference {
-    fn parse(form: &Syntax) -> Result<Self, Condition> {
+    fn parse(form: &Syntax) -> Result<Self, Exception> {
         match form {
             Syntax::Literal {
                 literal: Literal::Number(num),
@@ -454,7 +454,7 @@ pub enum ExportSet {
 }
 
 impl ExportSet {
-    pub fn parse_rename(form: &Syntax) -> Result<Self, Condition> {
+    pub fn parse_rename(form: &Syntax) -> Result<Self, Exception> {
         match form.as_list() {
             Some(
                 [
@@ -470,7 +470,7 @@ impl ExportSet {
         }
     }
 
-    pub fn parse(form: &Syntax) -> Result<Vec<Self>, Condition> {
+    pub fn parse(form: &Syntax) -> Result<Vec<Self>, Exception> {
         match form {
             Syntax::Identifier { ident, .. } => Ok(vec![Self::Internal {
                 rename: None,
@@ -503,7 +503,7 @@ pub struct ExportSpec {
 }
 
 impl ExportSpec {
-    pub fn parse(form: &Syntax) -> Result<Self, Condition> {
+    pub fn parse(form: &Syntax) -> Result<Self, Exception> {
         match form.as_list() {
             Some(
                 [
@@ -537,7 +537,7 @@ pub struct ImportSpec {
 }
 
 impl ImportSpec {
-    pub fn parse(form: &Syntax) -> Result<Self, Condition> {
+    pub fn parse(form: &Syntax) -> Result<Self, Exception> {
         match form.as_list() {
             Some(
                 [
@@ -603,7 +603,7 @@ pub enum ImportSet {
 }
 
 impl ImportSet {
-    pub fn parse(form: &Syntax) -> Result<Self, Condition> {
+    pub fn parse(form: &Syntax) -> Result<Self, Exception> {
         match form.as_list() {
             Some(
                 [
@@ -710,11 +710,11 @@ impl ImportSet {
         }
     }
 
-    pub fn parse_from_str(s: &str) -> Result<Self, Condition> {
+    pub fn parse_from_str(s: &str) -> Result<Self, Exception> {
         let form = Syntax::from_str(s, None)?;
         match form.as_list() {
             Some([item, Syntax::Null { .. }]) => Self::parse(item),
-            _ => Err(Condition::error(format!("bad form in '{s}'"))),
+            _ => Err(Exception::error(format!("bad form in '{s}'"))),
         }
     }
 }
@@ -726,7 +726,7 @@ pub struct LibraryReference {
 }
 
 impl LibraryReference {
-    fn parse(form: &Syntax) -> Result<Self, Condition> {
+    fn parse(form: &Syntax) -> Result<Self, Exception> {
         match form.as_list() {
             Some(
                 [
@@ -820,7 +820,7 @@ impl Definition {
         syn: &[Syntax],
         env: &Environment,
         form: &Syntax,
-    ) -> Result<Self, Condition> {
+    ) -> Result<Self, Exception> {
         match syn {
             [
                 _,
@@ -922,7 +922,7 @@ pub(super) fn define_syntax(
     ident: Identifier,
     expr: Syntax,
     env: &Environment,
-) -> Result<(), Condition> {
+) -> Result<(), Exception> {
     let FullyExpanded {
         expanded,
         expansion_env,
@@ -959,7 +959,7 @@ pub enum Expression {
 
 impl Expression {
     #[maybe_async]
-    pub fn parse(ctxt: &ParseContext, form: Syntax, env: &Environment) -> Result<Self, Condition> {
+    pub fn parse(ctxt: &ParseContext, form: Syntax, env: &Environment) -> Result<Self, Exception> {
         let FullyExpanded {
             expansion_env,
             expanded,
@@ -972,7 +972,7 @@ impl Expression {
         ctxt: &ParseContext,
         form: Syntax,
         env: &Environment,
-    ) -> Result<Self, Condition> {
+    ) -> Result<Self, Exception> {
         Self::parse_expanded_inner(ctxt, form, env)
     }
 
@@ -981,7 +981,7 @@ impl Expression {
         ctxt: &'a ParseContext,
         form: Syntax,
         env: &'a Environment,
-    ) -> BoxFuture<'a, Result<Self, Condition>> {
+    ) -> BoxFuture<'a, Result<Self, Exception>> {
         Box::pin(Self::parse_expanded_inner(ctxt, form, env))
     }
 
@@ -990,7 +990,7 @@ impl Expression {
         ctxt: &ParseContext,
         form: Syntax,
         env: &Environment,
-    ) -> Result<Self, Condition> {
+    ) -> Result<Self, Exception> {
         match &form {
             Syntax::Null { .. } => Err(error::unexpected_empty_list(&form, None)),
 
@@ -1169,7 +1169,7 @@ pub struct Quote {
 }
 
 impl Quote {
-    fn parse(exprs: &[Syntax], form: &Syntax) -> Result<Self, Condition> {
+    fn parse(exprs: &[Syntax], form: &Syntax) -> Result<Self, Exception> {
         match exprs {
             [] => Err(error::expected_more_arguments(form)),
             [expr] => Ok(Quote {
@@ -1187,7 +1187,7 @@ pub struct SyntaxQuote {
 }
 
 impl SyntaxQuote {
-    fn parse(exprs: &[Syntax], env: &Environment, form: &Syntax) -> Result<Self, Condition> {
+    fn parse(exprs: &[Syntax], env: &Environment, form: &Syntax) -> Result<Self, Exception> {
         match exprs {
             [] => Err(error::expected_more_arguments(form)),
             [expr] => {
@@ -1219,7 +1219,7 @@ impl Apply {
         args: &[Syntax],
         env: &Environment,
         form: &Syntax,
-    ) -> Result<Self, Condition> {
+    ) -> Result<Self, Exception> {
         let mut parsed_args = Vec::new();
         for arg in args {
             parsed_args.push(maybe_await!(Expression::parse(ctxt, arg.clone(), env))?);
@@ -1246,7 +1246,7 @@ impl Lambda {
         sexprs: &[Syntax],
         env: &Environment,
         form: &Syntax,
-    ) -> Result<Self, Condition> {
+    ) -> Result<Self, Exception> {
         match sexprs {
             [Syntax::Null { .. }, body @ ..] => {
                 maybe_await!(parse_lambda(ctxt, &[], body, env, form))
@@ -1275,7 +1275,7 @@ fn parse_lambda(
     body: &[Syntax],
     env: &Environment,
     form: &Syntax,
-) -> Result<Lambda, Condition> {
+) -> Result<Lambda, Exception> {
     let mut bound = HashSet::<&Identifier>::new();
     let mut fixed = Vec::new();
     let new_contour = env.new_lexical_contour();
@@ -1349,7 +1349,7 @@ impl Let {
         syn: &[Syntax],
         env: &Environment,
         form: &Syntax,
-    ) -> Result<Self, Condition> {
+    ) -> Result<Self, Exception> {
         match syn {
             [Syntax::Null { .. }, body @ ..] => {
                 maybe_await!(parse_let(ctxt, &[], body, env, form))
@@ -1380,7 +1380,7 @@ fn parse_let(
     body: &[Syntax],
     env: &Environment,
     form: &Syntax,
-) -> Result<Let, Condition> {
+) -> Result<Let, Exception> {
     let mut previously_bound = HashSet::new();
     let mut parsed_bindings = Vec::new();
     let mut binding_names = Vec::new();
@@ -1433,7 +1433,7 @@ fn parse_named_let(
     body: &[Syntax],
     env: &Environment,
     form: &Syntax,
-) -> Result<Let, Condition> {
+) -> Result<Let, Exception> {
     let mut previously_bound = HashSet::new();
     let mut formals = Vec::new();
     let mut args = Vec::new();
@@ -1503,7 +1503,7 @@ impl<'a> LetBinding<'a> {
         env: &Environment,
         previously_bound: &HashSet<&'a Identifier>,
         form: &'a Syntax,
-    ) -> Result<LetBinding<'a>, Condition> {
+    ) -> Result<LetBinding<'a>, Exception> {
         if let Some(
             [
                 subform @ Syntax::Identifier { ident, .. },
@@ -1538,7 +1538,7 @@ impl Set {
         exprs: &[Syntax],
         env: &Environment,
         form: &Syntax,
-    ) -> Result<Self, Condition> {
+    ) -> Result<Self, Exception> {
         match exprs {
             [] | [_] => Err(error::expected_more_arguments(form)),
             [subform @ Syntax::Identifier { ident, .. }, expr] => Ok(Set {
@@ -1573,7 +1573,7 @@ impl If {
         exprs: &[Syntax],
         env: &Environment,
         form: &Syntax,
-    ) -> Result<Self, Condition> {
+    ) -> Result<Self, Exception> {
         match exprs {
             [cond, success] => Ok(If {
                 cond: Arc::new(maybe_await!(Expression::parse(ctxt, cond.clone(), env))?),
@@ -1635,7 +1635,7 @@ impl DefinitionBody {
         runtime: &Runtime,
         form: &Syntax,
         env: &Environment,
-    ) -> Result<Self, Condition> {
+    ) -> Result<Self, Exception> {
         let ctxt = ParseContext {
             runtime: runtime.clone(),
             allow_imports: true,
@@ -1655,7 +1655,7 @@ impl DefinitionBody {
         body: &[Syntax],
         env: &Environment,
         form: &Syntax,
-    ) -> Result<Self, Condition> {
+    ) -> Result<Self, Exception> {
         maybe_await!(Self::parse_helper(ctxt, body, false, env, form))
     }
 
@@ -1668,7 +1668,7 @@ impl DefinitionBody {
         permissive: bool,
         env: &Environment,
         form: &Syntax,
-    ) -> Result<Self, Condition> {
+    ) -> Result<Self, Exception> {
         Self::parse_helper_inner(ctxt, body, permissive, env, form)
     }
 
@@ -1681,7 +1681,7 @@ impl DefinitionBody {
         permissive: bool,
         env: &'a Environment,
         form: &'a Syntax,
-    ) -> BoxFuture<'a, Result<Self, Condition>> {
+    ) -> BoxFuture<'a, Result<Self, Exception>> {
         Box::pin(Self::parse_helper_inner(ctxt, body, permissive, env, form))
     }
 
@@ -1692,7 +1692,7 @@ impl DefinitionBody {
         permissive: bool,
         env: &Environment,
         form: &Syntax,
-    ) -> Result<Self, Condition> {
+    ) -> Result<Self, Exception> {
         let mut defs = Vec::new();
         let mut exprs = Vec::new();
 
@@ -1760,7 +1760,7 @@ impl ExprBody {
 
     /// Differs from Body by being purely expression based. No definitions allowed.
     #[maybe_async]
-    fn parse(ctxt: &ParseContext, body: &[Syntax], env: &Environment) -> Result<Self, Condition> {
+    fn parse(ctxt: &ParseContext, body: &[Syntax], env: &Environment) -> Result<Self, Exception> {
         let mut exprs = Vec::new();
         for sexpr in body {
             let parsed = maybe_await!(Expression::parse(ctxt, sexpr.clone(), env))?;
@@ -1779,7 +1779,7 @@ fn splice_in(
     form: &Syntax,
     defs: &mut Vec<FullyExpanded>,
     exprs: &mut Vec<FullyExpanded>,
-) -> Result<(), Condition> {
+) -> Result<(), Exception> {
     splice_in_inner(ctxt, permissive, body, env, form, defs, exprs)
 }
 
@@ -1792,7 +1792,7 @@ fn splice_in<'a>(
     form: &'a Syntax,
     defs: &'a mut Vec<FullyExpanded>,
     exprs: &'a mut Vec<FullyExpanded>,
-) -> BoxFuture<'a, Result<(), Condition>> {
+) -> BoxFuture<'a, Result<(), Exception>> {
     Box::pin(splice_in_inner(
         ctxt, permissive, body, env, form, defs, exprs,
     ))
@@ -1807,7 +1807,7 @@ fn splice_in_inner(
     form: &Syntax,
     defs: &mut Vec<FullyExpanded>,
     exprs: &mut Vec<FullyExpanded>,
-) -> Result<(), Condition> {
+) -> Result<(), Exception> {
     if body.is_empty() {
         return Err(error::expected_body(form));
     }
@@ -1913,7 +1913,7 @@ fn parse_let_syntax(
     recursive: bool,
     bindings: &Syntax,
     env: &Environment,
-) -> Result<Environment, Condition> {
+) -> Result<Environment, Exception> {
     let Some([keyword_bindings @ .., Syntax::Null { .. }]) = bindings.as_list() else {
         return Err(error::expected_list(bindings));
     };
@@ -1951,7 +1951,7 @@ impl And {
 
 impl And {
     #[maybe_async]
-    fn parse(ctxt: &ParseContext, exprs: &[Syntax], env: &Environment) -> Result<Self, Condition> {
+    fn parse(ctxt: &ParseContext, exprs: &[Syntax], env: &Environment) -> Result<Self, Exception> {
         let mut output = Vec::new();
         for expr in exprs {
             let expr = maybe_await!(Expression::parse(ctxt, expr.clone(), env))?;
@@ -1972,7 +1972,7 @@ impl Or {
     }
 
     #[maybe_async]
-    fn parse(ctxt: &ParseContext, exprs: &[Syntax], env: &Environment) -> Result<Self, Condition> {
+    fn parse(ctxt: &ParseContext, exprs: &[Syntax], env: &Environment) -> Result<Self, Exception> {
         let mut output = Vec::new();
         for expr in exprs {
             let expr = maybe_await!(Expression::parse(ctxt, expr.clone(), env))?;
@@ -2011,7 +2011,7 @@ impl SyntaxCase {
         exprs: &[Syntax],
         env: &Environment,
         form: &Syntax,
-    ) -> Result<Self, Condition> {
+    ) -> Result<Self, Exception> {
         let (arg, keywords, mut rules) = match exprs {
             [arg, Syntax::List { list, .. }, rules @ ..] => {
                 let mut keywords = HashSet::default();
