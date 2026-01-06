@@ -3,6 +3,8 @@
           (import (rnrs syntax-case (6)))
           (import (rnrs hashtables (6)))
           (import (rnrs io ports (6)))
+          (import (rnrs io simple (6)))
+          (import (rnrs files (6)))
           (import (rnrs records syntactic (6)))
           (import (rnrs records procedural (6)))
           (import (rnrs records inspection (6)))))

@@ -18,8 +18,8 @@ use crate::{
     vectors::{self, ByteVector, Vector, VectorInner},
 };
 use std::{
-    collections::HashMap, fmt, hash::Hash, io::Write, marker::PhantomData, mem::ManuallyDrop,
-    ops::Deref, ptr::null, sync::Arc,
+    collections::HashMap, fmt, hash::Hash, marker::PhantomData, mem::ManuallyDrop, ops::Deref,
+    ptr::null, sync::Arc,
 };
 
 const ALIGNMENT: usize = 16;
@@ -1253,11 +1253,4 @@ pub fn pair_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
 #[bridge(name = "procedure?", lib = "(rnrs base builtins (6))")]
 pub fn procedure_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![Value::from(arg.type_of() == ValueType::Procedure)])
-}
-
-#[bridge(name = "display", lib = "(rnrs base builtins (6))")]
-pub fn display(arg: &Value) -> Result<Vec<Value>, Condition> {
-    print!("{arg}");
-    let _ = std::io::stdout().flush();
-    Ok(Vec::new())
 }

@@ -606,7 +606,7 @@ pub fn with_exception_handler(
         None,
     );
 
-    Ok(Application::new(thunk.clone(), vec![Value::from(k)], None))
+    Ok(Application::new(thunk, vec![Value::from(k)], None))
 }
 
 #[cps_bridge(def = "raise obj", lib = "(rnrs base builtins (6))")]
