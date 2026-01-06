@@ -963,6 +963,7 @@ pub(crate) struct PortInner {
 }
 
 impl PortInner {
+    #[allow(clippy::too_many_arguments)]
     fn new<D, P>(
         id: D,
         port: P,
@@ -2113,6 +2114,7 @@ impl Port {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_flags<D, P>(
         id: D,
         port: P,
@@ -3654,8 +3656,14 @@ pub fn call_with_input_file(
     };
     let proc = proc.clone().try_into()?;
     let filename = filename.to_string();
-    let file = maybe_await!(File::options().read(true).create(true).open(&filename))
-        .map_err(|err| map_io_error_to_condition(&filename, err))?;
+    let file = maybe_await!(
+        File::options()
+            .read(true)
+            .create(true)
+            .truncate(false)
+            .open(&filename)
+    )
+    .map_err(|err| map_io_error_to_condition(&filename, err))?;
 
     let port = Port::new_with_flags(
         filename,
@@ -3709,8 +3717,14 @@ pub fn call_with_output_file(
     };
     let proc = proc.clone().try_into()?;
     let filename = filename.to_string();
-    let file = maybe_await!(File::options().write(true).create(true).open(&filename))
-        .map_err(|err| map_io_error_to_condition(&filename, err))?;
+    let file = maybe_await!(
+        File::options()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&filename)
+    )
+    .map_err(|err| map_io_error_to_condition(&filename, err))?;
 
     let port = Port::new_with_flags(
         filename,
@@ -3796,8 +3810,14 @@ pub fn with_input_from_file(
     let filename = filename.to_string();
     let thunk = thunk.clone().try_into()?;
 
-    let file = maybe_await!(File::options().read(true).create(true).open(&filename))
-        .map_err(|err| map_io_error_to_condition(&filename, err))?;
+    let file = maybe_await!(
+        File::options()
+            .read(true)
+            .create(true)
+            .truncate(false)
+            .open(&filename)
+    )
+    .map_err(|err| map_io_error_to_condition(&filename, err))?;
 
     let port = Port::new_with_flags(
         filename,
@@ -3862,8 +3882,14 @@ pub fn with_output_to_file(
     let filename = filename.to_string();
     let thunk = thunk.clone().try_into()?;
 
-    let file = maybe_await!(File::options().write(true).create(true).open(&filename))
-        .map_err(|err| map_io_error_to_condition(&filename, err))?;
+    let file = maybe_await!(
+        File::options()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&filename)
+    )
+    .map_err(|err| map_io_error_to_condition(&filename, err))?;
 
     let port = Port::new_with_flags(
         filename,
