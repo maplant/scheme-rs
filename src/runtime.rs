@@ -354,7 +354,6 @@ unsafe extern "C" fn apply(
     op: *const (),
     args: *const *const (),
     num_args: u32,
-    span: *const Span,
     dyn_stack: *mut DynStack,
 ) -> *mut Application {
     unsafe {
@@ -374,12 +373,13 @@ unsafe extern "C" fn apply(
             }
         };
 
-        let app = Application::with_call_site(op, args, arc_from_ptr(span));
+        let app = Application::new(op, args);
 
         Box::into_raw(Box::new(app))
     }
 }
 
+/*
 /// Create a boxed application that forwards a list of values to the operator
 #[runtime_fn]
 unsafe extern "C" fn forward(
@@ -411,7 +411,7 @@ unsafe extern "C" fn forward(
 
         Box::into_raw(Box::new(app))
     }
-}
+}*/
 
 /// Create a boxed application that simply returns its arguments
 #[runtime_fn]
@@ -542,6 +542,24 @@ unsafe extern "C" fn error_unbound_variable(symbol: u32) -> *const () {
     let sym = Symbol(symbol);
     let condition = Exception::error(format!("{sym} is unbound"));
     Value::into_raw(Value::from(condition))
+}
+
+#[runtime_fn]
+unsafe extern "C" fn push_call_stack(trace: *const (), dyn_stack: *mut DynStack) {
+    unsafe {
+        dyn_stack.as_mut().unwrap_unchecked().push_call_stack(
+            Value::from_raw_inc_rc(trace)
+                .cast_to_scheme_type()
+                .unwrap_unchecked(),
+        );
+    }
+}
+
+#[runtime_fn]
+unsafe extern "C" fn pop_call_stack(dyn_stack: *mut DynStack) {
+    unsafe {
+        dyn_stack.as_mut().unwrap_unchecked().pop_call_stack();
+    }
 }
 
 #[runtime_fn]

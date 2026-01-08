@@ -48,7 +48,6 @@ impl Rebinds {
 #[derive(derive_builder::Builder)]
 pub(crate) struct RuntimeFunctions {
     apply: FuncId,
-    forward: FuncId,
     halt: FuncId,
     make_user: FuncId,
     make_continuation: FuncId,
@@ -77,6 +76,10 @@ pub(crate) struct RuntimeFunctions {
     greater_equal: FuncId,
     lesser: FuncId,
     lesser_equal: FuncId,
+
+    // Trace primops:
+    push_call_stack: FuncId,
+    pop_call_stack: FuncId,
 }
 
 impl Cps {
@@ -87,7 +90,7 @@ impl Cps {
         module: &mut JITModule,
         debug_info: &mut DebugInfo,
     ) -> Procedure {
-        if std::env::var("GOUKI_DEBUG").is_ok() {
+        if std::env::var("SCHEME_RS_DEBUG").is_ok() {
             eprintln!("compiling: {self:#?}");
         }
 
@@ -139,7 +142,7 @@ impl Cps {
 
         cu.cps_codegen(self, &mut deferred);
 
-        if std::env::var("GOUKI_DEBUG").is_ok() {
+        if std::env::var("SCHEME_RS_DEBUG").is_ok() {
             eprintln!("compiled: {}", cu.builder.func.display());
         }
 
@@ -197,8 +200,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
             Cps::If(cond, success, failure) => {
                 self.if_codegen(&cond, *success, *failure, deferred);
             }
-            Cps::App(operator, args, loc) => self.app_codegen(&operator, &args, loc),
-            Cps::Forward(operator, arg) => self.forward_codegen(&operator, &arg),
+            Cps::App(operator, args) => self.app_codegen(&operator, &args),
             Cps::PrimOp(PrimOp::Set, args, _, cexpr) => {
                 self.store_codegen(&args[1], &args[0], *cexpr, deferred);
             }
@@ -226,6 +228,17 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
             }
             Cps::PrimOp(PrimOp::ErrorNoPatternsMatch, _, _, _) => {
                 self.error_no_patterns_match_codegen();
+            }
+            Cps::PrimOp(PrimOp::PushCallStack, args, _, cexpr) => {
+                let [frame] = args.as_slice() else {
+                    unreachable!()
+                };
+                self.push_call_stack_codegen(frame);
+                self.cps_codegen(*cexpr, deferred);
+            }
+            Cps::PrimOp(PrimOp::PopCallStack, _, _, cexpr) => {
+                self.pop_call_stack_codegen();
+                self.cps_codegen(*cexpr, deferred);
             }
             Cps::PrimOp(primop, vals, result, cexpr) => {
                 self.simple_primop_codegen(primop, &vals, result, *cexpr, deferred);
@@ -459,6 +472,25 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         self.cps_codegen(cexpr, deferred);
     }
 
+    fn push_call_stack_codegen(&mut self, frame: &CpsValue) {
+        let frame = self.value_codegen(frame);
+        let push_call_stack = self
+            .module
+            .declare_func_in_func(self.runtime_funcs.push_call_stack, self.builder.func);
+        let dyn_stack = self.get_dyn_stack();
+        self.builder
+            .ins()
+            .call(push_call_stack, &[frame, dyn_stack]);
+    }
+
+    fn pop_call_stack_codegen(&mut self) {
+        let pop_call_stack = self
+            .module
+            .declare_func_in_func(self.runtime_funcs.pop_call_stack, self.builder.func);
+        let dyn_stack = self.get_dyn_stack();
+        self.builder.ins().call(pop_call_stack, &[dyn_stack]);
+    }
+
     fn error_no_patterns_match_codegen(&mut self) {
         self.drops_codegen();
         let error_no_patterns_match = self.module.declare_func_in_func(
@@ -495,7 +527,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         }
     }
 
-    fn app_codegen(&mut self, operator: &CpsValue, args: &[CpsValue], loc: Option<Span>) {
+    fn app_codegen(&mut self, operator: &CpsValue, args: &[CpsValue]) {
         let runtime = self.get_runtime();
         let dyn_stack = self.get_dyn_stack();
         let operator = self.value_codegen(operator);
@@ -509,26 +541,19 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
 
         let args_addr = self.builder.ins().stack_addr(types::I64, args_slot, 0);
         let args_len = self.builder.ins().iconst(types::I32, args.len() as i64);
-        let span = if let Some(loc) = loc {
-            let span = Arc::new(loc);
-            let span_ptr = Arc::as_ptr(&span);
-            self.debug_info.store_span(span);
-            self.builder.ins().iconst(types::I64, span_ptr as i64)
-        } else {
-            self.builder.ins().iconst(types::I64, 0)
-        };
         let apply = self
             .module
             .declare_func_in_func(self.runtime_funcs.apply, self.builder.func);
         let call = self.builder.ins().call(
             apply,
-            &[runtime, operator, args_addr, args_len, span, dyn_stack],
+            &[runtime, operator, args_addr, args_len, dyn_stack],
         );
         let app = self.builder.inst_results(call)[0];
         self.drops_codegen();
         self.builder.ins().return_(&[app]);
     }
 
+    /*
     fn forward_codegen(&mut self, operator: &CpsValue, arg: &CpsValue) {
         let runtime = self.get_runtime();
         let dyn_stack = self.get_dyn_stack();
@@ -546,6 +571,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         self.drops_codegen();
         self.builder.ins().return_(&[result]);
     }
+    */
 
     fn halt_codegen(&mut self, args: &CpsValue) {
         let val = self.value_codegen(args);

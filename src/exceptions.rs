@@ -354,7 +354,7 @@ define_condition_type!(
 );
 
 impl StackTrace {
-    pub fn new(trace: Vec<Syntax>) -> Self {
+    pub fn new(trace: Vec<Arc<Syntax>>) -> Self {
         Self {
             parent: Gc::new(SimpleCondition::new()),
             trace: Vector::from(trace.into_iter().map(Value::from).collect::<Vec<_>>()),
@@ -622,7 +622,7 @@ pub fn raise_builtin(
 /// Raises a non-continuable exception to the current exception handler.
 pub fn raise(runtime: Runtime, raised: Value, dyn_stack: &mut DynStack) -> Application {
     let raised = if let Some(condition) = raised.cast_to_scheme_type::<Exception>() {
-        Value::from(condition.add_condition(StackTrace::new(dyn_stack.to_stack_trace())))
+        Value::from(condition.add_condition(StackTrace::new(dyn_stack.trace())))
     } else {
         raised
     };

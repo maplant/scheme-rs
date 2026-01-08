@@ -12,7 +12,7 @@ use crate::{
     registry::BridgeFnDebugInfo,
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
-    syntax::{Identifier, Span, Syntax},
+    syntax::{Span, Syntax},
     value::Value,
     vectors::Vector,
 };
@@ -494,8 +494,6 @@ pub struct Application {
     pub op: OpType,
     /// The arguments being applied to the operator.
     pub args: Vec<Value>,
-    /// The call site of this application, if it exists.
-    pub call_site: Option<Arc<Span>>,
 }
 
 impl Application {
@@ -503,15 +501,6 @@ impl Application {
         Self {
             op: OpType::Proc(op),
             args,
-            call_site: None,
-        }
-    }
-
-    pub fn with_call_site(op: Procedure, args: Vec<Value>, call_site: Option<Arc<Span>>) -> Self {
-        Self {
-            op: OpType::Proc(op),
-            args,
-            call_site,
         }
     }
 
@@ -519,7 +508,6 @@ impl Application {
         Self {
             op: OpType::HaltOk,
             args,
-            call_site: None,
         }
     }
 
@@ -527,7 +515,6 @@ impl Application {
         Self {
             op: OpType::HaltErr,
             args: vec![arg],
-            call_site: None,
         }
     }
 
@@ -543,7 +530,6 @@ impl Application {
                     return Err(Exception(self.args.pop().unwrap()));
                 }
             };
-            dyn_stack.collect_frame(&op, self.call_site);
             self = maybe_await!(op.0.apply(self.args, dyn_stack));
         }
     }
@@ -559,7 +545,6 @@ impl Application {
                     return Err(Exception(self.args.pop().unwrap()));
                 }
             };
-            dyn_stack.collect_frame(&op, self.call_site);
             self = op.0.apply_sync(self.args, dyn_stack);
         }
     }
@@ -681,7 +666,7 @@ pub struct DynStack {
     dyn_stack: Vec<DynStackElem>,
     /// The current stack trace of the program
     // TODO: We should limit the number of frames
-    trace: Vec<Option<Frame>>,
+    trace: Vec<Arc<Syntax>>,
 }
 
 impl DynStack {
@@ -689,6 +674,19 @@ impl DynStack {
     // searching isn't _great_, although in practice I can't imagine this stack
     // will ever get very large.
 
+    pub(crate) fn push_call_stack(&mut self, frame: Arc<Syntax>) {
+        self.trace.push(frame);
+    }
+
+    pub(crate) fn pop_call_stack(&mut self) {
+        self.trace.pop();
+    }
+
+    pub fn trace(&self) -> Vec<Arc<Syntax>> {
+        self.trace.clone()
+    }
+
+    /*
     fn collect_frame(&mut self, op: &Procedure, call_site: Option<Arc<Span>>) {
         if op.is_continuation() {
             self.trace.pop();
@@ -716,6 +714,7 @@ impl DynStack {
             })
             .collect()
     }
+    */
 
     pub fn current_exception_handler(&self) -> Option<Procedure> {
         self.dyn_stack.iter().rev().find_map(|elem| match elem {
@@ -826,12 +825,6 @@ pub(crate) unsafe extern "C" fn pop_dyn_stack(
 
         Box::into_raw(Box::new(app))
     }
-}
-
-#[derive(Clone, Debug, Trace)]
-pub(crate) struct Frame {
-    func_name: Symbol,
-    call_site: Arc<Span>,
 }
 
 #[cps_bridge(def = "print-trace", lib = "(rnrs base builtins (6))")]

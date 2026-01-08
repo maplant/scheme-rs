@@ -11,7 +11,7 @@ use indexmap::IndexSet;
 /// There's not too much reason that this is a trait, other than I wanted to
 /// see all of the Compile implementations in one place.
 pub trait Compile: std::fmt::Debug {
-    fn compile(&self, meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps;
+    fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps;
 
     /// The top level function takes no arguments.
     fn compile_top_level(&self) -> Cps {
@@ -21,9 +21,7 @@ pub trait Compile: std::fmt::Debug {
             args: LambdaArgs::new(vec![result], true, None),
             body: Box::new(Cps::Halt(Value::from(result))),
             val: k,
-            cexp: Box::new(self.compile(Box::new(|value| {
-                Cps::App(value, vec![Value::from(k)], None)
-            }))),
+            cexp: Box::new(self.compile(&mut |value| Cps::App(value, vec![Value::from(k)]))),
             span: None,
         };
         let mutable_vars = compiled.mutable_vars();
@@ -34,7 +32,7 @@ pub trait Compile: std::fmt::Debug {
 impl Compile for Lambda {
     /// Generates the maximally-correct implementation of a lambda, i.e. a closure that
     /// tail-calls a closure.
-    fn compile(&self, meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+    fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
         compile_lambda(
             self.args.iter().cloned().collect(),
             self.args.is_variadic(),
@@ -64,11 +62,9 @@ fn compile_lambda(
         args: LambdaArgs::new(vec![k2], false, None),
         body: Box::new(Cps::Lambda {
             args: LambdaArgs::new(args, is_variadic, Some(k3)),
-            body: Box::new(body.compile(Box::new(|result| {
-                Cps::App(result, vec![Value::from(k3)], None)
-            }))),
+            body: Box::new(body.compile(&mut |result| Cps::App(result, vec![Value::from(k3)]))),
             val: k4,
-            cexp: Box::new(Cps::App(Value::from(k2), vec![Value::from(k4)], None)),
+            cexp: Box::new(Cps::App(Value::from(k2), vec![Value::from(k4)])),
             span: Some(span.clone()),
         }),
         val: k1,
@@ -78,7 +74,7 @@ fn compile_lambda(
 }
 
 impl Compile for Let {
-    fn compile(&self, meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+    fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
         compile_let(&self.bindings, &self.body, meta_cont)
     }
 }
@@ -86,7 +82,7 @@ impl Compile for Let {
 fn compile_let(
     binds: &[(Local, Expression)],
     body: &DefinitionBody,
-    mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>,
+    meta_cont: &mut dyn FnMut(Value) -> Cps,
 ) -> Cps {
     if let Some(((curr_bind, curr_expr), tail)) = binds.split_first() {
         let k1 = Local::gensym();
@@ -96,15 +92,13 @@ fn compile_let(
             args: LambdaArgs::new(vec![k2], false, None),
             body: Box::new(Cps::Lambda {
                 args: LambdaArgs::new(vec![*curr_bind], false, None),
-                body: Box::new(compile_let(
-                    tail,
-                    body,
-                    Box::new(move |result| Cps::App(result, vec![Value::from(k2)], None)),
-                )),
+                body: Box::new(compile_let(tail, body, &mut move |result| {
+                    Cps::App(result, vec![Value::from(k2)])
+                })),
                 val: k3,
-                cexp: Box::new(curr_expr.compile(Box::new(move |result| {
-                    Cps::App(result, vec![Value::from(k3)], None)
-                }))),
+                cexp: Box::new(
+                    curr_expr.compile(&mut move |result| Cps::App(result, vec![Value::from(k3)])),
+                ),
                 span: None,
             }),
             val: k1,
@@ -117,7 +111,7 @@ fn compile_let(
 }
 
 impl Compile for Expression {
-    fn compile(&self, meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+    fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
         match self {
             Self::Literal(l) => l.compile(meta_cont),
             Self::Apply(e) => e.compile(meta_cont),
@@ -140,16 +134,12 @@ impl Compile for Expression {
 }
 
 impl Compile for Var {
-    fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+    fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
         let k1 = Local::gensym();
         let k2 = Local::gensym();
         Cps::Lambda {
             args: LambdaArgs::new(vec![k2], false, None),
-            body: Box::new(Cps::App(
-                Value::from(k2),
-                vec![Value::from(self.clone())],
-                None,
-            )),
+            body: Box::new(Cps::App(Value::from(k2), vec![Value::from(self.clone())])),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
             span: None,
@@ -158,20 +148,20 @@ impl Compile for Var {
 }
 
 impl Compile for &[Expression] {
-    fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+    fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
         match self {
             [] => {
                 let k1 = Local::gensym();
                 let k2 = Local::gensym();
                 Cps::Lambda {
                     args: LambdaArgs::new(vec![k2], false, None),
-                    body: Box::new(Cps::App(Value::from(k2), Vec::new(), None)),
+                    body: Box::new(Cps::App(Value::from(k2), Vec::new())),
                     val: k1,
                     cexp: Box::new(meta_cont(Value::from(k1))),
                     span: None,
                 }
             }
-            [last_expr] => last_expr.compile(Box::new(meta_cont) as Box<dyn FnMut(Value) -> Cps>),
+            [last_expr] => last_expr.compile(meta_cont),
             [head, tail @ ..] => {
                 let k1 = Local::gensym();
                 let k2 = Local::gensym();
@@ -179,9 +169,9 @@ impl Compile for &[Expression] {
                     args: LambdaArgs::new(vec![k1], true, None),
                     body: Box::new(tail.compile(meta_cont)),
                     val: k2,
-                    cexp: Box::new(head.compile(Box::new(move |result| {
-                        Cps::App(result, vec![Value::from(k2)], None)
-                    }))),
+                    cexp: Box::new(
+                        head.compile(&mut move |result| Cps::App(result, vec![Value::from(k2)])),
+                    ),
                     span: None,
                 }
             }
@@ -189,7 +179,7 @@ impl Compile for &[Expression] {
     }
 }
 
-fn compile_undefined(mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+fn compile_undefined(meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
     let k1 = Local::gensym();
     let k2 = Local::gensym();
     Cps::Lambda {
@@ -197,7 +187,6 @@ fn compile_undefined(mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
         body: Box::new(Cps::App(
             Value::from(k2),
             vec![Value::from(RuntimeValue::undefined())],
-            None,
         )),
         val: k1,
         cexp: Box::new(meta_cont(Value::from(k1))),
@@ -206,7 +195,7 @@ fn compile_undefined(mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
 }
 
 impl Compile for Literal {
-    fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+    fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
         let k1 = Local::gensym();
         let k2 = Local::gensym();
         Cps::Lambda {
@@ -214,7 +203,6 @@ impl Compile for Literal {
             body: Box::new(Cps::App(
                 Value::from(k2),
                 vec![Value::from(RuntimeValue::from(self.clone()))],
-                None,
             )),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
@@ -224,13 +212,13 @@ impl Compile for Literal {
 }
 
 impl Compile for ExprBody {
-    fn compile(&self, meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+    fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
         self.exprs.as_slice().compile(meta_cont)
     }
 }
 
 impl Compile for Apply {
-    fn compile(&self, meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+    fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
         compile_apply(&self.operator, &self.args, self.span.clone(), meta_cont)
     }
 }
@@ -239,7 +227,7 @@ fn compile_apply(
     operator: &Expression,
     args: &[Expression],
     span: Span,
-    mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>,
+    meta_cont: &mut dyn FnMut(Value) -> Cps,
 ) -> Cps {
     let k1 = Local::gensym();
     let k2 = Local::gensym();
@@ -250,7 +238,7 @@ fn compile_apply(
         body: Box::new(if let Some(primop) = operator.to_primop() {
             compile_primop(Value::from(k2), primop, Vec::new(), args)
         } else {
-            operator.compile(Box::new(move |op_result| Cps::Lambda {
+            operator.compile(&mut move |op_result| Cps::Lambda {
                 args: LambdaArgs::new(vec![k3], false, None),
                 body: Box::new(compile_apply_args(
                     Value::from(k2),
@@ -260,9 +248,9 @@ fn compile_apply(
                     span.clone(),
                 )),
                 val: k4,
-                cexp: Box::new(Cps::App(op_result, vec![Value::from(k4)], None)),
+                cexp: Box::new(Cps::App(op_result, vec![Value::from(k4)])),
                 span: None,
-            }))
+            })
         }),
         val: k1,
         cexp: Box::new(meta_cont(Value::from(k1))),
@@ -280,7 +268,8 @@ fn compile_apply_args(
     let (arg, tail) = match remaining_args {
         [] => {
             collected_args.push(cont);
-            return Cps::App(op, collected_args, Some(span));
+            // TODO: Push to stack frame
+            return Cps::App(op, collected_args);
         }
         [arg, tail @ ..] => (arg, tail),
     };
@@ -294,9 +283,7 @@ fn compile_apply_args(
             compile_apply_args(cont, op, collected_args, tail, span)
         }),
         val: k1,
-        cexp: Box::new(arg.compile(Box::new(|result| {
-            Cps::App(result, vec![Value::from(k1)], None)
-        }))),
+        cexp: Box::new(arg.compile(&mut |result| Cps::App(result, vec![Value::from(k1)]))),
         span: None,
     }
 }
@@ -314,7 +301,7 @@ fn compile_primop(
                 primop,
                 collected_args,
                 val,
-                Box::new(Cps::App(cont, vec![Value::from(val)], None)),
+                Box::new(Cps::App(cont, vec![Value::from(val)])),
             );
         }
         [arg, tail @ ..] => (arg, tail),
@@ -329,42 +316,39 @@ fn compile_primop(
             compile_primop(cont, primop, collected_args, tail)
         }),
         val: k1,
-        cexp: Box::new(arg.compile(Box::new(|result| {
-            Cps::App(result, vec![Value::from(k1)], None)
-        }))),
+        cexp: Box::new(arg.compile(&mut |result| Cps::App(result, vec![Value::from(k1)]))),
         span: None,
     }
 }
 
 impl Compile for If {
-    fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+    fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
         let k1 = Local::gensym();
         let k2 = Local::gensym();
         Cps::Lambda {
             args: LambdaArgs::new(vec![k1], false, None),
-            body: Box::new(self.cond.compile(Box::new(|cond_result| {
+            body: Box::new(self.cond.compile(&mut |cond_result| {
                 let k3 = Local::gensym();
                 let cond_arg = Local::gensym();
                 Cps::Lambda {
                     args: LambdaArgs::new(vec![cond_arg], false, None),
                     body: Box::new(Cps::If(
                         Value::from(cond_arg),
-                        Box::new(self.success.compile(Box::new(|success| {
-                            Cps::App(success, vec![Value::from(k1)], None)
-                        }))),
+                        Box::new(
+                            self.success
+                                .compile(&mut |success| Cps::App(success, vec![Value::from(k1)])),
+                        ),
                         Box::new(if let Some(ref failure) = self.failure {
-                            failure.compile(Box::new(|failure| {
-                                Cps::App(failure, vec![Value::from(k1)], None)
-                            }))
+                            failure.compile(&mut |failure| Cps::App(failure, vec![Value::from(k1)]))
                         } else {
-                            Cps::App(Value::from(k1), Vec::new(), None)
+                            Cps::App(Value::from(k1), Vec::new())
                         }),
                     )),
                     val: k3,
-                    cexp: Box::new(Cps::App(cond_result, vec![Value::from(k3)], None)),
+                    cexp: Box::new(Cps::App(cond_result, vec![Value::from(k3)])),
                     span: None,
                 }
-            }))),
+            })),
             val: k2,
             cexp: Box::new(meta_cont(Value::from(k2))),
             span: None,
@@ -373,12 +357,12 @@ impl Compile for If {
 }
 
 impl Compile for And {
-    fn compile(&self, meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+    fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
         compile_and(&self.args, meta_cont)
     }
 }
 
-fn compile_and(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+fn compile_and(exprs: &[Expression], meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
     let (expr, tail) = match exprs {
         [] => return meta_cont(Value::from(RuntimeValue::from(true))),
         [expr] => (expr, None),
@@ -389,7 +373,7 @@ fn compile_and(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps 
     let k2 = Local::gensym();
     Cps::Lambda {
         args: LambdaArgs::new(vec![k1], false, None),
-        body: Box::new(expr.compile(Box::new(|expr_result| {
+        body: Box::new(expr.compile(&mut |expr_result| {
             let k3 = Local::gensym();
             let cond_arg = Local::gensym();
             Cps::Lambda {
@@ -397,28 +381,20 @@ fn compile_and(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps 
                 body: Box::new(Cps::If(
                     Value::from(cond_arg),
                     Box::new(if let Some(tail) = tail {
-                        compile_and(
-                            tail,
-                            Box::new(|expr| Cps::App(expr, vec![Value::from(k1)], None)),
-                        )
+                        compile_and(tail, &mut |expr| Cps::App(expr, vec![Value::from(k1)]))
                     } else {
-                        Cps::App(
-                            Value::from(k1),
-                            vec![Value::from(RuntimeValue::from(true))],
-                            None,
-                        )
+                        Cps::App(Value::from(k1), vec![Value::from(RuntimeValue::from(true))])
                     }),
                     Box::new(Cps::App(
                         Value::from(k1),
                         vec![Value::from(RuntimeValue::from(false))],
-                        None,
                     )),
                 )),
                 val: k3,
-                cexp: Box::new(Cps::App(expr_result, vec![Value::from(k3)], None)),
+                cexp: Box::new(Cps::App(expr_result, vec![Value::from(k3)])),
                 span: None,
             }
-        }))),
+        })),
         val: k2,
         cexp: Box::new(meta_cont(Value::from(k2))),
         span: None,
@@ -426,12 +402,12 @@ fn compile_and(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps 
 }
 
 impl Compile for Or {
-    fn compile(&self, meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+    fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
         compile_or(&self.args, meta_cont)
     }
 }
 
-fn compile_or(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+fn compile_or(exprs: &[Expression], meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
     let (expr, tail) = match exprs {
         [] => return meta_cont(Value::from(RuntimeValue::from(false))),
         [expr] => (expr, None),
@@ -442,7 +418,7 @@ fn compile_or(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps +
     let k2 = Local::gensym();
     Cps::Lambda {
         args: LambdaArgs::new(vec![k1], false, None),
-        body: Box::new(expr.compile(Box::new(|expr_result| {
+        body: Box::new(expr.compile(&mut |expr_result| {
             let k3 = Local::gensym();
             let cond_arg = Local::gensym();
             Cps::Lambda {
@@ -452,26 +428,21 @@ fn compile_or(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps +
                     Box::new(Cps::App(
                         Value::from(k1),
                         vec![Value::from(RuntimeValue::from(true))],
-                        None,
                     )),
                     Box::new(if let Some(tail) = tail {
-                        compile_or(
-                            tail,
-                            Box::new(|expr| Cps::App(expr, vec![Value::from(k1)], None)),
-                        )
+                        compile_or(tail, &mut |expr| Cps::App(expr, vec![Value::from(k1)]))
                     } else {
                         Cps::App(
                             Value::from(k1),
                             vec![Value::from(RuntimeValue::from(false))],
-                            None,
                         )
                     }),
                 )),
                 val: k3,
-                cexp: Box::new(Cps::App(expr_result, vec![Value::from(k3)], None)),
+                cexp: Box::new(Cps::App(expr_result, vec![Value::from(k3)])),
                 span: None,
             }
-        }))),
+        })),
         val: k2,
         cexp: Box::new(meta_cont(Value::from(k2))),
         span: None,
@@ -479,7 +450,7 @@ fn compile_or(exprs: &[Expression], mut meta_cont: Box<dyn FnMut(Value) -> Cps +
 }
 
 impl Compile for Definition {
-    fn compile(&self, meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+    fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
         match self {
             Self::DefineVar(var) => var.compile(meta_cont),
             Self::DefineFunc(func) => func.compile(meta_cont),
@@ -517,7 +488,7 @@ impl DefineFunc {
 }
 
 impl Compile for DefinitionBody {
-    fn compile(&self, meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+    fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
         match self.first {
             Either::Left(ref def) => def.alloc_cells(def.compile(meta_cont)),
             Either::Right(ref exprs) => exprs.compile(meta_cont),
@@ -533,7 +504,7 @@ fn next_or_wrap(next: &Option<Either<Box<Definition>, ExprBody>>, wrap: Cps) -> 
 }
 
 impl Compile for Option<Either<Box<Definition>, ExprBody>> {
-    fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+    fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
         match self {
             Some(Either::Left(def)) => def.compile(meta_cont),
             Some(Either::Right(exprs)) => exprs.compile(meta_cont),
@@ -542,7 +513,7 @@ impl Compile for Option<Either<Box<Definition>, ExprBody>> {
                 let k2 = Local::gensym();
                 Cps::Lambda {
                     args: LambdaArgs::new(vec![k1], false, None),
-                    body: Box::new(Cps::App(Value::from(k1), Vec::new(), None)),
+                    body: Box::new(Cps::App(Value::from(k1), Vec::new())),
                     val: k2,
                     cexp: Box::new(meta_cont(Value::from(k2))),
                     span: None,
@@ -553,12 +524,11 @@ impl Compile for Option<Either<Box<Definition>, ExprBody>> {
 }
 
 impl Compile for Set {
-    fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+    fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
         let expr_result = Local::gensym();
         let k1 = Local::gensym();
         let k2 = Local::gensym();
         let k3 = Local::gensym();
-        // let k4 = Local::gensym();
         Cps::Lambda {
             args: LambdaArgs::new(vec![k2], false, None),
             body: Box::new(Cps::Lambda {
@@ -570,12 +540,13 @@ impl Compile for Set {
                         Value::Var(Var::Local(expr_result)),
                     ],
                     Local::gensym(),
-                    Box::new(Cps::App(Value::from(k2), Vec::new(), None)),
+                    Box::new(Cps::App(Value::from(k2), Vec::new())),
                 )),
                 val: k3,
-                cexp: Box::new(self.val.compile(Box::new(move |result| {
-                    Cps::App(result, vec![Value::from(k3)], None)
-                }))),
+                cexp: Box::new(
+                    self.val
+                        .compile(&mut move |result| Cps::App(result, vec![Value::from(k3)])),
+                ),
                 span: None,
             }),
             val: k1,
@@ -586,12 +557,11 @@ impl Compile for Set {
 }
 
 impl Compile for DefineVar {
-    fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+    fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
         let expr_result = Local::gensym();
         let k1 = Local::gensym();
         let k2 = Local::gensym();
         let k3 = Local::gensym();
-        // let k4 = Local::gensym();
         Cps::Lambda {
             args: LambdaArgs::new(vec![k2], false, None),
             body: Box::new(Cps::Lambda {
@@ -603,14 +573,16 @@ impl Compile for DefineVar {
                         Value::Var(Var::Local(expr_result)),
                     ],
                     Local::gensym(),
-                    Box::new(self.next.compile(Box::new(move |result| {
-                        Cps::App(result, vec![Value::from(k2)], None)
-                    }))),
+                    Box::new(
+                        self.next
+                            .compile(&mut move |result| Cps::App(result, vec![Value::from(k2)])),
+                    ),
                 )),
                 val: k3,
-                cexp: Box::new(self.val.compile(Box::new(move |result| {
-                    Cps::App(result, vec![Value::from(k3)], None)
-                }))),
+                cexp: Box::new(
+                    self.val
+                        .compile(&mut move |result| Cps::App(result, vec![Value::from(k3)])),
+                ),
                 span: None,
             }),
             val: k1,
@@ -621,7 +593,7 @@ impl Compile for DefineVar {
 }
 
 impl Compile for DefineFunc {
-    fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+    fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
         let lambda_result = Local::gensym();
         let k1 = Local::gensym();
         let k2 = Local::gensym();
@@ -637,9 +609,10 @@ impl Compile for DefineFunc {
                         Value::Var(Var::Local(lambda_result)),
                     ],
                     Local::gensym(),
-                    Box::new(self.next.compile(Box::new(move |result| {
-                        Cps::App(result, vec![Value::from(k2)], None)
-                    }))),
+                    Box::new(
+                        self.next
+                            .compile(&mut move |result| Cps::App(result, vec![Value::from(k2)])),
+                    ),
                 )),
                 val: k3,
                 cexp: Box::new(compile_lambda(
@@ -648,7 +621,7 @@ impl Compile for DefineFunc {
                     &self.body,
                     self.span.clone(),
                     self.var.symbol(),
-                    |lambda_result| Cps::App(lambda_result, vec![Value::from(k3)], None),
+                    |lambda_result| Cps::App(lambda_result, vec![Value::from(k3)]),
                 )),
                 span: None,
             }),
@@ -660,7 +633,7 @@ impl Compile for DefineFunc {
 }
 
 impl Compile for Quote {
-    fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+    fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
         let k1 = Local::gensym();
         let k2 = Local::gensym();
         Cps::Lambda {
@@ -668,7 +641,6 @@ impl Compile for Quote {
             body: Box::new(Cps::App(
                 Value::from(k2),
                 vec![Value::from(self.val.clone())],
-                None,
             )),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
@@ -678,7 +650,7 @@ impl Compile for Quote {
 }
 
 impl Compile for SyntaxQuote {
-    fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+    fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
         let k1 = Local::gensym();
         let k2 = Local::gensym();
         let expanded = Local::gensym();
@@ -710,7 +682,7 @@ impl Compile for SyntaxQuote {
                 PrimOp::ExpandTemplate,
                 args,
                 expanded,
-                Box::new(Cps::App(Value::from(k2), vec![Value::from(expanded)], None)),
+                Box::new(Cps::App(Value::from(k2), vec![Value::from(expanded)])),
             )),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
@@ -720,26 +692,24 @@ impl Compile for SyntaxQuote {
 }
 
 impl Compile for SyntaxCase {
-    fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+    fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
         let k1 = Local::gensym();
         let k2 = Local::gensym();
         Cps::Lambda {
             args: LambdaArgs::new(vec![k2], false, None),
-            body: Box::new(self.arg.compile(Box::new(|expr_result| {
+            body: Box::new(self.arg.compile(&mut |expr_result| {
                 let k3 = Local::gensym();
                 let arg = Local::gensym();
                 Cps::Lambda {
                     args: LambdaArgs::new(vec![arg], false, None),
-                    body: Box::new(compile_syntax_rules(
-                        &self.rules,
-                        arg,
-                        Box::new(|expanded| Cps::App(expanded, vec![Value::from(k2)], None)),
-                    )),
+                    body: Box::new(compile_syntax_rules(&self.rules, arg, &mut |expanded| {
+                        Cps::App(expanded, vec![Value::from(k2)])
+                    })),
                     val: k3,
-                    cexp: Box::new(Cps::App(expr_result, vec![Value::from(k3)], None)),
+                    cexp: Box::new(Cps::App(expr_result, vec![Value::from(k3)])),
                     span: None,
                 }
-            }))),
+            })),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
             span: None,
@@ -749,7 +719,7 @@ impl Compile for SyntaxCase {
 fn compile_syntax_rules(
     rules: &[SyntaxRule],
     arg: Local,
-    mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>,
+    meta_cont: &mut dyn FnMut(Value) -> Cps,
 ) -> Cps {
     let k1 = Local::gensym();
     let k2 = Local::gensym();
@@ -760,7 +730,7 @@ fn compile_syntax_rules(
                 PrimOp::ErrorNoPatternsMatch,
                 Vec::new(),
                 Local::gensym(),
-                Box::new(Cps::App(Value::from(k2), Vec::new(), None)),
+                Box::new(Cps::App(Value::from(k2), Vec::new())),
             )),
             [rule, tail @ ..] => {
                 let pattern = Record::from_rust_type(rule.pattern.clone());
@@ -774,19 +744,16 @@ fn compile_syntax_rules(
                         } else {
                             rule.binds
                         };
-                        let inner = Box::new(Cps::If(
-                            Value::from(match_result),
-                            Box::new(rule.output_expression.compile(Box::new(|matches| {
-                                Cps::App(matches, vec![Value::from(k2)], None)
-                            }))),
-                            Box::new(compile_syntax_rules(
-                                tail,
-                                arg,
-                                Box::new(|next_pattern| {
-                                    Cps::App(next_pattern, vec![Value::from(k2)], None)
-                                }),
-                            )),
-                        ));
+                        let inner =
+                            Box::new(Cps::If(
+                                Value::from(match_result),
+                                Box::new(rule.output_expression.compile(&mut |matches| {
+                                    Cps::App(matches, vec![Value::from(k2)])
+                                })),
+                                Box::new(compile_syntax_rules(tail, arg, &mut |next_pattern| {
+                                    Cps::App(next_pattern, vec![Value::from(k2)])
+                                })),
+                            ));
                         if let Some(fender) = &rule.fender {
                             let k3 = Local::gensym();
                             Box::new(Cps::Lambda {
@@ -796,13 +763,12 @@ fn compile_syntax_rules(
                                 cexp: Box::new(Cps::If(
                                     Value::from(rule.binds),
                                     // Check the fender
-                                    Box::new(fender.compile(Box::new(|fender| {
-                                        Cps::App(fender, vec![Value::from(k3)], None)
-                                    }))),
+                                    Box::new(fender.compile(&mut |fender| {
+                                        Cps::App(fender, vec![Value::from(k3)])
+                                    })),
                                     Box::new(Cps::App(
                                         Value::from(k3),
                                         vec![Value::from(RuntimeValue::from(false))],
-                                        None,
                                     )),
                                 )),
                                 span: None,
@@ -821,7 +787,7 @@ fn compile_syntax_rules(
 }
 
 impl Compile for Vector {
-    fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+    fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
         let k1 = Local::gensym();
         let k2 = Local::gensym();
 
@@ -830,7 +796,6 @@ impl Compile for Vector {
             body: Box::new(Cps::App(
                 Value::from(k2),
                 vec![Value::from(RuntimeValue::from(self.vals.clone()))],
-                None,
             )),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
@@ -839,7 +804,7 @@ impl Compile for Vector {
     }
 }
 impl Compile for Vec<u8> {
-    fn compile(&self, mut meta_cont: Box<dyn FnMut(Value) -> Cps + '_>) -> Cps {
+    fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
         let k1 = Local::gensym();
         let k2 = Local::gensym();
 
@@ -848,7 +813,6 @@ impl Compile for Vec<u8> {
             body: Box::new(Cps::App(
                 Value::from(k2),
                 vec![Value::from(RuntimeValue::from(self.clone()))],
-                None,
             )),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
