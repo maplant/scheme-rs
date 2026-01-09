@@ -530,6 +530,9 @@ impl Application {
                     return Err(Exception(self.args.pop().unwrap()));
                 }
             };
+            if op.is_continuation() {
+                dyn_stack.pop_call_stack();
+            }
             self = maybe_await!(op.0.apply(self.args, dyn_stack));
         }
     }

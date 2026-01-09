@@ -3,6 +3,7 @@ use crate::{
     ast::*,
     expand::{ExpansionCombiner, SyntaxRule},
     records::Record,
+    syntax::{Identifier, Syntax},
     value::Value as RuntimeValue,
 };
 use either::Either;
@@ -25,7 +26,10 @@ pub trait Compile: std::fmt::Debug {
             span: None,
         };
         let mutable_vars = compiled.mutable_vars();
-        compiled.vals_to_cells(&mutable_vars).reduce()
+        compiled
+            .vals_to_cells(&mutable_vars)
+            .reduce()
+            .add_pop_call_stack_insts(&mut HashSet::default())
     }
 }
 
@@ -238,6 +242,21 @@ fn compile_apply(
         body: Box::new(if let Some(primop) = operator.to_primop() {
             compile_primop(Value::from(k2), primop, Vec::new(), args)
         } else {
+            let frame = if let Expression::Var(var) = operator
+                && let Some(sym) = var.symbol()
+            {
+                Syntax::Identifier {
+                    ident: Identifier::from_symbol(sym),
+                    binding_env: None,
+                    span,
+                }
+            } else {
+                Syntax::Identifier {
+                    ident: Identifier::new("<unknown>"),
+                    binding_env: None,
+                    span,
+                }
+            };
             operator.compile(&mut move |op_result| Cps::Lambda {
                 args: LambdaArgs::new(vec![k3], false, None),
                 body: Box::new(compile_apply_args(
@@ -245,7 +264,7 @@ fn compile_apply(
                     Value::from(k3),
                     Vec::new(),
                     args,
-                    span.clone(),
+                    frame.clone(),
                 )),
                 val: k4,
                 cexp: Box::new(Cps::App(op_result, vec![Value::from(k4)])),
@@ -263,13 +282,17 @@ fn compile_apply_args(
     op: Value,
     mut collected_args: Vec<Value>,
     remaining_args: &[Expression],
-    span: Span,
+    frame: Syntax,
 ) -> Cps {
     let (arg, tail) = match remaining_args {
         [] => {
             collected_args.push(cont);
-            // TODO: Push to stack frame
-            return Cps::App(op, collected_args);
+            return Cps::PrimOp(
+                PrimOp::PushCallStack,
+                vec![Value::from(RuntimeValue::from(frame))],
+                Local::gensym(),
+                Box::new(Cps::App(op, collected_args)),
+            );
         }
         [arg, tail @ ..] => (arg, tail),
     };
@@ -280,7 +303,7 @@ fn compile_apply_args(
         args: LambdaArgs::new(vec![k2], false, None),
         body: Box::new({
             collected_args.push(Value::from(k2));
-            compile_apply_args(cont, op, collected_args, tail, span)
+            compile_apply_args(cont, op, collected_args, tail, frame)
         }),
         val: k1,
         cexp: Box::new(arg.compile(&mut |result| Cps::App(result, vec![Value::from(k1)]))),
@@ -884,4 +907,56 @@ fn val_to_cell(arg: &mut Local, body: Box<Cps>) -> Box<Cps> {
             body,
         )),
     ))
+}
+
+impl Cps {
+    /// Add PopCallStack instructions to the Cps IR programatically
+    fn add_pop_call_stack_insts(self, apply_k: &mut HashSet<Local>) -> Cps {
+        match self {
+            Cps::PrimOp(PrimOp::PushCallStack, args, val, cexp) => {
+                match cexp.as_ref() {
+                    Self::App(_, args) => {
+                        apply_k.insert(args.last().unwrap().to_local().unwrap());
+                    }
+                    _ => unreachable!(),
+                }
+                Cps::PrimOp(PrimOp::PushCallStack, args, val, cexp)
+            }
+            Cps::PrimOp(op, args, val, cexp) => {
+                let cexp = Box::new(cexp.add_pop_call_stack_insts(apply_k));
+                Cps::PrimOp(op, args, val, cexp)
+            }
+            Cps::If(val, succ, fail) => Cps::If(
+                val,
+                Box::new(succ.add_pop_call_stack_insts(apply_k)),
+                Box::new(fail.add_pop_call_stack_insts(apply_k)),
+            ),
+            Cps::Lambda {
+                args,
+                body,
+                val,
+                cexp,
+                span,
+            } => {
+                let mut body = Box::new(body.add_pop_call_stack_insts(apply_k));
+                let cexp = Box::new(cexp.add_pop_call_stack_insts(apply_k));
+                if apply_k.remove(&val) {
+                    body = Box::new(Cps::PrimOp(
+                        PrimOp::PopCallStack,
+                        Vec::new(),
+                        Local::gensym(),
+                        body,
+                    ));
+                }
+                Cps::Lambda {
+                    args,
+                    body,
+                    val,
+                    cexp,
+                    span,
+                }
+            }
+            app => app,
+        }
+    }
 }
