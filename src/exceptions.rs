@@ -3,10 +3,11 @@
 use crate::{
     gc::{Gc, GcInner, Trace},
     ports::{IoError, IoReadError, IoWriteError},
-    proc::{Application, DynStack, DynStackElem, FuncPtr, Procedure, pop_dyn_stack},
+    proc::{Application, DynStackElem, DynamicState, FuncPtr, Procedure, pop_dyn_stack},
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::cps_bridge,
     runtime::{Runtime, RuntimeInner},
+    symbols::Symbol,
     syntax::{Identifier, Syntax, parse::ParseSyntaxError},
     value::{UnpackedValue, Value},
     vectors::Vector,
@@ -354,10 +355,10 @@ define_condition_type!(
 );
 
 impl StackTrace {
-    pub fn new(trace: Vec<Arc<Syntax>>) -> Self {
+    pub fn new(trace: Vec<Value>) -> Self {
         Self {
             parent: Gc::new(SimpleCondition::new()),
-            trace: Vector::from(trace.into_iter().map(Value::from).collect::<Vec<_>>()),
+            trace: Vector::from(trace),
         }
     }
 }
@@ -581,7 +582,7 @@ pub fn with_exception_handler(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    dyn_stack: &mut DynStack,
+    dyn_state: &mut DynamicState,
     k: Value,
 ) -> Result<Application, Exception> {
     let [handler, thunk] = args else {
@@ -591,15 +592,15 @@ pub fn with_exception_handler(
     let handler: Procedure = handler.clone().try_into()?;
     let thunk: Procedure = thunk.clone().try_into()?;
 
-    dyn_stack.push(DynStackElem::ExceptionHandler(handler));
+    dyn_state.push_dyn_stack(DynStackElem::ExceptionHandler(handler));
 
     let k_proc: Procedure = k.clone().try_into().unwrap();
     let (req_args, var) = k_proc.get_formals();
 
-    let k = Procedure::new(
+    let k = dyn_state.new_k(
         runtime.clone(),
         vec![k.clone()],
-        FuncPtr::Continuation(pop_dyn_stack),
+        pop_dyn_stack,
         req_args,
         var,
     );
@@ -613,28 +614,23 @@ pub fn raise_builtin(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    dyn_stack: &mut DynStack,
+    dyn_state: &mut DynamicState,
     _k: Value,
 ) -> Result<Application, Exception> {
-    Ok(raise(runtime.clone(), args[0].clone(), dyn_stack))
+    Ok(raise(runtime.clone(), args[0].clone(), dyn_state))
 }
 
 /// Raises a non-continuable exception to the current exception handler.
-pub fn raise(runtime: Runtime, raised: Value, dyn_stack: &mut DynStack) -> Application {
+pub fn raise(runtime: Runtime, raised: Value, dyn_state: &mut DynamicState) -> Application {
     let raised = if let Some(condition) = raised.cast_to_scheme_type::<Exception>() {
-        Value::from(condition.add_condition(StackTrace::new(dyn_stack.trace())))
+        let trace = dyn_state.current_marks(Symbol::intern("trace"));
+        Value::from(condition.add_condition(StackTrace::new(trace)))
     } else {
         raised
     };
 
     Application::new(
-        Procedure::new(
-            runtime,
-            vec![raised],
-            FuncPtr::Continuation(unwind_to_exception_handler),
-            0,
-            false,
-        ),
+        dyn_state.new_k(runtime, vec![raised], unwind_to_exception_handler, 0, false),
         Vec::new(),
     )
 }
@@ -643,7 +639,7 @@ pub fn raise(runtime: Runtime, raised: Value, dyn_stack: &mut DynStack) -> Appli
 unsafe extern "C" fn raise_rt(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     raised: *const (),
-    dyn_stack: *mut DynStack,
+    dyn_state: *mut DynamicState,
 ) -> *mut Application {
     unsafe {
         let runtime = Runtime::from_raw_inc_rc(runtime);
@@ -651,7 +647,7 @@ unsafe extern "C" fn raise_rt(
         Box::into_raw(Box::new(raise(
             runtime,
             raised,
-            dyn_stack.as_mut().unwrap_unchecked(),
+            dyn_state.as_mut().unwrap_unchecked(),
         )))
     }
 }
@@ -660,16 +656,16 @@ unsafe extern "C" fn unwind_to_exception_handler(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
-    dyn_stack: *mut DynStack,
+    dyn_state: *mut DynamicState,
 ) -> *mut Application {
     unsafe {
         // env[0] is the raised value:
         let raised = env.as_ref().unwrap().clone();
 
-        let dyn_stack = dyn_stack.as_mut().unwrap_unchecked();
+        let dyn_state = dyn_state.as_mut().unwrap_unchecked();
 
         loop {
-            let app = match dyn_stack.pop() {
+            let app = match dyn_state.pop_dyn_stack() {
                 None => {
                     // If the stack is empty, we should return the error
                     Application::halt_err(raised)
@@ -678,10 +674,10 @@ unsafe extern "C" fn unwind_to_exception_handler(
                     // If this is a winder, we should call the out winder while unwinding
                     Application::new(
                         winder.out_thunk,
-                        vec![Value::from(Procedure::new(
+                        vec![Value::from(dyn_state.new_k(
                             Runtime::from_raw_inc_rc(runtime),
                             vec![raised],
-                            FuncPtr::Continuation(unwind_to_exception_handler),
+                            unwind_to_exception_handler,
                             0,
                             false,
                         ))],
@@ -691,10 +687,10 @@ unsafe extern "C" fn unwind_to_exception_handler(
                     handler,
                     vec![
                         raised.clone(),
-                        Value::from(Procedure::new(
+                        Value::from(dyn_state.new_k(
                             Runtime::from_raw_inc_rc(runtime),
                             vec![raised],
-                            FuncPtr::Continuation(reraise_exception),
+                            reraise_exception,
                             0,
                             true,
                         )),
@@ -711,7 +707,7 @@ unsafe extern "C" fn reraise_exception(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
-    _dyn_stack: *mut DynStack,
+    _dyn_state: *mut DynamicState,
 ) -> *mut Application {
     unsafe {
         let runtime = Runtime(Gc::from_raw_inc_rc(runtime));
@@ -740,14 +736,14 @@ pub fn raise_continuable(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    dyn_stack: &mut DynStack,
+    dyn_state: &mut DynamicState,
     k: Value,
 ) -> Result<Application, Exception> {
     let [condition] = args else {
         unreachable!();
     };
 
-    let Some(handler) = dyn_stack.current_exception_handler() else {
+    let Some(handler) = dyn_state.current_exception_handler() else {
         return Ok(Application::halt_err(condition.clone()));
     };
 

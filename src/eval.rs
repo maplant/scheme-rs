@@ -9,7 +9,7 @@ use crate::{
     cps::Compile,
     env::Environment,
     exceptions::Exception,
-    proc::{Application, DynStack},
+    proc::{Application, DynamicState},
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::{Library, cps_bridge},
     runtime::Runtime,
@@ -24,7 +24,7 @@ pub fn eval(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _dyn_stack: &mut DynStack,
+    _dyn_state: &mut DynamicState,
     k: Value,
 ) -> Result<Application, Exception> {
     let [expression, environment] = args else {
@@ -52,7 +52,7 @@ pub fn environment(
     _env: &[Value],
     _args: &[Value],
     import_spec: &[Value],
-    _dyn_stack: &mut DynStack,
+    _dyn_state: &mut DynamicState,
     k: Value,
 ) -> Result<Application, Exception> {
     let marks = BTreeSet::default();

@@ -104,9 +104,8 @@ pub enum PrimOp {
     Lesser,
     LesserEqual,
 
-    // Trace operators:
-    PushCallStack,
-    PopCallStack,
+    // Continuation mark operators:
+    SetContinuationMark,
 
     // Macro expansion primitive operators:
     /// Matches the pattern against the syntax object, returning the bindings if

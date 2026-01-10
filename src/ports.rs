@@ -18,7 +18,7 @@ use crate::{
     enumerations::{EnumerationSet, EnumerationType},
     exceptions::{Assertion, Error, Exception, raise},
     gc::{Gc, GcInner, Trace},
-    proc::{Application, DynStack, DynStackElem, FuncPtr, Procedure, pop_dyn_stack},
+    proc::{Application, DynStackElem, DynamicState, FuncPtr, Procedure, pop_dyn_stack},
     records::{Record, RecordTypeDescriptor, SchemeCompatible},
     runtime::{Runtime, RuntimeInner},
     strings::WideString,
@@ -3208,10 +3208,10 @@ pub fn current_input_port(
     _env: &[Value],
     _args: &[Value],
     _rest_args: &[Value],
-    dyn_stack: &mut DynStack,
+    dyn_state: &mut DynamicState,
     k: Value,
 ) -> Result<Application, Exception> {
-    let current_input_port = dyn_stack.current_input_port();
+    let current_input_port = dyn_state.current_input_port();
     Ok(Application::new(
         k.try_into().unwrap(),
         vec![Value::from(current_input_port)],
@@ -3224,10 +3224,10 @@ pub fn current_output_port(
     _env: &[Value],
     _args: &[Value],
     _rest_args: &[Value],
-    dyn_stack: &mut DynStack,
+    dyn_state: &mut DynamicState,
     k: Value,
 ) -> Result<Application, Exception> {
-    let current_input_port = dyn_stack.current_output_port();
+    let current_input_port = dyn_state.current_output_port();
     Ok(Application::new(
         k.try_into().unwrap(),
         vec![Value::from(current_input_port)],
@@ -3240,7 +3240,7 @@ pub fn current_error_port(
     _env: &[Value],
     _args: &[Value],
     _rest_args: &[Value],
-    _dyn_stack: &mut DynStack,
+    _dyn_state: &mut DynamicState,
     k: Value,
 ) -> Result<Application, Exception> {
     let current_error_port = Port::new(
@@ -3637,7 +3637,7 @@ pub fn call_with_input_file(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _dyn_stack: &mut DynStack,
+    dyn_state: &mut DynamicState,
     k: Value,
 ) -> Result<Application, Exception> {
     #[cfg(not(feature = "async"))]
@@ -3672,10 +3672,10 @@ pub fn call_with_input_file(
         Some(Transcoder::native()),
     );
 
-    let k = Procedure::new(
+    let k = dyn_state.new_k(
         runtime.clone(),
         vec![Value::from(port.clone()), k],
-        FuncPtr::Continuation(close_port_and_call_k),
+        close_port_and_call_k,
         0,
         false,
     );
@@ -3696,7 +3696,7 @@ pub fn call_with_output_file(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _dyn_stack: &mut DynStack,
+    dyn_state: &mut DynamicState,
     k: Value,
 ) -> Result<Application, Exception> {
     #[cfg(not(feature = "async"))]
@@ -3731,10 +3731,10 @@ pub fn call_with_output_file(
         Some(Transcoder::native()),
     );
 
-    let k = Procedure::new(
+    let k = dyn_state.new_k(
         runtime.clone(),
         vec![Value::from(port.clone()), k],
-        FuncPtr::Continuation(close_port_and_call_k),
+        close_port_and_call_k,
         0,
         false,
     );
@@ -3749,7 +3749,7 @@ unsafe extern "C" fn close_port_and_call_k(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
-    _dyn_stack: *mut DynStack,
+    _dyn_state: *mut DynamicState,
 ) -> *mut Application {
     #[cfg(not(feature = "async"))]
     let bridge = FuncPtr::Bridge;
@@ -3785,7 +3785,7 @@ pub fn with_input_from_file(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    dyn_stack: &mut DynStack,
+    dyn_state: &mut DynamicState,
     k: Value,
 ) -> Result<Application, Exception> {
     #[cfg(not(feature = "async"))]
@@ -3821,23 +3821,23 @@ pub fn with_input_from_file(
         Some(Transcoder::native()),
     );
 
-    dyn_stack.push(DynStackElem::CurrentInputPort(port.clone()));
+    dyn_state.push_dyn_stack(DynStackElem::CurrentInputPort(port.clone()));
 
     let k_proc: Procedure = k.clone().try_into().unwrap();
     let (req_args, var) = k_proc.get_formals();
 
-    let k = Procedure::new(
+    let k = dyn_state.new_k(
         runtime.clone(),
         vec![k.clone()],
-        FuncPtr::Continuation(pop_dyn_stack),
+        pop_dyn_stack,
         req_args,
         var,
     );
 
-    let k = Procedure::new(
+    let k = dyn_state.new_k(
         runtime.clone(),
         vec![Value::from(port.clone()), Value::from(k)],
-        FuncPtr::Continuation(close_port_and_call_k),
+        close_port_and_call_k,
         0,
         false,
     );
@@ -3855,7 +3855,7 @@ pub fn with_output_to_file(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    dyn_stack: &mut DynStack,
+    dyn_state: &mut DynamicState,
     k: Value,
 ) -> Result<Application, Exception> {
     #[cfg(not(feature = "async"))]
@@ -3891,23 +3891,23 @@ pub fn with_output_to_file(
         Some(Transcoder::native()),
     );
 
-    dyn_stack.push(DynStackElem::CurrentOutputPort(port.clone()));
+    dyn_state.push_dyn_stack(DynStackElem::CurrentOutputPort(port.clone()));
 
     let k_proc: Procedure = k.clone().try_into().unwrap();
     let (req_args, var) = k_proc.get_formals();
 
-    let k = Procedure::new(
+    let k = dyn_state.new_k(
         runtime.clone(),
         vec![k.clone()],
-        FuncPtr::Continuation(pop_dyn_stack),
+        pop_dyn_stack,
         req_args,
         var,
     );
 
-    let k = Procedure::new(
+    let k = dyn_state.new_k(
         runtime.clone(),
         vec![Value::from(port.clone()), Value::from(k)],
-        FuncPtr::Continuation(close_port_and_call_k),
+        close_port_and_call_k,
         0,
         false,
     );
@@ -3945,17 +3945,17 @@ pub fn read_char(
     _env: &[Value],
     _args: &[Value],
     rest_args: &[Value],
-    dyn_stack: &mut DynStack,
+    dyn_state: &mut DynamicState,
     k: Value,
 ) -> Result<Application, Exception> {
     let input_port = match rest_args {
-        [] => dyn_stack.current_input_port(),
+        [] => dyn_state.current_input_port(),
         [input_port] => input_port.clone().try_into()?,
         _ => {
             return Ok(raise(
                 runtime.clone(),
                 Value::from(Exception::wrong_num_of_var_args(0..1, rest_args.len())),
-                dyn_stack,
+                dyn_state,
             ));
         }
     };
@@ -3979,17 +3979,17 @@ pub fn peek_char(
     _env: &[Value],
     _args: &[Value],
     rest_args: &[Value],
-    dyn_stack: &mut DynStack,
+    dyn_state: &mut DynamicState,
     k: Value,
 ) -> Result<Application, Exception> {
     let input_port = match rest_args {
-        [] => dyn_stack.current_input_port(),
+        [] => dyn_state.current_input_port(),
         [input_port] => input_port.clone().try_into()?,
         _ => {
             return Ok(raise(
                 runtime.clone(),
                 Value::from(Exception::wrong_num_of_var_args(0..1, rest_args.len())),
-                dyn_stack,
+                dyn_state,
             ));
         }
     };
@@ -4010,17 +4010,17 @@ pub fn read(
     _env: &[Value],
     _args: &[Value],
     rest_args: &[Value],
-    dyn_stack: &mut DynStack,
+    dyn_state: &mut DynamicState,
     k: Value,
 ) -> Result<Application, Exception> {
     let input_port = match rest_args {
-        [] => dyn_stack.current_input_port(),
+        [] => dyn_state.current_input_port(),
         [input_port] => input_port.clone().try_into()?,
         _ => {
             return Ok(raise(
                 runtime.clone(),
                 Value::from(Exception::wrong_num_of_var_args(0..1, rest_args.len())),
-                dyn_stack,
+                dyn_state,
             ));
         }
     };
@@ -4044,19 +4044,19 @@ pub fn write_char(
     _env: &[Value],
     args: &[Value],
     rest_args: &[Value],
-    dyn_stack: &mut DynStack,
+    dyn_state: &mut DynamicState,
     k: Value,
 ) -> Result<Application, Exception> {
     let [chr] = args else { unreachable!() };
     let chr: char = chr.clone().try_into()?;
     let output_port = match rest_args {
-        [] => dyn_stack.current_output_port(),
+        [] => dyn_state.current_output_port(),
         [output_port] => output_port.clone().try_into()?,
         _ => {
             return Ok(raise(
                 runtime.clone(),
                 Value::from(Exception::wrong_num_of_var_args(1..2, rest_args.len())),
-                dyn_stack,
+                dyn_state,
             ));
         }
     };
@@ -4076,17 +4076,17 @@ pub fn newline(
     _env: &[Value],
     _args: &[Value],
     rest_args: &[Value],
-    dyn_stack: &mut DynStack,
+    dyn_state: &mut DynamicState,
     k: Value,
 ) -> Result<Application, Exception> {
     let output_port = match rest_args {
-        [] => dyn_stack.current_output_port(),
+        [] => dyn_state.current_output_port(),
         [output_port] => output_port.clone().try_into()?,
         _ => {
             return Ok(raise(
                 runtime.clone(),
                 Value::from(Exception::wrong_num_of_var_args(0..1, rest_args.len())),
-                dyn_stack,
+                dyn_state,
             ));
         }
     };
@@ -4106,19 +4106,19 @@ pub fn display(
     _env: &[Value],
     args: &[Value],
     rest_args: &[Value],
-    dyn_stack: &mut DynStack,
+    dyn_state: &mut DynamicState,
     k: Value,
 ) -> Result<Application, Exception> {
     let [obj] = args else { unreachable!() };
     let obj = format!("{obj}");
     let output_port = match rest_args {
-        [] => dyn_stack.current_output_port(),
+        [] => dyn_state.current_output_port(),
         [output_port] => output_port.clone().try_into()?,
         _ => {
             return Ok(raise(
                 runtime.clone(),
                 Value::from(Exception::wrong_num_of_var_args(1..2, rest_args.len())),
-                dyn_stack,
+                dyn_state,
             ));
         }
     };
@@ -4138,19 +4138,19 @@ pub fn write(
     _env: &[Value],
     args: &[Value],
     rest_args: &[Value],
-    dyn_stack: &mut DynStack,
+    dyn_state: &mut DynamicState,
     k: Value,
 ) -> Result<Application, Exception> {
     let [obj] = args else { unreachable!() };
     let obj = format!("{obj:?}");
     let output_port = match rest_args {
-        [] => dyn_stack.current_output_port(),
+        [] => dyn_state.current_output_port(),
         [output_port] => output_port.clone().try_into()?,
         _ => {
             return Ok(raise(
                 runtime.clone(),
                 Value::from(Exception::wrong_num_of_var_args(1..2, rest_args.len())),
-                dyn_stack,
+                dyn_state,
             ));
         }
     };

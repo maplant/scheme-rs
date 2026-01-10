@@ -10,7 +10,7 @@ use scheme_rs::{
     env::Environment,
     exceptions::Exception,
     ports::{BufferMode, Port, Prompt, Transcoder},
-    proc::{Application, DynStack},
+    proc::{Application, DynamicState},
     registry::Library,
     runtime::Runtime,
     syntax::{Span, Syntax},
@@ -122,6 +122,6 @@ fn compile_and_run_str(
     let compiled = expr.compile_top_level();
     let closure = maybe_await!(runtime.compile_expr(compiled));
     let result =
-        maybe_await!(Application::new(closure, Vec::new()).eval(&mut DynStack::default()))?;
+        maybe_await!(Application::new(closure, Vec::new()).eval(&mut DynamicState::default()))?;
     Ok(result)
 }

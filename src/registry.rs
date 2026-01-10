@@ -8,7 +8,7 @@ use crate::{
     env::{EnvId, Environment, Global, Keyword},
     exceptions::{Exception, ImportError},
     gc::{Gc, Trace},
-    proc::{Application, BridgePtr, DynStack, FuncDebugInfo, FuncPtr, Procedure},
+    proc::{Application, BridgePtr, DynamicState, FuncDebugInfo, FuncPtr, Procedure},
     runtime::Runtime,
     symbols::Symbol,
     syntax::{Identifier, Syntax},
@@ -729,7 +729,8 @@ impl Library {
         let compiled = defn_body.compile_top_level();
         let rt = { self.0.read().rt.clone() };
         let proc = maybe_await!(rt.compile_expr(compiled));
-        let _ = maybe_await!(Application::new(proc, Vec::new()).eval(&mut DynStack::default()))?;
+        let _ =
+            maybe_await!(Application::new(proc, Vec::new()).eval(&mut DynamicState::default()))?;
         self.0.write().state = LibraryState::Invoked;
         Ok(())
     }

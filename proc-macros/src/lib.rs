@@ -77,7 +77,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 _env: &'a [::scheme_rs::value::Value],
                 args: &'a [::scheme_rs::value::Value],
                 rest_args: &'a [::scheme_rs::value::Value],
-                dyn_stack: &'a mut ::scheme_rs::proc::DynStack,
+                dyn_state: &'a mut ::scheme_rs::proc::DynamicState,
                 k: ::scheme_rs::value::Value,
             ) -> futures::future::BoxFuture<'a, scheme_rs::proc::Application> {
                 #bridge
@@ -94,7 +94,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                             Err(err) => return ::scheme_rs::exceptions::raise(
                                 runtime.clone(),
                                 err.into(),
-                                dyn_stack,
+                                dyn_state,
                             ),
                             Ok(result) => result,
                         };
@@ -128,7 +128,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 _env: &[::scheme_rs::value::Value],
                 args: &[::scheme_rs::value::Value],
                 rest_args: &[::scheme_rs::value::Value],
-                dyn_stack: &mut ::scheme_rs::proc::DynStack,
+                dyn_state: &mut ::scheme_rs::proc::DynamicState,
                 k: ::scheme_rs::value::Value,
             ) -> scheme_rs::proc::Application {
                 #bridge
@@ -144,7 +144,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                     Err(err) => return ::scheme_rs::exceptions::raise(
                         runtime.clone(),
                         err.into(),
-                        dyn_stack,
+                        dyn_state,
                     ),
                     Ok(result) => result,
                 };
@@ -274,7 +274,7 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 env: &'a [::scheme_rs::value::Value],
                 args: &'a [::scheme_rs::value::Value],
                 rest_args: &'a [::scheme_rs::value::Value],
-                dyn_stack: &'a mut ::scheme_rs::proc::DynStack,
+                dyn_state: &'a mut ::scheme_rs::proc::DynamicState,
                 k: ::scheme_rs::value::Value,
             ) -> futures::future::BoxFuture<'a, scheme_rs::proc::Application> {
                 #bridge
@@ -285,14 +285,14 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                         env,
                         args,
                         rest_args,
-                        dyn_stack,
+                        dyn_state,
                         k
                     ).await {
                         Ok(app) => app,
                         Err(err) => ::scheme_rs::exceptions::raise(
                             runtime.clone(),
                             err.into(),
-                            dyn_stack
+                            dyn_state
                         ),
                     }
                 })
@@ -307,7 +307,7 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 env: &[::scheme_rs::value::Value],
                 args: &[::scheme_rs::value::Value],
                 rest_args: &[::scheme_rs::value::Value],
-                dyn_stack: &mut ::scheme_rs::proc::DynStack,
+                dyn_state: &mut ::scheme_rs::proc::DynamicState,
                 k: ::scheme_rs::value::Value,
             ) -> scheme_rs::proc::Application {
                 #bridge
@@ -317,14 +317,14 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                     env,
                     args,
                     rest_args,
-                    dyn_stack,
+                    dyn_state,
                     k
                 ) {
                     Ok(app) => app,
                     Err(err) => ::scheme_rs::exceptions::raise(
                         runtime.clone(),
                         err.into(),
-                        dyn_stack
+                        dyn_state
                     )
                 }
             }

@@ -26,10 +26,7 @@ pub trait Compile: std::fmt::Debug {
             span: None,
         };
         let mutable_vars = compiled.mutable_vars();
-        compiled
-            .vals_to_cells(&mutable_vars)
-            .reduce()
-            .add_pop_call_stack_insts(&mut HashSet::default())
+        compiled.vals_to_cells(&mutable_vars).reduce()
     }
 }
 
@@ -288,8 +285,11 @@ fn compile_apply_args(
         [] => {
             collected_args.push(cont);
             return Cps::PrimOp(
-                PrimOp::PushCallStack,
-                vec![Value::from(RuntimeValue::from(frame))],
+                PrimOp::SetContinuationMark,
+                vec![
+                    Value::from(RuntimeValue::from(Symbol::intern("trace"))),
+                    Value::from(RuntimeValue::from(frame)),
+                ],
                 Local::gensym(),
                 Box::new(Cps::App(op, collected_args)),
             );
@@ -907,56 +907,4 @@ fn val_to_cell(arg: &mut Local, body: Box<Cps>) -> Box<Cps> {
             body,
         )),
     ))
-}
-
-impl Cps {
-    /// Add PopCallStack instructions to the Cps IR programatically
-    fn add_pop_call_stack_insts(self, apply_k: &mut HashSet<Local>) -> Cps {
-        match self {
-            Cps::PrimOp(PrimOp::PushCallStack, args, val, cexp) => {
-                match cexp.as_ref() {
-                    Self::App(_, args) => {
-                        apply_k.insert(args.last().unwrap().to_local().unwrap());
-                    }
-                    _ => unreachable!(),
-                }
-                Cps::PrimOp(PrimOp::PushCallStack, args, val, cexp)
-            }
-            Cps::PrimOp(op, args, val, cexp) => {
-                let cexp = Box::new(cexp.add_pop_call_stack_insts(apply_k));
-                Cps::PrimOp(op, args, val, cexp)
-            }
-            Cps::If(val, succ, fail) => Cps::If(
-                val,
-                Box::new(succ.add_pop_call_stack_insts(apply_k)),
-                Box::new(fail.add_pop_call_stack_insts(apply_k)),
-            ),
-            Cps::Lambda {
-                args,
-                body,
-                val,
-                cexp,
-                span,
-            } => {
-                let mut body = Box::new(body.add_pop_call_stack_insts(apply_k));
-                let cexp = Box::new(cexp.add_pop_call_stack_insts(apply_k));
-                if apply_k.remove(&val) {
-                    body = Box::new(Cps::PrimOp(
-                        PrimOp::PopCallStack,
-                        Vec::new(),
-                        Local::gensym(),
-                        body,
-                    ));
-                }
-                Cps::Lambda {
-                    args,
-                    body,
-                    val,
-                    cexp,
-                    span,
-                }
-            }
-            app => app,
-        }
-    }
 }

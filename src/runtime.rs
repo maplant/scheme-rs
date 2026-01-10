@@ -7,7 +7,9 @@ use crate::{
     lists::{Pair, list_to_vec},
     num,
     ports::{BufferMode, Port, Transcoder},
-    proc::{Application, ContinuationPtr, DynStack, FuncDebugInfo, FuncPtr, Procedure, UserPtr},
+    proc::{
+        Application, ContinuationPtr, DynamicState, FuncDebugInfo, FuncPtr, Procedure, UserPtr,
+    },
     registry::{Library, Registry},
     symbols::Symbol,
     syntax::Span,
@@ -78,7 +80,7 @@ impl Runtime {
         let compiled = body.compile_top_level();
         let closure = maybe_await!(self.compile_expr(compiled));
 
-        maybe_await!(Application::new(closure, Vec::new()).eval(&mut DynStack::default(),))
+        maybe_await!(Application::new(closure, Vec::new()).eval(&mut DynamicState::default(),))
     }
 
     pub fn get_registry(&self) -> Registry {
@@ -354,7 +356,7 @@ unsafe extern "C" fn apply(
     op: *const (),
     args: *const *const (),
     num_args: u32,
-    dyn_stack: *mut DynStack,
+    dyn_state: *mut DynamicState,
 ) -> *mut Application {
     unsafe {
         let args: Vec<_> = (0..num_args)
@@ -367,7 +369,7 @@ unsafe extern "C" fn apply(
                 let raised = raise(
                     Runtime::from_raw_inc_rc(runtime),
                     Exception::invalid_operator(x.type_name()).into(),
-                    dyn_stack.as_mut().unwrap_unchecked(),
+                    dyn_state.as_mut().unwrap_unchecked(),
                 );
                 return Box::into_raw(Box::new(raised));
             }
@@ -379,39 +381,22 @@ unsafe extern "C" fn apply(
     }
 }
 
-/*
-/// Create a boxed application that forwards a list of values to the operator
+/// Set the value for continuation mark
 #[runtime_fn]
-unsafe extern "C" fn forward(
-    runtime: *mut GcInner<RwLock<RuntimeInner>>,
-    op: *const (),
-    args: *const (),
-    dyn_stack: *mut DynStack,
-) -> *mut Application {
+unsafe extern "C" fn set_continuation_mark(
+    tag: *const (),
+    val: *const (),
+    dyn_state: *mut DynamicState,
+) {
     unsafe {
-        let op = match Value::from_raw_inc_rc(op).unpack() {
-            UnpackedValue::Procedure(op) => op,
-            x => {
-                let raised = raise(
-                    Runtime::from_raw_inc_rc(runtime),
-                    Exception::invalid_operator(x.type_name()).into(),
-                    dyn_stack.as_mut().unwrap_unchecked(),
-                );
-                return Box::into_raw(Box::new(raised));
-            }
-        };
-
-        // We do not need to increment to forward here, for the same reason as in
-        // halt.
-        let args = ManuallyDrop::new(Value::from_raw(args));
-        let mut flattened = Vec::new();
-        list_to_vec(&args, &mut flattened);
-
-        let app = Application::new(op, flattened);
-
-        Box::into_raw(Box::new(app))
+        let tag = Value::from_raw_inc_rc(tag);
+        let val = Value::from_raw_inc_rc(val);
+        dyn_state
+            .as_mut()
+            .unwrap()
+            .set_continuation_mark(tag.cast_to_scheme_type().unwrap(), val);
     }
-}*/
+}
 
 /// Create a boxed application that simply returns its arguments
 #[runtime_fn]
@@ -487,6 +472,7 @@ unsafe extern "C" fn make_continuation(
     num_envs: u32,
     num_required_args: u32,
     variadic: bool,
+    dyn_state: *mut DynamicState,
 ) -> *const () {
     unsafe {
         // Collect the environment:
@@ -494,10 +480,10 @@ unsafe extern "C" fn make_continuation(
             .map(|i| Value::from_raw_inc_rc(env.add(i as usize).read()))
             .collect();
 
-        let proc = Procedure::new(
+        let proc = dyn_state.as_mut().unwrap().new_k(
             Runtime::from_raw_inc_rc(runtime),
             env,
-            FuncPtr::Continuation(fn_ptr),
+            fn_ptr,
             num_required_args as usize,
             variadic,
         );
@@ -542,24 +528,6 @@ unsafe extern "C" fn error_unbound_variable(symbol: u32) -> *const () {
     let sym = Symbol(symbol);
     let condition = Exception::error(format!("{sym} is unbound"));
     Value::into_raw(Value::from(condition))
-}
-
-#[runtime_fn]
-unsafe extern "C" fn push_call_stack(trace: *const (), dyn_stack: *mut DynStack) {
-    unsafe {
-        dyn_stack.as_mut().unwrap_unchecked().push_call_stack(
-            Value::from_raw_inc_rc(trace)
-                .cast_to_scheme_type()
-                .unwrap_unchecked(),
-        );
-    }
-}
-
-#[runtime_fn]
-unsafe extern "C" fn pop_call_stack(dyn_stack: *mut DynStack) {
-    unsafe {
-        dyn_stack.as_mut().unwrap_unchecked().pop_call_stack();
-    }
 }
 
 #[runtime_fn]

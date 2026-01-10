@@ -165,9 +165,9 @@ impl LibrarySpec {
                 let mut body = body;
                 while let Some(spec) = body.first() {
                     if spec.has_car("export") {
-                        exports.join(ExportSpec::parse(spec).unwrap());
+                        exports.join(ExportSpec::parse(spec)?);
                     } else if spec.has_car("import") {
-                        imports.join(ImportSpec::parse(spec).unwrap());
+                        imports.join(ImportSpec::parse(spec)?);
                     } else {
                         break;
                     }

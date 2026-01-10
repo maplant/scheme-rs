@@ -66,6 +66,9 @@ pub(crate) struct RuntimeFunctions {
     cons: FuncId,
     list: FuncId,
 
+    // Continuation mark primops:
+    set_continuation_mark: FuncId,
+
     // Math primops:
     add: FuncId,
     sub: FuncId,
@@ -76,10 +79,6 @@ pub(crate) struct RuntimeFunctions {
     greater_equal: FuncId,
     lesser: FuncId,
     lesser_equal: FuncId,
-
-    // Trace primops:
-    push_call_stack: FuncId,
-    pop_call_stack: FuncId,
 }
 
 impl Cps {
@@ -122,7 +121,7 @@ impl Cps {
 
         let params = {
             let block_params = builder.block_params(entry_block);
-            [block_params[RUNTIME_PARAM], block_params[DYN_STACK_PARAM]]
+            [block_params[RUNTIME_PARAM], block_params[DYN_STATE_PARAM]]
         };
 
         let mut deferred = Vec::new();
@@ -191,7 +190,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         self.params[0]
     }
 
-    fn get_dyn_stack(&self) -> Value {
+    fn get_dyn_state(&self) -> Value {
         self.params[1]
     }
 
@@ -229,15 +228,11 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
             Cps::PrimOp(PrimOp::ErrorNoPatternsMatch, _, _, _) => {
                 self.error_no_patterns_match_codegen();
             }
-            Cps::PrimOp(PrimOp::PushCallStack, args, _, cexpr) => {
-                let [frame] = args.as_slice() else {
+            Cps::PrimOp(PrimOp::SetContinuationMark, args, _, cexpr) => {
+                let [tag, val] = args.as_slice() else {
                     unreachable!()
                 };
-                self.push_call_stack_codegen(frame);
-                self.cps_codegen(*cexpr, deferred);
-            }
-            Cps::PrimOp(PrimOp::PopCallStack, _, _, cexpr) => {
-                self.pop_call_stack_codegen();
+                self.set_continuation_mark_codegen(tag, val);
                 self.cps_codegen(*cexpr, deferred);
             }
             Cps::PrimOp(primop, vals, result, cexpr) => {
@@ -472,23 +467,16 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         self.cps_codegen(cexpr, deferred);
     }
 
-    fn push_call_stack_codegen(&mut self, frame: &CpsValue) {
-        let frame = self.value_codegen(frame);
-        let push_call_stack = self
+    fn set_continuation_mark_codegen(&mut self, tag: &CpsValue, val: &CpsValue) {
+        let tag = self.value_codegen(tag);
+        let val = self.value_codegen(val);
+        let dyn_state = self.get_dyn_state();
+        let set_continuation_mark = self
             .module
-            .declare_func_in_func(self.runtime_funcs.push_call_stack, self.builder.func);
-        let dyn_stack = self.get_dyn_stack();
+            .declare_func_in_func(self.runtime_funcs.set_continuation_mark, self.builder.func);
         self.builder
             .ins()
-            .call(push_call_stack, &[frame, dyn_stack]);
-    }
-
-    fn pop_call_stack_codegen(&mut self) {
-        let pop_call_stack = self
-            .module
-            .declare_func_in_func(self.runtime_funcs.pop_call_stack, self.builder.func);
-        let dyn_stack = self.get_dyn_stack();
-        self.builder.ins().call(pop_call_stack, &[dyn_stack]);
+            .call(set_continuation_mark, &[tag, val, dyn_state]);
     }
 
     fn error_no_patterns_match_codegen(&mut self) {
@@ -529,7 +517,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
 
     fn app_codegen(&mut self, operator: &CpsValue, args: &[CpsValue]) {
         let runtime = self.get_runtime();
-        let dyn_stack = self.get_dyn_stack();
+        let dyn_state = self.get_dyn_state();
         let operator = self.value_codegen(operator);
 
         // Allocate space for the args to be passed to make_application
@@ -544,10 +532,10 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         let apply = self
             .module
             .declare_func_in_func(self.runtime_funcs.apply, self.builder.func);
-        let call = self.builder.ins().call(
-            apply,
-            &[runtime, operator, args_addr, args_len, dyn_stack],
-        );
+        let call = self
+            .builder
+            .ins()
+            .call(apply, &[runtime, operator, args_addr, args_len, dyn_state]);
         let app = self.builder.inst_results(call)[0];
         self.drops_codegen();
         self.builder.ins().return_(&[app]);
@@ -556,7 +544,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
     /*
     fn forward_codegen(&mut self, operator: &CpsValue, arg: &CpsValue) {
         let runtime = self.get_runtime();
-        let dyn_stack = self.get_dyn_stack();
+        let dyn_state = self.get_dyn_state();
         let operator = self.value_codegen(operator);
         let arg = self.value_codegen(arg);
 
@@ -566,7 +554,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         let call = self
             .builder
             .ins()
-            .call(forward, &[runtime, operator, arg, dyn_stack]);
+            .call(forward, &[runtime, operator, arg, dyn_state]);
         let result = self.builder.inst_results(call)[0];
         self.drops_codegen();
         self.builder.ins().return_(&[result]);
@@ -623,11 +611,11 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
 
     fn raise_codegen(&mut self, val: Value) {
         let runtime = self.get_runtime();
-        let dyn_stack = self.get_dyn_stack();
+        let dyn_state = self.get_dyn_state();
         let raise = self
             .module
             .declare_func_in_func(self.runtime_funcs.raise_rt, self.builder.func);
-        let call = self.builder.ins().call(raise, &[runtime, val, dyn_stack]);
+        let call = self.builder.ins().call(raise, &[runtime, val, dyn_state]);
         let result = self.builder.inst_results(call)[0];
         self.builder.ins().return_(&[result]);
     }
@@ -740,6 +728,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
             });
             self.runtime_funcs.make_user
         } else {
+            args.push(self.get_dyn_state());
             self.runtime_funcs.make_continuation
         };
 
@@ -767,7 +756,7 @@ pub struct ProcedureBundle {
 const RUNTIME_PARAM: usize = 0;
 const ENV_PARAM: usize = 1;
 const ARGS_PARAM: usize = 2;
-const DYN_STACK_PARAM: usize = 3;
+const DYN_STATE_PARAM: usize = 3;
 const CONTINUATION_PARAM: usize = 4;
 
 fn make_sig(sig: &mut Signature, has_continuation: bool) {
@@ -844,7 +833,7 @@ impl ProcedureBundle {
 
         let params = {
             let block_params = builder.block_params(entry_block);
-            [block_params[RUNTIME_PARAM], block_params[DYN_STACK_PARAM]]
+            [block_params[RUNTIME_PARAM], block_params[DYN_STATE_PARAM]]
         };
 
         let mut rebinds = Rebinds::new();

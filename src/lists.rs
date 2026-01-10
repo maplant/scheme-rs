@@ -5,7 +5,7 @@ use crate::{
     exceptions::Exception,
     gc::{Gc, GcInner, Trace},
     num::Number,
-    proc::{Application, DynStack, Procedure},
+    proc::{Application, DynamicState, Procedure},
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
     value::{UnpackedValue, Value, ValueType, write_value},
@@ -269,7 +269,7 @@ pub fn map(
     _env: &[Value],
     args: &[Value],
     list_n: &[Value],
-    _params: &mut DynStack,
+    dyn_state: &mut DynamicState,
     k: Value,
 ) -> Result<Application, Exception> {
     let [mapper, list_1] = args else {
@@ -298,7 +298,7 @@ pub fn map(
         *input = cdr;
     }
 
-    let map_k = Procedure::new(
+    let map_k = dyn_state.new_k(
         runtime.clone(),
         vec![
             Value::from(Vec::<Value>::new()),
@@ -306,7 +306,7 @@ pub fn map(
             mapper.clone(),
             k,
         ],
-        crate::proc::FuncPtr::Continuation(map_k),
+        map_k,
         1,
         false,
     );
@@ -320,7 +320,7 @@ unsafe extern "C" fn map_k(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
-    _params: *mut DynStack,
+    dyn_state: *mut DynamicState,
 ) -> *mut Application {
     unsafe {
         // TODO: Probably need to do this in a way that avoids mutable variables
@@ -363,7 +363,7 @@ unsafe extern "C" fn map_k(
             *input = cdr;
         }
 
-        let map_k = Procedure::new(
+        let map_k = dyn_state.as_mut().unwrap().new_k(
             Runtime::from_raw_inc_rc(runtime),
             vec![
                 Value::from(output),
@@ -371,7 +371,7 @@ unsafe extern "C" fn map_k(
                 Value::from(mapper.clone()),
                 Value::from(k),
             ],
-            crate::proc::FuncPtr::Continuation(map_k),
+            map_k,
             1,
             false,
         );
