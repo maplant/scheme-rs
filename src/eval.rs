@@ -8,8 +8,8 @@ use crate::{
     ast::{Expression, ImportSet, ParseContext, discard_for},
     cps::Compile,
     env::Environment,
-    exceptions::Condition,
-    proc::{Application, DynStack},
+    exceptions::Exception,
+    proc::{Application, DynamicState},
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::{Library, cps_bridge},
     runtime::Runtime,
@@ -24,19 +24,19 @@ pub fn eval(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _dyn_stack: &mut DynStack,
+    _dyn_state: &mut DynamicState,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let [expression, environment] = args else {
         unreachable!()
     };
-    let env = environment.try_into_rust_type::<Environment>()?;
+    let env = environment.try_to_rust_type::<Environment>()?;
     let expr = Syntax::syntax_from_datum(&BTreeSet::default(), expression.clone());
     let ctxt = ParseContext::new(runtime, false);
     let expr = maybe_await!(Expression::parse(&ctxt, expr, &env))?;
     let compiled = expr.compile_top_level();
     let proc = maybe_await!(runtime.compile_expr(compiled));
-    Ok(Application::new(proc, vec![k], None))
+    Ok(Application::new(proc, vec![k]))
 }
 
 impl SchemeCompatible for Environment {
@@ -52,9 +52,9 @@ pub fn environment(
     _env: &[Value],
     _args: &[Value],
     import_spec: &[Value],
-    _dyn_stack: &mut DynStack,
+    _dyn_state: &mut DynamicState,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let marks = BTreeSet::default();
     let import_sets = import_spec
         .iter()
@@ -69,5 +69,5 @@ pub fn environment(
         maybe_await!(env.import(import_set))?;
     }
     let env = Value::from(Record::from_rust_type(env));
-    Ok(Application::new(k.try_into().unwrap(), vec![env], None))
+    Ok(Application::new(k.try_into().unwrap(), vec![env]))
 }

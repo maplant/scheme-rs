@@ -20,7 +20,7 @@ futures = { version = "0.3", optional = true }
 hashbrown = "0.16.1"
 indexmap = "2"
 inventory = "0.3"
-malachite = { version = "0.7", features = ["floats"] }
+malachite = { version = "0.9", features = ["floats"] }
 memchr = "2.7"
 num = "0.4"
 ordered-float = "5"
@@ -30,7 +30,6 @@ rust-embed = { version = "8", features = ["debug-embed"] }
 rustc-hash = "2.1"
 rustyline = { version = "17", features = ["derive"] }
 scheme-rs-macros = { version = "0.1.0-alpha.1", path = "proc-macros" }
-thiserror = "1"
 unicode_categories = "0.1"
 
 # Cranelift dependencies

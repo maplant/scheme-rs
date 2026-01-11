@@ -41,15 +41,11 @@ impl Cps {
                 free.extend(cond.to_local());
                 free
             }
-            Cps::App(op, vals, _) => {
+            Cps::App(op, vals) => {
                 let mut free = values_to_locals(vals);
                 free.extend(op.to_local());
                 free
             }
-            Cps::Forward(op, arg) => vec![op.to_local(), arg.to_local()]
-                .into_iter()
-                .flatten()
-                .collect(),
             Cps::Lambda {
                 args,
                 body,
@@ -82,11 +78,10 @@ impl Cps {
                 let uses = merge_uses(success.uses(uses_cache).clone(), failure.uses(uses_cache));
                 add_value_use(uses, cond)
             }
-            Cps::App(op, vals, _) => {
+            Cps::App(op, vals) => {
                 let uses = values_to_uses(vals);
                 add_value_use(uses, op)
             }
-            Cps::Forward(op, arg) => add_value_use(add_value_use(HashMap::new(), op), arg),
             Cps::Lambda {
                 body, val, cexp, ..
             } => {

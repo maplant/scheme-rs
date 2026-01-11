@@ -1,11 +1,11 @@
 //! Scaffolding for R*RS specification tests
 
-use scheme_rs::{exceptions::Condition, registry::bridge, value::Value};
+use scheme_rs::{exceptions::Exception, registry::bridge, value::Value};
 
 #[bridge(name = "assert-equal?", lib = "(test)")]
-fn test_assert(arg1: &Value, arg2: &Value) -> Result<Vec<Value>, Condition> {
+fn test_assert(arg1: &Value, arg2: &Value) -> Result<Vec<Value>, Exception> {
     if !arg1.equal(arg2) {
-        Err(Condition::error(format!(
+        Err(Exception::error(format!(
             "assert-equal? failed: {arg1:?} != {arg2:?}"
         )))
     } else {

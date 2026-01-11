@@ -2,12 +2,8 @@ use std::path::Path;
 
 use criterion::*;
 use scheme_rs::{
-    ast::DefinitionBody,
-    cps::Compile,
-    env::Environment,
-    registry::Library,
-    runtime::Runtime,
-    syntax::{Span, Syntax},
+    ast::DefinitionBody, cps::Compile, env::Environment, registry::Library, runtime::Runtime,
+    syntax::Syntax,
 };
 use scheme_rs_macros::{maybe_async, maybe_await};
 
@@ -32,13 +28,7 @@ fn run_bench() {
     let prog = Library::new_program(&rt, Path::new("in-line"));
     let env = Environment::Top(prog);
     let sexprs = Syntax::from_str("(import (rnrs base)) (abs -5)", None).unwrap();
-    let base = maybe_await!(DefinitionBody::parse_lib_body(
-        &rt,
-        &sexprs,
-        &env,
-        &Span::default()
-    ))
-    .unwrap();
+    let base = maybe_await!(DefinitionBody::parse_lib_body(&rt, &sexprs, &env,)).unwrap();
     let compiled = base.compile_top_level();
     maybe_await!(maybe_await!(rt.compile_expr(compiled)).call(&[])).unwrap();
 }

@@ -90,7 +90,7 @@ library:
 
 ```rust
 #[bridge(name = "=", lib = "(rnrs base builtins (6))")]
-pub fn equal_builtin(args: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn equal_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
     if let Some((first, rest)) = vals.split_first() {
         let first: Arc<Number> = first.clone().try_into()?;
         for next in rest {
@@ -108,7 +108,7 @@ If the `tokio` and `async` feature flags are enabled, bridge functions can be as
 
 ```rust
 #[bridge(name = "sleep", lib = "(tokio)")]
-pub async fn sleep(seconds: &Value) -> Result<Vec<Value>, Condition> {
+pub async fn sleep(seconds: &Value) -> Result<Vec<Value>, Exception> {
     use tokio::time::{sleep, Duration};
 
     let seconds: Arc<Number> = seconds.clone().try_into()?;

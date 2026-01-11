@@ -1,13 +1,8 @@
 use std::path::Path;
 
 use scheme_rs::{
-    ast::DefinitionBody,
-    cps::Compile,
-    env::Environment,
-    proc::Procedure,
-    registry::Library,
-    runtime::Runtime,
-    syntax::{Span, Syntax},
+    ast::DefinitionBody, cps::Compile, env::Environment, proc::Procedure, registry::Library,
+    runtime::Runtime, syntax::Syntax,
 };
 
 use criterion::*;
@@ -20,13 +15,7 @@ fn integrate_fn() -> Procedure {
     let env = Environment::Top(prog);
 
     let sexprs = Syntax::from_str(include_str!("integrate.scm"), Some("integrate.scm")).unwrap();
-    let base = maybe_await!(DefinitionBody::parse_lib_body(
-        &rt,
-        &sexprs,
-        &env,
-        &Span::default()
-    ))
-    .unwrap();
+    let base = maybe_await!(DefinitionBody::parse_lib_body(&rt, &sexprs, &env,)).unwrap();
     let compiled = base.compile_top_level();
     maybe_await!(rt.compile_expr(compiled))
 }

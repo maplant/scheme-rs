@@ -3,7 +3,7 @@ use parking_lot::RwLock;
 
 use crate::{
     ast,
-    exceptions::{Condition, Exception},
+    exceptions::Exception,
     gc::{Gc, GcInner, Trace},
     hashtables::{self, HashTable, HashTableInner},
     lists::{self, Pair, PairInner},
@@ -154,16 +154,49 @@ impl Value {
         self.unpacked_ref().type_name()
     }
 
-    pub fn try_into_rust_type<T: SchemeCompatible>(&self) -> Result<Gc<T>, Condition> {
+    /// Attempt to cast the value into a Scheme primitive type.
+    pub fn cast_to_scheme_type<T>(&self) -> Option<T>
+    where
+        for<'a> &'a Self: Into<Option<T>>,
+    {
+        self.into()
+    }
+
+    /// Attempt to cast the value into a Scheme primitive type and return a
+    /// descriptive error on failure.
+    pub fn try_to_scheme_type<T>(&self) -> Result<T, Exception>
+    where
+        T: TryFrom<Self, Error = Exception>,
+    {
+        self.clone().try_into()
+    }
+
+    /// Attempt to cast the value into a Rust type that implements
+    /// [`SchemeCompatible`].
+    pub fn cast_to_rust_type<T: SchemeCompatible>(&self) -> Option<Gc<T>> {
+        let UnpackedValue::Record(record) = self.clone().unpack() else {
+            return None;
+        };
+        record.cast::<T>()
+    }
+
+    /// Attempt to cast the value into a Rust type and return a descriptive
+    /// error on failure.
+    pub fn try_to_rust_type<T: SchemeCompatible>(&self) -> Result<Gc<T>, Exception> {
+        let type_name = T::rtd().name.to_str();
         let this = self.clone().unpack();
         let record = match this {
             UnpackedValue::Record(record) => record,
-            e => return Err(Condition::type_error("record-todo", e.type_name())),
+            e => return Err(Exception::type_error(&type_name, e.type_name())),
         };
 
         record
-            .try_into_rust_type::<T>()
-            .ok_or_else(|| Condition::type_error("record-todo", "record"))
+            .cast::<T>()
+            .ok_or_else(|| Exception::type_error(&type_name, &record.rtd().name.to_str()))
+    }
+
+    pub fn from_rust_type<T: SchemeCompatible>(t: T) -> Self {
+        Self::from(Record::from_rust_type(t))
     }
 
     pub fn unpack(self) -> UnpackedValue {
@@ -378,15 +411,7 @@ impl From<ast::Literal> for Value {
 }
 
 impl From<Exception> for Value {
-    fn from(exception: Exception) -> Self {
-        // Until we can decide on a good method for including the stack trace with
-        // the new condition, just return the object.
-        exception.obj
-    }
-}
-
-impl From<Condition> for Value {
-    fn from(value: Condition) -> Self {
+    fn from(value: Exception) -> Self {
         value.0
     }
 }
@@ -850,26 +875,78 @@ macro_rules! impl_try_from_value_for {
             }
         }
 
+        impl From<UnpackedValue> for Option<$ty> {
+            fn from(v: UnpackedValue) -> Self {
+                match v {
+                    UnpackedValue::$variant(v) => Some(v),
+                    _ => None,
+                }
+            }
+        }
+
+        impl From<Value> for Option<$ty> {
+            fn from(v: Value) -> Self {
+                v.unpack().into()
+            }
+        }
+
+        impl From<&'_ Value> for Option<$ty> {
+            fn from(v: &Value) -> Self {
+                v.clone().unpack().into()
+            }
+        }
+
         impl TryFrom<UnpackedValue> for $ty {
-            type Error = Condition;
+            type Error = Exception;
 
             fn try_from(v: UnpackedValue) -> Result<Self, Self::Error> {
                 match v {
                     UnpackedValue::$variant(v) => Ok(v),
                     UnpackedValue::Cell(cell) => cell.0.read().clone().try_into(),
-                    e => Err(Condition::type_error($type_name, e.type_name())),
+                    e => Err(Exception::type_error($type_name, e.type_name())),
                 }
             }
         }
 
         impl TryFrom<Value> for $ty {
-            type Error = Condition;
+            type Error = Exception;
 
             fn try_from(v: Value) -> Result<Self, Self::Error> {
                 v.unpack().try_into()
             }
         }
     };
+}
+
+impl From<()> for UnpackedValue {
+    fn from((): ()) -> Self {
+        Self::Null
+    }
+}
+
+impl From<()> for Value {
+    fn from((): ()) -> Self {
+        UnpackedValue::Null.into_value()
+    }
+}
+
+impl TryFrom<UnpackedValue> for () {
+    type Error = Exception;
+
+    fn try_from(value: UnpackedValue) -> Result<Self, Self::Error> {
+        match value {
+            UnpackedValue::Null => Ok(()),
+            e => Err(Exception::type_error("null", e.type_name())),
+        }
+    }
+}
+
+impl TryFrom<Value> for () {
+    type Error = Exception;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        value.unpack().try_into()
+    }
 }
 
 impl From<Cell> for UnpackedValue {
@@ -885,18 +962,18 @@ impl From<Cell> for Value {
 }
 
 impl TryFrom<UnpackedValue> for Cell {
-    type Error = Condition;
+    type Error = Exception;
 
     fn try_from(v: UnpackedValue) -> Result<Self, Self::Error> {
         match v {
             UnpackedValue::Cell(cell) => Ok(cell.clone()),
-            e => Err(Condition::type_error("cell", e.type_name())),
+            e => Err(Exception::type_error("cell", e.type_name())),
         }
     }
 }
 
 impl TryFrom<Value> for Cell {
-    type Error = Condition;
+    type Error = Exception;
 
     fn try_from(v: Value) -> Result<Self, Self::Error> {
         v.unpack().try_into()
@@ -963,12 +1040,12 @@ impl_from_wrapped_for!((Value, Value), Pair, |(car, cdr)| Pair::new(
 ));
 
 impl TryFrom<UnpackedValue> for (Value, Value) {
-    type Error = Condition;
+    type Error = Exception;
 
     fn try_from(val: UnpackedValue) -> Result<Self, Self::Error> {
         match val {
             UnpackedValue::Pair(pair) => Ok(pair.into()),
-            e => Err(Condition::type_error("pair", e.type_name())),
+            e => Err(Exception::type_error("pair", e.type_name())),
         }
     }
 }
@@ -976,18 +1053,18 @@ impl TryFrom<UnpackedValue> for (Value, Value) {
 macro_rules! impl_num_conversion {
     ($ty:ty) => {
         impl TryInto<$ty> for &Value {
-            type Error = Condition;
+            type Error = Exception;
 
             fn try_into(self) -> Result<$ty, Self::Error> {
                 match &*self.unpacked_ref() {
                     UnpackedValue::Number(num) => num.as_ref().try_into(),
-                    e => Err(Condition::type_error("number", e.type_name())),
+                    e => Err(Exception::type_error("number", e.type_name())),
                 }
             }
         }
 
         impl TryInto<$ty> for Value {
-            type Error = Condition;
+            type Error = Exception;
 
             fn try_into(self) -> Result<$ty, Self::Error> {
                 (&self).try_into()
@@ -1017,7 +1094,7 @@ impl_num_conversion!(isize);
 impl_num_conversion!(f64);
 
 impl TryFrom<Value> for (Value, Value) {
-    type Error = Condition;
+    type Error = Exception;
 
     fn try_from(val: Value) -> Result<Self, Self::Error> {
         Self::try_from(val.unpack())
@@ -1025,7 +1102,7 @@ impl TryFrom<Value> for (Value, Value) {
 }
 
 impl TryFrom<Value> for String {
-    type Error = Condition;
+    type Error = Exception;
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         let string: WideString = value.try_into()?;
@@ -1035,17 +1112,17 @@ impl TryFrom<Value> for String {
 
 /// Trait for converting vecs of values into arrays
 pub trait ExpectN<T> {
-    fn expect_n<const N: usize>(self) -> Result<[T; N], Condition>;
+    fn expect_n<const N: usize>(self) -> Result<[T; N], Exception>;
 }
 
 impl<T> ExpectN<T> for Vec<Value>
 where
     Value: TryInto<T>,
-    Condition: From<<Value as TryInto<T>>::Error>,
+    Exception: From<<Value as TryInto<T>>::Error>,
 {
-    fn expect_n<const N: usize>(self) -> Result<[T; N], Condition> {
+    fn expect_n<const N: usize>(self) -> Result<[T; N], Exception> {
         if self.len() != N {
-            return Err(Condition::error("wrong number of values"));
+            return Err(Exception::error("wrong number of values"));
         }
         // Safety: we've already determined that self is the correct size, so we
         // can safely use unwrap_unchecked
@@ -1061,19 +1138,19 @@ where
 
 /// Trait for converting vecs of values into one type
 pub trait Expect1<T> {
-    fn expect1(self) -> Result<T, Condition>;
+    fn expect1(self) -> Result<T, Exception>;
 }
 
 impl<T> Expect1<T> for Vec<Value>
 where
     Value: TryInto<T>,
-    Condition: From<<Value as TryInto<T>>::Error>,
+    Exception: From<<Value as TryInto<T>>::Error>,
 {
-    fn expect1(self) -> Result<T, Condition> {
+    fn expect1(self) -> Result<T, Exception> {
         let [val] = self
             .try_into()
-            .map_err(|_| Condition::error("wrong number of values"))?;
-        val.try_into().map_err(Condition::from)
+            .map_err(|_| Exception::error("wrong number of values"))?;
+        val.try_into().map_err(Exception::from)
     }
 }
 
@@ -1188,32 +1265,32 @@ fn debug_value(
     }
 }
 #[bridge(name = "not", lib = "(rnrs base builtins (6))")]
-pub fn not(a: &Value) -> Result<Vec<Value>, Condition> {
+pub fn not(a: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(a.0 as usize == Tag::Boolean as usize)])
 }
 
 #[bridge(name = "eqv?", lib = "(rnrs base builtins (6))")]
-pub fn eqv(a: &Value, b: &Value) -> Result<Vec<Value>, Condition> {
+pub fn eqv(a: &Value, b: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(a.eqv(b))])
 }
 
 #[bridge(name = "eq?", lib = "(rnrs base builtins (6))")]
-pub fn eq(a: &Value, b: &Value) -> Result<Vec<Value>, Condition> {
+pub fn eq(a: &Value, b: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(a.eqv(b))])
 }
 
 #[bridge(name = "equal?", lib = "(rnrs base builtins (6))")]
-pub fn equal_pred(a: &Value, b: &Value) -> Result<Vec<Value>, Condition> {
+pub fn equal_pred(a: &Value, b: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(a.equal(b))])
 }
 
 #[bridge(name = "boolean?", lib = "(rnrs base builtins (6))")]
-pub fn boolean_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
+pub fn boolean_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(arg.type_of() == ValueType::Boolean)])
 }
 
 #[bridge(name = "boolean=?", lib = "(rnrs base builtins (6))")]
-pub fn boolean_eq_pred(a: &Value, args: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn boolean_eq_pred(a: &Value, args: &[Value]) -> Result<Vec<Value>, Exception> {
     let res = if a.type_of() == ValueType::Boolean {
         args.iter().all(|arg| arg == a)
     } else {
@@ -1223,27 +1300,27 @@ pub fn boolean_eq_pred(a: &Value, args: &[Value]) -> Result<Vec<Value>, Conditio
 }
 
 #[bridge(name = "symbol?", lib = "(rnrs base builtins (6))")]
-pub fn symbol_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
+pub fn symbol_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(arg.type_of() == ValueType::Symbol)])
 }
 
 #[bridge(name = "char?", lib = "(rnrs base builtins (6))")]
-pub fn char_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
+pub fn char_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(arg.type_of() == ValueType::Character)])
 }
 
 #[bridge(name = "vector?", lib = "(rnrs base builtins (6))")]
-pub fn vector_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
+pub fn vector_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(arg.type_of() == ValueType::Vector)])
 }
 
 #[bridge(name = "null?", lib = "(rnrs base builtins (6))")]
-pub fn null_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
+pub fn null_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(arg.type_of() == ValueType::Null)])
 }
 
 #[bridge(name = "pair?", lib = "(rnrs base builtins (6))")]
-pub fn pair_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
+pub fn pair_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(matches!(
         *arg.unpacked_ref(),
         UnpackedValue::Pair(_)
@@ -1251,6 +1328,6 @@ pub fn pair_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "procedure?", lib = "(rnrs base builtins (6))")]
-pub fn procedure_pred(arg: &Value) -> Result<Vec<Value>, Condition> {
+pub fn procedure_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(arg.type_of() == ValueType::Procedure)])
 }
