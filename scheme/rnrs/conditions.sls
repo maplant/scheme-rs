@@ -12,6 +12,9 @@
           &import make-import-condition import-condition?
           &violation make-violation violation?
           &assertion make-assertion-violation assertion-violation?
+          &irritants make-irritants-condition irritants-condition? condition-irritants
+          &who make-who-condition who-condition? condition-who
+          &implementation-restriction make-implementation-restriction-violation implementation-restriction-violation? 
           &lexical make-lexical-violation lexical-violation?
           &syntax make-syntax-violation syntax-violation? syntax-violation-form syntax-violation-subform
           &undefined make-undefined-violation undefined-violation?)
@@ -91,14 +94,20 @@
   (from-builtin &warning make-warning warning? &warning-rtd)
   (from-builtin &serious make-serious-condition serious-condition? &serious-rtd)
   (from-builtin &trace make-trace trace? &trace-rtd)
-  (define condition-trace (condition-accessor (&trace-rtd) (record-accessor (&trace-rtd 0))))
+  (define condition-trace (condition-accessor (&trace-rtd) (record-accessor (&trace-rtd) 0)))
   (from-builtin &error make-error error? &error-rtd)
   (from-builtin &import make-import-condition import-condition? &import-rtd)
   (from-builtin &violation make-violation violation? &violation-rtd)
   (from-builtin &assertion make-assertion-violation assertion-violation? &assertion-rtd)
+  (from-builtin &irritants make-irritants-condition irritants-condition? &irritants-rtd)
+  (define condition-irritants (condition-accessor (&irritants-rtd) (record-accessor (&irritants-rtd) 0)))
+  (from-builtin &who make-who-condition who-condition? &who-rtd)
+  (define condition-who (condition-accessor (&who-rtd) (record-accessor (&who-rtd) 0)))
+  (from-builtin &non-continuable make-non-continuable-violation non-continuable-violation &non-continuable-rtd)
+  (from-builtin &implementation-restriction make-implementation-restriction-violation implementation-restriction-violation? &implementation-restriction-rtd)
   (from-builtin &lexical make-lexical-violation lexical-violation? &lexical-rtd)
   (from-builtin &syntax make-syntax-violation syntax-violation? &syntax-rtd)
-  (define syntax-violation-form (condition-accessor (&syntax-rtd) (record-accessor (&syntax-rtd 0))))
-  (define syntax-violation-subform (condition-accessor (&syntax-rtd) (record-accessor (&syntax-rtd 1))))
+  (define syntax-violation-form (condition-accessor (&syntax-rtd) (record-accessor (&syntax-rtd) 0)))
+  (define syntax-violation-subform (condition-accessor (&syntax-rtd) (record-accessor (&syntax-rtd) 1)))
   (from-builtin &undefined make-undefined-violation undefined-violation? &undefined-rtd))
         

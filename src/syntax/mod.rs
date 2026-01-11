@@ -5,6 +5,7 @@ use crate::{
     gc::Trace,
     lists::list_to_vec_with_null,
     ports::Port,
+    records::{RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::bridge,
     symbols::Symbol,
     syntax::parse::ParseSyntaxError,
@@ -59,6 +60,12 @@ impl Default for Span {
             offset: 0,
             file: Arc::new(String::new()),
         }
+    }
+}
+
+impl SchemeCompatible for Span {
+    fn rtd() -> Arc<RecordTypeDescriptor> {
+        rtd!(name: "span", sealed: true, opaque: true)
     }
 }
 
@@ -711,7 +718,6 @@ pub fn generate_temporaries(list: &Value) -> Result<Vec<Value>, Exception> {
         _ => return Err(Exception::error("argument must be a list".to_string())),
     };
 
-    // We can use marks to create unique temporaries
     let mut idents = (0..length)
         .map(|_| {
             let ident = Identifier::from_symbol(Symbol::gensym());

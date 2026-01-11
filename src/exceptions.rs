@@ -288,6 +288,36 @@ pub fn condition_rtd() -> Result<Vec<Value>, Exception> {
 }
 
 define_condition_type!(
+    rust_name: Message,
+    scheme_name: "&message",
+    parent: SimpleCondition,
+    fields: {
+        message: String,
+    },
+    constructor: |message| {
+        Ok(Message { parent: Gc::new(SimpleCondition::new()), message: message.to_string() })
+    },
+    debug: |this, f| {
+        write!(f, " ")?;
+        this.message.fmt(f)
+    }
+);
+
+impl Message {
+    pub fn new(message: impl std::fmt::Display) -> Self {
+        Self {
+            parent: Gc::new(SimpleCondition::new()),
+            message: message.to_string(),
+        }
+    }
+}
+
+#[bridge(name = "&message-rtd", lib = "(rnrs conditions builtins (6))")]
+pub fn message_rtd() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(Message::rtd())])
+}
+
+define_condition_type!(
     rust_name: Warning,
     scheme_name: "&warning",
     parent: SimpleCondition,
@@ -335,36 +365,6 @@ impl Default for Serious {
 #[bridge(name = "&serious-rtd", lib = "(rnrs conditions builtins (6))")]
 pub fn serious_rtd() -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(Serious::rtd())])
-}
-
-define_condition_type!(
-    rust_name: Message,
-    scheme_name: "&message",
-    parent: SimpleCondition,
-    fields: {
-        message: String,
-    },
-    constructor: |message| {
-        Ok(Message { parent: Gc::new(SimpleCondition::new()), message: message.to_string() })
-    },
-    debug: |this, f| {
-        write!(f, " ")?;
-        this.message.fmt(f)
-    }
-);
-
-impl Message {
-    pub fn new(message: impl std::fmt::Display) -> Self {
-        Self {
-            parent: Gc::new(SimpleCondition::new()),
-            message: message.to_string(),
-        }
-    }
-}
-
-#[bridge(name = "&message-rtd", lib = "(rnrs conditions builtins (6))")]
-pub fn message_rtd() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(Message::rtd())])
 }
 
 define_condition_type!(
@@ -504,6 +504,87 @@ impl Default for Assertion {
 #[bridge(name = "&assertion-rtd", lib = "(rnrs conditions builtins (6))")]
 pub fn assertion_rtd() -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(Assertion::rtd())])
+}
+
+define_condition_type!(
+    rust_name: Irritants,
+    scheme_name: "&irritants",
+    parent: SimpleCondition,
+    fields: {
+        irritants: Value,
+    },
+    constructor: |irritants| {
+        Ok(Irritants { parent: Gc::new(SimpleCondition::new()), irritants })
+    },
+    debug: |this, f| {
+        write!(f, " irritants: {:?}", this.irritants)
+    }
+);
+
+#[bridge(name = "&irritants-rtd", lib = "(rnrs conditions builtins (6))")]
+pub fn irritants_rtd() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(Irritants::rtd())])
+}
+
+define_condition_type!(
+    rust_name: Who,
+    scheme_name: "&who",
+    parent: SimpleCondition,
+    fields: {
+        who: String,
+    },
+    constructor: |who| {
+        Ok(Who { parent: Gc::new(SimpleCondition::new()), who: who.to_string() })
+    },
+    debug: |this, f| {
+        write!(f, " who: {:?}", this.who)
+    }
+);
+
+#[bridge(name = "&who-rtd", lib = "(rnrs conditions builtins (6))")]
+pub fn who_rtd() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(Who::rtd())])
+}
+
+define_condition_type!(
+    rust_name: NonContinuable,
+    scheme_name: "&non-continuable",
+    parent: Violation,
+);
+
+impl Default for NonContinuable {
+    fn default() -> Self {
+        Self {
+            parent: Gc::new(Violation::new()),
+        }
+    }
+}
+
+#[bridge(name = "&non-continuable-rtd", lib = "(rnrs conditions builtins (6))")]
+pub fn non_continuable_rtd() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(NonContinuable::rtd())])
+}
+
+define_condition_type!(
+    rust_name: ImplementationRestriction,
+    scheme_name: "&implementation-restriction",
+    parent: Violation,
+);
+
+impl Default for ImplementationRestriction {
+    fn default() -> Self {
+        Self {
+            parent: Gc::new(Violation::new()),
+        }
+    }
+}
+
+#[bridge(
+    name = "&implementation-restriction-rtd",
+    lib = "(rnrs conditions builtins (6))"
+)]
+pub fn who_td() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(NonContinuable::rtd())])
 }
 
 define_condition_type!(

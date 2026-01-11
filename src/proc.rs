@@ -321,14 +321,14 @@ impl ProcedureInner {
             }
             FuncPtr::PromptBarrier { barrier_id: id, k } => {
                 dyn_state.pop_marks();
-                match dyn_state.pop() {
+                match dyn_state.pop_dyn_stack() {
                     Some(DynStackElem::PromptBarrier(PromptBarrier {
                         barrier_id,
                         replaced_k,
                     })) if barrier_id == id => {
                         return Application::new(replaced_k, args);
                     }
-                    Some(other) => dyn_state.push(other),
+                    Some(other) => dyn_state.push_dyn_stack(other),
                     _ => (),
                 }
                 self.apply_jit(JitFuncPtr::Continuation(k), args, dyn_state, None)
@@ -344,7 +344,7 @@ impl fmt::Debug for ProcedureInner {
         }
 
         let Some(ref debug_info) = self.debug_info else {
-            write!(f, "(unknown-function")?;
+            write!(f, "(<lambda>")?;
             for i in 0..self.num_required_args {
                 write!(f, " ${i}")?;
             }
@@ -416,6 +416,10 @@ impl Procedure {
 
     pub fn get_formals(&self) -> (usize, bool) {
         (self.0.num_required_args, self.0.variadic)
+    }
+
+    pub fn get_debug_info(&self) -> Option<Arc<FuncDebugInfo>> {
+        self.0.debug_info.clone()
     }
 
     /// # Safety
@@ -577,11 +581,11 @@ impl Application {
 #[derive(Debug)]
 pub struct FuncDebugInfo {
     /// The name of the function.
-    name: Symbol,
+    pub name: Symbol,
     /// Named arguments for the function.
-    args: Vec<Local>,
+    pub args: Vec<Local>,
     /// Location of the function definition
-    location: Span,
+    pub location: Span,
 }
 
 impl FuncDebugInfo {

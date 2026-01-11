@@ -242,17 +242,13 @@ fn compile_apply(
             let frame = if let Expression::Var(var) = operator
                 && let Some(sym) = var.symbol()
             {
-                Syntax::Identifier {
+                Some(Syntax::Identifier {
                     ident: Identifier::from_symbol(sym),
                     binding_env: None,
-                    span,
-                }
+                    span: span.clone(),
+                })
             } else {
-                Syntax::Identifier {
-                    ident: Identifier::new("<unknown>"),
-                    binding_env: None,
-                    span,
-                }
+                None
             };
             operator.compile(&mut move |op_result| Cps::Lambda {
                 args: LambdaArgs::new(vec![k3], false, None),
@@ -262,6 +258,7 @@ fn compile_apply(
                     Vec::new(),
                     args,
                     frame.clone(),
+                    span.clone(),
                 )),
                 val: k4,
                 cexp: Box::new(Cps::App(op_result, vec![Value::from(k4)])),
@@ -279,20 +276,35 @@ fn compile_apply_args(
     op: Value,
     mut collected_args: Vec<Value>,
     remaining_args: &[Expression],
-    frame: Syntax,
+    frame: Option<Syntax>,
+    span: Span,
 ) -> Cps {
     let (arg, tail) = match remaining_args {
         [] => {
             collected_args.push(cont);
-            return Cps::PrimOp(
+            let frame = frame.map_or_else(
+                || Value::from(Local::gensym()),
+                |frame| Value::from(RuntimeValue::from(frame)),
+            );
+            let app = Cps::PrimOp(
                 PrimOp::SetContinuationMark,
                 vec![
                     Value::from(RuntimeValue::from(Symbol::intern("trace"))),
-                    Value::from(RuntimeValue::from(frame)),
+                    frame.clone(),
                 ],
                 Local::gensym(),
-                Box::new(Cps::App(op, collected_args)),
+                Box::new(Cps::App(op.clone(), collected_args)),
             );
+            return if let Value::Var(Var::Local(frame)) = frame {
+                Cps::PrimOp(
+                    PrimOp::GetFrame,
+                    vec![op, Value::from(RuntimeValue::from_rust_type(span))],
+                    frame,
+                    Box::new(app),
+                )
+            } else {
+                app
+            };
         }
         [arg, tail @ ..] => (arg, tail),
     };
@@ -303,7 +315,7 @@ fn compile_apply_args(
         args: LambdaArgs::new(vec![k2], false, None),
         body: Box::new({
             collected_args.push(Value::from(k2));
-            compile_apply_args(cont, op, collected_args, tail, frame)
+            compile_apply_args(cont, op, collected_args, tail, frame, span)
         }),
         val: k1,
         cexp: Box::new(arg.compile(&mut |result| Cps::App(result, vec![Value::from(k1)]))),

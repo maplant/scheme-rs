@@ -77,6 +77,10 @@ impl Number {
         matches!(self, Self::Real(r) if r.is_nan())
     }
 
+    pub fn is_infinite(&self) -> bool {
+        matches!(self, Self::Real(r) if r.is_infinite())
+    }
+
     pub fn is_complex(&self) -> bool {
         matches!(self, Self::Complex(_))
     }
@@ -895,6 +899,53 @@ pub fn is_complex(arg: &Value) -> Result<Vec<Value>, Exception> {
         arg.as_ref(),
         Number::Complex(_)
     ))])
+}
+
+#[bridge(name = "nan?", lib = "(rnrs base builtins (6))")]
+pub fn is_nan(arg: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(
+        arg.try_to_scheme_type::<Arc<Number>>()?.is_nan(),
+    )])
+}
+
+#[bridge(name = "infinite?", lib = "(rnrs base builtins (6))")]
+pub fn is_infinite(arg: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(
+        arg.try_to_scheme_type::<Arc<Number>>()?.is_infinite(),
+    )])
+}
+
+#[bridge(name = "magnitude", lib = "(rnrs base builtins (6))")]
+pub fn magnitude(arg: &Value) -> Result<Vec<Value>, Exception> {
+    match arg.try_to_scheme_type::<Arc<Number>>()?.as_ref() {
+        Number::Complex(complex) => Ok(vec![Value::from(Arc::new(Number::Real(complex.norm())))]),
+        _ => Ok(vec![arg.clone()]),
+    }
+}
+
+#[bridge(name = "real-part", lib = "(rnrs base builtins (6))")]
+pub fn real_part(arg: &Value) -> Result<Vec<Value>, Exception> {
+    match arg.try_to_scheme_type::<Arc<Number>>()?.as_ref() {
+        Number::Complex(complex) => Ok(vec![Value::from(Arc::new(Number::Real(complex.re)))]),
+        _ => Ok(vec![arg.clone()]),
+    }
+}
+
+#[bridge(name = "imag-part", lib = "(rnrs base builtins (6))")]
+pub fn imag_part(arg: &Value) -> Result<Vec<Value>, Exception> {
+    match arg.try_to_scheme_type::<Arc<Number>>()?.as_ref() {
+        Number::Complex(complex) => Ok(vec![Value::from(Arc::new(Number::Real(complex.im)))]),
+        _ => Err(Exception::error("expected complex number")),
+    }
+}
+
+#[bridge(name = "flonum?", lib = "(rnrs base builtins (6))")]
+pub fn is_flonum(arg: &Value) -> Result<Vec<Value>, Exception> {
+    let arg: Arc<Number> = match arg.clone().try_into() {
+        Ok(arg) => arg,
+        Err(_) => return Ok(vec![Value::from(false)]),
+    };
+    Ok(vec![Value::from(matches!(arg.as_ref(), Number::Real(_)))])
 }
 
 #[cfg(test)]

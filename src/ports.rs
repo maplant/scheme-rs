@@ -2318,6 +2318,19 @@ impl Port {
     }
 
     #[maybe_async]
+    pub fn get_string_n(&self, n: usize) -> Result<Option<String>, Exception> {
+        let mut out = String::with_capacity(n);
+        for _ in 0..n {
+            if let Some(chr) = maybe_await!(self.get_char())? {
+                out.push(chr);
+            } else {
+                break;
+            }
+        }
+        Ok(Some(out))
+    }
+
+    #[maybe_async]
     pub fn get_sexpr(&self, span: Span) -> Result<Option<(Syntax, Span)>, ParseSyntaxError> {
         #[cfg(not(feature = "async"))]
         let mut data = self.0.data.lock().unwrap();
@@ -3301,6 +3314,18 @@ pub fn lookahead_char(textual_input_port: &Value) -> Result<Vec<Value>, Exceptio
     let port: Port = textual_input_port.clone().try_into()?;
     if let Some(chr) = maybe_await!(port.lookahead_char())? {
         Ok(vec![Value::from(chr)])
+    } else {
+        Ok(vec![EOF_OBJECT.clone()])
+    }
+}
+
+#[maybe_async]
+#[bridge(name = "get-string-n", lib = "(rnrs io builtins (6))")]
+pub fn get_string_n(textual_input_port: &Value, n: &Value) -> Result<Vec<Value>, Exception> {
+    let port: Port = textual_input_port.clone().try_into()?;
+    let n: usize = n.clone().try_into()?;
+    if let Some(s) = maybe_await!(port.get_string_n(n))? {
+        Ok(vec![Value::from(s)])
     } else {
         Ok(vec![EOF_OBJECT.clone()])
     }

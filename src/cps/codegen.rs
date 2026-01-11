@@ -66,6 +66,9 @@ pub(crate) struct RuntimeFunctions {
     cons: FuncId,
     list: FuncId,
 
+    // Frame primops:
+    get_frame: FuncId,
+
     // Continuation mark primops:
     set_continuation_mark: FuncId,
 
@@ -227,6 +230,12 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
             }
             Cps::PrimOp(PrimOp::ErrorNoPatternsMatch, _, _, _) => {
                 self.error_no_patterns_match_codegen();
+            }
+            Cps::PrimOp(PrimOp::GetFrame, args, dest, cexpr) => {
+                let [op, span] = args.as_slice() else {
+                    unreachable!()
+                };
+                self.get_frame_codegen(op, span, dest, *cexpr, deferred);
             }
             Cps::PrimOp(PrimOp::SetContinuationMark, args, _, cexpr) => {
                 let [tag, val] = args.as_slice() else {
@@ -462,6 +471,26 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         // Otherwise continue with the correct value
         self.builder.switch_to_block(success_block);
         self.builder.seal_block(success_block);
+        self.rebinds.rebind(dest, IrValue::Value(result));
+        self.push_alloc(result);
+        self.cps_codegen(cexpr, deferred);
+    }
+
+    fn get_frame_codegen(
+        &mut self,
+        op: &CpsValue,
+        span: &CpsValue,
+        dest: Local,
+        cexpr: Cps,
+        deferred: &mut Vec<ProcedureBundle>,
+    ) {
+        let op = self.value_codegen(op);
+        let span = self.value_codegen(span);
+        let get_frame_func = self
+            .module
+            .declare_func_in_func(self.runtime_funcs.get_frame, self.builder.func);
+        let get_frame_call = self.builder.ins().call(get_frame_func, &[op, span]);
+        let result = self.builder.inst_results(get_frame_call)[0];
         self.rebinds.rebind(dest, IrValue::Value(result));
         self.push_alloc(result);
         self.cps_codegen(cexpr, deferred);

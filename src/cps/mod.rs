@@ -104,6 +104,9 @@ pub enum PrimOp {
     Lesser,
     LesserEqual,
 
+    // Frame operatiors
+    GetFrame,
+
     // Continuation mark operators:
     SetContinuationMark,
 

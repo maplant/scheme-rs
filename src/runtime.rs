@@ -12,7 +12,7 @@ use crate::{
     },
     registry::{Library, Registry},
     symbols::Symbol,
-    syntax::Span,
+    syntax::{Identifier, Span, Syntax},
     value::{Cell, UnpackedValue, Value},
 };
 use parking_lot::RwLock;
@@ -378,6 +378,26 @@ unsafe extern "C" fn apply(
         let app = Application::new(op, args);
 
         Box::into_raw(Box::new(app))
+    }
+}
+
+/// Get a frame from a procedure and a span
+#[runtime_fn]
+unsafe extern "C" fn get_frame(op: *const (), span: *const ()) -> *const () {
+    unsafe {
+        let op = Value::from_raw_inc_rc(op);
+        let op: Procedure = op.try_into().unwrap();
+        let span = Value::from_raw_inc_rc(span);
+        let span = span.cast_to_rust_type::<Span>().unwrap();
+        let frame = Syntax::Identifier {
+            ident: Identifier::from_symbol(
+                op.get_debug_info()
+                    .map_or_else(|| Symbol::intern("<lambda>"), |dbg| dbg.name),
+            ),
+            binding_env: None,
+            span: span.as_ref().clone(),
+        };
+        Value::into_raw(Value::from(frame))
     }
 }
 
