@@ -277,7 +277,7 @@ impl SchemeCompatible for SimpleCondition {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(
             name: "&condition",
-            constructor: |_| Ok(into_scheme_compatible(Gc::new(SimpleCondition::default())))
+            constructor: |_| Ok(into_scheme_compatible(Gc::new(SimpleCondition)))
         )
     }
 }
@@ -741,9 +741,9 @@ pub fn condition(conditions: &[Value]) -> Result<Vec<Value>, Exception> {
 
 #[bridge(name = "simple-conditions", lib = "(rnrs conditions builtins)")]
 pub fn simple_conditions(condition: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(slice_to_list(
+    Ok(vec![slice_to_list(
         &Exception(condition.clone()).simple_conditions()?,
-    ))])
+    )])
 }
 
 #[cps_bridge(

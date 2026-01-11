@@ -261,11 +261,10 @@ pub fn string_foldcase(string: &Value) -> Result<Vec<Value>, Exception> {
         .chars
         .read()
         .iter()
-        .map(|ch| match char_switch_case(*ch, to_foldcase) {
+        .flat_map(|ch| match char_switch_case(*ch, to_foldcase) {
             Either::Left(ch) => vec![ch],
             Either::Right(s) => s,
         })
-        .flatten()
         .collect::<Vec<_>>();
     let folded = WideString(Arc::new(WideStringInner {
         chars: RwLock::new(folded),
