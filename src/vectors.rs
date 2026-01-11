@@ -1,7 +1,7 @@
 use crate::{
     exceptions::Exception,
     gc::{Gc, Trace},
-    lists::{Pair, slice_to_list},
+    lists::slice_to_list,
     num::Number,
     registry::bridge,
     value::{Value, write_value},

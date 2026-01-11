@@ -34,6 +34,7 @@ pub struct RecordTypeDescriptor {
     pub sealed: bool,
     pub opaque: bool,
     pub uid: Option<Symbol>,
+    pub rust_type: bool,
     pub rust_parent_constructor: Option<RustParentConstructor>,
     /// Parent is most recently inserted record type, if one exists.
     pub inherits: indexmap::IndexSet<ByAddress<Arc<RecordTypeDescriptor>>>,
@@ -56,10 +57,7 @@ impl fmt::Debug for RecordTypeDescriptor {
         write!(
             f,
             "#<rtd name: {} sealed: {} opaque: {} rust: {} ",
-            self.name,
-            self.sealed,
-            self.opaque,
-            self.rust_parent_constructor.is_some()
+            self.name, self.sealed, self.opaque, self.rust_type,
         )?;
         if !self.inherits.is_empty() {
             let parent = self.inherits.last().unwrap();
@@ -126,6 +124,7 @@ pub static RECORD_TYPE_DESCRIPTOR_RTD: LazyLock<Arc<RecordTypeDescriptor>> = Laz
         sealed: true,
         opaque: true,
         uid: None,
+        rust_type: false,
         rust_parent_constructor: None,
         inherits: indexmap::IndexSet::new(),
         field_index_offset: 0,
@@ -187,6 +186,7 @@ pub fn make_record_type_descriptor(
         sealed,
         opaque,
         uid,
+        rust_type: false,
         rust_parent_constructor: None,
         inherits,
         field_index_offset,
@@ -219,7 +219,7 @@ pub struct RecordConstructorDescriptor {
 
 impl SchemeCompatible for RecordConstructorDescriptor {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "record-constructor-descriptor")
+        rtd!(name: "record-constructor-descriptor", sealed: true, opaque: true)
     }
 }
 
@@ -268,6 +268,14 @@ pub fn make_record_constructor_descriptor(
     };
 
     let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
+
+    if rtd.rust_type && rtd.rust_parent_constructor.is_none() {
+        return Err(Exception::error(format!(
+            "cannot create a record-constructor-descriptor for rust type without a constructor {}",
+            rtd.name
+        )));
+    }
+
     let parent_rcd = if parent_rcd.is_true() {
         let Some(parent_rtd) = rtd.inherits.last() else {
             return Err(Exception::error("RTD is a base type".to_string()));
@@ -615,18 +623,6 @@ impl Record {
         // Then, convert that back into the desired type
         Gc::downcast::<T>(gc_any).ok()
     }
-
-    /*
-    /// # Safety
-    /// Just don't use this
-    pub unsafe fn from_raw_parts(rust_parent: Gc<dyn SchemeCompatible>, rtd: Arc<RecordTypeDescriptor>, fields: Vec<Value>) -> Self {
-        Self(Gc::new(RecordInner {
-            rust_parent,
-            rtd,
-            fields,
-        }))
-    }
-    */
 }
 
 impl fmt::Debug for Record {
@@ -657,6 +653,7 @@ impl fmt::Debug for RecordInner {
             .chain(Some(ByAddress(self.rtd.clone())))
             .flat_map(|rtd| rtd.fields.clone());
         for field in &self.fields {
+            let field = field.read();
             let name = field_names.next().unwrap().name();
             write!(f, " {name}: {field:?}")?;
         }

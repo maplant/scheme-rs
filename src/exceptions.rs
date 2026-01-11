@@ -5,7 +5,7 @@ use crate::{
     lists::slice_to_list,
     ports::{IoError, IoReadError, IoWriteError},
     proc::{Application, DynStackElem, DynamicState, FuncPtr, Procedure, pop_dyn_stack},
-    records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
+    records::{Record, RecordTypeDescriptor, SchemeCompatible, into_scheme_compatible, rtd},
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
@@ -275,7 +275,10 @@ impl SimpleCondition {
 
 impl SchemeCompatible for SimpleCondition {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "&condition")
+        rtd!(
+            name: "&condition",
+            constructor: |_| Ok(into_scheme_compatible(Gc::new(SimpleCondition::default())))
+        )
     }
 }
 
@@ -591,7 +594,7 @@ pub struct CompoundCondition(pub(crate) Vec<Value>);
 
 impl SchemeCompatible for CompoundCondition {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "compound-condition")
+        rtd!(name: "compound-condition", sealed: true, opaque: true)
     }
 }
 

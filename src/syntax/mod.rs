@@ -712,11 +712,9 @@ pub fn generate_temporaries(list: &Value) -> Result<Vec<Value>, Exception> {
     };
 
     // We can use marks to create unique temporaries
-    let mark = Mark::new();
     let mut idents = (0..length)
-        .map(|i| {
-            let mut ident = Identifier::new(&format!("${i}"));
-            ident.mark(mark);
+        .map(|_| {
+            let ident = Identifier::from_symbol(Symbol::gensym());
             Syntax::Identifier {
                 ident,
                 binding_env: None,

@@ -3,8 +3,8 @@ use proc_macro2::{Literal, Span};
 use quote::{format_ident, quote};
 use syn::{
     Attribute, DataEnum, DataStruct, DeriveInput, Error, Expr, ExprClosure, Fields, FnArg,
-    GenericParam, Generics, Ident, ItemFn, LitStr, Member, Meta, Pat, PatIdent, PatType, Result,
-    Token, Type, TypePath, TypeReference, Visibility, braced, bracketed, parenthesized,
+    GenericParam, Generics, Ident, ItemFn, LitBool, LitStr, Member, Meta, Pat, PatIdent, PatType,
+    Result, Token, Type, TypePath, TypeReference, Visibility, braced, bracketed, parenthesized,
     parse::{Parse, ParseStream},
     parse_macro_input, parse_quote,
     punctuated::Punctuated,
@@ -796,7 +796,7 @@ struct Rtd {
     name: LitStr,
     parent: Option<Expr>,
     opaque: Option<Expr>,
-    sealed: Option<Expr>,
+    sealed: Option<LitBool>,
     uid: Option<LitStr>,
     constructor: Option<Expr>,
     fields: Option<Vec<RtdField>>,
@@ -874,6 +874,13 @@ impl Parse for Rtd {
             return Err(Error::new(input.span(), "name field is required"));
         };
 
+        if !sealed.as_ref().map_or(false, LitBool::value) && constructor.is_none() {
+            return Err(Error::new(
+                input.span(),
+                "unsealed records must have a constructor defined",
+            ));
+        }
+
         Ok(Rtd {
             name,
             parent,
@@ -938,6 +945,7 @@ pub fn rtd(tokens: TokenStream) -> TokenStream {
                         field_index_offset: 0,
                         fields: vec![ #( #fields, )* ],
                         rust_parent_constructor: #rust_parent_constructor,
+                        rust_type: true
                     })
                 });
             RTD.clone()

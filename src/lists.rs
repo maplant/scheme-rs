@@ -146,6 +146,7 @@ pub(crate) fn write_list(
     write!(f, ")")
 }
 
+/// Convert a slice of values to a proper list
 pub fn slice_to_list(items: &[Value]) -> Value {
     match items {
         [] => Value::null(),

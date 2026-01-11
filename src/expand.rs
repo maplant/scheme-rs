@@ -293,7 +293,7 @@ fn match_vec(patterns: &[Pattern], expr: &Syntax, expansion_level: &mut Expansio
 
 impl SchemeCompatible for Pattern {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "pattern")
+        rtd!(name: "pattern", sealed: true, opaque: true)
     }
 }
 
@@ -305,7 +305,7 @@ pub struct ExpansionLevel {
 
 impl SchemeCompatible for ExpansionLevel {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "expansion-level")
+        rtd!(name: "expansion-level", sealed: true, opaque: true)
     }
 }
 
@@ -316,7 +316,7 @@ pub struct ExpansionCombiner {
 
 impl SchemeCompatible for ExpansionCombiner {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "expansion-combiner")
+        rtd!(name: "expansion-combiner", sealed: true, opaque: true)
     }
 }
 
@@ -607,7 +607,7 @@ fn expand_vec(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<
 
 impl SchemeCompatible for Template {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "template")
+        rtd!(name: "template", sealed: true, opaque: true)
     }
 }
 

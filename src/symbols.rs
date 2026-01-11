@@ -34,6 +34,11 @@ impl Symbol {
         let symtab = SYMTAB.read().unwrap();
         symtab[self.0 as usize].clone()
     }
+
+    pub fn gensym() -> Self {
+        let string = Alphabetic.sample_string(&mut rand::rng(), 32);
+        Self::intern(&string)
+    }
 }
 
 impl fmt::Display for Symbol {
@@ -68,6 +73,5 @@ pub fn symbol_to_string(s: &Value) -> Result<Vec<Value>, Exception> {
 
 #[bridge(name = "gensym", lib = "(rnrs base builtins (6))")]
 pub fn gensym() -> Result<Vec<Value>, Exception> {
-    let string = Alphabetic.sample_string(&mut rand::rng(), 32);
-    Ok(vec![Value::from(Symbol::intern(&string))])
+    Ok(vec![Value::from(Symbol::gensym())])
 }
