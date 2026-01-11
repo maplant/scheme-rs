@@ -95,6 +95,9 @@ impl Cps {
         }
     }
 
+    /// I literally always forget about a function, but if you're creating a
+    /// PrimOp that performs an allocation, you _must_ increase the max drops
+    /// here!
     pub(super) fn max_drops(&self) -> usize {
         match self {
             Cps::PrimOp(PrimOp::AllocCell, _, _, cexpr) => cexpr.max_drops() + 1,
@@ -111,6 +114,7 @@ impl Cps {
                 | PrimOp::Lesser
                 | PrimOp::LesserEqual
                 | PrimOp::Matches
+                | PrimOp::GetFrame
                 | PrimOp::ExpandTemplate,
                 _,
                 _,
