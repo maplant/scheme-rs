@@ -74,26 +74,26 @@
              x))
       
       (define (field-specs-to-accessors record-name ctxt x)
-        (with-syntax ([((accessor-name . k) ...) (field-specs-to-accessor-names ctxt x)]
+        (with-syntax ([((accessor-name . k) ...) (field-specs-to-accessor-names (symbol->string (syntax->datum record-name)) ctxt x)]
                       [record-name record-name])
           #'(begin
               (define accessor-name (record-accessor (record-type-descriptor record-name) k)) ...)))
 
-      (define (field-specs-to-accessor-names ctxt x)
+      (define (field-specs-to-accessor-names record-name ctxt x)
        (let loop ([x (field-specs-to-list x)] [fields '()] [offset 0])
          (if (null? x)
              fields
              (loop (cdr x)
-                   (append fields (list (cons (field-spec-to-accessor-name ctxt (cdr (car x))) offset)))
+                   (append fields (list (cons (field-spec-to-accessor-name record-name ctxt (cdr (car x))) offset)))
                    (+ offset 1)))))
 
-      (define (field-spec-to-accessor-name ctxt spec)
+      (define (field-spec-to-accessor-name record-name ctxt spec)
         (let ([accessor (cdr spec)])
           (datum->syntax
            ctxt
            (string->symbol
             (if (null? accessor)
-                (string-append "get-" (symbol->string (car spec)))
+                (string-append record-name "-" (symbol->string (car spec)))
                 (symbol->string (car accessor)))))))
 
       (define (cdr-or-null x)
@@ -102,28 +102,28 @@
             (cdr x)))
 
       (define (field-specs-to-mutators record-name ctxt x)
-        (with-syntax ([((mutator-name . k) ...) (field-specs-to-mutator-names ctxt x)]
+        (with-syntax ([((mutator-name . k) ...) (field-specs-to-mutator-names (symbol->string (syntax->datum record-name)) ctxt x)]
                       [record-name record-name])
           #'(begin
               (define mutator-name (record-mutator (record-type-descriptor record-name) k)) ...)))
 
-      (define (field-specs-to-mutator-names ctxt x)
+      (define (field-specs-to-mutator-names record-name ctxt x)
         (let loop ([x (field-specs-to-list x)] [fields '()] [offset 0])
           (if (null? x)
               fields
               (loop (cdr x)
                     (if (eqv? (car (car x)) 'mutable)
-                        (append fields (list (cons (field-spec-to-mutator-name ctxt (cdr (car x))) offset)))
+                        (append fields (list (cons (field-spec-to-mutator-name record-name ctxt (cdr (car x))) offset)))
                         fields)
                     (+ offset 1)))))
 
-      (define (field-spec-to-mutator-name ctxt spec)
+      (define (field-spec-to-mutator-name record-name ctxt spec)
         (let ([accessor (cdr-or-null (cdr spec))])
           (datum->syntax
            ctxt
            (string->symbol
             (if (null? accessor)
-                (string-append "set-" (symbol->string (car spec)) "!")
+                (string-append record-name "-" (symbol->string (car spec)) "-set!")
                 (symbol->string (car accessor)))))))
 
       ;; Construct the proper call to make-record-type-descriptor

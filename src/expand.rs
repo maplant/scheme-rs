@@ -1,7 +1,7 @@
 use crate::{
-    ast::{Expression, Literal, ParseAstError, ParseContext},
+    ast::{Expression, Literal, ParseContext},
     env::{EnvId, Environment, Local},
-    exceptions::Condition,
+    exceptions::Exception,
     gc::{Gc, Trace},
     proc::Procedure,
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
@@ -36,7 +36,7 @@ impl SyntaxRule {
         fender: Option<&Syntax>,
         output_expression: &Syntax,
         env: &Environment,
-    ) -> Result<Self, ParseAstError> {
+    ) -> Result<Self, Exception> {
         let mut variables = HashSet::new();
         let pattern = Pattern::compile(pattern, keywords, &mut variables);
         let binds = Local::gensym();
@@ -154,7 +154,15 @@ impl Pattern {
                 }
             }
             Self::Keyword(lhs) => {
-                matches!(expr, Syntax::Identifier { ident: rhs, binding_env, .. } if lhs.sym == rhs.sym && lhs.binding_env == *binding_env)
+                matches!(
+                    expr,
+                    Syntax::Identifier {
+                        ident: rhs,
+                        binding_env,
+                        ..
+                    } if lhs.sym == rhs.sym
+                        && lhs.binding_env == *binding_env
+                )
             }
             Self::List(list) => match_list(list, expr, expansion_level),
             Self::Vector(vec) => match_vec(vec, expr, expansion_level),
@@ -285,7 +293,7 @@ fn match_vec(patterns: &[Pattern], expr: &Syntax, expansion_level: &mut Expansio
 
 impl SchemeCompatible for Pattern {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "pattern")
+        rtd!(name: "pattern", sealed: true, opaque: true)
     }
 }
 
@@ -297,7 +305,7 @@ pub struct ExpansionLevel {
 
 impl SchemeCompatible for ExpansionLevel {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "expansion-level")
+        rtd!(name: "expansion-level", sealed: true, opaque: true)
     }
 }
 
@@ -308,14 +316,14 @@ pub struct ExpansionCombiner {
 
 impl SchemeCompatible for ExpansionCombiner {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "expansion-combiner")
+        rtd!(name: "expansion-combiner", sealed: true, opaque: true)
     }
 }
 
 #[runtime_fn]
 unsafe extern "C" fn matches(pattern: *const (), syntax: *const ()) -> *const () {
     let pattern = unsafe { Value::from_raw_inc_rc(pattern) };
-    let pattern = pattern.try_into_rust_type::<Pattern>().unwrap();
+    let pattern = pattern.try_to_rust_type::<Pattern>().unwrap();
 
     let syntax = unsafe { Value::from_raw_inc_rc(syntax) };
     // This isn't a great way to do this, but it'll work for now:
@@ -599,7 +607,7 @@ fn expand_vec(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<
 
 impl SchemeCompatible for Template {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "template")
+        rtd!(name: "template", sealed: true, opaque: true)
     }
 }
 
@@ -614,17 +622,17 @@ unsafe extern "C" fn expand_template(
     // eventually
 
     let template = unsafe { Value::from_raw_inc_rc(template) };
-    let template = template.try_into_rust_type::<Template>().unwrap();
+    let template = template.try_to_rust_type::<Template>().unwrap();
 
     let expansion_combiner = unsafe { Value::from_raw_inc_rc(expansion_combiner) };
     let expansion_combiner = expansion_combiner
-        .try_into_rust_type::<ExpansionCombiner>()
+        .try_to_rust_type::<ExpansionCombiner>()
         .unwrap();
 
     let expansions = (0..num_expansions)
         .map(|i| {
             let expansion = unsafe { Value::from_raw_inc_rc(expansions.add(i as usize).read()) };
-            let expansion = expansion.try_into_rust_type::<ExpansionLevel>().unwrap();
+            let expansion = expansion.try_to_rust_type::<ExpansionLevel>().unwrap();
             expansion.as_ref().clone()
         })
         .collect::<Vec<_>>();
@@ -672,12 +680,12 @@ impl<'a> Binds<'a> {
 
 #[runtime_fn]
 unsafe extern "C" fn error_no_patterns_match() -> i64 {
-    let condition = Condition::error("No patterns match!".to_string());
+    let condition = Exception::error("no patterns match".to_string());
     Value::into_raw(Value::from(condition)) as i64
 }
 
 #[bridge(name = "make-variable-transformer", lib = "(rnrs base builtins (6))")]
-pub fn make_variable_transformer(proc: &Value) -> Result<Vec<Value>, Condition> {
+pub fn make_variable_transformer(proc: &Value) -> Result<Vec<Value>, Exception> {
     let proc: Procedure = proc.clone().try_into()?;
     let mut var_transformer = proc.0.as_ref().clone();
     var_transformer.is_variable_transformer = true;

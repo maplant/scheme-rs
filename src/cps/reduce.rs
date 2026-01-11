@@ -95,7 +95,7 @@ impl Cps {
                 }
                 return reduced;
             }
-            Cps::App(Value::Var(Var::Local(operator)), applied, _) if *operator == func => {
+            Cps::App(Value::Var(Var::Local(operator)), applied) if *operator == func => {
                 if args.variadic {
                     let (req, var) = applied.split_at(args.num_required());
                     let var_args = Local::gensym();
@@ -117,7 +117,7 @@ impl Cps {
                     return false;
                 }
             }
-            Cps::App(_, _, _) | Cps::Forward(_, _) | Cps::Halt(_) => return false,
+            Cps::App(_, _) | Cps::Halt(_) => return false,
         };
         *self = new;
         true

@@ -1,9 +1,11 @@
 (library (rnrs base (6))
   (export syntax-rules with-syntax cond case let* letrec letrec* values
           let-values let*-values when unless do case-lambda member memv
-          memq caar cadr memp call/cc for-each string-for-each vector-for-each
-          append make-list list-copy list-tail list-ref assoc map reverse
-          positive? negative? abs min max quasiquote identifier-syntax
+          memq caar cadr cddr caaar caadr cadar cdaar caddr cdadr cddar
+          cdddr memp call/cc for-each for-all exists string-for-each
+          vector-for-each append make-list list-copy list-tail list-ref 
+          assoc map reverse positive? negative? abs min max quasiquote
+          identifier-syntax string-foldcase
           (import (rnrs base builtins (6))
                   (except (rnrs base special-keywords (6)) $undefined)
                   (rnrs syntax-case special-keywords (6))))
@@ -302,6 +304,14 @@
   (define caar (lambda (x) (car (car x))))
   (define cadr (lambda (x) (car (cdr x))))
   (define cddr (lambda (x) (cdr (cdr x))))
+  (define caaar (lambda (x) (car (car (car x)))))
+  (define caadr (lambda (x) (car (car (cdr x)))))
+  (define cadar (lambda (x) (car (cdr (car x)))))
+  (define cdaar (lambda (x) (cdr (car (car x)))))
+  (define caddr (lambda (x) (car (cdr (cdr x)))))
+  (define cdadr (lambda (x) (cdr (car (cdr x)))))
+  (define cddar (lambda (x) (cdr (cdr (car x)))))
+  (define cdddr (lambda (x) (cdr (cdr (cdr x)))))
 
   (define (memp proc list)
     (if (and (pair? list)
@@ -322,6 +332,28 @@
         (loop (cdr rest))))
     (unless (null? listn)
       (apply for-each (cons proc listn))))
+
+  (define (for-all proc list1 . listn)
+    (call/cc (lambda (return)
+               (let loop ((rest list1))
+                 (unless (null? rest)
+                   (if (not (proc (car rest)))
+                       (return #f)
+                       (loop (cdr rest)))))
+               (if (null? listn)
+                   #t
+                   (apply for-all (cons proc listn))))))
+
+  (define (exists proc list1 . listn)
+    (call/cc (lambda (return)
+               (let loop ((rest list1))
+                 (unless (null? rest)
+                   (if (proc (car rest))
+                       (return #t)
+                       (loop (cdr rest)))))
+               (if (null? listn)
+                   #f
+                   (apply for-all (cons proc listn))))))
 
   (define (string-for-each proc str1 . strn)
     (let loop ([i 0]

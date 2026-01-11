@@ -104,6 +104,12 @@ pub enum PrimOp {
     Lesser,
     LesserEqual,
 
+    // Frame operatiors
+    GetFrame,
+
+    // Continuation mark operators:
+    SetContinuationMark,
+
     // Macro expansion primitive operators:
     /// Matches the pattern against the syntax object, returning the bindings if
     /// it does and false otherwise.
@@ -143,17 +149,13 @@ impl LambdaArgs {
     }
 }
 
-#[derive(derive_more::Debug, Clone)]
+#[derive(Debug, Clone)]
 pub enum Cps {
     /// Call to a primitive operator:
     PrimOp(PrimOp, Vec<Value>, Local, Box<Cps>),
 
     /// Function application:
-    App(Value, Vec<Value>, Option<Span>),
-
-    /// Forward a list of values into an application:
-    // TODO: I think we can get rid of this with better primitive operators, maybe.
-    Forward(Value, Value),
+    App(Value, Vec<Value>),
 
     /// Branching:
     If(Value, Box<Cps>, Box<Cps>),
@@ -179,13 +181,9 @@ impl Cps {
                 substitute_values(args, substitutions);
                 cexp.substitute(substitutions);
             }
-            Self::App(value, values, _) => {
+            Self::App(value, values) => {
                 substitute_value(value, substitutions);
                 substitute_values(values, substitutions);
-            }
-            Self::Forward(op, arg) => {
-                substitute_value(op, substitutions);
-                substitute_value(arg, substitutions);
             }
             Self::If(cond, success, failure) => {
                 substitute_value(cond, substitutions);

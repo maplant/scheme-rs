@@ -2,10 +2,10 @@ use indexmap::IndexMap;
 use parking_lot::RwLock;
 
 use crate::{
-    exceptions::Condition,
+    exceptions::Exception,
     gc::{Gc, GcInner, Trace},
     num::Number,
-    proc::{Application, DynStack, Procedure},
+    proc::{Application, DynamicState, Procedure},
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
     value::{UnpackedValue, Value, ValueType, write_value},
@@ -60,22 +60,22 @@ impl Pair {
     }
 
     /// Set the car of the Pair. Returns an error if pair is immutable.
-    pub fn set_car(&self, new_car: Value) -> Result<(), Condition> {
+    pub fn set_car(&self, new_car: Value) -> Result<(), Exception> {
         if self.0.mutable {
             *self.0.car.write() = new_car;
             Ok(())
         } else {
-            Err(Condition::error("pair is not mutable"))
+            Err(Exception::error("pair is not mutable"))
         }
     }
 
     /// Set the cdr of the Pair. Returns an error if pair is immutable.
-    pub fn set_cdr(&self, new_cdr: Value) -> Result<(), Condition> {
+    pub fn set_cdr(&self, new_cdr: Value) -> Result<(), Exception> {
         if self.0.mutable {
             *self.0.cdr.write() = new_cdr;
             Ok(())
         } else {
-            Err(Condition::error("pair is not mutable"))
+            Err(Exception::error("pair is not mutable"))
         }
     }
 }
@@ -146,6 +146,7 @@ pub(crate) fn write_list(
     write!(f, ")")
 }
 
+/// Convert a slice of values to a proper list
 pub fn slice_to_list(items: &[Value]) -> Value {
     match items {
         [] => Value::null(),
@@ -177,7 +178,7 @@ pub fn list_to_vec_with_null(curr: &Value, out: &mut Vec<Value>) {
 }
 
 #[bridge(name = "list", lib = "(rnrs base builtins (6))")]
-pub fn list(args: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn list(args: &[Value]) -> Result<Vec<Value>, Exception> {
     // Construct the list in reverse
     let mut cdr = Value::null();
     for arg in args.iter().rev() {
@@ -187,48 +188,48 @@ pub fn list(args: &[Value]) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "cons", lib = "(rnrs base builtins (6))")]
-pub fn cons(car: &Value, cdr: &Value) -> Result<Vec<Value>, Condition> {
+pub fn cons(car: &Value, cdr: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(Pair::new(car.clone(), cdr.clone(), true))])
 }
 
 #[bridge(name = "car", lib = "(rnrs base builtins (6))")]
-pub fn car(val: &Value) -> Result<Vec<Value>, Condition> {
+pub fn car(val: &Value) -> Result<Vec<Value>, Exception> {
     match &*val.unpacked_ref() {
         UnpackedValue::Pair(pair) => Ok(vec![pair.car()]),
         UnpackedValue::Syntax(syn) => Ok(vec![Value::from(syn.car()?)]),
-        _ => Err(Condition::type_error("list", val.type_name())),
+        _ => Err(Exception::type_error("list", val.type_name())),
     }
 }
 
 #[bridge(name = "cdr", lib = "(rnrs base builtins (6))")]
-pub fn cdr(val: &Value) -> Result<Vec<Value>, Condition> {
+pub fn cdr(val: &Value) -> Result<Vec<Value>, Exception> {
     match &*val.unpacked_ref() {
         UnpackedValue::Pair(pair) => Ok(vec![pair.cdr()]),
         UnpackedValue::Syntax(syn) => Ok(vec![Value::from(syn.cdr()?)]),
-        _ => Err(Condition::type_error("list", val.type_name())),
+        _ => Err(Exception::type_error("list", val.type_name())),
     }
 }
 
 #[bridge(name = "set-car!", lib = "(rnrs base builtins (6))")]
-pub fn set_car(var: &Value, val: &Value) -> Result<Vec<Value>, Condition> {
+pub fn set_car(var: &Value, val: &Value) -> Result<Vec<Value>, Exception> {
     let pair: Pair = var.clone().try_into()?;
     pair.set_car(val.clone())?;
     Ok(Vec::new())
 }
 
 #[bridge(name = "set-cdr!", lib = "(rnrs base builtins (6))")]
-pub fn set_cdr(var: &Value, val: &Value) -> Result<Vec<Value>, Condition> {
+pub fn set_cdr(var: &Value, val: &Value) -> Result<Vec<Value>, Exception> {
     let pair: Pair = var.clone().try_into()?;
     pair.set_cdr(val.clone())?;
     Ok(Vec::new())
 }
 
 #[bridge(name = "length", lib = "(rnrs base builtins (6))")]
-pub fn length_builtin(arg: &Value) -> Result<Vec<Value>, Condition> {
+pub fn length_builtin(arg: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(Number::from(length(arg)?))])
 }
 
-pub fn length(arg: &Value) -> Result<usize, Condition> {
+pub fn length(arg: &Value) -> Result<usize, Exception> {
     let mut length = 0usize;
     let mut arg = arg.clone();
     loop {
@@ -236,7 +237,7 @@ pub fn length(arg: &Value) -> Result<usize, Condition> {
             match &*arg.unpacked_ref() {
                 UnpackedValue::Pair(pair) => pair.cdr(),
                 UnpackedValue::Null => break,
-                _ => return Err(Condition::error("list must be proper".to_string())),
+                _ => return Err(Exception::error("list must be proper".to_string())),
             }
         };
         length += 1;
@@ -245,7 +246,7 @@ pub fn length(arg: &Value) -> Result<usize, Condition> {
 }
 
 #[bridge(name = "list->vector", lib = "(rnrs base builtins (6))")]
-pub fn list_to_vector(list: &Value) -> Result<Vec<Value>, Condition> {
+pub fn list_to_vector(list: &Value) -> Result<Vec<Value>, Exception> {
     let mut vec = Vec::new();
     list_to_vec(list, &mut vec);
 
@@ -253,7 +254,7 @@ pub fn list_to_vector(list: &Value) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "append", lib = "(rnrs base builtins (6))")]
-pub fn append(list: &Value, to_append: &Value) -> Result<Vec<Value>, Condition> {
+pub fn append(list: &Value, to_append: &Value) -> Result<Vec<Value>, Exception> {
     let mut vec = Vec::new();
     list_to_vec(list, &mut vec);
     let mut list = to_append.clone();
@@ -269,9 +270,9 @@ pub fn map(
     _env: &[Value],
     args: &[Value],
     list_n: &[Value],
-    _params: &mut DynStack,
+    dyn_state: &mut DynamicState,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let [mapper, list_1] = args else {
         unreachable!()
     };
@@ -285,20 +286,20 @@ pub fn map(
     for input in inputs.iter_mut() {
         if input.type_of() == ValueType::Null {
             // TODO: Check if the rest are also empty and args is empty
-            return Ok(Application::new(k.try_into()?, vec![Value::null()], None));
+            return Ok(Application::new(k.try_into()?, vec![Value::null()]));
         }
 
         let (car, cdr) = match &*input.unpacked_ref() {
             UnpackedValue::Pair(pair) => pair.clone().into(),
             UnpackedValue::Syntax(syn) => (Value::from(syn.car()?), Value::from(syn.cdr()?)),
-            _ => return Err(Condition::type_error("list", input.type_name())),
+            _ => return Err(Exception::type_error("list", input.type_name())),
         };
 
         args.push(car);
         *input = cdr;
     }
 
-    let map_k = Procedure::new(
+    let map_k = dyn_state.new_k(
         runtime.clone(),
         vec![
             Value::from(Vec::<Value>::new()),
@@ -306,22 +307,21 @@ pub fn map(
             mapper.clone(),
             k,
         ],
-        crate::proc::FuncPtr::Continuation(map_k),
+        map_k,
         1,
         false,
-        None,
     );
 
     args.push(Value::from(map_k));
 
-    Ok(Application::new(mapper_proc, args, None))
+    Ok(Application::new(mapper_proc, args))
 }
 
 unsafe extern "C" fn map_k(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
-    _params: *mut DynStack,
+    dyn_state: *mut DynamicState,
 ) -> *mut Application {
     unsafe {
         // TODO: Probably need to do this in a way that avoids mutable variables
@@ -347,7 +347,7 @@ unsafe extern "C" fn map_k(
             if input.type_of() == ValueType::Null {
                 // TODO: Check if the rest are also empty and args is empty
                 let output = slice_to_list(&output.0.vec.read());
-                let app = Application::new(k, vec![output], None);
+                let app = Application::new(k, vec![output]);
                 return Box::into_raw(Box::new(app));
             }
 
@@ -364,7 +364,7 @@ unsafe extern "C" fn map_k(
             *input = cdr;
         }
 
-        let map_k = Procedure::new(
+        let map_k = dyn_state.as_mut().unwrap().new_k(
             Runtime::from_raw_inc_rc(runtime),
             vec![
                 Value::from(output),
@@ -372,16 +372,13 @@ unsafe extern "C" fn map_k(
                 Value::from(mapper.clone()),
                 Value::from(k),
             ],
-            crate::proc::FuncPtr::Continuation(map_k),
+            map_k,
             1,
             false,
-            None,
         );
 
         args.push(Value::from(map_k));
 
-        let app = Application::new(mapper, args, None);
-
-        Box::into_raw(Box::new(app))
+        Box::into_raw(Box::new(Application::new(mapper, args)))
     }
 }
