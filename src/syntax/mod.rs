@@ -420,7 +420,7 @@ impl fmt::Debug for Syntax {
                 write!(f, ")")
             }
             Syntax::ByteVector { vector, .. } => {
-                write!(f, "#u8(")?;
+                write!(f, "#vu8(")?;
                 for (i, item) in vector.iter().enumerate() {
                     if i > 0 {
                         write!(f, " ")?;

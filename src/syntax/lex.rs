@@ -161,7 +161,7 @@ impl<'a> Lexer<'a> {
                     Lexeme::Boolean(true)
                 }
                 '#' if maybe_await!(self.match_tag("("))? => Lexeme::HashParen,
-                '#' if maybe_await!(self.match_tag("u8("))? => Lexeme::Vu8Paren,
+                '#' if maybe_await!(self.match_tag("vu8("))? => Lexeme::Vu8Paren,
                 '#' if maybe_await!(self.match_tag("'"))? => Lexeme::HashQuote,
                 '#' if maybe_await!(self.match_tag("`"))? => Lexeme::HashBackquote,
                 '#' if maybe_await!(self.match_tag(",@"))? => Lexeme::HashCommaAt,
@@ -196,7 +196,9 @@ impl<'a> Lexer<'a> {
                 maybe_await!(self.comment())?;
             } else if maybe_await!(self.match_tag("#|"))? {
                 maybe_await!(self.nested_comment())?;
-            } else if maybe_await!(self.match_pred(is_whitespace))?.is_none() {
+            } else if !maybe_await!(self.match_tag("#!r6rs"))?
+                && maybe_await!(self.match_pred(is_whitespace))?.is_none()
+            {
                 break;
             }
         }
@@ -239,20 +241,24 @@ impl<'a> Lexer<'a> {
             Character::Escaped(EscapedCharacter::Backspace)
         } else if maybe_await!(self.match_tag("delete"))? {
             Character::Escaped(EscapedCharacter::Delete)
-        } else if maybe_await!(self.match_tag("escape"))? {
+        } else if maybe_await!(self.match_tag("esc"))? {
             Character::Escaped(EscapedCharacter::Escape)
         } else if maybe_await!(self.match_tag("newline"))?
             || maybe_await!(self.match_tag("linefeed"))?
         {
             Character::Escaped(EscapedCharacter::Newline)
-        } else if maybe_await!(self.match_tag("null"))? {
-            Character::Escaped(EscapedCharacter::Null)
+        } else if maybe_await!(self.match_tag("nul"))? {
+            Character::Escaped(EscapedCharacter::Nul)
         } else if maybe_await!(self.match_tag("return"))? {
             Character::Escaped(EscapedCharacter::Return)
         } else if maybe_await!(self.match_tag("space"))? {
             Character::Escaped(EscapedCharacter::Space)
         } else if maybe_await!(self.match_tag("tab"))? {
             Character::Escaped(EscapedCharacter::Tab)
+        } else if maybe_await!(self.match_tag("vtab"))? {
+            Character::Escaped(EscapedCharacter::VTab)
+        } else if maybe_await!(self.match_tag("page"))? {
+            Character::Escaped(EscapedCharacter::Page)
         } else if maybe_await!(self.match_char('x'))? {
             if is_delimiter(maybe_await!(self.peek())?.ok_or(LexerError::UnexpectedEof)?) {
                 Character::Literal('x')
@@ -476,11 +482,16 @@ impl<'a> Lexer<'a> {
         while let Some(chr) = maybe_await!(self.match_pred(|chr| chr != '"'))? {
             if chr == '\\' {
                 let escaped = match maybe_await!(self.take())?.ok_or(LexerError::UnexpectedEof)? {
-                    'x' => todo!(),
+                    'x' => {
+                        let escaped = maybe_await!(self.inline_hex_escape())?;
+                        output.push_str(&escaped);
+                        continue;
+                    }
                     'a' => '\u{07}',
                     'b' => '\u{08}',
                     't' => '\t',
                     'n' => '\n',
+                    'r' => '\r',
                     'v' => '\u{0B}',
                     'f' => '\u{0C}',
                     '"' => '"',
@@ -567,6 +578,7 @@ impl<'a> Lexer<'a> {
         if !buff.is_empty() {
             escaped.push(u8::from_str_radix(&buff, 16).unwrap() as char);
         }
+        maybe_await!(self.take())?;
         Ok(escaped)
     }
 }
@@ -829,30 +841,34 @@ pub enum Character {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EscapedCharacter {
+    Nul,
     Alarm,
     Backspace,
-    Delete,
-    Escape,
-    Newline,
-    Null,
-    Return,
-    Space,
     Tab,
+    Newline,
+    VTab,
+    Page,
+    Return,
+    Escape,
+    Space,
+    Delete,
 }
 
 impl From<EscapedCharacter> for char {
     fn from(c: EscapedCharacter) -> char {
         // from r7rs 6.6
         match c {
+            EscapedCharacter::Nul => '\u{0000}',
             EscapedCharacter::Alarm => '\u{0007}',
             EscapedCharacter::Backspace => '\u{0008}',
-            EscapedCharacter::Delete => '\u{007F}',
-            EscapedCharacter::Escape => '\u{001B}',
-            EscapedCharacter::Newline => '\u{000A}',
-            EscapedCharacter::Null => '\u{0000}',
-            EscapedCharacter::Return => '\u{000D}',
-            EscapedCharacter::Space => ' ',
             EscapedCharacter::Tab => '\u{0009}',
+            EscapedCharacter::Newline => '\u{000A}',
+            EscapedCharacter::VTab => '\u{000B}',
+            EscapedCharacter::Page => '\u{000C}',
+            EscapedCharacter::Return => '\u{000D}',
+            EscapedCharacter::Escape => '\u{001B}',
+            EscapedCharacter::Space => ' ',
+            EscapedCharacter::Delete => '\u{007F}',
         }
     }
 }

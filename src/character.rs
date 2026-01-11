@@ -1,21 +1,22 @@
 use std::sync::Arc;
 
 use crate::{exceptions::Exception, num::Number, registry::bridge, value::Value};
+use either::Either;
 use unicode_categories::UnicodeCategories;
 
 mod unicode;
-use unicode::*;
+pub use unicode::*;
 
-fn char_switch_case<I: Iterator<Item = char> + ExactSizeIterator>(
+pub(crate) fn char_switch_case<I: Iterator<Item = char> + ExactSizeIterator>(
     ch: char,
     operation: fn(char) -> I,
-) -> Result<char, Exception> {
+) -> Either<char, Vec<char>> {
     let mut ch = operation(ch);
     let len = ch.len();
     if len == 1 {
-        Ok(ch.next().unwrap())
+        Either::Left(ch.next().unwrap())
     } else {
-        Err(Exception::wrong_num_of_unicode_chars(1, len))
+        Either::Right(ch.collect())
     }
 }
 
@@ -93,7 +94,7 @@ macro_rules! impl_char_ci_operator {
                 .chain(opt_chars)
                 .map(|ch| {
                     let ch: char = ch.clone().try_into()?;
-                    char_switch_case(ch, to_foldcase)
+                    Ok(char_switch_case(ch, to_foldcase).left_or(ch))
                 })
                 .collect::<Result<Vec<char>, Exception>>()?
                 .windows(2) {
@@ -155,7 +156,7 @@ macro_rules! impl_char_case_converter {
         $(#[bridge(name = $bridge_name, lib = "(rnrs base builtins (6))")]
         pub fn $function_name(ch: &Value) -> Result<Vec<Value>, Exception> {
             let ch: char = ch.clone().try_into()?;
-            Ok(vec![Value::from(char_switch_case(ch, $converter)?)])
+            Ok(vec![Value::from(char_switch_case(ch, $converter).left_or(ch))])
         })*
     }
 }
@@ -168,7 +169,9 @@ impl_char_case_converter![
 #[bridge(name = "char-foldcase", lib = "(rnrs base builtins (6))")]
 pub fn char_foldcase(ch: &Value) -> Result<Vec<Value>, Exception> {
     let ch: char = ch.clone().try_into()?;
-    Ok(vec![Value::from(char_switch_case(ch, to_foldcase)?)])
+    Ok(vec![Value::from(
+        char_switch_case(ch, to_foldcase).left_or(ch),
+    )])
 }
 
 #[cfg(test)]

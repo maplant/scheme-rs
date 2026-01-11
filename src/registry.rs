@@ -746,11 +746,13 @@ impl Library {
         }
         if let Some(Import { origin, rename }) = this.imports.get(name) {
             origin.binding_env(rename)
+        /*
         } else if self.is_repl() {
             // If this is a repl, there's no other binding this could possibly
             // refer to, and it may be bound in the future, so we say this is
             // the current binding environment.
             Some(EnvId::new(&self.0))
+        */
         } else {
             None
         }

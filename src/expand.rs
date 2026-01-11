@@ -154,7 +154,15 @@ impl Pattern {
                 }
             }
             Self::Keyword(lhs) => {
-                matches!(expr, Syntax::Identifier { ident: rhs, binding_env, .. } if lhs.sym == rhs.sym && lhs.binding_env == *binding_env)
+                matches!(
+                    expr,
+                    Syntax::Identifier {
+                        ident: rhs,
+                        binding_env,
+                        ..
+                    } if lhs.sym == rhs.sym
+                        && lhs.binding_env == *binding_env
+                )
             }
             Self::List(list) => match_list(list, expr, expansion_level),
             Self::Vector(vec) => match_vec(vec, expr, expansion_level),

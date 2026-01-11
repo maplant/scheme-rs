@@ -2,9 +2,11 @@
 
 use std::{fmt, hash::Hash, sync::Arc};
 
+use either::Either;
 use parking_lot::RwLock;
 
 use crate::{
+    character::{char_switch_case, to_foldcase},
     exceptions::Exception,
     gc::Trace,
     registry::bridge,
@@ -249,4 +251,25 @@ pub fn string_set_bang(string: &Value, k: &Value, chr: &Value) -> Result<Vec<Val
     }
     chars[k] = chr;
     Ok(vec![])
+}
+
+#[bridge(name = "string-foldcase", lib = "(rnrs base builtins (6))")]
+pub fn string_foldcase(string: &Value) -> Result<Vec<Value>, Exception> {
+    let string: WideString = string.try_to_scheme_type()?;
+    let folded = string
+        .0
+        .chars
+        .read()
+        .iter()
+        .map(|ch| match char_switch_case(*ch, to_foldcase) {
+            Either::Left(ch) => vec![ch],
+            Either::Right(s) => s,
+        })
+        .flatten()
+        .collect::<Vec<_>>();
+    let folded = WideString(Arc::new(WideStringInner {
+        chars: RwLock::new(folded),
+        mutable: true,
+    }));
+    Ok(vec![Value::from(folded)])
 }

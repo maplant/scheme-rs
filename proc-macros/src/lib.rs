@@ -1083,16 +1083,20 @@ pub fn define_condition_type(tokens: TokenStream) -> TokenStream {
 
     let field_idxs = 0..field_names.len();
 
-    let constructor =  constructor.map(|constructor| {
-        let inputs = 0..constructor.inputs.len();
-        let types = inputs.clone().map(|_| quote!(::scheme_rs::value::Value));
-        quote!(
-            constructor: |vals| {
-                let constructor: fn(#(#types,)*) -> Result<#rust_name, ::scheme_rs::exceptions::Exception> = #constructor;
-                Ok(::scheme_rs::records::into_scheme_compatible(Gc::new((constructor)(#(vals[#inputs].clone(),)*)?)))
-            },
-        )
-    });
+    let constructor =  constructor.map_or_else(
+        || quote! {
+            constructor: |_| Ok(::scheme_rs::records::into_scheme_compatible(Gc::new(#rust_name::default()))),
+        },
+        |constructor| {
+            let inputs = 0..constructor.inputs.len();
+            let types = inputs.clone().map(|_| quote!(::scheme_rs::value::Value));
+            quote!(
+                constructor: |vals| {
+                    let constructor: fn(#(#types,)*) -> Result<#rust_name, ::scheme_rs::exceptions::Exception> = #constructor;
+                    Ok(::scheme_rs::records::into_scheme_compatible(Gc::new((constructor)(#(vals[#inputs].clone(),)*)?)))
+                },
+            )
+        });
 
     let dbg = dbg.map(|dbg| {
         quote!(

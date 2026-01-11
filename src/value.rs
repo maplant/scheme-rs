@@ -195,6 +195,10 @@ impl Value {
             .ok_or_else(|| Exception::type_error(&type_name, &record.rtd().name.to_str()))
     }
 
+    pub fn from_rust_type<T: SchemeCompatible>(t: T) -> Self {
+        Self::from(Record::from_rust_type(t))
+    }
+
     pub fn unpack(self) -> UnpackedValue {
         let raw = ManuallyDrop::new(self).0;
         let tag = Tag::from(raw as usize & TAG);

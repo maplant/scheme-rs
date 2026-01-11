@@ -1,7 +1,7 @@
 use crate::{
     exceptions::Exception,
     gc::{Gc, Trace},
-    lists::slice_to_list,
+    lists::{Pair, slice_to_list},
     num::Number,
     registry::bridge,
     value::{Value, write_value},
@@ -32,6 +32,10 @@ impl Vector {
     }
 
     // TODO: Add more convenience functions here
+
+    pub fn to_list(&self) -> Value {
+        slice_to_list(&self.0.vec.read())
+    }
 }
 
 impl From<Vec<Value>> for Vector {
@@ -117,7 +121,7 @@ pub(crate) fn write_vec(
 }
 
 pub(crate) fn write_bytevec(v: &ByteVector, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
-    write!(f, "#u8(")?;
+    write!(f, "#vu8(")?;
 
     let bytes = v.0.vec.read();
     for (i, byte) in bytes.iter().enumerate() {

@@ -594,11 +594,11 @@ impl Record {
     /// Attempt to convert the record into a Rust type that implements
     /// [SchemeCompatible].
     pub fn cast<T: SchemeCompatible>(&self) -> Option<Gc<T>> {
-        let opaque_parent = self.0.rust_parent.as_ref()?;
+        let rust_parent = self.0.rust_parent.as_ref()?;
 
         // Attempt to extract any embedded records
         let rtd = T::rtd();
-        let mut t = opaque_parent.clone();
+        let mut t = rust_parent.clone();
         while let Some(embedded) = { t.extract_embedded_record(&rtd) } {
             t = embedded;
         }
