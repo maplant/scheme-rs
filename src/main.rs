@@ -5,7 +5,7 @@ use rustyline::{
     validate::{ValidationContext, ValidationResult, Validator},
 };
 use scheme_rs::{
-    env::Environment,
+    env::TopLevelEnvironment,
     ports::{BufferMode, Port, Prompt, Transcoder},
     runtime::Runtime,
     syntax::{Span, Syntax},
@@ -39,7 +39,7 @@ struct InputHelper {
 #[cfg_attr(feature = "async", tokio::main)]
 fn main() -> ExitCode {
     let runtime = Runtime::new();
-    let repl = Environment::new_repl(&runtime);
+    let repl = TopLevelEnvironment::new_repl(&runtime);
 
     maybe_await!(repl.import("(library (rnrs))".parse().unwrap()))
         .expect("Failed to import standard library");

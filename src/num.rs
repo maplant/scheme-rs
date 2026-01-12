@@ -151,26 +151,46 @@ impl From<Complex64> for Number {
 
 macro_rules! number_try_into_impl_integer {
     ($ty:tt) => {
-        impl TryInto<$ty> for &Number {
+        impl From<&'_ Number> for Option<$ty> {
+            fn from(num: &Number) -> Option<$ty> {
+                match num {
+                    Number::FixedInteger(i) => {
+                        if size_of::<$ty>() > size_of::<u32>() {
+                            Some(*i as $ty)
+                        } else if *i <= $ty::MAX as i64 && *i >= $ty::MIN as i64 {
+                            Some(*i as $ty)
+                        } else {
+                            None
+                        }
+                    }
+                    Number::BigInteger(bigint) => {
+                        $ty::convertible_from(bigint).then(|| $ty::wrapping_from(bigint))
+                    }
+                    Number::Rational(_) => None,
+                    Number::Real(_) => None,
+                    Number::Complex(_) => None,
+                }
+            }
+        }
+
+        impl TryFrom<&'_ Number> for $ty {
             type Error = Exception;
 
-            fn try_into(self) -> Result<$ty, Self::Error> {
-                match self {
+            fn try_from(num: &Number) -> Result<$ty, Self::Error> {
+                match num {
                     Number::FixedInteger(i) => {
                         // Since FixedInteger is i64, we can just check for
                         // greater than size_of::<u32>() to know if we should just
                         // cast the value to the type or check for the right size.
                         if size_of::<$ty>() > size_of::<u32>() {
                             Ok(*i as $ty)
+                        } else if *i <= $ty::MAX as i64 && *i >= $ty::MIN as i64 {
+                            Ok(*i as $ty)
                         } else {
-                            if *i <= $ty::MAX as i64 && *i >= $ty::MIN as i64 {
-                                Ok(*i as $ty)
-                            } else {
-                                Err(Exception::not_representable(
-                                    &format!("{i}"),
-                                    stringify!($ty),
-                                ))
-                            }
+                            Err(Exception::not_representable(
+                                &format!("{i}"),
+                                stringify!($ty),
+                            ))
                         }
                     }
                     Number::BigInteger(bigint) => $ty::convertible_from(bigint)
@@ -189,11 +209,11 @@ macro_rules! number_try_into_impl_integer {
             }
         }
 
-        impl TryInto<$ty> for Number {
+        impl TryFrom<Number> for $ty {
             type Error = Exception;
 
-            fn try_into(self) -> Result<$ty, Self::Error> {
-                (&self).try_into()
+            fn try_from(num: Number) -> Result<$ty, Self::Error> {
+                (&num).try_into()
             }
         }
     };
@@ -212,10 +232,11 @@ number_try_into_impl_integer!(i64);
 number_try_into_impl_integer!(i128);
 number_try_into_impl_integer!(isize);
 
-impl TryInto<Integer> for &Number {
+impl TryFrom<&'_ Number> for Integer {
     type Error = Exception;
-    fn try_into(self) -> Result<Integer, Self::Error> {
-        match self {
+
+    fn try_from(num: &Number) -> Result<Integer, Self::Error> {
+        match num {
             Number::FixedInteger(i) => Ok(Integer::from(*i)),
             Number::BigInteger(i) => Ok(i.clone()),
             Number::Rational(_) => Err(Exception::conversion_error("Integer", "Rational")),
@@ -225,31 +246,46 @@ impl TryInto<Integer> for &Number {
     }
 }
 
-impl TryInto<f64> for &Number {
-    type Error = Exception;
-    fn try_into(self) -> Result<f64, Self::Error> {
-        match self {
-            Number::FixedInteger(i) => Ok(*i as f64),
-            Number::Real(r) => Ok(*r),
-            Number::Complex(_) => Err(Exception::conversion_error("f64", "Complex")),
-            Number::Rational(r) => {
-                if let Some((float, _, _)) =
-                    r.sci_mantissa_and_exponent_round_ref(RoundingMode::Nearest)
-                {
-                    Ok(float)
-                } else {
-                    Err(Exception::not_representable(&format!("{r}"), "f64"))
-                }
+impl From<&'_ Number> for Option<f64> {
+    fn from(num: &Number) -> Option<f64> {
+        match num {
+            Number::FixedInteger(i) => Some(*i as f64),
+            Number::Real(r) => Some(*r),
+            Number::Complex(_) => None,
+            Number::BigInteger(i) => {
+                f64::convertible_from(i).then(|| f64::rounding_from(i, RoundingMode::Nearest).0)
             }
-            Number::BigInteger(_) => Err(Exception::conversion_error("f64", "BigInteger")),
+            Number::Rational(r) => r
+                .sci_mantissa_and_exponent_round_ref(RoundingMode::Nearest)
+                .map(|(float, _, _)| float),
         }
     }
 }
 
-impl TryInto<Complex64> for &Number {
+impl TryFrom<&'_ Number> for f64 {
     type Error = Exception;
-    fn try_into(self) -> Result<Complex64, Self::Error> {
-        match self {
+
+    fn try_from(num: &Number) -> Result<f64, Self::Error> {
+        match num {
+            Number::FixedInteger(i) => Ok(*i as f64),
+            Number::Real(r) => Ok(*r),
+            Number::Complex(_) => Err(Exception::conversion_error("f64", "Complex")),
+            Number::Rational(r) => r
+                .sci_mantissa_and_exponent_round_ref(RoundingMode::Nearest)
+                .map(|f| f.0)
+                .ok_or_else(|| Exception::not_representable(&format!("{r}"), "f64")),
+            Number::BigInteger(i) => f64::convertible_from(i)
+                .then(|| f64::rounding_from(i, RoundingMode::Nearest).0)
+                .ok_or_else(|| Exception::conversion_error("f64", "BigInteger")),
+        }
+    }
+}
+
+impl TryFrom<&'_ Number> for Complex64 {
+    type Error = Exception;
+
+    fn try_from(num: &Number) -> Result<Complex64, Self::Error> {
+        match num {
             Number::Complex(c) => Ok(*c),
             Number::Rational(_) => Err(Exception::conversion_error("Complex", "Rational")),
             Number::BigInteger(_) => Err(Exception::conversion_error("Complex", "BigInteger")),

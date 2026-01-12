@@ -27,15 +27,15 @@ scheme procedures.
  # Running Scheme code from Rust
 
 The simplest way to run scheme code from Rust is to use the
-[`Environment::eval`](env::Environment::eval) function which evaluates a
+[`TopLevelEnvironment::eval`](env::TopLevelEnvironment::eval) function which evaluates a
 string and returns the evaluated scheme values. Before you can call `eval`,
-you need to create an [`Environment`](env::Environment) which defines the
+you need to create a [`TopLevelEnvironment`](env::TopLevelEnvironment) which defines the
 set of imports provided to the scheme code.
 
 ```rust
-# use scheme_rs::{runtime::Runtime, env::Environment};
+# use scheme_rs::{runtime::Runtime, env::TopLevelEnvironment};
 # let runtime = Runtime::new();
-let env = Environment::new_repl(&runtime);
+let env = TopLevelEnvironment::new_repl(&runtime);
 env.import("(library (rnrs))".parse().unwrap());
 ```
 
@@ -45,23 +45,22 @@ external packages. If you are running untrusted user code, be sure to pass
 false and think careful of the functions you provide.
 
 ```rust
-# use scheme_rs::{runtime::Runtime, env::Environment};
+# use scheme_rs::{runtime::Runtime, env::TopLevelEnvironment, proc::Procedure};
 # let runtime = Runtime::new();
-# let env = Environment::new_repl(&runtime);
+# let env = TopLevelEnvironment::new_repl(&runtime);
 # env.import("(library (rnrs))".parse().unwrap());
-let [factorial] = env.eval(
+let vals = env.eval(
     false,
-    r#"
+    "
     (define (fact n)
       (if (= n 1)
           1
           (* n (fact (- n 1)))))
-   fact
-   "#
+    fact
+    "
 )
-.unwrap()
-.try_into()
 .unwrap();
+let factorial = vals[0].cast_to_scheme_type::<Procedure>().unwrap();
 ```
 
 ## Procedures
@@ -74,23 +73,24 @@ automatically garbage collected and implement `Send` and `Sync` and are
 anywhere.
 
 ```rust
-# use scheme_rs::{runtime::Runtime, env::Environment, value::Value};
+# use scheme_rs::{runtime::Runtime, env::TopLevelEnvironment, value::Value, proc::Procedure};
 # let runtime = Runtime::new();
-# let env = Environment::new_repl(&runtime);
+# let env = TopLevelEnvironment::new_repl(&runtime);
 # env.import("(library (rnrs))".parse().unwrap());
 # let [factorial] = env.eval(
 #     false,
-#     r#"
+#     "
 #     (define (fact n)
 #       (if (= n 1)
 #           1
 #           (* n (fact (- n 1)))))
 #     fact
-#     "#
+#     "
 # )
 # .unwrap()
 # .try_into()
 # .unwrap();
+# let factorial = factorial.cast_to_scheme_type::<Procedure>().unwrap();
 let [result] = factorial
     .call(&[Value::from(5)])
     .unwrap()
@@ -109,9 +109,9 @@ automatically registered into a given library:
 
 ```rust
 # use scheme_rs::{
-# registry::bridge, value::Value, exceptions::Condition};
+# registry::bridge, value::Value, exceptions::Exception};
 #[bridge(name = "add-five", lib = "(add-five-lib)")]
-fn add_five(num: &Value) -> Result<Vec<Value>, Condition> {
+fn add_five(num: &Value) -> Result<Vec<Value>, Exception> {
     let num: usize = num.clone().try_into()?;
     Ok(vec![Value::from(num + 5)])
 }
@@ -121,25 +121,26 @@ Once you've defined a bridge function it can be imported and called from scheme:
 
 ```rust
 # use scheme_rs::{
-# registry::bridge, value::Value, exceptions::Condition, 
-# runtime::Runtime, env::Environment};
+# registry::bridge, value::Value, exceptions::Exception, 
+# runtime::Runtime, env::TopLevelEnvironment};
 # #[bridge(name = "add-five", lib = "(add-five-lib)")]
-# fn add_five(num: &Value) -> Result<Vec<Value>, Condition> {
+# fn add_five(num: &Value) -> Result<Vec<Value>, Exception> {
 #    let num: usize = num.clone().try_into()?;
 #    Ok(vec![Value::from(num + 5)])
 # }
 # fn main() {
 # let runtime = Runtime::new();
-# let env = Environment::new_repl(&runtime);
+# let env = TopLevelEnvironment::new_repl(&runtime);
 # env.import("(library (rnrs))".parse().unwrap());
-env.eval(
-     true,
-     r#"
-     (import (add-five-lib))
-     (add-five 12) ; => 17
-     "#
- )
- .unwrap();
+let val = env.eval(
+  true,
+  "
+  (import (add-five-lib))
+  (add-five 12)
+  "
+)
+.unwrap();
+assert_eq!(val[0].cast_to_scheme_type::<u64>().unwrap(), 17);
 # }
 ```
 

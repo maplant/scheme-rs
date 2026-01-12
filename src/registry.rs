@@ -1,14 +1,13 @@
 //! Global collection of libraries associated with a [`Runtime`]
 
 use crate::{
-    ast::{
-        DefinitionBody, ExportSet, ImportSet, LibraryName, LibrarySpec, SpecialKeyword, Version,
+    ast::{ImportSet, LibraryName, LibrarySpec, SpecialKeyword, Version},
+    env::{
+        Export, Import, LibraryState, TopLevelEnvironment, TopLevelEnvironmentInner, TopLevelKind,
     },
-    cps::Compile,
-    env::{EnvId, Environment, Global, Keyword},
     exceptions::{Exception, ImportError},
     gc::{Gc, Trace},
-    proc::{Application, BridgePtr, DynamicState, FuncDebugInfo, FuncPtr, Procedure},
+    proc::{BridgePtr, FuncPtr, ProcDebugInfo, Procedure},
     runtime::Runtime,
     symbols::Symbol,
     syntax::{Identifier, Syntax},
@@ -16,7 +15,7 @@ use crate::{
 };
 
 use std::{
-    collections::{HashMap, HashSet, hash_map::Entry},
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -114,9 +113,9 @@ inventory::collect!(BridgeFn);
 #[folder = "scheme"]
 pub struct Stdlib;
 
-#[derive(Trace, Default, Debug)]
+#[derive(Trace, Default)]
 pub(crate) struct RegistryInner {
-    libs: HashMap<Vec<Symbol>, Library>,
+    libs: HashMap<Vec<Symbol>, TopLevelEnvironment>,
     loading: HashSet<Vec<Symbol>>,
 }
 
@@ -136,7 +135,7 @@ impl RegistryInner {
 
         // Import the bridge functions:
         for bridge_fn in inventory::iter::<BridgeFn>() {
-            let debug_info = Arc::new(FuncDebugInfo::from_bridge_fn(
+            let debug_info = Arc::new(ProcDebugInfo::from_bridge_fn(
                 bridge_fn.name,
                 bridge_fn.debug_info,
             ));
@@ -200,9 +199,9 @@ impl RegistryInner {
                 .collect::<Vec<_>>();
             (
                 name.clone(),
-                Library(Gc::new(RwLock::new(LibraryInner {
+                TopLevelEnvironment(Gc::new(RwLock::new(TopLevelEnvironmentInner {
                     rt: rt.clone(),
-                    kind: LibraryKind::Libary {
+                    kind: TopLevelKind::Libary {
                         name: LibraryName {
                             version: Version::from([6]),
                             name,
@@ -250,9 +249,9 @@ impl RegistryInner {
                         )
                     })
                     .collect();
-                let lib_inner = LibraryInner {
+                let lib_inner = TopLevelEnvironmentInner {
                     rt: rt.clone(),
-                    kind: LibraryKind::Libary {
+                    kind: TopLevelKind::Libary {
                         name: LibraryName {
                             version: lib.version,
                             name: name.clone(),
@@ -266,7 +265,7 @@ impl RegistryInner {
                     special_keywords: HashMap::default(),
                     state: LibraryState::Invoked,
                 };
-                (name, Library(Gc::new(RwLock::new(lib_inner))))
+                (name, TopLevelEnvironment(Gc::new(RwLock::new(lib_inner))))
             })
             .chain(special_keyword_libs)
             .collect();
@@ -278,7 +277,7 @@ impl RegistryInner {
     }
 }
 
-#[derive(Trace, Clone, Debug)]
+#[derive(Trace, Clone)]
 pub struct Registry(pub(crate) Gc<RwLock<RegistryInner>>);
 
 impl Registry {
@@ -297,7 +296,7 @@ impl Registry {
     // TODO: This function is quite messy, so it would be nice to do a little
     // clean up on it.
     #[maybe_async]
-    fn load_lib(&self, rt: &Runtime, name: &[Symbol]) -> Result<Library, Exception> {
+    fn load_lib(&self, rt: &Runtime, name: &[Symbol]) -> Result<TopLevelEnvironment, Exception> {
         if let Some(lib) = self.0.read().libs.get(name) {
             return Ok(lib.clone());
         }
@@ -345,7 +344,11 @@ impl Registry {
                     _ => return Err(Exception::error("library is malformed")),
                 };
                 let spec = LibrarySpec::parse(form)?;
-                maybe_await!(Library::from_spec(rt, spec, PathBuf::from(file_name)))?
+                maybe_await!(TopLevelEnvironment::from_spec(
+                    rt,
+                    spec,
+                    PathBuf::from(file_name)
+                ))?
             }
         };
         let mut this_mut = self.0.write();
@@ -471,7 +474,7 @@ fn load_lib_from_dir(
     rt: &Runtime,
     path: &Path,
     path_suffix: &str,
-) -> Result<Option<Library>, Exception> {
+) -> Result<Option<TopLevelEnvironment>, Exception> {
     for ext in ["sls", "ss", "scm"] {
         let path = path.join(format!("{path_suffix}.{ext}"));
         if let Ok(false) = maybe_await!(try_exists(&path)) {
@@ -485,392 +488,10 @@ fn load_lib_from_dir(
             _ => return Err(Exception::error("library is malformed")),
         };
         let spec = LibrarySpec::parse(form)?;
-        return Ok(Some(maybe_await!(Library::from_spec(rt, spec, path))?));
+        return Ok(Some(maybe_await!(TopLevelEnvironment::from_spec(
+            rt, spec, path
+        ))?));
     }
 
     Ok(None)
-}
-
-#[derive(Trace, derive_more::Debug)]
-pub(crate) struct LibraryInner {
-    #[debug(skip)]
-    pub(crate) rt: Runtime,
-    kind: LibraryKind,
-    exports: HashMap<Identifier, Export>,
-    imports: HashMap<Identifier, Import>,
-    state: LibraryState,
-    vars: HashMap<Identifier, Gc<RwLock<Value>>>,
-    keywords: HashMap<Identifier, Keyword>,
-    special_keywords: HashMap<Identifier, SpecialKeyword>,
-}
-
-impl LibraryInner {
-    pub(crate) fn new(
-        rt: &Runtime,
-        kind: LibraryKind,
-        imports: HashMap<Identifier, Import>,
-        exports: HashMap<Identifier, Identifier>,
-        body: Syntax,
-    ) -> Self {
-        let exports = exports
-            .into_iter()
-            .map(|(name, rename)| {
-                let origin = imports.get(&name).map(|import| import.origin.clone());
-                (name, Export { rename, origin })
-            })
-            .collect();
-
-        Self {
-            rt: rt.clone(),
-            kind,
-            imports,
-            exports,
-            state: LibraryState::Unexpanded(body),
-            vars: HashMap::default(),
-            keywords: HashMap::default(),
-            special_keywords: HashMap::default(),
-        }
-    }
-}
-
-#[derive(Trace, Debug)]
-pub enum LibraryKind {
-    /// A Repl is a library that does not have a name.
-    Repl,
-    /// A library has a name and an (optional) path.
-    Libary {
-        name: LibraryName,
-        path: Option<PathBuf>,
-    },
-    /// A program has a path
-    Program { path: PathBuf },
-}
-
-#[derive(Clone, Trace, derive_more::Debug)]
-pub struct Import {
-    /// The original name of the identifier before being renamed.
-    pub(crate) rename: Identifier,
-    #[debug(skip)]
-    pub(crate) origin: Library,
-}
-
-#[derive(Trace, Clone, derive_more::Debug)]
-pub struct Export {
-    pub(crate) rename: Identifier,
-    #[debug(skip)]
-    pub(crate) origin: Option<Library>,
-}
-
-#[derive(Trace, Clone, Debug)]
-pub struct Library(pub(crate) Gc<RwLock<LibraryInner>>);
-
-impl PartialEq for Library {
-    fn eq(&self, rhs: &Self) -> bool {
-        Gc::ptr_eq(&self.0, &rhs.0)
-    }
-}
-
-impl Library {
-    pub fn new_repl(rt: &Runtime) -> Self {
-        let mut inner = LibraryInner::new(
-            rt,
-            LibraryKind::Repl,
-            HashMap::default(),
-            HashMap::default(),
-            Syntax::Null {
-                span: crate::syntax::Span::default(),
-            },
-        );
-        inner.state = LibraryState::Invoked;
-        Self(Gc::new(RwLock::new(inner)))
-    }
-
-    pub fn new_program(rt: &Runtime, path: &Path) -> Self {
-        // Programs are given the import keyword, free of charge.
-        let inner = LibraryInner {
-            rt: rt.clone(),
-            kind: LibraryKind::Program {
-                path: path.to_path_buf(),
-            },
-            exports: HashMap::default(),
-            imports: HashMap::default(),
-            state: LibraryState::Invoked,
-            vars: HashMap::default(),
-            keywords: HashMap::default(),
-            special_keywords: [(Identifier::new("import"), SpecialKeyword::Import)]
-                .into_iter()
-                .collect(),
-        };
-        Self(Gc::new(RwLock::new(inner)))
-    }
-
-    #[maybe_async]
-    pub fn from_spec(rt: &Runtime, spec: LibrarySpec, path: PathBuf) -> Result<Self, Exception> {
-        let registry = rt.get_registry();
-
-        // Import libraries:
-        let mut imports = HashMap::<Identifier, Import>::default();
-        let mut exports = HashMap::<Identifier, Identifier>::default();
-
-        for lib_import in spec.imports.import_sets.into_iter() {
-            for (ident, import) in maybe_await!(registry.import(rt, lib_import))? {
-                match imports.entry(ident) {
-                    Entry::Occupied(prev_imported)
-                        if prev_imported.get().origin != import.origin =>
-                    {
-                        return Err(error::name_bound_multiple_times(prev_imported.key().sym));
-                    }
-                    Entry::Vacant(slot) => {
-                        slot.insert(import);
-                    }
-                    _ => (),
-                }
-            }
-        }
-
-        for export in spec.exports.export_sets.into_iter() {
-            match export {
-                ExportSet::Internal { rename, ident } => {
-                    let rename = if let Some(rename) = rename {
-                        rename
-                    } else {
-                        ident.clone()
-                    };
-                    exports.insert(ident, rename);
-                }
-                ExportSet::External(lib_import) => {
-                    for lib_import in lib_import.import_sets.into_iter() {
-                        for (ident, import) in maybe_await!(registry.import(rt, lib_import))? {
-                            match imports.entry(ident.clone()) {
-                                Entry::Occupied(prev_imported)
-                                    if prev_imported.get().origin != import.origin =>
-                                {
-                                    return Err(error::name_bound_multiple_times(ident.sym));
-                                }
-                                Entry::Vacant(slot) => {
-                                    slot.insert(import);
-                                }
-                                _ => (),
-                            }
-                            exports.insert(ident.clone(), ident);
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(Self(Gc::new(RwLock::new(LibraryInner::new(
-            rt,
-            LibraryKind::Libary {
-                name: spec.name,
-                path: Some(path),
-            },
-            imports,
-            exports,
-            spec.body,
-        )))))
-    }
-
-    #[maybe_async]
-    pub(crate) fn import(&self, import_set: ImportSet) -> Result<(), Exception> {
-        let (rt, registry) = {
-            let this = self.0.read();
-            (this.rt.clone(), this.rt.get_registry())
-        };
-        let imports = maybe_await!(registry.import(&rt, import_set))?;
-        let mut this = self.0.write();
-        for (ident, import) in imports {
-            match this.imports.entry(ident) {
-                Entry::Occupied(prev_imported) if prev_imported.get().origin != import.origin => {
-                    return Err(error::name_bound_multiple_times(
-                        prev_imported.get().rename.sym,
-                    ));
-                }
-                Entry::Vacant(slot) => {
-                    slot.insert(import);
-                }
-                _ => (),
-            }
-        }
-        Ok(())
-    }
-
-    #[maybe_async]
-    pub(crate) fn maybe_expand(&self) -> Result<(), Exception> {
-        let body = {
-            let mut this = self.0.write();
-            if let LibraryState::Unexpanded(body) = &mut this.state {
-                // std::mem::take(body)
-                body.clone()
-            } else {
-                return Ok(());
-            }
-        };
-        let rt = { self.0.read().rt.clone() };
-        let env = Environment::from(self.clone());
-        let expanded = maybe_await!(DefinitionBody::parse_lib_body(&rt, &body, &env))?;
-        self.0.write().state = LibraryState::Expanded(expanded);
-        Ok(())
-    }
-
-    #[maybe_async]
-    pub(crate) fn maybe_invoke(&self) -> Result<(), Exception> {
-        maybe_await!(self.maybe_expand())?;
-        let defn_body = {
-            let mut this = self.0.write();
-            match std::mem::replace(&mut this.state, LibraryState::Invalid) {
-                LibraryState::Expanded(defn_body) => defn_body,
-                x => {
-                    this.state = x;
-                    return Ok(());
-                }
-            }
-        };
-        let compiled = defn_body.compile_top_level();
-        let rt = { self.0.read().rt.clone() };
-        let proc = maybe_await!(rt.compile_expr(compiled));
-        let _ =
-            maybe_await!(Application::new(proc, Vec::new()).eval(&mut DynamicState::default()))?;
-        self.0.write().state = LibraryState::Invoked;
-        Ok(())
-    }
-
-    pub fn is_repl(&self) -> bool {
-        matches!(self.0.read().kind, LibraryKind::Repl)
-    }
-
-    pub(crate) fn binding_env(&self, name: &Identifier) -> Option<EnvId> {
-        let this = self.0.read();
-        if this.vars.contains_key(name) || this.keywords.contains_key(name) {
-            return Some(EnvId::new(&self.0));
-        }
-        if let Some(Import { origin, rename }) = this.imports.get(name) {
-            origin.binding_env(rename)
-        /*
-        } else if self.is_repl() {
-            // If this is a repl, there's no other binding this could possibly
-            // refer to, and it may be bound in the future, so we say this is
-            // the current binding environment.
-            Some(EnvId::new(&self.0))
-        */
-        } else {
-            None
-        }
-    }
-
-    pub(crate) fn def_var(&self, name: Identifier, value: Value) -> Global {
-        let mut this = self.0.write();
-        let mutable = !this.exports.contains_key(&name);
-        match this.vars.entry(name.clone()) {
-            Entry::Occupied(occup) => Global::new(name, occup.get().clone(), mutable),
-            Entry::Vacant(vacant) => Global::new(
-                name,
-                vacant.insert(Gc::new(RwLock::new(value))).clone(),
-                mutable,
-            ),
-        }
-    }
-
-    pub(crate) fn def_keyword(&self, keyword: Identifier, mac: Keyword) {
-        let mut this = self.0.write();
-        this.keywords.insert(keyword, mac);
-    }
-
-    #[cfg(not(feature = "async"))]
-    pub(crate) fn fetch_var(&self, name: &Identifier) -> Result<Option<Global>, Exception> {
-        self.fetch_var_inner(name)
-    }
-
-    #[cfg(feature = "async")]
-    pub(crate) fn fetch_var<'a>(
-        &'a self,
-        name: &'a Identifier,
-    ) -> BoxFuture<'a, Result<Option<Global>, Exception>> {
-        Box::pin(self.fetch_var_inner(name))
-    }
-
-    #[maybe_async]
-    fn fetch_var_inner(&self, name: &Identifier) -> Result<Option<Global>, Exception> {
-        let Import { origin, rename } = {
-            // Check this library
-            let this = self.0.read();
-            if let Some(var) = this.vars.get(name) {
-                let var = var.clone();
-                // Fetching this every time is kind of slow.
-                let mutable = !this.exports.contains_key(name);
-                return Ok(Some(Global::new(name.clone(), var, mutable)));
-            }
-
-            // Check our imports
-            let Some(import) = this.imports.get(name) else {
-                return Ok(None);
-            };
-
-            import.clone()
-        };
-
-        maybe_await!(origin.maybe_invoke())?;
-        maybe_await!(origin.fetch_var(&rename))
-    }
-
-    #[cfg(not(feature = "async"))]
-    pub(crate) fn fetch_keyword(&self, keyword: &Identifier) -> Result<Option<Keyword>, Exception> {
-        self.fetch_keyword_inner(keyword)
-    }
-
-    #[cfg(feature = "async")]
-    pub(crate) fn fetch_keyword<'a>(
-        &'a self,
-        keyword: &'a Identifier,
-    ) -> BoxFuture<'a, Result<Option<Keyword>, Exception>> {
-        Box::pin(self.fetch_keyword_inner(keyword))
-    }
-
-    #[maybe_async]
-    fn fetch_keyword_inner(&self, keyword: &Identifier) -> Result<Option<Keyword>, Exception> {
-        let Import { origin, rename } = {
-            // Check this library
-            let this = self.0.read();
-            if let Some(key) = this.keywords.get(keyword) {
-                let key = key.clone();
-                return Ok(Some(key));
-            }
-
-            // Check our imports
-            let Some(import) = this.imports.get(keyword) else {
-                return Ok(None);
-            };
-
-            import.clone()
-        };
-
-        maybe_await!(origin.maybe_invoke())?;
-        maybe_await!(origin.fetch_keyword(&rename))
-    }
-
-    pub(crate) fn fetch_special_keyword(&self, keyword: &Identifier) -> Option<SpecialKeyword> {
-        // Check this library:
-        let this = self.0.read();
-        if let Some(special_keyword) = this.special_keywords.get(keyword) {
-            return Some(*special_keyword);
-        }
-
-        // Check our imports:
-        let Import { origin, rename } = this.imports.get(keyword)?;
-
-        let rename = rename.clone();
-        let import = origin.clone();
-        drop(this);
-        import.fetch_special_keyword(&rename)
-    }
-}
-
-// TODO: Use these states to detect circular dependencies when we do our DFS.
-// Or, alternatively, just handle circular dependencies like Guile does.
-#[derive(Trace, Debug)]
-pub enum LibraryState {
-    Invalid,
-    Unexpanded(Syntax),
-    Expanded(DefinitionBody),
-    Invoked,
 }

@@ -10,7 +10,7 @@ use std::{collections::HashSet, sync::Arc};
 
 use crate::{
     cps::Value as CpsValue,
-    proc::{ContinuationPtr, FuncDebugInfo, FuncPtr, Procedure},
+    proc::{ContinuationPtr, FuncPtr, ProcDebugInfo, Procedure},
     runtime::{DebugInfo, Runtime},
     value::{Cell, Value as SchemeValue},
 };
@@ -744,7 +744,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
 
         let make_proc = if bundle.args.continuation.is_some() {
             args.push(if let Some(ref loc) = bundle.loc {
-                let debug_info = Arc::new(FuncDebugInfo::new(
+                let debug_info = Arc::new(ProcDebugInfo::new(
                     bundle.val.name,
                     bundle.args.args.clone(),
                     loc.clone(),

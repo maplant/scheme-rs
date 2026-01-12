@@ -5,7 +5,6 @@ use parking_lot::RwLock;
 use std::{
     fmt,
     hash::{DefaultHasher, Hash, Hasher},
-    sync::Arc,
 };
 
 use crate::{
@@ -15,7 +14,7 @@ use crate::{
     registry::bridge,
     strings::WideString,
     symbols::Symbol,
-    value::{Expect1, UnpackedValue, Value, ValueType},
+    value::{Expect1, Value, ValueType},
 };
 
 #[derive(Clone, Trace)]
@@ -456,103 +455,6 @@ pub fn hashtable_hash_function(hashtable: &Value) -> Result<Vec<Value>, Exceptio
     let hashtable: HashTable = hashtable.clone().try_into()?;
     let hash_func = Value::from(hashtable.0.hash.clone());
     Ok(vec![hash_func])
-}
-
-impl Value {
-    /// Performs a hash suitable for use with eq? as an equivalance function
-    pub fn eq_hash<H: Hasher>(&self, state: &mut H) {
-        let unpacked = self.unpacked_ref();
-        std::mem::discriminant(&*unpacked).hash(state);
-        match &*unpacked {
-            UnpackedValue::Undefined => (),
-            UnpackedValue::Null => (),
-            UnpackedValue::Boolean(b) => b.hash(state),
-            UnpackedValue::Character(c) => c.hash(state),
-            UnpackedValue::Number(n) => Arc::as_ptr(n).hash(state),
-            UnpackedValue::String(s) => Arc::as_ptr(&s.0).hash(state),
-            UnpackedValue::Symbol(s) => s.hash(state),
-            UnpackedValue::ByteVector(v) => Arc::as_ptr(&v.0).hash(state),
-            UnpackedValue::Syntax(s) => Arc::as_ptr(s).hash(state),
-            UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
-            UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
-            UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
-            UnpackedValue::Pair(p) => Gc::as_ptr(&p.0).hash(state),
-            UnpackedValue::Vector(v) => Gc::as_ptr(&v.0).hash(state),
-            UnpackedValue::Port(p) => Arc::as_ptr(&p.0).hash(state),
-            UnpackedValue::HashTable(ht) => Gc::as_ptr(&ht.0).hash(state),
-            UnpackedValue::Cell(c) => c.0.read().eqv_hash(state),
-        }
-    }
-
-    /// Performs a hash suitable for use with eqv? as an equivalance function
-    pub fn eqv_hash<H: Hasher>(&self, state: &mut H) {
-        let unpacked = self.unpacked_ref();
-        std::mem::discriminant(&*unpacked).hash(state);
-        match &*unpacked {
-            UnpackedValue::Undefined => (),
-            UnpackedValue::Null => (),
-            UnpackedValue::Boolean(b) => b.hash(state),
-            UnpackedValue::Character(c) => c.hash(state),
-            UnpackedValue::Number(n) => n.as_ref().hash(state),
-            UnpackedValue::String(s) => Arc::as_ptr(&s.0).hash(state),
-            UnpackedValue::Symbol(s) => s.hash(state),
-            UnpackedValue::ByteVector(v) => Arc::as_ptr(&v.0).hash(state),
-            UnpackedValue::Syntax(s) => Arc::as_ptr(s).hash(state),
-            UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
-            UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
-            UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
-            UnpackedValue::Pair(p) => Gc::as_ptr(&p.0).hash(state),
-            UnpackedValue::Vector(v) => Gc::as_ptr(&v.0).hash(state),
-            UnpackedValue::Port(p) => Arc::as_ptr(&p.0).hash(state),
-            UnpackedValue::HashTable(ht) => Gc::as_ptr(&ht.0).hash(state),
-            UnpackedValue::Cell(c) => c.0.read().eqv_hash(state),
-        }
-    }
-
-    /// Performs a hash suitable for use with equal? as an equivalance function
-    pub fn equal_hash<H: Hasher>(&self, recursive: &mut IndexSet<Value>, state: &mut H) {
-        let unpacked = self.unpacked_ref();
-        std::mem::discriminant(&*unpacked).hash(state);
-
-        // I think this is fine, because types that would be recursive will
-        // write out at least two values here where we're only writing out one.
-        if let Some(index) = recursive.get_index_of(self) {
-            state.write_usize(index);
-            return;
-        }
-
-        match &*unpacked {
-            UnpackedValue::Undefined => (),
-            UnpackedValue::Null => (),
-            UnpackedValue::Boolean(b) => b.hash(state),
-            UnpackedValue::Character(c) => c.hash(state),
-            UnpackedValue::Number(n) => n.as_ref().hash(state),
-            UnpackedValue::String(s) => s.hash(state),
-            UnpackedValue::Symbol(s) => s.hash(state),
-            UnpackedValue::ByteVector(v) => v.hash(state),
-            UnpackedValue::Syntax(s) => Arc::as_ptr(s).hash(state),
-            UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
-            UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
-            UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
-            UnpackedValue::Pair(p) => {
-                recursive.insert(self.clone());
-                let (car, cdr) = p.clone().into();
-                car.equal_hash(recursive, state);
-                cdr.equal_hash(recursive, state);
-            }
-            UnpackedValue::Vector(v) => {
-                recursive.insert(self.clone());
-                let v_read = v.0.vec.read();
-                state.write_usize(v_read.len());
-                for val in v_read.iter() {
-                    val.equal_hash(recursive, state);
-                }
-            }
-            UnpackedValue::Port(p) => Arc::as_ptr(&p.0).hash(state),
-            UnpackedValue::HashTable(ht) => Gc::as_ptr(&ht.0).hash(state),
-            UnpackedValue::Cell(c) => c.0.read().eqv_hash(state),
-        }
-    }
 }
 
 #[bridge(name = "eq-hash", lib = "(rnrs hashtables builtins (6))")]

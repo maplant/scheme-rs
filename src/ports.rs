@@ -2057,6 +2057,7 @@ impl<T> IntoPortReqs for T where T: Send + Sized + 'static {}
 #[cfg(feature = "async")]
 impl<T> IntoPortReqs for T where T: Send + Sync + Sized + 'static {}
 
+/// A type that can be converted into a Port.
 pub trait IntoPort: IntoPortReqs {
     fn into_port(self) -> PortBox {
         Box::new(self)
@@ -2093,10 +2094,18 @@ impl IntoPort for Cursor<Vec<u8>> {
     }
 }
 
+/// A value that can handle input/output from the outside world.
+///
+/// Ports can be created from either a Rust source (i.e. a
+/// [`Reader`](std::io::Read), [`Writer`](std::io::Write), or both) or from
+/// Scheme directly.
+///
+/// For more information, see [the module documentation](scheme_rs::ports).
 #[derive(Trace, Clone)]
 pub struct Port(pub(crate) Arc<PortInner>);
 
 impl Port {
+    /// Create a new Port from a Rust source.
     pub fn new<D, P>(
         id: D,
         port: P,
@@ -2120,6 +2129,8 @@ impl Port {
         )
     }
 
+    /// Create a new Port from a Rust source and selectively disable/enable
+    /// various scheme functionality.
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_flags<D, P>(
         id: D,
@@ -2172,6 +2183,8 @@ impl Port {
         )))
     }
 
+    /// Create a new custom textual port from a set of procedures and a
+    /// [buffer mode](BufferMode).
     #[allow(clippy::too_many_arguments)]
     pub fn new_custom_textual(
         id: impl fmt::Display,
@@ -2193,6 +2206,7 @@ impl Port {
         )))
     }
 
+    /// Return the Id of the port.
     pub fn id(&self) -> &str {
         match &self.0.info {
             PortInfo::BinaryPort(BinaryPortInfo { id, .. }) => id.as_str(),
@@ -2200,6 +2214,7 @@ impl Port {
         }
     }
 
+    /// Returns the transcoder of the port.
     pub fn transcoder(&self) -> Option<Transcoder> {
         match self.0.info {
             PortInfo::BinaryPort(BinaryPortInfo { transcoder, .. }) => transcoder,
@@ -2207,6 +2222,7 @@ impl Port {
         }
     }
 
+    /// Returns the buffer mode of the port.
     pub fn buffer_mode(&self) -> BufferMode {
         match self.0.info {
             PortInfo::BinaryPort(BinaryPortInfo { buffer_mode, .. }) => buffer_mode,
@@ -2214,6 +2230,7 @@ impl Port {
         }
     }
 
+    /// Returns whether or not this port supports the `port-position` procedure.
     pub fn has_port_position(&self) -> bool {
         match &self.0.info {
             PortInfo::BinaryPort(BinaryPortInfo { get_pos, .. }) => get_pos.is_some(),
@@ -2221,6 +2238,8 @@ impl Port {
         }
     }
 
+    /// Returns whether or not this port supports the `set-port-position!`
+    /// procedure.
     pub fn has_set_port_position(&self) -> bool {
         match &self.0.info {
             PortInfo::BinaryPort(BinaryPortInfo { set_pos, .. }) => set_pos.is_some(),
@@ -2228,6 +2247,7 @@ impl Port {
         }
     }
 
+    /// Returns whether or not this port is a textual port.
     pub fn is_textual_port(&self) -> bool {
         matches!(
             self.0.info,
@@ -2238,6 +2258,7 @@ impl Port {
         )
     }
 
+    /// Returns whether or not this port supports receiving input.
     pub fn is_input_port(&self) -> bool {
         matches!(
             self.0.info,
@@ -2246,6 +2267,7 @@ impl Port {
         )
     }
 
+    /// Returns whether or not this port supports sending output.
     pub fn is_output_port(&self) -> bool {
         matches!(
             self.0.info,
@@ -2254,6 +2276,8 @@ impl Port {
         )
     }
 
+    /// Read a single byte from the port. Returns an exception if the port is
+    /// not a binary port.
     #[maybe_async]
     pub fn get_u8(&self) -> Result<Option<u8>, Exception> {
         #[cfg(not(feature = "async"))]
@@ -2271,6 +2295,8 @@ impl Port {
         }
     }
 
+    /// Lookahead one byte into the port. Does not advance the port's position.
+    /// Returns an exception if the port is not a binary port.
     #[maybe_async]
     pub fn lookahead_u8(&self) -> Result<Option<u8>, Exception> {
         #[cfg(not(feature = "async"))]
@@ -2283,6 +2309,8 @@ impl Port {
         maybe_await!(data.peekn_bytes(&self.0.info, 0))
     }
 
+    /// Read a single [`char`] from the port. Returns an exception if the port
+    /// is not a textual port.
     #[maybe_async]
     pub fn get_char(&self) -> Result<Option<char>, Exception> {
         #[cfg(not(feature = "async"))]
@@ -2299,6 +2327,8 @@ impl Port {
         }
     }
 
+    /// Lookahead one [`char`] into the port. Does not advance the port's
+    /// position. Returns an exception if the port is not a textual port.
     #[maybe_async]
     pub fn lookahead_char(&self) -> Result<Option<char>, Exception> {
         #[cfg(not(feature = "async"))]
@@ -2310,6 +2340,7 @@ impl Port {
         maybe_await!(data.peekn_chars(&self.0.info, 0))
     }
 
+    /// Read a line from the port, not including the newline character.
     #[maybe_async]
     pub fn get_line(&self) -> Result<Option<String>, Exception> {
         let mut out = String::new();
@@ -2323,6 +2354,7 @@ impl Port {
         }
     }
 
+    /// Read a string of `n` characters long.
     #[maybe_async]
     pub fn get_string_n(&self, n: usize) -> Result<Option<String>, Exception> {
         let mut out = String::with_capacity(n);
@@ -2336,6 +2368,8 @@ impl Port {
         Ok(Some(out))
     }
 
+    /// Read a single datum from the port and advance the position to right after
+    /// the datum.
     #[maybe_async]
     pub fn get_sexpr(&self, span: Span) -> Result<Option<(Syntax, Span)>, ParseSyntaxError> {
         #[cfg(not(feature = "async"))]
@@ -2352,6 +2386,7 @@ impl Port {
         Ok(sexpr_or_eof.map(|sexpr| (sexpr, ending_span)))
     }
 
+    /// Read all datums from the port until EOF.
     #[maybe_async]
     pub fn all_sexprs(&self, span: Span) -> Result<Syntax, ParseSyntaxError> {
         #[cfg(not(feature = "async"))]
@@ -2365,6 +2400,7 @@ impl Port {
         Ok(maybe_await!(parser.all_sexprs())?)
     }
 
+    /// Write a single byte to the port.
     #[maybe_async]
     pub fn put_u8(&self, byte: u8) -> Result<(), Exception> {
         #[cfg(not(feature = "async"))]
@@ -2378,6 +2414,7 @@ impl Port {
         maybe_await!(data.put_bytes(&self.0.info, &[byte]))
     }
 
+    /// Write a single character to the port.
     #[maybe_async]
     pub fn put_char(&self, chr: char) -> Result<(), Exception> {
         #[cfg(not(feature = "async"))]
@@ -2392,6 +2429,7 @@ impl Port {
         maybe_await!(data.put_str(&self.0.info, s))
     }
 
+    /// Write the contents of a str `s` to the port.
     #[maybe_async]
     pub fn put_str(&self, s: &str) -> Result<(), Exception> {
         #[cfg(not(feature = "async"))]
@@ -2403,6 +2441,7 @@ impl Port {
         maybe_await!(data.put_str(&self.0.info, s))
     }
 
+    /// Flush the contents of the port to the writer sink.
     #[maybe_async]
     pub fn flush(&self) -> Result<(), Exception> {
         #[cfg(not(feature = "async"))]
@@ -2414,6 +2453,8 @@ impl Port {
         maybe_await!(data.flush(&self.0.info))
     }
 
+    /// Return the position of the port, erroring if the operation is not
+    /// supported.
     #[maybe_async]
     pub fn get_pos(&self) -> Result<u64, Exception> {
         #[cfg(not(feature = "async"))]
@@ -2425,6 +2466,8 @@ impl Port {
         maybe_await!(data.get_pos(&self.0.info))
     }
 
+    /// Sets the position of the port, erroring if the operation is not
+    /// supported.
     #[maybe_async]
     pub fn set_pos(&self, pos: u64) -> Result<(), Exception> {
         #[cfg(not(feature = "async"))]

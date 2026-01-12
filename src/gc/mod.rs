@@ -5,7 +5,8 @@
 //! allocated as opposed to when the type is Dropped.
 //!
 //! `Gc<T>` does not use tracing garbage collection but instead uses a technique
-//! where garbage cycles are detected known as "cycle collection".
+//! where garbage cycles are detected known as "cycle collection". This is done
+//! in a separate thread and is concurrent to the running program.
 //!
 //! Cycle collection was chosen because it has similar characteristics to `Gc`,
 //! providing all of the semantics Scheme expects and also plays nicely as a
@@ -40,7 +41,7 @@ pub struct Gc<T: ?Sized> {
 
 #[allow(private_bounds)]
 impl<T: GcOrTrace + 'static> Gc<T> {
-    /// Allocate a new object on the heap.
+    /// Allocate a new object on the heap and track .
     pub fn new(data: T) -> Gc<T> {
         alloc_gc_object(data)
     }
@@ -77,6 +78,7 @@ impl<T: ?Sized> Gc<T> {
         }
     }
 
+    /// Determine if two Gc types share the same pointer (i.e. are equivalent).
     pub fn ptr_eq(lhs: &Self, rhs: &Self) -> bool {
         std::ptr::addr_eq(lhs.ptr.as_ptr(), rhs.ptr.as_ptr())
     }
@@ -144,6 +146,8 @@ impl<T: ?Sized> Gc<T> {
 }
 
 impl Gc<dyn Any + Send + Sync> {
+    /// Attempt to downcase a `Gc<dyn Any>` into `T`, returning Self on
+    /// failure.
     pub fn downcast<T: Any + Send + Sync>(self) -> Result<Gc<T>, Self> {
         if self.as_ref().is::<T>() {
             let this = ManuallyDrop::new(self);
@@ -262,12 +266,13 @@ pub(crate) struct GcInner<T: ?Sized> {
 unsafe impl<T: ?Sized + Send> Send for GcInner<T> {}
 unsafe impl<T: ?Sized + Sync> Sync for GcInner<T> {}
 
-/// A type that can be traced for garbage collection.
+/// A type that can be traced for garbage collection. Types that implement this
+/// trait can be converted into a [`Gc`] for automatic garbage collection.
 ///
 /// # Safety
 ///
-/// This trait should _not_ be manually implemented! Instead, use the `Trace`
-/// derive macro.
+/// This trait should _not_ be manually implemented! Instead, use the
+/// [`Trace`](scheme_rs_macros::Trace) derive macro.
 pub unsafe trait Trace: 'static {
     /// # Safety
     ///

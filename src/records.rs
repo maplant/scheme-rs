@@ -33,8 +33,9 @@
 //!
 //! ```rust
 //! # use std::sync::Arc;
-//! # use scheme_rs::{gc::Trace, records::{rtd, SchemeCompatible, RecordTypeDescriptor}};
-//! # #[derive(Trace)]
+//! # use scheme_rs::{gc::Trace, records::{rtd, SchemeCompatible, RecordTypeDescriptor},
+//! # exceptions::Exception };
+//! # #[derive(Debug, Trace)]
 //! # struct Enemy {
 //! #   pos_x: f64,
 //! #   pos_y: f64,
@@ -42,10 +43,25 @@
 //! # }
 //! impl SchemeCompatible for Enemy {
 //!     fn rtd() -> Arc<RecordTypeDescriptor> {
-//!         rtd!(name: "enemy", fields: [ "pos-x", "pos-y", mutable("health") ])
+//!         rtd!(
+//!             name: "enemy",
+//!             fields: [ "pos-x", "pos-y", mutable("health") ],
+//!             constructor: |pos_x, pos_y, health| {
+//!                 Ok(Enemy {
+//!                     pos_x: pos_x.try_to_scheme_type()?,
+//!                     pos_y: pos_y.try_to_scheme_type()?,
+//!                     health: health.try_to_scheme_type()?,
+//!                 })
+//!             }
+//!         )
 //!     }
 //! }
 //! ```
+//!
+//! It's important to note that you need to provide an argument in the
+//! constructor for every field specified in `fields` and every parent field;
+//! however, this does not preclude you from omitting fields that are present in
+//! your data type from the `fields` list.
 //!
 //! Technically, [`rtd`](SchemeCompatible::rtd) is the only required method to
 //! implement `SchemeCompatible`, but since we populated `fields` it will be
@@ -60,7 +76,7 @@
 //! ```rust
 //! # use std::sync::Arc;
 //! # use scheme_rs::{gc::Trace, value::Value, records::{rtd, SchemeCompatible, RecordTypeDescriptor}};
-//! # #[derive(Trace)]
+//! # #[derive(Debug, Trace)]
 //! # struct Enemy {
 //! #   pos_x: f64,
 //! #   pos_y: f64,
@@ -68,7 +84,7 @@
 //! # }
 //! impl SchemeCompatible for Enemy {
 //! #    fn rtd() -> Arc<RecordTypeDescriptor> {
-//! #        rtd!(name: "enemy", fields: [ "pos-x", "pos-y", mutable("health") ])
+//! #        rtd!(name: "enemy", sealed: true)
 //! #    }
 //!     fn get_field(&self, k: usize) -> Value {
 //!         match k {
@@ -104,7 +120,7 @@
 //! # }
 //! # impl SchemeCompatible for Enemy {
 //! #    fn rtd() -> Arc<RecordTypeDescriptor> {
-//! #        rtd!(name: "enemy")
+//! #        rtd!(name: "enemy", sealed: true)
 //! #    }
 //! # }
 //! #[derive(Debug, Trace)]
@@ -115,7 +131,21 @@
 //!
 //! impl SchemeCompatible for SpecialEnemy {
 //!     fn rtd() -> Arc<RecordTypeDescriptor> {
-//!         rtd!(name: "enemy", parent: Enemy, fields: ["special"])
+//!         rtd!(
+//!             name: "enemy",
+//!             parent: Enemy,
+//!             fields: ["special"],
+//!             constructor: |pos_x, pos_y, health, special| {
+//!                 Ok(SpecialEnemy {
+//!                     parent: Gc::new(Enemy {
+//!                         pos_x: pos_x.try_to_scheme_type()?,
+//!                         pos_y: pos_y.try_to_scheme_type()?,
+//!                         health: health.try_to_scheme_type()?,
+//!                     }),
+//!                     special: special.try_to_scheme_type()?,
+//!                 })
+//!             }
+//!         )
 //!     }
 //!
 //!     fn get_field(&self, _k: usize) -> Value {
@@ -175,6 +205,7 @@ pub struct RecordTypeDescriptor {
     /// from being "generative," i.e. unique upon each call to
     /// `define-record-type`.
     pub uid: Option<Symbol>,
+    /// Whether or not the type being described is a Rust type.
     pub rust_type: bool,
     /// The Rust parent of the record type, if it exists.
     pub rust_parent_constructor: Option<RustParentConstructor>,
@@ -221,6 +252,7 @@ impl fmt::Debug for RecordTypeDescriptor {
     }
 }
 
+/// Description of a Record field.
 #[derive(Trace, Clone)]
 pub enum Field {
     Immutable(Symbol),
@@ -263,8 +295,9 @@ impl fmt::Debug for Field {
     }
 }
 
+/*
 /// The record type descriptor for the "record type descriptor" type.
-pub static RECORD_TYPE_DESCRIPTOR_RTD: LazyLock<Arc<RecordTypeDescriptor>> = LazyLock::new(|| {
+static RECORD_TYPE_DESCRIPTOR_RTD: LazyLock<Arc<RecordTypeDescriptor>> = LazyLock::new(|| {
     Arc::new(RecordTypeDescriptor {
         name: Symbol::intern("rtd"),
         sealed: true,
@@ -277,11 +310,11 @@ pub static RECORD_TYPE_DESCRIPTOR_RTD: LazyLock<Arc<RecordTypeDescriptor>> = Laz
         fields: vec![],
     })
 });
+*/
 
 type NonGenerativeStore = LazyLock<Arc<Mutex<HashMap<Symbol, Arc<RecordTypeDescriptor>>>>>;
 
-pub static NONGENERATIVE: NonGenerativeStore =
-    LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
+static NONGENERATIVE: NonGenerativeStore = LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
 
 #[bridge(
     name = "make-record-type-descriptor",
@@ -483,7 +516,7 @@ pub fn record_constructor(
 
     let (protocols, rtds) = rcd_to_protocols_and_rtds(&rcd);
 
-    // See if there is a rust contrustor available
+    // See if there is a rust constructor available
     let rust_constructor = rtds
         .iter()
         .find(|rtd| rtd.rust_parent_constructor.is_some())
@@ -866,7 +899,7 @@ impl RustParentConstructor {
 
 type ParentConstructor = fn(&[Value]) -> Result<Gc<dyn SchemeCompatible>, Exception>;
 
-pub fn is_subtype_of(val: &Value, rt: &Value) -> Result<bool, Exception> {
+pub(crate) fn is_subtype_of(val: &Value, rt: &Value) -> Result<bool, Exception> {
     let UnpackedValue::Record(rec) = val.clone().unpack() else {
         return Ok(false);
     };

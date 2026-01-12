@@ -5,7 +5,7 @@ use crate::{
     lists::slice_to_list,
     ports::{IoError, IoReadError, IoWriteError},
     proc::{Application, DynStackElem, DynamicState, FuncPtr, Procedure, pop_dyn_stack},
-    records::{Record, RecordTypeDescriptor, SchemeCompatible, into_scheme_compatible, rtd},
+    records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
@@ -264,7 +264,7 @@ macro_rules! impl_into_condition_for {
 impl_into_condition_for!(Box<crate::num::ArithmeticError>);
 impl_into_condition_for!(std::num::TryFromIntError);
 
-#[derive(Copy, Clone, Default, Debug, Trace)]
+#[derive(Copy, Clone, Default, Trace)]
 pub struct SimpleCondition;
 
 impl SimpleCondition {
@@ -277,8 +277,14 @@ impl SchemeCompatible for SimpleCondition {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(
             name: "&condition",
-            constructor: |_| Ok(into_scheme_compatible(Gc::new(SimpleCondition)))
+            constructor: || Ok(SimpleCondition)
         )
+    }
+}
+
+impl fmt::Debug for SimpleCondition {
+    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Ok(())
     }
 }
 
@@ -746,6 +752,7 @@ pub fn simple_conditions(condition: &Value) -> Result<Vec<Value>, Exception> {
     )])
 }
 
+#[doc(hidden)]
 #[cps_bridge(
     def = "with-exception-handler handler thunk",
     lib = "(rnrs exceptions builtins (6))"
@@ -781,6 +788,7 @@ pub fn with_exception_handler(
     Ok(Application::new(thunk, vec![Value::from(k)]))
 }
 
+#[doc(hidden)]
 #[cps_bridge(def = "raise obj", lib = "(rnrs exceptions builtins (6))")]
 pub fn raise_builtin(
     runtime: &Runtime,
@@ -901,8 +909,9 @@ unsafe extern "C" fn reraise_exception(
     }
 }
 
-/// Raises an exception to the current exception handler and coninues with the
+/// Raises an exception to the current exception handler and continues with the
 /// value returned by the handler.
+#[doc(hidden)]
 #[cps_bridge(def = "raise-continuable obj", lib = "(rnrs exceptions builtins (6))")]
 pub fn raise_continuable(
     _runtime: &Runtime,

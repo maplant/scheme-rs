@@ -322,7 +322,7 @@ impl Syntax {
 
     /// Fully expand the outermost syntax object.
     #[maybe_async]
-    pub fn expand(mut self, env: &Environment) -> Result<FullyExpanded, Exception> {
+    pub(crate) fn expand(mut self, env: &Environment) -> Result<FullyExpanded, Exception> {
         let mut curr_env = env.clone();
         loop {
             match maybe_await!(self.expand_once(&curr_env)) {
@@ -448,7 +448,7 @@ impl fmt::Debug for Syntax {
     }
 }
 
-pub enum Expansion {
+pub(crate) enum Expansion {
     /// Syntax remained unchanged after expansion
     Unexpanded,
     /// Syntax was expanded, producing a new expansion context
@@ -464,7 +464,7 @@ impl Expansion {
     }
 }
 
-pub struct FullyExpanded {
+pub(crate) struct FullyExpanded {
     pub expansion_env: Environment,
     pub expanded: Syntax,
 }

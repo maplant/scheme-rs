@@ -29,7 +29,7 @@ pub struct SyntaxRule {
 
 impl SyntaxRule {
     #[maybe_async]
-    pub fn compile(
+    pub(crate) fn compile(
         ctxt: &ParseContext,
         keywords: &HashSet<Symbol>,
         pattern: &Syntax,
@@ -389,7 +389,7 @@ pub enum Template {
 }
 
 impl Template {
-    pub fn compile<'a>(
+    pub(crate) fn compile<'a>(
         expr: &'a Syntax,
         env: &Environment,
         expansions: &mut HashMap<Identifier, Local>,
@@ -441,7 +441,7 @@ impl Template {
         }
     }
 
-    pub fn compile_escaped<'a>(
+    pub(crate) fn compile_escaped<'a>(
         expr: &'a Syntax,
         env: &Environment,
         expansions: &mut HashMap<Identifier, Local>,

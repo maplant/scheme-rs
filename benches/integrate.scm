@@ -1,4 +1,6 @@
-(import (rnrs))
+(library (benches integrate)
+  (export run)
+  (import (rnrs))
 
 (define integrate-system
   (lambda (system-derivative initial-state h)
@@ -77,11 +79,13 @@
      '#(1 0)
      .01))
 
-(letrec ((loop
-          (lambda (s i)
-            (cond ((= i 0) (head s))
-                  (else
-                   #;(display (head s))
-                   #;(display "\n")
-                   (loop (tail s) (- i 1)))))))
-  (loop the-states 5))
+(define (run)
+  (letrec ((loop
+            (lambda (s i)
+              (cond ((= i 0) (head s))
+                    (else
+                     #;(display (head s))
+                     #;(display "\n")
+                     (loop (tail s) (- i 1)))))))
+    (loop the-states 5)))
+)

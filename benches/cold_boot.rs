@@ -1,10 +1,5 @@
-use std::path::Path;
-
 use criterion::*;
-use scheme_rs::{
-    ast::DefinitionBody, cps::Compile, env::Environment, registry::Library, runtime::Runtime,
-    syntax::Syntax,
-};
+use scheme_rs::{env::TopLevelEnvironment, runtime::Runtime};
 use scheme_rs_macros::{maybe_async, maybe_await};
 
 #[cfg(not(feature = "async"))]
@@ -25,12 +20,8 @@ fn cold_boot_benchmark(c: &mut Criterion) {
 #[maybe_async]
 fn run_bench() {
     let rt = Runtime::new();
-    let prog = Library::new_program(&rt, Path::new("in-line"));
-    let env = Environment::Top(prog);
-    let sexprs = Syntax::from_str("(import (rnrs base)) (abs -5)", None).unwrap();
-    let base = maybe_await!(DefinitionBody::parse_lib_body(&rt, &sexprs, &env,)).unwrap();
-    let compiled = base.compile_top_level();
-    maybe_await!(maybe_await!(rt.compile_expr(compiled)).call(&[])).unwrap();
+    let repl = TopLevelEnvironment::new_repl(&rt);
+    maybe_await!(repl.eval(true, "(import (rnrs base)) (abs -5)")).unwrap();
 }
 
 criterion_group!(benches, cold_boot_benchmark);

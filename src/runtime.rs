@@ -1,18 +1,18 @@
-//! scheme-rs runtime.
+//! Scheme-rs core runtime.
 
 use crate::{
     ast::DefinitionBody,
     cps::{Compile, Cps, codegen::RuntimeFunctionsBuilder},
-    env::{Environment, Global},
+    env::{Environment, Global, TopLevelEnvironment},
     exceptions::{Exception, raise},
     gc::{Gc, GcInner, Trace, init_gc},
     lists::{Pair, list_to_vec},
     num,
     ports::{BufferMode, Port, Transcoder},
     proc::{
-        Application, ContinuationPtr, DynamicState, FuncDebugInfo, FuncPtr, Procedure, UserPtr,
+        Application, ContinuationPtr, DynamicState, FuncPtr, ProcDebugInfo, Procedure, UserPtr,
     },
-    registry::{Library, Registry},
+    registry::Registry,
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax},
     value::{Cell, UnpackedValue, Value},
@@ -21,13 +21,24 @@ use parking_lot::RwLock;
 use scheme_rs_macros::{maybe_async, maybe_await, runtime_fn};
 use std::{collections::HashSet, mem::ManuallyDrop, path::Path, sync::Arc};
 
-/// Scheme-rs Runtime
+/// Scheme-rs core runtime
+///
+/// Practically, the runtime is the core entry point for running Scheme programs
+/// with scheme-rs. It initializes the garbage collector and JIT compiler tasks
+/// and creates a new library registry.
+///
+/// There is not much you can do with a Runtime beyond creating it and using it
+/// to [run programs](Runtime::run_programs), however a lot of functions require
+/// it as an arguments, such as [TopLevelEnvironment::new_repl].
+///
+/// Runtime is automatically reference counted, so if you have all of the
+/// procedures you need you can drop it without any issue.
 ///
 /// # Safety:
 ///
-/// The runtime contains the only live references to the LLVM Context and
-/// therefore modules and allocated functions in the form a Sender of compilation
-/// tasks.
+/// The runtime contains the only live references to the Cranelift Context and
+/// therefore modules and allocated functions in the form a Sender of
+/// compilation tasks.
 ///
 /// When that sender's ref count is zero, it will cause the receiver to fail and
 /// the compilation task will exit, allowing for a graceful shutdown.
@@ -56,6 +67,7 @@ impl Runtime {
         this
     }
 
+    /// Run a program at the given location and return the values.
     #[maybe_async]
     pub fn run_program(&self, path: &Path) -> Result<Vec<Value>, Exception> {
         #[cfg(not(feature = "async"))]
@@ -64,7 +76,7 @@ impl Runtime {
         #[cfg(feature = "tokio")]
         use tokio::fs::File;
 
-        let progm = Library::new_program(self, path);
+        let progm = TopLevelEnvironment::new_program(self, path);
         let env = Environment::Top(progm);
         let form = {
             let port = Port::new(
@@ -90,7 +102,7 @@ impl Runtime {
     }
 
     #[maybe_async]
-    pub fn compile_expr(&self, expr: Cps) -> Procedure {
+    pub(crate) fn compile_expr(&self, expr: Cps) -> Procedure {
         let (completion_tx, completion_rx) = completion();
         let task = CompilationTask {
             completion_tx,
@@ -167,19 +179,13 @@ impl RuntimeInner {
 }
 
 #[derive(Trace, Clone, Debug, Default)]
-pub struct DebugInfo {
-    /// Stored locations:
-    stored_spans: Vec<Arc<Span>>,
+pub(crate) struct DebugInfo {
     /// Stored user function debug information:
-    stored_func_info: Vec<Arc<FuncDebugInfo>>,
+    stored_func_info: Vec<Arc<ProcDebugInfo>>,
 }
 
 impl DebugInfo {
-    pub fn store_span(&mut self, span: Arc<Span>) {
-        self.stored_spans.push(span);
-    }
-
-    pub fn store_func_info(&mut self, debug_info: Arc<FuncDebugInfo>) {
+    pub fn store_func_info(&mut self, debug_info: Arc<ProcDebugInfo>) {
         self.stored_func_info.push(debug_info);
     }
 }
@@ -523,7 +529,7 @@ unsafe extern "C" fn make_user(
     num_envs: u32,
     num_required_args: u32,
     variadic: bool,
-    debug_info: *const FuncDebugInfo,
+    debug_info: *const ProcDebugInfo,
 ) -> *const () {
     unsafe {
         // Collect the environment:

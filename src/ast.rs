@@ -15,7 +15,6 @@ use crate::{
 };
 use either::Either;
 
-use derive_more::From;
 use scheme_rs_macros::{maybe_async, maybe_await};
 use std::{
     collections::{HashMap, HashSet},
@@ -820,7 +819,7 @@ impl Definition {
     }
 
     #[maybe_async]
-    pub fn parse(
+    pub(crate) fn parse(
         ctxt: &ParseContext,
         syn: &[Syntax],
         env: &Environment,
@@ -964,7 +963,11 @@ pub enum Expression {
 
 impl Expression {
     #[maybe_async]
-    pub fn parse(ctxt: &ParseContext, form: Syntax, env: &Environment) -> Result<Self, Exception> {
+    pub(crate) fn parse(
+        ctxt: &ParseContext,
+        form: Syntax,
+        env: &Environment,
+    ) -> Result<Self, Exception> {
         let FullyExpanded {
             expansion_env,
             expanded,
@@ -1636,7 +1639,7 @@ impl DefinitionBody {
     }
 
     #[maybe_async]
-    pub fn parse_lib_body(
+    pub(crate) fn parse_lib_body(
         runtime: &Runtime,
         form: &Syntax,
         env: &Environment,
@@ -1655,7 +1658,7 @@ impl DefinitionBody {
     }
 
     #[maybe_async]
-    pub fn parse(
+    pub(crate) fn parse(
         ctxt: &ParseContext,
         body: &[Syntax],
         env: &Environment,

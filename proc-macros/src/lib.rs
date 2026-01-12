@@ -798,7 +798,7 @@ struct Rtd {
     opaque: Option<Expr>,
     sealed: Option<LitBool>,
     uid: Option<LitStr>,
-    constructor: Option<Expr>,
+    constructor: Option<ExprClosure>,
     fields: Option<Vec<RtdField>>,
 }
 
@@ -810,7 +810,7 @@ impl Parse for Rtd {
         let mut sealed = None;
         let mut fields = None;
         let mut uid = None;
-        let mut constructor = None;
+        let mut constructor: Option<ExprClosure> = None;
         while !input.is_empty() {
             let keyword: Ident = input.parse()?;
             if keyword == "name" {
@@ -881,6 +881,17 @@ impl Parse for Rtd {
             ));
         }
 
+        /*
+        if let Some(constructor) = &constructor
+            && constructor.inputs.len() != fields.as_ref().map_or(0, Vec::len)
+        {
+            return Err(Error::new(
+                input.span(),
+                "constructor must have same number of arguments as there are fields",
+            ));
+        }
+        */
+
         Ok(Rtd {
             name,
             parent,
@@ -913,7 +924,7 @@ pub fn rtd(tokens: TokenStream) -> TokenStream {
         .collect::<Vec<_>>();
     let inherits = match parent {
         Some(parent) => quote!({
-            let parent = #parent.clone();
+            let parent = <#parent as ::scheme_rs::records::SchemeCompatible>::rtd();
             let mut inherits = parent.inherits.clone();
             inherits.insert(::by_address::ByAddress(parent));
             inherits
@@ -922,7 +933,18 @@ pub fn rtd(tokens: TokenStream) -> TokenStream {
     };
     let rust_parent_constructor = match constructor {
         Some(constructor) => {
-            quote!(Some(::scheme_rs::records::RustParentConstructor::new(#constructor)))
+            let num_inputs = constructor.inputs.len();
+            let inputs = 0..num_inputs;
+            let types = inputs.clone().map(|_| quote!(::scheme_rs::value::Value));
+            quote!(Some({
+                ::scheme_rs::records::RustParentConstructor::new(|vals| {
+                    if vals.len() != #num_inputs {
+                        return Err(::scheme_rs::exceptions::Exception::wrong_num_of_args(#num_inputs, vals.len()));
+                    }
+                    let constructor: fn(#(#types,)*) -> Result<_, ::scheme_rs::exceptions::Exception> = #constructor;
+                    Ok(::scheme_rs::records::into_scheme_compatible(::scheme_rs::gc::Gc::new((constructor)(#(vals[#inputs].clone(),)*)?)))
+                })
+            }))
         }
         None => quote!(None),
     };
@@ -1094,9 +1116,13 @@ pub fn define_condition_type(tokens: TokenStream) -> TokenStream {
 
     let constructor =  constructor.map_or_else(
         || quote! {
-            constructor: |_| Ok(::scheme_rs::records::into_scheme_compatible(Gc::new(#rust_name::default()))),
+            constructor: || Ok(#rust_name::default()),
         },
         |constructor| {
+            quote!(
+                constructor: #constructor,
+            )
+            /*
             let inputs = 0..constructor.inputs.len();
             let types = inputs.clone().map(|_| quote!(::scheme_rs::value::Value));
             quote!(
@@ -1105,6 +1131,7 @@ pub fn define_condition_type(tokens: TokenStream) -> TokenStream {
                     Ok(::scheme_rs::records::into_scheme_compatible(Gc::new((constructor)(#(vals[#inputs].clone(),)*)?)))
                 },
             )
+             */
         });
 
     let dbg = dbg.map(|dbg| {
@@ -1126,7 +1153,7 @@ pub fn define_condition_type(tokens: TokenStream) -> TokenStream {
             fn rtd() -> std::sync::Arc<::scheme_rs::records::RecordTypeDescriptor> {
                 ::scheme_rs::records::rtd!(
                     name: #scheme_name,
-                    parent: #parent::rtd(),
+                    parent: #parent,
                     fields: [#(#field_name_strs,)*],
                     #constructor
                 )
