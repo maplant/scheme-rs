@@ -1,7 +1,7 @@
 //! Growable mutable vectors.
 
 use crate::{
-    exceptions::Condition,
+    exceptions::Exception,
     gc::{Gc, Trace},
     lists::slice_to_list,
     num::Number,
@@ -10,15 +10,15 @@ use crate::{
 };
 use indexmap::IndexMap;
 use malachite::Integer;
-use parking_lot::RwLock;
+use parking_lot::{
+    MappedRwLockReadGuard, MappedRwLockWriteGuard, RwLock, RwLockReadGuard, RwLockWriteGuard,
+};
 use std::{clone::Clone, fmt, hash::Hash, ops::Range, sync::Arc};
 
 #[derive(Trace)]
 #[repr(align(16))]
 pub(crate) struct VectorInner<T: Trace> {
-    /// Inner vector
-    // TODO: Maybe make this a tokio RwLock for async, so that byte buffers can
-    // be passed around more easily?
+    /// Inner vector.
     pub(crate) vec: RwLock<Vec<T>>,
     /// Whether or not the vector is mutable
     pub(crate) mutable: bool,
@@ -34,6 +34,10 @@ impl Vector {
     }
 
     // TODO: Add more convenience functions here
+
+    pub fn to_list(&self) -> Value {
+        slice_to_list(&self.0.vec.read())
+    }
 }
 
 impl From<Vec<Value>> for Vector {
@@ -52,6 +56,34 @@ pub struct ByteVector(pub(crate) Arc<VectorInner<u8>>);
 impl ByteVector {
     pub fn new(vec: Vec<u8>) -> Self {
         Self::from(vec)
+    }
+
+    pub fn as_slice(&self) -> MappedRwLockReadGuard<'_, [u8]> {
+        RwLockReadGuard::map(self.0.vec.read(), |vec| vec.as_slice())
+    }
+
+    pub fn as_mut_slice(&self) -> MappedRwLockWriteGuard<'_, [u8]> {
+        RwLockWriteGuard::map(self.0.vec.write(), |vec| vec.as_mut_slice())
+    }
+
+    pub fn as_mut_vec(&self) -> RwLockWriteGuard<'_, Vec<u8>> {
+        self.0.vec.write()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.vec.read().len()
+    }
+
+    pub fn clear(&self) {
+        self.0.vec.write().clear();
+    }
+
+    pub fn get(&self, idx: usize) -> Option<u8> {
+        self.0.vec.read().get(idx).copied()
     }
 }
 
@@ -91,7 +123,7 @@ pub(crate) fn write_vec(
 }
 
 pub(crate) fn write_bytevec(v: &ByteVector, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
-    write!(f, "#u8(")?;
+    write!(f, "#vu8(")?;
 
     let bytes = v.0.vec.read();
     for (i, byte) in bytes.iter().enumerate() {
@@ -104,9 +136,9 @@ pub(crate) fn write_bytevec(v: &ByteVector, f: &mut fmt::Formatter<'_>) -> Resul
     write!(f, ")")
 }
 
-fn try_make_range(start: usize, end: usize) -> Result<Range<usize>, Condition> {
+fn try_make_range(start: usize, end: usize) -> Result<Range<usize>, Exception> {
     if end < start {
-        Err(Condition::error(format!(
+        Err(Exception::error(format!(
             "Range end {end} cannot be less than start {start}",
         )))
     } else {
@@ -115,13 +147,13 @@ fn try_make_range(start: usize, end: usize) -> Result<Range<usize>, Condition> {
 }
 
 trait Indexer {
-    type Collection: TryFrom<Value, Error = Condition>;
+    type Collection: TryFrom<Value, Error = Exception>;
 
     fn get_len(_: &Self::Collection) -> usize;
 
     fn get_range(_: &Self::Collection, _: Range<usize>) -> Self::Collection;
 
-    fn index(from: &Value, range: &[Value]) -> Result<Self::Collection, Condition> {
+    fn index(from: &Value, range: &[Value]) -> Result<Self::Collection, Exception> {
         let collection = Self::Collection::try_from(from.clone())?;
         let len = Self::get_len(&collection);
 
@@ -140,7 +172,7 @@ trait Indexer {
 
         let range = try_make_range(start, end)?;
         if range.end > len {
-            return Err(Condition::invalid_range(range, len));
+            return Err(Exception::invalid_range(range, len));
         }
 
         Ok(Self::get_range(&collection, range))
@@ -175,7 +207,7 @@ impl Indexer for VectorIndexer {
 }
 
 #[bridge(name = "make-vector", lib = "(rnrs base builtins (6))")]
-pub fn make_vector(n: &Value, with: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn make_vector(n: &Value, with: &[Value]) -> Result<Vec<Value>, Exception> {
     let n: Arc<Number> = n.clone().try_into()?;
     let n: usize = n.as_ref().try_into()?;
 
@@ -190,7 +222,7 @@ pub fn make_vector(n: &Value, with: &[Value]) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "vector", lib = "(rnrs base builtins (6))")]
-pub fn vector(args: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn vector(args: &[Value]) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(Vector(Gc::new(VectorInner {
         vec: RwLock::new(args.to_vec()),
         mutable: true,
@@ -198,7 +230,7 @@ pub fn vector(args: &[Value]) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "vector-ref", lib = "(rnrs base builtins (6))")]
-pub fn vector_ref(vec: &Value, index: &Value) -> Result<Vec<Value>, Condition> {
+pub fn vector_ref(vec: &Value, index: &Value) -> Result<Vec<Value>, Exception> {
     let vec: Vector = vec.clone().try_into()?;
     let index: usize = index.clone().try_into()?;
     let vec_read = vec.0.vec.read();
@@ -206,13 +238,13 @@ pub fn vector_ref(vec: &Value, index: &Value) -> Result<Vec<Value>, Condition> {
     Ok(vec![
         vec_read
             .get(index)
-            .ok_or_else(|| Condition::invalid_index(index, vec_read.len()))?
+            .ok_or_else(|| Exception::invalid_index(index, vec_read.len()))?
             .clone(),
     ])
 }
 
 #[bridge(name = "vector-length", lib = "(rnrs base builtins (6))")]
-pub fn vector_len(vec: &Value) -> Result<Vec<Value>, Condition> {
+pub fn vector_len(vec: &Value) -> Result<Vec<Value>, Exception> {
     let vec: Vector = vec.clone().try_into()?;
     let len = vec.0.vec.read().len();
 
@@ -220,7 +252,7 @@ pub fn vector_len(vec: &Value) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "bytevector-length", lib = "(rnrs base builtins (6))")]
-pub fn bytevector_len(vec: &Value) -> Result<Vec<Value>, Condition> {
+pub fn bytevector_len(vec: &Value) -> Result<Vec<Value>, Exception> {
     let vec: ByteVector = vec.clone().try_into()?;
     let len = vec.0.vec.read().len();
 
@@ -231,11 +263,11 @@ pub fn bytevector_len(vec: &Value) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "vector-set!", lib = "(rnrs base builtins (6))")]
-pub fn vector_set_bang(vec: &Value, index: &Value, with: &Value) -> Result<Vec<Value>, Condition> {
+pub fn vector_set_bang(vec: &Value, index: &Value, with: &Value) -> Result<Vec<Value>, Exception> {
     let vec: Vector = vec.clone().try_into()?;
 
     if !vec.0.mutable {
-        return Err(Condition::error("vector is immutable"));
+        return Err(Exception::error("vector is immutable"));
     }
 
     let mut vec_write = vec.0.vec.write();
@@ -244,20 +276,20 @@ pub fn vector_set_bang(vec: &Value, index: &Value, with: &Value) -> Result<Vec<V
 
     *vec_write
         .get_mut(index)
-        .ok_or_else(|| Condition::invalid_index(index, vec_len))? = with.clone();
+        .ok_or_else(|| Exception::invalid_index(index, vec_len))? = with.clone();
 
     Ok(vec![])
 }
 
 #[bridge(name = "vector->list", lib = "(rnrs base builtins (6))")]
-pub fn vector_to_list(from: &Value, range: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn vector_to_list(from: &Value, range: &[Value]) -> Result<Vec<Value>, Exception> {
     let vec = VectorIndexer::index(from, range)?;
     let vec_read = vec.0.vec.read();
     Ok(vec![slice_to_list(&vec_read)])
 }
 
 #[bridge(name = "vector->string", lib = "(rnrs base builtins (6))")]
-pub fn vector_to_string(from: &Value, range: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn vector_to_string(from: &Value, range: &[Value]) -> Result<Vec<Value>, Exception> {
     let vec = VectorIndexer::index(from, range)?;
     let vec_read = vec.0.vec.read();
     Ok(vec![Value::from(
@@ -270,7 +302,7 @@ pub fn vector_to_string(from: &Value, range: &[Value]) -> Result<Vec<Value>, Con
 }
 
 #[bridge(name = "vector-copy", lib = "(rnrs base builtins (6))")]
-pub fn vector_copy(from: &Value, range: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn vector_copy(from: &Value, range: &[Value]) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(VectorIndexer::index(from, range)?)])
 }
 
@@ -280,20 +312,20 @@ pub fn vector_copy_to(
     at: &Value,
     from: &Value,
     range: &[Value],
-) -> Result<Vec<Value>, Condition> {
+) -> Result<Vec<Value>, Exception> {
     let to: Vector = to.clone().try_into()?;
     let mut to = to.0.vec.write();
 
     let at: usize = at.clone().try_into()?;
 
     if at >= to.len() {
-        return Err(Condition::invalid_index(at, to.len()));
+        return Err(Exception::invalid_index(at, to.len()));
     }
 
     let copies = VectorIndexer::index(from, range)?;
     let copies = copies.0.vec.read();
     if copies.len() + at >= to.len() {
-        return Err(Condition::invalid_range(at..at + copies.len(), to.len()));
+        return Err(Exception::invalid_range(at..at + copies.len(), to.len()));
     }
 
     copies
@@ -310,9 +342,9 @@ pub fn vector_copy_to(
 }
 
 #[bridge(name = "vector-append", lib = "(rnrs base builtins (6))")]
-pub fn vector_append(args: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn vector_append(args: &[Value]) -> Result<Vec<Value>, Exception> {
     if args.is_empty() {
-        return Err(Condition::wrong_num_of_var_args(1..usize::MAX, 0));
+        return Err(Exception::wrong_num_of_var_args(1..usize::MAX, 0));
     }
 
     Ok(vec![Value::from(
@@ -322,7 +354,7 @@ pub fn vector_append(args: &[Value]) -> Result<Vec<Value>, Condition> {
                 let vec_read = vec.0.vec.read();
                 Ok(vec_read.clone())
             })
-            .collect::<Result<Vec<_>, Condition>>()?
+            .collect::<Result<Vec<_>, Exception>>()?
             .into_iter()
             .flatten()
             .collect::<Vec<_>>(),
@@ -335,7 +367,7 @@ pub fn vector_fill(
     with: &Value,
     start: &Value,
     end: &[Value],
-) -> Result<Vec<Value>, Condition> {
+) -> Result<Vec<Value>, Exception> {
     let vector: Vector = vector.clone().try_into()?;
     let mut vector = vector.0.vec.write();
 
@@ -347,7 +379,7 @@ pub fn vector_fill(
 
     let range = try_make_range(start, end)?;
     if range.end > vector.len() {
-        return Err(Condition::invalid_range(range, vector.len()));
+        return Err(Exception::invalid_range(range, vector.len()));
     }
 
     range.for_each(|i| {

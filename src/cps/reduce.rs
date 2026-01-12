@@ -47,10 +47,7 @@ impl Cps {
                 let is_recursive = body.uses(uses_cache).contains_key(&val);
                 let uses = cexp.uses(uses_cache).get(&val).copied().unwrap_or(0);
 
-                // TODO: When we get more list primops, allow for variadic substitutions
-                if
-                /* !args.variadic && */
-                !is_recursive && uses == 1 {
+                if !is_recursive && uses == 1 {
                     let reduced = cexp.reduce_function(val, &args, &body, uses_cache);
                     if reduced {
                         // We can probably do better than just destroying the
@@ -98,7 +95,7 @@ impl Cps {
                 }
                 return reduced;
             }
-            Cps::App(Value::Var(Var::Local(operator)), applied, _) if *operator == func => {
+            Cps::App(Value::Var(Var::Local(operator)), applied) if *operator == func => {
                 if args.variadic {
                     let (req, var) = applied.split_at(args.num_required());
                     let var_args = Local::gensym();
@@ -112,11 +109,15 @@ impl Cps {
                             req.iter().cloned().chain(Some(Value::from(var_args))),
                         )),
                     )
-                } else {
+                } else if args.num_required() == applied.len() {
                     substitute(func_body.clone(), args, applied.iter().cloned())
+                } else {
+                    // It's an error if the number of arguments don't match but
+                    // defer until evaluation to raise it.
+                    return false;
                 }
             }
-            Cps::App(_, _, _) | Cps::Forward(_, _) | Cps::Halt(_) => return false,
+            Cps::App(_, _) | Cps::Halt(_) => return false,
         };
         *self = new;
         true

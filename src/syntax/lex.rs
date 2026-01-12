@@ -9,20 +9,21 @@ use unicode_categories::UnicodeCategories;
 use futures::future::BoxFuture;
 
 use crate::{
+    exceptions::Exception,
     num,
-    ports::{PortData, PortInfo, ReadError},
+    ports::{PortData, PortInfo},
 };
 
 pub struct Lexer<'a> {
     port_data: &'a mut PortData,
-    port_info: PortInfo,
+    port_info: &'a PortInfo,
     pos: usize,
     buff: Vec<char>,
     curr_span: Span,
 }
 
 impl<'a> Lexer<'a> {
-    pub(crate) fn new(port_data: &'a mut PortData, port_info: PortInfo, span: Span) -> Self {
+    pub(crate) fn new(port_data: &'a mut PortData, port_info: &'a PortInfo, span: Span) -> Self {
         Self {
             port_data,
             port_info,
@@ -42,17 +43,17 @@ impl<'a> Lexer<'a> {
     }
 
     #[maybe_async]
-    fn peek(&mut self) -> Result<Option<char>, ReadError> {
+    fn peek(&mut self) -> Result<Option<char>, Exception> {
         if self.buff.len() > self.pos {
             return Ok(Some(self.buff[self.pos]));
         }
         while self.buff.len() < self.pos {
-            let Some(chr) = maybe_await!(self.port_data.read_char(&self.port_info))? else {
+            let Some(chr) = maybe_await!(self.port_data.read_char(self.port_info))? else {
                 return Ok(None);
             };
             self.buff.push(chr);
         }
-        maybe_await!(self.port_data.peekn_chars(&self.port_info, 0))
+        maybe_await!(self.port_data.peekn_chars(self.port_info, 0))
     }
 
     fn skip(&mut self) {
@@ -60,7 +61,7 @@ impl<'a> Lexer<'a> {
     }
 
     #[maybe_async]
-    fn take(&mut self) -> Result<Option<char>, ReadError> {
+    fn take(&mut self) -> Result<Option<char>, Exception> {
         let Some(chr) = maybe_await!(self.peek())? else {
             return Ok(None);
         };
@@ -69,12 +70,12 @@ impl<'a> Lexer<'a> {
     }
 
     #[maybe_async]
-    fn match_char(&mut self, chr: char) -> Result<bool, ReadError> {
+    fn match_char(&mut self, chr: char) -> Result<bool, Exception> {
         Ok(maybe_await!(self.match_pred(|peek| peek == chr))?.is_some())
     }
 
     #[maybe_async]
-    fn match_pred(&mut self, pred: impl FnOnce(char) -> bool) -> Result<Option<char>, ReadError> {
+    fn match_pred(&mut self, pred: impl FnOnce(char) -> bool) -> Result<Option<char>, Exception> {
         let chr = maybe_await!(self.peek())?;
         if let Some(chr) = chr
             && pred(chr)
@@ -93,7 +94,7 @@ impl<'a> Lexer<'a> {
     }
 
     #[maybe_async]
-    fn match_tag(&mut self, tag: &str) -> Result<bool, ReadError> {
+    fn match_tag(&mut self, tag: &str) -> Result<bool, Exception> {
         let pos = self.pos;
         for chr in tag.chars() {
             if !maybe_await!(self.match_char(chr))? {
@@ -107,12 +108,12 @@ impl<'a> Lexer<'a> {
     }
 
     #[maybe_async]
-    fn consume_chars(&mut self) -> Result<(), ReadError> {
+    fn consume_chars(&mut self) -> Result<(), Exception> {
         // Consume all the characters we need to
         if self.pos > self.buff.len() {
             maybe_await!(
                 self.port_data
-                    .consume_chars(&self.port_info, self.pos - self.buff.len())
+                    .consume_chars(self.port_info, self.pos - self.buff.len())
             )?;
         }
         self.pos = 0;
@@ -160,7 +161,7 @@ impl<'a> Lexer<'a> {
                     Lexeme::Boolean(true)
                 }
                 '#' if maybe_await!(self.match_tag("("))? => Lexeme::HashParen,
-                '#' if maybe_await!(self.match_tag("u8("))? => Lexeme::Vu8Paren,
+                '#' if maybe_await!(self.match_tag("vu8("))? => Lexeme::Vu8Paren,
                 '#' if maybe_await!(self.match_tag("'"))? => Lexeme::HashQuote,
                 '#' if maybe_await!(self.match_tag("`"))? => Lexeme::HashBackquote,
                 '#' if maybe_await!(self.match_tag(",@"))? => Lexeme::HashCommaAt,
@@ -189,13 +190,15 @@ impl<'a> Lexer<'a> {
     }
 
     #[maybe_async]
-    fn interlexeme_space(&mut self) -> Result<(), ReadError> {
+    fn interlexeme_space(&mut self) -> Result<(), Exception> {
         loop {
             if maybe_await!(self.match_char(';'))? {
                 maybe_await!(self.comment())?;
             } else if maybe_await!(self.match_tag("#|"))? {
                 maybe_await!(self.nested_comment())?;
-            } else if maybe_await!(self.match_pred(is_whitespace))?.is_none() {
+            } else if !maybe_await!(self.match_tag("#!r6rs"))?
+                && maybe_await!(self.match_pred(is_whitespace))?.is_none()
+            {
                 break;
             }
         }
@@ -203,23 +206,23 @@ impl<'a> Lexer<'a> {
     }
 
     #[maybe_async]
-    fn comment(&mut self) -> Result<(), ReadError> {
+    fn comment(&mut self) -> Result<(), Exception> {
         while maybe_await!(self.match_pred(|chr| chr != '\n'))?.is_some() {}
         Ok(())
     }
 
     #[cfg(feature = "async")]
-    fn nested_comment(&mut self) -> BoxFuture<'_, Result<(), ReadError>> {
+    fn nested_comment(&mut self) -> BoxFuture<'_, Result<(), Exception>> {
         Box::pin(self.nested_comment_inner())
     }
 
     #[cfg(not(feature = "async"))]
-    fn nested_comment(&mut self) -> Result<(), ReadError> {
+    fn nested_comment(&mut self) -> Result<(), Exception> {
         self.nested_comment_inner()
     }
 
     #[maybe_async]
-    fn nested_comment_inner(&mut self) -> Result<(), ReadError> {
+    fn nested_comment_inner(&mut self) -> Result<(), Exception> {
         while !maybe_await!(self.match_tag("|#"))? {
             if maybe_await!(self.match_tag("#|"))? {
                 maybe_await!(self.nested_comment())?;
@@ -238,18 +241,24 @@ impl<'a> Lexer<'a> {
             Character::Escaped(EscapedCharacter::Backspace)
         } else if maybe_await!(self.match_tag("delete"))? {
             Character::Escaped(EscapedCharacter::Delete)
-        } else if maybe_await!(self.match_tag("escape"))? {
+        } else if maybe_await!(self.match_tag("esc"))? {
             Character::Escaped(EscapedCharacter::Escape)
-        } else if maybe_await!(self.match_tag("newline"))? {
+        } else if maybe_await!(self.match_tag("newline"))?
+            || maybe_await!(self.match_tag("linefeed"))?
+        {
             Character::Escaped(EscapedCharacter::Newline)
-        } else if maybe_await!(self.match_tag("null"))? {
-            Character::Escaped(EscapedCharacter::Null)
+        } else if maybe_await!(self.match_tag("nul"))? {
+            Character::Escaped(EscapedCharacter::Nul)
         } else if maybe_await!(self.match_tag("return"))? {
             Character::Escaped(EscapedCharacter::Return)
         } else if maybe_await!(self.match_tag("space"))? {
             Character::Escaped(EscapedCharacter::Space)
         } else if maybe_await!(self.match_tag("tab"))? {
             Character::Escaped(EscapedCharacter::Tab)
+        } else if maybe_await!(self.match_tag("vtab"))? {
+            Character::Escaped(EscapedCharacter::VTab)
+        } else if maybe_await!(self.match_tag("page"))? {
+            Character::Escaped(EscapedCharacter::Page)
         } else if maybe_await!(self.match_char('x'))? {
             if is_delimiter(maybe_await!(self.peek())?.ok_or(LexerError::UnexpectedEof)?) {
                 Character::Literal('x')
@@ -275,7 +284,7 @@ impl<'a> Lexer<'a> {
     }
 
     #[maybe_async]
-    fn number(&mut self) -> Result<Option<Number>, ReadError> {
+    fn number(&mut self) -> Result<Option<Number>, Exception> {
         let saved_pos = self.pos;
 
         let (radix, exactness) = maybe_await!(self.radix_and_exactness())?;
@@ -342,7 +351,7 @@ impl<'a> Lexer<'a> {
     }
 
     #[maybe_async]
-    fn part(&mut self, radix: u32) -> Result<Option<Part>, ReadError> {
+    fn part(&mut self, radix: u32) -> Result<Option<Part>, Exception> {
         let neg = !maybe_await!(self.match_char('+'))? && maybe_await!(self.match_char('-'))?;
         let mut mantissa_width = None;
 
@@ -401,7 +410,7 @@ impl<'a> Lexer<'a> {
     }
 
     #[maybe_async]
-    fn exactness(&mut self) -> Result<Option<Exactness>, ReadError> {
+    fn exactness(&mut self) -> Result<Option<Exactness>, Exception> {
         Ok(
             if maybe_await!(self.match_tag("#i"))? || maybe_await!(self.match_tag("#I"))? {
                 Some(Exactness::Inexact)
@@ -414,7 +423,7 @@ impl<'a> Lexer<'a> {
     }
 
     #[maybe_async]
-    fn radix(&mut self) -> Result<Option<u32>, ReadError> {
+    fn radix(&mut self) -> Result<Option<u32>, Exception> {
         Ok(
             if maybe_await!(self.match_tag("#b"))? || maybe_await!(self.match_tag("#B"))? {
                 Some(2)
@@ -431,7 +440,7 @@ impl<'a> Lexer<'a> {
     }
 
     #[maybe_async]
-    fn radix_and_exactness(&mut self) -> Result<(Option<u32>, Option<Exactness>), ReadError> {
+    fn radix_and_exactness(&mut self) -> Result<(Option<u32>, Option<Exactness>), Exception> {
         let exactness = maybe_await!(self.exactness())?;
         let radix = maybe_await!(self.radix())?;
         if exactness.is_some() {
@@ -442,7 +451,7 @@ impl<'a> Lexer<'a> {
     }
 
     #[maybe_async]
-    fn suffix(&mut self) -> Result<Option<isize>, ReadError> {
+    fn suffix(&mut self) -> Result<Option<isize>, Exception> {
         let pos = self.pos;
         if maybe_await!(
             self.match_pred(|chr| matches!(chr.to_ascii_lowercase(), 'e' | 's' | 'f' | 'd' | 'l'))
@@ -473,11 +482,16 @@ impl<'a> Lexer<'a> {
         while let Some(chr) = maybe_await!(self.match_pred(|chr| chr != '"'))? {
             if chr == '\\' {
                 let escaped = match maybe_await!(self.take())?.ok_or(LexerError::UnexpectedEof)? {
-                    'x' => todo!(),
+                    'x' => {
+                        let escaped = maybe_await!(self.inline_hex_escape())?;
+                        output.push_str(&escaped);
+                        continue;
+                    }
                     'a' => '\u{07}',
                     'b' => '\u{08}',
                     't' => '\t',
                     'n' => '\n',
+                    'r' => '\r',
                     'v' => '\u{0B}',
                     'f' => '\u{0C}',
                     '"' => '"',
@@ -564,6 +578,7 @@ impl<'a> Lexer<'a> {
         if !buff.is_empty() {
             escaped.push(u8::from_str_radix(&buff, 16).unwrap() as char);
         }
+        maybe_await!(self.take())?;
         Ok(escaped)
     }
 }
@@ -574,11 +589,11 @@ pub enum LexerError {
     InvalidCharacterInHexEscape { chr: char, span: Span },
     UnexpectedCharacter { chr: char, span: Span },
     BadEscapeCharacter { chr: char, span: Span },
-    ReadError(ReadError),
+    ReadError(Exception),
 }
 
-impl From<ReadError> for LexerError {
-    fn from(error: ReadError) -> Self {
+impl From<Exception> for LexerError {
+    fn from(error: Exception) -> Self {
         Self::ReadError(error)
     }
 }
@@ -826,30 +841,34 @@ pub enum Character {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EscapedCharacter {
+    Nul,
     Alarm,
     Backspace,
-    Delete,
-    Escape,
-    Newline,
-    Null,
-    Return,
-    Space,
     Tab,
+    Newline,
+    VTab,
+    Page,
+    Return,
+    Escape,
+    Space,
+    Delete,
 }
 
 impl From<EscapedCharacter> for char {
     fn from(c: EscapedCharacter) -> char {
         // from r7rs 6.6
         match c {
+            EscapedCharacter::Nul => '\u{0000}',
             EscapedCharacter::Alarm => '\u{0007}',
             EscapedCharacter::Backspace => '\u{0008}',
-            EscapedCharacter::Delete => '\u{007F}',
-            EscapedCharacter::Escape => '\u{001B}',
-            EscapedCharacter::Newline => '\u{000A}',
-            EscapedCharacter::Null => '\u{0000}',
-            EscapedCharacter::Return => '\u{000D}',
-            EscapedCharacter::Space => ' ',
             EscapedCharacter::Tab => '\u{0009}',
+            EscapedCharacter::Newline => '\u{000A}',
+            EscapedCharacter::VTab => '\u{000B}',
+            EscapedCharacter::Page => '\u{000C}',
+            EscapedCharacter::Return => '\u{000D}',
+            EscapedCharacter::Escape => '\u{001B}',
+            EscapedCharacter::Space => ' ',
+            EscapedCharacter::Delete => '\u{007F}',
         }
     }
 }

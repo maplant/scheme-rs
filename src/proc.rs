@@ -2,11 +2,11 @@
 
 use crate::{
     env::Local,
-    exceptions::{Condition, Exception, Frame, raise},
+    exceptions::{Exception, raise},
     gc::{Gc, GcInner, Trace},
     lists::{self, Pair, list_to_vec},
     num::Number,
-    ports::Port,
+    ports::{BufferMode, Port, Transcoder},
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::BridgeFnDebugInfo,
     runtime::{Runtime, RuntimeInner},
@@ -18,6 +18,7 @@ use crate::{
 use parking_lot::RwLock;
 use scheme_rs_macros::{cps_bridge, maybe_async, maybe_await};
 use std::{
+    collections::HashMap,
     fmt,
     sync::{
         Arc, OnceLock,
@@ -30,7 +31,7 @@ pub(crate) type ContinuationPtr = unsafe extern "C" fn(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
-    dyn_stack: *mut DynStack,
+    dyn_state: *mut DynamicState,
 ) -> *mut Application;
 
 /// A function pointer to a generated user function.
@@ -38,7 +39,7 @@ pub(crate) type UserPtr = unsafe extern "C" fn(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
-    dyn_stack: *mut DynStack,
+    dyn_state: *mut DynamicState,
     k: Value,
 ) -> *mut Application;
 
@@ -49,7 +50,7 @@ pub type BridgePtr = for<'a> fn(
     // TODO: Make this a Vec
     args: &'a [Value],
     rest_args: &'a [Value],
-    dyn_stack: &mut DynStack,
+    dyn_state: &mut DynamicState,
     k: Value,
 ) -> Application;
 
@@ -60,7 +61,7 @@ pub type AsyncBridgePtr = for<'a> fn(
     env: &'a [Value],
     args: &'a [Value],
     rest_args: &'a [Value],
-    dyn_stack: &'a mut DynStack,
+    dyn_state: &'a mut DynamicState,
     k: Value,
 ) -> futures::future::BoxFuture<'a, Application>;
 
@@ -80,6 +81,25 @@ pub(crate) enum FuncPtr {
         barrier_id: usize,
         k: ContinuationPtr,
     },
+}
+
+impl From<BridgePtr> for FuncPtr {
+    fn from(ptr: BridgePtr) -> Self {
+        Self::Bridge(ptr)
+    }
+}
+
+#[cfg(feature = "async")]
+impl From<AsyncBridgePtr> for FuncPtr {
+    fn from(ptr: AsyncBridgePtr) -> Self {
+        Self::AsyncBridge(ptr)
+    }
+}
+
+impl From<UserPtr> for FuncPtr {
+    fn from(ptr: UserPtr) -> Self {
+        Self::User(ptr)
+    }
 }
 
 enum JitFuncPtr {
@@ -141,6 +161,7 @@ impl ProcedureInner {
     pub(crate) fn prepare_args(
         &self,
         mut args: Vec<Value>,
+        dyn_state: &mut DynamicState,
     ) -> Result<(Vec<Value>, Option<Value>), Application> {
         // Extract the continuation, if it is required
         let cont = (!self.is_continuation()).then(|| args.pop().unwrap());
@@ -149,14 +170,16 @@ impl ProcedureInner {
         if args.len() < self.num_required_args {
             return Err(raise(
                 self.runtime.clone(),
-                Condition::wrong_num_of_args(self.num_required_args, args.len()).into(),
+                Exception::wrong_num_of_args(self.num_required_args, args.len()).into(),
+                dyn_state,
             ));
         }
 
         if !self.variadic && args.len() > self.num_required_args {
             return Err(raise(
                 self.runtime.clone(),
-                Condition::wrong_num_of_args(self.num_required_args, args.len()).into(),
+                Exception::wrong_num_of_args(self.num_required_args, args.len()).into(),
+                dyn_state,
             ));
         }
 
@@ -168,7 +191,7 @@ impl ProcedureInner {
         &self,
         func: AsyncBridgePtr,
         args: &[Value],
-        dyn_stack: &mut DynStack,
+        dyn_state: &mut DynamicState,
         k: Value,
     ) -> Application {
         let (args, rest_args) = if self.variadic {
@@ -177,14 +200,14 @@ impl ProcedureInner {
             (args, &[] as &[Value])
         };
 
-        (func)(&self.runtime, &self.env, args, rest_args, dyn_stack, k).await
+        (func)(&self.runtime, &self.env, args, rest_args, dyn_state, k).await
     }
 
     fn apply_sync_bridge(
         &self,
         func: BridgePtr,
         args: &[Value],
-        dyn_stack: &mut DynStack,
+        dyn_state: &mut DynamicState,
         k: Value,
     ) -> Application {
         let (args, rest_args) = if self.variadic {
@@ -193,14 +216,14 @@ impl ProcedureInner {
             (args, &[] as &[Value])
         };
 
-        (func)(&self.runtime, &self.env, args, rest_args, dyn_stack, k)
+        (func)(&self.runtime, &self.env, args, rest_args, dyn_state, k)
     }
 
     fn apply_jit(
         &self,
         func: JitFuncPtr,
         mut args: Vec<Value>,
-        dyn_stack: &mut DynStack,
+        dyn_state: &mut DynamicState,
         k: Option<Value>,
     ) -> Application {
         if self.variadic {
@@ -218,7 +241,7 @@ impl ProcedureInner {
                     Gc::as_ptr(&self.runtime.0),
                     self.env.as_ptr(),
                     args.as_ptr(),
-                    dyn_stack as *mut DynStack,
+                    dyn_state as *mut DynamicState,
                 )
             },
             JitFuncPtr::User(sync_fn) => unsafe {
@@ -226,7 +249,7 @@ impl ProcedureInner {
                     Gc::as_ptr(&self.runtime.0),
                     self.env.as_ptr(),
                     args.as_ptr(),
-                    dyn_stack as *mut DynStack,
+                    dyn_state as *mut DynamicState,
                     Value::from_raw(Value::as_raw(k.as_ref().unwrap())),
                 )
             },
@@ -236,73 +259,78 @@ impl ProcedureInner {
     }
 
     #[maybe_async]
-    pub fn apply(&self, args: Vec<Value>, dyn_stack: &mut DynStack) -> Application {
-        let (args, k) = match self.prepare_args(args) {
+    pub fn apply(&self, args: Vec<Value>, dyn_state: &mut DynamicState) -> Application {
+        let (args, k) = match self.prepare_args(args, dyn_state) {
             Ok(args) => args,
             Err(raised) => return raised,
         };
 
         match self.func {
             FuncPtr::Bridge(sbridge) => {
-                self.apply_sync_bridge(sbridge, &args, dyn_stack, k.unwrap())
+                self.apply_sync_bridge(sbridge, &args, dyn_state, k.unwrap())
             }
             #[cfg(feature = "async")]
             FuncPtr::AsyncBridge(abridge) => {
-                self.apply_async_bridge(abridge, &args, dyn_stack, k.unwrap())
+                self.apply_async_bridge(abridge, &args, dyn_state, k.unwrap())
                     .await
             }
-            FuncPtr::User(user) => self.apply_jit(JitFuncPtr::User(user), args, dyn_stack, k),
+            FuncPtr::User(user) => self.apply_jit(JitFuncPtr::User(user), args, dyn_state, k),
             FuncPtr::Continuation(k) => {
-                self.apply_jit(JitFuncPtr::Continuation(k), args, dyn_stack, None)
+                dyn_state.pop_marks();
+                self.apply_jit(JitFuncPtr::Continuation(k), args, dyn_state, None)
             }
             FuncPtr::PromptBarrier { barrier_id: id, k } => {
-                match dyn_stack.pop() {
+                dyn_state.pop_marks();
+                match dyn_state.pop_dyn_stack() {
                     Some(DynStackElem::PromptBarrier(PromptBarrier {
                         barrier_id,
                         replaced_k,
                     })) if barrier_id == id => {
-                        return Application::new(replaced_k, args, None);
+                        return Application::new(replaced_k, args);
                     }
-                    Some(other) => dyn_stack.push(other),
+                    Some(other) => dyn_state.push_dyn_stack(other),
                     _ => (),
                 }
-                self.apply_jit(JitFuncPtr::Continuation(k), args, dyn_stack, None)
+                self.apply_jit(JitFuncPtr::Continuation(k), args, dyn_state, None)
             }
         }
     }
 
     #[cfg(feature = "async")]
     /// Attempt to call the function, and throw an error if is async
-    pub fn apply_sync(&self, args: Vec<Value>, dyn_stack: &mut DynStack) -> Application {
-        let (args, k) = match self.prepare_args(args) {
+    pub fn apply_sync(&self, args: Vec<Value>, dyn_state: &mut DynamicState) -> Application {
+        let (args, k) = match self.prepare_args(args, dyn_state) {
             Ok(args) => args,
             Err(raised) => return raised,
         };
 
         match self.func {
             FuncPtr::Bridge(sbridge) => {
-                self.apply_sync_bridge(sbridge, &args, dyn_stack, k.unwrap())
+                self.apply_sync_bridge(sbridge, &args, dyn_state, k.unwrap())
             }
             FuncPtr::AsyncBridge(_) => raise(
                 self.runtime.clone(),
-                Condition::error("attempt to apply async function in a sync-only context").into(),
+                Exception::error("attempt to apply async function in a sync-only context").into(),
+                dyn_state,
             ),
-            FuncPtr::User(user) => self.apply_jit(JitFuncPtr::User(user), args, dyn_stack, k),
+            FuncPtr::User(user) => self.apply_jit(JitFuncPtr::User(user), args, dyn_state, k),
             FuncPtr::Continuation(k) => {
-                self.apply_jit(JitFuncPtr::Continuation(k), args, dyn_stack, None)
+                dyn_state.pop_marks();
+                self.apply_jit(JitFuncPtr::Continuation(k), args, dyn_state, None)
             }
             FuncPtr::PromptBarrier { barrier_id: id, k } => {
-                match dyn_stack.pop() {
+                dyn_state.pop_marks();
+                match dyn_state.pop_dyn_stack() {
                     Some(DynStackElem::PromptBarrier(PromptBarrier {
                         barrier_id,
                         replaced_k,
                     })) if barrier_id == id => {
-                        return Application::new(replaced_k, args, None);
+                        return Application::new(replaced_k, args);
                     }
-                    Some(other) => dyn_stack.push(other),
+                    Some(other) => dyn_state.push_dyn_stack(other),
                     _ => (),
                 }
-                self.apply_jit(JitFuncPtr::Continuation(k), args, dyn_stack, None)
+                self.apply_jit(JitFuncPtr::Continuation(k), args, dyn_state, None)
             }
         }
     }
@@ -315,7 +343,7 @@ impl fmt::Debug for ProcedureInner {
         }
 
         let Some(ref debug_info) = self.debug_info else {
-            write!(f, "(unknown-function")?;
+            write!(f, "(<lambda>")?;
             for i in 0..self.num_required_args {
                 write!(f, " ${i}")?;
             }
@@ -349,7 +377,20 @@ impl fmt::Debug for ProcedureInner {
 pub struct Procedure(pub(crate) Gc<ProcedureInner>);
 
 impl Procedure {
-    pub(crate) fn new(
+    #[allow(private_bounds)]
+    /// Creates a new procedure. `func` must be a [`BridgePtr`] or an
+    /// `AsyncBridgePtr` if `async` is enabled.
+    pub fn new(
+        runtime: Runtime,
+        env: Vec<Value>,
+        func: impl Into<FuncPtr>,
+        num_required_args: usize,
+        variadic: bool,
+    ) -> Self {
+        Self::with_debug_info(runtime, env, func.into(), num_required_args, variadic, None)
+    }
+
+    pub(crate) fn with_debug_info(
         runtime: Runtime,
         env: Vec<Value>,
         func: FuncPtr,
@@ -376,9 +417,13 @@ impl Procedure {
         (self.0.num_required_args, self.0.variadic)
     }
 
+    pub fn get_debug_info(&self) -> Option<Arc<FuncDebugInfo>> {
+        self.0.debug_info.clone()
+    }
+
     /// # Safety
     /// `args` must be a valid pointer and contain num_required_args + variadic entries.
-    unsafe fn collect_args(&self, args: *const Value) -> Vec<Value> {
+    pub(crate) unsafe fn collect_args(&self, args: *const Value) -> Vec<Value> {
         // I don't really like this, but what are you gonna do?
         let (num_required_args, variadic) = self.get_formals();
 
@@ -402,6 +447,10 @@ impl Procedure {
         self.0.is_variable_transformer
     }
 
+    pub fn is_continuation(&self) -> bool {
+        matches!(self.0.func, FuncPtr::Continuation(_))
+    }
+
     /// Applies `args` to the procedure and returns the values it evaluates to.
     #[maybe_async]
     pub fn call(&self, args: &[Value]) -> Result<Vec<Value>, Exception> {
@@ -409,7 +458,7 @@ impl Procedure {
 
         args.push(halt_continuation(self.get_runtime()));
 
-        maybe_await!(Application::new(self.clone(), args, None,).eval(&mut DynStack::default()))
+        maybe_await!(Application::new(self.clone(), args).eval(&mut DynamicState::default()))
     }
 
     #[cfg(feature = "async")]
@@ -418,7 +467,7 @@ impl Procedure {
 
         args.push(halt_continuation(self.get_runtime()));
 
-        Application::new(self.clone(), args, None).eval_sync(&mut DynStack::default())
+        Application::new(self.clone(), args).eval_sync(&mut DynamicState::default())
     }
 }
 
@@ -430,7 +479,7 @@ pub fn halt_continuation(runtime: Runtime) -> Value {
         _runtime: *mut GcInner<RwLock<RuntimeInner>>,
         _env: *const Value,
         args: *const Value,
-        _dyn_stack: *mut DynStack,
+        _dyn_state: *mut DynamicState,
     ) -> *mut Application {
         unsafe { crate::runtime::halt(Value::into_raw(args.read())) }
     }
@@ -473,17 +522,13 @@ pub struct Application {
     pub op: OpType,
     /// The arguments being applied to the operator.
     pub args: Vec<Value>,
-    /// The call site of this application, if it exists.
-    pub call_site: Option<Arc<Span>>,
 }
 
 impl Application {
-    pub fn new(op: Procedure, args: Vec<Value>, call_site: Option<Arc<Span>>) -> Self {
+    pub fn new(op: Procedure, args: Vec<Value>) -> Self {
         Self {
-            // We really gotta figure out how to deal with this better
             op: OpType::Proc(op),
             args,
-            call_site,
         }
     }
 
@@ -491,7 +536,6 @@ impl Application {
         Self {
             op: OpType::HaltOk,
             args,
-            call_site: None,
         }
     }
 
@@ -499,87 +543,37 @@ impl Application {
         Self {
             op: OpType::HaltErr,
             args: vec![arg],
-            call_site: None,
         }
     }
 
     /// Evaluate the application - and all subsequent application - until all that
     /// remains are values. This is the main trampoline of the evaluation engine.
     #[maybe_async]
-    pub fn eval(mut self, dyn_stack: &mut DynStack) -> Result<Vec<Value>, Exception> {
-        let mut stack_trace = StackTraceCollector::new();
-
+    pub fn eval(mut self, dyn_state: &mut DynamicState) -> Result<Vec<Value>, Exception> {
         loop {
             let op = match self.op {
                 OpType::Proc(proc) => proc,
                 OpType::HaltOk => return Ok(self.args),
                 OpType::HaltErr => {
-                    return Err(Exception::new(
-                        stack_trace.into_frames(),
-                        self.args.pop().unwrap(),
-                    ));
+                    return Err(Exception(self.args.pop().unwrap()));
                 }
             };
-            stack_trace.collect_application(op.0.debug_info.clone(), self.call_site);
-            self = maybe_await!(op.0.apply(self.args, dyn_stack));
+            self = maybe_await!(op.0.apply(self.args, dyn_state));
         }
     }
 
     #[cfg(feature = "async")]
     /// Just like [eval] but throws an error if we encounter an async function.
-    pub fn eval_sync(mut self, dyn_stack: &mut DynStack) -> Result<Vec<Value>, Exception> {
-        let mut stack_trace = StackTraceCollector::new();
-
+    pub fn eval_sync(mut self, dyn_state: &mut DynamicState) -> Result<Vec<Value>, Exception> {
         loop {
             let op = match self.op {
                 OpType::Proc(proc) => proc,
                 OpType::HaltOk => return Ok(self.args),
                 OpType::HaltErr => {
-                    return Err(Exception::new(
-                        stack_trace.into_frames(),
-                        self.args.pop().unwrap(),
-                    ));
+                    return Err(Exception(self.args.pop().unwrap()));
                 }
             };
-            stack_trace.collect_application(op.0.debug_info.clone(), self.call_site);
-            self = op.0.apply_sync(self.args, dyn_stack);
-        }
-    }
-}
-
-#[derive(Default)]
-struct StackTraceCollector {
-    stack_trace: Vec<StackTrace>,
-}
-
-impl StackTraceCollector {
-    fn new() -> Self {
-        Self::default()
-    }
-
-    fn into_frames(self) -> Vec<Frame> {
-        self.stack_trace
-            .into_iter()
-            .map(|trace| Frame::new(trace.debug_info.name, trace.call_site))
-            .collect()
-    }
-
-    fn collect_application(
-        &mut self,
-        debug_info: Option<Arc<FuncDebugInfo>>,
-        call_site: Option<Arc<Span>>,
-    ) {
-        if let Some(debug_info) = debug_info {
-            // This is a user func, and therefore we should push to the
-            // current stack trace.
-            self.stack_trace.push(StackTrace {
-                debug_info,
-                call_site,
-            });
-        } else {
-            // If this is not user func, we are returning from one via a
-            // continuation and should pop the stack frame:
-            self.stack_trace.pop();
+            self = op.0.apply_sync(self.args, dyn_state);
         }
     }
 }
@@ -587,17 +581,11 @@ impl StackTraceCollector {
 #[derive(Debug)]
 pub struct FuncDebugInfo {
     /// The name of the function.
-    name: Symbol,
+    pub name: Symbol,
     /// Named arguments for the function.
-    args: Vec<Local>,
+    pub args: Vec<Local>,
     /// Location of the function definition
-    location: Span,
-}
-
-#[derive(Debug)]
-struct StackTrace {
-    debug_info: Arc<FuncDebugInfo>,
-    call_site: Option<Arc<Span>>,
+    pub location: Span,
 }
 
 impl FuncDebugInfo {
@@ -633,32 +621,91 @@ pub fn apply(
     _env: &[Value],
     args: &[Value],
     rest_args: &[Value],
-    _dyn_stack: &mut DynStack,
+    _dyn_state: &mut DynamicState,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     if rest_args.is_empty() {
-        return Err(Condition::wrong_num_of_args(2, args.len()));
+        return Err(Exception::wrong_num_of_args(2, args.len()));
     }
     let op: Procedure = args[0].clone().try_into()?;
     let (last, args) = rest_args.split_last().unwrap();
     let mut args = args.to_vec();
     list_to_vec(last, &mut args);
     args.push(k);
-    Ok(Application::new(op.clone(), args, None))
+    Ok(Application::new(op.clone(), args))
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 //
-// Dynamic stack
+// Dynamic state
 //
 
-/// A dynamic stack, loosely modeled after Guile's
-#[derive(Clone, Default, Debug, Trace)]
-pub struct DynStack {
+/// The dynamic state of the running program, including winders, exception
+/// handlers, and continuation marks.
+#[derive(Clone, Debug, Trace)]
+pub struct DynamicState {
     dyn_stack: Vec<DynStackElem>,
+    cont_marks: Vec<HashMap<Symbol, Value>>,
 }
 
-impl DynStack {
+impl DynamicState {
+    pub fn new() -> Self {
+        Self {
+            dyn_stack: Vec::new(),
+            // Procedures returned by the JIT compiler are delimited
+            // continuations (of sorts), and therefore we need to preallocate
+            // the initial marks for them since there's no mechanism to allocate
+            // for them when they're run.
+            cont_marks: vec![HashMap::new()],
+        }
+    }
+
+    /// This is the only method you can use to create continuations, in order to
+    /// ensure that a continuation isn't allocated without a corresponding push
+    /// to cont_marks
+    pub(crate) fn new_k(
+        &mut self,
+        runtime: Runtime,
+        env: Vec<Value>,
+        k: ContinuationPtr,
+        num_required_args: usize,
+        variadic: bool,
+    ) -> Procedure {
+        self.push_marks();
+        Procedure::with_debug_info(
+            runtime,
+            env,
+            FuncPtr::Continuation(k),
+            num_required_args,
+            variadic,
+            None,
+        )
+    }
+
+    pub(crate) fn push_marks(&mut self) {
+        self.cont_marks.push(HashMap::new());
+    }
+
+    pub(crate) fn pop_marks(&mut self) {
+        self.cont_marks.pop();
+    }
+
+    pub(crate) fn current_marks(&self, tag: Symbol) -> Vec<Value> {
+        self.cont_marks
+            .iter()
+            .rev()
+            .flat_map(|marks| marks.get(&tag).cloned())
+            .collect()
+    }
+
+    pub(crate) fn set_continuation_mark(&mut self, tag: Symbol, val: Value) {
+        self.cont_marks.last_mut().unwrap().insert(tag, val);
+    }
+
+    // TODO: We should certainly try to optimize these functions. Linear
+    // searching isn't _great_, although in practice I can't imagine this stack
+    // will ever get very large.
+
     pub fn current_exception_handler(&self) -> Option<Procedure> {
         self.dyn_stack.iter().rev().find_map(|elem| match elem {
             DynStackElem::ExceptionHandler(proc) => Some(proc.clone()),
@@ -666,78 +713,130 @@ impl DynStack {
         })
     }
 
-    pub fn current_output_port(&self) -> Option<Port> {
-        self.dyn_stack.iter().rev().find_map(|elem| match elem {
-            DynStackElem::CurrentOutputPort(port) => Some(port.clone()),
-            _ => None,
-        })
+    pub fn current_input_port(&self) -> Port {
+        self.dyn_stack
+            .iter()
+            .rev()
+            .find_map(|elem| match elem {
+                DynStackElem::CurrentInputPort(port) => Some(port.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                Port::new(
+                    "<stdin>",
+                    #[cfg(not(feature = "async"))]
+                    std::io::stdin(),
+                    #[cfg(feature = "tokio")]
+                    tokio::io::stdin(),
+                    BufferMode::Line,
+                    Some(Transcoder::native()),
+                )
+            })
     }
 
-    pub fn current_input_port(&self) -> Option<Port> {
-        self.dyn_stack.iter().rev().find_map(|elem| match elem {
-            DynStackElem::CurrentInputPort(port) => Some(port.clone()),
-            _ => None,
-        })
+    pub fn current_output_port(&self) -> Port {
+        self.dyn_stack
+            .iter()
+            .rev()
+            .find_map(|elem| match elem {
+                DynStackElem::CurrentOutputPort(port) => Some(port.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                Port::new(
+                    "<stdout>",
+                    #[cfg(not(feature = "async"))]
+                    std::io::stdout(),
+                    #[cfg(feature = "tokio")]
+                    tokio::io::stdout(),
+                    // TODO: Probably should change this to line, but that
+                    // doesn't play nicely with rustyline
+                    BufferMode::None,
+                    Some(Transcoder::native()),
+                )
+            })
     }
 
-    pub fn push(&mut self, elem: DynStackElem) {
+    pub(crate) fn push_dyn_stack(&mut self, elem: DynStackElem) {
         self.dyn_stack.push(elem);
     }
 
-    pub fn pop(&mut self) -> Option<DynStackElem> {
+    pub(crate) fn pop_dyn_stack(&mut self) -> Option<DynStackElem> {
         self.dyn_stack.pop()
     }
 
-    pub fn get(&self, idx: usize) -> Option<&DynStackElem> {
+    pub(crate) fn dyn_stack_get(&self, idx: usize) -> Option<&DynStackElem> {
         self.dyn_stack.get(idx)
     }
 
-    pub fn last(&self) -> Option<&DynStackElem> {
+    pub(crate) fn dyn_stack_last(&self) -> Option<&DynStackElem> {
         self.dyn_stack.last()
     }
 
-    pub fn len(&self) -> usize {
+    pub(crate) fn dyn_stack_len(&self) -> usize {
         self.dyn_stack.len()
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn dyn_stack_is_empty(&self) -> bool {
         self.dyn_stack.is_empty()
     }
 }
 
-impl SchemeCompatible for DynStack {
+impl Default for DynamicState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SchemeCompatible for DynamicState {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(name: "$dyn-stack", sealed: true, opaque: true)
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Trace)]
-pub enum DynStackElem {
+pub(crate) enum DynStackElem {
     Prompt(Prompt),
     PromptBarrier(PromptBarrier),
     Winder(Winder),
     ExceptionHandler(Procedure),
-    CurrentOutputPort(Port),
     CurrentInputPort(Port),
+    CurrentOutputPort(Port),
 }
 
 pub(crate) unsafe extern "C" fn pop_dyn_stack(
     _runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
-    dyn_stack: *mut DynStack,
+    dyn_state: *mut DynamicState,
 ) -> *mut Application {
     unsafe {
         // env[0] is the continuation
         let k: Procedure = env.as_ref().unwrap().clone().try_into().unwrap();
 
-        dyn_stack.as_mut().unwrap_unchecked().pop();
+        dyn_state.as_mut().unwrap_unchecked().pop_dyn_stack();
 
         let args = k.collect_args(args);
-        let app = Application::new(k, args, None);
+        let app = Application::new(k, args);
 
         Box::into_raw(Box::new(app))
     }
+}
+
+#[cps_bridge(def = "print-trace", lib = "(rnrs base builtins (6))")]
+pub fn print_trace(
+    _runtime: &Runtime,
+    _env: &[Value],
+    _args: &[Value],
+    _rest_args: &[Value],
+    dyn_state: &mut DynamicState,
+    k: Value,
+) -> Result<Application, Exception> {
+    println!(
+        "trace: {:#?}",
+        dyn_state.current_marks(Symbol::intern("trace"))
+    );
+    Ok(Application::new(k.try_into()?, vec![]))
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -754,9 +853,9 @@ pub fn call_with_current_continuation(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    dyn_stack: &mut DynStack,
+    dyn_state: &mut DynamicState,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let [proc] = args else { unreachable!() };
     let proc: Procedure = proc.clone().try_into()?;
 
@@ -765,18 +864,17 @@ pub fn call_with_current_continuation(
         k.get_formals()
     };
 
-    let dyn_stack = Value::from(Record::from_rust_type(dyn_stack.clone()));
+    let dyn_state = Value::from(Record::from_rust_type(dyn_state.clone()));
 
     let escape_procedure = Procedure::new(
         runtime.clone(),
-        vec![k.clone(), dyn_stack],
+        vec![k.clone(), dyn_state],
         FuncPtr::Bridge(escape_procedure),
         req_args,
         variadic,
-        None,
     );
 
-    let app = Application::new(proc, vec![Value::from(escape_procedure), k], None);
+    let app = Application::new(proc, vec![Value::from(escape_procedure), k]);
 
     Ok(app)
 }
@@ -789,19 +887,19 @@ fn escape_procedure(
     env: &[Value],
     args: &[Value],
     rest_args: &[Value],
-    dyn_stack: &mut DynStack,
+    dyn_state: &mut DynamicState,
     _k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     // env[0] is the continuation
     let k = env[0].clone();
 
     // env[1] is the dyn stack of the continuation
-    let saved_dyn_stack_val = env[1].clone();
-    let saved_dyn_stack = saved_dyn_stack_val
-        .clone()
-        .try_into_rust_type::<DynStack>()
+    let saved_dyn_state_val = env[1].clone();
+    let saved_dyn_state = saved_dyn_state_val
+        .try_to_rust_type::<DynamicState>()
         .unwrap();
-    let saved_dyn_stack_read = saved_dyn_stack.as_ref();
+    let saved_dyn_state_read = saved_dyn_state.as_ref();
+    dyn_state.cont_marks = saved_dyn_state_read.cont_marks.clone();
 
     // Clone the continuation
     let k: Procedure = k.try_into().unwrap();
@@ -809,21 +907,20 @@ fn escape_procedure(
     let args = args.iter().chain(rest_args).cloned().collect::<Vec<_>>();
 
     // Simple optimization: check if we're in the same dyn stack
-    if dyn_stack.len() == saved_dyn_stack_read.len()
-        && dyn_stack.last() == saved_dyn_stack_read.last()
+    if dyn_state.dyn_stack_len() == saved_dyn_state_read.dyn_stack_len()
+        && dyn_state.dyn_stack_last() == saved_dyn_state_read.dyn_stack_last()
     {
-        Ok(Application::new(k, args, None))
+        Ok(Application::new(k, args))
     } else {
         let args = Value::from(args);
-        let k = Procedure::new(
+        let k = dyn_state.new_k(
             runtime.clone(),
-            vec![Value::from(k), args, saved_dyn_stack_val],
-            FuncPtr::Continuation(unwind),
+            vec![Value::from(k), args, saved_dyn_state_val],
+            unwind,
             0,
             false,
-            None,
         );
-        Ok(Application::new(k, Vec::new(), None))
+        Ok(Application::new(k, Vec::new()))
     }
 }
 
@@ -831,7 +928,7 @@ unsafe extern "C" fn unwind(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
-    dyn_stack: *mut DynStack,
+    dyn_state: *mut DynamicState,
 ) -> *mut Application {
     unsafe {
         // env[0] is the ultimate continuation
@@ -844,17 +941,18 @@ unsafe extern "C" fn unwind(
         let dest_stack_val = env.add(2).as_ref().unwrap().clone();
         let dest_stack = dest_stack_val
             .clone()
-            .try_into_rust_type::<DynStack>()
+            .try_to_rust_type::<DynamicState>()
             .unwrap();
         let dest_stack_read = dest_stack.as_ref();
 
-        let dyn_stack = dyn_stack.as_mut().unwrap_unchecked();
+        let dyn_state = dyn_state.as_mut().unwrap_unchecked();
 
-        while !dyn_stack.is_empty()
-            && (dyn_stack.len() > dest_stack_read.len()
-                || dyn_stack.last() != dest_stack_read.get(dyn_stack.len() - 1))
+        while !dyn_state.dyn_stack_is_empty()
+            && (dyn_state.dyn_stack_len() > dest_stack_read.dyn_stack_len()
+                || dyn_state.dyn_stack_last()
+                    != dest_stack_read.dyn_stack_get(dyn_state.dyn_stack_len() - 1))
         {
-            match dyn_stack.pop() {
+            match dyn_state.pop_dyn_stack() {
                 None => {
                     break;
                 }
@@ -862,15 +960,13 @@ unsafe extern "C" fn unwind(
                     // Call the out winder while unwinding
                     let app = Application::new(
                         winder.out_thunk,
-                        vec![Value::from(Procedure::new(
+                        vec![Value::from(dyn_state.new_k(
                             Runtime::from_raw_inc_rc(runtime),
                             vec![k, args, dest_stack_val],
-                            FuncPtr::Continuation(unwind),
+                            unwind,
                             0,
                             false,
-                            None,
                         ))],
-                        None,
                     );
                     return Box::into_raw(Box::new(app));
                 }
@@ -880,16 +976,14 @@ unsafe extern "C" fn unwind(
 
         // Begin winding
         let app = Application::new(
-            Procedure::new(
+            dyn_state.new_k(
                 Runtime::from_raw_inc_rc(runtime),
                 vec![k, args, dest_stack_val, Value::from(false)],
-                FuncPtr::Continuation(wind),
+                wind,
                 0,
                 false,
-                None,
             ),
             Vec::new(),
-            None,
         );
 
         Box::into_raw(Box::new(app))
@@ -900,7 +994,7 @@ unsafe extern "C" fn wind(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
-    dyn_stack: *mut DynStack,
+    dyn_state: *mut DynamicState,
 ) -> *mut Application {
     unsafe {
         // env[0] is the ultimate continuation
@@ -911,23 +1005,23 @@ unsafe extern "C" fn wind(
 
         // env[2] is the stack we are trying to reach
         let dest_stack_val = env.add(2).as_ref().unwrap().clone();
-        let dest_stack = dest_stack_val
-            .clone()
-            .try_into_rust_type::<DynStack>()
-            .unwrap();
+        let dest_stack = dest_stack_val.try_to_rust_type::<DynamicState>().unwrap();
         let dest_stack_read = dest_stack.as_ref();
 
-        let dyn_stack = dyn_stack.as_mut().unwrap_unchecked();
+        let dyn_state = dyn_state.as_mut().unwrap_unchecked();
 
         // env[3] is potentially a winder that we should push onto the dyn stack
         let winder = env.add(3).as_ref().unwrap().clone();
         if winder.is_true() {
-            let winder = winder.try_into_rust_type::<Winder>().unwrap();
-            dyn_stack.push(DynStackElem::Winder(winder.as_ref().clone()));
+            let winder = winder.try_to_rust_type::<Winder>().unwrap();
+            dyn_state.push_dyn_stack(DynStackElem::Winder(winder.as_ref().clone()));
         }
 
-        while dyn_stack.len() < dest_stack_read.len() {
-            match dest_stack_read.get(dyn_stack.len()).cloned() {
+        while dyn_state.dyn_stack_len() < dest_stack_read.dyn_stack_len() {
+            match dest_stack_read
+                .dyn_stack_get(dyn_state.dyn_stack_len())
+                .cloned()
+            {
                 None => {
                     break;
                 }
@@ -935,7 +1029,7 @@ unsafe extern "C" fn wind(
                     // Call the in winder while winding
                     let app = Application::new(
                         winder.in_thunk.clone(),
-                        vec![Value::from(Procedure::new(
+                        vec![Value::from(dyn_state.new_k(
                             Runtime::from_raw_inc_rc(runtime),
                             vec![
                                 k,
@@ -943,24 +1037,21 @@ unsafe extern "C" fn wind(
                                 dest_stack_val,
                                 Value::from(Record::from_rust_type(winder)),
                             ],
-                            FuncPtr::Continuation(wind),
+                            wind,
                             0,
                             false,
-                            None,
                         ))],
-                        None,
                     );
                     return Box::into_raw(Box::new(app));
                 }
-                Some(elem) => dyn_stack.push(elem),
+                Some(elem) => dyn_state.push_dyn_stack(elem),
             }
         }
 
         let args: Vector = args.try_into().unwrap();
         let args = args.0.vec.read().to_vec();
 
-        let app = Application::new(k.try_into().unwrap(), args, None);
-        Box::into_raw(Box::new(app))
+        Box::into_raw(Box::new(Application::new(k.try_into().unwrap(), args)))
     }
 }
 
@@ -968,7 +1059,7 @@ unsafe extern "C" fn call_consumer_with_values(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
-    _dyn_stack: *mut DynStack,
+    dyn_state: *mut DynamicState,
 ) -> *mut Application {
     unsafe {
         // env[0] is the consumer
@@ -980,7 +1071,8 @@ unsafe extern "C" fn call_consumer_with_values(
             _ => {
                 let raised = raise(
                     Runtime::from_raw_inc_rc(runtime),
-                    Condition::invalid_operator(type_name).into(),
+                    Exception::invalid_operator(type_name).into(),
+                    dyn_state.as_mut().unwrap_unchecked(),
                 );
                 return Box::into_raw(Box::new(raised));
             }
@@ -1008,11 +1100,7 @@ unsafe extern "C" fn call_consumer_with_values(
 
         collected_args.push(k);
 
-        Box::into_raw(Box::new(Application::new(
-            consumer.clone(),
-            collected_args,
-            None,
-        )))
+        Box::into_raw(Box::new(Application::new(consumer.clone(), collected_args)))
     }
 }
 
@@ -1025,11 +1113,11 @@ pub fn call_with_values(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _dyn_stack: &mut DynStack,
+    dyn_state: &mut DynamicState,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let [producer, consumer] = args else {
-        return Err(Condition::wrong_num_of_args(2, args.len()));
+        return Err(Exception::wrong_num_of_args(2, args.len()));
     };
 
     let producer: Procedure = producer.clone().try_into()?;
@@ -1038,19 +1126,17 @@ pub fn call_with_values(
     // Get the details of the consumer:
     let (num_required_args, variadic) = { (consumer.0.num_required_args, consumer.0.variadic) };
 
-    let call_consumer_closure = Procedure::new(
+    let call_consumer_closure = dyn_state.new_k(
         runtime.clone(),
         vec![Value::from(consumer), k],
-        FuncPtr::Continuation(call_consumer_with_values),
+        call_consumer_with_values,
         num_required_args,
         variadic,
-        None,
     );
 
     Ok(Application::new(
         producer,
         vec![Value::from(call_consumer_closure)],
-        None,
     ))
 }
 
@@ -1077,17 +1163,17 @@ pub fn dynamic_wind(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _dyn_stack: &mut DynStack,
+    dyn_state: &mut DynamicState,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let [in_thunk_val, body_thunk_val, out_thunk_val] = args else {
-        return Err(Condition::wrong_num_of_args(3, args.len()));
+        return Err(Exception::wrong_num_of_args(3, args.len()));
     };
 
     let in_thunk: Procedure = in_thunk_val.clone().try_into()?;
     let _: Procedure = body_thunk_val.clone().try_into()?;
 
-    let call_body_thunk_cont = Procedure::new(
+    let call_body_thunk_cont = dyn_state.new_k(
         runtime.clone(),
         vec![
             in_thunk_val.clone(),
@@ -1095,16 +1181,14 @@ pub fn dynamic_wind(
             out_thunk_val.clone(),
             k,
         ],
-        FuncPtr::Continuation(call_body_thunk),
+        call_body_thunk,
         0,
         true,
-        None,
     );
 
     Ok(Application::new(
         in_thunk,
         vec![Value::from(call_body_thunk_cont)],
-        None,
     ))
 }
 
@@ -1112,7 +1196,7 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
-    dyn_stack: *mut DynStack,
+    dyn_state: *mut DynamicState,
 ) -> *mut Application {
     unsafe {
         // env[0] is the in thunk
@@ -1127,23 +1211,22 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
         // env[3] is k, the continuation
         let k = env.add(3).as_ref().unwrap().clone();
 
-        let dyn_stack = dyn_stack.as_mut().unwrap_unchecked();
+        let dyn_state = dyn_state.as_mut().unwrap_unchecked();
 
-        dyn_stack.push(DynStackElem::Winder(Winder {
+        dyn_state.push_dyn_stack(DynStackElem::Winder(Winder {
             in_thunk: in_thunk.clone().try_into().unwrap(),
             out_thunk: out_thunk.clone().try_into().unwrap(),
         }));
 
-        let k = Procedure::new(
+        let k = dyn_state.new_k(
             Runtime::from_raw_inc_rc(runtime),
             vec![out_thunk, k],
-            FuncPtr::Continuation(call_out_thunks),
+            call_out_thunks,
             0,
             true,
-            None,
         );
 
-        let app = Application::new(body_thunk, vec![Value::from(k)], None);
+        let app = Application::new(body_thunk, vec![Value::from(k)]);
 
         Box::into_raw(Box::new(app))
     }
@@ -1153,7 +1236,7 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
-    dyn_stack: *mut DynStack,
+    dyn_state: *mut DynamicState,
 ) -> *mut Application {
     unsafe {
         // env[0] is the out thunk
@@ -1165,19 +1248,18 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
         // args[0] is the result of the body thunk
         let body_thunk_res = args.as_ref().unwrap().clone();
 
-        let dyn_stack = dyn_stack.as_mut().unwrap_unchecked();
-        dyn_stack.pop();
+        let dyn_state = dyn_state.as_mut().unwrap_unchecked();
+        dyn_state.pop_dyn_stack();
 
-        let cont = Procedure(Gc::new(ProcedureInner::new(
+        let cont = dyn_state.new_k(
             Runtime::from_raw_inc_rc(runtime),
             vec![body_thunk_res, k],
-            FuncPtr::Continuation(forward_body_thunk_result),
+            forward_body_thunk_result,
             0,
             true,
-            None,
-        )));
+        );
 
-        let app = Application::new(out_thunk, vec![Value::from(cont)], None);
+        let app = Application::new(out_thunk, vec![Value::from(cont)]);
 
         Box::into_raw(Box::new(app))
     }
@@ -1187,7 +1269,7 @@ unsafe extern "C" fn forward_body_thunk_result(
     _runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
-    _dyn_stack: *mut DynStack,
+    _dyn_state: *mut DynamicState,
 ) -> *mut Application {
     unsafe {
         // env[0] is the result of the body thunk
@@ -1198,9 +1280,7 @@ unsafe extern "C" fn forward_body_thunk_result(
         let mut args = Vec::new();
         list_to_vec(&body_thunk_res, &mut args);
 
-        let app = Application::new(k, args, None);
-
-        Box::into_raw(Box::new(app))
+        Box::into_raw(Box::new(Application::new(k, args)))
     }
 }
 
@@ -1234,9 +1314,9 @@ pub fn call_with_prompt(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    dyn_stack: &mut DynStack,
+    dyn_state: &mut DynamicState,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let [tag, thunk, handler] = args else {
         unreachable!()
     };
@@ -1247,12 +1327,14 @@ pub fn call_with_prompt(
 
     let barrier_id = BARRIER_ID.fetch_add(1, Ordering::Relaxed);
 
-    dyn_stack.push(DynStackElem::Prompt(Prompt {
+    dyn_state.push_dyn_stack(DynStackElem::Prompt(Prompt {
         tag,
         handler: handler.clone().try_into().unwrap(),
         barrier_id,
         handler_k: k.clone().try_into()?,
     }));
+
+    dyn_state.push_marks();
 
     let prompt_barrier = Procedure::new(
         runtime.clone(),
@@ -1263,13 +1345,11 @@ pub fn call_with_prompt(
         },
         req_args,
         variadic,
-        None,
     );
 
     Ok(Application::new(
         thunk.clone().try_into().unwrap(),
         vec![Value::from(prompt_barrier)],
-        None,
     ))
 }
 
@@ -1279,32 +1359,31 @@ pub fn abort_to_prompt(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    dyn_stack: &mut DynStack,
+    dyn_state: &mut DynamicState,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let [tag] = args else { unreachable!() };
 
-    let unwind_to_prompt = Procedure::new(
+    let unwind_to_prompt = dyn_state.new_k(
         runtime.clone(),
         vec![
             k,
             tag.clone(),
-            Value::from(Record::from_rust_type(dyn_stack.clone())),
+            Value::from(Record::from_rust_type(dyn_state.clone())),
         ],
-        FuncPtr::Continuation(unwind_to_prompt),
+        unwind_to_prompt,
         0,
         false,
-        None,
     );
 
-    Ok(Application::new(unwind_to_prompt, Vec::new(), None))
+    Ok(Application::new(unwind_to_prompt, Vec::new()))
 }
 
 unsafe extern "C" fn unwind_to_prompt(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
-    dyn_stack: *mut DynStack,
+    dyn_state: *mut DynamicState,
 ) -> *mut Application {
     unsafe {
         // env[0] is continuation
@@ -1312,15 +1391,15 @@ unsafe extern "C" fn unwind_to_prompt(
         // env[1] is the prompt tag
         let tag: Symbol = env.add(1).as_ref().unwrap().clone().try_into().unwrap();
         // env[2] is the saved dyn stack
-        let saved_dyn_stack = env.add(2).as_ref().unwrap().clone();
+        let saved_dyn_state = env.add(2).as_ref().unwrap().clone();
 
-        let dyn_stack = dyn_stack.as_mut().unwrap_unchecked();
+        let dyn_state = dyn_state.as_mut().unwrap_unchecked();
 
         loop {
-            let app = match dyn_stack.pop() {
+            let app = match dyn_state.pop_dyn_stack() {
                 None => {
                     // If the stack is empty, we should return the error
-                    Application::halt_err(Value::from(Condition::error(format!(
+                    Application::halt_err(Value::from(Exception::error(format!(
                         "No prompt tag {tag} found"
                     ))))
                 }
@@ -1330,10 +1409,13 @@ unsafe extern "C" fn unwind_to_prompt(
                     handler,
                     handler_k,
                 })) if prompt_tag == tag => {
-                    let saved_dyn_stack = saved_dyn_stack.try_into_rust_type::<DynStack>().unwrap();
-                    let prompt_delimited_dyn_stack = DynStack {
-                        dyn_stack: saved_dyn_stack.as_ref().dyn_stack[dyn_stack.len() + 1..]
+                    let saved_dyn_state =
+                        saved_dyn_state.try_to_rust_type::<DynamicState>().unwrap();
+                    let prompt_delimited_dyn_state = DynamicState {
+                        dyn_stack: saved_dyn_state.as_ref().dyn_stack
+                            [dyn_state.dyn_stack_len() + 1..]
                             .to_vec(),
+                        cont_marks: saved_dyn_state.cont_marks.clone(),
                     };
                     let (req_args, var) = {
                         let k_proc: Procedure = k.clone().try_into().unwrap();
@@ -1347,31 +1429,27 @@ unsafe extern "C" fn unwind_to_prompt(
                                 vec![
                                     k,
                                     Value::from(Number::from(barrier_id)),
-                                    Value::from(Record::from_rust_type(prompt_delimited_dyn_stack)),
+                                    Value::from(Record::from_rust_type(prompt_delimited_dyn_state)),
                                 ],
                                 FuncPtr::Bridge(delimited_continuation),
                                 req_args,
                                 var,
-                                None,
                             )),
                             Value::from(handler_k),
                         ],
-                        None,
                     )
                 }
                 Some(DynStackElem::Winder(winder)) => {
                     // If this is a winder, we should call the out winder while unwinding
                     Application::new(
                         winder.out_thunk,
-                        vec![Value::from(Procedure::new(
+                        vec![Value::from(dyn_state.new_k(
                             Runtime::from_raw_inc_rc(runtime),
-                            vec![k, Value::from(tag), saved_dyn_stack],
-                            FuncPtr::Continuation(unwind_to_prompt),
+                            vec![k, Value::from(tag), saved_dyn_state],
+                            unwind_to_prompt,
                             0,
                             false,
-                            None,
                         ))],
-                        None,
                     )
                 }
                 _ => continue,
@@ -1387,9 +1465,9 @@ fn delimited_continuation(
     env: &[Value],
     args: &[Value],
     rest_args: &[Value],
-    dyn_stack: &mut DynStack,
+    dyn_state: &mut DynamicState,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     // env[0] is the delimited continuation
     let dk = env[0].clone();
 
@@ -1398,41 +1476,41 @@ fn delimited_continuation(
     let barrier_id: usize = barrier_id.as_ref().try_into()?;
 
     // env[2] is the dyn stack of the continuation
-    let saved_dyn_stack_val = env[2].clone();
-    let saved_dyn_stack = saved_dyn_stack_val
-        .clone()
-        .try_into_rust_type::<DynStack>()
+    let saved_dyn_state_val = env[2].clone();
+    let saved_dyn_state = saved_dyn_state_val
+        .try_to_rust_type::<DynamicState>()
         .unwrap();
-    let saved_dyn_stack_read = saved_dyn_stack.as_ref();
+    let saved_dyn_state_read = saved_dyn_state.as_ref();
+    // Restore continuation marks
+    dyn_state.cont_marks = saved_dyn_state_read.cont_marks.clone();
 
     let args = args.iter().chain(rest_args).cloned().collect::<Vec<_>>();
 
-    dyn_stack.push(DynStackElem::PromptBarrier(PromptBarrier {
+    dyn_state.push_dyn_stack(DynStackElem::PromptBarrier(PromptBarrier {
         barrier_id,
         replaced_k: k.try_into()?,
     }));
 
     // Simple optimization: if the saved dyn stack is empty, we
     // can just call the delimited continuation
-    if saved_dyn_stack_read.is_empty() {
-        Ok(Application::new(dk.try_into()?, args, None))
+    if saved_dyn_state_read.dyn_stack_is_empty() {
+        Ok(Application::new(dk.try_into()?, args))
     } else {
         let args = Value::from(args);
-        let k = Procedure::new(
+        let k = dyn_state.new_k(
             runtime.clone(),
             vec![
                 dk,
                 args,
-                saved_dyn_stack_val,
+                saved_dyn_state_val,
                 Value::from(Number::from(0)),
                 Value::from(false),
             ],
-            FuncPtr::Continuation(wind_delim),
+            wind_delim,
             0,
             false,
-            None,
         );
-        Ok(Application::new(k, Vec::new(), None))
+        Ok(Application::new(k, Vec::new()))
     }
 }
 
@@ -1440,7 +1518,7 @@ unsafe extern "C" fn wind_delim(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
-    dyn_stack: *mut DynStack,
+    dyn_state: *mut DynamicState,
 ) -> *mut Application {
     unsafe {
         // env[0] is the ultimate continuation
@@ -1451,33 +1529,30 @@ unsafe extern "C" fn wind_delim(
 
         // env[2] is the stack we are trying to reach
         let dest_stack_val = env.add(2).as_ref().unwrap().clone();
-        let dest_stack = dest_stack_val
-            .clone()
-            .try_into_rust_type::<DynStack>()
-            .unwrap();
+        let dest_stack = dest_stack_val.try_to_rust_type::<DynamicState>().unwrap();
         let dest_stack_read = dest_stack.as_ref();
 
         // env[3] is the index into the dest stack we're at
         let idx: Arc<Number> = env.add(3).as_ref().unwrap().clone().try_into().unwrap();
         let mut idx: usize = idx.as_ref().try_into().unwrap();
 
-        let dyn_stack = dyn_stack.as_mut().unwrap_unchecked();
+        let dyn_state = dyn_state.as_mut().unwrap_unchecked();
 
         // env[4] is potentially a winder that we should push onto the dyn stack
         let winder = env.add(4).as_ref().unwrap().clone();
         if winder.is_true() {
-            let winder = winder.try_into_rust_type::<Winder>().unwrap();
-            dyn_stack.push(DynStackElem::Winder(winder.as_ref().clone()));
+            let winder = winder.try_to_rust_type::<Winder>().unwrap();
+            dyn_state.push_dyn_stack(DynStackElem::Winder(winder.as_ref().clone()));
         }
 
-        while let Some(elem) = dest_stack_read.get(idx) {
+        while let Some(elem) = dest_stack_read.dyn_stack_get(idx) {
             idx += 1;
 
             if let DynStackElem::Winder(winder) = elem {
                 // Call the in winder while winding
                 let app = Application::new(
                     winder.in_thunk.clone(),
-                    vec![Value::from(Procedure::new(
+                    vec![Value::from(dyn_state.new_k(
                         Runtime::from_raw_inc_rc(runtime),
                         vec![
                             k,
@@ -1485,22 +1560,19 @@ unsafe extern "C" fn wind_delim(
                             dest_stack_val,
                             Value::from(Record::from_rust_type(winder.clone())),
                         ],
-                        FuncPtr::Continuation(wind),
+                        wind,
                         0,
                         false,
-                        None,
                     ))],
-                    None,
                 );
                 return Box::into_raw(Box::new(app));
             }
-            dyn_stack.push(elem.clone());
+            dyn_state.push_dyn_stack(elem.clone());
         }
 
         let args: Vector = args.try_into().unwrap();
         let args = args.0.vec.read().to_vec();
 
-        let app = Application::new(k.try_into().unwrap(), args, None);
-        Box::into_raw(Box::new(app))
+        Box::into_raw(Box::new(Application::new(k.try_into().unwrap(), args)))
     }
 }

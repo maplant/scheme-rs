@@ -1,9 +1,11 @@
 (library (rnrs base (6))
   (export syntax-rules with-syntax cond case let* letrec letrec* values
           let-values let*-values when unless do case-lambda member memv
-          memq caar cadr memp call/cc for-each
-          append make-list list-copy list-tail list-ref assoc map reverse
-          positive? negative? abs min max quasiquote
+          memq caar cadr cddr caaar caadr cadar cdaar caddr cdadr cddar
+          cdddr memp call/cc for-each for-all exists string-for-each
+          vector-for-each append make-list list-copy list-tail list-ref 
+          assoc map reverse positive? negative? abs min max quasiquote
+          identifier-syntax string-foldcase
           (import (rnrs base builtins (6))
                   (except (rnrs base special-keywords (6)) $undefined)
                   (rnrs syntax-case special-keywords (6))))
@@ -18,7 +20,7 @@
          (syntax (lambda (x)
                    (syntax-case x (i ...)
                      ((dummy . pattern) (syntax template))
-                     ...))))))) 
+                     ...)))))))
 
   (define-syntax with-syntax
     (lambda (x)
@@ -26,6 +28,23 @@
         ((_ ((p e0) ...) e1 e2 ...)
          (syntax (syntax-case (list e0 ...) ()
                    ((p ...) (let () e1 e2 ...))))))))
+
+  (define-syntax identifier-syntax
+    (lambda (x)
+      (syntax-case x (set!)
+        [(_ e)
+         #'(lambda (x)
+             (syntax-case x ()
+               [id (identifier? #'id) #'e]
+               [(_ x (... ...)) #'(e x (... ...))]))]
+        [(_ (id exp1) ((set! var val) exp2))
+         (and (identifier? #'id) (identifier? #'var))
+         #'(make-variable-transformer
+            (lambda (x)
+              (syntax-case x (set!)
+                [(set! var val) #'exp2]
+                [(id x (... ...)) #'(exp1 x (... ...))]
+                [id (identifier? #'id) #'exp1])))])))
 
   (define-syntax cond
     (syntax-rules (else =>)
@@ -285,6 +304,14 @@
   (define caar (lambda (x) (car (car x))))
   (define cadr (lambda (x) (car (cdr x))))
   (define cddr (lambda (x) (cdr (cdr x))))
+  (define caaar (lambda (x) (car (car (car x)))))
+  (define caadr (lambda (x) (car (car (cdr x)))))
+  (define cadar (lambda (x) (car (cdr (car x)))))
+  (define cdaar (lambda (x) (cdr (car (car x)))))
+  (define caddr (lambda (x) (car (cdr (cdr x)))))
+  (define cdadr (lambda (x) (cdr (car (cdr x)))))
+  (define cddar (lambda (x) (cdr (cdr (car x)))))
+  (define cdddr (lambda (x) (cdr (cdr (cdr x)))))
 
   (define (memp proc list)
     (if (and (pair? list)
@@ -295,26 +322,56 @@
   ;; call/cc is an alias of call-with-current-continuation
   (define call/cc call-with-current-continuation)
 
-  #|
-  ;; Define call/cc and call-with-current-continuation in terms of its primitive
-  (define (call/cc x)
-    ($call/cc x));
-
-  (define (call-with-current-continuation x)
-  ($call/cc x))
-  |#
-
   ;; TODO: a lot of these should be made into rust functions, as of right now
   ;; these are quite slow.
 
-  (define (for-each func lst . remaining)
-    (let loop ((rest lst))
+  (define (for-each proc list1 . listn)
+    (let loop ((rest list1))
       (unless (null? rest)
-        (func (car rest))
+        (proc (car rest))
         (loop (cdr rest))))
-    (if (not (null? remaining))
-        (begin
-          (apply for-each (cons func remaining)))))
+    (unless (null? listn)
+      (apply for-each (cons proc listn))))
+
+  (define (for-all proc list1 . listn)
+    (call/cc (lambda (return)
+               (let loop ((rest list1))
+                 (unless (null? rest)
+                   (if (not (proc (car rest)))
+                       (return #f)
+                       (loop (cdr rest)))))
+               (if (null? listn)
+                   #t
+                   (apply for-all (cons proc listn))))))
+
+  (define (exists proc list1 . listn)
+    (call/cc (lambda (return)
+               (let loop ((rest list1))
+                 (unless (null? rest)
+                   (if (proc (car rest))
+                       (return #t)
+                       (loop (cdr rest)))))
+               (if (null? listn)
+                   #f
+                   (apply for-all (cons proc listn))))))
+
+  (define (string-for-each proc str1 . strn)
+    (let loop ([i 0]
+               [len (string-length str1)])
+      (when (< i len)
+        (proc (string-ref str1 i))
+        (loop (+ i 1) len)))
+    (unless (null? strn)
+      (apply string-for-each (cons proc strn))))
+
+  (define (vector-for-each proc vector1 . vectorn)
+    (let loop ([i 0]
+               [len (vector-length vector1)])
+      (when (< i len)
+        (proc (vector-ref vector1 i))
+        (loop (+ i 1) len)))
+    (unless (null? vectorn)
+      (apply vector-for-each (cons proc vectorn))))
 
   (define (make-list n)
     (if (> n 0)

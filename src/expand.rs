@@ -1,7 +1,7 @@
 use crate::{
-    ast::{Expression, Literal, ParseAstError, ParseContext},
-    env::{Environment, Local},
-    exceptions::Condition,
+    ast::{Expression, Literal, ParseContext},
+    env::{EnvId, Environment, Local},
+    exceptions::Exception,
     gc::{Gc, Trace},
     proc::Procedure,
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
@@ -36,7 +36,7 @@ impl SyntaxRule {
         fender: Option<&Syntax>,
         output_expression: &Syntax,
         env: &Environment,
-    ) -> Result<Self, ParseAstError> {
+    ) -> Result<Self, Exception> {
         let mut variables = HashSet::new();
         let pattern = Pattern::compile(pattern, keywords, &mut variables);
         let binds = Local::gensym();
@@ -57,7 +57,13 @@ impl SyntaxRule {
     }
 }
 
-#[derive(Clone, Debug, Trace, PartialEq)]
+#[derive(Copy, Clone, Debug, Trace)]
+pub struct Keyword {
+    sym: Symbol,
+    binding_env: Option<EnvId>,
+}
+
+#[derive(Clone, Debug, Trace)]
 pub enum Pattern {
     Null,
     Underscore,
@@ -66,7 +72,7 @@ pub enum Pattern {
     Vector(Vec<Pattern>),
     ByteVector(Vec<u8>),
     Variable(Identifier),
-    Keyword(Symbol),
+    Keyword(Keyword),
     Literal(Literal),
 }
 
@@ -79,9 +85,12 @@ impl Pattern {
         match expr {
             Syntax::Null { .. } => Self::Null,
             Syntax::Identifier { ident, .. } if ident.sym == "_" => Self::Underscore,
-            Syntax::Identifier { ident, .. } if keywords.contains(&ident.sym) => {
-                Self::Keyword(ident.sym)
-            }
+            Syntax::Identifier {
+                ident, binding_env, ..
+            } if keywords.contains(&ident.sym) => Self::Keyword(Keyword {
+                sym: ident.sym,
+                binding_env: *binding_env,
+            }),
             Syntax::Identifier { ident, .. } => {
                 variables.insert(ident.clone());
                 Self::Variable(ident.clone())
@@ -145,7 +154,15 @@ impl Pattern {
                 }
             }
             Self::Keyword(lhs) => {
-                matches!(expr, Syntax::Identifier { ident: rhs, bound: false, .. } if lhs == &rhs.sym)
+                matches!(
+                    expr,
+                    Syntax::Identifier {
+                        ident: rhs,
+                        binding_env,
+                        ..
+                    } if lhs.sym == rhs.sym
+                        && lhs.binding_env == *binding_env
+                )
             }
             Self::List(list) => match_list(list, expr, expansion_level),
             Self::Vector(vec) => match_vec(vec, expr, expansion_level),
@@ -276,7 +293,7 @@ fn match_vec(patterns: &[Pattern], expr: &Syntax, expansion_level: &mut Expansio
 
 impl SchemeCompatible for Pattern {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "pattern")
+        rtd!(name: "pattern", sealed: true, opaque: true)
     }
 }
 
@@ -288,7 +305,7 @@ pub struct ExpansionLevel {
 
 impl SchemeCompatible for ExpansionLevel {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "expansion-level")
+        rtd!(name: "expansion-level", sealed: true, opaque: true)
     }
 }
 
@@ -299,14 +316,14 @@ pub struct ExpansionCombiner {
 
 impl SchemeCompatible for ExpansionCombiner {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "expansion-combiner")
+        rtd!(name: "expansion-combiner", sealed: true, opaque: true)
     }
 }
 
 #[runtime_fn]
 unsafe extern "C" fn matches(pattern: *const (), syntax: *const ()) -> *const () {
     let pattern = unsafe { Value::from_raw_inc_rc(pattern) };
-    let pattern = pattern.try_into_rust_type::<Pattern>().unwrap();
+    let pattern = pattern.try_to_rust_type::<Pattern>().unwrap();
 
     let syntax = unsafe { Value::from_raw_inc_rc(syntax) };
     // This isn't a great way to do this, but it'll work for now:
@@ -363,16 +380,20 @@ pub enum Template {
     List(Vec<Template>),
     Vector(Vec<Template>),
     ByteVector(Vec<u8>),
-    Identifier(Identifier),
+    Identifier {
+        ident: Identifier,
+        binding_env: Option<EnvId>,
+    },
     Variable(Identifier),
     Literal(Literal),
 }
 
 impl Template {
-    pub fn compile(
-        expr: &Syntax,
+    pub fn compile<'a>(
+        expr: &'a Syntax,
         env: &Environment,
         expansions: &mut HashMap<Identifier, Local>,
+        resolved_bindings: &mut HashMap<&'a Identifier, Option<EnvId>>,
     ) -> Self {
         match expr {
             Syntax::Null { .. } => Self::Null,
@@ -386,14 +407,22 @@ impl Template {
                 ] = list.as_slice()
                     && ellipsis.sym == "..."
                 {
-                    Self::compile_escaped(template, env, expansions)
+                    Self::compile_escaped(template, env, expansions, resolved_bindings)
                 } else {
-                    Self::List(Self::compile_slice(list, env, expansions))
+                    Self::List(Self::compile_slice(
+                        list,
+                        env,
+                        expansions,
+                        resolved_bindings,
+                    ))
                 }
             }
-            Syntax::Vector { vector, .. } => {
-                Self::Vector(Self::compile_slice(vector, env, expansions))
-            }
+            Syntax::Vector { vector, .. } => Self::Vector(Self::compile_slice(
+                vector,
+                env,
+                expansions,
+                resolved_bindings,
+            )),
             Syntax::ByteVector { vector, .. } => Self::ByteVector(vector.clone()),
             Syntax::Literal { literal, .. } => Self::Literal(literal.clone()),
             Syntax::Identifier { ident, .. } => {
@@ -401,25 +430,37 @@ impl Template {
                     expansions.insert(ident.clone(), expansion);
                     Self::Variable(ident.clone())
                 } else {
-                    Self::Identifier(ident.clone())
+                    Self::Identifier {
+                        ident: ident.clone(),
+                        binding_env: *resolved_bindings
+                            .entry(ident)
+                            .or_insert_with(|| env.binding_env(ident)),
+                    }
                 }
             }
         }
     }
 
-    pub fn compile_escaped(
-        expr: &Syntax,
+    pub fn compile_escaped<'a>(
+        expr: &'a Syntax,
         env: &Environment,
         expansions: &mut HashMap<Identifier, Local>,
+        resolved_bindings: &mut HashMap<&'a Identifier, Option<EnvId>>,
     ) -> Self {
         match expr {
             Syntax::Null { .. } => Self::Null,
-            Syntax::List { list, .. } => {
-                Self::List(Self::compile_slice_escaped(list, env, expansions))
-            }
-            Syntax::Vector { vector, .. } => {
-                Self::Vector(Self::compile_slice_escaped(vector, env, expansions))
-            }
+            Syntax::List { list, .. } => Self::List(Self::compile_slice_escaped(
+                list,
+                env,
+                expansions,
+                resolved_bindings,
+            )),
+            Syntax::Vector { vector, .. } => Self::Vector(Self::compile_slice_escaped(
+                vector,
+                env,
+                expansions,
+                resolved_bindings,
+            )),
             Syntax::ByteVector { vector, .. } => Self::ByteVector(vector.clone()),
             Syntax::Literal { literal, .. } => Self::Literal(literal.clone()),
             Syntax::Identifier { ident, .. } => {
@@ -427,16 +468,22 @@ impl Template {
                     expansions.insert(ident.clone(), expansion);
                     Self::Variable(ident.clone())
                 } else {
-                    Self::Identifier(ident.clone())
+                    Self::Identifier {
+                        ident: ident.clone(),
+                        binding_env: *resolved_bindings
+                            .entry(ident)
+                            .or_insert_with(|| env.binding_env(ident)),
+                    }
                 }
             }
         }
     }
 
-    fn compile_slice(
-        mut expr: &[Syntax],
+    fn compile_slice<'a>(
+        mut expr: &'a [Syntax],
         env: &Environment,
         expansions: &mut HashMap<Identifier, Local>,
+        resolved_bindings: &mut HashMap<&'a Identifier, Option<EnvId>>,
     ) -> Vec<Self> {
         let mut output = Vec::new();
         loop {
@@ -450,12 +497,15 @@ impl Template {
                     tail @ ..,
                 ] if ellipsis.sym == "..." => {
                     output.push(Self::Ellipsis(Box::new(Template::compile(
-                        template, env, expansions,
+                        template,
+                        env,
+                        expansions,
+                        resolved_bindings,
                     ))));
                     expr = tail;
                 }
                 [head, tail @ ..] => {
-                    output.push(Self::compile(head, env, expansions));
+                    output.push(Self::compile(head, env, expansions, resolved_bindings));
                     expr = tail;
                 }
             }
@@ -463,14 +513,15 @@ impl Template {
         output
     }
 
-    fn compile_slice_escaped(
-        exprs: &[Syntax],
+    fn compile_slice_escaped<'a>(
+        exprs: &'a [Syntax],
         env: &Environment,
         expansions: &mut HashMap<Identifier, Local>,
+        resolved_bindings: &mut HashMap<&'a Identifier, Option<EnvId>>,
     ) -> Vec<Self> {
         exprs
             .iter()
-            .map(|expr| Self::compile_escaped(expr, env, expansions))
+            .map(|expr| Self::compile_escaped(expr, env, expansions, resolved_bindings))
             .collect()
     }
 
@@ -481,10 +532,10 @@ impl Template {
             Self::Vector(vec) => {
                 Syntax::new_vector(expand_vec(vec, binds, curr_span.clone())?, curr_span)
             }
-            Self::Identifier(ident) => Syntax::Identifier {
+            Self::Identifier { ident, binding_env } => Syntax::Identifier {
                 ident: ident.clone(),
                 span: curr_span,
-                bound: false,
+                binding_env: *binding_env,
             },
             Self::Variable(name) => binds.get_bind(name)?,
             Self::Literal(literal) => Syntax::new_literal(literal.clone(), curr_span),
@@ -492,47 +543,6 @@ impl Template {
         };
         Some(syn)
     }
-}
-
-impl SchemeCompatible for Template {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "template")
-    }
-}
-
-#[runtime_fn]
-unsafe extern "C" fn expand_template(
-    template: *const (),
-    expansion_combiner: *const (),
-    expansions: *const *const (),
-    num_expansions: u32,
-) -> *const () {
-    // TODO: A lot of probably unnecessary cloning here, we'll need to fix it up
-    // eventually
-
-    let template = unsafe { Value::from_raw_inc_rc(template) };
-    let template = template.try_into_rust_type::<Template>().unwrap();
-
-    let expansion_combiner = unsafe { Value::from_raw_inc_rc(expansion_combiner) };
-    let expansion_combiner = expansion_combiner
-        .try_into_rust_type::<ExpansionCombiner>()
-        .unwrap();
-
-    let expansions = (0..num_expansions)
-        .map(|i| {
-            let expansion = unsafe { Value::from_raw_inc_rc(expansions.add(i as usize).read()) };
-            let expansion = expansion.try_into_rust_type::<ExpansionLevel>().unwrap();
-            expansion.as_ref().clone()
-        })
-        .collect::<Vec<_>>();
-
-    let combined_expansions = expansion_combiner.combine_expansions(&expansions);
-    let binds = Binds::new_top(&combined_expansions);
-
-    // TODO: get a real span in here
-    let expanded = template.expand(&binds, Span::default()).unwrap();
-
-    Value::into_raw(Value::from(expanded))
 }
 
 fn expand_list(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<Syntax> {
@@ -595,6 +605,47 @@ fn expand_vec(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<
     Some(output)
 }
 
+impl SchemeCompatible for Template {
+    fn rtd() -> Arc<RecordTypeDescriptor> {
+        rtd!(name: "template", sealed: true, opaque: true)
+    }
+}
+
+#[runtime_fn]
+unsafe extern "C" fn expand_template(
+    template: *const (),
+    expansion_combiner: *const (),
+    expansions: *const *const (),
+    num_expansions: u32,
+) -> *const () {
+    // TODO: A lot of probably unnecessary cloning here, we'll need to fix it up
+    // eventually
+
+    let template = unsafe { Value::from_raw_inc_rc(template) };
+    let template = template.try_to_rust_type::<Template>().unwrap();
+
+    let expansion_combiner = unsafe { Value::from_raw_inc_rc(expansion_combiner) };
+    let expansion_combiner = expansion_combiner
+        .try_to_rust_type::<ExpansionCombiner>()
+        .unwrap();
+
+    let expansions = (0..num_expansions)
+        .map(|i| {
+            let expansion = unsafe { Value::from_raw_inc_rc(expansions.add(i as usize).read()) };
+            let expansion = expansion.try_to_rust_type::<ExpansionLevel>().unwrap();
+            expansion.as_ref().clone()
+        })
+        .collect::<Vec<_>>();
+
+    let combined_expansions = expansion_combiner.combine_expansions(&expansions);
+    let binds = Binds::new_top(&combined_expansions);
+
+    // TODO: get a real span in here
+    let expanded = template.expand(&binds, Span::default()).unwrap();
+
+    Value::into_raw(Value::from(expanded))
+}
+
 #[derive(Debug)]
 pub struct Binds<'a> {
     curr_expansion_level: &'a ExpansionLevel,
@@ -629,12 +680,12 @@ impl<'a> Binds<'a> {
 
 #[runtime_fn]
 unsafe extern "C" fn error_no_patterns_match() -> i64 {
-    let condition = Condition::error("No patterns match!".to_string());
+    let condition = Exception::error("no patterns match".to_string());
     Value::into_raw(Value::from(condition)) as i64
 }
 
 #[bridge(name = "make-variable-transformer", lib = "(rnrs base builtins (6))")]
-pub fn make_variable_transformer(proc: &Value) -> Result<Vec<Value>, Condition> {
+pub fn make_variable_transformer(proc: &Value) -> Result<Vec<Value>, Exception> {
     let proc: Procedure = proc.clone().try_into()?;
     let mut var_transformer = proc.0.as_ref().clone();
     var_transformer.is_variable_transformer = true;

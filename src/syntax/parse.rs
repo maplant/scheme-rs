@@ -39,7 +39,7 @@ macro_rules! token {
 }
 
 impl<'a> Parser<'a> {
-    pub(crate) fn new(port_data: &'a mut PortData, port_info: PortInfo, span: Span) -> Self {
+    pub(crate) fn new(port_data: &'a mut PortData, port_info: &'a PortInfo, span: Span) -> Self {
         Parser {
             lookahead: Vec::new(),
             lexer: Lexer::new(port_data, port_info, span),
@@ -181,12 +181,20 @@ impl Parser<'_> {
     }
 
     #[maybe_async]
-    pub fn all_sexprs(&mut self) -> Result<Vec<Syntax>, ParseSyntaxError> {
+    pub fn all_sexprs(&mut self) -> Result<Syntax, ParseSyntaxError> {
+        let start_span = self.lexer.curr_span();
         let mut sexprs = Vec::new();
         loop {
             // Check for EOF
             match maybe_await!(self.next_token()) {
-                Ok(None) => return Ok(sexprs),
+                Ok(None) => {
+                    let end_span = self.lexer.curr_span();
+                    sexprs.push(Syntax::Null { span: end_span });
+                    return Ok(Syntax::List {
+                        list: sexprs,
+                        span: start_span,
+                    });
+                }
                 Err(err) => return Err(ParseSyntaxError::Lex(err)),
                 Ok(Some(token)) => self.return_token(token),
             }

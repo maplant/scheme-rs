@@ -3,8 +3,8 @@ use proc_macro2::{Literal, Span};
 use quote::{format_ident, quote};
 use syn::{
     Attribute, DataEnum, DataStruct, DeriveInput, Error, Expr, ExprClosure, Fields, FnArg,
-    GenericParam, Generics, Ident, ItemFn, LitStr, Member, Meta, Pat, PatIdent, PatType, Result,
-    Token, Type, TypePath, TypeReference, Visibility, braced, bracketed, parenthesized,
+    GenericParam, Generics, Ident, ItemFn, LitBool, LitStr, Member, Meta, Pat, PatIdent, PatType,
+    Result, Token, Type, TypePath, TypeReference, Visibility, braced, bracketed, parenthesized,
     parse::{Parse, ParseStream},
     parse_macro_input, parse_quote,
     punctuated::Punctuated,
@@ -77,7 +77,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 _env: &'a [::scheme_rs::value::Value],
                 args: &'a [::scheme_rs::value::Value],
                 rest_args: &'a [::scheme_rs::value::Value],
-                _dyn_stack: &'a mut ::scheme_rs::proc::DynStack,
+                dyn_state: &'a mut ::scheme_rs::proc::DynamicState,
                 k: ::scheme_rs::value::Value,
             ) -> futures::future::BoxFuture<'a, scheme_rs::proc::Application> {
                 #bridge
@@ -94,15 +94,12 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                             Err(err) => return ::scheme_rs::exceptions::raise(
                                 runtime.clone(),
                                 err.into(),
+                                dyn_state,
                             ),
                             Ok(result) => result,
                         };
                         let k = unsafe { k.try_into().unwrap_unchecked() };
-                        ::scheme_rs::proc::Application::new(
-                            k,
-                            result,
-                            None // TODO
-                        )
+                        ::scheme_rs::proc::Application::new(k, result)
                     }
                 )
             }
@@ -131,7 +128,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 _env: &[::scheme_rs::value::Value],
                 args: &[::scheme_rs::value::Value],
                 rest_args: &[::scheme_rs::value::Value],
-                _dyn_stack: &mut ::scheme_rs::proc::DynStack,
+                dyn_state: &mut ::scheme_rs::proc::DynamicState,
                 k: ::scheme_rs::value::Value,
             ) -> scheme_rs::proc::Application {
                 #bridge
@@ -147,16 +144,13 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                     Err(err) => return ::scheme_rs::exceptions::raise(
                         runtime.clone(),
                         err.into(),
+                        dyn_state,
                     ),
                     Ok(result) => result,
                 };
 
                 let k = unsafe { k.try_into().unwrap_unchecked() };
-                ::scheme_rs::proc::Application::new(
-                    k,
-                    result,
-                    None // TODO
-                )
+                ::scheme_rs::proc::Application::new(k, result)
             }
 
             inventory::submit! {
@@ -280,7 +274,7 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 env: &'a [::scheme_rs::value::Value],
                 args: &'a [::scheme_rs::value::Value],
                 rest_args: &'a [::scheme_rs::value::Value],
-                dyn_stack: &'a mut ::scheme_rs::proc::DynStack,
+                dyn_state: &'a mut ::scheme_rs::proc::DynamicState,
                 k: ::scheme_rs::value::Value,
             ) -> futures::future::BoxFuture<'a, scheme_rs::proc::Application> {
                 #bridge
@@ -291,13 +285,14 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                         env,
                         args,
                         rest_args,
-                        dyn_stack,
+                        dyn_state,
                         k
                     ).await {
                         Ok(app) => app,
                         Err(err) => ::scheme_rs::exceptions::raise(
                             runtime.clone(),
                             err.into(),
+                            dyn_state
                         ),
                     }
                 })
@@ -312,7 +307,7 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 env: &[::scheme_rs::value::Value],
                 args: &[::scheme_rs::value::Value],
                 rest_args: &[::scheme_rs::value::Value],
-                dyn_stack: &mut ::scheme_rs::proc::DynStack,
+                dyn_state: &mut ::scheme_rs::proc::DynamicState,
                 k: ::scheme_rs::value::Value,
             ) -> scheme_rs::proc::Application {
                 #bridge
@@ -322,13 +317,14 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                     env,
                     args,
                     rest_args,
-                    dyn_stack,
+                    dyn_state,
                     k
                 ) {
                     Ok(app) => app,
                     Err(err) => ::scheme_rs::exceptions::raise(
                         runtime.clone(),
                         err.into(),
+                        dyn_state
                     )
                 }
             }
@@ -800,7 +796,7 @@ struct Rtd {
     name: LitStr,
     parent: Option<Expr>,
     opaque: Option<Expr>,
-    sealed: Option<Expr>,
+    sealed: Option<LitBool>,
     uid: Option<LitStr>,
     constructor: Option<Expr>,
     fields: Option<Vec<RtdField>>,
@@ -878,6 +874,13 @@ impl Parse for Rtd {
             return Err(Error::new(input.span(), "name field is required"));
         };
 
+        if !sealed.as_ref().map_or(false, LitBool::value) && constructor.is_none() {
+            return Err(Error::new(
+                input.span(),
+                "unsealed records must have a constructor defined",
+            ));
+        }
+
         Ok(Rtd {
             name,
             parent,
@@ -943,6 +946,7 @@ pub fn rtd(tokens: TokenStream) -> TokenStream {
                         field_index_offset: 0,
                         fields: vec![ #( #fields, )* ],
                         rust_parent_constructor: #rust_parent_constructor,
+                        rust_type: true
                     })
                 });
             RTD.clone()
@@ -1088,16 +1092,20 @@ pub fn define_condition_type(tokens: TokenStream) -> TokenStream {
 
     let field_idxs = 0..field_names.len();
 
-    let constructor =  constructor.map(|constructor| {
-        let inputs = 0..constructor.inputs.len();
-        let types = inputs.clone().map(|_| quote!(::scheme_rs::value::Value));
-        quote!(
-            constructor: |vals| {
-                let constructor: fn(#(#types,)*) -> Result<#rust_name, ::scheme_rs::exceptions::Condition> = #constructor;
-                Ok(::scheme_rs::records::into_scheme_compatible(Gc::new((constructor)(#(vals[#inputs].clone(),)*)?)))
-            },
-        )
-    });
+    let constructor =  constructor.map_or_else(
+        || quote! {
+            constructor: |_| Ok(::scheme_rs::records::into_scheme_compatible(Gc::new(#rust_name::default()))),
+        },
+        |constructor| {
+            let inputs = 0..constructor.inputs.len();
+            let types = inputs.clone().map(|_| quote!(::scheme_rs::value::Value));
+            quote!(
+                constructor: |vals| {
+                    let constructor: fn(#(#types,)*) -> Result<#rust_name, ::scheme_rs::exceptions::Exception> = #constructor;
+                    Ok(::scheme_rs::records::into_scheme_compatible(Gc::new((constructor)(#(vals[#inputs].clone(),)*)?)))
+                },
+            )
+        });
 
     let dbg = dbg.map(|dbg| {
         quote!(

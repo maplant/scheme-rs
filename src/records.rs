@@ -7,7 +7,7 @@
 //! Each records is described by its [`RecordTypeDescriptor`], which includes
 //! the names of its name and fields among other properties.
 //!
-//! # Implementing [`SchemeCompatible`] 
+//! # Implementing [`SchemeCompatible`]
 //!
 //! Any type that implements [`Trace`] and [`Debug`](std::fmt::Debug) is
 //! eligible to implement `SchemeCompatible`. Once this criteria is fulfilled,
@@ -146,10 +146,10 @@ use by_address::ByAddress;
 use parking_lot::RwLock;
 
 use crate::{
-    exceptions::Condition,
+    exceptions::Exception,
     gc::{Gc, GcInner, Trace},
     num::Number,
-    proc::{Application, DynStack, FuncPtr, Procedure},
+    proc::{Application, DynamicState, FuncPtr, Procedure},
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
@@ -175,6 +175,7 @@ pub struct RecordTypeDescriptor {
     /// from being "generative," i.e. unique upon each call to
     /// `define-record-type`.
     pub uid: Option<Symbol>,
+    pub rust_type: bool,
     /// The Rust parent of the record type, if it exists.
     pub rust_parent_constructor: Option<RustParentConstructor>,
     /// Parent is most recently inserted record type, if one exists.
@@ -202,10 +203,7 @@ impl fmt::Debug for RecordTypeDescriptor {
         write!(
             f,
             "#<rtd name: {} sealed: {} opaque: {} rust: {} ",
-            self.name,
-            self.sealed,
-            self.opaque,
-            self.rust_parent_constructor.is_some()
+            self.name, self.sealed, self.opaque, self.rust_type,
         )?;
         if !self.inherits.is_empty() {
             let parent = self.inherits.last().unwrap();
@@ -230,7 +228,7 @@ pub enum Field {
 }
 
 impl Field {
-    fn parse(field: &Value) -> Result<Self, Condition> {
+    fn parse(field: &Value) -> Result<Self, Exception> {
         let (mutability, field_name) = field.clone().try_into()?;
         let mutability: Symbol = mutability.try_into()?;
         let (field_name, _) = field_name.clone().try_into()?;
@@ -238,13 +236,13 @@ impl Field {
         match &*mutability.to_str() {
             "mutable" => Ok(Field::Mutable(field_name)),
             "immutable" => Ok(Field::Immutable(field_name)),
-            _ => Err(Condition::error(
+            _ => Err(Exception::error(
                 "mutability specifier must be mutable or immutable".to_string(),
             )),
         }
     }
 
-    fn parse_fields(fields: &Value) -> Result<Vec<Self>, Condition> {
+    fn parse_fields(fields: &Value) -> Result<Vec<Self>, Exception> {
         let fields: Vector = fields.clone().try_into()?;
         fields.0.vec.read().iter().map(Self::parse).collect()
     }
@@ -272,6 +270,7 @@ pub static RECORD_TYPE_DESCRIPTOR_RTD: LazyLock<Arc<RecordTypeDescriptor>> = Laz
         sealed: true,
         opaque: true,
         uid: None,
+        rust_type: false,
         rust_parent_constructor: None,
         inherits: indexmap::IndexSet::new(),
         field_index_offset: 0,
@@ -295,7 +294,7 @@ pub fn make_record_type_descriptor(
     sealed: &Value,
     opaque: &Value,
     fields: &Value,
-) -> Result<Vec<Value>, Condition> {
+) -> Result<Vec<Value>, Exception> {
     let uid: Option<Symbol> = if uid.is_true() {
         Some(uid.clone().try_into()?)
     } else {
@@ -333,6 +332,7 @@ pub fn make_record_type_descriptor(
         sealed,
         opaque,
         uid,
+        rust_type: false,
         rust_parent_constructor: None,
         inherits,
         field_index_offset,
@@ -350,7 +350,7 @@ pub fn make_record_type_descriptor(
     name = "record-type-descriptor?",
     lib = "(rnrs records procedural (6))"
 )]
-pub fn record_type_descriptor_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
+pub fn record_type_descriptor_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(
         obj.type_of() == ValueType::RecordTypeDescriptor,
     )])
@@ -366,7 +366,7 @@ pub struct RecordConstructorDescriptor {
 
 impl SchemeCompatible for RecordConstructorDescriptor {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "record-constructor-descriptor")
+        rtd!(name: "record-constructor-descriptor", sealed: true, opaque: true)
     }
 }
 
@@ -389,7 +389,6 @@ fn make_default_record_constructor_descriptor(
         FuncPtr::Bridge(default_protocol),
         1,
         false,
-        None,
     );
     Gc::new(RecordConstructorDescriptor {
         parent,
@@ -407,22 +406,30 @@ pub fn make_record_constructor_descriptor(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _dyn_stack: &mut DynStack,
+    _dyn_state: &mut DynamicState,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let k: Procedure = k.try_into()?;
     let [rtd, parent_rcd, protocol] = args else {
         unreachable!();
     };
 
     let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
+
+    if rtd.rust_type && rtd.rust_parent_constructor.is_none() {
+        return Err(Exception::error(format!(
+            "cannot create a record-constructor-descriptor for rust type without a constructor {}",
+            rtd.name
+        )));
+    }
+
     let parent_rcd = if parent_rcd.is_true() {
         let Some(parent_rtd) = rtd.inherits.last() else {
-            return Err(Condition::error("RTD is a base type".to_string()));
+            return Err(Exception::error("RTD is a base type".to_string()));
         };
-        let parent_rcd = parent_rcd.try_into_rust_type::<RecordConstructorDescriptor>()?;
+        let parent_rcd = parent_rcd.try_to_rust_type::<RecordConstructorDescriptor>()?;
         if !Arc::ptr_eq(&parent_rcd.rtd, parent_rtd) {
-            return Err(Condition::error(
+            return Err(Exception::error(
                 "Parent RTD does not match parent RCD".to_string(),
             ));
         }
@@ -445,7 +452,6 @@ pub fn make_record_constructor_descriptor(
             FuncPtr::Bridge(default_protocol),
             1,
             false,
-            None,
         )
     };
 
@@ -458,7 +464,6 @@ pub fn make_record_constructor_descriptor(
     Ok(Application::new(
         k,
         vec![Value::from(Record::from_rust_type(rcd))],
-        None,
     ))
 }
 
@@ -468,13 +473,13 @@ pub fn record_constructor(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    dyn_stack: &mut DynStack,
+    dyn_state: &mut DynamicState,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let [rcd] = args else {
         unreachable!();
     };
-    let rcd = rcd.try_into_rust_type::<RecordConstructorDescriptor>()?;
+    let rcd = rcd.try_to_rust_type::<RecordConstructorDescriptor>()?;
 
     let (protocols, rtds) = rcd_to_protocols_and_rtds(&rcd);
 
@@ -486,13 +491,12 @@ pub fn record_constructor(
 
     let protocols = protocols.into_iter().map(Value::from).collect::<Vec<_>>();
     let rtds = rtds.into_iter().map(Value::from).collect::<Vec<_>>();
-    let chain_protocols = Value::from(Procedure::new(
+    let chain_protocols = Value::from(dyn_state.new_k(
         runtime.clone(),
         vec![Value::from(protocols), k],
-        FuncPtr::Continuation(chain_protocols),
+        chain_protocols,
         1,
         false,
-        None,
     ));
 
     Ok(chain_constructors(
@@ -500,7 +504,7 @@ pub fn record_constructor(
         &[Value::from(rtds), rust_constructor],
         &[],
         &[],
-        dyn_stack,
+        dyn_state,
         chain_protocols,
     ))
 }
@@ -522,7 +526,7 @@ pub(crate) unsafe extern "C" fn chain_protocols(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
-    _dyn_stack: *mut DynStack,
+    dyn_state: *mut DynamicState,
 ) -> *mut Application {
     unsafe {
         // env[0] is a vector of protocols
@@ -540,24 +544,21 @@ pub(crate) unsafe extern "C" fn chain_protocols(
             return Box::into_raw(Box::new(Application::new(
                 curr_protocol,
                 vec![args.as_ref().unwrap().clone(), k.clone()],
-                None,
             )));
         }
 
         // Otherwise, turn the remaining chain into the continuation:
-        let new_k = Procedure::new(
+        let new_k = dyn_state.as_mut().unwrap().new_k(
             Runtime::from_raw_inc_rc(runtime),
             vec![Value::from(remaining_protocols), k],
-            FuncPtr::Continuation(chain_protocols),
+            chain_protocols,
             1,
             false,
-            None,
         );
 
         Box::into_raw(Box::new(Application::new(
             curr_protocol,
             vec![args.as_ref().unwrap().clone(), Value::from(new_k)],
-            None,
         )))
     }
 }
@@ -568,9 +569,9 @@ fn chain_constructors(
     env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _dyn_stack: &mut DynStack,
+    _dyn_state: &mut DynamicState,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let k: Procedure = k.try_into()?;
     // env[0] is a vector of RTDs
     let rtds: Vector = env[0].clone().try_into()?;
@@ -602,9 +603,8 @@ fn chain_constructors(
         },
         num_args,
         false,
-        None,
     );
-    Ok(Application::new(k, vec![Value::from(next_proc)], None))
+    Ok(Application::new(k, vec![Value::from(next_proc)]))
 }
 
 #[cps_bridge]
@@ -613,9 +613,9 @@ fn constructor(
     env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _dyn_stack: &mut DynStack,
+    _dyn_state: &mut DynamicState,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let k: Procedure = k.try_into()?;
     let rtd: Arc<RecordTypeDescriptor> = env[0].clone().try_into()?;
     // The fields of the record are all of the env variables chained with
@@ -649,7 +649,7 @@ fn constructor(
         rtd,
         fields: fields.into_iter().map(RwLock::new).collect(),
     })));
-    Ok(Application::new(k, vec![record], None))
+    Ok(Application::new(k, vec![record]))
 }
 
 #[cps_bridge]
@@ -658,9 +658,9 @@ fn default_protocol(
     env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _dyn_stack: &mut DynStack,
+    _dyn_state: &mut DynamicState,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let k: Procedure = k.try_into()?;
     let rtd: Arc<RecordTypeDescriptor> = env[0].clone().try_into()?;
     let num_args = rtd.field_index_offset + rtd.fields.len();
@@ -671,10 +671,9 @@ fn default_protocol(
         FuncPtr::Bridge(default_protocol_constructor),
         num_args,
         false,
-        None,
     );
 
-    Ok(Application::new(k, vec![Value::from(constructor)], None))
+    Ok(Application::new(k, vec![Value::from(constructor)]))
 }
 
 #[cps_bridge]
@@ -683,36 +682,35 @@ fn default_protocol_constructor(
     env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _dyn_stack: &mut DynStack,
+    dyn_state: &mut DynamicState,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let constructor: Procedure = env[0].clone().try_into()?;
     let rtd: Arc<RecordTypeDescriptor> = env[1].clone().try_into()?;
     let mut args = args.to_vec();
 
     let k = if let Some(parent) = rtd.inherits.last() {
         let remaining = args.split_off(parent.field_index_offset + parent.fields.len());
-        Value::from(Procedure::new(
+        Value::from(dyn_state.new_k(
             runtime.clone(),
             vec![Value::from(remaining), k],
-            FuncPtr::Continuation(call_constructor_continuation),
+            call_constructor_continuation,
             1,
             false,
-            None,
         ))
     } else {
         k
     };
 
     args.push(k);
-    Ok(Application::new(constructor, args, None))
+    Ok(Application::new(constructor, args))
 }
 
 pub(crate) unsafe extern "C" fn call_constructor_continuation(
     _runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
-    _dyn_stack: *mut DynStack,
+    _dyn_state: *mut DynamicState,
 ) -> *mut Application {
     unsafe {
         let constructor: Procedure = args.as_ref().unwrap().clone().try_into().unwrap();
@@ -722,7 +720,7 @@ pub(crate) unsafe extern "C" fn call_constructor_continuation(
         args.push(cont);
 
         // Call the constructor
-        Box::into_raw(Box::new(Application::new(constructor, args, None)))
+        Box::into_raw(Box::new(Application::new(constructor, args)))
     }
 }
 
@@ -732,6 +730,10 @@ pub(crate) unsafe extern "C" fn call_constructor_continuation(
 pub struct Record(pub(crate) Gc<RecordInner>);
 
 impl Record {
+    pub fn rtd(&self) -> Arc<RecordTypeDescriptor> {
+        self.0.rtd.clone()
+    }
+
     /// Convert any Rust type that implements [SchemeCompatible] into an opaque
     /// record.
     pub fn from_rust_type<T: SchemeCompatible>(t: T) -> Self {
@@ -746,12 +748,12 @@ impl Record {
 
     /// Attempt to convert the record into a Rust type that implements
     /// [SchemeCompatible].
-    pub fn try_into_rust_type<T: SchemeCompatible>(&self) -> Option<Gc<T>> {
-        let opaque_parent = self.0.rust_parent.as_ref()?;
+    pub fn cast<T: SchemeCompatible>(&self) -> Option<Gc<T>> {
+        let rust_parent = self.0.rust_parent.as_ref()?;
 
         // Attempt to extract any embedded records
         let rtd = T::rtd();
-        let mut t = opaque_parent.clone();
+        let mut t = rust_parent.clone();
         while let Some(embedded) = { t.extract_embedded_record(&rtd) } {
             t = embedded;
         }
@@ -759,7 +761,7 @@ impl Record {
         let t = ManuallyDrop::new(t);
 
         // Second, convert the opaque_parent type into a Gc<dyn Any>
-        let any: NonNull<GcInner<dyn Any>> = t.ptr;
+        let any: NonNull<GcInner<dyn Any + Send + Sync>> = t.ptr;
         let gc_any = Gc {
             ptr: any,
             marker: std::marker::PhantomData,
@@ -798,6 +800,7 @@ impl fmt::Debug for RecordInner {
             .chain(Some(ByAddress(self.rtd.clone())))
             .flat_map(|rtd| rtd.fields.clone());
         for field in &self.fields {
+            let field = field.read();
             let name = field_names.next().unwrap().name();
             write!(f, " {name}: {field:?}")?;
         }
@@ -806,7 +809,7 @@ impl fmt::Debug for RecordInner {
 }
 
 /// A Rust value that can present itself as a Scheme record.
-pub trait SchemeCompatible: fmt::Debug + Trace + Any {
+pub trait SchemeCompatible: fmt::Debug + Trace + Any + Send + Sync + 'static {
     /// The Record Type Descriptor of the value. Can be constructed at runtime,
     /// but cannot change.
     fn rtd() -> Arc<RecordTypeDescriptor>
@@ -861,9 +864,9 @@ impl RustParentConstructor {
     }
 }
 
-type ParentConstructor = fn(&[Value]) -> Result<Gc<dyn SchemeCompatible>, Condition>;
+type ParentConstructor = fn(&[Value]) -> Result<Gc<dyn SchemeCompatible>, Exception>;
 
-pub fn is_subtype_of(val: &Value, rt: &Value) -> Result<bool, Condition> {
+pub fn is_subtype_of(val: &Value, rt: &Value) -> Result<bool, Exception> {
     let UnpackedValue::Record(rec) = val.clone().unpack() else {
         return Ok(false);
     };
@@ -877,9 +880,9 @@ fn record_predicate_fn(
     env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _dyn_stack: &mut DynStack,
+    _dyn_state: &mut DynamicState,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let k: Procedure = k.try_into()?;
     let [val] = args else {
         unreachable!();
@@ -888,7 +891,6 @@ fn record_predicate_fn(
     Ok(Application::new(
         k,
         vec![Value::from(is_subtype_of(val, &env[0])?)],
-        None,
     ))
 }
 
@@ -898,9 +900,9 @@ pub fn record_predicate(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _dyn_stack: &mut DynStack,
+    _dyn_state: &mut DynamicState,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let k: Procedure = k.try_into()?;
     let [rtd] = args else {
         unreachable!();
@@ -912,9 +914,8 @@ pub fn record_predicate(
         FuncPtr::Bridge(record_predicate_fn),
         1,
         false,
-        None,
     );
-    Ok(Application::new(k, vec![Value::from(pred_fn)], None))
+    Ok(Application::new(k, vec![Value::from(pred_fn)]))
 }
 
 #[cps_bridge]
@@ -923,9 +924,9 @@ fn record_accessor_fn(
     env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _dyn_stack: &mut DynStack,
+    _dyn_state: &mut DynamicState,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let k: Procedure = k.try_into()?;
     let [val] = args else {
         unreachable!();
@@ -933,13 +934,13 @@ fn record_accessor_fn(
     let record: Record = val.clone().try_into()?;
     // RTD is the first environment variable, field index is the second
     if !is_subtype_of(val, &env[0])? {
-        return Err(Condition::error(
+        return Err(Exception::error(
             "not a child of this record type".to_string(),
         ));
     }
     let idx: usize = env[1].clone().try_into()?;
     let val = record.0.fields[idx].read().clone();
-    Ok(Application::new(k, vec![val], None))
+    Ok(Application::new(k, vec![val]))
 }
 
 #[cps_bridge(def = "record-accessor rtd k", lib = "(rnrs records procedural (6))")]
@@ -948,9 +949,9 @@ pub fn record_accessor(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _dyn_stack: &mut DynStack,
+    _dyn_state: &mut DynamicState,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let k: Procedure = k.try_into()?;
     let [rtd, idx] = args else {
         unreachable!();
@@ -958,7 +959,7 @@ pub fn record_accessor(
     let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
     let idx: usize = idx.clone().try_into()?;
     if idx > rtd.fields.len() {
-        return Err(Condition::error(format!(
+        return Err(Exception::error(format!(
             "{idx} is out of range {}",
             rtd.fields.len()
         )));
@@ -970,9 +971,8 @@ pub fn record_accessor(
         FuncPtr::Bridge(record_accessor_fn),
         1,
         false,
-        None,
     );
-    Ok(Application::new(k, vec![Value::from(accessor_fn)], None))
+    Ok(Application::new(k, vec![Value::from(accessor_fn)]))
 }
 
 #[cps_bridge]
@@ -981,9 +981,9 @@ fn record_mutator_fn(
     env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _dyn_stack: &mut DynStack,
+    _dyn_state: &mut DynamicState,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let k: Procedure = k.try_into()?;
     let [rec, new_val] = args else {
         unreachable!();
@@ -991,13 +991,13 @@ fn record_mutator_fn(
     let record: Record = rec.clone().try_into()?;
     // RTD is the first environment variable, field index is the second
     if !is_subtype_of(rec, &env[0])? {
-        return Err(Condition::error(
+        return Err(Exception::error(
             "not a child of this record type".to_string(),
         ));
     }
     let idx: usize = env[1].clone().try_into()?;
     *record.0.fields[idx].write() = new_val.clone();
-    Ok(Application::new(k, vec![], None))
+    Ok(Application::new(k, vec![]))
 }
 
 #[cps_bridge(def = "record-mutator rtd k", lib = "(rnrs records procedural (6))")]
@@ -1006,9 +1006,9 @@ pub fn record_mutator(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _dyn_stack: &mut DynStack,
+    _dyn_state: &mut DynamicState,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let k: Procedure = k.try_into()?;
     let [rtd, idx] = args else {
         unreachable!();
@@ -1016,13 +1016,13 @@ pub fn record_mutator(
     let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
     let idx: usize = idx.clone().try_into()?;
     if idx > rtd.fields.len() {
-        return Err(Condition::error(format!(
+        return Err(Exception::error(format!(
             "{idx} is out of range {}",
             rtd.fields.len()
         )));
     }
     if matches!(rtd.fields[idx], Field::Immutable(_)) {
-        return Err(Condition::error(format!("{idx} is immutable")));
+        return Err(Exception::error(format!("{idx} is immutable")));
     }
     let idx = idx + rtd.field_index_offset;
     let mutator_fn = Procedure::new(
@@ -1031,15 +1031,14 @@ pub fn record_mutator(
         FuncPtr::Bridge(record_mutator_fn),
         2,
         false,
-        None,
     );
-    Ok(Application::new(k, vec![Value::from(mutator_fn)], None))
+    Ok(Application::new(k, vec![Value::from(mutator_fn)]))
 }
 
 // Inspection library:
 
 #[bridge(name = "record?", lib = "(rnrs records inspection (6))")]
-pub fn record_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
+pub fn record_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
     match &*obj.unpacked_ref() {
         UnpackedValue::Record(rec) => Ok(vec![Value::from(!rec.0.rtd.opaque)]),
         _ => Ok(vec![Value::from(false)]),
@@ -1047,23 +1046,23 @@ pub fn record_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "record-rtd", lib = "(rnrs records inspection (6))")]
-pub fn record_rtd(record: &Value) -> Result<Vec<Value>, Condition> {
+pub fn record_rtd(record: &Value) -> Result<Vec<Value>, Exception> {
     match &*record.unpacked_ref() {
         UnpackedValue::Record(rec) if !rec.0.rtd.opaque => Ok(vec![Value::from(rec.0.rtd.clone())]),
-        _ => Err(Condition::error(
+        _ => Err(Exception::error(
             "expected a non-opaque record type".to_string(),
         )),
     }
 }
 
 #[bridge(name = "record-type-name", lib = "(rnrs records inspection (6))")]
-pub fn record_type_name(rtd: &Value) -> Result<Vec<Value>, Condition> {
+pub fn record_type_name(rtd: &Value) -> Result<Vec<Value>, Exception> {
     let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
     Ok(vec![Value::from(rtd.name)])
 }
 
 #[bridge(name = "record-type-parent", lib = "(rnrs records inspection (6))")]
-pub fn record_type_parent(rtd: &Value) -> Result<Vec<Value>, Condition> {
+pub fn record_type_parent(rtd: &Value) -> Result<Vec<Value>, Exception> {
     let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
     if let Some(parent) = rtd.inherits.last() {
         Ok(vec![Value::from(parent.0.clone())])
@@ -1073,7 +1072,7 @@ pub fn record_type_parent(rtd: &Value) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "record-type-uid", lib = "(rnrs records inspection (6))")]
-pub fn record_type_uid(rtd: &Value) -> Result<Vec<Value>, Condition> {
+pub fn record_type_uid(rtd: &Value) -> Result<Vec<Value>, Exception> {
     let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
     if let Some(uid) = rtd.uid {
         Ok(vec![Value::from(uid)])
@@ -1086,19 +1085,19 @@ pub fn record_type_uid(rtd: &Value) -> Result<Vec<Value>, Condition> {
     name = "record-type-generative?",
     lib = "(rnrs records inspection (6))"
 )]
-pub fn record_type_generative_pred(rtd: &Value) -> Result<Vec<Value>, Condition> {
+pub fn record_type_generative_pred(rtd: &Value) -> Result<Vec<Value>, Exception> {
     let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
     Ok(vec![Value::from(rtd.uid.is_none())])
 }
 
 #[bridge(name = "record-type-sealed?", lib = "(rnrs records inspection (6))")]
-pub fn record_type_sealed_pred(rtd: &Value) -> Result<Vec<Value>, Condition> {
+pub fn record_type_sealed_pred(rtd: &Value) -> Result<Vec<Value>, Exception> {
     let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
     Ok(vec![Value::from(rtd.sealed)])
 }
 
 #[bridge(name = "record-type-opaque?", lib = "(rnrs records inspection (6))")]
-pub fn record_type_opaque_pred(rtd: &Value) -> Result<Vec<Value>, Condition> {
+pub fn record_type_opaque_pred(rtd: &Value) -> Result<Vec<Value>, Exception> {
     let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
     Ok(vec![Value::from(rtd.opaque)])
 }
@@ -1107,7 +1106,7 @@ pub fn record_type_opaque_pred(rtd: &Value) -> Result<Vec<Value>, Condition> {
     name = "record-type-field-names",
     lib = "(rnrs records inspection (6))"
 )]
-pub fn record_type_field_names(rtd: &Value) -> Result<Vec<Value>, Condition> {
+pub fn record_type_field_names(rtd: &Value) -> Result<Vec<Value>, Exception> {
     let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
     let fields = rtd
         .fields
@@ -1119,13 +1118,13 @@ pub fn record_type_field_names(rtd: &Value) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "record-field-mutable?", lib = "(rnrs records inspection (6))")]
-pub fn record_field_mutable_pred(rtd: &Value, k: &Value) -> Result<Vec<Value>, Condition> {
+pub fn record_field_mutable_pred(rtd: &Value, k: &Value) -> Result<Vec<Value>, Exception> {
     let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
     let k: Arc<Number> = k.clone().try_into()?;
     let k: usize = k.as_ref().try_into()?;
 
     if k >= rtd.fields.len() {
-        return Err(Condition::invalid_index(k, rtd.fields.len()));
+        return Err(Exception::invalid_index(k, rtd.fields.len()));
     }
 
     Ok(vec![Value::from(matches!(

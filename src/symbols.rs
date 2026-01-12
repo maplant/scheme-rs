@@ -9,7 +9,7 @@ use indexmap::IndexSet;
 use rand::distr::{Alphabetic, SampleString};
 use scheme_rs_macros::{Trace, bridge};
 
-use crate::{exceptions::Condition, strings::WideString, value::Value};
+use crate::{exceptions::Exception, strings::WideString, value::Value};
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Trace)]
 pub struct Symbol(pub(crate) u32);
@@ -34,6 +34,11 @@ impl Symbol {
         let symtab = SYMTAB.read().unwrap();
         symtab[self.0 as usize].clone()
     }
+
+    pub fn gensym() -> Self {
+        let string = Alphabetic.sample_string(&mut rand::rng(), 32);
+        Self::intern(&string)
+    }
 }
 
 impl fmt::Display for Symbol {
@@ -55,19 +60,18 @@ impl PartialEq<&'_ str> for Symbol {
 }
 
 #[bridge(name = "string->symbol", lib = "(rnrs base builtins (6))")]
-pub fn string_to_symbol(s: &Value) -> Result<Vec<Value>, Condition> {
+pub fn string_to_symbol(s: &Value) -> Result<Vec<Value>, Exception> {
     let s: WideString = s.clone().try_into()?;
     Ok(vec![Value::from(Symbol::intern(&s.to_string()))])
 }
 
 #[bridge(name = "symbol->string", lib = "(rnrs base builtins (6))")]
-pub fn symbol_to_string(s: &Value) -> Result<Vec<Value>, Condition> {
+pub fn symbol_to_string(s: &Value) -> Result<Vec<Value>, Exception> {
     let sym: Symbol = s.clone().try_into()?;
     Ok(vec![Value::from(sym.to_str().to_string())])
 }
 
 #[bridge(name = "gensym", lib = "(rnrs base builtins (6))")]
-pub fn gensym() -> Result<Vec<Value>, Condition> {
-    let string = Alphabetic.sample_string(&mut rand::rng(), 32);
-    Ok(vec![Value::from(Symbol::intern(&string))])
+pub fn gensym() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(Symbol::gensym())])
 }

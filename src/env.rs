@@ -4,6 +4,7 @@ use std::{
     collections::{HashMap, HashSet, hash_map::Entry},
     fmt,
     hash::{Hash, Hasher},
+    ptr::NonNull,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
@@ -16,10 +17,10 @@ use futures::future::BoxFuture;
 
 use crate::{
     ast::{ImportSet, SpecialKeyword},
-    exceptions::{Condition, Exception},
+    exceptions::Exception,
     gc::{Gc, Trace},
     proc::Procedure,
-    registry::{Import, ImportError, Library},
+    registry::{Import, Library},
     runtime::Runtime,
     symbols::Symbol,
     syntax::{Identifier, Mark, Syntax},
@@ -61,7 +62,7 @@ impl LexicalContourInner {
     }
 
     #[cfg(not(feature = "async"))]
-    pub fn fetch_var(&self, name: &Identifier) -> Result<Option<Var>, Condition> {
+    pub fn fetch_var(&self, name: &Identifier) -> Result<Option<Var>, Exception> {
         if let Some(local) = self.vars.get(name) {
             return Ok(Some(Var::Local(*local)));
         }
@@ -72,7 +73,7 @@ impl LexicalContourInner {
     pub fn fetch_var<'a>(
         &self,
         name: &'a Identifier,
-    ) -> BoxFuture<'a, Result<Option<Var>, Condition>> {
+    ) -> BoxFuture<'a, Result<Option<Var>, Exception>> {
         if let Some(local) = self.vars.get(name) {
             let local = *local;
             return Box::pin(async move { Ok(Some(Var::Local(local))) });
@@ -85,7 +86,7 @@ impl LexicalContourInner {
     pub fn fetch_special_keyword_or_var(
         &self,
         name: &Identifier,
-    ) -> Result<Option<Either<SpecialKeyword, Var>>, Condition> {
+    ) -> Result<Option<Either<SpecialKeyword, Var>>, Exception> {
         if let Some(local) = self.vars.get(name) {
             return Ok(Some(Either::Right(Var::Local(*local))));
         }
@@ -96,7 +97,7 @@ impl LexicalContourInner {
     pub fn fetch_special_keyword_or_var<'a>(
         &self,
         name: &'a Identifier,
-    ) -> BoxFuture<'a, Result<Option<Either<SpecialKeyword, Var>>, Condition>> {
+    ) -> BoxFuture<'a, Result<Option<Either<SpecialKeyword, Var>>, Exception>> {
         if let Some(local) = self.vars.get(name) {
             let local = *local;
             return Box::pin(async move { Ok(Some(Either::Right(Var::Local(local)))) });
@@ -115,10 +116,6 @@ impl LexicalContourInner {
     pub fn fetch_top(&self) -> Library {
         self.up.fetch_top()
     }
-
-    pub fn is_bound(&self, name: &Identifier) -> bool {
-        self.vars.contains_key(name) || self.up.is_bound(name)
-    }
 }
 
 #[derive(Clone, Trace)]
@@ -126,7 +123,7 @@ pub struct LexicalContour(Gc<RwLock<LexicalContourInner>>);
 
 impl LexicalContour {
     #[cfg(not(feature = "async"))]
-    pub fn fetch_keyword(&self, name: &Identifier) -> Result<Option<Keyword>, Condition> {
+    pub fn fetch_keyword(&self, name: &Identifier) -> Result<Option<Keyword>, Exception> {
         self.clone().fetch_keyword_inner(name)
     }
 
@@ -134,12 +131,12 @@ impl LexicalContour {
     pub fn fetch_keyword<'a>(
         &self,
         name: &'a Identifier,
-    ) -> BoxFuture<'a, Result<Option<Keyword>, Condition>> {
+    ) -> BoxFuture<'a, Result<Option<Keyword>, Exception>> {
         Box::pin(self.clone().fetch_keyword_inner(name))
     }
 
     #[maybe_async]
-    fn fetch_keyword_inner(self, name: &Identifier) -> Result<Option<Keyword>, Condition> {
+    fn fetch_keyword_inner(self, name: &Identifier) -> Result<Option<Keyword>, Exception> {
         let up = {
             let this = self.0.read();
             if let Some(trans) = this.keywords.get(name) {
@@ -153,7 +150,7 @@ impl LexicalContour {
     }
 
     #[maybe_async]
-    pub fn import(&self, import_set: ImportSet) -> Result<(), ImportError> {
+    pub fn import(&self, import_set: ImportSet) -> Result<(), Exception> {
         let (rt, registry) = {
             let top = self.0.read().fetch_top();
             let top = top.0.read();
@@ -164,7 +161,9 @@ impl LexicalContour {
         for (ident, import) in imports {
             match this.imports.entry(ident) {
                 Entry::Occupied(prev_imported) if prev_imported.get().origin != import.origin => {
-                    return Err(ImportError::DuplicateIdentifier(prev_imported.key().sym));
+                    return Err(crate::registry::error::name_bound_multiple_times(
+                        prev_imported.key().sym,
+                    ));
                 }
                 Entry::Vacant(slot) => {
                     slot.insert(import);
@@ -173,6 +172,15 @@ impl LexicalContour {
             }
         }
         Ok(())
+    }
+
+    fn binding_env(&self, name: &Identifier) -> Option<EnvId> {
+        let this = self.0.read();
+        if this.vars.contains_key(name) || this.keywords.contains_key(name) {
+            Some(EnvId::new(&self.0))
+        } else {
+            this.up.binding_env(name)
+        }
     }
 }
 
@@ -203,7 +211,7 @@ impl LetSyntaxContourInner {
     }
 
     #[cfg(not(feature = "async"))]
-    pub fn fetch_var(&self, name: &Identifier) -> Result<Option<Var>, Condition> {
+    pub fn fetch_var(&self, name: &Identifier) -> Result<Option<Var>, Exception> {
         self.up.fetch_var(name)
     }
 
@@ -211,7 +219,7 @@ impl LetSyntaxContourInner {
     pub fn fetch_var<'a>(
         &self,
         name: &'a Identifier,
-    ) -> BoxFuture<'a, Result<Option<Var>, Condition>> {
+    ) -> BoxFuture<'a, Result<Option<Var>, Exception>> {
         let up = self.up.clone();
         Box::pin(async move { up.fetch_var(name).await })
     }
@@ -220,7 +228,7 @@ impl LetSyntaxContourInner {
     pub fn fetch_special_keyword_or_var(
         &self,
         name: &Identifier,
-    ) -> Result<Option<Either<SpecialKeyword, Var>>, Condition> {
+    ) -> Result<Option<Either<SpecialKeyword, Var>>, Exception> {
         self.up.fetch_special_keyword_or_var(name)
     }
 
@@ -228,7 +236,7 @@ impl LetSyntaxContourInner {
     pub fn fetch_special_keyword_or_var<'a>(
         &self,
         name: &'a Identifier,
-    ) -> BoxFuture<'a, Result<Option<Either<SpecialKeyword, Var>>, Condition>> {
+    ) -> BoxFuture<'a, Result<Option<Either<SpecialKeyword, Var>>, Exception>> {
         let up = self.up.clone();
         Box::pin(async move { up.fetch_special_keyword_or_var(name).await })
     }
@@ -242,12 +250,12 @@ impl LetSyntaxContourInner {
     }
 
     #[cfg(not(feature = "async"))]
-    pub fn import(&self, import_set: ImportSet) -> Result<(), ImportError> {
+    pub fn import(&self, import_set: ImportSet) -> Result<(), Exception> {
         self.up.import(import_set)
     }
 
     #[cfg(feature = "async")]
-    pub fn import(&self, import_set: ImportSet) -> BoxFuture<'static, Result<(), ImportError>> {
+    pub fn import(&self, import_set: ImportSet) -> BoxFuture<'static, Result<(), Exception>> {
         let up = self.up.clone();
         Box::pin(async move { up.import(import_set).await })
     }
@@ -258,7 +266,7 @@ pub struct LetSyntaxContour(Gc<RwLock<LetSyntaxContourInner>>);
 
 impl LetSyntaxContour {
     #[cfg(not(feature = "async"))]
-    pub fn fetch_keyword(&self, name: &Identifier) -> Result<Option<Keyword>, Condition> {
+    pub fn fetch_keyword(&self, name: &Identifier) -> Result<Option<Keyword>, Exception> {
         self.clone().fetch_keyword_inner(name)
     }
 
@@ -266,12 +274,12 @@ impl LetSyntaxContour {
     pub fn fetch_keyword<'a>(
         &self,
         name: &'a Identifier,
-    ) -> BoxFuture<'a, Result<Option<Keyword>, Condition>> {
+    ) -> BoxFuture<'a, Result<Option<Keyword>, Exception>> {
         Box::pin(self.clone().fetch_keyword_inner(name))
     }
 
     #[maybe_async]
-    fn fetch_keyword_inner(self, name: &Identifier) -> Result<Option<Keyword>, Condition> {
+    fn fetch_keyword_inner(self, name: &Identifier) -> Result<Option<Keyword>, Exception> {
         let up = {
             let this = self.0.read();
             if let Some(trans) = this.keywords.get(name) {
@@ -287,6 +295,20 @@ impl LetSyntaxContour {
             this.up.clone()
         };
         maybe_await!(up.fetch_keyword(name))
+    }
+
+    fn binding_env(&self, name: &Identifier) -> Option<EnvId> {
+        let this = self.0.read();
+        if this.keywords.contains_key(name) {
+            let env = if this.recursive {
+                EnvId::new(&self.0)
+            } else {
+                this.up.to_id()
+            };
+            Some(env)
+        } else {
+            this.up.binding_env(name)
+        }
     }
 }
 
@@ -310,7 +332,7 @@ impl MacroExpansion {
 macro_rules! macro_resolver_fn {
     ( $outer:ident, $inner:ident -> $ret:ty ) => {
         #[cfg(not(feature = "async"))]
-        pub fn $outer(&self, name: &Identifier) -> Result<Option<$ret>, Condition> {
+        pub fn $outer(&self, name: &Identifier) -> Result<Option<$ret>, Exception> {
             Self::$inner(&self.up, &self.source, self.mark, name)
         }
 
@@ -318,7 +340,7 @@ macro_rules! macro_resolver_fn {
         pub fn $outer<'a>(
             &self,
             name: &'a Identifier,
-        ) -> BoxFuture<'a, Result<Option<$ret>, Condition>> {
+        ) -> BoxFuture<'a, Result<Option<$ret>, Exception>> {
             let up = self.up.clone();
             let source = self.source.clone();
             let mark = self.mark;
@@ -331,7 +353,7 @@ macro_rules! macro_resolver_fn {
             source: &Environment,
             mark: Mark,
             name: &Identifier,
-        ) -> Result<Option<$ret>, Condition> {
+        ) -> Result<Option<$ret>, Exception> {
             // Attempt to check the up scope first:
             let var = maybe_await!(up.$outer(name))?;
             if var.is_some() {
@@ -411,24 +433,28 @@ impl MacroExpansion {
         self.up.fetch_top()
     }
 
-    pub fn is_bound(&self, name: &Identifier) -> bool {
-        self.up.is_bound(name)
-            || name.marks.contains(&self.mark) && {
-                let mut unmarked = name.clone();
-                unmarked.mark(self.mark);
-                self.source.is_bound(&unmarked)
-            }
-    }
-
     #[cfg(not(feature = "async"))]
-    pub fn import(&self, import_set: ImportSet) -> Result<(), ImportError> {
+    pub fn import(&self, import_set: ImportSet) -> Result<(), Exception> {
         self.up.import(import_set)
     }
 
     #[cfg(feature = "async")]
-    pub fn import(&self, import_set: ImportSet) -> BoxFuture<'static, Result<(), ImportError>> {
+    pub fn import(&self, import_set: ImportSet) -> BoxFuture<'static, Result<(), Exception>> {
         let up = self.up.clone();
         Box::pin(async move { up.import(import_set).await })
+    }
+
+    pub(crate) fn binding_env(&self, name: &Identifier) -> Option<EnvId> {
+        self.up.binding_env(name).or_else(|| {
+            name.marks
+                .contains(&self.mark)
+                .then(|| {
+                    let mut unmarked = name.clone();
+                    unmarked.mark(self.mark);
+                    self.source.binding_env(&unmarked)
+                })
+                .flatten()
+        })
     }
 }
 
@@ -462,12 +488,12 @@ impl SyntaxCaseExpr {
     }
 
     #[cfg(not(feature = "async"))]
-    fn fetch_var(&self, name: &Identifier) -> Result<Option<Var>, Condition> {
+    fn fetch_var(&self, name: &Identifier) -> Result<Option<Var>, Exception> {
         self.up.fetch_var(name)
     }
 
     #[cfg(feature = "async")]
-    fn fetch_var<'a>(&self, name: &'a Identifier) -> BoxFuture<'a, Result<Option<Var>, Condition>> {
+    fn fetch_var<'a>(&self, name: &'a Identifier) -> BoxFuture<'a, Result<Option<Var>, Exception>> {
         let up = self.up.clone();
         Box::pin(async move { up.fetch_var(name).await })
     }
@@ -477,7 +503,7 @@ impl SyntaxCaseExpr {
     }
 
     #[cfg(not(feature = "async"))]
-    fn fetch_keyword(&self, name: &Identifier) -> Result<Option<Keyword>, Condition> {
+    fn fetch_keyword(&self, name: &Identifier) -> Result<Option<Keyword>, Exception> {
         self.up.fetch_keyword(name)
     }
 
@@ -485,7 +511,7 @@ impl SyntaxCaseExpr {
     fn fetch_keyword<'a>(
         &self,
         name: &'a Identifier,
-    ) -> BoxFuture<'a, Result<Option<Keyword>, Condition>> {
+    ) -> BoxFuture<'a, Result<Option<Keyword>, Exception>> {
         let up = self.up.clone();
         Box::pin(async move { up.fetch_keyword(name).await })
     }
@@ -494,7 +520,7 @@ impl SyntaxCaseExpr {
     fn fetch_special_keyword_or_var(
         &self,
         name: &Identifier,
-    ) -> Result<Option<Either<SpecialKeyword, Var>>, Condition> {
+    ) -> Result<Option<Either<SpecialKeyword, Var>>, Exception> {
         self.up.fetch_special_keyword_or_var(name)
     }
 
@@ -502,18 +528,18 @@ impl SyntaxCaseExpr {
     fn fetch_special_keyword_or_var<'a>(
         &self,
         name: &'a Identifier,
-    ) -> BoxFuture<'a, Result<Option<Either<SpecialKeyword, Var>>, Condition>> {
+    ) -> BoxFuture<'a, Result<Option<Either<SpecialKeyword, Var>>, Exception>> {
         let up = self.up.clone();
         Box::pin(async move { up.fetch_special_keyword_or_var(name).await })
     }
 
     #[cfg(not(feature = "async"))]
-    fn import(&self, import: ImportSet) -> Result<(), ImportError> {
+    fn import(&self, import: ImportSet) -> Result<(), Exception> {
         self.up.import(import)
     }
 
     #[cfg(feature = "async")]
-    fn import(&self, import: ImportSet) -> BoxFuture<'static, Result<(), ImportError>> {
+    fn import(&self, import: ImportSet) -> BoxFuture<'static, Result<(), Exception>> {
         let up = self.up.clone();
         Box::pin(async move { up.import(import).await })
     }
@@ -526,8 +552,8 @@ impl SyntaxCaseExpr {
         }
     }
 
-    fn is_bound(&self, name: &Identifier) -> bool {
-        self.up.is_bound(name)
+    fn binding_env(&self, name: &Identifier) -> Option<EnvId> {
+        self.up.binding_env(name)
     }
 }
 
@@ -594,7 +620,7 @@ impl Environment {
     }
 
     #[maybe_async]
-    pub fn fetch_var(&self, name: &Identifier) -> Result<Option<Var>, Condition> {
+    pub fn fetch_var(&self, name: &Identifier) -> Result<Option<Var>, Exception> {
         let fetch_result = match self {
             Self::Top(top) => return Ok(maybe_await!(top.fetch_var(name))?.map(Var::Global)),
             Self::LexicalContour(lex) => lex.0.read().fetch_var(name),
@@ -616,7 +642,7 @@ impl Environment {
     }
 
     #[maybe_async]
-    pub fn fetch_keyword(&self, name: &Identifier) -> Result<Option<Keyword>, Condition> {
+    pub fn fetch_keyword(&self, name: &Identifier) -> Result<Option<Keyword>, Exception> {
         let fetch_result = match self {
             Self::Top(top) => top.fetch_keyword(name),
             Self::LexicalContour(lex) => lex.fetch_keyword(name),
@@ -631,7 +657,7 @@ impl Environment {
     pub fn fetch_special_keyword_or_var(
         &self,
         name: &Identifier,
-    ) -> Result<Option<Either<SpecialKeyword, Var>>, Condition> {
+    ) -> Result<Option<Either<SpecialKeyword, Var>>, Exception> {
         let fetch_result = match self {
             Self::Top(top) => {
                 if let Some(var) = maybe_await!(top.fetch_var(name))? {
@@ -648,10 +674,14 @@ impl Environment {
     }
 
     #[maybe_async]
-    pub fn import(&self, import: ImportSet) -> Result<(), ImportError> {
+    pub fn import(&self, import: ImportSet) -> Result<(), Exception> {
         let import_result = match self {
-            Self::Top(top) => return maybe_await!(top.import(import)),
-            Self::LexicalContour(lex) => return maybe_await!(lex.import(import)),
+            Self::Top(top) => {
+                return maybe_await!(top.import(import));
+            }
+            Self::LexicalContour(lex) => {
+                return maybe_await!(lex.import(import));
+            }
             Self::LetSyntaxContour(ls) => ls.0.read().import(import),
             Self::MacroExpansion(me) => me.read().import(import),
             Self::SyntaxCaseExpr(sc) => sc.read().import(import),
@@ -669,13 +699,16 @@ impl Environment {
         }
     }
 
-    pub fn is_bound(&self, name: &Identifier) -> bool {
+    /// Return the binding environment of the variable or keyword, if it exists
+    pub(crate) fn binding_env(&self, name: &Identifier) -> Option<EnvId> {
         match self {
-            Self::Top(top) => top.is_bound(name),
-            Self::LexicalContour(lex) => lex.0.read().is_bound(name),
-            Self::LetSyntaxContour(ls) => ls.0.read().up.is_bound(name),
-            Self::MacroExpansion(me) => me.read().is_bound(name),
-            Self::SyntaxCaseExpr(sc) => sc.read().is_bound(name),
+            Self::Top(top) => top.binding_env(name),
+            Self::LexicalContour(lex) => lex.binding_env(name),
+            Self::LetSyntaxContour(ls) => ls.binding_env(name),
+            Self::MacroExpansion(me) => me.read().binding_env(name),
+            // I don't think this is technically correct; it should probably
+            // return the syntax case expr env if the binding variable is hit
+            Self::SyntaxCaseExpr(sc) => sc.read().binding_env(name),
         }
     }
 
@@ -704,6 +737,16 @@ impl Environment {
         let syntax_case_expr = SyntaxCaseExpr::new(self, expansions_store, pattern_vars);
         Self::SyntaxCaseExpr(Gc::new(RwLock::new(syntax_case_expr)))
     }
+
+    pub(crate) fn to_id(&self) -> EnvId {
+        match self {
+            Self::Top(top) => EnvId::new(&top.0),
+            Self::LexicalContour(lex) => EnvId::new(&lex.0),
+            Self::LetSyntaxContour(ls) => EnvId::new(&ls.0),
+            Self::MacroExpansion(me) => EnvId::new(me),
+            Self::SyntaxCaseExpr(sc) => EnvId::new(sc),
+        }
+    }
 }
 
 impl From<Library> for Environment {
@@ -729,6 +772,37 @@ impl fmt::Debug for Environment {
         Ok(())
     }
 }
+
+impl PartialEq for Environment {
+    fn eq(&self, rhs: &Self) -> bool {
+        match (self, rhs) {
+            (Self::Top(lhs), Self::Top(rhs)) => lhs == rhs,
+            (Self::LexicalContour(lhs), Self::LexicalContour(rhs)) => Gc::ptr_eq(&lhs.0, &rhs.0),
+            (Self::LetSyntaxContour(lhs), Self::LetSyntaxContour(rhs)) => {
+                Gc::ptr_eq(&lhs.0, &rhs.0)
+            }
+            (Self::MacroExpansion(lhs), Self::MacroExpansion(rhs)) => Gc::ptr_eq(lhs, rhs),
+            (Self::SyntaxCaseExpr(lhs), Self::SyntaxCaseExpr(rhs)) => Gc::ptr_eq(lhs, rhs),
+            _ => false,
+        }
+    }
+}
+
+/// A unique identifier for a binding environment.
+#[repr(transparent)]
+#[derive(Copy, Clone, Debug, Trace, PartialEq)]
+pub struct EnvId(#[trace(skip)] NonNull<()>);
+
+impl EnvId {
+    pub(crate) fn new<T>(value: &Gc<T>) -> Self {
+        // Safety: we're converting one non-null to another, so we don't need to
+        // check its validity.
+        Self(unsafe { NonNull::new_unchecked(value.ptr.as_ptr() as *mut ()) })
+    }
+}
+
+unsafe impl Send for EnvId {}
+unsafe impl Sync for EnvId {}
 
 #[derive(Copy, Clone, Trace)]
 pub struct Local {

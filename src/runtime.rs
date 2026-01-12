@@ -4,15 +4,17 @@ use crate::{
     ast::DefinitionBody,
     cps::{Compile, Cps, codegen::RuntimeFunctionsBuilder},
     env::{Environment, Global},
-    exceptions::{Condition, Exception, raise},
+    exceptions::{Exception, raise},
     gc::{Gc, GcInner, Trace, init_gc},
     lists::{Pair, list_to_vec},
     num,
     ports::{BufferMode, Port, Transcoder},
-    proc::{Application, ContinuationPtr, DynStack, FuncDebugInfo, FuncPtr, Procedure, UserPtr},
+    proc::{
+        Application, ContinuationPtr, DynamicState, FuncDebugInfo, FuncPtr, Procedure, UserPtr,
+    },
     registry::{Library, Registry},
     symbols::Symbol,
-    syntax::Span,
+    syntax::{Identifier, Span, Syntax},
     value::{Cell, UnpackedValue, Value},
 };
 use parking_lot::RwLock;
@@ -64,28 +66,23 @@ impl Runtime {
 
         let progm = Library::new_program(self, path);
         let env = Environment::Top(progm);
-        let sexprs = {
+        let form = {
             let port = Port::new(
+                path.display(),
                 maybe_await!(File::open(path)).unwrap(),
                 BufferMode::Block,
                 Some(Transcoder::native()),
             );
             let file_name = path.file_name().unwrap().to_str().unwrap_or("<unknown>");
             let span = Span::new(file_name);
-            maybe_await!(port.all_sexprs(span)).map_err(Condition::from)?
+            maybe_await!(port.all_sexprs(span)).map_err(Exception::from)?
         };
 
-        let body = maybe_await!(DefinitionBody::parse_lib_body(
-            self,
-            &sexprs,
-            &env,
-            sexprs[0].span()
-        ))
-        .unwrap();
+        let body = maybe_await!(DefinitionBody::parse_lib_body(self, &form, &env)).unwrap();
         let compiled = body.compile_top_level();
         let closure = maybe_await!(self.compile_expr(compiled));
 
-        maybe_await!(Application::new(closure, Vec::new(), None,).eval(&mut DynStack::default(),))
+        maybe_await!(Application::new(closure, Vec::new()).eval(&mut DynamicState::default(),))
     }
 
     pub fn get_registry(&self) -> Registry {
@@ -361,7 +358,7 @@ unsafe extern "C" fn apply(
     op: *const (),
     args: *const *const (),
     num_args: u32,
-    span: *const Span,
+    dyn_state: *mut DynamicState,
 ) -> *mut Application {
     unsafe {
         let args: Vec<_> = (0..num_args)
@@ -373,46 +370,53 @@ unsafe extern "C" fn apply(
             x => {
                 let raised = raise(
                     Runtime::from_raw_inc_rc(runtime),
-                    Condition::invalid_operator(x.type_name()).into(),
+                    Exception::invalid_operator(x.type_name()).into(),
+                    dyn_state.as_mut().unwrap_unchecked(),
                 );
                 return Box::into_raw(Box::new(raised));
             }
         };
 
-        let app = Application::new(op, args, arc_from_ptr(span));
+        let app = Application::new(op, args);
 
         Box::into_raw(Box::new(app))
     }
 }
 
-/// Create a boxed application that forwards a list of values to the operator
+/// Get a frame from a procedure and a span
 #[runtime_fn]
-unsafe extern "C" fn forward(
-    runtime: *mut GcInner<RwLock<RuntimeInner>>,
-    op: *const (),
-    args: *const (),
-) -> *mut Application {
+unsafe extern "C" fn get_frame(op: *const (), span: *const ()) -> *const () {
     unsafe {
-        let op = match Value::from_raw_inc_rc(op).unpack() {
-            UnpackedValue::Procedure(op) => op,
-            x => {
-                let raised = raise(
-                    Runtime::from_raw_inc_rc(runtime),
-                    Condition::invalid_operator(x.type_name()).into(),
-                );
-                return Box::into_raw(Box::new(raised));
-            }
+        let op = Value::from_raw_inc_rc(op);
+        let op: Procedure = op.try_into().unwrap();
+        let span = Value::from_raw_inc_rc(span);
+        let span = span.cast_to_rust_type::<Span>().unwrap();
+        let frame = Syntax::Identifier {
+            ident: Identifier::from_symbol(
+                op.get_debug_info()
+                    .map_or_else(|| Symbol::intern("<lambda>"), |dbg| dbg.name),
+            ),
+            binding_env: None,
+            span: span.as_ref().clone(),
         };
+        Value::into_raw(Value::from(frame))
+    }
+}
 
-        // We do not need to increment to forward here, for the same reason as in
-        // halt.
-        let args = ManuallyDrop::new(Value::from_raw(args));
-        let mut flattened = Vec::new();
-        list_to_vec(&args, &mut flattened);
-
-        let app = Application::new(op, flattened, None);
-
-        Box::into_raw(Box::new(app))
+/// Set the value for continuation mark
+#[runtime_fn]
+unsafe extern "C" fn set_continuation_mark(
+    tag: *const (),
+    val: *const (),
+    dyn_state: *mut DynamicState,
+) {
+    unsafe {
+        let tag = Value::from_raw_inc_rc(tag);
+        let val = Value::from_raw_inc_rc(val);
+        dyn_state
+            .as_mut()
+            .unwrap()
+            .set_continuation_mark(tag.cast_to_scheme_type().unwrap(), val);
     }
 }
 
@@ -456,7 +460,7 @@ unsafe extern "C" fn store(from: *const (), to: *const ()) {
 unsafe extern "C" fn cons(vals: *const *const (), num_vals: u32, error: *mut Value) -> *const () {
     unsafe {
         if num_vals != 2 {
-            error.write(Condition::wrong_num_of_args(2, num_vals as usize).into());
+            error.write(Exception::wrong_num_of_args(2, num_vals as usize).into());
             return Value::into_raw(Value::undefined());
         }
         let car = Value::from_raw_inc_rc(vals.read());
@@ -490,6 +494,7 @@ unsafe extern "C" fn make_continuation(
     num_envs: u32,
     num_required_args: u32,
     variadic: bool,
+    dyn_state: *mut DynamicState,
 ) -> *const () {
     unsafe {
         // Collect the environment:
@@ -497,13 +502,12 @@ unsafe extern "C" fn make_continuation(
             .map(|i| Value::from_raw_inc_rc(env.add(i as usize).read()))
             .collect();
 
-        let proc = Procedure::new(
+        let proc = dyn_state.as_mut().unwrap().new_k(
             Runtime::from_raw_inc_rc(runtime),
             env,
-            FuncPtr::Continuation(fn_ptr),
+            fn_ptr,
             num_required_args as usize,
             variadic,
-            None,
         );
 
         Value::into_raw(Value::from(proc))
@@ -527,7 +531,7 @@ unsafe extern "C" fn make_user(
             .map(|i| Value::from_raw_inc_rc(env.add(i as usize).read()))
             .collect();
 
-        let proc = Procedure::new(
+        let proc = Procedure::with_debug_info(
             Runtime::from_raw_inc_rc(runtime),
             env,
             FuncPtr::User(fn_ptr),
@@ -544,7 +548,7 @@ unsafe extern "C" fn make_user(
 #[runtime_fn]
 unsafe extern "C" fn error_unbound_variable(symbol: u32) -> *const () {
     let sym = Symbol(symbol);
-    let condition = Condition::error(format!("{sym} is unbound"));
+    let condition = Exception::error(format!("{sym} is unbound"));
     Value::into_raw(Value::from(condition))
 }
 

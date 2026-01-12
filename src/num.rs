@@ -1,7 +1,7 @@
 //! Numerical tower.
 
 use crate::{
-    exceptions::Condition,
+    exceptions::Exception,
     gc::Trace,
     registry::bridge,
     value::{Value, ValueType},
@@ -79,6 +79,10 @@ impl Number {
         matches!(self, Self::Real(r) if r.is_nan())
     }
 
+    pub fn is_infinite(&self) -> bool {
+        matches!(self, Self::Real(r) if r.is_infinite())
+    }
+
     pub fn is_complex(&self) -> bool {
         matches!(self, Self::Complex(_))
     }
@@ -148,7 +152,7 @@ impl From<Complex64> for Number {
 macro_rules! number_try_into_impl_integer {
     ($ty:tt) => {
         impl TryInto<$ty> for &Number {
-            type Error = Condition;
+            type Error = Exception;
 
             fn try_into(self) -> Result<$ty, Self::Error> {
                 match self {
@@ -162,7 +166,7 @@ macro_rules! number_try_into_impl_integer {
                             if *i <= $ty::MAX as i64 && *i >= $ty::MIN as i64 {
                                 Ok(*i as $ty)
                             } else {
-                                Err(Condition::not_representable(
+                                Err(Exception::not_representable(
                                     &format!("{i}"),
                                     stringify!($ty),
                                 ))
@@ -172,21 +176,21 @@ macro_rules! number_try_into_impl_integer {
                     Number::BigInteger(bigint) => $ty::convertible_from(bigint)
                         .then(|| $ty::wrapping_from(bigint))
                         .ok_or_else(|| {
-                            Condition::not_representable(&format!("{bigint}"), stringify!($ty))
+                            Exception::not_representable(&format!("{bigint}"), stringify!($ty))
                         }),
                     Number::Rational(_) => {
-                        Err(Condition::conversion_error(stringify!($ty), "Rational"))
+                        Err(Exception::conversion_error(stringify!($ty), "Rational"))
                     }
-                    Number::Real(_) => Err(Condition::conversion_error(stringify!($ty), "Real")),
+                    Number::Real(_) => Err(Exception::conversion_error(stringify!($ty), "Real")),
                     Number::Complex(_) => {
-                        Err(Condition::conversion_error(stringify!($ty), "Complex"))
+                        Err(Exception::conversion_error(stringify!($ty), "Complex"))
                     }
                 }
             }
         }
 
         impl TryInto<$ty> for Number {
-            type Error = Condition;
+            type Error = Exception;
 
             fn try_into(self) -> Result<$ty, Self::Error> {
                 (&self).try_into()
@@ -209,55 +213,55 @@ number_try_into_impl_integer!(i128);
 number_try_into_impl_integer!(isize);
 
 impl TryInto<Integer> for &Number {
-    type Error = Condition;
+    type Error = Exception;
     fn try_into(self) -> Result<Integer, Self::Error> {
         match self {
             Number::FixedInteger(i) => Ok(Integer::from(*i)),
             Number::BigInteger(i) => Ok(i.clone()),
-            Number::Rational(_) => Err(Condition::conversion_error("Integer", "Rational")),
-            Number::Real(_) => Err(Condition::conversion_error("Integer", "Real")),
-            Number::Complex(_) => Err(Condition::conversion_error("Integer", "Complex")),
+            Number::Rational(_) => Err(Exception::conversion_error("Integer", "Rational")),
+            Number::Real(_) => Err(Exception::conversion_error("Integer", "Real")),
+            Number::Complex(_) => Err(Exception::conversion_error("Integer", "Complex")),
         }
     }
 }
 
 impl TryInto<f64> for &Number {
-    type Error = Condition;
+    type Error = Exception;
     fn try_into(self) -> Result<f64, Self::Error> {
         match self {
             Number::FixedInteger(i) => Ok(*i as f64),
             Number::Real(r) => Ok(*r),
-            Number::Complex(_) => Err(Condition::conversion_error("f64", "Complex")),
+            Number::Complex(_) => Err(Exception::conversion_error("f64", "Complex")),
             Number::Rational(r) => {
                 if let Some((float, _, _)) =
                     r.sci_mantissa_and_exponent_round_ref(RoundingMode::Nearest)
                 {
                     Ok(float)
                 } else {
-                    Err(Condition::not_representable(&format!("{r}"), "f64"))
+                    Err(Exception::not_representable(&format!("{r}"), "f64"))
                 }
             }
-            Number::BigInteger(_) => Err(Condition::conversion_error("f64", "BigInteger")),
+            Number::BigInteger(_) => Err(Exception::conversion_error("f64", "BigInteger")),
         }
     }
 }
 
 impl TryInto<Complex64> for &Number {
-    type Error = Condition;
+    type Error = Exception;
     fn try_into(self) -> Result<Complex64, Self::Error> {
         match self {
             Number::Complex(c) => Ok(*c),
-            Number::Rational(_) => Err(Condition::conversion_error("Complex", "Rational")),
-            Number::BigInteger(_) => Err(Condition::conversion_error("Complex", "BigInteger")),
+            Number::Rational(_) => Err(Exception::conversion_error("Complex", "Rational")),
+            Number::BigInteger(_) => Err(Exception::conversion_error("Complex", "BigInteger")),
             Number::Real(r) => {
                 let Some(c) = Complex64::from_f64(*r) else {
-                    return Err(Condition::not_representable(&format!("{r}"), "Real"));
+                    return Err(Exception::not_representable(&format!("{r}"), "Real"));
                 };
                 Ok(c)
             }
             Number::FixedInteger(i) => {
                 let Some(c) = Complex64::from_i64(*i) else {
-                    return Err(Condition::not_representable(&format!("{i}"), "Integer"));
+                    return Err(Exception::not_representable(&format!("{i}"), "Integer"));
                 };
                 Ok(c)
             }
@@ -635,29 +639,29 @@ impl From<RationalFromPrimitiveFloatError> for Box<ArithmeticError> {
 }
 
 #[bridge(name = "zero?", lib = "(rnrs base builtins (6))")]
-pub fn zero(arg: &Value) -> Result<Vec<Value>, Condition> {
+pub fn zero(arg: &Value) -> Result<Vec<Value>, Exception> {
     let num: Arc<Number> = arg.clone().try_into()?;
     Ok(vec![Value::from(num.is_zero())])
 }
 
 #[bridge(name = "even?", lib = "(rnrs base builtins (6))")]
-pub fn even(arg: &Value) -> Result<Vec<Value>, Condition> {
+pub fn even(arg: &Value) -> Result<Vec<Value>, Exception> {
     let num: Arc<Number> = arg.clone().try_into()?;
     Ok(vec![Value::from(num.is_even())])
 }
 
 #[bridge(name = "odd?", lib = "(rnrs base builtins (6))")]
-pub fn odd(arg: &Value) -> Result<Vec<Value>, Condition> {
+pub fn odd(arg: &Value) -> Result<Vec<Value>, Exception> {
     let num: Arc<Number> = arg.clone().try_into()?;
     Ok(vec![Value::from(num.is_odd())])
 }
 
 #[bridge(name = "+", lib = "(rnrs base builtins (6))")]
-pub fn add_builtin(args: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn add_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(add(args)?)])
 }
 
-pub(crate) fn add(vals: &[Value]) -> Result<Number, Condition> {
+pub(crate) fn add(vals: &[Value]) -> Result<Number, Exception> {
     let mut result = Number::FixedInteger(0);
     for val in vals {
         let num: Arc<Number> = val.clone().try_into()?;
@@ -667,11 +671,11 @@ pub(crate) fn add(vals: &[Value]) -> Result<Number, Condition> {
 }
 
 #[bridge(name = "-", lib = "(rnrs base builtins (6))")]
-pub fn sub_builtin(arg1: &Value, args: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn sub_builtin(arg1: &Value, args: &[Value]) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(sub(arg1, args)?)])
 }
 
-pub(crate) fn sub(val1: &Value, vals: &[Value]) -> Result<Number, Condition> {
+pub(crate) fn sub(val1: &Value, vals: &[Value]) -> Result<Number, Exception> {
     let val1: Arc<Number> = val1.clone().try_into()?;
     let mut val1 = val1.as_ref().clone();
     if vals.is_empty() {
@@ -686,11 +690,11 @@ pub(crate) fn sub(val1: &Value, vals: &[Value]) -> Result<Number, Condition> {
 }
 
 #[bridge(name = "*", lib = "(rnrs base builtins (6))")]
-pub fn mul_builtin(args: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn mul_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(mul(args)?)])
 }
 
-pub(crate) fn mul(vals: &[Value]) -> Result<Number, Condition> {
+pub(crate) fn mul(vals: &[Value]) -> Result<Number, Exception> {
     let mut result = Number::FixedInteger(1);
     for val in vals {
         let num: Arc<Number> = val.clone().try_into()?;
@@ -700,11 +704,11 @@ pub(crate) fn mul(vals: &[Value]) -> Result<Number, Condition> {
 }
 
 #[bridge(name = "/", lib = "(rnrs base builtins (6))")]
-pub fn div_builtin(arg1: &Value, args: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn div_builtin(arg1: &Value, args: &[Value]) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(div(arg1, args)?)])
 }
 
-pub(crate) fn div(val1: &Value, vals: &[Value]) -> Result<Number, Condition> {
+pub(crate) fn div(val1: &Value, vals: &[Value]) -> Result<Number, Exception> {
     let val1: Arc<Number> = val1.clone().try_into()?;
     if vals.is_empty() {
         return Ok(Number::FixedInteger(1).checked_div(&val1)?);
@@ -718,11 +722,11 @@ pub(crate) fn div(val1: &Value, vals: &[Value]) -> Result<Number, Condition> {
 }
 
 #[bridge(name = "=", lib = "(rnrs base builtins (6))")]
-pub fn equal_builtin(args: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn equal_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(equal(args)?)])
 }
 
-pub(crate) fn equal(vals: &[Value]) -> Result<bool, Condition> {
+pub(crate) fn equal(vals: &[Value]) -> Result<bool, Exception> {
     if let Some((first, rest)) = vals.split_first() {
         let first: Arc<Number> = first.clone().try_into()?;
         for next in rest {
@@ -736,11 +740,11 @@ pub(crate) fn equal(vals: &[Value]) -> Result<bool, Condition> {
 }
 
 #[bridge(name = ">", lib = "(rnrs base builtins (6))")]
-pub fn greater_builtin(args: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn greater_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(greater(args)?)])
 }
 
-pub(crate) fn greater(vals: &[Value]) -> Result<bool, Condition> {
+pub(crate) fn greater(vals: &[Value]) -> Result<bool, Exception> {
     if let Some((head, rest)) = vals.split_first() {
         let mut prev = head.clone();
         for next in rest {
@@ -750,10 +754,10 @@ pub(crate) fn greater(vals: &[Value]) -> Result<bool, Condition> {
                 // This is somewhat less efficient for small numbers but avoids
                 // cloning big ones
                 if prev.is_complex() {
-                    return Err(Condition::type_error("number", "complex"));
+                    return Err(Exception::type_error("number", "complex"));
                 }
                 if next.is_complex() {
-                    return Err(Condition::type_error("number", "complex"));
+                    return Err(Exception::type_error("number", "complex"));
                 }
                 if prev <= next {
                     return Ok(false);
@@ -766,11 +770,11 @@ pub(crate) fn greater(vals: &[Value]) -> Result<bool, Condition> {
 }
 
 #[bridge(name = ">=", lib = "(rnrs base builtins (6))")]
-pub fn greater_equal_builtin(args: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn greater_equal_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(greater_equal(args)?)])
 }
 
-pub(crate) fn greater_equal(vals: &[Value]) -> Result<bool, Condition> {
+pub(crate) fn greater_equal(vals: &[Value]) -> Result<bool, Exception> {
     if let Some((head, rest)) = vals.split_first() {
         let mut prev = head.clone();
         for next in rest {
@@ -778,10 +782,10 @@ pub(crate) fn greater_equal(vals: &[Value]) -> Result<bool, Condition> {
                 let prev: Arc<Number> = prev.clone().try_into()?;
                 let next: Arc<Number> = next.clone().try_into()?;
                 if prev.is_complex() {
-                    return Err(Condition::type_error("number", "complex"));
+                    return Err(Exception::type_error("number", "complex"));
                 }
                 if next.is_complex() {
-                    return Err(Condition::type_error("number", "complex"));
+                    return Err(Exception::type_error("number", "complex"));
                 }
                 if prev < next {
                     return Ok(false);
@@ -794,11 +798,11 @@ pub(crate) fn greater_equal(vals: &[Value]) -> Result<bool, Condition> {
 }
 
 #[bridge(name = "<", lib = "(rnrs base builtins (6))")]
-pub fn lesser_builtin(args: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn lesser_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(lesser(args)?)])
 }
 
-pub(crate) fn lesser(vals: &[Value]) -> Result<bool, Condition> {
+pub(crate) fn lesser(vals: &[Value]) -> Result<bool, Exception> {
     if let Some((head, rest)) = vals.split_first() {
         let mut prev = head.clone();
         for next in rest {
@@ -806,10 +810,10 @@ pub(crate) fn lesser(vals: &[Value]) -> Result<bool, Condition> {
                 let prev: Arc<Number> = prev.clone().try_into()?;
                 let next: Arc<Number> = next.clone().try_into()?;
                 if prev.is_complex() {
-                    return Err(Condition::type_error("number", "complex"));
+                    return Err(Exception::type_error("number", "complex"));
                 }
                 if next.is_complex() {
-                    return Err(Condition::type_error("number", "complex"));
+                    return Err(Exception::type_error("number", "complex"));
                 }
                 if prev >= next {
                     return Ok(false);
@@ -822,11 +826,11 @@ pub(crate) fn lesser(vals: &[Value]) -> Result<bool, Condition> {
 }
 
 #[bridge(name = "<=", lib = "(rnrs base builtins (6))")]
-pub fn lesser_equal_builtin(args: &[Value]) -> Result<Vec<Value>, Condition> {
+pub fn lesser_equal_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(lesser_equal(args)?)])
 }
 
-pub(crate) fn lesser_equal(vals: &[Value]) -> Result<bool, Condition> {
+pub(crate) fn lesser_equal(vals: &[Value]) -> Result<bool, Exception> {
     if let Some((head, rest)) = vals.split_first() {
         let mut prev = head.clone();
         for next in rest {
@@ -834,10 +838,10 @@ pub(crate) fn lesser_equal(vals: &[Value]) -> Result<bool, Condition> {
                 let prev: Arc<Number> = prev.clone().try_into()?;
                 let next: Arc<Number> = next.clone().try_into()?;
                 if prev.is_complex() {
-                    return Err(Condition::type_error("number", "complex"));
+                    return Err(Exception::type_error("number", "complex"));
                 }
                 if next.is_complex() {
-                    return Err(Condition::type_error("number", "complex"));
+                    return Err(Exception::type_error("number", "complex"));
                 }
                 if prev > next {
                     return Ok(false);
@@ -850,12 +854,12 @@ pub(crate) fn lesser_equal(vals: &[Value]) -> Result<bool, Condition> {
 }
 
 #[bridge(name = "number?", lib = "(rnrs base builtins (6))")]
-pub fn is_number(arg: &Value) -> Result<Vec<Value>, Condition> {
+pub fn is_number(arg: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(arg.type_of() == ValueType::Number)])
 }
 
 #[bridge(name = "integer?", lib = "(rnrs base builtins (6))")]
-pub fn is_integer(arg: &Value) -> Result<Vec<Value>, Condition> {
+pub fn is_integer(arg: &Value) -> Result<Vec<Value>, Exception> {
     let arg: Arc<Number> = match arg.clone().try_into() {
         Ok(arg) => arg,
         Err(_) => return Ok(vec![Value::from(false)]),
@@ -867,7 +871,7 @@ pub fn is_integer(arg: &Value) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "rational?", lib = "(rnrs base builtins (6))")]
-pub fn is_rational(arg: &Value) -> Result<Vec<Value>, Condition> {
+pub fn is_rational(arg: &Value) -> Result<Vec<Value>, Exception> {
     let arg: Arc<Number> = match arg.clone().try_into() {
         Ok(arg) => arg,
         Err(_) => return Ok(vec![Value::from(false)]),
@@ -879,7 +883,7 @@ pub fn is_rational(arg: &Value) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "real?", lib = "(rnrs base builtins (6))")]
-pub fn is_real(arg: &Value) -> Result<Vec<Value>, Condition> {
+pub fn is_real(arg: &Value) -> Result<Vec<Value>, Exception> {
     let arg: Arc<Number> = match arg.clone().try_into() {
         Ok(arg) => arg,
         Err(_) => return Ok(vec![Value::from(false)]),
@@ -888,7 +892,7 @@ pub fn is_real(arg: &Value) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "complex?", lib = "(rnrs base builtins (6))")]
-pub fn is_complex(arg: &Value) -> Result<Vec<Value>, Condition> {
+pub fn is_complex(arg: &Value) -> Result<Vec<Value>, Exception> {
     let arg: Arc<Number> = match arg.clone().try_into() {
         Ok(arg) => arg,
         Err(_) => return Ok(vec![Value::from(false)]),
@@ -897,6 +901,53 @@ pub fn is_complex(arg: &Value) -> Result<Vec<Value>, Condition> {
         arg.as_ref(),
         Number::Complex(_)
     ))])
+}
+
+#[bridge(name = "nan?", lib = "(rnrs base builtins (6))")]
+pub fn is_nan(arg: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(
+        arg.try_to_scheme_type::<Arc<Number>>()?.is_nan(),
+    )])
+}
+
+#[bridge(name = "infinite?", lib = "(rnrs base builtins (6))")]
+pub fn is_infinite(arg: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(
+        arg.try_to_scheme_type::<Arc<Number>>()?.is_infinite(),
+    )])
+}
+
+#[bridge(name = "magnitude", lib = "(rnrs base builtins (6))")]
+pub fn magnitude(arg: &Value) -> Result<Vec<Value>, Exception> {
+    match arg.try_to_scheme_type::<Arc<Number>>()?.as_ref() {
+        Number::Complex(complex) => Ok(vec![Value::from(Arc::new(Number::Real(complex.norm())))]),
+        _ => Ok(vec![arg.clone()]),
+    }
+}
+
+#[bridge(name = "real-part", lib = "(rnrs base builtins (6))")]
+pub fn real_part(arg: &Value) -> Result<Vec<Value>, Exception> {
+    match arg.try_to_scheme_type::<Arc<Number>>()?.as_ref() {
+        Number::Complex(complex) => Ok(vec![Value::from(Arc::new(Number::Real(complex.re)))]),
+        _ => Ok(vec![arg.clone()]),
+    }
+}
+
+#[bridge(name = "imag-part", lib = "(rnrs base builtins (6))")]
+pub fn imag_part(arg: &Value) -> Result<Vec<Value>, Exception> {
+    match arg.try_to_scheme_type::<Arc<Number>>()?.as_ref() {
+        Number::Complex(complex) => Ok(vec![Value::from(Arc::new(Number::Real(complex.im)))]),
+        _ => Err(Exception::error("expected complex number")),
+    }
+}
+
+#[bridge(name = "flonum?", lib = "(rnrs base builtins (6))")]
+pub fn is_flonum(arg: &Value) -> Result<Vec<Value>, Exception> {
+    let arg: Arc<Number> = match arg.clone().try_into() {
+        Ok(arg) => arg,
+        Err(_) => return Ok(vec![Value::from(false)]),
+    };
+    Ok(vec![Value::from(matches!(arg.as_ref(), Number::Real(_)))])
 }
 
 #[cfg(test)]

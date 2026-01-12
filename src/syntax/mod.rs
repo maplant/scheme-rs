@@ -2,11 +2,12 @@
 
 use crate::{
     ast::Literal,
-    env::{Environment, Keyword},
-    exceptions::Condition,
+    env::{EnvId, Environment, Keyword},
+    exceptions::{Exception, SyntaxViolation},
     gc::Trace,
     lists::list_to_vec_with_null,
     ports::Port,
+    records::{RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::bridge,
     symbols::Symbol,
     syntax::parse::ParseSyntaxError,
@@ -14,7 +15,7 @@ use crate::{
 };
 use scheme_rs_macros::{maybe_async, maybe_await};
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::{BTreeSet, HashMap},
     fmt,
     io::Cursor,
     sync::{
@@ -64,11 +65,15 @@ impl Default for Span {
     }
 }
 
+impl SchemeCompatible for Span {
+    fn rtd() -> Arc<RecordTypeDescriptor> {
+        rtd!(name: "span", sealed: true, opaque: true)
+    }
+}
+
 /// Representation of a Scheme syntax object, or s-expression.
-#[derive(Clone, Trace, PartialEq)]
+#[derive(Clone, Trace)]
 #[repr(align(16))]
-// TODO: Make cloning this struct as fast as possible. Realistically that means
-// moving nested data into Arc<[Syntax]>
 pub enum Syntax {
     /// An empty list.
     Null {
@@ -95,7 +100,7 @@ pub enum Syntax {
     },
     Identifier {
         ident: Identifier,
-        bound: bool,
+        binding_env: Option<EnvId>,
         span: Span,
     },
 }
@@ -135,21 +140,21 @@ impl Syntax {
         }
     }
 
-    pub fn car(&self) -> Result<Self, Condition> {
+    pub fn car(&self) -> Result<Self, Exception> {
         let Some([car, ..]) = self.as_list() else {
-            return Err(Condition::type_error("list", self.syntax_type()));
+            return Err(Exception::type_error("list", self.syntax_type()));
         };
         Ok(car.clone())
     }
 
-    pub fn cdr(&self) -> Result<Self, Condition> {
+    pub fn cdr(&self) -> Result<Self, Exception> {
         match self.as_list() {
             Some([_, null @ Syntax::Null { .. }]) => Ok(null.clone()),
             Some([_, cdr @ ..]) => Ok(Syntax::List {
                 list: cdr.to_vec(),
                 span: self.span().clone(),
             }),
-            _ => Err(Condition::type_error("list", self.syntax_type())),
+            _ => Err(Exception::type_error("list", self.syntax_type())),
         }
     }
 
@@ -192,7 +197,7 @@ impl Syntax {
                 };
                 Syntax::Identifier {
                     ident,
-                    bound: false,
+                    binding_env: None,
                     span: Span::default(),
                 }
             }
@@ -204,35 +209,43 @@ impl Syntax {
         }
     }
 
-    pub fn resolve_bindings(&mut self, env: &Environment) {
+    fn resolve_bindings<'a>(
+        &'a mut self,
+        env: &Environment,
+        resolved_bindings: &mut HashMap<&'a Identifier, Option<EnvId>>,
+    ) {
         match self {
             Self::List { list, .. } => {
                 for item in list {
-                    item.resolve_bindings(env);
+                    item.resolve_bindings(env, resolved_bindings);
                 }
             }
             Self::Vector { vector, .. } => {
                 for item in vector {
-                    item.resolve_bindings(env);
+                    item.resolve_bindings(env, resolved_bindings);
                 }
             }
             &mut Self::Identifier {
                 ref ident,
-                ref mut bound,
+                ref mut binding_env,
                 ..
-            } => *bound = env.is_bound(ident),
+            } => {
+                *binding_env = *resolved_bindings
+                    .entry(ident)
+                    .or_insert_with(|| env.binding_env(ident))
+            }
             _ => (),
         }
     }
 
     #[maybe_async]
-    fn apply_transformer(&self, env: &Environment, mac: Keyword) -> Result<Expansion, Value> {
+    fn apply_transformer(&self, env: &Environment, mac: Keyword) -> Result<Expansion, Exception> {
         // Create a new mark for the expansion context
         let new_mark = Mark::new();
 
         // Apply the new mark to the input and resolve any bindings
         let mut input = self.clone();
-        input.resolve_bindings(env);
+        input.resolve_bindings(env, &mut HashMap::default());
         input.mark(new_mark);
 
         // Call the transformer with the input:
@@ -241,12 +254,12 @@ impl Syntax {
         // Output must be syntax:
         let output: Arc<Syntax> = transformer_output
             .first()
-            .ok_or_else(|| Condition::syntax(self.clone(), None))?
+            .ok_or_else(|| Exception::error("syntax transformer produced no output"))?
             .clone()
             .try_into()?;
 
         // Apply the new mark to the output
-        let mut output = output.as_ref().clone();
+        let mut output = Arc::try_unwrap(output).unwrap_or_else(|arc| arc.as_ref().clone());
         output.mark(new_mark);
 
         let new_env = env.new_macro_expansion(new_mark, mac.source_env.clone());
@@ -255,17 +268,20 @@ impl Syntax {
     }
 
     #[cfg(not(feature = "async"))]
-    fn expand_once(&self, env: &Environment) -> Result<Expansion, Value> {
+    fn expand_once(&self, env: &Environment) -> Result<Expansion, Exception> {
         self.expand_once_inner(env)
     }
 
     #[cfg(feature = "async")]
-    fn expand_once<'a>(&'a self, env: &'a Environment) -> BoxFuture<'a, Result<Expansion, Value>> {
+    fn expand_once<'a>(
+        &'a self,
+        env: &'a Environment,
+    ) -> BoxFuture<'a, Result<Expansion, Exception>> {
         Box::pin(self.expand_once_inner(env))
     }
 
     #[maybe_async]
-    fn expand_once_inner(&self, env: &Environment) -> Result<Expansion, Value> {
+    fn expand_once_inner(&self, env: &Environment) -> Result<Expansion, Exception> {
         match self {
             Self::List { list, .. } => {
                 // TODO: If list head is a list, do we expand this in here or in proc call?
@@ -283,11 +299,10 @@ impl Syntax {
                         // Look for a variable transformer:
                         if let Some(mac) = maybe_await!(env.fetch_keyword(var))? {
                             if !mac.transformer.is_variable_transformer() {
-                                return Err(Condition::error(format!(
-                                    "{} not a variable transformer",
+                                return Err(Exception::error(format!(
+                                    "{} is not a variable transformer",
                                     var.sym
-                                ))
-                                .into());
+                                )));
                             }
                             return maybe_await!(self.apply_transformer(env, mac));
                         }
@@ -307,42 +322,57 @@ impl Syntax {
 
     /// Fully expand the outermost syntax object.
     #[maybe_async]
-    pub fn expand(mut self, env: &Environment) -> Result<FullyExpanded, Value> {
+    pub fn expand(mut self, env: &Environment) -> Result<FullyExpanded, Exception> {
         let mut curr_env = env.clone();
         loop {
-            match maybe_await!(self.expand_once(&curr_env))? {
-                Expansion::Unexpanded => {
+            match maybe_await!(self.expand_once(&curr_env)) {
+                Ok(Expansion::Unexpanded) => {
                     return Ok(FullyExpanded::new(curr_env, self));
                 }
-                Expansion::Expanded { new_env, syntax } => {
+                Ok(Expansion::Expanded { new_env, syntax }) => {
                     curr_env = new_env;
                     self = syntax;
+                }
+                Err(condition) => {
+                    return Err(condition.add_condition(SyntaxViolation::new(self, None)));
                 }
             }
         }
     }
 
     #[cfg(not(feature = "async"))]
-    pub fn from_str(s: &str, file_name: Option<&str>) -> Result<Vec<Self>, ParseSyntaxError> {
+    pub fn from_str(s: &str, file_name: Option<&str>) -> Result<Self, ParseSyntaxError> {
         use crate::ports::{BufferMode, Transcoder};
 
         let file_name = file_name.unwrap_or("<unknown>");
         let bytes = Cursor::new(s.as_bytes().to_vec());
-        let port = Port::new(bytes, BufferMode::Block, Some(Transcoder::native()));
+        let port = Port::new(
+            file_name,
+            bytes,
+            BufferMode::Block,
+            Some(Transcoder::native()),
+        );
         port.all_sexprs(Span::new(file_name))
     }
 
     #[cfg(feature = "async")]
-    pub fn from_str(s: &str, file_name: Option<&str>) -> Result<Vec<Self>, ParseSyntaxError> {
+    pub fn from_str(s: &str, file_name: Option<&str>) -> Result<Self, ParseSyntaxError> {
         use crate::ports::{BufferMode, Transcoder};
 
         let file_name = file_name.unwrap_or("<unknown>");
         let bytes = Cursor::new(s.as_bytes().to_vec());
 
         // This is kind of convoluted, but convenient
-        let port =
-            Arc::into_inner(Port::new(bytes, BufferMode::Block, Some(Transcoder::native())).0)
-                .unwrap();
+        let port = Arc::into_inner(
+            Port::new(
+                file_name,
+                bytes,
+                BufferMode::Block,
+                Some(Transcoder::native()),
+            )
+            .0,
+        )
+        .unwrap();
         let info = port.info;
         let mut data = port.data.into_inner();
 
@@ -351,23 +381,9 @@ impl Syntax {
         futures::executor::block_on(async move {
             use crate::syntax::parse::Parser;
 
-            let mut parser = Parser::new(&mut data, info, Span::new(file_name));
+            let mut parser = Parser::new(&mut data, &info, Span::new(file_name));
             parser.all_sexprs().await
         })
-    }
-
-    pub fn fetch_all_identifiers(&self, idents: &mut HashSet<Identifier>) {
-        match self {
-            Self::List { list: syns, .. } | Self::Vector { vector: syns, .. } => {
-                for item in syns {
-                    item.fetch_all_identifiers(idents);
-                }
-            }
-            Self::Identifier { ident, .. } => {
-                idents.insert(ident.clone());
-            }
-            _ => (),
-        }
     }
 
     /// Returns true if the syntax item is a list with a car that is an
@@ -413,7 +429,7 @@ impl fmt::Debug for Syntax {
                 write!(f, ")")
             }
             Syntax::ByteVector { vector, .. } => {
-                write!(f, "#u8(")?;
+                write!(f, "#vu8(")?;
                 for (i, item) in vector.iter().enumerate() {
                     if i > 0 {
                         write!(f, " ")?;
@@ -494,6 +510,13 @@ impl Identifier {
     pub fn new(name: &str) -> Self {
         Self {
             sym: Symbol::intern(name),
+            marks: BTreeSet::default(),
+        }
+    }
+
+    pub fn from_symbol(sym: Symbol) -> Self {
+        Self {
+            sym,
             marks: BTreeSet::default(),
         }
     }
@@ -606,7 +629,7 @@ impl Syntax {
         Self::Identifier {
             ident: Identifier::new(name),
             span: span.into(),
-            bound: false,
+            binding_env: None,
         }
     }
 
@@ -616,19 +639,19 @@ impl Syntax {
 }
 
 #[bridge(name = "syntax->datum", lib = "(rnrs syntax-case builtins (6))")]
-pub fn syntax_to_datum(syn: &Value) -> Result<Vec<Value>, Condition> {
+pub fn syntax_to_datum(syn: &Value) -> Result<Vec<Value>, Exception> {
     let syn: Arc<Syntax> = syn.clone().try_into()?;
     Ok(vec![Value::datum_from_syntax(syn.as_ref())])
 }
 
 #[bridge(name = "datum->syntax", lib = "(rnrs syntax-case builtins (6))")]
-pub fn datum_to_syntax(template_id: &Value, datum: &Value) -> Result<Vec<Value>, Condition> {
+pub fn datum_to_syntax(template_id: &Value, datum: &Value) -> Result<Vec<Value>, Exception> {
     let syntax: Arc<Syntax> = template_id.clone().try_into()?;
     let Syntax::Identifier {
         ident: template_id, ..
     } = syntax.as_ref()
     else {
-        return Err(Condition::type_error("template_id", "syntax"));
+        return Err(Exception::type_error("template_id", "syntax"));
     };
     Ok(vec![Value::from(Syntax::syntax_from_datum(
         &template_id.marks,
@@ -637,7 +660,7 @@ pub fn datum_to_syntax(template_id: &Value, datum: &Value) -> Result<Vec<Value>,
 }
 
 #[bridge(name = "identifier?", lib = "(rnrs syntax-case builtins (6))")]
-pub fn identifier_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
+pub fn identifier_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
     let Ok(syn) = Arc::<Syntax>::try_from(obj.clone()) else {
         return Ok(vec![Value::from(false)]);
     };
@@ -645,55 +668,45 @@ pub fn identifier_pred(obj: &Value) -> Result<Vec<Value>, Condition> {
 }
 
 #[bridge(name = "bound-identifier=?", lib = "(rnrs syntax-case builtins (6))")]
-pub fn bound_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, Condition> {
+pub fn bound_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, Exception> {
     let id1: Arc<Syntax> = id1.clone().try_into()?;
     let id2: Arc<Syntax> = id2.clone().try_into()?;
-    let Syntax::Identifier {
-        ident: id1,
-        bound: bound_id1,
-        ..
-    } = id1.as_ref()
-    else {
-        return Err(Condition::type_error("identifier", "syntax"));
+    let Syntax::Identifier { ident: id1, .. } = id1.as_ref() else {
+        return Err(Exception::type_error("identifier", "syntax"));
     };
-    let Syntax::Identifier {
-        ident: id2,
-        bound: bound_id2,
-        ..
-    } = id2.as_ref()
-    else {
-        return Err(Condition::type_error("identifier", "syntax"));
+    let Syntax::Identifier { ident: id2, .. } = id2.as_ref() else {
+        return Err(Exception::type_error("identifier", "syntax"));
     };
-    Ok(vec![Value::from(*bound_id1 && *bound_id2 && id1 == id2)])
+    Ok(vec![Value::from(id1 == id2)])
 }
 
 #[bridge(name = "free-identifier=?", lib = "(rnrs syntax-case builtins (6))")]
-pub fn free_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, Condition> {
+pub fn free_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, Exception> {
     let id1: Arc<Syntax> = id1.clone().try_into()?;
     let id2: Arc<Syntax> = id2.clone().try_into()?;
     let Syntax::Identifier {
         ident: id1,
-        bound: bound_id1,
+        binding_env: bound_id1,
         ..
     } = id1.as_ref()
     else {
-        return Err(Condition::type_error("identifier", "syntax"));
+        return Err(Exception::type_error("identifier", "syntax"));
     };
     let Syntax::Identifier {
         ident: id2,
-        bound: bound_id2,
+        binding_env: bound_id2,
         ..
     } = id2.as_ref()
     else {
-        return Err(Condition::type_error("identifier", "syntax"));
+        return Err(Exception::type_error("identifier", "syntax"));
     };
     Ok(vec![Value::from(
-        !bound_id1 && !bound_id2 && id1.sym == id2.sym,
+        bound_id1 == bound_id2 && id1.sym == id2.sym,
     )])
 }
 
 #[bridge(name = "generate-temporaries", lib = "(rnrs syntax-case builtins (6))")]
-pub fn generate_temporaries(list: &Value) -> Result<Vec<Value>, Condition> {
+pub fn generate_temporaries(list: &Value) -> Result<Vec<Value>, Exception> {
     let length = match list.type_of() {
         ValueType::Pair => crate::lists::length(list)?,
         ValueType::Syntax => {
@@ -701,21 +714,18 @@ pub fn generate_temporaries(list: &Value) -> Result<Vec<Value>, Condition> {
             match &*syntax {
                 // TODO: Check for proper list?
                 Syntax::List { list, .. } => list.len() - 1,
-                _ => return Err(Condition::error("Syntax object must be a list".to_string())),
+                _ => return Err(Exception::error("Syntax object must be a list".to_string())),
             }
         }
-        _ => return Err(Condition::error("argument must be a list".to_string())),
+        _ => return Err(Exception::error("argument must be a list".to_string())),
     };
 
-    // We can use marks to create unique temporaries
-    let mark = Mark::new();
     let mut idents = (0..length)
-        .map(|i| {
-            let mut ident = Identifier::new(&format!("${i}"));
-            ident.mark(mark);
+        .map(|_| {
+            let ident = Identifier::from_symbol(Symbol::gensym());
             Syntax::Identifier {
                 ident,
-                bound: false,
+                binding_env: None,
                 span: Span::default(),
             }
         })

@@ -1,95 +1,34 @@
-//! Exceptional situations and conditions
-
-use parking_lot::RwLock;
-use scheme_rs_macros::{cps_bridge, runtime_fn};
+//! Exceptional situations and conditions.
 
 use crate::{
-    ast::ParseAstError,
     gc::{Gc, GcInner, Trace},
-    proc::{Application, DynStack, DynStackElem, FuncPtr, Procedure, pop_dyn_stack},
-    records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
-    registry::ImportError,
+    lists::slice_to_list,
+    ports::{IoError, IoReadError, IoWriteError},
+    proc::{Application, DynStackElem, DynamicState, FuncPtr, Procedure, pop_dyn_stack},
+    records::{Record, RecordTypeDescriptor, SchemeCompatible, into_scheme_compatible, rtd},
+    registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
-    syntax::{Identifier, Span, Syntax, parse::ParseSyntaxError},
-    value::Value,
+    syntax::{Identifier, Syntax, parse::ParseSyntaxError},
+    value::{UnpackedValue, Value},
+    vectors::Vector,
 };
-
+use parking_lot::RwLock;
 pub use scheme_rs_macros::define_condition_type;
-
-use std::{error::Error as StdError, fmt, ops::Range, sync::Arc};
-
-#[derive(Clone, Trace)]
-pub struct Exception {
-    pub backtrace: Vec<Frame>,
-    pub obj: Value,
-}
-
-impl Exception {
-    pub fn new(backtrace: Vec<Frame>, obj: Value) -> Self {
-        Self { backtrace, obj }
-    }
-}
+use scheme_rs_macros::runtime_fn;
+use std::{convert::Infallible, fmt, ops::Range, sync::Arc};
 
 impl fmt::Display for Exception {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "Uncaught exception: {}", self.obj)?;
-        Ok(())
-    }
-}
-
-impl fmt::Debug for Exception {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        const MAX_BACKTRACE_LEN: usize = 20;
-        writeln!(f, "Uncaught exception: {}", self.obj)?;
-        if !self.backtrace.is_empty() {
-            writeln!(f, "Stack trace:")?;
-            for (i, frame) in self.backtrace.iter().rev().enumerate() {
-                if i >= MAX_BACKTRACE_LEN {
-                    writeln!(f, "(backtrace truncated)")?;
-                    break;
-                }
-                writeln!(f, "{i}: {frame}")?;
-            }
-        }
-        Ok(())
-    }
-}
-
-impl StdError for Exception {}
-
-impl From<Condition> for Exception {
-    fn from(cond: Condition) -> Self {
-        Self {
-            backtrace: Vec::new(),
-            obj: cond.0,
-        }
-    }
-}
-
-impl fmt::Display for Condition {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         <Value as fmt::Debug>::fmt(&self.0, f)
     }
 }
 
-impl From<ParseSyntaxError> for Condition {
-    fn from(_error: ParseSyntaxError) -> Self {
-        todo!()
-    }
-}
-
-impl From<Exception> for Condition {
-    fn from(e: Exception) -> Self {
-        // For now just drop the back trace:
-        Self(e.obj)
-    }
-}
-
+/// A signal of some sort of erroneous condition.
 #[derive(Debug, Clone)]
-pub struct Condition(pub Value);
+pub struct Exception(pub Value);
 
-impl Condition {
+impl Exception {
     pub fn error(message: impl fmt::Display) -> Self {
         Self(Value::from(Record::from_rust_type(
             CompoundCondition::from((Assertion::new(), Message::new(message.to_string()))),
@@ -211,43 +150,110 @@ impl Condition {
             )),
         )))
     }
+
+    pub fn io_error(message: impl fmt::Display) -> Self {
+        Self(Value::from(Record::from_rust_type(
+            CompoundCondition::from((IoError::new(), Assertion::new(), Message::new(message))),
+        )))
+    }
+
+    pub fn io_read_error(message: impl fmt::Display) -> Self {
+        Self(Value::from(Record::from_rust_type(
+            CompoundCondition::from((IoReadError::new(), Assertion::new(), Message::new(message))),
+        )))
+    }
+
+    pub fn io_write_error(message: impl fmt::Display) -> Self {
+        Self(Value::from(Record::from_rust_type(
+            CompoundCondition::from((IoWriteError::new(), Assertion::new(), Message::new(message))),
+        )))
+    }
+
+    pub fn add_condition(self, condition: impl SchemeCompatible) -> Self {
+        let mut conditions = if let Some(compound) = self.0.cast_to_rust_type::<CompoundCondition>()
+        {
+            compound.0.clone()
+        } else {
+            vec![self.0]
+        };
+
+        conditions.push(Value::from(Record::from_rust_type(condition)));
+
+        Self(Value::from(Record::from_rust_type(CompoundCondition(
+            conditions,
+        ))))
+    }
+
+    pub fn simple_conditions(&self) -> Result<Vec<Value>, Exception> {
+        if self.0.cast_to_rust_type::<SimpleCondition>().is_some() {
+            Ok(vec![self.0.clone()])
+        } else if let Some(compound_condition) = self.0.cast_to_rust_type::<CompoundCondition>() {
+            Ok(compound_condition.0.clone())
+        } else {
+            Err(Exception::error("not a simple or compound condition"))
+        }
+    }
 }
 
-impl From<SimpleCondition> for Condition {
+impl From<&'_ Value> for Option<Exception> {
+    fn from(value: &'_ Value) -> Self {
+        if let UnpackedValue::Record(record) = &*value.unpacked_ref()
+            && let rtd = record.rtd()
+            && (RecordTypeDescriptor::is_subtype_of(&rtd, &SimpleCondition::rtd())
+                || RecordTypeDescriptor::is_subtype_of(&rtd, &CompoundCondition::rtd()))
+        {
+            Some(Exception(value.clone()))
+        } else {
+            None
+        }
+    }
+}
+
+impl From<std::io::Error> for Exception {
+    fn from(value: std::io::Error) -> Self {
+        Self::from((IoError::new(), Message::new(format!("{value:?}"))))
+    }
+}
+
+impl From<SimpleCondition> for Exception {
     fn from(simple: SimpleCondition) -> Self {
         Self(Value::from(Record::from_rust_type(simple)))
     }
 }
 
-impl From<Warning> for Condition {
+impl From<Warning> for Exception {
     fn from(warning: Warning) -> Self {
         Self(Value::from(Record::from_rust_type(warning)))
     }
 }
 
-impl From<Serious> for Condition {
+impl From<Serious> for Exception {
     fn from(serious: Serious) -> Self {
         Self(Value::from(Record::from_rust_type(serious)))
     }
 }
 
-// TODO: This needs to be removed and replaced in each place with a custom
-// conversion that takes into account the form/subform.
-impl From<ParseAstError> for Condition {
-    fn from(value: ParseAstError) -> Self {
-        Condition::error(format!("Error parsing: {value:?}"))
+impl From<Message> for Exception {
+    fn from(message: Message) -> Self {
+        Self(Value::from(Record::from_rust_type(message)))
     }
 }
 
-impl From<ImportError> for Condition {
-    fn from(value: ImportError) -> Self {
-        Condition::error(format!("Error importing: {value:?}"))
+impl From<Infallible> for Exception {
+    fn from(infallible: Infallible) -> Self {
+        match infallible {}
+    }
+}
+
+impl From<ParseSyntaxError> for Exception {
+    fn from(error: ParseSyntaxError) -> Self {
+        Self::from((Lexical::new(), Message::new(error)))
     }
 }
 
 macro_rules! impl_into_condition_for {
     ($for:ty) => {
-        impl From<$for> for Condition {
+        impl From<$for> for Exception {
             fn from(e: $for) -> Self {
                 Self::error(e.to_string())
             }
@@ -269,48 +275,16 @@ impl SimpleCondition {
 
 impl SchemeCompatible for SimpleCondition {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "&condition")
+        rtd!(
+            name: "&condition",
+            constructor: |_| Ok(into_scheme_compatible(Gc::new(SimpleCondition)))
+        )
     }
 }
 
-define_condition_type!(
-    rust_name: Warning,
-    scheme_name: "&warning",
-    parent: SimpleCondition,
-);
-
-impl Warning {
-    pub fn new() -> Self {
-        Self {
-            parent: Gc::new(SimpleCondition::new()),
-        }
-    }
-}
-
-impl Default for Warning {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-define_condition_type!(
-    rust_name: Serious,
-    scheme_name: "&serious",
-    parent: SimpleCondition,
-);
-
-impl Serious {
-    pub fn new() -> Self {
-        Self {
-            parent: Gc::new(SimpleCondition::new()),
-        }
-    }
-}
-
-impl Default for Serious {
-    fn default() -> Self {
-        Self::new()
-    }
+#[bridge(name = "&condition-rtd", lib = "(rnrs conditions builtins (6))")]
+pub fn condition_rtd() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(SimpleCondition::rtd())])
 }
 
 define_condition_type!(
@@ -338,6 +312,96 @@ impl Message {
     }
 }
 
+#[bridge(name = "&message-rtd", lib = "(rnrs conditions builtins (6))")]
+pub fn message_rtd() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(Message::rtd())])
+}
+
+define_condition_type!(
+    rust_name: Warning,
+    scheme_name: "&warning",
+    parent: SimpleCondition,
+);
+
+impl Warning {
+    pub fn new() -> Self {
+        Self {
+            parent: Gc::new(SimpleCondition::new()),
+        }
+    }
+}
+
+impl Default for Warning {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[bridge(name = "&warning-rtd", lib = "(rnrs conditions builtins (6))")]
+pub fn warning_rtd() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(Warning::rtd())])
+}
+
+define_condition_type!(
+    rust_name: Serious,
+    scheme_name: "&serious",
+    parent: SimpleCondition,
+);
+
+impl Serious {
+    pub fn new() -> Self {
+        Self {
+            parent: Gc::new(SimpleCondition::new()),
+        }
+    }
+}
+
+impl Default for Serious {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[bridge(name = "&serious-rtd", lib = "(rnrs conditions builtins (6))")]
+pub fn serious_rtd() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(Serious::rtd())])
+}
+
+define_condition_type!(
+    rust_name: StackTrace,
+    scheme_name: "&trace",
+    parent: SimpleCondition,
+    fields: {
+        trace: Vector,
+    },
+    constructor: |trace| {
+        Ok(StackTrace {
+            parent: Gc::new(SimpleCondition::new()),
+            trace: trace.clone().try_into()?,
+        })
+    },
+    debug: |this, f| {
+        for trace in &*this.trace.0.vec.read() {
+            write!(f, " {trace}")?;
+        }
+        Ok(())
+    }
+);
+
+impl StackTrace {
+    pub fn new(trace: Vec<Value>) -> Self {
+        Self {
+            parent: Gc::new(SimpleCondition::new()),
+            trace: Vector::from(trace),
+        }
+    }
+}
+
+#[bridge(name = "&trace-rtd", lib = "(rnrs conditions builtins (6))")]
+pub fn trace_rtd() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(StackTrace::rtd())])
+}
+
 define_condition_type!(
     rust_name: Error,
     scheme_name: "&error",
@@ -356,6 +420,40 @@ impl Default for Error {
     fn default() -> Self {
         Self::new()
     }
+}
+
+#[bridge(name = "&error-rtd", lib = "(rnrs conditions builtins (6))")]
+pub fn error_rtd() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(Error::rtd())])
+}
+
+define_condition_type!(
+    rust_name: ImportError,
+    scheme_name: "&import",
+    parent: Error,
+    fields: {
+        library: String,
+    },
+    constructor: |lib| {
+        Ok(ImportError {  parent: Gc::new(Error::new()), library: lib.to_string() })
+    },
+    debug: |this, f| {
+        write!(f, " library: {}", this.library)
+    }
+);
+
+impl ImportError {
+    pub fn new(library: String) -> Self {
+        Self {
+            parent: Gc::new(Error::new()),
+            library,
+        }
+    }
+}
+
+#[bridge(name = "&import-rtd", lib = "(rnrs conditions builtins (6))")]
+pub fn import_rtd() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(ImportError::rtd())])
 }
 
 define_condition_type!(
@@ -378,6 +476,11 @@ impl Default for Violation {
     }
 }
 
+#[bridge(name = "&violation-rtd", lib = "(rnrs conditions builtins (6))")]
+pub fn violation_rtd() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(Violation::rtd())])
+}
+
 define_condition_type!(
     rust_name: Assertion,
     scheme_name: "&assertion",
@@ -396,6 +499,117 @@ impl Default for Assertion {
     fn default() -> Self {
         Self::new()
     }
+}
+
+#[bridge(name = "&assertion-rtd", lib = "(rnrs conditions builtins (6))")]
+pub fn assertion_rtd() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(Assertion::rtd())])
+}
+
+define_condition_type!(
+    rust_name: Irritants,
+    scheme_name: "&irritants",
+    parent: SimpleCondition,
+    fields: {
+        irritants: Value,
+    },
+    constructor: |irritants| {
+        Ok(Irritants { parent: Gc::new(SimpleCondition::new()), irritants })
+    },
+    debug: |this, f| {
+        write!(f, " irritants: {:?}", this.irritants)
+    }
+);
+
+#[bridge(name = "&irritants-rtd", lib = "(rnrs conditions builtins (6))")]
+pub fn irritants_rtd() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(Irritants::rtd())])
+}
+
+define_condition_type!(
+    rust_name: Who,
+    scheme_name: "&who",
+    parent: SimpleCondition,
+    fields: {
+        who: String,
+    },
+    constructor: |who| {
+        Ok(Who { parent: Gc::new(SimpleCondition::new()), who: who.to_string() })
+    },
+    debug: |this, f| {
+        write!(f, " who: {:?}", this.who)
+    }
+);
+
+#[bridge(name = "&who-rtd", lib = "(rnrs conditions builtins (6))")]
+pub fn who_rtd() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(Who::rtd())])
+}
+
+define_condition_type!(
+    rust_name: NonContinuable,
+    scheme_name: "&non-continuable",
+    parent: Violation,
+);
+
+impl Default for NonContinuable {
+    fn default() -> Self {
+        Self {
+            parent: Gc::new(Violation::new()),
+        }
+    }
+}
+
+#[bridge(name = "&non-continuable-rtd", lib = "(rnrs conditions builtins (6))")]
+pub fn non_continuable_rtd() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(NonContinuable::rtd())])
+}
+
+define_condition_type!(
+    rust_name: ImplementationRestriction,
+    scheme_name: "&implementation-restriction",
+    parent: Violation,
+);
+
+impl Default for ImplementationRestriction {
+    fn default() -> Self {
+        Self {
+            parent: Gc::new(Violation::new()),
+        }
+    }
+}
+
+#[bridge(
+    name = "&implementation-restriction-rtd",
+    lib = "(rnrs conditions builtins (6))"
+)]
+pub fn who_td() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(NonContinuable::rtd())])
+}
+
+define_condition_type!(
+    rust_name: Lexical,
+    scheme_name: "&lexical",
+    parent: Violation,
+);
+
+impl Lexical {
+    pub fn new() -> Self {
+        Self {
+            parent: Gc::new(Violation::new()),
+        }
+    }
+}
+
+impl Default for Lexical {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[bridge(name = "&lexical-rtd", lib = "(rnrs conditions builtins (6))")]
+pub fn lexical_rtd() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(Lexical::rtd())])
 }
 
 define_condition_type!(
@@ -426,6 +640,11 @@ impl SyntaxViolation {
     }
 }
 
+#[bridge(name = "&syntax-rtd", lib = "(rnrs conditions builtins (6))")]
+pub fn syntax_rtd() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(SyntaxViolation::rtd())])
+}
+
 define_condition_type!(
     rust_name: Undefined,
     scheme_name: "&undefined",
@@ -446,12 +665,17 @@ impl Default for Undefined {
     }
 }
 
+#[bridge(name = "&undefined-rtd", lib = "(rnrs conditions builtins (6))")]
+pub fn undefined_rtd() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(Undefined::rtd())])
+}
+
 #[derive(Clone, Trace)]
-pub struct CompoundCondition(Vec<Value>);
+pub struct CompoundCondition(pub(crate) Vec<Value>);
 
 impl SchemeCompatible for CompoundCondition {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "compound-condition")
+        rtd!(name: "compound-condition", sealed: true, opaque: true)
     }
 }
 
@@ -465,7 +689,7 @@ impl fmt::Debug for CompoundCondition {
     }
 }
 
-impl<T> From<T> for Condition
+impl<T> From<T> for Exception
 where
     CompoundCondition: From<T>,
 {
@@ -504,43 +728,36 @@ where
     }
 }
 
-#[derive(Debug, Clone, Trace)]
-pub struct Frame {
-    pub proc: Symbol,
-    pub call_site_span: Option<Arc<Span>>,
-}
-
-impl Frame {
-    pub fn new(proc: Symbol, call_site_span: Option<Arc<Span>>) -> Self {
-        Self {
-            proc,
-            call_site_span,
-        }
+#[bridge(name = "condition", lib = "(rnrs conditions builtins)")]
+pub fn condition(conditions: &[Value]) -> Result<Vec<Value>, Exception> {
+    match conditions {
+        // TODO: Check if this is a condition
+        [simple_condition] => Ok(vec![simple_condition.clone()]),
+        conditions => Ok(vec![Value::from(Record::from_rust_type(
+            CompoundCondition(conditions.to_vec()),
+        ))]),
     }
 }
 
-impl fmt::Display for Frame {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(ref call_site) = self.call_site_span {
-            write!(f, "{} at {call_site}", self.proc)
-        } else {
-            write!(f, "{} at (unknown)", self.proc)
-        }
-    }
+#[bridge(name = "simple-conditions", lib = "(rnrs conditions builtins)")]
+pub fn simple_conditions(condition: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![slice_to_list(
+        &Exception(condition.clone()).simple_conditions()?,
+    )])
 }
 
 #[cps_bridge(
     def = "with-exception-handler handler thunk",
-    lib = "(rnrs base builtins (6))"
+    lib = "(rnrs exceptions builtins (6))"
 )]
 pub fn with_exception_handler(
     runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    dyn_stack: &mut DynStack,
+    dyn_state: &mut DynamicState,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let [handler, thunk] = args else {
         unreachable!();
     };
@@ -548,48 +765,46 @@ pub fn with_exception_handler(
     let handler: Procedure = handler.clone().try_into()?;
     let thunk: Procedure = thunk.clone().try_into()?;
 
-    dyn_stack.push(DynStackElem::ExceptionHandler(handler));
+    dyn_state.push_dyn_stack(DynStackElem::ExceptionHandler(handler));
 
     let k_proc: Procedure = k.clone().try_into().unwrap();
     let (req_args, var) = k_proc.get_formals();
 
-    let k = Procedure::new(
+    let k = dyn_state.new_k(
         runtime.clone(),
         vec![k.clone()],
-        FuncPtr::Continuation(pop_dyn_stack),
+        pop_dyn_stack,
         req_args,
         var,
-        None,
     );
 
-    Ok(Application::new(thunk.clone(), vec![Value::from(k)], None))
+    Ok(Application::new(thunk, vec![Value::from(k)]))
 }
 
-#[cps_bridge(def = "raise obj", lib = "(rnrs base builtins (6))")]
+#[cps_bridge(def = "raise obj", lib = "(rnrs exceptions builtins (6))")]
 pub fn raise_builtin(
     runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _dyn_stack: &mut DynStack,
+    dyn_state: &mut DynamicState,
     _k: Value,
-) -> Result<Application, Condition> {
-    Ok(raise(runtime.clone(), args[0].clone()))
+) -> Result<Application, Exception> {
+    Ok(raise(runtime.clone(), args[0].clone(), dyn_state))
 }
 
 /// Raises a non-continuable exception to the current exception handler.
-pub fn raise(runtime: Runtime, raised: Value) -> Application {
+pub fn raise(runtime: Runtime, raised: Value, dyn_state: &mut DynamicState) -> Application {
+    let raised = if let Some(condition) = raised.cast_to_scheme_type::<Exception>() {
+        let trace = dyn_state.current_marks(Symbol::intern("trace"));
+        Value::from(condition.add_condition(StackTrace::new(trace)))
+    } else {
+        raised
+    };
+
     Application::new(
-        Procedure::new(
-            runtime,
-            vec![raised],
-            FuncPtr::Continuation(unwind_to_exception_handler),
-            0,
-            false,
-            None,
-        ),
+        dyn_state.new_k(runtime, vec![raised], unwind_to_exception_handler, 0, false),
         Vec::new(),
-        None,
     )
 }
 
@@ -597,11 +812,16 @@ pub fn raise(runtime: Runtime, raised: Value) -> Application {
 unsafe extern "C" fn raise_rt(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     raised: *const (),
+    dyn_state: *mut DynamicState,
 ) -> *mut Application {
     unsafe {
         let runtime = Runtime::from_raw_inc_rc(runtime);
         let raised = Value::from_raw(raised);
-        Box::into_raw(Box::new(raise(runtime, raised)))
+        Box::into_raw(Box::new(raise(
+            runtime,
+            raised,
+            dyn_state.as_mut().unwrap_unchecked(),
+        )))
     }
 }
 
@@ -609,16 +829,16 @@ unsafe extern "C" fn unwind_to_exception_handler(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
-    dyn_stack: *mut DynStack,
+    dyn_state: *mut DynamicState,
 ) -> *mut Application {
     unsafe {
         // env[0] is the raised value:
         let raised = env.as_ref().unwrap().clone();
 
-        let dyn_stack = dyn_stack.as_mut().unwrap_unchecked();
+        let dyn_state = dyn_state.as_mut().unwrap_unchecked();
 
         loop {
-            let app = match dyn_stack.pop() {
+            let app = match dyn_state.pop_dyn_stack() {
                 None => {
                     // If the stack is empty, we should return the error
                     Application::halt_err(raised)
@@ -627,31 +847,27 @@ unsafe extern "C" fn unwind_to_exception_handler(
                     // If this is a winder, we should call the out winder while unwinding
                     Application::new(
                         winder.out_thunk,
-                        vec![Value::from(Procedure::new(
+                        vec![Value::from(dyn_state.new_k(
                             Runtime::from_raw_inc_rc(runtime),
                             vec![raised],
-                            FuncPtr::Continuation(unwind_to_exception_handler),
+                            unwind_to_exception_handler,
                             0,
                             false,
-                            None,
                         ))],
-                        None,
                     )
                 }
                 Some(DynStackElem::ExceptionHandler(handler)) => Application::new(
                     handler,
                     vec![
                         raised.clone(),
-                        Value::from(Procedure::new(
+                        Value::from(dyn_state.new_k(
                             Runtime::from_raw_inc_rc(runtime),
                             vec![raised],
-                            FuncPtr::Continuation(reraise_exception),
+                            reraise_exception,
                             0,
                             true,
-                            None,
                         )),
                     ],
-                    None,
                 ),
                 _ => continue,
             };
@@ -664,7 +880,7 @@ unsafe extern "C" fn reraise_exception(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
-    _dyn_stack: *mut DynStack,
+    _dyn_state: *mut DynamicState,
 ) -> *mut Application {
     unsafe {
         let runtime = Runtime(Gc::from_raw_inc_rc(runtime));
@@ -679,32 +895,30 @@ unsafe extern "C" fn reraise_exception(
                 FuncPtr::Bridge(raise_builtin),
                 1,
                 false,
-                None,
             ),
             vec![exception, Value::undefined()],
-            None,
         )))
     }
 }
 
 /// Raises an exception to the current exception handler and coninues with the
 /// value returned by the handler.
-#[cps_bridge(def = "raise-continuable obj", lib = "(rnrs base builtins (6))")]
+#[cps_bridge(def = "raise-continuable obj", lib = "(rnrs exceptions builtins (6))")]
 pub fn raise_continuable(
     _runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    dyn_stack: &mut DynStack,
+    dyn_state: &mut DynamicState,
     k: Value,
-) -> Result<Application, Condition> {
+) -> Result<Application, Exception> {
     let [condition] = args else {
         unreachable!();
     };
 
-    let Some(handler) = dyn_stack.current_exception_handler() else {
+    let Some(handler) = dyn_state.current_exception_handler() else {
         return Ok(Application::halt_err(condition.clone()));
     };
 
-    Ok(Application::new(handler, vec![condition.clone(), k], None))
+    Ok(Application::new(handler, vec![condition.clone(), k]))
 }
