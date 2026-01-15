@@ -79,6 +79,10 @@ impl Number {
         matches!(self, Self::Real(r) if r.is_nan())
     }
 
+    pub fn is_finite(&self) -> bool {
+        matches!(self, Self::Real(r) if r.is_finite())
+    }
+
     pub fn is_infinite(&self) -> bool {
         matches!(self, Self::Real(r) if r.is_infinite())
     }
@@ -674,87 +678,160 @@ impl From<RationalFromPrimitiveFloatError> for Box<ArithmeticError> {
     }
 }
 
-#[bridge(name = "zero?", lib = "(rnrs base builtins (6))")]
-pub fn zero(arg: &Value) -> Result<Vec<Value>, Exception> {
-    let num: Arc<Number> = arg.clone().try_into()?;
-    Ok(vec![Value::from(num.is_zero())])
+#[bridge(name = "number?", lib = "(rnrs base builtins (6))")]
+pub fn is_number(arg: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(arg.type_of() == ValueType::Number)])
 }
 
-#[bridge(name = "even?", lib = "(rnrs base builtins (6))")]
-pub fn even(arg: &Value) -> Result<Vec<Value>, Exception> {
-    let num: Arc<Number> = arg.clone().try_into()?;
-    Ok(vec![Value::from(num.is_even())])
-}
-
-#[bridge(name = "odd?", lib = "(rnrs base builtins (6))")]
-pub fn odd(arg: &Value) -> Result<Vec<Value>, Exception> {
-    let num: Arc<Number> = arg.clone().try_into()?;
-    Ok(vec![Value::from(num.is_odd())])
-}
-
-#[bridge(name = "+", lib = "(rnrs base builtins (6))")]
-pub fn add_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(add(args)?)])
-}
-
-pub(crate) fn add(vals: &[Value]) -> Result<Number, Exception> {
-    let mut result = Number::FixedInteger(0);
-    for val in vals {
-        let num: Arc<Number> = val.clone().try_into()?;
-        result = result.checked_add(&num)?;
+#[bridge(name = "integer?", lib = "(rnrs base builtins (6))")]
+pub fn is_integer(obj: &Value) -> Result<Vec<Value>, Exception> {
+    match obj.cast_to_scheme_type::<Arc<Number>>().as_deref() {
+        Some(Number::Real(r)) if r.is_nan() || r.is_infinite() || r.fract() != 0.0 => Ok(vec![Value::from(false)]),
+        Some(Number::Complex(_)) => Ok(vec![Value::from(false)]),
+        Some(Number::Rational(r)) if r.to_denominator() != 1i64 => Ok(vec![Value::from(false)]),
+        Some(_) => Ok(vec![Value::from(true)]),
+        None => Ok(vec![Value::from(false)]),
     }
-    Ok(result)
 }
 
-#[bridge(name = "-", lib = "(rnrs base builtins (6))")]
-pub fn sub_builtin(arg1: &Value, args: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(sub(arg1, args)?)])
+#[bridge(name = "rational?", lib = "(rnrs base builtins (6))")]
+pub fn is_rational(obj: &Value) -> Result<Vec<Value>, Exception> {
+    match obj.cast_to_scheme_type::<Arc<Number>>().as_deref() {
+        Some(Number::Real(r)) if r.is_nan() || r.is_infinite() => Ok(vec![Value::from(false)]),
+        Some(Number::Complex(_)) => Ok(vec![Value::from(false)]),
+        Some(_) => Ok(vec![Value::from(true)]),
+        None => Ok(vec![Value::from(false)]),
+    }
 }
 
-pub(crate) fn sub(val1: &Value, vals: &[Value]) -> Result<Number, Exception> {
-    let val1: Arc<Number> = val1.clone().try_into()?;
-    let mut val1 = val1.as_ref().clone();
-    if vals.is_empty() {
-        Ok(-val1)
-    } else {
-        for val in vals {
-            let num: Arc<Number> = val.clone().try_into()?;
-            val1 = val1.checked_sub(&num)?;
+#[bridge(name = "real?", lib = "(rnrs base builtins (6))")]
+pub fn is_real(obj: &Value) -> Result<Vec<Value>, Exception> {
+    match obj.cast_to_scheme_type::<Arc<Number>>().as_deref() {
+        Some(Number::Complex(_)) => Ok(vec![Value::from(false)]),
+        Some(_) => Ok(vec![Value::from(true)]),
+        None => Ok(vec![Value::from(false)]),
+    }
+}
+
+#[bridge(name = "complex?", lib = "(rnrs base builtins (6))")]
+pub fn is_complex(obj: &Value) -> Result<Vec<Value>, Exception> {
+    match obj.cast_to_scheme_type::<Arc<Number>>().as_deref() {
+        Some(_) => Ok(vec![Value::from(true)]),
+        None => Ok(vec![Value::from(false)]),
+    }
+}
+
+// TODO: These three procedures are the same as the previous three,
+// but eventually they will differ when we implement complex numbers
+// correctly
+
+#[bridge(name = "real-valued?", lib = "(rnrs base builtins (6))")]
+pub fn real_valued_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
+    match obj.cast_to_scheme_type::<Arc<Number>>().as_deref() {
+        Some(Number::Complex(_)) => Ok(vec![Value::from(false)]),
+        Some(_) => Ok(vec![Value::from(true)]),
+        None => Ok(vec![Value::from(false)]),
+    }
+}
+
+#[bridge(name = "rational-valued?", lib = "(rnrs base builtins (6))")]
+pub fn rational_valued_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
+    match obj.cast_to_scheme_type::<Arc<Number>>().as_deref() {
+        Some(Number::Real(r)) if r.is_nan() || r.is_infinite() => Ok(vec![Value::from(false)]),
+        Some(Number::Complex(_)) => Ok(vec![Value::from(false)]),
+        Some(_) => Ok(vec![Value::from(true)]),
+        None => Ok(vec![Value::from(false)]),
+    }
+}
+
+#[bridge(name = "integer-valued?", lib = "(rnrs base builtins (6))")]
+pub fn integer_valued_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
+        match obj.cast_to_scheme_type::<Arc<Number>>().as_deref() {
+        Some(Number::Real(r)) if r.is_nan() || r.is_infinite() || r.fract() != 0.0 => Ok(vec![Value::from(false)]),
+        Some(Number::Complex(_)) => Ok(vec![Value::from(false)]),
+        Some(Number::Rational(r)) if r.to_denominator() != 1i64 => Ok(vec![Value::from(false)]),
+        Some(_) => Ok(vec![Value::from(true)]),
+        None => Ok(vec![Value::from(false)]),
+    }
+}
+
+
+#[bridge(name = "magnitude", lib = "(rnrs base builtins (6))")]
+pub fn magnitude(arg: &Value) -> Result<Vec<Value>, Exception> {
+    match arg.try_to_scheme_type::<Arc<Number>>()?.as_ref() {
+        Number::Complex(complex) => Ok(vec![Value::from(Arc::new(Number::Real(complex.norm())))]),
+        _ => Ok(vec![arg.clone()]),
+    }
+}
+
+#[bridge(name = "real-part", lib = "(rnrs base builtins (6))")]
+pub fn real_part(arg: &Value) -> Result<Vec<Value>, Exception> {
+    match arg.try_to_scheme_type::<Arc<Number>>()?.as_ref() {
+        Number::Complex(complex) => Ok(vec![Value::from(Arc::new(Number::Real(complex.re)))]),
+        _ => Ok(vec![arg.clone()]),
+    }
+}
+
+#[bridge(name = "imag-part", lib = "(rnrs base builtins (6))")]
+pub fn imag_part(arg: &Value) -> Result<Vec<Value>, Exception> {
+    match arg.try_to_scheme_type::<Arc<Number>>()?.as_ref() {
+        Number::Complex(complex) => Ok(vec![Value::from(Arc::new(Number::Real(complex.im)))]),
+        _ => Err(Exception::error("expected complex number")),
+    }
+}
+
+#[bridge(name = "flonum?", lib = "(rnrs base builtins (6))")]
+pub fn is_flonum(arg: &Value) -> Result<Vec<Value>, Exception> {
+    let arg: Arc<Number> = match arg.clone().try_into() {
+        Ok(arg) => arg,
+        Err(_) => return Ok(vec![Value::from(false)]),
+    };
+    Ok(vec![Value::from(matches!(arg.as_ref(), Number::Real(_)))])
+}
+
+#[bridge(name = "exact?", lib = "(rnrs base builtins (6))")]
+pub fn exact_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(matches!(
+        obj.try_to_scheme_type::<Arc<Number>>()?.as_ref(),
+        Number::FixedInteger(_) | Number::BigInteger(_) | Number::Rational(_)
+    ))])
+}
+
+#[bridge(name = "inexact?", lib = "(rnrs base builtins (6))")]
+pub fn inexact_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(matches!(
+        obj.try_to_scheme_type::<Arc<Number>>()?.as_ref(),
+        Number::Real(_) | Number::Complex(_)
+    ))])
+}
+
+#[bridge(name = "exact", lib = "(rnrs base builtins (6))")]
+pub fn exact(obj: &Value) -> Result<Vec<Value>, Exception> {
+    match obj.try_to_scheme_type::<Arc<Number>>()?.as_ref() {
+        Number::FixedInteger(_) | Number::BigInteger(_) | Number::Rational(_) => {
+            Ok(vec![obj.clone()])
         }
-        Ok(val1)
+        Number::Real(float) => Ok(vec![Value::from(Number::BigInteger(
+            Integer::rounding_from(*float, RoundingMode::Nearest).0,
+        ))]),
+        Number::Complex(_) => Err(Exception::implementation_violation(
+            "no way to make a complex number exact",
+        )),
     }
 }
 
-#[bridge(name = "*", lib = "(rnrs base builtins (6))")]
-pub fn mul_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(mul(args)?)])
-}
-
-pub(crate) fn mul(vals: &[Value]) -> Result<Number, Exception> {
-    let mut result = Number::FixedInteger(1);
-    for val in vals {
-        let num: Arc<Number> = val.clone().try_into()?;
-        result = result.checked_mul(&num)?;
+#[bridge(name = "inexact", lib = "(rnrs base builtins (6))")]
+pub fn inexact(obj: &Value) -> Result<Vec<Value>, Exception> {
+    match obj.try_to_scheme_type::<Arc<Number>>()?.as_ref() {
+        Number::FixedInteger(i) => Ok(vec![Value::from(Number::Real(*i as f64))]),
+        Number::BigInteger(i) => Ok(vec![Value::from(Number::Real(
+            f64::rounding_from(i, RoundingMode::Nearest).0,
+        ))]),
+        Number::Rational(r) => Ok(vec![Value::from(Number::Real(
+            f64::rounding_from(r, RoundingMode::Nearest).0,
+        ))]),
+        Number::Real(_) | Number::Complex(_) => Ok(vec![obj.clone()]),
     }
-    Ok(result)
-}
-
-#[bridge(name = "/", lib = "(rnrs base builtins (6))")]
-pub fn div_builtin(arg1: &Value, args: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(div(arg1, args)?)])
-}
-
-pub(crate) fn div(val1: &Value, vals: &[Value]) -> Result<Number, Exception> {
-    let val1: Arc<Number> = val1.clone().try_into()?;
-    if vals.is_empty() {
-        return Ok(Number::FixedInteger(1).checked_div(&val1)?);
-    }
-    let mut result = val1.as_ref().clone();
-    for val in vals {
-        let num: Arc<Number> = val.clone().try_into()?;
-        result = result.checked_div(&num)?;
-    }
-    Ok(result)
 }
 
 #[bridge(name = "=", lib = "(rnrs base builtins (6))")]
@@ -770,6 +847,34 @@ pub(crate) fn equal(vals: &[Value]) -> Result<bool, Exception> {
             if first != next {
                 return Ok(false);
             }
+        }
+    }
+    Ok(true)
+}
+
+#[bridge(name = "<", lib = "(rnrs base builtins (6))")]
+pub fn lesser_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(lesser(args)?)])
+}
+
+pub(crate) fn lesser(vals: &[Value]) -> Result<bool, Exception> {
+    if let Some((head, rest)) = vals.split_first() {
+        let mut prev = head.clone();
+        for next in rest {
+            {
+                let prev: Arc<Number> = prev.clone().try_into()?;
+                let next: Arc<Number> = next.clone().try_into()?;
+                if prev.is_complex() {
+                    return Err(Exception::type_error("number", "complex"));
+                }
+                if next.is_complex() {
+                    return Err(Exception::type_error("number", "complex"));
+                }
+                if prev >= next {
+                    return Ok(false);
+                }
+            }
+            prev = next.clone();
         }
     }
     Ok(true)
@@ -796,62 +901,6 @@ pub(crate) fn greater(vals: &[Value]) -> Result<bool, Exception> {
                     return Err(Exception::type_error("number", "complex"));
                 }
                 if prev <= next {
-                    return Ok(false);
-                }
-            }
-            prev = next.clone();
-        }
-    }
-    Ok(true)
-}
-
-#[bridge(name = ">=", lib = "(rnrs base builtins (6))")]
-pub fn greater_equal_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(greater_equal(args)?)])
-}
-
-pub(crate) fn greater_equal(vals: &[Value]) -> Result<bool, Exception> {
-    if let Some((head, rest)) = vals.split_first() {
-        let mut prev = head.clone();
-        for next in rest {
-            {
-                let prev: Arc<Number> = prev.clone().try_into()?;
-                let next: Arc<Number> = next.clone().try_into()?;
-                if prev.is_complex() {
-                    return Err(Exception::type_error("number", "complex"));
-                }
-                if next.is_complex() {
-                    return Err(Exception::type_error("number", "complex"));
-                }
-                if prev < next {
-                    return Ok(false);
-                }
-            }
-            prev = next.clone();
-        }
-    }
-    Ok(true)
-}
-
-#[bridge(name = "<", lib = "(rnrs base builtins (6))")]
-pub fn lesser_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(lesser(args)?)])
-}
-
-pub(crate) fn lesser(vals: &[Value]) -> Result<bool, Exception> {
-    if let Some((head, rest)) = vals.split_first() {
-        let mut prev = head.clone();
-        for next in rest {
-            {
-                let prev: Arc<Number> = prev.clone().try_into()?;
-                let next: Arc<Number> = next.clone().try_into()?;
-                if prev.is_complex() {
-                    return Err(Exception::type_error("number", "complex"));
-                }
-                if next.is_complex() {
-                    return Err(Exception::type_error("number", "complex"));
-                }
-                if prev >= next {
                     return Ok(false);
                 }
             }
@@ -889,54 +938,64 @@ pub(crate) fn lesser_equal(vals: &[Value]) -> Result<bool, Exception> {
     Ok(true)
 }
 
-#[bridge(name = "number?", lib = "(rnrs base builtins (6))")]
-pub fn is_number(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(arg.type_of() == ValueType::Number)])
+#[bridge(name = ">=", lib = "(rnrs base builtins (6))")]
+pub fn greater_equal_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(greater_equal(args)?)])
 }
 
-#[bridge(name = "integer?", lib = "(rnrs base builtins (6))")]
-pub fn is_integer(arg: &Value) -> Result<Vec<Value>, Exception> {
-    let arg: Arc<Number> = match arg.clone().try_into() {
-        Ok(arg) => arg,
-        Err(_) => return Ok(vec![Value::from(false)]),
-    };
-    Ok(vec![Value::from(matches!(
-        arg.as_ref(),
-        Number::FixedInteger(_) | Number::BigInteger(_)
-    ))])
+pub(crate) fn greater_equal(vals: &[Value]) -> Result<bool, Exception> {
+    if let Some((head, rest)) = vals.split_first() {
+        let mut prev = head.clone();
+        for next in rest {
+            {
+                let prev: Arc<Number> = prev.clone().try_into()?;
+                let next: Arc<Number> = next.clone().try_into()?;
+                if prev.is_complex() {
+                    return Err(Exception::type_error("number", "complex"));
+                }
+                if next.is_complex() {
+                    return Err(Exception::type_error("number", "complex"));
+                }
+                if prev < next {
+                    return Ok(false);
+                }
+            }
+            prev = next.clone();
+        }
+    }
+    Ok(true)
 }
 
-#[bridge(name = "rational?", lib = "(rnrs base builtins (6))")]
-pub fn is_rational(arg: &Value) -> Result<Vec<Value>, Exception> {
-    let arg: Arc<Number> = match arg.clone().try_into() {
-        Ok(arg) => arg,
-        Err(_) => return Ok(vec![Value::from(false)]),
-    };
-    Ok(vec![Value::from(matches!(
-        arg.as_ref(),
-        Number::Rational(_)
-    ))])
+#[bridge(name = "zero?", lib = "(rnrs base builtins (6))")]
+pub fn zero(arg: &Value) -> Result<Vec<Value>, Exception> {
+    let num: Arc<Number> = arg.clone().try_into()?;
+    Ok(vec![Value::from(num.is_zero())])
 }
 
-#[bridge(name = "real?", lib = "(rnrs base builtins (6))")]
-pub fn is_real(arg: &Value) -> Result<Vec<Value>, Exception> {
-    let arg: Arc<Number> = match arg.clone().try_into() {
-        Ok(arg) => arg,
-        Err(_) => return Ok(vec![Value::from(false)]),
-    };
-    Ok(vec![Value::from(matches!(arg.as_ref(), Number::Real(_)))])
+#[bridge(name = "odd?", lib = "(rnrs base builtins (6))")]
+pub fn odd(arg: &Value) -> Result<Vec<Value>, Exception> {
+    let num: Arc<Number> = arg.clone().try_into()?;
+    Ok(vec![Value::from(num.is_odd())])
 }
 
-#[bridge(name = "complex?", lib = "(rnrs base builtins (6))")]
-pub fn is_complex(arg: &Value) -> Result<Vec<Value>, Exception> {
-    let arg: Arc<Number> = match arg.clone().try_into() {
-        Ok(arg) => arg,
-        Err(_) => return Ok(vec![Value::from(false)]),
-    };
-    Ok(vec![Value::from(matches!(
-        arg.as_ref(),
-        Number::Complex(_)
-    ))])
+#[bridge(name = "even?", lib = "(rnrs base builtins (6))")]
+pub fn even(arg: &Value) -> Result<Vec<Value>, Exception> {
+    let num: Arc<Number> = arg.clone().try_into()?;
+    Ok(vec![Value::from(num.is_even())])
+}
+
+#[bridge(name = "finite?", lib = "(rnrs base builtins (6))")]
+pub fn finite_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(
+        !arg.try_to_scheme_type::<Arc<Number>>()?.is_finite(),
+    )])
+}
+
+#[bridge(name = "infinite?", lib = "(rnrs base builtins (6))")]
+pub fn infinite_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(
+        arg.try_to_scheme_type::<Arc<Number>>()?.is_infinite(),
+    )])
 }
 
 #[bridge(name = "nan?", lib = "(rnrs base builtins (6))")]
@@ -946,45 +1005,143 @@ pub fn is_nan(arg: &Value) -> Result<Vec<Value>, Exception> {
     )])
 }
 
-#[bridge(name = "infinite?", lib = "(rnrs base builtins (6))")]
-pub fn is_infinite(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(
-        arg.try_to_scheme_type::<Arc<Number>>()?.is_infinite(),
-    )])
+#[bridge(name = "+", lib = "(rnrs base builtins (6))")]
+pub fn add_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(add(args)?)])
 }
 
-#[bridge(name = "magnitude", lib = "(rnrs base builtins (6))")]
-pub fn magnitude(arg: &Value) -> Result<Vec<Value>, Exception> {
-    match arg.try_to_scheme_type::<Arc<Number>>()?.as_ref() {
-        Number::Complex(complex) => Ok(vec![Value::from(Arc::new(Number::Real(complex.norm())))]),
-        _ => Ok(vec![arg.clone()]),
+pub(crate) fn add(vals: &[Value]) -> Result<Number, Exception> {
+    let mut result = Number::FixedInteger(0);
+    for val in vals {
+        let num: Arc<Number> = val.clone().try_into()?;
+        result = result.checked_add(&num)?;
+    }
+    Ok(result)
+}
+
+#[bridge(name = "*", lib = "(rnrs base builtins (6))")]
+pub fn mul_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(mul(args)?)])
+}
+
+pub(crate) fn mul(vals: &[Value]) -> Result<Number, Exception> {
+    let mut result = Number::FixedInteger(1);
+    for val in vals {
+        let num: Arc<Number> = val.clone().try_into()?;
+        result = result.checked_mul(&num)?;
+    }
+    Ok(result)
+}
+
+#[bridge(name = "-", lib = "(rnrs base builtins (6))")]
+pub fn sub_builtin(arg1: &Value, args: &[Value]) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(sub(arg1, args)?)])
+}
+
+pub(crate) fn sub(val1: &Value, vals: &[Value]) -> Result<Number, Exception> {
+    let val1: Arc<Number> = val1.clone().try_into()?;
+    let mut val1 = val1.as_ref().clone();
+    if vals.is_empty() {
+        Ok(-val1)
+    } else {
+        for val in vals {
+            let num: Arc<Number> = val.clone().try_into()?;
+            val1 = val1.checked_sub(&num)?;
+        }
+        Ok(val1)
     }
 }
 
-#[bridge(name = "real-part", lib = "(rnrs base builtins (6))")]
-pub fn real_part(arg: &Value) -> Result<Vec<Value>, Exception> {
-    match arg.try_to_scheme_type::<Arc<Number>>()?.as_ref() {
-        Number::Complex(complex) => Ok(vec![Value::from(Arc::new(Number::Real(complex.re)))]),
-        _ => Ok(vec![arg.clone()]),
+#[bridge(name = "/", lib = "(rnrs base builtins (6))")]
+pub fn div_builtin(arg1: &Value, args: &[Value]) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(div(arg1, args)?)])
+}
+
+pub(crate) fn div(val1: &Value, vals: &[Value]) -> Result<Number, Exception> {
+    let val1: Arc<Number> = val1.clone().try_into()?;
+    if vals.is_empty() {
+        return Ok(Number::FixedInteger(1).checked_div(&val1)?);
+    }
+    let mut result = val1.as_ref().clone();
+    for val in vals {
+        let num: Arc<Number> = val.clone().try_into()?;
+        result = result.checked_div(&num)?;
+    }
+    Ok(result)
+}
+
+// div0, mod0, and the like
+
+#[bridge(name = "numerator", lib = "(rnrs base builtins (6))")]
+pub fn numerator(obj: &Value) -> Result<Vec<Value>, Exception> {
+    match obj.try_to_scheme_type::<Arc<Number>>()?.as_ref() {
+        Number::Rational(r) => Ok(vec![Value::from(Number::BigInteger(
+            Integer::from_sign_and_abs(*r >= 0i64, r.to_numerator()),
+        ))]),
+        _ => Ok(vec![obj.clone()]),
     }
 }
 
-#[bridge(name = "imag-part", lib = "(rnrs base builtins (6))")]
-pub fn imag_part(arg: &Value) -> Result<Vec<Value>, Exception> {
-    match arg.try_to_scheme_type::<Arc<Number>>()?.as_ref() {
-        Number::Complex(complex) => Ok(vec![Value::from(Arc::new(Number::Real(complex.im)))]),
-        _ => Err(Exception::error("expected complex number")),
+#[bridge(name = "denominator", lib = "(rnrs base builtins (6))")]
+pub fn denominator(obj: &Value) -> Result<Vec<Value>, Exception> {
+    match obj.try_to_scheme_type::<Arc<Number>>()?.as_ref() {
+        Number::Rational(r) => Ok(vec![Value::from(Number::BigInteger(
+            Integer::from(r.to_denominator()),
+        ))]),
+        _ => Ok(vec![obj.clone()]),
     }
 }
 
-#[bridge(name = "flonum?", lib = "(rnrs base builtins (6))")]
-pub fn is_flonum(arg: &Value) -> Result<Vec<Value>, Exception> {
-    let arg: Arc<Number> = match arg.clone().try_into() {
-        Ok(arg) => arg,
-        Err(_) => return Ok(vec![Value::from(false)]),
-    };
-    Ok(vec![Value::from(matches!(arg.as_ref(), Number::Real(_)))])
+#[bridge(name = "floor", lib = "(rnrs base builtins (6))")]
+pub fn floor(obj: &Value) -> Result<Vec<Value>, Exception> {
+    match obj.try_to_scheme_type::<Arc<Number>>()?.as_ref() {
+        Number::Rational(r) => Ok(vec![Value::from(Number::BigInteger(
+            Integer::rounding_from(r, RoundingMode::Floor).0
+        ))]),
+        Number::Real(r) => Ok(vec![Value::from(Number::Real(r.floor()))]),
+        Number::Complex(_) => Err(Exception::error("cannot floor complex number")),
+        _ => Ok(vec![obj.clone()]),
+    }
 }
+
+
+#[bridge(name = "ceiling", lib = "(rnrs base builtins (6))")]
+pub fn ceiling(obj: &Value) -> Result<Vec<Value>, Exception> {
+    match obj.try_to_scheme_type::<Arc<Number>>()?.as_ref() {
+        Number::Rational(r) => Ok(vec![Value::from(Number::BigInteger(
+            Integer::rounding_from(r, RoundingMode::Ceiling).0
+        ))]),
+        Number::Real(r) => Ok(vec![Value::from(Number::Real(r.ceil()))]),
+        Number::Complex(_) => Err(Exception::error("cannot ceil complex number")),
+        _ => Ok(vec![obj.clone()]),
+    }
+}
+
+
+#[bridge(name = "truncate", lib = "(rnrs base builtins (6))")]
+pub fn truncate(obj: &Value) -> Result<Vec<Value>, Exception> {
+    match obj.try_to_scheme_type::<Arc<Number>>()?.as_ref() {
+        Number::Rational(r) => Ok(vec![Value::from(Number::BigInteger(
+            Integer::rounding_from(r, RoundingMode::Down).0
+        ))]),
+        Number::Real(r) => Ok(vec![Value::from(Number::Real(r.trunc()))]),
+        Number::Complex(_) => Err(Exception::error("cannot truncate complex number")),
+        _ => Ok(vec![obj.clone()]),
+    }
+}
+
+#[bridge(name = "round", lib = "(rnrs base builtins (6))")]
+pub fn round(obj: &Value) -> Result<Vec<Value>, Exception> {
+    match obj.try_to_scheme_type::<Arc<Number>>()?.as_ref() {
+        Number::Rational(r) => Ok(vec![Value::from(Number::BigInteger(
+            Integer::rounding_from(r, RoundingMode::Nearest).0
+        ))]),
+        Number::Real(r) => Ok(vec![Value::from(Number::Real(r.round_ties_even()))]),
+        Number::Complex(_) => Err(Exception::error("cannot round complex number")),
+        _ => Ok(vec![obj.clone()]),
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

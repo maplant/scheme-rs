@@ -127,6 +127,16 @@ impl Exception {
         )))
     }
 
+    pub fn implementation_violation(msg: impl fmt::Display) -> Self {
+        Self(Value::from_rust_type(
+            CompoundCondition::from((
+                Assertion::new(),
+                ImplementationRestriction::new(),
+                Message::new(msg),
+            )),
+        ))
+    }
+
     /// For when we cannot convert a value into the requested type.
     ///
     /// Example: Integer to a Complex
@@ -310,7 +320,7 @@ define_condition_type!(
 );
 
 impl Message {
-    pub fn new(message: impl std::fmt::Display) -> Self {
+    pub fn new(message: impl fmt::Display) -> Self {
         Self {
             parent: Gc::new(SimpleCondition::new()),
             message: message.to_string(),
@@ -576,6 +586,12 @@ define_condition_type!(
     scheme_name: "&implementation-restriction",
     parent: Violation,
 );
+
+impl ImplementationRestriction {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
 
 impl Default for ImplementationRestriction {
     fn default() -> Self {

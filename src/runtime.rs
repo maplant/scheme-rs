@@ -28,7 +28,7 @@ use std::{collections::HashSet, mem::ManuallyDrop, path::Path, sync::Arc};
 /// and creates a new library registry.
 ///
 /// There is not much you can do with a Runtime beyond creating it and using it
-/// to [run programs](Runtime::run_programs), however a lot of functions require
+/// to [run programs](Runtime::run_program), however a lot of functions require
 /// it as an arguments, such as [TopLevelEnvironment::new_repl].
 ///
 /// Runtime is automatically reference counted, so if you have all of the
