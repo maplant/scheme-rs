@@ -15,7 +15,6 @@ use parking_lot::RwLock;
 use crate::{
     exceptions::Exception,
     gc::{Gc, GcInner, Trace},
-    num::Number,
     proc::{Application, DynamicState, FuncPtr, Procedure},
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
@@ -815,7 +814,7 @@ pub fn record_accessor(
     let idx = idx + rtd.field_index_offset;
     let accessor_fn = Procedure::new(
         runtime.clone(),
-        vec![Value::from(rtd), Value::from(Number::from(idx))],
+        vec![Value::from(rtd), Value::from(idx)],
         FuncPtr::Bridge(record_accessor_fn),
         1,
         false,
@@ -875,7 +874,7 @@ pub fn record_mutator(
     let idx = idx + rtd.field_index_offset;
     let mutator_fn = Procedure::new(
         runtime.clone(),
-        vec![Value::from(rtd), Value::from(Number::from(idx))],
+        vec![Value::from(rtd), Value::from(idx)],
         FuncPtr::Bridge(record_mutator_fn),
         2,
         false,
@@ -968,8 +967,7 @@ pub fn record_type_field_names(rtd: &Value) -> Result<Vec<Value>, Exception> {
 #[bridge(name = "record-field-mutable?", lib = "(rnrs records inspection (6))")]
 pub fn record_field_mutable_pred(rtd: &Value, k: &Value) -> Result<Vec<Value>, Exception> {
     let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
-    let k: Arc<Number> = k.clone().try_into()?;
-    let k: usize = k.as_ref().try_into()?;
+    let k: usize = k.try_to_scheme_type()?;
 
     if k >= rtd.fields.len() {
         return Err(Exception::invalid_index(k, rtd.fields.len()));

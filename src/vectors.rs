@@ -2,12 +2,10 @@ use crate::{
     exceptions::Exception,
     gc::{Gc, Trace},
     lists::slice_to_list,
-    num::Number,
     registry::bridge,
     value::{Value, write_value},
 };
 use indexmap::IndexMap;
-use malachite::Integer;
 use parking_lot::{
     MappedRwLockReadGuard, MappedRwLockWriteGuard, RwLock, RwLockReadGuard, RwLockWriteGuard,
 };
@@ -206,8 +204,7 @@ impl Indexer for VectorIndexer {
 
 #[bridge(name = "make-vector", lib = "(rnrs base builtins (6))")]
 pub fn make_vector(n: &Value, with: &[Value]) -> Result<Vec<Value>, Exception> {
-    let n: Arc<Number> = n.clone().try_into()?;
-    let n: usize = n.as_ref().try_into()?;
+    let n: usize = n.try_to_scheme_type()?;
 
     Ok(vec![Value::from(Vector(Gc::new(VectorInner {
         vec: RwLock::new(
@@ -254,10 +251,7 @@ pub fn bytevector_len(vec: &Value) -> Result<Vec<Value>, Exception> {
     let vec: ByteVector = vec.clone().try_into()?;
     let len = vec.0.vec.read().len();
 
-    Ok(vec![Value::from(match i64::try_from(len) {
-        Ok(len) => Number::FixedInteger(len),
-        Err(_) => Number::BigInteger(Integer::from(len)),
-    })])
+    Ok(vec![Value::from(len)])
 }
 
 #[bridge(name = "vector-set!", lib = "(rnrs base builtins (6))")]

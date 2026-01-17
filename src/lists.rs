@@ -4,7 +4,6 @@ use parking_lot::RwLock;
 use crate::{
     exceptions::Exception,
     gc::{Gc, GcInner, Trace},
-    num::Number,
     proc::{Application, DynamicState, Procedure},
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
@@ -226,7 +225,7 @@ pub fn set_cdr(var: &Value, val: &Value) -> Result<Vec<Value>, Exception> {
 
 #[bridge(name = "length", lib = "(rnrs base builtins (6))")]
 pub fn length_builtin(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(Number::from(length(arg)?))])
+    Ok(vec![Value::from(length(arg)?)])
 }
 
 pub fn length(arg: &Value) -> Result<usize, Exception> {

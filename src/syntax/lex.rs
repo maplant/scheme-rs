@@ -1,5 +1,7 @@
 //! Lexical analysis of symbolic expressions
 
+use std::sync::Arc;
+
 use super::Span;
 use malachite::{Integer, base::num::conversion::traits::*, rational::Rational};
 use scheme_rs_macros::{maybe_async, maybe_await};
@@ -10,7 +12,7 @@ use futures::future::BoxFuture;
 
 use crate::{
     exceptions::Exception,
-    num,
+    num::{self, SimpleNumber},
     ports::{PortData, PortInfo},
 };
 
@@ -691,6 +693,19 @@ pub struct Number {
     imag_part: Option<Part>,
 }
 
+impl TryFrom<(Part, u32)> for SimpleNumber {
+    type Error = ParseNumberError;
+
+    fn try_from((part, radix): (Part, u32)) -> Result<Self, Self::Error> {
+        part.try_into_i64(radix)
+            .map(SimpleNumber::FixedInteger)
+            .or_else(|| part.try_into_integer(radix).map(SimpleNumber::BigInteger))
+            .or_else(|| part.try_into_rational(radix).map(SimpleNumber::Rational))
+            .or_else(|| part.try_into_f64(radix).map(SimpleNumber::Real))
+            .ok_or(ParseNumberError::NoValidRepresentation)
+    }
+}
+
 impl TryFrom<Number> for num::Number {
     type Error = ParseNumberError;
 
@@ -698,38 +713,24 @@ impl TryFrom<Number> for num::Number {
         // Ignore exactness for now
         if let Some(imag_part) = value.imag_part {
             // This is a complex number:
-            let imag_part = imag_part
-                .try_into_f64(value.radix)
-                .ok_or(ParseNumberError::NoValidRepresentation)?;
-            let real_part = if let Some(real_part) = value.real_part {
-                real_part
-                    .try_into_f64(value.radix)
-                    .ok_or(ParseNumberError::NoValidRepresentation)?
+            let imag_part: SimpleNumber = (imag_part, value.radix).try_into()?;
+            let real_part: SimpleNumber = if let Some(real_part) = value.real_part {
+                (real_part, value.radix).try_into()?
             } else {
-                0.0
+                SimpleNumber::Real(0.0)
             };
-            return Ok(num::Number::Complex(::num::Complex::new(
-                real_part, imag_part,
-            )));
+            return Ok(num::Number(Arc::new(num::NumberInner::Complex(
+                num::Complex::new(real_part, imag_part),
+            ))));
         }
 
         let part = value
             .real_part
-            .as_ref()
             .ok_or(ParseNumberError::NoValidRepresentation)?;
 
-        part.try_into_i64(value.radix)
-            .map(num::Number::FixedInteger)
-            .or_else(|| {
-                part.try_into_integer(value.radix)
-                    .map(num::Number::BigInteger)
-            })
-            .or_else(|| {
-                part.try_into_rational(value.radix)
-                    .map(num::Number::Rational)
-            })
-            .or_else(|| part.try_into_f64(value.radix).map(num::Number::Real))
-            .ok_or(ParseNumberError::NoValidRepresentation)
+        Ok(num::Number(Arc::new(num::NumberInner::Simple(
+            (part, value.radix).try_into()?,
+        ))))
     }
 }
 

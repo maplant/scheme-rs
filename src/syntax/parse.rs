@@ -282,8 +282,9 @@ impl Parser<'_> {
         loop {
             match maybe_await!(self.next_token())?.ok_or(ParseSyntaxError::UnexpectedEof)? {
                 token!(Lexeme::Number(num), span) => {
-                    if let Number::FixedInteger(i) = num.try_into()?
-                        && let Ok(byte) = u8::try_from(i)
+                    let num: Number = num.try_into()?;
+                    if let Some(simple) = num.as_simple()
+                        && let Ok(byte) = u8::try_from(simple)
                     {
                         output.push(byte);
                         continue;
