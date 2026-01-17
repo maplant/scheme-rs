@@ -1,4 +1,167 @@
-//! Rudimentary structure support.
+//! Records (also known as structs).
+//!
+//! [`Records`](Record) are the mechanism by which new types are introduced to
+//! scheme and the method by which custom Rust types are stored and accessible
+//! to scheme code.
+//!
+//! Each records is described by its [`RecordTypeDescriptor`], which includes
+//! the names of its name and fields among other properties.
+//!
+//! # Implementing [`SchemeCompatible`]
+//!
+//! Any type that implements [`Trace`] and [`Debug`](std::fmt::Debug) is
+//! eligible to implement `SchemeCompatible`. Once this criteria is fulfilled,
+//! we first need to use the [`rtd`] proc macro to fill in the type descriptor.
+//!
+//! For example, let's say that we have `Enemy` struct that we want to have two
+//! immutable fields and one mutable field:
+//!
+//! ```rust
+//! # use scheme_rs::gc::Trace;
+//! #[derive(Trace, Debug)]
+//! struct Enemy {
+//!   // pos_x and pos_y will be immutable from Scheme code (although they can
+//!   // can still be modified from Rust):
+//!   pos_x: f64,
+//!   pos_y: f64,
+//!   // health will be mutable in both Scheme and Rust code:
+//!   health: f64,
+//! }
+//! ```
+//!
+//! We can now fill in the `rtd` for the type:
+//!
+//! ```rust
+//! # use std::sync::Arc;
+//! # use scheme_rs::{gc::Trace, records::{rtd, SchemeCompatible, RecordTypeDescriptor},
+//! # exceptions::Exception };
+//! # #[derive(Debug, Trace)]
+//! # struct Enemy {
+//! #   pos_x: f64,
+//! #   pos_y: f64,
+//! #   health: f64,
+//! # }
+//! impl SchemeCompatible for Enemy {
+//!     fn rtd() -> Arc<RecordTypeDescriptor> {
+//!         rtd!(
+//!             name: "enemy",
+//!             fields: [ "pos-x", "pos-y", mutable("health") ],
+//!             constructor: |pos_x, pos_y, health| {
+//!                 Ok(Enemy {
+//!                     pos_x: pos_x.try_to_scheme_type()?,
+//!                     pos_y: pos_y.try_to_scheme_type()?,
+//!                     health: health.try_to_scheme_type()?,
+//!                 })
+//!             }
+//!         )
+//!     }
+//! }
+//! ```
+//!
+//! It's important to note that you need to provide an argument in the
+//! constructor for every field specified in `fields` and every parent field;
+//! however, this does not preclude you from omitting fields that are present in
+//! your data type from the `fields` list.
+//!
+//! Technically, [`rtd`](SchemeCompatible::rtd) is the only required method to
+//! implement `SchemeCompatible`, but since we populated `fields` it will be
+//! possible for the [`get_field`](SchemeCompatible::get_field) and
+//! [`set_field`](SchemeCompatible::set_field) functions to be called, which by
+//! default panic.
+//!
+//! Thus, we need to provide getters and setters for each field. We only need to
+//! provide setters for the mutable fields. Fields are indexed by their position
+//! in the `fields` array passed to `rtd`:
+//!
+//! ```rust
+//! # use std::sync::Arc;
+//! # use scheme_rs::{gc::Trace, value::Value, records::{rtd, SchemeCompatible, RecordTypeDescriptor}};
+//! # #[derive(Debug, Trace)]
+//! # struct Enemy {
+//! #   pos_x: f64,
+//! #   pos_y: f64,
+//! #   health: f64,
+//! # }
+//! impl SchemeCompatible for Enemy {
+//! #    fn rtd() -> Arc<RecordTypeDescriptor> {
+//! #        rtd!(name: "enemy", sealed: true)
+//! #    }
+//!     fn get_field(&self, k: usize) -> Value {
+//!         match k {
+//!             0 => Value::from(self.pos_x),
+//!             1 => Value::from(self.pos_y),
+//!             2 => Value::from(self.health),
+//!             _ => unreachable!(),
+//!         }
+//!     }
+//!
+//!     fn set_field(&mut self, _k: usize, val: Value) {
+//!         let Some(health) = f64::try_from(val).ok() else { return; };
+//!         self.health = health;
+//!     }
+//! }
+//! ```
+//!
+//! ## Expressing subtyping relationships
+//!
+//! It is possible to express the classic child/parent relationship in structs
+//! by embedding the parent in the child and implementing the
+//! [`extract_embedded_record`](SchemeCompatible::extract_embedded_record)
+//! function with the [`into_scheme_compatible`] function:
+//!
+//! ```rust
+//! # use std::sync::Arc;
+//! # use scheme_rs::{gc::{Trace, Gc}, value::Value, records::{rtd, SchemeCompatible, RecordTypeDescriptor, into_scheme_compatible}};
+//! # #[derive(Debug, Trace)]
+//! # struct Enemy {
+//! #   pos_x: f64,
+//! #   pos_y: f64,
+//! #   health: f64,
+//! # }
+//! # impl SchemeCompatible for Enemy {
+//! #    fn rtd() -> Arc<RecordTypeDescriptor> {
+//! #        rtd!(name: "enemy", sealed: true)
+//! #    }
+//! # }
+//! #[derive(Debug, Trace)]
+//! struct SpecialEnemy {
+//!     parent: Gc<Enemy>,
+//!     special: u64,
+//! }
+//!
+//! impl SchemeCompatible for SpecialEnemy {
+//!     fn rtd() -> Arc<RecordTypeDescriptor> {
+//!         rtd!(
+//!             name: "enemy",
+//!             parent: Enemy,
+//!             fields: ["special"],
+//!             constructor: |pos_x, pos_y, health, special| {
+//!                 Ok(SpecialEnemy {
+//!                     parent: Gc::new(Enemy {
+//!                         pos_x: pos_x.try_to_scheme_type()?,
+//!                         pos_y: pos_y.try_to_scheme_type()?,
+//!                         health: health.try_to_scheme_type()?,
+//!                     }),
+//!                     special: special.try_to_scheme_type()?,
+//!                 })
+//!             }
+//!         )
+//!     }
+//!
+//!     fn get_field(&self, _k: usize) -> Value {
+//!         Value::from(self.special)
+//!     }
+//!
+//!     fn extract_embedded_record(
+//!         &self,
+//!         rtd: &Arc<RecordTypeDescriptor>
+//!     ) -> Option<Gc<dyn SchemeCompatible>> {
+//!         Enemy::rtd()
+//!             .is_subtype_of(rtd)
+//!             .then(|| into_scheme_compatible(self.parent.clone()))
+//!     }
+//! }
+//! ```
 
 use std::{
     any::Any,
@@ -29,15 +192,29 @@ pub use scheme_rs_macros::rtd;
 #[derive(Trace, Clone)]
 #[repr(align(16))]
 pub struct RecordTypeDescriptor {
+    /// The name of the record.
     pub name: Symbol,
+    /// Whether or not the record is "sealed". Sealed records cannot be made the
+    /// parent of other records.
     pub sealed: bool,
+    /// Whether or not the record is "opaque". Opaque records are not considered
+    /// to be records proper and fail the `record?` predicate.
     pub opaque: bool,
+    /// An optional universal identifier for the record. Prevents the record
+    /// from being "generative," i.e. unique upon each call to
+    /// `define-record-type`.
     pub uid: Option<Symbol>,
+    /// Whether or not the type being described is a Rust type.
     pub rust_type: bool,
+    /// The Rust parent of the record type, if it exists.
     pub rust_parent_constructor: Option<RustParentConstructor>,
     /// Parent is most recently inserted record type, if one exists.
     pub inherits: indexmap::IndexSet<ByAddress<Arc<RecordTypeDescriptor>>>,
+    /// The index into `fields` where this record's fields proper begin. All of
+    /// the previous fields belong to a parent.
     pub field_index_offset: usize,
+    /// The fields of the record, including all of the ones inherited from
+    /// parents.
     pub fields: Vec<Field>,
 }
 
@@ -74,6 +251,7 @@ impl fmt::Debug for RecordTypeDescriptor {
     }
 }
 
+/// Description of a Record field.
 #[derive(Trace, Clone)]
 pub enum Field {
     Immutable(Symbol),
@@ -116,8 +294,9 @@ impl fmt::Debug for Field {
     }
 }
 
+/*
 /// The record type descriptor for the "record type descriptor" type.
-pub static RECORD_TYPE_DESCRIPTOR_RTD: LazyLock<Arc<RecordTypeDescriptor>> = LazyLock::new(|| {
+static RECORD_TYPE_DESCRIPTOR_RTD: LazyLock<Arc<RecordTypeDescriptor>> = LazyLock::new(|| {
     Arc::new(RecordTypeDescriptor {
         name: Symbol::intern("rtd"),
         sealed: true,
@@ -130,11 +309,11 @@ pub static RECORD_TYPE_DESCRIPTOR_RTD: LazyLock<Arc<RecordTypeDescriptor>> = Laz
         fields: vec![],
     })
 });
+*/
 
 type NonGenerativeStore = LazyLock<Arc<Mutex<HashMap<Symbol, Arc<RecordTypeDescriptor>>>>>;
 
-pub static NONGENERATIVE: NonGenerativeStore =
-    LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
+static NONGENERATIVE: NonGenerativeStore = LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
 
 #[bridge(
     name = "make-record-type-descriptor",
@@ -209,6 +388,7 @@ pub fn record_type_descriptor_pred(obj: &Value) -> Result<Vec<Value>, Exception>
     )])
 }
 
+/// A description of a record's constructor.
 #[derive(Trace, Clone)]
 pub struct RecordConstructorDescriptor {
     parent: Option<Gc<RecordConstructorDescriptor>>,
@@ -335,7 +515,7 @@ pub fn record_constructor(
 
     let (protocols, rtds) = rcd_to_protocols_and_rtds(&rcd);
 
-    // See if there is a rust contrustor available
+    // See if there is a rust constructor available
     let rust_constructor = rtds
         .iter()
         .find(|rtd| rtd.rust_parent_constructor.is_some())
@@ -688,6 +868,11 @@ pub trait SchemeCompatible: fmt::Debug + Trace + Any + Send + Sync + 'static {
     }
 }
 
+/// Convenience function for converting a `Gc<T>` into a
+/// `Gc<dyn SchemeCompatible>`.
+///
+/// This isn't as simple as using the `as` keyword in Rust due to the
+/// instability of the `CoerceUnsized` trait.
 pub fn into_scheme_compatible(t: Gc<impl SchemeCompatible>) -> Gc<dyn SchemeCompatible> {
     // Convert t into a Gc<dyn SchemeCompatible>. This has to be done
     // manually since [CoerceUnsized] is unstable.
@@ -713,7 +898,7 @@ impl RustParentConstructor {
 
 type ParentConstructor = fn(&[Value]) -> Result<Gc<dyn SchemeCompatible>, Exception>;
 
-pub fn is_subtype_of(val: &Value, rt: &Value) -> Result<bool, Exception> {
+pub(crate) fn is_subtype_of(val: &Value, rt: &Value) -> Result<bool, Exception> {
     let UnpackedValue::Record(rec) = val.clone().unpack() else {
         return Ok(false);
     };

@@ -1,5 +1,4 @@
 //! Procedures, continuation and user, and applying values to those procedures.
-//! Contains the main evaluation trampoline.
 
 use crate::{
     env::Local,
@@ -128,7 +127,7 @@ pub(crate) struct ProcedureInner {
     pub(crate) is_variable_transformer: bool,
     /// Debug information for this function. Only applicable if the function is
     /// a user function, i.e. not a continuation.
-    pub(crate) debug_info: Option<Arc<FuncDebugInfo>>,
+    pub(crate) debug_info: Option<Arc<ProcDebugInfo>>,
 }
 
 impl ProcedureInner {
@@ -138,7 +137,7 @@ impl ProcedureInner {
         func: FuncPtr,
         num_required_args: usize,
         variadic: bool,
-        debug_info: Option<Arc<FuncDebugInfo>>,
+        debug_info: Option<Arc<ProcDebugInfo>>,
     ) -> Self {
         Self {
             runtime,
@@ -396,7 +395,7 @@ impl Procedure {
         func: FuncPtr,
         num_required_args: usize,
         variadic: bool,
-        debug_info: Option<Arc<FuncDebugInfo>>,
+        debug_info: Option<Arc<ProcDebugInfo>>,
     ) -> Self {
         Self(Gc::new(ProcedureInner {
             runtime,
@@ -417,7 +416,7 @@ impl Procedure {
         (self.0.num_required_args, self.0.variadic)
     }
 
-    pub fn get_debug_info(&self) -> Option<Arc<FuncDebugInfo>> {
+    pub fn get_debug_info(&self) -> Option<Arc<ProcDebugInfo>> {
         self.0.debug_info.clone()
     }
 
@@ -451,6 +450,7 @@ impl Procedure {
         matches!(self.0.func, FuncPtr::Continuation(_))
     }
 
+    /// Applies `args` to the procedure and returns the values it evaluates to.
     #[maybe_async]
     pub fn call(&self, args: &[Value]) -> Result<Vec<Value>, Exception> {
         let mut args = args.to_vec();
@@ -509,7 +509,7 @@ impl PartialEq for Procedure {
     }
 }
 
-pub enum OpType {
+pub(crate) enum OpType {
     Proc(Procedure),
     HaltOk,
     HaltErr,
@@ -518,9 +518,9 @@ pub enum OpType {
 /// An application of a function to a given set of values.
 pub struct Application {
     /// The operator being applied to.
-    pub op: OpType,
+    op: OpType,
     /// The arguments being applied to the operator.
-    pub args: Vec<Value>,
+    args: Vec<Value>,
 }
 
 impl Application {
@@ -577,8 +577,10 @@ impl Application {
     }
 }
 
+/// Debug information associated with a procedure, including its name, argument
+/// names, and source location.
 #[derive(Debug)]
-pub struct FuncDebugInfo {
+pub struct ProcDebugInfo {
     /// The name of the function.
     pub name: Symbol,
     /// Named arguments for the function.
@@ -587,7 +589,7 @@ pub struct FuncDebugInfo {
     pub location: Span,
 }
 
-impl FuncDebugInfo {
+impl ProcDebugInfo {
     pub fn new(name: Option<Symbol>, args: Vec<Local>, location: Span) -> Self {
         Self {
             name: name.unwrap_or_else(|| Symbol::intern("<lambda>")),
@@ -1145,7 +1147,7 @@ pub fn call_with_values(
 //
 
 #[derive(Clone, Debug, Trace, PartialEq)]
-pub struct Winder {
+pub(crate) struct Winder {
     pub(crate) in_thunk: Procedure,
     pub(crate) out_thunk: Procedure,
 }
@@ -1289,7 +1291,7 @@ unsafe extern "C" fn forward_body_thunk_result(
 //
 
 #[derive(Clone, Debug, PartialEq, Trace)]
-pub struct Prompt {
+pub(crate) struct Prompt {
     tag: Symbol,
     barrier_id: usize,
     handler: Procedure,
@@ -1297,7 +1299,7 @@ pub struct Prompt {
 }
 
 #[derive(Clone, Debug, PartialEq, Trace)]
-pub struct PromptBarrier {
+pub(crate) struct PromptBarrier {
     barrier_id: usize,
     replaced_k: Procedure,
 }

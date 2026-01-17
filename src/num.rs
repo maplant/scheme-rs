@@ -1,3 +1,5 @@
+//! Numerical tower.
+
 use crate::{
     exceptions::Exception,
     gc::Trace,
@@ -218,6 +220,10 @@ impl SimpleNumber {
         } else {
             false
         }
+    }
+
+    pub fn is_finite(&self) -> bool {
+        matches!(self, Self::Real(r) if r.is_finite())
     }
 
     pub fn is_infinite(&self) -> bool {
@@ -1216,95 +1222,57 @@ impl_op_for_number!(Sub, sub);
 impl_op_for_number!(Mul, mul);
 impl_op_for_number!(Div, div);
 
-#[bridge(name = "zero?", lib = "(rnrs base builtins (6))")]
-pub fn zero(arg: &Value) -> Result<Vec<Value>, Exception> {
-    let num: Number = arg.try_to_scheme_type()?;
-    Ok(vec![Value::from(num.is_zero())])
+////////////////////////////////////////////////////////////////////////////////
+// Numerical built-ins:
+
+#[bridge(name = "number?", lib = "(rnrs base builtins (6))")]
+pub fn is_number(arg: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(arg.type_of() == ValueType::Number)])
 }
 
-#[bridge(name = "even?", lib = "(rnrs base builtins (6))")]
-pub fn even(arg: &Value) -> Result<Vec<Value>, Exception> {
-    let int: Integer = arg.try_to_scheme_type()?;
-    Ok(vec![Value::from(int.even())])
+#[bridge(name = "complex?", lib = "(rnrs base builtins (6))")]
+pub fn is_complex(arg: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(
+        arg.cast_to_scheme_type::<Number>()
+            .as_ref()
+            .is_some_and(Number::is_complex),
+    )])
 }
 
-#[bridge(name = "odd?", lib = "(rnrs base builtins (6))")]
-pub fn odd(arg: &Value) -> Result<Vec<Value>, Exception> {
-    let int: Integer = arg.try_to_scheme_type()?;
-    Ok(vec![Value::from(int.odd())])
+#[bridge(name = "real?", lib = "(rnrs base builtins (6))")]
+pub fn is_real(arg: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(
+        arg.cast_to_scheme_type::<Number>()
+            .as_ref()
+            .is_some_and(Number::is_real),
+    )])
 }
 
-#[bridge(name = "+", lib = "(rnrs base builtins (6))")]
-pub fn add_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(add(args)?)])
+#[bridge(name = "rational?", lib = "(rnrs base builtins (6))")]
+pub fn is_rational(arg: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(
+        arg.cast_to_scheme_type::<Number>()
+            .as_ref()
+            .is_some_and(Number::is_rational),
+    )])
 }
 
-pub(crate) fn add(vals: &[Value]) -> Result<Number, Exception> {
-    let mut result = Number::from(0i64);
-    for val in vals {
-        let num: Number = val.try_to_scheme_type()?;
-        result = result + num;
-    }
-    Ok(result)
+#[bridge(name = "integer?", lib = "(rnrs base builtins (6))")]
+pub fn is_integer(arg: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(
+        arg.cast_to_scheme_type::<Number>()
+            .as_ref()
+            .is_some_and(Number::is_integer),
+    )])
 }
 
-#[bridge(name = "-", lib = "(rnrs base builtins (6))")]
-pub fn sub_builtin(arg1: &Value, args: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(sub(arg1, args)?)])
-}
-
-pub(crate) fn sub(val1: &Value, vals: &[Value]) -> Result<Number, Exception> {
-    let val1: Number = val1.try_to_scheme_type()?;
-    let mut val1 = val1.clone();
-    if vals.is_empty() {
-        Ok(-val1)
-    } else {
-        for val in vals {
-            let num: Number = val.try_to_scheme_type()?;
-            val1 = val1 - num;
-        }
-        Ok(val1)
-    }
-}
-
-#[bridge(name = "*", lib = "(rnrs base builtins (6))")]
-pub fn mul_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(mul(args)?)])
-}
-
-pub(crate) fn mul(vals: &[Value]) -> Result<Number, Exception> {
-    let mut result = Number::from(1i64);
-    for val in vals {
-        let num: Number = val.try_to_scheme_type()?;
-        result = result * num;
-    }
-    Ok(result)
-}
-
-#[bridge(name = "/", lib = "(rnrs base builtins (6))")]
-pub fn div_builtin(arg1: &Value, args: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(div(arg1, args)?)])
-}
-
-pub(crate) fn div(val1: &Value, vals: &[Value]) -> Result<Number, Exception> {
-    let val1: Number = val1.try_to_scheme_type()?;
-    if vals.is_empty() {
-        if val1.is_zero() {
-            return Err(Exception::error("division by zero"));
-        } else {
-            return Ok(Number::from(1) / val1);
-        }
-    }
-    let mut result = val1.clone();
-    for val in vals {
-        let num: Number = val.try_to_scheme_type()?;
-        if num.is_zero() {
-            return Err(Exception::error("division by zero"));
-        }
-        result = result / num;
-    }
-    Ok(result)
-}
+// real-valued?
+// rational-valued?
+// integer-valued?
+// exact?
+// inexact?
+// inexact
+// exact
 
 #[bridge(name = "=", lib = "(rnrs base builtins (6))")]
 pub fn equal_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
@@ -1319,6 +1287,34 @@ pub(crate) fn equal(vals: &[Value]) -> Result<bool, Exception> {
             if first != next {
                 return Ok(false);
             }
+        }
+    }
+    Ok(true)
+}
+
+#[bridge(name = "<", lib = "(rnrs base builtins (6))")]
+pub fn lesser_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(lesser(args)?)])
+}
+
+pub(crate) fn lesser(vals: &[Value]) -> Result<bool, Exception> {
+    if let Some((head, rest)) = vals.split_first() {
+        let mut prev = head.clone();
+        for next in rest {
+            {
+                let prev: Number = prev.try_to_scheme_type()?;
+                let next: Number = next.try_to_scheme_type()?;
+                if prev.is_complex() {
+                    return Err(Exception::type_error("number", "complex"));
+                }
+                if next.is_complex() {
+                    return Err(Exception::type_error("number", "complex"));
+                }
+                if prev >= next {
+                    return Ok(false);
+                }
+            }
+            prev = next.clone();
         }
     }
     Ok(true)
@@ -1345,62 +1341,6 @@ pub(crate) fn greater(vals: &[Value]) -> Result<bool, Exception> {
                     return Err(Exception::type_error("real", "complex"));
                 }
                 if prev <= next {
-                    return Ok(false);
-                }
-            }
-            prev = next.clone();
-        }
-    }
-    Ok(true)
-}
-
-#[bridge(name = ">=", lib = "(rnrs base builtins (6))")]
-pub fn greater_equal_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(greater_equal(args)?)])
-}
-
-pub(crate) fn greater_equal(vals: &[Value]) -> Result<bool, Exception> {
-    if let Some((head, rest)) = vals.split_first() {
-        let mut prev = head.clone();
-        for next in rest {
-            {
-                let prev: Number = prev.try_to_scheme_type()?;
-                let next: Number = next.try_to_scheme_type()?;
-                if prev.is_complex() {
-                    return Err(Exception::type_error("real", "complex"));
-                }
-                if next.is_complex() {
-                    return Err(Exception::type_error("real", "complex"));
-                }
-                if prev < next {
-                    return Ok(false);
-                }
-            }
-            prev = next.clone();
-        }
-    }
-    Ok(true)
-}
-
-#[bridge(name = "<", lib = "(rnrs base builtins (6))")]
-pub fn lesser_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(lesser(args)?)])
-}
-
-pub(crate) fn lesser(vals: &[Value]) -> Result<bool, Exception> {
-    if let Some((head, rest)) = vals.split_first() {
-        let mut prev = head.clone();
-        for next in rest {
-            {
-                let prev: Number = prev.try_to_scheme_type()?;
-                let next: Number = next.try_to_scheme_type()?;
-                if prev.is_complex() {
-                    return Err(Exception::type_error("number", "complex"));
-                }
-                if next.is_complex() {
-                    return Err(Exception::type_error("number", "complex"));
-                }
-                if prev >= next {
                     return Ok(false);
                 }
             }
@@ -1438,44 +1378,63 @@ pub(crate) fn lesser_equal(vals: &[Value]) -> Result<bool, Exception> {
     Ok(true)
 }
 
-#[bridge(name = "number?", lib = "(rnrs base builtins (6))")]
-pub fn is_number(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(arg.type_of() == ValueType::Number)])
+#[bridge(name = ">=", lib = "(rnrs base builtins (6))")]
+pub fn greater_equal_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(greater_equal(args)?)])
 }
 
-#[bridge(name = "integer?", lib = "(rnrs base builtins (6))")]
-pub fn is_integer(arg: &Value) -> Result<Vec<Value>, Exception> {
+pub(crate) fn greater_equal(vals: &[Value]) -> Result<bool, Exception> {
+    if let Some((head, rest)) = vals.split_first() {
+        let mut prev = head.clone();
+        for next in rest {
+            {
+                let prev: Number = prev.try_to_scheme_type()?;
+                let next: Number = next.try_to_scheme_type()?;
+                if prev.is_complex() {
+                    return Err(Exception::type_error("real", "complex"));
+                }
+                if next.is_complex() {
+                    return Err(Exception::type_error("real", "complex"));
+                }
+                if prev < next {
+                    return Ok(false);
+                }
+            }
+            prev = next.clone();
+        }
+    }
+    Ok(true)
+}
+
+#[bridge(name = "zero?", lib = "(rnrs base builtins (6))")]
+pub fn zero(arg: &Value) -> Result<Vec<Value>, Exception> {
+    let num: Number = arg.try_to_scheme_type()?;
+    Ok(vec![Value::from(num.is_zero())])
+}
+
+#[bridge(name = "odd?", lib = "(rnrs base builtins (6))")]
+pub fn odd(arg: &Value) -> Result<Vec<Value>, Exception> {
+    let int: Integer = arg.try_to_scheme_type()?;
+    Ok(vec![Value::from(int.odd())])
+}
+
+#[bridge(name = "even?", lib = "(rnrs base builtins (6))")]
+pub fn even(arg: &Value) -> Result<Vec<Value>, Exception> {
+    let int: Integer = arg.try_to_scheme_type()?;
+    Ok(vec![Value::from(int.even())])
+}
+
+#[bridge(name = "finite?", lib = "(rnrs base builtins (6))")]
+pub fn is_finite(arg: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(
-        arg.cast_to_scheme_type::<Number>()
-            .as_ref()
-            .is_some_and(Number::is_integer),
+        !arg.try_to_scheme_type::<SimpleNumber>()?.is_infinite(),
     )])
 }
 
-#[bridge(name = "rational?", lib = "(rnrs base builtins (6))")]
-pub fn is_rational(arg: &Value) -> Result<Vec<Value>, Exception> {
+#[bridge(name = "infinite?", lib = "(rnrs base builtins (6))")]
+pub fn is_infinite(arg: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(
-        arg.cast_to_scheme_type::<Number>()
-            .as_ref()
-            .is_some_and(Number::is_rational),
-    )])
-}
-
-#[bridge(name = "real?", lib = "(rnrs base builtins (6))")]
-pub fn is_real(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(
-        arg.cast_to_scheme_type::<Number>()
-            .as_ref()
-            .is_some_and(Number::is_real),
-    )])
-}
-
-#[bridge(name = "complex?", lib = "(rnrs base builtins (6))")]
-pub fn is_complex(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(
-        arg.cast_to_scheme_type::<Number>()
-            .as_ref()
-            .is_some_and(Number::is_complex),
+        arg.try_to_scheme_type::<SimpleNumber>()?.is_infinite(),
     )])
 }
 
@@ -1486,11 +1445,144 @@ pub fn is_nan(arg: &Value) -> Result<Vec<Value>, Exception> {
     )])
 }
 
-#[bridge(name = "nan?", lib = "(rnrs base builtins (6))")]
-pub fn is_infinite(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(
-        arg.try_to_scheme_type::<SimpleNumber>()?.is_infinite(),
-    )])
+#[bridge(name = "+", lib = "(rnrs base builtins (6))")]
+pub fn add_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(add(args)?)])
+}
+
+pub(crate) fn add(vals: &[Value]) -> Result<Number, Exception> {
+    let mut result = Number::from(0i64);
+    for val in vals {
+        let num: Number = val.try_to_scheme_type()?;
+        result = result + num;
+    }
+    Ok(result)
+}
+
+#[bridge(name = "*", lib = "(rnrs base builtins (6))")]
+pub fn mul_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(mul(args)?)])
+}
+
+pub(crate) fn mul(vals: &[Value]) -> Result<Number, Exception> {
+    let mut result = Number::from(1i64);
+    for val in vals {
+        let num: Number = val.try_to_scheme_type()?;
+        result = result * num;
+    }
+    Ok(result)
+}
+
+#[bridge(name = "-", lib = "(rnrs base builtins (6))")]
+pub fn sub_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(add(args)?)])
+}
+
+pub(crate) fn sub(val1: &Value, vals: &[Value]) -> Result<Number, Exception> {
+    let val1: Number = val1.try_to_scheme_type()?;
+    let mut val1 = val1.clone();
+    if vals.is_empty() {
+        Ok(-val1)
+    } else {
+        for val in vals {
+            let num: Number = val.try_to_scheme_type()?;
+            val1 = val1 - num;
+        }
+        Ok(val1)
+    }
+}
+
+#[bridge(name = "/", lib = "(rnrs base builtins (6))")]
+pub fn div_builtin(arg1: &Value, args: &[Value]) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(div(arg1, args)?)])
+}
+
+pub(crate) fn div(val1: &Value, vals: &[Value]) -> Result<Number, Exception> {
+    let val1: Number = val1.try_to_scheme_type()?;
+    if vals.is_empty() {
+        if val1.is_zero() {
+            return Err(Exception::error("division by zero"));
+        } else {
+            return Ok(Number::from(1) / val1);
+        }
+    }
+    let mut result = val1.clone();
+    for val in vals {
+        let num: Number = val.try_to_scheme_type()?;
+        if num.is_zero() {
+            return Err(Exception::error("division by zero"));
+        }
+        result = result / num;
+    }
+    Ok(result)
+}
+
+#[bridge(name = "numerator", lib = "(rnrs base builtins (6))")]
+pub fn numerator(obj: &Value) -> Result<Vec<Value>, Exception> {
+    match obj.try_to_scheme_type::<SimpleNumber>()? {
+        SimpleNumber::Rational(r) => Ok(vec![Value::from(Integer::from_sign_and_abs(
+            r >= 0i64,
+            r.into_numerator(),
+        ))]),
+        _ => Ok(vec![obj.clone()]),
+    }
+}
+
+#[bridge(name = "denominator", lib = "(rnrs base builtins (6))")]
+pub fn denominator(obj: &Value) -> Result<Vec<Value>, Exception> {
+    match obj.try_to_scheme_type::<SimpleNumber>()? {
+        SimpleNumber::Rational(r) => Ok(vec![Value::from(Integer::from(r.into_denominator()))]),
+        SimpleNumber::Real(r) => Ok(vec![Value::from(Integer::from(
+            Rational::try_from_float_simplest(r)
+                .map_err(|_| Exception::error("not a rational"))?
+                .into_denominator(),
+        ))]),
+        _ => Ok(vec![Value::from(1)]),
+    }
+}
+
+#[bridge(name = "floor", lib = "(rnrs base builtins (6))")]
+pub fn floor(obj: &Value) -> Result<Vec<Value>, Exception> {
+    match obj.try_to_scheme_type::<SimpleNumber>()? {
+        SimpleNumber::Rational(r) => Ok(vec![Value::from(
+            Integer::rounding_from(r, RoundingMode::Floor).0,
+        )]),
+        SimpleNumber::Real(r) => Ok(vec![Value::from(r.floor())]),
+        _ => Ok(vec![obj.clone()]),
+    }
+}
+
+#[bridge(name = "ceiling", lib = "(rnrs base builtins (6))")]
+pub fn ceiling(obj: &Value) -> Result<Vec<Value>, Exception> {
+    match obj.try_to_scheme_type::<SimpleNumber>()? {
+        SimpleNumber::Rational(r) => Ok(vec![Value::from(
+            Integer::rounding_from(r, RoundingMode::Ceiling).0,
+        )]),
+        SimpleNumber::Real(r) => Ok(vec![Value::from(r.ceil())]),
+        _ => Ok(vec![obj.clone()]),
+    }
+}
+
+#[bridge(name = "truncate", lib = "(rnrs base builtins (6))")]
+pub fn truncate(obj: &Value) -> Result<Vec<Value>, Exception> {
+    match obj.try_to_scheme_type::<SimpleNumber>()? {
+        SimpleNumber::Rational(r) => Ok(vec![Value::from(
+            Integer::rounding_from(r, RoundingMode::Down).0,
+        )]),
+        SimpleNumber::Real(r) => Ok(vec![Value::from(r.trunc())]),
+        _ => Ok(vec![obj.clone()]),
+    }
+}
+
+#[bridge(name = "round", lib = "(rnrs base builtins (6))")]
+pub fn round(obj: &Value) -> Result<Vec<Value>, Exception> {
+    match obj.try_to_scheme_type::<SimpleNumber>()? {
+        SimpleNumber::Rational(r) => Ok(vec![Value::from(
+            Integer::rounding_from(r, RoundingMode::Nearest).0,
+        )]),
+        SimpleNumber::Real(r) => Ok(vec![Value::from(r.round_ties_even())]),
+        _ => Ok(vec![obj.clone()]),
+    }
 }
 
 #[bridge(name = "magnitude", lib = "(rnrs base builtins (6))")]

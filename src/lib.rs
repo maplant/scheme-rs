@@ -1,13 +1,15 @@
+#![doc = include_str!("docs.md")]
+
 extern crate self as scheme_rs;
 
 pub mod ast;
-pub mod character;
-pub mod cps;
+pub(crate) mod character;
+pub(crate) mod cps;
 pub mod enumerations;
 pub mod env;
 pub mod eval;
 pub mod exceptions;
-pub mod expand;
+pub(crate) mod expand;
 pub mod gc;
 pub mod hashtables;
 pub mod lists;

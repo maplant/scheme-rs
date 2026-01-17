@@ -5,7 +5,7 @@ use crate::{
     lists::slice_to_list,
     ports::{IoError, IoReadError, IoWriteError},
     proc::{Application, DynStackElem, DynamicState, FuncPtr, Procedure, pop_dyn_stack},
-    records::{Record, RecordTypeDescriptor, SchemeCompatible, into_scheme_compatible, rtd},
+    records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
@@ -125,6 +125,14 @@ impl Exception {
                 )),
             )),
         )))
+    }
+
+    pub fn implementation_violation(msg: impl fmt::Display) -> Self {
+        Self(Value::from_rust_type(CompoundCondition::from((
+            Assertion::new(),
+            ImplementationRestriction::new(),
+            Message::new(msg),
+        ))))
     }
 
     /// For when we cannot convert a value into the requested type.
@@ -263,7 +271,7 @@ macro_rules! impl_into_condition_for {
 
 impl_into_condition_for!(std::num::TryFromIntError);
 
-#[derive(Copy, Clone, Default, Debug, Trace)]
+#[derive(Copy, Clone, Default, Trace)]
 pub struct SimpleCondition;
 
 impl SimpleCondition {
@@ -276,8 +284,14 @@ impl SchemeCompatible for SimpleCondition {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(
             name: "&condition",
-            constructor: |_| Ok(into_scheme_compatible(Gc::new(SimpleCondition)))
+            constructor: || Ok(SimpleCondition)
         )
+    }
+}
+
+impl fmt::Debug for SimpleCondition {
+    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Ok(())
     }
 }
 
@@ -303,7 +317,7 @@ define_condition_type!(
 );
 
 impl Message {
-    pub fn new(message: impl std::fmt::Display) -> Self {
+    pub fn new(message: impl fmt::Display) -> Self {
         Self {
             parent: Gc::new(SimpleCondition::new()),
             message: message.to_string(),
@@ -570,6 +584,12 @@ define_condition_type!(
     parent: Violation,
 );
 
+impl ImplementationRestriction {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 impl Default for ImplementationRestriction {
     fn default() -> Self {
         Self {
@@ -745,6 +765,7 @@ pub fn simple_conditions(condition: &Value) -> Result<Vec<Value>, Exception> {
     )])
 }
 
+#[doc(hidden)]
 #[cps_bridge(
     def = "with-exception-handler handler thunk",
     lib = "(rnrs exceptions builtins (6))"
@@ -780,6 +801,7 @@ pub fn with_exception_handler(
     Ok(Application::new(thunk, vec![Value::from(k)]))
 }
 
+#[doc(hidden)]
 #[cps_bridge(def = "raise obj", lib = "(rnrs exceptions builtins (6))")]
 pub fn raise_builtin(
     runtime: &Runtime,
@@ -900,8 +922,9 @@ unsafe extern "C" fn reraise_exception(
     }
 }
 
-/// Raises an exception to the current exception handler and coninues with the
+/// Raises an exception to the current exception handler and continues with the
 /// value returned by the handler.
+#[doc(hidden)]
 #[cps_bridge(def = "raise-continuable obj", lib = "(rnrs exceptions builtins (6))")]
 pub fn raise_continuable(
     _runtime: &Runtime,

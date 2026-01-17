@@ -15,11 +15,11 @@ use crate::{
 };
 use either::Either;
 
-use derive_more::From;
 use scheme_rs_macros::{maybe_async, maybe_await};
 use std::{
     collections::{HashMap, HashSet},
     fmt,
+    str::FromStr,
     sync::Arc,
 };
 
@@ -709,8 +709,12 @@ impl ImportSet {
             _ => Err(error::expected_list(form)),
         }
     }
+}
 
-    pub fn parse_from_str(s: &str) -> Result<Self, Exception> {
+impl FromStr for ImportSet {
+    type Err = Exception;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         let form = Syntax::from_str(s, None)?;
         match form.as_list() {
             Some([item, Syntax::Null { .. }]) => Self::parse(item),
@@ -815,7 +819,7 @@ impl Definition {
     }
 
     #[maybe_async]
-    pub fn parse(
+    pub(crate) fn parse(
         ctxt: &ParseContext,
         syn: &[Syntax],
         env: &Environment,
@@ -959,7 +963,11 @@ pub enum Expression {
 
 impl Expression {
     #[maybe_async]
-    pub fn parse(ctxt: &ParseContext, form: Syntax, env: &Environment) -> Result<Self, Exception> {
+    pub(crate) fn parse(
+        ctxt: &ParseContext,
+        form: Syntax,
+        env: &Environment,
+    ) -> Result<Self, Exception> {
         let FullyExpanded {
             expansion_env,
             expanded,
@@ -1631,7 +1639,7 @@ impl DefinitionBody {
     }
 
     #[maybe_async]
-    pub fn parse_lib_body(
+    pub(crate) fn parse_lib_body(
         runtime: &Runtime,
         form: &Syntax,
         env: &Environment,
@@ -1650,7 +1658,7 @@ impl DefinitionBody {
     }
 
     #[maybe_async]
-    pub fn parse(
+    pub(crate) fn parse(
         ctxt: &ParseContext,
         body: &[Syntax],
         env: &Environment,

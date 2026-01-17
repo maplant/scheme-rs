@@ -5,16 +5,10 @@ use rustyline::{
     validate::{ValidationContext, ValidationResult, Validator},
 };
 use scheme_rs::{
-    ast::{DefinitionBody, ImportSet, ParseContext},
-    cps::Compile,
-    env::Environment,
-    exceptions::Exception,
+    env::TopLevelEnvironment,
     ports::{BufferMode, Port, Prompt, Transcoder},
-    proc::{Application, DynamicState},
-    registry::Library,
     runtime::Runtime,
     syntax::{Span, Syntax},
-    value::Value,
 };
 use scheme_rs_macros::{maybe_async, maybe_await};
 use std::process::ExitCode;
@@ -45,10 +39,9 @@ struct InputHelper {
 #[cfg_attr(feature = "async", tokio::main)]
 fn main() -> ExitCode {
     let runtime = Runtime::new();
-    let repl = Library::new_repl(&runtime);
-    let env = Environment::Top(repl);
+    let repl = TopLevelEnvironment::new_repl(&runtime);
 
-    maybe_await!(env.import(ImportSet::parse_from_str("(library (rnrs))").unwrap()))
+    maybe_await!(repl.import("(library (rnrs))".parse().unwrap()))
         .expect("Failed to import standard library");
 
     let config = Config::builder()
@@ -94,7 +87,7 @@ fn main() -> ExitCode {
             }
         };
 
-        match maybe_await!(compile_and_run_str(&runtime, &env, sexpr)) {
+        match maybe_await!(repl.eval_sexpr(true, &sexpr)) {
             Ok(results) => {
                 for result in results.into_iter() {
                     println!("${n_results} = {result:?}");
@@ -108,20 +101,4 @@ fn main() -> ExitCode {
     }
 
     ExitCode::SUCCESS
-}
-
-#[maybe_async]
-fn compile_and_run_str(
-    runtime: &Runtime,
-    repl: &Environment,
-    sexpr: Syntax,
-) -> Result<Vec<Value>, Exception> {
-    let ctxt = ParseContext::new(runtime, true);
-    let sexprs = [sexpr];
-    let expr = maybe_await!(DefinitionBody::parse(&ctxt, &sexprs, repl, &sexprs[0]))?;
-    let compiled = expr.compile_top_level();
-    let closure = maybe_await!(runtime.compile_expr(compiled));
-    let result =
-        maybe_await!(Application::new(closure, Vec::new()).eval(&mut DynamicState::default()))?;
-    Ok(result)
 }

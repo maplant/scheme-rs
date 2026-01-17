@@ -1,3 +1,89 @@
+//! Scheme values.
+//!
+//! Scheme values are dynamic and can contain essentially any value, similar to
+//! an [`Arc<dyn Any>`](std::any::Any). Any type that has a valid scheme
+//! representation (see [scheme types](#scheme-types) for more information) can
+//! be converted easily to a Scheme `Value`. Converting a Rust primitive or
+//! standard library type can be done simply with the `From` trait:
+//!
+//! ```
+//! # use scheme_rs::value::Value;
+//! let value = Value::from(3.1415926f64);
+//! ```
+//!
+//! Converting a Value back to a concrete rust type can be done via the
+//! [`TryFrom`] trait or by obtaining an enum through the
+//! [`unpack`](Value::unpack) or [`unpacked_ref`](Value::unpacked_ref)
+//! functions:
+//!
+//! ```
+//! # use scheme_rs::value::{Value, UnpackedValue};
+//! # let value = Value::from(3.1415926f64);
+//! let float: f64 = value.clone().try_into().unwrap();
+//! let float: f64 = match value.unpack() {
+//!     UnpackedValue::Number(num) => num.as_ref().try_into().unwrap(),
+//!     _ => unreachable!(),
+//! };
+//! ```
+//!
+//! It is generally preferrable to use `try_into` as opposed to `unpack` since
+//! `UnpackedValue` is an enumeration that is subject to change.
+//!
+//! Alternatively, the [`cast_to_scheme_type`](Value::cast_to_scheme_type)
+//! method can be used to obtain an Option from a reference for more ergonomic
+//! casting. There is also the [`try_to_scheme_type`](Value::try_to_scheme_type)
+//! function that is similarly more ergonomic:
+//!
+//! ```
+//! # use scheme_rs::value::{Value, UnpackedValue};
+//! let value = Value::from(3);
+//! let float = value.cast_to_scheme_type::<f64>().unwrap();
+//! let int = value.cast_to_scheme_type::<i64>().unwrap();
+//! ```
+//!
+//! ## Converting to and from arbitrary Rust types
+//!
+//! Besides primitives and standard library types, scheme-rs supports converting
+//! arbitrary Rust types (such as structs and enums) to `Values` by representing
+//! them as [`Records`](Record). To do this, the type must implement the
+//! [`SchemeCompatible`] trait (see [`records`](scheme_rs::records) for more
+//! information).
+//!
+//! `Value` provides three convenience methods to facilitate these conversions:
+//! - [`from_rust_type`](Value::from_rust_type): convert a `SchemeCompatible`
+//!   type to a record type, and then to a `Value`.
+//! - [`try_to_rust_type`](Value::try_to_rust_type): attempt to convert the
+//!   value to a `Gc<T>` where `T: SchemeCompatible` providing a detailed error
+//!   on failure.
+//! - [`cast_to_rust_type`](Value::cast_to_rust_type): attempt to convert the
+//!   value to a `Gc<T>` where `T: SchemeCompatible`, returning `None` on
+//!   failure.
+//!
+//! ## Scheme types:
+//!
+//! Scheme values can inhabit at most one of any of the following types:
+//! - **undefined**: Variables with this value throw an error upon being read.
+//! - **null**: Can only be one possible value which is itself. Conceptually the
+//!   same as the [`()`](https://doc.rust-lang.org/std/primitive.unit.html) type.
+//! - **pair**: A [collection of two Values](Pair). Conceptually similar to a
+//!   Rust [two-tuple](https://doc.rust-lang.org/std/primitive.tuple.html).
+//! - **boolean**: Can either be `true` or `false`.
+//! - **character**: A unicode code point. Same thing as a [`char`](std::char).
+//! - **number**: A numerical value on the numerical tower. Represented by a
+//!   [`Arc<Number>`](crate::num::Number).
+//! - **symbol**: A [`Symbol`].
+//! - **vector**: A [`Vector`].
+//! - **byte-vector**: A [`ByteVector`].
+//! - **syntax**: A [`Syntax`].
+//! - **procedure**: A [`Procedure`].
+//! - **record**: A [`Record`], which can possibly be a [`SchemeCompatible`].
+//! - **rtd**: A [descriptor of a record's type](RecordTypeDescriptor).
+//! - **hashtable**: A [`HashTable`].
+//! - **port**: A value that can handle [input/output](scheme_rs::ports::Port)
+//!   from the outside world.
+//! - **cell**: A mutable reference to another Value. This type is completely
+//!   transparent and impossible to observe.
+
 use indexmap::{IndexMap, IndexSet};
 use malachite::Integer;
 use parking_lot::RwLock;
@@ -6,7 +92,7 @@ use crate::{
     ast,
     exceptions::Exception,
     gc::{Gc, GcInner, Trace},
-    hashtables::{self, HashTable, HashTableInner},
+    hashtables::{HashTable, HashTableInner},
     lists::{self, Pair, PairInner},
     num::{Number, NumberInner, SimpleNumber},
     ports::{Port, PortInner},
@@ -19,8 +105,14 @@ use crate::{
     vectors::{self, ByteVector, Vector, VectorInner},
 };
 use std::{
-    collections::HashMap, fmt, hash::Hash, marker::PhantomData, mem::ManuallyDrop, ops::Deref,
-    ptr::null, sync::Arc,
+    collections::HashMap,
+    fmt,
+    hash::{Hash, Hasher},
+    marker::PhantomData,
+    mem::ManuallyDrop,
+    ops::Deref,
+    ptr::null,
+    sync::Arc,
 };
 
 const ALIGNMENT: usize = 16;
@@ -28,11 +120,16 @@ const TAG_BITS: usize = ALIGNMENT.ilog2() as usize;
 const TAG: usize = 0b1111;
 const FALSE_VALUE: usize = Tag::Boolean as usize;
 
-/// A Scheme value. Represented as a tagged pointer.
+/// A Scheme value. See [the module documentation](scheme_rs::value) for more
+/// information.
 #[repr(transparent)]
 pub struct Value(*const ());
 
 impl Value {
+    /// Create a new `Value` from an `UnpackedValue`.
+    ///
+    /// This is generally discouraged as it's cumbersome; try using `From`
+    /// instead.
     pub fn new(v: UnpackedValue) -> Self {
         v.into_value()
     }
@@ -50,7 +147,7 @@ impl Value {
     ///
     /// # Safety
     /// Calling this function is undefined behavior if the raw u64 was not obtained
-    /// via [into_raw]
+    /// via [into_raw](Value::into_raw)
     pub unsafe fn from_raw(raw: *const ()) -> Self {
         Self(raw)
     }
@@ -59,7 +156,7 @@ impl Value {
     ///
     /// # Safety
     /// Calling this function is undefined behavior if the raw u64 was not obtained
-    /// via [into_raw]
+    /// via [into_raw](Value::into_raw)
     pub unsafe fn from_raw_inc_rc(raw: *const ()) -> Self {
         let tag = Tag::from(raw as usize & TAG);
         let untagged = raw.map_addr(|raw| raw & !TAG);
@@ -85,9 +182,9 @@ impl Value {
                     }
                 }
                 Tag::Port => Arc::increment_strong_count(untagged as *const PortInner),
-                Tag::HashTable => Gc::increment_reference_count(
-                    untagged as *mut GcInner<hashtables::HashTableInner>,
-                ),
+                Tag::HashTable => {
+                    Gc::increment_reference_count(untagged as *mut GcInner<HashTableInner>)
+                }
                 Tag::Cell => {
                     Gc::increment_reference_count(untagged as *mut GcInner<Value>);
                 }
@@ -99,7 +196,8 @@ impl Value {
 
     /// Creates a raw u64 from a Value. Does not decrement the reference count.
     /// Calling this function without turning the raw value into a Value via
-    /// [from_raw] is equivalent to calling mem::forget on the value.
+    /// [from_raw](Value::from_raw) is equivalent to calling mem::forget on the
+    /// value.
     pub fn into_raw(val: Self) -> *const () {
         ManuallyDrop::new(val).0
     }
@@ -125,6 +223,7 @@ impl Value {
         Self(null::<()>().map_addr(|raw| raw | Tag::Pair as usize))
     }
 
+    /// Convert a [`Syntax`] into its corresponding datum representation.
     pub fn datum_from_syntax(syntax: &Syntax) -> Self {
         match syntax {
             Syntax::Null { .. } => Self::null(),
@@ -196,10 +295,13 @@ impl Value {
             .ok_or_else(|| Exception::type_error(&type_name, &record.rtd().name.to_str()))
     }
 
+    /// Automatically convert a `SchemeCompatible` type to a `Record` and then
+    /// into a `Value`.
     pub fn from_rust_type<T: SchemeCompatible>(t: T) -> Self {
         Self::from(Record::from_rust_type(t))
     }
 
+    /// Unpack the value into an enum representation.
     pub fn unpack(self) -> UnpackedValue {
         let raw = ManuallyDrop::new(self).0;
         let tag = Tag::from(raw as usize & TAG);
@@ -300,6 +402,101 @@ impl Value {
     pub fn equal(&self, rhs: &Self) -> bool {
         equal(self, rhs)
     }
+
+    /// Performs a hash suitable for use with eq? as an equivalance function
+    pub fn eq_hash<H: Hasher>(&self, state: &mut H) {
+        let unpacked = self.unpacked_ref();
+        std::mem::discriminant(&*unpacked).hash(state);
+        match &*unpacked {
+            UnpackedValue::Undefined => (),
+            UnpackedValue::Null => (),
+            UnpackedValue::Boolean(b) => b.hash(state),
+            UnpackedValue::Character(c) => c.hash(state),
+            UnpackedValue::Number(n) => Arc::as_ptr(&n.0).hash(state),
+            UnpackedValue::String(s) => Arc::as_ptr(&s.0).hash(state),
+            UnpackedValue::Symbol(s) => s.hash(state),
+            UnpackedValue::ByteVector(v) => Arc::as_ptr(&v.0).hash(state),
+            UnpackedValue::Syntax(s) => Arc::as_ptr(s).hash(state),
+            UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
+            UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
+            UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
+            UnpackedValue::Pair(p) => Gc::as_ptr(&p.0).hash(state),
+            UnpackedValue::Vector(v) => Gc::as_ptr(&v.0).hash(state),
+            UnpackedValue::Port(p) => Arc::as_ptr(&p.0).hash(state),
+            UnpackedValue::HashTable(ht) => Gc::as_ptr(&ht.0).hash(state),
+            UnpackedValue::Cell(c) => c.0.read().eqv_hash(state),
+        }
+    }
+
+    /// Performs a hash suitable for use with eqv? as an equivalance function
+    pub fn eqv_hash<H: Hasher>(&self, state: &mut H) {
+        let unpacked = self.unpacked_ref();
+        std::mem::discriminant(&*unpacked).hash(state);
+        match &*unpacked {
+            UnpackedValue::Undefined => (),
+            UnpackedValue::Null => (),
+            UnpackedValue::Boolean(b) => b.hash(state),
+            UnpackedValue::Character(c) => c.hash(state),
+            UnpackedValue::Number(n) => n.hash(state),
+            UnpackedValue::String(s) => Arc::as_ptr(&s.0).hash(state),
+            UnpackedValue::Symbol(s) => s.hash(state),
+            UnpackedValue::ByteVector(v) => Arc::as_ptr(&v.0).hash(state),
+            UnpackedValue::Syntax(s) => Arc::as_ptr(s).hash(state),
+            UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
+            UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
+            UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
+            UnpackedValue::Pair(p) => Gc::as_ptr(&p.0).hash(state),
+            UnpackedValue::Vector(v) => Gc::as_ptr(&v.0).hash(state),
+            UnpackedValue::Port(p) => Arc::as_ptr(&p.0).hash(state),
+            UnpackedValue::HashTable(ht) => Gc::as_ptr(&ht.0).hash(state),
+            UnpackedValue::Cell(c) => c.0.read().eqv_hash(state),
+        }
+    }
+
+    /// Performs a hash suitable for use with equal? as an equivalance function
+    pub fn equal_hash<H: Hasher>(&self, recursive: &mut IndexSet<Value>, state: &mut H) {
+        let unpacked = self.unpacked_ref();
+        std::mem::discriminant(&*unpacked).hash(state);
+
+        // I think this is fine, because types that would be recursive will
+        // write out at least two values here where we're only writing out one.
+        if let Some(index) = recursive.get_index_of(self) {
+            state.write_usize(index);
+            return;
+        }
+
+        match &*unpacked {
+            UnpackedValue::Undefined => (),
+            UnpackedValue::Null => (),
+            UnpackedValue::Boolean(b) => b.hash(state),
+            UnpackedValue::Character(c) => c.hash(state),
+            UnpackedValue::Number(n) => n.hash(state),
+            UnpackedValue::String(s) => s.hash(state),
+            UnpackedValue::Symbol(s) => s.hash(state),
+            UnpackedValue::ByteVector(v) => v.hash(state),
+            UnpackedValue::Syntax(s) => Arc::as_ptr(s).hash(state),
+            UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
+            UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
+            UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
+            UnpackedValue::Pair(p) => {
+                recursive.insert(self.clone());
+                let (car, cdr) = p.clone().into();
+                car.equal_hash(recursive, state);
+                cdr.equal_hash(recursive, state);
+            }
+            UnpackedValue::Vector(v) => {
+                recursive.insert(self.clone());
+                let v_read = v.0.vec.read();
+                state.write_usize(v_read.len());
+                for val in v_read.iter() {
+                    val.equal_hash(recursive, state);
+                }
+            }
+            UnpackedValue::Port(p) => Arc::as_ptr(&p.0).hash(state),
+            UnpackedValue::HashTable(ht) => Gc::as_ptr(&ht.0).hash(state),
+            UnpackedValue::Cell(c) => c.0.read().eqv_hash(state),
+        }
+    }
 }
 
 impl Clone for Value {
@@ -315,7 +512,7 @@ impl Drop for Value {
     }
 }
 
-/// Default Hash implementation for Value is [Value::hash_eqv]. This produces
+/// Default Hash implementation for Value is [Value::eqv_hash]. This produces
 /// reasonable hash maps.
 impl Hash for Value {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
@@ -372,6 +569,8 @@ unsafe impl Trace for Value {
 #[derive(Clone, Trace)]
 pub struct Cell(pub(crate) Gc<RwLock<Value>>);
 
+/// A reference to an [`UnpackedValue`]. Allows for unpacking a `Value` without
+/// cloning/modifying the reference count.
 pub struct UnpackedValueRef<'a> {
     unpacked: ManuallyDrop<UnpackedValue>,
     marker: PhantomData<&'a UnpackedValue>,
@@ -463,6 +662,7 @@ impl From<usize> for Tag {
     }
 }
 
+/// Different possible types that a Value can inhabit.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ValueType {
     Undefined,
@@ -483,7 +683,7 @@ pub enum ValueType {
     Port,
 }
 
-/// The external, unpacked representation of a scheme value.
+/// The external, unpacked, enumeration representation of a scheme value.
 ///
 /// Values that are not potentially cyclical, such as syntax objects and byte
 /// vectors use Arcs as they are much less expensive than Gc types.
@@ -505,7 +705,7 @@ pub enum UnpackedValue {
     RecordTypeDescriptor(Arc<RecordTypeDescriptor>),
     Pair(Pair),
     Port(Port),
-    HashTable(hashtables::HashTable),
+    HashTable(HashTable),
     Cell(Cell),
 }
 
@@ -675,6 +875,7 @@ impl UnpackedValue {
 }
 
 /// Determine if two objects are equal in an extremely granular sense.
+///
 /// This implementation is a Rust translation of Efficient Dondestructive
 /// Equality Checking for Trees and Graphs by Michael D. Adams and R. Kent
 /// Dybvig.
@@ -1068,11 +1269,11 @@ macro_rules! impl_num_conversion {
             }
         }
 
-        impl TryInto<$ty> for Value {
+        impl TryFrom<Value> for $ty {
             type Error = Exception;
 
-            fn try_into(self) -> Result<$ty, Self::Error> {
-                (&self).try_into()
+            fn try_from(value: Value) -> Result<$ty, Self::Error> {
+                (&value).try_into()
             }
         }
 
