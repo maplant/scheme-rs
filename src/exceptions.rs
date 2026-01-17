@@ -128,13 +128,11 @@ impl Exception {
     }
 
     pub fn implementation_violation(msg: impl fmt::Display) -> Self {
-        Self(Value::from_rust_type(
-            CompoundCondition::from((
-                Assertion::new(),
-                ImplementationRestriction::new(),
-                Message::new(msg),
-            )),
-        ))
+        Self(Value::from_rust_type(CompoundCondition::from((
+            Assertion::new(),
+            ImplementationRestriction::new(),
+            Message::new(msg),
+        ))))
     }
 
     /// For when we cannot convert a value into the requested type.
@@ -271,7 +269,6 @@ macro_rules! impl_into_condition_for {
     };
 }
 
-impl_into_condition_for!(Box<crate::num::ArithmeticError>);
 impl_into_condition_for!(std::num::TryFromIntError);
 
 #[derive(Copy, Clone, Default, Trace)]

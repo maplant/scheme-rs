@@ -5,7 +5,6 @@ use crate::{
     exceptions::{Exception, raise},
     gc::{Gc, GcInner, Trace},
     lists::{self, Pair, list_to_vec},
-    num::Number,
     ports::{BufferMode, Port, Transcoder},
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::BridgeFnDebugInfo,
@@ -1430,7 +1429,7 @@ unsafe extern "C" fn unwind_to_prompt(
                                 Runtime::from_raw_inc_rc(runtime),
                                 vec![
                                     k,
-                                    Value::from(Number::from(barrier_id)),
+                                    Value::from(barrier_id),
                                     Value::from(Record::from_rust_type(prompt_delimited_dyn_state)),
                                 ],
                                 FuncPtr::Bridge(delimited_continuation),
@@ -1474,8 +1473,7 @@ fn delimited_continuation(
     let dk = env[0].clone();
 
     // env[1] is the barrier Id
-    let barrier_id: Arc<Number> = env[1].clone().try_into()?;
-    let barrier_id: usize = barrier_id.as_ref().try_into()?;
+    let barrier_id: usize = env[1].try_to_scheme_type()?;
 
     // env[2] is the dyn stack of the continuation
     let saved_dyn_state_val = env[2].clone();
@@ -1505,7 +1503,7 @@ fn delimited_continuation(
                 dk,
                 args,
                 saved_dyn_state_val,
-                Value::from(Number::from(0)),
+                Value::from(0),
                 Value::from(false),
             ],
             wind_delim,
@@ -1535,8 +1533,7 @@ unsafe extern "C" fn wind_delim(
         let dest_stack_read = dest_stack.as_ref();
 
         // env[3] is the index into the dest stack we're at
-        let idx: Arc<Number> = env.add(3).as_ref().unwrap().clone().try_into().unwrap();
-        let mut idx: usize = idx.as_ref().try_into().unwrap();
+        let mut idx: usize = env.add(3).as_ref().unwrap().cast_to_scheme_type().unwrap();
 
         let dyn_state = dyn_state.as_mut().unwrap_unchecked();
 

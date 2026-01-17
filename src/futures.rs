@@ -14,7 +14,6 @@ use tokio::{
 
 use crate::{
     exceptions::Exception,
-    num::Number,
     proc::Procedure,
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     strings::WideString,
@@ -92,8 +91,7 @@ pub async fn accept(listener: &Value) -> Result<Vec<Value>, Exception> {
 
 #[bridge(name = "read", lib = "(tokio)")]
 pub async fn read(socket: &Value, buff_size: &Value) -> Result<Vec<Value>, Exception> {
-    let buff_size: Arc<Number> = buff_size.clone().try_into()?;
-    let buff_size: usize = buff_size.as_ref().try_into()?;
+    let buff_size: usize = buff_size.try_to_scheme_type()?;
     let mut buffer = vec![0u8; buff_size];
     let socket = socket.try_to_rust_type::<Arc<Mutex<TcpStream>>>()?;
 

@@ -22,7 +22,6 @@ inventory = "0.3"
 malachite = { version = "0.9", features = ["floats"] }
 memchr = "2.7"
 num = "0.4"
-ordered-float = "5"
 parking_lot = "0.12.5"
 rand = { version = "0.9", features = ["thread_rng"] }
 rust-embed = { version = "8", features = ["debug-embed"] }

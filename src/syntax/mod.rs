@@ -202,7 +202,7 @@ impl Syntax {
                 }
             }
             UnpackedValue::Number(num) => Syntax::Literal {
-                literal: Literal::Number(num.as_ref().clone()),
+                literal: Literal::Number(num.clone()),
                 span: Span::default(),
             },
             x => unimplemented!("{:?}", x.into_value()),

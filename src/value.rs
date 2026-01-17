@@ -85,6 +85,7 @@
 //!   transparent and impossible to observe.
 
 use indexmap::{IndexMap, IndexSet};
+use malachite::Integer;
 use parking_lot::RwLock;
 
 use crate::{
@@ -93,7 +94,7 @@ use crate::{
     gc::{Gc, GcInner, Trace},
     hashtables::{HashTable, HashTableInner},
     lists::{self, Pair, PairInner},
-    num::Number,
+    num::{Number, NumberInner, SimpleNumber},
     ports::{Port, PortInner},
     proc::{Procedure, ProcedureInner},
     records::{Record, RecordInner, RecordTypeDescriptor, SchemeCompatible},
@@ -161,7 +162,7 @@ impl Value {
         let untagged = raw.map_addr(|raw| raw & !TAG);
         unsafe {
             match tag {
-                Tag::Number => Arc::increment_strong_count(untagged as *const Number),
+                Tag::Number => Arc::increment_strong_count(untagged as *const NumberInner),
                 Tag::String => Arc::increment_strong_count(untagged as *const WideStringInner),
                 Tag::Vector => {
                     Gc::increment_reference_count(untagged as *mut GcInner<VectorInner<Value>>)
@@ -265,9 +266,9 @@ impl Value {
     /// descriptive error on failure.
     pub fn try_to_scheme_type<T>(&self) -> Result<T, Exception>
     where
-        T: TryFrom<Self, Error = Exception>,
+        T: for<'a> TryFrom<&'a Self, Error = Exception>,
     {
-        self.clone().try_into()
+        self.try_into()
     }
 
     /// Attempt to cast the value into a Rust type that implements
@@ -316,8 +317,8 @@ impl Value {
                 UnpackedValue::Character(char::from_u32(untagged).unwrap())
             }
             Tag::Number => {
-                let number = unsafe { Arc::from_raw(untagged as *const Number) };
-                UnpackedValue::Number(number)
+                let number = unsafe { Arc::from_raw(untagged as *const NumberInner) };
+                UnpackedValue::Number(Number(number))
             }
             Tag::String => {
                 let str = unsafe { Arc::from_raw(untagged as *const WideStringInner) };
@@ -411,7 +412,7 @@ impl Value {
             UnpackedValue::Null => (),
             UnpackedValue::Boolean(b) => b.hash(state),
             UnpackedValue::Character(c) => c.hash(state),
-            UnpackedValue::Number(n) => Arc::as_ptr(n).hash(state),
+            UnpackedValue::Number(n) => Arc::as_ptr(&n.0).hash(state),
             UnpackedValue::String(s) => Arc::as_ptr(&s.0).hash(state),
             UnpackedValue::Symbol(s) => s.hash(state),
             UnpackedValue::ByteVector(v) => Arc::as_ptr(&v.0).hash(state),
@@ -436,7 +437,7 @@ impl Value {
             UnpackedValue::Null => (),
             UnpackedValue::Boolean(b) => b.hash(state),
             UnpackedValue::Character(c) => c.hash(state),
-            UnpackedValue::Number(n) => n.as_ref().hash(state),
+            UnpackedValue::Number(n) => n.hash(state),
             UnpackedValue::String(s) => Arc::as_ptr(&s.0).hash(state),
             UnpackedValue::Symbol(s) => s.hash(state),
             UnpackedValue::ByteVector(v) => Arc::as_ptr(&v.0).hash(state),
@@ -469,7 +470,7 @@ impl Value {
             UnpackedValue::Null => (),
             UnpackedValue::Boolean(b) => b.hash(state),
             UnpackedValue::Character(c) => c.hash(state),
-            UnpackedValue::Number(n) => n.as_ref().hash(state),
+            UnpackedValue::Number(n) => n.hash(state),
             UnpackedValue::String(s) => s.hash(state),
             UnpackedValue::Symbol(s) => s.hash(state),
             UnpackedValue::ByteVector(v) => v.hash(state),
@@ -693,7 +694,7 @@ pub enum UnpackedValue {
     Null,
     Boolean(bool),
     Character(char),
-    Number(Arc<Number>),
+    Number(Number),
     String(WideString),
     Symbol(Symbol),
     Vector(Vector),
@@ -720,7 +721,7 @@ impl UnpackedValue {
                 Value::from_ptr_and_tag(((c as usize) << TAG_BITS) as *const (), Tag::Character)
             }
             Self::Number(num) => {
-                let untagged = Arc::into_raw(num);
+                let untagged = Arc::into_raw(num.0);
                 Value::from_ptr_and_tag(untagged, Tag::Number)
             }
             Self::String(str) => {
@@ -778,7 +779,7 @@ impl UnpackedValue {
         match (self, rhs) {
             (Self::Boolean(a), Self::Boolean(b)) => a == b,
             (Self::Symbol(a), Self::Symbol(b)) => a == b,
-            (Self::Number(a), Self::Number(b)) => Arc::ptr_eq(a, b),
+            (Self::Number(a), Self::Number(b)) => Arc::ptr_eq(&a.0, &b.0),
             (Self::Character(a), Self::Character(b)) => a == b,
             (Self::Null, Self::Null) => true,
             (Self::String(a), Self::String(b)) => Arc::ptr_eq(&a.0, &b.0),
@@ -806,11 +807,7 @@ impl UnpackedValue {
             (Self::Boolean(a), Self::Boolean(b)) => a == b,
             // symbol=?
             (Self::Symbol(a), Self::Symbol(b)) => a == b,
-            // Numbers are only equivalent if they're the same exactness
-            // Two NaNs are also treated as equivalent
-            (Self::Number(a), Self::Number(b)) => {
-                (a.is_nan() && b.is_nan()) || (a.is_exact() == b.is_exact() && a == b)
-            }
+            (Self::Number(a), Self::Number(b)) => a.eqv(b),
             // char=?
             (Self::Character(a), Self::Character(b)) => a == b,
             // Both obj1 and obj2 are the empty list
@@ -1000,10 +997,10 @@ fn union_find(ht: &mut HashMap<Value, Value>, x: &Value, y: &Value) -> bool {
             let ny = unbox_to_num(&ry);
             if nx > ny {
                 set_box(&ry, rx.clone());
-                set_box(&rx, nx.checked_add(&ny).unwrap());
+                set_box(&rx, nx + ny);
             } else {
                 set_box(&rx, ry.clone());
-                set_box(&ry, nx.checked_add(&ny).unwrap());
+                set_box(&ry, nx + ny);
             }
         }
     }
@@ -1038,8 +1035,7 @@ fn unbox(v: &Value) -> Value {
 
 fn unbox_to_num(v: &Value) -> Number {
     let pair: Pair = v.clone().try_into().unwrap();
-    let num: Arc<Number> = pair.car().try_into().unwrap();
-    num.as_ref().clone()
+    pair.car().try_into().unwrap()
 }
 
 fn is_box(v: &Value) -> bool {
@@ -1054,7 +1050,7 @@ fn set_box(b: &Value, val: impl Into<Value>) {
 impl From<ast::Literal> for UnpackedValue {
     fn from(lit: ast::Literal) -> Self {
         match lit {
-            ast::Literal::Number(n) => Self::Number(Arc::new(n.clone())),
+            ast::Literal::Number(n) => Self::Number(n.clone()),
             ast::Literal::Boolean(b) => Self::Boolean(b),
             ast::Literal::String(s) => Self::String(WideString::from(s.clone())),
             ast::Literal::Character(c) => Self::Character(c),
@@ -1114,6 +1110,14 @@ macro_rules! impl_try_from_value_for {
 
             fn try_from(v: Value) -> Result<Self, Self::Error> {
                 v.unpack().try_into()
+            }
+        }
+
+        impl TryFrom<&Value> for $ty {
+            type Error = Exception;
+
+            fn try_from(v: &Value) -> Result<Self, Self::Error> {
+                v.clone().unpack().try_into()
             }
         }
     };
@@ -1202,7 +1206,7 @@ impl From<bool> for Value {
 // impl_try_from_value_for!(bool, Boolean, "bool");
 
 impl_try_from_value_for!(char, Character, "char");
-impl_try_from_value_for!(Arc<Number>, Number, "number");
+impl_try_from_value_for!(Number, Number, "number");
 impl_try_from_value_for!(WideString, String, "string");
 impl_try_from_value_for!(Symbol, Symbol, "symbol");
 impl_try_from_value_for!(Vector, Vector, "vector");
@@ -1231,7 +1235,7 @@ macro_rules! impl_from_wrapped_for {
     };
 }
 
-impl_from_wrapped_for!(Number, Number, Arc::new);
+// impl_from_wrapped_for!(Number, Number, Arc::new);
 impl_from_wrapped_for!(String, String, WideString::new);
 impl_from_wrapped_for!(Vec<Value>, Vector, Vector::new);
 impl_from_wrapped_for!(Vec<u8>, ByteVector, ByteVector::new);
@@ -1253,22 +1257,13 @@ impl TryFrom<UnpackedValue> for (Value, Value) {
 
 macro_rules! impl_num_conversion {
     ($ty:ty) => {
-        impl From<&'_ Value> for Option<$ty> {
-            fn from(value: &Value) -> Option<$ty> {
-                if let UnpackedValue::Number(num) = &*value.unpacked_ref() {
-                    num.as_ref().into()
-                } else {
-                    None
-                }
-            }
-        }
-
-        impl TryFrom<&'_ Value> for $ty {
+        // TODO: Can we reverse these?
+        impl TryFrom<&Value> for $ty {
             type Error = Exception;
 
             fn try_from(value: &Value) -> Result<$ty, Self::Error> {
                 match &*value.unpacked_ref() {
-                    UnpackedValue::Number(num) => num.as_ref().try_into(),
+                    UnpackedValue::Number(num) => num.try_into(),
                     e => Err(Exception::type_error("number", e.type_name())),
                 }
             }
@@ -1279,6 +1274,24 @@ macro_rules! impl_num_conversion {
 
             fn try_from(value: Value) -> Result<$ty, Self::Error> {
                 (&value).try_into()
+            }
+        }
+
+        impl From<&Value> for Option<$ty> {
+            fn from(value: &Value) -> Self {
+                match &*value.unpacked_ref() {
+                    UnpackedValue::Number(num) => num.into(),
+                    _ => None,
+                }
+            }
+        }
+
+        impl From<Value> for Option<$ty> {
+            fn from(value: Value) -> Self {
+                match value.unpack() {
+                    UnpackedValue::Number(num) => num.into(),
+                    _ => None,
+                }
             }
         }
 
@@ -1303,6 +1316,8 @@ impl_num_conversion!(i64);
 impl_num_conversion!(i128);
 impl_num_conversion!(isize);
 impl_num_conversion!(f64);
+impl_num_conversion!(Integer);
+impl_num_conversion!(SimpleNumber);
 
 impl TryFrom<Value> for (Value, Value) {
     type Error = Exception;
