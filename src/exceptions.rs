@@ -261,7 +261,6 @@ macro_rules! impl_into_condition_for {
     };
 }
 
-impl_into_condition_for!(Box<crate::num::ArithmeticError>);
 impl_into_condition_for!(std::num::TryFromIntError);
 
 #[derive(Copy, Clone, Default, Debug, Trace)]

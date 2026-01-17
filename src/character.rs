@@ -1,6 +1,4 @@
-use std::sync::Arc;
-
-use crate::{exceptions::Exception, num::Number, registry::bridge, value::Value};
+use crate::{exceptions::Exception, registry::bridge, value::Value};
 use either::Either;
 use unicode_categories::UnicodeCategories;
 
@@ -24,15 +22,12 @@ pub(crate) fn char_switch_case<I: Iterator<Item = char> + ExactSizeIterator>(
 pub fn char_to_integer(ch: &Value) -> Result<Vec<Value>, Exception> {
     let ch: char = ch.clone().try_into()?;
 
-    Ok(vec![Value::from(Number::FixedInteger(
-        <char as Into<u32>>::into(ch).into(),
-    ))])
+    Ok(vec![Value::from(<char as Into<u32>>::into(ch))])
 }
 
 #[bridge(name = "integer->char", lib = "(rnrs base builtins (6))")]
 pub fn integer_to_char(int: &Value) -> Result<Vec<Value>, Exception> {
-    let int: Arc<Number> = int.clone().try_into()?;
-    let int: usize = int.as_ref().try_into()?;
+    let int: usize = int.try_to_scheme_type()?;
     if let Ok(int) = <usize as TryInto<u32>>::try_into(int)
         && let Some(ch) = char::from_u32(int)
     {
@@ -40,7 +35,7 @@ pub fn integer_to_char(int: &Value) -> Result<Vec<Value>, Exception> {
     }
 
     // char->integer returns a number larger than 0x10FFFF if integer is not an unicode scalar
-    Ok(vec![Value::from(Number::FixedInteger(0x10FFFF + 1))])
+    Ok(vec![Value::from(0x10FFFF + 1)])
 }
 
 macro_rules! impl_char_operator {
@@ -143,11 +138,7 @@ pub fn digit_value(ch: &Value) -> Result<Vec<Value>, Exception> {
     let ch: char = ch.clone().try_into()?;
 
     Ok(vec![
-        digit_to_num(ch)
-            .map(<u32 as Into<i64>>::into)
-            .map(Number::FixedInteger)
-            .map(Value::from)
-            .unwrap_or(Value::from(false)),
+        digit_to_num(ch).map_or_else(|| Value::from(false), Value::from),
     ])
 }
 
