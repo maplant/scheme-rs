@@ -162,11 +162,13 @@ impl Syntax {
         "todo"
     }
 
-    pub fn syntax_from_datum(marks: &BTreeSet<Mark>, datum: Value) -> Self {
+    pub fn syntax_from_datum(marks: &BTreeSet<Mark>, datum: Value) -> Result<Self, Exception> {
         // TODO: conjure up better values for Span
         match datum.unpack() {
-            UnpackedValue::Boolean(b) => Syntax::new_literal(Literal::Boolean(b), Span::default()),
-            UnpackedValue::Null => Syntax::new_null(Span::default()),
+            UnpackedValue::Boolean(b) => {
+                Ok(Syntax::new_literal(Literal::Boolean(b), Span::default()))
+            }
+            UnpackedValue::Null => Ok(Syntax::new_null(Span::default())),
             UnpackedValue::Pair(pair) => {
                 let (lhs, rhs) = pair.into();
                 let mut list = Vec::new();
@@ -174,38 +176,45 @@ impl Syntax {
                 list_to_vec_with_null(&rhs, &mut list);
                 let mut out_list = Vec::new();
                 for item in list.iter() {
-                    out_list.push(Syntax::syntax_from_datum(marks, item.clone()));
+                    out_list.push(Syntax::syntax_from_datum(marks, item.clone())?);
                 }
-                Syntax::new_list(out_list, Span::default())
+                Ok(Syntax::new_list(out_list, Span::default()))
             }
             UnpackedValue::Syntax(syntax) => {
                 let mut syntax = syntax.as_ref().clone();
                 syntax.mark_many(marks);
-                syntax
+                Ok(syntax)
             }
             UnpackedValue::Vector(vec) => {
                 let mut out_vec = Vec::new();
                 for item in vec.0.vec.read().iter() {
-                    out_vec.push(Syntax::syntax_from_datum(marks, item.clone()));
+                    out_vec.push(Syntax::syntax_from_datum(marks, item.clone())?);
                 }
-                Syntax::new_vector(out_vec, Span::default())
+                Ok(Syntax::new_vector(out_vec, Span::default()))
             }
             UnpackedValue::Symbol(sym) => {
                 let ident = Identifier {
                     sym,
                     marks: marks.clone(),
                 };
-                Syntax::Identifier {
+                Ok(Syntax::Identifier {
                     ident,
                     binding_env: None,
                     span: Span::default(),
-                }
+                })
             }
-            UnpackedValue::Number(num) => Syntax::Literal {
+            UnpackedValue::Number(num) => Ok(Syntax::Literal {
                 literal: Literal::Number(num.clone()),
                 span: Span::default(),
-            },
-            x => unimplemented!("{:?}", x.into_value()),
+            }),
+            UnpackedValue::String(string) => Ok(Syntax::Literal {
+                literal: Literal::String(string.to_string()),
+                span: Span::default(),
+            }),
+            datum => Err(Exception::error(format!(
+                "cannot convert datum type {} to syntax object",
+                datum.type_name()
+            ))),
         }
     }
 
@@ -656,7 +665,7 @@ pub fn datum_to_syntax(template_id: &Value, datum: &Value) -> Result<Vec<Value>,
     Ok(vec![Value::from(Syntax::syntax_from_datum(
         &template_id.marks,
         datum.clone(),
-    ))])
+    )?)])
 }
 
 #[bridge(name = "identifier?", lib = "(rnrs syntax-case builtins (6))")]

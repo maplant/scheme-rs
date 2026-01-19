@@ -720,7 +720,7 @@ impl TryFrom<Number> for num::Number {
                 SimpleNumber::Real(0.0)
             };
             return Ok(num::Number(Arc::new(num::NumberInner::Complex(
-                num::Complex::new(real_part, imag_part),
+                num::ComplexNumber::new(real_part, imag_part),
             ))));
         }
 

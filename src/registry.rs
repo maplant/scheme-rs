@@ -23,13 +23,27 @@ use std::{
 #[cfg(feature = "async")]
 use futures::future::BoxFuture;
 use parking_lot::RwLock;
-pub use scheme_rs_macros::{bridge, cps_bridge};
+/// Define and register a Scheme function in Rust.
+pub use scheme_rs_macros::bridge;
+/// Define and register a Scheme function in Rust written in continuation
+/// passing style.
+pub use scheme_rs_macros::cps_bridge;
 use scheme_rs_macros::{maybe_async, maybe_await};
 
 pub(crate) mod error {
-    use crate::{exceptions::Message, ports::IoError};
+    use crate::{ast::VersionReference, exceptions::Message, ports::IoError};
 
     use super::*;
+
+    pub(super) fn version_mismatch(requirement: &VersionReference, lib: &LibraryName) -> Exception {
+        Exception::from((
+            Message::new(format!(
+                "version requirement `{requirement}` does not match library version `{}`",
+                lib.version
+            )),
+            ImportError::new(lib.name()),
+        ))
+    }
 
     pub(super) fn library_not_found() -> Exception {
         Exception::from((IoError::new(), Message::new("library not found")))
@@ -45,12 +59,14 @@ pub(crate) mod error {
     }
 }
 
+#[doc(hidden)]
 pub enum Bridge {
     Sync(BridgePtr),
     #[cfg(feature = "async")]
     Async(crate::proc::AsyncBridgePtr),
 }
 
+#[doc(hidden)]
 pub struct BridgeFn {
     name: &'static str,
     lib_name: &'static str,
@@ -80,6 +96,7 @@ impl BridgeFn {
     }
 }
 
+#[doc(hidden)]
 #[derive(Copy, Clone)]
 pub struct BridgeFnDebugInfo {
     pub(crate) file: &'static str,
@@ -111,7 +128,7 @@ inventory::collect!(BridgeFn);
 
 #[derive(rust_embed::Embed)]
 #[folder = "scheme"]
-pub struct Stdlib;
+struct Stdlib;
 
 #[derive(Trace, Default)]
 pub(crate) struct RegistryInner {
@@ -278,7 +295,7 @@ impl RegistryInner {
 }
 
 #[derive(Trace, Clone)]
-pub struct Registry(pub(crate) Gc<RwLock<RegistryInner>>);
+pub(crate) struct Registry(pub(crate) Gc<RwLock<RegistryInner>>);
 
 impl Registry {
     pub(crate) fn empty() -> Self {
@@ -291,6 +308,25 @@ impl Registry {
 
     fn mark_as_loading(&self, name: &[Symbol]) {
         self.0.write().loading.insert(name.to_vec());
+    }
+
+    #[maybe_async]
+    pub(crate) fn def_lib(&self, rt: &Runtime, lib: &str, path: &str) -> Result<(), Exception> {
+        let form = Syntax::from_str(lib, Some(path))?;
+        let form = match form.as_list() {
+            Some([form, Syntax::Null { .. }]) => form,
+            _ => return Err(Exception::error("library is malformed")),
+        };
+        let spec = LibrarySpec::parse(form)?;
+        let name = spec.name.name.clone();
+        let lib = maybe_await!(TopLevelEnvironment::from_spec(
+            rt,
+            spec,
+            PathBuf::from(path),
+        ))?;
+        let mut this_mut = self.0.write();
+        this_mut.libs.insert(name, lib);
+        Ok(())
     }
 
     // TODO: This function is quite messy, so it would be nice to do a little
@@ -319,7 +355,8 @@ impl Registry {
         // Check the current path first:
         let curr_path = std::env::current_dir()
             .expect("If we can't get the current working directory, we can't really do much");
-        let lib = if let Some(lib) = maybe_await!(load_lib_from_dir(rt, &curr_path, &path_suffix))?
+        let lib = if cfg!(feature = "load-libraries-from-fs")
+            && let Some(lib) = maybe_await!(load_lib_from_dir(rt, &curr_path, &path_suffix))?
         {
             lib
         } else {
@@ -329,7 +366,9 @@ impl Registry {
                     .unwrap_or_else(|_| DEFAULT_LOAD_PATH.to_string()),
             );
 
-            if let Some(lib) = maybe_await!(load_lib_from_dir(rt, &path, &path_suffix))? {
+            if cfg!(feature = "load-libraries-from-fs")
+                && let Some(lib) = maybe_await!(load_lib_from_dir(rt, &path, &path_suffix))?
+            {
                 lib
             } else {
                 // Finally, try the embedded Stdlib
@@ -384,9 +423,9 @@ impl Registry {
         import_set: ImportSet,
     ) -> ImportIter<'b> {
         match import_set {
-            ImportSet::Library(lib) => {
-                let lib = maybe_await!(self.load_lib(rt, &lib.name)).map_err(|err| {
-                    let lib_name = lib
+            ImportSet::Library(lib_import) => {
+                let lib = maybe_await!(self.load_lib(rt, &lib_import.name)).map_err(|err| {
+                    let lib_name = lib_import
                         .name
                         .iter()
                         .map(|x| x.to_string())
@@ -394,6 +433,13 @@ impl Registry {
                     let lib_name = format!("({})", lib_name.join(" "));
                     err.add_condition(ImportError::new(lib_name))
                 })?;
+
+                if let TopLevelKind::Libary { name, .. } = &*lib.get_kind()
+                    && !lib_import.version_ref.matches(&name.version)
+                {
+                    return Err(error::version_mismatch(&lib_import.version_ref, name));
+                }
+
                 let exports = {
                     lib.0
                         .read()

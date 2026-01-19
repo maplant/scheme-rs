@@ -5,7 +5,7 @@
           cdddr memp call/cc for-each for-all exists string-for-each
           vector-for-each append make-list list-copy list-tail list-ref 
           assoc map reverse positive? negative? abs min max quasiquote
-          identifier-syntax string-foldcase
+          identifier-syntax string-foldcase assert
           (import (rnrs base builtins (6))
                   (except (rnrs base special-keywords (6)) $undefined)
                   (rnrs syntax-case special-keywords (6))))
@@ -569,4 +569,10 @@
            ;; optimal construction code otherwise, then emit Scheme code
            ;; corresponding to the intermediate language forms.
            ((_ e) (emit (quasi (syntax e) 0)))))))
+
+  (define-syntax assert
+    (syntax-rules ()
+      [(_ expr)
+       (unless expr
+           (assertion-violation #f "assertion failed"))]))
   )

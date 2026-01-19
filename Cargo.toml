@@ -13,8 +13,8 @@ repository = "https://github.com/maplant/scheme-rs"
 [dependencies]
 async-stream = { version = "0.3", optional = true }
 by_address = "1.2"
+clap = { version = "4", features = ["derive"] }
 derive_builder = "0.20"
-either = "1"
 futures = { version = "0.3", optional = true }
 hashbrown = "0.16.1"
 indexmap = "2"
@@ -40,8 +40,9 @@ cranelift-module = "0.122"
 tokio = { version = "1.47", features = ["full"], optional = true }
 
 [features]
-default = []
+default = ["load-libraries-from-fs"]
 async = ["dep:futures", "dep:async-stream"]
+load-libraries-from-fs = []
 
 [profile.release]
 lto = true

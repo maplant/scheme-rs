@@ -1,12 +1,12 @@
 use super::*;
 use crate::{
+    Either,
     ast::*,
     expand::{ExpansionCombiner, SyntaxRule},
     records::Record,
     syntax::{Identifier, Syntax},
     value::Value as RuntimeValue,
 };
-use either::Either;
 use indexmap::IndexSet;
 
 /// There's not too much reason that this is a trait, other than I wanted to
@@ -393,7 +393,22 @@ impl Compile for If {
 
 impl Compile for And {
     fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
-        compile_and(&self.args, meta_cont)
+        if self.args.is_empty() {
+            let k1 = Local::gensym();
+            let k2 = Local::gensym();
+            Cps::Lambda {
+                args: LambdaArgs::new(vec![k1], false, None),
+                body: Box::new(Cps::App(
+                    Value::from(k1),
+                    vec![Value::from(RuntimeValue::from(true))],
+                )),
+                val: k2,
+                cexp: Box::new(meta_cont(Value::from(k2))),
+                span: None,
+            }
+        } else {
+            compile_and(&self.args, meta_cont)
+        }
     }
 }
 
@@ -438,7 +453,22 @@ fn compile_and(exprs: &[Expression], meta_cont: &mut dyn FnMut(Value) -> Cps) ->
 
 impl Compile for Or {
     fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
-        compile_or(&self.args, meta_cont)
+        if self.args.is_empty() {
+            let k1 = Local::gensym();
+            let k2 = Local::gensym();
+            Cps::Lambda {
+                args: LambdaArgs::new(vec![k1], false, None),
+                body: Box::new(Cps::App(
+                    Value::from(k1),
+                    vec![Value::from(RuntimeValue::from(false))],
+                )),
+                val: k2,
+                cexp: Box::new(meta_cont(Value::from(k2))),
+                span: None,
+            }
+        } else {
+            compile_or(&self.args, meta_cont)
+        }
     }
 }
 

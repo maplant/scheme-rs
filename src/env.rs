@@ -9,14 +9,14 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use either::Either;
-use parking_lot::RwLock;
+use parking_lot::{MappedRwLockReadGuard, RwLock, RwLockReadGuard};
 use scheme_rs_macros::{maybe_async, maybe_await};
 
 #[cfg(feature = "async")]
 use futures::future::BoxFuture;
 
 use crate::{
+    Either,
     ast::{
         DefinitionBody, ExportSet, ImportSet, LibraryName, LibrarySpec, ParseContext,
         SpecialKeyword,
@@ -166,6 +166,10 @@ impl TopLevelEnvironment {
                 .collect(),
         };
         Self(Gc::new(RwLock::new(inner)))
+    }
+
+    pub(crate) fn get_kind(&self) -> MappedRwLockReadGuard<'_, TopLevelKind> {
+        RwLockReadGuard::map(self.0.read(), |inner| &inner.kind)
     }
 
     /// Evaluate the scheme expression in the provided environment and return
@@ -1194,6 +1198,7 @@ impl EnvId {
 unsafe impl Send for EnvId {}
 unsafe impl Sync for EnvId {}
 
+/// A local variable.
 #[derive(Copy, Clone, Trace)]
 pub struct Local {
     pub(crate) id: usize,
@@ -1219,7 +1224,7 @@ impl Eq for Local {}
 
 impl Local {
     /// Create a new temporary value.
-    pub fn gensym() -> Self {
+    pub(crate) fn gensym() -> Self {
         static NEXT_SYM: AtomicUsize = AtomicUsize::new(0);
         Self {
             id: NEXT_SYM.fetch_add(1, Ordering::Relaxed),
@@ -1227,13 +1232,13 @@ impl Local {
         }
     }
 
-    pub fn gensym_with_name(name: Symbol) -> Self {
+    pub(crate) fn gensym_with_name(name: Symbol) -> Self {
         let mut sym = Self::gensym();
         sym.name = Some(name);
         sym
     }
 
-    pub fn to_func_name(&self) -> String {
+    pub(crate) fn get_func_name(&self) -> String {
         if let Some(name) = self.name {
             format!("{name}")
         } else {
@@ -1263,6 +1268,8 @@ impl fmt::Debug for Local {
 }
 
 // TODO: Do we need to make this pointer eq?
+/// A global variable, i.e. a variable that is present in a top level
+/// environment.
 #[derive(Clone, Trace)]
 pub struct Global {
     pub(crate) name: Identifier,
@@ -1321,7 +1328,7 @@ impl Hash for Global {
 }
 
 #[derive(Clone, Trace, Hash, PartialEq, Eq)]
-pub enum Var {
+pub(crate) enum Var {
     Global(Global),
     Local(Local),
 }
@@ -1344,6 +1351,7 @@ impl fmt::Debug for Var {
     }
 }
 
+/// A keyword, i.e. a transformer defined via `define-syntax`.
 #[derive(Clone, Trace)]
 pub struct Keyword {
     pub(crate) source_env: Environment,

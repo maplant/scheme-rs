@@ -3,6 +3,7 @@
 use indexmap::IndexSet;
 use parking_lot::RwLock;
 use std::{
+    collections::HashSet,
     fmt,
     hash::{DefaultHasher, Hash, Hasher},
 };
@@ -307,6 +308,44 @@ impl fmt::Debug for HashTable {
     }
 }
 
+#[derive(Default, Trace)]
+pub struct EqualHashSet {
+    set: HashSet<EqualValue>,
+}
+
+impl EqualHashSet {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn insert(&mut self, new_value: Value) {
+        let new_value = EqualValue(new_value);
+        if !self.set.contains(&new_value) {
+            self.set.insert(new_value);
+        }
+    }
+
+    pub fn get(&mut self, val: &Value) -> &Value {
+        let val = EqualValue(val.clone());
+        &self.set.get(&val).unwrap().0
+    }
+}
+
+#[derive(Clone, Eq, Trace)]
+pub struct EqualValue(pub Value);
+
+impl PartialEq for EqualValue {
+    fn eq(&self, rhs: &Self) -> bool {
+        self.0.equal(&rhs.0)
+    }
+}
+
+impl Hash for EqualValue {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.equal_hash(&mut IndexSet::new(), state)
+    }
+}
+
 #[bridge(name = "make-hashtable", lib = "(rnrs hashtables builtins (6))")]
 pub fn make_hashtable(
     hash_function: &Value,
@@ -455,6 +494,13 @@ pub fn hashtable_hash_function(hashtable: &Value) -> Result<Vec<Value>, Exceptio
     let hashtable: HashTable = hashtable.clone().try_into()?;
     let hash_func = Value::from(hashtable.0.hash.clone());
     Ok(vec![hash_func])
+}
+
+#[bridge(name = "hashtable-mutable?", lib = "(rnrs hashtables builtins (6))")]
+pub fn hashtable_mutable_pred(hashtable: &Value) -> Result<Vec<Value>, Exception> {
+    let hashtable: HashTable = hashtable.clone().try_into()?;
+    let is_mutable = Value::from(hashtable.0.mutable);
+    Ok(vec![is_mutable])
 }
 
 #[bridge(name = "eq-hash", lib = "(rnrs hashtables builtins (6))")]

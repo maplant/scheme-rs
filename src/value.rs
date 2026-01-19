@@ -21,7 +21,7 @@
 //! # let value = Value::from(3.1415926f64);
 //! let float: f64 = value.clone().try_into().unwrap();
 //! let float: f64 = match value.unpack() {
-//!     UnpackedValue::Number(num) => num.as_ref().try_into().unwrap(),
+//!     UnpackedValue::Number(num) => num.try_into().unwrap(),
 //!     _ => unreachable!(),
 //! };
 //! ```
@@ -568,6 +568,20 @@ unsafe impl Trace for Value {
 /// A Cell is a value that is mutable, essentially a variable.
 #[derive(Clone, Trace)]
 pub struct Cell(pub(crate) Gc<RwLock<Value>>);
+
+impl Cell {
+    pub fn new(val: Value) -> Self {
+        Self(Gc::new(RwLock::new(val)))
+    }
+
+    pub fn get(&self) -> Value {
+        self.0.read().clone()
+    }
+
+    pub fn set(&self, new_val: Value) {
+        *self.0.write() = new_val;
+    }
+}
 
 /// A reference to an [`UnpackedValue`]. Allows for unpacking a `Value` without
 /// cloning/modifying the reference count.
@@ -1182,6 +1196,14 @@ impl TryFrom<Value> for Cell {
 
     fn try_from(v: Value) -> Result<Self, Self::Error> {
         v.unpack().try_into()
+    }
+}
+
+impl TryFrom<&Value> for Cell {
+    type Error = Exception;
+
+    fn try_from(v: &Value) -> Result<Self, Self::Error> {
+        v.clone().unpack().try_into()
     }
 }
 

@@ -5,6 +5,9 @@ Scheme-rs is an implementation of the
 language](https://en.wikipedia.org/wiki/Scheme_(programming_language)) that is 
 designed to embedded within sync and async Rust. 
 
+[<img alt="crates.io" src="https://img.shields.io/crates/v/scheme-rs.svg?style=for-the-badge&color=fc8d62&logo=rust" height="20">](https://crates.io/crates/scheme-rs)
+[<img alt="docs.rs" src="https://img.shields.io/badge/docs.rs-scheme-rs?style=for-the-badge&labelColor=555555&logo=docs.rs" height="20">](https://docs.rs/scheme-rs)
+
 ## Features:
 
 - **Fast**: scheme-rs uses JIT compilation to provide performance on par with 

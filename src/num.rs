@@ -1,4 +1,26 @@
-//! Numerical tower.
+//! Scheme numerical tower.
+//!
+//! For more detailed information about the scheme numerical tower from the
+//! language perspective, please [refer to the language reference](www.todo.com).
+//!
+//! The core numeric value for scheme-rs is [`Number`], which is a reference
+//! counted numeric value that can be any of the following types:
+//!
+//! - **fixed num**: [a signed 64-bit integer](std::i64),
+//! - **big num**: an [arbitrary-precision integer](malachite::Integer),
+//! - **rational**: an
+//!   [arbitrary-precision rational](malachite::rational::Rational),
+//! - **real**: a [64-bit IEEE float point number](std::f64), or
+//! - **complex**: a pair of two of any of the previous value types.
+//!
+//! `Number` implements all of the expected Rust operators, including [`Neg`],
+//! [`Add`], [`Mul`], [`Sub`], [`Div`], [`Rem`], [`PartialEq`], and
+//! [`PartialOrd`], while also inheriting all of the issues of IEEE floating
+//! point numbers such as [NaN not being equal to itself](https://en.wikipedia.org/wiki/NaN#Comparison_with_NaN)
+//! and therefore being unable to implement [`Eq`]. To get around these issues
+//! in cases where it is desirable to have strict equivalent for `Number` types,
+//! such as when `Number` is a key in a hash table, the [`eqv`](Number::eqv)
+//! method is provided, for which NaNs are treated as equivalent.
 
 use crate::{
     exceptions::Exception,
@@ -18,7 +40,7 @@ use malachite::{
     },
     rational::Rational,
 };
-use num::{ToPrimitive, Zero};
+use num::ToPrimitive;
 use std::{
     cmp::Ordering,
     fmt,
@@ -30,11 +52,23 @@ use std::{
 #[repr(align(16))]
 pub(crate) enum NumberInner {
     Simple(SimpleNumber),
-    Complex(Complex),
+    Complex(ComplexNumber),
 }
 
+/// Scheme numeric type.
 #[derive(Clone, Trace)]
 pub struct Number(pub(crate) Arc<NumberInner>);
+
+macro_rules! number_dispatch_method {
+    ( $func:ident ) => {
+        pub fn $func(&self) -> Self {
+            match self.0.as_ref() {
+                NumberInner::Simple(simple) => Number::from(simple.$func()),
+                NumberInner::Complex(complex) => Number::from(complex.$func()),
+            }
+        }
+    };
+}
 
 impl Number {
     pub fn as_simple(&self) -> Option<&SimpleNumber> {
@@ -44,7 +78,7 @@ impl Number {
         }
     }
 
-    pub fn as_complex(&self) -> Option<&Complex> {
+    pub fn as_complex(&self) -> Option<&ComplexNumber> {
         match self.0.as_ref() {
             NumberInner::Complex(complex) => Some(complex),
             NumberInner::Simple(_) => None,
@@ -83,11 +117,27 @@ impl Number {
         }
     }
 
-    pub fn is_complex(&self) -> bool {
+    pub fn is_integer_valued(&self) -> bool {
         match self.0.as_ref() {
-            NumberInner::Simple(_) => false,
-            NumberInner::Complex(complex) => !complex.im.is_zero(),
+            NumberInner::Simple(simple) => simple.is_integer(),
+            NumberInner::Complex(complex) => complex.im.is_zero() && complex.re.is_integer(),
         }
+    }
+
+    pub fn is_rational_valued(&self) -> bool {
+        match self.0.as_ref() {
+            NumberInner::Simple(simple) => simple.is_rational(),
+            NumberInner::Complex(complex) => complex.im.is_zero() && complex.re.is_rational(),
+        }
+    }
+
+    pub fn is_real_valued(&self) -> bool {
+        self.is_real()
+    }
+
+    /// All numbers are complex!
+    pub fn is_complex(&self) -> bool {
+        true
     }
 
     pub fn eqv(&self, rhs: &Self) -> bool {
@@ -109,6 +159,32 @@ impl Number {
             _ => false,
         }
     }
+
+    pub fn pow(&self, rhs: &Number) -> Number {
+        match (self.0.as_ref(), rhs.0.as_ref()) {
+            (NumberInner::Simple(base), NumberInner::Simple(exp)) => Number::from(base.pow(exp)),
+            (NumberInner::Simple(base), NumberInner::Complex(exp)) => {
+                Number::from(ComplexNumber::new(base.clone(), SimpleNumber::zero()).powc(exp))
+            }
+            (NumberInner::Complex(base), NumberInner::Simple(exp)) => {
+                Number::from(base.powc(&ComplexNumber::new(exp.clone(), SimpleNumber::zero())))
+            }
+            (NumberInner::Complex(base), NumberInner::Complex(exp)) => Number::from(base.powc(exp)),
+        }
+    }
+
+    number_dispatch_method!(exp);
+    number_dispatch_method!(ln);
+    number_dispatch_method!(sqrt);
+    number_dispatch_method!(sin);
+    number_dispatch_method!(cos);
+    number_dispatch_method!(tan);
+    // number_dispatch_method!(sinh);
+    // number_dispatch_method!(cosh);
+    // number_dispatch_method!(tanh);
+    number_dispatch_method!(asin);
+    number_dispatch_method!(acos);
+    number_dispatch_method!(atan);
 }
 
 impl From<NumberInner> for Number {
@@ -188,6 +264,7 @@ impl_simple_number_int_conversion_for_num!(i128);
 impl_simple_number_int_conversion_for_num!(isize);
 impl_simple_number_int_conversion_for_num!(Integer);
 
+/// Scheme simple numeric type (i.e. numbers that satisfy `real?`)
 #[derive(Clone)]
 #[repr(align(16))]
 pub enum SimpleNumber {
@@ -198,12 +275,46 @@ pub enum SimpleNumber {
 }
 
 impl SimpleNumber {
+    pub fn zero() -> Self {
+        Self::FixedInteger(0)
+    }
+
+    pub fn one() -> Self {
+        Self::FixedInteger(1)
+    }
+
+    pub fn infinity() -> Self {
+        Self::Real(f64::INFINITY)
+    }
+
+    pub fn neg_infinity() -> Self {
+        Self::Real(f64::NEG_INFINITY)
+    }
+
     pub fn is_zero(&self) -> bool {
         match self {
-            SimpleNumber::FixedInteger(i) => i.is_zero(),
-            SimpleNumber::BigInteger(i) => i.eq(&0),
-            SimpleNumber::Rational(r) => r.eq(&0),
-            SimpleNumber::Real(r) => r.is_zero(),
+            SimpleNumber::FixedInteger(i) => *i == 0,
+            SimpleNumber::BigInteger(i) => *i == 0,
+            SimpleNumber::Rational(r) => *r == 0,
+            SimpleNumber::Real(r) => *r == 0.0,
+        }
+    }
+
+    pub fn is_one(&self) -> bool {
+        match self {
+            SimpleNumber::FixedInteger(i) => *i == 1,
+            SimpleNumber::BigInteger(i) => *i == 1,
+            SimpleNumber::Rational(r) => *r == 1,
+            SimpleNumber::Real(r) => *r == 1.0,
+        }
+    }
+
+    pub fn is_neg_one(&self) -> bool {
+        match self {
+            SimpleNumber::FixedInteger(i) => *i == -1,
+            SimpleNumber::BigInteger(i) => *i == -1,
+            SimpleNumber::Rational(r) => *r == -1,
+            SimpleNumber::Real(r) => *r == -1.0,
         }
     }
 
@@ -269,6 +380,14 @@ impl SimpleNumber {
         }
     }
 
+    pub fn abs(&self) -> Self {
+        if *self < SimpleNumber::zero() {
+            -self
+        } else {
+            self.clone()
+        }
+    }
+
     pub fn powi(&self, p: i32) -> Self {
         match self {
             SimpleNumber::FixedInteger(i) => i.checked_pow(p as u32).map_or_else(
@@ -278,6 +397,90 @@ impl SimpleNumber {
             SimpleNumber::BigInteger(i) => SimpleNumber::BigInteger(i.pow(p as u64)),
             SimpleNumber::Rational(r) => SimpleNumber::Rational(r.pow(p as u64)),
             SimpleNumber::Real(r) => SimpleNumber::Real(r.powi(p)),
+        }
+    }
+
+    pub fn pow(&self, p: &SimpleNumber) -> Self {
+        println!("hello?");
+        if dbg!(self.is_zero()) {
+            if p.is_zero() {
+                if self.is_exact() && p.is_exact() {
+                    return Self::from(1);
+                } else {
+                    return Self::from(1.0);
+                }
+            } else if p.is_positive() {
+                if self.is_exact() && p.is_exact() {
+                    return Self::from(0);
+                } else {
+                    return Self::from(0.0);
+                }
+            } else {
+                return Self::infinity();
+            }
+        }
+        match (self, p) {
+            (SimpleNumber::FixedInteger(l), SimpleNumber::FixedInteger(r)) if *r >= 0 => {
+                SimpleNumber::from(Integer::from(*l).pow(*r as u64))
+            }
+            (SimpleNumber::FixedInteger(l), SimpleNumber::FixedInteger(r)) if *r < 0 => {
+                SimpleNumber::from(Rational::from_integers(
+                    Integer::from(1),
+                    Integer::from(*l).pow(-*r as u64),
+                ))
+            }
+            (SimpleNumber::FixedInteger(l), SimpleNumber::BigInteger(i)) if *i >= 0 => {
+                let exp: Option<u64> = i.try_into().ok();
+                if let Some(exp) = exp {
+                    SimpleNumber::from(Integer::from(*l).pow(exp))
+                } else {
+                    SimpleNumber::infinity()
+                }
+            }
+            (SimpleNumber::FixedInteger(l), SimpleNumber::BigInteger(i)) if *i < 0 => {
+                let exp: Option<u64> = (&(-i)).try_into().ok();
+                if let Some(exp) = exp {
+                    SimpleNumber::from(Rational::from_integers(
+                        Integer::from(1),
+                        Integer::from(*l).pow(exp),
+                    ))
+                } else {
+                    SimpleNumber::zero()
+                }
+            }
+            (SimpleNumber::BigInteger(l), SimpleNumber::FixedInteger(r)) if *r >= 0 => {
+                SimpleNumber::from(l.pow(*r as u64))
+            }
+            (SimpleNumber::BigInteger(l), SimpleNumber::FixedInteger(r)) if *r < 0 => {
+                SimpleNumber::from(Rational::from_integers(Integer::from(1), l.pow(-*r as u64)))
+            }
+            (SimpleNumber::BigInteger(l), SimpleNumber::BigInteger(i)) if *i >= 0 => {
+                let exp: Option<u64> = i.try_into().ok();
+                if let Some(exp) = exp {
+                    SimpleNumber::from(l.pow(exp))
+                } else {
+                    SimpleNumber::infinity()
+                }
+            }
+            (SimpleNumber::BigInteger(l), SimpleNumber::BigInteger(i)) if *i < 0 => {
+                let exp: Option<u64> = (&(-i)).try_into().ok();
+                if let Some(exp) = exp {
+                    SimpleNumber::from(Rational::from_integers(Integer::from(1), l.pow(exp)))
+                } else {
+                    SimpleNumber::zero()
+                }
+            }
+            (SimpleNumber::Rational(r), SimpleNumber::FixedInteger(exp)) if *exp >= 0 => {
+                SimpleNumber::from(r.pow(*exp as u64))
+            }
+            (SimpleNumber::Rational(r), SimpleNumber::FixedInteger(exp)) if *exp < 0 => {
+                SimpleNumber::from((Rational::from(1) / r).pow(-exp as u64))
+            }
+            (l, r) => {
+                let l = l.to_f64();
+                let r = r.to_f64();
+                SimpleNumber::from(l.powf(r))
+            }
         }
     }
 
@@ -298,6 +501,63 @@ impl SimpleNumber {
     // Two NaNs are also treated as equivalent
     pub fn eqv(&self, rhs: &Self) -> bool {
         (self.is_nan() && rhs.is_nan()) || (self.is_exact() == rhs.is_exact() && self == rhs)
+    }
+
+    pub fn to_f64(&self) -> f64 {
+        match self {
+            Self::FixedInteger(i) => *i as f64,
+            Self::BigInteger(i) => f64::rounding_from(i, RoundingMode::Nearest).0,
+            Self::Rational(r) => f64::rounding_from(r, RoundingMode::Nearest).0,
+            Self::Real(r) => *r,
+        }
+    }
+
+    pub fn exp(&self) -> Self {
+        Self::Real(self.to_f64().exp())
+    }
+
+    pub fn ln(&self) -> Self {
+        Self::Real(self.to_f64().ln())
+    }
+
+    pub fn sin(&self) -> Self {
+        Self::Real(self.to_f64().sin())
+    }
+
+    pub fn cos(&self) -> Self {
+        Self::Real(self.to_f64().cos())
+    }
+
+    pub fn tan(&self) -> Self {
+        Self::Real(self.to_f64().tan())
+    }
+
+    pub fn sinh(&self) -> Self {
+        Self::Real(self.to_f64().sinh())
+    }
+
+    pub fn cosh(&self) -> Self {
+        Self::Real(self.to_f64().cosh())
+    }
+
+    pub fn tanh(&self) -> Self {
+        Self::Real(self.to_f64().tanh())
+    }
+
+    pub fn asin(&self) -> Self {
+        Self::Real(self.to_f64().asin())
+    }
+
+    pub fn acos(&self) -> Self {
+        Self::Real(self.to_f64().acos())
+    }
+
+    pub fn atan(&self) -> Self {
+        Self::Real(self.to_f64().atan())
+    }
+
+    pub fn atan2(&self, num2: &Self) -> Self {
+        Self::Real(self.to_f64().atan2(num2.to_f64()))
     }
 }
 
@@ -380,14 +640,20 @@ impl From<Integer> for SimpleNumber {
     }
 }
 
+impl From<Rational> for SimpleNumber {
+    fn from(r: Rational) -> Self {
+        Self::Rational(r)
+    }
+}
+
 impl From<f64> for SimpleNumber {
     fn from(r: f64) -> Self {
         Self::Real(r)
     }
 }
 
-impl From<Complex> for Number {
-    fn from(complex: Complex) -> Self {
+impl From<ComplexNumber> for Number {
+    fn from(complex: ComplexNumber) -> Self {
         Self(Arc::new(NumberInner::Complex(complex)))
     }
 }
@@ -625,7 +891,7 @@ impl fmt::Display for SimpleNumber {
             Self::Real(r) if r.is_nan() => write!(f, "+nan.0"),
             Self::Real(r) if r.is_infinite() && r.is_sign_positive() => write!(f, "+inf.0"),
             Self::Real(r) if r.is_infinite() && r.is_sign_negative() => write!(f, "-inf.0"),
-            Self::Real(r) => write!(f, "{r}"),
+            Self::Real(r) => write!(f, "{r:?}"),
         }
     }
 }
@@ -639,7 +905,7 @@ impl fmt::Debug for SimpleNumber {
             Self::Real(r) if r.is_nan() => write!(f, "+nan.0"),
             Self::Real(r) if r.is_infinite() && r.is_sign_positive() => write!(f, "+inf.0"),
             Self::Real(r) if r.is_infinite() && r.is_sign_negative() => write!(f, "-inf.0"),
-            Self::Real(r) => write!(f, "{r}"),
+            Self::Real(r) => write!(f, "{r:?}"),
         }
     }
 }
@@ -748,7 +1014,7 @@ impl Neg for &'_ SimpleNumber {
     }
 }
 
-macro_rules! impl_op_for_simple_and_complex_numbers {
+macro_rules! impl_op_for_simple_numbers {
     ($trait:ident, $op:ident, $checked:ident) => {
         impl $trait for &SimpleNumber {
             type Output = SimpleNumber;
@@ -828,34 +1094,12 @@ macro_rules! impl_op_for_simple_and_complex_numbers {
                 (&self).$op(&rhs)
             }
         }
-
-        impl $trait for &Complex {
-            type Output = Complex;
-
-            fn $op(self, rhs: &Complex) -> Complex {
-                Complex {
-                    re: (&self.re).$op(&rhs.re),
-                    im: (&self.im).$op(&rhs.im),
-                }
-            }
-        }
-
-        impl $trait for Complex {
-            type Output = Complex;
-
-            fn $op(self, rhs: Complex) -> Complex {
-                Complex {
-                    re: self.re.$op(rhs.re),
-                    im: self.im.$op(rhs.im),
-                }
-            }
-        }
     };
 }
 
-impl_op_for_simple_and_complex_numbers!(Add, add, checked_add);
-impl_op_for_simple_and_complex_numbers!(Sub, sub, checked_sub);
-impl_op_for_simple_and_complex_numbers!(Mul, mul, checked_mul);
+impl_op_for_simple_numbers!(Add, add, checked_add);
+impl_op_for_simple_numbers!(Sub, sub, checked_sub);
+impl_op_for_simple_numbers!(Mul, mul, checked_mul);
 // impl_op_for_simple_and_complex_numbers!(Div, div, checked_div);
 
 impl Div for &SimpleNumber {
@@ -1008,19 +1252,136 @@ impl Rem for SimpleNumber {
     }
 }
 
+/// Scheme complex numeric type.
 #[derive(Clone)]
-pub struct Complex {
+pub struct ComplexNumber {
     re: SimpleNumber,
     im: SimpleNumber,
 }
 
-impl Complex {
+impl ComplexNumber {
     pub fn new(re: SimpleNumber, im: SimpleNumber) -> Self {
         Self { re, im }
     }
+
+    pub fn is_zero(&self) -> bool {
+        self.re.is_zero() && self.im.is_zero()
+    }
+
+    pub fn one() -> Self {
+        Self {
+            re: SimpleNumber::one(),
+            im: SimpleNumber::zero(),
+        }
+    }
+
+    pub fn i() -> Self {
+        Self {
+            re: SimpleNumber::zero(),
+            im: SimpleNumber::one(),
+        }
+    }
+
+    pub fn from_polar(r: SimpleNumber, theta: SimpleNumber) -> Self {
+        Self::new(&r * &theta.cos(), &r * &theta.sin())
+    }
+
+    pub fn to_polar(&self) -> (SimpleNumber, SimpleNumber) {
+        (self.magnitude(), self.arg())
+    }
+
+    pub fn magnitude(&self) -> SimpleNumber {
+        self.magnitude2().sqrt()
+    }
+
+    pub fn magnitude2(&self) -> SimpleNumber {
+        self.re.powi(2) + self.im.powi(2)
+    }
+
+    pub fn sqrt(&self) -> Self {
+        if self.im.is_zero() {
+            if self.re.is_positive() {
+                Self::new(self.re.sqrt(), self.im.clone())
+            } else if self.im.is_positive() {
+                Self::new(SimpleNumber::zero(), (-&self.re).sqrt())
+            } else {
+                Self::new(SimpleNumber::zero(), -(-&self.re).sqrt())
+            }
+        } else if self.re.is_zero() {
+            let x = (self.im.abs() / SimpleNumber::from(2)).sqrt();
+            if self.im.is_positive() {
+                Self::new(x.clone(), x)
+            } else {
+                Self::new(x.clone(), -x)
+            }
+        } else {
+            let (r, theta) = self.to_polar();
+            Self::from_polar(r.sqrt(), theta / SimpleNumber::from(2))
+        }
+    }
+
+    pub fn arg(&self) -> SimpleNumber {
+        self.im.atan2(&self.re)
+    }
+
+    pub fn exp(&self) -> Self {
+        Self::from_polar(self.re.exp(), self.im.clone())
+    }
+
+    pub fn ln(&self) -> Self {
+        let (r, theta) = self.to_polar();
+        Self::new(r.ln(), theta)
+    }
+
+    pub fn powc(&self, exp: &Self) -> Self {
+        if exp.is_zero() {
+            return Self::one();
+        }
+        (exp * &self.ln()).exp()
+    }
+
+    pub fn sin(&self) -> Self {
+        Self::new(
+            self.re.sin() * self.im.cosh(),
+            self.re.cos() * self.im.sinh(),
+        )
+    }
+
+    pub fn cos(&self) -> Self {
+        Self::new(
+            self.re.cos() * self.im.cosh(),
+            -self.re.sin() * self.im.sinh(),
+        )
+    }
+
+    pub fn tan(&self) -> Self {
+        let scale = (&self.re + &self.re).cos() + (&self.im + &self.im).cosh();
+        let re = &(&self.re + &self.re).sin() / &scale;
+        let im = &(&self.im + &self.im).sinh() / &scale;
+        Self::new(re, im)
+    }
+
+    pub fn asin(&self) -> Self {
+        -Self::i() * ((Self::one() - self * self).sqrt() + &Self::i() * self).ln()
+    }
+
+    pub fn acos(&self) -> Self {
+        -Self::i() * (&(Self::i() * (Self::one() - self * self).sqrt()) + self).ln()
+    }
+
+    pub fn atan(&self) -> Self {
+        if self.re.is_zero() && self.im.is_one() {
+            Self::new(SimpleNumber::zero(), SimpleNumber::infinity())
+        } else if self.re.is_zero() && self.im.is_neg_one() {
+            Self::new(SimpleNumber::zero(), SimpleNumber::neg_infinity())
+        } else {
+            ((&(Self::one() + Self::i()) * self).ln() - (Self::one() - &Self::i() * self).ln())
+                / ((Self::one() + Self::one()) * Self::i())
+        }
+    }
 }
 
-impl From<SimpleNumber> for Complex {
+impl From<SimpleNumber> for ComplexNumber {
     fn from(value: SimpleNumber) -> Self {
         Self {
             re: value,
@@ -1029,16 +1390,16 @@ impl From<SimpleNumber> for Complex {
     }
 }
 
-impl PartialEq for Complex {
-    fn eq(&self, rhs: &Complex) -> bool {
+impl PartialEq for ComplexNumber {
+    fn eq(&self, rhs: &ComplexNumber) -> bool {
         self.re == rhs.re && self.im == rhs.im
     }
 }
 
-impl Neg for Complex {
-    type Output = Complex;
+impl Neg for ComplexNumber {
+    type Output = ComplexNumber;
 
-    fn neg(self) -> Complex {
+    fn neg(self) -> ComplexNumber {
         Self {
             re: -self.re,
             im: -self.im,
@@ -1046,40 +1407,102 @@ impl Neg for Complex {
     }
 }
 
-impl Neg for &Complex {
-    type Output = Complex;
+impl Neg for &ComplexNumber {
+    type Output = ComplexNumber;
 
-    fn neg(self) -> Complex {
-        Complex {
+    fn neg(self) -> ComplexNumber {
+        ComplexNumber {
             re: -(&self.re),
             im: -(&self.im),
         }
     }
 }
 
-impl Div for &Complex {
-    type Output = Complex;
+impl Add<&ComplexNumber> for &ComplexNumber {
+    type Output = ComplexNumber;
 
-    fn div(self, rhs: &Complex) -> Complex {
+    fn add(self, rhs: &ComplexNumber) -> ComplexNumber {
+        ComplexNumber {
+            re: (&self.re).add(&rhs.re),
+            im: (&self.im).add(&rhs.im),
+        }
+    }
+}
+
+impl Add<ComplexNumber> for ComplexNumber {
+    type Output = ComplexNumber;
+
+    fn add(self, rhs: ComplexNumber) -> ComplexNumber {
+        ComplexNumber {
+            re: self.re.add(rhs.re),
+            im: self.im.add(rhs.im),
+        }
+    }
+}
+
+impl Sub<&ComplexNumber> for &ComplexNumber {
+    type Output = ComplexNumber;
+
+    fn sub(self, rhs: &ComplexNumber) -> ComplexNumber {
+        ComplexNumber {
+            re: (&self.re).sub(&rhs.re),
+            im: (&self.im).sub(&rhs.im),
+        }
+    }
+}
+
+impl Sub<ComplexNumber> for ComplexNumber {
+    type Output = ComplexNumber;
+
+    fn sub(self, rhs: ComplexNumber) -> ComplexNumber {
+        ComplexNumber {
+            re: self.re.sub(rhs.re),
+            im: self.im.sub(rhs.im),
+        }
+    }
+}
+
+impl Mul<&ComplexNumber> for &ComplexNumber {
+    type Output = ComplexNumber;
+
+    fn mul(self, rhs: &ComplexNumber) -> ComplexNumber {
+        let re = &self.re * &rhs.re - &self.im * &rhs.im;
+        let im = &self.re * &rhs.im + &self.im * &rhs.re;
+        ComplexNumber::new(re, im)
+    }
+}
+
+impl Mul<ComplexNumber> for ComplexNumber {
+    type Output = ComplexNumber;
+
+    fn mul(self, rhs: ComplexNumber) -> ComplexNumber {
+        (&self).mul(&rhs)
+    }
+}
+
+impl Div for &ComplexNumber {
+    type Output = ComplexNumber;
+
+    fn div(self, rhs: &ComplexNumber) -> ComplexNumber {
         let norm_sqr = rhs.re.powi(2) + rhs.im.powi(2);
         let re = self.re.clone() * rhs.re.clone() + self.im.clone() * rhs.im.clone();
         let im = self.im.clone() * rhs.re.clone() - self.re.clone() * rhs.im.clone();
-        Complex {
+        ComplexNumber {
             re: re / norm_sqr.clone(),
             im: im / norm_sqr,
         }
     }
 }
 
-impl Div for Complex {
-    type Output = Complex;
+impl Div for ComplexNumber {
+    type Output = ComplexNumber;
 
-    fn div(self, rhs: Complex) -> Complex {
+    fn div(self, rhs: ComplexNumber) -> ComplexNumber {
         &self / &rhs
     }
 }
 
-impl fmt::Display for Complex {
+impl fmt::Display for ComplexNumber {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", self.re)?;
         if self.im.is_positive() && !self.im.is_nan() && !self.im.is_infinite() {
@@ -1089,7 +1512,7 @@ impl fmt::Display for Complex {
     }
 }
 
-impl fmt::Debug for Complex {
+impl fmt::Debug for ComplexNumber {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{:?}+{:?}i", self.re, self.im)
     }
@@ -1195,10 +1618,10 @@ macro_rules! impl_op_for_number {
                         Number::from(lhs.$op(rhs))
                     }
                     (NumberInner::Simple(lhs), NumberInner::Complex(rhs)) => {
-                        Number::from((&Complex::from(lhs.clone())).$op(rhs))
+                        Number::from((&ComplexNumber::from(lhs.clone())).$op(rhs))
                     }
                     (NumberInner::Complex(lhs), NumberInner::Simple(rhs)) => {
-                        Number::from(lhs.$op(&Complex::from(rhs.clone())))
+                        Number::from(lhs.$op(&ComplexNumber::from(rhs.clone())))
                     }
                     (NumberInner::Complex(lhs), NumberInner::Complex(rhs)) => {
                         Number::from(lhs.$op(rhs))
@@ -1266,20 +1689,44 @@ pub fn is_integer(arg: &Value) -> Result<Vec<Value>, Exception> {
     )])
 }
 
-// real-valued?
-// rational-valued?
-// integer-valued?
+#[bridge(name = "real-valued?", lib = "(rnrs base builtins (6))")]
+pub fn real_valued_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(
+        arg.cast_to_scheme_type::<Number>()
+            .as_ref()
+            .is_some_and(Number::is_real_valued),
+    )])
+}
+
+#[bridge(name = "rational-valued?", lib = "(rnrs base builtins (6))")]
+pub fn rational_valued_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(
+        arg.cast_to_scheme_type::<Number>()
+            .as_ref()
+            .is_some_and(Number::is_rational_valued),
+    )])
+}
+
+#[bridge(name = "integer-valued?", lib = "(rnrs base builtins (6))")]
+pub fn integer_valued_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(
+        arg.cast_to_scheme_type::<Number>()
+            .as_ref()
+            .is_some_and(Number::is_integer_valued),
+    )])
+}
+
 // exact?
 // inexact?
 // inexact
 // exact
 
 #[bridge(name = "=", lib = "(rnrs base builtins (6))")]
-pub fn equal_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(equal(args)?)])
+pub fn equal(args: &[Value]) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(equal_prim(args)?)])
 }
 
-pub(crate) fn equal(vals: &[Value]) -> Result<bool, Exception> {
+pub(crate) fn equal_prim(vals: &[Value]) -> Result<bool, Exception> {
     if let Some((first, rest)) = vals.split_first() {
         let first: Number = first.try_to_scheme_type()?;
         for next in rest {
@@ -1293,26 +1740,24 @@ pub(crate) fn equal(vals: &[Value]) -> Result<bool, Exception> {
 }
 
 #[bridge(name = "<", lib = "(rnrs base builtins (6))")]
-pub fn lesser_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(lesser(args)?)])
+pub fn lesser(args: &[Value]) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(lesser_prim(args)?)])
 }
 
-pub(crate) fn lesser(vals: &[Value]) -> Result<bool, Exception> {
+pub(crate) fn lesser_prim(vals: &[Value]) -> Result<bool, Exception> {
     if let Some((head, rest)) = vals.split_first() {
         let mut prev = head.clone();
         for next in rest {
-            {
-                let prev: Number = prev.try_to_scheme_type()?;
-                let next: Number = next.try_to_scheme_type()?;
-                if prev.is_complex() {
-                    return Err(Exception::type_error("number", "complex"));
-                }
-                if next.is_complex() {
-                    return Err(Exception::type_error("number", "complex"));
-                }
-                if prev >= next {
-                    return Ok(false);
-                }
+            let prev_num: Number = prev.try_to_scheme_type()?;
+            let next_num: Number = next.try_to_scheme_type()?;
+            if !prev_num.is_real() {
+                return Err(Exception::type_error("real", "complex"));
+            }
+            if !next_num.is_real() {
+                return Err(Exception::type_error("real", "complex"));
+            }
+            if prev_num >= next_num {
+                return Ok(false);
             }
             prev = next.clone();
         }
@@ -1321,28 +1766,26 @@ pub(crate) fn lesser(vals: &[Value]) -> Result<bool, Exception> {
 }
 
 #[bridge(name = ">", lib = "(rnrs base builtins (6))")]
-pub fn greater_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(greater(args)?)])
+pub fn greater(args: &[Value]) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(greater_prim(args)?)])
 }
 
-pub(crate) fn greater(vals: &[Value]) -> Result<bool, Exception> {
+pub(crate) fn greater_prim(vals: &[Value]) -> Result<bool, Exception> {
     if let Some((head, rest)) = vals.split_first() {
         let mut prev = head.clone();
         for next in rest {
-            {
-                let prev: Number = prev.try_to_scheme_type()?;
-                let next: Number = next.try_to_scheme_type()?;
-                // This is somewhat less efficient for small numbers but avoids
-                // cloning big ones
-                if prev.is_complex() {
-                    return Err(Exception::type_error("real", "complex"));
-                }
-                if next.is_complex() {
-                    return Err(Exception::type_error("real", "complex"));
-                }
-                if prev <= next {
-                    return Ok(false);
-                }
+            let prev_num: Number = prev.try_to_scheme_type()?;
+            let next_num: Number = next.try_to_scheme_type()?;
+            // This is somewhat less efficient for small numbers but avoids
+            // cloning big ones
+            if !prev_num.is_real() {
+                return Err(Exception::type_error("real", "complex"));
+            }
+            if !next_num.is_real() {
+                return Err(Exception::type_error("real", "complex"));
+            }
+            if prev_num <= next_num {
+                return Ok(false);
             }
             prev = next.clone();
         }
@@ -1351,26 +1794,24 @@ pub(crate) fn greater(vals: &[Value]) -> Result<bool, Exception> {
 }
 
 #[bridge(name = "<=", lib = "(rnrs base builtins (6))")]
-pub fn lesser_equal_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(lesser_equal(args)?)])
+pub fn lesser_equal(args: &[Value]) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(lesser_equal_prim(args)?)])
 }
 
-pub(crate) fn lesser_equal(vals: &[Value]) -> Result<bool, Exception> {
+pub(crate) fn lesser_equal_prim(vals: &[Value]) -> Result<bool, Exception> {
     if let Some((head, rest)) = vals.split_first() {
         let mut prev = head.clone();
         for next in rest {
-            {
-                let prev: Number = prev.try_to_scheme_type()?;
-                let next: Number = next.try_to_scheme_type()?;
-                if prev.is_complex() {
-                    return Err(Exception::type_error("number", "complex"));
-                }
-                if next.is_complex() {
-                    return Err(Exception::type_error("number", "complex"));
-                }
-                if prev > next {
-                    return Ok(false);
-                }
+            let prev_num: Number = prev.try_to_scheme_type()?;
+            let next_num: Number = next.try_to_scheme_type()?;
+            if !prev_num.is_real() {
+                return Err(Exception::type_error("real", "complex"));
+            }
+            if !next_num.is_real() {
+                return Err(Exception::type_error("real", "complex"));
+            }
+            if prev_num > next_num {
+                return Ok(false);
             }
             prev = next.clone();
         }
@@ -1379,26 +1820,24 @@ pub(crate) fn lesser_equal(vals: &[Value]) -> Result<bool, Exception> {
 }
 
 #[bridge(name = ">=", lib = "(rnrs base builtins (6))")]
-pub fn greater_equal_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(greater_equal(args)?)])
+pub fn greater_equal(args: &[Value]) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(greater_equal_prim(args)?)])
 }
 
-pub(crate) fn greater_equal(vals: &[Value]) -> Result<bool, Exception> {
+pub(crate) fn greater_equal_prim(vals: &[Value]) -> Result<bool, Exception> {
     if let Some((head, rest)) = vals.split_first() {
         let mut prev = head.clone();
         for next in rest {
-            {
-                let prev: Number = prev.try_to_scheme_type()?;
-                let next: Number = next.try_to_scheme_type()?;
-                if prev.is_complex() {
-                    return Err(Exception::type_error("real", "complex"));
-                }
-                if next.is_complex() {
-                    return Err(Exception::type_error("real", "complex"));
-                }
-                if prev < next {
-                    return Ok(false);
-                }
+            let prev_num: Number = prev.try_to_scheme_type()?;
+            let next_num: Number = next.try_to_scheme_type()?;
+            if !prev_num.is_real() {
+                return Err(Exception::type_error("real", "complex"));
+            }
+            if !next_num.is_real() {
+                return Err(Exception::type_error("real", "complex"));
+            }
+            if prev_num < next_num {
+                return Ok(false);
             }
             prev = next.clone();
         }
@@ -1446,11 +1885,11 @@ pub fn is_nan(arg: &Value) -> Result<Vec<Value>, Exception> {
 }
 
 #[bridge(name = "+", lib = "(rnrs base builtins (6))")]
-pub fn add_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(add(args)?)])
+pub fn add(args: &[Value]) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(add_prim(args)?)])
 }
 
-pub(crate) fn add(vals: &[Value]) -> Result<Number, Exception> {
+pub(crate) fn add_prim(vals: &[Value]) -> Result<Number, Exception> {
     let mut result = Number::from(0i64);
     for val in vals {
         let num: Number = val.try_to_scheme_type()?;
@@ -1460,11 +1899,11 @@ pub(crate) fn add(vals: &[Value]) -> Result<Number, Exception> {
 }
 
 #[bridge(name = "*", lib = "(rnrs base builtins (6))")]
-pub fn mul_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(mul(args)?)])
+pub fn mul(args: &[Value]) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(mul_prim(args)?)])
 }
 
-pub(crate) fn mul(vals: &[Value]) -> Result<Number, Exception> {
+pub(crate) fn mul_prim(vals: &[Value]) -> Result<Number, Exception> {
     let mut result = Number::from(1i64);
     for val in vals {
         let num: Number = val.try_to_scheme_type()?;
@@ -1474,11 +1913,11 @@ pub(crate) fn mul(vals: &[Value]) -> Result<Number, Exception> {
 }
 
 #[bridge(name = "-", lib = "(rnrs base builtins (6))")]
-pub fn sub_builtin(args: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(add(args)?)])
+pub fn sub(arg1: &Value, args: &[Value]) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(sub_prim(arg1, args)?)])
 }
 
-pub(crate) fn sub(val1: &Value, vals: &[Value]) -> Result<Number, Exception> {
+pub(crate) fn sub_prim(val1: &Value, vals: &[Value]) -> Result<Number, Exception> {
     let val1: Number = val1.try_to_scheme_type()?;
     let mut val1 = val1.clone();
     if vals.is_empty() {
@@ -1493,11 +1932,11 @@ pub(crate) fn sub(val1: &Value, vals: &[Value]) -> Result<Number, Exception> {
 }
 
 #[bridge(name = "/", lib = "(rnrs base builtins (6))")]
-pub fn div_builtin(arg1: &Value, args: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(div(arg1, args)?)])
+pub fn div(arg1: &Value, args: &[Value]) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(div_prim(arg1, args)?)])
 }
 
-pub(crate) fn div(val1: &Value, vals: &[Value]) -> Result<Number, Exception> {
+pub(crate) fn div_prim(val1: &Value, vals: &[Value]) -> Result<Number, Exception> {
     let val1: Number = val1.try_to_scheme_type()?;
     if vals.is_empty() {
         if val1.is_zero() {
@@ -1585,13 +2024,71 @@ pub fn round(obj: &Value) -> Result<Vec<Value>, Exception> {
     }
 }
 
+#[bridge(name = "exp", lib = "(rnrs base builtins (6))")]
+pub fn exp(z: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(z.try_to_scheme_type::<Number>()?.exp())])
+}
+
+#[bridge(name = "log", lib = "(rnrs base builtins (6))")]
+pub fn log(z: &Value, base: &[Value]) -> Result<Vec<Value>, Exception> {
+    let base = match base {
+        [] => None,
+        [base] => Some(base.try_to_scheme_type::<f64>()?),
+        _ => return Err(Exception::error("too many arguments")),
+    };
+    let num = match z.try_to_scheme_type::<SimpleNumber>()? {
+        SimpleNumber::FixedInteger(i) => i as f64,
+        SimpleNumber::BigInteger(i) => f64::rounding_from(&i, RoundingMode::Nearest).0,
+        SimpleNumber::Rational(r) => f64::rounding_from(&r, RoundingMode::Nearest).0,
+        SimpleNumber::Real(r) => r,
+    };
+    if let Some(base) = base {
+        Ok(vec![Value::from(num.log(base))])
+    } else {
+        Ok(vec![Value::from(num.ln())])
+    }
+}
+
+#[bridge(name = "sin", lib = "(rnrs base builtins (6))")]
+pub fn sin(z: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(z.try_to_scheme_type::<Number>()?.sin())])
+}
+
+#[bridge(name = "cos", lib = "(rnrs base builtins (6))")]
+pub fn cos(z: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(z.try_to_scheme_type::<Number>()?.cos())])
+}
+
+#[bridge(name = "tan", lib = "(rnrs base builtins (6))")]
+pub fn tan(z: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(z.try_to_scheme_type::<Number>()?.tan())])
+}
+
+#[bridge(name = "asin", lib = "(rnrs base builtins (6))")]
+pub fn asin(z: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(z.try_to_scheme_type::<Number>()?.asin())])
+}
+
+#[bridge(name = "acos", lib = "(rnrs base builtins (6))")]
+pub fn acos(z: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(z.try_to_scheme_type::<Number>()?.acos())])
+}
+
+#[bridge(name = "atan", lib = "(rnrs base builtins (6))")]
+pub fn atan(z: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(z.try_to_scheme_type::<Number>()?.atan())])
+}
+
+#[bridge(name = "sqrt", lib = "(rnrs base builtins (6))")]
+pub fn sqrt(z: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(z.try_to_scheme_type::<Number>()?.sqrt())])
+}
+
 #[bridge(name = "magnitude", lib = "(rnrs base builtins (6))")]
 pub fn magnitude(arg: &Value) -> Result<Vec<Value>, Exception> {
     let num: Number = arg.try_to_scheme_type()?;
     if let Some(complex) = num.as_complex() {
-        Ok(vec![Value::from(
-            (complex.re.powi(2) + complex.im.powi(2)).sqrt(),
-        )])
+        Ok(vec![Value::from(complex.magnitude())])
     } else {
         Ok(vec![arg.clone()])
     }
@@ -1615,4 +2112,11 @@ pub fn imag_part(arg: &Value) -> Result<Vec<Value>, Exception> {
     } else {
         Err(Exception::error("expected complex number"))
     }
+}
+
+#[bridge(name = "expt", lib = "(rnrs base builtins (6))")]
+pub fn expt(z1: &Value, z2: &Value) -> Result<Vec<Value>, Exception> {
+    let z1 = z1.try_to_scheme_type::<Number>()?;
+    let z2 = z2.try_to_scheme_type::<Number>()?;
+    Ok(vec![Value::from(z1.pow(&z2))])
 }

@@ -1,11 +1,16 @@
-//! String builtins and data types
+//! String builtins and data types.
+//!
+//! Although we would like to, the R6RS standard of Rust precludes us from
+//! using the standard library String type by mandating O(1) lookups of
+//! characters from indices. This means that Scheme strings are vectors of
+//! unicode code points rather that UTF-8 strings.
 
 use std::{fmt, hash::Hash, sync::Arc};
 
-use either::Either;
 use parking_lot::RwLock;
 
 use crate::{
+    Either,
     character::{char_switch_case, to_foldcase},
     exceptions::Exception,
     gc::Trace,
@@ -67,6 +72,15 @@ impl From<Vec<char>> for WideString {
 
 impl From<String> for WideString {
     fn from(value: String) -> Self {
+        Self(Arc::new(WideStringInner {
+            chars: RwLock::new(value.chars().collect()),
+            mutable: false,
+        }))
+    }
+}
+
+impl From<&str> for WideString {
+    fn from(value: &str) -> Self {
         Self(Arc::new(WideStringInner {
             chars: RwLock::new(value.chars().collect()),
             mutable: false,

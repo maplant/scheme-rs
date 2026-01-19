@@ -327,7 +327,7 @@ unsafe extern "C" fn matches(pattern: *const (), syntax: *const ()) -> *const ()
 
     let syntax = unsafe { Value::from_raw_inc_rc(syntax) };
     // This isn't a great way to do this, but it'll work for now:
-    let syntax = Syntax::syntax_from_datum(&BTreeSet::default(), syntax);
+    let syntax = Syntax::syntax_from_datum(&BTreeSet::default(), syntax).unwrap();
 
     let mut expansions = ExpansionLevel::default();
     if pattern.matches(&syntax, &mut expansions) {
@@ -532,6 +532,7 @@ impl Template {
             Self::Vector(vec) => {
                 Syntax::new_vector(expand_vec(vec, binds, curr_span.clone())?, curr_span)
             }
+            Self::ByteVector(bvec) => Syntax::new_byte_vector(bvec.clone(), curr_span),
             Self::Identifier { ident, binding_env } => Syntax::Identifier {
                 ident: ident.clone(),
                 span: curr_span,
@@ -539,7 +540,7 @@ impl Template {
             },
             Self::Variable(name) => binds.get_bind(name)?,
             Self::Literal(literal) => Syntax::new_literal(literal.clone(), curr_span),
-            _ => unreachable!(),
+            Self::Ellipsis(_) => unreachable!(),
         };
         Some(syn)
     }

@@ -15,7 +15,6 @@
 mod collection;
 
 pub use collection::{OpaqueGcPtr, init_gc};
-use either::Either;
 pub use scheme_rs_macros::Trace;
 
 use std::{
@@ -30,7 +29,10 @@ use std::{
     ptr::{NonNull, drop_in_place},
 };
 
-use crate::gc::collection::{GcHeader, alloc_gc_object};
+use crate::{
+    Either,
+    gc::collection::{GcHeader, alloc_gc_object},
+};
 
 /// A heap allocated garbage collected smart pointer. Gc requires that `T`
 /// implements the [`Trace`] trait to properly track references.

@@ -68,11 +68,11 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
 
     let arg_indices: Vec<_> = (0..num_args).collect();
 
-    // let arg_idents: Vec<_> = (0..num_args).map(|i| format_ident!("a{i}")).collect();
+    let visibility = bridge.vis.clone();
 
     if bridge.sig.asyncness.is_some() {
         quote! {
-            pub(crate) fn #wrapper_name<'a>(
+            #visibility fn #wrapper_name<'a>(
                 runtime: &'a ::scheme_rs::runtime::Runtime,
                 _env: &'a [::scheme_rs::value::Value],
                 args: &'a [::scheme_rs::value::Value],
@@ -123,7 +123,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         }
     } else {
         quote! {
-            pub(crate) fn #wrapper_name<'a>(
+            #visibility fn #wrapper_name(
                 runtime: &::scheme_rs::runtime::Runtime,
                 _env: &[::scheme_rs::value::Value],
                 args: &[::scheme_rs::value::Value],

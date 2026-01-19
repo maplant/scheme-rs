@@ -1,4 +1,22 @@
 //! Exceptional situations and conditions.
+//!
+//! Scheme has two distinct concepts: conditions and exceptions. Exceptions are
+//! values that values passed to the `raise` and `raise-continuable` procedures
+//! and can be any [`Value`]. Conditions are records that contain information
+//! describing an erroneous situation or _condition_.
+//!
+//! Conditions in Scheme are either [simple](`SimpleCondition`) or
+//! [compound](`CompoundCondition`). Scheme-rs provides the ability to inspect
+//! conditions without discerning whether they or simple or compound. Using the
+//! [`condition`](Exception::condition) method, a specific condition and thus
+//! its associated information can be extracted from the condition.
+//!
+//! For example, a common condition is the [`&trace`](StackTrace) condition,
+//! which can be used to extract a stack trace for the exception:
+//!
+//! ```
+//!
+//! ```
 
 use crate::{
     gc::{Gc, GcInner, Trace},
@@ -14,9 +32,11 @@ use crate::{
     vectors::Vector,
 };
 use parking_lot::RwLock;
-pub use scheme_rs_macros::define_condition_type;
 use scheme_rs_macros::runtime_fn;
 use std::{convert::Infallible, fmt, ops::Range, sync::Arc};
+
+/// A macro for easily creating new condition types.
+pub use scheme_rs_macros::define_condition_type;
 
 impl fmt::Display for Exception {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -201,6 +221,10 @@ impl Exception {
             Err(Exception::error("not a simple or compound condition"))
         }
     }
+
+    pub fn condition<T>(&self) -> Result<Option<T>, Exception> {
+        todo!()
+    }
 }
 
 impl From<&'_ Value> for Option<Exception> {
@@ -293,6 +317,13 @@ impl fmt::Debug for SimpleCondition {
     fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
         Ok(())
     }
+}
+
+#[bridge(name = "condition?", lib = "(rnrs conditions builtins (6))")]
+pub fn condition_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
+    let is_condition = obj.cast_to_rust_type::<SimpleCondition>().is_some()
+        || obj.cast_to_rust_type::<CompoundCondition>().is_some();
+    Ok(vec![Value::from(is_condition)])
 }
 
 #[bridge(name = "&condition-rtd", lib = "(rnrs conditions builtins (6))")]
@@ -407,6 +438,10 @@ impl StackTrace {
             parent: Gc::new(SimpleCondition::new()),
             trace: Vector::from(trace),
         }
+    }
+
+    pub fn trace(&self) -> Vec<Syntax> {
+        todo!()
     }
 }
 
@@ -534,6 +569,15 @@ define_condition_type!(
     }
 );
 
+impl Irritants {
+    pub fn new(irritants: Value) -> Self {
+        Irritants {
+            parent: Gc::new(SimpleCondition::new()),
+            irritants,
+        }
+    }
+}
+
 #[bridge(name = "&irritants-rtd", lib = "(rnrs conditions builtins (6))")]
 pub fn irritants_rtd() -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(Irritants::rtd())])
@@ -553,6 +597,15 @@ define_condition_type!(
         write!(f, " who: {:?}", this.who)
     }
 );
+
+impl Who {
+    pub fn new(who: impl fmt::Display) -> Self {
+        Who {
+            parent: Gc::new(SimpleCondition::new()),
+            who: who.to_string(),
+        }
+    }
+}
 
 #[bridge(name = "&who-rtd", lib = "(rnrs conditions builtins (6))")]
 pub fn who_rtd() -> Result<Vec<Value>, Exception> {
@@ -943,4 +996,39 @@ pub fn raise_continuable(
     };
 
     Ok(Application::new(handler, vec![condition.clone(), k]))
+}
+
+#[bridge(name = "error", lib = "(rnrs base builtins (6))")]
+pub fn error(who: &Value, message: &Value, irritants: &[Value]) -> Result<Vec<Value>, Exception> {
+    let mut conditions = Vec::new();
+    if who.is_true() {
+        conditions.push(Value::from_rust_type(Who::new(who)));
+    }
+    conditions.push(Value::from_rust_type(Message::new(message)));
+    conditions.push(Value::from_rust_type(Irritants::new(slice_to_list(
+        irritants,
+    ))));
+    Err(Exception(Value::from(Exception::from(CompoundCondition(
+        conditions,
+    )))))
+}
+
+#[bridge(name = "assertion-violation", lib = "(rnrs base builtins (6))")]
+pub fn assertion_violation(
+    who: &Value,
+    message: &Value,
+    irritants: &[Value],
+) -> Result<Vec<Value>, Exception> {
+    let mut conditions = Vec::new();
+    conditions.push(Value::from_rust_type(Assertion::new()));
+    if who.is_true() {
+        conditions.push(Value::from_rust_type(Who::new(who)));
+    }
+    conditions.push(Value::from_rust_type(Message::new(message)));
+    conditions.push(Value::from_rust_type(Irritants::new(slice_to_list(
+        irritants,
+    ))));
+    Err(Exception(Value::from(Exception::from(CompoundCondition(
+        conditions,
+    )))))
 }

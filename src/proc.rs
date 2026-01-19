@@ -1,4 +1,95 @@
-//! Procedures, continuation and user, and applying values to those procedures.
+//! Scheme Procedures.
+//!
+//! Scheme procedures, more commonly known as [`closures`](https://en.wikipedia.org/wiki/Closure_(computer_programming))
+//! as they capture their environment, are the fundamental and only way to
+//! transfer control from a Rust context to a Scheme context.
+//!
+//! # Calling procedures from Rust
+//!
+//! # Manually creating closures
+//!
+//! Generally procedures are created in Scheme contexts. However, it is
+//! occasionally desirable to create a closure in Rust contexts. This can be
+//! done with a [`cps_bridge`] function and a call to [`Procedure::new`]. The
+//! `env` argument to the CPS function is a reference to the vector passed to
+//! the `new` function:
+//!
+//! ```
+//! # use scheme_rs::{proc::{Procedure, BridgePtr, Application, DynamicState},
+//! # registry::cps_bridge, value::Value, runtime::Runtime, exceptions::Exception};
+//! #[cps_bridge]
+//! fn closure(
+//!     _runtime: &Runtime,
+//!     env: &[Value],
+//!     _args: &[Value],
+//!     _rest_args: &[Value],
+//!     _dyn_state: &mut DynamicState,
+//!     k: Value,
+//! ) -> Result<Application, Exception> {
+//!     Ok(Application::new(k.try_into()?, vec![ env[0].clone() ]))
+//! }
+//!
+//! # fn main() {
+//! # let runtime = Runtime::new();
+//! let closure = Procedure::new(
+//!     runtime,
+//!     vec![ Value::from(3.1415) ],
+//!     closure as BridgePtr,
+//!     0,
+//!     false,
+//! );
+//! # }
+//! ```
+//!
+//! By default the environment is immutable. If the environment needs to be
+//! modified, a [`Cell`](scheme_rs::value::Cell) can be used:
+//!
+//! ```
+//! # use scheme_rs::{
+//! #     proc::{Procedure, BridgePtr, Application, DynamicState},
+//! #     registry::cps_bridge, value::{Value, Cell}, runtime::Runtime,
+//! #     exceptions::Exception,
+//! #     num::Number,
+//! # };
+//! #[cps_bridge]
+//! fn next_num(
+//!     _runtime: &Runtime,
+//!     env: &[Value],
+//!     _args: &[Value],
+//!     _rest_args: &[Value],
+//!     _dyn_state: &mut DynamicState,
+//!     k: Value,
+//! ) -> Result<Application, Exception> {
+//!     // Fetch the cell from the environment:
+//!     let cell: Cell = env[0].try_to_scheme_type()?;
+//!     let curr: Number = cell.get().try_into()?;
+//!
+//!     // Increment the cell
+//!     cell.set(Value::from(curr.clone() + Number::from(1)));
+//!
+//!     // Return the previous value:
+//!     Ok(Application::new(k.try_into()?, vec![ Value::from(curr) ]))
+//! }
+//!
+//! # fn main() {
+//! # let runtime = Runtime::new();
+//! let next_num = Procedure::new(
+//!     runtime,
+//!     // Cells must be converted to values:
+//!     vec![ Value::from(Cell::new(Value::from(3.1415))) ],
+//!     next_num as BridgePtr,
+//!     0,
+//!     false,
+//! );
+//! # }
+//! ```
+//!
+//! # Categories of procedures
+//!
+//! In scheme-rs, procedures can be placed into a few different categories, the
+//! most obvious is that procedures are either _user_ functions or
+//! [_continuations_](https://en.wikipedia.org/wiki/Continuation). This
+//! categorization is mostly transparent to the user.
 
 use crate::{
     env::Local,
@@ -257,6 +348,7 @@ impl ProcedureInner {
         unsafe { *Box::from_raw(app) }
     }
 
+    /// Apply the arguments to the function, returning the next application.
     #[maybe_async]
     pub fn apply(&self, args: Vec<Value>, dyn_state: &mut DynamicState) -> Application {
         let (args, k) = match self.prepare_args(args, dyn_state) {
@@ -408,14 +500,18 @@ impl Procedure {
         }))
     }
 
+    /// Get the runtime associated with the procedure
     pub fn get_runtime(&self) -> Runtime {
         self.0.runtime.clone()
     }
 
+    /// Return the number of required arguments and whether or not this function
+    /// is variadic
     pub fn get_formals(&self) -> (usize, bool) {
         (self.0.num_required_args, self.0.variadic)
     }
 
+    /// Return the debug information associated with procedure, if it exists.
     pub fn get_debug_info(&self) -> Option<Arc<ProcDebugInfo>> {
         self.0.debug_info.clone()
     }
@@ -446,8 +542,9 @@ impl Procedure {
         self.0.is_variable_transformer
     }
 
+    /// Return whether or not the procedure is a continuation
     pub fn is_continuation(&self) -> bool {
-        matches!(self.0.func, FuncPtr::Continuation(_))
+        self.0.is_continuation()
     }
 
     /// Applies `args` to the procedure and returns the values it evaluates to.
@@ -472,7 +569,7 @@ impl Procedure {
 
 static HALT_CONTINUATION: OnceLock<Value> = OnceLock::new();
 
-/// Return a continuation that returns its expressions.
+/// Return a continuation that returns its expressions to the Rust program.
 pub fn halt_continuation(runtime: Runtime) -> Value {
     unsafe extern "C" fn halt(
         _runtime: *mut GcInner<RwLock<RuntimeInner>>,

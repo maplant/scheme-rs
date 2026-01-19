@@ -103,7 +103,7 @@ impl Cps {
         make_sig(&mut ctx.func.signature, false);
 
         let val = Local::gensym();
-        let name = val.to_func_name();
+        let name = val.get_func_name();
         let entry_func = module
             .declare_function(&name, Linkage::Export, &ctx.func.signature)
             .unwrap();
@@ -294,10 +294,8 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
             }
             CpsValue::Const(val) => {
                 let mut runtime_write = self.runtime.0.write();
-                if !runtime_write.constants_pool.contains(val) {
-                    runtime_write.constants_pool.insert(val.clone());
-                }
-                let raw = SchemeValue::as_raw(runtime_write.constants_pool.get(val).unwrap());
+                runtime_write.constants_pool.insert(val.clone());
+                let raw = SchemeValue::as_raw(runtime_write.constants_pool.get(val));
                 return self.builder.ins().iconst(types::I64, raw as i64);
             }
         };

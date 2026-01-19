@@ -211,14 +211,14 @@ pub fn cdr(val: &Value) -> Result<Vec<Value>, Exception> {
     }
 }
 
-#[bridge(name = "set-car!", lib = "(rnrs base builtins (6))")]
+#[bridge(name = "set-car!", lib = "(rnrs mutable-pairs (6))")]
 pub fn set_car(var: &Value, val: &Value) -> Result<Vec<Value>, Exception> {
     let pair: Pair = var.clone().try_into()?;
     pair.set_car(val.clone())?;
     Ok(Vec::new())
 }
 
-#[bridge(name = "set-cdr!", lib = "(rnrs base builtins (6))")]
+#[bridge(name = "set-cdr!", lib = "(rnrs mutable-pairs (6))")]
 pub fn set_cdr(var: &Value, val: &Value) -> Result<Vec<Value>, Exception> {
     let pair: Pair = var.clone().try_into()?;
     pair.set_cdr(val.clone())?;

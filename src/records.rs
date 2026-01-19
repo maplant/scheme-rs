@@ -213,7 +213,7 @@ pub struct RecordTypeDescriptor {
     /// The index into `fields` where this record's fields proper begin. All of
     /// the previous fields belong to a parent.
     pub field_index_offset: usize,
-    /// The fields of the record, including all of the ones inherited from
+    /// The fields of the record, notincluding any of the ones inherited from
     /// parents.
     pub fields: Vec<Field>,
 }
@@ -863,7 +863,7 @@ pub trait SchemeCompatible: fmt::Debug + Trace + Any + Send + Sync + 'static {
     }
 
     /// Set the kth field of the record.
-    fn set_field(&mut self, k: usize, _val: Value) {
+    fn set_field(&self, k: usize, _val: Value) {
         panic!("{k} is out of bounds")
     }
 }
@@ -898,11 +898,10 @@ impl RustParentConstructor {
 
 type ParentConstructor = fn(&[Value]) -> Result<Gc<dyn SchemeCompatible>, Exception>;
 
-pub(crate) fn is_subtype_of(val: &Value, rt: &Value) -> Result<bool, Exception> {
+pub(crate) fn is_subtype_of(val: &Value, rt: Arc<RecordTypeDescriptor>) -> Result<bool, Exception> {
     let UnpackedValue::Record(rec) = val.clone().unpack() else {
         return Ok(false);
     };
-    let rt: Arc<RecordTypeDescriptor> = rt.clone().try_into()?;
     Ok(Arc::ptr_eq(&rec.0.rtd, &rt) || rec.0.rtd.inherits.contains(&ByAddress::from(rt)))
 }
 
@@ -920,9 +919,10 @@ fn record_predicate_fn(
         unreachable!();
     };
     // RTD is the first environment variable:
+    let rtd: Arc<RecordTypeDescriptor> = env[0].try_to_scheme_type()?;
     Ok(Application::new(
         k,
-        vec![Value::from(is_subtype_of(val, &env[0])?)],
+        vec![Value::from(is_subtype_of(val, rtd)?)],
     ))
 }
 
@@ -965,13 +965,24 @@ fn record_accessor_fn(
     };
     let record: Record = val.clone().try_into()?;
     // RTD is the first environment variable, field index is the second
-    if !is_subtype_of(val, &env[0])? {
+    let rtd: Arc<RecordTypeDescriptor> = env[0].try_to_scheme_type()?;
+    if !is_subtype_of(val, rtd.clone())? {
         return Err(Exception::error(
             "not a child of this record type".to_string(),
         ));
     }
     let idx: usize = env[1].clone().try_into()?;
-    let val = record.0.fields[idx].read().clone();
+    let val = if let Some(rust_parent) = &record.0.rust_parent
+        && rtd.rust_type
+    {
+        let mut t = rust_parent.clone();
+        while let Some(embedded) = { t.extract_embedded_record(&rtd) } {
+            t = embedded;
+        }
+        t.get_field(idx)
+    } else {
+        record.0.fields[idx].read().clone()
+    };
     Ok(Application::new(k, vec![val]))
 }
 
@@ -990,9 +1001,14 @@ pub fn record_accessor(
     };
     let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
     let idx: usize = idx.clone().try_into()?;
-    if idx > rtd.fields.len() {
+    if idx >= rtd.fields.len() {
+        /*
+        println!("{idx}");
+        println!("{}", rtd.field_index_offset);
+        println!("{rtd:#?}");
+        */
         return Err(Exception::error(format!(
-            "{idx} is out of range {}",
+            "{idx} is out of range 0..{}",
             rtd.fields.len()
         )));
     }
@@ -1022,13 +1038,24 @@ fn record_mutator_fn(
     };
     let record: Record = rec.clone().try_into()?;
     // RTD is the first environment variable, field index is the second
-    if !is_subtype_of(rec, &env[0])? {
+    let rtd: Arc<RecordTypeDescriptor> = env[0].try_to_scheme_type()?;
+    if !is_subtype_of(rec, rtd.clone())? {
         return Err(Exception::error(
             "not a child of this record type".to_string(),
         ));
     }
     let idx: usize = env[1].clone().try_into()?;
-    *record.0.fields[idx].write() = new_val.clone();
+    if let Some(rust_parent) = &record.0.rust_parent
+        && rtd.rust_type
+    {
+        let mut t = rust_parent.clone();
+        while let Some(embedded) = { t.extract_embedded_record(&rtd) } {
+            t = embedded;
+        }
+        t.set_field(idx, new_val.clone());
+    } else {
+        *record.0.fields[idx].write() = new_val.clone();
+    }
     Ok(Application::new(k, vec![]))
 }
 
@@ -1047,7 +1074,7 @@ pub fn record_mutator(
     };
     let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
     let idx: usize = idx.clone().try_into()?;
-    if idx > rtd.fields.len() {
+    if idx >= rtd.fields.len() {
         return Err(Exception::error(format!(
             "{idx} is out of range {}",
             rtd.fields.len()

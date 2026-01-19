@@ -1,5 +1,4 @@
-use crate::{exceptions::Exception, registry::bridge, value::Value};
-use either::Either;
+use crate::{Either, exceptions::Exception, registry::bridge, value::Value};
 use unicode_categories::UnicodeCategories;
 
 mod unicode;

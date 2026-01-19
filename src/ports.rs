@@ -6,7 +6,6 @@
 //! Note: if async is enabled, then these traits switch to their async
 //! equivalents in the runtime you're targeting.
 
-use either::Either;
 use memchr::{memchr, memmem};
 use parking_lot::RwLock;
 use rustyline::Editor;
@@ -21,6 +20,7 @@ use std::{
 };
 
 use crate::{
+    Either,
     enumerations::{EnumerationSet, EnumerationType},
     exceptions::{Assertion, Error, Exception, raise},
     gc::{Gc, GcInner, Trace},
@@ -4248,9 +4248,10 @@ pub fn file_exists_pred(filename: &Value) -> Result<Vec<Value>, Exception> {
     let filename = filename.to_string();
     let path = Path::new(&filename);
 
-    maybe_await!(try_exists(path)).map_err(|err| Exception::io_error(format!("{err:?}")))?;
+    let exists =
+        maybe_await!(try_exists(path)).map_err(|err| Exception::io_error(format!("{err:?}")))?;
 
-    Ok(Vec::new())
+    Ok(vec![Value::from(exists)])
 }
 
 #[maybe_async]

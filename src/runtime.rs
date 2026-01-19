@@ -1,4 +1,8 @@
 //! Scheme-rs core runtime.
+//!
+//! The [`Runtime`] struct initializes and stores the core runtime for
+//! scheme-rs. It contains a registry of libraries and the memory associated
+//! with the JIT compiled [`Procedures`](Procedure).
 
 use crate::{
     ast::DefinitionBody,
@@ -6,6 +10,7 @@ use crate::{
     env::{Environment, Global, TopLevelEnvironment},
     exceptions::{Exception, raise},
     gc::{Gc, GcInner, Trace, init_gc},
+    hashtables::EqualHashSet,
     lists::{Pair, list_to_vec},
     num,
     ports::{BufferMode, Port, Transcoder},
@@ -30,6 +35,9 @@ use std::{collections::HashSet, mem::ManuallyDrop, path::Path, sync::Arc};
 /// There is not much you can do with a Runtime beyond creating it and using it
 /// to [run programs](Runtime::run_program), however a lot of functions require
 /// it as an arguments, such as [TopLevelEnvironment::new_repl].
+///
+/// You can also use the runtime to [define libraries](Runtime::def_lib) from
+/// Rust code.
 ///
 /// Runtime is automatically reference counted, so if you have all of the
 /// procedures you need you can drop it without any issue.
@@ -94,10 +102,30 @@ impl Runtime {
         let compiled = body.compile_top_level();
         let closure = maybe_await!(self.compile_expr(compiled));
 
-        maybe_await!(Application::new(closure, Vec::new()).eval(&mut DynamicState::default(),))
+        maybe_await!(Application::new(closure, Vec::new()).eval(&mut DynamicState::default()))
     }
 
-    pub fn get_registry(&self) -> Registry {
+    /// Define a library from Rust code. Useful if file system access is disabled.
+    #[cfg(not(feature = "async"))]
+    #[track_caller]
+    pub fn def_lib(&self, lib: &str) -> Result<(), Exception> {
+        use std::panic::Location;
+
+        self.get_registry()
+            .def_lib(self, lib, Location::caller().file())
+    }
+
+    /// Define a library from Rust code. Useful if file system access is disabled.
+    #[cfg(feature = "async")]
+    pub async fn def_lib(&self, lib: &str) -> Result<(), Exception> {
+        use std::panic::Location;
+
+        self.get_registry()
+            .def_lib(self, lib, Location::caller().file())
+            .await
+    }
+
+    pub(crate) fn get_registry(&self) -> Registry {
         self.0.read().registry.clone()
     }
 
@@ -136,7 +164,7 @@ pub(crate) struct RuntimeInner {
     pub(crate) registry: Registry,
     /// Channel to compilation task
     compilation_buffer_tx: CompilationBufferTx,
-    pub(crate) constants_pool: HashSet<Value>,
+    pub(crate) constants_pool: EqualHashSet,
     pub(crate) globals_pool: HashSet<Global>,
     pub(crate) debug_info: DebugInfo,
 }
@@ -171,7 +199,7 @@ impl RuntimeInner {
         RuntimeInner {
             registry: Registry::empty(),
             compilation_buffer_tx,
-            constants_pool: HashSet::new(),
+            constants_pool: EqualHashSet::new(),
             globals_pool: HashSet::new(),
             debug_info: DebugInfo::default(),
         }
@@ -565,7 +593,7 @@ unsafe extern "C" fn add(vals: *const *const (), num_vals: u32, error: *mut Valu
             // Can't easily wrap these in a ManuallyDrop, so we dec the rc.
             .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read()))
             .collect();
-        match num::add(&vals) {
+        match num::add_prim(&vals) {
             Ok(num) => Value::into_raw(Value::from(num)),
             Err(condition) => {
                 error.write(condition.into());
@@ -581,7 +609,7 @@ unsafe extern "C" fn sub(vals: *const *const (), num_vals: u32, error: *mut Valu
         let vals: Vec<_> = (0..num_vals)
             .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read()))
             .collect();
-        match num::sub(&vals[0], &vals[1..]) {
+        match num::sub_prim(&vals[0], &vals[1..]) {
             Ok(num) => Value::into_raw(Value::from(num)),
             Err(condition) => {
                 error.write(condition.into());
@@ -597,7 +625,7 @@ unsafe extern "C" fn mul(vals: *const *const (), num_vals: u32, error: *mut Valu
         let vals: Vec<_> = (0..num_vals)
             .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read()))
             .collect();
-        match num::mul(&vals) {
+        match num::mul_prim(&vals) {
             Ok(num) => Value::into_raw(Value::from(num)),
             Err(condition) => {
                 error.write(condition.into());
@@ -613,7 +641,7 @@ unsafe extern "C" fn div(vals: *const *const (), num_vals: u32, error: *mut Valu
         let vals: Vec<_> = (0..num_vals)
             .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read()))
             .collect();
-        match num::div(&vals[0], &vals[1..]) {
+        match num::div_prim(&vals[0], &vals[1..]) {
             Ok(num) => Value::into_raw(Value::from(num)),
             Err(condition) => {
                 error.write(condition.into());
@@ -624,7 +652,7 @@ unsafe extern "C" fn div(vals: *const *const (), num_vals: u32, error: *mut Valu
 }
 
 macro_rules! define_comparison_fn {
-    ( $name:ident ) => {
+    ( $name:ident, $prim:ident ) => {
         #[runtime_fn]
         unsafe extern "C" fn $name(
             vals: *const *const (),
@@ -635,7 +663,7 @@ macro_rules! define_comparison_fn {
                 let vals: Vec<_> = (0..num_vals)
                     .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read()))
                     .collect();
-                match num::$name(&vals) {
+                match num::$prim(&vals) {
                     Ok(res) => Value::into_raw(Value::from(res)),
                     Err(condition) => {
                         error.write(condition.into());
@@ -647,8 +675,8 @@ macro_rules! define_comparison_fn {
     };
 }
 
-define_comparison_fn!(equal);
-define_comparison_fn!(greater);
-define_comparison_fn!(greater_equal);
-define_comparison_fn!(lesser);
-define_comparison_fn!(lesser_equal);
+define_comparison_fn!(equal, equal_prim);
+define_comparison_fn!(greater, greater_prim);
+define_comparison_fn!(greater_equal, greater_equal_prim);
+define_comparison_fn!(lesser, lesser_prim);
+define_comparison_fn!(lesser_equal, lesser_equal_prim);

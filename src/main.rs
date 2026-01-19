@@ -1,3 +1,4 @@
+use clap::Parser;
 use rustyline::{
     Completer, Config, Editor, Helper, Highlighter, Hinter, Validator,
     highlight::MatchingBracketHighlighter,
@@ -6,12 +7,22 @@ use rustyline::{
 };
 use scheme_rs::{
     env::TopLevelEnvironment,
+    exceptions::Exception,
     ports::{BufferMode, Port, Prompt, Transcoder},
     runtime::Runtime,
     syntax::{Span, Syntax},
 };
 use scheme_rs_macros::{maybe_async, maybe_await};
-use std::process::ExitCode;
+use std::path::Path;
+
+#[derive(Parser, Debug)]
+struct Args {
+    /// Scheme programs to run
+    files: Vec<String>,
+    /// Force interactive mode (REPL)
+    #[arg(short, long)]
+    interactive: bool,
+}
 
 #[derive(Default)]
 struct InputValidator;
@@ -37,8 +48,21 @@ struct InputHelper {
 
 #[maybe_async]
 #[cfg_attr(feature = "async", tokio::main)]
-fn main() -> ExitCode {
+fn main() -> Result<(), Exception> {
+    let args = Args::parse();
+
     let runtime = Runtime::new();
+
+    // Run any programs
+    for file in &args.files {
+        let path = Path::new(file);
+        let _ = maybe_await!(runtime.run_program(path))?;
+    }
+
+    if !args.files.is_empty() && !args.interactive {
+        return Ok(());
+    }
+
     let repl = TopLevelEnvironment::new_repl(&runtime);
 
     maybe_await!(repl.import("(library (rnrs))".parse().unwrap()))
@@ -51,8 +75,9 @@ fn main() -> ExitCode {
     let mut editor = match Editor::with_history(config, DefaultHistory::new()) {
         Ok(e) => e,
         Err(err) => {
-            eprintln!("Error creating line editor: {err}");
-            return ExitCode::FAILURE;
+            return Err(Exception::error(format!(
+                "Error creating line editor: {err}"
+            )));
         }
     };
 
@@ -82,8 +107,9 @@ fn main() -> ExitCode {
             }
             Ok(None) => break,
             Err(err) => {
-                eprintln!("Error while reading input: {err}");
-                return ExitCode::FAILURE;
+                return Err(Exception::error(format!(
+                    "Error while reading input: {err}"
+                )));
             }
         };
 
@@ -100,5 +126,5 @@ fn main() -> ExitCode {
         }
     }
 
-    ExitCode::SUCCESS
+    Ok(())
 }

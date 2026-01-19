@@ -31,12 +31,12 @@ pub fn eval(
         unreachable!()
     };
     let env = environment.try_to_rust_type::<Environment>()?;
-    let expr = Syntax::syntax_from_datum(&BTreeSet::default(), expression.clone());
+    let expr = Syntax::syntax_from_datum(&BTreeSet::default(), expression.clone())?;
     let ctxt = ParseContext::new(runtime, false);
     let expr = maybe_await!(Expression::parse(&ctxt, expr, &env))?;
     let compiled = expr.compile_top_level();
-    let proc = maybe_await!(runtime.compile_expr(compiled));
-    Ok(Application::new(proc, vec![k]))
+    let result = maybe_await!(maybe_await!(runtime.compile_expr(compiled)).call(&[]))?;
+    Ok(Application::new(k.try_into()?, result))
 }
 
 impl SchemeCompatible for Environment {
@@ -60,7 +60,7 @@ pub fn environment(
         .iter()
         .cloned()
         .map(|spec| {
-            let syntax = Syntax::syntax_from_datum(&marks, spec);
+            let syntax = Syntax::syntax_from_datum(&marks, spec)?;
             ImportSet::parse(discard_for(&syntax))
         })
         .collect::<Result<Vec<_>, _>>()?;

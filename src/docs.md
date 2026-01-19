@@ -8,6 +8,9 @@ designed to embedded within sync and async Rust.
   flag.
 - `tokio`: Enables support for the [tokio](https://tokio.rs/) async
   executor.
+- `load-libraries-from-fs`: Enables automatically loading libraries from the 
+  file system. The library name specifies its location on the filesystem 
+  relative to the currently running process.
 
 # Getting started
 
@@ -149,15 +152,75 @@ style](https://en.wikipedia.org/wiki/Continuation-passing_style) for greater
 flexibility and control. See the [`cps_bridge`](registry::cps_bridge) proc macro
 for more information.
 
-## Embedding Rust structs in Scheme
+## Values
+
+Scheme [`Values`](value::Value) can be created from most primitives and std
+library objects simply by using `From`:
+
+```rust
+# use scheme_rs::value::Value;
+let pi = Value::from(3.14159268);
+let pair = Value::from((Value::from(1), Value::from((Value::from(2), Value::from(())))));
+```
+
+Rust objects that implement [`SchemeCompatible`](records::SchemeCompatible) can 
+be converted using the [`from_rust_type`](value::Value::from_rust_type) function:
+
+```rust
+# use scheme_rs::{value::Value, records::{rtd, SchemeCompatible, RecordTypeDescriptor}, gc::Trace};
+# use std::sync::Arc;
+#[derive(Debug, Trace)]
+struct Vec3 {
+    x: f64,
+    y: f64
+}
+
+impl SchemeCompatible for Vec3 {
+    fn rtd() -> Arc<RecordTypeDescriptor> {
+        rtd!(
+            name: "vec3",
+            fields: ["x", "y"],
+            constructor: |x, y| {
+                Ok(Vec3 {
+                    x: x.try_to_scheme_type()?,
+                    y: y.try_to_scheme_type()?,
+                })
+            }
+        )
+    }
+    
+    fn get_field(&self, k: usize) -> Value {
+        match k {
+            0 => self.x.into(),
+            1 => self.y.into(),
+            _ => unreachable!(),
+        }
+    }
+}
+
+let pos = Value::from_rust_type(Vec3 { x: 1.0, y: 2.0 });
+```
+
+`Values` can be converted back to Rust types with the 
+- [`cast_to_scheme_type`](value::Value::cast_to_scheme_type)
+- [`try_to_scheme_type`](value::Value::try_to_scheme_type)
+- [`cast_to_rust_type`](value::Value::cast_to_rust_type)
+- and [`try_to_rust_type`](value::Value::try_to_rust_type) functions.
+
+The `cast_*` functions convert values to `Option<_>`, and the `try_*` functions 
+provide more detailed error conditions of the conversion failure.
+
+```rust
+# use scheme_rs::value::Value;
+# let pi = Value::from(3.14159268);
+assert_eq!(pi.cast_to_scheme_type::<f64>(), Some(3.14159268));
+```
+
+See [the `value` module for more information](value).
+
 
 # Error handling
- 
-`TODO`
 
-# Garbage Collection
-
-See the [gc] module for a more detailed explanation on the garbage collector.
-
-
-
+All scheme-rs functions that return an error return an [`Exception`](exceptions)
+which adhere to the scheme condition system. See
+[the `exceptions` module for more information](exceptions).
