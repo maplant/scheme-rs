@@ -1,7 +1,7 @@
 # <picture><source media="(prefers-color-scheme: dark)" srcset="logo-dark.png"><img align="left" width="150px" src="logo-light.png"></picture> Scheme-rs: Embedded Scheme for the Rust Ecosystem
 [<img alt="github" src="https://img.shields.io/badge/github-maplant/scheme--rs-8da0cb?style=for-the-badge&labelColor=555555&logo=github" height="20">](https://github.com/maplant/scheme-rs)
 [<img alt="crates.io" src="https://img.shields.io/crates/v/scheme-rs.svg?style=for-the-badge&color=fc8d62&logo=rust" height="20">](https://crates.io/crates/scheme-rs)
-[<img alt="docs.rs" src="https://img.shields.io/badge/docs.rs-scheme-rs?style=for-the-badge&labelColor=555555&logo=docs.rs" height="20">](https://docs.rs/scheme-rs)
+[<img alt="docs.rs" src="https://img.shields.io/badge/docs.rs-scheme--rs-66c2a5?style=for-the-badge&labelColor=555555&logo=docs.rs" height="20">](https://docs.rs/scheme-rs)
 
 Scheme-rs is an implementation of the
 [R6RS](https://www.r6rs.org/final/r6rs.pdf) specification of the [Scheme programming 
