@@ -17,29 +17,29 @@
 //! immutable fields and one mutable field:
 //!
 //! ```rust
+//! # use std::sync::Mutex;
 //! # use scheme_rs::gc::Trace;
 //! #[derive(Trace, Debug)]
 //! struct Enemy {
-//!   // pos_x and pos_y will be immutable from Scheme code (although they can
-//!   // can still be modified from Rust):
+//!   // pos_x and pos_y will be immutable
 //!   pos_x: f64,
 //!   pos_y: f64,
-//!   // health will be mutable in both Scheme and Rust code:
-//!   health: f64,
+//!   // health will be mutable (thus the mutex)
+//!   health: Mutex<f64>,
 //! }
 //! ```
 //!
 //! We can now fill in the `rtd` for the type:
 //!
 //! ```rust
-//! # use std::sync::Arc;
+//! # use std::sync::{Arc, Mutex};
 //! # use scheme_rs::{gc::Trace, records::{rtd, SchemeCompatible, RecordTypeDescriptor},
 //! # exceptions::Exception };
 //! # #[derive(Debug, Trace)]
 //! # struct Enemy {
 //! #   pos_x: f64,
 //! #   pos_y: f64,
-//! #   health: f64,
+//! #   health: Mutex<f64>,
 //! # }
 //! impl SchemeCompatible for Enemy {
 //!     fn rtd() -> Arc<RecordTypeDescriptor> {
@@ -50,7 +50,7 @@
 //!                 Ok(Enemy {
 //!                     pos_x: pos_x.try_to_scheme_type()?,
 //!                     pos_y: pos_y.try_to_scheme_type()?,
-//!                     health: health.try_to_scheme_type()?,
+//!                     health: Mutex::new(health.try_to_scheme_type()?),
 //!                 })
 //!             }
 //!         )
@@ -74,30 +74,32 @@
 //! in the `fields` array passed to `rtd`:
 //!
 //! ```rust
-//! # use std::sync::Arc;
-//! # use scheme_rs::{gc::Trace, value::Value, records::{rtd, SchemeCompatible, RecordTypeDescriptor}};
+//! # use std::sync::{Arc, Mutex};
+//! # use scheme_rs::{gc::Trace, value::Value, records::{rtd, SchemeCompatible, RecordTypeDescriptor}, exceptions::Exception};
 //! # #[derive(Debug, Trace)]
 //! # struct Enemy {
 //! #   pos_x: f64,
 //! #   pos_y: f64,
-//! #   health: f64,
+//! #   health: Mutex<f64>,
 //! # }
 //! impl SchemeCompatible for Enemy {
 //! #    fn rtd() -> Arc<RecordTypeDescriptor> {
 //! #        rtd!(name: "enemy", sealed: true)
 //! #    }
-//!     fn get_field(&self, k: usize) -> Value {
+//!     fn get_field(&self, k: usize) -> Result<Value, Exception> {
 //!         match k {
-//!             0 => Value::from(self.pos_x),
-//!             1 => Value::from(self.pos_y),
-//!             2 => Value::from(self.health),
-//!             _ => unreachable!(),
+//!             0 => Ok(Value::from(self.pos_x)),
+//!             1 => Ok(Value::from(self.pos_y)),
+//!             2 => Ok(Value::from(*self.health.lock().unwrap())),
+//!             _ => Err(Exception::invalid_record_index(k)),
 //!         }
 //!     }
 //!
-//!     fn set_field(&mut self, _k: usize, val: Value) {
-//!         let Some(health) = f64::try_from(val).ok() else { return; };
-//!         self.health = health;
+//!     fn set_field(&self, k: usize, new_health: Value) -> Result<(), Exception> {
+//!         if k != 2 { return Err(Exception::invalid_record_index(k)); }
+//!         let new_health = f64::try_from(new_health)?;
+//!         *self.health.lock().unwrap() = new_health;
+//!         Ok(())
 //!     }
 //! }
 //! ```
@@ -111,7 +113,7 @@
 //!
 //! ```rust
 //! # use std::sync::Arc;
-//! # use scheme_rs::{gc::{Trace, Gc}, value::Value, records::{rtd, SchemeCompatible, RecordTypeDescriptor, into_scheme_compatible}};
+//! # use scheme_rs::{gc::{Trace, Gc}, value::Value, records::{rtd, SchemeCompatible, RecordTypeDescriptor, into_scheme_compatible}, exceptions::Exception};
 //! # #[derive(Debug, Trace)]
 //! # struct Enemy {
 //! #   pos_x: f64,
@@ -135,6 +137,8 @@
 //!             name: "enemy",
 //!             parent: Enemy,
 //!             fields: ["special"],
+//!             // The constructor must take all of the arguments
+//!             // required by all of the parent objects, in order.
 //!             constructor: |pos_x, pos_y, health, special| {
 //!                 Ok(SpecialEnemy {
 //!                     parent: Gc::new(Enemy {
@@ -148,8 +152,8 @@
 //!         )
 //!     }
 //!
-//!     fn get_field(&self, _k: usize) -> Value {
-//!         Value::from(self.special)
+//!     fn get_field(&self, _k: usize) -> Result<Value, Exception> {
+//!         Ok(Value::from(self.special))
 //!     }
 //!
 //!     fn extract_embedded_record(
@@ -161,6 +165,44 @@
 //!             .then(|| into_scheme_compatible(self.parent.clone()))
 //!     }
 //! }
+//! ```
+//!
+//! ## Defining Rust types as Scheme records
+//!
+//! There is still a little bit more work to do in order to have our Rust type
+//! appear fully as a record in scheme. First, we can use the `lib` keyword in
+//! the `rtd!` macro to specify a location to put a procedure that returns our
+//! type's rtd:
+//!
+//! ```rust
+//! # use std::sync::Arc;
+//! # use scheme_rs::{gc::Trace, records::{rtd, SchemeCompatible, RecordTypeDescriptor},
+//! # exceptions::Exception };
+//! # #[derive(Debug, Trace)]
+//! # struct Enemy {}
+//! impl SchemeCompatible for Enemy {
+//!     fn rtd() -> Arc<RecordTypeDescriptor> {
+//!         rtd!(
+//!             lib: "(enemies (1))",
+//!             // ...
+//! #           name: "enemy",
+//! #           sealed: true, opaque: true,
+//!         )
+//!     }
+//! }
+//! ```
+//!
+//! This will register the procedure `enemy-rtd` in the `(enemies (1))` scheme
+//! library. We can expand that library using the `define-rust-type` macro
+//! provided by the `(rust (1))` library to define enemy fully as a scheme
+//! record:
+//!
+//! ```scheme
+//! (library (enemies (1))
+//!  (export enemy make-enemy enemy?)
+//!  (import (rust (1)))
+//!
+//!  (define-rust-type enemy (enemy-rtd) make-enemy enemy?))
 //! ```
 
 use std::{
@@ -518,6 +560,7 @@ pub fn record_constructor(
     // See if there is a rust constructor available
     let rust_constructor = rtds
         .iter()
+        .rev()
         .find(|rtd| rtd.rust_parent_constructor.is_some())
         .map_or_else(|| Value::from(false), |rtd| Value::from(rtd.clone()));
 
@@ -858,13 +901,13 @@ pub trait SchemeCompatible: fmt::Debug + Trace + Any + Send + Sync + 'static {
     }
 
     /// Fetch the kth field of the record.
-    fn get_field(&self, k: usize) -> Value {
-        panic!("{k} is out of bounds")
+    fn get_field(&self, k: usize) -> Result<Value, Exception> {
+        Err(Exception::error(format!("invalid record field: {k}")))
     }
 
     /// Set the kth field of the record.
-    fn set_field(&self, k: usize, _val: Value) {
-        panic!("{k} is out of bounds")
+    fn set_field(&self, k: usize, _val: Value) -> Result<(), Exception> {
+        Err(Exception::error(format!("invalid record field: {k}")))
     }
 }
 
@@ -979,10 +1022,15 @@ fn record_accessor_fn(
         while let Some(embedded) = { t.extract_embedded_record(&rtd) } {
             t = embedded;
         }
-        t.get_field(idx)
+        t.get_field(idx)?
     } else {
         record.0.fields[idx].read().clone()
     };
+    if val.is_undefined() {
+        return Err(Exception::error(format!(
+            "failed to get field!: {rtd:?}, {idx}"
+        )));
+    }
     Ok(Application::new(k, vec![val]))
 }
 
@@ -1002,11 +1050,6 @@ pub fn record_accessor(
     let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
     let idx: usize = idx.clone().try_into()?;
     if idx >= rtd.fields.len() {
-        /*
-        println!("{idx}");
-        println!("{}", rtd.field_index_offset);
-        println!("{rtd:#?}");
-        */
         return Err(Exception::error(format!(
             "{idx} is out of range 0..{}",
             rtd.fields.len()
@@ -1052,7 +1095,7 @@ fn record_mutator_fn(
         while let Some(embedded) = { t.extract_embedded_record(&rtd) } {
             t = embedded;
         }
-        t.set_field(idx, new_val.clone());
+        t.set_field(idx, new_val.clone())?;
     } else {
         *record.0.fields[idx].write() = new_val.clone();
     }

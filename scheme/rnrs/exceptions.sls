@@ -1,6 +1,8 @@
 (library (rnrs exceptions (6))
   (export guard
-          (import (rnrs exceptions builtins (6))))
+          with-exception-handler
+          raise
+          raise-continuable)
   (import (rnrs base))
 
   (define-syntax guard-inner

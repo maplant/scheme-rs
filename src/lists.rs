@@ -1,5 +1,6 @@
 //! Scheme pairs and lists.
 
+use hashbrown::HashSet;
 use indexmap::IndexMap;
 use parking_lot::RwLock;
 
@@ -176,6 +177,27 @@ pub fn list_to_vec_with_null(curr: &Value, out: &mut Vec<Value>) {
         }
         _ => out.push(curr.clone()),
     }
+}
+
+pub fn is_list(curr: &Value, seen: &mut HashSet<Value>) -> bool {
+    if curr.is_null() {
+        return true;
+    }
+
+    if !seen.insert(curr.clone()) {
+        return false;
+    }
+
+    let Some(curr) = curr.cast_to_scheme_type::<Pair>() else {
+        return false;
+    };
+
+    is_list(&curr.cdr(), seen)
+}
+
+#[bridge(name = "list?", lib = "(rnrs base builtins (6))")]
+pub fn list_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(is_list(arg, &mut HashSet::default()))])
 }
 
 #[bridge(name = "list", lib = "(rnrs base builtins (6))")]

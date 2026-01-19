@@ -167,7 +167,7 @@ Rust objects that implement [`SchemeCompatible`](records::SchemeCompatible) can
 be converted using the [`from_rust_type`](value::Value::from_rust_type) function:
 
 ```rust
-# use scheme_rs::{value::Value, records::{rtd, SchemeCompatible, RecordTypeDescriptor}, gc::Trace};
+# use scheme_rs::{value::Value, records::{rtd, SchemeCompatible, RecordTypeDescriptor}, gc::Trace, exceptions::Exception};
 # use std::sync::Arc;
 #[derive(Debug, Trace)]
 struct Vec3 {
@@ -189,10 +189,10 @@ impl SchemeCompatible for Vec3 {
         )
     }
     
-    fn get_field(&self, k: usize) -> Value {
+    fn get_field(&self, k: usize) -> Result<Value, Exception> {
         match k {
-            0 => self.x.into(),
-            1 => self.y.into(),
+            0 => Ok(self.x.into()),
+            1 => Ok(self.y.into()),
             _ => unreachable!(),
         }
     }

@@ -245,7 +245,7 @@ impl RegistryInner {
                         .iter()
                         .map(|(name, kw)| (Identifier::new(name), *kw))
                         .collect(),
-                    state: LibraryState::Invoked,
+                    state: LibraryState::BridgesDefined,
                 }))),
             )
         });
@@ -280,7 +280,7 @@ impl RegistryInner {
                     vars: lib.syms,
                     keywords: HashMap::default(),
                     special_keywords: HashMap::default(),
-                    state: LibraryState::Invoked,
+                    state: LibraryState::BridgesDefined,
                 };
                 (name, TopLevelEnvironment(Gc::new(RwLock::new(lib_inner))))
             })
@@ -333,9 +333,15 @@ impl Registry {
     // clean up on it.
     #[maybe_async]
     fn load_lib(&self, rt: &Runtime, name: &[Symbol]) -> Result<TopLevelEnvironment, Exception> {
-        if let Some(lib) = self.0.read().libs.get(name) {
-            return Ok(lib.clone());
-        }
+        let mut vars = if let Some(lib) = self.0.read().libs.get(name) {
+            if lib.get_state().is_bridges_defined() {
+                Some(lib.0.read().vars.clone())
+            } else {
+                return Ok(lib.clone());
+            }
+        } else {
+            Some(HashMap::default())
+        };
 
         // Check to see that we're not currently loading the library. Circular
         // dependencies are not allowed. We should probably support them at some
@@ -356,7 +362,8 @@ impl Registry {
         let curr_path = std::env::current_dir()
             .expect("If we can't get the current working directory, we can't really do much");
         let lib = if cfg!(feature = "load-libraries-from-fs")
-            && let Some(lib) = maybe_await!(load_lib_from_dir(rt, &curr_path, &path_suffix))?
+            && let Some(lib) =
+                maybe_await!(load_lib_from_dir(rt, &curr_path, &path_suffix, &mut vars))?
         {
             lib
         } else {
@@ -367,14 +374,22 @@ impl Registry {
             );
 
             if cfg!(feature = "load-libraries-from-fs")
-                && let Some(lib) = maybe_await!(load_lib_from_dir(rt, &path, &path_suffix))?
+                && let Some(lib) =
+                    maybe_await!(load_lib_from_dir(rt, &path, &path_suffix, &mut vars))?
             {
                 lib
             } else {
                 // Finally, try the embedded Stdlib
                 let file_name = format!("{path_suffix}.sls");
                 let Some(lib) = Stdlib::get(&file_name) else {
-                    return Err(error::library_not_found());
+                    if let Some(lib) = self.0.read().libs.get(name)
+                        && lib.get_state().is_bridges_defined()
+                    {
+                        lib.0.write().state = LibraryState::Invoked;
+                        return Ok(lib.clone());
+                    } else {
+                        return Err(error::library_not_found());
+                    }
                 };
                 let contents = std::str::from_utf8(&lib.data).unwrap();
                 let form = Syntax::from_str(contents, Some(&file_name))?;
@@ -383,10 +398,11 @@ impl Registry {
                     _ => return Err(Exception::error("library is malformed")),
                 };
                 let spec = LibrarySpec::parse(form)?;
-                maybe_await!(TopLevelEnvironment::from_spec(
+                maybe_await!(TopLevelEnvironment::from_spec_inner(
                     rt,
                     spec,
-                    PathBuf::from(file_name)
+                    PathBuf::from(file_name),
+                    vars.take().unwrap(),
                 ))?
             }
         };
@@ -520,6 +536,7 @@ fn load_lib_from_dir(
     rt: &Runtime,
     path: &Path,
     path_suffix: &str,
+    vars: &mut Option<HashMap<Identifier, Gc<RwLock<Value>>>>,
 ) -> Result<Option<TopLevelEnvironment>, Exception> {
     for ext in ["sls", "ss", "scm"] {
         let path = path.join(format!("{path_suffix}.{ext}"));
@@ -534,8 +551,11 @@ fn load_lib_from_dir(
             _ => return Err(Exception::error("library is malformed")),
         };
         let spec = LibrarySpec::parse(form)?;
-        return Ok(Some(maybe_await!(TopLevelEnvironment::from_spec(
-            rt, spec, path
+        return Ok(Some(maybe_await!(TopLevelEnvironment::from_spec_inner(
+            rt,
+            spec,
+            path,
+            vars.take().unwrap()
         ))?));
     }
 

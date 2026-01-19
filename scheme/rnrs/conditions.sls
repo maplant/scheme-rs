@@ -1,5 +1,6 @@
 (library (rnrs conditions (6))
-  (export (import (only (rnrs conditions builtins) simple-conditions condition condition?))
+  (export simple-conditions
+          condition condition?
           define-condition-type
           condition-predicate
           condition-accessor
@@ -21,7 +22,6 @@
           &undefined make-undefined-violation undefined-violation?)
   (import (rnrs base (6))
           (rnrs syntax-case (6))
-          (rnrs conditions builtins (6))
           (rnrs records procedural (6))
           (rnrs records syntactic (6)))
 

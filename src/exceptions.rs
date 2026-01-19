@@ -197,6 +197,10 @@ impl Exception {
         )))
     }
 
+    pub fn invalid_record_index(k: usize) -> Self {
+        Self::error(format!("invalid record index: {k}"))
+    }
+
     pub fn add_condition(self, condition: impl SchemeCompatible) -> Self {
         let mut conditions = if let Some(compound) = self.0.cast_to_rust_type::<CompoundCondition>()
         {
@@ -307,6 +311,7 @@ impl SimpleCondition {
 impl SchemeCompatible for SimpleCondition {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(
+            lib: "(rnrs conditions (6))",
             name: "&condition",
             constructor: || Ok(SimpleCondition)
         )
@@ -319,19 +324,15 @@ impl fmt::Debug for SimpleCondition {
     }
 }
 
-#[bridge(name = "condition?", lib = "(rnrs conditions builtins (6))")]
+#[bridge(name = "condition?", lib = "(rnrs conditions (6))")]
 pub fn condition_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
     let is_condition = obj.cast_to_rust_type::<SimpleCondition>().is_some()
         || obj.cast_to_rust_type::<CompoundCondition>().is_some();
     Ok(vec![Value::from(is_condition)])
 }
 
-#[bridge(name = "&condition-rtd", lib = "(rnrs conditions builtins (6))")]
-pub fn condition_rtd() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(SimpleCondition::rtd())])
-}
-
 define_condition_type!(
+    lib: "(rnrs conditions (6))",
     rust_name: Message,
     scheme_name: "&message",
     parent: SimpleCondition,
@@ -356,12 +357,8 @@ impl Message {
     }
 }
 
-#[bridge(name = "&message-rtd", lib = "(rnrs conditions builtins (6))")]
-pub fn message_rtd() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(Message::rtd())])
-}
-
 define_condition_type!(
+    lib: "(rnrs conditions (6))",
     rust_name: Warning,
     scheme_name: "&warning",
     parent: SimpleCondition,
@@ -381,12 +378,8 @@ impl Default for Warning {
     }
 }
 
-#[bridge(name = "&warning-rtd", lib = "(rnrs conditions builtins (6))")]
-pub fn warning_rtd() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(Warning::rtd())])
-}
-
 define_condition_type!(
+    lib: "(rnrs conditions (6))",
     rust_name: Serious,
     scheme_name: "&serious",
     parent: SimpleCondition,
@@ -406,12 +399,8 @@ impl Default for Serious {
     }
 }
 
-#[bridge(name = "&serious-rtd", lib = "(rnrs conditions builtins (6))")]
-pub fn serious_rtd() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(Serious::rtd())])
-}
-
 define_condition_type!(
+    lib: "(rnrs conditions (6))",
     rust_name: StackTrace,
     scheme_name: "&trace",
     parent: SimpleCondition,
@@ -445,12 +434,8 @@ impl StackTrace {
     }
 }
 
-#[bridge(name = "&trace-rtd", lib = "(rnrs conditions builtins (6))")]
-pub fn trace_rtd() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(StackTrace::rtd())])
-}
-
 define_condition_type!(
+    lib: "(rnrs conditions (6))",
     rust_name: Error,
     scheme_name: "&error",
     parent: Serious,
@@ -470,12 +455,8 @@ impl Default for Error {
     }
 }
 
-#[bridge(name = "&error-rtd", lib = "(rnrs conditions builtins (6))")]
-pub fn error_rtd() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(Error::rtd())])
-}
-
 define_condition_type!(
+    lib: "(rnrs conditions (6))",
     rust_name: ImportError,
     scheme_name: "&import",
     parent: Error,
@@ -499,12 +480,8 @@ impl ImportError {
     }
 }
 
-#[bridge(name = "&import-rtd", lib = "(rnrs conditions builtins (6))")]
-pub fn import_rtd() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(ImportError::rtd())])
-}
-
 define_condition_type!(
+    lib: "(rnrs conditions (6))",
     rust_name: Violation,
     scheme_name: "&violation",
     parent: Serious,
@@ -524,12 +501,8 @@ impl Default for Violation {
     }
 }
 
-#[bridge(name = "&violation-rtd", lib = "(rnrs conditions builtins (6))")]
-pub fn violation_rtd() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(Violation::rtd())])
-}
-
 define_condition_type!(
+    lib: "(rnrs conditions (6))",
     rust_name: Assertion,
     scheme_name: "&assertion",
     parent: Violation
@@ -549,12 +522,8 @@ impl Default for Assertion {
     }
 }
 
-#[bridge(name = "&assertion-rtd", lib = "(rnrs conditions builtins (6))")]
-pub fn assertion_rtd() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(Assertion::rtd())])
-}
-
 define_condition_type!(
+    lib: "(rnrs conditions (6))",
     rust_name: Irritants,
     scheme_name: "&irritants",
     parent: SimpleCondition,
@@ -578,12 +547,8 @@ impl Irritants {
     }
 }
 
-#[bridge(name = "&irritants-rtd", lib = "(rnrs conditions builtins (6))")]
-pub fn irritants_rtd() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(Irritants::rtd())])
-}
-
 define_condition_type!(
+    lib: "(rnrs conditions (6))",
     rust_name: Who,
     scheme_name: "&who",
     parent: SimpleCondition,
@@ -607,12 +572,8 @@ impl Who {
     }
 }
 
-#[bridge(name = "&who-rtd", lib = "(rnrs conditions builtins (6))")]
-pub fn who_rtd() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(Who::rtd())])
-}
-
 define_condition_type!(
+    lib: "(rnrs conditions (6))",
     rust_name: NonContinuable,
     scheme_name: "&non-continuable",
     parent: Violation,
@@ -625,13 +586,8 @@ impl Default for NonContinuable {
         }
     }
 }
-
-#[bridge(name = "&non-continuable-rtd", lib = "(rnrs conditions builtins (6))")]
-pub fn non_continuable_rtd() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(NonContinuable::rtd())])
-}
-
 define_condition_type!(
+    lib: "(rnrs conditions (6))",
     rust_name: ImplementationRestriction,
     scheme_name: "&implementation-restriction",
     parent: Violation,
@@ -651,15 +607,8 @@ impl Default for ImplementationRestriction {
     }
 }
 
-#[bridge(
-    name = "&implementation-restriction-rtd",
-    lib = "(rnrs conditions builtins (6))"
-)]
-pub fn who_td() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(NonContinuable::rtd())])
-}
-
 define_condition_type!(
+    lib: "(rnrs conditions (6))",
     rust_name: Lexical,
     scheme_name: "&lexical",
     parent: Violation,
@@ -679,12 +628,8 @@ impl Default for Lexical {
     }
 }
 
-#[bridge(name = "&lexical-rtd", lib = "(rnrs conditions builtins (6))")]
-pub fn lexical_rtd() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(Lexical::rtd())])
-}
-
 define_condition_type!(
+    lib: "(rnrs conditions (6))",
     rust_name: SyntaxViolation,
     scheme_name: "&syntax",
     parent: Violation,
@@ -712,12 +657,8 @@ impl SyntaxViolation {
     }
 }
 
-#[bridge(name = "&syntax-rtd", lib = "(rnrs conditions builtins (6))")]
-pub fn syntax_rtd() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(SyntaxViolation::rtd())])
-}
-
 define_condition_type!(
+    lib: "(rnrs conditions (6))",
     rust_name: Undefined,
     scheme_name: "&undefined",
     parent: Violation
@@ -737,17 +678,17 @@ impl Default for Undefined {
     }
 }
 
-#[bridge(name = "&undefined-rtd", lib = "(rnrs conditions builtins (6))")]
-pub fn undefined_rtd() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(Undefined::rtd())])
-}
-
 #[derive(Clone, Trace)]
 pub struct CompoundCondition(pub(crate) Vec<Value>);
 
 impl SchemeCompatible for CompoundCondition {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "compound-condition", sealed: true, opaque: true)
+        rtd!(
+            lib: "(rnrs conditions (6))",
+            name: "compound-condition",
+            sealed: true,
+            opaque: true
+        )
     }
 }
 
@@ -800,7 +741,7 @@ where
     }
 }
 
-#[bridge(name = "condition", lib = "(rnrs conditions builtins)")]
+#[bridge(name = "condition", lib = "(rnrs conditions (6))")]
 pub fn condition(conditions: &[Value]) -> Result<Vec<Value>, Exception> {
     match conditions {
         // TODO: Check if this is a condition
@@ -811,7 +752,7 @@ pub fn condition(conditions: &[Value]) -> Result<Vec<Value>, Exception> {
     }
 }
 
-#[bridge(name = "simple-conditions", lib = "(rnrs conditions builtins)")]
+#[bridge(name = "simple-conditions", lib = "(rnrs conditions (6))")]
 pub fn simple_conditions(condition: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![slice_to_list(
         &Exception(condition.clone()).simple_conditions()?,
@@ -821,7 +762,7 @@ pub fn simple_conditions(condition: &Value) -> Result<Vec<Value>, Exception> {
 #[doc(hidden)]
 #[cps_bridge(
     def = "with-exception-handler handler thunk",
-    lib = "(rnrs exceptions builtins (6))"
+    lib = "(rnrs exceptions (6))"
 )]
 pub fn with_exception_handler(
     runtime: &Runtime,
@@ -855,7 +796,7 @@ pub fn with_exception_handler(
 }
 
 #[doc(hidden)]
-#[cps_bridge(def = "raise obj", lib = "(rnrs exceptions builtins (6))")]
+#[cps_bridge(def = "raise obj", lib = "(rnrs exceptions (6))")]
 pub fn raise_builtin(
     runtime: &Runtime,
     _env: &[Value],
@@ -978,7 +919,7 @@ unsafe extern "C" fn reraise_exception(
 /// Raises an exception to the current exception handler and continues with the
 /// value returned by the handler.
 #[doc(hidden)]
-#[cps_bridge(def = "raise-continuable obj", lib = "(rnrs exceptions builtins (6))")]
+#[cps_bridge(def = "raise-continuable obj", lib = "(rnrs exceptions (6))")]
 pub fn raise_continuable(
     _runtime: &Runtime,
     _env: &[Value],

@@ -59,6 +59,7 @@ impl TopLevelEnvironmentInner {
         kind: TopLevelKind,
         imports: HashMap<Identifier, Import>,
         exports: HashMap<Identifier, Identifier>,
+        vars: HashMap<Identifier, Gc<RwLock<Value>>>,
         body: Syntax,
     ) -> Self {
         let exports = exports
@@ -75,7 +76,7 @@ impl TopLevelEnvironmentInner {
             imports,
             exports,
             state: LibraryState::Unexpanded(body),
-            vars: HashMap::default(),
+            vars,
             keywords: HashMap::default(),
             special_keywords: HashMap::default(),
         }
@@ -134,19 +135,6 @@ impl TopLevelEnvironment {
                 .collect(),
         };
         Self(Gc::new(RwLock::new(inner)))
-        /*
-        let mut inner = TopLevelEnvironmentInner::new(
-            rt,
-            TopLevelKind::Repl,
-            HashMap::default(),
-            HashMap::default(),
-            Syntax::Null {
-                span: crate::syntax::Span::default(),
-            },
-        );
-        inner.state = LibraryState::Invoked;
-        Self(Gc::new(RwLock::new(inner)))
-        */
     }
 
     pub(crate) fn new_program(rt: &Runtime, path: &Path) -> Self {
@@ -170,6 +158,10 @@ impl TopLevelEnvironment {
 
     pub(crate) fn get_kind(&self) -> MappedRwLockReadGuard<'_, TopLevelKind> {
         RwLockReadGuard::map(self.0.read(), |inner| &inner.kind)
+    }
+
+    pub(crate) fn get_state(&self) -> MappedRwLockReadGuard<'_, LibraryState> {
+        RwLockReadGuard::map(self.0.read(), |inner| &inner.state)
     }
 
     /// Evaluate the scheme expression in the provided environment and return
@@ -210,6 +202,16 @@ impl TopLevelEnvironment {
 
     #[maybe_async]
     pub fn from_spec(rt: &Runtime, spec: LibrarySpec, path: PathBuf) -> Result<Self, Exception> {
+        maybe_await!(Self::from_spec_inner(rt, spec, path, HashMap::default()))
+    }
+
+    #[maybe_async]
+    pub(crate) fn from_spec_inner(
+        rt: &Runtime,
+        spec: LibrarySpec,
+        path: PathBuf,
+        vars: HashMap<Identifier, Gc<RwLock<Value>>>,
+    ) -> Result<Self, Exception> {
         let registry = rt.get_registry();
 
         // Import libraries:
@@ -271,6 +273,7 @@ impl TopLevelEnvironment {
             },
             imports,
             exports,
+            vars,
             spec.body,
         )))))
     }
@@ -473,9 +476,16 @@ impl TopLevelEnvironment {
 #[derive(Trace, Debug)]
 pub(crate) enum LibraryState {
     Invalid,
+    BridgesDefined,
     Unexpanded(Syntax),
     Expanded(DefinitionBody),
     Invoked,
+}
+
+impl LibraryState {
+    pub(crate) fn is_bridges_defined(&self) -> bool {
+        matches!(self, LibraryState::BridgesDefined)
+    }
 }
 
 // TODO: We need to aggressively add caching to basically every data structure

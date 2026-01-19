@@ -143,6 +143,10 @@ impl Value {
         self.0 as usize == Tag::Pair as usize
     }
 
+    pub fn is_undefined(&self) -> bool {
+        self.type_of() == ValueType::Undefined
+    }
+
     /// Creates a new Value from a raw u64.
     ///
     /// # Safety

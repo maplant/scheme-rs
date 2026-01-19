@@ -1,11 +1,13 @@
 //! Growable mutable vectors.
 
+#[cfg(target_endian = "little")]
+use crate::symbols::Symbol;
 use crate::{
     exceptions::Exception,
     gc::{Gc, Trace},
     lists::slice_to_list,
     registry::bridge,
-    value::{Value, write_value},
+    value::{Value, ValueType, write_value},
 };
 use indexmap::IndexMap;
 use parking_lot::{
@@ -387,4 +389,21 @@ pub fn vector_fill(
     });
 
     Ok(vec![])
+}
+
+#[bridge(name = "native-endianness", lib = "(rnrs base bytevectors (6))")]
+pub fn native_endianness() -> Result<Vec<Value>, Exception> {
+    #[cfg(target_endian = "little")]
+    {
+        Ok(vec![Value::from(Symbol::intern("little"))])
+    }
+    #[cfg(target_endian = "big")]
+    {
+        Ok(vec![Value::from(Symbol::intern("big"))])
+    }
+}
+
+#[bridge(name = "bytevector?", lib = "(rnrs base bytevectors (6))")]
+pub fn bytevector_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(arg.type_of() == ValueType::ByteVector)])
 }
