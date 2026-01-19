@@ -14,6 +14,7 @@
           &assertion make-assertion-violation assertion-violation?
           &irritants make-irritants-condition irritants-condition? condition-irritants
           &who make-who-condition who-condition? condition-who
+          &non-continuable make-non-continuable-violation non-continuable-violation? 
           &implementation-restriction make-implementation-restriction-violation implementation-restriction-violation? 
           &lexical make-lexical-violation lexical-violation?
           &syntax make-syntax-violation syntax-violation? syntax-violation-form syntax-violation-subform
@@ -103,7 +104,7 @@
   (define condition-irritants (condition-accessor (&irritants-rtd) (record-accessor (&irritants-rtd) 0)))
   (from-builtin &who make-who-condition who-condition? &who-rtd)
   (define condition-who (condition-accessor (&who-rtd) (record-accessor (&who-rtd) 0)))
-  (from-builtin &non-continuable make-non-continuable-violation non-continuable-violation &non-continuable-rtd)
+  (from-builtin &non-continuable make-non-continuable-violation non-continuable-violation? &non-continuable-rtd)
   (from-builtin &implementation-restriction make-implementation-restriction-violation implementation-restriction-violation? &implementation-restriction-rtd)
   (from-builtin &lexical make-lexical-violation lexical-violation? &lexical-rtd)
   (from-builtin &syntax make-syntax-violation syntax-violation? &syntax-rtd)

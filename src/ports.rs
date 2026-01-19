@@ -34,7 +34,7 @@ use crate::{
         parse::{ParseSyntaxError, Parser},
     },
     value::{Expect1, Value, ValueType},
-    vectors::ByteVector,
+    vectors::{ByteVector, Vector},
 };
 
 pub(crate) struct Utf8Buffer {
@@ -3746,12 +3746,13 @@ pub fn call_with_input_file(
         Some(Transcoder::native()),
     );
 
+    let (num_req_args, variadic) = k.cast_to_scheme_type::<Procedure>().unwrap().get_formals();
     let k = dyn_state.new_k(
         runtime.clone(),
         vec![Value::from(port.clone()), k],
         close_port_and_call_k,
-        0,
-        false,
+        num_req_args,
+        variadic,
     );
 
     Ok(Application::new(
@@ -3805,12 +3806,13 @@ pub fn call_with_output_file(
         Some(Transcoder::native()),
     );
 
+    let (num_req_args, variadic) = k.cast_to_scheme_type::<Procedure>().unwrap().get_formals();
     let k = dyn_state.new_k(
         runtime.clone(),
         vec![Value::from(port.clone()), k],
         close_port_and_call_k,
-        0,
-        false,
+        num_req_args,
+        variadic,
     );
 
     Ok(Application::new(
@@ -3822,8 +3824,8 @@ pub fn call_with_output_file(
 unsafe extern "C" fn close_port_and_call_k(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
-    _args: *const Value,
-    _dyn_state: *mut DynamicState,
+    args: *const Value,
+    dyn_state: *mut DynamicState,
 ) -> *mut Application {
     #[cfg(not(feature = "async"))]
     let bridge = FuncPtr::Bridge;
@@ -3839,10 +3841,44 @@ unsafe extern "C" fn close_port_and_call_k(
         // env[1] is the continuation
         let k = env.add(1).as_ref().unwrap().clone();
 
+        // Collect necessary arguments
+        let k_proc = k.cast_to_scheme_type::<Procedure>().unwrap();
+        let args = k_proc.collect_args(args);
+
+        let k = dyn_state.as_mut().unwrap().new_k(
+            runtime.clone(),
+            vec![k, Value::from(args)],
+            call_k_with_env,
+            0,
+            false,
+        );
+
         Box::into_raw(Box::new(Application::new(
             Procedure::new(runtime, Vec::new(), bridge(close_port), 1, false),
-            vec![port, k],
+            vec![port, Value::from(k)],
         )))
+    }
+}
+
+unsafe extern "C" fn call_k_with_env(
+    _runtime: *mut GcInner<RwLock<RuntimeInner>>,
+    env: *const Value,
+    _args: *const Value,
+    _dyn_state: *mut DynamicState,
+) -> *mut Application {
+    unsafe {
+        // env[0] is the continuation:
+        let k = env.as_ref().unwrap().clone();
+        // env[1] are the arguments:
+        let args = env
+            .add(1)
+            .as_ref()
+            .unwrap()
+            .cast_to_scheme_type::<Vector>()
+            .unwrap()
+            .clone_inner_vec();
+
+        Box::into_raw(Box::new(Application::new(k.try_into().unwrap(), args)))
     }
 }
 
@@ -3982,8 +4018,8 @@ pub fn with_output_to_file(
         runtime.clone(),
         vec![Value::from(port.clone()), Value::from(k)],
         close_port_and_call_k,
-        0,
-        false,
+        req_args,
+        var,
     );
 
     Ok(Application::new(thunk, vec![Value::from(k)]))

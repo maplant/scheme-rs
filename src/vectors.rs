@@ -36,6 +36,10 @@ impl Vector {
     pub fn to_list(&self) -> Value {
         slice_to_list(&self.0.vec.read())
     }
+
+    pub fn clone_inner_vec(&self) -> Vec<Value> {
+        self.0.vec.read().clone()
+    }
 }
 
 impl From<Vec<Value>> for Vector {
