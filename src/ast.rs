@@ -1319,7 +1319,7 @@ impl SyntaxQuote {
             [expr] => {
                 let mut expansions = HashMap::new();
                 let template =
-                    Template::compile(expr, env, &mut expansions, &mut HashMap::default());
+                    Template::compile(expr, env, &mut expansions, &mut HashMap::default())?;
                 Ok(SyntaxQuote {
                     template,
                     expansions,

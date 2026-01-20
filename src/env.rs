@@ -1,7 +1,7 @@
 //! Scheme lexical environments.
 
 use std::{
-    collections::{HashMap, HashSet, hash_map::Entry},
+    collections::{HashMap, hash_map::Entry},
     fmt,
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
@@ -847,7 +847,7 @@ impl MacroExpansion {
         fetch_var, fetch_var_inner -> Var
     );
 
-    pub fn fetch_pattern_variable(&self, name: &Identifier) -> Option<Local> {
+    pub fn fetch_pattern_variable(&self, name: &Identifier) -> Option<(Local, usize)> {
         let var = self.up.fetch_pattern_variable(name);
         if var.is_some() {
             return var;
@@ -903,11 +903,15 @@ impl MacroExpansion {
 pub(crate) struct SyntaxCaseExpr {
     up: Environment,
     expansions_store: Local,
-    pattern_vars: HashSet<Identifier>,
+    pattern_vars: HashMap<Identifier, usize>,
 }
 
 impl SyntaxCaseExpr {
-    fn new(env: &Environment, expansions_store: Local, pattern_vars: HashSet<Identifier>) -> Self {
+    fn new(
+        env: &Environment,
+        expansions_store: Local,
+        pattern_vars: HashMap<Identifier, usize>,
+    ) -> Self {
         Self {
             up: env.clone(),
             expansions_store,
@@ -980,9 +984,9 @@ impl SyntaxCaseExpr {
         Box::pin(async move { up.import(import).await })
     }
 
-    fn fetch_pattern_variable(&self, name: &Identifier) -> Option<Local> {
-        if self.pattern_vars.contains(name) {
-            Some(self.expansions_store)
+    fn fetch_pattern_variable(&self, name: &Identifier) -> Option<(Local, usize)> {
+        if let Some(nesting) = self.pattern_vars.get(name) {
+            Some((self.expansions_store, *nesting))
         } else {
             self.up.fetch_pattern_variable(name)
         }
@@ -1093,7 +1097,7 @@ impl Environment {
         maybe_await!(import_result)
     }
 
-    pub fn fetch_pattern_variable(&self, name: &Identifier) -> Option<Local> {
+    pub fn fetch_pattern_variable(&self, name: &Identifier) -> Option<(Local, usize)> {
         match self {
             Self::Top(_) => None,
             Self::LexicalContour(lex) => lex.0.read().up.fetch_pattern_variable(name),
@@ -1136,7 +1140,7 @@ impl Environment {
     pub fn new_syntax_case_expr(
         &self,
         expansions_store: Local,
-        pattern_vars: HashSet<Identifier>,
+        pattern_vars: HashMap<Identifier, usize>,
     ) -> Self {
         let syntax_case_expr = SyntaxCaseExpr::new(self, expansions_store, pattern_vars);
         Self::SyntaxCaseExpr(Gc::new(RwLock::new(syntax_case_expr)))
