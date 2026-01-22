@@ -1,12 +1,12 @@
 use crate::{
     ast::{Expression, Literal, ParseContext},
-    env::{EnvId, Environment, Local},
+    env::{Binding, Environment, Local},
     exceptions::Exception,
     gc::{Gc, Trace},
     proc::Procedure,
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     symbols::Symbol,
-    syntax::{Identifier, Span, Syntax},
+    syntax::{Identifier, Span, Syntax, free_identifier_equal},
     value::Value,
 };
 use scheme_rs_macros::{bridge, maybe_async, maybe_await, runtime_fn};
@@ -51,16 +51,16 @@ pub struct SyntaxRule {
 
 impl SyntaxRule {
     #[maybe_async]
-    pub(crate) fn compile(
+    pub(crate) fn compile<'a>(
         ctxt: &ParseContext,
-        keywords: &HashSet<Symbol>,
-        pattern: &Syntax,
-        fender: Option<&Syntax>,
-        output_expression: &Syntax,
+        keywords: &HashSet<&'a Identifier>,
+        pattern: &'a Syntax,
+        fender: Option<&'a Syntax>,
+        output_expression: &'a Syntax,
         env: &Environment,
     ) -> Result<Self, Exception> {
         let mut variables = HashMap::new();
-        let pattern = Pattern::compile(pattern, keywords, 0, &mut variables);
+        let pattern = Pattern::compile(pattern, keywords, 0, env, &mut variables);
         let binds = Local::gensym();
         let env = env.new_syntax_case_expr(binds, variables);
         let fender = if let Some(fender) = fender {
@@ -79,10 +79,10 @@ impl SyntaxRule {
     }
 }
 
-#[derive(Copy, Clone, Debug, Trace)]
+#[derive(Clone, Debug, Trace)]
 pub struct Keyword {
-    sym: Symbol,
-    binding_env: Option<EnvId>,
+    ident: Identifier,
+    binding: Binding,
 }
 
 #[derive(Clone, Debug, Trace)]
@@ -99,21 +99,22 @@ pub enum Pattern {
 }
 
 impl Pattern {
-    pub fn compile(
-        expr: &Syntax,
-        keywords: &HashSet<Symbol>,
+    pub fn compile<'a>(
+        expr: &'a Syntax,
+        keywords: &HashSet<&'a Identifier>,
         curr_nesting_level: usize,
+        env: &Environment,
         variables: &mut HashMap<Identifier, usize>,
     ) -> Self {
         match expr {
             Syntax::Null { .. } => Self::Null,
             Syntax::Identifier { ident, .. } if ident.sym == "_" => Self::Underscore,
-            Syntax::Identifier {
-                ident, binding_env, ..
-            } if keywords.contains(&ident.sym) => Self::Keyword(Keyword {
-                sym: ident.sym,
-                binding_env: *binding_env,
-            }),
+            Syntax::Identifier { ident, binding, .. } if keywords.contains(&ident) => {
+                Self::Keyword(Keyword {
+                    ident: ident.clone(),
+                    binding: env.fetch_binding(ident),
+                })
+            }
             Syntax::Identifier { ident, .. } => {
                 variables.insert(ident.clone(), curr_nesting_level);
                 Self::Variable(ident.clone())
@@ -122,12 +123,14 @@ impl Pattern {
                 list,
                 keywords,
                 curr_nesting_level,
+                env,
                 variables,
             )),
             Syntax::Vector { vector, .. } => Self::Vector(Self::compile_slice(
                 vector,
                 keywords,
                 curr_nesting_level,
+                env,
                 variables,
             )),
             Syntax::ByteVector { vector, .. } => Self::ByteVector(vector.clone()),
@@ -135,10 +138,11 @@ impl Pattern {
         }
     }
 
-    fn compile_slice(
-        mut expr: &[Syntax],
-        keywords: &HashSet<Symbol>,
+    fn compile_slice<'a>(
+        mut expr: &'a [Syntax],
+        keywords: &HashSet<&'a Identifier>,
         curr_nesting_level: usize,
+        env: &Environment,
         variables: &mut HashMap<Identifier, usize>,
     ) -> Vec<Self> {
         let mut output = Vec::new();
@@ -156,12 +160,19 @@ impl Pattern {
                         pattern,
                         keywords,
                         curr_nesting_level + 1,
+                        env,
                         variables,
                     ))));
                     expr = tail;
                 }
                 [head, tail @ ..] => {
-                    output.push(Self::compile(head, keywords, curr_nesting_level, variables));
+                    output.push(Self::compile(
+                        head,
+                        keywords,
+                        curr_nesting_level,
+                        env,
+                        variables,
+                    ));
                     expr = tail;
                 }
             }
@@ -189,15 +200,21 @@ impl Pattern {
                 }
             }
             Self::Keyword(lhs) => {
-                matches!(
-                    expr,
-                    Syntax::Identifier {
-                        ident: rhs,
-                        binding_env,
-                        ..
-                    } if lhs.sym == rhs.sym
-                        && lhs.binding_env == *binding_env
-                )
+                if let Syntax::Identifier {
+                    ident: rhs_ident,
+                    binding: rhs_binding,
+                    ..
+                } = expr
+                {
+                    free_identifier_equal(
+                        &lhs.ident,
+                        Some(&lhs.binding),
+                        &rhs_ident,
+                        rhs_binding.as_ref(),
+                    )
+                } else {
+                    false
+                }
             }
             Self::List(list) => match_list(list, expr, expansion_level),
             Self::Vector(vec) => match_vec(vec, expr, expansion_level),
@@ -415,10 +432,7 @@ pub enum Template {
     List(Vec<Template>),
     Vector(Vec<Template>),
     ByteVector(Vec<u8>),
-    Identifier {
-        ident: Identifier,
-        binding_env: Option<EnvId>,
-    },
+    Identifier { ident: Identifier, binding: Binding },
     Variable(Identifier),
     Literal(Literal),
 }
@@ -428,7 +442,7 @@ impl Template {
         expr: &'a Syntax,
         env: &Environment,
         expansions: &mut HashMap<Identifier, Local>,
-        resolved_bindings: &mut HashMap<&'a Identifier, Option<EnvId>>,
+        resolved_bindings: &mut HashMap<&'a Identifier, Binding>,
     ) -> Result<Self, Exception> {
         check_ellipsis(expr, env)?;
         Self::compile_inner(expr, env, expansions, resolved_bindings)
@@ -438,7 +452,7 @@ impl Template {
         expr: &'a Syntax,
         env: &Environment,
         expansions: &mut HashMap<Identifier, Local>,
-        resolved_bindings: &mut HashMap<&'a Identifier, Option<EnvId>>,
+        resolved_bindings: &mut HashMap<&'a Identifier, Binding>,
     ) -> Result<Self, Exception> {
         match expr {
             Syntax::Null { .. } => Ok(Self::Null),
@@ -480,9 +494,10 @@ impl Template {
                 } else {
                     Ok(Self::Identifier {
                         ident: ident.clone(),
-                        binding_env: *resolved_bindings
+                        binding: resolved_bindings
                             .entry(ident)
-                            .or_insert_with(|| env.binding_env(ident)),
+                            .or_insert_with(|| env.fetch_binding(ident))
+                            .clone(),
                     })
                 }
             }
@@ -493,7 +508,7 @@ impl Template {
         expr: &'a Syntax,
         env: &Environment,
         expansions: &mut HashMap<Identifier, Local>,
-        resolved_bindings: &mut HashMap<&'a Identifier, Option<EnvId>>,
+        resolved_bindings: &mut HashMap<&'a Identifier, Binding>,
     ) -> Result<Self, Exception> {
         match expr {
             Syntax::Null { .. } => Ok(Self::Null),
@@ -518,9 +533,10 @@ impl Template {
                 } else {
                     Ok(Self::Identifier {
                         ident: ident.clone(),
-                        binding_env: *resolved_bindings
+                        binding: resolved_bindings
                             .entry(ident)
-                            .or_insert_with(|| env.binding_env(ident)),
+                            .or_insert_with(|| env.fetch_binding(ident))
+                            .clone(),
                     })
                 }
             }
@@ -531,7 +547,7 @@ impl Template {
         mut expr: &'a [Syntax],
         env: &Environment,
         expansions: &mut HashMap<Identifier, Local>,
-        resolved_bindings: &mut HashMap<&'a Identifier, Option<EnvId>>,
+        resolved_bindings: &mut HashMap<&'a Identifier, Binding>,
     ) -> Result<Vec<Self>, Exception> {
         let mut output = Vec::new();
         loop {
@@ -577,7 +593,7 @@ impl Template {
         exprs: &'a [Syntax],
         env: &Environment,
         expansions: &mut HashMap<Identifier, Local>,
-        resolved_bindings: &mut HashMap<&'a Identifier, Option<EnvId>>,
+        resolved_bindings: &mut HashMap<&'a Identifier, Binding>,
     ) -> Result<Vec<Self>, Exception> {
         exprs
             .iter()
@@ -593,10 +609,10 @@ impl Template {
                 Syntax::new_vector(expand_vec(vec, binds, curr_span.clone())?, curr_span)
             }
             Self::ByteVector(bvec) => Syntax::new_byte_vector(bvec.clone(), curr_span),
-            Self::Identifier { ident, binding_env } => Syntax::Identifier {
+            Self::Identifier { ident, binding } => Syntax::Identifier {
                 ident: ident.clone(),
                 span: curr_span,
-                binding_env: *binding_env,
+                binding: Some(binding.clone()),
             },
             Self::Variable(name) => binds.get_bind(name)?,
             Self::Literal(literal) => Syntax::new_literal(literal.clone(), curr_span),

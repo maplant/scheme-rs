@@ -430,7 +430,7 @@ unsafe extern "C" fn get_frame(op: *const (), span: *const ()) -> *const () {
                 op.get_debug_info()
                     .map_or_else(|| Symbol::intern("<lambda>"), |dbg| dbg.name),
             ),
-            binding_env: None,
+            binding: None,
             span: span.as_ref().clone(),
         };
         Value::into_raw(Value::from(frame))

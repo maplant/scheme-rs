@@ -290,7 +290,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
                     types::I64,
                     SchemeValue::as_raw(&SchemeValue::from(Cell(global.val.clone()))) as i64,
                 );
-                (cell, global.name.sym.0)
+                (cell, global.name.0)
             }
             CpsValue::Const(val) => {
                 let mut runtime_write = self.runtime.0.write();

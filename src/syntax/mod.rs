@@ -2,9 +2,9 @@
 
 use crate::{
     ast::Literal,
-    env::{EnvId, Environment, Keyword},
+    env::{Binding, Environment, Keyword},
     exceptions::{Exception, SyntaxViolation},
-    gc::Trace,
+    gc::{Gc, Trace},
     lists::list_to_vec_with_null,
     ports::Port,
     records::{RecordTypeDescriptor, SchemeCompatible, rtd},
@@ -15,8 +15,10 @@ use crate::{
 };
 use scheme_rs_macros::{maybe_async, maybe_await};
 use std::{
+    borrow::Cow,
     collections::{BTreeSet, HashMap},
     fmt,
+    hash::{Hash, Hasher},
     io::Cursor,
     sync::{
         Arc,
@@ -100,7 +102,7 @@ pub enum Syntax {
     },
     Identifier {
         ident: Identifier,
-        binding_env: Option<EnvId>,
+        binding: Option<Binding>,
         span: Span,
     },
 }
@@ -199,7 +201,7 @@ impl Syntax {
                 };
                 Ok(Syntax::Identifier {
                     ident,
-                    binding_env: None,
+                    binding: None,
                     span: Span::default(),
                 })
             }
@@ -221,7 +223,7 @@ impl Syntax {
     fn resolve_bindings<'a>(
         &'a mut self,
         env: &Environment,
-        resolved_bindings: &mut HashMap<&'a Identifier, Option<EnvId>>,
+        resolved_bindings: &mut HashMap<&'a Identifier, Binding>,
     ) {
         match self {
             Self::List { list, .. } => {
@@ -236,12 +238,15 @@ impl Syntax {
             }
             &mut Self::Identifier {
                 ref ident,
-                ref mut binding_env,
+                ref mut binding,
                 ..
             } => {
-                *binding_env = *resolved_bindings
-                    .entry(ident)
-                    .or_insert_with(|| env.binding_env(ident))
+                *binding = Some(
+                    resolved_bindings
+                        .entry(ident)
+                        .or_insert_with(|| env.fetch_binding(ident))
+                        .clone(),
+                );
             }
             _ => (),
         }
@@ -503,10 +508,10 @@ impl Default for Mark {
     }
 }
 
-#[derive(Clone, Hash, PartialEq, Eq, Trace)]
+#[derive(Clone, Trace, PartialEq, Eq, Hash)]
 pub struct Identifier {
-    pub sym: Symbol,
-    pub marks: BTreeSet<Mark>,
+    pub(crate) sym: Symbol,
+    pub(crate) marks: BTreeSet<Mark>,
 }
 
 impl fmt::Debug for Identifier {
@@ -555,6 +560,25 @@ impl Identifier {
 impl PartialEq<str> for Identifier {
     fn eq(&self, rhs: &str) -> bool {
         self.sym.to_str().as_ref() == rhs
+    }
+}
+
+pub fn free_identifier_equal(
+    lhs: &Identifier,
+    lhs_binding: Option<&Binding>,
+    rhs: &Identifier,
+    rhs_binding: Option<&Binding>,
+) -> bool {
+    let lhs_binding = lhs_binding.map(Binding::resolve);
+    let rhs_binding = rhs_binding.map(Binding::resolve);
+
+    match (lhs_binding.as_deref(), rhs_binding.as_deref()) {
+        (Some(Binding::Local(lhs)), Some(Binding::Local(rhs))) => lhs == rhs,
+        (Some(Binding::Global(lhs)), Some(Binding::Global(rhs))) => Gc::ptr_eq(&lhs, &rhs),
+        (Some(Binding::Keyword(lhs)), Some(Binding::Keyword(rhs))) => lhs == rhs,
+        (Some(Binding::SpecialKeyword(lhs)), Some(Binding::SpecialKeyword(rhs))) => lhs == rhs,
+        (Some(Binding::Top(_, _)) | None, Some(Binding::Top(_, _)) | None) => lhs.sym == rhs.sym,
+        _ => false,
     }
 }
 
@@ -638,7 +662,7 @@ impl Syntax {
         Self::Identifier {
             ident: Identifier::new(name),
             span: span.into(),
-            binding_env: None,
+            binding: None,
         }
     }
 
@@ -695,7 +719,7 @@ pub fn free_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, E
     let id2: Arc<Syntax> = id2.clone().try_into()?;
     let Syntax::Identifier {
         ident: id1,
-        binding_env: bound_id1,
+        binding: id1_binding,
         ..
     } = id1.as_ref()
     else {
@@ -703,15 +727,18 @@ pub fn free_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, E
     };
     let Syntax::Identifier {
         ident: id2,
-        binding_env: bound_id2,
+        binding: id2_binding,
         ..
     } = id2.as_ref()
     else {
         return Err(Exception::type_error("identifier", "syntax"));
     };
-    Ok(vec![Value::from(
-        bound_id1 == bound_id2 && id1.sym == id2.sym,
-    )])
+    Ok(vec![Value::from(free_identifier_equal(
+        id1,
+        id1_binding.as_ref(),
+        id2,
+        id2_binding.as_ref(),
+    ))])
 }
 
 #[bridge(name = "generate-temporaries", lib = "(rnrs syntax-case builtins (6))")]
@@ -734,7 +761,7 @@ pub fn generate_temporaries(list: &Value) -> Result<Vec<Value>, Exception> {
             let ident = Identifier::from_symbol(Symbol::gensym());
             Syntax::Identifier {
                 ident,
-                binding_env: None,
+                binding: None,
                 span: Span::default(),
             }
         })

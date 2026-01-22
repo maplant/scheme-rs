@@ -244,7 +244,7 @@ fn compile_apply(
             {
                 Some(Syntax::Identifier {
                     ident: Identifier::from_symbol(sym),
-                    binding_env: None,
+                    binding: None,
                     span: span.clone(),
                 })
             } else {

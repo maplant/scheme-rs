@@ -489,3 +489,18 @@
 
 ;; Test quasiquoting
 (assert-equal? `(1 2 3 ,(+ 1 2 3)) (list 1 2 3 6))
+
+;; Identifier predicates
+(let ([fred 17])
+  (define-syntax a
+    (lambda (x)
+      (syntax-case x ()
+        [(_ id) #'(b id fred)])))
+  (define-syntax b
+    (lambda (x)
+      (syntax-case x ()
+        [(_ id1 id2)
+         #`(list
+            #,(free-identifier=? #'id1 #'id2)
+            #,(bound-identifier=? #'id1 #'id2))])))
+  (assert-equal? (a fred) '(#t #f)))

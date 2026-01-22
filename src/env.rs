@@ -1,6 +1,7 @@
 //! Scheme lexical environments.
 
 use std::{
+    borrow::Cow,
     collections::{HashMap, hash_map::Entry},
     fmt,
     hash::{Hash, Hasher},
@@ -345,22 +346,18 @@ impl TopLevelEnvironment {
         matches!(self.0.read().kind, TopLevelKind::Repl)
     }
 
-    pub(crate) fn binding_env(&self, name: &Identifier) -> Option<EnvId> {
+    pub(crate) fn fetch_binding(&self, name: &Identifier) -> Binding {
         let this = self.0.read();
-        if this.vars.contains_key(name) || this.keywords.contains_key(name) {
-            return Some(EnvId::new(&self.0));
-        }
-        if let Some(Import { origin, rename }) = this.imports.get(name) {
-            origin.binding_env(rename)
-        /*
-        } else if self.is_repl() {
-            // If this is a repl, there's no other binding this could possibly
-            // refer to, and it may be bound in the future, so we say this is
-            // the current binding environment.
-            Some(EnvId::new(&self.0))
-        */
+        if let Some(global) = this.vars.get(name) {
+            Binding::Global(global.clone())
+        } else if let Some(keyword) = this.keywords.get(name) {
+            Binding::Keyword(keyword.clone())
+        } else if let Some(special_keyword) = this.special_keywords.get(name) {
+            Binding::SpecialKeyword(*special_keyword)
+        // } else if let Some(Import { origin, rename }) = this.imports.get(name) {
+        //     origin.fetch_binding(rename)
         } else {
-            None
+            Binding::Top(self.clone(), name.clone())
         }
     }
 
@@ -368,9 +365,9 @@ impl TopLevelEnvironment {
         let mut this = self.0.write();
         let mutable = !this.exports.contains_key(&name);
         match this.vars.entry(name.clone()) {
-            Entry::Occupied(occup) => Global::new(name, occup.get().clone(), mutable),
+            Entry::Occupied(occup) => Global::new(name.sym, occup.get().clone(), mutable),
             Entry::Vacant(vacant) => Global::new(
-                name,
+                name.sym,
                 vacant.insert(Gc::new(RwLock::new(value))).clone(),
                 mutable,
             ),
@@ -404,7 +401,7 @@ impl TopLevelEnvironment {
                 let var = var.clone();
                 // Fetching this every time is kind of slow.
                 let mutable = !this.exports.contains_key(name);
-                return Ok(Some(Global::new(name.clone(), var, mutable)));
+                return Ok(Some(Global::new(name.sym, var, mutable)));
             }
 
             // Check our imports
@@ -605,7 +602,11 @@ impl LexicalContour {
             if let Some(trans) = this.keywords.get(name) {
                 let trans = trans.clone();
                 drop(this);
-                return Ok(Some(Keyword::new(Environment::LexicalContour(self), trans)));
+                return Ok(Some(Keyword::new(
+                    name.clone(),
+                    Environment::LexicalContour(self),
+                    trans,
+                )));
             }
             this.up.clone()
         };
@@ -637,12 +638,18 @@ impl LexicalContour {
         Ok(())
     }
 
-    fn binding_env(&self, name: &Identifier) -> Option<EnvId> {
+    fn fetch_binding(&self, name: &Identifier) -> Binding {
         let this = self.0.read();
-        if this.vars.contains_key(name) || this.keywords.contains_key(name) {
-            Some(EnvId::new(&self.0))
+        if let Some(var) = this.vars.get(name) {
+            Binding::Local(*var)
+        } else if let Some(transformer) = this.keywords.get(name) {
+            Binding::Keyword(Keyword::new(
+                name.clone(),
+                Environment::LexicalContour(self.clone()),
+                transformer.clone(),
+            ))
         } else {
-            this.up.binding_env(name)
+            this.up.fetch_binding(name)
         }
     }
 }
@@ -749,24 +756,24 @@ impl LetSyntaxContour {
                 } else {
                     this.up.clone()
                 };
-                return Ok(Some(Keyword::new(env, trans)));
+                return Ok(Some(Keyword::new(name.clone(), env, trans)));
             }
             this.up.clone()
         };
         maybe_await!(up.fetch_keyword(name))
     }
 
-    fn binding_env(&self, name: &Identifier) -> Option<EnvId> {
+    fn fetch_binding(&self, name: &Identifier) -> Binding {
         let this = self.0.read();
-        if this.keywords.contains_key(name) {
+        if let Some(transformer) = this.keywords.get(name) {
             let env = if this.recursive {
-                EnvId::new(&self.0)
+                Environment::LetSyntaxContour(self.clone())
             } else {
-                this.up.to_id()
+                this.up.clone()
             };
-            Some(env)
+            Binding::Keyword(Keyword::new(name.clone(), env, transformer.clone()))
         } else {
-            this.up.binding_env(name)
+            this.up.fetch_binding(name)
         }
     }
 }
@@ -885,17 +892,15 @@ impl MacroExpansion {
         Box::pin(async move { up.import(import_set).await })
     }
 
-    pub(crate) fn binding_env(&self, name: &Identifier) -> Option<EnvId> {
-        self.up.binding_env(name).or_else(|| {
-            name.marks
-                .contains(&self.mark)
-                .then(|| {
-                    let mut unmarked = name.clone();
-                    unmarked.mark(self.mark);
-                    self.source.binding_env(&unmarked)
-                })
-                .flatten()
-        })
+    pub(crate) fn fetch_binding(&self, name: &Identifier) -> Binding {
+        match self.up.fetch_binding(name) {
+            Binding::Top(_, _) if name.marks.contains(&self.mark) => {
+                let mut unmarked = name.clone();
+                unmarked.mark(self.mark);
+                self.source.fetch_binding(&unmarked)
+            }
+            binding => binding,
+        }
     }
 }
 
@@ -992,8 +997,8 @@ impl SyntaxCaseExpr {
         }
     }
 
-    fn binding_env(&self, name: &Identifier) -> Option<EnvId> {
-        self.up.binding_env(name)
+    fn fetch_binding(&self, name: &Identifier) -> Binding {
+        self.up.fetch_binding(name)
     }
 }
 
@@ -1029,7 +1034,7 @@ impl Environment {
 
     pub fn def_keyword(&self, name: Identifier, val: Procedure) {
         match self {
-            Self::Top(top) => top.def_keyword(name, Keyword::new(self.clone(), val)),
+            Self::Top(top) => top.def_keyword(name.clone(), Keyword::new(name, self.clone(), val)),
             Self::LexicalContour(lex) => lex.0.write().def_keyword(name, val),
             Self::LetSyntaxContour(ls) => ls.0.write().def_keyword(name, val),
             Self::MacroExpansion(me) => me.read().def_keyword(name, val),
@@ -1107,16 +1112,16 @@ impl Environment {
         }
     }
 
-    /// Return the binding environment of the variable or keyword, if it exists
-    pub(crate) fn binding_env(&self, name: &Identifier) -> Option<EnvId> {
+    /// Return the binding of the identifier
+    pub(crate) fn fetch_binding(&self, name: &Identifier) -> Binding {
         match self {
-            Self::Top(top) => top.binding_env(name),
-            Self::LexicalContour(lex) => lex.binding_env(name),
-            Self::LetSyntaxContour(ls) => ls.binding_env(name),
-            Self::MacroExpansion(me) => me.read().binding_env(name),
+            Self::Top(top) => top.fetch_binding(name),
+            Self::LexicalContour(lex) => lex.fetch_binding(name),
+            Self::LetSyntaxContour(ls) => ls.fetch_binding(name),
+            Self::MacroExpansion(me) => me.read().fetch_binding(name),
             // I don't think this is technically correct; it should probably
             // return the syntax case expr env if the binding variable is hit
-            Self::SyntaxCaseExpr(sc) => sc.read().binding_env(name),
+            Self::SyntaxCaseExpr(sc) => sc.read().fetch_binding(name),
         }
     }
 
@@ -1144,16 +1149,6 @@ impl Environment {
     ) -> Self {
         let syntax_case_expr = SyntaxCaseExpr::new(self, expansions_store, pattern_vars);
         Self::SyntaxCaseExpr(Gc::new(RwLock::new(syntax_case_expr)))
-    }
-
-    pub(crate) fn to_id(&self) -> EnvId {
-        match self {
-            Self::Top(top) => EnvId::new(&top.0),
-            Self::LexicalContour(lex) => EnvId::new(&lex.0),
-            Self::LetSyntaxContour(ls) => EnvId::new(&ls.0),
-            Self::MacroExpansion(me) => EnvId::new(me),
-            Self::SyntaxCaseExpr(sc) => EnvId::new(sc),
-        }
     }
 }
 
@@ -1195,22 +1190,6 @@ impl PartialEq for Environment {
         }
     }
 }
-
-/// A unique identifier for a binding environment.
-#[repr(transparent)]
-#[derive(Copy, Clone, Debug, Trace, PartialEq)]
-pub struct EnvId(#[trace(skip)] NonNull<()>);
-
-impl EnvId {
-    pub(crate) fn new<T>(value: &Gc<T>) -> Self {
-        // Safety: we're converting one non-null to another, so we don't need to
-        // check its validity.
-        Self(unsafe { NonNull::new_unchecked(value.ptr.as_ptr() as *mut ()) })
-    }
-}
-
-unsafe impl Send for EnvId {}
-unsafe impl Sync for EnvId {}
 
 /// A local variable.
 #[derive(Copy, Clone, Trace)]
@@ -1286,13 +1265,13 @@ impl fmt::Debug for Local {
 /// environment.
 #[derive(Clone, Trace)]
 pub struct Global {
-    pub(crate) name: Identifier,
+    pub(crate) name: Symbol,
     pub(crate) val: Gc<RwLock<Value>>,
     pub(crate) mutable: bool,
 }
 
 impl Global {
-    pub(crate) fn new(name: Identifier, val: Gc<RwLock<Value>>, mutable: bool) -> Self {
+    pub(crate) fn new(name: Symbol, val: Gc<RwLock<Value>>, mutable: bool) -> Self {
         Global { name, val, mutable }
     }
 
@@ -1319,13 +1298,14 @@ impl Global {
 
 impl fmt::Debug for Global {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "${}", self.name.sym)
+        write!(f, "${}", self.name)
     }
 }
 
 impl PartialEq for Global {
     fn eq(&self, rhs: &Self) -> bool {
-        self.name == rhs.name && Gc::ptr_eq(&self.val, &rhs.val)
+        Gc::ptr_eq(&self.val, &rhs.val)
+        /* self.name == rhs.name && */
     }
 }
 
@@ -1350,7 +1330,7 @@ pub(crate) enum Var {
 impl Var {
     pub fn symbol(&self) -> Option<Symbol> {
         match self {
-            Var::Global(global) => Some(global.name.sym),
+            Var::Global(global) => Some(global.name),
             Var::Local(local) => local.name,
         }
     }
@@ -1368,15 +1348,113 @@ impl fmt::Debug for Var {
 /// A keyword, i.e. a transformer defined via `define-syntax`.
 #[derive(Clone, Trace)]
 pub struct Keyword {
+    pub name: Identifier,
     pub(crate) source_env: Environment,
     pub transformer: Procedure,
 }
 
 impl Keyword {
-    pub(crate) fn new(source_env: Environment, transformer: Procedure) -> Self {
+    pub(crate) fn new(name: Identifier, source_env: Environment, transformer: Procedure) -> Self {
         Self {
+            name,
             source_env,
             transformer,
         }
     }
 }
+
+impl PartialEq for Keyword {
+    fn eq(&self, rhs: &Self) -> bool {
+        self.name == rhs.name && self.source_env == rhs.source_env
+    }
+}
+
+/*
+pub(crate) enum TopLevelBinding {
+    Global(Gc<RwLock<Value>>),
+    Keyword(Keyword),
+    SpecialKeyword(SpecialKeyword),
+}
+*/
+
+#[derive(Clone, Trace)]
+pub enum Binding {
+    Local(Local),
+    Global(Gc<RwLock<Value>>),
+    Keyword(Keyword),
+    SpecialKeyword(SpecialKeyword),
+    Top(TopLevelEnvironment, Identifier),
+}
+
+impl fmt::Debug for Binding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Local(local) => write!(f, "%local<{local:?}>"),
+            Self::Global(global) => write!(f, "%global<{:p}>", global.ptr),
+            Self::Keyword(keyword) => write!(f, "%keyword<{}>", keyword.name.sym),
+            Self::SpecialKeyword(special_keyword) => write!(f, "%keyword<{special_keyword:?}>"),
+            Self::Top(_, name) => write!(f, "%top<{name:?}>"),
+        }
+    }
+}
+
+impl Binding {
+    pub fn resolve<'a>(&'a self) -> Cow<'a, Binding> {
+        match self {
+            Self::Top(top, name) => match top.fetch_binding(name) {
+                Binding::Top(mut top, mut name) => {
+                    while let Some(Import { origin, rename }) =
+                        { top.0.read().imports.get(&name).cloned() }
+                    {
+                        let binding = origin.fetch_binding(&rename);
+                        // let resolved = binding.resolve(&rename);
+                        match binding {
+                            Binding::Top(new_top, new_name) => {
+                                top = new_top;
+                                name = new_name;
+                            }
+                            _ => return Cow::Owned(binding),
+                        }
+                    }
+                    Cow::Owned(Binding::Top(top, name))
+                }
+                resolved => Cow::Owned(resolved),
+            },
+            _ => Cow::Borrowed(self),
+        }
+    }
+}
+
+/*
+impl UnresolvedBinding {
+    pub fn resolve(&self, ident: &Identifier) -> Option<ResolvedBinding> {
+        match self {
+            Self::Local(local) => Some(ResolvedBinding::Local(local)),
+            Self::Global(global) => Some(ResolvedBinding::Global(global.clone())),
+            Self::Keyword(kw) => Some(ResolvedBinding::Keyword(kw.clone())),
+            Self::SpecialKeyword(kw) => Some(ResolvedBinding::SpecialKeyword(*kw)),
+            Self::Top(top) => {
+                let this = self.0.read();
+                if let Some(global) = this.vars.get(name) {
+                    UnresolvedBinding::Global(global.clone())
+                } else if let Some(keyword) = this.keywords.get(name) {
+                    UnresolvedBinding::Keyword(keyword.clone())
+                } else if let Some(special_keyword) = this.special_keywords.get(name) {
+                    UnresolvedBinding::SpecialKeyword(*special_keyword)
+                } else if let Some(Import { origin, rename }) = this.imports.get(name) {
+                    origin.fetch_binding(rename)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+}
+
+pub enum ResolvedBinding {
+    Local(Local),
+    Global(Gc<RwLock<Value>>),
+    Keyword(Keyword),
+    SpecialKeyword(SpecialKeyword),
+}
+*/

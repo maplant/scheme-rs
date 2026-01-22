@@ -115,7 +115,7 @@ mod error {
 
 /// Special keywords are keywords that the compiler needs to know about in order
 /// to create a proper AST as specified by R6RS base.
-#[derive(Copy, Clone, Trace, Debug)]
+#[derive(Copy, Clone, Trace, Debug, PartialEq, Eq)]
 pub enum SpecialKeyword {
     Undefined,
     Begin,
@@ -2140,7 +2140,7 @@ impl SyntaxCase {
                 // TODO: ensure keywords_list is proper
                 for keyword in &list[..list.len() - 1] {
                     if let Syntax::Identifier { ident, .. } = keyword {
-                        keywords.insert(ident.sym);
+                        keywords.insert(ident);
                     } else {
                         return Err(error::expected_identifier(form, Some(keyword)));
                     }
