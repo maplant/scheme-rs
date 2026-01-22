@@ -25,6 +25,8 @@
   ;; Derived from the macro definition found in Ikarus by Abdulaziz Ghuloum.
   ;; The original macro is largely incomplete, so this extends and modifies that
   ;; heavily.
+  ;;
+  ;; TODO: Lots of error checking
 
   (define-syntax define-record-type
     (lambda (x)
@@ -180,14 +182,21 @@
           [_        #'#f]))
 
       (define (do-define-record ctxt name-spec clause*)
-        (let ([name (get-record-name name-spec)])
+        (let ([name (get-record-name name-spec)]
+              [field-spec (get-clause #'fields clause*)])
           (with-syntax ([record-name (get-record-name name-spec)]
                         [record-constructor-name (get-constructor-name name-spec ctxt)] 
                         [record-predicate-name (get-predicate-name name-spec ctxt)]
                         [record-make-rtd (rtd-code ctxt name clause*)]
                         [record-make-rcd (rcd-code clause*)]
-                        [record-accessor-defns (field-specs-to-accessors name ctxt (cdr (get-clause #'fields clause*)))]
-                        [record-mutator-defns (field-specs-to-mutators name ctxt (cdr (get-clause #'fields clause*)))])
+                        [record-accessor-defns
+                         (if (not field-spec)
+                             #'(begin)
+                             (field-specs-to-accessors name ctxt (cdr field-spec)))]
+                        [record-mutator-defns
+                         (if (not field-spec)
+                             #'(begin)
+                             (field-specs-to-mutators name ctxt (cdr field-spec)))])
             #'(begin
                 (define record-rtd record-make-rtd)
                 (define record-rcd record-make-rcd)
