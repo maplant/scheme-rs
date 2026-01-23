@@ -3,7 +3,7 @@
 use crate::{
     ast::Literal,
     env::{Binding, Environment, Keyword},
-    exceptions::{Exception, SyntaxViolation},
+    exceptions::{CompoundCondition, Exception, Message, SyntaxViolation, Who},
     gc::{Gc, Trace},
     lists::list_to_vec_with_null,
     ports::Port,
@@ -15,10 +15,9 @@ use crate::{
 };
 use scheme_rs_macros::{maybe_async, maybe_await};
 use std::{
-    borrow::Cow,
     collections::{BTreeSet, HashMap},
     fmt,
-    hash::{Hash, Hasher},
+    hash::Hash,
     io::Cursor,
     sync::{
         Arc,
@@ -266,15 +265,18 @@ impl Syntax {
         let transformer_output = maybe_await!(mac.transformer.call(&[Value::from(input)]))?;
 
         // Output must be syntax:
-        let output: Arc<Syntax> = transformer_output
-            .first()
-            .ok_or_else(|| Exception::error("syntax transformer produced no output"))?
-            .clone()
-            .try_into()?;
+        let output = Syntax::syntax_from_datum(
+            &BTreeSet::from([new_mark]),
+            transformer_output
+                .first()
+                .ok_or_else(|| Exception::error("syntax transformer produced no output"))?
+                .clone(),
+        )?;
+        // .try_into()?;
 
-        // Apply the new mark to the output
-        let mut output = Arc::try_unwrap(output).unwrap_or_else(|arc| arc.as_ref().clone());
-        output.mark(new_mark);
+        //        // Apply the new mark to the output
+        //        let mut output = Arc::try_unwrap(output).unwrap_or_else(|arc| arc.as_ref().clone());
+        //        output.mark(new_mark);
 
         let new_env = env.new_macro_expansion(new_mark, mac.source_env.clone());
 
@@ -673,8 +675,11 @@ impl Syntax {
 
 #[bridge(name = "syntax->datum", lib = "(rnrs syntax-case builtins (6))")]
 pub fn syntax_to_datum(syn: &Value) -> Result<Vec<Value>, Exception> {
-    let syn: Arc<Syntax> = syn.clone().try_into()?;
-    Ok(vec![Value::datum_from_syntax(syn.as_ref())])
+    // TODO: This can certainly be done more efficiently
+    Ok(vec![Value::datum_from_syntax(&Syntax::syntax_from_datum(
+        &BTreeSet::default(),
+        syn.clone(),
+    )?)])
 }
 
 #[bridge(name = "datum->syntax", lib = "(rnrs syntax-case builtins (6))")]
@@ -773,4 +778,30 @@ pub fn generate_temporaries(list: &Value) -> Result<Vec<Value>, Exception> {
         list: idents,
         span: Span::default(),
     })])
+}
+
+#[bridge(name = "syntax-violation", lib = "(rnrs base builtins (6))")]
+pub fn syntax_violation(
+    who: &Value,
+    message: &Value,
+    form: &Value,
+    subform: &[Value],
+) -> Result<Vec<Value>, Exception> {
+    let subform = match subform {
+        [] => None,
+        [subform] => Some(subform.clone()),
+        _ => return Err(Exception::wrong_num_of_var_args(3..4, 3 + subform.len())),
+    };
+    let mut conditions = Vec::new();
+    if who.is_true() {
+        conditions.push(Value::from_rust_type(Who::new(who.clone())));
+    }
+    conditions.push(Value::from_rust_type(Message::new(message)));
+    conditions.push(Value::from_rust_type(SyntaxViolation::new_from_values(
+        form.clone(),
+        subform,
+    )));
+    Err(Exception(Value::from(Exception::from(CompoundCondition(
+        conditions,
+    )))))
 }

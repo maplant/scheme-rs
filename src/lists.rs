@@ -217,20 +217,12 @@ pub fn cons(car: &Value, cdr: &Value) -> Result<Vec<Value>, Exception> {
 
 #[bridge(name = "car", lib = "(rnrs base builtins (6))")]
 pub fn car(val: &Value) -> Result<Vec<Value>, Exception> {
-    match &*val.unpacked_ref() {
-        UnpackedValue::Pair(pair) => Ok(vec![pair.car()]),
-        UnpackedValue::Syntax(syn) => Ok(vec![Value::from(syn.car()?)]),
-        _ => Err(Exception::type_error("list", val.type_name())),
-    }
+    Ok(vec![val.try_to_scheme_type::<Pair>()?.car()])
 }
 
 #[bridge(name = "cdr", lib = "(rnrs base builtins (6))")]
 pub fn cdr(val: &Value) -> Result<Vec<Value>, Exception> {
-    match &*val.unpacked_ref() {
-        UnpackedValue::Pair(pair) => Ok(vec![pair.cdr()]),
-        UnpackedValue::Syntax(syn) => Ok(vec![Value::from(syn.cdr()?)]),
-        _ => Err(Exception::type_error("list", val.type_name())),
-    }
+    Ok(vec![val.try_to_scheme_type::<Pair>()?.cdr()])
 }
 
 #[bridge(name = "set-car!", lib = "(rnrs mutable-pairs (6))")]
@@ -314,7 +306,7 @@ pub fn map(
 
         let (car, cdr) = match &*input.unpacked_ref() {
             UnpackedValue::Pair(pair) => pair.clone().into(),
-            UnpackedValue::Syntax(syn) => (Value::from(syn.car()?), Value::from(syn.cdr()?)),
+            // UnpackedValue::Syntax(syn) => (Value::from(syn.car()?), Value::from(syn.cdr()?)),
             _ => return Err(Exception::type_error("list", input.type_name())),
         };
 
@@ -376,10 +368,12 @@ unsafe extern "C" fn map_k(
 
             let (car, cdr) = match &*input.unpacked_ref() {
                 UnpackedValue::Pair(pair) => pair.clone().into(),
+                /*
                 UnpackedValue::Syntax(syn) => (
                     Value::from(syn.car().unwrap()),
                     Value::from(syn.cdr().unwrap()),
                 ),
+                */
                 _ => unreachable!(),
             };
 

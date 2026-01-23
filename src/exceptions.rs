@@ -553,10 +553,10 @@ define_condition_type!(
     scheme_name: "&who",
     parent: SimpleCondition,
     fields: {
-        who: String,
+        who: Value,
     },
     constructor: |who| {
-        Ok(Who { parent: Gc::new(SimpleCondition::new()), who: who.to_string() })
+        Ok(Who { parent: Gc::new(SimpleCondition::new()), who: who, })
     },
     debug: |this, f| {
         write!(f, " who: {:?}", this.who)
@@ -564,10 +564,10 @@ define_condition_type!(
 );
 
 impl Who {
-    pub fn new(who: impl fmt::Display) -> Self {
+    pub fn new(who: Value) -> Self {
         Who {
             parent: Gc::new(SimpleCondition::new()),
-            who: who.to_string(),
+            who,
         }
     }
 }
@@ -634,8 +634,8 @@ define_condition_type!(
     scheme_name: "&syntax",
     parent: Violation,
     fields: {
-        form: Arc<Syntax>,
-        subform: Option<Arc<Syntax>>,
+        form: Value,
+        subform: Option<Value>,
     },
     constructor: |form, subform| {
         let form = form.try_into()?;
@@ -651,8 +651,16 @@ impl SyntaxViolation {
     pub fn new(form: Syntax, subform: Option<Syntax>) -> Self {
         Self {
             parent: Gc::new(Violation::new()),
-            form: Arc::new(form),
-            subform: subform.map(Arc::new),
+            form: Value::from(form),
+            subform: subform.map(Value::from),
+        }
+    }
+
+    pub fn new_from_values(form: Value, subform: Option<Value>) -> Self {
+        Self {
+            parent: Gc::new(Violation::new()),
+            form,
+            subform,
         }
     }
 }
@@ -943,7 +951,7 @@ pub fn raise_continuable(
 pub fn error(who: &Value, message: &Value, irritants: &[Value]) -> Result<Vec<Value>, Exception> {
     let mut conditions = Vec::new();
     if who.is_true() {
-        conditions.push(Value::from_rust_type(Who::new(who)));
+        conditions.push(Value::from_rust_type(Who::new(who.clone())));
     }
     conditions.push(Value::from_rust_type(Message::new(message)));
     conditions.push(Value::from_rust_type(Irritants::new(slice_to_list(
@@ -963,7 +971,7 @@ pub fn assertion_violation(
     let mut conditions = Vec::new();
     conditions.push(Value::from_rust_type(Assertion::new()));
     if who.is_true() {
-        conditions.push(Value::from_rust_type(Who::new(who)));
+        conditions.push(Value::from_rust_type(Who::new(who.clone())));
     }
     conditions.push(Value::from_rust_type(Message::new(message)));
     conditions.push(Value::from_rust_type(Irritants::new(slice_to_list(

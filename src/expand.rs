@@ -3,15 +3,16 @@ use crate::{
     env::{Binding, Environment, Local},
     exceptions::Exception,
     gc::{Gc, Trace},
+    lists::list_to_vec_with_null,
     proc::Procedure,
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax, free_identifier_equal},
-    value::Value,
+    value::{UnpackedValue, Value},
 };
 use scheme_rs_macros::{bridge, maybe_async, maybe_await, runtime_fn};
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     sync::Arc,
 };
 
@@ -180,7 +181,7 @@ impl Pattern {
         output
     }
 
-    fn matches(&self, expr: &Syntax, expansion_level: &mut ExpansionLevel) -> bool {
+    fn matches(&self, expr: &Value, expansion_level: &mut ExpansionLevel) -> bool {
         match self {
             Self::Underscore => !expr.is_null(),
             Self::Variable(sym) => {
@@ -192,19 +193,40 @@ impl Pattern {
                 );
                 true
             }
-            Self::Literal(lhs) => {
-                if let Syntax::Literal { literal: rhs, .. } = expr {
-                    lhs == rhs
-                } else {
-                    false
+            Self::Literal(lhs) => match (lhs, &*expr.unpacked_ref()) {
+                (lhs, UnpackedValue::Syntax(rhs)) => {
+                    if let Syntax::Literal { literal: rhs, .. } = rhs.as_ref() {
+                        lhs == rhs
+                    } else {
+                        false
+                    }
                 }
-            }
+                (Literal::Number(lhs), UnpackedValue::Number(rhs)) => lhs == rhs,
+                (Literal::Boolean(lhs), UnpackedValue::Boolean(rhs)) => lhs == rhs,
+                (Literal::Character(lhs), UnpackedValue::Character(rhs)) => lhs == rhs,
+                (Literal::String(lhs), UnpackedValue::String(rhs)) => *rhs == *lhs.as_str(),
+                _ => false,
+            },
+            Self::ByteVector(lhs) => match &*expr.unpacked_ref() {
+                UnpackedValue::Syntax(rhs) => {
+                    if let Syntax::ByteVector { vector: rhs, .. } = rhs.as_ref() {
+                        lhs == rhs
+                    } else {
+                        false
+                    }
+                }
+                UnpackedValue::ByteVector(rhs) => rhs == lhs.as_slice(),
+                _ => false,
+            },
             Self::Keyword(lhs) => {
+                let UnpackedValue::Syntax(rhs) = &*expr.unpacked_ref() else {
+                    return false;
+                };
                 if let Syntax::Identifier {
                     ident: rhs_ident,
                     binding: rhs_binding,
                     ..
-                } = expr
+                } = rhs.as_ref()
                 {
                     free_identifier_equal(
                         &lhs.ident,
@@ -218,13 +240,6 @@ impl Pattern {
             }
             Self::List(list) => match_list(list, expr, expansion_level),
             Self::Vector(vec) => match_vec(vec, expr, expansion_level),
-            Self::ByteVector(vec) => {
-                if let Self::ByteVector(v) = self {
-                    v == vec
-                } else {
-                    false
-                }
-            }
             // We shouldn't ever see this outside of lists
             Self::Null => expr.is_null(),
             Self::Ellipsis(_) => unreachable!(),
@@ -234,7 +249,7 @@ impl Pattern {
 
 fn match_ellipsis(
     patterns: &[Pattern],
-    exprs: &[Syntax],
+    exprs: &[Value],
     expansion_level: &mut ExpansionLevel,
 ) -> bool {
     // The ellipsis gets to consume any extra items, thus the difference:
@@ -269,12 +284,20 @@ fn match_ellipsis(
     true
 }
 
-fn match_list(patterns: &[Pattern], expr: &Syntax, expansion_level: &mut ExpansionLevel) -> bool {
+fn match_list(patterns: &[Pattern], expr: &Value, expansion_level: &mut ExpansionLevel) -> bool {
     assert!(!patterns.is_empty());
 
-    let exprs = match expr {
-        Syntax::List { list, .. } => list,
-        Syntax::Null { .. } => std::slice::from_ref(expr),
+    let exprs = match &*expr.unpacked_ref() {
+        UnpackedValue::Syntax(syntax) => match syntax.as_ref() {
+            Syntax::List { list, .. } => list.iter().cloned().map(Value::from).collect(),
+            null @ Syntax::Null { .. } => vec![Value::from(null.clone())],
+            _ => return false,
+        },
+        UnpackedValue::Null | UnpackedValue::Pair(_) => {
+            let mut exprs = Vec::new();
+            list_to_vec_with_null(expr, &mut exprs);
+            exprs
+        }
         _ => return false,
     };
 
@@ -311,25 +334,33 @@ fn match_list(patterns: &[Pattern], expr: &Syntax, expansion_level: &mut Expansi
             match exprs.as_slice() {
                 [] => false,
                 [x] => cdr.matches(x, expansion_level),
-                _ => cdr.matches(
-                    &Syntax::new_list(exprs, expr.span().clone()),
-                    expansion_level,
-                ),
+                [cars @ .., list] => {
+                    let mut list = list.clone();
+                    for car in cars.iter().rev().cloned() {
+                        list = Value::from((car, list));
+                    }
+                    cdr.matches(&list, expansion_level)
+                }
             }
         }
-        (_, true) => match_ellipsis(patterns, exprs, expansion_level),
+        (_, true) => match_ellipsis(patterns, &exprs, expansion_level),
     }
 }
 
-fn match_vec(patterns: &[Pattern], expr: &Syntax, expansion_level: &mut ExpansionLevel) -> bool {
-    let Syntax::Vector { vector: exprs, .. } = expr else {
-        return false;
+fn match_vec(patterns: &[Pattern], expr: &Value, expansion_level: &mut ExpansionLevel) -> bool {
+    let exprs = match &*expr.unpacked_ref() {
+        UnpackedValue::Syntax(syntax) => match syntax.as_ref() {
+            Syntax::Vector { vector, .. } => vector.iter().cloned().map(Value::from).collect(),
+            _ => return false,
+        },
+        UnpackedValue::Vector(vector) => vector.0.vec.read().clone(),
+        _ => return false,
     };
 
     let contains_ellipsis = patterns.iter().any(|p| matches!(p, Pattern::Ellipsis(_)));
 
     if contains_ellipsis {
-        match_ellipsis(patterns, exprs, expansion_level)
+        match_ellipsis(patterns, &exprs, expansion_level)
     } else {
         if patterns.len() != exprs.len() {
             return false;
@@ -351,7 +382,7 @@ impl SchemeCompatible for Pattern {
 
 #[derive(Clone, Debug, Default, Trace)]
 pub struct ExpansionLevel {
-    binds: HashMap<Identifier, Syntax>,
+    binds: HashMap<Identifier, Value>,
     expansions: Vec<ExpansionLevel>,
 }
 
@@ -373,16 +404,17 @@ impl SchemeCompatible for ExpansionCombiner {
 }
 
 #[runtime_fn]
-unsafe extern "C" fn matches(pattern: *const (), syntax: *const ()) -> *const () {
+unsafe extern "C" fn matches(pattern: *const (), value: *const ()) -> *const () {
     let pattern = unsafe { Value::from_raw_inc_rc(pattern) };
     let pattern = pattern.try_to_rust_type::<Pattern>().unwrap();
 
-    let syntax = unsafe { Value::from_raw_inc_rc(syntax) };
-    // This isn't a great way to do this, but it'll work for now:
-    let syntax = Syntax::syntax_from_datum(&BTreeSet::default(), syntax).unwrap();
+    let value = unsafe { Value::from_raw_inc_rc(value) };
+
+    // // This isn't a great way to do this, but it'll work for now:
+    // let syntax = Syntax::syntax_from_datum(&BTreeSet::default(), syntax).unwrap();
 
     let mut expansions = ExpansionLevel::default();
-    if pattern.matches(&syntax, &mut expansions) {
+    if pattern.matches(&value, &mut expansions) {
         Value::into_raw(Value::from(Record::from_rust_type(expansions)))
     } else {
         Value::into_raw(Value::from(false))
@@ -431,10 +463,8 @@ pub enum Template {
     Ellipsis(Box<Template>),
     List(Vec<Template>),
     Vector(Vec<Template>),
-    ByteVector(Vec<u8>),
-    Identifier { ident: Identifier, binding: Binding },
     Variable(Identifier),
-    Literal(Literal),
+    Wrapped(Syntax),
 }
 
 impl Template {
@@ -448,6 +478,56 @@ impl Template {
         Self::compile_inner(expr, env, expansions, resolved_bindings)
     }
 
+    fn is_wrapped(&self) -> bool {
+        matches!(self, Self::Wrapped(_))
+    }
+
+    fn new_list(list: Vec<Template>, span: Span) -> Self {
+        if list.iter().all(Template::is_wrapped) {
+            Self::Wrapped(Syntax::new_list(
+                list.into_iter()
+                    .map(|wrapped| match wrapped {
+                        Template::Wrapped(wrapped) => wrapped,
+                        _ => unreachable!(),
+                    })
+                    .collect(),
+                span,
+            ))
+        } else {
+            Self::List(
+                list.into_iter()
+                    .map(|template| match template {
+                        Template::Wrapped(Syntax::Null { .. }) => Template::Null,
+                        template => template,
+                    })
+                    .collect(),
+            )
+        }
+    }
+
+    fn new_vector(vec: Vec<Template>, span: Span) -> Self {
+        if vec.iter().all(Template::is_wrapped) {
+            Self::Wrapped(Syntax::new_vector(
+                vec.into_iter()
+                    .map(|wrapped| match wrapped {
+                        Template::Wrapped(wrapped) => wrapped,
+                        _ => unreachable!(),
+                    })
+                    .collect(),
+                span,
+            ))
+        } else {
+            Self::Vector(
+                vec.into_iter()
+                    .map(|template| match template {
+                        Template::Wrapped(Syntax::Null { .. }) => Template::Null,
+                        template => template,
+                    })
+                    .collect(),
+            )
+        }
+    }
+
     fn compile_inner<'a>(
         expr: &'a Syntax,
         env: &Environment,
@@ -456,7 +536,7 @@ impl Template {
     ) -> Result<Self, Exception> {
         match expr {
             Syntax::Null { .. } => Ok(Self::Null),
-            Syntax::List { list, .. } => {
+            Syntax::List { list, span, .. } => {
                 if let [
                     Syntax::Identifier {
                         ident: ellipsis, ..
@@ -468,39 +548,39 @@ impl Template {
                 {
                     Self::compile_escaped(template, env, expansions, resolved_bindings)
                 } else {
-                    Ok(Self::List(Self::compile_slice(
-                        list,
-                        env,
-                        expansions,
-                        resolved_bindings,
-                    )?))
+                    Ok(Self::new_list(
+                        Self::compile_slice(list, env, expansions, resolved_bindings)?,
+                        span.clone(),
+                    ))
                 }
             }
-            Syntax::Vector { vector, .. } => Ok(Self::Vector(Self::compile_slice(
-                vector,
-                env,
-                expansions,
-                resolved_bindings,
-            )?)),
-            Syntax::ByteVector { vector, .. } => Ok(Self::ByteVector(vector.clone())),
-            Syntax::Literal { literal, .. } => Ok(Self::Literal(literal.clone())),
+            Syntax::Vector { vector, span, .. } => Ok(Self::new_vector(
+                Self::compile_slice(vector, env, expansions, resolved_bindings)?,
+                span.clone(),
+            )),
+            // Syntax::ByteVector { vector, .. } => Ok(Self::Wrapped(WrappedTemplate::ByteVector(vector.clone()))),
+            // Syntax::Literal { literal, .. } => Ok(Self::Wrapped(WrappedTemplate::Literal(literal.clone()))),
             Syntax::Identifier { ident, .. } if ident.sym == "..." => {
                 panic!("error")
             }
-            Syntax::Identifier { ident, .. } => {
+            Syntax::Identifier { ident, span, .. } => {
                 if let Some((expansion, _)) = env.fetch_pattern_variable(ident) {
                     expansions.insert(ident.clone(), expansion);
                     Ok(Self::Variable(ident.clone()))
                 } else {
-                    Ok(Self::Identifier {
+                    Ok(Self::Wrapped(Syntax::Identifier {
                         ident: ident.clone(),
-                        binding: resolved_bindings
-                            .entry(ident)
-                            .or_insert_with(|| env.fetch_binding(ident))
-                            .clone(),
-                    })
+                        binding: Some(
+                            resolved_bindings
+                                .entry(ident)
+                                .or_insert_with(|| env.fetch_binding(ident))
+                                .clone(),
+                        ),
+                        span: span.clone(),
+                    }))
                 }
             }
+            wrapped => Ok(Self::Wrapped(wrapped.clone())),
         }
     }
 
@@ -512,34 +592,32 @@ impl Template {
     ) -> Result<Self, Exception> {
         match expr {
             Syntax::Null { .. } => Ok(Self::Null),
-            Syntax::List { list, .. } => Ok(Self::List(Self::compile_slice_escaped(
-                list,
-                env,
-                expansions,
-                resolved_bindings,
-            )?)),
-            Syntax::Vector { vector, .. } => Ok(Self::Vector(Self::compile_slice_escaped(
-                vector,
-                env,
-                expansions,
-                resolved_bindings,
-            )?)),
-            Syntax::ByteVector { vector, .. } => Ok(Self::ByteVector(vector.clone())),
-            Syntax::Literal { literal, .. } => Ok(Self::Literal(literal.clone())),
-            Syntax::Identifier { ident, .. } => {
+            Syntax::List { list, span, .. } => Ok(Self::new_list(
+                Self::compile_slice_escaped(list, env, expansions, resolved_bindings)?,
+                span.clone(),
+            )),
+            Syntax::Vector { vector, span, .. } => Ok(Self::new_vector(
+                Self::compile_slice_escaped(vector, env, expansions, resolved_bindings)?,
+                span.clone(),
+            )),
+            Syntax::Identifier { ident, span, .. } => {
                 if let Some((expansion, _)) = env.fetch_pattern_variable(ident) {
                     expansions.insert(ident.clone(), expansion);
                     Ok(Self::Variable(ident.clone()))
                 } else {
-                    Ok(Self::Identifier {
+                    Ok(Self::Wrapped(Syntax::Identifier {
                         ident: ident.clone(),
-                        binding: resolved_bindings
-                            .entry(ident)
-                            .or_insert_with(|| env.fetch_binding(ident))
-                            .clone(),
-                    })
+                        binding: Some(
+                            resolved_bindings
+                                .entry(ident)
+                                .or_insert_with(|| env.fetch_binding(ident))
+                                .clone(),
+                        ),
+                        span: span.clone(),
+                    }))
                 }
             }
+            wrapped => Ok(Self::Wrapped(wrapped.clone())),
         }
     }
 
@@ -601,27 +679,19 @@ impl Template {
             .collect()
     }
 
-    fn expand(&self, binds: &Binds<'_>, curr_span: Span) -> Option<Syntax> {
-        let syn = match self {
-            Self::Null => Syntax::new_null(curr_span),
+    fn expand(&self, binds: &Binds<'_>, curr_span: Span) -> Option<Value> {
+        let value = match self {
+            Self::Null => Value::null(),
             Self::List(list) => expand_list(list, binds, curr_span.clone())?,
-            Self::Vector(vec) => {
-                Syntax::new_vector(expand_vec(vec, binds, curr_span.clone())?, curr_span)
-            }
-            Self::ByteVector(bvec) => Syntax::new_byte_vector(bvec.clone(), curr_span),
-            Self::Identifier { ident, binding } => Syntax::Identifier {
-                ident: ident.clone(),
-                span: curr_span,
-                binding: Some(binding.clone()),
-            },
-            Self::Variable(name) => binds.get_bind(name)?,
-            Self::Literal(literal) => Syntax::new_literal(literal.clone(), curr_span),
+            Self::Vector(vec) => expand_vec(vec, binds, curr_span.clone())?,
+            Self::Variable(name) => Value::from(binds.get_bind(name)?),
             Self::Ellipsis(_) => unreachable!(),
+            Self::Wrapped(wrapped) => Value::from(wrapped.clone()),
         };
-        Some(syn)
+        Some(value)
     }
 
-    fn expand_nested(&self, binds: &Binds<'_>, curr_span: Span) -> Option<Vec<Syntax>> {
+    fn expand_nested(&self, binds: &Binds<'_>, curr_span: Span) -> Option<Vec<Value>> {
         let mut output = Vec::new();
         if let Template::Ellipsis(template) = self {
             for expansion in &binds.curr_expansion_level.expansions {
@@ -638,43 +708,26 @@ impl Template {
     }
 }
 
-fn expand_list(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<Syntax> {
-    let mut output = Vec::new();
+fn expand_list(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<Value> {
+    let mut expanded = Vec::new();
     for item in items {
-        output.extend(item.expand_nested(binds, curr_span.clone())?);
+        expanded.extend(item.expand_nested(binds, curr_span.clone())?);
     }
-    Some(normalize_list(output, curr_span))
-}
-
-/// Because we flatten lists into vectors for syntax objects, its necessary to
-/// normalize the list after expansion. Specifically, after expansion, if the
-/// last element of a list is another list, the list needs to be flattened. After
-/// flattening if the vec is empty or a single Null long, it can be replaced with
-/// just a Null.
-fn normalize_list(mut list: Vec<Syntax>, span: Span) -> Syntax {
-    // Check for flattening:
-    if matches!(list.as_slice(), &[.., Syntax::List { .. }]) {
-        let Some(Syntax::List { list: tail, .. }) = list.pop() else {
-            unreachable!()
-        };
-        list.extend(tail);
-    }
-    // We should only have to do this once, if a list is the last element after
-    // flattening something has gone wrong.
-    assert!(!matches!(list.last(), Some(Syntax::List { .. })));
-    // Check for empty/null list:
-    match list.as_slice() {
-        [] | [Syntax::Null { .. }] => Syntax::Null { span },
-        _ => Syntax::new_list(list, span),
-    }
-}
-
-fn expand_vec(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<Vec<Syntax>> {
-    let mut output = Vec::new();
-    for item in items {
-        output.extend(item.expand_nested(binds, curr_span.clone())?);
+    let Some(mut output) = expanded.pop() else {
+        return Some(Value::null());
+    };
+    for expanded in expanded.into_iter().rev() {
+        output = Value::from((expanded, output));
     }
     Some(output)
+}
+
+fn expand_vec(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<Value> {
+    let mut output = Vec::new();
+    for item in items {
+        output.extend(item.expand_nested(binds, curr_span.clone())?);
+    }
+    Some(Value::from(output))
 }
 
 fn check_ellipsis(expr: &Syntax, env: &Environment) -> Result<(), Exception> {
@@ -833,7 +886,7 @@ unsafe extern "C" fn expand_template(
     // TODO: get a real span in here
     let expanded = template.expand(&binds, Span::default()).unwrap();
 
-    Value::into_raw(Value::from(expanded))
+    Value::into_raw(expanded)
 }
 
 #[derive(Debug)]
@@ -857,7 +910,7 @@ impl<'a> Binds<'a> {
         }
     }
 
-    fn get_bind(&self, ident: &Identifier) -> Option<Syntax> {
+    fn get_bind(&self, ident: &Identifier) -> Option<Value> {
         if let bind @ Some(_) = self.curr_expansion_level.binds.get(ident) {
             bind.cloned()
         } else if let Some(up) = self.parent_expansion_level {

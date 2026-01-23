@@ -141,6 +141,10 @@ impl Value {
 
     pub fn is_null(&self) -> bool {
         self.0 as usize == Tag::Pair as usize
+            || match &*self.unpacked_ref() {
+                UnpackedValue::Syntax(syn) => syn.is_null(),
+                _ => false,
+            }
     }
 
     pub fn is_undefined(&self) -> bool {
@@ -1479,7 +1483,7 @@ fn display_value(
         UnpackedValue::ByteVector(v) => vectors::write_bytevec(&v, f),
         UnpackedValue::Procedure(_) => write!(f, "<procedure>"),
         UnpackedValue::Record(record) => write!(f, "{record:?}"),
-        UnpackedValue::Syntax(syntax) => write!(f, "{syntax:#?}"),
+        UnpackedValue::Syntax(syntax) => write!(f, "#<syntax {syntax:#?}>"),
         UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
         UnpackedValue::Port(_) => write!(f, "<port>"),
         UnpackedValue::HashTable(hashtable) => write!(f, "{hashtable:?}"),
@@ -1507,7 +1511,7 @@ fn debug_value(
         }
         UnpackedValue::Vector(v) => vectors::write_vec(&v, debug_value, circular_values, f),
         UnpackedValue::ByteVector(v) => vectors::write_bytevec(&v, f),
-        UnpackedValue::Syntax(syntax) => write!(f, "{syntax:#?}"),
+        UnpackedValue::Syntax(syntax) => write!(f, "#<syntax {syntax:#?}>"),
         UnpackedValue::Procedure(proc) => write!(f, "#<procedure {proc:?}>"),
         UnpackedValue::Record(record) => write!(f, "{record:#?}"),
         UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),

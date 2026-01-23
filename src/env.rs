@@ -6,7 +6,6 @@ use std::{
     fmt,
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
-    ptr::NonNull,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
