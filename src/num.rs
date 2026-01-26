@@ -42,11 +42,7 @@ use malachite::{
 };
 use num::ToPrimitive;
 use std::{
-    cmp::Ordering,
-    fmt,
-    hash::Hash,
-    ops::{Add, Div, Mul, Neg, Rem, Sub},
-    sync::Arc,
+    cmp::Ordering, fmt, hash::Hash, i64, ops::{Add, Div, Mul, Neg, Rem, Sub}, sync::Arc
 };
 
 #[repr(align(16))]
@@ -138,6 +134,34 @@ impl Number {
     /// All numbers are complex!
     pub fn is_complex(&self) -> bool {
         true
+    }
+
+    pub fn is_exact(&self) -> bool {
+        match self.0.as_ref() {
+            NumberInner::Simple(simple) => simple.is_exact(),
+            NumberInner::Complex(complex) => complex.im.is_exact() && complex.re.is_exact(),
+        }
+    }
+
+    pub fn is_inexact(&self) -> bool {
+        match self.0.as_ref() {
+            NumberInner::Simple(simple) => !simple.is_exact(),
+            NumberInner::Complex(complex) => !complex.im.is_exact() || !complex.re.is_exact(),
+        }
+    }
+
+    pub fn inexact(self) -> Number {
+        match self.0.as_ref() {
+            NumberInner::Simple(simple) => Number::from(simple.inexact()),
+            NumberInner::Complex(complex) => Number::from(complex.inexact()),
+        }
+    }
+
+    pub fn exact(self) -> Number {
+        match self.0.as_ref() {
+            NumberInner::Simple(simple) => Number::from(simple.exact()),
+            NumberInner::Complex(complex) => Number::from(complex.exact()),
+        }
     }
 
     pub fn eqv(&self, rhs: &Self) -> bool {
@@ -380,6 +404,32 @@ impl SimpleNumber {
         }
     }
 
+    pub fn to_integer(&self, rounding_mode: RoundingMode) -> Self {
+        match self {
+            Self::FixedInteger(i) => Self::FixedInteger(*i),
+            Self::BigInteger(i) => Self::BigInteger(i.clone()),
+            Self::Rational(r) => Self::BigInteger(Integer::rounding_from(r, rounding_mode).0),
+            Self::Real(r) => Self::BigInteger(Integer::rounding_from(*r, rounding_mode).0),
+        }        
+    }
+
+    pub fn inexact(&self) -> Self {
+        match self {
+            Self::FixedInteger(i) => Self::Real(*i as f64),
+            Self::BigInteger(i) => Self::Real(f64::rounding_from(i, RoundingMode::Nearest).0),
+            Self::Rational(r) => Self::Real(f64::rounding_from(r, RoundingMode::Nearest).0),
+            Self::Real(r) => Self::Real(*r),
+        }
+    }
+
+    pub fn exact(&self) -> Self {
+        match self {
+            // We can do better than this, but it'll do for now
+            Self::Real(r) => Self::FixedInteger(*r as i64),
+            num => num.clone(),
+        }
+    }
+
     pub fn abs(&self) -> Self {
         if *self < SimpleNumber::zero() {
             -self
@@ -401,8 +451,7 @@ impl SimpleNumber {
     }
 
     pub fn pow(&self, p: &SimpleNumber) -> Self {
-        println!("hello?");
-        if dbg!(self.is_zero()) {
+        if self.is_zero() {
             if p.is_zero() {
                 if self.is_exact() && p.is_exact() {
                     return Self::from(1);
@@ -1282,6 +1331,20 @@ impl ComplexNumber {
         }
     }
 
+    pub fn inexact(&self) -> Self {
+        Self {
+            re: self.re.inexact(),
+            im: self.im.inexact(),
+        }
+    }
+
+    pub fn exact(&self) -> Self {
+        Self {
+            re: self.re.exact(),
+            im: self.im.exact(),
+        }
+    }
+
     pub fn from_polar(r: SimpleNumber, theta: SimpleNumber) -> Self {
         Self::new(&r * &theta.cos(), &r * &theta.sin())
     }
@@ -1716,10 +1779,25 @@ pub fn integer_valued_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
     )])
 }
 
-// exact?
-// inexact?
-// inexact
-// exact
+#[bridge(name = "exact?", lib = "(rnrs base builtins (6))")]
+pub fn exact_pred(z: Number) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(z.is_exact())])
+}
+
+#[bridge(name = "inexact?", lib = "(rnrs base builtins (6))")]
+pub fn inexact_pred(z: Number) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(z.is_inexact())])
+}
+
+#[bridge(name = "inexact", lib = "(rnrs base builtins (6))")]
+pub fn inexact(z: Number) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(z.inexact())])
+}
+
+#[bridge(name = "exact", lib = "(rnrs base builtins (6))")]
+pub fn exact(z: Number) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(z.exact())])
+}
 
 #[bridge(name = "=", lib = "(rnrs base builtins (6))")]
 pub fn equal(args: &[Value]) -> Result<Vec<Value>, Exception> {
@@ -1956,6 +2034,53 @@ pub(crate) fn div_prim(val1: &Value, vals: &[Value]) -> Result<Number, Exception
     Ok(result)
 }
 
+#[bridge(name = "div-and-mod", lib = "(rnrs base builtins (6))")]
+pub fn div_mod(x1: SimpleNumber, x2: SimpleNumber) -> Result<Vec<Value>, Exception> {
+    let nd = (&x1 / &x2).to_integer(RoundingMode::Floor);
+    let nd_x2 = &x2 * &nd;
+    let modulo = if nd_x2 < x1 {
+        x1 - nd_x2
+    } else {
+        nd_x2 - x1
+    };
+    Ok(vec![Value::from(nd), Value::from(modulo)])
+}
+
+#[bridge(name = "div", lib = "(rnrs base builtins (6))")]
+pub fn integer_division(x1: SimpleNumber, x2: SimpleNumber) -> Result<Vec<Value>, Exception> {
+    let nd = (x1 / x2).to_integer(RoundingMode::Floor);
+    Ok(vec![Value::from(nd)])
+}
+
+#[bridge(name = "mod", lib = "(rnrs base builtins (6))")]
+pub fn modulo(x1: SimpleNumber, x2: SimpleNumber) -> Result<Vec<Value>, Exception> {
+    let nd = (&x1 / &x2).to_integer(RoundingMode::Floor);
+    let nd_x2 = &x2 * &nd;
+    if nd_x2 < x1 {
+        Ok(vec![Value::from(x1 - nd_x2)])
+    } else {
+        Ok(vec![Value::from(nd_x2 - x1)])
+    }
+}
+
+#[bridge(name = "div0-and-mod0", lib = "(rnrs base builtins (6))")]
+pub fn div0_mod0(x1: SimpleNumber, x2: SimpleNumber) -> Result<Vec<Value>, Exception> {
+    let nd = (&x1 / &x2).to_integer(RoundingMode::Down);
+    let modulo = &x1 % &x2;
+    Ok(vec![Value::from(nd), Value::from(modulo)])
+}
+
+#[bridge(name = "div0", lib = "(rnrs base builtins (6))")]
+pub fn integer_division0(x1: SimpleNumber, x2: SimpleNumber) -> Result<Vec<Value>, Exception> {
+    let nd = (x1 / x2).to_integer(RoundingMode::Down);
+    Ok(vec![Value::from(nd)])
+}
+
+#[bridge(name = "mod0", lib = "(rnrs base builtins (6))")]
+pub fn modulo0(x1: SimpleNumber, x2: SimpleNumber) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(x1 % x2)])
+}
+
 #[bridge(name = "numerator", lib = "(rnrs base builtins (6))")]
 pub fn numerator(obj: &Value) -> Result<Vec<Value>, Exception> {
     match obj.try_to_scheme_type::<SimpleNumber>()? {
@@ -2119,4 +2244,91 @@ pub fn expt(z1: &Value, z2: &Value) -> Result<Vec<Value>, Exception> {
     let z1 = z1.try_to_scheme_type::<Number>()?;
     let z2 = z2.try_to_scheme_type::<Number>()?;
     Ok(vec![Value::from(z1.pow(&z2))])
+}
+
+/// R6RS Fixnums
+pub struct Fixnum(pub i64);
+
+impl From<&Value> for Option<Fixnum> {
+    fn from(value: &Value) -> Option<Fixnum> {
+        if let Some(num) = value.cast_to_scheme_type::<Number>() {
+            if let  NumberInner::Simple(simple) = &*num.0 {
+                if let  SimpleNumber::FixedInteger(fixnum) = simple {
+                    return Some(Fixnum(*fixnum));
+                }
+            }
+        }
+        None
+    }
+}
+
+impl TryFrom<&Value> for Fixnum {
+    type Error = Exception;
+
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        if let Some(num) = value.cast_to_scheme_type::<Number>() {
+            if let  NumberInner::Simple(simple) = &*num.0 {
+                if let  SimpleNumber::FixedInteger(fixnum) = simple {
+                    return Ok(Fixnum(*fixnum));
+                }
+            }
+        }
+        Err(Exception::error("value is not a fixnum"))
+    }
+}
+
+#[bridge(name = "fixnum?", lib = "(rnrs arithmetic fixnums (6))")]
+pub fn fixnum_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(obj.cast_to_scheme_type::<Fixnum>().is_some())])
+}
+
+#[bridge(name = "fixnum-width", lib = "(rnrs arithmetic fixnums (6))")]
+pub fn fixnum_width() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(64)])
+}
+
+#[bridge(name = "least-fixnum", lib = "(rnrs arithmetic fixnums (6))")]
+pub fn least_fixnum() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(i64::MIN)])
+}
+
+#[bridge(name = "greatest-fixnum", lib = "(rnrs arithmetic fixnums (6))")]
+pub fn greatest_fixnum() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(i64::MAX)])
+}
+
+/// R6RS Flonums
+pub struct Flonum(pub f64);
+
+impl From<&Value> for Option<Flonum> {
+    fn from(value: &Value) -> Option<Flonum> {
+        if let Some(num) = value.cast_to_scheme_type::<Number>() {
+            if let  NumberInner::Simple(simple) = &*num.0 {
+                if let  SimpleNumber::Real(flonum) = simple {
+                    return Some(Flonum(*flonum));
+                }
+            }
+        }
+        None
+    }
+}
+
+impl TryFrom<&Value> for Flonum {
+    type Error = Exception;
+
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        if let Some(num) = value.cast_to_scheme_type::<Number>() {
+            if let  NumberInner::Simple(simple) = &*num.0 {
+                if let  SimpleNumber::Real(flonum) = simple {
+                    return Ok(Flonum(*flonum));
+                }
+            }
+        }
+        Err(Exception::error("value is not a flonum"))
+    }
+}
+
+#[bridge(name = "flonum?", lib = "(rnrs arithmetic flonums (6))")]
+pub fn flonum_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(obj.cast_to_scheme_type::<Flonum>().is_some())])
 }

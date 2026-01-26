@@ -2996,9 +2996,9 @@ fn open_file_port(
         File::options()
             .read(kind.read())
             .write(kind.write())
-            .create(!file_options.contains("no-create"))
+            .create(kind.write() && !file_options.contains("no-create"))
             .append(file_options.contains("append"))
-            .truncate(!file_options.contains("no-truncate"))
+            .truncate(kind.write() && !file_options.contains("no-truncate"))
             .open(&filename)
     )
     .map_err(|err| map_io_error_to_condition(&filename, err))?;
@@ -3704,7 +3704,7 @@ pub fn make_custom_textual_input_output_port(
 #[maybe_async]
 #[cps_bridge(
     def = "call-with-input-file filename proc",
-    lib = "(rnrs io simple builtins)"
+    lib = "(rnrs io simple builtins (6))"
 )]
 pub fn call_with_input_file(
     runtime: &Runtime,
@@ -3728,8 +3728,9 @@ pub fn call_with_input_file(
     let file = maybe_await!(
         File::options()
             .read(true)
-            .create(true)
-            .truncate(false)
+            .write(true)
+            // .create(true)
+            // .truncate(false)
             .open(&filename)
     )
     .map_err(|err| map_io_error_to_condition(&filename, err))?;
@@ -3764,7 +3765,7 @@ pub fn call_with_input_file(
 #[maybe_async]
 #[cps_bridge(
     def = "call-with-output-file filename proc",
-    lib = "(rnrs io simple builtins)"
+    lib = "(rnrs io simple builtins (6))"
 )]
 pub fn call_with_output_file(
     runtime: &Runtime,
@@ -3888,7 +3889,7 @@ unsafe extern "C" fn call_k_with_env(
 #[maybe_async]
 #[cps_bridge(
     def = "with-input-from-file filename thunk",
-    lib = "(rnrs io simple builtins)"
+    lib = "(rnrs io simple builtins (6))"
 )]
 pub fn with_input_from_file(
     runtime: &Runtime,
@@ -3958,7 +3959,7 @@ pub fn with_input_from_file(
 #[maybe_async]
 #[cps_bridge(
     def = "with-output-to-file filename thunk",
-    lib = "(rnrs io simple builtins)"
+    lib = "(rnrs io simple builtins (6))"
 )]
 pub fn with_output_to_file(
     runtime: &Runtime,
@@ -4028,6 +4029,7 @@ pub fn with_output_to_file(
 #[maybe_async]
 #[bridge(name = "open-input-file", lib = "(rnrs io simple builtins (6))")]
 pub fn open_input_file(filename: &Value) -> Result<Vec<Value>, Exception> {
+    // TODO: This needs to be a text port
     Ok(vec![Value::from(maybe_await!(open_file_port(
         filename,
         &[],
@@ -4048,7 +4050,7 @@ pub fn open_output_file(filename: &Value) -> Result<Vec<Value>, Exception> {
 #[maybe_async]
 #[cps_bridge(
     def = "read-char . textual-input-port",
-    lib = "(rnrs io simple builtins)"
+    lib = "(rnrs io simple builtins (6))" 
 )]
 pub fn read_char(
     runtime: &Runtime,
@@ -4082,7 +4084,7 @@ pub fn read_char(
 #[maybe_async]
 #[cps_bridge(
     def = "peek-char . textual-input-port",
-    lib = "(rnrs io simple builtins)"
+    lib = "(rnrs io simple builtins (6))"
 )]
 pub fn peek_char(
     runtime: &Runtime,
@@ -4114,7 +4116,7 @@ pub fn peek_char(
 }
 
 #[maybe_async]
-#[cps_bridge(def = "read . textual-input-port", lib = "(rnrs io simple builtins)")]
+#[cps_bridge(def = "read . textual-input-port", lib = "(rnrs io simple builtins (6))")]
 pub fn read(
     runtime: &Runtime,
     _env: &[Value],
@@ -4147,7 +4149,7 @@ pub fn read(
 #[maybe_async]
 #[cps_bridge(
     def = "write-char char . textual-output-port",
-    lib = "(rnrs io simple builtins)"
+    lib = "(rnrs io simple builtins (6))"
 )]
 pub fn write_char(
     runtime: &Runtime,
@@ -4179,7 +4181,7 @@ pub fn write_char(
 #[maybe_async]
 #[cps_bridge(
     def = "newline . textual-output-port",
-    lib = "(rnrs io simple builtins)"
+    lib = "(rnrs io simple builtins (6))"
 )]
 pub fn newline(
     runtime: &Runtime,
@@ -4209,7 +4211,7 @@ pub fn newline(
 #[maybe_async]
 #[cps_bridge(
     def = "display obj . textual-output-port",
-    lib = "(rnrs io simple builtins)"
+    lib = "(rnrs io simple builtins (6))"
 )]
 pub fn display(
     runtime: &Runtime,
@@ -4241,7 +4243,7 @@ pub fn display(
 #[maybe_async]
 #[cps_bridge(
     def = "write obj . textual-output-port",
-    lib = "(rnrs io simple builtins)"
+    lib = "(rnrs io simple builtins (6))"
 )]
 pub fn write(
     runtime: &Runtime,

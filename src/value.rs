@@ -105,14 +105,7 @@ use crate::{
     vectors::{self, ByteVector, Vector, VectorInner},
 };
 use std::{
-    collections::HashMap,
-    fmt,
-    hash::{Hash, Hasher},
-    marker::PhantomData,
-    mem::ManuallyDrop,
-    ops::Deref,
-    ptr::null,
-    sync::Arc,
+    collections::HashMap, convert::Infallible, fmt, hash::{Hash, Hasher}, marker::PhantomData, mem::ManuallyDrop, ops::Deref, ptr::null, sync::Arc
 };
 
 const ALIGNMENT: usize = 16;
@@ -1145,6 +1138,12 @@ macro_rules! impl_try_from_value_for {
     };
 }
 
+impl From<Infallible> for Value {
+    fn from(value: Infallible) -> Self {
+        match value {}
+    }
+}
+
 impl From<()> for UnpackedValue {
     fn from((): ()) -> Self {
         Self::Null
@@ -1274,6 +1273,15 @@ impl_from_wrapped_for!((Value, Value), Pair, |(car, cdr)| Pair::new(
     car, cdr, false
 ));
 
+impl From<UnpackedValue> for Option<(Value, Value)> {
+    fn from(val: UnpackedValue) -> Self {
+        match val {
+            UnpackedValue::Pair(pair) => Some(pair.into()),
+            _ => None,
+        }
+    }
+}
+
 impl TryFrom<UnpackedValue> for (Value, Value) {
     type Error = Exception;
 
@@ -1349,11 +1357,31 @@ impl_num_conversion!(f64);
 impl_num_conversion!(Integer);
 impl_num_conversion!(SimpleNumber);
 
+impl From<Value> for Option<(Value, Value)> {
+    fn from(value: Value) -> Self {
+        value.unpack().into()
+    }
+}
+
+impl From<&Value> for Option<(Value, Value)> {
+    fn from(value: &Value) -> Self {
+        value.clone().unpack().into()
+    }
+}
+
 impl TryFrom<Value> for (Value, Value) {
     type Error = Exception;
 
     fn try_from(val: Value) -> Result<Self, Self::Error> {
         Self::try_from(val.unpack())
+    }
+}
+
+impl TryFrom<&Value> for (Value, Value) {
+    type Error = Exception;
+
+    fn try_from(val: &Value) -> Result<Self, Self::Error> {
+        Self::try_from(val.clone().unpack())
     }
 }
 

@@ -98,7 +98,7 @@ impl Runtime {
             maybe_await!(port.all_sexprs(span)).map_err(Exception::from)?
         };
 
-        let body = maybe_await!(DefinitionBody::parse_lib_body(self, &form, &env)).unwrap();
+        let body = maybe_await!(DefinitionBody::parse_lib_body(self, &form, &env))?;
         let compiled = body.compile_top_level();
         let closure = maybe_await!(self.compile_expr(compiled));
 
@@ -422,7 +422,9 @@ unsafe extern "C" fn apply(
 unsafe extern "C" fn get_frame(op: *const (), span: *const ()) -> *const () {
     unsafe {
         let op = Value::from_raw_inc_rc(op);
-        let op: Procedure = op.try_into().unwrap();
+        let Some(op) = op.cast_to_scheme_type::<Procedure>() else {
+            return Value::into_raw(Value::null());
+        };
         let span = Value::from_raw_inc_rc(span);
         let span = span.cast_to_rust_type::<Span>().unwrap();
         let frame = Syntax::Identifier {

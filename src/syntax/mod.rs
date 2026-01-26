@@ -272,11 +272,6 @@ impl Syntax {
                 .ok_or_else(|| Exception::error("syntax transformer produced no output"))?
                 .clone(),
         )?;
-        // .try_into()?;
-
-        //        // Apply the new mark to the output
-        //        let mut output = Arc::try_unwrap(output).unwrap_or_else(|arc| arc.as_ref().clone());
-        //        output.mark(new_mark);
 
         let new_env = env.new_macro_expansion(new_mark, mac.source_env.clone());
 
@@ -457,8 +452,8 @@ impl fmt::Debug for Syntax {
             Syntax::Literal { literal, .. } => {
                 write!(f, "{literal}")
             }
-            Syntax::Identifier { ident, .. } => {
-                write!(f, "{}", ident.sym)
+            Syntax::Identifier { ident, span, .. } => {
+                write!(f, "{} @ {span}", ident.sym, )
             }
         }
     }
@@ -761,23 +756,17 @@ pub fn generate_temporaries(list: &Value) -> Result<Vec<Value>, Exception> {
         _ => return Err(Exception::error("argument must be a list".to_string())),
     };
 
-    let mut idents = (0..length)
-        .map(|_| {
-            let ident = Identifier::from_symbol(Symbol::gensym());
-            Syntax::Identifier {
-                ident,
-                binding: None,
-                span: Span::default(),
-            }
-        })
-        .collect::<Vec<_>>();
-    idents.push(Syntax::Null {
-        span: Span::default(),
-    });
-    Ok(vec![Value::from(Syntax::List {
-        list: idents,
-        span: Span::default(),
-    })])
+    let mut temporaries = Value::null();
+    for _ in 0..length {
+        let ident = Syntax::Identifier {
+            ident: Identifier::from_symbol(Symbol::gensym()),
+            binding: None,
+            span: Span::default(),
+        };
+        temporaries = Value::from((Value::from(ident), temporaries));
+    }
+
+    Ok(vec![Value::from(temporaries)])
 }
 
 #[bridge(name = "syntax-violation", lib = "(rnrs base builtins (6))")]
@@ -795,6 +784,15 @@ pub fn syntax_violation(
     let mut conditions = Vec::new();
     if who.is_true() {
         conditions.push(Value::from_rust_type(Who::new(who.clone())));
+    } else if let Some(syntax) = form.cast_to_scheme_type::<Arc<Syntax>>() {
+        let who = if let Syntax::Identifier { ident, .. } = syntax.as_ref() {
+            Some(ident.sym)
+        } else if let Some([Syntax::Identifier { ident, .. }, ..]) = syntax.as_list() {
+            Some(ident.sym)
+        } else {
+            None
+        };
+        conditions.push(Value::from_rust_type(Who::new(Value::from(who))));
     }
     conditions.push(Value::from_rust_type(Message::new(message)));
     conditions.push(Value::from_rust_type(SyntaxViolation::new_from_values(

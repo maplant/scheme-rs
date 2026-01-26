@@ -428,18 +428,20 @@ fn compile_and(exprs: &[Expression], meta_cont: &mut dyn FnMut(Value) -> Cps) ->
             let cond_arg = Local::gensym();
             Cps::Lambda {
                 args: LambdaArgs::new(vec![cond_arg], false, None),
-                body: Box::new(Cps::If(
-                    Value::from(cond_arg),
-                    Box::new(if let Some(tail) = tail {
-                        compile_and(tail, &mut |expr| Cps::App(expr, vec![Value::from(k1)]))
-                    } else {
-                        Cps::App(Value::from(k1), vec![Value::from(RuntimeValue::from(true))])
-                    }),
-                    Box::new(Cps::App(
-                        Value::from(k1),
-                        vec![Value::from(RuntimeValue::from(false))],
-                    )),
-                )),
+                body: if let Some(tail) = tail {
+                    Box::new(Cps::If(
+                        Value::from(cond_arg),
+                        Box::new(compile_and(tail, &mut |expr| {
+                            Cps::App(expr, vec![Value::from(k1)])
+                        })),
+                        Box::new(Cps::App(
+                            Value::from(k1),
+                            vec![Value::from(RuntimeValue::from(false))],
+                        )),
+                    ))
+                } else {
+                    Box::new(Cps::App(Value::from(k1), vec![Value::from(cond_arg)]))
+                },
                 val: k3,
                 cexp: Box::new(Cps::App(expr_result, vec![Value::from(k3)])),
                 span: None,
@@ -490,10 +492,7 @@ fn compile_or(exprs: &[Expression], meta_cont: &mut dyn FnMut(Value) -> Cps) -> 
                 args: LambdaArgs::new(vec![cond_arg], false, None),
                 body: Box::new(Cps::If(
                     Value::from(cond_arg),
-                    Box::new(Cps::App(
-                        Value::from(k1),
-                        vec![Value::from(RuntimeValue::from(true))],
-                    )),
+                    Box::new(Cps::App(Value::from(k1), vec![Value::from(cond_arg)])),
                     Box::new(if let Some(tail) = tail {
                         compile_or(tail, &mut |expr| Cps::App(expr, vec![Value::from(k1)]))
                     } else {

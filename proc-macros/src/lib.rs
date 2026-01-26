@@ -85,7 +85,18 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 Box::pin(
                     async move {
                         let result = #impl_name(
-                            #( &args[#arg_indices], )*
+                            #(
+                                match (&args[#arg_indices]).try_into() {
+                                    Ok(ok) => ok,
+                                    Err(err) => {
+                                        return ::scheme_rs::exceptions::raise(
+                                            runtime.clone(),
+                                            err.into(),
+                                            dyn_state,
+                                        )
+                                    }
+                                },
+                            )*
                             #rest_args
                         ).await;
                         // If the function returned an error, we want to raise
@@ -134,7 +145,18 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 #bridge
 
                 let result = #impl_name(
-                    #( &args[#arg_indices], )*
+                    #(
+                        match (&args[#arg_indices]).try_into() {
+                            Ok(ok) => ok,
+                            Err(err) => {
+                                return ::scheme_rs::exceptions::raise(
+                                    runtime.clone(),
+                                    err.into(),
+                                    dyn_state,
+                                )
+                            }
+                        },
+                    )*
                     #rest_args
                 );
 

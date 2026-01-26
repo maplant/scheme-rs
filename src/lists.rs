@@ -148,6 +148,67 @@ pub(crate) fn write_list(
     write!(f, ")")
 }
 
+/// A proper list.
+///
+/// Conversion to this type guarantees that a type is a proper list and allows
+/// for fast retrieval of the length or any individual element of the list.
+///
+/// # Performance
+///
+/// This is done by copying the list into a `Vec`, which can be a quite
+/// expensive operation, so only use this if you need all elements of the list.
+pub struct List {
+    head: Value,
+    items: Vec<Value>,
+}
+
+impl List {
+    pub fn as_slice(&self) -> &[Value] {
+        self.items.as_slice()
+    }
+
+    pub fn into_vec(self) -> Vec<Value> {
+        self.items
+    }
+
+    pub fn into_iter(self) -> impl Iterator<Item = Value> {
+        self.items.into_iter()
+    }
+}
+
+impl From<List> for Value {
+    fn from(value: List) -> Self {
+        value.head
+    }
+}
+
+impl From<&Value> for Option<List> {
+    fn from(value: &Value) -> Self {
+        let mut seen = HashSet::new();
+        let mut cdr = value.clone();
+        let mut items = Vec::new();
+        while !cdr.is_null() {
+            if !seen.insert(cdr.clone()) {
+                return None;
+            }
+            let (car, new_cdr) = cdr.cast_to_scheme_type()?;
+            items.push(car);
+            cdr = new_cdr;
+        }
+        Some(List { head: value.clone(), items })
+    }
+}
+
+impl TryFrom<&Value> for List {
+    type Error = Exception;
+
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        value
+            .cast_to_scheme_type::<List>()
+            .ok_or_else(|| Exception::error("value is not a proper list"))
+    }
+}
+
 /// Convert a slice of values to a proper list
 pub fn slice_to_list(items: &[Value]) -> Value {
     match items {
@@ -262,10 +323,8 @@ pub fn length(arg: &Value) -> Result<usize, Exception> {
 
 #[bridge(name = "list->vector", lib = "(rnrs base builtins (6))")]
 pub fn list_to_vector(list: &Value) -> Result<Vec<Value>, Exception> {
-    let mut vec = Vec::new();
-    list_to_vec(list, &mut vec);
-
-    Ok(vec![Value::from(vec)])
+    let List { items, .. } = list.try_to_scheme_type()?;
+    Ok(vec![Value::from(items)])
 }
 
 #[bridge(name = "append", lib = "(rnrs base builtins (6))")]
@@ -304,11 +363,7 @@ pub fn map(
             return Ok(Application::new(k.try_into()?, vec![Value::null()]));
         }
 
-        let (car, cdr) = match &*input.unpacked_ref() {
-            UnpackedValue::Pair(pair) => pair.clone().into(),
-            // UnpackedValue::Syntax(syn) => (Value::from(syn.car()?), Value::from(syn.cdr()?)),
-            _ => return Err(Exception::type_error("list", input.type_name())),
-        };
+        let (car, cdr) = input.try_to_scheme_type::<Pair>()?.into();
 
         args.push(car);
         *input = cdr;
@@ -366,17 +421,7 @@ unsafe extern "C" fn map_k(
                 return Box::into_raw(Box::new(app));
             }
 
-            let (car, cdr) = match &*input.unpacked_ref() {
-                UnpackedValue::Pair(pair) => pair.clone().into(),
-                /*
-                UnpackedValue::Syntax(syn) => (
-                    Value::from(syn.car().unwrap()),
-                    Value::from(syn.cdr().unwrap()),
-                ),
-                */
-                _ => unreachable!(),
-            };
-
+            let (car, cdr) = input.cast_to_scheme_type::<Pair>().unwrap().into();
             args.push(car);
             *input = cdr;
         }
@@ -397,5 +442,31 @@ unsafe extern "C" fn map_k(
         args.push(Value::from(map_k));
 
         Box::into_raw(Box::new(Application::new(mapper, args)))
+    }
+}
+
+#[bridge(name = "zip", lib = "(rnrs base builtins (6))")]
+pub fn zip(list1: &Value, listn: &[Value]) -> Result<Vec<Value>, Exception> {
+    let mut output: Option<Vec<Value>> = None;
+    for list in Some(list1).into_iter().chain(listn.into_iter()).rev() {
+        let List { items, .. } = list.try_to_scheme_type()?;
+        if let Some(output) = &output {
+            if output.len() != items.len() {
+                return Err(Exception::error("lists do not have the same length"));
+            }
+        } else {
+            output = Some(vec![Value::null(); items.len()]);
+        }
+
+        let output = output.as_mut().unwrap();
+        for (i, item) in items.into_iter().enumerate() {
+            output[i] = Value::from((item, output[i].clone()));
+        }
+    }
+
+    if let Some(output) = output {
+        Ok(vec![slice_to_list(&output)])
+    } else {
+        Ok(vec![Value::null()])
     }
 }

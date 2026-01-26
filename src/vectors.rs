@@ -5,7 +5,7 @@ use crate::symbols::Symbol;
 use crate::{
     exceptions::Exception,
     gc::{Gc, Trace},
-    lists::slice_to_list,
+    lists::{List, slice_to_list},
     registry::bridge,
     value::{Value, ValueType, write_value},
 };
@@ -31,6 +31,13 @@ pub struct Vector(pub(crate) Gc<VectorInner<Value>>);
 impl Vector {
     pub fn new(vec: Vec<Value>) -> Self {
         Self::from(vec)
+    }
+
+    pub fn new_mutable(vec: Vec<Value>) -> Self {
+        Self(Gc::new(VectorInner {
+            vec: RwLock::new(vec),
+            mutable: true,
+        }))
     }
 
     // TODO: Add more convenience functions here
@@ -60,6 +67,13 @@ pub struct ByteVector(pub(crate) Arc<VectorInner<u8>>);
 impl ByteVector {
     pub fn new(vec: Vec<u8>) -> Self {
         Self::from(vec)
+    }
+
+    pub fn new_mutable(vec: Vec<u8>) -> Self {
+        Self(Arc::new(VectorInner {
+            vec: RwLock::new(vec),
+            mutable: true,
+        }))
     }
 
     pub fn as_slice(&self) -> MappedRwLockReadGuard<'_, [u8]> {
@@ -109,6 +123,12 @@ impl Hash for ByteVector {
 impl PartialEq<[u8]> for ByteVector {
     fn eq(&self, rhs: &[u8]) -> bool {
         &*self.0.vec.read() == rhs
+    }
+}
+
+impl PartialEq for ByteVector {
+    fn eq(&self, rhs: &Self) -> bool {
+        *self.0.vec.read() == *rhs.0.vec.read()
     }
 }
 
@@ -397,7 +417,7 @@ pub fn vector_fill(
     Ok(vec![])
 }
 
-#[bridge(name = "native-endianness", lib = "(rnrs base bytevectors (6))")]
+#[bridge(name = "native-endianness", lib = "(rnrs bytevectors (6))")]
 pub fn native_endianness() -> Result<Vec<Value>, Exception> {
     #[cfg(target_endian = "little")]
     {
@@ -409,7 +429,36 @@ pub fn native_endianness() -> Result<Vec<Value>, Exception> {
     }
 }
 
-#[bridge(name = "bytevector?", lib = "(rnrs base bytevectors (6))")]
+#[bridge(name = "bytevector?", lib = "(rnrs bytevectors (6))")]
 pub fn bytevector_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(arg.type_of() == ValueType::ByteVector)])
+}
+
+#[bridge(name = "make-bytevector", lib = "(rnrs bytevectors (6))")]
+pub fn make_bytevector(k: usize, fill: &[Value]) -> Result<Vec<Value>, Exception> {
+    let fill: u8 = match fill {
+        [] => 0u8,
+        [fill] => fill.try_into()?,
+        _ => return Err(Exception::wrong_num_of_var_args(1..2, 1 + fill.len())),
+    };
+    Ok(vec![Value::from(ByteVector::new_mutable(vec![fill; k]))])
+}
+
+#[bridge(name = "bytevector-length", lib = "(rnrs bytevectors (6))")]
+pub fn bytevector_length(bytevector: ByteVector) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(bytevector.len())])
+}
+
+#[bridge(name = "bytevector=?", lib = "(rnrs bytevectors (6))")]
+pub fn bytevector_equal_pred(lhs: ByteVector, rhs: ByteVector) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(lhs == rhs)])
+}
+
+#[bridge(name = "u8-list->bytevector", lib = "(rnrs bytevectors (6))")]
+pub fn u8_list_to_bytevector(list: List) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(ByteVector::new_mutable(
+        list.into_iter()
+            .map(u8::try_from)
+            .collect::<Result<Vec<_>, _>>()?,
+    ))])
 }
