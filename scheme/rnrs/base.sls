@@ -1,21 +1,76 @@
 (library (rnrs base (6))
-  (export cond case let* caar cadr cddr caaar caadr cadar cdaar
-          caddr cdadr cddar cdddr call/cc for-each string-for-each
-          vector-for-each append make-list list-copy list-tail list-ref assoc
-          map reverse positive? negative? abs min max quasiquote
-          identifier-syntax assert
+  (export cond case let* caar cadr cdar cddr caaar caadr cadar cdaar caddr cdadr
+          cddar cdddr caaaar caaadr caadar caaddr cadaar cadadr caddar cadddr
+          cdaaar cdaadr cdadar cdaddr cddaar cddadr cdddar cddddr call/cc
+          for-each string-for-each vector-for-each vector-map append make-list
+          list-copy list-tail list-ref map reverse positive? negative? abs min
+          max quasiquote gcd lcm identifier-syntax assert rationalize
           (import (rnrs base builtins (6)))
           (import (rnrs syntax-rules (6)))
           (import (rnrs values (6)))
           (import (rnrs letrec (6)))
           (import (except (rnrs base special-keywords (6)) $undefined)))
-  
   (import (rnrs lists (6))
           (rnrs control (6))
           (rnrs syntax-case (6))
           (rnrs io simple builtins)
           (only (rnrs base special-keywords (6)) $undefined))
 
+  (define (gcd a b)
+    (if (= b 0)
+        a
+        (gcd b (mod a b))))
+
+  (define (lcm a b)
+    (* (/ (abs b) (gcd a b)) (abs a)))
+
+  ;; rationalize function taken from Larceny, with the following copyright
+  ;; attribution:
+  ;; 
+  ;; From MacScheme.
+  ;;
+  ;; This code was written by Alan Bawden.
+  ;; Its copyright status is unknown to me [i.e., to Will. --lars]
+  ;;
+  ;; Modified for R6RS semantics on infinities and NaNs.
+
+  (define (rationalize x e)
+    (define (simplest-rational x y)
+      (define (simplest-rational-internal x y)      ; assumes 0 < X < Y
+        (let ((fx (floor x))        ; [X] <= X < [X]+1
+              (fy (floor y)))       ; [Y] <= Y < [Y]+1, also [X] <= [Y]
+          (cond ((not (< fx x))
+                 ;; X is an integer so X is the answer:
+                 fx)
+                ((= fx fy)
+                 ;; [Y] = [X] < X < Y so expand the next term in the continued
+                 ;; fraction:
+                 (+ fx (/ (simplest-rational-internal
+                           (/ (- y fy)) (/ (- x fx))))))
+                (else
+                 ;; [X] < X < [X]+1 <= [Y] <= Y so [X]+1 is the answer:
+                 (+ 1 fx)))))
+      (cond ((< y x)
+             ;; Y < X so swap and try again:
+             (simplest-rational y x))
+            ((not (< x y))
+             ;; X = Y so if either is a rational that is the answer, otherwise
+             ;; X and Y are both infinite or both NaN.
+             (cond ((rational? x) x)
+                   ((rational? y) y)
+                   (else x)))
+            ((positive? x) 
+             ;; 0 < X < Y which is what SIMPLEST-RATIONAL-INTERNAL expects:
+             (simplest-rational-internal x y))
+            ((negative? y)
+             ;; X < Y < 0 so 0 < -Y < -X and we negate the answer:
+             (- (simplest-rational-internal (- y) (- x))))
+            ((and (exact? x) (exact? e))
+             ;; X <= 0 <= Y so zero is the answer:
+             0)
+            (else 0.0)))
+    (simplest-rational (- x e) (+ x e)))
+  
   (define-syntax cond
     (syntax-rules (else =>)
       ((cond (else result1 result2 ...))
@@ -76,6 +131,7 @@
   ;; TODO: All of the car/cdr combinations
   (define caar (lambda (x) (car (car x))))
   (define cadr (lambda (x) (car (cdr x))))
+  (define cdar (lambda (x) (cdr (car x))))
   (define cddr (lambda (x) (cdr (cdr x))))
   (define caaar (lambda (x) (car (car (car x)))))
   (define caadr (lambda (x) (car (car (cdr x)))))
@@ -85,7 +141,23 @@
   (define cdadr (lambda (x) (cdr (car (cdr x)))))
   (define cddar (lambda (x) (cdr (cdr (car x)))))
   (define cdddr (lambda (x) (cdr (cdr (cdr x)))))
-
+  (define caaaar (lambda (x) (car (car (car (car x))))))
+  (define caaadr (lambda (x) (car (car (car (cdr x))))))
+  (define caadar (lambda (x) (car (car (cdr (car x))))))
+  (define caaddr (lambda (x) (car (car (cdr (cdr x))))))
+  (define cadaar (lambda (x) (car (cdr (car (car x))))))
+  (define cadadr (lambda (x) (car (cdr (car (cdr x))))))
+  (define caddar (lambda (x) (car (cdr (cdr (car x))))))
+  (define cadddr (lambda (x) (car (cdr (cdr (cdr x))))))
+  (define cdaaar (lambda (x) (cdr (car (car (car x))))))
+  (define cdaadr (lambda (x) (cdr (car (car (cdr x))))))
+  (define cdadar (lambda (x) (cdr (car (cdr (car x))))))
+  (define cdaddr (lambda (x) (cdr (car (cdr (cdr x))))))
+  (define cddaar (lambda (x) (cdr (cdr (car (car x))))))
+  (define cddadr (lambda (x) (cdr (cdr (car (cdr x))))))
+  (define cdddar (lambda (x) (cdr (cdr (cdr (car x))))))
+  (define cddddr (lambda (x) (cdr (cdr (cdr (cdr x))))))
+  
   ;; call/cc is an alias of call-with-current-continuation
   (define call/cc call-with-current-continuation)
 
@@ -99,23 +171,22 @@
           (apply proc (car items))
           (loop (cdr items))))))
 
-  #;(define (string-for-each proc str1 . strn)
-    (let loop ([i 0]
-               [len (string-length str1)])
-      (when (< i len)
-        (proc (string-ref str1 i))
-        (loop (+ i 1) len)))
-    (unless (null? strn)
-      (apply string-for-each (cons proc strn))))
+  (define (string-for-each proc str1 . strn)
+    (let ([items (apply zip (cons (string->list str1) (map string->list strn)))])
+      (let loop ((items items))
+        (unless (null? items)
+          (apply proc (car items))
+          (loop (cdr items))))))
+  
+  (define (vector-map proc vec1 . vecn)
+    (list->vector (apply map proc (cons (vector->list vec1) (map vector->list vecn)))))
 
-  #;(define (vector-for-each proc vector1 . vectorn)
-    (let loop ([i 0]
-               [len (vector-length vector1)])
-      (when (< i len)
-        (proc (vector-ref vector1 i))
-        (loop (+ i 1) len)))
-    (unless (null? vectorn)
-      (apply vector-for-each (cons proc vectorn))))
+  (define (vector-for-each proc vec1 . vecn)
+    (let ([items (apply zip (cons (vector->list vec1) (map vector->list vecn)))])
+      (let loop ((items items))
+        (unless (null? items)
+          (apply proc (car items))
+          (loop (cdr items))))))
 
   (define (make-list n)
     (if (> n 0)
@@ -137,14 +208,6 @@
     (if (> n 0)
         (list-ref (cdr lst) (- n 1))
         (car lst)))
-
-  (define (assoc k lst)
-    (if (null? lst)
-        #f
-        (let ((pair (car lst)))
-          (if (equal? (car pair) k)
-              pair
-              (assoc k (cdr lst))))))
 
   (define (reverse ls)
     (define (reverse ls acc)

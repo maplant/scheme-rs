@@ -141,13 +141,14 @@ impl Exception {
             CompoundCondition::from((
                 Assertion::new(),
                 Message::new(format!(
-                    "Expected {expected:?} arguments, provided {provided}"
+                    "Expected {} to {} arguments, provided {provided}",
+                    expected.start, expected.end
                 )),
             )),
         )))
     }
 
-    pub fn implementation_violation(msg: impl fmt::Display) -> Self {
+    pub fn implementation_restriction(msg: impl fmt::Display) -> Self {
         Self(Value::from_rust_type(CompoundCondition::from((
             Assertion::new(),
             ImplementationRestriction::new(),

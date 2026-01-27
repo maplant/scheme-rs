@@ -120,6 +120,18 @@ fn add_five(num: &Value) -> Result<Vec<Value>, Exception> {
 }
 ```
 
+Bridge functions can also optionally automatically type-check their arguments at
+run-time, so the following definition is also valid:
+
+```rust
+# use scheme_rs::{
+# registry::bridge, value::Value, exceptions::Exception};
+#[bridge(name = "add-five", lib = "(add-five-lib)")]
+fn add_five(num: usize) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(num + 5)])
+}
+```
+
 Once you've defined a bridge function it can be imported and called from scheme:
 
 ```rust

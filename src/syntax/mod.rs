@@ -407,7 +407,7 @@ impl Syntax {
 impl fmt::Debug for Syntax {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Syntax::Null { .. } => write!(f, "()"),
+            Syntax::Null { span, .. } => write!(f, "() @ {span}"),
             Syntax::List { list, .. } => {
                 // Proper list
                 let proper_list = matches!(list.last(), Some(Syntax::Null { .. }));
@@ -453,7 +453,7 @@ impl fmt::Debug for Syntax {
                 write!(f, "{literal}")
             }
             Syntax::Identifier { ident, span, .. } => {
-                write!(f, "{} @ {span}", ident.sym, )
+                write!(f, "{} @ {span}", ident.sym,)
             }
         }
     }

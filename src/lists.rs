@@ -10,6 +10,7 @@ use crate::{
     proc::{Application, DynamicState, Procedure},
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
+    strings::WideString,
     value::{UnpackedValue, Value, ValueType, write_value},
     vectors::Vector,
 };
@@ -195,7 +196,10 @@ impl From<&Value> for Option<List> {
             items.push(car);
             cdr = new_cdr;
         }
-        Some(List { head: value.clone(), items })
+        Some(List {
+            head: value.clone(),
+            items,
+        })
     }
 }
 
@@ -325,6 +329,15 @@ pub fn length(arg: &Value) -> Result<usize, Exception> {
 pub fn list_to_vector(list: &Value) -> Result<Vec<Value>, Exception> {
     let List { items, .. } = list.try_to_scheme_type()?;
     Ok(vec![Value::from(items)])
+}
+
+#[bridge(name = "list->string", lib = "(rnrs base builtins (6))")]
+pub fn list_to_string(List { items, .. }: List) -> Result<Vec<Value>, Exception> {
+    let chars = items
+        .into_iter()
+        .map(char::try_from)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(vec![Value::from(WideString::new_mutable(chars))])
 }
 
 #[bridge(name = "append", lib = "(rnrs base builtins (6))")]

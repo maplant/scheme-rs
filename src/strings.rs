@@ -206,6 +206,97 @@ pub fn string_eq_pred(
     Ok(vec![Value::from(true)])
 }
 
+#[bridge(name = "string<?", lib = "(rnrs base builtins (6))")]
+pub fn string_less_pred(
+    string_1: WideString,
+    string_2: &Value,
+    string_n: &[Value],
+) -> Result<Vec<Value>, Exception> {
+    let mut prev_string = string_1;
+    for string_n in Some(string_2).into_iter().chain(string_n.iter()).cloned() {
+        let string_n: WideString = string_n.try_into()?;
+        {
+            let prev_string_read = prev_string.0.chars.read();
+            if !(&*prev_string_read < &*string_n.0.chars.read()) {
+                return Ok(vec![Value::from(false)]);
+            }
+        }
+        prev_string = string_n;
+    }
+    Ok(vec![Value::from(true)])
+}
+
+#[bridge(name = "string>?", lib = "(rnrs base builtins (6))")]
+pub fn string_greater_pred(
+    string_1: WideString,
+    string_2: &Value,
+    string_n: &[Value],
+) -> Result<Vec<Value>, Exception> {
+    let mut prev_string = string_1;
+    for string_n in Some(string_2).into_iter().chain(string_n.iter()).cloned() {
+        let string_n: WideString = string_n.try_into()?;
+        {
+            let prev_string_read = prev_string.0.chars.read();
+            if !(&*prev_string_read > &*string_n.0.chars.read()) {
+                return Ok(vec![Value::from(false)]);
+            }
+        }
+        prev_string = string_n;
+    }
+    Ok(vec![Value::from(true)])
+}
+
+#[bridge(name = "string<=?", lib = "(rnrs base builtins (6))")]
+pub fn string_less_equal_pred(
+    string_1: WideString,
+    string_2: &Value,
+    string_n: &[Value],
+) -> Result<Vec<Value>, Exception> {
+    let mut prev_string = string_1;
+    for string_n in Some(string_2).into_iter().chain(string_n.iter()).cloned() {
+        let string_n: WideString = string_n.try_into()?;
+        {
+            let prev_string_read = prev_string.0.chars.read();
+            if !(&*prev_string_read <= &*string_n.0.chars.read()) {
+                return Ok(vec![Value::from(false)]);
+            }
+        }
+        prev_string = string_n;
+    }
+    Ok(vec![Value::from(true)])
+}
+
+#[bridge(name = "string>=?", lib = "(rnrs base builtins (6))")]
+pub fn string_greater_equal_pred(
+    string_1: WideString,
+    string_2: &Value,
+    string_n: &[Value],
+) -> Result<Vec<Value>, Exception> {
+    let mut prev_string = string_1;
+    for string_n in Some(string_2).into_iter().chain(string_n.iter()).cloned() {
+        let string_n: WideString = string_n.try_into()?;
+        {
+            let prev_string_read = prev_string.0.chars.read();
+            if !(&*prev_string_read >= &*string_n.0.chars.read()) {
+                return Ok(vec![Value::from(false)]);
+            }
+        }
+        prev_string = string_n;
+    }
+    Ok(vec![Value::from(true)])
+}
+
+#[bridge(name = "substring", lib = "(rnrs base builtins (6))")]
+pub fn substring(string: WideString, start: usize, end: usize) -> Result<Vec<Value>, Exception> {
+    if start > end {
+        return Err(Exception::error(format!(
+            "start ({start}) cannot be greater than end ({end})"
+        )));
+    }
+    let substr = string.0.chars.read()[start..end].to_vec();
+    Ok(vec![Value::from(WideString::new_mutable(substr))])
+}
+
 #[bridge(name = "string-append", lib = "(rnrs base builtins (6))")]
 pub fn list(args: &[Value]) -> Result<Vec<Value>, Exception> {
     let mut output = String::new();
@@ -214,6 +305,21 @@ pub fn list(args: &[Value]) -> Result<Vec<Value>, Exception> {
         output += arg.as_str();
     }
     Ok(vec![Value::from(output)])
+}
+
+#[bridge(name = "string->list", lib = "(rnrs base builtins (6))")]
+pub fn string_to_list(string: WideString) -> Result<Vec<Value>, Exception> {
+    let mut list = Value::null();
+    for chr in string.0.chars.read().iter().rev() {
+        list = Value::from((Value::from(*chr), list));
+    }
+    Ok(vec![Value::from(list)])
+}
+
+#[bridge(name = "string-copy", lib = "(rnrs base builtins (6))")]
+pub fn string_copy(string: WideString) -> Result<Vec<Value>, Exception> {
+    let copy = string.0.chars.read().clone();
+    Ok(vec![Value::from(WideString::new_mutable(copy))])
 }
 
 #[bridge(name = "string->vector", lib = "(rnrs base builtins (6))")]

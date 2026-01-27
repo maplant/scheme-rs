@@ -1982,17 +1982,21 @@ fn splice_in_inner(
                     (Some(Either::Left(SpecialKeyword::LetSyntax)), [bindings, form @ ..]) => {
                         let new_env =
                             maybe_await!(parse_let_syntax(ctxt, false, bindings, &expansion_env))?;
-                        maybe_await!(splice_in(
-                            ctxt, permissive, form, &new_env, &expanded, defs, exprs
-                        ))?;
+                        if !form.is_empty() {
+                            maybe_await!(splice_in(
+                                ctxt, permissive, form, &new_env, &expanded, defs, exprs
+                            ))?;
+                        }
                         continue;
                     }
                     (Some(Either::Left(SpecialKeyword::LetRecSyntax)), [bindings, form @ ..]) => {
                         let new_env =
                             maybe_await!(parse_let_syntax(ctxt, true, bindings, &expansion_env))?;
-                        maybe_await!(splice_in(
-                            ctxt, permissive, form, &new_env, &expanded, defs, exprs
-                        ))?;
+                        if !form.is_empty() {
+                            maybe_await!(splice_in(
+                                ctxt, permissive, form, &new_env, &expanded, defs, exprs
+                            ))?;
+                        }
                         continue;
                     }
                     (Some(Either::Left(SpecialKeyword::Import)), imports) => {
@@ -2036,6 +2040,10 @@ fn parse_let_syntax(
     bindings: &Syntax,
     env: &Environment,
 ) -> Result<Environment, Exception> {
+    if bindings.is_null() {
+        return Ok(env.new_let_syntax_contour(recursive));
+    }
+
     let Some([keyword_bindings @ .., Syntax::Null { .. }]) = bindings.as_list() else {
         return Err(error::expected_list(bindings));
     };

@@ -4050,7 +4050,7 @@ pub fn open_output_file(filename: &Value) -> Result<Vec<Value>, Exception> {
 #[maybe_async]
 #[cps_bridge(
     def = "read-char . textual-input-port",
-    lib = "(rnrs io simple builtins (6))" 
+    lib = "(rnrs io simple builtins (6))"
 )]
 pub fn read_char(
     runtime: &Runtime,
@@ -4116,7 +4116,10 @@ pub fn peek_char(
 }
 
 #[maybe_async]
-#[cps_bridge(def = "read . textual-input-port", lib = "(rnrs io simple builtins (6))")]
+#[cps_bridge(
+    def = "read . textual-input-port",
+    lib = "(rnrs io simple builtins (6))"
+)]
 pub fn read(
     runtime: &Runtime,
     _env: &[Value],

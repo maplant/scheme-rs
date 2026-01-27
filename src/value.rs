@@ -94,7 +94,7 @@ use crate::{
     gc::{Gc, GcInner, Trace},
     hashtables::{HashTable, HashTableInner},
     lists::{self, Pair, PairInner},
-    num::{Number, NumberInner, SimpleNumber},
+    num::{ComplexNumber, Number, NumberInner, SimpleNumber},
     ports::{Port, PortInner},
     proc::{Procedure, ProcedureInner},
     records::{Record, RecordInner, RecordTypeDescriptor, SchemeCompatible},
@@ -105,7 +105,15 @@ use crate::{
     vectors::{self, ByteVector, Vector, VectorInner},
 };
 use std::{
-    collections::HashMap, convert::Infallible, fmt, hash::{Hash, Hasher}, marker::PhantomData, mem::ManuallyDrop, ops::Deref, ptr::null, sync::Arc
+    collections::HashMap,
+    convert::Infallible,
+    fmt,
+    hash::{Hash, Hasher},
+    marker::PhantomData,
+    mem::ManuallyDrop,
+    ops::Deref,
+    ptr::null,
+    sync::Arc,
 };
 
 const ALIGNMENT: usize = 16;
@@ -1356,6 +1364,7 @@ impl_num_conversion!(isize);
 impl_num_conversion!(f64);
 impl_num_conversion!(Integer);
 impl_num_conversion!(SimpleNumber);
+impl_num_conversion!(ComplexNumber);
 
 impl From<Value> for Option<(Value, Value)> {
     fn from(value: Value) -> Self {
