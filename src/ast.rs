@@ -1,6 +1,7 @@
 //! Data structures for expanding and representing Scheme code.
 
 use crate::{
+    Either,
     cps::{Compile, PrimOp},
     env::{Environment, Local, Var},
     exceptions::Exception,
@@ -13,13 +14,12 @@ use crate::{
     syntax::{FullyExpanded, Identifier, Span, Syntax},
     value::Value,
 };
-use either::Either;
 
-use derive_more::From;
 use scheme_rs_macros::{maybe_async, maybe_await};
 use std::{
     collections::{HashMap, HashSet},
     fmt,
+    str::FromStr,
     sync::Arc,
 };
 
@@ -115,7 +115,7 @@ mod error {
 
 /// Special keywords are keywords that the compiler needs to know about in order
 /// to create a proper AST as specified by R6RS base.
-#[derive(Copy, Clone, Trace, Debug)]
+#[derive(Copy, Clone, Trace, Debug, PartialEq, Eq)]
 pub enum SpecialKeyword {
     Undefined,
     Begin,
@@ -231,6 +231,15 @@ impl LibraryName {
             _ => Err(Exception::error(format!("bad form in '{s}'"))),
         }
     }
+
+    pub fn name(&self) -> String {
+        let lib_name = self
+            .name
+            .iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<String>>();
+        format!("({})", lib_name.join(" "))
+    }
 }
 
 fn list_to_name(name: &[Syntax], form: &Syntax) -> Result<Vec<Symbol>, Exception> {
@@ -295,6 +304,19 @@ impl Version {
     }
 }
 
+impl fmt::Display for Version {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "(")?;
+        for (i, sv) in self.version.iter().enumerate() {
+            if i > 0 {
+                write!(f, " ")?;
+            }
+            write!(f, "{sv}")?;
+        }
+        write!(f, ")")
+    }
+}
+
 impl<const N: usize> From<[usize; N]> for Version {
     fn from(value: [usize; N]) -> Self {
         Self {
@@ -312,6 +334,21 @@ pub enum VersionReference {
 }
 
 impl VersionReference {
+    pub fn matches(&self, version: &Version) -> bool {
+        match self {
+            Self::SubVersions(subversions) if version.version.len() >= subversions.len() => {
+                subversions
+                    .iter()
+                    .zip(version.version.iter())
+                    .all(|(svr, ver)| svr.matches(*ver))
+            }
+            Self::SubVersions(_) => false,
+            Self::And(vrs) => vrs.iter().all(|vr| vr.matches(version)),
+            Self::Or(vrs) => vrs.iter().any(|vr| vr.matches(version)),
+            Self::Not(vr) => !vr.matches(version),
+        }
+    }
+
     fn parse(form: &Syntax) -> Result<Self, Exception> {
         match form.as_list() {
             Some(
@@ -363,6 +400,46 @@ impl VersionReference {
     }
 }
 
+impl fmt::Display for VersionReference {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SubVersions(svs) => {
+                write!(f, "(")?;
+                for (i, sv) in svs.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
+                    write!(f, "{sv}")?;
+                }
+                write!(f, ")")
+            }
+            Self::And(svs) => {
+                write!(f, "(and ")?;
+                for (i, sv) in svs.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
+                    write!(f, "{sv}")?;
+                }
+                write!(f, ")")
+            }
+            Self::Or(svs) => {
+                write!(f, "(and ")?;
+                for (i, sv) in svs.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
+                    write!(f, "{sv}")?;
+                }
+                write!(f, ")")
+            }
+            Self::Not(sv) => {
+                write!(f, "(not {sv})")
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum SubVersionReference {
     SubVersion(usize),
@@ -374,6 +451,17 @@ pub enum SubVersionReference {
 }
 
 impl SubVersionReference {
+    fn matches(&self, lhs: usize) -> bool {
+        match self {
+            Self::SubVersion(rhs) => lhs == *rhs,
+            Self::Gte(rhs) => lhs >= *rhs,
+            Self::Lte(rhs) => lhs <= *rhs,
+            Self::And(refs) => refs.iter().all(|r| r.matches(lhs)),
+            Self::Or(refs) => refs.iter().any(|r| r.matches(lhs)),
+            Self::Not(svr) => !svr.matches(lhs),
+        }
+    }
+
     fn parse(form: &Syntax) -> Result<Self, Exception> {
         match form {
             Syntax::Literal {
@@ -440,6 +528,39 @@ impl SubVersionReference {
                 None => Err(error::expected_list(form)),
                 _ => Err(error::bad_form(form, None)),
             },
+        }
+    }
+}
+
+impl fmt::Display for SubVersionReference {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SubVersion(sv) => write!(f, "{sv}"),
+            Self::Gte(sv) => write!(f, "(>= {sv})"),
+            Self::Lte(sv) => write!(f, "(<= {sv})"),
+            Self::And(svs) => {
+                write!(f, "(and ")?;
+                for (i, sv) in svs.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
+                    write!(f, "{sv}")?;
+                }
+                write!(f, ")")
+            }
+            Self::Or(svs) => {
+                write!(f, "(and ")?;
+                for (i, sv) in svs.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
+                    write!(f, "{sv}")?;
+                }
+                write!(f, ")")
+            }
+            Self::Not(sv) => {
+                write!(f, "(not {sv})")
+            }
         }
     }
 }
@@ -709,8 +830,12 @@ impl ImportSet {
             _ => Err(error::expected_list(form)),
         }
     }
+}
 
-    pub fn parse_from_str(s: &str) -> Result<Self, Exception> {
+impl FromStr for ImportSet {
+    type Err = Exception;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         let form = Syntax::from_str(s, None)?;
         match form.as_list() {
             Some([item, Syntax::Null { .. }]) => Self::parse(item),
@@ -722,7 +847,7 @@ impl ImportSet {
 #[derive(Debug)]
 pub struct LibraryReference {
     pub(crate) name: Vec<Symbol>,
-    pub(crate) _version_ref: VersionReference,
+    pub(crate) version_ref: VersionReference,
 }
 
 impl LibraryReference {
@@ -742,8 +867,8 @@ impl LibraryReference {
                         _ => Err(error::expected_identifier(form, Some(atom))),
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                let _version_ref = VersionReference::parse(version_ref)?;
-                Ok(LibraryReference { name, _version_ref })
+                let version_ref = VersionReference::parse(version_ref)?;
+                Ok(LibraryReference { name, version_ref })
             }
             Some([syms @ .., Syntax::Null { .. }]) => {
                 let name = syms
@@ -755,7 +880,7 @@ impl LibraryReference {
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(LibraryReference {
                     name,
-                    _version_ref: VersionReference::SubVersions(Vec::new()),
+                    version_ref: VersionReference::SubVersions(Vec::new()),
                 })
             }
             None => Err(error::expected_list(form)),
@@ -815,7 +940,7 @@ impl Definition {
     }
 
     #[maybe_async]
-    pub fn parse(
+    pub(crate) fn parse(
         ctxt: &ParseContext,
         syn: &[Syntax],
         env: &Environment,
@@ -959,7 +1084,11 @@ pub enum Expression {
 
 impl Expression {
     #[maybe_async]
-    pub fn parse(ctxt: &ParseContext, form: Syntax, env: &Environment) -> Result<Self, Exception> {
+    pub(crate) fn parse(
+        ctxt: &ParseContext,
+        form: Syntax,
+        env: &Environment,
+    ) -> Result<Self, Exception> {
         let FullyExpanded {
             expansion_env,
             expanded,
@@ -1101,24 +1230,21 @@ impl Expression {
     pub fn to_primop(&self) -> Option<PrimOp> {
         use crate::{
             lists::{cons, list},
-            num::{
-                add_builtin, div_builtin, equal_builtin, greater_builtin, greater_equal_builtin,
-                lesser_builtin, lesser_equal_builtin, mul_builtin, sub_builtin,
-            },
+            num::{add, div, equal, greater, greater_equal, lesser, lesser_equal, mul, sub},
             proc::{BridgePtr, FuncPtr::Bridge, Procedure},
         };
         use std::ptr::fn_addr_eq;
 
         const PRIMOP_TAB: &[(BridgePtr, PrimOp)] = &[
-            (add_builtin, PrimOp::Add),
-            (sub_builtin, PrimOp::Sub),
-            (mul_builtin, PrimOp::Mul),
-            (div_builtin, PrimOp::Div),
-            (equal_builtin, PrimOp::Equal),
-            (greater_builtin, PrimOp::Greater),
-            (greater_equal_builtin, PrimOp::GreaterEqual),
-            (lesser_builtin, PrimOp::Lesser),
-            (lesser_equal_builtin, PrimOp::LesserEqual),
+            (add, PrimOp::Add),
+            (sub, PrimOp::Sub),
+            (mul, PrimOp::Mul),
+            (div, PrimOp::Div),
+            (equal, PrimOp::Equal),
+            (greater, PrimOp::Greater),
+            (greater_equal, PrimOp::GreaterEqual),
+            (lesser, PrimOp::Lesser),
+            (lesser_equal, PrimOp::LesserEqual),
             (cons, PrimOp::Cons),
             (list, PrimOp::List),
         ];
@@ -1193,7 +1319,7 @@ impl SyntaxQuote {
             [expr] => {
                 let mut expansions = HashMap::new();
                 let template =
-                    Template::compile(expr, env, &mut expansions, &mut HashMap::default());
+                    Template::compile(expr, env, &mut expansions, &mut HashMap::default())?;
                 Ok(SyntaxQuote {
                     template,
                     expansions,
@@ -1339,10 +1465,6 @@ pub struct Let {
 }
 
 impl Let {
-    pub fn new(bindings: Vec<(Local, Expression)>, body: DefinitionBody) -> Self {
-        Self { bindings, body }
-    }
-
     #[maybe_async]
     fn parse(
         ctxt: &ParseContext,
@@ -1631,7 +1753,7 @@ impl DefinitionBody {
     }
 
     #[maybe_async]
-    pub fn parse_lib_body(
+    pub(crate) fn parse_lib_body(
         runtime: &Runtime,
         form: &Syntax,
         env: &Environment,
@@ -1650,7 +1772,7 @@ impl DefinitionBody {
     }
 
     #[maybe_async]
-    pub fn parse(
+    pub(crate) fn parse(
         ctxt: &ParseContext,
         body: &[Syntax],
         env: &Environment,
@@ -1860,17 +1982,21 @@ fn splice_in_inner(
                     (Some(Either::Left(SpecialKeyword::LetSyntax)), [bindings, form @ ..]) => {
                         let new_env =
                             maybe_await!(parse_let_syntax(ctxt, false, bindings, &expansion_env))?;
-                        maybe_await!(splice_in(
-                            ctxt, permissive, form, &new_env, &expanded, defs, exprs
-                        ))?;
+                        if !form.is_empty() {
+                            maybe_await!(splice_in(
+                                ctxt, permissive, form, &new_env, &expanded, defs, exprs
+                            ))?;
+                        }
                         continue;
                     }
                     (Some(Either::Left(SpecialKeyword::LetRecSyntax)), [bindings, form @ ..]) => {
                         let new_env =
                             maybe_await!(parse_let_syntax(ctxt, true, bindings, &expansion_env))?;
-                        maybe_await!(splice_in(
-                            ctxt, permissive, form, &new_env, &expanded, defs, exprs
-                        ))?;
+                        if !form.is_empty() {
+                            maybe_await!(splice_in(
+                                ctxt, permissive, form, &new_env, &expanded, defs, exprs
+                            ))?;
+                        }
                         continue;
                     }
                     (Some(Either::Left(SpecialKeyword::Import)), imports) => {
@@ -1914,6 +2040,10 @@ fn parse_let_syntax(
     bindings: &Syntax,
     env: &Environment,
 ) -> Result<Environment, Exception> {
+    if bindings.is_null() {
+        return Ok(env.new_let_syntax_contour(recursive));
+    }
+
     let Some([keyword_bindings @ .., Syntax::Null { .. }]) = bindings.as_list() else {
         return Err(error::expected_list(bindings));
     };
@@ -2018,7 +2148,7 @@ impl SyntaxCase {
                 // TODO: ensure keywords_list is proper
                 for keyword in &list[..list.len() - 1] {
                     if let Syntax::Identifier { ident, .. } = keyword {
-                        keywords.insert(ident.sym);
+                        keywords.insert(ident);
                     } else {
                         return Err(error::expected_identifier(form, Some(keyword)));
                     }

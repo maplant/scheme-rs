@@ -68,11 +68,11 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
 
     let arg_indices: Vec<_> = (0..num_args).collect();
 
-    // let arg_idents: Vec<_> = (0..num_args).map(|i| format_ident!("a{i}")).collect();
+    let visibility = bridge.vis.clone();
 
     if bridge.sig.asyncness.is_some() {
         quote! {
-            pub(crate) fn #wrapper_name<'a>(
+            #visibility fn #wrapper_name<'a>(
                 runtime: &'a ::scheme_rs::runtime::Runtime,
                 _env: &'a [::scheme_rs::value::Value],
                 args: &'a [::scheme_rs::value::Value],
@@ -85,7 +85,18 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 Box::pin(
                     async move {
                         let result = #impl_name(
-                            #( &args[#arg_indices], )*
+                            #(
+                                match (&args[#arg_indices]).try_into() {
+                                    Ok(ok) => ok,
+                                    Err(err) => {
+                                        return ::scheme_rs::exceptions::raise(
+                                            runtime.clone(),
+                                            err.into(),
+                                            dyn_state,
+                                        )
+                                    }
+                                },
+                            )*
                             #rest_args
                         ).await;
                         // If the function returned an error, we want to raise
@@ -123,7 +134,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         }
     } else {
         quote! {
-            pub(crate) fn #wrapper_name<'a>(
+            #visibility fn #wrapper_name(
                 runtime: &::scheme_rs::runtime::Runtime,
                 _env: &[::scheme_rs::value::Value],
                 args: &[::scheme_rs::value::Value],
@@ -134,7 +145,18 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 #bridge
 
                 let result = #impl_name(
-                    #( &args[#arg_indices], )*
+                    #(
+                        match (&args[#arg_indices]).try_into() {
+                            Ok(ok) => ok,
+                            Err(err) => {
+                                return ::scheme_rs::exceptions::raise(
+                                    runtime.clone(),
+                                    err.into(),
+                                    dyn_state,
+                                )
+                            }
+                        },
+                    )*
                     #rest_args
                 );
 
@@ -798,8 +820,9 @@ struct Rtd {
     opaque: Option<Expr>,
     sealed: Option<LitBool>,
     uid: Option<LitStr>,
-    constructor: Option<Expr>,
+    constructor: Option<ExprClosure>,
     fields: Option<Vec<RtdField>>,
+    lib: Option<LitStr>,
 }
 
 impl Parse for Rtd {
@@ -810,7 +833,8 @@ impl Parse for Rtd {
         let mut sealed = None;
         let mut fields = None;
         let mut uid = None;
-        let mut constructor = None;
+        let mut lib = None;
+        let mut constructor: Option<ExprClosure> = None;
         while !input.is_empty() {
             let keyword: Ident = input.parse()?;
             if keyword == "name" {
@@ -852,6 +876,12 @@ impl Parse for Rtd {
                 }
                 let _: Token![:] = input.parse()?;
                 uid = Some(input.parse()?);
+            } else if keyword == "lib" {
+                if lib.is_some() {
+                    return Err(Error::new(keyword.span(), "duplicate definition of lib"));
+                }
+                let _: Token![:] = input.parse()?;
+                lib = Some(input.parse()?);
             } else if keyword == "fields" {
                 if fields.is_some() {
                     return Err(Error::new(keyword.span(), "duplicate definition of fields"));
@@ -889,10 +919,12 @@ impl Parse for Rtd {
             uid,
             constructor,
             fields,
+            lib,
         })
     }
 }
 
+/// Convenience macro for declaring RecordTypeDescriptors
 #[proc_macro]
 pub fn rtd(tokens: TokenStream) -> TokenStream {
     let Rtd {
@@ -903,6 +935,7 @@ pub fn rtd(tokens: TokenStream) -> TokenStream {
         uid,
         constructor,
         fields,
+        lib,
     } = parse_macro_input!(tokens as Rtd);
 
     let fields = fields
@@ -912,7 +945,7 @@ pub fn rtd(tokens: TokenStream) -> TokenStream {
         .collect::<Vec<_>>();
     let inherits = match parent {
         Some(parent) => quote!({
-            let parent = #parent.clone();
+            let parent = <#parent as ::scheme_rs::records::SchemeCompatible>::rtd();
             let mut inherits = parent.inherits.clone();
             inherits.insert(::by_address::ByAddress(parent));
             inherits
@@ -921,7 +954,18 @@ pub fn rtd(tokens: TokenStream) -> TokenStream {
     };
     let rust_parent_constructor = match constructor {
         Some(constructor) => {
-            quote!(Some(::scheme_rs::records::RustParentConstructor::new(#constructor)))
+            let num_inputs = constructor.inputs.len();
+            let inputs = 0..num_inputs;
+            let types = inputs.clone().map(|_| quote!(::scheme_rs::value::Value));
+            quote!(Some({
+                ::scheme_rs::records::RustParentConstructor::new(|vals| {
+                    if vals.len() != #num_inputs {
+                        return Err(::scheme_rs::exceptions::Exception::wrong_num_of_args(#num_inputs, vals.len()));
+                    }
+                    let constructor: fn(#(#types,)*) -> Result<_, ::scheme_rs::exceptions::Exception> = #constructor;
+                    Ok(::scheme_rs::records::into_scheme_compatible(::scheme_rs::gc::Gc::new((constructor)(#(vals[#inputs].clone(),)*)?)))
+                })
+            }))
         }
         None => quote!(None),
     };
@@ -931,6 +975,16 @@ pub fn rtd(tokens: TokenStream) -> TokenStream {
         Some(uid) => quote!(Some(::scheme_rs::symbols::Symbol::intern(#uid))),
         None => quote!(None),
     };
+
+    let bridge = lib.map(|lib| {
+        let name = format!("{}-rtd", name.value());
+        quote! {
+            #[::scheme_rs_macros::bridge(name = #name, lib = #lib)]
+            pub fn rtd() -> Result<Vec<::scheme_rs::value::Value>, ::scheme_rs::exceptions::Exception> {
+                Ok(vec![::scheme_rs::value::Value::from(RTD.clone())])
+            }
+        }
+    });
 
     quote! {
         {
@@ -948,6 +1002,7 @@ pub fn rtd(tokens: TokenStream) -> TokenStream {
                         rust_type: true
                     })
                 });
+            #bridge
             RTD.clone()
         }
     }.into()
@@ -970,6 +1025,7 @@ impl Parse for DctField {
 struct DefineConditionType {
     scheme_name: LitStr,
     rust_name: Ident,
+    lib: Option<LitStr>,
     parent: Type,
     constructor: Option<ExprClosure>,
     fields: Option<Vec<DctField>>,
@@ -984,6 +1040,7 @@ impl Parse for DefineConditionType {
         let mut constructor = None;
         let mut fields = None;
         let mut dbg = None;
+        let mut lib = None;
 
         while !input.is_empty() {
             let keyword: Ident = input.parse()?;
@@ -996,6 +1053,15 @@ impl Parse for DefineConditionType {
                 }
                 let _: Token![:] = input.parse()?;
                 scheme_name = Some(input.parse()?);
+            } else if keyword == "lib" {
+                if lib.is_some() {
+                    return Err(Error::new(
+                        keyword.span(),
+                        "duplicate definition of lib",
+                    ));
+                }
+                let _: Token![:] = input.parse()?;
+                lib = Some(input.parse()?);
             } else if keyword == "rust_name" {
                 if rust_name.is_some() {
                     return Err(Error::new(
@@ -1063,6 +1129,7 @@ impl Parse for DefineConditionType {
             constructor,
             fields,
             dbg,
+            lib,
         })
     }
 }
@@ -1076,6 +1143,7 @@ pub fn define_condition_type(tokens: TokenStream) -> TokenStream {
         constructor,
         fields,
         dbg,
+        lib,
     } = parse_macro_input!(tokens as DefineConditionType);
 
     let (field_names, field_tys): (Vec<_>, Vec<_>) = fields
@@ -1091,18 +1159,15 @@ pub fn define_condition_type(tokens: TokenStream) -> TokenStream {
 
     let field_idxs = 0..field_names.len();
 
+    let lib = lib.map(|lib| quote!(lib: #lib,));
+
     let constructor =  constructor.map_or_else(
         || quote! {
-            constructor: |_| Ok(::scheme_rs::records::into_scheme_compatible(Gc::new(#rust_name::default()))),
+            constructor: || Ok(#rust_name::default()),
         },
         |constructor| {
-            let inputs = 0..constructor.inputs.len();
-            let types = inputs.clone().map(|_| quote!(::scheme_rs::value::Value));
             quote!(
-                constructor: |vals| {
-                    let constructor: fn(#(#types,)*) -> Result<#rust_name, ::scheme_rs::exceptions::Exception> = #constructor;
-                    Ok(::scheme_rs::records::into_scheme_compatible(Gc::new((constructor)(#(vals[#inputs].clone(),)*)?)))
-                },
+                constructor: #constructor,
             )
         });
 
@@ -1125,7 +1190,8 @@ pub fn define_condition_type(tokens: TokenStream) -> TokenStream {
             fn rtd() -> std::sync::Arc<::scheme_rs::records::RecordTypeDescriptor> {
                 ::scheme_rs::records::rtd!(
                     name: #scheme_name,
-                    parent: #parent::rtd(),
+                    parent: #parent,
+                    #lib
                     fields: [#(#field_name_strs,)*],
                     #constructor
                 )
@@ -1140,10 +1206,10 @@ pub fn define_condition_type(tokens: TokenStream) -> TokenStream {
                     .then(|| ::scheme_rs::records::into_scheme_compatible(self.parent.clone()))
             }
 
-            fn get_field(&self, k: usize) -> ::scheme_rs::value::Value {
+            fn get_field(&self, k: usize) -> Result<::scheme_rs::value::Value, ::scheme_rs::exceptions::Exception> {
                 match k {
-                    #(#field_idxs => ::scheme_rs::value::Value::from(self.#field_names.clone()),)*
-                    _ => panic!("{k} is out of bounds"),
+                    #(#field_idxs => Ok(::scheme_rs::value::Value::from(self.#field_names.clone())),)*
+                    _ => Err(Exception::error(format!("invalid record field: {k}"))),
                 }
             }
         }

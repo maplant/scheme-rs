@@ -1,3 +1,4 @@
+use clap::Parser;
 use rustyline::{
     Completer, Config, Editor, Helper, Highlighter, Hinter, Validator,
     highlight::MatchingBracketHighlighter,
@@ -5,19 +6,23 @@ use rustyline::{
     validate::{ValidationContext, ValidationResult, Validator},
 };
 use scheme_rs::{
-    ast::{DefinitionBody, ImportSet, ParseContext},
-    cps::Compile,
-    env::Environment,
+    env::TopLevelEnvironment,
     exceptions::Exception,
     ports::{BufferMode, Port, Prompt, Transcoder},
-    proc::{Application, DynamicState},
-    registry::Library,
     runtime::Runtime,
     syntax::{Span, Syntax},
-    value::Value,
 };
 use scheme_rs_macros::{maybe_async, maybe_await};
-use std::process::ExitCode;
+use std::path::Path;
+
+#[derive(Parser, Debug)]
+struct Args {
+    /// Scheme programs to run
+    files: Vec<String>,
+    /// Force interactive mode (REPL)
+    #[arg(short, long)]
+    interactive: bool,
+}
 
 #[derive(Default)]
 struct InputValidator;
@@ -43,12 +48,24 @@ struct InputHelper {
 
 #[maybe_async]
 #[cfg_attr(feature = "async", tokio::main)]
-fn main() -> ExitCode {
-    let runtime = Runtime::new();
-    let repl = Library::new_repl(&runtime);
-    let env = Environment::Top(repl);
+fn main() -> Result<(), Exception> {
+    let args = Args::parse();
 
-    maybe_await!(env.import(ImportSet::parse_from_str("(library (rnrs))").unwrap()))
+    let runtime = Runtime::new();
+
+    // Run any programs
+    for file in &args.files {
+        let path = Path::new(file);
+        let _ = maybe_await!(runtime.run_program(path))?;
+    }
+
+    if !args.files.is_empty() && !args.interactive {
+        return Ok(());
+    }
+
+    let repl = TopLevelEnvironment::new_repl(&runtime);
+
+    maybe_await!(repl.import("(library (rnrs))".parse().unwrap()))
         .expect("Failed to import standard library");
 
     let config = Config::builder()
@@ -58,8 +75,9 @@ fn main() -> ExitCode {
     let mut editor = match Editor::with_history(config, DefaultHistory::new()) {
         Ok(e) => e,
         Err(err) => {
-            eprintln!("Error creating line editor: {err}");
-            return ExitCode::FAILURE;
+            return Err(Exception::error(format!(
+                "Error creating line editor: {err}"
+            )));
         }
     };
 
@@ -89,12 +107,13 @@ fn main() -> ExitCode {
             }
             Ok(None) => break,
             Err(err) => {
-                eprintln!("Error while reading input: {err}");
-                return ExitCode::FAILURE;
+                return Err(Exception::error(format!(
+                    "Error while reading input: {err}"
+                )));
             }
         };
 
-        match maybe_await!(compile_and_run_str(&runtime, &env, sexpr)) {
+        match maybe_await!(repl.eval_sexpr(true, &sexpr)) {
             Ok(results) => {
                 for result in results.into_iter() {
                     println!("${n_results} = {result:?}");
@@ -107,21 +126,5 @@ fn main() -> ExitCode {
         }
     }
 
-    ExitCode::SUCCESS
-}
-
-#[maybe_async]
-fn compile_and_run_str(
-    runtime: &Runtime,
-    repl: &Environment,
-    sexpr: Syntax,
-) -> Result<Vec<Value>, Exception> {
-    let ctxt = ParseContext::new(runtime, true);
-    let sexprs = [sexpr];
-    let expr = maybe_await!(DefinitionBody::parse(&ctxt, &sexprs, repl, &sexprs[0]))?;
-    let compiled = expr.compile_top_level();
-    let closure = maybe_await!(runtime.compile_expr(compiled));
-    let result =
-        maybe_await!(Application::new(closure, Vec::new()).eval(&mut DynamicState::default()))?;
-    Ok(result)
+    Ok(())
 }

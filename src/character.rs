@@ -1,5 +1,4 @@
-use crate::{exceptions::Exception, registry::bridge, value::Value};
-use either::Either;
+use crate::{Either, exceptions::Exception, registry::bridge, value::Value};
 use unicode_categories::UnicodeCategories;
 
 mod unicode;
@@ -117,7 +116,7 @@ impl_char_ci_operator![
 
 macro_rules! impl_char_predicate {
     ($(($bridge_name:literal, $function_name:ident, $predicate:ident)),* $(,)?) => {
-        $(#[bridge(name = $bridge_name, lib = "(base)")]
+        $(#[bridge(name = $bridge_name, lib = "(rnrs base builtins (6))")]
         pub fn $function_name(ch: &Value) -> Result<Vec<Value>, Exception> {
             let ch: char = ch.clone().try_into()?;
             Ok(vec![Value::from(ch.$predicate())])

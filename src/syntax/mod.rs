@@ -1,8 +1,10 @@
+//! Rust representation of S-expressions.
+
 use crate::{
     ast::Literal,
-    env::{EnvId, Environment, Keyword},
-    exceptions::{Exception, SyntaxViolation},
-    gc::Trace,
+    env::{Binding, Environment, Keyword},
+    exceptions::{CompoundCondition, Exception, Message, SyntaxViolation, Who},
+    gc::{Gc, Trace},
     lists::list_to_vec_with_null,
     ports::Port,
     records::{RecordTypeDescriptor, SchemeCompatible, rtd},
@@ -15,6 +17,7 @@ use scheme_rs_macros::{maybe_async, maybe_await};
 use std::{
     collections::{BTreeSet, HashMap},
     fmt,
+    hash::Hash,
     io::Cursor,
     sync::{
         Arc,
@@ -98,7 +101,7 @@ pub enum Syntax {
     },
     Identifier {
         ident: Identifier,
-        binding_env: Option<EnvId>,
+        binding: Option<Binding>,
         span: Span,
     },
 }
@@ -160,11 +163,13 @@ impl Syntax {
         "todo"
     }
 
-    pub fn syntax_from_datum(marks: &BTreeSet<Mark>, datum: Value) -> Self {
+    pub fn syntax_from_datum(marks: &BTreeSet<Mark>, datum: Value) -> Result<Self, Exception> {
         // TODO: conjure up better values for Span
         match datum.unpack() {
-            UnpackedValue::Boolean(b) => Syntax::new_literal(Literal::Boolean(b), Span::default()),
-            UnpackedValue::Null => Syntax::new_null(Span::default()),
+            UnpackedValue::Boolean(b) => {
+                Ok(Syntax::new_literal(Literal::Boolean(b), Span::default()))
+            }
+            UnpackedValue::Null => Ok(Syntax::new_null(Span::default())),
             UnpackedValue::Pair(pair) => {
                 let (lhs, rhs) = pair.into();
                 let mut list = Vec::new();
@@ -172,45 +177,52 @@ impl Syntax {
                 list_to_vec_with_null(&rhs, &mut list);
                 let mut out_list = Vec::new();
                 for item in list.iter() {
-                    out_list.push(Syntax::syntax_from_datum(marks, item.clone()));
+                    out_list.push(Syntax::syntax_from_datum(marks, item.clone())?);
                 }
-                Syntax::new_list(out_list, Span::default())
+                Ok(Syntax::new_list(out_list, Span::default()))
             }
             UnpackedValue::Syntax(syntax) => {
                 let mut syntax = syntax.as_ref().clone();
                 syntax.mark_many(marks);
-                syntax
+                Ok(syntax)
             }
             UnpackedValue::Vector(vec) => {
                 let mut out_vec = Vec::new();
                 for item in vec.0.vec.read().iter() {
-                    out_vec.push(Syntax::syntax_from_datum(marks, item.clone()));
+                    out_vec.push(Syntax::syntax_from_datum(marks, item.clone())?);
                 }
-                Syntax::new_vector(out_vec, Span::default())
+                Ok(Syntax::new_vector(out_vec, Span::default()))
             }
             UnpackedValue::Symbol(sym) => {
                 let ident = Identifier {
                     sym,
                     marks: marks.clone(),
                 };
-                Syntax::Identifier {
+                Ok(Syntax::Identifier {
                     ident,
-                    binding_env: None,
+                    binding: None,
                     span: Span::default(),
-                }
+                })
             }
-            UnpackedValue::Number(num) => Syntax::Literal {
+            UnpackedValue::Number(num) => Ok(Syntax::Literal {
                 literal: Literal::Number(num.clone()),
                 span: Span::default(),
-            },
-            x => unimplemented!("{:?}", x.into_value()),
+            }),
+            UnpackedValue::String(string) => Ok(Syntax::Literal {
+                literal: Literal::String(string.to_string()),
+                span: Span::default(),
+            }),
+            datum => Err(Exception::error(format!(
+                "cannot convert datum type {} to syntax object",
+                datum.type_name()
+            ))),
         }
     }
 
     fn resolve_bindings<'a>(
         &'a mut self,
         env: &Environment,
-        resolved_bindings: &mut HashMap<&'a Identifier, Option<EnvId>>,
+        resolved_bindings: &mut HashMap<&'a Identifier, Binding>,
     ) {
         match self {
             Self::List { list, .. } => {
@@ -225,12 +237,15 @@ impl Syntax {
             }
             &mut Self::Identifier {
                 ref ident,
-                ref mut binding_env,
+                ref mut binding,
                 ..
             } => {
-                *binding_env = *resolved_bindings
-                    .entry(ident)
-                    .or_insert_with(|| env.binding_env(ident))
+                *binding = Some(
+                    resolved_bindings
+                        .entry(ident)
+                        .or_insert_with(|| env.fetch_binding(ident))
+                        .clone(),
+                );
             }
             _ => (),
         }
@@ -250,15 +265,13 @@ impl Syntax {
         let transformer_output = maybe_await!(mac.transformer.call(&[Value::from(input)]))?;
 
         // Output must be syntax:
-        let output: Arc<Syntax> = transformer_output
-            .first()
-            .ok_or_else(|| Exception::error("syntax transformer produced no output"))?
-            .clone()
-            .try_into()?;
-
-        // Apply the new mark to the output
-        let mut output = Arc::try_unwrap(output).unwrap_or_else(|arc| arc.as_ref().clone());
-        output.mark(new_mark);
+        let output = Syntax::syntax_from_datum(
+            &BTreeSet::from([new_mark]),
+            transformer_output
+                .first()
+                .ok_or_else(|| Exception::error("syntax transformer produced no output"))?
+                .clone(),
+        )?;
 
         let new_env = env.new_macro_expansion(new_mark, mac.source_env.clone());
 
@@ -320,7 +333,7 @@ impl Syntax {
 
     /// Fully expand the outermost syntax object.
     #[maybe_async]
-    pub fn expand(mut self, env: &Environment) -> Result<FullyExpanded, Exception> {
+    pub(crate) fn expand(mut self, env: &Environment) -> Result<FullyExpanded, Exception> {
         let mut curr_env = env.clone();
         loop {
             match maybe_await!(self.expand_once(&curr_env)) {
@@ -394,7 +407,7 @@ impl Syntax {
 impl fmt::Debug for Syntax {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Syntax::Null { .. } => write!(f, "()"),
+            Syntax::Null { span, .. } => write!(f, "() @ {span}"),
             Syntax::List { list, .. } => {
                 // Proper list
                 let proper_list = matches!(list.last(), Some(Syntax::Null { .. }));
@@ -439,14 +452,14 @@ impl fmt::Debug for Syntax {
             Syntax::Literal { literal, .. } => {
                 write!(f, "{literal}")
             }
-            Syntax::Identifier { ident, .. } => {
-                write!(f, "{}", ident.sym)
+            Syntax::Identifier { ident, span, .. } => {
+                write!(f, "{} @ {span}", ident.sym,)
             }
         }
     }
 }
 
-pub enum Expansion {
+pub(crate) enum Expansion {
     /// Syntax remained unchanged after expansion
     Unexpanded,
     /// Syntax was expanded, producing a new expansion context
@@ -462,7 +475,7 @@ impl Expansion {
     }
 }
 
-pub struct FullyExpanded {
+pub(crate) struct FullyExpanded {
     pub expansion_env: Environment,
     pub expanded: Syntax,
 }
@@ -492,10 +505,10 @@ impl Default for Mark {
     }
 }
 
-#[derive(Clone, Hash, PartialEq, Eq, Trace)]
+#[derive(Clone, Trace, PartialEq, Eq, Hash)]
 pub struct Identifier {
-    pub sym: Symbol,
-    pub marks: BTreeSet<Mark>,
+    pub(crate) sym: Symbol,
+    pub(crate) marks: BTreeSet<Mark>,
 }
 
 impl fmt::Debug for Identifier {
@@ -544,6 +557,25 @@ impl Identifier {
 impl PartialEq<str> for Identifier {
     fn eq(&self, rhs: &str) -> bool {
         self.sym.to_str().as_ref() == rhs
+    }
+}
+
+pub fn free_identifier_equal(
+    lhs: &Identifier,
+    lhs_binding: Option<&Binding>,
+    rhs: &Identifier,
+    rhs_binding: Option<&Binding>,
+) -> bool {
+    let lhs_binding = lhs_binding.map(Binding::resolve);
+    let rhs_binding = rhs_binding.map(Binding::resolve);
+
+    match (lhs_binding.as_deref(), rhs_binding.as_deref()) {
+        (Some(Binding::Local(lhs)), Some(Binding::Local(rhs))) => lhs == rhs,
+        (Some(Binding::Global(lhs)), Some(Binding::Global(rhs))) => Gc::ptr_eq(&lhs, &rhs),
+        (Some(Binding::Keyword(lhs)), Some(Binding::Keyword(rhs))) => lhs == rhs,
+        (Some(Binding::SpecialKeyword(lhs)), Some(Binding::SpecialKeyword(rhs))) => lhs == rhs,
+        (Some(Binding::Top(_, _)) | None, Some(Binding::Top(_, _)) | None) => lhs.sym == rhs.sym,
+        _ => false,
     }
 }
 
@@ -627,7 +659,7 @@ impl Syntax {
         Self::Identifier {
             ident: Identifier::new(name),
             span: span.into(),
-            binding_env: None,
+            binding: None,
         }
     }
 
@@ -638,8 +670,11 @@ impl Syntax {
 
 #[bridge(name = "syntax->datum", lib = "(rnrs syntax-case builtins (6))")]
 pub fn syntax_to_datum(syn: &Value) -> Result<Vec<Value>, Exception> {
-    let syn: Arc<Syntax> = syn.clone().try_into()?;
-    Ok(vec![Value::datum_from_syntax(syn.as_ref())])
+    // TODO: This can certainly be done more efficiently
+    Ok(vec![Value::datum_from_syntax(&Syntax::syntax_from_datum(
+        &BTreeSet::default(),
+        syn.clone(),
+    )?)])
 }
 
 #[bridge(name = "datum->syntax", lib = "(rnrs syntax-case builtins (6))")]
@@ -654,7 +689,7 @@ pub fn datum_to_syntax(template_id: &Value, datum: &Value) -> Result<Vec<Value>,
     Ok(vec![Value::from(Syntax::syntax_from_datum(
         &template_id.marks,
         datum.clone(),
-    ))])
+    )?)])
 }
 
 #[bridge(name = "identifier?", lib = "(rnrs syntax-case builtins (6))")]
@@ -684,7 +719,7 @@ pub fn free_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, E
     let id2: Arc<Syntax> = id2.clone().try_into()?;
     let Syntax::Identifier {
         ident: id1,
-        binding_env: bound_id1,
+        binding: id1_binding,
         ..
     } = id1.as_ref()
     else {
@@ -692,15 +727,18 @@ pub fn free_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, E
     };
     let Syntax::Identifier {
         ident: id2,
-        binding_env: bound_id2,
+        binding: id2_binding,
         ..
     } = id2.as_ref()
     else {
         return Err(Exception::type_error("identifier", "syntax"));
     };
-    Ok(vec![Value::from(
-        bound_id1 == bound_id2 && id1.sym == id2.sym,
-    )])
+    Ok(vec![Value::from(free_identifier_equal(
+        id1,
+        id1_binding.as_ref(),
+        id2,
+        id2_binding.as_ref(),
+    ))])
 }
 
 #[bridge(name = "generate-temporaries", lib = "(rnrs syntax-case builtins (6))")]
@@ -718,21 +756,50 @@ pub fn generate_temporaries(list: &Value) -> Result<Vec<Value>, Exception> {
         _ => return Err(Exception::error("argument must be a list".to_string())),
     };
 
-    let mut idents = (0..length)
-        .map(|_| {
-            let ident = Identifier::from_symbol(Symbol::gensym());
-            Syntax::Identifier {
-                ident,
-                binding_env: None,
-                span: Span::default(),
-            }
-        })
-        .collect::<Vec<_>>();
-    idents.push(Syntax::Null {
-        span: Span::default(),
-    });
-    Ok(vec![Value::from(Syntax::List {
-        list: idents,
-        span: Span::default(),
-    })])
+    let mut temporaries = Value::null();
+    for _ in 0..length {
+        let ident = Syntax::Identifier {
+            ident: Identifier::from_symbol(Symbol::gensym()),
+            binding: None,
+            span: Span::default(),
+        };
+        temporaries = Value::from((Value::from(ident), temporaries));
+    }
+
+    Ok(vec![Value::from(temporaries)])
+}
+
+#[bridge(name = "syntax-violation", lib = "(rnrs base builtins (6))")]
+pub fn syntax_violation(
+    who: &Value,
+    message: &Value,
+    form: &Value,
+    subform: &[Value],
+) -> Result<Vec<Value>, Exception> {
+    let subform = match subform {
+        [] => None,
+        [subform] => Some(subform.clone()),
+        _ => return Err(Exception::wrong_num_of_var_args(3..4, 3 + subform.len())),
+    };
+    let mut conditions = Vec::new();
+    if who.is_true() {
+        conditions.push(Value::from_rust_type(Who::new(who.clone())));
+    } else if let Some(syntax) = form.cast_to_scheme_type::<Arc<Syntax>>() {
+        let who = if let Syntax::Identifier { ident, .. } = syntax.as_ref() {
+            Some(ident.sym)
+        } else if let Some([Syntax::Identifier { ident, .. }, ..]) = syntax.as_list() {
+            Some(ident.sym)
+        } else {
+            None
+        };
+        conditions.push(Value::from_rust_type(Who::new(Value::from(who))));
+    }
+    conditions.push(Value::from_rust_type(Message::new(message)));
+    conditions.push(Value::from_rust_type(SyntaxViolation::new_from_values(
+        form.clone(),
+        subform,
+    )));
+    Err(Exception(Value::from(Exception::from(CompoundCondition(
+        conditions,
+    )))))
 }

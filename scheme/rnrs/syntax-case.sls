@@ -30,13 +30,6 @@
   ;; 
   (define-syntax quasisyntax
     (lambda (e)
-      (define (flatten e)
-        (syntax-case e ()
-          [((head1 head2) tail ...)
-           (with-syntax (((flattened-tail ...) (flatten (syntax (tail ...)))))
-             (syntax (head1 head2 flattened-tail ...)))]
-          [()
-           (syntax ())]))
 
       ;; Expand returns a list of the form
       ;;    [template[t/e, ...] (replacement ...)]
@@ -72,9 +65,9 @@
            (with-syntax (((r* (rep ...)) (expand (syntax r) 0))
                          ((t ...)        (generate-temporaries
                                           (syntax (e ...)))))
-             (with-syntax (((t* ...) (flatten (syntax ((t (... ...)) ...)))))
-               (syntax ((t* ... . r*)
-                        (((t (... ...)) e) ... rep ...))))))
+             (with-syntax ((((t ...) ...) (syntax ((t (... ...)) ...))))
+               (syntax [(t ... ... . r*)
+                        (((t ...) e) ... rep ...)]))))
           ((k . r)
            (and (> level 0)
                 (identifier? (syntax k))

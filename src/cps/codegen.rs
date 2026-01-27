@@ -10,7 +10,7 @@ use std::{collections::HashSet, sync::Arc};
 
 use crate::{
     cps::Value as CpsValue,
-    proc::{ContinuationPtr, FuncDebugInfo, FuncPtr, Procedure},
+    proc::{ContinuationPtr, FuncPtr, ProcDebugInfo, Procedure},
     runtime::{DebugInfo, Runtime},
     value::{Cell, Value as SchemeValue},
 };
@@ -103,7 +103,7 @@ impl Cps {
         make_sig(&mut ctx.func.signature, false);
 
         let val = Local::gensym();
-        let name = val.to_func_name();
+        let name = val.get_func_name();
         let entry_func = module
             .declare_function(&name, Linkage::Export, &ctx.func.signature)
             .unwrap();
@@ -290,14 +290,12 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
                     types::I64,
                     SchemeValue::as_raw(&SchemeValue::from(Cell(global.val.clone()))) as i64,
                 );
-                (cell, global.name.sym.0)
+                (cell, global.name.0)
             }
             CpsValue::Const(val) => {
                 let mut runtime_write = self.runtime.0.write();
-                if !runtime_write.constants_pool.contains(val) {
-                    runtime_write.constants_pool.insert(val.clone());
-                }
-                let raw = SchemeValue::as_raw(runtime_write.constants_pool.get(val).unwrap());
+                runtime_write.constants_pool.insert(val.clone());
+                let raw = SchemeValue::as_raw(runtime_write.constants_pool.get(val));
                 return self.builder.ins().iconst(types::I64, raw as i64);
             }
         };
@@ -744,7 +742,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
 
         let make_proc = if bundle.args.continuation.is_some() {
             args.push(if let Some(ref loc) = bundle.loc {
-                let debug_info = Arc::new(FuncDebugInfo::new(
+                let debug_info = Arc::new(ProcDebugInfo::new(
                     bundle.val.name,
                     bundle.args.args.clone(),
                     loc.clone(),
