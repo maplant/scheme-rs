@@ -1,9 +1,10 @@
 //! Global collection of libraries associated with a [`Runtime`]
 
 use crate::{
-    ast::{ImportSet, LibraryName, LibrarySpec, SpecialKeyword, Version},
+    ast::{ImportSet, LibraryName, LibrarySpec, Primitive, Version},
     env::{
-        Export, Import, LibraryState, TopLevelEnvironment, TopLevelEnvironmentInner, TopLevelKind,
+        Binding, Export, Global, Import, LibraryState, Scope, TOP_LEVEL_BINDINGS, TopLevelBinding,
+        TopLevelEnvironment, TopLevelEnvironmentInner, TopLevelKind, add_binding,
     },
     exceptions::{Exception, ImportError},
     gc::{Gc, Trace},
@@ -11,7 +12,7 @@ use crate::{
     runtime::Runtime,
     symbols::Symbol,
     syntax::{Identifier, Syntax},
-    value::Value,
+    value::{Cell, Value},
 };
 
 use std::{
@@ -146,7 +147,7 @@ impl RegistryInner {
     pub fn new(rt: &Runtime) -> Self {
         struct Lib {
             version: Version,
-            syms: HashMap<Identifier, Gc<RwLock<Value>>>,
+            syms: HashMap<Symbol, Procedure>,
         }
         let mut libs = HashMap::<Vec<Symbol>, Lib>::default();
 
@@ -165,8 +166,8 @@ impl RegistryInner {
             // TODO: If version does not match, error.
 
             lib.syms.insert(
-                Identifier::new(bridge_fn.name),
-                Gc::new(RwLock::new(Value::from(Procedure::with_debug_info(
+                Symbol::intern(bridge_fn.name),
+                Procedure::with_debug_info(
                     rt.clone(),
                     Vec::new(),
                     match bridge_fn.wrapper {
@@ -177,43 +178,75 @@ impl RegistryInner {
                     bridge_fn.num_args,
                     bridge_fn.variadic,
                     Some(debug_info),
-                )))),
+                ),
             );
         }
 
         // Define the special keyword libraries:
         let special_keyword_libs = [
             (
-                ["rnrs", "base", "special-keywords"],
+                ["rnrs", "base", "primitives"],
                 &[
-                    ("begin", SpecialKeyword::Begin),
-                    ("lambda", SpecialKeyword::Lambda),
-                    ("let", SpecialKeyword::Let),
-                    ("let-syntax", SpecialKeyword::LetSyntax),
-                    ("letrec-syntax", SpecialKeyword::LetRecSyntax),
-                    ("if", SpecialKeyword::If),
-                    ("and", SpecialKeyword::And),
-                    ("or", SpecialKeyword::Or),
-                    ("quote", SpecialKeyword::Quote),
-                    ("syntax", SpecialKeyword::Syntax),
-                    ("set!", SpecialKeyword::Set),
-                    ("define", SpecialKeyword::Define),
-                    ("define-syntax", SpecialKeyword::DefineSyntax),
-                    ("import", SpecialKeyword::Import),
-                    ("$undefined", SpecialKeyword::Undefined),
+                    ("begin", Primitive::Begin),
+                    ("lambda", Primitive::Lambda),
+                    ("let", Primitive::Let),
+                    ("let-syntax", Primitive::LetSyntax),
+                    ("letrec-syntax", Primitive::LetRecSyntax),
+                    ("if", Primitive::If),
+                    ("and", Primitive::And),
+                    ("or", Primitive::Or),
+                    ("quote", Primitive::Quote),
+                    ("syntax", Primitive::Syntax),
+                    ("set!", Primitive::Set),
+                    ("define", Primitive::Define),
+                    ("define-syntax", Primitive::DefineSyntax),
+                    ("import", Primitive::Import),
+                    ("$undefined", Primitive::Undefined),
                 ][..],
             ),
             (
-                ["rnrs", "syntax-case", "special-keywords"],
-                &[("syntax-case", SpecialKeyword::SyntaxCase)],
+                ["rnrs", "syntax-case", "primitives"],
+                &[("syntax-case", Primitive::SyntaxCase)],
             ),
         ]
         .into_iter()
-        .map(|(name, special_keywords)| {
+        .map(|(name, primitives)| {
             let name = name
                 .iter()
                 .map(|name| Symbol::intern(name))
                 .collect::<Vec<_>>();
+            let scope = Scope::new();
+            let exports = primitives
+                .into_iter()
+                .map(|(name, primitive)| {
+                    let name = Symbol::intern(name);
+                    let binding = Binding::new();
+                    add_binding(Identifier::from_symbol(name, scope), binding);
+                    TOP_LEVEL_BINDINGS
+                        .lock()
+                        .insert(binding, TopLevelBinding::Primitive(*primitive));
+                    (
+                        name,
+                        Export {
+                            binding,
+                            origin: None,
+                        },
+                    )
+                })
+                .collect();
+
+            /*
+            let primitives = primitives
+                .into_iter()
+                .map(|(name, primitive)| {
+                    let name = Symbol::intern(name);
+                    let binding = Binding::new();
+                    add_binding(Identifier::from_symbol(name, scope), binding);
+                    (name, binding, *primitive)
+                })
+                .collect::<Vec<_>>();
+            */
+
             (
                 name.clone(),
                 TopLevelEnvironment(Gc::new(RwLock::new(TopLevelEnvironmentInner {
@@ -225,27 +258,30 @@ impl RegistryInner {
                         },
                         path: None,
                     },
-                    imports: HashMap::default(),
-                    exports: special_keywords
+                    imports: HashMap::new(),
+                    exports,
+                    /*
+                    exports: primitives
                         .iter()
-                        .map(|(name, _)| {
-                            let name = Identifier::new(name);
+                        .map(|(name, binding, _)| {
                             (
-                                name.clone(),
+                                *name,
                                 Export {
-                                    rename: name.clone(),
+                                    binding: *binding,
                                     origin: None,
                                 },
                             )
                         })
                         .collect(),
-                    vars: HashMap::default(),
-                    keywords: HashMap::default(),
-                    special_keywords: special_keywords
-                        .iter()
-                        .map(|(name, kw)| (Identifier::new(name), *kw))
+                    vars: HashMap::new(),
+                    keywords: HashMap::new(),
+                    primitives: primitives
+                        .into_iter()
+                        .map(|(_, binding, primitive)| (binding, primitive))
                         .collect(),
-                    state: LibraryState::BridgesDefined,
+                    */
+                    state: LibraryState::Invoked,
+                    scope,
                 }))),
             )
         });
@@ -253,14 +289,25 @@ impl RegistryInner {
         let libs = libs
             .into_iter()
             .map(|(name, lib)| {
+                let scope = Scope::new();
                 let exports = lib
                     .syms
-                    .keys()
-                    .map(|export| {
+                    .into_iter()
+                    .map(|(name, proc)| {
+                        let binding = Binding::new();
+                        add_binding(Identifier::from_symbol(name, scope), binding);
+                        TOP_LEVEL_BINDINGS.lock().insert(
+                            binding,
+                            TopLevelBinding::Global(Global::new(
+                                name,
+                                Cell::new(Value::from(proc)),
+                                false,
+                            )),
+                        );
                         (
-                            export.clone(),
+                            name,
                             Export {
-                                rename: export.clone(),
+                                binding,
                                 origin: None,
                             },
                         )
@@ -275,12 +322,10 @@ impl RegistryInner {
                         },
                         path: None,
                     },
-                    imports: HashMap::default(),
+                    imports: HashMap::new(),
                     exports,
-                    vars: lib.syms,
-                    keywords: HashMap::default(),
-                    special_keywords: HashMap::default(),
-                    state: LibraryState::BridgesDefined,
+                    state: LibraryState::Invoked,
+                    scope,
                 };
                 (name, TopLevelEnvironment(Gc::new(RwLock::new(lib_inner))))
             })
@@ -333,6 +378,12 @@ impl Registry {
     // clean up on it.
     #[maybe_async]
     fn load_lib(&self, rt: &Runtime, name: &[Symbol]) -> Result<TopLevelEnvironment, Exception> {
+        let scope = if let Some(lib) = self.0.read().libs.get(name) {
+            lib.0.read().scope
+        } else {
+            Scope::new()
+        };
+        /*
         let mut vars = if let Some(lib) = self.0.read().libs.get(name) {
             if lib.get_state().is_bridges_defined() {
                 Some(lib.0.read().vars.clone())
@@ -342,11 +393,13 @@ impl Registry {
         } else {
             Some(HashMap::default())
         };
+         */
 
         // Check to see that we're not currently loading the library. Circular
         // dependencies are not allowed. We should probably support them at some
         // point to some degree.
         if self.0.read().loading.contains(name) {
+            println!("loading: {name:?}");
             return Err(error::circular_dependency());
         }
 
@@ -362,8 +415,7 @@ impl Registry {
         let curr_path = std::env::current_dir()
             .expect("If we can't get the current working directory, we can't really do much");
         let lib = if cfg!(feature = "load-libraries-from-fs")
-            && let Some(lib) =
-                maybe_await!(load_lib_from_dir(rt, &curr_path, &path_suffix, &mut vars))?
+            && let Some(lib) = maybe_await!(load_lib_from_dir(rt, &curr_path, &path_suffix, scope))?
         {
             lib
         } else {
@@ -374,36 +426,31 @@ impl Registry {
             );
 
             if cfg!(feature = "load-libraries-from-fs")
-                && let Some(lib) =
-                    maybe_await!(load_lib_from_dir(rt, &path, &path_suffix, &mut vars))?
+                && let Some(lib) = maybe_await!(load_lib_from_dir(rt, &path, &path_suffix, scope))?
             {
                 lib
             } else {
                 // Finally, try the embedded Stdlib
                 let file_name = format!("{path_suffix}.sls");
-                let Some(lib) = Stdlib::get(&file_name) else {
-                    if let Some(lib) = self.0.read().libs.get(name)
-                        && lib.get_state().is_bridges_defined()
-                    {
-                        lib.0.write().state = LibraryState::Invoked;
-                        return Ok(lib.clone());
+                if let Some(lib) = Stdlib::get(&file_name) {
+                    let contents = std::str::from_utf8(&lib.data).unwrap();
+                    let form = Syntax::from_str(contents, Some(&file_name))?;
+                    let form = match form.as_list() {
+                        Some([form, Syntax::Null { .. }]) => form,
+                        _ => return Err(Exception::error("library is malformed")),
+                    };
+                    let spec = LibrarySpec::parse(form)?;
+                    maybe_await!(TopLevelEnvironment::from_spec_with_scope(
+                        rt,
+                        spec,
+                        PathBuf::from(file_name),
+                        scope
+                    ))?
+                } else if let Some(lib) = self.0.read().libs.get(name) {
+                        lib.clone()
                     } else {
                         return Err(error::library_not_found());
-                    }
-                };
-                let contents = std::str::from_utf8(&lib.data).unwrap();
-                let form = Syntax::from_str(contents, Some(&file_name))?;
-                let form = match form.as_list() {
-                    Some([form, Syntax::Null { .. }]) => form,
-                    _ => return Err(Exception::error("library is malformed")),
-                };
-                let spec = LibrarySpec::parse(form)?;
-                maybe_await!(TopLevelEnvironment::from_spec_inner(
-                    rt,
-                    spec,
-                    PathBuf::from(file_name),
-                    vars.take().unwrap(),
-                ))?
+                }
             }
         };
         let mut this_mut = self.0.write();
@@ -464,15 +511,11 @@ impl Registry {
                         .map(|(orign, exp)| (orign.clone(), exp.clone()))
                         .collect::<Vec<_>>()
                 };
-                Ok(Box::new(exports.into_iter().map(move |(orign, exp)| {
+                Ok(Box::new(exports.into_iter().map(move |(name, exp)| {
                     (
-                        exp.rename,
+                        name,
                         Import {
-                            rename: if let Some(import) = lib.0.read().imports.get(&orign) {
-                                import.rename.clone()
-                            } else {
-                                orign
-                            },
+                            binding: exp.binding,
                             origin: if let Some(redirect) = exp.origin {
                                 redirect.clone()
                             } else {
@@ -491,10 +534,14 @@ impl Registry {
                     .filter(move |(import, _)| !disallowed.contains(import)),
             ) as DynIter<'b>),
             ImportSet::Prefix { set, prefix } => {
-                let prefix = prefix.sym.to_str();
+                let prefix = prefix.to_str();
                 Ok(Box::new(
-                    maybe_await!(self.import(rt, *set))?
-                        .map(move |(name, import)| (name.prefix(&prefix), import)),
+                    maybe_await!(self.import(rt, *set))?.map(move |(name, import)| {
+                        (
+                            Symbol::intern(&format!("{prefix}{}", name.to_str())),
+                            import,
+                        )
+                    }),
                 ) as DynIter<'b>)
             }
             ImportSet::Rename { set, mut renames } => Ok(Box::new(
@@ -505,7 +552,7 @@ impl Registry {
     }
 }
 
-type DynIter<'a> = Box<dyn Iterator<Item = (Identifier, Import)> + 'a>;
+type DynIter<'a> = Box<dyn Iterator<Item = (Symbol, Import)> + 'a>;
 type ImportIter<'b> = Result<DynIter<'b>, Exception>;
 #[cfg(feature = "async")]
 type ImportIterFuture<'b> = BoxFuture<'b, ImportIter<'b>>;
@@ -536,7 +583,8 @@ fn load_lib_from_dir(
     rt: &Runtime,
     path: &Path,
     path_suffix: &str,
-    vars: &mut Option<HashMap<Identifier, Gc<RwLock<Value>>>>,
+    scope: Scope,
+    //    vars: &mut Option<HashMap<Binding, Global>>,
 ) -> Result<Option<TopLevelEnvironment>, Exception> {
     for ext in ["sls", "ss", "scm"] {
         let path = path.join(format!("{path_suffix}.{ext}"));
@@ -551,11 +599,9 @@ fn load_lib_from_dir(
             _ => return Err(Exception::error("library is malformed")),
         };
         let spec = LibrarySpec::parse(form)?;
-        return Ok(Some(maybe_await!(TopLevelEnvironment::from_spec_inner(
-            rt,
-            spec,
-            path,
-            vars.take().unwrap()
+        return Ok(Some(maybe_await!(TopLevelEnvironment::from_spec_with_scope(
+            rt, spec, path, scope,
+            //          vars.take().unwrap()
         ))?));
     }
 

@@ -2,20 +2,21 @@
 
 use crate::{
     ast::Literal,
-    env::{Binding, Environment, Keyword},
+    env::{Binding, CompileTimeValue, Environment, Scope, add_binding, resolve},
     exceptions::{CompoundCondition, Exception, Message, SyntaxViolation, Who},
     gc::{Gc, Trace},
     lists::list_to_vec_with_null,
     ports::Port,
+    proc::Procedure,
     records::{RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::bridge,
     symbols::Symbol,
     syntax::parse::ParseSyntaxError,
-    value::{UnpackedValue, Value, ValueType},
+    value::{Expect1, UnpackedValue, Value, ValueType},
 };
 use scheme_rs_macros::{maybe_async, maybe_await};
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, HashSet},
     fmt,
     hash::Hash,
     io::Cursor,
@@ -101,12 +102,77 @@ pub enum Syntax {
     },
     Identifier {
         ident: Identifier,
-        binding: Option<Binding>,
         span: Span,
     },
 }
 
 impl Syntax {
+    pub(crate) fn adjust_scope(&mut self, scope: Scope, op: fn(&mut Identifier, Scope)) {
+        match self {
+            Self::List { list, .. } => {
+                for item in list {
+                    item.adjust_scope(scope, op);
+                }
+            }
+            Self::Vector { vector, .. } => {
+                for item in vector {
+                    item.adjust_scope(scope, op);
+                }
+            }
+            Self::Identifier { ident, .. } => op(ident, scope),
+            _ => (),
+        }
+    }
+
+    pub fn add_scope(&mut self, scope: Scope) {
+        self.adjust_scope(scope, Identifier::add_scope)
+    }
+
+    pub fn flip_scope(&mut self, scope: Scope) {
+        self.adjust_scope(scope, Identifier::flip_scope)
+    }
+
+    pub fn remove_scope(&mut self, scope: Scope) {
+        self.adjust_scope(scope, Identifier::remove_scope)
+    }
+
+    /*
+    pub fn add_scope(&mut self, scope: Scope) {
+        match self {
+            Self::List { list, .. } => {
+                for item in list {
+                    item.add_scope(scope);
+                }
+            }
+            Self::Vector { vector, .. } => {
+                for item in vector {
+                    item.add_scope(scope);
+                }
+            }
+            Self::Identifier { ident, .. } => ident.add_scope(scope),
+            _ => (),
+        }
+    }
+
+    pub fn flip_scope(&mut self, scope: Scope) {
+        match self {
+            Self::List { list, .. } => {
+                for item in list {
+                    item.flip_scope(scope);
+                }
+            }
+            Self::Vector { vector, .. } => {
+                for item in vector {
+                    item.flip_scope(scope);
+                }
+            }
+            Self::Identifier { ident, .. } => ident.flip_scope(scope),
+            _ => (),
+        }
+}
+    */
+
+    /*
     pub fn mark(&mut self, mark: Mark) {
         match self {
             Self::List { list, .. } => {
@@ -140,14 +206,17 @@ impl Syntax {
             _ => (),
         }
     }
+    */
 
-    pub fn car(&self) -> Result<Self, Exception> {
-        let Some([car, ..]) = self.as_list() else {
-            return Err(Exception::type_error("list", self.syntax_type()));
-        };
-        Ok(car.clone())
+    pub(crate) fn car(&self) -> Option<&Self> {
+        if let Some([car, ..]) = self.as_list() {
+            Some(car)
+        } else {
+            None
+        }
     }
 
+    /*
     pub fn cdr(&self) -> Result<Self, Exception> {
         match self.as_list() {
             Some([_, null @ Syntax::Null { .. }]) => Ok(null.clone()),
@@ -158,12 +227,43 @@ impl Syntax {
             _ => Err(Exception::type_error("list", self.syntax_type())),
         }
     }
+     */
+
+    /// Return the cdrs of the list, ignoring the terminating Null, erroring if
+    /// it's not a proper list.
+    pub(crate) fn cdr(&self) -> Result<&[Self], Exception> {
+        if let Some([_, cdrs @ ..]) = self.as_list() {
+            Ok(cdrs)
+        } else {
+            Err(Exception::error("not a list"))
+        }
+    }
+
+    pub(crate) fn cdr_mut(&mut self) -> Result<&mut [Self], Exception> {
+        if let Some([_, cdrs @ ..]) = self.as_list_mut() {
+            Ok(cdrs)
+        } else {
+            Err(Exception::error("not a list"))
+        }
+    }
+
+    pub(crate) fn into_cdr(self) -> Result<impl Iterator<Item = Self>, Exception> {
+        Ok(vec![].into_iter())
+    }
+
+    pub(crate) fn into_n_cdrs<const N: usize>(self) -> Result<[Self; N], Exception> {
+        todo!()
+    }
+
+    pub(crate) fn into_nonempty_list(self) -> Result<Vec<Self>, Exception> {
+        todo!()
+    }
 
     pub fn syntax_type(&self) -> &'static str {
         "todo"
     }
 
-    pub fn syntax_from_datum(marks: &BTreeSet<Mark>, datum: Value) -> Result<Self, Exception> {
+    pub fn syntax_from_datum(scopes: &BTreeSet<Scope>, datum: Value) -> Result<Self, Exception> {
         // TODO: conjure up better values for Span
         match datum.unpack() {
             UnpackedValue::Boolean(b) => {
@@ -177,30 +277,31 @@ impl Syntax {
                 list_to_vec_with_null(&rhs, &mut list);
                 let mut out_list = Vec::new();
                 for item in list.iter() {
-                    out_list.push(Syntax::syntax_from_datum(marks, item.clone())?);
+                    out_list.push(Syntax::syntax_from_datum(scopes, item.clone())?);
                 }
                 Ok(Syntax::new_list(out_list, Span::default()))
             }
             UnpackedValue::Syntax(syntax) => {
                 let mut syntax = syntax.as_ref().clone();
-                syntax.mark_many(marks);
+                for scope in scopes {
+                    syntax.add_scope(*scope);
+                }
                 Ok(syntax)
             }
             UnpackedValue::Vector(vec) => {
                 let mut out_vec = Vec::new();
                 for item in vec.0.vec.read().iter() {
-                    out_vec.push(Syntax::syntax_from_datum(marks, item.clone())?);
+                    out_vec.push(Syntax::syntax_from_datum(scopes, item.clone())?);
                 }
                 Ok(Syntax::new_vector(out_vec, Span::default()))
             }
             UnpackedValue::Symbol(sym) => {
                 let ident = Identifier {
                     sym,
-                    marks: marks.clone(),
+                    scopes: scopes.clone(),
                 };
                 Ok(Syntax::Identifier {
                     ident,
-                    binding: None,
                     span: Span::default(),
                 })
             }
@@ -219,6 +320,7 @@ impl Syntax {
         }
     }
 
+    /*
     fn resolve_bindings<'a>(
         &'a mut self,
         env: &Environment,
@@ -250,32 +352,25 @@ impl Syntax {
             _ => (),
         }
     }
+     */
 
     #[maybe_async]
-    fn apply_transformer(&self, env: &Environment, mac: Keyword) -> Result<Expansion, Exception> {
-        // Create a new mark for the expansion context
-        let new_mark = Mark::new();
+    fn apply_transformer(&self, transformer: &Procedure) -> Result<Expansion, Exception> {
+        // Create a new scope for the expansion
+        let intro_scope = Scope::new();
 
-        // Apply the new mark to the input and resolve any bindings
+        // Apply the new scope to the input
         let mut input = self.clone();
-        input.resolve_bindings(env, &mut HashMap::default());
-        input.mark(new_mark);
+        input.add_scope(intro_scope);
 
         // Call the transformer with the input:
-        let transformer_output = maybe_await!(mac.transformer.call(&[Value::from(input)]))?;
+        let transformer_output = maybe_await!(transformer.call(&[Value::from(input)]))?;
 
-        // Output must be syntax:
-        let output = Syntax::syntax_from_datum(
-            &BTreeSet::from([new_mark]),
-            transformer_output
-                .first()
-                .ok_or_else(|| Exception::error("syntax transformer produced no output"))?
-                .clone(),
-        )?;
+        let output: Value = transformer_output.expect1()?;
+        let mut output = Syntax::syntax_from_datum(&BTreeSet::new(), output)?;
+        output.flip_scope(intro_scope);
 
-        let new_env = env.new_macro_expansion(new_mark, mac.source_env.clone());
-
-        Ok(Expansion::new_expanded(new_env, output))
+        Ok(Expansion::Expanded(output))
     }
 
     #[cfg(not(feature = "async"))]
@@ -300,30 +395,40 @@ impl Syntax {
                     Some(Self::Identifier { ident, .. }) => ident,
                     _ => return Ok(Expansion::Unexpanded),
                 };
-                if let Some(mac) = maybe_await!(env.fetch_keyword(ident))? {
-                    return maybe_await!(self.apply_transformer(env, mac));
+                if ident.sym == "f" {
+                    println!("f = {ident:?}");
+                }
+                if let Some(binding) = ident.resolve()
+                    && let Some(transformer) = maybe_await!(env.lookup_keyword(binding))?
+                {
+                    return maybe_await!(self.apply_transformer(&transformer));
                 }
 
                 // Check for set! macro
                 match &list.as_slice()[1..] {
-                    [Syntax::Identifier { ident: var, .. }, ..] if ident == "set!" => {
+                    [Syntax::Identifier { ident, .. }, ..] if ident == "set!" => {
                         // Look for a variable transformer:
-                        if let Some(mac) = maybe_await!(env.fetch_keyword(var))? {
-                            if !mac.transformer.is_variable_transformer() {
+                        if let Some(binding) = ident.resolve()
+                            && let Some(transformer) = maybe_await!(env.lookup_keyword(binding))?
+                        {
+                            if !transformer.is_variable_transformer() {
                                 return Err(Exception::error(format!(
                                     "{} is not a variable transformer",
-                                    var.sym
+                                    ident.sym
                                 )));
                             }
-                            return maybe_await!(self.apply_transformer(env, mac));
+                            return maybe_await!(self.apply_transformer(&transformer));
                         }
                     }
                     _ => (),
                 }
             }
             Self::Identifier { ident, .. } => {
-                if let Some(mac) = maybe_await!(env.fetch_keyword(ident))? {
-                    return maybe_await!(self.apply_transformer(env, mac));
+                if let Some(binding) = ident.resolve() 
+                    && let Some(transformer) =
+                    maybe_await!(env.lookup_keyword(binding))?
+                {
+                    return maybe_await!(self.apply_transformer(&transformer));
                 }
             }
             _ => (),
@@ -333,15 +438,13 @@ impl Syntax {
 
     /// Fully expand the outermost syntax object.
     #[maybe_async]
-    pub(crate) fn expand(mut self, env: &Environment) -> Result<FullyExpanded, Exception> {
-        let mut curr_env = env.clone();
+    pub(crate) fn expand(mut self, env: &Environment) -> Result<Syntax, Exception> {
         loop {
-            match maybe_await!(self.expand_once(&curr_env)) {
+            match maybe_await!(self.expand_once(&env)) {
                 Ok(Expansion::Unexpanded) => {
-                    return Ok(FullyExpanded::new(curr_env, self));
+                    return Ok(self);
                 }
-                Ok(Expansion::Expanded { new_env, syntax }) => {
-                    curr_env = new_env;
+                Ok(Expansion::Expanded(syntax)) => {
                     self = syntax;
                 }
                 Err(condition) => {
@@ -402,6 +505,100 @@ impl Syntax {
     pub(crate) fn has_car(&self, car: &str) -> bool {
         matches!(self.as_list(), Some([Self::Identifier { ident, .. }, .. ]) if ident == car)
     }
+
+    pub fn span(&self) -> &Span {
+        match self {
+            Self::Null { span } => span,
+            Self::List { span, .. } => span,
+            Self::Vector { span, .. } => span,
+            Self::ByteVector { span, .. } => span,
+            Self::Literal { span, .. } => span,
+            Self::Identifier { span, .. } => span,
+        }
+    }
+
+    pub fn new_null(span: impl Into<Span>) -> Self {
+        Self::Null { span: span.into() }
+    }
+
+    pub fn is_null(&self) -> bool {
+        matches!(self, Self::Null { .. })
+    }
+
+    pub fn as_ident(&self) -> Option<&Identifier> {
+        if let Syntax::Identifier { ident, .. } = self {
+            Some(ident)
+        } else {
+            None
+        }
+    }
+
+    pub fn new_list(list: Vec<Syntax>, span: impl Into<Span>) -> Self {
+        Self::List {
+            list,
+            span: span.into(),
+        }
+    }
+
+    pub fn as_list(&self) -> Option<&[Syntax]> {
+        if let Syntax::List { list, .. } = self {
+            Some(list)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_list_mut(&mut self) -> Option<&mut [Syntax]> {
+        if let Syntax::List { list, .. } = self {
+            Some(list)
+        } else {
+            None
+        }
+    }
+
+    pub fn is_list(&self) -> bool {
+        matches!(self, Self::List { .. })
+    }
+
+    pub fn new_vector(vector: Vec<Syntax>, span: impl Into<Span>) -> Self {
+        Self::Vector {
+            vector,
+            span: span.into(),
+        }
+    }
+
+    pub fn new_byte_vector(vector: Vec<u8>, span: impl Into<Span>) -> Self {
+        Self::ByteVector {
+            vector,
+            span: span.into(),
+        }
+    }
+
+    pub fn is_vector(&self) -> bool {
+        matches!(self, Self::Vector { .. })
+    }
+
+    pub fn new_literal(literal: Literal, span: impl Into<Span>) -> Self {
+        Self::Literal {
+            literal,
+            span: span.into(),
+        }
+    }
+
+    pub fn is_literal(&self) -> bool {
+        matches!(self, Self::Literal { .. })
+    }
+
+    pub fn new_identifier(name: &str, span: impl Into<Span>) -> Self {
+        Self::Identifier {
+            ident: Identifier::new(name),
+            span: span.into(),
+        }
+    }
+
+    pub fn is_identifier(&self) -> bool {
+        matches!(self, Self::Identifier { .. })
+    }
 }
 
 impl fmt::Debug for Syntax {
@@ -453,7 +650,7 @@ impl fmt::Debug for Syntax {
                 write!(f, "{literal}")
             }
             Syntax::Identifier { ident, span, .. } => {
-                write!(f, "{} @ {span}", ident.sym,)
+                write!(f, "{}", ident.sym)
             }
         }
     }
@@ -463,31 +660,10 @@ pub(crate) enum Expansion {
     /// Syntax remained unchanged after expansion
     Unexpanded,
     /// Syntax was expanded, producing a new expansion context
-    Expanded {
-        new_env: Environment,
-        syntax: Syntax,
-    },
+    Expanded(Syntax),
 }
 
-impl Expansion {
-    fn new_expanded(new_env: Environment, syntax: Syntax) -> Self {
-        Self::Expanded { new_env, syntax }
-    }
-}
-
-pub(crate) struct FullyExpanded {
-    pub expansion_env: Environment,
-    pub expanded: Syntax,
-}
-
-impl FullyExpanded {
-    pub fn new(expansion_env: Environment, expanded: Syntax) -> Self {
-        Self {
-            expansion_env,
-            expanded,
-        }
-    }
-}
+/*
 
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Trace)]
 pub struct Mark(usize);
@@ -505,15 +681,17 @@ impl Default for Mark {
     }
 }
 
+*/
+
 #[derive(Clone, Trace, PartialEq, Eq, Hash)]
 pub struct Identifier {
     pub(crate) sym: Symbol,
-    pub(crate) marks: BTreeSet<Mark>,
+    pub(crate) scopes: BTreeSet<Scope>,
 }
 
 impl fmt::Debug for Identifier {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.sym)
+        write!(f, "{} ({:?})", self.sym, self.scopes)
     }
 }
 
@@ -521,17 +699,58 @@ impl Identifier {
     pub fn new(name: &str) -> Self {
         Self {
             sym: Symbol::intern(name),
-            marks: BTreeSet::default(),
+            scopes: BTreeSet::new(),
         }
     }
 
-    pub fn from_symbol(sym: Symbol) -> Self {
+    pub fn from_symbol(sym: Symbol, scope: Scope) -> Self {
         Self {
             sym,
-            marks: BTreeSet::default(),
+            scopes: BTreeSet::from([scope]),
         }
     }
 
+    pub fn add_scope(&mut self, scope: Scope) {
+        self.scopes.insert(scope);
+    }
+
+    pub fn remove_scope(&mut self, scope: Scope) {
+        self.scopes.remove(&scope);
+    }
+
+    pub fn flip_scope(&mut self, scope: Scope) {
+        if self.scopes.contains(&scope) {
+            self.scopes.remove(&scope);
+        } else {
+            self.scopes.insert(scope);
+        }
+    }
+
+    pub fn free_identifier_equal(&self, rhs: &Self) -> bool {
+        let lhs = self.resolve();
+        let rhs = rhs.resolve();
+        lhs == rhs
+    }
+
+    pub fn resolve(&self) -> Option<Binding> {
+        resolve(self)
+    }
+
+    pub(crate) fn bind(&self) -> Binding {
+        if let Some(binding) = self.resolve() {
+            binding
+        } else {
+            self.new_bind()
+        }
+    }
+
+    pub(crate) fn new_bind(&self) -> Binding {
+        let new_binding = Binding::new();
+        add_binding(self.clone(), new_binding);
+        new_binding
+    }
+
+    /*
     /// Return this identifier prefixed with the given string
     pub fn prefix(self, prefix: &str) -> Self {
         let sym = Symbol::intern(&format!("{prefix}{}", self.sym.to_str()));
@@ -552,119 +771,12 @@ impl Identifier {
     pub fn mark_many(&mut self, marks: &BTreeSet<Mark>) {
         self.marks = self.marks.symmetric_difference(marks).cloned().collect();
     }
+    */
 }
 
 impl PartialEq<str> for Identifier {
     fn eq(&self, rhs: &str) -> bool {
         self.sym.to_str().as_ref() == rhs
-    }
-}
-
-pub fn free_identifier_equal(
-    lhs: &Identifier,
-    lhs_binding: Option<&Binding>,
-    rhs: &Identifier,
-    rhs_binding: Option<&Binding>,
-) -> bool {
-    let lhs_binding = lhs_binding.map(Binding::resolve);
-    let rhs_binding = rhs_binding.map(Binding::resolve);
-
-    match (lhs_binding.as_deref(), rhs_binding.as_deref()) {
-        (Some(Binding::Local(lhs)), Some(Binding::Local(rhs))) => lhs == rhs,
-        (Some(Binding::Global(lhs)), Some(Binding::Global(rhs))) => Gc::ptr_eq(&lhs, &rhs),
-        (Some(Binding::Keyword(lhs)), Some(Binding::Keyword(rhs))) => lhs == rhs,
-        (Some(Binding::SpecialKeyword(lhs)), Some(Binding::SpecialKeyword(rhs))) => lhs == rhs,
-        (Some(Binding::Top(_, _)) | None, Some(Binding::Top(_, _)) | None) => lhs.sym == rhs.sym,
-        _ => false,
-    }
-}
-
-impl Syntax {
-    pub fn span(&self) -> &Span {
-        match self {
-            Self::Null { span } => span,
-            Self::List { span, .. } => span,
-            Self::Vector { span, .. } => span,
-            Self::ByteVector { span, .. } => span,
-            Self::Literal { span, .. } => span,
-            Self::Identifier { span, .. } => span,
-        }
-    }
-
-    pub fn new_null(span: impl Into<Span>) -> Self {
-        Self::Null { span: span.into() }
-    }
-
-    pub fn is_null(&self) -> bool {
-        matches!(self, Self::Null { .. })
-    }
-
-    pub fn as_ident(&self) -> Option<&Identifier> {
-        if let Syntax::Identifier { ident, .. } = self {
-            Some(ident)
-        } else {
-            None
-        }
-    }
-
-    pub fn new_list(list: Vec<Syntax>, span: impl Into<Span>) -> Self {
-        Self::List {
-            list,
-            span: span.into(),
-        }
-    }
-
-    pub fn as_list(&self) -> Option<&[Syntax]> {
-        if let Syntax::List { list, .. } = self {
-            Some(list)
-        } else {
-            None
-        }
-    }
-
-    pub fn is_list(&self) -> bool {
-        matches!(self, Self::List { .. })
-    }
-
-    pub fn new_vector(vector: Vec<Syntax>, span: impl Into<Span>) -> Self {
-        Self::Vector {
-            vector,
-            span: span.into(),
-        }
-    }
-
-    pub fn new_byte_vector(vector: Vec<u8>, span: impl Into<Span>) -> Self {
-        Self::ByteVector {
-            vector,
-            span: span.into(),
-        }
-    }
-
-    pub fn is_vector(&self) -> bool {
-        matches!(self, Self::Vector { .. })
-    }
-
-    pub fn new_literal(literal: Literal, span: impl Into<Span>) -> Self {
-        Self::Literal {
-            literal,
-            span: span.into(),
-        }
-    }
-
-    pub fn is_literal(&self) -> bool {
-        matches!(self, Self::Literal { .. })
-    }
-
-    pub fn new_identifier(name: &str, span: impl Into<Span>) -> Self {
-        Self::Identifier {
-            ident: Identifier::new(name),
-            span: span.into(),
-            binding: None,
-        }
-    }
-
-    pub fn is_identifier(&self) -> bool {
-        matches!(self, Self::Identifier { .. })
     }
 }
 
@@ -687,7 +799,7 @@ pub fn datum_to_syntax(template_id: &Value, datum: &Value) -> Result<Vec<Value>,
         return Err(Exception::type_error("template_id", "syntax"));
     };
     Ok(vec![Value::from(Syntax::syntax_from_datum(
-        &template_id.marks,
+        &template_id.scopes,
         datum.clone(),
     )?)])
 }
@@ -717,28 +829,13 @@ pub fn bound_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, 
 pub fn free_identifier_eq_pred(id1: &Value, id2: &Value) -> Result<Vec<Value>, Exception> {
     let id1: Arc<Syntax> = id1.clone().try_into()?;
     let id2: Arc<Syntax> = id2.clone().try_into()?;
-    let Syntax::Identifier {
-        ident: id1,
-        binding: id1_binding,
-        ..
-    } = id1.as_ref()
-    else {
+    let Syntax::Identifier { ident: id1, .. } = id1.as_ref() else {
         return Err(Exception::type_error("identifier", "syntax"));
     };
-    let Syntax::Identifier {
-        ident: id2,
-        binding: id2_binding,
-        ..
-    } = id2.as_ref()
-    else {
+    let Syntax::Identifier { ident: id2, .. } = id2.as_ref() else {
         return Err(Exception::type_error("identifier", "syntax"));
     };
-    Ok(vec![Value::from(free_identifier_equal(
-        id1,
-        id1_binding.as_ref(),
-        id2,
-        id2_binding.as_ref(),
-    ))])
+    Ok(vec![Value::from(id1.free_identifier_equal(id2))])
 }
 
 #[bridge(name = "generate-temporaries", lib = "(rnrs syntax-case builtins (6))")]
@@ -759,8 +856,10 @@ pub fn generate_temporaries(list: &Value) -> Result<Vec<Value>, Exception> {
     let mut temporaries = Value::null();
     for _ in 0..length {
         let ident = Syntax::Identifier {
-            ident: Identifier::from_symbol(Symbol::gensym()),
-            binding: None,
+            ident: Identifier {
+                sym: Symbol::gensym(),
+                scopes: BTreeSet::new(),
+            },
             span: Span::default(),
         };
         temporaries = Value::from((Value::from(ident), temporaries));

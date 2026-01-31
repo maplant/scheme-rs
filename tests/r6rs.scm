@@ -325,18 +325,18 @@
              'now)
 
 (assert-equal? (let ()
-               (let-syntax
-                   ((def (syntax-rules ()
-                           ((def stuff ...) (define stuff ...)))))
-                 (def foo 42))
-               foo)
+                 (let-syntax
+                     ((def (syntax-rules ()
+                             ((def stuff ...) (define stuff ...)))))
+                   (def foo1 42))
+                 foo1)
              42)
 
 (assert-equal? (let ((x 'outer))
-               (let-syntax ((m (syntax-rules () ((m) x))))
-                 (let ((x 'inner))
-                   (m))))
-             'outer)
+                 (let-syntax ((m (syntax-rules () ((m) x))))
+                   (let ((x 'inner))
+                     (m))))
+               'outer)
 
 ;; TODO: Fix parser for this, I guess.
 ;; (assert-equal? (let ()
@@ -364,25 +364,29 @@
                         (let temp)
                         (if y)
                         y)))
-             7)
+               7)
 
 (assert-equal? (let ((f (lambda (x) (+ x 1))))
-               (let-syntax ((f (syntax-rules ()
-                                 ((f x) x)))
-                            (g (syntax-rules ()
-                                 ((g x) (f x)))))
-                 (list (f 1) (g 1))))
-             '(1 2))
+                 (let-syntax ((f (syntax-rules ()
+                                   ((f x) x)))
+                              (g (syntax-rules ()
+                                   ((g x) (f x)))))
+                   (list (f 1) (g 1))))
+               '(1 2))
+
+(display "got here!\n");
 
 (assert-equal? (let ((f (lambda (x) (+ x 1))))
-               (letrec-syntax ((f (syntax-rules ()
-                                    ((f x) x)))
-                               (g (syntax-rules ()
-                                    ((g x) (f x)))))
-                 (list (f 1) (g 1))))
-             '(1 1))
+                 (letrec-syntax ((f (syntax-rules ()
+                                      ((f x) x)))
+                                 (g (syntax-rules ()
+                                      ((g x) (f x)))))
+                   (list (f 1) (g 1))))
+               '(1 1))
 
 ;; Extra stuff:
+
+(display "here2\n")
 
 (assert-equal? (let ([x 1])
                (syntax-case #'() ()
@@ -411,6 +415,8 @@
 
 ;; Realized this was an issue when doing escape analysis:
 (define (test a) (set! a '()))
+
+(display "here3\n")
 
 ;; r6rs-lib:
 
@@ -471,6 +477,8 @@
 (assert-equal? (point-x (make-point/abs -1 -2)) 1)
 (assert-equal? (point-y (make-point/abs -1 -2)) 2)
 
+(display "here4\n")
+
 ;; Test from make the define-record-type macro:
 (define (get-clause id ls)
   (syntax-case ls ()
@@ -489,6 +497,8 @@
 
 ;; Test quasiquoting
 (assert-equal? `(1 2 3 ,(+ 1 2 3)) (list 1 2 3 6))
+
+(display "here5\n")
 
 ;; Identifier predicates
 (let ([fred 17])

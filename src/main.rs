@@ -113,7 +113,7 @@ fn main() -> Result<(), Exception> {
             }
         };
 
-        match maybe_await!(repl.eval_sexpr(true, &sexpr)) {
+        match maybe_await!(repl.eval_sexpr(true, sexpr)) {
             Ok(results) => {
                 for result in results.into_iter() {
                     println!("${n_results} = {result:?}");

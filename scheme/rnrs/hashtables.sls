@@ -2,7 +2,7 @@
   (export (import (rnrs hashtables builtins (6)))
           make-eq-hashtable make-eqv-hashtable)
   (import (only (rnrs base builtins (6)) eqv? eq? null? car)
-          (rnrs base special-keywords (6)))
+          (rnrs base primitives (6)))
 
   (define (make-eq-hashtable . k)
     (if (null? k)

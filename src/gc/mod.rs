@@ -848,4 +848,28 @@ where
             lock.visit_or_recurse(visitor);
         }
     }
+
+    unsafe fn finalize(&mut self) {
+        unsafe {
+            self.get_mut().unwrap().finalize_or_skip();
+        }
+    }
+}
+
+unsafe impl<T> Trace for parking_lot::Mutex<T>
+where
+    T: GcOrTrace,
+{
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+        unsafe {
+            let lock = self.lock();
+            lock.visit_or_recurse(visitor);
+        }
+    }
+
+    unsafe fn finalize(&mut self) {
+        unsafe {
+            self.get_mut().finalize_or_skip();
+        }
+    }
 }

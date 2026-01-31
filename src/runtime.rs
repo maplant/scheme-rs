@@ -24,7 +24,12 @@ use crate::{
 };
 use parking_lot::RwLock;
 use scheme_rs_macros::{maybe_async, maybe_await, runtime_fn};
-use std::{collections::HashSet, mem::ManuallyDrop, path::Path, sync::Arc};
+use std::{
+    collections::{BTreeSet, HashSet},
+    mem::ManuallyDrop,
+    path::Path,
+    sync::Arc,
+};
 
 /// Scheme-rs core runtime
 ///
@@ -85,8 +90,8 @@ impl Runtime {
         use tokio::fs::File;
 
         let progm = TopLevelEnvironment::new_program(self, path);
-        let env = Environment::Top(progm);
-        let form = {
+        let env = Environment::Top(progm.clone());
+        let mut form = {
             let port = Port::new(
                 path.display(),
                 maybe_await!(File::open(path)).unwrap(),
@@ -98,6 +103,7 @@ impl Runtime {
             maybe_await!(port.all_sexprs(span)).map_err(Exception::from)?
         };
 
+        form.add_scope(progm.scope());
         let body = maybe_await!(DefinitionBody::parse_lib_body(self, &form, &env))?;
         let compiled = body.compile_top_level();
         let closure = maybe_await!(self.compile_expr(compiled));
@@ -190,7 +196,7 @@ fn compilation_buffer() -> (CompilationBufferTx, CompilationBufferRx) {
 impl RuntimeInner {
     fn new() -> Self {
         // Ensure the GC is initialized:
-        init_gc();
+        // init_gc();
         let (compilation_buffer_tx, compilation_buffer_rx) = compilation_buffer();
         // According the inkwell (and therefore LLVM docs), one LlvmContext may
         // be present per thread. Thus, we spawn a new thread and a new
@@ -402,6 +408,7 @@ unsafe extern "C" fn apply(
         let op = match Value::from_raw_inc_rc(op).unpack() {
             UnpackedValue::Procedure(op) => op,
             x => {
+                println!("x = {:?}", x.clone().into_value());
                 let raised = raise(
                     Runtime::from_raw_inc_rc(runtime),
                     Exception::invalid_operator(x.type_name()).into(),
@@ -428,11 +435,12 @@ unsafe extern "C" fn get_frame(op: *const (), span: *const ()) -> *const () {
         let span = Value::from_raw_inc_rc(span);
         let span = span.cast_to_rust_type::<Span>().unwrap();
         let frame = Syntax::Identifier {
-            ident: Identifier::from_symbol(
-                op.get_debug_info()
+            ident: Identifier {
+                sym: op
+                    .get_debug_info()
                     .map_or_else(|| Symbol::intern("<lambda>"), |dbg| dbg.name),
-            ),
-            binding: None,
+                scopes: BTreeSet::new(),
+            },
             span: span.as_ref().clone(),
         };
         Value::into_raw(Value::from(frame))

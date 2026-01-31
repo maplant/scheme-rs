@@ -1,9 +1,13 @@
 //! Data structures for expanding and representing Scheme code.
 
+// TODO: All of these functions need to be improved to reduce the amount of
+// cloning that occurs. I was going to add that as part of the set-of-scopes
+// change, but it proved too unwieldy
+
 use crate::{
     Either,
     cps::{Compile, PrimOp},
-    env::{Environment, Local, Var},
+    env::{Binding, Environment, Local, Scope, Var, add_binding},
     exceptions::Exception,
     expand::{SyntaxRule, Template},
     gc::Trace,
@@ -11,8 +15,8 @@ use crate::{
     proc::Procedure,
     runtime::Runtime,
     symbols::Symbol,
-    syntax::{FullyExpanded, Identifier, Span, Syntax},
-    value::Value,
+    syntax::{Identifier, Span, Syntax},
+    value::{Expect1, Value},
 };
 
 use scheme_rs_macros::{maybe_async, maybe_await};
@@ -113,10 +117,10 @@ mod error {
     }
 }
 
-/// Special keywords are keywords that the compiler needs to know about in order
-/// to create a proper AST as specified by R6RS base.
+/// Primitives that the compiler needs to be aware of in order to create a
+/// proper AST as specified by R6RS base.
 #[derive(Copy, Clone, Trace, Debug, PartialEq, Eq)]
-pub enum SpecialKeyword {
+pub enum Primitive {
     Undefined,
     Begin,
     Lambda,
@@ -568,8 +572,8 @@ impl fmt::Display for SubVersionReference {
 #[derive(Debug)]
 pub enum ExportSet {
     Internal {
-        rename: Option<Identifier>,
-        ident: Identifier,
+        rename: Option<Symbol>,
+        name: Symbol,
     },
     External(ImportSpec),
 }
@@ -584,8 +588,8 @@ impl ExportSet {
                     Syntax::Null { .. },
                 ],
             ) => Ok(Self::Internal {
-                rename: Some(to.clone()),
-                ident: from.clone(),
+                rename: Some(to.sym),
+                name: from.sym,
             }),
             _ => Err(error::bad_form(form, None)),
         }
@@ -595,7 +599,7 @@ impl ExportSet {
         match form {
             Syntax::Identifier { ident, .. } => Ok(vec![Self::Internal {
                 rename: None,
-                ident: ident.clone(),
+                name: ident.sym,
             }]),
             Syntax::List { list, .. } => match list.as_slice() {
                 [
@@ -706,20 +710,20 @@ pub enum ImportSet {
     Library(LibraryReference),
     Only {
         set: Box<ImportSet>,
-        allowed: HashSet<Identifier>,
+        allowed: HashSet<Symbol>,
     },
     Except {
         set: Box<ImportSet>,
-        disallowed: HashSet<Identifier>,
+        disallowed: HashSet<Symbol>,
     },
     Prefix {
         set: Box<ImportSet>,
-        prefix: Identifier,
+        prefix: Symbol,
     },
     Rename {
         set: Box<ImportSet>,
         /// Imported identifiers to rename (from, to).
-        renames: HashMap<Identifier, Identifier>,
+        renames: HashMap<Symbol, Symbol>,
     },
 }
 
@@ -749,7 +753,7 @@ impl ImportSet {
                 let allowed = imports
                     .iter()
                     .map(|allowed| match allowed {
-                        Syntax::Identifier { ident, .. } => Ok(ident.clone()),
+                        Syntax::Identifier { ident, .. } => Ok(ident.sym),
                         _ => Err(error::expected_identifier(form, Some(allowed))),
                     })
                     .collect::<Result<HashSet<_>, _>>()?;
@@ -772,7 +776,7 @@ impl ImportSet {
                 let disallowed = exceptions
                     .iter()
                     .map(|disallowed| match disallowed {
-                        Syntax::Identifier { ident, .. } => Ok(ident.clone()),
+                        Syntax::Identifier { ident, .. } => Ok(ident.sym),
                         _ => Err(error::expected_identifier(form, Some(disallowed))),
                     })
                     .collect::<Result<HashSet<_>, _>>()?;
@@ -794,7 +798,7 @@ impl ImportSet {
                 let import_set = ImportSet::parse(import_set)?;
                 Ok(Self::Prefix {
                     set: Box::new(import_set),
-                    prefix: prefix.clone(),
+                    prefix: prefix.sym,
                 })
             }
             Some(
@@ -817,7 +821,7 @@ impl ImportSet {
                                 Syntax::Identifier { ident: to, .. },
                                 Syntax::Null { .. },
                             ],
-                        ) => Ok((from.clone(), to.clone())),
+                        ) => Ok((from.sym, to.sym)),
                         _ => Err(error::bad_form(form, Some(rename))),
                     })
                     .collect::<Result<HashMap<_, _>, _>>()?;
@@ -953,7 +957,7 @@ impl Definition {
                 expr,
                 Syntax::Null { .. },
             ] => Ok(Definition::DefineVar(DefineVar {
-                var: maybe_await!(env.fetch_var(ident))?.unwrap(),
+                var: maybe_await!(env.lookup_var(ident.bind()))?.unwrap(),
                 val: Arc::new(maybe_await!(Expression::parse(ctxt, expr.clone(), env))?),
                 next: None,
             })),
@@ -970,12 +974,12 @@ impl Definition {
                         },
                         args @ ..,
                     ] => {
-                        let var = maybe_await!(env.fetch_var(func_name))?.unwrap();
-
+                        let var = maybe_await!(env.lookup_var(func_name.bind()))?.unwrap(); //env.def_var(func_name.bind(), func_name.sym);
                         let mut bound = HashSet::<&Identifier>::new();
                         let mut fixed = Vec::new();
                         let new_env = env.new_lexical_contour();
                         let mut arg_names = Vec::new();
+                        let func_scope = Scope::new();
 
                         // Bind the arguments to a new environment:
                         for arg in &args[..args.len() - 1] {
@@ -984,12 +988,15 @@ impl Definition {
                                     if bound.contains(ident) {
                                         return Err(error::name_previously_bound(form, arg));
                                     }
-                                    let Var::Local(sym) = new_env.def_var(ident.clone()) else {
-                                        unreachable!()
-                                    };
                                     bound.insert(ident);
-                                    fixed.push(sym);
                                     arg_names.push(ident.sym);
+                                    let mut arg = ident.clone();
+                                    arg.add_scope(func_scope);
+                                    let local = new_env
+                                        .def_var(arg.new_bind(), arg.sym)
+                                        .as_local()
+                                        .unwrap();
+                                    fixed.push(local);
                                 }
                                 x => return Err(error::expected_identifier(form, Some(x))),
                             }
@@ -1004,12 +1011,14 @@ impl Definition {
                                     if bound.contains(ident) {
                                         return Err(error::name_previously_bound(form, last));
                                     }
-                                    let Var::Local(remaining) = new_env.def_var(ident.clone())
-                                    else {
-                                        unreachable!()
-                                    };
                                     bound.insert(ident);
                                     arg_names.push(ident.sym);
+                                    let mut remaining = ident.clone();
+                                    remaining.add_scope(func_scope);
+                                    let remaining = new_env
+                                        .def_var(remaining.new_bind(), remaining.sym)
+                                        .as_local()
+                                        .unwrap();
                                     Formals::VarArgs {
                                         fixed: fixed.into_iter().collect(),
                                         remaining,
@@ -1023,7 +1032,10 @@ impl Definition {
                         };
 
                         // Parse the body:
-                        let body = maybe_await!(DefinitionBody::parse(ctxt, body, &new_env, form))?;
+                        let mut body = body.to_vec();
+                        body.iter_mut().for_each(|s| s.add_scope(func_scope));
+                        let body =
+                            maybe_await!(DefinitionBody::parse(ctxt, &body, &new_env, form))?;
 
                         Ok(Self::DefineFunc(DefineFunc {
                             var,
@@ -1044,21 +1056,16 @@ impl Definition {
 #[maybe_async]
 pub(super) fn define_syntax(
     ctxt: &ParseContext,
-    ident: Identifier,
+    binding: Binding,
     expr: Syntax,
     env: &Environment,
 ) -> Result<(), Exception> {
-    let FullyExpanded {
-        expanded,
-        expansion_env,
-    } = maybe_await!(expr.expand(env))?;
-
-    let expr = maybe_await!(Expression::parse(ctxt, expanded, &expansion_env))?;
+    let expanded = maybe_await!(expr.expand(env))?;
+    let expr = maybe_await!(Expression::parse(ctxt, expanded, env))?;
     let cps_expr = expr.compile_top_level();
-    let mac = maybe_await!(maybe_await!(ctxt.runtime.compile_expr(cps_expr)).call(&[]))?;
-    let transformer: Procedure = mac[0].clone().try_into()?;
-    env.def_keyword(ident, transformer);
-
+    let values = maybe_await!(maybe_await!(ctxt.runtime.compile_expr(cps_expr)).call(&[]))?;
+    let transformer: Procedure = values.expect1()?;
+    env.def_keyword(binding, transformer);
     Ok(())
 }
 
@@ -1089,11 +1096,8 @@ impl Expression {
         form: Syntax,
         env: &Environment,
     ) -> Result<Self, Exception> {
-        let FullyExpanded {
-            expansion_env,
-            expanded,
-        } = maybe_await!(form.expand(env))?;
-        maybe_await!(Self::parse_expanded(ctxt, expanded, &expansion_env))
+        let expanded = maybe_await!(form.expand(env))?;
+        maybe_await!(Self::parse_expanded(ctxt, expanded, env))
     }
 
     #[cfg(not(feature = "async"))]
@@ -1125,6 +1129,21 @@ impl Expression {
 
             // Regular identifiers:
             Syntax::Identifier { ident, .. } => {
+                if let Some(binding) = ident.resolve() {
+                    if let Some(primitive) = env.lookup_primitive(binding) {
+                        match primitive {
+                            Primitive::Undefined => Ok(Self::Undefined),
+                            _ => Err(error::bad_form(&form, None)),
+                        }
+                    } else if let Some(var) = maybe_await!(env.lookup_var(binding))? {
+                        Ok(Self::Var(var))
+                    } else {
+                        Err(error::undefined_variable(&form, None))
+                    }
+                } else {
+                    Err(error::undefined_variable(&form, None))
+                }
+                /*
                 match maybe_await!(env.fetch_special_keyword_or_var(ident))? {
                     Some(Either::Left(SpecialKeyword::Undefined)) => Ok(Self::Undefined),
                     Some(Either::Left(_)) => Err(error::bad_form(&form, None)),
@@ -1140,6 +1159,7 @@ impl Expression {
                         }
                     }
                 }
+                 */
             }
 
             // Literals:
@@ -1153,10 +1173,78 @@ impl Expression {
             Syntax::List { list: exprs, .. } => match exprs.as_slice() {
                 // Special forms:
                 [
-                    Syntax::Identifier { ident, .. },
+                    ident_form @ Syntax::Identifier { ident, .. },
                     tail @ ..,
                     Syntax::Null { .. },
-                ] => match maybe_await!(env.fetch_special_keyword_or_var(ident))? {
+                ] => {
+                    let Some(binding) = ident.resolve() else {
+                        return Err(error::undefined_variable(&form, Some(ident_form)));
+                    };
+                    if let Some(primitive) = env.lookup_primitive(binding) {
+                        match primitive {
+                            Primitive::Begin => maybe_await!(ExprBody::parse(ctxt, tail, env))
+                                .map(Expression::Begin),
+                            Primitive::Lambda => {
+                                maybe_await!(Lambda::parse(ctxt, tail, env, &form))
+                                    .map(Expression::Lambda)
+                            }
+                            Primitive::Let => maybe_await!(Let::parse(ctxt, tail, env, &form))
+                                .map(Expression::Let),
+                            Primitive::If => {
+                                maybe_await!(If::parse(ctxt, tail, env, &form)).map(Expression::If)
+                            }
+                            Primitive::And => {
+                                maybe_await!(And::parse(ctxt, tail, env)).map(Expression::And)
+                            }
+                            Primitive::Or => {
+                                maybe_await!(Or::parse(ctxt, tail, env)).map(Expression::Or)
+                            }
+                            Primitive::Quote => Quote::parse(tail, &form).map(Expression::Quote),
+                            Primitive::Syntax => {
+                                SyntaxQuote::parse(tail, env, &form).map(Expression::SyntaxQuote)
+                            }
+                            Primitive::SyntaxCase => {
+                                maybe_await!(SyntaxCase::parse(ctxt, tail, env, &form))
+                                    .map(Expression::SyntaxCase)
+                            }
+                            Primitive::Set => maybe_await!(Set::parse(ctxt, tail, env, &form))
+                                .map(Expression::Set),
+                            Primitive::LetSyntax if !tail.is_empty() => { 
+                                let (form, env) = maybe_await!(parse_let_syntax(
+                                    ctxt,
+                                    false,
+                                    &tail[0],
+                                    &tail[1..],
+                                    env,
+                                    &mut Vec::new(),
+                                ))?;
+                                maybe_await!(ExprBody::parse(ctxt, &form, &env))
+                                    .map(Expression::Begin)
+                            }
+                            Primitive::LetRecSyntax if !tail.is_empty() => {
+                                let (form, env) = maybe_await!(parse_let_syntax(
+                                    ctxt,
+                                    true,
+                                    &tail[0],
+                                    &tail[1..],
+                                    env,
+                                    &mut Vec::new(),
+                                ))?;
+                                maybe_await!(ExprBody::parse(ctxt, &form, &env))
+                                    .map(Expression::Begin)
+                            }
+                            Primitive::Import => Err(error::unexpected_import(&form)),
+                            Primitive::Define => Err(error::unexpected_define(&form)),
+                            _ => Err(error::bad_form(&form, None)),
+                        }
+                    } else if let Some(var) = maybe_await!(env.lookup_var(binding))? {
+                        maybe_await!(Apply::parse(ctxt, Expression::Var(var), tail, env, &form))
+                            .map(Expression::Apply)
+                    } else {
+                        Err(error::undefined_variable(&form, Some(ident_form)))
+                    }
+                    /*
+                    match maybe_await!(env.fetch_special_keyword_or_var(ident))? {
                     Some(Either::Left(SpecialKeyword::Begin)) => {
                         maybe_await!(ExprBody::parse(ctxt, tail, env)).map(Expression::Begin)
                     }
@@ -1211,7 +1299,9 @@ impl Expression {
                     }
                     None => Err(error::undefined_variable(&form, None)),
                     _ => Err(error::bad_form(&form, None)),
-                },
+                    },
+                    */
+                }
                 [expr, args @ .., Syntax::Null { .. }] => maybe_await!(Apply::parse(
                     ctxt,
                     maybe_await!(Expression::parse(ctxt, expr.clone(), env))?,
@@ -1252,8 +1342,7 @@ impl Expression {
         let Expression::Var(Var::Global(global)) = self else {
             return None;
         };
-        let val = global.value_ref().read().clone();
-        let val: Procedure = val.try_into().ok()?;
+        let val: Procedure = global.read().try_into().ok()?;
 
         let Bridge(ptr) = val.0.func else {
             return None;
@@ -1309,7 +1398,7 @@ impl Quote {
 #[derive(Debug, Clone, Trace)]
 pub struct SyntaxQuote {
     pub template: Template,
-    pub expansions: HashMap<Identifier, Local>,
+    pub expansions: HashMap<Binding, Local>,
 }
 
 impl SyntaxQuote {
@@ -1318,8 +1407,7 @@ impl SyntaxQuote {
             [] => Err(error::expected_more_arguments(form)),
             [expr] => {
                 let mut expansions = HashMap::new();
-                let template =
-                    Template::compile(expr, env, &mut expansions, &mut HashMap::default())?;
+                let template = Template::compile(expr, env, &mut expansions)?;
                 Ok(SyntaxQuote {
                     template,
                     expansions,
@@ -1406,6 +1494,7 @@ fn parse_lambda(
     let mut fixed = Vec::new();
     let new_contour = env.new_lexical_contour();
     let mut arg_names = Vec::new();
+    let lambda_scope = Scope::new();
 
     if !args.is_empty() {
         for arg in &args[..args.len() - 1] {
@@ -1414,12 +1503,15 @@ fn parse_lambda(
                     if bound.contains(ident) {
                         return Err(error::name_previously_bound(form, arg));
                     }
-                    let Var::Local(arg) = new_contour.def_var(ident.clone()) else {
-                        unreachable!()
-                    };
-                    fixed.push(arg);
                     arg_names.push(ident.sym);
                     bound.insert(ident);
+                    let mut arg = ident.clone();
+                    arg.add_scope(lambda_scope);
+                    let local = new_contour
+                        .def_var(arg.new_bind(), arg.sym)
+                        .as_local()
+                        .unwrap();
+                    fixed.push(local);
                 }
                 x => return Err(error::expected_identifier(form, Some(x))),
             }
@@ -1434,9 +1526,12 @@ fn parse_lambda(
                     return Err(error::name_previously_bound(form, last));
                 }
                 arg_names.push(ident.sym);
-                let Var::Local(remaining) = new_contour.def_var(ident.clone()) else {
-                    unreachable!()
-                };
+                let mut remaining = ident.clone();
+                remaining.add_scope(lambda_scope);
+                let remaining = new_contour
+                    .def_var(remaining.new_bind(), remaining.sym)
+                    .as_local()
+                    .unwrap();
                 Formals::VarArgs {
                     fixed: fixed.into_iter().collect(),
                     remaining,
@@ -1449,7 +1544,9 @@ fn parse_lambda(
         Formals::FixedArgs(Vec::new())
     };
 
-    let body = maybe_await!(DefinitionBody::parse(ctxt, body, &new_contour, form))?;
+    let mut body = body.to_vec();
+    body.iter_mut().for_each(|s| s.add_scope(lambda_scope));
+    let body = maybe_await!(DefinitionBody::parse(ctxt, &body, &new_contour, form))?;
 
     Ok(Lambda {
         args,
@@ -1505,8 +1602,8 @@ fn parse_let(
 ) -> Result<Let, Exception> {
     let mut previously_bound = HashSet::new();
     let mut parsed_bindings = Vec::new();
-    let mut binding_names = Vec::new();
 
+    let new_scope = Scope::new();
     let new_contour = env.new_lexical_contour();
 
     match bindings {
@@ -1521,11 +1618,13 @@ fn parse_let(
                     form
                 ))?;
                 previously_bound.insert(binding.ident);
-                let Var::Local(var) = new_contour.def_var(binding.ident.clone()) else {
-                    unreachable!()
-                };
-                binding_names.push(binding.ident.sym);
-                parsed_bindings.push((var, binding));
+                let mut var = binding.ident.clone();
+                var.add_scope(new_scope);
+                let var = new_contour
+                    .def_var(var.new_bind(), var.sym)
+                    .as_local()
+                    .unwrap();
+                parsed_bindings.push((var, binding.expr));
             }
         }
         _ => {
@@ -1533,17 +1632,13 @@ fn parse_let(
         }
     }
 
-    let ast_body = maybe_await!(DefinitionBody::parse(ctxt, body, &new_contour, form))?;
-
-    // TODO: Lot of unnecessary cloning here, fix that.
-    let bindings: Vec<_> = parsed_bindings
-        .iter()
-        .map(|(var, binding)| (*var, binding.expr.clone()))
-        .collect();
+    let mut body = body.to_vec();
+    body.iter_mut().for_each(|s| s.add_scope(new_scope));
+    let body = maybe_await!(DefinitionBody::parse(ctxt, &body, &new_contour, form))?;
 
     Ok(Let {
-        bindings,
-        body: ast_body,
+        bindings: parsed_bindings,
+        body,
     })
 }
 
@@ -1560,10 +1655,14 @@ fn parse_named_let(
     let mut formals = Vec::new();
     let mut args = Vec::new();
 
+    let func_scope = Scope::new();
     let func_contour = env.new_lexical_contour();
 
-    let func = func_contour.def_var(name.clone());
+    let mut func_name = name.clone();
+    func_name.add_scope(func_scope);
+    let func = func_contour.def_var(func_name.new_bind(), func_name.sym);
 
+    let body_scope = Scope::new();
     let body_contour = func_contour.new_lexical_contour();
 
     match bindings {
@@ -1578,11 +1677,15 @@ fn parse_named_let(
                     form
                 ))?;
                 previously_bound.insert(binding.ident);
-                let Var::Local(var) = body_contour.def_var(binding.ident.clone()) else {
-                    unreachable!()
-                };
-                formals.push(var);
                 args.push(binding.expr);
+                let mut arg = binding.ident.clone();
+                arg.add_scope(func_scope);
+                arg.add_scope(body_scope);
+                let var = body_contour
+                    .def_var(arg.new_bind(), arg.sym)
+                    .as_local()
+                    .unwrap();
+                formals.push(var);
             }
         }
         _ => {
@@ -1590,7 +1693,12 @@ fn parse_named_let(
         }
     }
 
-    let body = maybe_await!(DefinitionBody::parse(ctxt, body, &body_contour, form))?;
+    let mut body = body.to_vec();
+    body.iter_mut().for_each(|s| {
+        s.add_scope(func_scope);
+        s.add_scope(body_scope);
+    });
+    let body = maybe_await!(DefinitionBody::parse(ctxt, &body, &body_contour, form))?;
 
     let func = DefineFunc {
         var: func.clone(),
@@ -1664,12 +1772,18 @@ impl Set {
         match exprs {
             [] | [_] => Err(error::expected_more_arguments(form)),
             [subform @ Syntax::Identifier { ident, .. }, expr] => Ok(Set {
-                var: match maybe_await!(env.fetch_var(ident))? {
-                    Some(Var::Global(global)) if !global.mutable => {
-                        return Err(error::immutable_variable(form, subform));
-                    }
-                    Some(var) => var,
-                    None => {
+                var: {
+                    if let Some(binding) = ident.resolve() {
+                        match maybe_await!(env.lookup_var(binding))? {
+                            Some(Var::Global(global)) if !global.mutable => {
+                                return Err(error::immutable_variable(form, subform));
+                            }
+                            Some(var) => var,
+                            None => {
+                                return Err(error::undefined_variable(form, Some(subform)));
+                            }
+                        }
+                    } else {
                         return Err(error::undefined_variable(form, Some(subform)));
                     }
                 },
@@ -1817,42 +1931,66 @@ impl DefinitionBody {
     ) -> Result<Self, Exception> {
         let mut defs = Vec::new();
         let mut exprs = Vec::new();
+        let mut introduced_scopes = Vec::new();
 
         maybe_await!(splice_in(
-            runtime, permissive, body, env, form, &mut defs, &mut exprs
+            runtime, permissive, body, env, form, &mut defs, &mut exprs, &mut introduced_scopes,
         ))?;
 
         let mut defs_parsed = Vec::new();
         let mut exprs_parsed = Vec::new();
 
         // Mark all of the defs as defined:
-        for def in defs.iter() {
-            if let Some([_, def, ..]) = def.expanded.as_list() {
+        for (def, _) in defs.iter() {
+            if let Some([_, def, ..]) = def.as_list() {
                 let ident = match def.as_list() {
                     Some([Syntax::Identifier { ident, .. }, ..]) => ident,
                     _ => def.as_ident().expect(
                         "define should have already been parsed and determined to be well-formed",
                     ),
                 };
-                env.def_var(ident.clone());
+                let mut ident = ident.clone();
+                for scope in &introduced_scopes {
+                    ident.remove_scope(*scope);
+                }
+                let binding = ident.bind();
+                env.def_var(binding, ident.sym);
+                /*
+                // We also want to create the same binding for the identifier
+                // with any let-syntax scopes removed in order to properly
+                // support splicing
+                let mut ident = ident.clone();
+                for scope in &introduced_scopes {
+                    ident.remove_scope(*scope);
+                }
+                add_binding(ident, binding);
+                */
             }
         }
 
-        for def in defs.into_iter() {
+        for (mut def, env) in defs.into_iter() {
+            /*
+            for new_scope in &introduced_scopes {
+                def.add_scope(*new_scope);
+            }
+            */
             let def = maybe_await!(Definition::parse(
                 runtime,
-                def.expanded.as_list().unwrap(),
-                &def.expansion_env,
-                &def.expanded
+                def.as_list().unwrap(),
+                &env,
+                &def,
             ))?;
             defs_parsed.push(def);
         }
 
-        for expr in exprs.into_iter() {
+        for (mut expr, env) in exprs.into_iter() {
+            /*
+            for new_scope in &introduced_scopes {
+                expr.add_scope(*new_scope);
+            }
+            */
             exprs_parsed.push(maybe_await!(Expression::parse_expanded(
-                runtime,
-                expr.expanded,
-                &expr.expansion_env
+                runtime, expr, &env,
             ))?);
         }
 
@@ -1899,10 +2037,11 @@ fn splice_in(
     body: &[Syntax],
     env: &Environment,
     form: &Syntax,
-    defs: &mut Vec<FullyExpanded>,
-    exprs: &mut Vec<FullyExpanded>,
+    defs: &mut Vec<(Syntax, Environment)>,
+    exprs: &mut Vec<(Syntax, Environment)>,
+    introduced_scopes: &mut Vec<Scope>,
 ) -> Result<(), Exception> {
-    splice_in_inner(ctxt, permissive, body, env, form, defs, exprs)
+    splice_in_inner(ctxt, permissive, body, env, form, defs, exprs, introduced_scopes)
 }
 
 #[cfg(feature = "async")]
@@ -1912,11 +2051,12 @@ fn splice_in<'a>(
     body: &'a [Syntax],
     env: &'a Environment,
     form: &'a Syntax,
-    defs: &'a mut Vec<FullyExpanded>,
-    exprs: &'a mut Vec<FullyExpanded>,
+    defs: &'a mut Vec<(Syntax, Environment)>,
+    exprs: &'a mut Vec<(Syntax, Environment)>,
+    introduced_scopes: &mut Vec<Scope>,
 ) -> BoxFuture<'a, Result<(), Exception>> {
     Box::pin(splice_in_inner(
-        ctxt, permissive, body, env, form, defs, exprs,
+        ctxt, permissive, body, env, form, defs, exprs, introduced_scopes
     ))
 }
 
@@ -1927,17 +2067,15 @@ fn splice_in_inner(
     body: &[Syntax],
     env: &Environment,
     form: &Syntax,
-    defs: &mut Vec<FullyExpanded>,
-    exprs: &mut Vec<FullyExpanded>,
+    defs: &mut Vec<(Syntax, Environment)>,
+    exprs: &mut Vec<(Syntax, Environment)>,
+    introduced_scopes: &mut Vec<Scope>,
 ) -> Result<(), Exception> {
     if body.is_empty() {
         return Err(error::expected_body(form));
     }
     for unexpanded in body {
-        let FullyExpanded {
-            expansion_env,
-            expanded,
-        } = maybe_await!(unexpanded.clone().expand(env))?;
+        let expanded = maybe_await!(unexpanded.clone().expand(env))?;
         let is_def = {
             if let Some(
                 [
@@ -1947,39 +2085,49 @@ fn splice_in_inner(
                 ],
             ) = expanded.as_list()
             {
-                let keyword = maybe_await!(expansion_env.fetch_special_keyword_or_var(ident))?;
-                match (keyword, tail) {
-                    (Some(Either::Left(SpecialKeyword::Begin)), []) => {
+                // let keyword = maybe_await!(expansion_env.fetch_special_keyword_or_var(ident))?;
+                let primitive = ident
+                    .resolve()
+                    .and_then(|binding| env.lookup_primitive(binding));
+                match (primitive, tail) {
+                    (Some(Primitive::Begin), []) => {
                         continue;
                     }
-                    (Some(Either::Left(SpecialKeyword::Begin)), body) => {
+                    (Some(Primitive::Begin), body) => {
                         maybe_await!(splice_in(
-                            ctxt,
-                            permissive,
-                            body,
-                            &expansion_env,
-                            &expanded,
-                            defs,
-                            exprs
+                            ctxt, permissive, body, env, &expanded, defs, exprs, introduced_scopes,
                         ))?;
                         continue;
                     }
                     (
-                        Some(Either::Left(SpecialKeyword::DefineSyntax)),
+                        Some(Primitive::DefineSyntax),
                         [Syntax::Identifier { ident: name, .. }, expr],
                     ) => {
-                        maybe_await!(define_syntax(
-                            ctxt,
-                            name.clone(),
-                            expr.clone(),
-                            &expansion_env
-                        ))?;
+                        maybe_await!(define_syntax(ctxt, name.bind(), expr.clone(), env))?;
                         continue;
                     }
-                    (Some(Either::Left(SpecialKeyword::DefineSyntax)), _) => {
+                    (Some(Primitive::DefineSyntax), _) => {
                         return Err(error::unexpected_define_syntax(&expanded));
                     }
-                    (Some(Either::Left(SpecialKeyword::LetSyntax)), [bindings, form @ ..]) => {
+                    (Some(Primitive::LetSyntax), [bindings, form @ ..]) => {
+                        let (form, env) =
+                            maybe_await!(parse_let_syntax(ctxt, false, bindings, form, env, introduced_scopes))?;
+                        if !form.is_empty() {
+                            maybe_await!(splice_in(
+                                ctxt, permissive, &form, &env, &expanded, defs, exprs, introduced_scopes
+                            ))?;
+                            /*
+                            for (syn, _) in new_defs.iter_mut().chain(new_exprs.iter_mut()) {
+                                for scope in scopes.iter() {
+                                    syn.remove_scope(*scope);
+                                }
+                            }
+                            */
+                            // defs.extend(new_defs);
+                            // exprs.extend(new_exprs);
+                        }
+                        continue;
+                        /*
                         let new_env =
                             maybe_await!(parse_let_syntax(ctxt, false, bindings, &expansion_env))?;
                         if !form.is_empty() {
@@ -1988,8 +2136,37 @@ fn splice_in_inner(
                             ))?;
                         }
                         continue;
+                        */
                     }
-                    (Some(Either::Left(SpecialKeyword::LetRecSyntax)), [bindings, form @ ..]) => {
+                    (Some(Primitive::LetRecSyntax), [bindings, form @ ..]) => {
+                        let (form, env,) =
+                            maybe_await!(parse_let_syntax(ctxt, true, bindings, form, env, introduced_scopes))?;
+                        if !form.is_empty() {
+                            // let mut new_defs = Vec::new();
+                            // let mut new_exprs = Vec::new();
+                            maybe_await!(splice_in(
+                                ctxt, permissive, &form, &env, &expanded, defs, exprs, introduced_scopes
+                            ))?;
+                            // for (syn, _) in new_defs.iter_mut().chain(new_exprs.iter_mut()) {
+                            //     for scope in scopes.iter() {
+                            //         syn.remove_scope(*scope);
+                            //     }
+                            // }
+                            // defs.extend(new_defs);
+                            // exprs.extend(new_exprs);
+                        }
+                        continue;
+                        /*
+                        let (form, env, scopes) =
+                            maybe_await!(parse_let_syntax(ctxt, true, bindings, form, env))?;
+                        if !form.is_empty() {
+                            maybe_await!(splice_in(
+                                ctxt, permissive, &form, &env, &expanded, defs, exprs,
+                            ))?;
+                        }
+                        continue;
+                        */
+                        /*
                         let new_env =
                             maybe_await!(parse_let_syntax(ctxt, true, bindings, &expansion_env))?;
                         if !form.is_empty() {
@@ -1998,18 +2175,19 @@ fn splice_in_inner(
                             ))?;
                         }
                         continue;
+                        */
                     }
-                    (Some(Either::Left(SpecialKeyword::Import)), imports) => {
+                    (Some(Primitive::Import), imports) => {
                         if !permissive && !exprs.is_empty() || !ctxt.allow_imports {
                             return Err(error::unexpected_import(&expanded));
                         }
                         for import in imports {
                             let import_set = ImportSet::parse(discard_for(import))?;
-                            maybe_await!(expansion_env.import(import_set))?;
+                            maybe_await!(env.import(import_set))?;
                         }
                         continue;
                     }
-                    (Some(Either::Left(SpecialKeyword::Define)), _) => {
+                    (Some(Primitive::Define), _) => {
                         if !permissive && !exprs.is_empty() {
                             return Err(error::unexpected_define(&expanded));
                         }
@@ -2022,11 +2200,10 @@ fn splice_in_inner(
             }
         };
 
-        let expanded = FullyExpanded::new(expansion_env, expanded);
         if is_def {
-            defs.push(expanded);
+            defs.push((expanded, env.clone()));
         } else {
-            exprs.push(expanded);
+            exprs.push((expanded, env.clone()));
         }
     }
 
@@ -2038,8 +2215,61 @@ fn parse_let_syntax(
     ctxt: &ParseContext,
     recursive: bool,
     bindings: &Syntax,
+    exprs: &[Syntax],
     env: &Environment,
-) -> Result<Environment, Exception> {
+    introduced_scopes: &mut Vec<Scope>
+) -> Result<(Vec<Syntax>, Environment), Exception> {
+    let new_env = env.new_lexical_contour();
+    let mut body = exprs.to_vec();
+
+    if bindings.is_null() {
+        return Ok((body, new_env));
+    }
+
+    let Some([keyword_bindings @ .., Syntax::Null { .. }]) = bindings.as_list() else {
+        return Err(error::expected_list(bindings));
+    };
+
+    let new_scope = Scope::new();
+    introduced_scopes.push(new_scope);
+    // let letrec_scope = recursive.then(Scope::new);
+
+    for binding in keyword_bindings {
+        if let Some([Syntax::Identifier { ident, .. }, expr, Syntax::Null { .. }]) =
+            binding.as_list()
+        {
+            let mut name = ident.clone();
+            name.add_scope(new_scope);
+            let mut expr = expr.clone();
+            if recursive {
+                expr.add_scope(new_scope);
+            }
+            let bind = name.new_bind();
+            /*
+            if name.sym == "f" {
+                println!("new scope: {new_scope:?}");
+                println!("bound f: {name:?} {bind:?}");
+            }
+            if name.sym == "g" {
+                println!("expr: {expr:?}");
+            }
+             */
+            maybe_await!(define_syntax(ctxt, bind, expr, &new_env))?;
+        } else {
+            return Err(error::bad_form(bindings, Some(binding)));
+        }
+    }
+
+    body.iter_mut().for_each(|s| s.add_scope(new_scope));
+    if recursive {
+        let disambig_scope = Scope::new();
+        introduced_scopes.push(disambig_scope);
+        body.iter_mut().for_each(|s| s.add_scope(disambig_scope));
+    }
+
+    Ok((body, new_env))
+
+    /*
     if bindings.is_null() {
         return Ok(env.new_let_syntax_contour(recursive));
     }
@@ -2066,6 +2296,8 @@ fn parse_let_syntax(
     }
 
     Ok(new_env)
+     */
+    //todo!()
 }
 
 #[derive(Debug, Clone, Trace)]

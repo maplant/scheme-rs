@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use super::*;
 use crate::{
     Either,
@@ -243,8 +245,10 @@ fn compile_apply(
                 && let Some(sym) = var.symbol()
             {
                 Some(Syntax::Identifier {
-                    ident: Identifier::from_symbol(sym),
-                    binding: None,
+                    ident: Identifier {
+                        sym,
+                        scopes: BTreeSet::new(),
+                    },
                     span: span.clone(),
                 })
             } else {
