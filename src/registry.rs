@@ -359,7 +359,7 @@ impl Registry {
     pub(crate) fn def_lib(&self, rt: &Runtime, lib: &str, path: &str) -> Result<(), Exception> {
         let form = Syntax::from_str(lib, Some(path))?;
         let form = match form.as_list() {
-            Some([form, Syntax::Null { .. }]) => form,
+            Some([form, end]) if end.is_null() => form,
             _ => return Err(Exception::error("library is malformed")),
         };
         let spec = LibrarySpec::parse(form)?;
@@ -436,7 +436,7 @@ impl Registry {
                     let contents = std::str::from_utf8(&lib.data).unwrap();
                     let form = Syntax::from_str(contents, Some(&file_name))?;
                     let form = match form.as_list() {
-                        Some([form, Syntax::Null { .. }]) => form,
+                        Some([form, end]) if end.is_null() => form,
                         _ => return Err(Exception::error("library is malformed")),
                     };
                     let spec = LibrarySpec::parse(form)?;
@@ -595,7 +595,7 @@ fn load_lib_from_dir(
         let file_name = path.file_name().unwrap().to_string_lossy();
         let form = Syntax::from_str(&contents, Some(&file_name))?;
         let form = match form.as_list() {
-            Some([form, Syntax::Null { .. }]) => form,
+            Some([form, end]) if end.is_null() => form,
             _ => return Err(Exception::error("library is malformed")),
         };
         let spec = LibrarySpec::parse(form)?;

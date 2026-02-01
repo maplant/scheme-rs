@@ -35,6 +35,10 @@ impl Symbol {
         symtab[self.0 as usize].clone()
     }
 
+    pub fn print(self) -> String {
+        self.to_string()
+    }
+
     pub fn gensym() -> Self {
         let string = Alphabetic.sample_string(&mut rand::rng(), 32);
         Self::intern(&string)

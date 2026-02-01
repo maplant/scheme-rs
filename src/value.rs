@@ -101,7 +101,7 @@ use crate::{
     registry::bridge,
     strings::{WideString, WideStringInner},
     symbols::Symbol,
-    syntax::Syntax,
+    syntax::{Identifier, Syntax},
     vectors::{self, ByteVector, Vector, VectorInner},
 };
 use std::{
@@ -142,10 +142,6 @@ impl Value {
 
     pub fn is_null(&self) -> bool {
         self.0 as usize == Tag::Pair as usize
-            || match &*self.unpacked_ref() {
-                UnpackedValue::Syntax(syn) => syn.is_null(),
-                _ => false,
-            }
     }
 
     pub fn is_undefined(&self) -> bool {
@@ -177,7 +173,7 @@ impl Value {
                     Gc::increment_reference_count(untagged as *mut GcInner<VectorInner<Value>>)
                 }
                 Tag::ByteVector => Arc::increment_strong_count(untagged as *const VectorInner<u8>),
-                Tag::Syntax => Arc::increment_strong_count(untagged as *const Syntax),
+                Tag::Syntax => Gc::increment_reference_count(untagged as *mut GcInner<Syntax>),
                 Tag::Procedure => {
                     Gc::increment_reference_count(untagged as *mut GcInner<ProcedureInner>)
                 }
@@ -235,7 +231,8 @@ impl Value {
     /// Convert a [`Syntax`] into its corresponding datum representation.
     pub fn datum_from_syntax(syntax: &Syntax) -> Self {
         match syntax {
-            Syntax::Null { .. } => Self::null(),
+            Syntax::Wrapped { value, .. } => value.clone(),
+            // Syntax::Null { .. } => Self::null(),
             Syntax::List { list, .. } => {
                 let mut curr = Self::datum_from_syntax(list.last().unwrap());
                 for item in list[..list.len() - 1].iter().rev() {
@@ -249,8 +246,8 @@ impl Value {
                     .map(Self::datum_from_syntax)
                     .collect::<Vec<_>>(),
             ),
-            Syntax::ByteVector { vector, .. } => Self::from(vector.clone()),
-            Syntax::Literal { literal, .. } => Self::from(literal.clone()),
+            // Syntax::ByteVector { vector, .. } => Self::from(vector.clone()),
+            // Syntax::Literal { literal, .. } => Self::from(literal.clone()),
             Syntax::Identifier { ident, .. } => Self::new(UnpackedValue::Symbol(ident.sym)),
         }
     }
@@ -346,7 +343,7 @@ impl Value {
                 UnpackedValue::ByteVector(ByteVector(bvec))
             }
             Tag::Syntax => {
-                let syn = unsafe { Arc::from_raw(untagged as *const Syntax) };
+                let syn = unsafe { Gc::from_raw(untagged as *mut GcInner<Syntax>) };
                 UnpackedValue::Syntax(syn)
             }
             Tag::Procedure => {
@@ -425,7 +422,7 @@ impl Value {
             UnpackedValue::String(s) => Arc::as_ptr(&s.0).hash(state),
             UnpackedValue::Symbol(s) => s.hash(state),
             UnpackedValue::ByteVector(v) => Arc::as_ptr(&v.0).hash(state),
-            UnpackedValue::Syntax(s) => Arc::as_ptr(s).hash(state),
+            UnpackedValue::Syntax(s) => Gc::as_ptr(s).hash(state),
             UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
             UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
             UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
@@ -450,7 +447,7 @@ impl Value {
             UnpackedValue::String(s) => Arc::as_ptr(&s.0).hash(state),
             UnpackedValue::Symbol(s) => s.hash(state),
             UnpackedValue::ByteVector(v) => Arc::as_ptr(&v.0).hash(state),
-            UnpackedValue::Syntax(s) => Arc::as_ptr(s).hash(state),
+            UnpackedValue::Syntax(s) => Gc::as_ptr(s).hash(state),
             UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
             UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
             UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
@@ -483,7 +480,7 @@ impl Value {
             UnpackedValue::String(s) => s.hash(state),
             UnpackedValue::Symbol(s) => s.hash(state),
             UnpackedValue::ByteVector(v) => v.hash(state),
-            UnpackedValue::Syntax(s) => Arc::as_ptr(s).hash(state),
+            UnpackedValue::Syntax(s) => Gc::as_ptr(s).hash(state),
             UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
             UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
             UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
@@ -627,11 +624,13 @@ where
     }
 }
 
+/*
 impl From<ast::Literal> for Value {
     fn from(lit: ast::Literal) -> Self {
         Value::new(lit.into())
     }
 }
+*/
 
 impl From<Exception> for Value {
     fn from(value: Exception) -> Self {
@@ -722,7 +721,7 @@ pub enum UnpackedValue {
     Symbol(Symbol),
     Vector(Vector),
     ByteVector(ByteVector),
-    Syntax(Arc<Syntax>),
+    Syntax(Gc<Syntax>),
     Procedure(Procedure),
     Record(Record),
     RecordTypeDescriptor(Arc<RecordTypeDescriptor>),
@@ -763,8 +762,8 @@ impl UnpackedValue {
                 Value::from_ptr_and_tag(untagged, Tag::ByteVector)
             }
             Self::Syntax(syn) => {
-                let untagged = Arc::into_raw(syn);
-                Value::from_ptr_and_tag(untagged, Tag::Syntax)
+                let untagged = Gc::into_raw(syn);
+                Value::from_mut_ptr_and_tag(untagged, Tag::Syntax)
             }
             Self::Procedure(clos) => {
                 let untagged = Gc::into_raw(clos.0);
@@ -810,7 +809,7 @@ impl UnpackedValue {
             (Self::Vector(a), Self::Vector(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(&a.0, &b.0),
             (Self::Procedure(a), Self::Procedure(b)) => Gc::ptr_eq(&a.0, &b.0),
-            (Self::Syntax(a), Self::Syntax(b)) => Arc::ptr_eq(a, b),
+            (Self::Syntax(a), Self::Syntax(b)) => Gc::ptr_eq(a, b),
             (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
             (Self::Port(a), Self::Port(b)) => Arc::ptr_eq(&a.0, &b.0),
@@ -841,7 +840,7 @@ impl UnpackedValue {
             (Self::Vector(a), Self::Vector(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(&a.0, &b.0),
             (Self::Procedure(a), Self::Procedure(b)) => Gc::ptr_eq(&a.0, &b.0),
-            (Self::Syntax(a), Self::Syntax(b)) => Arc::ptr_eq(a, b),
+            (Self::Syntax(a), Self::Syntax(b)) => Gc::ptr_eq(a, b),
             (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
             (Self::Port(a), Self::Port(b)) => Arc::ptr_eq(&a.0, &b.0),
@@ -885,7 +884,7 @@ impl UnpackedValue {
             Self::Pair(_) => ValueType::Pair,
             Self::Vector(_) => ValueType::Vector,
             Self::ByteVector(_) => ValueType::ByteVector,
-            Self::Syntax(syn) if matches!(syn.as_ref(), Syntax::Null { .. }) => ValueType::Null,
+            // Self::Syntax(syn) if matches!(syn.as_ref(), Syntax::Null { .. }) => ValueType::Null,
             Self::Syntax(_) => ValueType::Syntax,
             Self::Procedure(_) => ValueType::Procedure,
             Self::Record(_) => ValueType::Record,
@@ -1070,6 +1069,7 @@ fn set_box(b: &Value, val: impl Into<Value>) {
     pair.set_car(val.into()).unwrap();
 }
 
+/*
 impl From<ast::Literal> for UnpackedValue {
     fn from(lit: ast::Literal) -> Self {
         match lit {
@@ -1080,6 +1080,7 @@ impl From<ast::Literal> for UnpackedValue {
         }
     }
 }
+*/
 
 macro_rules! impl_try_from_value_for {
     ($ty:ty, $variant:ident, $type_name:literal) => {
@@ -1248,7 +1249,7 @@ impl_try_from_value_for!(WideString, String, "string");
 impl_try_from_value_for!(Symbol, Symbol, "symbol");
 impl_try_from_value_for!(Vector, Vector, "vector");
 impl_try_from_value_for!(ByteVector, ByteVector, "byte-vector");
-impl_try_from_value_for!(Arc<Syntax>, Syntax, "syntax");
+impl_try_from_value_for!(Gc<Syntax>, Syntax, "syntax");
 impl_try_from_value_for!(Procedure, Procedure, "procedure");
 impl_try_from_value_for!(Pair, Pair, "pair");
 impl_try_from_value_for!(Record, Record, "record");
@@ -1276,7 +1277,7 @@ macro_rules! impl_from_wrapped_for {
 impl_from_wrapped_for!(String, String, WideString::new);
 impl_from_wrapped_for!(Vec<Value>, Vector, Vector::new);
 impl_from_wrapped_for!(Vec<u8>, ByteVector, ByteVector::new);
-impl_from_wrapped_for!(Syntax, Syntax, Arc::new);
+impl_from_wrapped_for!(Syntax, Syntax, Gc::new);
 impl_from_wrapped_for!((Value, Value), Pair, |(car, cdr)| Pair::new(
     car, cdr, false
 ));
@@ -1365,6 +1366,31 @@ impl_num_conversion!(f64);
 impl_num_conversion!(Integer);
 impl_num_conversion!(SimpleNumber);
 impl_num_conversion!(ComplexNumber);
+
+impl From<&Value> for Option<Identifier> {
+    fn from(value: &Value) -> Self {
+        match &*value.unpacked_ref() {
+            UnpackedValue::Syntax(syn) => {
+                match syn.as_ref() {
+                    Syntax::Identifier { ident, .. } => Some(ident.clone()),
+                    _ => None,
+                }
+            },
+            _ => None,
+        }
+    }
+}
+
+impl TryFrom<&Value> for Identifier {
+    type Error = Exception;
+
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        match Option::<Identifier>::from(value) {
+            Some(ident) => Ok(ident),
+            None => Err(Exception::type_error("identifier", value.type_name())),
+        }
+    }
+}
 
 impl From<Value> for Option<(Value, Value)> {
     fn from(value: Value) -> Self {

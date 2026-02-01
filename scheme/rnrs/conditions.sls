@@ -55,15 +55,15 @@
       (syntax-case x ()
         [(_ name constructor predicate builtin)
          #'(begin
-             (define rtd (builtin))
-             (define rcd (make-record-constructor-descriptor rtd #f #f))
-             (define constructor (record-constructor rcd))
-             (define predicate (condition-predicate rtd))
+             (define condition-rtd (builtin))
+             (define condition-rcd (make-record-constructor-descriptor condition-rtd #f #f))
+             (define constructor (record-constructor condition-rcd))
+             (define predicate (condition-predicate condition-rtd))
              (define-syntax name
                (lambda (x)
                  (syntax-case x (rtd rcd)
-                   [(_ rtd) #'rtd]
-                   [(_ rcd) #'rcd]))))])))
+                   [(_ rtd) #'condition-rtd]
+                   [(_ rcd) #'condition-rcd]))))])))
 
   (define-syntax define-condition-type
     (lambda (x)

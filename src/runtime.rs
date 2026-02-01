@@ -196,7 +196,7 @@ fn compilation_buffer() -> (CompilationBufferTx, CompilationBufferRx) {
 impl RuntimeInner {
     fn new() -> Self {
         // Ensure the GC is initialized:
-        // init_gc();
+        init_gc();
         let (compilation_buffer_tx, compilation_buffer_rx) = compilation_buffer();
         // According the inkwell (and therefore LLVM docs), one LlvmContext may
         // be present per thread. Thus, we spawn a new thread and a new

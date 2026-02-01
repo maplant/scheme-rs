@@ -49,6 +49,10 @@ impl Vector {
     pub fn clone_inner_vec(&self) -> Vec<Value> {
         self.0.vec.read().clone()
     }
+
+    pub fn iter(&self) -> impl Iterator<Item = Value> {
+        self.0.vec.read().clone().into_iter()
+    }
 }
 
 impl From<Vec<Value>> for Vector {
