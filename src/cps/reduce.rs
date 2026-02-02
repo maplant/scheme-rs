@@ -53,7 +53,7 @@ impl Cps {
                         // We can probably do better than just destroying the
                         // whole cache, but this works and doesn't hurt perf
                         // too much.
-                        uses_cache.clear();
+                        // uses_cache.clear();
                         return cexp;
                     }
                 }
@@ -107,10 +107,11 @@ impl Cps {
                             func_body.clone(),
                             args,
                             req.iter().cloned().chain(Some(Value::from(var_args))),
+                            uses_cache,
                         )),
                     )
                 } else if args.num_required() == applied.len() {
-                    substitute(func_body.clone(), args, applied.iter().cloned())
+                    substitute(func_body.clone(), args, applied.iter().cloned(), uses_cache)
                 } else {
                     // It's an error if the number of arguments don't match but
                     // defer until evaluation to raise it.
@@ -165,8 +166,13 @@ impl Cps {
     }
 }
 
-fn substitute(mut body: Cps, args: &LambdaArgs, applied: impl Iterator<Item = Value>) -> Cps {
+fn substitute(
+    mut body: Cps,
+    args: &LambdaArgs,
+    applied: impl Iterator<Item = Value>,
+    uses_cache: &mut HashMap<Local, HashMap<Local, usize>>,
+) -> Cps {
     let substitutions = args.iter().copied().zip(applied).collect::<HashMap<_, _>>();
-    body.substitute(&substitutions);
+    body.substitute(&substitutions, uses_cache);
     body
 }
