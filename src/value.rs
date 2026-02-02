@@ -1370,11 +1370,9 @@ impl_num_conversion!(ComplexNumber);
 impl From<&Value> for Option<Identifier> {
     fn from(value: &Value) -> Self {
         match &*value.unpacked_ref() {
-            UnpackedValue::Syntax(syn) => {
-                match syn.as_ref() {
-                    Syntax::Identifier { ident, .. } => Some(ident.clone()),
-                    _ => None,
-                }
+            UnpackedValue::Syntax(syn) => match syn.as_ref() {
+                Syntax::Identifier { ident, .. } => Some(ident.clone()),
+                _ => None,
             },
             _ => None,
         }

@@ -50,10 +50,6 @@ impl Cps {
                 if !is_recursive && uses == 1 {
                     let reduced = cexp.reduce_function(val, &args, &body, uses_cache);
                     if reduced {
-                        // We can probably do better than just destroying the
-                        // whole cache, but this works and doesn't hurt perf
-                        // too much.
-                        // uses_cache.clear();
                         return cexp;
                     }
                 }

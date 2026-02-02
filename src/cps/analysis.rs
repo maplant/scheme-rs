@@ -20,6 +20,7 @@
 use super::*;
 
 impl Cps {
+    #[stacksafe::stacksafe]
     pub(super) fn free_variables(&self) -> HashSet<Local> {
         match self {
             Cps::PrimOp(PrimOp::AllocCell, _, bind, cexpr) => {

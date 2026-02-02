@@ -1,13 +1,12 @@
 //! Scheme lexical environments.
 
 use std::{
-    borrow::Cow,
     collections::{BTreeSet, HashMap, hash_map::Entry},
     fmt,
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
     sync::{
-        LazyLock, OnceLock,
+        LazyLock,
         atomic::{AtomicUsize, Ordering},
     },
 };
@@ -19,7 +18,6 @@ use scheme_rs_macros::{maybe_async, maybe_await};
 use futures::future::BoxFuture;
 
 use crate::{
-    Either,
     ast::{
         DefinitionBody, ExportSet, ImportSet, LibraryName, LibrarySpec, ParseContext, Primitive,
     },
@@ -87,11 +85,6 @@ impl TopLevelEnvironmentInner {
             imports,
             exports,
             state: LibraryState::Unexpanded(body),
-            /*
-            vars,
-            keywords: HashMap::new(),
-            primitives: HashMap::new(),
-             */
             scope,
         }
     }
@@ -174,11 +167,7 @@ impl TopLevelEnvironment {
     }
 
     #[maybe_async]
-    pub fn from_spec(
-        rt: &Runtime,
-        spec: LibrarySpec,
-        path: PathBuf,
-    ) -> Result<Self, Exception> {
+    pub fn from_spec(rt: &Runtime, spec: LibrarySpec, path: PathBuf) -> Result<Self, Exception> {
         maybe_await!(Self::from_spec_with_scope(rt, spec, path, Scope::new()))
     }
 
@@ -200,7 +189,6 @@ impl TopLevelEnvironment {
                 if let Some(prev_binding) = bound_names.get(&name)
                     && prev_binding != &import.binding
                 {
-                    println!("here2");
                     return Err(error::name_bound_multiple_times(name));
                 }
                 bound_names.insert(name, import.binding);
@@ -227,7 +215,6 @@ impl TopLevelEnvironment {
                             if let Some(prev_binding) = bound_names.get(&name)
                                 && prev_binding != &import.binding
                             {
-                                println!("here1");
                                 return Err(error::name_bound_multiple_times(name));
                             }
                             bound_names.insert(name, import.binding);
@@ -397,7 +384,7 @@ impl TopLevelEnvironment {
                 }
             }
             Entry::Vacant(vacant) => {
-                let global = Global::new(name, Cell::new(value), mutable);
+                let global = Global::new(name, Cell::new(value), mutable, self.clone());
                 vacant.insert(TopLevelBinding::Global(global.clone()));
                 global
             }
@@ -419,12 +406,12 @@ impl TopLevelEnvironment {
 
     #[maybe_async]
     pub fn lookup_var_inner(&self, binding: Binding) -> Result<Option<Global>, Exception> {
-        if let Some(origin) = self.0.read().imports.get(&binding).cloned() {
-            maybe_await!(origin.maybe_invoke())?;
-            maybe_await!(origin.lookup_var(binding))
-        } else if let Some(TopLevelBinding::Global(global)) =
-            TOP_LEVEL_BINDINGS.lock().get(&binding)
+        if let Some(TopLevelBinding::Global(global)) =
+            { TOP_LEVEL_BINDINGS.lock().get(&binding).cloned() }
         {
+            if *self != global.origin {
+                maybe_await!(global.origin.maybe_invoke())?;
+            }
             Ok(Some(global.clone()))
         } else {
             Ok(None)
@@ -453,10 +440,7 @@ impl TopLevelEnvironment {
     #[maybe_async]
     pub fn lookup_keyword_inner(&self, binding: Binding) -> Result<Option<Procedure>, Exception> {
         if let Some(origin) = self.0.read().imports.get(&binding).cloned() {
-            // TODO: this was switched to maybe_invoke because there's a bug
-            // where macros don't invoke when they carry a binding.
-            // maybe_await!(origin.maybe_expand())?;
-            maybe_await!(origin.maybe_invoke())?;
+            maybe_await!(origin.maybe_expand())?;
             maybe_await!(origin.lookup_keyword(binding))
         } else if let Some(TopLevelBinding::Keyword(kw)) = TOP_LEVEL_BINDINGS.lock().get(&binding) {
             Ok(Some(kw.clone()))
@@ -486,6 +470,7 @@ impl fmt::Debug for TopLevelEnvironment {
 #[derive(Trace, Debug)]
 pub(crate) enum LibraryState {
     Invalid,
+    BridgesDefined,
     Unexpanded(Syntax),
     Expanded(DefinitionBody),
     Invoked,
@@ -601,7 +586,6 @@ impl LexicalContour {
          */
         todo!()
     }
-
 }
 
 /// A lexical contour
@@ -620,7 +604,12 @@ impl Environment {
         }))
     }
 
-    pub fn new_syntax_case_contour(&self, scope: Scope, expansion: Local, vars: HashMap<Binding, usize>) -> Self {
+    pub fn new_syntax_case_contour(
+        &self,
+        scope: Scope,
+        expansion: Local,
+        vars: HashMap<Binding, usize>,
+    ) -> Self {
         Self::LexicalContour(Gc::new(LexicalContour {
             up: self.clone(),
             bindings: Mutex::new(
@@ -724,7 +713,6 @@ impl Environment {
             Self::LexicalContour(lc) => maybe_await!(lc.import(import_set)),
         }
     }
-
 }
 
 impl From<TopLevelEnvironment> for Environment {
@@ -810,11 +798,17 @@ pub struct Global {
     pub(crate) name: Symbol,
     pub(crate) val: Cell,
     pub(crate) mutable: bool,
+    pub(crate) origin: TopLevelEnvironment,
 }
 
 impl Global {
-    pub(crate) fn new(name: Symbol, val: Cell, mutable: bool) -> Self {
-        Global { name, val, mutable }
+    pub(crate) fn new(name: Symbol, val: Cell, mutable: bool, origin: TopLevelEnvironment) -> Self {
+        Global {
+            name,
+            val,
+            mutable,
+            origin,
+        }
     }
 
     pub fn is_mutable(&self) -> bool {

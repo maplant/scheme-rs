@@ -1,31 +1,20 @@
 //! Rust representation of S-expressions.
 
 use crate::{
-    // ast::Literal,
     ast::Primitive,
     env::{Binding, Environment, Scope, add_binding, resolve},
     exceptions::{CompoundCondition, Exception, Message, SyntaxViolation, Who},
     gc::{Gc, Trace},
-    lists::list_to_vec_with_null,
     ports::Port,
     proc::Procedure,
     records::{RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::bridge,
     symbols::Symbol,
     syntax::parse::ParseSyntaxError,
-    value::{Expect1, UnpackedValue, Value, ValueType},
+    value::{Expect1, UnpackedValue, Value},
 };
 use scheme_rs_macros::{maybe_async, maybe_await};
-use std::{
-    collections::{BTreeSet, HashMap, HashSet},
-    fmt,
-    hash::Hash,
-    io::Cursor,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-};
+use std::{collections::BTreeSet, fmt, hash::Hash, io::Cursor, sync::Arc};
 
 #[cfg(feature = "async")]
 use futures::future::BoxFuture;
@@ -94,12 +83,6 @@ pub enum Syntax {
         vector: Vec<Syntax>,
         span: Span,
     },
-    /*
-    ByteVector {
-        vector: Vec<u8>,
-        span: Span,
-    },
-    */
     Identifier {
         ident: Identifier,
         span: Span,
@@ -239,215 +222,11 @@ impl Syntax {
             UnpackedValue::Syntax(syn) => match syn.as_ref() {
                 Syntax::Identifier { ident, .. } => Value::from(ident.sym),
                 Syntax::Wrapped { value, .. } => value.clone(),
-                //Syntax::Vector { vector, .. } => {
-                //    Value::from(vector.iter().cloned().map(Syntax::unwrap).map(Syntax::syntax_to_datum).collect::<Vec<_>>())
-                //}
-                //Syntax::List { list, .. } => {
-                //    let mut cdr = Self::syntax_to_datum(Self::unwrap(list.last().unwrap().clone()));
-                //    for car in list.iter().rev().skip(1) {
-                //        cdr = Value::from((Self::syntax_to_datum(Self::unwrap(car.clone())), cdr))
-                //    }
-                //    cdr
-                //}
-                syn => Syntax::syntax_to_datum(Self::unwrap(syn.clone())), /*
-                                                                               Syntax::Wrapped { value, .. } => value.clone(),
-                                                                               Syntax::List { list, .. } => {
-                                                                                   let mut cdr = Self::syntax_to_datum(Self::unwraplist.last().unwrap());
-                                                                                   for car in list.iter().rev().skip(1) {
-                                                                                       cdr = Value::from((Self::syntax_to_datum(unwrap(car.clone())), cdr))
-                                                                                   }
-                                                                           }
-                                                                               */
+                syn => Syntax::syntax_to_datum(Self::unwrap(syn.clone())),
             },
             unpacked => unpacked.into_value(),
         }
     }
-
-    /*
-        pub fn add_scope(&mut self, scope: Scope) {
-            match self {
-                Self::List { list, .. } => {
-                    for item in list {
-                        item.add_scope(scope);
-                    }
-                }
-                Self::Vector { vector, .. } => {
-                    for item in vector {
-                        item.add_scope(scope);
-                    }
-                }
-                Self::Identifier { ident, .. } => ident.add_scope(scope),
-                _ => (),
-            }
-        }
-
-        pub fn flip_scope(&mut self, scope: Scope) {
-            match self {
-                Self::List { list, .. } => {
-                    for item in list {
-                        item.flip_scope(scope);
-                    }
-                }
-                Self::Vector { vector, .. } => {
-                    for item in vector {
-                        item.flip_scope(scope);
-                    }
-                }
-                Self::Identifier { ident, .. } => ident.flip_scope(scope),
-                _ => (),
-            }
-    }
-        */
-
-    /*
-    pub fn mark(&mut self, mark: Mark) {
-        match self {
-            Self::List { list, .. } => {
-                for item in list {
-                    item.mark(mark);
-                }
-            }
-            Self::Vector { vector, .. } => {
-                for item in vector {
-                    item.mark(mark);
-                }
-            }
-            Self::Identifier { ident, .. } => ident.mark(mark),
-            _ => (),
-        }
-    }
-
-    pub fn mark_many(&mut self, marks: &BTreeSet<Mark>) {
-        match self {
-            Self::List { list, .. } => {
-                for item in list {
-                    item.mark_many(marks);
-                }
-            }
-            Self::Vector { vector, .. } => {
-                for item in vector {
-                    item.mark_many(marks);
-                }
-            }
-            Self::Identifier { ident, .. } => ident.mark_many(marks),
-            _ => (),
-        }
-    }
-    */
-
-    pub(crate) fn car(&self) -> Option<&Self> {
-        if let Some([car, ..]) = self.as_list() {
-            Some(car)
-        } else {
-            None
-        }
-    }
-
-    /*
-    pub fn cdr(&self) -> Result<Self, Exception> {
-        match self.as_list() {
-            Some([_, null @ Syntax::Null { .. }]) => Ok(null.clone()),
-            Some([_, cdr @ ..]) => Ok(Syntax::List {
-                list: cdr.to_vec(),
-                span: self.span().clone(),
-            }),
-            _ => Err(Exception::type_error("list", self.syntax_type())),
-        }
-    }
-     */
-
-    /*
-    pub fn syntax_from_datum(scopes: &BTreeSet<Scope>, datum: Value) -> Result<Self, Exception> {
-        // TODO: conjure up better values for Span
-        match datum.unpack() {
-            UnpackedValue::Boolean(b) => {
-                Ok(Syntax::new_literal(Literal::Boolean(b), Span::default()))
-            }
-            UnpackedValue::Null => Ok(Syntax::new_null(Span::default())),
-            UnpackedValue::Pair(pair) => {
-                let (lhs, rhs) = pair.into();
-                let mut list = Vec::new();
-                list.push(lhs.clone());
-                list_to_vec_with_null(&rhs, &mut list);
-                let mut out_list = Vec::new();
-                for item in list.iter() {
-                    out_list.push(Syntax::syntax_from_datum(scopes, item.clone())?);
-                }
-                Ok(Syntax::new_list(out_list, Span::default()))
-            }
-            UnpackedValue::Syntax(syntax) => {
-                let mut syntax = syntax.as_ref().clone();
-                for scope in scopes {
-                    syntax.add_scope(*scope);
-                }
-                Ok(syntax)
-            }
-            UnpackedValue::Vector(vec) => {
-                let mut out_vec = Vec::new();
-                for item in vec.0.vec.read().iter() {
-                    out_vec.push(Syntax::syntax_from_datum(scopes, item.clone())?);
-                }
-                Ok(Syntax::new_vector(out_vec, Span::default()))
-            }
-            UnpackedValue::Symbol(sym) => {
-                let ident = Identifier {
-                    sym,
-                    scopes: scopes.clone(),
-                };
-                Ok(Syntax::Identifier {
-                    ident,
-                    span: Span::default(),
-                })
-            }
-            UnpackedValue::Number(num) => Ok(Syntax::Literal {
-                literal: Literal::Number(num.clone()),
-                span: Span::default(),
-            }),
-            UnpackedValue::String(string) => Ok(Syntax::Literal {
-                literal: Literal::String(string.to_string()),
-                span: Span::default(),
-            }),
-            datum => Err(Exception::error(format!(
-                "cannot convert datum type {} to syntax object",
-                datum.type_name()
-            ))),
-        }
-    }
-    */
-
-    /*
-    fn resolve_bindings<'a>(
-        &'a mut self,
-        env: &Environment,
-        resolved_bindings: &mut HashMap<&'a Identifier, Binding>,
-    ) {
-        match self {
-            Self::List { list, .. } => {
-                for item in list {
-                    item.resolve_bindings(env, resolved_bindings);
-                }
-            }
-            Self::Vector { vector, .. } => {
-                for item in vector {
-                    item.resolve_bindings(env, resolved_bindings);
-                }
-            }
-            &mut Self::Identifier {
-                ref ident,
-                ref mut binding,
-                ..
-            } => {
-                *binding = Some(
-                    resolved_bindings
-                        .entry(ident)
-                        .or_insert_with(|| env.fetch_binding(ident))
-                        .clone(),
-                );
-            }
-            _ => (),
-        }
-    }
-     */
 
     #[maybe_async]
     fn apply_transformer(&self, transformer: &Procedure) -> Result<Expansion, Exception> {
@@ -483,10 +262,8 @@ impl Syntax {
 
     #[maybe_async]
     fn expand_once_inner(&self, env: &Environment) -> Result<Expansion, Exception> {
-        println!("expanding: {self:?}");
         match self {
             Self::List { list, .. } => {
-                // TODO: If list head is a list, do we expand this in here or in proc call?
                 let ident = match list.first() {
                     Some(Self::Identifier { ident, .. }) => ident,
                     _ => return Ok(Expansion::Unexpanded),
@@ -600,8 +377,6 @@ impl Syntax {
             Self::Wrapped { span, .. } => span,
             Self::List { span, .. } => span,
             Self::Vector { span, .. } => span,
-            // Self::ByteVector { span, .. } => span,
-            // Self::Literal { span, .. } => span,
             Self::Identifier { span, .. } => span,
         }
     }
@@ -659,26 +434,6 @@ impl Syntax {
         }
     }
 
-    /*
-    pub fn new_byte_vector(vector: Vec<u8>, span: impl Into<Span>) -> Self {
-        Self::ByteVector {
-            vector,
-            span: span.into(),
-        }
-    }
-
-    pub fn new_literal(literal: Literal, span: impl Into<Span>) -> Self {
-        Self::Literal {
-            literal,
-            span: span.into(),
-        }
-    }
-
-    pub fn is_literal(&self) -> bool {
-        matches!(self, Self::Literal { .. })
-    }
-    */
-
     pub fn new_identifier(name: &str, span: impl Into<Span>) -> Self {
         Self::Identifier {
             ident: Identifier::new(name),
@@ -733,22 +488,7 @@ impl fmt::Debug for Syntax {
                 }
                 write!(f, ")")
             }
-            /*
-            Syntax::ByteVector { vector, .. } => {
-                write!(f, "#vu8(")?;
-                for (i, item) in vector.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " ")?;
-                    }
-                    write!(f, "{item:x}")?;
-                }
-                write!(f, ")")
-            }
-            Syntax::Literal { literal, .. } => {
-                write!(f, "{literal}")
-            }
-            */
-            Syntax::Identifier { ident, span, .. } => {
+            Syntax::Identifier { ident, .. } => {
                 write!(f, "{}", ident.sym)
             }
         }
@@ -761,26 +501,6 @@ pub(crate) enum Expansion {
     /// Syntax was expanded, producing a new expansion context
     Expanded(Syntax),
 }
-
-/*
-
-#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Trace)]
-pub struct Mark(usize);
-
-impl Mark {
-    pub fn new() -> Self {
-        static NEXT_MARK: AtomicUsize = AtomicUsize::new(0);
-        Self(NEXT_MARK.fetch_add(1, Ordering::Relaxed))
-    }
-}
-
-impl Default for Mark {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-*/
 
 #[derive(Clone, Trace, PartialEq, Eq, Hash)]
 pub struct Identifier {
@@ -850,29 +570,6 @@ impl Identifier {
         add_binding(self.clone(), new_binding);
         new_binding
     }
-
-    /*
-    /// Return this identifier prefixed with the given string
-    pub fn prefix(self, prefix: &str) -> Self {
-        let sym = Symbol::intern(&format!("{prefix}{}", self.sym.to_str()));
-        Self {
-            sym,
-            marks: self.marks,
-        }
-    }
-
-    pub fn mark(&mut self, mark: Mark) {
-        if self.marks.contains(&mark) {
-            self.marks.remove(&mark);
-        } else {
-            self.marks.insert(mark);
-        }
-    }
-
-    pub fn mark_many(&mut self, marks: &BTreeSet<Mark>) {
-        self.marks = self.marks.symmetric_difference(marks).cloned().collect();
-    }
-    */
 }
 
 impl PartialEq<str> for Identifier {
@@ -885,20 +582,6 @@ impl PartialEq<str> for Identifier {
 pub fn syntax_to_datum(value: &Value) -> Result<Vec<Value>, Exception> {
     // This is quite slow and could be improved
     Ok(vec![Syntax::syntax_to_datum(value.clone())])
-
-    /*
-    match value.unpack() {
-        UnpackedValue::Vector(vec) =>
-    }
-    */
-    /*
-    // TODO: This can certainly be done more efficiently
-    Ok(vec![Value::datum_from_syntax(&Syntax::syntax_from_datum(
-        &BTreeSet::default(),
-        syn.clone(),
-    )?)])
-     */
-    // todo!()
 }
 
 #[bridge(name = "datum->syntax", lib = "(rnrs syntax-case builtins (6))")]
@@ -907,25 +590,13 @@ pub fn datum_to_syntax(template_id: Identifier, datum: &Value) -> Result<Vec<Val
         &template_id.scopes,
         datum.clone(),
     ))])
-    /*
-    let syntax: Arc<Syntax> = template_id.clone().try_into()?;
-    let Syntax::Identifier {
-        ident: template_id, ..
-    } = syntax.as_ref()
-    else {
-        return Err(Exception::type_error("template_id", "syntax"));
-    };
-    Ok(vec![Value::from(Syntax::syntax_from_datum(
-        &template_id.scopes,
-        datum.clone(),
-    )?)])
-     */
-    //todo!()
 }
 
 #[bridge(name = "identifier?", lib = "(rnrs syntax-case builtins (6))")]
 pub fn identifier_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(obj.cast_to_scheme_type::<Identifier>().is_some())])
+    Ok(vec![Value::from(
+        obj.cast_to_scheme_type::<Identifier>().is_some(),
+    )])
 }
 
 #[bridge(name = "bound-identifier=?", lib = "(rnrs syntax-case builtins (6))")]
@@ -940,7 +611,13 @@ pub fn free_identifier_eq_pred(id1: Identifier, id2: Identifier) -> Result<Vec<V
 
 #[bridge(name = "generate-temporaries", lib = "(rnrs syntax-case builtins (6))")]
 pub fn generate_temporaries(list: &Value) -> Result<Vec<Value>, Exception> {
-    let length = crate::lists::length(list)?;
+    let length = if let Syntax::List { list, .. } = Syntax::wrap(list.clone())
+        && list.last().unwrap().is_null()
+    {
+        list.len() - 1
+    } else {
+        return Err(Exception::error("expected proper list"));
+    };
 
     let mut temporaries = Value::null();
     for _ in 0..length {

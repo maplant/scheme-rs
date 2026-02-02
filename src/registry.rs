@@ -280,7 +280,7 @@ impl RegistryInner {
                         .map(|(_, binding, primitive)| (binding, primitive))
                         .collect(),
                     */
-                    state: LibraryState::Invoked,
+                    state: LibraryState::BridgesDefined,
                     scope,
                 }))),
             )
@@ -290,30 +290,24 @@ impl RegistryInner {
             .into_iter()
             .map(|(name, lib)| {
                 let scope = Scope::new();
+
                 let exports = lib
                     .syms
                     .into_iter()
                     .map(|(name, proc)| {
                         let binding = Binding::new();
                         add_binding(Identifier::from_symbol(name, scope), binding);
-                        TOP_LEVEL_BINDINGS.lock().insert(
-                            binding,
-                            TopLevelBinding::Global(Global::new(
-                                name,
-                                Cell::new(Value::from(proc)),
-                                false,
-                            )),
-                        );
                         (
                             name,
+                            proc,
                             Export {
                                 binding,
                                 origin: None,
                             },
                         )
                     })
-                    .collect();
-                let lib_inner = TopLevelEnvironmentInner {
+                    .collect::<Vec<_>>();
+                let lib = TopLevelEnvironment(Gc::new(RwLock::new(TopLevelEnvironmentInner {
                     rt: rt.clone(),
                     kind: TopLevelKind::Libary {
                         name: LibraryName {
@@ -323,11 +317,26 @@ impl RegistryInner {
                         path: None,
                     },
                     imports: HashMap::new(),
-                    exports,
-                    state: LibraryState::Invoked,
+                    exports: exports
+                        .iter()
+                        .map(|(name, _, export)| (*name, export.clone()))
+                        .collect(),
+                    state: LibraryState::BridgesDefined,
                     scope,
-                };
-                (name, TopLevelEnvironment(Gc::new(RwLock::new(lib_inner))))
+                })));
+
+                for (name, proc, export) in exports {
+                    TOP_LEVEL_BINDINGS.lock().insert(
+                        export.binding,
+                        TopLevelBinding::Global(Global::new(
+                            name,
+                            Cell::new(Value::from(proc)),
+                            false,
+                            lib.clone(),
+                        )),
+                    );
+                }
+                (name, lib)
             })
             .chain(special_keyword_libs)
             .collect();
@@ -379,6 +388,9 @@ impl Registry {
     #[maybe_async]
     fn load_lib(&self, rt: &Runtime, name: &[Symbol]) -> Result<TopLevelEnvironment, Exception> {
         let scope = if let Some(lib) = self.0.read().libs.get(name) {
+            if !matches!(*lib.get_state(), LibraryState::BridgesDefined) {
+                return Ok(lib.clone());
+            }
             lib.0.read().scope
         } else {
             Scope::new()
@@ -447,9 +459,10 @@ impl Registry {
                         scope
                     ))?
                 } else if let Some(lib) = self.0.read().libs.get(name) {
-                        lib.clone()
-                    } else {
-                        return Err(error::library_not_found());
+                    lib.0.write().state = LibraryState::Invoked;
+                    lib.clone()
+                } else {
+                    return Err(error::library_not_found());
                 }
             }
         };
@@ -599,10 +612,12 @@ fn load_lib_from_dir(
             _ => return Err(Exception::error("library is malformed")),
         };
         let spec = LibrarySpec::parse(form)?;
-        return Ok(Some(maybe_await!(TopLevelEnvironment::from_spec_with_scope(
-            rt, spec, path, scope,
-            //          vars.take().unwrap()
-        ))?));
+        return Ok(Some(maybe_await!(
+            TopLevelEnvironment::from_spec_with_scope(
+                rt, spec, path, scope,
+                //          vars.take().unwrap()
+            )
+        )?));
     }
 
     Ok(None)

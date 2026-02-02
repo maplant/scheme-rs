@@ -7,7 +7,7 @@
 use crate::{
     Either,
     cps::{Compile, PrimOp},
-    env::{Binding, Environment, Local, Scope, Var, add_binding},
+    env::{Binding, Environment, Local, Scope, Var},
     exceptions::Exception,
     expand::{SyntaxRule, Template},
     gc::Trace,
@@ -210,16 +210,12 @@ pub struct LibraryName {
 impl LibraryName {
     pub fn parse(form: &Syntax) -> Result<Self, Exception> {
         match form.as_list() {
-            Some(
-                [
-                    name @ ..,
-                    Syntax::List { list: version, .. },
-                    end,
-                ],
-            ) if end.is_null() => Ok(Self {
-                name: list_to_name(name, form)?,
-                version: Version::parse(version, form)?,
-            }),
+            Some([name @ .., Syntax::List { list: version, .. }, end]) if end.is_null() => {
+                Ok(Self {
+                    name: list_to_name(name, form)?,
+                    version: Version::parse(version, form)?,
+                })
+            }
             Some([name @ .., end]) if end.is_null() => Ok(Self {
                 name: list_to_name(name, form)?,
                 version: Version::default(),
@@ -290,11 +286,7 @@ impl Version {
                 let version: Result<Vec<usize>, _> = version
                     .iter()
                     .map(|subvers| {
-                        if let Syntax::Wrapped {
-                            value,
-                            ..
-                        } = subvers
-                        {
+                        if let Syntax::Wrapped { value, .. } = subvers {
                             Ok(value.try_into()?)
                         } else {
                             Err(error::expected_number(form, subvers))
@@ -355,39 +347,27 @@ impl VersionReference {
 
     fn parse(form: &Syntax) -> Result<Self, Exception> {
         match form.as_list() {
-            Some(
-                [
-                    Syntax::Identifier { ident: kw, .. },
-                    version_refs @ ..,
-                    end,
-                ],
-            ) if kw == "and" && end.is_null() => {
+            Some([Syntax::Identifier { ident: kw, .. }, version_refs @ .., end])
+                if kw == "and" && end.is_null() =>
+            {
                 let version_refs = version_refs
                     .iter()
                     .map(VersionReference::parse)
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(Self::And(version_refs))
             }
-            Some(
-                [
-                    Syntax::Identifier { ident: kw, .. },
-                    version_refs @ ..,
-                    end,
-                ],
-            ) if kw == "or" && end.is_null() => {
+            Some([Syntax::Identifier { ident: kw, .. }, version_refs @ .., end])
+                if kw == "or" && end.is_null() =>
+            {
                 let version_refs = version_refs
                     .iter()
                     .map(VersionReference::parse)
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(Self::Or(version_refs))
             }
-            Some(
-                [
-                    Syntax::Identifier { ident: kw, .. },
-                    version_ref,
-                    end,
-                ],
-            ) if kw == "not" && end.is_null() => {
+            Some([Syntax::Identifier { ident: kw, .. }, version_ref, end])
+                if kw == "not" && end.is_null() =>
+            {
                 let version_ref = VersionReference::parse(version_ref)?;
                 Ok(Self::Not(Box::new(version_ref)))
             }
@@ -468,27 +448,19 @@ impl SubVersionReference {
 
     fn parse(form: &Syntax) -> Result<Self, Exception> {
         match form {
-            Syntax::Wrapped {
-                value,
-                ..
-            } => Ok(Self::SubVersion(value.try_into()?)),
+            Syntax::Wrapped { value, .. } => Ok(Self::SubVersion(value.try_into()?)),
             _ => match form.as_list() {
                 Some(
                     [
                         Syntax::Identifier { ident: kw, .. },
-                        Syntax::Wrapped { value, 
-                            ..
-                        },
+                        Syntax::Wrapped { value, .. },
                         end,
                     ],
                 ) if kw == ">=" && end.is_null() => Ok(Self::Gte(value.try_into()?)),
                 Some(
                     [
                         Syntax::Identifier { ident: kw, .. },
-                        Syntax::Wrapped {
-                            value,
-                            ..
-                        },
+                        Syntax::Wrapped { value, .. },
                         end,
                     ],
                 ) if kw == "<=" && end.is_null() => Ok(Self::Lte(value.try_into()?)),
@@ -518,13 +490,9 @@ impl SubVersionReference {
                         .collect::<Result<Vec<_>, _>>()?;
                     Ok(Self::Or(subversion_refs))
                 }
-                Some(
-                    [
-                        Syntax::Identifier { ident: kw, .. },
-                        subversion_ref,
-                        end,
-                    ],
-                ) if kw == "not" && end.is_null() => {
+                Some([Syntax::Identifier { ident: kw, .. }, subversion_ref, end])
+                    if kw == "not" && end.is_null() =>
+                {
                     let subversion_ref = SubVersionReference::parse(subversion_ref)?;
                     Ok(Self::Not(Box::new(subversion_ref)))
                 }
@@ -601,16 +569,16 @@ impl ExportSet {
                 name: ident.sym,
             }]),
             Syntax::List { list, .. } => match list.as_slice() {
-                [
-                    Syntax::Identifier { ident, .. },
-                    renames @ ..,
-                    end,
-                ] if ident == "rename" && end.is_null() => Ok(renames
-                    .iter()
-                    .map(Self::parse_rename)
-                    .collect::<Result<Vec<_>, _>>()?),
+                [Syntax::Identifier { ident, .. }, renames @ .., end]
+                    if ident == "rename" && end.is_null() =>
+                {
+                    Ok(renames
+                        .iter()
+                        .map(Self::parse_rename)
+                        .collect::<Result<Vec<_>, _>>()?)
+                }
                 [Syntax::Identifier { ident, .. }, .., end]
-                    if ident == "import" && end.is_null()=>
+                    if ident == "import" && end.is_null() =>
                 {
                     Ok(vec![Self::External(ImportSpec::parse(form)?)])
                 }
@@ -737,7 +705,9 @@ impl ImportSet {
                     lib_ref,
                     end,
                 ],
-            ) if import_type == "library" && end.is_null() => Ok(Self::Library(LibraryReference::parse(lib_ref)?)),
+            ) if import_type == "library" && end.is_null() => {
+                Ok(Self::Library(LibraryReference::parse(lib_ref)?))
+            }
             Some(
                 [
                     Syntax::Identifier {
@@ -856,13 +826,7 @@ pub struct LibraryReference {
 impl LibraryReference {
     fn parse(form: &Syntax) -> Result<Self, Exception> {
         match form.as_list() {
-            Some(
-                [
-                    syms @ ..,
-                    version_ref @ Syntax::List { .. },
-                    end,
-                ],
-            ) if end.is_null() => {
+            Some([syms @ .., version_ref @ Syntax::List { .. }, end]) if end.is_null() => {
                 let name = syms
                     .iter()
                     .map(|atom| match atom {
@@ -950,16 +914,13 @@ impl Definition {
         form: &Syntax,
     ) -> Result<Self, Exception> {
         match syn {
-            [
-                _,
-                Syntax::Identifier { ident, .. },
-                expr,
-                end,
-            ] if end.is_null() => Ok(Definition::DefineVar(DefineVar {
-                var: maybe_await!(env.lookup_var(ident.bind()))?.unwrap(),
-                val: Arc::new(maybe_await!(Expression::parse(ctxt, expr.clone(), env))?),
-                next: None,
-            })),
+            [_, Syntax::Identifier { ident, .. }, expr, end] if end.is_null() => {
+                Ok(Definition::DefineVar(DefineVar {
+                    var: maybe_await!(env.lookup_var(ident.bind()))?.unwrap(),
+                    val: Arc::new(maybe_await!(Expression::parse(ctxt, expr.clone(), env))?),
+                    next: None,
+                }))
+            }
             [_, Syntax::List { list, .. }, body @ .., end] if end.is_null() => {
                 if body.is_empty() {
                     return Err(error::expected_body(form));
@@ -1166,7 +1127,6 @@ impl Expression {
             /*
             Syntax::Literal { literal, .. } => Ok(Self::Literal(literal.clone())),
             */
-
             // Vector literals:
             Syntax::Vector { vector, .. } => Ok(Self::Vector(Vector::parse(vector))),
             // Syntax::ByteVector { vector, .. } => Ok(Self::ByteVector(vector.clone())),
@@ -1211,7 +1171,7 @@ impl Expression {
                             }
                             Primitive::Set => maybe_await!(Set::parse(ctxt, tail, env, &form))
                                 .map(Expression::Set),
-                            Primitive::LetSyntax if !tail.is_empty() => { 
+                            Primitive::LetSyntax if !tail.is_empty() => {
                                 let (form, env) = maybe_await!(parse_let_syntax(
                                     ctxt,
                                     false,
@@ -1587,11 +1547,9 @@ impl Let {
                 Syntax::List { list: bindings, .. },
                 body @ ..,
             ] => maybe_await!(parse_named_let(ctxt, ident, bindings, body, env, form)),
-            [
-                Syntax::Identifier { ident, .. },
-                empty,
-                body @ ..,
-            ] if empty.is_null() => maybe_await!(parse_named_let(ctxt, ident, &[], body, env, form)),
+            [Syntax::Identifier { ident, .. }, empty, body @ ..] if empty.is_null() => {
+                maybe_await!(parse_named_let(ctxt, ident, &[], body, env, form))
+            }
             _ => Err(error::expected_more_arguments(form)),
         }
     }
@@ -1745,9 +1703,10 @@ impl<'a> LetBinding<'a> {
             [
                 subform @ Syntax::Identifier { ident, .. },
                 expr,
-                end // Syntax::Null { .. },
+                end, // Syntax::Null { .. },
             ],
-        ) = binding.as_list() && end.is_null()
+        ) = binding.as_list()
+            && end.is_null()
         {
             if previously_bound.contains(ident) {
                 return Err(error::name_previously_bound(form, subform));
@@ -1941,7 +1900,14 @@ impl DefinitionBody {
         let mut introduced_scopes = Vec::new();
 
         maybe_await!(splice_in(
-            runtime, permissive, body, env, form, &mut defs, &mut exprs, &mut introduced_scopes,
+            runtime,
+            permissive,
+            body,
+            env,
+            form,
+            &mut defs,
+            &mut exprs,
+            &mut introduced_scopes,
         ))?;
 
         let mut defs_parsed = Vec::new();
@@ -2048,7 +2014,16 @@ fn splice_in(
     exprs: &mut Vec<(Syntax, Environment)>,
     introduced_scopes: &mut Vec<Scope>,
 ) -> Result<(), Exception> {
-    splice_in_inner(ctxt, permissive, body, env, form, defs, exprs, introduced_scopes)
+    splice_in_inner(
+        ctxt,
+        permissive,
+        body,
+        env,
+        form,
+        defs,
+        exprs,
+        introduced_scopes,
+    )
 }
 
 #[cfg(feature = "async")]
@@ -2063,7 +2038,14 @@ fn splice_in<'a>(
     introduced_scopes: &mut Vec<Scope>,
 ) -> BoxFuture<'a, Result<(), Exception>> {
     Box::pin(splice_in_inner(
-        ctxt, permissive, body, env, form, defs, exprs, introduced_scopes
+        ctxt,
+        permissive,
+        body,
+        env,
+        form,
+        defs,
+        exprs,
+        introduced_scopes,
     ))
 }
 
@@ -2084,13 +2066,8 @@ fn splice_in_inner(
     for unexpanded in body {
         let expanded = maybe_await!(unexpanded.clone().expand(env))?;
         let is_def = {
-            if let Some(
-                [
-                    Syntax::Identifier { ident, .. },
-                    tail @ ..,
-                    end,
-                ],
-            ) = expanded.as_list() && end.is_null()
+            if let Some([Syntax::Identifier { ident, .. }, tail @ .., end]) = expanded.as_list()
+                && end.is_null()
             {
                 // let keyword = maybe_await!(expansion_env.fetch_special_keyword_or_var(ident))?;
                 let primitive = ident
@@ -2102,7 +2079,14 @@ fn splice_in_inner(
                     }
                     (Some(Primitive::Begin), body) => {
                         maybe_await!(splice_in(
-                            ctxt, permissive, body, env, &expanded, defs, exprs, introduced_scopes,
+                            ctxt,
+                            permissive,
+                            body,
+                            env,
+                            &expanded,
+                            defs,
+                            exprs,
+                            introduced_scopes,
                         ))?;
                         continue;
                     }
@@ -2117,11 +2101,24 @@ fn splice_in_inner(
                         return Err(error::unexpected_define_syntax(&expanded));
                     }
                     (Some(Primitive::LetSyntax), [bindings, form @ ..]) => {
-                        let (form, env) =
-                            maybe_await!(parse_let_syntax(ctxt, false, bindings, form, env, introduced_scopes))?;
+                        let (form, env) = maybe_await!(parse_let_syntax(
+                            ctxt,
+                            false,
+                            bindings,
+                            form,
+                            env,
+                            introduced_scopes
+                        ))?;
                         if !form.is_empty() {
                             maybe_await!(splice_in(
-                                ctxt, permissive, &form, &env, &expanded, defs, exprs, introduced_scopes
+                                ctxt,
+                                permissive,
+                                &form,
+                                &env,
+                                &expanded,
+                                defs,
+                                exprs,
+                                introduced_scopes
                             ))?;
                             /*
                             for (syn, _) in new_defs.iter_mut().chain(new_exprs.iter_mut()) {
@@ -2146,13 +2143,26 @@ fn splice_in_inner(
                         */
                     }
                     (Some(Primitive::LetRecSyntax), [bindings, form @ ..]) => {
-                        let (form, env,) =
-                            maybe_await!(parse_let_syntax(ctxt, true, bindings, form, env, introduced_scopes))?;
+                        let (form, env) = maybe_await!(parse_let_syntax(
+                            ctxt,
+                            true,
+                            bindings,
+                            form,
+                            env,
+                            introduced_scopes
+                        ))?;
                         if !form.is_empty() {
                             // let mut new_defs = Vec::new();
                             // let mut new_exprs = Vec::new();
                             maybe_await!(splice_in(
-                                ctxt, permissive, &form, &env, &expanded, defs, exprs, introduced_scopes
+                                ctxt,
+                                permissive,
+                                &form,
+                                &env,
+                                &expanded,
+                                defs,
+                                exprs,
+                                introduced_scopes
                             ))?;
                             // for (syn, _) in new_defs.iter_mut().chain(new_exprs.iter_mut()) {
                             //     for scope in scopes.iter() {
@@ -2224,7 +2234,7 @@ fn parse_let_syntax(
     bindings: &Syntax,
     exprs: &[Syntax],
     env: &Environment,
-    introduced_scopes: &mut Vec<Scope>
+    introduced_scopes: &mut Vec<Scope>,
 ) -> Result<(Vec<Syntax>, Environment), Exception> {
     let new_scope = Scope::new();
     let new_env = env.new_lexical_contour(new_scope);
@@ -2245,8 +2255,7 @@ fn parse_let_syntax(
     introduced_scopes.push(new_scope);
 
     for binding in keyword_bindings {
-        if let Some([Syntax::Identifier { ident, .. }, expr, end]) =
-            binding.as_list()
+        if let Some([Syntax::Identifier { ident, .. }, expr, end]) = binding.as_list()
             && end.is_null()
         {
             let mut name = ident.clone();

@@ -12,7 +12,7 @@ use crate::{
     cps::Value as CpsValue,
     proc::{ContinuationPtr, FuncPtr, ProcDebugInfo, Procedure},
     runtime::{DebugInfo, Runtime},
-    value::{Cell, Value as SchemeValue},
+    value::Value as SchemeValue,
 };
 
 use super::*;

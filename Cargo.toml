@@ -30,6 +30,9 @@ rustyline = { version = "17", features = ["derive"] }
 scheme-rs-macros = { version = "0.1.0-alpha.1", path = "proc-macros" }
 unicode_categories = "0.1"
 
+# TODO: Remove this dependency
+stacksafe = "1"
+
 # Cranelift dependencies
 cranelift = "0.122"
 cranelift-jit = "0.122"

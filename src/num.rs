@@ -476,6 +476,7 @@ impl SimpleNumber {
             Self::FixedInteger(i) => Self::FixedInteger(*i),
             Self::BigInteger(i) => Self::BigInteger(i.clone()),
             Self::Rational(r) => Self::BigInteger(Integer::rounding_from(r, rounding_mode).0),
+            Self::Real(r) if r.is_nan() || r.is_infinite() => Self::Real(*r),
             Self::Real(r) => Self::BigInteger(Integer::rounding_from(*r, rounding_mode).0),
         }
     }
@@ -492,7 +493,7 @@ impl SimpleNumber {
     pub fn exact(&self) -> Self {
         match self {
             // We can do better than this, but it'll do for now
-            Self::Real(r) if r.fract() == 0.0 => {
+            Self::Real(r) if !r.is_nan() && !r.is_infinite() && r.fract() == 0.0 => {
                 Self::BigInteger(Integer::rounding_from(*r, RoundingMode::Nearest).0)
             }
             Self::Real(r) => match Rational::try_from_float_simplest(*r) {
@@ -877,7 +878,7 @@ impl TryFrom<&SimpleNumber> for Integer {
                 Ok(Integer::from(r.to_numerator()))
             }
             SimpleNumber::Rational(_) => Err(Exception::conversion_error("integer", "rational")),
-            SimpleNumber::Real(r) if r.fract() == 0.0 => {
+            SimpleNumber::Real(r) if !r.is_nan() && !r.is_infinite() && r.fract() == 0.0 => {
                 Ok(Integer::rounding_from(*r, RoundingMode::Nearest).0)
             }
             SimpleNumber::Real(_) => Err(Exception::conversion_error("integer", "real")),
@@ -902,7 +903,7 @@ impl From<&SimpleNumber> for Option<Integer> {
                 Some(Integer::from(r.to_numerator()))
             }
             SimpleNumber::Rational(_) => None,
-            SimpleNumber::Real(r) if r.fract() == 0.0 => {
+            SimpleNumber::Real(r) if !r.is_nan() && !r.is_infinite() && r.fract() == 0.0 => {
                 Some(Integer::rounding_from(*r, RoundingMode::Nearest).0)
             }
             SimpleNumber::Real(_) => None,
@@ -1128,7 +1129,10 @@ impl Neg for &'_ SimpleNumber {
 
     fn neg(self) -> SimpleNumber {
         match self {
-            SimpleNumber::FixedInteger(i) => SimpleNumber::FixedInteger(-i),
+            SimpleNumber::FixedInteger(i) => i.checked_neg().map_or_else(
+                || -SimpleNumber::BigInteger(-Integer::from(*i)),
+                |i| SimpleNumber::FixedInteger(i),
+            ),
             SimpleNumber::BigInteger(i) => SimpleNumber::BigInteger(-i),
             SimpleNumber::Rational(r) => SimpleNumber::Rational(-r),
             SimpleNumber::Real(r) => SimpleNumber::Real(-r),
@@ -1939,7 +1943,7 @@ pub(crate) fn equal_prim(vals: &[Value]) -> Result<bool, Exception> {
         let first: Number = first.try_to_scheme_type()?;
         for next in rest {
             let next: Number = next.try_to_scheme_type()?;
-            if first != next {
+            if !(first == next) {
                 return Ok(false);
             }
         }
@@ -1964,7 +1968,7 @@ pub(crate) fn lesser_prim(vals: &[Value]) -> Result<bool, Exception> {
             if !next_num.is_real() {
                 return Err(Exception::type_error("real", "complex"));
             }
-            if prev_num >= next_num {
+            if !(prev_num < next_num) {
                 return Ok(false);
             }
             prev = next.clone();
@@ -1992,7 +1996,7 @@ pub(crate) fn greater_prim(vals: &[Value]) -> Result<bool, Exception> {
             if !next_num.is_real() {
                 return Err(Exception::type_error("real", "complex"));
             }
-            if prev_num <= next_num {
+            if !(prev_num > next_num) {
                 return Ok(false);
             }
             prev = next.clone();
@@ -2018,7 +2022,7 @@ pub(crate) fn lesser_equal_prim(vals: &[Value]) -> Result<bool, Exception> {
             if !next_num.is_real() {
                 return Err(Exception::type_error("real", "complex"));
             }
-            if prev_num > next_num {
+            if !(prev_num <= next_num) {
                 return Ok(false);
             }
             prev = next.clone();
@@ -2044,7 +2048,7 @@ pub(crate) fn greater_equal_prim(vals: &[Value]) -> Result<bool, Exception> {
             if !next_num.is_real() {
                 return Err(Exception::type_error("real", "complex"));
             }
-            if prev_num < next_num {
+            if !(prev_num >= next_num) {
                 return Ok(false);
             }
             prev = next.clone();
@@ -2166,6 +2170,9 @@ pub(crate) fn div_prim(val1: &Value, vals: &[Value]) -> Result<Number, Exception
 
 #[bridge(name = "div-and-mod", lib = "(rnrs base builtins (6))")]
 pub fn div_mod(x1: SimpleNumber, x2: SimpleNumber) -> Result<Vec<Value>, Exception> {
+    if x2.is_zero() {
+        return Err(Exception::error("division by zero"));
+    }
     let nd = (&x1 / &x2).to_integer(RoundingMode::Floor);
     let nd_x2 = &x2 * &nd;
     let modulo = if nd_x2 < x1 { x1 - nd_x2 } else { nd_x2 - x1 };
@@ -2174,12 +2181,18 @@ pub fn div_mod(x1: SimpleNumber, x2: SimpleNumber) -> Result<Vec<Value>, Excepti
 
 #[bridge(name = "div", lib = "(rnrs base builtins (6))")]
 pub fn integer_division(x1: SimpleNumber, x2: SimpleNumber) -> Result<Vec<Value>, Exception> {
+    if x2.is_zero() {
+        return Err(Exception::error("division by zero"));
+    }
     let nd = (x1 / x2).to_integer(RoundingMode::Floor);
     Ok(vec![Value::from(nd)])
 }
 
 #[bridge(name = "mod", lib = "(rnrs base builtins (6))")]
 pub fn modulo(x1: SimpleNumber, x2: SimpleNumber) -> Result<Vec<Value>, Exception> {
+    if x2.is_zero() {
+        return Err(Exception::error("modulo by zero"));
+    }
     let nd = (&x1 / &x2).to_integer(RoundingMode::Floor);
     let nd_x2 = &x2 * &nd;
     if nd_x2 < x1 {
@@ -2191,6 +2204,9 @@ pub fn modulo(x1: SimpleNumber, x2: SimpleNumber) -> Result<Vec<Value>, Exceptio
 
 #[bridge(name = "div0-and-mod0", lib = "(rnrs base builtins (6))")]
 pub fn div0_mod0(x1: SimpleNumber, x2: SimpleNumber) -> Result<Vec<Value>, Exception> {
+    if x2.is_zero() {
+        return Err(Exception::error("division by zero"));
+    }
     let nd = (&x1 / &x2).to_integer(RoundingMode::Down);
     let modulo = &x1 % &x2;
     Ok(vec![Value::from(nd), Value::from(modulo)])
@@ -2198,12 +2214,18 @@ pub fn div0_mod0(x1: SimpleNumber, x2: SimpleNumber) -> Result<Vec<Value>, Excep
 
 #[bridge(name = "div0", lib = "(rnrs base builtins (6))")]
 pub fn integer_division0(x1: SimpleNumber, x2: SimpleNumber) -> Result<Vec<Value>, Exception> {
+    if x2.is_zero() {
+        return Err(Exception::error("division by zero"));
+    }
     let nd = (x1 / x2).to_integer(RoundingMode::Down);
     Ok(vec![Value::from(nd)])
 }
 
 #[bridge(name = "mod0", lib = "(rnrs base builtins (6))")]
 pub fn modulo0(x1: SimpleNumber, x2: SimpleNumber) -> Result<Vec<Value>, Exception> {
+    if x2.is_zero() {
+        return Err(Exception::error("modulo by zero"));
+    }
     Ok(vec![Value::from(x1 % x2)])
 }
 

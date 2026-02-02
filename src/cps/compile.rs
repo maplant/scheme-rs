@@ -197,24 +197,19 @@ fn compile_undefined(meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
     }
 }
 
-
 impl Compile for RuntimeValue {
     fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
         let k1 = Local::gensym();
         let k2 = Local::gensym();
         Cps::Lambda {
             args: LambdaArgs::new(vec![k2], false, None),
-            body: Box::new(Cps::App(
-                Value::from(k2),
-                vec![Value::from(self.clone())],
-            )),
+            body: Box::new(Cps::App(Value::from(k2), vec![Value::from(self.clone())])),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
             span: None,
         }
     }
 }
-
 
 impl Compile for ExprBody {
     fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
