@@ -131,7 +131,6 @@ impl Compile for Expression {
             Self::Set(set) => set.compile(meta_cont),
             Self::Undefined => compile_undefined(meta_cont),
             Self::Vector(vec) => vec.compile(meta_cont),
-            Self::ByteVector(vec) => vec.compile(meta_cont),
         }
     }
 }
@@ -723,9 +722,9 @@ impl Compile for SyntaxQuote {
         let mut expansions_seen = IndexSet::new();
         let mut uses = HashMap::new();
 
-        for (ident, expansion) in self.expansions.iter() {
+        for (binding, expansion) in self.expansions.iter() {
             let (idx, _) = expansions_seen.insert_full(expansion);
-            uses.insert(ident.clone(), idx);
+            uses.insert(*binding, idx);
         }
 
         let mut args = vec![

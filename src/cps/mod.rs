@@ -202,7 +202,7 @@ impl Cps {
             } => {
                 body.substitute(substitutions, uses_cache);
                 cexp.substitute(substitutions, uses_cache);
-                uses_cache.remove(&val);
+                uses_cache.remove(val);
             }
             Self::Halt(value) => {
                 substitute_value(value, substitutions);

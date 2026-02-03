@@ -306,7 +306,7 @@ impl Syntax {
     #[maybe_async]
     pub(crate) fn expand(mut self, env: &Environment) -> Result<Syntax, Exception> {
         loop {
-            match maybe_await!(self.expand_once(&env)) {
+            match maybe_await!(self.expand_once(env)) {
                 Ok(Expansion::Unexpanded) => {
                     return Ok(self);
                 }
@@ -631,7 +631,7 @@ pub fn generate_temporaries(list: &Value) -> Result<Vec<Value>, Exception> {
         temporaries = Value::from((Value::from(ident), temporaries));
     }
 
-    Ok(vec![Value::from(temporaries)])
+    Ok(vec![temporaries])
 }
 
 #[bridge(name = "syntax-violation", lib = "(rnrs base builtins (6))")]

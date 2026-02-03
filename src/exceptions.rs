@@ -557,7 +557,7 @@ define_condition_type!(
         who: Value,
     },
     constructor: |who| {
-        Ok(Who { parent: Gc::new(SimpleCondition::new()), who: who, })
+        Ok(Who { parent: Gc::new(SimpleCondition::new()), who, })
     },
     debug: |this, f| {
         write!(f, " who: {:?}", this.who)
@@ -639,8 +639,7 @@ define_condition_type!(
         subform: Option<Value>,
     },
     constructor: |form, subform| {
-        let form = form.try_into()?;
-        let subform = if subform.is_true() { Some(subform.try_into()?) } else { None };
+        let subform = if subform.is_true() { Some(subform) } else { None };
         Ok(SyntaxViolation { parent: Gc::new(Violation::new()), form, subform })
     },
     debug: |this, f| {

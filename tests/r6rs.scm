@@ -374,8 +374,6 @@
                    (list (f 1) (g 1))))
                '(1 2))
 
-(display "got here!\n");
-
 (assert-equal? (let ((f (lambda (x) (+ x 1))))
                  (letrec-syntax ((f (syntax-rules ()
                                       ((f x) x)))
@@ -385,8 +383,6 @@
                '(1 1))
 
 ;; Extra stuff:
-
-(display "here2\n")
 
 (assert-equal? (let ([x 1])
                (syntax-case #'() ()
@@ -415,8 +411,6 @@
 
 ;; Realized this was an issue when doing escape analysis:
 (define (test a) (set! a '()))
-
-(display "here3\n")
 
 ;; r6rs-lib:
 
@@ -477,8 +471,6 @@
 (assert-equal? (point-x (make-point/abs -1 -2)) 1)
 (assert-equal? (point-y (make-point/abs -1 -2)) 2)
 
-(display "here4\n")
-
 ;; Test from make the define-record-type macro:
 (define (get-clause id ls)
   (syntax-case ls ()
@@ -497,8 +489,6 @@
 
 ;; Test quasiquoting
 (assert-equal? `(1 2 3 ,(+ 1 2 3)) (list 1 2 3 6))
-
-(display "here5\n")
 
 ;; Identifier predicates
 (let ([fred 17])

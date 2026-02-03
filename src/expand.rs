@@ -85,12 +85,10 @@ impl SyntaxRule {
 
 #[derive(Clone, Debug, Trace)]
 pub enum Pattern {
-    Null,
     Underscore,
     Ellipsis(Box<Pattern>),
     List(Vec<Pattern>),
     Vector(Vec<Pattern>),
-    // ByteVector(Vec<u8>),
     Variable(Binding),
     Keyword(Identifier),
     Literal(Value),
@@ -191,14 +189,14 @@ impl Pattern {
             }
             Self::Literal(lhs) => {
                 if let Syntax::Wrapped { value: rhs, .. } = expr {
-                    lhs.equal(&rhs)
+                    lhs.equal(rhs)
                 } else {
                     false
                 }
             }
             Self::Keyword(lhs) => {
                 if let Syntax::Identifier { ident: rhs, .. } = expr {
-                    lhs.free_identifier_equal(&rhs)
+                    lhs.free_identifier_equal(rhs)
                 } else {
                     false
                 }
@@ -206,7 +204,6 @@ impl Pattern {
             Self::List(list) => match_list(list, expr, expansion_level),
             Self::Vector(vec) => match_vec(vec, expr, expansion_level),
             // We shouldn't ever see this outside of lists
-            Self::Null => expr.is_null(),
             Self::Ellipsis(_) => unreachable!(),
         }
     }
@@ -258,46 +255,33 @@ fn match_list(patterns: &[Pattern], expr: &Syntax, expansion_level: &mut Expansi
         _ => return false,
     };
 
-    let contains_ellipsis = patterns.iter().any(|p| matches!(p, Pattern::Ellipsis(_)));
-
-    match (patterns.split_last().unwrap(), contains_ellipsis) {
-        ((Pattern::Null, _), false) => {
-            // Proper list, no ellipsis. Match everything in order
-            if patterns.len() != exprs.len() {
+    if patterns.iter().any(|p| matches!(p, Pattern::Ellipsis(_))) {
+        match_ellipsis(patterns, exprs, expansion_level)
+    } else if let Some((cdr, head)) = patterns.split_last() {
+        // The pattern is an list that contains no ellipsis.
+        // Match in order until the last pattern, then match that to the nth
+        // cdr.
+        let mut exprs = exprs.iter();
+        for pattern in head.iter() {
+            let Some(expr) = exprs.next() else {
+                continue;
+            };
+            if !pattern.matches(expr, expansion_level) {
                 return false;
             }
-            for (pattern, expr) in patterns.iter().zip(exprs.iter()) {
-                if !pattern.matches(expr, expansion_level) {
-                    return false;
-                }
-            }
-            true
         }
-        ((cdr, head), false) => {
-            // The pattern is an improper list that contains no ellipsis.
-            // Match in order until the last pattern, then match that to the nth
-            // cdr.
-            let mut exprs = exprs.iter();
-            for pattern in head.iter() {
-                let Some(expr) = exprs.next() else {
-                    continue;
-                };
-                if !pattern.matches(expr, expansion_level) {
-                    return false;
-                }
-            }
-            // Match the cdr:
-            let exprs: Vec<_> = exprs.cloned().collect();
-            match exprs.as_slice() {
-                [] => false,
-                [x] => cdr.matches(x, expansion_level),
-                _ => cdr.matches(
-                    &Syntax::new_list(exprs, expr.span().clone()),
-                    expansion_level,
-                ),
-            }
+        // Match the cdr:
+        let exprs: Vec<_> = exprs.cloned().collect();
+        match exprs.as_slice() {
+            [] => false,
+            [x] => cdr.matches(x, expansion_level),
+            _ => cdr.matches(
+                &Syntax::new_list(exprs, expr.span().clone()),
+                expansion_level,
+            ),
         }
-        (_, true) => match_ellipsis(patterns, &exprs, expansion_level),
+    } else {
+        false
     }
 }
 
@@ -309,11 +293,10 @@ fn match_vec(patterns: &[Pattern], expr: &Syntax, expansion_level: &mut Expansio
     let contains_ellipsis = patterns.iter().any(|p| matches!(p, Pattern::Ellipsis(_)));
 
     if contains_ellipsis {
-        match_ellipsis(patterns, &exprs, expansion_level)
+        match_ellipsis(patterns, exprs, expansion_level)
+    } else if patterns.len() != exprs.len() {
+        false
     } else {
-        if patterns.len() != exprs.len() {
-            return false;
-        }
         for (pattern, expr) in patterns.iter().zip(exprs.iter()) {
             if !pattern.matches(expr, expansion_level) {
                 return false;
@@ -359,9 +342,6 @@ unsafe extern "C" fn matches(pattern: *const (), value: *const ()) -> *const () 
 
     let value = unsafe { Value::from_raw_inc_rc(value) };
     let syntax = Syntax::wrap(value);
-
-    // // This isn't a great way to do this, but it'll work for now:
-    // let syntax = Syntax::syntax_from_datum(&BTreeSet::default(), syntax).unwrap();
 
     let mut expansions = ExpansionLevel::default();
     if pattern.matches(&syntax, &mut expansions) {
@@ -444,18 +424,6 @@ impl Template {
             ))
         } else {
             Self::List(list)
-            /*
-            Self::List(
-                list.into_iter().collect()
-                    /*
-                    .map(|template| match template {
-                        // Template::Wrapped(Syntax::Null { .. }) => Template::Null,
-                        template => template,
-                    })
-                    .collect(),
-                    */
-            )
-            */
         }
     }
 
@@ -529,7 +497,6 @@ impl Template {
         expansions: &mut HashMap<Binding, Local>,
     ) -> Result<Self, Exception> {
         match expr {
-            // Syntax::Null { .. } => Ok(Self::Null),
             Syntax::List { list, span, .. } => Ok(Self::new_list(
                 Self::compile_slice_escaped(list, env, expansions)?,
                 span.clone(),
@@ -573,14 +540,14 @@ impl Template {
                 ] if ellipsis.sym == "..." => {
                     let mut compiled =
                         Self::Ellipsis(Box::new(Self::compile_inner(template, env, expansions)?));
-                    let mut tail = &tail[..];
+                    let mut tail = tail;
                     while matches!(tail.first(), Some(Syntax::Identifier { ident, ..}) if ident.sym == "...")
                     {
                         compiled = Self::Ellipsis(Box::new(compiled));
                         tail = &tail[1..];
                     }
                     output.push(compiled);
-                    expr = &tail;
+                    expr = tail;
                 }
                 [head, tail @ ..] => {
                     output.push(Self::compile_inner(head, env, expansions)?);
@@ -666,10 +633,10 @@ fn check_ellipsis(expr: &Syntax, env: &Environment) -> Result<(), Exception> {
             {
                 check_escaped_template(template, env)
             } else {
-                check_subtemplate(&list, env)?
+                check_subtemplate(list, env)?
             }
         }
-        Syntax::Vector { vector, .. } => check_subtemplate(&vector, env)?,
+        Syntax::Vector { vector, .. } => check_subtemplate(vector, env)?,
         Syntax::Identifier { ident, .. } => {
             if let Some(binding) = ident.resolve()
                 && let Some((_, depth)) = env.lookup_pattern_variable(binding)
@@ -708,10 +675,10 @@ fn check_template(expr: &Syntax, env: &Environment) -> Result<Vec<(Symbol, isize
             {
                 Ok(check_escaped_template(template, env))
             } else {
-                check_subtemplate(&list, env)
+                check_subtemplate(list, env)
             }
         }
-        Syntax::Vector { vector, .. } => check_subtemplate(&vector, env),
+        Syntax::Vector { vector, .. } => check_subtemplate(vector, env),
         Syntax::Identifier { ident, .. } => {
             // TODO: Probably should cache these resolves at some point...
             if let Some(binding) = ident.resolve()
@@ -734,7 +701,7 @@ fn check_subtemplate(
         [] => Ok(Vec::new()),
         [template, tail @ ..] => {
             let mut num_ellipsis = 0;
-            let mut tail = &tail[..];
+            let mut tail = tail;
             while matches!(tail.first(), Some(Syntax::Identifier { ident, ..}) if ident.sym == "...")
             {
                 num_ellipsis += 1;

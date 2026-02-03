@@ -126,7 +126,7 @@ impl Hash for ByteVector {
 
 impl PartialEq<[u8]> for ByteVector {
     fn eq(&self, rhs: &[u8]) -> bool {
-        &*self.0.vec.read() == rhs
+        *self.0.vec.read() == rhs
     }
 }
 

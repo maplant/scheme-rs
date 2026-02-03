@@ -11,7 +11,6 @@ use crate::{
     exceptions::Exception,
     expand::{SyntaxRule, Template},
     gc::Trace,
-    num::Number,
     proc::Procedure,
     runtime::Runtime,
     symbols::Symbol,
@@ -934,7 +933,7 @@ impl Definition {
                         },
                         args @ ..,
                     ] => {
-                        let var = maybe_await!(env.lookup_var(func_name.bind()))?.unwrap(); //env.def_var(func_name.bind(), func_name.sym);
+                        let var = maybe_await!(env.lookup_var(func_name.bind()))?.unwrap();
                         let mut bound = HashSet::<&Identifier>::new();
                         let mut fixed = Vec::new();
                         let func_scope = Scope::new();
@@ -1045,7 +1044,6 @@ pub enum Expression {
     Set(Set),
     Var(Var),
     Vector(Vector),
-    ByteVector(Vec<u8>),
     Begin(ExprBody),
 }
 
@@ -1103,33 +1101,13 @@ impl Expression {
                 } else {
                     Err(error::undefined_variable(&form, None))
                 }
-                /*
-                match maybe_await!(env.fetch_special_keyword_or_var(ident))? {
-                    Some(Either::Left(SpecialKeyword::Undefined)) => Ok(Self::Undefined),
-                    Some(Either::Left(_)) => Err(error::bad_form(&form, None)),
-                    Some(Either::Right(var)) => Ok(Self::Var(var)),
-                    None => {
-                        let top = env.fetch_top();
-                        if top.is_repl() {
-                            Ok(Self::Var(Var::Global(
-                                top.def_var(ident.clone(), Value::undefined()),
-                            )))
-                        } else {
-                            Err(error::undefined_variable(&form, None))
-                        }
-                    }
-                }
-                 */
             }
 
             // Literals:
             Syntax::Wrapped { value, .. } => Ok(Self::Literal(value.clone())),
-            /*
-            Syntax::Literal { literal, .. } => Ok(Self::Literal(literal.clone())),
-            */
+
             // Vector literals:
             Syntax::Vector { vector, .. } => Ok(Self::Vector(Vector::parse(vector))),
-            // Syntax::ByteVector { vector, .. } => Ok(Self::ByteVector(vector.clone())),
 
             // Functional forms:
             Syntax::List { list: exprs, .. } => match exprs.as_slice() {
@@ -1205,64 +1183,6 @@ impl Expression {
                     } else {
                         Err(error::undefined_variable(&form, Some(ident_form)))
                     }
-                    /*
-                    match maybe_await!(env.fetch_special_keyword_or_var(ident))? {
-                    Some(Either::Left(SpecialKeyword::Begin)) => {
-                        maybe_await!(ExprBody::parse(ctxt, tail, env)).map(Expression::Begin)
-                    }
-                    Some(Either::Left(SpecialKeyword::Lambda)) => {
-                        maybe_await!(Lambda::parse(ctxt, tail, env, &form)).map(Expression::Lambda)
-                    }
-                    Some(Either::Left(SpecialKeyword::Let)) => {
-                        maybe_await!(Let::parse(ctxt, tail, env, &form)).map(Expression::Let)
-                    }
-                    Some(Either::Left(SpecialKeyword::If)) => {
-                        maybe_await!(If::parse(ctxt, tail, env, &form)).map(Expression::If)
-                    }
-                    Some(Either::Left(SpecialKeyword::And)) => {
-                        maybe_await!(And::parse(ctxt, tail, env)).map(Expression::And)
-                    }
-                    Some(Either::Left(SpecialKeyword::Or)) => {
-                        maybe_await!(Or::parse(ctxt, tail, env)).map(Expression::Or)
-                    }
-                    Some(Either::Left(SpecialKeyword::Quote)) => {
-                        Quote::parse(tail, &form).map(Expression::Quote)
-                    }
-                    Some(Either::Left(SpecialKeyword::Syntax)) => {
-                        SyntaxQuote::parse(tail, env, &form).map(Expression::SyntaxQuote)
-                    }
-                    Some(Either::Left(SpecialKeyword::SyntaxCase)) => {
-                        maybe_await!(SyntaxCase::parse(ctxt, tail, env, &form))
-                            .map(Expression::SyntaxCase)
-                    }
-                    Some(Either::Left(SpecialKeyword::Set)) => {
-                        maybe_await!(Set::parse(ctxt, tail, env, &form)).map(Expression::Set)
-                    }
-                    Some(Either::Left(SpecialKeyword::LetSyntax)) if tail.len() > 1 => {
-                        let new_env = maybe_await!(parse_let_syntax(ctxt, false, &tail[0], env))?;
-                        maybe_await!(ExprBody::parse(ctxt, &tail[1..], &new_env))
-                            .map(Expression::Begin)
-                    }
-                    Some(Either::Left(SpecialKeyword::LetRecSyntax)) if tail.len() > 1 => {
-                        let new_env = maybe_await!(parse_let_syntax(ctxt, true, &tail[0], env))?;
-                        maybe_await!(ExprBody::parse(ctxt, &tail[1..], &new_env))
-                            .map(Expression::Begin)
-                    }
-                    Some(Either::Right(var)) => {
-                        maybe_await!(Apply::parse(ctxt, Expression::Var(var), tail, env, &form))
-                            .map(Expression::Apply)
-                    }
-                    Some(Either::Left(SpecialKeyword::DefineSyntax)) => unreachable!(),
-                    Some(Either::Left(SpecialKeyword::Import)) => {
-                        Err(error::unexpected_import(&form))
-                    }
-                    Some(Either::Left(SpecialKeyword::Define)) => {
-                        Err(error::unexpected_define(&form))
-                    }
-                    None => Err(error::undefined_variable(&form, None)),
-                    _ => Err(error::bad_form(&form, None)),
-                    },
-                    */
                 }
                 [expr, args @ .., end] if end.is_null() => maybe_await!(Apply::parse(
                     ctxt,
@@ -1923,30 +1843,17 @@ impl DefinitionBody {
                     ),
                 };
                 let mut ident = ident.clone();
+                // Remove any scopes introduced by a let-syntax or
+                // letrec-syntax form
                 for scope in &introduced_scopes {
                     ident.remove_scope(*scope);
                 }
                 let binding = ident.bind();
                 env.def_var(binding, ident.sym);
-                /*
-                // We also want to create the same binding for the identifier
-                // with any let-syntax scopes removed in order to properly
-                // support splicing
-                let mut ident = ident.clone();
-                for scope in &introduced_scopes {
-                    ident.remove_scope(*scope);
-                }
-                add_binding(ident, binding);
-                */
             }
         }
 
-        for (mut def, env) in defs.into_iter() {
-            /*
-            for new_scope in &introduced_scopes {
-                def.add_scope(*new_scope);
-            }
-            */
+        for (def, env) in defs.into_iter() {
             let def = maybe_await!(Definition::parse(
                 runtime,
                 def.as_list().unwrap(),
@@ -1956,12 +1863,7 @@ impl DefinitionBody {
             defs_parsed.push(def);
         }
 
-        for (mut expr, env) in exprs.into_iter() {
-            /*
-            for new_scope in &introduced_scopes {
-                expr.add_scope(*new_scope);
-            }
-            */
+        for (expr, env) in exprs.into_iter() {
             exprs_parsed.push(maybe_await!(Expression::parse_expanded(
                 runtime, expr, &env,
             ))?);
@@ -2004,6 +1906,7 @@ impl ExprBody {
 }
 
 #[cfg(not(feature = "async"))]
+#[allow(clippy::too_many_arguments)]
 fn splice_in(
     ctxt: &ParseContext,
     permissive: bool,
@@ -2027,6 +1930,7 @@ fn splice_in(
 }
 
 #[cfg(feature = "async")]
+#[allow(clippy::too_many_arguments)]
 fn splice_in<'a>(
     ctxt: &'a ParseContext,
     permissive: bool,
@@ -2035,7 +1939,7 @@ fn splice_in<'a>(
     form: &'a Syntax,
     defs: &'a mut Vec<(Syntax, Environment)>,
     exprs: &'a mut Vec<(Syntax, Environment)>,
-    introduced_scopes: &mut Vec<Scope>,
+    introduced_scopes: &'a mut Vec<Scope>,
 ) -> BoxFuture<'a, Result<(), Exception>> {
     Box::pin(splice_in_inner(
         ctxt,
@@ -2050,6 +1954,7 @@ fn splice_in<'a>(
 }
 
 #[maybe_async]
+#[allow(clippy::too_many_arguments)]
 fn splice_in_inner(
     ctxt: &ParseContext,
     permissive: bool,
@@ -2069,7 +1974,6 @@ fn splice_in_inner(
             if let Some([Syntax::Identifier { ident, .. }, tail @ .., end]) = expanded.as_list()
                 && end.is_null()
             {
-                // let keyword = maybe_await!(expansion_env.fetch_special_keyword_or_var(ident))?;
                 let primitive = ident
                     .resolve()
                     .and_then(|binding| env.lookup_primitive(binding));
@@ -2120,27 +2024,8 @@ fn splice_in_inner(
                                 exprs,
                                 introduced_scopes
                             ))?;
-                            /*
-                            for (syn, _) in new_defs.iter_mut().chain(new_exprs.iter_mut()) {
-                                for scope in scopes.iter() {
-                                    syn.remove_scope(*scope);
-                                }
-                            }
-                            */
-                            // defs.extend(new_defs);
-                            // exprs.extend(new_exprs);
                         }
                         continue;
-                        /*
-                        let new_env =
-                            maybe_await!(parse_let_syntax(ctxt, false, bindings, &expansion_env))?;
-                        if !form.is_empty() {
-                            maybe_await!(splice_in(
-                                ctxt, permissive, form, &new_env, &expanded, defs, exprs
-                            ))?;
-                        }
-                        continue;
-                        */
                     }
                     (Some(Primitive::LetRecSyntax), [bindings, form @ ..]) => {
                         let (form, env) = maybe_await!(parse_let_syntax(
@@ -2152,8 +2037,6 @@ fn splice_in_inner(
                             introduced_scopes
                         ))?;
                         if !form.is_empty() {
-                            // let mut new_defs = Vec::new();
-                            // let mut new_exprs = Vec::new();
                             maybe_await!(splice_in(
                                 ctxt,
                                 permissive,
@@ -2164,35 +2047,8 @@ fn splice_in_inner(
                                 exprs,
                                 introduced_scopes
                             ))?;
-                            // for (syn, _) in new_defs.iter_mut().chain(new_exprs.iter_mut()) {
-                            //     for scope in scopes.iter() {
-                            //         syn.remove_scope(*scope);
-                            //     }
-                            // }
-                            // defs.extend(new_defs);
-                            // exprs.extend(new_exprs);
                         }
                         continue;
-                        /*
-                        let (form, env, scopes) =
-                            maybe_await!(parse_let_syntax(ctxt, true, bindings, form, env))?;
-                        if !form.is_empty() {
-                            maybe_await!(splice_in(
-                                ctxt, permissive, &form, &env, &expanded, defs, exprs,
-                            ))?;
-                        }
-                        continue;
-                        */
-                        /*
-                        let new_env =
-                            maybe_await!(parse_let_syntax(ctxt, true, bindings, &expansion_env))?;
-                        if !form.is_empty() {
-                            maybe_await!(splice_in(
-                                ctxt, permissive, form, &new_env, &expanded, defs, exprs
-                            ))?;
-                        }
-                        continue;
-                        */
                     }
                     (Some(Primitive::Import), imports) => {
                         if !permissive && !exprs.is_empty() || !ctxt.allow_imports {
@@ -2279,36 +2135,6 @@ fn parse_let_syntax(
     }
 
     Ok((body, new_env))
-
-    /*
-    if bindings.is_null() {
-        return Ok(env.new_let_syntax_contour(recursive));
-    }
-
-    let Some([keyword_bindings @ .., Syntax::Null { .. }]) = bindings.as_list() else {
-        return Err(error::expected_list(bindings));
-    };
-
-    let new_env = env.new_let_syntax_contour(recursive);
-
-    for binding in keyword_bindings {
-        if let Some(
-            [
-                Syntax::Identifier { ident: keyword, .. },
-                expr,
-                Syntax::Null { .. },
-            ],
-        ) = binding.as_list()
-        {
-            maybe_await!(define_syntax(ctxt, keyword.clone(), expr.clone(), &new_env))?;
-        } else {
-            return Err(error::bad_form(bindings, Some(binding)));
-        }
-    }
-
-    Ok(new_env)
-     */
-    //todo!()
 }
 
 #[derive(Debug, Clone, Trace)]

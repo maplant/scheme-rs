@@ -49,7 +49,6 @@ use std::{
     cmp::Ordering,
     fmt,
     hash::Hash,
-    i64,
     io::Cursor,
     ops::{Add, Div, Mul, Neg, Rem, Sub},
     sync::Arc,
@@ -1131,7 +1130,7 @@ impl Neg for &'_ SimpleNumber {
         match self {
             SimpleNumber::FixedInteger(i) => i.checked_neg().map_or_else(
                 || -SimpleNumber::BigInteger(-Integer::from(*i)),
-                |i| SimpleNumber::FixedInteger(i),
+                SimpleNumber::FixedInteger,
             ),
             SimpleNumber::BigInteger(i) => SimpleNumber::BigInteger(-i),
             SimpleNumber::Rational(r) => SimpleNumber::Rational(-r),
@@ -1428,10 +1427,10 @@ impl ComplexNumber {
             return Some(output);
         }
         if self.im.is_positive() && !self.im.is_nan() && !self.im.is_infinite() {
-            output.push_str("+");
+            output.push('+');
         }
         output.push_str(&self.im.to_string(radix, precision)?);
-        output.push_str("i");
+        output.push('i');
         Some(output)
     }
 
@@ -1968,7 +1967,7 @@ pub(crate) fn lesser_prim(vals: &[Value]) -> Result<bool, Exception> {
             if !next_num.is_real() {
                 return Err(Exception::type_error("real", "complex"));
             }
-            if !(prev_num < next_num) {
+            if !matches!(prev_num.partial_cmp(&next_num), Some(Ordering::Less)) {
                 return Ok(false);
             }
             prev = next.clone();
@@ -1996,7 +1995,7 @@ pub(crate) fn greater_prim(vals: &[Value]) -> Result<bool, Exception> {
             if !next_num.is_real() {
                 return Err(Exception::type_error("real", "complex"));
             }
-            if !(prev_num > next_num) {
+            if !matches!(prev_num.partial_cmp(&next_num), Some(Ordering::Greater)) {
                 return Ok(false);
             }
             prev = next.clone();
@@ -2022,7 +2021,10 @@ pub(crate) fn lesser_equal_prim(vals: &[Value]) -> Result<bool, Exception> {
             if !next_num.is_real() {
                 return Err(Exception::type_error("real", "complex"));
             }
-            if !(prev_num <= next_num) {
+            if !matches!(
+                prev_num.partial_cmp(&next_num),
+                Some(Ordering::Equal | Ordering::Less)
+            ) {
                 return Ok(false);
             }
             prev = next.clone();
@@ -2048,7 +2050,10 @@ pub(crate) fn greater_equal_prim(vals: &[Value]) -> Result<bool, Exception> {
             if !next_num.is_real() {
                 return Err(Exception::type_error("real", "complex"));
             }
-            if !(prev_num >= next_num) {
+            if !matches!(
+                prev_num.partial_cmp(&next_num),
+                Some(Ordering::Equal | Ordering::Greater)
+            ) {
                 return Ok(false);
             }
             prev = next.clone();
@@ -2459,9 +2464,12 @@ pub fn string_to_number(s: WideString, rest_args: &[Value]) -> Result<Vec<Value>
     let bytes = Cursor::new(s.as_bytes().to_vec());
     let port = Port::new("", bytes, BufferMode::Block, Some(Transcoder::native()));
     let info = &port.0.info;
+    #[cfg(not(feature = "async"))]
     let mut data = port.0.data.lock().unwrap();
+    #[cfg(feature = "tokio")]
+    let mut data = port.0.data.lock().await;
     let mut lexer = Lexer::new(&mut data, info, Span::default());
-    let Some(number) = maybe_await!(lexer.number(radix).ok().flatten()) else {
+    let Some(number) = maybe_await!(lexer.number(radix)).ok().flatten() else {
         return Ok(vec![Value::from(false)]);
     };
 
@@ -2481,14 +2489,14 @@ pub struct Fixnum(pub i64);
 
 impl From<&Value> for Option<Fixnum> {
     fn from(value: &Value) -> Option<Fixnum> {
-        if let Some(num) = value.cast_to_scheme_type::<Number>() {
-            if let NumberInner::Simple(simple) = &*num.0 {
-                if let SimpleNumber::FixedInteger(fixnum) = simple {
-                    return Some(Fixnum(*fixnum));
-                }
-            }
+        if let Some(num) = value.cast_to_scheme_type::<Number>()
+            && let NumberInner::Simple(simple) = &*num.0
+            && let SimpleNumber::FixedInteger(fixnum) = simple
+        {
+            Some(Fixnum(*fixnum))
+        } else {
+            None
         }
-        None
     }
 }
 
@@ -2496,14 +2504,14 @@ impl TryFrom<&Value> for Fixnum {
     type Error = Exception;
 
     fn try_from(value: &Value) -> Result<Self, Self::Error> {
-        if let Some(num) = value.cast_to_scheme_type::<Number>() {
-            if let NumberInner::Simple(simple) = &*num.0 {
-                if let SimpleNumber::FixedInteger(fixnum) = simple {
-                    return Ok(Fixnum(*fixnum));
-                }
-            }
+        if let Some(num) = value.cast_to_scheme_type::<Number>()
+            && let NumberInner::Simple(simple) = &*num.0
+            && let SimpleNumber::FixedInteger(fixnum) = simple
+        {
+            Ok(Fixnum(*fixnum))
+        } else {
+            Err(Exception::error("value is not a fixnum"))
         }
-        Err(Exception::error("value is not a fixnum"))
     }
 }
 
@@ -2534,14 +2542,14 @@ pub struct Flonum(pub f64);
 
 impl From<&Value> for Option<Flonum> {
     fn from(value: &Value) -> Option<Flonum> {
-        if let Some(num) = value.cast_to_scheme_type::<Number>() {
-            if let NumberInner::Simple(simple) = &*num.0 {
-                if let SimpleNumber::Real(flonum) = simple {
-                    return Some(Flonum(*flonum));
-                }
-            }
+        if let Some(num) = value.cast_to_scheme_type::<Number>()
+            && let NumberInner::Simple(simple) = &*num.0
+            && let SimpleNumber::Real(flonum) = simple
+        {
+            Some(Flonum(*flonum))
+        } else {
+            None
         }
-        None
     }
 }
 
@@ -2549,14 +2557,14 @@ impl TryFrom<&Value> for Flonum {
     type Error = Exception;
 
     fn try_from(value: &Value) -> Result<Self, Self::Error> {
-        if let Some(num) = value.cast_to_scheme_type::<Number>() {
-            if let NumberInner::Simple(simple) = &*num.0 {
-                if let SimpleNumber::Real(flonum) = simple {
-                    return Ok(Flonum(*flonum));
-                }
-            }
+        if let Some(num) = value.cast_to_scheme_type::<Number>()
+            && let NumberInner::Simple(simple) = &*num.0
+            && let SimpleNumber::Real(flonum) = simple
+        {
+            Ok(Flonum(*flonum))
+        } else {
+            Err(Exception::error("value is not a flonum"))
         }
-        Err(Exception::error("value is not a flonum"))
     }
 }
 

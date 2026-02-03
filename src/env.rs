@@ -138,8 +138,7 @@ impl TopLevelEnvironment {
         };
         let repl = Self(Gc::new(RwLock::new(inner)));
         // Repls are given the import keyword, free of charge.
-        repl.import("(only (rnrs base primitives) import)".parse().unwrap())
-            .unwrap();
+        repl.give_import_primitive();
         repl
     }
 
@@ -156,10 +155,32 @@ impl TopLevelEnvironment {
         };
         let program = Self(Gc::new(RwLock::new(inner)));
         // Programs are given the import keyword, free of charge.
+        program.give_import_primitive();
         program
-            .import("(only (rnrs base primitives) import)".parse().unwrap())
+    }
+
+    fn give_import_primitive(&self) {
+        let kw = Symbol::intern("import");
+        let lib_name = [
+            Symbol::intern("rnrs"),
+            Symbol::intern("base"),
+            Symbol::intern("primitives"),
+        ];
+        let rnrs_base_prims = self
+            .0
+            .read()
+            .rt
+            .get_registry()
+            .0
+            .read()
+            .libs
+            .get(lib_name.as_slice())
+            .cloned()
             .unwrap();
-        program
+        let import = rnrs_base_prims.0.read().exports.get(&kw).unwrap().clone();
+        let mut this = self.0.write();
+        this.imports.insert(import.binding, rnrs_base_prims.clone());
+        add_binding(Identifier::from_symbol(kw, this.scope), import.binding);
     }
 
     pub(crate) fn scope(&self) -> Scope {
@@ -397,7 +418,7 @@ impl TopLevelEnvironment {
     }
 
     #[cfg(feature = "async")]
-    pub(crate) fn lookup_var<'a>(
+    pub(crate) fn lookup_var(
         &self,
         binding: Binding,
     ) -> BoxFuture<'_, Result<Option<Global>, Exception>> {
@@ -439,7 +460,7 @@ impl TopLevelEnvironment {
 
     #[maybe_async]
     pub fn lookup_keyword_inner(&self, binding: Binding) -> Result<Option<Procedure>, Exception> {
-        if let Some(origin) = self.0.read().imports.get(&binding).cloned() {
+        if let Some(origin) = { self.0.read().imports.get(&binding).cloned() } {
             maybe_await!(origin.maybe_expand())?;
             maybe_await!(origin.lookup_keyword(binding))
         } else if let Some(TopLevelBinding::Keyword(kw)) = TOP_LEVEL_BINDINGS.lock().get(&binding) {
@@ -476,8 +497,8 @@ pub(crate) enum LibraryState {
     Invoked,
 }
 
-#[derive(Trace, PartialEq, Debug)]
-enum BindingType {
+#[derive(Trace, PartialEq, Debug, Clone)]
+enum LocalBinding {
     Var(Local),
     Keyword(Procedure),
     Pattern(Local, usize),
@@ -485,9 +506,9 @@ enum BindingType {
 }
 
 #[derive(Trace, Debug)]
-struct LexicalContour {
+pub(crate) struct LexicalContour {
     up: Environment,
-    bindings: Mutex<HashMap<Binding, BindingType>>,
+    bindings: Mutex<HashMap<Binding, LocalBinding>>,
     scope: Scope,
 }
 
@@ -496,22 +517,22 @@ impl LexicalContour {
         let local = Local::gensym_with_name(name);
         self.bindings
             .lock()
-            .insert(binding, BindingType::Var(local));
+            .insert(binding, LocalBinding::Var(local));
         local
     }
 
     fn def_keyword(&self, binding: Binding, transformer: Procedure) {
         self.bindings
             .lock()
-            .insert(binding, BindingType::Keyword(transformer));
+            .insert(binding, LocalBinding::Keyword(transformer));
     }
 
     #[maybe_async]
     fn lookup_keyword(&self, binding: Binding) -> Result<Option<Procedure>, Exception> {
-        if let Some(bound) = self.bindings.lock().get(&binding) {
+        if let Some(bound) = { self.bindings.lock().get(&binding).cloned() } {
             match bound {
-                BindingType::Keyword(transformer) => Ok(Some(transformer.clone())),
-                BindingType::Imported(imported) => maybe_await!(imported.lookup_keyword(binding)),
+                LocalBinding::Keyword(transformer) => Ok(Some(transformer.clone())),
+                LocalBinding::Imported(imported) => maybe_await!(imported.lookup_keyword(binding)),
                 _ => Ok(None),
             }
         } else {
@@ -521,10 +542,10 @@ impl LexicalContour {
 
     #[maybe_async]
     fn lookup_var(&self, binding: Binding) -> Result<Option<Var>, Exception> {
-        if let Some(bound) = self.bindings.lock().get(&binding) {
+        if let Some(bound) = { self.bindings.lock().get(&binding).cloned() } {
             match bound {
-                BindingType::Var(local) => Ok(Some(Var::Local(*local))),
-                BindingType::Imported(imported) => {
+                LocalBinding::Var(local) => Ok(Some(Var::Local(local))),
+                LocalBinding::Imported(imported) => {
                     Ok(maybe_await!(imported.lookup_var(binding))?.map(Var::Global))
                 }
                 _ => Ok(None),
@@ -537,7 +558,7 @@ impl LexicalContour {
     fn lookup_primitive(&self, binding: Binding) -> Option<Primitive> {
         if let Some(bound) = self.bindings.lock().get(&binding) {
             match bound {
-                BindingType::Imported(imported) => imported.lookup_primitive(binding),
+                LocalBinding::Imported(imported) => imported.lookup_primitive(binding),
                 _ => None,
             }
         } else {
@@ -548,7 +569,7 @@ impl LexicalContour {
     fn lookup_pattern_variable(&self, binding: Binding) -> Option<(Local, usize)> {
         if let Some(bound) = self.bindings.lock().get(&binding) {
             match bound {
-                BindingType::Pattern(local, depth) => Some((*local, *depth)),
+                LocalBinding::Pattern(local, depth) => Some((*local, *depth)),
                 _ => None,
             }
         } else {
@@ -556,13 +577,8 @@ impl LexicalContour {
         }
     }
 
-    pub fn fetch_top(&self) -> TopLevelEnvironment {
-        self.up.fetch_top()
-    }
-
     #[maybe_async]
-    pub fn import(&self, _import_set: ImportSet) -> Result<(), Exception> {
-        /*
+    pub fn import(&self, import_set: ImportSet) -> Result<(), Exception> {
         let (rt, registry) = {
             let top = self.fetch_top();
             let top = top.0.read();
@@ -571,20 +587,23 @@ impl LexicalContour {
         let imports = maybe_await!(registry.import(&rt, import_set))?;
         let mut bindings = self.bindings.lock();
         for (sym, import) in imports {
-            let binding_type = BindingType::Imported(import.origin.clone());
+            let binding_type = LocalBinding::Imported(import.origin.clone());
             match bindings.entry(import.binding) {
-                Entry::Occupied(prev_imported) if *prev_imported.get() != binding_type => {
+                Entry::Occupied(prev_imported) if *prev_imported.key() != import.binding => {
                     return Err(error::name_bound_multiple_times(sym));
                 }
                 Entry::Vacant(slot) => {
+                    add_binding(Identifier::from_symbol(sym, self.scope), import.binding);
                     slot.insert(binding_type);
                 }
                 _ => (),
             }
         }
         Ok(())
-         */
-        todo!()
+    }
+
+    pub fn fetch_top(&self) -> TopLevelEnvironment {
+        self.up.fetch_top()
     }
 }
 
@@ -614,7 +633,7 @@ impl Environment {
             up: self.clone(),
             bindings: Mutex::new(
                 vars.into_iter()
-                    .map(|(binding, depth)| (binding, BindingType::Pattern(expansion, depth)))
+                    .map(|(binding, depth)| (binding, LocalBinding::Pattern(expansion, depth)))
                     .collect(),
             ),
             scope,
@@ -668,8 +687,8 @@ impl Environment {
     pub fn lookup_var(&self, binding: Binding) -> BoxFuture<'_, Result<Option<Var>, Exception>> {
         Box::pin(async move {
             match self {
-                Self::Top(top) => top.lookup_var(binding).await,
-                Self::LexicalContour(lc) => lc.lookup_bar(binding).await,
+                Self::Top(top) => Ok(top.lookup_var(binding).await?.map(Var::Global)),
+                Self::LexicalContour(lc) => lc.lookup_var(binding).await,
             }
         })
     }
@@ -699,18 +718,18 @@ impl Environment {
         }
     }
 
-    pub fn fetch_top(&self) -> TopLevelEnvironment {
-        match self {
-            Self::Top(top) => top.clone(),
-            Self::LexicalContour(lc) => lc.fetch_top(),
-        }
-    }
-
     #[maybe_async]
     pub fn import(&self, import_set: ImportSet) -> Result<(), Exception> {
         match self {
             Self::Top(top) => maybe_await!(top.import(import_set)),
             Self::LexicalContour(lc) => maybe_await!(lc.import(import_set)),
+        }
+    }
+
+    pub fn fetch_top(&self) -> TopLevelEnvironment {
+        match self {
+            Self::Top(top) => top.clone(),
+            Self::LexicalContour(lc) => lc.fetch_top(),
         }
     }
 }
@@ -904,6 +923,12 @@ impl Scope {
     }
 }
 
+impl Default for Scope {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Trace)]
 pub struct Binding(usize);
 
@@ -915,16 +940,23 @@ impl Binding {
     }
 }
 
+impl Default for Binding {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl fmt::Debug for Binding {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "!{}", self.0)
     }
 }
 
+type Bindings = Vec<(BTreeSet<Scope>, Binding)>;
+
 // We can probably design this much more intelligently
-pub(crate) static GLOBAL_BINDING_TABLE: LazyLock<
-    Mutex<HashMap<Symbol, Vec<(BTreeSet<Scope>, Binding)>>>,
-> = LazyLock::new(|| Mutex::new(HashMap::new()));
+pub(crate) static GLOBAL_BINDING_TABLE: LazyLock<Mutex<HashMap<Symbol, Bindings>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub(crate) fn add_binding(id: Identifier, binding: Binding) {
     GLOBAL_BINDING_TABLE
@@ -936,12 +968,9 @@ pub(crate) fn add_binding(id: Identifier, binding: Binding) {
 
 pub(crate) fn resolve(id: &Identifier) -> Option<Binding> {
     let candidate_ids = find_all_matching_bindings(id);
-    let Some(max_id) = candidate_ids
+    let max_id = candidate_ids
         .iter()
-        .max_by(|a, b| a.0.len().cmp(&b.0.len()))
-    else {
-        return None;
-    };
+        .max_by(|a, b| a.0.len().cmp(&b.0.len()))?;
     if is_ambiguous(&max_id.0, &candidate_ids) {
         return None;
     }

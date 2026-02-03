@@ -50,10 +50,6 @@ pub(crate) mod error {
         Exception::from((IoError::new(), Message::new("library not found")))
     }
 
-    pub(crate) fn name_bound_multiple_times(name: Symbol) -> Exception {
-        Exception::from(Message::new(format!("`{name}` bound multiple times")))
-    }
-
     // TODO: Include dependency chain that lead to this error
     pub(super) fn circular_dependency() -> Exception {
         Exception::from(Message::new("circular dependency"))
@@ -133,7 +129,7 @@ struct Stdlib;
 
 #[derive(Trace, Default)]
 pub(crate) struct RegistryInner {
-    libs: HashMap<Vec<Symbol>, TopLevelEnvironment>,
+    pub(crate) libs: HashMap<Vec<Symbol>, TopLevelEnvironment>,
     loading: HashSet<Vec<Symbol>>,
 }
 
@@ -217,7 +213,7 @@ impl RegistryInner {
                 .collect::<Vec<_>>();
             let scope = Scope::new();
             let exports = primitives
-                .into_iter()
+                .iter()
                 .map(|(name, primitive)| {
                     let name = Symbol::intern(name);
                     let binding = Binding::new();
@@ -235,18 +231,6 @@ impl RegistryInner {
                 })
                 .collect();
 
-            /*
-            let primitives = primitives
-                .into_iter()
-                .map(|(name, primitive)| {
-                    let name = Symbol::intern(name);
-                    let binding = Binding::new();
-                    add_binding(Identifier::from_symbol(name, scope), binding);
-                    (name, binding, *primitive)
-                })
-                .collect::<Vec<_>>();
-            */
-
             (
                 name.clone(),
                 TopLevelEnvironment(Gc::new(RwLock::new(TopLevelEnvironmentInner {
@@ -260,26 +244,6 @@ impl RegistryInner {
                     },
                     imports: HashMap::new(),
                     exports,
-                    /*
-                    exports: primitives
-                        .iter()
-                        .map(|(name, binding, _)| {
-                            (
-                                *name,
-                                Export {
-                                    binding: *binding,
-                                    origin: None,
-                                },
-                            )
-                        })
-                        .collect(),
-                    vars: HashMap::new(),
-                    keywords: HashMap::new(),
-                    primitives: primitives
-                        .into_iter()
-                        .map(|(_, binding, primitive)| (binding, primitive))
-                        .collect(),
-                    */
                     state: LibraryState::BridgesDefined,
                     scope,
                 }))),
@@ -395,23 +359,11 @@ impl Registry {
         } else {
             Scope::new()
         };
-        /*
-        let mut vars = if let Some(lib) = self.0.read().libs.get(name) {
-            if lib.get_state().is_bridges_defined() {
-                Some(lib.0.read().vars.clone())
-            } else {
-                return Ok(lib.clone());
-            }
-        } else {
-            Some(HashMap::default())
-        };
-         */
 
         // Check to see that we're not currently loading the library. Circular
         // dependencies are not allowed. We should probably support them at some
         // point to some degree.
         if self.0.read().loading.contains(name) {
-            println!("loading: {name:?}");
             return Err(error::circular_dependency());
         }
 
@@ -521,7 +473,7 @@ impl Registry {
                         .read()
                         .exports
                         .iter()
-                        .map(|(orign, exp)| (orign.clone(), exp.clone()))
+                        .map(|(origin, exp)| (*origin, exp.clone()))
                         .collect::<Vec<_>>()
                 };
                 Ok(Box::new(exports.into_iter().map(move |(name, exp)| {
@@ -597,7 +549,6 @@ fn load_lib_from_dir(
     path: &Path,
     path_suffix: &str,
     scope: Scope,
-    //    vars: &mut Option<HashMap<Binding, Global>>,
 ) -> Result<Option<TopLevelEnvironment>, Exception> {
     for ext in ["sls", "ss", "scm"] {
         let path = path.join(format!("{path_suffix}.{ext}"));
@@ -613,10 +564,7 @@ fn load_lib_from_dir(
         };
         let spec = LibrarySpec::parse(form)?;
         return Ok(Some(maybe_await!(
-            TopLevelEnvironment::from_spec_with_scope(
-                rt, spec, path, scope,
-                //          vars.take().unwrap()
-            )
+            TopLevelEnvironment::from_spec_with_scope(rt, spec, path, scope,)
         )?));
     }
 

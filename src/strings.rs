@@ -217,7 +217,7 @@ pub fn string_less_pred(
         let string_n: WideString = string_n.try_into()?;
         {
             let prev_string_read = prev_string.0.chars.read();
-            if !(&*prev_string_read < &*string_n.0.chars.read()) {
+            if *prev_string_read >= *string_n.0.chars.read() {
                 return Ok(vec![Value::from(false)]);
             }
         }
@@ -237,7 +237,7 @@ pub fn string_greater_pred(
         let string_n: WideString = string_n.try_into()?;
         {
             let prev_string_read = prev_string.0.chars.read();
-            if !(&*prev_string_read > &*string_n.0.chars.read()) {
+            if *prev_string_read <= *string_n.0.chars.read() {
                 return Ok(vec![Value::from(false)]);
             }
         }
@@ -257,7 +257,7 @@ pub fn string_less_equal_pred(
         let string_n: WideString = string_n.try_into()?;
         {
             let prev_string_read = prev_string.0.chars.read();
-            if !(&*prev_string_read <= &*string_n.0.chars.read()) {
+            if *prev_string_read > *string_n.0.chars.read() {
                 return Ok(vec![Value::from(false)]);
             }
         }
@@ -277,7 +277,7 @@ pub fn string_greater_equal_pred(
         let string_n: WideString = string_n.try_into()?;
         {
             let prev_string_read = prev_string.0.chars.read();
-            if !(&*prev_string_read >= &*string_n.0.chars.read()) {
+            if *prev_string_read < *string_n.0.chars.read() {
                 return Ok(vec![Value::from(false)]);
             }
         }
@@ -313,7 +313,7 @@ pub fn string_to_list(string: WideString) -> Result<Vec<Value>, Exception> {
     for chr in string.0.chars.read().iter().rev() {
         list = Value::from((Value::from(*chr), list));
     }
-    Ok(vec![Value::from(list)])
+    Ok(vec![list])
 }
 
 #[bridge(name = "string-copy", lib = "(rnrs base builtins (6))")]

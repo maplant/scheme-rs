@@ -89,7 +89,6 @@ use malachite::Integer;
 use parking_lot::RwLock;
 
 use crate::{
-    ast,
     exceptions::Exception,
     gc::{Gc, GcInner, Trace},
     hashtables::{HashTable, HashTableInner},

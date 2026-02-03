@@ -171,8 +171,13 @@ impl List {
     pub fn into_vec(self) -> Vec<Value> {
         self.items
     }
+}
 
-    pub fn into_iter(self) -> impl Iterator<Item = Value> {
+impl IntoIterator for List {
+    type Item = Value;
+    type IntoIter = std::vec::IntoIter<Value>;
+
+    fn into_iter(self) -> Self::IntoIter {
         self.items.into_iter()
     }
 }
@@ -461,7 +466,7 @@ unsafe extern "C" fn map_k(
 #[bridge(name = "zip", lib = "(rnrs base builtins (6))")]
 pub fn zip(list1: &Value, listn: &[Value]) -> Result<Vec<Value>, Exception> {
     let mut output: Option<Vec<Value>> = None;
-    for list in Some(list1).into_iter().chain(listn.into_iter()).rev() {
+    for list in Some(list1).into_iter().chain(listn.iter()).rev() {
         let List { items, .. } = list.try_to_scheme_type()?;
         if let Some(output) = &output {
             if output.len() != items.len() {
