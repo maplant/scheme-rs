@@ -197,8 +197,14 @@ impl HashTableInner {
         }
     }
 
-    pub fn clear(&self) {
+    pub fn clear(&self) -> Result<(), Exception> {
+        if !self.mutable {
+            return Err(Exception::error("hashtable is immutable"));
+        }
+
         self.table.write().clear();
+
+        Ok(())
     }
 
     pub fn keys(&self) -> Vec<Value> {
@@ -282,8 +288,8 @@ impl HashTable {
         Self(Gc::new(self.0.copy(mutable)))
     }
 
-    pub fn clear(&self) {
-        self.0.clear();
+    pub fn clear(&self) -> Result<(), Exception> {
+        self.0.clear()
     }
 
     pub fn keys(&self) -> Vec<Value> {
@@ -448,7 +454,7 @@ pub fn hashtable_clear_bang(hashtable: &Value, rest: &[Value]) -> Result<Vec<Val
         x => return Err(Exception::wrong_num_of_args(3, 2 + x.len())),
     };
 
-    hashtable.clear();
+    hashtable.clear()?;
 
     if let Some(k) = k {
         let mut table = hashtable.0.table.write();
@@ -529,6 +535,18 @@ pub fn string_hash(string: &Value) -> Result<Vec<Value>, Exception> {
     let string: WideString = string.clone().try_into()?;
     let mut hasher = DefaultHasher::new();
     string.hash(&mut hasher);
+    Ok(vec![Value::from(hasher.finish())])
+}
+
+#[bridge(name = "string-ci-hash", lib = "(rnrs hashtables builtins (6))")]
+pub fn string_ci_hash(string: &Value) -> Result<Vec<Value>, Exception> {
+    let string: WideString = string.clone().try_into()?;
+    let mut hasher = DefaultHasher::new();
+    let chars = string.0.chars.read();
+    hasher.write_usize(chars.len());
+    for lowercase in chars.iter().copied().flat_map(char::to_lowercase) {
+        lowercase.hash(&mut hasher);
+    }
     Ok(vec![Value::from(hasher.finish())])
 }
 

@@ -4,7 +4,8 @@
           cdaaar cdaadr cdadar cdaddr cddaar cddadr cdddar cddddr call/cc
           for-each string-for-each vector-for-each vector-map append make-list
           list-copy list-tail list-ref map reverse positive? negative? abs min
-          max quasiquote gcd lcm identifier-syntax assert rationalize
+          max quasiquote gcd lcm identifier-syntax assert rationalize div0 mod0
+          div0-and-mod0 
           (import (rnrs base builtins (6)))
           (import (rnrs syntax-rules (6)))
           (import (rnrs values (6)))
@@ -23,6 +24,24 @@
 
   (define (lcm a b)
     (* (/ (abs b) (gcd a b)) (abs a)))
+
+  (define (div0-and-mod0 x y)
+    (define q (div x y))
+    (define r (mod x y))
+    (cond ((< r (abs (/ y 2)))
+              (values q r))
+             ((> y 0)
+              (values (+ q 1) (- x (* (+ q 1) y))))
+             (else
+              (values (- q 1) (- x (* (- q 1) y))))))
+
+  (define (div0 x y)
+    (let-values ([(q r) (div0-and-mod0 x y)])
+      q))
+
+  (define (mod0 x y)
+    (let-values ([(q r) (div0-and-mod0 x y)])
+      r))
 
   ;; rationalize function taken from Larceny, with the following copyright
   ;; attribution:
@@ -235,13 +254,13 @@
                     smallest)))))
 
   (define (max x . xs)
-    (let loop ((xs xs) (biggest x))
+    (let loop ([xs xs] [biggest x] [is-inexact (inexact? x)])
       (if (null? xs)
-          biggest
-          (loop (cdr xs)
-                (if (> (car xs) biggest)
-                    (car xs)
-                    biggest)))))
+          (if is-inexact (inexact biggest) biggest)
+          (let ([x (car xs)])
+            (loop (cdr xs)
+                  (if (> x biggest) x biggest)
+                  (or is-inexact (inexact? x)))))))
 
   ;; quasiquote is Copyright (c) 2006 Andre van Tonder
   ;; 

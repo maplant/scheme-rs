@@ -758,7 +758,7 @@ impl Part {
         let num = match &self.real {
             Real::Num(num) => i64::from_str_radix(num, radix).ok()?,
             Real::Decimal(base, fract, None) if fract.is_empty() => base.parse().ok()?,
-            Real::Decimal(base, fract, Some(exp)) if fract.is_empty() => {
+            Real::Decimal(base, fract, Some(exp)) if fract.is_empty() && !exp.is_negative() => {
                 let base: i64 = base.parse().ok()?;
                 let exp = 10_i64.checked_pow((*exp).try_into().ok()?)?;
                 base.checked_mul(exp)?
@@ -774,7 +774,7 @@ impl Part {
             Real::Decimal(base, fract, None) if fract.is_empty() => {
                 Integer::from_string_base(10, base)?
             }
-            Real::Decimal(base, fract, Some(exp)) if fract.is_empty() => {
+            Real::Decimal(base, fract, Some(exp)) if fract.is_empty() && !exp.is_negative() => {
                 Integer::from_sci_string(&format!("{base}e{exp}"))?
             }
             _ => return None,

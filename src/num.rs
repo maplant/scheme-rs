@@ -118,7 +118,7 @@ impl Number {
     pub fn is_real(&self) -> bool {
         match self.0.as_ref() {
             NumberInner::Simple(_) => true,
-            NumberInner::Complex(complex) => complex.im.is_zero(),
+            NumberInner::Complex(complex) => complex.im.is_exact() && complex.im.is_zero(),
         }
     }
 
@@ -137,7 +137,10 @@ impl Number {
     }
 
     pub fn is_real_valued(&self) -> bool {
-        self.is_real()
+        match self.0.as_ref() {
+            NumberInner::Simple(_) => true,
+            NumberInner::Complex(complex) => complex.im.is_zero(),
+        }
     }
 
     /// All numbers are complex!
@@ -520,6 +523,14 @@ impl SimpleNumber {
             SimpleNumber::BigInteger(i) => SimpleNumber::BigInteger(i.pow(p as u64)),
             SimpleNumber::Rational(r) => SimpleNumber::Rational(r.pow(p as u64)),
             SimpleNumber::Real(r) => SimpleNumber::Real(r.powi(p)),
+        }
+    }
+
+    pub fn div_euclid(&self, rhs: &Self) -> Self {
+        if rhs.is_positive() {
+            (self / rhs).to_integer(RoundingMode::Floor)
+        } else {
+            (self / rhs).to_integer(RoundingMode::Ceiling)
         }
     }
 
@@ -1032,18 +1043,51 @@ impl fmt::Debug for SimpleNumber {
     }
 }
 
+/// Hash implementation for SimpleNumber is the eqv-hash procedure from r6rs.
 impl Hash for SimpleNumber {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        std::mem::discriminant(self).hash(state);
         match self {
-            SimpleNumber::FixedInteger(i) => i.hash(state),
-            SimpleNumber::BigInteger(i) => i.hash(state),
-            SimpleNumber::Rational(r) => r.hash(state),
-            SimpleNumber::Real(r) if r.is_nan() => {
-                // Use the same bit pattern for all NaNs to mirror eqv
-                f64::NAN.to_bits().hash(state)
+            SimpleNumber::FixedInteger(i) => {
+                0u8.hash(state);
+                i.hash(state);
             }
-            SimpleNumber::Real(r) => r.to_bits().hash(state),
+            SimpleNumber::BigInteger(i) => {
+                if i64::convertible_from(i) {
+                    0u8.hash(state);
+                    i64::wrapping_from(i).hash(state)
+                } else {
+                    1u8.hash(state);
+                    i.hash(state)
+                }
+            }
+            SimpleNumber::Rational(r) => {
+                if *r.denominator_ref() == 1u32 {
+                    let i = if *r < 0 {
+                        -Integer::from(r.numerator_ref())
+                    } else {
+                        Integer::from(r.numerator_ref())
+                    };
+                    if i64::convertible_from(&i) {
+                        0u8.hash(state);
+                        i64::wrapping_from(&i).hash(state)
+                    } else {
+                        1u8.hash(state);
+                        i.hash(state)
+                    }
+                } else {
+                    2u8.hash(state);
+                    r.hash(state)
+                }
+            }
+            SimpleNumber::Real(r) => {
+                3u8.hash(state);
+                if r.is_nan() {
+                    // Use the same bit pattern for all NaNs to mirror eqv
+                    f64::NAN.to_bits().hash(state);
+                } else {
+                    r.to_bits().hash(state);
+                }
+            }
         }
     }
 }
@@ -1129,7 +1173,7 @@ impl Neg for &'_ SimpleNumber {
     fn neg(self) -> SimpleNumber {
         match self {
             SimpleNumber::FixedInteger(i) => i.checked_neg().map_or_else(
-                || -SimpleNumber::BigInteger(-Integer::from(*i)),
+                || SimpleNumber::BigInteger(-Integer::from(*i)),
                 SimpleNumber::FixedInteger,
             ),
             SimpleNumber::BigInteger(i) => SimpleNumber::BigInteger(-i),
@@ -2154,9 +2198,11 @@ pub fn div(arg1: &Value, args: &[Value]) -> Result<Vec<Value>, Exception> {
 }
 
 pub(crate) fn div_prim(val1: &Value, vals: &[Value]) -> Result<Number, Exception> {
+    let mut is_exact = true;
     let val1: Number = val1.try_to_scheme_type()?;
+    is_exact &= val1.is_exact();
     if vals.is_empty() {
-        if val1.is_zero() {
+        if val1.is_zero() && is_exact {
             return Err(Exception::error("division by zero"));
         } else {
             return Ok(Number::from(1) / val1);
@@ -2165,7 +2211,8 @@ pub(crate) fn div_prim(val1: &Value, vals: &[Value]) -> Result<Number, Exception
     let mut result = val1.clone();
     for val in vals {
         let num: Number = val.try_to_scheme_type()?;
-        if num.is_zero() {
+        is_exact &= num.is_exact();
+        if num.is_zero() && is_exact {
             return Err(Exception::error("division by zero"));
         }
         result = result / num;
@@ -2178,7 +2225,7 @@ pub fn div_mod(x1: SimpleNumber, x2: SimpleNumber) -> Result<Vec<Value>, Excepti
     if x2.is_zero() {
         return Err(Exception::error("division by zero"));
     }
-    let nd = (&x1 / &x2).to_integer(RoundingMode::Floor);
+    let nd = x1.div_euclid(&x2);
     let nd_x2 = &x2 * &nd;
     let modulo = if nd_x2 < x1 { x1 - nd_x2 } else { nd_x2 - x1 };
     Ok(vec![Value::from(nd), Value::from(modulo)])
@@ -2189,7 +2236,7 @@ pub fn integer_division(x1: SimpleNumber, x2: SimpleNumber) -> Result<Vec<Value>
     if x2.is_zero() {
         return Err(Exception::error("division by zero"));
     }
-    let nd = (x1 / x2).to_integer(RoundingMode::Floor);
+    let nd = x1.div_euclid(&x2);
     Ok(vec![Value::from(nd)])
 }
 
@@ -2198,40 +2245,13 @@ pub fn modulo(x1: SimpleNumber, x2: SimpleNumber) -> Result<Vec<Value>, Exceptio
     if x2.is_zero() {
         return Err(Exception::error("modulo by zero"));
     }
-    let nd = (&x1 / &x2).to_integer(RoundingMode::Floor);
+    let nd = x1.div_euclid(&x2);
     let nd_x2 = &x2 * &nd;
     if nd_x2 < x1 {
         Ok(vec![Value::from(x1 - nd_x2)])
     } else {
         Ok(vec![Value::from(nd_x2 - x1)])
     }
-}
-
-#[bridge(name = "div0-and-mod0", lib = "(rnrs base builtins (6))")]
-pub fn div0_mod0(x1: SimpleNumber, x2: SimpleNumber) -> Result<Vec<Value>, Exception> {
-    if x2.is_zero() {
-        return Err(Exception::error("division by zero"));
-    }
-    let nd = (&x1 / &x2).to_integer(RoundingMode::Down);
-    let modulo = &x1 % &x2;
-    Ok(vec![Value::from(nd), Value::from(modulo)])
-}
-
-#[bridge(name = "div0", lib = "(rnrs base builtins (6))")]
-pub fn integer_division0(x1: SimpleNumber, x2: SimpleNumber) -> Result<Vec<Value>, Exception> {
-    if x2.is_zero() {
-        return Err(Exception::error("division by zero"));
-    }
-    let nd = (x1 / x2).to_integer(RoundingMode::Down);
-    Ok(vec![Value::from(nd)])
-}
-
-#[bridge(name = "mod0", lib = "(rnrs base builtins (6))")]
-pub fn modulo0(x1: SimpleNumber, x2: SimpleNumber) -> Result<Vec<Value>, Exception> {
-    if x2.is_zero() {
-        return Err(Exception::error("modulo by zero"));
-    }
-    Ok(vec![Value::from(x1 % x2)])
 }
 
 #[bridge(name = "numerator", lib = "(rnrs base builtins (6))")]
@@ -2249,11 +2269,15 @@ pub fn numerator(obj: &Value) -> Result<Vec<Value>, Exception> {
 pub fn denominator(obj: &Value) -> Result<Vec<Value>, Exception> {
     match obj.try_to_scheme_type::<SimpleNumber>()? {
         SimpleNumber::Rational(r) => Ok(vec![Value::from(Integer::from(r.into_denominator()))]),
-        SimpleNumber::Real(r) => Ok(vec![Value::from(Integer::from(
-            Rational::try_from_float_simplest(r)
-                .map_err(|_| Exception::error("not a rational"))?
-                .into_denominator(),
-        ))]),
+        SimpleNumber::Real(r) => Ok(vec![Value::from(
+            f64::rounding_from(
+                &Rational::try_from_float_simplest(r)
+                    .map_err(|_| Exception::error("not a rational"))?
+                    .into_denominator(),
+                RoundingMode::Nearest,
+            )
+            .0,
+        )]),
         _ => Ok(vec![Value::from(1)]),
     }
 }

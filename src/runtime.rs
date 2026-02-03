@@ -408,7 +408,6 @@ unsafe extern "C" fn apply(
         let op = match Value::from_raw_inc_rc(op).unpack() {
             UnpackedValue::Procedure(op) => op,
             x => {
-                println!("x = {:?}", x.clone().into_value());
                 let raised = raise(
                     Runtime::from_raw_inc_rc(runtime),
                     Exception::invalid_operator(x.type_name()).into(),
