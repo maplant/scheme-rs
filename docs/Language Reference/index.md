@@ -255,6 +255,13 @@ is a map of countries in North America to their capitals:
     ("Canada" . "Ottawa")
 )
 ```
+
+!!! warning
+
+    The `#hash` prefix is currently implemented as an alias that calls the 
+    function `alist->hashtable` with its quoted contents. Therefore, the 
+    `(rnrs hashtables (6))` library needs to be included to use this prefix. In
+    the future, this prefix will be a core part of the syntax.
  
 ## Library syntax
 
@@ -267,35 +274,35 @@ meaning the type of value is determined at run time and not at compile type.
 
 Scheme values can have at most one type, of the following categories:
 
-- **null**: Can only be one possible value which is itself. Commonly known as 
+- **Null**: Can only be one possible value which is itself. Commonly known as 
   the [unit type](https://en.wikipedia.org/wiki/Unit_type).
-- **pair**: A collection of two values.
-- **boolean**: Can either be `true` or `false`.
-- **character**: A unicode code point. 
-- **number**: A numerical value on the [numerical tower](#numeric-tower). 
-- **symbol**: A symbol. Conceptually similar to an immutable string. Symbols are
+- **Pair**: A collection of two values.
+- **Boolean**: Can either be `true` or `false`.
+- **Character**: A unicode code point. 
+- **Number**: A numerical value on the [numerical tower](#numeric-tower). 
+- **Symbol**: A symbol. Conceptually similar to an immutable string. Symbols are
   [interned](https://en.wikipedia.org/wiki/String_interning) so that symbols 
   with the same spelling always satisfy `eq?`.
-- **vector**: An array of values.
-- **byte-vector**: An array of bytes.
-- **syntax**: Value containing a represenation of the [datum syntax](#syntax),
+- **Vector**: An array of values.
+- **Byte-vector**: An array of bytes.
+- **Syntax**: Value containing a representation of the [datum syntax](#syntax),
   including source code information.
-- **procedure**: A scheme procedure, more commonly known as a 
+- **Procedure**: A scheme procedure, more commonly known as a 
   [closure](https://en.wikipedia.org/wiki/Closure_(computer_programming)).
-- **record**: A [record](https://en.wikipedia.org/wiki/Record_(computer_science)).
-- **rtd**: A description of a record's type.
-- **hashtable**: A [hash table](https://en.wikipedia.org/wiki/Hash_table). 
-- **port**: A value that can handle input/output from the outside world.
+- **Record**: A [record](https://en.wikipedia.org/wiki/Record_(computer_science)).
+- **Record Type Descriptor**: A description of a record's type.
+- **Hashtable**: A [hash table](https://en.wikipedia.org/wiki/Hash_table). 
+- **Port**: A value that can handle input/output from the outside world.
 
 ### Numeric tower
 
 Numbers can be any member of increasingly larger sets, of which there are the
 following:
 
-- _integers_, which is a subset of
-- _rationals_, which is a subset of 
-- _reals_, which is a subset of 
-- _complex numbers_ of which all numbers are a member of.
+- _Integers_, which is a subset of
+- _Rationals_, which is a subset of 
+- _Reals_, which is a subset of 
+- _Complex Numbers_ of which all numbers are a member of.
 
 In scheme-rs, integers are represented with either 64-bit signed integers or 
 [big numbers](https://en.wikipedia.org/wiki/Arbitrary-precision_arithmetic), 

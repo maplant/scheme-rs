@@ -1,8 +1,7 @@
-# Base
+# Lang
 
-The base library `(import (base))` provides the most bare-bones standard scheme
-syntax and functions to get started. Base is re-exported by all of the other 
-standard libraries to reduce friction. 
+The base language library `(import (lang))` provides the most bare-bones 
+standard scheme syntax and functions to get started. 
 
 ## `define` _syntax_
 
@@ -34,7 +33,7 @@ in `. variable-name` to express variable arity.
       (* n (fact (- n 1)))))
 ```
 
-## `lambda` syntax
+## `lambda` _syntax_
 
 The `lambda` keyword is used to define anonymous procedures. It has three key forms:
 
@@ -53,9 +52,31 @@ bound outside the scope of the lambda are captured.
 (define g 0)
 
 (define next-g 
-    (lambda ()
-        (let ((curr-g g))
-            (set! g (+ g 1))
-            curr-g)))
+  (lambda ()
+    (let ((curr-g g))
+      (set! g (+ g 1))
+      curr-g)))
+```
+
+## `let` _syntax_
+
+### Lexical bindings 
+
+The `let` keyword is used to define lexical bindings for local variables. 
+
+```scheme
+(let ((var expr) ...) body)
+```
+
+Variables defined this way are only visible for their body. Variables are bound
+to their expressions in order, but are not visible for each others binding 
+expressions.
+
+Let expressions return the last value returned in `body`.
+
+``` scheme title="Example: let bindings" linenums="1"
+(let ([x 1])
+  (+ x (let ([x 2])
+         x))) ; => returns 3
 ```
 

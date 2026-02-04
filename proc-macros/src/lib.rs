@@ -396,6 +396,12 @@ fn derive_trace_struct(
             return Ok(quote! {
                 unsafe impl ::scheme_rs::gc::Trace for #name {
                     unsafe fn visit_children(&self, visitor: &mut dyn FnMut(::scheme_rs::gc::OpaqueGcPtr)) {}
+
+                    unsafe fn finalize(&mut self) {
+                        unsafe {
+                            ::std::ptr::drop_in_place(self as *mut Self)
+                        }
+                    }
                 }
             });
         }

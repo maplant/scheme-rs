@@ -290,11 +290,7 @@ pub unsafe trait Trace: 'static {
     /// function **ANYWHERE ELSE** is a **RACE CONDITION**!
     ///
     /// **DO NOT CALL THIS FUNCTION!!**
-    unsafe fn finalize(&mut self) {
-        unsafe {
-            drop_in_place(self as *mut Self);
-        }
-    }
+    unsafe fn finalize(&mut self);
 }
 
 macro_rules! impl_empty_trace {
@@ -302,6 +298,12 @@ macro_rules! impl_empty_trace {
         $(
             unsafe impl Trace for $x {
                 unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
+
+                unsafe fn finalize(&mut self) {
+                    unsafe {
+                        drop_in_place(self as *mut Self);
+                    }
+                }
             }
         )*
     }
@@ -342,6 +344,12 @@ where
     B: ?Sized + 'static,
 {
     unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
+
+    unsafe fn finalize(&mut self) {
+        unsafe {
+            drop_in_place(self as *mut Self);
+        }
+    }
 }
 
 /// # Safety
@@ -675,20 +683,23 @@ where
 
 unsafe impl<T> Trace for Box<T>
 where
-    T: GcOrTrace + ?Sized,
+    T: GcOrTrace,
 {
     unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {
-        // self.as_ref().visit_or_recurse(visitor);
+        /*
+        unsafe {
+            self.as_ref().visit_or_recurse(visitor);
+        }
+        */
     }
 
-    /*
     unsafe fn finalize(&mut self) {
-        println!("finalizing box!");
-        self.as_mut().finalize_or_skip();
-        std::alloc::dealloc(self.as_mut() as *mut T as *mut u8, Layout::new::<T>());
-        // todo!("need to dealloc data without dropping box");
+        // TODO: Deallocate box without dropping inner contents 
+        unsafe {
+            // self.finalize_or_skip();
+            drop_in_place(self as *mut Self);
+        }
     }
-    */
 }
 
 /*
@@ -733,6 +744,12 @@ where
         // An Arc wrapping a Gc effectively creates an additional ref count for
         // that Gc that we cannot access.
     }
+
+    unsafe fn finalize(&mut self) {
+        unsafe {
+            drop_in_place(self as *mut Self)
+        }
+    }
 }
 
 unsafe impl<T> Trace for std::sync::Weak<T>
@@ -743,6 +760,12 @@ where
         // Same reasoning as Arc. If we're not visiting Arcs, we shouldn't visit Weak.
         // Let it handle its own ref count.
     }
+
+    unsafe fn finalize(&mut self) {
+        unsafe {
+            drop_in_place(self as *mut Self)
+        }
+    }
 }
 
 #[cfg(feature = "async")]
@@ -751,6 +774,12 @@ where
     T: std::future::Future + 'static,
 {
     unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
+
+    unsafe fn finalize(&mut self) {
+        unsafe {
+            drop_in_place(self as *mut Self)
+        }
+    }
 }
 
 unsafe impl<T> Trace for std::sync::mpsc::Sender<T>
@@ -758,6 +787,12 @@ where
     T: 'static,
 {
     unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
+
+    unsafe fn finalize(&mut self) {
+        unsafe {
+            drop_in_place(self as *mut Self)
+        }
+    }
 }
 
 unsafe impl<T> Trace for std::sync::mpsc::SyncSender<T>
@@ -765,6 +800,12 @@ where
     T: 'static,
 {
     unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
+
+    unsafe fn finalize(&mut self) {
+        unsafe {
+            drop_in_place(self as *mut Self)
+        }
+    }
 }
 
 #[cfg(feature = "tokio")]
@@ -835,6 +876,12 @@ where
     T: 'static,
 {
     unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
+
+    unsafe fn finalize(&mut self) {
+        unsafe {
+            drop_in_place(self as *mut Self);
+        }
+    }
 }
 
 unsafe impl<T> Trace for std::sync::Mutex<T>

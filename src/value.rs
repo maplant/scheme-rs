@@ -62,26 +62,26 @@
 //! ## Scheme types:
 //!
 //! Scheme values can inhabit at most one of any of the following types:
-//! - **undefined**: Variables with this value throw an error upon being read.
-//! - **null**: Can only be one possible value which is itself. Conceptually the
+//! - **Undefined**: Variables with this value throw an error upon being read.
+//! - **Null**: Can only be one possible value which is itself. Conceptually the
 //!   same as the [`()`](https://doc.rust-lang.org/std/primitive.unit.html) type.
-//! - **pair**: A [collection of two Values](Pair). Conceptually similar to a
+//! - **Pair**: A [collection of two Values](Pair). Conceptually similar to a
 //!   Rust [two-tuple](https://doc.rust-lang.org/std/primitive.tuple.html).
-//! - **boolean**: Can either be `true` or `false`.
-//! - **character**: A unicode code point. Same thing as a [`char`](std::char).
-//! - **number**: A numerical value on the numerical tower. Represented by a
+//! - **Boolean**: Can either be `true` or `false`.
+//! - **Character**: A unicode code point. Same thing as a [`char`](std::char).
+//! - **Number**: A numerical value on the numerical tower. Represented by a
 //!   [`Arc<Number>`](crate::num::Number).
-//! - **symbol**: A [`Symbol`].
-//! - **vector**: A [`Vector`].
-//! - **byte-vector**: A [`ByteVector`].
-//! - **syntax**: A [`Syntax`].
-//! - **procedure**: A [`Procedure`].
-//! - **record**: A [`Record`], which can possibly be a [`SchemeCompatible`].
-//! - **rtd**: A [descriptor of a record's type](RecordTypeDescriptor).
-//! - **hashtable**: A [`HashTable`].
-//! - **port**: A value that can handle [input/output](scheme_rs::ports::Port)
+//! - **Symbol**: A [`Symbol`].
+//! - **Vector**: A [`Vector`].
+//! - **Byte-vector**: A [`ByteVector`].
+//! - **Syntax**: A [`Syntax`].
+//! - **Procedure**: A [`Procedure`].
+//! - **Record**: A [`Record`], which can possibly be a [`SchemeCompatible`].
+//! - **Record Type Descriptor**: A [descriptor of a record's type](RecordTypeDescriptor).
+//! - **Hashtable**: A [`HashTable`].
+//! - **Port**: A value that can handle [input/output](scheme_rs::ports::Port)
 //!   from the outside world.
-//! - **cell**: A mutable reference to another Value. This type is completely
+//! - **Cell**: A mutable reference to another Value. This type is completely
 //!   transparent and impossible to observe.
 
 use indexmap::{IndexMap, IndexSet};

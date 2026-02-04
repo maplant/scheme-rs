@@ -933,6 +933,17 @@ mod __impl {
         }
     }
 
+    #[cfg(feature = "tokio")]
+    impl IntoPort for tokio::net::TcpStream {
+        fn read_fn() -> Option<ReadFn> {
+            Some(read_fn::<Self>())
+        }
+
+        fn write_fn() -> Option<WriteFn> {
+            Some(write_fn::<Self>())
+        }
+    }
+
     pub(super) trait StreamExtExt {
         type Item;
 

@@ -351,6 +351,24 @@ impl ProcedureInner {
     /// Apply the arguments to the function, returning the next application.
     #[maybe_async]
     pub fn apply(&self, args: Vec<Value>, dyn_state: &mut DynamicState) -> Application {
+        if let FuncPtr::PromptBarrier { barrier_id: id, .. } = self.func {
+            dyn_state.pop_marks();
+            match dyn_state.pop_dyn_stack() {
+                Some(DynStackElem::PromptBarrier(PromptBarrier {
+                    barrier_id,
+                    replaced_k,
+                })) if barrier_id == id => {
+                    let (args, _) = match replaced_k.0.prepare_args(args, dyn_state) {
+                        Ok(args) => args,
+                        Err(raised) => return raised,
+                    };
+                    return Application::new(replaced_k, args);
+                }
+                Some(other) => dyn_state.push_dyn_stack(other),
+                _ => (),
+            }
+        }
+
         let (args, k) = match self.prepare_args(args, dyn_state) {
             Ok(args) => args,
             Err(raised) => return raised,
@@ -370,18 +388,7 @@ impl ProcedureInner {
                 dyn_state.pop_marks();
                 self.apply_jit(JitFuncPtr::Continuation(k), args, dyn_state, None)
             }
-            FuncPtr::PromptBarrier { barrier_id: id, k } => {
-                dyn_state.pop_marks();
-                match dyn_state.pop_dyn_stack() {
-                    Some(DynStackElem::PromptBarrier(PromptBarrier {
-                        barrier_id,
-                        replaced_k,
-                    })) if barrier_id == id => {
-                        return Application::new(replaced_k, args);
-                    }
-                    Some(other) => dyn_state.push_dyn_stack(other),
-                    _ => (),
-                }
+            FuncPtr::PromptBarrier { k, .. } => {
                 self.apply_jit(JitFuncPtr::Continuation(k), args, dyn_state, None)
             }
         }
@@ -390,6 +397,24 @@ impl ProcedureInner {
     #[cfg(feature = "async")]
     /// Attempt to call the function, and throw an error if is async
     pub fn apply_sync(&self, args: Vec<Value>, dyn_state: &mut DynamicState) -> Application {
+        if let FuncPtr::PromptBarrier { barrier_id: id, .. } = self.func {
+            dyn_state.pop_marks();
+            match dyn_state.pop_dyn_stack() {
+                Some(DynStackElem::PromptBarrier(PromptBarrier {
+                    barrier_id,
+                    replaced_k,
+                })) if barrier_id == id => {
+                    let (args, _) = match replaced_k.0.prepare_args(args, dyn_state) {
+                        Ok(args) => args,
+                        Err(raised) => return raised,
+                    };
+                    return Application::new(replaced_k, args);
+                }
+                Some(other) => dyn_state.push_dyn_stack(other),
+                _ => (),
+            }
+        }
+
         let (args, k) = match self.prepare_args(args, dyn_state) {
             Ok(args) => args,
             Err(raised) => return raised,
@@ -409,18 +434,7 @@ impl ProcedureInner {
                 dyn_state.pop_marks();
                 self.apply_jit(JitFuncPtr::Continuation(k), args, dyn_state, None)
             }
-            FuncPtr::PromptBarrier { barrier_id: id, k } => {
-                dyn_state.pop_marks();
-                match dyn_state.pop_dyn_stack() {
-                    Some(DynStackElem::PromptBarrier(PromptBarrier {
-                        barrier_id,
-                        replaced_k,
-                    })) if barrier_id == id => {
-                        return Application::new(replaced_k, args);
-                    }
-                    Some(other) => dyn_state.push_dyn_stack(other),
-                    _ => (),
-                }
+            FuncPtr::PromptBarrier { k, .. } => {
                 self.apply_jit(JitFuncPtr::Continuation(k), args, dyn_state, None)
             }
         }
@@ -1403,10 +1417,7 @@ pub(crate) struct PromptBarrier {
 
 static BARRIER_ID: AtomicUsize = AtomicUsize::new(0);
 
-#[cps_bridge(
-    def = "call-with-prompt tag thunk handler",
-    lib = "(rnrs base builtins (6))"
-)]
+#[cps_bridge(def = "call-with-prompt tag thunk handler", lib = "(prompts)")]
 pub fn call_with_prompt(
     runtime: &Runtime,
     _env: &[Value],
@@ -1451,7 +1462,7 @@ pub fn call_with_prompt(
     ))
 }
 
-#[cps_bridge(def = "abort-to-prompt tag", lib = "(rnrs base builtins (6))")]
+#[cps_bridge(def = "abort-to-prompt tag", lib = "(prompts)")]
 pub fn abort_to_prompt(
     runtime: &Runtime,
     _env: &[Value],
