@@ -1,166 +1,81 @@
 ---
-icon: lucide/rocket
+title: Home
+hide:
+    - navigation
+    - toc
 ---
 
-# Getting started
+<figure markdown="span">
+    <picture><source media="(prefers-color-scheme: dark)" srcset="images/logo-dark.png"><img align="center" width="250px" src="images/logo-light.png"></picture> 
+</figure>
 
-For full documentation visit [zensical.org](https://zensical.org/docs/).
+# Scheme-rs: Embedded Scheme for the Rust Ecosystem
+[<img alt="github" src="https://img.shields.io/badge/github-maplant/scheme--rs-8da0cb?style=for-the-badge&labelColor=555555&logo=github" height="20">](https://github.com/maplant/scheme-rs)
+[<img alt="crates.io" src="https://img.shields.io/crates/v/scheme-rs.svg?style=for-the-badge&color=fc8d62&logo=rust" height="20">](https://crates.io/crates/scheme-rs)
+[<img alt="docs.rs" src="https://img.shields.io/badge/docs.rs-scheme--rs-66c2a5?style=for-the-badge&labelColor=555555&logo=docs.rs" height="20">](https://docs.rs/scheme-rs)
 
-## Commands
+Scheme-rs is an implementation of the
+[R6RS](https://www.r6rs.org/final/r6rs.pdf) specification of the [Scheme programming 
+language](https://en.wikipedia.org/wiki/Scheme_(programming_language)) that is 
+designed to embedded within sync and async Rust. 
 
-* [`zensical new`][new] - Create a new project
-* [`zensical serve`][serve] - Start local web server
-* [`zensical build`][build] - Build your site
+``` scheme
+;; Example of a program that defines a variable via a datum received over a 
+;; socket.
+;; 
+;; Requires the `async` and `tokio` features enabled.
 
-  [new]: https://zensical.org/docs/usage/new/
-  [serve]: https://zensical.org/docs/usage/preview/
-  [build]: https://zensical.org/docs/usage/build/
+(import (rnrs) (async))
 
-## Examples
+(define-syntax expand-from-socket
+  (lambda (x)
+    (syntax-case x ()
+      [(ctxt)
+       (let ([listener (bind-tcp "0.0.0.0:8080")])
+         (let-values ([(port addr) (accept listener)])
+           (datum->syntax #'ctxt (get-datum (transcoded-port port (native-transcoder))))))])))
 
-### Admonitions
-
-> Go to [documentation](https://zensical.org/docs/authoring/admonitions/)
-
-!!! note
-
-    This is a **note** admonition. Use it to provide helpful information.
-
-!!! warning
-
-    This is a **warning** admonition. Be careful!
-
-### Details
-
-> Go to [documentation](https://zensical.org/docs/authoring/admonitions/#collapsible-blocks)
-
-??? info "Click to expand for more info"
-    
-    This content is hidden until you click to expand it.
-    Great for FAQs or long explanations.
-
-## Code Blocks
-
-> Go to [documentation](https://zensical.org/docs/authoring/code-blocks/)
-
-``` python hl_lines="2" title="Code blocks"
-def greet(name):
-    print(f"Hello, {name}!") # (1)!
-
-greet("Python")
+(define var-from-network (expand-from-socket))
 ```
 
-1.  > Go to [documentation](https://zensical.org/docs/authoring/code-blocks/#code-annotations)
+## Features:
 
-    Code annotations allow to attach notes to lines of code.
+- **Modern**: scheme-rs is a modern scheme implementation of the R6RS standard and includes 
+  advanced features such as [delimited continuations](https://en.wikipedia.org/wiki/Delimited_continuation).
+- **Fast**: scheme-rs uses JIT compilation to provide performance on par with 
+  other modern scheme implementations.
+- **Easy to use**: scheme-rs makes it trivial to define Rust functions and data
+  structures that are accessible from scheme code and vice-versa.
+- **Safe**: scheme-rs provides a completely safe API that is impossible to 
+  misuse.
+- **Supports both async and sync Rust**: by enabling the `async` feature flag 
+  it becomes possible (and easy) to define async scheme functions in Rust. 
 
-Code can also be highlighted inline: `#!python print("Hello, Python!")`.
+## Getting started:
 
-## Content tabs
+For embedding scheme-rs in your Rust project, [take a look at the API documentation](https://docs.rs/scheme-rs/latest/scheme_rs/).
 
-> Go to [documentation](https://zensical.org/docs/authoring/content-tabs/)
+For installing scheme-rs as a standalone executable, cargo can be used:
 
-=== "Python"
-
-    ``` python
-    print("Hello from Python!")
-    ```
-
-=== "Rust"
-
-    ``` rs
-    println!("Hello from Rust!");
-    ```
-
-## Diagrams
-
-> Go to [documentation](https://zensical.org/docs/authoring/diagrams/)
-
-``` mermaid
-graph LR
-  A[Start] --> B{Error?};
-  B -->|Yes| C[Hmm...];
-  C --> D[Debug];
-  D --> B;
-  B ---->|No| E[Yay!];
+``` console
+$ cargo install scheme-rs 
 ```
 
-## Footnotes
+To enable async features, install with the `async` and `tokio` features:
 
-> Go to [documentation](https://zensical.org/docs/authoring/footnotes/)
+``` console
+$ cargo install scheme-rs --features "async,tokio"
+``` 
 
-Here's a sentence with a footnote.[^1]
+## Documentation 
 
-Hover it, to see a tooltip.
+- [API documentation](https://docs.rs/scheme-rs/latest/scheme_rs/)
+- [Language reference](https://www.scheme.rs/Language Reference/)
 
-[^1]: This is the footnote.
+## Contributing
+
+If you have any questions or comments about the project, feel free to join 
+[the scheme-rs discord server](https://discord.gg/sR4TttzGv5).
 
 
-## Formatting
 
-> Go to [documentation](https://zensical.org/docs/authoring/formatting/)
-
-- ==This was marked (highlight)==
-- ^^This was inserted (underline)^^
-- ~~This was deleted (strikethrough)~~
-- H~2~O
-- A^T^A
-- ++ctrl+alt+del++
-
-## Icons, Emojis
-
-> Go to [documentation](https://zensical.org/docs/authoring/icons-emojis/)
-
-* :sparkles: `:sparkles:`
-* :rocket: `:rocket:`
-* :tada: `:tada:`
-* :memo: `:memo:`
-* :eyes: `:eyes:`
-
-## Maths
-
-> Go to [documentation](https://zensical.org/docs/authoring/math/)
-
-$$
-\cos x=\sum_{k=0}^{\infty}\frac{(-1)^k}{(2k)!}x^{2k}
-$$
-
-!!! warning "Needs configuration"
-    Note that MathJax is included via a `script` tag on this page and is not
-    configured in the generated default configuration to avoid including it
-    in a pages that do not need it. See the documentation for details on how
-    to configure it on all your pages if they are more Maths-heavy than these
-    simple starter pages.
-
-<script id="MathJax-script" async src="https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js"></script>
-<script>
-  window.MathJax = {
-    tex: {
-      inlineMath: [["\\(", "\\)"]],
-      displayMath: [["\\[", "\\]"]],
-      processEscapes: true,
-      processEnvironments: true
-    },
-    options: {
-      ignoreHtmlClass: ".*|",
-      processHtmlClass: "arithmatex"
-    }
-  };
-</script>
-
-## Task Lists
-
-> Go to [documentation](https://zensical.org/docs/authoring/lists/#using-task-lists)
-
-* [x] Install Zensical
-* [x] Configure `zensical.toml`
-* [x] Write amazing documentation
-* [ ] Deploy anywhere
-
-## Tooltips
-
-> Go to [documentation](https://zensical.org/docs/authoring/tooltips/)
-
-[Hover me][example]
-
-  [example]: https://example.com "I'm a tooltip!"

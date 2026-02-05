@@ -232,6 +232,7 @@ represented as follows:
 #vu8(1 2 255)
 ```
 
+<!--
 #### Non-standard datums
 
 scheme-rs supports some non-standard but common datum literals:
@@ -262,6 +263,8 @@ is a map of countries in North America to their capitals:
     function `alist->hashtable` with its quoted contents. Therefore, the 
     `(rnrs hashtables (6))` library needs to be included to use this prefix. In
     the future, this prefix will be a core part of the syntax.
+    
+-->
  
 ## Library syntax
 

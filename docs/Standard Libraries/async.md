@@ -45,7 +45,7 @@ Sleeps for `milliseconds`, yielding to the tokio executor.
 (spawn thunk)
 ```
 
-Spawns the thunk in a new [tokio tasks](https://docs.rs/tokio/latest/tokio/task/index.html)
+Spawns the thunk in a new [tokio task](https://docs.rs/tokio/latest/tokio/task/index.html)
 and returns the future associated with completion of the task.
 
 ## `bind-tcp` _procedure_
