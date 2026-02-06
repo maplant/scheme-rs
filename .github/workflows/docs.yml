@@ -2,7 +2,7 @@ name: Create and publish the docs website image
 
 on:
   push:
-    branches: ['docs']
+    branches: ['main']
 
 env:
   REGISTRY: ghcr.io
