@@ -13,8 +13,8 @@ with the `scheme-rs` runtime.
 the Rust runtime known as concurrent cycle collection[^1]. This means that the 
 garbage collector for `scheme-rs` runs completely in parallel with the rest of 
 the program. That can mean that ocassionally mean that the collector falls 
-behind if the amount of allocations out paces its ability to quickly collect it.
-To remedy this, a scheme program can force a pause by calling `collect-garbage`.
+behind if the amount of allocations out paces its ability to collect them. To
+remedy this, a scheme program can force a pause by calling `collect-garbage`.
 
 Over time the garbage collector should improve and the need for this should 
 become less and less.
