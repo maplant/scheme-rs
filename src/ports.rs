@@ -3071,6 +3071,13 @@ pub fn eof_object() -> Result<Vec<Value>, Exception> {
     Ok(vec![EOF_OBJECT.clone()])
 }
 
+#[bridge(name = "eof-object?", lib = "(rnrs io builtins (6))")]
+pub fn eof_object_pred(val: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(
+        val.cast_to_rust_type::<EofObject>().is_some(),
+    )])
+}
+
 #[bridge(name = "port?", lib = "(rnrs io builtins (6))")]
 pub fn port_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(obj.type_of() == ValueType::Port)])

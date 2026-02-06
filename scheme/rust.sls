@@ -9,7 +9,7 @@
   (define-syntax define-rust-type
     (lambda (x)
       (syntax-case x ()
-        [(_ name rtd constructor predicate
+        [(_ name rtd constructor predicate)
           #'(begin
              (define rtd (builtin))
              (define rcd (make-record-constructor-descriptor rtd #f #f))
@@ -19,4 +19,4 @@
                (lambda (x)
                  (syntax-case x (rtd rcd)
                    [(_ rtd) #'rtd]
-                   [(_ rcd) #'rcd])))))]))))
+                   [(_ rcd) #'rcd])))))])))

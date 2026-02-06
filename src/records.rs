@@ -336,23 +336,6 @@ impl fmt::Debug for Field {
     }
 }
 
-/*
-/// The record type descriptor for the "record type descriptor" type.
-static RECORD_TYPE_DESCRIPTOR_RTD: LazyLock<Arc<RecordTypeDescriptor>> = LazyLock::new(|| {
-    Arc::new(RecordTypeDescriptor {
-        name: Symbol::intern("rtd"),
-        sealed: true,
-        opaque: true,
-        uid: None,
-        rust_type: false,
-        rust_parent_constructor: None,
-        inherits: indexmap::IndexSet::new(),
-        field_index_offset: 0,
-        fields: vec![],
-    })
-});
-*/
-
 type NonGenerativeStore = LazyLock<Arc<Mutex<HashMap<Symbol, Arc<RecordTypeDescriptor>>>>>;
 
 static NONGENERATIVE: NonGenerativeStore = LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
@@ -844,6 +827,54 @@ impl Record {
 
         // Then, convert that back into the desired type
         Gc::downcast::<T>(gc_any).ok()
+    }
+
+    /// Get the kth field of the Record
+    pub fn get_field(&self, k: usize) -> Result<Value, Exception> {
+        self.get_parent_field(&self.rtd(), k)
+    }
+
+    /// Get the kth field of a parent Record
+    pub fn get_parent_field(
+        &self,
+        rtd: &Arc<RecordTypeDescriptor>,
+        k: usize,
+    ) -> Result<Value, Exception> {
+        if !self.0.rtd.is_subtype_of(rtd) {
+            Err(Exception::error(format!("not a subtype of {rtd:?}")))
+        } else if let Some(mut t) = self.0.rust_parent.clone() {
+            while let Some(embedded) = { t.extract_embedded_record(rtd) } {
+                t = embedded;
+            }
+            t.get_field(rtd.field_index_offset + k)
+        } else {
+            Ok(self.0.fields[rtd.field_index_offset + k].read().clone())
+        }
+    }
+
+    /// Set the kth field of the Record
+    pub fn set_field(&self, k: usize, new_value: Value) -> Result<(), Exception> {
+        self.set_parent_field(&self.rtd(), k, new_value)
+    }
+
+    /// Set the kth field of a parent Record
+    pub fn set_parent_field(
+        &self,
+        rtd: &Arc<RecordTypeDescriptor>,
+        k: usize,
+        new_value: Value,
+    ) -> Result<(), Exception> {
+        if !self.0.rtd.is_subtype_of(rtd) {
+            Err(Exception::error(format!("not a subtype of {rtd:?}")))
+        } else if let Some(mut t) = self.0.rust_parent.clone() {
+            while let Some(embedded) = { t.extract_embedded_record(rtd) } {
+                t = embedded;
+            }
+            t.set_field(rtd.field_index_offset + k, new_value)
+        } else {
+            *self.0.fields[rtd.field_index_offset + k].write() = new_value;
+            Ok(())
+        }
     }
 }
 

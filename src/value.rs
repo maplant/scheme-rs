@@ -231,7 +231,6 @@ impl Value {
     pub fn datum_from_syntax(syntax: &Syntax) -> Self {
         match syntax {
             Syntax::Wrapped { value, .. } => value.clone(),
-            // Syntax::Null { .. } => Self::null(),
             Syntax::List { list, .. } => {
                 let mut curr = Self::datum_from_syntax(list.last().unwrap());
                 for item in list[..list.len() - 1].iter().rev() {
@@ -245,8 +244,6 @@ impl Value {
                     .map(Self::datum_from_syntax)
                     .collect::<Vec<_>>(),
             ),
-            // Syntax::ByteVector { vector, .. } => Self::from(vector.clone()),
-            // Syntax::Literal { literal, .. } => Self::from(literal.clone()),
             Syntax::Identifier { ident, .. } => Self::new(UnpackedValue::Symbol(ident.sym)),
         }
     }
@@ -883,7 +880,6 @@ impl UnpackedValue {
             Self::Pair(_) => ValueType::Pair,
             Self::Vector(_) => ValueType::Vector,
             Self::ByteVector(_) => ValueType::ByteVector,
-            // Self::Syntax(syn) if matches!(syn.as_ref(), Syntax::Null { .. }) => ValueType::Null,
             Self::Syntax(_) => ValueType::Syntax,
             Self::Procedure(_) => ValueType::Procedure,
             Self::Record(_) => ValueType::Record,
@@ -1067,19 +1063,6 @@ fn set_box(b: &Value, val: impl Into<Value>) {
     let pair: Pair = b.clone().try_into().unwrap();
     pair.set_car(val.into()).unwrap();
 }
-
-/*
-impl From<ast::Literal> for UnpackedValue {
-    fn from(lit: ast::Literal) -> Self {
-        match lit {
-            ast::Literal::Number(n) => Self::Number(n.clone()),
-            ast::Literal::Boolean(b) => Self::Boolean(b),
-            ast::Literal::String(s) => Self::String(WideString::from(s.clone())),
-            ast::Literal::Character(c) => Self::Character(c),
-        }
-    }
-}
-*/
 
 macro_rules! impl_try_from_value_for {
     ($ty:ty, $variant:ident, $type_name:literal) => {
@@ -1571,7 +1554,10 @@ fn debug_value(
         }
         UnpackedValue::Vector(v) => vectors::write_vec(&v, debug_value, circular_values, f),
         UnpackedValue::ByteVector(v) => vectors::write_bytevec(&v, f),
-        UnpackedValue::Syntax(syntax) => write!(f, "#<syntax {syntax:#?}>"),
+        UnpackedValue::Syntax(syntax) => {
+            let span = syntax.span();
+            write!(f, "#<syntax:{span} {syntax:#?}>")
+        }
         UnpackedValue::Procedure(proc) => write!(f, "#<procedure {proc:?}>"),
         UnpackedValue::Record(record) => write!(f, "{record:#?}"),
         UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),

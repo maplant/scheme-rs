@@ -14,7 +14,7 @@
 
 mod collection;
 
-pub use collection::{OpaqueGcPtr, init_gc};
+pub use collection::{OpaqueGcPtr, collect_garbage, init_gc};
 pub use scheme_rs_macros::Trace;
 
 use std::{
@@ -694,7 +694,7 @@ where
     }
 
     unsafe fn finalize(&mut self) {
-        // TODO: Deallocate box without dropping inner contents 
+        // TODO: Deallocate box without dropping inner contents
         unsafe {
             // self.finalize_or_skip();
             drop_in_place(self as *mut Self);
@@ -746,9 +746,7 @@ where
     }
 
     unsafe fn finalize(&mut self) {
-        unsafe {
-            drop_in_place(self as *mut Self)
-        }
+        unsafe { drop_in_place(self as *mut Self) }
     }
 }
 
@@ -762,9 +760,7 @@ where
     }
 
     unsafe fn finalize(&mut self) {
-        unsafe {
-            drop_in_place(self as *mut Self)
-        }
+        unsafe { drop_in_place(self as *mut Self) }
     }
 }
 
@@ -776,9 +772,7 @@ where
     unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
 
     unsafe fn finalize(&mut self) {
-        unsafe {
-            drop_in_place(self as *mut Self)
-        }
+        unsafe { drop_in_place(self as *mut Self) }
     }
 }
 
@@ -789,9 +783,7 @@ where
     unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
 
     unsafe fn finalize(&mut self) {
-        unsafe {
-            drop_in_place(self as *mut Self)
-        }
+        unsafe { drop_in_place(self as *mut Self) }
     }
 }
 
@@ -802,9 +794,7 @@ where
     unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
 
     unsafe fn finalize(&mut self) {
-        unsafe {
-            drop_in_place(self as *mut Self)
-        }
+        unsafe { drop_in_place(self as *mut Self) }
     }
 }
 

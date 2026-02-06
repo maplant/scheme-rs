@@ -1,17 +1,17 @@
 //! Scheme numerical tower.
 //!
 //! For more detailed information about the scheme numerical tower from the
-//! language perspective, please [refer to the language reference](www.todo.com).
+//! language perspective, please [refer to the language reference](www.scheme.rs/Language Reference/#numeric-tower).
 //!
 //! The core numeric value for scheme-rs is [`Number`], which is a reference
 //! counted numeric value that can be any of the following types:
 //!
-//! - **fixed num**: [a signed 64-bit integer](std::i64),
-//! - **big num**: an [arbitrary-precision integer](malachite::Integer),
-//! - **rational**: an
+//! - **Fixed num**: [a signed 64-bit integer](std::i64),
+//! - **Big num**: an [arbitrary-precision integer](malachite::Integer),
+//! - **Rational**: an
 //!   [arbitrary-precision rational](malachite::rational::Rational),
-//! - **real**: a [64-bit IEEE float point number](std::f64), or
-//! - **complex**: a pair of two of any of the previous value types.
+//! - **Real**: a [64-bit IEEE float point number](std::f64), or
+//! - **Complex**: a pair of two of any of the previous value types.
 //!
 //! `Number` implements all of the expected Rust operators, including [`Neg`],
 //! [`Add`], [`Mul`], [`Sub`], [`Div`], [`Rem`], [`PartialEq`], and
@@ -2352,33 +2352,33 @@ pub fn log(z: &Value, base: &[Value]) -> Result<Vec<Value>, Exception> {
 }
 
 #[bridge(name = "sin", lib = "(rnrs base builtins (6))")]
-pub fn sin(z: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(z.try_to_scheme_type::<Number>()?.sin())])
+pub fn sin(z: Number) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(z.sin())])
 }
 
 #[bridge(name = "cos", lib = "(rnrs base builtins (6))")]
-pub fn cos(z: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(z.try_to_scheme_type::<Number>()?.cos())])
+pub fn cos(z: Number) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(z.cos())])
 }
 
 #[bridge(name = "tan", lib = "(rnrs base builtins (6))")]
-pub fn tan(z: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(z.try_to_scheme_type::<Number>()?.tan())])
+pub fn tan(z: Number) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(z.tan())])
 }
 
 #[bridge(name = "asin", lib = "(rnrs base builtins (6))")]
-pub fn asin(z: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(z.try_to_scheme_type::<Number>()?.asin())])
+pub fn asin(z: Number) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(z.asin())])
 }
 
 #[bridge(name = "acos", lib = "(rnrs base builtins (6))")]
-pub fn acos(z: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(z.try_to_scheme_type::<Number>()?.acos())])
+pub fn acos(z: Number) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(z.acos())])
 }
 
 #[bridge(name = "atan", lib = "(rnrs base builtins (6))")]
-pub fn atan(z: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(z.try_to_scheme_type::<Number>()?.atan())])
+pub fn atan(z: Number) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(z.atan())])
 }
 
 #[bridge(name = "sqrt", lib = "(rnrs base builtins (6))")]

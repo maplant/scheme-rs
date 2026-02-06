@@ -33,7 +33,11 @@ designed to embedded within sync and async Rust.
       [(ctxt)
        (let ([listener (bind-tcp "0.0.0.0:8080")])
          (let-values ([(port addr) (accept listener)])
-           (datum->syntax #'ctxt (get-datum (transcoded-port port (native-transcoder))))))])))
+           (let* ([port (transcoded-port port (native-transcoder))]
+                  [recvd-syntax (datum->syntax #'ctxt (get-datum port))])
+             (write 'thanks! port)
+             (close-port port)
+             recvd-syntax)))])))
 
 (define var-from-network (expand-from-socket))
 ```
@@ -70,7 +74,7 @@ $ cargo install scheme-rs --features "async,tokio"
 ## Documentation 
 
 - [API documentation](https://docs.rs/scheme-rs/latest/scheme_rs/)
-- [Language reference](https://www.scheme.rs/Language Reference/)
+- [Language reference](<./Language Reference/>)
 
 ## Contributing
 

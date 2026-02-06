@@ -40,9 +40,9 @@ pub(crate) struct HashTableInner {
     /// eq and hash functions with the key Value, so we use hashbrown's
     /// HashTable
     table: RwLock<hashbrown::HashTable<TableEntry>>,
-    /// Equivalence function. 
+    /// Equivalence function.
     eq: Procedure,
-    /// Hash function. 
+    /// Hash function.
     hash: Procedure,
     /// Whether or not the hashtable is mutable
     mutable: bool,

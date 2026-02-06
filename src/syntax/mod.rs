@@ -453,9 +453,7 @@ impl Syntax {
 impl fmt::Debug for Syntax {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            // Syntax::Null { span, .. } => write!(f, "() @ {span}"),
             Syntax::List { list, .. } => {
-                // Proper list
                 let proper_list = list.last().unwrap().is_null();
                 let len = list.len();
                 write!(f, "(")?;
@@ -520,6 +518,10 @@ impl Identifier {
             sym: Symbol::intern(name),
             scopes: BTreeSet::new(),
         }
+    }
+
+    pub fn symbol(&self) -> Symbol {
+        self.sym
     }
 
     pub fn from_symbol(sym: Symbol, scope: Scope) -> Self {

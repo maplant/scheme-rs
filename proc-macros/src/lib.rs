@@ -11,6 +11,24 @@ use syn::{
     spanned::Spanned,
 };
 
+/// The `bridge` proc macro allows one to register Scheme procedures written in
+/// Rust.
+///
+/// Rust functions registered with `bridge` must have the following form:
+/// `async? fn(arg: &T, ... (rest_args: &[Value])?) -> Result<Vec<Value>, Exception>`
+///
+/// The types of the arguments can be any `T` for which `T: TryFrom<&Value>`, or
+/// they can be a `&Value`. Scheme-rs will throw an excpetion if 
+///
+/// Bridge functions can be async if the `async` feature flag is enabled.
+///
+/// The `bridge` proc macro takes two arguments: `def` which specifies the
+/// scheme procedure name and `lib` which specifies the library to register the
+/// procedure to. At time of variable resolution, if the library has no scheme
+/// code associated with it, all bridge functions registered to that library
+/// will be assumed to be public. More control can be given by associating
+/// scheme code with the library, in that case bridge functions will need to be
+/// made public by putting them in the `export` spec.
 #[proc_macro_attribute]
 pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     let mut name: Option<LitStr> = None;
@@ -196,6 +214,58 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     .into()
 }
 
+/// The `cps_bridge` proc macro allows one to register Scheme procedureds written
+/// in Rust in a
+/// [continuation-passing style](https://en.wikipedia.org/wiki/Continuation-passing_style).
+///
+/// The main benefit of this is to allow for Rust functions that call scheme
+/// procedures in a tail-context. Essentially every scheme function, including
+/// those that are not possible to express in base scheme, are expressible in
+/// Rust because of this.
+///
+/// Functions registered with `cps_bridge` must take the following arguments:
+///  - `runtime: &Runtime`: The runtime to which the procedure is registered.
+///  - `env: &[Value]`: Environmental variables supplied to the procedure via
+///    `Procedure::new`.
+///  - `args: &[Value]`: The arguments to the procedure.
+///  - `rest_args: &[Value]`: Any variadic arguments provided to the procedure.
+///  - `dyn_state: &mut DynamicState`: The dynamic state of the program.
+///  - `k: Value`: The current continuation.
+///
+/// The `cps_bridge` proc macro takes two arguments: `def` which specifies the
+/// scheme procedure name and arguments and `lib` which specifies the library
+/// to register the procedure to.
+///
+/// `cps_bridge` functions can be async if the `async` feature flag is enabled.
+///
+/// **Note:** `cps_bridge` functions _must_ be public to be registered to a
+/// library! If a `cbs_bridge` function is declared as private, it does not take
+/// a `def` or `lib` argument.
+///
+/// # Example: Scheme `apply` procedure written in Rust:
+///
+/// ```rust,ignore
+/// #[cps_bridge(def = "apply arg1 . args", lib = "(rnrs base builtins (6))")]
+/// pub fn apply(
+///     _runtime: &Runtime,
+///     _env: &[Value],
+///     args: &[Value],
+///     rest_args: &[Value],
+///     _dyn_state: &mut DynamicState,
+///     k: Value,
+/// ) -> Result<Application, Exception> {
+///     if rest_args.is_empty() {
+///         return Err(Exception::wrong_num_of_args(2, args.len()));
+///     }
+///     let op: Procedure = args[0].clone().try_into()?;
+///     let (last, args) = rest_args.split_last().unwrap();
+///     let mut args = args.to_vec();
+///     list_to_vec(last, &mut args);
+///     args.push(k);
+///     Ok(Application::new(op.clone(), args))
+/// }
+/// ```
+
 #[proc_macro_attribute]
 pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     let mut def: Option<LitStr> = None;
@@ -361,6 +431,27 @@ fn is_slice(arg: &FnArg) -> bool {
     matches!(arg, FnArg::Typed(PatType { ty, ..}) if matches!(ty.as_ref(), Type::Reference(TypeReference { elem, .. }) if matches!(elem.as_ref(), Type::Slice(_))))
 }
 
+/// Derive the `Trace` trait for a type.
+///
+/// `Trace` assumes that all fields of the type implement `Trace` or are a `Gc`
+/// type. Occasionally you want to skip the tracing of a field, perhaps because
+/// the type cannot implement `Trace`. The `#[trace(skip)]` attribute specifies
+/// that the collector should ignore that field when tracing the type.
+///
+/// Skipping a field is always safe, but can cause memory leaks if the field
+/// being skipped contains a `Gc`.
+///
+/// `Trace` will also automatically add `Trace` bounds to generic parameters.
+/// To avoid this behavior, use the `#[trace(skip_bounds)]` attribute.
+///
+/// ```rust,ignore
+/// #[derive(Trace)]
+/// #[trace(skip_bounds)]
+/// struct CustomType<T> {
+///     #[trace(skip)]
+///     inner: TypeYouDoNotOwn<T>
+/// }
+/// ```
 #[proc_macro_derive(Trace, attributes(trace))]
 pub fn derive_trace(input: TokenStream) -> TokenStream {
     let DeriveInput {
@@ -1187,8 +1278,8 @@ pub fn define_condition_type(tokens: TokenStream) -> TokenStream {
     quote! {
         #[derive(Clone, ::scheme_rs::gc::Trace)]
         pub struct #rust_name {
-            parent: ::scheme_rs::gc::Gc<#parent>,
-            #( #field_names: #field_tys, )*
+            pub parent: ::scheme_rs::gc::Gc<#parent>,
+            #( pub #field_names: #field_tys, )*
 
         }
 

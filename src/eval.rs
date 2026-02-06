@@ -1,4 +1,4 @@
-//! Support for dynamic evaluation library (rnrs eval (6))
+//! Dynamic evaluation.
 
 use std::{collections::BTreeSet, sync::Arc};
 
@@ -32,7 +32,6 @@ pub fn eval(
     };
     let env = environment.try_to_rust_type::<Environment>()?;
     let expr = Syntax::datum_to_syntax(&env.get_scope_set(), expression.clone());
-    // let expr = Syntax::syntax_from_datum(&BTreeSet::default(), expression.clone())?;
     let ctxt = ParseContext::new(runtime, false);
     let expr = maybe_await!(Expression::parse(&ctxt, expr, &env))?;
     let compiled = expr.compile_top_level();

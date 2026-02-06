@@ -15,7 +15,38 @@
 //! which can be used to extract a stack trace for the exception:
 //!
 //! ```
-//!
+//! # use scheme_rs::{exceptions::{Exception, Message, SyntaxViolation, StackTrace}, gc::Gc, syntax::Syntax};
+//! // Code from scheme-rs repl to print errors:
+//! fn print_exception(exception: Exception) {
+//!     let Ok(conditions) = exception.simple_conditions() else {
+//!         println!(
+//!             "Exception occurred with a non-condition value: {:?}",
+//!             exception.0
+//!         );
+//!         return;
+//!     };
+//!     println!("Uncaught exception:");
+//!     for condition in conditions.into_iter() {
+//!         if let Some(message) = condition.cast_to_rust_type::<Message>() {
+//!             println!(" - Message: {}", message.message);
+//!         } else if let Some(syntax) = condition.cast_to_rust_type::<SyntaxViolation>() {
+//!             println!(" - Syntax error in form: {:?}", syntax.form);
+//!             if let Some(subform) = syntax.subform.as_ref() {
+//!                 println!("   (subform: {subform:?})");
+//!             }
+//!         } else if let Some(trace) = condition.cast_to_rust_type::<StackTrace>() {
+//!             println!(" - Stack trace:");
+//!             for (i, trace) in trace.trace.iter().enumerate() {
+//!                 let syntax = trace.cast_to_scheme_type::<Gc<Syntax>>().unwrap();
+//!                 let span = syntax.span();
+//!                 let func_name = syntax.as_ident().unwrap().symbol();
+//!                 println!("{:>6}: {func_name}:{span}", i + 1);
+//!             }
+//!         } else {
+//!             println!(" - Condition: {condition:?}");
+//!         }
+//!     }
+//! }
 //! ```
 
 use crate::{
@@ -227,8 +258,13 @@ impl Exception {
         }
     }
 
-    pub fn condition<T>(&self) -> Result<Option<T>, Exception> {
-        todo!()
+    pub fn condition<T: SchemeCompatible>(&self) -> Result<Option<Gc<T>>, Exception> {
+        for condition in self.simple_conditions()?.into_iter() {
+            if let Some(condition) = condition.cast_to_rust_type::<T>() {
+                return Ok(Some(condition));
+            }
+        }
+        Ok(None)
     }
 }
 

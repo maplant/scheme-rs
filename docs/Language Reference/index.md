@@ -157,12 +157,12 @@ example that shows every type of comment in action:
     of a non-negative integer.
 |#
 (define fact
-    (lambda (n)
-        ;; base case
-        (if (= n 0)
-            #;(= n 1)
-            1       ; identity of *
-            (* n (fact (- n 1))))))
+  (lambda (n)
+    ;; base case
+    (if (= n 0)
+        #;(= n 1)
+        1       ; identity of *
+        (* n (fact (- n 1))))))
 ```
     
 ### Datum syntax
@@ -269,6 +269,48 @@ is a map of countries in North America to their capitals:
 ## Library syntax
 
 Libraries provide a syntax for importing and exporting symbols. 
+
+Libraries have the following form:
+
+
+```scheme
+(library (⟨name⟩ ... ⟨version⟩?) 
+  (export ⟨export-spec⟩ ...)
+  (import ⟨import-spec⟩ ...)
+  
+  ⟨body⟩)
+```
+
+
+The `⟨name⟩` of the library is a list of symbols, and should match with the 
+location of the library in the filesytem. For example, a library named
+`(foo bar baz)` should be located at `foo/bar/baz.sls`.
+
+The optional `⟨version⟩` of a library is either null or a list of integers 
+that specify the [semantic version](https://semver.org/) of the library.
+
+`⟨export-spec⟩` is either a symbol specifying a variable to be exported or
+a datum of the form `(import ⟨import-spec⟩)`. Exports of the latter form 
+export all values included in the import.
+
+An `⟨import-spec⟩` has one of the following forms:
+
+- `⟨library-reference⟩`
+- `(library ⟨library-reference⟩)`
+  Allows for importing of libraries that include the words "only", "except", 
+  "prefix", or "rename".
+- `(only ⟨import-spec⟩ ⟨identifier⟩ ...)`
+  Imports only the identifiers specified from the import spec.
+- `(except ⟨import-spec⟩ ⟨identifier⟩ ...)` 
+  Imports all of the identifiers from the import spec _except_ for the ones 
+  specified.
+- `(prefix ⟨import-spec⟩ ⟨identifier⟩)`
+  Prefixes all of the identifier in the import spec with the provided 
+  identifier.
+- `(rename ⟨import-spec⟩ (⟨identifier1⟩ ⟨identifier2⟩) ...)`
+  Renames each identifier in the import spec that matches the nth `car` in 
+  the provided list with the nth `cdr`.
+
 
 ## Type system
 

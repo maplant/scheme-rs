@@ -7,7 +7,7 @@ Delimited continuations in Scheme are created by enclosing some procedure in
 what is called a _prompt_, so-called because it resembles the REPL prompt. Code
 running in a prompt has the ability to abort to a prompt handler, passing along
 its current continuation at the time. Unlike the continuation obtained from 
-`call-cc`, the continuation of a prompt does not extent beyond the prompt 
+`call/cc`, the continuation of a prompt does not extent beyond the prompt 
 handler. 
 
 Dynamic delimited continuations further extend this by allowing prompts to be 

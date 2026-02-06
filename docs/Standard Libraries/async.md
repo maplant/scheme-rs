@@ -65,3 +65,35 @@ Creates a new `tcp-listener` bound to `address`.
 Blocks until a new connection is received by the listener. Returns a new socket
 and the address of the connecting client. Sockets are binary input/output
 _ports_.
+
+## Examples
+
+``` scheme title="Example: A Scheme REPL over the network"
+(import (rnrs)
+        (rnrs eval)
+        (prefix (async) tokio/))
+
+(define env (environment '(rnrs)))
+
+(define (repl port)
+  (let ([datum (get-datum port)])
+    (unless (eof-object? datum)
+      (let ([result (eval datum env)])
+        (write result port)
+        (newline port)
+        (repl port)))))
+
+(define (serve)
+  (define (listen listener)
+    (let-values ([(port addr) (tokio/accept listener)])
+      (tokio/spawn
+       (lambda ()
+         (with-exception-handler
+          (lambda (err)
+            (display "task terminated with error\n")
+            (write "bye!" port))
+          (lambda () (repl (transcoded-port port (native-transcoder)))))))
+      (listen listener)))
+  (let ([listener (tokio/bind-tcp "0.0.0.0:8080")])
+    (listen listener)))
+``` 
