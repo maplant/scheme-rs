@@ -1115,8 +1115,8 @@ impl PartialEq for SimpleNumber {
             (Self::Rational(rational), Self::Real(float))
             | (Self::Real(float), Self::Rational(rational)) => float == rational,
 
-            (Self::FixedInteger(fixed_int), Self::Real(float))
-            | (Self::Real(float), Self::FixedInteger(fixed_int))
+            (Self::FixedInteger(_), Self::Real(float))
+            | (Self::Real(float), Self::FixedInteger(_))
                 if float.fract() != 0.0 =>
             {
                 false

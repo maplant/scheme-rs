@@ -71,6 +71,7 @@
 //! - **Character**: A unicode code point. Same thing as a [`char`](std::char).
 //! - **Number**: A numerical value on the numerical tower. Represented by a
 //!   [`Arc<Number>`](crate::num::Number).
+//! - **String**: An array of [`chars`](std::char).
 //! - **Symbol**: A [`Symbol`].
 //! - **Vector**: A [`Vector`].
 //! - **Byte-vector**: A [`ByteVector`].

@@ -71,6 +71,19 @@ To enable async features, install with the `async` and `tokio` features:
 $ cargo install scheme-rs --features "async,tokio"
 ``` 
 
+## Supported platforms:
+
+scheme-rs uses [cranelift](cranelift.dev) for JIT compilation and is therefore 
+limited to platforms supported by cranelift. At the current moment that includes
+x86-64, aarch64 (ARM64), s390x (IBM Z), and riscv64 architectures.
+
+scheme-rs has been tested on the following platforms:
+
+- Linux (fully supported, primary platform)
+- MacOs (occasionally tested)
+- Windows (previously tested, not tested in a while)
+
+
 ## Documentation 
 
 - [API documentation](https://docs.rs/scheme-rs/latest/scheme_rs/)

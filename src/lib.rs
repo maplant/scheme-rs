@@ -44,3 +44,6 @@ pub mod futures;
 // Require tokio (for now) if the async feature is enabled
 #[cfg(all(feature = "async", not(feature = "tokio")))]
 compile_error!("async features requires the tokio feature to be enabled");
+
+#[cfg(target_pointer_width = "32")]
+compile_error!("32 bit architectures are currently not supported");
