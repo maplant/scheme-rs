@@ -1,11 +1,12 @@
-//! Garbage-Collected smart pointers with interior mutability.
+//! Garbage collected smart pointers.
 //!
 //! `Gc<T>` is conceptually similar to `Arc<T>`, but garbage collection occurs
 //! concurrently at a fixed cadence or whenever a threshold of memory has been
 //! allocated as opposed to when the type is Dropped.
 //!
 //! `Gc<T>` does not use tracing garbage collection but instead uses a technique
-//! where garbage cycles are detected known as "cycle collection".
+//! where garbage cycles are detected known as "cycle collection". This is done
+//! in a separate thread and is concurrent to the running program.
 //!
 //! Cycle collection was chosen because it has similar characteristics to `Gc`,
 //! providing all of the semantics Scheme expects and also plays nicely as a
@@ -13,8 +14,7 @@
 
 mod collection;
 
-pub use collection::{OpaqueGcPtr, init_gc};
-use either::Either;
+pub use collection::{OpaqueGcPtr, collect_garbage, init_gc};
 pub use scheme_rs_macros::Trace;
 
 use std::{
@@ -29,9 +29,13 @@ use std::{
     ptr::{NonNull, drop_in_place},
 };
 
-use crate::gc::collection::{GcHeader, alloc_gc_object};
+use crate::{
+    Either,
+    gc::collection::{GcHeader, alloc_gc_object},
+};
 
-/// A Garbage-Collected smart pointer with interior mutability.
+/// A heap allocated garbage collected smart pointer. Gc requires that `T`
+/// implements the [`Trace`] trait to properly track references.
 pub struct Gc<T: ?Sized> {
     pub(crate) ptr: NonNull<GcInner<T>>,
     pub(crate) marker: PhantomData<GcInner<T>>,
@@ -39,6 +43,7 @@ pub struct Gc<T: ?Sized> {
 
 #[allow(private_bounds)]
 impl<T: GcOrTrace + 'static> Gc<T> {
+    /// Allocate a new object on the heap and track .
     pub fn new(data: T) -> Gc<T> {
         alloc_gc_object(data)
     }
@@ -47,8 +52,8 @@ impl<T: GcOrTrace + 'static> Gc<T> {
 #[allow(private_bounds)]
 impl<T: GcOrTrace + Send + Sync + 'static> Gc<T> {
     /// Convert a `Gc<T>` into a `Gc<dyn Any>`. This is a separate function
-    /// since [CoerceUnsized] is unstable.
-    pub fn into_any(this: Self) -> Gc<dyn Any + Send + Sync> {
+    /// since [`CoerceUnsized`](std::ops::CoerceUnsized) is unstable.
+    pub fn into_any(this: Self) -> Gc<dyn Any> {
         let this = ManuallyDrop::new(this);
         let any: NonNull<GcInner<dyn Any + Send + Sync>> = this.ptr;
         Gc {
@@ -63,6 +68,7 @@ impl<T: ?Sized> Gc<T> {
     ///
     /// This function is not safe and basically useless for anything outside of
     /// the Trace proc macro's generated code.
+    #[doc(hidden)]
     pub unsafe fn as_opaque(&self) -> OpaqueGcPtr {
         unsafe {
             OpaqueGcPtr {
@@ -74,6 +80,7 @@ impl<T: ?Sized> Gc<T> {
         }
     }
 
+    /// Determine if two Gc types share the same pointer (i.e. are equivalent).
     pub fn ptr_eq(lhs: &Self, rhs: &Self) -> bool {
         std::ptr::addr_eq(lhs.ptr.as_ptr(), rhs.ptr.as_ptr())
     }
@@ -141,6 +148,8 @@ impl<T: ?Sized> Gc<T> {
 }
 
 impl Gc<dyn Any + Send + Sync> {
+    /// Attempt to downcase a `Gc<dyn Any>` into `T`, returning Self on
+    /// failure.
     pub fn downcast<T: Any + Send + Sync>(self) -> Result<Gc<T>, Self> {
         if self.as_ref().is::<T>() {
             let this = ManuallyDrop::new(self);
@@ -259,11 +268,13 @@ pub(crate) struct GcInner<T: ?Sized> {
 unsafe impl<T: ?Sized + Send> Send for GcInner<T> {}
 unsafe impl<T: ?Sized + Sync> Sync for GcInner<T> {}
 
-/// A type that can be traced for garbage collection.
+/// A type that can be traced for garbage collection. Types that implement this
+/// trait can be converted into a [`Gc`] for automatic garbage collection.
 ///
 /// # Safety
 ///
-/// This trait should _not_ be manually implemented!
+/// This trait should _not_ be manually implemented! Instead, use the
+/// [`Trace`](scheme_rs_macros::Trace) derive macro.
 pub unsafe trait Trace: 'static {
     /// # Safety
     ///
@@ -279,11 +290,7 @@ pub unsafe trait Trace: 'static {
     /// function **ANYWHERE ELSE** is a **RACE CONDITION**!
     ///
     /// **DO NOT CALL THIS FUNCTION!!**
-    unsafe fn finalize(&mut self) {
-        unsafe {
-            drop_in_place(self as *mut Self);
-        }
-    }
+    unsafe fn finalize(&mut self);
 }
 
 macro_rules! impl_empty_trace {
@@ -291,6 +298,12 @@ macro_rules! impl_empty_trace {
         $(
             unsafe impl Trace for $x {
                 unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
+
+                unsafe fn finalize(&mut self) {
+                    unsafe {
+                        drop_in_place(self as *mut Self);
+                    }
+                }
             }
         )*
     }
@@ -331,6 +344,12 @@ where
     B: ?Sized + 'static,
 {
     unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
+
+    unsafe fn finalize(&mut self) {
+        unsafe {
+            drop_in_place(self as *mut Self);
+        }
+    }
 }
 
 /// # Safety
@@ -664,20 +683,23 @@ where
 
 unsafe impl<T> Trace for Box<T>
 where
-    T: GcOrTrace + ?Sized,
+    T: GcOrTrace,
 {
     unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {
-        // self.as_ref().visit_or_recurse(visitor);
+        /*
+        unsafe {
+            self.as_ref().visit_or_recurse(visitor);
+        }
+        */
     }
 
-    /*
     unsafe fn finalize(&mut self) {
-        println!("finalizing box!");
-        self.as_mut().finalize_or_skip();
-        std::alloc::dealloc(self.as_mut() as *mut T as *mut u8, Layout::new::<T>());
-        // todo!("need to dealloc data without dropping box");
+        // TODO: Deallocate box without dropping inner contents
+        unsafe {
+            // self.finalize_or_skip();
+            drop_in_place(self as *mut Self);
+        }
     }
-    */
 }
 
 /*
@@ -722,6 +744,10 @@ where
         // An Arc wrapping a Gc effectively creates an additional ref count for
         // that Gc that we cannot access.
     }
+
+    unsafe fn finalize(&mut self) {
+        unsafe { drop_in_place(self as *mut Self) }
+    }
 }
 
 unsafe impl<T> Trace for std::sync::Weak<T>
@@ -732,6 +758,10 @@ where
         // Same reasoning as Arc. If we're not visiting Arcs, we shouldn't visit Weak.
         // Let it handle its own ref count.
     }
+
+    unsafe fn finalize(&mut self) {
+        unsafe { drop_in_place(self as *mut Self) }
+    }
 }
 
 #[cfg(feature = "async")]
@@ -740,6 +770,10 @@ where
     T: std::future::Future + 'static,
 {
     unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
+
+    unsafe fn finalize(&mut self) {
+        unsafe { drop_in_place(self as *mut Self) }
+    }
 }
 
 unsafe impl<T> Trace for std::sync::mpsc::Sender<T>
@@ -747,6 +781,10 @@ where
     T: 'static,
 {
     unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
+
+    unsafe fn finalize(&mut self) {
+        unsafe { drop_in_place(self as *mut Self) }
+    }
 }
 
 unsafe impl<T> Trace for std::sync::mpsc::SyncSender<T>
@@ -754,6 +792,10 @@ where
     T: 'static,
 {
     unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
+
+    unsafe fn finalize(&mut self) {
+        unsafe { drop_in_place(self as *mut Self) }
+    }
 }
 
 #[cfg(feature = "tokio")]
@@ -824,6 +866,12 @@ where
     T: 'static,
 {
     unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
+
+    unsafe fn finalize(&mut self) {
+        unsafe {
+            drop_in_place(self as *mut Self);
+        }
+    }
 }
 
 unsafe impl<T> Trace for std::sync::Mutex<T>
@@ -835,6 +883,30 @@ where
             // TODO: Think really hard as to if this is correct
             let lock = self.lock().unwrap();
             lock.visit_or_recurse(visitor);
+        }
+    }
+
+    unsafe fn finalize(&mut self) {
+        unsafe {
+            self.get_mut().unwrap().finalize_or_skip();
+        }
+    }
+}
+
+unsafe impl<T> Trace for parking_lot::Mutex<T>
+where
+    T: GcOrTrace,
+{
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+        unsafe {
+            let lock = self.lock();
+            lock.visit_or_recurse(visitor);
+        }
+    }
+
+    unsafe fn finalize(&mut self) {
+        unsafe {
+            self.get_mut().finalize_or_skip();
         }
     }
 }

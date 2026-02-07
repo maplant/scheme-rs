@@ -1,5 +1,95 @@
-//! Procedures, continuation and user, and applying values to those procedures.
-//! Contains the main evaluation trampoline.
+//! Scheme Procedures.
+//!
+//! Scheme procedures, more commonly known as [`closures`](https://en.wikipedia.org/wiki/Closure_(computer_programming))
+//! as they capture their environment, are the fundamental and only way to
+//! transfer control from a Rust context to a Scheme context.
+//!
+//! # Calling procedures from Rust
+//!
+//! # Manually creating closures
+//!
+//! Generally procedures are created in Scheme contexts. However, it is
+//! occasionally desirable to create a closure in Rust contexts. This can be
+//! done with a [`cps_bridge`] function and a call to [`Procedure::new`]. The
+//! `env` argument to the CPS function is a reference to the vector passed to
+//! the `new` function:
+//!
+//! ```
+//! # use scheme_rs::{proc::{Procedure, BridgePtr, Application, DynamicState},
+//! # registry::cps_bridge, value::Value, runtime::Runtime, exceptions::Exception};
+//! #[cps_bridge]
+//! fn closure(
+//!     _runtime: &Runtime,
+//!     env: &[Value],
+//!     _args: &[Value],
+//!     _rest_args: &[Value],
+//!     _dyn_state: &mut DynamicState,
+//!     k: Value,
+//! ) -> Result<Application, Exception> {
+//!     Ok(Application::new(k.try_into()?, vec![ env[0].clone() ]))
+//! }
+//!
+//! # fn main() {
+//! # let runtime = Runtime::new();
+//! let closure = Procedure::new(
+//!     runtime,
+//!     vec![ Value::from(3.1415) ],
+//!     closure as BridgePtr,
+//!     0,
+//!     false,
+//! );
+//! # }
+//! ```
+//!
+//! By default the environment is immutable. If the environment needs to be
+//! modified, a [`Cell`](scheme_rs::value::Cell) can be used:
+//!
+//! ```
+//! # use scheme_rs::{
+//! #     proc::{Procedure, BridgePtr, Application, DynamicState},
+//! #     registry::cps_bridge, value::{Value, Cell}, runtime::Runtime,
+//! #     exceptions::Exception,
+//! #     num::Number,
+//! # };
+//! #[cps_bridge]
+//! fn next_num(
+//!     _runtime: &Runtime,
+//!     env: &[Value],
+//!     _args: &[Value],
+//!     _rest_args: &[Value],
+//!     _dyn_state: &mut DynamicState,
+//!     k: Value,
+//! ) -> Result<Application, Exception> {
+//!     // Fetch the cell from the environment:
+//!     let cell: Cell = env[0].try_to_scheme_type()?;
+//!     let curr: Number = cell.get().try_into()?;
+//!
+//!     // Increment the cell
+//!     cell.set(Value::from(curr.clone() + Number::from(1)));
+//!
+//!     // Return the previous value:
+//!     Ok(Application::new(k.try_into()?, vec![ Value::from(curr) ]))
+//! }
+//!
+//! # fn main() {
+//! # let runtime = Runtime::new();
+//! let next_num = Procedure::new(
+//!     runtime,
+//!     // Cells must be converted to values:
+//!     vec![ Value::from(Cell::new(Value::from(3.1415))) ],
+//!     next_num as BridgePtr,
+//!     0,
+//!     false,
+//! );
+//! # }
+//! ```
+//!
+//! # Categories of procedures
+//!
+//! In scheme-rs, procedures can be placed into a few different categories, the
+//! most obvious is that procedures are either _user_ functions or
+//! [_continuations_](https://en.wikipedia.org/wiki/Continuation). This
+//! categorization is mostly transparent to the user.
 
 use crate::{
     env::Local,
@@ -128,7 +218,7 @@ pub(crate) struct ProcedureInner {
     pub(crate) is_variable_transformer: bool,
     /// Debug information for this function. Only applicable if the function is
     /// a user function, i.e. not a continuation.
-    pub(crate) debug_info: Option<Arc<FuncDebugInfo>>,
+    pub(crate) debug_info: Option<Arc<ProcDebugInfo>>,
 }
 
 impl ProcedureInner {
@@ -138,7 +228,7 @@ impl ProcedureInner {
         func: FuncPtr,
         num_required_args: usize,
         variadic: bool,
-        debug_info: Option<Arc<FuncDebugInfo>>,
+        debug_info: Option<Arc<ProcDebugInfo>>,
     ) -> Self {
         Self {
             runtime,
@@ -258,8 +348,27 @@ impl ProcedureInner {
         unsafe { *Box::from_raw(app) }
     }
 
+    /// Apply the arguments to the function, returning the next application.
     #[maybe_async]
     pub fn apply(&self, args: Vec<Value>, dyn_state: &mut DynamicState) -> Application {
+        if let FuncPtr::PromptBarrier { barrier_id: id, .. } = self.func {
+            dyn_state.pop_marks();
+            match dyn_state.pop_dyn_stack() {
+                Some(DynStackElem::PromptBarrier(PromptBarrier {
+                    barrier_id,
+                    replaced_k,
+                })) if barrier_id == id => {
+                    let (args, _) = match replaced_k.0.prepare_args(args, dyn_state) {
+                        Ok(args) => args,
+                        Err(raised) => return raised,
+                    };
+                    return Application::new(replaced_k, args);
+                }
+                Some(other) => dyn_state.push_dyn_stack(other),
+                _ => (),
+            }
+        }
+
         let (args, k) = match self.prepare_args(args, dyn_state) {
             Ok(args) => args,
             Err(raised) => return raised,
@@ -279,18 +388,7 @@ impl ProcedureInner {
                 dyn_state.pop_marks();
                 self.apply_jit(JitFuncPtr::Continuation(k), args, dyn_state, None)
             }
-            FuncPtr::PromptBarrier { barrier_id: id, k } => {
-                dyn_state.pop_marks();
-                match dyn_state.pop_dyn_stack() {
-                    Some(DynStackElem::PromptBarrier(PromptBarrier {
-                        barrier_id,
-                        replaced_k,
-                    })) if barrier_id == id => {
-                        return Application::new(replaced_k, args);
-                    }
-                    Some(other) => dyn_state.push_dyn_stack(other),
-                    _ => (),
-                }
+            FuncPtr::PromptBarrier { k, .. } => {
                 self.apply_jit(JitFuncPtr::Continuation(k), args, dyn_state, None)
             }
         }
@@ -299,6 +397,24 @@ impl ProcedureInner {
     #[cfg(feature = "async")]
     /// Attempt to call the function, and throw an error if is async
     pub fn apply_sync(&self, args: Vec<Value>, dyn_state: &mut DynamicState) -> Application {
+        if let FuncPtr::PromptBarrier { barrier_id: id, .. } = self.func {
+            dyn_state.pop_marks();
+            match dyn_state.pop_dyn_stack() {
+                Some(DynStackElem::PromptBarrier(PromptBarrier {
+                    barrier_id,
+                    replaced_k,
+                })) if barrier_id == id => {
+                    let (args, _) = match replaced_k.0.prepare_args(args, dyn_state) {
+                        Ok(args) => args,
+                        Err(raised) => return raised,
+                    };
+                    return Application::new(replaced_k, args);
+                }
+                Some(other) => dyn_state.push_dyn_stack(other),
+                _ => (),
+            }
+        }
+
         let (args, k) = match self.prepare_args(args, dyn_state) {
             Ok(args) => args,
             Err(raised) => return raised,
@@ -318,18 +434,7 @@ impl ProcedureInner {
                 dyn_state.pop_marks();
                 self.apply_jit(JitFuncPtr::Continuation(k), args, dyn_state, None)
             }
-            FuncPtr::PromptBarrier { barrier_id: id, k } => {
-                dyn_state.pop_marks();
-                match dyn_state.pop_dyn_stack() {
-                    Some(DynStackElem::PromptBarrier(PromptBarrier {
-                        barrier_id,
-                        replaced_k,
-                    })) if barrier_id == id => {
-                        return Application::new(replaced_k, args);
-                    }
-                    Some(other) => dyn_state.push_dyn_stack(other),
-                    _ => (),
-                }
+            FuncPtr::PromptBarrier { k, .. } => {
                 self.apply_jit(JitFuncPtr::Continuation(k), args, dyn_state, None)
             }
         }
@@ -396,7 +501,7 @@ impl Procedure {
         func: FuncPtr,
         num_required_args: usize,
         variadic: bool,
-        debug_info: Option<Arc<FuncDebugInfo>>,
+        debug_info: Option<Arc<ProcDebugInfo>>,
     ) -> Self {
         Self(Gc::new(ProcedureInner {
             runtime,
@@ -409,15 +514,19 @@ impl Procedure {
         }))
     }
 
+    /// Get the runtime associated with the procedure
     pub fn get_runtime(&self) -> Runtime {
         self.0.runtime.clone()
     }
 
+    /// Return the number of required arguments and whether or not this function
+    /// is variadic
     pub fn get_formals(&self) -> (usize, bool) {
         (self.0.num_required_args, self.0.variadic)
     }
 
-    pub fn get_debug_info(&self) -> Option<Arc<FuncDebugInfo>> {
+    /// Return the debug information associated with procedure, if it exists.
+    pub fn get_debug_info(&self) -> Option<Arc<ProcDebugInfo>> {
         self.0.debug_info.clone()
     }
 
@@ -447,10 +556,12 @@ impl Procedure {
         self.0.is_variable_transformer
     }
 
+    /// Return whether or not the procedure is a continuation
     pub fn is_continuation(&self) -> bool {
-        matches!(self.0.func, FuncPtr::Continuation(_))
+        self.0.is_continuation()
     }
 
+    /// Applies `args` to the procedure and returns the values it evaluates to.
     #[maybe_async]
     pub fn call(&self, args: &[Value]) -> Result<Vec<Value>, Exception> {
         let mut args = args.to_vec();
@@ -472,7 +583,7 @@ impl Procedure {
 
 static HALT_CONTINUATION: OnceLock<Value> = OnceLock::new();
 
-/// Return a continuation that returns its expressions.
+/// Return a continuation that returns its expressions to the Rust program.
 pub fn halt_continuation(runtime: Runtime) -> Value {
     unsafe extern "C" fn halt(
         _runtime: *mut GcInner<RwLock<RuntimeInner>>,
@@ -509,7 +620,7 @@ impl PartialEq for Procedure {
     }
 }
 
-pub enum OpType {
+pub(crate) enum OpType {
     Proc(Procedure),
     HaltOk,
     HaltErr,
@@ -518,9 +629,9 @@ pub enum OpType {
 /// An application of a function to a given set of values.
 pub struct Application {
     /// The operator being applied to.
-    pub op: OpType,
+    op: OpType,
     /// The arguments being applied to the operator.
-    pub args: Vec<Value>,
+    args: Vec<Value>,
 }
 
 impl Application {
@@ -577,8 +688,10 @@ impl Application {
     }
 }
 
+/// Debug information associated with a procedure, including its name, argument
+/// names, and source location.
 #[derive(Debug)]
-pub struct FuncDebugInfo {
+pub struct ProcDebugInfo {
     /// The name of the function.
     pub name: Symbol,
     /// Named arguments for the function.
@@ -587,7 +700,7 @@ pub struct FuncDebugInfo {
     pub location: Span,
 }
 
-impl FuncDebugInfo {
+impl ProcDebugInfo {
     pub fn new(name: Option<Symbol>, args: Vec<Local>, location: Span) -> Self {
         Self {
             name: name.unwrap_or_else(|| Symbol::intern("<lambda>")),
@@ -1145,7 +1258,7 @@ pub fn call_with_values(
 //
 
 #[derive(Clone, Debug, Trace, PartialEq)]
-pub struct Winder {
+pub(crate) struct Winder {
     pub(crate) in_thunk: Procedure,
     pub(crate) out_thunk: Procedure,
 }
@@ -1289,7 +1402,7 @@ unsafe extern "C" fn forward_body_thunk_result(
 //
 
 #[derive(Clone, Debug, PartialEq, Trace)]
-pub struct Prompt {
+pub(crate) struct Prompt {
     tag: Symbol,
     barrier_id: usize,
     handler: Procedure,
@@ -1297,17 +1410,14 @@ pub struct Prompt {
 }
 
 #[derive(Clone, Debug, PartialEq, Trace)]
-pub struct PromptBarrier {
+pub(crate) struct PromptBarrier {
     barrier_id: usize,
     replaced_k: Procedure,
 }
 
 static BARRIER_ID: AtomicUsize = AtomicUsize::new(0);
 
-#[cps_bridge(
-    def = "call-with-prompt tag thunk handler",
-    lib = "(rnrs base builtins (6))"
-)]
+#[cps_bridge(def = "call-with-prompt tag thunk handler", lib = "(prompts)")]
 pub fn call_with_prompt(
     runtime: &Runtime,
     _env: &[Value],
@@ -1352,7 +1462,7 @@ pub fn call_with_prompt(
     ))
 }
 
-#[cps_bridge(def = "abort-to-prompt tag", lib = "(rnrs base builtins (6))")]
+#[cps_bridge(def = "abort-to-prompt tag", lib = "(prompts)")]
 pub fn abort_to_prompt(
     runtime: &Runtime,
     _env: &[Value],

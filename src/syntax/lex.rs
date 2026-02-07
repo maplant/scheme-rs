@@ -63,7 +63,7 @@ impl<'a> Lexer<'a> {
     }
 
     #[maybe_async]
-    fn take(&mut self) -> Result<Option<char>, Exception> {
+    pub(crate) fn take(&mut self) -> Result<Option<char>, Exception> {
         let Some(chr) = maybe_await!(self.peek())? else {
             return Ok(None);
         };
@@ -136,7 +136,7 @@ impl<'a> Lexer<'a> {
         let span = self.curr_span();
 
         // Check for various special characters:
-        let lexeme = if let Some(number) = maybe_await!(self.number())? {
+        let lexeme = if let Some(number) = maybe_await!(self.number(10))? {
             Lexeme::Number(number)
         } else if let Some(identifier) = maybe_await!(self.identifier())? {
             Lexeme::Identifier(identifier)
@@ -286,12 +286,12 @@ impl<'a> Lexer<'a> {
     }
 
     #[maybe_async]
-    fn number(&mut self) -> Result<Option<Number>, Exception> {
+    pub(crate) fn number(&mut self, default_radix: u32) -> Result<Option<Number>, Exception> {
         let saved_pos = self.pos;
 
         let (radix, exactness) = maybe_await!(self.radix_and_exactness())?;
 
-        let radix = radix.unwrap_or(10);
+        let radix = radix.unwrap_or(default_radix);
 
         // Need this because "10i" is not a valid number.
         let has_sign = {
@@ -316,6 +316,7 @@ impl<'a> Lexer<'a> {
                 exactness,
                 real_part: None,
                 imag_part: first_part,
+                is_polar: false,
             }
         } else {
             let matched_at = maybe_await!(self.match_char('@'))?;
@@ -337,6 +338,7 @@ impl<'a> Lexer<'a> {
                 exactness,
                 real_part: first_part,
                 imag_part,
+                is_polar: matched_at,
             }
         };
 
@@ -691,6 +693,7 @@ pub struct Number {
     exactness: Option<Exactness>,
     real_part: Option<Part>,
     imag_part: Option<Part>,
+    is_polar: bool,
 }
 
 impl TryFrom<(Part, u32)> for SimpleNumber {
@@ -720,7 +723,11 @@ impl TryFrom<Number> for num::Number {
                 SimpleNumber::Real(0.0)
             };
             return Ok(num::Number(Arc::new(num::NumberInner::Complex(
-                num::Complex::new(real_part, imag_part),
+                if value.is_polar {
+                    num::ComplexNumber::from_polar(real_part, imag_part)
+                } else {
+                    num::ComplexNumber::new(real_part, imag_part)
+                },
             ))));
         }
 
@@ -751,7 +758,7 @@ impl Part {
         let num = match &self.real {
             Real::Num(num) => i64::from_str_radix(num, radix).ok()?,
             Real::Decimal(base, fract, None) if fract.is_empty() => base.parse().ok()?,
-            Real::Decimal(base, fract, Some(exp)) if fract.is_empty() => {
+            Real::Decimal(base, fract, Some(exp)) if fract.is_empty() && !exp.is_negative() => {
                 let base: i64 = base.parse().ok()?;
                 let exp = 10_i64.checked_pow((*exp).try_into().ok()?)?;
                 base.checked_mul(exp)?
@@ -767,7 +774,7 @@ impl Part {
             Real::Decimal(base, fract, None) if fract.is_empty() => {
                 Integer::from_string_base(10, base)?
             }
-            Real::Decimal(base, fract, Some(exp)) if fract.is_empty() => {
+            Real::Decimal(base, fract, Some(exp)) if fract.is_empty() && !exp.is_negative() => {
                 Integer::from_sci_string(&format!("{base}e{exp}"))?
             }
             _ => return None,
@@ -780,6 +787,9 @@ impl Part {
             Real::Rational(num, denom) => {
                 let num = Integer::from_string_base(radix as u8, num)?;
                 let den = Integer::from_string_base(radix as u8, denom)?;
+                if den == 0 {
+                    return None;
+                }
                 Rational::from_integers(num, den)
             }
             _ => return None,
@@ -799,6 +809,9 @@ impl Part {
             Real::Rational(num, den) if radix == 10 => {
                 let num: f64 = num.parse().ok()?;
                 let den: f64 = den.parse().ok()?;
+                if den == 0.0 {
+                    return None;
+                }
                 let num = num / den;
                 Some(if self.neg { -num } else { num })
             }

@@ -1,3 +1,4 @@
+use clap::Parser;
 use rustyline::{
     Completer, Config, Editor, Helper, Highlighter, Hinter, Validator,
     highlight::MatchingBracketHighlighter,
@@ -5,19 +6,24 @@ use rustyline::{
     validate::{ValidationContext, ValidationResult, Validator},
 };
 use scheme_rs::{
-    ast::{DefinitionBody, ImportSet, ParseContext},
-    cps::Compile,
-    env::Environment,
-    exceptions::Exception,
+    env::TopLevelEnvironment,
+    exceptions::{Exception, Message, StackTrace, SyntaxViolation},
+    gc::Gc,
     ports::{BufferMode, Port, Prompt, Transcoder},
-    proc::{Application, DynamicState},
-    registry::Library,
     runtime::Runtime,
     syntax::{Span, Syntax},
-    value::Value,
 };
 use scheme_rs_macros::{maybe_async, maybe_await};
-use std::process::ExitCode;
+use std::path::Path;
+
+#[derive(Parser, Debug)]
+struct Args {
+    /// Scheme programs to run
+    files: Vec<String>,
+    /// Force interactive mode (REPL)
+    #[arg(short, long)]
+    interactive: bool,
+}
 
 #[derive(Default)]
 struct InputValidator;
@@ -43,12 +49,24 @@ struct InputHelper {
 
 #[maybe_async]
 #[cfg_attr(feature = "async", tokio::main)]
-fn main() -> ExitCode {
-    let runtime = Runtime::new();
-    let repl = Library::new_repl(&runtime);
-    let env = Environment::Top(repl);
+fn main() -> Result<(), Exception> {
+    let args = Args::parse();
 
-    maybe_await!(env.import(ImportSet::parse_from_str("(library (rnrs))").unwrap()))
+    let runtime = Runtime::new();
+
+    // Run any programs
+    for file in &args.files {
+        let path = Path::new(file);
+        let _ = maybe_await!(runtime.run_program(path))?;
+    }
+
+    if !args.files.is_empty() && !args.interactive {
+        return Ok(());
+    }
+
+    let repl = TopLevelEnvironment::new_repl(&runtime);
+
+    maybe_await!(repl.import("(library (rnrs))".parse().unwrap()))
         .expect("Failed to import standard library");
 
     let config = Config::builder()
@@ -58,8 +76,9 @@ fn main() -> ExitCode {
     let mut editor = match Editor::with_history(config, DefaultHistory::new()) {
         Ok(e) => e,
         Err(err) => {
-            eprintln!("Error creating line editor: {err}");
-            return ExitCode::FAILURE;
+            return Err(Exception::error(format!(
+                "Error creating line editor: {err}"
+            )));
         }
     };
 
@@ -89,39 +108,53 @@ fn main() -> ExitCode {
             }
             Ok(None) => break,
             Err(err) => {
-                eprintln!("Error while reading input: {err}");
-                return ExitCode::FAILURE;
+                return Err(Exception::error(format!(
+                    "Error while reading input: {err}"
+                )));
             }
         };
 
-        match maybe_await!(compile_and_run_str(&runtime, &env, sexpr)) {
+        match maybe_await!(repl.eval_sexpr(true, sexpr)) {
             Ok(results) => {
                 for result in results.into_iter() {
                     println!("${n_results} = {result:?}");
                     n_results += 1;
                 }
             }
-            Err(err) => {
-                println!("{err:?}");
-            }
+            Err(err) => print_exception(err),
         }
     }
 
-    ExitCode::SUCCESS
+    Ok(())
 }
 
-#[maybe_async]
-fn compile_and_run_str(
-    runtime: &Runtime,
-    repl: &Environment,
-    sexpr: Syntax,
-) -> Result<Vec<Value>, Exception> {
-    let ctxt = ParseContext::new(runtime, true);
-    let sexprs = [sexpr];
-    let expr = maybe_await!(DefinitionBody::parse(&ctxt, &sexprs, repl, &sexprs[0]))?;
-    let compiled = expr.compile_top_level();
-    let closure = maybe_await!(runtime.compile_expr(compiled));
-    let result =
-        maybe_await!(Application::new(closure, Vec::new()).eval(&mut DynamicState::default()))?;
-    Ok(result)
+fn print_exception(exception: Exception) {
+    let Ok(conditions) = exception.simple_conditions() else {
+        println!(
+            "Exception occurred with a non-condition value: {:?}",
+            exception.0
+        );
+        return;
+    };
+    println!("Uncaught exception:");
+    for condition in conditions.into_iter() {
+        if let Some(message) = condition.cast_to_rust_type::<Message>() {
+            println!(" - Message: {}", message.message);
+        } else if let Some(syntax) = condition.cast_to_rust_type::<SyntaxViolation>() {
+            println!(" - Syntax error in form: {:?}", syntax.form);
+            if let Some(subform) = syntax.subform.as_ref() {
+                println!("   (subform: {subform:?})");
+            }
+        } else if let Some(trace) = condition.cast_to_rust_type::<StackTrace>() {
+            println!(" - Stack trace:");
+            for (i, trace) in trace.trace.iter().enumerate() {
+                let syntax = trace.cast_to_scheme_type::<Gc<Syntax>>().unwrap();
+                let span = syntax.span();
+                let func_name = syntax.as_ident().unwrap().symbol();
+                println!("{:>6}: {func_name}:{span}", i + 1);
+            }
+        } else {
+            println!(" - Condition: {condition:?}");
+        }
+    }
 }

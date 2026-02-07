@@ -1,6 +1,6 @@
 use crate::{
-    ast::{Expression, Literal, ParseContext},
-    env::{EnvId, Environment, Local},
+    ast::{Expression, ParseContext},
+    env::{Binding, Environment, Local, Scope, add_binding},
     exceptions::Exception,
     gc::{Gc, Trace},
     proc::Procedure,
@@ -11,13 +11,35 @@ use crate::{
 };
 use scheme_rs_macros::{bridge, maybe_async, maybe_await, runtime_fn};
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     sync::Arc,
 };
 
-// TODO: This code needs _a lot_ more error checking: error checking for missing
-// ellipsis, error checking for too many ellipsis. It makes debugging extremely
-// confusing!
+mod error {
+    use crate::exceptions::{Message, SyntaxViolation};
+
+    use super::*;
+
+    pub(super) fn no_pattern_variables_in_template(form: &Syntax) -> Exception {
+        Exception::from((
+            Message::new("no pattern variables in template"),
+            SyntaxViolation::new(form.clone(), None),
+        ))
+    }
+    pub(super) fn too_few_ellipsis(sym: Symbol, form: &Syntax) -> Exception {
+        Exception::from((
+            Message::new(format!("too few ellipsis for pattern variable {sym}",)),
+            SyntaxViolation::new(form.clone(), None),
+        ))
+    }
+
+    pub(super) fn too_many_ellipsis(sym: Symbol, form: &Syntax) -> Exception {
+        Exception::from((
+            Message::new(format!("too many ellipsis for pattern variable {sym}")),
+            SyntaxViolation::new(form.clone(), None),
+        ))
+    }
+}
 
 #[derive(Clone, Trace, Debug)]
 pub struct SyntaxRule {
@@ -29,25 +51,29 @@ pub struct SyntaxRule {
 
 impl SyntaxRule {
     #[maybe_async]
-    pub fn compile(
+    pub(crate) fn compile<'a>(
         ctxt: &ParseContext,
-        keywords: &HashSet<Symbol>,
-        pattern: &Syntax,
-        fender: Option<&Syntax>,
-        output_expression: &Syntax,
+        keywords: &HashSet<&'a Identifier>,
+        pattern: &'a Syntax,
+        fender: Option<&'a Syntax>,
+        output_expression: &'a Syntax,
         env: &Environment,
     ) -> Result<Self, Exception> {
-        let mut variables = HashSet::new();
-        let pattern = Pattern::compile(pattern, keywords, &mut variables);
+        let mut variables = HashMap::new();
+        let pattern_scope = Scope::new();
+        let pattern = Pattern::compile(pattern, keywords, 0, pattern_scope, &mut variables);
         let binds = Local::gensym();
-        let env = env.new_syntax_case_expr(binds, variables);
+        let env = env.new_syntax_case_contour(pattern_scope, binds, variables);
         let fender = if let Some(fender) = fender {
-            Some(maybe_await!(Expression::parse(ctxt, fender.clone(), &env))?)
+            let mut fender = fender.clone();
+            fender.add_scope(pattern_scope);
+            Some(maybe_await!(Expression::parse(ctxt, fender, &env))?)
         } else {
             None
         };
-        let output_expression =
-            maybe_await!(Expression::parse(ctxt, output_expression.clone(), &env))?;
+        let mut output_expression = output_expression.clone();
+        output_expression.add_scope(pattern_scope);
+        let output_expression = maybe_await!(Expression::parse(ctxt, output_expression, &env))?;
         Ok(Self {
             pattern,
             binds,
@@ -57,57 +83,62 @@ impl SyntaxRule {
     }
 }
 
-#[derive(Copy, Clone, Debug, Trace)]
-pub struct Keyword {
-    sym: Symbol,
-    binding_env: Option<EnvId>,
-}
-
 #[derive(Clone, Debug, Trace)]
 pub enum Pattern {
-    Null,
     Underscore,
     Ellipsis(Box<Pattern>),
     List(Vec<Pattern>),
     Vector(Vec<Pattern>),
-    ByteVector(Vec<u8>),
-    Variable(Identifier),
-    Keyword(Keyword),
-    Literal(Literal),
+    Variable(Binding),
+    Keyword(Identifier),
+    Literal(Value),
 }
 
 impl Pattern {
-    pub fn compile(
-        expr: &Syntax,
-        keywords: &HashSet<Symbol>,
-        variables: &mut HashSet<Identifier>,
+    pub fn compile<'a>(
+        expr: &'a Syntax,
+        keywords: &HashSet<&'a Identifier>,
+        curr_nesting_level: usize,
+        scope: Scope,
+        variables: &mut HashMap<Binding, usize>,
     ) -> Self {
         match expr {
-            Syntax::Null { .. } => Self::Null,
             Syntax::Identifier { ident, .. } if ident.sym == "_" => Self::Underscore,
-            Syntax::Identifier {
-                ident, binding_env, ..
-            } if keywords.contains(&ident.sym) => Self::Keyword(Keyword {
-                sym: ident.sym,
-                binding_env: *binding_env,
-            }),
+            Syntax::Identifier { ident, .. } if keywords.contains(&ident) => {
+                Self::Keyword(ident.clone())
+            }
             Syntax::Identifier { ident, .. } => {
-                variables.insert(ident.clone());
-                Self::Variable(ident.clone())
+                let mut ident = ident.clone();
+                ident.add_scope(scope);
+                let binding = Binding::new();
+                add_binding(ident, binding);
+                variables.insert(binding, curr_nesting_level);
+                Self::Variable(binding)
             }
-            Syntax::List { list, .. } => Self::List(Self::compile_slice(list, keywords, variables)),
-            Syntax::Vector { vector, .. } => {
-                Self::Vector(Self::compile_slice(vector, keywords, variables))
-            }
-            Syntax::ByteVector { vector, .. } => Self::ByteVector(vector.clone()),
-            Syntax::Literal { literal, .. } => Self::Literal(literal.clone()),
+            Syntax::List { list, .. } => Self::List(Self::compile_slice(
+                list,
+                keywords,
+                curr_nesting_level,
+                scope,
+                variables,
+            )),
+            Syntax::Vector { vector, .. } => Self::Vector(Self::compile_slice(
+                vector,
+                keywords,
+                curr_nesting_level,
+                scope,
+                variables,
+            )),
+            Syntax::Wrapped { value, .. } => Self::Literal(value.clone()),
         }
     }
 
-    fn compile_slice(
-        mut expr: &[Syntax],
-        keywords: &HashSet<Symbol>,
-        variables: &mut HashSet<Identifier>,
+    fn compile_slice<'a>(
+        mut expr: &'a [Syntax],
+        keywords: &HashSet<&'a Identifier>,
+        curr_nesting_level: usize,
+        scope: Scope,
+        variables: &mut HashMap<Binding, usize>,
     ) -> Vec<Self> {
         let mut output = Vec::new();
         loop {
@@ -121,12 +152,22 @@ impl Pattern {
                     tail @ ..,
                 ] if ellipsis.sym == "..." => {
                     output.push(Self::Ellipsis(Box::new(Pattern::compile(
-                        pattern, keywords, variables,
+                        pattern,
+                        keywords,
+                        curr_nesting_level + 1,
+                        scope,
+                        variables,
                     ))));
                     expr = tail;
                 }
                 [head, tail @ ..] => {
-                    output.push(Self::compile(head, keywords, variables));
+                    output.push(Self::compile(
+                        head,
+                        keywords,
+                        curr_nesting_level,
+                        scope,
+                        variables,
+                    ));
                     expr = tail;
                 }
             }
@@ -137,44 +178,32 @@ impl Pattern {
     fn matches(&self, expr: &Syntax, expansion_level: &mut ExpansionLevel) -> bool {
         match self {
             Self::Underscore => !expr.is_null(),
-            Self::Variable(sym) => {
+            Self::Variable(binding) => {
                 assert!(
                     expansion_level
                         .binds
-                        .insert(sym.clone(), expr.clone())
+                        .insert(*binding, expr.clone())
                         .is_none()
                 );
                 true
             }
             Self::Literal(lhs) => {
-                if let Syntax::Literal { literal: rhs, .. } = expr {
-                    lhs == rhs
+                if let Syntax::Wrapped { value: rhs, .. } = expr {
+                    lhs.equal(rhs)
                 } else {
                     false
                 }
             }
             Self::Keyword(lhs) => {
-                matches!(
-                    expr,
-                    Syntax::Identifier {
-                        ident: rhs,
-                        binding_env,
-                        ..
-                    } if lhs.sym == rhs.sym
-                        && lhs.binding_env == *binding_env
-                )
-            }
-            Self::List(list) => match_list(list, expr, expansion_level),
-            Self::Vector(vec) => match_vec(vec, expr, expansion_level),
-            Self::ByteVector(vec) => {
-                if let Self::ByteVector(v) = self {
-                    v == vec
+                if let Syntax::Identifier { ident: rhs, .. } = expr {
+                    lhs.free_identifier_equal(rhs)
                 } else {
                     false
                 }
             }
+            Self::List(list) => match_list(list, expr, expansion_level),
+            Self::Vector(vec) => match_vec(vec, expr, expansion_level),
             // We shouldn't ever see this outside of lists
-            Self::Null => expr.is_null(),
             Self::Ellipsis(_) => unreachable!(),
         }
     }
@@ -222,50 +251,37 @@ fn match_list(patterns: &[Pattern], expr: &Syntax, expansion_level: &mut Expansi
 
     let exprs = match expr {
         Syntax::List { list, .. } => list,
-        Syntax::Null { .. } => std::slice::from_ref(expr),
+        Syntax::Wrapped { value, .. } if value.is_null() => std::slice::from_ref(expr),
         _ => return false,
     };
 
-    let contains_ellipsis = patterns.iter().any(|p| matches!(p, Pattern::Ellipsis(_)));
-
-    match (patterns.split_last().unwrap(), contains_ellipsis) {
-        ((Pattern::Null, _), false) => {
-            // Proper list, no ellipsis. Match everything in order
-            if patterns.len() != exprs.len() {
+    if patterns.iter().any(|p| matches!(p, Pattern::Ellipsis(_))) {
+        match_ellipsis(patterns, exprs, expansion_level)
+    } else if let Some((cdr, head)) = patterns.split_last() {
+        // The pattern is an list that contains no ellipsis.
+        // Match in order until the last pattern, then match that to the nth
+        // cdr.
+        let mut exprs = exprs.iter();
+        for pattern in head.iter() {
+            let Some(expr) = exprs.next() else {
+                continue;
+            };
+            if !pattern.matches(expr, expansion_level) {
                 return false;
             }
-            for (pattern, expr) in patterns.iter().zip(exprs.iter()) {
-                if !pattern.matches(expr, expansion_level) {
-                    return false;
-                }
-            }
-            true
         }
-        ((cdr, head), false) => {
-            // The pattern is an improper list that contains no ellipsis.
-            // Match in order until the last pattern, then match that to the nth
-            // cdr.
-            let mut exprs = exprs.iter();
-            for pattern in head.iter() {
-                let Some(expr) = exprs.next() else {
-                    continue;
-                };
-                if !pattern.matches(expr, expansion_level) {
-                    return false;
-                }
-            }
-            // Match the cdr:
-            let exprs: Vec<_> = exprs.cloned().collect();
-            match exprs.as_slice() {
-                [] => false,
-                [x] => cdr.matches(x, expansion_level),
-                _ => cdr.matches(
-                    &Syntax::new_list(exprs, expr.span().clone()),
-                    expansion_level,
-                ),
-            }
+        // Match the cdr:
+        let exprs: Vec<_> = exprs.cloned().collect();
+        match exprs.as_slice() {
+            [] => false,
+            [x] => cdr.matches(x, expansion_level),
+            _ => cdr.matches(
+                &Syntax::new_list(exprs, expr.span().clone()),
+                expansion_level,
+            ),
         }
-        (_, true) => match_ellipsis(patterns, exprs, expansion_level),
+    } else {
+        false
     }
 }
 
@@ -278,10 +294,9 @@ fn match_vec(patterns: &[Pattern], expr: &Syntax, expansion_level: &mut Expansio
 
     if contains_ellipsis {
         match_ellipsis(patterns, exprs, expansion_level)
+    } else if patterns.len() != exprs.len() {
+        false
     } else {
-        if patterns.len() != exprs.len() {
-            return false;
-        }
         for (pattern, expr) in patterns.iter().zip(exprs.iter()) {
             if !pattern.matches(expr, expansion_level) {
                 return false;
@@ -299,7 +314,7 @@ impl SchemeCompatible for Pattern {
 
 #[derive(Clone, Debug, Default, Trace)]
 pub struct ExpansionLevel {
-    binds: HashMap<Identifier, Syntax>,
+    binds: HashMap<Binding, Syntax>,
     expansions: Vec<ExpansionLevel>,
 }
 
@@ -311,7 +326,7 @@ impl SchemeCompatible for ExpansionLevel {
 
 #[derive(Trace, Debug)]
 pub struct ExpansionCombiner {
-    pub(crate) uses: HashMap<Identifier, usize>,
+    pub(crate) uses: HashMap<Binding, usize>,
 }
 
 impl SchemeCompatible for ExpansionCombiner {
@@ -321,13 +336,12 @@ impl SchemeCompatible for ExpansionCombiner {
 }
 
 #[runtime_fn]
-unsafe extern "C" fn matches(pattern: *const (), syntax: *const ()) -> *const () {
+unsafe extern "C" fn matches(pattern: *const (), value: *const ()) -> *const () {
     let pattern = unsafe { Value::from_raw_inc_rc(pattern) };
     let pattern = pattern.try_to_rust_type::<Pattern>().unwrap();
 
-    let syntax = unsafe { Value::from_raw_inc_rc(syntax) };
-    // This isn't a great way to do this, but it'll work for now:
-    let syntax = Syntax::syntax_from_datum(&BTreeSet::default(), syntax);
+    let value = unsafe { Value::from_raw_inc_rc(value) };
+    let syntax = Syntax::wrap(value);
 
     let mut expansions = ExpansionLevel::default();
     if pattern.matches(&syntax, &mut expansions) {
@@ -342,11 +356,11 @@ impl ExpansionCombiner {
         let binds = self
             .uses
             .iter()
-            .filter_map(|(ident, idx)| {
+            .filter_map(|(binding, idx)| {
                 expansions[*idx]
                     .binds
-                    .get(ident)
-                    .map(|expansion| (ident.clone(), expansion.clone()))
+                    .get(binding)
+                    .map(|expansion| (*binding, expansion.clone()))
             })
             .collect::<HashMap<_, _>>();
         let max_expansions = expansions
@@ -375,116 +389,144 @@ impl ExpansionCombiner {
 
 #[derive(Clone, Debug, Trace)]
 pub enum Template {
-    Null,
+    // Null,
     Ellipsis(Box<Template>),
     List(Vec<Template>),
     Vector(Vec<Template>),
-    ByteVector(Vec<u8>),
-    Identifier {
-        ident: Identifier,
-        binding_env: Option<EnvId>,
-    },
-    Variable(Identifier),
-    Literal(Literal),
+    Variable(Binding),
+    Wrapped(Syntax),
 }
 
 impl Template {
-    pub fn compile<'a>(
-        expr: &'a Syntax,
+    pub(crate) fn compile(
+        expr: &Syntax,
         env: &Environment,
-        expansions: &mut HashMap<Identifier, Local>,
-        resolved_bindings: &mut HashMap<&'a Identifier, Option<EnvId>>,
-    ) -> Self {
+        expansions: &mut HashMap<Binding, Local>,
+    ) -> Result<Self, Exception> {
+        check_ellipsis(expr, env)?;
+        Self::compile_inner(expr, env, expansions)
+    }
+
+    fn is_wrapped(&self) -> bool {
+        matches!(self, Self::Wrapped(_))
+    }
+
+    fn new_list(list: Vec<Template>, span: Span) -> Self {
+        if list.iter().all(Template::is_wrapped) {
+            Self::Wrapped(Syntax::new_list(
+                list.into_iter()
+                    .map(|wrapped| match wrapped {
+                        Template::Wrapped(wrapped) => wrapped,
+                        _ => unreachable!(),
+                    })
+                    .collect(),
+                span,
+            ))
+        } else {
+            Self::List(list)
+        }
+    }
+
+    fn new_vector(vec: Vec<Template>, span: Span) -> Self {
+        if vec.iter().all(Template::is_wrapped) {
+            Self::Wrapped(Syntax::new_vector(
+                vec.into_iter()
+                    .map(|wrapped| match wrapped {
+                        Template::Wrapped(wrapped) => wrapped,
+                        _ => unreachable!(),
+                    })
+                    .collect(),
+                span,
+            ))
+        } else {
+            Self::Vector(vec)
+        }
+    }
+
+    fn compile_inner(
+        expr: &Syntax,
+        env: &Environment,
+        expansions: &mut HashMap<Binding, Local>,
+    ) -> Result<Self, Exception> {
         match expr {
-            Syntax::Null { .. } => Self::Null,
-            Syntax::List { list, .. } => {
+            Syntax::List { list, span, .. } => {
                 if let [
                     Syntax::Identifier {
                         ident: ellipsis, ..
                     },
                     template,
-                    Syntax::Null { .. },
+                    _,
                 ] = list.as_slice()
                     && ellipsis.sym == "..."
                 {
-                    Self::compile_escaped(template, env, expansions, resolved_bindings)
+                    Self::compile_escaped(template, env, expansions)
                 } else {
-                    Self::List(Self::compile_slice(
-                        list,
-                        env,
-                        expansions,
-                        resolved_bindings,
+                    Ok(Self::new_list(
+                        Self::compile_slice(list, env, expansions)?,
+                        span.clone(),
                     ))
                 }
             }
-            Syntax::Vector { vector, .. } => Self::Vector(Self::compile_slice(
-                vector,
-                env,
-                expansions,
-                resolved_bindings,
+            Syntax::Vector { vector, span, .. } => Ok(Self::new_vector(
+                Self::compile_slice(vector, env, expansions)?,
+                span.clone(),
             )),
-            Syntax::ByteVector { vector, .. } => Self::ByteVector(vector.clone()),
-            Syntax::Literal { literal, .. } => Self::Literal(literal.clone()),
-            Syntax::Identifier { ident, .. } => {
-                if let Some(expansion) = env.fetch_pattern_variable(ident) {
-                    expansions.insert(ident.clone(), expansion);
-                    Self::Variable(ident.clone())
+            Syntax::Identifier { ident, .. } if ident.sym == "..." => {
+                Err(Exception::syntax(expr.clone(), None))
+            }
+            Syntax::Identifier { ident, span, .. } => {
+                if let Some(binding) = ident.resolve()
+                    && let Some((expansion, _)) = env.lookup_pattern_variable(binding)
+                {
+                    expansions.insert(binding, expansion);
+                    Ok(Self::Variable(binding))
                 } else {
-                    Self::Identifier {
+                    Ok(Self::Wrapped(Syntax::Identifier {
                         ident: ident.clone(),
-                        binding_env: *resolved_bindings
-                            .entry(ident)
-                            .or_insert_with(|| env.binding_env(ident)),
-                    }
+                        span: span.clone(),
+                    }))
                 }
             }
+            wrapped => Ok(Self::Wrapped(wrapped.clone())),
         }
     }
 
-    pub fn compile_escaped<'a>(
-        expr: &'a Syntax,
+    pub(crate) fn compile_escaped(
+        expr: &Syntax,
         env: &Environment,
-        expansions: &mut HashMap<Identifier, Local>,
-        resolved_bindings: &mut HashMap<&'a Identifier, Option<EnvId>>,
-    ) -> Self {
+        expansions: &mut HashMap<Binding, Local>,
+    ) -> Result<Self, Exception> {
         match expr {
-            Syntax::Null { .. } => Self::Null,
-            Syntax::List { list, .. } => Self::List(Self::compile_slice_escaped(
-                list,
-                env,
-                expansions,
-                resolved_bindings,
+            Syntax::List { list, span, .. } => Ok(Self::new_list(
+                Self::compile_slice_escaped(list, env, expansions)?,
+                span.clone(),
             )),
-            Syntax::Vector { vector, .. } => Self::Vector(Self::compile_slice_escaped(
-                vector,
-                env,
-                expansions,
-                resolved_bindings,
+            Syntax::Vector { vector, span, .. } => Ok(Self::new_vector(
+                Self::compile_slice_escaped(vector, env, expansions)?,
+                span.clone(),
             )),
-            Syntax::ByteVector { vector, .. } => Self::ByteVector(vector.clone()),
-            Syntax::Literal { literal, .. } => Self::Literal(literal.clone()),
-            Syntax::Identifier { ident, .. } => {
-                if let Some(expansion) = env.fetch_pattern_variable(ident) {
-                    expansions.insert(ident.clone(), expansion);
-                    Self::Variable(ident.clone())
+            Syntax::Identifier { ident, span, .. } => {
+                if let Some(binding) = ident.resolve()
+                    && let Some((expansion, _)) = env.lookup_pattern_variable(binding)
+                {
+                    expansions.insert(binding, expansion);
+                    Ok(Self::Variable(binding))
                 } else {
-                    Self::Identifier {
+                    Ok(Self::Wrapped(Syntax::Identifier {
                         ident: ident.clone(),
-                        binding_env: *resolved_bindings
-                            .entry(ident)
-                            .or_insert_with(|| env.binding_env(ident)),
-                    }
+                        span: span.clone(),
+                    }))
                 }
             }
+            wrapped => Ok(Self::Wrapped(wrapped.clone())),
         }
     }
 
-    fn compile_slice<'a>(
-        mut expr: &'a [Syntax],
+    fn compile_slice(
+        mut expr: &[Syntax],
         env: &Environment,
-        expansions: &mut HashMap<Identifier, Local>,
-        resolved_bindings: &mut HashMap<&'a Identifier, Option<EnvId>>,
-    ) -> Vec<Self> {
+        expansions: &mut HashMap<Binding, Local>,
+    ) -> Result<Vec<Self>, Exception> {
         let mut output = Vec::new();
         loop {
             match expr {
@@ -496,113 +538,209 @@ impl Template {
                     },
                     tail @ ..,
                 ] if ellipsis.sym == "..." => {
-                    output.push(Self::Ellipsis(Box::new(Template::compile(
-                        template,
-                        env,
-                        expansions,
-                        resolved_bindings,
-                    ))));
+                    let mut compiled =
+                        Self::Ellipsis(Box::new(Self::compile_inner(template, env, expansions)?));
+                    let mut tail = tail;
+                    while matches!(tail.first(), Some(Syntax::Identifier { ident, ..}) if ident.sym == "...")
+                    {
+                        compiled = Self::Ellipsis(Box::new(compiled));
+                        tail = &tail[1..];
+                    }
+                    output.push(compiled);
                     expr = tail;
                 }
                 [head, tail @ ..] => {
-                    output.push(Self::compile(head, env, expansions, resolved_bindings));
+                    output.push(Self::compile_inner(head, env, expansions)?);
                     expr = tail;
                 }
             }
         }
-        output
+        Ok(output)
     }
 
-    fn compile_slice_escaped<'a>(
-        exprs: &'a [Syntax],
+    fn compile_slice_escaped(
+        exprs: &[Syntax],
         env: &Environment,
-        expansions: &mut HashMap<Identifier, Local>,
-        resolved_bindings: &mut HashMap<&'a Identifier, Option<EnvId>>,
-    ) -> Vec<Self> {
+        expansions: &mut HashMap<Binding, Local>,
+    ) -> Result<Vec<Self>, Exception> {
         exprs
             .iter()
-            .map(|expr| Self::compile_escaped(expr, env, expansions, resolved_bindings))
+            .map(|expr| Self::compile_escaped(expr, env, expansions))
             .collect()
     }
 
-    fn expand(&self, binds: &Binds<'_>, curr_span: Span) -> Option<Syntax> {
-        let syn = match self {
-            Self::Null => Syntax::new_null(curr_span),
-            Self::List(list) => expand_list(list, binds, curr_span.clone())?,
-            Self::Vector(vec) => {
-                Syntax::new_vector(expand_vec(vec, binds, curr_span.clone())?, curr_span)
-            }
-            Self::Identifier { ident, binding_env } => Syntax::Identifier {
-                ident: ident.clone(),
-                span: curr_span,
-                binding_env: *binding_env,
-            },
-            Self::Variable(name) => binds.get_bind(name)?,
-            Self::Literal(literal) => Syntax::new_literal(literal.clone(), curr_span),
-            _ => unreachable!(),
-        };
-        Some(syn)
+    fn expand(&self, binds: &Binds<'_>, curr_span: Span) -> Option<Value> {
+        match self {
+            Self::List(list) => expand_list(list, binds, curr_span.clone()),
+            Self::Vector(vec) => expand_vec(vec, binds, curr_span.clone()),
+            Self::Variable(binding) => Some(Syntax::unwrap(binds.get_bind(*binding)?)),
+            Self::Ellipsis(_) => unreachable!(),
+            Self::Wrapped(Syntax::Wrapped { value, .. }) if value.is_null() => Some(Value::null()),
+            Self::Wrapped(wrapped) => Some(Value::from(wrapped.clone())),
+        }
     }
-}
 
-fn expand_list(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<Syntax> {
-    let mut output = Vec::new();
-    for item in items {
-        if let Template::Ellipsis(template) = item {
+    fn expand_nested(&self, binds: &Binds<'_>, curr_span: Span) -> Option<Vec<Value>> {
+        let mut output = Vec::new();
+        if let Template::Ellipsis(template) = self {
             for expansion in &binds.curr_expansion_level.expansions {
                 let new_level = binds.new_level(expansion);
-                let Some(result) = template.expand(&new_level, curr_span.clone()) else {
+                let Some(result) = template.expand_nested(&new_level, curr_span.clone()) else {
                     break;
                 };
-                output.push(result);
+                output.extend(result);
             }
         } else {
-            output.push(item.expand(binds, curr_span.clone())?);
+            output.push(self.expand(binds, curr_span.clone())?);
         }
-    }
-    Some(normalize_list(output, curr_span))
-}
-
-/// Because we flatten lists into vectors for syntax objects, its necessary to
-/// normalize the list after expansion. Specifically, after expansion, if the
-/// last element of a list is another list, the list needs to be flattened. After
-/// flattening if the vec is empty or a single Null long, it can be replaced with
-/// just a Null.
-fn normalize_list(mut list: Vec<Syntax>, span: Span) -> Syntax {
-    // Check for flattening:
-    if matches!(list.as_slice(), &[.., Syntax::List { .. }]) {
-        let Some(Syntax::List { list: tail, .. }) = list.pop() else {
-            unreachable!()
-        };
-        list.extend(tail);
-    }
-    // We should only have to do this once, if a list is the last element after
-    // flattening something has gone wrong.
-    assert!(!matches!(list.last(), Some(Syntax::List { .. })));
-    // Check for empty/null list:
-    match list.as_slice() {
-        [] | [Syntax::Null { .. }] => Syntax::Null { span },
-        _ => Syntax::new_list(list, span),
+        Some(output)
     }
 }
 
-fn expand_vec(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<Vec<Syntax>> {
-    let mut output = Vec::new();
+fn expand_list(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<Value> {
+    let mut expanded = Vec::new();
     for item in items {
-        match item {
-            Template::Ellipsis(template) => {
-                for expansion in &binds.curr_expansion_level.expansions {
-                    let new_level = binds.new_level(expansion);
-                    let Some(result) = template.expand(&new_level, curr_span.clone()) else {
-                        break;
-                    };
-                    output.push(result);
-                }
-            }
-            item => output.push(item.expand(binds, curr_span.clone())?),
-        }
+        expanded.extend(item.expand_nested(binds, curr_span.clone())?);
+    }
+    let Some(mut output) = expanded.pop() else {
+        return Some(Value::null());
+    };
+    for expanded in expanded.into_iter().rev() {
+        output = Value::from((expanded, output));
     }
     Some(output)
+}
+
+fn expand_vec(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<Value> {
+    let mut output = Vec::new();
+    for item in items {
+        output.extend(item.expand_nested(binds, curr_span.clone())?);
+    }
+    Some(Value::from(output))
+}
+
+fn check_ellipsis(expr: &Syntax, env: &Environment) -> Result<(), Exception> {
+    let binds = match expr {
+        Syntax::List { list, .. } => {
+            if let [
+                Syntax::Identifier {
+                    ident: ellipsis, ..
+                },
+                template,
+                _,
+            ] = list.as_slice()
+                && ellipsis.sym == "..."
+            {
+                check_escaped_template(template, env)
+            } else {
+                check_subtemplate(list, env)?
+            }
+        }
+        Syntax::Vector { vector, .. } => check_subtemplate(vector, env)?,
+        Syntax::Identifier { ident, .. } => {
+            if let Some(binding) = ident.resolve()
+                && let Some((_, depth)) = env.lookup_pattern_variable(binding)
+                && depth != 0
+            {
+                return Err(error::too_few_ellipsis(ident.sym, expr));
+            } else {
+                return Ok(());
+            }
+        }
+        _ => return Ok(()),
+    };
+
+    if let Some((sym, _)) = binds.iter().find(|(_, depth)| *depth > 0) {
+        return Err(error::too_few_ellipsis(*sym, expr));
+    }
+    let has_proper_pattern_var = binds.iter().any(|(_, depth)| *depth == 0);
+    if !has_proper_pattern_var && let Some((sym, _)) = binds.iter().find(|(_, depth)| *depth < 0) {
+        return Err(error::too_many_ellipsis(*sym, expr));
+    }
+
+    Ok(())
+}
+
+fn check_template(expr: &Syntax, env: &Environment) -> Result<Vec<(Symbol, isize)>, Exception> {
+    match expr {
+        Syntax::List { list, .. } => {
+            if let [
+                Syntax::Identifier {
+                    ident: ellipsis, ..
+                },
+                template,
+                _,
+            ] = list.as_slice()
+                && ellipsis.sym == "..."
+            {
+                Ok(check_escaped_template(template, env))
+            } else {
+                check_subtemplate(list, env)
+            }
+        }
+        Syntax::Vector { vector, .. } => check_subtemplate(vector, env),
+        Syntax::Identifier { ident, .. } => {
+            // TODO: Probably should cache these resolves at some point...
+            if let Some(binding) = ident.resolve()
+                && let Some((_, depth)) = env.lookup_pattern_variable(binding)
+            {
+                Ok(vec![(ident.sym, depth as isize)])
+            } else {
+                Ok(Vec::new())
+            }
+        }
+        _ => Ok(Vec::new()),
+    }
+}
+
+fn check_subtemplate(
+    expr: &[Syntax],
+    env: &Environment,
+) -> Result<Vec<(Symbol, isize)>, Exception> {
+    match expr {
+        [] => Ok(Vec::new()),
+        [template, tail @ ..] => {
+            let mut num_ellipsis = 0;
+            let mut tail = tail;
+            while matches!(tail.first(), Some(Syntax::Identifier { ident, ..}) if ident.sym == "...")
+            {
+                num_ellipsis += 1;
+                tail = &tail[1..];
+            }
+            let mut patterns = check_template(template, env)?;
+            if patterns.is_empty() && num_ellipsis > 0 {
+                return Err(error::no_pattern_variables_in_template(template));
+            }
+            for pattern in &mut patterns {
+                pattern.1 -= num_ellipsis;
+            }
+            patterns.extend(check_subtemplate(tail, env)?);
+            Ok(patterns)
+        }
+    }
+}
+
+fn check_escaped_template(expr: &Syntax, env: &Environment) -> Vec<(Symbol, isize)> {
+    match expr {
+        Syntax::List { list, .. } => list
+            .iter()
+            .flat_map(|template| check_escaped_template(template, env))
+            .collect(),
+        Syntax::Vector { vector, .. } => vector
+            .iter()
+            .flat_map(|template| check_escaped_template(template, env))
+            .collect(),
+        Syntax::Identifier { ident, .. } => {
+            if let Some(binding) = ident.resolve()
+                && let Some((_, depth)) = env.lookup_pattern_variable(binding)
+            {
+                vec![(ident.sym, depth as isize)]
+            } else {
+                Vec::new()
+            }
+        }
+        _ => Vec::new(),
+    }
 }
 
 impl SchemeCompatible for Template {
@@ -643,7 +781,7 @@ unsafe extern "C" fn expand_template(
     // TODO: get a real span in here
     let expanded = template.expand(&binds, Span::default()).unwrap();
 
-    Value::into_raw(Value::from(expanded))
+    Value::into_raw(expanded)
 }
 
 #[derive(Debug)]
@@ -667,11 +805,11 @@ impl<'a> Binds<'a> {
         }
     }
 
-    fn get_bind(&self, ident: &Identifier) -> Option<Syntax> {
-        if let bind @ Some(_) = self.curr_expansion_level.binds.get(ident) {
+    fn get_bind(&self, binding: Binding) -> Option<Syntax> {
+        if let bind @ Some(_) = self.curr_expansion_level.binds.get(&binding) {
             bind.cloned()
         } else if let Some(up) = self.parent_expansion_level {
-            up.get_bind(ident)
+            up.get_bind(binding)
         } else {
             None
         }

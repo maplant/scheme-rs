@@ -1,9 +1,4 @@
-use std::path::Path;
-
-use scheme_rs::{
-    ast::DefinitionBody, cps::Compile, env::Environment, proc::Procedure, registry::Library,
-    runtime::Runtime, syntax::Syntax,
-};
+use scheme_rs::{env::TopLevelEnvironment, proc::Procedure, runtime::Runtime, value::Expect1};
 
 use criterion::*;
 use scheme_rs_macros::{maybe_async, maybe_await};
@@ -11,13 +6,11 @@ use scheme_rs_macros::{maybe_async, maybe_await};
 #[maybe_async]
 fn integrate_fn() -> Procedure {
     let rt = Runtime::new();
-    let prog = Library::new_program(&rt, Path::new("integrate.scm"));
-    let env = Environment::Top(prog);
-
-    let sexprs = Syntax::from_str(include_str!("integrate.scm"), Some("integrate.scm")).unwrap();
-    let base = maybe_await!(DefinitionBody::parse_lib_body(&rt, &sexprs, &env,)).unwrap();
-    let compiled = base.compile_top_level();
-    maybe_await!(rt.compile_expr(compiled))
+    let prog = TopLevelEnvironment::new_repl(&rt);
+    maybe_await!(prog.eval(true, "(import (benches integrate)) run"))
+        .unwrap()
+        .expect1()
+        .unwrap()
 }
 
 #[cfg(not(feature = "async"))]

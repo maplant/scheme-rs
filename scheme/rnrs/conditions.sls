@@ -1,5 +1,6 @@
 (library (rnrs conditions (6))
-  (export (import (only (rnrs conditions builtins) simple-conditions condition condition?))
+  (export simple-conditions
+          condition condition?
           define-condition-type
           condition-predicate
           condition-accessor
@@ -14,13 +15,13 @@
           &assertion make-assertion-violation assertion-violation?
           &irritants make-irritants-condition irritants-condition? condition-irritants
           &who make-who-condition who-condition? condition-who
+          &non-continuable make-non-continuable-violation non-continuable-violation? 
           &implementation-restriction make-implementation-restriction-violation implementation-restriction-violation? 
           &lexical make-lexical-violation lexical-violation?
           &syntax make-syntax-violation syntax-violation? syntax-violation-form syntax-violation-subform
           &undefined make-undefined-violation undefined-violation?)
   (import (rnrs base (6))
           (rnrs syntax-case (6))
-          (rnrs conditions builtins (6))
           (rnrs records procedural (6))
           (rnrs records syntactic (6)))
 
@@ -54,15 +55,15 @@
       (syntax-case x ()
         [(_ name constructor predicate builtin)
          #'(begin
-             (define rtd (builtin))
-             (define rcd (make-record-constructor-descriptor rtd #f #f))
-             (define constructor (record-constructor rcd))
-             (define predicate (condition-predicate rtd))
+             (define condition-rtd (builtin))
+             (define condition-rcd (make-record-constructor-descriptor condition-rtd #f #f))
+             (define constructor (record-constructor condition-rcd))
+             (define predicate (condition-predicate condition-rtd))
              (define-syntax name
                (lambda (x)
                  (syntax-case x (rtd rcd)
-                   [(_ rtd) #'rtd]
-                   [(_ rcd) #'rcd]))))])))
+                   [(_ rtd) #'condition-rtd]
+                   [(_ rcd) #'condition-rcd]))))])))
 
   (define-syntax define-condition-type
     (lambda (x)
@@ -103,7 +104,7 @@
   (define condition-irritants (condition-accessor (&irritants-rtd) (record-accessor (&irritants-rtd) 0)))
   (from-builtin &who make-who-condition who-condition? &who-rtd)
   (define condition-who (condition-accessor (&who-rtd) (record-accessor (&who-rtd) 0)))
-  (from-builtin &non-continuable make-non-continuable-violation non-continuable-violation &non-continuable-rtd)
+  (from-builtin &non-continuable make-non-continuable-violation non-continuable-violation? &non-continuable-rtd)
   (from-builtin &implementation-restriction make-implementation-restriction-violation implementation-restriction-violation? &implementation-restriction-rtd)
   (from-builtin &lexical make-lexical-violation lexical-violation? &lexical-rtd)
   (from-builtin &syntax make-syntax-violation syntax-violation? &syntax-rtd)

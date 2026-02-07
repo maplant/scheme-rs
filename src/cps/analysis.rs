@@ -20,6 +20,7 @@
 use super::*;
 
 impl Cps {
+    #[stacksafe::stacksafe]
     pub(super) fn free_variables(&self) -> HashSet<Local> {
         match self {
             Cps::PrimOp(PrimOp::AllocCell, _, bind, cexpr) => {
@@ -72,6 +73,7 @@ impl Cps {
     ) -> HashMap<Local, usize> {
         match self {
             Cps::PrimOp(_, args, _, cexpr) => {
+                // TODO: Cache prim op uses too
                 merge_uses(values_to_uses(args), cexpr.uses(uses_cache))
             }
             Cps::If(cond, success, failure) => {

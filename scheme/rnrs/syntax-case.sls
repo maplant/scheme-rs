@@ -1,9 +1,9 @@
 (library (rnrs syntax-case (6))
   (export quasisyntax
           (import (rnrs syntax-case builtins (6)))
-          (import (rnrs syntax-case special-keywords (6))))
+          (import (rnrs syntax-case primitives (6))))
   (import (rnrs base builtins (6))
-          (rnrs base special-keywords (6)))
+          (rnrs base primitives (6)))
 
   (define-syntax with-syntax
     (lambda (x)
@@ -30,13 +30,6 @@
   ;; 
   (define-syntax quasisyntax
     (lambda (e)
-      (define (flatten e)
-        (syntax-case e ()
-          [((head1 head2) tail ...)
-           (with-syntax (((flattened-tail ...) (flatten (syntax (tail ...)))))
-             (syntax (head1 head2 flattened-tail ...)))]
-          [()
-           (syntax ())]))
 
       ;; Expand returns a list of the form
       ;;    [template[t/e, ...] (replacement ...)]
@@ -72,9 +65,9 @@
            (with-syntax (((r* (rep ...)) (expand (syntax r) 0))
                          ((t ...)        (generate-temporaries
                                           (syntax (e ...)))))
-             (with-syntax (((t* ...) (flatten (syntax ((t (... ...)) ...)))))
-               (syntax ((t* ... . r*)
-                        (((t (... ...)) e) ... rep ...))))))
+             (with-syntax ((((t ...) ...) (syntax ((t (... ...)) ...))))
+               (syntax [(t ... ... . r*)
+                        (((t ...) e) ... rep ...)]))))
           ((k . r)
            (and (> level 0)
                 (identifier? (syntax k))

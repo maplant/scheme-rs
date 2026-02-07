@@ -1,26 +1,119 @@
+//! Scheme values.
+//!
+//! Scheme values are dynamic and can contain essentially any value, similar to
+//! an [`Arc<dyn Any>`](std::any::Any). Any type that has a valid scheme
+//! representation (see [scheme types](#scheme-types) for more information) can
+//! be converted easily to a Scheme `Value`. Converting a Rust primitive or
+//! standard library type can be done simply with the `From` trait:
+//!
+//! ```
+//! # use scheme_rs::value::Value;
+//! let value = Value::from(3.1415926f64);
+//! ```
+//!
+//! Converting a Value back to a concrete rust type can be done via the
+//! [`TryFrom`] trait or by obtaining an enum through the
+//! [`unpack`](Value::unpack) or [`unpacked_ref`](Value::unpacked_ref)
+//! functions:
+//!
+//! ```
+//! # use scheme_rs::value::{Value, UnpackedValue};
+//! # let value = Value::from(3.1415926f64);
+//! let float: f64 = value.clone().try_into().unwrap();
+//! let float: f64 = match value.unpack() {
+//!     UnpackedValue::Number(num) => num.try_into().unwrap(),
+//!     _ => unreachable!(),
+//! };
+//! ```
+//!
+//! It is generally preferrable to use `try_into` as opposed to `unpack` since
+//! `UnpackedValue` is an enumeration that is subject to change.
+//!
+//! Alternatively, the [`cast_to_scheme_type`](Value::cast_to_scheme_type)
+//! method can be used to obtain an Option from a reference for more ergonomic
+//! casting. There is also the [`try_to_scheme_type`](Value::try_to_scheme_type)
+//! function that is similarly more ergonomic:
+//!
+//! ```
+//! # use scheme_rs::value::{Value, UnpackedValue};
+//! let value = Value::from(3);
+//! let float = value.cast_to_scheme_type::<f64>().unwrap();
+//! let int = value.cast_to_scheme_type::<i64>().unwrap();
+//! ```
+//!
+//! ## Converting to and from arbitrary Rust types
+//!
+//! Besides primitives and standard library types, scheme-rs supports converting
+//! arbitrary Rust types (such as structs and enums) to `Values` by representing
+//! them as [`Records`](Record). To do this, the type must implement the
+//! [`SchemeCompatible`] trait (see [`records`](scheme_rs::records) for more
+//! information).
+//!
+//! `Value` provides three convenience methods to facilitate these conversions:
+//! - [`from_rust_type`](Value::from_rust_type): convert a `SchemeCompatible`
+//!   type to a record type, and then to a `Value`.
+//! - [`try_to_rust_type`](Value::try_to_rust_type): attempt to convert the
+//!   value to a `Gc<T>` where `T: SchemeCompatible` providing a detailed error
+//!   on failure.
+//! - [`cast_to_rust_type`](Value::cast_to_rust_type): attempt to convert the
+//!   value to a `Gc<T>` where `T: SchemeCompatible`, returning `None` on
+//!   failure.
+//!
+//! ## Scheme types:
+//!
+//! Scheme values can inhabit at most one of any of the following types:
+//! - **Undefined**: Variables with this value throw an error upon being read.
+//! - **Null**: Can only be one possible value which is itself. Conceptually the
+//!   same as the [`()`](https://doc.rust-lang.org/std/primitive.unit.html) type.
+//! - **Pair**: A [collection of two Values](Pair). Conceptually similar to a
+//!   Rust [two-tuple](https://doc.rust-lang.org/std/primitive.tuple.html).
+//! - **Boolean**: Can either be `true` or `false`.
+//! - **Character**: A unicode code point. Same thing as a [`char`](std::char).
+//! - **Number**: A numerical value on the numerical tower. Represented by a
+//!   [`Arc<Number>`](crate::num::Number).
+//! - **String**: An array of [`chars`](std::char).
+//! - **Symbol**: A [`Symbol`].
+//! - **Vector**: A [`Vector`].
+//! - **Byte-vector**: A [`ByteVector`].
+//! - **Syntax**: A [`Syntax`].
+//! - **Procedure**: A [`Procedure`].
+//! - **Record**: A [`Record`], which can possibly be a [`SchemeCompatible`].
+//! - **Record Type Descriptor**: A [descriptor of a record's type](RecordTypeDescriptor).
+//! - **Hashtable**: A [`HashTable`].
+//! - **Port**: A value that can handle [input/output](scheme_rs::ports::Port)
+//!   from the outside world.
+//! - **Cell**: A mutable reference to another Value. This type is completely
+//!   transparent and impossible to observe.
+
 use indexmap::{IndexMap, IndexSet};
 use malachite::Integer;
 use parking_lot::RwLock;
 
 use crate::{
-    ast,
     exceptions::Exception,
     gc::{Gc, GcInner, Trace},
-    hashtables::{self, HashTable, HashTableInner},
+    hashtables::{HashTable, HashTableInner},
     lists::{self, Pair, PairInner},
-    num::{Number, NumberInner, SimpleNumber},
+    num::{ComplexNumber, Number, NumberInner, SimpleNumber},
     ports::{Port, PortInner},
     proc::{Procedure, ProcedureInner},
     records::{Record, RecordInner, RecordTypeDescriptor, SchemeCompatible},
     registry::bridge,
     strings::{WideString, WideStringInner},
     symbols::Symbol,
-    syntax::Syntax,
+    syntax::{Identifier, Syntax},
     vectors::{self, ByteVector, Vector, VectorInner},
 };
 use std::{
-    collections::HashMap, fmt, hash::Hash, marker::PhantomData, mem::ManuallyDrop, ops::Deref,
-    ptr::null, sync::Arc,
+    collections::HashMap,
+    convert::Infallible,
+    fmt,
+    hash::{Hash, Hasher},
+    marker::PhantomData,
+    mem::ManuallyDrop,
+    ops::Deref,
+    ptr::null,
+    sync::Arc,
 };
 
 const ALIGNMENT: usize = 16;
@@ -28,11 +121,16 @@ const TAG_BITS: usize = ALIGNMENT.ilog2() as usize;
 const TAG: usize = 0b1111;
 const FALSE_VALUE: usize = Tag::Boolean as usize;
 
-/// A Scheme value. Represented as a tagged pointer.
+/// A Scheme value. See [the module documentation](scheme_rs::value) for more
+/// information.
 #[repr(transparent)]
 pub struct Value(*const ());
 
 impl Value {
+    /// Create a new `Value` from an `UnpackedValue`.
+    ///
+    /// This is generally discouraged as it's cumbersome; try using `From`
+    /// instead.
     pub fn new(v: UnpackedValue) -> Self {
         v.into_value()
     }
@@ -46,11 +144,15 @@ impl Value {
         self.0 as usize == Tag::Pair as usize
     }
 
+    pub fn is_undefined(&self) -> bool {
+        self.type_of() == ValueType::Undefined
+    }
+
     /// Creates a new Value from a raw u64.
     ///
     /// # Safety
     /// Calling this function is undefined behavior if the raw u64 was not obtained
-    /// via [into_raw]
+    /// via [into_raw](Value::into_raw)
     pub unsafe fn from_raw(raw: *const ()) -> Self {
         Self(raw)
     }
@@ -59,7 +161,7 @@ impl Value {
     ///
     /// # Safety
     /// Calling this function is undefined behavior if the raw u64 was not obtained
-    /// via [into_raw]
+    /// via [into_raw](Value::into_raw)
     pub unsafe fn from_raw_inc_rc(raw: *const ()) -> Self {
         let tag = Tag::from(raw as usize & TAG);
         let untagged = raw.map_addr(|raw| raw & !TAG);
@@ -71,7 +173,7 @@ impl Value {
                     Gc::increment_reference_count(untagged as *mut GcInner<VectorInner<Value>>)
                 }
                 Tag::ByteVector => Arc::increment_strong_count(untagged as *const VectorInner<u8>),
-                Tag::Syntax => Arc::increment_strong_count(untagged as *const Syntax),
+                Tag::Syntax => Gc::increment_reference_count(untagged as *mut GcInner<Syntax>),
                 Tag::Procedure => {
                     Gc::increment_reference_count(untagged as *mut GcInner<ProcedureInner>)
                 }
@@ -85,9 +187,9 @@ impl Value {
                     }
                 }
                 Tag::Port => Arc::increment_strong_count(untagged as *const PortInner),
-                Tag::HashTable => Gc::increment_reference_count(
-                    untagged as *mut GcInner<hashtables::HashTableInner>,
-                ),
+                Tag::HashTable => {
+                    Gc::increment_reference_count(untagged as *mut GcInner<HashTableInner>)
+                }
                 Tag::Cell => {
                     Gc::increment_reference_count(untagged as *mut GcInner<Value>);
                 }
@@ -99,7 +201,8 @@ impl Value {
 
     /// Creates a raw u64 from a Value. Does not decrement the reference count.
     /// Calling this function without turning the raw value into a Value via
-    /// [from_raw] is equivalent to calling mem::forget on the value.
+    /// [from_raw](Value::from_raw) is equivalent to calling mem::forget on the
+    /// value.
     pub fn into_raw(val: Self) -> *const () {
         ManuallyDrop::new(val).0
     }
@@ -125,9 +228,10 @@ impl Value {
         Self(null::<()>().map_addr(|raw| raw | Tag::Pair as usize))
     }
 
+    /// Convert a [`Syntax`] into its corresponding datum representation.
     pub fn datum_from_syntax(syntax: &Syntax) -> Self {
         match syntax {
-            Syntax::Null { .. } => Self::null(),
+            Syntax::Wrapped { value, .. } => value.clone(),
             Syntax::List { list, .. } => {
                 let mut curr = Self::datum_from_syntax(list.last().unwrap());
                 for item in list[..list.len() - 1].iter().rev() {
@@ -141,8 +245,6 @@ impl Value {
                     .map(Self::datum_from_syntax)
                     .collect::<Vec<_>>(),
             ),
-            Syntax::ByteVector { vector, .. } => Self::from(vector.clone()),
-            Syntax::Literal { literal, .. } => Self::from(literal.clone()),
             Syntax::Identifier { ident, .. } => Self::new(UnpackedValue::Symbol(ident.sym)),
         }
     }
@@ -196,10 +298,13 @@ impl Value {
             .ok_or_else(|| Exception::type_error(&type_name, &record.rtd().name.to_str()))
     }
 
+    /// Automatically convert a `SchemeCompatible` type to a `Record` and then
+    /// into a `Value`.
     pub fn from_rust_type<T: SchemeCompatible>(t: T) -> Self {
         Self::from(Record::from_rust_type(t))
     }
 
+    /// Unpack the value into an enum representation.
     pub fn unpack(self) -> UnpackedValue {
         let raw = ManuallyDrop::new(self).0;
         let tag = Tag::from(raw as usize & TAG);
@@ -235,7 +340,7 @@ impl Value {
                 UnpackedValue::ByteVector(ByteVector(bvec))
             }
             Tag::Syntax => {
-                let syn = unsafe { Arc::from_raw(untagged as *const Syntax) };
+                let syn = unsafe { Gc::from_raw(untagged as *mut GcInner<Syntax>) };
                 UnpackedValue::Syntax(syn)
             }
             Tag::Procedure => {
@@ -300,6 +405,101 @@ impl Value {
     pub fn equal(&self, rhs: &Self) -> bool {
         equal(self, rhs)
     }
+
+    /// Performs a hash suitable for use with eq? as an equivalance function
+    pub fn eq_hash<H: Hasher>(&self, state: &mut H) {
+        let unpacked = self.unpacked_ref();
+        std::mem::discriminant(&*unpacked).hash(state);
+        match &*unpacked {
+            UnpackedValue::Undefined => (),
+            UnpackedValue::Null => (),
+            UnpackedValue::Boolean(b) => b.hash(state),
+            UnpackedValue::Character(c) => c.hash(state),
+            UnpackedValue::Number(n) => Arc::as_ptr(&n.0).hash(state),
+            UnpackedValue::String(s) => Arc::as_ptr(&s.0).hash(state),
+            UnpackedValue::Symbol(s) => s.hash(state),
+            UnpackedValue::ByteVector(v) => Arc::as_ptr(&v.0).hash(state),
+            UnpackedValue::Syntax(s) => Gc::as_ptr(s).hash(state),
+            UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
+            UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
+            UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
+            UnpackedValue::Pair(p) => Gc::as_ptr(&p.0).hash(state),
+            UnpackedValue::Vector(v) => Gc::as_ptr(&v.0).hash(state),
+            UnpackedValue::Port(p) => Arc::as_ptr(&p.0).hash(state),
+            UnpackedValue::HashTable(ht) => Gc::as_ptr(&ht.0).hash(state),
+            UnpackedValue::Cell(c) => c.0.read().eqv_hash(state),
+        }
+    }
+
+    /// Performs a hash suitable for use with eqv? as an equivalance function
+    pub fn eqv_hash<H: Hasher>(&self, state: &mut H) {
+        let unpacked = self.unpacked_ref();
+        std::mem::discriminant(&*unpacked).hash(state);
+        match &*unpacked {
+            UnpackedValue::Undefined => (),
+            UnpackedValue::Null => (),
+            UnpackedValue::Boolean(b) => b.hash(state),
+            UnpackedValue::Character(c) => c.hash(state),
+            UnpackedValue::Number(n) => n.hash(state),
+            UnpackedValue::String(s) => Arc::as_ptr(&s.0).hash(state),
+            UnpackedValue::Symbol(s) => s.hash(state),
+            UnpackedValue::ByteVector(v) => Arc::as_ptr(&v.0).hash(state),
+            UnpackedValue::Syntax(s) => Gc::as_ptr(s).hash(state),
+            UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
+            UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
+            UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
+            UnpackedValue::Pair(p) => Gc::as_ptr(&p.0).hash(state),
+            UnpackedValue::Vector(v) => Gc::as_ptr(&v.0).hash(state),
+            UnpackedValue::Port(p) => Arc::as_ptr(&p.0).hash(state),
+            UnpackedValue::HashTable(ht) => Gc::as_ptr(&ht.0).hash(state),
+            UnpackedValue::Cell(c) => c.0.read().eqv_hash(state),
+        }
+    }
+
+    /// Performs a hash suitable for use with equal? as an equivalance function
+    pub fn equal_hash<H: Hasher>(&self, recursive: &mut IndexSet<Value>, state: &mut H) {
+        let unpacked = self.unpacked_ref();
+        std::mem::discriminant(&*unpacked).hash(state);
+
+        // I think this is fine, because types that would be recursive will
+        // write out at least two values here where we're only writing out one.
+        if let Some(index) = recursive.get_index_of(self) {
+            state.write_usize(index);
+            return;
+        }
+
+        match &*unpacked {
+            UnpackedValue::Undefined => (),
+            UnpackedValue::Null => (),
+            UnpackedValue::Boolean(b) => b.hash(state),
+            UnpackedValue::Character(c) => c.hash(state),
+            UnpackedValue::Number(n) => n.hash(state),
+            UnpackedValue::String(s) => s.hash(state),
+            UnpackedValue::Symbol(s) => s.hash(state),
+            UnpackedValue::ByteVector(v) => v.hash(state),
+            UnpackedValue::Syntax(s) => Gc::as_ptr(s).hash(state),
+            UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
+            UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
+            UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
+            UnpackedValue::Pair(p) => {
+                recursive.insert(self.clone());
+                let (car, cdr) = p.clone().into();
+                car.equal_hash(recursive, state);
+                cdr.equal_hash(recursive, state);
+            }
+            UnpackedValue::Vector(v) => {
+                recursive.insert(self.clone());
+                let v_read = v.0.vec.read();
+                state.write_usize(v_read.len());
+                for val in v_read.iter() {
+                    val.equal_hash(recursive, state);
+                }
+            }
+            UnpackedValue::Port(p) => Arc::as_ptr(&p.0).hash(state),
+            UnpackedValue::HashTable(ht) => Gc::as_ptr(&ht.0).hash(state),
+            UnpackedValue::Cell(c) => c.0.read().eqv_hash(state),
+        }
+    }
 }
 
 impl Clone for Value {
@@ -315,7 +515,7 @@ impl Drop for Value {
     }
 }
 
-/// Default Hash implementation for Value is [Value::hash_eqv]. This produces
+/// Default Hash implementation for Value is [Value::eqv_hash]. This produces
 /// reasonable hash maps.
 impl Hash for Value {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
@@ -372,6 +572,22 @@ unsafe impl Trace for Value {
 #[derive(Clone, Trace)]
 pub struct Cell(pub(crate) Gc<RwLock<Value>>);
 
+impl Cell {
+    pub fn new(val: Value) -> Self {
+        Self(Gc::new(RwLock::new(val)))
+    }
+
+    pub fn get(&self) -> Value {
+        self.0.read().clone()
+    }
+
+    pub fn set(&self, new_val: Value) {
+        *self.0.write() = new_val;
+    }
+}
+
+/// A reference to an [`UnpackedValue`]. Allows for unpacking a `Value` without
+/// cloning/modifying the reference count.
 pub struct UnpackedValueRef<'a> {
     unpacked: ManuallyDrop<UnpackedValue>,
     marker: PhantomData<&'a UnpackedValue>,
@@ -405,11 +621,13 @@ where
     }
 }
 
+/*
 impl From<ast::Literal> for Value {
     fn from(lit: ast::Literal) -> Self {
         Value::new(lit.into())
     }
 }
+*/
 
 impl From<Exception> for Value {
     fn from(value: Exception) -> Self {
@@ -463,6 +681,7 @@ impl From<usize> for Tag {
     }
 }
 
+/// Different possible types that a Value can inhabit.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ValueType {
     Undefined,
@@ -483,7 +702,7 @@ pub enum ValueType {
     Port,
 }
 
-/// The external, unpacked representation of a scheme value.
+/// The external, unpacked, enumeration representation of a scheme value.
 ///
 /// Values that are not potentially cyclical, such as syntax objects and byte
 /// vectors use Arcs as they are much less expensive than Gc types.
@@ -499,13 +718,13 @@ pub enum UnpackedValue {
     Symbol(Symbol),
     Vector(Vector),
     ByteVector(ByteVector),
-    Syntax(Arc<Syntax>),
+    Syntax(Gc<Syntax>),
     Procedure(Procedure),
     Record(Record),
     RecordTypeDescriptor(Arc<RecordTypeDescriptor>),
     Pair(Pair),
     Port(Port),
-    HashTable(hashtables::HashTable),
+    HashTable(HashTable),
     Cell(Cell),
 }
 
@@ -540,8 +759,8 @@ impl UnpackedValue {
                 Value::from_ptr_and_tag(untagged, Tag::ByteVector)
             }
             Self::Syntax(syn) => {
-                let untagged = Arc::into_raw(syn);
-                Value::from_ptr_and_tag(untagged, Tag::Syntax)
+                let untagged = Gc::into_raw(syn);
+                Value::from_mut_ptr_and_tag(untagged, Tag::Syntax)
             }
             Self::Procedure(clos) => {
                 let untagged = Gc::into_raw(clos.0);
@@ -587,7 +806,7 @@ impl UnpackedValue {
             (Self::Vector(a), Self::Vector(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(&a.0, &b.0),
             (Self::Procedure(a), Self::Procedure(b)) => Gc::ptr_eq(&a.0, &b.0),
-            (Self::Syntax(a), Self::Syntax(b)) => Arc::ptr_eq(a, b),
+            (Self::Syntax(a), Self::Syntax(b)) => Gc::ptr_eq(a, b),
             (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
             (Self::Port(a), Self::Port(b)) => Arc::ptr_eq(&a.0, &b.0),
@@ -618,7 +837,7 @@ impl UnpackedValue {
             (Self::Vector(a), Self::Vector(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(&a.0, &b.0),
             (Self::Procedure(a), Self::Procedure(b)) => Gc::ptr_eq(&a.0, &b.0),
-            (Self::Syntax(a), Self::Syntax(b)) => Arc::ptr_eq(a, b),
+            (Self::Syntax(a), Self::Syntax(b)) => Gc::ptr_eq(a, b),
             (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
             (Self::Port(a), Self::Port(b)) => Arc::ptr_eq(&a.0, &b.0),
@@ -662,7 +881,6 @@ impl UnpackedValue {
             Self::Pair(_) => ValueType::Pair,
             Self::Vector(_) => ValueType::Vector,
             Self::ByteVector(_) => ValueType::ByteVector,
-            Self::Syntax(syn) if matches!(syn.as_ref(), Syntax::Null { .. }) => ValueType::Null,
             Self::Syntax(_) => ValueType::Syntax,
             Self::Procedure(_) => ValueType::Procedure,
             Self::Record(_) => ValueType::Record,
@@ -675,6 +893,7 @@ impl UnpackedValue {
 }
 
 /// Determine if two objects are equal in an extremely granular sense.
+///
 /// This implementation is a Rust translation of Efficient Dondestructive
 /// Equality Checking for Trees and Graphs by Michael D. Adams and R. Kent
 /// Dybvig.
@@ -846,17 +1065,6 @@ fn set_box(b: &Value, val: impl Into<Value>) {
     pair.set_car(val.into()).unwrap();
 }
 
-impl From<ast::Literal> for UnpackedValue {
-    fn from(lit: ast::Literal) -> Self {
-        match lit {
-            ast::Literal::Number(n) => Self::Number(n.clone()),
-            ast::Literal::Boolean(b) => Self::Boolean(b),
-            ast::Literal::String(s) => Self::String(WideString::from(s.clone())),
-            ast::Literal::Character(c) => Self::Character(c),
-        }
-    }
-}
-
 macro_rules! impl_try_from_value_for {
     ($ty:ty, $variant:ident, $type_name:literal) => {
         impl From<$ty> for UnpackedValue {
@@ -922,6 +1130,12 @@ macro_rules! impl_try_from_value_for {
     };
 }
 
+impl From<Infallible> for Value {
+    fn from(value: Infallible) -> Self {
+        match value {}
+    }
+}
+
 impl From<()> for UnpackedValue {
     fn from((): ()) -> Self {
         Self::Null
@@ -984,6 +1198,14 @@ impl TryFrom<Value> for Cell {
     }
 }
 
+impl TryFrom<&Value> for Cell {
+    type Error = Exception;
+
+    fn try_from(v: &Value) -> Result<Self, Self::Error> {
+        v.clone().unpack().try_into()
+    }
+}
+
 impl From<Value> for bool {
     fn from(value: Value) -> Self {
         value.is_true()
@@ -1010,7 +1232,7 @@ impl_try_from_value_for!(WideString, String, "string");
 impl_try_from_value_for!(Symbol, Symbol, "symbol");
 impl_try_from_value_for!(Vector, Vector, "vector");
 impl_try_from_value_for!(ByteVector, ByteVector, "byte-vector");
-impl_try_from_value_for!(Arc<Syntax>, Syntax, "syntax");
+impl_try_from_value_for!(Gc<Syntax>, Syntax, "syntax");
 impl_try_from_value_for!(Procedure, Procedure, "procedure");
 impl_try_from_value_for!(Pair, Pair, "pair");
 impl_try_from_value_for!(Record, Record, "record");
@@ -1038,10 +1260,19 @@ macro_rules! impl_from_wrapped_for {
 impl_from_wrapped_for!(String, String, WideString::new);
 impl_from_wrapped_for!(Vec<Value>, Vector, Vector::new);
 impl_from_wrapped_for!(Vec<u8>, ByteVector, ByteVector::new);
-impl_from_wrapped_for!(Syntax, Syntax, Arc::new);
+impl_from_wrapped_for!(Syntax, Syntax, Gc::new);
 impl_from_wrapped_for!((Value, Value), Pair, |(car, cdr)| Pair::new(
     car, cdr, false
 ));
+
+impl From<UnpackedValue> for Option<(Value, Value)> {
+    fn from(val: UnpackedValue) -> Self {
+        match val {
+            UnpackedValue::Pair(pair) => Some(pair.into()),
+            _ => None,
+        }
+    }
+}
 
 impl TryFrom<UnpackedValue> for (Value, Value) {
     type Error = Exception;
@@ -1068,11 +1299,11 @@ macro_rules! impl_num_conversion {
             }
         }
 
-        impl TryInto<$ty> for Value {
+        impl TryFrom<Value> for $ty {
             type Error = Exception;
 
-            fn try_into(self) -> Result<$ty, Self::Error> {
-                (&self).try_into()
+            fn try_from(value: Value) -> Result<$ty, Self::Error> {
+                (&value).try_into()
             }
         }
 
@@ -1117,12 +1348,56 @@ impl_num_conversion!(isize);
 impl_num_conversion!(f64);
 impl_num_conversion!(Integer);
 impl_num_conversion!(SimpleNumber);
+impl_num_conversion!(ComplexNumber);
+
+impl From<&Value> for Option<Identifier> {
+    fn from(value: &Value) -> Self {
+        match &*value.unpacked_ref() {
+            UnpackedValue::Syntax(syn) => match syn.as_ref() {
+                Syntax::Identifier { ident, .. } => Some(ident.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
+
+impl TryFrom<&Value> for Identifier {
+    type Error = Exception;
+
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        match Option::<Identifier>::from(value) {
+            Some(ident) => Ok(ident),
+            None => Err(Exception::type_error("identifier", value.type_name())),
+        }
+    }
+}
+
+impl From<Value> for Option<(Value, Value)> {
+    fn from(value: Value) -> Self {
+        value.unpack().into()
+    }
+}
+
+impl From<&Value> for Option<(Value, Value)> {
+    fn from(value: &Value) -> Self {
+        value.clone().unpack().into()
+    }
+}
 
 impl TryFrom<Value> for (Value, Value) {
     type Error = Exception;
 
     fn try_from(val: Value) -> Result<Self, Self::Error> {
         Self::try_from(val.unpack())
+    }
+}
+
+impl TryFrom<&Value> for (Value, Value) {
+    type Error = Exception;
+
+    fn try_from(val: &Value) -> Result<Self, Self::Error> {
+        Self::try_from(val.clone().unpack())
     }
 }
 
@@ -1252,7 +1527,7 @@ fn display_value(
         UnpackedValue::ByteVector(v) => vectors::write_bytevec(&v, f),
         UnpackedValue::Procedure(_) => write!(f, "<procedure>"),
         UnpackedValue::Record(record) => write!(f, "{record:?}"),
-        UnpackedValue::Syntax(syntax) => write!(f, "{syntax:#?}"),
+        UnpackedValue::Syntax(syntax) => write!(f, "#<syntax {syntax:#?}>"),
         UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
         UnpackedValue::Port(_) => write!(f, "<port>"),
         UnpackedValue::HashTable(hashtable) => write!(f, "{hashtable:?}"),
@@ -1280,7 +1555,10 @@ fn debug_value(
         }
         UnpackedValue::Vector(v) => vectors::write_vec(&v, debug_value, circular_values, f),
         UnpackedValue::ByteVector(v) => vectors::write_bytevec(&v, f),
-        UnpackedValue::Syntax(syntax) => write!(f, "{syntax:#?}"),
+        UnpackedValue::Syntax(syntax) => {
+            let span = syntax.span();
+            write!(f, "#<syntax:{span} {syntax:#?}>")
+        }
         UnpackedValue::Procedure(proc) => write!(f, "#<procedure {proc:?}>"),
         UnpackedValue::Record(record) => write!(f, "{record:#?}"),
         UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),

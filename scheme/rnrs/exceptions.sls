@@ -1,41 +1,44 @@
 (library (rnrs exceptions (6))
   (export guard
-          (import (rnrs exceptions builtins (6))))
+          with-exception-handler
+          raise
+          raise-continuable)
   (import (rnrs base))
 
   (define-syntax guard-inner
     (syntax-rules (else =>)
-      ((_ var (else result1 result2 ...))
-       (begin result1 result2 ...))
-      ((_ var (test => result))
+      [(_ continue var (else result1 result2 ...))
+       (continue (begin result1 result2 ...))]
+      [(_ continue var (test => result))
        (let ((temp test))
-         (if temp (result temp))))
-      ((_ var (test => result) clause1 clause2 ...)
-       (let ((temp test))
-         (if temp
-             (result temp)
-             (guard-inner var clause1 clause2 ...))))
-      ((_ var (test)) (begin test (raise var)))
-      ((_ var (test) clause1 clause2 ...)
+         (if temp (continue (result temp))))]
+      [(_ continue var (test => result) clause1 clause2 ...)
        (let ((temp test))
          (if temp
-             temp
-             (guard-inner var clause1 clause2 ...))))
-      ((_ var (test result1 result2 ...))
+             (continue (result temp))
+             (guard-inner continue var clause1 clause2 ...)))]
+      [(_ continue var (test)) (begin test (raise var))]
+      [(_ continue var (test) clause1 clause2 ...)
+       (let ((temp test))
+         (if temp
+             (continue temp)
+             (guard-inner continue var clause1 clause2 ...)))]
+      [(_ continue var (test result1 result2 ...))
        (if test
-           (begin result1 result2 ...)
-           (raise var)))
-           
-      ((_ var (test result1 result2 ...)
-                 clause1 clause2 ...)
+           (continue (begin result1 result2 ...))
+           (raise var))]
+      [(_ continue var (test result1 result2 ...)
+          clause1 clause2 ...)
        (if test
-           (begin result1 result2 ...)
-           (guard-inner var clause1 clause2 ...)))))
+           (continue (begin result1 result2 ...))
+           (guard-inner continue var clause1 clause2 ...))]))
   
   (define-syntax guard
     (syntax-rules ()
       ([_ (var clause1 clausen ...) body]
-       (with-exception-handler
-        (lambda (var)
-          (guard-inner var clause1 clausen ...))
-        (lambda () body))))))
+       (call/cc
+        (lambda (continue)
+          (with-exception-handler
+           (lambda (var)
+             (guard-inner continue var clause1 clausen ...))
+           (lambda () body))))))))

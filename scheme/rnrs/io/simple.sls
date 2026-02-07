@@ -11,6 +11,6 @@
   (define (close-input-port port)
     (close-port port))
 
-  (define (close-ouput-port port)
+  (define (close-output-port port)
     (close-port port)))
                         

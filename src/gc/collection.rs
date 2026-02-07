@@ -17,8 +17,9 @@ use std::{
 };
 
 use rustc_hash::FxHashSet as HashSet;
+use scheme_rs_macros::{maybe_async, maybe_await};
 
-use crate::gc::GcInner;
+use crate::{exceptions::Exception, gc::GcInner, registry::bridge, value::Value};
 
 #[derive(Debug)]
 #[repr(C)]
@@ -101,6 +102,7 @@ impl std::fmt::Debug for OpaqueGcPtr {
     }
 }
 
+#[doc(hidden)]
 pub type OpaqueGcPtr = HeapObject<()>;
 
 impl HeapObject<()> {
@@ -245,8 +247,54 @@ pub(super) fn alloc_gc_object<T: super::GcOrTrace>(data: T) -> super::Gc<T> {
 static HEAP_START: AtomicPtr<GcHeader> = AtomicPtr::new(std::ptr::null_mut());
 static COLLECTOR_TASK: OnceLock<JoinHandle<()>> = OnceLock::new();
 
+/// Initializes the garbage collector thread. Calling this function is typically
+/// not required as creating a [`Runtime`](crate::runtime::Runtime)
+/// automatically calls it.
+///
+/// Calling this function multiple times does nothing, there is only one
+/// collector thread allowed at a time.
 pub fn init_gc() {
     let _ = COLLECTOR_TASK.get_or_init(|| Collector::new().run());
+}
+
+static CURRENT_EPOCH: AtomicUsize = AtomicUsize::new(0);
+
+/// Force a garbage collection pause.
+#[cfg(not(feature = "async"))]
+pub fn collect_garbage() {
+    use std::thread::sleep;
+
+    const MAX_SLEEP: u64 = 100;
+
+    let curr_epoch = CURRENT_EPOCH.load(Ordering::Relaxed);
+    let mut sleep_for = 10;
+    // Wait for two epochs
+    while CURRENT_EPOCH.load(Ordering::Relaxed) < curr_epoch + 2 {
+        sleep(Duration::from_millis(sleep_for));
+        sleep_for = (sleep_for * 2).min(MAX_SLEEP);
+    }
+}
+
+#[cfg(feature = "tokio")]
+pub async fn collect_garbage() {
+    use tokio::time::sleep;
+
+    const MAX_SLEEP: u64 = 100;
+
+    let curr_epoch = CURRENT_EPOCH.load(Ordering::Relaxed);
+    let mut sleep_for = 10;
+    // Wait for two epochs
+    while CURRENT_EPOCH.load(Ordering::Relaxed) < curr_epoch + 2 {
+        sleep(Duration::from_millis(sleep_for)).await;
+        sleep_for = (sleep_for * 2).min(MAX_SLEEP);
+    }
+}
+
+#[maybe_async]
+#[bridge(name = "collect-garbage", lib = "(runtime (1))")]
+pub fn collect_garbage_bridge() -> Result<Vec<Value>, Exception> {
+    maybe_await!(collect_garbage());
+    Ok(Vec::new())
 }
 
 #[derive(Debug)]
@@ -278,6 +326,9 @@ impl Collector {
     }
 
     fn epoch(&mut self) {
+        // Signal a new epoch
+        CURRENT_EPOCH.fetch_add(1, Ordering::Relaxed);
+
         self.start = HEAP_START
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |_| Some(null_mut()))
             .unwrap();

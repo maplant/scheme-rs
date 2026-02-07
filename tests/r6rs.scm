@@ -325,18 +325,18 @@
              'now)
 
 (assert-equal? (let ()
-               (let-syntax
-                   ((def (syntax-rules ()
-                           ((def stuff ...) (define stuff ...)))))
-                 (def foo 42))
-               foo)
+                 (let-syntax
+                     ((def (syntax-rules ()
+                             ((def stuff ...) (define stuff ...)))))
+                   (def foo1 42))
+                 foo1)
              42)
 
 (assert-equal? (let ((x 'outer))
-               (let-syntax ((m (syntax-rules () ((m) x))))
-                 (let ((x 'inner))
-                   (m))))
-             'outer)
+                 (let-syntax ((m (syntax-rules () ((m) x))))
+                   (let ((x 'inner))
+                     (m))))
+               'outer)
 
 ;; TODO: Fix parser for this, I guess.
 ;; (assert-equal? (let ()
@@ -364,23 +364,23 @@
                         (let temp)
                         (if y)
                         y)))
-             7)
+               7)
 
 (assert-equal? (let ((f (lambda (x) (+ x 1))))
-               (let-syntax ((f (syntax-rules ()
-                                 ((f x) x)))
-                            (g (syntax-rules ()
-                                 ((g x) (f x)))))
-                 (list (f 1) (g 1))))
-             '(1 2))
+                 (let-syntax ((f (syntax-rules ()
+                                   ((f x) x)))
+                              (g (syntax-rules ()
+                                   ((g x) (f x)))))
+                   (list (f 1) (g 1))))
+               '(1 2))
 
 (assert-equal? (let ((f (lambda (x) (+ x 1))))
-               (letrec-syntax ((f (syntax-rules ()
-                                    ((f x) x)))
-                               (g (syntax-rules ()
-                                    ((g x) (f x)))))
-                 (list (f 1) (g 1))))
-             '(1 1))
+                 (letrec-syntax ((f (syntax-rules ()
+                                      ((f x) x)))
+                                 (g (syntax-rules ()
+                                      ((g x) (f x)))))
+                   (list (f 1) (g 1))))
+               '(1 1))
 
 ;; Extra stuff:
 
@@ -489,3 +489,18 @@
 
 ;; Test quasiquoting
 (assert-equal? `(1 2 3 ,(+ 1 2 3)) (list 1 2 3 6))
+
+;; Identifier predicates
+(let ([fred 17])
+  (define-syntax a
+    (lambda (x)
+      (syntax-case x ()
+        [(_ id) #'(b id fred)])))
+  (define-syntax b
+    (lambda (x)
+      (syntax-case x ()
+        [(_ id1 id2)
+         #`(list
+            #,(free-identifier=? #'id1 #'id2)
+            #,(bound-identifier=? #'id1 #'id2))])))
+  (assert-equal? (a fred) '(#t #f)))

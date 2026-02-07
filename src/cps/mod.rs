@@ -175,11 +175,18 @@ pub enum Cps {
 
 impl Cps {
     /// Perform substitutions on local variables.
-    fn substitute(&mut self, substitutions: &HashMap<Local, Value>) {
+    // TODO: This could probably be improved by being a little smarter about
+    // when we clear the uses cache (i.e. return a bool if any substitutions
+    // occurred).
+    fn substitute(
+        &mut self,
+        substitutions: &HashMap<Local, Value>,
+        uses_cache: &mut HashMap<Local, HashMap<Local, usize>>,
+    ) {
         match self {
             Self::PrimOp(_, args, _, cexp) => {
                 substitute_values(args, substitutions);
-                cexp.substitute(substitutions);
+                cexp.substitute(substitutions, uses_cache);
             }
             Self::App(value, values) => {
                 substitute_value(value, substitutions);
@@ -187,12 +194,15 @@ impl Cps {
             }
             Self::If(cond, success, failure) => {
                 substitute_value(cond, substitutions);
-                success.substitute(substitutions);
-                failure.substitute(substitutions);
+                success.substitute(substitutions, uses_cache);
+                failure.substitute(substitutions, uses_cache);
             }
-            Self::Lambda { body, cexp, .. } => {
-                body.substitute(substitutions);
-                cexp.substitute(substitutions);
+            Self::Lambda {
+                body, cexp, val, ..
+            } => {
+                body.substitute(substitutions, uses_cache);
+                cexp.substitute(substitutions, uses_cache);
+                uses_cache.remove(val);
             }
             Self::Halt(value) => {
                 substitute_value(value, substitutions);

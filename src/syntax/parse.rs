@@ -1,8 +1,9 @@
 use crate::{
-    ast::Literal,
+    // ast::Literal,
     num::Number,
     ports::{PortData, PortInfo},
     syntax::lex::ParseNumberError,
+    value::Value,
 };
 
 pub use super::lex::LexerError;
@@ -79,26 +80,22 @@ impl Parser<'_> {
     fn expression_inner(&mut self) -> Result<Option<Syntax>, ParseSyntaxError> {
         match maybe_await!(self.next_token())?.ok_or(ParseSyntaxError::UnexpectedEof)? {
             // Literals:
-            token!(Lexeme::Boolean(b), span) => {
-                Ok(Some(Syntax::new_literal(Literal::Boolean(b), span)))
-            }
+            token!(Lexeme::Boolean(b), span) => Ok(Some(Syntax::new_wrapped(Value::from(b), span))),
             token!(Lexeme::Character(Character::Literal(c)), span) => {
-                Ok(Some(Syntax::new_literal(Literal::Character(c), span)))
+                Ok(Some(Syntax::new_wrapped(Value::from(c), span)))
             }
-            token!(Lexeme::Character(Character::Escaped(e)), span) => Ok(Some(
-                Syntax::new_literal(Literal::Character(e.into()), span),
-            )),
+            token!(Lexeme::Character(Character::Escaped(e)), span) => {
+                Ok(Some(Syntax::new_wrapped(Value::from(char::from(e)), span)))
+            }
             token!(Lexeme::Character(Character::Unicode(u)), span) => {
-                Ok(Some(Syntax::new_literal(
-                    Literal::Character(char::try_from(u32::from_str_radix(&u, 16).unwrap())?),
+                Ok(Some(Syntax::new_wrapped(
+                    Value::from(char::try_from(u32::from_str_radix(&u, 16).unwrap())?),
                     span,
                 )))
             }
-            token!(Lexeme::String(s), span) => {
-                Ok(Some(Syntax::new_literal(Literal::String(s), span)))
-            }
-            token!(Lexeme::Number(n), span) => Ok(Some(Syntax::new_literal(
-                Literal::Number(Number::try_from(n)?),
+            token!(Lexeme::String(s), span) => Ok(Some(Syntax::new_wrapped(Value::from(s), span))),
+            token!(Lexeme::Number(n), span) => Ok(Some(Syntax::new_wrapped(
+                Value::from(Number::try_from(n)?),
                 span,
             ))),
 
@@ -189,7 +186,7 @@ impl Parser<'_> {
             match maybe_await!(self.next_token()) {
                 Ok(None) => {
                     let end_span = self.lexer.curr_span();
-                    sexprs.push(Syntax::Null { span: end_span });
+                    sexprs.push(Syntax::new_wrapped(Value::null(), end_span));
                     return Ok(Syntax::List {
                         list: sexprs,
                         span: start_span,
@@ -211,7 +208,9 @@ impl Parser<'_> {
             token!(Lexeme::Period) => return maybe_await!(self.get_sexpr()),
             // If the first token is a closing paren, then this is an empty
             // list
-            token if token.lexeme == closing => return Ok(Syntax::new_null(token.span)),
+            token if token.lexeme == closing => {
+                return Ok(Syntax::new_wrapped(Value::null(), token.span));
+            }
             // Otherwise, push the token back and continue
             token => {
                 self.return_token(token);
@@ -225,7 +224,7 @@ impl Parser<'_> {
             }
             match maybe_await!(self.next_token())?.ok_or(ParseSyntaxError::UnexpectedEof)? {
                 token if token.lexeme == closing => {
-                    output.push(Syntax::new_null(token.span));
+                    output.push(Syntax::new_wrapped(Value::null(), token.span));
                     return Ok(Syntax::new_list(output, span));
                 }
                 token!(Lexeme::Period) => {
@@ -237,7 +236,7 @@ impl Parser<'_> {
                         // Proper list with period:
                         (token!(Lexeme::LParen, end_span), token!(Lexeme::RParen))
                         | (token!(Lexeme::LBracket, end_span), token!(Lexeme::RBracket)) => {
-                            output.push(Syntax::new_null(end_span));
+                            output.push(Syntax::new_wrapped(Value::null(), end_span));
                             return Ok(Syntax::new_list(output, span));
                         }
                         // Improper list:
@@ -291,7 +290,9 @@ impl Parser<'_> {
                     }
                     return Err(ParseSyntaxError::NonByte { span });
                 }
-                token!(Lexeme::RParen) => return Ok(Syntax::new_byte_vector(output, span)),
+                token!(Lexeme::RParen) => {
+                    return Ok(Syntax::new_wrapped(Value::from(output), span));
+                }
                 token => {
                     return Err(ParseSyntaxError::NonByte { span: token.span });
                 }
@@ -307,7 +308,7 @@ impl Parser<'_> {
             vec![
                 Syntax::new_identifier(alias, span.clone()),
                 expr,
-                Syntax::new_null(expr_span),
+                Syntax::new_wrapped(Value::null(), expr_span),
             ],
             span,
         ))

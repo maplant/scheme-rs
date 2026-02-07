@@ -1,12 +1,14 @@
+use std::collections::BTreeSet;
+
 use super::*;
 use crate::{
+    Either,
     ast::*,
     expand::{ExpansionCombiner, SyntaxRule},
     records::Record,
     syntax::{Identifier, Syntax},
     value::Value as RuntimeValue,
 };
-use either::Either;
 use indexmap::IndexSet;
 
 /// There's not too much reason that this is a trait, other than I wanted to
@@ -129,7 +131,6 @@ impl Compile for Expression {
             Self::Set(set) => set.compile(meta_cont),
             Self::Undefined => compile_undefined(meta_cont),
             Self::Vector(vec) => vec.compile(meta_cont),
-            Self::ByteVector(vec) => vec.compile(meta_cont),
         }
     }
 }
@@ -195,16 +196,13 @@ fn compile_undefined(meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
     }
 }
 
-impl Compile for Literal {
+impl Compile for RuntimeValue {
     fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
         let k1 = Local::gensym();
         let k2 = Local::gensym();
         Cps::Lambda {
             args: LambdaArgs::new(vec![k2], false, None),
-            body: Box::new(Cps::App(
-                Value::from(k2),
-                vec![Value::from(RuntimeValue::from(self.clone()))],
-            )),
+            body: Box::new(Cps::App(Value::from(k2), vec![Value::from(self.clone())])),
             val: k1,
             cexp: Box::new(meta_cont(Value::from(k1))),
             span: None,
@@ -243,8 +241,10 @@ fn compile_apply(
                 && let Some(sym) = var.symbol()
             {
                 Some(Syntax::Identifier {
-                    ident: Identifier::from_symbol(sym),
-                    binding_env: None,
+                    ident: Identifier {
+                        sym,
+                        scopes: BTreeSet::new(),
+                    },
                     span: span.clone(),
                 })
             } else {
@@ -393,7 +393,22 @@ impl Compile for If {
 
 impl Compile for And {
     fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
-        compile_and(&self.args, meta_cont)
+        if self.args.is_empty() {
+            let k1 = Local::gensym();
+            let k2 = Local::gensym();
+            Cps::Lambda {
+                args: LambdaArgs::new(vec![k1], false, None),
+                body: Box::new(Cps::App(
+                    Value::from(k1),
+                    vec![Value::from(RuntimeValue::from(true))],
+                )),
+                val: k2,
+                cexp: Box::new(meta_cont(Value::from(k2))),
+                span: None,
+            }
+        } else {
+            compile_and(&self.args, meta_cont)
+        }
     }
 }
 
@@ -413,18 +428,20 @@ fn compile_and(exprs: &[Expression], meta_cont: &mut dyn FnMut(Value) -> Cps) ->
             let cond_arg = Local::gensym();
             Cps::Lambda {
                 args: LambdaArgs::new(vec![cond_arg], false, None),
-                body: Box::new(Cps::If(
-                    Value::from(cond_arg),
-                    Box::new(if let Some(tail) = tail {
-                        compile_and(tail, &mut |expr| Cps::App(expr, vec![Value::from(k1)]))
-                    } else {
-                        Cps::App(Value::from(k1), vec![Value::from(RuntimeValue::from(true))])
-                    }),
-                    Box::new(Cps::App(
-                        Value::from(k1),
-                        vec![Value::from(RuntimeValue::from(false))],
-                    )),
-                )),
+                body: if let Some(tail) = tail {
+                    Box::new(Cps::If(
+                        Value::from(cond_arg),
+                        Box::new(compile_and(tail, &mut |expr| {
+                            Cps::App(expr, vec![Value::from(k1)])
+                        })),
+                        Box::new(Cps::App(
+                            Value::from(k1),
+                            vec![Value::from(RuntimeValue::from(false))],
+                        )),
+                    ))
+                } else {
+                    Box::new(Cps::App(Value::from(k1), vec![Value::from(cond_arg)]))
+                },
                 val: k3,
                 cexp: Box::new(Cps::App(expr_result, vec![Value::from(k3)])),
                 span: None,
@@ -438,7 +455,22 @@ fn compile_and(exprs: &[Expression], meta_cont: &mut dyn FnMut(Value) -> Cps) ->
 
 impl Compile for Or {
     fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
-        compile_or(&self.args, meta_cont)
+        if self.args.is_empty() {
+            let k1 = Local::gensym();
+            let k2 = Local::gensym();
+            Cps::Lambda {
+                args: LambdaArgs::new(vec![k1], false, None),
+                body: Box::new(Cps::App(
+                    Value::from(k1),
+                    vec![Value::from(RuntimeValue::from(false))],
+                )),
+                val: k2,
+                cexp: Box::new(meta_cont(Value::from(k2))),
+                span: None,
+            }
+        } else {
+            compile_or(&self.args, meta_cont)
+        }
     }
 }
 
@@ -460,10 +492,7 @@ fn compile_or(exprs: &[Expression], meta_cont: &mut dyn FnMut(Value) -> Cps) -> 
                 args: LambdaArgs::new(vec![cond_arg], false, None),
                 body: Box::new(Cps::If(
                     Value::from(cond_arg),
-                    Box::new(Cps::App(
-                        Value::from(k1),
-                        vec![Value::from(RuntimeValue::from(true))],
-                    )),
+                    Box::new(Cps::App(Value::from(k1), vec![Value::from(cond_arg)])),
                     Box::new(if let Some(tail) = tail {
                         compile_or(tail, &mut |expr| Cps::App(expr, vec![Value::from(k1)]))
                     } else {
@@ -693,9 +722,9 @@ impl Compile for SyntaxQuote {
         let mut expansions_seen = IndexSet::new();
         let mut uses = HashMap::new();
 
-        for (ident, expansion) in self.expansions.iter() {
+        for (binding, expansion) in self.expansions.iter() {
             let (idx, _) = expansions_seen.insert_full(expansion);
-            uses.insert(ident.clone(), idx);
+            uses.insert(*binding, idx);
         }
 
         let mut args = vec![

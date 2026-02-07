@@ -7,18 +7,18 @@ use futures::{
 use scheme_rs_macros::bridge;
 
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::Mutex,
+    time::{Duration, sleep},
 };
 
 use crate::{
     exceptions::Exception,
+    ports::{BufferMode, Port},
     proc::Procedure,
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     strings::WideString,
     value::Value,
-    vectors::ByteVector,
 };
 
 type Future = Shared<BoxFuture<'static, Result<Vec<Value>, Exception>>>;
@@ -33,7 +33,14 @@ impl SchemeCompatible for Future {
     }
 }
 
-#[bridge(name = "spawn", lib = "(tokio)")]
+#[bridge(name = "future", lib = "(async)")]
+pub async fn make_future(proc: Procedure) -> Result<Vec<Value>, Exception> {
+    let future: Future = async move { proc.call(&[]).await }.boxed().shared();
+    let future = Value::from_rust_type(future);
+    Ok(vec![future])
+}
+
+#[bridge(name = "spawn", lib = "(async)")]
 pub async fn spawn(task: &Value) -> Result<Vec<Value>, Exception> {
     let task: Procedure = task.clone().try_into()?;
     let task = tokio::task::spawn(async move { task.call(&[]).await });
@@ -42,7 +49,7 @@ pub async fn spawn(task: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![future])
 }
 
-#[bridge(name = "await", lib = "(tokio)")]
+#[bridge(name = "await", lib = "(async)")]
 pub async fn await_future(future: &Value) -> Result<Vec<Value>, Exception> {
     future.try_to_rust_type::<Future>()?.as_ref().clone().await
 }
@@ -57,7 +64,7 @@ impl SchemeCompatible for Arc<TcpListener> {
     }
 }
 
-#[bridge(name = "bind-tcp", lib = "(tokio)")]
+#[bridge(name = "bind-tcp", lib = "(async)")]
 pub async fn bind_tcp(addr: &Value) -> Result<Vec<Value>, Exception> {
     let addr: WideString = addr.clone().try_into()?;
     let listener = TcpListener::bind(&addr.to_string())
@@ -77,49 +84,20 @@ impl SchemeCompatible for Arc<Mutex<TcpStream>> {
     }
 }
 
-#[bridge(name = "accept", lib = "(tokio)")]
+#[bridge(name = "accept", lib = "(async)")]
 pub async fn accept(listener: &Value) -> Result<Vec<Value>, Exception> {
     let listener = { listener.try_to_rust_type::<Arc<TcpListener>>()?.clone() };
     let (socket, addr) = listener
         .accept()
         .await
         .map_err(|e| Exception::error(format!("Could not accept client: {e:?}")))?;
-    let socket = Value::from(Record::from_rust_type(Arc::new(Mutex::new(socket))));
+    let socket = Value::from(Port::new(addr.to_string(), socket, BufferMode::Block, None));
     let addr = Value::from(addr.to_string());
     Ok(vec![socket, addr])
 }
 
-#[bridge(name = "read", lib = "(tokio)")]
-pub async fn read(socket: &Value, buff_size: &Value) -> Result<Vec<Value>, Exception> {
-    let buff_size: usize = buff_size.try_to_scheme_type()?;
-    let mut buffer = vec![0u8; buff_size];
-    let socket = socket.try_to_rust_type::<Arc<Mutex<TcpStream>>>()?;
-
-    let len = socket
-        .lock()
-        .await
-        .read(&mut buffer)
-        .await
-        .map_err(|e| Exception::error(format!("failed to read from socket: {e:?}")))?;
-
-    buffer.resize(len, 0);
-
-    Ok(vec![Value::from(buffer)])
-}
-
-#[bridge(name = "write", lib = "(tokio)")]
-pub async fn write(socket: &Value, buffer: &Value) -> Result<Vec<Value>, Exception> {
-    let buffer: ByteVector = buffer.clone().try_into()?;
-    let socket = { socket.try_to_rust_type::<Arc<Mutex<TcpStream>>>()?.clone() };
-
-    let buff = buffer.0.vec.read().clone();
-
-    socket
-        .lock()
-        .await
-        .write(&buff)
-        .await
-        .map_err(|e| Exception::error(format!("failed to read from socket: {e:?}")))?;
-
-    Ok(vec![Value::from(buffer)])
+#[bridge(name = "sleep", lib = "(async)")]
+pub async fn sleep_ms(ms: u64) -> Result<Vec<Value>, Exception> {
+    sleep(Duration::from_millis(ms)).await;
+    Ok(Vec::new())
 }

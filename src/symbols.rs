@@ -1,4 +1,4 @@
-//! Interned symbols
+//! Interned symbols.
 
 use std::{
     fmt,
@@ -35,6 +35,10 @@ impl Symbol {
         symtab[self.0 as usize].clone()
     }
 
+    pub fn print(self) -> String {
+        self.to_string()
+    }
+
     pub fn gensym() -> Self {
         let string = Alphabetic.sample_string(&mut rand::rng(), 32);
         Self::intern(&string)
@@ -57,6 +61,24 @@ impl PartialEq<&'_ str> for Symbol {
     fn eq(&self, rhs: &&str) -> bool {
         self.to_str().as_ref() == *rhs
     }
+}
+
+#[bridge(name = "symbol=?", lib = "(rnrs base builtins (6))")]
+pub fn symbol_equal_pred(
+    symbol1: Symbol,
+    symbol2: Symbol,
+    symboln: &[Value],
+) -> Result<Vec<Value>, Exception> {
+    if symbol1 != symbol2 {
+        return Ok(vec![Value::from(false)]);
+    }
+    for symboln in symboln {
+        let symboln = symboln.try_to_scheme_type::<Symbol>()?;
+        if symbol1 != symboln {
+            return Ok(vec![Value::from(false)]);
+        }
+    }
+    Ok(vec![Value::from(true)])
 }
 
 #[bridge(name = "string->symbol", lib = "(rnrs base builtins (6))")]

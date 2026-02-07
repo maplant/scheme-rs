@@ -1,51 +1,95 @@
 (library (rnrs base (6))
-  (export syntax-rules with-syntax cond case let* letrec letrec* values
-          let-values let*-values when unless do case-lambda member memv
-          memq caar cadr cddr caaar caadr cadar cdaar caddr cdadr cddar
-          cdddr memp call/cc for-each for-all exists string-for-each
-          vector-for-each append make-list list-copy list-tail list-ref 
-          assoc map reverse positive? negative? abs min max quasiquote
-          identifier-syntax string-foldcase
-          (import (rnrs base builtins (6))
-                  (except (rnrs base special-keywords (6)) $undefined)
-                  (rnrs syntax-case special-keywords (6))))
-  (import (rnrs syntax-case (6))
-          (only (rnrs base special-keywords (6)) $undefined))
+  (export cond case let* caar cadr cdar cddr caaar caadr cadar cdaar caddr cdadr
+          cddar cdddr caaaar caaadr caadar caaddr cadaar cadadr caddar cadddr
+          cdaaar cdaadr cdadar cdaddr cddaar cddadr cdddar cddddr call/cc
+          for-each string-for-each vector-for-each vector-map append make-list
+          list-copy list-tail list-ref map reverse positive? negative? abs min
+          max quasiquote gcd lcm identifier-syntax assert rationalize div0 mod0
+          div0-and-mod0 
+          (import (rnrs base builtins (6)))
+          (import (rnrs syntax-rules (6)))
+          (import (rnrs values (6)))
+          (import (rnrs letrec (6)))
+          (import (except (rnrs base primitives (6)) $undefined)))
+  (import (rnrs lists (6))
+          (rnrs control (6))
+          (rnrs syntax-case (6))
+          (rnrs io simple builtins)
+          (only (rnrs base primitives (6)) $undefined))
 
-  ;; Define syntax-rules in terms of syntax case 
-  (define-syntax syntax-rules
-    (lambda (x)
-      (syntax-case x ()
-        ((_ (i ...) ((keyword . pattern) template) ...)
-         (syntax (lambda (x)
-                   (syntax-case x (i ...)
-                     ((dummy . pattern) (syntax template))
-                     ...)))))))
+  (define (gcd a b)
+    (if (= b 0)
+        a
+        (gcd b (mod a b))))
 
-  (define-syntax with-syntax
-    (lambda (x)
-      (syntax-case x ()
-        ((_ ((p e0) ...) e1 e2 ...)
-         (syntax (syntax-case (list e0 ...) ()
-                   ((p ...) (let () e1 e2 ...))))))))
+  (define (lcm a b)
+    (* (/ (abs b) (gcd a b)) (abs a)))
 
-  (define-syntax identifier-syntax
-    (lambda (x)
-      (syntax-case x (set!)
-        [(_ e)
-         #'(lambda (x)
-             (syntax-case x ()
-               [id (identifier? #'id) #'e]
-               [(_ x (... ...)) #'(e x (... ...))]))]
-        [(_ (id exp1) ((set! var val) exp2))
-         (and (identifier? #'id) (identifier? #'var))
-         #'(make-variable-transformer
-            (lambda (x)
-              (syntax-case x (set!)
-                [(set! var val) #'exp2]
-                [(id x (... ...)) #'(exp1 x (... ...))]
-                [id (identifier? #'id) #'exp1])))])))
+  (define (div0-and-mod0 x y)
+    (define q (div x y))
+    (define r (mod x y))
+    (cond ((< r (abs (/ y 2)))
+              (values q r))
+             ((> y 0)
+              (values (+ q 1) (- x (* (+ q 1) y))))
+             (else
+              (values (- q 1) (- x (* (- q 1) y))))))
 
+  (define (div0 x y)
+    (let-values ([(q r) (div0-and-mod0 x y)])
+      q))
+
+  (define (mod0 x y)
+    (let-values ([(q r) (div0-and-mod0 x y)])
+      r))
+
+  ;; rationalize function taken from Larceny, with the following copyright
+  ;; attribution:
+  ;; 
+  ;; From MacScheme.
+  ;;
+  ;; This code was written by Alan Bawden.
+  ;; Its copyright status is unknown to me [i.e., to Will. --lars]
+  ;;
+  ;; Modified for R6RS semantics on infinities and NaNs.
+
+  (define (rationalize x e)
+    (define (simplest-rational x y)
+      (define (simplest-rational-internal x y)      ; assumes 0 < X < Y
+        (let ((fx (floor x))        ; [X] <= X < [X]+1
+              (fy (floor y)))       ; [Y] <= Y < [Y]+1, also [X] <= [Y]
+          (cond ((not (< fx x))
+                 ;; X is an integer so X is the answer:
+                 fx)
+                ((= fx fy)
+                 ;; [Y] = [X] < X < Y so expand the next term in the continued
+                 ;; fraction:
+                 (+ fx (/ (simplest-rational-internal
+                           (/ (- y fy)) (/ (- x fx))))))
+                (else
+                 ;; [X] < X < [X]+1 <= [Y] <= Y so [X]+1 is the answer:
+                 (+ 1 fx)))))
+      (cond ((< y x)
+             ;; Y < X so swap and try again:
+             (simplest-rational y x))
+            ((not (< x y))
+             ;; X = Y so if either is a rational that is the answer, otherwise
+             ;; X and Y are both infinite or both NaN.
+             (cond ((rational? x) x)
+                   ((rational? y) y)
+                   (else x)))
+            ((positive? x) 
+             ;; 0 < X < Y which is what SIMPLEST-RATIONAL-INTERNAL expects:
+             (simplest-rational-internal x y))
+            ((negative? y)
+             ;; X < Y < 0 so 0 < -Y < -X and we negate the answer:
+             (- (simplest-rational-internal (- y) (- x))))
+            ((and (exact? x) (exact? e))
+             ;; X <= 0 <= Y so zero is the answer:
+             0)
+            (else 0.0)))
+    (simplest-rational (- x e) (+ x e)))
+  
   (define-syntax cond
     (syntax-rules (else =>)
       ((cond (else result1 result2 ...))
@@ -102,207 +146,11 @@
        (let ((name1 expr1))
          (let* ((name2 expr2) ...)
            body1 body2 ...)))))
-
-  (define-syntax letrec
-    (syntax-rules ()
-      ((letrec () body1 body2 ...)
-       (let () body1 body2 ...))
-      ((letrec ((var init) ...) body1 body2 ...)
-       (letrec-helper
-        (var ...)
-        ()
-        ((var init) ...)
-        body1 body2 ...))))
-
-  (define-syntax letrec-helper
-    (syntax-rules ()
-      ((letrec-helper
-        ()
-        (temp ...)
-        ((var init) ...)
-        body1 body2 ...)
-       (let ((var $undefined) ...)
-         (let ((temp init) ...)
-           (set! var temp)
-           ...)
-         (let () body1 body2 ...)))
-      ((letrec-helper
-        (x y ...)
-        (temp ...)
-        ((var init) ...)
-        body1 body2 ...)
-       (letrec-helper
-        (y ...)
-        (newtemp temp ...)
-        ((var init) ...)
-        body1 body2 ...))))
-
-  (define-syntax letrec*
-    (syntax-rules ()
-      ((letrec* ((var1 init1) ...) body1 body2 ...)
-       (let ((var1 $undefined) ...)
-         (set! var1 init1) ...
-         (let () body1 body2 ...)))))
-
-  (define (values . things)
-    (call-with-current-continuation
-     (lambda (cont) (apply cont things))))
-
-  (define-syntax let-values
-    (syntax-rules ()
-      ((let-values (binding ...) body1 body2 ...)
-       (let-values-helper1
-        ()
-        (binding ...)
-        body1 body2 ...))))
-
-  (define-syntax let-values-helper1
-    ;; map over the bindings
-    (syntax-rules ()
-      ((let-values
-           ((id temp) ...)
-         ()
-         body1 body2 ...)
-       (let ((id temp) ...) body1 body2 ...))
-      ((let-values
-           assocs
-         ((formals1 expr1) (formals2 expr2) ...)
-         body1 body2 ...)
-       (let-values-helper2
-        formals1
-        ()
-        expr1
-        assocs
-        ((formals2 expr2) ...)
-        body1 body2 ...))))
-
-  (define-syntax let-values-helper2
-    ;; create temporaries for the formals
-    (syntax-rules ()
-      ((let-values-helper2
-        ()
-        temp-formals
-        expr1
-        assocs
-        bindings
-        body1 body2 ...)
-       (call-with-values
-           (lambda () expr1)
-         (lambda temp-formals
-           (let-values-helper1
-            assocs
-            bindings
-            body1 body2 ...))))
-      ((let-values-helper2
-        (first . rest)
-        (temp ...)
-        expr1
-        (assoc ...)
-        bindings
-        body1 body2 ...)
-       (let-values-helper2
-        rest
-        (temp ... newtemp)
-        expr1
-        (assoc ... (first newtemp))
-        bindings
-        body1 body2 ...))
-      ((let-values-helper2
-        rest-formal
-        (temp ...)
-        expr1
-        (assoc ...)
-        bindings
-        body1 body2 ...)
-       (call-with-values
-           (lambda () expr1)
-         (lambda (temp ... . newtemp)
-           (let-values-helper1
-            (assoc ... (rest-formal newtemp))
-            bindings
-            body1 body2 ...))))))
-
-  (define-syntax let*-values
-    (syntax-rules ()
-      ((let*-values () body1 body2 ...)
-       (let-values () body1 body2 ...))
-      ((let*-values ((name1 expr1) (name2 expr2) ...)
-         body1 body2 ...)
-       (let-values ((name1 expr1))
-         (let*-values ((name2 expr2) ...)
-           body1 body2 ...)))))
-
-  (define-syntax when
-    (syntax-rules ()
-      ((when test result1 result2 ...)
-       (if test
-           (begin result1 result2 ...)))))
-
-  (define-syntax unless
-    (syntax-rules ()
-      ((unless test result1 result2 ...)
-       (if (not test)
-           (begin result1 result2 ...)))))
-
-  (define-syntax do
-    (syntax-rules ()
-      ((do ((var init step ...) ...)
-           (test expr ...)
-         command ...)
-       (letrec
-           ((loop
-             (lambda (var ...)
-               (if test
-                   (begin
-                     #f ; avoid empty begin
-                     expr ...)
-                   (begin
-                     command
-                     ...
-                     (loop (do "step" var step ...)
-                           ...))))))
-         (loop init ...)))
-      ((do "step" x)
-       x)
-      ((do "step" x y)
-       y)))
-
-  (define-syntax case-lambda
-    (syntax-rules ()
-      ((_ (fmls b1 b2 ...))
-       (lambda fmls b1 b2 ...))
-      ((_ (fmls b1 b2 ...) ...)
-       (lambda args
-         (let ((n (length args)))
-           (case-lambda-help args n
-                             (fmls b1 b2 ...) ...))))))
-
-  (define-syntax case-lambda-help
-    (syntax-rules ()
-      ((_ args n)
-       (assertion-violation #f "unexpected number of arguments"))
-      ((_ args n ((x ...) b1 b2 ...) more ...)
-       (if (= n (length '(x ...)))
-           (apply (lambda (x ...) b1 b2 ...) args)
-           (case-lambda-help args n more ...)))
-      ((_ args n ((x1 x2 ... . r) b1 b2 ...) more ...)
-       (if (>= n (length '(x1 x2 ...)))
-           (apply (lambda (x1 x2 ... . r) b1 b2 ...)
-                  args)
-           (case-lambda-help args n more ...)))
-      ((_ args n (r b1 b2 ...) more ...)
-       (apply (lambda r b1 b2 ...) args))))
-
-  (define (member obj list)
-    (memp (lambda (x) (equal? x obj)) list))
-  (define (memv obj list)
-    (memp (lambda (x) (eqv? x obj)) list))
-  (define (memq obj list)
-    (memp (lambda (x) (eq? x obj)) list))
   
   ;; TODO: All of the car/cdr combinations
   (define caar (lambda (x) (car (car x))))
   (define cadr (lambda (x) (car (cdr x))))
+  (define cdar (lambda (x) (cdr (car x))))
   (define cddr (lambda (x) (cdr (cdr x))))
   (define caaar (lambda (x) (car (car (car x)))))
   (define caadr (lambda (x) (car (car (cdr x)))))
@@ -312,13 +160,23 @@
   (define cdadr (lambda (x) (cdr (car (cdr x)))))
   (define cddar (lambda (x) (cdr (cdr (car x)))))
   (define cdddr (lambda (x) (cdr (cdr (cdr x)))))
-
-  (define (memp proc list)
-    (if (and (pair? list)
-             (proc (car list)))
-        list
-        (if (null? list) #f (memp proc (cdr list)))))
-
+  (define caaaar (lambda (x) (car (car (car (car x))))))
+  (define caaadr (lambda (x) (car (car (car (cdr x))))))
+  (define caadar (lambda (x) (car (car (cdr (car x))))))
+  (define caaddr (lambda (x) (car (car (cdr (cdr x))))))
+  (define cadaar (lambda (x) (car (cdr (car (car x))))))
+  (define cadadr (lambda (x) (car (cdr (car (cdr x))))))
+  (define caddar (lambda (x) (car (cdr (cdr (car x))))))
+  (define cadddr (lambda (x) (car (cdr (cdr (cdr x))))))
+  (define cdaaar (lambda (x) (cdr (car (car (car x))))))
+  (define cdaadr (lambda (x) (cdr (car (car (cdr x))))))
+  (define cdadar (lambda (x) (cdr (car (cdr (car x))))))
+  (define cdaddr (lambda (x) (cdr (car (cdr (cdr x))))))
+  (define cddaar (lambda (x) (cdr (cdr (car (car x))))))
+  (define cddadr (lambda (x) (cdr (cdr (car (cdr x))))))
+  (define cdddar (lambda (x) (cdr (cdr (cdr (car x))))))
+  (define cddddr (lambda (x) (cdr (cdr (cdr (cdr x))))))
+  
   ;; call/cc is an alias of call-with-current-continuation
   (define call/cc call-with-current-continuation)
 
@@ -326,52 +184,28 @@
   ;; these are quite slow.
 
   (define (for-each proc list1 . listn)
-    (let loop ((rest list1))
-      (unless (null? rest)
-        (proc (car rest))
-        (loop (cdr rest))))
-    (unless (null? listn)
-      (apply for-each (cons proc listn))))
-
-  (define (for-all proc list1 . listn)
-    (call/cc (lambda (return)
-               (let loop ((rest list1))
-                 (unless (null? rest)
-                   (if (not (proc (car rest)))
-                       (return #f)
-                       (loop (cdr rest)))))
-               (if (null? listn)
-                   #t
-                   (apply for-all (cons proc listn))))))
-
-  (define (exists proc list1 . listn)
-    (call/cc (lambda (return)
-               (let loop ((rest list1))
-                 (unless (null? rest)
-                   (if (proc (car rest))
-                       (return #t)
-                       (loop (cdr rest)))))
-               (if (null? listn)
-                   #f
-                   (apply for-all (cons proc listn))))))
+    (let ([items (apply zip (cons list1 listn))])
+      (let loop ((items items))
+        (unless (null? items)
+          (apply proc (car items))
+          (loop (cdr items))))))
 
   (define (string-for-each proc str1 . strn)
-    (let loop ([i 0]
-               [len (string-length str1)])
-      (when (< i len)
-        (proc (string-ref str1 i))
-        (loop (+ i 1) len)))
-    (unless (null? strn)
-      (apply string-for-each (cons proc strn))))
+    (let ([items (apply zip (cons (string->list str1) (map string->list strn)))])
+      (let loop ((items items))
+        (unless (null? items)
+          (apply proc (car items))
+          (loop (cdr items))))))
+  
+  (define (vector-map proc vec1 . vecn)
+    (list->vector (apply map proc (cons (vector->list vec1) (map vector->list vecn)))))
 
-  (define (vector-for-each proc vector1 . vectorn)
-    (let loop ([i 0]
-               [len (vector-length vector1)])
-      (when (< i len)
-        (proc (vector-ref vector1 i))
-        (loop (+ i 1) len)))
-    (unless (null? vectorn)
-      (apply vector-for-each (cons proc vectorn))))
+  (define (vector-for-each proc vec1 . vecn)
+    (let ([items (apply zip (cons (vector->list vec1) (map vector->list vecn)))])
+      (let loop ((items items))
+        (unless (null? items)
+          (apply proc (car items))
+          (loop (cdr items))))))
 
   (define (make-list n)
     (if (> n 0)
@@ -393,14 +227,6 @@
     (if (> n 0)
         (list-ref (cdr lst) (- n 1))
         (car lst)))
-
-  (define (assoc k lst)
-    (if (null? lst)
-        #f
-        (let ((pair (car lst)))
-          (if (equal? (car pair) k)
-              pair
-              (assoc k (cdr lst))))))
 
   (define (reverse ls)
     (define (reverse ls acc)
@@ -428,13 +254,13 @@
                     smallest)))))
 
   (define (max x . xs)
-    (let loop ((xs xs) (biggest x))
+    (let loop ([xs xs] [biggest x] [is-inexact (inexact? x)])
       (if (null? xs)
-          biggest
-          (loop (cdr xs)
-                (if (> (car xs) biggest)
-                    (car xs)
-                    biggest)))))
+          (if is-inexact (inexact biggest) biggest)
+          (let ([x (car xs)])
+            (loop (cdr xs)
+                  (if (> x biggest) x biggest)
+                  (or is-inexact (inexact? x)))))))
 
   ;; quasiquote is Copyright (c) 2006 Andre van Tonder
   ;; 
@@ -569,4 +395,9 @@
            ;; optimal construction code otherwise, then emit Scheme code
            ;; corresponding to the intermediate language forms.
            ((_ e) (emit (quasi (syntax e) 0)))))))
-  )
+
+  (define-syntax assert
+    (syntax-rules ()
+      [(_ expr)
+       (unless expr
+           (assertion-violation #f "assertion failed"))])))

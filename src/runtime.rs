@@ -1,31 +1,57 @@
+//! Scheme-rs core runtime.
+//!
+//! The [`Runtime`] struct initializes and stores the core runtime for
+//! scheme-rs. It contains a registry of libraries and the memory associated
+//! with the JIT compiled [`Procedures`](Procedure).
+
 use crate::{
     ast::DefinitionBody,
     cps::{Compile, Cps, codegen::RuntimeFunctionsBuilder},
-    env::{Environment, Global},
+    env::{Environment, Global, TopLevelEnvironment},
     exceptions::{Exception, raise},
     gc::{Gc, GcInner, Trace, init_gc},
+    hashtables::EqualHashSet,
     lists::{Pair, list_to_vec},
     num,
     ports::{BufferMode, Port, Transcoder},
     proc::{
-        Application, ContinuationPtr, DynamicState, FuncDebugInfo, FuncPtr, Procedure, UserPtr,
+        Application, ContinuationPtr, DynamicState, FuncPtr, ProcDebugInfo, Procedure, UserPtr,
     },
-    registry::{Library, Registry},
+    registry::Registry,
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax},
     value::{Cell, UnpackedValue, Value},
 };
 use parking_lot::RwLock;
 use scheme_rs_macros::{maybe_async, maybe_await, runtime_fn};
-use std::{collections::HashSet, mem::ManuallyDrop, path::Path, sync::Arc};
+use std::{
+    collections::{BTreeSet, HashSet},
+    mem::ManuallyDrop,
+    path::Path,
+    sync::Arc,
+};
 
-/// Scheme-rs Runtime
+/// Scheme-rs core runtime
+///
+/// Practically, the runtime is the core entry point for running Scheme programs
+/// with scheme-rs. It initializes the garbage collector and JIT compiler tasks
+/// and creates a new library registry.
+///
+/// There is not much you can do with a Runtime beyond creating it and using it
+/// to [run programs](Runtime::run_program), however a lot of functions require
+/// it as an arguments, such as [TopLevelEnvironment::new_repl].
+///
+/// You can also use the runtime to [define libraries](Runtime::def_lib) from
+/// Rust code.
+///
+/// Runtime is automatically reference counted, so if you have all of the
+/// procedures you need you can drop it without any issue.
 ///
 /// # Safety:
 ///
-/// The runtime contains the only live references to the LLVM Context and
-/// therefore modules and allocated functions in the form a Sender of compilation
-/// tasks.
+/// The runtime contains the only live references to the Cranelift Context and
+/// therefore modules and allocated functions in the form a Sender of
+/// compilation tasks.
 ///
 /// When that sender's ref count is zero, it will cause the receiver to fail and
 /// the compilation task will exit, allowing for a graceful shutdown.
@@ -54,6 +80,7 @@ impl Runtime {
         this
     }
 
+    /// Run a program at the given location and return the values.
     #[maybe_async]
     pub fn run_program(&self, path: &Path) -> Result<Vec<Value>, Exception> {
         #[cfg(not(feature = "async"))]
@@ -62,9 +89,9 @@ impl Runtime {
         #[cfg(feature = "tokio")]
         use tokio::fs::File;
 
-        let progm = Library::new_program(self, path);
-        let env = Environment::Top(progm);
-        let form = {
+        let progm = TopLevelEnvironment::new_program(self, path);
+        let env = Environment::Top(progm.clone());
+        let mut form = {
             let port = Port::new(
                 path.display(),
                 maybe_await!(File::open(path)).unwrap(),
@@ -76,19 +103,40 @@ impl Runtime {
             maybe_await!(port.all_sexprs(span)).map_err(Exception::from)?
         };
 
-        let body = maybe_await!(DefinitionBody::parse_lib_body(self, &form, &env)).unwrap();
+        form.add_scope(progm.scope());
+        let body = maybe_await!(DefinitionBody::parse_lib_body(self, &form, &env))?;
         let compiled = body.compile_top_level();
         let closure = maybe_await!(self.compile_expr(compiled));
 
-        maybe_await!(Application::new(closure, Vec::new()).eval(&mut DynamicState::default(),))
+        maybe_await!(Application::new(closure, Vec::new()).eval(&mut DynamicState::default()))
     }
 
-    pub fn get_registry(&self) -> Registry {
+    /// Define a library from Rust code. Useful if file system access is disabled.
+    #[cfg(not(feature = "async"))]
+    #[track_caller]
+    pub fn def_lib(&self, lib: &str) -> Result<(), Exception> {
+        use std::panic::Location;
+
+        self.get_registry()
+            .def_lib(self, lib, Location::caller().file())
+    }
+
+    /// Define a library from Rust code. Useful if file system access is disabled.
+    #[cfg(feature = "async")]
+    pub async fn def_lib(&self, lib: &str) -> Result<(), Exception> {
+        use std::panic::Location;
+
+        self.get_registry()
+            .def_lib(self, lib, Location::caller().file())
+            .await
+    }
+
+    pub(crate) fn get_registry(&self) -> Registry {
         self.0.read().registry.clone()
     }
 
     #[maybe_async]
-    pub fn compile_expr(&self, expr: Cps) -> Procedure {
+    pub(crate) fn compile_expr(&self, expr: Cps) -> Procedure {
         let (completion_tx, completion_rx) = completion();
         let task = CompilationTask {
             completion_tx,
@@ -122,7 +170,7 @@ pub(crate) struct RuntimeInner {
     pub(crate) registry: Registry,
     /// Channel to compilation task
     compilation_buffer_tx: CompilationBufferTx,
-    pub(crate) constants_pool: HashSet<Value>,
+    pub(crate) constants_pool: EqualHashSet,
     pub(crate) globals_pool: HashSet<Global>,
     pub(crate) debug_info: DebugInfo,
 }
@@ -157,7 +205,7 @@ impl RuntimeInner {
         RuntimeInner {
             registry: Registry::empty(),
             compilation_buffer_tx,
-            constants_pool: HashSet::new(),
+            constants_pool: EqualHashSet::new(),
             globals_pool: HashSet::new(),
             debug_info: DebugInfo::default(),
         }
@@ -165,19 +213,13 @@ impl RuntimeInner {
 }
 
 #[derive(Trace, Clone, Debug, Default)]
-pub struct DebugInfo {
-    /// Stored locations:
-    stored_spans: Vec<Arc<Span>>,
+pub(crate) struct DebugInfo {
     /// Stored user function debug information:
-    stored_func_info: Vec<Arc<FuncDebugInfo>>,
+    stored_func_info: Vec<Arc<ProcDebugInfo>>,
 }
 
 impl DebugInfo {
-    pub fn store_span(&mut self, span: Arc<Span>) {
-        self.stored_spans.push(span);
-    }
-
-    pub fn store_func_info(&mut self, debug_info: Arc<FuncDebugInfo>) {
+    pub fn store_func_info(&mut self, debug_info: Arc<ProcDebugInfo>) {
         self.stored_func_info.push(debug_info);
     }
 }
@@ -386,15 +428,18 @@ unsafe extern "C" fn apply(
 unsafe extern "C" fn get_frame(op: *const (), span: *const ()) -> *const () {
     unsafe {
         let op = Value::from_raw_inc_rc(op);
-        let op: Procedure = op.try_into().unwrap();
+        let Some(op) = op.cast_to_scheme_type::<Procedure>() else {
+            return Value::into_raw(Value::null());
+        };
         let span = Value::from_raw_inc_rc(span);
         let span = span.cast_to_rust_type::<Span>().unwrap();
         let frame = Syntax::Identifier {
-            ident: Identifier::from_symbol(
-                op.get_debug_info()
+            ident: Identifier {
+                sym: op
+                    .get_debug_info()
                     .map_or_else(|| Symbol::intern("<lambda>"), |dbg| dbg.name),
-            ),
-            binding_env: None,
+                scopes: BTreeSet::new(),
+            },
             span: span.as_ref().clone(),
         };
         Value::into_raw(Value::from(frame))
@@ -521,7 +566,7 @@ unsafe extern "C" fn make_user(
     num_envs: u32,
     num_required_args: u32,
     variadic: bool,
-    debug_info: *const FuncDebugInfo,
+    debug_info: *const ProcDebugInfo,
 ) -> *const () {
     unsafe {
         // Collect the environment:
@@ -557,7 +602,7 @@ unsafe extern "C" fn add(vals: *const *const (), num_vals: u32, error: *mut Valu
             // Can't easily wrap these in a ManuallyDrop, so we dec the rc.
             .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read()))
             .collect();
-        match num::add(&vals) {
+        match num::add_prim(&vals) {
             Ok(num) => Value::into_raw(Value::from(num)),
             Err(condition) => {
                 error.write(condition.into());
@@ -573,7 +618,7 @@ unsafe extern "C" fn sub(vals: *const *const (), num_vals: u32, error: *mut Valu
         let vals: Vec<_> = (0..num_vals)
             .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read()))
             .collect();
-        match num::sub(&vals[0], &vals[1..]) {
+        match num::sub_prim(&vals[0], &vals[1..]) {
             Ok(num) => Value::into_raw(Value::from(num)),
             Err(condition) => {
                 error.write(condition.into());
@@ -589,7 +634,7 @@ unsafe extern "C" fn mul(vals: *const *const (), num_vals: u32, error: *mut Valu
         let vals: Vec<_> = (0..num_vals)
             .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read()))
             .collect();
-        match num::mul(&vals) {
+        match num::mul_prim(&vals) {
             Ok(num) => Value::into_raw(Value::from(num)),
             Err(condition) => {
                 error.write(condition.into());
@@ -605,7 +650,7 @@ unsafe extern "C" fn div(vals: *const *const (), num_vals: u32, error: *mut Valu
         let vals: Vec<_> = (0..num_vals)
             .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read()))
             .collect();
-        match num::div(&vals[0], &vals[1..]) {
+        match num::div_prim(&vals[0], &vals[1..]) {
             Ok(num) => Value::into_raw(Value::from(num)),
             Err(condition) => {
                 error.write(condition.into());
@@ -616,7 +661,7 @@ unsafe extern "C" fn div(vals: *const *const (), num_vals: u32, error: *mut Valu
 }
 
 macro_rules! define_comparison_fn {
-    ( $name:ident ) => {
+    ( $name:ident, $prim:ident ) => {
         #[runtime_fn]
         unsafe extern "C" fn $name(
             vals: *const *const (),
@@ -627,7 +672,7 @@ macro_rules! define_comparison_fn {
                 let vals: Vec<_> = (0..num_vals)
                     .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read()))
                     .collect();
-                match num::$name(&vals) {
+                match num::$prim(&vals) {
                     Ok(res) => Value::into_raw(Value::from(res)),
                     Err(condition) => {
                         error.write(condition.into());
@@ -639,8 +684,8 @@ macro_rules! define_comparison_fn {
     };
 }
 
-define_comparison_fn!(equal);
-define_comparison_fn!(greater);
-define_comparison_fn!(greater_equal);
-define_comparison_fn!(lesser);
-define_comparison_fn!(lesser_equal);
+define_comparison_fn!(equal, equal_prim);
+define_comparison_fn!(greater, greater_prim);
+define_comparison_fn!(greater_equal, greater_equal_prim);
+define_comparison_fn!(lesser, lesser_prim);
+define_comparison_fn!(lesser_equal, lesser_equal_prim);

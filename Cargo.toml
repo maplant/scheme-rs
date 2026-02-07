@@ -1,6 +1,6 @@
 [package]
 name = "scheme-rs"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 edition = "2024"
 authors = ["Matthew Plant <maplant@protonmail.com>"]
 description = "Embedded scheme for the Rust ecosystem"
@@ -13,9 +13,8 @@ repository = "https://github.com/maplant/scheme-rs"
 [dependencies]
 async-stream = { version = "0.3", optional = true }
 by_address = "1.2"
+clap = { version = "4", features = ["derive"] }
 derive_builder = "0.20"
-derive_more = { version = "1.0", features = ["debug", "from"]}
-either = "1"
 futures = { version = "0.3", optional = true }
 hashbrown = "0.16.1"
 indexmap = "2"
@@ -31,6 +30,9 @@ rustyline = { version = "17", features = ["derive"] }
 scheme-rs-macros = { version = "0.1.0-alpha.1", path = "proc-macros" }
 unicode_categories = "0.1"
 
+# TODO: Remove this dependency
+stacksafe = "1"
+
 # Cranelift dependencies
 cranelift = "0.122"
 cranelift-jit = "0.122"
@@ -41,8 +43,9 @@ cranelift-module = "0.122"
 tokio = { version = "1.47", features = ["full"], optional = true }
 
 [features]
-default = []
+default = ["load-libraries-from-fs"]
 async = ["dep:futures", "dep:async-stream"]
+load-libraries-from-fs = []
 
 [profile.release]
 lto = true

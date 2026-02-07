@@ -1,11 +1,11 @@
-//! R6RS compatible hashtables
+//! Scheme compatible hashtables
 
 use indexmap::IndexSet;
 use parking_lot::RwLock;
 use std::{
+    collections::HashSet,
     fmt,
     hash::{DefaultHasher, Hash, Hasher},
-    sync::Arc,
 };
 
 use crate::{
@@ -15,7 +15,7 @@ use crate::{
     registry::bridge,
     strings::WideString,
     symbols::Symbol,
-    value::{Expect1, UnpackedValue, Value, ValueType},
+    value::{Expect1, Value, ValueType},
 };
 
 #[derive(Clone, Trace)]
@@ -40,9 +40,9 @@ pub(crate) struct HashTableInner {
     /// eq and hash functions with the key Value, so we use hashbrown's
     /// HashTable
     table: RwLock<hashbrown::HashTable<TableEntry>>,
-    /// Equivalence function
+    /// Equivalence function.
     eq: Procedure,
-    /// Hash function
+    /// Hash function.
     hash: Procedure,
     /// Whether or not the hashtable is mutable
     mutable: bool,
@@ -197,8 +197,14 @@ impl HashTableInner {
         }
     }
 
-    pub fn clear(&self) {
+    pub fn clear(&self) -> Result<(), Exception> {
+        if !self.mutable {
+            return Err(Exception::error("hashtable is immutable"));
+        }
+
         self.table.write().clear();
+
+        Ok(())
     }
 
     pub fn keys(&self) -> Vec<Value> {
@@ -282,8 +288,8 @@ impl HashTable {
         Self(Gc::new(self.0.copy(mutable)))
     }
 
-    pub fn clear(&self) {
-        self.0.clear();
+    pub fn clear(&self) -> Result<(), Exception> {
+        self.0.clear()
     }
 
     pub fn keys(&self) -> Vec<Value> {
@@ -305,6 +311,44 @@ impl fmt::Debug for HashTable {
             write!(f, "({:?} . {:?})", entry.key, entry.val)?;
         }
         write!(f, ")")
+    }
+}
+
+#[derive(Default, Trace)]
+pub struct EqualHashSet {
+    set: HashSet<EqualValue>,
+}
+
+impl EqualHashSet {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn insert(&mut self, new_value: Value) {
+        let new_value = EqualValue(new_value);
+        if !self.set.contains(&new_value) {
+            self.set.insert(new_value);
+        }
+    }
+
+    pub fn get(&mut self, val: &Value) -> &Value {
+        let val = EqualValue(val.clone());
+        &self.set.get(&val).unwrap().0
+    }
+}
+
+#[derive(Clone, Eq, Trace)]
+pub struct EqualValue(pub Value);
+
+impl PartialEq for EqualValue {
+    fn eq(&self, rhs: &Self) -> bool {
+        self.0.equal(&rhs.0)
+    }
+}
+
+impl Hash for EqualValue {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.equal_hash(&mut IndexSet::new(), state)
     }
 }
 
@@ -410,7 +454,7 @@ pub fn hashtable_clear_bang(hashtable: &Value, rest: &[Value]) -> Result<Vec<Val
         x => return Err(Exception::wrong_num_of_args(3, 2 + x.len())),
     };
 
-    hashtable.clear();
+    hashtable.clear()?;
 
     if let Some(k) = k {
         let mut table = hashtable.0.table.write();
@@ -458,101 +502,11 @@ pub fn hashtable_hash_function(hashtable: &Value) -> Result<Vec<Value>, Exceptio
     Ok(vec![hash_func])
 }
 
-impl Value {
-    /// Performs a hash suitable for use with eq? as an equivalance function
-    pub fn eq_hash<H: Hasher>(&self, state: &mut H) {
-        let unpacked = self.unpacked_ref();
-        std::mem::discriminant(&*unpacked).hash(state);
-        match &*unpacked {
-            UnpackedValue::Undefined => (),
-            UnpackedValue::Null => (),
-            UnpackedValue::Boolean(b) => b.hash(state),
-            UnpackedValue::Character(c) => c.hash(state),
-            UnpackedValue::Number(n) => Arc::as_ptr(&n.0).hash(state),
-            UnpackedValue::String(s) => Arc::as_ptr(&s.0).hash(state),
-            UnpackedValue::Symbol(s) => s.hash(state),
-            UnpackedValue::ByteVector(v) => Arc::as_ptr(&v.0).hash(state),
-            UnpackedValue::Syntax(s) => Arc::as_ptr(s).hash(state),
-            UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
-            UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
-            UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
-            UnpackedValue::Pair(p) => Gc::as_ptr(&p.0).hash(state),
-            UnpackedValue::Vector(v) => Gc::as_ptr(&v.0).hash(state),
-            UnpackedValue::Port(p) => Arc::as_ptr(&p.0).hash(state),
-            UnpackedValue::HashTable(ht) => Gc::as_ptr(&ht.0).hash(state),
-            UnpackedValue::Cell(c) => c.0.read().eqv_hash(state),
-        }
-    }
-
-    /// Performs a hash suitable for use with eqv? as an equivalance function
-    pub fn eqv_hash<H: Hasher>(&self, state: &mut H) {
-        let unpacked = self.unpacked_ref();
-        std::mem::discriminant(&*unpacked).hash(state);
-        match &*unpacked {
-            UnpackedValue::Undefined => (),
-            UnpackedValue::Null => (),
-            UnpackedValue::Boolean(b) => b.hash(state),
-            UnpackedValue::Character(c) => c.hash(state),
-            UnpackedValue::Number(n) => n.hash(state),
-            UnpackedValue::String(s) => Arc::as_ptr(&s.0).hash(state),
-            UnpackedValue::Symbol(s) => s.hash(state),
-            UnpackedValue::ByteVector(v) => Arc::as_ptr(&v.0).hash(state),
-            UnpackedValue::Syntax(s) => Arc::as_ptr(s).hash(state),
-            UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
-            UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
-            UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
-            UnpackedValue::Pair(p) => Gc::as_ptr(&p.0).hash(state),
-            UnpackedValue::Vector(v) => Gc::as_ptr(&v.0).hash(state),
-            UnpackedValue::Port(p) => Arc::as_ptr(&p.0).hash(state),
-            UnpackedValue::HashTable(ht) => Gc::as_ptr(&ht.0).hash(state),
-            UnpackedValue::Cell(c) => c.0.read().eqv_hash(state),
-        }
-    }
-
-    /// Performs a hash suitable for use with equal? as an equivalance function
-    pub fn equal_hash<H: Hasher>(&self, recursive: &mut IndexSet<Value>, state: &mut H) {
-        let unpacked = self.unpacked_ref();
-        std::mem::discriminant(&*unpacked).hash(state);
-
-        // I think this is fine, because types that would be recursive will
-        // write out at least two values here where we're only writing out one.
-        if let Some(index) = recursive.get_index_of(self) {
-            state.write_usize(index);
-            return;
-        }
-
-        match &*unpacked {
-            UnpackedValue::Undefined => (),
-            UnpackedValue::Null => (),
-            UnpackedValue::Boolean(b) => b.hash(state),
-            UnpackedValue::Character(c) => c.hash(state),
-            UnpackedValue::Number(n) => n.hash(state),
-            UnpackedValue::String(s) => s.hash(state),
-            UnpackedValue::Symbol(s) => s.hash(state),
-            UnpackedValue::ByteVector(v) => v.hash(state),
-            UnpackedValue::Syntax(s) => Arc::as_ptr(s).hash(state),
-            UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
-            UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
-            UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
-            UnpackedValue::Pair(p) => {
-                recursive.insert(self.clone());
-                let (car, cdr) = p.clone().into();
-                car.equal_hash(recursive, state);
-                cdr.equal_hash(recursive, state);
-            }
-            UnpackedValue::Vector(v) => {
-                recursive.insert(self.clone());
-                let v_read = v.0.vec.read();
-                state.write_usize(v_read.len());
-                for val in v_read.iter() {
-                    val.equal_hash(recursive, state);
-                }
-            }
-            UnpackedValue::Port(p) => Arc::as_ptr(&p.0).hash(state),
-            UnpackedValue::HashTable(ht) => Gc::as_ptr(&ht.0).hash(state),
-            UnpackedValue::Cell(c) => c.0.read().eqv_hash(state),
-        }
-    }
+#[bridge(name = "hashtable-mutable?", lib = "(rnrs hashtables builtins (6))")]
+pub fn hashtable_mutable_pred(hashtable: &Value) -> Result<Vec<Value>, Exception> {
+    let hashtable: HashTable = hashtable.clone().try_into()?;
+    let is_mutable = Value::from(hashtable.0.mutable);
+    Ok(vec![is_mutable])
 }
 
 #[bridge(name = "eq-hash", lib = "(rnrs hashtables builtins (6))")]
@@ -581,6 +535,18 @@ pub fn string_hash(string: &Value) -> Result<Vec<Value>, Exception> {
     let string: WideString = string.clone().try_into()?;
     let mut hasher = DefaultHasher::new();
     string.hash(&mut hasher);
+    Ok(vec![Value::from(hasher.finish())])
+}
+
+#[bridge(name = "string-ci-hash", lib = "(rnrs hashtables builtins (6))")]
+pub fn string_ci_hash(string: &Value) -> Result<Vec<Value>, Exception> {
+    let string: WideString = string.clone().try_into()?;
+    let mut hasher = DefaultHasher::new();
+    let chars = string.0.chars.read();
+    hasher.write_usize(chars.len());
+    for lowercase in chars.iter().copied().flat_map(char::to_lowercase) {
+        lowercase.hash(&mut hasher);
+    }
     Ok(vec![Value::from(hasher.finish())])
 }
 

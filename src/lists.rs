@@ -1,3 +1,6 @@
+//! Scheme pairs and lists.
+
+use hashbrown::HashSet;
 use indexmap::IndexMap;
 use parking_lot::RwLock;
 
@@ -7,6 +10,7 @@ use crate::{
     proc::{Application, DynamicState, Procedure},
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
+    strings::WideString,
     value::{UnpackedValue, Value, ValueType, write_value},
     vectors::Vector,
 };
@@ -23,8 +27,8 @@ pub(crate) struct PairInner {
     mutable: bool,
 }
 
-/// A pair of Scheme [Values](Value). Has a head (the [car](Value::car)) and a
-/// tail (the [cdr](Value::cdr)).
+/// A pair of Scheme [Values](Value). Has a head (the [car](Pair::car())) and a
+/// tail (the [cdr](Pair::cdr())).
 #[derive(Clone, Trace)]
 pub struct Pair(pub(crate) Gc<PairInner>);
 
@@ -43,7 +47,7 @@ impl Pair {
         self.0.car.read().clone()
     }
 
-    /// Alias for [car]
+    /// Alias for [`car`](Pair::car())
     pub fn head(&self) -> Value {
         self.car()
     }
@@ -53,7 +57,7 @@ impl Pair {
         self.0.cdr.read().clone()
     }
 
-    /// Alias for [cdr]
+    /// Alias for [`cdr`](Pair::cdr())
     pub fn tail(&self) -> Value {
         self.cdr()
     }
@@ -145,6 +149,75 @@ pub(crate) fn write_list(
     write!(f, ")")
 }
 
+/// A proper list.
+///
+/// Conversion to this type guarantees that a type is a proper list and allows
+/// for fast retrieval of the length or any individual element of the list.
+///
+/// # Performance
+///
+/// This is done by copying the list into a `Vec`, which can be a quite
+/// expensive operation, so only use this if you need all elements of the list.
+pub struct List {
+    head: Value,
+    items: Vec<Value>,
+}
+
+impl List {
+    pub fn as_slice(&self) -> &[Value] {
+        self.items.as_slice()
+    }
+
+    pub fn into_vec(self) -> Vec<Value> {
+        self.items
+    }
+}
+
+impl IntoIterator for List {
+    type Item = Value;
+    type IntoIter = std::vec::IntoIter<Value>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.items.into_iter()
+    }
+}
+
+impl From<List> for Value {
+    fn from(value: List) -> Self {
+        value.head
+    }
+}
+
+impl From<&Value> for Option<List> {
+    fn from(value: &Value) -> Self {
+        let mut seen = HashSet::new();
+        let mut cdr = value.clone();
+        let mut items = Vec::new();
+        while !cdr.is_null() {
+            if !seen.insert(cdr.clone()) {
+                return None;
+            }
+            let (car, new_cdr) = cdr.cast_to_scheme_type()?;
+            items.push(car);
+            cdr = new_cdr;
+        }
+        Some(List {
+            head: value.clone(),
+            items,
+        })
+    }
+}
+
+impl TryFrom<&Value> for List {
+    type Error = Exception;
+
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        value
+            .cast_to_scheme_type::<List>()
+            .ok_or_else(|| Exception::error("value is not a proper list"))
+    }
+}
+
 /// Convert a slice of values to a proper list
 pub fn slice_to_list(items: &[Value]) -> Value {
     match items {
@@ -176,6 +249,27 @@ pub fn list_to_vec_with_null(curr: &Value, out: &mut Vec<Value>) {
     }
 }
 
+pub fn is_list(curr: &Value, seen: &mut HashSet<Value>) -> bool {
+    if curr.is_null() {
+        return true;
+    }
+
+    if !seen.insert(curr.clone()) {
+        return false;
+    }
+
+    let Some(curr) = curr.cast_to_scheme_type::<Pair>() else {
+        return false;
+    };
+
+    is_list(&curr.cdr(), seen)
+}
+
+#[bridge(name = "list?", lib = "(rnrs base builtins (6))")]
+pub fn list_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(is_list(arg, &mut HashSet::default()))])
+}
+
 #[bridge(name = "list", lib = "(rnrs base builtins (6))")]
 pub fn list(args: &[Value]) -> Result<Vec<Value>, Exception> {
     // Construct the list in reverse
@@ -193,30 +287,22 @@ pub fn cons(car: &Value, cdr: &Value) -> Result<Vec<Value>, Exception> {
 
 #[bridge(name = "car", lib = "(rnrs base builtins (6))")]
 pub fn car(val: &Value) -> Result<Vec<Value>, Exception> {
-    match &*val.unpacked_ref() {
-        UnpackedValue::Pair(pair) => Ok(vec![pair.car()]),
-        UnpackedValue::Syntax(syn) => Ok(vec![Value::from(syn.car()?)]),
-        _ => Err(Exception::type_error("list", val.type_name())),
-    }
+    Ok(vec![val.try_to_scheme_type::<Pair>()?.car()])
 }
 
 #[bridge(name = "cdr", lib = "(rnrs base builtins (6))")]
 pub fn cdr(val: &Value) -> Result<Vec<Value>, Exception> {
-    match &*val.unpacked_ref() {
-        UnpackedValue::Pair(pair) => Ok(vec![pair.cdr()]),
-        UnpackedValue::Syntax(syn) => Ok(vec![Value::from(syn.cdr()?)]),
-        _ => Err(Exception::type_error("list", val.type_name())),
-    }
+    Ok(vec![val.try_to_scheme_type::<Pair>()?.cdr()])
 }
 
-#[bridge(name = "set-car!", lib = "(rnrs base builtins (6))")]
+#[bridge(name = "set-car!", lib = "(rnrs mutable-pairs (6))")]
 pub fn set_car(var: &Value, val: &Value) -> Result<Vec<Value>, Exception> {
     let pair: Pair = var.clone().try_into()?;
     pair.set_car(val.clone())?;
     Ok(Vec::new())
 }
 
-#[bridge(name = "set-cdr!", lib = "(rnrs base builtins (6))")]
+#[bridge(name = "set-cdr!", lib = "(rnrs mutable-pairs (6))")]
 pub fn set_cdr(var: &Value, val: &Value) -> Result<Vec<Value>, Exception> {
     let pair: Pair = var.clone().try_into()?;
     pair.set_cdr(val.clone())?;
@@ -246,10 +332,17 @@ pub fn length(arg: &Value) -> Result<usize, Exception> {
 
 #[bridge(name = "list->vector", lib = "(rnrs base builtins (6))")]
 pub fn list_to_vector(list: &Value) -> Result<Vec<Value>, Exception> {
-    let mut vec = Vec::new();
-    list_to_vec(list, &mut vec);
+    let List { items, .. } = list.try_to_scheme_type()?;
+    Ok(vec![Value::from(items)])
+}
 
-    Ok(vec![Value::from(vec)])
+#[bridge(name = "list->string", lib = "(rnrs base builtins (6))")]
+pub fn list_to_string(List { items, .. }: List) -> Result<Vec<Value>, Exception> {
+    let chars = items
+        .into_iter()
+        .map(char::try_from)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(vec![Value::from(WideString::new_mutable(chars))])
 }
 
 #[bridge(name = "append", lib = "(rnrs base builtins (6))")]
@@ -288,11 +381,7 @@ pub fn map(
             return Ok(Application::new(k.try_into()?, vec![Value::null()]));
         }
 
-        let (car, cdr) = match &*input.unpacked_ref() {
-            UnpackedValue::Pair(pair) => pair.clone().into(),
-            UnpackedValue::Syntax(syn) => (Value::from(syn.car()?), Value::from(syn.cdr()?)),
-            _ => return Err(Exception::type_error("list", input.type_name())),
-        };
+        let (car, cdr) = input.try_to_scheme_type::<Pair>()?.into();
 
         args.push(car);
         *input = cdr;
@@ -350,15 +439,7 @@ unsafe extern "C" fn map_k(
                 return Box::into_raw(Box::new(app));
             }
 
-            let (car, cdr) = match &*input.unpacked_ref() {
-                UnpackedValue::Pair(pair) => pair.clone().into(),
-                UnpackedValue::Syntax(syn) => (
-                    Value::from(syn.car().unwrap()),
-                    Value::from(syn.cdr().unwrap()),
-                ),
-                _ => unreachable!(),
-            };
-
+            let (car, cdr) = input.cast_to_scheme_type::<Pair>().unwrap().into();
             args.push(car);
             *input = cdr;
         }
@@ -379,5 +460,31 @@ unsafe extern "C" fn map_k(
         args.push(Value::from(map_k));
 
         Box::into_raw(Box::new(Application::new(mapper, args)))
+    }
+}
+
+#[bridge(name = "zip", lib = "(rnrs base builtins (6))")]
+pub fn zip(list1: &Value, listn: &[Value]) -> Result<Vec<Value>, Exception> {
+    let mut output: Option<Vec<Value>> = None;
+    for list in Some(list1).into_iter().chain(listn.iter()).rev() {
+        let List { items, .. } = list.try_to_scheme_type()?;
+        if let Some(output) = &output {
+            if output.len() != items.len() {
+                return Err(Exception::error("lists do not have the same length"));
+            }
+        } else {
+            output = Some(vec![Value::null(); items.len()]);
+        }
+
+        let output = output.as_mut().unwrap();
+        for (i, item) in items.into_iter().enumerate() {
+            output[i] = Value::from((item, output[i].clone()));
+        }
+    }
+
+    if let Some(output) = output {
+        Ok(vec![slice_to_list(&output)])
+    } else {
+        Ok(vec![Value::null()])
     }
 }
