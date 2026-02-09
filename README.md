@@ -43,7 +43,7 @@ $ cargo install scheme-rs --features "async,tokio"
 ## Documentation 
 
 - [API documentation](https://docs.rs/scheme-rs/latest/scheme_rs/)
-- [Language reference](<https://www.scheme.rs/Language Reference/>)
+- [Language reference](<https://www.scheme-rs.org/Language Reference/>)
 
 ## Contributing
 
