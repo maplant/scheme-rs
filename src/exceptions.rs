@@ -694,7 +694,7 @@ define_condition_type!(
         writeln!(f, "\n--> {}:{}:{}:", span.file, span.line, span.column)?;
         writeln!(f, "    | {}", "")?;
         writeln!(f, "{:03} | {:?}", span.line, gc_inner)?;
-        writeln!(f, "    | {}^", " ".repeat(span.column+span.offset))?;
+        writeln!(f, "    | {}^ here", " ".repeat(span.column))?;
         Ok(())
     }
 );
