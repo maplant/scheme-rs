@@ -679,7 +679,23 @@ define_condition_type!(
         Ok(SyntaxViolation { parent: Gc::new(Violation::new()), form, subform })
     },
     debug: |this, f| {
-        write!(f, " form: {:?} subform: {:?}", this.form, this.subform)
+        // TODO: remove the clone here, i have to understand more of the Value repr beforehand
+        let UnpackedValue::Syntax(gc_inner) = this.form.clone().unpack() else {
+            unreachable!();
+        };
+
+        // TODO: we have to remove the weird prefix [1] and where do we get the message from [2]:
+        //
+        // [1]: Error: Exception(#<compound-condition #<&syntax
+        // [2]: > #<&message "undefined variable">>
+
+        let span = gc_inner.span();
+
+        writeln!(f, "\n--> {}:{}:{}:", span.file, span.line, span.column)?;
+        writeln!(f, "    | {}", "")?;
+        writeln!(f, "{:03} | {:?}", span.line, gc_inner)?;
+        writeln!(f, "    | {}^", " ".repeat(span.column+span.offset))?;
+        Ok(())
     }
 );
 
