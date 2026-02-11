@@ -73,7 +73,7 @@ $ cargo install scheme-rs --features "async,tokio"
 
 ## Supported platforms:
 
-scheme-rs uses [cranelift](cranelift.dev) for JIT compilation and is therefore 
+scheme-rs uses [cranelift](https://cranelift.dev) for JIT compilation and is therefore 
 limited to platforms supported by cranelift. At the current moment that includes
 x86-64, aarch64 (ARM64), s390x (IBM Z), and riscv64 architectures.
 
