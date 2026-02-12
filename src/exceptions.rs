@@ -720,7 +720,6 @@ impl SyntaxViolation {
             }
         }
 
-        w.flush()?;
         Ok(())
     }
 
