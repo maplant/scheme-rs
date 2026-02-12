@@ -14,8 +14,8 @@ use scheme_rs::{
     syntax::{Span, Syntax},
 };
 use scheme_rs_macros::{maybe_async, maybe_await};
-use std::path::Path;
-use std::process;
+use std::{fs, process};
+use std::{io, path::Path};
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -48,8 +48,17 @@ struct InputHelper {
     highlighter: MatchingBracketHighlighter,
 }
 
+fn attach_context_to_exception(
+    path: impl AsRef<Path>,
+    exception: Exception,
+) -> (Vec<String>, Exception) {
+    let contents = fs::read_to_string(path).unwrap_or_else(|_| String::new());
+    let lines = contents.lines().map(|s| s.to_string()).collect();
+    (lines, exception)
+}
+
 /// scheme-rs entry point
-fn entry() -> Result<(), Exception> {
+fn entry() -> Result<(), (Vec<String>, Exception)> {
     let args = Args::parse();
 
     let runtime = Runtime::new();
@@ -57,7 +66,8 @@ fn entry() -> Result<(), Exception> {
     // Run any programs
     for file in &args.files {
         let path = Path::new(file);
-        maybe_await!(runtime.run_program(path))?;
+        maybe_await!(runtime.run_program(path))
+            .map_err(|e| attach_context_to_exception(path, e))?;
     }
 
     if !args.files.is_empty() && !args.interactive {
@@ -76,9 +86,10 @@ fn entry() -> Result<(), Exception> {
     let mut editor = match Editor::with_history(config, DefaultHistory::new()) {
         Ok(e) => e,
         Err(err) => {
-            return Err(Exception::error(format!(
-                "Error creating line editor: {err}"
-            )));
+            return Err((
+                Vec::new(),
+                Exception::error(format!("Error creating line editor: {err}")),
+            ));
         }
     };
 
@@ -108,13 +119,17 @@ fn entry() -> Result<(), Exception> {
             }
             Ok(None) => break,
             Err(err) => {
-                return Err(Exception::error(format!(
-                    "Error while reading input: {err}"
-                )));
+                return Err((
+                    Vec::new(),
+                    Exception::error(format!("Error while reading input: {err}")),
+                ));
             }
         };
 
-        for result in maybe_await!(repl.eval_sexpr(true, sexpr))?.into_iter() {
+        for result in maybe_await!(repl.eval_sexpr(true, sexpr))
+            .map_err(|e| (Vec::new(), e))?
+            .into_iter()
+        {
             println!("${n_results} = {result:?}");
             n_results += 1;
         }
@@ -127,35 +142,50 @@ fn entry() -> Result<(), Exception> {
 #[cfg_attr(feature = "async", tokio::main)]
 fn main() {
     if let Err(e) = entry() {
-        print_exception(e);
+        print_exception(e).unwrap();
         process::exit(1);
     };
 }
 
-fn print_exception(exception: Exception) {
+fn print_exception(exception: (Vec<String>, Exception)) -> io::Result<()> {
+    let (lines, exception) = exception;
+    use std::io::Write;
+
+    let stdout = io::stdout();
+    let mut w = stdout.lock();
+
     let Ok(conditions) = exception.simple_conditions() else {
-        println!(
+        return writeln!(
+            w,
             "Exception occurred with a non-condition value: {:?}",
             exception.0
         );
-        return;
     };
-    println!("Uncaught exception:");
+
+    writeln!(w, "Uncaught exception:")?;
     for condition in conditions.into_iter().rev() {
         if let Some(message) = condition.cast_to_rust_type::<Message>() {
-            println!(" - Message: {}", message.message);
+            writeln!(w, " - Message: {}", message.message)?;
         } else if let Some(syntax) = condition.cast_to_rust_type::<SyntaxViolation>() {
-            println!("\n{:?}", syntax);
+            writeln!(w)?;
+            // this is a fallback for having no lines available, for instance in the context of the
+            // repl
+            if lines.is_empty() {
+                syntax.pretty_print_no_lines(&mut w)?;
+            } else {
+                syntax.pretty_print(&mut w, &lines)?;
+            }
         } else if let Some(trace) = condition.cast_to_rust_type::<StackTrace>() {
-            println!(" - Stack trace:");
+            writeln!(w, " - Stack trace:")?;
             for (i, trace) in trace.trace.iter().enumerate() {
                 let syntax = trace.cast_to_scheme_type::<Gc<Syntax>>().unwrap();
                 let span = syntax.span();
                 let func_name = syntax.as_ident().unwrap().symbol();
-                println!("{:>6}: {func_name}:{span}", i + 1);
+                writeln!(w, "{:>6}: {func_name}:{span}", i + 1)?;
             }
         } else {
-            println!(" - Condition: {condition:?}");
+            writeln!(w, " - Condition: {condition:?}")?;
         }
     }
+    Ok(())
 }
