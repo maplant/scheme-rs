@@ -94,7 +94,7 @@ impl Runtime {
         let mut form = {
             let port = Port::new(
                 path.display(),
-                maybe_await!(File::open(path)).unwrap(),
+                maybe_await!(File::open(path)).map_err(Exception::io_error)?,
                 BufferMode::Block,
                 Some(Transcoder::native()),
             );
