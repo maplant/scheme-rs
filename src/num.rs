@@ -36,7 +36,7 @@ use malachite::{
     Integer,
     base::{
         num::{
-            arithmetic::traits::{FloorSqrt, Parity, Pow},
+            arithmetic::traits::{FloorSqrt, Gcd, Parity, Pow},
             conversion::traits::{ConvertibleFrom, RoundingFrom, WrappingFrom},
         },
         rounding_modes::RoundingMode,
@@ -2281,6 +2281,60 @@ pub fn denominator(obj: &Value) -> Result<Vec<Value>, Exception> {
         _ => Ok(vec![Value::from(1)]),
     }
 }
+
+#[bridge(name = "gcd", lib = "(rnrs base builtins (6))")]
+pub fn gcd(vals: &[Value]) -> Result<Vec<Value>, Exception> {
+    let mut result = SimpleNumber::zero();
+
+    for val in vals {
+        let num = val.try_to_scheme_type::<SimpleNumber>()?;
+        result = gcd_binary(result, num)?;
+    }
+
+    Ok(vec![Value::from(Number::from(result))])
+}
+
+fn gcd_binary(u: SimpleNumber, v: SimpleNumber) -> Result<SimpleNumber, Exception> {
+    match (u, v) {
+        (SimpleNumber::FixedInteger(x), SimpleNumber::FixedInteger(y)) => {
+            let result = num::integer::gcd(x, y);
+            Ok(SimpleNumber::FixedInteger(result))
+        }
+        (SimpleNumber::BigInteger(x), SimpleNumber::BigInteger(y)) => {
+            let result = x.unsigned_abs_ref().gcd(y.unsigned_abs_ref());
+            Ok(SimpleNumber::BigInteger(Integer::from_sign_and_abs(
+                true, result,
+            )))
+        }
+        (SimpleNumber::Rational(_), SimpleNumber::Rational(_))
+        | (SimpleNumber::FixedInteger(_), SimpleNumber::BigInteger(_))
+        | (SimpleNumber::FixedInteger(_), SimpleNumber::Rational(_))
+        | (SimpleNumber::FixedInteger(_), SimpleNumber::Real(_))
+        | (SimpleNumber::BigInteger(_), SimpleNumber::FixedInteger(_))
+        | (SimpleNumber::BigInteger(_), SimpleNumber::Rational(_))
+        | (SimpleNumber::BigInteger(_), SimpleNumber::Real(_))
+        | (SimpleNumber::Rational(_), SimpleNumber::FixedInteger(_))
+        | (SimpleNumber::Rational(_), SimpleNumber::BigInteger(_))
+        | (SimpleNumber::Rational(_), SimpleNumber::Real(_))
+        | (SimpleNumber::Real(_), SimpleNumber::FixedInteger(_))
+        | (SimpleNumber::Real(_), SimpleNumber::BigInteger(_))
+        | (SimpleNumber::Real(_), SimpleNumber::Rational(_))
+        | (SimpleNumber::Real(_), SimpleNumber::Real(_)) => {
+            Err(Exception::error("arguments have incompatible types"))
+        }
+    }
+}
+
+// #[bridge(name = "floor", lib = "(rnrs base builtins (6))")]
+// pub fn floor(obj: &Value) -> Result<Vec<Value>, Exception> {
+//     match obj.try_to_scheme_type::<SimpleNumber>()? {
+//         SimpleNumber::Rational(r) => Ok(vec![Value::from(
+//             Integer::rounding_from(r, RoundingMode::Floor).0,
+//         )]),
+//         SimpleNumber::Real(r) => Ok(vec![Value::from(r.floor())]),
+//         _ => Ok(vec![obj.clone()]),
+//     }
+// }
 
 #[bridge(name = "floor", lib = "(rnrs base builtins (6))")]
 pub fn floor(obj: &Value) -> Result<Vec<Value>, Exception> {
