@@ -48,17 +48,8 @@ struct InputHelper {
     highlighter: MatchingBracketHighlighter,
 }
 
-fn attach_context_to_exception(
-    path: impl AsRef<Path>,
-    exception: Exception,
-) -> (Vec<String>, Exception) {
-    let contents = fs::read_to_string(path).unwrap_or_else(|_| String::new());
-    let lines = contents.lines().map(|s| s.to_string()).collect();
-    (lines, exception)
-}
-
 /// scheme-rs entry point
-fn entry() -> Result<(), (Vec<String>, Exception)> {
+fn entry() -> Result<(), Exception> {
     let args = Args::parse();
 
     let runtime = Runtime::new();
@@ -66,8 +57,7 @@ fn entry() -> Result<(), (Vec<String>, Exception)> {
     // Run any programs
     for file in &args.files {
         let path = Path::new(file);
-        maybe_await!(runtime.run_program(path))
-            .map_err(|e| attach_context_to_exception(path, e))?;
+        maybe_await!(runtime.run_program(path))?;
     }
 
     if !args.files.is_empty() && !args.interactive {
@@ -86,10 +76,9 @@ fn entry() -> Result<(), (Vec<String>, Exception)> {
     let mut editor = match Editor::with_history(config, DefaultHistory::new()) {
         Ok(e) => e,
         Err(err) => {
-            return Err((
-                Vec::new(),
-                Exception::error(format!("Error creating line editor: {err}")),
-            ));
+            return Err(Exception::error(format!(
+                "Error creating line editor: {err}"
+            )));
         }
     };
 
@@ -119,17 +108,13 @@ fn entry() -> Result<(), (Vec<String>, Exception)> {
             }
             Ok(None) => break,
             Err(err) => {
-                return Err((
-                    Vec::new(),
-                    Exception::error(format!("Error while reading input: {err}")),
-                ));
+                return Err(Exception::error(format!(
+                    "Error while reading input: {err}"
+                )));
             }
         };
 
-        for result in maybe_await!(repl.eval_sexpr(true, sexpr))
-            .map_err(|e| (Vec::new(), e))?
-            .into_iter()
-        {
+        for result in maybe_await!(repl.eval_sexpr(true, sexpr))?.into_iter() {
             println!("${n_results} = {result:?}");
             n_results += 1;
         }
@@ -147,8 +132,7 @@ fn main() {
     };
 }
 
-fn print_exception(exception: (Vec<String>, Exception)) -> io::Result<()> {
-    let (lines, exception) = exception;
+fn print_exception(exception: Exception) -> io::Result<()> {
     use std::io::Write;
 
     let stdout = io::stdout();
@@ -167,6 +151,9 @@ fn print_exception(exception: (Vec<String>, Exception)) -> io::Result<()> {
         if let Some(message) = condition.cast_to_rust_type::<Message>() {
             writeln!(w, " - Message: {}", message.message)?;
         } else if let Some(syntax) = condition.cast_to_rust_type::<SyntaxViolation>() {
+            let file_name = syntax.file_name();
+            let contents = fs::read_to_string(&file_name).unwrap_or_default();
+            let lines: Vec<&str> = contents.lines().collect();
             writeln!(w)?;
             // this is a fallback for having no lines available, for instance in the context of the
             // repl

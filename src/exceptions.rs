@@ -689,6 +689,14 @@ impl SyntaxViolation {
         }
     }
 
+    pub fn file_name(&self) -> String {
+        let unpacked_value_ref = self.form.unpacked_ref();
+        let UnpackedValue::Syntax(gc_inner) = unpacked_value_ref.as_ref() else {
+            unreachable!();
+        };
+        gc_inner.span().file.clone().to_string()
+    }
+
     // TODO: make this a trait or something, so it can be implemented for more exceptions
 
     /// pretty print a SyntaxViolation, heavily inspired by
