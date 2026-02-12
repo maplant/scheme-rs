@@ -57,7 +57,9 @@ fn main() -> Result<(), Exception> {
     // Run any programs
     for file in &args.files {
         let path = Path::new(file);
-        let _ = maybe_await!(runtime.run_program(path))?;
+        if let Err(e) = maybe_await!(runtime.run_program(path)) {
+            print_exception(e);
+        };
     }
 
     if !args.files.is_empty() && !args.interactive {

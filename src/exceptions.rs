@@ -684,11 +684,6 @@ define_condition_type!(
             unreachable!();
         };
 
-        // TODO: we have to remove the weird prefix [1] and where do we get the message from [2]:
-        //
-        // [1]: Error: Exception(#<compound-condition #<&syntax
-        // [2]: > #<&message "undefined variable">>
-
         let span = gc_inner.span();
 
         writeln!(f, "\n--> {}:{}:{}:", span.file, span.line, span.column)?;
