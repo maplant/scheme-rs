@@ -686,7 +686,7 @@ define_condition_type!(
 
         let span = gc_inner.span();
 
-        writeln!(f, "\n--> {}:{}:{}:", span.file, span.line, span.column)?;
+        writeln!(f, "--> {}:{}:{}:", span.file, span.line, span.column)?;
         writeln!(f, "    | {}", "")?;
         writeln!(f, "{:03} | {:?}", span.line, gc_inner)?;
         writeln!(f, "    | {}^ here", " ".repeat(span.column))?;

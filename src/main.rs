@@ -15,6 +15,7 @@ use scheme_rs::{
 };
 use scheme_rs_macros::{maybe_async, maybe_await};
 use std::path::Path;
+use std::process;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -47,9 +48,8 @@ struct InputHelper {
     highlighter: MatchingBracketHighlighter,
 }
 
-#[maybe_async]
-#[cfg_attr(feature = "async", tokio::main)]
-fn main() -> Result<(), Exception> {
+/// scheme-rs entry point
+fn entry() -> Result<(), Exception> {
     let args = Args::parse();
 
     let runtime = Runtime::new();
@@ -57,9 +57,7 @@ fn main() -> Result<(), Exception> {
     // Run any programs
     for file in &args.files {
         let path = Path::new(file);
-        if let Err(e) = maybe_await!(runtime.run_program(path)) {
-            print_exception(e);
-        };
+        maybe_await!(runtime.run_program(path))?;
     }
 
     if !args.files.is_empty() && !args.interactive {
@@ -116,18 +114,22 @@ fn main() -> Result<(), Exception> {
             }
         };
 
-        match maybe_await!(repl.eval_sexpr(true, sexpr)) {
-            Ok(results) => {
-                for result in results.into_iter() {
-                    println!("${n_results} = {result:?}");
-                    n_results += 1;
-                }
-            }
-            Err(err) => print_exception(err),
+        for result in maybe_await!(repl.eval_sexpr(true, sexpr))?.into_iter() {
+            println!("${n_results} = {result:?}");
+            n_results += 1;
         }
     }
 
     Ok(())
+}
+
+#[maybe_async]
+#[cfg_attr(feature = "async", tokio::main)]
+fn main() {
+    if let Err(e) = entry() {
+        print_exception(e);
+        process::exit(1);
+    };
 }
 
 fn print_exception(exception: Exception) {
@@ -139,14 +141,11 @@ fn print_exception(exception: Exception) {
         return;
     };
     println!("Uncaught exception:");
-    for condition in conditions.into_iter() {
+    for condition in conditions.into_iter().rev() {
         if let Some(message) = condition.cast_to_rust_type::<Message>() {
             println!(" - Message: {}", message.message);
         } else if let Some(syntax) = condition.cast_to_rust_type::<SyntaxViolation>() {
-            println!(" - Syntax error in form: {:?}", syntax.form);
-            if let Some(subform) = syntax.subform.as_ref() {
-                println!("   (subform: {subform:?})");
-            }
+            println!("\n{:?}", syntax);
         } else if let Some(trace) = condition.cast_to_rust_type::<StackTrace>() {
             println!(" - Stack trace:");
             for (i, trace) in trace.trace.iter().enumerate() {
