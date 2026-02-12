@@ -17,7 +17,7 @@ hide:
 Scheme-rs is an implementation of the
 [R6RS](https://www.r6rs.org/final/r6rs.pdf) specification of the [Scheme programming 
 language](https://en.wikipedia.org/wiki/Scheme_(programming_language)) that is 
-designed to embedded within sync and async Rust. 
+designed to be embedded within sync and async Rust.
 
 ``` scheme
 ;; Example of a program that defines a variable via a datum received over a 

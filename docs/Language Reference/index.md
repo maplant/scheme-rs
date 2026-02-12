@@ -325,7 +325,7 @@ Scheme values can have at most one type, of the following categories:
 - **Boolean**: Can either be `true` or `false`.
 - **Character**: A unicode code point. 
 - **Number**: A numerical value on the [numerical tower](#numeric-tower). 
-- **String:**: An array of unicode code points.
+- **String**: An array of unicode code points.
 - **Symbol**: A symbol. Conceptually similar to an immutable string. Symbols are
   [interned](https://en.wikipedia.org/wiki/String_interning) so that symbols 
   with the same spelling always satisfy `eq?`.
