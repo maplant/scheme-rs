@@ -6,7 +6,7 @@
 Scheme-rs is an implementation of the
 [R6RS](https://www.r6rs.org/final/r6rs.pdf) specification of the [Scheme programming 
 language](https://en.wikipedia.org/wiki/Scheme_(programming_language)) that is 
-designed to embedded within sync and async Rust. 
+designed to be embedded within sync and async Rust.
 
 Scheme-rs is safe, fast, and does not sacrifice modern conveniences.
 
@@ -43,7 +43,7 @@ $ cargo install scheme-rs --features "async,tokio"
 ## Documentation 
 
 - [API documentation](https://docs.rs/scheme-rs/latest/scheme_rs/)
-- [Language reference](<https://www.scheme-rs.org/Language Reference/>)
+- [Language reference](<https://scheme.rs/Language Reference/>)
 
 ## Contributing
 
