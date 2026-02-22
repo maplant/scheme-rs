@@ -1834,13 +1834,13 @@ impl DefinitionBody {
         let mut exprs_parsed = Vec::new();
 
         // Mark all of the defs as defined:
-        for (def, _) in defs.iter() {
-            if let Some([_, def, ..]) = def.as_list() {
+        for (def_form, _) in defs.iter() {
+            if let Some([_, def, ..]) = def_form.as_list() {
                 let ident = match def.as_list() {
                     Some([Syntax::Identifier { ident, .. }, ..]) => ident,
-                    _ => def.as_ident().expect(
-                        "define should have already been parsed and determined to be well-formed",
-                    ),
+                    _ => def
+                        .as_ident()
+                        .ok_or_else(|| error::bad_form(def_form, None))?,
                 };
                 let mut ident = ident.clone();
                 // Remove any scopes introduced by a let-syntax or
