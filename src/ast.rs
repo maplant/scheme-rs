@@ -111,6 +111,19 @@ mod error {
         syntax_error(form, None, "illegal import")
     }
 
+    pub(super) fn import_not_permitted(form: &Syntax, lib_name: &[Symbol]) -> Exception {
+        let lib_name = lib_name
+            .iter()
+            .map(|s| s.to_str().to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        syntax_error(
+            form,
+            None,
+            &format!("import of ({lib_name}) is not permitted"),
+        )
+    }
+
     pub(super) fn unexpected_empty_list(form: &Syntax, subform: Option<&Syntax>) -> Exception {
         syntax_error(form, subform, "unexpected empty list")
     }
@@ -802,6 +815,18 @@ impl ImportSet {
             _ => Err(error::expected_list(form)),
         }
     }
+
+    /// Returns the base library name for this import set, recursively unwrapping
+    /// any Only/Except/Prefix/Rename wrappers.
+    pub fn library_name(&self) -> &[Symbol] {
+        match self {
+            ImportSet::Library(lib_ref) => &lib_ref.name,
+            ImportSet::Only { set, .. }
+            | ImportSet::Except { set, .. }
+            | ImportSet::Prefix { set, .. }
+            | ImportSet::Rename { set, .. } => set.library_name(),
+        }
+    }
 }
 
 impl FromStr for ImportSet {
@@ -855,16 +880,58 @@ impl LibraryReference {
     }
 }
 
+/// Controls which libraries may be imported during evaluation.
+#[derive(Clone, Debug)]
+pub enum ImportPolicy {
+    /// All imports are allowed.
+    Allow,
+    /// Only the listed libraries may be imported. An empty set means no imports
+    /// are allowed.
+    AllowList(HashSet<Vec<Symbol>>),
+}
+
+impl ImportPolicy {
+    /// Returns `true` if the given import set is permitted under this policy.
+    pub fn is_allowed(&self, import_set: &ImportSet) -> bool {
+        match self {
+            ImportPolicy::Allow => true,
+            ImportPolicy::AllowList(allowed) => allowed.contains(import_set.library_name()),
+        }
+    }
+
+    /// Create an allowlist from string library names.
+    ///
+    /// Each entry is a slice of strings representing the library name
+    /// components, e.g., `&["scheme", "base"]` for `(scheme base)`.
+    pub fn allow_only(libs: &[&[&str]]) -> Self {
+        let set = libs
+            .iter()
+            .map(|lib| lib.iter().map(|s| Symbol::intern(s)).collect())
+            .collect();
+        ImportPolicy::AllowList(set)
+    }
+}
+
+impl From<bool> for ImportPolicy {
+    fn from(allow: bool) -> Self {
+        if allow {
+            ImportPolicy::Allow
+        } else {
+            ImportPolicy::AllowList(HashSet::new())
+        }
+    }
+}
+
 pub struct ParseContext {
     runtime: Runtime,
-    allow_imports: bool,
+    import_policy: ImportPolicy,
 }
 
 impl ParseContext {
-    pub fn new(runtime: &Runtime, allow_imports: bool) -> Self {
+    pub fn new(runtime: &Runtime, import_policy: impl Into<ImportPolicy>) -> Self {
         Self {
             runtime: runtime.clone(),
-            allow_imports,
+            import_policy: import_policy.into(),
         }
     }
 }
@@ -1760,7 +1827,7 @@ impl DefinitionBody {
     ) -> Result<Self, Exception> {
         let ctxt = ParseContext {
             runtime: runtime.clone(),
-            allow_imports: true,
+            import_policy: ImportPolicy::Allow,
         };
         // No explanation needed
         match form.as_list() {
@@ -2051,11 +2118,24 @@ fn splice_in_inner(
                         continue;
                     }
                     (Some(Primitive::Import), imports) => {
-                        if !permissive && !exprs.is_empty() || !ctxt.allow_imports {
+                        if !permissive && !exprs.is_empty() {
                             return Err(error::unexpected_import(&expanded));
                         }
+                        // First pass: parse all import sets and validate against
+                        // our import policy before executing any of them.
+                        let mut parsed_imports = Vec::new();
                         for import in imports {
                             let import_set = ImportSet::parse(discard_for(import))?;
+                            if !ctxt.import_policy.is_allowed(&import_set) {
+                                return Err(error::import_not_permitted(
+                                    &expanded,
+                                    import_set.library_name(),
+                                ));
+                            }
+                            parsed_imports.push(import_set);
+                        }
+                        // Second pass: execute all imports (all have been validated)
+                        for import_set in parsed_imports {
                             maybe_await!(env.import(import_set))?;
                         }
                         continue;
