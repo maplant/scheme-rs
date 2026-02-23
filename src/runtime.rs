@@ -47,7 +47,7 @@ use std::{
 /// Runtime is automatically reference counted, so if you have all of the
 /// procedures you need you can drop it without any issue.
 ///
-/// # Safety:
+/// # Safety
 ///
 /// The runtime contains the only live references to the Cranelift Context and
 /// therefore modules and allocated functions in the form a Sender of
