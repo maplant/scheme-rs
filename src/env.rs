@@ -17,6 +17,7 @@ use scheme_rs_macros::{maybe_async, maybe_await};
 #[cfg(feature = "async")]
 use futures::future::BoxFuture;
 
+pub use crate::ast::{AllowList, ImportPolicy};
 use crate::{
     ast::{
         DefinitionBody, ExportSet, ImportSet, LibraryName, LibrarySpec, ParseContext, Primitive,
@@ -277,10 +278,15 @@ impl TopLevelEnvironment {
     }
 
     /// Evaluate the scheme expression in the provided environment and return
-    /// the values. If `allow_imports` is false, import expressions are
-    /// disallowed and will cause an error.
+    /// the values. The `import_policy` controls which libraries may be imported;
+    /// use `ImportPolicy::Allow` to permit all imports, or provide an allowlist
+    /// of specific libraries.
     #[maybe_async]
-    pub fn eval(&self, allow_imports: bool, code: &str) -> Result<Vec<Value>, Exception> {
+    pub fn eval(
+        &self,
+        import_policy: impl Into<ImportPolicy>,
+        code: &str,
+    ) -> Result<Vec<Value>, Exception> {
         let mut sexprs = Syntax::from_str(code, None)?;
         sexprs.add_scope(self.0.read().scope);
         let Some([body @ .., end]) = sexprs.as_list() else {
@@ -290,7 +296,7 @@ impl TopLevelEnvironment {
             return Err(Exception::syntax(sexprs, None));
         }
         let rt = { self.0.read().rt.clone() };
-        let ctxt = ParseContext::new(&rt, allow_imports);
+        let ctxt = ParseContext::new(&rt, import_policy);
         let body = maybe_await!(DefinitionBody::parse(
             &ctxt,
             body,
@@ -304,11 +310,11 @@ impl TopLevelEnvironment {
     #[maybe_async]
     pub fn eval_sexpr(
         &self,
-        allow_imports: bool,
+        import_policy: impl Into<ImportPolicy>,
         mut sexpr: Syntax,
     ) -> Result<Vec<Value>, Exception> {
         let rt = { self.0.read().rt.clone() };
-        let ctxt = ParseContext::new(&rt, allow_imports);
+        let ctxt = ParseContext::new(&rt, import_policy);
         sexpr.add_scope(self.0.read().scope);
         let body = std::slice::from_ref(&sexpr);
         let body = maybe_await!(DefinitionBody::parse(
@@ -996,4 +1002,160 @@ fn find_all_matching_bindings(id: &Identifier) -> Vec<(BTreeSet<Scope>, Binding)
                 .cloned()
                 .collect()
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::ImportSet;
+    use crate::runtime::Runtime;
+
+    #[test]
+    fn import_policy_allow() {
+        let rt = Runtime::new();
+        let env = TopLevelEnvironment::new_repl(&rt);
+        // ImportPolicy::Allow should permit imports
+        let result = env.eval(ImportPolicy::Allow, "(import (rnrs)) (abs -5)");
+        assert!(
+            result.is_ok(),
+            "ImportPolicy::Allow should permit imports: {result:?}"
+        );
+    }
+
+    #[test]
+    fn import_policy_deny_all() {
+        let rt = Runtime::new();
+        let env = TopLevelEnvironment::new_repl(&rt);
+        // deny_all should deny all imports
+        let result = env.eval(ImportPolicy::deny_all(), "(import (rnrs))");
+        assert!(result.is_err(), "deny_all should deny all imports");
+    }
+
+    #[test]
+    fn import_policy_allowlist_permits_listed() {
+        let rt = Runtime::new();
+        let env = TopLevelEnvironment::new_repl(&rt);
+        // Allow only (rnrs base) via s-expression parsing
+        let allow_list: AllowList = "((rnrs base))".parse().unwrap();
+        let policy = ImportPolicy::allow_only(allow_list);
+        let result = env.eval(policy, "(import (rnrs base)) (abs -5)");
+        assert!(
+            result.is_ok(),
+            "AllowList should permit listed library: {result:?}"
+        );
+    }
+
+    #[test]
+    fn import_policy_allowlist_denies_unlisted() {
+        let rt = Runtime::new();
+        let env = TopLevelEnvironment::new_repl(&rt);
+        // Allow only (rnrs base), but try to import (rnrs io simple)
+        let allow_list: AllowList = "((rnrs base))".parse().unwrap();
+        let policy = ImportPolicy::allow_only(allow_list);
+        let result = env.eval(policy, "(import (rnrs io simple))");
+        assert!(result.is_err(), "AllowList should deny unlisted library");
+    }
+
+    #[test]
+    fn allowlist_from_str_multiple_libs() {
+        let allow_list: AllowList = "((rnrs base) (rnrs io simple))".parse().unwrap();
+        let rt = Runtime::new();
+        let env = TopLevelEnvironment::new_repl(&rt);
+        let policy = ImportPolicy::allow_only(allow_list);
+        // Both libraries should be permitted
+        let result = env.eval(policy, "(import (rnrs base) (rnrs io simple)) (abs -5)");
+        assert!(
+            result.is_ok(),
+            "AllowList should permit all listed libraries: {result:?}"
+        );
+    }
+
+    #[test]
+    fn allowlist_from_slice() {
+        let allow_list = AllowList::from_slice(&[&["rnrs", "base"]]);
+        let rt = Runtime::new();
+        let env = TopLevelEnvironment::new_repl(&rt);
+        let policy = ImportPolicy::allow_only(allow_list);
+        let result = env.eval(policy, "(import (rnrs base)) (abs -5)");
+        assert!(
+            result.is_ok(),
+            "AllowList::from_slice should work: {result:?}"
+        );
+    }
+
+    #[test]
+    fn allowlist_add_lib() {
+        use crate::symbols::Symbol;
+
+        let mut allow_list = AllowList::default();
+        allow_list.add_lib(vec![Symbol::intern("rnrs"), Symbol::intern("base")]);
+        let rt = Runtime::new();
+        let env = TopLevelEnvironment::new_repl(&rt);
+        let policy = ImportPolicy::allow_only(allow_list);
+        let result = env.eval(policy, "(import (rnrs base)) (abs -5)");
+        assert!(result.is_ok(), "AllowList::add_lib should work: {result:?}");
+    }
+
+    #[test]
+    fn import_policy_from_bool() {
+        let rt = Runtime::new();
+        let env = TopLevelEnvironment::new_repl(&rt);
+
+        // true should permit imports (backward compat)
+        let result = env.eval(true, "(import (rnrs)) (abs -5)");
+        assert!(result.is_ok(), "true should permit imports: {result:?}");
+
+        // false should deny imports (backward compat)
+        let env2 = TopLevelEnvironment::new_repl(&rt);
+        let result = env2.eval(false, "(import (rnrs))");
+        assert!(result.is_err(), "false should deny imports");
+    }
+
+    #[test]
+    fn import_set_library_name() {
+        // Plain library reference
+        let import_set: ImportSet = "(scheme write)".parse().unwrap();
+        let name: Vec<String> = import_set
+            .library_name()
+            .iter()
+            .map(|s| s.to_str().to_string())
+            .collect();
+        assert_eq!(name, vec!["scheme", "write"]);
+
+        // Wrapped in (only ...)
+        let import_set: ImportSet = "(only (scheme base) define)".parse().unwrap();
+        let name: Vec<String> = import_set
+            .library_name()
+            .iter()
+            .map(|s| s.to_str().to_string())
+            .collect();
+        assert_eq!(name, vec!["scheme", "base"]);
+
+        // Wrapped in (except ...)
+        let import_set: ImportSet = "(except (scheme write) display)".parse().unwrap();
+        let name: Vec<String> = import_set
+            .library_name()
+            .iter()
+            .map(|s| s.to_str().to_string())
+            .collect();
+        assert_eq!(name, vec!["scheme", "write"]);
+
+        // Wrapped in (prefix ...)
+        let import_set: ImportSet = "(prefix (scheme base) s:)".parse().unwrap();
+        let name: Vec<String> = import_set
+            .library_name()
+            .iter()
+            .map(|s| s.to_str().to_string())
+            .collect();
+        assert_eq!(name, vec!["scheme", "base"]);
+
+        // Wrapped in (rename ...)
+        let import_set: ImportSet = "(rename (scheme write) (display show))".parse().unwrap();
+        let name: Vec<String> = import_set
+            .library_name()
+            .iter()
+            .map(|s| s.to_str().to_string())
+            .collect();
+        assert_eq!(name, vec!["scheme", "write"]);
+    }
 }
