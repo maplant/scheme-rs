@@ -120,7 +120,7 @@ mod error {
         syntax_error(
             form,
             None,
-            &format!("import of ({lib_name}) is not permitted"),
+            format!("import of ({lib_name}) is not permitted"),
         )
     }
 

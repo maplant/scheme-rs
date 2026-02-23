@@ -1053,10 +1053,7 @@ mod tests {
         let allow_list: AllowList = "((rnrs base))".parse().unwrap();
         let policy = ImportPolicy::allow_only(allow_list);
         let result = env.eval(policy, "(import (rnrs io simple))");
-        assert!(
-            result.is_err(),
-            "AllowList should deny unlisted library"
-        );
+        assert!(result.is_err(), "AllowList should deny unlisted library");
     }
 
     #[test]
@@ -1066,10 +1063,7 @@ mod tests {
         let env = TopLevelEnvironment::new_repl(&rt);
         let policy = ImportPolicy::allow_only(allow_list);
         // Both libraries should be permitted
-        let result = env.eval(
-            policy,
-            "(import (rnrs base) (rnrs io simple)) (abs -5)",
-        );
+        let result = env.eval(policy, "(import (rnrs base) (rnrs io simple)) (abs -5)");
         assert!(
             result.is_ok(),
             "AllowList should permit all listed libraries: {result:?}"
@@ -1099,10 +1093,7 @@ mod tests {
         let env = TopLevelEnvironment::new_repl(&rt);
         let policy = ImportPolicy::allow_only(allow_list);
         let result = env.eval(policy, "(import (rnrs base)) (abs -5)");
-        assert!(
-            result.is_ok(),
-            "AllowList::add_lib should work: {result:?}"
-        );
+        assert!(result.is_ok(), "AllowList::add_lib should work: {result:?}");
     }
 
     #[test]
