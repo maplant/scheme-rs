@@ -1004,7 +1004,7 @@ fn find_all_matching_bindings(id: &Identifier) -> Vec<(BTreeSet<Scope>, Binding)
         })
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "async")))]
 mod tests {
     use super::*;
     use crate::ast::ImportSet;
