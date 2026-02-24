@@ -74,8 +74,12 @@ impl Cps {
         uses_cache: &mut HashMap<Local, HashMap<Local, usize>>,
     ) -> bool {
         let new = match self {
-            Cps::PrimOp(_, _, _, cexp) => {
-                return cexp.reduce_function(func, args, func_body, uses_cache);
+            Cps::PrimOp(_, _, val, cexp) => {
+                let reduced = cexp.reduce_function(func, args, func_body, uses_cache);
+                if reduced {
+                    uses_cache.remove(val);
+                }
+                return reduced;
             }
             Cps::If(_, succ, fail) => {
                 return succ.reduce_function(func, args, func_body, uses_cache)

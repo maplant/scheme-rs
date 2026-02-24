@@ -184,9 +184,10 @@ impl Cps {
         uses_cache: &mut HashMap<Local, HashMap<Local, usize>>,
     ) {
         match self {
-            Self::PrimOp(_, args, _, cexp) => {
+            Self::PrimOp(_, args, val, cexp) => {
                 substitute_values(args, substitutions);
                 cexp.substitute(substitutions, uses_cache);
+                uses_cache.remove(val);
             }
             Self::App(value, values) => {
                 substitute_value(value, substitutions);
