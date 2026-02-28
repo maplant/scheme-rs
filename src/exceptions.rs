@@ -64,7 +64,7 @@ use crate::{
 };
 use parking_lot::RwLock;
 use scheme_rs_macros::runtime_fn;
-use std::{convert::Infallible, fmt, ops::Range, sync::Arc};
+use std::{convert::Infallible, fmt, io, ops::Range, sync::Arc};
 
 /// A macro for easily creating new condition types.
 pub use scheme_rs_macros::define_condition_type;
@@ -678,9 +678,6 @@ define_condition_type!(
         let subform = if subform.is_true() { Some(subform) } else { None };
         Ok(SyntaxViolation { parent: Gc::new(Violation::new()), form, subform })
     },
-    debug: |this, f| {
-        write!(f, " form: {:?} subform: {:?}", this.form, this.subform)
-    }
 );
 
 impl SyntaxViolation {
@@ -690,6 +687,65 @@ impl SyntaxViolation {
             form: Value::from(form),
             subform: subform.map(Value::from),
         }
+    }
+
+    pub fn file_name(&self) -> String {
+        let unpacked_value_ref = self.form.unpacked_ref();
+        let UnpackedValue::Syntax(gc_inner) = unpacked_value_ref.as_ref() else {
+            unreachable!();
+        };
+        gc_inner.span().file.clone().to_string()
+    }
+
+    // TODO: make this a trait or something, so it can be implemented for more exceptions
+
+    /// pretty print a SyntaxViolation, heavily inspired by
+    /// [T8Err::render](https://github.com/xnacly/tango8/blob/master/shared/src/err.rs#L11)
+    pub fn pretty_print<'r, W, S>(&self, w: &'r mut W, lines: &'r [S]) -> io::Result<()>
+    where
+        W: std::io::Write,
+        S: std::fmt::Display,
+    {
+        let unpacked_value_ref = self.form.unpacked_ref();
+        let UnpackedValue::Syntax(gc_inner) = unpacked_value_ref.as_ref() else {
+            unreachable!();
+        };
+        let span = gc_inner.span();
+
+        // --> <filename>:<line>:<col>
+        writeln!(w, "--> {}:{}:{}:", span.file, span.line, span.column)?;
+
+        let start = span.line.saturating_sub(2);
+        let end = (span.line + 3).min(lines.len() as u32);
+
+        for i in start..end {
+            //  <line num> | <line content>
+            //  +1, because 0 addressing
+            writeln!(w, "{:03} | {}", i + 1, lines[i as usize])?;
+            //  +1, because span.line is somehow not 0 addressed :O
+            if i + 1 == span.line {
+                writeln!(w, "    | {}~ here", " ".repeat(span.column))?; //  | <spacing until column>~
+            }
+        }
+
+        Ok(())
+    }
+
+    /// The repl doesnt allow us to capture all input lines via the fs, so we need a fallback for
+    /// only printing the offending line, we have access to via gc_inner
+    pub fn pretty_print_no_lines<W>(&self, w: &mut W) -> io::Result<()>
+    where
+        W: std::io::Write,
+    {
+        let unpacked_value_ref = self.form.unpacked_ref();
+        let UnpackedValue::Syntax(gc_inner) = unpacked_value_ref.as_ref() else {
+            unreachable!();
+        };
+        let span = gc_inner.span();
+        writeln!(w, "--> {}:{}:{}:", span.file, span.line, span.column)?;
+        writeln!(w, "{:03} | {:?}", span.line, gc_inner)?;
+        writeln!(w, "    | {}~ here", " ".repeat(span.column))?;
+        Ok(())
     }
 
     pub fn new_from_values(form: Value, subform: Option<Value>) -> Self {
