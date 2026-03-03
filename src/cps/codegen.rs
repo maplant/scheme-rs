@@ -128,6 +128,7 @@ impl Cps {
         };
 
         let mut deferred = Vec::new();
+        let mut free_vars_cache = HashMap::default();
 
         let mut cu = CompilationUnit {
             runtime: runtime.clone(),
@@ -139,6 +140,7 @@ impl Cps {
             runtime_funcs,
             params,
             module,
+            free_vars_cache: &mut free_vars_cache,
             debug_info,
         };
 
@@ -154,7 +156,14 @@ impl Cps {
         module.clear_context(&mut ctx);
 
         while let Some(next) = deferred.pop() {
-            next.codegen(runtime_funcs, &cells, module, debug_info, &mut deferred);
+            next.codegen(
+                runtime_funcs,
+                &cells,
+                &mut free_vars_cache,
+                module,
+                debug_info,
+                &mut deferred,
+            );
         }
 
         module.finalize_definitions().unwrap();
@@ -169,7 +178,7 @@ impl Cps {
     }
 }
 
-struct CompilationUnit<'m, 'f, 'd> {
+struct CompilationUnit<'m, 'f, 'c, 'd> {
     runtime: Runtime,
     builder: FunctionBuilder<'m>,
     rebinds: Rebinds,
@@ -177,11 +186,12 @@ struct CompilationUnit<'m, 'f, 'd> {
     curr_allocs: usize,
     runtime_funcs: &'f RuntimeFunctions,
     params: [Value; 2],
+    free_vars_cache: &'c mut HashMap<Local, HashSet<Local>>,
     module: &'m mut JITModule,
     debug_info: &'d mut DebugInfo,
 }
 
-impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
+impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
     fn push_alloc(&mut self, val: Value) {
         self.builder
             .ins()
@@ -260,6 +270,7 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
                     args.clone(),
                     body.as_ref().clone(),
                     loc,
+                    &mut self.free_vars_cache,
                     self.module,
                 );
                 self.make_procedure_codegen(&bundle, *cexp, deferred);
@@ -568,26 +579,6 @@ impl<'m, 'f, 'd> CompilationUnit<'m, 'f, 'd> {
         self.builder.ins().return_(&[app]);
     }
 
-    /*
-    fn forward_codegen(&mut self, operator: &CpsValue, arg: &CpsValue) {
-        let runtime = self.get_runtime();
-        let dyn_state = self.get_dyn_state();
-        let operator = self.value_codegen(operator);
-        let arg = self.value_codegen(arg);
-
-        let forward = self
-            .module
-            .declare_func_in_func(self.runtime_funcs.forward, self.builder.func);
-        let call = self
-            .builder
-            .ins()
-            .call(forward, &[runtime, operator, arg, dyn_state]);
-        let result = self.builder.inst_results(call)[0];
-        self.drops_codegen();
-        self.builder.ins().return_(&[result]);
-    }
-    */
-
     fn halt_codegen(&mut self, args: &CpsValue) {
         let val = self.value_codegen(args);
         let halt = self
@@ -806,6 +797,7 @@ impl ProcedureBundle {
         args: LambdaArgs,
         body: Cps,
         loc: Option<Span>,
+        free_vars_cache: &mut HashMap<Local, HashSet<Local>>,
         module: &mut JITModule,
     ) -> Self {
         let mut sig = module.make_signature();
@@ -816,7 +808,7 @@ impl ProcedureBundle {
             .expect("Could not declare function");
 
         let env = body
-            .free_variables()
+            .free_variables(free_vars_cache)
             .difference(&args.iter().cloned().collect::<HashSet<_>>())
             .cloned()
             .collect::<Vec<_>>();
@@ -836,6 +828,7 @@ impl ProcedureBundle {
         self,
         runtime_funcs: &RuntimeFunctions,
         cells: &HashSet<Local>,
+        free_vars_cache: &mut HashMap<Local, HashSet<Local>>,
         module: &mut JITModule,
         debug_info: &mut DebugInfo,
         deferred: &mut Vec<Self>,
@@ -903,6 +896,7 @@ impl ProcedureBundle {
             runtime_funcs,
             params,
             module,
+            free_vars_cache,
             debug_info,
         };
 
