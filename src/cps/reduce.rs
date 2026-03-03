@@ -4,12 +4,20 @@
 use super::*;
 
 impl Cps {
-    pub(super) fn reduce(self) -> Self {
-        // Perform beta reduction twice. This seems like the sweet spot for now
+    pub(super) fn reduce(mut self) -> Self {
         let mut uses_cache = HashMap::default();
-        self.beta_reduction(&mut uses_cache)
-            .beta_reduction(&mut uses_cache)
-            .dead_code_elimination(&mut uses_cache)
+
+        // Perform beta reduction until reaching a fixed point:
+        loop {
+            let mut modified = false;
+            self = self.beta_reduction(&mut uses_cache, &mut modified);
+            if !modified {
+                break;
+            }
+        }
+
+        // Lastly, perform dead code elimination:
+        self.dead_code_elimination(&mut uses_cache)
     }
 
     /// Beta-reduction optimization step. This function replaces applications to
@@ -18,21 +26,22 @@ impl Cps {
     /// Our initial heuristic is rather simple: if a function is non-recursive and
     /// is applied to exactly once in its continuation expression, its body is
     /// substituted for the application.
-    ///
-    /// The uses analysis cache is absolutely demolished and dangerous to use by
-    /// the end of this function.
-    fn beta_reduction(self, uses_cache: &mut HashMap<Local, HashMap<Local, usize>>) -> Self {
+    fn beta_reduction(
+        self,
+        uses_cache: &mut HashMap<Local, HashMap<Local, usize>>,
+        modified: &mut bool,
+    ) -> Self {
         match self {
             Cps::PrimOp(prim_op, values, result, cexp) => Cps::PrimOp(
                 prim_op,
                 values,
                 result,
-                Box::new(cexp.beta_reduction(uses_cache)),
+                Box::new(cexp.beta_reduction(uses_cache, modified)),
             ),
             Cps::If(cond, success, failure) => Cps::If(
                 cond,
-                Box::new(success.beta_reduction(uses_cache)),
-                Box::new(failure.beta_reduction(uses_cache)),
+                Box::new(success.beta_reduction(uses_cache, modified)),
+                Box::new(failure.beta_reduction(uses_cache, modified)),
             ),
             Cps::Lambda {
                 args,
@@ -41,8 +50,8 @@ impl Cps {
                 cexp,
                 span,
             } => {
-                let body = body.beta_reduction(uses_cache);
-                let mut cexp = cexp.beta_reduction(uses_cache);
+                let body = body.beta_reduction(uses_cache, modified);
+                let mut cexp = cexp.beta_reduction(uses_cache, modified);
 
                 let is_recursive = body.uses(uses_cache).contains_key(&val);
                 let uses = cexp.uses(uses_cache).get(&val).copied().unwrap_or(0);
@@ -50,6 +59,7 @@ impl Cps {
                 if !is_recursive && uses == 1 {
                     let reduced = cexp.reduce_function(val, &args, &body, uses_cache);
                     if reduced {
+                        *modified = true;
                         return cexp;
                     }
                 }
