@@ -16,10 +16,11 @@ use crate::{
 };
 
 use std::{
-    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
 };
+
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 #[cfg(feature = "async")]
 use futures::future::BoxFuture;
@@ -242,7 +243,7 @@ impl RegistryInner {
                         },
                         path: None,
                     },
-                    imports: HashMap::new(),
+                    imports: HashMap::default(),
                     exports,
                     state: LibraryState::BridgesDefined,
                     scope,
@@ -280,7 +281,7 @@ impl RegistryInner {
                         },
                         path: None,
                     },
-                    imports: HashMap::new(),
+                    imports: HashMap::default(),
                     exports: exports
                         .iter()
                         .map(|(name, _, export)| (*name, export.clone()))

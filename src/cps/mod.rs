@@ -19,10 +19,9 @@ use crate::{
     syntax::Span,
     value::Value as RuntimeValue,
 };
-use std::{
-    collections::{HashMap, HashSet},
-    fmt,
-};
+use std::fmt;
+
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 mod analysis;
 pub(crate) mod codegen;
@@ -184,9 +183,10 @@ impl Cps {
         uses_cache: &mut HashMap<Local, HashMap<Local, usize>>,
     ) {
         match self {
-            Self::PrimOp(_, args, _, cexp) => {
+            Self::PrimOp(_, args, val, cexp) => {
                 substitute_values(args, substitutions);
                 cexp.substitute(substitutions, uses_cache);
+                uses_cache.remove(val);
             }
             Self::App(value, values) => {
                 substitute_value(value, substitutions);

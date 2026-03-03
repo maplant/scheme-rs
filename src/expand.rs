@@ -10,10 +10,9 @@ use crate::{
     value::Value,
 };
 use scheme_rs_macros::{bridge, maybe_async, maybe_await, runtime_fn};
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::sync::Arc;
+
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 mod error {
     use crate::exceptions::{Message, SyntaxViolation};
@@ -59,7 +58,7 @@ impl SyntaxRule {
         output_expression: &'a Syntax,
         env: &Environment,
     ) -> Result<Self, Exception> {
-        let mut variables = HashMap::new();
+        let mut variables = HashMap::default();
         let pattern_scope = Scope::new();
         let pattern = Pattern::compile(pattern, keywords, 0, pattern_scope, &mut variables);
         let binds = Local::gensym();
