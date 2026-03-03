@@ -720,7 +720,7 @@ impl Compile for SyntaxQuote {
         let expanded = Local::gensym();
 
         let mut expansions_seen = IndexSet::new();
-        let mut uses = HashMap::new();
+        let mut uses = HashMap::default();
 
         for (binding, expansion) in self.expansions.iter() {
             let (idx, _) = expansions_seen.insert_full(expansion);

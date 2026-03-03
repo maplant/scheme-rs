@@ -1,7 +1,7 @@
 //! Scheme lexical environments.
 
 use std::{
-    collections::{BTreeSet, HashMap, hash_map::Entry},
+    collections::{BTreeSet, hash_map::Entry},
     fmt,
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
@@ -13,6 +13,8 @@ use std::{
 
 use parking_lot::{MappedRwLockReadGuard, Mutex, RwLock, RwLockReadGuard};
 use scheme_rs_macros::{maybe_async, maybe_await};
+
+use rustc_hash::FxHashMap as HashMap;
 
 #[cfg(feature = "async")]
 use futures::future::BoxFuture;
@@ -50,7 +52,7 @@ pub(crate) enum TopLevelBinding {
 }
 
 pub(crate) static TOP_LEVEL_BINDINGS: LazyLock<Mutex<HashMap<Binding, TopLevelBinding>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+    LazyLock::new(|| Mutex::new(HashMap::default()));
 
 #[derive(Trace)]
 pub(crate) struct TopLevelEnvironmentInner {
@@ -132,8 +134,8 @@ impl TopLevelEnvironment {
         let inner = TopLevelEnvironmentInner {
             rt: rt.clone(),
             kind: TopLevelKind::Repl,
-            exports: HashMap::new(),
-            imports: HashMap::new(),
+            exports: HashMap::default(),
+            imports: HashMap::default(),
             state: LibraryState::Invoked,
             scope: Scope::new(),
         };
@@ -149,8 +151,8 @@ impl TopLevelEnvironment {
             kind: TopLevelKind::Program {
                 path: path.to_path_buf(),
             },
-            exports: HashMap::new(),
-            imports: HashMap::new(),
+            exports: HashMap::default(),
+            imports: HashMap::default(),
             state: LibraryState::Invoked,
             scope: Scope::new(),
         };
@@ -203,8 +205,8 @@ impl TopLevelEnvironment {
         let registry = rt.get_registry();
 
         // Import libraries:
-        let mut bound_names = HashMap::<Symbol, Binding>::new();
-        let mut imports = HashMap::<Binding, TopLevelEnvironment>::new();
+        let mut bound_names = HashMap::<Symbol, Binding>::default();
+        let mut imports = HashMap::<Binding, TopLevelEnvironment>::default();
 
         for lib_import in spec.imports.import_sets.into_iter() {
             for (name, import) in maybe_await!(registry.import(rt, lib_import))? {
@@ -220,7 +222,7 @@ impl TopLevelEnvironment {
             }
         }
 
-        let mut exports = HashMap::new();
+        let mut exports = HashMap::default();
         for export in spec.exports.export_sets.into_iter() {
             match export {
                 ExportSet::Internal { rename, name } => {
@@ -624,7 +626,7 @@ impl Environment {
     pub fn new_lexical_contour(&self, scope: Scope) -> Self {
         Self::LexicalContour(Gc::new(LexicalContour {
             up: self.clone(),
-            bindings: Mutex::new(HashMap::new()),
+            bindings: Mutex::new(HashMap::default()),
             scope,
         }))
     }
@@ -962,7 +964,7 @@ type Bindings = Vec<(BTreeSet<Scope>, Binding)>;
 
 // We can probably design this much more intelligently
 pub(crate) static GLOBAL_BINDING_TABLE: LazyLock<Mutex<HashMap<Symbol, Bindings>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+    LazyLock::new(|| Mutex::new(HashMap::default()));
 
 pub(crate) fn add_binding(id: Identifier, binding: Binding) {
     GLOBAL_BINDING_TABLE

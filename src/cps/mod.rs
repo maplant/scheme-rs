@@ -19,10 +19,9 @@ use crate::{
     syntax::Span,
     value::Value as RuntimeValue,
 };
-use std::{
-    collections::{HashMap, HashSet},
-    fmt,
-};
+use std::fmt;
+
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 mod analysis;
 pub(crate) mod codegen;

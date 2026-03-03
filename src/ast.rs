@@ -19,12 +19,9 @@ use crate::{
 };
 
 use scheme_rs_macros::{maybe_async, maybe_await};
-use std::{
-    collections::{HashMap, HashSet},
-    fmt,
-    str::FromStr,
-    sync::Arc,
-};
+use std::{fmt, str::FromStr, sync::Arc};
+
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 #[cfg(feature = "async")]
 use futures::future::BoxFuture;
@@ -930,7 +927,7 @@ impl FromStr for AllowList {
         if !end.is_null() {
             return Err(Exception::error(format!("improper list in '{s}'")));
         }
-        let mut set = HashSet::new();
+        let mut set = HashSet::default();
         for lib in libs {
             let Some([syms @ .., end]) = lib.as_list() else {
                 return Err(Exception::error(format!(
@@ -1074,7 +1071,7 @@ impl Definition {
                         args @ ..,
                     ] => {
                         let var = maybe_await!(env.lookup_var(func_name.bind()))?.unwrap();
-                        let mut bound = HashSet::<&Identifier>::new();
+                        let mut bound = HashSet::<&Identifier>::default();
                         let mut fixed = Vec::new();
                         let func_scope = Scope::new();
                         let new_env = env.new_lexical_contour(func_scope);
@@ -1430,7 +1427,7 @@ impl SyntaxQuote {
         match exprs {
             [] => Err(error::expected_more_arguments(form)),
             [expr] => {
-                let mut expansions = HashMap::new();
+                let mut expansions = HashMap::default();
                 let template = Template::compile(expr, env, &mut expansions)?;
                 Ok(SyntaxQuote {
                     template,
@@ -1514,7 +1511,7 @@ fn parse_lambda(
     env: &Environment,
     form: &Syntax,
 ) -> Result<Lambda, Exception> {
-    let mut bound = HashSet::<&Identifier>::new();
+    let mut bound = HashSet::<&Identifier>::default();
     let mut fixed = Vec::new();
     let lambda_scope = Scope::new();
     let new_contour = env.new_lexical_contour(lambda_scope);
@@ -1623,7 +1620,7 @@ fn parse_let(
     env: &Environment,
     form: &Syntax,
 ) -> Result<Let, Exception> {
-    let mut previously_bound = HashSet::new();
+    let mut previously_bound = HashSet::default();
     let mut parsed_bindings = Vec::new();
 
     let new_scope = Scope::new();
@@ -1675,7 +1672,7 @@ fn parse_named_let(
     env: &Environment,
     form: &Syntax,
 ) -> Result<Let, Exception> {
-    let mut previously_bound = HashSet::new();
+    let mut previously_bound = HashSet::default();
     let mut formals = Vec::new();
     let mut args = Vec::new();
 

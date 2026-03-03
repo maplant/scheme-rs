@@ -6,7 +6,7 @@ use cranelift::{
 };
 use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Linkage, Module};
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
 
 use crate::{
     cps::Value as CpsValue,

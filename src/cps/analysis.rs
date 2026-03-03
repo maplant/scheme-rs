@@ -96,7 +96,7 @@ impl Cps {
                 }
                 uses_cache.get(val).unwrap().clone()
             }
-            Cps::Halt(value) => add_value_use(HashMap::new(), value),
+            Cps::Halt(value) => add_value_use(HashMap::default(), value),
         }
     }
 
@@ -154,7 +154,7 @@ impl Cps {
                 .union(&cexp.mutable_vars())
                 .copied()
                 .collect(),
-            _ => HashSet::new(),
+            _ => HashSet::default(),
         }
     }
 
@@ -168,7 +168,7 @@ impl Cps {
             Cps::PrimOp(_, _, _, cexp) => cexp.cells(),
             Cps::If(_, succ, fail) => succ.cells().union(&fail.cells()).copied().collect(),
             Cps::Lambda { body, cexp, .. } => body.cells().union(&cexp.cells()).copied().collect(),
-            _ => HashSet::new(),
+            _ => HashSet::default(),
         }
     }
 }
@@ -178,7 +178,7 @@ fn values_to_locals(vals: &[Value]) -> HashSet<Local> {
 }
 
 fn values_to_uses(vals: &[Value]) -> HashMap<Local, usize> {
-    let mut uses = HashMap::new();
+    let mut uses = HashMap::default();
     for local in vals.iter().flat_map(|val| val.to_local()) {
         *uses.entry(local).or_default() += 1;
     }
