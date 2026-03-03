@@ -270,7 +270,7 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
                     args.clone(),
                     body.as_ref().clone(),
                     loc,
-                    &mut self.free_vars_cache,
+                    self.free_vars_cache,
                     self.module,
                 );
                 self.make_procedure_codegen(&bundle, *cexp, deferred);
