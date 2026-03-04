@@ -685,41 +685,20 @@ unsafe impl<T> Trace for Box<T>
 where
     T: GcOrTrace,
 {
-    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {
-        /*
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
         unsafe {
             self.as_ref().visit_or_recurse(visitor);
         }
-        */
     }
 
     unsafe fn finalize(&mut self) {
-        // TODO: Deallocate box without dropping inner contents
         unsafe {
-            // self.finalize_or_skip();
-            drop_in_place(self as *mut Self);
+            self.finalize_or_skip();
+            drop(Box::from_raw(&mut *self as *mut Self as *mut ManuallyDrop<Self>));
         }
     }
 }
 
-/*
-unsafe impl<T> Trace for [T]
-where
-    T: GcOrTrace,
-{
-    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
-        for item in self {
-            item.visit_or_recurse(visitor);
-        }
-    }
-
-    unsafe fn finalize(&mut self) {
-        for item in self {
-            item.finalize_or_skip();
-        }
-    }
-}
- */
 
 unsafe impl<T> Trace for by_address::ByAddress<T>
 where
@@ -798,6 +777,12 @@ where
     }
 }
 
+// Quite a few of these implementations for mutices or rwlocks lock the data
+// when visiting their children. This is correct based on a particular detail of
+// the garbage collector, which is that it will never acquire a lock of a child
+// when it is holding the lock of a parent. Thus, they will never cause a
+// deadlock with a mutator thread.
+
 #[cfg(feature = "tokio")]
 unsafe impl<T> Trace for tokio::sync::Mutex<T>
 where
@@ -805,8 +790,6 @@ where
 {
     unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
         unsafe {
-            // TODO: Think really hard as to if this is correct
-            // This _should_ be fine, while not optimally efficient.
             let lock = self.blocking_lock();
             lock.visit_or_recurse(visitor);
         }
@@ -843,13 +826,8 @@ where
 {
     unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
         unsafe {
-            // TODO: Think really hard as to if this is correct
-            loop {
-                if let Ok(read_lock) = self.try_read() {
-                    read_lock.visit_or_recurse(visitor);
-                    return;
-                }
-            }
+            let read_lock = tokio::sync::RwLock::blocking_read(self);
+            read_lock.visit_or_recurse(visitor);
         }
     }
 

@@ -29,7 +29,7 @@ pub(crate) struct GcHeader {
     /// Reference count as of the current epoch
     epoch_rc: usize,
     /// Circular reference count
-    crc: isize,
+    crc: usize,
     /// Color of the object
     color: Color,
     /// Whether or not the object has been buffered for deletion
@@ -148,11 +148,11 @@ impl HeapObject<()> {
         unsafe { (*self.header.as_ref().get()).epoch_rc = rc }
     }
 
-    unsafe fn crc(&self) -> isize {
+    unsafe fn crc(&self) -> usize {
         unsafe { (*self.header.as_ref().get()).crc }
     }
 
-    unsafe fn set_crc(&self, crc: isize) {
+    unsafe fn set_crc(&self, crc: usize) {
         unsafe {
             (*self.header.as_ref().get()).crc = crc;
         }
@@ -234,7 +234,7 @@ pub(super) fn alloc_gc_object<T: super::GcOrTrace>(data: T) -> super::Gc<T> {
     };
 
     HEAP_START
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |next| unsafe {
+        .fetch_update(Ordering::Release, Ordering::Relaxed, |next| unsafe {
             let new_gc_ptr = new_gc.ptr.as_ptr() as *mut GcHeader;
             (*new_gc_ptr).next = next;
             Some(new_gc_ptr)
@@ -330,7 +330,7 @@ impl Collector {
         CURRENT_EPOCH.fetch_add(1, Ordering::Relaxed);
 
         self.start = HEAP_START
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |_| Some(null_mut()))
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |_| Some(null_mut()))
             .unwrap();
 
         // Go through and set the prev ptr for all of the new items:
@@ -493,7 +493,7 @@ impl Collector {
             for c in &self.cycles {
                 for n in c {
                     n.set_color(Color::Red);
-                    n.set_crc(n.epoch_rc() as isize);
+                    n.set_crc(n.epoch_rc());
                 }
                 for n in c {
                     for_each_child(*n, &mut |m| {
@@ -644,7 +644,7 @@ unsafe fn mark_gray(s: OpaqueGcPtr) {
         let mut stack = Vec::new();
         if s.color() != Color::Gray {
             s.set_color(Color::Gray);
-            s.set_crc(s.epoch_rc() as isize);
+            s.set_crc(s.epoch_rc());
             for_each_child(s, &mut |t| stack.push(MarkGrayPhase::MarkGray(t)))
         }
         while let Some(s) = stack.pop() {
@@ -652,7 +652,7 @@ unsafe fn mark_gray(s: OpaqueGcPtr) {
                 MarkGrayPhase::MarkGray(s) => {
                     if s.color() != Color::Gray {
                         s.set_color(Color::Gray);
-                        s.set_crc(s.epoch_rc() as isize);
+                        s.set_crc(s.epoch_rc());
                         for_each_child(s, &mut |t| stack.push(MarkGrayPhase::MarkGray(t)))
                     }
                     stack.push(MarkGrayPhase::SetCrc(s))
@@ -683,24 +683,12 @@ unsafe fn collect_white(s: OpaqueGcPtr, current_cycle: &mut Vec<OpaqueGcPtr>) {
 
 unsafe fn sigma_test(c: &[OpaqueGcPtr]) -> bool {
     unsafe {
-        let mut sum = 0;
         for n in c {
-            sum += n.crc();
-        }
-        sum == 0
-        // TODO: I think this is still correct. Make CRC a usize and uncomment
-        // out this code.
-        /*
-        // NOTE: This is the only function so far that I have not implemented
-        // _exactly_ as the text reads. I do not understand why I would have to
-        // continue iterating if I see a CRC > 0, as CRCs cannot be negative.
-        for n in c {
-            if *crc(*n) > 0 {
+            if n.crc() > 0 {
                 return false;
             }
         }
         true
-        */
     }
 }
 
