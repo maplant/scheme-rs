@@ -360,8 +360,8 @@ impl Collector {
 
     fn await_epoch(&mut self) {
         let mut heap = HEAP.lock();
-
-        // #[cfg(not(test))]
+        
+        #[cfg(not(test))]
         COLLECTION_START_SIGNAL.wait_while(&mut heap, Heap::should_not_collect);
 
         self.head = std::mem::take(&mut heap.head);
@@ -418,15 +418,8 @@ impl Collector {
             self.process_cycles();
         }
 
-        /*
-        // Add the heap back into HEAP, unless we freed everything:
-        if self.head.is_null() {
-            return;
-        }
-        */
-
         let mut heap = HEAP.lock();
-        if self.head.is_null() {
+        if !self.head.is_null() {
             unsafe {
                 if heap.head.is_null() {
                     heap.head = self.head;
