@@ -251,7 +251,7 @@ pub(super) fn alloc_gc_object<T: super::GcOrTrace>(data: T) -> super::Gc<T> {
     heap.new_allocs += 1;
 
     if heap.new_allocs >= 10_000 {
-        COLLECTOR_SIGNAL.notify_one();
+        COLLECTION_START_SIGNAL.notify_one();
     }
 
     new_gc
@@ -277,7 +277,7 @@ unsafe impl Send for Heap {}
 unsafe impl Sync for Heap {}
 
 static HEAP: Mutex<Heap> = Mutex::new(Heap::new());
-static COLLECTOR_SIGNAL: Condvar = Condvar::new();
+static COLLECTION_START_SIGNAL: Condvar = Condvar::new();
 static COLLECTOR_TASK: OnceLock<JoinHandle<()>> = OnceLock::new();
 
 /// Initializes the garbage collector thread. Calling this function is typically
@@ -369,7 +369,7 @@ impl Collector {
             let mut heap = HEAP.lock();
             
             #[cfg(not(test))]
-            COLLECTOR_SIGNAL.wait(&mut heap);
+            COLLECTION_START_SIGNAL.wait(&mut heap);
 
             self.head = std::mem::take(&mut heap.head);
             self.tail = std::mem::take(&mut heap.tail);
@@ -432,6 +432,7 @@ impl Collector {
                 heap.head = self.head;
                 heap.tail = self.tail;
             } else {
+                (*self.tail).next = heap.head;
                 (*heap.head).prev = self.tail;
                 heap.head = self.head;
             }
