@@ -6,7 +6,6 @@ use std::{
     alloc::Layout,
     cell::UnsafeCell,
     marker::PhantomData,
-    mem::offset_of,
     ptr::{NonNull, null_mut},
     sync::{OnceLock, atomic::AtomicUsize},
     thread::JoinHandle,
@@ -19,7 +18,7 @@ use scheme_rs_macros::{maybe_async, maybe_await};
 use crate::{exceptions::Exception, gc::GcInner, registry::bridge, value::Value};
 
 #[derive(Debug)]
-#[repr(C)]
+#[repr(C, align(8))]
 pub(crate) struct GcHeader {
     /// Reference count shared with the Gc types
     pub(crate) shared_rc: AtomicUsize,
@@ -27,22 +26,21 @@ pub(crate) struct GcHeader {
     epoch_rc: usize,
     /// Circular reference count
     crc: isize,
-    /// Color of the object
-    color: Color,
-    /// Whether or not the object has been buffered for deletion
-    buffered: bool,
     /// Type-erased visitor function
     visit_children: unsafe fn(this: *const (), visitor: &mut dyn FnMut(HeapObject<()>)),
     /// Type-erased finalizer function
     finalize: unsafe fn(this: *mut ()),
     /// Layout for the underlying data
     layout: Layout,
-    /// Offset into the underlying data
-    offset: usize,
-    /// Next item in the heap, or null
+    /// Next item in the heap, or null. Lower 3 bits are the color
     next: *mut GcHeader,
-    /// Previous item in the heap, or null
+    /// Previous item in the heap, or null. Lower 1 bit is the buffered flag
     prev: *mut GcHeader,
+}
+
+#[bridge(name = "gc-header-size", lib = "(runtime (1))")]
+pub fn gc_header_size() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(std::mem::size_of::<GcHeader>())])
 }
 
 impl GcHeader {
@@ -51,8 +49,6 @@ impl GcHeader {
             shared_rc: AtomicUsize::new(1),
             epoch_rc: 1,
             crc: 1,
-            color: Color::Black,
-            buffered: true,
             visit_children: |this, visitor| unsafe {
                 let this = this as *const UnsafeCell<T> as *const T;
                 T::visit_or_recurse(this.as_ref().unwrap(), visitor);
@@ -62,10 +58,41 @@ impl GcHeader {
                 T::finalize_or_skip(this.as_mut().unwrap());
             },
             layout: Layout::new::<super::GcInner<T>>(),
-            offset: offset_of!(super::GcInner<T>, data),
             next: null_mut(),
-            prev: null_mut(),
+            prev: null_mut::<GcHeader>().map_addr(|addr| addr | 1),
         }
+    }
+
+    fn get_color(&self) -> Color {
+        Color::from((self.next as usize & 0b111) as u8)
+    }
+
+    fn set_color(&mut self, color: Color) {
+        self.next = self.get_next().map_addr(|addr| addr | color as usize);
+    }
+
+    fn get_next(&self) -> *mut GcHeader {
+        self.next.map_addr(|addr| addr & !0b111)
+    }
+
+    fn set_next(&mut self, new: *mut GcHeader) {
+        self.next = new.map_addr(|addr| addr | self.get_color() as usize);
+    }
+
+    fn get_buffered(&self) -> bool {
+        (self.prev as usize & 0b1) == 1
+    }
+
+    fn set_buffered(&mut self, buffered: bool) {
+        self.prev = self.get_prev().map_addr(|addr| addr | buffered as usize);
+    }
+
+    fn get_prev(&self) -> *mut GcHeader {
+        self.prev.map_addr(|addr| addr & !0b1)
+    }
+
+    fn set_prev(&mut self, new: *mut GcHeader) {
+        self.prev = new.map_addr(|addr| addr | self.get_buffered() as usize);
     }
 }
 
@@ -84,6 +111,20 @@ enum Color {
     Red = 4,
     /// Candidate cycle awaiting epoch boundary
     Orange = 5,
+}
+
+impl From<u8> for Color {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => Self::Black,
+            1 => Self::Gray,
+            2 => Self::White,
+            3 => Self::Purple,
+            4 => Self::Red,
+            5 => Self::Orange,
+            _ => unreachable!(),
+        }
+    }
 }
 
 #[derive(Copy, Clone, Hash, PartialEq, Eq)]
@@ -110,7 +151,11 @@ impl HeapObject<()> {
         }
 
         let header = NonNull::new(ptr as *mut UnsafeCell<GcHeader>).unwrap();
-        let header_offset = unsafe { (*header.as_ref().get()).offset };
+
+        let (_, header_offset) = Layout::new::<GcHeader>()
+            .extend(unsafe { (*header.as_ref().get()).layout })
+            .unwrap();
+
         let data = unsafe { (ptr as *mut ()).byte_add(header_offset) };
         Some(Self {
             header,
@@ -157,22 +202,22 @@ impl HeapObject<()> {
     }
 
     unsafe fn color(&self) -> Color {
-        unsafe { (*self.header.as_ref().get()).color }
+        unsafe { (*self.header.as_ref().get()).get_color() }
     }
 
     unsafe fn set_color(&self, color: Color) {
         unsafe {
-            (*self.header.as_ref().get()).color = color;
+            (*self.header.as_ref().get()).set_color(color);
         }
     }
 
     unsafe fn buffered(&self) -> bool {
-        unsafe { (*self.header.as_ref().get()).buffered }
+        unsafe { (*self.header.as_ref().get()).get_buffered() }
     }
 
     unsafe fn set_buffered(&self, buffered: bool) {
         unsafe {
-            (*self.header.as_ref().get()).buffered = buffered;
+            (*self.header.as_ref().get()).set_buffered(buffered);
         }
     }
 
@@ -199,22 +244,22 @@ impl HeapObject<()> {
     }
 
     unsafe fn next(&self) -> *mut GcHeader {
-        unsafe { (*self.header.as_ref().get()).next }
+        unsafe { (*self.header.as_ref().get()).get_next() }
     }
 
     unsafe fn set_next(&self, next: *mut GcHeader) {
         unsafe {
-            (*self.header.as_ref().get()).next = next;
+            (*self.header.as_ref().get()).set_next(next);
         }
     }
 
     unsafe fn prev(&self) -> *mut GcHeader {
-        unsafe { (*self.header.as_ref().get()).prev }
+        unsafe { (*self.header.as_ref().get()).get_prev() }
     }
 
     unsafe fn set_prev(&self, prev: *mut GcHeader) {
         unsafe {
-            (*self.header.as_ref().get()).prev = prev;
+            (*self.header.as_ref().get()).set_prev(prev);
         }
     }
 }
@@ -239,10 +284,10 @@ pub(super) fn alloc_gc_object<T: super::GcOrTrace>(data: T) -> super::Gc<T> {
         if heap.head.is_null() {
             heap.tail = new_gc_ptr;
         } else {
-            (*heap.head).prev = new_gc_ptr;
+            (*heap.head).set_prev(new_gc_ptr);
         }
 
-        (*new_gc_ptr).next = heap.head;
+        (*new_gc_ptr).set_next(heap.head);
     }
 
     heap.head = new_gc_ptr;
@@ -274,6 +319,7 @@ impl Heap {
         }
     }
 
+    #[cfg(not(test))]
     fn should_not_collect(&mut self) -> bool {
         self.new_allocs < MIN_ALLOCS_TO_COLLECT && !self.force_collection
     }
@@ -286,6 +332,7 @@ static HEAP: Mutex<Heap> = Mutex::new(Heap::new());
 static COLLECTION_START_SIGNAL: Condvar = Condvar::new();
 static COLLECTION_DONE_SIGNAL: Condvar = Condvar::new();
 static COLLECTOR_TASK: OnceLock<JoinHandle<()>> = OnceLock::new();
+#[cfg(not(test))]
 const MIN_ALLOCS_TO_COLLECT: usize = 10_000;
 
 /// Initializes the garbage collector thread. Calling this function is typically
@@ -360,7 +407,7 @@ impl Collector {
 
     fn await_epoch(&mut self) {
         let mut heap = HEAP.lock();
-        
+
         #[cfg(not(test))]
         COLLECTION_START_SIGNAL.wait_while(&mut heap, Heap::should_not_collect);
 
@@ -372,8 +419,6 @@ impl Collector {
 
     fn epoch(&mut self) {
         self.await_epoch();
-
-        println!("collecting");
 
         self.next = self.head;
 
@@ -425,8 +470,8 @@ impl Collector {
                     heap.head = self.head;
                     heap.tail = self.tail;
                 } else {
-                    (*self.tail).next = heap.head;
-                    (*heap.head).prev = self.tail;
+                    (*self.tail).set_next(heap.head);
+                    (*heap.head).set_prev(self.tail);
                     heap.head = self.head;
                 }
             }
@@ -434,8 +479,6 @@ impl Collector {
 
         heap.epoch += 1;
         COLLECTION_DONE_SIGNAL.notify_all();
-
-        println!("finished");
     }
 
     unsafe fn decrement(&mut self, s: OpaqueGcPtr) {
