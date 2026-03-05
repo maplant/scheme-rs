@@ -293,9 +293,7 @@ pub(super) fn alloc_gc_object<T: super::GcOrTrace>(data: T) -> super::Gc<T> {
     heap.head = new_gc_ptr;
     heap.new_allocs += 1;
 
-    if heap.new_allocs >= 10_000 {
-        COLLECTION_START_SIGNAL.notify_one();
-    }
+    COLLECTION_START_SIGNAL.notify_one();
 
     new_gc
 }
