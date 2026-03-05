@@ -693,8 +693,8 @@ where
 
     unsafe fn finalize(&mut self) {
         unsafe {
-            self.finalize_or_skip();
-            drop(Box::from_raw(&mut *self as *mut Self as *mut ManuallyDrop<Self>));
+            self.as_mut().finalize_or_skip();
+            drop(Box::from_raw(self.as_mut() as *mut T as *mut ManuallyDrop<T>));
         }
     }
 }

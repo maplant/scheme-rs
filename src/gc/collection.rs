@@ -8,10 +8,7 @@ use std::{
     marker::PhantomData,
     mem::offset_of,
     ptr::{NonNull, null_mut},
-    sync::{
-        OnceLock,
-        atomic::AtomicUsize, 
-    },
+    sync::{OnceLock, atomic::AtomicUsize},
     thread::JoinHandle,
 };
 
@@ -73,19 +70,20 @@ impl GcHeader {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[repr(u8)]
 enum Color {
     /// In use or free
-    Black,
+    Black = 0,
     /// Possible member of a cycle
-    Gray,
+    Gray = 1,
     /// Member of a garbage cycle
-    White,
+    White = 2,
     /// Possible root of cycle
-    Purple,
+    Purple = 3,
     /// Candidate cycle undergoing Σ-computation
-    Red,
+    Red = 4,
     /// Candidate cycle awaiting epoch boundary
-    Orange,
+    Orange = 5,
 }
 
 #[derive(Copy, Clone, Hash, PartialEq, Eq)]
@@ -261,6 +259,8 @@ struct Heap {
     head: *mut GcHeader,
     tail: *mut GcHeader,
     new_allocs: usize,
+    epoch: usize,
+    force_collection: bool,
 }
 
 impl Heap {
@@ -269,7 +269,13 @@ impl Heap {
             head: std::ptr::null_mut(),
             tail: std::ptr::null_mut(),
             new_allocs: 0,
+            epoch: 0,
+            force_collection: false,
         }
+    }
+
+    fn should_not_collect(&mut self) -> bool {
+        self.new_allocs < MIN_ALLOCS_TO_COLLECT && !self.force_collection
     }
 }
 
@@ -278,7 +284,9 @@ unsafe impl Sync for Heap {}
 
 static HEAP: Mutex<Heap> = Mutex::new(Heap::new());
 static COLLECTION_START_SIGNAL: Condvar = Condvar::new();
+static COLLECTION_DONE_SIGNAL: Condvar = Condvar::new();
 static COLLECTOR_TASK: OnceLock<JoinHandle<()>> = OnceLock::new();
+const MIN_ALLOCS_TO_COLLECT: usize = 10_000;
 
 /// Initializes the garbage collector thread. Calling this function is typically
 /// not required as creating a [`Runtime`](crate::runtime::Runtime)
@@ -290,41 +298,27 @@ pub fn init_gc() {
     let _ = COLLECTOR_TASK.get_or_init(|| Collector::new().run());
 }
 
-// static CURRENT_EPOCH: AtomicUsize = AtomicUsize::new(0);
+fn collect_garbage_sync() {
+    let mut heap = HEAP.lock();
+    let target_epoch = heap.epoch + 1;
+    heap.force_collection = true;
+    COLLECTION_START_SIGNAL.notify_one();
+    COLLECTION_DONE_SIGNAL.wait_while(&mut heap, |heap| heap.epoch < target_epoch);
+}
 
 /// Force a garbage collection pause.
 #[cfg(not(feature = "async"))]
 pub fn collect_garbage() {
-    /*
-    use std::thread::sleep;
-
-    const MAX_SLEEP: u64 = 100;
-
-    let curr_epoch = CURRENT_EPOCH.load(Ordering::Relaxed);
-    let mut sleep_for = 10;
-    // Wait for two epochs
-    while CURRENT_EPOCH.load(Ordering::Relaxed) < curr_epoch + 2 {
-        sleep(Duration::from_millis(sleep_for));
-        sleep_for = (sleep_for * 2).min(MAX_SLEEP);
-    }
-     */
+    collect_garbage_sync();
 }
 
 #[cfg(feature = "tokio")]
 pub async fn collect_garbage() {
-    /*
-    use tokio::time::sleep;
-
-    const MAX_SLEEP: u64 = 100;
-
-    let curr_epoch = CURRENT_EPOCH.load(Ordering::Relaxed);
-    let mut sleep_for = 10;
-    // Wait for two epochs
-    while CURRENT_EPOCH.load(Ordering::Relaxed) < curr_epoch + 2 {
-        sleep(Duration::from_millis(sleep_for)).await;
-        sleep_for = (sleep_for * 2).min(MAX_SLEEP);
-    }
-     */
+    tokio::task::spawn_blocking(|| {
+        collect_garbage_sync();
+    })
+    .await
+    .unwrap();
 }
 
 #[maybe_async]
@@ -364,17 +358,20 @@ impl Collector {
         })
     }
 
-    fn epoch(&mut self) {
-        {
-            let mut heap = HEAP.lock();
-            
-            #[cfg(not(test))]
-            COLLECTION_START_SIGNAL.wait(&mut heap);
+    fn await_epoch(&mut self) {
+        let mut heap = HEAP.lock();
 
-            self.head = std::mem::take(&mut heap.head);
-            self.tail = std::mem::take(&mut heap.tail);
-            heap.new_allocs = 0;
-        }
+        // #[cfg(not(test))]
+        COLLECTION_START_SIGNAL.wait_while(&mut heap, Heap::should_not_collect);
+
+        self.head = std::mem::take(&mut heap.head);
+        self.tail = std::mem::take(&mut heap.tail);
+        heap.new_allocs = 0;
+        heap.force_collection = false;
+    }
+
+    fn epoch(&mut self) {
+        self.await_epoch();
 
         println!("collecting");
 
@@ -421,22 +418,29 @@ impl Collector {
             self.process_cycles();
         }
 
+        /*
         // Add the heap back into HEAP, unless we freed everything:
         if self.head.is_null() {
             return;
         }
+        */
 
         let mut heap = HEAP.lock();
-        unsafe {
-            if heap.head.is_null() {
-                heap.head = self.head;
-                heap.tail = self.tail;
-            } else {
-                (*self.tail).next = heap.head;
-                (*heap.head).prev = self.tail;
-                heap.head = self.head;
+        if self.head.is_null() {
+            unsafe {
+                if heap.head.is_null() {
+                    heap.head = self.head;
+                    heap.tail = self.tail;
+                } else {
+                    (*self.tail).next = heap.head;
+                    (*heap.head).prev = self.tail;
+                    heap.head = self.head;
+                }
             }
         }
+
+        heap.epoch += 1;
+        COLLECTION_DONE_SIGNAL.notify_all();
 
         println!("finished");
     }
