@@ -10,12 +10,12 @@ use std::{
     ptr::{NonNull, null_mut},
     sync::{
         OnceLock,
-        atomic::{AtomicPtr, AtomicUsize, Ordering},
+        atomic::AtomicUsize, 
     },
     thread::JoinHandle,
-    time::Duration,
 };
 
+use parking_lot::{Condvar, Mutex};
 use rustc_hash::FxHashSet as HashSet;
 use scheme_rs_macros::{maybe_async, maybe_await};
 
@@ -29,7 +29,7 @@ pub(crate) struct GcHeader {
     /// Reference count as of the current epoch
     epoch_rc: usize,
     /// Circular reference count
-    crc: usize,
+    crc: isize,
     /// Color of the object
     color: Color,
     /// Whether or not the object has been buffered for deletion
@@ -148,11 +148,11 @@ impl HeapObject<()> {
         unsafe { (*self.header.as_ref().get()).epoch_rc = rc }
     }
 
-    unsafe fn crc(&self) -> usize {
+    unsafe fn crc(&self) -> isize {
         unsafe { (*self.header.as_ref().get()).crc }
     }
 
-    unsafe fn set_crc(&self, crc: usize) {
+    unsafe fn set_crc(&self, crc: isize) {
         unsafe {
             (*self.header.as_ref().get()).crc = crc;
         }
@@ -233,18 +233,51 @@ pub(super) fn alloc_gc_object<T: super::GcOrTrace>(data: T) -> super::Gc<T> {
         marker: PhantomData,
     };
 
-    HEAP_START
-        .fetch_update(Ordering::Release, Ordering::Relaxed, |next| unsafe {
-            let new_gc_ptr = new_gc.ptr.as_ptr() as *mut GcHeader;
-            (*new_gc_ptr).next = next;
-            Some(new_gc_ptr)
-        })
-        .unwrap();
+    let new_gc_ptr = new_gc.ptr.as_ptr() as *mut GcHeader;
+
+    let mut heap = HEAP.lock();
+
+    unsafe {
+        if heap.head.is_null() {
+            heap.tail = new_gc_ptr;
+        } else {
+            (*heap.head).prev = new_gc_ptr;
+        }
+
+        (*new_gc_ptr).next = heap.head;
+    }
+
+    heap.head = new_gc_ptr;
+    heap.new_allocs += 1;
+
+    if heap.new_allocs >= 10_000 {
+        COLLECTOR_SIGNAL.notify_one();
+    }
 
     new_gc
 }
 
-static HEAP_START: AtomicPtr<GcHeader> = AtomicPtr::new(std::ptr::null_mut());
+struct Heap {
+    head: *mut GcHeader,
+    tail: *mut GcHeader,
+    new_allocs: usize,
+}
+
+impl Heap {
+    const fn new() -> Self {
+        Self {
+            head: std::ptr::null_mut(),
+            tail: std::ptr::null_mut(),
+            new_allocs: 0,
+        }
+    }
+}
+
+unsafe impl Send for Heap {}
+unsafe impl Sync for Heap {}
+
+static HEAP: Mutex<Heap> = Mutex::new(Heap::new());
+static COLLECTOR_SIGNAL: Condvar = Condvar::new();
 static COLLECTOR_TASK: OnceLock<JoinHandle<()>> = OnceLock::new();
 
 /// Initializes the garbage collector thread. Calling this function is typically
@@ -257,11 +290,12 @@ pub fn init_gc() {
     let _ = COLLECTOR_TASK.get_or_init(|| Collector::new().run());
 }
 
-static CURRENT_EPOCH: AtomicUsize = AtomicUsize::new(0);
+// static CURRENT_EPOCH: AtomicUsize = AtomicUsize::new(0);
 
 /// Force a garbage collection pause.
 #[cfg(not(feature = "async"))]
 pub fn collect_garbage() {
+    /*
     use std::thread::sleep;
 
     const MAX_SLEEP: u64 = 100;
@@ -273,10 +307,12 @@ pub fn collect_garbage() {
         sleep(Duration::from_millis(sleep_for));
         sleep_for = (sleep_for * 2).min(MAX_SLEEP);
     }
+     */
 }
 
 #[cfg(feature = "tokio")]
 pub async fn collect_garbage() {
+    /*
     use tokio::time::sleep;
 
     const MAX_SLEEP: u64 = 100;
@@ -288,6 +324,7 @@ pub async fn collect_garbage() {
         sleep(Duration::from_millis(sleep_for)).await;
         sleep_for = (sleep_for * 2).min(MAX_SLEEP);
     }
+     */
 }
 
 #[maybe_async]
@@ -301,7 +338,8 @@ pub fn collect_garbage_bridge() -> Result<Vec<Value>, Exception> {
 pub struct Collector {
     roots: HashSet<OpaqueGcPtr>,
     cycles: Vec<Vec<OpaqueGcPtr>>,
-    start: *mut GcHeader,
+    head: *mut GcHeader,
+    tail: *mut GcHeader,
     next: *mut GcHeader,
 }
 
@@ -312,7 +350,8 @@ impl Collector {
         Self {
             roots: HashSet::default(),
             cycles: Vec::new(),
-            start: null_mut(),
+            head: null_mut(),
+            tail: null_mut(),
             next: null_mut(),
         }
     }
@@ -326,36 +365,20 @@ impl Collector {
     }
 
     fn epoch(&mut self) {
-        // Signal a new epoch
-        CURRENT_EPOCH.fetch_add(1, Ordering::Relaxed);
+        {
+            let mut heap = HEAP.lock();
+            
+            #[cfg(not(test))]
+            COLLECTOR_SIGNAL.wait(&mut heap);
 
-        self.start = HEAP_START
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |_| Some(null_mut()))
-            .unwrap();
-
-        // Go through and set the prev ptr for all of the new items:
-        let mut prev = null_mut();
-        let mut next = self.start;
-        let mut new_live_objects = 0;
-        while let Some(curr_heap_object) = unsafe { OpaqueGcPtr::from_ptr(next) } {
-            unsafe {
-                if !curr_heap_object.prev().is_null() {
-                    break;
-                }
-
-                new_live_objects += 1;
-
-                curr_heap_object.set_prev(prev);
-                prev = next;
-                next = curr_heap_object.next();
-            }
+            self.head = std::mem::take(&mut heap.head);
+            self.tail = std::mem::take(&mut heap.tail);
+            heap.new_allocs = 0;
         }
 
-        if new_live_objects == 1 {
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        println!("collecting");
 
-        self.next = self.start;
+        self.next = self.head;
 
         // Collect obvious garbage; i.e. heap objects that have a ref count of zero,
         // and potential candidates for cycles.
@@ -398,30 +421,23 @@ impl Collector {
             self.process_cycles();
         }
 
-        // Add the heap back into HEAP_START, unless we freed everything:
-        if self.start.is_null() {
+        // Add the heap back into HEAP, unless we freed everything:
+        if self.head.is_null() {
             return;
         }
 
-        if let Err(mut curr_ptr) =
-            HEAP_START.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |new_start| {
-                new_start.is_null().then_some(self.start)
-            })
-        {
-            // We have a new start, append start to the end of the linked list
-            loop {
-                let curr = unsafe { OpaqueGcPtr::from_ptr(curr_ptr) }.unwrap();
-                let next = unsafe { curr.next() };
-                if next.is_null() {
-                    if let Some(start) = unsafe { OpaqueGcPtr::from_ptr(self.start) } {
-                        unsafe { start.set_prev(curr_ptr) };
-                    }
-                    unsafe { curr.set_next(self.start) };
-                    return;
-                }
-                curr_ptr = next;
+        let mut heap = HEAP.lock();
+        unsafe {
+            if heap.head.is_null() {
+                heap.head = self.head;
+                heap.tail = self.tail;
+            } else {
+                (*heap.head).prev = self.tail;
+                heap.head = self.head;
             }
         }
+
+        println!("finished");
     }
 
     unsafe fn decrement(&mut self, s: OpaqueGcPtr) {
@@ -493,7 +509,7 @@ impl Collector {
             for c in &self.cycles {
                 for n in c {
                     n.set_color(Color::Red);
-                    n.set_crc(n.epoch_rc());
+                    n.set_crc(n.epoch_rc() as isize);
                 }
                 for n in c {
                     for_each_child(*n, &mut |m| {
@@ -572,8 +588,12 @@ impl Collector {
             let prev = s.prev();
             let next = s.next();
 
-            if self.start == s.as_ptr() {
-                self.start = next;
+            if self.head == s.as_ptr() {
+                self.head = next;
+            }
+
+            if self.tail == s.as_ptr() {
+                self.tail = prev;
             }
 
             if self.next == s.as_ptr() {
@@ -644,7 +664,7 @@ unsafe fn mark_gray(s: OpaqueGcPtr) {
         let mut stack = Vec::new();
         if s.color() != Color::Gray {
             s.set_color(Color::Gray);
-            s.set_crc(s.epoch_rc());
+            s.set_crc(s.epoch_rc() as isize);
             for_each_child(s, &mut |t| stack.push(MarkGrayPhase::MarkGray(t)))
         }
         while let Some(s) = stack.pop() {
@@ -652,7 +672,7 @@ unsafe fn mark_gray(s: OpaqueGcPtr) {
                 MarkGrayPhase::MarkGray(s) => {
                     if s.color() != Color::Gray {
                         s.set_color(Color::Gray);
-                        s.set_crc(s.epoch_rc());
+                        s.set_crc(s.epoch_rc() as isize);
                         for_each_child(s, &mut |t| stack.push(MarkGrayPhase::MarkGray(t)))
                     }
                     stack.push(MarkGrayPhase::SetCrc(s))
@@ -683,12 +703,11 @@ unsafe fn collect_white(s: OpaqueGcPtr, current_cycle: &mut Vec<OpaqueGcPtr>) {
 
 unsafe fn sigma_test(c: &[OpaqueGcPtr]) -> bool {
     unsafe {
+        let mut sum = 0;
         for n in c {
-            if n.crc() > 0 {
-                return false;
-            }
+            sum += n.crc();
         }
-        true
+        sum == 0
     }
 }
 
