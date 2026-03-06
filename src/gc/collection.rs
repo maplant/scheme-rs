@@ -4,6 +4,7 @@
 
 use std::{
     alloc::Layout,
+    any::TypeId,
     cell::UnsafeCell,
     marker::PhantomData,
     ptr::{NonNull, null_mut},
@@ -12,7 +13,7 @@ use std::{
 };
 
 use parking_lot::{Condvar, Mutex};
-use rustc_hash::FxHashSet as HashSet;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use scheme_rs_macros::{maybe_async, maybe_await};
 
 use crate::{exceptions::Exception, gc::GcInner, registry::bridge, value::Value};
@@ -26,12 +27,8 @@ pub(crate) struct GcHeader {
     epoch_rc: usize,
     /// Circular reference count
     crc: isize,
-    /// Type-erased visitor function
-    visit_children: unsafe fn(this: *const (), visitor: &mut dyn FnMut(HeapObject<()>)),
-    /// Type-erased finalizer function
-    finalize: unsafe fn(this: *mut ()),
-    /// Layout for the underlying data
-    layout: Layout,
+    /// VTable for the type
+    vtable: &'static VTable,
     /// Next item in the heap, or null. Lower 3 bits are the color
     next: *mut GcHeader,
     /// Previous item in the heap, or null. Lower 1 bit is the buffered flag
@@ -49,15 +46,7 @@ impl GcHeader {
             shared_rc: AtomicUsize::new(1),
             epoch_rc: 1,
             crc: 1,
-            visit_children: |this, visitor| unsafe {
-                let this = this as *const UnsafeCell<T> as *const T;
-                T::visit_or_recurse(this.as_ref().unwrap(), visitor);
-            },
-            finalize: |this| unsafe {
-                let this = this as *mut T;
-                T::finalize_or_skip(this.as_mut().unwrap());
-            },
-            layout: Layout::new::<super::GcInner<T>>(),
+            vtable: &INVALID_VTABLE,
             next: null_mut(),
             prev: null_mut::<GcHeader>().map_addr(|addr| addr | 1),
         }
@@ -95,6 +84,38 @@ impl GcHeader {
         self.prev = new.map_addr(|addr| addr | self.get_buffered() as usize);
     }
 }
+
+#[derive(Debug)]
+struct VTable {
+    /// Type-erased visitor function
+    visit_children: unsafe fn(this: *const (), visitor: &mut dyn FnMut(HeapObject<()>)),
+    /// Type-erased finalizer function
+    finalize: unsafe fn(this: *mut ()),
+    /// Layout for the underlying data
+    layout: Layout,
+}
+
+impl VTable {
+    const fn new<T: super::GcOrTrace>() -> Self {
+        Self {
+            visit_children: |this, visitor| unsafe {
+                let this = this as *const UnsafeCell<T> as *const T;
+                T::visit_or_recurse(this.as_ref().unwrap(), visitor);
+            },
+            finalize: |this| unsafe {
+                let this = this as *mut T;
+                T::finalize_or_skip(this.as_mut().unwrap());
+            },
+            layout: Layout::new::<super::GcInner<T>>(),
+        }
+    }
+}
+
+static INVALID_VTABLE: VTable = VTable {
+    visit_children: |_, _| unreachable!(),
+    finalize: |_| unreachable!(),
+    layout: unsafe { Layout::from_size_align_unchecked(0, 1) },
+};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -153,7 +174,7 @@ impl HeapObject<()> {
         let header = NonNull::new(ptr as *mut UnsafeCell<GcHeader>).unwrap();
 
         let (_, header_offset) = Layout::new::<GcHeader>()
-            .extend(unsafe { (*header.as_ref().get()).layout })
+            .extend(unsafe { (*header.as_ref().get()).vtable.layout })
             .unwrap();
 
         let data = unsafe { (ptr as *mut ()).byte_add(header_offset) };
@@ -224,15 +245,15 @@ impl HeapObject<()> {
     unsafe fn visit_children(
         &self,
     ) -> unsafe fn(this: *const (), visitor: &mut dyn FnMut(OpaqueGcPtr)) {
-        unsafe { (*self.header.as_ref().get()).visit_children }
+        unsafe { (*self.header.as_ref().get()).vtable.visit_children }
     }
 
     unsafe fn finalize(&self) -> unsafe fn(this: *mut ()) {
-        unsafe { (*self.header.as_ref().get()).finalize }
+        unsafe { (*self.header.as_ref().get()).vtable.finalize }
     }
 
     unsafe fn layout(&self) -> Layout {
-        unsafe { (*self.header.as_ref().get()).layout }
+        unsafe { (*self.header.as_ref().get()).vtable.layout }
     }
 
     unsafe fn data(&self) -> *const () {
@@ -281,6 +302,16 @@ pub(super) fn alloc_gc_object<T: super::GcOrTrace>(data: T) -> super::Gc<T> {
     let mut heap = HEAP.lock();
 
     unsafe {
+        let vtable = heap
+            .vtables
+            .get_or_insert_with(HashMap::default)
+            .entry(TypeId::of::<T>())
+            // This technically doesn't have to be a leak, we could just use
+            // unsafe, but this plays nicely with the rust typesystem
+            .or_insert_with(|| Box::leak(Box::new(VTable::new::<T>())));
+
+        (*new_gc_ptr).vtable = vtable;
+
         if heap.head.is_null() {
             heap.tail = new_gc_ptr;
         } else {
@@ -304,6 +335,7 @@ struct Heap {
     new_allocs: usize,
     epoch: usize,
     force_collection: bool,
+    vtables: Option<HashMap<TypeId, &'static VTable>>,
 }
 
 impl Heap {
@@ -314,6 +346,7 @@ impl Heap {
             new_allocs: 0,
             epoch: 0,
             force_collection: false,
+            vtables: None,
         }
     }
 
