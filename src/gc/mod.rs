@@ -685,41 +685,21 @@ unsafe impl<T> Trace for Box<T>
 where
     T: GcOrTrace,
 {
-    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {
-        /*
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
         unsafe {
             self.as_ref().visit_or_recurse(visitor);
         }
-        */
     }
 
     unsafe fn finalize(&mut self) {
-        // TODO: Deallocate box without dropping inner contents
         unsafe {
-            // self.finalize_or_skip();
-            drop_in_place(self as *mut Self);
+            self.as_mut().finalize_or_skip();
+            drop(Box::from_raw(
+                self.as_mut() as *mut T as *mut ManuallyDrop<T>
+            ));
         }
     }
 }
-
-/*
-unsafe impl<T> Trace for [T]
-where
-    T: GcOrTrace,
-{
-    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
-        for item in self {
-            item.visit_or_recurse(visitor);
-        }
-    }
-
-    unsafe fn finalize(&mut self) {
-        for item in self {
-            item.finalize_or_skip();
-        }
-    }
-}
- */
 
 unsafe impl<T> Trace for by_address::ByAddress<T>
 where
@@ -798,6 +778,9 @@ where
     }
 }
 
+// We can safely skip recursing in the cases when a mutex is being held, because
+// a held mutex must be a live one.
+
 #[cfg(feature = "tokio")]
 unsafe impl<T> Trace for tokio::sync::Mutex<T>
 where
@@ -805,10 +788,9 @@ where
 {
     unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
         unsafe {
-            // TODO: Think really hard as to if this is correct
-            // This _should_ be fine, while not optimally efficient.
-            let lock = self.blocking_lock();
-            lock.visit_or_recurse(visitor);
+            if let Ok(lock) = self.try_lock() {
+                lock.visit_or_recurse(visitor);
+            }
         }
     }
 
@@ -843,12 +825,8 @@ where
 {
     unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
         unsafe {
-            // TODO: Think really hard as to if this is correct
-            loop {
-                if let Ok(read_lock) = self.try_read() {
-                    read_lock.visit_or_recurse(visitor);
-                    return;
-                }
+            if let Ok(read_lock) = tokio::sync::RwLock::try_read(self) {
+                read_lock.visit_or_recurse(visitor);
             }
         }
     }
@@ -880,9 +858,9 @@ where
 {
     unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
         unsafe {
-            // TODO: Think really hard as to if this is correct
-            let lock = self.lock().unwrap();
-            lock.visit_or_recurse(visitor);
+            if let Ok(lock) = self.try_lock() {
+                lock.visit_or_recurse(visitor);
+            }
         }
     }
 
@@ -899,8 +877,9 @@ where
 {
     unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
         unsafe {
-            let lock = self.lock();
-            lock.visit_or_recurse(visitor);
+            if let Some(lock) = self.try_lock() {
+                lock.visit_or_recurse(visitor);
+            }
         }
     }
 
