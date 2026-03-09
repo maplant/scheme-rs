@@ -334,6 +334,14 @@ macro_rules! impl_into_condition_for {
     };
 }
 
+pub trait PrettyException<W>
+where
+    W: std::io::Write,
+{
+    fn pretty_print<S: std::fmt::Display>(&self, w: &mut W, lines: &[S]) -> io::Result<()>;
+    fn pretty_print_no_lines(&self, w: &mut W) -> io::Result<()>;
+}
+
 impl_into_condition_for!(std::num::TryFromIntError);
 
 #[derive(Copy, Clone, Default, Trace)]
@@ -457,6 +465,26 @@ define_condition_type!(
         Ok(())
     }
 );
+
+impl<W> PrettyException<W> for StackTrace
+where
+    W: std::io::Write,
+{
+    fn pretty_print<S: std::fmt::Display>(&self, w: &mut W, _lines: &[S]) -> io::Result<()> {
+        self.pretty_print_no_lines(w)?;
+        Ok(())
+    }
+
+    fn pretty_print_no_lines(&self, w: &mut W) -> io::Result<()> {
+        for (i, trace) in self.trace.iter().enumerate() {
+            let syntax = trace.cast_to_scheme_type::<Gc<Syntax>>().unwrap();
+            let span = syntax.span();
+            let func_name = syntax.as_ident().unwrap().symbol();
+            writeln!(w, "{:>6}: {func_name}:{span}", i + 1)?;
+        }
+        Ok(())
+    }
+}
 
 impl StackTrace {
     pub fn new(trace: Vec<Value>) -> Self {
@@ -680,32 +708,21 @@ define_condition_type!(
     },
 );
 
-impl SyntaxViolation {
-    pub fn new(form: Syntax, subform: Option<Syntax>) -> Self {
-        Self {
-            parent: Gc::new(Violation::new()),
-            form: Value::from(form),
-            subform: subform.map(Value::from),
-        }
-    }
-
-    pub fn file_name(&self) -> String {
-        let unpacked_value_ref = self.form.unpacked_ref();
-        let UnpackedValue::Syntax(gc_inner) = unpacked_value_ref.as_ref() else {
-            unreachable!();
-        };
-        gc_inner.span().file.clone().to_string()
-    }
-
-    // TODO: make this a trait or something, so it can be implemented for more exceptions
-
+impl<W> PrettyException<W> for SyntaxViolation
+where
+    W: std::io::Write,
+{
     /// pretty print a SyntaxViolation, heavily inspired by
     /// [T8Err::render](https://github.com/xnacly/tango8/blob/master/shared/src/err.rs#L11)
-    pub fn pretty_print<'r, W, S>(&self, w: &'r mut W, lines: &'r [S]) -> io::Result<()>
-    where
-        W: std::io::Write,
-        S: std::fmt::Display,
-    {
+    fn pretty_print<S: std::fmt::Display>(&self, w: &mut W, lines: &[S]) -> io::Result<()> {
+        // This is set if the syntax violation is a call to an undefined function, but since the
+        // message itself is not part of this pretty printing, but rather its own condition, we
+        // cant do anything with it.
+        //
+        // if let Some(sf) = &self.subform {
+        //     dbg!(sf);
+        // }
+
         let unpacked_value_ref = self.form.unpacked_ref();
         let UnpackedValue::Syntax(gc_inner) = unpacked_value_ref.as_ref() else {
             unreachable!();
@@ -733,7 +750,7 @@ impl SyntaxViolation {
 
     /// The repl doesnt allow us to capture all input lines via the fs, so we need a fallback for
     /// only printing the offending line, we have access to via gc_inner
-    pub fn pretty_print_no_lines<W>(&self, w: &mut W) -> io::Result<()>
+    fn pretty_print_no_lines(&self, w: &mut W) -> io::Result<()>
     where
         W: std::io::Write,
     {
@@ -746,6 +763,24 @@ impl SyntaxViolation {
         writeln!(w, "{:03} | {:?}", span.line, gc_inner)?;
         writeln!(w, "    | {}~ here", " ".repeat(span.column))?;
         Ok(())
+    }
+}
+
+impl SyntaxViolation {
+    pub fn new(form: Syntax, subform: Option<Syntax>) -> Self {
+        Self {
+            parent: Gc::new(Violation::new()),
+            form: Value::from(form),
+            subform: subform.map(Value::from),
+        }
+    }
+
+    pub fn file_name(&self) -> String {
+        let unpacked_value_ref = self.form.unpacked_ref();
+        let UnpackedValue::Syntax(gc_inner) = unpacked_value_ref.as_ref() else {
+            unreachable!();
+        };
+        gc_inner.span().file.clone().to_string()
     }
 
     pub fn new_from_values(form: Value, subform: Option<Value>) -> Self {

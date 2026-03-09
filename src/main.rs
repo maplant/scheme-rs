@@ -7,7 +7,7 @@ use rustyline::{
 };
 use scheme_rs::{
     env::TopLevelEnvironment,
-    exceptions::{Exception, Message, StackTrace, SyntaxViolation},
+    exceptions::{Exception, Message, PrettyException, StackTrace, SyntaxViolation},
     gc::Gc,
     ports::{BufferMode, Port, Prompt, Transcoder},
     runtime::Runtime,
@@ -163,13 +163,24 @@ fn print_exception(exception: Exception) -> io::Result<()> {
                 syntax.pretty_print(&mut w, &lines)?;
             }
         } else if let Some(trace) = condition.cast_to_rust_type::<StackTrace>() {
-            writeln!(w, " - Stack trace:")?;
-            for (i, trace) in trace.trace.iter().enumerate() {
-                let syntax = trace.cast_to_scheme_type::<Gc<Syntax>>().unwrap();
-                let span = syntax.span();
-                let func_name = syntax.as_ident().unwrap().symbol();
-                writeln!(w, "{:>6}: {func_name}:{span}", i + 1)?;
-            }
+            // TODO: i have no fucking clue how to get a syntax from this one :O
+            // let file_name = trace
+            //     .trace
+            //     .iter()
+            //     .next()
+            //     .unwrap()
+            //     .cast_to_rust_type::<SyntaxViolation>()
+            //     .unwrap()
+            //     .file_name();
+            // let contents = fs::read_to_string(&file_name).unwrap_or_default();
+            // let lines: Vec<&str> = contents.lines().collect();
+            // writeln!(w)?;
+            // if lines.is_empty() {
+            //     trace.pretty_print_no_lines(&mut w)?;
+            // } else {
+            //     trace.pretty_print(&mut w, &lines)?;
+            // }
+            trace.pretty_print_no_lines(&mut w)?;
         } else {
             writeln!(w, " - Condition: {condition:?}")?;
         }
