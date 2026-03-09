@@ -58,7 +58,7 @@ use crate::{
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
-    syntax::{Identifier, Syntax, parse::ParseSyntaxError},
+    syntax::{Identifier, Span, Syntax, parse::ParseSyntaxError},
     value::{UnpackedValue, Value},
     vectors::Vector,
 };
@@ -342,6 +342,28 @@ where
     fn pretty_print_no_lines(&self, w: &mut W) -> io::Result<()>;
 }
 
+fn print_lines_with_offense_from_span<W, S>(w: &mut W, span: &Span, lines: &[S]) -> io::Result<()>
+where
+    W: std::io::Write,
+    S: std::fmt::Display,
+{
+    writeln!(w, "--> {}:{}:{}:", span.file, span.line, span.column)?;
+
+    let start = span.line.saturating_sub(2);
+    let end = (span.line + 3).min(lines.len() as u32);
+
+    for i in start..end {
+        //  <line num> | <line content>
+        //  +1, because 0 addressing
+        writeln!(w, "{:03} | {}", i + 1, lines[i as usize])?;
+        //  +1, because span.line is somehow not 0 addressed :O
+        if i + 1 == span.line {
+            writeln!(w, "    | {}~ here", " ".repeat(span.column))?; //  | <spacing until column>~
+        }
+    }
+    Ok(())
+}
+
 impl_into_condition_for!(std::num::TryFromIntError);
 
 #[derive(Copy, Clone, Default, Trace)]
@@ -470,8 +492,12 @@ impl<W> PrettyException<W> for StackTrace
 where
     W: std::io::Write,
 {
-    fn pretty_print<S: std::fmt::Display>(&self, w: &mut W, _lines: &[S]) -> io::Result<()> {
+    fn pretty_print<S: std::fmt::Display>(&self, w: &mut W, lines: &[S]) -> io::Result<()> {
         self.pretty_print_no_lines(w)?;
+        let first = self.trace.first().unwrap();
+        let syntax = first.cast_to_scheme_type::<Gc<Syntax>>().unwrap();
+        let span = syntax.span();
+        print_lines_with_offense_from_span(w, &span, lines)?;
         Ok(())
     }
 
@@ -728,24 +754,7 @@ where
             unreachable!();
         };
         let span = gc_inner.span();
-
-        // --> <filename>:<line>:<col>
-        writeln!(w, "--> {}:{}:{}:", span.file, span.line, span.column)?;
-
-        let start = span.line.saturating_sub(2);
-        let end = (span.line + 3).min(lines.len() as u32);
-
-        for i in start..end {
-            //  <line num> | <line content>
-            //  +1, because 0 addressing
-            writeln!(w, "{:03} | {}", i + 1, lines[i as usize])?;
-            //  +1, because span.line is somehow not 0 addressed :O
-            if i + 1 == span.line {
-                writeln!(w, "    | {}~ here", " ".repeat(span.column))?; //  | <spacing until column>~
-            }
-        }
-
-        Ok(())
+        print_lines_with_offense_from_span(w, &span, lines)
     }
 
     /// The repl doesnt allow us to capture all input lines via the fs, so we need a fallback for

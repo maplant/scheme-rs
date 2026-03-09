@@ -12,6 +12,7 @@ use scheme_rs::{
     ports::{BufferMode, Port, Prompt, Transcoder},
     runtime::Runtime,
     syntax::{Span, Syntax},
+    value::Value,
 };
 use scheme_rs_macros::{maybe_async, maybe_await};
 use std::{fs, process};
@@ -163,24 +164,17 @@ fn print_exception(exception: Exception) -> io::Result<()> {
                 syntax.pretty_print(&mut w, &lines)?;
             }
         } else if let Some(trace) = condition.cast_to_rust_type::<StackTrace>() {
-            // TODO: i have no fucking clue how to get a syntax from this one :O
-            // let file_name = trace
-            //     .trace
-            //     .iter()
-            //     .next()
-            //     .unwrap()
-            //     .cast_to_rust_type::<SyntaxViolation>()
-            //     .unwrap()
-            //     .file_name();
-            // let contents = fs::read_to_string(&file_name).unwrap_or_default();
-            // let lines: Vec<&str> = contents.lines().collect();
-            // writeln!(w)?;
-            // if lines.is_empty() {
-            //     trace.pretty_print_no_lines(&mut w)?;
-            // } else {
-            //     trace.pretty_print(&mut w, &lines)?;
-            // }
-            trace.pretty_print_no_lines(&mut w)?;
+            let first = trace.trace.first().unwrap();
+            let syntax = first.cast_to_scheme_type::<Gc<Syntax>>().unwrap();
+            let file_name = syntax.span().file.clone();
+            let contents = fs::read_to_string(file_name.as_ref()).unwrap_or_default();
+            let lines: Vec<&str> = contents.lines().collect();
+            writeln!(w)?;
+            if lines.is_empty() {
+                trace.pretty_print_no_lines(&mut w)?;
+            } else {
+                trace.pretty_print(&mut w, &lines)?;
+            }
         } else {
             writeln!(w, " - Condition: {condition:?}")?;
         }
