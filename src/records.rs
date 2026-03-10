@@ -482,13 +482,11 @@ pub fn make_record_constructor_descriptor(
 
     let parent_rcd = if parent_rcd.is_true() {
         let Some(parent_rtd) = rtd.inherits.last() else {
-            return Err(Exception::error("RTD is a base type".to_string()));
+            return Err(Exception::error("rtd is a base type"));
         };
         let parent_rcd = parent_rcd.try_to_rust_type::<RecordConstructorDescriptor>()?;
         if !Arc::ptr_eq(&parent_rcd.rtd, parent_rtd) {
-            return Err(Exception::error(
-                "Parent RTD does not match parent RCD".to_string(),
-            ));
+            return Err(Exception::error("parent rtd does not match parent rcd"));
         }
         Some(parent_rcd)
     } else if !rtd.is_base_record_type() {
@@ -841,7 +839,7 @@ impl Record {
         k: usize,
     ) -> Result<Value, Exception> {
         if !self.0.rtd.is_subtype_of(rtd) {
-            Err(Exception::error(format!("not a subtype of {rtd:?}")))
+            Err(Exception::error(format!("not a subtype of {}", rtd.name)))
         } else if let Some(mut t) = self.0.rust_parent.clone() {
             while let Some(embedded) = { t.extract_embedded_record(rtd) } {
                 t = embedded;
@@ -865,7 +863,7 @@ impl Record {
         new_value: Value,
     ) -> Result<(), Exception> {
         if !self.0.rtd.is_subtype_of(rtd) {
-            Err(Exception::error(format!("not a subtype of {rtd:?}")))
+            Err(Exception::error(format!("not a subtype of {}", rtd.name)))
         } else if let Some(mut t) = self.0.rust_parent.clone() {
             while let Some(embedded) = { t.extract_embedded_record(rtd) } {
                 t = embedded;
@@ -1042,7 +1040,7 @@ fn record_accessor_fn(
     let rtd: Arc<RecordTypeDescriptor> = env[0].try_to_scheme_type()?;
     if !is_subtype_of(val, rtd.clone())? {
         return Err(Exception::error(
-            "not a child of this record type".to_string(),
+            "not a child of this record type",
         ));
     }
     let idx: usize = env[1].clone().try_into()?;
@@ -1059,7 +1057,7 @@ fn record_accessor_fn(
     };
     if val.is_undefined() {
         return Err(Exception::error(format!(
-            "failed to get field!: {rtd:?}, {idx}"
+            "failed to get field: {}, {idx}", rtd.name
         )));
     }
     Ok(Application::new(k, vec![val]))
@@ -1115,7 +1113,7 @@ fn record_mutator_fn(
     let rtd: Arc<RecordTypeDescriptor> = env[0].try_to_scheme_type()?;
     if !is_subtype_of(rec, rtd.clone())? {
         return Err(Exception::error(
-            "not a child of this record type".to_string(),
+            "not a child of this record type",
         ));
     }
     let idx: usize = env[1].clone().try_into()?;

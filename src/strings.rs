@@ -290,7 +290,7 @@ pub fn string_greater_equal_pred(
 pub fn substring(string: WideString, start: usize, end: usize) -> Result<Vec<Value>, Exception> {
     if start > end {
         return Err(Exception::error(format!(
-            "start ({start}) cannot be greater than end ({end})"
+            "start {start} is greater than end {end}"
         )));
     }
     let substr = string.0.chars.read()[start..end].to_vec();
@@ -342,7 +342,7 @@ pub fn string_to_vector(from: &Value, range: &[Value]) -> Result<Vec<Value>, Exc
 
     if end < start {
         return Err(Exception::error(format!(
-            "Range end {end} cannot be less than start {start}",
+            "range end {end} is less than start {start}",
         )));
     } else if end > len {
         return Err(Exception::invalid_range(start..end, len));

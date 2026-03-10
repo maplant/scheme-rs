@@ -1509,7 +1509,7 @@ unsafe extern "C" fn unwind_to_prompt(
                 None => {
                     // If the stack is empty, we should return the error
                     Application::halt_err(Value::from(Exception::error(format!(
-                        "No prompt tag {tag} found"
+                        "no prompt tag {tag} found"
                     ))))
                 }
                 Some(DynStackElem::Prompt(Prompt {

@@ -322,7 +322,7 @@ pub fn length(arg: &Value) -> Result<usize, Exception> {
             match &*arg.unpacked_ref() {
                 UnpackedValue::Pair(pair) => pair.cdr(),
                 UnpackedValue::Null => break,
-                _ => return Err(Exception::error("list must be proper".to_string())),
+                _ => return Err(Exception::error("list must be proper")),
             }
         };
         length += 1;

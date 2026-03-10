@@ -173,7 +173,7 @@ pub(crate) fn write_bytevec(v: &ByteVector, f: &mut fmt::Formatter<'_>) -> Resul
 fn try_make_range(start: usize, end: usize) -> Result<Range<usize>, Exception> {
     if end < start {
         Err(Exception::error(format!(
-            "Range end {end} cannot be less than start {start}",
+            "range end {end} is less than start {start}",
         )))
     } else {
         Ok(start..end)
