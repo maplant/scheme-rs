@@ -1039,9 +1039,7 @@ fn record_accessor_fn(
     // RTD is the first environment variable, field index is the second
     let rtd: Arc<RecordTypeDescriptor> = env[0].try_to_scheme_type()?;
     if !is_subtype_of(val, rtd.clone())? {
-        return Err(Exception::error(
-            "not a child of this record type",
-        ));
+        return Err(Exception::error("not a child of this record type"));
     }
     let idx: usize = env[1].clone().try_into()?;
     let val = if let Some(rust_parent) = &record.0.rust_parent
@@ -1057,7 +1055,8 @@ fn record_accessor_fn(
     };
     if val.is_undefined() {
         return Err(Exception::error(format!(
-            "failed to get field: {}, {idx}", rtd.name
+            "failed to get field: {}, {idx}",
+            rtd.name
         )));
     }
     Ok(Application::new(k, vec![val]))
@@ -1112,9 +1111,7 @@ fn record_mutator_fn(
     // RTD is the first environment variable, field index is the second
     let rtd: Arc<RecordTypeDescriptor> = env[0].try_to_scheme_type()?;
     if !is_subtype_of(rec, rtd.clone())? {
-        return Err(Exception::error(
-            "not a child of this record type",
-        ));
+        return Err(Exception::error("not a child of this record type"));
     }
     let idx: usize = env[1].clone().try_into()?;
     if let Some(rust_parent) = &record.0.rust_parent
