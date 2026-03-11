@@ -817,7 +817,7 @@ impl<'a> Binds<'a> {
 
 #[runtime_fn]
 unsafe extern "C" fn error_no_patterns_match() -> i64 {
-    let condition = Exception::error("no patterns match".to_string());
+    let condition = Exception::error("no patterns match");
     Value::into_raw(Value::from(condition)) as i64
 }
 

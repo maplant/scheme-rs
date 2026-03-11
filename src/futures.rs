@@ -69,7 +69,7 @@ pub async fn bind_tcp(addr: &Value) -> Result<Vec<Value>, Exception> {
     let addr: WideString = addr.clone().try_into()?;
     let listener = TcpListener::bind(&addr.to_string())
         .await
-        .map_err(|e| Exception::error(format!("failed to bind to address: {e:?}")))?;
+        .map_err(|e| Exception::error(format!("failed to bind to address: {e}")))?;
     let listener = Value::from(Record::from_rust_type(Arc::new(listener)));
     Ok(vec![listener])
 }
@@ -90,7 +90,7 @@ pub async fn accept(listener: &Value) -> Result<Vec<Value>, Exception> {
     let (socket, addr) = listener
         .accept()
         .await
-        .map_err(|e| Exception::error(format!("Could not accept client: {e:?}")))?;
+        .map_err(|e| Exception::error(format!("could not accept client: {e}")))?;
     let socket = Value::from(Port::new(addr.to_string(), socket, BufferMode::Block, None));
     let addr = Value::from(addr.to_string());
     Ok(vec![socket, addr])

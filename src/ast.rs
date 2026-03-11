@@ -237,7 +237,9 @@ impl LibraryName {
         let form = Syntax::from_str(s, file_name)?;
         match form.as_list() {
             Some([item, end]) if end.is_null() => Self::parse(item),
-            _ => Err(Exception::error(format!("bad form in '{s}'"))),
+            _ => Err(Exception::error(format!(
+                "expected a single library form, got: {s}"
+            ))),
         }
     }
 
@@ -833,7 +835,9 @@ impl FromStr for ImportSet {
         let form = Syntax::from_str(s, None)?;
         match form.as_list() {
             Some([item, end]) if end.is_null() => Self::parse(item),
-            _ => Err(Exception::error(format!("bad form in '{s}'"))),
+            _ => Err(Exception::error(format!(
+                "expected a single import set, got: {s}"
+            ))),
         }
     }
 }

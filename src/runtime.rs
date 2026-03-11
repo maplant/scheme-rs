@@ -591,7 +591,7 @@ unsafe extern "C" fn make_user(
 #[runtime_fn]
 unsafe extern "C" fn error_unbound_variable(symbol: u32) -> *const () {
     let sym = Symbol(symbol);
-    let condition = Exception::error(format!("{sym} is unbound"));
+    let condition = Exception::error(format!("undefined variable {sym}"));
     Value::into_raw(Value::from(condition))
 }
 
