@@ -350,7 +350,6 @@ impl Heap {
         }
     }
 
-    #[cfg(not(test))]
     fn should_not_collect(&mut self) -> bool {
         self.new_allocs < MIN_ALLOCS_TO_COLLECT && !self.force_collection
     }
@@ -363,7 +362,6 @@ static HEAP: Mutex<Heap> = Mutex::new(Heap::new());
 static COLLECTION_START_SIGNAL: Condvar = Condvar::new();
 static COLLECTION_DONE_SIGNAL: Condvar = Condvar::new();
 static COLLECTOR_TASK: OnceLock<JoinHandle<()>> = OnceLock::new();
-#[cfg(not(test))]
 const MIN_ALLOCS_TO_COLLECT: usize = 10_000;
 
 /// Initializes the garbage collector thread. Calling this function is typically
@@ -378,7 +376,7 @@ pub fn init_gc() {
 
 fn collect_garbage_sync() {
     let mut heap = HEAP.lock();
-    let target_epoch = heap.epoch + 1;
+    let target_epoch = heap.epoch + 2;
     heap.force_collection = true;
     COLLECTION_START_SIGNAL.notify_one();
     COLLECTION_DONE_SIGNAL.wait_while(&mut heap, |heap| heap.epoch < target_epoch);
@@ -439,7 +437,6 @@ impl Collector {
     fn await_epoch(&mut self) {
         let mut heap = HEAP.lock();
 
-        #[cfg(not(test))]
         COLLECTION_START_SIGNAL.wait_while(&mut heap, Heap::should_not_collect);
 
         self.head = std::mem::take(&mut heap.head);
@@ -824,16 +821,12 @@ mod test {
 
         assert_eq!(Arc::strong_count(&out_ptr), 2);
 
-        let mut collector = Collector::new();
-
-        collector.epoch();
-
         drop(a);
         drop(b);
         drop(c);
 
-        collector.epoch();
-        collector.epoch();
+        collect_garbage_sync();
+        collect_garbage_sync();
 
         assert_eq!(Arc::strong_count(&out_ptr), 1);
     }
