@@ -76,7 +76,7 @@ impl fmt::Display for Exception {
 }
 
 /// A signal of some sort of erroneous condition.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Trace)]
 pub struct Exception(pub Value);
 
 impl Exception {
