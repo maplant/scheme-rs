@@ -419,7 +419,7 @@ impl Syntax {
     pub fn car(&self) -> Option<&Syntax> {
         if let Syntax::List { list, .. } = self {
             list.first()
-        }  else {
+        } else {
             None
         }
     }

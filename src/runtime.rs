@@ -117,7 +117,7 @@ impl Runtime {
 
         // If the first form is not an import, import (rnrs)
         if add_rnrs_import {
-            maybe_await!(env.import("(library (rnrs))".parse()?)?);
+            maybe_await!(env.import("(library (rnrs))".parse()?))?;
         }
 
         let body = maybe_await!(DefinitionBody::parse_lib_body(self, &form, &env))?;
