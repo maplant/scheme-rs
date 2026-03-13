@@ -5,7 +5,7 @@
 //! with the JIT compiled [`Procedures`](Procedure).
 
 use crate::{
-    ast::DefinitionBody,
+    ast::{DefinitionBody, Primitive},
     cps::{Compile, Cps, codegen::RuntimeFunctionsBuilder},
     env::{Environment, Global, TopLevelEnvironment},
     exceptions::{Exception, raise},
@@ -104,6 +104,22 @@ impl Runtime {
         };
 
         form.add_scope(progm.scope());
+
+        // Check if the first form is an import
+        let add_rnrs_import = if let Some(first_form) = form.car()
+            && let Some(Syntax::Identifier { ident, .. }) = first_form.car()
+            && let Some(binding) = ident.resolve()
+        {
+            env.lookup_primitive(binding) != Some(Primitive::Import)
+        } else {
+            true
+        };
+
+        // If the first form is not an import, import (rnrs)
+        if add_rnrs_import {
+            maybe_await!(env.import("(library (rnrs))".parse()?)?);
+        }
+
         let body = maybe_await!(DefinitionBody::parse_lib_body(self, &form, &env))?;
         let compiled = body.compile_top_level();
         let closure = maybe_await!(self.compile_expr(compiled));

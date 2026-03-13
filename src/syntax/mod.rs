@@ -416,6 +416,14 @@ impl Syntax {
         matches!(self, Self::List { .. })
     }
 
+    pub fn car(&self) -> Option<&Syntax> {
+        if let Syntax::List { list, .. } = self {
+            list.first()
+        }  else {
+            None
+        }
+    }
+
     pub fn new_vector(vector: Vec<Syntax>, span: impl Into<Span>) -> Self {
         Self::Vector {
             vector,
