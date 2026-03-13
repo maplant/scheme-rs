@@ -7,14 +7,16 @@ use rustyline::{
 };
 use scheme_rs::{
     env::TopLevelEnvironment,
-    exceptions::{Exception, Message, StackTrace, SyntaxViolation},
+    exceptions::{Exception, Message, PrettyException, StackTrace, SyntaxViolation},
     gc::Gc,
     ports::{BufferMode, Port, Prompt, Transcoder},
     runtime::Runtime,
     syntax::{Span, Syntax},
+    value::Value,
 };
 use scheme_rs_macros::{maybe_async, maybe_await};
-use std::path::Path;
+use std::{fs, process};
+use std::{io, path::Path};
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -47,9 +49,8 @@ struct InputHelper {
     highlighter: MatchingBracketHighlighter,
 }
 
-#[maybe_async]
-#[cfg_attr(feature = "async", tokio::main)]
-fn main() -> Result<(), Exception> {
+/// scheme-rs entry point
+fn entry() -> Result<(), Exception> {
     let args = Args::parse();
 
     let runtime = Runtime::new();
@@ -57,7 +58,7 @@ fn main() -> Result<(), Exception> {
     // Run any programs
     for file in &args.files {
         let path = Path::new(file);
-        let _ = maybe_await!(runtime.run_program(path))?;
+        maybe_await!(runtime.run_program(path))?;
     }
 
     if !args.files.is_empty() && !args.interactive {
@@ -114,47 +115,69 @@ fn main() -> Result<(), Exception> {
             }
         };
 
-        match maybe_await!(repl.eval_sexpr(true, sexpr)) {
-            Ok(results) => {
-                for result in results.into_iter() {
-                    println!("${n_results} = {result:?}");
-                    n_results += 1;
-                }
-            }
-            Err(err) => print_exception(err),
+        for result in maybe_await!(repl.eval_sexpr(true, sexpr))?.into_iter() {
+            println!("${n_results} = {result:?}");
+            n_results += 1;
         }
     }
 
     Ok(())
 }
 
-fn print_exception(exception: Exception) {
+#[maybe_async]
+#[cfg_attr(feature = "async", tokio::main)]
+fn main() {
+    if let Err(e) = entry() {
+        print_exception(e).unwrap();
+        process::exit(1);
+    };
+}
+
+fn print_exception(exception: Exception) -> io::Result<()> {
+    use std::io::Write;
+
+    let stdout = io::stdout();
+    let mut w = stdout.lock();
+
     let Ok(conditions) = exception.simple_conditions() else {
-        println!(
+        return writeln!(
+            w,
             "Exception occurred with a non-condition value: {:?}",
             exception.0
         );
-        return;
     };
-    println!("Uncaught exception:");
-    for condition in conditions.into_iter() {
+
+    writeln!(w, "Uncaught exception:")?;
+    for condition in conditions.into_iter().rev() {
         if let Some(message) = condition.cast_to_rust_type::<Message>() {
-            println!(" - Message: {}", message.message);
+            writeln!(w, " - Message: {}", message.message)?;
         } else if let Some(syntax) = condition.cast_to_rust_type::<SyntaxViolation>() {
-            println!(" - Syntax error in form: {:?}", syntax.form);
-            if let Some(subform) = syntax.subform.as_ref() {
-                println!("   (subform: {subform:?})");
+            let file_name = syntax.file_name();
+            let contents = fs::read_to_string(&file_name).unwrap_or_default();
+            let lines: Vec<&str> = contents.lines().collect();
+            writeln!(w)?;
+            // this is a fallback for having no lines available, for instance in the context of the
+            // repl
+            if lines.is_empty() {
+                syntax.pretty_print_no_lines(&mut w)?;
+            } else {
+                syntax.pretty_print(&mut w, &lines)?;
             }
         } else if let Some(trace) = condition.cast_to_rust_type::<StackTrace>() {
-            println!(" - Stack trace:");
-            for (i, trace) in trace.trace.iter().enumerate() {
-                let syntax = trace.cast_to_scheme_type::<Gc<Syntax>>().unwrap();
-                let span = syntax.span();
-                let func_name = syntax.as_ident().unwrap().symbol();
-                println!("{:>6}: {func_name}:{span}", i + 1);
+            let first = trace.trace.first().unwrap();
+            let syntax = first.cast_to_scheme_type::<Gc<Syntax>>().unwrap();
+            let file_name = syntax.span().file.clone();
+            let contents = fs::read_to_string(file_name.as_ref()).unwrap_or_default();
+            let lines: Vec<&str> = contents.lines().collect();
+            writeln!(w)?;
+            if lines.is_empty() {
+                trace.pretty_print_no_lines(&mut w)?;
+            } else {
+                trace.pretty_print(&mut w, &lines)?;
             }
         } else {
-            println!(" - Condition: {condition:?}");
+            writeln!(w, " - Condition: {condition:?}")?;
         }
     }
+    Ok(())
 }
