@@ -14,7 +14,13 @@ use crate::{
     value::{Expect1, UnpackedValue, Value},
 };
 use scheme_rs_macros::{maybe_async, maybe_await};
-use std::{collections::BTreeSet, fmt, hash::Hash, io::Cursor, sync::Arc};
+use std::{
+    collections::BTreeSet,
+    fmt,
+    hash::Hash,
+    io::Cursor,
+    sync::{Arc, LazyLock},
+};
 
 #[cfg(feature = "async")]
 use futures::future::BoxFuture;
@@ -48,11 +54,12 @@ impl fmt::Display for Span {
 
 impl Default for Span {
     fn default() -> Self {
+        static UNKNOWN: LazyLock<Arc<String>> = LazyLock::new(|| Arc::new("<unknown>".to_string()));
         Self {
             line: 1,
             column: 0,
             offset: 0,
-            file: Arc::new(String::new()),
+            file: UNKNOWN.clone(),
         }
     }
 }
@@ -119,12 +126,12 @@ impl Syntax {
         self.adjust_scope(scope, Identifier::remove_scope)
     }
 
-    pub fn wrap(value: Value) -> Syntax {
+    pub fn wrap(value: Value, span: &Span) -> Syntax {
         match value.unpack() {
             UnpackedValue::Pair(pair) => {
                 let (car, cdr) = pair.into();
-                let car = Self::wrap(car);
-                let cdr = Self::wrap(cdr);
+                let car = Self::wrap(car, span);
+                let cdr = Self::wrap(cdr, span);
                 match cdr {
                     Syntax::List { mut list, span } => {
                         list.insert(0, car);
@@ -132,13 +139,13 @@ impl Syntax {
                     }
                     _ => Syntax::List {
                         list: vec![car, cdr],
-                        span: Span::default(),
+                        span: span.clone(),
                     },
                 }
             }
             UnpackedValue::Vector(vec) => Syntax::Vector {
-                vector: vec.iter().map(Syntax::wrap).collect(),
-                span: Span::default(),
+                vector: vec.iter().map(|value| Syntax::wrap(value, span)).collect(),
+                span: span.clone(),
             },
             UnpackedValue::Syntax(syn) => syn.as_ref().clone(),
             value => Syntax::Wrapped {
@@ -165,12 +172,12 @@ impl Syntax {
         }
     }
 
-    pub fn datum_to_syntax(scopes: &BTreeSet<Scope>, value: Value) -> Syntax {
+    pub fn datum_to_syntax(scopes: &BTreeSet<Scope>, value: Value, span: &Span) -> Syntax {
         match value.unpack() {
             UnpackedValue::Pair(pair) => {
                 let (car, cdr) = pair.into();
-                let car = Self::datum_to_syntax(scopes, car);
-                let cdr = Self::datum_to_syntax(scopes, cdr);
+                let car = Self::datum_to_syntax(scopes, car, span);
+                let cdr = Self::datum_to_syntax(scopes, cdr, span);
                 match cdr {
                     Syntax::List { mut list, span } => {
                         list.insert(0, car);
@@ -178,14 +185,14 @@ impl Syntax {
                     }
                     _ => Syntax::List {
                         list: vec![car, cdr],
-                        span: Span::default(),
+                        span: span.clone(),
                     },
                 }
             }
             UnpackedValue::Vector(vec) => Syntax::Vector {
                 vector: vec
                     .iter()
-                    .map(|value| Syntax::datum_to_syntax(scopes, value))
+                    .map(|value| Syntax::datum_to_syntax(scopes, value, span))
                     .collect(),
                 span: Span::default(),
             },
@@ -205,7 +212,7 @@ impl Syntax {
             },
             value => Syntax::Wrapped {
                 value: value.into_value(),
-                span: Span::default(),
+                span: span.clone(),
             },
         }
     }
@@ -241,7 +248,7 @@ impl Syntax {
         let transformer_output = maybe_await!(transformer.call(&[Value::from(input)]))?;
 
         let output: Value = transformer_output.expect1()?;
-        let mut output = Syntax::wrap(output);
+        let mut output = Syntax::wrap(output, self.span());
         output.flip_scope(intro_scope);
 
         Ok(Expansion::Expanded(output))
@@ -599,6 +606,7 @@ pub fn datum_to_syntax(template_id: Identifier, datum: &Value) -> Result<Vec<Val
     Ok(vec![Value::from(Syntax::datum_to_syntax(
         &template_id.scopes,
         datum.clone(),
+        &Span::default(),
     ))])
 }
 
@@ -621,7 +629,7 @@ pub fn free_identifier_eq_pred(id1: Identifier, id2: Identifier) -> Result<Vec<V
 
 #[bridge(name = "generate-temporaries", lib = "(rnrs syntax-case builtins (6))")]
 pub fn generate_temporaries(list: &Value) -> Result<Vec<Value>, Exception> {
-    let length = if let Syntax::List { list, .. } = Syntax::wrap(list.clone())
+    let length = if let Syntax::List { list, .. } = Syntax::wrap(list.clone(), &Span::default())
         && list.last().unwrap().is_null()
     {
         list.len() - 1

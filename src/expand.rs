@@ -340,7 +340,7 @@ unsafe extern "C" fn matches(pattern: *const (), value: *const ()) -> *const () 
     let pattern = pattern.try_to_rust_type::<Pattern>().unwrap();
 
     let value = unsafe { Value::from_raw_inc_rc(value) };
-    let syntax = Syntax::wrap(value);
+    let syntax = Syntax::wrap(value, &Span::default());
 
     let mut expansions = ExpansionLevel::default();
     if pattern.matches(&syntax, &mut expansions) {
@@ -568,10 +568,10 @@ impl Template {
             .collect()
     }
 
-    fn expand(&self, binds: &Binds<'_>, curr_span: Span) -> Option<Value> {
+    fn expand(&self, binds: &Binds<'_>, curr_span: &Span) -> Option<Value> {
         match self {
-            Self::List(list) => expand_list(list, binds, curr_span.clone()),
-            Self::Vector(vec) => expand_vec(vec, binds, curr_span.clone()),
+            Self::List(list) => expand_list(list, binds, curr_span),
+            Self::Vector(vec) => expand_vec(vec, binds, curr_span),
             Self::Variable(binding) => Some(Syntax::unwrap(binds.get_bind(*binding)?)),
             Self::Ellipsis(_) => unreachable!(),
             Self::Wrapped(Syntax::Wrapped { value, .. }) if value.is_null() => Some(Value::null()),
@@ -579,27 +579,27 @@ impl Template {
         }
     }
 
-    fn expand_nested(&self, binds: &Binds<'_>, curr_span: Span) -> Option<Vec<Value>> {
+    fn expand_nested(&self, binds: &Binds<'_>, curr_span: &Span) -> Option<Vec<Value>> {
         let mut output = Vec::new();
         if let Template::Ellipsis(template) = self {
             for expansion in &binds.curr_expansion_level.expansions {
                 let new_level = binds.new_level(expansion);
-                let Some(result) = template.expand_nested(&new_level, curr_span.clone()) else {
+                let Some(result) = template.expand_nested(&new_level, curr_span) else {
                     break;
                 };
                 output.extend(result);
             }
         } else {
-            output.push(self.expand(binds, curr_span.clone())?);
+            output.push(self.expand(binds, curr_span)?);
         }
         Some(output)
     }
 }
 
-fn expand_list(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<Value> {
+fn expand_list(items: &[Template], binds: &Binds<'_>, curr_span: &Span) -> Option<Value> {
     let mut expanded = Vec::new();
     for item in items {
-        expanded.extend(item.expand_nested(binds, curr_span.clone())?);
+        expanded.extend(item.expand_nested(binds, curr_span)?);
     }
     let Some(mut output) = expanded.pop() else {
         return Some(Value::null());
@@ -610,10 +610,10 @@ fn expand_list(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option
     Some(output)
 }
 
-fn expand_vec(items: &[Template], binds: &Binds<'_>, curr_span: Span) -> Option<Value> {
+fn expand_vec(items: &[Template], binds: &Binds<'_>, curr_span: &Span) -> Option<Value> {
     let mut output = Vec::new();
     for item in items {
-        output.extend(item.expand_nested(binds, curr_span.clone())?);
+        output.extend(item.expand_nested(binds, curr_span)?);
     }
     Some(Value::from(output))
 }
@@ -750,13 +750,14 @@ impl SchemeCompatible for Template {
 
 #[runtime_fn]
 unsafe extern "C" fn expand_template(
+    span: *const (),
     template: *const (),
     expansion_combiner: *const (),
     expansions: *const *const (),
     num_expansions: u32,
 ) -> *const () {
-    // TODO: A lot of probably unnecessary cloning here, we'll need to fix it up
-    // eventually
+    let span = unsafe { Value::from_raw_inc_rc(span) };
+    let span = span.try_to_rust_type::<Span>().unwrap();
 
     let template = unsafe { Value::from_raw_inc_rc(template) };
     let template = template.try_to_rust_type::<Template>().unwrap();
@@ -777,8 +778,8 @@ unsafe extern "C" fn expand_template(
     let combined_expansions = expansion_combiner.combine_expansions(&expansions);
     let binds = Binds::new_top(&combined_expansions);
 
-    // TODO: get a real span in here
-    let expanded = template.expand(&binds, Span::default()).unwrap();
+    // Expand the template:
+    let expanded = template.expand(&binds, span.as_ref()).unwrap();
 
     Value::into_raw(expanded)
 }
