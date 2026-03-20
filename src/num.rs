@@ -2548,7 +2548,7 @@ pub fn fixnum_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
 
 #[bridge(name = "fixnum-width", lib = "(rnrs arithmetic fixnums (6))")]
 pub fn fixnum_width() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(64)])
+    Ok(vec![Value::from(i64::BITS)])
 }
 
 #[bridge(name = "least-fixnum", lib = "(rnrs arithmetic fixnums (6))")]
@@ -2780,6 +2780,8 @@ pub fn xor_fixnum(fx1: &Value, fx2: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(fx1 ^ fx2)])
 }
 
+// NOTE: If anyone is curious, this is a bitwise multiplexer.
+// `fx1` is the selector mask, `fx2` is the true value and `fx3` is the false value.
 #[bridge(name = "fxif", lib = "(rnrs arithmetic fixnums (6))")]
 pub fn if_fixnum(fx1: &Value, fx2: &Value, fx3: &Value) -> Result<Vec<Value>, Exception> {
     let Fixnum(fx1) = Fixnum::try_from(fx1)?;
@@ -2789,6 +2791,39 @@ pub fn if_fixnum(fx1: &Value, fx2: &Value, fx3: &Value) -> Result<Vec<Value>, Ex
     Ok(vec![Value::from(fx1 & fx2 | !fx1 & fx3)])
 }
 
+#[bridge(name = "fxbit-count", lib = "(rnrs arithmetic fixnums (6))")]
+pub fn bit_count_fixnum(fx: &Value) -> Result<Vec<Value>, Exception> {
+    let Fixnum(fx) = Fixnum::try_from(fx)?;
+
+    let result = if fx >= 0 {
+        fx.count_ones()
+    } else {
+        fx.count_zeros()
+    };
+
+    Ok(vec![Value::from(result)])
+}
+
+#[bridge(name = "fxlength", lib = "(rnrs arithmetic fixnums (6))")]
+pub fn length_fixnum(fx: &Value) -> Result<Vec<Value>, Exception> {
+    let Fixnum(mut fx) = Fixnum::try_from(fx)?;
+
+    fx = if fx >= 0 { fx } else { !fx };
+
+    let len = i64::BITS - fx.leading_zeros();
+
+    Ok(vec![Value::from(len)])
+}
+
+// TODO: Does our method return the correct values for 0, 1 and -4?
+//
+// (fxfirst-bit-set fx)‌‌procedure 
+// Returns the index of the least significant 1 bit in the two's complement representation of fx. If fx is 0, then −1 is returned.
+// 
+// (fxfirst-bit-set 0)        ‌⇒  -1
+// (fxfirst-bit-set 1)        ‌⇒  0
+// 
+// (fxfirst-bit-set -4)       ‌⇒  2
 #[bridge(name = "fxfirst-bit-set", lib = "(rnrs arithmetic fixnums (6))")]
 pub fn first_bit_set_fixnum(fx: &Value) -> Result<Vec<Value>, Exception> {
     let Fixnum(fx) = Fixnum::try_from(fx)?;
@@ -2796,24 +2831,19 @@ pub fn first_bit_set_fixnum(fx: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(fx.trailing_zeros())])
 }
 
-fn arithmetic_shift(fx1: &Value, fx2: &Value, shift_left: bool) -> Result<Vec<Value>, Exception> {
+// TODO: This implementation is incorrect.
+fn arithmetic_shift(fx1: &Value, fx2: &Value) -> Result<Vec<Value>, Exception> {
     let Fixnum(fx1) = Fixnum::try_from(fx1)?;
     let Fixnum(fx2) = Fixnum::try_from(fx2)?;
 
     let fx2 = u32::try_from(fx2)
         .map_err(|_| Exception::implementation_restriction("fx2 must be non-negative"))?;
 
-    let result = if shift_left {
-        fx1.checked_shl(fx2)
-            .ok_or(Exception::implementation_restriction(
-                "The result of fxarithmetic-shift-left is not a valid fixnum",
-            ))
-    } else {
-        fx1.checked_shr(fx2)
-            .ok_or(Exception::implementation_restriction(
-                "The result of fxarithmetic-shift-right is not a valid fixnum",
-            ))
-    };
+    let result = fx1
+        .checked_shl(fx2)
+        .ok_or(Exception::implementation_restriction(
+            "The result of fxarithmetic-shift-left is not a valid fixnum",
+        ));
 
     result.map(|result| vec![Value::from(result)])
 }
