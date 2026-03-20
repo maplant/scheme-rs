@@ -1,2 +1,6 @@
+/.jj
+
 /target
 /Cargo.lock
+
+/test/data
