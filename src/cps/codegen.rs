@@ -56,11 +56,13 @@ pub(crate) struct RuntimeFunctions {
     read_cell: FuncId,
     store: FuncId,
     error_unbound_variable: FuncId,
+    dropv: FuncId,
+    raise_rt: FuncId,
+
+    // Syntax primops:
     matches: FuncId,
     expand_template: FuncId,
     error_no_patterns_match: FuncId,
-    dropv: FuncId,
-    raise_rt: FuncId,
 
     // List primops:
     cons: FuncId,
@@ -226,10 +228,11 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
                 self.matches_codegen(pattern, expr, bind_to, *cexpr, deferred);
             }
             Cps::PrimOp(PrimOp::ExpandTemplate, args, expand_to, cexpr) => {
-                let [template, expansion_combiner, expansions @ ..] = args.as_slice() else {
+                let [span, template, expansion_combiner, expansions @ ..] = args.as_slice() else {
                     unreachable!()
                 };
                 self.expand_template_codegen(
+                    span,
                     template,
                     expansion_combiner,
                     expansions,
@@ -366,8 +369,10 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
         self.cps_codegen(cexpr, deferred);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn expand_template_codegen(
         &mut self,
+        span: &CpsValue,
         template: &CpsValue,
         expansion_combiner: &CpsValue,
         expansions: &[CpsValue],
@@ -394,12 +399,15 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
             .ins()
             .iconst(types::I32, expansions.len() as i64);
 
+        let span = self.value_codegen(span);
+
         let expand_template = self
             .module
             .declare_func_in_func(self.runtime_funcs.expand_template, self.builder.func);
         let call = self.builder.ins().call(
             expand_template,
             &[
+                span,
                 template,
                 expansion_combiner,
                 expansions_addr,
