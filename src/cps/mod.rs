@@ -209,6 +209,72 @@ impl Cps {
             }
         }
     }
+
+    pub(crate) fn pretty_print(&self, indent: usize) {
+        match self {
+            Cps::PrimOp(PrimOp::Set, vals, _, cexp) => {
+                eprintln!("{:>indent$}{:?} <- {:?};", "", vals[0], vals[1]);
+                cexp.pretty_print(indent);
+            }
+            Cps::PrimOp(primop, vals, to, cexp) => {
+                eprint!("{:>indent$}let {to:?} = {primop:?}", "");
+                pretty_print_values(vals);
+                eprintln!(";\n");
+                cexp.pretty_print(indent);
+            }
+            Cps::Lambda {
+                args,
+                body,
+                val,
+                cexp,
+                ..
+            } => {
+                eprint!("{:>indent$}def {val}(", "");
+                for (i, arg) in args.args.iter().enumerate() {
+                    if i > 0 {
+                        eprint!(", ");
+                    }
+                    eprint!("{arg:?}");
+                }
+                if args.variadic {
+                    eprint!("...")
+                }
+                if let Some(k) = args.continuation {
+                    eprint!(", {k:?} k");
+                }
+                eprintln!("):");
+                body.pretty_print(indent + 2);
+                eprintln!("{:>indent$}end", "");
+                cexp.pretty_print(indent);
+            }
+            Cps::If(val, succ, fail) => {
+                eprintln!("{:>indent$}if {val:?} then", "");
+                succ.pretty_print(indent + 2);
+                eprintln!("{:>indent$}else", "");
+                fail.pretty_print(indent + 2);
+                eprintln!("{:>indent$}end", "");
+            }
+            Cps::App(val, args) => {
+                eprint!("{:>indent$}{val:?}", "");
+                pretty_print_values(args);
+                eprintln!(";");
+            }
+            Cps::Halt(val) => {
+                eprintln!("{:>indent$}Halt({val:?});", "");
+            }
+        }
+    }
+}
+
+fn pretty_print_values(vals: &[Value]) {
+    eprint!("(");
+    for (i, val) in vals.iter().enumerate() {
+        if i > 0 {
+            eprint!(", ");
+        }
+        eprint!("{val:?}");
+    }
+    eprint!(")");
 }
 
 fn substitute_value(value: &mut Value, substitutions: &HashMap<Local, Value>) {

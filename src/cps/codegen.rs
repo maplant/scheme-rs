@@ -93,7 +93,8 @@ impl Cps {
         debug_info: &mut DebugInfo,
     ) -> Procedure {
         if std::env::var("SCHEME_RS_DEBUG").is_ok() {
-            eprintln!("compiling: {self:#?}");
+            eprintln!("Compiling:");
+            self.pretty_print(2);
         }
 
         let cells = self.cells();
@@ -145,10 +146,6 @@ impl Cps {
         };
 
         cu.cps_codegen(self, &mut deferred);
-
-        if std::env::var("SCHEME_RS_DEBUG").is_ok() {
-            eprintln!("compiled: {}", cu.builder.func.display());
-        }
 
         cu.builder.finalize();
 
@@ -901,10 +898,6 @@ impl ProcedureBundle {
         };
 
         cu.cps_codegen(self.body, deferred);
-
-        if std::env::var("GOUKI_DEBUG").is_ok() {
-            eprintln!("compiled: {}", cu.builder.func.display());
-        }
 
         cu.builder.finalize();
 

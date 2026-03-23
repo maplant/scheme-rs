@@ -800,7 +800,7 @@ impl Local {
 impl fmt::Display for Local {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(name) = self.name {
-            write!(f, "{name}:${}", self.id)
+            write!(f, "{name}")
         } else {
             write!(f, "%{}", self.id)
         }
@@ -810,7 +810,7 @@ impl fmt::Display for Local {
 impl fmt::Debug for Local {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(name) = self.name {
-            write!(f, "{name}:${}", self.id)
+            write!(f, "{name}")
         } else {
             write!(f, "%{}", self.id)
         }
