@@ -1547,10 +1547,7 @@ unsafe extern "C" fn unwind_to_prompt(
                     ))];
                     handler_args.extend(args.cast_to_scheme_type::<Vector>().unwrap().iter());
                     handler_args.push(Value::from(handler_k));
-                    Application::new(
-                        handler,
-                        handler_args,
-                    )
+                    Application::new(handler, handler_args)
                 }
                 Some(DynStackElem::Winder(winder)) => {
                     // If this is a winder, we should call the out winder while unwinding
