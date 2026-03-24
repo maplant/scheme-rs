@@ -76,7 +76,7 @@ impl fmt::Display for Exception {
 }
 
 /// A signal of some sort of erroneous condition.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Trace)]
 pub struct Exception(pub Value);
 
 impl Exception {
@@ -96,7 +96,7 @@ impl Exception {
         Self(Value::from(Record::from_rust_type(
             CompoundCondition::from((
                 Undefined::new(),
-                Message::new(format!("Undefined variable {}", ident.sym)),
+                Message::new(format!("undefined variable {}", ident.sym)),
             )),
         )))
     }
@@ -106,7 +106,7 @@ impl Exception {
             CompoundCondition::from((
                 Assertion::new(),
                 Message::new(format!(
-                    "Expected value of type {expected}, provided {provided}"
+                    "expected value of type {expected}, provided {provided}"
                 )),
             )),
         )))
@@ -117,7 +117,7 @@ impl Exception {
             CompoundCondition::from((
                 Assertion::new(),
                 Message::new(format!(
-                    "Invalid operator, expected procedure, provided {provided}"
+                    "invalid operator: expected procedure, provided {provided}"
                 )),
             )),
         )))
@@ -128,7 +128,7 @@ impl Exception {
             CompoundCondition::from((
                 Assertion::new(),
                 Message::new(format!(
-                    "Invalid index of {index} into collection of size {len}"
+                    "index {index} out of bounds for collection of size {len}"
                 )),
             )),
         )))
@@ -139,7 +139,7 @@ impl Exception {
             CompoundCondition::from((
                 Assertion::new(),
                 Message::new(format!(
-                    "Invalid range of {range:?} into collection of size {len}"
+                    "range {range:?} out of bounds for collection of size {len}"
                 )),
             )),
         )))
@@ -150,7 +150,7 @@ impl Exception {
             CompoundCondition::from((
                 Assertion::new(),
                 Message::new(format!(
-                    "Expected to receive {expected} unicode characters from transform, received {provided}"
+                    "expected {expected} unicode characters from transform, received {provided}"
                 )),
             )),
         )))
@@ -161,7 +161,7 @@ impl Exception {
             CompoundCondition::from((
                 Assertion::new(),
                 Message::new(format!(
-                    "Expected {expected} arguments, provided {provided}"
+                    "expected {expected} arguments, provided {provided}"
                 )),
             )),
         )))
@@ -172,7 +172,7 @@ impl Exception {
             CompoundCondition::from((
                 Assertion::new(),
                 Message::new(format!(
-                    "Expected {} to {} arguments, provided {provided}",
+                    "expected {} to {} arguments, provided {provided}",
                     expected.start, expected.end
                 )),
             )),
@@ -194,7 +194,7 @@ impl Exception {
         Self(Value::from(Record::from_rust_type(
             CompoundCondition::from((
                 Assertion::new(),
-                Message::new(format!("Could not convert {provided} into {expected}")),
+                Message::new(format!("cannot convert {provided} into {expected}")),
             )),
         )))
     }
@@ -206,7 +206,7 @@ impl Exception {
         Self(Value::from(Record::from_rust_type(
             CompoundCondition::from((
                 Assertion::new(),
-                Message::new(format!("Could not represent '{value}' in {type} type")),
+                Message::new(format!("cannot represent '{value}' as {type}")),
             )),
         )))
     }

@@ -70,7 +70,7 @@ impl Decode for Utf8Buffer {
                 match self.error_mode {
                     ErrorHandlingMode::Ignore => Ok(None),
                     ErrorHandlingMode::Replace => Ok(Some('\u{FFFD}')),
-                    ErrorHandlingMode::Raise => Err(Exception::io_read_error(format!("{err:?}"))),
+                    ErrorHandlingMode::Raise => Err(Exception::io_read_error(format!("{err}"))),
                 }
             }
         }
@@ -132,7 +132,7 @@ impl Decode for Utf16Buffer {
                 match self.error_mode {
                     ErrorHandlingMode::Ignore => Ok(None),
                     ErrorHandlingMode::Replace => Ok(Some('\u{FFFD}')),
-                    ErrorHandlingMode::Raise => Err(Exception::io_read_error(format!("{err:?}"))),
+                    ErrorHandlingMode::Raise => Err(Exception::io_read_error(format!("{err}"))),
                 }
             }
             [Err(_)] => Ok(None),
@@ -520,7 +520,7 @@ mod __impl {
             let mut buff = buff.as_mut_slice();
             concrete
                 .read(&mut buff[start..(start + count)])
-                .map_err(|err| Exception::io_read_error(format!("{err:?}")))
+                .map_err(|err| Exception::io_read_error(format!("{err}")))
         })
     }
 
@@ -534,7 +534,7 @@ mod __impl {
             concrete
                 .write_all(&buff[start..(start + count)])
                 .and_then(|()| concrete.flush())
-                .map_err(|err| Exception::io_write_error(format!("{err:?}")))?;
+                .map_err(|err| Exception::io_write_error(format!("{err}")))?;
             Ok(())
         })
     }
@@ -547,7 +547,7 @@ mod __impl {
             let concrete = any.downcast_mut::<T>().unwrap();
             concrete
                 .stream_position()
-                .map_err(|err| Exception::io_error(format!("{err:?}")))
+                .map_err(|err| Exception::io_error(format!("{err}")))
         })
     }
 
@@ -559,7 +559,7 @@ mod __impl {
             let concrete = any.downcast_mut::<T>().unwrap();
             let _ = concrete
                 .seek(SeekFrom::Start(pos))
-                .map_err(|err| Exception::io_error(format!("{err:?}")))?;
+                .map_err(|err| Exception::io_error(format!("{err}")))?;
             Ok(())
         })
     }
@@ -741,7 +741,7 @@ mod __impl {
                 let read = concrete
                     .read(&mut local_buff)
                     .await
-                    .map_err(|err| Exception::io_read_error(format!("{err:?}")))?;
+                    .map_err(|err| Exception::io_read_error(format!("{err}")))?;
                 buff.as_mut_slice()[start..(start + count)].copy_from_slice(&local_buff);
 
                 Ok(read)
@@ -761,11 +761,11 @@ mod __impl {
                 concrete
                     .write_all(&local_buff)
                     .await
-                    .map_err(|err| Exception::io_write_error(format!("{err:?}")))?;
+                    .map_err(|err| Exception::io_write_error(format!("{err}")))?;
                 concrete
                     .flush()
                     .await
-                    .map_err(|err| Exception::io_write_error(format!("{err:?}")))?;
+                    .map_err(|err| Exception::io_write_error(format!("{err}")))?;
                 Ok(())
             })
         })
@@ -782,7 +782,7 @@ mod __impl {
                 concrete
                     .stream_position()
                     .await
-                    .map_err(|err| Exception::io_error(format!("{err:?}")))
+                    .map_err(|err| Exception::io_error(format!("{err}")))
             })
         })
     }
@@ -798,7 +798,7 @@ mod __impl {
                 let _ = concrete
                     .seek(SeekFrom::Start(pos))
                     .await
-                    .map_err(|err| Exception::io_error(format!("{err:?}")))?;
+                    .map_err(|err| Exception::io_error(format!("{err}")))?;
                 Ok(())
             })
         })
@@ -3055,7 +3055,7 @@ fn map_io_error_to_condition(filename: &str, err: std::io::Error) -> Exception {
             Exception::from((Assertion::new(), IoFileProtectionError::new(filename)))
         }
         // TODO: All the rest
-        _ => Exception::io_error(format!("{err:?}")),
+        _ => Exception::io_error(format!("{err}")),
     }
 }
 
@@ -4370,7 +4370,7 @@ pub fn file_exists_pred(filename: &Value) -> Result<Vec<Value>, Exception> {
     let path = Path::new(&filename);
 
     let exists =
-        maybe_await!(try_exists(path)).map_err(|err| Exception::io_error(format!("{err:?}")))?;
+        maybe_await!(try_exists(path)).map_err(|err| Exception::io_error(format!("{err}")))?;
 
     Ok(vec![Value::from(exists)])
 }

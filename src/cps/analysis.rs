@@ -21,22 +21,25 @@ use super::*;
 
 impl Cps {
     #[stacksafe::stacksafe]
-    pub(super) fn free_variables(&self) -> HashSet<Local> {
+    pub(super) fn free_variables(
+        &self,
+        cache: &mut HashMap<Local, HashSet<Local>>,
+    ) -> HashSet<Local> {
         match self {
             Cps::PrimOp(PrimOp::AllocCell, _, bind, cexpr) => {
-                let mut free = cexpr.free_variables();
+                let mut free = cexpr.free_variables(cache);
                 free.remove(bind);
                 free
             }
             Cps::PrimOp(_, args, bind, cexpr) => {
-                let mut free = cexpr.free_variables();
+                let mut free = cexpr.free_variables(cache);
                 free.remove(bind);
                 free.union(&values_to_locals(args)).copied().collect()
             }
             Cps::If(cond, success, failure) => {
                 let mut free: HashSet<_> = success
-                    .free_variables()
-                    .union(&failure.free_variables())
+                    .free_variables(cache)
+                    .union(&failure.free_variables(cache))
                     .copied()
                     .collect();
                 free.extend(cond.to_local());
@@ -54,14 +57,19 @@ impl Cps {
                 cexp,
                 ..
             } => {
-                let mut free_body = body.free_variables();
-                for arg in args.iter() {
-                    free_body.remove(arg);
+                if !cache.contains_key(val) {
+                    let mut free_body = body.free_variables(cache);
+                    for arg in args.iter() {
+                        free_body.remove(arg);
+                    }
+                    let mut free_variables: HashSet<_> = free_body
+                        .union(&cexp.free_variables(cache))
+                        .copied()
+                        .collect();
+                    free_variables.remove(val);
+                    cache.insert(*val, free_variables);
                 }
-                let mut free_variables: HashSet<_> =
-                    free_body.union(&cexp.free_variables()).copied().collect();
-                free_variables.remove(val);
-                free_variables
+                cache.get(val).unwrap().clone()
             }
             Cps::Halt(val) => val.to_local().into_iter().collect(),
         }
@@ -72,12 +80,15 @@ impl Cps {
         uses_cache: &mut HashMap<Local, HashMap<Local, usize>>,
     ) -> HashMap<Local, usize> {
         match self {
-            Cps::PrimOp(_, args, _, cexpr) => {
-                // TODO: Cache prim op uses too
-                merge_uses(values_to_uses(args), cexpr.uses(uses_cache))
+            Cps::PrimOp(_, args, val, cexpr) => {
+                if !uses_cache.contains_key(val) {
+                    let uses = merge_uses(values_to_uses(args), cexpr.uses(uses_cache));
+                    uses_cache.insert(*val, uses);
+                }
+                uses_cache.get(val).unwrap().clone()
             }
             Cps::If(cond, success, failure) => {
-                let uses = merge_uses(success.uses(uses_cache).clone(), failure.uses(uses_cache));
+                let uses = merge_uses(success.uses(uses_cache), failure.uses(uses_cache));
                 add_value_use(uses, cond)
             }
             Cps::App(op, vals) => {
@@ -88,16 +99,16 @@ impl Cps {
                 body, val, cexp, ..
             } => {
                 if !uses_cache.contains_key(val) {
-                    let uses = merge_uses(body.uses(uses_cache).clone(), cexp.uses(uses_cache));
+                    let uses = merge_uses(body.uses(uses_cache), cexp.uses(uses_cache));
                     uses_cache.insert(*val, uses);
                 }
                 uses_cache.get(val).unwrap().clone()
             }
-            Cps::Halt(value) => add_value_use(HashMap::new(), value),
+            Cps::Halt(value) => add_value_use(HashMap::default(), value),
         }
     }
 
-    /// I literally always forget about a function, but if you're creating a
+    /// I literally always forget about this function, but if you're creating a
     /// PrimOp that performs an allocation, you _must_ increase the max drops
     /// here!
     pub(super) fn max_drops(&self) -> usize {
@@ -151,7 +162,7 @@ impl Cps {
                 .union(&cexp.mutable_vars())
                 .copied()
                 .collect(),
-            _ => HashSet::new(),
+            _ => HashSet::default(),
         }
     }
 
@@ -165,7 +176,7 @@ impl Cps {
             Cps::PrimOp(_, _, _, cexp) => cexp.cells(),
             Cps::If(_, succ, fail) => succ.cells().union(&fail.cells()).copied().collect(),
             Cps::Lambda { body, cexp, .. } => body.cells().union(&cexp.cells()).copied().collect(),
-            _ => HashSet::new(),
+            _ => HashSet::default(),
         }
     }
 }
@@ -175,7 +186,7 @@ fn values_to_locals(vals: &[Value]) -> HashSet<Local> {
 }
 
 fn values_to_uses(vals: &[Value]) -> HashMap<Local, usize> {
-    let mut uses = HashMap::new();
+    let mut uses = HashMap::default();
     for local in vals.iter().flat_map(|val| val.to_local()) {
         *uses.entry(local).or_default() += 1;
     }

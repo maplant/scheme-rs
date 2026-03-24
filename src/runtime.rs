@@ -5,7 +5,7 @@
 //! with the JIT compiled [`Procedures`](Procedure).
 
 use crate::{
-    ast::DefinitionBody,
+    ast::{DefinitionBody, Primitive},
     cps::{Compile, Cps, codegen::RuntimeFunctionsBuilder},
     env::{Environment, Global, TopLevelEnvironment},
     exceptions::{Exception, raise},
@@ -47,7 +47,7 @@ use std::{
 /// Runtime is automatically reference counted, so if you have all of the
 /// procedures you need you can drop it without any issue.
 ///
-/// # Safety:
+/// # Safety
 ///
 /// The runtime contains the only live references to the Cranelift Context and
 /// therefore modules and allocated functions in the form a Sender of
@@ -104,6 +104,22 @@ impl Runtime {
         };
 
         form.add_scope(progm.scope());
+
+        // Check if the first form is an import
+        let add_rnrs_import = if let Some(first_form) = form.car()
+            && let Some(Syntax::Identifier { ident, .. }) = first_form.car()
+            && let Some(binding) = ident.resolve()
+        {
+            env.lookup_primitive(binding) != Some(Primitive::Import)
+        } else {
+            true
+        };
+
+        // If the first form is not an import, import (rnrs)
+        if add_rnrs_import {
+            maybe_await!(env.import("(library (rnrs))".parse()?))?;
+        }
+
         let body = maybe_await!(DefinitionBody::parse_lib_body(self, &form, &env))?;
         let compiled = body.compile_top_level();
         let closure = maybe_await!(self.compile_expr(compiled));
@@ -591,7 +607,7 @@ unsafe extern "C" fn make_user(
 #[runtime_fn]
 unsafe extern "C" fn error_unbound_variable(symbol: u32) -> *const () {
     let sym = Symbol(symbol);
-    let condition = Exception::error(format!("{sym} is unbound"));
+    let condition = Exception::error(format!("undefined variable {sym}"));
     Value::into_raw(Value::from(condition))
 }
 

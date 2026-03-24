@@ -59,7 +59,7 @@
 //!   value to a `Gc<T>` where `T: SchemeCompatible`, returning `None` on
 //!   failure.
 //!
-//! ## Scheme types:
+//! ## Scheme types
 //!
 //! Scheme values can inhabit at most one of any of the following types:
 //! - **Undefined**: Variables with this value throw an error upon being read.

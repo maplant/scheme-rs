@@ -3,7 +3,7 @@ scheme-rs is an implementation of the
 language](https://en.wikipedia.org/wiki/Scheme_(programming_language)) that is
 designed to embedded within sync and async Rust.
 
-# Feature flags:
+# Feature flags
 - `async`: Enables support for async functions. Requires the `tokio` feature
   flag.
 - `tokio`: Enables support for the [tokio](https://tokio.rs/) async
