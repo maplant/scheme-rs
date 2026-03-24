@@ -34,14 +34,19 @@ importantly have fun!
 Installs a _prompt_ with the given _tag_ and _handler_ and invokes _thunk_. 
 `tag` must be a Symbol. 
 
+`handler` must take at least one argument, which is the delimited continuation
+of the thunk at the time of calling `abort-to-prompt`. The rest of the arguments
+are the values passed to `abort-to-prompt`. 
+
 ## `abort-to-prompt` _procedure_
 
 ``` scheme
-(abort-to-prompt tag)
+(abort-to-prompt tag . values)
 ```
 
 Calls the handler of the prompt installed with `tag` with the current 
-continuation such that the current continuation does not extend past the prompt.
+continuation such that the current continuation does not extend past the prompt
+and `values`.
 
 ## Examples
 

@@ -1462,12 +1462,12 @@ pub fn call_with_prompt(
     ))
 }
 
-#[cps_bridge(def = "abort-to-prompt tag", lib = "(prompts)")]
+#[cps_bridge(def = "abort-to-prompt tag . values", lib = "(prompts)")]
 pub fn abort_to_prompt(
     runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
-    _rest_args: &[Value],
+    rest_args: &[Value],
     dyn_state: &mut DynamicState,
     k: Value,
 ) -> Result<Application, Exception> {
@@ -1477,6 +1477,7 @@ pub fn abort_to_prompt(
         runtime.clone(),
         vec![
             k,
+            Value::from(rest_args.to_vec()),
             tag.clone(),
             Value::from(Record::from_rust_type(dyn_state.clone())),
         ],
@@ -1497,10 +1498,12 @@ unsafe extern "C" fn unwind_to_prompt(
     unsafe {
         // env[0] is continuation
         let k = env.as_ref().unwrap().clone();
-        // env[1] is the prompt tag
-        let tag: Symbol = env.add(1).as_ref().unwrap().clone().try_into().unwrap();
-        // env[2] is the saved dyn stack
-        let saved_dyn_state = env.add(2).as_ref().unwrap().clone();
+        // env[1] is the arguments passed to abort-to-prompt:
+        let args = env.add(1).as_ref().unwrap().clone();
+        // env[2] is the prompt tag
+        let tag: Symbol = env.add(2).as_ref().unwrap().clone().try_into().unwrap();
+        // env[3] is the saved dyn stack
+        let saved_dyn_state = env.add(3).as_ref().unwrap().clone();
 
         let dyn_state = dyn_state.as_mut().unwrap_unchecked();
 
@@ -1530,23 +1533,21 @@ unsafe extern "C" fn unwind_to_prompt(
                         let k_proc: Procedure = k.clone().try_into().unwrap();
                         k_proc.get_formals()
                     };
-                    Application::new(
-                        handler,
+                    // Construct the arguments
+                    let mut handler_args = vec![Value::from(Procedure::new(
+                        Runtime::from_raw_inc_rc(runtime),
                         vec![
-                            Value::from(Procedure::new(
-                                Runtime::from_raw_inc_rc(runtime),
-                                vec![
-                                    k,
-                                    Value::from(barrier_id),
-                                    Value::from(Record::from_rust_type(prompt_delimited_dyn_state)),
-                                ],
-                                FuncPtr::Bridge(delimited_continuation),
-                                req_args,
-                                var,
-                            )),
-                            Value::from(handler_k),
+                            k,
+                            Value::from(barrier_id),
+                            Value::from(Record::from_rust_type(prompt_delimited_dyn_state)),
                         ],
-                    )
+                        FuncPtr::Bridge(delimited_continuation),
+                        req_args,
+                        var,
+                    ))];
+                    handler_args.extend(args.cast_to_scheme_type::<Vector>().unwrap().iter());
+                    handler_args.push(Value::from(handler_k));
+                    Application::new(handler, handler_args)
                 }
                 Some(DynStackElem::Winder(winder)) => {
                     // If this is a winder, we should call the out winder while unwinding
@@ -1554,7 +1555,7 @@ unsafe extern "C" fn unwind_to_prompt(
                         winder.out_thunk,
                         vec![Value::from(dyn_state.new_k(
                             Runtime::from_raw_inc_rc(runtime),
-                            vec![k, Value::from(tag), saved_dyn_state],
+                            vec![k, args, Value::from(tag), saved_dyn_state],
                             unwind_to_prompt,
                             0,
                             false,
