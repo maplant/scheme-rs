@@ -56,11 +56,13 @@ pub(crate) struct RuntimeFunctions {
     read_cell: FuncId,
     store: FuncId,
     error_unbound_variable: FuncId,
+    dropv: FuncId,
+    raise_rt: FuncId,
+
+    // Syntax primops:
     matches: FuncId,
     expand_template: FuncId,
     error_no_patterns_match: FuncId,
-    dropv: FuncId,
-    raise_rt: FuncId,
 
     // List primops:
     cons: FuncId,

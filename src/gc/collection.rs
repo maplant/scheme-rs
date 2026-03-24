@@ -376,7 +376,7 @@ pub fn init_gc() {
 
 fn collect_garbage_sync() {
     let mut heap = HEAP.lock();
-    let target_epoch = heap.epoch + 2;
+    let target_epoch = heap.epoch + 1;
     heap.force_collection = true;
     COLLECTION_START_SIGNAL.notify_one();
     COLLECTION_DONE_SIGNAL.wait_while(&mut heap, |heap| heap.epoch < target_epoch);
@@ -800,6 +800,8 @@ mod test {
 
     #[test]
     fn cycles() {
+        init_gc();
+
         #[derive(Default, Trace)]
         struct Cyclic {
             next: Option<Gc<RwLock<Cyclic>>>,
@@ -825,6 +827,7 @@ mod test {
         drop(b);
         drop(c);
 
+        collect_garbage_sync();
         collect_garbage_sync();
         collect_garbage_sync();
 
