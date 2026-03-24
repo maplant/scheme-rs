@@ -13,7 +13,7 @@ use crate::{
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::cps_bridge,
     runtime::Runtime,
-    syntax::Syntax,
+    syntax::{Span, Syntax},
     value::Value,
 };
 
@@ -31,7 +31,7 @@ pub fn eval(
         unreachable!()
     };
     let env = environment.try_to_rust_type::<Environment>()?;
-    let expr = Syntax::datum_to_syntax(&env.get_scope_set(), expression.clone());
+    let expr = Syntax::datum_to_syntax(&env.get_scope_set(), expression.clone(), &Span::default());
     let ctxt = ParseContext::new(runtime, false);
     let expr = maybe_await!(Expression::parse(&ctxt, expr, &env))?;
     let compiled = expr.compile_top_level();
@@ -59,7 +59,7 @@ pub fn environment(
         .iter()
         .cloned()
         .map(|spec| {
-            let syntax = Syntax::datum_to_syntax(&BTreeSet::default(), spec);
+            let syntax = Syntax::datum_to_syntax(&BTreeSet::default(), spec, &Span::default());
             ImportSet::parse(discard_for(&syntax))
         })
         .collect::<Result<Vec<_>, _>>()?;
