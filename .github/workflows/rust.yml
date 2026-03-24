@@ -13,7 +13,6 @@ jobs:
   build:
   
     runs-on: ubuntu-latest
-    
     steps:
     - uses: actions/checkout@v3
     - uses: dtolnay/rust-toolchain@stable
@@ -27,5 +26,6 @@ jobs:
       run: cargo clippy --all-targets -- -Dclippy::all -D warnings
     - name: Test
       run: cargo test
+      timeout-minutes: 2
     - name: Bench
       run: cargo bench
