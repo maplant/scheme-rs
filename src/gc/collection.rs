@@ -379,7 +379,7 @@ fn collect_garbage_sync() {
     let target_epoch = heap.epoch + 2;
     heap.force_collection = true;
     COLLECTION_START_SIGNAL.notify_one();
-    COLLECTION_DONE_SIGNAL.wait_while(&mut heap, |heap| heap.epoch < target_epoch);
+    COLLECTION_DONE_SIGNAL.wait_while(&mut heap, |heap| dbg!(heap.epoch < target_epoch));
 }
 
 /// Force a garbage collection pause.
@@ -446,7 +446,9 @@ impl Collector {
     }
 
     fn epoch(&mut self) {
+        println!("Awaiting epoch");
         self.await_epoch();
+        println!("Starting epoch");
 
         self.next = self.head;
 
@@ -507,6 +509,7 @@ impl Collector {
 
         heap.epoch += 1;
         COLLECTION_DONE_SIGNAL.notify_all();
+        println!("finishing");
     }
 
     unsafe fn decrement(&mut self, s: OpaqueGcPtr) {
@@ -830,7 +833,7 @@ mod test {
         println!("First collection");
         assert!(!COLLECTOR_TASK.get().unwrap().is_finished());
         collect_garbage_sync();
-        println!("Second collectin");
+        println!("Second collection");
         assert!(!COLLECTOR_TASK.get().unwrap().is_finished());
         collect_garbage_sync();
 
