@@ -800,6 +800,8 @@ mod test {
 
     #[test]
     fn cycles() {
+        init_gc();
+
         #[derive(Default, Trace)]
         struct Cyclic {
             next: Option<Gc<RwLock<Cyclic>>>,
@@ -825,7 +827,9 @@ mod test {
         drop(b);
         drop(c);
 
+        assert!(!COLLECTOR_TASK.get().unwrap().is_finished());
         collect_garbage_sync();
+        assert!(!COLLECTOR_TASK.get().unwrap().is_finished());
         collect_garbage_sync();
 
         assert_eq!(Arc::strong_count(&out_ptr), 1);
