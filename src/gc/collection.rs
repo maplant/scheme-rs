@@ -827,8 +827,10 @@ mod test {
         drop(b);
         drop(c);
 
+        println!("First collection");
         assert!(!COLLECTOR_TASK.get().unwrap().is_finished());
         collect_garbage_sync();
+        println!("Second collectin");
         assert!(!COLLECTOR_TASK.get().unwrap().is_finished());
         collect_garbage_sync();
 
