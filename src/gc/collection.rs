@@ -829,6 +829,7 @@ mod test {
 
         collect_garbage_sync();
         collect_garbage_sync();
+        collect_garbage_sync();
 
         assert_eq!(Arc::strong_count(&out_ptr), 1);
     }
