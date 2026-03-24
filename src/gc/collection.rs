@@ -379,7 +379,9 @@ fn collect_garbage_sync() {
     let target_epoch = heap.epoch + 1;
     heap.force_collection = true;
     COLLECTION_START_SIGNAL.notify_one();
-    COLLECTION_DONE_SIGNAL.wait_while(&mut heap, |heap| dbg!(dbg!(heap.epoch) < dbg!(target_epoch)));
+    COLLECTION_DONE_SIGNAL.wait_while(&mut heap, |heap| {
+        dbg!(dbg!(heap.epoch) < dbg!(target_epoch))
+    });
 }
 
 /// Force a garbage collection pause.
