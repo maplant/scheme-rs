@@ -1422,7 +1422,6 @@ impl Quote {
 
 #[derive(Debug, Clone, Trace)]
 pub struct SyntaxQuote {
-    pub span: Span,
     pub template: Template,
     pub expansions: HashMap<Binding, Local>,
 }
@@ -1435,7 +1434,6 @@ impl SyntaxQuote {
                 let mut expansions = HashMap::default();
                 let template = Template::compile(expr, env, &mut expansions)?;
                 Ok(SyntaxQuote {
-                    span: form.span().clone(),
                     template,
                     expansions,
                 })

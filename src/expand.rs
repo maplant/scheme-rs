@@ -568,10 +568,10 @@ impl Template {
             .collect()
     }
 
-    fn expand(&self, binds: &Binds<'_>, curr_span: &Span) -> Option<Value> {
+    fn expand(&self, binds: &Binds<'_>) -> Option<Value> {
         match self {
-            Self::List(list) => expand_list(list, binds, curr_span),
-            Self::Vector(vec) => expand_vec(vec, binds, curr_span),
+            Self::List(list) => expand_list(list, binds),
+            Self::Vector(vec) => expand_vec(vec, binds),
             Self::Variable(binding) => Some(Syntax::unwrap(binds.get_bind(*binding)?)),
             Self::Ellipsis(_) => unreachable!(),
             Self::Wrapped(Syntax::Wrapped { value, .. }) if value.is_null() => Some(Value::null()),
@@ -579,27 +579,27 @@ impl Template {
         }
     }
 
-    fn expand_nested(&self, binds: &Binds<'_>, curr_span: &Span) -> Option<Vec<Value>> {
+    fn expand_nested(&self, binds: &Binds<'_>) -> Option<Vec<Value>> {
         let mut output = Vec::new();
         if let Template::Ellipsis(template) = self {
             for expansion in &binds.curr_expansion_level.expansions {
                 let new_level = binds.new_level(expansion);
-                let Some(result) = template.expand_nested(&new_level, curr_span) else {
+                let Some(result) = template.expand_nested(&new_level) else {
                     break;
                 };
                 output.extend(result);
             }
         } else {
-            output.push(self.expand(binds, curr_span)?);
+            output.push(self.expand(binds)?);
         }
         Some(output)
     }
 }
 
-fn expand_list(items: &[Template], binds: &Binds<'_>, curr_span: &Span) -> Option<Value> {
+fn expand_list(items: &[Template], binds: &Binds<'_>) -> Option<Value> {
     let mut expanded = Vec::new();
     for item in items {
-        expanded.extend(item.expand_nested(binds, curr_span)?);
+        expanded.extend(item.expand_nested(binds)?);
     }
     let Some(mut output) = expanded.pop() else {
         return Some(Value::null());
@@ -610,10 +610,10 @@ fn expand_list(items: &[Template], binds: &Binds<'_>, curr_span: &Span) -> Optio
     Some(output)
 }
 
-fn expand_vec(items: &[Template], binds: &Binds<'_>, curr_span: &Span) -> Option<Value> {
+fn expand_vec(items: &[Template], binds: &Binds<'_>) -> Option<Value> {
     let mut output = Vec::new();
     for item in items {
-        output.extend(item.expand_nested(binds, curr_span)?);
+        output.extend(item.expand_nested(binds)?);
     }
     Some(Value::from(output))
 }
@@ -750,15 +750,11 @@ impl SchemeCompatible for Template {
 
 #[runtime_fn]
 unsafe extern "C" fn expand_template(
-    span: *const (),
     template: *const (),
     expansion_combiner: *const (),
     expansions: *const *const (),
     num_expansions: u32,
 ) -> *const () {
-    let span = unsafe { Value::from_raw_inc_rc(span) };
-    let span = span.try_to_rust_type::<Span>().unwrap();
-
     let template = unsafe { Value::from_raw_inc_rc(template) };
     let template = template.try_to_rust_type::<Template>().unwrap();
 
@@ -779,7 +775,7 @@ unsafe extern "C" fn expand_template(
     let binds = Binds::new_top(&combined_expansions);
 
     // Expand the template:
-    let expanded = template.expand(&binds, span.as_ref()).unwrap();
+    let expanded = template.expand(&binds).unwrap();
 
     Value::into_raw(expanded)
 }

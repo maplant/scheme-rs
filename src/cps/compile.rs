@@ -728,7 +728,6 @@ impl Compile for SyntaxQuote {
         }
 
         let mut args = vec![
-            Value::from(RuntimeValue::from_rust_type(self.span.clone())),
             Value::from(RuntimeValue::from_rust_type(self.template.clone())),
             Value::from(RuntimeValue::from_rust_type(ExpansionCombiner { uses })),
         ];
