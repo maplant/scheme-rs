@@ -7,14 +7,14 @@ use rustyline::{
 };
 use scheme_rs::{
     env::TopLevelEnvironment,
-    exceptions::{Exception, Message, PrettyException, StackTrace, SyntaxViolation},
+    exceptions::{Assertion, Exception, Message, PrettyException, StackTrace, SyntaxViolation},
     gc::Gc,
     ports::{BufferMode, Port, Prompt, Transcoder},
     runtime::Runtime,
     syntax::{Span, Syntax},
-    value::Value,
 };
 use scheme_rs_macros::{maybe_async, maybe_await};
+use std::io::Write;
 use std::{fs, process};
 use std::{io, path::Path};
 
@@ -133,9 +133,26 @@ fn main() {
     };
 }
 
-fn print_exception(exception: Exception) -> io::Result<()> {
-    use std::io::Write;
+fn pretty_print_exception<W: std::io::Write>(
+    w: &mut W,
+    file_name: &str,
+    pe: &impl PrettyException<W>,
+) -> io::Result<()> {
+    // only doing this once would be a bit better for perf, but this is the "err" path either way.
+    let contents = fs::read_to_string(&file_name).unwrap_or_default();
+    let lines: Vec<&str> = contents.lines().collect();
+    writeln!(w)?;
+    // this is a fallback for having no lines available, for instance in the context of the
+    // repl
+    if lines.is_empty() {
+        pe.pretty_print_no_lines(w)?;
+    } else {
+        pe.pretty_print(w, &lines)?;
+    }
+    Ok(())
+}
 
+fn print_exception(exception: Exception) -> io::Result<()> {
     let stdout = io::stdout();
     let mut w = stdout.lock();
 
@@ -152,29 +169,18 @@ fn print_exception(exception: Exception) -> io::Result<()> {
         if let Some(message) = condition.cast_to_rust_type::<Message>() {
             writeln!(w, " - Message: {}", message.message)?;
         } else if let Some(syntax) = condition.cast_to_rust_type::<SyntaxViolation>() {
-            let file_name = syntax.file_name();
-            let contents = fs::read_to_string(&file_name).unwrap_or_default();
-            let lines: Vec<&str> = contents.lines().collect();
-            writeln!(w)?;
-            // this is a fallback for having no lines available, for instance in the context of the
-            // repl
-            if lines.is_empty() {
-                syntax.pretty_print_no_lines(&mut w)?;
-            } else {
-                syntax.pretty_print(&mut w, &lines)?;
-            }
+            pretty_print_exception(&mut w, &syntax.file_name(), syntax.as_ref())?;
         } else if let Some(trace) = condition.cast_to_rust_type::<StackTrace>() {
             let first = trace.trace.first().unwrap();
             let syntax = first.cast_to_scheme_type::<Gc<Syntax>>().unwrap();
-            let file_name = syntax.span().file.clone();
-            let contents = fs::read_to_string(file_name.as_ref()).unwrap_or_default();
-            let lines: Vec<&str> = contents.lines().collect();
-            writeln!(w)?;
-            if lines.is_empty() {
-                trace.pretty_print_no_lines(&mut w)?;
-            } else {
-                trace.pretty_print(&mut w, &lines)?;
-            }
+            pretty_print_exception(
+                &mut w,
+                // BUG: this is empty?
+                syntax.span().file.as_str(),
+                trace.as_ref(),
+            )?;
+        } else if condition.cast_to_rust_type::<Assertion>().is_some() {
+            writeln!(w, " - Assertion failed")?;
         } else {
             writeln!(w, " - Condition: {condition:?}")?;
         }
