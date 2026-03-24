@@ -25,7 +25,7 @@ jobs:
     - name: Clippy
       run: cargo clippy --all-targets -- -Dclippy::all -D warnings
     - name: Test
-      run: cargo test -- --nocapture
+      run: cargo test
       timeout-minutes: 2
     - name: Bench
       run: cargo bench
