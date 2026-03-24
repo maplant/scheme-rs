@@ -338,8 +338,12 @@ pub trait PrettyException<W>
 where
     W: std::io::Write,
 {
-    fn pretty_print<S: std::fmt::Display>(&self, w: &mut W, lines: &[S]) -> io::Result<()>;
-    fn pretty_print_no_lines(&self, w: &mut W) -> io::Result<()>;
+    fn pretty_print<S: std::fmt::Display>(
+        &self,
+        w: &mut W,
+        filename: &str,
+        lines: &[S],
+    ) -> io::Result<()>;
 }
 
 fn print_lines_with_offense_from_span<W, S>(w: &mut W, span: &Span, lines: &[S]) -> io::Result<()>
@@ -348,7 +352,6 @@ where
     S: std::fmt::Display,
 {
     writeln!(w, "--> {}:{}:{}:", span.file, span.line, span.column)?;
-
     let start = span.line.saturating_sub(2);
     let end = (span.line + 3).min(lines.len() as u32);
 
@@ -492,22 +495,32 @@ impl<W> PrettyException<W> for StackTrace
 where
     W: std::io::Write,
 {
-    fn pretty_print<S: std::fmt::Display>(&self, w: &mut W, lines: &[S]) -> io::Result<()> {
-        self.pretty_print_no_lines(w)?;
+    fn pretty_print<S: std::fmt::Display>(
+        &self,
+        w: &mut W,
+        filename: &str,
+        lines: &[S],
+    ) -> io::Result<()> {
         let first = self.trace.first().unwrap();
         let syntax = first.cast_to_scheme_type::<Gc<Syntax>>().unwrap();
-        let span = syntax.span();
-        print_lines_with_offense_from_span(w, &span, lines)?;
-        Ok(())
-    }
+        let mut span = syntax.span().clone();
+        span.file = Arc::new(
+            if filename.is_empty() {
+                "repl"
+            } else {
+                filename
+            }
+            .to_string(),
+        );
 
-    fn pretty_print_no_lines(&self, w: &mut W) -> io::Result<()> {
         for (i, trace) in self.trace.iter().enumerate() {
             let syntax = trace.cast_to_scheme_type::<Gc<Syntax>>().unwrap();
             let span = syntax.span();
             let func_name = syntax.as_ident().unwrap().symbol();
             writeln!(w, "{:>6}: {func_name}:{span}", i + 1)?;
         }
+
+        print_lines_with_offense_from_span(w, &span, lines)?;
         Ok(())
     }
 }
@@ -740,7 +753,12 @@ where
 {
     /// pretty print a SyntaxViolation, heavily inspired by
     /// [T8Err::render](https://github.com/xnacly/tango8/blob/master/shared/src/err.rs#L11)
-    fn pretty_print<S: std::fmt::Display>(&self, w: &mut W, lines: &[S]) -> io::Result<()> {
+    fn pretty_print<S: std::fmt::Display>(
+        &self,
+        w: &mut W,
+        filename: &str,
+        lines: &[S],
+    ) -> io::Result<()> {
         // This is set if the syntax violation is a call to an undefined function, but since the
         // message itself is not part of this pretty printing, but rather its own condition, we
         // cant do anything with it.
@@ -753,25 +771,16 @@ where
         let UnpackedValue::Syntax(gc_inner) = unpacked_value_ref.as_ref() else {
             unreachable!();
         };
-        let span = gc_inner.span();
+        let mut span = gc_inner.span().clone();
+        span.file = Arc::new(
+            if filename.is_empty() {
+                "repl"
+            } else {
+                filename
+            }
+            .to_string(),
+        );
         print_lines_with_offense_from_span(w, &span, lines)
-    }
-
-    /// The repl doesnt allow us to capture all input lines via the fs, so we need a fallback for
-    /// only printing the offending line, we have access to via gc_inner
-    fn pretty_print_no_lines(&self, w: &mut W) -> io::Result<()>
-    where
-        W: std::io::Write,
-    {
-        let unpacked_value_ref = self.form.unpacked_ref();
-        let UnpackedValue::Syntax(gc_inner) = unpacked_value_ref.as_ref() else {
-            unreachable!();
-        };
-        let span = gc_inner.span();
-        writeln!(w, "--> {}:{}:{}:", span.file, span.line, span.column)?;
-        writeln!(w, "{:03} | {:?}", span.line, gc_inner)?;
-        writeln!(w, "    | {}~ here", " ".repeat(span.column))?;
-        Ok(())
     }
 }
 

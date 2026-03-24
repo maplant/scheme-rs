@@ -135,21 +135,14 @@ fn main() {
 
 fn pretty_print_exception<W: std::io::Write>(
     w: &mut W,
-    file_name: &str,
+    filename: &str,
     pe: &impl PrettyException<W>,
 ) -> io::Result<()> {
     // only doing this once would be a bit better for perf, but this is the "err" path either way.
-    let contents = fs::read_to_string(&file_name).unwrap_or_default();
+    let contents = fs::read_to_string(&filename).unwrap_or_default();
     let lines: Vec<&str> = contents.lines().collect();
     writeln!(w)?;
-    // this is a fallback for having no lines available, for instance in the context of the
-    // repl
-    if lines.is_empty() {
-        pe.pretty_print_no_lines(w)?;
-    } else {
-        pe.pretty_print(w, &lines)?;
-    }
-    Ok(())
+    pe.pretty_print(w, filename, &lines)
 }
 
 fn print_exception(exception: Exception) -> io::Result<()> {
