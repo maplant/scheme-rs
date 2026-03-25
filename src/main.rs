@@ -139,7 +139,7 @@ fn pretty_print_exception<W: std::io::Write>(
     pe: &impl PrettyException<W>,
 ) -> io::Result<()> {
     // only doing this once would be a bit better for perf, but this is the "err" path either way.
-    let contents = fs::read_to_string(&filename).unwrap_or_default();
+    let contents = fs::read_to_string(filename).unwrap_or_default();
     let lines: Vec<&str> = contents.lines().collect();
     writeln!(w)?;
     pe.pretty_print(w, filename, &lines)
