@@ -55,8 +55,16 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     let wrapper_name = impl_name.to_string();
     let wrapper_name = Ident::new(&wrapper_name, Span::call_site());
 
-    let (rest_args, is_variadic) = if let Some(last_arg) = bridge.sig.inputs.last()
-        && is_slice(&last_arg)
+    // If the first parameter is dyn_state we can leave it off the Scheme parameter list
+    let has_dyn_state = bridge.sig.inputs.first().map(is_dyn_state).unwrap_or(false);
+    let scheme_inputs: Vec<_> = if has_dyn_state {
+        bridge.sig.inputs.iter().skip(1).collect()
+    } else {
+        bridge.sig.inputs.iter().collect()
+    };
+
+    let (rest_args, is_variadic) = if let Some(last_arg) = scheme_inputs.last()
+        && is_slice(last_arg)
     {
         (quote!(rest_args), true)
     } else {
@@ -64,14 +72,12 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     let num_args = if is_variadic {
-        bridge.sig.inputs.len().saturating_sub(1)
+        scheme_inputs.len().saturating_sub(1)
     } else {
-        bridge.sig.inputs.len()
+        scheme_inputs.len()
     };
 
-    let arg_names: Vec<_> = bridge
-        .sig
-        .inputs
+    let arg_names: Vec<_> = scheme_inputs
         .iter()
         .enumerate()
         .map(|(i, arg)| {
@@ -85,6 +91,12 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         .collect();
 
     let arg_indices: Vec<_> = (0..num_args).collect();
+
+    let dyn_state_arg = if has_dyn_state {
+        quote!(dyn_state,)
+    } else {
+        quote!()
+    };
 
     let visibility = bridge.vis.clone();
 
@@ -103,6 +115,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 Box::pin(
                     async move {
                         let result = #impl_name(
+                            #dyn_state_arg
                             #(
                                 match (&args[#arg_indices]).try_into() {
                                     Ok(ok) => ok,
@@ -163,6 +176,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 #bridge
 
                 let result = #impl_name(
+                    #dyn_state_arg
                     #(
                         match (&args[#arg_indices]).try_into() {
                             Ok(ok) => ok,
@@ -429,6 +443,17 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
 
 fn is_slice(arg: &FnArg) -> bool {
     matches!(arg, FnArg::Typed(PatType { ty, ..}) if matches!(ty.as_ref(), Type::Reference(TypeReference { elem, .. }) if matches!(elem.as_ref(), Type::Slice(_))))
+}
+
+fn is_dyn_state(arg: &FnArg) -> bool {
+    if let FnArg::Typed(PatType { ty, .. }) = arg {
+        if let Type::Reference(TypeReference { mutability: Some(_), elem, .. }) = ty.as_ref() {
+            if let Type::Path(TypePath { path, .. }) = elem.as_ref() {
+                return path.segments.last().map(|s| s.ident == "DynamicState").unwrap_or(false);
+            }
+        }
+    }
+    false
 }
 
 /// Derive the `Trace` trait for a type.
