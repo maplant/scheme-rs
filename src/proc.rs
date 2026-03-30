@@ -108,6 +108,7 @@ use crate::{
 use parking_lot::RwLock;
 use scheme_rs_macros::{cps_bridge, maybe_async, maybe_await};
 use std::{
+    any::Any,
     collections::HashMap,
     fmt,
     sync::{
@@ -571,6 +572,22 @@ impl Procedure {
         maybe_await!(Application::new(self.clone(), args).eval(&mut DynamicState::default()))
     }
 
+    /// Like [`call`], but with a user context that will be available to all
+    /// bridge functions via [`DynamicState::user_ctx`] throughout the call chain,
+    /// including across reentrant Rust-Scheme-Rust boundaries.
+    #[maybe_async]
+    pub fn call_with_ctx(
+        &self,
+        args: &[Value],
+        ctx: Arc<dyn Any + Send + Sync>,
+    ) -> Result<Vec<Value>, Exception> {
+        let mut args = args.to_vec();
+        args.push(halt_continuation(self.get_runtime()));
+        let mut dyn_state = DynamicState::default();
+        dyn_state.set_user_ctx(ctx);
+        maybe_await!(Application::new(self.clone(), args).eval(&mut dyn_state))
+    }
+
     #[cfg(feature = "async")]
     pub fn call_sync(&self, args: &[Value]) -> Result<Vec<Value>, Exception> {
         let mut args = args.to_vec();
@@ -578,6 +595,19 @@ impl Procedure {
         args.push(halt_continuation(self.get_runtime()));
 
         Application::new(self.clone(), args).eval_sync(&mut DynamicState::default())
+    }
+
+    #[cfg(feature = "async")]
+    pub fn call_sync_with_ctx(
+        &self,
+        args: &[Value],
+        ctx: Arc<dyn Any + Send + Sync>,
+    ) -> Result<Vec<Value>, Exception> {
+        let mut args = args.to_vec();
+        args.push(halt_continuation(self.get_runtime()));
+        let mut dyn_state = DynamicState::default();
+        dyn_state.set_user_ctx(ctx);
+        Application::new(self.clone(), args).eval_sync(&mut dyn_state)
     }
 }
 
@@ -754,10 +784,21 @@ pub fn apply(
 
 /// The dynamic state of the running program, including winders, exception
 /// handlers, and continuation marks.
-#[derive(Clone, Debug, Trace)]
+#[derive(Clone, Trace)]
 pub struct DynamicState {
     dyn_stack: Vec<DynStackElem>,
     cont_marks: Vec<HashMap<Symbol, Value>>,
+    user_ctx: Option<Arc<dyn Any + Send + Sync>>,
+}
+
+impl fmt::Debug for DynamicState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DynamicState")
+            .field("dyn_stack", &self.dyn_stack)
+            .field("cont_marks", &self.cont_marks)
+            .field("user_ctx", &self.user_ctx.as_ref().map(|_| ".."))
+            .finish()
+    }
 }
 
 impl DynamicState {
@@ -769,6 +810,7 @@ impl DynamicState {
             // the initial marks for them since there's no mechanism to allocate
             // for them when they're run.
             cont_marks: vec![HashMap::new()],
+            user_ctx: None,
         }
     }
 
@@ -891,6 +933,28 @@ impl DynamicState {
 
     pub(crate) fn dyn_stack_is_empty(&self) -> bool {
         self.dyn_stack.is_empty()
+    }
+
+    /// Get the user context, if set.
+    pub fn user_ctx(&self) -> Option<&Arc<dyn Any + Send + Sync>> {
+        self.user_ctx.as_ref()
+    }
+
+    /// Downcast the user context to a concrete type.
+    pub fn user_ctx_downcast<T: Send + Sync + 'static>(&self) -> Option<&T> {
+        self.user_ctx
+            .as_ref()
+            .and_then(|arc| arc.downcast_ref::<T>())
+    }
+
+    /// Set the user context.
+    pub fn set_user_ctx(&mut self, ctx: Arc<dyn Any + Send + Sync>) {
+        self.user_ctx = Some(ctx);
+    }
+
+    /// Clear the user context.
+    pub fn clear_user_ctx(&mut self) {
+        self.user_ctx = None;
     }
 }
 
@@ -1528,6 +1592,7 @@ unsafe extern "C" fn unwind_to_prompt(
                             [dyn_state.dyn_stack_len() + 1..]
                             .to_vec(),
                         cont_marks: saved_dyn_state.cont_marks.clone(),
+                        user_ctx: dyn_state.user_ctx.clone(),
                     };
                     let (req_args, var) = {
                         let k_proc: Procedure = k.clone().try_into().unwrap();
