@@ -58,13 +58,13 @@ use crate::{
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
-    syntax::{Identifier, Syntax, parse::ParseSyntaxError},
+    syntax::{Identifier, Span, Syntax, parse::ParseSyntaxError},
     value::{UnpackedValue, Value},
     vectors::Vector,
 };
 use parking_lot::RwLock;
 use scheme_rs_macros::runtime_fn;
-use std::{convert::Infallible, fmt, ops::Range, sync::Arc};
+use std::{convert::Infallible, fmt, io, ops::Range, sync::Arc};
 
 /// A macro for easily creating new condition types.
 pub use scheme_rs_macros::define_condition_type;
@@ -334,6 +334,39 @@ macro_rules! impl_into_condition_for {
     };
 }
 
+pub trait PrettyException<W>
+where
+    W: std::io::Write,
+{
+    fn pretty_print<S: std::fmt::Display>(
+        &self,
+        w: &mut W,
+        filename: &str,
+        lines: &[S],
+    ) -> io::Result<()>;
+}
+
+fn print_lines_with_offense_from_span<W, S>(w: &mut W, span: &Span, lines: &[S]) -> io::Result<()>
+where
+    W: std::io::Write,
+    S: std::fmt::Display,
+{
+    writeln!(w, "--> {}:{}:{}:", span.file, span.line, span.column)?;
+    let start = span.line.saturating_sub(2);
+    let end = (span.line + 3).min(lines.len() as u32);
+
+    for i in start..end {
+        //  <line num> | <line content>
+        //  +1, because 0 addressing
+        writeln!(w, "{:03} | {}", i + 1, lines[i as usize])?;
+        //  +1, because span.line is somehow not 0 addressed :O
+        if i + 1 == span.line {
+            writeln!(w, "    | {}~ here", " ".repeat(span.column))?; //  | <spacing until column>~
+        }
+    }
+    Ok(())
+}
+
 impl_into_condition_for!(std::num::TryFromIntError);
 
 #[derive(Copy, Clone, Default, Trace)]
@@ -457,6 +490,40 @@ define_condition_type!(
         Ok(())
     }
 );
+
+impl<W> PrettyException<W> for StackTrace
+where
+    W: std::io::Write,
+{
+    fn pretty_print<S: std::fmt::Display>(
+        &self,
+        w: &mut W,
+        filename: &str,
+        lines: &[S],
+    ) -> io::Result<()> {
+        let first = self.trace.first().unwrap();
+        let syntax = first.cast_to_scheme_type::<Gc<Syntax>>().unwrap();
+        let mut span = syntax.span().clone();
+        span.file = Arc::new(
+            if filename.is_empty() {
+                "repl"
+            } else {
+                filename
+            }
+            .to_string(),
+        );
+
+        for (i, trace) in self.trace.iter().enumerate() {
+            let syntax = trace.cast_to_scheme_type::<Gc<Syntax>>().unwrap();
+            let span = syntax.span();
+            let func_name = syntax.as_ident().unwrap().symbol();
+            writeln!(w, "{:>6}: {func_name}:{span}", i + 1)?;
+        }
+
+        print_lines_with_offense_from_span(w, &span, lines)?;
+        Ok(())
+    }
+}
 
 impl StackTrace {
     pub fn new(trace: Vec<Value>) -> Self {
@@ -678,10 +745,44 @@ define_condition_type!(
         let subform = if subform.is_true() { Some(subform) } else { None };
         Ok(SyntaxViolation { parent: Gc::new(Violation::new()), form, subform })
     },
-    debug: |this, f| {
-        write!(f, " form: {:?} subform: {:?}", this.form, this.subform)
-    }
 );
+
+impl<W> PrettyException<W> for SyntaxViolation
+where
+    W: std::io::Write,
+{
+    /// pretty print a SyntaxViolation, heavily inspired by
+    /// [T8Err::render](https://github.com/xnacly/tango8/blob/master/shared/src/err.rs#L11)
+    fn pretty_print<S: std::fmt::Display>(
+        &self,
+        w: &mut W,
+        filename: &str,
+        lines: &[S],
+    ) -> io::Result<()> {
+        // This is set if the syntax violation is a call to an undefined function, but since the
+        // message itself is not part of this pretty printing, but rather its own condition, we
+        // cant do anything with it.
+        //
+        // if let Some(sf) = &self.subform {
+        //     dbg!(sf);
+        // }
+
+        let unpacked_value_ref = self.form.unpacked_ref();
+        let UnpackedValue::Syntax(gc_inner) = unpacked_value_ref.as_ref() else {
+            unreachable!();
+        };
+        let mut span = gc_inner.span().clone();
+        span.file = Arc::new(
+            if filename.is_empty() {
+                "repl"
+            } else {
+                filename
+            }
+            .to_string(),
+        );
+        print_lines_with_offense_from_span(w, &span, lines)
+    }
+}
 
 impl SyntaxViolation {
     pub fn new(form: Syntax, subform: Option<Syntax>) -> Self {
@@ -690,6 +791,14 @@ impl SyntaxViolation {
             form: Value::from(form),
             subform: subform.map(Value::from),
         }
+    }
+
+    pub fn file_name(&self) -> String {
+        let unpacked_value_ref = self.form.unpacked_ref();
+        let UnpackedValue::Syntax(gc_inner) = unpacked_value_ref.as_ref() else {
+            unreachable!();
+        };
+        gc_inner.span().file.clone().to_string()
     }
 
     pub fn new_from_values(form: Value, subform: Option<Value>) -> Self {

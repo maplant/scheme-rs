@@ -40,6 +40,21 @@ impl Vector {
         }))
     }
 
+    pub fn get(&self, index: usize) -> Option<Value> {
+        let handle = self.0.vec.read();
+        handle.get(index).cloned()
+    }
+
+    pub fn first(&self) -> Option<Value> {
+        let handle = self.0.vec.read();
+        handle.first().cloned()
+    }
+
+    pub fn last(&self) -> Option<Value> {
+        let handle = self.0.vec.read();
+        handle.last().cloned()
+    }
+
     // TODO: Add more convenience functions here
 
     pub fn to_list(&self) -> Value {
