@@ -2548,7 +2548,7 @@ pub fn fixnum_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
 
 #[bridge(name = "fixnum-width", lib = "(rnrs arithmetic fixnums (6))")]
 pub fn fixnum_width() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(64)])
+    Ok(vec![Value::from(i64::BITS)])
 }
 
 #[bridge(name = "least-fixnum", lib = "(rnrs arithmetic fixnums (6))")]
@@ -2559,6 +2559,314 @@ pub fn least_fixnum() -> Result<Vec<Value>, Exception> {
 #[bridge(name = "greatest-fixnum", lib = "(rnrs arithmetic fixnums (6))")]
 pub fn greatest_fixnum() -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(i64::MAX)])
+}
+
+/// All arguments must be equal fixnums.
+#[bridge(name = "fx=?", lib = "(rnrs arithmetic fixnums (6))")]
+pub fn equal_fixnum(args: &[Value]) -> Result<Vec<Value>, Exception> {
+    if let Some((first, rest)) = args.split_first() {
+        let prev = Fixnum::try_from(first)?;
+
+        for next in rest {
+            let next = Fixnum::try_from(next)?;
+            if prev.0 != next.0 {
+                return Ok(vec![Value::from(false)]);
+            }
+        }
+    }
+
+    Ok(vec![Value::from(true)])
+}
+
+/// All arguments must be monotonically increasing fixnums.
+#[bridge(name = "fx>?", lib = "(rnrs arithmetic fixnums (6))")]
+pub fn greater_fixnum(args: &[Value]) -> Result<Vec<Value>, Exception> {
+    if let Some((first, rest)) = args.split_first() {
+        let mut prev = Fixnum::try_from(first)?;
+
+        for next in rest {
+            let next = Fixnum::try_from(next)?;
+            if prev.0 < next.0 {
+                return Ok(vec![Value::from(false)]);
+            }
+            prev = next;
+        }
+    }
+
+    Ok(vec![Value::from(true)])
+}
+
+/// All arguments must be monotonically decreasing fixnums.
+#[bridge(name = "fx<?", lib = "(rnrs arithmetic fixnums (6))")]
+pub fn lesser_fixnum(args: &[Value]) -> Result<Vec<Value>, Exception> {
+    if let Some((first, rest)) = args.split_first() {
+        let mut prev = Fixnum::try_from(first)?;
+
+        for next in rest {
+            let next = Fixnum::try_from(next)?;
+            if prev.0 > next.0 {
+                return Ok(vec![Value::from(false)]);
+            }
+            prev = next;
+        }
+    }
+
+    Ok(vec![Value::from(true)])
+}
+
+#[bridge(name = "fx>=?", lib = "(rnrs arithmetic fixnums (6))")]
+pub fn greater_equal_fixnum(args: &[Value]) -> Result<Vec<Value>, Exception> {
+    if let Some((first, rest)) = args.split_first() {
+        let mut prev = Fixnum::try_from(first)?;
+
+        for next in rest {
+            let next = Fixnum::try_from(next)?;
+            if prev.0 <= next.0 {
+                return Ok(vec![Value::from(false)]);
+            }
+            prev = next;
+        }
+    }
+
+    Ok(vec![Value::from(true)])
+}
+
+#[bridge(name = "fx<=?", lib = "(rnrs arithmetic fixnums (6))")]
+pub fn lesser_equal_fixnum(args: &[Value]) -> Result<Vec<Value>, Exception> {
+    if let Some((first, rest)) = args.split_first() {
+        let mut prev = Fixnum::try_from(first)?;
+
+        for next in rest {
+            let next = Fixnum::try_from(next)?;
+            if prev.0 > next.0 {
+                return Ok(vec![Value::from(false)]);
+            }
+            prev = next;
+        }
+    }
+
+    Ok(vec![Value::from(true)])
+}
+
+#[bridge(name = "fx+", lib = "(rnrs arithmetic fixnums (6))")]
+pub fn add_fixnum(fx1: &Value, fx2: &Value) -> Result<Vec<Value>, Exception> {
+    let Fixnum(a) = Fixnum::try_from(fx1)?;
+    let Fixnum(b) = Fixnum::try_from(fx2)?;
+    let result = a
+        .checked_add(b)
+        .ok_or_else(|| Exception::implementation_restriction("fx+ result is not a fixnum"))?;
+    Ok(vec![Value::from(result)])
+}
+
+#[bridge(name = "fx*", lib = "(rnrs arithmetic fixnums (6))")]
+pub fn mul_fixnum(fx1: &Value, fx2: &Value) -> Result<Vec<Value>, Exception> {
+    let Fixnum(a) = Fixnum::try_from(fx1)?;
+    let Fixnum(b) = Fixnum::try_from(fx2)?;
+    let result = a
+        .checked_mul(b)
+        .ok_or_else(|| Exception::implementation_restriction("fx* result is not a fixnum"))?;
+    Ok(vec![Value::from(result)])
+}
+
+// TODO: An exception with condition type &assertion is raised if the mathematically correct
+// result of this procedure is not a fixnum.
+#[bridge(name = "fx-", lib = "(rnrs arithmetic fixnums (6))")]
+pub fn sub_fixnum(fx1: &Value, rest: &[Value]) -> Result<Vec<Value>, Exception> {
+    let Fixnum(a) = Fixnum::try_from(fx1)?;
+    if rest.is_empty() {
+        let result = a
+            .checked_neg()
+            .ok_or_else(|| Exception::implementation_restriction("fx- result is not a fixnum"))?;
+        Ok(vec![Value::from(result)])
+    } else {
+        let Fixnum(b) = Fixnum::try_from(&rest[0])?;
+        let result = a
+            .checked_sub(b)
+            .ok_or_else(|| Exception::implementation_restriction("fx- result is not a fixnum"))?;
+        Ok(vec![Value::from(result)])
+    }
+}
+
+fn fixnum_decompose(s: i128) -> (i64, i64) {
+    // Perform centered modulo to get the low bits.
+    let s0 = s as i64;
+    let rounded_value = s as i128 - s0 as i128;
+    // NOTE: The definition requires this division to be centered, but here we are performing
+    // flooring division on the `rounded_value` to get the high bits, which will yield the
+    // same result as centered division.
+    // `s1 = (s - s0) / 2^64`
+    let s1 = (rounded_value >> 64) as i64;
+    (s0, s1)
+}
+
+// NOTE: nightly Rust offers `bigint` features: https://github.com/rust-lang/rust/issues/85532
+
+#[bridge(name = "fx+/carry", lib = "(rnrs arithmetic fixnums (6))")]
+pub fn add_carry_fixnum(fx1: &Value, fx2: &Value, fx3: &Value) -> Result<Vec<Value>, Exception> {
+    let Fixnum(fx1) = Fixnum::try_from(fx1)?;
+    let Fixnum(fx2) = Fixnum::try_from(fx2)?;
+    let Fixnum(fx3) = Fixnum::try_from(fx3)?;
+
+    // We are trying to compute the values of `s0` and `s1` such that:
+    // `s = s1 * 2^64 + s0 = fx1 + fx2 + fx3`
+
+    // NOTE: Convert to i128 to prevent overflow.
+    let s = (fx1 as i128 + fx2 as i128) + fx3 as i128;
+    let (s0, s1) = fixnum_decompose(s);
+
+    Ok(vec![Value::from(s0), Value::from(s1)])
+}
+
+#[bridge(name = "fx-/carry", lib = "(rnrs arithmetic fixnums (6))")]
+pub fn sub_carry_fixnum(fx1: &Value, fx2: &Value, fx3: &Value) -> Result<Vec<Value>, Exception> {
+    let Fixnum(fx1) = Fixnum::try_from(fx1)?;
+    let Fixnum(fx2) = Fixnum::try_from(fx2)?;
+    let Fixnum(fx3) = Fixnum::try_from(fx3)?;
+
+    // We are trying to compute the values of `s0` and `s1` such that:
+    // `s = s1 * 2^64 + s0 = fx1 - fx2 - fx3`
+
+    // NOTE: Convert to i128 to prevent overflow.
+    let s = (fx1 as i128 - fx2 as i128) - fx3 as i128;
+    let (s0, s1) = fixnum_decompose(s);
+
+    Ok(vec![Value::from(s0), Value::from(s1)])
+}
+
+#[bridge(name = "fx*/carry", lib = "(rnrs arithmetic fixnums (6))")]
+pub fn mul_carry_fixnum(fx1: &Value, fx2: &Value, fx3: &Value) -> Result<Vec<Value>, Exception> {
+    let Fixnum(fx1) = Fixnum::try_from(fx1)?;
+    let Fixnum(fx2) = Fixnum::try_from(fx2)?;
+    let Fixnum(fx3) = Fixnum::try_from(fx3)?;
+
+    // We are trying to compute the values of `s0` and `s1` such that:
+    // `s = s1 * 2^64 + s0 = fx1 * fx2 + fx3`
+
+    // NOTE: Convert to i128 to prevent overflow.
+    let s = fx1 as i128 * fx2 as i128 + fx3 as i128;
+    let (s0, s1) = fixnum_decompose(s);
+
+    Ok(vec![Value::from(s0), Value::from(s1)])
+}
+
+#[bridge(name = "fxnot", lib = "(rnrs arithmetic fixnums (6))")]
+pub fn not_fixnum(fx: &Value) -> Result<Vec<Value>, Exception> {
+    let Fixnum(fx) = Fixnum::try_from(fx)?;
+
+    Ok(vec![Value::from(!fx)])
+}
+
+#[bridge(name = "fxand", lib = "(rnrs arithmetic fixnums (6))")]
+pub fn and_fixnum(fx1: &Value, fx2: &Value) -> Result<Vec<Value>, Exception> {
+    let Fixnum(fx1) = Fixnum::try_from(fx1)?;
+    let Fixnum(fx2) = Fixnum::try_from(fx2)?;
+
+    Ok(vec![Value::from(fx1 & fx2)])
+}
+
+#[bridge(name = "fxior", lib = "(rnrs arithmetic fixnums (6))")]
+pub fn ior_fixnum(fx1: &Value, fx2: &Value) -> Result<Vec<Value>, Exception> {
+    let Fixnum(fx1) = Fixnum::try_from(fx1)?;
+    let Fixnum(fx2) = Fixnum::try_from(fx2)?;
+
+    Ok(vec![Value::from(fx1 | fx2)])
+}
+
+#[bridge(name = "fxxor", lib = "(rnrs arithmetic fixnums (6))")]
+pub fn xor_fixnum(fx1: &Value, fx2: &Value) -> Result<Vec<Value>, Exception> {
+    let Fixnum(fx1) = Fixnum::try_from(fx1)?;
+    let Fixnum(fx2) = Fixnum::try_from(fx2)?;
+
+    Ok(vec![Value::from(fx1 ^ fx2)])
+}
+
+// NOTE: If anyone is curious, this is a bitwise multiplexer.
+// `fx1` is the selector mask, `fx2` is the true value and `fx3` is the false value.
+#[bridge(name = "fxif", lib = "(rnrs arithmetic fixnums (6))")]
+pub fn if_fixnum(fx1: &Value, fx2: &Value, fx3: &Value) -> Result<Vec<Value>, Exception> {
+    let Fixnum(fx1) = Fixnum::try_from(fx1)?;
+    let Fixnum(fx2) = Fixnum::try_from(fx2)?;
+    let Fixnum(fx3) = Fixnum::try_from(fx3)?;
+
+    Ok(vec![Value::from(fx1 & fx2 | !fx1 & fx3)])
+}
+
+#[bridge(name = "fxbit-count", lib = "(rnrs arithmetic fixnums (6))")]
+pub fn bit_count_fixnum(fx: &Value) -> Result<Vec<Value>, Exception> {
+    let Fixnum(fx) = Fixnum::try_from(fx)?;
+
+    let result = if fx >= 0 {
+        fx.count_ones()
+    } else {
+        fx.count_zeros()
+    };
+
+    Ok(vec![Value::from(result)])
+}
+
+#[bridge(name = "fxlength", lib = "(rnrs arithmetic fixnums (6))")]
+pub fn length_fixnum(fx: &Value) -> Result<Vec<Value>, Exception> {
+    let Fixnum(mut fx) = Fixnum::try_from(fx)?;
+
+    fx = if fx >= 0 { fx } else { !fx };
+
+    let len = i64::BITS - fx.leading_zeros();
+
+    Ok(vec![Value::from(len)])
+}
+
+// TODO: Does our method return the correct values for 0, 1 and -4?
+//
+// (fxfirst-bit-set fx)‌‌procedure 
+// Returns the index of the least significant 1 bit in the two's complement representation of fx. If fx is 0, then −1 is returned.
+// 
+// (fxfirst-bit-set 0)        ‌⇒  -1
+// (fxfirst-bit-set 1)        ‌⇒  0
+// 
+// (fxfirst-bit-set -4)       ‌⇒  2
+#[bridge(name = "fxfirst-bit-set", lib = "(rnrs arithmetic fixnums (6))")]
+pub fn first_bit_set_fixnum(fx: &Value) -> Result<Vec<Value>, Exception> {
+    let Fixnum(fx) = Fixnum::try_from(fx)?;
+
+    Ok(vec![Value::from(fx.trailing_zeros())])
+}
+
+// TODO: This implementation is incorrect.
+fn arithmetic_shift(fx1: &Value, fx2: &Value) -> Result<Vec<Value>, Exception> {
+    let Fixnum(fx1) = Fixnum::try_from(fx1)?;
+    let Fixnum(fx2) = Fixnum::try_from(fx2)?;
+
+    let fx2 = u32::try_from(fx2)
+        .map_err(|_| Exception::implementation_restriction("fx2 must be non-negative"))?;
+
+    let result = fx1
+        .checked_shl(fx2)
+        .ok_or(Exception::implementation_restriction(
+            "The result of fxarithmetic-shift-left is not a valid fixnum",
+        ));
+
+    result.map(|result| vec![Value::from(result)])
+}
+
+#[bridge(
+    name = "fxarithmetic-shift-left",
+    lib = "(rnrs arithmetic fixnums (6))"
+)]
+pub fn arithmetic_shift_left_fixnum(fx1: &Value, fx2: &Value) -> Result<Vec<Value>, Exception> {
+    arithmetic_shift(fx1, fx2, true)
+}
+
+#[bridge(
+    name = "fxarithmetic-shift-right",
+    lib = "(rnrs arithmetic fixnums (6))"
+)]
+pub fn arithmetic_shift_right_fixnum(fx1: &Value, fx2: &Value) -> Result<Vec<Value>, Exception> {
+    arithmetic_shift(fx1, fx2, false)
+}
+
+#[bridge(name = "fxarithmetic-shift", lib = "(rnrs arithmetic fixnums (6))")]
+pub fn arithmetic_shift_fixnum(fx1: &Value, fx2: &Value) -> Result<Vec<Value>, Exception> {
+    arithmetic_shift(fx1, fx2, true)
 }
 
 /// R6RS Flonums
