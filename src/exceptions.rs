@@ -53,7 +53,7 @@ use crate::{
     gc::{Gc, GcInner, Trace},
     lists::slice_to_list,
     ports::{IoError, IoReadError, IoWriteError},
-    proc::{Application, ContinuationBarrier, DynStackElem, FuncPtr, Procedure, pop_dyn_stack},
+    proc::{Application, ContBarrier, DynStackElem, FuncPtr, Procedure, pop_dyn_stack},
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
@@ -813,7 +813,7 @@ pub fn with_exception_handler(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    barrier: &mut ContinuationBarrier,
+    barrier: &mut ContBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
     let [handler, thunk] = args else {
@@ -846,14 +846,14 @@ pub fn raise_builtin(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    barrier: &mut ContinuationBarrier,
+    barrier: &mut ContBarrier,
     _k: Value,
 ) -> Result<Application, Exception> {
     Ok(raise(runtime.clone(), args[0].clone(), barrier))
 }
 
 /// Raises a non-continuable exception to the current exception handler.
-pub fn raise(runtime: Runtime, raised: Value, barrier: &mut ContinuationBarrier) -> Application {
+pub fn raise(runtime: Runtime, raised: Value, barrier: &mut ContBarrier) -> Application {
     let raised = if let Some(condition) = raised.cast_to_scheme_type::<Exception>() {
         let trace = barrier.current_marks(Symbol::intern("trace"));
         Value::from(condition.add_condition(StackTrace::new(trace)))
@@ -871,7 +871,7 @@ pub fn raise(runtime: Runtime, raised: Value, barrier: &mut ContinuationBarrier)
 unsafe extern "C" fn raise_rt(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     raised: *const (),
-    barrier: *mut ContinuationBarrier,
+    barrier: *mut ContBarrier,
 ) -> *mut Application {
     unsafe {
         let runtime = Runtime::from_raw_inc_rc(runtime);
@@ -888,7 +888,7 @@ unsafe extern "C" fn unwind_to_exception_handler(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
-    barrier: *mut ContinuationBarrier,
+    barrier: *mut ContBarrier,
 ) -> *mut Application {
     unsafe {
         // env[0] is the raised value:
@@ -939,7 +939,7 @@ unsafe extern "C" fn reraise_exception(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
-    _barrier: *mut ContinuationBarrier,
+    _barrier: *mut ContBarrier,
 ) -> *mut Application {
     unsafe {
         let runtime = Runtime(Gc::from_raw_inc_rc(runtime));
@@ -969,7 +969,7 @@ pub fn raise_continuable(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    barrier: &mut ContinuationBarrier,
+    barrier: &mut ContBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
     let [condition] = args else {

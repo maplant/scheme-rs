@@ -95,7 +95,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 _env: &'a [::scheme_rs::value::Value],
                 args: &'a [::scheme_rs::value::Value],
                 rest_args: &'a [::scheme_rs::value::Value],
-                barrier: &'a mut ::scheme_rs::proc::ContinuationBarrier,
+                barrier: &'a mut ::scheme_rs::proc::ContBarrier,
                 k: ::scheme_rs::value::Value,
             ) -> futures::future::BoxFuture<'a, scheme_rs::proc::Application> {
                 #bridge
@@ -157,7 +157,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 _env: &[::scheme_rs::value::Value],
                 args: &[::scheme_rs::value::Value],
                 rest_args: &[::scheme_rs::value::Value],
-                barrier: &mut ::scheme_rs::proc::ContinuationBarrier,
+                barrier: &mut ::scheme_rs::proc::ContBarrier,
                 k: ::scheme_rs::value::Value,
             ) -> scheme_rs::proc::Application {
                 #bridge
@@ -229,7 +229,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
 ///    `Procedure::new`.
 ///  - `args: &[Value]`: The arguments to the procedure.
 ///  - `rest_args: &[Value]`: Any variadic arguments provided to the procedure.
-///  - `barrier: &mut ContinuationBarrier`: The dynamic state of the program.
+///  - `barrier: &mut ContBarrier`: The dynamic state of the program.
 ///  - `k: Value`: The current continuation.
 ///
 /// The `cps_bridge` proc macro takes two arguments: `def` which specifies the
@@ -251,7 +251,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
 ///     _env: &[Value],
 ///     args: &[Value],
 ///     rest_args: &[Value],
-///     _barrier: &mut ContinuationBarrier,
+///     _barrier: &mut ContBarrier,
 ///     k: Value,
 /// ) -> Result<Application, Exception> {
 ///     if rest_args.is_empty() {
@@ -366,7 +366,7 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 env: &'a [::scheme_rs::value::Value],
                 args: &'a [::scheme_rs::value::Value],
                 rest_args: &'a [::scheme_rs::value::Value],
-                barrier: &'a mut ::scheme_rs::proc::ContinuationBarrier,
+                barrier: &'a mut ::scheme_rs::proc::ContBarrier,
                 k: ::scheme_rs::value::Value,
             ) -> futures::future::BoxFuture<'a, scheme_rs::proc::Application> {
                 #bridge
@@ -399,7 +399,7 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 env: &[::scheme_rs::value::Value],
                 args: &[::scheme_rs::value::Value],
                 rest_args: &[::scheme_rs::value::Value],
-                barrier: &mut ::scheme_rs::proc::ContinuationBarrier,
+                barrier: &mut ::scheme_rs::proc::ContBarrier,
                 k: ::scheme_rs::value::Value,
             ) -> scheme_rs::proc::Application {
                 #bridge

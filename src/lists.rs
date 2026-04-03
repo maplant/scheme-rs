@@ -7,7 +7,7 @@ use parking_lot::RwLock;
 use crate::{
     exceptions::Exception,
     gc::{Gc, GcInner, Trace},
-    proc::{Application, ContinuationBarrier, Procedure},
+    proc::{Application, ContBarrier, Procedure},
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
     strings::WideString,
@@ -362,7 +362,7 @@ pub fn map(
     _env: &[Value],
     args: &[Value],
     list_n: &[Value],
-    barrier: &mut ContinuationBarrier,
+    barrier: &mut ContBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
     let [mapper, list_1] = args else {
@@ -409,7 +409,7 @@ unsafe extern "C" fn map_k(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
-    barrier: *mut ContinuationBarrier,
+    barrier: *mut ContBarrier,
 ) -> *mut Application {
     unsafe {
         // TODO: Probably need to do this in a way that avoids mutable variables

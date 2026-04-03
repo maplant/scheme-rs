@@ -77,7 +77,7 @@ anywhere.
 
 ```rust
 # use scheme_rs::{
-# runtime::Runtime, env::TopLevelEnvironment, value::Value, proc::{ContinuationBarrier, Procedure},
+# runtime::Runtime, env::TopLevelEnvironment, value::Value, proc::{ContBarrier, Procedure},
 # };
 # let runtime = Runtime::new();
 # let env = TopLevelEnvironment::new_repl(&runtime);
@@ -99,7 +99,7 @@ anywhere.
 let [result] = factorial
     .call(
         &[Value::from(5)],
-        &mut ContinuationBarrier::new(),
+        &mut ContBarrier::new(),
     )
     .unwrap()
     .try_into()
@@ -244,7 +244,7 @@ which adhere to the scheme condition system. See
 
 # Mutable references
 
-scheme-rs supports accessing mutable variables via the [`ContinuationBarrier`](proc) 
+scheme-rs supports accessing mutable variables via the [`ContBarrier`](proc) 
 parameter. Mutable variables are called "params" in scheme-rs due to their 
 similarity to [dynamic parameters](https://srfi.schemers.org/srfi-39/srfi-39.html).
 
@@ -253,14 +253,14 @@ Creating a new mutable references enforces a new continuation barrier.
 ```rust
 # use scheme_rs::{
 # registry::cps_bridge, value::Value, exceptions::Exception, 
-# runtime::Runtime, env::TopLevelEnvironment, proc::{Application, ContinuationBarrier, Procedure}}; 
+# runtime::Runtime, env::TopLevelEnvironment, proc::{Application, ContBarrier, Procedure}}; 
 #[cps_bridge(def = "inc", lib = "(example)")]
 pub fn inc(
     _runtime: &Runtime,
     _env: &[Value],
     _args: &[Value],
     _rest_args: &[Value],
-    barrier: &mut ContinuationBarrier,
+    barrier: &mut ContBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
     let var: &mut u32 = barrier.get_param("var").unwrap().downcast_mut().unwrap();
@@ -274,12 +274,12 @@ pub fn call_with_var(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    barrier: &mut ContinuationBarrier,
+    barrier: &mut ContBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
     // Set up the new dynamic state and add the param
     let mut var = 0u32;
-    let mut new_barrier = ContinuationBarrier::from(barrier.save());
+    let mut new_barrier = ContBarrier::from(barrier.save());
     new_barrier.add_param("var", &mut var);
     
     // Call the thunk arg with the new dyn state:

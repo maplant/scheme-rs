@@ -14,10 +14,7 @@ use crate::{
     lists::{Pair, list_to_vec},
     num,
     ports::{BufferMode, Port, Transcoder},
-    proc::{
-        Application, ContinuationBarrier, ContinuationPtr, FuncPtr, ProcDebugInfo, Procedure,
-        UserPtr,
-    },
+    proc::{Application, ContBarrier, ContinuationPtr, FuncPtr, ProcDebugInfo, Procedure, UserPtr},
     registry::Registry,
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax},
@@ -125,9 +122,7 @@ impl Runtime {
         let compiled = body.compile_top_level();
         let closure = maybe_await!(self.compile_expr(compiled));
 
-        maybe_await!(
-            Application::new(closure, Vec::new()).eval(&mut ContinuationBarrier::default())
-        )
+        maybe_await!(Application::new(closure, Vec::new()).eval(&mut ContBarrier::default()))
     }
 
     /// Define a library from Rust code. Useful if file system access is disabled.
@@ -417,7 +412,7 @@ unsafe extern "C" fn apply(
     op: *const (),
     args: *const *const (),
     num_args: u32,
-    barrier: *mut ContinuationBarrier,
+    barrier: *mut ContBarrier,
 ) -> *mut Application {
     unsafe {
         let args: Vec<_> = (0..num_args)
@@ -470,7 +465,7 @@ unsafe extern "C" fn get_frame(op: *const (), span: *const ()) -> *const () {
 unsafe extern "C" fn set_continuation_mark(
     tag: *const (),
     val: *const (),
-    barrier: *mut ContinuationBarrier,
+    barrier: *mut ContBarrier,
 ) {
     unsafe {
         let tag = Value::from_raw_inc_rc(tag);
@@ -556,7 +551,7 @@ unsafe extern "C" fn make_continuation(
     num_envs: u32,
     num_required_args: u32,
     variadic: bool,
-    barrier: *mut ContinuationBarrier,
+    barrier: *mut ContBarrier,
 ) -> *const () {
     unsafe {
         // Collect the environment:

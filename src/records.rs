@@ -220,7 +220,7 @@ use parking_lot::RwLock;
 use crate::{
     exceptions::Exception,
     gc::{Gc, GcInner, Trace},
-    proc::{Application, ContinuationBarrier, FuncPtr, Procedure},
+    proc::{Application, ContBarrier, FuncPtr, Procedure},
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
@@ -463,7 +463,7 @@ pub fn make_record_constructor_descriptor(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _barrier: &mut ContinuationBarrier,
+    _barrier: &mut ContBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
     let k: Procedure = k.try_into()?;
@@ -528,7 +528,7 @@ pub fn record_constructor(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    barrier: &mut ContinuationBarrier,
+    barrier: &mut ContBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
     let [rcd] = args else {
@@ -582,7 +582,7 @@ pub(crate) unsafe extern "C" fn chain_protocols(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
-    barrier: *mut ContinuationBarrier,
+    barrier: *mut ContBarrier,
 ) -> *mut Application {
     unsafe {
         // env[0] is a vector of protocols
@@ -625,7 +625,7 @@ fn chain_constructors(
     env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _barrier: &mut ContinuationBarrier,
+    _barrier: &mut ContBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
     let k: Procedure = k.try_into()?;
@@ -669,7 +669,7 @@ fn constructor(
     env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _barrier: &mut ContinuationBarrier,
+    _barrier: &mut ContBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
     let k: Procedure = k.try_into()?;
@@ -714,7 +714,7 @@ fn default_protocol(
     env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _barrier: &mut ContinuationBarrier,
+    _barrier: &mut ContBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
     let k: Procedure = k.try_into()?;
@@ -738,7 +738,7 @@ fn default_protocol_constructor(
     env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    barrier: &mut ContinuationBarrier,
+    barrier: &mut ContBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
     let constructor: Procedure = env[0].clone().try_into()?;
@@ -766,7 +766,7 @@ pub(crate) unsafe extern "C" fn call_constructor_continuation(
     _runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
-    _barrier: *mut ContinuationBarrier,
+    _barrier: *mut ContBarrier,
 ) -> *mut Application {
     unsafe {
         let constructor: Procedure = args.as_ref().unwrap().clone().try_into().unwrap();
@@ -983,7 +983,7 @@ fn record_predicate_fn(
     env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _barrier: &mut ContinuationBarrier,
+    _barrier: &mut ContBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
     let k: Procedure = k.try_into()?;
@@ -1004,7 +1004,7 @@ pub fn record_predicate(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _barrier: &mut ContinuationBarrier,
+    _barrier: &mut ContBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
     let k: Procedure = k.try_into()?;
@@ -1028,7 +1028,7 @@ fn record_accessor_fn(
     env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _barrier: &mut ContinuationBarrier,
+    _barrier: &mut ContBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
     let k: Procedure = k.try_into()?;
@@ -1068,7 +1068,7 @@ pub fn record_accessor(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _barrier: &mut ContinuationBarrier,
+    _barrier: &mut ContBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
     let k: Procedure = k.try_into()?;
@@ -1100,7 +1100,7 @@ fn record_mutator_fn(
     env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _barrier: &mut ContinuationBarrier,
+    _barrier: &mut ContBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
     let k: Procedure = k.try_into()?;
@@ -1134,7 +1134,7 @@ pub fn record_mutator(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _barrier: &mut ContinuationBarrier,
+    _barrier: &mut ContBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
     let k: Procedure = k.try_into()?;

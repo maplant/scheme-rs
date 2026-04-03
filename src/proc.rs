@@ -15,7 +15,7 @@
 //! the `new` function:
 //!
 //! ```
-//! # use scheme_rs::{proc::{Procedure, BridgePtr, Application, ContinuationBarrier},
+//! # use scheme_rs::{proc::{Procedure, BridgePtr, Application, ContBarrier},
 //! # registry::cps_bridge, value::Value, runtime::Runtime, exceptions::Exception};
 //! #[cps_bridge]
 //! fn closure(
@@ -23,7 +23,7 @@
 //!     env: &[Value],
 //!     _args: &[Value],
 //!     _rest_args: &[Value],
-//!     _barrier: &mut ContinuationBarrier,
+//!     _barrier: &mut ContBarrier,
 //!     k: Value,
 //! ) -> Result<Application, Exception> {
 //!     Ok(Application::new(k.try_into()?, vec![ env[0].clone() ]))
@@ -46,7 +46,7 @@
 //!
 //! ```
 //! # use scheme_rs::{
-//! #     proc::{Procedure, BridgePtr, Application, ContinuationBarrier},
+//! #     proc::{Procedure, BridgePtr, Application, ContBarrier},
 //! #     registry::cps_bridge, value::{Value, Cell}, runtime::Runtime,
 //! #     exceptions::Exception,
 //! #     num::Number,
@@ -57,7 +57,7 @@
 //!     env: &[Value],
 //!     _args: &[Value],
 //!     _rest_args: &[Value],
-//!     _barrier: &mut ContinuationBarrier,
+//!     _barrier: &mut ContBarrier,
 //!     k: Value,
 //! ) -> Result<Application, Exception> {
 //!     // Fetch the cell from the environment:
@@ -123,7 +123,7 @@ pub(crate) type ContinuationPtr = unsafe extern "C" fn(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
-    barrier: *mut ContinuationBarrier<'_>,
+    barrier: *mut ContBarrier<'_>,
 ) -> *mut Application;
 
 /// A function pointer to a generated user function.
@@ -131,7 +131,7 @@ pub(crate) type UserPtr = unsafe extern "C" fn(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
-    barrier: *mut ContinuationBarrier<'_>,
+    barrier: *mut ContBarrier<'_>,
     k: Value,
 ) -> *mut Application;
 
@@ -141,7 +141,7 @@ pub type BridgePtr = fn(
     env: &[Value],
     args: &[Value],
     rest_args: &[Value],
-    barrier: &mut ContinuationBarrier<'_>,
+    barrier: &mut ContBarrier<'_>,
     k: Value,
 ) -> Application;
 
@@ -152,7 +152,7 @@ pub type AsyncBridgePtr = for<'a> fn(
     env: &'a [Value],
     args: &'a [Value],
     rest_args: &'a [Value],
-    barrier: &'a mut ContinuationBarrier<'_>,
+    barrier: &'a mut ContBarrier<'_>,
     k: Value,
 ) -> futures::future::BoxFuture<'a, Application>;
 
@@ -252,7 +252,7 @@ impl ProcedureInner {
     pub(crate) fn prepare_args(
         &self,
         mut args: Vec<Value>,
-        barrier: &mut ContinuationBarrier,
+        barrier: &mut ContBarrier,
     ) -> Result<(Vec<Value>, Option<Value>), Application> {
         // Extract the continuation, if it is required
         let cont = (!self.is_continuation()).then(|| args.pop().unwrap());
@@ -282,7 +282,7 @@ impl ProcedureInner {
         &self,
         func: AsyncBridgePtr,
         args: &[Value],
-        barrier: &mut ContinuationBarrier<'_>,
+        barrier: &mut ContBarrier<'_>,
         k: Value,
     ) -> Application {
         let (args, rest_args) = if self.variadic {
@@ -298,7 +298,7 @@ impl ProcedureInner {
         &self,
         func: BridgePtr,
         args: &[Value],
-        barrier: &mut ContinuationBarrier,
+        barrier: &mut ContBarrier,
         k: Value,
     ) -> Application {
         let (args, rest_args) = if self.variadic {
@@ -314,7 +314,7 @@ impl ProcedureInner {
         &self,
         func: JitFuncPtr,
         mut args: Vec<Value>,
-        barrier: &mut ContinuationBarrier,
+        barrier: &mut ContBarrier,
         k: Option<Value>,
     ) -> Application {
         if self.variadic {
@@ -332,7 +332,7 @@ impl ProcedureInner {
                     Gc::as_ptr(&self.runtime.0),
                     self.env.as_ptr(),
                     args.as_ptr(),
-                    barrier as *mut ContinuationBarrier<'_>,
+                    barrier as *mut ContBarrier<'_>,
                 )
             },
             JitFuncPtr::User(sync_fn) => unsafe {
@@ -340,7 +340,7 @@ impl ProcedureInner {
                     Gc::as_ptr(&self.runtime.0),
                     self.env.as_ptr(),
                     args.as_ptr(),
-                    barrier as *mut ContinuationBarrier<'_>,
+                    barrier as *mut ContBarrier<'_>,
                     Value::from_raw(Value::as_raw(k.as_ref().unwrap())),
                 )
             },
@@ -351,7 +351,7 @@ impl ProcedureInner {
 
     /// Apply the arguments to the function, returning the next application.
     #[maybe_async]
-    pub fn apply(&self, args: Vec<Value>, barrier: &mut ContinuationBarrier<'_>) -> Application {
+    pub fn apply(&self, args: Vec<Value>, barrier: &mut ContBarrier<'_>) -> Application {
         if let FuncPtr::PromptBarrier { barrier_id: id, .. } = self.func {
             barrier.pop_marks();
             match barrier.pop_dyn_stack() {
@@ -395,7 +395,7 @@ impl ProcedureInner {
 
     #[cfg(feature = "async")]
     /// Attempt to call the function, and throw an error if is async
-    pub fn apply_sync(&self, args: Vec<Value>, barrier: &mut ContinuationBarrier) -> Application {
+    pub fn apply_sync(&self, args: Vec<Value>, barrier: &mut ContBarrier) -> Application {
         if let FuncPtr::PromptBarrier { barrier_id: id, .. } = self.func {
             barrier.pop_marks();
             match barrier.pop_dyn_stack() {
@@ -563,7 +563,7 @@ impl Procedure {
     pub fn call(
         &self,
         args: &[Value],
-        barrier: &mut ContinuationBarrier<'_>,
+        barrier: &mut ContBarrier<'_>,
     ) -> Result<Vec<Value>, Exception> {
         let mut args = args.to_vec();
 
@@ -576,7 +576,7 @@ impl Procedure {
     pub fn call_sync(
         &self,
         args: &[Value],
-        barrier: &mut ContinuationBarrier<'_>,
+        barrier: &mut ContBarrier<'_>,
     ) -> Result<Vec<Value>, Exception> {
         let mut args = args.to_vec();
 
@@ -594,7 +594,7 @@ pub fn halt_continuation(runtime: Runtime) -> Value {
         _runtime: *mut GcInner<RwLock<RuntimeInner>>,
         _env: *const Value,
         args: *const Value,
-        _barrier: *mut ContinuationBarrier,
+        _barrier: *mut ContBarrier,
     ) -> *mut Application {
         unsafe { crate::runtime::halt(Value::into_raw(args.read())) }
     }
@@ -666,7 +666,7 @@ impl Application {
     #[maybe_async]
     pub fn eval<'a, 'b>(
         mut self,
-        barrier: &'a mut ContinuationBarrier<'b>,
+        barrier: &'a mut ContBarrier<'b>,
     ) -> Result<Vec<Value>, Exception> {
         loop {
             let op = match self.op {
@@ -682,7 +682,7 @@ impl Application {
 
     #[cfg(feature = "async")]
     /// Just like [eval] but throws an error if we encounter an async function.
-    pub fn eval_sync(mut self, barrier: &mut ContinuationBarrier) -> Result<Vec<Value>, Exception> {
+    pub fn eval_sync(mut self, barrier: &mut ContBarrier) -> Result<Vec<Value>, Exception> {
         loop {
             let op = match self.op {
                 OpType::Proc(proc) => proc,
@@ -741,7 +741,7 @@ pub fn apply(
     _env: &[Value],
     args: &[Value],
     rest_args: &[Value],
-    _barrier: &mut ContinuationBarrier,
+    _barrier: &mut ContBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
     if rest_args.is_empty() {
@@ -771,7 +771,7 @@ type Param<'a> = &'a mut dyn Any;
 ///
 /// This structure also contains the dynamic state of the running program
 /// including winders, exception handlers, continuation marks, and parameters.
-pub struct ContinuationBarrier<'a> {
+pub struct ContBarrier<'a> {
     /// The id of the barrier. Checked when calling an escape procedure
     id: usize,
     /// The active dynamic stack
@@ -782,7 +782,7 @@ pub struct ContinuationBarrier<'a> {
     params: HashMap<Symbol, Param<'a>>,
 }
 
-impl<'a> ContinuationBarrier<'a> {
+impl<'a> ContBarrier<'a> {
     pub fn new() -> Self {
         static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
 
@@ -952,7 +952,7 @@ impl<'a> ContinuationBarrier<'a> {
     }
 }
 
-impl Default for ContinuationBarrier<'_> {
+impl Default for ContBarrier<'_> {
     fn default() -> Self {
         Self::new()
     }
@@ -984,9 +984,9 @@ impl SavedDynamicState {
     }
 }
 
-impl From<SavedDynamicState> for ContinuationBarrier<'_> {
+impl From<SavedDynamicState> for ContBarrier<'_> {
     fn from(value: SavedDynamicState) -> Self {
-        ContinuationBarrier {
+        ContBarrier {
             dyn_stack: value.dyn_stack,
             cont_marks: value.cont_marks,
             ..Default::default()
@@ -1014,7 +1014,7 @@ pub(crate) unsafe extern "C" fn pop_dyn_stack(
     _runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
-    barrier: *mut ContinuationBarrier,
+    barrier: *mut ContBarrier,
 ) -> *mut Application {
     unsafe {
         // env[0] is the continuation
@@ -1035,7 +1035,7 @@ pub fn print_trace(
     _env: &[Value],
     _args: &[Value],
     _rest_args: &[Value],
-    barrier: &mut ContinuationBarrier,
+    barrier: &mut ContBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
     println!(
@@ -1059,7 +1059,7 @@ pub fn call_with_current_continuation(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    barrier: &mut ContinuationBarrier,
+    barrier: &mut ContBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
     let [proc] = args else { unreachable!() };
@@ -1093,7 +1093,7 @@ fn escape_procedure(
     env: &[Value],
     args: &[Value],
     rest_args: &[Value],
-    barrier: &mut ContinuationBarrier,
+    barrier: &mut ContBarrier,
     _k: Value,
 ) -> Result<Application, Exception> {
     // env[0] is the continuation
@@ -1139,7 +1139,7 @@ unsafe extern "C" fn unwind(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
-    barrier: *mut ContinuationBarrier,
+    barrier: *mut ContBarrier,
 ) -> *mut Application {
     unsafe {
         // env[0] is the ultimate continuation
@@ -1205,7 +1205,7 @@ unsafe extern "C" fn wind(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
-    barrier: *mut ContinuationBarrier,
+    barrier: *mut ContBarrier,
 ) -> *mut Application {
     unsafe {
         // env[0] is the ultimate continuation
@@ -1272,7 +1272,7 @@ unsafe extern "C" fn call_consumer_with_values(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
-    barrier: *mut ContinuationBarrier,
+    barrier: *mut ContBarrier,
 ) -> *mut Application {
     unsafe {
         // env[0] is the consumer
@@ -1326,7 +1326,7 @@ pub fn call_with_values(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    barrier: &mut ContinuationBarrier,
+    barrier: &mut ContBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
     let [producer, consumer] = args else {
@@ -1376,7 +1376,7 @@ pub fn dynamic_wind(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    barrier: &mut ContinuationBarrier,
+    barrier: &mut ContBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
     let [in_thunk_val, body_thunk_val, out_thunk_val] = args else {
@@ -1409,7 +1409,7 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
-    barrier: *mut ContinuationBarrier,
+    barrier: *mut ContBarrier,
 ) -> *mut Application {
     unsafe {
         // env[0] is the in thunk
@@ -1449,7 +1449,7 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
-    barrier: *mut ContinuationBarrier,
+    barrier: *mut ContBarrier,
 ) -> *mut Application {
     unsafe {
         // env[0] is the out thunk
@@ -1482,7 +1482,7 @@ unsafe extern "C" fn forward_body_thunk_result(
     _runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
-    _barrier: *mut ContinuationBarrier,
+    _barrier: *mut ContBarrier,
 ) -> *mut Application {
     unsafe {
         // env[0] is the result of the body thunk
@@ -1524,7 +1524,7 @@ pub fn call_with_prompt(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    barrier: &mut ContinuationBarrier,
+    barrier: &mut ContBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
     let [tag, thunk, handler] = args else {
@@ -1569,7 +1569,7 @@ pub fn abort_to_prompt(
     _env: &[Value],
     args: &[Value],
     rest_args: &[Value],
-    barrier: &mut ContinuationBarrier,
+    barrier: &mut ContBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
     let [tag] = args else { unreachable!() };
@@ -1594,7 +1594,7 @@ unsafe extern "C" fn unwind_to_prompt(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
-    barrier: *mut ContinuationBarrier,
+    barrier: *mut ContBarrier,
 ) -> *mut Application {
     unsafe {
         // env[0] is continuation
@@ -1677,7 +1677,7 @@ fn delimited_continuation(
     env: &[Value],
     args: &[Value],
     rest_args: &[Value],
-    barrier: &mut ContinuationBarrier,
+    barrier: &mut ContBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
     // env[0] is the delimited continuation
@@ -1729,7 +1729,7 @@ unsafe extern "C" fn wind_delim(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
-    barrier: *mut ContinuationBarrier,
+    barrier: *mut ContBarrier,
 ) -> *mut Application {
     unsafe {
         // env[0] is the ultimate continuation

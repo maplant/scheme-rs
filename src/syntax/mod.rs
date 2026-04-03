@@ -6,7 +6,7 @@ use crate::{
     exceptions::{CompoundCondition, Exception, Message, SyntaxViolation, Who},
     gc::{Gc, Trace},
     ports::Port,
-    proc::{ContinuationBarrier, Procedure},
+    proc::{ContBarrier, Procedure},
     records::{RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::bridge,
     symbols::Symbol,
@@ -246,7 +246,7 @@ impl Syntax {
 
         // Call the transformer with the input:
         let transformer_output =
-            maybe_await!(transformer.call(&[Value::from(input)], &mut ContinuationBarrier::new()))?;
+            maybe_await!(transformer.call(&[Value::from(input)], &mut ContBarrier::new()))?;
 
         let output: Value = transformer_output.expect1()?;
         let mut output = Syntax::wrap(output, self.span());

@@ -11,7 +11,7 @@ use crate::{
     exceptions::Exception,
     expand::{SyntaxRule, Template},
     gc::Trace,
-    proc::{ContinuationBarrier, Procedure},
+    proc::{ContBarrier, Procedure},
     runtime::Runtime,
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax},
@@ -1164,8 +1164,7 @@ pub(super) fn define_syntax(
     let expr = maybe_await!(Expression::parse(ctxt, expanded, env))?;
     let cps_expr = expr.compile_top_level();
     let values = maybe_await!(
-        maybe_await!(ctxt.runtime.compile_expr(cps_expr))
-            .call(&[], &mut ContinuationBarrier::new())
+        maybe_await!(ctxt.runtime.compile_expr(cps_expr)).call(&[], &mut ContBarrier::new())
     )?;
     let transformer: Procedure = values.expect1()?;
     env.def_keyword(binding, transformer);

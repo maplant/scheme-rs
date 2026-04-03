@@ -9,7 +9,7 @@ use crate::{
     cps::Compile,
     env::{Environment, TopLevelEnvironment},
     exceptions::Exception,
-    proc::{Application, ContinuationBarrier},
+    proc::{Application, ContBarrier},
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::cps_bridge,
     runtime::Runtime,
@@ -24,7 +24,7 @@ pub fn eval(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _barrier: &mut ContinuationBarrier<'_>,
+    _barrier: &mut ContBarrier<'_>,
     k: Value,
 ) -> Result<Application, Exception> {
     let [expression, environment] = args else {
@@ -36,7 +36,7 @@ pub fn eval(
     let expr = maybe_await!(Expression::parse(&ctxt, expr, &env))?;
     let compiled = expr.compile_top_level();
     let result = maybe_await!(
-        maybe_await!(runtime.compile_expr(compiled)).call(&[], &mut ContinuationBarrier::new())
+        maybe_await!(runtime.compile_expr(compiled)).call(&[], &mut ContBarrier::new())
     )?;
     Ok(Application::new(k.try_into()?, result))
 }
@@ -54,7 +54,7 @@ pub fn environment(
     _env: &[Value],
     _args: &[Value],
     import_spec: &[Value],
-    _barrier: &mut ContinuationBarrier<'_>,
+    _barrier: &mut ContBarrier<'_>,
     k: Value,
 ) -> Result<Application, Exception> {
     let import_sets = import_spec
