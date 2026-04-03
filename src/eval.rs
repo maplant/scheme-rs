@@ -24,7 +24,7 @@ pub fn eval(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    _dyn_state: &mut DynamicState,
+    _dyn_state: &mut DynamicState<'_>,
     k: Value,
 ) -> Result<Application, Exception> {
     let [expression, environment] = args else {
@@ -52,7 +52,7 @@ pub fn environment(
     _env: &[Value],
     _args: &[Value],
     import_spec: &[Value],
-    _dyn_state: &mut DynamicState,
+    _dyn_state: &mut DynamicState<'_>,
     k: Value,
 ) -> Result<Application, Exception> {
     let import_sets = import_spec

@@ -108,8 +108,10 @@ use crate::{
 use parking_lot::RwLock;
 use scheme_rs_macros::{cps_bridge, maybe_async, maybe_await};
 use std::{
+    any::Any,
     collections::HashMap,
     fmt,
+    ops::DerefMut,
     sync::{
         Arc, OnceLock,
         atomic::{AtomicUsize, Ordering},
@@ -121,7 +123,7 @@ pub(crate) type ContinuationPtr = unsafe extern "C" fn(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
-    dyn_state: *mut DynamicState,
+    dyn_state: *mut DynamicState<'_>,
 ) -> *mut Application;
 
 /// A function pointer to a generated user function.
@@ -129,18 +131,17 @@ pub(crate) type UserPtr = unsafe extern "C" fn(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
-    dyn_state: *mut DynamicState,
+    dyn_state: *mut DynamicState<'_>,
     k: Value,
 ) -> *mut Application;
 
 /// A function pointer to a sync Rust bridge function.
-pub type BridgePtr = for<'a> fn(
-    runtime: &'a Runtime,
-    env: &'a [Value],
-    // TODO: Make this a Vec
-    args: &'a [Value],
-    rest_args: &'a [Value],
-    dyn_state: &mut DynamicState,
+pub type BridgePtr = fn(
+    runtime: &Runtime,
+    env: &[Value],
+    args: &[Value],
+    rest_args: &[Value],
+    dyn_state: &mut DynamicState<'_>,
     k: Value,
 ) -> Application;
 
@@ -151,7 +152,7 @@ pub type AsyncBridgePtr = for<'a> fn(
     env: &'a [Value],
     args: &'a [Value],
     rest_args: &'a [Value],
-    dyn_state: &'a mut DynamicState,
+    dyn_state: &'a mut DynamicState<'_>,
     k: Value,
 ) -> futures::future::BoxFuture<'a, Application>;
 
@@ -331,7 +332,7 @@ impl ProcedureInner {
                     Gc::as_ptr(&self.runtime.0),
                     self.env.as_ptr(),
                     args.as_ptr(),
-                    dyn_state as *mut DynamicState,
+                    dyn_state as *mut DynamicState<'_>,
                 )
             },
             JitFuncPtr::User(sync_fn) => unsafe {
@@ -339,7 +340,7 @@ impl ProcedureInner {
                     Gc::as_ptr(&self.runtime.0),
                     self.env.as_ptr(),
                     args.as_ptr(),
-                    dyn_state as *mut DynamicState,
+                    dyn_state as *mut DynamicState<'_>,
                     Value::from_raw(Value::as_raw(k.as_ref().unwrap())),
                 )
             },
@@ -659,7 +660,10 @@ impl Application {
     /// Evaluate the application - and all subsequent application - until all that
     /// remains are values. This is the main trampoline of the evaluation engine.
     #[maybe_async]
-    pub fn eval(mut self, dyn_state: &mut DynamicState) -> Result<Vec<Value>, Exception> {
+    pub fn eval<'a, 'b>(
+        mut self,
+        dyn_state: &'a mut DynamicState<'b>,
+    ) -> Result<Vec<Value>, Exception> {
         loop {
             let op = match self.op {
                 OpType::Proc(proc) => proc,
@@ -752,15 +756,22 @@ pub fn apply(
 // Dynamic state
 //
 
+#[cfg(feature = "async")]
+type Param<'a> = &'a mut (dyn Any + Send + Sync);
+
+#[cfg(not(feature = "async"))]
+type Param<'a> = &'a mut dyn Any;
+
 /// The dynamic state of the running program, including winders, exception
-/// handlers, and continuation marks.
-#[derive(Clone, Debug, Trace)]
-pub struct DynamicState {
+/// handlers, continuation marks, and parameters.
+#[derive(Debug)]
+pub struct DynamicState<'a> {
     dyn_stack: Vec<DynStackElem>,
     cont_marks: Vec<HashMap<Symbol, Value>>,
+    params: HashMap<Symbol, Param<'a>>,
 }
 
-impl DynamicState {
+impl<'a> DynamicState<'a> {
     pub fn new() -> Self {
         Self {
             dyn_stack: Vec::new(),
@@ -769,6 +780,7 @@ impl DynamicState {
             // the initial marks for them since there's no mechanism to allocate
             // for them when they're run.
             cont_marks: vec![HashMap::new()],
+            params: HashMap::new(),
         }
     }
 
@@ -792,6 +804,35 @@ impl DynamicState {
             variadic,
             None,
         )
+    }
+
+    pub fn save(&self) -> SavedDynamicState {
+        SavedDynamicState {
+            dyn_stack: self.dyn_stack.clone(),
+            cont_marks: self.cont_marks.clone(),
+        }
+    }
+
+    pub fn add_param(
+        &mut self,
+        key: impl Into<Symbol>,
+        #[cfg(feature = "async")] val: &'a mut (impl Any + Send + Sync),
+        #[cfg(not(feature = "async"))] val: &'a mut impl Any,
+    ) {
+        self.params.insert(key.into(), val);
+    }
+
+    pub fn get_param<'b>(&'b mut self, key: impl Into<Symbol>) -> Option<Param<'b>> {
+        self.params.get_mut(&key.into()).map(|v| v.deref_mut())
+    }
+
+    pub fn get_params_disjoint<'b, const N: usize>(
+        &'b mut self,
+        keys: [&Symbol; N],
+    ) -> [Option<Param<'b>>; N] {
+        self.params
+            .get_disjoint_mut(keys)
+            .map(|v| v.map(|v| v.deref_mut()))
     }
 
     pub(crate) fn push_marks(&mut self) {
@@ -877,9 +918,11 @@ impl DynamicState {
         self.dyn_stack.pop()
     }
 
+    /*
     pub(crate) fn dyn_stack_get(&self, idx: usize) -> Option<&DynStackElem> {
         self.dyn_stack.get(idx)
     }
+    */
 
     pub(crate) fn dyn_stack_last(&self) -> Option<&DynStackElem> {
         self.dyn_stack.last()
@@ -894,15 +937,46 @@ impl DynamicState {
     }
 }
 
-impl Default for DynamicState {
+impl Default for DynamicState<'_> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl SchemeCompatible for DynamicState {
+/// A copy of [`DynamicState`] without mutable parameters
+#[derive(Clone, Debug, Trace)]
+pub struct SavedDynamicState {
+    dyn_stack: Vec<DynStackElem>,
+    cont_marks: Vec<HashMap<Symbol, Value>>,
+}
+
+impl SavedDynamicState {
+    pub(crate) fn dyn_stack_get(&self, idx: usize) -> Option<&DynStackElem> {
+        self.dyn_stack.get(idx)
+    }
+
+    pub(crate) fn dyn_stack_len(&self) -> usize {
+        self.dyn_stack.len()
+    }
+
+    pub(crate) fn dyn_stack_is_empty(&self) -> bool {
+        self.dyn_stack.is_empty()
+    }
+}
+
+impl From<SavedDynamicState> for DynamicState<'_> {
+    fn from(value: SavedDynamicState) -> Self {
+        DynamicState {
+            dyn_stack: value.dyn_stack,
+            cont_marks: value.cont_marks,
+            ..Default::default()
+        }
+    }
+}
+
+impl SchemeCompatible for SavedDynamicState {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "$dyn-stack", sealed: true, opaque: true)
+        rtd!(name: "$dynamic-state", sealed: true, opaque: true)
     }
 }
 
@@ -976,7 +1050,7 @@ pub fn call_with_current_continuation(
         k.get_formals()
     };
 
-    let dyn_state = Value::from(Record::from_rust_type(dyn_state.clone()));
+    let dyn_state = Value::from(Record::from_rust_type(dyn_state.save()));
 
     let escape_procedure = Procedure::new(
         runtime.clone(),
@@ -1008,7 +1082,7 @@ fn escape_procedure(
     // env[1] is the dyn stack of the continuation
     let saved_dyn_state_val = env[1].clone();
     let saved_dyn_state = saved_dyn_state_val
-        .try_to_rust_type::<DynamicState>()
+        .try_to_rust_type::<SavedDynamicState>()
         .unwrap();
     let saved_dyn_state_read = saved_dyn_state.as_ref();
     dyn_state.cont_marks = saved_dyn_state_read.cont_marks.clone();
@@ -1018,22 +1092,24 @@ fn escape_procedure(
 
     let args = args.iter().chain(rest_args).cloned().collect::<Vec<_>>();
 
-    // Simple optimization: check if we're in the same dyn stack
-    if dyn_state.dyn_stack_len() == saved_dyn_state_read.dyn_stack_len()
-        && dyn_state.dyn_stack_last() == saved_dyn_state_read.dyn_stack_last()
-    {
-        Ok(Application::new(k, args))
+    /*
+        // Simple optimization: check if we're in the same dyn stack
+        if dyn_state.dyn_stack_len() == saved_dyn_state_read.dyn_stack_len()
+            && dyn_state.dyn_stack_last() == saved_dyn_state_read.dyn_stack_last()
+        {
+            Ok(Application::new(k, args))
     } else {
-        let args = Value::from(args);
-        let k = dyn_state.new_k(
-            runtime.clone(),
-            vec![Value::from(k), args, saved_dyn_state_val],
-            unwind,
-            0,
-            false,
-        );
-        Ok(Application::new(k, Vec::new()))
-    }
+         */
+    let args = Value::from(args);
+    let k = dyn_state.new_k(
+        runtime.clone(),
+        vec![Value::from(k), args, saved_dyn_state_val],
+        unwind,
+        0,
+        false,
+    );
+    Ok(Application::new(k, Vec::new()))
+    // }
 }
 
 unsafe extern "C" fn unwind(
@@ -1053,7 +1129,7 @@ unsafe extern "C" fn unwind(
         let dest_stack_val = env.add(2).as_ref().unwrap().clone();
         let dest_stack = dest_stack_val
             .clone()
-            .try_to_rust_type::<DynamicState>()
+            .try_to_rust_type::<SavedDynamicState>()
             .unwrap();
         let dest_stack_read = dest_stack.as_ref();
 
@@ -1117,7 +1193,9 @@ unsafe extern "C" fn wind(
 
         // env[2] is the stack we are trying to reach
         let dest_stack_val = env.add(2).as_ref().unwrap().clone();
-        let dest_stack = dest_stack_val.try_to_rust_type::<DynamicState>().unwrap();
+        let dest_stack = dest_stack_val
+            .try_to_rust_type::<SavedDynamicState>()
+            .unwrap();
         let dest_stack_read = dest_stack.as_ref();
 
         let dyn_state = dyn_state.as_mut().unwrap_unchecked();
@@ -1479,7 +1557,7 @@ pub fn abort_to_prompt(
             k,
             Value::from(rest_args.to_vec()),
             tag.clone(),
-            Value::from(Record::from_rust_type(dyn_state.clone())),
+            Value::from_rust_type(dyn_state.save()),
         ],
         unwind_to_prompt,
         0,
@@ -1521,9 +1599,10 @@ unsafe extern "C" fn unwind_to_prompt(
                     handler,
                     handler_k,
                 })) if prompt_tag == tag => {
-                    let saved_dyn_state =
-                        saved_dyn_state.try_to_rust_type::<DynamicState>().unwrap();
-                    let prompt_delimited_dyn_state = DynamicState {
+                    let saved_dyn_state = saved_dyn_state
+                        .try_to_rust_type::<SavedDynamicState>()
+                        .unwrap();
+                    let prompt_delimited_dyn_state = SavedDynamicState {
                         dyn_stack: saved_dyn_state.as_ref().dyn_stack
                             [dyn_state.dyn_stack_len() + 1..]
                             .to_vec(),
@@ -1539,7 +1618,7 @@ unsafe extern "C" fn unwind_to_prompt(
                         vec![
                             k,
                             Value::from(barrier_id),
-                            Value::from(Record::from_rust_type(prompt_delimited_dyn_state)),
+                            Value::from_rust_type(prompt_delimited_dyn_state),
                         ],
                         FuncPtr::Bridge(delimited_continuation),
                         req_args,
@@ -1587,7 +1666,7 @@ fn delimited_continuation(
     // env[2] is the dyn stack of the continuation
     let saved_dyn_state_val = env[2].clone();
     let saved_dyn_state = saved_dyn_state_val
-        .try_to_rust_type::<DynamicState>()
+        .try_to_rust_type::<SavedDynamicState>()
         .unwrap();
     let saved_dyn_state_read = saved_dyn_state.as_ref();
     // Restore continuation marks
@@ -1638,7 +1717,9 @@ unsafe extern "C" fn wind_delim(
 
         // env[2] is the stack we are trying to reach
         let dest_stack_val = env.add(2).as_ref().unwrap().clone();
-        let dest_stack = dest_stack_val.try_to_rust_type::<DynamicState>().unwrap();
+        let dest_stack = dest_stack_val
+            .try_to_rust_type::<SavedDynamicState>()
+            .unwrap();
         let dest_stack_read = dest_stack.as_ref();
 
         // env[3] is the index into the dest stack we're at

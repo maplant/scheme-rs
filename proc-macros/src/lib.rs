@@ -133,7 +133,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 )
             }
 
-            inventory::submit! {
+            ::scheme_rs::registry::inventory::submit! {
                 ::scheme_rs::registry::BridgeFn::new(
                     #name,
                     #lib,
@@ -193,7 +193,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 ::scheme_rs::proc::Application::new(k, result)
             }
 
-            inventory::submit! {
+            ::scheme_rs::registry::inventory::submit! {
                 ::scheme_rs::registry::BridgeFn::new(
                     #name,
                     #lib,
@@ -320,7 +320,7 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         };
 
         let inventory = quote! {
-            inventory::submit! {
+            ::scheme_rs::registry::inventory::submit! {
                 ::scheme_rs::registry::BridgeFn::new(
                     #name,
                     #lib,
@@ -846,7 +846,7 @@ pub fn runtime_fn(_args: TokenStream, item: TokenStream) -> TokenStream {
 
     quote! {
         #[allow(unused)]
-        inventory::submit!(crate::runtime::RuntimeFn::new(
+        ::scheme_rs::registry::inventory::submit!(crate::runtime::RuntimeFn::new(
             |runtime_fns, module| {
                 use cranelift::prelude::*;
                 use cranelift_module::{Module, Linkage};

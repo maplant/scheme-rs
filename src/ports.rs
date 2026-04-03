@@ -3791,7 +3791,7 @@ pub fn call_with_input_file(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    dyn_state: &mut DynamicState,
+    dyn_state: &mut DynamicState<'_>,
     k: Value,
 ) -> Result<Application, Exception> {
     #[cfg(not(feature = "async"))]
@@ -3852,7 +3852,7 @@ pub fn call_with_output_file(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    dyn_state: &mut DynamicState,
+    dyn_state: &mut DynamicState<'_>,
     k: Value,
 ) -> Result<Application, Exception> {
     #[cfg(not(feature = "async"))]
@@ -3976,7 +3976,7 @@ pub fn with_input_from_file(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    dyn_state: &mut DynamicState,
+    dyn_state: &mut DynamicState<'_>,
     k: Value,
 ) -> Result<Application, Exception> {
     #[cfg(not(feature = "async"))]
@@ -4046,7 +4046,7 @@ pub fn with_output_to_file(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    dyn_state: &mut DynamicState,
+    dyn_state: &mut DynamicState<'_>,
     k: Value,
 ) -> Result<Application, Exception> {
     #[cfg(not(feature = "async"))]
@@ -4137,7 +4137,7 @@ pub fn read_char(
     _env: &[Value],
     _args: &[Value],
     rest_args: &[Value],
-    dyn_state: &mut DynamicState,
+    dyn_state: &mut DynamicState<'_>,
     k: Value,
 ) -> Result<Application, Exception> {
     let input_port = match rest_args {
@@ -4171,7 +4171,7 @@ pub fn peek_char(
     _env: &[Value],
     _args: &[Value],
     rest_args: &[Value],
-    dyn_state: &mut DynamicState,
+    dyn_state: &mut DynamicState<'_>,
     k: Value,
 ) -> Result<Application, Exception> {
     let input_port = match rest_args {
@@ -4205,7 +4205,7 @@ pub fn read(
     _env: &[Value],
     _args: &[Value],
     rest_args: &[Value],
-    dyn_state: &mut DynamicState,
+    dyn_state: &mut DynamicState<'_>,
     k: Value,
 ) -> Result<Application, Exception> {
     let input_port = match rest_args {
@@ -4239,7 +4239,7 @@ pub fn write_char(
     _env: &[Value],
     args: &[Value],
     rest_args: &[Value],
-    dyn_state: &mut DynamicState,
+    dyn_state: &mut DynamicState<'_>,
     k: Value,
 ) -> Result<Application, Exception> {
     let [chr] = args else { unreachable!() };
@@ -4271,7 +4271,7 @@ pub fn newline(
     _env: &[Value],
     _args: &[Value],
     rest_args: &[Value],
-    dyn_state: &mut DynamicState,
+    dyn_state: &mut DynamicState<'_>,
     k: Value,
 ) -> Result<Application, Exception> {
     let output_port = match rest_args {
@@ -4301,7 +4301,7 @@ pub fn display(
     _env: &[Value],
     args: &[Value],
     rest_args: &[Value],
-    dyn_state: &mut DynamicState,
+    dyn_state: &mut DynamicState<'_>,
     k: Value,
 ) -> Result<Application, Exception> {
     let [obj] = args else { unreachable!() };
@@ -4333,7 +4333,7 @@ pub fn write(
     _env: &[Value],
     args: &[Value],
     rest_args: &[Value],
-    dyn_state: &mut DynamicState,
+    dyn_state: &mut DynamicState<'_>,
     k: Value,
 ) -> Result<Application, Exception> {
     let [obj] = args else { unreachable!() };

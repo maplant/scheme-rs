@@ -236,3 +236,53 @@ See [the `value` module for more information](value).
 All scheme-rs functions that return an error return an [`Exception`](exceptions)
 which adhere to the scheme condition system. See
 [the `exceptions` module for more information](exceptions).
+
+# Mutable references
+
+scheme-rs supports accessing mutable variables via the [`DynamicState`](proc) 
+parameter. Mutable variables are called "params" in scheme-rs due to their 
+similarity to [dynamic parameters](https://srfi.schemers.org/srfi-39/srfi-39.html).
+
+Use of mutable variables enforces a continuation barrier.
+
+```rust
+# use scheme_rs::{
+# registry::cps_bridge, value::Value, exceptions::Exception, 
+# runtime::Runtime, env::TopLevelEnvironment, proc::{Application, DynamicState, Procedure}}; 
+#[cps_bridge(def = "inc", lib = "(example)")]
+pub fn inc(
+    _runtime: &Runtime,
+    _env: &[Value],
+    _args: &[Value],
+    _rest_args: &[Value],
+    dyn_state: &mut DynamicState,
+    k: Value,
+) -> Result<Application, Exception> {
+    let var: &mut u32 = dyn_state.get_param("var").unwrap().downcast_mut().unwrap();
+    *var += 1;
+    Ok(Application::new(k.try_into()?, vec![Value::from(*var)]))
+}
+
+#[cps_bridge(def = "call-with-var thunk", lib = "(example)")]
+pub fn call_with_var(
+    _runtime: &Runtime,
+    _env: &[Value],
+    args: &[Value],
+    _rest_args: &[Value],
+    dyn_state: &mut DynamicState,
+    k: Value,
+) -> Result<Application, Exception> {
+    // Set up the new dynamic state and add the param
+    let mut var = 0u32;
+    let mut new_dyn_state = DynamicState::from(dyn_state.save());
+    new_dyn_state.add_param("var", &mut var);
+    
+    // Call the thunk arg with the new dyn state:
+    let thunk: Procedure = args[0].clone().try_into()?;
+    let result = Application::new(thunk, Vec::new())
+        .eval(&mut new_dyn_state)?;
+    
+    // Return to the continuation:
+    Ok(Application::new(k.try_into()?, result))
+}
+```
