@@ -282,7 +282,7 @@ impl ProcedureInner {
         &self,
         func: AsyncBridgePtr,
         args: &[Value],
-        dyn_state: &mut DynamicState,
+        dyn_state: &mut DynamicState<'_>,
         k: Value,
     ) -> Application {
         let (args, rest_args) = if self.variadic {
@@ -351,7 +351,7 @@ impl ProcedureInner {
 
     /// Apply the arguments to the function, returning the next application.
     #[maybe_async]
-    pub fn apply(&self, args: Vec<Value>, dyn_state: &mut DynamicState) -> Application {
+    pub fn apply(&self, args: Vec<Value>, dyn_state: &mut DynamicState<'_>) -> Application {
         if let FuncPtr::PromptBarrier { barrier_id: id, .. } = self.func {
             dyn_state.pop_marks();
             match dyn_state.pop_dyn_stack() {
@@ -570,6 +570,20 @@ impl Procedure {
         args.push(halt_continuation(self.get_runtime()));
 
         maybe_await!(Application::new(self.clone(), args).eval(&mut DynamicState::default()))
+    }
+
+    /// Like `call`, but with a provided `DynamicState`.
+    #[maybe_async]
+    pub fn call_with_dyn_state(
+        &self,
+        args: &[Value],
+        dyn_state: &mut DynamicState<'_>,
+    ) -> Result<Vec<Value>, Exception> {
+        let mut args = args.to_vec();
+
+        args.push(halt_continuation(self.get_runtime()));
+
+        maybe_await!(Application::new(self.clone(), args).eval(dyn_state))
     }
 
     #[cfg(feature = "async")]
