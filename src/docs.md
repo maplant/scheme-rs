@@ -279,7 +279,7 @@ pub fn call_with_var(
     
     // Call the thunk arg with the new dyn state:
     let thunk: Procedure = args[0].clone().try_into()?;
-    let result = thunk.call_with_dyn_state(&mut new_dyn_state)?;
+    let result = thunk.call_with_dyn_state(&[], &mut new_dyn_state)?;
     
     // Return to the continuation:
     Ok(Application::new(k.try_into()?, result))
