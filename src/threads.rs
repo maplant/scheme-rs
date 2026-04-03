@@ -13,7 +13,7 @@ use scheme_rs_macros::bridge;
 use crate::{
     exceptions::Exception,
     gc::{Gc, Trace},
-    proc::Procedure,
+    proc::{ContinuationBarrier, Procedure},
     records::{RecordTypeDescriptor, SchemeCompatible, rtd},
     value::Value,
 };
@@ -46,12 +46,12 @@ pub fn spawn(thunk: Procedure) -> Result<Vec<Value>, Exception> {
 
         #[cfg(not(feature = "async"))]
         {
-            *cell_write = thunk.call(&[]);
+            *cell_write = thunk.call(&[], &mut ContinuationBarrier::new());
         }
 
         #[cfg(feature = "async")]
         {
-            *cell_write = thunk.call_sync(&[]);
+            *cell_write = thunk.call_sync(&[], &mut ContinuationBarrier::new());
         }
     });
     let id = join_handle.thread().id();

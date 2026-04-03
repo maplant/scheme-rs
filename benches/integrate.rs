@@ -1,4 +1,9 @@
-use scheme_rs::{env::TopLevelEnvironment, proc::Procedure, runtime::Runtime, value::Expect1};
+use scheme_rs::{
+    env::TopLevelEnvironment,
+    proc::{ContinuationBarrier, Procedure},
+    runtime::Runtime,
+    value::Expect1,
+};
 
 use criterion::*;
 use scheme_rs_macros::{maybe_async, maybe_await};
@@ -18,7 +23,7 @@ fn integrate_benchmark(c: &mut Criterion) {
     let proc = integrate_fn();
 
     c.bench_function("integrate", |b| {
-        b.iter(|| proc.call(&[]));
+        b.iter(|| proc.call(&[], &mut ContinuationBarrier::new()));
     });
 }
 
@@ -31,7 +36,7 @@ fn integrate_benchmark(c: &mut Criterion) {
     c.bench_function("integrate", |b| {
         b.to_async(&runtime).iter(|| {
             let val = proc.clone();
-            async move { val.call(&[]).await }
+            async move { val.call(&[], &mut ContinuationBarrier::new()).await }
         })
     });
 }

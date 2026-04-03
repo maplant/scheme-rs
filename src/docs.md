@@ -76,7 +76,9 @@ automatically garbage collected and implement `Send` and `Sync` and are
 anywhere.
 
 ```rust
-# use scheme_rs::{runtime::Runtime, env::TopLevelEnvironment, value::Value, proc::Procedure};
+# use scheme_rs::{
+# runtime::Runtime, env::TopLevelEnvironment, value::Value, proc::{ContinuationBarrier, Procedure},
+# };
 # let runtime = Runtime::new();
 # let env = TopLevelEnvironment::new_repl(&runtime);
 # env.import("(library (rnrs))".parse().unwrap());
@@ -95,7 +97,10 @@ anywhere.
 # .unwrap();
 # let factorial = factorial.cast_to_scheme_type::<Procedure>().unwrap();
 let [result] = factorial
-    .call(&[Value::from(5)])
+    .call(
+        &[Value::from(5)],
+        &mut ContinuationBarrier::new(),
+    )
     .unwrap()
     .try_into()
     .unwrap();
@@ -239,26 +244,26 @@ which adhere to the scheme condition system. See
 
 # Mutable references
 
-scheme-rs supports accessing mutable variables via the [`DynamicState`](proc) 
+scheme-rs supports accessing mutable variables via the [`ContinuationBarrier`](proc) 
 parameter. Mutable variables are called "params" in scheme-rs due to their 
 similarity to [dynamic parameters](https://srfi.schemers.org/srfi-39/srfi-39.html).
 
-Use of mutable variables enforces a continuation barrier.
+Creating a new mutable references enforces a new continuation barrier.
 
 ```rust
 # use scheme_rs::{
 # registry::cps_bridge, value::Value, exceptions::Exception, 
-# runtime::Runtime, env::TopLevelEnvironment, proc::{Application, DynamicState, Procedure}}; 
+# runtime::Runtime, env::TopLevelEnvironment, proc::{Application, ContinuationBarrier, Procedure}}; 
 #[cps_bridge(def = "inc", lib = "(example)")]
 pub fn inc(
     _runtime: &Runtime,
     _env: &[Value],
     _args: &[Value],
     _rest_args: &[Value],
-    dyn_state: &mut DynamicState,
+    barrier: &mut ContinuationBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
-    let var: &mut u32 = dyn_state.get_param("var").unwrap().downcast_mut().unwrap();
+    let var: &mut u32 = barrier.get_param("var").unwrap().downcast_mut().unwrap();
     *var += 1;
     Ok(Application::new(k.try_into()?, vec![Value::from(*var)]))
 }
@@ -269,17 +274,17 @@ pub fn call_with_var(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    dyn_state: &mut DynamicState,
+    barrier: &mut ContinuationBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
     // Set up the new dynamic state and add the param
     let mut var = 0u32;
-    let mut new_dyn_state = DynamicState::from(dyn_state.save());
-    new_dyn_state.add_param("var", &mut var);
+    let mut new_barrier = ContinuationBarrier::from(barrier.save());
+    new_barrier.add_param("var", &mut var);
     
     // Call the thunk arg with the new dyn state:
     let thunk: Procedure = args[0].clone().try_into()?;
-    let result = thunk.call_with_dyn_state(&[], &mut new_dyn_state)?;
+    let result = thunk.call(&[], &mut new_barrier)?;
     
     // Return to the continuation:
     Ok(Application::new(k.try_into()?, result))

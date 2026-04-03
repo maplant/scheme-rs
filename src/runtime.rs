@@ -15,7 +15,8 @@ use crate::{
     num,
     ports::{BufferMode, Port, Transcoder},
     proc::{
-        Application, ContinuationPtr, DynamicState, FuncPtr, ProcDebugInfo, Procedure, UserPtr,
+        Application, ContinuationBarrier, ContinuationPtr, FuncPtr, ProcDebugInfo, Procedure,
+        UserPtr,
     },
     registry::Registry,
     symbols::Symbol,
@@ -124,7 +125,9 @@ impl Runtime {
         let compiled = body.compile_top_level();
         let closure = maybe_await!(self.compile_expr(compiled));
 
-        maybe_await!(Application::new(closure, Vec::new()).eval(&mut DynamicState::default()))
+        maybe_await!(
+            Application::new(closure, Vec::new()).eval(&mut ContinuationBarrier::default())
+        )
     }
 
     /// Define a library from Rust code. Useful if file system access is disabled.
@@ -414,7 +417,7 @@ unsafe extern "C" fn apply(
     op: *const (),
     args: *const *const (),
     num_args: u32,
-    dyn_state: *mut DynamicState,
+    barrier: *mut ContinuationBarrier,
 ) -> *mut Application {
     unsafe {
         let args: Vec<_> = (0..num_args)
@@ -427,7 +430,7 @@ unsafe extern "C" fn apply(
                 let raised = raise(
                     Runtime::from_raw_inc_rc(runtime),
                     Exception::invalid_operator(x.type_name()).into(),
-                    dyn_state.as_mut().unwrap_unchecked(),
+                    barrier.as_mut().unwrap_unchecked(),
                 );
                 return Box::into_raw(Box::new(raised));
             }
@@ -467,12 +470,12 @@ unsafe extern "C" fn get_frame(op: *const (), span: *const ()) -> *const () {
 unsafe extern "C" fn set_continuation_mark(
     tag: *const (),
     val: *const (),
-    dyn_state: *mut DynamicState,
+    barrier: *mut ContinuationBarrier,
 ) {
     unsafe {
         let tag = Value::from_raw_inc_rc(tag);
         let val = Value::from_raw_inc_rc(val);
-        dyn_state
+        barrier
             .as_mut()
             .unwrap()
             .set_continuation_mark(tag.cast_to_scheme_type().unwrap(), val);
@@ -553,7 +556,7 @@ unsafe extern "C" fn make_continuation(
     num_envs: u32,
     num_required_args: u32,
     variadic: bool,
-    dyn_state: *mut DynamicState,
+    barrier: *mut ContinuationBarrier,
 ) -> *const () {
     unsafe {
         // Collect the environment:
@@ -561,7 +564,7 @@ unsafe extern "C" fn make_continuation(
             .map(|i| Value::from_raw_inc_rc(env.add(i as usize).read()))
             .collect();
 
-        let proc = dyn_state.as_mut().unwrap().new_k(
+        let proc = barrier.as_mut().unwrap().new_k(
             Runtime::from_raw_inc_rc(runtime),
             env,
             fn_ptr,

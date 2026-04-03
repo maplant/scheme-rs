@@ -27,7 +27,7 @@ use crate::{
     cps::Compile,
     exceptions::Exception,
     gc::{Gc, Trace},
-    proc::{Application, DynamicState, Procedure},
+    proc::{Application, ContinuationBarrier, Procedure},
     runtime::Runtime,
     symbols::Symbol,
     syntax::{Identifier, Syntax},
@@ -306,7 +306,7 @@ impl TopLevelEnvironment {
             &sexprs
         ))?;
         let compiled = maybe_await!(rt.compile_expr(body.compile_top_level()));
-        maybe_await!(Application::new(compiled, Vec::new()).eval(&mut DynamicState::new()))
+        maybe_await!(Application::new(compiled, Vec::new()).eval(&mut ContinuationBarrier::new()))
     }
 
     #[maybe_async]
@@ -326,7 +326,7 @@ impl TopLevelEnvironment {
             &sexpr
         ))?;
         let compiled = maybe_await!(rt.compile_expr(body.compile_top_level()));
-        maybe_await!(Application::new(compiled, Vec::new()).eval(&mut DynamicState::new()))
+        maybe_await!(Application::new(compiled, Vec::new()).eval(&mut ContinuationBarrier::new()))
     }
 
     #[maybe_async]
@@ -386,7 +386,8 @@ impl TopLevelEnvironment {
         let compiled = defn_body.compile_top_level();
         let rt = { self.0.read().rt.clone() };
         let proc = maybe_await!(rt.compile_expr(compiled));
-        let _ = maybe_await!(Application::new(proc, Vec::new()).eval(&mut DynamicState::new()))?;
+        let _ =
+            maybe_await!(Application::new(proc, Vec::new()).eval(&mut ContinuationBarrier::new()))?;
         self.0.write().state = LibraryState::Invoked;
         Ok(())
     }

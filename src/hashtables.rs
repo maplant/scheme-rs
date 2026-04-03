@@ -11,7 +11,7 @@ use std::{
 use crate::{
     exceptions::Exception,
     gc::{Gc, Trace},
-    proc::Procedure,
+    proc::{ContinuationBarrier, Procedure},
     registry::bridge,
     strings::WideString,
     symbols::Symbol,
@@ -55,22 +55,30 @@ impl HashTableInner {
 
     #[cfg(not(feature = "async"))]
     pub fn hash(&self, val: Value) -> Result<u64, Exception> {
-        self.hash.call(&[val])?.expect1()
+        self.hash
+            .call(&[val], &mut ContinuationBarrier::new())?
+            .expect1()
     }
 
     #[cfg(feature = "async")]
     pub fn hash(&self, val: Value) -> Result<u64, Exception> {
-        self.hash.call_sync(&[val])?.expect1()
+        self.hash
+            .call_sync(&[val], &mut ContinuationBarrier::new())?
+            .expect1()
     }
 
     #[cfg(not(feature = "async"))]
     pub fn eq(&self, lhs: Value, rhs: Value) -> Result<bool, Exception> {
-        self.eq.call(&[lhs, rhs])?.expect1()
+        self.eq
+            .call(&[lhs, rhs], &mut ContinuationBarrier::new())?
+            .expect1()
     }
 
     #[cfg(feature = "async")]
     pub fn eq(&self, lhs: Value, rhs: Value) -> Result<bool, Exception> {
-        self.eq.call_sync(&[lhs, rhs])?.expect1()
+        self.eq
+            .call_sync(&[lhs, rhs], &mut ContinuationBarrier::new())?
+            .expect1()
     }
 
     /// Equivalent to `hashtable-ref`
@@ -159,10 +167,14 @@ impl HashTableInner {
         for entry in table.iter_hash_mut(hash) {
             if entry.hash == hash && self.eq(key.clone(), entry.key.clone())? {
                 #[cfg(not(feature = "async"))]
-                let updated = proc.call(slice::from_ref(&entry.val))?[0].clone();
+                let updated = proc
+                    .call(slice::from_ref(&entry.val), &mut ContinuationBarrier::new())?[0]
+                    .clone();
 
                 #[cfg(feature = "async")]
-                let updated = proc.call_sync(slice::from_ref(&entry.val))?[0].clone();
+                let updated = proc
+                    .call_sync(slice::from_ref(&entry.val), &mut ContinuationBarrier::new())?[0]
+                    .clone();
 
                 entry.val = updated;
                 return Ok(());
@@ -170,10 +182,12 @@ impl HashTableInner {
         }
 
         #[cfg(not(feature = "async"))]
-        let updated = proc.call(slice::from_ref(default))?[0].clone();
+        let updated =
+            proc.call(slice::from_ref(default), &mut ContinuationBarrier::new())?[0].clone(); // 
 
         #[cfg(feature = "async")]
-        let updated = proc.call_sync(slice::from_ref(default))?[0].clone();
+        let updated =
+            proc.call_sync(slice::from_ref(default), &mut ContinuationBarrier::new())?[0].clone();
 
         table.insert_unique(
             hash,
