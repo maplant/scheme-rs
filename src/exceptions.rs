@@ -351,6 +351,9 @@ where
     W: std::io::Write,
     S: std::fmt::Display,
 {
+    if lines.is_empty() {
+        return Ok(());
+    }
     writeln!(w, "--> {}:{}:{}:", span.file, span.line, span.column)?;
     let start = span.line.saturating_sub(2);
     let end = (span.line + 3).min(lines.len() as u32);
