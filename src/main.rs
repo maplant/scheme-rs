@@ -50,6 +50,7 @@ struct InputHelper {
 }
 
 /// scheme-rs entry point
+#[maybe_async]
 fn entry() -> Result<(), Exception> {
     let args = Args::parse();
 
@@ -115,9 +116,14 @@ fn entry() -> Result<(), Exception> {
             }
         };
 
-        for result in maybe_await!(repl.eval_sexpr(true, sexpr))?.into_iter() {
-            println!("${n_results} = {result:?}");
-            n_results += 1;
+        match maybe_await!(repl.eval_sexpr(true, sexpr)) {
+            Ok(results) => {
+                for result in results.into_iter() {
+                    println!("${n_results} = {result:?}");
+                    n_results += 1;
+                }
+            }
+            Err(err) => print_exception(err).unwrap(),
         }
     }
 
@@ -127,7 +133,7 @@ fn entry() -> Result<(), Exception> {
 #[maybe_async]
 #[cfg_attr(feature = "async", tokio::main)]
 fn main() {
-    if let Err(e) = entry() {
+    if let Err(e) = maybe_await!(entry()) {
         print_exception(e).unwrap();
         process::exit(1);
     };
@@ -141,7 +147,7 @@ fn pretty_print_exception<W: std::io::Write>(
     // only doing this once would be a bit better for perf, but this is the "err" path either way.
     let contents = fs::read_to_string(filename).unwrap_or_default();
     let lines: Vec<&str> = contents.lines().collect();
-    writeln!(w)?;
+    // writeln!(w)?;
     pe.pretty_print(w, filename, &lines)
 }
 
@@ -164,14 +170,12 @@ fn print_exception(exception: Exception) -> io::Result<()> {
         } else if let Some(syntax) = condition.cast_to_rust_type::<SyntaxViolation>() {
             pretty_print_exception(&mut w, &syntax.file_name(), syntax.as_ref())?;
         } else if let Some(trace) = condition.cast_to_rust_type::<StackTrace>() {
-            let first = trace.trace.first().unwrap();
+            let Some(first) = trace.trace.first() else {
+                continue;
+            };
+            writeln!(w, " - Trace:")?;
             let syntax = first.cast_to_scheme_type::<Gc<Syntax>>().unwrap();
-            pretty_print_exception(
-                &mut w,
-                // BUG: this is empty?
-                syntax.span().file.as_str(),
-                trace.as_ref(),
-            )?;
+            pretty_print_exception(&mut w, syntax.span().file.as_str(), trace.as_ref())?;
         } else if condition.cast_to_rust_type::<Assertion>().is_some() {
             writeln!(w, " - Assertion failed")?;
         } else {
