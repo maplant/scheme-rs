@@ -22,6 +22,9 @@ use std::{
 
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
+/// Re-export of the inventory crate for use with proc macros
+pub use inventory;
+
 #[cfg(feature = "async")]
 use futures::future::BoxFuture;
 use parking_lot::RwLock;

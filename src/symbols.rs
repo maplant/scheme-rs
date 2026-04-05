@@ -63,6 +63,12 @@ impl PartialEq<&'_ str> for Symbol {
     }
 }
 
+impl From<&str> for Symbol {
+    fn from(value: &str) -> Self {
+        Symbol::intern(value)
+    }
+}
+
 #[bridge(name = "symbol=?", lib = "(rnrs base builtins (6))")]
 pub fn symbol_equal_pred(
     symbol1: Symbol,

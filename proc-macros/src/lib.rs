@@ -18,7 +18,7 @@ use syn::{
 /// `async? fn(arg: &T, ... (rest_args: &[Value])?) -> Result<Vec<Value>, Exception>`
 ///
 /// The types of the arguments can be any `T` for which `T: TryFrom<&Value>`, or
-/// they can be a `&Value`. Scheme-rs will throw an excpetion if 
+/// they can be a `&Value`. Scheme-rs will throw an excpetion if
 ///
 /// Bridge functions can be async if the `async` feature flag is enabled.
 ///
@@ -95,7 +95,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 _env: &'a [::scheme_rs::value::Value],
                 args: &'a [::scheme_rs::value::Value],
                 rest_args: &'a [::scheme_rs::value::Value],
-                dyn_state: &'a mut ::scheme_rs::proc::DynamicState,
+                barrier: &'a mut ::scheme_rs::proc::ContBarrier,
                 k: ::scheme_rs::value::Value,
             ) -> futures::future::BoxFuture<'a, scheme_rs::proc::Application> {
                 #bridge
@@ -110,7 +110,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                                         return ::scheme_rs::exceptions::raise(
                                             runtime.clone(),
                                             err.into(),
-                                            dyn_state,
+                                            barrier,
                                         )
                                     }
                                 },
@@ -123,7 +123,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                             Err(err) => return ::scheme_rs::exceptions::raise(
                                 runtime.clone(),
                                 err.into(),
-                                dyn_state,
+                                barrier,
                             ),
                             Ok(result) => result,
                         };
@@ -133,7 +133,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 )
             }
 
-            inventory::submit! {
+            ::scheme_rs::registry::inventory::submit! {
                 ::scheme_rs::registry::BridgeFn::new(
                     #name,
                     #lib,
@@ -157,7 +157,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 _env: &[::scheme_rs::value::Value],
                 args: &[::scheme_rs::value::Value],
                 rest_args: &[::scheme_rs::value::Value],
-                dyn_state: &mut ::scheme_rs::proc::DynamicState,
+                barrier: &mut ::scheme_rs::proc::ContBarrier,
                 k: ::scheme_rs::value::Value,
             ) -> scheme_rs::proc::Application {
                 #bridge
@@ -170,7 +170,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                                 return ::scheme_rs::exceptions::raise(
                                     runtime.clone(),
                                     err.into(),
-                                    dyn_state,
+                                    barrier,
                                 )
                             }
                         },
@@ -184,7 +184,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                     Err(err) => return ::scheme_rs::exceptions::raise(
                         runtime.clone(),
                         err.into(),
-                        dyn_state,
+                        barrier,
                     ),
                     Ok(result) => result,
                 };
@@ -193,7 +193,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 ::scheme_rs::proc::Application::new(k, result)
             }
 
-            inventory::submit! {
+            ::scheme_rs::registry::inventory::submit! {
                 ::scheme_rs::registry::BridgeFn::new(
                     #name,
                     #lib,
@@ -229,7 +229,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
 ///    `Procedure::new`.
 ///  - `args: &[Value]`: The arguments to the procedure.
 ///  - `rest_args: &[Value]`: Any variadic arguments provided to the procedure.
-///  - `dyn_state: &mut DynamicState`: The dynamic state of the program.
+///  - `barrier: &mut ContBarrier`: The dynamic state of the program.
 ///  - `k: Value`: The current continuation.
 ///
 /// The `cps_bridge` proc macro takes two arguments: `def` which specifies the
@@ -251,7 +251,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
 ///     _env: &[Value],
 ///     args: &[Value],
 ///     rest_args: &[Value],
-///     _dyn_state: &mut DynamicState,
+///     _barrier: &mut ContBarrier,
 ///     k: Value,
 /// ) -> Result<Application, Exception> {
 ///     if rest_args.is_empty() {
@@ -320,7 +320,7 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         };
 
         let inventory = quote! {
-            inventory::submit! {
+            ::scheme_rs::registry::inventory::submit! {
                 ::scheme_rs::registry::BridgeFn::new(
                     #name,
                     #lib,
@@ -366,7 +366,7 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 env: &'a [::scheme_rs::value::Value],
                 args: &'a [::scheme_rs::value::Value],
                 rest_args: &'a [::scheme_rs::value::Value],
-                dyn_state: &'a mut ::scheme_rs::proc::DynamicState,
+                barrier: &'a mut ::scheme_rs::proc::ContBarrier,
                 k: ::scheme_rs::value::Value,
             ) -> futures::future::BoxFuture<'a, scheme_rs::proc::Application> {
                 #bridge
@@ -377,14 +377,14 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                         env,
                         args,
                         rest_args,
-                        dyn_state,
+                        barrier,
                         k
                     ).await {
                         Ok(app) => app,
                         Err(err) => ::scheme_rs::exceptions::raise(
                             runtime.clone(),
                             err.into(),
-                            dyn_state
+                            barrier
                         ),
                     }
                 })
@@ -399,7 +399,7 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 env: &[::scheme_rs::value::Value],
                 args: &[::scheme_rs::value::Value],
                 rest_args: &[::scheme_rs::value::Value],
-                dyn_state: &mut ::scheme_rs::proc::DynamicState,
+                barrier: &mut ::scheme_rs::proc::ContBarrier,
                 k: ::scheme_rs::value::Value,
             ) -> scheme_rs::proc::Application {
                 #bridge
@@ -409,14 +409,14 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                     env,
                     args,
                     rest_args,
-                    dyn_state,
+                    barrier,
                     k
                 ) {
                     Ok(app) => app,
                     Err(err) => ::scheme_rs::exceptions::raise(
                         runtime.clone(),
                         err.into(),
-                        dyn_state
+                        barrier
                     )
                 }
             }
@@ -846,7 +846,7 @@ pub fn runtime_fn(_args: TokenStream, item: TokenStream) -> TokenStream {
 
     quote! {
         #[allow(unused)]
-        inventory::submit!(crate::runtime::RuntimeFn::new(
+        ::scheme_rs::registry::inventory::submit!(crate::runtime::RuntimeFn::new(
             |runtime_fns, module| {
                 use cranelift::prelude::*;
                 use cranelift_module::{Module, Linkage};
@@ -1152,10 +1152,7 @@ impl Parse for DefineConditionType {
                 scheme_name = Some(input.parse()?);
             } else if keyword == "lib" {
                 if lib.is_some() {
-                    return Err(Error::new(
-                        keyword.span(),
-                        "duplicate definition of lib",
-                    ));
+                    return Err(Error::new(keyword.span(), "duplicate definition of lib"));
                 }
                 let _: Token![:] = input.parse()?;
                 lib = Some(input.parse()?);
@@ -1258,15 +1255,18 @@ pub fn define_condition_type(tokens: TokenStream) -> TokenStream {
 
     let lib = lib.map(|lib| quote!(lib: #lib,));
 
-    let constructor =  constructor.map_or_else(
-        || quote! {
-            constructor: || Ok(#rust_name::default()),
+    let constructor = constructor.map_or_else(
+        || {
+            quote! {
+                constructor: || Ok(#rust_name::default()),
+            }
         },
         |constructor| {
             quote!(
                 constructor: #constructor,
             )
-        });
+        },
+    );
 
     let dbg = dbg.map(|dbg| {
         quote!(

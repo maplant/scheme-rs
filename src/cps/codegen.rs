@@ -127,7 +127,10 @@ impl Cps {
 
         let params = {
             let block_params = builder.block_params(entry_block);
-            [block_params[RUNTIME_PARAM], block_params[DYN_STATE_PARAM]]
+            [
+                block_params[RUNTIME_PARAM],
+                block_params[CONT_BARRIER_PARAM],
+            ]
         };
 
         let mut deferred = Vec::new();
@@ -202,7 +205,7 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
         self.params[0]
     }
 
-    fn get_dyn_state(&self) -> Value {
+    fn get_barrier(&self) -> Value {
         self.params[1]
     }
 
@@ -507,13 +510,13 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
     fn set_continuation_mark_codegen(&mut self, tag: &CpsValue, val: &CpsValue) {
         let tag = self.value_codegen(tag);
         let val = self.value_codegen(val);
-        let dyn_state = self.get_dyn_state();
+        let barrier = self.get_barrier();
         let set_continuation_mark = self
             .module
             .declare_func_in_func(self.runtime_funcs.set_continuation_mark, self.builder.func);
         self.builder
             .ins()
-            .call(set_continuation_mark, &[tag, val, dyn_state]);
+            .call(set_continuation_mark, &[tag, val, barrier]);
     }
 
     fn error_no_patterns_match_codegen(&mut self) {
@@ -554,7 +557,7 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
 
     fn app_codegen(&mut self, operator: &CpsValue, args: &[CpsValue]) {
         let runtime = self.get_runtime();
-        let dyn_state = self.get_dyn_state();
+        let barrier = self.get_barrier();
         let operator = self.value_codegen(operator);
 
         // Allocate space for the args to be passed to make_application
@@ -572,7 +575,7 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
         let call = self
             .builder
             .ins()
-            .call(apply, &[runtime, operator, args_addr, args_len, dyn_state]);
+            .call(apply, &[runtime, operator, args_addr, args_len, barrier]);
         let app = self.builder.inst_results(call)[0];
         self.drops_codegen();
         self.builder.ins().return_(&[app]);
@@ -628,11 +631,11 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
 
     fn raise_codegen(&mut self, val: Value) {
         let runtime = self.get_runtime();
-        let dyn_state = self.get_dyn_state();
+        let barrier = self.get_barrier();
         let raise = self
             .module
             .declare_func_in_func(self.runtime_funcs.raise_rt, self.builder.func);
-        let call = self.builder.ins().call(raise, &[runtime, val, dyn_state]);
+        let call = self.builder.ins().call(raise, &[runtime, val, barrier]);
         let result = self.builder.inst_results(call)[0];
         self.builder.ins().return_(&[result]);
     }
@@ -745,7 +748,7 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
             });
             self.runtime_funcs.make_user
         } else {
-            args.push(self.get_dyn_state());
+            args.push(self.get_barrier());
             self.runtime_funcs.make_continuation
         };
 
@@ -773,7 +776,7 @@ pub struct ProcedureBundle {
 const RUNTIME_PARAM: usize = 0;
 const ENV_PARAM: usize = 1;
 const ARGS_PARAM: usize = 2;
-const DYN_STATE_PARAM: usize = 3;
+const CONT_BARRIER_PARAM: usize = 3;
 const CONTINUATION_PARAM: usize = 4;
 
 fn make_sig(sig: &mut Signature, has_continuation: bool) {
@@ -852,7 +855,10 @@ impl ProcedureBundle {
 
         let params = {
             let block_params = builder.block_params(entry_block);
-            [block_params[RUNTIME_PARAM], block_params[DYN_STATE_PARAM]]
+            [
+                block_params[RUNTIME_PARAM],
+                block_params[CONT_BARRIER_PARAM],
+            ]
         };
 
         let mut rebinds = Rebinds::new();

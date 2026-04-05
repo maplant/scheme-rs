@@ -76,7 +76,9 @@ automatically garbage collected and implement `Send` and `Sync` and are
 anywhere.
 
 ```rust
-# use scheme_rs::{runtime::Runtime, env::TopLevelEnvironment, value::Value, proc::Procedure};
+# use scheme_rs::{
+# runtime::Runtime, env::TopLevelEnvironment, value::Value, proc::{ContBarrier, Procedure},
+# };
 # let runtime = Runtime::new();
 # let env = TopLevelEnvironment::new_repl(&runtime);
 # env.import("(library (rnrs))".parse().unwrap());
@@ -95,7 +97,10 @@ anywhere.
 # .unwrap();
 # let factorial = factorial.cast_to_scheme_type::<Procedure>().unwrap();
 let [result] = factorial
-    .call(&[Value::from(5)])
+    .call(
+        &[Value::from(5)],
+        &mut ContBarrier::new(),
+    )
     .unwrap()
     .try_into()
     .unwrap();
@@ -236,3 +241,52 @@ See [the `value` module for more information](value).
 All scheme-rs functions that return an error return an [`Exception`](exceptions)
 which adhere to the scheme condition system. See
 [the `exceptions` module for more information](exceptions).
+
+# Mutable references
+
+scheme-rs supports accessing mutable variables via the [`ContBarrier`](proc) 
+parameter. Mutable variables are called "params" in scheme-rs due to their 
+similarity to [dynamic parameters](https://srfi.schemers.org/srfi-39/srfi-39.html).
+
+Creating a new mutable references enforces a new continuation barrier.
+
+```rust
+# use scheme_rs::{
+# registry::cps_bridge, value::Value, exceptions::Exception, 
+# runtime::Runtime, env::TopLevelEnvironment, proc::{Application, ContBarrier, Procedure}}; 
+#[cps_bridge(def = "inc", lib = "(example)")]
+pub fn inc(
+    _runtime: &Runtime,
+    _env: &[Value],
+    _args: &[Value],
+    _rest_args: &[Value],
+    barrier: &mut ContBarrier,
+    k: Value,
+) -> Result<Application, Exception> {
+    let var: &mut u32 = barrier.get_param("var").unwrap().downcast_mut().unwrap();
+    *var += 1;
+    Ok(Application::new(k.try_into()?, vec![Value::from(*var)]))
+}
+
+#[cps_bridge(def = "call-with-var thunk", lib = "(example)")]
+pub fn call_with_var(
+    _runtime: &Runtime,
+    _env: &[Value],
+    args: &[Value],
+    _rest_args: &[Value],
+    barrier: &mut ContBarrier,
+    k: Value,
+) -> Result<Application, Exception> {
+    // Set up the new dynamic state and add the param
+    let mut var = 0u32;
+    let mut new_barrier = ContBarrier::from(barrier.save());
+    new_barrier.add_param("var", &mut var);
+    
+    // Call the thunk arg with the new dyn state:
+    let thunk: Procedure = args[0].clone().try_into()?;
+    let result = thunk.call(&[], &mut new_barrier)?;
+    
+    // Return to the continuation:
+    Ok(Application::new(k.try_into()?, result))
+}
+```

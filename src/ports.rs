@@ -24,7 +24,7 @@ use crate::{
     enumerations::{EnumerationSet, EnumerationType},
     exceptions::{Assertion, Error, Exception, raise},
     gc::{Gc, GcInner, Trace},
-    proc::{Application, DynStackElem, DynamicState, FuncPtr, Procedure, pop_dyn_stack},
+    proc::{Application, ContBarrier, DynStackElem, FuncPtr, Procedure, pop_dyn_stack},
     records::{Record, RecordTypeDescriptor, SchemeCompatible},
     runtime::{Runtime, RuntimeInner},
     strings::WideString,
@@ -567,11 +567,14 @@ mod __impl {
     pub(super) fn proc_to_read_fn(read: Procedure) -> ReadFn {
         Box::new(move |_, buff, start, count| {
             let [read] = read
-                .call(&[
-                    Value::from(buff.clone()),
-                    Value::from(start),
-                    Value::from(count),
-                ])
+                .call(
+                    &[
+                        Value::from(buff.clone()),
+                        Value::from(start),
+                        Value::from(count),
+                    ],
+                    &mut ContBarrier::new(),
+                )
                 .map_err(|err| err.add_condition(IoReadError::new()))?
                 .try_into()
                 .map_err(|_| {
@@ -589,11 +592,14 @@ mod __impl {
     pub(super) fn proc_to_write_fn(write: Procedure) -> WriteFn {
         Box::new(move |_, buff, start, count| {
             let _ = write
-                .call(&[
-                    Value::from(buff.clone()),
-                    Value::from(start),
-                    Value::from(count),
-                ])
+                .call(
+                    &[
+                        Value::from(buff.clone()),
+                        Value::from(start),
+                        Value::from(count),
+                    ],
+                    &mut ContBarrier::new(),
+                )
                 .map_err(|err| err.add_condition(IoReadError::new()))?;
             Ok(())
         })
@@ -602,7 +608,7 @@ mod __impl {
     pub(super) fn proc_to_get_pos_fn(get_pos: Procedure) -> GetPosFn {
         Box::new(move |_| {
             let [pos] = get_pos
-                .call(&[])
+                .call(&[], &mut ContBarrier::new())
                 .map_err(|err| err.add_condition(IoError::new()))?
                 .try_into()
                 .map_err(|_| {
@@ -618,7 +624,7 @@ mod __impl {
     pub(super) fn proc_to_set_pos_fn(set_pos: Procedure) -> SetPosFn {
         Box::new(move |_, pos| {
             let _ = set_pos
-                .call(&[Value::from(pos)])
+                .call(&[Value::from(pos)], &mut ContBarrier::new())
                 .map_err(|err| err.add_condition(IoError::new()))?;
             Ok(())
         })
@@ -627,7 +633,7 @@ mod __impl {
     pub(super) fn proc_to_close_fn(close: Procedure) -> CloseFn {
         Box::new(move |_| {
             let _ = close
-                .call(&[])
+                .call(&[], &mut ContBarrier::new())
                 .map_err(|err| err.add_condition(IoError::new()))?;
             Ok(())
         })
@@ -809,11 +815,14 @@ mod __impl {
             let read = read.clone();
             Box::pin(async move {
                 let [read] = read
-                    .call(&[
-                        Value::from(buff.clone()),
-                        Value::from(start),
-                        Value::from(count),
-                    ])
+                    .call(
+                        &[
+                            Value::from(buff.clone()),
+                            Value::from(start),
+                            Value::from(count),
+                        ],
+                        &mut ContBarrier::new(),
+                    )
                     .await
                     .map_err(|err| err.add_condition(IoReadError::new()))?
                     .try_into()
@@ -837,11 +846,14 @@ mod __impl {
             let write = write.clone();
             Box::pin(async move {
                 let _ = write
-                    .call(&[
-                        Value::from(buff.clone()),
-                        Value::from(start),
-                        Value::from(count),
-                    ])
+                    .call(
+                        &[
+                            Value::from(buff.clone()),
+                            Value::from(start),
+                            Value::from(count),
+                        ],
+                        &mut ContBarrier::new(),
+                    )
                     .await
                     .map_err(|err| err.add_condition(IoReadError::new()))?;
                 Ok(())
@@ -854,7 +866,7 @@ mod __impl {
             let get_pos = get_pos.clone();
             Box::pin(async move {
                 let [pos] = get_pos
-                    .call(&[])
+                    .call(&[], &mut ContBarrier::new())
                     .await
                     .map_err(|err| err.add_condition(IoError::new()))?
                     .try_into()
@@ -876,7 +888,7 @@ mod __impl {
             let set_pos = set_pos.clone();
             Box::pin(async move {
                 let _ = set_pos
-                    .call(&[Value::from(pos)])
+                    .call(&[Value::from(pos)], &mut ContBarrier::new())
                     .await
                     .map_err(|err| err.add_condition(IoError::new()))?;
                 Ok(())
@@ -889,7 +901,7 @@ mod __impl {
             let close = close.clone();
             Box::pin(async move {
                 let _ = close
-                    .call(&[])
+                    .call(&[], &mut ContBarrier::new())
                     .await
                     .map_err(|err| err.add_condition(IoError::new()))?;
                 Ok(())
@@ -1668,11 +1680,14 @@ impl CustomTextualPortData {
             && let len = self.output_buffer.len()
             && len != 0
         {
-            maybe_await!(write.call(&[
-                Value::from(self.output_buffer.clone()),
-                Value::from(0usize),
-                Value::from(len)
-            ]))?;
+            maybe_await!(write.call(
+                &[
+                    Value::from(self.output_buffer.clone()),
+                    Value::from(0usize),
+                    Value::from(len)
+                ],
+                &mut ContBarrier::new()
+            ))?;
             self.output_buffer.clear();
         }
 
@@ -1687,11 +1702,14 @@ impl CustomTextualPortData {
                     (self.chars_read, self.input_buffer.len() - self.chars_read)
                 }
             };
-            let read: usize = maybe_await!(read.call(&[
-                Value::from(self.input_buffer.clone()),
-                Value::from(start),
-                Value::from(count)
-            ]))?
+            let read: usize = maybe_await!(read.call(
+                &[
+                    Value::from(self.input_buffer.clone()),
+                    Value::from(start),
+                    Value::from(count)
+                ],
+                &mut ContBarrier::new()
+            ))?
             .expect1()?;
 
             if read == 0 {
@@ -1746,11 +1764,11 @@ impl CustomTextualPortData {
             && let Some(set_pos) = port_info.set_pos.as_ref()
             && self.chars_read > 0
         {
-            let curr_pos: u64 = maybe_await!(get_pos.call(&[]))?
+            let curr_pos: u64 = maybe_await!(get_pos.call(&[], &mut ContBarrier::new()))?
                 .expect1()
                 .map_err(|err: Exception| err.add_condition(IoWriteError::new()))?;
             let seek_to = curr_pos - (self.chars_read as u64 - self.input_pos as u64);
-            maybe_await!(set_pos.call(&[Value::from(seek_to)]))?;
+            maybe_await!(set_pos.call(&[Value::from(seek_to)], &mut ContBarrier::new()))?;
             self.chars_read = 0;
             self.input_pos = 0;
         }
@@ -1761,11 +1779,14 @@ impl CustomTextualPortData {
                     {
                         self.output_buffer.0.chars.write()[0] = chr;
                     }
-                    maybe_await!(write.call(&[
-                        Value::from(self.output_buffer.clone()),
-                        Value::from(0usize),
-                        Value::from(1usize)
-                    ]))?;
+                    maybe_await!(write.call(
+                        &[
+                            Value::from(self.output_buffer.clone()),
+                            Value::from(0usize),
+                            Value::from(1usize)
+                        ],
+                        &mut ContBarrier::new()
+                    ))?;
                 }
             }
             BufferMode::Line => {
@@ -1782,11 +1803,14 @@ impl CustomTextualPortData {
                         }
                     }
                     let len = self.output_buffer.len();
-                    maybe_await!(write.call(&[
-                        Value::from(self.output_buffer.clone()),
-                        Value::from(0usize),
-                        Value::from(len)
-                    ]))?;
+                    maybe_await!(write.call(
+                        &[
+                            Value::from(self.output_buffer.clone()),
+                            Value::from(0usize),
+                            Value::from(len)
+                        ],
+                        &mut ContBarrier::new()
+                    ))?;
                     self.output_buffer.clear();
                 }
             }
@@ -1794,11 +1818,14 @@ impl CustomTextualPortData {
                 for chr in s.chars() {
                     let len = self.output_buffer.len();
                     if len >= BUFFER_SIZE {
-                        maybe_await!(write.call(&[
-                            Value::from(self.output_buffer.clone()),
-                            Value::from(0usize),
-                            Value::from(len)
-                        ]))?;
+                        maybe_await!(write.call(
+                            &[
+                                Value::from(self.output_buffer.clone()),
+                                Value::from(0usize),
+                                Value::from(len)
+                            ],
+                            &mut ContBarrier::new()
+                        ))?;
                         self.output_buffer.clear();
                     }
                     self.output_buffer.0.chars.write().push(chr);
@@ -1819,11 +1846,14 @@ impl CustomTextualPortData {
             return Err(Exception::io_error("port is closed"));
         }
 
-        maybe_await!(write.call(&[
-            Value::from(self.output_buffer.clone()),
-            Value::from(0usize),
-            Value::from(self.output_buffer.len()),
-        ]))?;
+        maybe_await!(write.call(
+            &[
+                Value::from(self.output_buffer.clone()),
+                Value::from(0usize),
+                Value::from(self.output_buffer.len()),
+            ],
+            &mut ContBarrier::new()
+        ))?;
         self.output_buffer.clear();
 
         Ok(())
@@ -1839,7 +1869,7 @@ impl CustomTextualPortData {
             return Err(Exception::io_error("port is closed"));
         }
 
-        maybe_await!(get_pos.call(&[]))?.expect1()
+        maybe_await!(get_pos.call(&[], &mut ContBarrier::new()))?.expect1()
     }
 
     #[maybe_async]
@@ -1856,18 +1886,21 @@ impl CustomTextualPortData {
 
         // Reset the buffers
         if let Some(write) = port_info.write.as_ref() {
-            maybe_await!(write.call(&[
-                Value::from(self.output_buffer.clone()),
-                Value::from(0usize),
-                Value::from(self.output_buffer.len()),
-            ]))?;
+            maybe_await!(write.call(
+                &[
+                    Value::from(self.output_buffer.clone()),
+                    Value::from(0usize),
+                    Value::from(self.output_buffer.len()),
+                ],
+                &mut ContBarrier::new()
+            ))?;
             self.output_buffer.clear();
         }
 
         self.chars_read = 0;
         self.input_pos = 0;
 
-        maybe_await!(set_pos.call(&[Value::from(pos)]))?;
+        maybe_await!(set_pos.call(&[Value::from(pos)], &mut ContBarrier::new()))?;
 
         Ok(())
     }
@@ -1884,7 +1917,7 @@ impl CustomTextualPortData {
         maybe_await!(self.flush(port_info))?;
 
         if let Some(close) = port_info.close.as_ref() {
-            maybe_await!(close.call(&[]))?;
+            maybe_await!(close.call(&[], &mut ContBarrier::new()))?;
         }
 
         Ok(())
@@ -3350,10 +3383,10 @@ pub fn current_input_port(
     _env: &[Value],
     _args: &[Value],
     _rest_args: &[Value],
-    dyn_state: &mut DynamicState,
+    barrier: &mut ContBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
-    let current_input_port = dyn_state.current_input_port();
+    let current_input_port = barrier.current_input_port();
     Ok(Application::new(
         k.try_into().unwrap(),
         vec![Value::from(current_input_port)],
@@ -3366,10 +3399,10 @@ pub fn current_output_port(
     _env: &[Value],
     _args: &[Value],
     _rest_args: &[Value],
-    dyn_state: &mut DynamicState,
+    barrier: &mut ContBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
-    let current_input_port = dyn_state.current_output_port();
+    let current_input_port = barrier.current_output_port();
     Ok(Application::new(
         k.try_into().unwrap(),
         vec![Value::from(current_input_port)],
@@ -3382,7 +3415,7 @@ pub fn current_error_port(
     _env: &[Value],
     _args: &[Value],
     _rest_args: &[Value],
-    _dyn_state: &mut DynamicState,
+    _barrier: &mut ContBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
     let current_error_port = Port::new(
@@ -3791,7 +3824,7 @@ pub fn call_with_input_file(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    dyn_state: &mut DynamicState,
+    barrier: &mut ContBarrier<'_>,
     k: Value,
 ) -> Result<Application, Exception> {
     #[cfg(not(feature = "async"))]
@@ -3828,7 +3861,7 @@ pub fn call_with_input_file(
     );
 
     let (num_req_args, variadic) = k.cast_to_scheme_type::<Procedure>().unwrap().get_formals();
-    let k = dyn_state.new_k(
+    let k = barrier.new_k(
         runtime.clone(),
         vec![Value::from(port.clone()), k],
         close_port_and_call_k,
@@ -3852,7 +3885,7 @@ pub fn call_with_output_file(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    dyn_state: &mut DynamicState,
+    barrier: &mut ContBarrier<'_>,
     k: Value,
 ) -> Result<Application, Exception> {
     #[cfg(not(feature = "async"))]
@@ -3888,7 +3921,7 @@ pub fn call_with_output_file(
     );
 
     let (num_req_args, variadic) = k.cast_to_scheme_type::<Procedure>().unwrap().get_formals();
-    let k = dyn_state.new_k(
+    let k = barrier.new_k(
         runtime.clone(),
         vec![Value::from(port.clone()), k],
         close_port_and_call_k,
@@ -3906,7 +3939,7 @@ unsafe extern "C" fn close_port_and_call_k(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
-    dyn_state: *mut DynamicState,
+    barrier: *mut ContBarrier,
 ) -> *mut Application {
     #[cfg(not(feature = "async"))]
     let bridge = FuncPtr::Bridge;
@@ -3926,7 +3959,7 @@ unsafe extern "C" fn close_port_and_call_k(
         let k_proc = k.cast_to_scheme_type::<Procedure>().unwrap();
         let args = k_proc.collect_args(args);
 
-        let k = dyn_state.as_mut().unwrap().new_k(
+        let k = barrier.as_mut().unwrap().new_k(
             runtime.clone(),
             vec![k, Value::from(args)],
             call_k_with_env,
@@ -3945,7 +3978,7 @@ unsafe extern "C" fn call_k_with_env(
     _runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
-    _dyn_state: *mut DynamicState,
+    _barrier: *mut ContBarrier,
 ) -> *mut Application {
     unsafe {
         // env[0] is the continuation:
@@ -3976,7 +4009,7 @@ pub fn with_input_from_file(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    dyn_state: &mut DynamicState,
+    barrier: &mut ContBarrier<'_>,
     k: Value,
 ) -> Result<Application, Exception> {
     #[cfg(not(feature = "async"))]
@@ -4012,12 +4045,12 @@ pub fn with_input_from_file(
         Some(Transcoder::native()),
     );
 
-    dyn_state.push_dyn_stack(DynStackElem::CurrentInputPort(port.clone()));
+    barrier.push_dyn_stack(DynStackElem::CurrentInputPort(port.clone()));
 
     let k_proc: Procedure = k.clone().try_into().unwrap();
     let (req_args, var) = k_proc.get_formals();
 
-    let k = dyn_state.new_k(
+    let k = barrier.new_k(
         runtime.clone(),
         vec![k.clone()],
         pop_dyn_stack,
@@ -4025,7 +4058,7 @@ pub fn with_input_from_file(
         var,
     );
 
-    let k = dyn_state.new_k(
+    let k = barrier.new_k(
         runtime.clone(),
         vec![Value::from(port.clone()), Value::from(k)],
         close_port_and_call_k,
@@ -4046,7 +4079,7 @@ pub fn with_output_to_file(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    dyn_state: &mut DynamicState,
+    barrier: &mut ContBarrier<'_>,
     k: Value,
 ) -> Result<Application, Exception> {
     #[cfg(not(feature = "async"))]
@@ -4082,12 +4115,12 @@ pub fn with_output_to_file(
         Some(Transcoder::native()),
     );
 
-    dyn_state.push_dyn_stack(DynStackElem::CurrentOutputPort(port.clone()));
+    barrier.push_dyn_stack(DynStackElem::CurrentOutputPort(port.clone()));
 
     let k_proc: Procedure = k.clone().try_into().unwrap();
     let (req_args, var) = k_proc.get_formals();
 
-    let k = dyn_state.new_k(
+    let k = barrier.new_k(
         runtime.clone(),
         vec![k.clone()],
         pop_dyn_stack,
@@ -4095,7 +4128,7 @@ pub fn with_output_to_file(
         var,
     );
 
-    let k = dyn_state.new_k(
+    let k = barrier.new_k(
         runtime.clone(),
         vec![Value::from(port.clone()), Value::from(k)],
         close_port_and_call_k,
@@ -4137,17 +4170,17 @@ pub fn read_char(
     _env: &[Value],
     _args: &[Value],
     rest_args: &[Value],
-    dyn_state: &mut DynamicState,
+    barrier: &mut ContBarrier<'_>,
     k: Value,
 ) -> Result<Application, Exception> {
     let input_port = match rest_args {
-        [] => dyn_state.current_input_port(),
+        [] => barrier.current_input_port(),
         [input_port] => input_port.clone().try_into()?,
         _ => {
             return Ok(raise(
                 runtime.clone(),
                 Value::from(Exception::wrong_num_of_var_args(0..1, rest_args.len())),
-                dyn_state,
+                barrier,
             ));
         }
     };
@@ -4171,17 +4204,17 @@ pub fn peek_char(
     _env: &[Value],
     _args: &[Value],
     rest_args: &[Value],
-    dyn_state: &mut DynamicState,
+    barrier: &mut ContBarrier<'_>,
     k: Value,
 ) -> Result<Application, Exception> {
     let input_port = match rest_args {
-        [] => dyn_state.current_input_port(),
+        [] => barrier.current_input_port(),
         [input_port] => input_port.clone().try_into()?,
         _ => {
             return Ok(raise(
                 runtime.clone(),
                 Value::from(Exception::wrong_num_of_var_args(0..1, rest_args.len())),
-                dyn_state,
+                barrier,
             ));
         }
     };
@@ -4205,17 +4238,17 @@ pub fn read(
     _env: &[Value],
     _args: &[Value],
     rest_args: &[Value],
-    dyn_state: &mut DynamicState,
+    barrier: &mut ContBarrier<'_>,
     k: Value,
 ) -> Result<Application, Exception> {
     let input_port = match rest_args {
-        [] => dyn_state.current_input_port(),
+        [] => barrier.current_input_port(),
         [input_port] => input_port.clone().try_into()?,
         _ => {
             return Ok(raise(
                 runtime.clone(),
                 Value::from(Exception::wrong_num_of_var_args(0..1, rest_args.len())),
-                dyn_state,
+                barrier,
             ));
         }
     };
@@ -4239,19 +4272,19 @@ pub fn write_char(
     _env: &[Value],
     args: &[Value],
     rest_args: &[Value],
-    dyn_state: &mut DynamicState,
+    barrier: &mut ContBarrier<'_>,
     k: Value,
 ) -> Result<Application, Exception> {
     let [chr] = args else { unreachable!() };
     let chr: char = chr.clone().try_into()?;
     let output_port = match rest_args {
-        [] => dyn_state.current_output_port(),
+        [] => barrier.current_output_port(),
         [output_port] => output_port.clone().try_into()?,
         _ => {
             return Ok(raise(
                 runtime.clone(),
                 Value::from(Exception::wrong_num_of_var_args(1..2, rest_args.len())),
-                dyn_state,
+                barrier,
             ));
         }
     };
@@ -4271,17 +4304,17 @@ pub fn newline(
     _env: &[Value],
     _args: &[Value],
     rest_args: &[Value],
-    dyn_state: &mut DynamicState,
+    barrier: &mut ContBarrier<'_>,
     k: Value,
 ) -> Result<Application, Exception> {
     let output_port = match rest_args {
-        [] => dyn_state.current_output_port(),
+        [] => barrier.current_output_port(),
         [output_port] => output_port.clone().try_into()?,
         _ => {
             return Ok(raise(
                 runtime.clone(),
                 Value::from(Exception::wrong_num_of_var_args(0..1, rest_args.len())),
-                dyn_state,
+                barrier,
             ));
         }
     };
@@ -4301,19 +4334,19 @@ pub fn display(
     _env: &[Value],
     args: &[Value],
     rest_args: &[Value],
-    dyn_state: &mut DynamicState,
+    barrier: &mut ContBarrier<'_>,
     k: Value,
 ) -> Result<Application, Exception> {
     let [obj] = args else { unreachable!() };
     let obj = format!("{obj}");
     let output_port = match rest_args {
-        [] => dyn_state.current_output_port(),
+        [] => barrier.current_output_port(),
         [output_port] => output_port.clone().try_into()?,
         _ => {
             return Ok(raise(
                 runtime.clone(),
                 Value::from(Exception::wrong_num_of_var_args(1..2, rest_args.len())),
-                dyn_state,
+                barrier,
             ));
         }
     };
@@ -4333,19 +4366,19 @@ pub fn write(
     _env: &[Value],
     args: &[Value],
     rest_args: &[Value],
-    dyn_state: &mut DynamicState,
+    barrier: &mut ContBarrier<'_>,
     k: Value,
 ) -> Result<Application, Exception> {
     let [obj] = args else { unreachable!() };
     let obj = format!("{obj:?}");
     let output_port = match rest_args {
-        [] => dyn_state.current_output_port(),
+        [] => barrier.current_output_port(),
         [output_port] => output_port.clone().try_into()?,
         _ => {
             return Ok(raise(
                 runtime.clone(),
                 Value::from(Exception::wrong_num_of_var_args(1..2, rest_args.len())),
-                dyn_state,
+                barrier,
             ));
         }
     };

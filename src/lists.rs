@@ -7,7 +7,7 @@ use parking_lot::RwLock;
 use crate::{
     exceptions::Exception,
     gc::{Gc, GcInner, Trace},
-    proc::{Application, DynamicState, Procedure},
+    proc::{Application, ContBarrier, Procedure},
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
     strings::WideString,
@@ -362,7 +362,7 @@ pub fn map(
     _env: &[Value],
     args: &[Value],
     list_n: &[Value],
-    dyn_state: &mut DynamicState,
+    barrier: &mut ContBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
     let [mapper, list_1] = args else {
@@ -387,7 +387,7 @@ pub fn map(
         *input = cdr;
     }
 
-    let map_k = dyn_state.new_k(
+    let map_k = barrier.new_k(
         runtime.clone(),
         vec![
             Value::from(Vec::<Value>::new()),
@@ -409,7 +409,7 @@ unsafe extern "C" fn map_k(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
-    dyn_state: *mut DynamicState,
+    barrier: *mut ContBarrier,
 ) -> *mut Application {
     unsafe {
         // TODO: Probably need to do this in a way that avoids mutable variables
@@ -444,7 +444,7 @@ unsafe extern "C" fn map_k(
             *input = cdr;
         }
 
-        let map_k = dyn_state.as_mut().unwrap().new_k(
+        let map_k = barrier.as_mut().unwrap().new_k(
             Runtime::from_raw_inc_rc(runtime),
             vec![
                 Value::from(output),
