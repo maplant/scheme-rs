@@ -50,6 +50,7 @@ struct InputHelper {
 }
 
 /// scheme-rs entry point
+#[maybe_async]
 fn entry() -> Result<(), Exception> {
     let args = Args::parse();
 
@@ -127,7 +128,7 @@ fn entry() -> Result<(), Exception> {
 #[maybe_async]
 #[cfg_attr(feature = "async", tokio::main)]
 fn main() {
-    if let Err(e) = entry() {
+    if let Err(e) = maybe_await!(entry()) {
         print_exception(e).unwrap();
         process::exit(1);
     };
