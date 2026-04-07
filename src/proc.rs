@@ -850,6 +850,37 @@ impl<'a> ContBarrier<'a> {
             .map(|v| v.map(|v| v.deref_mut()))
     }
 
+    pub fn iter_params<'b>(&'b mut self) -> impl Iterator<Item = (Symbol, Param<'b>)> {
+        self.params.iter_mut().map(|(k, v)| (*k, v.deref_mut()))
+    }
+
+    /// Constructs a child barrier from the current barrier, extracting an array
+    /// of parameters that are not automatically passed onto the child.
+    pub fn child_barrier<'b, 'c, const N: usize>(
+        &'b mut self,
+        params: [impl Into<Symbol>; N],
+    ) -> ([Option<Param<'b>>; N], ContBarrier<'c>)
+    where
+        'b: 'c,
+    {
+        let param_to_index = params
+            .into_iter()
+            .enumerate()
+            .map(|(idx, param)| (param.into(), idx))
+            .collect::<HashMap<_, _>>();
+        let mut params = [const { None }; N];
+        let mut child_barrier = ContBarrier::from(self.save());
+        for (key, value) in self.params.iter_mut() {
+            let value = value.deref_mut();
+            if let Some(idx) = param_to_index.get(key) {
+                params[*idx] = Some(value);
+            } else {
+                child_barrier.params.insert(*key, value);
+            }
+        }
+        (params.try_into().unwrap(), child_barrier)
+    }
+
     pub(crate) fn push_marks(&mut self) {
         self.cont_marks.push(HashMap::new());
     }
@@ -933,12 +964,6 @@ impl<'a> ContBarrier<'a> {
         self.dyn_stack.pop()
     }
 
-    /*
-    pub(crate) fn dyn_stack_get(&self, idx: usize) -> Option<&DynStackElem> {
-        self.dyn_stack.get(idx)
-    }
-    */
-
     pub(crate) fn dyn_stack_last(&self) -> Option<&DynStackElem> {
         self.dyn_stack.last()
     }
@@ -955,6 +980,19 @@ impl<'a> ContBarrier<'a> {
 impl Default for ContBarrier<'_> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<'a, 'b, 'c> From<&'b mut ContBarrier<'a>> for ContBarrier<'c>
+where
+    'b: 'c,
+{
+    fn from(value: &'b mut ContBarrier<'a>) -> Self {
+        let mut new_barrier = ContBarrier::from(value.save());
+        for (key, value) in value.params.iter_mut() {
+            new_barrier.params.insert(*key, value.deref_mut());
+        }
+        new_barrier
     }
 }
 
