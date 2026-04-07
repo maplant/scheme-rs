@@ -42,7 +42,7 @@ pub struct Gc<T: ?Sized> {
 }
 
 #[allow(private_bounds)]
-impl<T: GcOrTrace + 'static> Gc<T> {
+impl<T: Send + GcOrTrace + 'static> Gc<T> {
     /// Allocate a new object on the heap and track .
     pub fn new(data: T) -> Gc<T> {
         alloc_gc_object(data)
@@ -53,7 +53,7 @@ impl<T: GcOrTrace + 'static> Gc<T> {
 impl<T: GcOrTrace + Send + Sync + 'static> Gc<T> {
     /// Convert a `Gc<T>` into a `Gc<dyn Any>`. This is a separate function
     /// since [`CoerceUnsized`](std::ops::CoerceUnsized) is unstable.
-    pub fn into_any(this: Self) -> Gc<dyn Any> {
+    pub fn into_any(this: Self) -> Gc<dyn Any + Send + Sync> {
         let this = ManuallyDrop::new(this);
         let any: NonNull<GcInner<dyn Any + Send + Sync>> = this.ptr;
         Gc {
@@ -179,13 +179,13 @@ impl<T: ?Sized> AsRef<T> for Gc<T> {
     }
 }
 
-impl<T: Trace> From<T> for Gc<T> {
+impl<T: Send + Trace> From<T> for Gc<T> {
     fn from(t: T) -> Self {
         Gc::new(t)
     }
 }
 
-impl<T: Trace + Default> Default for Gc<T> {
+impl<T: Send + Trace + Default> Default for Gc<T> {
     fn default() -> Self {
         Gc::new(T::default())
     }
