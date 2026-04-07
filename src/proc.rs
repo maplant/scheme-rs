@@ -878,7 +878,7 @@ impl<'a> ContBarrier<'a> {
                 child_barrier.params.insert(*key, value);
             }
         }
-        (params.try_into().unwrap(), child_barrier)
+        (params, child_barrier)
     }
 
     pub(crate) fn push_marks(&mut self) {
