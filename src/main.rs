@@ -1,20 +1,21 @@
 use clap::Parser;
+use parking_lot::Mutex;
 use rustyline::{
     Completer, Config, Editor, Helper, Highlighter, Hinter, Validator,
     highlight::MatchingBracketHighlighter,
-    history::DefaultHistory,
+    history::{DefaultHistory, FileHistory},
     validate::{ValidationContext, ValidationResult, Validator},
 };
 use scheme_rs::{
     env::TopLevelEnvironment,
-    exceptions::{Assertion, Exception, Message, PrettyException, StackTrace, SyntaxViolation},
+    exceptions::{Assertion, Exception, Message, PrettyCondition, SourceStore, StackTrace, SyntaxViolation},
     gc::Gc,
-    ports::{BufferMode, Port, Prompt, Transcoder},
+    ports::{BufferMode, IntoPort, Port, Prompt, ReadFn, Transcoder},
     runtime::Runtime,
     syntax::{Span, Syntax},
 };
 use scheme_rs_macros::{maybe_async, maybe_await};
-use std::io::Write;
+use std::{any::Any, io::Write, sync::Arc};
 use std::{fs, process};
 use std::{io, path::Path};
 
@@ -47,6 +48,23 @@ struct InputHelper {
     validator: InputValidator,
     #[rustyline(Highlighter)]
     highlighter: MatchingBracketHighlighter,
+}
+
+pub struct TextStoringPrompt {
+    prompt: Prompt<InputHelper, FileHistory>,
+    text: Arc<Mutex<String>>
+}
+
+impl IntoPort for TextStoringPrompt {
+    fn read_fn() -> Option<ReadFn> {
+        let prompt_read_fn = Prompt::<InputHelper, FileHistory>::read_fn().unwrap();
+        Some(Box::new(move |any, buff, start, count| {
+            let this = any.downcast_mut::<Self>().unwrap();
+            let written = (prompt_read_fn)(&mut this.prompt, buff, start, count)?;
+            this.text.lock().push_str(str::from_utf8(&buff.as_slice()[start..(start + written)]).unwrap());
+            Ok(written)
+        }))
+    }
 }
 
 /// scheme-rs entry point
@@ -91,7 +109,12 @@ fn entry() -> Result<(), Exception> {
 
     editor.set_helper(Some(helper));
 
-    let prompt = Prompt::new(editor);
+    let text = Arc::new(Mutex::new(String::new()));
+
+    let prompt = TextStoringPrompt {
+        prompt: Prompt::new(editor),
+        text: text.clone(),
+    };
 
     let mut span = Span::new("<prompt>");
     let input_port = Port::new(
@@ -123,8 +146,17 @@ fn entry() -> Result<(), Exception> {
                     n_results += 1;
                 }
             }
-            Err(err) => print_exception(err).unwrap(),
+            Err(err) => {
+                pretty_print_exception(
+                    &err,
+                    text.as_ref(),
+                    &span,
+                );
+                // err.pretty_print().unwrap(),
+            }
         }
+
+            // dbg!(text.lock());
     }
 
     Ok(())
@@ -134,53 +166,19 @@ fn entry() -> Result<(), Exception> {
 #[cfg_attr(feature = "async", tokio::main)]
 fn main() {
     if let Err(e) = maybe_await!(entry()) {
-        print_exception(e).unwrap();
+        // e.pretty_print().unwrap();
         process::exit(1);
     };
 }
 
-fn pretty_print_exception<W: std::io::Write>(
-    w: &mut W,
-    filename: &str,
-    pe: &impl PrettyException<W>,
-) -> io::Result<()> {
-    // only doing this once would be a bit better for perf, but this is the "err" path either way.
-    let contents = fs::read_to_string(filename).unwrap_or_default();
-    let lines: Vec<&str> = contents.lines().collect();
-    // writeln!(w)?;
-    pe.pretty_print(w, filename, &lines)
-}
-
-fn print_exception(exception: Exception) -> io::Result<()> {
-    let stdout = io::stdout();
-    let mut w = stdout.lock();
-
-    let Ok(conditions) = exception.simple_conditions() else {
-        return writeln!(
-            w,
-            "Exception occurred with a non-condition value: {:?}",
-            exception.0
-        );
-    };
-
-    writeln!(w, "Uncaught exception:")?;
-    for condition in conditions.into_iter().rev() {
-        if let Some(message) = condition.cast_to_rust_type::<Message>() {
-            writeln!(w, " - Message: {}", message.message)?;
-        } else if let Some(syntax) = condition.cast_to_rust_type::<SyntaxViolation>() {
-            pretty_print_exception(&mut w, &syntax.file_name(), syntax.as_ref())?;
-        } else if let Some(trace) = condition.cast_to_rust_type::<StackTrace>() {
-            let Some(first) = trace.trace.first() else {
-                continue;
-            };
-            writeln!(w, " - Trace:")?;
-            let syntax = first.cast_to_scheme_type::<Gc<Syntax>>().unwrap();
-            pretty_print_exception(&mut w, syntax.span().file.as_str(), trace.as_ref())?;
-        } else if condition.cast_to_rust_type::<Assertion>().is_some() {
-            writeln!(w, " - Assertion failed")?;
-        } else {
-            writeln!(w, " - Condition: {condition:?}")?;
-        }
-    }
-    Ok(())
+fn pretty_print_exception(
+    exception: &Exception,
+    repl_text: &Mutex<String>,
+    repl_span: &Span,
+) {
+    let mut source_store = SourceStore::default();
+    source_store.store(repl_span.file.clone(), repl_text.lock().lines().map(|x| x.to_string()).collect());
+    let mut out = String::new();
+    exception.pretty_print(&source_store, &mut out).unwrap();
+    print!("{out}");
 }

@@ -8,7 +8,7 @@ use crate::{
     ast::{DefinitionBody, Primitive},
     cps::{Compile, Cps, codegen::RuntimeFunctionsBuilder},
     env::{Environment, Global, TopLevelEnvironment},
-    exceptions::{Exception, raise},
+    exceptions::{Exception, SourceStore, raise},
     gc::{Gc, GcInner, Trace, init_gc},
     hashtables::EqualHashSet,
     lists::{Pair, list_to_vec},
@@ -20,7 +20,7 @@ use crate::{
     syntax::{Identifier, Span, Syntax},
     value::{Cell, UnpackedValue, Value},
 };
-use parking_lot::RwLock;
+use parking_lot::{MappedRwLockReadGuard, MappedRwLockWriteGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use scheme_rs_macros::{maybe_async, maybe_await, runtime_fn};
 use std::{
     collections::{BTreeSet, HashSet},
@@ -166,6 +166,14 @@ impl Runtime {
     pub(crate) unsafe fn from_raw_inc_rc(rt: *mut GcInner<RwLock<RuntimeInner>>) -> Self {
         unsafe { Self(Gc::from_raw_inc_rc(rt)) }
     }
+
+    pub fn read_sources(&self) -> MappedRwLockReadGuard<'_, SourceStore> {
+        RwLockReadGuard::map(self.0.read(), |inner| &inner.source_store)
+    }
+
+    pub fn write_sources(&self) -> MappedRwLockWriteGuard<'_, SourceStore> {
+        RwLockWriteGuard::map(self.0.write(), |inner| &mut inner.source_store)
+    }
 }
 
 #[cfg(not(feature = "async"))]
@@ -187,6 +195,7 @@ pub(crate) struct RuntimeInner {
     pub(crate) constants_pool: EqualHashSet,
     pub(crate) globals_pool: HashSet<Global>,
     pub(crate) debug_info: DebugInfo,
+    pub(crate) source_store: SourceStore,
 }
 
 impl Default for RuntimeInner {
@@ -222,6 +231,7 @@ impl RuntimeInner {
             constants_pool: EqualHashSet::new(),
             globals_pool: HashSet::new(),
             debug_info: DebugInfo::default(),
+            source_store: SourceStore::default(),
         }
     }
 }

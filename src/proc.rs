@@ -664,9 +664,9 @@ impl Application {
     /// Evaluate the application - and all subsequent application - until all that
     /// remains are values. This is the main trampoline of the evaluation engine.
     #[maybe_async]
-    pub fn eval<'a, 'b>(
+    pub fn eval(
         mut self,
-        barrier: &'a mut ContBarrier<'b>,
+        barrier: &mut ContBarrier<'_>,
     ) -> Result<Vec<Value>, Exception> {
         loop {
             let op = match self.op {
@@ -729,7 +729,7 @@ impl ProcDebugInfo {
                 line: debug_info.line,
                 column: debug_info.column as usize,
                 offset: debug_info.offset,
-                file: std::sync::Arc::new(debug_info.file.to_string()),
+                file: std::sync::Arc::from(debug_info.file.to_string()),
             },
         }
     }

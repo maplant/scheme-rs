@@ -68,6 +68,10 @@ impl Vector {
     pub fn iter(&self) -> impl Iterator<Item = Value> {
         self.0.vec.read().clone().into_iter()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.vec.read().is_empty()
+    }
 }
 
 impl From<Vec<Value>> for Vector {

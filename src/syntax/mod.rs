@@ -34,13 +34,13 @@ pub struct Span {
     pub line: u32,
     pub column: usize,
     pub offset: usize,
-    pub file: Arc<String>,
+    pub file: Arc<str>,
 }
 
 impl Span {
     pub fn new(file: &str) -> Self {
         Self {
-            file: Arc::new(file.to_string()),
+            file: Arc::from(file.to_string()),
             ..Default::default()
         }
     }
@@ -54,7 +54,7 @@ impl fmt::Display for Span {
 
 impl Default for Span {
     fn default() -> Self {
-        static UNKNOWN: LazyLock<Arc<String>> = LazyLock::new(|| Arc::new("<unknown>".to_string()));
+        static UNKNOWN: LazyLock<Arc<str>> = LazyLock::new(|| Arc::from("<unknown>".to_string()));
         Self {
             line: 1,
             column: 0,

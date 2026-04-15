@@ -5,6 +5,7 @@ edition = "2024"
 authors = ["Matthew Plant <maplant@protonmail.com>"]
 description = "Embedded scheme for the Rust ecosystem"
 license = "MPL-2.0"
+keywords = ["scheme", "JIT", "async", "scripting"]
 
 documentation = "https://docs.rs/crate/scheme-rs"
 homepage = "https://github.com/maplant/scheme-rs"

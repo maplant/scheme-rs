@@ -501,17 +501,17 @@ mod __impl {
 
     use super::*;
 
-    pub(super) type ReadFn = Box<
+    pub type ReadFn = Box<
         dyn Fn(&mut dyn Any, &ByteVector, usize, usize) -> Result<usize, Exception> + Send + Sync,
     >;
-    pub(super) type WriteFn =
+    pub type WriteFn =
         Box<dyn Fn(&mut dyn Any, &ByteVector, usize, usize) -> Result<(), Exception> + Send + Sync>;
-    pub(super) type GetPosFn = Box<dyn Fn(&mut dyn Any) -> Result<u64, Exception> + Send + Sync>;
-    pub(super) type SetPosFn =
+    pub type GetPosFn = Box<dyn Fn(&mut dyn Any) -> Result<u64, Exception> + Send + Sync>;
+    pub type SetPosFn =
         Box<dyn Fn(&mut dyn Any, u64) -> Result<(), Exception> + Send + Sync>;
-    pub(super) type CloseFn = Box<dyn Fn(&mut dyn Any) -> Result<(), Exception> + Send + Sync>;
+    pub type CloseFn = Box<dyn Fn(&mut dyn Any) -> Result<(), Exception> + Send + Sync>;
 
-    pub(super) fn read_fn<T>() -> ReadFn
+    pub fn read_fn<T>() -> ReadFn
     where
         T: Read + Any + Send + 'static,
     {
@@ -524,7 +524,7 @@ mod __impl {
         })
     }
 
-    pub(super) fn write_fn<T>() -> WriteFn
+    pub fn write_fn<T>() -> WriteFn
     where
         T: Write + Any + Send + 'static,
     {
@@ -539,7 +539,7 @@ mod __impl {
         })
     }
 
-    pub(super) fn get_pos_fn<T>() -> GetPosFn
+    pub fn get_pos_fn<T>() -> GetPosFn
     where
         T: Seek + Any + Send + 'static,
     {
@@ -551,7 +551,7 @@ mod __impl {
         })
     }
 
-    pub(super) fn set_pos_fn<T>() -> SetPosFn
+    pub fn set_pos_fn<T>() -> SetPosFn
     where
         T: Seek + Any + Send + 'static,
     {
@@ -695,7 +695,7 @@ mod __impl {
 
     use super::*;
 
-    pub(super) type ReadFn = Box<
+    pub type ReadFn = Box<
         dyn for<'a> Fn(
                 &'a mut (dyn Any + Send),
                 &'a ByteVector,
@@ -705,7 +705,7 @@ mod __impl {
             + Send
             + Sync,
     >;
-    pub(super) type WriteFn = Box<
+    pub type WriteFn = Box<
         dyn for<'a> Fn(
                 &'a mut (dyn Any + Send),
                 &'a ByteVector,
@@ -715,17 +715,17 @@ mod __impl {
             + Send
             + Sync,
     >;
-    pub(super) type GetPosFn = Box<
+    pub type GetPosFn = Box<
         dyn for<'a> Fn(&'a mut (dyn Any + Send)) -> BoxFuture<'a, Result<u64, Exception>>
             + Send
             + Sync,
     >;
-    pub(super) type SetPosFn = Box<
+    pub type SetPosFn = Box<
         dyn for<'a> Fn(&'a mut (dyn Any + Send), u64) -> BoxFuture<'a, Result<(), Exception>>
             + Send
             + Sync,
     >;
-    pub(super) type CloseFn = Box<
+    pub type CloseFn = Box<
         dyn for<'a> Fn(&'a mut (dyn Any + Send)) -> BoxFuture<'a, Result<(), Exception>>
             + Send
             + Sync,
@@ -735,7 +735,7 @@ mod __impl {
     // Bytevectors behind a non-async compatible rwlock. We _could_ put them
     // behind an async compatible one, but I'm not sure that's worthwhile.
 
-    pub(super) fn read_fn<T>() -> ReadFn
+    pub fn read_fn<T>() -> ReadFn
     where
         T: AsyncRead + Any + Send + 'static,
     {
@@ -755,7 +755,7 @@ mod __impl {
         })
     }
 
-    pub(super) fn write_fn<T>() -> WriteFn
+    pub fn write_fn<T>() -> WriteFn
     where
         T: AsyncWrite + Any + Send + 'static,
     {
@@ -777,7 +777,7 @@ mod __impl {
         })
     }
 
-    pub(super) fn get_pos_fn<T>() -> GetPosFn
+    pub fn get_pos_fn<T>() -> GetPosFn
     where
         T: AsyncSeek + Any + Send + 'static,
     {
@@ -793,7 +793,7 @@ mod __impl {
         })
     }
 
-    pub(super) fn set_pos_fn<T>() -> SetPosFn
+    pub fn set_pos_fn<T>() -> SetPosFn
     where
         T: AsyncSeek + Any + Send + 'static,
     {
@@ -984,7 +984,7 @@ mod __impl {
     }
 }
 
-use __impl::*;
+pub use __impl::*;
 
 pub(crate) struct PortInner {
     pub(crate) info: PortInfo,

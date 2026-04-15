@@ -58,8 +58,9 @@ impl<'a> Lexer<'a> {
         maybe_await!(self.port_data.peekn_chars(self.port_info, 0))
     }
 
-    fn skip(&mut self) {
-        self.pos += 1;
+    fn skip(&mut self) -> Result<(), Exception> {
+        self.take()?;
+        Ok(())
     }
 
     #[maybe_async]
@@ -67,6 +68,12 @@ impl<'a> Lexer<'a> {
         let Some(chr) = maybe_await!(self.peek())? else {
             return Ok(None);
         };
+        if chr == '\n' {
+            self.curr_span.line += 1;
+            self.curr_span.column = 0;
+        } else {
+            self.curr_span.column += 1;
+        }
         self.pos += 1;
         Ok(Some(chr))
     }
@@ -105,7 +112,7 @@ impl<'a> Lexer<'a> {
             }
         }
         // tag cannot contain newlines
-        self.curr_span.column += self.pos;
+        self.curr_span.column += pos;
         Ok(true)
     }
 
@@ -229,7 +236,7 @@ impl<'a> Lexer<'a> {
             if maybe_await!(self.match_tag("#|"))? {
                 maybe_await!(self.nested_comment())?;
             } else {
-                self.skip();
+                self.skip()?;
             }
         }
         Ok(())
@@ -288,6 +295,7 @@ impl<'a> Lexer<'a> {
     #[maybe_async]
     pub(crate) fn number(&mut self, default_radix: u32) -> Result<Option<Number>, Exception> {
         let saved_pos = self.pos;
+        let saved_span = self.curr_span.clone();
 
         let (radix, exactness) = maybe_await!(self.radix_and_exactness())?;
 
@@ -303,12 +311,14 @@ impl<'a> Lexer<'a> {
 
         if first_part.is_none() {
             self.pos = saved_pos;
+            self.curr_span = saved_span;
             return Ok(None);
         }
 
         let number = if maybe_await!(self.match_char('i'))? {
             if !has_sign {
                 self.pos = saved_pos;
+                self.curr_span = saved_span;
                 return Ok(None);
             }
             Number {
@@ -327,6 +337,7 @@ impl<'a> Lexer<'a> {
                 let second_part = maybe_await!(self.part(radix))?;
                 if second_part.is_none() || !matched_at && !maybe_await!(self.match_char('i'))? {
                     self.pos = saved_pos;
+                    self.curr_span = saved_span;
                     return Ok(None);
                 }
                 second_part
@@ -345,6 +356,7 @@ impl<'a> Lexer<'a> {
         match maybe_await!(self.peek()) {
             Ok(Some(chr)) if is_subsequent(chr) => {
                 self.pos = saved_pos;
+                self.curr_span = saved_span;
                 return Ok(None);
             }
             Err(err) => return Err(err),
@@ -529,7 +541,7 @@ impl<'a> Lexer<'a> {
             }
         }
         // Skip the terminating quote
-        self.skip();
+        self.skip()?;
         Ok(output)
     }
 
