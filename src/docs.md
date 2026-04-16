@@ -10,7 +10,11 @@ designed to embedded within sync and async Rust.
   executor.
 - `load-libraries-from-fs`: Enables automatically loading libraries from the 
   file system. The library name specifies its location on the filesystem 
-  relative to the currently running process.
+  relative to the currently running process. 
+- `store-source`: Stores source files in memory for better error messages.
+
+The features `load-libraries-from-fs` and `store-source` are enabled by 
+default.
 
 # Getting started
 

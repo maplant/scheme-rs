@@ -269,13 +269,6 @@ impl Exception {
     }
 
     pub fn pretty_print(&self, source_store: &SourceStore, f: &mut impl fmt::Write) -> fmt::Result {
-        /*
-        use io::Write;
-
-        let stdout = io::stdout();
-        let mut w = stdout.lock();
-        */
-
         let Ok(conditions) = self.simple_conditions() else {
             return writeln!(
                 f,
@@ -289,13 +282,7 @@ impl Exception {
             if let Some(message) = condition.cast_to_rust_type::<Message>() {
                 writeln!(f, " - Message: {}", message.message)?;
             } else if let Some(syntax) = condition.cast_to_rust_type::<SyntaxViolation>() {
-                /*
-                println!(" - Syntax error in form: {:?}", syntax.form);
-                if let Some(subform) = syntax.subform.as_ref() {
-                    println!("   (subform: {subform:?})");
-                }
-                 */
-
+                println!(" - Syntax error:");
                 source_store.pretty_print_condition(syntax.as_ref(), f)?;
             } else if let Some(trace) = condition.cast_to_rust_type::<StackTrace>() {
                 if !trace.trace.is_empty() {
@@ -543,7 +530,7 @@ impl PrettyCondition for StackTrace {
         let syntax = first.cast_to_scheme_type::<Gc<Syntax>>().unwrap();
         syntax.span().clone()
     }
-    
+
     fn pretty_print(&self, w: &mut impl fmt::Write) -> fmt::Result {
         for (i, trace) in self.trace.iter().enumerate() {
             let syntax = trace.cast_to_scheme_type::<Gc<Syntax>>().unwrap();
@@ -787,29 +774,6 @@ impl PrettyCondition for SyntaxViolation {
             .span()
             .clone()
     }
-
-    /*
-    fn pretty_print(
-        &self,
-        lines: Option<&[String]>,
-        w: &mut impl fmt::Write,
-    ) -> fmt::Result {
-        // This is set if the syntax violation is a call to an undefined function, but since the
-        // message itself is not part of this pretty printing, but rather its own condition, we
-        // cant do anything with it.
-        //
-        // if let Some(sf) = &self.subform {
-        //     dbg!(sf);
-        // }
-
-        let unpacked_value_ref = self.form.unpacked_ref();
-        let UnpackedValue::Syntax(gc_inner) = unpacked_value_ref.as_ref() else {
-            unreachable!();
-        };
-        let span = gc_inner.span().clone();
-        print_lines_with_offense_from_span(&span, lines, w)
-    }
-    */
 }
 
 impl SyntaxViolation {
@@ -820,16 +784,6 @@ impl SyntaxViolation {
             subform: subform.map(Value::from),
         }
     }
-
-    /*
-    pub fn span(&self) -> Span {
-        let unpacked_value_ref = self.form.unpacked_ref();
-        let UnpackedValue::Syntax(gc_inner) = unpacked_value_ref.as_ref() else {
-            unreachable!();
-        };
-        gc_inner.span().clone()
-    }
-    */
 
     pub fn new_from_values(form: Value, subform: Option<Value>) -> Self {
         Self {

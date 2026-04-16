@@ -3,21 +3,18 @@ use parking_lot::Mutex;
 use rustyline::{
     Completer, Config, Editor, Helper, Highlighter, Hinter, Validator,
     highlight::MatchingBracketHighlighter,
-    history::{DefaultHistory, FileHistory},
+    history::DefaultHistory,
     validate::{ValidationContext, ValidationResult, Validator},
 };
 use scheme_rs::{
     env::TopLevelEnvironment,
-    exceptions::{Assertion, Exception, Message, PrettyCondition, SourceStore, StackTrace, SyntaxViolation},
-    gc::Gc,
+    exceptions::Exception,
     ports::{BufferMode, IntoPort, Port, Prompt, ReadFn, Transcoder},
     runtime::Runtime,
     syntax::{Span, Syntax},
 };
 use scheme_rs_macros::{maybe_async, maybe_await};
-use std::{any::Any, io::Write, sync::Arc};
-use std::{fs, process};
-use std::{io, path::Path};
+use std::{path::Path, process, sync::Arc};
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -27,6 +24,9 @@ struct Args {
     #[arg(short, long)]
     interactive: bool,
 }
+
+#[cfg(not(feature = "async"))]
+use rustyline::history::FileHistory;
 
 #[derive(Default)]
 struct InputValidator;
@@ -51,28 +51,49 @@ struct InputHelper {
 }
 
 pub struct TextStoringPrompt {
+    #[cfg(not(feature = "async"))]
     prompt: Prompt<InputHelper, FileHistory>,
-    text: Arc<Mutex<String>>
+    #[cfg(feature = "async")]
+    prompt: Prompt,
+    text: Arc<Mutex<String>>,
 }
 
+#[cfg(not(feature = "async"))]
 impl IntoPort for TextStoringPrompt {
     fn read_fn() -> Option<ReadFn> {
         let prompt_read_fn = Prompt::<InputHelper, FileHistory>::read_fn().unwrap();
         Some(Box::new(move |any, buff, start, count| {
             let this = any.downcast_mut::<Self>().unwrap();
             let written = (prompt_read_fn)(&mut this.prompt, buff, start, count)?;
-            this.text.lock().push_str(str::from_utf8(&buff.as_slice()[start..(start + written)]).unwrap());
+            this.text
+                .lock()
+                .push_str(str::from_utf8(&buff.as_slice()[start..(start + written)]).unwrap());
             Ok(written)
+        }))
+    }
+}
+
+#[cfg(feature = "async")]
+impl IntoPort for TextStoringPrompt {
+    fn read_fn() -> Option<ReadFn> {
+        Some(Box::new(move |any, buff, start, count| {
+            Box::pin(async move {
+                let prompt_read_fn = Prompt::read_fn().unwrap();
+                let this = any.downcast_mut::<Self>().unwrap();
+                let written = (prompt_read_fn)(&mut this.prompt, buff, start, count).await?;
+                this.text
+                    .lock()
+                    .push_str(str::from_utf8(&buff.as_slice()[start..(start + written)]).unwrap());
+                Ok(written)
+            })
         }))
     }
 }
 
 /// scheme-rs entry point
 #[maybe_async]
-fn entry() -> Result<(), Exception> {
+fn entry(runtime: &Runtime) -> Result<(), Exception> {
     let args = Args::parse();
-
-    let runtime = Runtime::new();
 
     // Run any programs
     for file in &args.files {
@@ -84,7 +105,7 @@ fn entry() -> Result<(), Exception> {
         return Ok(());
     }
 
-    let repl = TopLevelEnvironment::new_repl(&runtime);
+    let repl = TopLevelEnvironment::new_repl(runtime);
 
     maybe_await!(repl.import("(library (rnrs))".parse().unwrap()))
         .expect("Failed to import standard library");
@@ -146,17 +167,17 @@ fn entry() -> Result<(), Exception> {
                     n_results += 1;
                 }
             }
-            Err(err) => {
-                pretty_print_exception(
-                    &err,
-                    text.as_ref(),
-                    &span,
+            Err(exception) => {
+                let mut source_store = runtime.write_sources();
+                source_store.store(
+                    span.file.clone(),
+                    text.lock().lines().map(|x| x.to_string()).collect(),
                 );
-                // err.pretty_print().unwrap(),
+                let mut out = String::new();
+                exception.pretty_print(&source_store, &mut out).unwrap();
+                print!("{out}");
             }
         }
-
-            // dbg!(text.lock());
     }
 
     Ok(())
@@ -165,20 +186,14 @@ fn entry() -> Result<(), Exception> {
 #[maybe_async]
 #[cfg_attr(feature = "async", tokio::main)]
 fn main() {
-    if let Err(e) = maybe_await!(entry()) {
-        // e.pretty_print().unwrap();
+    let runtime = Runtime::new();
+
+    if let Err(exception) = maybe_await!(entry(&runtime)) {
+        let mut out = String::new();
+        exception
+            .pretty_print(&runtime.read_sources(), &mut out)
+            .unwrap();
+        print!("{out}");
         process::exit(1);
     };
-}
-
-fn pretty_print_exception(
-    exception: &Exception,
-    repl_text: &Mutex<String>,
-    repl_span: &Span,
-) {
-    let mut source_store = SourceStore::default();
-    source_store.store(repl_span.file.clone(), repl_text.lock().lines().map(|x| x.to_string()).collect());
-    let mut out = String::new();
-    exception.pretty_print(&source_store, &mut out).unwrap();
-    print!("{out}");
 }

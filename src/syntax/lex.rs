@@ -58,8 +58,9 @@ impl<'a> Lexer<'a> {
         maybe_await!(self.port_data.peekn_chars(self.port_info, 0))
     }
 
+    #[maybe_async]
     fn skip(&mut self) -> Result<(), Exception> {
-        self.take()?;
+        maybe_await!(self.take())?;
         Ok(())
     }
 
@@ -236,7 +237,7 @@ impl<'a> Lexer<'a> {
             if maybe_await!(self.match_tag("#|"))? {
                 maybe_await!(self.nested_comment())?;
             } else {
-                self.skip()?;
+                maybe_await!(self.skip())?;
             }
         }
         Ok(())
@@ -541,7 +542,7 @@ impl<'a> Lexer<'a> {
             }
         }
         // Skip the terminating quote
-        self.skip()?;
+        maybe_await!(self.skip())?;
         Ok(output)
     }
 

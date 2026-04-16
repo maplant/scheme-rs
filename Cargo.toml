@@ -44,9 +44,10 @@ cranelift-module = "0.122"
 tokio = { version = "1.47", features = ["full"], optional = true }
 
 [features]
-default = ["load-libraries-from-fs"]
+default = ["load-libraries-from-fs", "store-source"]
 async = ["dep:futures", "dep:async-stream"]
 load-libraries-from-fs = []
+store-source = []
 
 [profile.release]
 lto = true
