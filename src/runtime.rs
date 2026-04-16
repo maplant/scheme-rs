@@ -19,7 +19,9 @@ use crate::{
     syntax::{Identifier, Span, Syntax},
     value::{Cell, UnpackedValue, Value},
 };
-use parking_lot::{MappedRwLockReadGuard, MappedRwLockWriteGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use parking_lot::{
+    MappedRwLockReadGuard, MappedRwLockWriteGuard, RwLock, RwLockReadGuard, RwLockWriteGuard,
+};
 use scheme_rs_macros::{maybe_async, maybe_await, runtime_fn};
 use std::{
     collections::{BTreeSet, HashSet},
@@ -84,7 +86,7 @@ impl Runtime {
         let env = Environment::Top(progm.clone());
 
         #[cfg(feature = "store-source")]
-        let mut form = {        
+        let mut form = {
             let contents = maybe_await!(read_to_string(path))?;
             let lines = contents.lines().map(|x| x.to_string()).collect();
             let file_name = path.file_name().unwrap().to_str().unwrap_or("<unknown>");
@@ -95,11 +97,11 @@ impl Runtime {
 
         #[cfg(not(feature = "store-source"))]
         let mut form = {
-            use crate::ports::{Port, BufferMode, Transcoder};
+            use crate::ports::{BufferMode, Port, Transcoder};
 
             #[cfg(not(feature = "async"))]
             use std::fs::File;
-            
+
             #[cfg(feature = "tokio")]
             use tokio::fs::File;
 

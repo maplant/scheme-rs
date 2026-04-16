@@ -664,10 +664,7 @@ impl Application {
     /// Evaluate the application - and all subsequent application - until all that
     /// remains are values. This is the main trampoline of the evaluation engine.
     #[maybe_async]
-    pub fn eval(
-        mut self,
-        barrier: &mut ContBarrier<'_>,
-    ) -> Result<Vec<Value>, Exception> {
+    pub fn eval(mut self, barrier: &mut ContBarrier<'_>) -> Result<Vec<Value>, Exception> {
         loop {
             let op = match self.op {
                 OpType::Proc(proc) => proc,

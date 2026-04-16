@@ -507,8 +507,7 @@ mod __impl {
     pub type WriteFn =
         Box<dyn Fn(&mut dyn Any, &ByteVector, usize, usize) -> Result<(), Exception> + Send + Sync>;
     pub type GetPosFn = Box<dyn Fn(&mut dyn Any) -> Result<u64, Exception> + Send + Sync>;
-    pub type SetPosFn =
-        Box<dyn Fn(&mut dyn Any, u64) -> Result<(), Exception> + Send + Sync>;
+    pub type SetPosFn = Box<dyn Fn(&mut dyn Any, u64) -> Result<(), Exception> + Send + Sync>;
     pub type CloseFn = Box<dyn Fn(&mut dyn Any) -> Result<(), Exception> + Send + Sync>;
 
     pub fn read_fn<T>() -> ReadFn
