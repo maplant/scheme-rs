@@ -3065,8 +3065,8 @@ fn open_file_port(
     Ok(Port::new_with_flags(
         filename,
         file,
-        false,
-        true,
+        kind.read(),
+        kind.write(),
         transcoder.is_none(),
         transcoder.is_none(),
         true,

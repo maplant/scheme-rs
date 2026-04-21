@@ -168,13 +168,13 @@ fn entry(runtime: &Runtime) -> Result<(), Exception> {
                 }
             }
             Err(exception) => {
-                let mut source_store = runtime.write_sources();
-                source_store.store(
+                let mut source_cache = runtime.source_cache();
+                source_cache.store(
                     span.file.clone(),
                     text.lock().lines().map(|x| x.to_string()).collect(),
                 );
                 let mut out = String::new();
-                exception.pretty_print(&source_store, &mut out).unwrap();
+                exception.pretty_print(&mut source_cache, &mut out).unwrap();
                 print!("{out}");
             }
         }
@@ -191,7 +191,7 @@ fn main() {
     if let Err(exception) = maybe_await!(entry(&runtime)) {
         let mut out = String::new();
         exception
-            .pretty_print(&runtime.read_sources(), &mut out)
+            .pretty_print(&mut runtime.source_cache(), &mut out)
             .unwrap();
         print!("{out}");
         process::exit(1);

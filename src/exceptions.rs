@@ -65,7 +65,13 @@ use crate::{
 use by_address::ByAddress;
 use parking_lot::RwLock;
 use scheme_rs_macros::runtime_fn;
-use std::{collections::HashMap, convert::Infallible, fmt, ops::Range, sync::Arc};
+use std::{
+    collections::{HashMap, hash_map::Entry},
+    convert::Infallible,
+    fmt,
+    ops::Range,
+    sync::Arc,
+};
 
 /// A macro for easily creating new condition types.
 pub use scheme_rs_macros::define_condition_type;
@@ -268,7 +274,11 @@ impl Exception {
         Ok(None)
     }
 
-    pub fn pretty_print(&self, source_store: &SourceStore, f: &mut impl fmt::Write) -> fmt::Result {
+    pub fn pretty_print(
+        &self,
+        source_cache: &mut SourceCache,
+        f: &mut impl fmt::Write,
+    ) -> fmt::Result {
         let Ok(conditions) = self.simple_conditions() else {
             return writeln!(
                 f,
@@ -282,12 +292,12 @@ impl Exception {
             if let Some(message) = condition.cast_to_rust_type::<Message>() {
                 writeln!(f, " - Message: {}", message.message)?;
             } else if let Some(syntax) = condition.cast_to_rust_type::<SyntaxViolation>() {
-                println!(" - Syntax error:");
-                source_store.pretty_print_condition(syntax.as_ref(), f)?;
+                writeln!(f, " - Syntax error in form: {:?}", syntax.form)?;
+                source_cache.pretty_print_condition(syntax.as_ref(), f)?;
             } else if let Some(trace) = condition.cast_to_rust_type::<StackTrace>() {
                 if !trace.trace.is_empty() {
                     writeln!(f, " - Trace:")?;
-                    source_store.pretty_print_condition(trace.as_ref(), f)?;
+                    source_cache.pretty_print_condition(trace.as_ref(), f)?;
                 }
             } else if condition.cast_to_rust_type::<Assertion>().is_some() {
                 writeln!(f, " - Assertion failed")?;
@@ -1113,23 +1123,32 @@ pub fn assertion_violation(
 
 /// Store of source files for pretty printing error messages.
 #[derive(Default, Trace)]
-pub struct SourceStore {
-    store: HashMap<ByAddress<Arc<str>>, Vec<String>>,
+pub struct SourceCache {
+    cache: HashMap<ByAddress<Arc<str>>, Vec<String>>,
 }
 
-impl SourceStore {
+impl SourceCache {
     pub fn store(&mut self, file_name: Arc<str>, lines: Vec<String>) {
-        self.store.insert(ByAddress(file_name), lines);
+        self.cache.insert(ByAddress(file_name), lines);
     }
 
-    pub fn fetch(&self, file_name: &Arc<str>) -> Option<&[String]> {
-        self.store
+    // #[maybe_await]
+    pub fn fetch(&mut self, file_name: &Arc<str>) -> Option<&[String]> {
+        if !self.cache.contains_key(ByAddress::from_ref(file_name)) {
+            let lines = std::fs::read_to_string(file_name.as_ref())
+                .ok()?
+                .lines()
+                .map(|x| x.to_string())
+                .collect::<Vec<_>>();
+            self.cache.insert(ByAddress(file_name.clone()), lines);
+        }
+        self.cache
             .get(ByAddress::from_ref(file_name))
-            .map(|x| x.as_ref())
+            .map(|lines| lines.as_ref())
     }
 
     pub fn pretty_print_condition(
-        &self,
+        &mut self,
         pe: &impl PrettyCondition,
         w: &mut impl fmt::Write,
     ) -> fmt::Result {

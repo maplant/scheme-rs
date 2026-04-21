@@ -561,14 +561,8 @@ fn load_lib_from_dir(
         }
         let contents = maybe_await!(read_to_string(&path))?;
 
-        #[cfg(feature = "store-source")]
-        let lines = contents.lines().map(|x| x.to_string()).collect();
-
         let file_name = path.file_name().unwrap().to_string_lossy();
         let form = Syntax::from_str(&contents, Some(&file_name))?;
-
-        #[cfg(feature = "store-source")]
-        rt.write_sources().store(form.span().file.clone(), lines);
 
         let form = match form.as_list() {
             Some([form, end]) if end.is_null() => form,
