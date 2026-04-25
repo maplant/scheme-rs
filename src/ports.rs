@@ -254,23 +254,15 @@ impl BufferMode {
             Self::Block => Symbol::intern("block"),
         }
     }
-}
 
-impl SchemeCompatible for BufferMode {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "buffer-mode", sealed: true, opaque: true)
+    fn from_sym(sym: Symbol) -> Result<Self, Exception> {
+        match &*sym.to_str() {
+            "none" => Ok(Self::None),
+            "line" => Ok(Self::Line),
+            "block" => Ok(Self::Block),
+            _ => Err(Exception::error("invalid buffer mode symbol")),
+        }
     }
-}
-
-#[bridge(name = "buffer-mode", lib = "(rnrs io builtins (6))")]
-pub fn buffer_mode(mode: &Value) -> Result<Vec<Value>, Exception> {
-    let sym: Symbol = mode.clone().try_into()?;
-    let mode = match &*sym.to_str() {
-        "line" => BufferMode::Line,
-        "block" => BufferMode::Block,
-        _ => BufferMode::None,
-    };
-    Ok(vec![Value::from(Record::from_rust_type(mode))])
 }
 
 #[derive(Copy, Clone, Trace)]
@@ -3033,8 +3025,9 @@ fn open_file_port(
     };
 
     let (buffer_mode, rest_args) = if let [buffer_mode, rest @ ..] = rest_args {
-        let buffer_mode = buffer_mode.clone().try_to_rust_type::<BufferMode>()?;
-        (*buffer_mode, rest)
+        let buffer_mode =
+            BufferMode::from_sym(buffer_mode.clone().try_to_scheme_type::<Symbol>()?)?;
+        (buffer_mode, rest)
     } else {
         (BufferMode::Block, &[] as &[Value])
     };

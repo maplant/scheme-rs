@@ -7,7 +7,7 @@
   (define-syntax include
     (lambda (x)
       (define (read-file fn k)
-        (let ([p (open-file-input-port fn (default-file-options) (buffer-mode 'block) (native-transcoder))])
+        (let ([p (open-file-input-port fn (file-options) (buffer-mode block) (native-transcoder))])
           (let f ([x (get-datum p)])
             (if (eof-object? x)
                 (begin (close-port p) '())

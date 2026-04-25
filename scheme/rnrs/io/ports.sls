@@ -1,7 +1,28 @@
 (library (rnrs io ports (6))
-  (export open-string-input-port
+  (export open-string-input-port buffer-mode file-options
           (import (rnrs io builtins)))
-  (import (rnrs base) (rnrs mutable-strings))
+  (import (rnrs base)
+          (rnrs enums)
+          (rnrs syntax-case)
+          (rnrs mutable-strings))
+
+  (define-syntax buffer-mode
+    (lambda (x)
+      (syntax-case x (none line block)
+        [(_ none) #''none]
+        [(_ line) #''line]
+        [(_ block) #''block])))
+
+  (define (buffer-mode? sym)
+    (or (eqv? sym 'none)
+        (eqv? sym 'line)
+        (eqv? sym 'block)))
+
+  (define-syntax file-options
+    ;; TODO: Make this better
+    (lambda (x)
+      (syntax-case x ()
+        ([_ symbols ...] #'((enum-set-constructor (default-file-options)) '(symbols ...))))))
 
   (define (read-string input-string input-start output-string output-start count)
     (if (> count 0)

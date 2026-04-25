@@ -1,6 +1,6 @@
 //! Scheme enumerations and enumeration sets.
 
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use indexmap::IndexSet;
 use scheme_rs_macros::{bridge, cps_bridge};
@@ -35,10 +35,19 @@ impl SchemeCompatible for EnumerationType {
     }
 }
 
-#[derive(Trace, Debug)]
+#[derive(Trace)]
 pub struct EnumerationSet {
     enum_type: Gc<EnumerationType>,
     set: IndexSet<Symbol>,
+}
+
+impl fmt::Debug for EnumerationSet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for sym in &self.set {
+            write!(f, " {sym}")?;
+        }
+        Ok(())
+    }
 }
 
 impl EnumerationSet {

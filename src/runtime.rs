@@ -20,9 +20,7 @@ use crate::{
     syntax::{Identifier, Span, Syntax},
     value::{Cell, UnpackedValue, Value},
 };
-use parking_lot::{
-    MappedRwLockReadGuard, MappedRwLockWriteGuard, RwLock, RwLockReadGuard, RwLockWriteGuard,
-};
+use parking_lot::{MappedRwLockWriteGuard, RwLock, RwLockWriteGuard};
 use scheme_rs_macros::{maybe_async, maybe_await, runtime_fn};
 use std::{
     collections::{BTreeSet, HashSet},

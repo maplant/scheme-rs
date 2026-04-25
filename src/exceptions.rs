@@ -65,13 +65,7 @@ use crate::{
 use by_address::ByAddress;
 use parking_lot::RwLock;
 use scheme_rs_macros::runtime_fn;
-use std::{
-    collections::{HashMap, hash_map::Entry},
-    convert::Infallible,
-    fmt,
-    ops::Range,
-    sync::Arc,
-};
+use std::{collections::HashMap, convert::Infallible, fmt, ops::Range, sync::Arc};
 
 /// A macro for easily creating new condition types.
 pub use scheme_rs_macros::define_condition_type;
