@@ -215,7 +215,7 @@ where
     fn from_iter<T: IntoIterator<Item = V>>(iter: T) -> Self {
         let items = iter.into_iter().map(Into::into).collect::<Vec<_>>();
         let mut head = Value::null();
-        for item in &items {
+        for item in items.iter().rev() {
             head = Value::from((item.clone(), head));
         }
         Self { head, items }
