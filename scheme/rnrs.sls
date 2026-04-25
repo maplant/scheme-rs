@@ -9,6 +9,7 @@
           (import (rnrs io simple (6)))
           (import (rnrs files (6)))
           (import (rnrs exceptions (6)))
+          (import (rnrs enums (6)))
           (import (rnrs conditions (6)))
           (import (rnrs records syntactic (6)))
           (import (rnrs records procedural (6)))

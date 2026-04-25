@@ -802,6 +802,16 @@ impl Record {
         }))
     }
 
+    pub fn from_rust_gc_type<T: SchemeCompatible>(t: Gc<T>) -> Self {
+        let opaque_parent = Some(into_scheme_compatible(t));
+        let rtd = T::rtd();
+        Self(Gc::new(RecordInner {
+            rust_parent: opaque_parent,
+            rtd,
+            fields: Vec::new(),
+        }))
+    }
+
     /// Attempt to convert the record into a Rust type that implements
     /// [SchemeCompatible].
     pub fn cast<T: SchemeCompatible>(&self) -> Option<Gc<T>> {

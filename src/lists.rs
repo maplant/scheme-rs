@@ -225,7 +225,7 @@ where
 impl From<Vec<Value>> for List {
     fn from(items: Vec<Value>) -> Self {
         let mut head = Value::null();
-        for item in items.iter().rev {
+        for item in items.iter().rev() {
             head = Value::from((item.clone(), head));
         }
         Self { head, items }

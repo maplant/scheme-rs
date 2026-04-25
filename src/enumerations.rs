@@ -10,7 +10,7 @@ use crate::{
     gc::{Gc, Trace},
     lists::List,
     proc::{Application, ContBarrier, FuncPtr, Procedure},
-    records::{RecordTypeDescriptor, SchemeCompatible, rtd},
+    records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     runtime::Runtime,
     symbols::Symbol,
     value::Value,
@@ -103,10 +103,11 @@ pub fn enum_set_constructor(
     _barrier: &mut ContBarrier,
     k: Value,
 ) -> Result<Application, Exception> {
-    args[0].try_to_rust_type::<EnumerationSet>()?;
+    let set = args[0].try_to_rust_type::<EnumerationSet>()?;
+    let universe = Value::from(Record::from_rust_gc_type(set.enum_type.clone()));
     let constructor = Procedure::new(
         runtime.clone(),
-        vec![args[0].clone()],
+        vec![universe],
         FuncPtr::Bridge(enum_set_constructor_fn),
         1,
         false,
