@@ -208,6 +208,30 @@ impl From<&Value> for Option<List> {
     }
 }
 
+impl<V> FromIterator<V> for List
+where
+    V: Into<Value>,
+{
+    fn from_iter<T: IntoIterator<Item = V>>(iter: T) -> Self {
+        let items = iter.into_iter().map(Into::into).collect::<Vec<_>>();
+        let mut head = Value::null();
+        for item in &items {
+            head = Value::from((item.clone(), head));
+        }
+        Self { head, items }
+    }
+}
+
+impl From<Vec<Value>> for List {
+    fn from(items: Vec<Value>) -> Self {
+        let mut head = Value::null();
+        for item in items.iter().rev {
+            head = Value::from((item.clone(), head));
+        }
+        Self { head, items }
+    }
+}
+
 impl TryFrom<&Value> for List {
     type Error = Exception;
 
