@@ -158,3 +158,11 @@ them is a syntax violation.
 
 `quote` returns its argument literally without evaluation. It is often referred
 to by it's alias, `'`. 
+
+## `include` _syntax_
+
+``` scheme
+(include ⟨filename⟩)
+```
+
+Inserts the contents of ⟨filename⟩ at the point of expansion.
