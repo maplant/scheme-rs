@@ -1,5 +1,5 @@
 (library (rnrs io ports (6))
-  (export open-string-input-port buffer-mode file-options
+  (export open-string-input-port buffer-mode buffer-mode? file-options
           (import (rnrs io builtins))
           (import (rnrs io conditions)))
   (import (rnrs base)
@@ -18,6 +18,24 @@
     (or (eqv? sym 'none)
         (eqv? sym 'line)
         (eqv? sym 'block)))
+
+  (define-syntax eol-style
+    (lambda (x)
+      (syntax-case x (lf cr crlf nel crnel ls none)
+        ([_ lf] #''lf)
+        ([_ cr] #''cr)
+        ([_ crlf] #''crlf)
+        ([_ nel] #''nel)
+        ([_ crnel] #''crnel)
+        ([_ ls] #''ls)
+        ([_ none] #''none))))
+
+  (define-syntax error-handling-mode
+    (lambda (x)
+      (syntax-case x (ignore raise replace)
+        ([_ ignore] #''ignore)
+        ([_ raise] #''raise)
+        ([_ replace] #''replace))))
 
   (define-syntax file-options
     ;; TODO: Make this better

@@ -305,6 +305,61 @@ pub fn native_transcoder() -> Result<Vec<Value>, Exception> {
     ))])
 }
 
+#[bridge(name = "make-transcoder", lib = "(rnrs io builtins (6))")]
+pub fn make_transcoder(codec: &Value, remaining: &[Value]) -> Result<Vec<Value>, Exception> {
+    let codec = *codec.try_to_rust_type::<Codec>()?;
+    let (eol_type, error_handling_mode) = match remaining {
+        [] => (EolStyle::None, ErrorHandlingMode::Replace),
+        [eol_style] => (
+            EolStyle::from_sym(eol_style.try_into()?)?,
+            ErrorHandlingMode::Replace,
+        ),
+        [eol_style, error_handling_mode] => (
+            EolStyle::from_sym(eol_style.try_into()?)?,
+            ErrorHandlingMode::from_sym(error_handling_mode.try_into()?)?,
+        ),
+        _ => return Err(Exception::wrong_num_of_var_args(1..3, 1 + remaining.len())),
+    };
+    Ok(vec![Value::from_rust_type(Transcoder {
+        codec,
+        eol_type,
+        error_handling_mode,
+    })])
+}
+
+#[bridge(name = "transcoder-codec", lib = "(rnrs io builtins (6))")]
+pub fn transcoder_codec(transcoder: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![
+        transcoder
+            .try_to_rust_type::<Transcoder>()?
+            .codec
+            .to_value(),
+    ])
+}
+
+#[bridge(name = "transcoder-eol-style", lib = "(rnrs io builtins (6))")]
+pub fn transcoder_eol_style(transcoder: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(
+        transcoder
+            .try_to_rust_type::<Transcoder>()?
+            .eol_type
+            .to_sym(),
+    )])
+}
+
+#[bridge(
+    name = "transcoder-error-handling-mode",
+    lib = "(rnrs io builtins (6))"
+)]
+pub fn transcoder_error_handling_mode(transcoder: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(
+        transcoder
+            .try_to_rust_type::<Transcoder>()?
+            .error_handling_mode
+            .to_sym(),
+    )])
+}
+
 #[derive(Copy, Clone, Trace)]
 pub enum Codec {
     Latin1,
@@ -312,12 +367,43 @@ pub enum Codec {
     Utf16,
 }
 
+impl SchemeCompatible for Codec {
+    fn rtd() -> Arc<RecordTypeDescriptor> {
+        rtd!(name: "codec", opaque: true, sealed: true)
+    }
+}
+
+static LATIN_1_CODEC: LazyLock<Gc<Codec>> = LazyLock::new(|| Gc::new(Codec::Latin1));
+static UTF_8_CODEC: LazyLock<Gc<Codec>> = LazyLock::new(|| Gc::new(Codec::Utf8));
+static UTF_16_CODEC: LazyLock<Gc<Codec>> = LazyLock::new(|| Gc::new(Codec::Utf16));
+
+#[bridge(name = "latin-1-codec", lib = "(rnrs io builtins (6))")]
+pub fn latin_1_codec() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(Record::from_rust_gc_type(
+        LATIN_1_CODEC.clone(),
+    ))])
+}
+
+#[bridge(name = "utf-8-codec", lib = "(rnrs io builtins (6))")]
+pub fn utf_8_codec() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(Record::from_rust_gc_type(
+        UTF_8_CODEC.clone(),
+    ))])
+}
+
+#[bridge(name = "utf-16-codec", lib = "(rnrs io builtins (6))")]
+pub fn utf_16_codec() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(Record::from_rust_gc_type(
+        UTF_16_CODEC.clone(),
+    ))])
+}
+
 impl fmt::Debug for Codec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Latin1 => write!(f, "latin-1"),
-            Self::Utf8 => write!(f, "utf-8"),
-            Self::Utf16 => write!(f, "utf-16"),
+            Self::Latin1 => write!(f, " latin-1"),
+            Self::Utf8 => write!(f, " utf-8"),
+            Self::Utf16 => write!(f, " utf-16"),
         }
     }
 }
@@ -340,6 +426,14 @@ impl Codec {
                 Some(Endianness::Be) => &[0x28, 0x20],
                 None => &[],
             },
+        }
+    }
+
+    fn to_value(self) -> Value {
+        match self {
+            Self::Latin1 => Value::from(Record::from_rust_gc_type(LATIN_1_CODEC.clone())),
+            Self::Utf8 => Value::from(Record::from_rust_gc_type(UTF_8_CODEC.clone())),
+            Self::Utf16 => Value::from(Record::from_rust_gc_type(UTF_16_CODEC.clone())),
         }
     }
 }
@@ -377,6 +471,31 @@ impl fmt::Debug for EolStyle {
 }
 
 impl EolStyle {
+    fn to_sym(self) -> Symbol {
+        match self {
+            Self::None => Symbol::intern("none"),
+            Self::Lf => Symbol::intern("lf"),
+            Self::Cr => Symbol::intern("cr"),
+            Self::Crlf => Symbol::intern("crlf"),
+            Self::Nel => Symbol::intern("nel"),
+            Self::Crnel => Symbol::intern("crnel"),
+            Self::Ls => Symbol::intern("ls"),
+        }
+    }
+
+    fn from_sym(sym: Symbol) -> Result<Self, Exception> {
+        match &*sym.to_str() {
+            "none" => Ok(Self::None),
+            "lf" => Ok(Self::Lf),
+            "cr" => Ok(Self::Cr),
+            "crlf" => Ok(Self::Crlf),
+            "nel" => Ok(Self::Nel),
+            "Crnel" => Ok(Self::Crnel),
+            "ls" => Ok(Self::Ls),
+            _ => Err(Exception::error("invalid eol style symbol")),
+        }
+    }
+
     #[maybe_async]
     fn convert_eol_style_to_linefeed_inner(
         self,
@@ -471,6 +590,25 @@ pub enum ErrorHandlingMode {
     Ignore,
     Raise,
     Replace,
+}
+
+impl ErrorHandlingMode {
+    fn to_sym(self) -> Symbol {
+        match self {
+            Self::Ignore => Symbol::intern("ignore"),
+            Self::Raise => Symbol::intern("raise"),
+            Self::Replace => Symbol::intern("replace"),
+        }
+    }
+
+    fn from_sym(sym: Symbol) -> Result<Self, Exception> {
+        match &*sym.to_str() {
+            "ignore" => Ok(Self::Ignore),
+            "raise" => Ok(Self::Raise),
+            "replace" => Ok(Self::Replace),
+            _ => Err(Exception::error("invalid error handling mode symbol")),
+        }
+    }
 }
 
 impl fmt::Debug for ErrorHandlingMode {
@@ -2956,7 +3094,7 @@ define_condition_type!(
     constructor: |port| {
         Ok(IoPortError {
             parent: Gc::new(IoError::new()),
-            port: port,
+            port,
         })
     },
 );
@@ -2977,7 +3115,7 @@ define_condition_type!(
     parent: IoPortError,
     constructor: |port| {
         Ok(IoDecodingError {
-            parent: Gc::new(IoPortError::new(port.try_into()?)),
+            parent: Gc::new(IoPortError::new(port)),
         })
     },
 );
@@ -3000,7 +3138,7 @@ define_condition_type!(
     },
     constructor: |port, chr| {
         Ok(IoEncodingError {
-            parent: Gc::new(IoPortError::new(port.try_into()?)),
+            parent: Gc::new(IoPortError::new(port)),
             chr: chr.try_into()?,
         })
     },

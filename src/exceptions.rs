@@ -1058,15 +1058,18 @@ unsafe extern "C" fn unwind_to_exception_handler(
 
 unsafe extern "C" fn reraise_exception(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
-    env: *const Value,
+    _env: *const Value,
     _args: *const Value,
     _barrier: *mut ContBarrier,
 ) -> *mut Application {
     unsafe {
         let runtime = Runtime(Gc::from_raw_inc_rc(runtime));
 
+        /*
         // env[0] is the exception
         let exception = env.as_ref().unwrap().clone();
+         */
+        let exception = Value::from_rust_type(NonContinuable::default());
 
         Box::into_raw(Box::new(Application::new(
             Procedure::new(
