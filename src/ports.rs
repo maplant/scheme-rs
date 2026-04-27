@@ -1017,7 +1017,7 @@ impl PortInner {
                 transcoder,
             }),
             data: Mutex::new(PortData::BinaryPort(BinaryPortData {
-                port: Some(port.into_port()),
+                inner_port: Some(port.into_port()),
                 input_pos: 0,
                 bytes_read: 0,
                 input_buffer: buffer_mode.new_input_byte_buffer(transcoder.is_some(), can_read),
@@ -1063,7 +1063,7 @@ impl PortInner {
                 transcoder,
             }),
             data: Mutex::new(PortData::BinaryPort(BinaryPortData {
-                port: Some(Box::new(())),
+                inner_port: Some(Box::new(())),
                 input_pos: 0,
                 bytes_read: 0,
                 input_buffer: buffer_mode.new_input_byte_buffer(transcoder.is_some(), is_read),
@@ -1132,7 +1132,7 @@ pub(crate) struct BinaryPortInfo {
 
 /// Mutable data contained in the binary port.
 pub(crate) struct BinaryPortData {
-    port: Option<PortBox>,
+    inner_port: Option<PortBox>,
     input_pos: usize,
     bytes_read: usize,
     input_buffer: ByteVector,
@@ -1182,7 +1182,7 @@ impl BinaryPortData {
             return Err(Exception::io_read_error("not an input port"));
         };
 
-        let Some(port) = self.port.as_deref_mut() else {
+        let Some(port) = self.inner_port.as_deref_mut() else {
             return Err(Exception::io_read_error("port is closed"));
         };
 
@@ -1435,7 +1435,7 @@ impl BinaryPortData {
             return Err(Exception::io_write_error("not an output port"));
         };
 
-        let Some(port) = self.port.as_deref_mut() else {
+        let Some(port) = self.inner_port.as_deref_mut() else {
             return Err(Exception::io_write_error("port is closed"));
         };
 
@@ -1553,7 +1553,7 @@ impl BinaryPortData {
             return Err(Exception::io_write_error("not an output port"));
         };
 
-        let Some(port) = self.port.as_deref_mut() else {
+        let Some(port) = self.inner_port.as_deref_mut() else {
             return Err(Exception::io_write_error("port is closed"));
         };
 
@@ -1574,7 +1574,7 @@ impl BinaryPortData {
             return Err(Exception::io_error("port does not support port-position"));
         };
 
-        let Some(port) = self.port.as_deref_mut() else {
+        let Some(port) = self.inner_port.as_deref_mut() else {
             return Err(Exception::io_error("port is closed"));
         };
 
@@ -1589,7 +1589,7 @@ impl BinaryPortData {
             ));
         };
 
-        let Some(port) = self.port.as_deref_mut() else {
+        let Some(port) = self.inner_port.as_deref_mut() else {
             return Err(Exception::io_error("port is closed"));
         };
 
@@ -1611,7 +1611,7 @@ impl BinaryPortData {
 
     #[maybe_async]
     fn close(&mut self) -> Result<(), Exception> {
-        let mut port = self.port.take();
+        let mut port = self.inner_port.take();
 
         if let Some(port) = port.as_deref_mut() {
             if let Some(write) = self.write.as_ref() {
@@ -2752,6 +2752,7 @@ pub use prompt::*;
 // Conditions:
 
 define_condition_type!(
+    lib: "(rnrs io conditions (6))",
     rust_name: IoError,
     scheme_name: "&i/o",
     parent: Error
@@ -2772,6 +2773,7 @@ impl Default for IoError {
 }
 
 define_condition_type!(
+    lib: "(rnrs io conditions (6))",
     rust_name: IoReadError,
     scheme_name: "&i/o-read",
     parent: IoError,
@@ -2792,6 +2794,7 @@ impl Default for IoReadError {
 }
 
 define_condition_type!(
+    lib: "(rnrs io conditions (6))",
     rust_name: IoWriteError,
     scheme_name: "&i/o-write",
     parent: IoError,
@@ -2812,6 +2815,7 @@ impl Default for IoWriteError {
 }
 
 define_condition_type!(
+    lib: "(rnrs io conditions (6))",
     rust_name: IoInvalidPositionError,
     scheme_name: "&i/o-invalid-position",
     parent: IoError,
@@ -2830,6 +2834,7 @@ define_condition_type!(
 );
 
 define_condition_type!(
+    lib: "(rnrs io conditions (6))",
     rust_name: IoFilenameError,
     scheme_name: "&i/o-filename",
     parent: IoError,
@@ -2857,6 +2862,7 @@ impl IoFilenameError {
 }
 
 define_condition_type!(
+    lib: "(rnrs io conditions (6))",
     rust_name: IoFileProtectionError,
     scheme_name: "&i/o-file-protection",
     parent: IoFilenameError,
@@ -2879,6 +2885,7 @@ impl IoFileProtectionError {
 }
 
 define_condition_type!(
+    lib: "(rnrs io conditions (6))",
     rust_name: IoFileIsReadOnlyError,
     scheme_name: "&i/o-file-is-read-only",
     parent: IoFileProtectionError,
@@ -2893,6 +2900,7 @@ define_condition_type!(
 );
 
 define_condition_type!(
+    lib: "(rnrs io conditions (6))",
     rust_name: IoFileAlreadyExistsError,
     scheme_name: "&i/o-file-already-exists",
     parent: IoFilenameError,
@@ -2915,6 +2923,7 @@ impl IoFileAlreadyExistsError {
 }
 
 define_condition_type!(
+    lib: "(rnrs io conditions (6))",
     rust_name: IoFileDoesNotExistError,
     scheme_name: "&i/o-file-does-not-exist",
     parent: IoFilenameError,
@@ -2937,19 +2946,74 @@ impl IoFileDoesNotExistError {
 }
 
 define_condition_type!(
+    lib: "(rnrs io conditions (6))",
     rust_name: IoPortError,
     scheme_name: "&i/o-port",
     parent: IoError,
     fields: {
-        port: Port,
+        port: Value,
     },
     constructor: |port| {
         Ok(IoPortError {
             parent: Gc::new(IoError::new()),
-            port: port.try_into()?,
+            port: port,
         })
     },
 );
+
+impl IoPortError {
+    pub fn new(port: Value) -> Self {
+        Self {
+            parent: Gc::new(IoError::new()),
+            port,
+        }
+    }
+}
+
+define_condition_type!(
+    lib: "(rnrs io conditions (6))",
+    rust_name: IoDecodingError,
+    scheme_name: "&i/o-decoding",
+    parent: IoPortError,
+    constructor: |port| {
+        Ok(IoDecodingError {
+            parent: Gc::new(IoPortError::new(port.try_into()?)),
+        })
+    },
+);
+
+impl IoDecodingError {
+    pub fn new(port: Value) -> Self {
+        Self {
+            parent: Gc::new(IoPortError::new(port)),
+        }
+    }
+}
+
+define_condition_type!(
+    lib: "(rnrs io conditions (6))",
+    rust_name: IoEncodingError,
+    scheme_name: "&i/o-encoding",
+    parent: IoPortError,
+    fields: {
+        chr: char,
+    },
+    constructor: |port, chr| {
+        Ok(IoEncodingError {
+            parent: Gc::new(IoPortError::new(port.try_into()?)),
+            chr: chr.try_into()?,
+        })
+    },
+);
+
+impl IoEncodingError {
+    pub fn new(port: Value, chr: char) -> Self {
+        Self {
+            parent: Gc::new(IoPortError::new(port)),
+            chr,
+        }
+    }
+}
 
 #[derive(Copy, Clone, Trace)]
 pub struct EofObject;
@@ -3153,7 +3217,7 @@ pub fn transcoded_port(port: Port, transcoder: &Value) -> Result<Vec<Value>, Exc
     };
 
     let new_data = BinaryPortData {
-        port: port_data.port.take(),
+        inner_port: port_data.inner_port.take(),
         input_pos: port_data.input_pos,
         bytes_read: port_data.bytes_read,
         input_buffer: port_data.input_buffer.clone(),

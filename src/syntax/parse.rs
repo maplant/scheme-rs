@@ -1,5 +1,4 @@
 use crate::{
-    // ast::Literal,
     num::Number,
     ports::{PortData, PortInfo},
     syntax::lex::ParseNumberError,

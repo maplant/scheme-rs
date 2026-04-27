@@ -1,6 +1,7 @@
 (library (rnrs io ports (6))
   (export open-string-input-port buffer-mode file-options
-          (import (rnrs io builtins)))
+          (import (rnrs io builtins))
+          (import (rnrs io conditions)))
   (import (rnrs base)
           (rnrs enums)
           (rnrs syntax-case)

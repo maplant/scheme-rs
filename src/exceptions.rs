@@ -52,7 +52,7 @@
 use crate::{
     gc::{Gc, GcInner, Trace},
     lists::slice_to_list,
-    ports::{IoError, IoReadError, IoWriteError},
+    ports::{IoDecodingError, IoEncodingError, IoError, IoReadError, IoWriteError},
     proc::{Application, ContBarrier, DynStackElem, FuncPtr, Procedure, pop_dyn_stack},
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::{bridge, cps_bridge},
@@ -227,6 +227,26 @@ impl Exception {
     pub fn io_write_error(message: impl fmt::Display) -> Self {
         Self(Value::from(Record::from_rust_type(
             CompoundCondition::from((IoWriteError::new(), Assertion::new(), Message::new(message))),
+        )))
+    }
+
+    pub fn io_decoding_error(message: impl fmt::Display, port: Value) -> Self {
+        Self(Value::from(Record::from_rust_type(
+            CompoundCondition::from((
+                IoDecodingError::new(port),
+                Assertion::new(),
+                Message::new(message),
+            )),
+        )))
+    }
+
+    pub fn io_encoding_error(message: impl fmt::Display, port: Value, chr: char) -> Self {
+        Self(Value::from(Record::from_rust_type(
+            CompoundCondition::from((
+                IoEncodingError::new(port, chr),
+                Assertion::new(),
+                Message::new(message),
+            )),
         )))
     }
 
@@ -531,13 +551,17 @@ define_condition_type!(
 impl PrettyCondition for StackTrace {
     fn span(&self) -> Span {
         let first = self.trace.first().unwrap();
-        let syntax = first.cast_to_scheme_type::<Gc<Syntax>>().unwrap();
+        let Some(syntax) = first.cast_to_scheme_type::<Gc<Syntax>>() else {
+            return Span::default();
+        };
         syntax.span().clone()
     }
 
     fn pretty_print(&self, w: &mut impl fmt::Write) -> fmt::Result {
         for (i, trace) in self.trace.iter().enumerate() {
-            let syntax = trace.cast_to_scheme_type::<Gc<Syntax>>().unwrap();
+            let Some(syntax) = trace.cast_to_scheme_type::<Gc<Syntax>>() else {
+                continue;
+            };
             let span = syntax.span();
             let func_name = syntax.as_ident().unwrap().symbol();
             writeln!(w, "{:>6}: {func_name}:{span}", i + 1)?;

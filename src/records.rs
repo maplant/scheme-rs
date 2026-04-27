@@ -255,7 +255,7 @@ pub struct RecordTypeDescriptor {
     /// The index into `fields` where this record's fields proper begin. All of
     /// the previous fields belong to a parent.
     pub field_index_offset: usize,
-    /// The fields of the record, notincluding any of the ones inherited from
+    /// The fields of the record, not including any of the ones inherited from
     /// parents.
     pub fields: Vec<Field>,
 }
@@ -267,6 +267,15 @@ impl RecordTypeDescriptor {
 
     pub fn is_subtype_of(self: &Arc<Self>, rtd: &Arc<Self>) -> bool {
         Arc::ptr_eq(self, rtd) || self.inherits.contains(&ByAddress(rtd.clone()))
+    }
+
+    pub fn num_fields(&self) -> usize {
+        self.fields.len()
+            + self
+                .inherits
+                .iter()
+                .map(|parent| parent.fields.len())
+                .sum::<usize>()
     }
 }
 
@@ -719,7 +728,7 @@ fn default_protocol(
 ) -> Result<Application, Exception> {
     let k: Procedure = k.try_into()?;
     let rtd: Arc<RecordTypeDescriptor> = env[0].clone().try_into()?;
-    let num_args = rtd.field_index_offset + rtd.fields.len();
+    let num_args = rtd.num_fields(); // rtd.field_index_offset + rtd.fields.len();
 
     let constructor = Procedure::new(
         runtime.clone(),
@@ -746,7 +755,7 @@ fn default_protocol_constructor(
     let mut args = args.to_vec();
 
     let k = if let Some(parent) = rtd.inherits.last() {
-        let remaining = args.split_off(parent.field_index_offset + parent.fields.len());
+        let remaining = args.split_off(parent.num_fields());
         Value::from(barrier.new_k(
             runtime.clone(),
             vec![Value::from(remaining), k],
