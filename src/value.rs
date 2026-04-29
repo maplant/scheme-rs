@@ -235,7 +235,7 @@ impl Value {
             Syntax::List { list, .. } => {
                 let mut curr = Self::datum_from_syntax(list.last().unwrap());
                 for item in list[..list.len() - 1].iter().rev() {
-                    curr = Self::from(Pair::new(Self::datum_from_syntax(item), curr, false));
+                    curr = Self::from(Pair::immutable(Self::datum_from_syntax(item), curr));
                 }
                 curr
             }
@@ -1043,7 +1043,7 @@ fn find(mut b: Value) -> Value {
 }
 
 fn boxv(v: Value) -> Value {
-    Value::from(Pair::new(v.clone(), Value::null(), true))
+    Value::from(Pair::mutable(v.clone(), Value::null()))
 }
 
 fn unbox(v: &Value) -> Value {
@@ -1256,14 +1256,11 @@ macro_rules! impl_from_wrapped_for {
     };
 }
 
-// impl_from_wrapped_for!(Number, Number, Arc::new);
-impl_from_wrapped_for!(String, String, WideString::new);
-impl_from_wrapped_for!(Vec<Value>, Vector, Vector::new);
-impl_from_wrapped_for!(Vec<u8>, ByteVector, ByteVector::new);
+impl_from_wrapped_for!(String, String, WideString::immutable);
+impl_from_wrapped_for!(Vec<Value>, Vector, Vector::immutable);
+impl_from_wrapped_for!(Vec<u8>, ByteVector, ByteVector::immutable);
 impl_from_wrapped_for!(Syntax, Syntax, Gc::new);
-impl_from_wrapped_for!((Value, Value), Pair, |(car, cdr)| Pair::new(
-    car, cdr, false
-));
+impl_from_wrapped_for!((Value, Value), Pair, |(car, cdr)| Pair::immutable(car, cdr));
 
 impl From<UnpackedValue> for Option<(Value, Value)> {
     fn from(val: UnpackedValue) -> Self {

@@ -321,7 +321,7 @@ impl ProcedureInner {
             let mut rest_args = Value::null();
             let extra_args = args.len() - self.num_required_args;
             for _ in 0..extra_args {
-                rest_args = Value::from(Pair::new(args.pop().unwrap(), rest_args, false));
+                rest_args = Value::from(Pair::immutable(args.pop().unwrap(), rest_args));
             }
             args.push(rest_args);
         }

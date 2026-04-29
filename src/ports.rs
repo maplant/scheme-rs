@@ -208,12 +208,12 @@ pub enum BufferMode {
 impl BufferMode {
     fn new_input_byte_buffer(&self, text: bool, is_input_port: bool) -> ByteVector {
         if !is_input_port {
-            return ByteVector::new(Vec::new());
+            return ByteVector::mutable(Vec::new());
         }
         match self {
-            Self::None if text => ByteVector::new(vec![0u8; 4]),
-            Self::None => ByteVector::new(vec![0]),
-            Self::Line | Self::Block => ByteVector::new(vec![0u8; BUFFER_SIZE]),
+            Self::None if text => ByteVector::mutable(vec![0u8; 4]),
+            Self::None => ByteVector::mutable(vec![0]),
+            Self::Line | Self::Block => ByteVector::mutable(vec![0u8; BUFFER_SIZE]),
         }
     }
 
@@ -222,18 +222,18 @@ impl BufferMode {
             return WideString::from(Vec::new());
         }
         match self {
-            Self::None => WideString::new_mutable(vec!['\0']),
-            Self::Line | Self::Block => WideString::new_mutable(vec!['\0'; BUFFER_SIZE]),
+            Self::None => WideString::mutable(vec!['\0']),
+            Self::Line | Self::Block => WideString::mutable(vec!['\0'; BUFFER_SIZE]),
         }
     }
 
     fn new_output_byte_buffer(&self, is_output_port: bool) -> ByteVector {
         if !is_output_port {
-            return ByteVector::new(Vec::new());
+            return ByteVector::mutable(Vec::new());
         }
         match self {
-            Self::None => ByteVector::new(Vec::new()),
-            Self::Line | Self::Block => ByteVector::new(Vec::with_capacity(BUFFER_SIZE)),
+            Self::None => ByteVector::mutable(Vec::new()),
+            Self::Line | Self::Block => ByteVector::mutable(Vec::with_capacity(BUFFER_SIZE)),
         }
     }
 
@@ -242,8 +242,8 @@ impl BufferMode {
             return WideString::from(Vec::new());
         }
         match self {
-            Self::None => WideString::new_mutable(Vec::new()),
-            Self::Line | Self::Block => WideString::new_mutable(Vec::with_capacity(BUFFER_SIZE)),
+            Self::None => WideString::mutable(Vec::new()),
+            Self::Line | Self::Block => WideString::mutable(Vec::with_capacity(BUFFER_SIZE)),
         }
     }
 
@@ -276,7 +276,7 @@ impl fmt::Debug for Transcoder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            " {:?} {:?} {:?}",
+            "{:?} {:?} {:?}",
             self.codec, self.eol_type, self.error_handling_mode
         )
     }
@@ -646,7 +646,7 @@ mod __impl {
     {
         Box::new(|any, buff, start, count| {
             let concrete = any.downcast_mut::<T>().unwrap();
-            let mut buff = buff.as_mut_slice();
+            let mut buff = buff.as_mut_slice()?;
             concrete
                 .read(&mut buff[start..(start + count)])
                 .map_err(|err| Exception::io_read_error(format!("{err}")))
@@ -1329,7 +1329,7 @@ impl BinaryPortData {
             && len != 0
         {
             maybe_await!(write(port, &self.output_buffer, 0, len))?;
-            self.output_buffer.clear();
+            self.output_buffer.clear()?;
         }
 
         if n + self.input_pos > self.input_buffer.len() {
@@ -1559,7 +1559,7 @@ impl BinaryPortData {
 
         if self.input_buffer.len() - self.input_pos < 4 {
             self.input_buffer
-                .as_mut_slice()
+                .as_mut_slice()?
                 .copy_within(self.input_pos.., 0);
             self.bytes_read -= self.input_pos;
             self.input_pos = 0;
@@ -1595,12 +1595,12 @@ impl BinaryPortData {
             (BufferMode::None, _) => {
                 for byte in bytes {
                     let len = {
-                        let mut output_buffer = self.output_buffer.as_mut_vec();
+                        let mut output_buffer = self.output_buffer.as_mut_vec()?;
                         output_buffer.push(*byte);
                         output_buffer.len()
                     };
                     maybe_await!(write(port, &self.output_buffer, 0, len))?;
-                    self.output_buffer.as_mut_vec().clear();
+                    self.output_buffer.as_mut_vec()?.clear();
                 }
             }
             (BufferMode::Line, Some(transcoder)) => loop {
@@ -1609,7 +1609,7 @@ impl BinaryPortData {
                     .find_next_line(transcoder.codec.ls_needle(self.utf16_endianness), bytes)
                 {
                     self.output_buffer
-                        .as_mut_vec()
+                        .as_mut_vec()?
                         .extend_from_slice(&bytes[..next_line]);
                     bytes = &bytes[next_line..];
                     maybe_await!(write(
@@ -1618,9 +1618,9 @@ impl BinaryPortData {
                         0,
                         self.output_buffer.len()
                     ))?;
-                    self.output_buffer.clear();
+                    self.output_buffer.clear()?;
                 } else {
-                    self.output_buffer.as_mut_vec().extend_from_slice(bytes);
+                    self.output_buffer.as_mut_vec()?.extend_from_slice(bytes);
                     break;
                 }
             },
@@ -1628,7 +1628,7 @@ impl BinaryPortData {
                 if bytes.len() + self.output_buffer.len() >= BUFFER_SIZE {
                     let num_bytes_to_buffer = BUFFER_SIZE - self.output_buffer.len();
                     self.output_buffer
-                        .as_mut_vec()
+                        .as_mut_vec()?
                         .extend_from_slice(&bytes[..num_bytes_to_buffer]);
                     bytes = &bytes[num_bytes_to_buffer..];
                     maybe_await!(write(
@@ -1637,9 +1637,9 @@ impl BinaryPortData {
                         0,
                         self.output_buffer.len()
                     ))?;
-                    self.output_buffer.clear();
+                    self.output_buffer.clear()?;
                 } else {
-                    self.output_buffer.as_mut_vec().extend_from_slice(bytes);
+                    self.output_buffer.as_mut_vec()?.extend_from_slice(bytes);
                     break;
                 }
             },
@@ -1701,7 +1701,7 @@ impl BinaryPortData {
             0,
             self.output_buffer.len()
         ))?;
-        self.output_buffer.clear();
+        self.output_buffer.clear()?;
 
         Ok(())
     }
@@ -1739,7 +1739,7 @@ impl BinaryPortData {
                 0,
                 self.output_buffer.len()
             ))?;
-            self.output_buffer.clear();
+            self.output_buffer.clear()?;
         }
         self.bytes_read = 0;
         self.input_pos = 0;
@@ -2603,6 +2603,20 @@ impl Port {
         maybe_await!(data.put_bytes(&self.0.info, &[byte]))
     }
 
+    /// Write a byte slice to the port.
+    #[maybe_async]
+    pub fn put_bytes(&self, bytes: &[u8]) -> Result<(), Exception> {
+        #[cfg(not(feature = "async"))]
+        let mut data = self.0.data.lock().unwrap();
+
+        #[cfg(feature = "async")]
+        let mut data = self.0.data.lock().await;
+
+        // TODO: ensure this is not a textual port
+
+        maybe_await!(data.put_bytes(&self.0.info, bytes))
+    }
+
     /// Write a single character to the port.
     #[maybe_async]
     pub fn put_char(&self, chr: char) -> Result<(), Exception> {
@@ -2616,6 +2630,25 @@ impl Port {
         let s = chr.encode_utf8(&mut buf);
 
         maybe_await!(data.put_str(&self.0.info, s))
+    }
+
+    /// Write a char slice to the port.
+    #[maybe_async]
+    pub fn put_chars(&self, chars: &[char]) -> Result<(), Exception> {
+        #[cfg(not(feature = "async"))]
+        let mut data = self.0.data.lock().unwrap();
+
+        #[cfg(feature = "async")]
+        let mut data = self.0.data.lock().await;
+
+        for chr in chars {
+            let mut buf: [u8; 4] = [0; 4];
+            let s = chr.encode_utf8(&mut buf);
+
+            maybe_await!(data.put_str(&self.0.info, s))?;
+        }
+
+        Ok(())
     }
 
     /// Write the contents of a str `s` to the port.
@@ -2718,7 +2751,7 @@ mod prompt {
             Some(Box::new(|any, buff, start, count| {
                 use std::cmp::Ordering;
 
-                let buff = &mut buff.as_mut_slice()[start..(start + count)];
+                let buff = &mut buff.as_mut_slice()?[start..(start + count)];
                 let concrete = any.downcast_mut::<Self>().unwrap();
 
                 if concrete.closed {
@@ -3869,6 +3902,42 @@ pub fn put_u8(binary_output_port: &Value, octet: &Value) -> Result<Vec<Value>, E
     Ok(Vec::new())
 }
 
+#[maybe_async]
+#[bridge(name = "put-bytevector", lib = "(rnrs io builtins (6))")]
+pub fn put_bytevector(
+    port: Port,
+    bytevector: ByteVector,
+    start_count: &[Value],
+) -> Result<Vec<Value>, Exception> {
+    let bytevector = bytevector.as_slice();
+    let slice = match start_count {
+        [] => &bytevector[..],
+        [start] => {
+            let start: usize = start.try_to_scheme_type()?;
+            if start >= bytevector.len() {
+                return Err(Exception::invalid_index(start, bytevector.len()));
+            }
+            &bytevector[start..]
+        }
+        [start, count] => {
+            let start: usize = start.try_to_scheme_type()?;
+            let count: usize = count.try_to_scheme_type()?;
+            if (start + count) >= bytevector.len() {
+                return Err(Exception::invalid_index(start + count, bytevector.len()));
+            }
+            &bytevector[start..(start + count)]
+        }
+        _ => {
+            return Err(Exception::wrong_num_of_var_args(
+                2..4,
+                2 + start_count.len(),
+            ));
+        }
+    };
+    maybe_await!(port.put_bytes(slice))?;
+    Ok(Vec::new())
+}
+
 // 8.2.12. Textual output
 
 #[maybe_async]
@@ -3877,6 +3946,42 @@ pub fn put_char(textual_output_port: &Value, chr: &Value) -> Result<Vec<Value>, 
     let port: Port = textual_output_port.clone().try_into()?;
     let chr: char = chr.clone().try_into()?;
     maybe_await!(port.put_char(chr))?;
+    Ok(Vec::new())
+}
+
+#[maybe_async]
+#[bridge(name = "put-string", lib = "(rnrs io builtins (6))")]
+pub fn put_string(
+    port: Port,
+    string: WideString,
+    start_count: &[Value],
+) -> Result<Vec<Value>, Exception> {
+    let string = string.as_slice();
+    let slice = match start_count {
+        [] => &string[..],
+        [start] => {
+            let start: usize = start.try_to_scheme_type()?;
+            if start >= string.len() {
+                return Err(Exception::invalid_index(start, string.len()));
+            } 
+            &string[start..]
+        }
+        [start, count] => {
+            let start: usize = start.try_to_scheme_type()?;
+            let count: usize = count.try_to_scheme_type()?;
+            if (start + count) >= string.len() {
+                return Err(Exception::invalid_index(start + count, string.len()));
+            }
+            &string[start..(start + count)]
+        }
+        _ => {
+            return Err(Exception::wrong_num_of_var_args(
+                2..4,
+                2 + start_count.len(),
+            ));
+        }
+    };
+    maybe_await!(port.put_chars(slice))?;
     Ok(Vec::new())
 }
 

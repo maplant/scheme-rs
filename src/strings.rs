@@ -7,7 +7,7 @@
 
 use std::{fmt, hash::Hash, sync::Arc};
 
-use parking_lot::RwLock;
+use parking_lot::{MappedRwLockReadGuard, RwLock, RwLockReadGuard};
 
 use crate::{
     Either,
@@ -31,17 +31,21 @@ pub(crate) struct WideStringInner {
 pub struct WideString(pub(crate) Arc<WideStringInner>);
 
 impl WideString {
-    pub fn new(s: impl fmt::Display) -> Self {
+    pub fn immutable(s: impl fmt::Display) -> Self {
         Self::from(s.to_string())
     }
 
-    pub fn new_mutable<V>(value: V) -> Self
+    pub fn mutable<V>(value: V) -> Self
     where
         Self: From<V>,
     {
         let mut this = Self::from(value);
         Arc::get_mut(&mut this.0).unwrap().mutable = true;
         this
+    }
+    
+    pub fn as_slice(&self) -> MappedRwLockReadGuard<'_, [char]> {
+        RwLockReadGuard::map(self.0.chars.read(), |chars| chars.as_slice())
     }
 
     pub fn clear(&self) {
@@ -294,7 +298,7 @@ pub fn substring(string: WideString, start: usize, end: usize) -> Result<Vec<Val
         )));
     }
     let substr = string.0.chars.read()[start..end].to_vec();
-    Ok(vec![Value::from(WideString::new_mutable(substr))])
+    Ok(vec![Value::from(WideString::mutable(substr))])
 }
 
 #[bridge(name = "string-append", lib = "(rnrs base builtins (6))")]
@@ -319,7 +323,7 @@ pub fn string_to_list(string: WideString) -> Result<Vec<Value>, Exception> {
 #[bridge(name = "string-copy", lib = "(rnrs base builtins (6))")]
 pub fn string_copy(string: WideString) -> Result<Vec<Value>, Exception> {
     let copy = string.0.chars.read().clone();
-    Ok(vec![Value::from(WideString::new_mutable(copy))])
+    Ok(vec![Value::from(WideString::mutable(copy))])
 }
 
 #[bridge(name = "string->vector", lib = "(rnrs base builtins (6))")]
