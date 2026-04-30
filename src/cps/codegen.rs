@@ -12,7 +12,7 @@ use crate::{
     cps::Value as CpsValue,
     proc::{ContinuationPtr, FuncPtr, ProcDebugInfo, Procedure},
     runtime::{DebugInfo, Runtime},
-    value::Value as SchemeValue,
+    value::{FALSE_VALUE, Value as SchemeValue},
 };
 
 use super::*;
@@ -600,11 +600,17 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
         deferred: &mut Vec<ProcedureBundle>,
     ) {
         let cond = self.value_codegen(cond);
+        let cond = self
+            .builder
+            .ins()
+            .icmp_imm(IntCC::NotEqual, cond, FALSE_VALUE as i64);
+        /*
         let truthy = self
             .module
             .declare_func_in_func(self.runtime_funcs.truthy, self.builder.func);
         let truthy_call = self.builder.ins().call(truthy, &[cond]);
         let cond = self.builder.inst_results(truthy_call)[0];
+        */
 
         // Because our compiler is not particularly sophisticated right now, we
         // can guarantee that both branches terminate. Thus, no merge basic
@@ -913,3 +919,19 @@ impl ProcedureBundle {
         module.clear_context(&mut ctx);
     }
 }
+
+/*
+fn write_perf_map_entry(addr: *const u8, size: usize, name: &str) {
+    use std::io::Write;
+    let pid = std::process::id();
+    let path = format!("/tmp/perf-{pid}.map");
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(file, "{:x} {size:x} {name}", addr as usize);
+        let _ = file.flush();
+    }
+}
+*/
