@@ -1347,6 +1347,7 @@ impl Expression {
             lists::{cons, list},
             num::{add, div, equal, greater, greater_equal, lesser, lesser_equal, mul, sub},
             proc::{BridgePtr, FuncPtr::Bridge, Procedure},
+            value::{null_pred, not, pair_pred},
         };
         use std::ptr::fn_addr_eq;
 
@@ -1362,6 +1363,9 @@ impl Expression {
             (lesser_equal, PrimOp::LesserEqual),
             (cons, PrimOp::Cons),
             (list, PrimOp::List),
+            (not, PrimOp::Not),
+            (null_pred, PrimOp::IsNull),
+            (pair_pred, PrimOp::IsPair),
         ];
 
         let Expression::Var(Var::Global(global)) = self else {

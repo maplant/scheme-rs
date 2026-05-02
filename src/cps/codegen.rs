@@ -12,7 +12,7 @@ use crate::{
     cps::Value as CpsValue,
     proc::{ContinuationPtr, FuncPtr, ProcDebugInfo, Procedure},
     runtime::{DebugInfo, Runtime},
-    value::{FALSE_VALUE, Value as SchemeValue},
+    value::{FALSE_VALUE, NULL_VALUE, TAG, TRUE_VALUE, Tag, Value as SchemeValue},
 };
 
 use super::*;
@@ -51,7 +51,6 @@ pub(crate) struct RuntimeFunctions {
     halt: FuncId,
     make_user: FuncId,
     make_continuation: FuncId,
-    truthy: FuncId,
     alloc_cell: FuncId,
     read_cell: FuncId,
     store: FuncId,
@@ -256,8 +255,19 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
                 self.set_continuation_mark_codegen(tag, val);
                 self.cps_codegen(*cexpr, deferred);
             }
+            Cps::PrimOp(
+                primop @ (PrimOp::Not | PrimOp::IsNull | PrimOp::IsPair),
+                args,
+                result,
+                cexpr,
+            ) => {
+                let [arg] = args.as_slice() else {
+                    unreachable!()
+                };
+                self.bool_primop_codegen(primop, arg, result, *cexpr, deferred);
+            }
             Cps::PrimOp(primop, vals, result, cexpr) => {
-                self.simple_primop_codegen(primop, &vals, result, *cexpr, deferred);
+                self.value_primop_codegen(primop, &vals, result, *cexpr, deferred);
             }
             Cps::Lambda {
                 args,
@@ -414,7 +424,46 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
         self.cps_codegen(cexpr, deferred);
     }
 
-    fn simple_primop_codegen(
+    fn bool_primop_codegen(
+        &mut self,
+        primop: PrimOp,
+        arg: &CpsValue,
+        dest: Local,
+        cexpr: Cps,
+        deferred: &mut Vec<ProcedureBundle>,
+    ) {
+        let arg = self.value_codegen(arg);
+        let cond = match primop {
+            PrimOp::Not => self
+                .builder
+                .ins()
+                .icmp_imm(IntCC::Equal, arg, FALSE_VALUE as i64),
+            PrimOp::IsNull => self
+                .builder
+                .ins()
+                .icmp_imm(IntCC::Equal, arg, NULL_VALUE as i64),
+            PrimOp::IsPair => {
+                let tag = self.builder.ins().band_imm(arg, TAG as i64);
+                let is_pair_tag = self
+                    .builder
+                    .ins()
+                    .icmp_imm(IntCC::Equal, tag, Tag::Pair as i64);
+                let is_not_null =
+                    self.builder
+                        .ins()
+                        .icmp_imm(IntCC::NotEqual, arg, NULL_VALUE as i64);
+                self.builder.ins().band(is_pair_tag, is_not_null)
+            }
+            _ => unreachable!(),
+        };
+        let true_val = self.builder.ins().iconst(types::I64, TRUE_VALUE as i64);
+        let false_val = self.builder.ins().iconst(types::I64, FALSE_VALUE as i64);
+        let result = self.builder.ins().select(cond, true_val, false_val);
+        self.rebinds.rebind(dest, IrValue::Value(result));
+        self.cps_codegen(cexpr, deferred);
+    }
+
+    fn value_primop_codegen(
         &mut self,
         primop: PrimOp,
         vals: &[CpsValue],
@@ -483,7 +532,9 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
         self.builder.switch_to_block(success_block);
         self.builder.seal_block(success_block);
         self.rebinds.rebind(dest, IrValue::Value(result));
-        self.push_alloc(result);
+        if primop.needs_drop() {
+            self.push_alloc(result);
+        }
         self.cps_codegen(cexpr, deferred);
     }
 

@@ -89,8 +89,12 @@ pub enum PrimOp {
     AllocCell,
 
     // List/pair operators:
+    Car,
+    Cdr,
     Cons,
     List,
+    IsNull,
+    IsPair,
 
     // Math primitive operators:
     Add,
@@ -102,6 +106,9 @@ pub enum PrimOp {
     GreaterEqual,
     Lesser,
     LesserEqual,
+
+    // Boolean operators:
+    Not,
 
     // Frame operatiors
     GetFrame,
@@ -117,6 +124,38 @@ pub enum PrimOp {
     ExpandTemplate,
     /// Raise an error indicating a failure to match the pattern.
     ErrorNoPatternsMatch,
+}
+
+impl PrimOp {
+    /// Whether or not the primitive operator performs returns a temporary
+    pub fn needs_drop(&self) -> bool {
+        // No cheating.
+        match self {
+            Self::Set => false,
+            Self::AllocCell => true,
+            Self::Car => true,
+            Self::Cdr => true,
+            Self::Cons => true,
+            Self::List => true,
+            Self::IsNull => false,
+            Self::IsPair => false,
+            Self::Add => true,
+            Self::Sub => true,
+            Self::Mul => true,
+            Self::Div => true,
+            Self::Equal => false,
+            Self::Greater => false,
+            Self::GreaterEqual => false,
+            Self::Lesser => false,
+            Self::LesserEqual => false,
+            Self::Not => false,
+            Self::GetFrame => true,
+            Self::SetContinuationMark => false,
+            Self::Matches => false,
+            Self::ExpandTemplate => true,
+            Self::ErrorNoPatternsMatch => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
