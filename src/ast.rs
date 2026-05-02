@@ -1344,10 +1344,10 @@ impl Expression {
     // they are returned from a store.
     pub fn to_primop(&self) -> Option<PrimOp> {
         use crate::{
-            lists::{cons, list},
+            lists::{car, cdr, cons, list},
             num::{add, div, equal, greater, greater_equal, lesser, lesser_equal, mul, sub},
             proc::{BridgePtr, FuncPtr::Bridge, Procedure},
-            value::{null_pred, not, pair_pred},
+            value::{not, null_pred, pair_pred},
         };
         use std::ptr::fn_addr_eq;
 
@@ -1363,6 +1363,8 @@ impl Expression {
             (lesser_equal, PrimOp::LesserEqual),
             (cons, PrimOp::Cons),
             (list, PrimOp::List),
+            (car, PrimOp::Car),
+            (cdr, PrimOp::Cdr),
             (not, PrimOp::Not),
             (null_pred, PrimOp::IsNull),
             (pair_pred, PrimOp::IsPair),

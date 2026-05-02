@@ -110,7 +110,9 @@ impl Cps {
 
     pub(super) fn max_drops(&self) -> usize {
         match self {
-            Cps::PrimOp(primop, _, _, cexpr) => cexpr.max_drops() + primop.needs_drop() as usize,
+            Cps::PrimOp(primop, _, _, cexpr) => {
+                cexpr.max_drops() + primop.info().needs_drop as usize
+            }
             Cps::Lambda { cexp, .. } => cexp.max_drops() + 1,
             Cps::If(_, success, failure) => success.max_drops().max(failure.max_drops()),
             _ => 0,
