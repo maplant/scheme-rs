@@ -10,7 +10,9 @@ impl Cps {
         // Perform beta reduction until reaching a fixed point:
         loop {
             let mut modified = false;
-            self = self.beta_reduction(&mut uses_cache, &mut modified);
+            self = self
+                .beta_reduction(&mut uses_cache, &mut modified)
+                .eta_reduction(&mut uses_cache, &mut modified);
             if !modified {
                 break;
             }
@@ -57,7 +59,7 @@ impl Cps {
                 let uses = cexp.uses(uses_cache).get(&val).copied().unwrap_or(0);
 
                 if !is_recursive && uses == 1 {
-                    let reduced = cexp.reduce_function(val, &args, &body, uses_cache);
+                    let reduced = cexp.beta_reduce_function(val, &args, &body, uses_cache);
                     if reduced {
                         *modified = true;
                         return cexp;
@@ -76,7 +78,7 @@ impl Cps {
         }
     }
 
-    fn reduce_function(
+    fn beta_reduce_function(
         &mut self,
         func: Local,
         args: &LambdaArgs,
@@ -85,21 +87,21 @@ impl Cps {
     ) -> bool {
         let new = match self {
             Cps::PrimOp(_, _, val, cexp) => {
-                let reduced = cexp.reduce_function(func, args, func_body, uses_cache);
+                let reduced = cexp.beta_reduce_function(func, args, func_body, uses_cache);
                 if reduced {
                     uses_cache.remove(val);
                 }
                 return reduced;
             }
             Cps::If(_, succ, fail) => {
-                return succ.reduce_function(func, args, func_body, uses_cache)
-                    || fail.reduce_function(func, args, func_body, uses_cache);
+                return succ.beta_reduce_function(func, args, func_body, uses_cache)
+                    || fail.beta_reduce_function(func, args, func_body, uses_cache);
             }
             Cps::Lambda {
                 val, body, cexp, ..
             } => {
-                let reduced = body.reduce_function(func, args, func_body, uses_cache)
-                    || cexp.reduce_function(func, args, func_body, uses_cache);
+                let reduced = body.beta_reduce_function(func, args, func_body, uses_cache)
+                    || cexp.beta_reduce_function(func, args, func_body, uses_cache);
                 if reduced {
                     uses_cache.remove(val);
                 }
@@ -132,6 +134,62 @@ impl Cps {
         };
         *self = new;
         true
+    }
+
+    /// Eta-reduction optimization steps. Replaces lambdas that forward their
+    /// arguments to another lambda with the body lambda.
+    fn eta_reduction(
+        self,
+        uses_cache: &mut HashMap<Local, HashMap<Local, usize>>,
+        modified: &mut bool,
+    ) -> Self {
+        match self {
+            Cps::PrimOp(prim_op, values, result, cexp) => Cps::PrimOp(
+                prim_op,
+                values,
+                result,
+                Box::new(cexp.eta_reduction(uses_cache, modified)),
+            ),
+            Cps::If(cond, success, failure) => Cps::If(
+                cond,
+                Box::new(success.eta_reduction(uses_cache, modified)),
+                Box::new(failure.eta_reduction(uses_cache, modified)),
+            ),
+            Cps::Lambda {
+                args,
+                body,
+                val,
+                cexp,
+                span,
+            } => {
+                let body = body.eta_reduction(uses_cache, modified);
+                let mut cexp = cexp.eta_reduction(uses_cache, modified);
+
+                if !args.variadic
+                    && args.continuation.is_none()
+                    && let Cps::App(k, app_args) = &body
+                    && *k != Value::from(val)
+                    && args
+                        .args
+                        .iter()
+                        .zip(app_args.iter())
+                        .all(|(arg, app_arg)| *app_arg == Value::from(*arg))
+                {
+                    *modified = true;
+                    cexp.substitute(&[(val, k.clone())].into_iter().collect(), uses_cache);
+                    cexp
+                } else {
+                    Cps::Lambda {
+                        args,
+                        body: Box::new(body),
+                        val,
+                        cexp: Box::new(cexp),
+                        span,
+                    }
+                }
+            }
+            cexp => cexp,
+        }
     }
 
     /// Removes any closures and allocated cells that are left unused.
