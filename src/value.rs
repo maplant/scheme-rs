@@ -118,8 +118,10 @@ use std::{
 
 const ALIGNMENT: usize = 16;
 const TAG_BITS: usize = ALIGNMENT.ilog2() as usize;
-const TAG: usize = 0b1111;
-const FALSE_VALUE: usize = Tag::Boolean as usize;
+pub(crate) const TAG: usize = 0b1111;
+pub(crate) const NULL_VALUE: usize = Tag::Pair as usize;
+pub(crate) const TRUE_VALUE: usize = Tag::Boolean as usize | 1 << TAG_BITS;
+pub(crate) const FALSE_VALUE: usize = Tag::Boolean as usize;
 
 /// A Scheme value. See [the module documentation](scheme_rs::value) for more
 /// information.

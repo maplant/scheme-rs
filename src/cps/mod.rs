@@ -89,8 +89,12 @@ pub enum PrimOp {
     AllocCell,
 
     // List/pair operators:
+    Car,
+    Cdr,
     Cons,
     List,
+    IsNull,
+    IsPair,
 
     // Math primitive operators:
     Add,
@@ -102,6 +106,9 @@ pub enum PrimOp {
     GreaterEqual,
     Lesser,
     LesserEqual,
+
+    // Boolean operators:
+    Not,
 
     // Frame operatiors
     GetFrame,
@@ -117,6 +124,63 @@ pub enum PrimOp {
     ExpandTemplate,
     /// Raise an error indicating a failure to match the pattern.
     ErrorNoPatternsMatch,
+}
+
+impl PrimOp {
+    pub(crate) fn info(&self) -> PrimOpInfo {
+        match self {
+            Self::Set => PrimOpInfo::new(2, false, false, false),
+            Self::AllocCell => PrimOpInfo::new(0, false, false, true),
+            Self::Car => PrimOpInfo::new(1, false, true, true),
+            Self::Cdr => PrimOpInfo::new(1, false, true, true),
+            Self::Cons => PrimOpInfo::new(2, false, false, true),
+            Self::List => PrimOpInfo::new(0, true, false, true),
+            Self::IsNull => PrimOpInfo::new(1, false, false, false),
+            Self::IsPair => PrimOpInfo::new(1, false, false, false),
+            Self::Add => PrimOpInfo::new(0, true, true, true),
+            Self::Mul => PrimOpInfo::new(0, true, true, true),
+            Self::Sub => PrimOpInfo::new(1, true, true, true),
+            Self::Div => PrimOpInfo::new(1, true, true, true),
+            Self::Equal => PrimOpInfo::new(1, true, true, false),
+            Self::Greater => PrimOpInfo::new(1, true, true, false),
+            Self::GreaterEqual => PrimOpInfo::new(1, true, true, false),
+            Self::Lesser => PrimOpInfo::new(1, true, true, false),
+            Self::LesserEqual => PrimOpInfo::new(1, true, true, false),
+            Self::Not => PrimOpInfo::new(1, false, false, false),
+            Self::GetFrame => PrimOpInfo::new(1, false, false, true),
+            Self::SetContinuationMark => PrimOpInfo::new(2, false, false, false),
+            Self::Matches => PrimOpInfo::new(2, false, false, false),
+            Self::ExpandTemplate => PrimOpInfo::new(4, false, false, true),
+            Self::ErrorNoPatternsMatch => PrimOpInfo::new(0, false, false, false),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct PrimOpInfo {
+    pub required: usize,
+    pub variadic: bool,
+    pub can_error: bool,
+    pub needs_drop: bool,
+}
+
+impl PrimOpInfo {
+    fn new(required: usize, variadic: bool, can_error: bool, needs_drop: bool) -> Self {
+        Self {
+            required,
+            variadic,
+            can_error,
+            needs_drop,
+        }
+    }
+
+    pub(crate) fn matches_args(&self, num: usize) -> bool {
+        if self.variadic {
+            num > self.required
+        } else {
+            num == self.required
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
