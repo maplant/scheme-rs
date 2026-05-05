@@ -167,7 +167,9 @@ to by it's alias, `'`.
 
 Inserts the contents of ⟨filename⟩ at the point of expansion.
 
-## `match` _syntax_
+## Pattern matching
+
+### `match` _syntax_
 
 ``` scheme 
 (match ⟨expr⟩ ⟨clause⟩ ...)
@@ -252,8 +254,8 @@ authors. It has the following grammar:
 ⇒ 6
 ```
 
-## `match-let` _syntax_
 
+### `match-let` _syntax_
 
 ``` scheme 
 (match-let ((⟨pattern⟩ ⟨expr⟩) ...) body)
@@ -269,7 +271,7 @@ variables. Raises an error if any of the expression fail to match.
 ⇒ (4 3 2 1)
 ```
 
-## `match-let*` _syntax_
+### `match-let*` _syntax_
 
 ``` scheme 
 (match-let* ((⟨pattern⟩ ⟨expr⟩) ...) body)
@@ -277,7 +279,7 @@ variables. Raises an error if any of the expression fail to match.
 
 `let*` version of `match-let`.
 
-## `match-letrec` _syntax_
+### `match-letrec` _syntax_
 
 ``` scheme 
 (match-letrec ((⟨pattern⟩ ⟨expr⟩) ...) body)
