@@ -166,3 +166,121 @@ to by it's alias, `'`.
 ```
 
 Inserts the contents of ⟨filename⟩ at the point of expansion.
+
+## `match` _syntax_
+
+``` scheme 
+(match ⟨expr⟩ ⟨clause⟩ ...)
+```
+Provides facilities for pattern matching. The pattern matcher provided by 
+scheme-rs is known as the Wright-Cartwright-Shinn matcher thanks to its 
+authors. It has the following grammar:
+
+```
+        patterns:                       matches:
+
+  pat ::= identifier                      anything, and binds identifier
+        | _                               anything
+        | ()                              the empty list
+        | #t                              #t
+        | #f                              #f
+        | string                          a string
+        | number                          a number
+        | character                       a character
+        | 'sexp                           an s-expression
+        | 'symbol                         a symbol (special case of s-expr)
+        | (pat_1 ... pat_n)               list of n elements
+        | (pat_1 ... pat_n . pat_{n+1})   list of n or more
+        | (pat_1 ... pat_n pat_n+1 ooo)   list of n or more, each element
+                                          of remainder must match pat_n+1
+        | #(pat_1 ... pat_n)              vector of n elements
+        | #(pat_1 ... pat_n pat_n+1 ooo)  vector of n or more, each element
+                                          of remainder must match pat_n+1
+        | #&pat                           box
+        | ($ record-name pat_1 ... pat_n) a record
+        | (= field pat)                   a ``field'' of an object
+        | (and pat_1 ... pat_n)           if all of pat_1 thru pat_n match
+        | (or pat_1 ... pat_n)            if any of pat_1 thru pat_n match
+        | (not pat_1 ... pat_n)           if all pat_1 thru pat_n don't match
+        | (? predicate pat_1 ... pat_n)   if predicate true and all of
+                                          pat_1 thru pat_n match
+        | (set! identifier)               anything, and binds setter
+        | (get! identifier)               anything, and binds getter
+        | `qp                             a quasi-pattern
+        | (identifier *** pat)            matches pat in a tree and binds
+        identifier to the path leading
+        to the object that matches pat
+
+  ooo ::= ...                             zero or more
+        | ___                             zero or more
+        | **1                             1 or more
+
+  quasi-patterns:                 matches:
+
+  qp  ::= ()                              the empty list
+        | #t                              #t
+        | #f                              #f
+        | string                          a string
+        | number                          a number
+        | character                       a character
+        | identifier                      a symbol
+        | (qp_1 ... qp_n)                 list of n elements
+        | (qp_1 ... qp_n . qp_{n+1})      list of n or more
+        | (qp_1 ... qp_n qp_n+1 ooo)      list of n or more, each element
+                                          of remainder must match qp_n+1
+        | #(qp_1 ... qp_n)                vector of n elements
+        | #(qp_1 ... qp_n qp_n+1 ooo)     vector of n or more, each element
+                                          of remainder must match qp_n+1
+        | #&qp                            box
+        | ,pat                            a pattern
+        | ,@pat                           a pattern
+```
+
+
+``` scheme title="Example: match expression" linenums="1"
+(match '(hello world)
+  ((a)   #f)
+  ((a b) (list b a)))
+⇒ (world hello)
+
+(match '(hello)
+  ((a)   #f)
+  ((a b) (list b a)))
+⇒ #f
+
+(match #(1 2 3) (#(a b c) (+ a b c)))
+⇒ 6
+```
+
+## `match-let` _syntax_
+
+
+``` scheme 
+(match-let ((⟨pattern⟩ ⟨expr⟩) ...) body)
+```
+
+Matches each pattern to the given expression and evaluates with the bond 
+variables. Raises an error if any of the expression fail to match.
+
+``` scheme title="Example: match expression" linenums="1"
+(match-let (((a b) '(1 2))
+            ((c d) '(3 4)))
+  (list d c b a))
+⇒ (4 3 2 1)
+```
+
+## `match-let*` _syntax_
+
+``` scheme 
+(match-let* ((⟨pattern⟩ ⟨expr⟩) ...) body)
+```
+
+`let*` version of `match-let`.
+
+## `match-letrec` _syntax_
+
+``` scheme 
+(match-letrec ((⟨pattern⟩ ⟨expr⟩) ...) body)
+```
+
+`letrec` version of `match-let`
