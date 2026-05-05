@@ -2557,6 +2557,16 @@ impl Port {
         Ok(Some(out))
     }
 
+    /// Read the contents of the port until eof.
+    #[maybe_async]
+    pub fn get_string_all(&self) -> Result<Option<String>, Exception> {
+        let mut out = String::new();
+        while let Some(chr) = maybe_await!(self.get_char())? {
+            out.push(chr);
+        }
+        Ok(Some(out))
+    }
+
     /// Read a single datum from the port and advance the position to right after
     /// the datum.
     #[maybe_async]
@@ -3726,6 +3736,16 @@ pub fn get_line(textual_input_port: &Value) -> Result<Vec<Value>, Exception> {
     let port: Port = textual_input_port.clone().try_into()?;
     if let Some(line) = maybe_await!(port.get_line())? {
         Ok(vec![Value::from(line)])
+    } else {
+        Ok(vec![EOF_OBJECT.clone()])
+    }
+}
+
+#[maybe_async]
+#[bridge(name = "get-string-all", lib = "(rnrs io builtins (6))")]
+pub fn get_string_all(textual_input_port: Port) -> Result<Vec<Value>, Exception> {
+    if let Some(s) = maybe_await!(textual_input_port.get_string_all())? {
+        Ok(vec![Value::from(s)])
     } else {
         Ok(vec![EOF_OBJECT.clone()])
     }

@@ -1,12 +1,13 @@
 (library (rnrs io ports (6))
   (export open-string-input-port buffer-mode buffer-mode? file-options
-          open-bytevector-output-port string->bytevector
+          open-bytevector-output-port string->bytevector bytevector->string
           (import (rnrs io builtins))
           (import (rnrs io conditions)))
   (import (rnrs base)
           (rnrs bytevectors)
           (rnrs enums)
           (rnrs syntax-case)
+          (rnrs io simple builtins)
           (rnrs mutable-strings))
 
   (define-syntax buffer-mode
@@ -49,7 +50,11 @@
     (let-values (([string-port byte-extractor] (open-bytevector-output-port transcoder)))
       (put-string string-port string)
       (close-port string-port)
-      (byte-extractor)))3
+      (byte-extractor)))
+
+  (define (bytevector->string bytevector transcoder)
+    (let ((bytevector-port (open-bytevector-input-port bytevector transcoder)))
+      (get-string-all bytevector-port)))
 
   (define (open-bytevector-output-port . maybe-transcoder)
     (define output (make-bytevector 0))
@@ -79,11 +84,9 @@
        (lambda (pos) (set! curr-pos pos))
        ;; close
        #f))
-
     (if (null? maybe-transcoder)
         (values output-port extraction-procedure)
         (values (transcoded-port output-port (car maybe-transcoder)) extraction-procedure)))
-
   
   (define (read-bytevector input-bvec input-start output-bvec output-start count)
     (if (> count 0)
@@ -95,20 +98,25 @@
 
   (define (open-bytevector-input-port input-bvec . maybe-transcoder)
     (define curr-pos 0)
-    (make-custom-binary-input-port
-     "bytevector-input-port"
-     ;; read!
-     (lambda (output-bvec start count)
-       (let ([adjusted-count (min count (- length curr-pos))])
-         (read-bytevector input-bvec curr-pos output-bvec start adjusted-count)
-         (set! curr-pos (+ curr-pos adjusted-count))
-         adjusted-count))
-     ;; get-position
-     (lambda () curr-pos)
-     ;; set-position
-     (lambda (pos) (set! curr-pos pos))
-     ;; close
-     #f))
+    (define length (bytevector-length input-bvec))
+    (define output-port
+      (make-custom-binary-input-port
+       "bytevector-input-port"
+       ;; read!
+       (lambda (output-bvec start count)
+         (let ([adjusted-count (min count (- length curr-pos))])
+           (read-bytevector input-bvec curr-pos output-bvec start adjusted-count)
+           (set! curr-pos (+ curr-pos adjusted-count))
+           adjusted-count))
+       ;; get-position
+       (lambda () curr-pos)
+       ;; set-position
+       (lambda (pos) (set! curr-pos pos))
+       ;; close
+       #f))
+    (if (null? maybe-transcoder)
+        output-port
+        (transcoded-port output-port (car maybe-transcoder))))
 
   (define (read-string input-string input-start output-string output-start count)
     (if (> count 0)
