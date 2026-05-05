@@ -3983,7 +3983,7 @@ pub fn put_string(
             let start: usize = start.try_to_scheme_type()?;
             if start >= string.len() {
                 return Err(Exception::invalid_index(start, string.len()));
-            } 
+            }
             &string[start..]
         }
         [start, count] => {
