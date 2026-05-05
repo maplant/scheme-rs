@@ -405,13 +405,14 @@ impl TopLevelEnvironment {
             != Some(binding);
         let mut top_level_binds = TOP_LEVEL_BINDINGS.lock();
         match top_level_binds.entry(binding) {
-            Entry::Occupied(occup) => {
-                if let TopLevelBinding::Global(global) = occup.get().clone() {
+            Entry::Occupied(mut occup) => match occup.get_mut() {
+                TopLevelBinding::Global(global) => global.clone(),
+                occup => {
+                    let global = Global::new(name, Cell::new(value), mutable, self.clone());
+                    *occup = TopLevelBinding::Global(global.clone());
                     global
-                } else {
-                    unreachable!()
                 }
-            }
+            },
             Entry::Vacant(vacant) => {
                 let global = Global::new(name, Cell::new(value), mutable, self.clone());
                 vacant.insert(TopLevelBinding::Global(global.clone()));
