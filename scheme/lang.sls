@@ -1,5 +1,6 @@
 (library (lang (1))
-  (export (import (only (rnrs) define lambda let let* letrec set! quote
+  (export (import (match))
+          (import (only (rnrs) define lambda let let* letrec set! quote
                         quasiquote)) include)
   (import (rnrs))
 
