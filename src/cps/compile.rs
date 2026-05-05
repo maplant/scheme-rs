@@ -234,37 +234,41 @@ fn compile_apply(
     let k4 = Local::gensym();
     Cps::Lambda {
         args: LambdaArgs::new(vec![k2], false, None),
-        body: Box::new(if let Some(primop) = operator.to_primop() {
-            compile_primop(Value::from(k2), primop, Vec::new(), args)
-        } else {
-            let frame = if let Expression::Var(var) = operator
-                && let Some(sym) = var.symbol()
+        body: Box::new(
+            if let Some(primop) = operator.to_primop()
+                && primop.info().matches_args(args.len())
             {
-                Some(Syntax::Identifier {
-                    ident: Identifier {
-                        sym,
-                        scopes: BTreeSet::new(),
-                    },
-                    span: span.clone(),
-                })
+                compile_primop(Value::from(k2), primop, Vec::new(), args)
             } else {
-                None
-            };
-            operator.compile(&mut move |op_result| Cps::Lambda {
-                args: LambdaArgs::new(vec![k3], false, None),
-                body: Box::new(compile_apply_args(
-                    Value::from(k2),
-                    Value::from(k3),
-                    Vec::new(),
-                    args,
-                    frame.clone(),
-                    span.clone(),
-                )),
-                val: k4,
-                cexp: Box::new(Cps::App(op_result, vec![Value::from(k4)])),
-                span: None,
-            })
-        }),
+                let frame = if let Expression::Var(var) = operator
+                    && let Some(sym) = var.symbol()
+                {
+                    Some(Syntax::Identifier {
+                        ident: Identifier {
+                            sym,
+                            scopes: BTreeSet::new(),
+                        },
+                        span: span.clone(),
+                    })
+                } else {
+                    None
+                };
+                operator.compile(&mut move |op_result| Cps::Lambda {
+                    args: LambdaArgs::new(vec![k3], false, None),
+                    body: Box::new(compile_apply_args(
+                        Value::from(k2),
+                        Value::from(k3),
+                        Vec::new(),
+                        args,
+                        frame.clone(),
+                        span.clone(),
+                    )),
+                    val: k4,
+                    cexp: Box::new(Cps::App(op_result, vec![Value::from(k4)])),
+                    span: None,
+                })
+            },
+        ),
         val: k1,
         cexp: Box::new(meta_cont(Value::from(k1))),
         span: None,

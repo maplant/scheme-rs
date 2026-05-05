@@ -506,16 +506,6 @@ pub(crate) unsafe extern "C" fn halt(args: *const ()) -> *mut Application {
     }
 }
 
-/// Evaluate a `Gc<Value>` as "truthy" or not, as in whether it triggers a
-/// conditional.
-#[runtime_fn]
-unsafe extern "C" fn truthy(val: *const ()) -> bool {
-    unsafe {
-        // No need to increment the reference count here:
-        ManuallyDrop::new(Value::from_raw(val)).is_true()
-    }
-}
-
 /// Replace the value pointed to at to with the value contained in from.
 #[runtime_fn]
 unsafe extern "C" fn store(from: *const (), to: *const ()) {
@@ -528,23 +518,49 @@ unsafe extern "C" fn store(from: *const (), to: *const ()) {
     }
 }
 
+/// Return the car of the argument
+#[runtime_fn]
+unsafe extern "C" fn car(val: *const (), error: *mut Value) -> *const () {
+    unsafe {
+        let val = ManuallyDrop::new(Value::from_raw(val));
+        match val.try_to_scheme_type::<Pair>() {
+            Ok(pair) => Value::into_raw(pair.car()),
+            Err(condition) => {
+                error.write(condition.into());
+                Value::into_raw(Value::undefined())
+            }
+        }
+    }
+}
+
+/// Return the cdr of the argument
+#[runtime_fn]
+unsafe extern "C" fn cdr(val: *const (), error: *mut Value) -> *const () {
+    unsafe {
+        let val = ManuallyDrop::new(Value::from_raw(val));
+        match val.try_to_scheme_type::<Pair>() {
+            Ok(pair) => Value::into_raw(pair.cdr()),
+            Err(condition) => {
+                error.write(condition.into());
+                Value::into_raw(Value::undefined())
+            }
+        }
+    }
+}
+
 /// Return the cons of the two arguments
 #[runtime_fn]
-unsafe extern "C" fn cons(vals: *const *const (), num_vals: u32, error: *mut Value) -> *const () {
+unsafe extern "C" fn cons(car: *const (), cdr: *const ()) -> *const () {
     unsafe {
-        if num_vals != 2 {
-            error.write(Exception::wrong_num_of_args(2, num_vals as usize).into());
-            return Value::into_raw(Value::undefined());
-        }
-        let car = Value::from_raw_inc_rc(vals.read());
-        let cdr = Value::from_raw_inc_rc(vals.add(1).read());
+        let car = Value::from_raw_inc_rc(car);
+        let cdr = Value::from_raw_inc_rc(cdr);
         Value::into_raw(Value::from(Pair::mutable(car, cdr)))
     }
 }
 
 /// Return the proper list of the arguments
 #[runtime_fn]
-unsafe extern "C" fn list(vals: *const *const (), num_vals: u32, _error: *mut Value) -> *const () {
+unsafe extern "C" fn list(vals: *const *const (), num_vals: u32) -> *const () {
     let mut list = Value::null();
     unsafe {
         for i in (0..num_vals).rev() {

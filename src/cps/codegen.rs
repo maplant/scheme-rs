@@ -12,7 +12,7 @@ use crate::{
     cps::Value as CpsValue,
     proc::{ContinuationPtr, FuncPtr, ProcDebugInfo, Procedure},
     runtime::{DebugInfo, Runtime},
-    value::Value as SchemeValue,
+    value::{FALSE_VALUE, NULL_VALUE, TAG, TRUE_VALUE, Tag, Value as SchemeValue},
 };
 
 use super::*;
@@ -51,7 +51,6 @@ pub(crate) struct RuntimeFunctions {
     halt: FuncId,
     make_user: FuncId,
     make_continuation: FuncId,
-    truthy: FuncId,
     alloc_cell: FuncId,
     read_cell: FuncId,
     store: FuncId,
@@ -67,6 +66,8 @@ pub(crate) struct RuntimeFunctions {
     // List primops:
     cons: FuncId,
     list: FuncId,
+    car: FuncId,
+    cdr: FuncId,
 
     // Frame primops:
     get_frame: FuncId,
@@ -256,8 +257,19 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
                 self.set_continuation_mark_codegen(tag, val);
                 self.cps_codegen(*cexpr, deferred);
             }
+            Cps::PrimOp(
+                primop @ (PrimOp::Not | PrimOp::IsNull | PrimOp::IsPair),
+                args,
+                result,
+                cexpr,
+            ) => {
+                let [arg] = args.as_slice() else {
+                    unreachable!()
+                };
+                self.bool_primop_codegen(primop, arg, result, *cexpr, deferred);
+            }
             Cps::PrimOp(primop, vals, result, cexpr) => {
-                self.simple_primop_codegen(primop, &vals, result, *cexpr, deferred);
+                self.value_primop_codegen(primop, &vals, result, *cexpr, deferred);
             }
             Cps::Lambda {
                 args,
@@ -414,7 +426,46 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
         self.cps_codegen(cexpr, deferred);
     }
 
-    fn simple_primop_codegen(
+    fn bool_primop_codegen(
+        &mut self,
+        primop: PrimOp,
+        arg: &CpsValue,
+        dest: Local,
+        cexpr: Cps,
+        deferred: &mut Vec<ProcedureBundle>,
+    ) {
+        let arg = self.value_codegen(arg);
+        let cond = match primop {
+            PrimOp::Not => self
+                .builder
+                .ins()
+                .icmp_imm(IntCC::Equal, arg, FALSE_VALUE as i64),
+            PrimOp::IsNull => self
+                .builder
+                .ins()
+                .icmp_imm(IntCC::Equal, arg, NULL_VALUE as i64),
+            PrimOp::IsPair => {
+                let tag = self.builder.ins().band_imm(arg, TAG as i64);
+                let is_pair_tag = self
+                    .builder
+                    .ins()
+                    .icmp_imm(IntCC::Equal, tag, Tag::Pair as i64);
+                let is_not_null =
+                    self.builder
+                        .ins()
+                        .icmp_imm(IntCC::NotEqual, arg, NULL_VALUE as i64);
+                self.builder.ins().band(is_pair_tag, is_not_null)
+            }
+            _ => unreachable!(),
+        };
+        let true_val = self.builder.ins().iconst(types::I64, TRUE_VALUE as i64);
+        let false_val = self.builder.ins().iconst(types::I64, FALSE_VALUE as i64);
+        let result = self.builder.ins().select(cond, true_val, false_val);
+        self.rebinds.rebind(dest, IrValue::Value(result));
+        self.cps_codegen(cexpr, deferred);
+    }
+
+    fn value_primop_codegen(
         &mut self,
         primop: PrimOp,
         vals: &[CpsValue],
@@ -422,16 +473,23 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
         cexpr: Cps,
         deferred: &mut Vec<ProcedureBundle>,
     ) {
-        // Put the values into an array:
-        let args = self.alloc_array(vals.len());
+        let primop_info = primop.info();
 
-        for (i, val) in vals.iter().enumerate() {
-            let val = self.value_codegen(val);
-            self.array_store(args, i, val);
-        }
+        let mut args = if primop_info.variadic {
+            // Put the values into an array:
+            let args = self.alloc_array(vals.len());
 
-        let vals_addr = self.builder.ins().stack_addr(types::I64, args, 0);
-        let num_vals = self.builder.ins().iconst(types::I32, vals.len() as i64);
+            for (i, val) in vals.iter().enumerate() {
+                let val = self.value_codegen(val);
+                self.array_store(args, i, val);
+            }
+
+            let vals_addr = self.builder.ins().stack_addr(types::I64, args, 0);
+            let num_vals = self.builder.ins().iconst(types::I32, vals.len() as i64);
+            vec![vals_addr, num_vals]
+        } else {
+            vals.iter().map(|val| self.value_codegen(val)).collect()
+        };
 
         // Call the respective runtime function:
         let runtime_func = match primop {
@@ -446,6 +504,8 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
             PrimOp::LesserEqual => self.runtime_funcs.lesser_equal,
             PrimOp::Cons => self.runtime_funcs.cons,
             PrimOp::List => self.runtime_funcs.list,
+            PrimOp::Car => self.runtime_funcs.car,
+            PrimOp::Cdr => self.runtime_funcs.cdr,
             _ => unreachable!(),
         };
 
@@ -453,37 +513,49 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
             .module
             .declare_func_in_func(runtime_func, self.builder.func);
 
-        let error_slot = self.alloc_array(1);
-        let error_addr = self.builder.ins().stack_addr(types::I64, error_slot, 0);
-        let primop_call = self
-            .builder
-            .ins()
-            .call(runtime_func, &[vals_addr, num_vals, error_addr]);
+        // Add a slot for the error if this function can error:
+        let error_slot = primop_info.can_error.then(|| {
+            let error_slot = self.alloc_array(1);
+            let error_addr = self.builder.ins().stack_addr(types::I64, error_slot, 0);
+            args.push(error_addr);
+            error_slot
+        });
+
+        // Call the function:
+        let primop_call = self.builder.ins().call(runtime_func, args.as_slice());
         let result = self.builder.inst_results(primop_call)[0];
 
-        // Check if the result is undefined:
-        let cond = self.builder.ins().icmp_imm(IntCC::Equal, result, 0);
+        // Check for error if we need to:
+        if let Some(error_slot) = error_slot {
+            // Check if the result is undefined:
+            let cond = self.builder.ins().icmp_imm(IntCC::Equal, result, 0);
 
-        let failure_block = self.builder.create_block();
-        let success_block = self.builder.create_block();
+            let failure_block = self.builder.create_block();
+            let success_block = self.builder.create_block();
 
-        self.builder
-            .ins()
-            .brif(cond, failure_block, &[], success_block, &[]);
+            self.builder
+                .ins()
+                .brif(cond, failure_block, &[], success_block, &[]);
 
-        // Throw the error:
-        self.builder.switch_to_block(failure_block);
-        self.builder.seal_block(failure_block);
+            // Throw the error:
+            self.builder.switch_to_block(failure_block);
+            self.builder.seal_block(failure_block);
 
-        let error_val = self.array_load(error_slot, 0);
-        self.drops_codegen();
-        self.raise_codegen(error_val);
+            let error_val = self.array_load(error_slot, 0);
+            self.drops_codegen();
+            self.raise_codegen(error_val);
 
-        // Otherwise continue with the correct value
-        self.builder.switch_to_block(success_block);
-        self.builder.seal_block(success_block);
+            // Otherwise continue with the correct value
+            self.builder.switch_to_block(success_block);
+            self.builder.seal_block(success_block);
+        }
+
         self.rebinds.rebind(dest, IrValue::Value(result));
-        self.push_alloc(result);
+
+        if primop_info.needs_drop {
+            self.push_alloc(result);
+        }
+
         self.cps_codegen(cexpr, deferred);
     }
 
@@ -600,11 +672,17 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
         deferred: &mut Vec<ProcedureBundle>,
     ) {
         let cond = self.value_codegen(cond);
+        let cond = self
+            .builder
+            .ins()
+            .icmp_imm(IntCC::NotEqual, cond, FALSE_VALUE as i64);
+        /*
         let truthy = self
             .module
             .declare_func_in_func(self.runtime_funcs.truthy, self.builder.func);
         let truthy_call = self.builder.ins().call(truthy, &[cond]);
         let cond = self.builder.inst_results(truthy_call)[0];
+        */
 
         // Because our compiler is not particularly sophisticated right now, we
         // can guarantee that both branches terminate. Thus, no merge basic
@@ -913,3 +991,19 @@ impl ProcedureBundle {
         module.clear_context(&mut ctx);
     }
 }
+
+/*
+fn write_perf_map_entry(addr: *const u8, size: usize, name: &str) {
+    use std::io::Write;
+    let pid = std::process::id();
+    let path = format!("/tmp/perf-{pid}.map");
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(file, "{:x} {size:x} {name}", addr as usize);
+        let _ = file.flush();
+    }
+}
+*/
