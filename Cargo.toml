@@ -1,6 +1,6 @@
 [package]
 name = "scheme-rs"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 authors = ["Matthew Plant <maplant@protonmail.com>"]
 description = "Embedded scheme for the Rust ecosystem"
@@ -28,7 +28,7 @@ rand = { version = "0.9", features = ["thread_rng"] }
 rust-embed = { version = "8", features = ["debug-embed"] }
 rustc-hash = "2.1"
 rustyline = { version = "17", features = ["derive"] }
-scheme-rs-macros = { version = "0.1.0-alpha.1", path = "proc-macros" }
+scheme-rs-macros = { version = "0.2.0", path = "proc-macros" }
 unicode_categories = "0.1"
 
 # TODO: Remove this dependency

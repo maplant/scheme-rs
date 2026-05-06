@@ -19,7 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   handlers with values.
 - Added method for accessing Rust mutable references in Scheme within a 
   static delimited continuation via `ContBarrier`.
-- Improved excpetion printing (thanks @xnacly!).
+- Added `r6rs` enumeration sets.
+- Improved exception printing (thanks @xnacly!).
+- Added Shinn-Wright pattern matcher accessible via `(lang (1))`.
+- Allow for `_` to be a keyword in `syntax-rules` and `syntax-case` macros.
 
 ### Changed
 
@@ -36,4 +39,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed re-defining of top level items causing a panic.
 - Fixed `Gc` not requiring `Send`.
 - Various performance improvements to the runtime system and garbage collector.
-
+- Various fixes to reach higher parity in the R6RS test suite (26 of 2445).
