@@ -43,7 +43,7 @@ impl WideString {
         Arc::get_mut(&mut this.0).unwrap().mutable = true;
         this
     }
-    
+
     pub fn as_slice(&self) -> MappedRwLockReadGuard<'_, [char]> {
         RwLockReadGuard::map(self.0.chars.read(), |chars| chars.as_slice())
     }
