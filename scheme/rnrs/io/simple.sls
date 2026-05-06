@@ -1,6 +1,7 @@
 (library (rnrs io simple (6))
   (export eof-object eof-object? input-port? output-port? close-input-port
-          close-output-port close-port (import (rnrs io simple builtins)))
+          close-output-port close-port (import (rnrs io simple builtins))
+          (import (rnrs io conditions)))
   (import (rnrs base)
           (only (rnrs io ports)
                 eof-object eof-object? input-port? output-port? close-port))
@@ -13,4 +14,3 @@
 
   (define (close-output-port port)
     (close-port port)))
-                        

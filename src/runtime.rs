@@ -554,7 +554,7 @@ unsafe extern "C" fn cons(car: *const (), cdr: *const ()) -> *const () {
     unsafe {
         let car = Value::from_raw_inc_rc(car);
         let cdr = Value::from_raw_inc_rc(cdr);
-        Value::into_raw(Value::from(Pair::new(car, cdr, true)))
+        Value::into_raw(Value::from(Pair::mutable(car, cdr)))
     }
 }
 
@@ -564,10 +564,9 @@ unsafe extern "C" fn list(vals: *const *const (), num_vals: u32) -> *const () {
     let mut list = Value::null();
     unsafe {
         for i in (0..num_vals).rev() {
-            list = Value::from(Pair::new(
+            list = Value::from(Pair::mutable(
                 Value::from_raw_inc_rc(vals.add(i as usize).read()),
                 list,
-                true,
             ));
         }
     }

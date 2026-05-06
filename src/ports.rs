@@ -208,12 +208,12 @@ pub enum BufferMode {
 impl BufferMode {
     fn new_input_byte_buffer(&self, text: bool, is_input_port: bool) -> ByteVector {
         if !is_input_port {
-            return ByteVector::new(Vec::new());
+            return ByteVector::mutable(Vec::new());
         }
         match self {
-            Self::None if text => ByteVector::new(vec![0u8; 4]),
-            Self::None => ByteVector::new(vec![0]),
-            Self::Line | Self::Block => ByteVector::new(vec![0u8; BUFFER_SIZE]),
+            Self::None if text => ByteVector::mutable(vec![0u8; 4]),
+            Self::None => ByteVector::mutable(vec![0]),
+            Self::Line | Self::Block => ByteVector::mutable(vec![0u8; BUFFER_SIZE]),
         }
     }
 
@@ -222,18 +222,18 @@ impl BufferMode {
             return WideString::from(Vec::new());
         }
         match self {
-            Self::None => WideString::new_mutable(vec!['\0']),
-            Self::Line | Self::Block => WideString::new_mutable(vec!['\0'; BUFFER_SIZE]),
+            Self::None => WideString::mutable(vec!['\0']),
+            Self::Line | Self::Block => WideString::mutable(vec!['\0'; BUFFER_SIZE]),
         }
     }
 
     fn new_output_byte_buffer(&self, is_output_port: bool) -> ByteVector {
         if !is_output_port {
-            return ByteVector::new(Vec::new());
+            return ByteVector::mutable(Vec::new());
         }
         match self {
-            Self::None => ByteVector::new(Vec::new()),
-            Self::Line | Self::Block => ByteVector::new(Vec::with_capacity(BUFFER_SIZE)),
+            Self::None => ByteVector::mutable(Vec::new()),
+            Self::Line | Self::Block => ByteVector::mutable(Vec::with_capacity(BUFFER_SIZE)),
         }
     }
 
@@ -242,8 +242,8 @@ impl BufferMode {
             return WideString::from(Vec::new());
         }
         match self {
-            Self::None => WideString::new_mutable(Vec::new()),
-            Self::Line | Self::Block => WideString::new_mutable(Vec::with_capacity(BUFFER_SIZE)),
+            Self::None => WideString::mutable(Vec::new()),
+            Self::Line | Self::Block => WideString::mutable(Vec::with_capacity(BUFFER_SIZE)),
         }
     }
 
@@ -276,7 +276,7 @@ impl fmt::Debug for Transcoder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            " {:?} {:?} {:?}",
+            "{:?} {:?} {:?}",
             self.codec, self.eol_type, self.error_handling_mode
         )
     }
@@ -305,6 +305,61 @@ pub fn native_transcoder() -> Result<Vec<Value>, Exception> {
     ))])
 }
 
+#[bridge(name = "make-transcoder", lib = "(rnrs io builtins (6))")]
+pub fn make_transcoder(codec: &Value, remaining: &[Value]) -> Result<Vec<Value>, Exception> {
+    let codec = *codec.try_to_rust_type::<Codec>()?;
+    let (eol_type, error_handling_mode) = match remaining {
+        [] => (EolStyle::None, ErrorHandlingMode::Replace),
+        [eol_style] => (
+            EolStyle::from_sym(eol_style.try_into()?)?,
+            ErrorHandlingMode::Replace,
+        ),
+        [eol_style, error_handling_mode] => (
+            EolStyle::from_sym(eol_style.try_into()?)?,
+            ErrorHandlingMode::from_sym(error_handling_mode.try_into()?)?,
+        ),
+        _ => return Err(Exception::wrong_num_of_var_args(1..3, 1 + remaining.len())),
+    };
+    Ok(vec![Value::from_rust_type(Transcoder {
+        codec,
+        eol_type,
+        error_handling_mode,
+    })])
+}
+
+#[bridge(name = "transcoder-codec", lib = "(rnrs io builtins (6))")]
+pub fn transcoder_codec(transcoder: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![
+        transcoder
+            .try_to_rust_type::<Transcoder>()?
+            .codec
+            .to_value(),
+    ])
+}
+
+#[bridge(name = "transcoder-eol-style", lib = "(rnrs io builtins (6))")]
+pub fn transcoder_eol_style(transcoder: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(
+        transcoder
+            .try_to_rust_type::<Transcoder>()?
+            .eol_type
+            .to_sym(),
+    )])
+}
+
+#[bridge(
+    name = "transcoder-error-handling-mode",
+    lib = "(rnrs io builtins (6))"
+)]
+pub fn transcoder_error_handling_mode(transcoder: &Value) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(
+        transcoder
+            .try_to_rust_type::<Transcoder>()?
+            .error_handling_mode
+            .to_sym(),
+    )])
+}
+
 #[derive(Copy, Clone, Trace)]
 pub enum Codec {
     Latin1,
@@ -312,12 +367,43 @@ pub enum Codec {
     Utf16,
 }
 
+impl SchemeCompatible for Codec {
+    fn rtd() -> Arc<RecordTypeDescriptor> {
+        rtd!(name: "codec", opaque: true, sealed: true)
+    }
+}
+
+static LATIN_1_CODEC: LazyLock<Gc<Codec>> = LazyLock::new(|| Gc::new(Codec::Latin1));
+static UTF_8_CODEC: LazyLock<Gc<Codec>> = LazyLock::new(|| Gc::new(Codec::Utf8));
+static UTF_16_CODEC: LazyLock<Gc<Codec>> = LazyLock::new(|| Gc::new(Codec::Utf16));
+
+#[bridge(name = "latin-1-codec", lib = "(rnrs io builtins (6))")]
+pub fn latin_1_codec() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(Record::from_rust_gc_type(
+        LATIN_1_CODEC.clone(),
+    ))])
+}
+
+#[bridge(name = "utf-8-codec", lib = "(rnrs io builtins (6))")]
+pub fn utf_8_codec() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(Record::from_rust_gc_type(
+        UTF_8_CODEC.clone(),
+    ))])
+}
+
+#[bridge(name = "utf-16-codec", lib = "(rnrs io builtins (6))")]
+pub fn utf_16_codec() -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(Record::from_rust_gc_type(
+        UTF_16_CODEC.clone(),
+    ))])
+}
+
 impl fmt::Debug for Codec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Latin1 => write!(f, "latin-1"),
-            Self::Utf8 => write!(f, "utf-8"),
-            Self::Utf16 => write!(f, "utf-16"),
+            Self::Latin1 => write!(f, " latin-1"),
+            Self::Utf8 => write!(f, " utf-8"),
+            Self::Utf16 => write!(f, " utf-16"),
         }
     }
 }
@@ -340,6 +426,14 @@ impl Codec {
                 Some(Endianness::Be) => &[0x28, 0x20],
                 None => &[],
             },
+        }
+    }
+
+    fn to_value(self) -> Value {
+        match self {
+            Self::Latin1 => Value::from(Record::from_rust_gc_type(LATIN_1_CODEC.clone())),
+            Self::Utf8 => Value::from(Record::from_rust_gc_type(UTF_8_CODEC.clone())),
+            Self::Utf16 => Value::from(Record::from_rust_gc_type(UTF_16_CODEC.clone())),
         }
     }
 }
@@ -377,6 +471,31 @@ impl fmt::Debug for EolStyle {
 }
 
 impl EolStyle {
+    fn to_sym(self) -> Symbol {
+        match self {
+            Self::None => Symbol::intern("none"),
+            Self::Lf => Symbol::intern("lf"),
+            Self::Cr => Symbol::intern("cr"),
+            Self::Crlf => Symbol::intern("crlf"),
+            Self::Nel => Symbol::intern("nel"),
+            Self::Crnel => Symbol::intern("crnel"),
+            Self::Ls => Symbol::intern("ls"),
+        }
+    }
+
+    fn from_sym(sym: Symbol) -> Result<Self, Exception> {
+        match &*sym.to_str() {
+            "none" => Ok(Self::None),
+            "lf" => Ok(Self::Lf),
+            "cr" => Ok(Self::Cr),
+            "crlf" => Ok(Self::Crlf),
+            "nel" => Ok(Self::Nel),
+            "Crnel" => Ok(Self::Crnel),
+            "ls" => Ok(Self::Ls),
+            _ => Err(Exception::error("invalid eol style symbol")),
+        }
+    }
+
     #[maybe_async]
     fn convert_eol_style_to_linefeed_inner(
         self,
@@ -473,6 +592,25 @@ pub enum ErrorHandlingMode {
     Replace,
 }
 
+impl ErrorHandlingMode {
+    fn to_sym(self) -> Symbol {
+        match self {
+            Self::Ignore => Symbol::intern("ignore"),
+            Self::Raise => Symbol::intern("raise"),
+            Self::Replace => Symbol::intern("replace"),
+        }
+    }
+
+    fn from_sym(sym: Symbol) -> Result<Self, Exception> {
+        match &*sym.to_str() {
+            "ignore" => Ok(Self::Ignore),
+            "raise" => Ok(Self::Raise),
+            "replace" => Ok(Self::Replace),
+            _ => Err(Exception::error("invalid error handling mode symbol")),
+        }
+    }
+}
+
 impl fmt::Debug for ErrorHandlingMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -508,7 +646,7 @@ mod __impl {
     {
         Box::new(|any, buff, start, count| {
             let concrete = any.downcast_mut::<T>().unwrap();
-            let mut buff = buff.as_mut_slice();
+            let mut buff = buff.as_mut_slice()?;
             concrete
                 .read(&mut buff[start..(start + count)])
                 .map_err(|err| Exception::io_read_error(format!("{err}")))
@@ -739,7 +877,7 @@ mod __impl {
                     .read(&mut local_buff)
                     .await
                     .map_err(|err| Exception::io_read_error(format!("{err}")))?;
-                buff.as_mut_slice()[start..(start + count)].copy_from_slice(&local_buff);
+                buff.as_mut_slice()?[start..(start + count)].copy_from_slice(&local_buff);
 
                 Ok(read)
             })
@@ -1017,7 +1155,7 @@ impl PortInner {
                 transcoder,
             }),
             data: Mutex::new(PortData::BinaryPort(BinaryPortData {
-                port: Some(port.into_port()),
+                inner_port: Some(port.into_port()),
                 input_pos: 0,
                 bytes_read: 0,
                 input_buffer: buffer_mode.new_input_byte_buffer(transcoder.is_some(), can_read),
@@ -1063,7 +1201,7 @@ impl PortInner {
                 transcoder,
             }),
             data: Mutex::new(PortData::BinaryPort(BinaryPortData {
-                port: Some(Box::new(())),
+                inner_port: Some(Box::new(())),
                 input_pos: 0,
                 bytes_read: 0,
                 input_buffer: buffer_mode.new_input_byte_buffer(transcoder.is_some(), is_read),
@@ -1132,7 +1270,7 @@ pub(crate) struct BinaryPortInfo {
 
 /// Mutable data contained in the binary port.
 pub(crate) struct BinaryPortData {
-    port: Option<PortBox>,
+    inner_port: Option<PortBox>,
     input_pos: usize,
     bytes_read: usize,
     input_buffer: ByteVector,
@@ -1182,7 +1320,7 @@ impl BinaryPortData {
             return Err(Exception::io_read_error("not an input port"));
         };
 
-        let Some(port) = self.port.as_deref_mut() else {
+        let Some(port) = self.inner_port.as_deref_mut() else {
             return Err(Exception::io_read_error("port is closed"));
         };
 
@@ -1191,7 +1329,7 @@ impl BinaryPortData {
             && len != 0
         {
             maybe_await!(write(port, &self.output_buffer, 0, len))?;
-            self.output_buffer.clear();
+            self.output_buffer.clear()?;
         }
 
         if n + self.input_pos > self.input_buffer.len() {
@@ -1421,7 +1559,7 @@ impl BinaryPortData {
 
         if self.input_buffer.len() - self.input_pos < 4 {
             self.input_buffer
-                .as_mut_slice()
+                .as_mut_slice()?
                 .copy_within(self.input_pos.., 0);
             self.bytes_read -= self.input_pos;
             self.input_pos = 0;
@@ -1435,7 +1573,7 @@ impl BinaryPortData {
             return Err(Exception::io_write_error("not an output port"));
         };
 
-        let Some(port) = self.port.as_deref_mut() else {
+        let Some(port) = self.inner_port.as_deref_mut() else {
             return Err(Exception::io_write_error("port is closed"));
         };
 
@@ -1457,12 +1595,12 @@ impl BinaryPortData {
             (BufferMode::None, _) => {
                 for byte in bytes {
                     let len = {
-                        let mut output_buffer = self.output_buffer.as_mut_vec();
+                        let mut output_buffer = self.output_buffer.as_mut_vec()?;
                         output_buffer.push(*byte);
                         output_buffer.len()
                     };
                     maybe_await!(write(port, &self.output_buffer, 0, len))?;
-                    self.output_buffer.as_mut_vec().clear();
+                    self.output_buffer.as_mut_vec()?.clear();
                 }
             }
             (BufferMode::Line, Some(transcoder)) => loop {
@@ -1471,7 +1609,7 @@ impl BinaryPortData {
                     .find_next_line(transcoder.codec.ls_needle(self.utf16_endianness), bytes)
                 {
                     self.output_buffer
-                        .as_mut_vec()
+                        .as_mut_vec()?
                         .extend_from_slice(&bytes[..next_line]);
                     bytes = &bytes[next_line..];
                     maybe_await!(write(
@@ -1480,9 +1618,9 @@ impl BinaryPortData {
                         0,
                         self.output_buffer.len()
                     ))?;
-                    self.output_buffer.clear();
+                    self.output_buffer.clear()?;
                 } else {
-                    self.output_buffer.as_mut_vec().extend_from_slice(bytes);
+                    self.output_buffer.as_mut_vec()?.extend_from_slice(bytes);
                     break;
                 }
             },
@@ -1490,7 +1628,7 @@ impl BinaryPortData {
                 if bytes.len() + self.output_buffer.len() >= BUFFER_SIZE {
                     let num_bytes_to_buffer = BUFFER_SIZE - self.output_buffer.len();
                     self.output_buffer
-                        .as_mut_vec()
+                        .as_mut_vec()?
                         .extend_from_slice(&bytes[..num_bytes_to_buffer]);
                     bytes = &bytes[num_bytes_to_buffer..];
                     maybe_await!(write(
@@ -1499,9 +1637,9 @@ impl BinaryPortData {
                         0,
                         self.output_buffer.len()
                     ))?;
-                    self.output_buffer.clear();
+                    self.output_buffer.clear()?;
                 } else {
-                    self.output_buffer.as_mut_vec().extend_from_slice(bytes);
+                    self.output_buffer.as_mut_vec()?.extend_from_slice(bytes);
                     break;
                 }
             },
@@ -1553,7 +1691,7 @@ impl BinaryPortData {
             return Err(Exception::io_write_error("not an output port"));
         };
 
-        let Some(port) = self.port.as_deref_mut() else {
+        let Some(port) = self.inner_port.as_deref_mut() else {
             return Err(Exception::io_write_error("port is closed"));
         };
 
@@ -1563,7 +1701,7 @@ impl BinaryPortData {
             0,
             self.output_buffer.len()
         ))?;
-        self.output_buffer.clear();
+        self.output_buffer.clear()?;
 
         Ok(())
     }
@@ -1574,7 +1712,7 @@ impl BinaryPortData {
             return Err(Exception::io_error("port does not support port-position"));
         };
 
-        let Some(port) = self.port.as_deref_mut() else {
+        let Some(port) = self.inner_port.as_deref_mut() else {
             return Err(Exception::io_error("port is closed"));
         };
 
@@ -1589,7 +1727,7 @@ impl BinaryPortData {
             ));
         };
 
-        let Some(port) = self.port.as_deref_mut() else {
+        let Some(port) = self.inner_port.as_deref_mut() else {
             return Err(Exception::io_error("port is closed"));
         };
 
@@ -1601,7 +1739,7 @@ impl BinaryPortData {
                 0,
                 self.output_buffer.len()
             ))?;
-            self.output_buffer.clear();
+            self.output_buffer.clear()?;
         }
         self.bytes_read = 0;
         self.input_pos = 0;
@@ -1611,7 +1749,7 @@ impl BinaryPortData {
 
     #[maybe_async]
     fn close(&mut self) -> Result<(), Exception> {
-        let mut port = self.port.take();
+        let mut port = self.inner_port.take();
 
         if let Some(port) = port.as_deref_mut() {
             if let Some(write) = self.write.as_ref() {
@@ -2419,6 +2557,16 @@ impl Port {
         Ok(Some(out))
     }
 
+    /// Read the contents of the port until eof.
+    #[maybe_async]
+    pub fn get_string_all(&self) -> Result<Option<String>, Exception> {
+        let mut out = String::new();
+        while let Some(chr) = maybe_await!(self.get_char())? {
+            out.push(chr);
+        }
+        Ok(Some(out))
+    }
+
     /// Read a single datum from the port and advance the position to right after
     /// the datum.
     #[maybe_async]
@@ -2465,6 +2613,20 @@ impl Port {
         maybe_await!(data.put_bytes(&self.0.info, &[byte]))
     }
 
+    /// Write a byte slice to the port.
+    #[maybe_async]
+    pub fn put_bytes(&self, bytes: &[u8]) -> Result<(), Exception> {
+        #[cfg(not(feature = "async"))]
+        let mut data = self.0.data.lock().unwrap();
+
+        #[cfg(feature = "async")]
+        let mut data = self.0.data.lock().await;
+
+        // TODO: ensure this is not a textual port
+
+        maybe_await!(data.put_bytes(&self.0.info, bytes))
+    }
+
     /// Write a single character to the port.
     #[maybe_async]
     pub fn put_char(&self, chr: char) -> Result<(), Exception> {
@@ -2478,6 +2640,25 @@ impl Port {
         let s = chr.encode_utf8(&mut buf);
 
         maybe_await!(data.put_str(&self.0.info, s))
+    }
+
+    /// Write a char slice to the port.
+    #[maybe_async]
+    pub fn put_chars(&self, chars: &[char]) -> Result<(), Exception> {
+        #[cfg(not(feature = "async"))]
+        let mut data = self.0.data.lock().unwrap();
+
+        #[cfg(feature = "async")]
+        let mut data = self.0.data.lock().await;
+
+        for chr in chars {
+            let mut buf: [u8; 4] = [0; 4];
+            let s = chr.encode_utf8(&mut buf);
+
+            maybe_await!(data.put_str(&self.0.info, s))?;
+        }
+
+        Ok(())
     }
 
     /// Write the contents of a str `s` to the port.
@@ -2580,7 +2761,7 @@ mod prompt {
             Some(Box::new(|any, buff, start, count| {
                 use std::cmp::Ordering;
 
-                let buff = &mut buff.as_mut_slice()[start..(start + count)];
+                let buff = &mut buff.as_mut_slice()?[start..(start + count)];
                 let concrete = any.downcast_mut::<Self>().unwrap();
 
                 if concrete.closed {
@@ -2698,7 +2879,7 @@ mod prompt {
                         std::mem::take(&mut concrete.leftover)
                     };
 
-                    let buff = &mut buff.as_mut_slice()[start..(start + count)];
+                    let buff = &mut buff.as_mut_slice()?[start..(start + count)];
                     match line.len().cmp(&buff.len()) {
                         Ordering::Less => {
                             buff[..line.len()].copy_from_slice(line.as_slice());
@@ -2752,6 +2933,7 @@ pub use prompt::*;
 // Conditions:
 
 define_condition_type!(
+    lib: "(rnrs io conditions (6))",
     rust_name: IoError,
     scheme_name: "&i/o",
     parent: Error
@@ -2772,6 +2954,7 @@ impl Default for IoError {
 }
 
 define_condition_type!(
+    lib: "(rnrs io conditions (6))",
     rust_name: IoReadError,
     scheme_name: "&i/o-read",
     parent: IoError,
@@ -2792,6 +2975,7 @@ impl Default for IoReadError {
 }
 
 define_condition_type!(
+    lib: "(rnrs io conditions (6))",
     rust_name: IoWriteError,
     scheme_name: "&i/o-write",
     parent: IoError,
@@ -2812,6 +2996,7 @@ impl Default for IoWriteError {
 }
 
 define_condition_type!(
+    lib: "(rnrs io conditions (6))",
     rust_name: IoInvalidPositionError,
     scheme_name: "&i/o-invalid-position",
     parent: IoError,
@@ -2830,6 +3015,7 @@ define_condition_type!(
 );
 
 define_condition_type!(
+    lib: "(rnrs io conditions (6))",
     rust_name: IoFilenameError,
     scheme_name: "&i/o-filename",
     parent: IoError,
@@ -2857,6 +3043,7 @@ impl IoFilenameError {
 }
 
 define_condition_type!(
+    lib: "(rnrs io conditions (6))",
     rust_name: IoFileProtectionError,
     scheme_name: "&i/o-file-protection",
     parent: IoFilenameError,
@@ -2879,6 +3066,7 @@ impl IoFileProtectionError {
 }
 
 define_condition_type!(
+    lib: "(rnrs io conditions (6))",
     rust_name: IoFileIsReadOnlyError,
     scheme_name: "&i/o-file-is-read-only",
     parent: IoFileProtectionError,
@@ -2893,6 +3081,7 @@ define_condition_type!(
 );
 
 define_condition_type!(
+    lib: "(rnrs io conditions (6))",
     rust_name: IoFileAlreadyExistsError,
     scheme_name: "&i/o-file-already-exists",
     parent: IoFilenameError,
@@ -2915,6 +3104,7 @@ impl IoFileAlreadyExistsError {
 }
 
 define_condition_type!(
+    lib: "(rnrs io conditions (6))",
     rust_name: IoFileDoesNotExistError,
     scheme_name: "&i/o-file-does-not-exist",
     parent: IoFilenameError,
@@ -2937,19 +3127,74 @@ impl IoFileDoesNotExistError {
 }
 
 define_condition_type!(
+    lib: "(rnrs io conditions (6))",
     rust_name: IoPortError,
     scheme_name: "&i/o-port",
     parent: IoError,
     fields: {
-        port: Port,
+        port: Value,
     },
     constructor: |port| {
         Ok(IoPortError {
             parent: Gc::new(IoError::new()),
-            port: port.try_into()?,
+            port,
         })
     },
 );
+
+impl IoPortError {
+    pub fn new(port: Value) -> Self {
+        Self {
+            parent: Gc::new(IoError::new()),
+            port,
+        }
+    }
+}
+
+define_condition_type!(
+    lib: "(rnrs io conditions (6))",
+    rust_name: IoDecodingError,
+    scheme_name: "&i/o-decoding",
+    parent: IoPortError,
+    constructor: |port| {
+        Ok(IoDecodingError {
+            parent: Gc::new(IoPortError::new(port)),
+        })
+    },
+);
+
+impl IoDecodingError {
+    pub fn new(port: Value) -> Self {
+        Self {
+            parent: Gc::new(IoPortError::new(port)),
+        }
+    }
+}
+
+define_condition_type!(
+    lib: "(rnrs io conditions (6))",
+    rust_name: IoEncodingError,
+    scheme_name: "&i/o-encoding",
+    parent: IoPortError,
+    fields: {
+        chr: char,
+    },
+    constructor: |port, chr| {
+        Ok(IoEncodingError {
+            parent: Gc::new(IoPortError::new(port)),
+            chr: chr.try_into()?,
+        })
+    },
+);
+
+impl IoEncodingError {
+    pub fn new(port: Value, chr: char) -> Self {
+        Self {
+            parent: Gc::new(IoPortError::new(port)),
+            chr,
+        }
+    }
+}
 
 #[derive(Copy, Clone, Trace)]
 pub struct EofObject;
@@ -3153,7 +3398,7 @@ pub fn transcoded_port(port: Port, transcoder: &Value) -> Result<Vec<Value>, Exc
     };
 
     let new_data = BinaryPortData {
-        port: port_data.port.take(),
+        inner_port: port_data.inner_port.take(),
         input_pos: port_data.input_pos,
         bytes_read: port_data.bytes_read,
         input_buffer: port_data.input_buffer.clone(),
@@ -3497,6 +3742,16 @@ pub fn get_line(textual_input_port: &Value) -> Result<Vec<Value>, Exception> {
 }
 
 #[maybe_async]
+#[bridge(name = "get-string-all", lib = "(rnrs io builtins (6))")]
+pub fn get_string_all(textual_input_port: Port) -> Result<Vec<Value>, Exception> {
+    if let Some(s) = maybe_await!(textual_input_port.get_string_all())? {
+        Ok(vec![Value::from(s)])
+    } else {
+        Ok(vec![EOF_OBJECT.clone()])
+    }
+}
+
+#[maybe_async]
 #[bridge(name = "get-datum", lib = "(rnrs io builtins (6))")]
 pub fn get_datum(textual_input_port: &Value) -> Result<Vec<Value>, Exception> {
     let port: Port = textual_input_port.clone().try_into()?;
@@ -3667,6 +3922,81 @@ pub fn put_u8(binary_output_port: &Value, octet: &Value) -> Result<Vec<Value>, E
     Ok(Vec::new())
 }
 
+#[cfg(not(feature = "async"))]
+#[bridge(name = "put-bytevector", lib = "(rnrs io builtins (6))")]
+pub fn put_bytevector(
+    port: Port,
+    bytevector: ByteVector,
+    start_count: &[Value],
+) -> Result<Vec<Value>, Exception> {
+    let bytevector = bytevector.as_slice();
+    let slice = match start_count {
+        [] => &bytevector[..],
+        [start] => {
+            let start: usize = start.try_to_scheme_type()?;
+            if start >= bytevector.len() {
+                return Err(Exception::invalid_index(start, bytevector.len()));
+            }
+            &bytevector[start..]
+        }
+        [start, count] => {
+            let start: usize = start.try_to_scheme_type()?;
+            let count: usize = count.try_to_scheme_type()?;
+            if (start + count) >= bytevector.len() {
+                return Err(Exception::invalid_index(start + count, bytevector.len()));
+            }
+            &bytevector[start..(start + count)]
+        }
+        _ => {
+            return Err(Exception::wrong_num_of_var_args(
+                2..4,
+                2 + start_count.len(),
+            ));
+        }
+    };
+    port.put_bytes(slice)?;
+    Ok(Vec::new())
+}
+
+#[cfg(feature = "async")]
+#[bridge(name = "put-bytevector", lib = "(rnrs io builtins (6))")]
+pub async fn put_bytevector(
+    port: Port,
+    bytevector: ByteVector,
+    start_count: &[Value],
+) -> Result<Vec<Value>, Exception> {
+    // We have to copy the slice to another buffer... it's really obnoxious
+    let slice = {
+        let bytevector = bytevector.as_slice();
+        match start_count {
+            [] => bytevector[..].to_vec(),
+            [start] => {
+                let start: usize = start.try_to_scheme_type()?;
+                if start >= bytevector.len() {
+                    return Err(Exception::invalid_index(start, bytevector.len()));
+                }
+                bytevector[start..].to_vec()
+            }
+            [start, count] => {
+                let start: usize = start.try_to_scheme_type()?;
+                let count: usize = count.try_to_scheme_type()?;
+                if (start + count) >= bytevector.len() {
+                    return Err(Exception::invalid_index(start + count, bytevector.len()));
+                }
+                bytevector[start..(start + count)].to_vec()
+            }
+            _ => {
+                return Err(Exception::wrong_num_of_var_args(
+                    2..4,
+                    2 + start_count.len(),
+                ));
+            }
+        }
+    };
+    port.put_bytes(&slice).await?;
+    Ok(Vec::new())
+}
+
 // 8.2.12. Textual output
 
 #[maybe_async]
@@ -3675,6 +4005,80 @@ pub fn put_char(textual_output_port: &Value, chr: &Value) -> Result<Vec<Value>, 
     let port: Port = textual_output_port.clone().try_into()?;
     let chr: char = chr.clone().try_into()?;
     maybe_await!(port.put_char(chr))?;
+    Ok(Vec::new())
+}
+
+#[cfg(not(feature = "async"))]
+#[bridge(name = "put-string", lib = "(rnrs io builtins (6))")]
+pub fn put_string(
+    port: Port,
+    string: WideString,
+    start_count: &[Value],
+) -> Result<Vec<Value>, Exception> {
+    let string = string.as_slice();
+    let slice = match start_count {
+        [] => &string[..],
+        [start] => {
+            let start: usize = start.try_to_scheme_type()?;
+            if start >= string.len() {
+                return Err(Exception::invalid_index(start, string.len()));
+            }
+            &string[start..]
+        }
+        [start, count] => {
+            let start: usize = start.try_to_scheme_type()?;
+            let count: usize = count.try_to_scheme_type()?;
+            if (start + count) >= string.len() {
+                return Err(Exception::invalid_index(start + count, string.len()));
+            }
+            &string[start..(start + count)]
+        }
+        _ => {
+            return Err(Exception::wrong_num_of_var_args(
+                2..4,
+                2 + start_count.len(),
+            ));
+        }
+    };
+    port.put_chars(slice)?;
+    Ok(Vec::new())
+}
+
+#[cfg(feature = "async")]
+#[bridge(name = "put-string", lib = "(rnrs io builtins (6))")]
+pub async fn put_string(
+    port: Port,
+    string: WideString,
+    start_count: &[Value],
+) -> Result<Vec<Value>, Exception> {
+    let slice = {
+        let string = string.as_slice();
+        match start_count {
+            [] => string[..].to_vec(),
+            [start] => {
+                let start: usize = start.try_to_scheme_type()?;
+                if start >= string.len() {
+                    return Err(Exception::invalid_index(start, string.len()));
+                }
+                string[start..].to_vec()
+            }
+            [start, count] => {
+                let start: usize = start.try_to_scheme_type()?;
+                let count: usize = count.try_to_scheme_type()?;
+                if (start + count) >= string.len() {
+                    return Err(Exception::invalid_index(start + count, string.len()));
+                }
+                string[start..(start + count)].to_vec()
+            }
+            _ => {
+                return Err(Exception::wrong_num_of_var_args(
+                    2..4,
+                    2 + start_count.len(),
+                ));
+            }
+        }
+    };
+    port.put_chars(&slice).await?;
     Ok(Vec::new())
 }
 

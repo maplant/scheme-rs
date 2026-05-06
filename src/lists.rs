@@ -33,12 +33,21 @@ pub(crate) struct PairInner {
 pub struct Pair(pub(crate) Gc<PairInner>);
 
 impl Pair {
-    /// Construct a new Pair from a car and cdr
-    pub fn new(car: Value, cdr: Value, mutable: bool) -> Self {
+    /// Construct a new mutable Pair from a car and cdr
+    pub fn mutable(car: Value, cdr: Value) -> Self {
         Self(Gc::new(PairInner {
             car: RwLock::new(car),
             cdr: RwLock::new(cdr),
-            mutable,
+            mutable: true,
+        }))
+    }
+
+    /// Construct a new immutable Pair from a car and cdr
+    pub fn immutable(car: Value, cdr: Value) -> Self {
+        Self(Gc::new(PairInner {
+            car: RwLock::new(car),
+            cdr: RwLock::new(cdr),
+            mutable: false,
         }))
     }
 
@@ -246,7 +255,7 @@ impl TryFrom<&Value> for List {
 pub fn slice_to_list(items: &[Value]) -> Value {
     match items {
         [] => Value::null(),
-        [head, tail @ ..] => Value::from(Pair::new(head.clone(), slice_to_list(tail), false)),
+        [head, tail @ ..] => Value::from(Pair::immutable(head.clone(), slice_to_list(tail))),
     }
 }
 
@@ -299,14 +308,14 @@ pub fn list(args: &[Value]) -> Result<Vec<Value>, Exception> {
     // Construct the list in reverse
     let mut cdr = Value::null();
     for arg in args.iter().rev() {
-        cdr = Value::from(Pair::new(arg.clone(), cdr, true));
+        cdr = Value::from(Pair::mutable(arg.clone(), cdr));
     }
     Ok(vec![cdr])
 }
 
 #[bridge(name = "cons", lib = "(rnrs base builtins (6))")]
 pub fn cons(car: &Value, cdr: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(Pair::new(car.clone(), cdr.clone(), true))])
+    Ok(vec![Value::from(Pair::mutable(car.clone(), cdr.clone()))])
 }
 
 #[bridge(name = "car", lib = "(rnrs base builtins (6))")]
@@ -366,7 +375,7 @@ pub fn list_to_string(List { items, .. }: List) -> Result<Vec<Value>, Exception>
         .into_iter()
         .map(char::try_from)
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(vec![Value::from(WideString::new_mutable(chars))])
+    Ok(vec![Value::from(WideString::mutable(chars))])
 }
 
 #[bridge(name = "append", lib = "(rnrs base builtins (6))")]
@@ -375,7 +384,7 @@ pub fn append(list: &Value, to_append: &Value) -> Result<Vec<Value>, Exception> 
     list_to_vec(list, &mut vec);
     let mut list = to_append.clone();
     for item in vec.into_iter().rev() {
-        list = Value::from(Pair::new(item, list, true));
+        list = Value::from(Pair::mutable(item, list));
     }
     Ok(vec![list])
 }

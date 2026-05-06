@@ -29,11 +29,11 @@ pub(crate) struct VectorInner<T: Trace> {
 pub struct Vector(pub(crate) Gc<VectorInner<Value>>);
 
 impl Vector {
-    pub fn new(vec: Vec<Value>) -> Self {
+    pub fn immutable(vec: Vec<Value>) -> Self {
         Self::from(vec)
     }
 
-    pub fn new_mutable(vec: Vec<Value>) -> Self {
+    pub fn mutable(vec: Vec<Value>) -> Self {
         Self(Gc::new(VectorInner {
             vec: RwLock::new(vec),
             mutable: true,
@@ -88,11 +88,11 @@ impl From<Vec<Value>> for Vector {
 pub struct ByteVector(pub(crate) Arc<VectorInner<u8>>);
 
 impl ByteVector {
-    pub fn new(vec: Vec<u8>) -> Self {
+    pub fn immutable(vec: Vec<u8>) -> Self {
         Self::from(vec)
     }
 
-    pub fn new_mutable(vec: Vec<u8>) -> Self {
+    pub fn mutable(vec: Vec<u8>) -> Self {
         Self(Arc::new(VectorInner {
             vec: RwLock::new(vec),
             mutable: true,
@@ -103,12 +103,22 @@ impl ByteVector {
         RwLockReadGuard::map(self.0.vec.read(), |vec| vec.as_slice())
     }
 
-    pub fn as_mut_slice(&self) -> MappedRwLockWriteGuard<'_, [u8]> {
-        RwLockWriteGuard::map(self.0.vec.write(), |vec| vec.as_mut_slice())
+    pub fn as_mut_slice(&self) -> Result<MappedRwLockWriteGuard<'_, [u8]>, Exception> {
+        if self.0.mutable {
+            Ok(RwLockWriteGuard::map(self.0.vec.write(), |vec| {
+                vec.as_mut_slice()
+            }))
+        } else {
+            Err(Exception::error("bytevector is not mutable"))
+        }
     }
 
-    pub fn as_mut_vec(&self) -> RwLockWriteGuard<'_, Vec<u8>> {
-        self.0.vec.write()
+    pub fn as_mut_vec(&self) -> Result<RwLockWriteGuard<'_, Vec<u8>>, Exception> {
+        if self.0.mutable {
+            Ok(self.0.vec.write())
+        } else {
+            Err(Exception::error("bytevector is not mutable"))
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -119,8 +129,13 @@ impl ByteVector {
         self.0.vec.read().len()
     }
 
-    pub fn clear(&self) {
-        self.0.vec.write().clear();
+    pub fn clear(&self) -> Result<(), Exception> {
+        if self.0.mutable {
+            self.0.vec.write().clear();
+            Ok(())
+        } else {
+            Err(Exception::error("bytevector is not mutable"))
+        }
     }
 
     pub fn get(&self, idx: usize) -> Option<u8> {
@@ -464,7 +479,7 @@ pub fn make_bytevector(k: usize, fill: &[Value]) -> Result<Vec<Value>, Exception
         [fill] => fill.try_into()?,
         _ => return Err(Exception::wrong_num_of_var_args(1..2, 1 + fill.len())),
     };
-    Ok(vec![Value::from(ByteVector::new_mutable(vec![fill; k]))])
+    Ok(vec![Value::from(ByteVector::mutable(vec![fill; k]))])
 }
 
 #[bridge(name = "bytevector-length", lib = "(rnrs bytevectors (6))")]
@@ -477,11 +492,60 @@ pub fn bytevector_equal_pred(lhs: ByteVector, rhs: ByteVector) -> Result<Vec<Val
     Ok(vec![Value::from(lhs == rhs)])
 }
 
+#[bridge(name = "bytevector-u8-ref", lib = "(rnrs bytevectors (6))")]
+pub fn bytevector_u8_ref(bytevector: ByteVector, k: usize) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(bytevector.get(k).ok_or_else(|| {
+        Exception::invalid_index(k, bytevector.len())
+    })?)])
+}
+
+#[bridge(name = "bytevector-u8-set!", lib = "(rnrs bytevectors (6))")]
+pub fn bytevector_u8_set(
+    bytevector: ByteVector,
+    k: usize,
+    octet: u8,
+) -> Result<Vec<Value>, Exception> {
+    let mut slice = bytevector.as_mut_slice()?;
+    let len = slice.len();
+    *slice
+        .get_mut(k)
+        .ok_or_else(|| Exception::invalid_index(k, len))? = octet;
+    Ok(Vec::new())
+}
+
 #[bridge(name = "u8-list->bytevector", lib = "(rnrs bytevectors (6))")]
 pub fn u8_list_to_bytevector(list: List) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(ByteVector::new_mutable(
+    Ok(vec![Value::from(ByteVector::mutable(
         list.into_iter()
             .map(u8::try_from)
             .collect::<Result<Vec<_>, _>>()?,
     ))])
+}
+
+#[bridge(name = "bytevector-push!", lib = "(rnrs bytevectors (6))")]
+pub fn bytevector_push(bytevector: ByteVector, byte: u8) -> Result<Vec<Value>, Exception> {
+    bytevector.as_mut_vec()?.push(byte);
+    Ok(vec![])
+}
+
+#[bridge(name = "bytevector-insert!", lib = "(rnrs bytevectors (6))")]
+pub fn bytevector_insert(
+    bytevector: ByteVector,
+    idx: usize,
+    byte: u8,
+) -> Result<Vec<Value>, Exception> {
+    let mut bv = bytevector.as_mut_vec()?;
+    if idx > bv.len() {
+        return Err(Exception::invalid_index(idx, bv.len()));
+    } else {
+        bv.insert(idx, byte);
+    }
+    Ok(vec![])
+}
+
+#[bridge(name = "bytevector-take!", lib = "(rnrs bytevectors (6))")]
+pub fn bytevector_take(bytevector: ByteVector) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(ByteVector::mutable(std::mem::take(
+        &mut *bytevector.as_mut_vec()?,
+    )))])
 }
