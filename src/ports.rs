@@ -877,7 +877,7 @@ mod __impl {
                     .read(&mut local_buff)
                     .await
                     .map_err(|err| Exception::io_read_error(format!("{err}")))?;
-                buff.as_mut_slice()[start..(start + count)].copy_from_slice(&local_buff);
+                buff.as_mut_slice()?[start..(start + count)].copy_from_slice(&local_buff);
 
                 Ok(read)
             })
@@ -2879,7 +2879,7 @@ mod prompt {
                         std::mem::take(&mut concrete.leftover)
                     };
 
-                    let buff = &mut buff.as_mut_slice()[start..(start + count)];
+                    let buff = &mut buff.as_mut_slice()?[start..(start + count)];
                     match line.len().cmp(&buff.len()) {
                         Ordering::Less => {
                             buff[..line.len()].copy_from_slice(line.as_slice());
@@ -3922,7 +3922,7 @@ pub fn put_u8(binary_output_port: &Value, octet: &Value) -> Result<Vec<Value>, E
     Ok(Vec::new())
 }
 
-#[maybe_async]
+#[cfg(not(feature = "async"))]
 #[bridge(name = "put-bytevector", lib = "(rnrs io builtins (6))")]
 pub fn put_bytevector(
     port: Port,
@@ -3954,7 +3954,46 @@ pub fn put_bytevector(
             ));
         }
     };
-    maybe_await!(port.put_bytes(slice))?;
+    port.put_bytes(slice)?;
+    Ok(Vec::new())
+}
+
+#[cfg(feature = "async")]
+#[bridge(name = "put-bytevector", lib = "(rnrs io builtins (6))")]
+pub async fn put_bytevector(
+    port: Port,
+    bytevector: ByteVector,
+    start_count: &[Value],
+) -> Result<Vec<Value>, Exception> {
+    // We have to copy the slice to another buffer... it's really obnoxious
+    let slice = {
+        let bytevector = bytevector.as_slice();
+        match start_count {
+            [] => bytevector[..].to_vec(),
+            [start] => {
+                let start: usize = start.try_to_scheme_type()?;
+                if start >= bytevector.len() {
+                    return Err(Exception::invalid_index(start, bytevector.len()));
+                }
+                bytevector[start..].to_vec()
+            }
+            [start, count] => {
+                let start: usize = start.try_to_scheme_type()?;
+                let count: usize = count.try_to_scheme_type()?;
+                if (start + count) >= bytevector.len() {
+                    return Err(Exception::invalid_index(start + count, bytevector.len()));
+                }
+                bytevector[start..(start + count)].to_vec()
+            }
+            _ => {
+                return Err(Exception::wrong_num_of_var_args(
+                    2..4,
+                    2 + start_count.len(),
+                ));
+            }
+        }
+    };
+    port.put_bytes(&slice).await?;
     Ok(Vec::new())
 }
 
@@ -3969,7 +4008,7 @@ pub fn put_char(textual_output_port: &Value, chr: &Value) -> Result<Vec<Value>, 
     Ok(Vec::new())
 }
 
-#[maybe_async]
+#[cfg(not(feature = "async"))]
 #[bridge(name = "put-string", lib = "(rnrs io builtins (6))")]
 pub fn put_string(
     port: Port,
@@ -4001,7 +4040,45 @@ pub fn put_string(
             ));
         }
     };
-    maybe_await!(port.put_chars(slice))?;
+    port.put_chars(slice)?;
+    Ok(Vec::new())
+}
+
+#[cfg(feature = "async")]
+#[bridge(name = "put-string", lib = "(rnrs io builtins (6))")]
+pub async fn put_string(
+    port: Port,
+    string: WideString,
+    start_count: &[Value],
+) -> Result<Vec<Value>, Exception> {
+    let slice = {
+        let string = string.as_slice();
+        match start_count {
+            [] => string[..].to_vec(),
+            [start] => {
+                let start: usize = start.try_to_scheme_type()?;
+                if start >= string.len() {
+                    return Err(Exception::invalid_index(start, string.len()));
+                }
+                string[start..].to_vec()
+            }
+            [start, count] => {
+                let start: usize = start.try_to_scheme_type()?;
+                let count: usize = count.try_to_scheme_type()?;
+                if (start + count) >= string.len() {
+                    return Err(Exception::invalid_index(start + count, string.len()));
+                }
+                string[start..(start + count)].to_vec()
+            }
+            _ => {
+                return Err(Exception::wrong_num_of_var_args(
+                    2..4,
+                    2 + start_count.len(),
+                ));
+            }
+        }
+    };
+    port.put_chars(&slice).await?;
     Ok(Vec::new())
 }
 
