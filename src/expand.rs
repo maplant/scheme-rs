@@ -84,6 +84,7 @@ impl SyntaxRule {
 
 #[derive(Clone, Debug, Trace)]
 pub enum Pattern {
+    Underscore,
     Ellipsis(Box<Pattern>),
     List(Vec<Pattern>),
     Vector(Vec<Pattern>),
@@ -101,9 +102,11 @@ impl Pattern {
         variables: &mut HashMap<Binding, usize>,
     ) -> Self {
         match expr {
+            // Allow for underscores as keywords
             Syntax::Identifier { ident, .. } if keywords.contains(&ident) => {
                 Self::Keyword(ident.clone())
             }
+            Syntax::Identifier { ident, .. } if ident.sym == "_" => Self::Underscore,
             Syntax::Identifier { ident, .. } => {
                 let mut ident = ident.clone();
                 ident.add_scope(scope);
@@ -174,6 +177,7 @@ impl Pattern {
 
     fn matches(&self, expr: &Syntax, expansion_level: &mut ExpansionLevel) -> bool {
         match self {
+            Self::Underscore => !expr.is_null(),
             Self::Variable(binding) => {
                 assert!(
                     expansion_level
