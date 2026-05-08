@@ -13,6 +13,7 @@ pub(crate) mod expand;
 pub mod gc;
 pub mod hashtables;
 pub mod lists;
+pub mod lsp;
 pub mod num;
 pub mod ports;
 pub mod proc;
