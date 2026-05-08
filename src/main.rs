@@ -98,6 +98,11 @@ impl IntoPort for TextStoringPrompt {
 fn entry(runtime: &Runtime) -> Result<(), Exception> {
     let args = Args::parse();
 
+    if args.lsp {
+        maybe_await!(scheme_rs::lsp::start()).map_err(|err| Exception::error(err.to_string()))?;
+        return Ok(());
+    }
+
     // Run any programs
     for file in &args.files {
         let path = Path::new(file);
