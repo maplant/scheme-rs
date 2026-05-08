@@ -23,6 +23,9 @@ struct Args {
     /// Force interactive mode (REPL)
     #[arg(short, long)]
     interactive: bool,
+    /// Start scheme-rs language server
+    #[arg(long)]
+    lsp: bool,
 }
 
 #[cfg(not(feature = "async"))]
