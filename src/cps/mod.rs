@@ -1,7 +1,7 @@
 //! Continuation-Passing Style
 //!
 //! Our mid-level representation for scheme code that ultimately gets translated
-//! into LLVM SSA for JIT compilation. This representation is the ultimate
+//! into Cranelift SSA for JIT compilation. This representation is the ultimate
 //! result of our parsing and compilation steps and the final step before JIT
 //! compilation.
 //!
@@ -184,6 +184,46 @@ impl PrimOpInfo {
 }
 
 #[derive(Debug, Clone)]
+pub enum Cps {
+    /// Call to a primitive operator:
+    PrimOp(PrimOp, Vec<Value>, Local, Box<Cps>),
+
+    /// Function application:
+    App(Value, Vec<Value>),
+
+    /// Branching:
+    If(Value, Box<Cps>, Box<Cps>),
+
+    /// Function creation:
+    Lambda {
+        args: LambdaArgs,
+        body: Box<Cps>,
+        val: Local,
+        cexp: Box<Cps>,
+        span: Option<Span>,
+    },
+
+    /*
+    /// Mutually-recursive function definitions:
+    Fix {
+        bindings: Vec<LambdaBinding>,
+        cexp: Box<Cps>,
+    },
+     */
+    /// Halt execution and return the values:
+    Halt(Value),
+}
+
+/*
+pub struct LambdaBinding {
+    args: LambdaArgs,
+    body: Box<Cps>,
+    val: Local,
+    span: Option<Span>,
+}
+*/
+
+#[derive(Debug, Clone)]
 pub struct LambdaArgs {
     args: Vec<Local>,
     variadic: bool,
@@ -210,30 +250,6 @@ impl LambdaArgs {
     fn num_required(&self) -> usize {
         self.args.len().saturating_sub(self.variadic as usize)
     }
-}
-
-#[derive(Debug, Clone)]
-pub enum Cps {
-    /// Call to a primitive operator:
-    PrimOp(PrimOp, Vec<Value>, Local, Box<Cps>),
-
-    /// Function application:
-    App(Value, Vec<Value>),
-
-    /// Branching:
-    If(Value, Box<Cps>, Box<Cps>),
-
-    /// Function creation:
-    Lambda {
-        args: LambdaArgs,
-        body: Box<Cps>,
-        val: Local,
-        cexp: Box<Cps>,
-        span: Option<Span>,
-    },
-
-    /// Halt execution and return the values:
-    Halt(Value),
 }
 
 impl Cps {
@@ -283,7 +299,7 @@ impl Cps {
             Cps::PrimOp(primop, vals, to, cexp) => {
                 eprint!("{:>indent$}let {to:?} = {primop:?}", "");
                 pretty_print_values(vals);
-                eprintln!(";\n");
+                eprintln!(";");
                 cexp.pretty_print(indent);
             }
             Cps::Lambda {

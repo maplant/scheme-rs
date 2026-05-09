@@ -5,7 +5,7 @@
 //! with the JIT compiled [`Procedures`](Procedure).
 
 use crate::{
-    ast::{DefinitionBody, Primitive},
+    ast::{Definitions, Primitive},
     cps::{Compile, Cps, codegen::RuntimeFunctionsBuilder},
     env::{Environment, Global, TopLevelEnvironment},
     exceptions::{Exception, SourceCache, raise},
@@ -119,7 +119,7 @@ impl Runtime {
             maybe_await!(env.import("(library (rnrs))".parse()?))?;
         }
 
-        let body = maybe_await!(DefinitionBody::parse_lib_body(self, &form, &env))?;
+        let body = maybe_await!(Definitions::parse_lib_body(self, &form, &env))?;
         let compiled = body.compile_top_level();
         let closure = maybe_await!(self.compile_expr(compiled));
 

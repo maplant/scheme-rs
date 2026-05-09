@@ -50,7 +50,7 @@ impl Compile for Lambda {
 fn compile_lambda(
     args: Vec<Local>,
     is_variadic: bool,
-    body: &DefinitionBody,
+    body: &Definitions,
     span: Span,
     name: Option<Symbol>,
     mut meta_cont: impl FnMut(Value) -> Cps,
@@ -84,7 +84,7 @@ impl Compile for Let {
 
 fn compile_let(
     binds: &[(Local, Expression)],
-    body: &DefinitionBody,
+    body: &Definitions,
     meta_cont: &mut dyn FnMut(Value) -> Cps,
 ) -> Cps {
     if let Some(((curr_bind, curr_expr), tail)) = binds.split_first() {
@@ -113,12 +113,62 @@ fn compile_let(
     }
 }
 
+impl Compile for LetRec {
+    fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
+        let mut sets = compile_letrec(&self.bindings, &self.body, meta_cont);
+        // Allocate the cells. Do it in reverse just show it shows up better in
+        // debug output
+        for binding in self.bindings.iter().rev() {
+            sets = Cps::PrimOp(PrimOp::AllocCell, Vec::new(), binding.0, Box::new(sets))
+        }
+        sets
+    }
+}
+
+fn compile_letrec(
+    binds: &[(Local, Expression)],
+    body: &Definitions,
+    meta_cont: &mut dyn FnMut(Value) -> Cps,
+) -> Cps {
+    if let Some(((curr_bind, curr_expr), tail)) = binds.split_first() {
+        let expr_result = Local::gensym();
+        let k1 = Local::gensym();
+        let k2 = Local::gensym();
+        let k3 = Local::gensym();
+        Cps::Lambda {
+            args: LambdaArgs::new(vec![k2], false, None),
+            body: Box::new(Cps::Lambda {
+                args: LambdaArgs::new(vec![expr_result], false, None),
+                body: Box::new(Cps::PrimOp(
+                    PrimOp::Set,
+                    vec![Value::from(*curr_bind), Value::Var(Var::Local(expr_result))],
+                    Local::gensym(),
+                    Box::new(compile_letrec(tail, body, &mut move |result| {
+                        Cps::App(result, vec![Value::from(k2)])
+                    })),
+                )),
+                val: k3,
+                cexp: Box::new(
+                    curr_expr.compile(&mut move |result| Cps::App(result, vec![Value::from(k3)])),
+                ),
+                span: None,
+            }),
+            val: k1,
+            cexp: Box::new(meta_cont(Value::from(k1))),
+            span: None,
+        }
+    } else {
+        body.compile(meta_cont)
+    }
+}
+
 impl Compile for Expression {
     fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
         match self {
             Self::Literal(l) => l.compile(meta_cont),
             Self::Apply(e) => e.compile(meta_cont),
             Self::Let(e) => e.compile(meta_cont),
+            Self::LetRec(e) => e.compile(meta_cont),
             Self::If(e) => e.compile(meta_cont),
             Self::Lambda(e) => e.compile(meta_cont),
             Self::Var(v) => v.compile(meta_cont),
@@ -210,7 +260,7 @@ impl Compile for RuntimeValue {
     }
 }
 
-impl Compile for ExprBody {
+impl Compile for Body {
     fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
         self.exprs.as_slice().compile(meta_cont)
     }
@@ -517,6 +567,7 @@ fn compile_or(exprs: &[Expression], meta_cont: &mut dyn FnMut(Value) -> Cps) -> 
     }
 }
 
+/*
 impl Compile for Definition {
     fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
         match self {
@@ -555,23 +606,14 @@ impl DefineFunc {
     }
 }
 
-impl Compile for DefinitionBody {
-    fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
-        match self.first {
-            Either::Left(ref def) => def.alloc_cells(def.compile(meta_cont)),
-            Either::Right(ref exprs) => exprs.compile(meta_cont),
-        }
-    }
-}
-
-fn next_or_wrap(next: &Option<Either<Box<Definition>, ExprBody>>, wrap: Cps) -> Cps {
+fn next_or_wrap(next: &Option<Either<Box<Definition>, Body>>, wrap: Cps) -> Cps {
     match next {
         Some(Either::Left(def)) => def.alloc_cells(wrap),
         _ => wrap,
     }
 }
 
-impl Compile for Option<Either<Box<Definition>, ExprBody>> {
+impl Compile for Option<Either<Box<Definition>, Body>> {
     fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
         match self {
             Some(Either::Left(def)) => def.compile(meta_cont),
@@ -587,6 +629,16 @@ impl Compile for Option<Either<Box<Definition>, ExprBody>> {
                     span: None,
                 }
             }
+        }
+    }
+}
+ */
+
+impl Compile for Definitions {
+    fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
+        match self.inner {
+            Either::Left(ref let_rec) => let_rec.compile(meta_cont),
+            Either::Right(ref exprs) => exprs.compile(meta_cont),
         }
     }
 }
@@ -624,6 +676,7 @@ impl Compile for Set {
     }
 }
 
+/*
 impl Compile for DefineVar {
     fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
         let expr_result = Local::gensym();
@@ -699,6 +752,7 @@ impl Compile for DefineFunc {
         }
     }
 }
+*/
 
 impl Compile for Quote {
     fn compile(&self, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {

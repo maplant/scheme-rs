@@ -190,6 +190,7 @@ impl RegistryInner {
                     ("begin", Primitive::Begin),
                     ("lambda", Primitive::Lambda),
                     ("let", Primitive::Let),
+                    ("letrec", Primitive::LetRec),
                     ("let-syntax", Primitive::LetSyntax),
                     ("letrec-syntax", Primitive::LetRecSyntax),
                     ("if", Primitive::If),

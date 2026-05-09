@@ -21,9 +21,7 @@ use futures::future::BoxFuture;
 
 pub use crate::ast::{AllowList, ImportPolicy};
 use crate::{
-    ast::{
-        DefinitionBody, ExportSet, ImportSet, LibraryName, LibrarySpec, ParseContext, Primitive,
-    },
+    ast::{Definitions, ExportSet, ImportSet, LibraryName, LibrarySpec, ParseContext, Primitive},
     cps::Compile,
     exceptions::Exception,
     gc::{Gc, Trace},
@@ -299,7 +297,7 @@ impl TopLevelEnvironment {
         }
         let rt = { self.0.read().rt.clone() };
         let ctxt = ParseContext::new(&rt, import_policy);
-        let body = maybe_await!(DefinitionBody::parse(
+        let body = maybe_await!(Definitions::parse(
             &ctxt,
             body,
             &Environment::Top(self.clone()),
@@ -319,7 +317,7 @@ impl TopLevelEnvironment {
         let ctxt = ParseContext::new(&rt, import_policy);
         sexpr.add_scope(self.0.read().scope);
         let body = std::slice::from_ref(&sexpr);
-        let body = maybe_await!(DefinitionBody::parse(
+        let body = maybe_await!(Definitions::parse(
             &ctxt,
             body,
             &Environment::Top(self.clone()),
@@ -365,7 +363,7 @@ impl TopLevelEnvironment {
         };
         let rt = { self.0.read().rt.clone() };
         let env = Environment::from(self.clone());
-        let expanded = maybe_await!(DefinitionBody::parse_lib_body(&rt, &body, &env))?;
+        let expanded = maybe_await!(Definitions::parse_lib_body(&rt, &body, &env))?;
         self.0.write().state = LibraryState::Expanded(expanded);
         Ok(())
     }
@@ -502,7 +500,7 @@ pub(crate) enum LibraryState {
     Invalid,
     BridgesDefined,
     Unexpanded(Syntax),
-    Expanded(DefinitionBody),
+    Expanded(Definitions),
     Invoked,
 }
 
@@ -900,6 +898,10 @@ impl Var {
             Self::Global(_) => None,
             Self::Local(local) => Some(*local),
         }
+    }
+
+    pub fn is_global(&self) -> bool {
+        matches!(self, Var::Global(_))
     }
 }
 

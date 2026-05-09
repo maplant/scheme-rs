@@ -268,6 +268,18 @@ pub(crate) struct GcInner<T: ?Sized> {
 unsafe impl<T: ?Sized + Send> Send for GcInner<T> {}
 unsafe impl<T: ?Sized + Sync> Sync for GcInner<T> {}
 
+/*
+
+/// A heap allocated garbage collected smart pointer that can not be collected
+pub struct RootedGc<T: ?Sized> {
+    // ...
+}
+
+impl RootedGc {
+}
+
+*/
+
 /// A type that can be traced for garbage collection. Types that implement this
 /// trait can be converted into a [`Gc`] for automatic garbage collection.
 ///

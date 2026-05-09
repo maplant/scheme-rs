@@ -134,6 +134,7 @@ pub enum Primitive {
     Begin,
     Lambda,
     Let,
+    LetRec,
     LetSyntax,
     LetRecSyntax,
     If,
@@ -264,26 +265,6 @@ fn list_to_name(name: &[Syntax], form: &Syntax) -> Result<Vec<Symbol>, Exception
         })
         .collect()
 }
-
-/*
-#[derive(Debug)]
-pub enum ParseLibraryNameError {
-    ParseSyntaxError(ParseSyntaxError),
-    ParseAstError(ParseAstError),
-}
-
-impl From<ParseSyntaxError> for ParseLibraryNameError {
-    fn from(pse: ParseSyntaxError) -> Self {
-        Self::ParseSyntaxError(pse)
-    }
-}
-
-impl From<ParseAstError> for ParseLibraryNameError {
-    fn from(pae: ParseAstError) -> Self {
-        Self::ParseAstError(pae)
-    }
-}
-*/
 
 #[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Hash, Default, Trace, Debug)]
 pub struct Version {
@@ -1011,29 +992,34 @@ impl ParseContext {
 }
 
 #[derive(Debug, Clone, Trace)]
-pub enum Definition {
-    DefineVar(DefineVar),
-    DefineFunc(DefineFunc),
+pub struct Definition {
+    var: Var,
+    expr: Expression,
+    // DefineVar(DefineVar),
+    // DefineFunc(DefineFunc),
 }
 
+/*
 #[derive(Debug, Clone, Trace)]
 pub struct DefineVar {
     pub var: Var,
     pub val: Arc<Expression>,
-    pub next: Option<Either<Box<Definition>, ExprBody>>,
+    pub next: Option<Either<Box<Definition>, Body>>,
 }
 
 #[derive(Debug, Clone, Trace)]
 pub struct DefineFunc {
     pub var: Var,
     pub args: Formals,
-    pub body: Box<DefinitionBody>,
-    pub next: Option<Either<Box<Definition>, ExprBody>>,
+    pub body: Box<Definitions>,
+    pub next: Option<Either<Box<Definition>, Body>>,
     pub span: Span,
 }
+*/
 
 impl Definition {
-    fn set_next(self, next: Either<Box<Definition>, ExprBody>) -> Self {
+    /*
+    fn set_next(self, next: Either<Box<Definition>, Body>) -> Self {
         match self {
             Self::DefineVar(mut def_var) => {
                 def_var.next = Some(next);
@@ -1045,6 +1031,7 @@ impl Definition {
             }
         }
     }
+    */
 
     #[maybe_async]
     pub(crate) fn parse(
@@ -1055,11 +1042,17 @@ impl Definition {
     ) -> Result<Self, Exception> {
         match syn {
             [_, Syntax::Identifier { ident, .. }, expr, end] if end.is_null() => {
+                Ok(Definition {
+                    var: maybe_await!(env.lookup_var(ident.bind()))?.unwrap(),
+                    expr: maybe_await!(Expression::parse(ctxt, expr.clone(), env))?,
+                })
+                /*
                 Ok(Definition::DefineVar(DefineVar {
                     var: maybe_await!(env.lookup_var(ident.bind()))?.unwrap(),
                     val: Arc::new(maybe_await!(Expression::parse(ctxt, expr.clone(), env))?),
                     next: None,
                 }))
+                */
             }
             [_, Syntax::List { list, .. }, body @ .., end] if end.is_null() => {
                 if body.is_empty() {
@@ -1134,9 +1127,18 @@ impl Definition {
                         // Parse the body:
                         let mut body = body.to_vec();
                         body.iter_mut().for_each(|s| s.add_scope(func_scope));
-                        let body =
-                            maybe_await!(DefinitionBody::parse(ctxt, &body, &new_env, form))?;
+                        let body = maybe_await!(Definitions::parse(ctxt, &body, &new_env, form))?;
 
+                        Ok(Definition {
+                            var,
+                            expr: Expression::Lambda(Lambda {
+                                args,
+                                body,
+                                span: func_span.clone(),
+                            }),
+                        })
+
+                        /*
                         Ok(Self::DefineFunc(DefineFunc {
                             var,
                             args,
@@ -1144,6 +1146,8 @@ impl Definition {
                             next: None,
                             span: func_span.clone(),
                         }))
+                         */
+                        // todo!()
                     }
                     _ => Err(error::bad_form(form, None)),
                 }
@@ -1180,6 +1184,7 @@ pub enum Expression {
     SyntaxCase(SyntaxCase),
     Apply(Apply),
     Let(Let),
+    LetRec(LetRec),
     If(If),
     And(And),
     Or(Or),
@@ -1187,7 +1192,7 @@ pub enum Expression {
     Set(Set),
     Var(Var),
     Vector(Vector),
-    Begin(ExprBody),
+    Begin(Body),
 }
 
 impl Expression {
@@ -1265,14 +1270,19 @@ impl Expression {
                     };
                     if let Some(primitive) = env.lookup_primitive(binding) {
                         match primitive {
-                            Primitive::Begin => maybe_await!(ExprBody::parse(ctxt, tail, env))
-                                .map(Expression::Begin),
+                            Primitive::Begin => {
+                                maybe_await!(Body::parse(ctxt, tail, env)).map(Expression::Begin)
+                            }
                             Primitive::Lambda => {
                                 maybe_await!(Lambda::parse(ctxt, tail, env, &form))
                                     .map(Expression::Lambda)
                             }
                             Primitive::Let => maybe_await!(Let::parse(ctxt, tail, env, &form))
                                 .map(Expression::Let),
+                            Primitive::LetRec => {
+                                maybe_await!(LetRec::parse(ctxt, tail, env, &form))
+                                    .map(Expression::LetRec)
+                            }
                             Primitive::If => {
                                 maybe_await!(If::parse(ctxt, tail, env, &form)).map(Expression::If)
                             }
@@ -1301,8 +1311,7 @@ impl Expression {
                                     env,
                                     &mut Vec::new(),
                                 ))?;
-                                maybe_await!(ExprBody::parse(ctxt, &form, &env))
-                                    .map(Expression::Begin)
+                                maybe_await!(Body::parse(ctxt, &form, &env)).map(Expression::Begin)
                             }
                             Primitive::LetRecSyntax if !tail.is_empty() => {
                                 let (form, env) = maybe_await!(parse_let_syntax(
@@ -1313,8 +1322,7 @@ impl Expression {
                                     env,
                                     &mut Vec::new(),
                                 ))?;
-                                maybe_await!(ExprBody::parse(ctxt, &form, &env))
-                                    .map(Expression::Begin)
+                                maybe_await!(Body::parse(ctxt, &form, &env)).map(Expression::Begin)
                             }
                             Primitive::Import => Err(error::unexpected_import(&form)),
                             Primitive::Define => Err(error::unexpected_define(&form)),
@@ -1482,7 +1490,7 @@ impl Apply {
 #[derive(Debug, Clone, Trace)]
 pub struct Lambda {
     pub args: Formals,
-    pub body: DefinitionBody,
+    pub body: Definitions,
     pub span: Span,
 }
 
@@ -1580,7 +1588,7 @@ fn parse_lambda(
 
     let mut body = body.to_vec();
     body.iter_mut().for_each(|s| s.add_scope(lambda_scope));
-    let body = maybe_await!(DefinitionBody::parse(ctxt, &body, &new_contour, form))?;
+    let body = maybe_await!(Definitions::parse(ctxt, &body, &new_contour, form))?;
 
     Ok(Lambda {
         args,
@@ -1592,7 +1600,7 @@ fn parse_lambda(
 #[derive(Debug, Clone, Trace)]
 pub struct Let {
     pub bindings: Vec<(Local, Expression)>,
-    pub body: DefinitionBody,
+    pub body: Definitions,
 }
 
 impl Let {
@@ -1667,7 +1675,7 @@ fn parse_let(
 
     let mut body = body.to_vec();
     body.iter_mut().for_each(|s| s.add_scope(new_scope));
-    let body = maybe_await!(DefinitionBody::parse(ctxt, &body, &new_contour, form))?;
+    let body = maybe_await!(Definitions::parse(ctxt, &body, &new_contour, form))?;
 
     Ok(Let {
         bindings: parsed_bindings,
@@ -1732,25 +1740,41 @@ fn parse_named_let(
         s.add_scope(func_scope);
         s.add_scope(body_scope);
     });
-    let body = maybe_await!(DefinitionBody::parse(ctxt, &body, &body_contour, form))?;
+    let body = maybe_await!(Definitions::parse(ctxt, &body, &body_contour, form))?;
 
+    let let_rec = LetRec {
+        bindings: vec![(
+            func.as_local().expect("let var should be a local"),
+            Expression::Lambda(Lambda {
+                args: Formals::FixedArgs(formals),
+                body,
+                span: form.span().clone(),
+            }),
+        )],
+        body: Definitions::new(Either::Right(Body::new(vec![Expression::Apply(Apply {
+            operator: Box::new(Expression::Var(func)),
+            args,
+            span: form.span().clone(),
+        })]))),
+    };
+
+    /*
     let func = DefineFunc {
         var: func.clone(),
         args: Formals::FixedArgs(formals),
         body: Box::new(body),
-        next: Some(Either::Right(ExprBody::new(vec![Expression::Apply(
-            Apply {
-                operator: Box::new(Expression::Var(func)),
-                args,
-                span: form.span().clone(),
-            },
-        )]))),
+        next: Some(Either::Right(Body::new(vec![Expression::Apply(Apply {
+            operator: Box::new(Expression::Var(func)),
+            args,
+            span: form.span().clone(),
+        })]))),
         span: form.span().clone(),
     };
+    */
 
     Ok(Let {
         bindings: Vec::new(),
-        body: DefinitionBody::new(Either::Left(Definition::DefineFunc(func))),
+        body: Definitions::new(Either::Left(Box::new(let_rec))),
     })
 }
 
@@ -1892,13 +1916,14 @@ impl Formals {
 }
 
 #[derive(Debug, Clone, Trace)]
-pub struct DefinitionBody {
-    pub first: Either<Definition, ExprBody>,
+pub struct Definitions {
+    pub inner: Either<Box<LetRec>, Body>,
+    // pub first: Either<Definition, Body>,
 }
 
-impl DefinitionBody {
-    pub fn new(first: Either<Definition, ExprBody>) -> Self {
-        Self { first }
+impl Definitions {
+    pub fn new(inner: Either<Box<LetRec>, Body>) -> Self {
+        Self { inner }
     }
 
     #[maybe_async]
@@ -2012,37 +2037,142 @@ impl DefinitionBody {
             defs_parsed.push(def);
         }
 
+        if let Some(def) = defs_parsed.last()
+            && def.var.is_global()
+        {
+            // If we're setting globals, we can reduce everything to a series
+            // of sets
+            exprs_parsed.extend(defs_parsed.drain(..).map(|def| {
+                assert!(def.var.is_global());
+                Expression::Set(Set {
+                    var: def.var,
+                    val: Arc::new(def.expr),
+                })
+            }));
+        }
+
         for (expr, env) in exprs.into_iter() {
             exprs_parsed.push(maybe_await!(Expression::parse_expanded(
                 runtime, expr, &env,
             ))?);
         }
 
-        let expr_body = ExprBody::new(exprs_parsed);
-        match defs_parsed.pop() {
-            Some(last_def) => {
-                let mut last_def = last_def.set_next(Either::Right(expr_body));
-                for next_def in defs_parsed.into_iter().rev() {
-                    last_def = next_def.set_next(Either::Left(Box::new(last_def)));
-                }
-                Ok(Self::new(Either::Left(last_def)))
-            }
-            _ => Ok(Self::new(Either::Right(expr_body))),
+        let body = Body::new(exprs_parsed);
+
+        if defs_parsed.is_empty() {
+            Ok(Self::new(Either::Right(body)))
+        } else {
+            Ok(Self::new(Either::Left(Box::new(LetRec {
+                bindings: defs_parsed
+                    .into_iter()
+                    .map(|def| {
+                        (
+                            def.var
+                                .as_local()
+                                .expect("definitions are either all global or all local"),
+                            def.expr,
+                        )
+                    })
+                    .collect(),
+                body: Definitions::new(Either::Right(body)),
+            }))))
         }
     }
 }
 
 #[derive(Debug, Clone, Trace)]
-pub struct ExprBody {
+pub struct LetRec {
+    pub bindings: Vec<(Local, Expression)>,
+    pub body: Definitions,
+}
+
+impl LetRec {
+    #[maybe_async]
+    fn parse(
+        ctxt: &ParseContext,
+        syn: &[Syntax],
+        env: &Environment,
+        form: &Syntax,
+    ) -> Result<Self, Exception> {
+        let (bindings, body): (&[Syntax], &[Syntax]) = match syn {
+            [empty, body @ ..] if empty.is_null() => {
+                (&[], body)
+                // maybe_await!(parse_let(ctxt, &[], body, env, form))
+            }
+            [Syntax::List { list: bindings, .. }, body @ ..] => {
+                match bindings.as_slice() {
+                    [] => (&[], body),
+                    [empty] if empty.is_null() => (&[], body),
+                    [bindings @ .., end] if end.is_null() => (bindings, body),
+                    _ => return Err(error::expected_list(form)),
+                }
+                // (bindings, body)
+                // maybe_await!(parse_let(ctxt, bindings, body, env, form))
+            }
+            _ => return Err(error::expected_more_arguments(form)),
+        };
+
+        let new_scope = Scope::new();
+        let new_contour = env.new_lexical_contour(new_scope);
+        let mut previously_bound = HashSet::default();
+        let mut locals = Vec::new();
+
+        // Go through and mark all of the bindings. Don't do any more work than
+        // that, we can throw away the scope if there's an error later.
+        for binding in bindings {
+            if let Some([subform @ Syntax::Identifier { ident, .. }, _, end]) = binding.as_list()
+                && end.is_null()
+            {
+                if previously_bound.contains(ident) {
+                    return Err(error::name_previously_bound(form, subform));
+                }
+
+                let mut var = ident.clone();
+                var.add_scope(new_scope);
+                let var = new_contour
+                    .def_var(var.new_bind(), ident.sym)
+                    .as_local()
+                    .unwrap();
+                locals.push(var);
+                previously_bound.insert(ident);
+            } else {
+                return Err(error::expected_list(binding));
+            }
+        }
+
+        let mut parsed_bindings = Vec::new();
+        for (binding, var) in bindings.iter().zip(&locals) {
+            if let Some([_, expr, _]) = binding.as_list() {
+                let mut expr = expr.clone();
+                expr.add_scope(new_scope);
+                parsed_bindings.push((
+                    *var,
+                    maybe_await!(Expression::parse(ctxt, expr, &new_contour))?,
+                ));
+            }
+        }
+
+        let mut body = body.to_vec();
+        body.iter_mut().for_each(|s| s.add_scope(new_scope));
+        let body = maybe_await!(Definitions::parse(ctxt, &body, &new_contour, form))?;
+
+        Ok(LetRec {
+            bindings: parsed_bindings,
+            body,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Trace)]
+pub struct Body {
     pub exprs: Vec<Expression>,
 }
 
-impl ExprBody {
+impl Body {
     pub fn new(exprs: Vec<Expression>) -> Self {
         Self { exprs }
     }
 
-    /// Differs from Body by being purely expression based. No definitions allowed.
     #[maybe_async]
     fn parse(ctxt: &ParseContext, body: &[Syntax], env: &Environment) -> Result<Self, Exception> {
         let mut exprs = Vec::new();
