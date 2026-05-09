@@ -23,8 +23,9 @@ Scheme-rs is safe, fast, and does not sacrifice modern conveniences.
   misuse.
 - **Supports both async and sync Rust**: by enabling the `async` feature flag 
   it becomes possible (and easy) to define async scheme functions in Rust. 
-- **Language server protocol**: scheme-rs includes a language server protocol
-  implementation for editor agnostic tooling
+- **Language server protocol**: scheme-rs includes a language server
+  protocol implementation for editor agnostic tooling, requires
+  enabling the `lsp` feature
 
 ## Getting started:
 

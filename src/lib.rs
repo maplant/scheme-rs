@@ -13,6 +13,7 @@ pub(crate) mod expand;
 pub mod gc;
 pub mod hashtables;
 pub mod lists;
+#[cfg(feature = "lsp")]
 pub mod lsp;
 pub mod num;
 pub mod ports;

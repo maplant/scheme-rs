@@ -98,9 +98,22 @@ impl IntoPort for TextStoringPrompt {
 fn entry(runtime: &Runtime) -> Result<(), Exception> {
     let args = Args::parse();
 
-    if args.lsp {
-        maybe_await!(scheme_rs::lsp::start()).map_err(|err| Exception::error(err.to_string()))?;
-        return Ok(());
+    #[cfg(feature = "lsp")]
+    {
+        if args.lsp {
+            maybe_await!(scheme_rs::lsp::start())
+                .map_err(|err| Exception::error(err.to_string()))?;
+            return Ok(());
+        }
+    }
+
+    #[cfg(not(feature = "lsp"))]
+    {
+        if args.lsp {
+            return Err(Exception::error(
+                "`--lsp` requires building scheme-rs with the `lsp` feature enabled",
+            ));
+        }
     }
 
     // Run any programs
