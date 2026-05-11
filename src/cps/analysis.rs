@@ -19,27 +19,29 @@
 
 use super::*;
 
-impl Cps {
+#[derive(Default)]
+pub(crate) struct FreeVariablesCache {
+    cache: HashMap<Local, HashSet<Local>>,
+}
+
+impl FreeVariablesCache {
     #[stacksafe::stacksafe]
-    pub(super) fn free_variables(
-        &self,
-        cache: &mut HashMap<Local, HashSet<Local>>,
-    ) -> HashSet<Local> {
-        match self {
+    pub fn free_variables(&mut self, cps: &Cps) -> HashSet<Local> {
+        match cps {
             Cps::PrimOp(PrimOp::AllocCell, _, bind, cexpr) => {
-                let mut free = cexpr.free_variables(cache);
+                let mut free = self.free_variables(cexpr);
                 free.remove(bind);
                 free
             }
             Cps::PrimOp(_, args, bind, cexpr) => {
-                let mut free = cexpr.free_variables(cache);
+                let mut free = self.free_variables(cexpr);
                 free.remove(bind);
                 free.union(&values_to_locals(args)).copied().collect()
             }
             Cps::If(cond, success, failure) => {
-                let mut free: HashSet<_> = success
-                    .free_variables(cache)
-                    .union(&failure.free_variables(cache))
+                let mut free: HashSet<_> = self
+                    .free_variables(success)
+                    .union(&self.free_variables(failure))
                     .copied()
                     .collect();
                 free.extend(cond.to_local());
@@ -50,112 +52,148 @@ impl Cps {
                 free.extend(op.to_local());
                 free
             }
-            Cps::Lambda {
-                args,
-                body,
-                val,
-                cexp,
-                ..
-            } => {
-                if !cache.contains_key(val) {
-                    let mut free_body = body.free_variables(cache);
-                    for arg in args.iter() {
-                        free_body.remove(arg);
+            Cps::Fix(bindings, cexpr) => {
+                let mut free_variables = HashSet::default();
+                for binding in bindings {
+                    if !self.cache.contains_key(&binding.val) {
+                        let mut free_body = self.free_variables(&binding.body);
+                        for arg in binding.args.iter() {
+                            free_body.remove(arg);
+                        }
+                        self.cache.insert(binding.val, free_body);
                     }
-                    let mut free_variables: HashSet<_> = free_body
-                        .union(&cexp.free_variables(cache))
-                        .copied()
-                        .collect();
-                    free_variables.remove(val);
-                    cache.insert(*val, free_variables);
+                    free_variables = if free_variables.is_empty() {
+                        self.cache[&binding.val].clone()
+                    } else {
+                        self.cache[&binding.val]
+                            .union(&free_variables)
+                            .copied()
+                            .collect()
+                    }
                 }
-                cache.get(val).unwrap().clone()
+                free_variables = self
+                    .free_variables(cexpr)
+                    .union(&free_variables)
+                    .copied()
+                    .collect();
+                for binding in bindings {
+                    free_variables.remove(&binding.val);
+                }
+                free_variables
             }
             Cps::Halt(val) => val.to_local().into_iter().collect(),
         }
     }
+}
 
-    pub(super) fn uses(
-        &self,
-        uses_cache: &mut HashMap<Local, HashMap<Local, usize>>,
-    ) -> HashMap<Local, usize> {
-        match self {
+/// Tracks the number of times a local is used.
+#[derive(Default)]
+pub(crate) struct UsesCache {
+    cache: HashMap<Local, HashMap<Local, usize>>,
+}
+
+impl UsesCache {
+    pub fn remove(&mut self, local: &Local) {
+        self.cache.remove(local);
+    }
+
+    pub fn uses(&mut self, cps: &Cps) -> HashMap<Local, usize> {
+        match cps {
             Cps::PrimOp(_, args, val, cexpr) => {
-                if !uses_cache.contains_key(val) {
-                    let uses = merge_uses(values_to_uses(args), cexpr.uses(uses_cache));
-                    uses_cache.insert(*val, uses);
+                if !self.cache.contains_key(val) {
+                    let uses = merge_uses(values_to_uses(args), self.uses(cexpr));
+                    self.cache.insert(*val, uses);
                 }
-                uses_cache.get(val).unwrap().clone()
+                self.cache[val].clone()
             }
             Cps::If(cond, success, failure) => {
-                let uses = merge_uses(success.uses(uses_cache), failure.uses(uses_cache));
+                let uses = merge_uses(self.uses(success), self.uses(failure));
                 add_value_use(uses, cond)
             }
             Cps::App(op, vals) => {
                 let uses = values_to_uses(vals);
                 add_value_use(uses, op)
             }
-            Cps::Lambda {
-                body, val, cexp, ..
-            } => {
-                if !uses_cache.contains_key(val) {
-                    let uses = merge_uses(body.uses(uses_cache), cexp.uses(uses_cache));
-                    uses_cache.insert(*val, uses);
+
+            Cps::Fix(bindings, cexpr) => {
+                let mut uses = HashMap::default();
+                for binding in bindings {
+                    if !self.cache.contains_key(&binding.val) {
+                        let uses = self.uses(&binding.body);
+                        self.cache.insert(binding.val, uses);
+                    }
+                    uses = if uses.is_empty() {
+                        self.cache[&binding.val].clone()
+                    } else {
+                        merge_uses(self.cache[&binding.val].clone(), uses)
+                    };
                 }
-                uses_cache.get(val).unwrap().clone()
+                merge_uses(uses, self.uses(cexpr))
             }
             Cps::Halt(value) => add_value_use(HashMap::default(), value),
         }
     }
+}
 
+impl Cps {
     pub(super) fn max_drops(&self) -> usize {
         match self {
             Cps::PrimOp(primop, _, _, cexpr) => {
                 cexpr.max_drops() + primop.info().needs_drop as usize
             }
-            Cps::Lambda { cexp, .. } => cexp.max_drops() + 1,
+            Cps::Fix(_, cexpr) => cexpr.max_drops() + 1,
             Cps::If(_, success, failure) => success.max_drops().max(failure.max_drops()),
             _ => 0,
         }
     }
 
     /// Returns a all of the variables that set within the cexpr
-    pub(super) fn mutable_vars(&self) -> HashSet<Local> {
+    pub(super) fn mutable_vars(&self, out: &mut HashSet<Local>) {
         match self {
             Cps::PrimOp(PrimOp::Set, args, _, cexp) => {
                 let [to, _] = args.as_slice() else {
                     unreachable!()
                 };
-                let mut mutables = cexp.mutable_vars();
-                mutables.extend(to.to_local());
-                mutables
+                cexp.mutable_vars(out);
+                out.extend(to.to_local());
             }
-            Cps::PrimOp(_, _, _, cexp) => cexp.mutable_vars(),
-            Cps::If(_, succ, fail) => succ
-                .mutable_vars()
-                .union(&fail.mutable_vars())
-                .copied()
-                .collect(),
-            Cps::Lambda { body, cexp, .. } => body
-                .mutable_vars()
-                .union(&cexp.mutable_vars())
-                .copied()
-                .collect(),
-            _ => HashSet::default(),
+            Cps::PrimOp(_, _, _, cexp) => {
+                cexp.mutable_vars(out);
+            }
+            Cps::If(_, succ, fail) => {
+                succ.mutable_vars(out);
+                fail.mutable_vars(out);
+            }
+            Cps::Fix(bindings, cexp) => {
+                for binding in bindings {
+                    binding.body.mutable_vars(out);
+                }
+                cexp.mutable_vars(out);
+            }
+            _ => (),
         }
     }
 
-    pub(super) fn cells(&self) -> HashSet<Local> {
+    pub(super) fn cells(&self, out: &mut HashSet<Local>) {
         match self {
             Cps::PrimOp(PrimOp::AllocCell, _, val, cexp) => {
-                let mut cells = cexp.cells();
-                cells.insert(*val);
-                cells
+                cexp.cells(out);
+                out.insert(*val);
             }
-            Cps::PrimOp(_, _, _, cexp) => cexp.cells(),
-            Cps::If(_, succ, fail) => succ.cells().union(&fail.cells()).copied().collect(),
-            Cps::Lambda { body, cexp, .. } => body.cells().union(&cexp.cells()).copied().collect(),
-            _ => HashSet::default(),
+            Cps::PrimOp(_, _, _, cexp) => {
+                cexp.cells(out);
+            }
+            Cps::If(_, succ, fail) => {
+                succ.cells(out);
+                fail.cells(out);
+            }
+            Cps::Fix(bindings, cexp) => {
+                for binding in bindings {
+                    binding.body.cells(out);
+                }
+                cexp.cells(out);
+            }
+            _ => (),
         }
     }
 }
@@ -185,6 +223,7 @@ fn merge_uses(mut l: HashMap<Local, usize>, mut r: HashMap<Local, usize>) -> Has
         l
     }
 }
+
 fn add_value_use(mut uses: HashMap<Local, usize>, value: &Value) -> HashMap<Local, usize> {
     if let Some(local) = value.to_local() {
         *uses.entry(local).or_default() += 1;

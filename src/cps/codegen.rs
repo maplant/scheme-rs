@@ -9,7 +9,7 @@ use cranelift_module::{FuncId, Linkage, Module};
 use std::sync::Arc;
 
 use crate::{
-    cps::Value as CpsValue,
+    cps::{Value as CpsValue, analysis::FreeVariablesCache},
     proc::{ContinuationPtr, FuncPtr, ProcDebugInfo, Procedure},
     runtime::{DebugInfo, Runtime},
     value::{FALSE_VALUE, NULL_VALUE, TAG, TRUE_VALUE, Tag, Value as SchemeValue},
@@ -100,7 +100,8 @@ impl Cps {
             self.pretty_print(2);
         }
 
-        let cells = self.cells();
+        let mut cells = HashSet::default();
+        self.cells(&mut cells);
         let mut builder_context = FunctionBuilderContext::new();
         let mut ctx = module.make_context();
 
@@ -135,7 +136,7 @@ impl Cps {
         };
 
         let mut deferred = Vec::new();
-        let mut free_vars_cache = HashMap::default();
+        let mut free_vars_cache = FreeVariablesCache::default();
 
         let mut cu = CompilationUnit {
             runtime: runtime.clone(),
@@ -189,7 +190,7 @@ struct CompilationUnit<'m, 'f, 'c, 'd> {
     curr_allocs: usize,
     runtime_funcs: &'f RuntimeFunctions,
     params: [Value; 2],
-    free_vars_cache: &'c mut HashMap<Local, HashSet<Local>>,
+    free_vars_cache: &'c mut FreeVariablesCache,
     module: &'m mut JITModule,
     debug_info: &'d mut DebugInfo,
 }
@@ -271,24 +272,37 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
             Cps::PrimOp(primop, vals, result, cexpr) => {
                 self.value_primop_codegen(primop, &vals, result, *cexpr, deferred);
             }
-            Cps::Lambda {
-                args,
-                body,
-                val,
+            // Fix expression with only one value - the most common case
+            Cps::Fix(
+                mut bindings,
+                // args,
+                // body,
+                // val,
                 cexp,
-                span: loc,
-            } => {
-                let bundle = ProcedureBundle::new(
-                    self.runtime.clone(),
-                    val,
-                    args.clone(),
-                    body.as_ref().clone(),
-                    loc,
-                    self.free_vars_cache,
-                    self.module,
-                );
-                self.make_procedure_codegen(&bundle, *cexp, deferred);
-                deferred.push(bundle);
+                // span: loc,
+            ) => {
+                if bindings.len() == 1
+                    && let Some(LambdaBinding {
+                        args,
+                        body,
+                        val,
+                        span,
+                    }) = bindings.pop()
+                {
+                    let bundle = ProcedureBundle::new(
+                        self.runtime.clone(),
+                        val,
+                        args.clone(),
+                        body.as_ref().clone(),
+                        span,
+                        self.free_vars_cache,
+                        self.module,
+                    );
+                    self.make_procedure_codegen(&bundle, *cexp, deferred);
+                    deferred.push(bundle);
+                } else {
+                    todo!("implement mutually recursive functions")
+                }
             }
             Cps::Halt(value) => self.halt_codegen(&value),
         }
@@ -676,13 +690,6 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
             .builder
             .ins()
             .icmp_imm(IntCC::NotEqual, cond, FALSE_VALUE as i64);
-        /*
-        let truthy = self
-            .module
-            .declare_func_in_func(self.runtime_funcs.truthy, self.builder.func);
-        let truthy_call = self.builder.ins().call(truthy, &[cond]);
-        let cond = self.builder.inst_results(truthy_call)[0];
-        */
 
         // Because our compiler is not particularly sophisticated right now, we
         // can guarantee that both branches terminate. Thus, no merge basic
@@ -877,7 +884,7 @@ impl ProcedureBundle {
         args: LambdaArgs,
         body: Cps,
         loc: Option<Span>,
-        free_vars_cache: &mut HashMap<Local, HashSet<Local>>,
+        free_vars_cache: &mut FreeVariablesCache,
         module: &mut JITModule,
     ) -> Self {
         let mut sig = module.make_signature();
@@ -887,8 +894,8 @@ impl ProcedureBundle {
             .declare_anonymous_function(&sig)
             .expect("Could not declare function");
 
-        let env = body
-            .free_variables(free_vars_cache)
+        let env = free_vars_cache
+            .free_variables(&body)
             .difference(&args.iter().cloned().collect::<HashSet<_>>())
             .cloned()
             .collect::<Vec<_>>();
@@ -908,7 +915,7 @@ impl ProcedureBundle {
         self,
         runtime_funcs: &RuntimeFunctions,
         cells: &HashSet<Local>,
-        free_vars_cache: &mut HashMap<Local, HashSet<Local>>,
+        free_vars_cache: &mut FreeVariablesCache,
         module: &mut JITModule,
         debug_info: &mut DebugInfo,
         deferred: &mut Vec<Self>,
@@ -991,19 +998,3 @@ impl ProcedureBundle {
         module.clear_context(&mut ctx);
     }
 }
-
-/*
-fn write_perf_map_entry(addr: *const u8, size: usize, name: &str) {
-    use std::io::Write;
-    let pid = std::process::id();
-    let path = format!("/tmp/perf-{pid}.map");
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
-        let _ = writeln!(file, "{:x} {size:x} {name}", addr as usize);
-        let _ = file.flush();
-    }
-}
-*/

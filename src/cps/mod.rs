@@ -13,6 +13,7 @@
 //!   directly to machine code.
 
 use crate::{
+    cps::analysis::UsesCache,
     env::{Global, Local, Var},
     gc::Trace,
     symbols::Symbol,
@@ -194,34 +195,20 @@ pub enum Cps {
     /// Branching:
     If(Value, Box<Cps>, Box<Cps>),
 
-    /// Function creation:
-    Lambda {
-        args: LambdaArgs,
-        body: Box<Cps>,
-        val: Local,
-        cexp: Box<Cps>,
-        span: Option<Span>,
-    },
-
-    /*
     /// Mutually-recursive function definitions:
-    Fix {
-        bindings: Vec<LambdaBinding>,
-        cexp: Box<Cps>,
-    },
-     */
+    Fix(Vec<LambdaBinding>, Box<Cps>),
+
     /// Halt execution and return the values:
     Halt(Value),
 }
 
-/*
+#[derive(Debug, Clone)]
 pub struct LambdaBinding {
     args: LambdaArgs,
     body: Box<Cps>,
     val: Local,
     span: Option<Span>,
 }
-*/
 
 #[derive(Debug, Clone)]
 pub struct LambdaArgs {
@@ -257,11 +244,7 @@ impl Cps {
     // TODO: This could probably be improved by being a little smarter about
     // when we clear the uses cache (i.e. return a bool if any substitutions
     // occurred).
-    fn substitute(
-        &mut self,
-        substitutions: &HashMap<Local, Value>,
-        uses_cache: &mut HashMap<Local, HashMap<Local, usize>>,
-    ) {
+    fn substitute(&mut self, substitutions: &HashMap<Local, Value>, uses_cache: &mut UsesCache) {
         match self {
             Self::PrimOp(_, args, val, cexp) => {
                 substitute_values(args, substitutions);
@@ -277,12 +260,12 @@ impl Cps {
                 success.substitute(substitutions, uses_cache);
                 failure.substitute(substitutions, uses_cache);
             }
-            Self::Lambda {
-                body, cexp, val, ..
-            } => {
-                body.substitute(substitutions, uses_cache);
+            Self::Fix(bindings, cexp) => {
+                for binding in bindings {
+                    binding.body.substitute(substitutions, uses_cache);
+                    uses_cache.remove(&binding.val);
+                }
                 cexp.substitute(substitutions, uses_cache);
-                uses_cache.remove(val);
             }
             Self::Halt(value) => {
                 substitute_value(value, substitutions);
@@ -302,30 +285,31 @@ impl Cps {
                 eprintln!(";");
                 cexp.pretty_print(indent);
             }
-            Cps::Lambda {
-                args,
-                body,
-                val,
-                cexp,
-                ..
-            } => {
-                eprint!("{:>indent$}def {val}(", "");
-                for (i, arg) in args.args.iter().enumerate() {
-                    if i > 0 {
-                        eprint!(", ");
+            Cps::Fix(bindings, cexp) => {
+                eprintln!("{:>indent$}fix:", "");
+                for binding in bindings {
+                    eprint!(
+                        "{:>new_indent$}{} = λ(",
+                        "",
+                        binding.val,
+                        new_indent = indent + 4
+                    );
+                    for (i, arg) in binding.args.args.iter().enumerate() {
+                        if i > 0 {
+                            eprint!(", ");
+                        }
+                        eprint!("{arg:?}");
                     }
-                    eprint!("{arg:?}");
+                    if binding.args.variadic {
+                        eprint!("...")
+                    }
+                    if let Some(k) = binding.args.continuation {
+                        eprint!(", {k:?} k");
+                    }
+                    eprintln!("):");
+                    binding.body.pretty_print(indent + 6);
                 }
-                if args.variadic {
-                    eprint!("...")
-                }
-                if let Some(k) = args.continuation {
-                    eprint!(", {k:?} k");
-                }
-                eprintln!("):");
-                body.pretty_print(indent + 2);
-                eprintln!("{:>indent$}end", "");
-                cexp.pretty_print(indent);
+                cexp.pretty_print(indent + 2);
             }
             Cps::If(val, succ, fail) => {
                 eprintln!("{:>indent$}if {val:?} then", "");
