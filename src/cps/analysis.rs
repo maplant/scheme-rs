@@ -147,33 +147,6 @@ impl Cps {
         }
     }
 
-    /// Returns a all of the variables that set within the cexpr
-    pub(super) fn mutable_vars(&self, out: &mut HashSet<Local>) {
-        match self {
-            Cps::PrimOp(PrimOp::Set, args, _, cexp) => {
-                let [to, _] = args.as_slice() else {
-                    unreachable!()
-                };
-                cexp.mutable_vars(out);
-                out.extend(to.to_local());
-            }
-            Cps::PrimOp(_, _, _, cexp) => {
-                cexp.mutable_vars(out);
-            }
-            Cps::If(_, succ, fail) => {
-                succ.mutable_vars(out);
-                fail.mutable_vars(out);
-            }
-            Cps::Fix(bindings, cexp) => {
-                for binding in bindings {
-                    binding.body.mutable_vars(out);
-                }
-                cexp.mutable_vars(out);
-            }
-            _ => (),
-        }
-    }
-
     pub(super) fn cells(&self, out: &mut HashSet<Local>) {
         match self {
             Cps::PrimOp(PrimOp::AllocCell, _, val, cexp) => {

@@ -91,6 +91,7 @@ impl Cps {
     pub(crate) fn into_procedure(
         self,
         runtime: Runtime,
+        mut free_vars_cache: FreeVariablesCache,
         runtime_funcs: &RuntimeFunctions,
         module: &mut JITModule,
         debug_info: &mut DebugInfo,
@@ -136,7 +137,6 @@ impl Cps {
         };
 
         let mut deferred = Vec::new();
-        let mut free_vars_cache = FreeVariablesCache::default();
 
         let mut cu = CompilationUnit {
             runtime: runtime.clone(),

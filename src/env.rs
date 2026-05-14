@@ -14,15 +14,14 @@ use std::{
 use parking_lot::{MappedRwLockReadGuard, Mutex, RwLock, RwLockReadGuard};
 use scheme_rs_macros::{maybe_async, maybe_await};
 
-use rustc_hash::FxHashMap as HashMap;
-
 #[cfg(feature = "async")]
 use futures::future::BoxFuture;
 
 pub use crate::ast::{AllowList, ImportPolicy};
 use crate::{
+    HashMap, HashSet,
     ast::{Definitions, ExportSet, ImportSet, LibraryName, LibrarySpec, ParseContext, Primitive},
-    cps::Compile,
+    cps::compile::Compiler,
     exceptions::Exception,
     gc::{Gc, Trace},
     proc::{Application, ContBarrier, Procedure},
@@ -297,13 +296,15 @@ impl TopLevelEnvironment {
         }
         let rt = { self.0.read().rt.clone() };
         let ctxt = ParseContext::new(&rt, import_policy);
+        let mut mutable_vars = HashSet::default();
         let body = maybe_await!(Definitions::parse(
             &ctxt,
             body,
             &Environment::Top(self.clone()),
-            &sexprs
+            &sexprs,
+            &mut mutable_vars,
         ))?;
-        let compiled = maybe_await!(rt.compile_expr(body.compile_top_level()));
+        let compiled = maybe_await!(Compiler::new(mutable_vars).compile(&rt, &body))?;
         maybe_await!(Application::new(compiled, Vec::new()).eval(&mut ContBarrier::new()))
     }
 
@@ -316,14 +317,16 @@ impl TopLevelEnvironment {
         let rt = { self.0.read().rt.clone() };
         let ctxt = ParseContext::new(&rt, import_policy);
         sexpr.add_scope(self.0.read().scope);
+        let mut mutable_vars = HashSet::default();
         let body = std::slice::from_ref(&sexpr);
         let body = maybe_await!(Definitions::parse(
             &ctxt,
             body,
             &Environment::Top(self.clone()),
-            &sexpr
+            &sexpr,
+            &mut mutable_vars,
         ))?;
-        let compiled = maybe_await!(rt.compile_expr(body.compile_top_level()));
+        let compiled = maybe_await!(Compiler::new(mutable_vars).compile(&rt, &body))?;
         maybe_await!(Application::new(compiled, Vec::new()).eval(&mut ContBarrier::new()))
     }
 
@@ -363,27 +366,38 @@ impl TopLevelEnvironment {
         };
         let rt = { self.0.read().rt.clone() };
         let env = Environment::from(self.clone());
-        let expanded = maybe_await!(Definitions::parse_lib_body(&rt, &body, &env))?;
-        self.0.write().state = LibraryState::Expanded(expanded);
+        let mut mutable_vars = HashSet::default();
+        let expanded = maybe_await!(Definitions::parse_lib_body(
+            &rt,
+            &body,
+            &env,
+            &mut mutable_vars
+        ))?;
+        self.0.write().state = LibraryState::Expanded {
+            expanded,
+            mutable_vars,
+        };
         Ok(())
     }
 
     #[maybe_async]
     pub(crate) fn maybe_invoke(&self) -> Result<(), Exception> {
         maybe_await!(self.maybe_expand())?;
-        let defn_body = {
+        let (defn_body, mutable_vars) = {
             let mut this = self.0.write();
             match std::mem::replace(&mut this.state, LibraryState::Invalid) {
-                LibraryState::Expanded(defn_body) => defn_body,
+                LibraryState::Expanded {
+                    expanded,
+                    mutable_vars,
+                } => (expanded, mutable_vars),
                 x => {
                     this.state = x;
                     return Ok(());
                 }
             }
         };
-        let compiled = defn_body.compile_top_level();
         let rt = { self.0.read().rt.clone() };
-        let proc = maybe_await!(rt.compile_expr(compiled));
+        let proc = maybe_await!(Compiler::new(mutable_vars).compile(&rt, &defn_body))?;
         let _ = maybe_await!(Application::new(proc, Vec::new()).eval(&mut ContBarrier::new()))?;
         self.0.write().state = LibraryState::Invoked;
         Ok(())
@@ -500,7 +514,10 @@ pub(crate) enum LibraryState {
     Invalid,
     BridgesDefined,
     Unexpanded(Syntax),
-    Expanded(Definitions),
+    Expanded {
+        expanded: Definitions,
+        mutable_vars: HashSet<Local>,
+    },
     Invoked,
 }
 

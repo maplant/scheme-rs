@@ -6,7 +6,7 @@
 
 use crate::{
     ast::{Definitions, Primitive},
-    cps::{Compile, Cps, codegen::RuntimeFunctionsBuilder},
+    cps::{Cps, analysis::FreeVariablesCache, codegen::RuntimeFunctionsBuilder, compile::Compiler},
     env::{Environment, Global, TopLevelEnvironment},
     exceptions::{Exception, SourceCache, raise},
     gc::{Gc, GcInner, Trace, init_gc},
@@ -119,11 +119,15 @@ impl Runtime {
             maybe_await!(env.import("(library (rnrs))".parse()?))?;
         }
 
-        let body = maybe_await!(Definitions::parse_lib_body(self, &form, &env))?;
-        let compiled = body.compile_top_level();
-        let closure = maybe_await!(self.compile_expr(compiled));
-
-        maybe_await!(Application::new(closure, Vec::new()).eval(&mut ContBarrier::default()))
+        let mut mutable_vars = HashSet::default();
+        let body = maybe_await!(Definitions::parse_lib_body(
+            self,
+            &form,
+            &env,
+            &mut mutable_vars
+        ))?;
+        let proc = maybe_await!(Compiler::new(mutable_vars).compile(self, &body))?;
+        maybe_await!(Application::new(proc, Vec::new()).eval(&mut ContBarrier::default()))
     }
 
     /// Define a library from Rust code. Useful if file system access is disabled.
@@ -151,12 +155,13 @@ impl Runtime {
     }
 
     #[maybe_async]
-    pub(crate) fn compile_expr(&self, expr: Cps) -> Procedure {
+    pub(crate) fn compile_expr(&self, expr: Cps, free_vars_cache: FreeVariablesCache) -> Procedure {
         let (completion_tx, completion_rx) = completion();
         let task = CompilationTask {
             completion_tx,
             compilation_unit: expr,
             runtime: self.clone(),
+            free_vars_cache,
         };
         let sender = { self.0.read().compilation_buffer_tx.clone() };
         let _ = maybe_await!(sender.send(task));
@@ -286,6 +291,7 @@ async fn recv_procedure(rx: CompletionRx) -> Procedure {
 
 struct CompilationTask {
     compilation_unit: Cps,
+    free_vars_cache: FreeVariablesCache,
     completion_tx: CompletionTx,
     /// Since Contexts are per-thread, we will only ever see the same Runtime.
     /// However, we can't cache the Runtime, as that would cause a ref cycle
@@ -343,11 +349,17 @@ fn compilation_task(mut compilation_queue_rx: CompilationBufferRx) {
         let CompilationTask {
             completion_tx,
             compilation_unit,
+            free_vars_cache,
             runtime,
         } = task;
 
-        let proc =
-            compilation_unit.into_procedure(runtime, &runtime_funcs, &mut module, &mut debug_info);
+        let proc = compilation_unit.into_procedure(
+            runtime,
+            free_vars_cache,
+            &runtime_funcs,
+            &mut module,
+            &mut debug_info,
+        );
 
         let _ = completion_tx.send(proc);
     }

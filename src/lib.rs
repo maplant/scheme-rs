@@ -26,6 +26,8 @@ pub mod threads;
 pub mod value;
 pub mod vectors;
 
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+
 /// Internal `Either` type
 #[derive(Debug, Clone)]
 enum Either<L, R> {

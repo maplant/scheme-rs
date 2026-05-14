@@ -24,12 +24,10 @@ use std::fmt;
 
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
-mod analysis;
+pub(crate) mod analysis;
 pub(crate) mod codegen;
-mod compile;
+pub(crate) mod compile;
 mod reduce;
-
-pub use compile::Compile;
 
 #[derive(Clone, PartialEq)]
 pub enum Value {
