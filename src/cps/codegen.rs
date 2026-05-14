@@ -273,14 +273,7 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
                 self.value_primop_codegen(primop, &vals, result, *cexpr, deferred);
             }
             // Fix expression with only one value - the most common case
-            Cps::Fix(
-                mut bindings,
-                // args,
-                // body,
-                // val,
-                cexp,
-                // span: loc,
-            ) => {
+            Cps::Fix(mut bindings, cexp) => {
                 if bindings.len() == 1
                     && let Some(LambdaBinding {
                         args,

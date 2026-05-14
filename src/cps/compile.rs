@@ -158,17 +158,76 @@ fn compile_let(
 
 impl Compile for LetRec {
     fn compile(&self, ctxt: &Compiler, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
-        let mut sets = compile_letrec(ctxt, &self.bindings, &self.body, meta_cont);
+        // Implementation of Robust and Effective Transformation of Letrec by
+        // Oscar Waddell, Dipanwita Sarkar, and R. Kent Dybvig.
+        //
+        // The most important aspect of this is to transform a series of
+        // unassigned, mutually recursive lambda bindings into a FIX operator.
+        //
+        // This allows us to avoid an allocation per binding, but also allows
+        // to more rigorously optimize the lambda in the FIX binding.
+        //
+        // The paper defines one partition that we ignore for now -
+        // unreferenced variables. It would be a little annoying to include
+        // that analysis at this point, so we defer that to a later time.
+        // Unreferenced variables are simply considered simple.
+
+        // Binding partitions:
+        // let mut simple = Vec::new();
+        let mut lambda = Vec::new();
+        let mut complex = Vec::new();
+
+        for (local, expr) in &self.bindings {
+            if let Expression::Lambda(l) = expr
+                && !ctxt.mutable_vars.contains(local)
+            {
+                lambda.push((local, l));
+            } else {
+                complex.push((local, expr));
+            }
+        }
+
+        // Convert lambda bindings into a fix:
+        let mut inner =
+            Cps::Fix(
+                lambda
+                    .into_iter()
+                    .map(|(local, lambda)| {
+                        let k3 = Local::gensym();
+                        LambdaBinding {
+                            args: LambdaArgs::new(
+                                lambda.args.iter().cloned().collect(),
+                                lambda.args.is_variadic(),
+                                Some(k3),
+                            ),
+                            body: Box::new(lambda.body.compile(ctxt, &mut |result| {
+                                Cps::App(result, vec![Value::from(k3)])
+                            })),
+                            val: *local,
+                            span: Some(lambda.span.clone()),
+                        }
+                    })
+                    .collect(),
+                // Compile the complex bindings
+                Box::new(compile_letrec_complex_bindings(
+                    ctxt,
+                    &self.bindings,
+                    &self.body,
+                    meta_cont,
+                )),
+            );
+
         // Allocate the cells. Do it in reverse just show it shows up better in
         // debug output
-        for binding in self.bindings.iter().rev() {
-            sets = Cps::PrimOp(PrimOp::AllocCell, Vec::new(), binding.0, Box::new(sets))
+        for binding in complex.iter().rev() {
+            inner = Cps::PrimOp(PrimOp::AllocCell, Vec::new(), *binding.0, Box::new(inner))
         }
-        sets
+
+        inner
     }
 }
 
-fn compile_letrec(
+fn compile_letrec_complex_bindings(
     ctxt: &Compiler,
     binds: &[(Local, Expression)],
     body: &Definitions,
@@ -189,9 +248,12 @@ fn compile_letrec(
                             PrimOp::Set,
                             vec![Value::from(*curr_bind), Value::Var(Var::Local(expr_result))],
                             Local::gensym(),
-                            Box::new(compile_letrec(ctxt, tail, body, &mut move |result| {
-                                Cps::App(result, vec![Value::from(k2)])
-                            })),
+                            Box::new(compile_letrec_complex_bindings(
+                                ctxt,
+                                tail,
+                                body,
+                                &mut move |result| Cps::App(result, vec![Value::from(k2)]),
+                            )),
                         )),
                         val: k3,
                         span: None,
