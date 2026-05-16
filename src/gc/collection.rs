@@ -6,7 +6,6 @@ use std::{
     alloc::Layout,
     any::TypeId,
     cell::UnsafeCell,
-    marker::PhantomData,
     ptr::{NonNull, null_mut},
     sync::{OnceLock, atomic::AtomicUsize},
     thread::JoinHandle,
@@ -16,7 +15,7 @@ use parking_lot::{Condvar, Mutex};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use scheme_rs_macros::{maybe_async, maybe_await};
 
-use crate::{exceptions::Exception, gc::GcInner, registry::bridge, value::Value};
+use crate::{exceptions::Exception, registry::bridge, value::Value};
 
 #[derive(Debug)]
 #[repr(C, align(8))]
@@ -288,16 +287,8 @@ impl HeapObject<()> {
 unsafe impl Send for HeapObject<()> {}
 unsafe impl Sync for HeapObject<()> {}
 
-pub(super) fn alloc_gc_object<T: super::GcOrTrace>(data: T) -> super::Gc<T> {
-    let new_gc = super::Gc {
-        ptr: NonNull::from(Box::leak(Box::new(GcInner {
-            header: UnsafeCell::new(GcHeader::new::<T>()),
-            data: UnsafeCell::new(data),
-        }))),
-        marker: PhantomData,
-    };
-
-    let new_gc_ptr = new_gc.ptr.as_ptr() as *mut GcHeader;
+pub(super) unsafe fn unroot<T: super::GcOrTrace>(gc: &super::Gc<T>) {
+    let new_gc_ptr = gc.ptr.as_ptr() as *mut GcHeader;
 
     let mut heap = HEAP.lock();
 
@@ -325,8 +316,6 @@ pub(super) fn alloc_gc_object<T: super::GcOrTrace>(data: T) -> super::Gc<T> {
     heap.new_allocs += 1;
 
     COLLECTION_START_SIGNAL.notify_one();
-
-    new_gc
 }
 
 struct Heap {

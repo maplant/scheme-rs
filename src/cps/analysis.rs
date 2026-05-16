@@ -141,7 +141,7 @@ impl Cps {
             Cps::PrimOp(primop, _, _, cexpr) => {
                 cexpr.max_drops() + primop.info().needs_drop as usize
             }
-            Cps::Fix(_, cexpr) => cexpr.max_drops() + 1,
+            Cps::Fix(bindings, cexpr) => cexpr.max_drops() + bindings.len(),
             Cps::If(_, success, failure) => success.max_drops().max(failure.max_drops()),
             _ => 0,
         }

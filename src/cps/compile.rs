@@ -210,10 +210,7 @@ impl Compile for LetRec {
                     .collect(),
                 // Compile the complex bindings
                 Box::new(compile_letrec_complex_bindings(
-                    ctxt,
-                    &self.bindings,
-                    &self.body,
-                    meta_cont,
+                    ctxt, &complex, &self.body, meta_cont,
                 )),
             );
 
@@ -229,11 +226,11 @@ impl Compile for LetRec {
 
 fn compile_letrec_complex_bindings(
     ctxt: &Compiler,
-    binds: &[(Local, Expression)],
+    binds: &[(&Local, &Expression)],
     body: &Definitions,
     meta_cont: &mut dyn FnMut(Value) -> Cps,
 ) -> Cps {
-    if let Some(((curr_bind, curr_expr), tail)) = binds.split_first() {
+    if let Some((&(curr_bind, curr_expr), tail)) = binds.split_first() {
         let expr_result = Local::gensym();
         let k1 = Local::gensym();
         let k2 = Local::gensym();

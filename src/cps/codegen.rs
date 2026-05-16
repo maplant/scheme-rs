@@ -51,6 +51,8 @@ pub(crate) struct RuntimeFunctions {
     halt: FuncId,
     make_user: FuncId,
     make_continuation: FuncId,
+    patch_env_slot: FuncId,
+    unroot_proc: FuncId,
     alloc_cell: FuncId,
     read_cell: FuncId,
     store: FuncId,
@@ -272,30 +274,8 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
             Cps::PrimOp(primop, vals, result, cexpr) => {
                 self.value_primop_codegen(primop, &vals, result, *cexpr, deferred);
             }
-            // Fix expression with only one value - the most common case
-            Cps::Fix(mut bindings, cexp) => {
-                if bindings.len() == 1
-                    && let Some(LambdaBinding {
-                        args,
-                        body,
-                        val,
-                        span,
-                    }) = bindings.pop()
-                {
-                    let bundle = ProcedureBundle::new(
-                        self.runtime.clone(),
-                        val,
-                        args.clone(),
-                        body.as_ref().clone(),
-                        span,
-                        self.free_vars_cache,
-                        self.module,
-                    );
-                    self.make_procedure_codegen(&bundle, *cexp, deferred);
-                    deferred.push(bundle);
-                } else {
-                    todo!("implement mutually recursive functions")
-                }
+            Cps::Fix(bindings, cexp) => {
+                self.fix_codegen(bindings, *cexp, deferred);
             }
             Cps::Halt(value) => self.halt_codegen(&value),
         }
@@ -766,18 +746,70 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
             .stack_load(types::I64, slot, i as i32 * 8)
     }
 
-    fn make_procedure_codegen(
+    fn fix_codegen(
         &mut self,
-        bundle: &ProcedureBundle,
+        bindings: Vec<LambdaBinding>,
         cexp: Cps,
         deferred: &mut Vec<ProcedureBundle>,
     ) {
-        // Construct the envs array:
+        let bundles: Vec<ProcedureBundle> = bindings
+            .into_iter()
+            .map(|binding| {
+                ProcedureBundle::new(
+                    self.runtime.clone(),
+                    binding.val,
+                    binding.args,
+                    *binding.body,
+                    binding.span,
+                    self.free_vars_cache,
+                    self.module,
+                )
+            })
+            .collect();
+
+        // The set of vals bound in this Fix. A binding's body may reference any
+        // of these, including itself, so we cannot resolve them until after all
+        // of the procedures have been allocated.
+        let fix_vals: HashSet<Local> = bundles.iter().map(|b| b.val).collect();
+
+        // Allocate all of the procedures. The procedures are rooted and thus we
+        // have exclusive mutable access to them.
+        for bundle in &bundles {
+            self.alloc_procedure_codegen(bundle, &fix_vals);
+        }
+
+        // Patch any procedures that were created by the fix primitive into the
+        // environment of the procedures.
+        for bundle in &bundles {
+            self.patch_env_codegen(bundle, &fix_vals);
+        }
+
+        // Now that we no longer need mutable access, unroot the procedures.
+        for bundle in &bundles {
+            self.unroot_proc_codegen(bundle);
+        }
+
+        self.cps_codegen(cexp, deferred);
+
+        for bundle in bundles {
+            deferred.push(bundle);
+        }
+    }
+
+    fn alloc_procedure_codegen(&mut self, bundle: &ProcedureBundle, fix_vals: &HashSet<Local>) {
+        // Construct the env array. Recursive references get a placeholder that
+        // will be overwritten once every procedure in the group has been
+        // allocated.
         let env = self.alloc_array(bundle.env.len());
         for (i, env_var) in bundle.env.iter().enumerate() {
-            let val = match *self.rebinds.fetch_bind(env_var) {
-                IrValue::Cell(ptr) => ptr,
-                IrValue::Value(val) => val,
+            let val = if fix_vals.contains(env_var) {
+                // Undefined
+                self.builder.ins().iconst(types::I64, 0)
+            } else {
+                match *self.rebinds.fetch_bind(env_var) {
+                    IrValue::Cell(ptr) => ptr,
+                    IrValue::Value(val) => val,
+                }
             };
             self.array_store(env, i, val);
         }
@@ -837,7 +869,41 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
         let proc = self.builder.inst_results(call)[0];
         self.rebinds.rebind(bundle.val, IrValue::Value(proc));
         self.push_alloc(proc);
-        self.cps_codegen(cexp, deferred);
+    }
+
+    fn patch_env_codegen(&mut self, bundle: &ProcedureBundle, fix_vals: &HashSet<Local>) {
+        let IrValue::Value(proc) = self.rebinds.fetch_bind(&bundle.val) else {
+            unreachable!();
+        };
+
+        let patch_fn = self
+            .module
+            .declare_func_in_func(self.runtime_funcs.patch_env_slot, self.builder.func);
+
+        for (i, env_var) in bundle.env.iter().enumerate() {
+            if !fix_vals.contains(env_var) {
+                continue;
+            }
+            let IrValue::Value(target) = self.rebinds.fetch_bind(env_var) else {
+                unreachable!();
+            };
+            let slot_idx = self.builder.ins().iconst(types::I32, i as i64);
+            self.builder
+                .ins()
+                .call(patch_fn, &[*proc, slot_idx, *target]);
+        }
+    }
+
+    fn unroot_proc_codegen(&mut self, bundle: &ProcedureBundle) {
+        let IrValue::Value(proc) = self.rebinds.fetch_bind(&bundle.val) else {
+            unreachable!();
+        };
+
+        let unroot_proc = self
+            .module
+            .declare_func_in_func(self.runtime_funcs.unroot_proc, self.builder.func);
+
+        self.builder.ins().call(unroot_proc, &[*proc]);
     }
 }
 

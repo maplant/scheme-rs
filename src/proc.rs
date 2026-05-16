@@ -500,15 +500,14 @@ impl Procedure {
         variadic: bool,
         debug_info: Option<Arc<ProcDebugInfo>>,
     ) -> Self {
-        Self(Gc::new(ProcedureInner {
+        Self(Gc::new(ProcedureInner::new(
             runtime,
             env,
             func,
             num_required_args,
             variadic,
-            is_variable_transformer: false,
             debug_info,
-        }))
+        )))
     }
 
     /// Get the runtime associated with the procedure

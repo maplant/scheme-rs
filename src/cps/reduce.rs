@@ -123,6 +123,16 @@ impl Cps {
                 return cexpr.beta_reduce_function(func, args, func_body, uses_cache);
             }
             Cps::App(Value::Var(Var::Local(operator)), applied) if *operator == func => {
+                let (k, applied) = if args.continuation.is_some() {
+                    if let Some((k, applied)) = applied.split_last() {
+                        (Some(k.clone()), applied)
+                    } else {
+                        return false;
+                    }
+                } else {
+                    (None, applied.as_slice())
+                };
+
                 if args.variadic {
                     let (req, var) = applied.split_at(args.num_required());
                     let var_args = Local::gensym();
@@ -133,12 +143,20 @@ impl Cps {
                         Box::new(substitute(
                             func_body.clone(),
                             args,
-                            req.iter().cloned().chain(Some(Value::from(var_args))),
+                            req.iter()
+                                .cloned()
+                                .chain(Some(Value::from(var_args)))
+                                .chain(k),
                             uses_cache,
                         )),
                     )
                 } else if args.num_required() == applied.len() {
-                    substitute(func_body.clone(), args, applied.iter().cloned(), uses_cache)
+                    substitute(
+                        func_body.clone(),
+                        args,
+                        applied.iter().cloned().chain(k),
+                        uses_cache,
+                    )
                 } else {
                     // It's an error if the number of arguments don't match but
                     // defer until evaluation to raise it.
@@ -238,11 +256,25 @@ impl Cps {
             ),
             Cps::Fix(mut bindings, cexpr) => {
                 let cexpr = cexpr.dead_code_elimination(uses_cache);
-                let uses = uses_cache.uses(&cexpr);
+
+                // Compute the live set of the Fix operator. A procedure is live
+                // if it used in the continuation expression or used in the body
+                // of another live procedure.
+                let mut live: HashSet<Local> = uses_cache.uses(&cexpr).keys().copied().collect();
+                let mut prev_num_live = 0;
+                while live.len() > prev_num_live {
+                    prev_num_live = live.len();
+                    for binding in &bindings {
+                        if live.contains(&binding.val) {
+                            live.extend(uses_cache.uses(&binding.body).keys().copied());
+                        }
+                    }
+                }
+
                 bindings = bindings
                     .into_iter()
                     .filter_map(|binding| {
-                        uses.contains_key(&binding.val).then(|| LambdaBinding {
+                        live.contains(&binding.val).then(|| LambdaBinding {
                             args: binding.args,
                             body: Box::new(binding.body.dead_code_elimination(uses_cache)),
                             val: binding.val,
@@ -250,6 +282,7 @@ impl Cps {
                         })
                     })
                     .collect::<Vec<_>>();
+
                 if bindings.is_empty() {
                     cexpr
                 } else {

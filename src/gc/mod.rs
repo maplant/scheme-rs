@@ -31,7 +31,7 @@ use std::{
 
 use crate::{
     Either,
-    gc::collection::{GcHeader, alloc_gc_object},
+    gc::collection::{GcHeader, unroot},
 };
 
 /// A heap allocated garbage collected smart pointer. Gc requires that `T`
@@ -43,9 +43,25 @@ pub struct Gc<T: ?Sized> {
 
 #[allow(private_bounds)]
 impl<T: Send + GcOrTrace + 'static> Gc<T> {
-    /// Allocate a new object on the heap and track .
+    /// Allocate a new object on the heap and track it.
     pub fn new(data: T) -> Gc<T> {
-        alloc_gc_object(data)
+        let new_gc = Self::rooted(data);
+        unsafe {
+            unroot(&new_gc);
+        }
+        new_gc
+    }
+
+    /// Allocate a new object and do not track it. The object will only become
+    /// tracked when it is called with `unroot`.
+    pub(crate) fn rooted(data: T) -> Gc<T> {
+        Self {
+            ptr: NonNull::from(Box::leak(Box::new(GcInner {
+                header: UnsafeCell::new(GcHeader::new::<T>()),
+                data: UnsafeCell::new(data),
+            }))),
+            marker: PhantomData,
+        }
     }
 }
 
@@ -59,6 +75,21 @@ impl<T: GcOrTrace + Send + Sync + 'static> Gc<T> {
         Gc {
             ptr: any,
             marker: PhantomData,
+        }
+    }
+}
+
+#[allow(private_bounds)]
+impl<T: GcOrTrace> Gc<T> {
+    /// Unroot a rooted Gc object.
+    ///
+    /// # Safety
+    ///
+    /// Calling this function more than once on a rooted Gc object or at all on
+    /// an unrooted Gc object is undefined behavior.
+    pub(crate) unsafe fn unroot(this: &Self) {
+        unsafe {
+            unroot(this);
         }
     }
 }
@@ -262,23 +293,11 @@ fn dec_rc<T: ?Sized>(ptr: NonNull<GcInner<T>>) {
 #[repr(C)]
 pub(crate) struct GcInner<T: ?Sized> {
     header: UnsafeCell<GcHeader>,
-    data: UnsafeCell<T>,
+    pub(crate) data: UnsafeCell<T>,
 }
 
 unsafe impl<T: ?Sized + Send> Send for GcInner<T> {}
 unsafe impl<T: ?Sized + Sync> Sync for GcInner<T> {}
-
-/*
-
-/// A heap allocated garbage collected smart pointer that can not be collected
-pub struct RootedGc<T: ?Sized> {
-    // ...
-}
-
-impl RootedGc {
-}
-
-*/
 
 /// A type that can be traced for garbage collection. Types that implement this
 /// trait can be converted into a [`Gc`] for automatic garbage collection.

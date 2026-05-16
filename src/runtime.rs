@@ -14,11 +14,14 @@ use crate::{
     lists::{Pair, list_to_vec},
     num,
     ports::{BufferMode, Port, Transcoder},
-    proc::{Application, ContBarrier, ContinuationPtr, FuncPtr, ProcDebugInfo, Procedure, UserPtr},
+    proc::{
+        Application, ContBarrier, ContinuationPtr, FuncPtr, ProcDebugInfo, Procedure,
+        ProcedureInner, UserPtr,
+    },
     registry::Registry,
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax},
-    value::{Cell, UnpackedValue, Value},
+    value::{Cell, TAG, UnpackedValue, Value},
 };
 use parking_lot::{MappedRwLockWriteGuard, RwLock, RwLockWriteGuard};
 use scheme_rs_macros::{maybe_async, maybe_await, runtime_fn};
@@ -602,13 +605,15 @@ unsafe extern "C" fn make_continuation(
             .map(|i| Value::from_raw_inc_rc(env.add(i as usize).read()))
             .collect();
 
-        let proc = barrier.as_mut().unwrap().new_k(
+        barrier.as_mut().unwrap().push_marks();
+        let proc = Procedure(Gc::rooted(ProcedureInner::new(
             Runtime::from_raw_inc_rc(runtime),
             env,
-            fn_ptr,
+            FuncPtr::Continuation(fn_ptr),
             num_required_args as usize,
             variadic,
-        );
+            None,
+        )));
 
         Value::into_raw(Value::from(proc))
     }
@@ -631,16 +636,41 @@ unsafe extern "C" fn make_user(
             .map(|i| Value::from_raw_inc_rc(env.add(i as usize).read()))
             .collect();
 
-        let proc = Procedure::with_debug_info(
+        let proc = Procedure(Gc::rooted(ProcedureInner::new(
             Runtime::from_raw_inc_rc(runtime),
             env,
             FuncPtr::User(fn_ptr),
             num_required_args as usize,
             variadic,
             arc_from_ptr(debug_info),
-        );
+        )));
 
         Value::into_raw(Value::from(proc))
+    }
+}
+
+/// Path in a value into the env array for a procedure post-allocation. This
+/// isn't normally possible without Mutices, but procedures are allocated rooted
+/// and are unrooted after.
+#[runtime_fn]
+unsafe extern "C" fn patch_env_slot(proc: *const (), slot_idx: u32, value: *const ()) {
+    unsafe {
+        let proc_gc = ManuallyDrop::new(Gc::from_raw(
+            proc.map_addr(|raw| raw & !TAG) as *mut GcInner<ProcedureInner>
+        ));
+        (*Gc::as_ptr(&proc_gc)).data.get_mut().env[slot_idx as usize] =
+            Value::from_raw_inc_rc(value);
+    }
+}
+
+/// Unroot a procedure, giving up mutable access
+#[runtime_fn]
+unsafe extern "C" fn unroot_proc(proc: *const ()) {
+    unsafe {
+        let proc_gc = ManuallyDrop::new(Gc::from_raw(
+            proc.map_addr(|raw| raw & !TAG) as *mut GcInner<ProcedureInner>
+        ));
+        Gc::unroot(&proc_gc);
     }
 }
 
