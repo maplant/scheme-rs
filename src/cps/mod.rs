@@ -274,69 +274,69 @@ impl Cps {
     pub(crate) fn pretty_print(&self, indent: usize) {
         match self {
             Cps::PrimOp(PrimOp::Set, vals, _, cexp) => {
-                eprintln!("{:>indent$}{:?} <- {:?};", "", vals[0], vals[1]);
+                eprintln!("{:>indent$}(set! {:?} {:?})", "", vals[0], vals[1]);
                 cexp.pretty_print(indent);
             }
             Cps::PrimOp(primop, vals, to, cexp) => {
-                eprint!("{:>indent$}let {to:?} = {primop:?}", "");
+                eprint!("{:>indent$}({primop:?}", "");
                 pretty_print_values(vals);
-                eprintln!(";");
+                eprintln!(" #:out {to:?})");
                 cexp.pretty_print(indent);
             }
             Cps::Fix(bindings, cexp) => {
-                eprintln!("{:>indent$}fix:", "");
-                for binding in bindings {
+                eprint!("{:>indent$}(letrec (", "");
+                for (i, binding) in bindings.iter().enumerate() {
+                    if i > 0 {
+                        eprint!("{:>new_indent$}", "", new_indent = indent + 9);
+                    }
+                    let binding_name = binding.val.to_string();
                     eprint!(
-                        "{:>new_indent$}{} = λ(",
-                        "",
-                        binding.val,
-                        new_indent = indent + 4
+                        "[{binding_name} (λ (",
                     );
                     for (i, arg) in binding.args.args.iter().enumerate() {
                         if i > 0 {
-                            eprint!(", ");
+                            eprint!(" ");
                         }
                         eprint!("{arg:?}");
-                    }
-                    if binding.args.variadic {
-                        eprint!("...")
+                        if i == binding.args.num_required() && binding.args.variadic {
+                            eprint!("...");
+                        }
                     }
                     if let Some(k) = binding.args.continuation {
-                        eprint!(", {k:?} k");
+                        if binding.args.num_required() > 0 || binding.args.variadic {
+                            eprint!(" ");
+                        }
+                        eprint!("{k:?}");
                     }
-                    eprintln!("):");
-                    binding.body.pretty_print(indent + 6);
+                    eprintln!(")");
+                    binding.body.pretty_print(indent + 14 + binding_name.len());
+                    eprint!(")]\n");
                 }
                 cexp.pretty_print(indent + 2);
             }
             Cps::If(val, succ, fail) => {
-                eprintln!("{:>indent$}if {val:?} then", "");
-                succ.pretty_print(indent + 2);
-                eprintln!("{:>indent$}else", "");
-                fail.pretty_print(indent + 2);
-                eprintln!("{:>indent$}end", "");
+                eprintln!("{:>indent$}(if {val:?}", "");
+                succ.pretty_print(indent + 5);
+                eprintln!("\n");
+                fail.pretty_print(indent + 5);
+                eprint!(")");
             }
             Cps::App(val, args) => {
-                eprint!("{:>indent$}{val:?}", "");
+                eprint!("{:>indent$}({val:?}", "");
                 pretty_print_values(args);
-                eprintln!(";");
+                eprint!(")")
             }
             Cps::Halt(val) => {
-                eprintln!("{:>indent$}Halt({val:?});", "");
+                eprint!("{:>indent$}(Halt {val:?})", "");
             }
         }
     }
 }
 
 fn pretty_print_values(vals: &[Value]) {
-    eprint!("(");
-    for (i, val) in vals.iter().enumerate() {
-        if i > 0 {
-            eprint!(", ");
-        }
-        eprint!("{val:?}");
+    for val in vals {
+        eprint!(" {val:?}");
     }
-    eprint!(")");
 }
 
 fn substitute_value(value: &mut Value, substitutions: &HashMap<Local, Value>) {
