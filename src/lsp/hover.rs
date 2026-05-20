@@ -108,27 +108,34 @@ fn var_hover(var: Var) -> String {
 
 fn procedure_hover(kind: &str, fallback_name: String, procedure: &Procedure) -> String {
     let (required, variadic) = procedure.get_formals();
-    let (name, args) = procedure.get_debug_info().map_or_else(
+    let (name, args, docs) = procedure.get_debug_info().map_or_else(
         || {
             (
                 fallback_name,
                 (0..required + usize::from(variadic))
                     .map(|idx| format!("${idx}"))
                     .collect(),
+                None,
             )
         },
         |debug_info| {
             (
                 debug_info.name.to_string(),
                 debug_info.args.iter().map(ToString::to_string).collect(),
+                debug_info.docs.clone(),
             )
         },
     );
 
-    format!(
+    let mut hover = format!(
         "{}\n\n{kind}",
         format_signature(name, args, required, variadic)
-    )
+    );
+    if let Some(docs) = docs {
+        hover.push_str("\n\n");
+        hover.push_str(docs.trim());
+    }
+    hover
 }
 
 fn format_signature(name: String, args: Vec<String>, required: usize, variadic: bool) -> String {

@@ -703,6 +703,8 @@ pub struct ProcDebugInfo {
     pub args: Vec<Local>,
     /// Location of the function definition
     pub location: Span,
+    /// Documentation captured from the function definition.
+    pub docs: Option<String>,
 }
 
 impl ProcDebugInfo {
@@ -711,6 +713,7 @@ impl ProcDebugInfo {
             name: name.unwrap_or_else(|| Symbol::intern("<lambda>")),
             args,
             location,
+            docs: None,
         }
     }
 
@@ -728,6 +731,7 @@ impl ProcDebugInfo {
                 offset: debug_info.offset,
                 file: std::sync::Arc::from(debug_info.file.to_string()),
             },
+            docs: (!debug_info.docs.is_empty()).then(|| debug_info.docs.to_string()),
         }
     }
 }
