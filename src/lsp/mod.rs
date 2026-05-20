@@ -6,21 +6,28 @@
 mod error;
 
 pub use error::LspError;
-use lsp_server::{Connection, Message, Notification};
+use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
 use lsp_types::{
-    Diagnostic, DiagnosticSeverity, Position, PublishDiagnosticsParams, Range, ServerCapabilities,
-    TextDocumentSyncKind, TextDocumentSyncOptions, Uri,
-    notification::{DidChangeTextDocument, DidOpenTextDocument, Notification as _},
+    Diagnostic, DiagnosticSeverity, Hover, HoverContents, HoverProviderCapability, MarkedString,
+    Position, PublishDiagnosticsParams, Range, ServerCapabilities, TextDocumentSyncKind,
+    TextDocumentSyncOptions, Uri,
+    notification::{
+        DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification as _,
+    },
+    request::{HoverRequest, Request as _},
 };
 use scheme_rs_macros::{maybe_async, maybe_await};
 
 use crate::{
     ast::{DefinitionBody, Primitive},
-    env::{Environment, TopLevelEnvironment},
+    env::{Environment, TopLevelEnvironment, Var},
     exceptions::{Exception, Message as SchemeMessage, PrettyCondition, SyntaxViolation},
+    proc::Procedure,
     runtime::Runtime,
-    syntax::{Span, Syntax, lex::LexerError, parse::ParseSyntaxError},
+    syntax::{Identifier, Span, Syntax, lex::LexerError, parse::ParseSyntaxError},
 };
+
+use rustc_hash::FxHashMap as HashMap;
 
 macro_rules! lsp_log {
     ($($arg:tt)*) => {
@@ -46,6 +53,7 @@ pub fn start(config: LspConfig) -> Result<(), LspError> {
                 ..Default::default()
             },
         )),
+        hover_provider: Some(HoverProviderCapability::Simple(true)),
         ..Default::default()
     })
     .map_err(LspError::SerializeCapabilities)?;
@@ -74,18 +82,30 @@ fn event_loop(
     runtime: &Runtime,
     config: LspConfig,
 ) -> Result<(), LspError> {
+    let mut documents = HashMap::<Uri, String>::default();
+
     for msg in &connection.receiver {
         match msg {
             Message::Request(req) => {
                 if connection.handle_shutdown(&req)? {
                     return Ok(());
                 }
-                lsp_log!("unsupported request: {}", req.method);
+                maybe_await!(handle_request(
+                    &connection,
+                    runtime,
+                    config,
+                    &documents,
+                    req
+                ))?;
             }
             Message::Response(_) => {}
             Message::Notification(notification) => match notification.method.as_str() {
                 DidOpenTextDocument::METHOD => {
                     let params = cast_notification::<DidOpenTextDocument>(notification)?;
+                    documents.insert(
+                        params.text_document.uri.clone(),
+                        params.text_document.text.clone(),
+                    );
                     maybe_await!(publish_diagnostics(
                         &connection,
                         runtime,
@@ -97,6 +117,7 @@ fn event_loop(
                 DidChangeTextDocument::METHOD => {
                     let params = cast_notification::<DidChangeTextDocument>(notification)?;
                     if let Some(change) = params.content_changes.first() {
+                        documents.insert(params.text_document.uri.clone(), change.text.clone());
                         maybe_await!(publish_diagnostics(
                             &connection,
                             runtime,
@@ -106,8 +127,58 @@ fn event_loop(
                         ))?;
                     }
                 }
+                DidCloseTextDocument::METHOD => {
+                    let params = cast_notification::<DidCloseTextDocument>(notification)?;
+                    documents.remove(&params.text_document.uri);
+                }
                 method => lsp_log!("unsupported notification: {method}"),
             },
+        }
+    }
+
+    Ok(())
+}
+
+#[maybe_async]
+fn handle_request(
+    connection: &Connection,
+    runtime: &Runtime,
+    config: LspConfig,
+    documents: &HashMap<Uri, String>,
+    request: Request,
+) -> Result<(), LspError> {
+    match request.method.as_str() {
+        HoverRequest::METHOD => {
+            let (id, params) = request
+                .extract::<lsp_types::HoverParams>(HoverRequest::METHOD)
+                .map_err(LspError::ExtractRequest)?;
+            let uri = params.text_document_position_params.text_document.uri;
+            let hover = if let Some(text) = documents.get(&uri) {
+                maybe_await!(hover_for_document(
+                    runtime,
+                    config,
+                    &uri,
+                    text,
+                    params.text_document_position_params.position,
+                ))
+            } else {
+                None
+            };
+            connection
+                .sender
+                .send(Message::Response(Response::new_ok(id, hover)))
+                .map_err(|_| LspError::SendResponse)?;
+        }
+        method => {
+            lsp_log!("unsupported request: {method}");
+            connection
+                .sender
+                .send(Message::Response(Response::new_err(
+                    request.id,
+                    ErrorCode::MethodNotFound as i32,
+                    format!("unsupported request: {method}"),
+                )))
+                .map_err(|_| LspError::SendResponse)?;
         }
     }
 
@@ -145,14 +216,8 @@ fn diagnostics_for_document(
     uri: &Uri,
     text: &str,
 ) -> Vec<Diagnostic> {
-    let file_name = uri
-        .as_str()
-        .strip_prefix("file://")
-        .unwrap_or(uri.as_str())
-        .to_string();
-
-    let mut form = match Syntax::from_str(text, Some(&file_name)) {
-        Ok(form) => form,
+    let (form, env) = match parse_document(runtime, uri, text) {
+        Ok(context) => context,
         Err(err) => return vec![diagnostic_from_parse_error(err, text)],
     };
 
@@ -160,22 +225,7 @@ fn diagnostics_for_document(
         return Vec::new();
     }
 
-    let program = TopLevelEnvironment::new_program(runtime, file_name.as_ref());
-    let env = Environment::Top(program.clone());
-    form.add_scope(program.scope());
-
-    let add_rnrs_import = if let Some(first_form) = form.car()
-        && let Some(Syntax::Identifier { ident, .. }) = first_form.car()
-        && let Some(binding) = ident.resolve()
-    {
-        env.lookup_primitive(binding) != Some(Primitive::Import)
-    } else {
-        true
-    };
-
-    if add_rnrs_import
-        && let Err(err) = maybe_await!(env.import("(library (rnrs))".parse().unwrap()))
-    {
+    if let Err(err) = maybe_await!(import_default_rnrs(&form, &env)) {
         return vec![diagnostic_from_exception(err, text)];
     }
 
@@ -183,6 +233,178 @@ fn diagnostics_for_document(
         Ok(_) => Vec::new(),
         Err(err) => vec![diagnostic_from_exception(err, text)],
     }
+}
+
+#[maybe_async]
+fn hover_for_document(
+    runtime: &Runtime,
+    config: LspConfig,
+    uri: &Uri,
+    text: &str,
+    position: Position,
+) -> Option<Hover> {
+    let (form, env) = parse_document(runtime, uri, text).ok()?;
+    maybe_await!(import_default_rnrs(&form, &env)).ok()?;
+    if config.allow_macro_expansion {
+        let _ = maybe_await!(DefinitionBody::parse_lib_body(runtime, &form, &env));
+    }
+
+    let (ident, range) = identifier_at(&form, text, position)?;
+    let contents = maybe_await!(hover_contents_for_identifier(&ident, &env))?;
+
+    Some(Hover {
+        contents: HoverContents::Scalar(MarkedString::String(contents)),
+        range: Some(range),
+    })
+}
+
+fn parse_document(
+    runtime: &Runtime,
+    uri: &Uri,
+    text: &str,
+) -> Result<(Syntax, Environment), ParseSyntaxError> {
+    let file_name = document_file_name(uri);
+    let mut form = Syntax::from_str(text, Some(&file_name))?;
+    let program = TopLevelEnvironment::new_program(runtime, file_name.as_ref());
+    let env = Environment::Top(program.clone());
+    form.add_scope(program.scope());
+    Ok((form, env))
+}
+
+fn document_file_name(uri: &Uri) -> String {
+    uri.as_str()
+        .strip_prefix("file://")
+        .unwrap_or(uri.as_str())
+        .to_string()
+}
+
+#[maybe_async]
+fn import_default_rnrs(form: &Syntax, env: &Environment) -> Result<(), Exception> {
+    let starts_with_import = if let Some(first_form) = form.car()
+        && let Some(Syntax::Identifier { ident, .. }) = first_form.car()
+        && let Some(binding) = ident.resolve()
+    {
+        env.lookup_primitive(binding) == Some(Primitive::Import)
+    } else {
+        false
+    };
+
+    if !starts_with_import {
+        maybe_await!(env.import("(library (rnrs))".parse().unwrap()))?;
+    }
+
+    Ok(())
+}
+
+#[maybe_async]
+fn hover_contents_for_identifier(ident: &Identifier, env: &Environment) -> Option<String> {
+    let binding = ident.resolve()?;
+    if let Some(primitive) = env.lookup_primitive(binding) {
+        return Some(primitive_hover(ident.symbol().to_string(), primitive));
+    }
+    if maybe_await!(env.lookup_keyword(binding))
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return Some(format!("{}\n\nsyntax keyword", ident.symbol()));
+    }
+    if let Some(var) = maybe_await!(env.lookup_var(binding)).ok().flatten() {
+        return Some(var_hover(var));
+    }
+    None
+}
+
+fn identifier_at(syntax: &Syntax, text: &str, position: Position) -> Option<(Identifier, Range)> {
+    match syntax {
+        Syntax::Identifier { ident, span } => {
+            let range = token_range(text, span);
+            range_contains_position(&range, position).then(|| (ident.clone(), range))
+        }
+        Syntax::List { list, .. } => list
+            .iter()
+            .find_map(|item| identifier_at(item, text, position)),
+        Syntax::Vector { vector, .. } => vector
+            .iter()
+            .find_map(|item| identifier_at(item, text, position)),
+        Syntax::Wrapped { .. } => None,
+    }
+}
+
+fn range_contains_position(range: &Range, position: Position) -> bool {
+    (position.line, position.character) >= (range.start.line, range.start.character)
+        && (position.line, position.character) < (range.end.line, range.end.character)
+}
+
+fn primitive_hover(name: String, primitive: Primitive) -> String {
+    let kind = if primitive == Primitive::Undefined {
+        "primitive value"
+    } else {
+        "primitive syntax"
+    };
+    format!("{name}\n\n{kind}")
+}
+
+fn var_hover(var: Var) -> String {
+    match var {
+        Var::Local(local) => format!("{local}\n\nlocal variable"),
+        Var::Global(global) => {
+            let name = global.name.to_string();
+            let mut hover = format!("{name}\n\nglobal variable");
+            let value = global.read();
+            if let Some(procedure) = value.cast_to_scheme_type::<Procedure>() {
+                hover = procedure_hover("global procedure", name, &procedure);
+            } else if !value.is_undefined() {
+                hover.push_str(&format!("\n\ntype: {}", value.type_name()));
+            }
+            if global.is_mutable() {
+                hover.push_str("\n\nmutable");
+            }
+            hover
+        }
+    }
+}
+
+fn procedure_hover(kind: &str, fallback_name: String, procedure: &Procedure) -> String {
+    let (required, variadic) = procedure.get_formals();
+    let (name, args) = procedure.get_debug_info().map_or_else(
+        || {
+            (
+                fallback_name,
+                (0..required + usize::from(variadic))
+                    .map(|idx| format!("${idx}"))
+                    .collect(),
+            )
+        },
+        |debug_info| {
+            (
+                debug_info.name.to_string(),
+                debug_info.args.iter().map(ToString::to_string).collect(),
+            )
+        },
+    );
+
+    format!(
+        "{}\n\n{kind}",
+        format_signature(name, args, required, variadic)
+    )
+}
+
+fn format_signature(name: String, args: Vec<String>, required: usize, variadic: bool) -> String {
+    if args.is_empty() {
+        return format!("({name})");
+    }
+
+    let mut output = format!("({name}");
+    for (idx, arg) in args.iter().enumerate() {
+        if variadic && idx == required {
+            output.push_str(" .");
+        }
+        output.push(' ');
+        output.push_str(arg);
+    }
+    output.push(')');
+    output
 }
 
 fn diagnostic_from_parse_error(err: ParseSyntaxError, text: &str) -> Diagnostic {
