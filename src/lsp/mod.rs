@@ -28,8 +28,13 @@ macro_rules! lsp_log {
     };
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LspConfig {
+    pub allow_macro_expansion: bool,
+}
+
 #[maybe_async]
-pub fn start() -> Result<(), LspError> {
+pub fn start(config: LspConfig) -> Result<(), LspError> {
     lsp_log!("starting language server");
 
     let (connection, io_threads) = Connection::stdio();
@@ -56,7 +61,7 @@ pub fn start() -> Result<(), LspError> {
     };
 
     let runtime = Runtime::new();
-    maybe_await!(event_loop(connection, &runtime))?;
+    maybe_await!(event_loop(connection, &runtime, config))?;
 
     io_threads.join().map_err(|_| LspError::JoinIoThreads)?;
     lsp_log!("shutting down language server");
@@ -64,7 +69,11 @@ pub fn start() -> Result<(), LspError> {
 }
 
 #[maybe_async]
-fn event_loop(connection: Connection, runtime: &Runtime) -> Result<(), LspError> {
+fn event_loop(
+    connection: Connection,
+    runtime: &Runtime,
+    config: LspConfig,
+) -> Result<(), LspError> {
     for msg in &connection.receiver {
         match msg {
             Message::Request(req) => {
@@ -80,6 +89,7 @@ fn event_loop(connection: Connection, runtime: &Runtime) -> Result<(), LspError>
                     maybe_await!(publish_diagnostics(
                         &connection,
                         runtime,
+                        config,
                         params.text_document.uri,
                         &params.text_document.text,
                     ))?;
@@ -90,6 +100,7 @@ fn event_loop(connection: Connection, runtime: &Runtime) -> Result<(), LspError>
                         maybe_await!(publish_diagnostics(
                             &connection,
                             runtime,
+                            config,
                             params.text_document.uri,
                             &change.text
                         ))?;
@@ -107,10 +118,11 @@ fn event_loop(connection: Connection, runtime: &Runtime) -> Result<(), LspError>
 fn publish_diagnostics(
     connection: &Connection,
     runtime: &Runtime,
+    config: LspConfig,
     uri: Uri,
     text: &str,
 ) -> Result<(), LspError> {
-    let diagnostics = maybe_await!(diagnostics_for_document(runtime, &uri, text));
+    let diagnostics = maybe_await!(diagnostics_for_document(runtime, config, &uri, text));
     connection
         .sender
         .send(Message::Notification(Notification::new(
@@ -127,7 +139,12 @@ fn publish_diagnostics(
 }
 
 #[maybe_async]
-fn diagnostics_for_document(runtime: &Runtime, uri: &Uri, text: &str) -> Vec<Diagnostic> {
+fn diagnostics_for_document(
+    runtime: &Runtime,
+    config: LspConfig,
+    uri: &Uri,
+    text: &str,
+) -> Vec<Diagnostic> {
     let file_name = uri
         .as_str()
         .strip_prefix("file://")
@@ -138,6 +155,10 @@ fn diagnostics_for_document(runtime: &Runtime, uri: &Uri, text: &str) -> Vec<Dia
         Ok(form) => form,
         Err(err) => return vec![diagnostic_from_parse_error(err, text)],
     };
+
+    if !config.allow_macro_expansion {
+        return Vec::new();
+    }
 
     let program = TopLevelEnvironment::new_program(runtime, file_name.as_ref());
     let env = Environment::Top(program.clone());

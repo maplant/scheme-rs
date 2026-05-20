@@ -26,6 +26,9 @@ struct Args {
     /// Start scheme-rs language server
     #[arg(long)]
     lsp: bool,
+    /// Allow the LSP to run macro expansion while producing diagnostics
+    #[arg(long)]
+    dangerously_allow_macro_expansion_in_lsp: bool,
 }
 
 #[cfg(not(feature = "async"))]
@@ -101,8 +104,10 @@ fn entry(runtime: &Runtime) -> Result<(), Exception> {
     #[cfg(feature = "lsp")]
     {
         if args.lsp {
-            maybe_await!(scheme_rs::lsp::start())
-                .map_err(|err| Exception::error(err.to_string()))?;
+            maybe_await!(scheme_rs::lsp::start(scheme_rs::lsp::LspConfig {
+                allow_macro_expansion: args.dangerously_allow_macro_expansion_in_lsp,
+            }))
+            .map_err(|err| Exception::error(err.to_string()))?;
             return Ok(());
         }
     }
