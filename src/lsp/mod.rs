@@ -10,6 +10,7 @@ mod document;
 mod error;
 /// hover resolution/formatting
 mod hover;
+mod procedure;
 
 pub use error::LspError;
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};

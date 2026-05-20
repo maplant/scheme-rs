@@ -12,6 +12,7 @@ use crate::{
 use super::{
     LspConfig,
     document::{import_visible_libraries, parse_document, token_range},
+    procedure::procedure_info,
 };
 
 #[maybe_async]
@@ -107,50 +108,11 @@ fn var_hover(var: Var) -> String {
 }
 
 fn procedure_hover(kind: &str, fallback_name: String, procedure: &Procedure) -> String {
-    let (required, variadic) = procedure.get_formals();
-    let (name, args, docs) = procedure.get_debug_info().map_or_else(
-        || {
-            (
-                fallback_name,
-                (0..required + usize::from(variadic))
-                    .map(|idx| format!("${idx}"))
-                    .collect(),
-                None,
-            )
-        },
-        |debug_info| {
-            (
-                debug_info.name.to_string(),
-                debug_info.args.iter().map(ToString::to_string).collect(),
-                debug_info.docs.clone(),
-            )
-        },
-    );
-
-    let mut hover = format!(
-        "{}\n\n{kind}",
-        format_signature(name, args, required, variadic)
-    );
-    if let Some(docs) = docs {
+    let info = procedure_info(fallback_name, procedure);
+    let mut hover = format!("{}\n\n{kind}", info.signature);
+    if let Some(docs) = info.docs {
         hover.push_str("\n\n");
         hover.push_str(docs.trim());
     }
     hover
-}
-
-fn format_signature(name: String, args: Vec<String>, required: usize, variadic: bool) -> String {
-    if args.is_empty() {
-        return format!("({name})");
-    }
-
-    let mut output = format!("({name}");
-    for (idx, arg) in args.iter().enumerate() {
-        if variadic && idx == required {
-            output.push_str(" .");
-        }
-        output.push(' ');
-        output.push_str(arg);
-    }
-    output.push(')');
-    output
 }

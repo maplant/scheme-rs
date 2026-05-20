@@ -1,4 +1,7 @@
-use lsp_types::{CompletionItem, CompletionItemKind, CompletionResponse, Position, Uri};
+use lsp_types::{
+    CompletionItem, CompletionItemKind, CompletionResponse, Documentation, InsertTextFormat,
+    Position, Uri,
+};
 use scheme_rs_macros::{maybe_async, maybe_await};
 
 use crate::{
@@ -8,7 +11,10 @@ use crate::{
     symbols::Symbol,
 };
 
-use super::document::{completion_prefix, import_visible_libraries, parse_document};
+use super::{
+    document::{completion_prefix, import_visible_libraries, parse_document},
+    procedure::procedure_info,
+};
 
 #[maybe_async]
 pub(super) fn completions_for_document(
@@ -89,8 +95,8 @@ fn var_completion_item(label: String, var: Var) -> CompletionItem {
     match var {
         Var::Global(global) => {
             let value = global.read();
-            if value.cast_to_scheme_type::<Procedure>().is_some() {
-                completion_item(label, CompletionItemKind::FUNCTION, "procedure")
+            if let Some(procedure) = value.cast_to_scheme_type::<Procedure>() {
+                procedure_completion_item(label, &procedure)
             } else {
                 CompletionItem {
                     label,
@@ -109,6 +115,23 @@ fn completion_item(label: String, kind: CompletionItemKind, detail: &str) -> Com
         label,
         kind: Some(kind),
         detail: Some(detail.to_string()),
+        ..Default::default()
+    }
+}
+
+fn procedure_completion_item(label: String, procedure: &Procedure) -> CompletionItem {
+    let info = procedure_info(label.clone(), procedure);
+    CompletionItem {
+        label,
+        kind: Some(CompletionItemKind::FUNCTION),
+        detail: Some(info.signature),
+        documentation: info
+            .docs
+            .map(|docs| docs.trim().to_string())
+            .filter(|docs| !docs.is_empty())
+            .map(Documentation::String),
+        insert_text: info.snippet,
+        insert_text_format: Some(InsertTextFormat::SNIPPET),
         ..Default::default()
     }
 }
