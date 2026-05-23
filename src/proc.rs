@@ -157,6 +157,39 @@ pub type AsyncBridgePtr = for<'a> fn(
 ) -> futures::future::BoxFuture<'a, Application>;
 
 #[derive(Copy, Clone, Debug)]
+pub enum KnownFunc {
+    Known0x1(fn() -> Result<Value, Exception>),
+    Known1x0(fn(&Value) -> Result<(), Exception>),
+    Known1x1(fn(&Value) -> Result<Value, Exception>),
+    Known2x0(fn(&Value, &Value) -> Result<(), Exception>),
+    Known2x1(fn(&Value, &Value) -> Result<Value, Exception>),
+    Known3x0(fn(&Value, &Value, &Value) -> Result<(), Exception>),
+    Known3x1(fn(&Value, &Value, &Value) -> Result<Value, Exception>),
+}
+
+impl KnownFunc {
+    fn call(self, args: &[Value]) -> Result<Vec<Value>, Exception> {
+        match self {
+            Self::Known0x1(func) => { Ok(vec![(func)()?]) },
+            Self::Known1x0(func) => { (func)(&args[0])?; Ok(Vec::new()) },
+            Self::Known1x1(func) => { Ok(vec![(func)(&args[0])?]) },
+            Self::Known2x0(func) => { (func)(&args[0], &args[1])?; Ok(Vec::new()) },
+            Self::Known2x1(func) => { Ok(vec![(func)(&args[0], &args[1])?]) },
+            Self::Known3x0(func) => { (func)(&args[0], &args[1], &args[2])?; Ok(Vec::new()) },
+            Self::Known3x1(func) => { Ok(vec![(func)(&args[0], &args[1], &args[2])?]) }
+        }
+    }
+    
+    fn apply(self, runtime: &Runtime, args: &[Value], k: Value, barrier: &mut ContBarrier<'_>) -> Application {
+        let k: Procedure = k.cast_to_scheme_type().unwrap();
+        match self.call(args) {
+            Ok(result) => k.0.apply(result, barrier),
+            Err(err) => raise(runtime.clone(), err.into(), barrier)                            
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
 pub(crate) enum FuncPtr {
     /// A function defined in Rust
     Bridge(BridgePtr),
@@ -172,6 +205,8 @@ pub(crate) enum FuncPtr {
         barrier_id: usize,
         k: ContinuationPtr,
     },
+    /// A known function
+    Known(KnownFunc),
 }
 
 impl From<BridgePtr> for FuncPtr {
@@ -390,6 +425,7 @@ impl ProcedureInner {
             FuncPtr::PromptBarrier { k, .. } => {
                 self.apply_jit(JitFuncPtr::Continuation(k), args, barrier, None)
             }
+            FuncPtr::Known(known) => known.apply(&self.runtime, &args, k.unwrap(), barrier),
         }
     }
 

@@ -87,6 +87,11 @@ pub enum PrimOp {
     /// Allocate a cell, returning a Gc<Value>:
     AllocCell,
 
+    /// Call a known function that returns no values:
+    CallKnown0,
+    /// Call a known function that returns one value:
+    CallKnown1,
+
     // List/pair operators:
     Car,
     Cdr,
@@ -130,6 +135,8 @@ impl PrimOp {
         match self {
             Self::Set => PrimOpInfo::new(2, false, false, false),
             Self::AllocCell => PrimOpInfo::new(0, false, false, true),
+            Self::CallKnown0 => todo!(),
+            Self::CallKnown1 => todo!(),
             Self::Car => PrimOpInfo::new(1, false, true, true),
             Self::Cdr => PrimOpInfo::new(1, false, true, true),
             Self::Cons => PrimOpInfo::new(2, false, false, true),
@@ -277,18 +284,29 @@ impl Cps {
                 eprintln!("{:>indent$}(set! {:?} {:?})", "", vals[0], vals[1]);
                 cexp.pretty_print(indent);
             }
-            Cps::PrimOp(primop, vals, to, cexp) => {
-                eprint!("{:>indent$}({primop:?}", "");
-                pretty_print_values(vals);
-                eprintln!(" #:out {to:?})");
-                cexp.pretty_print(indent);
+            mut next @ Cps::PrimOp(_, _, _, _) => {
+                eprint!("{:>indent$}(let (", "");
+                let mut first = true;
+                while let Cps::PrimOp(op, vals, to, cexpr) = next {
+                    if !first {
+                        eprint!("\n{:>new_indent$}", "", new_indent = indent + 6);
+                    }
+                    eprint!("[{to:?} ({op:?}");
+                    pretty_print_values(&vals);
+                    eprint!(")]");
+                    next = cexpr.as_ref();
+                    first = false;
+                }
+                eprintln!(")");
+                next.pretty_print(indent + 3);
+                eprint!(")");
             }
             Cps::Fix(bindings, cexp) => {
                 eprint!("{:>indent$}(letrec (", "");
                 for (i, binding) in bindings.iter().enumerate() {
                     if i > 0 {
-                        eprint!("{:>new_indent$}", "", new_indent = indent + 9);
-                    }
+                        eprint!("\n{:>new_indent$}", "", new_indent = indent + 9);
+                    } 
                     let binding_name = binding.val.to_string();
                     eprint!(
                         "[{binding_name} (λ (",
@@ -309,15 +327,17 @@ impl Cps {
                         eprint!("{k:?}");
                     }
                     eprintln!(")");
-                    binding.body.pretty_print(indent + 14 + binding_name.len());
-                    eprint!(")]\n");
+                    binding.body.pretty_print(indent + 13 + binding_name.len());
+                    eprint!(")]");
                 }
+                eprintln!(")");
                 cexp.pretty_print(indent + 2);
+                eprint!(")");
             }
             Cps::If(val, succ, fail) => {
                 eprintln!("{:>indent$}(if {val:?}", "");
                 succ.pretty_print(indent + 5);
-                eprintln!("\n");
+                eprintln!("");
                 fail.pretty_print(indent + 5);
                 eprint!(")");
             }
