@@ -4,7 +4,8 @@ use quote::{format_ident, quote};
 use syn::{
     Attribute, DataEnum, DataStruct, DeriveInput, Error, Expr, ExprClosure, Fields, FnArg,
     GenericParam, Generics, Ident, ItemFn, LitBool, LitStr, Member, Meta, Pat, PatIdent, PatType,
-    Result, Token, Type, TypePath, TypeReference, Visibility, braced, bracketed, parenthesized,
+    Result, ReturnType, Token, Type, TypePath, TypeReference, Visibility, braced, bracketed,
+    parenthesized,
     parse::{Parse, ParseStream},
     parse_macro_input, parse_quote,
     punctuated::Punctuated,
@@ -47,8 +48,16 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
 
     parse_macro_input!(args with bridge_attr_parser);
 
-    let name = name.unwrap().value();
-    let lib = lib.unwrap().value();
+    let Some(name) = name.map(|x| x.value()) else {
+        return Error::new(Span::call_site(), "name attribute is required")
+            .into_compile_error()
+            .into();
+    };
+    let Some(lib) = lib.map(|x| x.value()) else {
+        return Error::new(Span::call_site(), "lib attribute is required")
+            .into_compile_error()
+            .into();
+    };
     let bridge = parse_macro_input!(item as ItemFn);
 
     let impl_name = bridge.sig.ident.clone();
@@ -214,6 +223,38 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     .into()
 }
 
+fn is_return_type_known(ret_type: &ReturnType) -> bool {
+    todo!()
+}
+
+fn codegen_known_bridge(bridge: &ItemFn) -> TokenStream {
+    let visibility = quote!();
+    let wrapper_name = quote!();
+    let args = vec![quote!()];
+    let ret_type = quote!();
+    let bridge = quote!();
+    let impl_name = quote!();
+    let call_inner = quote! {
+        #impl_name(
+            #(#args.try_into()?,)*
+        )
+    };
+    let call_inner = if todo!("returns a Result") {
+        quote!(Ok(#call_inner?.try_into()?))
+    } else {
+        quote!(Ok(#call_inner.try_into()?))
+    };
+    quote! {
+        #visibility fn #wrapper_name(
+            #( #args: &Value, )*
+        ) -> #ret_type {
+            #bridge
+            #call_inner
+        }
+    }
+    .into()
+}
+
 /// The `cps_bridge` proc macro allows one to register Scheme procedureds written
 /// in Rust in a
 /// [continuation-passing style](https://en.wikipedia.org/wiki/Continuation-passing_style).
@@ -291,8 +332,22 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
 
     let (vis, inventory) = if matches!(bridge.vis, Visibility::Public(_)) {
         let vis = std::mem::replace(&mut bridge.vis, Visibility::Inherited);
-        let lib = lib.unwrap().value();
-        let def = def.unwrap().value();
+        let Some(lib) = lib.map(|x| x.value()) else {
+            return Error::new(
+                Span::call_site(),
+                "lib attribute is required for pub cps bridges",
+            )
+            .into_compile_error()
+            .into();
+        };
+        let Some(def) = def.map(|x| x.value()) else {
+            return Error::new(
+                Span::call_site(),
+                "def attribute is required for pub cps bridges",
+            )
+            .into_compile_error()
+            .into();
+        };
         let mut is_variadic = false;
 
         let mut def = def

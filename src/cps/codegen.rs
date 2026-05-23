@@ -100,7 +100,8 @@ impl Cps {
     ) -> Procedure {
         if std::env::var("SCHEME_RS_DEBUG").is_ok() {
             eprintln!("Compiling:");
-            self.pretty_print(2);
+            self.pretty_print(0);
+            eprintln!("");
         }
 
         let mut cells = HashSet::default();

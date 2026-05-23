@@ -8,7 +8,7 @@ use crate::{
     },
     exceptions::{Exception, ImportError},
     gc::{Gc, Trace},
-    proc::{BridgePtr, FuncPtr, ProcDebugInfo, Procedure},
+    proc::{BridgePtr, FuncPtr, KnownFunc, ProcDebugInfo, Procedure},
     runtime::Runtime,
     symbols::Symbol,
     syntax::{Identifier, Syntax},
@@ -62,6 +62,7 @@ pub(crate) mod error {
 
 #[doc(hidden)]
 pub enum Bridge {
+    Known(KnownFunc),
     Sync(BridgePtr),
     #[cfg(feature = "async")]
     Async(crate::proc::AsyncBridgePtr),
@@ -172,6 +173,7 @@ impl RegistryInner {
                     Vec::new(),
                     match bridge_fn.wrapper {
                         Bridge::Sync(func) => FuncPtr::Bridge(func),
+                        _ => todo!(),
                         #[cfg(feature = "async")]
                         Bridge::Async(func) => FuncPtr::AsyncBridge(func),
                     },
