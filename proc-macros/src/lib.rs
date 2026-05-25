@@ -3,9 +3,9 @@ use proc_macro2::{Literal, Span};
 use quote::{format_ident, quote};
 use syn::{
     Attribute, DataEnum, DataStruct, DeriveInput, Error, Expr, ExprClosure, Fields, FnArg,
-    GenericParam, Generics, Ident, ItemFn, LitBool, LitStr, Member, Meta, Pat, PatIdent, PatType,
-    Result, Token, Type, TypePath, TypeReference, Visibility, braced, bracketed, parenthesized,
-    parse::{Parse, ParseStream},
+    GenericParam, Generics, Ident, ItemFn, Lit, LitBool, LitStr, Member, Meta, Pat, PatIdent,
+    PatType, Result, Token, Type, TypePath, TypeReference, Visibility, braced, bracketed,
+    parenthesized, parse::{Parse, ParseStream},
     parse_macro_input, parse_quote,
     punctuated::Punctuated,
     spanned::Spanned,
@@ -50,6 +50,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     let name = name.unwrap().value();
     let lib = lib.unwrap().value();
     let bridge = parse_macro_input!(item as ItemFn);
+    let docs = doc_string(&bridge.attrs);
 
     let impl_name = bridge.sig.ident.clone();
     let wrapper_name = impl_name.to_string();
@@ -146,6 +147,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                         ::std::column!(),
                         0,
                         &[ #( #arg_names, )* ],
+                        #docs,
                     )
                 )
             }
@@ -206,6 +208,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                         ::std::column!(),
                         0,
                         &[ #( #arg_names, )* ],
+                        #docs,
                     )
                 )
             }
@@ -285,6 +288,7 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     parse_macro_input!(args with bridge_attr_parser);
 
     let mut bridge = parse_macro_input!(item as ItemFn);
+    let docs = doc_string(&bridge.attrs);
     let wrapper_name = Ident::new(&bridge.sig.ident.to_string(), Span::call_site());
     bridge.sig.ident = Ident::new("inner", Span::call_site());
     let impl_name = bridge.sig.ident.clone();
@@ -333,6 +337,7 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                         ::std::column!(),
                         0,
                         &[ #( #def, )* ],
+                        #docs,
                     )
                 )
             }
@@ -429,6 +434,28 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
 
 fn is_slice(arg: &FnArg) -> bool {
     matches!(arg, FnArg::Typed(PatType { ty, ..}) if matches!(ty.as_ref(), Type::Reference(TypeReference { elem, .. }) if matches!(elem.as_ref(), Type::Slice(_))))
+}
+
+fn doc_string(attrs: &[Attribute]) -> String {
+    attrs
+        .iter()
+        .filter_map(|attr| {
+            if !attr.path().is_ident("doc") {
+                return None;
+            }
+            let Meta::NameValue(name_value) = &attr.meta else {
+                return None;
+            };
+            let Expr::Lit(expr_lit) = &name_value.value else {
+                return None;
+            };
+            let Lit::Str(lit) = &expr_lit.lit else {
+                return None;
+            };
+            Some(lit.value().trim_start().to_string())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Derive the `Trace` trait for a type.

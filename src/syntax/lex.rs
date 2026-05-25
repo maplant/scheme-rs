@@ -1,6 +1,6 @@
 //! Lexical analysis of symbolic expressions
 
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use super::Span;
 use malachite::{Integer, base::num::conversion::traits::*, rational::Rational};
@@ -609,6 +609,24 @@ pub enum LexerError {
     ReadError(Exception),
 }
 
+impl fmt::Display for LexerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnexpectedEof => write!(f, "unexpected end of file"),
+            Self::InvalidCharacterInHexEscape { chr, span } => {
+                write!(f, "invalid character `{chr}` in hex escape at `{span}`")
+            }
+            Self::UnexpectedCharacter { chr, span } => {
+                write!(f, "unexpected character `{chr}` at `{span}`")
+            }
+            Self::BadEscapeCharacter { chr, span } => {
+                write!(f, "bad escape character `{chr}` at `{span}`")
+            }
+            Self::ReadError(err) => write!(f, "read error: {err}"),
+        }
+    }
+}
+
 impl From<Exception> for LexerError {
     fn from(error: Exception) -> Self {
         Self::ReadError(error)
@@ -757,6 +775,14 @@ impl TryFrom<Number> for num::Number {
 #[derive(Debug)]
 pub enum ParseNumberError {
     NoValidRepresentation,
+}
+
+impl fmt::Display for ParseNumberError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoValidRepresentation => write!(f, "number has no valid representation"),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

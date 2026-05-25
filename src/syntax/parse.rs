@@ -350,8 +350,8 @@ impl fmt::Display for ParseSyntaxError {
                 write!(f, "unclosed parenthesis at location `{span}`")
             }
             Self::CharTryFrom(e) => write!(f, "{e}"),
-            Self::Lex(e) => write!(f, "{e:?}"),
-            Self::ParseNumberError(e) => write!(f, "{e:?}"),
+            Self::Lex(e) => write!(f, "{e}"),
+            Self::ParseNumberError(e) => write!(f, "{e}"),
             Self::UnexpectedToken { token } => {
                 write!(
                     f,
