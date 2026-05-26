@@ -782,11 +782,21 @@ mod __impl {
         fn seek_fns() -> Option<(GetPosFn, SetPosFn)> {
             Some((get_pos_fn::<Self>(), set_pos_fn::<Self>()))
         }
+
+        #[cfg(unix)]
+        fn raw_fd_fn() -> Option<RawFdFn> {
+            Some(raw_fd_fn_for::<Self>())
+        }
     }
 
     impl IntoPort for std::io::Stdin {
         fn read_fn() -> Option<ReadFn> {
             Some(read_fn::<Self>())
+        }
+
+        #[cfg(unix)]
+        fn raw_fd_fn() -> Option<RawFdFn> {
+            Some(raw_fd_fn_for::<Self>())
         }
     }
 
@@ -794,11 +804,21 @@ mod __impl {
         fn write_fn() -> Option<WriteFn> {
             Some(write_fn::<Self>())
         }
+
+        #[cfg(unix)]
+        fn raw_fd_fn() -> Option<RawFdFn> {
+            Some(raw_fd_fn_for::<Self>())
+        }
     }
 
     impl IntoPort for std::io::Stderr {
         fn write_fn() -> Option<WriteFn> {
             Some(write_fn::<Self>())
+        }
+
+        #[cfg(unix)]
+        fn raw_fd_fn() -> Option<RawFdFn> {
+            Some(raw_fd_fn_for::<Self>())
         }
     }
 }
@@ -1037,12 +1057,22 @@ mod __impl {
         fn seek_fns() -> Option<(GetPosFn, SetPosFn)> {
             Some((get_pos_fn::<Self>(), set_pos_fn::<Self>()))
         }
+
+        #[cfg(unix)]
+        fn raw_fd_fn() -> Option<RawFdFn> {
+            Some(raw_fd_fn_for::<Self>())
+        }
     }
 
     #[cfg(feature = "tokio")]
     impl IntoPort for tokio::io::Stdin {
         fn read_fn() -> Option<ReadFn> {
             Some(read_fn::<Self>())
+        }
+
+        #[cfg(unix)]
+        fn raw_fd_fn() -> Option<RawFdFn> {
+            Some(raw_fd_fn_for::<Self>())
         }
     }
 
@@ -1051,12 +1081,22 @@ mod __impl {
         fn write_fn() -> Option<WriteFn> {
             Some(write_fn::<Self>())
         }
+
+        #[cfg(unix)]
+        fn raw_fd_fn() -> Option<RawFdFn> {
+            Some(raw_fd_fn_for::<Self>())
+        }
     }
 
     #[cfg(feature = "tokio")]
     impl IntoPort for tokio::io::Stderr {
         fn write_fn() -> Option<WriteFn> {
             Some(write_fn::<Self>())
+        }
+
+        #[cfg(unix)]
+        fn raw_fd_fn() -> Option<RawFdFn> {
+            Some(raw_fd_fn_for::<Self>())
         }
     }
 
@@ -1068,6 +1108,11 @@ mod __impl {
 
         fn write_fn() -> Option<WriteFn> {
             Some(write_fn::<Self>())
+        }
+
+        #[cfg(unix)]
+        fn raw_fd_fn() -> Option<RawFdFn> {
+            Some(raw_fd_fn_for::<Self>())
         }
     }
 
@@ -1100,6 +1145,17 @@ mod __impl {
 }
 
 pub use __impl::*;
+
+#[cfg(unix)]
+pub type RawFdFn = Box<dyn Fn(&dyn Any) -> std::os::fd::RawFd + Send + Sync>;
+
+#[cfg(unix)]
+pub fn raw_fd_fn_for<T>() -> RawFdFn
+where
+    T: std::os::fd::AsRawFd + Any + Send + 'static,
+{
+    Box::new(|any| any.downcast_ref::<T>().unwrap().as_raw_fd())
+}
 
 #[derive(Trace)]
 pub(crate) struct PortInner {
@@ -1155,6 +1211,8 @@ impl PortInner {
                 get_pos,
                 set_pos,
                 close,
+                #[cfg(unix)]
+                raw_fd: P::raw_fd_fn(),
             })),
         }
     }
@@ -1201,6 +1259,8 @@ impl PortInner {
                 get_pos,
                 set_pos,
                 close,
+                #[cfg(unix)]
+                raw_fd: None,
             })),
         }
     }
@@ -1286,6 +1346,8 @@ pub(crate) struct BinaryPortData {
     get_pos: Option<GetPosFn>,
     set_pos: Option<SetPosFn>,
     close: Option<CloseFn>,
+    #[cfg(unix)]
+    raw_fd: Option<RawFdFn>,
 }
 
 pub const BUFFER_SIZE: usize = 8192;
@@ -2265,6 +2327,11 @@ pub trait IntoPort: IntoPortReqs {
     fn close_fn() -> Option<CloseFn> {
         None
     }
+
+    #[cfg(unix)]
+    fn raw_fd_fn() -> Option<RawFdFn> {
+        None
+    }
 }
 
 impl IntoPort for Cursor<Vec<u8>> {
@@ -2391,6 +2458,24 @@ impl Port {
             close,
             buffer_mode,
         )))
+    }
+
+    #[cfg(unix)]
+    pub fn raw_fd(&self) -> Option<std::os::fd::RawFd> {
+        #[cfg(not(feature = "async"))]
+        let data = self.0.data.lock().unwrap();
+
+        // tokio::sync::Mutex::blocking_lock for use outside async context
+        #[cfg(feature = "async")]
+        let data = self.0.data.blocking_lock();
+
+        match &*data {
+            PortData::BinaryPort(bp) => bp
+                .raw_fd
+                .as_ref()
+                .and_then(|f| bp.inner_port.as_deref().map(|port| f(port))),
+            PortData::CustomTextualPort(_) => None,
+        }
     }
 
     /// Return the Id of the port.
@@ -3432,6 +3517,8 @@ pub fn transcoded_port(
         get_pos: port_data.get_pos.take(),
         set_pos: port_data.set_pos.take(),
         close: port_data.close.take(),
+        #[cfg(unix)]
+        raw_fd: port_data.raw_fd.take(),
     };
 
     let new_info = BinaryPortInfo {
