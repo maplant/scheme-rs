@@ -176,6 +176,17 @@ impl<'a> Lexer<'a> {
                 '#' if maybe_await!(self.match_tag("`"))? => Lexeme::HashBackquote,
                 '#' if maybe_await!(self.match_tag(",@"))? => Lexeme::HashCommaAt,
                 '#' if maybe_await!(self.match_tag(","))? => Lexeme::HashComma,
+                '#' if maybe_await!(self.match_tag(":"))? => {
+                    match maybe_await!(self.identifier())? {
+                        Some(name) => Lexeme::Keyword(name),
+                        None => {
+                            return Err(LexerError::UnexpectedCharacter {
+                                chr: ':',
+                                span: self.curr_span(),
+                            });
+                        }
+                    }
+                }
                 '#' => {
                     let next_chr = maybe_await!(self.take())?;
                     if let Some(chr) = next_chr {
@@ -700,6 +711,7 @@ pub enum Lexeme {
     Number(Number),
     Character(Character),
     String(String),
+    Keyword(String),
     LParen,
     RParen,
     LBracket,
