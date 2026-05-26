@@ -54,6 +54,16 @@ pub(crate) enum TopLevelBinding {
 pub(crate) static TOP_LEVEL_BINDINGS: LazyLock<Mutex<HashMap<Binding, TopLevelBinding>>> =
     LazyLock::new(|| Mutex::new(HashMap::default()));
 
+/// Maps each binding to the library that defines it. Used to trigger lazy
+/// expansion of libraries when a macro transformer produces identifiers
+/// from libraries not directly imported by the use site.
+static BINDING_ORIGINS: LazyLock<Mutex<HashMap<Binding, TopLevelEnvironment>>> =
+    LazyLock::new(|| Mutex::new(HashMap::default()));
+
+pub(crate) fn record_binding_origin(binding: Binding, origin: TopLevelEnvironment) {
+    BINDING_ORIGINS.lock().entry(binding).or_insert(origin);
+}
+
 #[derive(Trace)]
 pub(crate) struct TopLevelEnvironmentInner {
     pub(crate) rt: Runtime,
@@ -216,6 +226,7 @@ impl TopLevelEnvironment {
                     return Err(error::name_bound_multiple_times(name));
                 }
                 bound_names.insert(name, import.binding);
+                record_binding_origin(import.binding, import.origin.clone());
                 imports.insert(import.binding, import.origin);
                 // Bind the new identifier in the global symbol table:
                 add_binding(Identifier::from_symbol(name, library_scope), import.binding);
@@ -242,6 +253,7 @@ impl TopLevelEnvironment {
                                 return Err(error::name_bound_multiple_times(name));
                             }
                             bound_names.insert(name, import.binding);
+                            record_binding_origin(import.binding, import.origin.clone());
                             imports.insert(import.binding, import.origin);
                             // Bind the new identifier in the global symbol table:
                             add_binding(
@@ -344,6 +356,7 @@ impl TopLevelEnvironment {
                 }
                 Entry::Vacant(slot) => {
                     add_binding(Identifier::from_symbol(sym, scope), import.binding);
+                    record_binding_origin(import.binding, import.origin.clone());
                     slot.insert(import.origin);
                 }
                 _ => (),
@@ -356,9 +369,10 @@ impl TopLevelEnvironment {
     pub(crate) fn maybe_expand(&self) -> Result<(), Exception> {
         let body = {
             let mut this = self.0.write();
-            if let LibraryState::Unexpanded(body) = &mut this.state {
-                // std::mem::take(body)
-                body.clone()
+            if let LibraryState::Unexpanded(body) = &this.state {
+                let body = body.clone();
+                this.state = LibraryState::Expanding;
+                body
             } else {
                 return Ok(());
             }
@@ -474,6 +488,18 @@ impl TopLevelEnvironment {
             maybe_await!(origin.lookup_keyword(binding))
         } else if let Some(TopLevelBinding::Keyword(kw)) = TOP_LEVEL_BINDINGS.lock().get(&binding) {
             Ok(Some(kw.clone()))
+        } else if let Some(origin) = { BINDING_ORIGINS.lock().get(&binding).cloned() } {
+            // The binding was not directly imported by this environment and hasn't
+            // been registered in TOP_LEVEL_BINDINGS yet. This happens when a macro
+            // transformer produces output containing identifiers from libraries that
+            // were imported by the macro's defining library but not by the use site.
+            // Use the global binding origin table to find and expand the right library.
+            maybe_await!(origin.maybe_expand())?;
+            if let Some(TopLevelBinding::Keyword(kw)) = TOP_LEVEL_BINDINGS.lock().get(&binding) {
+                Ok(Some(kw.clone()))
+            } else {
+                Ok(None)
+            }
         } else {
             Ok(None)
         }
@@ -502,6 +528,7 @@ pub(crate) enum LibraryState {
     Invalid,
     BridgesDefined,
     Unexpanded(Syntax),
+    Expanding,
     Expanded(DefinitionBody),
     Invoked,
 }
@@ -603,6 +630,7 @@ impl LexicalContour {
                 }
                 Entry::Vacant(slot) => {
                     add_binding(Identifier::from_symbol(sym, self.scope), import.binding);
+                    record_binding_origin(import.binding, import.origin);
                     slot.insert(binding_type);
                 }
                 _ => (),
