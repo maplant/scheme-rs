@@ -84,18 +84,51 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         .iter()
         .enumerate()
         .map(|(i, arg)| {
-            if let FnArg::Typed(PatType { pat, .. }) = arg {
-                if let Pat::Ident(PatIdent { ident, .. }) = pat.as_ref() {
-                    return ident.to_string();
-                }
+            if let FnArg::Typed(PatType { pat, .. }) = arg
+                && let Pat::Ident(PatIdent { ident, .. }) = pat.as_ref()
+            {
+                ident.to_string()
+            } else {
+                format!("arg{i}")
             }
-            format!("arg{i}")
         })
         .collect();
 
     let arg_indices: Vec<_> = (0..num_args).collect();
 
     let visibility = bridge.vis.clone();
+
+    if bridge.sig.asyncness.is_none()
+        && !is_variadic
+        && let Some(known_ret_type) = is_return_type_known(&bridge.sig.output)
+    {
+        return codegen_known_bridge(
+            &bridge,
+            known_ret_type,
+            &name,
+            &lib,
+            num_args,
+            visibility,
+            wrapper_name,
+            bridge
+                .sig
+                .inputs
+                .iter()
+                .enumerate()
+                .map(|(i, arg)| {
+                    if let FnArg::Typed(PatType { pat, .. }) = arg
+                        && let Pat::Ident(PatIdent { ident, .. }) = pat.as_ref()
+                    {
+                        ident.clone()
+                    } else {
+                        format_ident!("arg{i}")
+                    }
+                })
+                .collect(),
+            arg_names,
+            impl_name,
+        );
+    }
 
     if bridge.sig.asyncness.is_some() {
         quote! {
@@ -223,33 +256,120 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     .into()
 }
 
-fn is_return_type_known(ret_type: &ReturnType) -> bool {
-    todo!()
+#[derive(Clone)]
+struct KnownReturnType {
+    is_unit: bool,
+    is_result: bool,
 }
 
-fn codegen_known_bridge(bridge: &ItemFn) -> TokenStream {
-    let visibility = quote!();
-    let wrapper_name = quote!();
-    let args = vec![quote!()];
-    let ret_type = quote!();
-    let bridge = quote!();
-    let impl_name = quote!();
-    let call_inner = quote! {
+fn is_return_type_known(ret_type: &ReturnType) -> Option<KnownReturnType> {
+    let ty = match ret_type {
+        ReturnType::Default => {
+            return Some(KnownReturnType {
+                is_unit: true,
+                is_result: false,
+            });
+        }
+        ReturnType::Type(_, ty) => ty.as_ref(),
+    };
+
+    // Result<T, _> is known if T is not a Vec<_>
+    if let Type::Path(TypePath { path, .. }) = ty
+        && let Some(last) = path.segments.last()
+        && last.ident == "Result"
+    {
+        if let syn::PathArguments::AngleBracketed(args) = &last.arguments
+            && args.args.len() == 2
+            && let Some(syn::GenericArgument::Type(ok_ty)) = args.args.first()
+            && !is_vec(ok_ty)
+        {
+            Some(KnownReturnType {
+                is_unit: is_unit(ok_ty),
+                is_result: true,
+            })
+        } else {
+            None
+        }
+    } else if is_vec(ty) {
+        // Non-result is known if it is not a Vec
+        None
+    } else {
+        Some(KnownReturnType {
+            is_unit: is_unit(ty),
+            is_result: false,
+        })
+    }
+}
+
+fn is_vec(ty: &Type) -> bool {
+    matches!(ty, Type::Path(TypePath { path, .. }) if path.segments.last().is_some_and(|p| p.ident == "Vec"))
+}
+
+fn is_unit(ty: &Type) -> bool {
+    matches!(ty, Type::Tuple(t) if t.elems.is_empty())
+}
+
+fn codegen_known_bridge(
+    bridge: &ItemFn,
+    ret_type: KnownReturnType,
+    name: &str,
+    lib: &str,
+    num_args: usize,
+    visibility: Visibility,
+    wrapper_name: Ident,
+    args: Vec<Ident>,
+    arg_names: Vec<String>,
+    impl_name: Ident,
+) -> TokenStream {
+    let call_inner = quote!(
         #impl_name(
             #(#args.try_into()?,)*
         )
-    };
-    let call_inner = if todo!("returns a Result") {
-        quote!(Ok(#call_inner?.try_into()?))
+    );
+    let call_inner = if ret_type.is_result {
+        quote!(#call_inner?)
     } else {
-        quote!(Ok(#call_inner.try_into()?))
+        call_inner
     };
+    let call_inner = if ret_type.is_unit {
+        quote!(Ok(#call_inner))
+    } else {
+        quote!(Ok(#call_inner.into()))
+    };
+
+    let known_type = format_ident!("Known{}x{}", args.len(), !ret_type.is_unit as usize);
+
+    let ret_type = if ret_type.is_unit {
+        quote!(Result<(), ::scheme_rs::exceptions::Exception>)
+    } else {
+        quote!(Result<::scheme_rs::value::Value, ::scheme_rs::exceptions::Exception>)
+    };
+
     quote! {
         #visibility fn #wrapper_name(
             #( #args: &Value, )*
         ) -> #ret_type {
             #bridge
             #call_inner
+        }
+
+        ::scheme_rs::registry::inventory::submit! {
+            ::scheme_rs::registry::BridgeFn::new(
+                #name,
+                #lib,
+                #num_args,
+                false,
+                ::scheme_rs::registry::Bridge::Known(::scheme_rs::proc::KnownFunc::#known_type(
+                    #wrapper_name /* as fn(#( #args: &Value, )*) -> #ret_type, */
+                )),
+                ::scheme_rs::registry::BridgeFnDebugInfo::new(
+                    ::std::file!(),
+                    ::std::line!(),
+                    ::std::column!(),
+                    0,
+                    &[ #( #arg_names, )* ],
+                )
+            )
         }
     }
     .into()

@@ -11,7 +11,7 @@ use crate::{
     exceptions::Exception,
     expand::{SyntaxRule, Template},
     gc::Trace,
-    proc::{ContBarrier, Procedure},
+    proc::{ContBarrier, FuncPtr, KnownFunc, Procedure},
     runtime::Runtime,
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax},
@@ -1320,6 +1320,18 @@ impl Expression {
                 .map(Expression::Apply),
                 _ => Err(error::bad_form(&form, None)),
             },
+        }
+    }
+
+    pub fn to_known(&self) -> Option<KnownFunc> {
+        let Expression::Var(Var::Global(global)) = self else {
+            return None;
+        };
+        let val: Procedure = global.read().try_into().ok()?;
+
+        match val.0.func {
+            FuncPtr::Known(known) => Some(known),
+            _ => None,
         }
     }
 

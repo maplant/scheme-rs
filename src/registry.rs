@@ -173,7 +173,7 @@ impl RegistryInner {
                     Vec::new(),
                     match bridge_fn.wrapper {
                         Bridge::Sync(func) => FuncPtr::Bridge(func),
-                        _ => todo!(),
+                        Bridge::Known(known) => FuncPtr::Known(known),
                         #[cfg(feature = "async")]
                         Bridge::Async(func) => FuncPtr::AsyncBridge(func),
                     },

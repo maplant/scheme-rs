@@ -167,6 +167,14 @@ pub enum KnownFunc {
     Known3x1(fn(&Value, &Value, &Value) -> Result<Value, Exception>),
 }
 
+/*
+impl From<fn(&Value, &Value) -> Result<Value, Exception>> for KnownFunc {
+    fn from(value: fn(&Value, &Value) -> Result<Value, Exception>) -> Self {
+        Self::Known2x1(value)
+    }
+}
+*/
+
 impl KnownFunc {
     fn call(self, args: &[Value]) -> Result<Vec<Value>, Exception> {
         match self {

@@ -378,8 +378,23 @@ pub fn list_to_string(List { items, .. }: List) -> Result<Vec<Value>, Exception>
     Ok(vec![Value::from(WideString::mutable(chars))])
 }
 
+/*
 #[bridge(name = "append", lib = "(rnrs base builtins (6))")]
 pub fn append(list: &Value, to_append: &Value) -> Result<Vec<Value>, Exception> {
+    let mut vec = Vec::new();
+    list_to_vec(list, &mut vec);
+}
+ */
+
+
+#[bridge(name = "append", lib = "(rnrs base builtins (6))")]
+pub fn append(List { items, .. }: List, to_append: &Value) -> Value {
+    let mut list = to_append.clone();
+    for item in items.into_iter().rev() {
+        list = Value::from(Pair::mutable(item, list));
+    }
+    list
+    /*
     let mut vec = Vec::new();
     list_to_vec(list, &mut vec);
     let mut list = to_append.clone();
@@ -387,6 +402,7 @@ pub fn append(list: &Value, to_append: &Value) -> Result<Vec<Value>, Exception> 
         list = Value::from(Pair::mutable(item, list));
     }
     Ok(vec![list])
+    */
 }
 
 #[cps_bridge(def = "map proc list1 . listn", lib = "(rnrs base builtins (6))")]
