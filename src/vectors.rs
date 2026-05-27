@@ -297,25 +297,18 @@ pub fn vector(args: &[Value]) -> Result<Vec<Value>, Exception> {
 }
 
 #[bridge(name = "vector-ref", lib = "(rnrs base builtins (6))")]
-pub fn vector_ref(vec: &Value, index: &Value) -> Result<Vec<Value>, Exception> {
-    let vec: Vector = vec.clone().try_into()?;
-    let index: usize = index.clone().try_into()?;
+pub fn vector_ref(vec: Vector, index: usize) -> Result<Value, Exception> {
     let vec_read = vec.0.vec.read();
 
-    Ok(vec![
-        vec_read
-            .get(index)
-            .ok_or_else(|| Exception::invalid_index(index, vec_read.len()))?
-            .clone(),
-    ])
+    Ok(vec_read
+        .get(index)
+        .ok_or_else(|| Exception::invalid_index(index, vec_read.len()))?
+        .clone())
 }
 
 #[bridge(name = "vector-length", lib = "(rnrs base builtins (6))")]
-pub fn vector_len(vec: &Value) -> Result<Vec<Value>, Exception> {
-    let vec: Vector = vec.clone().try_into()?;
-    let len = vec.0.vec.read().len();
-
-    Ok(vec![Value::from(len)])
+pub fn vector_length(vec: Vector) -> usize {
+    vec.0.vec.read().len()
 }
 
 #[bridge(name = "bytevector-length", lib = "(rnrs base builtins (6))")]
@@ -327,22 +320,19 @@ pub fn bytevector_len(vec: &Value) -> Result<Vec<Value>, Exception> {
 }
 
 #[bridge(name = "vector-set!", lib = "(rnrs base builtins (6))")]
-pub fn vector_set_bang(vec: &Value, index: &Value, with: &Value) -> Result<Vec<Value>, Exception> {
-    let vec: Vector = vec.clone().try_into()?;
-
+pub fn vector_set_bang(vec: Vector, index: usize, with: &Value) -> Result<(), Exception> {
     if !vec.0.mutable {
         return Err(Exception::error("vector is immutable"));
     }
 
     let mut vec_write = vec.0.vec.write();
     let vec_len = vec_write.len();
-    let index: usize = index.clone().try_into()?;
 
     *vec_write
         .get_mut(index)
         .ok_or_else(|| Exception::invalid_index(index, vec_len))? = with.clone();
 
-    Ok(vec![])
+    Ok(())
 }
 
 #[bridge(name = "vector->list", lib = "(rnrs base builtins (6))")]

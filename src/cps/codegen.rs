@@ -60,6 +60,15 @@ pub(crate) struct RuntimeFunctions {
     dropv: FuncId,
     raise_rt: FuncId,
 
+    // Known function operations:
+    call_known_0x1: FuncId,
+    call_known_1x0: FuncId,
+    call_known_1x1: FuncId,
+    call_known_2x0: FuncId,
+    call_known_2x1: FuncId,
+    call_known_3x0: FuncId,
+    call_known_3x1: FuncId,
+
     // Syntax primops:
     matches: FuncId,
     expand_template: FuncId,
@@ -101,7 +110,7 @@ impl Cps {
         if std::env::var("SCHEME_RS_DEBUG").is_ok() {
             eprintln!("Compiling:");
             self.pretty_print(0);
-            eprintln!("");
+            eprintln!();
         }
 
         let mut cells = HashSet::default();
@@ -305,6 +314,16 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
                 );
                 (cell, global.name.0)
             }
+            CpsValue::Const(val)
+                if let Some(proc) = val.cast_to_scheme_type::<Procedure>()
+                    && let Some(known) = proc.to_known() =>
+            {
+                // Known functions get converted to i64 constants
+                return self
+                    .builder
+                    .ins()
+                    .iconst(types::I64, known.cast_to_usize() as i64);
+            }
             CpsValue::Const(val) => {
                 let mut runtime_write = self.runtime.0.write();
                 runtime_write.constants_pool.insert(val.clone());
@@ -494,6 +513,19 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
             PrimOp::List => self.runtime_funcs.list,
             PrimOp::Car => self.runtime_funcs.car,
             PrimOp::Cdr => self.runtime_funcs.cdr,
+            PrimOp::CallKnown0 => match vals.len() {
+                2 => self.runtime_funcs.call_known_1x0,
+                3 => self.runtime_funcs.call_known_2x0,
+                4 => self.runtime_funcs.call_known_3x0,
+                _ => unreachable!(),
+            },
+            PrimOp::CallKnown1 => match vals.len() {
+                1 => self.runtime_funcs.call_known_0x1,
+                2 => self.runtime_funcs.call_known_1x1,
+                3 => self.runtime_funcs.call_known_2x1,
+                4 => self.runtime_funcs.call_known_3x1,
+                _ => unreachable!(),
+            },
             _ => unreachable!(),
         };
 
@@ -501,6 +533,7 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
             .module
             .declare_func_in_func(runtime_func, self.builder.func);
 
+        // TODO: Having multiple of these is redundant.
         // Add a slot for the error if this function can error:
         let error_slot = primop_info.can_error.then(|| {
             let error_slot = self.alloc_array(1);

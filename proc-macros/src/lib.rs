@@ -100,6 +100,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
 
     if bridge.sig.asyncness.is_none()
         && !is_variadic
+        && num_args <= 3
         && let Some(known_ret_type) = is_return_type_known(&bridge.sig.output)
     {
         return codegen_known_bridge(
@@ -346,6 +347,7 @@ fn codegen_known_bridge(
     };
 
     quote! {
+        #[allow(clippy::needless_question_mark)]
         #visibility fn #wrapper_name(
             #( #args: &Value, )*
         ) -> #ret_type {
@@ -1523,6 +1525,23 @@ pub fn maybe_await(tokens: TokenStream) -> TokenStream {
 
             #[cfg(feature = "async")]
             let result = #tokens .await;
+
+            result
+        }
+    }
+    .into()
+}
+
+#[proc_macro]
+pub fn maybe_await_boxed(tokens: TokenStream) -> TokenStream {
+    let tokens = proc_macro2::TokenStream::from(tokens);
+    quote! {
+        {
+            #[cfg(not(feature = "async"))]
+            let result = #tokens ;
+
+            #[cfg(feature = "async")]
+            let result = Box::pin(async move { #tokens .await }).await;
 
             result
         }

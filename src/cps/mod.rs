@@ -135,8 +135,8 @@ impl PrimOp {
         match self {
             Self::Set => PrimOpInfo::new(2, false, false, false),
             Self::AllocCell => PrimOpInfo::new(0, false, false, true),
-            Self::CallKnown0 => todo!(),
-            Self::CallKnown1 => todo!(),
+            Self::CallKnown0 => PrimOpInfo::new(1, false, true, false),
+            Self::CallKnown1 => PrimOpInfo::new(0, false, true, true),
             Self::Car => PrimOpInfo::new(1, false, true, true),
             Self::Cdr => PrimOpInfo::new(1, false, true, true),
             Self::Cons => PrimOpInfo::new(2, false, false, true),
@@ -292,7 +292,7 @@ impl Cps {
                         eprint!("\n{:>new_indent$}", "", new_indent = indent + 6);
                     }
                     eprint!("[{to:?} ({op:?}");
-                    pretty_print_values(&vals);
+                    pretty_print_values(vals);
                     eprint!(")]");
                     next = cexpr.as_ref();
                     first = false;
@@ -306,11 +306,9 @@ impl Cps {
                 for (i, binding) in bindings.iter().enumerate() {
                     if i > 0 {
                         eprint!("\n{:>new_indent$}", "", new_indent = indent + 9);
-                    } 
+                    }
                     let binding_name = binding.val.to_string();
-                    eprint!(
-                        "[{binding_name} (λ (",
-                    );
+                    eprint!("[{binding_name} (λ (",);
                     for (i, arg) in binding.args.args.iter().enumerate() {
                         if i > 0 {
                             eprint!(" ");
@@ -337,7 +335,7 @@ impl Cps {
             Cps::If(val, succ, fail) => {
                 eprintln!("{:>indent$}(if {val:?}", "");
                 succ.pretty_print(indent + 5);
-                eprintln!("");
+                eprintln!();
                 fail.pretty_print(indent + 5);
                 eprint!(")");
             }

@@ -776,3 +776,136 @@ define_comparison_fn!(greater, greater_prim);
 define_comparison_fn!(greater_equal, greater_equal_prim);
 define_comparison_fn!(lesser, lesser_prim);
 define_comparison_fn!(lesser_equal, lesser_equal_prim);
+
+#[runtime_fn]
+unsafe extern "C" fn call_known_1x0(func: usize, arg1: *const (), error: *mut Value) -> *const () {
+    unsafe {
+        let func: fn(&Value) -> Result<(), Exception> = std::mem::transmute(func);
+        let arg1 = ManuallyDrop::new(Value::from_raw(arg1));
+        match (func)(&arg1) {
+            Ok(()) => Value::into_raw(Value::from(true)),
+            Err(condition) => {
+                error.write(condition.into());
+                Value::into_raw(Value::undefined())
+            }
+        }
+    }
+}
+
+#[runtime_fn]
+unsafe extern "C" fn call_known_2x0(
+    func: usize,
+    arg1: *const (),
+    arg2: *const (),
+    error: *mut Value,
+) -> *const () {
+    unsafe {
+        let func: fn(&Value, &Value) -> Result<(), Exception> = std::mem::transmute(func);
+        let arg1 = ManuallyDrop::new(Value::from_raw(arg1));
+        let arg2 = ManuallyDrop::new(Value::from_raw(arg2));
+        match (func)(&arg1, &arg2) {
+            Ok(()) => Value::into_raw(Value::from(true)),
+            Err(condition) => {
+                error.write(condition.into());
+                Value::into_raw(Value::undefined())
+            }
+        }
+    }
+}
+
+#[runtime_fn]
+unsafe extern "C" fn call_known_3x0(
+    func: usize,
+    arg1: *const (),
+    arg2: *const (),
+    arg3: *const (),
+    error: *mut Value,
+) -> *const () {
+    unsafe {
+        let func: fn(&Value, &Value, &Value) -> Result<(), Exception> = std::mem::transmute(func);
+        let arg1 = ManuallyDrop::new(Value::from_raw(arg1));
+        let arg2 = ManuallyDrop::new(Value::from_raw(arg2));
+        let arg3 = ManuallyDrop::new(Value::from_raw(arg3));
+        match (func)(&arg1, &arg2, &arg3) {
+            Ok(()) => Value::into_raw(Value::from(true)),
+            Err(condition) => {
+                error.write(condition.into());
+                Value::into_raw(Value::undefined())
+            }
+        }
+    }
+}
+
+#[runtime_fn]
+unsafe extern "C" fn call_known_0x1(func: usize, error: *mut Value) -> *const () {
+    unsafe {
+        let func: fn() -> Result<Value, Exception> = std::mem::transmute(func);
+        match (func)() {
+            Ok(res) => Value::into_raw(res),
+            Err(condition) => {
+                error.write(condition.into());
+                Value::into_raw(Value::undefined())
+            }
+        }
+    }
+}
+
+#[runtime_fn]
+unsafe extern "C" fn call_known_1x1(func: usize, arg1: *const (), error: *mut Value) -> *const () {
+    unsafe {
+        let func: fn(&Value) -> Result<Value, Exception> = std::mem::transmute(func);
+        let arg1 = ManuallyDrop::new(Value::from_raw(arg1));
+        match (func)(&arg1) {
+            Ok(res) => Value::into_raw(res),
+            Err(condition) => {
+                error.write(condition.into());
+                Value::into_raw(Value::undefined())
+            }
+        }
+    }
+}
+
+#[runtime_fn]
+unsafe extern "C" fn call_known_2x1(
+    func: usize,
+    arg1: *const (),
+    arg2: *const (),
+    error: *mut Value,
+) -> *const () {
+    unsafe {
+        let func: fn(&Value, &Value) -> Result<Value, Exception> = std::mem::transmute(func);
+        let arg1 = ManuallyDrop::new(Value::from_raw(arg1));
+        let arg2 = ManuallyDrop::new(Value::from_raw(arg2));
+        match (func)(&arg1, &arg2) {
+            Ok(res) => Value::into_raw(res),
+            Err(condition) => {
+                error.write(condition.into());
+                Value::into_raw(Value::undefined())
+            }
+        }
+    }
+}
+
+#[runtime_fn]
+unsafe extern "C" fn call_known_3x1(
+    func: usize,
+    arg1: *const (),
+    arg2: *const (),
+    arg3: *const (),
+    error: *mut Value,
+) -> *const () {
+    unsafe {
+        let func: fn(&Value, &Value, &Value) -> Result<Value, Exception> =
+            std::mem::transmute(func);
+        let arg1 = ManuallyDrop::new(Value::from_raw(arg1));
+        let arg2 = ManuallyDrop::new(Value::from_raw(arg2));
+        let arg3 = ManuallyDrop::new(Value::from_raw(arg3));
+        match (func)(&arg1, &arg2, &arg3) {
+            Ok(res) => Value::into_raw(res),
+            Err(condition) => {
+                error.write(condition.into());
+                Value::into_raw(Value::undefined())
+            }
+        }
+    }
+}

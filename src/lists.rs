@@ -386,7 +386,6 @@ pub fn append(list: &Value, to_append: &Value) -> Result<Vec<Value>, Exception> 
 }
  */
 
-
 #[bridge(name = "append", lib = "(rnrs base builtins (6))")]
 pub fn append(List { items, .. }: List, to_append: &Value) -> Value {
     let mut list = to_append.clone();

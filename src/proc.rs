@@ -92,6 +92,7 @@
 //! categorization is mostly transparent to the user.
 
 use crate::{
+    cps::PrimOp,
     env::Local,
     exceptions::{Exception, raise},
     gc::{Gc, GcInner, Trace},
@@ -106,7 +107,7 @@ use crate::{
     vectors::Vector,
 };
 use parking_lot::RwLock;
-use scheme_rs_macros::{cps_bridge, maybe_async, maybe_await};
+use scheme_rs_macros::{cps_bridge, maybe_async, maybe_await, maybe_await_boxed};
 use std::{
     any::Any,
     collections::HashMap,
@@ -167,32 +168,83 @@ pub enum KnownFunc {
     Known3x1(fn(&Value, &Value, &Value) -> Result<Value, Exception>),
 }
 
-/*
-impl From<fn(&Value, &Value) -> Result<Value, Exception>> for KnownFunc {
-    fn from(value: fn(&Value, &Value) -> Result<Value, Exception>) -> Self {
-        Self::Known2x1(value)
-    }
-}
-*/
-
 impl KnownFunc {
     fn call(self, args: &[Value]) -> Result<Vec<Value>, Exception> {
         match self {
-            Self::Known0x1(func) => { Ok(vec![(func)()?]) },
-            Self::Known1x0(func) => { (func)(&args[0])?; Ok(Vec::new()) },
-            Self::Known1x1(func) => { Ok(vec![(func)(&args[0])?]) },
-            Self::Known2x0(func) => { (func)(&args[0], &args[1])?; Ok(Vec::new()) },
-            Self::Known2x1(func) => { Ok(vec![(func)(&args[0], &args[1])?]) },
-            Self::Known3x0(func) => { (func)(&args[0], &args[1], &args[2])?; Ok(Vec::new()) },
-            Self::Known3x1(func) => { Ok(vec![(func)(&args[0], &args[1], &args[2])?]) }
+            Self::Known0x1(func) => Ok(vec![(func)()?]),
+            Self::Known1x0(func) => {
+                (func)(&args[0])?;
+                Ok(Vec::new())
+            }
+            Self::Known1x1(func) => Ok(vec![(func)(&args[0])?]),
+            Self::Known2x0(func) => {
+                (func)(&args[0], &args[1])?;
+                Ok(Vec::new())
+            }
+            Self::Known2x1(func) => Ok(vec![(func)(&args[0], &args[1])?]),
+            Self::Known3x0(func) => {
+                (func)(&args[0], &args[1], &args[2])?;
+                Ok(Vec::new())
+            }
+            Self::Known3x1(func) => Ok(vec![(func)(&args[0], &args[1], &args[2])?]),
         }
     }
-    
-    fn apply(self, runtime: &Runtime, args: &[Value], k: Value, barrier: &mut ContBarrier<'_>) -> Application {
+
+    #[maybe_async]
+    fn apply(
+        self,
+        runtime: &Runtime,
+        args: &[Value],
+        k: Value,
+        barrier: &mut ContBarrier<'_>,
+    ) -> Application {
         let k: Procedure = k.cast_to_scheme_type().unwrap();
         match self.call(args) {
-            Ok(result) => k.0.apply(result, barrier),
-            Err(err) => raise(runtime.clone(), err.into(), barrier)                            
+            Ok(result) => maybe_await!(k.0.apply(result, barrier)),
+            Err(err) => raise(runtime.clone(), err.into(), barrier),
+        }
+    }
+
+    #[cfg(feature = "async")]
+    fn apply_sync(
+        self,
+        runtime: &Runtime,
+        args: &[Value],
+        k: Value,
+        barrier: &mut ContBarrier<'_>,
+    ) -> Application {
+        let k: Procedure = k.cast_to_scheme_type().unwrap();
+        match self.call(args) {
+            Ok(result) => k.0.apply_sync(result, barrier),
+            Err(err) => raise(runtime.clone(), err.into(), barrier),
+        }
+    }
+
+    pub fn return_values(&self) -> usize {
+        match self {
+            Self::Known1x0(_) | Self::Known2x0(_) | Self::Known3x0(_) => 0,
+            Self::Known0x1(_) | Self::Known1x1(_) | Self::Known2x1(_) | Self::Known3x1(_) => 1,
+        }
+    }
+
+    pub(crate) fn cast_to_usize(&self) -> usize {
+        match self {
+            Self::Known0x1(ptr) => *ptr as usize,
+            Self::Known1x0(ptr) => *ptr as usize,
+            Self::Known1x1(ptr) => *ptr as usize,
+            Self::Known2x0(ptr) => *ptr as usize,
+            Self::Known2x1(ptr) => *ptr as usize,
+            Self::Known3x0(ptr) => *ptr as usize,
+            Self::Known3x1(ptr) => *ptr as usize,
+        }
+    }
+
+    pub(crate) fn matches_args(&self, num: usize) -> bool {
+        match self {
+            Self::Known0x1(_) => num == 0,
+            Self::Known1x0(_) | Self::Known1x1(_) => num == 1,
+            Self::Known2x0(_) | Self::Known2x1(_) => num == 2,
+            Self::Known3x0(_) | Self::Known3x1(_) => num == 3,
         }
     }
 }
@@ -433,7 +485,9 @@ impl ProcedureInner {
             FuncPtr::PromptBarrier { k, .. } => {
                 self.apply_jit(JitFuncPtr::Continuation(k), args, barrier, None)
             }
-            FuncPtr::Known(known) => known.apply(&self.runtime, &args, k.unwrap(), barrier),
+            FuncPtr::Known(known) => {
+                maybe_await_boxed!(known.apply(&self.runtime, &args, k.unwrap(), barrier))
+            }
         }
     }
 
@@ -478,6 +532,7 @@ impl ProcedureInner {
             FuncPtr::PromptBarrier { k, .. } => {
                 self.apply_jit(JitFuncPtr::Continuation(k), args, barrier, None)
             }
+            FuncPtr::Known(known) => known.apply_sync(&self.runtime, &args, k.unwrap(), barrier),
         }
     }
 }
@@ -626,6 +681,56 @@ impl Procedure {
         args.push(halt_continuation(self.get_runtime()));
 
         Application::new(self.clone(), args).eval_sync(barrier)
+    }
+
+    pub(crate) fn to_primop(&self) -> Option<PrimOp> {
+        use crate::{
+            lists::{car, cdr, cons, list},
+            num::{add, div, equal, greater, greater_equal, lesser, lesser_equal, mul, sub},
+            proc::{BridgePtr, FuncPtr::Bridge},
+            value::{not, null_pred, pair_pred},
+        };
+        use std::ptr::fn_addr_eq;
+
+        const PRIMOP_TAB: &[(BridgePtr, PrimOp)] = &[
+            (add, PrimOp::Add),
+            (sub, PrimOp::Sub),
+            (mul, PrimOp::Mul),
+            (div, PrimOp::Div),
+            (equal, PrimOp::Equal),
+            (greater, PrimOp::Greater),
+            (greater_equal, PrimOp::GreaterEqual),
+            (lesser, PrimOp::Lesser),
+            (lesser_equal, PrimOp::LesserEqual),
+            (cons, PrimOp::Cons),
+            (list, PrimOp::List),
+            (car, PrimOp::Car),
+            (cdr, PrimOp::Cdr),
+            (not, PrimOp::Not),
+            (null_pred, PrimOp::IsNull),
+            (pair_pred, PrimOp::IsPair),
+        ];
+
+        let Bridge(ptr) = self.0.func else {
+            return None;
+        };
+
+        for (builtin, primop) in PRIMOP_TAB.iter().copied() {
+            // These function pointer comparisons are guaranteed to be meaningful since
+            // they are returned from a store.
+            if fn_addr_eq(ptr, builtin) {
+                return Some(primop);
+            }
+        }
+
+        None
+    }
+
+    pub(crate) fn to_known(&self) -> Option<KnownFunc> {
+        match self.0.func {
+            FuncPtr::Known(known) => Some(known),
+            _ => None,
+        }
     }
 }
 

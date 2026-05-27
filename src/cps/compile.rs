@@ -409,11 +409,29 @@ fn compile_apply(
     Cps::Fix(
         vec![LambdaBinding {
             args: LambdaArgs::new(vec![k2], false, None),
-            body: Box::new(
-                if let Some(primop) = operator.to_primop()
+            body: Box::new({
+                let maybe_proc = operator.to_immutable_proc();
+                if let Some(proc) = &maybe_proc
+                    && let Some(primop) = proc.to_primop()
                     && primop.info().matches_args(args.len())
                 {
                     compile_primop(ctxt, Value::from(k2), primop, Vec::new(), args)
+                } else if let Some(proc) = maybe_proc
+                    && let Some(known) = proc.to_known()
+                    && known.matches_args(args.len())
+                {
+                    let primop = match known.return_values() {
+                        0 => PrimOp::CallKnown0,
+                        1 => PrimOp::CallKnown1,
+                        _ => unreachable!(),
+                    };
+                    compile_primop(
+                        ctxt,
+                        Value::from(k2),
+                        primop,
+                        vec![Value::from(RuntimeValue::from(proc))],
+                        args,
+                    )
                 } else {
                     let frame = if let Expression::Var(var) = operator
                         && let Some(sym) = var.symbol()
@@ -447,8 +465,8 @@ fn compile_apply(
                             Box::new(Cps::App(op_result, vec![Value::from(k4)])),
                         )
                     })
-                },
-            ),
+                }
+            }),
             val: k1,
             span: None,
         }],

@@ -6,12 +6,12 @@
 
 use crate::{
     Either,
-    cps::{PrimOp, compile::Compiler},
+    cps::compile::Compiler,
     env::{Binding, Environment, Local, Scope, Var},
     exceptions::Exception,
     expand::{SyntaxRule, Template},
     gc::Trace,
-    proc::{ContBarrier, FuncPtr, KnownFunc, Procedure},
+    proc::{ContBarrier, Procedure},
     runtime::Runtime,
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax},
@@ -1323,64 +1323,14 @@ impl Expression {
         }
     }
 
-    pub fn to_known(&self) -> Option<KnownFunc> {
-        let Expression::Var(Var::Global(global)) = self else {
-            return None;
-        };
-        let val: Procedure = global.read().try_into().ok()?;
-
-        match val.0.func {
-            FuncPtr::Known(known) => Some(known),
-            _ => None,
+    pub fn to_immutable_proc(&self) -> Option<Procedure> {
+        if let Expression::Var(Var::Global(global)) = self
+            && !global.mutable
+        {
+            global.read().try_into().ok()
+        } else {
+            None
         }
-    }
-
-    // These function pointer comparisons are guaranteed to be meaningful since
-    // they are returned from a store.
-    pub fn to_primop(&self) -> Option<PrimOp> {
-        use crate::{
-            lists::{car, cdr, cons, list},
-            num::{add, div, equal, greater, greater_equal, lesser, lesser_equal, mul, sub},
-            proc::{BridgePtr, FuncPtr::Bridge, Procedure},
-            value::{not, null_pred, pair_pred},
-        };
-        use std::ptr::fn_addr_eq;
-
-        const PRIMOP_TAB: &[(BridgePtr, PrimOp)] = &[
-            (add, PrimOp::Add),
-            (sub, PrimOp::Sub),
-            (mul, PrimOp::Mul),
-            (div, PrimOp::Div),
-            (equal, PrimOp::Equal),
-            (greater, PrimOp::Greater),
-            (greater_equal, PrimOp::GreaterEqual),
-            (lesser, PrimOp::Lesser),
-            (lesser_equal, PrimOp::LesserEqual),
-            (cons, PrimOp::Cons),
-            (list, PrimOp::List),
-            (car, PrimOp::Car),
-            (cdr, PrimOp::Cdr),
-            (not, PrimOp::Not),
-            (null_pred, PrimOp::IsNull),
-            (pair_pred, PrimOp::IsPair),
-        ];
-
-        let Expression::Var(Var::Global(global)) = self else {
-            return None;
-        };
-        let val: Procedure = global.read().try_into().ok()?;
-
-        let Bridge(ptr) = val.0.func else {
-            return None;
-        };
-
-        for (builtin, primop) in PRIMOP_TAB.iter().copied() {
-            if fn_addr_eq(ptr, builtin) {
-                return Some(primop);
-            }
-        }
-
-        None
     }
 }
 
