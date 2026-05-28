@@ -30,7 +30,7 @@ use crate::{
     proc::{Application, ContBarrier, Procedure},
     runtime::Runtime,
     symbols::Symbol,
-    syntax::{Identifier, Syntax},
+    syntax::{Identifier, Span, Syntax},
     value::{Cell, Value},
 };
 
@@ -46,13 +46,27 @@ pub(crate) mod error {
 
 #[derive(Clone)]
 pub(crate) enum TopLevelBinding {
+    Unexpanded(TopLevelEnvironment),
     Global(Global),
     Keyword(Procedure),
     Primitive(Primitive),
 }
 
+impl TopLevelBinding {
+    fn lookup(binding: &Binding) -> Option<TopLevelBinding> {
+        TOP_LEVEL_BINDINGS.lock().get(binding).cloned()
+    }
+}
+
 pub(crate) static TOP_LEVEL_BINDINGS: LazyLock<Mutex<HashMap<Binding, TopLevelBinding>>> =
     LazyLock::new(|| Mutex::new(HashMap::default()));
+
+fn add_pending_top_level_binding(binding: Binding, origin: TopLevelEnvironment) {
+    TOP_LEVEL_BINDINGS
+        .lock()
+        .entry(binding)
+        .or_insert_with(|| TopLevelBinding::Unexpanded(origin));
+}
 
 #[derive(Trace)]
 pub(crate) struct TopLevelEnvironmentInner {
@@ -126,6 +140,17 @@ pub struct TopLevelEnvironment(pub(crate) Gc<RwLock<TopLevelEnvironmentInner>>);
 impl PartialEq for TopLevelEnvironment {
     fn eq(&self, rhs: &Self) -> bool {
         Gc::ptr_eq(&self.0, &rhs.0)
+    }
+}
+
+impl Eq for TopLevelEnvironment {}
+
+impl Hash for TopLevelEnvironment {
+    fn hash<H>(&self, state: &mut H)
+    where
+        H: Hasher,
+    {
+        self.0.ptr.hash(state)
     }
 }
 
@@ -216,6 +241,7 @@ impl TopLevelEnvironment {
                     return Err(error::name_bound_multiple_times(name));
                 }
                 bound_names.insert(name, import.binding);
+                add_pending_top_level_binding(import.binding, import.origin.clone());
                 imports.insert(import.binding, import.origin);
                 // Bind the new identifier in the global symbol table:
                 add_binding(Identifier::from_symbol(name, library_scope), import.binding);
@@ -242,6 +268,7 @@ impl TopLevelEnvironment {
                                 return Err(error::name_bound_multiple_times(name));
                             }
                             bound_names.insert(name, import.binding);
+                            add_pending_top_level_binding(import.binding, import.origin.clone());
                             imports.insert(import.binding, import.origin);
                             // Bind the new identifier in the global symbol table:
                             add_binding(
@@ -343,6 +370,7 @@ impl TopLevelEnvironment {
                     return Err(error::name_bound_multiple_times(sym));
                 }
                 Entry::Vacant(slot) => {
+                    add_pending_top_level_binding(import.binding, import.origin.clone());
                     add_binding(Identifier::from_symbol(sym, scope), import.binding);
                     slot.insert(import.origin);
                 }
@@ -357,12 +385,18 @@ impl TopLevelEnvironment {
         let body = {
             let mut this = self.0.write();
             if let LibraryState::Unexpanded(body) = &mut this.state {
-                // std::mem::take(body)
-                body.clone()
+                std::mem::replace(
+                    body,
+                    Syntax::Wrapped {
+                        value: Value::undefined(),
+                        span: Span::default(),
+                    },
+                )
             } else {
                 return Ok(());
             }
         };
+
         let rt = { self.0.read().rt.clone() };
         let env = Environment::from(self.clone());
         let expanded = maybe_await!(DefinitionBody::parse_lib_body(&rt, &body, &env))?;
@@ -436,15 +470,18 @@ impl TopLevelEnvironment {
 
     #[maybe_async]
     pub fn lookup_var_inner(&self, binding: Binding) -> Result<Option<Global>, Exception> {
-        if let Some(TopLevelBinding::Global(global)) =
-            { TOP_LEVEL_BINDINGS.lock().get(&binding).cloned() }
-        {
-            if *self != global.origin {
-                maybe_await!(global.origin.maybe_invoke())?;
+        match TopLevelBinding::lookup(&binding) {
+            Some(TopLevelBinding::Unexpanded(unexpanded)) => {
+                maybe_await!(unexpanded.maybe_expand())?;
+                maybe_await!(self.lookup_var(binding))
             }
-            Ok(Some(global.clone()))
-        } else {
-            Ok(None)
+            Some(TopLevelBinding::Global(global)) => {
+                if *self != global.origin {
+                    maybe_await!(global.origin.maybe_invoke())?;
+                }
+                Ok(Some(global.clone()))
+            }
+            _ => Ok(None),
         }
     }
 
@@ -472,10 +509,15 @@ impl TopLevelEnvironment {
         if let Some(origin) = { self.0.read().imports.get(&binding).cloned() } {
             maybe_await!(origin.maybe_expand())?;
             maybe_await!(origin.lookup_keyword(binding))
-        } else if let Some(TopLevelBinding::Keyword(kw)) = TOP_LEVEL_BINDINGS.lock().get(&binding) {
-            Ok(Some(kw.clone()))
         } else {
-            Ok(None)
+            match TopLevelBinding::lookup(&binding) {
+                Some(TopLevelBinding::Unexpanded(unexpanded)) => {
+                    maybe_await!(unexpanded.maybe_expand())?;
+                    maybe_await!(self.lookup_keyword(binding))
+                }
+                Some(TopLevelBinding::Keyword(kw)) => Ok(Some(kw)),
+                _ => Ok(None),
+            }
         }
     }
 
