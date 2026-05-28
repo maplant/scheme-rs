@@ -21,12 +21,12 @@
 //! fn closure(
 //!     _runtime: &Runtime,
 //!     env: &[Value],
+//!     k: Procedure,
 //!     _args: &[Value],
 //!     _rest_args: &[Value],
 //!     _barrier: &mut ContBarrier,
-//!     k: Value,
 //! ) -> Result<Application, Exception> {
-//!     Ok(Application::new(k.try_into()?, vec![ env[0].clone() ]))
+//!     Ok(Application::new(k, None, vec![ env[0].clone() ]))
 //! }
 //!
 //! # fn main() {
@@ -55,10 +55,10 @@
 //! fn next_num(
 //!     _runtime: &Runtime,
 //!     env: &[Value],
+//!     k: Procedure,
 //!     _args: &[Value],
 //!     _rest_args: &[Value],
 //!     _barrier: &mut ContBarrier,
-//!     k: Value,
 //! ) -> Result<Application, Exception> {
 //!     // Fetch the cell from the environment:
 //!     let cell: Cell = env[0].try_to_scheme_type()?;
@@ -68,7 +68,7 @@
 //!     cell.set(Value::from(curr.clone() + Number::from(1)));
 //!
 //!     // Return the previous value:
-//!     Ok(Application::new(k.try_into()?, vec![ Value::from(curr) ]))
+//!     Ok(Application::new(k, None, vec![ Value::from(curr) ]))
 //! }
 //!
 //! # fn main() {
@@ -133,17 +133,17 @@ pub(crate) type UserPtr = unsafe extern "C" fn(
     env: *const Value,
     args: *const Value,
     barrier: *mut ContBarrier<'_>,
-    k: Value,
+    k: *mut GcInner<ProcedureInner>,
 ) -> *mut Application;
 
 /// A function pointer to a sync Rust bridge function.
 pub type BridgePtr = fn(
     runtime: &Runtime,
     env: &[Value],
+    k: Procedure,
     args: &[Value],
     rest_args: &[Value],
     barrier: &mut ContBarrier<'_>,
-    k: Value,
 ) -> Application;
 
 /// A function pointer to an async Rust bridge function.
@@ -151,10 +151,10 @@ pub type BridgePtr = fn(
 pub type AsyncBridgePtr = for<'a> fn(
     runtime: &'a Runtime,
     env: &'a [Value],
+    k: Procedure,
     args: &'a [Value],
     rest_args: &'a [Value],
     barrier: &'a mut ContBarrier<'_>,
-    k: Value,
 ) -> futures::future::BoxFuture<'a, Application>;
 
 #[derive(Copy, Clone, Debug)]
@@ -194,13 +194,12 @@ impl KnownFunc {
     fn apply(
         self,
         runtime: &Runtime,
+        k: Procedure,
         args: &[Value],
-        k: Value,
         barrier: &mut ContBarrier<'_>,
     ) -> Application {
-        let k: Procedure = k.cast_to_scheme_type().unwrap();
         match self.call(args) {
-            Ok(result) => maybe_await!(k.0.apply(result, barrier)),
+            Ok(result) => maybe_await!(k.0.apply(None, result, barrier)),
             Err(err) => raise(runtime.clone(), err.into(), barrier),
         }
     }
@@ -209,13 +208,12 @@ impl KnownFunc {
     fn apply_sync(
         self,
         runtime: &Runtime,
+        k: Procedure,
         args: &[Value],
-        k: Value,
         barrier: &mut ContBarrier<'_>,
     ) -> Application {
-        let k: Procedure = k.cast_to_scheme_type().unwrap();
         match self.call(args) {
-            Ok(result) => k.0.apply_sync(result, barrier),
+            Ok(result) => k.0.apply_sync(None, result, barrier),
             Err(err) => raise(runtime.clone(), err.into(), barrier),
         }
     }
@@ -344,13 +342,21 @@ impl ProcedureInner {
         )
     }
 
-    pub(crate) fn prepare_args(
+    pub(crate) fn check_args(
         &self,
-        mut args: Vec<Value>,
+        k: &Option<Procedure>,
+        args: &[Value],
         barrier: &mut ContBarrier,
-    ) -> Result<(Vec<Value>, Option<Value>), Application> {
-        // Extract the continuation, if it is required
-        let cont = (!self.is_continuation()).then(|| args.pop().unwrap());
+    ) -> Result<(), Application> {
+        // Error if this is not a continuation and this function is not passed
+        // a continuation
+        if self.is_continuation() == k.is_some() {
+            return Err(raise(
+                self.runtime.clone(),
+                Exception::no_cont().into(),
+                barrier,
+            ));
+        }
 
         // Error if the number of arguments provided is incorrect
         if args.len() < self.num_required_args {
@@ -369,16 +375,16 @@ impl ProcedureInner {
             ));
         }
 
-        Ok((args, cont))
+        Ok(())
     }
 
     #[cfg(feature = "async")]
     async fn apply_async_bridge(
         &self,
         func: AsyncBridgePtr,
+        k: Procedure,
         args: &[Value],
         barrier: &mut ContBarrier<'_>,
-        k: Value,
     ) -> Application {
         let (args, rest_args) = if self.variadic {
             args.split_at(self.num_required_args)
@@ -386,15 +392,15 @@ impl ProcedureInner {
             (args, &[] as &[Value])
         };
 
-        (func)(&self.runtime, &self.env, args, rest_args, barrier, k).await
+        (func)(&self.runtime, &self.env, k, args, rest_args, barrier).await
     }
 
     fn apply_sync_bridge(
         &self,
         func: BridgePtr,
+        k: Procedure,
         args: &[Value],
         barrier: &mut ContBarrier,
-        k: Value,
     ) -> Application {
         let (args, rest_args) = if self.variadic {
             args.split_at(self.num_required_args)
@@ -402,20 +408,21 @@ impl ProcedureInner {
             (args, &[] as &[Value])
         };
 
-        (func)(&self.runtime, &self.env, args, rest_args, barrier, k)
+        (func)(&self.runtime, &self.env, k, args, rest_args, barrier)
     }
 
     fn apply_jit(
         &self,
         func: JitFuncPtr,
+        k: Option<Procedure>,
         mut args: Vec<Value>,
         barrier: &mut ContBarrier,
-        k: Option<Value>,
     ) -> Application {
         if self.variadic {
             let mut rest_args = Value::null();
             let extra_args = args.len() - self.num_required_args;
             for _ in 0..extra_args {
+                // TBD: Is pop or clone faster?
                 rest_args = Value::from(Pair::immutable(args.pop().unwrap(), rest_args));
             }
             args.push(rest_args);
@@ -436,7 +443,8 @@ impl ProcedureInner {
                     self.env.as_ptr(),
                     args.as_ptr(),
                     barrier as *mut ContBarrier<'_>,
-                    Value::from_raw(Value::as_raw(k.as_ref().unwrap())),
+                    Gc::as_ptr(&k.as_ref().unwrap().0),
+                    // Value::from_raw(Value::as_raw(k.as_ref().unwrap())),
                 )
             },
         };
@@ -446,7 +454,12 @@ impl ProcedureInner {
 
     /// Apply the arguments to the function, returning the next application.
     #[maybe_async]
-    pub fn apply(&self, args: Vec<Value>, barrier: &mut ContBarrier<'_>) -> Application {
+    pub fn apply(
+        &self,
+        k: Option<Procedure>,
+        args: Vec<Value>,
+        barrier: &mut ContBarrier<'_>,
+    ) -> Application {
         if let FuncPtr::PromptBarrier { barrier_id: id, .. } = self.func {
             barrier.pop_marks();
             match barrier.pop_dyn_stack() {
@@ -454,85 +467,87 @@ impl ProcedureInner {
                     barrier_id,
                     replaced_k,
                 })) if barrier_id == id => {
-                    let (args, _) = match replaced_k.0.prepare_args(args, barrier) {
-                        Ok(args) => args,
-                        Err(raised) => return raised,
+                    return if let Err(raised) =
+                        replaced_k.0.check_args(&k, args.as_slice(), barrier)
+                    {
+                        raised
+                    } else {
+                        Application::new(replaced_k, None, args)
                     };
-                    return Application::new(replaced_k, args);
                 }
                 Some(other) => barrier.push_dyn_stack(other),
                 _ => (),
             }
         }
 
-        let (args, k) = match self.prepare_args(args, barrier) {
-            Ok(args) => args,
-            Err(raised) => return raised,
-        };
+        if let Err(raised) = self.check_args(&k, &args, barrier) {
+            return raised;
+        }
 
         match self.func {
-            FuncPtr::Bridge(sbridge) => self.apply_sync_bridge(sbridge, &args, barrier, k.unwrap()),
+            FuncPtr::Bridge(sbridge) => self.apply_sync_bridge(sbridge, k.unwrap(), &args, barrier),
             #[cfg(feature = "async")]
             FuncPtr::AsyncBridge(abridge) => {
-                self.apply_async_bridge(abridge, &args, barrier, k.unwrap())
+                self.apply_async_bridge(abridge, k.unwrap(), &args, barrier)
                     .await
             }
-            FuncPtr::User(user) => self.apply_jit(JitFuncPtr::User(user), args, barrier, k),
+            FuncPtr::User(user) => self.apply_jit(JitFuncPtr::User(user), k, args, barrier),
             FuncPtr::Continuation(k) => {
                 barrier.pop_marks();
-                self.apply_jit(JitFuncPtr::Continuation(k), args, barrier, None)
+                self.apply_jit(JitFuncPtr::Continuation(k), None, args, barrier)
             }
             FuncPtr::PromptBarrier { k, .. } => {
-                self.apply_jit(JitFuncPtr::Continuation(k), args, barrier, None)
+                self.apply_jit(JitFuncPtr::Continuation(k), None, args, barrier)
             }
             FuncPtr::Known(known) => {
-                maybe_await_boxed!(known.apply(&self.runtime, &args, k.unwrap(), barrier))
+                maybe_await_boxed!(known.apply(&self.runtime, k.unwrap(), &args, barrier))
             }
         }
     }
 
     #[cfg(feature = "async")]
     /// Attempt to call the function, and throw an error if is async
-    pub fn apply_sync(&self, args: Vec<Value>, barrier: &mut ContBarrier) -> Application {
-        if let FuncPtr::PromptBarrier { barrier_id: id, .. } = self.func {
+    pub fn apply_sync(&self, k: Option<Procedure>, args: Vec<Value>, barrier: &mut ContBarrier) -> Application {
+                if let FuncPtr::PromptBarrier { barrier_id: id, .. } = self.func {
             barrier.pop_marks();
             match barrier.pop_dyn_stack() {
                 Some(DynStackElem::PromptBarrier(PromptBarrier {
                     barrier_id,
                     replaced_k,
                 })) if barrier_id == id => {
-                    let (args, _) = match replaced_k.0.prepare_args(args, barrier) {
-                        Ok(args) => args,
-                        Err(raised) => return raised,
+                    return if let Err(raised) =
+                        replaced_k.0.check_args(&k, args.as_slice(), barrier)
+                    {
+                        raised
+                    } else {
+                        Application::new(replaced_k, None, args)
                     };
-                    return Application::new(replaced_k, args);
                 }
                 Some(other) => barrier.push_dyn_stack(other),
                 _ => (),
             }
         }
 
-        let (args, k) = match self.prepare_args(args, barrier) {
-            Ok(args) => args,
-            Err(raised) => return raised,
-        };
+        if let Err(raised) = self.check_args(&k, &args, barrier) {
+            return raised;
+        }
 
         match self.func {
-            FuncPtr::Bridge(sbridge) => self.apply_sync_bridge(sbridge, &args, barrier, k.unwrap()),
+            FuncPtr::Bridge(sbridge) => self.apply_sync_bridge(sbridge, k.unwrap(), &args, barrier),
             FuncPtr::AsyncBridge(_) => raise(
                 self.runtime.clone(),
                 Exception::error("attempt to apply async function in a sync-only context").into(),
                 barrier,
             ),
-            FuncPtr::User(user) => self.apply_jit(JitFuncPtr::User(user), args, barrier, k),
+            FuncPtr::User(user) => self.apply_jit(JitFuncPtr::User(user), k, args, barrier),
             FuncPtr::Continuation(k) => {
                 barrier.pop_marks();
-                self.apply_jit(JitFuncPtr::Continuation(k), args, barrier, None)
+                self.apply_jit(JitFuncPtr::Continuation(k), None, args, barrier)
             }
             FuncPtr::PromptBarrier { k, .. } => {
-                self.apply_jit(JitFuncPtr::Continuation(k), args, barrier, None)
+                self.apply_jit(JitFuncPtr::Continuation(k), None, args, barrier)
             }
-            FuncPtr::Known(known) => known.apply_sync(&self.runtime, &args, k.unwrap(), barrier),
+            FuncPtr::Known(known) => known.apply_sync(&self.runtime, k.unwrap(), &args, barrier),
         }
     }
 }
@@ -575,6 +590,7 @@ impl fmt::Debug for ProcedureInner {
 /// variables used in the body, along with a function pointer to the body of the
 /// procedure.
 #[derive(Clone, Trace)]
+#[repr(transparent)]
 pub struct Procedure(pub(crate) Gc<ProcedureInner>);
 
 impl Procedure {
@@ -663,11 +679,8 @@ impl Procedure {
         args: &[Value],
         barrier: &mut ContBarrier<'_>,
     ) -> Result<Vec<Value>, Exception> {
-        let mut args = args.to_vec();
-
-        args.push(halt_continuation(self.get_runtime()));
-
-        maybe_await!(Application::new(self.clone(), args).eval(barrier))
+        let k = (!self.is_continuation()).then(|| halt_continuation(self.get_runtime()));
+        maybe_await!(Application::new(self.clone(), k, args.to_vec()).eval(barrier))
     }
 
     #[cfg(feature = "async")]
@@ -676,11 +689,8 @@ impl Procedure {
         args: &[Value],
         barrier: &mut ContBarrier<'_>,
     ) -> Result<Vec<Value>, Exception> {
-        let mut args = args.to_vec();
-
-        args.push(halt_continuation(self.get_runtime()));
-
-        Application::new(self.clone(), args).eval_sync(barrier)
+        let k = (!self.is_continuation()).then(|| halt_continuation(self.get_runtime()));
+        Application::new(self.clone(), k, args.to_vec()).eval_sync(barrier)
     }
 
     pub(crate) fn to_primop(&self) -> Option<PrimOp> {
@@ -734,10 +744,10 @@ impl Procedure {
     }
 }
 
-static HALT_CONTINUATION: OnceLock<Value> = OnceLock::new();
+static HALT_CONTINUATION: OnceLock<Procedure> = OnceLock::new();
 
 /// Return a continuation that returns its expressions to the Rust program.
-pub fn halt_continuation(runtime: Runtime) -> Value {
+pub fn halt_continuation(runtime: Runtime) -> Procedure {
     unsafe extern "C" fn halt(
         _runtime: *mut GcInner<RwLock<RuntimeInner>>,
         _env: *const Value,
@@ -749,14 +759,14 @@ pub fn halt_continuation(runtime: Runtime) -> Value {
 
     HALT_CONTINUATION
         .get_or_init(move || {
-            Value::from(Procedure(Gc::new(ProcedureInner::new(
+            Procedure(Gc::new(ProcedureInner::new(
                 runtime,
                 Vec::new(),
                 FuncPtr::Continuation(halt),
                 0,
                 true,
                 None,
-            ))))
+            )))
         })
         .clone()
 }
@@ -783,14 +793,18 @@ pub(crate) enum OpType {
 pub struct Application {
     /// The operator being applied to.
     op: OpType,
+    /// The continuation being applied, if it exists.
+    k: Option<Procedure>,
     /// The arguments being applied to the operator.
+    // TODO: Maybe make this a Cow<[Value]>?
     args: Vec<Value>,
 }
 
 impl Application {
-    pub fn new(op: Procedure, args: Vec<Value>) -> Self {
+    pub fn new(op: Procedure, k: Option<Procedure>, args: Vec<Value>) -> Self {
         Self {
             op: OpType::Proc(op),
+            k,
             args,
         }
     }
@@ -798,6 +812,7 @@ impl Application {
     pub fn halt_ok(args: Vec<Value>) -> Self {
         Self {
             op: OpType::HaltOk,
+            k: None,
             args,
         }
     }
@@ -805,6 +820,7 @@ impl Application {
     pub fn halt_err(arg: Value) -> Self {
         Self {
             op: OpType::HaltErr,
+            k: None,
             args: vec![arg],
         }
     }
@@ -821,7 +837,7 @@ impl Application {
                     return Err(Exception(self.args.pop().unwrap()));
                 }
             };
-            self = maybe_await!(op.0.apply(self.args, barrier));
+            self = maybe_await!(op.0.apply(self.k, self.args, barrier));
         }
     }
 
@@ -836,7 +852,7 @@ impl Application {
                     return Err(Exception(self.args.pop().unwrap()));
                 }
             };
-            self = op.0.apply_sync(self.args, barrier);
+            self = op.0.apply_sync(self.k, self.args, barrier);
         }
     }
 }
@@ -884,10 +900,10 @@ impl ProcDebugInfo {
 pub fn apply(
     _runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     args: &[Value],
     rest_args: &[Value],
     _barrier: &mut ContBarrier,
-    k: Value,
 ) -> Result<Application, Exception> {
     if rest_args.is_empty() {
         return Err(Exception::wrong_num_of_args(2, args.len()));
@@ -896,8 +912,7 @@ pub fn apply(
     let (last, args) = rest_args.split_last().unwrap();
     let mut args = args.to_vec();
     list_to_vec(last, &mut args);
-    args.push(k);
-    Ok(Application::new(op.clone(), args))
+    Ok(Application::new(op.clone(), Some(k), args))
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1206,7 +1221,7 @@ pub(crate) unsafe extern "C" fn pop_dyn_stack(
         barrier.as_mut().unwrap_unchecked().pop_dyn_stack();
 
         let args = k.collect_args(args);
-        let app = Application::new(k, args);
+        let app = Application::new(k, None, args);
 
         Box::into_raw(Box::new(app))
     }
@@ -1216,16 +1231,16 @@ pub(crate) unsafe extern "C" fn pop_dyn_stack(
 pub fn print_trace(
     _runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     _args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier,
-    k: Value,
 ) -> Result<Application, Exception> {
     println!(
         "trace: {:#?}",
         barrier.current_marks(Symbol::intern("trace"))
     );
-    Ok(Application::new(k.try_into()?, vec![]))
+    Ok(Application::new(k, None, Vec::new()))
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1240,30 +1255,27 @@ pub fn print_trace(
 pub fn call_with_current_continuation(
     runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier,
-    k: Value,
 ) -> Result<Application, Exception> {
     let [proc] = args else { unreachable!() };
     let proc: Procedure = proc.clone().try_into()?;
 
-    let (req_args, variadic) = {
-        let k: Procedure = k.clone().try_into()?;
-        k.get_formals()
-    };
+    let (req_args, variadic) = k.get_formals();
 
-    let barrier = Value::from(Record::from_rust_type(barrier.save()));
+    let barrier = Value::from_rust_type(barrier.save());
 
     let escape_procedure = Procedure::new(
         runtime.clone(),
-        vec![k.clone(), barrier],
+        vec![Value::from(k.clone()), barrier],
         FuncPtr::Bridge(escape_procedure),
         req_args,
         variadic,
     );
 
-    let app = Application::new(proc, vec![Value::from(escape_procedure), k]);
+    let app = Application::new(proc, Some(k), vec![Value::from(escape_procedure)]);
 
     Ok(app)
 }
@@ -1274,10 +1286,10 @@ pub fn call_with_current_continuation(
 fn escape_procedure(
     runtime: &Runtime,
     env: &[Value],
+    _k: Procedure,
     args: &[Value],
     rest_args: &[Value],
     barrier: &mut ContBarrier,
-    _k: Value,
 ) -> Result<Application, Exception> {
     // env[0] is the continuation
     let k = env[0].clone();
@@ -1304,7 +1316,7 @@ fn escape_procedure(
     if barrier.dyn_stack_len() == saved_barrier_read.dyn_stack_len()
         && barrier.dyn_stack_last() == saved_barrier_read.dyn_stack_last()
     {
-        Ok(Application::new(k, args))
+        Ok(Application::new(k, None, args))
     } else {
         let args = Value::from(args);
         let k = barrier.new_k(
@@ -1314,7 +1326,7 @@ fn escape_procedure(
             0,
             false,
         );
-        Ok(Application::new(k, Vec::new()))
+        Ok(Application::new(k, None, Vec::new()))
     }
 }
 
@@ -1354,13 +1366,14 @@ unsafe extern "C" fn unwind(
                     // Call the out winder while unwinding
                     let app = Application::new(
                         winder.out_thunk,
-                        vec![Value::from(barrier.new_k(
+                        Some(barrier.new_k(
                             Runtime::from_raw_inc_rc(runtime),
                             vec![k, args, dest_stack_val],
                             unwind,
                             0,
                             false,
-                        ))],
+                        )),
+                        Vec::new(),
                     );
                     return Box::into_raw(Box::new(app));
                 }
@@ -1377,6 +1390,7 @@ unsafe extern "C" fn unwind(
                 0,
                 false,
             ),
+            None,
             Vec::new(),
         );
 
@@ -1425,7 +1439,7 @@ unsafe extern "C" fn wind(
                     // Call the in winder while winding
                     let app = Application::new(
                         winder.in_thunk.clone(),
-                        vec![Value::from(barrier.new_k(
+                        Some(barrier.new_k(
                             Runtime::from_raw_inc_rc(runtime),
                             vec![
                                 k,
@@ -1436,7 +1450,8 @@ unsafe extern "C" fn wind(
                             wind,
                             0,
                             false,
-                        ))],
+                        )),
+                        Vec::new(),
                     );
                     return Box::into_raw(Box::new(app));
                 }
@@ -1447,7 +1462,11 @@ unsafe extern "C" fn wind(
         let args: Vector = args.try_into().unwrap();
         let args = args.0.vec.read().to_vec();
 
-        Box::into_raw(Box::new(Application::new(k.try_into().unwrap(), args)))
+        Box::into_raw(Box::new(Application::new(
+            k.try_into().unwrap(),
+            None,
+            args,
+        )))
     }
 }
 
@@ -1494,9 +1513,11 @@ unsafe extern "C" fn call_consumer_with_values(
             collected_args.extend(vec);
         }
 
-        collected_args.push(k);
-
-        Box::into_raw(Box::new(Application::new(consumer.clone(), collected_args)))
+        Box::into_raw(Box::new(Application::new(
+            consumer.clone(),
+            k.cast_to_scheme_type(),
+            collected_args,
+        )))
     }
 }
 
@@ -1507,10 +1528,10 @@ unsafe extern "C" fn call_consumer_with_values(
 pub fn call_with_values(
     runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier,
-    k: Value,
 ) -> Result<Application, Exception> {
     let [producer, consumer] = args else {
         return Err(Exception::wrong_num_of_args(2, args.len()));
@@ -1524,7 +1545,7 @@ pub fn call_with_values(
 
     let call_consumer_closure = barrier.new_k(
         runtime.clone(),
-        vec![Value::from(consumer), k],
+        vec![Value::from(consumer), Value::from(k)],
         call_consumer_with_values,
         num_required_args,
         variadic,
@@ -1532,7 +1553,8 @@ pub fn call_with_values(
 
     Ok(Application::new(
         producer,
-        vec![Value::from(call_consumer_closure)],
+        Some(call_consumer_closure),
+        Vec::new(),
     ))
 }
 
@@ -1557,10 +1579,10 @@ impl SchemeCompatible for Winder {
 pub fn dynamic_wind(
     runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier,
-    k: Value,
 ) -> Result<Application, Exception> {
     let [in_thunk_val, body_thunk_val, out_thunk_val] = args else {
         return Err(Exception::wrong_num_of_args(3, args.len()));
@@ -1575,7 +1597,7 @@ pub fn dynamic_wind(
             in_thunk_val.clone(),
             body_thunk_val.clone(),
             out_thunk_val.clone(),
-            k,
+            Value::from(k),
         ],
         call_body_thunk,
         0,
@@ -1584,7 +1606,8 @@ pub fn dynamic_wind(
 
     Ok(Application::new(
         in_thunk,
-        vec![Value::from(call_body_thunk_cont)],
+        Some(call_body_thunk_cont),
+        Vec::new(),
     ))
 }
 
@@ -1622,7 +1645,7 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
             true,
         );
 
-        let app = Application::new(body_thunk, vec![Value::from(k)]);
+        let app = Application::new(body_thunk, Some(k), Vec::new());
 
         Box::into_raw(Box::new(app))
     }
@@ -1647,7 +1670,7 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
         let barrier = barrier.as_mut().unwrap_unchecked();
         barrier.pop_dyn_stack();
 
-        let cont = barrier.new_k(
+        let k = barrier.new_k(
             Runtime::from_raw_inc_rc(runtime),
             vec![body_thunk_res, k],
             forward_body_thunk_result,
@@ -1655,7 +1678,7 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
             true,
         );
 
-        let app = Application::new(out_thunk, vec![Value::from(cont)]);
+        let app = Application::new(out_thunk, Some(k), Vec::new());
 
         Box::into_raw(Box::new(app))
     }
@@ -1676,7 +1699,7 @@ unsafe extern "C" fn forward_body_thunk_result(
         let mut args = Vec::new();
         list_to_vec(&body_thunk_res, &mut args);
 
-        Box::into_raw(Box::new(Application::new(k, args)))
+        Box::into_raw(Box::new(Application::new(k, None, args)))
     }
 }
 
@@ -1705,17 +1728,16 @@ static BARRIER_ID: AtomicUsize = AtomicUsize::new(0);
 pub fn call_with_prompt(
     runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier,
-    k: Value,
 ) -> Result<Application, Exception> {
     let [tag, thunk, handler] = args else {
         unreachable!()
     };
 
-    let k_proc: Procedure = k.clone().try_into().unwrap();
-    let (req_args, variadic) = k_proc.get_formals();
+    let (req_args, variadic) = k.get_formals();
     let tag: Symbol = tag.clone().try_into().unwrap();
 
     let barrier_id = BARRIER_ID.fetch_add(1, Ordering::Relaxed);
@@ -1724,14 +1746,14 @@ pub fn call_with_prompt(
         tag,
         handler: handler.clone().try_into().unwrap(),
         barrier_id,
-        handler_k: k.clone().try_into()?,
+        handler_k: k.clone(),
     }));
 
     barrier.push_marks();
 
     let prompt_barrier = Procedure::new(
         runtime.clone(),
-        vec![k],
+        vec![Value::from(k)],
         FuncPtr::PromptBarrier {
             barrier_id,
             k: pop_dyn_stack,
@@ -1742,7 +1764,8 @@ pub fn call_with_prompt(
 
     Ok(Application::new(
         thunk.clone().try_into().unwrap(),
-        vec![Value::from(prompt_barrier)],
+        Some(prompt_barrier),
+        Vec::new(),
     ))
 }
 
@@ -1750,17 +1773,17 @@ pub fn call_with_prompt(
 pub fn abort_to_prompt(
     runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     args: &[Value],
     rest_args: &[Value],
     barrier: &mut ContBarrier,
-    k: Value,
 ) -> Result<Application, Exception> {
     let [tag] = args else { unreachable!() };
 
     let unwind_to_prompt = barrier.new_k(
         runtime.clone(),
         vec![
-            k,
+            Value::from(k),
             Value::from(rest_args.to_vec()),
             tag.clone(),
             Value::from_rust_type(barrier.save()),
@@ -1770,7 +1793,7 @@ pub fn abort_to_prompt(
         false,
     );
 
-    Ok(Application::new(unwind_to_prompt, Vec::new()))
+    Ok(Application::new(unwind_to_prompt, None, Vec::new()))
 }
 
 unsafe extern "C" fn unwind_to_prompt(
@@ -1818,7 +1841,8 @@ unsafe extern "C" fn unwind_to_prompt(
                         let k_proc: Procedure = k.clone().try_into().unwrap();
                         k_proc.get_formals()
                     };
-                    // Construct the arguments
+                    // Construct the arguments. The handler's continuation comes
+                    // first, followed by the resume procedure and the values.
                     let mut handler_args = vec![Value::from(Procedure::new(
                         Runtime::from_raw_inc_rc(runtime),
                         vec![
@@ -1831,20 +1855,20 @@ unsafe extern "C" fn unwind_to_prompt(
                         var,
                     ))];
                     handler_args.extend(args.cast_to_scheme_type::<Vector>().unwrap().iter());
-                    handler_args.push(Value::from(handler_k));
-                    Application::new(handler, handler_args)
+                    Application::new(handler, Some(handler_k), handler_args)
                 }
                 Some(DynStackElem::Winder(winder)) => {
                     // If this is a winder, we should call the out winder while unwinding
                     Application::new(
                         winder.out_thunk,
-                        vec![Value::from(barrier.new_k(
+                        Some(barrier.new_k(
                             Runtime::from_raw_inc_rc(runtime),
                             vec![k, args, Value::from(tag), saved_barrier],
                             unwind_to_prompt,
                             0,
                             false,
-                        ))],
+                        )),
+                        Vec::new(),
                     )
                 }
                 _ => continue,
@@ -1858,10 +1882,10 @@ unsafe extern "C" fn unwind_to_prompt(
 fn delimited_continuation(
     runtime: &Runtime,
     env: &[Value],
+    k: Procedure,
     args: &[Value],
     rest_args: &[Value],
     barrier: &mut ContBarrier,
-    k: Value,
 ) -> Result<Application, Exception> {
     // env[0] is the delimited continuation
     let dk = env[0].clone();
@@ -1882,13 +1906,13 @@ fn delimited_continuation(
 
     barrier.push_dyn_stack(DynStackElem::PromptBarrier(PromptBarrier {
         barrier_id,
-        replaced_k: k.try_into()?,
+        replaced_k: k,
     }));
 
     // Simple optimization: if the saved dyn stack is empty, we
     // can just call the delimited continuation
     if saved_barrier_read.dyn_stack_is_empty() {
-        Ok(Application::new(dk.try_into()?, args))
+        Ok(Application::new(dk.try_into()?, None, args))
     } else {
         let args = Value::from(args);
         let k = barrier.new_k(
@@ -1904,7 +1928,7 @@ fn delimited_continuation(
             0,
             false,
         );
-        Ok(Application::new(k, Vec::new()))
+        Ok(Application::new(k, None, Vec::new()))
     }
 }
 
@@ -1947,7 +1971,7 @@ unsafe extern "C" fn wind_delim(
                 // Call the in winder while winding
                 let app = Application::new(
                     winder.in_thunk.clone(),
-                    vec![Value::from(barrier.new_k(
+                    Some(barrier.new_k(
                         Runtime::from_raw_inc_rc(runtime),
                         vec![
                             k,
@@ -1958,7 +1982,8 @@ unsafe extern "C" fn wind_delim(
                         wind,
                         0,
                         false,
-                    ))],
+                    )),
+                    Vec::new(),
                 );
                 return Box::into_raw(Box::new(app));
             }
@@ -1968,6 +1993,10 @@ unsafe extern "C" fn wind_delim(
         let args: Vector = args.try_into().unwrap();
         let args = args.0.vec.read().to_vec();
 
-        Box::into_raw(Box::new(Application::new(k.try_into().unwrap(), args)))
+        Box::into_raw(Box::new(Application::new(
+            k.try_into().unwrap(),
+            None,
+            args,
+        )))
     }
 }

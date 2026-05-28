@@ -452,9 +452,8 @@ fn compile_apply(
                                 args: LambdaArgs::new(vec![k3], false, None),
                                 body: Box::new(compile_apply_args(
                                     ctxt,
-                                    Value::from(k2),
                                     Value::from(k3),
-                                    Vec::new(),
+                                    vec![Value::from(k2)],
                                     args,
                                     frame.clone(),
                                     span.clone(),
@@ -476,7 +475,6 @@ fn compile_apply(
 
 fn compile_apply_args(
     ctxt: &Compiler,
-    cont: Value,
     op: Value,
     mut collected_args: Vec<Value>,
     remaining_args: &[Expression],
@@ -485,7 +483,6 @@ fn compile_apply_args(
 ) -> Cps {
     let (arg, tail) = match remaining_args {
         [] => {
-            collected_args.push(cont);
             let frame = frame.map_or_else(
                 || Value::from(Local::gensym()),
                 |frame| Value::from(RuntimeValue::from(frame)),
@@ -520,7 +517,7 @@ fn compile_apply_args(
             args: LambdaArgs::new(vec![k2], false, None),
             body: Box::new({
                 collected_args.push(Value::from(k2));
-                compile_apply_args(ctxt, cont, op, collected_args, tail, frame, span)
+                compile_apply_args(ctxt, op, collected_args, tail, frame, span)
             }),
             val: k1,
             span: None,

@@ -408,10 +408,10 @@ pub fn append(List { items, .. }: List, to_append: &Value) -> Value {
 pub fn map(
     runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     args: &[Value],
     list_n: &[Value],
     barrier: &mut ContBarrier,
-    k: Value,
 ) -> Result<Application, Exception> {
     let [mapper, list_1] = args else {
         unreachable!()
@@ -421,12 +421,12 @@ pub fn map(
         .into_iter()
         .chain(list_n.iter().cloned())
         .collect::<Vec<_>>();
-    let mut args = Vec::new();
 
+    let mut args = Vec::new();
     for input in inputs.iter_mut() {
         if input.type_of() == ValueType::Null {
             // TODO: Check if the rest are also empty and args is empty
-            return Ok(Application::new(k.try_into()?, vec![Value::null()]));
+            return Ok(Application::new(k, None, vec![Value::null()]));
         }
 
         let (car, cdr) = input.try_to_scheme_type::<Pair>()?.into();
@@ -441,16 +441,14 @@ pub fn map(
             Value::from(Vec::<Value>::new()),
             Value::from(inputs),
             mapper.clone(),
-            k,
+            Value::from(k),
         ],
         map_k,
         1,
         false,
     );
 
-    args.push(Value::from(map_k));
-
-    Ok(Application::new(mapper_proc, args))
+    Ok(Application::new(mapper_proc, Some(map_k), args))
 }
 
 unsafe extern "C" fn map_k(
@@ -483,7 +481,7 @@ unsafe extern "C" fn map_k(
             if input.type_of() == ValueType::Null {
                 // TODO: Check if the rest are also empty and args is empty
                 let output = slice_to_list(&output.0.vec.read());
-                let app = Application::new(k, vec![output]);
+                let app = Application::new(k, None, vec![output]);
                 return Box::into_raw(Box::new(app));
             }
 
@@ -505,9 +503,7 @@ unsafe extern "C" fn map_k(
             false,
         );
 
-        args.push(Value::from(map_k));
-
-        Box::into_raw(Box::new(Application::new(mapper, args)))
+        Box::into_raw(Box::new(Application::new(mapper, Some(map_k), args)))
     }
 }
 

@@ -124,7 +124,7 @@ impl Cps {
             }
             Cps::App(Value::Var(Var::Local(operator)), applied) if *operator == func => {
                 let (k, applied) = if args.continuation.is_some() {
-                    if let Some((k, applied)) = applied.split_last() {
+                    if let Some((k, applied)) = applied.split_first() {
                         (Some(k.clone()), applied)
                     } else {
                         return false;
@@ -143,10 +143,9 @@ impl Cps {
                         Box::new(substitute(
                             func_body.clone(),
                             args,
-                            req.iter()
-                                .cloned()
-                                .chain(Some(Value::from(var_args)))
-                                .chain(k),
+                            k.into_iter()
+                                .chain(req.iter().cloned())
+                                .chain(Some(Value::from(var_args))),
                             uses_cache,
                         )),
                     )
@@ -154,7 +153,7 @@ impl Cps {
                     substitute(
                         func_body.clone(),
                         args,
-                        applied.iter().cloned().chain(k),
+                        k.into_iter().chain(applied.iter().cloned()),
                         uses_cache,
                     )
                 } else {

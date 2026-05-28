@@ -53,7 +53,10 @@ use crate::{
     gc::{Gc, GcInner, Trace},
     lists::slice_to_list,
     ports::{IoDecodingError, IoEncodingError, IoError, IoReadError, IoWriteError},
-    proc::{Application, ContBarrier, DynStackElem, FuncPtr, Procedure, pop_dyn_stack},
+    proc::{
+        Application, ContBarrier, DynStackElem, FuncPtr, Procedure, halt_continuation,
+        pop_dyn_stack,
+    },
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
@@ -178,6 +181,13 @@ impl Exception {
                 )),
             )),
         )))
+    }
+
+    pub fn no_cont() -> Self {
+        Self(Value::from_rust_type(CompoundCondition::from((
+            Assertion::new(),
+            Message::new("no continuation argument passed to this function"),
+        ))))
     }
 
     pub fn implementation_restriction(msg: impl fmt::Display) -> Self {
@@ -932,10 +942,10 @@ pub fn simple_conditions(condition: &Value) -> Result<Vec<Value>, Exception> {
 pub fn with_exception_handler(
     runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier,
-    k: Value,
 ) -> Result<Application, Exception> {
     let [handler, thunk] = args else {
         unreachable!();
@@ -946,18 +956,17 @@ pub fn with_exception_handler(
 
     barrier.push_dyn_stack(DynStackElem::ExceptionHandler(handler));
 
-    let k_proc: Procedure = k.clone().try_into().unwrap();
-    let (req_args, var) = k_proc.get_formals();
+    let (req_args, var) = k.get_formals();
 
     let k = barrier.new_k(
         runtime.clone(),
-        vec![k.clone()],
+        vec![Value::from(k)],
         pop_dyn_stack,
         req_args,
         var,
     );
 
-    Ok(Application::new(thunk, vec![Value::from(k)]))
+    Ok(Application::new(thunk, Some(k), Vec::new()))
 }
 
 #[doc(hidden)]
@@ -965,10 +974,10 @@ pub fn with_exception_handler(
 pub fn raise_builtin(
     runtime: &Runtime,
     _env: &[Value],
+    _k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier,
-    _k: Value,
 ) -> Result<Application, Exception> {
     Ok(raise(runtime.clone(), args[0].clone(), barrier))
 }
@@ -984,6 +993,7 @@ pub fn raise(runtime: Runtime, raised: Value, barrier: &mut ContBarrier) -> Appl
 
     Application::new(
         barrier.new_k(runtime, vec![raised], unwind_to_exception_handler, 0, false),
+        None,
         Vec::new(),
     )
 }
@@ -1027,27 +1037,26 @@ unsafe extern "C" fn unwind_to_exception_handler(
                     // If this is a winder, we should call the out winder while unwinding
                     Application::new(
                         winder.out_thunk,
-                        vec![Value::from(barrier.new_k(
+                        Some(barrier.new_k(
                             Runtime::from_raw_inc_rc(runtime),
                             vec![raised],
                             unwind_to_exception_handler,
                             0,
                             false,
-                        ))],
+                        )),
+                        Vec::new(),
                     )
                 }
                 Some(DynStackElem::ExceptionHandler(handler)) => Application::new(
                     handler,
-                    vec![
-                        raised.clone(),
-                        Value::from(barrier.new_k(
-                            Runtime::from_raw_inc_rc(runtime),
-                            vec![raised],
-                            reraise_exception,
-                            0,
-                            true,
-                        )),
-                    ],
+                    Some(barrier.new_k(
+                        Runtime::from_raw_inc_rc(runtime),
+                        vec![raised.clone()],
+                        reraise_exception,
+                        0,
+                        true,
+                    )),
+                    vec![raised],
                 ),
                 _ => continue,
             };
@@ -1073,13 +1082,14 @@ unsafe extern "C" fn reraise_exception(
 
         Box::into_raw(Box::new(Application::new(
             Procedure::new(
-                runtime,
+                runtime.clone(),
                 Vec::new(),
                 FuncPtr::Bridge(raise_builtin),
                 1,
                 false,
             ),
-            vec![exception, Value::undefined()],
+            Some(halt_continuation(runtime)),
+            vec![exception],
         )))
     }
 }
@@ -1091,10 +1101,10 @@ unsafe extern "C" fn reraise_exception(
 pub fn raise_continuable(
     _runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier,
-    k: Value,
 ) -> Result<Application, Exception> {
     let [condition] = args else {
         unreachable!();
@@ -1104,7 +1114,7 @@ pub fn raise_continuable(
         return Ok(Application::halt_err(condition.clone()));
     };
 
-    Ok(Application::new(handler, vec![condition.clone(), k]))
+    Ok(Application::new(handler, Some(k), vec![condition.clone()]))
 }
 
 #[bridge(name = "error", lib = "(rnrs base builtins (6))")]

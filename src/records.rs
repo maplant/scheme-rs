@@ -470,12 +470,11 @@ fn make_default_record_constructor_descriptor(
 pub fn make_record_constructor_descriptor(
     runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     _barrier: &mut ContBarrier,
-    k: Value,
 ) -> Result<Application, Exception> {
-    let k: Procedure = k.try_into()?;
     let [rtd, parent_rcd, protocol] = args else {
         unreachable!();
     };
@@ -525,20 +524,17 @@ pub fn make_record_constructor_descriptor(
         protocol,
     };
 
-    Ok(Application::new(
-        k,
-        vec![Value::from(Record::from_rust_type(rcd))],
-    ))
+    Ok(Application::new(k, None, vec![Value::from_rust_type(rcd)]))
 }
 
 #[cps_bridge(def = "record-constructor rcd", lib = "(rnrs records procedural (6))")]
 pub fn record_constructor(
     runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier,
-    k: Value,
 ) -> Result<Application, Exception> {
     let [rcd] = args else {
         unreachable!();
@@ -556,21 +552,21 @@ pub fn record_constructor(
 
     let protocols = protocols.into_iter().map(Value::from).collect::<Vec<_>>();
     let rtds = rtds.into_iter().map(Value::from).collect::<Vec<_>>();
-    let chain_protocols = Value::from(barrier.new_k(
+    let chain_protocols = barrier.new_k(
         runtime.clone(),
-        vec![Value::from(protocols), k],
+        vec![Value::from(protocols), Value::from(k)],
         chain_protocols,
         1,
         false,
-    ));
+    );
 
     Ok(chain_constructors(
         runtime,
         &[Value::from(rtds), rust_constructor],
+        chain_protocols,
         &[],
         &[],
         barrier,
-        chain_protocols,
     ))
 }
 
@@ -608,12 +604,13 @@ pub(crate) unsafe extern "C" fn chain_protocols(
         if remaining_protocols.is_empty() {
             return Box::into_raw(Box::new(Application::new(
                 curr_protocol,
-                vec![args.as_ref().unwrap().clone(), k.clone()],
+                k.cast_to_scheme_type(),
+                vec![args.as_ref().unwrap().clone()],
             )));
         }
 
         // Otherwise, turn the remaining chain into the continuation:
-        let new_k = barrier.as_mut().unwrap().new_k(
+        let k1 = barrier.as_mut().unwrap().new_k(
             Runtime::from_raw_inc_rc(runtime),
             vec![Value::from(remaining_protocols), k],
             chain_protocols,
@@ -623,7 +620,8 @@ pub(crate) unsafe extern "C" fn chain_protocols(
 
         Box::into_raw(Box::new(Application::new(
             curr_protocol,
-            vec![args.as_ref().unwrap().clone(), Value::from(new_k)],
+            Some(k1),
+            vec![args.as_ref().unwrap().clone()],
         )))
     }
 }
@@ -632,12 +630,11 @@ pub(crate) unsafe extern "C" fn chain_protocols(
 fn chain_constructors(
     runtime: &Runtime,
     env: &[Value],
+    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     _barrier: &mut ContBarrier,
-    k: Value,
 ) -> Result<Application, Exception> {
-    let k: Procedure = k.try_into()?;
     // env[0] is a vector of RTDs
     let rtds: Vector = env[0].clone().try_into()?;
     // env[1] is the possible rust constructor
@@ -669,19 +666,18 @@ fn chain_constructors(
         num_args,
         false,
     );
-    Ok(Application::new(k, vec![Value::from(next_proc)]))
+    Ok(Application::new(k, None, vec![Value::from(next_proc)]))
 }
 
 #[cps_bridge]
 fn constructor(
     _runtime: &Runtime,
     env: &[Value],
+    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     _barrier: &mut ContBarrier,
-    k: Value,
 ) -> Result<Application, Exception> {
-    let k: Procedure = k.try_into()?;
     let rtd: Arc<RecordTypeDescriptor> = env[0].clone().try_into()?;
     // The fields of the record are all of the env variables chained with
     // the arguments to this function.
@@ -714,21 +710,20 @@ fn constructor(
         rtd,
         fields: fields.into_iter().map(RwLock::new).collect(),
     })));
-    Ok(Application::new(k, vec![record]))
+    Ok(Application::new(k, None, vec![record]))
 }
 
 #[cps_bridge]
 fn default_protocol(
     runtime: &Runtime,
     env: &[Value],
+    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     _barrier: &mut ContBarrier,
-    k: Value,
 ) -> Result<Application, Exception> {
-    let k: Procedure = k.try_into()?;
     let rtd: Arc<RecordTypeDescriptor> = env[0].clone().try_into()?;
-    let num_args = rtd.num_fields(); // rtd.field_index_offset + rtd.fields.len();
+    let num_args = rtd.num_fields();
 
     let constructor = Procedure::new(
         runtime.clone(),
@@ -738,37 +733,36 @@ fn default_protocol(
         false,
     );
 
-    Ok(Application::new(k, vec![Value::from(constructor)]))
+    Ok(Application::new(k, None, vec![Value::from(constructor)]))
 }
 
 #[cps_bridge]
 fn default_protocol_constructor(
     runtime: &Runtime,
     env: &[Value],
+    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier,
-    k: Value,
 ) -> Result<Application, Exception> {
     let constructor: Procedure = env[0].clone().try_into()?;
     let rtd: Arc<RecordTypeDescriptor> = env[1].clone().try_into()?;
-    let mut args = args.to_vec();
 
+    let mut args = args.to_vec();
     let k = if let Some(parent) = rtd.inherits.last() {
         let remaining = args.split_off(parent.num_fields());
-        Value::from(barrier.new_k(
+        barrier.new_k(
             runtime.clone(),
-            vec![Value::from(remaining), k],
+            vec![Value::from(remaining), Value::from(k)],
             call_constructor_continuation,
             1,
             false,
-        ))
+        )
     } else {
         k
     };
 
-    args.push(k);
-    Ok(Application::new(constructor, args))
+    Ok(Application::new(constructor, Some(k), args))
 }
 
 pub(crate) unsafe extern "C" fn call_constructor_continuation(
@@ -780,12 +774,15 @@ pub(crate) unsafe extern "C" fn call_constructor_continuation(
     unsafe {
         let constructor: Procedure = args.as_ref().unwrap().clone().try_into().unwrap();
         let args: Vector = env.as_ref().unwrap().clone().try_into().unwrap();
-        let mut args = args.0.vec.read().clone();
-        let cont = env.add(1).as_ref().unwrap().clone();
-        args.push(cont);
+        let args = args.0.vec.read().clone();
+        let cont = env.add(1).as_ref().unwrap();
 
         // Call the constructor
-        Box::into_raw(Box::new(Application::new(constructor, args)))
+        Box::into_raw(Box::new(Application::new(
+            constructor,
+            cont.cast_to_scheme_type(),
+            args,
+        )))
     }
 }
 
@@ -1000,12 +997,11 @@ pub(crate) fn is_subtype_of(val: &Value, rt: Arc<RecordTypeDescriptor>) -> Resul
 fn record_predicate_fn(
     _runtime: &Runtime,
     env: &[Value],
+    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     _barrier: &mut ContBarrier,
-    k: Value,
 ) -> Result<Application, Exception> {
-    let k: Procedure = k.try_into()?;
     let [val] = args else {
         unreachable!();
     };
@@ -1013,6 +1009,7 @@ fn record_predicate_fn(
     let rtd: Arc<RecordTypeDescriptor> = env[0].try_to_scheme_type()?;
     Ok(Application::new(
         k,
+        None,
         vec![Value::from(is_subtype_of(val, rtd)?)],
     ))
 }
@@ -1021,12 +1018,11 @@ fn record_predicate_fn(
 pub fn record_predicate(
     runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     _barrier: &mut ContBarrier,
-    k: Value,
 ) -> Result<Application, Exception> {
-    let k: Procedure = k.try_into()?;
     let [rtd] = args else {
         unreachable!();
     };
@@ -1038,19 +1034,18 @@ pub fn record_predicate(
         1,
         false,
     );
-    Ok(Application::new(k, vec![Value::from(pred_fn)]))
+    Ok(Application::new(k, None, vec![Value::from(pred_fn)]))
 }
 
 #[cps_bridge]
 fn record_accessor_fn(
     _runtime: &Runtime,
     env: &[Value],
+    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     _barrier: &mut ContBarrier,
-    k: Value,
 ) -> Result<Application, Exception> {
-    let k: Procedure = k.try_into()?;
     let [val] = args else {
         unreachable!();
     };
@@ -1078,19 +1073,18 @@ fn record_accessor_fn(
             rtd.name
         )));
     }
-    Ok(Application::new(k, vec![val]))
+    Ok(Application::new(k, None, vec![val]))
 }
 
 #[cps_bridge(def = "record-accessor rtd k", lib = "(rnrs records procedural (6))")]
 pub fn record_accessor(
     runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     _barrier: &mut ContBarrier,
-    k: Value,
 ) -> Result<Application, Exception> {
-    let k: Procedure = k.try_into()?;
     let [rtd, idx] = args else {
         unreachable!();
     };
@@ -1110,19 +1104,18 @@ pub fn record_accessor(
         1,
         false,
     );
-    Ok(Application::new(k, vec![Value::from(accessor_fn)]))
+    Ok(Application::new(k, None, vec![Value::from(accessor_fn)]))
 }
 
 #[cps_bridge]
 fn record_mutator_fn(
     _runtime: &Runtime,
     env: &[Value],
+    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     _barrier: &mut ContBarrier,
-    k: Value,
 ) -> Result<Application, Exception> {
-    let k: Procedure = k.try_into()?;
     let [rec, new_val] = args else {
         unreachable!();
     };
@@ -1144,19 +1137,18 @@ fn record_mutator_fn(
     } else {
         *record.0.fields[idx].write() = new_val.clone();
     }
-    Ok(Application::new(k, vec![]))
+    Ok(Application::new(k, None, Vec::new()))
 }
 
 #[cps_bridge(def = "record-mutator rtd k", lib = "(rnrs records procedural (6))")]
 pub fn record_mutator(
     runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     _barrier: &mut ContBarrier,
-    k: Value,
 ) -> Result<Application, Exception> {
-    let k: Procedure = k.try_into()?;
     let [rtd, idx] = args else {
         unreachable!();
     };
@@ -1179,7 +1171,7 @@ pub fn record_mutator(
         2,
         false,
     );
-    Ok(Application::new(k, vec![Value::from(mutator_fn)]))
+    Ok(Application::new(k, None, vec![Value::from(mutator_fn)]))
 }
 
 // Inspection library:

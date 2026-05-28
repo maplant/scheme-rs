@@ -10,7 +10,7 @@ use crate::{
     cps::compile::Compiler,
     env::{Environment, TopLevelEnvironment},
     exceptions::Exception,
-    proc::{Application, ContBarrier},
+    proc::{Application, ContBarrier, Procedure},
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::cps_bridge,
     runtime::Runtime,
@@ -23,10 +23,10 @@ use crate::{
 pub fn eval(
     runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     _barrier: &mut ContBarrier<'_>,
-    k: Value,
 ) -> Result<Application, Exception> {
     let [expression, environment] = args else {
         unreachable!()
@@ -38,7 +38,7 @@ pub fn eval(
     let expr = maybe_await!(Expression::parse(&ctxt, expr, &env, &mut mutable_vars))?;
     let proc = maybe_await!(Compiler::new(mutable_vars).compile(runtime, &expr))?;
     let result = maybe_await!(proc.call(&[], &mut ContBarrier::new()))?;
-    Ok(Application::new(k.try_into()?, result))
+    Ok(Application::new(k, None, result))
 }
 
 impl SchemeCompatible for Environment {
@@ -52,10 +52,10 @@ impl SchemeCompatible for Environment {
 pub fn environment(
     runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     _args: &[Value],
     import_spec: &[Value],
     _barrier: &mut ContBarrier<'_>,
-    k: Value,
 ) -> Result<Application, Exception> {
     let import_sets = import_spec
         .iter()
@@ -70,5 +70,5 @@ pub fn environment(
         maybe_await!(env.import(import_set))?;
     }
     let env = Value::from(Record::from_rust_type(env));
-    Ok(Application::new(k.try_into().unwrap(), vec![env]))
+    Ok(Application::new(k, None, vec![env]))
 }

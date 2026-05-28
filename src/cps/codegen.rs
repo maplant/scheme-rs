@@ -1055,9 +1055,10 @@ impl ProcedureBundle {
             rebinds.rebind(env_var, var);
         }
 
-        // Load args:
+        // Load args. The continuation is passed as a separate parameter (see
+        // below), so only the regular arguments live in the args array.
         let args_param = builder.block_params(entry_block)[ARGS_PARAM];
-        for (i, arg) in self.args.iter().enumerate() {
+        for (i, arg) in self.args.args.iter().enumerate() {
             let var = builder
                 .ins()
                 .load(types::I64, MemFlags::new(), args_param, (i * 8) as i32);
@@ -1067,7 +1068,8 @@ impl ProcedureBundle {
         // Load continuation:
         if let Some(cont) = self.args.continuation {
             let cont_param = builder.block_params(entry_block)[CONTINUATION_PARAM];
-            rebinds.rebind(cont, IrValue::Value(cont_param));
+            let val = builder.ins().bor_imm(cont_param, Tag::Procedure as i64);
+            rebinds.rebind(cont, IrValue::Value(val));
         }
 
         let mut cu = CompilationUnit {

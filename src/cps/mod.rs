@@ -217,9 +217,9 @@ pub struct LambdaBinding {
 
 #[derive(Debug, Clone)]
 pub struct LambdaArgs {
+    continuation: Option<Local>,
     args: Vec<Local>,
     variadic: bool,
-    continuation: Option<Local>,
 }
 
 impl LambdaArgs {
@@ -232,11 +232,17 @@ impl LambdaArgs {
     }
 
     fn iter_mut(&mut self) -> impl Iterator<Item = &mut Local> {
-        self.args.iter_mut().chain(self.continuation.as_mut())
+        self.continuation
+            .as_mut()
+            .into_iter()
+            .chain(self.args.iter_mut())
     }
 
     fn iter(&self) -> impl Iterator<Item = &Local> {
-        self.args.iter().chain(self.continuation.as_ref())
+        self.continuation
+            .as_ref()
+            .into_iter()
+            .chain(self.args.iter())
     }
 
     fn num_required(&self) -> usize {
@@ -285,11 +291,11 @@ impl Cps {
                 cexp.pretty_print(indent);
             }
             mut next @ Cps::PrimOp(_, _, _, _) => {
-                eprint!("{:>indent$}(let (", "");
+                eprint!("{:>indent$}(let* (", "");
                 let mut first = true;
                 while let Cps::PrimOp(op, vals, to, cexpr) = next {
                     if !first {
-                        eprint!("\n{:>new_indent$}", "", new_indent = indent + 6);
+                        eprint!("\n{:>new_indent$}", "", new_indent = indent + 7);
                     }
                     eprint!("[{to:?} ({op:?}");
                     pretty_print_values(vals);
@@ -308,23 +314,31 @@ impl Cps {
                         eprint!("\n{:>new_indent$}", "", new_indent = indent + 9);
                     }
                     let binding_name = binding.val.to_string();
-                    eprint!("[{binding_name} (λ (",);
-                    for (i, arg) in binding.args.args.iter().enumerate() {
-                        if i > 0 {
-                            eprint!(" ");
+                    eprint!("[{binding_name} (λ ",);
+                    if binding.args.continuation.is_none()
+                        && binding.args.num_required() == 0
+                        && binding.args.variadic
+                    {
+                        eprint!("{:?} ", binding.args.args[0]);
+                    } else {
+                        eprint!("(");
+                        let mut first = true;
+                        if let Some(k) = binding.args.continuation {
+                            eprint!("{k:?}");
+                            first = false;
                         }
-                        eprint!("{arg:?}");
-                        if i == binding.args.num_required() && binding.args.variadic {
-                            eprint!("...");
+                        for (i, arg) in binding.args.args.iter().enumerate() {
+                            if !first {
+                                eprint!(" ");
+                            }
+                            if i == binding.args.num_required() && binding.args.variadic {
+                                eprint!(". ");
+                            }
+                            eprint!("{arg:?}");
+                            first = false;
                         }
+                        eprintln!(")");
                     }
-                    if let Some(k) = binding.args.continuation {
-                        if binding.args.num_required() > 0 || binding.args.variadic {
-                            eprint!(" ");
-                        }
-                        eprint!("{k:?}");
-                    }
-                    eprintln!(")");
                     binding.body.pretty_print(indent + 13 + binding_name.len());
                     eprint!(")]");
                 }

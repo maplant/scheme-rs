@@ -136,10 +136,10 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
             #visibility fn #wrapper_name<'a>(
                 runtime: &'a ::scheme_rs::runtime::Runtime,
                 _env: &'a [::scheme_rs::value::Value],
+                k: ::scheme_rs::proc::Procedure,
                 args: &'a [::scheme_rs::value::Value],
                 rest_args: &'a [::scheme_rs::value::Value],
                 barrier: &'a mut ::scheme_rs::proc::ContBarrier,
-                k: ::scheme_rs::value::Value,
             ) -> futures::future::BoxFuture<'a, scheme_rs::proc::Application> {
                 #bridge
 
@@ -170,8 +170,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                             ),
                             Ok(result) => result,
                         };
-                        let k = unsafe { k.try_into().unwrap_unchecked() };
-                        ::scheme_rs::proc::Application::new(k, result)
+                        ::scheme_rs::proc::Application::new(k, None, result)
                     }
                 )
             }
@@ -198,10 +197,10 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
             #visibility fn #wrapper_name(
                 runtime: &::scheme_rs::runtime::Runtime,
                 _env: &[::scheme_rs::value::Value],
+                k: ::scheme_rs::proc::Procedure,
                 args: &[::scheme_rs::value::Value],
                 rest_args: &[::scheme_rs::value::Value],
                 barrier: &mut ::scheme_rs::proc::ContBarrier,
-                k: ::scheme_rs::value::Value,
             ) -> scheme_rs::proc::Application {
                 #bridge
 
@@ -232,8 +231,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                     Ok(result) => result,
                 };
 
-                let k = unsafe { k.try_into().unwrap_unchecked() };
-                ::scheme_rs::proc::Application::new(k, result)
+                ::scheme_rs::proc::Application::new(k, None, result)
             }
 
             ::scheme_rs::registry::inventory::submit! {
@@ -412,10 +410,10 @@ fn codegen_known_bridge(
 /// pub fn apply(
 ///     _runtime: &Runtime,
 ///     _env: &[Value],
+///     k: Procedure,
 ///     args: &[Value],
 ///     rest_args: &[Value],
 ///     _barrier: &mut ContBarrier,
-///     k: Value,
 /// ) -> Result<Application, Exception> {
 ///     if rest_args.is_empty() {
 ///         return Err(Exception::wrong_num_of_args(2, args.len()));
@@ -424,7 +422,7 @@ fn codegen_known_bridge(
 ///     let (last, args) = rest_args.split_last().unwrap();
 ///     let mut args = args.to_vec();
 ///     list_to_vec(last, &mut args);
-///     args.push(k);
+///     args.insert(0, k);
 ///     Ok(Application::new(op.clone(), args))
 /// }
 /// ```
@@ -541,10 +539,10 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
             #vis fn #wrapper_name<'a>(
                 runtime: &'a ::scheme_rs::runtime::Runtime,
                 env: &'a [::scheme_rs::value::Value],
+                k: ::scheme_rs::proc::Procedure,
                 args: &'a [::scheme_rs::value::Value],
                 rest_args: &'a [::scheme_rs::value::Value],
                 barrier: &'a mut ::scheme_rs::proc::ContBarrier,
-                k: ::scheme_rs::value::Value,
             ) -> futures::future::BoxFuture<'a, scheme_rs::proc::Application> {
                 #bridge
 
@@ -552,10 +550,10 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                     match #impl_name(
                         runtime,
                         env,
+                        k,
                         args,
                         rest_args,
                         barrier,
-                        k
                     ).await {
                         Ok(app) => app,
                         Err(err) => ::scheme_rs::exceptions::raise(
@@ -574,20 +572,20 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
             #vis fn #wrapper_name(
                 runtime: &::scheme_rs::runtime::Runtime,
                 env: &[::scheme_rs::value::Value],
+                k: ::scheme_rs::proc::Procedure,
                 args: &[::scheme_rs::value::Value],
                 rest_args: &[::scheme_rs::value::Value],
                 barrier: &mut ::scheme_rs::proc::ContBarrier,
-                k: ::scheme_rs::value::Value,
             ) -> scheme_rs::proc::Application {
                 #bridge
 
                 match #impl_name(
                     runtime,
                     env,
+                    k,
                     args,
                     rest_args,
                     barrier,
-                    k
                 ) {
                     Ok(app) => app,
                     Err(err) => ::scheme_rs::exceptions::raise(

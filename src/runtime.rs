@@ -130,7 +130,7 @@ impl Runtime {
             &mut mutable_vars
         ))?;
         let proc = maybe_await!(Compiler::new(mutable_vars).compile(self, &body))?;
-        maybe_await!(Application::new(proc, Vec::new()).eval(&mut ContBarrier::default()))
+        maybe_await!(Application::new(proc, None, Vec::new()).eval(&mut ContBarrier::default()))
     }
 
     /// Define a library from Rust code. Useful if file system access is disabled.
@@ -436,7 +436,7 @@ unsafe extern "C" fn dropv(val: *const *const (), num_drops: u32) {
     }
 }
 
-/// Create a boxed application
+/// Create a boxed application.
 #[runtime_fn]
 unsafe extern "C" fn apply(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
@@ -446,10 +446,6 @@ unsafe extern "C" fn apply(
     barrier: *mut ContBarrier,
 ) -> *mut Application {
     unsafe {
-        let args: Vec<_> = (0..num_args)
-            .map(|i| Value::from_raw_inc_rc(args.add(i as usize).read()))
-            .collect();
-
         let op = match Value::from_raw_inc_rc(op).unpack() {
             UnpackedValue::Procedure(op) => op,
             x => {
@@ -462,7 +458,19 @@ unsafe extern "C" fn apply(
             }
         };
 
-        let app = Application::new(op, args);
+        let (k, offset) = if !op.0.is_continuation() {
+            (Value::from_raw_inc_rc(args.read()).cast_to_scheme_type(), 1)
+        } else {
+            (None, 0)
+        };
+
+        let app = Application::new(
+            op,
+            k,
+            (offset..num_args)
+                .map(|i| Value::from_raw_inc_rc(args.add(i as usize).read()))
+                .collect(),
+        );
 
         Box::into_raw(Box::new(app))
     }

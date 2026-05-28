@@ -218,7 +218,7 @@ impl Value {
         Self(ptr.map_addr(|raw| raw | tag as usize) as *const ())
     }
 
-    fn from_mut_ptr_and_tag<T: Send + Sync>(ptr: *mut T, tag: Tag) -> Self {
+    pub(crate) fn from_mut_ptr_and_tag<T: Send + Sync>(ptr: *mut T, tag: Tag) -> Self {
         Self(ptr.map_addr(|raw| raw | tag as usize) as *const ())
     }
 
