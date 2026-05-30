@@ -112,6 +112,11 @@
 (assert-equal? (assoc 'b alist) '(b . 2))
 (assert-equal? (assoc 'c alist) #f)
 
+(assert-equal? (append) '())
+(assert-equal? (append (list 1 2)) (list 1 2))
+(assert-equal? (append (list 1 2 3) (list 4 5 6)) (list 1 2 3 4 5 6))
+(assert-equal? (apply append '()) '())
+
 ;; 11.2.2. Syntax definitions
 
 (assert-equal? (let ()
