@@ -509,3 +509,8 @@
             #,(free-identifier=? #'id1 #'id2)
             #,(bound-identifier=? #'id1 #'id2))])))
   (assert-equal? (a fred) '(#t #f)))
+
+;; Conditions
+(guard (e (#t '()))
+       (+ 1 2)
+       (+ 3 4))
