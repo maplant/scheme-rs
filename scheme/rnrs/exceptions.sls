@@ -35,10 +35,10 @@
   
   (define-syntax guard
     (syntax-rules ()
-      ([_ (var clause1 clausen ...) body]
+      ([_ (var clause1 clausen ...) body1 body2 ...]
        (call/cc
         (lambda (continue)
           (with-exception-handler
            (lambda (var)
              (guard-inner continue var clause1 clausen ...))
-           (lambda () body))))))))
+           (lambda () body1 body2 ...))))))))
