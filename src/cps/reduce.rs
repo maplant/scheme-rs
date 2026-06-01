@@ -169,6 +169,7 @@ impl Cps {
                     && args.continuation.is_none()
                     && let Cps::App(k, app_args) = &body
                     && *k != Value::from(val)
+                    && args.args.len() == app_args.len()
                     && args
                         .args
                         .iter()
@@ -243,4 +244,72 @@ fn substitute(
     let substitutions = args.iter().copied().zip(applied).collect::<HashMap<_, _>>();
     body.substitute(&substitutions, uses_cache);
     body
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::env::Local;
+
+    #[test]
+    fn eta_reduction_preserves_lambdas_that_drop_args() {
+        // Lambda(a, b): App(f, a) must NOT be reduced to f,
+        // because that would change the arity and silently drop b.
+        let a = Local::gensym();
+        let b = Local::gensym();
+        let f = Local::gensym();
+        let lambda_val = Local::gensym();
+
+        let cps = Cps::Lambda {
+            args: LambdaArgs::new(vec![a, b], false, None),
+            body: Box::new(Cps::App(Value::from(f), vec![Value::from(a)])),
+            val: lambda_val,
+            cexp: Box::new(Cps::Halt(Value::from(lambda_val))),
+            span: None,
+        };
+
+        let reduced = cps.reduce();
+
+        // The lambda must survive — it should NOT be eta-reduced.
+        match &reduced {
+            Cps::Lambda { args, body, .. } => {
+                assert_eq!(args.args.len(), 2, "lambda should keep both args");
+                assert!(
+                    matches!(body.as_ref(), Cps::App(_, app_args) if app_args.len() == 1),
+                    "body should still forward only one arg"
+                );
+            }
+            other => panic!("expected Lambda, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn eta_reduction_still_works_for_exact_forwarding() {
+        // Lambda(a, b): App(f, a, b) SHOULD be reduced to f.
+        let a = Local::gensym();
+        let b = Local::gensym();
+        let f = Local::gensym();
+        let lambda_val = Local::gensym();
+
+        let cps = Cps::Lambda {
+            args: LambdaArgs::new(vec![a, b], false, None),
+            body: Box::new(Cps::App(
+                Value::from(f),
+                vec![Value::from(a), Value::from(b)],
+            )),
+            val: lambda_val,
+            cexp: Box::new(Cps::Halt(Value::from(lambda_val))),
+            span: None,
+        };
+
+        let reduced = cps.reduce();
+
+        // The lambda should be eta-reduced: Halt(f)
+        match &reduced {
+            Cps::Halt(val) => {
+                assert_eq!(*val, Value::from(f), "should eta-reduce to f");
+            }
+            other => panic!("expected Halt(f) after eta-reduction, got {other:?}"),
+        }
+    }
 }
