@@ -169,6 +169,7 @@ impl Cps {
                     && args.continuation.is_none()
                     && let Cps::App(k, app_args) = &body
                     && *k != Value::from(val)
+                    && args.args.len() == app_args.len()
                     && args
                         .args
                         .iter()
