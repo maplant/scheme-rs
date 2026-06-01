@@ -516,6 +516,8 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
         // Add a slot for the error if this function can error:
         let error_slot = primop_info.can_error.then(|| {
             let error_slot = self.alloc_array(1);
+            let zero = self.builder.ins().iconst(types::I64, 0);
+            self.array_store(error_slot, 0, zero);
             let error_addr = self.builder.ins().stack_addr(types::I64, error_slot, 0);
             args.push(error_addr);
             error_slot
@@ -527,8 +529,8 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
 
         // Check for error if we need to:
         if let Some(error_slot) = error_slot {
-            // Check if the result is undefined:
-            let cond = self.builder.ins().icmp_imm(IntCC::Equal, result, 0);
+            let error_val = self.array_load(error_slot, 0);
+            let cond = self.builder.ins().icmp_imm(IntCC::NotEqual, error_val, 0);
 
             let failure_block = self.builder.create_block();
             let success_block = self.builder.create_block();
@@ -537,11 +539,9 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
                 .ins()
                 .brif(cond, failure_block, &[], success_block, &[]);
 
-            // Throw the error:
             self.builder.switch_to_block(failure_block);
             self.builder.seal_block(failure_block);
 
-            let error_val = self.array_load(error_slot, 0);
             self.drops_codegen();
             self.raise_codegen(error_val);
 
