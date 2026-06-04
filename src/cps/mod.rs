@@ -215,6 +215,16 @@ pub struct LambdaBinding {
     span: Option<Span>,
 }
 
+impl LambdaBinding {
+    fn is_continuation(&self) -> bool {
+        self.args.continuation.is_none()
+    }
+
+    fn is_func(&self) -> bool {
+        self.args.continuation.is_some()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct LambdaArgs {
     continuation: Option<Local>,
