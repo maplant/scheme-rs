@@ -552,12 +552,13 @@ pub fn record_constructor(
 
     let protocols = protocols.into_iter().map(Value::from).collect::<Vec<_>>();
     let rtds = rtds.into_iter().map(Value::from).collect::<Vec<_>>();
-    let chain_protocols = barrier.new_k(
+    let chain_protocols = Procedure::new_cont(
         runtime.clone(),
         vec![Value::from(protocols), Value::from(k)],
         chain_protocols,
         1,
         false,
+        barrier,
     );
 
     Ok(chain_constructors(
@@ -610,12 +611,13 @@ pub(crate) unsafe extern "C" fn chain_protocols(
         }
 
         // Otherwise, turn the remaining chain into the continuation:
-        let k1 = barrier.as_mut().unwrap().new_k(
+        let k1 = Procedure::new_cont(
             Runtime::from_raw_inc_rc(runtime),
             vec![Value::from(remaining_protocols), k],
             chain_protocols,
             1,
             false,
+            barrier.as_mut().unwrap(),
         );
 
         Box::into_raw(Box::new(Application::new(
@@ -751,12 +753,13 @@ fn default_protocol_constructor(
     let mut args = args.to_vec();
     let k = if let Some(parent) = rtd.inherits.last() {
         let remaining = args.split_off(parent.num_fields());
-        barrier.new_k(
+        Procedure::new_cont(
             runtime.clone(),
             vec![Value::from(remaining), Value::from(k)],
             call_constructor_continuation,
             1,
             false,
+            barrier,
         )
     } else {
         k

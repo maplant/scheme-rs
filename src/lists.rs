@@ -378,14 +378,6 @@ pub fn list_to_string(List { items, .. }: List) -> Result<Vec<Value>, Exception>
     Ok(vec![Value::from(WideString::mutable(chars))])
 }
 
-/*
-#[bridge(name = "append", lib = "(rnrs base builtins (6))")]
-pub fn append(list: &Value, to_append: &Value) -> Result<Vec<Value>, Exception> {
-    let mut vec = Vec::new();
-    list_to_vec(list, &mut vec);
-}
- */
-
 #[bridge(name = "append", lib = "(rnrs base builtins (6))")]
 pub fn append(List { items, .. }: List, to_append: &Value) -> Value {
     let mut list = to_append.clone();
@@ -393,15 +385,6 @@ pub fn append(List { items, .. }: List, to_append: &Value) -> Value {
         list = Value::from(Pair::mutable(item, list));
     }
     list
-    /*
-    let mut vec = Vec::new();
-    list_to_vec(list, &mut vec);
-    let mut list = to_append.clone();
-    for item in vec.into_iter().rev() {
-        list = Value::from(Pair::mutable(item, list));
-    }
-    Ok(vec![list])
-    */
 }
 
 #[cps_bridge(def = "map proc list1 . listn", lib = "(rnrs base builtins (6))")]
@@ -435,7 +418,7 @@ pub fn map(
         *input = cdr;
     }
 
-    let map_k = barrier.new_k(
+    let map_k = Procedure::new_cont(
         runtime.clone(),
         vec![
             Value::from(Vec::<Value>::new()),
@@ -446,6 +429,7 @@ pub fn map(
         map_k,
         1,
         false,
+        barrier,
     );
 
     Ok(Application::new(mapper_proc, Some(map_k), args))
@@ -490,7 +474,7 @@ unsafe extern "C" fn map_k(
             *input = cdr;
         }
 
-        let map_k = barrier.as_mut().unwrap().new_k(
+        let map_k = Procedure::new_cont(
             Runtime::from_raw_inc_rc(runtime),
             vec![
                 Value::from(output),
@@ -501,6 +485,7 @@ unsafe extern "C" fn map_k(
             map_k,
             1,
             false,
+            barrier.as_mut().unwrap(),
         );
 
         Box::into_raw(Box::new(Application::new(mapper, Some(map_k), args)))

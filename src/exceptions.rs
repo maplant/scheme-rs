@@ -958,12 +958,13 @@ pub fn with_exception_handler(
 
     let (req_args, var) = k.get_formals();
 
-    let k = barrier.new_k(
+    let k = Procedure::new_cont(
         runtime.clone(),
         vec![Value::from(k)],
         pop_dyn_stack,
         req_args,
         var,
+        barrier
     );
 
     Ok(Application::new(thunk, Some(k), Vec::new()))
@@ -992,7 +993,7 @@ pub fn raise(runtime: Runtime, raised: Value, barrier: &mut ContBarrier) -> Appl
     };
 
     Application::new(
-        barrier.new_k(runtime, vec![raised], unwind_to_exception_handler, 0, false),
+        Procedure::new_cont(runtime, vec![raised], unwind_to_exception_handler, 0, false, barrier),
         None,
         Vec::new(),
     )
@@ -1037,24 +1038,26 @@ unsafe extern "C" fn unwind_to_exception_handler(
                     // If this is a winder, we should call the out winder while unwinding
                     Application::new(
                         winder.out_thunk,
-                        Some(barrier.new_k(
+                        Some(Procedure::new_cont(
                             Runtime::from_raw_inc_rc(runtime),
                             vec![raised],
                             unwind_to_exception_handler,
                             0,
                             false,
+                            barrier,
                         )),
                         Vec::new(),
                     )
                 }
                 Some(DynStackElem::ExceptionHandler(handler)) => Application::new(
                     handler,
-                    Some(barrier.new_k(
+                    Some(Procedure::new_cont(
                         Runtime::from_raw_inc_rc(runtime),
                         vec![raised.clone()],
                         reraise_exception,
                         0,
                         true,
+                        barrier,
                     )),
                     vec![raised],
                 ),
@@ -1074,10 +1077,6 @@ unsafe extern "C" fn reraise_exception(
     unsafe {
         let runtime = Runtime(Gc::from_raw_inc_rc(runtime));
 
-        /*
-        // env[0] is the exception
-        let exception = env.as_ref().unwrap().clone();
-         */
         let exception = Value::from_rust_type(NonContinuable::default());
 
         Box::into_raw(Box::new(Application::new(

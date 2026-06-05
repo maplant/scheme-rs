@@ -444,7 +444,6 @@ impl ProcedureInner {
                     args.as_ptr(),
                     barrier as *mut ContBarrier<'_>,
                     Gc::as_ptr(&k.as_ref().unwrap().0),
-                    // Value::from_raw(Value::as_raw(k.as_ref().unwrap())),
                 )
             },
         };
@@ -605,6 +604,25 @@ impl Procedure {
         variadic: bool,
     ) -> Self {
         Self::with_debug_info(runtime, env, func.into(), num_required_args, variadic, None)
+    }
+
+    pub(crate) fn new_cont(
+        runtime: Runtime,
+        env: Vec<Value>,
+        k: ContinuationPtr,
+        num_required_args: usize,
+        variadic: bool,
+        cont_barrier: &mut ContBarrier,
+    ) -> Self {
+        cont_barrier.push_marks();
+        Procedure::with_debug_info(
+            runtime,
+            env,
+            FuncPtr::Continuation(k),
+            num_required_args,
+            variadic,
+            None,
+        )
     }
 
     pub(crate) fn with_debug_info(
@@ -958,28 +976,6 @@ impl<'a> ContBarrier<'a> {
         }
     }
 
-    /// This is the only method you can use to create continuations, in order to
-    /// ensure that a continuation isn't allocated without a corresponding push
-    /// to cont_marks
-    pub(crate) fn new_k(
-        &mut self,
-        runtime: Runtime,
-        env: Vec<Value>,
-        k: ContinuationPtr,
-        num_required_args: usize,
-        variadic: bool,
-    ) -> Procedure {
-        self.push_marks();
-        Procedure::with_debug_info(
-            runtime,
-            env,
-            FuncPtr::Continuation(k),
-            num_required_args,
-            variadic,
-            None,
-        )
-    }
-
     pub fn save(&self) -> SavedDynamicState {
         SavedDynamicState {
             id: self.id,
@@ -1319,12 +1315,13 @@ fn escape_procedure(
         Ok(Application::new(k, None, args))
     } else {
         let args = Value::from(args);
-        let k = barrier.new_k(
+        let k = Procedure::new_cont(
             runtime.clone(),
             vec![Value::from(k), args, saved_barrier_val],
             unwind,
             0,
             false,
+            barrier,
         );
         Ok(Application::new(k, None, Vec::new()))
     }
@@ -1366,12 +1363,13 @@ unsafe extern "C" fn unwind(
                     // Call the out winder while unwinding
                     let app = Application::new(
                         winder.out_thunk,
-                        Some(barrier.new_k(
+                        Some(Procedure::new_cont(
                             Runtime::from_raw_inc_rc(runtime),
                             vec![k, args, dest_stack_val],
                             unwind,
                             0,
                             false,
+                            barrier,
                         )),
                         Vec::new(),
                     );
@@ -1383,12 +1381,13 @@ unsafe extern "C" fn unwind(
 
         // Begin winding
         let app = Application::new(
-            barrier.new_k(
+            Procedure::new_cont(
                 Runtime::from_raw_inc_rc(runtime),
                 vec![k, args, dest_stack_val, Value::from(false)],
                 wind,
                 0,
                 false,
+                barrier,
             ),
             None,
             Vec::new(),
@@ -1439,7 +1438,7 @@ unsafe extern "C" fn wind(
                     // Call the in winder while winding
                     let app = Application::new(
                         winder.in_thunk.clone(),
-                        Some(barrier.new_k(
+                        Some(Procedure::new_cont(
                             Runtime::from_raw_inc_rc(runtime),
                             vec![
                                 k,
@@ -1450,6 +1449,7 @@ unsafe extern "C" fn wind(
                             wind,
                             0,
                             false,
+                            barrier,
                         )),
                         Vec::new(),
                     );
@@ -1543,12 +1543,13 @@ pub fn call_with_values(
     // Get the details of the consumer:
     let (num_required_args, variadic) = { (consumer.0.num_required_args, consumer.0.variadic) };
 
-    let call_consumer_closure = barrier.new_k(
+    let call_consumer_closure = Procedure::new_cont(
         runtime.clone(),
         vec![Value::from(consumer), Value::from(k)],
         call_consumer_with_values,
         num_required_args,
         variadic,
+        barrier,
     );
 
     Ok(Application::new(
@@ -1591,7 +1592,7 @@ pub fn dynamic_wind(
     let in_thunk: Procedure = in_thunk_val.clone().try_into()?;
     let _: Procedure = body_thunk_val.clone().try_into()?;
 
-    let call_body_thunk_cont = barrier.new_k(
+    let call_body_thunk_cont = Procedure::new_cont(
         runtime.clone(),
         vec![
             in_thunk_val.clone(),
@@ -1602,6 +1603,7 @@ pub fn dynamic_wind(
         call_body_thunk,
         0,
         true,
+        barrier,
     );
 
     Ok(Application::new(
@@ -1637,12 +1639,13 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
             out_thunk: out_thunk.clone().try_into().unwrap(),
         }));
 
-        let k = barrier.new_k(
+        let k = Procedure::new_cont(
             Runtime::from_raw_inc_rc(runtime),
             vec![out_thunk, k],
             call_out_thunks,
             0,
             true,
+            barrier,
         );
 
         let app = Application::new(body_thunk, Some(k), Vec::new());
@@ -1670,12 +1673,13 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
         let barrier = barrier.as_mut().unwrap_unchecked();
         barrier.pop_dyn_stack();
 
-        let k = barrier.new_k(
+        let k = Procedure::new_cont(
             Runtime::from_raw_inc_rc(runtime),
             vec![body_thunk_res, k],
             forward_body_thunk_result,
             0,
             true,
+            barrier,
         );
 
         let app = Application::new(out_thunk, Some(k), Vec::new());
@@ -1780,7 +1784,7 @@ pub fn abort_to_prompt(
 ) -> Result<Application, Exception> {
     let [tag] = args else { unreachable!() };
 
-    let unwind_to_prompt = barrier.new_k(
+    let unwind_to_prompt = Procedure::new_cont(
         runtime.clone(),
         vec![
             Value::from(k),
@@ -1791,6 +1795,7 @@ pub fn abort_to_prompt(
         unwind_to_prompt,
         0,
         false,
+        barrier,
     );
 
     Ok(Application::new(unwind_to_prompt, None, Vec::new()))
@@ -1861,12 +1866,13 @@ unsafe extern "C" fn unwind_to_prompt(
                     // If this is a winder, we should call the out winder while unwinding
                     Application::new(
                         winder.out_thunk,
-                        Some(barrier.new_k(
+                        Some(Procedure::new_cont(
                             Runtime::from_raw_inc_rc(runtime),
                             vec![k, args, Value::from(tag), saved_barrier],
                             unwind_to_prompt,
                             0,
                             false,
+                            barrier,
                         )),
                         Vec::new(),
                     )
@@ -1915,7 +1921,7 @@ fn delimited_continuation(
         Ok(Application::new(dk.try_into()?, None, args))
     } else {
         let args = Value::from(args);
-        let k = barrier.new_k(
+        let k = Procedure::new_cont(
             runtime.clone(),
             vec![
                 dk,
@@ -1927,6 +1933,7 @@ fn delimited_continuation(
             wind_delim,
             0,
             false,
+            barrier,
         );
         Ok(Application::new(k, None, Vec::new()))
     }
@@ -1971,7 +1978,7 @@ unsafe extern "C" fn wind_delim(
                 // Call the in winder while winding
                 let app = Application::new(
                     winder.in_thunk.clone(),
-                    Some(barrier.new_k(
+                    Some(Procedure::new_cont(
                         Runtime::from_raw_inc_rc(runtime),
                         vec![
                             k,
@@ -1982,6 +1989,7 @@ unsafe extern "C" fn wind_delim(
                         wind,
                         0,
                         false,
+                        barrier,
                     )),
                     Vec::new(),
                 );

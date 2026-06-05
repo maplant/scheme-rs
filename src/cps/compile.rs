@@ -4,7 +4,7 @@ use super::*;
 use crate::{
     Either,
     ast::*,
-    cps::analysis::FreeVariablesCache,
+    cps::analysis::{FreeVariablesCache},
     exceptions::Exception,
     expand::{ExpansionCombiner, SyntaxRule},
     proc::Procedure,
@@ -46,12 +46,14 @@ impl Compiler {
             }],
             Box::new(expr.compile(&self, &mut |value| Cps::App(value, vec![Value::from(k)]))),
         );
-        let reduced = cps.vals_to_cells(&self.mutable_vars).reduce();
+        let reduced = cps.vals_to_cells(&self.mutable_vars).reduce().contify();
+
         // Check if there are any remaining free variables, signaling a phase error
         if !self.free_vars_cache.free_variables(&reduced).is_empty() {
             // TODO: More detailed error message with name of variables
             return Err(Exception::error("reference to out of phase identifiers"));
         }
+
         Ok(maybe_await!(
             runtime.compile_expr(reduced, self.free_vars_cache)
         ))

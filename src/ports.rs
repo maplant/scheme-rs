@@ -4260,12 +4260,13 @@ pub fn call_with_input_file(
     );
 
     let (num_req_args, variadic) = k.get_formals();
-    let k = barrier.new_k(
+    let k = Procedure::new_cont(
         runtime.clone(),
         vec![Value::from(port.clone()), Value::from(k)],
         close_port_and_call_k,
         num_req_args,
         variadic,
+        barrier,
     );
 
     Ok(Application::new(proc, Some(k), vec![Value::from(port)]))
@@ -4317,12 +4318,13 @@ pub fn call_with_output_file(
     );
 
     let (num_req_args, variadic) = k.get_formals();
-    let k = barrier.new_k(
+    let k = Procedure::new_cont(
         runtime.clone(),
         vec![Value::from(port.clone()), Value::from(k)],
         close_port_and_call_k,
         num_req_args,
         variadic,
+        barrier,
     );
 
     Ok(Application::new(proc, Some(k), vec![Value::from(port)]))
@@ -4352,12 +4354,13 @@ unsafe extern "C" fn close_port_and_call_k(
         let k_proc = k.cast_to_scheme_type::<Procedure>().unwrap();
         let args = k_proc.collect_args(args);
 
-        let k = barrier.as_mut().unwrap().new_k(
+        let k = Procedure::new_cont(
             runtime.clone(),
             vec![k, Value::from(args)],
             call_k_with_env,
             0,
             false,
+            barrier.as_mut().unwrap()
         );
 
         Box::into_raw(Box::new(Application::new(
@@ -4447,20 +4450,22 @@ pub fn with_input_from_file(
 
     let (req_args, var) = k.get_formals();
 
-    let k1 = barrier.new_k(
+    let k1 = Procedure::new_cont(
         runtime.clone(),
         vec![Value::from(k.clone())],
         pop_dyn_stack,
         req_args,
         var,
+        barrier,
     );
 
-    let k2 = barrier.new_k(
+    let k2 = Procedure::new_cont(
         runtime.clone(),
         vec![Value::from(port.clone()), Value::from(k1)],
         close_port_and_call_k,
         0,
         false,
+        barrier,
     );
 
     Ok(Application::new(thunk, Some(k2), Vec::new()))
@@ -4516,20 +4521,22 @@ pub fn with_output_to_file(
 
     let (req_args, var) = k.get_formals();
 
-    let k1 = barrier.new_k(
+    let k1 = Procedure::new_cont(
         runtime.clone(),
         vec![Value::from(k)],
         pop_dyn_stack,
         req_args,
         var,
+        barrier,
     );
 
-    let k2 = barrier.new_k(
+    let k2 = Procedure::new_cont(
         runtime.clone(),
         vec![Value::from(port.clone()), Value::from(k1)],
         close_port_and_call_k,
         req_args,
         var,
+        barrier,
     );
 
     Ok(Application::new(thunk, Some(k2), Vec::new()))

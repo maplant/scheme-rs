@@ -27,6 +27,7 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 pub(crate) mod analysis;
 pub(crate) mod codegen;
 pub(crate) mod compile;
+mod contify;
 mod reduce;
 
 #[derive(Clone, PartialEq)]
@@ -261,6 +262,12 @@ impl LambdaArgs {
 }
 
 impl Cps {
+    /// Take ownership of and modify the term, replacing it
+    fn update_term(&mut self, updater: impl FnOnce(Cps) -> Cps) {
+        let old_term = std::mem::replace(self, Cps::Halt(Value::from(RuntimeValue::undefined())));
+        *self = (updater)(old_term);
+    }
+
     /// Perform substitutions on local variables.
     // TODO: This could probably be improved by being a little smarter about
     // when we clear the uses cache (i.e. return a bool if any substitutions
