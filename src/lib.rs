@@ -3,6 +3,7 @@
 extern crate self as scheme_rs;
 
 pub(crate) mod ast;
+pub mod atomic;
 pub(crate) mod character;
 pub(crate) mod cps;
 pub(crate) mod enumerations;
