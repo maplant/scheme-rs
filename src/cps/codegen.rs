@@ -408,6 +408,9 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
             .ins()
             .iconst(types::I32, expansions.len() as i64);
 
+        let error_slot = self.alloc_array(1);
+        let error_addr = self.builder.ins().stack_addr(types::I64, error_slot, 0);
+
         let expand_template = self
             .module
             .declare_func_in_func(self.runtime_funcs.expand_template, self.builder.func);
@@ -418,9 +421,27 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
                 expansion_combiner,
                 expansions_addr,
                 expansions_len,
+                error_addr,
             ],
         );
         let expanded = self.builder.inst_results(call)[0];
+
+        let cond = self.builder.ins().icmp_imm(IntCC::Equal, expanded, 0);
+        let failure_block = self.builder.create_block();
+        let success_block = self.builder.create_block();
+        self.builder
+            .ins()
+            .brif(cond, failure_block, &[], success_block, &[]);
+
+        self.builder.switch_to_block(failure_block);
+        self.builder.seal_block(failure_block);
+        let error_val = self.array_load(error_slot, 0);
+        self.drops_codegen();
+        self.raise_codegen(error_val);
+
+        self.builder.switch_to_block(success_block);
+        self.builder.seal_block(success_block);
+
         self.rebinds.rebind(dest, IrValue::Value(expanded));
         self.push_alloc(expanded);
         self.cps_codegen(cexpr, deferred);

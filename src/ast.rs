@@ -1389,28 +1389,6 @@ impl Expression {
     }
 }
 
-/*
-#[derive(Debug, Clone, PartialEq, Trace)]
-pub enum Literal {
-    Number(Number),
-    Boolean(bool),
-    Character(char),
-    String(String),
-}
-
-impl fmt::Display for Literal {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Number(num) => write!(f, "{num}"),
-            Self::Boolean(true) => write!(f, "#t"),
-            Self::Boolean(false) => write!(f, "#f"),
-            Self::Character(chr) => write!(f, "{chr}"),
-            Self::String(str) => write!(f, "{str:?}"),
-        }
-    }
-}
-*/
-
 #[derive(Debug, Clone, Trace)]
 pub struct Quote {
     pub val: Value,
