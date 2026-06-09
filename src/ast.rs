@@ -985,6 +985,7 @@ impl From<bool> for ImportPolicy {
 pub struct ParseContext {
     runtime: Runtime,
     import_policy: ImportPolicy,
+    ellipsis: Symbol,
 }
 
 impl ParseContext {
@@ -992,6 +993,15 @@ impl ParseContext {
         Self {
             runtime: runtime.clone(),
             import_policy: import_policy.into(),
+            ellipsis: Symbol::intern("..."),
+        }
+    }
+
+    pub(crate) fn with_ellipsis(&self, ellipsis: Symbol) -> Self {
+        Self {
+            runtime: self.runtime.clone(),
+            import_policy: self.import_policy.clone(),
+            ellipsis,
         }
     }
 }
@@ -1257,9 +1267,8 @@ impl Expression {
                             Primitive::Or => maybe_await!(Or::parse(ctxt, tail, env, mutable_vars))
                                 .map(Expression::Or),
                             Primitive::Quote => Quote::parse(tail, &form).map(Expression::Quote),
-                            Primitive::Syntax => {
-                                SyntaxQuote::parse(tail, env, &form).map(Expression::SyntaxQuote)
-                            }
+                            Primitive::Syntax => SyntaxQuote::parse(ctxt, tail, env, &form)
+                                .map(Expression::SyntaxQuote),
                             Primitive::SyntaxCase => maybe_await!(SyntaxCase::parse(
                                 ctxt,
                                 tail,
@@ -1363,12 +1372,17 @@ pub struct SyntaxQuote {
 }
 
 impl SyntaxQuote {
-    fn parse(exprs: &[Syntax], env: &Environment, form: &Syntax) -> Result<Self, Exception> {
+    fn parse(
+        ctxt: &ParseContext,
+        exprs: &[Syntax],
+        env: &Environment,
+        form: &Syntax,
+    ) -> Result<Self, Exception> {
         match exprs {
             [] => Err(error::expected_more_arguments(form)),
             [expr] => {
                 let mut expansions = HashMap::default();
-                let template = Template::compile(expr, env, &mut expansions)?;
+                let template = Template::compile(expr, env, &mut expansions, ctxt.ellipsis)?;
                 Ok(SyntaxQuote {
                     template,
                     expansions,
@@ -1917,6 +1931,7 @@ impl Definitions {
         let ctxt = ParseContext {
             runtime: runtime.clone(),
             import_policy: ImportPolicy::Allow,
+            ellipsis: Symbol::intern("..."),
         };
         // No explanation needed
         match form.as_list() {
@@ -2527,7 +2542,35 @@ impl SyntaxCase {
         form: &Syntax,
         mutable_vars: &mut HashSet<Local>,
     ) -> Result<Self, Exception> {
-        let (arg, keywords, mut rules) = match exprs {
+        let (arg, keywords, mut rules, ellipsis) = match exprs {
+            [
+                arg,
+                Syntax::Identifier {
+                    ident: custom_ellipsis,
+                    ..
+                },
+                Syntax::List { list, .. },
+                rules @ ..,
+            ] => {
+                let mut keywords = HashSet::default();
+                for keyword in &list[..list.len() - 1] {
+                    if let Syntax::Identifier { ident, .. } = keyword {
+                        keywords.insert(ident);
+                    } else {
+                        return Err(error::expected_identifier(form, Some(keyword)));
+                    }
+                }
+                (arg, keywords, rules, custom_ellipsis.sym)
+            }
+            [
+                arg,
+                Syntax::Identifier {
+                    ident: custom_ellipsis,
+                    ..
+                },
+                empty,
+                rules @ ..,
+            ] if empty.is_null() => (arg, HashSet::default(), rules, custom_ellipsis.sym),
             [arg, Syntax::List { list, .. }, rules @ ..] => {
                 let mut keywords = HashSet::default();
                 // TODO: ensure keywords_list is proper
@@ -2538,9 +2581,11 @@ impl SyntaxCase {
                         return Err(error::expected_identifier(form, Some(keyword)));
                     }
                 }
-                (arg, keywords, rules)
+                (arg, keywords, rules, Symbol::intern("..."))
             }
-            [arg, empty, rules @ ..] if empty.is_null() => (arg, HashSet::default(), rules),
+            [arg, empty, rules @ ..] if empty.is_null() => {
+                (arg, HashSet::default(), rules, Symbol::intern("..."))
+            }
             _ => return Err(error::bad_form(form, None)),
         };
         let mut syntax_rules = Vec::new();
@@ -2556,7 +2601,8 @@ impl SyntaxCase {
                             None,
                             output_expression,
                             env,
-                            mutable_vars
+                            mutable_vars,
+                            ellipsis,
                         ))?);
                         rules = tail;
                     }
@@ -2569,6 +2615,7 @@ impl SyntaxCase {
                             output_expression,
                             env,
                             mutable_vars,
+                            ellipsis,
                         ))?);
                         rules = tail;
                     }

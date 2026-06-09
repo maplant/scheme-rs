@@ -8,6 +8,12 @@
   (define-syntax syntax-rules
     (lambda (x)
       (syntax-case x ()
+        ((_ ellipsis (i ...) ((keyword . pattern) template) ...)
+         (identifier? (syntax ellipsis))
+         (syntax (lambda (x)
+                   (syntax-case x ellipsis (i ...)
+                     ((dummy . pattern) (syntax template))
+                     ...))))
         ((_ (i ...) ((keyword . pattern) template) ...)
          (syntax (lambda (x)
                    (syntax-case x (i ...)
