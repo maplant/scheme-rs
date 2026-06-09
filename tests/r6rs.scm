@@ -34,13 +34,13 @@
 (define y 42)
 
 (assert-equal? (let ((y 43))
-               (+ x y))
-             66)
+                 (+ x y))
+               66)
 
 (assert-equal? (let ((y 43))
-               (let ((y 44))
-                 (+ x y)))
-             67)
+                 (let ((y 44))
+                   (+ x y)))
+               67)
 
 ;; 1.6 Procedures
 
@@ -70,15 +70,15 @@
 ;; 1.8 Assignments
 
 (assert-equal? (let ((x 23))
-               (set! x 42)
-               x)
-             42)
+                 (set! x 42)
+                 x)
+               42)
 
 ;; 1.11 Continuations
 (assert-equal? (+ 1 (call-with-current-continuation
-                   (lambda (escape)
-                     (+ 2 (escape 3)))))
-             4)
+                     (lambda (escape)
+                       (+ 2 (escape 3)))))
+               4)
 
 ;; ?? boolean=?
 
@@ -120,30 +120,30 @@
 ;; 11.2.2. Syntax definitions
 
 (assert-equal? (let ()
-               (define even?
-                 (lambda (x)
-                   (or (= x 0) (odd? (- x 1)))))
-               (define-syntax odd?
-                 (syntax-rules ()
-                   ((odd? x) (not (even? x)))))
-               (even? 10))
-             #t)
+                 (define even?
+                   (lambda (x)
+                     (or (= x 0) (odd? (- x 1)))))
+                 (define-syntax odd?
+                   (syntax-rules ()
+                     ((odd? x) (not (even? x)))))
+                 (even? 10))
+               #t)
 
 (assert-equal? (let ()
-               (define-syntax bind-to-zero
-                 (syntax-rules ()
-                   ((bind-to-zero id) (define id 0))))
-               (bind-to-zero x)
-               x)
-             0)
+                 (define-syntax bind-to-zero
+                   (syntax-rules ()
+                     ((bind-to-zero id) (define id 0))))
+                 (bind-to-zero x)
+                 x)
+               0)
 
 ;; 11.3 Bodies
 
 (assert-equal? (let ((x 5))
-               (define foo (lambda (y) (bar x y)))
-               (define bar (lambda (a b) (+ (* a b) a)))
-               (foo (+ x 3)))
-             45)
+                 (define foo (lambda (y) (bar x y)))
+                 (define bar (lambda (a b) (+ (* a b) a)))
+                 (foo (+ x 3)))
+               45)
 
 
 ;; 11.4.2. Procedures
@@ -151,99 +151,99 @@
 ;; (skipping a bunch of these because this stuff works)
 
 (assert-equal? ((lambda (x)
-                (define (p y)
-                  (+ y 1))
-                (+ (p x) x))
-              5)
-             11)
+                  (define (p y)
+                    (+ y 1))
+                  (+ (p x) x))
+                5)
+               11)
 
 ;; 11.4.3 Conditionals
 
 (assert-equal? (if (> 3 2) 'yes 'no) 'yes)
 (assert-equal? (if (> 2 3) 'yes 'no) 'no)
 (assert-equal? (if (> 3 2)
-                 (- 3 2)
-                 (+ 3 2))
-             1)
+                   (- 3 2)
+                   (+ 3 2))
+               1)
 
 ;; 11.4.5 Derived conditionals
 
 (assert-equal? (cond ((> 3 2) 'greater)
-                   ((< 3 2) 'less))
-             'greater)
+                     ((< 3 2) 'less))
+               'greater)
 (assert-equal? (cond ((> 3 3) 'greater)
-                   ((< 3 3) 'less)
-                   (else 'equal))
-             'equal)
+                     ((< 3 3) 'less)
+                     (else 'equal))
+               'equal)
 (assert-equal? (cond ('(1 2 3) => cadr)
-                   (else #f))
-             2)
+                     (else #f))
+               2)
 
 (assert-equal? (case (* 2 3)
-               ((2 3 5 7) 'prime)
-               ((1 4 6 8 9) 'composite))
-             'composite)
+                 ((2 3 5 7) 'prime)
+                 ((1 4 6 8 9) 'composite))
+               'composite)
 (assert-equal? (case (car '(c d))
-               ((a e i o u) 'vowel)
-               ((w y) 'semivowel)
-               (else 'consonant))
-             'consonant)
+                 ((a e i o u) 'vowel)
+                 ((w y) 'semivowel)
+                 (else 'consonant))
+               'consonant)
 
 
 ;; 11.4.6. Binding constructs
 
 (assert-equal? (let ((x 2) (y 3))
-               (let* ((x 7)
-                      (z (+ x y)))
-                 (* z x)))
-             70)
+                 (let* ((x 7)
+                        (z (+ x y)))
+                   (* z x)))
+               70)
 
 (assert-equal? (letrec ((even?
-                       (lambda (n)
-                         (if (zero? n)
-                             #t
-                             (odd? (- n 1)))))
-                      (odd?
-                       (lambda (n)
-                         (if (zero? n)
-                             #f
-                             (even? (- n 1))))))
-               (even? 88))
-             #t)
+                         (lambda (n)
+                           (if (zero? n)
+                               #t
+                               (odd? (- n 1)))))
+                        (odd?
+                         (lambda (n)
+                           (if (zero? n)
+                               #f
+                               (even? (- n 1))))))
+                 (even? 88))
+               #t)
 
 (assert-equal? (letrec* ((p
-                        (lambda (x)
-                          (+ 1 (q (- x 1)))))
-                       (q
-                        (lambda (y)
-                          (if (zero? y)
-                              0
-                              (+ 1 (p (- y 1))))))
-                       (x (p 5))
-                       (y x))
-               y)
-             5)
+                          (lambda (x)
+                            (+ 1 (q (- x 1)))))
+                         (q
+                          (lambda (y)
+                            (if (zero? y)
+                                0
+                                (+ 1 (p (- y 1))))))
+                         (x (p 5))
+                         (y x))
+                 y)
+               5)
 
 (assert-equal? (let-values (((a b) (values 1 2))
-                          ((c d) (values 3 4)))
-               (list a b c d))
-             '(1 2 3 4))
+                            ((c d) (values 3 4)))
+                 (list a b c d))
+               '(1 2 3 4))
 
 (assert-equal? (let-values (((a b . c) (values 1 2 3 4)))
-               (list a b c))
-             '(1 2 (3 4)))
+                 (list a b c))
+               '(1 2 (3 4)))
 
 (assert-equal? (let ((a 'a) (b 'b) (x 'x) (y 'y))
-               (let-values (((a b) (values x y))
-                            ((x y) (values a b)))
-                 (list a b x y)))
-             '(x y a b))
+                 (let-values (((a b) (values x y))
+                              ((x y) (values a b)))
+                   (list a b x y)))
+               '(x y a b))
 
 (assert-equal? (let ((a 'a) (b 'b) (x 'x) (y 'y))
-               (let*-values (((a b) (values x y))
-                             ((x y) (values a b)))
-                 (list a b x y)))
-             '(x y x y))
+                 (let*-values (((a b) (values x y))
+                               ((x y) (values a b)))
+                   (list a b x y)))
+               '(x y x y))
 
 ;; 11.5. Equivalence predicates
 
@@ -251,17 +251,17 @@
 ;; wrong, but a much deeper problem than one with the implementation of eq?
 
 (assert-equal? (eq? (list 'a) (list 'a))
-             #f)
+               #f)
 
 (assert-equal? (let ((x 1))
-               (eq? x x))
-             #t)
+                 (eq? x x))
+               #t)
 
 (assert-equal? (let loopv ((n 1))
-               (if (> n 10)
-                   '()
-                   (cons n (loopv (+ n 1)))))
-             '(1 2 3 4 5 6 7 8 9 10))
+                 (if (> n 10)
+                     '()
+                     (cons n (loopv (+ n 1)))))
+               '(1 2 3 4 5 6 7 8 9 10))
 
 (define-syntax loop
   (lambda (x)
@@ -274,11 +274,11 @@
               (let f () e ... (f)))))])))
 
 (assert-equal? (let ((n 3) (ls '()))
-               (loop
-                (if (= n 0) (break ls))
-                (set! ls (cons 'a ls))
-                (set! n (- n 1))))
-             '(a a a))
+                 (loop
+                  (if (= n 0) (break ls))
+                  (set! ls (cons 'a ls))
+                  (set! n (- n 1))))
+               '(a a a))
 
 ;; 11.7 Arithmetic
 
@@ -288,46 +288,46 @@
 ;; 11.15 Control features
 
 (assert-equal? (let ((path '())
-                   (c #f))
-               (let ((add (lambda (s)
-                            (set! path (cons s path)))))
-                 (dynamic-wind
-                     (lambda () (add 'connect))
-                     (lambda ()
-                       (add (call-with-current-continuation
-                             (lambda (c0)
-                               (set! c c0)
-                               'talk1))))
-                     (lambda () (add 'disconnect)))
-                 (if (< (length path) 4)
-                     (c 'talk2)
-                     (reverse path))))
-             '(connect talk1 disconnect connect talk2 disconnect))
+                     (c #f))
+                 (let ((add (lambda (s)
+                              (set! path (cons s path)))))
+                   (dynamic-wind
+                       (lambda () (add 'connect))
+                       (lambda ()
+                         (add (call-with-current-continuation
+                               (lambda (c0)
+                                 (set! c c0)
+                                 'talk1))))
+                       (lambda () (add 'disconnect)))
+                   (if (< (length path) 4)
+                       (c 'talk2)
+                       (reverse path))))
+               '(connect talk1 disconnect connect talk2 disconnect))
 
 (assert-equal? (let ((n 0))
-               (call-with-current-continuation
-                (lambda (k)
-                  (dynamic-wind
-                      (lambda ()
-                        (set! n (+ n 1))
-                        (k))
-                      (lambda ()
-                        (set! n (+ n 2)))
-                      (lambda ()
-                        (set! n (+ n 4))))))
-               n)
-             1)
+                 (call-with-current-continuation
+                  (lambda (k)
+                    (dynamic-wind
+                        (lambda ()
+                          (set! n (+ n 1))
+                          (k))
+                        (lambda ()
+                          (set! n (+ n 2)))
+                        (lambda ()
+                          (set! n (+ n 4))))))
+                 n)
+               1)
 
 ;; 11.18 Binding constructs for syntactic-keywords
 (assert-equal? (let-syntax ((when (syntax-rules ()
-                                  ((when test stmt1 stmt2 ...)
-                                   (if test
-                                       (begin stmt1
-                                              stmt2 ...))))))
-               (let ((if #t))
-                 (when if (set! if 'now))
-                 if))
-             'now)
+                                    ((when test stmt1 stmt2 ...)
+                                     (if test
+                                         (begin stmt1
+                                                stmt2 ...))))))
+                 (let ((if #t))
+                   (when if (set! if 'now))
+                   if))
+               'now)
 
 (assert-equal? (let ()
                  (let-syntax
@@ -335,7 +335,7 @@
                              ((def stuff ...) (define stuff ...)))))
                    (def foo1 42))
                  foo1)
-             42)
+               42)
 
 (assert-equal? (let ((x 'outer))
                  (let-syntax ((m (syntax-rules () ((m) x))))
@@ -343,32 +343,31 @@
                      (m))))
                'outer)
 
-;; TODO: Fix parser for this, I guess.
-;; (assert-equal? (let ()
-;;              (let-syntax ())
-;;              5)
-;;            5)
+(assert-equal? (let ()
+                 (let-syntax ())
+                 5)
+               5)
 
 (assert-equal? (letrec-syntax
-                 ((my-or (syntax-rules ()
-                           ((my-or) #f)
-                           ((my-or e) e)
-                           ((my-or e1 e2 ...)
-                            (let ((temp e1))
-                              (if temp
-                                  temp
-                                  (my-or e2 ...)))))))
-               (let ((x #f)
-                     (y 7)
-                     (temp 8)
-                     ;; TODO: In the R6RS docs these are let and if and everything
-                     ;; works fine. Got to fix the parser
-                     (let odd?)
-                     (if even?))
-                 (my-or x
-                        (let temp)
-                        (if y)
-                        y)))
+                   ((my-or (syntax-rules ()
+                             ((my-or) #f)
+                             ((my-or e) e)
+                             ((my-or e1 e2 ...)
+                              (let ((temp e1))
+                                (if temp
+                                    temp
+                                    (my-or e2 ...)))))))
+                 (let ((x #f)
+                       (y 7)
+                       (temp 8)
+                       ;; TODO: In the R6RS docs these are let and if and everything
+                       ;; works fine. Got to fix the parser
+                       (let odd?)
+                       (if even?))
+                   (my-or x
+                          (let temp)
+                          (if y)
+                          y)))
                7)
 
 (assert-equal? (let ((f (lambda (x) (+ x 1))))
@@ -390,9 +389,9 @@
 ;; Extra stuff:
 
 (assert-equal? (let ([x 1])
-               (syntax-case #'() ()
-                 ([] x)))
-             1)
+                 (syntax-case #'() ()
+                   ([] x)))
+               1)
 
 ;; Guile hygiene example:
 
@@ -514,3 +513,12 @@
 (guard (e (#t '()))
        (+ 1 2)
        (+ 3 4))
+
+;; Test macro expansion bug:
+
+(define-syntax test-bug-286
+  (syntax-rules ()
+    ((_ (a ...) ... (b ...) c)
+     (list (list (list a ...) ...) (list b ...) c))))
+
+(assert-equal? (test-bug-286 (1 2) 99) '(() (1 2) 99))
