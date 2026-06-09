@@ -6,7 +6,7 @@
 
 use crate::{
     ast::{Definitions, Primitive},
-    cps::{Cps, analysis::FreeVariablesCache, codegen::RuntimeFunctionsBuilder, compile::Compiler},
+    cps::{Cps, analysis::FreeVariables, codegen::RuntimeFunctionsBuilder, compile::Compiler},
     env::{Environment, Global, TopLevelEnvironment},
     exceptions::{Exception, SourceCache, raise},
     gc::{Gc, GcInner, Trace, init_gc},
@@ -158,7 +158,7 @@ impl Runtime {
     }
 
     #[maybe_async]
-    pub(crate) fn compile_expr(&self, expr: Cps, free_vars_cache: FreeVariablesCache) -> Procedure {
+    pub(crate) fn compile_expr(&self, expr: Cps, free_vars_cache: FreeVariables) -> Procedure {
         let (completion_tx, completion_rx) = completion();
         let task = CompilationTask {
             completion_tx,
@@ -294,7 +294,7 @@ async fn recv_procedure(rx: CompletionRx) -> Procedure {
 
 struct CompilationTask {
     compilation_unit: Cps,
-    free_vars_cache: FreeVariablesCache,
+    free_vars_cache: FreeVariables,
     completion_tx: CompletionTx,
     /// Since Contexts are per-thread, we will only ever see the same Runtime.
     /// However, we can't cache the Runtime, as that would cause a ref cycle

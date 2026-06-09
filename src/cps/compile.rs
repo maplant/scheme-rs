@@ -4,7 +4,7 @@ use super::*;
 use crate::{
     Either,
     ast::*,
-    cps::analysis::{FreeVariablesCache},
+    cps::analysis::{FreeVariables},
     exceptions::Exception,
     expand::{ExpansionCombiner, SyntaxRule},
     proc::Procedure,
@@ -18,14 +18,14 @@ use scheme_rs_macros::{maybe_async, maybe_await};
 
 pub(crate) struct Compiler {
     mutable_vars: HashSet<Local>,
-    free_vars_cache: FreeVariablesCache,
+    free_vars_cache: FreeVariables,
 }
 
 impl Compiler {
     pub fn new(mutable_vars: HashSet<Local>) -> Self {
         Self {
             mutable_vars,
-            free_vars_cache: FreeVariablesCache::default(),
+            free_vars_cache: FreeVariables::default(),
         }
     }
 
@@ -49,7 +49,7 @@ impl Compiler {
         let reduced = cps.vals_to_cells(&self.mutable_vars).reduce().contify();
 
         // Check if there are any remaining free variables, signaling a phase error
-        if !self.free_vars_cache.free_variables(&reduced).is_empty() {
+        if !self.free_vars_cache.find_free_vars(&reduced).is_empty() {
             // TODO: More detailed error message with name of variables
             return Err(Exception::error("reference to out of phase identifiers"));
         }

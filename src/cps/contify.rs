@@ -56,7 +56,7 @@ impl Cps {
                         let old_k = binding.args.continuation.take().unwrap();
                         binding.body.substitute(
                             &[(old_k, Value::from(new_k))].into_iter().collect(),
-                            &mut UsesCache::default(),
+                            &mut Uses::default(),
                         );
                     }
                 }
@@ -174,7 +174,7 @@ impl LambdaBinding {
             .into_iter()
             .collect::<HashMap<_, _>>();
         self.body.relocate_and_contify(dominators, to_place);
-        self.body.substitute(&subs, &mut UsesCache::default());
+        self.body.substitute(&subs, &mut Uses::default());
 
         // Place any continuations that move into this function:
         if let Some(mut funcs) = to_place.remove(&self.val) {

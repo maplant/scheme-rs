@@ -13,7 +13,7 @@
 //!   directly to machine code.
 
 use crate::{
-    cps::analysis::UsesCache,
+    cps::analysis::Uses,
     env::{Global, Local, Var},
     gc::Trace,
     symbols::Symbol,
@@ -272,12 +272,12 @@ impl Cps {
     // TODO: This could probably be improved by being a little smarter about
     // when we clear the uses cache (i.e. return a bool if any substitutions
     // occurred).
-    fn substitute(&mut self, substitutions: &HashMap<Local, Value>, uses_cache: &mut UsesCache) {
+    fn substitute(&mut self, substitutions: &HashMap<Local, Value>, uses: &mut Uses) {
         match self {
             Self::PrimOp(_, args, val, cexp) => {
                 substitute_values(args, substitutions);
-                cexp.substitute(substitutions, uses_cache);
-                uses_cache.remove(val);
+                cexp.substitute(substitutions, uses);
+                uses.remove(val);
             }
             Self::App(value, values) => {
                 substitute_value(value, substitutions);
@@ -285,15 +285,15 @@ impl Cps {
             }
             Self::If(cond, success, failure) => {
                 substitute_value(cond, substitutions);
-                success.substitute(substitutions, uses_cache);
-                failure.substitute(substitutions, uses_cache);
+                success.substitute(substitutions, uses);
+                failure.substitute(substitutions, uses);
             }
             Self::Fix(bindings, cexp) => {
                 for binding in bindings {
-                    binding.body.substitute(substitutions, uses_cache);
-                    uses_cache.remove(&binding.val);
+                    binding.body.substitute(substitutions, uses);
+                    uses.remove(&binding.val);
                 }
-                cexp.substitute(substitutions, uses_cache);
+                cexp.substitute(substitutions, uses);
             }
             Self::Halt(value) => {
                 substitute_value(value, substitutions);

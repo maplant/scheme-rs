@@ -9,7 +9,7 @@ use cranelift_module::{FuncId, Linkage, Module};
 use std::sync::Arc;
 
 use crate::{
-    cps::{Value as CpsValue, analysis::FreeVariablesCache},
+    cps::{Value as CpsValue, analysis::FreeVariables},
     proc::{ContinuationPtr, FuncPtr, ProcDebugInfo, Procedure},
     runtime::{DebugInfo, Runtime},
     value::{FALSE_VALUE, NULL_VALUE, TAG, TRUE_VALUE, Tag, Value as SchemeValue},
@@ -102,7 +102,7 @@ impl Cps {
     pub(crate) fn into_procedure(
         self,
         runtime: Runtime,
-        mut free_vars_cache: FreeVariablesCache,
+        mut free_vars_cache: FreeVariables,
         runtime_funcs: &RuntimeFunctions,
         module: &mut JITModule,
         debug_info: &mut DebugInfo,
@@ -202,7 +202,7 @@ struct CompilationUnit<'m, 'f, 'c, 'd> {
     curr_allocs: usize,
     runtime_funcs: &'f RuntimeFunctions,
     params: [Value; 2],
-    free_vars_cache: &'c mut FreeVariablesCache,
+    free_vars_cache: &'c mut FreeVariables,
     module: &'m mut JITModule,
     debug_info: &'d mut DebugInfo,
 }
@@ -977,7 +977,7 @@ impl ProcedureBundle {
         args: LambdaArgs,
         body: Cps,
         loc: Option<Span>,
-        free_vars_cache: &mut FreeVariablesCache,
+        free_vars_cache: &mut FreeVariables,
         module: &mut JITModule,
     ) -> Self {
         let mut sig = module.make_signature();
@@ -988,7 +988,7 @@ impl ProcedureBundle {
             .expect("Could not declare function");
 
         let env = free_vars_cache
-            .free_variables(&body)
+            .find_free_vars(&body)
             .difference(&args.iter().cloned().collect::<HashSet<_>>())
             .cloned()
             .collect::<Vec<_>>();
@@ -1008,7 +1008,7 @@ impl ProcedureBundle {
         self,
         runtime_funcs: &RuntimeFunctions,
         cells: &HashSet<Local>,
-        free_vars_cache: &mut FreeVariablesCache,
+        free_vars_cache: &mut FreeVariables,
         module: &mut JITModule,
         debug_info: &mut DebugInfo,
         deferred: &mut Vec<Self>,
