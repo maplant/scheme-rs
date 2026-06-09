@@ -1128,6 +1128,27 @@ mod __impl {
         fn raw_fd_fn() -> Option<RawFdFn> {
             Some(raw_fd_fn_for::<Self>())
         }
+
+        fn poll_read_ready_fn() -> Option<PollReadyFn> {
+            Some(Box::new(|any| {
+                let stream = any.downcast_ref::<tokio::net::TcpStream>().unwrap();
+                let mut buf = [0u8; 0];
+                match stream.try_read(&mut buf) {
+                    Ok(_) => true,
+                    Err(e) => e.kind() != std::io::ErrorKind::WouldBlock,
+                }
+            }))
+        }
+
+        fn poll_write_ready_fn() -> Option<PollReadyFn> {
+            Some(Box::new(|any| {
+                let stream = any.downcast_ref::<tokio::net::TcpStream>().unwrap();
+                match stream.try_write(&[]) {
+                    Ok(_) => true,
+                    Err(e) => e.kind() != std::io::ErrorKind::WouldBlock,
+                }
+            }))
+        }
     }
 
     pub(super) trait StreamExtExt {
@@ -1170,6 +1191,8 @@ where
 {
     Box::new(|any| any.downcast_ref::<T>().unwrap().as_raw_fd())
 }
+
+pub type PollReadyFn = Box<dyn Fn(&dyn Any) -> bool + Send + Sync>;
 
 pub(crate) struct PortInner {
     pub(crate) info: PortInfo,
@@ -1224,6 +1247,8 @@ impl PortInner {
                 close,
                 #[cfg(unix)]
                 raw_fd: P::raw_fd_fn(),
+                poll_read_ready: P::poll_read_ready_fn(),
+                poll_write_ready: P::poll_write_ready_fn(),
             })),
         }
     }
@@ -1272,6 +1297,8 @@ impl PortInner {
                 close,
                 #[cfg(unix)]
                 raw_fd: None,
+                poll_read_ready: None,
+                poll_write_ready: None,
             })),
         }
     }
@@ -1344,6 +1371,8 @@ pub(crate) struct BinaryPortData {
     close: Option<CloseFn>,
     #[cfg(unix)]
     raw_fd: Option<RawFdFn>,
+    poll_read_ready: Option<PollReadyFn>,
+    poll_write_ready: Option<PollReadyFn>,
 }
 
 pub const BUFFER_SIZE: usize = 8192;
@@ -2332,6 +2361,14 @@ pub trait IntoPort: IntoPortReqs {
     fn raw_fd_fn() -> Option<RawFdFn> {
         None
     }
+
+    fn poll_read_ready_fn() -> Option<PollReadyFn> {
+        None
+    }
+
+    fn poll_write_ready_fn() -> Option<PollReadyFn> {
+        None
+    }
 }
 
 impl IntoPort for Cursor<Vec<u8>> {
@@ -2475,6 +2512,38 @@ impl Port {
                 .as_ref()
                 .and_then(|f| bp.inner_port.as_deref().map(|port| f(port))),
             PortData::CustomTextualPort(_) => None,
+        }
+    }
+
+    pub fn poll_read_ready(&self) -> bool {
+        #[cfg(not(feature = "async"))]
+        let data = self.0.data.lock().unwrap();
+        #[cfg(feature = "async")]
+        let data = self.0.data.blocking_lock();
+
+        match &*data {
+            PortData::BinaryPort(bp) => bp
+                .poll_read_ready
+                .as_ref()
+                .and_then(|f| bp.inner_port.as_deref().map(|port| f(port)))
+                .unwrap_or(false),
+            PortData::CustomTextualPort(_) => false,
+        }
+    }
+
+    pub fn poll_write_ready(&self) -> bool {
+        #[cfg(not(feature = "async"))]
+        let data = self.0.data.lock().unwrap();
+        #[cfg(feature = "async")]
+        let data = self.0.data.blocking_lock();
+
+        match &*data {
+            PortData::BinaryPort(bp) => bp
+                .poll_write_ready
+                .as_ref()
+                .and_then(|f| bp.inner_port.as_deref().map(|port| f(port)))
+                .unwrap_or(false),
+            PortData::CustomTextualPort(_) => false,
         }
     }
 
@@ -3496,6 +3565,8 @@ pub fn transcoded_port(port: Port, transcoder: &Value) -> Result<Vec<Value>, Exc
         close: port_data.close.take(),
         #[cfg(unix)]
         raw_fd: port_data.raw_fd.take(),
+        poll_read_ready: port_data.poll_read_ready.take(),
+        poll_write_ready: port_data.poll_write_ready.take(),
     };
 
     let new_info = BinaryPortInfo {
