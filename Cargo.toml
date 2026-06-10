@@ -12,6 +12,7 @@ homepage = "https://github.com/maplant/scheme-rs"
 repository = "https://github.com/maplant/scheme-rs"
 
 [dependencies]
+arc-swap = "1"
 async-stream = { version = "0.3", optional = true }
 by_address = "1.2"
 clap = { version = "4", features = ["derive"] }

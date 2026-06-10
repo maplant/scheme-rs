@@ -243,6 +243,22 @@ impl<T: ?Sized + Eq> Eq for Gc<T> {}
 unsafe impl<T: ?Sized + Send> Send for Gc<T> {}
 unsafe impl<T: ?Sized + Sync> Sync for Gc<T> {}
 
+unsafe impl<T> arc_swap::RefCnt for Gc<T> {
+    type Base = GcInner<T>;
+
+    fn into_ptr(me: Self) -> *mut GcInner<T> {
+        Gc::into_raw(me)
+    }
+
+    fn as_ptr(me: &Self) -> *mut GcInner<T> {
+        Gc::as_ptr(me)
+    }
+
+    unsafe fn from_ptr(ptr: *const Self::Base) -> Self {
+        unsafe { Gc::from_raw(ptr as *mut GcInner<T>) }
+    }
+}
+
 fn inc_rc<T: ?Sized>(ptr: NonNull<GcInner<T>>) {
     unsafe {
         (*ptr.as_ref().header.get())
@@ -260,7 +276,8 @@ fn dec_rc<T: ?Sized>(ptr: NonNull<GcInner<T>>) {
 }
 
 #[repr(C)]
-pub(crate) struct GcInner<T: ?Sized> {
+#[doc(hidden)]
+pub struct GcInner<T: ?Sized> {
     header: UnsafeCell<GcHeader>,
     data: UnsafeCell<T>,
 }
