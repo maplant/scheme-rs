@@ -65,11 +65,10 @@ impl Compiler {
         reduced.collect_bindings(&mut lambda_bindings);
         let escaping = Escaping::find_escaping(&reduced, &lambda_bindings, &self.free_vars);
         let dominators = Dominators::find_dominators(&reduced, lambda_bindings);
+        // Contification makes free_vars no longer valid
         let contified = reduced.contify(&escaping, &dominators);
 
-        Ok(maybe_await!(
-            runtime.compile_expr(contified, self.free_vars)
-        ))
+        Ok(maybe_await!(runtime.compile_expr(contified, escaping)))
     }
 }
 

@@ -28,7 +28,7 @@ impl Cps {
 
         let mut places = HashMap::default();
         let mut cexpr = self.collect_relocatable_contifiables(escaping, dominators, &mut places);
-        cexpr.relocate_and_contify(dominators, &mut places);
+        cexpr.relocate_and_contify(escaping, dominators, &mut places);
 
         cexpr
     }
@@ -58,7 +58,7 @@ impl Cps {
 
                     if binding.is_func()
                         && !escaping.contains(binding.val)
-                        && let Some(new_k) = dominators.target_cont(binding.val)
+                        && let Some(new_k) = dominators.target_cont(binding.val, escaping)
                         && fix_scope.contains(&new_k)
                     {
                         let old_k = binding.args.continuation.take().unwrap();
@@ -80,6 +80,7 @@ impl Cps {
             }
             Cps::App(op, args)
                 if let Some(local) = op.to_local()
+                    && !escaping.contains(local)
                     && matches!(dominators.idoms.get(&local), Some(ReturnNode::Lambda(_))) =>
             {
                 args.remove(0);
@@ -139,6 +140,7 @@ impl Cps {
 
     fn relocate_and_contify(
         &mut self,
+        escaping: &Escaping,
         dominators: &Dominators,
         places: &mut HashMap<Local, Vec<LambdaBinding>>,
     ) {
@@ -146,10 +148,12 @@ impl Cps {
             Cps::Fix(bindings, cexpr) => {
                 let mut new_bindings = vec![];
                 for binding in bindings.iter_mut() {
-                    binding.body.relocate_and_contify(dominators, places);
+                    binding
+                        .body
+                        .relocate_and_contify(escaping, dominators, places);
                     if let Some(mut funcs) = places.remove(&binding.val) {
                         for func in funcs.iter_mut() {
-                            func.contify(dominators, places);
+                            func.contify(escaping, dominators, places);
                         }
                         if binding.is_func() {
                             binding
@@ -161,13 +165,13 @@ impl Cps {
                     }
                 }
                 bindings.extend(new_bindings);
-                cexpr.relocate_and_contify(dominators, places);
+                cexpr.relocate_and_contify(escaping, dominators, places);
             }
             Cps::If(_, succ, fail) => {
-                succ.relocate_and_contify(dominators, places);
-                fail.relocate_and_contify(dominators, places);
+                succ.relocate_and_contify(escaping, dominators, places);
+                fail.relocate_and_contify(escaping, dominators, places);
             }
-            Cps::PrimOp(_, _, _, cexpr) => cexpr.relocate_and_contify(dominators, places),
+            Cps::PrimOp(_, _, _, cexpr) => cexpr.relocate_and_contify(escaping, dominators, places),
             Cps::App(_, _) => (),
             Cps::Halt(_) => (),
         }
@@ -177,21 +181,23 @@ impl Cps {
 impl LambdaBinding {
     fn contify(
         &mut self,
+        escaping: &Escaping,
         dominators: &Dominators,
         to_place: &mut HashMap<Local, Vec<LambdaBinding>>,
     ) {
-        let new_k = dominators.target_cont(self.val).unwrap();
+        let new_k = dominators.target_cont(self.val, escaping).unwrap();
         let old_k = self.args.continuation.take().unwrap();
         let subs = [(old_k, Value::from(new_k))]
             .into_iter()
             .collect::<HashMap<_, _>>();
-        self.body.relocate_and_contify(dominators, to_place);
+        self.body
+            .relocate_and_contify(escaping, dominators, to_place);
         self.body.substitute(&subs, &mut Uses::default());
 
         // Place any continuations that move into this function:
         if let Some(mut funcs) = to_place.remove(&self.val) {
             for func in funcs.iter_mut() {
-                func.contify(dominators, to_place);
+                func.contify(escaping, dominators, to_place);
             }
             self.body
                 .update_term(|body| Cps::Fix(funcs, Box::new(body)));
@@ -208,12 +214,14 @@ pub(crate) struct Dominators {
 impl Dominators {
     /// Return the target continuation that the contifiable function always
     /// returns to, if it is contifiable.
-    fn target_cont(&self, f: Local) -> Option<Local> {
+    fn target_cont(&self, f: Local, escaping: &Escaping) -> Option<Local> {
         match self.idoms[&f] {
             ReturnNode::Root => None,
             ReturnNode::Lambda(d) => {
-                if matches!(self.idoms.get(&d), Some(ReturnNode::Lambda(_))) {
-                    self.target_cont(d)
+                if matches!(self.idoms.get(&d), Some(ReturnNode::Lambda(_)))
+                    && !escaping.contains(d)
+                {
+                    self.target_cont(d, escaping)
                 } else {
                     Some(self.cont_params.get(&d).copied().unwrap_or(d))
                 }

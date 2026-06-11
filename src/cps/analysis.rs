@@ -235,14 +235,40 @@ impl Escaping {
 }
 
 impl Cps {
-    pub(super) fn max_drops(&self) -> usize {
+    pub(super) fn max_allocs(
+        &self,
+        curr_allocs: usize,
+        escaping: &Escaping,
+        allocs_at_local_conts: &mut HashMap<Local, usize>,
+    ) -> usize {
         match self {
             Cps::PrimOp(primop, _, _, cexpr) => {
-                cexpr.max_drops() + primop.info().needs_drop as usize
+                let curr_allocs = curr_allocs + primop.info().needs_drop as usize;
+                cexpr.max_allocs(curr_allocs, escaping, allocs_at_local_conts)
             }
-            Cps::Fix(bindings, cexpr) => cexpr.max_drops() + bindings.len(),
-            Cps::If(_, success, failure) => success.max_drops().max(failure.max_drops()),
-            _ => 0,
+            Cps::Fix(bindings, cexpr) => {
+                let curr_allocs = curr_allocs
+                    + bindings
+                        .iter()
+                        .filter(|binding| binding.is_func() || escaping.contains(binding.val))
+                        .count();
+                let mut max_allocs = curr_allocs;
+                for binding in bindings {
+                    if binding.is_continuation() && !escaping.contains(binding.val) {
+                        allocs_at_local_conts.insert(binding.val, curr_allocs);
+                        max_allocs = max_allocs.max(binding.body.max_allocs(
+                            curr_allocs + binding.args.args.len(),
+                            escaping,
+                            allocs_at_local_conts,
+                        ));
+                    }
+                }
+                cexpr.max_allocs(max_allocs, escaping, allocs_at_local_conts)
+            }
+            Cps::If(_, success, failure) => success
+                .max_allocs(curr_allocs, escaping, allocs_at_local_conts)
+                .max(failure.max_allocs(curr_allocs, escaping, allocs_at_local_conts)),
+            _ => curr_allocs,
         }
     }
 

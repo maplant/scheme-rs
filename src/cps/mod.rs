@@ -261,10 +261,14 @@ impl LambdaArgs {
     }
 
     pub(crate) fn matches_args(&self, num: usize) -> bool {
+        // `num` is the length of an application's argument list, which includes
+        // the continuation as its first element. Count the continuation here so
+        // a well-formed call is not mistaken for a wrong-arity (escaping) one.
+        let params = self.args.len() + self.continuation.is_some() as usize;
         if self.variadic {
-            num > self.args.len()
+            num > params
         } else {
-            num == self.args.len()
+            num == params
         }
     }
 }
