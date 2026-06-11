@@ -4360,7 +4360,7 @@ unsafe extern "C" fn close_port_and_call_k(
             call_k_with_env,
             0,
             false,
-            barrier.as_mut().unwrap()
+            barrier.as_mut().unwrap(),
         );
 
         Box::into_raw(Box::new(Application::new(

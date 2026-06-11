@@ -2,9 +2,12 @@ use std::collections::BTreeSet;
 
 use super::*;
 use crate::{
-    Either,
+    Either, HashMap,
     ast::*,
-    cps::analysis::{FreeVariables},
+    cps::{
+        analysis::{Escaping, FreeVariables},
+        contify::Dominators,
+    },
     exceptions::Exception,
     expand::{ExpansionCombiner, SyntaxRule},
     proc::Procedure,
@@ -18,14 +21,14 @@ use scheme_rs_macros::{maybe_async, maybe_await};
 
 pub(crate) struct Compiler {
     mutable_vars: HashSet<Local>,
-    free_vars_cache: FreeVariables,
+    free_vars: FreeVariables,
 }
 
 impl Compiler {
     pub fn new(mutable_vars: HashSet<Local>) -> Self {
         Self {
             mutable_vars,
-            free_vars_cache: FreeVariables::default(),
+            free_vars: FreeVariables::default(),
         }
     }
 
@@ -46,16 +49,26 @@ impl Compiler {
             }],
             Box::new(expr.compile(&self, &mut |value| Cps::App(value, vec![Value::from(k)]))),
         );
-        let reduced = cps.vals_to_cells(&self.mutable_vars).reduce().contify();
 
-        // Check if there are any remaining free variables, signaling a phase error
-        if !self.free_vars_cache.find_free_vars(&reduced).is_empty() {
+        // Perform beta and eta reduction on the CPS:
+        let reduced = cps.vals_to_cells(&self.mutable_vars).reduce();
+
+        // Check if there are any remaining free variables, signaling a phase
+        // error. Also needed for our escape analysis.
+        if !self.free_vars.find_free_vars(&reduced).is_empty() {
             // TODO: More detailed error message with name of variables
             return Err(Exception::error("reference to out of phase identifiers"));
         }
 
+        // Perform contification on the graph:
+        let mut lambda_bindings = HashMap::default();
+        reduced.collect_bindings(&mut lambda_bindings);
+        let escaping = Escaping::find_escaping(&reduced, &lambda_bindings, &self.free_vars);
+        let dominators = Dominators::find_dominators(&reduced, lambda_bindings);
+        let contified = reduced.contify(&escaping, &dominators);
+
         Ok(maybe_await!(
-            runtime.compile_expr(reduced, self.free_vars_cache)
+            runtime.compile_expr(contified, self.free_vars)
         ))
     }
 }
@@ -173,9 +186,11 @@ impl Compile for LetRec {
         // unreferenced variables. It would be a little annoying to include
         // that analysis at this point, so we defer that to a later time.
         // Unreferenced variables are simply considered simple.
+        //
+        // We also ignore the simple partition, as it's not necessary for
+        // generating our FIX binding.
 
         // Binding partitions:
-        // let mut simple = Vec::new();
         let mut lambda = Vec::new();
         let mut complex = Vec::new();
 

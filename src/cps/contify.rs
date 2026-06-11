@@ -4,6 +4,8 @@
 
 use std::{collections::HashSet, hash::Hash, slice};
 
+use crate::cps::analysis::Escaping;
+
 use super::*;
 
 #[derive(Default)]
@@ -19,19 +21,24 @@ impl Scope<'_> {
 }
 
 impl Cps {
-    pub(super) fn contify(mut self) -> Self {
-        let dominators = Dominators::find_dominators(&self);
-
-        self.flip_in_place_contifiables(&dominators, &Scope::default());
+    /// Convert functions that do not escape and always return to the same place
+    /// into local continuations.
+    pub(super) fn contify(mut self, escaping: &Escaping, dominators: &Dominators) -> Self {
+        self.flip_in_place_contifiables(escaping, dominators, &Scope::default());
 
         let mut places = HashMap::default();
-        let mut cexpr = self.collect_relocatable_contifiables(&dominators, &mut places);
-        cexpr.relocate_and_contify(&dominators, &mut places);
+        let mut cexpr = self.collect_relocatable_contifiables(escaping, dominators, &mut places);
+        cexpr.relocate_and_contify(dominators, &mut places);
 
         cexpr
     }
 
-    fn flip_in_place_contifiables(&mut self, dominators: &Dominators, scope: &Scope<'_>) {
+    fn flip_in_place_contifiables(
+        &mut self,
+        escaping: &Escaping,
+        dominators: &Dominators,
+        scope: &Scope<'_>,
+    ) {
         match self {
             Cps::Fix(bindings, cexpr) => {
                 let fix_scope = Scope {
@@ -47,9 +54,10 @@ impl Cps {
 
                     binding
                         .body
-                        .flip_in_place_contifiables(dominators, &body_scope);
+                        .flip_in_place_contifiables(escaping, dominators, &body_scope);
 
                     if binding.is_func()
+                        && !escaping.contains(binding.val)
                         && let Some(new_k) = dominators.target_cont(binding.val)
                         && fix_scope.contains(&new_k)
                     {
@@ -61,13 +69,15 @@ impl Cps {
                     }
                 }
 
-                cexpr.flip_in_place_contifiables(dominators, &fix_scope);
+                cexpr.flip_in_place_contifiables(escaping, dominators, &fix_scope);
             }
             Cps::If(_, succ, fail) => {
-                succ.flip_in_place_contifiables(dominators, scope);
-                fail.flip_in_place_contifiables(dominators, scope);
+                succ.flip_in_place_contifiables(escaping, dominators, scope);
+                fail.flip_in_place_contifiables(escaping, dominators, scope);
             }
-            Cps::PrimOp(_, _, _, cexpr) => cexpr.flip_in_place_contifiables(dominators, scope),
+            Cps::PrimOp(_, _, _, cexpr) => {
+                cexpr.flip_in_place_contifiables(escaping, dominators, scope)
+            }
             Cps::App(op, args)
                 if let Some(local) = op.to_local()
                     && matches!(dominators.idoms.get(&local), Some(ReturnNode::Lambda(_))) =>
@@ -81,6 +91,7 @@ impl Cps {
 
     fn collect_relocatable_contifiables(
         self,
+        escaping: &Escaping,
         dominators: &Dominators,
         places: &mut HashMap<Local, Vec<LambdaBinding>>,
     ) -> Cps {
@@ -90,9 +101,10 @@ impl Cps {
                     .into_iter()
                     .filter_map(|mut binding| {
                         binding.body.update_term(|binding| {
-                            binding.collect_relocatable_contifiables(dominators, places)
+                            binding.collect_relocatable_contifiables(escaping, dominators, places)
                         });
                         if binding.is_func()
+                            && !escaping.contains(binding.val)
                             && let Some(ReturnNode::Lambda(val)) =
                                 dominators.idoms.get(&binding.val)
                         {
@@ -103,7 +115,7 @@ impl Cps {
                         }
                     })
                     .collect::<Vec<_>>();
-                let cexpr = cexpr.collect_relocatable_contifiables(dominators, places);
+                let cexpr = cexpr.collect_relocatable_contifiables(escaping, dominators, places);
                 if bindings.is_empty() {
                     cexpr
                 } else {
@@ -112,14 +124,14 @@ impl Cps {
             }
             Cps::If(cond, succ, fail) => Cps::If(
                 cond,
-                Box::new(succ.collect_relocatable_contifiables(dominators, places)),
-                Box::new(fail.collect_relocatable_contifiables(dominators, places)),
+                Box::new(succ.collect_relocatable_contifiables(escaping, dominators, places)),
+                Box::new(fail.collect_relocatable_contifiables(escaping, dominators, places)),
             ),
             Cps::PrimOp(op, args, res, cexpr) => Cps::PrimOp(
                 op,
                 args,
                 res,
-                Box::new(cexpr.collect_relocatable_contifiables(dominators, places)),
+                Box::new(cexpr.collect_relocatable_contifiables(escaping, dominators, places)),
             ),
             cexpr => cexpr,
         }
@@ -144,7 +156,7 @@ impl Cps {
                                 .body
                                 .update_term(|body| Cps::Fix(funcs, Box::new(body)));
                         } else {
-                            new_bindings.extend(funcs.into_iter());
+                            new_bindings.extend(funcs);
                         }
                     }
                 }
@@ -210,11 +222,7 @@ impl Dominators {
     }
 
     /// Implementation of Contification Using Dominators A_Dom analysis
-    pub(crate) fn find_dominators(cps: &Cps) -> Self {
-        // First, we need a map of all Fix bindings in the program:
-        let mut bindings_map = HashMap::default();
-        cps.collect_bindings(&mut bindings_map);
-
+    pub(crate) fn find_dominators(cps: &Cps, bindings_map: HashMap<Local, &LambdaBinding>) -> Self {
         // Collect a map of all the continuation arguments to their respective
         // functions and a map of all functions to continuation arguments.
         let (cont_owners, cont_params) = bindings_map
@@ -261,7 +269,7 @@ impl Dominators {
                 };
 
                 let mut new_idom = None;
-                for pred in g.preds[&b].iter() {
+                for pred in g.preds[b].iter() {
                     let Some(&p) = node_to_idom_idx.get(pred) else {
                         continue;
                     };
@@ -434,7 +442,7 @@ fn lookup_value<'a>(
 }
 
 impl Cps {
-    fn collect_bindings<'a>(&'a self, bindings: &mut HashMap<Local, &'a LambdaBinding>) {
+    pub(super) fn collect_bindings<'a>(&'a self, bindings: &mut HashMap<Local, &'a LambdaBinding>) {
         match self {
             Cps::PrimOp(_, _, _, cexpr) => cexpr.collect_bindings(bindings),
             Cps::If(_, succ, fail) => {

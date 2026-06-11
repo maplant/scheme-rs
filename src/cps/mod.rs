@@ -183,7 +183,7 @@ impl PrimOpInfo {
 
     pub(crate) fn matches_args(&self, num: usize) -> bool {
         if self.variadic {
-            num > self.required
+            num >= self.required
         } else {
             num == self.required
         }
@@ -258,6 +258,14 @@ impl LambdaArgs {
 
     fn num_required(&self) -> usize {
         self.args.len().saturating_sub(self.variadic as usize)
+    }
+
+    pub(crate) fn matches_args(&self, num: usize) -> bool {
+        if self.variadic {
+            num > self.args.len()
+        } else {
+            num == self.args.len()
+        }
     }
 }
 

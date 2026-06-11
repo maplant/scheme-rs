@@ -506,8 +506,13 @@ impl ProcedureInner {
 
     #[cfg(feature = "async")]
     /// Attempt to call the function, and throw an error if is async
-    pub fn apply_sync(&self, k: Option<Procedure>, args: Vec<Value>, barrier: &mut ContBarrier) -> Application {
-                if let FuncPtr::PromptBarrier { barrier_id: id, .. } = self.func {
+    pub fn apply_sync(
+        &self,
+        k: Option<Procedure>,
+        args: Vec<Value>,
+        barrier: &mut ContBarrier,
+    ) -> Application {
+        if let FuncPtr::PromptBarrier { barrier_id: id, .. } = self.func {
             barrier.pop_marks();
             match barrier.pop_dyn_stack() {
                 Some(DynStackElem::PromptBarrier(PromptBarrier {

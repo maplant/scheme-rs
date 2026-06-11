@@ -158,13 +158,13 @@ impl Runtime {
     }
 
     #[maybe_async]
-    pub(crate) fn compile_expr(&self, expr: Cps, free_vars_cache: FreeVariables) -> Procedure {
+    pub(crate) fn compile_expr(&self, expr: Cps, free_vars: FreeVariables) -> Procedure {
         let (completion_tx, completion_rx) = completion();
         let task = CompilationTask {
             completion_tx,
             compilation_unit: expr,
             runtime: self.clone(),
-            free_vars_cache,
+            free_vars,
         };
         let sender = { self.0.read().compilation_buffer_tx.clone() };
         let _ = maybe_await!(sender.send(task));
@@ -294,7 +294,7 @@ async fn recv_procedure(rx: CompletionRx) -> Procedure {
 
 struct CompilationTask {
     compilation_unit: Cps,
-    free_vars_cache: FreeVariables,
+    free_vars: FreeVariables,
     completion_tx: CompletionTx,
     /// Since Contexts are per-thread, we will only ever see the same Runtime.
     /// However, we can't cache the Runtime, as that would cause a ref cycle
@@ -352,7 +352,7 @@ fn compilation_task(mut compilation_queue_rx: CompilationBufferRx) {
         let CompilationTask {
             completion_tx,
             compilation_unit,
-            free_vars_cache,
+            free_vars: free_vars_cache,
             runtime,
         } = task;
 
@@ -424,6 +424,12 @@ unsafe extern "C" fn read_cell(cell: *const ()) -> *const () {
         let cell_read = cell.0.read();
         Value::as_raw(&cell_read)
     }
+}
+
+/// Increment the reference count of a value, returning it
+#[runtime_fn]
+unsafe extern "C" fn clonev(val: *const ()) -> *const () {
+    unsafe { Value::into_raw(Value::from_raw_inc_rc(val)) }
 }
 
 /// Decrement the reference count of a value

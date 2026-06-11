@@ -138,6 +138,19 @@ impl Uses {
 /// Extremely simple escape analysis. A function escapes if it appears in a
 /// non-operator position or if it is among the free variables of a funcction
 /// that escapes.
+///
+/// At the moment, because this analysis is used for the express purpose of
+/// contification, we add a few more criteria to mark a function as escaping
+/// to make our lives easier:
+///
+/// - A function is escaping if it is applied with the wrong number of
+///   arguments. This is because we have no error path at compilation time
+///   for wrong number of arguments.
+///
+/// - A function is escaping if it is variadic. This should be pretty easy to
+///   deal with, but for now we ignore such functions to reduce the code in our
+///   initial MVP.
+///
 #[derive(Default)]
 pub struct Escaping {
     escaping: HashSet<Local>,
@@ -146,7 +159,7 @@ pub struct Escaping {
 impl Escaping {
     pub fn find_escaping(
         cexpr: &Cps,
-        procs: &HashSet<Local>,
+        procs: &HashMap<Local, &LambdaBinding>,
         free_variables: &FreeVariables,
     ) -> Self {
         let mut escaping = Self::default();
@@ -159,9 +172,18 @@ impl Escaping {
         self.escaping.contains(&local)
     }
 
-    fn scan(&mut self, cexpr: &Cps, procs: &HashSet<Local>) {
+    fn scan(&mut self, cexpr: &Cps, procs: &HashMap<Local, &LambdaBinding>) {
         match cexpr {
-            Cps::App(_, args) => self.scan_vals(args, procs),
+            Cps::App(op, args) => {
+                self.scan_vals(args, procs);
+                // Functions applied with the wrong number of arguments escape:
+                if let Some(local) = op.to_local()
+                    && let Some(proc) = procs.get(&local)
+                    && !proc.args.matches_args(args.len())
+                {
+                    self.escaping.insert(local);
+                }
+            }
             Cps::PrimOp(_, args, _, cexpr) => {
                 self.scan_vals(args, procs);
                 self.scan(cexpr, procs);
@@ -174,6 +196,10 @@ impl Escaping {
             Cps::Fix(bindings, cexpr) => {
                 for binding in bindings {
                     self.scan(&binding.body, procs);
+                    // Variadic functions escape (for now):
+                    if binding.args.variadic {
+                        self.escaping.insert(binding.val);
+                    }
                 }
                 self.scan(cexpr, procs);
             }
@@ -181,21 +207,25 @@ impl Escaping {
         }
     }
 
-    fn scan_vals(&mut self, vals: &[Value], procs: &HashSet<Local>) {
+    fn scan_vals<T>(&mut self, vals: &[Value], procs: &HashMap<Local, T>) {
         for val in vals {
             if let Some(proc) = val.to_local()
-                && procs.contains(&proc)
+                && procs.contains_key(&proc)
             {
                 self.escaping.insert(proc);
             }
         }
     }
 
-    fn find_transitive_closure(&mut self, procs: &HashSet<Local>, free_variables: &FreeVariables) {
+    fn find_transitive_closure<T>(
+        &mut self,
+        procs: &HashMap<Local, T>,
+        free_variables: &FreeVariables,
+    ) {
         let mut work_queue = self.escaping.iter().copied().collect::<VecDeque<_>>();
         while let Some(proc) = work_queue.pop_front() {
             for p in &free_variables.free_vars[&proc] {
-                if procs.contains(&p) && !self.escaping.contains(&p) {
+                if procs.contains_key(p) && !self.escaping.contains(p) {
                     self.escaping.insert(*p);
                     work_queue.push_back(*p);
                 }

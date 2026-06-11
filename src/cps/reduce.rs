@@ -82,10 +82,7 @@ impl Cps {
                     );
                     *binding.body = body.beta_reduction(uses, modified);
                 }
-                Cps::Fix(
-                    bindings,
-                    Box::new(cexpr.beta_reduction(uses, modified)),
-                )
+                Cps::Fix(bindings, Box::new(cexpr.beta_reduction(uses, modified)))
             }
             cexpr => cexpr,
         }
@@ -200,10 +197,7 @@ impl Cps {
                         .all(|(arg, app_arg)| *app_arg == Value::from(*arg))
                 {
                     *modified = true;
-                    cexpr.substitute(
-                        &[(binding.val, k.clone())].into_iter().collect(),
-                        uses,
-                    );
+                    cexpr.substitute(&[(binding.val, k.clone())].into_iter().collect(), uses);
                     cexpr
                 } else {
                     Cps::Fix(
@@ -225,10 +219,7 @@ impl Cps {
                     );
                     *binding.body = body.eta_reduction(uses, modified);
                 }
-                Cps::Fix(
-                    bindings,
-                    Box::new(cexpr.beta_reduction(uses, modified)),
-                )
+                Cps::Fix(bindings, Box::new(cexpr.beta_reduction(uses, modified)))
             }
             cexpr => cexpr,
         }

@@ -57,6 +57,7 @@ pub(crate) struct RuntimeFunctions {
     read_cell: FuncId,
     store: FuncId,
     error_unbound_variable: FuncId,
+    clonev: FuncId,
     dropv: FuncId,
     raise_rt: FuncId,
 

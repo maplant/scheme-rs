@@ -964,7 +964,7 @@ pub fn with_exception_handler(
         pop_dyn_stack,
         req_args,
         var,
-        barrier
+        barrier,
     );
 
     Ok(Application::new(thunk, Some(k), Vec::new()))
@@ -993,7 +993,14 @@ pub fn raise(runtime: Runtime, raised: Value, barrier: &mut ContBarrier) -> Appl
     };
 
     Application::new(
-        Procedure::new_cont(runtime, vec![raised], unwind_to_exception_handler, 0, false, barrier),
+        Procedure::new_cont(
+            runtime,
+            vec![raised],
+            unwind_to_exception_handler,
+            0,
+            false,
+            barrier,
+        ),
         None,
         Vec::new(),
     )
