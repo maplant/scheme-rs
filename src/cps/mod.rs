@@ -81,11 +81,12 @@ impl fmt::Debug for Value {
 
 #[derive(Copy, Clone, Debug, Trace)]
 pub enum PrimOp {
+    // Cell operations:
     /// Set cell value:
     Set,
-
-    // Cell operations:
-    /// Allocate a cell, returning a Gc<Value>:
+    /// Read a cell value (or return the value):
+    Read,
+    /// Allocate a cell:
     AllocCell,
 
     // List/pair operators:
@@ -130,6 +131,7 @@ impl PrimOp {
     pub(crate) fn info(&self) -> PrimOpInfo {
         match self {
             Self::Set => PrimOpInfo::new(2, false, false, false),
+            Self::Read => PrimOpInfo::new(1, false, false, false),
             Self::AllocCell => PrimOpInfo::new(0, false, false, true),
             Self::Car => PrimOpInfo::new(1, false, true, true),
             Self::Cdr => PrimOpInfo::new(1, false, true, true),

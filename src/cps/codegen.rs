@@ -222,6 +222,11 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
             Cps::PrimOp(PrimOp::AllocCell, _, into, cexpr) => {
                 self.alloc_cell_codegen(into, *cexpr, deferred);
             }
+            Cps::PrimOp(PrimOp::Read, args, result, cexpr) => {
+                let value = self.value_codegen(&args[0]);
+                self.rebinds.rebind(result, IrValue::Value(value));
+                self.cps_codegen(*cexpr, deferred);
+            }
             Cps::PrimOp(PrimOp::Matches, args, bind_to, cexpr) => {
                 let [pattern, expr] = args.as_slice() else {
                     unreachable!()
