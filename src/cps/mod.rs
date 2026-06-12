@@ -157,7 +157,7 @@ impl PrimOp {
             Self::GetFrame => PrimOpInfo::new(1, false, false, true),
             Self::SetContinuationMark => PrimOpInfo::new(2, false, false, false),
             Self::Matches => PrimOpInfo::new(2, false, false, false),
-            Self::ExpandTemplate => PrimOpInfo::new(4, false, false, true),
+            Self::ExpandTemplate => PrimOpInfo::new(4, false, true, true),
             Self::ErrorNoPatternsMatch => PrimOpInfo::new(0, false, false, false),
         }
     }
