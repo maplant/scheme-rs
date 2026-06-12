@@ -42,6 +42,13 @@ mod error {
     pub(super) fn ellipsis_length_mismatch() -> Exception {
         Exception::error("pattern variables in an ellipsis differ in length")
     }
+
+    pub(super) fn multiple_ellipsis_at_same_level(form: &Syntax) -> Exception {
+        Exception::from((
+            Message::new("misplaced ellipsis in pattern"),
+            SyntaxViolation::new(form.clone(), None),
+        ))
+    }
 }
 
 #[derive(Clone, Trace, Debug)]
@@ -64,7 +71,7 @@ impl SyntaxRule {
     ) -> Result<Self, Exception> {
         let mut variables = HashMap::default();
         let pattern_scope = Scope::new();
-        let pattern = Pattern::compile(pattern, keywords, 0, pattern_scope, &mut variables);
+        let pattern = Pattern::compile(pattern, keywords, 0, pattern_scope, &mut variables)?;
         let binds = Local::gensym();
         let env = env.new_syntax_case_contour(pattern_scope, binds, variables);
         let fender = if let Some(fender) = fender {
@@ -104,8 +111,8 @@ impl Pattern {
         curr_nesting_level: usize,
         scope: Scope,
         variables: &mut HashMap<Binding, usize>,
-    ) -> Self {
-        match expr {
+    ) -> Result<Self, Exception> {
+        Ok(match expr {
             // Allow for underscores as keywords
             Syntax::Identifier { ident, .. } if keywords.contains(&ident) => {
                 Self::Keyword(ident.clone())
@@ -125,16 +132,16 @@ impl Pattern {
                 curr_nesting_level,
                 scope,
                 variables,
-            )),
+            )?),
             Syntax::Vector { vector, .. } => Self::Vector(Self::compile_slice(
                 vector,
                 keywords,
                 curr_nesting_level,
                 scope,
                 variables,
-            )),
+            )?),
             Syntax::Wrapped { value, .. } => Self::Literal(value.clone()),
-        }
+        })
     }
 
     fn compile_slice<'a>(
@@ -143,8 +150,9 @@ impl Pattern {
         curr_nesting_level: usize,
         scope: Scope,
         variables: &mut HashMap<Binding, usize>,
-    ) -> Vec<Self> {
+    ) -> Result<Vec<Self>, Exception> {
         let mut output = Vec::new();
+        let mut seen_ellipsis = false;
         loop {
             match expr {
                 [] => break,
@@ -155,13 +163,17 @@ impl Pattern {
                     },
                     tail @ ..,
                 ] if ellipsis.sym == "..." => {
+                    if seen_ellipsis {
+                        return Err(error::multiple_ellipsis_at_same_level(pattern));
+                    }
+                    seen_ellipsis = true;
                     output.push(Self::Ellipsis(Box::new(Pattern::compile(
                         pattern,
                         keywords,
                         curr_nesting_level + 1,
                         scope,
                         variables,
-                    ))));
+                    )?)));
                     expr = tail;
                 }
                 [head, tail @ ..] => {
@@ -171,12 +183,12 @@ impl Pattern {
                         curr_nesting_level,
                         scope,
                         variables,
-                    ));
+                    )?);
                     expr = tail;
                 }
             }
         }
-        output
+        Ok(output)
     }
 
     /// All pattern variables bound by this pattern, at any ellipsis depth.
