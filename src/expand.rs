@@ -393,7 +393,6 @@ impl ExpansionCombiner {
 
 #[derive(Clone, Debug, Trace)]
 pub enum Template {
-    // Null,
     Ellipsis(Box<Template>),
     List(Vec<Template>),
     Vector(Vec<Template>),
@@ -652,6 +651,7 @@ fn expand_children(items: &[Template], env: &MatchEnv) -> Result<Vec<Value>, Exc
     }
     Ok(output)
 }
+
 fn vec_to_improper_list(mut expanded: Vec<Value>) -> Value {
     let Some(mut output) = expanded.pop() else {
         return Value::null();
