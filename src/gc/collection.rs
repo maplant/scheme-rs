@@ -397,6 +397,7 @@ pub fn collect_garbage_bridge() -> Result<Vec<Value>, Exception> {
 pub struct Collector {
     roots: HashSet<OpaqueGcPtr>,
     cycles: Vec<Vec<OpaqueGcPtr>>,
+    freed_objs: HashSet<OpaqueGcPtr>,
     head: *mut GcHeader,
     tail: *mut GcHeader,
     next: *mut GcHeader,
@@ -409,6 +410,7 @@ impl Collector {
         Self {
             roots: HashSet::default(),
             cycles: Vec::new(),
+            freed_objs: HashSet::default(),
             head: null_mut(),
             tail: null_mut(),
             next: null_mut(),
@@ -470,6 +472,22 @@ impl Collector {
             }
         }
 
+        // Remove freed objects from cycles recorded on a previous epoch.
+        // Every free since the last retain is in freed_objs (free() records
+        // unconditionally, covering release() cascades), and cycles are only
+        // dereferenced below, after this retain. Clearing per epoch keeps
+        // recycled addresses from purging fresh parkings later.
+        let freed = std::mem::take(&mut self.freed_objs);
+        self.cycles.retain_mut(|cycle| {
+            cycle.retain(|obj| !freed.contains(obj));
+            !cycle.is_empty()
+        });
+        self.freed_objs = {
+            let mut freed = freed;
+            freed.clear();
+            freed
+        };
+
         // Free any cycles from the previous epoch
         unsafe {
             self.free_cycles();
@@ -479,6 +497,11 @@ impl Collector {
         unsafe {
             self.process_cycles();
         }
+
+        // Frees recorded during free_cycles target objects that cannot be in
+        // any pending cycle; drop them now so recycled addresses never purge
+        // a fresh parking in a later epoch.
+        self.freed_objs.clear();
 
         let mut heap = HEAP.lock();
         if !self.head.is_null() {
@@ -668,6 +691,10 @@ impl Collector {
 
             // self.heap.remove(&s);
             self.roots.remove(&s);
+
+            // Record the free so the next epoch purges any entry for this
+            // object from the pending cycle list before dereferencing it.
+            self.freed_objs.insert(s);
 
             // Finalize the object:
             (s.finalize())(s.data_mut());
