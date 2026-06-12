@@ -106,6 +106,7 @@ pub struct BridgeFnDebugInfo {
     pub(crate) column: u32,
     pub(crate) offset: usize,
     pub(crate) args: &'static [&'static str],
+    pub(crate) docs: &'static str,
 }
 
 impl BridgeFnDebugInfo {
@@ -115,6 +116,7 @@ impl BridgeFnDebugInfo {
         column: u32,
         offset: usize,
         args: &'static [&'static str],
+        docs: &'static str,
     ) -> Self {
         Self {
             file,
@@ -122,6 +124,7 @@ impl BridgeFnDebugInfo {
             column,
             offset,
             args,
+            docs,
         }
     }
 }

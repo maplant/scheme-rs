@@ -23,6 +23,12 @@ struct Args {
     /// Force interactive mode (REPL)
     #[arg(short, long)]
     interactive: bool,
+    /// Start scheme-rs language server
+    #[arg(long)]
+    lsp: bool,
+    /// Allow the LSP to run macro expansion while producing diagnostics
+    #[arg(long)]
+    dangerously_allow_macro_expansion_in_lsp: bool,
 }
 
 #[cfg(not(feature = "async"))]
@@ -94,6 +100,26 @@ impl IntoPort for TextStoringPrompt {
 #[maybe_async]
 fn entry(runtime: &Runtime) -> Result<(), Exception> {
     let args = Args::parse();
+
+    #[cfg(feature = "lsp")]
+    {
+        if args.lsp {
+            maybe_await!(scheme_rs::lsp::start(scheme_rs::lsp::LspConfig {
+                allow_macro_expansion: args.dangerously_allow_macro_expansion_in_lsp,
+            }))
+            .map_err(|err| Exception::error(err.to_string()))?;
+            return Ok(());
+        }
+    }
+
+    #[cfg(not(feature = "lsp"))]
+    {
+        if args.lsp {
+            return Err(Exception::error(
+                "`--lsp` requires building scheme-rs with the `lsp` feature enabled",
+            ));
+        }
+    }
 
     // Run any programs
     for file in &args.files {

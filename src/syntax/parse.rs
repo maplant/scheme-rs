@@ -1,4 +1,5 @@
 use crate::{
+    keywords::Keyword,
     num::Number,
     ports::{PortData, PortInfo},
     syntax::lex::ParseNumberError,
@@ -93,6 +94,9 @@ impl Parser<'_> {
                 )))
             }
             token!(Lexeme::String(s), span) => Ok(Some(Syntax::new_wrapped(Value::from(s), span))),
+            token!(Lexeme::Keyword(name), span) => {
+                Ok(Some(Syntax::new_wrapped(Keyword::intern(&name), span)))
+            }
             token!(Lexeme::Number(n), span) => Ok(Some(Syntax::new_wrapped(
                 Value::from(Number::try_from(n)?),
                 span,
@@ -350,8 +354,8 @@ impl fmt::Display for ParseSyntaxError {
                 write!(f, "unclosed parenthesis at location `{span}`")
             }
             Self::CharTryFrom(e) => write!(f, "{e}"),
-            Self::Lex(e) => write!(f, "{e:?}"),
-            Self::ParseNumberError(e) => write!(f, "{e:?}"),
+            Self::Lex(e) => write!(f, "{e}"),
+            Self::ParseNumberError(e) => write!(f, "{e}"),
             Self::UnexpectedToken { token } => {
                 write!(
                     f,

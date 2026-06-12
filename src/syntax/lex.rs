@@ -1,6 +1,6 @@
 //! Lexical analysis of symbolic expressions
 
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use super::Span;
 use malachite::{Integer, base::num::conversion::traits::*, rational::Rational};
@@ -176,6 +176,17 @@ impl<'a> Lexer<'a> {
                 '#' if maybe_await!(self.match_tag("`"))? => Lexeme::HashBackquote,
                 '#' if maybe_await!(self.match_tag(",@"))? => Lexeme::HashCommaAt,
                 '#' if maybe_await!(self.match_tag(","))? => Lexeme::HashComma,
+                '#' if maybe_await!(self.match_tag(":"))? => {
+                    match maybe_await!(self.identifier())? {
+                        Some(name) => Lexeme::Keyword(name),
+                        None => {
+                            return Err(LexerError::UnexpectedCharacter {
+                                chr: ':',
+                                span: self.curr_span(),
+                            });
+                        }
+                    }
+                }
                 '#' => {
                     let next_chr = maybe_await!(self.take())?;
                     if let Some(chr) = next_chr {
@@ -609,6 +620,24 @@ pub enum LexerError {
     ReadError(Exception),
 }
 
+impl fmt::Display for LexerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnexpectedEof => write!(f, "unexpected end of file"),
+            Self::InvalidCharacterInHexEscape { chr, span } => {
+                write!(f, "invalid character `{chr}` in hex escape at `{span}`")
+            }
+            Self::UnexpectedCharacter { chr, span } => {
+                write!(f, "unexpected character `{chr}` at `{span}`")
+            }
+            Self::BadEscapeCharacter { chr, span } => {
+                write!(f, "bad escape character `{chr}` at `{span}`")
+            }
+            Self::ReadError(err) => write!(f, "read error: {err}"),
+        }
+    }
+}
+
 impl From<Exception> for LexerError {
     fn from(error: Exception) -> Self {
         Self::ReadError(error)
@@ -682,6 +711,7 @@ pub enum Lexeme {
     Number(Number),
     Character(Character),
     String(String),
+    Keyword(String),
     LParen,
     RParen,
     LBracket,
@@ -757,6 +787,14 @@ impl TryFrom<Number> for num::Number {
 #[derive(Debug)]
 pub enum ParseNumberError {
     NoValidRepresentation,
+}
+
+impl fmt::Display for ParseNumberError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoValidRepresentation => write!(f, "number has no valid representation"),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

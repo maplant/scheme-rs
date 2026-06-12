@@ -399,7 +399,6 @@ impl ExpansionCombiner {
 
 #[derive(Clone, Debug, Trace)]
 pub enum Template {
-    // Null,
     Ellipsis(Box<Template>),
     List(Vec<Template>),
     Vector(Vec<Template>),
@@ -579,54 +578,98 @@ impl Template {
             .collect()
     }
 
-    fn expand(&self, binds: &Binds<'_>) -> Option<Value> {
+    fn expand(&self, binds: &Binds<'_>) -> Value {
         match self {
             Self::List(list) => expand_list(list, binds),
             Self::Vector(vec) => expand_vec(vec, binds),
-            Self::Variable(binding) => Some(Syntax::unwrap(binds.get_bind(*binding)?)),
+            Self::Variable(binding) => Syntax::unwrap(binds.get_bind(*binding).unwrap()),
+            Self::Wrapped(Syntax::Wrapped { value, .. }) if value.is_null() => Value::null(),
+            Self::Wrapped(wrapped) => Value::from(wrapped.clone()),
             Self::Ellipsis(_) => unreachable!(),
-            Self::Wrapped(Syntax::Wrapped { value, .. }) if value.is_null() => Some(Value::null()),
-            Self::Wrapped(wrapped) => Some(Value::from(wrapped.clone())),
         }
     }
 
     fn expand_nested(&self, binds: &Binds<'_>) -> Option<Vec<Value>> {
-        let mut output = Vec::new();
-        if let Template::Ellipsis(template) = self {
-            for expansion in &binds.curr_expansion_level.expansions {
-                let new_level = binds.new_level(expansion);
-                let Some(result) = template.expand_nested(&new_level) else {
-                    break;
-                };
-                output.extend(result);
+        match self {
+            Self::List(list) => Some(vec![expand_nested_list(list, binds)?]),
+            Self::Vector(vec) => Some(vec![expand_nested_vec(vec, binds)?]),
+            Self::Variable(binding) => Some(vec![Syntax::unwrap(binds.get_bind(*binding)?)]),
+            Self::Wrapped(Syntax::Wrapped { value, .. }) if value.is_null() => {
+                Some(vec![Value::null()])
             }
-        } else {
-            output.push(self.expand(binds)?);
+            Self::Wrapped(wrapped) => Some(vec![Value::from(wrapped.clone())]),
+            Self::Ellipsis(template) => {
+                // If there are no expansions possible at this level, return
+                // None to bubble up.
+                if binds.curr_expansion_level.expansions.is_empty() {
+                    None
+                } else {
+                    Some(template.expand_ellipsis_levels(binds))
+                }
+            }
         }
-        Some(output)
+    }
+
+    fn expand_ellipsis(&self, binds: &Binds<'_>) -> Vec<Value> {
+        if let Self::Ellipsis(template) = self {
+            template.expand_ellipsis_levels(binds)
+        } else {
+            vec![self.expand(binds)]
+        }
+    }
+
+    fn expand_ellipsis_levels(&self, binds: &Binds<'_>) -> Vec<Value> {
+        let mut output = Vec::new();
+        for expansion in &binds.curr_expansion_level.expansions {
+            let new_level = binds.new_level(expansion);
+            let Some(result) = self.expand_nested(&new_level) else {
+                break;
+            };
+            output.extend(result);
+        }
+        output
     }
 }
 
-fn expand_list(items: &[Template], binds: &Binds<'_>) -> Option<Value> {
+fn expand_children(items: &[Template], binds: &Binds<'_>) -> Vec<Value> {
+    items
+        .iter()
+        .flat_map(|item| item.expand_ellipsis(binds))
+        .collect()
+}
+
+fn expand_nested_children(items: &[Template], binds: &Binds<'_>) -> Option<Vec<Value>> {
     let mut expanded = Vec::new();
     for item in items {
         expanded.extend(item.expand_nested(binds)?);
     }
+    Some(expanded)
+}
+
+fn vec_to_improper_list(mut expanded: Vec<Value>) -> Value {
     let Some(mut output) = expanded.pop() else {
-        return Some(Value::null());
+        return Value::null();
     };
     for expanded in expanded.into_iter().rev() {
         output = Value::from((expanded, output));
     }
-    Some(output)
+    output
 }
 
-fn expand_vec(items: &[Template], binds: &Binds<'_>) -> Option<Value> {
-    let mut output = Vec::new();
-    for item in items {
-        output.extend(item.expand_nested(binds)?);
-    }
-    Some(Value::from(output))
+fn expand_list(items: &[Template], binds: &Binds<'_>) -> Value {
+    vec_to_improper_list(expand_children(items, binds))
+}
+
+fn expand_nested_list(items: &[Template], binds: &Binds<'_>) -> Option<Value> {
+    Some(vec_to_improper_list(expand_nested_children(items, binds)?))
+}
+
+fn expand_vec(items: &[Template], binds: &Binds<'_>) -> Value {
+    Value::from(expand_children(items, binds))
+}
+
+fn expand_nested_vec(items: &[Template], binds: &Binds<'_>) -> Option<Value> {
+    Some(Value::from(expand_nested_children(items, binds)))
 }
 
 fn check_ellipsis(expr: &Syntax, env: &Environment) -> Result<(), Exception> {
@@ -786,7 +829,7 @@ unsafe extern "C" fn expand_template(
     let binds = Binds::new_top(&combined_expansions);
 
     // Expand the template:
-    let expanded = template.expand(&binds).unwrap();
+    let expanded = template.expand(&binds);
 
     Value::into_raw(expanded)
 }

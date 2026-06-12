@@ -6,12 +6,7 @@
 
 use crate::{
     ast::{Definitions, Primitive},
-    cps::{
-        Cps,
-        analysis::Escaping,
-        codegen::RuntimeFunctionsBuilder,
-        compile::Compiler,
-    },
+    cps::{Cps, analysis::Escaping, codegen::RuntimeFunctionsBuilder, compile::Compiler},
     env::{Environment, Global, TopLevelEnvironment},
     exceptions::{Exception, SourceCache, raise},
     gc::{Gc, GcInner, Trace, init_gc},

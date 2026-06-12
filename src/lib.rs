@@ -3,6 +3,7 @@
 extern crate self as scheme_rs;
 
 pub(crate) mod ast;
+pub mod atomic;
 pub(crate) mod character;
 pub(crate) mod cps;
 pub(crate) mod enumerations;
@@ -12,7 +13,10 @@ pub mod exceptions;
 pub(crate) mod expand;
 pub mod gc;
 pub mod hashtables;
+pub mod keywords;
 pub mod lists;
+#[cfg(feature = "lsp")]
+pub mod lsp;
 pub mod num;
 pub mod ports;
 pub mod proc;
