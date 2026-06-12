@@ -30,6 +30,23 @@ use syn::{
 /// will be assumed to be public. More control can be given by associating
 /// scheme code with the library, in that case bridge functions will need to be
 /// made public by putting them in the `export` spec.
+///
+/// # Known functions
+///
+/// If there is no `rest_args` (variadic) parameter and the function takes three
+/// or fewer arguments, the function may choose to return a single value or `()`
+/// instead of a `Vec` and become "known". Known functions are faster than
+/// regular bridge functions and have the added benefit of not having to return
+/// a `Vec<Value>` but any type that can be converted into one (although `()` is
+/// treated as no return value rather than the empty list in this context).
+///
+/// ```rust
+/// #[bridge(name = "length", lib = "(list-length (1))")]
+/// pub fn length(arg: List) -> usize {
+///     arg.len()
+/// }
+/// ```
+
 #[proc_macro_attribute]
 pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     let mut name: Option<LitStr> = None;
@@ -394,10 +411,10 @@ fn codegen_known_bridge(
 ///  - `runtime: &Runtime`: The runtime to which the procedure is registered.
 ///  - `env: &[Value]`: Environmental variables supplied to the procedure via
 ///    `Procedure::new`.
+///  - `k: Procedure`: The current continuation.
 ///  - `args: &[Value]`: The arguments to the procedure.
 ///  - `rest_args: &[Value]`: Any variadic arguments provided to the procedure.
 ///  - `barrier: &mut ContBarrier`: The dynamic state of the program.
-///  - `k: Value`: The current continuation.
 ///
 /// The `cps_bridge` proc macro takes two arguments: `def` which specifies the
 /// scheme procedure name and arguments and `lib` which specifies the library
@@ -428,8 +445,7 @@ fn codegen_known_bridge(
 ///     let (last, args) = rest_args.split_last().unwrap();
 ///     let mut args = args.to_vec();
 ///     list_to_vec(last, &mut args);
-///     args.insert(0, k);
-///     Ok(Application::new(op.clone(), args))
+///     Ok(Application::new(op.clone(), Some(k), args))
 /// }
 /// ```
 

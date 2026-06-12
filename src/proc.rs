@@ -1161,7 +1161,7 @@ where
     }
 }
 
-/// A copy of [`DynamicState`] without mutable parameters
+/// A copy of [`ContBarrier`] without mutable parameters
 #[derive(Clone, Debug, Trace)]
 pub struct SavedDynamicState {
     id: usize,

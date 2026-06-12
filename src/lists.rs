@@ -180,6 +180,10 @@ impl List {
     pub fn into_vec(self) -> Vec<Value> {
         self.items
     }
+
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
 }
 
 impl IntoIterator for List {
