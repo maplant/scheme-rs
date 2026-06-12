@@ -555,3 +555,36 @@
     (syntax-rules ::: ()
       ((_ f (x :::)) (list (f x) :::))))
   (assert-equal? (my-map (lambda (x) (+ x 1)) (1 2 3)) '(2 3 4)))
+
+;; Nested ellipsis matching zero items must expand to nothing, not
+;; abort the enclosing expansion (regression after fix for bug 286):
+
+(define case-lambda-test
+  (case-lambda
+    (() 'zero)
+    ((a) (list 'one a))
+    ((a . rest) (list 'many a rest))))
+
+(assert-equal? (case-lambda-test) 'zero)
+(assert-equal? (case-lambda-test 1) '(one 1))
+(assert-equal? (case-lambda-test 1 2 3) '(many 1 (2 3)))
+
+(assert-equal? (do ((i 0 (+ i 1))
+                    (acc '()))
+                   ((= i 3) 'done))
+               'done)
+
+(define-syntax flatten-test
+  (syntax-rules ()
+    ((_ (x ...) ...) '(x ... ...))))
+
+(assert-equal? (flatten-test (1 2) () (3)) '(1 2 3))
+
+;; A vector sub-template whose ellipsis matched zero items must expand
+;; to an empty vector, not abort (or worse, inject #f):
+
+(define-syntax vector-ellipsis-test
+  (syntax-rules ()
+    ((_ (a ...) ...) '(#(a ...) ...))))
+
+(assert-equal? (vector-ellipsis-test (1 2) () (3)) '(#(1 2) #() #(3)))
