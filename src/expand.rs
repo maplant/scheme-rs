@@ -38,6 +38,10 @@ mod error {
             SyntaxViolation::new(form.clone(), None),
         ))
     }
+
+    pub(super) fn ellipsis_length_mismatch() -> Exception {
+        Exception::error("pattern variables in an ellipsis differ in length")
+    }
 }
 
 #[derive(Clone, Trace, Debug)]
@@ -175,14 +179,27 @@ impl Pattern {
         output
     }
 
-    fn matches(&self, expr: &Syntax, expansion_level: &mut ExpansionLevel) -> bool {
+    /// All pattern variables bound by this pattern, at any ellipsis depth.
+    fn variables(&self, out: &mut HashSet<Binding>) {
+        match self {
+            Self::Variable(binding) => {
+                out.insert(*binding);
+            }
+            Self::Ellipsis(pattern) => pattern.variables(out),
+            Self::List(patterns) | Self::Vector(patterns) => {
+                patterns.iter().for_each(|pattern| pattern.variables(out))
+            }
+            Self::Underscore | Self::Keyword(_) | Self::Literal(_) => (),
+        }
+    }
+
+    fn matches(&self, expr: &Syntax, env: &mut MatchEnv) -> bool {
         match self {
             Self::Underscore => !expr.is_null(),
             Self::Variable(binding) => {
                 assert!(
-                    expansion_level
-                        .binds
-                        .insert(*binding, expr.clone())
+                    env.binds
+                        .insert(*binding, Match::Leaf(expr.clone()))
                         .is_none()
                 );
                 true
@@ -201,19 +218,15 @@ impl Pattern {
                     false
                 }
             }
-            Self::List(list) => match_list(list, expr, expansion_level),
-            Self::Vector(vec) => match_vec(vec, expr, expansion_level),
+            Self::List(list) => match_list(list, expr, env),
+            Self::Vector(vec) => match_vec(vec, expr, env),
             // We shouldn't ever see this outside of lists
             Self::Ellipsis(_) => unreachable!(),
         }
     }
 }
 
-fn match_ellipsis(
-    patterns: &[Pattern],
-    exprs: &[Syntax],
-    expansion_level: &mut ExpansionLevel,
-) -> bool {
+fn match_ellipsis(patterns: &[Pattern], exprs: &[Syntax], env: &mut MatchEnv) -> bool {
     // The ellipsis gets to consume any extra items, thus the difference:
     let Some(extra_items) = (exprs.len() + 1).checked_sub(patterns.len()) else {
         return false;
@@ -222,20 +235,29 @@ fn match_ellipsis(
     let mut expr_iter = exprs.iter();
     for pattern in patterns.iter() {
         if let Pattern::Ellipsis(muncher) = pattern {
-            // Gobble up the extra items:
-            for i in 0..extra_items {
-                if expansion_level.expansions.len() <= i {
-                    expansion_level.expansions.push(ExpansionLevel::default());
-                }
+            let mut vars = HashSet::default();
+            muncher.variables(&mut vars);
+            let mut matched_vars: HashMap<Binding, Vec<_>> =
+                vars.into_iter().map(|var| (var, Vec::new())).collect();
+
+            for _ in 0..extra_items {
                 let expr = expr_iter.next().unwrap();
-                if !muncher.matches(expr, &mut expansion_level.expansions[i]) {
+                let mut sub = MatchEnv::default();
+                if !muncher.matches(expr, &mut sub) {
                     return false;
                 }
+                for (binding, m) in sub.binds.into_iter() {
+                    matched_vars.entry(binding).or_default().push(m);
+                }
+            }
+
+            for (binding, seq) in matched_vars.into_iter() {
+                env.binds.insert(binding, Match::Seq(seq));
             }
         } else {
             // Otherwise, match the pattern normally
             let expr = expr_iter.next().unwrap();
-            if !pattern.matches(expr, expansion_level) {
+            if !pattern.matches(expr, env) {
                 return false;
             }
         }
@@ -246,7 +268,7 @@ fn match_ellipsis(
     true
 }
 
-fn match_list(patterns: &[Pattern], expr: &Syntax, expansion_level: &mut ExpansionLevel) -> bool {
+fn match_list(patterns: &[Pattern], expr: &Syntax, env: &mut MatchEnv) -> bool {
     assert!(!patterns.is_empty());
 
     let exprs = match expr {
@@ -256,7 +278,7 @@ fn match_list(patterns: &[Pattern], expr: &Syntax, expansion_level: &mut Expansi
     };
 
     if patterns.iter().any(|p| matches!(p, Pattern::Ellipsis(_))) {
-        match_ellipsis(patterns, exprs, expansion_level)
+        match_ellipsis(patterns, exprs, env)
     } else if let Some((cdr, head)) = patterns.split_last() {
         // The pattern is an list that contains no ellipsis.
         // Match in order until the last pattern, then match that to the nth
@@ -266,7 +288,7 @@ fn match_list(patterns: &[Pattern], expr: &Syntax, expansion_level: &mut Expansi
             let Some(expr) = exprs.next() else {
                 continue;
             };
-            if !pattern.matches(expr, expansion_level) {
+            if !pattern.matches(expr, env) {
                 return false;
             }
         }
@@ -274,18 +296,15 @@ fn match_list(patterns: &[Pattern], expr: &Syntax, expansion_level: &mut Expansi
         let exprs: Vec<_> = exprs.cloned().collect();
         match exprs.as_slice() {
             [] => false,
-            [x] => cdr.matches(x, expansion_level),
-            _ => cdr.matches(
-                &Syntax::new_list(exprs, expr.span().clone()),
-                expansion_level,
-            ),
+            [x] => cdr.matches(x, env),
+            _ => cdr.matches(&Syntax::new_list(exprs, expr.span().clone()), env),
         }
     } else {
         false
     }
 }
 
-fn match_vec(patterns: &[Pattern], expr: &Syntax, expansion_level: &mut ExpansionLevel) -> bool {
+fn match_vec(patterns: &[Pattern], expr: &Syntax, env: &mut MatchEnv) -> bool {
     let Syntax::Vector { vector: exprs, .. } = expr else {
         return false;
     };
@@ -293,12 +312,12 @@ fn match_vec(patterns: &[Pattern], expr: &Syntax, expansion_level: &mut Expansio
     let contains_ellipsis = patterns.iter().any(|p| matches!(p, Pattern::Ellipsis(_)));
 
     if contains_ellipsis {
-        match_ellipsis(patterns, exprs, expansion_level)
+        match_ellipsis(patterns, exprs, env)
     } else if patterns.len() != exprs.len() {
         false
     } else {
         for (pattern, expr) in patterns.iter().zip(exprs.iter()) {
-            if !pattern.matches(expr, expansion_level) {
+            if !pattern.matches(expr, env) {
                 return false;
             }
         }
@@ -312,15 +331,20 @@ impl SchemeCompatible for Pattern {
     }
 }
 
-#[derive(Clone, Debug, Default, Trace)]
-pub struct ExpansionLevel {
-    binds: HashMap<Binding, Syntax>,
-    expansions: Vec<ExpansionLevel>,
+#[derive(Clone, Debug, Trace)]
+enum Match {
+    Leaf(Syntax),
+    Seq(Vec<Match>),
 }
 
-impl SchemeCompatible for ExpansionLevel {
+#[derive(Clone, Debug, Default, Trace)]
+pub struct MatchEnv {
+    binds: HashMap<Binding, Match>,
+}
+
+impl SchemeCompatible for MatchEnv {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "expansion-level", sealed: true, opaque: true)
+        rtd!(name: "match-env", sealed: true, opaque: true)
     }
 }
 
@@ -343,47 +367,27 @@ unsafe extern "C" fn matches(pattern: *const (), value: *const ()) -> *const () 
     let value = unsafe { Value::from_raw_inc_rc(value) };
     let syntax = Syntax::wrap(value, &Span::default());
 
-    let mut expansions = ExpansionLevel::default();
-    if pattern.matches(&syntax, &mut expansions) {
-        Value::into_raw(Value::from(Record::from_rust_type(expansions)))
+    let mut env = MatchEnv::default();
+    if pattern.matches(&syntax, &mut env) {
+        Value::into_raw(Value::from(Record::from_rust_type(env)))
     } else {
         Value::into_raw(Value::from(false))
     }
 }
 
 impl ExpansionCombiner {
-    fn combine_expansions(&self, expansions: &[ExpansionLevel]) -> ExpansionLevel {
+    fn combine_envs(&self, envs: &[MatchEnv]) -> MatchEnv {
         let binds = self
             .uses
             .iter()
             .filter_map(|(binding, idx)| {
-                expansions[*idx]
+                envs[*idx]
                     .binds
                     .get(binding)
-                    .map(|expansion| (*binding, expansion.clone()))
+                    .map(|matched| (*binding, matched.clone()))
             })
-            .collect::<HashMap<_, _>>();
-        let max_expansions = expansions
-            .iter()
-            .map(|exp| exp.expansions.len())
-            .max()
-            .unwrap_or(0);
-        let expansions = (0..max_expansions)
-            .map(|i| {
-                let expansions = expansions
-                    .iter()
-                    .map(|exp| {
-                        if exp.expansions.len() <= i {
-                            ExpansionLevel::default()
-                        } else {
-                            exp.expansions[i].clone()
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                self.combine_expansions(&expansions)
-            })
-            .collect::<Vec<_>>();
-        ExpansionLevel { binds, expansions }
+            .collect();
+        MatchEnv { binds }
     }
 }
 
@@ -568,72 +572,84 @@ impl Template {
             .collect()
     }
 
-    fn expand(&self, binds: &Binds<'_>) -> Value {
+    fn variables(&self, out: &mut HashSet<Binding>) {
         match self {
-            Self::List(list) => expand_list(list, binds),
-            Self::Vector(vec) => expand_vec(vec, binds),
-            Self::Variable(binding) => Syntax::unwrap(binds.get_bind(*binding).unwrap()),
-            Self::Wrapped(Syntax::Wrapped { value, .. }) if value.is_null() => Value::null(),
-            Self::Wrapped(wrapped) => Value::from(wrapped.clone()),
-            Self::Ellipsis(_) => unreachable!(),
+            Self::Variable(binding) => {
+                out.insert(*binding);
+            }
+            Self::Ellipsis(template) => template.variables(out),
+            Self::List(items) | Self::Vector(items) => {
+                items.iter().for_each(|item| item.variables(out))
+            }
+            Self::Wrapped(_) => (),
         }
     }
 
-    fn expand_nested(&self, binds: &Binds<'_>) -> Option<Vec<Value>> {
+    fn expand(&self, env: &MatchEnv) -> Result<Value, Exception> {
         match self {
-            Self::List(list) => Some(vec![expand_nested_list(list, binds)?]),
-            Self::Vector(vec) => Some(vec![expand_nested_vec(vec, binds)?]),
-            Self::Variable(binding) => Some(vec![Syntax::unwrap(binds.get_bind(*binding)?)]),
-            Self::Wrapped(Syntax::Wrapped { value, .. }) if value.is_null() => {
-                Some(vec![Value::null()])
+            Self::Variable(binding) if let Some(Match::Leaf(syntax)) = env.binds.get(binding) => {
+                Ok(Syntax::unwrap(syntax.clone()))
             }
-            Self::Wrapped(wrapped) => Some(vec![Value::from(wrapped.clone())]),
-            Self::Ellipsis(template) => {
-                // If there are no expansions possible at this level, return
-                // None to bubble up.
-                if binds.curr_expansion_level.expansions.is_empty() {
-                    None
-                } else {
-                    Some(template.expand_ellipsis_levels(binds))
-                }
-            }
+            Self::Wrapped(Syntax::Wrapped { value, .. }) if value.is_null() => Ok(Value::null()),
+            Self::Wrapped(wrapped) => Ok(Value::from(wrapped.clone())),
+            Self::List(items) => Ok(vec_to_improper_list(expand_children(items, env)?)),
+            Self::Vector(items) => Ok(Value::from(expand_children(items, env)?)),
+            Self::Variable(_) | Self::Ellipsis(_) => unreachable!(),
         }
     }
 
-    fn expand_ellipsis(&self, binds: &Binds<'_>) -> Vec<Value> {
-        if let Self::Ellipsis(template) = self {
-            template.expand_ellipsis_levels(binds)
+    fn expand_ellipsis(&self, env: &MatchEnv) -> Result<Vec<Value>, Exception> {
+        if let Self::Ellipsis(subtemplate) = self {
+            subtemplate.expand_ellipsis_subtemplate(env)
         } else {
-            vec![self.expand(binds)]
+            Ok(vec![self.expand(env)?])
         }
     }
 
-    fn expand_ellipsis_levels(&self, binds: &Binds<'_>) -> Vec<Value> {
-        let mut output = Vec::new();
-        for expansion in &binds.curr_expansion_level.expansions {
-            let new_level = binds.new_level(expansion);
-            let Some(result) = self.expand_nested(&new_level) else {
-                break;
+    fn expand_ellipsis_subtemplate(&self, env: &MatchEnv) -> Result<Vec<Value>, Exception> {
+        let mut vars = HashSet::default();
+        self.variables(&mut vars);
+
+        let controlled = vars
+            .into_iter()
+            .filter(|var| matches!(env.binds.get(var), Some(Match::Seq(_))))
+            .collect::<HashSet<_>>();
+
+        let mut len = None;
+        for var in &controlled {
+            let Some(Match::Seq(column)) = env.binds.get(var) else {
+                unreachable!()
             };
-            output.extend(result);
+            match len {
+                None => len = Some(column.len()),
+                Some(n) if n != column.len() => return Err(error::ellipsis_length_mismatch()),
+                _ => (),
+            }
         }
-        output
+        let len = len.unwrap_or(0);
+
+        let mut output = Vec::with_capacity(len);
+        for i in 0..len {
+            let mut sub_env = env.clone();
+            for var in &controlled {
+                let Some(Match::Seq(column)) = env.binds.get(var) else {
+                    unreachable!()
+                };
+                sub_env.binds.insert(*var, column[i].clone());
+            }
+
+            output.extend(self.expand_ellipsis(&sub_env)?);
+        }
+        Ok(output)
     }
 }
 
-fn expand_children(items: &[Template], binds: &Binds<'_>) -> Vec<Value> {
-    items
-        .iter()
-        .flat_map(|item| item.expand_ellipsis(binds))
-        .collect()
-}
-
-fn expand_nested_children(items: &[Template], binds: &Binds<'_>) -> Option<Vec<Value>> {
-    let mut expanded = Vec::new();
+fn expand_children(items: &[Template], env: &MatchEnv) -> Result<Vec<Value>, Exception> {
+    let mut output = Vec::new();
     for item in items {
-        expanded.extend(item.expand_nested(binds)?);
+        output.extend(item.expand_ellipsis(env)?);
     }
-    Some(expanded)
+    Ok(output)
 }
 
 fn vec_to_improper_list(mut expanded: Vec<Value>) -> Value {
@@ -644,22 +660,6 @@ fn vec_to_improper_list(mut expanded: Vec<Value>) -> Value {
         output = Value::from((expanded, output));
     }
     output
-}
-
-fn expand_list(items: &[Template], binds: &Binds<'_>) -> Value {
-    vec_to_improper_list(expand_children(items, binds))
-}
-
-fn expand_nested_list(items: &[Template], binds: &Binds<'_>) -> Option<Value> {
-    Some(vec_to_improper_list(expand_nested_children(items, binds)?))
-}
-
-fn expand_vec(items: &[Template], binds: &Binds<'_>) -> Value {
-    Value::from(expand_children(items, binds))
-}
-
-fn expand_nested_vec(items: &[Template], binds: &Binds<'_>) -> Option<Value> {
-    Some(Value::from(expand_nested_children(items, binds)))
 }
 
 fn check_ellipsis(expr: &Syntax, env: &Environment) -> Result<(), Exception> {
@@ -798,6 +798,7 @@ unsafe extern "C" fn expand_template(
     expansion_combiner: *const (),
     expansions: *const *const (),
     num_expansions: u32,
+    error: *mut Value,
 ) -> *const () {
     let template = unsafe { Value::from_raw_inc_rc(template) };
     let template = template.try_to_rust_type::<Template>().unwrap();
@@ -807,51 +808,21 @@ unsafe extern "C" fn expand_template(
         .try_to_rust_type::<ExpansionCombiner>()
         .unwrap();
 
-    let expansions = (0..num_expansions)
+    let envs = (0..num_expansions)
         .map(|i| {
-            let expansion = unsafe { Value::from_raw_inc_rc(expansions.add(i as usize).read()) };
-            let expansion = expansion.try_to_rust_type::<ExpansionLevel>().unwrap();
-            expansion.as_ref().clone()
+            let env = unsafe { Value::from_raw_inc_rc(expansions.add(i as usize).read()) };
+            let env = env.try_to_rust_type::<MatchEnv>().unwrap();
+            env.as_ref().clone()
         })
         .collect::<Vec<_>>();
 
-    let combined_expansions = expansion_combiner.combine_expansions(&expansions);
-    let binds = Binds::new_top(&combined_expansions);
+    let env = expansion_combiner.combine_envs(&envs);
 
-    // Expand the template:
-    let expanded = template.expand(&binds);
-
-    Value::into_raw(expanded)
-}
-
-#[derive(Debug)]
-pub struct Binds<'a> {
-    curr_expansion_level: &'a ExpansionLevel,
-    parent_expansion_level: Option<&'a Binds<'a>>,
-}
-
-impl<'a> Binds<'a> {
-    fn new_top(top_expansion_level: &'a ExpansionLevel) -> Self {
-        Self {
-            curr_expansion_level: top_expansion_level,
-            parent_expansion_level: None,
-        }
-    }
-
-    fn new_level<'b: 'a>(&'b self, next_expansion_level: &'b ExpansionLevel) -> Binds<'b> {
-        Binds {
-            curr_expansion_level: next_expansion_level,
-            parent_expansion_level: Some(self),
-        }
-    }
-
-    fn get_bind(&self, binding: Binding) -> Option<Syntax> {
-        if let bind @ Some(_) = self.curr_expansion_level.binds.get(&binding) {
-            bind.cloned()
-        } else if let Some(up) = self.parent_expansion_level {
-            up.get_bind(binding)
-        } else {
-            None
+    match template.expand(&env) {
+        Ok(expanded) => Value::into_raw(expanded),
+        Err(exception) => {
+            unsafe { error.write(Value::from(exception)) };
+            Value::into_raw(Value::undefined())
         }
     }
 }
