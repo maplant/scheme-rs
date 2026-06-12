@@ -144,15 +144,21 @@ fn compile_let(
         let k1 = Local::gensym();
         let k2 = Local::gensym();
         let k3 = Local::gensym();
+        let raw_val = Local::gensym();
         Cps::Fix(
             vec![LambdaBinding {
                 args: LambdaArgs::new(vec![k2], false, None),
                 body: Box::new(Cps::Fix(
                     vec![LambdaBinding {
-                        args: LambdaArgs::new(vec![*curr_bind], false, None),
-                        body: Box::new(compile_let(ctxt, tail, body, &mut move |result| {
-                            Cps::App(result, vec![Value::from(k2)])
-                        })),
+                        args: LambdaArgs::new(vec![raw_val], false, None),
+                        body: Box::new(Cps::PrimOp(
+                            PrimOp::Read,
+                            vec![Value::from(raw_val)],
+                            *curr_bind,
+                            Box::new(compile_let(ctxt, tail, body, &mut move |result| {
+                                Cps::App(result, vec![Value::from(k2)])
+                            })),
+                        )),
                         val: k3,
                         span: None,
                     }],
@@ -1027,7 +1033,11 @@ impl Cps {
                 local,
                 Box::new(cexpr.vals_to_cells(mutable_vars)),
             ),
-            Cps::PrimOp(op, vals, local, cexpr) => {
+            Self::PrimOp(PrimOp::Read, vals, mut local, cexpr) if mutable_vars.contains(&local) => {
+                let body = val_to_cell(&mut local, Box::new(cexpr.vals_to_cells(mutable_vars)));
+                Self::PrimOp(PrimOp::Read, vals, local, body)
+            }
+            Self::PrimOp(op, vals, local, cexpr) => {
                 let cexpr = Box::new(cexpr.vals_to_cells(mutable_vars));
                 Cps::PrimOp(op, vals, local, cexpr)
             }

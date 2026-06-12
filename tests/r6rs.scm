@@ -522,3 +522,14 @@
      (list (list (list a ...) ...) (list b ...) c))))
 
 (assert-equal? (test-bug-286 (1 2) 99) '(() (1 2) 99))
+
+;; Test cell bug:
+
+(let ((x 1)
+      (y 2))
+  (let ((tmp x))
+    (set! x y)
+    (set! y tmp))
+  (assert-equal? (list x y) '(2 1)))
+
+(assert-equal? (let ((tmp 5)) (set! tmp (+ tmp 1)) tmp) 6)
