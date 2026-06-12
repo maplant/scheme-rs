@@ -477,16 +477,10 @@ impl Collector {
         // unconditionally, covering release() cascades), and cycles are only
         // dereferenced below, after this retain. Clearing per epoch keeps
         // recycled addresses from purging fresh parkings later.
-        let freed = std::mem::take(&mut self.freed_objs);
         self.cycles.retain_mut(|cycle| {
-            cycle.retain(|obj| !freed.contains(obj));
+            cycle.retain(|obj| !self.freed_objs.contains(obj));
             !cycle.is_empty()
         });
-        self.freed_objs = {
-            let mut freed = freed;
-            freed.clear();
-            freed
-        };
 
         // Free any cycles from the previous epoch
         unsafe {
