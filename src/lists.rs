@@ -182,7 +182,11 @@ impl List {
     }
 
     pub fn len(&self) -> usize {
-        self.items.len()
+        self.items.len() - 1
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.len() == 1
     }
 }
 
