@@ -1,7 +1,7 @@
 //! Cranelift Codegen from CPS.
 
 use cranelift::{
-    codegen::ir::{StackSlot, entities::Value},
+    codegen::ir::{BlockArg, StackSlot, entities::Value},
     prelude::*,
 };
 use cranelift_jit::JITModule;
@@ -9,7 +9,10 @@ use cranelift_module::{FuncId, Linkage, Module};
 use std::sync::Arc;
 
 use crate::{
-    cps::Value as CpsValue,
+    cps::{
+        Value as CpsValue,
+        analysis::{Escaping, FreeVariables},
+    },
     proc::{ContinuationPtr, FuncPtr, ProcDebugInfo, Procedure},
     runtime::{DebugInfo, Runtime},
     value::{FALSE_VALUE, NULL_VALUE, TAG, TRUE_VALUE, Tag, Value as SchemeValue},
@@ -51,12 +54,24 @@ pub(crate) struct RuntimeFunctions {
     halt: FuncId,
     make_user: FuncId,
     make_continuation: FuncId,
+    patch_env_slot: FuncId,
+    unroot_proc: FuncId,
     alloc_cell: FuncId,
     read_cell: FuncId,
     store: FuncId,
     error_unbound_variable: FuncId,
+    clonev: FuncId,
     dropv: FuncId,
     raise_rt: FuncId,
+
+    // Known function operations:
+    call_known_0x1: FuncId,
+    call_known_1x0: FuncId,
+    call_known_1x1: FuncId,
+    call_known_2x0: FuncId,
+    call_known_2x1: FuncId,
+    call_known_3x0: FuncId,
+    call_known_3x1: FuncId,
 
     // Syntax primops:
     matches: FuncId,
@@ -91,16 +106,22 @@ impl Cps {
     pub(crate) fn into_procedure(
         self,
         runtime: Runtime,
+        escaping: Escaping,
         runtime_funcs: &RuntimeFunctions,
         module: &mut JITModule,
         debug_info: &mut DebugInfo,
     ) -> Procedure {
         if std::env::var("SCHEME_RS_DEBUG").is_ok() {
             eprintln!("Compiling:");
-            self.pretty_print(2);
+            self.pretty_print(0);
+            eprintln!();
         }
 
-        let cells = self.cells();
+        let mut free_vars = FreeVariables::default();
+        free_vars.find_free_vars(&self);
+
+        let mut cells = HashSet::default();
+        self.cells(&mut cells);
         let mut builder_context = FunctionBuilderContext::new();
         let mut ctx = module.make_context();
 
@@ -113,11 +134,12 @@ impl Cps {
             .unwrap();
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_context);
 
-        let num_drops = self.max_drops();
+        let mut allocs_at_local_conts = HashMap::default();
+        let max_allocs = self.max_allocs(0, &escaping, &mut allocs_at_local_conts);
 
         let vals = builder.create_sized_stack_slot(StackSlotData::new(
             StackSlotKind::ExplicitSlot,
-            num_drops as u32 * 8,
+            max_allocs as u32 * 8,
             0,
         ));
 
@@ -134,9 +156,6 @@ impl Cps {
             ]
         };
 
-        let mut deferred = Vec::new();
-        let mut free_vars_cache = HashMap::default();
-
         let mut cu = CompilationUnit {
             runtime: runtime.clone(),
             builder,
@@ -147,25 +166,40 @@ impl Cps {
             runtime_funcs,
             params,
             module,
-            free_vars_cache: &mut free_vars_cache,
+            allocs_at_local_cont: &allocs_at_local_conts,
+            local_cont_blocks: HashMap::default(),
+            free_vars: &mut free_vars,
+            escaping: &escaping,
             debug_info,
         };
 
-        cu.cps_codegen(self, &mut deferred);
+        let mut deferred_procs = Vec::new();
+        let mut deferred_local_conts = Vec::new();
+        cu.cps_codegen(self, &mut deferred_procs, &mut deferred_local_conts);
+
+        while let Some(local_cont) = deferred_local_conts.pop() {
+            cu.local_cont_codegen(local_cont, &mut deferred_procs, &mut deferred_local_conts);
+        }
+
+        // Seal all of the local continuations
+        for block in cu.local_cont_blocks.values() {
+            cu.builder.seal_block(*block);
+        }
 
         cu.builder.finalize();
 
         module.define_function(entry_func, &mut ctx).unwrap();
         module.clear_context(&mut ctx);
 
-        while let Some(next) = deferred.pop() {
+        while let Some(next) = deferred_procs.pop() {
             next.codegen(
                 runtime_funcs,
                 &cells,
-                &mut free_vars_cache,
+                &escaping,
+                &mut free_vars,
                 module,
                 debug_info,
-                &mut deferred,
+                &mut deferred_procs,
             );
         }
 
@@ -181,20 +215,23 @@ impl Cps {
     }
 }
 
-struct CompilationUnit<'m, 'f, 'c, 'd> {
+struct CompilationUnit<'m, 'a> {
     runtime: Runtime,
     builder: FunctionBuilder<'m>,
     rebinds: Rebinds,
     allocs: StackSlot,
     curr_allocs: usize,
-    runtime_funcs: &'f RuntimeFunctions,
+    allocs_at_local_cont: &'a HashMap<Local, usize>,
+    local_cont_blocks: HashMap<Local, Block>,
+    runtime_funcs: &'a RuntimeFunctions,
     params: [Value; 2],
-    free_vars_cache: &'c mut HashMap<Local, HashSet<Local>>,
-    module: &'m mut JITModule,
-    debug_info: &'d mut DebugInfo,
+    free_vars: &'a mut FreeVariables,
+    escaping: &'a Escaping,
+    module: &'a mut JITModule,
+    debug_info: &'a mut DebugInfo,
 }
 
-impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
+impl CompilationUnit<'_, '_> {
     fn push_alloc(&mut self, val: Value) {
         self.builder
             .ins()
@@ -210,28 +247,52 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
         self.params[1]
     }
 
-    fn cps_codegen(&mut self, cps: Cps, deferred: &mut Vec<ProcedureBundle>) {
+    fn cps_codegen(
+        &mut self,
+        cps: Cps,
+        deferred_procs: &mut Vec<ProcedureBundle>,
+        deferred_local_conts: &mut Vec<ProcedureBundle>,
+    ) {
         match cps {
             Cps::If(cond, success, failure) => {
-                self.if_codegen(&cond, *success, *failure, deferred);
+                self.if_codegen(
+                    &cond,
+                    *success,
+                    *failure,
+                    deferred_procs,
+                    deferred_local_conts,
+                );
             }
             Cps::App(operator, args) => self.app_codegen(&operator, &args),
             Cps::PrimOp(PrimOp::Set, args, _, cexpr) => {
-                self.store_codegen(&args[1], &args[0], *cexpr, deferred);
+                self.store_codegen(
+                    &args[1],
+                    &args[0],
+                    *cexpr,
+                    deferred_procs,
+                    deferred_local_conts,
+                );
             }
             Cps::PrimOp(PrimOp::AllocCell, _, into, cexpr) => {
-                self.alloc_cell_codegen(into, *cexpr, deferred);
+                self.alloc_cell_codegen(into, *cexpr, deferred_procs, deferred_local_conts);
             }
             Cps::PrimOp(PrimOp::Read, args, result, cexpr) => {
                 let value = self.value_codegen(&args[0]);
                 self.rebinds.rebind(result, IrValue::Value(value));
-                self.cps_codegen(*cexpr, deferred);
+                self.cps_codegen(*cexpr, deferred_procs, deferred_local_conts);
             }
             Cps::PrimOp(PrimOp::Matches, args, bind_to, cexpr) => {
                 let [pattern, expr] = args.as_slice() else {
                     unreachable!()
                 };
-                self.matches_codegen(pattern, expr, bind_to, *cexpr, deferred);
+                self.matches_codegen(
+                    pattern,
+                    expr,
+                    bind_to,
+                    *cexpr,
+                    deferred_procs,
+                    deferred_local_conts,
+                );
             }
             Cps::PrimOp(PrimOp::ExpandTemplate, args, expand_to, cexpr) => {
                 let [template, expansion_combiner, expansions @ ..] = args.as_slice() else {
@@ -243,7 +304,8 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
                     expansions,
                     expand_to,
                     *cexpr,
-                    deferred,
+                    deferred_procs,
+                    deferred_local_conts,
                 );
             }
             Cps::PrimOp(PrimOp::ErrorNoPatternsMatch, _, _, _) => {
@@ -253,14 +315,21 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
                 let [op, span] = args.as_slice() else {
                     unreachable!()
                 };
-                self.get_frame_codegen(op, span, dest, *cexpr, deferred);
+                self.get_frame_codegen(
+                    op,
+                    span,
+                    dest,
+                    *cexpr,
+                    deferred_procs,
+                    deferred_local_conts,
+                );
             }
             Cps::PrimOp(PrimOp::SetContinuationMark, args, _, cexpr) => {
                 let [tag, val] = args.as_slice() else {
                     unreachable!()
                 };
                 self.set_continuation_mark_codegen(tag, val);
-                self.cps_codegen(*cexpr, deferred);
+                self.cps_codegen(*cexpr, deferred_procs, deferred_local_conts);
             }
             Cps::PrimOp(
                 primop @ (PrimOp::Not | PrimOp::IsNull | PrimOp::IsPair),
@@ -271,29 +340,27 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
                 let [arg] = args.as_slice() else {
                     unreachable!()
                 };
-                self.bool_primop_codegen(primop, arg, result, *cexpr, deferred);
+                self.bool_primop_codegen(
+                    primop,
+                    arg,
+                    result,
+                    *cexpr,
+                    deferred_procs,
+                    deferred_local_conts,
+                );
             }
             Cps::PrimOp(primop, vals, result, cexpr) => {
-                self.value_primop_codegen(primop, &vals, result, *cexpr, deferred);
-            }
-            Cps::Lambda {
-                args,
-                body,
-                val,
-                cexp,
-                span: loc,
-            } => {
-                let bundle = ProcedureBundle::new(
-                    self.runtime.clone(),
-                    val,
-                    args.clone(),
-                    body.as_ref().clone(),
-                    loc,
-                    self.free_vars_cache,
-                    self.module,
+                self.value_primop_codegen(
+                    primop,
+                    &vals,
+                    result,
+                    *cexpr,
+                    deferred_procs,
+                    deferred_local_conts,
                 );
-                self.make_procedure_codegen(&bundle, *cexp, deferred);
-                deferred.push(bundle);
+            }
+            Cps::Fix(bindings, cexp) => {
+                self.fix_codegen(bindings, *cexp, deferred_procs, deferred_local_conts);
             }
             Cps::Halt(value) => self.halt_codegen(&value),
         }
@@ -321,6 +388,16 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
                     SchemeValue::as_raw(&SchemeValue::from(global.val.clone())) as i64,
                 );
                 (cell, global.name.0)
+            }
+            CpsValue::Const(val)
+                if let Some(proc) = val.cast_to_scheme_type::<Procedure>()
+                    && let Some(known) = proc.to_known() =>
+            {
+                // Known functions get converted to i64 constants
+                return self
+                    .builder
+                    .ins()
+                    .iconst(types::I64, known.cast_to_usize() as i64);
             }
             CpsValue::Const(val) => {
                 let mut runtime_write = self.runtime.0.write();
@@ -350,7 +427,7 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
         self.builder.switch_to_block(undefined_block);
         self.builder.seal_block(undefined_block);
 
-        self.drops_codegen();
+        self.drop_all_codegen();
         let symbol = self.builder.ins().iconst(types::I32, symbol as i64);
         let error_unbound_variable = self
             .module
@@ -371,7 +448,8 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
         expr: &CpsValue,
         binds: Local,
         cexpr: Cps,
-        deferred: &mut Vec<ProcedureBundle>,
+        deferred_procs: &mut Vec<ProcedureBundle>,
+        deferred_local_conts: &mut Vec<ProcedureBundle>,
     ) {
         let pattern = self.value_codegen(pattern);
         let expr = self.value_codegen(expr);
@@ -382,9 +460,10 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
         let match_result = self.builder.inst_results(call)[0];
         self.rebinds.rebind(binds, IrValue::Value(match_result));
         self.push_alloc(match_result);
-        self.cps_codegen(cexpr, deferred);
+        self.cps_codegen(cexpr, deferred_procs, deferred_local_conts);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn expand_template_codegen(
         &mut self,
         template: &CpsValue,
@@ -392,7 +471,8 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
         expansions: &[CpsValue],
         dest: Local,
         cexpr: Cps,
-        deferred: &mut Vec<ProcedureBundle>,
+        deferred_procs: &mut Vec<ProcedureBundle>,
+        deferred_local_conts: &mut Vec<ProcedureBundle>,
     ) {
         let template = self.value_codegen(template);
         let expansion_combiner = self.value_codegen(expansion_combiner);
@@ -441,7 +521,7 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
         self.builder.switch_to_block(failure_block);
         self.builder.seal_block(failure_block);
         let error_val = self.array_load(error_slot, 0);
-        self.drops_codegen();
+        self.drop_all_codegen();
         self.raise_codegen(error_val);
 
         self.builder.switch_to_block(success_block);
@@ -449,7 +529,7 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
 
         self.rebinds.rebind(dest, IrValue::Value(expanded));
         self.push_alloc(expanded);
-        self.cps_codegen(cexpr, deferred);
+        self.cps_codegen(cexpr, deferred_procs, deferred_local_conts);
     }
 
     fn bool_primop_codegen(
@@ -458,7 +538,8 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
         arg: &CpsValue,
         dest: Local,
         cexpr: Cps,
-        deferred: &mut Vec<ProcedureBundle>,
+        deferred_procs: &mut Vec<ProcedureBundle>,
+        deferred_local_conts: &mut Vec<ProcedureBundle>,
     ) {
         let arg = self.value_codegen(arg);
         let cond = match primop {
@@ -488,7 +569,7 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
         let false_val = self.builder.ins().iconst(types::I64, FALSE_VALUE as i64);
         let result = self.builder.ins().select(cond, true_val, false_val);
         self.rebinds.rebind(dest, IrValue::Value(result));
-        self.cps_codegen(cexpr, deferred);
+        self.cps_codegen(cexpr, deferred_procs, deferred_local_conts);
     }
 
     fn value_primop_codegen(
@@ -497,7 +578,8 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
         vals: &[CpsValue],
         dest: Local,
         cexpr: Cps,
-        deferred: &mut Vec<ProcedureBundle>,
+        deferred_procs: &mut Vec<ProcedureBundle>,
+        deferred_local_conts: &mut Vec<ProcedureBundle>,
     ) {
         let primop_info = primop.info();
 
@@ -532,6 +614,19 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
             PrimOp::List => self.runtime_funcs.list,
             PrimOp::Car => self.runtime_funcs.car,
             PrimOp::Cdr => self.runtime_funcs.cdr,
+            PrimOp::CallKnown0 => match vals.len() {
+                2 => self.runtime_funcs.call_known_1x0,
+                3 => self.runtime_funcs.call_known_2x0,
+                4 => self.runtime_funcs.call_known_3x0,
+                _ => unreachable!(),
+            },
+            PrimOp::CallKnown1 => match vals.len() {
+                1 => self.runtime_funcs.call_known_0x1,
+                2 => self.runtime_funcs.call_known_1x1,
+                3 => self.runtime_funcs.call_known_2x1,
+                4 => self.runtime_funcs.call_known_3x1,
+                _ => unreachable!(),
+            },
             _ => unreachable!(),
         };
 
@@ -539,6 +634,7 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
             .module
             .declare_func_in_func(runtime_func, self.builder.func);
 
+        // TODO: Having multiple of these is redundant.
         // Add a slot for the error if this function can error:
         let error_slot = primop_info.can_error.then(|| {
             let error_slot = self.alloc_array(1);
@@ -568,7 +664,7 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
             self.builder.seal_block(failure_block);
 
             let error_val = self.array_load(error_slot, 0);
-            self.drops_codegen();
+            self.drop_all_codegen();
             self.raise_codegen(error_val);
 
             // Otherwise continue with the correct value
@@ -582,7 +678,7 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
             self.push_alloc(result);
         }
 
-        self.cps_codegen(cexpr, deferred);
+        self.cps_codegen(cexpr, deferred_procs, deferred_local_conts);
     }
 
     fn get_frame_codegen(
@@ -591,7 +687,8 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
         span: &CpsValue,
         dest: Local,
         cexpr: Cps,
-        deferred: &mut Vec<ProcedureBundle>,
+        deferred_procs: &mut Vec<ProcedureBundle>,
+        deferred_local_conts: &mut Vec<ProcedureBundle>,
     ) {
         let op = self.value_codegen(op);
         let span = self.value_codegen(span);
@@ -602,7 +699,7 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
         let result = self.builder.inst_results(get_frame_call)[0];
         self.rebinds.rebind(dest, IrValue::Value(result));
         self.push_alloc(result);
-        self.cps_codegen(cexpr, deferred);
+        self.cps_codegen(cexpr, deferred_procs, deferred_local_conts);
     }
 
     fn set_continuation_mark_codegen(&mut self, tag: &CpsValue, val: &CpsValue) {
@@ -618,7 +715,7 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
     }
 
     fn error_no_patterns_match_codegen(&mut self) {
-        self.drops_codegen();
+        self.drop_all_codegen();
         let error_no_patterns_match = self.module.declare_func_in_func(
             self.runtime_funcs.error_no_patterns_match,
             self.builder.func,
@@ -628,7 +725,13 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
         self.raise_codegen(error);
     }
 
-    fn alloc_cell_codegen(&mut self, var: Local, cexpr: Cps, deferred: &mut Vec<ProcedureBundle>) {
+    fn alloc_cell_codegen(
+        &mut self,
+        var: Local,
+        cexpr: Cps,
+        deferred_procs: &mut Vec<ProcedureBundle>,
+        deferred_local_conts: &mut Vec<ProcedureBundle>,
+    ) {
         let alloc_cell = self
             .module
             .declare_func_in_func(self.runtime_funcs.alloc_cell, self.builder.func);
@@ -636,10 +739,10 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
         let cell = self.builder.inst_results(call)[0];
         self.rebinds.rebind(var, IrValue::Cell(cell));
         self.push_alloc(cell);
-        self.cps_codegen(cexpr, deferred);
+        self.cps_codegen(cexpr, deferred_procs, deferred_local_conts);
     }
 
-    fn drops_codegen(&mut self) {
+    fn drop_all_codegen(&mut self) {
         if self.curr_allocs > 0 {
             let vals = self.builder.ins().stack_addr(types::I64, self.allocs, 0);
             let num_vals = self
@@ -653,7 +756,29 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
         }
     }
 
+    fn drop_n_codegen(&mut self, n: usize) {
+        if n > 0 {
+            let vals = self.builder.ins().stack_addr(
+                types::I64,
+                self.allocs,
+                (self.curr_allocs - n) as i32 * 8,
+            );
+            let num_vals = self.builder.ins().iconst(types::I32, n as i64);
+            let dropv = self
+                .module
+                .declare_func_in_func(self.runtime_funcs.dropv, self.builder.func);
+            self.builder.ins().call(dropv, &[vals, num_vals]);
+        }
+    }
+
     fn app_codegen(&mut self, operator: &CpsValue, args: &[CpsValue]) {
+        if let Some(local) = operator.to_local()
+            && let Some(num_allocs_at_dest) = self.allocs_at_local_cont.get(&local)
+        {
+            self.jump_codegen(self.local_cont_blocks[&local], *num_allocs_at_dest, args);
+            return;
+        }
+
         let runtime = self.get_runtime();
         let barrier = self.get_barrier();
         let operator = self.value_codegen(operator);
@@ -675,8 +800,28 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
             .ins()
             .call(apply, &[runtime, operator, args_addr, args_len, barrier]);
         let app = self.builder.inst_results(call)[0];
-        self.drops_codegen();
+        self.drop_all_codegen();
         self.builder.ins().return_(&[app]);
+    }
+
+    fn jump_codegen(&mut self, to: Block, num_allocs_at_dest: usize, args: &[CpsValue]) {
+        assert!(
+            self.curr_allocs >= num_allocs_at_dest,
+            "cannot jump to a continuation with more allocations"
+        );
+        let clone = self
+            .module
+            .declare_func_in_func(self.runtime_funcs.clonev, self.builder.func);
+        let mut cloned_args = Vec::new();
+        for arg in args {
+            let arg_val = self.value_codegen(arg);
+            let clone_call = self.builder.ins().call(clone, &[arg_val]);
+            cloned_args.push(BlockArg::Value(self.builder.inst_results(clone_call)[0]));
+        }
+        // Drop any allocations that are not present in the continuation we're
+        // jumping to
+        self.drop_n_codegen(self.curr_allocs - num_allocs_at_dest);
+        self.builder.ins().jump(to, &cloned_args);
     }
 
     fn halt_codegen(&mut self, args: &CpsValue) {
@@ -686,7 +831,7 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
             .declare_func_in_func(self.runtime_funcs.halt, self.builder.func);
         let call = self.builder.ins().call(halt, &[val]);
         let result = self.builder.inst_results(call)[0];
-        self.drops_codegen();
+        self.drop_all_codegen();
         self.builder.ins().return_(&[result]);
     }
 
@@ -695,20 +840,14 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
         cond: &CpsValue,
         success: Cps,
         failure: Cps,
-        deferred: &mut Vec<ProcedureBundle>,
+        deferred_procs: &mut Vec<ProcedureBundle>,
+        deferred_local_conts: &mut Vec<ProcedureBundle>,
     ) {
         let cond = self.value_codegen(cond);
         let cond = self
             .builder
             .ins()
             .icmp_imm(IntCC::NotEqual, cond, FALSE_VALUE as i64);
-        /*
-        let truthy = self
-            .module
-            .declare_func_in_func(self.runtime_funcs.truthy, self.builder.func);
-        let truthy_call = self.builder.ins().call(truthy, &[cond]);
-        let cond = self.builder.inst_results(truthy_call)[0];
-        */
 
         // Because our compiler is not particularly sophisticated right now, we
         // can guarantee that both branches terminate. Thus, no merge basic
@@ -724,13 +863,13 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
         let num_allocs = self.curr_allocs;
         self.builder.switch_to_block(success_block);
         self.builder.seal_block(success_block);
-        self.cps_codegen(success, deferred);
+        self.cps_codegen(success, deferred_procs, deferred_local_conts);
 
         // Generate failure block:
         self.curr_allocs = num_allocs;
         self.builder.switch_to_block(failure_block);
         self.builder.seal_block(failure_block);
-        self.cps_codegen(failure, deferred);
+        self.cps_codegen(failure, deferred_procs, deferred_local_conts);
     }
 
     fn raise_codegen(&mut self, val: Value) {
@@ -749,7 +888,8 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
         from: &CpsValue,
         to: &CpsValue,
         cexpr: Cps,
-        deferred: &mut Vec<ProcedureBundle>,
+        deferred_procs: &mut Vec<ProcedureBundle>,
+        deferred_local_conts: &mut Vec<ProcedureBundle>,
     ) {
         let from = self.value_codegen(from);
         let to = match to {
@@ -771,7 +911,7 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
             .module
             .declare_func_in_func(self.runtime_funcs.store, self.builder.func);
         self.builder.ins().call(store, &[from, to]);
-        self.cps_codegen(cexpr, deferred)
+        self.cps_codegen(cexpr, deferred_procs, deferred_local_conts)
     }
 
     fn alloc_array(&mut self, len: usize) -> StackSlot {
@@ -792,18 +932,106 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
             .stack_load(types::I64, slot, i as i32 * 8)
     }
 
-    fn make_procedure_codegen(
+    fn fix_codegen(
         &mut self,
-        bundle: &ProcedureBundle,
+        bindings: Vec<LambdaBinding>,
         cexp: Cps,
-        deferred: &mut Vec<ProcedureBundle>,
+        deferred_procs: &mut Vec<ProcedureBundle>,
+        deferred_local_conts: &mut Vec<ProcedureBundle>,
     ) {
-        // Construct the envs array:
+        // Collect local_cont and proc bundles
+        let mut proc_bundles = Vec::new();
+        let mut local_cont_bundles = Vec::new();
+        for binding in bindings.into_iter() {
+            let is_proc = binding.is_func() || self.escaping.contains(binding.val);
+            let bundle = ProcedureBundle::new(
+                self.runtime.clone(),
+                binding.val,
+                binding.args,
+                *binding.body,
+                binding.span,
+                self.free_vars,
+                self.module,
+            );
+            if is_proc {
+                proc_bundles.push(bundle);
+            } else {
+                let cont_block = self.builder.create_block();
+                self.local_cont_blocks.insert(bundle.val, cont_block);
+                local_cont_bundles.push(bundle);
+            }
+        }
+
+        // The set of vals bound in this Fix (that are not local continuations).
+        // A binding's body may reference any of these, including itself, so we
+        // cannot resolve them until after all of the procedures have been
+        // allocated.
+        let fix_vals = proc_bundles.iter().map(|b| b.val).collect::<HashSet<_>>();
+
+        // Allocate all of the procedures. The procedures are rooted and thus we
+        // have exclusive mutable access to them.
+        for bundle in &proc_bundles {
+            self.alloc_procedure_codegen(bundle, &fix_vals);
+        }
+
+        // Patch any procedures that were created by the fix primitive into the
+        // environment of the procedures.
+        for bundle in &proc_bundles {
+            self.patch_env_codegen(bundle, &fix_vals);
+        }
+
+        // Now that we no longer need mutable access, unroot the procedures.
+        for bundle in &proc_bundles {
+            self.unroot_proc_codegen(bundle);
+        }
+
+        deferred_procs.extend(proc_bundles);
+        deferred_local_conts.extend(local_cont_bundles);
+
+        self.cps_codegen(cexp, deferred_procs, deferred_local_conts);
+    }
+
+    fn local_cont_codegen(
+        &mut self,
+        bundle: ProcedureBundle,
+        deferred_procs: &mut Vec<ProcedureBundle>,
+        deferred_local_conts: &mut Vec<ProcedureBundle>,
+    ) {
+        let cont_block = self.local_cont_blocks[&bundle.val];
+        self.builder.switch_to_block(cont_block);
+
+        // Reset curr_allocs to whatever
+        self.curr_allocs = self.allocs_at_local_cont[&bundle.val];
+
+        let mut param_vals = Vec::new();
+        for arg in &bundle.args.args {
+            let value = self.builder.append_block_param(cont_block, types::I64);
+            param_vals.push(value);
+            self.rebinds.rebind(*arg, IrValue::Value(value));
+        }
+
+        for param_val in param_vals {
+            self.push_alloc(param_val);
+        }
+
+        // No need to rebind env variables, they are already present
+        self.cps_codegen(bundle.body, deferred_procs, deferred_local_conts);
+    }
+
+    fn alloc_procedure_codegen(&mut self, bundle: &ProcedureBundle, fix_vals: &HashSet<Local>) {
+        // Construct the env array. Recursive references get a placeholder that
+        // will be overwritten once every procedure in the group has been
+        // allocated.
         let env = self.alloc_array(bundle.env.len());
         for (i, env_var) in bundle.env.iter().enumerate() {
-            let val = match *self.rebinds.fetch_bind(env_var) {
-                IrValue::Cell(ptr) => ptr,
-                IrValue::Value(val) => val,
+            let val = if fix_vals.contains(env_var) {
+                // Undefined
+                self.builder.ins().iconst(types::I64, 0)
+            } else {
+                match *self.rebinds.fetch_bind(env_var) {
+                    IrValue::Cell(ptr) => ptr,
+                    IrValue::Value(val) => val,
+                }
             };
             self.array_store(env, i, val);
         }
@@ -863,7 +1091,41 @@ impl<'m, 'f, 'c, 'd> CompilationUnit<'m, 'f, 'c, 'd> {
         let proc = self.builder.inst_results(call)[0];
         self.rebinds.rebind(bundle.val, IrValue::Value(proc));
         self.push_alloc(proc);
-        self.cps_codegen(cexp, deferred);
+    }
+
+    fn patch_env_codegen(&mut self, bundle: &ProcedureBundle, fix_vals: &HashSet<Local>) {
+        let IrValue::Value(proc) = self.rebinds.fetch_bind(&bundle.val) else {
+            unreachable!();
+        };
+
+        let patch_fn = self
+            .module
+            .declare_func_in_func(self.runtime_funcs.patch_env_slot, self.builder.func);
+
+        for (i, env_var) in bundle.env.iter().enumerate() {
+            if !fix_vals.contains(env_var) {
+                continue;
+            }
+            let IrValue::Value(target) = self.rebinds.fetch_bind(env_var) else {
+                unreachable!();
+            };
+            let slot_idx = self.builder.ins().iconst(types::I32, i as i64);
+            self.builder
+                .ins()
+                .call(patch_fn, &[*proc, slot_idx, *target]);
+        }
+    }
+
+    fn unroot_proc_codegen(&mut self, bundle: &ProcedureBundle) {
+        let IrValue::Value(proc) = self.rebinds.fetch_bind(&bundle.val) else {
+            unreachable!();
+        };
+
+        let unroot_proc = self
+            .module
+            .declare_func_in_func(self.runtime_funcs.unroot_proc, self.builder.func);
+
+        self.builder.ins().call(unroot_proc, &[*proc]);
     }
 }
 
@@ -903,7 +1165,7 @@ impl ProcedureBundle {
         args: LambdaArgs,
         body: Cps,
         loc: Option<Span>,
-        free_vars_cache: &mut HashMap<Local, HashSet<Local>>,
+        free_vars_cache: &mut FreeVariables,
         module: &mut JITModule,
     ) -> Self {
         let mut sig = module.make_signature();
@@ -913,8 +1175,8 @@ impl ProcedureBundle {
             .declare_anonymous_function(&sig)
             .expect("Could not declare function");
 
-        let env = body
-            .free_variables(free_vars_cache)
+        let env = free_vars_cache
+            .find_free_vars(&body)
             .difference(&args.iter().cloned().collect::<HashSet<_>>())
             .cloned()
             .collect::<Vec<_>>();
@@ -930,25 +1192,30 @@ impl ProcedureBundle {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn codegen(
         self,
         runtime_funcs: &RuntimeFunctions,
         cells: &HashSet<Local>,
-        free_vars_cache: &mut HashMap<Local, HashSet<Local>>,
+        escaping: &Escaping,
+        free_vars: &mut FreeVariables,
         module: &mut JITModule,
         debug_info: &mut DebugInfo,
-        deferred: &mut Vec<Self>,
+        deferred_procs: &mut Vec<Self>,
     ) {
         let mut builder_context = FunctionBuilderContext::new();
         let mut ctx = module.make_context();
         make_sig(&mut ctx.func.signature, self.args.continuation.is_some());
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_context);
 
-        let max_drops = self.body.max_drops();
+        let mut allocs_at_local_conts = HashMap::default();
+        let max_allocs = self
+            .body
+            .max_allocs(0, escaping, &mut allocs_at_local_conts);
 
         let allocs = builder.create_sized_stack_slot(StackSlotData::new(
             StackSlotKind::ExplicitSlot,
-            max_drops as u32 * 8,
+            max_allocs as u32 * 8,
             0,
         ));
 
@@ -981,9 +1248,10 @@ impl ProcedureBundle {
             rebinds.rebind(env_var, var);
         }
 
-        // Load args:
+        // Load args. The continuation is passed as a separate parameter (see
+        // below), so only the regular arguments live in the args array.
         let args_param = builder.block_params(entry_block)[ARGS_PARAM];
-        for (i, arg) in self.args.iter().enumerate() {
+        for (i, arg) in self.args.args.iter().enumerate() {
             let var = builder
                 .ins()
                 .load(types::I64, MemFlags::new(), args_param, (i * 8) as i32);
@@ -993,7 +1261,8 @@ impl ProcedureBundle {
         // Load continuation:
         if let Some(cont) = self.args.continuation {
             let cont_param = builder.block_params(entry_block)[CONTINUATION_PARAM];
-            rebinds.rebind(cont, IrValue::Value(cont_param));
+            let val = builder.ins().bor_imm(cont_param, Tag::Procedure as i64);
+            rebinds.rebind(cont, IrValue::Value(val));
         }
 
         let mut cu = CompilationUnit {
@@ -1002,14 +1271,27 @@ impl ProcedureBundle {
             rebinds,
             allocs,
             curr_allocs: 0,
+            allocs_at_local_cont: &allocs_at_local_conts,
+            local_cont_blocks: HashMap::default(),
+            escaping,
             runtime_funcs,
             params,
             module,
-            free_vars_cache,
+            free_vars,
             debug_info,
         };
 
-        cu.cps_codegen(self.body, deferred);
+        let mut deferred_local_conts = Vec::new();
+        cu.cps_codegen(self.body, deferred_procs, &mut deferred_local_conts);
+
+        while let Some(local_cont) = deferred_local_conts.pop() {
+            cu.local_cont_codegen(local_cont, deferred_procs, &mut deferred_local_conts);
+        }
+
+        // Seal all of the local continuations
+        for block in cu.local_cont_blocks.values() {
+            cu.builder.seal_block(*block);
+        }
 
         cu.builder.finalize();
 
@@ -1017,19 +1299,3 @@ impl ProcedureBundle {
         module.clear_context(&mut ctx);
     }
 }
-
-/*
-fn write_perf_map_entry(addr: *const u8, size: usize, name: &str) {
-    use std::io::Write;
-    let pid = std::process::id();
-    let path = format!("/tmp/perf-{pid}.map");
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
-        let _ = writeln!(file, "{:x} {size:x} {name}", addr as usize);
-        let _ = file.flush();
-    }
-}
-*/

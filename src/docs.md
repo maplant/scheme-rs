@@ -258,24 +258,24 @@ Creating a new mutable references enforces a new continuation barrier.
 pub fn inc(
     _runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     _args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier,
-    k: Value,
 ) -> Result<Application, Exception> {
     let var: &mut u32 = barrier.get_param("var").unwrap().downcast_mut().unwrap();
     *var += 1;
-    Ok(Application::new(k.try_into()?, vec![Value::from(*var)]))
+    Ok(Application::new(k, None, vec![Value::from(*var)]))
 }
 
 #[cps_bridge(def = "call-with-var thunk", lib = "(example)")]
 pub fn call_with_var(
     _runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier,
-    k: Value,
 ) -> Result<Application, Exception> {
     // Set up the new dynamic state and add the param
     let mut var = 0u32;
@@ -287,6 +287,6 @@ pub fn call_with_var(
     let result = thunk.call(&[], &mut new_barrier)?;
     
     // Return to the continuation:
-    Ok(Application::new(k.try_into()?, result))
+    Ok(Application::new(k, None, result))
 }
 ```

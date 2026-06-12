@@ -1,4 +1,5 @@
 use crate::{
+    HashMap, HashSet,
     ast::{Expression, ParseContext},
     env::{Binding, Environment, Local, Scope, add_binding},
     exceptions::Exception,
@@ -11,8 +12,6 @@ use crate::{
 };
 use scheme_rs_macros::{bridge, maybe_async, maybe_await, runtime_fn};
 use std::sync::Arc;
-
-use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 mod error {
     use crate::exceptions::{Message, SyntaxViolation};
@@ -68,6 +67,7 @@ impl SyntaxRule {
         fender: Option<&'a Syntax>,
         output_expression: &'a Syntax,
         env: &Environment,
+        mutable_vars: &mut HashSet<Local>,
     ) -> Result<Self, Exception> {
         let mut variables = HashMap::default();
         let pattern_scope = Scope::new();
@@ -77,13 +77,23 @@ impl SyntaxRule {
         let fender = if let Some(fender) = fender {
             let mut fender = fender.clone();
             fender.add_scope(pattern_scope);
-            Some(maybe_await!(Expression::parse(ctxt, fender, &env))?)
+            Some(maybe_await!(Expression::parse(
+                ctxt,
+                fender,
+                &env,
+                mutable_vars
+            ))?)
         } else {
             None
         };
         let mut output_expression = output_expression.clone();
         output_expression.add_scope(pattern_scope);
-        let output_expression = maybe_await!(Expression::parse(ctxt, output_expression, &env))?;
+        let output_expression = maybe_await!(Expression::parse(
+            ctxt,
+            output_expression,
+            &env,
+            mutable_vars
+        ))?;
         Ok(Self {
             pattern,
             binds,

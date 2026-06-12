@@ -5,8 +5,8 @@
 //! with the JIT compiled [`Procedures`](Procedure).
 
 use crate::{
-    ast::{DefinitionBody, Primitive},
-    cps::{Compile, Cps, codegen::RuntimeFunctionsBuilder},
+    ast::{Definitions, Primitive},
+    cps::{Cps, analysis::Escaping, codegen::RuntimeFunctionsBuilder, compile::Compiler},
     env::{Environment, Global, TopLevelEnvironment},
     exceptions::{Exception, SourceCache, raise},
     gc::{Gc, GcInner, Trace, init_gc},
@@ -14,11 +14,14 @@ use crate::{
     lists::{Pair, list_to_vec},
     num,
     ports::{BufferMode, Port, Transcoder},
-    proc::{Application, ContBarrier, ContinuationPtr, FuncPtr, ProcDebugInfo, Procedure, UserPtr},
+    proc::{
+        Application, ContBarrier, ContinuationPtr, FuncPtr, ProcDebugInfo, Procedure,
+        ProcedureInner, UserPtr,
+    },
     registry::Registry,
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax},
-    value::{Cell, UnpackedValue, Value},
+    value::{Cell, TAG, UnpackedValue, Value},
 };
 use parking_lot::{MappedRwLockWriteGuard, RwLock, RwLockWriteGuard};
 use scheme_rs_macros::{maybe_async, maybe_await, runtime_fn};
@@ -119,11 +122,15 @@ impl Runtime {
             maybe_await!(env.import("(library (rnrs))".parse()?))?;
         }
 
-        let body = maybe_await!(DefinitionBody::parse_lib_body(self, &form, &env))?;
-        let compiled = body.compile_top_level();
-        let closure = maybe_await!(self.compile_expr(compiled));
-
-        maybe_await!(Application::new(closure, Vec::new()).eval(&mut ContBarrier::default()))
+        let mut mutable_vars = HashSet::default();
+        let body = maybe_await!(Definitions::parse_lib_body(
+            self,
+            &form,
+            &env,
+            &mut mutable_vars
+        ))?;
+        let proc = maybe_await!(Compiler::new(mutable_vars).compile(self, &body))?;
+        maybe_await!(Application::new(proc, None, Vec::new()).eval(&mut ContBarrier::default()))
     }
 
     /// Define a library from Rust code. Useful if file system access is disabled.
@@ -151,12 +158,13 @@ impl Runtime {
     }
 
     #[maybe_async]
-    pub(crate) fn compile_expr(&self, expr: Cps) -> Procedure {
+    pub(crate) fn compile_expr(&self, expr: Cps, escaping: Escaping) -> Procedure {
         let (completion_tx, completion_rx) = completion();
         let task = CompilationTask {
             completion_tx,
             compilation_unit: expr,
             runtime: self.clone(),
+            escaping,
         };
         let sender = { self.0.read().compilation_buffer_tx.clone() };
         let _ = maybe_await!(sender.send(task));
@@ -286,6 +294,7 @@ async fn recv_procedure(rx: CompletionRx) -> Procedure {
 
 struct CompilationTask {
     compilation_unit: Cps,
+    escaping: Escaping,
     completion_tx: CompletionTx,
     /// Since Contexts are per-thread, we will only ever see the same Runtime.
     /// However, we can't cache the Runtime, as that would cause a ref cycle
@@ -343,11 +352,17 @@ fn compilation_task(mut compilation_queue_rx: CompilationBufferRx) {
         let CompilationTask {
             completion_tx,
             compilation_unit,
+            escaping,
             runtime,
         } = task;
 
-        let proc =
-            compilation_unit.into_procedure(runtime, &runtime_funcs, &mut module, &mut debug_info);
+        let proc = compilation_unit.into_procedure(
+            runtime,
+            escaping,
+            &runtime_funcs,
+            &mut module,
+            &mut debug_info,
+        );
 
         let _ = completion_tx.send(proc);
     }
@@ -411,6 +426,12 @@ unsafe extern "C" fn read_cell(cell: *const ()) -> *const () {
     }
 }
 
+/// Increment the reference count of a value, returning it
+#[runtime_fn]
+unsafe extern "C" fn clonev(val: *const ()) -> *const () {
+    unsafe { Value::into_raw(Value::from_raw_inc_rc(val)) }
+}
+
 /// Decrement the reference count of a value
 #[runtime_fn]
 unsafe extern "C" fn dropv(val: *const *const (), num_drops: u32) {
@@ -421,7 +442,7 @@ unsafe extern "C" fn dropv(val: *const *const (), num_drops: u32) {
     }
 }
 
-/// Create a boxed application
+/// Create a boxed application.
 #[runtime_fn]
 unsafe extern "C" fn apply(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
@@ -431,10 +452,6 @@ unsafe extern "C" fn apply(
     barrier: *mut ContBarrier,
 ) -> *mut Application {
     unsafe {
-        let args: Vec<_> = (0..num_args)
-            .map(|i| Value::from_raw_inc_rc(args.add(i as usize).read()))
-            .collect();
-
         let op = match Value::from_raw_inc_rc(op).unpack() {
             UnpackedValue::Procedure(op) => op,
             x => {
@@ -447,7 +464,19 @@ unsafe extern "C" fn apply(
             }
         };
 
-        let app = Application::new(op, args);
+        let (k, offset) = if !op.0.is_continuation() {
+            (Value::from_raw_inc_rc(args.read()).cast_to_scheme_type(), 1)
+        } else {
+            (None, 0)
+        };
+
+        let app = Application::new(
+            op,
+            k,
+            (offset..num_args)
+                .map(|i| Value::from_raw_inc_rc(args.add(i as usize).read()))
+                .collect(),
+        );
 
         Box::into_raw(Box::new(app))
     }
@@ -590,13 +619,15 @@ unsafe extern "C" fn make_continuation(
             .map(|i| Value::from_raw_inc_rc(env.add(i as usize).read()))
             .collect();
 
-        let proc = barrier.as_mut().unwrap().new_k(
+        barrier.as_mut().unwrap().push_marks();
+        let proc = Procedure(Gc::rooted(ProcedureInner::new(
             Runtime::from_raw_inc_rc(runtime),
             env,
-            fn_ptr,
+            FuncPtr::Continuation(fn_ptr),
             num_required_args as usize,
             variadic,
-        );
+            None,
+        )));
 
         Value::into_raw(Value::from(proc))
     }
@@ -619,16 +650,41 @@ unsafe extern "C" fn make_user(
             .map(|i| Value::from_raw_inc_rc(env.add(i as usize).read()))
             .collect();
 
-        let proc = Procedure::with_debug_info(
+        let proc = Procedure(Gc::rooted(ProcedureInner::new(
             Runtime::from_raw_inc_rc(runtime),
             env,
             FuncPtr::User(fn_ptr),
             num_required_args as usize,
             variadic,
             arc_from_ptr(debug_info),
-        );
+        )));
 
         Value::into_raw(Value::from(proc))
+    }
+}
+
+/// Path in a value into the env array for a procedure post-allocation. This
+/// isn't normally possible without Mutices, but procedures are allocated rooted
+/// and are unrooted after.
+#[runtime_fn]
+unsafe extern "C" fn patch_env_slot(proc: *const (), slot_idx: u32, value: *const ()) {
+    unsafe {
+        let proc_gc = ManuallyDrop::new(Gc::from_raw(
+            proc.map_addr(|raw| raw & !TAG) as *mut GcInner<ProcedureInner>
+        ));
+        (*Gc::as_ptr(&proc_gc)).data.get_mut().env[slot_idx as usize] =
+            Value::from_raw_inc_rc(value);
+    }
+}
+
+/// Unroot a procedure, giving up mutable access
+#[runtime_fn]
+unsafe extern "C" fn unroot_proc(proc: *const ()) {
+    unsafe {
+        let proc_gc = ManuallyDrop::new(Gc::from_raw(
+            proc.map_addr(|raw| raw & !TAG) as *mut GcInner<ProcedureInner>
+        ));
+        Gc::unroot(&proc_gc);
     }
 }
 
@@ -734,3 +790,136 @@ define_comparison_fn!(greater, greater_prim);
 define_comparison_fn!(greater_equal, greater_equal_prim);
 define_comparison_fn!(lesser, lesser_prim);
 define_comparison_fn!(lesser_equal, lesser_equal_prim);
+
+#[runtime_fn]
+unsafe extern "C" fn call_known_1x0(func: usize, arg1: *const (), error: *mut Value) -> *const () {
+    unsafe {
+        let func: fn(&Value) -> Result<(), Exception> = std::mem::transmute(func);
+        let arg1 = ManuallyDrop::new(Value::from_raw(arg1));
+        match (func)(&arg1) {
+            Ok(()) => Value::into_raw(Value::from(true)),
+            Err(condition) => {
+                error.write(condition.into());
+                Value::into_raw(Value::undefined())
+            }
+        }
+    }
+}
+
+#[runtime_fn]
+unsafe extern "C" fn call_known_2x0(
+    func: usize,
+    arg1: *const (),
+    arg2: *const (),
+    error: *mut Value,
+) -> *const () {
+    unsafe {
+        let func: fn(&Value, &Value) -> Result<(), Exception> = std::mem::transmute(func);
+        let arg1 = ManuallyDrop::new(Value::from_raw(arg1));
+        let arg2 = ManuallyDrop::new(Value::from_raw(arg2));
+        match (func)(&arg1, &arg2) {
+            Ok(()) => Value::into_raw(Value::from(true)),
+            Err(condition) => {
+                error.write(condition.into());
+                Value::into_raw(Value::undefined())
+            }
+        }
+    }
+}
+
+#[runtime_fn]
+unsafe extern "C" fn call_known_3x0(
+    func: usize,
+    arg1: *const (),
+    arg2: *const (),
+    arg3: *const (),
+    error: *mut Value,
+) -> *const () {
+    unsafe {
+        let func: fn(&Value, &Value, &Value) -> Result<(), Exception> = std::mem::transmute(func);
+        let arg1 = ManuallyDrop::new(Value::from_raw(arg1));
+        let arg2 = ManuallyDrop::new(Value::from_raw(arg2));
+        let arg3 = ManuallyDrop::new(Value::from_raw(arg3));
+        match (func)(&arg1, &arg2, &arg3) {
+            Ok(()) => Value::into_raw(Value::from(true)),
+            Err(condition) => {
+                error.write(condition.into());
+                Value::into_raw(Value::undefined())
+            }
+        }
+    }
+}
+
+#[runtime_fn]
+unsafe extern "C" fn call_known_0x1(func: usize, error: *mut Value) -> *const () {
+    unsafe {
+        let func: fn() -> Result<Value, Exception> = std::mem::transmute(func);
+        match (func)() {
+            Ok(res) => Value::into_raw(res),
+            Err(condition) => {
+                error.write(condition.into());
+                Value::into_raw(Value::undefined())
+            }
+        }
+    }
+}
+
+#[runtime_fn]
+unsafe extern "C" fn call_known_1x1(func: usize, arg1: *const (), error: *mut Value) -> *const () {
+    unsafe {
+        let func: fn(&Value) -> Result<Value, Exception> = std::mem::transmute(func);
+        let arg1 = ManuallyDrop::new(Value::from_raw(arg1));
+        match (func)(&arg1) {
+            Ok(res) => Value::into_raw(res),
+            Err(condition) => {
+                error.write(condition.into());
+                Value::into_raw(Value::undefined())
+            }
+        }
+    }
+}
+
+#[runtime_fn]
+unsafe extern "C" fn call_known_2x1(
+    func: usize,
+    arg1: *const (),
+    arg2: *const (),
+    error: *mut Value,
+) -> *const () {
+    unsafe {
+        let func: fn(&Value, &Value) -> Result<Value, Exception> = std::mem::transmute(func);
+        let arg1 = ManuallyDrop::new(Value::from_raw(arg1));
+        let arg2 = ManuallyDrop::new(Value::from_raw(arg2));
+        match (func)(&arg1, &arg2) {
+            Ok(res) => Value::into_raw(res),
+            Err(condition) => {
+                error.write(condition.into());
+                Value::into_raw(Value::undefined())
+            }
+        }
+    }
+}
+
+#[runtime_fn]
+unsafe extern "C" fn call_known_3x1(
+    func: usize,
+    arg1: *const (),
+    arg2: *const (),
+    arg3: *const (),
+    error: *mut Value,
+) -> *const () {
+    unsafe {
+        let func: fn(&Value, &Value, &Value) -> Result<Value, Exception> =
+            std::mem::transmute(func);
+        let arg1 = ManuallyDrop::new(Value::from_raw(arg1));
+        let arg2 = ManuallyDrop::new(Value::from_raw(arg2));
+        let arg3 = ManuallyDrop::new(Value::from_raw(arg3));
+        match (func)(&arg1, &arg2, &arg3) {
+            Ok(res) => Value::into_raw(res),
+            Err(condition) => {
+                error.write(condition.into());
+                Value::into_raw(Value::undefined())
+            }
+        }
+    }
+}

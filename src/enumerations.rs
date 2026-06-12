@@ -107,10 +107,10 @@ pub fn enum_set_universe(enum_set: &Value) -> Result<Vec<Value>, Exception> {
 pub fn enum_set_constructor(
     runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     _barrier: &mut ContBarrier,
-    k: Value,
 ) -> Result<Application, Exception> {
     let set = args[0].try_to_rust_type::<EnumerationSet>()?;
     let universe = Value::from(Record::from_rust_gc_type(set.enum_type.clone()));
@@ -121,20 +121,17 @@ pub fn enum_set_constructor(
         1,
         false,
     );
-    Ok(Application::new(
-        k.try_into()?,
-        vec![Value::from(constructor)],
-    ))
+    Ok(Application::new(k, None, vec![Value::from(constructor)]))
 }
 
 #[cps_bridge]
 fn enum_set_constructor_fn(
     _runtime: &Runtime,
     env: &[Value],
+    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     _barrier: &mut ContBarrier,
-    k: Value,
 ) -> Result<Application, Exception> {
     // env[0] is the universe:
     let enum_type: Gc<EnumerationType> = env[0].try_to_rust_type()?;
@@ -154,7 +151,8 @@ fn enum_set_constructor_fn(
         .collect::<Result<IndexSet<_>, _>>()?;
     let enum_set = EnumerationSet { enum_type, set };
     Ok(Application::new(
-        k.try_into()?,
+        k,
+        None,
         vec![Value::from_rust_type(enum_set)],
     ))
 }

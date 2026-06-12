@@ -3618,14 +3618,15 @@ pub fn standard_input_port() -> Result<Vec<Value>, Exception> {
 pub fn current_input_port(
     _runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     _args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier,
-    k: Value,
 ) -> Result<Application, Exception> {
     let current_input_port = barrier.current_input_port();
     Ok(Application::new(
-        k.try_into().unwrap(),
+        k,
+        None,
         vec![Value::from(current_input_port)],
     ))
 }
@@ -3634,14 +3635,15 @@ pub fn current_input_port(
 pub fn current_output_port(
     _runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     _args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier,
-    k: Value,
 ) -> Result<Application, Exception> {
     let current_input_port = barrier.current_output_port();
     Ok(Application::new(
-        k.try_into().unwrap(),
+        k,
+        None,
         vec![Value::from(current_input_port)],
     ))
 }
@@ -3650,10 +3652,10 @@ pub fn current_output_port(
 pub fn current_error_port(
     _runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     _args: &[Value],
     _rest_args: &[Value],
     _barrier: &mut ContBarrier,
-    k: Value,
 ) -> Result<Application, Exception> {
     let current_error_port = Port::new(
         "<stderr>",
@@ -3665,7 +3667,8 @@ pub fn current_error_port(
         Some(Transcoder::native()),
     );
     Ok(Application::new(
-        k.try_into().unwrap(),
+        k,
+        None,
         vec![Value::from(current_error_port)],
     ))
 }
@@ -4218,10 +4221,10 @@ pub fn make_custom_textual_input_output_port(
 pub fn call_with_input_file(
     runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier<'_>,
-    k: Value,
 ) -> Result<Application, Exception> {
     #[cfg(not(feature = "async"))]
     use std::fs::File;
@@ -4256,19 +4259,17 @@ pub fn call_with_input_file(
         Some(Transcoder::native()),
     );
 
-    let (num_req_args, variadic) = k.cast_to_scheme_type::<Procedure>().unwrap().get_formals();
-    let k = barrier.new_k(
+    let (num_req_args, variadic) = k.get_formals();
+    let k = Procedure::new_cont(
         runtime.clone(),
-        vec![Value::from(port.clone()), k],
+        vec![Value::from(port.clone()), Value::from(k)],
         close_port_and_call_k,
         num_req_args,
         variadic,
+        barrier,
     );
 
-    Ok(Application::new(
-        proc,
-        vec![Value::from(port), Value::from(k)],
-    ))
+    Ok(Application::new(proc, Some(k), vec![Value::from(port)]))
 }
 
 #[maybe_async]
@@ -4279,10 +4280,10 @@ pub fn call_with_input_file(
 pub fn call_with_output_file(
     runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier<'_>,
-    k: Value,
 ) -> Result<Application, Exception> {
     #[cfg(not(feature = "async"))]
     use std::fs::File;
@@ -4316,19 +4317,17 @@ pub fn call_with_output_file(
         Some(Transcoder::native()),
     );
 
-    let (num_req_args, variadic) = k.cast_to_scheme_type::<Procedure>().unwrap().get_formals();
-    let k = barrier.new_k(
+    let (num_req_args, variadic) = k.get_formals();
+    let k = Procedure::new_cont(
         runtime.clone(),
-        vec![Value::from(port.clone()), k],
+        vec![Value::from(port.clone()), Value::from(k)],
         close_port_and_call_k,
         num_req_args,
         variadic,
+        barrier,
     );
 
-    Ok(Application::new(
-        proc,
-        vec![Value::from(port), Value::from(k)],
-    ))
+    Ok(Application::new(proc, Some(k), vec![Value::from(port)]))
 }
 
 unsafe extern "C" fn close_port_and_call_k(
@@ -4355,17 +4354,19 @@ unsafe extern "C" fn close_port_and_call_k(
         let k_proc = k.cast_to_scheme_type::<Procedure>().unwrap();
         let args = k_proc.collect_args(args);
 
-        let k = barrier.as_mut().unwrap().new_k(
+        let k = Procedure::new_cont(
             runtime.clone(),
             vec![k, Value::from(args)],
             call_k_with_env,
             0,
             false,
+            barrier.as_mut().unwrap(),
         );
 
         Box::into_raw(Box::new(Application::new(
             Procedure::new(runtime, Vec::new(), bridge(close_port), 1, false),
-            vec![port, Value::from(k)],
+            Some(k),
+            vec![port],
         )))
     }
 }
@@ -4388,7 +4389,11 @@ unsafe extern "C" fn call_k_with_env(
             .unwrap()
             .clone_inner_vec();
 
-        Box::into_raw(Box::new(Application::new(k.try_into().unwrap(), args)))
+        Box::into_raw(Box::new(Application::new(
+            k.try_into().unwrap(),
+            None,
+            args,
+        )))
     }
 }
 
@@ -4403,10 +4408,10 @@ unsafe extern "C" fn call_k_with_env(
 pub fn with_input_from_file(
     runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier<'_>,
-    k: Value,
 ) -> Result<Application, Exception> {
     #[cfg(not(feature = "async"))]
     use std::fs::File;
@@ -4443,26 +4448,27 @@ pub fn with_input_from_file(
 
     barrier.push_dyn_stack(DynStackElem::CurrentInputPort(port.clone()));
 
-    let k_proc: Procedure = k.clone().try_into().unwrap();
-    let (req_args, var) = k_proc.get_formals();
+    let (req_args, var) = k.get_formals();
 
-    let k = barrier.new_k(
+    let k1 = Procedure::new_cont(
         runtime.clone(),
-        vec![k.clone()],
+        vec![Value::from(k.clone())],
         pop_dyn_stack,
         req_args,
         var,
+        barrier,
     );
 
-    let k = barrier.new_k(
+    let k2 = Procedure::new_cont(
         runtime.clone(),
-        vec![Value::from(port.clone()), Value::from(k)],
+        vec![Value::from(port.clone()), Value::from(k1)],
         close_port_and_call_k,
         0,
         false,
+        barrier,
     );
 
-    Ok(Application::new(thunk, vec![Value::from(k)]))
+    Ok(Application::new(thunk, Some(k2), Vec::new()))
 }
 
 #[maybe_async]
@@ -4473,10 +4479,10 @@ pub fn with_input_from_file(
 pub fn with_output_to_file(
     runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier<'_>,
-    k: Value,
 ) -> Result<Application, Exception> {
     #[cfg(not(feature = "async"))]
     use std::fs::File;
@@ -4513,26 +4519,27 @@ pub fn with_output_to_file(
 
     barrier.push_dyn_stack(DynStackElem::CurrentOutputPort(port.clone()));
 
-    let k_proc: Procedure = k.clone().try_into().unwrap();
-    let (req_args, var) = k_proc.get_formals();
+    let (req_args, var) = k.get_formals();
 
-    let k = barrier.new_k(
+    let k1 = Procedure::new_cont(
         runtime.clone(),
-        vec![k.clone()],
+        vec![Value::from(k)],
         pop_dyn_stack,
         req_args,
         var,
+        barrier,
     );
 
-    let k = barrier.new_k(
+    let k2 = Procedure::new_cont(
         runtime.clone(),
-        vec![Value::from(port.clone()), Value::from(k)],
+        vec![Value::from(port.clone()), Value::from(k1)],
         close_port_and_call_k,
         req_args,
         var,
+        barrier,
     );
 
-    Ok(Application::new(thunk, vec![Value::from(k)]))
+    Ok(Application::new(thunk, Some(k2), Vec::new()))
 }
 
 #[maybe_async]
@@ -4564,10 +4571,10 @@ pub fn open_output_file(filename: &Value) -> Result<Vec<Value>, Exception> {
 pub fn read_char(
     runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     _args: &[Value],
     rest_args: &[Value],
     barrier: &mut ContBarrier<'_>,
-    k: Value,
 ) -> Result<Application, Exception> {
     let input_port = match rest_args {
         [] => barrier.current_input_port(),
@@ -4587,7 +4594,7 @@ pub fn read_char(
         EOF_OBJECT.clone()
     };
 
-    Ok(Application::new(k.try_into()?, vec![result]))
+    Ok(Application::new(k, None, vec![result]))
 }
 
 #[maybe_async]
@@ -4598,10 +4605,10 @@ pub fn read_char(
 pub fn peek_char(
     runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     _args: &[Value],
     rest_args: &[Value],
     barrier: &mut ContBarrier<'_>,
-    k: Value,
 ) -> Result<Application, Exception> {
     let input_port = match rest_args {
         [] => barrier.current_input_port(),
@@ -4621,7 +4628,7 @@ pub fn peek_char(
         EOF_OBJECT.clone()
     };
 
-    Ok(Application::new(k.try_into()?, vec![result]))
+    Ok(Application::new(k, None, vec![result]))
 }
 
 #[maybe_async]
@@ -4632,10 +4639,10 @@ pub fn peek_char(
 pub fn read(
     runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     _args: &[Value],
     rest_args: &[Value],
     barrier: &mut ContBarrier<'_>,
-    k: Value,
 ) -> Result<Application, Exception> {
     let input_port = match rest_args {
         [] => barrier.current_input_port(),
@@ -4655,7 +4662,7 @@ pub fn read(
         EOF_OBJECT.clone()
     };
 
-    Ok(Application::new(k.try_into()?, vec![result]))
+    Ok(Application::new(k, None, vec![result]))
 }
 
 #[maybe_async]
@@ -4666,10 +4673,10 @@ pub fn read(
 pub fn write_char(
     runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     args: &[Value],
     rest_args: &[Value],
     barrier: &mut ContBarrier<'_>,
-    k: Value,
 ) -> Result<Application, Exception> {
     let [chr] = args else { unreachable!() };
     let chr: char = chr.clone().try_into()?;
@@ -4687,7 +4694,7 @@ pub fn write_char(
 
     maybe_await!(output_port.put_char(chr))?;
 
-    Ok(Application::new(k.try_into()?, Vec::new()))
+    Ok(Application::new(k, None, Vec::new()))
 }
 
 #[maybe_async]
@@ -4698,10 +4705,10 @@ pub fn write_char(
 pub fn newline(
     runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     _args: &[Value],
     rest_args: &[Value],
     barrier: &mut ContBarrier<'_>,
-    k: Value,
 ) -> Result<Application, Exception> {
     let output_port = match rest_args {
         [] => barrier.current_output_port(),
@@ -4717,7 +4724,7 @@ pub fn newline(
 
     maybe_await!(output_port.put_char('\n'))?;
 
-    Ok(Application::new(k.try_into()?, Vec::new()))
+    Ok(Application::new(k, None, Vec::new()))
 }
 
 #[maybe_async]
@@ -4728,10 +4735,10 @@ pub fn newline(
 pub fn display(
     runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     args: &[Value],
     rest_args: &[Value],
     barrier: &mut ContBarrier<'_>,
-    k: Value,
 ) -> Result<Application, Exception> {
     let [obj] = args else { unreachable!() };
     let obj = format!("{obj}");
@@ -4749,7 +4756,7 @@ pub fn display(
 
     maybe_await!(output_port.put_str(&obj))?;
 
-    Ok(Application::new(k.try_into()?, Vec::new()))
+    Ok(Application::new(k, None, Vec::new()))
 }
 
 #[maybe_async]
@@ -4760,10 +4767,10 @@ pub fn display(
 pub fn write(
     runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     args: &[Value],
     rest_args: &[Value],
     barrier: &mut ContBarrier<'_>,
-    k: Value,
 ) -> Result<Application, Exception> {
     let [obj] = args else { unreachable!() };
     let obj = format!("{obj:?}");
@@ -4781,7 +4788,7 @@ pub fn write(
 
     maybe_await!(output_port.put_str(&obj))?;
 
-    Ok(Application::new(k.try_into()?, Vec::new()))
+    Ok(Application::new(k, None, Vec::new()))
 }
 
 // 9. File System

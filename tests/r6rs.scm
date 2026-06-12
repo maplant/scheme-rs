@@ -198,18 +198,18 @@
                    (* z x)))
                70)
 
-(assert-equal? (letrec ((even?
-                         (lambda (n)
-                           (if (zero? n)
-                               #t
-                               (odd? (- n 1)))))
-                        (odd?
-                         (lambda (n)
-                           (if (zero? n)
-                               #f
-                               (even? (- n 1))))))
-                 (even? 88))
-               #t)
+(assert-equal? (letrec ((even-test?
+                       (lambda (n)
+                         (if (zero? n)
+                             #t
+                             (odd-test? (- n 1)))))
+                      (odd-test?
+                       (lambda (n)
+                         (if (zero? n)
+                             #f
+                             (even-test? (- n 1))))))
+               (even-test? 88))
+             #t)
 
 (assert-equal? (letrec* ((p
                           (lambda (x)

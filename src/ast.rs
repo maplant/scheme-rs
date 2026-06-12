@@ -6,7 +6,7 @@
 
 use crate::{
     Either,
-    cps::{Compile, PrimOp},
+    cps::compile::Compiler,
     env::{Binding, Environment, Local, Scope, Var},
     exceptions::Exception,
     expand::{SyntaxRule, Template},
@@ -134,6 +134,7 @@ pub enum Primitive {
     Begin,
     Lambda,
     Let,
+    LetRec,
     LetSyntax,
     LetRecSyntax,
     If,
@@ -264,26 +265,6 @@ fn list_to_name(name: &[Syntax], form: &Syntax) -> Result<Vec<Symbol>, Exception
         })
         .collect()
 }
-
-/*
-#[derive(Debug)]
-pub enum ParseLibraryNameError {
-    ParseSyntaxError(ParseSyntaxError),
-    ParseAstError(ParseAstError),
-}
-
-impl From<ParseSyntaxError> for ParseLibraryNameError {
-    fn from(pse: ParseSyntaxError) -> Self {
-        Self::ParseSyntaxError(pse)
-    }
-}
-
-impl From<ParseAstError> for ParseLibraryNameError {
-    fn from(pae: ParseAstError) -> Self {
-        Self::ParseAstError(pae)
-    }
-}
-*/
 
 #[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Hash, Default, Trace, Debug)]
 pub struct Version {
@@ -1011,56 +992,25 @@ impl ParseContext {
 }
 
 #[derive(Debug, Clone, Trace)]
-pub enum Definition {
-    DefineVar(DefineVar),
-    DefineFunc(DefineFunc),
-}
-
-#[derive(Debug, Clone, Trace)]
-pub struct DefineVar {
-    pub var: Var,
-    pub val: Arc<Expression>,
-    pub next: Option<Either<Box<Definition>, ExprBody>>,
-}
-
-#[derive(Debug, Clone, Trace)]
-pub struct DefineFunc {
-    pub var: Var,
-    pub args: Formals,
-    pub body: Box<DefinitionBody>,
-    pub next: Option<Either<Box<Definition>, ExprBody>>,
-    pub span: Span,
+pub struct Definition {
+    var: Var,
+    expr: Expression,
 }
 
 impl Definition {
-    fn set_next(self, next: Either<Box<Definition>, ExprBody>) -> Self {
-        match self {
-            Self::DefineVar(mut def_var) => {
-                def_var.next = Some(next);
-                Self::DefineVar(def_var)
-            }
-            Self::DefineFunc(mut def_func) => {
-                def_func.next = Some(next);
-                Self::DefineFunc(def_func)
-            }
-        }
-    }
-
     #[maybe_async]
     pub(crate) fn parse(
         ctxt: &ParseContext,
         syn: &[Syntax],
         env: &Environment,
         form: &Syntax,
+        mutable_vars: &mut HashSet<Local>,
     ) -> Result<Self, Exception> {
         match syn {
-            [_, Syntax::Identifier { ident, .. }, expr, end] if end.is_null() => {
-                Ok(Definition::DefineVar(DefineVar {
-                    var: maybe_await!(env.lookup_var(ident.bind()))?.unwrap(),
-                    val: Arc::new(maybe_await!(Expression::parse(ctxt, expr.clone(), env))?),
-                    next: None,
-                }))
-            }
+            [_, Syntax::Identifier { ident, .. }, expr, end] if end.is_null() => Ok(Definition {
+                var: maybe_await!(env.lookup_var(ident.bind()))?.unwrap(),
+                expr: maybe_await!(Expression::parse(ctxt, expr.clone(), env, mutable_vars))?,
+            }),
             [_, Syntax::List { list, .. }, body @ .., end] if end.is_null() => {
                 if body.is_empty() {
                     return Err(error::expected_body(form));
@@ -1134,16 +1084,22 @@ impl Definition {
                         // Parse the body:
                         let mut body = body.to_vec();
                         body.iter_mut().for_each(|s| s.add_scope(func_scope));
-                        let body =
-                            maybe_await!(DefinitionBody::parse(ctxt, &body, &new_env, form))?;
+                        let body = maybe_await!(Definitions::parse(
+                            ctxt,
+                            &body,
+                            &new_env,
+                            form,
+                            mutable_vars
+                        ))?;
 
-                        Ok(Self::DefineFunc(DefineFunc {
+                        Ok(Definition {
                             var,
-                            args,
-                            body: Box::new(body),
-                            next: None,
-                            span: func_span.clone(),
-                        }))
+                            expr: Expression::Lambda(Lambda {
+                                args,
+                                body,
+                                span: func_span.clone(),
+                            }),
+                        })
                     }
                     _ => Err(error::bad_form(form, None)),
                 }
@@ -1161,11 +1117,10 @@ pub(super) fn define_syntax(
     env: &Environment,
 ) -> Result<(), Exception> {
     let expanded = maybe_await!(expr.expand(env))?;
-    let expr = maybe_await!(Expression::parse(ctxt, expanded, env))?;
-    let cps_expr = expr.compile_top_level();
-    let values = maybe_await!(
-        maybe_await!(ctxt.runtime.compile_expr(cps_expr)).call(&[], &mut ContBarrier::new())
-    )?;
+    let mut mutable_vars = HashSet::default();
+    let expr = maybe_await!(Expression::parse(ctxt, expanded, env, &mut mutable_vars))?;
+    let proc = maybe_await!(Compiler::new(mutable_vars).compile(&ctxt.runtime, &expr))?;
+    let values = maybe_await!(proc.call(&[], &mut ContBarrier::new()))?;
     let transformer: Procedure = values.expect1()?;
     env.def_keyword(binding, transformer);
     Ok(())
@@ -1180,6 +1135,7 @@ pub enum Expression {
     SyntaxCase(SyntaxCase),
     Apply(Apply),
     Let(Let),
+    LetRec(LetRec),
     If(If),
     And(And),
     Or(Or),
@@ -1187,7 +1143,7 @@ pub enum Expression {
     Set(Set),
     Var(Var),
     Vector(Vector),
-    Begin(ExprBody),
+    Begin(Body),
 }
 
 impl Expression {
@@ -1196,9 +1152,10 @@ impl Expression {
         ctxt: &ParseContext,
         form: Syntax,
         env: &Environment,
+        mutable_vars: &mut HashSet<Local>,
     ) -> Result<Self, Exception> {
         let expanded = maybe_await!(form.expand(env))?;
-        maybe_await!(Self::parse_expanded(ctxt, expanded, env))
+        maybe_await!(Self::parse_expanded(ctxt, expanded, env, mutable_vars))
     }
 
     #[cfg(not(feature = "async"))]
@@ -1206,8 +1163,9 @@ impl Expression {
         ctxt: &ParseContext,
         form: Syntax,
         env: &Environment,
+        mutable_vars: &mut HashSet<Local>,
     ) -> Result<Self, Exception> {
-        Self::parse_expanded_inner(ctxt, form, env)
+        Self::parse_expanded_inner(ctxt, form, env, mutable_vars)
     }
 
     #[cfg(feature = "async")]
@@ -1215,8 +1173,9 @@ impl Expression {
         ctxt: &'a ParseContext,
         form: Syntax,
         env: &'a Environment,
+        mutable_vars: &'a mut HashSet<Local>,
     ) -> BoxFuture<'a, Result<Self, Exception>> {
-        Box::pin(Self::parse_expanded_inner(ctxt, form, env))
+        Box::pin(Self::parse_expanded_inner(ctxt, form, env, mutable_vars))
     }
 
     #[maybe_async]
@@ -1224,6 +1183,7 @@ impl Expression {
         ctxt: &ParseContext,
         form: Syntax,
         env: &Environment,
+        mutable_vars: &mut HashSet<Local>,
     ) -> Result<Self, Exception> {
         match &form {
             syn if syn.is_null() => Err(error::unexpected_empty_list(&form, None)),
@@ -1265,33 +1225,48 @@ impl Expression {
                     };
                     if let Some(primitive) = env.lookup_primitive(binding) {
                         match primitive {
-                            Primitive::Begin => maybe_await!(ExprBody::parse(ctxt, tail, env))
-                                .map(Expression::Begin),
+                            Primitive::Begin => {
+                                maybe_await!(Body::parse(ctxt, tail, env, mutable_vars))
+                                    .map(Expression::Begin)
+                            }
                             Primitive::Lambda => {
-                                maybe_await!(Lambda::parse(ctxt, tail, env, &form))
+                                maybe_await!(Lambda::parse(ctxt, tail, env, &form, mutable_vars))
                                     .map(Expression::Lambda)
                             }
-                            Primitive::Let => maybe_await!(Let::parse(ctxt, tail, env, &form))
-                                .map(Expression::Let),
+                            Primitive::Let => {
+                                maybe_await!(Let::parse(ctxt, tail, env, &form, mutable_vars))
+                                    .map(Expression::Let)
+                            }
+                            Primitive::LetRec => {
+                                maybe_await!(LetRec::parse(ctxt, tail, env, &form, mutable_vars))
+                                    .map(Expression::LetRec)
+                            }
                             Primitive::If => {
-                                maybe_await!(If::parse(ctxt, tail, env, &form)).map(Expression::If)
+                                maybe_await!(If::parse(ctxt, tail, env, &form, mutable_vars))
+                                    .map(Expression::If)
                             }
                             Primitive::And => {
-                                maybe_await!(And::parse(ctxt, tail, env)).map(Expression::And)
+                                maybe_await!(And::parse(ctxt, tail, env, mutable_vars))
+                                    .map(Expression::And)
                             }
-                            Primitive::Or => {
-                                maybe_await!(Or::parse(ctxt, tail, env)).map(Expression::Or)
-                            }
+                            Primitive::Or => maybe_await!(Or::parse(ctxt, tail, env, mutable_vars))
+                                .map(Expression::Or),
                             Primitive::Quote => Quote::parse(tail, &form).map(Expression::Quote),
                             Primitive::Syntax => {
                                 SyntaxQuote::parse(tail, env, &form).map(Expression::SyntaxQuote)
                             }
-                            Primitive::SyntaxCase => {
-                                maybe_await!(SyntaxCase::parse(ctxt, tail, env, &form))
-                                    .map(Expression::SyntaxCase)
+                            Primitive::SyntaxCase => maybe_await!(SyntaxCase::parse(
+                                ctxt,
+                                tail,
+                                env,
+                                &form,
+                                mutable_vars
+                            ))
+                            .map(Expression::SyntaxCase),
+                            Primitive::Set => {
+                                maybe_await!(Set::parse(ctxt, tail, env, &form, mutable_vars))
+                                    .map(Expression::Set)
                             }
-                            Primitive::Set => maybe_await!(Set::parse(ctxt, tail, env, &form))
-                                .map(Expression::Set),
                             Primitive::LetSyntax if !tail.is_empty() => {
                                 let (form, env) = maybe_await!(parse_let_syntax(
                                     ctxt,
@@ -1301,7 +1276,7 @@ impl Expression {
                                     env,
                                     &mut Vec::new(),
                                 ))?;
-                                maybe_await!(ExprBody::parse(ctxt, &form, &env))
+                                maybe_await!(Body::parse(ctxt, &form, &env, mutable_vars))
                                     .map(Expression::Begin)
                             }
                             Primitive::LetRecSyntax if !tail.is_empty() => {
@@ -1313,7 +1288,7 @@ impl Expression {
                                     env,
                                     &mut Vec::new(),
                                 ))?;
-                                maybe_await!(ExprBody::parse(ctxt, &form, &env))
+                                maybe_await!(Body::parse(ctxt, &form, &env, mutable_vars))
                                     .map(Expression::Begin)
                             }
                             Primitive::Import => Err(error::unexpected_import(&form)),
@@ -1321,18 +1296,26 @@ impl Expression {
                             _ => Err(error::bad_form(&form, None)),
                         }
                     } else if let Some(var) = maybe_await!(env.lookup_var(binding))? {
-                        maybe_await!(Apply::parse(ctxt, Expression::Var(var), tail, env, &form))
-                            .map(Expression::Apply)
+                        maybe_await!(Apply::parse(
+                            ctxt,
+                            Expression::Var(var),
+                            tail,
+                            env,
+                            &form,
+                            mutable_vars
+                        ))
+                        .map(Expression::Apply)
                     } else {
                         Err(error::undefined_variable(&form, Some(ident_form)))
                     }
                 }
                 [expr, args @ .., end] if end.is_null() => maybe_await!(Apply::parse(
                     ctxt,
-                    maybe_await!(Expression::parse(ctxt, expr.clone(), env))?,
+                    maybe_await!(Expression::parse(ctxt, expr.clone(), env, mutable_vars))?,
                     args,
                     env,
-                    &form
+                    &form,
+                    mutable_vars,
                 ))
                 .map(Expression::Apply),
                 _ => Err(error::bad_form(&form, None)),
@@ -1340,52 +1323,14 @@ impl Expression {
         }
     }
 
-    // These function pointer comparisons are guaranteed to be meaningful since
-    // they are returned from a store.
-    pub fn to_primop(&self) -> Option<PrimOp> {
-        use crate::{
-            lists::{car, cdr, cons, list},
-            num::{add, div, equal, greater, greater_equal, lesser, lesser_equal, mul, sub},
-            proc::{BridgePtr, FuncPtr::Bridge, Procedure},
-            value::{not, null_pred, pair_pred},
-        };
-        use std::ptr::fn_addr_eq;
-
-        const PRIMOP_TAB: &[(BridgePtr, PrimOp)] = &[
-            (add, PrimOp::Add),
-            (sub, PrimOp::Sub),
-            (mul, PrimOp::Mul),
-            (div, PrimOp::Div),
-            (equal, PrimOp::Equal),
-            (greater, PrimOp::Greater),
-            (greater_equal, PrimOp::GreaterEqual),
-            (lesser, PrimOp::Lesser),
-            (lesser_equal, PrimOp::LesserEqual),
-            (cons, PrimOp::Cons),
-            (list, PrimOp::List),
-            (car, PrimOp::Car),
-            (cdr, PrimOp::Cdr),
-            (not, PrimOp::Not),
-            (null_pred, PrimOp::IsNull),
-            (pair_pred, PrimOp::IsPair),
-        ];
-
-        let Expression::Var(Var::Global(global)) = self else {
-            return None;
-        };
-        let val: Procedure = global.read().try_into().ok()?;
-
-        let Bridge(ptr) = val.0.func else {
-            return None;
-        };
-
-        for (builtin, primop) in PRIMOP_TAB.iter().copied() {
-            if fn_addr_eq(ptr, builtin) {
-                return Some(primop);
-            }
+    pub fn to_immutable_proc(&self) -> Option<Procedure> {
+        if let Expression::Var(Var::Global(global)) = self
+            && !global.mutable
+        {
+            global.read().try_into().ok()
+        } else {
+            None
         }
-
-        None
     }
 }
 
@@ -1444,10 +1389,16 @@ impl Apply {
         args: &[Syntax],
         env: &Environment,
         form: &Syntax,
+        mutable_vars: &mut HashSet<Local>,
     ) -> Result<Self, Exception> {
         let mut parsed_args = Vec::new();
         for arg in args {
-            parsed_args.push(maybe_await!(Expression::parse(ctxt, arg.clone(), env))?);
+            parsed_args.push(maybe_await!(Expression::parse(
+                ctxt,
+                arg.clone(),
+                env,
+                mutable_vars
+            ))?);
         }
         Ok(Apply {
             operator: Box::new(operator),
@@ -1460,7 +1411,7 @@ impl Apply {
 #[derive(Debug, Clone, Trace)]
 pub struct Lambda {
     pub args: Formals,
-    pub body: DefinitionBody,
+    pub body: Definitions,
     pub span: Span,
 }
 
@@ -1471,13 +1422,14 @@ impl Lambda {
         sexprs: &[Syntax],
         env: &Environment,
         form: &Syntax,
+        mutable_vars: &mut HashSet<Local>,
     ) -> Result<Self, Exception> {
         match sexprs {
             [null, body @ ..] if null.is_null() => {
-                maybe_await!(parse_lambda(ctxt, &[], body, env, form))
+                maybe_await!(parse_lambda(ctxt, &[], body, env, form, mutable_vars))
             }
             [Syntax::List { list: args, .. }, body @ ..] => {
-                maybe_await!(parse_lambda(ctxt, args, body, env, form))
+                maybe_await!(parse_lambda(ctxt, args, body, env, form, mutable_vars))
             }
             [ident @ Syntax::Identifier { .. }, body @ ..] => {
                 maybe_await!(parse_lambda(
@@ -1486,6 +1438,7 @@ impl Lambda {
                     body,
                     env,
                     form,
+                    mutable_vars,
                 ))
             }
             _ => Err(error::expected_more_arguments(form)),
@@ -1500,6 +1453,7 @@ fn parse_lambda(
     body: &[Syntax],
     env: &Environment,
     form: &Syntax,
+    mutable_vars: &mut HashSet<Local>,
 ) -> Result<Lambda, Exception> {
     let mut bound = HashSet::<&Identifier>::default();
     let mut fixed = Vec::new();
@@ -1558,7 +1512,13 @@ fn parse_lambda(
 
     let mut body = body.to_vec();
     body.iter_mut().for_each(|s| s.add_scope(lambda_scope));
-    let body = maybe_await!(DefinitionBody::parse(ctxt, &body, &new_contour, form))?;
+    let body = maybe_await!(Definitions::parse(
+        ctxt,
+        &body,
+        &new_contour,
+        form,
+        mutable_vars
+    ))?;
 
     Ok(Lambda {
         args,
@@ -1570,7 +1530,7 @@ fn parse_lambda(
 #[derive(Debug, Clone, Trace)]
 pub struct Let {
     pub bindings: Vec<(Local, Expression)>,
-    pub body: DefinitionBody,
+    pub body: Definitions,
 }
 
 impl Let {
@@ -1580,22 +1540,39 @@ impl Let {
         syn: &[Syntax],
         env: &Environment,
         form: &Syntax,
+        mutable_vars: &mut HashSet<Local>,
     ) -> Result<Self, Exception> {
         match syn {
             [empty, body @ ..] if empty.is_null() => {
-                maybe_await!(parse_let(ctxt, &[], body, env, form))
+                maybe_await!(parse_let(ctxt, &[], body, env, form, mutable_vars))
             }
             [Syntax::List { list: bindings, .. }, body @ ..] => {
-                maybe_await!(parse_let(ctxt, bindings, body, env, form))
+                maybe_await!(parse_let(ctxt, bindings, body, env, form, mutable_vars))
             }
             // Named let:
             [
                 Syntax::Identifier { ident, .. },
                 Syntax::List { list: bindings, .. },
                 body @ ..,
-            ] => maybe_await!(parse_named_let(ctxt, ident, bindings, body, env, form)),
+            ] => maybe_await!(parse_named_let(
+                ctxt,
+                ident,
+                bindings,
+                body,
+                env,
+                form,
+                mutable_vars
+            )),
             [Syntax::Identifier { ident, .. }, empty, body @ ..] if empty.is_null() => {
-                maybe_await!(parse_named_let(ctxt, ident, &[], body, env, form))
+                maybe_await!(parse_named_let(
+                    ctxt,
+                    ident,
+                    &[],
+                    body,
+                    env,
+                    form,
+                    mutable_vars
+                ))
             }
             _ => Err(error::expected_more_arguments(form)),
         }
@@ -1609,6 +1586,7 @@ fn parse_let(
     body: &[Syntax],
     env: &Environment,
     form: &Syntax,
+    mutable_vars: &mut HashSet<Local>,
 ) -> Result<Let, Exception> {
     let mut previously_bound = HashSet::default();
     let mut parsed_bindings = Vec::new();
@@ -1626,7 +1604,8 @@ fn parse_let(
                     binding,
                     env,
                     &previously_bound,
-                    form
+                    form,
+                    mutable_vars
                 ))?;
                 previously_bound.insert(binding.ident);
                 let mut var = binding.ident.clone();
@@ -1645,7 +1624,13 @@ fn parse_let(
 
     let mut body = body.to_vec();
     body.iter_mut().for_each(|s| s.add_scope(new_scope));
-    let body = maybe_await!(DefinitionBody::parse(ctxt, &body, &new_contour, form))?;
+    let body = maybe_await!(Definitions::parse(
+        ctxt,
+        &body,
+        &new_contour,
+        form,
+        mutable_vars
+    ))?;
 
     Ok(Let {
         bindings: parsed_bindings,
@@ -1661,6 +1646,7 @@ fn parse_named_let(
     body: &[Syntax],
     env: &Environment,
     form: &Syntax,
+    mutable_vars: &mut HashSet<Local>,
 ) -> Result<Let, Exception> {
     let mut previously_bound = HashSet::default();
     let mut formals = Vec::new();
@@ -1686,7 +1672,8 @@ fn parse_named_let(
                     binding,
                     env,
                     &previously_bound,
-                    form
+                    form,
+                    mutable_vars
                 ))?;
                 previously_bound.insert(binding.ident);
                 args.push(binding.expr);
@@ -1710,25 +1697,33 @@ fn parse_named_let(
         s.add_scope(func_scope);
         s.add_scope(body_scope);
     });
-    let body = maybe_await!(DefinitionBody::parse(ctxt, &body, &body_contour, form))?;
+    let body = maybe_await!(Definitions::parse(
+        ctxt,
+        &body,
+        &body_contour,
+        form,
+        mutable_vars
+    ))?;
 
-    let func = DefineFunc {
-        var: func.clone(),
-        args: Formals::FixedArgs(formals),
-        body: Box::new(body),
-        next: Some(Either::Right(ExprBody::new(vec![Expression::Apply(
-            Apply {
-                operator: Box::new(Expression::Var(func)),
-                args,
+    let let_rec = LetRec {
+        bindings: vec![(
+            func.as_local().expect("let var should be a local"),
+            Expression::Lambda(Lambda {
+                args: Formals::FixedArgs(formals),
+                body,
                 span: form.span().clone(),
-            },
-        )]))),
-        span: form.span().clone(),
+            }),
+        )],
+        body: Definitions::new(Either::Right(Body::new(vec![Expression::Apply(Apply {
+            operator: Box::new(Expression::Var(func)),
+            args,
+            span: form.span().clone(),
+        })]))),
     };
 
     Ok(Let {
         bindings: Vec::new(),
-        body: DefinitionBody::new(Either::Left(Definition::DefineFunc(func))),
+        body: Definitions::new(Either::Left(Box::new(let_rec))),
     })
 }
 
@@ -1745,21 +1740,16 @@ impl<'a> LetBinding<'a> {
         env: &Environment,
         previously_bound: &HashSet<&'a Identifier>,
         form: &'a Syntax,
+        mutable_vars: &mut HashSet<Local>,
     ) -> Result<LetBinding<'a>, Exception> {
-        if let Some(
-            [
-                subform @ Syntax::Identifier { ident, .. },
-                expr,
-                end, // Syntax::Null { .. },
-            ],
-        ) = binding.as_list()
+        if let Some([subform @ Syntax::Identifier { ident, .. }, expr, end]) = binding.as_list()
             && end.is_null()
         {
             if previously_bound.contains(ident) {
                 return Err(error::name_previously_bound(form, subform));
             }
 
-            let expr = maybe_await!(Expression::parse(ctxt, expr.clone(), env))?;
+            let expr = maybe_await!(Expression::parse(ctxt, expr.clone(), env, mutable_vars))?;
 
             Ok(LetBinding { ident, expr })
         } else {
@@ -1781,6 +1771,7 @@ impl Set {
         exprs: &[Syntax],
         env: &Environment,
         form: &Syntax,
+        mutable_vars: &mut HashSet<Local>,
     ) -> Result<Self, Exception> {
         match exprs {
             [] | [_] => Err(error::expected_more_arguments(form)),
@@ -1791,7 +1782,12 @@ impl Set {
                             Some(Var::Global(global)) if !global.mutable => {
                                 return Err(error::immutable_variable(form, subform));
                             }
-                            Some(var) => var,
+                            Some(var) => {
+                                if let Some(local) = var.as_local() {
+                                    mutable_vars.insert(local);
+                                }
+                                var
+                            }
                             None => {
                                 return Err(error::undefined_variable(form, Some(subform)));
                             }
@@ -1800,7 +1796,12 @@ impl Set {
                         return Err(error::undefined_variable(form, Some(subform)));
                     }
                 },
-                val: Arc::new(maybe_await!(Expression::parse(ctxt, expr.clone(), env))?),
+                val: Arc::new(maybe_await!(Expression::parse(
+                    ctxt,
+                    expr.clone(),
+                    env,
+                    mutable_vars
+                ))?),
             }),
             [arg1, _] => Err(error::expected_identifier(form, Some(arg1))),
             [_, _, arg3, ..] => Err(error::unexpected_argument(form, arg3)),
@@ -1822,20 +1823,42 @@ impl If {
         exprs: &[Syntax],
         env: &Environment,
         form: &Syntax,
+        mutable_vars: &mut HashSet<Local>,
     ) -> Result<Self, Exception> {
         match exprs {
             [cond, success] => Ok(If {
-                cond: Arc::new(maybe_await!(Expression::parse(ctxt, cond.clone(), env))?),
-                success: Arc::new(maybe_await!(Expression::parse(ctxt, success.clone(), env))?),
+                cond: Arc::new(maybe_await!(Expression::parse(
+                    ctxt,
+                    cond.clone(),
+                    env,
+                    mutable_vars
+                ))?),
+                success: Arc::new(maybe_await!(Expression::parse(
+                    ctxt,
+                    success.clone(),
+                    env,
+                    mutable_vars
+                ))?),
                 failure: None,
             }),
             [cond, success, failure] => Ok(If {
-                cond: Arc::new(maybe_await!(Expression::parse(ctxt, cond.clone(), env))?),
-                success: Arc::new(maybe_await!(Expression::parse(ctxt, success.clone(), env))?),
+                cond: Arc::new(maybe_await!(Expression::parse(
+                    ctxt,
+                    cond.clone(),
+                    env,
+                    mutable_vars
+                ))?),
+                success: Arc::new(maybe_await!(Expression::parse(
+                    ctxt,
+                    success.clone(),
+                    env,
+                    mutable_vars
+                ))?),
                 failure: Some(Arc::new(maybe_await!(Expression::parse(
                     ctxt,
                     failure.clone(),
-                    env
+                    env,
+                    mutable_vars
                 ))?)),
             }),
             [] => Err(error::expected_more_arguments(form)),
@@ -1870,13 +1893,13 @@ impl Formals {
 }
 
 #[derive(Debug, Clone, Trace)]
-pub struct DefinitionBody {
-    pub first: Either<Definition, ExprBody>,
+pub struct Definitions {
+    pub inner: Either<Box<LetRec>, Body>,
 }
 
-impl DefinitionBody {
-    pub fn new(first: Either<Definition, ExprBody>) -> Self {
-        Self { first }
+impl Definitions {
+    pub fn new(inner: Either<Box<LetRec>, Body>) -> Self {
+        Self { inner }
     }
 
     #[maybe_async]
@@ -1884,6 +1907,7 @@ impl DefinitionBody {
         runtime: &Runtime,
         form: &Syntax,
         env: &Environment,
+        mutable_vars: &mut HashSet<Local>,
     ) -> Result<Self, Exception> {
         let ctxt = ParseContext {
             runtime: runtime.clone(),
@@ -1892,7 +1916,14 @@ impl DefinitionBody {
         // No explanation needed
         match form.as_list() {
             Some([list @ .., end]) if end.is_null() => {
-                maybe_await!(Self::parse_helper(&ctxt, list, true, env, form))
+                maybe_await!(Self::parse_helper(
+                    &ctxt,
+                    list,
+                    true,
+                    env,
+                    form,
+                    mutable_vars
+                ))
             }
             _ => Err(error::bad_form(form, None)),
         }
@@ -1904,8 +1935,16 @@ impl DefinitionBody {
         body: &[Syntax],
         env: &Environment,
         form: &Syntax,
+        mutable_vars: &mut HashSet<Local>,
     ) -> Result<Self, Exception> {
-        maybe_await!(Self::parse_helper(ctxt, body, false, env, form))
+        maybe_await!(Self::parse_helper(
+            ctxt,
+            body,
+            false,
+            env,
+            form,
+            mutable_vars
+        ))
     }
 
     /// Parse the body. body is expected to be a list of valid syntax objects, and should not include
@@ -1917,8 +1956,9 @@ impl DefinitionBody {
         permissive: bool,
         env: &Environment,
         form: &Syntax,
+        mutable_vars: &mut HashSet<Local>,
     ) -> Result<Self, Exception> {
-        Self::parse_helper_inner(ctxt, body, permissive, env, form)
+        Self::parse_helper_inner(ctxt, body, permissive, env, form, mutable_vars)
     }
 
     /// Parse the body. body is expected to be a list of valid syntax objects, and should not include
@@ -1930,8 +1970,16 @@ impl DefinitionBody {
         permissive: bool,
         env: &'a Environment,
         form: &'a Syntax,
+        mutable_vars: &'a mut HashSet<Local>,
     ) -> BoxFuture<'a, Result<Self, Exception>> {
-        Box::pin(Self::parse_helper_inner(ctxt, body, permissive, env, form))
+        Box::pin(Self::parse_helper_inner(
+            ctxt,
+            body,
+            permissive,
+            env,
+            form,
+            mutable_vars,
+        ))
     }
 
     #[maybe_async]
@@ -1941,6 +1989,7 @@ impl DefinitionBody {
         permissive: bool,
         env: &Environment,
         form: &Syntax,
+        mutable_vars: &mut HashSet<Local>,
     ) -> Result<Self, Exception> {
         let mut defs = Vec::new();
         let mut exprs = Vec::new();
@@ -1986,46 +2035,158 @@ impl DefinitionBody {
                 def.as_list().unwrap(),
                 &env,
                 &def,
+                mutable_vars,
             ))?;
             defs_parsed.push(def);
         }
 
+        if let Some(def) = defs_parsed.last()
+            && def.var.is_global()
+        {
+            // If we're setting globals, we can reduce everything to a series
+            // of sets
+            exprs_parsed.extend(defs_parsed.drain(..).map(|def| {
+                assert!(def.var.is_global());
+                Expression::Set(Set {
+                    var: def.var,
+                    val: Arc::new(def.expr),
+                })
+            }));
+        }
+
         for (expr, env) in exprs.into_iter() {
             exprs_parsed.push(maybe_await!(Expression::parse_expanded(
-                runtime, expr, &env,
+                runtime,
+                expr,
+                &env,
+                mutable_vars,
             ))?);
         }
 
-        let expr_body = ExprBody::new(exprs_parsed);
-        match defs_parsed.pop() {
-            Some(last_def) => {
-                let mut last_def = last_def.set_next(Either::Right(expr_body));
-                for next_def in defs_parsed.into_iter().rev() {
-                    last_def = next_def.set_next(Either::Left(Box::new(last_def)));
-                }
-                Ok(Self::new(Either::Left(last_def)))
-            }
-            _ => Ok(Self::new(Either::Right(expr_body))),
+        let body = Body::new(exprs_parsed);
+
+        if defs_parsed.is_empty() {
+            Ok(Self::new(Either::Right(body)))
+        } else {
+            Ok(Self::new(Either::Left(Box::new(LetRec {
+                bindings: defs_parsed
+                    .into_iter()
+                    .map(|def| {
+                        (
+                            def.var
+                                .as_local()
+                                .expect("definitions are either all global or all local"),
+                            def.expr,
+                        )
+                    })
+                    .collect(),
+                body: Definitions::new(Either::Right(body)),
+            }))))
         }
     }
 }
 
 #[derive(Debug, Clone, Trace)]
-pub struct ExprBody {
+pub struct LetRec {
+    pub bindings: Vec<(Local, Expression)>,
+    pub body: Definitions,
+}
+
+impl LetRec {
+    #[maybe_async]
+    fn parse(
+        ctxt: &ParseContext,
+        syn: &[Syntax],
+        env: &Environment,
+        form: &Syntax,
+        mutable_vars: &mut HashSet<Local>,
+    ) -> Result<Self, Exception> {
+        let (bindings, body): (&[Syntax], &[Syntax]) = match syn {
+            [empty, body @ ..] if empty.is_null() => (&[], body),
+            [Syntax::List { list: bindings, .. }, body @ ..] => match bindings.as_slice() {
+                [] => (&[], body),
+                [empty] if empty.is_null() => (&[], body),
+                [bindings @ .., end] if end.is_null() => (bindings, body),
+                _ => return Err(error::expected_list(form)),
+            },
+            _ => return Err(error::expected_more_arguments(form)),
+        };
+
+        let new_scope = Scope::new();
+        let new_contour = env.new_lexical_contour(new_scope);
+        let mut previously_bound = HashSet::default();
+        let mut locals = Vec::new();
+
+        for binding in bindings {
+            if let Some([subform @ Syntax::Identifier { ident, .. }, _, end]) = binding.as_list()
+                && end.is_null()
+            {
+                if previously_bound.contains(ident) {
+                    return Err(error::name_previously_bound(form, subform));
+                }
+
+                let mut var = ident.clone();
+                var.add_scope(new_scope);
+                let var = new_contour
+                    .def_var(var.new_bind(), ident.sym)
+                    .as_local()
+                    .unwrap();
+                locals.push(var);
+                previously_bound.insert(ident);
+            } else {
+                return Err(error::expected_list(binding));
+            }
+        }
+
+        let mut parsed_bindings = Vec::new();
+        for (binding, var) in bindings.iter().zip(&locals) {
+            if let Some([_, expr, _]) = binding.as_list() {
+                let mut expr = expr.clone();
+                expr.add_scope(new_scope);
+                parsed_bindings.push((
+                    *var,
+                    maybe_await!(Expression::parse(ctxt, expr, &new_contour, mutable_vars))?,
+                ));
+            }
+        }
+
+        let mut body = body.to_vec();
+        body.iter_mut().for_each(|s| s.add_scope(new_scope));
+        let body = maybe_await!(Definitions::parse(
+            ctxt,
+            &body,
+            &new_contour,
+            form,
+            mutable_vars
+        ))?;
+
+        Ok(LetRec {
+            bindings: parsed_bindings,
+            body,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Trace)]
+pub struct Body {
     pub exprs: Vec<Expression>,
 }
 
-impl ExprBody {
+impl Body {
     pub fn new(exprs: Vec<Expression>) -> Self {
         Self { exprs }
     }
 
-    /// Differs from Body by being purely expression based. No definitions allowed.
     #[maybe_async]
-    fn parse(ctxt: &ParseContext, body: &[Syntax], env: &Environment) -> Result<Self, Exception> {
+    fn parse(
+        ctxt: &ParseContext,
+        body: &[Syntax],
+        env: &Environment,
+        mutable_vars: &mut HashSet<Local>,
+    ) -> Result<Self, Exception> {
         let mut exprs = Vec::new();
         for sexpr in body {
-            let parsed = maybe_await!(Expression::parse(ctxt, sexpr.clone(), env))?;
+            let parsed = maybe_await!(Expression::parse(ctxt, sexpr.clone(), env, mutable_vars))?;
             exprs.push(parsed);
         }
         Ok(Self { exprs })
@@ -2290,10 +2451,15 @@ impl And {
 
 impl And {
     #[maybe_async]
-    fn parse(ctxt: &ParseContext, exprs: &[Syntax], env: &Environment) -> Result<Self, Exception> {
+    fn parse(
+        ctxt: &ParseContext,
+        exprs: &[Syntax],
+        env: &Environment,
+        mutable_vars: &mut HashSet<Local>,
+    ) -> Result<Self, Exception> {
         let mut output = Vec::new();
         for expr in exprs {
-            let expr = maybe_await!(Expression::parse(ctxt, expr.clone(), env))?;
+            let expr = maybe_await!(Expression::parse(ctxt, expr.clone(), env, mutable_vars))?;
             output.push(expr);
         }
         Ok(Self::new(output))
@@ -2311,10 +2477,15 @@ impl Or {
     }
 
     #[maybe_async]
-    fn parse(ctxt: &ParseContext, exprs: &[Syntax], env: &Environment) -> Result<Self, Exception> {
+    fn parse(
+        ctxt: &ParseContext,
+        exprs: &[Syntax],
+        env: &Environment,
+        mutable_vars: &mut HashSet<Local>,
+    ) -> Result<Self, Exception> {
         let mut output = Vec::new();
         for expr in exprs {
-            let expr = maybe_await!(Expression::parse(ctxt, expr.clone(), env))?;
+            let expr = maybe_await!(Expression::parse(ctxt, expr.clone(), env, mutable_vars))?;
             output.push(expr);
         }
         Ok(Self::new(output))
@@ -2349,6 +2520,7 @@ impl SyntaxCase {
         exprs: &[Syntax],
         env: &Environment,
         form: &Syntax,
+        mutable_vars: &mut HashSet<Local>,
     ) -> Result<Self, Exception> {
         let (arg, keywords, mut rules) = match exprs {
             [arg, Syntax::List { list, .. }, rules @ ..] => {
@@ -2379,6 +2551,7 @@ impl SyntaxCase {
                             None,
                             output_expression,
                             env,
+                            mutable_vars
                         ))?);
                         rules = tail;
                     }
@@ -2390,6 +2563,7 @@ impl SyntaxCase {
                             Some(fender),
                             output_expression,
                             env,
+                            mutable_vars,
                         ))?);
                         rules = tail;
                     }
@@ -2399,7 +2573,12 @@ impl SyntaxCase {
             }
         }
         Ok(SyntaxCase {
-            arg: Arc::new(maybe_await!(Expression::parse(ctxt, arg.clone(), env))?),
+            arg: Arc::new(maybe_await!(Expression::parse(
+                ctxt,
+                arg.clone(),
+                env,
+                mutable_vars
+            ))?),
             rules: syntax_rules,
         })
     }

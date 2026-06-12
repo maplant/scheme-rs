@@ -5,11 +5,12 @@ use std::{collections::BTreeSet, sync::Arc};
 use scheme_rs_macros::{maybe_async, maybe_await};
 
 use crate::{
+    HashSet,
     ast::{Expression, ImportSet, ParseContext, discard_for},
-    cps::Compile,
+    cps::compile::Compiler,
     env::{Environment, TopLevelEnvironment},
     exceptions::Exception,
-    proc::{Application, ContBarrier},
+    proc::{Application, ContBarrier, Procedure},
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::cps_bridge,
     runtime::Runtime,
@@ -22,10 +23,10 @@ use crate::{
 pub fn eval(
     runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     _barrier: &mut ContBarrier<'_>,
-    k: Value,
 ) -> Result<Application, Exception> {
     let [expression, environment] = args else {
         unreachable!()
@@ -33,12 +34,11 @@ pub fn eval(
     let env = environment.try_to_rust_type::<Environment>()?;
     let expr = Syntax::datum_to_syntax(&env.get_scope_set(), expression.clone(), &Span::default());
     let ctxt = ParseContext::new(runtime, false);
-    let expr = maybe_await!(Expression::parse(&ctxt, expr, &env))?;
-    let compiled = expr.compile_top_level();
-    let result = maybe_await!(
-        maybe_await!(runtime.compile_expr(compiled)).call(&[], &mut ContBarrier::new())
-    )?;
-    Ok(Application::new(k.try_into()?, result))
+    let mut mutable_vars = HashSet::default();
+    let expr = maybe_await!(Expression::parse(&ctxt, expr, &env, &mut mutable_vars))?;
+    let proc = maybe_await!(Compiler::new(mutable_vars).compile(runtime, &expr))?;
+    let result = maybe_await!(proc.call(&[], &mut ContBarrier::new()))?;
+    Ok(Application::new(k, None, result))
 }
 
 impl SchemeCompatible for Environment {
@@ -52,10 +52,10 @@ impl SchemeCompatible for Environment {
 pub fn environment(
     runtime: &Runtime,
     _env: &[Value],
+    k: Procedure,
     _args: &[Value],
     import_spec: &[Value],
     _barrier: &mut ContBarrier<'_>,
-    k: Value,
 ) -> Result<Application, Exception> {
     let import_sets = import_spec
         .iter()
@@ -70,5 +70,5 @@ pub fn environment(
         maybe_await!(env.import(import_set))?;
     }
     let env = Value::from(Record::from_rust_type(env));
-    Ok(Application::new(k.try_into().unwrap(), vec![env]))
+    Ok(Application::new(k, None, vec![env]))
 }
