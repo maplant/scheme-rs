@@ -471,7 +471,7 @@
          fk))
     ((match-two v #(p ...) g+s . x)
      (match-vector v 0 () (p ...) . x))
-    ((match-two v _ g+s (sk ...) fk i) '(sk ... i))
+    ((match-two v _ g+s (sk ...) fk i) (sk ... i))
     ;; Not a pair or vector or special literal, test to see if it's a
     ;; new symbol, in which case we just bind it, or if it's an
     ;; already bound symbol or some other literal, in which case we
