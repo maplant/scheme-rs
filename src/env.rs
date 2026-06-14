@@ -386,13 +386,15 @@ impl TopLevelEnvironment {
         let body = {
             let mut this = self.0.write();
             if let LibraryState::Unexpanded(body) = &mut this.state {
-                std::mem::replace(
+                let body = std::mem::replace(
                     body,
                     Syntax::Wrapped {
                         value: Value::undefined(),
                         span: Span::default(),
                     },
-                )
+                );
+                this.state = LibraryState::Expanding;
+                body
             } else {
                 return Ok(());
             }
@@ -557,6 +559,7 @@ pub(crate) enum LibraryState {
     Invalid,
     BridgesDefined,
     Unexpanded(Syntax),
+    Expanding,
     Expanded {
         expanded: Definitions,
         mutable_vars: HashSet<Local>,
