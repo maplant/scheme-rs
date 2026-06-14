@@ -45,11 +45,16 @@ mod error {
     }
 
     pub(super) fn bad_form(form: &Syntax, subform: Option<&Syntax>) -> Exception {
-        syntax_error(form, subform, "bad form")
+        syntax_error(form, subform, format!("bad form: {}", form.short_display()))
     }
 
     pub(super) fn undefined_variable(form: &Syntax, subform: Option<&Syntax>) -> Exception {
-        syntax_error(form, subform, "undefined variable")
+        let detail = subform.unwrap_or(form);
+        syntax_error(
+            form,
+            subform,
+            format!("undefined variable: {}", detail.short_display()),
+        )
     }
 
     pub(super) fn immutable_variable(form: &Syntax, subform: &Syntax) -> Exception {
