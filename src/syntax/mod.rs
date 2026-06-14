@@ -380,6 +380,15 @@ impl Syntax {
         matches!(self.as_list(), Some([Self::Identifier { ident, .. }, .. ]) if ident == car)
     }
 
+    pub fn short_display(&self) -> String {
+        let s = format!("{self:?}");
+        if s.len() > 80 {
+            format!("{}...", &s[..77])
+        } else {
+            s
+        }
+    }
+
     pub fn span(&self) -> &Span {
         match self {
             Self::Wrapped { span, .. } => span,
