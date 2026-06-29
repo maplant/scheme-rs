@@ -220,7 +220,7 @@ impl Cps {
                     );
                     *binding.body = body.eta_reduction(uses, modified);
                 }
-                Cps::Fix(bindings, Box::new(cexpr.beta_reduction(uses, modified)))
+                Cps::Fix(bindings, Box::new(cexpr.eta_reduction(uses, modified)))
             }
             cexpr => cexpr,
         }
