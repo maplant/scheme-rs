@@ -588,3 +588,17 @@
     ((_ (a ...) ...) '(#(a ...) ...))))
 
 (assert-equal? (vector-ellipsis-test (1 2) () (3)) '(#(1 2) #() #(3)))
+
+;; SRFI-2/202: and-let*
+(import (srfi :2))
+
+;; Basic SRFI-2 behavior
+(assert-equal? (and-let* ((x 1) (y 2)) (+ x y)) 3)
+(assert-equal? (and-let* ((x #f) (y 2)) (+ x y)) #f)
+(assert-equal? (and-let* ((x (memv 3 '(1 2 3 4)))) (car x)) 3)
+(assert-equal? (and-let* () 5) 5)
+(assert-equal? (and-let* ()) #t)
+
+;; SRFI-202 guard clause (bare expression, no binding)
+(assert-equal? (and-let* (((> 3 2))) 'yes) 'yes)
+(assert-equal? (and-let* (((> 2 3))) 'yes) #f)
