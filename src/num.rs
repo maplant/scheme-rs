@@ -2198,21 +2198,17 @@ pub fn div(arg1: &Value, args: &[Value]) -> Result<Vec<Value>, Exception> {
 }
 
 pub(crate) fn div_prim(val1: &Value, vals: &[Value]) -> Result<Number, Exception> {
-    let mut is_exact = true;
     let val1: Number = val1.try_to_scheme_type()?;
-    is_exact &= val1.is_exact();
     if vals.is_empty() {
-        if val1.is_zero() && is_exact {
+        if val1.is_zero() && val1.is_exact() {
             return Err(Exception::error("division by zero"));
-        } else {
-            return Ok(Number::from(1) / val1);
         }
+        return Ok(Number::from(1) / val1);
     }
     let mut result = val1.clone();
     for val in vals {
         let num: Number = val.try_to_scheme_type()?;
-        is_exact &= num.is_exact();
-        if num.is_zero() && is_exact {
+        if num.is_zero() && num.is_exact() {
             return Err(Exception::error("division by zero"));
         }
         result = result / num;

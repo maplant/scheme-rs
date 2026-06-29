@@ -1578,7 +1578,7 @@ pub fn eqv(a: &Value, b: &Value) -> Result<Vec<Value>, Exception> {
 
 #[bridge(name = "eq?", lib = "(rnrs base builtins (6))")]
 pub fn eq(a: &Value, b: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(a.eqv(b))])
+    Ok(vec![Value::from(a.eq(b))])
 }
 
 #[bridge(name = "equal?", lib = "(rnrs base builtins (6))")]

@@ -855,7 +855,9 @@ where
 {
     unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
         unsafe {
-            self.read().visit_or_recurse(visitor);
+            if let Some(read_lock) = self.try_read() {
+                read_lock.visit_or_recurse(visitor);
+            }
         }
     }
 
