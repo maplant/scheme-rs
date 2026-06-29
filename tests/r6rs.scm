@@ -533,3 +533,25 @@
   (assert-equal? (list x y) '(2 1)))
 
 (assert-equal? (let ((tmp 5)) (set! tmp (+ tmp 1)) tmp) 6)
+
+;; Custom ellipsis in syntax-rules
+(let ()
+  (define-syntax my-list
+    (syntax-rules ::: ()
+      ((_ x :::) (list x :::))))
+  (assert-equal? (my-list 1 2 3) '(1 2 3)))
+
+;; Custom ellipsis with recursive macro
+(let ()
+  (define-syntax my-or
+    (syntax-rules ::: ()
+      ((_ e) e)
+      ((_ e1 e2 :::) (let ((t e1)) (if t t (my-or e2 :::))))))
+  (assert-equal? (my-or #f #f 42) 42))
+
+;; Custom ellipsis with nested patterns
+(let ()
+  (define-syntax my-map
+    (syntax-rules ::: ()
+      ((_ f (x :::)) (list (f x) :::))))
+  (assert-equal? (my-map (lambda (x) (+ x 1)) (1 2 3)) '(2 3 4)))

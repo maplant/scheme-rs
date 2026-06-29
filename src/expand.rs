@@ -60,6 +60,7 @@ pub struct SyntaxRule {
 
 impl SyntaxRule {
     #[maybe_async]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn compile<'a>(
         ctxt: &ParseContext,
         keywords: &HashSet<&'a Identifier>,
@@ -68,17 +69,26 @@ impl SyntaxRule {
         output_expression: &'a Syntax,
         env: &Environment,
         mutable_vars: &mut HashSet<Local>,
+        ellipsis: Symbol,
     ) -> Result<Self, Exception> {
         let mut variables = HashMap::default();
         let pattern_scope = Scope::new();
-        let pattern = Pattern::compile(pattern, keywords, 0, pattern_scope, &mut variables)?;
+        let pattern = Pattern::compile(
+            pattern,
+            keywords,
+            0,
+            pattern_scope,
+            &mut variables,
+            ellipsis,
+        )?;
         let binds = Local::gensym();
         let env = env.new_syntax_case_contour(pattern_scope, binds, variables);
+        let ctxt = ctxt.with_ellipsis(ellipsis);
         let fender = if let Some(fender) = fender {
             let mut fender = fender.clone();
             fender.add_scope(pattern_scope);
             Some(maybe_await!(Expression::parse(
-                ctxt,
+                &ctxt,
                 fender,
                 &env,
                 mutable_vars
@@ -89,7 +99,7 @@ impl SyntaxRule {
         let mut output_expression = output_expression.clone();
         output_expression.add_scope(pattern_scope);
         let output_expression = maybe_await!(Expression::parse(
-            ctxt,
+            &ctxt,
             output_expression,
             &env,
             mutable_vars
@@ -121,6 +131,7 @@ impl Pattern {
         curr_nesting_level: usize,
         scope: Scope,
         variables: &mut HashMap<Binding, usize>,
+        ellipsis: Symbol,
     ) -> Result<Self, Exception> {
         Ok(match expr {
             // Allow for underscores as keywords
@@ -142,6 +153,7 @@ impl Pattern {
                 curr_nesting_level,
                 scope,
                 variables,
+                ellipsis,
             )?),
             Syntax::Vector { vector, .. } => Self::Vector(Self::compile_slice(
                 vector,
@@ -149,6 +161,7 @@ impl Pattern {
                 curr_nesting_level,
                 scope,
                 variables,
+                ellipsis,
             )?),
             Syntax::Wrapped { value, .. } => Self::Literal(value.clone()),
         })
@@ -160,6 +173,7 @@ impl Pattern {
         curr_nesting_level: usize,
         scope: Scope,
         variables: &mut HashMap<Binding, usize>,
+        ellipsis: Symbol,
     ) -> Result<Vec<Self>, Exception> {
         let mut output = Vec::new();
         let mut seen_ellipsis = false;
@@ -169,10 +183,11 @@ impl Pattern {
                 [
                     pattern,
                     Syntax::Identifier {
-                        ident: ellipsis, ..
+                        ident: ellipsis_ident,
+                        ..
                     },
                     tail @ ..,
-                ] if ellipsis.sym == "..." => {
+                ] if ellipsis_ident.sym == ellipsis => {
                     if seen_ellipsis {
                         return Err(error::multiple_ellipsis_at_same_level(pattern));
                     }
@@ -183,6 +198,7 @@ impl Pattern {
                         curr_nesting_level + 1,
                         scope,
                         variables,
+                        ellipsis,
                     )?)));
                     expr = tail;
                 }
@@ -193,6 +209,7 @@ impl Pattern {
                         curr_nesting_level,
                         scope,
                         variables,
+                        ellipsis,
                     )?);
                     expr = tail;
                 }
@@ -427,9 +444,10 @@ impl Template {
         expr: &Syntax,
         env: &Environment,
         expansions: &mut HashMap<Binding, Local>,
+        ellipsis: Symbol,
     ) -> Result<Self, Exception> {
-        check_ellipsis(expr, env)?;
-        Self::compile_inner(expr, env, expansions)
+        check_ellipsis(expr, env, ellipsis)?;
+        Self::compile_inner(expr, env, expansions, ellipsis)
     }
 
     fn is_wrapped(&self) -> bool {
@@ -472,31 +490,33 @@ impl Template {
         expr: &Syntax,
         env: &Environment,
         expansions: &mut HashMap<Binding, Local>,
+        ellipsis: Symbol,
     ) -> Result<Self, Exception> {
         match expr {
             Syntax::List { list, span, .. } => {
                 if let [
                     Syntax::Identifier {
-                        ident: ellipsis, ..
+                        ident: ellipsis_ident,
+                        ..
                     },
                     template,
                     _,
                 ] = list.as_slice()
-                    && ellipsis.sym == "..."
+                    && ellipsis_ident.sym == ellipsis
                 {
                     Self::compile_escaped(template, env, expansions)
                 } else {
                     Ok(Self::new_list(
-                        Self::compile_slice(list, env, expansions)?,
+                        Self::compile_slice(list, env, expansions, ellipsis)?,
                         span.clone(),
                     ))
                 }
             }
             Syntax::Vector { vector, span, .. } => Ok(Self::new_vector(
-                Self::compile_slice(vector, env, expansions)?,
+                Self::compile_slice(vector, env, expansions, ellipsis)?,
                 span.clone(),
             )),
-            Syntax::Identifier { ident, .. } if ident.sym == "..." => {
+            Syntax::Identifier { ident, .. } if ident.sym == ellipsis => {
                 Err(Exception::syntax(expr.clone(), None))
             }
             Syntax::Identifier { ident, span, .. } => {
@@ -551,6 +571,7 @@ impl Template {
         mut expr: &[Syntax],
         env: &Environment,
         expansions: &mut HashMap<Binding, Local>,
+        ellipsis: Symbol,
     ) -> Result<Vec<Self>, Exception> {
         let mut output = Vec::new();
         loop {
@@ -559,14 +580,16 @@ impl Template {
                 [
                     template,
                     Syntax::Identifier {
-                        ident: ellipsis, ..
+                        ident: ellipsis_ident,
+                        ..
                     },
                     tail @ ..,
-                ] if ellipsis.sym == "..." => {
-                    let mut compiled =
-                        Self::Ellipsis(Box::new(Self::compile_inner(template, env, expansions)?));
+                ] if ellipsis_ident.sym == ellipsis => {
+                    let mut compiled = Self::Ellipsis(Box::new(Self::compile_inner(
+                        template, env, expansions, ellipsis,
+                    )?));
                     let mut tail = tail;
-                    while matches!(tail.first(), Some(Syntax::Identifier { ident, ..}) if ident.sym == "...")
+                    while matches!(tail.first(), Some(Syntax::Identifier { ident, ..}) if ident.sym == ellipsis)
                     {
                         compiled = Self::Ellipsis(Box::new(compiled));
                         tail = &tail[1..];
@@ -575,7 +598,7 @@ impl Template {
                     expr = tail;
                 }
                 [head, tail @ ..] => {
-                    output.push(Self::compile_inner(head, env, expansions)?);
+                    output.push(Self::compile_inner(head, env, expansions, ellipsis)?);
                     expr = tail;
                 }
             }
@@ -684,24 +707,25 @@ fn vec_to_improper_list(mut expanded: Vec<Value>) -> Value {
     output
 }
 
-fn check_ellipsis(expr: &Syntax, env: &Environment) -> Result<(), Exception> {
+fn check_ellipsis(expr: &Syntax, env: &Environment, ellipsis: Symbol) -> Result<(), Exception> {
     let binds = match expr {
         Syntax::List { list, .. } => {
             if let [
                 Syntax::Identifier {
-                    ident: ellipsis, ..
+                    ident: ellipsis_ident,
+                    ..
                 },
                 template,
                 _,
             ] = list.as_slice()
-                && ellipsis.sym == "..."
+                && ellipsis_ident.sym == ellipsis
             {
                 check_escaped_template(template, env)
             } else {
-                check_subtemplate(list, env)?
+                check_subtemplate(list, env, ellipsis)?
             }
         }
-        Syntax::Vector { vector, .. } => check_subtemplate(vector, env)?,
+        Syntax::Vector { vector, .. } => check_subtemplate(vector, env, ellipsis)?,
         Syntax::Identifier { ident, .. } => {
             if let Some(binding) = ident.resolve()
                 && let Some((_, depth)) = env.lookup_pattern_variable(binding)
@@ -726,24 +750,29 @@ fn check_ellipsis(expr: &Syntax, env: &Environment) -> Result<(), Exception> {
     Ok(())
 }
 
-fn check_template(expr: &Syntax, env: &Environment) -> Result<Vec<(Symbol, isize)>, Exception> {
+fn check_template(
+    expr: &Syntax,
+    env: &Environment,
+    ellipsis: Symbol,
+) -> Result<Vec<(Symbol, isize)>, Exception> {
     match expr {
         Syntax::List { list, .. } => {
             if let [
                 Syntax::Identifier {
-                    ident: ellipsis, ..
+                    ident: ellipsis_ident,
+                    ..
                 },
                 template,
                 _,
             ] = list.as_slice()
-                && ellipsis.sym == "..."
+                && ellipsis_ident.sym == ellipsis
             {
                 Ok(check_escaped_template(template, env))
             } else {
-                check_subtemplate(list, env)
+                check_subtemplate(list, env, ellipsis)
             }
         }
-        Syntax::Vector { vector, .. } => check_subtemplate(vector, env),
+        Syntax::Vector { vector, .. } => check_subtemplate(vector, env, ellipsis),
         Syntax::Identifier { ident, .. } => {
             // TODO: Probably should cache these resolves at some point...
             if let Some(binding) = ident.resolve()
@@ -761,25 +790,26 @@ fn check_template(expr: &Syntax, env: &Environment) -> Result<Vec<(Symbol, isize
 fn check_subtemplate(
     expr: &[Syntax],
     env: &Environment,
+    ellipsis: Symbol,
 ) -> Result<Vec<(Symbol, isize)>, Exception> {
     match expr {
         [] => Ok(Vec::new()),
         [template, tail @ ..] => {
             let mut num_ellipsis = 0;
             let mut tail = tail;
-            while matches!(tail.first(), Some(Syntax::Identifier { ident, ..}) if ident.sym == "...")
+            while matches!(tail.first(), Some(Syntax::Identifier { ident, ..}) if ident.sym == ellipsis)
             {
                 num_ellipsis += 1;
                 tail = &tail[1..];
             }
-            let mut patterns = check_template(template, env)?;
+            let mut patterns = check_template(template, env, ellipsis)?;
             if patterns.is_empty() && num_ellipsis > 0 {
                 return Err(error::no_pattern_variables_in_template(template));
             }
             for pattern in &mut patterns {
                 pattern.1 -= num_ellipsis;
             }
-            patterns.extend(check_subtemplate(tail, env)?);
+            patterns.extend(check_subtemplate(tail, env, ellipsis)?);
             Ok(patterns)
         }
     }
