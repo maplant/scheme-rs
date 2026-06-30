@@ -934,15 +934,7 @@ impl TryFrom<&SimpleNumber> for f64 {
         match num {
             SimpleNumber::FixedInteger(i) => Ok(*i as f64),
             SimpleNumber::Real(r) => Ok(*r),
-            SimpleNumber::Rational(r) => {
-                if let Some((float, _, _)) =
-                    r.sci_mantissa_and_exponent_round_ref(RoundingMode::Nearest)
-                {
-                    Ok(float)
-                } else {
-                    Err(Exception::not_representable(&format!("{r}"), "f64"))
-                }
-            }
+            SimpleNumber::Rational(r) => Ok(f64::rounding_from(r, RoundingMode::Nearest).0),
             SimpleNumber::BigInteger(_) => Err(Exception::conversion_error("f64", "integer")),
         }
     }
@@ -961,9 +953,7 @@ impl From<&SimpleNumber> for Option<f64> {
         match num {
             SimpleNumber::FixedInteger(i) => Some(*i as f64),
             SimpleNumber::Real(r) => Some(*r),
-            SimpleNumber::Rational(r) => r
-                .sci_mantissa_and_exponent_round_ref(RoundingMode::Nearest)
-                .map(|(float, _, _)| float),
+            SimpleNumber::Rational(r) => Some(f64::rounding_from(r, RoundingMode::Nearest).0),
             SimpleNumber::BigInteger(_) => None,
         }
     }
