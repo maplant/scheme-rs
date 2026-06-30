@@ -15,6 +15,9 @@ use crate::{
     value::{Cell, Value},
 };
 
+#[cfg(feature = "plugins")]
+use crate::proc::{Application, ContBarrier};
+
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -418,6 +421,14 @@ impl Registry {
         Ok(())
     }
 
+    /// Load a plugin from Scheme via `(load-plugin path)`.
+    #[cfg(feature = "plugins")]
+    fn load_plugin_from_path(&self, rt: &Runtime, path: &str) -> Result<(), Exception> {
+        let library = unsafe { libloading::Library::new(path) }
+            .map_err(|e| Exception::error(format!("failed to load plugin {path}: {e}")))?;
+        self.load_plugin(rt, library)
+    }
+
     fn mark_as_loading(&self, name: &[Symbol]) {
         self.0.write().loading.insert(name.to_vec());
     }
@@ -609,6 +620,24 @@ impl Registry {
             ) as DynIter<'b>),
         }
     }
+}
+
+#[cfg(feature = "plugins")]
+#[cps_bridge(def = "load-plugin path", lib = "(scheme-rs plugins)")]
+pub fn load_plugin(
+    runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    _rest_args: &[Value],
+    _barrier: &mut ContBarrier<'_>,
+) -> Result<Application, Exception> {
+    let [path] = args else { unreachable!() };
+    let path: crate::strings::WideString = path.clone().try_into()?;
+    runtime
+        .get_registry()
+        .load_plugin_from_path(runtime, &path.to_string())?;
+    Ok(Application::new(k, None, vec![]))
 }
 
 type DynIter<'a> = Box<dyn Iterator<Item = (Symbol, Import)> + 'a>;
