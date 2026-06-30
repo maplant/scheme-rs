@@ -315,7 +315,9 @@ pub(super) unsafe fn unroot<T: super::GcOrTrace>(gc: &super::Gc<T>) {
     heap.head = new_gc_ptr;
     heap.new_allocs += 1;
 
-    COLLECTION_START_SIGNAL.notify_one();
+    if heap.should_collect() {
+        COLLECTION_START_SIGNAL.notify_one();
+    }
 }
 
 struct Heap {
@@ -337,6 +339,10 @@ impl Heap {
             force_collection: false,
             vtables: None,
         }
+    }
+
+    fn should_collect(&mut self) -> bool {
+        !self.should_not_collect()
     }
 
     fn should_not_collect(&mut self) -> bool {
