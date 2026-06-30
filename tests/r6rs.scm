@@ -602,3 +602,23 @@
 ;; SRFI-202 guard clause (bare expression, no binding)
 (assert-equal? (and-let* (((> 3 2))) 'yes) 'yes)
 (assert-equal? (and-let* (((> 2 3))) 'yes) #f)
+
+;; SRFI-197: Pipeline operators
+(import (srfi :197))
+
+(assert-equal? (chain 1 (+ _ 10) (* _ 2)) 22)
+(assert-equal? (chain "hello" (string-append _ " world") (string-length _)) 11)
+(assert-equal? (chain 42) 42)
+(assert-equal? (chain 5 (- 10 _)) 5)
+
+(assert-equal? (nest (+ _ 10) (* _ 2) 3) 16)
+(assert-equal? (nest (list 'a _) (list 'b _) 'c) '(a (b c)))
+(assert-equal? (nest 42) 42)
+
+(assert-equal? (nest-reverse 3 (* _ 2) (+ _ 10)) 16)
+(assert-equal? (nest-reverse 'c (list 'b _) (list 'a _)) '(a (b c)))
+(assert-equal? (nest-reverse 42) 42)
+
+;; (lang pipeline) re-export
+(import (lang pipeline))
+(assert-equal? (chain 1 (+ _ 2) (* _ 3)) 9)
