@@ -134,6 +134,22 @@ impl BridgeFnDebugInfo {
 
 inventory::collect!(BridgeFn);
 
+/// Automatically export bridge functions for cdylib plugin crates.
+/// In a cdylib, this symbol is exported and discovered by `load_plugin`.
+/// In a regular binary, it exists but is unused.
+#[cfg(feature = "plugins")]
+#[unsafe(no_mangle)]
+pub extern "C" fn scheme_rs_bridges() -> PluginBridges {
+    let bridges: Vec<BridgeFn> = inventory::iter::<BridgeFn>()
+        .map(|b| unsafe { std::ptr::read(b as *const BridgeFn) })
+        .collect();
+    let leaked = bridges.leak();
+    PluginBridges {
+        ptr: leaked.as_ptr(),
+        len: leaked.len(),
+    }
+}
+
 /// Fat pointer returned by a plugin's `scheme_rs_bridges` export.
 #[cfg(feature = "plugins")]
 #[repr(C)]
@@ -623,7 +639,7 @@ impl Registry {
 }
 
 #[cfg(feature = "plugins")]
-#[cps_bridge(def = "load-plugin path", lib = "(scheme-rs plugins)")]
+#[cps_bridge(def = "%load-plugin path", lib = "(scheme-rs plugins builtins)")]
 pub fn load_plugin(
     runtime: &Runtime,
     _env: &[Value],
