@@ -64,6 +64,7 @@ pub(crate) mod error {
 }
 
 #[doc(hidden)]
+#[derive(Copy, Clone)]
 pub enum Bridge {
     Known(KnownFunc),
     Sync(BridgePtr),
@@ -71,7 +72,11 @@ pub enum Bridge {
     Async(crate::proc::AsyncBridgePtr),
 }
 
+// BridgeFn is passed across the FFI boundary between host and plugin.
+// Both sides MUST be compiled with the same rustc version and scheme-rs
+// feature flags, since BridgeFn is not #[repr(C)].
 #[doc(hidden)]
+#[derive(Copy, Clone)]
 pub struct BridgeFn {
     name: &'static str,
     lib_name: &'static str,
@@ -137,16 +142,20 @@ inventory::collect!(BridgeFn);
 /// Automatically export bridge functions for cdylib plugin crates.
 /// In a cdylib, this symbol is exported and discovered by `load_plugin`.
 /// In a regular binary, it exists but is unused.
+///
+/// The returned pointer is valid for the lifetime of the process (backed by
+/// a lazily-initialized static). Safe to call multiple times.
 #[cfg(feature = "plugins")]
 #[unsafe(no_mangle)]
 pub extern "C" fn scheme_rs_bridges() -> PluginBridges {
-    let bridges: Vec<BridgeFn> = inventory::iter::<BridgeFn>()
-        .map(|b| unsafe { std::ptr::read(b as *const BridgeFn) })
-        .collect();
-    let leaked = bridges.leak();
+    use std::sync::OnceLock;
+    static BRIDGES: OnceLock<Vec<BridgeFn>> = OnceLock::new();
+    let bridges = BRIDGES.get_or_init(|| {
+        inventory::iter::<BridgeFn>().copied().collect()
+    });
     PluginBridges {
-        ptr: leaked.as_ptr(),
-        len: leaked.len(),
+        ptr: bridges.as_ptr(),
+        len: bridges.len(),
     }
 }
 
@@ -158,16 +167,28 @@ pub struct PluginBridges {
     pub len: usize,
 }
 
+/// Keeps a plugin's shared library loaded for the lifetime of the process.
+///
+/// We intentionally never unload plugins: Procedure objects elsewhere in the
+/// GC heap may hold fn pointers into plugin code, and those pointers would
+/// dangle if the library were unmapped. ManuallyDrop ensures the library
+/// stays mapped even after the RegistryInner is finalized.
 #[cfg(feature = "plugins")]
-struct PluginHandle(libloading::Library);
+struct PluginHandle(std::mem::ManuallyDrop<libloading::Library>);
 
 #[cfg(feature = "plugins")]
-// SAFETY: libloading::Library contains no Gc pointers.
+impl PluginHandle {
+    fn new(library: libloading::Library) -> Self {
+        Self(std::mem::ManuallyDrop::new(library))
+    }
+}
+
+#[cfg(feature = "plugins")]
+// SAFETY: libloading::Library contains no Gc pointers. ManuallyDrop is
+// intentional — plugin code must remain mapped for the process lifetime.
 unsafe impl Trace for PluginHandle {
     unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
-    unsafe fn finalize(&mut self) {
-        unsafe { std::ptr::drop_in_place(self as *mut Self) }
-    }
+    unsafe fn finalize(&mut self) {}
 }
 
 #[derive(rust_embed::Embed)]
@@ -179,6 +200,8 @@ pub(crate) struct RegistryInner {
     loading: HashSet<Vec<Symbol>>,
     #[cfg(feature = "plugins")]
     plugins: Vec<PluginHandle>,
+    #[cfg(feature = "plugins")]
+    loaded_plugin_paths: HashSet<PathBuf>,
 }
 
 // SAFETY: Only libs contains Gc pointers. plugins and loading have no Gc refs.
@@ -198,6 +221,8 @@ impl Default for RegistryInner {
             loading: HashSet::default(),
             #[cfg(feature = "plugins")]
             plugins: Vec::new(),
+            #[cfg(feature = "plugins")]
+            loaded_plugin_paths: HashSet::default(),
         }
     }
 }
@@ -406,15 +431,14 @@ impl Registry {
     /// extern "C" PluginBridges scheme_rs_bridges(void);
     /// ```
     ///
-    /// The library handle is kept alive for the lifetime of the registry,
-    /// ensuring that function pointers from the plugin remain valid.
-    ///
     /// # Safety
     ///
     /// The caller must ensure that `library` was built against the same
-    /// version of scheme-rs as the host.
+    /// `rustc` version and scheme-rs feature flags as the host, since
+    /// `BridgeFn` is not `#[repr(C)]` and its layout is not guaranteed
+    /// across compilation units.
     #[cfg(feature = "plugins")]
-    pub fn load_plugin(
+    pub unsafe fn load_plugin(
         &self,
         rt: &Runtime,
         library: libloading::Library,
@@ -433,16 +457,29 @@ impl Registry {
 
         let mut inner = self.0.write();
         inner.register_bridges(rt, bridges.iter());
-        inner.plugins.push(PluginHandle(library));
+        inner.plugins.push(PluginHandle::new(library));
         Ok(())
     }
 
     /// Load a plugin from Scheme via `(load-plugin path)`.
+    ///
+    /// Returns Ok(()) without reloading if the plugin has already been loaded.
     #[cfg(feature = "plugins")]
     fn load_plugin_from_path(&self, rt: &Runtime, path: &str) -> Result<(), Exception> {
+        let canonical = std::fs::canonicalize(path)
+            .map_err(|e| Exception::error(format!("failed to resolve plugin path {path}: {e}")))?;
+
+        if self.0.read().loaded_plugin_paths.contains(&canonical) {
+            return Ok(());
+        }
+
         let library = unsafe { libloading::Library::new(path) }
             .map_err(|e| Exception::error(format!("failed to load plugin {path}: {e}")))?;
-        self.load_plugin(rt, library)
+        // SAFETY: caller (the Scheme bridge) is responsible for ensuring
+        // ABI compatibility; in practice both sides come from the same build.
+        unsafe { self.load_plugin(rt, library)? };
+        self.0.write().loaded_plugin_paths.insert(canonical);
+        Ok(())
     }
 
     fn mark_as_loading(&self, name: &[Symbol]) {

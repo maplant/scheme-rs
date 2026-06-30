@@ -160,10 +160,10 @@ impl Runtime {
     /// # Safety
     ///
     /// The caller must ensure that `library` was built against the same
-    /// version of scheme-rs as the host.
+    /// `rustc` version and scheme-rs feature flags as the host.
     #[cfg(feature = "plugins")]
-    pub fn load_plugin(&self, library: libloading::Library) -> Result<(), Exception> {
-        self.get_registry().load_plugin(self, library)
+    pub unsafe fn load_plugin(&self, library: libloading::Library) -> Result<(), Exception> {
+        unsafe { self.get_registry().load_plugin(self, library) }
     }
 
     pub(crate) fn get_registry(&self) -> Registry {
