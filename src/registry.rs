@@ -443,6 +443,16 @@ impl Registry {
         rt: &Runtime,
         library: libloading::Library,
     ) -> Result<(), Exception> {
+        let mut inner = self.0.write();
+        unsafe { Self::load_plugin_locked(&mut inner, rt, library) }
+    }
+
+    #[cfg(feature = "plugins")]
+    unsafe fn load_plugin_locked(
+        inner: &mut RegistryInner,
+        rt: &Runtime,
+        library: libloading::Library,
+    ) -> Result<(), Exception> {
         let bridges: &[BridgeFn] = unsafe {
             let func: libloading::Symbol<extern "C" fn() -> PluginBridges> = library
                 .get(b"scheme_rs_bridges")
@@ -455,7 +465,6 @@ impl Registry {
             std::slice::from_raw_parts(result.ptr, result.len)
         };
 
-        let mut inner = self.0.write();
         inner.register_bridges(rt, bridges.iter());
         inner.plugins.push(PluginHandle::new(library));
         Ok(())
@@ -464,21 +473,25 @@ impl Registry {
     /// Load a plugin from Scheme via `(load-plugin path)`.
     ///
     /// Returns Ok(()) without reloading if the plugin has already been loaded.
+    /// Holds the write lock across the entire check-load-insert sequence to
+    /// prevent TOCTOU races.
     #[cfg(feature = "plugins")]
     fn load_plugin_from_path(&self, rt: &Runtime, path: &str) -> Result<(), Exception> {
         let canonical = std::fs::canonicalize(path)
             .map_err(|e| Exception::error(format!("failed to resolve plugin path {path}: {e}")))?;
 
-        if self.0.read().loaded_plugin_paths.contains(&canonical) {
+        let mut inner = self.0.write();
+
+        if inner.loaded_plugin_paths.contains(&canonical) {
             return Ok(());
         }
 
-        let library = unsafe { libloading::Library::new(path) }
+        let library = unsafe { libloading::Library::new(&canonical) }
             .map_err(|e| Exception::error(format!("failed to load plugin {path}: {e}")))?;
         // SAFETY: caller (the Scheme bridge) is responsible for ensuring
         // ABI compatibility; in practice both sides come from the same build.
-        unsafe { self.load_plugin(rt, library)? };
-        self.0.write().loaded_plugin_paths.insert(canonical);
+        unsafe { Self::load_plugin_locked(&mut inner, rt, library)? };
+        inner.loaded_plugin_paths.insert(canonical);
         Ok(())
     }
 
