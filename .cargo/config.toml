@@ -1,0 +1,2 @@
+[alias]
+rtest = "bash cargo build && cd tests/data/r6rs/r6rs-test && ../../../../target/debug/scheme-rs tests/r6rs/run-via-eval.sps"
