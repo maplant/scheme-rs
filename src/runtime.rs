@@ -153,6 +153,19 @@ impl Runtime {
             .await
     }
 
+    /// Load a plugin from a dynamic library.
+    ///
+    /// See [`Registry::load_plugin`] for details.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `library` was built against the same
+    /// version of scheme-rs as the host.
+    #[cfg(feature = "plugins")]
+    pub fn load_plugin(&self, library: libloading::Library) -> Result<(), Exception> {
+        self.get_registry().load_plugin(self, library)
+    }
+
     pub(crate) fn get_registry(&self) -> Registry {
         self.0.read().registry.clone()
     }
