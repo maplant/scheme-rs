@@ -139,12 +139,6 @@ impl BridgeFnDebugInfo {
 
 inventory::collect!(BridgeFn);
 
-/// Automatically export bridge functions for cdylib plugin crates.
-/// In a cdylib, this symbol is exported and discovered by `load_plugin`.
-/// In a regular binary, it exists but is unused.
-///
-/// The returned pointer is valid for the lifetime of the process (backed by
-/// a lazily-initialized static). Safe to call multiple times.
 #[cfg(feature = "plugins")]
 #[unsafe(no_mangle)]
 pub extern "C" fn scheme_rs_bridges() -> PluginBridges {
@@ -161,13 +155,9 @@ pub extern "C" fn scheme_rs_bridges() -> PluginBridges {
     }
 }
 
-/// The scheme-rs version that this build was compiled against.
-/// Plugins embed this in their [`PluginBridges`] return value so the
-/// host can reject ABI-incompatible loads at runtime.
 #[cfg(feature = "plugins")]
 pub static SCHEME_RS_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Fat pointer returned by a plugin's `scheme_rs_bridges` export.
 #[cfg(feature = "plugins")]
 #[repr(C)]
 pub struct PluginBridges {
@@ -177,12 +167,6 @@ pub struct PluginBridges {
     pub len: usize,
 }
 
-/// Keeps a plugin's shared library loaded for the lifetime of the process.
-///
-/// We intentionally never unload plugins: Procedure objects elsewhere in the
-/// GC heap may hold fn pointers into plugin code, and those pointers would
-/// dangle if the library were unmapped. ManuallyDrop ensures the library
-/// stays mapped even after the RegistryInner is finalized.
 #[cfg(feature = "plugins")]
 struct PluginHandle(std::mem::ManuallyDrop<libloading::Library>);
 
@@ -194,8 +178,6 @@ impl PluginHandle {
 }
 
 #[cfg(feature = "plugins")]
-// SAFETY: libloading::Library contains no Gc pointers. ManuallyDrop is
-// intentional — plugin code must remain mapped for the process lifetime.
 unsafe impl Trace for PluginHandle {
     unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
     unsafe fn finalize(&mut self) {}
@@ -214,7 +196,6 @@ pub(crate) struct RegistryInner {
     loaded_plugin_paths: HashSet<PathBuf>,
 }
 
-// SAFETY: Only libs contains Gc pointers. plugins and loading have no Gc refs.
 unsafe impl Trace for RegistryInner {
     unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
         unsafe { self.libs.visit_children(visitor) }
@@ -238,12 +219,10 @@ impl Default for RegistryInner {
 }
 
 impl RegistryInner {
-    /// Construct an empty registry
     pub fn empty() -> Self {
         Self::default()
     }
 
-    /// Register bridge functions into the library table.
     fn register_bridges<'a>(
         &mut self,
         rt: &Runtime,
@@ -434,23 +413,11 @@ impl Registry {
         Self(Gc::new(RwLock::new(RegistryInner::new(rt))))
     }
 
-    /// Load bridge functions from a dynamic library (plugin).
-    ///
-    /// The plugin must export a C function named `scheme_rs_bridges`:
-    /// ```c
-    /// extern "C" PluginBridges scheme_rs_bridges(void);
-    /// ```
-    ///
-    /// The scheme-rs version is checked at load time; a mismatch returns
-    /// an error.
-    ///
     /// # Safety
     ///
-    /// The caller must ensure that `library` was built with the same
-    /// `rustc` version and scheme-rs feature flags as the host, since
-    /// `BridgeFn` is not `#[repr(C)]` and its layout is not guaranteed
-    /// across compilation units. The version check catches semver
-    /// mismatches but cannot detect ABI drift from different compilers.
+    /// The plugin must be built with the same `rustc` and scheme-rs
+    /// feature flags as the host. Version is checked at load time but
+    /// ABI drift from different compilers is not detected.
     #[cfg(feature = "plugins")]
     pub unsafe fn load_plugin(
         &self,
@@ -498,11 +465,6 @@ impl Registry {
         Ok(())
     }
 
-    /// Load a plugin from Scheme via `(load-plugin path)`.
-    ///
-    /// Returns Ok(()) without reloading if the plugin has already been loaded.
-    /// Holds the write lock across the entire check-load-insert sequence to
-    /// prevent TOCTOU races.
     #[cfg(feature = "plugins")]
     fn load_plugin_from_path(&self, rt: &Runtime, path: &str) -> Result<(), Exception> {
         let canonical = std::fs::canonicalize(path)
@@ -516,8 +478,6 @@ impl Registry {
 
         let library = unsafe { libloading::Library::new(&canonical) }
             .map_err(|e| Exception::error(format!("failed to load plugin {path}: {e}")))?;
-        // SAFETY: caller (the Scheme bridge) is responsible for ensuring
-        // ABI compatibility; in practice both sides come from the same build.
         unsafe { Self::load_plugin_locked(&mut inner, rt, library)? };
         inner.loaded_plugin_paths.insert(canonical);
         Ok(())

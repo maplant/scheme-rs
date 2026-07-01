@@ -153,15 +153,9 @@ impl Runtime {
             .await
     }
 
-    /// Load a plugin from a dynamic library.
-    ///
-    /// See [`Registry::load_plugin`] for details. The scheme-rs version
-    /// is validated at load time.
-    ///
     /// # Safety
     ///
-    /// The caller must ensure that `library` was built with the same
-    /// `rustc` version and scheme-rs feature flags as the host.
+    /// See [`Registry::load_plugin`].
     #[cfg(feature = "plugins")]
     pub unsafe fn load_plugin(&self, library: libloading::Library) -> Result<(), Exception> {
         unsafe { self.get_registry().load_plugin(self, library) }
