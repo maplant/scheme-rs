@@ -61,7 +61,7 @@
 //!     _barrier: &mut ContBarrier,
 //! ) -> Result<Application, Exception> {
 //!     // Fetch the cell from the environment:
-//!     let cell: Cell = env[0].try_to_scheme_type()?;
+//!     let cell: Cell = env[0].try_to()?;
 //!     let curr: Number = cell.get().try_into()?;
 //!
 //!     // Increment the cell
@@ -98,7 +98,7 @@ use crate::{
     gc::{Gc, GcInner, Trace},
     lists::{self, Pair, list_to_vec},
     ports::{BufferMode, Port, Transcoder},
-    records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
+    records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
     registry::BridgeFnDebugInfo,
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
@@ -1197,9 +1197,9 @@ impl From<SavedDynamicState> for ContBarrier<'_> {
     }
 }
 
-impl SchemeCompatible for SavedDynamicState {
+impl Embeddable for SavedDynamicState {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "$dynamic-state", sealed: true, opaque: true)
+        rtd!(ty: SavedDynamicState, name: "%dynamic-state", sealed: true, opaque: true)
     }
 }
 
@@ -1270,7 +1270,7 @@ pub fn call_with_current_continuation(
 
     let (req_args, variadic) = k.get_formals();
 
-    let barrier = Value::from_rust_type(barrier.save());
+    let barrier = Value::from(barrier.save());
 
     let escape_procedure = Procedure::new(
         runtime.clone(),
@@ -1302,7 +1302,7 @@ fn escape_procedure(
     // env[1] is the dyn stack of the continuation
     let saved_barrier_val = env[1].clone();
     let saved_barrier = saved_barrier_val
-        .try_to_rust_type::<SavedDynamicState>()
+        .try_to::<Embedded<SavedDynamicState>>()
         .unwrap();
     let saved_barrier_read = saved_barrier.as_ref();
 
@@ -1353,7 +1353,7 @@ unsafe extern "C" fn unwind(
         let dest_stack_val = env.add(2).as_ref().unwrap().clone();
         let dest_stack = dest_stack_val
             .clone()
-            .try_to_rust_type::<SavedDynamicState>()
+            .try_to::<Embedded<SavedDynamicState>>()
             .unwrap();
         let dest_stack_read = dest_stack.as_ref();
 
@@ -1422,7 +1422,7 @@ unsafe extern "C" fn wind(
         // env[2] is the stack we are trying to reach
         let dest_stack_val = env.add(2).as_ref().unwrap().clone();
         let dest_stack = dest_stack_val
-            .try_to_rust_type::<SavedDynamicState>()
+            .try_to::<Embedded<SavedDynamicState>>()
             .unwrap();
         let dest_stack_read = dest_stack.as_ref();
 
@@ -1431,7 +1431,7 @@ unsafe extern "C" fn wind(
         // env[3] is potentially a winder that we should push onto the dyn stack
         let winder = env.add(3).as_ref().unwrap().clone();
         if winder.is_true() {
-            let winder = winder.try_to_rust_type::<Winder>().unwrap();
+            let winder = winder.try_to::<Embedded<Winder>>().unwrap();
             barrier.push_dyn_stack(DynStackElem::Winder(winder.as_ref().clone()));
         }
 
@@ -1449,12 +1449,7 @@ unsafe extern "C" fn wind(
                         winder.in_thunk.clone(),
                         Some(Procedure::new_cont(
                             Runtime::from_raw_inc_rc(runtime),
-                            vec![
-                                k,
-                                args,
-                                dest_stack_val,
-                                Value::from(Record::from_rust_type(winder)),
-                            ],
+                            vec![k, args, dest_stack_val, Value::from(winder)],
                             wind,
                             0,
                             false,
@@ -1524,7 +1519,7 @@ unsafe extern "C" fn call_consumer_with_values(
 
         Box::into_raw(Box::new(Application::new(
             consumer.clone(),
-            k.cast_to_scheme_type(),
+            k.cast_to(),
             collected_args,
         )))
     }
@@ -1579,9 +1574,9 @@ pub(crate) struct Winder {
     pub(crate) out_thunk: Procedure,
 }
 
-impl SchemeCompatible for Winder {
+impl Embeddable for Winder {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "$winder", sealed: true, opaque: true)
+        rtd!(ty: Winder, name: "%winder", sealed: true, opaque: true)
     }
 }
 
@@ -1799,7 +1794,7 @@ pub fn abort_to_prompt(
             Value::from(k),
             Value::from(rest_args.to_vec()),
             tag.clone(),
-            Value::from_rust_type(barrier.save()),
+            Value::from(barrier.save()),
         ],
         unwind_to_prompt,
         0,
@@ -1843,7 +1838,7 @@ unsafe extern "C" fn unwind_to_prompt(
                     handler_k,
                 })) if prompt_tag == tag => {
                     let saved_barrier = saved_barrier
-                        .try_to_rust_type::<SavedDynamicState>()
+                        .try_to::<Embedded<SavedDynamicState>>()
                         .unwrap();
                     let prompt_delimited_barrier = SavedDynamicState {
                         id: saved_barrier.id,
@@ -1862,13 +1857,13 @@ unsafe extern "C" fn unwind_to_prompt(
                         vec![
                             k,
                             Value::from(barrier_id),
-                            Value::from_rust_type(prompt_delimited_barrier),
+                            Value::from(prompt_delimited_barrier),
                         ],
                         FuncPtr::Bridge(delimited_continuation),
                         req_args,
                         var,
                     ))];
-                    handler_args.extend(args.cast_to_scheme_type::<Vector>().unwrap().iter());
+                    handler_args.extend(args.cast_to::<Vector>().unwrap().iter());
                     Application::new(handler, Some(handler_k), handler_args)
                 }
                 Some(DynStackElem::Winder(winder)) => {
@@ -1906,12 +1901,12 @@ fn delimited_continuation(
     let dk = env[0].clone();
 
     // env[1] is the barrier Id
-    let barrier_id: usize = env[1].try_to_scheme_type()?;
+    let barrier_id: usize = env[1].try_to()?;
 
     // env[2] is the dyn stack of the continuation
     let saved_barrier_val = env[2].clone();
     let saved_barrier = saved_barrier_val
-        .try_to_rust_type::<SavedDynamicState>()
+        .try_to::<Embedded<SavedDynamicState>>()
         .unwrap();
     let saved_barrier_read = saved_barrier.as_ref();
     // Restore continuation marks
@@ -1964,19 +1959,19 @@ unsafe extern "C" fn wind_delim(
         // env[2] is the stack we are trying to reach
         let dest_stack_val = env.add(2).as_ref().unwrap().clone();
         let dest_stack = dest_stack_val
-            .try_to_rust_type::<SavedDynamicState>()
+            .try_to::<Embedded<SavedDynamicState>>()
             .unwrap();
         let dest_stack_read = dest_stack.as_ref();
 
         // env[3] is the index into the dest stack we're at
-        let mut idx: usize = env.add(3).as_ref().unwrap().cast_to_scheme_type().unwrap();
+        let mut idx: usize = env.add(3).as_ref().unwrap().cast_to().unwrap();
 
         let barrier = barrier.as_mut().unwrap_unchecked();
 
         // env[4] is potentially a winder that we should push onto the dyn stack
         let winder = env.add(4).as_ref().unwrap().clone();
         if winder.is_true() {
-            let winder = winder.try_to_rust_type::<Winder>().unwrap();
+            let winder = winder.try_to::<Embedded<Winder>>().unwrap();
             barrier.push_dyn_stack(DynStackElem::Winder(winder.as_ref().clone()));
         }
 
@@ -1989,12 +1984,7 @@ unsafe extern "C" fn wind_delim(
                     winder.in_thunk.clone(),
                     Some(Procedure::new_cont(
                         Runtime::from_raw_inc_rc(runtime),
-                        vec![
-                            k,
-                            args,
-                            dest_stack_val,
-                            Value::from(Record::from_rust_type(winder.clone())),
-                        ],
+                        vec![k, args, dest_stack_val, Value::from(winder.clone())],
                         wind,
                         0,
                         false,

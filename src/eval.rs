@@ -11,7 +11,7 @@ use crate::{
     env::{Environment, TopLevelEnvironment},
     exceptions::Exception,
     proc::{Application, ContBarrier, Procedure},
-    records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
+    records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
     registry::cps_bridge,
     runtime::Runtime,
     syntax::{Span, Syntax},
@@ -31,7 +31,7 @@ pub fn eval(
     let [expression, environment] = args else {
         unreachable!()
     };
-    let env = environment.try_to_rust_type::<Environment>()?;
+    let env = environment.try_to::<Embedded<Environment>>()?;
     let expr = Syntax::datum_to_syntax(&env.get_scope_set(), expression.clone(), &Span::default());
     let ctxt = ParseContext::new(runtime, false);
     let mut mutable_vars = HashSet::default();
@@ -41,9 +41,9 @@ pub fn eval(
     Ok(Application::new(k, None, result))
 }
 
-impl SchemeCompatible for Environment {
+impl Embeddable for Environment {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "environment", sealed: true, opaque: true)
+        rtd!(ty: Environment, name: "environment", sealed: true, opaque: true)
     }
 }
 
@@ -69,6 +69,6 @@ pub fn environment(
     for import_set in import_sets {
         maybe_await!(env.import(import_set))?;
     }
-    let env = Value::from(Record::from_rust_type(env));
+    let env = Value::from(env);
     Ok(Application::new(k, None, vec![env]))
 }

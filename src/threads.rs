@@ -14,7 +14,7 @@ use crate::{
     exceptions::Exception,
     gc::{Gc, Trace},
     proc::{ContBarrier, Procedure},
-    records::{RecordTypeDescriptor, SchemeCompatible, rtd},
+    records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
     value::Value,
 };
 
@@ -31,9 +31,9 @@ impl fmt::Debug for JoinHandle {
     }
 }
 
-impl SchemeCompatible for JoinHandle {
+impl Embeddable for JoinHandle {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "join-handle", sealed: true, opaque: true)
+        rtd!(ty: JoinHandle, name: "join-handle", sealed: true, opaque: true)
     }
 }
 
@@ -55,12 +55,11 @@ pub fn spawn(thunk: Procedure) -> Result<Vec<Value>, Exception> {
         }
     });
     let id = join_handle.thread().id();
-    Ok(vec![Value::from_rust_type(JoinHandle { id, result: cell })])
+    Ok(vec![Value::from(JoinHandle { id, result: cell })])
 }
 
 #[bridge(name = "join", lib = "(threads (1))")]
-pub fn join(handle: &Value) -> Result<Vec<Value>, Exception> {
-    let handle = handle.try_to_rust_type::<JoinHandle>()?;
+pub fn join(handle: Embedded<JoinHandle>) -> Result<Vec<Value>, Exception> {
     let curr_id = thread::current().id();
     if curr_id == handle.id {
         Err(Exception::error(format!(
@@ -79,7 +78,5 @@ pub fn sleep(ms: u64) -> Result<Vec<Value>, Exception> {
 
 #[bridge(name = "join-handle?", lib = "(threads (1))")]
 pub fn join_handle_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(
-        obj.cast_to_rust_type::<JoinHandle>().is_some(),
-    )])
+    Ok(vec![Value::from(obj.is_a::<Embedded<JoinHandle>>())])
 }

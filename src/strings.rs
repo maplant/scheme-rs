@@ -379,7 +379,7 @@ pub fn string_set_bang(string: &Value, k: &Value, chr: &Value) -> Result<Vec<Val
 
 #[bridge(name = "string-foldcase", lib = "(rnrs base builtins (6))")]
 pub fn string_foldcase(string: &Value) -> Result<Vec<Value>, Exception> {
-    let string: WideString = string.try_to_scheme_type()?;
+    let string: WideString = string.try_to()?;
     let folded = string
         .0
         .chars

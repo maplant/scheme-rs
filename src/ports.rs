@@ -25,7 +25,7 @@ use crate::{
     exceptions::{Assertion, Error, Exception, raise},
     gc::{Gc, GcInner, Trace},
     proc::{Application, ContBarrier, DynStackElem, FuncPtr, Procedure, pop_dyn_stack},
-    records::{Record, RecordTypeDescriptor, SchemeCompatible},
+    records::{Embeddable, Embedded, RecordTypeDescriptor},
     runtime::{Runtime, RuntimeInner},
     strings::WideString,
     symbols::Symbol,
@@ -292,22 +292,22 @@ impl Transcoder {
     }
 }
 
-impl SchemeCompatible for Transcoder {
+impl Embeddable for Transcoder {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "transcoder", opaque: true, sealed: true)
+        rtd!(ty: Transcoder, name: "transcoder", opaque: true, sealed: true)
     }
 }
 
 #[bridge(name = "native-transcoder", lib = "(rnrs io builtins (6))")]
 pub fn native_transcoder() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(Record::from_rust_type(
-        Transcoder::native(),
-    ))])
+    Ok(vec![Value::from(Transcoder::native())])
 }
 
 #[bridge(name = "make-transcoder", lib = "(rnrs io builtins (6))")]
-pub fn make_transcoder(codec: &Value, remaining: &[Value]) -> Result<Vec<Value>, Exception> {
-    let codec = *codec.try_to_rust_type::<Codec>()?;
+pub fn make_transcoder(
+    codec: Embedded<Codec>,
+    remaining: &[Value],
+) -> Result<Vec<Value>, Exception> {
     let (eol_type, error_handling_mode) = match remaining {
         [] => (EolStyle::None, ErrorHandlingMode::Replace),
         [eol_style] => (
@@ -320,44 +320,31 @@ pub fn make_transcoder(codec: &Value, remaining: &[Value]) -> Result<Vec<Value>,
         ),
         _ => return Err(Exception::wrong_num_of_var_args(1..3, 1 + remaining.len())),
     };
-    Ok(vec![Value::from_rust_type(Transcoder {
-        codec,
+    Ok(vec![Value::from(Transcoder {
+        codec: *codec,
         eol_type,
         error_handling_mode,
     })])
 }
 
 #[bridge(name = "transcoder-codec", lib = "(rnrs io builtins (6))")]
-pub fn transcoder_codec(transcoder: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![
-        transcoder
-            .try_to_rust_type::<Transcoder>()?
-            .codec
-            .to_value(),
-    ])
+pub fn transcoder_codec(transcoder: Embedded<Transcoder>) -> Result<Vec<Value>, Exception> {
+    Ok(vec![transcoder.codec.to_value()])
 }
 
 #[bridge(name = "transcoder-eol-style", lib = "(rnrs io builtins (6))")]
-pub fn transcoder_eol_style(transcoder: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(
-        transcoder
-            .try_to_rust_type::<Transcoder>()?
-            .eol_type
-            .to_sym(),
-    )])
+pub fn transcoder_eol_style(transcoder: Embedded<Transcoder>) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(transcoder.eol_type.to_sym())])
 }
 
 #[bridge(
     name = "transcoder-error-handling-mode",
     lib = "(rnrs io builtins (6))"
 )]
-pub fn transcoder_error_handling_mode(transcoder: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(
-        transcoder
-            .try_to_rust_type::<Transcoder>()?
-            .error_handling_mode
-            .to_sym(),
-    )])
+pub fn transcoder_error_handling_mode(
+    transcoder: Embedded<Transcoder>,
+) -> Result<Vec<Value>, Exception> {
+    Ok(vec![Value::from(transcoder.error_handling_mode.to_sym())])
 }
 
 #[derive(Copy, Clone, Trace)]
@@ -367,35 +354,29 @@ pub enum Codec {
     Utf16,
 }
 
-impl SchemeCompatible for Codec {
+impl Embeddable for Codec {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "codec", opaque: true, sealed: true)
+        rtd!(ty: Codec, name: "codec", opaque: true, sealed: true)
     }
 }
 
-static LATIN_1_CODEC: LazyLock<Gc<Codec>> = LazyLock::new(|| Gc::new(Codec::Latin1));
-static UTF_8_CODEC: LazyLock<Gc<Codec>> = LazyLock::new(|| Gc::new(Codec::Utf8));
-static UTF_16_CODEC: LazyLock<Gc<Codec>> = LazyLock::new(|| Gc::new(Codec::Utf16));
+static LATIN_1_CODEC: LazyLock<Embedded<Codec>> = LazyLock::new(|| Embedded::new(Codec::Latin1));
+static UTF_8_CODEC: LazyLock<Embedded<Codec>> = LazyLock::new(|| Embedded::new(Codec::Utf8));
+static UTF_16_CODEC: LazyLock<Embedded<Codec>> = LazyLock::new(|| Embedded::new(Codec::Utf16));
 
 #[bridge(name = "latin-1-codec", lib = "(rnrs io builtins (6))")]
 pub fn latin_1_codec() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(Record::from_rust_gc_type(
-        LATIN_1_CODEC.clone(),
-    ))])
+    Ok(vec![Value::from(LATIN_1_CODEC.clone())])
 }
 
 #[bridge(name = "utf-8-codec", lib = "(rnrs io builtins (6))")]
 pub fn utf_8_codec() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(Record::from_rust_gc_type(
-        UTF_8_CODEC.clone(),
-    ))])
+    Ok(vec![Value::from(UTF_8_CODEC.clone())])
 }
 
 #[bridge(name = "utf-16-codec", lib = "(rnrs io builtins (6))")]
 pub fn utf_16_codec() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(Record::from_rust_gc_type(
-        UTF_16_CODEC.clone(),
-    ))])
+    Ok(vec![Value::from(UTF_16_CODEC.clone())])
 }
 
 impl fmt::Debug for Codec {
@@ -431,9 +412,9 @@ impl Codec {
 
     fn to_value(self) -> Value {
         match self {
-            Self::Latin1 => Value::from(Record::from_rust_gc_type(LATIN_1_CODEC.clone())),
-            Self::Utf8 => Value::from(Record::from_rust_gc_type(UTF_8_CODEC.clone())),
-            Self::Utf16 => Value::from(Record::from_rust_gc_type(UTF_16_CODEC.clone())),
+            Self::Latin1 => Value::from(LATIN_1_CODEC.clone()),
+            Self::Utf8 => Value::from(UTF_8_CODEC.clone()),
+            Self::Utf16 => Value::from(UTF_16_CODEC.clone()),
         }
     }
 }
@@ -2942,7 +2923,7 @@ define_condition_type!(
 impl IoError {
     pub fn new() -> Self {
         Self {
-            parent: Gc::new(Error::new()),
+            parent: Error::new(),
         }
     }
 }
@@ -2963,7 +2944,7 @@ define_condition_type!(
 impl IoReadError {
     pub fn new() -> Self {
         Self {
-            parent: Gc::new(IoError::new()),
+            parent: IoError::new(),
         }
     }
 }
@@ -2984,7 +2965,7 @@ define_condition_type!(
 impl IoWriteError {
     pub fn new() -> Self {
         Self {
-            parent: Gc::new(IoError::new()),
+            parent: IoError::new(),
         }
     }
 }
@@ -3005,7 +2986,7 @@ define_condition_type!(
     },
     constructor: |position| {
         Ok(IoInvalidPositionError {
-            parent: Gc::new(IoError::new()),
+            parent: IoError::new(),
             position: position.try_into()?,
         })
     },
@@ -3024,7 +3005,7 @@ define_condition_type!(
     },
     constructor: |filename| {
         Ok(IoFilenameError {
-            parent: Gc::new(IoError::new()),
+            parent: IoError::new(),
             filename: filename.to_string(),
         })
     },
@@ -3036,7 +3017,7 @@ define_condition_type!(
 impl IoFilenameError {
     pub fn new(filename: String) -> Self {
         Self {
-            parent: Gc::new(IoError::new()),
+            parent: IoError::new(),
             filename: filename.to_string(),
         }
     }
@@ -3049,7 +3030,7 @@ define_condition_type!(
     parent: IoFilenameError,
     constructor: |filename| {
         Ok(IoFileProtectionError {
-            parent: Gc::new(IoFilenameError::new(filename.to_string()))
+            parent: IoFilenameError::new(filename.to_string())
         })
     },
     debug: |this, f| {
@@ -3060,7 +3041,7 @@ define_condition_type!(
 impl IoFileProtectionError {
     pub fn new(filename: impl fmt::Display) -> Self {
         Self {
-            parent: Gc::new(IoFilenameError::new(filename.to_string())),
+            parent: IoFilenameError::new(filename.to_string()),
         }
     }
 }
@@ -3072,7 +3053,7 @@ define_condition_type!(
     parent: IoFileProtectionError,
     constructor: |filename| {
         Ok(IoFileIsReadOnlyError {
-            parent: Gc::new(IoFileProtectionError::new(filename.to_string()))
+            parent: IoFileProtectionError::new(filename.to_string())
         })
     },
     debug: |this, f| {
@@ -3087,7 +3068,7 @@ define_condition_type!(
     parent: IoFilenameError,
     constructor: |filename| {
         Ok(IoFileAlreadyExistsError {
-            parent: Gc::new(IoFilenameError::new(filename.to_string()))
+            parent: IoFilenameError::new(filename.to_string())
         })
     },
     debug: |this, f| {
@@ -3098,7 +3079,7 @@ define_condition_type!(
 impl IoFileAlreadyExistsError {
     pub fn new(filename: impl fmt::Display) -> Self {
         Self {
-            parent: Gc::new(IoFilenameError::new(filename.to_string())),
+            parent: IoFilenameError::new(filename.to_string()),
         }
     }
 }
@@ -3110,7 +3091,7 @@ define_condition_type!(
     parent: IoFilenameError,
     constructor: |filename| {
         Ok(IoFileDoesNotExistError {
-            parent: Gc::new(IoFilenameError::new(filename.to_string()))
+            parent: IoFilenameError::new(filename.to_string())
         })
     },
     debug: |this, f| {
@@ -3121,7 +3102,7 @@ define_condition_type!(
 impl IoFileDoesNotExistError {
     pub fn new(filename: impl fmt::Display) -> Self {
         Self {
-            parent: Gc::new(IoFilenameError::new(filename.to_string())),
+            parent: IoFilenameError::new(filename.to_string()),
         }
     }
 }
@@ -3136,7 +3117,7 @@ define_condition_type!(
     },
     constructor: |port| {
         Ok(IoPortError {
-            parent: Gc::new(IoError::new()),
+            parent: IoError::new(),
             port,
         })
     },
@@ -3145,7 +3126,7 @@ define_condition_type!(
 impl IoPortError {
     pub fn new(port: Value) -> Self {
         Self {
-            parent: Gc::new(IoError::new()),
+            parent: IoError::new(),
             port,
         }
     }
@@ -3158,7 +3139,7 @@ define_condition_type!(
     parent: IoPortError,
     constructor: |port| {
         Ok(IoDecodingError {
-            parent: Gc::new(IoPortError::new(port)),
+            parent: IoPortError::new(port),
         })
     },
 );
@@ -3166,7 +3147,7 @@ define_condition_type!(
 impl IoDecodingError {
     pub fn new(port: Value) -> Self {
         Self {
-            parent: Gc::new(IoPortError::new(port)),
+            parent: IoPortError::new(port),
         }
     }
 }
@@ -3181,7 +3162,7 @@ define_condition_type!(
     },
     constructor: |port, chr| {
         Ok(IoEncodingError {
-            parent: Gc::new(IoPortError::new(port)),
+            parent: IoPortError::new(port),
             chr: chr.try_into()?,
         })
     },
@@ -3190,7 +3171,7 @@ define_condition_type!(
 impl IoEncodingError {
     pub fn new(port: Value, chr: char) -> Self {
         Self {
-            parent: Gc::new(IoPortError::new(port)),
+            parent: IoPortError::new(port),
             chr,
         }
     }
@@ -3199,9 +3180,9 @@ impl IoEncodingError {
 #[derive(Copy, Clone, Trace)]
 pub struct EofObject;
 
-impl SchemeCompatible for EofObject {
+impl Embeddable for EofObject {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "!eof", opaque: true, sealed: true)
+        rtd!(ty: EofObject, name: "!eof", opaque: true, sealed: true)
     }
 }
 
@@ -3211,11 +3192,10 @@ impl fmt::Debug for EofObject {
     }
 }
 
-static EOF_OBJECT: LazyLock<Value> =
-    LazyLock::new(|| Value::from(Record::from_rust_type(EofObject)));
+static EOF_OBJECT: LazyLock<Value> = LazyLock::new(|| Value::from(EofObject));
 
-static FILE_OPTIONS: LazyLock<Gc<EnumerationType>> = LazyLock::new(|| {
-    Gc::new(EnumerationType::new([
+static FILE_OPTIONS: LazyLock<Embedded<EnumerationType>> = LazyLock::new(|| {
+    Embedded::new(EnumerationType::new([
         Symbol::intern("append"),
         Symbol::intern("no-create"),
         Symbol::intern("no-fail"),
@@ -3223,8 +3203,8 @@ static FILE_OPTIONS: LazyLock<Gc<EnumerationType>> = LazyLock::new(|| {
     ]))
 });
 
-fn default_file_options() -> EnumerationSet {
-    EnumerationSet::new(&FILE_OPTIONS, [])
+fn default_file_options() -> Embedded<EnumerationSet> {
+    Embedded::new(EnumerationSet::new(&FILE_OPTIONS, []))
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -3262,16 +3242,15 @@ fn open_file_port(
 
     // We don't actually use file options for anything in the input case.
     let (file_options, rest_args) = if let [file_options, rest @ ..] = rest_args {
-        let file_options = file_options.clone().try_to_rust_type::<EnumerationSet>()?;
+        let file_options = file_options.clone().try_to::<Embedded<EnumerationSet>>()?;
         file_options.type_check(&FILE_OPTIONS)?;
         (file_options, rest)
     } else {
-        (Gc::new(default_file_options()), &[] as &[Value])
+        (default_file_options(), &[] as &[Value])
     };
 
     let (buffer_mode, rest_args) = if let [buffer_mode, rest @ ..] = rest_args {
-        let buffer_mode =
-            BufferMode::from_sym(buffer_mode.clone().try_to_scheme_type::<Symbol>()?)?;
+        let buffer_mode = BufferMode::from_sym(buffer_mode.clone().try_to::<Symbol>()?)?;
         (buffer_mode, rest)
     } else {
         (BufferMode::Block, &[] as &[Value])
@@ -3279,7 +3258,7 @@ fn open_file_port(
 
     let transcoder = if let [transcoder] = rest_args {
         if transcoder.is_true() {
-            let transcoder = transcoder.clone().try_to_rust_type::<Transcoder>()?;
+            let transcoder = transcoder.clone().try_to::<Embedded<Transcoder>>()?;
             Some(*transcoder)
         } else {
             None
@@ -3331,20 +3310,18 @@ fn map_io_error_to_condition(filename: &str, err: std::io::Error) -> Exception {
 
 #[bridge(name = "default-file-options", lib = "(rnrs io builtins (6))")]
 pub fn default_file_options_scm() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(Record::from_rust_type(
-        default_file_options(),
-    ))])
+    Ok(vec![Value::from(default_file_options())])
 }
 
 #[bridge(name = "eof-object", lib = "(rnrs io builtins (6))")]
 pub fn eof_object() -> Result<Vec<Value>, Exception> {
-    Ok(vec![EOF_OBJECT.clone()])
+    Ok(vec![Value::from(EOF_OBJECT.clone())])
 }
 
 #[bridge(name = "eof-object?", lib = "(rnrs io builtins (6))")]
 pub fn eof_object_pred(val: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(
-        val.cast_to_rust_type::<EofObject>().is_some(),
+        val.cast_to::<Embedded<EofObject>>().is_some(),
     )])
 }
 
@@ -3357,7 +3334,7 @@ pub fn port_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
 pub fn port_transcoder(port: &Value) -> Result<Vec<Value>, Exception> {
     let port: Port = port.clone().try_into()?;
     if let Some(transcoder) = port.transcoder() {
-        let transcoder = Value::from(Record::from_rust_type(transcoder));
+        let transcoder = Value::from(transcoder);
         Ok(vec![transcoder])
     } else {
         Ok(vec![Value::from(false)])
@@ -3378,8 +3355,10 @@ pub fn binary_port_pred(port: &Value) -> Result<Vec<Value>, Exception> {
 
 #[maybe_async]
 #[bridge(name = "transcoded-port", lib = "(rnrs io builtins (6))")]
-pub fn transcoded_port(port: Port, transcoder: &Value) -> Result<Vec<Value>, Exception> {
-    let transcoder = transcoder.try_to_rust_type::<Transcoder>()?;
+pub fn transcoded_port(
+    port: Port,
+    transcoder: Embedded<Transcoder>,
+) -> Result<Vec<Value>, Exception> {
     if port.is_textual_port() {
         return Err(Exception::error("not a binary port"));
     }
@@ -3682,7 +3661,7 @@ pub fn get_u8(binary_input_port: &Value) -> Result<Vec<Value>, Exception> {
     if let Some(byte) = maybe_await!(port.get_u8())? {
         Ok(vec![Value::from(byte)])
     } else {
-        Ok(vec![EOF_OBJECT.clone()])
+        Ok(vec![Value::from(EOF_OBJECT.clone())])
     }
 }
 
@@ -3693,7 +3672,7 @@ pub fn lookahead_u8(binary_input_port: &Value) -> Result<Vec<Value>, Exception> 
     if let Some(byte) = maybe_await!(port.lookahead_u8())? {
         Ok(vec![Value::from(byte)])
     } else {
-        Ok(vec![EOF_OBJECT.clone()])
+        Ok(vec![Value::from(EOF_OBJECT.clone())])
     }
 }
 
@@ -3706,7 +3685,7 @@ pub fn get_char(textual_input_port: &Value) -> Result<Vec<Value>, Exception> {
     if let Some(chr) = maybe_await!(port.get_char())? {
         Ok(vec![Value::from(chr)])
     } else {
-        Ok(vec![EOF_OBJECT.clone()])
+        Ok(vec![Value::from(EOF_OBJECT.clone())])
     }
 }
 
@@ -3717,7 +3696,7 @@ pub fn lookahead_char(textual_input_port: &Value) -> Result<Vec<Value>, Exceptio
     if let Some(chr) = maybe_await!(port.lookahead_char())? {
         Ok(vec![Value::from(chr)])
     } else {
-        Ok(vec![EOF_OBJECT.clone()])
+        Ok(vec![Value::from(EOF_OBJECT.clone())])
     }
 }
 
@@ -3729,7 +3708,7 @@ pub fn get_string_n(textual_input_port: &Value, n: &Value) -> Result<Vec<Value>,
     if let Some(s) = maybe_await!(port.get_string_n(n))? {
         Ok(vec![Value::from(s)])
     } else {
-        Ok(vec![EOF_OBJECT.clone()])
+        Ok(vec![Value::from(EOF_OBJECT.clone())])
     }
 }
 
@@ -3740,7 +3719,7 @@ pub fn get_line(textual_input_port: &Value) -> Result<Vec<Value>, Exception> {
     if let Some(line) = maybe_await!(port.get_line())? {
         Ok(vec![Value::from(line)])
     } else {
-        Ok(vec![EOF_OBJECT.clone()])
+        Ok(vec![Value::from(EOF_OBJECT.clone())])
     }
 }
 
@@ -3750,7 +3729,7 @@ pub fn get_string_all(textual_input_port: Port) -> Result<Vec<Value>, Exception>
     if let Some(s) = maybe_await!(textual_input_port.get_string_all())? {
         Ok(vec![Value::from(s)])
     } else {
-        Ok(vec![EOF_OBJECT.clone()])
+        Ok(vec![Value::from(EOF_OBJECT.clone())])
     }
 }
 
@@ -3761,7 +3740,7 @@ pub fn get_datum(textual_input_port: &Value) -> Result<Vec<Value>, Exception> {
     if let Some((syntax, _)) = maybe_await!(port.get_sexpr(Span::default()))? {
         Ok(vec![Value::datum_from_syntax(&syntax)])
     } else {
-        Ok(vec![EOF_OBJECT.clone()])
+        Ok(vec![Value::from(EOF_OBJECT.clone())])
     }
 }
 
@@ -3936,15 +3915,15 @@ pub fn put_bytevector(
     let slice = match start_count {
         [] => &bytevector[..],
         [start] => {
-            let start: usize = start.try_to_scheme_type()?;
+            let start: usize = start.try_to()?;
             if start >= bytevector.len() {
                 return Err(Exception::invalid_index(start, bytevector.len()));
             }
             &bytevector[start..]
         }
         [start, count] => {
-            let start: usize = start.try_to_scheme_type()?;
-            let count: usize = count.try_to_scheme_type()?;
+            let start: usize = start.try_to()?;
+            let count: usize = count.try_to()?;
             if (start + count) >= bytevector.len() {
                 return Err(Exception::invalid_index(start + count, bytevector.len()));
             }
@@ -4022,15 +4001,15 @@ pub fn put_string(
     let slice = match start_count {
         [] => &string[..],
         [start] => {
-            let start: usize = start.try_to_scheme_type()?;
+            let start: usize = start.try_to()?;
             if start >= string.len() {
                 return Err(Exception::invalid_index(start, string.len()));
             }
             &string[start..]
         }
         [start, count] => {
-            let start: usize = start.try_to_scheme_type()?;
-            let count: usize = count.try_to_scheme_type()?;
+            let start: usize = start.try_to()?;
+            let count: usize = count.try_to()?;
             if (start + count) >= string.len() {
                 return Err(Exception::invalid_index(start + count, string.len()));
             }
@@ -4351,7 +4330,7 @@ unsafe extern "C" fn close_port_and_call_k(
         let k = env.add(1).as_ref().unwrap().clone();
 
         // Collect necessary arguments
-        let k_proc = k.cast_to_scheme_type::<Procedure>().unwrap();
+        let k_proc = k.cast_to::<Procedure>().unwrap();
         let args = k_proc.collect_args(args);
 
         let k = Procedure::new_cont(
@@ -4385,7 +4364,7 @@ unsafe extern "C" fn call_k_with_env(
             .add(1)
             .as_ref()
             .unwrap()
-            .cast_to_scheme_type::<Vector>()
+            .cast_to::<Vector>()
             .unwrap()
             .clone_inner_vec();
 
@@ -4591,7 +4570,7 @@ pub fn read_char(
     let result = if let Some(byte) = maybe_await!(input_port.get_char())? {
         Value::from(byte)
     } else {
-        EOF_OBJECT.clone()
+        Value::from(EOF_OBJECT.clone())
     };
 
     Ok(Application::new(k, None, vec![result]))

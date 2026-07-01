@@ -7,11 +7,13 @@
 //! Each records is described by its [`RecordTypeDescriptor`], which includes
 //! the names of its name and fields among other properties.
 //!
-//! # Implementing [`SchemeCompatible`]
+//! # Implementing [`Embeddable`]
 //!
 //! Any type that implements [`Trace`] and [`Debug`](std::fmt::Debug) is
-//! eligible to implement `SchemeCompatible`. Once this criteria is fulfilled,
-//! we first need to use the [`rtd`] proc macro to fill in the type descriptor.
+//! eligible to implement `Embeddable`, which allows a value of that type to be
+//! embedded directly inside the record's allocation. Once this criteria is
+//! fulfilled, we first need to use the [`rtd`] proc macro to fill in the type
+//! descriptor.
 //!
 //! For example, let's say that we have `Enemy` struct that we want to have two
 //! immutable fields and one mutable field:
@@ -29,11 +31,12 @@
 //! }
 //! ```
 //!
-//! We can now fill in the `rtd` for the type:
+//! We can now fill in the `rtd` for the type. Note that the `ty` field tells the
+//! macro which Rust type is being embedded:
 //!
 //! ```rust
 //! # use std::sync::{Arc, Mutex};
-//! # use scheme_rs::{gc::Trace, records::{rtd, SchemeCompatible, RecordTypeDescriptor},
+//! # use scheme_rs::{gc::Trace, records::{rtd, Embeddable, RecordTypeDescriptor},
 //! # exceptions::Exception };
 //! # #[derive(Debug, Trace)]
 //! # struct Enemy {
@@ -41,16 +44,17 @@
 //! #   pos_y: f64,
 //! #   health: Mutex<f64>,
 //! # }
-//! impl SchemeCompatible for Enemy {
+//! impl Embeddable for Enemy {
 //!     fn rtd() -> Arc<RecordTypeDescriptor> {
 //!         rtd!(
+//!             ty: Enemy,
 //!             name: "enemy",
 //!             fields: [ "pos-x", "pos-y", mutable("health") ],
 //!             constructor: |pos_x, pos_y, health| {
 //!                 Ok(Enemy {
-//!                     pos_x: pos_x.try_to_scheme_type()?,
-//!                     pos_y: pos_y.try_to_scheme_type()?,
-//!                     health: Mutex::new(health.try_to_scheme_type()?),
+//!                     pos_x: pos_x.try_to()?,
+//!                     pos_y: pos_y.try_to()?,
+//!                     health: Mutex::new(health.try_to()?),
 //!                 })
 //!             }
 //!         )
@@ -63,11 +67,11 @@
 //! however, this does not preclude you from omitting fields that are present in
 //! your data type from the `fields` list.
 //!
-//! Technically, [`rtd`](SchemeCompatible::rtd) is the only required method to
-//! implement `SchemeCompatible`, but since we populated `fields` it will be
-//! possible for the [`get_field`](SchemeCompatible::get_field) and
-//! [`set_field`](SchemeCompatible::set_field) functions to be called, which by
-//! default panic.
+//! Technically, [`rtd`](Embeddable::rtd) is the only required method to
+//! implement `Embeddable`, but since we populated `fields` it will be
+//! possible for the [`get_field`](Embeddable::get_field) and
+//! [`set_field`](Embeddable::set_field) functions to be called, which by
+//! default error.
 //!
 //! Thus, we need to provide getters and setters for each field. We only need to
 //! provide setters for the mutable fields. Fields are indexed by their position
@@ -75,16 +79,16 @@
 //!
 //! ```rust
 //! # use std::sync::{Arc, Mutex};
-//! # use scheme_rs::{gc::Trace, value::Value, records::{rtd, SchemeCompatible, RecordTypeDescriptor}, exceptions::Exception};
+//! # use scheme_rs::{gc::Trace, value::Value, records::{rtd, Embeddable, RecordTypeDescriptor}, exceptions::Exception};
 //! # #[derive(Debug, Trace)]
 //! # struct Enemy {
 //! #   pos_x: f64,
 //! #   pos_y: f64,
 //! #   health: Mutex<f64>,
 //! # }
-//! impl SchemeCompatible for Enemy {
+//! impl Embeddable for Enemy {
 //! #    fn rtd() -> Arc<RecordTypeDescriptor> {
-//! #        rtd!(name: "enemy", sealed: true)
+//! #        rtd!(ty: Enemy, name: "enemy", sealed: true)
 //! #    }
 //!     fn get_field(&self, k: usize) -> Result<Value, Exception> {
 //!         match k {
@@ -107,33 +111,33 @@
 //! ## Expressing subtyping relationships
 //!
 //! It is possible to express the classic child/parent relationship in structs
-//! by embedding the parent in the child and implementing the
-//! [`extract_embedded_record`](SchemeCompatible::extract_embedded_record)
-//! function with the [`into_scheme_compatible`] function:
+//! by embedding the parent in the child by value and implementing the
+//! [`parent_record`](Embeddable::parent_record) function:
 //!
 //! ```rust
 //! # use std::sync::Arc;
-//! # use scheme_rs::{gc::{Trace, Gc}, value::Value, records::{rtd, SchemeCompatible, RecordTypeDescriptor, into_scheme_compatible}, exceptions::Exception};
+//! # use scheme_rs::{gc::Trace, value::Value, records::{rtd, Embeddable, RecordTypeDescriptor}, exceptions::Exception};
 //! # #[derive(Debug, Trace)]
 //! # struct Enemy {
 //! #   pos_x: f64,
 //! #   pos_y: f64,
 //! #   health: f64,
 //! # }
-//! # impl SchemeCompatible for Enemy {
+//! # impl Embeddable for Enemy {
 //! #    fn rtd() -> Arc<RecordTypeDescriptor> {
-//! #        rtd!(name: "enemy", sealed: true)
+//! #        rtd!(ty: Enemy, name: "enemy", sealed: true)
 //! #    }
 //! # }
 //! #[derive(Debug, Trace)]
 //! struct SpecialEnemy {
-//!     parent: Gc<Enemy>,
+//!     parent: Enemy,
 //!     special: u64,
 //! }
 //!
-//! impl SchemeCompatible for SpecialEnemy {
+//! impl Embeddable for SpecialEnemy {
 //!     fn rtd() -> Arc<RecordTypeDescriptor> {
 //!         rtd!(
+//!             ty: SpecialEnemy,
 //!             name: "enemy",
 //!             parent: Enemy,
 //!             fields: ["special"],
@@ -141,12 +145,12 @@
 //!             // required by all of the parent objects, in order.
 //!             constructor: |pos_x, pos_y, health, special| {
 //!                 Ok(SpecialEnemy {
-//!                     parent: Gc::new(Enemy {
-//!                         pos_x: pos_x.try_to_scheme_type()?,
-//!                         pos_y: pos_y.try_to_scheme_type()?,
-//!                         health: health.try_to_scheme_type()?,
-//!                     }),
-//!                     special: special.try_to_scheme_type()?,
+//!                     parent: Enemy {
+//!                         pos_x: pos_x.try_to()?,
+//!                         pos_y: pos_y.try_to()?,
+//!                         health: health.try_to()?,
+//!                     },
+//!                     special: special.try_to()?,
 //!                 })
 //!             }
 //!         )
@@ -156,13 +160,13 @@
 //!         Ok(Value::from(self.special))
 //!     }
 //!
-//!     fn extract_embedded_record(
+//!     fn parent_record(
 //!         &self,
 //!         rtd: &Arc<RecordTypeDescriptor>
-//!     ) -> Option<Gc<dyn SchemeCompatible>> {
+//!     ) -> Option<&dyn Embeddable> {
 //!         Enemy::rtd()
 //!             .is_subtype_of(rtd)
-//!             .then(|| into_scheme_compatible(self.parent.clone()))
+//!             .then(|| &self.parent as &dyn Embeddable)
 //!     }
 //! }
 //! ```
@@ -176,13 +180,14 @@
 //!
 //! ```rust
 //! # use std::sync::Arc;
-//! # use scheme_rs::{gc::Trace, records::{rtd, SchemeCompatible, RecordTypeDescriptor},
+//! # use scheme_rs::{gc::Trace, records::{rtd, Embeddable, RecordTypeDescriptor},
 //! # exceptions::Exception };
 //! # #[derive(Debug, Trace)]
 //! # struct Enemy {}
-//! impl SchemeCompatible for Enemy {
+//! impl Embeddable for Enemy {
 //!     fn rtd() -> Arc<RecordTypeDescriptor> {
 //!         rtd!(
+//!             ty: Enemy,
 //!             lib: "(enemies (1))",
 //!             // ...
 //! #           name: "enemy",
@@ -206,11 +211,15 @@
 //! ```
 
 use std::{
-    any::Any,
+    alloc::{self, Layout},
+    any::{Any, TypeId},
     collections::HashMap,
     fmt,
-    mem::ManuallyDrop,
-    ptr::NonNull,
+    marker::PhantomData,
+    mem::align_of,
+    ops::Deref,
+    ptr::{self, NonNull},
+    slice,
     sync::{Arc, LazyLock, Mutex},
 };
 
@@ -219,12 +228,12 @@ use parking_lot::RwLock;
 
 use crate::{
     exceptions::Exception,
-    gc::{Gc, GcInner, Trace},
+    gc::{Gc, GcInner, OpaqueGcPtr, Trace},
     proc::{Application, ContBarrier, FuncPtr, Procedure},
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
-    value::{UnpackedValue, Value, ValueType},
+    value::{Cell, UnpackedValue, Value, ValueType},
     vectors::Vector,
 };
 
@@ -246,21 +255,28 @@ pub struct RecordTypeDescriptor {
     /// from being "generative," i.e. unique upon each call to
     /// `define-record-type`.
     pub uid: Option<Symbol>,
-    /// Whether or not the type being described is a Rust type.
-    pub rust_type: bool,
-    /// The Rust parent of the record type, if it exists.
-    pub rust_parent_constructor: Option<RustParentConstructor>,
+    /// Embedded type's VTable. Some if the record contains an embedded type.
+    /// Child RTDs inherit the `embedded_vtable` of their Parent.
+    pub embedded_vtable: Option<EmbeddableVTable>,
+    /// The Rust constructor of the embedded type, if it exists. Child RTDs
+    /// inherit the `embedded_constructor` of their
+    pub embedded_constructor: Option<RustParentConstructor>,
     /// Parent is most recently inserted record type, if one exists.
     pub inherits: indexmap::IndexSet<ByAddress<Arc<RecordTypeDescriptor>>>,
-    /// The index into `fields` where this record's fields proper begin. All of
-    /// the previous fields belong to a parent.
-    pub field_index_offset: usize,
+    /// The number of fields inherited by this record.
+    pub num_inherited_fields: usize,
     /// The fields of the record, not including any of the ones inherited from
     /// parents.
     pub fields: Vec<Field>,
 }
 
 impl RecordTypeDescriptor {
+    // TODO: Add a constructor that sets everything up from a parent.
+
+    pub fn is_rust_type(&self) -> bool {
+        self.embedded_vtable.is_some()
+    }
+
     pub fn is_base_record_type(&self) -> bool {
         self.inherits.is_empty()
     }
@@ -270,12 +286,7 @@ impl RecordTypeDescriptor {
     }
 
     pub fn num_fields(&self) -> usize {
-        self.fields.len()
-            + self
-                .inherits
-                .iter()
-                .map(|parent| parent.fields.len())
-                .sum::<usize>()
+        self.fields.len() + self.num_inherited_fields
     }
 }
 
@@ -283,8 +294,8 @@ impl fmt::Debug for RecordTypeDescriptor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "#<rtd name: {} sealed: {} opaque: {} rust: {} ",
-            self.name, self.sealed, self.opaque, self.rust_type,
+            "#<rtd name: {} sealed: {} opaque: {} ", // rust: {} ",
+            self.name, self.sealed, self.opaque,
         )?;
         if !self.inherits.is_empty() {
             let parent = self.inherits.last().unwrap();
@@ -334,6 +345,10 @@ impl Field {
             Self::Immutable(sym) | Self::Mutable(sym) => *sym,
         }
     }
+
+    fn is_mutable(&self) -> bool {
+        matches!(self, Self::Mutable(_))
+    }
 }
 
 impl fmt::Debug for Field {
@@ -343,6 +358,464 @@ impl fmt::Debug for Field {
             Self::Mutable(sym) => write!(f, "(mutable {sym})"),
         }
     }
+}
+
+/// A Scheme record type. Effectively a tuple of a fixed size array and some type
+/// information.
+#[derive(Trace, Clone)]
+pub struct Record(pub(crate) Gc<RecordInner>);
+
+impl Record {
+    pub fn rtd(&self) -> Arc<RecordTypeDescriptor> {
+        self.0.rtd.clone()
+    }
+
+    /// Embed a rust value into a record.
+    pub fn embed<E: Embeddable>(e: E) -> Self {
+        let (layout, embed_offset) = Layout::from_size_align(
+            RecordInner::fields_offset(),
+            align_of::<GcInner<RecordInner>>(),
+        )
+        .unwrap()
+        .extend(Layout::new::<E>())
+        .unwrap();
+        let layout = layout.pad_to_align();
+
+        let ptr = unsafe {
+            let record = alloc::alloc(layout) as *mut GcInner<RecordInner>;
+            ptr::write(
+                record,
+                GcInner::new(RecordInner {
+                    rtd: E::rtd(),
+                    fields: [],
+                }),
+            );
+            ptr::write(record.byte_add(embed_offset) as *mut E, e);
+            record
+        };
+
+        let inner = Gc {
+            ptr: NonNull::new(ptr).unwrap(),
+            marker: PhantomData,
+        };
+
+        unsafe {
+            crate::gc::unroot(&inner, layout);
+        }
+
+        Self(inner)
+    }
+
+    pub fn cast<E: Embeddable>(&self) -> Option<Embedded<E>> {
+        let embedded_ptr = self.0.embedded_ptr()?;
+        let embedded_vtable = self.0.rtd.embedded_vtable.as_ref()?;
+
+        if TypeId::of::<E>() == embedded_vtable.type_id {
+            return Some(Embedded::from_raw_parts(
+                NonNull::new(embedded_ptr as *mut E).unwrap(),
+                self.clone(),
+            ));
+        }
+
+        let rtd = E::rtd();
+        let mut embedded = embedded_vtable.ptr_to_parent(embedded_ptr, &rtd)?;
+        while let Some(parent) = embedded.parent_record(&rtd) {
+            embedded = parent;
+        }
+
+        let downcast_embedded = (embedded as &dyn Any).downcast_ref::<E>()?;
+
+        Some(Embedded {
+            embedded_ptr: NonNull::from_ref(downcast_embedded),
+            record: self.clone(),
+        })
+    }
+
+    /*
+
+    /// Get the kth field of the Record
+    pub fn get_field(&self, k: usize) -> Result<Value, Exception> {
+        self.get_parent_field(&self.rtd(), k)
+    }
+
+    /// Get the kth field of a parent Record
+    pub fn get_parent_field(
+        &self,
+        rtd: &Arc<RecordTypeDescriptor>,
+        k: usize,
+    ) -> Result<Value, Exception> {
+        /*
+        if !self.0.rtd.is_subtype_of(rtd) {
+            Err(Exception::error(format!("not a subtype of {}", rtd.name)))
+        } else if let Some(mut t) = self.0.rust_parent.clone() {
+            while let Some(embedded) = { t.extract_embedded_record(rtd) } {
+                t = embedded;
+            }
+            t.get_field(rtd.field_index_offset + k)
+        } else {
+            Ok(self.0.fields[rtd.field_index_offset + k].read().clone())
+        }
+         */
+        todo!()
+    }
+
+    /// Set the kth field of the Record
+    pub fn set_field(&self, k: usize, new_value: Value) -> Result<(), Exception> {
+        self.set_parent_field(&self.rtd(), k, new_value)
+    }
+
+    /// Set the kth field of a parent Record
+    pub fn set_parent_field(
+        &self,
+        rtd: &Arc<RecordTypeDescriptor>,
+        k: usize,
+        new_value: Value,
+    ) -> Result<(), Exception> {
+        /*
+        if !self.0.rtd.is_subtype_of(rtd) {
+            Err(Exception::error(format!("not a subtype of {}", rtd.name)))
+        } else if let Some(mut t) = self.0.rust_parent.clone() {
+            while let Some(embedded) = { t.extract_embedded_record(rtd) } {
+                t = embedded;
+            }
+            t.set_field(rtd.field_index_offset + k, new_value)
+        } else {
+            *self.0.fields[rtd.field_index_offset + k].write() = new_value;
+            Ok(())
+        }
+         */
+        todo!()
+    }
+     */
+}
+
+impl fmt::Debug for Record {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+// #[derive(Trace)]
+#[repr(C, align(16))]
+pub(crate) struct RecordInner {
+    // pub(crate) rust_parent: Option<Gc<dyn SchemeCompatible>>,
+    rtd: Arc<RecordTypeDescriptor>,
+    /// Pointer to the first field. If the record contains an embedded value it
+    /// will be stored after the last field.
+    fields: [Value; 0],
+}
+
+impl RecordInner {
+    pub(crate) fn num_embedded_fields(&self) -> usize {
+        self.rtd
+            .embedded_vtable
+            .as_ref()
+            .map_or(0, |vtable| vtable.embedded_fields)
+    }
+
+    pub(crate) fn num_unembedded_fields(&self) -> usize {
+        self.rtd.num_fields() - self.num_embedded_fields()
+    }
+
+    pub(crate) fn fields(&self) -> &[Value] {
+        unsafe { slice::from_raw_parts(self.fields_ptr(), self.num_unembedded_fields()) }
+    }
+
+    pub(crate) const fn fields_offset() -> usize {
+        GcInner::<RecordInner>::data_offset() + std::mem::offset_of!(RecordInner, fields)
+    }
+
+    pub(crate) fn fields_ptr(&self) -> *const Value {
+        &self.fields as *const Value
+    }
+
+    pub(crate) fn fields_ptr_mut(&mut self) -> *mut Value {
+        &mut self.fields as *mut Value
+    }
+
+    pub(crate) fn embedded_ptr(&self) -> Option<*const ()> {
+        let vtable = self.rtd.embedded_vtable?;
+        unsafe {
+            let fields_end = self
+                .fields_ptr()
+                .add(self.rtd.num_fields() - vtable.embedded_fields);
+            Some(fields_end.add(fields_end.align_offset(vtable.layout.align())) as *const ())
+        }
+    }
+
+    pub(crate) fn embedded_ptr_mut(&mut self) -> Option<*mut ()> {
+        let vtable = self.rtd.embedded_vtable?;
+        unsafe {
+            let fields_end = self
+                .fields_ptr_mut()
+                .add(self.rtd.num_fields() - vtable.embedded_fields);
+            Some(fields_end.add(fields_end.align_offset(vtable.layout.align())) as *mut ())
+        }
+    }
+}
+
+unsafe impl Trace for RecordInner {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(crate::gc::OpaqueGcPtr)) {
+        let num_fields = self.num_unembedded_fields();
+        let fields_ptr = self.fields_ptr();
+        for i in 0..num_fields {
+            unsafe {
+                fields_ptr.add(i).as_ref().unwrap().visit_children(visitor);
+            }
+        }
+        if let Some(embedded_vtable) = self.rtd.embedded_vtable {
+            unsafe {
+                (embedded_vtable.visit_children)(self.embedded_ptr().unwrap(), visitor);
+            }
+        }
+    }
+
+    unsafe fn finalize(&mut self) {
+        let num_fields = self.num_unembedded_fields();
+        let fields_ptr = self.fields_ptr_mut();
+        for i in 0..num_fields {
+            unsafe {
+                fields_ptr.add(i).as_mut().unwrap().finalize();
+            }
+        }
+        if let Some(embedded_vtable) = self.rtd.embedded_vtable {
+            unsafe {
+                (embedded_vtable.finalize)(self.embedded_ptr_mut().unwrap());
+            }
+        }
+    }
+}
+
+impl fmt::Debug for RecordInner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        /*
+        write!(f, "#<{}", self.rtd.name)?;
+        // Inline slots hold only the fields *not* covered by the embed, so skip
+        // the embed-covered names to keep names aligned with the slots.
+        let mut field_names = self
+            .rtd
+            .inherits
+            .iter()
+            .cloned()
+            .chain(Some(ByAddress(self.rtd.clone())))
+            .flat_map(|rtd| rtd.fields.clone())
+            .skip(self.embed_field_count());
+        for field in self.fields() {
+            let field = if let Some(cell) = field.cast_to::<Cell>() {
+                cell.get()
+            } else {
+                field.clone()
+            };
+            match field_names.next() {
+                Some(name) => write!(f, " {}: {field:?}", name.name())?,
+                None => write!(f, " {field:?}")?,
+            }
+        }
+        write!(f, ">")
+         */
+        todo!()
+    }
+}
+
+/// A Rust type that can be embedded safely in a Scheme record.
+pub trait Embeddable: fmt::Debug + Trace + Any + Send + Sync {
+    /// The Record Type Descriptor of the value. Can be constructed at runtime,
+    /// but cannot change.
+    fn rtd() -> Arc<RecordTypeDescriptor>
+    where
+        Self: Sized;
+
+    /// Returns any parent records embedded in the Rust type.
+    fn parent_record(&self, _rtd: &Arc<RecordTypeDescriptor>) -> Option<&dyn Embeddable> {
+        None
+    }
+
+    /// Fetch the kth field of the record.
+    fn get_field(&self, k: usize) -> Result<Value, Exception> {
+        Err(Exception::error(format!("invalid record field: {k}")))
+    }
+
+    /// Set the kth field of the record.
+    fn set_field(&self, k: usize, _val: Value) -> Result<(), Exception> {
+        Err(Exception::error(format!("invalid record field: {k}")))
+    }
+}
+
+// TODO: add trace(skip_all) attribute
+#[derive(Copy, Clone, Trace)]
+pub struct EmbeddableVTable {
+    #[trace(skip)]
+    pub type_id: TypeId,
+    #[trace(skip)]
+    layout: Layout,
+    pub embedded_fields: usize,
+    #[trace(skip)]
+    pub visit_children: unsafe fn(*const (), &mut dyn FnMut(OpaqueGcPtr)),
+    #[trace(skip)]
+    pub finalize: unsafe fn(*mut ()),
+    #[trace(skip)]
+    pub parent_record: fn(*const (), &Arc<RecordTypeDescriptor>) -> Option<*const dyn Embeddable>,
+    #[trace(skip)]
+    pub get_field: fn(*const (), usize) -> Result<Value, Exception>,
+    #[trace(skip)]
+    pub set_field: fn(*const (), usize, Value) -> Result<(), Exception>,
+}
+
+impl EmbeddableVTable {
+    pub const fn new<E: Embeddable>(embedded_fields: usize) -> Self {
+        Self {
+            type_id: TypeId::of::<E>(),
+            layout: Layout::new::<E>(),
+            embedded_fields,
+            visit_children: |this, visitor| unsafe {
+                E::visit_children(this.cast::<E>().as_ref().unwrap(), visitor);
+            },
+            finalize: |this| unsafe {
+                E::finalize(this.cast::<E>().as_mut().unwrap());
+            },
+            parent_record: |this, rtd| {
+                E::parent_record(unsafe { this.cast::<E>().as_ref().unwrap() }, rtd)
+                    .map(|r| r as *const dyn Embeddable)
+            },
+            get_field: |this, k| E::get_field(unsafe { this.cast::<E>().as_ref().unwrap() }, k),
+            set_field: |this, k, val| {
+                E::set_field(unsafe { this.cast::<E>().as_ref().unwrap() }, k, val)
+            },
+        }
+    }
+
+    fn ptr_to_parent(
+        &self,
+        ptr: *const (),
+        rtd: &Arc<RecordTypeDescriptor>,
+    ) -> Option<&dyn Embeddable> {
+        (self.parent_record)(ptr, rtd).and_then(|ptr| unsafe { ptr.as_ref() })
+    }
+}
+
+#[derive(Trace)]
+pub struct Embedded<T> {
+    #[trace(skip)]
+    embedded_ptr: NonNull<T>,
+    record: Record,
+}
+
+unsafe impl<T> Send for Embedded<T> {}
+unsafe impl<T> Sync for Embedded<T> {}
+
+impl<T> Clone for Embedded<T> {
+    fn clone(&self) -> Self {
+        Self {
+            embedded_ptr: self.embedded_ptr,
+            record: self.record.clone(),
+        }
+    }
+}
+
+impl<T: Embeddable> Embedded<T> {
+    pub fn new(embeddable: T) -> Self {
+        Record::embed(embeddable)
+            .cast::<T>()
+            .expect("freshly embedded value must cast back to its own type")
+    }
+}
+
+impl<T> Embedded<T> {
+    pub fn ptr_eq(lhs: &Self, rhs: &Self) -> bool {
+        lhs.embedded_ptr == rhs.embedded_ptr
+    }
+
+    pub(crate) fn from_raw_parts(embedded_ptr: NonNull<T>, record: Record) -> Self {
+        Self {
+            embedded_ptr,
+            record,
+        }
+    }
+}
+
+impl<T> Deref for Embedded<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { self.embedded_ptr.as_ref() }
+    }
+}
+
+impl<T> AsRef<T> for Embedded<T> {
+    fn as_ref(&self) -> &T {
+        unsafe { self.embedded_ptr.as_ref() }
+    }
+}
+
+impl<T> From<&Value> for Option<Embedded<T>>
+where
+    T: Embeddable,
+{
+    fn from(value: &Value) -> Self {
+        let UnpackedValue::Record(record) = value.clone().unpack() else {
+            return None;
+        };
+        record.cast::<T>()
+    }
+}
+
+impl<T> TryFrom<&Value> for Embedded<T>
+where
+    T: Embeddable,
+{
+    type Error = Exception;
+
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        let type_name = T::rtd().name.to_str();
+        let UnpackedValue::Record(record) = value.clone().unpack() else {
+            return Err(Exception::type_error(&type_name, value.type_name()));
+        };
+        let record_name = record.rtd().name.to_str();
+        record
+            .cast::<T>()
+            .ok_or_else(|| Exception::type_error(&type_name, &record_name))
+    }
+}
+
+impl<T> From<T> for Value
+where
+    T: Embeddable,
+{
+    fn from(value: T) -> Self {
+        Value::from(Record::embed(value))
+    }
+}
+
+impl<T> From<Embedded<T>> for Value
+where
+    T: Embeddable,
+{
+    fn from(value: Embedded<T>) -> Self {
+        Value::from(value.record)
+    }
+}
+
+#[derive(Copy, Clone, Debug, Trace)]
+pub struct RustParentConstructor {
+    #[trace(skip)]
+    constructor: ParentConstructor,
+}
+
+impl RustParentConstructor {
+    pub fn new(constructor: ParentConstructor) -> Self {
+        Self { constructor }
+    }
+}
+
+type ParentConstructor = fn(&[Value]) -> Result<ParentWriter, Exception>;
+
+type ParentWriter = Box<dyn FnOnce(*mut ())>;
+
+pub(crate) fn is_subtype_of(val: &Value, rt: Arc<RecordTypeDescriptor>) -> Result<bool, Exception> {
+    let UnpackedValue::Record(rec) = val.clone().unpack() else {
+        return Ok(false);
+    };
+    Ok(Arc::ptr_eq(&rec.0.rtd, &rt) || rec.0.rtd.inherits.contains(&ByAddress::from(rt)))
 }
 
 type NonGenerativeStore = LazyLock<Arc<Mutex<HashMap<Symbol, Arc<RecordTypeDescriptor>>>>>;
@@ -387,22 +860,29 @@ pub fn make_record_type_descriptor(
     } else {
         indexmap::IndexSet::new()
     };
-    let field_index_offset = inherits.last().map_or(0, |last_parent| {
-        last_parent.field_index_offset + last_parent.fields.len()
+    let num_inherited_fields = inherits.last().map_or(0, |last_parent| {
+        last_parent.num_inherited_fields + last_parent.fields.len()
     });
     let sealed = sealed.is_true();
     let opaque = opaque.is_true();
     let fields = Field::parse_fields(fields)?;
+
+    // Inherit any embedded vtable or constructors:
+    let (embedded_vtable, embedded_constructor) = inherits
+        .last()
+        .map(|rtd| (rtd.embedded_vtable, rtd.embedded_constructor))
+        .unzip();
+
     let rtd = Arc::new(RecordTypeDescriptor {
         name,
         sealed,
         opaque,
         uid,
-        rust_type: false,
-        rust_parent_constructor: None,
         inherits,
-        field_index_offset,
+        num_inherited_fields,
         fields,
+        embedded_vtable: embedded_vtable.flatten(),
+        embedded_constructor: embedded_constructor.flatten(),
     });
 
     if let Some(uid) = uid {
@@ -425,14 +905,19 @@ pub fn record_type_descriptor_pred(obj: &Value) -> Result<Vec<Value>, Exception>
 /// A description of a record's constructor.
 #[derive(Trace, Clone)]
 pub struct RecordConstructorDescriptor {
-    parent: Option<Gc<RecordConstructorDescriptor>>,
+    parent: Option<Embedded<RecordConstructorDescriptor>>,
     rtd: Arc<RecordTypeDescriptor>,
     protocol: Procedure,
 }
 
-impl SchemeCompatible for RecordConstructorDescriptor {
+impl Embeddable for RecordConstructorDescriptor {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "record-constructor-descriptor", sealed: true, opaque: true)
+        rtd!(
+            ty: RecordConstructorDescriptor,
+            name: "record-constructor-descriptor",
+            sealed: true,
+            opaque: true
+        )
     }
 }
 
@@ -445,7 +930,7 @@ impl fmt::Debug for RecordConstructorDescriptor {
 fn make_default_record_constructor_descriptor(
     runtime: Runtime,
     rtd: Arc<RecordTypeDescriptor>,
-) -> Gc<RecordConstructorDescriptor> {
+) -> Embedded<RecordConstructorDescriptor> {
     let parent = rtd.inherits.last().map(|parent| {
         make_default_record_constructor_descriptor(runtime.clone(), parent.0.clone())
     });
@@ -456,7 +941,7 @@ fn make_default_record_constructor_descriptor(
         1,
         false,
     );
-    Gc::new(RecordConstructorDescriptor {
+    Embedded::new(RecordConstructorDescriptor {
         parent,
         rtd,
         protocol,
@@ -481,7 +966,7 @@ pub fn make_record_constructor_descriptor(
 
     let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
 
-    if rtd.rust_type && rtd.rust_parent_constructor.is_none() {
+    if rtd.is_rust_type() && rtd.embedded_constructor.is_none() {
         return Err(Exception::error(format!(
             "cannot create a record-constructor-descriptor for rust type without a constructor {}",
             rtd.name
@@ -492,7 +977,7 @@ pub fn make_record_constructor_descriptor(
         let Some(parent_rtd) = rtd.inherits.last() else {
             return Err(Exception::error("rtd is a base type"));
         };
-        let parent_rcd = parent_rcd.try_to_rust_type::<RecordConstructorDescriptor>()?;
+        let parent_rcd = parent_rcd.try_to::<Embedded<RecordConstructorDescriptor>>()?;
         if !Arc::ptr_eq(&parent_rcd.rtd, parent_rtd) {
             return Err(Exception::error("parent rtd does not match parent rcd"));
         }
@@ -524,7 +1009,7 @@ pub fn make_record_constructor_descriptor(
         protocol,
     };
 
-    Ok(Application::new(k, None, vec![Value::from_rust_type(rcd)]))
+    Ok(Application::new(k, None, vec![Value::from(rcd)]))
 }
 
 #[cps_bridge(def = "record-constructor rcd", lib = "(rnrs records procedural (6))")]
@@ -539,16 +1024,9 @@ pub fn record_constructor(
     let [rcd] = args else {
         unreachable!();
     };
-    let rcd = rcd.try_to_rust_type::<RecordConstructorDescriptor>()?;
+    let rcd = rcd.try_to::<Embedded<RecordConstructorDescriptor>>()?;
 
     let (protocols, rtds) = rcd_to_protocols_and_rtds(&rcd);
-
-    // See if there is a rust constructor available
-    let rust_constructor = rtds
-        .iter()
-        .rev()
-        .find(|rtd| rtd.rust_parent_constructor.is_some())
-        .map_or_else(|| Value::from(false), |rtd| Value::from(rtd.clone()));
 
     let protocols = protocols.into_iter().map(Value::from).collect::<Vec<_>>();
     let rtds = rtds.into_iter().map(Value::from).collect::<Vec<_>>();
@@ -563,7 +1041,7 @@ pub fn record_constructor(
 
     Ok(chain_constructors(
         runtime,
-        &[Value::from(rtds), rust_constructor],
+        &[Value::from(rtds)],
         chain_protocols,
         &[],
         &[],
@@ -572,7 +1050,7 @@ pub fn record_constructor(
 }
 
 fn rcd_to_protocols_and_rtds(
-    rcd: &Gc<RecordConstructorDescriptor>,
+    rcd: &Embedded<RecordConstructorDescriptor>,
 ) -> (Vec<Procedure>, Vec<Arc<RecordTypeDescriptor>>) {
     let (mut protocols, mut rtds) = if let Some(ref parent) = rcd.parent {
         rcd_to_protocols_and_rtds(parent)
@@ -605,7 +1083,7 @@ pub(crate) unsafe extern "C" fn chain_protocols(
         if remaining_protocols.is_empty() {
             return Box::into_raw(Box::new(Application::new(
                 curr_protocol,
-                k.cast_to_scheme_type(),
+                k.cast_to(),
                 vec![args.as_ref().unwrap().clone()],
             )));
         }
@@ -639,21 +1117,19 @@ fn chain_constructors(
 ) -> Result<Application, Exception> {
     // env[0] is a vector of RTDs
     let rtds: Vector = env[0].clone().try_into()?;
-    // env[1] is the possible rust constructor
-    let rust_constructor = env[1].clone();
     let mut rtds = rtds.0.vec.read().clone();
     let remaining_rtds = rtds.split_off(1);
     let curr_rtd: Arc<RecordTypeDescriptor> = rtds[0].clone().try_into()?;
     let rtds_remain = !remaining_rtds.is_empty();
     let num_args = curr_rtd.fields.len();
     let env = if rtds_remain {
-        vec![Value::from(remaining_rtds), rust_constructor]
+        vec![Value::from(remaining_rtds)]
     } else {
-        vec![Value::from(curr_rtd), rust_constructor]
+        vec![Value::from(curr_rtd)]
     }
     .into_iter()
     // Chain the current environment:
-    .chain(env[2..].iter().cloned())
+    .chain(env[1..].iter().cloned())
     // Chain the arguments passed to this function:
     .chain(args.iter().cloned())
     .collect::<Vec<_>>();
@@ -683,36 +1159,85 @@ fn constructor(
     let rtd: Arc<RecordTypeDescriptor> = env[0].clone().try_into()?;
     // The fields of the record are all of the env variables chained with
     // the arguments to this function.
-    let mut fields = env[2..]
+    let mut fields = env[1..]
         .iter()
         .cloned()
         .chain(args.iter().cloned())
         .collect::<Vec<_>>();
-    // Check for a rust constructor
-    let rust_constructor = env[1].clone();
-    let (rust_parent, fields) = if rust_constructor.is_true() {
-        let rust_rtd: Arc<RecordTypeDescriptor> = rust_constructor.try_into()?;
-        let num_fields: usize = rust_rtd
+    let (embedded_vtable_and_writer, fields) =
+        if let Some(embedded_constructor) = rtd.embedded_constructor {
+            let embedded_vtable = rtd.embedded_vtable.unwrap();
+            let remaining_fields = fields.split_off(embedded_vtable.embedded_fields);
+            // Call the rust constructor for the embedded type
+            let writer = (embedded_constructor.constructor)(&fields)?;
+            (Some((embedded_vtable, writer)), remaining_fields)
+        } else {
+            (None, fields)
+        };
+
+    let prefix = Layout::from_size_align(
+        RecordInner::fields_offset(),
+        align_of::<GcInner<RecordInner>>(),
+    )
+    .unwrap();
+    let (layout, fields_offset) = prefix
+        .extend(Layout::array::<Value>(fields.len()).unwrap())
+        .unwrap();
+
+    let (layout, embedded_offset_and_writer) =
+        if let Some((embedded_vtable, writer)) = embedded_vtable_and_writer {
+            let (layout, embed_offset) = layout.extend(embedded_vtable.layout).unwrap();
+            (layout, Some((embed_offset, writer)))
+        } else {
+            (layout, None)
+        };
+
+    let layout = layout.pad_to_align();
+
+    let record = unsafe {
+        let record = alloc::alloc(layout) as *mut GcInner<RecordInner>;
+        ptr::write(
+            record,
+            GcInner::new(RecordInner {
+                rtd: rtd.clone(),
+                fields: [],
+            }),
+        );
+
+        let fields_ptr = record.byte_add(fields_offset) as *mut Value;
+
+        let field_mutability = rtd
             .inherits
             .iter()
-            .map(|parent| parent.fields.len())
-            .sum();
-        let remaining_fields = fields.split_off(num_fields + rust_rtd.fields.len());
-        (
-            Some((rust_rtd.rust_parent_constructor.unwrap().constructor)(
-                &fields,
-            )?),
-            remaining_fields,
-        )
-    } else {
-        (None, fields)
+            .flat_map(|parent| parent.fields.iter())
+            .chain(rtd.fields.iter())
+            .map(Field::is_mutable)
+            .skip(rtd.embedded_vtable.map_or(0, |vt| vt.embedded_fields));
+
+        for (i, (field, mutable)) in fields.into_iter().zip(field_mutability).enumerate() {
+            let field = if mutable {
+                Value::from(Cell::new(field))
+            } else {
+                field
+            };
+            fields_ptr.add(i).write(field);
+        }
+
+        if let Some((embedded_offset, writer)) = embedded_offset_and_writer {
+            (writer)(record.byte_add(embedded_offset) as *mut ());
+        }
+
+        let inner = Gc {
+            ptr: NonNull::new(record).unwrap(),
+            marker: PhantomData,
+        };
+
+        crate::gc::unroot(&inner, layout);
+
+        Record(inner)
     };
-    let record = Value::from(Record(Gc::new(RecordInner {
-        rust_parent,
-        rtd,
-        fields: fields.into_iter().map(RwLock::new).collect(),
-    })));
-    Ok(Application::new(k, None, vec![record]))
+
+    Ok(Application::new(k, None, vec![Value::from(record)]))
 }
 
 #[cps_bridge]
@@ -783,217 +1308,10 @@ pub(crate) unsafe extern "C" fn call_constructor_continuation(
         // Call the constructor
         Box::into_raw(Box::new(Application::new(
             constructor,
-            cont.cast_to_scheme_type(),
+            cont.cast_to(),
             args,
         )))
     }
-}
-
-/// A Scheme record type. Effectively a tuple of a fixed size array and some type
-/// information.
-#[derive(Trace, Clone)]
-pub struct Record(pub(crate) Gc<RecordInner>);
-
-impl Record {
-    pub fn rtd(&self) -> Arc<RecordTypeDescriptor> {
-        self.0.rtd.clone()
-    }
-
-    /// Convert any Rust type that implements [SchemeCompatible] into an opaque
-    /// record.
-    pub fn from_rust_type<T: SchemeCompatible>(t: T) -> Self {
-        let opaque_parent = Some(into_scheme_compatible(Gc::new(t)));
-        let rtd = T::rtd();
-        Self(Gc::new(RecordInner {
-            rust_parent: opaque_parent,
-            rtd,
-            fields: Vec::new(),
-        }))
-    }
-
-    pub fn from_rust_gc_type<T: SchemeCompatible>(t: Gc<T>) -> Self {
-        let opaque_parent = Some(into_scheme_compatible(t));
-        let rtd = T::rtd();
-        Self(Gc::new(RecordInner {
-            rust_parent: opaque_parent,
-            rtd,
-            fields: Vec::new(),
-        }))
-    }
-
-    /// Attempt to convert the record into a Rust type that implements
-    /// [SchemeCompatible].
-    pub fn cast<T: SchemeCompatible>(&self) -> Option<Gc<T>> {
-        let rust_parent = self.0.rust_parent.as_ref()?;
-
-        // Attempt to extract any embedded records
-        let rtd = T::rtd();
-        let mut t = rust_parent.clone();
-        while let Some(embedded) = { t.extract_embedded_record(&rtd) } {
-            t = embedded;
-        }
-
-        let t = ManuallyDrop::new(t);
-
-        // Second, convert the opaque_parent type into a Gc<dyn Any>
-        let any: NonNull<GcInner<dyn Any + Send + Sync>> = t.ptr;
-        let gc_any = Gc {
-            ptr: any,
-            marker: std::marker::PhantomData,
-        };
-
-        // Then, convert that back into the desired type
-        Gc::downcast::<T>(gc_any).ok()
-    }
-
-    /// Get the kth field of the Record
-    pub fn get_field(&self, k: usize) -> Result<Value, Exception> {
-        self.get_parent_field(&self.rtd(), k)
-    }
-
-    /// Get the kth field of a parent Record
-    pub fn get_parent_field(
-        &self,
-        rtd: &Arc<RecordTypeDescriptor>,
-        k: usize,
-    ) -> Result<Value, Exception> {
-        if !self.0.rtd.is_subtype_of(rtd) {
-            Err(Exception::error(format!("not a subtype of {}", rtd.name)))
-        } else if let Some(mut t) = self.0.rust_parent.clone() {
-            while let Some(embedded) = { t.extract_embedded_record(rtd) } {
-                t = embedded;
-            }
-            t.get_field(rtd.field_index_offset + k)
-        } else {
-            Ok(self.0.fields[rtd.field_index_offset + k].read().clone())
-        }
-    }
-
-    /// Set the kth field of the Record
-    pub fn set_field(&self, k: usize, new_value: Value) -> Result<(), Exception> {
-        self.set_parent_field(&self.rtd(), k, new_value)
-    }
-
-    /// Set the kth field of a parent Record
-    pub fn set_parent_field(
-        &self,
-        rtd: &Arc<RecordTypeDescriptor>,
-        k: usize,
-        new_value: Value,
-    ) -> Result<(), Exception> {
-        if !self.0.rtd.is_subtype_of(rtd) {
-            Err(Exception::error(format!("not a subtype of {}", rtd.name)))
-        } else if let Some(mut t) = self.0.rust_parent.clone() {
-            while let Some(embedded) = { t.extract_embedded_record(rtd) } {
-                t = embedded;
-            }
-            t.set_field(rtd.field_index_offset + k, new_value)
-        } else {
-            *self.0.fields[rtd.field_index_offset + k].write() = new_value;
-            Ok(())
-        }
-    }
-}
-
-impl fmt::Debug for Record {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-#[derive(Trace)]
-#[repr(align(16))]
-pub(crate) struct RecordInner {
-    pub(crate) rust_parent: Option<Gc<dyn SchemeCompatible>>,
-    pub(crate) rtd: Arc<RecordTypeDescriptor>,
-    pub(crate) fields: Vec<RwLock<Value>>,
-}
-
-impl fmt::Debug for RecordInner {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "#<{}", self.rtd.name)?;
-        if let Some(parent) = &self.rust_parent {
-            write!(f, "{parent:?}")?;
-        }
-        let mut field_names = self
-            .rtd
-            .inherits
-            .iter()
-            .cloned()
-            .chain(Some(ByAddress(self.rtd.clone())))
-            .flat_map(|rtd| rtd.fields.clone());
-        for field in &self.fields {
-            let field = field.read();
-            let name = field_names.next().unwrap().name();
-            write!(f, " {name}: {field:?}")?;
-        }
-        write!(f, ">")
-    }
-}
-
-/// A Rust value that can present itself as a Scheme record.
-pub trait SchemeCompatible: fmt::Debug + Trace + Any + Send + Sync + 'static {
-    /// The Record Type Descriptor of the value. Can be constructed at runtime,
-    /// but cannot change.
-    fn rtd() -> Arc<RecordTypeDescriptor>
-    where
-        Self: Sized;
-
-    /// Extract the embedded record type with the matching record type
-    /// descriptor if it exists.
-    fn extract_embedded_record(
-        &self,
-        _rtd: &Arc<RecordTypeDescriptor>,
-    ) -> Option<Gc<dyn SchemeCompatible>> {
-        None
-    }
-
-    /// Fetch the kth field of the record.
-    fn get_field(&self, k: usize) -> Result<Value, Exception> {
-        Err(Exception::error(format!("invalid record field: {k}")))
-    }
-
-    /// Set the kth field of the record.
-    fn set_field(&self, k: usize, _val: Value) -> Result<(), Exception> {
-        Err(Exception::error(format!("invalid record field: {k}")))
-    }
-}
-
-/// Convenience function for converting a `Gc<T>` into a
-/// `Gc<dyn SchemeCompatible>`.
-///
-/// This isn't as simple as using the `as` keyword in Rust due to the
-/// instability of the `CoerceUnsized` trait.
-pub fn into_scheme_compatible(t: Gc<impl SchemeCompatible>) -> Gc<dyn SchemeCompatible> {
-    // Convert t into a Gc<dyn SchemeCompatible>. This has to be done
-    // manually since [CoerceUnsized] is unstable.
-    let t = ManuallyDrop::new(t);
-    let any: NonNull<GcInner<dyn SchemeCompatible>> = t.ptr;
-    Gc {
-        ptr: any,
-        marker: std::marker::PhantomData,
-    }
-}
-
-#[derive(Copy, Clone, Debug, Trace)]
-pub struct RustParentConstructor {
-    #[trace(skip)]
-    constructor: ParentConstructor,
-}
-
-impl RustParentConstructor {
-    pub fn new(constructor: ParentConstructor) -> Self {
-        Self { constructor }
-    }
-}
-
-type ParentConstructor = fn(&[Value]) -> Result<Gc<dyn SchemeCompatible>, Exception>;
-
-pub(crate) fn is_subtype_of(val: &Value, rt: Arc<RecordTypeDescriptor>) -> Result<bool, Exception> {
-    let UnpackedValue::Record(rec) = val.clone().unpack() else {
-        return Ok(false);
-    };
-    Ok(Arc::ptr_eq(&rec.0.rtd, &rt) || rec.0.rtd.inherits.contains(&ByAddress::from(rt)))
 }
 
 #[cps_bridge]
@@ -1009,7 +1327,7 @@ fn record_predicate_fn(
         unreachable!();
     };
     // RTD is the first environment variable:
-    let rtd: Arc<RecordTypeDescriptor> = env[0].try_to_scheme_type()?;
+    let rtd: Arc<RecordTypeDescriptor> = env[0].try_to()?;
     Ok(Application::new(
         k,
         None,
@@ -1053,26 +1371,36 @@ fn record_accessor_fn(
         unreachable!();
     };
     let record: Record = val.clone().try_into()?;
-    // RTD is the first environment variable, field index is the second
-    let rtd: Arc<RecordTypeDescriptor> = env[0].try_to_scheme_type()?;
+    let rtd: Arc<RecordTypeDescriptor> = env[0].try_to()?;
     if !is_subtype_of(val, rtd.clone())? {
         return Err(Exception::error("not a child of this record type"));
     }
-    let idx: usize = env[1].clone().try_into()?;
-    let val = if let Some(rust_parent) = &record.0.rust_parent
-        && rtd.rust_type
-    {
-        let mut t = rust_parent.clone();
-        while let Some(embedded) = { t.extract_embedded_record(&rtd) } {
-            t = embedded;
+    let local_idx: usize = env[1].clone().try_into()?;
+    let abs_idx = local_idx + rtd.num_inherited_fields;
+    let val = if abs_idx < record.0.num_embedded_fields() {
+        // The field lives inside the embedded Rust value.
+        let embedded_ptr = record.0.embedded_ptr().unwrap();
+        let embedded_vtable = record.0.rtd.embedded_vtable.as_ref().unwrap();
+        if rtd.embedded_vtable.unwrap().type_id == embedded_vtable.type_id {
+            (embedded_vtable.get_field)(embedded_ptr, local_idx)?
+        } else {
+            let mut embedded = embedded_vtable.ptr_to_parent(embedded_ptr, &rtd).unwrap();
+            while let Some(parent) = embedded.parent_record(&rtd) {
+                embedded = parent;
+            }
+            embedded.get_field(local_idx)?
         }
-        t.get_field(idx)?
     } else {
-        record.0.fields[idx].read().clone()
+        let k = abs_idx - record.0.num_embedded_fields();
+        if let Some(cell) = record.0.fields()[k].cast_to::<Cell>() {
+            cell.get()
+        } else {
+            record.0.fields()[k].clone()
+        }
     };
     if val.is_undefined() {
         return Err(Exception::error(format!(
-            "failed to get field: {}, {idx}",
+            "failed to get field: {}, {local_idx}",
             rtd.name
         )));
     }
@@ -1099,7 +1427,8 @@ pub fn record_accessor(
             rtd.fields.len()
         )));
     }
-    let idx = idx + rtd.field_index_offset;
+    // Store the local (within-rtd) index; `record_accessor_fn` resolves it to
+    // either the embed or an inline slot.
     let accessor_fn = Procedure::new(
         runtime.clone(),
         vec![Value::from(rtd), Value::from(idx)],
@@ -1123,22 +1452,31 @@ fn record_mutator_fn(
         unreachable!();
     };
     let record: Record = rec.clone().try_into()?;
-    // RTD is the first environment variable, field index is the second
-    let rtd: Arc<RecordTypeDescriptor> = env[0].try_to_scheme_type()?;
+    // RTD is the first environment variable, the field's local index the second.
+    let rtd: Arc<RecordTypeDescriptor> = env[0].try_to()?;
     if !is_subtype_of(rec, rtd.clone())? {
         return Err(Exception::error("not a child of this record type"));
     }
-    let idx: usize = env[1].clone().try_into()?;
-    if let Some(rust_parent) = &record.0.rust_parent
-        && rtd.rust_type
-    {
-        let mut t = rust_parent.clone();
-        while let Some(embedded) = { t.extract_embedded_record(&rtd) } {
-            t = embedded;
+    let local_idx: usize = env[1].clone().try_into()?;
+    let abs_idx = local_idx + rtd.num_inherited_fields;
+    if abs_idx < record.0.num_embedded_fields() {
+        // The field lives inside the embedded Rust value.
+        let embedded_ptr = record.0.embedded_ptr().unwrap();
+        let embedded_vtable = record.0.rtd.embedded_vtable.as_ref().unwrap();
+        if rtd.embedded_vtable.unwrap().type_id == embedded_vtable.type_id {
+            (embedded_vtable.set_field)(embedded_ptr, local_idx, new_val.clone())?;
+        } else {
+            let mut embedded = embedded_vtable.ptr_to_parent(embedded_ptr, &rtd).unwrap();
+            while let Some(parent) = embedded.parent_record(&rtd) {
+                embedded = parent;
+            }
+            embedded.set_field(local_idx, new_val.clone())?;
         }
-        t.set_field(idx, new_val.clone())?;
     } else {
-        *record.0.fields[idx].write() = new_val.clone();
+        let slot = abs_idx - record.0.num_embedded_fields();
+        record.0.fields()[slot]
+            .try_to::<Cell>()?
+            .set(new_val.clone());
     }
     Ok(Application::new(k, None, Vec::new()))
 }
@@ -1166,7 +1504,6 @@ pub fn record_mutator(
     if matches!(rtd.fields[idx], Field::Immutable(_)) {
         return Err(Exception::error(format!("{idx} is immutable")));
     }
-    let idx = idx + rtd.field_index_offset;
     let mutator_fn = Procedure::new(
         runtime.clone(),
         vec![Value::from(rtd), Value::from(idx)],
@@ -1198,14 +1535,12 @@ pub fn record_rtd(record: &Value) -> Result<Vec<Value>, Exception> {
 }
 
 #[bridge(name = "record-type-name", lib = "(rnrs records inspection (6))")]
-pub fn record_type_name(rtd: &Value) -> Result<Vec<Value>, Exception> {
-    let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
+pub fn record_type_name(rtd: Arc<RecordTypeDescriptor>) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(rtd.name)])
 }
 
 #[bridge(name = "record-type-parent", lib = "(rnrs records inspection (6))")]
-pub fn record_type_parent(rtd: &Value) -> Result<Vec<Value>, Exception> {
-    let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
+pub fn record_type_parent(rtd: Arc<RecordTypeDescriptor>) -> Result<Vec<Value>, Exception> {
     if let Some(parent) = rtd.inherits.last() {
         Ok(vec![Value::from(parent.0.clone())])
     } else {
@@ -1214,8 +1549,7 @@ pub fn record_type_parent(rtd: &Value) -> Result<Vec<Value>, Exception> {
 }
 
 #[bridge(name = "record-type-uid", lib = "(rnrs records inspection (6))")]
-pub fn record_type_uid(rtd: &Value) -> Result<Vec<Value>, Exception> {
-    let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
+pub fn record_type_uid(rtd: Arc<RecordTypeDescriptor>) -> Result<Vec<Value>, Exception> {
     if let Some(uid) = rtd.uid {
         Ok(vec![Value::from(uid)])
     } else {
@@ -1227,20 +1561,19 @@ pub fn record_type_uid(rtd: &Value) -> Result<Vec<Value>, Exception> {
     name = "record-type-generative?",
     lib = "(rnrs records inspection (6))"
 )]
-pub fn record_type_generative_pred(rtd: &Value) -> Result<Vec<Value>, Exception> {
-    let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
+pub fn record_type_generative_pred(
+    rtd: Arc<RecordTypeDescriptor>,
+) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(rtd.uid.is_none())])
 }
 
 #[bridge(name = "record-type-sealed?", lib = "(rnrs records inspection (6))")]
-pub fn record_type_sealed_pred(rtd: &Value) -> Result<Vec<Value>, Exception> {
-    let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
+pub fn record_type_sealed_pred(rtd: Arc<RecordTypeDescriptor>) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(rtd.sealed)])
 }
 
 #[bridge(name = "record-type-opaque?", lib = "(rnrs records inspection (6))")]
-pub fn record_type_opaque_pred(rtd: &Value) -> Result<Vec<Value>, Exception> {
-    let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
+pub fn record_type_opaque_pred(rtd: Arc<RecordTypeDescriptor>) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(rtd.opaque)])
 }
 
@@ -1248,8 +1581,7 @@ pub fn record_type_opaque_pred(rtd: &Value) -> Result<Vec<Value>, Exception> {
     name = "record-type-field-names",
     lib = "(rnrs records inspection (6))"
 )]
-pub fn record_type_field_names(rtd: &Value) -> Result<Vec<Value>, Exception> {
-    let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
+pub fn record_type_field_names(rtd: Arc<RecordTypeDescriptor>) -> Result<Vec<Value>, Exception> {
     let fields = rtd
         .fields
         .iter()
@@ -1260,10 +1592,10 @@ pub fn record_type_field_names(rtd: &Value) -> Result<Vec<Value>, Exception> {
 }
 
 #[bridge(name = "record-field-mutable?", lib = "(rnrs records inspection (6))")]
-pub fn record_field_mutable_pred(rtd: &Value, k: &Value) -> Result<Vec<Value>, Exception> {
-    let rtd: Arc<RecordTypeDescriptor> = rtd.clone().try_into()?;
-    let k: usize = k.try_to_scheme_type()?;
-
+pub fn record_field_mutable_pred(
+    rtd: Arc<RecordTypeDescriptor>,
+    k: usize,
+) -> Result<Vec<Value>, Exception> {
     if k >= rtd.fields.len() {
         return Err(Exception::invalid_index(k, rtd.fields.len()));
     }

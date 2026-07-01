@@ -214,7 +214,7 @@ impl From<&Value> for Option<List> {
             if !seen.insert(cdr.clone()) {
                 return None;
             }
-            let (car, new_cdr) = cdr.cast_to_scheme_type()?;
+            let (car, new_cdr) = cdr.cast_to()?;
             items.push(car);
             cdr = new_cdr;
         }
@@ -254,7 +254,7 @@ impl TryFrom<&Value> for List {
 
     fn try_from(value: &Value) -> Result<Self, Self::Error> {
         value
-            .cast_to_scheme_type::<List>()
+            .cast_to::<List>()
             .ok_or_else(|| Exception::error("value is not a proper list"))
     }
 }
@@ -299,7 +299,7 @@ pub fn is_list(curr: &Value, seen: &mut HashSet<Value>) -> bool {
         return false;
     }
 
-    let Some(curr) = curr.cast_to_scheme_type::<Pair>() else {
+    let Some(curr) = curr.cast_to::<Pair>() else {
         return false;
     };
 
@@ -328,12 +328,12 @@ pub fn cons(car: &Value, cdr: &Value) -> Result<Vec<Value>, Exception> {
 
 #[bridge(name = "car", lib = "(rnrs base builtins (6))")]
 pub fn car(val: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![val.try_to_scheme_type::<Pair>()?.car()])
+    Ok(vec![val.try_to::<Pair>()?.car()])
 }
 
 #[bridge(name = "cdr", lib = "(rnrs base builtins (6))")]
 pub fn cdr(val: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![val.try_to_scheme_type::<Pair>()?.cdr()])
+    Ok(vec![val.try_to::<Pair>()?.cdr()])
 }
 
 #[bridge(name = "set-car!", lib = "(rnrs mutable-pairs (6))")]
@@ -373,7 +373,7 @@ pub fn length(arg: &Value) -> Result<usize, Exception> {
 
 #[bridge(name = "list->vector", lib = "(rnrs base builtins (6))")]
 pub fn list_to_vector(list: &Value) -> Result<Vec<Value>, Exception> {
-    let List { items, .. } = list.try_to_scheme_type()?;
+    let List { items, .. } = list.try_to()?;
     Ok(vec![Value::from(items)])
 }
 
@@ -430,7 +430,7 @@ pub fn map(
             return Ok(Application::new(k, None, vec![Value::null()]));
         }
 
-        let (car, cdr) = input.try_to_scheme_type::<Pair>()?.into();
+        let (car, cdr) = input.try_to::<Pair>()?.into();
 
         args.push(car);
         *input = cdr;
@@ -487,7 +487,7 @@ unsafe extern "C" fn map_k(
                 return Box::into_raw(Box::new(app));
             }
 
-            let (car, cdr) = input.cast_to_scheme_type::<Pair>().unwrap().into();
+            let (car, cdr) = input.cast_to::<Pair>().unwrap().into();
             args.push(car);
             *input = cdr;
         }
@@ -514,7 +514,7 @@ unsafe extern "C" fn map_k(
 pub fn zip(list1: &Value, listn: &[Value]) -> Result<Vec<Value>, Exception> {
     let mut output: Option<Vec<Value>> = None;
     for list in Some(list1).into_iter().chain(listn.iter()).rev() {
-        let List { items, .. } = list.try_to_scheme_type()?;
+        let List { items, .. } = list.try_to()?;
         if let Some(output) = &output {
             if output.len() != items.len() {
                 return Err(Exception::error("lists do not have the same length"));

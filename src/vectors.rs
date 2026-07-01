@@ -276,7 +276,7 @@ impl Indexer for VectorIndexer {
 
 #[bridge(name = "make-vector", lib = "(rnrs base builtins (6))")]
 pub fn make_vector(n: &Value, with: &[Value]) -> Result<Vec<Value>, Exception> {
-    let n: usize = n.try_to_scheme_type()?;
+    let n: usize = n.try_to()?;
 
     Ok(vec![Value::from(Vector(Gc::new(VectorInner {
         vec: RwLock::new(

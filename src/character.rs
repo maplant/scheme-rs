@@ -26,7 +26,7 @@ pub fn char_to_integer(ch: &Value) -> Result<Vec<Value>, Exception> {
 
 #[bridge(name = "integer->char", lib = "(rnrs base builtins (6))")]
 pub fn integer_to_char(int: &Value) -> Result<Vec<Value>, Exception> {
-    let int: usize = int.try_to_scheme_type()?;
+    let int: usize = int.try_to()?;
     if let Ok(int) = <usize as TryInto<u32>>::try_into(int)
         && let Some(ch) = char::from_u32(int)
     {

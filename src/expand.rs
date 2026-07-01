@@ -5,7 +5,7 @@ use crate::{
     exceptions::Exception,
     gc::{Gc, Trace},
     proc::Procedure,
-    records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
+    records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax},
     value::Value,
@@ -364,9 +364,9 @@ fn match_vec(patterns: &[Pattern], expr: &Syntax, env: &mut MatchEnv) -> bool {
     }
 }
 
-impl SchemeCompatible for Pattern {
+impl Embeddable for Pattern {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "pattern", sealed: true, opaque: true)
+        rtd!(ty: Pattern, name: "pattern", sealed: true, opaque: true)
     }
 }
 
@@ -381,9 +381,9 @@ pub struct MatchEnv {
     binds: HashMap<Binding, Match>,
 }
 
-impl SchemeCompatible for MatchEnv {
+impl Embeddable for MatchEnv {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "match-env", sealed: true, opaque: true)
+        rtd!(ty: MatchEnv, name: "match-env", sealed: true, opaque: true)
     }
 }
 
@@ -392,23 +392,23 @@ pub struct ExpansionCombiner {
     pub(crate) uses: HashMap<Binding, usize>,
 }
 
-impl SchemeCompatible for ExpansionCombiner {
+impl Embeddable for ExpansionCombiner {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "expansion-combiner", sealed: true, opaque: true)
+        rtd!(ty: ExpansionCombiner, name: "expansion-combiner", sealed: true, opaque: true)
     }
 }
 
 #[runtime_fn]
 unsafe extern "C" fn matches(pattern: *const (), value: *const ()) -> *const () {
     let pattern = unsafe { Value::from_raw_inc_rc(pattern) };
-    let pattern = pattern.try_to_rust_type::<Pattern>().unwrap();
+    let pattern = pattern.try_to::<Embedded<Pattern>>().unwrap();
 
     let value = unsafe { Value::from_raw_inc_rc(value) };
     let syntax = Syntax::wrap(value, &Span::default());
 
     let mut env = MatchEnv::default();
     if pattern.matches(&syntax, &mut env) {
-        Value::into_raw(Value::from(Record::from_rust_type(env)))
+        Value::into_raw(Value::from(env))
     } else {
         Value::into_raw(Value::from(false))
     }
@@ -838,9 +838,9 @@ fn check_escaped_template(expr: &Syntax, env: &Environment) -> Vec<(Symbol, isiz
     }
 }
 
-impl SchemeCompatible for Template {
+impl Embeddable for Template {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "template", sealed: true, opaque: true)
+        rtd!(ty: Template, name: "template", sealed: true, opaque: true)
     }
 }
 
@@ -853,17 +853,17 @@ unsafe extern "C" fn expand_template(
     error: *mut Value,
 ) -> *const () {
     let template = unsafe { Value::from_raw_inc_rc(template) };
-    let template = template.try_to_rust_type::<Template>().unwrap();
+    let template = template.try_to::<Embedded<Template>>().unwrap();
 
     let expansion_combiner = unsafe { Value::from_raw_inc_rc(expansion_combiner) };
     let expansion_combiner = expansion_combiner
-        .try_to_rust_type::<ExpansionCombiner>()
+        .try_to::<Embedded<ExpansionCombiner>>()
         .unwrap();
 
     let envs = (0..num_expansions)
         .map(|i| {
             let env = unsafe { Value::from_raw_inc_rc(expansions.add(i as usize).read()) };
-            let env = env.try_to_rust_type::<MatchEnv>().unwrap();
+            let env = env.try_to::<Embedded<MatchEnv>>().unwrap();
             env.as_ref().clone()
         })
         .collect::<Vec<_>>();

@@ -3,9 +3,10 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use scheme_rs_macros::{Trace, bridge};
 
+use crate::records::Embedded;
 use crate::{
     exceptions::Exception,
-    records::{RecordTypeDescriptor, SchemeCompatible, rtd},
+    records::{Embeddable, RecordTypeDescriptor, rtd},
     strings::WideString,
     symbols::Symbol,
     value::Value,
@@ -23,32 +24,30 @@ impl Keyword {
         let mut cache = INTERNED.lock().unwrap();
         cache
             .entry(sym)
-            .or_insert_with(|| Value::from_rust_type(Keyword(sym)))
+            .or_insert_with(|| Value::from(Keyword(sym)))
             .clone()
     }
 }
 
-impl SchemeCompatible for Keyword {
+impl Embeddable for Keyword {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "keyword", sealed: true, opaque: true)
+        rtd!(ty: Keyword, name: "keyword", sealed: true, opaque: true)
     }
 }
 
 #[bridge(name = "keyword?", lib = "(srfi :88)")]
 pub fn keyword_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(
-        obj.cast_to_rust_type::<Keyword>().is_some(),
+        obj.cast_to::<Embedded<Keyword>>().is_some(),
     )])
 }
 
 #[bridge(name = "keyword->string", lib = "(srfi :88)")]
-pub fn keyword_to_string(obj: &Value) -> Result<Vec<Value>, Exception> {
-    let kw = obj.try_to_rust_type::<Keyword>()?;
+pub fn keyword_to_string(kw: Embedded<Keyword>) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(kw.0.to_str().to_string())])
 }
 
 #[bridge(name = "string->keyword", lib = "(srfi :88)")]
-pub fn string_to_keyword(s: &Value) -> Result<Vec<Value>, Exception> {
-    let s: WideString = s.clone().try_into()?;
+pub fn string_to_keyword(s: WideString) -> Result<Vec<Value>, Exception> {
     Ok(vec![Keyword::intern(&s.to_string())])
 }

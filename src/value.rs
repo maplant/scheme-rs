@@ -29,34 +29,34 @@
 //! It is generally preferrable to use `try_into` as opposed to `unpack` since
 //! `UnpackedValue` is an enumeration that is subject to change.
 //!
-//! Alternatively, the [`cast_to_scheme_type`](Value::cast_to_scheme_type)
+//! Alternatively, the [`cast_to`](Value::cast_to)
 //! method can be used to obtain an Option from a reference for more ergonomic
-//! casting. There is also the [`try_to_scheme_type`](Value::try_to_scheme_type)
+//! casting. There is also the [`try_to`](Value::try_to)
 //! function that is similarly more ergonomic:
 //!
 //! ```
 //! # use scheme_rs::value::{Value, UnpackedValue};
 //! let value = Value::from(3);
-//! let float = value.cast_to_scheme_type::<f64>().unwrap();
-//! let int = value.cast_to_scheme_type::<i64>().unwrap();
+//! let float = value.cast_to::<f64>().unwrap();
+//! let int = value.cast_to::<i64>().unwrap();
 //! ```
 //!
 //! ## Converting to and from arbitrary Rust types
 //!
 //! Besides primitives and standard library types, scheme-rs supports converting
-//! arbitrary Rust types (such as structs and enums) to `Values` by representing
-//! them as [`Records`](Record). To do this, the type must implement the
-//! [`SchemeCompatible`] trait (see [`records`](scheme_rs::records) for more
-//! information).
+//! arbitrary Rust types (such as structs and enums) to `Values` by embedding
+//! them inside [`Records`](Record). To do this, the type must implement the
+//! [`Embeddable`](records::Embeddable) trait (see [`records`](scheme_rs::records)
+//! for more information).
 //!
-//! `Value` provides three convenience methods to facilitate these conversions:
-//! - [`from_rust_type`](Value::from_rust_type): convert a `SchemeCompatible`
-//!   type to a record type, and then to a `Value`.
-//! - [`try_to_rust_type`](Value::try_to_rust_type): attempt to convert the
-//!   value to a `Gc<T>` where `T: SchemeCompatible` providing a detailed error
-//!   on failure.
-//! - [`cast_to_rust_type`](Value::cast_to_rust_type): attempt to convert the
-//!   value to a `Gc<T>` where `T: SchemeCompatible`, returning `None` on
+//! These conversions are performed with the standard conversion traits:
+//! - `Value::from(t)`: embed an [`Embeddable`](records::Embeddable) value into a
+//!   record, and then convert it to a `Value`.
+//! - [`try_to`](Value::try_to)`::<Embedded<T>>()`: attempt to convert the value
+//!   to an [`Embedded<T>`](records::Embedded), providing a detailed error on
+//!   failure.
+//! - [`cast_to`](Value::cast_to)`::<Embedded<T>>()`: attempt to convert the
+//!   value to an [`Embedded<T>`](records::Embedded), returning `None` on
 //!   failure.
 //!
 //! ## Scheme types
@@ -77,7 +77,8 @@
 //! - **Byte-vector**: A [`ByteVector`].
 //! - **Syntax**: A [`Syntax`].
 //! - **Procedure**: A [`Procedure`].
-//! - **Record**: A [`Record`], which can possibly be a [`SchemeCompatible`].
+//! - **Record**: A [`Record`], which can possibly embed an
+//!   [`Embeddable`](records::Embeddable) Rust value.
 //! - **Record Type Descriptor**: A [descriptor of a record's type](RecordTypeDescriptor).
 //! - **Hashtable**: A [`HashTable`].
 //! - **Port**: A value that can handle [input/output](scheme_rs::ports::Port)
@@ -97,7 +98,7 @@ use crate::{
     num::{ComplexNumber, Number, NumberInner, SimpleNumber},
     ports::{Port, PortInner},
     proc::{Procedure, ProcedureInner},
-    records::{Record, RecordInner, RecordTypeDescriptor, SchemeCompatible},
+    records::{Record, RecordInner, RecordTypeDescriptor},
     registry::bridge,
     strings::{WideString, WideStringInner},
     symbols::Symbol,
@@ -259,23 +260,33 @@ impl Value {
         self.unpacked_ref().type_name()
     }
 
+    // TODO: These will be cast_to and try_to
+
     /// Attempt to cast the value into a Scheme primitive type.
-    pub fn cast_to_scheme_type<T>(&self) -> Option<T>
+    pub fn cast_to<T>(&self) -> Option<T>
     where
         for<'a> &'a Self: Into<Option<T>>,
     {
         self.into()
     }
 
+    pub fn is_a<T>(&self) -> bool
+    where
+        for<'a> &'a Self: Into<Option<T>>,
+    {
+        self.into().is_some()
+    }
+
     /// Attempt to cast the value into a Scheme primitive type and return a
     /// descriptive error on failure.
-    pub fn try_to_scheme_type<T>(&self) -> Result<T, Exception>
+    pub fn try_to<T>(&self) -> Result<T, Exception>
     where
         T: for<'a> TryFrom<&'a Self, Error = Exception>,
     {
         self.try_into()
     }
 
+    /*
     /// Attempt to cast the value into a Rust type that implements
     /// [`SchemeCompatible`].
     pub fn cast_to_rust_type<T: SchemeCompatible>(&self) -> Option<Gc<T>> {
@@ -287,7 +298,7 @@ impl Value {
 
     /// Attempt to cast the value into a Rust type and return a descriptive
     /// error on failure.
-    pub fn try_to_rust_type<T: SchemeCompatible>(&self) -> Result<Gc<T>, Exception> {
+    pub fn try_to_rust_type<T: Embeddable>(&self) -> Result<Gc<T>, Exception> {
         let type_name = T::rtd().name.to_str();
         let this = self.clone().unpack();
         let record = match this {
@@ -299,12 +310,16 @@ impl Value {
             .cast::<T>()
             .ok_or_else(|| Exception::type_error(&type_name, &record.rtd().name.to_str()))
     }
+    */
 
+    /*
     /// Automatically convert a `SchemeCompatible` type to a `Record` and then
     /// into a `Value`.
-    pub fn from_rust_type<T: SchemeCompatible>(t: T) -> Self {
-        Self::from(Record::from_rust_type(t))
+    pub fn embed<T: Embeddable>(t: T) -> Self {
+        // Self::from(Record::from_rust_type(t))
+        todo!()
     }
+    */
 
     /// Unpack the value into an enum representation.
     pub fn unpack(self) -> UnpackedValue {
@@ -588,6 +603,15 @@ impl Cell {
     }
 }
 
+impl From<&Value> for Option<Cell> {
+    fn from(val: &Value) -> Option<Cell> {
+        match val.clone().unpack() {
+            UnpackedValue::Cell(cell) => Some(cell),
+            _ => None,
+        }
+    }
+}
+
 /// A reference to an [`UnpackedValue`]. Allows for unpacking a `Value` without
 /// cloning/modifying the reference count.
 pub struct UnpackedValueRef<'a> {
@@ -623,19 +647,24 @@ where
     }
 }
 
-/*
-impl From<ast::Literal> for Value {
-    fn from(lit: ast::Literal) -> Self {
-        Value::new(lit.into())
-    }
-}
-*/
-
 impl From<Exception> for Value {
     fn from(value: Exception) -> Self {
         value.0
     }
 }
+
+/*
+
+1: Symbol,
+2: Pair,
+3: Boolean,
+4: Character,
+5: Number,
+6: Procedure,
+7: Record,
+8: Cell,
+
+*/
 
 #[repr(u64)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]

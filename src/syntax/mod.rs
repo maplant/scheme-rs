@@ -7,7 +7,7 @@ use crate::{
     gc::{Gc, Trace},
     ports::Port,
     proc::{ContBarrier, Procedure},
-    records::{RecordTypeDescriptor, SchemeCompatible, rtd},
+    records::{Embeddable, RecordTypeDescriptor, rtd},
     registry::bridge,
     symbols::Symbol,
     syntax::parse::ParseSyntaxError,
@@ -64,9 +64,9 @@ impl Default for Span {
     }
 }
 
-impl SchemeCompatible for Span {
+impl Embeddable for Span {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "span", sealed: true, opaque: true)
+        rtd!(ty: Span, name: "span", sealed: true, opaque: true)
     }
 }
 
@@ -622,9 +622,7 @@ pub fn datum_to_syntax(template_id: Identifier, datum: &Value) -> Result<Vec<Val
 
 #[bridge(name = "identifier?", lib = "(rnrs syntax-case builtins (6))")]
 pub fn identifier_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(
-        obj.cast_to_scheme_type::<Identifier>().is_some(),
-    )])
+    Ok(vec![Value::from(obj.cast_to::<Identifier>().is_some())])
 }
 
 #[bridge(name = "bound-identifier=?", lib = "(rnrs syntax-case builtins (6))")]
@@ -676,8 +674,8 @@ pub fn syntax_violation(
     };
     let mut conditions = Vec::new();
     if who.is_true() {
-        conditions.push(Value::from_rust_type(Who::new(who.clone())));
-    } else if let Some(syntax) = form.cast_to_scheme_type::<Gc<Syntax>>() {
+        conditions.push(Value::from(Who::new(who.clone())));
+    } else if let Some(syntax) = form.cast_to::<Gc<Syntax>>() {
         let who = if let Syntax::Identifier { ident, .. } = syntax.as_ref() {
             Some(ident.sym)
         } else if let Some([Syntax::Identifier { ident, .. }, ..]) = syntax.as_list() {
@@ -685,10 +683,10 @@ pub fn syntax_violation(
         } else {
             None
         };
-        conditions.push(Value::from_rust_type(Who::new(Value::from(who))));
+        conditions.push(Value::from(Who::new(Value::from(who))));
     }
-    conditions.push(Value::from_rust_type(Message::new(message)));
-    conditions.push(Value::from_rust_type(SyntaxViolation::new_from_values(
+    conditions.push(Value::from(Message::new(message)));
+    conditions.push(Value::from(SyntaxViolation::new_from_values(
         form.clone(),
         subform,
     )));
