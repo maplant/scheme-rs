@@ -1,3 +1,5 @@
+#![allow(clippy::mutable_key_type)]
+
 //! MVP Language Server Protocol support for Scheme.
 //!
 //! Adapted from sqleibniz's small stdio LSP: full-document sync,
@@ -26,7 +28,8 @@ use lsp_types::{
 use scheme_rs_macros::{maybe_async, maybe_await};
 
 use crate::{
-    ast::DefinitionBody,
+    HashSet,
+    ast::Definitions,
     exceptions::{Exception, Message as SchemeMessage, PrettyCondition, SyntaxViolation},
     runtime::Runtime,
     syntax::{Span, lex::LexerError, parse::ParseSyntaxError},
@@ -260,7 +263,12 @@ fn diagnostics_for_document(
         return vec![diagnostic_from_exception(err, text)];
     }
 
-    match maybe_await!(DefinitionBody::parse_lib_body(runtime, &form, &env)) {
+    match maybe_await!(Definitions::parse_lib_body(
+        runtime,
+        &form,
+        &env,
+        &mut HashSet::default()
+    )) {
         Ok(_) => Vec::new(),
         Err(err) => vec![diagnostic_from_exception(err, text)],
     }
