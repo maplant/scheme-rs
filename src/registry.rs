@@ -7,13 +7,16 @@ use crate::{
         TopLevelEnvironment, TopLevelEnvironmentInner, TopLevelKind, add_binding,
     },
     exceptions::{Exception, ImportError},
-    gc::{Gc, Trace},
+    gc::{Gc, OpaqueGcPtr, Trace},
     proc::{BridgePtr, FuncPtr, KnownFunc, ProcDebugInfo, Procedure},
     runtime::Runtime,
     symbols::Symbol,
     syntax::{Identifier, Syntax},
     value::{Cell, Value},
 };
+
+#[cfg(feature = "plugins")]
+use crate::proc::{Application, ContBarrier};
 
 use std::{
     path::{Path, PathBuf},
@@ -61,6 +64,7 @@ pub(crate) mod error {
 }
 
 #[doc(hidden)]
+#[derive(Copy, Clone)]
 pub enum Bridge {
     Known(KnownFunc),
     Sync(BridgePtr),
@@ -68,7 +72,11 @@ pub enum Bridge {
     Async(crate::proc::AsyncBridgePtr),
 }
 
+// BridgeFn is passed across the FFI boundary between host and plugin.
+// Both sides MUST be compiled with the same rustc version and scheme-rs
+// feature flags, since BridgeFn is not #[repr(C)].
 #[doc(hidden)]
+#[derive(Copy, Clone)]
 pub struct BridgeFn {
     name: &'static str,
     lib_name: &'static str,
@@ -131,43 +139,111 @@ impl BridgeFnDebugInfo {
 
 inventory::collect!(BridgeFn);
 
+#[cfg(feature = "plugins")]
+#[unsafe(no_mangle)]
+pub extern "C" fn scheme_rs_bridges() -> PluginBridges {
+    use std::sync::OnceLock;
+    static BRIDGES: OnceLock<Vec<BridgeFn>> = OnceLock::new();
+    let bridges = BRIDGES.get_or_init(|| {
+        inventory::iter::<BridgeFn>().copied().collect()
+    });
+    PluginBridges {
+        version: SCHEME_RS_VERSION.as_ptr(),
+        version_len: SCHEME_RS_VERSION.len(),
+        ptr: bridges.as_ptr(),
+        len: bridges.len(),
+    }
+}
+
+#[cfg(feature = "plugins")]
+pub static SCHEME_RS_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[cfg(feature = "plugins")]
+#[repr(C)]
+pub struct PluginBridges {
+    pub version: *const u8,
+    pub version_len: usize,
+    pub ptr: *const BridgeFn,
+    pub len: usize,
+}
+
+#[cfg(feature = "plugins")]
+struct PluginHandle(std::mem::ManuallyDrop<libloading::Library>);
+
+#[cfg(feature = "plugins")]
+impl PluginHandle {
+    fn new(library: libloading::Library) -> Self {
+        Self(std::mem::ManuallyDrop::new(library))
+    }
+}
+
+#[cfg(feature = "plugins")]
+unsafe impl Trace for PluginHandle {
+    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
+    unsafe fn finalize(&mut self) {}
+}
+
 #[derive(rust_embed::Embed)]
 #[folder = "scheme"]
 struct Stdlib;
 
-#[derive(Trace, Default)]
 pub(crate) struct RegistryInner {
     pub(crate) libs: HashMap<Vec<Symbol>, TopLevelEnvironment>,
     loading: HashSet<Vec<Symbol>>,
+    #[cfg(feature = "plugins")]
+    plugins: Vec<PluginHandle>,
+    #[cfg(feature = "plugins")]
+    loaded_plugin_paths: HashSet<PathBuf>,
+}
+
+unsafe impl Trace for RegistryInner {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+        unsafe { self.libs.visit_children(visitor) }
+    }
+    unsafe fn finalize(&mut self) {
+        unsafe { std::ptr::drop_in_place(self as *mut Self) }
+    }
+}
+
+impl Default for RegistryInner {
+    fn default() -> Self {
+        Self {
+            libs: HashMap::default(),
+            loading: HashSet::default(),
+            #[cfg(feature = "plugins")]
+            plugins: Vec::new(),
+            #[cfg(feature = "plugins")]
+            loaded_plugin_paths: HashSet::default(),
+        }
+    }
 }
 
 impl RegistryInner {
-    /// Construct an empty registry
     pub fn empty() -> Self {
         Self::default()
     }
 
-    /// Construct a Registry with all of the available bridge functions and special keywords.
-    pub fn new(rt: &Runtime) -> Self {
+    fn register_bridges<'a>(
+        &mut self,
+        rt: &Runtime,
+        bridges: impl Iterator<Item = &'a BridgeFn>,
+    ) {
         struct Lib {
             version: Version,
             syms: HashMap<Symbol, Procedure>,
         }
-        let mut libs = HashMap::<Vec<Symbol>, Lib>::default();
+        let mut new_libs = HashMap::<Vec<Symbol>, Lib>::default();
 
-        // Import the bridge functions:
-        for bridge_fn in inventory::iter::<BridgeFn>() {
+        for bridge_fn in bridges {
             let debug_info = Arc::new(ProcDebugInfo::from_bridge_fn(
                 bridge_fn.name,
                 bridge_fn.debug_info,
             ));
             let lib_name = LibraryName::from_str(bridge_fn.lib_name, None).unwrap();
-            let lib = libs.entry(lib_name.name).or_insert_with(|| Lib {
+            let lib = new_libs.entry(lib_name.name).or_insert_with(|| Lib {
                 version: lib_name.version,
                 syms: HashMap::default(),
             });
-
-            // TODO: If version does not match, error.
 
             lib.syms.insert(
                 Symbol::intern(bridge_fn.name),
@@ -186,6 +262,66 @@ impl RegistryInner {
                 ),
             );
         }
+
+        for (name, lib) in new_libs {
+            let scope = Scope::new();
+
+            let exports = lib
+                .syms
+                .into_iter()
+                .map(|(name, proc)| {
+                    let binding = Binding::new();
+                    add_binding(Identifier::from_symbol(name, scope), binding);
+                    (
+                        name,
+                        proc,
+                        Export {
+                            binding,
+                            origin: None,
+                        },
+                    )
+                })
+                .collect::<Vec<_>>();
+            let tle = TopLevelEnvironment(Gc::new(RwLock::new(TopLevelEnvironmentInner {
+                rt: rt.clone(),
+                kind: TopLevelKind::Libary {
+                    name: LibraryName {
+                        version: lib.version,
+                        name: name.clone(),
+                    },
+                    path: None,
+                },
+                imports: HashMap::default(),
+                exports: exports
+                    .iter()
+                    .map(|(name, _, export)| (*name, export.clone()))
+                    .collect(),
+                state: LibraryState::BridgesDefined,
+                scope,
+            })));
+
+            for (name, proc, export) in exports {
+                TOP_LEVEL_BINDINGS.lock().insert(
+                    export.binding,
+                    TopLevelBinding::Global(Global::new(
+                        name,
+                        Cell::new(Value::from(proc)),
+                        false,
+                        tle.clone(),
+                    )),
+                );
+            }
+
+            self.libs.insert(name, tle);
+        }
+    }
+
+    /// Construct a Registry with all of the available bridge functions and special keywords.
+    pub fn new(rt: &Runtime) -> Self {
+        let mut this = Self::default();
+
+        // Import statically-linked bridge functions:
+        this.register_bridges(rt, inventory::iter::<BridgeFn>());
 
         // Define the special keyword libraries:
         let special_keyword_libs = [
@@ -260,65 +396,8 @@ impl RegistryInner {
             )
         });
 
-        let libs = libs
-            .into_iter()
-            .map(|(name, lib)| {
-                let scope = Scope::new();
-
-                let exports = lib
-                    .syms
-                    .into_iter()
-                    .map(|(name, proc)| {
-                        let binding = Binding::new();
-                        add_binding(Identifier::from_symbol(name, scope), binding);
-                        (
-                            name,
-                            proc,
-                            Export {
-                                binding,
-                                origin: None,
-                            },
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                let lib = TopLevelEnvironment(Gc::new(RwLock::new(TopLevelEnvironmentInner {
-                    rt: rt.clone(),
-                    kind: TopLevelKind::Libary {
-                        name: LibraryName {
-                            version: lib.version,
-                            name: name.clone(),
-                        },
-                        path: None,
-                    },
-                    imports: HashMap::default(),
-                    exports: exports
-                        .iter()
-                        .map(|(name, _, export)| (*name, export.clone()))
-                        .collect(),
-                    state: LibraryState::BridgesDefined,
-                    scope,
-                })));
-
-                for (name, proc, export) in exports {
-                    TOP_LEVEL_BINDINGS.lock().insert(
-                        export.binding,
-                        TopLevelBinding::Global(Global::new(
-                            name,
-                            Cell::new(Value::from(proc)),
-                            false,
-                            lib.clone(),
-                        )),
-                    );
-                }
-                (name, lib)
-            })
-            .chain(special_keyword_libs)
-            .collect();
-
-        Self {
-            libs,
-            loading: HashSet::default(),
-        }
+        this.libs.extend(special_keyword_libs);
+        this
     }
 }
 
@@ -332,6 +411,76 @@ impl Registry {
 
     pub(crate) fn new(rt: &Runtime) -> Self {
         Self(Gc::new(RwLock::new(RegistryInner::new(rt))))
+    }
+
+    /// # Safety
+    ///
+    /// The plugin must be built with the same `rustc` and scheme-rs
+    /// feature flags as the host. Version is checked at load time but
+    /// ABI drift from different compilers is not detected.
+    #[cfg(feature = "plugins")]
+    pub unsafe fn load_plugin(
+        &self,
+        rt: &Runtime,
+        library: libloading::Library,
+    ) -> Result<(), Exception> {
+        let mut inner = self.0.write();
+        unsafe { Self::load_plugin_locked(&mut inner, rt, library) }
+    }
+
+    #[cfg(feature = "plugins")]
+    unsafe fn load_plugin_locked(
+        inner: &mut RegistryInner,
+        rt: &Runtime,
+        library: libloading::Library,
+    ) -> Result<(), Exception> {
+        let bridges: &[BridgeFn] = unsafe {
+            let func: libloading::Symbol<extern "C" fn() -> PluginBridges> = library
+                .get(b"scheme_rs_bridges")
+                .map_err(|e| {
+                    Exception::error(format!(
+                        "plugin does not export scheme_rs_bridges: {e}"
+                    ))
+                })?;
+            let result = func();
+
+            let plugin_version =
+                std::str::from_utf8(std::slice::from_raw_parts(
+                    result.version,
+                    result.version_len,
+                ))
+                .unwrap_or("<invalid utf8>");
+            if plugin_version != SCHEME_RS_VERSION {
+                return Err(Exception::error(format!(
+                    "plugin version mismatch: plugin was built against \
+                     scheme-rs {plugin_version}, host is {SCHEME_RS_VERSION}"
+                )));
+            }
+
+            std::slice::from_raw_parts(result.ptr, result.len)
+        };
+
+        inner.register_bridges(rt, bridges.iter());
+        inner.plugins.push(PluginHandle::new(library));
+        Ok(())
+    }
+
+    #[cfg(feature = "plugins")]
+    fn load_plugin_from_path(&self, rt: &Runtime, path: &str) -> Result<(), Exception> {
+        let canonical = std::fs::canonicalize(path)
+            .map_err(|e| Exception::error(format!("failed to resolve plugin path {path}: {e}")))?;
+
+        let mut inner = self.0.write();
+
+        if inner.loaded_plugin_paths.contains(&canonical) {
+            return Ok(());
+        }
+
+        let library = unsafe { libloading::Library::new(&canonical) }
+            .map_err(|e| Exception::error(format!("failed to load plugin {path}: {e}")))?;
+        unsafe { Self::load_plugin_locked(&mut inner, rt, library)? };
+        inner.loaded_plugin_paths.insert(canonical);
+        Ok(())
     }
 
     fn mark_as_loading(&self, name: &[Symbol]) {
@@ -525,6 +674,24 @@ impl Registry {
             ) as DynIter<'b>),
         }
     }
+}
+
+#[cfg(feature = "plugins")]
+#[cps_bridge(def = "%load-plugin path", lib = "(scheme-rs plugins builtins)")]
+pub fn load_plugin(
+    runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    _rest_args: &[Value],
+    _barrier: &mut ContBarrier<'_>,
+) -> Result<Application, Exception> {
+    let [path] = args else { unreachable!() };
+    let path: crate::strings::WideString = path.clone().try_into()?;
+    runtime
+        .get_registry()
+        .load_plugin_from_path(runtime, &path.to_string())?;
+    Ok(Application::new(k, None, vec![]))
 }
 
 type DynIter<'a> = Box<dyn Iterator<Item = (Symbol, Import)> + 'a>;
