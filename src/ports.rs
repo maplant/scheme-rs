@@ -1300,12 +1300,7 @@ impl BinaryPortData {
             return Ok(None);
         };
 
-        let Some(transcoder) = port_info.transcoder else {
-            return Err(Exception::io_read_error("not a text port"));
-        };
-
-        let byte_len = transcoder.codec.byte_len(next_char);
-        maybe_await!(self.consume_bytes(port_info, byte_len))?;
+        maybe_await!(self.consume_chars(port_info, 1))?;
 
         Ok(Some(next_char))
     }
@@ -1332,7 +1327,7 @@ impl BinaryPortData {
             self.output_buffer.clear()?;
         }
 
-        if n + self.input_pos > self.input_buffer.len() {
+        if n + self.input_pos >= self.input_buffer.len() {
             panic!("attempt to lookahead further than the buffer allows");
         }
 
@@ -1564,6 +1559,7 @@ impl BinaryPortData {
             self.bytes_read -= self.input_pos;
             self.input_pos = 0;
         }
+
         Ok(())
     }
 
@@ -4827,4 +4823,24 @@ pub fn delete_file(filename: &Value) -> Result<Vec<Value>, Exception> {
         .map_err(|_| Exception::from((Assertion::new(), IoFilenameError::new(filename))))?;
 
     Ok(Vec::new())
+}
+
+#[cfg(test)]
+mod test {
+    #[test]
+    fn test_buffer_boundary_eof() {
+        use scheme_rs::syntax::Syntax;
+
+        fn input(mb_char_starts_at: usize) -> String {
+            let prefix = "(define x\n  ;; ";
+            let mut s = String::from(prefix);
+            s.extend(std::iter::repeat_n('A', mb_char_starts_at - prefix.len()));
+            s.push('\u{2500}'); // 3 bytes in UTF-8
+            s.push_str("\n  1)\n");
+            s
+        }
+
+        // U+2500 occupies bytes 8190..8193: straddles the 8192 boundary.
+        assert!(Syntax::from_str(&input(8190), Some("fail.scm")).is_ok())
+    }
 }
