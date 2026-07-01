@@ -154,15 +154,25 @@ pub extern "C" fn scheme_rs_bridges() -> PluginBridges {
         inventory::iter::<BridgeFn>().copied().collect()
     });
     PluginBridges {
+        version: SCHEME_RS_VERSION.as_ptr(),
+        version_len: SCHEME_RS_VERSION.len(),
         ptr: bridges.as_ptr(),
         len: bridges.len(),
     }
 }
 
+/// The scheme-rs version that this build was compiled against.
+/// Plugins embed this in their [`PluginBridges`] return value so the
+/// host can reject ABI-incompatible loads at runtime.
+#[cfg(feature = "plugins")]
+pub static SCHEME_RS_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// Fat pointer returned by a plugin's `scheme_rs_bridges` export.
 #[cfg(feature = "plugins")]
 #[repr(C)]
 pub struct PluginBridges {
+    pub version: *const u8,
+    pub version_len: usize,
     pub ptr: *const BridgeFn,
     pub len: usize,
 }
@@ -431,12 +441,16 @@ impl Registry {
     /// extern "C" PluginBridges scheme_rs_bridges(void);
     /// ```
     ///
+    /// The scheme-rs version is checked at load time; a mismatch returns
+    /// an error.
+    ///
     /// # Safety
     ///
-    /// The caller must ensure that `library` was built against the same
+    /// The caller must ensure that `library` was built with the same
     /// `rustc` version and scheme-rs feature flags as the host, since
     /// `BridgeFn` is not `#[repr(C)]` and its layout is not guaranteed
-    /// across compilation units.
+    /// across compilation units. The version check catches semver
+    /// mismatches but cannot detect ABI drift from different compilers.
     #[cfg(feature = "plugins")]
     pub unsafe fn load_plugin(
         &self,
@@ -462,6 +476,20 @@ impl Registry {
                     ))
                 })?;
             let result = func();
+
+            let plugin_version =
+                std::str::from_utf8(std::slice::from_raw_parts(
+                    result.version,
+                    result.version_len,
+                ))
+                .unwrap_or("<invalid utf8>");
+            if plugin_version != SCHEME_RS_VERSION {
+                return Err(Exception::error(format!(
+                    "plugin version mismatch: plugin was built against \
+                     scheme-rs {plugin_version}, host is {SCHEME_RS_VERSION}"
+                )));
+            }
+
             std::slice::from_raw_parts(result.ptr, result.len)
         };
 
