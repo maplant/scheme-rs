@@ -510,11 +510,7 @@ impl<'a> Lexer<'a> {
         while let Some(chr) = maybe_await!(self.match_pred(|chr| chr != '"'))? {
             if chr == '\\' {
                 let escaped = match maybe_await!(self.take())?.ok_or(LexerError::UnexpectedEof)? {
-                    'x' => {
-                        let escaped = maybe_await!(self.inline_hex_escape())?;
-                        output.push_str(&escaped);
-                        continue;
-                    }
+                    'x' => maybe_await!(self.inline_hex_escape())?,
                     'a' => '\u{07}',
                     'b' => '\u{08}',
                     't' => '\t',
@@ -560,7 +556,7 @@ impl<'a> Lexer<'a> {
     #[maybe_async]
     fn identifier(&mut self) -> Result<Option<String>, LexerError> {
         let mut ident = if maybe_await!(self.match_tag("\\x"))? {
-            maybe_await!(self.inline_hex_escape())?
+            String::from(maybe_await!(self.inline_hex_escape())?)
         } else if maybe_await!(self.match_tag("..."))? {
             String::from("...")
         } else if maybe_await!(self.match_tag("->"))? {
@@ -575,7 +571,7 @@ impl<'a> Lexer<'a> {
 
         loop {
             if maybe_await!(self.match_tag("\\x"))? {
-                ident.push_str(&maybe_await!(self.inline_hex_escape())?);
+                ident.push(maybe_await!(self.inline_hex_escape())?);
             } else if let Some(next) = maybe_await!(self.match_pred(is_subsequent))? {
                 ident.push(next);
             } else {
@@ -587,9 +583,8 @@ impl<'a> Lexer<'a> {
     }
 
     #[maybe_async]
-    fn inline_hex_escape(&mut self) -> Result<String, LexerError> {
-        let mut escaped = String::new();
-        let mut buff = String::with_capacity(2);
+    fn inline_hex_escape(&mut self) -> Result<char, LexerError> {
+        let mut digits = String::new();
         while let Some(chr) = maybe_await!(self.match_pred(|chr| chr != ';'))? {
             if !chr.is_ascii_hexdigit() {
                 return Err(LexerError::InvalidCharacterInHexEscape {
@@ -597,17 +592,15 @@ impl<'a> Lexer<'a> {
                     span: self.curr_span(),
                 });
             }
-            buff.push(chr);
-            if buff.len() == 2 {
-                escaped.push(u8::from_str_radix(&buff, 16).unwrap() as char);
-                buff.clear();
-            }
-        }
-        if !buff.is_empty() {
-            escaped.push(u8::from_str_radix(&buff, 16).unwrap() as char);
+            digits.push(chr);
         }
         maybe_await!(self.take())?;
-        Ok(escaped)
+        u32::from_str_radix(&digits, 16)
+            .ok()
+            .and_then(char::from_u32)
+            .ok_or_else(|| LexerError::InvalidHexEscape {
+                span: self.curr_span(),
+            })
     }
 }
 
@@ -615,6 +608,7 @@ impl<'a> Lexer<'a> {
 pub enum LexerError {
     UnexpectedEof,
     InvalidCharacterInHexEscape { chr: char, span: Span },
+    InvalidHexEscape { span: Span },
     UnexpectedCharacter { chr: char, span: Span },
     BadEscapeCharacter { chr: char, span: Span },
     ReadError(Exception),
@@ -626,6 +620,12 @@ impl fmt::Display for LexerError {
             Self::UnexpectedEof => write!(f, "unexpected end of file"),
             Self::InvalidCharacterInHexEscape { chr, span } => {
                 write!(f, "invalid character `{chr}` in hex escape at `{span}`")
+            }
+            Self::InvalidHexEscape { span } => {
+                write!(
+                    f,
+                    "hex escape is not a valid Unicode scalar value at `{span}`"
+                )
             }
             Self::UnexpectedCharacter { chr, span } => {
                 write!(f, "unexpected character `{chr}` at `{span}`")

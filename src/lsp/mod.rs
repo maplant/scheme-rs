@@ -323,6 +323,7 @@ fn parse_error_span(err: &ParseSyntaxError) -> Option<&Span> {
         | ParseSyntaxError::UnclosedParen { span } => Some(span),
         ParseSyntaxError::Lex(err) => match err {
             LexerError::InvalidCharacterInHexEscape { span, .. }
+            | LexerError::InvalidHexEscape { span }
             | LexerError::UnexpectedCharacter { span, .. }
             | LexerError::BadEscapeCharacter { span, .. } => Some(span),
             LexerError::UnexpectedEof | LexerError::ReadError(_) => None,
