@@ -22,6 +22,8 @@ use crate::{
 pub struct JoinHandle {
     #[trace(skip)]
     id: ThreadId,
+    #[trace(skip)]
+    thread: Mutex<Option<thread::JoinHandle<()>>>,
     result: Gc<Mutex<Result<Vec<Value>, Exception>>>,
 }
 
@@ -55,20 +57,40 @@ pub fn spawn(thunk: Procedure) -> Result<Vec<Value>, Exception> {
         }
     });
     let id = join_handle.thread().id();
-    Ok(vec![Value::from_rust_type(JoinHandle { id, result: cell })])
+    Ok(vec![Value::from_rust_type(JoinHandle {
+        id,
+        thread: Mutex::new(Some(join_handle)),
+        result: cell,
+    })])
 }
 
 #[bridge(name = "join", lib = "(threads (1))")]
 pub fn join(handle: &Value) -> Result<Vec<Value>, Exception> {
     let handle = handle.try_to_rust_type::<JoinHandle>()?;
+    join_inner(&handle)
+}
+
+fn join_inner(handle: &JoinHandle) -> Result<Vec<Value>, Exception> {
     let curr_id = thread::current().id();
     if curr_id == handle.id {
-        Err(Exception::error(format!(
+        return Err(Exception::error(format!(
             "thread {curr_id:?} attempted to join itself"
-        )))
-    } else {
-        handle.result.lock().clone()
+        )));
     }
+    // The scrutinee's MutexGuard is held across join() (if-let temporary
+    // scope), which is what blocks concurrent joiners until the thread has
+    // finished; don't hoist the lock() into its own binding.
+    if let Some(thread) = handle.thread.lock().take()
+        && let Err(payload) = thread.join()
+    {
+        let msg = payload
+            .downcast_ref::<&str>()
+            .map(ToString::to_string)
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown panic".to_string());
+        *handle.result.lock() = Err(Exception::error(format!("thread panicked: {msg}")));
+    }
+    handle.result.lock().clone()
 }
 
 #[bridge(name = "sleep", lib = "(threads (1))")]
@@ -82,4 +104,24 @@ pub fn join_handle_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(
         obj.cast_to_rust_type::<JoinHandle>().is_some(),
     )])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn join_surfaces_panics() {
+        let thread = thread::spawn(|| panic!("boom"));
+        let handle = JoinHandle {
+            id: thread.thread().id(),
+            thread: Mutex::new(Some(thread)),
+            result: Gc::new(Mutex::new(Ok(Vec::new()))),
+        };
+        let err = join_inner(&handle).unwrap_err();
+        assert!(format!("{err:?}").contains("boom"));
+        // Subsequent joins see the persisted error, not the default cell.
+        let err = join_inner(&handle).unwrap_err();
+        assert!(format!("{err:?}").contains("boom"));
+    }
 }
