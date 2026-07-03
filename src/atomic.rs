@@ -67,9 +67,9 @@ pub fn atomic_box_set(ab: Embedded<AtomicBox>, new_val: &Value) -> Result<Vec<Va
 }
 
 #[bridge(name = "atomic-box-swap!", lib = "(srfi :230)")]
-pub fn atomic_box_swap(ab: Embedded<AtomicBox>, new_val: &Value) -> Result<Vec<Value>, Exception> {
+pub fn atomic_box_swap(ab: Embedded<AtomicBox>, new_val: &Value) -> Value {
     let old = ab.inner.swap(Gc::new(new_val.clone()));
-    Ok(vec![Value::clone(&old)])
+    Value::clone(&old)
 }
 
 #[bridge(name = "atomic-box-compare-and-swap!", lib = "(srfi :230)")]

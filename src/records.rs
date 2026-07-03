@@ -588,32 +588,26 @@ unsafe impl Trace for RecordInner {
 
 impl fmt::Debug for RecordInner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        /*
         write!(f, "#<{}", self.rtd.name)?;
-        // Inline slots hold only the fields *not* covered by the embed, so skip
-        // the embed-covered names to keep names aligned with the slots.
-        let mut field_names = self
+        let skipped_fields = if let Some(vtable) = self.rtd.embedded_vtable {
+            (vtable.debug_fmt)(self.embedded_ptr().unwrap(), f)?;
+            vtable.embedded_fields
+        } else {
+            0
+        };
+        for (Field::Mutable(name) | Field::Immutable(name), field) in self
             .rtd
             .inherits
             .iter()
             .cloned()
             .chain(Some(ByAddress(self.rtd.clone())))
             .flat_map(|rtd| rtd.fields.clone())
-            .skip(self.embed_field_count());
-        for field in self.fields() {
-            let field = if let Some(cell) = field.cast_to::<Cell>() {
-                cell.get()
-            } else {
-                field.clone()
-            };
-            match field_names.next() {
-                Some(name) => write!(f, " {}: {field:?}", name.name())?,
-                None => write!(f, " {field:?}")?,
-            }
+            .skip(skipped_fields)
+            .zip(self.fields())
+        {
+            write!(f, " {name}: {field:?}")?;
         }
         write!(f, ">")
-         */
-        todo!()
     }
 }
 
@@ -659,6 +653,8 @@ pub struct EmbeddableVTable {
     pub get_field: fn(*const (), usize) -> Result<Value, Exception>,
     #[trace(skip)]
     pub set_field: fn(*const (), usize, Value) -> Result<(), Exception>,
+    #[trace(skip)]
+    pub debug_fmt: fn(*const (), &mut fmt::Formatter<'_>) -> fmt::Result,
 }
 
 impl EmbeddableVTable {
@@ -681,6 +677,7 @@ impl EmbeddableVTable {
             set_field: |this, k, val| {
                 E::set_field(unsafe { this.cast::<E>().as_ref().unwrap() }, k, val)
             },
+            debug_fmt: |this, fmt| E::fmt(unsafe { this.cast::<E>().as_ref().unwrap() }, fmt),
         }
     }
 
