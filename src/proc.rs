@@ -951,7 +951,15 @@ impl<'a> ContBarrier<'a> {
             dyn_stack: Vec::new(),
             cont_marks: vec![HashMap::new()],
             params: HashMap::new(),
-            parameter_cells: self.parameter_cells.clone(),
+            // Snapshot the parameter values rather than cloning the map:
+            // cells are shared Gc pointers that parameter_set writes
+            // through, so a plain clone would let a child's set or
+            // parameterize mutate the parent's bindings.
+            parameter_cells: self
+                .parameter_cells
+                .iter()
+                .map(|(id, cell)| (*id, Cell::new(cell.get())))
+                .collect(),
         }
     }
 

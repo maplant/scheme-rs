@@ -13,8 +13,10 @@ use scheme_rs_macros::bridge;
 use crate::{
     exceptions::Exception,
     gc::{Gc, Trace},
-    proc::{ContBarrier, Procedure},
+    proc::{Application, ContBarrier, Procedure},
     records::{RecordTypeDescriptor, SchemeCompatible, rtd},
+    registry::cps_bridge,
+    runtime::Runtime,
     value::Value,
 };
 
@@ -39,10 +41,22 @@ impl SchemeCompatible for JoinHandle {
     }
 }
 
-#[bridge(name = "spawn", lib = "(threads (1))")]
-pub fn spawn(thunk: Procedure) -> Result<Vec<Value>, Exception> {
+#[cps_bridge(def = "spawn thunk", lib = "(threads (1))")]
+pub fn spawn(
+    _runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    _rest_args: &[Value],
+    barrier: &mut ContBarrier,
+) -> Result<Application, Exception> {
+    let thunk: Procedure = args[0].clone().try_into()?;
     let cell = Gc::new(Mutex::new(Ok(Vec::new())));
     let cell_cloned = cell.clone();
+    // The child inherits a snapshot of the parent's parameter bindings.
+    // Moved as SavedDynamicState because ContBarrier itself is not Send
+    // in non-async builds.
+    let child = barrier.child().save();
     // Capture the runtime handle so the child thread can enter the reactor
     // context (timers/IO in async bridges work). Remaining ceiling:
     // reactor-backed bridges reached from hashtable hash/eq callbacks park a
@@ -53,26 +67,28 @@ pub fn spawn(thunk: Procedure) -> Result<Vec<Value>, Exception> {
     let handle = tokio::runtime::Handle::try_current().ok();
     let join_handle = thread::spawn(move || {
         let mut cell_write = cell_cloned.lock();
+        let mut barrier = ContBarrier::from(child);
 
         #[cfg(not(feature = "async"))]
         {
-            *cell_write = thunk.call(&[], &mut ContBarrier::new());
+            *cell_write = thunk.call(&[], &mut barrier);
         }
 
         #[cfg(feature = "async")]
         {
             *cell_write = match handle {
-                Some(handle) => handle.block_on(thunk.call(&[], &mut ContBarrier::new())),
-                None => thunk.call_sync(&[], &mut ContBarrier::new()),
+                Some(handle) => handle.block_on(thunk.call(&[], &mut barrier)),
+                None => thunk.call_sync(&[], &mut barrier),
             };
         }
     });
     let id = join_handle.thread().id();
-    Ok(vec![Value::from_rust_type(JoinHandle {
+    let handle = Value::from_rust_type(JoinHandle {
         id,
         thread: Mutex::new(Some(join_handle)),
         result: cell,
-    })])
+    });
+    Ok(Application::new(k, None, vec![handle]))
 }
 
 #[bridge(name = "join", lib = "(threads (1))")]

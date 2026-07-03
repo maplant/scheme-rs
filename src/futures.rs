@@ -15,8 +15,10 @@ use tokio::{
 use crate::{
     exceptions::Exception,
     ports::{BufferMode, Port},
-    proc::{ContBarrier, Procedure},
+    proc::{Application, ContBarrier, Procedure},
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
+    registry::cps_bridge,
+    runtime::Runtime,
     strings::WideString,
     value::Value,
 };
@@ -33,22 +35,41 @@ impl SchemeCompatible for Future {
     }
 }
 
-#[bridge(name = "future", lib = "(async)")]
-pub async fn make_future(proc: Procedure) -> Result<Vec<Value>, Exception> {
-    let future: Future = async move { proc.call(&[], &mut ContBarrier::new()).await }
+#[cps_bridge(def = "future proc", lib = "(async)")]
+pub fn make_future(
+    _runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    _rest_args: &[Value],
+    barrier: &mut ContBarrier,
+) -> Result<Application, Exception> {
+    let proc: Procedure = args[0].clone().try_into()?;
+    // The task inherits a snapshot of the parameter bindings as of future
+    // creation, not as of first await.
+    let mut child = barrier.child();
+    let future: Future = async move { proc.call(&[], &mut child).await }
         .boxed()
         .shared();
     let future = Value::from_rust_type(future);
-    Ok(vec![future])
+    Ok(Application::new(k, None, vec![future]))
 }
 
-#[bridge(name = "spawn", lib = "(async)")]
-pub async fn spawn(task: &Value) -> Result<Vec<Value>, Exception> {
-    let task: Procedure = task.clone().try_into()?;
-    let task = tokio::task::spawn(async move { task.call(&[], &mut ContBarrier::new()).await });
+#[cps_bridge(def = "spawn task", lib = "(async)")]
+pub fn spawn(
+    _runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    _rest_args: &[Value],
+    barrier: &mut ContBarrier,
+) -> Result<Application, Exception> {
+    let task: Procedure = args[0].clone().try_into()?;
+    let mut child = barrier.child();
+    let task = tokio::task::spawn(async move { task.call(&[], &mut child).await });
     let future: Future = async move { task.await.unwrap() }.boxed().shared();
     let future = Value::from(Record::from_rust_type(future));
-    Ok(vec![future])
+    Ok(Application::new(k, None, vec![future]))
 }
 
 #[bridge(name = "await", lib = "(async)")]
