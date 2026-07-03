@@ -80,7 +80,6 @@
 //! - **Record**: A [`Record`], which can possibly embed an
 //!   [`Embeddable`](records::Embeddable) Rust value.
 //! - **Record Type Descriptor**: A [descriptor of a record's type](RecordTypeDescriptor).
-//! - **Hashtable**: A [`HashTable`].
 //! - **Port**: A value that can handle [input/output](scheme_rs::ports::Port)
 //!   from the outside world.
 //! - **Cell**: A mutable reference to another Value. This type is completely
@@ -93,7 +92,6 @@ use parking_lot::RwLock;
 use crate::{
     exceptions::Exception,
     gc::{Gc, GcInner, Trace},
-    hashtables::{HashTable, HashTableInner},
     lists::{self, Pair, PairInner},
     num::{ComplexNumber, Number, NumberInner, SimpleNumber},
     ports::{Port, PortInner},
@@ -190,9 +188,6 @@ impl Value {
                     }
                 }
                 Tag::Port => Arc::increment_strong_count(untagged as *const PortInner),
-                Tag::HashTable => {
-                    Gc::increment_reference_count(untagged as *mut GcInner<HashTableInner>)
-                }
                 Tag::Cell => {
                     Gc::increment_reference_count(untagged as *mut GcInner<Value>);
                 }
@@ -262,7 +257,7 @@ impl Value {
 
     // TODO: These will be cast_to and try_to
 
-    /// Attempt to cast the value into a Scheme primitive type.
+    /// Attempt to cast the value.
     pub fn cast_to<T>(&self) -> Option<T>
     where
         for<'a> &'a Self: Into<Option<T>>,
@@ -277,49 +272,13 @@ impl Value {
         self.into().is_some()
     }
 
-    /// Attempt to cast the value into a Scheme primitive type and return a
-    /// descriptive error on failure.
+    /// Attempt to cast the value and return a descriptive error on failure.
     pub fn try_to<T>(&self) -> Result<T, Exception>
     where
         T: for<'a> TryFrom<&'a Self, Error = Exception>,
     {
         self.try_into()
     }
-
-    /*
-    /// Attempt to cast the value into a Rust type that implements
-    /// [`SchemeCompatible`].
-    pub fn cast_to_rust_type<T: SchemeCompatible>(&self) -> Option<Gc<T>> {
-        let UnpackedValue::Record(record) = self.clone().unpack() else {
-            return None;
-        };
-        record.cast::<T>()
-    }
-
-    /// Attempt to cast the value into a Rust type and return a descriptive
-    /// error on failure.
-    pub fn try_to_rust_type<T: Embeddable>(&self) -> Result<Gc<T>, Exception> {
-        let type_name = T::rtd().name.to_str();
-        let this = self.clone().unpack();
-        let record = match this {
-            UnpackedValue::Record(record) => record,
-            e => return Err(Exception::type_error(&type_name, e.type_name())),
-        };
-
-        record
-            .cast::<T>()
-            .ok_or_else(|| Exception::type_error(&type_name, &record.rtd().name.to_str()))
-    }
-    */
-
-    /*
-    /// Automatically convert a `SchemeCompatible` type to a `Record` and then
-    /// into a `Value`.
-    pub fn embed<T: Embeddable>(t: T) -> Self {
-        // Self::from(Record::from_rust_type(t))
-        todo!()
-    }
-    */
 
     /// Unpack the value into an enum representation.
     pub fn unpack(self) -> UnpackedValue {
@@ -384,10 +343,6 @@ impl Value {
                 let port_inner = unsafe { Arc::from_raw(untagged as *const PortInner) };
                 UnpackedValue::Port(Port(port_inner))
             }
-            Tag::HashTable => {
-                let ht = unsafe { Gc::from_raw(untagged as *mut GcInner<HashTableInner>) };
-                UnpackedValue::HashTable(HashTable(ht))
-            }
             Tag::Cell => {
                 let cell = unsafe { Gc::from_raw(untagged as *mut GcInner<RwLock<Value>>) };
                 UnpackedValue::Cell(Cell(cell))
@@ -443,7 +398,6 @@ impl Value {
             UnpackedValue::Pair(p) => Gc::as_ptr(&p.0).hash(state),
             UnpackedValue::Vector(v) => Gc::as_ptr(&v.0).hash(state),
             UnpackedValue::Port(p) => Arc::as_ptr(&p.0).hash(state),
-            UnpackedValue::HashTable(ht) => Gc::as_ptr(&ht.0).hash(state),
             UnpackedValue::Cell(c) => c.0.read().eqv_hash(state),
         }
     }
@@ -468,7 +422,6 @@ impl Value {
             UnpackedValue::Pair(p) => Gc::as_ptr(&p.0).hash(state),
             UnpackedValue::Vector(v) => Gc::as_ptr(&v.0).hash(state),
             UnpackedValue::Port(p) => Arc::as_ptr(&p.0).hash(state),
-            UnpackedValue::HashTable(ht) => Gc::as_ptr(&ht.0).hash(state),
             UnpackedValue::Cell(c) => c.0.read().eqv_hash(state),
         }
     }
@@ -513,7 +466,6 @@ impl Value {
                 }
             }
             UnpackedValue::Port(p) => Arc::as_ptr(&p.0).hash(state),
-            UnpackedValue::HashTable(ht) => Gc::as_ptr(&ht.0).hash(state),
             UnpackedValue::Cell(c) => c.0.read().eqv_hash(state),
         }
     }
@@ -682,7 +634,6 @@ pub(crate) enum Tag {
     Procedure = 10,
     Record = 11,
     RecordTypeDescriptor = 12,
-    HashTable = 13,
     Port = 14,
     Cell = 15,
 }
@@ -704,7 +655,6 @@ impl From<usize> for Tag {
             10 => Self::Procedure,
             11 => Self::Record,
             12 => Self::RecordTypeDescriptor,
-            13 => Self::HashTable,
             14 => Self::Port,
             15 => Self::Cell,
             tag => panic!("Invalid tag: {tag}"),
@@ -729,7 +679,6 @@ pub enum ValueType {
     Procedure,
     Record,
     RecordTypeDescriptor,
-    HashTable,
     Port,
 }
 
@@ -755,7 +704,6 @@ pub enum UnpackedValue {
     RecordTypeDescriptor(Arc<RecordTypeDescriptor>),
     Pair(Pair),
     Port(Port),
-    HashTable(HashTable),
     Cell(Cell),
 }
 
@@ -813,10 +761,6 @@ impl UnpackedValue {
                 let untagged = Arc::into_raw(port.0);
                 Value::from_ptr_and_tag(untagged, Tag::Port)
             }
-            Self::HashTable(ht) => {
-                let untagged = Gc::into_raw(ht.0);
-                Value::from_ptr_and_tag(untagged, Tag::HashTable)
-            }
             Self::Cell(cell) => {
                 let untagged = Gc::into_raw(cell.0);
                 Value::from_mut_ptr_and_tag(untagged, Tag::Cell)
@@ -841,7 +785,6 @@ impl UnpackedValue {
             (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
             (Self::Port(a), Self::Port(b)) => Arc::ptr_eq(&a.0, &b.0),
-            (Self::HashTable(a), Self::HashTable(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Cell(a), b) => a.0.read().unpacked_ref().eq(b),
             (a, Self::Cell(b)) => a.eq(&b.0.read().unpacked_ref()),
             _ => false,
@@ -872,7 +815,6 @@ impl UnpackedValue {
             (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
             (Self::Port(a), Self::Port(b)) => Arc::ptr_eq(&a.0, &b.0),
-            (Self::HashTable(a), Self::HashTable(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Cell(a), b) => a.0.read().unpacked_ref().eqv(b),
             (a, Self::Cell(b)) => a.eqv(&b.0.read().unpacked_ref()),
             _ => false,
@@ -895,7 +837,6 @@ impl UnpackedValue {
             Self::Record(_) => "record",
             Self::RecordTypeDescriptor(_) => "rtd",
             Self::Port(_) => "port",
-            Self::HashTable(_) => "hashtable",
             Self::Cell(cell) => cell.0.read().type_name(),
         }
     }
@@ -917,7 +858,6 @@ impl UnpackedValue {
             Self::Record(_) => ValueType::Record,
             Self::RecordTypeDescriptor(_) => ValueType::RecordTypeDescriptor,
             Self::Port(_) => ValueType::Port,
-            Self::HashTable(_) => ValueType::HashTable,
             Self::Cell(cell) => cell.0.read().type_of(),
         }
     }
@@ -1268,7 +1208,6 @@ impl_try_from_value_for!(Procedure, Procedure, "procedure");
 impl_try_from_value_for!(Pair, Pair, "pair");
 impl_try_from_value_for!(Record, Record, "record");
 impl_try_from_value_for!(Port, Port, "port");
-impl_try_from_value_for!(HashTable, HashTable, "hashtable");
 impl_try_from_value_for!(Arc<RecordTypeDescriptor>, RecordTypeDescriptor, "rt");
 
 macro_rules! impl_from_wrapped_for {
@@ -1558,7 +1497,6 @@ fn display_value(
         UnpackedValue::Syntax(syntax) => write!(f, "#<syntax {syntax:#?}>"),
         UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
         UnpackedValue::Port(_) => write!(f, "<port>"),
-        UnpackedValue::HashTable(hashtable) => write!(f, "{hashtable:?}"),
         UnpackedValue::Cell(cell) => display_value(&cell.0.read(), circular_values, f),
     }
 }
@@ -1591,7 +1529,6 @@ fn debug_value(
         UnpackedValue::Record(record) => write!(f, "{record:#?}"),
         UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
         UnpackedValue::Port(_) => write!(f, "<port>"),
-        UnpackedValue::HashTable(hashtable) => write!(f, "{hashtable:?}"),
         UnpackedValue::Cell(cell) => debug_value(&cell.0.read(), circular_values, f),
     }
 }
