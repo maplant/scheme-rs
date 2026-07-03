@@ -119,6 +119,37 @@ use std::{
     },
 };
 
+#[cfg(feature = "async")]
+struct ThreadWaker(std::thread::Thread);
+
+#[cfg(feature = "async")]
+impl std::task::Wake for ThreadWaker {
+    fn wake(self: Arc<Self>) {
+        self.0.unpark();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.unpark();
+    }
+}
+
+/// Minimal park-based `block_on`. Hand-rolled because the alternatives panic
+/// exactly where `call_sync` runs: `futures::executor::block_on`'s enter
+/// guard forbids nesting, and tokio's `Handle::block_on` refuses to run
+/// inside a runtime context.
+#[cfg(feature = "async")]
+fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+    let waker = std::task::Waker::from(Arc::new(ThreadWaker(std::thread::current())));
+    let mut cx = std::task::Context::from_waker(&waker);
+    let mut fut = std::pin::pin!(fut);
+    loop {
+        match fut.as_mut().poll(&mut cx) {
+            std::task::Poll::Ready(val) => return val,
+            std::task::Poll::Pending => std::thread::park(),
+        }
+    }
+}
+
 /// A function pointer to a generated continuation.
 pub(crate) type ContinuationPtr = unsafe extern "C" fn(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
@@ -200,20 +231,6 @@ impl KnownFunc {
     ) -> Application {
         match self.call(args) {
             Ok(result) => maybe_await!(k.0.apply(None, result, barrier)),
-            Err(err) => raise(runtime.clone(), err.into(), barrier),
-        }
-    }
-
-    #[cfg(feature = "async")]
-    fn apply_sync(
-        self,
-        runtime: &Runtime,
-        k: Procedure,
-        args: &[Value],
-        barrier: &mut ContBarrier<'_>,
-    ) -> Application {
-        match self.call(args) {
-            Ok(result) => k.0.apply_sync(None, result, barrier),
             Err(err) => raise(runtime.clone(), err.into(), barrier),
         }
     }
@@ -503,57 +520,6 @@ impl ProcedureInner {
             }
         }
     }
-
-    #[cfg(feature = "async")]
-    /// Attempt to call the function, and throw an error if is async
-    pub fn apply_sync(
-        &self,
-        k: Option<Procedure>,
-        args: Vec<Value>,
-        barrier: &mut ContBarrier,
-    ) -> Application {
-        if let FuncPtr::PromptBarrier { barrier_id: id, .. } = self.func {
-            barrier.pop_marks();
-            match barrier.pop_dyn_stack() {
-                Some(DynStackElem::PromptBarrier(PromptBarrier {
-                    barrier_id,
-                    replaced_k,
-                })) if barrier_id == id => {
-                    return if let Err(raised) =
-                        replaced_k.0.check_args(&k, args.as_slice(), barrier)
-                    {
-                        raised
-                    } else {
-                        Application::new(replaced_k, None, args)
-                    };
-                }
-                Some(other) => barrier.push_dyn_stack(other),
-                _ => (),
-            }
-        }
-
-        if let Err(raised) = self.check_args(&k, &args, barrier) {
-            return raised;
-        }
-
-        match self.func {
-            FuncPtr::Bridge(sbridge) => self.apply_sync_bridge(sbridge, k.unwrap(), &args, barrier),
-            FuncPtr::AsyncBridge(_) => raise(
-                self.runtime.clone(),
-                Exception::error("attempt to apply async function in a sync-only context").into(),
-                barrier,
-            ),
-            FuncPtr::User(user) => self.apply_jit(JitFuncPtr::User(user), k, args, barrier),
-            FuncPtr::Continuation(k) => {
-                barrier.pop_marks();
-                self.apply_jit(JitFuncPtr::Continuation(k), None, args, barrier)
-            }
-            FuncPtr::PromptBarrier { k, .. } => {
-                self.apply_jit(JitFuncPtr::Continuation(k), None, args, barrier)
-            }
-            FuncPtr::Known(known) => known.apply_sync(&self.runtime, k.unwrap(), &args, barrier),
-        }
-    }
 }
 
 impl fmt::Debug for ProcedureInner {
@@ -706,6 +672,8 @@ impl Procedure {
         maybe_await!(Application::new(self.clone(), k, args.to_vec()).eval(barrier))
     }
 
+    /// Like [`call`](Self::call), but blocks the current OS thread until
+    /// evaluation completes.
     #[cfg(feature = "async")]
     pub fn call_sync(
         &self,
@@ -713,7 +681,7 @@ impl Procedure {
         barrier: &mut ContBarrier<'_>,
     ) -> Result<Vec<Value>, Exception> {
         let k = (!self.is_continuation()).then(|| halt_continuation(self.get_runtime()));
-        Application::new(self.clone(), k, args.to_vec()).eval_sync(barrier)
+        block_on(Application::new(self.clone(), k, args.to_vec()).eval(barrier))
     }
 
     pub(crate) fn to_primop(&self) -> Option<PrimOp> {
@@ -861,21 +829,6 @@ impl Application {
                 }
             };
             self = maybe_await!(op.0.apply(self.k, self.args, barrier));
-        }
-    }
-
-    #[cfg(feature = "async")]
-    /// Just like [eval] but throws an error if we encounter an async function.
-    pub fn eval_sync(mut self, barrier: &mut ContBarrier) -> Result<Vec<Value>, Exception> {
-        loop {
-            let op = match self.op {
-                OpType::Proc(proc) => proc,
-                OpType::HaltOk => return Ok(self.args),
-                OpType::HaltErr => {
-                    return Err(Exception(self.args.pop().unwrap()));
-                }
-            };
-            self = op.0.apply_sync(self.k, self.args, barrier);
         }
     }
 }

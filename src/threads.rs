@@ -43,6 +43,14 @@ impl SchemeCompatible for JoinHandle {
 pub fn spawn(thunk: Procedure) -> Result<Vec<Value>, Exception> {
     let cell = Gc::new(Mutex::new(Ok(Vec::new())));
     let cell_cloned = cell.clone();
+    // Capture the runtime handle so the child thread can enter the reactor
+    // context (timers/IO in async bridges work). Remaining ceiling:
+    // reactor-backed bridges reached from hashtable hash/eq callbacks park a
+    // runtime worker inside call_sync — deadlock on current_thread runtimes,
+    // pool starvation on multi_thread. Goes away once the hashtable path is
+    // asyncified (follow-up); call_sync then only parks non-worker threads.
+    #[cfg(feature = "async")]
+    let handle = tokio::runtime::Handle::try_current().ok();
     let join_handle = thread::spawn(move || {
         let mut cell_write = cell_cloned.lock();
 
@@ -53,7 +61,10 @@ pub fn spawn(thunk: Procedure) -> Result<Vec<Value>, Exception> {
 
         #[cfg(feature = "async")]
         {
-            *cell_write = thunk.call_sync(&[], &mut ContBarrier::new());
+            *cell_write = match handle {
+                Some(handle) => handle.block_on(thunk.call(&[], &mut ContBarrier::new())),
+                None => thunk.call_sync(&[], &mut ContBarrier::new()),
+            };
         }
     });
     let id = join_handle.thread().id();
