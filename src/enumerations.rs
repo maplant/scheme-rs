@@ -29,7 +29,7 @@ impl EnumerationType {
     }
 }
 
-impl Embeddable for EnumerationType {
+unsafe impl Embeddable for EnumerationType {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(ty: EnumerationType, name: "enum-universe", sealed: true, opaque: true)
     }
@@ -75,7 +75,7 @@ impl EnumerationSet {
     }
 }
 
-impl Embeddable for EnumerationSet {
+unsafe impl Embeddable for EnumerationSet {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(ty: EnumerationSet, name: "enum-set", sealed: true, opaque: true)
     }

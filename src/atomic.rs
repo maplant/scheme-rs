@@ -29,7 +29,7 @@ unsafe impl Trace for AtomicBox {
     }
 }
 
-impl Embeddable for AtomicBox {
+unsafe impl Embeddable for AtomicBox {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(
             ty: AtomicBox,

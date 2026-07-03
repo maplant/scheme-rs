@@ -64,7 +64,7 @@ impl Default for Span {
     }
 }
 
-impl Embeddable for Span {
+unsafe impl Embeddable for Span {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(ty: Span, name: "span", sealed: true, opaque: true)
     }

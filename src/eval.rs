@@ -41,7 +41,7 @@ pub fn eval(
     Ok(Application::new(k, None, result))
 }
 
-impl Embeddable for Environment {
+unsafe impl Embeddable for Environment {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(ty: Environment, name: "environment", sealed: true, opaque: true)
     }

@@ -612,7 +612,16 @@ impl fmt::Debug for RecordInner {
 }
 
 /// A Rust type that can be embedded safely in a Scheme record.
-pub trait Embeddable: fmt::Debug + Trace + Any + Send + Sync {
+///
+/// # Safety:
+///
+/// The [rtd] function cannot return a RecordTypeDescriptor created for a
+/// different type than the type implementing that function. Doing so is
+/// undefined behavior.
+///
+/// scheme-rs uses the layout of the type to compactly allocate types within
+/// scheme records. Those layouts are stored in the RTD.
+pub unsafe trait Embeddable: fmt::Debug + Trace + Any + Send + Sync  {
     /// The Record Type Descriptor of the value. Can be constructed at runtime,
     /// but cannot change.
     fn rtd() -> Arc<RecordTypeDescriptor>
@@ -741,6 +750,15 @@ impl<T> Deref for Embedded<T> {
 impl<T> AsRef<T> for Embedded<T> {
     fn as_ref(&self) -> &T {
         unsafe { self.embedded_ptr.as_ref() }
+    }
+}
+
+impl<T> fmt::Debug for Embedded<T>
+where
+    T: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.as_ref().fmt(f)
     }
 }
 
@@ -907,7 +925,7 @@ pub struct RecordConstructorDescriptor {
     protocol: Procedure,
 }
 
-impl Embeddable for RecordConstructorDescriptor {
+unsafe impl Embeddable for RecordConstructorDescriptor {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(
             ty: RecordConstructorDescriptor,

@@ -1197,7 +1197,7 @@ impl From<SavedDynamicState> for ContBarrier<'_> {
     }
 }
 
-impl Embeddable for SavedDynamicState {
+unsafe impl Embeddable for SavedDynamicState {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(ty: SavedDynamicState, name: "%dynamic-state", sealed: true, opaque: true)
     }
@@ -1574,7 +1574,7 @@ pub(crate) struct Winder {
     pub(crate) out_thunk: Procedure,
 }
 
-impl Embeddable for Winder {
+unsafe impl Embeddable for Winder {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(ty: Winder, name: "%winder", sealed: true, opaque: true)
     }

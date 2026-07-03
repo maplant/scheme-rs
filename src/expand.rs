@@ -364,7 +364,7 @@ fn match_vec(patterns: &[Pattern], expr: &Syntax, env: &mut MatchEnv) -> bool {
     }
 }
 
-impl Embeddable for Pattern {
+unsafe impl Embeddable for Pattern {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(ty: Pattern, name: "pattern", sealed: true, opaque: true)
     }
@@ -381,7 +381,7 @@ pub struct MatchEnv {
     binds: HashMap<Binding, Match>,
 }
 
-impl Embeddable for MatchEnv {
+unsafe impl Embeddable for MatchEnv {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(ty: MatchEnv, name: "match-env", sealed: true, opaque: true)
     }
@@ -392,7 +392,7 @@ pub struct ExpansionCombiner {
     pub(crate) uses: HashMap<Binding, usize>,
 }
 
-impl Embeddable for ExpansionCombiner {
+unsafe impl Embeddable for ExpansionCombiner {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(ty: ExpansionCombiner, name: "expansion-combiner", sealed: true, opaque: true)
     }
@@ -838,7 +838,7 @@ fn check_escaped_template(expr: &Syntax, env: &Environment) -> Vec<(Symbol, isiz
     }
 }
 
-impl Embeddable for Template {
+unsafe impl Embeddable for Template {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(ty: Template, name: "template", sealed: true, opaque: true)
     }

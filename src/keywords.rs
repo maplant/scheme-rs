@@ -29,7 +29,7 @@ impl Keyword {
     }
 }
 
-impl Embeddable for Keyword {
+unsafe impl Embeddable for Keyword {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(ty: Keyword, name: "keyword", sealed: true, opaque: true)
     }

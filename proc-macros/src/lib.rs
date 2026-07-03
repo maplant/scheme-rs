@@ -1542,7 +1542,7 @@ pub fn define_condition_type(tokens: TokenStream) -> TokenStream {
 
         }
 
-        impl ::scheme_rs::records::Embeddable for #rust_name {
+        unsafe impl ::scheme_rs::records::Embeddable for #rust_name {
             fn rtd() -> std::sync::Arc<::scheme_rs::records::RecordTypeDescriptor> {
                 ::scheme_rs::records::rtd!(
                     ty: #rust_name,
@@ -1561,7 +1561,6 @@ pub fn define_condition_type(tokens: TokenStream) -> TokenStream {
                 #parent::rtd()
                     .is_subtype_of(rtd)
                     .then(|| &self.parent as &dyn ::scheme_rs::records::Embeddable)
-                          // ::scheme_rs::records::into_scheme_compatible(self.parent.clone()))
             }
 
             fn get_field(&self, k: usize) -> Result<::scheme_rs::value::Value, ::scheme_rs::exceptions::Exception> {

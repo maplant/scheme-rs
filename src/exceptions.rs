@@ -424,7 +424,7 @@ impl SimpleCondition {
     }
 }
 
-impl Embeddable for SimpleCondition {
+unsafe impl Embeddable for SimpleCondition {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(
             lib: "(rnrs conditions (6))",
@@ -840,7 +840,7 @@ impl Default for Undefined {
 #[derive(Clone, Trace)]
 pub struct CompoundCondition(pub(crate) Vec<Value>);
 
-impl Embeddable for CompoundCondition {
+unsafe impl Embeddable for CompoundCondition {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(
             lib: "(rnrs conditions (6))",

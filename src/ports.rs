@@ -292,7 +292,7 @@ impl Transcoder {
     }
 }
 
-impl Embeddable for Transcoder {
+unsafe impl Embeddable for Transcoder {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(ty: Transcoder, name: "transcoder", opaque: true, sealed: true)
     }
@@ -354,7 +354,7 @@ pub enum Codec {
     Utf16,
 }
 
-impl Embeddable for Codec {
+unsafe impl Embeddable for Codec {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(ty: Codec, name: "codec", opaque: true, sealed: true)
     }
@@ -3180,7 +3180,7 @@ impl IoEncodingError {
 #[derive(Copy, Clone, Trace)]
 pub struct EofObject;
 
-impl Embeddable for EofObject {
+unsafe impl Embeddable for EofObject {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(ty: EofObject, name: "!eof", opaque: true, sealed: true)
     }

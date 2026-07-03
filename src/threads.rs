@@ -31,7 +31,7 @@ impl fmt::Debug for JoinHandle {
     }
 }
 
-impl Embeddable for JoinHandle {
+unsafe impl Embeddable for JoinHandle {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(ty: JoinHandle, name: "join-handle", sealed: true, opaque: true)
     }
