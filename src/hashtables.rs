@@ -442,11 +442,7 @@ pub fn hashtable_ref(
 }
 
 #[bridge(name = "hashtable-set!", lib = "(rnrs hashtables builtins (6))")]
-pub fn hashtable_set_bang(
-    hashtable: HashTable,
-    key: &Value,
-    obj: &Value,
-) -> Result<(), Exception> {
+pub fn hashtable_set_bang(hashtable: HashTable, key: &Value, obj: &Value) -> Result<(), Exception> {
     hashtable.set(key, obj)?;
     Ok(())
 }

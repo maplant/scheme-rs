@@ -215,6 +215,7 @@ use std::{
     any::{Any, TypeId},
     collections::HashMap,
     fmt,
+    hash::{Hash, Hasher},
     marker::PhantomData,
     mem::align_of,
     ops::Deref,
@@ -487,6 +488,54 @@ impl Record {
         todo!()
     }
      */
+
+    pub fn eq(&self, rhs: &Record) -> bool {
+        if let Some(vtable) = self.0.rtd.embedded_vtable {
+            (vtable.eq)(self.0.embedded_ptr().unwrap(), rhs)
+        } else {
+            Gc::ptr_eq(&self.0, &rhs.0)
+        }
+    }
+
+    pub fn eqv(&self, rhs: &Record) -> bool {
+        if let Some(vtable) = self.0.rtd.embedded_vtable {
+            (vtable.eqv)(self.0.embedded_ptr().unwrap(), rhs)
+        } else {
+            Gc::ptr_eq(&self.0, &rhs.0)
+        }
+    }
+
+    pub fn equal(&self, rhs: &Record) -> bool {
+        if let Some(vtable) = self.0.rtd.embedded_vtable {
+            (vtable.equal)(self.0.embedded_ptr().unwrap(), rhs)
+        } else {
+            Gc::ptr_eq(&self.0, &rhs.0)
+        }
+    }
+
+    pub fn eq_hash<H: Hasher>(&self, hasher: &mut H) {
+        if let Some(vtable) = self.0.rtd.embedded_vtable {
+            (vtable.eq_hash)(self.0.embedded_ptr().unwrap(), hasher)
+        } else {
+            Gc::as_ptr(&self.0).hash(hasher)
+        }
+    }
+
+    pub fn eqv_hash<H: Hasher>(&self, hasher: &mut H) {
+        if let Some(vtable) = self.0.rtd.embedded_vtable {
+            (vtable.eqv_hash)(self.0.embedded_ptr().unwrap(), hasher)
+        } else {
+            Gc::as_ptr(&self.0).hash(hasher)
+        }
+    }
+
+    pub fn equal_hash<H: Hasher>(&self, hasher: &mut H) {
+        if let Some(vtable) = self.0.rtd.embedded_vtable {
+            (vtable.equal_hash)(self.0.embedded_ptr().unwrap(), hasher)
+        } else {
+            Gc::as_ptr(&self.0).hash(hasher)
+        }
+    }
 }
 
 impl fmt::Debug for Record {
@@ -571,6 +620,9 @@ unsafe impl Trace for RecordInner {
     }
 
     unsafe fn finalize(&mut self) {
+        unsafe {
+            self.rtd.finalize();
+        }
         let num_fields = self.num_unembedded_fields();
         let fields_ptr = self.fields_ptr_mut();
         for i in 0..num_fields {
@@ -621,7 +673,7 @@ impl fmt::Debug for RecordInner {
 ///
 /// scheme-rs uses the layout of the type to compactly allocate types within
 /// scheme records. Those layouts are stored in the RTD.
-pub unsafe trait Embeddable: fmt::Debug + Trace + Any + Send + Sync  {
+pub unsafe trait Embeddable: fmt::Debug + Trace + Any + Send + Sync {
     /// The Record Type Descriptor of the value. Can be constructed at runtime,
     /// but cannot change.
     fn rtd() -> Arc<RecordTypeDescriptor>
@@ -641,6 +693,66 @@ pub unsafe trait Embeddable: fmt::Debug + Trace + Any + Send + Sync  {
     /// Set the kth field of the record.
     fn set_field(&self, k: usize, _val: Value) -> Result<(), Exception> {
         Err(Exception::error(format!("invalid record field: {k}")))
+    }
+
+    fn eq(&self, rhs: &Record) -> bool
+    where
+        Self: Sized,
+    {
+        let Some(rhs) = rhs.cast::<Self>() else {
+            return false;
+        };
+        std::ptr::eq(
+            self as *const Self as *const (),
+            rhs.embedded_ptr.as_ptr().cast::<()>(),
+        )
+    }
+
+    fn eqv(&self, rhs: &Record) -> bool
+    where
+        Self: Sized,
+    {
+        let Some(rhs) = rhs.cast::<Self>() else {
+            return false;
+        };
+        std::ptr::eq(
+            self as *const Self as *const (),
+            rhs.embedded_ptr.as_ptr().cast::<()>(),
+        )
+    }
+
+    fn equal(&self, rhs: &Record) -> bool
+    where
+        Self: Sized,
+    {
+        let Some(rhs) = rhs.cast::<Self>() else {
+            return false;
+        };
+        std::ptr::eq(
+            self as *const Self as *const (),
+            rhs.embedded_ptr.as_ptr().cast::<()>(),
+        )
+    }
+
+    fn eq_hash(&self, hasher: &mut dyn Hasher)
+    where
+        Self: Sized,
+    {
+        hasher.write_usize(self as *const Self as usize)
+    }
+
+    fn eqv_hash(&self, hasher: &mut dyn Hasher)
+    where
+        Self: Sized,
+    {
+        hasher.write_usize(self as *const Self as usize)
+    }
+
+    fn equal_hash(&self, hasher: &mut dyn Hasher)
+    where
+        Self: Sized,
+    {
+        hasher.write_usize(self as *const Self as usize)
     }
 }
 
@@ -664,6 +776,18 @@ pub struct EmbeddableVTable {
     pub set_field: fn(*const (), usize, Value) -> Result<(), Exception>,
     #[trace(skip)]
     pub debug_fmt: fn(*const (), &mut fmt::Formatter<'_>) -> fmt::Result,
+    #[trace(skip)]
+    pub eq: for<'a> fn(*const (), &'a Record) -> bool,
+    #[trace(skip)]
+    pub eqv: for<'a> fn(*const (), &'a Record) -> bool,
+    #[trace(skip)]
+    pub equal: for<'a> fn(*const (), &'a Record) -> bool,
+    #[trace(skip)]
+    pub eq_hash: for<'a> fn(*const (), &'a mut dyn Hasher),
+    #[trace(skip)]
+    pub eqv_hash: for<'a> fn(*const (), &'a mut dyn Hasher),
+    #[trace(skip)]
+    pub equal_hash: for<'a> fn(*const (), &'a mut dyn Hasher),
 }
 
 impl EmbeddableVTable {
@@ -687,6 +811,18 @@ impl EmbeddableVTable {
                 E::set_field(unsafe { this.cast::<E>().as_ref().unwrap() }, k, val)
             },
             debug_fmt: |this, fmt| E::fmt(unsafe { this.cast::<E>().as_ref().unwrap() }, fmt),
+            eq: |lhs, rhs| E::eq(unsafe { lhs.cast::<E>().as_ref().unwrap() }, rhs),
+            eqv: |lhs, rhs| E::eqv(unsafe { lhs.cast::<E>().as_ref().unwrap() }, rhs),
+            equal: |lhs, rhs| E::equal(unsafe { lhs.cast::<E>().as_ref().unwrap() }, rhs),
+            eq_hash: |this, hasher| {
+                E::eq_hash(unsafe { this.cast::<E>().as_ref().unwrap() }, hasher)
+            },
+            eqv_hash: |this, hasher| {
+                E::eqv_hash(unsafe { this.cast::<E>().as_ref().unwrap() }, hasher)
+            },
+            equal_hash: |this, hasher| {
+                E::equal_hash(unsafe { this.cast::<E>().as_ref().unwrap() }, hasher)
+            },
         }
     }
 
@@ -783,7 +919,7 @@ where
     fn try_from(value: &Value) -> Result<Self, Self::Error> {
         let type_name = T::rtd().name.to_str();
         let UnpackedValue::Record(record) = value.clone().unpack() else {
-            return Err(Exception::type_error(&type_name, value.type_name()));
+            return Err(Exception::type_error(&type_name, &value.type_name()));
         };
         let record_name = record.rtd().name.to_str();
         record

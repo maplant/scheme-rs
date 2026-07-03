@@ -458,7 +458,7 @@ unsafe extern "C" fn apply(
             x => {
                 let raised = raise(
                     Runtime::from_raw_inc_rc(runtime),
-                    Exception::invalid_operator(x.type_name()).into(),
+                    Exception::invalid_operator(&*x.type_name()).into(),
                     barrier.as_mut().unwrap_unchecked(),
                 );
                 return Box::into_raw(Box::new(raised));

@@ -95,7 +95,7 @@ use crate::{
     proc::{Procedure, ProcedureInner},
     records::{Record, RecordInner, RecordTypeDescriptor},
     registry::bridge,
-    strings::{WideString, WideStringInner},
+    strings::WideString,
     symbols::Symbol,
     syntax::{Identifier, Syntax},
     vectors::{self, ByteVector, Vector, VectorInner},
@@ -166,7 +166,6 @@ impl Value {
         unsafe {
             match tag {
                 Tag::Number => Arc::increment_strong_count(untagged as *const NumberInner),
-                Tag::String => Arc::increment_strong_count(untagged as *const WideStringInner),
                 Tag::Vector => {
                     Gc::increment_reference_count(untagged as *mut GcInner<VectorInner<Value>>)
                 }
@@ -247,7 +246,7 @@ impl Value {
         self.unpacked_ref().type_of()
     }
 
-    pub fn type_name(&self) -> &'static str {
+    pub fn type_name(&self) -> Arc<str> {
         self.unpacked_ref().type_name()
     }
 
@@ -292,10 +291,6 @@ impl Value {
             Tag::Number => {
                 let number = unsafe { Arc::from_raw(untagged as *const NumberInner) };
                 UnpackedValue::Number(Number(number))
-            }
-            Tag::String => {
-                let str = unsafe { Arc::from_raw(untagged as *const WideStringInner) };
-                UnpackedValue::String(WideString(str))
             }
             Tag::Symbol => {
                 let untagged = (untagged as usize >> TAG_BITS) as u32;
@@ -378,12 +373,11 @@ impl Value {
             UnpackedValue::Boolean(b) => b.hash(state),
             UnpackedValue::Character(c) => c.hash(state),
             UnpackedValue::Number(n) => Arc::as_ptr(&n.0).hash(state),
-            UnpackedValue::String(s) => Arc::as_ptr(&s.0).hash(state),
             UnpackedValue::Symbol(s) => s.hash(state),
             UnpackedValue::ByteVector(v) => Arc::as_ptr(&v.0).hash(state),
             UnpackedValue::Syntax(s) => Gc::as_ptr(s).hash(state),
             UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
-            UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
+            UnpackedValue::Record(r) => r.eq_hash(state),
             UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
             UnpackedValue::Pair(p) => Gc::as_ptr(&p.0).hash(state),
             UnpackedValue::Vector(v) => Gc::as_ptr(&v.0).hash(state),
@@ -401,12 +395,11 @@ impl Value {
             UnpackedValue::Boolean(b) => b.hash(state),
             UnpackedValue::Character(c) => c.hash(state),
             UnpackedValue::Number(n) => n.hash(state),
-            UnpackedValue::String(s) => Arc::as_ptr(&s.0).hash(state),
             UnpackedValue::Symbol(s) => s.hash(state),
             UnpackedValue::ByteVector(v) => Arc::as_ptr(&v.0).hash(state),
             UnpackedValue::Syntax(s) => Gc::as_ptr(s).hash(state),
             UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
-            UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
+            UnpackedValue::Record(r) => r.eqv_hash(state),
             UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
             UnpackedValue::Pair(p) => Gc::as_ptr(&p.0).hash(state),
             UnpackedValue::Vector(v) => Gc::as_ptr(&v.0).hash(state),
@@ -432,12 +425,11 @@ impl Value {
             UnpackedValue::Boolean(b) => b.hash(state),
             UnpackedValue::Character(c) => c.hash(state),
             UnpackedValue::Number(n) => n.hash(state),
-            UnpackedValue::String(s) => s.hash(state),
             UnpackedValue::Symbol(s) => s.hash(state),
             UnpackedValue::ByteVector(v) => v.hash(state),
             UnpackedValue::Syntax(s) => Gc::as_ptr(s).hash(state),
             UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
-            UnpackedValue::Record(r) => Gc::as_ptr(&r.0).hash(state),
+            UnpackedValue::Record(r) => r.equal_hash(state),
             UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
             UnpackedValue::Pair(p) => {
                 recursive.insert(self.clone());
@@ -613,7 +605,6 @@ pub(crate) enum Tag {
     Boolean = 2,
     Character = 3,
     Number = 4,
-    String = 5,
     Symbol = 6,
     Vector = 7,
     ByteVector = 8,
@@ -633,7 +624,6 @@ impl From<usize> for Tag {
             2 => Self::Boolean,
             3 => Self::Character,
             4 => Self::Number,
-            5 => Self::String,
             6 => Self::Symbol,
             7 => Self::Vector,
             8 => Self::ByteVector,
@@ -656,7 +646,6 @@ pub enum ValueType {
     Boolean,
     Character,
     Number,
-    String,
     Symbol,
     Vector,
     ByteVector,
@@ -678,7 +667,6 @@ pub enum UnpackedValue {
     Boolean(bool),
     Character(char),
     Number(Number),
-    String(WideString),
     Symbol(Symbol),
     Vector(Vector),
     ByteVector(ByteVector),
@@ -704,10 +692,6 @@ impl UnpackedValue {
             Self::Number(num) => {
                 let untagged = Arc::into_raw(num.0);
                 Value::from_ptr_and_tag(untagged, Tag::Number)
-            }
-            Self::String(str) => {
-                let untagged = Arc::into_raw(str.0);
-                Value::from_ptr_and_tag(untagged, Tag::String)
             }
             Self::Symbol(sym) => {
                 Value::from_ptr_and_tag(((sym.0 as usize) << TAG_BITS) as *const (), Tag::Symbol)
@@ -755,13 +739,12 @@ impl UnpackedValue {
             (Self::Number(a), Self::Number(b)) => Arc::ptr_eq(&a.0, &b.0),
             (Self::Character(a), Self::Character(b)) => a == b,
             (Self::Null, Self::Null) => true,
-            (Self::String(a), Self::String(b)) => Arc::ptr_eq(&a.0, &b.0),
             (Self::Pair(a), Self::Pair(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Vector(a), Self::Vector(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(&a.0, &b.0),
             (Self::Procedure(a), Self::Procedure(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Syntax(a), Self::Syntax(b)) => Gc::ptr_eq(a, b),
-            (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
+            (Self::Record(a), Self::Record(b)) => a.eq(b),
             (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
             (Self::Cell(a), b) => a.0.read().unpacked_ref().eq(b),
             (a, Self::Cell(b)) => a.eq(&b.0.read().unpacked_ref()),
@@ -784,13 +767,12 @@ impl UnpackedValue {
             // Both obj1 and obj2 are the empty list
             (Self::Null, Self::Null) => true,
             // Everything else is pointer equivalence
-            (Self::String(a), Self::String(b)) => Arc::ptr_eq(&a.0, &b.0),
             (Self::Pair(a), Self::Pair(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Vector(a), Self::Vector(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(&a.0, &b.0),
             (Self::Procedure(a), Self::Procedure(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Syntax(a), Self::Syntax(b)) => Gc::ptr_eq(a, b),
-            (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
+            (Self::Record(a), Self::Record(b)) => a.eqv(b),
             (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
             (Self::Cell(a), b) => a.0.read().unpacked_ref().eqv(b),
             (a, Self::Cell(b)) => a.eqv(&b.0.read().unpacked_ref()),
@@ -798,21 +780,20 @@ impl UnpackedValue {
         }
     }
 
-    pub fn type_name(&self) -> &'static str {
+    pub fn type_name(&self) -> Arc<str> {
         match self {
-            Self::Undefined => "undefined",
-            Self::Boolean(_) => "bool",
-            Self::Number(_) => "number",
-            Self::Character(_) => "character",
-            Self::String(_) => "string",
-            Self::Symbol(_) => "symbol",
-            Self::Pair(_) | Self::Null => "pair",
-            Self::Vector(_) => "vector",
-            Self::ByteVector(_) => "byte vector",
-            Self::Syntax(_) => "syntax",
-            Self::Procedure(_) => "procedure",
-            Self::Record(_) => "record",
-            Self::RecordTypeDescriptor(_) => "rtd",
+            Self::Undefined => Symbol::intern("undefined").to_str(),
+            Self::Boolean(_) => Symbol::intern("bool").to_str(),
+            Self::Number(_) => Symbol::intern("number").to_str(),
+            Self::Character(_) => Symbol::intern("character").to_str(),
+            Self::Symbol(_) => Symbol::intern("symbol").to_str(),
+            Self::Pair(_) | Self::Null => Symbol::intern("pair").to_str(),
+            Self::Vector(_) => Symbol::intern("vector").to_str(),
+            Self::ByteVector(_) => Symbol::intern("bytevector").to_str(),
+            Self::Syntax(_) => Symbol::intern("syntax").to_str(),
+            Self::Procedure(_) => Symbol::intern("procedure").to_str(),
+            Self::Record(record) => record.rtd().name.to_str(),
+            Self::RecordTypeDescriptor(_) => Symbol::intern("rtd").to_str(),
             Self::Cell(cell) => cell.0.read().type_name(),
         }
     }
@@ -824,7 +805,6 @@ impl UnpackedValue {
             Self::Boolean(_) => ValueType::Boolean,
             Self::Number(_) => ValueType::Number,
             Self::Character(_) => ValueType::Character,
-            Self::String(_) => ValueType::String,
             Self::Symbol(_) => ValueType::Symbol,
             Self::Pair(_) => ValueType::Pair,
             Self::Vector(_) => ValueType::Vector,
@@ -871,7 +851,7 @@ fn fast(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64) -> O
         (ValueType::Pair, ValueType::Pair) => pair_eq(ht, obj1, obj2, k),
         (ValueType::Vector, ValueType::Vector) => vector_eq(ht, obj1, obj2, k),
         (ValueType::ByteVector, ValueType::ByteVector) => bytevector_eq(obj1, obj2, k),
-        (ValueType::String, ValueType::String) => string_eq(obj1, obj2, k),
+        (ValueType::Record, ValueType::Record) => record_equal(obj1, obj2, k),
         _ => None,
     }
 }
@@ -894,7 +874,7 @@ fn slow(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64) -> O
             vector_eq(ht, obj1, obj2, k)
         }
         (ValueType::ByteVector, ValueType::ByteVector) => bytevector_eq(obj1, obj2, k),
-        (ValueType::String, ValueType::String) => string_eq(obj1, obj2, k),
+        (ValueType::Record, ValueType::Record) => record_equal(obj1, obj2, k),
         _ => None,
     }
 }
@@ -928,10 +908,10 @@ fn bytevector_eq(obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
     (*obj1.0.vec.read() == *obj2.0.vec.read()).then_some(k)
 }
 
-fn string_eq(obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
-    let obj1: WideString = obj1.clone().try_into().unwrap();
-    let obj2: WideString = obj2.clone().try_into().unwrap();
-    (obj1 == obj2).then_some(k)
+fn record_equal(obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
+    let obj1: Record = obj1.clone().try_into().unwrap();
+    let obj2: Record = obj2.clone().try_into().unwrap();
+    (obj1.equal(&obj2)).then_some(k)
 }
 
 fn union_find(ht: &mut HashMap<Value, Value>, x: &Value, y: &Value) -> bool {
@@ -1053,7 +1033,7 @@ macro_rules! impl_try_from_value_for {
                 match v {
                     UnpackedValue::$variant(v) => Ok(v),
                     UnpackedValue::Cell(cell) => cell.0.read().clone().try_into(),
-                    e => Err(Exception::type_error($type_name, e.type_name())),
+                    e => Err(Exception::type_error($type_name, &*e.type_name())),
                 }
             }
         }
@@ -1100,7 +1080,7 @@ impl TryFrom<UnpackedValue> for () {
     fn try_from(value: UnpackedValue) -> Result<Self, Self::Error> {
         match value {
             UnpackedValue::Null => Ok(()),
-            e => Err(Exception::type_error("null", e.type_name())),
+            e => Err(Exception::type_error("null", &e.type_name())),
         }
     }
 }
@@ -1131,7 +1111,7 @@ impl TryFrom<UnpackedValue> for Cell {
     fn try_from(v: UnpackedValue) -> Result<Self, Self::Error> {
         match v {
             UnpackedValue::Cell(cell) => Ok(cell.clone()),
-            e => Err(Exception::type_error("cell", e.type_name())),
+            e => Err(Exception::type_error("cell", &*e.type_name())),
         }
     }
 }
@@ -1174,7 +1154,6 @@ impl From<bool> for Value {
 
 impl_try_from_value_for!(char, Character, "char");
 impl_try_from_value_for!(Number, Number, "number");
-impl_try_from_value_for!(WideString, String, "string");
 impl_try_from_value_for!(Symbol, Symbol, "symbol");
 impl_try_from_value_for!(Vector, Vector, "vector");
 impl_try_from_value_for!(ByteVector, ByteVector, "byte-vector");
@@ -1200,7 +1179,6 @@ macro_rules! impl_from_wrapped_for {
     };
 }
 
-impl_from_wrapped_for!(String, String, WideString::immutable);
 impl_from_wrapped_for!(Vec<Value>, Vector, Vector::immutable);
 impl_from_wrapped_for!(Vec<u8>, ByteVector, ByteVector::immutable);
 impl_from_wrapped_for!(Syntax, Syntax, Gc::new);
@@ -1221,7 +1199,7 @@ impl TryFrom<UnpackedValue> for (Value, Value) {
     fn try_from(val: UnpackedValue) -> Result<Self, Self::Error> {
         match val {
             UnpackedValue::Pair(pair) => Ok(pair.into()),
-            e => Err(Exception::type_error("pair", e.type_name())),
+            e => Err(Exception::type_error("pair", &e.type_name())),
         }
     }
 }
@@ -1235,7 +1213,7 @@ macro_rules! impl_num_conversion {
             fn try_from(value: &Value) -> Result<$ty, Self::Error> {
                 match &*value.unpacked_ref() {
                     UnpackedValue::Number(num) => num.try_into(),
-                    e => Err(Exception::type_error("number", e.type_name())),
+                    e => Err(Exception::type_error("number", &e.type_name())),
                 }
             }
         }
@@ -1309,7 +1287,7 @@ impl TryFrom<&Value> for Identifier {
     fn try_from(value: &Value) -> Result<Self, Self::Error> {
         match Option::<Identifier>::from(value) {
             Some(ident) => Ok(ident),
-            None => Err(Exception::type_error("identifier", value.type_name())),
+            None => Err(Exception::type_error("identifier", &value.type_name())),
         }
     }
 }
@@ -1458,7 +1436,6 @@ fn display_value(
         UnpackedValue::Boolean(false) => write!(f, "#f"),
         UnpackedValue::Number(number) => write!(f, "{number}"),
         UnpackedValue::Character(c) => write!(f, "#\\{c}"),
-        UnpackedValue::String(string) => write!(f, "{string}"),
         UnpackedValue::Symbol(symbol) => write!(f, "{symbol}"),
         UnpackedValue::Pair(pair) => {
             let (car, cdr) = pair.into();
@@ -1486,7 +1463,6 @@ fn debug_value(
         UnpackedValue::Boolean(false) => write!(f, "#f"),
         UnpackedValue::Number(number) => write!(f, "{number}"),
         UnpackedValue::Character(c) => write!(f, "#\\{c}"),
-        UnpackedValue::String(string) => write!(f, "{string:?}"),
         UnpackedValue::Symbol(symbol) => write!(f, "{symbol}"),
         UnpackedValue::Pair(pair) => {
             let (car, cdr) = pair.into();

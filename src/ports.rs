@@ -1237,7 +1237,8 @@ impl PortInner {
 unsafe impl Embeddable for PortInner {
     fn rtd() -> Arc<RecordTypeDescriptor>
     where
-        Self: Sized {
+        Self: Sized,
+    {
         rtd!(ty: PortInner, name: "port", sealed: true, opaque: true)
     }
 }
@@ -3371,7 +3372,7 @@ pub fn eof_object_pred(val: &Value) -> Result<Vec<Value>, Exception> {
 }
 
 #[bridge(name = "port?", lib = "(rnrs io builtins (6))")]
-pub fn port_pred(obj: &Value,) -> bool {
+pub fn port_pred(obj: &Value) -> bool {
     obj.is_a::<Embedded<PortInner>>()
 }
 
