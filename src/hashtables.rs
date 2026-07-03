@@ -18,7 +18,7 @@ use crate::{
     registry::bridge,
     strings::WideString,
     symbols::Symbol,
-    value::{Expect1, Value, ValueType},
+    value::{Expect1, Value},
 };
 
 #[derive(Clone, Trace)]
@@ -384,6 +384,12 @@ impl TryFrom<Value> for HashTable {
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         Ok(Self((&value).try_into()?))
+    }
+}
+
+impl From<&Value> for Option<HashTable> {
+    fn from(value: &Value) -> Self {
+        Some(HashTable(value.cast_to()?))
     }
 }
 

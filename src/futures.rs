@@ -26,6 +26,7 @@ type Future = Shared<BoxFuture<'static, Result<Vec<Value>, Exception>>>;
 impl SchemeCompatible for Future {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(
+            ty: Future,
             name: "future",
             opaque: true,
             sealed: true,

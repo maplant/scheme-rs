@@ -33,7 +33,7 @@ use crate::{
         Span, Syntax,
         parse::{ParseSyntaxError, Parser},
     },
-    value::{Expect1, Value, ValueType},
+    value::{Expect1, Value},
     vectors::{ByteVector, Vector},
 };
 
@@ -1096,8 +1096,11 @@ mod __impl {
 
 pub use __impl::*;
 
+#[derive(Trace)]
 pub(crate) struct PortInner {
+    #[trace(skip)]
     pub(crate) info: PortInfo,
+    #[trace(skip)]
     pub(crate) data: Mutex<PortData>,
 }
 
@@ -1228,6 +1231,20 @@ impl PortInner {
                 output_buffer: buffer_mode.new_output_char_buffer(is_write),
             })),
         }
+    }
+}
+
+unsafe impl Embeddable for PortInner {
+    fn rtd() -> Arc<RecordTypeDescriptor>
+    where
+        Self: Sized {
+        rtd!(ty: PortInner, name: "port", sealed: true, opaque: true)
+    }
+}
+
+impl fmt::Debug for PortInner {
+    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Ok(())
     }
 }
 
@@ -2270,7 +2287,7 @@ impl IntoPort for Cursor<Vec<u8>> {
 ///
 /// For more information, see [the module documentation](scheme_rs::ports).
 #[derive(Trace, Clone)]
-pub struct Port(pub(crate) Arc<PortInner>);
+pub struct Port(pub(crate) Embedded<PortInner>);
 
 impl Port {
     /// Create a new Port from a Rust source.
@@ -2315,7 +2332,7 @@ impl Port {
         D: fmt::Display,
         P: IntoPort,
     {
-        Self(Arc::new(PortInner::new(
+        Self(Embedded::new(PortInner::new(
             id,
             port,
             has_read,
@@ -2339,7 +2356,7 @@ impl Port {
         buffer_mode: BufferMode,
         transcoder: Option<Transcoder>,
     ) -> Self {
-        Self(Arc::new(PortInner::new_custom(
+        Self(Embedded::new(PortInner::new_custom(
             id,
             read,
             write,
@@ -2363,7 +2380,7 @@ impl Port {
         close: Option<Procedure>,
         buffer_mode: BufferMode,
     ) -> Self {
-        Self(Arc::new(PortInner::new_custom_textual(
+        Self(Embedded::new(PortInner::new_custom_textual(
             id,
             read,
             write,
@@ -2701,7 +2718,35 @@ impl fmt::Debug for Port {
 
 impl PartialEq for Port {
     fn eq(&self, rhs: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &rhs.0)
+        Embedded::ptr_eq(&self.0, &rhs.0)
+    }
+}
+
+impl From<Port> for Value {
+    fn from(value: Port) -> Self {
+        Value::from(value.0)
+    }
+}
+
+impl TryFrom<Value> for Port {
+    type Error = Exception;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        Ok(Self((&value).try_into()?))
+    }
+}
+
+impl From<&Value> for Option<Port> {
+    fn from(value: &Value) -> Self {
+        Some(Port(value.cast_to()?))
+    }
+}
+
+impl TryFrom<&Value> for Port {
+    type Error = Exception;
+
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        Ok(Self(value.try_into()?))
     }
 }
 
@@ -3326,8 +3371,8 @@ pub fn eof_object_pred(val: &Value) -> Result<Vec<Value>, Exception> {
 }
 
 #[bridge(name = "port?", lib = "(rnrs io builtins (6))")]
-pub fn port_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(obj.type_of() == ValueType::Port)])
+pub fn port_pred(obj: &Value,) -> bool {
+    obj.is_a::<Embedded<PortInner>>()
 }
 
 #[bridge(name = "port-transcoder", lib = "(rnrs io builtins (6))")]
@@ -3395,7 +3440,7 @@ pub fn transcoded_port(
         ..port_info.clone()
     };
 
-    let new_port = Port(Arc::new(PortInner {
+    let new_port = Port(Embedded::new(PortInner {
         info: PortInfo::BinaryPort(new_info),
         data: Mutex::new(PortData::BinaryPort(new_data)),
     }));

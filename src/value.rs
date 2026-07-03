@@ -80,8 +80,6 @@
 //! - **Record**: A [`Record`], which can possibly embed an
 //!   [`Embeddable`](records::Embeddable) Rust value.
 //! - **Record Type Descriptor**: A [descriptor of a record's type](RecordTypeDescriptor).
-//! - **Port**: A value that can handle [input/output](scheme_rs::ports::Port)
-//!   from the outside world.
 //! - **Cell**: A mutable reference to another Value. This type is completely
 //!   transparent and impossible to observe.
 
@@ -94,7 +92,6 @@ use crate::{
     gc::{Gc, GcInner, Trace},
     lists::{self, Pair, PairInner},
     num::{ComplexNumber, Number, NumberInner, SimpleNumber},
-    ports::{Port, PortInner},
     proc::{Procedure, ProcedureInner},
     records::{Record, RecordInner, RecordTypeDescriptor},
     registry::bridge,
@@ -187,7 +184,6 @@ impl Value {
                         Gc::increment_reference_count(untagged as *mut GcInner<PairInner>)
                     }
                 }
-                Tag::Port => Arc::increment_strong_count(untagged as *const PortInner),
                 Tag::Cell => {
                     Gc::increment_reference_count(untagged as *mut GcInner<Value>);
                 }
@@ -254,8 +250,6 @@ impl Value {
     pub fn type_name(&self) -> &'static str {
         self.unpacked_ref().type_name()
     }
-
-    // TODO: These will be cast_to and try_to
 
     /// Attempt to cast the value.
     pub fn cast_to<T>(&self) -> Option<T>
@@ -339,10 +333,6 @@ impl Value {
                     UnpackedValue::Pair(Pair(pair))
                 }
             }
-            Tag::Port => {
-                let port_inner = unsafe { Arc::from_raw(untagged as *const PortInner) };
-                UnpackedValue::Port(Port(port_inner))
-            }
             Tag::Cell => {
                 let cell = unsafe { Gc::from_raw(untagged as *mut GcInner<RwLock<Value>>) };
                 UnpackedValue::Cell(Cell(cell))
@@ -397,7 +387,6 @@ impl Value {
             UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
             UnpackedValue::Pair(p) => Gc::as_ptr(&p.0).hash(state),
             UnpackedValue::Vector(v) => Gc::as_ptr(&v.0).hash(state),
-            UnpackedValue::Port(p) => Arc::as_ptr(&p.0).hash(state),
             UnpackedValue::Cell(c) => c.0.read().eqv_hash(state),
         }
     }
@@ -421,7 +410,6 @@ impl Value {
             UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
             UnpackedValue::Pair(p) => Gc::as_ptr(&p.0).hash(state),
             UnpackedValue::Vector(v) => Gc::as_ptr(&v.0).hash(state),
-            UnpackedValue::Port(p) => Arc::as_ptr(&p.0).hash(state),
             UnpackedValue::Cell(c) => c.0.read().eqv_hash(state),
         }
     }
@@ -465,7 +453,6 @@ impl Value {
                     val.equal_hash(recursive, state);
                 }
             }
-            UnpackedValue::Port(p) => Arc::as_ptr(&p.0).hash(state),
             UnpackedValue::Cell(c) => c.0.read().eqv_hash(state),
         }
     }
@@ -634,7 +621,6 @@ pub(crate) enum Tag {
     Procedure = 10,
     Record = 11,
     RecordTypeDescriptor = 12,
-    Port = 14,
     Cell = 15,
 }
 
@@ -655,7 +641,6 @@ impl From<usize> for Tag {
             10 => Self::Procedure,
             11 => Self::Record,
             12 => Self::RecordTypeDescriptor,
-            14 => Self::Port,
             15 => Self::Cell,
             tag => panic!("Invalid tag: {tag}"),
         }
@@ -679,7 +664,6 @@ pub enum ValueType {
     Procedure,
     Record,
     RecordTypeDescriptor,
-    Port,
 }
 
 /// The external, unpacked, enumeration representation of a scheme value.
@@ -703,7 +687,6 @@ pub enum UnpackedValue {
     Record(Record),
     RecordTypeDescriptor(Arc<RecordTypeDescriptor>),
     Pair(Pair),
-    Port(Port),
     Cell(Cell),
 }
 
@@ -757,10 +740,6 @@ impl UnpackedValue {
                 let untagged = Gc::into_raw(pair.0);
                 Value::from_mut_ptr_and_tag(untagged, Tag::Pair)
             }
-            Self::Port(port) => {
-                let untagged = Arc::into_raw(port.0);
-                Value::from_ptr_and_tag(untagged, Tag::Port)
-            }
             Self::Cell(cell) => {
                 let untagged = Gc::into_raw(cell.0);
                 Value::from_mut_ptr_and_tag(untagged, Tag::Cell)
@@ -784,7 +763,6 @@ impl UnpackedValue {
             (Self::Syntax(a), Self::Syntax(b)) => Gc::ptr_eq(a, b),
             (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
-            (Self::Port(a), Self::Port(b)) => Arc::ptr_eq(&a.0, &b.0),
             (Self::Cell(a), b) => a.0.read().unpacked_ref().eq(b),
             (a, Self::Cell(b)) => a.eq(&b.0.read().unpacked_ref()),
             _ => false,
@@ -814,7 +792,6 @@ impl UnpackedValue {
             (Self::Syntax(a), Self::Syntax(b)) => Gc::ptr_eq(a, b),
             (Self::Record(a), Self::Record(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
-            (Self::Port(a), Self::Port(b)) => Arc::ptr_eq(&a.0, &b.0),
             (Self::Cell(a), b) => a.0.read().unpacked_ref().eqv(b),
             (a, Self::Cell(b)) => a.eqv(&b.0.read().unpacked_ref()),
             _ => false,
@@ -836,7 +813,6 @@ impl UnpackedValue {
             Self::Procedure(_) => "procedure",
             Self::Record(_) => "record",
             Self::RecordTypeDescriptor(_) => "rtd",
-            Self::Port(_) => "port",
             Self::Cell(cell) => cell.0.read().type_name(),
         }
     }
@@ -857,7 +833,6 @@ impl UnpackedValue {
             Self::Procedure(_) => ValueType::Procedure,
             Self::Record(_) => ValueType::Record,
             Self::RecordTypeDescriptor(_) => ValueType::RecordTypeDescriptor,
-            Self::Port(_) => ValueType::Port,
             Self::Cell(cell) => cell.0.read().type_of(),
         }
     }
@@ -1207,7 +1182,6 @@ impl_try_from_value_for!(Gc<Syntax>, Syntax, "syntax");
 impl_try_from_value_for!(Procedure, Procedure, "procedure");
 impl_try_from_value_for!(Pair, Pair, "pair");
 impl_try_from_value_for!(Record, Record, "record");
-impl_try_from_value_for!(Port, Port, "port");
 impl_try_from_value_for!(Arc<RecordTypeDescriptor>, RecordTypeDescriptor, "rt");
 
 macro_rules! impl_from_wrapped_for {
@@ -1496,7 +1470,6 @@ fn display_value(
         UnpackedValue::Record(record) => write!(f, "{record:?}"),
         UnpackedValue::Syntax(syntax) => write!(f, "#<syntax {syntax:#?}>"),
         UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
-        UnpackedValue::Port(_) => write!(f, "<port>"),
         UnpackedValue::Cell(cell) => display_value(&cell.0.read(), circular_values, f),
     }
 }
@@ -1528,7 +1501,6 @@ fn debug_value(
         UnpackedValue::Procedure(proc) => write!(f, "#<procedure {proc:?}>"),
         UnpackedValue::Record(record) => write!(f, "{record:#?}"),
         UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
-        UnpackedValue::Port(_) => write!(f, "<port>"),
         UnpackedValue::Cell(cell) => debug_value(&cell.0.read(), circular_values, f),
     }
 }
