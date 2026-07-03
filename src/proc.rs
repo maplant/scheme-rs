@@ -97,13 +97,14 @@ use crate::{
     exceptions::{Exception, raise},
     gc::{Gc, GcInner, Trace},
     lists::{self, Pair, list_to_vec},
+    parameters::Parameter,
     ports::{BufferMode, Port, Transcoder},
     records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
     registry::BridgeFnDebugInfo,
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
     syntax::Span,
-    value::Value,
+    value::{Cell, Value},
     vectors::Vector,
 };
 use parking_lot::RwLock;
@@ -920,14 +921,19 @@ pub struct ContBarrier<'a> {
     cont_marks: Vec<HashMap<Symbol, Value>>,
     /// The active installed mutable parameters
     params: HashMap<Symbol, Param<'a>>,
+    /// Per-task parameter bindings, keyed by Parameter id
+    parameter_cells: HashMap<usize, Cell>,
 }
 
 impl<'a> ContBarrier<'a> {
-    pub fn new() -> Self {
+    fn next_id() -> usize {
         static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+        NEXT_ID.fetch_add(1, Ordering::Relaxed)
+    }
 
+    pub fn new() -> Self {
         Self {
-            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            id: Self::next_id(),
             dyn_stack: Vec::new(),
             // Procedures returned by the JIT compiler are delimited
             // continuations (of sorts), and therefore we need to preallocate
@@ -935,6 +941,17 @@ impl<'a> ContBarrier<'a> {
             // for them when they're run.
             cont_marks: vec![HashMap::new()],
             params: HashMap::new(),
+            parameter_cells: HashMap::new(),
+        }
+    }
+
+    pub fn child(&self) -> ContBarrier<'static> {
+        ContBarrier {
+            id: Self::next_id(),
+            dyn_stack: Vec::new(),
+            cont_marks: vec![HashMap::new()],
+            params: HashMap::new(),
+            parameter_cells: self.parameter_cells.clone(),
         }
     }
 
@@ -943,6 +960,7 @@ impl<'a> ContBarrier<'a> {
             id: self.id,
             dyn_stack: self.dyn_stack.clone(),
             cont_marks: self.cont_marks.clone(),
+            parameter_cells: self.parameter_cells.clone(),
         }
     }
 
@@ -1093,6 +1111,22 @@ impl<'a> ContBarrier<'a> {
     pub(crate) fn dyn_stack_is_empty(&self) -> bool {
         self.dyn_stack.is_empty()
     }
+
+    pub(crate) fn parameter_ref(&self, param: &Gc<Parameter>) -> Value {
+        match self.parameter_cells.get(&param.id()) {
+            Some(cell) => cell.get(),
+            None => param.default_value(),
+        }
+    }
+
+    pub(crate) fn parameter_set(&mut self, param_id: usize, val: Value) {
+        match self.parameter_cells.get(&param_id) {
+            Some(cell) => cell.set(val),
+            None => {
+                self.parameter_cells.insert(param_id, Cell::new(val));
+            }
+        }
+    }
 }
 
 impl Default for ContBarrier<'_> {
@@ -1120,6 +1154,7 @@ pub struct SavedDynamicState {
     id: usize,
     dyn_stack: Vec<DynStackElem>,
     cont_marks: Vec<HashMap<Symbol, Value>>,
+    parameter_cells: HashMap<usize, Cell>,
 }
 
 impl SavedDynamicState {
@@ -1145,6 +1180,7 @@ impl From<SavedDynamicState> for ContBarrier<'_> {
         ContBarrier {
             dyn_stack: value.dyn_stack,
             cont_marks: value.cont_marks,
+            parameter_cells: value.parameter_cells,
             ..Default::default()
         }
     }
@@ -1803,6 +1839,7 @@ unsafe extern "C" fn unwind_to_prompt(
                         dyn_stack: saved_barrier.as_ref().dyn_stack[barrier.dyn_stack_len() + 1..]
                             .to_vec(),
                         cont_marks: saved_barrier.cont_marks.clone(),
+                        parameter_cells: saved_barrier.parameter_cells.clone(),
                     };
                     let (req_args, var) = {
                         let k_proc: Procedure = k.clone().try_into().unwrap();

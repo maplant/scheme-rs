@@ -574,6 +574,12 @@ unsafe impl Trace for Value {
 #[derive(Clone, Trace)]
 pub struct Cell(pub(crate) Gc<RwLock<Value>>);
 
+impl std::fmt::Debug for Cell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "#<cell>")
+    }
+}
+
 impl Cell {
     pub fn new(val: Value) -> Self {
         Self(Gc::new(RwLock::new(val)))
