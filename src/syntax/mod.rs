@@ -7,7 +7,7 @@ use crate::{
     gc::{Gc, Trace},
     ports::Port,
     proc::{ContBarrier, Procedure},
-    records::{Embeddable, RecordTypeDescriptor, rtd},
+    records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
     registry::bridge,
     symbols::Symbol,
     syntax::parse::ParseSyntaxError,
@@ -96,6 +96,15 @@ pub enum Syntax {
     },
 }
 
+unsafe impl Embeddable for Syntax {
+    fn rtd() -> Arc<RecordTypeDescriptor>
+    where
+        Self: Sized,
+    {
+        rtd!(ty: Syntax, name: "syntax", sealed: true, opaque: true)
+    }
+}
+
 impl Syntax {
     pub(crate) fn adjust_scope(&mut self, scope: Scope, op: fn(&mut Identifier, Scope)) {
         match self {
@@ -147,7 +156,9 @@ impl Syntax {
                 vector: vec.iter().map(|value| Syntax::wrap(value, span)).collect(),
                 span: span.clone(),
             },
-            UnpackedValue::Syntax(syn) => syn.as_ref().clone(),
+            UnpackedValue::Record(rec) if let Some(syn) = rec.cast::<Syntax>() => {
+                syn.as_ref().clone()
+            }
             value => Syntax::Wrapped {
                 value: value.into_value(),
                 span: Span::default(),
@@ -196,7 +207,7 @@ impl Syntax {
                     .collect(),
                 span: Span::default(),
             },
-            UnpackedValue::Syntax(syn) => {
+            UnpackedValue::Record(rec) if let Some(syn) = rec.cast::<Syntax>() => {
                 let mut syn = syn.as_ref().clone();
                 for scope in scopes {
                     syn.add_scope(*scope);
@@ -226,11 +237,13 @@ impl Syntax {
             UnpackedValue::Vector(vec) => {
                 Value::from(vec.iter().map(Self::syntax_to_datum).collect::<Vec<_>>())
             }
-            UnpackedValue::Syntax(syn) => match syn.as_ref() {
-                Syntax::Identifier { ident, .. } => Value::from(ident.sym),
-                Syntax::Wrapped { value, .. } => value.clone(),
-                syn => Syntax::syntax_to_datum(Self::unwrap(syn.clone())),
-            },
+            UnpackedValue::Record(rec) if let Some(syn) = rec.cast::<Syntax>() => {
+                match syn.as_ref() {
+                    Syntax::Identifier { ident, .. } => Value::from(ident.sym),
+                    Syntax::Wrapped { value, .. } => value.clone(),
+                    syn => Syntax::syntax_to_datum(Self::unwrap(syn.clone())),
+                }
+            }
             unpacked => unpacked.into_value(),
         }
     }
@@ -605,6 +618,29 @@ impl PartialEq<str> for Identifier {
     }
 }
 
+impl From<&Value> for Option<Identifier> {
+    fn from(value: &Value) -> Self {
+        if let Some(Syntax::Identifier { ident, .. }) =
+            value.cast_to::<Embedded<Syntax>>().as_deref()
+        {
+            Some(ident.clone())
+        } else {
+            None
+        }
+    }
+}
+
+impl TryFrom<&Value> for Identifier {
+    type Error = Exception;
+
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        match Option::<Identifier>::from(value) {
+            Some(ident) => Ok(ident),
+            None => Err(Exception::type_error("identifier", &value.type_name())),
+        }
+    }
+}
+
 #[bridge(name = "syntax->datum", lib = "(rnrs syntax-case builtins (6))")]
 pub fn syntax_to_datum(value: &Value) -> Result<Vec<Value>, Exception> {
     // This is quite slow and could be improved
@@ -675,7 +711,7 @@ pub fn syntax_violation(
     let mut conditions = Vec::new();
     if who.is_true() {
         conditions.push(Value::from(Who::new(who.clone())));
-    } else if let Some(syntax) = form.cast_to::<Gc<Syntax>>() {
+    } else if let Some(syntax) = form.cast_to::<Embedded<Syntax>>() {
         let who = if let Syntax::Identifier { ident, .. } = syntax.as_ref() {
             Some(ident.sym)
         } else if let Some([Syntax::Identifier { ident, .. }, ..]) = syntax.as_list() {

@@ -538,6 +538,12 @@ impl Record {
     }
 }
 
+impl fmt::Display for Record {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 impl fmt::Debug for Record {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
@@ -638,15 +644,23 @@ unsafe impl Trace for RecordInner {
     }
 }
 
+impl fmt::Display for RecordInner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(vtable) = self.rtd.embedded_vtable {
+            (vtable.display_fmt)(self.embedded_ptr().unwrap(), f)
+        } else {
+            Ok(())
+        }
+    }
+}
+
 impl fmt::Debug for RecordInner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "#<{}", self.rtd.name)?;
-        let skipped_fields = if let Some(vtable) = self.rtd.embedded_vtable {
+        if let Some(vtable) = self.rtd.embedded_vtable {
             (vtable.debug_fmt)(self.embedded_ptr().unwrap(), f)?;
-            vtable.embedded_fields
-        } else {
-            0
-        };
+        }
+
+        write!(f, "#<{}", self.rtd.name)?;
         for (Field::Mutable(name) | Field::Immutable(name), field) in self
             .rtd
             .inherits
@@ -654,7 +668,6 @@ impl fmt::Debug for RecordInner {
             .cloned()
             .chain(Some(ByAddress(self.rtd.clone())))
             .flat_map(|rtd| rtd.fields.clone())
-            .skip(skipped_fields)
             .zip(self.fields())
         {
             write!(f, " {name}: {field:?}")?;
@@ -673,7 +686,7 @@ impl fmt::Debug for RecordInner {
 ///
 /// scheme-rs uses the layout of the type to compactly allocate types within
 /// scheme records. Those layouts are stored in the RTD.
-pub unsafe trait Embeddable: fmt::Debug + Trace + Any + Send + Sync {
+pub unsafe trait Embeddable: Trace + Any + Send + Sync {
     /// The Record Type Descriptor of the value. Can be constructed at runtime,
     /// but cannot change.
     fn rtd() -> Arc<RecordTypeDescriptor>
@@ -693,6 +706,14 @@ pub unsafe trait Embeddable: fmt::Debug + Trace + Any + Send + Sync {
     /// Set the kth field of the record.
     fn set_field(&self, k: usize, _val: Value) -> Result<(), Exception> {
         Err(Exception::error(format!("invalid record field: {k}")))
+    }
+
+    fn display_fmt(&self, _fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Ok(())
+    }
+
+    fn debug_fmt(&self, _fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Ok(())
     }
 
     fn eq(&self, rhs: &Record) -> bool
@@ -775,6 +796,8 @@ pub struct EmbeddableVTable {
     #[trace(skip)]
     pub set_field: fn(*const (), usize, Value) -> Result<(), Exception>,
     #[trace(skip)]
+    pub display_fmt: fn(*const (), &mut fmt::Formatter<'_>) -> fmt::Result,
+    #[trace(skip)]
     pub debug_fmt: fn(*const (), &mut fmt::Formatter<'_>) -> fmt::Result,
     #[trace(skip)]
     pub eq: for<'a> fn(*const (), &'a Record) -> bool,
@@ -810,7 +833,10 @@ impl EmbeddableVTable {
             set_field: |this, k, val| {
                 E::set_field(unsafe { this.cast::<E>().as_ref().unwrap() }, k, val)
             },
-            debug_fmt: |this, fmt| E::fmt(unsafe { this.cast::<E>().as_ref().unwrap() }, fmt),
+            display_fmt: |this, fmt| {
+                E::display_fmt(unsafe { this.cast::<E>().as_ref().unwrap() }, fmt)
+            },
+            debug_fmt: |this, fmt| E::debug_fmt(unsafe { this.cast::<E>().as_ref().unwrap() }, fmt),
             eq: |lhs, rhs| E::eq(unsafe { lhs.cast::<E>().as_ref().unwrap() }, rhs),
             eqv: |lhs, rhs| E::eqv(unsafe { lhs.cast::<E>().as_ref().unwrap() }, rhs),
             equal: |lhs, rhs| E::equal(unsafe { lhs.cast::<E>().as_ref().unwrap() }, rhs),

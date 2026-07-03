@@ -414,7 +414,10 @@ impl CompilationUnit<'_, '_> {
         let cell_value = self.builder.inst_results(call)[0];
 
         // Check if the cell is undefined:
-        let cond = self.builder.ins().icmp_imm(IntCC::Equal, cell_value, 0);
+        let cond = self
+            .builder
+            .ins()
+            .icmp_imm(IntCC::Equal, cell_value, Tag::Record as i64);
 
         let undefined_block = self.builder.create_block();
         let defined_block = self.builder.create_block();
@@ -650,7 +653,10 @@ impl CompilationUnit<'_, '_> {
         // Check for error if we need to:
         if let Some(error_slot) = error_slot {
             // Check if the result is undefined:
-            let cond = self.builder.ins().icmp_imm(IntCC::Equal, result, 0);
+            let cond = self
+                .builder
+                .ins()
+                .icmp_imm(IntCC::Equal, result, Tag::Record as i64);
 
             let failure_block = self.builder.create_block();
             let success_block = self.builder.create_block();
@@ -1026,7 +1032,7 @@ impl CompilationUnit<'_, '_> {
         for (i, env_var) in bundle.env.iter().enumerate() {
             let val = if fix_vals.contains(env_var) {
                 // Undefined
-                self.builder.ins().iconst(types::I64, 0)
+                self.builder.ins().iconst(types::I64, Tag::Record as i64)
             } else {
                 match *self.rebinds.fetch_bind(env_var) {
                     IrValue::Cell(ptr) => ptr,

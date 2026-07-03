@@ -27,6 +27,15 @@ pub(crate) struct WideStringInner {
     mutable: bool,
 }
 
+impl fmt::Display for WideStringInner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for char in &*self.chars.read() {
+            write!(f, "{char}")?;
+        }
+        Ok(())
+    }
+}
+
 impl fmt::Debug for WideStringInner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "\"")?;
@@ -43,6 +52,14 @@ unsafe impl Embeddable for WideStringInner {
         Self: Sized,
     {
         rtd!(ty: WideStringInner, name: "string", sealed: true, opaque: true)
+    }
+
+    fn display_fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "{self}")
+    }
+
+    fn debug_fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "{self:?}")
     }
 
     fn equal(&self, rhs: &Record) -> bool

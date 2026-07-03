@@ -541,7 +541,7 @@ define_condition_type!(
 impl PrettyCondition for StackTrace {
     fn span(&self) -> Span {
         let first = self.trace.first().unwrap();
-        let Some(syntax) = first.cast_to::<Gc<Syntax>>() else {
+        let Some(syntax) = first.cast_to::<Embedded<Syntax>>() else {
             return Span::default();
         };
         syntax.span().clone()
@@ -549,7 +549,7 @@ impl PrettyCondition for StackTrace {
 
     fn pretty_print(&self, w: &mut impl fmt::Write) -> fmt::Result {
         for (i, trace) in self.trace.iter().enumerate() {
-            let Some(syntax) = trace.cast_to::<Gc<Syntax>>() else {
+            let Some(syntax) = trace.cast_to::<Embedded<Syntax>>() else {
                 continue;
             };
             let span = syntax.span();
@@ -571,7 +571,7 @@ impl StackTrace {
     pub fn trace(&self) -> Vec<Syntax> {
         self.trace
             .iter()
-            .filter_map(|v| v.cast_to::<Gc<Syntax>>())
+            .filter_map(|v| v.cast_to::<Embedded<Syntax>>())
             .map(|syntax| syntax.as_ref().clone())
             .collect()
     }
@@ -791,7 +791,7 @@ impl PrettyCondition for SyntaxViolation {
         self.subform
             .as_ref()
             .unwrap_or(&self.form)
-            .cast_to::<Gc<Syntax>>()
+            .cast_to::<Embedded<Syntax>>()
             .unwrap()
             .span()
             .clone()
