@@ -11,7 +11,6 @@ pub mod env;
 pub mod eval;
 pub mod exceptions;
 pub(crate) mod expand;
-pub mod parameters;
 pub mod gc;
 pub mod hashtables;
 pub mod keywords;
@@ -19,6 +18,7 @@ pub mod lists;
 #[cfg(feature = "lsp")]
 pub mod lsp;
 pub mod num;
+pub mod parameters;
 pub mod ports;
 pub mod proc;
 pub mod records;
