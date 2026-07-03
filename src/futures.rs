@@ -45,9 +45,8 @@ pub fn make_future(
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
     let proc: Procedure = args[0].clone().try_into()?;
-    // The task inherits a snapshot of the parameter bindings as of future
-    // creation, not as of first await.
-    let mut child = barrier.child();
+    // Parameter bindings are inherited as of future creation, not first await.
+    let mut child = ContBarrier::from(barrier.child_state());
     let future: Future = async move { proc.call(&[], &mut child).await }
         .boxed()
         .shared();
@@ -65,7 +64,7 @@ pub fn spawn(
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
     let task: Procedure = args[0].clone().try_into()?;
-    let mut child = barrier.child();
+    let mut child = ContBarrier::from(barrier.child_state());
     let task = tokio::task::spawn(async move { task.call(&[], &mut child).await });
     let future: Future = async move { task.await.unwrap() }.boxed().shared();
     let future = Value::from(Record::from_rust_type(future));

@@ -53,10 +53,9 @@ pub fn spawn(
     let thunk: Procedure = args[0].clone().try_into()?;
     let cell = Gc::new(Mutex::new(Ok(Vec::new())));
     let cell_cloned = cell.clone();
-    // The child inherits a snapshot of the parent's parameter bindings.
-    // Moved as SavedDynamicState because ContBarrier itself is not Send
-    // in non-async builds.
-    let child = barrier.child().save();
+    // Built into a ContBarrier inside the closure; ContBarrier itself is
+    // not Send in non-async builds.
+    let child = barrier.child_state();
     // Capture the runtime handle so the child thread can enter the reactor
     // context (timers/IO in async bridges work). Remaining ceiling:
     // reactor-backed bridges reached from hashtable hash/eq callbacks park a
