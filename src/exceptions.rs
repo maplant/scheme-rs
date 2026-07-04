@@ -246,7 +246,7 @@ impl Exception {
     }
 
     pub fn add_condition(self, condition: impl Embeddable) -> Self {
-        let mut conditions = if let Some(compound) = self.0.cast_to::<Embedded<CompoundCondition>>()
+        let mut conditions = if let Some(compound) = self.0.cast::<Embedded<CompoundCondition>>()
         {
             compound.0.clone()
         } else {
@@ -259,9 +259,9 @@ impl Exception {
     }
 
     pub fn simple_conditions(&self) -> Result<Vec<Value>, Exception> {
-        if self.0.cast_to::<Embedded<SimpleCondition>>().is_some() {
+        if self.0.cast::<Embedded<SimpleCondition>>().is_some() {
             Ok(vec![self.0.clone()])
-        } else if let Some(compound_condition) = self.0.cast_to::<Embedded<CompoundCondition>>() {
+        } else if let Some(compound_condition) = self.0.cast::<Embedded<CompoundCondition>>() {
             Ok(compound_condition.0.clone())
         } else {
             Err(Exception::error("not a simple or compound condition"))
@@ -270,7 +270,7 @@ impl Exception {
 
     pub fn condition<T: Embeddable>(&self) -> Result<Option<Embedded<T>>, Exception> {
         for condition in self.simple_conditions()?.into_iter() {
-            if let Some(condition) = condition.cast_to::<Embedded<T>>() {
+            if let Some(condition) = condition.cast::<Embedded<T>>() {
                 return Ok(Some(condition));
             }
         }
@@ -292,17 +292,17 @@ impl Exception {
 
         writeln!(f, "Uncaught exception:")?;
         for condition in conditions.into_iter().rev() {
-            if let Some(message) = condition.cast_to::<Embedded<Message>>() {
+            if let Some(message) = condition.cast::<Embedded<Message>>() {
                 writeln!(f, " - Message: {}", message.message)?;
-            } else if let Some(syntax) = condition.cast_to::<Embedded<SyntaxViolation>>() {
+            } else if let Some(syntax) = condition.cast::<Embedded<SyntaxViolation>>() {
                 writeln!(f, " - Syntax error in form: {:?}", syntax.form)?;
                 source_cache.pretty_print_condition(syntax.as_ref(), f)?;
-            } else if let Some(trace) = condition.cast_to::<Embedded<StackTrace>>() {
+            } else if let Some(trace) = condition.cast::<Embedded<StackTrace>>() {
                 if !trace.trace.is_empty() {
                     writeln!(f, " - Trace:")?;
                     source_cache.pretty_print_condition(trace.as_ref(), f)?;
                 }
-            } else if condition.cast_to::<Embedded<Assertion>>().is_some() {
+            } else if condition.cast::<Embedded<Assertion>>().is_some() {
                 writeln!(f, " - Assertion failed")?;
             } else {
                 writeln!(f, " - Condition: {condition:?}")?;
@@ -443,8 +443,8 @@ impl fmt::Debug for SimpleCondition {
 
 #[bridge(name = "condition?", lib = "(rnrs conditions (6))")]
 pub fn condition_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
-    let is_condition = obj.cast_to::<Embedded<SimpleCondition>>().is_some()
-        || obj.cast_to::<Embedded<CompoundCondition>>().is_some();
+    let is_condition = obj.cast::<Embedded<SimpleCondition>>().is_some()
+        || obj.cast::<Embedded<CompoundCondition>>().is_some();
     Ok(vec![Value::from(is_condition)])
 }
 
@@ -541,7 +541,7 @@ define_condition_type!(
 impl PrettyCondition for StackTrace {
     fn span(&self) -> Span {
         let first = self.trace.first().unwrap();
-        let Some(syntax) = first.cast_to::<Embedded<Syntax>>() else {
+        let Some(syntax) = first.cast::<Embedded<Syntax>>() else {
             return Span::default();
         };
         syntax.span().clone()
@@ -549,7 +549,7 @@ impl PrettyCondition for StackTrace {
 
     fn pretty_print(&self, w: &mut impl fmt::Write) -> fmt::Result {
         for (i, trace) in self.trace.iter().enumerate() {
-            let Some(syntax) = trace.cast_to::<Embedded<Syntax>>() else {
+            let Some(syntax) = trace.cast::<Embedded<Syntax>>() else {
                 continue;
             };
             let span = syntax.span();
@@ -571,7 +571,7 @@ impl StackTrace {
     pub fn trace(&self) -> Vec<Syntax> {
         self.trace
             .iter()
-            .filter_map(|v| v.cast_to::<Embedded<Syntax>>())
+            .filter_map(|v| v.cast::<Embedded<Syntax>>())
             .map(|syntax| syntax.as_ref().clone())
             .collect()
     }
@@ -791,7 +791,7 @@ impl PrettyCondition for SyntaxViolation {
         self.subform
             .as_ref()
             .unwrap_or(&self.form)
-            .cast_to::<Embedded<Syntax>>()
+            .cast::<Embedded<Syntax>>()
             .unwrap()
             .span()
             .clone()
@@ -963,7 +963,7 @@ pub fn raise_builtin(
 
 /// Raises a non-continuable exception to the current exception handler.
 pub fn raise(runtime: Runtime, raised: Value, barrier: &mut ContBarrier) -> Application {
-    let raised = if let Some(condition) = raised.cast_to::<Exception>() {
+    let raised = if let Some(condition) = raised.cast::<Exception>() {
         let trace = barrier.current_marks(Symbol::intern("trace"));
         Value::from(condition.add_condition(StackTrace::new(trace)))
     } else {

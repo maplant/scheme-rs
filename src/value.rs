@@ -90,7 +90,7 @@ use crate::{
     exceptions::Exception,
     gc::{Gc, GcInner, Trace},
     lists::{self, Pair, PairInner},
-    num::{ComplexNumber, Number, NumberInner, SimpleNumber},
+    num::{ComplexNumber, Number, NumberInner, NumberRepr, SimpleNumber},
     proc::{Procedure, ProcedureInner},
     records::{Embedded, Record, RecordInner, RecordTypeDescriptor},
     registry::bridge,
@@ -118,6 +118,8 @@ pub(crate) const SYMBOL_CHAR: u32 = 0x110000;
 pub(crate) const NULL_VALUE: usize = Tag::Pair as usize;
 pub(crate) const TRUE_VALUE: usize = Tag::Boolean as usize | 1 << TAG_BITS;
 pub(crate) const FALSE_VALUE: usize = Tag::Boolean as usize;
+pub const FIXNUM_MIN: i64 = -(1 << 62);
+pub const FIXNUM_MAX: i64 = (1 << 62) - 1;
 
 /// A Scheme value. See [the module documentation](scheme_rs::value) for more
 /// information.
@@ -250,7 +252,7 @@ impl Value {
     }
 
     /// Attempt to cast the value.
-    pub fn cast_to<T>(&self) -> Option<T>
+    pub fn cast<T>(&self) -> Option<T>
     where
         for<'a> &'a Self: Into<Option<T>>,
     {
@@ -295,7 +297,7 @@ impl Value {
             }
             Tag::Number => {
                 let number = unsafe { Arc::from_raw(untagged as *const NumberInner) };
-                UnpackedValue::Number(Number(number))
+                UnpackedValue::Number(Number(NumberRepr::Heap(number)))
             }
             Tag::Procedure => {
                 let clos = unsafe { Gc::from_raw(untagged as *mut GcInner<ProcedureInner>) };
@@ -413,7 +415,7 @@ impl Value {
             UnpackedValue::Null => (),
             UnpackedValue::Boolean(b) => b.hash(state),
             UnpackedValue::Character(c) => c.hash(state),
-            UnpackedValue::Number(n) => Arc::as_ptr(&n.0).hash(state),
+            UnpackedValue::Number(n) => n.eq_hash(state),
             UnpackedValue::Symbol(s) => s.hash(state),
             UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
             UnpackedValue::Record(r) => r.eq_hash(state),
@@ -628,28 +630,28 @@ impl From<Exception> for Value {
 #[repr(u64)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Tag {
-    Pair = 1,
-    Boolean = 2,
-    CharacterOrSymbol = 3,
-    Number = 4,
-    Procedure = 10,
-    Record = 11,
-    RecordTypeDescriptor = 12,
-    Cell = 15,
+    Pair = 0,
+    Boolean = 1,
+    CharacterOrSymbol = 2,
+    Number = 3,
+    Procedure = 4,
+    Record = 5,
+    RecordTypeDescriptor = 6,
+    Cell = 7,
 }
 
 // TODO: Make TryFrom with error
 impl From<usize> for Tag {
     fn from(tag: usize) -> Self {
         match tag {
-            1 => Self::Pair,
-            2 => Self::Boolean,
-            3 => Self::CharacterOrSymbol,
-            4 => Self::Number,
-            10 => Self::Procedure,
-            11 => Self::Record,
-            12 => Self::RecordTypeDescriptor,
-            15 => Self::Cell,
+            0 => Self::Pair,
+            1 => Self::Boolean,
+            2 => Self::CharacterOrSymbol,
+            3 => Self::Number,
+            4 => Self::Procedure,
+            5 => Self::Record,
+            6 => Self::RecordTypeDescriptor,
+            7 => Self::Cell,
             tag => panic!("Invalid tag: {tag}"),
         }
     }
@@ -698,16 +700,21 @@ impl UnpackedValue {
             Self::Boolean(b) => {
                 Value::from_ptr_and_tag(((b as usize) << TAG_BITS) as *const (), Tag::Boolean)
             }
-            Self::Character(c) => {
-                Value::from_ptr_and_tag(((c as usize) << TAG_BITS) as *const (), Tag::CharacterOrSymbol)
-            }
-            Self::Number(num) => {
-                let untagged = Arc::into_raw(num.0);
-                Value::from_ptr_and_tag(untagged, Tag::Number)
-            }
-            Self::Symbol(sym) => {
-                Value::from_ptr_and_tag((((sym.0 as usize) << 32) | (SYMBOL_CHAR as usize) << TAG_BITS) as *const (), Tag::CharacterOrSymbol)
-            }
+            Self::Character(c) => Value::from_ptr_and_tag(
+                ((c as usize) << TAG_BITS) as *const (),
+                Tag::CharacterOrSymbol,
+            ),
+            Self::Number(num) => match num.0 {
+                NumberRepr::Heap(num) => {
+                    let untagged = Arc::into_raw(num);
+                    Value::from_ptr_and_tag(untagged, Tag::Number)
+                }
+                _ => todo!(),
+            },
+            Self::Symbol(sym) => Value::from_ptr_and_tag(
+                (((sym.0 as usize) << 32) | (SYMBOL_CHAR as usize) << TAG_BITS) as *const (),
+                Tag::CharacterOrSymbol,
+            ),
             Self::Procedure(clos) => {
                 let untagged = Gc::into_raw(clos.0);
                 Value::from_mut_ptr_and_tag(untagged, Tag::Procedure)
@@ -736,7 +743,7 @@ impl UnpackedValue {
         match (self, rhs) {
             (Self::Boolean(a), Self::Boolean(b)) => a == b,
             (Self::Symbol(a), Self::Symbol(b)) => a == b,
-            (Self::Number(a), Self::Number(b)) => Arc::ptr_eq(&a.0, &b.0),
+            (Self::Number(a), Self::Number(b)) => a.eq(b),
             (Self::Character(a), Self::Character(b)) => a == b,
             (Self::Null, Self::Null) => true,
             (Self::Pair(a), Self::Pair(b)) => Gc::ptr_eq(&a.0, &b.0),
@@ -837,7 +844,7 @@ fn fast(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64) -> O
     }
     match (obj1.type_of(), obj2.type_of()) {
         (ValueType::Pair, ValueType::Pair) => pair_eq(ht, obj1, obj2, k),
-        (ValueType::Record, ValueType::Record) => record_equal(ht, obj1.cast_to()?, obj2.cast_to()?, k),
+        (ValueType::Record, ValueType::Record) => record_equal(ht, obj1.cast()?, obj2.cast()?, k),
         _ => None,
     }
 }
@@ -858,7 +865,7 @@ fn slow(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64) -> O
             if union_find(ht, obj1, obj2) {
                 Some(0)
             } else {
-                record_equal(ht, obj1.cast_to()?, obj2.cast_to()?, k)
+                record_equal(ht, obj1.cast()?, obj2.cast()?, k)
             }
         }
         _ => None,
@@ -873,7 +880,12 @@ fn pair_eq(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64) -
     e(ht, &car_x, &car_y, k - 1).and_then(|k| e(ht, &cdr_x, &cdr_y, k))
 }
 
-fn vector_eq(ht: &mut HashMap<Value, Value>, vobj1: Embedded<VectorInner<Value>>, vobj2: Embedded<VectorInner<Value>>, k: i64) -> Option<i64> {
+fn vector_eq(
+    ht: &mut HashMap<Value, Value>,
+    vobj1: Embedded<VectorInner<Value>>,
+    vobj2: Embedded<VectorInner<Value>>,
+    k: i64,
+) -> Option<i64> {
     let vobj1 = vobj1.vec.read();
     let vobj2 = vobj2.vec.read();
     if vobj1.len() != vobj2.len() {
@@ -896,7 +908,8 @@ fn bytevector_eq(obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
 
 fn record_equal(ht: &mut HashMap<Value, Value>, obj1: Record, obj2: Record, k: i64) -> Option<i64> {
     if let Some(vobj1) = obj1.cast::<VectorInner<Value>>() {
-        obj2.cast::<VectorInner<Value>>().map_or(None, |vobj2| vector_eq(ht, vobj1, vobj2, k))
+        obj2.cast::<VectorInner<Value>>()
+            .map_or(None, |vobj2| vector_eq(ht, vobj1, vobj2, k))
     } else {
         /*
         let obj1: Record = obj1.clone().try_into().unwrap();

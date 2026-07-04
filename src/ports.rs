@@ -2739,7 +2739,7 @@ impl TryFrom<Value> for Port {
 
 impl From<&Value> for Option<Port> {
     fn from(value: &Value) -> Self {
-        Some(Port(value.cast_to()?))
+        Some(Port(value.cast()?))
     }
 }
 
@@ -3367,7 +3367,7 @@ pub fn eof_object() -> Result<Vec<Value>, Exception> {
 #[bridge(name = "eof-object?", lib = "(rnrs io builtins (6))")]
 pub fn eof_object_pred(val: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(
-        val.cast_to::<Embedded<EofObject>>().is_some(),
+        val.cast::<Embedded<EofObject>>().is_some(),
     )])
 }
 
@@ -4376,7 +4376,7 @@ unsafe extern "C" fn close_port_and_call_k(
         let k = env.add(1).as_ref().unwrap().clone();
 
         // Collect necessary arguments
-        let k_proc = k.cast_to::<Procedure>().unwrap();
+        let k_proc = k.cast::<Procedure>().unwrap();
         let args = k_proc.collect_args(args);
 
         let k = Procedure::new_cont(
@@ -4410,7 +4410,7 @@ unsafe extern "C" fn call_k_with_env(
             .add(1)
             .as_ref()
             .unwrap()
-            .cast_to::<Vector>()
+            .cast::<Vector>()
             .unwrap()
             .clone_inner_vec();
 

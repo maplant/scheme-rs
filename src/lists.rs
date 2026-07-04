@@ -214,7 +214,7 @@ impl From<&Value> for Option<List> {
             if !seen.insert(cdr.clone()) {
                 return None;
             }
-            let (car, new_cdr) = cdr.cast_to()?;
+            let (car, new_cdr) = cdr.cast()?;
             items.push(car);
             cdr = new_cdr;
         }
@@ -254,7 +254,7 @@ impl TryFrom<&Value> for List {
 
     fn try_from(value: &Value) -> Result<Self, Self::Error> {
         value
-            .cast_to::<List>()
+            .cast::<List>()
             .ok_or_else(|| Exception::error("value is not a proper list"))
     }
 }
@@ -299,7 +299,7 @@ pub fn is_list(curr: &Value, seen: &mut HashSet<Value>) -> bool {
         return false;
     }
 
-    let Some(curr) = curr.cast_to::<Pair>() else {
+    let Some(curr) = curr.cast::<Pair>() else {
         return false;
     };
 
@@ -487,7 +487,7 @@ unsafe extern "C" fn map_k(
                 return Box::into_raw(Box::new(app));
             }
 
-            let (car, cdr) = input.cast_to::<Pair>().unwrap().into();
+            let (car, cdr) = input.cast::<Pair>().unwrap().into();
             args.push(car);
             *input = cdr;
         }

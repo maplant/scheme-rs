@@ -133,7 +133,7 @@ impl TryFrom<Value> for Vector {
 
 impl From<&Value> for Option<Vector> {
     fn from(value: &Value) -> Self {
-        Some(Vector(value.cast_to()?))
+        Some(Vector(value.cast()?))
     }
 }
 
@@ -300,7 +300,7 @@ impl TryFrom<Value> for ByteVector {
 
 impl From<&Value> for Option<ByteVector> {
     fn from(value: &Value) -> Self {
-        Some(ByteVector(value.cast_to()?))
+        Some(ByteVector(value.cast()?))
     }
 }
 

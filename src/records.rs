@@ -1267,7 +1267,7 @@ pub(crate) unsafe extern "C" fn chain_protocols(
         if remaining_protocols.is_empty() {
             return Box::into_raw(Box::new(Application::new(
                 curr_protocol,
-                k.cast_to(),
+                k.cast(),
                 vec![args.as_ref().unwrap().clone()],
             )));
         }
@@ -1492,7 +1492,7 @@ pub(crate) unsafe extern "C" fn call_constructor_continuation(
         // Call the constructor
         Box::into_raw(Box::new(Application::new(
             constructor,
-            cont.cast_to(),
+            cont.cast(),
             args,
         )))
     }
@@ -1576,7 +1576,7 @@ fn record_accessor_fn(
         }
     } else {
         let k = abs_idx - record.0.num_embedded_fields();
-        if let Some(cell) = record.0.fields()[k].cast_to::<Cell>() {
+        if let Some(cell) = record.0.fields()[k].cast::<Cell>() {
             cell.get()
         } else {
             record.0.fields()[k].clone()

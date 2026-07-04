@@ -389,7 +389,7 @@ impl TryFrom<Value> for HashTable {
 
 impl From<&Value> for Option<HashTable> {
     fn from(value: &Value) -> Self {
-        Some(HashTable(value.cast_to()?))
+        Some(HashTable(value.cast()?))
     }
 }
 

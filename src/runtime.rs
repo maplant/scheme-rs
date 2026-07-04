@@ -466,7 +466,7 @@ unsafe extern "C" fn apply(
         };
 
         let (k, offset) = if !op.0.is_continuation() {
-            (Value::from_raw_inc_rc(args.read()).cast_to(), 1)
+            (Value::from_raw_inc_rc(args.read()).cast(), 1)
         } else {
             (None, 0)
         };
@@ -488,11 +488,11 @@ unsafe extern "C" fn apply(
 unsafe extern "C" fn get_frame(op: *const (), span: *const ()) -> *const () {
     unsafe {
         let op = Value::from_raw_inc_rc(op);
-        let Some(op) = op.cast_to::<Procedure>() else {
+        let Some(op) = op.cast::<Procedure>() else {
             return Value::into_raw(Value::null());
         };
         let span = Value::from_raw_inc_rc(span);
-        let span = span.cast_to::<Embedded<Span>>().unwrap();
+        let span = span.cast::<Embedded<Span>>().unwrap();
         let frame = Syntax::Identifier {
             ident: Identifier {
                 sym: op
@@ -519,7 +519,7 @@ unsafe extern "C" fn set_continuation_mark(
         barrier
             .as_mut()
             .unwrap()
-            .set_continuation_mark(tag.cast_to().unwrap(), val);
+            .set_continuation_mark(tag.cast().unwrap(), val);
     }
 }
 

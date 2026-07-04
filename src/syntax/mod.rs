@@ -649,7 +649,7 @@ impl PartialEq<str> for Identifier {
 impl From<&Value> for Option<Identifier> {
     fn from(value: &Value) -> Self {
         if let Some(Syntax::Identifier { ident, .. }) =
-            value.cast_to::<Embedded<Syntax>>().as_deref()
+            value.cast::<Embedded<Syntax>>().as_deref()
         {
             Some(ident.clone())
         } else {
@@ -686,7 +686,7 @@ pub fn datum_to_syntax(template_id: Identifier, datum: &Value) -> Result<Vec<Val
 
 #[bridge(name = "identifier?", lib = "(rnrs syntax-case builtins (6))")]
 pub fn identifier_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(obj.cast_to::<Identifier>().is_some())])
+    Ok(vec![Value::from(obj.cast::<Identifier>().is_some())])
 }
 
 #[bridge(name = "bound-identifier=?", lib = "(rnrs syntax-case builtins (6))")]
@@ -739,7 +739,7 @@ pub fn syntax_violation(
     let mut conditions = Vec::new();
     if who.is_true() {
         conditions.push(Value::from(Who::new(who.clone())));
-    } else if let Some(syntax) = form.cast_to::<Embedded<Syntax>>() {
+    } else if let Some(syntax) = form.cast::<Embedded<Syntax>>() {
         let who = if let Syntax::Identifier { ident, .. } = syntax.as_ref() {
             Some(ident.sym)
         } else if let Some([Syntax::Identifier { ident, .. }, ..]) = syntax.as_list() {

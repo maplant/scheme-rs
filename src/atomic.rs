@@ -42,7 +42,7 @@ unsafe impl Embeddable for AtomicBox {
 
 #[bridge(name = "atomic-box?", lib = "(srfi :230)")]
 pub fn atomic_box_p(obj: &Value) -> Result<Vec<Value>, Exception> {
-    let is_atomic_box = obj.cast_to::<Embedded<AtomicBox>>().is_some();
+    let is_atomic_box = obj.cast::<Embedded<AtomicBox>>().is_some();
     Ok(vec![Value::from(is_atomic_box)])
 }
 

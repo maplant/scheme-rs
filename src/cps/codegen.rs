@@ -390,7 +390,7 @@ impl CompilationUnit<'_, '_> {
                 (cell, global.name.0)
             }
             CpsValue::Const(val)
-                if let Some(proc) = val.cast_to::<Procedure>()
+                if let Some(proc) = val.cast::<Procedure>()
                     && let Some(known) = proc.to_known() =>
             {
                 // Known functions get converted to i64 constants

@@ -217,7 +217,7 @@ impl TryFrom<Value> for WideString {
 
 impl From<&Value> for Option<WideString> {
     fn from(value: &Value) -> Self {
-        Some(WideString(value.cast_to()?))
+        Some(WideString(value.cast()?))
     }
 }
 

@@ -1519,7 +1519,7 @@ unsafe extern "C" fn call_consumer_with_values(
 
         Box::into_raw(Box::new(Application::new(
             consumer.clone(),
-            k.cast_to(),
+            k.cast(),
             collected_args,
         )))
     }
@@ -1863,7 +1863,7 @@ unsafe extern "C" fn unwind_to_prompt(
                         req_args,
                         var,
                     ))];
-                    handler_args.extend(args.cast_to::<Vector>().unwrap().iter());
+                    handler_args.extend(args.cast::<Vector>().unwrap().iter());
                     Application::new(handler, Some(handler_k), handler_args)
                 }
                 Some(DynStackElem::Winder(winder)) => {
@@ -1964,7 +1964,7 @@ unsafe extern "C" fn wind_delim(
         let dest_stack_read = dest_stack.as_ref();
 
         // env[3] is the index into the dest stack we're at
-        let mut idx: usize = env.add(3).as_ref().unwrap().cast_to().unwrap();
+        let mut idx: usize = env.add(3).as_ref().unwrap().cast().unwrap();
 
         let barrier = barrier.as_mut().unwrap_unchecked();
 
