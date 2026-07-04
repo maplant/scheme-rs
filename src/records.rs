@@ -748,26 +748,14 @@ pub unsafe trait Embeddable: Trace + Any + Send + Sync {
     where
         Self: Sized,
     {
-        let Some(rhs) = rhs.cast::<Self>() else {
-            return false;
-        };
-        std::ptr::eq(
-            self as *const Self as *const (),
-            rhs.embedded_ptr.as_ptr().cast::<()>(),
-        )
+        self.eq(rhs)
     }
 
     fn equal(&self, rhs: &Record) -> bool
     where
         Self: Sized,
     {
-        let Some(rhs) = rhs.cast::<Self>() else {
-            return false;
-        };
-        std::ptr::eq(
-            self as *const Self as *const (),
-            rhs.embedded_ptr.as_ptr().cast::<()>(),
-        )
+        self.eqv(rhs)
     }
 
     fn eq_hash(&self, hasher: &mut dyn Hasher)
@@ -781,14 +769,14 @@ pub unsafe trait Embeddable: Trace + Any + Send + Sync {
     where
         Self: Sized,
     {
-        hasher.write_usize(self as *const Self as usize)
+        self.eq_hash(hasher)
     }
 
     fn equal_hash(&self, _recursive: &mut IndexSet<Value>, hasher: &mut dyn Hasher)
     where
         Self: Sized,
     {
-        hasher.write_usize(self as *const Self as usize)
+        self.eqv_hash(hasher)
     }
 }
 
