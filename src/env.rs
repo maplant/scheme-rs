@@ -44,6 +44,10 @@ pub(crate) mod error {
     pub(crate) fn name_bound_multiple_times(name: Symbol) -> Exception {
         Exception::from(Message::new(format!("`{name}` bound multiple times")))
     }
+
+    pub(crate) fn circular_binding_lookup() -> Exception {
+        Exception::from(Message::new("circular binding lookup"))
+    }
 }
 
 #[derive(Clone)]
@@ -62,6 +66,30 @@ impl TopLevelBinding {
 
 pub(crate) static TOP_LEVEL_BINDINGS: LazyLock<Mutex<HashMap<Binding, TopLevelBinding>>> =
     LazyLock::new(|| Mutex::new(HashMap::default()));
+
+/// Tracks bindings currently being resolved through the `Unexpanded` retry
+/// path in `lookup_var_inner`/`lookup_keyword_inner`. Backstops any cyclic
+/// lookup pattern (beyond direct self-reference, handled separately) by
+/// turning infinite recursion into a catchable `Exception`.
+static IN_PROGRESS_LOOKUPS: LazyLock<Mutex<HashSet<Binding>>> =
+    LazyLock::new(|| Mutex::new(HashSet::default()));
+
+struct LookupGuard(Binding);
+
+impl LookupGuard {
+    fn enter(binding: Binding) -> Result<Self, Exception> {
+        if !IN_PROGRESS_LOOKUPS.lock().insert(binding) {
+            return Err(error::circular_binding_lookup());
+        }
+        Ok(Self(binding))
+    }
+}
+
+impl Drop for LookupGuard {
+    fn drop(&mut self) {
+        IN_PROGRESS_LOOKUPS.lock().remove(&self.0);
+    }
+}
 
 fn add_pending_top_level_binding(binding: Binding, origin: TopLevelEnvironment) {
     TOP_LEVEL_BINDINGS
@@ -468,6 +496,10 @@ impl TopLevelEnvironment {
     pub fn lookup_var_inner(&self, binding: Binding) -> Result<Option<Global>, Exception> {
         match TopLevelBinding::lookup(&binding) {
             Some(TopLevelBinding::Unexpanded(unexpanded)) => {
+                if *self == unexpanded {
+                    return Ok(None);
+                }
+                let _guard = LookupGuard::enter(binding)?;
                 maybe_await!(unexpanded.maybe_expand())?;
                 maybe_await!(self.lookup_var(binding))
             }
@@ -508,6 +540,10 @@ impl TopLevelEnvironment {
         } else {
             match TopLevelBinding::lookup(&binding) {
                 Some(TopLevelBinding::Unexpanded(unexpanded)) => {
+                    if *self == unexpanded {
+                        return Ok(None);
+                    }
+                    let _guard = LookupGuard::enter(binding)?;
                     maybe_await!(unexpanded.maybe_expand())?;
                     maybe_await!(self.lookup_keyword(binding))
                 }
