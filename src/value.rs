@@ -93,7 +93,7 @@ use crate::{
     lists::{self, Pair, PairInner},
     num::{ComplexNumber, Number, NumberInner, SimpleNumber},
     proc::{Procedure, ProcedureInner},
-    records::{Record, RecordInner, RecordTypeDescriptor},
+    records::{Embedded, Record, RecordInner, RecordTypeDescriptor},
     registry::bridge,
     strings::WideString,
     symbols::Symbol,
@@ -166,9 +166,6 @@ impl Value {
         unsafe {
             match tag {
                 Tag::Number => Arc::increment_strong_count(untagged as *const NumberInner),
-                Tag::Vector => {
-                    Gc::increment_reference_count(untagged as *mut GcInner<VectorInner<Value>>)
-                }
                 Tag::ByteVector => Arc::increment_strong_count(untagged as *const VectorInner<u8>),
                 Tag::Procedure => {
                     Gc::increment_reference_count(untagged as *mut GcInner<ProcedureInner>)
@@ -299,20 +296,10 @@ impl Value {
                 let untagged = (untagged as usize >> TAG_BITS) as u32;
                 UnpackedValue::Symbol(Symbol(untagged))
             }
-            Tag::Vector => {
-                let vec = unsafe { Gc::from_raw(untagged as *mut GcInner<VectorInner<Self>>) };
-                UnpackedValue::Vector(Vector(vec))
-            }
             Tag::ByteVector => {
                 let bvec = unsafe { Arc::from_raw(untagged as *const VectorInner<u8>) };
                 UnpackedValue::ByteVector(ByteVector(bvec))
             }
-            /*
-            Tag::Syntax => {
-                let syn = unsafe { Gc::from_raw(untagged as *mut GcInner<Syntax>) };
-                UnpackedValue::Syntax(syn)
-            }
-            */
             Tag::Procedure => {
                 let clos = unsafe { Gc::from_raw(untagged as *mut GcInner<ProcedureInner>) };
                 UnpackedValue::Procedure(Procedure(clos))
@@ -352,6 +339,62 @@ impl Value {
         }
     }
 
+    pub fn display_fmt(
+        &self,
+        circular_values: &mut IndexMap<Value, bool>,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
+        match self.clone().unpack() {
+            UnpackedValue::Undefined => write!(f, "<undefined>"),
+            UnpackedValue::Null => write!(f, "()"),
+            UnpackedValue::Boolean(true) => write!(f, "#t"),
+            UnpackedValue::Boolean(false) => write!(f, "#f"),
+            UnpackedValue::Number(number) => write!(f, "{number}"),
+            UnpackedValue::Character(c) => write!(f, "#\\{c}"),
+            UnpackedValue::Symbol(symbol) => write!(f, "{symbol}"),
+            UnpackedValue::Pair(pair) => {
+                let (car, cdr) = pair.into();
+                lists::write_list(&car, &cdr, Value::display_fmt, circular_values, f)
+            }
+            UnpackedValue::ByteVector(v) => vectors::write_bytevec(&v, f),
+            UnpackedValue::Procedure(_) => write!(f, "<procedure>"),
+            UnpackedValue::Record(record) => record.display_fmt(circular_values, f),
+            UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
+            UnpackedValue::Cell(cell) => cell.0.read().display_fmt(circular_values, f),
+        }
+    }
+
+    pub fn debug_fmt(
+        &self,
+        circular_values: &mut IndexMap<Value, bool>,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
+        match self.clone().unpack() {
+            UnpackedValue::Undefined => write!(f, "<undefined>"),
+            UnpackedValue::Null => write!(f, "()"),
+            UnpackedValue::Boolean(true) => write!(f, "#t"),
+            UnpackedValue::Boolean(false) => write!(f, "#f"),
+            UnpackedValue::Number(number) => write!(f, "{number}"),
+            UnpackedValue::Character(c) => write!(f, "#\\{c}"),
+            UnpackedValue::Symbol(symbol) => write!(f, "{symbol}"),
+            UnpackedValue::Pair(pair) => {
+                let (car, cdr) = pair.into();
+                lists::write_list(&car, &cdr, Value::debug_fmt, circular_values, f)
+            }
+            UnpackedValue::ByteVector(v) => vectors::write_bytevec(&v, f),
+            /*
+            UnpackedValue::Syntax(syntax) => {
+                let span = syntax.span();
+                write!(f, "#<syntax:{span} {syntax:#?}>")
+            }
+            */
+            UnpackedValue::Procedure(proc) => write!(f, "#<procedure {proc:?}>"),
+            UnpackedValue::Record(record) => record.debug_fmt(circular_values, f),
+            UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
+            UnpackedValue::Cell(cell) => cell.0.read().debug_fmt(circular_values, f),
+        }
+    }
+
     /// The eq? predicate as defined by the R6RS specification.
     #[allow(clippy::should_implement_trait)]
     pub fn eq(&self, rhs: &Self) -> bool {
@@ -388,7 +431,6 @@ impl Value {
             UnpackedValue::Record(r) => r.eq_hash(state),
             UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
             UnpackedValue::Pair(p) => Gc::as_ptr(&p.0).hash(state),
-            UnpackedValue::Vector(v) => Gc::as_ptr(&v.0).hash(state),
             UnpackedValue::Cell(c) => c.0.read().eqv_hash(state),
         }
     }
@@ -409,7 +451,6 @@ impl Value {
             UnpackedValue::Record(r) => r.eqv_hash(state),
             UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
             UnpackedValue::Pair(p) => Gc::as_ptr(&p.0).hash(state),
-            UnpackedValue::Vector(v) => Gc::as_ptr(&v.0).hash(state),
             UnpackedValue::Cell(c) => c.0.read().eqv_hash(state),
         }
     }
@@ -435,21 +476,16 @@ impl Value {
             UnpackedValue::Symbol(s) => s.hash(state),
             UnpackedValue::ByteVector(v) => v.hash(state),
             UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
-            UnpackedValue::Record(r) => r.equal_hash(state),
+            UnpackedValue::Record(r) => {
+                recursive.insert(self.clone());
+                r.equal_hash(recursive, state);
+            }
             UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
             UnpackedValue::Pair(p) => {
                 recursive.insert(self.clone());
                 let (car, cdr) = p.clone().into();
                 car.equal_hash(recursive, state);
                 cdr.equal_hash(recursive, state);
-            }
-            UnpackedValue::Vector(v) => {
-                recursive.insert(self.clone());
-                let v_read = v.0.vec.read();
-                state.write_usize(v_read.len());
-                for val in v_read.iter() {
-                    val.equal_hash(recursive, state);
-                }
             }
             UnpackedValue::Cell(c) => c.0.read().eqv_hash(state),
         }
@@ -497,7 +533,7 @@ impl fmt::Display for Value {
         let mut circular_values = IndexSet::default();
         determine_circularity(self, &mut IndexSet::default(), &mut circular_values);
         let mut circular_values = circular_values.into_iter().map(|k| (k, false)).collect();
-        write_value(self, display_value, &mut circular_values, f)
+        write_value(self, Value::display_fmt, &mut circular_values, f)
     }
 }
 
@@ -506,7 +542,7 @@ impl fmt::Debug for Value {
         let mut circular_values = IndexSet::default();
         determine_circularity(self, &mut IndexSet::default(), &mut circular_values);
         let mut circular_values = circular_values.into_iter().map(|k| (k, false)).collect();
-        write_value(self, debug_value, &mut circular_values, f)
+        write_value(self, Value::debug_fmt, &mut circular_values, f)
     }
 }
 
@@ -611,7 +647,6 @@ pub(crate) enum Tag {
     Character = 3,
     Number = 4,
     Symbol = 6,
-    Vector = 7,
     ByteVector = 8,
     Procedure = 10,
     Record = 11,
@@ -628,7 +663,6 @@ impl From<usize> for Tag {
             3 => Self::Character,
             4 => Self::Number,
             6 => Self::Symbol,
-            7 => Self::Vector,
             8 => Self::ByteVector,
             10 => Self::Procedure,
             11 => Self::Record,
@@ -649,7 +683,6 @@ pub enum ValueType {
     Character,
     Number,
     Symbol,
-    Vector,
     ByteVector,
     Procedure,
     Record,
@@ -669,7 +702,6 @@ pub enum UnpackedValue {
     Character(char),
     Number(Number),
     Symbol(Symbol),
-    Vector(Vector),
     ByteVector(ByteVector),
     Procedure(Procedure),
     Record(Record),
@@ -695,10 +727,6 @@ impl UnpackedValue {
             }
             Self::Symbol(sym) => {
                 Value::from_ptr_and_tag(((sym.0 as usize) << TAG_BITS) as *const (), Tag::Symbol)
-            }
-            Self::Vector(vec) => {
-                let untagged = Gc::into_raw(vec.0);
-                Value::from_mut_ptr_and_tag(untagged, Tag::Vector)
             }
             Self::ByteVector(b_vec) => {
                 let untagged = Arc::into_raw(b_vec.0);
@@ -736,7 +764,6 @@ impl UnpackedValue {
             (Self::Character(a), Self::Character(b)) => a == b,
             (Self::Null, Self::Null) => true,
             (Self::Pair(a), Self::Pair(b)) => Gc::ptr_eq(&a.0, &b.0),
-            (Self::Vector(a), Self::Vector(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(&a.0, &b.0),
             (Self::Procedure(a), Self::Procedure(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Record(a), Self::Record(b)) => a.eq(b),
@@ -763,7 +790,6 @@ impl UnpackedValue {
             (Self::Null, Self::Null) => true,
             // Everything else is pointer equivalence
             (Self::Pair(a), Self::Pair(b)) => Gc::ptr_eq(&a.0, &b.0),
-            (Self::Vector(a), Self::Vector(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(&a.0, &b.0),
             (Self::Procedure(a), Self::Procedure(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Record(a), Self::Record(b)) => a.eqv(b),
@@ -782,7 +808,6 @@ impl UnpackedValue {
             Self::Character(_) => Symbol::intern("character").to_str(),
             Self::Symbol(_) => Symbol::intern("symbol").to_str(),
             Self::Pair(_) | Self::Null => Symbol::intern("pair").to_str(),
-            Self::Vector(_) => Symbol::intern("vector").to_str(),
             Self::ByteVector(_) => Symbol::intern("bytevector").to_str(),
             Self::Procedure(_) => Symbol::intern("procedure").to_str(),
             Self::Record(record) => record.rtd().name.to_str(),
@@ -800,7 +825,6 @@ impl UnpackedValue {
             Self::Character(_) => ValueType::Character,
             Self::Symbol(_) => ValueType::Symbol,
             Self::Pair(_) => ValueType::Pair,
-            Self::Vector(_) => ValueType::Vector,
             Self::ByteVector(_) => ValueType::ByteVector,
             Self::Procedure(_) => ValueType::Procedure,
             Self::Record(_) => ValueType::Record,
@@ -841,9 +865,8 @@ fn fast(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64) -> O
     }
     match (obj1.type_of(), obj2.type_of()) {
         (ValueType::Pair, ValueType::Pair) => pair_eq(ht, obj1, obj2, k),
-        (ValueType::Vector, ValueType::Vector) => vector_eq(ht, obj1, obj2, k),
         (ValueType::ByteVector, ValueType::ByteVector) => bytevector_eq(obj1, obj2, k),
-        (ValueType::Record, ValueType::Record) => record_equal(obj1, obj2, k),
+        (ValueType::Record, ValueType::Record) => record_equal(ht, obj1, obj2, k),
         _ => None,
     }
 }
@@ -859,14 +882,13 @@ fn slow(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64) -> O
             }
             pair_eq(ht, obj1, obj2, k)
         }
-        (ValueType::Vector, ValueType::Vector) => {
+        (ValueType::ByteVector, ValueType::ByteVector) => bytevector_eq(obj1, obj2, k),
+        (ValueType::Record, ValueType::Record) => {
             if union_find(ht, obj1, obj2) {
                 return Some(0);
             }
-            vector_eq(ht, obj1, obj2, k)
+            record_equal(ht, obj1, obj2, k)
         }
-        (ValueType::ByteVector, ValueType::ByteVector) => bytevector_eq(obj1, obj2, k),
-        (ValueType::Record, ValueType::Record) => record_equal(obj1, obj2, k),
         _ => None,
     }
 }
@@ -879,9 +901,7 @@ fn pair_eq(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64) -
     e(ht, &car_x, &car_y, k - 1).and_then(|k| e(ht, &cdr_x, &cdr_y, k))
 }
 
-fn vector_eq(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
-    let vobj1: Vector = obj1.clone().try_into().unwrap();
-    let vobj2: Vector = obj2.clone().try_into().unwrap();
+fn vector_eq(ht: &mut HashMap<Value, Value>, vobj1: Vector, vobj2: Vector, k: i64) -> Option<i64> {
     let vobj1 = vobj1.0.vec.read();
     let vobj2 = vobj2.0.vec.read();
     if vobj1.len() != vobj2.len() {
@@ -900,10 +920,16 @@ fn bytevector_eq(obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
     (*obj1.0.vec.read() == *obj2.0.vec.read()).then_some(k)
 }
 
-fn record_equal(obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
-    let obj1: Record = obj1.clone().try_into().unwrap();
-    let obj2: Record = obj2.clone().try_into().unwrap();
-    (obj1.equal(&obj2)).then_some(k)
+fn record_equal(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
+    if let Some(vobj1) = obj1.cast_to::<Vector>()
+        && let Some(vobj2) = obj2.cast_to::<Vector>()
+    {
+        vector_eq(ht, vobj1, vobj2, k)
+    } else {
+        let obj1: Record = obj1.clone().try_into().unwrap();
+        let obj2: Record = obj2.clone().try_into().unwrap();
+        (obj1.equal(&obj2)).then_some(k)
+    }
 }
 
 fn union_find(ht: &mut HashMap<Value, Value>, x: &Value, y: &Value) -> bool {
@@ -1147,7 +1173,6 @@ impl From<bool> for Value {
 impl_try_from_value_for!(char, Character, "char");
 impl_try_from_value_for!(Number, Number, "number");
 impl_try_from_value_for!(Symbol, Symbol, "symbol");
-impl_try_from_value_for!(Vector, Vector, "vector");
 impl_try_from_value_for!(ByteVector, ByteVector, "byte-vector");
 impl_try_from_value_for!(Procedure, Procedure, "procedure");
 impl_try_from_value_for!(Pair, Pair, "pair");
@@ -1170,7 +1195,6 @@ macro_rules! impl_from_wrapped_for {
     };
 }
 
-impl_from_wrapped_for!(Vec<Value>, Vector, Vector::immutable);
 impl_from_wrapped_for!(Vec<u8>, ByteVector, ByteVector::immutable);
 impl_from_wrapped_for!((Value, Value), Pair, |(car, cdr)| Pair::immutable(car, cdr));
 
@@ -1360,8 +1384,8 @@ fn determine_circularity(
             determine_circularity(&car, visited, circular);
             determine_circularity(&cdr, visited, circular);
         }
-        UnpackedValue::Vector(vec) => {
-            let vec_read = vec.0.vec.read();
+        UnpackedValue::Record(rec) if let Some(vec) = rec.cast::<VectorInner<Value>>() => {
+            let vec_read = vec.vec.read();
             for item in vec_read.iter() {
                 determine_circularity(item, visited, circular);
             }
@@ -1391,81 +1415,23 @@ pub(crate) fn write_value(
     fmt(val, circular_values, f)
 }
 
-fn display_value(
-    val: &Value,
-    circular_values: &mut IndexMap<Value, bool>,
-    f: &mut fmt::Formatter<'_>,
-) -> fmt::Result {
-    match val.clone().unpack() {
-        UnpackedValue::Undefined => write!(f, "<undefined>"),
-        UnpackedValue::Null => write!(f, "()"),
-        UnpackedValue::Boolean(true) => write!(f, "#t"),
-        UnpackedValue::Boolean(false) => write!(f, "#f"),
-        UnpackedValue::Number(number) => write!(f, "{number}"),
-        UnpackedValue::Character(c) => write!(f, "#\\{c}"),
-        UnpackedValue::Symbol(symbol) => write!(f, "{symbol}"),
-        UnpackedValue::Pair(pair) => {
-            let (car, cdr) = pair.into();
-            lists::write_list(&car, &cdr, display_value, circular_values, f)
-        }
-        UnpackedValue::Vector(v) => vectors::write_vec(&v, display_value, circular_values, f),
-        UnpackedValue::ByteVector(v) => vectors::write_bytevec(&v, f),
-        UnpackedValue::Procedure(_) => write!(f, "<procedure>"),
-        UnpackedValue::Record(record) => write!(f, "{record}"),
-        UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
-        UnpackedValue::Cell(cell) => display_value(&cell.0.read(), circular_values, f),
-    }
-}
-
-fn debug_value(
-    val: &Value,
-    circular_values: &mut IndexMap<Value, bool>,
-    f: &mut fmt::Formatter<'_>,
-) -> fmt::Result {
-    match val.clone().unpack() {
-        UnpackedValue::Undefined => write!(f, "<undefined>"),
-        UnpackedValue::Null => write!(f, "()"),
-        UnpackedValue::Boolean(true) => write!(f, "#t"),
-        UnpackedValue::Boolean(false) => write!(f, "#f"),
-        UnpackedValue::Number(number) => write!(f, "{number}"),
-        UnpackedValue::Character(c) => write!(f, "#\\{c}"),
-        UnpackedValue::Symbol(symbol) => write!(f, "{symbol}"),
-        UnpackedValue::Pair(pair) => {
-            let (car, cdr) = pair.into();
-            lists::write_list(&car, &cdr, debug_value, circular_values, f)
-        }
-        UnpackedValue::Vector(v) => vectors::write_vec(&v, debug_value, circular_values, f),
-        UnpackedValue::ByteVector(v) => vectors::write_bytevec(&v, f),
-        /*
-        UnpackedValue::Syntax(syntax) => {
-            let span = syntax.span();
-            write!(f, "#<syntax:{span} {syntax:#?}>")
-        }
-        */
-        UnpackedValue::Procedure(proc) => write!(f, "#<procedure {proc:?}>"),
-        UnpackedValue::Record(record) => write!(f, "{record:#?}"),
-        UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
-        UnpackedValue::Cell(cell) => debug_value(&cell.0.read(), circular_values, f),
-    }
-}
 #[bridge(name = "not", lib = "(rnrs base builtins (6))")]
 pub fn not(a: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(a.0 as usize == Tag::Boolean as usize)])
 }
 
-#[bridge(name = "eqv?", lib = "(rnrs base builtins (6))")]
-pub fn eqv(a: &Value, b: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(a.eqv(b))])
-}
-
 #[bridge(name = "eq?", lib = "(rnrs base builtins (6))")]
-pub fn eq(a: &Value, b: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(a.eq(b))])
+pub fn eq(a: &Value, b: &Value) -> bool {
+    a.eq(b)
+}
+#[bridge(name = "eqv?", lib = "(rnrs base builtins (6))")]
+pub fn eqv(a: &Value, b: &Value) -> bool {
+    a.eqv(b)
 }
 
 #[bridge(name = "equal?", lib = "(rnrs base builtins (6))")]
-pub fn equal_pred(a: &Value, b: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(a.equal(b))])
+pub fn equal_pred(a: &Value, b: &Value) -> bool {
+    a.equal(b)
 }
 
 #[bridge(name = "boolean?", lib = "(rnrs base builtins (6))")]
@@ -1491,11 +1457,6 @@ pub fn symbol_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
 #[bridge(name = "char?", lib = "(rnrs base builtins (6))")]
 pub fn char_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(arg.type_of() == ValueType::Character)])
-}
-
-#[bridge(name = "vector?", lib = "(rnrs base builtins (6))")]
-pub fn vector_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(arg.type_of() == ValueType::Vector)])
 }
 
 #[bridge(name = "null?", lib = "(rnrs base builtins (6))")]

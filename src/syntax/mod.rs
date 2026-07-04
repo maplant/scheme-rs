@@ -12,6 +12,7 @@ use crate::{
     symbols::Symbol,
     syntax::parse::ParseSyntaxError,
     value::{Expect1, UnpackedValue, Value},
+    vectors::{Vector, VectorInner},
 };
 use scheme_rs_macros::{maybe_async, maybe_await};
 use std::{
@@ -152,12 +153,19 @@ impl Syntax {
                     },
                 }
             }
-            UnpackedValue::Vector(vec) => Syntax::Vector {
-                vector: vec.iter().map(|value| Syntax::wrap(value, span)).collect(),
-                span: span.clone(),
-            },
             UnpackedValue::Record(rec) if let Some(syn) = rec.cast::<Syntax>() => {
                 syn.as_ref().clone()
+            }
+            UnpackedValue::Record(rec) if let Some(vec) = rec.cast::<VectorInner<Value>>() => {
+                Syntax::Vector {
+                    vector: vec
+                        .vec
+                        .read()
+                        .iter()
+                        .map(|value| Syntax::wrap(value.clone(), span))
+                        .collect(),
+                    span: span.clone(),
+                }
             }
             value => Syntax::Wrapped {
                 value: value.into_value(),
@@ -200,13 +208,18 @@ impl Syntax {
                     },
                 }
             }
-            UnpackedValue::Vector(vec) => Syntax::Vector {
-                vector: vec
-                    .iter()
-                    .map(|value| Syntax::datum_to_syntax(scopes, value, span))
-                    .collect(),
-                span: Span::default(),
-            },
+
+            UnpackedValue::Record(rec) if let Some(vec) = rec.cast::<VectorInner<Value>>() => {
+                Syntax::Vector {
+                    vector: vec
+                        .vec
+                        .read()
+                        .iter()
+                        .map(|value| Syntax::datum_to_syntax(scopes, value.clone(), span))
+                        .collect(),
+                    span: Span::default(),
+                }
+            }
             UnpackedValue::Record(rec) if let Some(syn) = rec.cast::<Syntax>() => {
                 let mut syn = syn.as_ref().clone();
                 for scope in scopes {
@@ -234,8 +247,15 @@ impl Syntax {
                 let (car, cdr) = pair.into();
                 Value::from((Self::syntax_to_datum(car), Self::syntax_to_datum(cdr)))
             }
-            UnpackedValue::Vector(vec) => {
-                Value::from(vec.iter().map(Self::syntax_to_datum).collect::<Vec<_>>())
+            UnpackedValue::Record(rec) if let Some(vec) = rec.cast::<VectorInner<Value>>() => {
+                Value::from(
+                    vec.vec
+                        .read()
+                        .iter()
+                        .cloned()
+                        .map(Self::syntax_to_datum)
+                        .collect::<Vec<_>>(),
+                )
             }
             UnpackedValue::Record(rec) if let Some(syn) = rec.cast::<Syntax>() => {
                 match syn.as_ref() {

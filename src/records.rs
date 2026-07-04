@@ -225,6 +225,7 @@ use std::{
 };
 
 use by_address::ByAddress;
+use indexmap::{IndexMap, IndexSet};
 use parking_lot::RwLock;
 
 use crate::{
@@ -489,6 +490,44 @@ impl Record {
     }
      */
 
+    pub fn display_fmt(
+        &self,
+        circular_values: &mut IndexMap<Value, bool>,
+        fmt: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
+        if let Some(vtable) = self.0.rtd.embedded_vtable {
+            (vtable.display_fmt)(self.0.embedded_ptr().unwrap(), circular_values, fmt)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn debug_fmt(
+        &self,
+        circular_values: &mut IndexMap<Value, bool>,
+        fmt: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
+        if let Some(vtable) = self.0.rtd.embedded_vtable {
+            (vtable.debug_fmt)(self.0.embedded_ptr().unwrap(), circular_values, fmt)?;
+        }
+
+        write!(fmt, "#<{}", self.0.rtd.name)?;
+        for (Field::Mutable(name) | Field::Immutable(name), field) in self
+            .0
+            .rtd
+            .inherits
+            .iter()
+            .cloned()
+            .chain(Some(ByAddress(self.0.rtd.clone())))
+            .flat_map(|rtd| rtd.fields.clone())
+            .zip(self.0.fields())
+        {
+            write!(fmt, " {name}: ")?;
+            field.debug_fmt(circular_values, fmt)?;
+        }
+        write!(fmt, ">")
+    }
+
     pub fn eq(&self, rhs: &Record) -> bool {
         if let Some(vtable) = self.0.rtd.embedded_vtable {
             (vtable.eq)(self.0.embedded_ptr().unwrap(), rhs)
@@ -529,9 +568,9 @@ impl Record {
         }
     }
 
-    pub fn equal_hash<H: Hasher>(&self, hasher: &mut H) {
+    pub fn equal_hash<H: Hasher>(&self, recursive: &mut IndexSet<Value>, hasher: &mut H) {
         if let Some(vtable) = self.0.rtd.embedded_vtable {
-            (vtable.equal_hash)(self.0.embedded_ptr().unwrap(), hasher)
+            (vtable.equal_hash)(self.0.embedded_ptr().unwrap(), recursive, hasher)
         } else {
             Gc::as_ptr(&self.0).hash(hasher)
         }
@@ -540,13 +579,13 @@ impl Record {
 
 impl fmt::Display for Record {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+        self.display_fmt(&mut IndexMap::default(), f)
     }
 }
 
 impl fmt::Debug for Record {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+        self.debug_fmt(&mut IndexMap::default(), f)
     }
 }
 
@@ -644,38 +683,6 @@ unsafe impl Trace for RecordInner {
     }
 }
 
-impl fmt::Display for RecordInner {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(vtable) = self.rtd.embedded_vtable {
-            (vtable.display_fmt)(self.embedded_ptr().unwrap(), f)
-        } else {
-            Ok(())
-        }
-    }
-}
-
-impl fmt::Debug for RecordInner {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(vtable) = self.rtd.embedded_vtable {
-            (vtable.debug_fmt)(self.embedded_ptr().unwrap(), f)?;
-        }
-
-        write!(f, "#<{}", self.rtd.name)?;
-        for (Field::Mutable(name) | Field::Immutable(name), field) in self
-            .rtd
-            .inherits
-            .iter()
-            .cloned()
-            .chain(Some(ByAddress(self.rtd.clone())))
-            .flat_map(|rtd| rtd.fields.clone())
-            .zip(self.fields())
-        {
-            write!(f, " {name}: {field:?}")?;
-        }
-        write!(f, ">")
-    }
-}
-
 /// A Rust type that can be embedded safely in a Scheme record.
 ///
 /// # Safety:
@@ -708,11 +715,19 @@ pub unsafe trait Embeddable: Trace + Any + Send + Sync {
         Err(Exception::error(format!("invalid record field: {k}")))
     }
 
-    fn display_fmt(&self, _fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn display_fmt(
+        &self,
+        _circular_values: &mut IndexMap<Value, bool>,
+        _fmt: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
         Ok(())
     }
 
-    fn debug_fmt(&self, _fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn debug_fmt(
+        &self,
+        _circular_values: &mut IndexMap<Value, bool>,
+        _fmt: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
         Ok(())
     }
 
@@ -769,7 +784,7 @@ pub unsafe trait Embeddable: Trace + Any + Send + Sync {
         hasher.write_usize(self as *const Self as usize)
     }
 
-    fn equal_hash(&self, hasher: &mut dyn Hasher)
+    fn equal_hash(&self, _recursive: &mut IndexSet<Value>, hasher: &mut dyn Hasher)
     where
         Self: Sized,
     {
@@ -796,9 +811,11 @@ pub struct EmbeddableVTable {
     #[trace(skip)]
     pub set_field: fn(*const (), usize, Value) -> Result<(), Exception>,
     #[trace(skip)]
-    pub display_fmt: fn(*const (), &mut fmt::Formatter<'_>) -> fmt::Result,
+    pub display_fmt:
+        fn(*const (), &mut IndexMap<Value, bool>, &mut fmt::Formatter<'_>) -> fmt::Result,
     #[trace(skip)]
-    pub debug_fmt: fn(*const (), &mut fmt::Formatter<'_>) -> fmt::Result,
+    pub debug_fmt:
+        fn(*const (), &mut IndexMap<Value, bool>, &mut fmt::Formatter<'_>) -> fmt::Result,
     #[trace(skip)]
     pub eq: for<'a> fn(*const (), &'a Record) -> bool,
     #[trace(skip)]
@@ -810,7 +827,7 @@ pub struct EmbeddableVTable {
     #[trace(skip)]
     pub eqv_hash: for<'a> fn(*const (), &'a mut dyn Hasher),
     #[trace(skip)]
-    pub equal_hash: for<'a> fn(*const (), &'a mut dyn Hasher),
+    pub equal_hash: for<'a> fn(*const (), &'a mut IndexSet<Value>, &'a mut dyn Hasher),
 }
 
 impl EmbeddableVTable {
@@ -833,10 +850,12 @@ impl EmbeddableVTable {
             set_field: |this, k, val| {
                 E::set_field(unsafe { this.cast::<E>().as_ref().unwrap() }, k, val)
             },
-            display_fmt: |this, fmt| {
-                E::display_fmt(unsafe { this.cast::<E>().as_ref().unwrap() }, fmt)
+            display_fmt: |this, circ, fmt| {
+                E::display_fmt(unsafe { this.cast::<E>().as_ref().unwrap() }, circ, fmt)
             },
-            debug_fmt: |this, fmt| E::debug_fmt(unsafe { this.cast::<E>().as_ref().unwrap() }, fmt),
+            debug_fmt: |this, circ, fmt| {
+                E::debug_fmt(unsafe { this.cast::<E>().as_ref().unwrap() }, circ, fmt)
+            },
             eq: |lhs, rhs| E::eq(unsafe { lhs.cast::<E>().as_ref().unwrap() }, rhs),
             eqv: |lhs, rhs| E::eqv(unsafe { lhs.cast::<E>().as_ref().unwrap() }, rhs),
             equal: |lhs, rhs| E::equal(unsafe { lhs.cast::<E>().as_ref().unwrap() }, rhs),
@@ -846,8 +865,8 @@ impl EmbeddableVTable {
             eqv_hash: |this, hasher| {
                 E::eqv_hash(unsafe { this.cast::<E>().as_ref().unwrap() }, hasher)
             },
-            equal_hash: |this, hasher| {
-                E::equal_hash(unsafe { this.cast::<E>().as_ref().unwrap() }, hasher)
+            equal_hash: |this, rec, hasher| {
+                E::equal_hash(unsafe { this.cast::<E>().as_ref().unwrap() }, rec, hasher)
             },
         }
     }

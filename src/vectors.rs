@@ -3,16 +3,19 @@
 #[cfg(target_endian = "little")]
 use crate::symbols::Symbol;
 use crate::{
+    DynHasher,
     exceptions::Exception,
     gc::{Gc, Trace},
     lists::{List, slice_to_list},
+    records::{Embeddable, Embedded, Record},
     registry::bridge,
     value::{Value, ValueType, write_value},
 };
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 use parking_lot::{
     MappedRwLockReadGuard, MappedRwLockWriteGuard, RwLock, RwLockReadGuard, RwLockWriteGuard,
 };
+use scheme_rs_macros::rtd;
 use std::{clone::Clone, fmt, hash::Hash, ops::Range, sync::Arc};
 
 #[derive(Trace)]
@@ -24,9 +27,55 @@ pub(crate) struct VectorInner<T: Trace> {
     pub(crate) mutable: bool,
 }
 
+unsafe impl Embeddable for VectorInner<Value> {
+    fn rtd() -> Arc<crate::records::RecordTypeDescriptor>
+    where
+        Self: Sized,
+    {
+        rtd!(ty: VectorInner<Value>, name: "vector", sealed: true, opaque: true)
+    }
+
+    fn display_fmt(
+        &self,
+        circular_values: &mut IndexMap<Value, bool>,
+        fmt: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
+        write_vec(&self, Value::display_fmt, circular_values, fmt)
+    }
+
+    fn debug_fmt(
+        &self,
+        circular_values: &mut IndexMap<Value, bool>,
+        fmt: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
+        write_vec(&self, Value::debug_fmt, circular_values, fmt)
+    }
+
+    fn equal(&self, rhs: &Record) -> bool
+    where
+        Self: Sized,
+    {
+        let Some(rhs) = rhs.cast::<Self>() else {
+            return false;
+        };
+        *self.vec.read() == *rhs.vec.read()
+    }
+
+    fn equal_hash(&self, recursive: &mut IndexSet<Value>, hasher: &mut dyn std::hash::Hasher)
+    where
+        Self: Sized,
+    {
+        let v_read = self.vec.read();
+        hasher.write_usize(v_read.len());
+        for val in v_read.iter() {
+            val.equal_hash(recursive, &mut DynHasher(hasher));
+        }
+    }
+}
+
 /// A vector of values
 #[derive(Clone, Trace)]
-pub struct Vector(pub(crate) Gc<VectorInner<Value>>);
+pub struct Vector(pub(crate) Embedded<VectorInner<Value>>);
 
 impl Vector {
     pub fn immutable(vec: Vec<Value>) -> Self {
@@ -34,7 +83,7 @@ impl Vector {
     }
 
     pub fn mutable(vec: Vec<Value>) -> Self {
-        Self(Gc::new(VectorInner {
+        Self(Embedded::new(VectorInner {
             vec: RwLock::new(vec),
             mutable: true,
         }))
@@ -74,12 +123,49 @@ impl Vector {
     }
 }
 
+impl TryFrom<Value> for Vector {
+    type Error = Exception;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        Ok(Self((&value).try_into()?))
+    }
+}
+
+impl From<&Value> for Option<Vector> {
+    fn from(value: &Value) -> Self {
+        Some(Vector(value.cast_to()?))
+    }
+}
+
+impl TryFrom<&Value> for Vector {
+    type Error = Exception;
+
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        Ok(Self(value.try_into()?))
+    }
+}
+
 impl From<Vec<Value>> for Vector {
     fn from(vec: Vec<Value>) -> Self {
-        Self(Gc::new(VectorInner {
+        Self(Embedded::new(VectorInner {
             vec: RwLock::new(vec),
             mutable: false,
         }))
+    }
+}
+
+impl From<Vec<Value>> for Value {
+    fn from(vec: Vec<Value>) -> Self {
+        Value::from(VectorInner {
+            vec: RwLock::new(vec),
+            mutable: false,
+        })
+    }
+}
+
+impl From<Vector> for Value {
+    fn from(vec: Vector) -> Self {
+        Value::from(vec.0)
     }
 }
 
@@ -171,15 +257,14 @@ impl PartialEq for ByteVector {
 }
 
 pub(crate) fn write_vec(
-    v: &Vector,
+    v: &VectorInner<Value>,
     fmt: fn(&Value, &mut IndexMap<Value, bool>, &mut fmt::Formatter<'_>) -> fmt::Result,
     circular_values: &mut IndexMap<Value, bool>,
     f: &mut fmt::Formatter<'_>,
 ) -> Result<(), fmt::Error> {
     write!(f, "#(")?;
 
-    let values = v.0.vec.read();
-
+    let values = v.vec.read();
     for (i, value) in values.iter().enumerate() {
         if i > 0 {
             write!(f, " ")?;
@@ -267,33 +352,38 @@ impl Indexer for VectorIndexer {
             .take(range.end - range.start)
             .cloned()
             .collect();
-        Vector(Gc::new(VectorInner {
+        Vector(Embedded::new(VectorInner {
             vec: RwLock::new(subvec),
             mutable: true,
         }))
     }
 }
 
+#[bridge(name = "vector?", lib = "(rnrs base builtins (6))")]
+pub fn vector_pred(arg: &Value) -> bool {
+    arg.is_a::<Vector>()
+}
+
 #[bridge(name = "make-vector", lib = "(rnrs base builtins (6))")]
 pub fn make_vector(n: &Value, with: &[Value]) -> Result<Vec<Value>, Exception> {
     let n: usize = n.try_to()?;
 
-    Ok(vec![Value::from(Vector(Gc::new(VectorInner {
+    Ok(vec![Value::from(VectorInner {
         vec: RwLock::new(
             (0..n)
                 .map(|_| with.first().cloned().unwrap_or_else(Value::null))
                 .collect::<Vec<_>>(),
         ),
         mutable: true,
-    })))])
+    })])
 }
 
 #[bridge(name = "vector", lib = "(rnrs base builtins (6))")]
 pub fn vector(args: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(Vector(Gc::new(VectorInner {
+    Ok(vec![Value::from(VectorInner {
         vec: RwLock::new(args.to_vec()),
         mutable: true,
-    })))])
+    })])
 }
 
 #[bridge(name = "vector-ref", lib = "(rnrs base builtins (6))")]

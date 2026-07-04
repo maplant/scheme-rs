@@ -7,6 +7,7 @@
 
 use std::{fmt, hash::Hash, sync::Arc};
 
+use indexmap::{IndexMap, IndexSet};
 use parking_lot::{MappedRwLockReadGuard, RwLock, RwLockReadGuard};
 use scheme_rs_macros::rtd;
 
@@ -54,11 +55,19 @@ unsafe impl Embeddable for WideStringInner {
         rtd!(ty: WideStringInner, name: "string", sealed: true, opaque: true)
     }
 
-    fn display_fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn display_fmt(
+        &self,
+        _circular: &mut IndexMap<Value, bool>,
+        fmt: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
         write!(fmt, "{self}")
     }
 
-    fn debug_fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn debug_fmt(
+        &self,
+        _circular: &mut IndexMap<Value, bool>,
+        fmt: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
         write!(fmt, "{self:?}")
     }
 
@@ -72,7 +81,7 @@ unsafe impl Embeddable for WideStringInner {
         *self.chars.read() == *rhs.chars.read()
     }
 
-    fn equal_hash(&self, hasher: &mut dyn std::hash::Hasher)
+    fn equal_hash(&self, _recursive: &mut IndexSet<Value>, hasher: &mut dyn std::hash::Hasher)
     where
         Self: Sized,
     {
