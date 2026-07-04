@@ -287,7 +287,7 @@ impl Syntax {
 
         // Call the transformer with the input:
         let transformer_output =
-            maybe_await!(transformer.call(&[Value::from(input)], &mut ContBarrier::new()))?;
+            maybe_await!(transformer.call(&[Value::from(input)], &mut ContBarrier::nested()))?;
 
         let output: Value = transformer_output.expect1()?;
         let mut output = Syntax::wrap(output, self.span());

@@ -1135,7 +1135,7 @@ pub(super) fn define_syntax(
     let mut mutable_vars = HashSet::default();
     let expr = maybe_await!(Expression::parse(ctxt, expanded, env, &mut mutable_vars))?;
     let proc = maybe_await!(Compiler::new(mutable_vars).compile(&ctxt.runtime, &expr))?;
-    let values = maybe_await!(proc.call(&[], &mut ContBarrier::new()))?;
+    let values = maybe_await!(proc.call(&[], &mut ContBarrier::nested()))?;
     let transformer: Procedure = values.expect1()?;
     env.def_keyword(binding, transformer);
     Ok(())

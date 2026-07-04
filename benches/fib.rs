@@ -29,7 +29,7 @@ fn fib_benchmark(c: &mut Criterion) {
     let proc = fib_fn();
 
     c.bench_function("fib 10000", |b| {
-        b.iter(|| proc.call(&[], &mut ContBarrier::new()))
+        b.iter(|| proc.call(&[], &mut ContBarrier::root()))
     });
 }
 
@@ -42,7 +42,7 @@ fn fib_benchmark(c: &mut Criterion) {
     c.bench_function("fib 10000", |b| {
         b.to_async(&runtime).iter(|| {
             let val = proc.clone();
-            async move { val.call(&[], &mut ContBarrier::new()).await }
+            async move { val.call(&[], &mut ContBarrier::root()).await }
         })
     });
 }

@@ -693,7 +693,7 @@ mod __impl {
                         Value::from(start),
                         Value::from(count),
                     ],
-                    &mut ContBarrier::new(),
+                    &mut ContBarrier::nested(),
                 )
                 .map_err(|err| err.add_condition(IoReadError::new()))?
                 .try_into()
@@ -718,7 +718,7 @@ mod __impl {
                         Value::from(start),
                         Value::from(count),
                     ],
-                    &mut ContBarrier::new(),
+                    &mut ContBarrier::nested(),
                 )
                 .map_err(|err| err.add_condition(IoReadError::new()))?;
             Ok(())
@@ -728,7 +728,7 @@ mod __impl {
     pub(super) fn proc_to_get_pos_fn(get_pos: Procedure) -> GetPosFn {
         Box::new(move |_| {
             let [pos] = get_pos
-                .call(&[], &mut ContBarrier::new())
+                .call(&[], &mut ContBarrier::nested())
                 .map_err(|err| err.add_condition(IoError::new()))?
                 .try_into()
                 .map_err(|_| {
@@ -744,7 +744,7 @@ mod __impl {
     pub(super) fn proc_to_set_pos_fn(set_pos: Procedure) -> SetPosFn {
         Box::new(move |_, pos| {
             let _ = set_pos
-                .call(&[Value::from(pos)], &mut ContBarrier::new())
+                .call(&[Value::from(pos)], &mut ContBarrier::nested())
                 .map_err(|err| err.add_condition(IoError::new()))?;
             Ok(())
         })
@@ -753,7 +753,7 @@ mod __impl {
     pub(super) fn proc_to_close_fn(close: Procedure) -> CloseFn {
         Box::new(move |_| {
             let _ = close
-                .call(&[], &mut ContBarrier::new())
+                .call(&[], &mut ContBarrier::nested())
                 .map_err(|err| err.add_condition(IoError::new()))?;
             Ok(())
         })
@@ -936,7 +936,7 @@ mod __impl {
                             Value::from(start),
                             Value::from(count),
                         ],
-                        &mut ContBarrier::new(),
+                        &mut ContBarrier::nested(),
                     )
                     .await
                     .map_err(|err| err.add_condition(IoReadError::new()))?
@@ -967,7 +967,7 @@ mod __impl {
                             Value::from(start),
                             Value::from(count),
                         ],
-                        &mut ContBarrier::new(),
+                        &mut ContBarrier::nested(),
                     )
                     .await
                     .map_err(|err| err.add_condition(IoReadError::new()))?;
@@ -981,7 +981,7 @@ mod __impl {
             let get_pos = get_pos.clone();
             Box::pin(async move {
                 let [pos] = get_pos
-                    .call(&[], &mut ContBarrier::new())
+                    .call(&[], &mut ContBarrier::nested())
                     .await
                     .map_err(|err| err.add_condition(IoError::new()))?
                     .try_into()
@@ -1003,7 +1003,7 @@ mod __impl {
             let set_pos = set_pos.clone();
             Box::pin(async move {
                 let _ = set_pos
-                    .call(&[Value::from(pos)], &mut ContBarrier::new())
+                    .call(&[Value::from(pos)], &mut ContBarrier::nested())
                     .await
                     .map_err(|err| err.add_condition(IoError::new()))?;
                 Ok(())
@@ -1016,7 +1016,7 @@ mod __impl {
             let close = close.clone();
             Box::pin(async move {
                 let _ = close
-                    .call(&[], &mut ContBarrier::new())
+                    .call(&[], &mut ContBarrier::nested())
                     .await
                     .map_err(|err| err.add_condition(IoError::new()))?;
                 Ok(())
@@ -1815,7 +1815,7 @@ impl CustomTextualPortData {
                     Value::from(0usize),
                     Value::from(len)
                 ],
-                &mut ContBarrier::new()
+                &mut ContBarrier::nested()
             ))?;
             self.output_buffer.clear();
         }
@@ -1837,7 +1837,7 @@ impl CustomTextualPortData {
                     Value::from(start),
                     Value::from(count)
                 ],
-                &mut ContBarrier::new()
+                &mut ContBarrier::nested()
             ))?
             .expect1()?;
 
@@ -1893,11 +1893,11 @@ impl CustomTextualPortData {
             && let Some(set_pos) = port_info.set_pos.as_ref()
             && self.chars_read > 0
         {
-            let curr_pos: u64 = maybe_await!(get_pos.call(&[], &mut ContBarrier::new()))?
+            let curr_pos: u64 = maybe_await!(get_pos.call(&[], &mut ContBarrier::nested()))?
                 .expect1()
                 .map_err(|err: Exception| err.add_condition(IoWriteError::new()))?;
             let seek_to = curr_pos - (self.chars_read as u64 - self.input_pos as u64);
-            maybe_await!(set_pos.call(&[Value::from(seek_to)], &mut ContBarrier::new()))?;
+            maybe_await!(set_pos.call(&[Value::from(seek_to)], &mut ContBarrier::nested()))?;
             self.chars_read = 0;
             self.input_pos = 0;
         }
@@ -1914,7 +1914,7 @@ impl CustomTextualPortData {
                             Value::from(0usize),
                             Value::from(1usize)
                         ],
-                        &mut ContBarrier::new()
+                        &mut ContBarrier::nested()
                     ))?;
                 }
             }
@@ -1938,7 +1938,7 @@ impl CustomTextualPortData {
                             Value::from(0usize),
                             Value::from(len)
                         ],
-                        &mut ContBarrier::new()
+                        &mut ContBarrier::nested()
                     ))?;
                     self.output_buffer.clear();
                 }
@@ -1953,7 +1953,7 @@ impl CustomTextualPortData {
                                 Value::from(0usize),
                                 Value::from(len)
                             ],
-                            &mut ContBarrier::new()
+                            &mut ContBarrier::nested()
                         ))?;
                         self.output_buffer.clear();
                     }
@@ -1981,7 +1981,7 @@ impl CustomTextualPortData {
                 Value::from(0usize),
                 Value::from(self.output_buffer.len()),
             ],
-            &mut ContBarrier::new()
+            &mut ContBarrier::nested()
         ))?;
         self.output_buffer.clear();
 
@@ -1998,7 +1998,7 @@ impl CustomTextualPortData {
             return Err(Exception::io_error("port is closed"));
         }
 
-        maybe_await!(get_pos.call(&[], &mut ContBarrier::new()))?.expect1()
+        maybe_await!(get_pos.call(&[], &mut ContBarrier::nested()))?.expect1()
     }
 
     #[maybe_async]
@@ -2021,7 +2021,7 @@ impl CustomTextualPortData {
                     Value::from(0usize),
                     Value::from(self.output_buffer.len()),
                 ],
-                &mut ContBarrier::new()
+                &mut ContBarrier::nested()
             ))?;
             self.output_buffer.clear();
         }
@@ -2029,7 +2029,7 @@ impl CustomTextualPortData {
         self.chars_read = 0;
         self.input_pos = 0;
 
-        maybe_await!(set_pos.call(&[Value::from(pos)], &mut ContBarrier::new()))?;
+        maybe_await!(set_pos.call(&[Value::from(pos)], &mut ContBarrier::nested()))?;
 
         Ok(())
     }
@@ -2046,7 +2046,7 @@ impl CustomTextualPortData {
         maybe_await!(self.flush(port_info))?;
 
         if let Some(close) = port_info.close.as_ref() {
-            maybe_await!(close.call(&[], &mut ContBarrier::new()))?;
+            maybe_await!(close.call(&[], &mut ContBarrier::nested()))?;
         }
 
         Ok(())

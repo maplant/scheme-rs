@@ -1069,14 +1069,6 @@ impl<'a> ContBarrier<'a> {
         NEXT_ID.fetch_add(1, Ordering::Relaxed)
     }
 
-    pub fn new() -> Self {
-        Self {
-            id: Self::next_id(),
-            state: Gc::new(RwLock::new(DynState::new())),
-            params: HashMap::new(),
-        }
-    }
-
     /// A barrier with a fresh, empty dynamic state. Only for true entry
     /// points: an embedder calling into Scheme from a context with no
     /// ambient dynamic state.
@@ -1091,10 +1083,19 @@ impl<'a> ContBarrier<'a> {
     /// state means the callee observes the caller's exception handlers and
     /// current ports.
     pub fn nested() -> ContBarrier<'static> {
-        match ambient_state() {
-            Some(state) => Self::from_state(state),
-            None => Self::root(),
-        }
+        let Some(state) = ambient_state() else {
+            return Self::root();
+        };
+        let mut barrier = Self::from_state(state);
+        // A fresh barrier's cont_marks starts pre-seeded with one baseline
+        // frame (see DynState::new), which the entry continuation (halt, or
+        // the callee being a continuation itself) consumes exactly once on
+        // the way out. A nested barrier shares the ambient cont_marks stack
+        // instead of getting a fresh one, so it must push that baseline
+        // frame itself; otherwise its terminal pop would consume a frame
+        // that belongs to the ambient computation.
+        barrier.push_marks();
+        barrier
     }
 
     pub(crate) fn from_state(state: Gc<RwLock<DynState>>) -> ContBarrier<'static> {
@@ -1281,12 +1282,6 @@ impl<'a> ContBarrier<'a> {
     }
 }
 
-impl Default for ContBarrier<'_> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl<'a, 'b, 'c> From<&'b mut ContBarrier<'a>> for ContBarrier<'c>
 where
     'b: 'c,
@@ -1449,7 +1444,16 @@ fn escape_procedure(
     let saved_barrier_read = saved_barrier.as_ref();
 
     if saved_barrier_read.id != barrier.id {
-        return Err(Exception::error("attempt to cross continuation barrier"));
+        // Don't raise this through the (possibly shared, since barriers now
+        // share dynamic state) exception-handler search: a handler found
+        // that way could belong to an ancestor barrier and need to escape
+        // right back out through this same check. Halt this barrier's local
+        // trampoline directly instead, so the error surfaces as a plain
+        // Result::Err to whichever Rust frame owns this barrier — letting it
+        // re-raise, if at all, from a barrier where escaping is possible.
+        return Ok(Application::halt_err(Value::from(Exception::error(
+            "attempt to cross continuation barrier",
+        ))));
     }
 
     barrier.set_cont_marks(saved_barrier_read.cont_marks.clone());

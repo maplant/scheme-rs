@@ -99,7 +99,7 @@ anywhere.
 let [result] = factorial
     .call(
         &[Value::from(5)],
-        &mut ContBarrier::new(),
+        &mut ContBarrier::root(),
     )
     .unwrap()
     .try_into()

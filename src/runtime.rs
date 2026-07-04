@@ -131,7 +131,8 @@ impl Runtime {
             &mut mutable_vars
         ))?;
         let proc = maybe_await!(Compiler::new(mutable_vars).compile(self, &body))?;
-        maybe_await!(Application::new(proc, None, Vec::new()).eval(&mut ContBarrier::default()))
+        let mut barrier = self.entry_barrier();
+        maybe_await!(Application::new(proc, None, Vec::new()).eval(&mut barrier))
     }
 
     /// Define a library from Rust code. Useful if file system access is disabled.

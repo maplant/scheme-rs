@@ -23,7 +23,7 @@ fn integrate_benchmark(c: &mut Criterion) {
     let proc = integrate_fn();
 
     c.bench_function("integrate", |b| {
-        b.iter(|| proc.call(&[], &mut ContBarrier::new()));
+        b.iter(|| proc.call(&[], &mut ContBarrier::root()));
     });
 }
 
@@ -36,7 +36,7 @@ fn integrate_benchmark(c: &mut Criterion) {
     c.bench_function("integrate", |b| {
         b.to_async(&runtime).iter(|| {
             let val = proc.clone();
-            async move { val.call(&[], &mut ContBarrier::new()).await }
+            async move { val.call(&[], &mut ContBarrier::root()).await }
         })
     });
 }
