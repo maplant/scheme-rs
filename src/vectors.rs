@@ -5,11 +5,11 @@ use crate::symbols::Symbol;
 use crate::{
     DynHasher,
     exceptions::Exception,
-    gc::{Gc, Trace},
+    gc::Trace,
     lists::{List, slice_to_list},
     records::{Embeddable, Embedded, Record},
     registry::bridge,
-    value::{Value, ValueType, write_value},
+    value::{Value, write_value},
 };
 use indexmap::{IndexMap, IndexSet};
 use parking_lot::{

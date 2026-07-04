@@ -730,6 +730,17 @@ unsafe extern "C" fn sub(vals: *const *const (), num_vals: u32, error: *mut Valu
 }
 
 #[runtime_fn]
+unsafe extern "C" fn i64_to_number(value: i64) -> *const () {
+    Value::into_raw(Value::from(num::Number::from(value)))
+}
+
+#[runtime_fn]
+unsafe extern "C" fn i128_to_number(lo: i64, hi: i64) -> *const () {
+    let value = ((hi as i128) << 64) | ((lo as u64) as i128);
+    Value::into_raw(Value::from(num::Number::from(value)))
+}
+
+#[runtime_fn]
 unsafe extern "C" fn mul(vals: *const *const (), num_vals: u32, error: *mut Value) -> *const () {
     unsafe {
         let vals: Vec<_> = (0..num_vals)

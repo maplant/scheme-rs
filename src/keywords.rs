@@ -37,9 +37,7 @@ unsafe impl Embeddable for Keyword {
 
 #[bridge(name = "keyword?", lib = "(srfi :88)")]
 pub fn keyword_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(
-        obj.cast::<Embedded<Keyword>>().is_some(),
-    )])
+    Ok(vec![Value::from(obj.cast::<Embedded<Keyword>>().is_some())])
 }
 
 #[bridge(name = "keyword->string", lib = "(srfi :88)")]

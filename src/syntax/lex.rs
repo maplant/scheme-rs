@@ -765,13 +765,13 @@ impl TryFrom<Number> for num::Number {
             } else {
                 SimpleNumber::Real(0.0)
             };
-            return Ok(num::Number(NumberRepr::Heap(Arc::new(num::NumberInner::Complex(
-                if value.is_polar {
+            return Ok(num::Number(NumberRepr::Heap(Arc::new(
+                num::NumberInner::Complex(if value.is_polar {
                     num::ComplexNumber::from_polar(real_part, imag_part)
                 } else {
                     num::ComplexNumber::new(real_part, imag_part)
-                },
-            )))));
+                }),
+            ))));
         }
 
         let part = value

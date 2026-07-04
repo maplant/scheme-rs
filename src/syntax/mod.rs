@@ -4,7 +4,7 @@ use crate::{
     ast::Primitive,
     env::{Binding, Environment, Scope, add_binding, resolve},
     exceptions::{CompoundCondition, Exception, Message, SyntaxViolation, Who},
-    gc::{Gc, Trace},
+    gc::Trace,
     ports::Port,
     proc::{ContBarrier, Procedure},
     records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
@@ -12,7 +12,7 @@ use crate::{
     symbols::Symbol,
     syntax::parse::ParseSyntaxError,
     value::{Expect1, UnpackedValue, Value},
-    vectors::{Vector, VectorInner},
+    vectors::VectorInner,
 };
 use scheme_rs_macros::{maybe_async, maybe_await};
 use std::{
@@ -648,8 +648,7 @@ impl PartialEq<str> for Identifier {
 
 impl From<&Value> for Option<Identifier> {
     fn from(value: &Value) -> Self {
-        if let Some(Syntax::Identifier { ident, .. }) =
-            value.cast::<Embedded<Syntax>>().as_deref()
+        if let Some(Syntax::Identifier { ident, .. }) = value.cast::<Embedded<Syntax>>().as_deref()
         {
             Some(ident.clone())
         } else {

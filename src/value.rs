@@ -327,9 +327,7 @@ impl Value {
                 let cell = unsafe { Gc::from_raw(untagged as *mut GcInner<RwLock<Value>>) };
                 UnpackedValue::Cell(Cell(cell))
             }
-            Tag::FixNum => {
-                UnpackedValue::Number(Number(NumberRepr::Fixed(raw as i64 >> 1)))
-            }
+            Tag::FixNum => UnpackedValue::Number(Number(NumberRepr::Fixed(raw as i64 >> 1))),
         }
     }
 
@@ -651,15 +649,15 @@ impl From<usize> for Tag {
             Self::FixNum
         } else if tag == Self::Pair as usize {
             Self::Pair
-        } else if tag == Self::Boolean as usize{
-            Self::Boolean 
-        } else if tag == Self::CharacterOrSymbol  as usize{
+        } else if tag == Self::Boolean as usize {
+            Self::Boolean
+        } else if tag == Self::CharacterOrSymbol as usize {
             Self::CharacterOrSymbol
-        } else if tag == Self::Number  as usize{
+        } else if tag == Self::Number as usize {
             Self::Number
         } else if tag == Self::Procedure as usize {
             Self::Procedure
-        } else if tag == Self::Record as usize{
+        } else if tag == Self::Record as usize {
             Self::Record
         } else if tag == Self::RecordTypeDescriptor as usize {
             Self::RecordTypeDescriptor

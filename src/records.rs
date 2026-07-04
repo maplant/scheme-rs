@@ -1490,11 +1490,7 @@ pub(crate) unsafe extern "C" fn call_constructor_continuation(
         let cont = env.add(1).as_ref().unwrap();
 
         // Call the constructor
-        Box::into_raw(Box::new(Application::new(
-            constructor,
-            cont.cast(),
-            args,
-        )))
+        Box::into_raw(Box::new(Application::new(constructor, cont.cast(), args)))
     }
 }
 

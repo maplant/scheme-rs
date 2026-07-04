@@ -246,8 +246,7 @@ impl Exception {
     }
 
     pub fn add_condition(self, condition: impl Embeddable) -> Self {
-        let mut conditions = if let Some(compound) = self.0.cast::<Embedded<CompoundCondition>>()
-        {
+        let mut conditions = if let Some(compound) = self.0.cast::<Embedded<CompoundCondition>>() {
             compound.0.clone()
         } else {
             vec![self.0]
