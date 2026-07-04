@@ -114,6 +114,7 @@ use std::{
 const ALIGNMENT: usize = 16;
 const TAG_BITS: usize = ALIGNMENT.ilog2() as usize;
 pub(crate) const TAG: usize = 0b1111;
+pub(crate) const SYMBOL_CHAR: u32 = 0x110000;
 pub(crate) const NULL_VALUE: usize = Tag::Pair as usize;
 pub(crate) const TRUE_VALUE: usize = Tag::Boolean as usize | 1 << TAG_BITS;
 pub(crate) const FALSE_VALUE: usize = Tag::Boolean as usize;
@@ -184,7 +185,7 @@ impl Value {
                 Tag::Cell => {
                     Gc::increment_reference_count(untagged as *mut GcInner<Value>);
                 }
-                Tag::Symbol | Tag::Boolean | Tag::Character => (),
+                Tag::Boolean | Tag::CharacterOrSymbol => (),
             }
         }
         Self(raw)
@@ -282,17 +283,19 @@ impl Value {
                 let untagged = untagged as usize >> TAG_BITS;
                 UnpackedValue::Boolean(untagged != 0)
             }
-            Tag::Character => {
-                let untagged = (untagged as usize >> TAG_BITS) as u32;
-                UnpackedValue::Character(char::from_u32(untagged).unwrap())
+            Tag::CharacterOrSymbol => {
+                let untagged_char = (untagged as usize as u32) >> TAG_BITS;
+                if untagged_char == SYMBOL_CHAR {
+                    // Upper 32 bits used for symbols
+                    UnpackedValue::Symbol(Symbol((untagged as usize >> 32) as u32))
+                } else {
+                    // Lower 32 bits used for character
+                    UnpackedValue::Character(char::from_u32(untagged_char).unwrap())
+                }
             }
             Tag::Number => {
                 let number = unsafe { Arc::from_raw(untagged as *const NumberInner) };
                 UnpackedValue::Number(Number(number))
-            }
-            Tag::Symbol => {
-                let untagged = (untagged as usize >> TAG_BITS) as u32;
-                UnpackedValue::Symbol(Symbol(untagged))
             }
             Tag::Procedure => {
                 let clos = unsafe { Gc::from_raw(untagged as *mut GcInner<ProcedureInner>) };
@@ -627,9 +630,8 @@ impl From<Exception> for Value {
 pub(crate) enum Tag {
     Pair = 1,
     Boolean = 2,
-    Character = 3,
+    CharacterOrSymbol = 3,
     Number = 4,
-    Symbol = 6,
     Procedure = 10,
     Record = 11,
     RecordTypeDescriptor = 12,
@@ -642,9 +644,8 @@ impl From<usize> for Tag {
         match tag {
             1 => Self::Pair,
             2 => Self::Boolean,
-            3 => Self::Character,
+            3 => Self::CharacterOrSymbol,
             4 => Self::Number,
-            6 => Self::Symbol,
             10 => Self::Procedure,
             11 => Self::Record,
             12 => Self::RecordTypeDescriptor,
@@ -698,14 +699,14 @@ impl UnpackedValue {
                 Value::from_ptr_and_tag(((b as usize) << TAG_BITS) as *const (), Tag::Boolean)
             }
             Self::Character(c) => {
-                Value::from_ptr_and_tag(((c as usize) << TAG_BITS) as *const (), Tag::Character)
+                Value::from_ptr_and_tag(((c as usize) << TAG_BITS) as *const (), Tag::CharacterOrSymbol)
             }
             Self::Number(num) => {
                 let untagged = Arc::into_raw(num.0);
                 Value::from_ptr_and_tag(untagged, Tag::Number)
             }
             Self::Symbol(sym) => {
-                Value::from_ptr_and_tag(((sym.0 as usize) << TAG_BITS) as *const (), Tag::Symbol)
+                Value::from_ptr_and_tag((((sym.0 as usize) << 32) | (SYMBOL_CHAR as usize) << TAG_BITS) as *const (), Tag::CharacterOrSymbol)
             }
             Self::Procedure(clos) => {
                 let untagged = Gc::into_raw(clos.0);
