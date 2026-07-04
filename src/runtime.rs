@@ -15,7 +15,7 @@ use crate::{
     num,
     ports::{BufferMode, Port, Transcoder},
     proc::{
-        Application, ContBarrier, ContinuationPtr, FuncPtr, ProcDebugInfo, Procedure,
+        Application, ContBarrier, ContinuationPtr, DynState, FuncPtr, ProcDebugInfo, Procedure,
         ProcedureInner, UserPtr,
     },
     records::Embedded,
@@ -158,6 +158,17 @@ impl Runtime {
         self.0.read().registry.clone()
     }
 
+    /// The root dynamic state shared by all top-level evaluation on this runtime.
+    pub(crate) fn root_dyn_state(&self) -> Gc<RwLock<DynState>> {
+        self.0.read().dyn_state.clone()
+    }
+
+    /// A barrier for top-level evaluation (programs, REPL forms, library
+    /// invocation) against this runtime's root dynamic state.
+    pub(crate) fn entry_barrier(&self) -> ContBarrier<'static> {
+        ContBarrier::from_state(self.root_dyn_state())
+    }
+
     #[maybe_async]
     pub(crate) fn compile_expr(&self, expr: Cps, escaping: Escaping) -> Procedure {
         let (completion_tx, completion_rx) = completion();
@@ -214,6 +225,10 @@ pub(crate) struct RuntimeInner {
     pub(crate) globals_pool: HashSet<Global>,
     pub(crate) debug_info: DebugInfo,
     pub(crate) source_cache: SourceCache,
+    /// The root dynamic state for programs run on this runtime. Top-level
+    /// library bodies are invoked against this state, so dynamic-state
+    /// changes made at library load time persist for the Runtime's life.
+    dyn_state: Gc<RwLock<DynState>>,
 }
 
 impl Default for RuntimeInner {
@@ -247,6 +262,7 @@ impl RuntimeInner {
             globals_pool: HashSet::new(),
             debug_info: DebugInfo::default(),
             source_cache: SourceCache::default(),
+            dyn_state: Gc::new(RwLock::new(DynState::new())),
         }
     }
 }

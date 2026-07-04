@@ -110,6 +110,7 @@ use parking_lot::RwLock;
 use scheme_rs_macros::{cps_bridge, maybe_async, maybe_await, maybe_await_boxed};
 use std::{
     any::Any,
+    cell::RefCell,
     collections::HashMap,
     fmt,
     ops::DerefMut,
@@ -851,7 +852,7 @@ impl Application {
     /// Evaluate the application - and all subsequent application - until all that
     /// remains are values. This is the main trampoline of the evaluation engine.
     #[maybe_async]
-    pub fn eval(mut self, barrier: &mut ContBarrier<'_>) -> Result<Vec<Value>, Exception> {
+    fn eval_inner(mut self, barrier: &mut ContBarrier<'_>) -> Result<Vec<Value>, Exception> {
         loop {
             let op = match self.op {
                 OpType::Proc(proc) => proc,
@@ -864,9 +865,41 @@ impl Application {
         }
     }
 
+    /// Evaluate the application — and all subsequent applications — until all
+    /// that remains are values. This is the main trampoline of the evaluation
+    /// engine. Publishes the barrier's dynamic state as the task's ambient
+    /// state for the duration.
+    #[cfg(all(feature = "async", feature = "tokio"))]
+    pub async fn eval(self, barrier: &mut ContBarrier<'_>) -> Result<Vec<Value>, Exception> {
+        let state = barrier.state.clone();
+        AMBIENT_STATE.scope(state, self.eval_inner(barrier)).await
+    }
+
+    /// Evaluate the application — and all subsequent applications — until all
+    /// that remains are values. This is the main trampoline of the evaluation
+    /// engine. Publishes the barrier's dynamic state as the task's ambient
+    /// state for the duration.
+    #[cfg(all(feature = "async", not(feature = "tokio")))]
+    pub async fn eval(self, barrier: &mut ContBarrier<'_>) -> Result<Vec<Value>, Exception> {
+        // Best-effort without task-locals; correct for single-threaded executors.
+        let _guard = publish_ambient(barrier.state.clone());
+        self.eval_inner(barrier).await
+    }
+
+    /// Evaluate the application — and all subsequent applications — until all
+    /// that remains are values. This is the main trampoline of the evaluation
+    /// engine. Publishes the barrier's dynamic state as the task's ambient
+    /// state for the duration.
+    #[cfg(not(feature = "async"))]
+    pub fn eval(self, barrier: &mut ContBarrier<'_>) -> Result<Vec<Value>, Exception> {
+        let _guard = publish_ambient(barrier.state.clone());
+        self.eval_inner(barrier)
+    }
+
     #[cfg(feature = "async")]
     /// Just like [eval] but throws an error if we encounter an async function.
     pub fn eval_sync(mut self, barrier: &mut ContBarrier) -> Result<Vec<Value>, Exception> {
+        let _guard = publish_ambient(barrier.state.clone());
         loop {
             let op = match self.op {
                 OpType::Proc(proc) => proc,
@@ -963,7 +996,7 @@ pub(crate) struct DynState {
 }
 
 impl DynState {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             dyn_stack: Vec::new(),
             // Procedures returned by the JIT compiler are delimited
@@ -972,6 +1005,44 @@ impl DynState {
             // allocate for them when they're run.
             cont_marks: vec![HashMap::new()],
         }
+    }
+}
+
+#[cfg(feature = "tokio")]
+tokio::task_local! {
+    /// The dynamic state of the current tokio task. Survives work-stealing
+    /// migration between worker threads.
+    static AMBIENT_STATE: Gc<RwLock<DynState>>;
+}
+
+std::thread_local! {
+    /// Fallback ambient state for sync builds, OS threads, and eval_sync.
+    static AMBIENT_STATE_TL: RefCell<Option<Gc<RwLock<DynState>>>> =
+        const { RefCell::new(None) };
+}
+
+/// The dynamic state of the task/thread we are currently running on, if any
+/// evaluation is in progress.
+pub(crate) fn ambient_state() -> Option<Gc<RwLock<DynState>>> {
+    #[cfg(feature = "tokio")]
+    if let Ok(state) = AMBIENT_STATE.try_with(Clone::clone) {
+        return Some(state);
+    }
+    AMBIENT_STATE_TL.with(|s| s.borrow().clone())
+}
+
+/// Publish `state` as this thread's ambient dynamic state; restores the
+/// previous value on drop. Used by the sync trampoline; the async
+/// trampoline uses AMBIENT_STATE.scope instead.
+pub(crate) struct AmbientGuard(Option<Gc<RwLock<DynState>>>);
+
+pub(crate) fn publish_ambient(state: Gc<RwLock<DynState>>) -> AmbientGuard {
+    AMBIENT_STATE_TL.with(|s| AmbientGuard(s.borrow_mut().replace(state)))
+}
+
+impl Drop for AmbientGuard {
+    fn drop(&mut self) {
+        AMBIENT_STATE_TL.with(|s| *s.borrow_mut() = self.0.take());
     }
 }
 
@@ -1002,6 +1073,34 @@ impl<'a> ContBarrier<'a> {
         Self {
             id: Self::next_id(),
             state: Gc::new(RwLock::new(DynState::new())),
+            params: HashMap::new(),
+        }
+    }
+
+    /// A barrier with a fresh, empty dynamic state. Only for true entry
+    /// points: an embedder calling into Scheme from a context with no
+    /// ambient dynamic state.
+    pub fn root() -> ContBarrier<'static> {
+        Self::from_state(Gc::new(RwLock::new(DynState::new())))
+    }
+
+    /// A barrier for nested re-entry into Scheme (callbacks, macro
+    /// transformers, library invocation): shares the dynamic state of the
+    /// task we are running on, under a fresh id. The fresh id keeps escape
+    /// procedures from jumping across the intervening Rust frame; the shared
+    /// state means the callee observes the caller's exception handlers and
+    /// current ports.
+    pub fn nested() -> ContBarrier<'static> {
+        match ambient_state() {
+            Some(state) => Self::from_state(state),
+            None => Self::root(),
+        }
+    }
+
+    pub(crate) fn from_state(state: Gc<RwLock<DynState>>) -> ContBarrier<'static> {
+        ContBarrier {
+            id: Self::next_id(),
+            state,
             params: HashMap::new(),
         }
     }
