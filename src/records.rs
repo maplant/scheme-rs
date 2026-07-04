@@ -508,24 +508,24 @@ impl Record {
         fmt: &mut fmt::Formatter<'_>,
     ) -> fmt::Result {
         if let Some(vtable) = self.0.rtd.embedded_vtable {
-            (vtable.debug_fmt)(self.0.embedded_ptr().unwrap(), circular_values, fmt)?;
+            (vtable.debug_fmt)(self.0.embedded_ptr().unwrap(), circular_values, fmt)
+        } else {
+            write!(fmt, "#<{}", self.0.rtd.name)?;
+            for (Field::Mutable(name) | Field::Immutable(name), field) in self
+                .0
+                .rtd
+                .inherits
+                .iter()
+                .cloned()
+                .chain(Some(ByAddress(self.0.rtd.clone())))
+                .flat_map(|rtd| rtd.fields.clone())
+                .zip(self.0.fields())
+            {
+                write!(fmt, " {name}: ")?;
+                field.debug_fmt(circular_values, fmt)?;
+            }
+            write!(fmt, ">")
         }
-
-        write!(fmt, "#<{}", self.0.rtd.name)?;
-        for (Field::Mutable(name) | Field::Immutable(name), field) in self
-            .0
-            .rtd
-            .inherits
-            .iter()
-            .cloned()
-            .chain(Some(ByAddress(self.0.rtd.clone())))
-            .flat_map(|rtd| rtd.fields.clone())
-            .zip(self.0.fields())
-        {
-            write!(fmt, " {name}: ")?;
-            field.debug_fmt(circular_values, fmt)?;
-        }
-        write!(fmt, ">")
     }
 
     pub fn eq(&self, rhs: &Record) -> bool {

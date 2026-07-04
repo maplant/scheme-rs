@@ -104,6 +104,14 @@ unsafe impl Embeddable for Syntax {
     {
         rtd!(ty: Syntax, name: "syntax", sealed: true, opaque: true)
     }
+
+    fn debug_fmt(
+        &self,
+        _circular_values: &mut indexmap::IndexMap<Value, bool>,
+        fmt: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
+        write!(fmt, "#<syntax:{} {:#?}>", self.span(), self)
+    }
 }
 
 impl Syntax {
