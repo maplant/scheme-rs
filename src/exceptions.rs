@@ -1020,7 +1020,8 @@ unsafe extern "C" fn unwind_to_exception_handler(
                     Application::halt_err(raised)
                 }
                 Some(DynStackElem::Winder(winder)) => {
-                    // If this is a winder, we should call the out winder while unwinding
+                    // If this is a winder, we should call the out winder while unwinding.
+                    // Variadic: the out thunk's return arity is not under our control.
                     Application::new(
                         winder.out_thunk,
                         Some(Procedure::new_cont(
@@ -1028,7 +1029,7 @@ unsafe extern "C" fn unwind_to_exception_handler(
                             vec![raised],
                             unwind_to_exception_handler,
                             0,
-                            false,
+                            true,
                             barrier,
                         )),
                         Vec::new(),

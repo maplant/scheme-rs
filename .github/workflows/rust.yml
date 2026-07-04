@@ -15,15 +15,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
+    - uses: taiki-e/install-action@cargo-hack
     - uses: dtolnay/rust-toolchain@stable
       with:
         components: clippy, rustfmt
     - name: Build
-      run: cargo build 
+      run: cargo hack build --feature-powerset --group-features async,tokio
     - name: Check formatting
-      run: cargo fmt  -- --check
+      run: cargo fmt -- --check
     - name: Clippy
-      run: cargo clippy --all-targets -- -Dclippy::all -D warnings
+      run: cargo hack clippy --feature-powerset --group-features async,tokio --all-targets -- -Dclippy::all -D warnings
     - name: Test
       run: cargo test
       timeout-minutes: 2
