@@ -13,7 +13,7 @@ use scheme_rs_macros::bridge;
 use crate::{
     exceptions::Exception,
     gc::{Gc, Trace},
-    proc::{ContBarrier, Procedure},
+    proc::{ContBarrier, Procedure, spawn_state},
     records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
     value::Value,
 };
@@ -41,7 +41,7 @@ unsafe impl Embeddable for JoinHandle {
 pub fn spawn(thunk: Procedure) -> Result<Vec<Value>, Exception> {
     let cell = Gc::new(Mutex::new(Ok(Vec::new())));
     let cell_cloned = cell.clone();
-    let state = crate::proc::spawn_state();
+    let state = spawn_state();
     let join_handle = thread::spawn(move || {
         let mut cell_write = cell_cloned.lock();
 
