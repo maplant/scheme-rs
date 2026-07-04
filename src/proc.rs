@@ -1012,20 +1012,14 @@ impl DynState {
     /// entries (current ports) carry over as copies; control entries
     /// (winders, prompts, exception handlers) belong to the spawning
     /// thread's stack and do not cross. Continuation marks start fresh —
-    /// the child begins a fresh initial continuation. This is an allowlist:
-    /// entries not listed here default to *not* crossing the spawn boundary;
-    /// reconsider when adding a `DynStackElem` variant.
+    /// the child begins a fresh initial continuation. Which entries cross
+    /// is decided per-variant by [`DynStackElem::crosses_spawn`].
     fn spawn_snapshot(&self) -> Self {
         Self {
             dyn_stack: self
                 .dyn_stack
                 .iter()
-                .filter(|elem| {
-                    matches!(
-                        elem,
-                        DynStackElem::CurrentInputPort(_) | DynStackElem::CurrentOutputPort(_)
-                    )
-                })
+                .filter(|elem| elem.crosses_spawn())
                 .cloned()
                 .collect(),
             cont_marks: vec![HashMap::new()],
@@ -1385,6 +1379,22 @@ pub(crate) enum DynStackElem {
     ExceptionHandler(Procedure),
     CurrentInputPort(Port),
     CurrentOutputPort(Port),
+}
+
+impl DynStackElem {
+    /// Whether this entry crosses a spawn boundary into a child thread or
+    /// task. Binding entries (current ports) do; control entries (winders,
+    /// prompts, exception handlers) belong to the spawning stack and do
+    /// not. Exhaustive on purpose: adding a variant forces this decision.
+    fn crosses_spawn(&self) -> bool {
+        match self {
+            DynStackElem::CurrentInputPort(_) | DynStackElem::CurrentOutputPort(_) => true,
+            DynStackElem::Prompt(_)
+            | DynStackElem::PromptBarrier(_)
+            | DynStackElem::Winder(_)
+            | DynStackElem::ExceptionHandler(_) => false,
+        }
+    }
 }
 
 pub(crate) unsafe extern "C" fn pop_dyn_stack(
