@@ -953,43 +953,65 @@ type Param<'a> = &'a mut (dyn Any + Send + Sync);
 #[cfg(not(feature = "async"))]
 type Param<'a> = &'a mut dyn Any;
 
+/// The dynamic state of a running task: the dynamic stack (winders,
+/// exception handlers, current ports) and continuation marks. Kept behind a
+/// `Gc<RwLock<..>>` handle, separate from the barrier's identity.
+#[derive(Clone, Debug, Trace)]
+pub(crate) struct DynState {
+    dyn_stack: Vec<DynStackElem>,
+    cont_marks: Vec<HashMap<Symbol, Value>>,
+}
+
+impl DynState {
+    fn new() -> Self {
+        Self {
+            dyn_stack: Vec::new(),
+            // Procedures returned by the JIT compiler are delimited
+            // continuations (of sorts), and therefore we need to preallocate
+            // the initial marks for them since there's no mechanism to
+            // allocate for them when they're run.
+            cont_marks: vec![HashMap::new()],
+        }
+    }
+}
+
 /// A continuation barrier. Escape procedures created within a continuation
 /// barrier cannot be called within another barrier.
 ///
-/// This structure also contains the dynamic state of the running program
-/// including winders, exception handlers, continuation marks, and parameters.
+/// The barrier separates *identity* (the `id`, fresh at every Rust re-entry
+/// frame, which is what stops escape procedures from jumping across a Rust
+/// frame) from the *dynamic state* of the running task, which is kept
+/// separate so that it can outlive and be shared across individual barriers.
 pub struct ContBarrier<'a> {
-    /// The id of the barrier. Checked when calling an escape procedure
+    /// The id of the barrier. Checked when calling an escape procedure.
     id: usize,
-    /// The active dynamic stack
-    dyn_stack: Vec<DynStackElem>,
-    /// The active [continuation marks](https://srfi.schemers.org/srfi-157/srfi-157.html)
-    cont_marks: Vec<HashMap<Symbol, Value>>,
-    /// The active installed mutable parameters
+    /// The dynamic state of the running task.
+    state: Gc<RwLock<DynState>>,
+    /// Host-injected mutable variables (see `add_param`). Unrelated to
+    /// Scheme parameter objects; per-entry by nature (borrowed &mut).
     params: HashMap<Symbol, Param<'a>>,
 }
 
 impl<'a> ContBarrier<'a> {
-    pub fn new() -> Self {
+    fn next_id() -> usize {
         static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+        NEXT_ID.fetch_add(1, Ordering::Relaxed)
+    }
 
+    pub fn new() -> Self {
         Self {
-            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
-            dyn_stack: Vec::new(),
-            // Procedures returned by the JIT compiler are delimited
-            // continuations (of sorts), and therefore we need to preallocate
-            // the initial marks for them since there's no mechanism to allocate
-            // for them when they're run.
-            cont_marks: vec![HashMap::new()],
+            id: Self::next_id(),
+            state: Gc::new(RwLock::new(DynState::new())),
             params: HashMap::new(),
         }
     }
 
     pub fn save(&self) -> SavedDynamicState {
+        let state = self.state.read().clone();
         SavedDynamicState {
             id: self.id,
-            dyn_stack: self.dyn_stack.clone(),
-            cont_marks: self.cont_marks.clone(),
+            dyn_stack: state.dyn_stack,
+            cont_marks: state.cont_marks,
         }
     }
 
@@ -1047,15 +1069,17 @@ impl<'a> ContBarrier<'a> {
     }
 
     pub(crate) fn push_marks(&mut self) {
-        self.cont_marks.push(HashMap::new());
+        self.state.write().cont_marks.push(HashMap::new());
     }
 
     pub(crate) fn pop_marks(&mut self) {
-        self.cont_marks.pop();
+        self.state.write().cont_marks.pop();
     }
 
     pub(crate) fn current_marks(&self, tag: Symbol) -> Vec<Value> {
-        self.cont_marks
+        self.state
+            .read()
+            .cont_marks
             .iter()
             .rev()
             .flat_map(|marks| marks.get(&tag).cloned())
@@ -1063,7 +1087,17 @@ impl<'a> ContBarrier<'a> {
     }
 
     pub(crate) fn set_continuation_mark(&mut self, tag: Symbol, val: Value) {
-        self.cont_marks.last_mut().unwrap().insert(tag, val);
+        self.state
+            .write()
+            .cont_marks
+            .last_mut()
+            .unwrap()
+            .insert(tag, val);
+    }
+
+    /// Replace the continuation marks wholesale (continuation reinstatement).
+    pub(crate) fn set_cont_marks(&mut self, marks: Vec<HashMap<Symbol, Value>>) {
+        self.state.write().cont_marks = marks;
     }
 
     // TODO: We should certainly try to optimize these functions. Linear
@@ -1071,14 +1105,17 @@ impl<'a> ContBarrier<'a> {
     // will ever get very large.
 
     pub fn current_exception_handler(&self) -> Option<Procedure> {
-        self.dyn_stack.iter().rev().find_map(|elem| match elem {
+        let state = self.state.read();
+        state.dyn_stack.iter().rev().find_map(|elem| match elem {
             DynStackElem::ExceptionHandler(proc) => Some(proc.clone()),
             _ => None,
         })
     }
 
     pub fn current_input_port(&self) -> Port {
-        self.dyn_stack
+        let state = self.state.read();
+        state
+            .dyn_stack
             .iter()
             .rev()
             .find_map(|elem| match elem {
@@ -1099,7 +1136,9 @@ impl<'a> ContBarrier<'a> {
     }
 
     pub fn current_output_port(&self) -> Port {
-        self.dyn_stack
+        let state = self.state.read();
+        state
+            .dyn_stack
             .iter()
             .rev()
             .find_map(|elem| match elem {
@@ -1122,23 +1161,24 @@ impl<'a> ContBarrier<'a> {
     }
 
     pub(crate) fn push_dyn_stack(&mut self, elem: DynStackElem) {
-        self.dyn_stack.push(elem);
+        self.state.write().dyn_stack.push(elem);
     }
 
     pub(crate) fn pop_dyn_stack(&mut self) -> Option<DynStackElem> {
-        self.dyn_stack.pop()
+        self.state.write().dyn_stack.pop()
     }
 
-    pub(crate) fn dyn_stack_last(&self) -> Option<&DynStackElem> {
-        self.dyn_stack.last()
+    /// Returns an owned clone: the stack lives behind a lock now.
+    pub(crate) fn dyn_stack_last(&self) -> Option<DynStackElem> {
+        self.state.read().dyn_stack.last().cloned()
     }
 
     pub(crate) fn dyn_stack_len(&self) -> usize {
-        self.dyn_stack.len()
+        self.state.read().dyn_stack.len()
     }
 
     pub(crate) fn dyn_stack_is_empty(&self) -> bool {
-        self.dyn_stack.is_empty()
+        self.state.read().dyn_stack.is_empty()
     }
 }
 
@@ -1190,9 +1230,12 @@ impl SavedDynamicState {
 impl From<SavedDynamicState> for ContBarrier<'_> {
     fn from(value: SavedDynamicState) -> Self {
         ContBarrier {
-            dyn_stack: value.dyn_stack,
-            cont_marks: value.cont_marks,
-            ..Default::default()
+            id: Self::next_id(),
+            state: Gc::new(RwLock::new(DynState {
+                dyn_stack: value.dyn_stack,
+                cont_marks: value.cont_marks,
+            })),
+            params: HashMap::new(),
         }
     }
 }
@@ -1310,7 +1353,7 @@ fn escape_procedure(
         return Err(Exception::error("attempt to cross continuation barrier"));
     }
 
-    barrier.cont_marks = saved_barrier_read.cont_marks.clone();
+    barrier.set_cont_marks(saved_barrier_read.cont_marks.clone());
 
     // Clone the continuation
     let k: Procedure = k.try_into().unwrap();
@@ -1319,7 +1362,7 @@ fn escape_procedure(
 
     // Simple optimization: check if we're in the same dyn stack
     if barrier.dyn_stack_len() == saved_barrier_read.dyn_stack_len()
-        && barrier.dyn_stack_last() == saved_barrier_read.dyn_stack_last()
+        && barrier.dyn_stack_last().as_ref() == saved_barrier_read.dyn_stack_last()
     {
         Ok(Application::new(k, None, args))
     } else {
@@ -1361,7 +1404,7 @@ unsafe extern "C" fn unwind(
 
         while !barrier.dyn_stack_is_empty()
             && (barrier.dyn_stack_len() > dest_stack_read.dyn_stack_len()
-                || barrier.dyn_stack_last()
+                || barrier.dyn_stack_last().as_ref()
                     != dest_stack_read.dyn_stack_get(barrier.dyn_stack_len() - 1))
         {
             match barrier.pop_dyn_stack() {
@@ -1910,7 +1953,7 @@ fn delimited_continuation(
         .unwrap();
     let saved_barrier_read = saved_barrier.as_ref();
     // Restore continuation marks
-    barrier.cont_marks = saved_barrier_read.cont_marks.clone();
+    barrier.set_cont_marks(saved_barrier_read.cont_marks.clone());
 
     let args = args.iter().chain(rest_args).cloned().collect::<Vec<_>>();
 
