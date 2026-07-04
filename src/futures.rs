@@ -37,9 +37,12 @@ unsafe impl Embeddable for Future {
 #[bridge(name = "future", lib = "(async)")]
 pub async fn make_future(proc: Procedure) -> Result<Vec<Value>, Exception> {
     let state = spawn_state();
-    let future: Future = async move { proc.call(&[], &mut ContBarrier::from_state(state)).await }
-        .boxed()
-        .shared();
+    let future: Future = async move {
+        proc.call_with_barrier(&[], &mut ContBarrier::from_state(state))
+            .await
+    }
+    .boxed()
+    .shared();
     let future = Value::from(future);
     Ok(vec![future])
 }
@@ -48,10 +51,10 @@ pub async fn make_future(proc: Procedure) -> Result<Vec<Value>, Exception> {
 pub async fn spawn(task: &Value) -> Result<Vec<Value>, Exception> {
     let task: Procedure = task.clone().try_into()?;
     let state = spawn_state();
-    let task =
-        tokio::task::spawn(
-            async move { task.call(&[], &mut ContBarrier::from_state(state)).await },
-        );
+    let task = tokio::task::spawn(async move {
+        task.call_with_barrier(&[], &mut ContBarrier::from_state(state))
+            .await
+    });
     let future: Future = async move { task.await.unwrap() }.boxed().shared();
     let future = Value::from(future);
     Ok(vec![future])

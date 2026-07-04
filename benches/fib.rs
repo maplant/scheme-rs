@@ -1,9 +1,4 @@
-use scheme_rs::{
-    env::TopLevelEnvironment,
-    proc::{ContBarrier, Procedure},
-    runtime::Runtime,
-    value::Expect1,
-};
+use scheme_rs::{env::TopLevelEnvironment, proc::Procedure, runtime::Runtime, value::Expect1};
 
 use criterion::*;
 use scheme_rs_macros::{maybe_async, maybe_await};
@@ -28,9 +23,7 @@ fn fib_fn() -> Procedure {
 fn fib_benchmark(c: &mut Criterion) {
     let proc = fib_fn();
 
-    c.bench_function("fib 10000", |b| {
-        b.iter(|| proc.call(&[], &mut ContBarrier::root()))
-    });
+    c.bench_function("fib 10000", |b| b.iter(|| proc.call(&[])));
 }
 
 #[cfg(feature = "async")]
@@ -42,7 +35,7 @@ fn fib_benchmark(c: &mut Criterion) {
     c.bench_function("fib 10000", |b| {
         b.to_async(&runtime).iter(|| {
             let val = proc.clone();
-            async move { val.call(&[], &mut ContBarrier::root()).await }
+            async move { val.call(&[]).await }
         })
     });
 }

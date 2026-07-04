@@ -47,12 +47,12 @@ pub fn spawn(thunk: Procedure) -> Result<Vec<Value>, Exception> {
 
         #[cfg(not(feature = "async"))]
         {
-            *cell_write = thunk.call(&[], &mut ContBarrier::from_state(state));
+            *cell_write = thunk.call_with_barrier(&[], &mut ContBarrier::from_state(state));
         }
 
         #[cfg(feature = "async")]
         {
-            *cell_write = thunk.call_sync(&[], &mut ContBarrier::from_state(state));
+            *cell_write = thunk.call_sync_with_barrier(&[], &mut ContBarrier::from_state(state));
         }
     });
     let id = join_handle.thread().id();

@@ -37,7 +37,7 @@ pub fn eval(
     let mut mutable_vars = HashSet::default();
     let expr = maybe_await!(Expression::parse(&ctxt, expr, &env, &mut mutable_vars))?;
     let proc = maybe_await!(Compiler::new(mutable_vars).compile(runtime, &expr))?;
-    let result = maybe_await!(proc.call(&[], &mut ContBarrier::nested()))?;
+    let result = maybe_await!(proc.call(&[]))?;
     Ok(Application::new(k, None, result))
 }
 

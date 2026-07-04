@@ -696,9 +696,29 @@ impl Procedure {
         self.0.is_continuation()
     }
 
+    /// Call this procedure in the ambient dynamic extent: the barrier is
+    /// constructed automatically (sharing the running task's dynamic state
+    /// when called from within an evaluation, fresh otherwise). Use
+    /// [`Procedure::call_with_barrier`] to supply host parameters or an
+    /// explicit dynamic state.
+    #[maybe_async]
+    pub fn call(&self, args: &[Value]) -> Result<Vec<Value>, Exception> {
+        maybe_await!(self.call_with_barrier(args, &mut ContBarrier::nested()))
+    }
+
+    /// Call this procedure in the ambient dynamic extent: the barrier is
+    /// constructed automatically (sharing the running task's dynamic state
+    /// when called from within an evaluation, fresh otherwise). Use
+    /// [`Procedure::call_sync_with_barrier`] to supply host parameters or
+    /// an explicit dynamic state.
+    #[cfg(feature = "async")]
+    pub fn call_sync(&self, args: &[Value]) -> Result<Vec<Value>, Exception> {
+        self.call_sync_with_barrier(args, &mut ContBarrier::nested())
+    }
+
     /// Applies `args` to the procedure and returns the values it evaluates to.
     #[maybe_async]
-    pub fn call(
+    pub fn call_with_barrier(
         &self,
         args: &[Value],
         barrier: &mut ContBarrier<'_>,
@@ -708,7 +728,7 @@ impl Procedure {
     }
 
     #[cfg(feature = "async")]
-    pub fn call_sync(
+    pub fn call_sync_with_barrier(
         &self,
         args: &[Value],
         barrier: &mut ContBarrier<'_>,

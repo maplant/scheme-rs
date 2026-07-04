@@ -75,23 +75,23 @@ automatically garbage collected and implement `Send` and `Sync` and are
 `'static` so you can hold on to them for as long as you want and put them
 anywhere.
 
-Calling a procedure requires a [`ContBarrier`](proc::ContBarrier), which
-carries the current continuation barrier's identity and its dynamic state
-(exception handlers, current ports, and the like). There are three ways to
-get one: [`ContBarrier::root`](proc::ContBarrier::root) starts a fresh,
-empty dynamic state, for embedder entry points with no ambient Scheme
-state to inherit; [`ContBarrier::nested`](proc::ContBarrier::nested) is for
-callbacks that re-enter Scheme from within a running evaluation, sharing
-the caller's dynamic state under a fresh id; and spawning concurrent work
-(a thread, task, or future) gets a filtered snapshot of the ambient state
-automatically, handled internally by the threads and async libraries.
+Calling a procedure runs it in the ambient dynamic extent (exception
+handlers, current ports, and the like): `call` shares the running task's
+dynamic state when called from within an evaluation and starts a fresh one
+otherwise. For explicit control — supplying host parameters (see
+`add_param`) or an explicit dynamic state — use
+[`Procedure::call_with_barrier`](proc::Procedure::call_with_barrier) with a
+[`ContBarrier`](proc::ContBarrier) constructed via
+[`ContBarrier::root`](proc::ContBarrier::root) (a fresh, empty dynamic
+state) or [`ContBarrier::nested`](proc::ContBarrier::nested) (the ambient
+dynamic state under a fresh id).
 Top-level evaluation (programs, REPL forms, and library bodies) runs
 against a root dynamic state owned by the `Runtime` itself, so dynamic
 state established while loading libraries persists for the Runtime's life.
 
 ```rust
 # use scheme_rs::{
-# runtime::Runtime, env::TopLevelEnvironment, value::Value, proc::{ContBarrier, Procedure},
+# runtime::Runtime, env::TopLevelEnvironment, value::Value, proc::Procedure,
 # };
 # let runtime = Runtime::new();
 # let env = TopLevelEnvironment::new_repl(&runtime);
@@ -111,10 +111,7 @@ state established while loading libraries persists for the Runtime's life.
 # .unwrap();
 # let factorial = factorial.cast::<Procedure>().unwrap();
 let [result] = factorial
-    .call(
-        &[Value::from(5)],
-        &mut ContBarrier::root(),
-    )
+    .call(&[Value::from(5)])
     .unwrap()
     .try_into()
     .unwrap();
@@ -299,7 +296,7 @@ pub fn call_with_var(
     
     // Call the thunk arg with the new dyn state:
     let thunk: Procedure = args[0].clone().try_into()?;
-    let result = thunk.call(&[], &mut new_barrier)?;
+    let result = thunk.call_with_barrier(&[], &mut new_barrier)?;
     
     // Return to the continuation:
     Ok(Application::new(k, None, result))
