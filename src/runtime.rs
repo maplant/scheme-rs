@@ -951,3 +951,31 @@ unsafe extern "C" fn call_known_3x1(
         }
     }
 }
+
+#[cfg(all(test, not(feature = "async")))]
+mod tests {
+    use super::*;
+    use crate::env::{ImportPolicy, TopLevelEnvironment};
+
+    #[test]
+    fn uncaught_error_leaves_root_cont_marks_balanced() {
+        let rt = Runtime::new();
+        let env = TopLevelEnvironment::new_repl(&rt);
+        // An uncaught error inside several pending non-tail calls: each
+        // pending continuation has pushed a cont_marks frame that its
+        // invocation would normally pop, and the HaltErr exit skips all of
+        // those pops. The trampoline must rebalance the root state itself.
+        let program = "
+            (import (rnrs))
+            (define (fail n)
+              (if (= n 0)
+                  (error 'boom \"uncaught\")
+                  (+ 1 (fail (- n 1)))))
+            (fail 5)";
+        assert!(env.eval(ImportPolicy::Allow, program).is_err());
+        let depth_after_first = rt.entry_barrier().marks_depth();
+        assert!(env.eval(ImportPolicy::Allow, program).is_err());
+        let depth_after_second = rt.entry_barrier().marks_depth();
+        assert_eq!(depth_after_first, depth_after_second);
+    }
+}

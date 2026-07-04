@@ -851,18 +851,28 @@ impl Application {
 
     /// Evaluate the application - and all subsequent application - until all that
     /// remains are values. This is the main trampoline of the evaluation engine.
+    ///
+    /// The trampoline owns the continuation-mark balance for its run: it
+    /// pushes the baseline frame that the terminal (halt) continuation pops
+    /// on a successful exit, and truncates back to the entry depth on every
+    /// exit. On success the truncate is a no-op; on a halt_err exit (uncaught
+    /// raise, failed cross-barrier escape, missing prompt tag) it discards
+    /// the baseline frame plus one leaked frame per pending continuation
+    /// whose invocation — and therefore whose pop — never happened.
     #[maybe_async]
     fn eval_inner(mut self, barrier: &mut ContBarrier<'_>) -> Result<Vec<Value>, Exception> {
-        loop {
+        barrier.push_marks();
+        let restore_depth = barrier.marks_depth() - 1;
+        let result = loop {
             let op = match self.op {
                 OpType::Proc(proc) => proc,
-                OpType::HaltOk => return Ok(self.args),
-                OpType::HaltErr => {
-                    return Err(Exception(self.args.pop().unwrap()));
-                }
+                OpType::HaltOk => break Ok(self.args),
+                OpType::HaltErr => break Err(Exception(self.args.pop().unwrap())),
             };
             self = maybe_await!(op.0.apply(self.k, self.args, barrier));
-        }
+        };
+        barrier.truncate_marks(restore_depth);
+        result
     }
 
     /// Evaluate the application — and all subsequent applications — until all
@@ -900,16 +910,18 @@ impl Application {
     /// Just like [eval] but throws an error if we encounter an async function.
     pub fn eval_sync(mut self, barrier: &mut ContBarrier) -> Result<Vec<Value>, Exception> {
         let _guard = publish_ambient(barrier.state.clone());
-        loop {
+        barrier.push_marks();
+        let restore_depth = barrier.marks_depth() - 1;
+        let result = loop {
             let op = match self.op {
                 OpType::Proc(proc) => proc,
-                OpType::HaltOk => return Ok(self.args),
-                OpType::HaltErr => {
-                    return Err(Exception(self.args.pop().unwrap()));
-                }
+                OpType::HaltOk => break Ok(self.args),
+                OpType::HaltErr => break Err(Exception(self.args.pop().unwrap())),
             };
             self = op.0.apply_sync(self.k, self.args, barrier);
-        }
+        };
+        barrier.truncate_marks(restore_depth);
+        result
     }
 }
 
@@ -1083,19 +1095,10 @@ impl<'a> ContBarrier<'a> {
     /// state means the callee observes the caller's exception handlers and
     /// current ports.
     pub fn nested() -> ContBarrier<'static> {
-        let Some(state) = ambient_state() else {
-            return Self::root();
-        };
-        let mut barrier = Self::from_state(state);
-        // A fresh barrier's cont_marks starts pre-seeded with one baseline
-        // frame (see DynState::new), which the entry continuation (halt, or
-        // the callee being a continuation itself) consumes exactly once on
-        // the way out. A nested barrier shares the ambient cont_marks stack
-        // instead of getting a fresh one, so it must push that baseline
-        // frame itself; otherwise its terminal pop would consume a frame
-        // that belongs to the ambient computation.
-        barrier.push_marks();
-        barrier
+        match ambient_state() {
+            Some(state) => Self::from_state(state),
+            None => Self::root(),
+        }
     }
 
     pub(crate) fn from_state(state: Gc<RwLock<DynState>>) -> ContBarrier<'static> {
@@ -1174,6 +1177,17 @@ impl<'a> ContBarrier<'a> {
 
     pub(crate) fn pop_marks(&mut self) {
         self.state.write().cont_marks.pop();
+    }
+
+    pub(crate) fn marks_depth(&self) -> usize {
+        self.state.read().cont_marks.len()
+    }
+
+    /// Truncate continuation marks back to `depth`, discarding frames left
+    /// behind by pending continuations when the trampoline exits early
+    /// (halt_err). No-op on balanced exits.
+    pub(crate) fn truncate_marks(&mut self, depth: usize) {
+        self.state.write().cont_marks.truncate(depth);
     }
 
     pub(crate) fn current_marks(&self, tag: Symbol) -> Vec<Value> {
