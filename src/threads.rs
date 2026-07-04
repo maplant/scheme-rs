@@ -41,17 +41,18 @@ unsafe impl Embeddable for JoinHandle {
 pub fn spawn(thunk: Procedure) -> Result<Vec<Value>, Exception> {
     let cell = Gc::new(Mutex::new(Ok(Vec::new())));
     let cell_cloned = cell.clone();
+    let state = crate::proc::spawn_state();
     let join_handle = thread::spawn(move || {
         let mut cell_write = cell_cloned.lock();
 
         #[cfg(not(feature = "async"))]
         {
-            *cell_write = thunk.call(&[], &mut ContBarrier::root());
+            *cell_write = thunk.call(&[], &mut ContBarrier::from_state(state));
         }
 
         #[cfg(feature = "async")]
         {
-            *cell_write = thunk.call_sync(&[], &mut ContBarrier::root());
+            *cell_write = thunk.call_sync(&[], &mut ContBarrier::from_state(state));
         }
     });
     let id = join_handle.thread().id();

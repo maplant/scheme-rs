@@ -1007,6 +1007,28 @@ impl DynState {
             cont_marks: vec![HashMap::new()],
         }
     }
+
+    /// The dynamic state a newly spawned thread/task starts with: binding
+    /// entries (current ports) carry over as copies; control entries
+    /// (winders, prompts, exception handlers) belong to the spawning
+    /// thread's stack and do not cross. Continuation marks start fresh —
+    /// the child begins a fresh initial continuation.
+    fn spawn_snapshot(&self) -> Self {
+        Self {
+            dyn_stack: self
+                .dyn_stack
+                .iter()
+                .filter(|elem| {
+                    matches!(
+                        elem,
+                        DynStackElem::CurrentInputPort(_) | DynStackElem::CurrentOutputPort(_)
+                    )
+                })
+                .cloned()
+                .collect(),
+            cont_marks: vec![HashMap::new()],
+        }
+    }
 }
 
 #[cfg(feature = "async")]
@@ -1030,6 +1052,16 @@ pub(crate) fn ambient_state() -> Option<Gc<RwLock<DynState>>> {
         return Some(state);
     }
     AMBIENT_STATE_TL.with(|s| s.borrow().clone())
+}
+
+/// The dynamic state for a child thread/task spawned right now: a filtered
+/// snapshot of the ambient state (empty if there is none).
+pub(crate) fn spawn_state() -> Gc<RwLock<DynState>> {
+    let snapshot = match ambient_state() {
+        Some(state) => state.read().spawn_snapshot(),
+        None => DynState::new(),
+    };
+    Gc::new(RwLock::new(snapshot))
 }
 
 /// Publish `state` as this thread's ambient dynamic state; restores the
@@ -2154,5 +2186,55 @@ unsafe extern "C" fn wind_delim(
             None,
             args,
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spawn_snapshot_keeps_ports_drops_control_resets_marks() {
+        let runtime = Runtime::new();
+        let out_port = Port::new(
+            "<stdout>",
+            #[cfg(not(feature = "async"))]
+            std::io::stdout(),
+            #[cfg(feature = "tokio")]
+            tokio::io::stdout(),
+            BufferMode::None,
+            Some(Transcoder::native()),
+        );
+        let in_port = Port::new(
+            "<stdin>",
+            #[cfg(not(feature = "async"))]
+            std::io::stdin(),
+            #[cfg(feature = "tokio")]
+            tokio::io::stdin(),
+            BufferMode::Line,
+            Some(Transcoder::native()),
+        );
+        let mut marked = HashMap::new();
+        marked.insert(Symbol::intern("mark"), Value::from(true));
+        let state = DynState {
+            dyn_stack: vec![
+                DynStackElem::ExceptionHandler(halt_continuation(runtime)),
+                DynStackElem::CurrentOutputPort(out_port),
+                DynStackElem::CurrentInputPort(in_port),
+            ],
+            cont_marks: vec![HashMap::new(), marked],
+        };
+
+        let snapshot = state.spawn_snapshot();
+
+        assert!(matches!(
+            snapshot.dyn_stack.as_slice(),
+            [
+                DynStackElem::CurrentOutputPort(_),
+                DynStackElem::CurrentInputPort(_)
+            ]
+        ));
+        assert_eq!(snapshot.cont_marks.len(), 1);
+        assert!(snapshot.cont_marks[0].is_empty());
     }
 }
