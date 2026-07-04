@@ -169,9 +169,43 @@ impl From<Vector> for Value {
     }
 }
 
+unsafe impl Embeddable for VectorInner<u8> {
+    fn rtd() -> Arc<crate::records::RecordTypeDescriptor>
+    where
+        Self: Sized,
+    {
+        rtd!(ty: VectorInner<u8>, name: "bytevector", sealed: true, opaque: true)
+    }
+
+    fn debug_fmt(
+        &self,
+        _circular_values: &mut IndexMap<Value, bool>,
+        fmt: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
+        write_bytevec(self, fmt)
+    }
+
+    fn equal(&self, rhs: &Record) -> bool
+    where
+        Self: Sized,
+    {
+        let Some(rhs) = rhs.cast::<Self>() else {
+            return false;
+        };
+        *self.vec.read() == *rhs.vec.read()
+    }
+
+    fn equal_hash(&self, _recursive: &mut IndexSet<Value>, hasher: &mut dyn std::hash::Hasher)
+    where
+        Self: Sized,
+    {
+        self.vec.read().hash(&mut DynHasher(hasher))
+    }
+}
+
 /// A vector of bytes
 #[derive(Clone, Trace)]
-pub struct ByteVector(pub(crate) Arc<VectorInner<u8>>);
+pub struct ByteVector(pub(crate) Embedded<VectorInner<u8>>);
 
 impl ByteVector {
     pub fn immutable(vec: Vec<u8>) -> Self {
@@ -179,7 +213,7 @@ impl ByteVector {
     }
 
     pub fn mutable(vec: Vec<u8>) -> Self {
-        Self(Arc::new(VectorInner {
+        Self(Embedded::new(VectorInner {
             vec: RwLock::new(vec),
             mutable: true,
         }))
@@ -231,7 +265,7 @@ impl ByteVector {
 
 impl From<Vec<u8>> for ByteVector {
     fn from(vec: Vec<u8>) -> Self {
-        Self(Arc::new(VectorInner {
+        Self(Embedded::new(VectorInner {
             vec: RwLock::new(vec),
             mutable: false,
         }))
@@ -256,6 +290,40 @@ impl PartialEq for ByteVector {
     }
 }
 
+impl TryFrom<Value> for ByteVector {
+    type Error = Exception;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        Ok(Self((&value).try_into()?))
+    }
+}
+
+impl From<&Value> for Option<ByteVector> {
+    fn from(value: &Value) -> Self {
+        Some(ByteVector(value.cast_to()?))
+    }
+}
+
+impl TryFrom<&Value> for ByteVector {
+    type Error = Exception;
+
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        Ok(Self(value.try_into()?))
+    }
+}
+
+impl From<Vec<u8>> for Value {
+    fn from(value: Vec<u8>) -> Self {
+        Value::from(ByteVector::from(value))
+    }
+}
+
+impl From<ByteVector> for Value {
+    fn from(vec: ByteVector) -> Self {
+        Value::from(vec.0)
+    }
+}
+
 pub(crate) fn write_vec(
     v: &VectorInner<Value>,
     fmt: fn(&Value, &mut IndexMap<Value, bool>, &mut fmt::Formatter<'_>) -> fmt::Result,
@@ -275,10 +343,13 @@ pub(crate) fn write_vec(
     write!(f, ")")
 }
 
-pub(crate) fn write_bytevec(v: &ByteVector, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+pub(crate) fn write_bytevec(
+    v: &VectorInner<u8>,
+    f: &mut fmt::Formatter<'_>,
+) -> Result<(), fmt::Error> {
     write!(f, "#vu8(")?;
 
-    let bytes = v.0.vec.read();
+    let bytes = v.vec.read();
     for (i, byte) in bytes.iter().enumerate() {
         if i > 0 {
             write!(f, " ")?;
@@ -548,8 +619,8 @@ pub fn native_endianness() -> Result<Vec<Value>, Exception> {
 }
 
 #[bridge(name = "bytevector?", lib = "(rnrs bytevectors (6))")]
-pub fn bytevector_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(arg.type_of() == ValueType::ByteVector)])
+pub fn bytevector_pred(arg: &Value) -> bool {
+    arg.is_a::<Embedded<VectorInner<u8>>>()
 }
 
 #[bridge(name = "make-bytevector", lib = "(rnrs bytevectors (6))")]

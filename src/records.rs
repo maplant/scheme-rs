@@ -715,7 +715,7 @@ pub unsafe trait Embeddable: Trace + Any + Send + Sync {
         Err(Exception::error(format!("invalid record field: {k}")))
     }
 
-    fn display_fmt(
+    fn debug_fmt(
         &self,
         _circular_values: &mut IndexMap<Value, bool>,
         _fmt: &mut fmt::Formatter<'_>,
@@ -723,12 +723,12 @@ pub unsafe trait Embeddable: Trace + Any + Send + Sync {
         Ok(())
     }
 
-    fn debug_fmt(
+    fn display_fmt(
         &self,
-        _circular_values: &mut IndexMap<Value, bool>,
-        _fmt: &mut fmt::Formatter<'_>,
+        circular_values: &mut IndexMap<Value, bool>,
+        fmt: &mut fmt::Formatter<'_>,
     ) -> fmt::Result {
-        Ok(())
+        self.debug_fmt(circular_values, fmt)
     }
 
     fn eq(&self, rhs: &Record) -> bool

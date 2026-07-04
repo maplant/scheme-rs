@@ -74,7 +74,6 @@
 //! - **String**: An array of [`chars`](std::char).
 //! - **Symbol**: A [`Symbol`].
 //! - **Vector**: A [`Vector`].
-//! - **Byte-vector**: A [`ByteVector`].
 //! - **Syntax**: A [`Syntax`].
 //! - **Procedure**: A [`Procedure`].
 //! - **Record**: A [`Record`], which can possibly embed an
@@ -166,7 +165,6 @@ impl Value {
         unsafe {
             match tag {
                 Tag::Number => Arc::increment_strong_count(untagged as *const NumberInner),
-                Tag::ByteVector => Arc::increment_strong_count(untagged as *const VectorInner<u8>),
                 Tag::Procedure => {
                     Gc::increment_reference_count(untagged as *mut GcInner<ProcedureInner>)
                 }
@@ -296,10 +294,6 @@ impl Value {
                 let untagged = (untagged as usize >> TAG_BITS) as u32;
                 UnpackedValue::Symbol(Symbol(untagged))
             }
-            Tag::ByteVector => {
-                let bvec = unsafe { Arc::from_raw(untagged as *const VectorInner<u8>) };
-                UnpackedValue::ByteVector(ByteVector(bvec))
-            }
             Tag::Procedure => {
                 let clos = unsafe { Gc::from_raw(untagged as *mut GcInner<ProcedureInner>) };
                 UnpackedValue::Procedure(Procedure(clos))
@@ -356,7 +350,6 @@ impl Value {
                 let (car, cdr) = pair.into();
                 lists::write_list(&car, &cdr, Value::display_fmt, circular_values, f)
             }
-            UnpackedValue::ByteVector(v) => vectors::write_bytevec(&v, f),
             UnpackedValue::Procedure(_) => write!(f, "<procedure>"),
             UnpackedValue::Record(record) => record.display_fmt(circular_values, f),
             UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
@@ -381,13 +374,6 @@ impl Value {
                 let (car, cdr) = pair.into();
                 lists::write_list(&car, &cdr, Value::debug_fmt, circular_values, f)
             }
-            UnpackedValue::ByteVector(v) => vectors::write_bytevec(&v, f),
-            /*
-            UnpackedValue::Syntax(syntax) => {
-                let span = syntax.span();
-                write!(f, "#<syntax:{span} {syntax:#?}>")
-            }
-            */
             UnpackedValue::Procedure(proc) => write!(f, "#<procedure {proc:?}>"),
             UnpackedValue::Record(record) => record.debug_fmt(circular_values, f),
             UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
@@ -426,7 +412,6 @@ impl Value {
             UnpackedValue::Character(c) => c.hash(state),
             UnpackedValue::Number(n) => Arc::as_ptr(&n.0).hash(state),
             UnpackedValue::Symbol(s) => s.hash(state),
-            UnpackedValue::ByteVector(v) => Arc::as_ptr(&v.0).hash(state),
             UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
             UnpackedValue::Record(r) => r.eq_hash(state),
             UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
@@ -446,7 +431,6 @@ impl Value {
             UnpackedValue::Character(c) => c.hash(state),
             UnpackedValue::Number(n) => n.hash(state),
             UnpackedValue::Symbol(s) => s.hash(state),
-            UnpackedValue::ByteVector(v) => Arc::as_ptr(&v.0).hash(state),
             UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
             UnpackedValue::Record(r) => r.eqv_hash(state),
             UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
@@ -474,7 +458,6 @@ impl Value {
             UnpackedValue::Character(c) => c.hash(state),
             UnpackedValue::Number(n) => n.hash(state),
             UnpackedValue::Symbol(s) => s.hash(state),
-            UnpackedValue::ByteVector(v) => v.hash(state),
             UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
             UnpackedValue::Record(r) => {
                 recursive.insert(self.clone());
@@ -647,7 +630,6 @@ pub(crate) enum Tag {
     Character = 3,
     Number = 4,
     Symbol = 6,
-    ByteVector = 8,
     Procedure = 10,
     Record = 11,
     RecordTypeDescriptor = 12,
@@ -663,7 +645,6 @@ impl From<usize> for Tag {
             3 => Self::Character,
             4 => Self::Number,
             6 => Self::Symbol,
-            8 => Self::ByteVector,
             10 => Self::Procedure,
             11 => Self::Record,
             12 => Self::RecordTypeDescriptor,
@@ -683,7 +664,6 @@ pub enum ValueType {
     Character,
     Number,
     Symbol,
-    ByteVector,
     Procedure,
     Record,
     RecordTypeDescriptor,
@@ -702,7 +682,6 @@ pub enum UnpackedValue {
     Character(char),
     Number(Number),
     Symbol(Symbol),
-    ByteVector(ByteVector),
     Procedure(Procedure),
     Record(Record),
     RecordTypeDescriptor(Arc<RecordTypeDescriptor>),
@@ -727,10 +706,6 @@ impl UnpackedValue {
             }
             Self::Symbol(sym) => {
                 Value::from_ptr_and_tag(((sym.0 as usize) << TAG_BITS) as *const (), Tag::Symbol)
-            }
-            Self::ByteVector(b_vec) => {
-                let untagged = Arc::into_raw(b_vec.0);
-                Value::from_ptr_and_tag(untagged, Tag::ByteVector)
             }
             Self::Procedure(clos) => {
                 let untagged = Gc::into_raw(clos.0);
@@ -764,7 +739,6 @@ impl UnpackedValue {
             (Self::Character(a), Self::Character(b)) => a == b,
             (Self::Null, Self::Null) => true,
             (Self::Pair(a), Self::Pair(b)) => Gc::ptr_eq(&a.0, &b.0),
-            (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(&a.0, &b.0),
             (Self::Procedure(a), Self::Procedure(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Record(a), Self::Record(b)) => a.eq(b),
             (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
@@ -790,7 +764,6 @@ impl UnpackedValue {
             (Self::Null, Self::Null) => true,
             // Everything else is pointer equivalence
             (Self::Pair(a), Self::Pair(b)) => Gc::ptr_eq(&a.0, &b.0),
-            (Self::ByteVector(a), Self::ByteVector(b)) => Arc::ptr_eq(&a.0, &b.0),
             (Self::Procedure(a), Self::Procedure(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Record(a), Self::Record(b)) => a.eqv(b),
             (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
@@ -808,7 +781,6 @@ impl UnpackedValue {
             Self::Character(_) => Symbol::intern("character").to_str(),
             Self::Symbol(_) => Symbol::intern("symbol").to_str(),
             Self::Pair(_) | Self::Null => Symbol::intern("pair").to_str(),
-            Self::ByteVector(_) => Symbol::intern("bytevector").to_str(),
             Self::Procedure(_) => Symbol::intern("procedure").to_str(),
             Self::Record(record) => record.rtd().name.to_str(),
             Self::RecordTypeDescriptor(_) => Symbol::intern("rtd").to_str(),
@@ -825,7 +797,6 @@ impl UnpackedValue {
             Self::Character(_) => ValueType::Character,
             Self::Symbol(_) => ValueType::Symbol,
             Self::Pair(_) => ValueType::Pair,
-            Self::ByteVector(_) => ValueType::ByteVector,
             Self::Procedure(_) => ValueType::Procedure,
             Self::Record(_) => ValueType::Record,
             Self::RecordTypeDescriptor(_) => ValueType::RecordTypeDescriptor,
@@ -865,8 +836,7 @@ fn fast(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64) -> O
     }
     match (obj1.type_of(), obj2.type_of()) {
         (ValueType::Pair, ValueType::Pair) => pair_eq(ht, obj1, obj2, k),
-        (ValueType::ByteVector, ValueType::ByteVector) => bytevector_eq(obj1, obj2, k),
-        (ValueType::Record, ValueType::Record) => record_equal(ht, obj1, obj2, k),
+        (ValueType::Record, ValueType::Record) => record_equal(ht, obj1.cast_to()?, obj2.cast_to()?, k),
         _ => None,
     }
 }
@@ -882,12 +852,13 @@ fn slow(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64) -> O
             }
             pair_eq(ht, obj1, obj2, k)
         }
-        (ValueType::ByteVector, ValueType::ByteVector) => bytevector_eq(obj1, obj2, k),
+        // (ValueType::ByteVector, ValueType::ByteVector) => bytevector_eq(obj1, obj2, k),
         (ValueType::Record, ValueType::Record) => {
             if union_find(ht, obj1, obj2) {
-                return Some(0);
+                Some(0)
+            } else {
+                record_equal(ht, obj1.cast_to()?, obj2.cast_to()?, k)
             }
-            record_equal(ht, obj1, obj2, k)
         }
         _ => None,
     }
@@ -901,9 +872,9 @@ fn pair_eq(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64) -
     e(ht, &car_x, &car_y, k - 1).and_then(|k| e(ht, &cdr_x, &cdr_y, k))
 }
 
-fn vector_eq(ht: &mut HashMap<Value, Value>, vobj1: Vector, vobj2: Vector, k: i64) -> Option<i64> {
-    let vobj1 = vobj1.0.vec.read();
-    let vobj2 = vobj2.0.vec.read();
+fn vector_eq(ht: &mut HashMap<Value, Value>, vobj1: Embedded<VectorInner<Value>>, vobj2: Embedded<VectorInner<Value>>, k: i64) -> Option<i64> {
+    let vobj1 = vobj1.vec.read();
+    let vobj2 = vobj2.vec.read();
     if vobj1.len() != vobj2.len() {
         return None;
     }
@@ -914,20 +885,22 @@ fn vector_eq(ht: &mut HashMap<Value, Value>, vobj1: Vector, vobj2: Vector, k: i6
     Some(k)
 }
 
+/*
 fn bytevector_eq(obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
     let obj1: ByteVector = obj1.clone().try_into().unwrap();
     let obj2: ByteVector = obj2.clone().try_into().unwrap();
     (*obj1.0.vec.read() == *obj2.0.vec.read()).then_some(k)
 }
+*/
 
-fn record_equal(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
-    if let Some(vobj1) = obj1.cast_to::<Vector>()
-        && let Some(vobj2) = obj2.cast_to::<Vector>()
-    {
-        vector_eq(ht, vobj1, vobj2, k)
+fn record_equal(ht: &mut HashMap<Value, Value>, obj1: Record, obj2: Record, k: i64) -> Option<i64> {
+    if let Some(vobj1) = obj1.cast::<VectorInner<Value>>() {
+        obj2.cast::<VectorInner<Value>>().map_or(None, |vobj2| vector_eq(ht, vobj1, vobj2, k))
     } else {
+        /*
         let obj1: Record = obj1.clone().try_into().unwrap();
         let obj2: Record = obj2.clone().try_into().unwrap();
+        */
         (obj1.equal(&obj2)).then_some(k)
     }
 }
@@ -1173,7 +1146,6 @@ impl From<bool> for Value {
 impl_try_from_value_for!(char, Character, "char");
 impl_try_from_value_for!(Number, Number, "number");
 impl_try_from_value_for!(Symbol, Symbol, "symbol");
-impl_try_from_value_for!(ByteVector, ByteVector, "byte-vector");
 impl_try_from_value_for!(Procedure, Procedure, "procedure");
 impl_try_from_value_for!(Pair, Pair, "pair");
 impl_try_from_value_for!(Record, Record, "record");
@@ -1195,7 +1167,6 @@ macro_rules! impl_from_wrapped_for {
     };
 }
 
-impl_from_wrapped_for!(Vec<u8>, ByteVector, ByteVector::immutable);
 impl_from_wrapped_for!((Value, Value), Pair, |(car, cdr)| Pair::immutable(car, cdr));
 
 impl From<UnpackedValue> for Option<(Value, Value)> {
