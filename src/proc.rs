@@ -1112,8 +1112,8 @@ impl<'a> ContBarrier<'a> {
     }
 
     /// A barrier for nested re-entry into Scheme (callbacks, macro
-    /// transformers, library invocation): shares the dynamic state of the
-    /// task we are running on, under a fresh id. The fresh id keeps escape
+    /// transformers, `eval`): shares the dynamic state of the task we are
+    /// running on, under a fresh id. The fresh id keeps escape
     /// procedures from jumping across the intervening Rust frame; the shared
     /// state means the callee observes the caller's exception handlers and
     /// current ports.

@@ -85,6 +85,9 @@ callbacks that re-enter Scheme from within a running evaluation, sharing
 the caller's dynamic state under a fresh id; and spawning concurrent work
 (a thread, task, or future) gets a filtered snapshot of the ambient state
 automatically, handled internally by the threads and async libraries.
+Top-level evaluation (programs, REPL forms, and library bodies) runs
+against a root dynamic state owned by the `Runtime` itself, so dynamic
+state established while loading libraries persists for the Runtime's life.
 
 ```rust
 # use scheme_rs::{
