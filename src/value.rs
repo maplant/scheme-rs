@@ -118,6 +118,7 @@ pub(crate) const SYMBOL_CHAR: u32 = 0x110000;
 pub(crate) const NULL_VALUE: usize = Tag::Pair as usize;
 pub(crate) const TRUE_VALUE: usize = Tag::Boolean as usize | 1 << TAG_BITS;
 pub(crate) const FALSE_VALUE: usize = Tag::Boolean as usize;
+pub(crate) const UNDEFINED_VALUE: usize = Tag::Record as usize;
 pub const FIXNUM_MIN: i64 = -(1 << 62);
 pub const FIXNUM_MAX: i64 = (1 << 62) - 1;
 
@@ -187,7 +188,7 @@ impl Value {
                 Tag::Cell => {
                     Gc::increment_reference_count(untagged as *mut GcInner<Value>);
                 }
-                Tag::Boolean | Tag::CharacterOrSymbol => (),
+                Tag::FixNum | Tag::Boolean | Tag::CharacterOrSymbol => (),
             }
         }
         Self(raw)
@@ -215,11 +216,11 @@ impl Value {
     }
 
     pub fn undefined() -> Self {
-        Self(null::<()>().map_addr(|raw| raw | Tag::Record as usize))
+        Self(null::<()>().map_addr(|raw| raw | UNDEFINED_VALUE))
     }
 
     pub fn null() -> Self {
-        Self(null::<()>().map_addr(|raw| raw | Tag::Pair as usize))
+        Self(null::<()>().map_addr(|raw| raw | NULL_VALUE))
     }
 
     /// Convert a [`Syntax`] into its corresponding datum representation.
@@ -280,7 +281,6 @@ impl Value {
         let tag = Tag::from(raw as usize & TAG);
         let untagged = raw.map_addr(|raw| raw & !TAG);
         match tag {
-            // Tag::Undefined => UnpackedValue::Undefined,
             Tag::Boolean => {
                 let untagged = untagged as usize >> TAG_BITS;
                 UnpackedValue::Boolean(untagged != 0)
@@ -326,6 +326,9 @@ impl Value {
             Tag::Cell => {
                 let cell = unsafe { Gc::from_raw(untagged as *mut GcInner<RwLock<Value>>) };
                 UnpackedValue::Cell(Cell(cell))
+            }
+            Tag::FixNum => {
+                UnpackedValue::Number(Number(NumberRepr::Fixed(raw as i64 >> 1)))
             }
         }
     }
@@ -631,28 +634,39 @@ impl From<Exception> for Value {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Tag {
     Pair = 0,
-    Boolean = 1,
-    CharacterOrSymbol = 2,
-    Number = 3,
-    Procedure = 4,
-    Record = 5,
-    RecordTypeDescriptor = 6,
-    Cell = 7,
+    Boolean = 1 << 1,
+    CharacterOrSymbol = 2 << 1,
+    Number = 3 << 1,
+    Procedure = 4 << 1,
+    Record = 5 << 1,
+    RecordTypeDescriptor = 6 << 1,
+    Cell = 7 << 1,
+    FixNum = 1,
 }
 
 // TODO: Make TryFrom with error
 impl From<usize> for Tag {
     fn from(tag: usize) -> Self {
-        match tag {
-            0 => Self::Pair,
-            1 => Self::Boolean,
-            2 => Self::CharacterOrSymbol,
-            3 => Self::Number,
-            4 => Self::Procedure,
-            5 => Self::Record,
-            6 => Self::RecordTypeDescriptor,
-            7 => Self::Cell,
-            tag => panic!("Invalid tag: {tag}"),
+        if tag & 1 == 1 {
+            Self::FixNum
+        } else if tag == Self::Pair as usize {
+            Self::Pair
+        } else if tag == Self::Boolean as usize{
+            Self::Boolean 
+        } else if tag == Self::CharacterOrSymbol  as usize{
+            Self::CharacterOrSymbol
+        } else if tag == Self::Number  as usize{
+            Self::Number
+        } else if tag == Self::Procedure as usize {
+            Self::Procedure
+        } else if tag == Self::Record as usize{
+            Self::Record
+        } else if tag == Self::RecordTypeDescriptor as usize {
+            Self::RecordTypeDescriptor
+        } else if tag == Self::Cell as usize {
+            Self::Cell
+        } else {
+            panic!("Invalid tag: {tag}")
         }
     }
 }
@@ -709,7 +723,9 @@ impl UnpackedValue {
                     let untagged = Arc::into_raw(num);
                     Value::from_ptr_and_tag(untagged, Tag::Number)
                 }
-                _ => todo!(),
+                NumberRepr::Fixed(fixed) => {
+                    Value::from_ptr_and_tag((fixed << 1) as *const (), Tag::FixNum)
+                }
             },
             Self::Symbol(sym) => Value::from_ptr_and_tag(
                 (((sym.0 as usize) << 32) | (SYMBOL_CHAR as usize) << TAG_BITS) as *const (),

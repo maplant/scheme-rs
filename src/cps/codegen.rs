@@ -15,7 +15,7 @@ use crate::{
     },
     proc::{ContinuationPtr, FuncPtr, ProcDebugInfo, Procedure},
     runtime::{DebugInfo, Runtime},
-    value::{FALSE_VALUE, NULL_VALUE, TAG, TRUE_VALUE, Tag, Value as SchemeValue},
+    value::{FALSE_VALUE, NULL_VALUE, TAG, TRUE_VALUE, Tag, UNDEFINED_VALUE, Value as SchemeValue},
 };
 
 use super::*;
@@ -417,7 +417,7 @@ impl CompilationUnit<'_, '_> {
         let cond = self
             .builder
             .ins()
-            .icmp_imm(IntCC::Equal, cell_value, Tag::Record as i64);
+            .icmp_imm(IntCC::Equal, cell_value, UNDEFINED_VALUE as i64);
 
         let undefined_block = self.builder.create_block();
         let defined_block = self.builder.create_block();
@@ -514,7 +514,10 @@ impl CompilationUnit<'_, '_> {
         );
         let expanded = self.builder.inst_results(call)[0];
 
-        let cond = self.builder.ins().icmp_imm(IntCC::Equal, expanded, 0);
+        let cond = self
+            .builder
+            .ins()
+            .icmp_imm(IntCC::Equal, expanded, UNDEFINED_VALUE as i64);
         let failure_block = self.builder.create_block();
         let success_block = self.builder.create_block();
         self.builder
@@ -656,7 +659,7 @@ impl CompilationUnit<'_, '_> {
             let cond = self
                 .builder
                 .ins()
-                .icmp_imm(IntCC::Equal, result, Tag::Record as i64);
+                .icmp_imm(IntCC::Equal, result, UNDEFINED_VALUE as i64);
 
             let failure_block = self.builder.create_block();
             let success_block = self.builder.create_block();

@@ -46,12 +46,18 @@ use malachite::{
 use num::ToPrimitive;
 use scheme_rs_macros::{maybe_async, maybe_await};
 use std::{
-    borrow::Cow, cmp::Ordering, fmt, hash::{Hash, Hasher}, io::Cursor, ops::{Add, Div, Mul, Neg, Rem, Sub}, sync::Arc
+    borrow::Cow,
+    cmp::Ordering,
+    fmt,
+    hash::{Hash, Hasher},
+    io::Cursor,
+    ops::{Add, Div, Mul, Neg, Rem, Sub},
+    sync::Arc,
 };
 
 #[repr(align(16))]
 #[derive(Clone)]
-pub(crate) enum NumberInner {
+pub enum NumberInner {
     Simple(SimpleNumber),
     Complex(ComplexNumber),
 }
@@ -80,22 +86,28 @@ macro_rules! number_dispatch_method {
 impl Number {
     pub fn as_inner_ref(&self) -> Cow<'_, NumberInner> {
         match &self.0 {
-            NumberRepr::Fixed(fixed) => Cow::Owned(NumberInner::Simple(SimpleNumber::FixedInteger(*fixed))),
+            NumberRepr::Fixed(fixed) => {
+                Cow::Owned(NumberInner::Simple(SimpleNumber::FixedInteger(*fixed)))
+            }
             NumberRepr::Heap(inner) => Cow::Borrowed(inner.as_ref()),
         }
     }
-    
+
     pub fn as_simple(&self) -> Option<Cow<'_, SimpleNumber>> {
         match &self.0 {
             NumberRepr::Fixed(fixed) => Some(Cow::Owned(SimpleNumber::FixedInteger(*fixed))),
-            NumberRepr::Heap(inner) if let NumberInner::Simple(simple) = inner.as_ref() => Some(Cow::Borrowed(simple)),
+            NumberRepr::Heap(inner) if let NumberInner::Simple(simple) = inner.as_ref() => {
+                Some(Cow::Borrowed(simple))
+            }
             NumberRepr::Heap(_) => None,
         }
     }
 
     pub fn as_complex(&self) -> Option<Cow<'_, ComplexNumber>> {
         match &self.0 {
-            NumberRepr::Heap(inner) if let NumberInner::Complex(complex) = inner.as_ref() => Some(Cow::Borrowed(complex)),
+            NumberRepr::Heap(inner) if let NumberInner::Complex(complex) = inner.as_ref() => {
+                Some(Cow::Borrowed(complex))
+            }
             _ => None,
             // NumberInner::Simple(_) => None,
         }
@@ -216,7 +228,7 @@ impl Number {
     pub fn eq(&self, rhs: &Number) -> bool {
         match (&self.0, &rhs.0) {
             (NumberRepr::Fixed(lhs), NumberRepr::Fixed(rhs)) => *lhs == *rhs,
-            (NumberRepr::Heap(_), NumberRepr::Heap(_)) => self == rhs,
+            (NumberRepr::Heap(lhs), NumberRepr::Heap(rhs)) => Arc::ptr_eq(lhs, rhs),
             _ => false,
         }
     }
@@ -256,7 +268,9 @@ impl Number {
 
 impl From<NumberInner> for Number {
     fn from(value: NumberInner) -> Self {
-        if let NumberInner::Simple(SimpleNumber::FixedInteger(fixed)) = value {
+        if let NumberInner::Simple(SimpleNumber::FixedInteger(fixed)) = value
+            && (FIXNUM_MIN..=FIXNUM_MAX).contains(&fixed)
+        {
             Self(NumberRepr::Fixed(fixed))
         } else {
             Self(NumberRepr::Heap(Arc::new(value)))
@@ -270,8 +284,12 @@ where
 {
     fn from(simple_number: T) -> Self {
         match SimpleNumber::from(simple_number) {
-            SimpleNumber::FixedInteger(fixed) if (FIXNUM_MIN..FIXNUM_MAX).contains(&fixed) => Self(NumberRepr::Fixed(fixed)),
-            simple_number => Self(NumberRepr::Heap(Arc::new(NumberInner::Simple(simple_number)))),
+            SimpleNumber::FixedInteger(fixed) if (FIXNUM_MIN..=FIXNUM_MAX).contains(&fixed) => {
+                Self(NumberRepr::Fixed(fixed))
+            }
+            simple_number => Self(NumberRepr::Heap(Arc::new(NumberInner::Simple(
+                simple_number,
+            )))),
         }
     }
 }
@@ -1944,9 +1962,7 @@ pub fn is_complex(arg: &Value) -> Result<Vec<Value>, Exception> {
 #[bridge(name = "real?", lib = "(rnrs base builtins (6))")]
 pub fn is_real(arg: &Value) -> Result<Vec<Value>, Exception> {
     Ok(vec![Value::from(
-        arg.cast::<Number>()
-            .as_ref()
-            .is_some_and(Number::is_real),
+        arg.cast::<Number>().as_ref().is_some_and(Number::is_real),
     )])
 }
 
@@ -2576,17 +2592,17 @@ pub fn fixnum_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
 
 #[bridge(name = "fixnum-width", lib = "(rnrs arithmetic fixnums (6))")]
 pub fn fixnum_width() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(64)])
+    Ok(vec![Value::from(63)])
 }
 
 #[bridge(name = "least-fixnum", lib = "(rnrs arithmetic fixnums (6))")]
 pub fn least_fixnum() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(i64::MIN)])
+    Ok(vec![Value::from(FIXNUM_MIN)])
 }
 
 #[bridge(name = "greatest-fixnum", lib = "(rnrs arithmetic fixnums (6))")]
 pub fn greatest_fixnum() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(i64::MAX)])
+    Ok(vec![Value::from(FIXNUM_MAX)])
 }
 
 /// R6RS Flonums
