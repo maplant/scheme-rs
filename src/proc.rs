@@ -879,7 +879,7 @@ impl Application {
     /// that remains are values. This is the main trampoline of the evaluation
     /// engine. Publishes the barrier's dynamic state as the task's ambient
     /// state for the duration.
-    #[cfg(all(feature = "async", feature = "tokio"))]
+    #[cfg(feature = "async")]
     pub async fn eval(self, barrier: &mut ContBarrier<'_>) -> Result<Vec<Value>, Exception> {
         let state = barrier.state.clone();
         AMBIENT_STATE.scope(state, self.eval_inner(barrier)).await
@@ -887,18 +887,7 @@ impl Application {
 
     /// Evaluate the application — and all subsequent applications — until all
     /// that remains are values. This is the main trampoline of the evaluation
-    /// engine. Publishes the barrier's dynamic state as the task's ambient
-    /// state for the duration.
-    #[cfg(all(feature = "async", not(feature = "tokio")))]
-    pub async fn eval(self, barrier: &mut ContBarrier<'_>) -> Result<Vec<Value>, Exception> {
-        // Best-effort without task-locals; correct for single-threaded executors.
-        let _guard = publish_ambient(barrier.state.clone());
-        self.eval_inner(barrier).await
-    }
-
-    /// Evaluate the application — and all subsequent applications — until all
-    /// that remains are values. This is the main trampoline of the evaluation
-    /// engine. Publishes the barrier's dynamic state as the task's ambient
+    /// engine. Publishes the barrier's dynamic state as the thread's ambient
     /// state for the duration.
     #[cfg(not(feature = "async"))]
     pub fn eval(self, barrier: &mut ContBarrier<'_>) -> Result<Vec<Value>, Exception> {
@@ -1020,7 +1009,7 @@ impl DynState {
     }
 }
 
-#[cfg(feature = "tokio")]
+#[cfg(feature = "async")]
 tokio::task_local! {
     /// The dynamic state of the current tokio task. Survives work-stealing
     /// migration between worker threads.
@@ -1036,7 +1025,7 @@ std::thread_local! {
 /// The dynamic state of the task/thread we are currently running on, if any
 /// evaluation is in progress.
 pub(crate) fn ambient_state() -> Option<Gc<RwLock<DynState>>> {
-    #[cfg(feature = "tokio")]
+    #[cfg(feature = "async")]
     if let Ok(state) = AMBIENT_STATE.try_with(Clone::clone) {
         return Some(state);
     }
