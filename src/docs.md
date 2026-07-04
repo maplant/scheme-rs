@@ -75,6 +75,17 @@ automatically garbage collected and implement `Send` and `Sync` and are
 `'static` so you can hold on to them for as long as you want and put them
 anywhere.
 
+Calling a procedure requires a [`ContBarrier`](proc::ContBarrier), which
+carries the current continuation barrier's identity and its dynamic state
+(exception handlers, current ports, and the like). There are three ways to
+get one: [`ContBarrier::root`](proc::ContBarrier::root) starts a fresh,
+empty dynamic state, for embedder entry points with no ambient Scheme
+state to inherit; [`ContBarrier::nested`](proc::ContBarrier::nested) is for
+callbacks that re-enter Scheme from within a running evaluation, sharing
+the caller's dynamic state under a fresh id; and spawning concurrent work
+(a thread, task, or future) gets a filtered snapshot of the ambient state
+automatically, handled internally by the threads and async libraries.
+
 ```rust
 # use scheme_rs::{
 # runtime::Runtime, env::TopLevelEnvironment, value::Value, proc::{ContBarrier, Procedure},

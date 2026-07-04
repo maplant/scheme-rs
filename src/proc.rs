@@ -1012,7 +1012,9 @@ impl DynState {
     /// entries (current ports) carry over as copies; control entries
     /// (winders, prompts, exception handlers) belong to the spawning
     /// thread's stack and do not cross. Continuation marks start fresh —
-    /// the child begins a fresh initial continuation.
+    /// the child begins a fresh initial continuation. This is an allowlist:
+    /// entries not listed here default to *not* crossing the spawn boundary;
+    /// reconsider when adding a `DynStackElem` variant.
     fn spawn_snapshot(&self) -> Self {
         Self {
             dyn_stack: self
