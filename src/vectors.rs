@@ -40,7 +40,7 @@ unsafe impl Embeddable for VectorInner<Value> {
         circular_values: &mut IndexMap<Value, bool>,
         fmt: &mut fmt::Formatter<'_>,
     ) -> fmt::Result {
-        write_vec(&self, Value::display_fmt, circular_values, fmt)
+        write_vec(self, Value::display_fmt, circular_values, fmt)
     }
 
     fn debug_fmt(
@@ -48,7 +48,7 @@ unsafe impl Embeddable for VectorInner<Value> {
         circular_values: &mut IndexMap<Value, bool>,
         fmt: &mut fmt::Formatter<'_>,
     ) -> fmt::Result {
-        write_vec(&self, Value::debug_fmt, circular_values, fmt)
+        write_vec(self, Value::debug_fmt, circular_values, fmt)
     }
 
     fn equal(&self, rhs: &Record) -> bool

@@ -392,25 +392,22 @@ impl Syntax {
         let bytes = Cursor::new(s.as_bytes().to_vec());
 
         // This is kind of convoluted, but convenient
-        let port = Arc::into_inner(
-            Port::new(
-                file_name,
-                bytes,
-                BufferMode::Block,
-                Some(Transcoder::native()),
-            )
-            .0,
-        )
-        .unwrap();
-        let info = port.info;
-        let mut data = port.data.into_inner();
+        let port = Port::new(
+            file_name,
+            bytes,
+            BufferMode::Block,
+            Some(Transcoder::native()),
+        );
+        let info = &port.0.info;
+        // The port was just created, so the lock is uncontested.
+        let mut data = port.0.data.try_lock().unwrap();
 
         // This is safe since we don't need the async executor to drive anything
         // here
         futures::executor::block_on(async move {
             use crate::syntax::parse::Parser;
 
-            let mut parser = Parser::new(&mut data, &info, Span::new(file_name));
+            let mut parser = Parser::new(&mut data, info, Span::new(file_name));
             parser.all_sexprs().await
         })
     }

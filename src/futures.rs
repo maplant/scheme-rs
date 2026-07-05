@@ -16,14 +16,14 @@ use crate::{
     exceptions::Exception,
     ports::{BufferMode, Port},
     proc::{ContBarrier, Procedure},
-    records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
+    records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
     strings::WideString,
     value::Value,
 };
 
 type Future = Shared<BoxFuture<'static, Result<Vec<Value>, Exception>>>;
 
-impl SchemeCompatible for Future {
+unsafe impl Embeddable for Future {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(
             ty: Future,
@@ -39,7 +39,7 @@ pub async fn make_future(proc: Procedure) -> Result<Vec<Value>, Exception> {
     let future: Future = async move { proc.call(&[], &mut ContBarrier::new()).await }
         .boxed()
         .shared();
-    let future = Value::from_rust_type(future);
+    let future = Value::from(future);
     Ok(vec![future])
 }
 
@@ -48,18 +48,19 @@ pub async fn spawn(task: &Value) -> Result<Vec<Value>, Exception> {
     let task: Procedure = task.clone().try_into()?;
     let task = tokio::task::spawn(async move { task.call(&[], &mut ContBarrier::new()).await });
     let future: Future = async move { task.await.unwrap() }.boxed().shared();
-    let future = Value::from(Record::from_rust_type(future));
+    let future = Value::from(future);
     Ok(vec![future])
 }
 
 #[bridge(name = "await", lib = "(async)")]
 pub async fn await_future(future: &Value) -> Result<Vec<Value>, Exception> {
-    future.try_to_rust_type::<Future>()?.as_ref().clone().await
+    future.try_to::<Embedded<Future>>()?.as_ref().clone().await
 }
 
-impl SchemeCompatible for Arc<TcpListener> {
+unsafe impl Embeddable for Arc<TcpListener> {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(
+            ty: Arc<TcpListener>,
             name: "tcp-listener",
             opaque: true,
             sealed: true,
@@ -73,13 +74,14 @@ pub async fn bind_tcp(addr: &Value) -> Result<Vec<Value>, Exception> {
     let listener = TcpListener::bind(&addr.to_string())
         .await
         .map_err(|e| Exception::error(format!("failed to bind to address: {e}")))?;
-    let listener = Value::from(Record::from_rust_type(Arc::new(listener)));
+    let listener = Value::from(Arc::new(listener));
     Ok(vec![listener])
 }
 
-impl SchemeCompatible for Arc<Mutex<TcpStream>> {
+unsafe impl Embeddable for Arc<Mutex<TcpStream>> {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(
+            ty: Arc<Mutex<TcpStream>>,
             name: "socket",
             opaque: true,
             sealed: true,
@@ -89,7 +91,12 @@ impl SchemeCompatible for Arc<Mutex<TcpStream>> {
 
 #[bridge(name = "accept", lib = "(async)")]
 pub async fn accept(listener: &Value) -> Result<Vec<Value>, Exception> {
-    let listener = { listener.try_to_rust_type::<Arc<TcpListener>>()?.clone() };
+    let listener = {
+        listener
+            .try_to::<Embedded<Arc<TcpListener>>>()?
+            .as_ref()
+            .clone()
+    };
     let (socket, addr) = listener
         .accept()
         .await

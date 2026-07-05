@@ -499,16 +499,16 @@ where
 {
     unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
         unsafe {
-            for i in 0..N {
-                self[i].visit_or_recurse(visitor);
+            for item in self {
+                item.visit_or_recurse(visitor);
             }
         }
     }
 
     unsafe fn finalize(&mut self) {
         unsafe {
-            for i in 0..N {
-                self[i].finalize_or_skip();
+            for item in self {
+                item.finalize_or_skip();
             }
         }
     }

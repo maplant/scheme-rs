@@ -225,6 +225,7 @@ impl Number {
     number_dispatch_method!(acos);
     number_dispatch_method!(atan);
 
+    #[allow(clippy::should_implement_trait)]
     pub fn eq(&self, rhs: &Number) -> bool {
         match (&self.0, &rhs.0) {
             (NumberRepr::Fixed(lhs), NumberRepr::Fixed(rhs)) => *lhs == *rhs,
@@ -237,7 +238,7 @@ impl Number {
         std::mem::discriminant(&self.0).hash(state);
         match &self.0 {
             NumberRepr::Fixed(fixed) => fixed.hash(state),
-            NumberRepr::Heap(heap) => Arc::as_ptr(&heap).hash(state),
+            NumberRepr::Heap(heap) => Arc::as_ptr(heap).hash(state),
         }
     }
 

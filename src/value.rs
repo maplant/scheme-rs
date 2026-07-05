@@ -37,8 +37,8 @@
 //! ```
 //! # use scheme_rs::value::{Value, UnpackedValue};
 //! let value = Value::from(3);
-//! let float = value.cast_to::<f64>().unwrap();
-//! let int = value.cast_to::<i64>().unwrap();
+//! let float = value.cast::<f64>().unwrap();
+//! let int = value.cast::<i64>().unwrap();
 //! ```
 //!
 //! ## Converting to and from arbitrary Rust types
@@ -70,17 +70,17 @@
 //! - **Boolean**: Can either be `true` or `false`.
 //! - **Character**: A unicode code point. Same thing as a [`char`](std::char).
 //! - **Number**: A numerical value on the numerical tower. Represented by a
-//!   [`Arc<Number>`](crate::num::Number).
-//! - **String**: An array of [`chars`](std::char).
+//!   [`Number`](crate::num::Number).
 //! - **Symbol**: A [`Symbol`].
-//! - **Vector**: A [`Vector`].
-//! - **Syntax**: A [`Syntax`].
 //! - **Procedure**: A [`Procedure`].
 //! - **Record**: A [`Record`], which can possibly embed an
 //!   [`Embeddable`](records::Embeddable) Rust value.
 //! - **Record Type Descriptor**: A [descriptor of a record's type](RecordTypeDescriptor).
 //! - **Cell**: A mutable reference to another Value. This type is completely
 //!   transparent and impossible to observe.
+//!
+//! Any type that is not one of these can be stored in a Value, but they are
+//! considered to be [`Records`](records::Record).
 
 use indexmap::{IndexMap, IndexSet};
 use malachite::Integer;
@@ -96,8 +96,8 @@ use crate::{
     registry::bridge,
     strings::WideString,
     symbols::Symbol,
-    syntax::{Identifier, Syntax},
-    vectors::{self, ByteVector, Vector, VectorInner},
+    syntax::Syntax,
+    vectors::VectorInner,
 };
 use std::{
     collections::HashMap,
@@ -912,23 +912,11 @@ fn vector_eq(
     Some(k)
 }
 
-/*
-fn bytevector_eq(obj1: &Value, obj2: &Value, k: i64) -> Option<i64> {
-    let obj1: ByteVector = obj1.clone().try_into().unwrap();
-    let obj2: ByteVector = obj2.clone().try_into().unwrap();
-    (*obj1.0.vec.read() == *obj2.0.vec.read()).then_some(k)
-}
-*/
-
 fn record_equal(ht: &mut HashMap<Value, Value>, obj1: Record, obj2: Record, k: i64) -> Option<i64> {
     if let Some(vobj1) = obj1.cast::<VectorInner<Value>>() {
         obj2.cast::<VectorInner<Value>>()
-            .map_or(None, |vobj2| vector_eq(ht, vobj1, vobj2, k))
+            .and_then(|vobj2| vector_eq(ht, vobj1, vobj2, k))
     } else {
-        /*
-        let obj1: Record = obj1.clone().try_into().unwrap();
-        let obj2: Record = obj2.clone().try_into().unwrap();
-        */
         (obj1.equal(&obj2)).then_some(k)
     }
 }
@@ -1130,7 +1118,7 @@ impl TryFrom<UnpackedValue> for Cell {
     fn try_from(v: UnpackedValue) -> Result<Self, Self::Error> {
         match v {
             UnpackedValue::Cell(cell) => Ok(cell.clone()),
-            e => Err(Exception::type_error("cell", &*e.type_name())),
+            e => Err(Exception::type_error("cell", &e.type_name())),
         }
     }
 }

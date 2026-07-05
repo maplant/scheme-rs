@@ -44,7 +44,7 @@
 //! #   pos_y: f64,
 //! #   health: Mutex<f64>,
 //! # }
-//! impl Embeddable for Enemy {
+//! unsafe impl Embeddable for Enemy {
 //!     fn rtd() -> Arc<RecordTypeDescriptor> {
 //!         rtd!(
 //!             ty: Enemy,
@@ -86,7 +86,7 @@
 //! #   pos_y: f64,
 //! #   health: Mutex<f64>,
 //! # }
-//! impl Embeddable for Enemy {
+//! unsafe impl Embeddable for Enemy {
 //! #    fn rtd() -> Arc<RecordTypeDescriptor> {
 //! #        rtd!(ty: Enemy, name: "enemy", sealed: true)
 //! #    }
@@ -123,7 +123,7 @@
 //! #   pos_y: f64,
 //! #   health: f64,
 //! # }
-//! # impl Embeddable for Enemy {
+//! # unsafe impl Embeddable for Enemy {
 //! #    fn rtd() -> Arc<RecordTypeDescriptor> {
 //! #        rtd!(ty: Enemy, name: "enemy", sealed: true)
 //! #    }
@@ -134,7 +134,7 @@
 //!     special: u64,
 //! }
 //!
-//! impl Embeddable for SpecialEnemy {
+//! unsafe impl Embeddable for SpecialEnemy {
 //!     fn rtd() -> Arc<RecordTypeDescriptor> {
 //!         rtd!(
 //!             ty: SpecialEnemy,
@@ -184,7 +184,7 @@
 //! # exceptions::Exception };
 //! # #[derive(Debug, Trace)]
 //! # struct Enemy {}
-//! impl Embeddable for Enemy {
+//! unsafe impl Embeddable for Enemy {
 //!     fn rtd() -> Arc<RecordTypeDescriptor> {
 //!         rtd!(
 //!             ty: Enemy,
@@ -528,6 +528,7 @@ impl Record {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn eq(&self, rhs: &Record) -> bool {
         if let Some(vtable) = self.0.rtd.embedded_vtable {
             (vtable.eq)(self.0.embedded_ptr().unwrap(), rhs)
@@ -685,7 +686,7 @@ unsafe impl Trace for RecordInner {
 
 /// A Rust type that can be embedded safely in a Scheme record.
 ///
-/// # Safety:
+/// # Safety
 ///
 /// The [rtd] function cannot return a RecordTypeDescriptor created for a
 /// different type than the type implementing that function. Doing so is

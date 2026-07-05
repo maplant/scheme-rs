@@ -728,6 +728,7 @@ impl CompilationUnit<'_, '_> {
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn fixnum_binop_codegen(
         &mut self,
         primop: PrimOp,

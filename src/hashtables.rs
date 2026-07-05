@@ -455,7 +455,6 @@ pub fn hashtable_delete_bang(hashtable: HashTable, key: &Value) -> Result<(), Ex
 
 #[bridge(name = "hashtable-contains?", lib = "(rnrs hashtables builtins (6))")]
 pub fn hashtable_contains_pred(hashtable: HashTable, key: &Value) -> Result<bool, Exception> {
-    let hashtable: HashTable = hashtable.clone().try_into()?;
     Ok(hashtable.contains(key)?)
 }
 
@@ -466,8 +465,6 @@ pub fn hashtable_update_bang(
     proc: Procedure,
     default: &Value,
 ) -> Result<Vec<Value>, Exception> {
-    let hashtable: HashTable = hashtable.clone().try_into()?;
-    let proc: Procedure = proc.clone().try_into()?;
     hashtable.update(key, &proc, default)?;
     Ok(Vec::new())
 }

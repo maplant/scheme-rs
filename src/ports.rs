@@ -3356,15 +3356,13 @@ pub fn default_file_options_scm() -> Result<Vec<Value>, Exception> {
 }
 
 #[bridge(name = "eof-object", lib = "(rnrs io builtins (6))")]
-pub fn eof_object() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(EOF_OBJECT.clone())])
+pub fn eof_object() -> Value {
+    EOF_OBJECT.clone()
 }
 
 #[bridge(name = "eof-object?", lib = "(rnrs io builtins (6))")]
-pub fn eof_object_pred(val: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(
-        val.cast::<Embedded<EofObject>>().is_some(),
-    )])
+pub fn eof_object_pred(val: &Value) -> bool {
+    val.is_a::<Embedded<EofObject>>()
 }
 
 #[bridge(name = "port?", lib = "(rnrs io builtins (6))")]
@@ -3703,7 +3701,7 @@ pub fn get_u8(binary_input_port: &Value) -> Result<Vec<Value>, Exception> {
     if let Some(byte) = maybe_await!(port.get_u8())? {
         Ok(vec![Value::from(byte)])
     } else {
-        Ok(vec![Value::from(EOF_OBJECT.clone())])
+        Ok(vec![EOF_OBJECT.clone()])
     }
 }
 
@@ -3714,7 +3712,7 @@ pub fn lookahead_u8(binary_input_port: &Value) -> Result<Vec<Value>, Exception> 
     if let Some(byte) = maybe_await!(port.lookahead_u8())? {
         Ok(vec![Value::from(byte)])
     } else {
-        Ok(vec![Value::from(EOF_OBJECT.clone())])
+        Ok(vec![EOF_OBJECT.clone()])
     }
 }
 
@@ -3722,46 +3720,41 @@ pub fn lookahead_u8(binary_input_port: &Value) -> Result<Vec<Value>, Exception> 
 
 #[maybe_async]
 #[bridge(name = "get-char", lib = "(rnrs io builtins (6))")]
-pub fn get_char(textual_input_port: &Value) -> Result<Vec<Value>, Exception> {
-    let port: Port = textual_input_port.clone().try_into()?;
-    if let Some(chr) = maybe_await!(port.get_char())? {
+pub fn get_char(textual_input_port: Port) -> Result<Vec<Value>, Exception> {
+    if let Some(chr) = maybe_await!(textual_input_port.get_char())? {
         Ok(vec![Value::from(chr)])
     } else {
-        Ok(vec![Value::from(EOF_OBJECT.clone())])
+        Ok(vec![EOF_OBJECT.clone()])
     }
 }
 
 #[maybe_async]
 #[bridge(name = "lookahead-char", lib = "(rnrs io builtins (6))")]
-pub fn lookahead_char(textual_input_port: &Value) -> Result<Vec<Value>, Exception> {
-    let port: Port = textual_input_port.clone().try_into()?;
-    if let Some(chr) = maybe_await!(port.lookahead_char())? {
+pub fn lookahead_char(textual_input_port: Port) -> Result<Vec<Value>, Exception> {
+    if let Some(chr) = maybe_await!(textual_input_port.lookahead_char())? {
         Ok(vec![Value::from(chr)])
     } else {
-        Ok(vec![Value::from(EOF_OBJECT.clone())])
+        Ok(vec![EOF_OBJECT.clone()])
     }
 }
 
 #[maybe_async]
 #[bridge(name = "get-string-n", lib = "(rnrs io builtins (6))")]
-pub fn get_string_n(textual_input_port: &Value, n: &Value) -> Result<Vec<Value>, Exception> {
-    let port: Port = textual_input_port.clone().try_into()?;
-    let n: usize = n.clone().try_into()?;
-    if let Some(s) = maybe_await!(port.get_string_n(n))? {
+pub fn get_string_n(textual_input_port: Port, n: usize) -> Result<Vec<Value>, Exception> {
+    if let Some(s) = maybe_await!(textual_input_port.get_string_n(n))? {
         Ok(vec![Value::from(s)])
     } else {
-        Ok(vec![Value::from(EOF_OBJECT.clone())])
+        Ok(vec![EOF_OBJECT.clone()])
     }
 }
 
 #[maybe_async]
 #[bridge(name = "get-line", lib = "(rnrs io builtins (6))")]
-pub fn get_line(textual_input_port: &Value) -> Result<Vec<Value>, Exception> {
-    let port: Port = textual_input_port.clone().try_into()?;
-    if let Some(line) = maybe_await!(port.get_line())? {
+pub fn get_line(textual_input_port: Port) -> Result<Vec<Value>, Exception> {
+    if let Some(line) = maybe_await!(textual_input_port.get_line())? {
         Ok(vec![Value::from(line)])
     } else {
-        Ok(vec![Value::from(EOF_OBJECT.clone())])
+        Ok(vec![EOF_OBJECT.clone()])
     }
 }
 
@@ -3771,18 +3764,17 @@ pub fn get_string_all(textual_input_port: Port) -> Result<Vec<Value>, Exception>
     if let Some(s) = maybe_await!(textual_input_port.get_string_all())? {
         Ok(vec![Value::from(s)])
     } else {
-        Ok(vec![Value::from(EOF_OBJECT.clone())])
+        Ok(vec![EOF_OBJECT.clone()])
     }
 }
 
 #[maybe_async]
 #[bridge(name = "get-datum", lib = "(rnrs io builtins (6))")]
-pub fn get_datum(textual_input_port: &Value) -> Result<Vec<Value>, Exception> {
-    let port: Port = textual_input_port.clone().try_into()?;
-    if let Some((syntax, _)) = maybe_await!(port.get_sexpr(Span::default()))? {
+pub fn get_datum(textual_input_port: Port) -> Result<Vec<Value>, Exception> {
+    if let Some((syntax, _)) = maybe_await!(textual_input_port.get_sexpr(Span::default()))? {
         Ok(vec![Value::datum_from_syntax(&syntax)])
     } else {
-        Ok(vec![Value::from(EOF_OBJECT.clone())])
+        Ok(vec![EOF_OBJECT.clone()])
     }
 }
 
@@ -3995,15 +3987,15 @@ pub async fn put_bytevector(
         match start_count {
             [] => bytevector[..].to_vec(),
             [start] => {
-                let start: usize = start.try_to_scheme_type()?;
+                let start: usize = start.try_to()?;
                 if start >= bytevector.len() {
                     return Err(Exception::invalid_index(start, bytevector.len()));
                 }
                 bytevector[start..].to_vec()
             }
             [start, count] => {
-                let start: usize = start.try_to_scheme_type()?;
-                let count: usize = count.try_to_scheme_type()?;
+                let start: usize = start.try_to()?;
+                let count: usize = count.try_to()?;
                 if (start + count) >= bytevector.len() {
                     return Err(Exception::invalid_index(start + count, bytevector.len()));
                 }
@@ -4080,15 +4072,15 @@ pub async fn put_string(
         match start_count {
             [] => string[..].to_vec(),
             [start] => {
-                let start: usize = start.try_to_scheme_type()?;
+                let start: usize = start.try_to()?;
                 if start >= string.len() {
                     return Err(Exception::invalid_index(start, string.len()));
                 }
                 string[start..].to_vec()
             }
             [start, count] => {
-                let start: usize = start.try_to_scheme_type()?;
-                let count: usize = count.try_to_scheme_type()?;
+                let start: usize = start.try_to()?;
+                let count: usize = count.try_to()?;
                 if (start + count) >= string.len() {
                     return Err(Exception::invalid_index(start + count, string.len()));
                 }
@@ -4612,7 +4604,7 @@ pub fn read_char(
     let result = if let Some(byte) = maybe_await!(input_port.get_char())? {
         Value::from(byte)
     } else {
-        Value::from(EOF_OBJECT.clone())
+        EOF_OBJECT.clone()
     };
 
     Ok(Application::new(k, None, vec![result]))

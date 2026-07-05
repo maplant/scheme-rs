@@ -63,7 +63,7 @@ let vals = env.eval(
     "
 )
 .unwrap();
-let factorial = vals[0].cast_to::<Procedure>().unwrap();
+let factorial = vals[0].cast::<Procedure>().unwrap();
 ```
 
 ## Procedures
@@ -95,7 +95,7 @@ anywhere.
 # .unwrap()
 # .try_into()
 # .unwrap();
-# let factorial = factorial.cast_to::<Procedure>().unwrap();
+# let factorial = factorial.cast::<Procedure>().unwrap();
 let [result] = factorial
     .call(
         &[Value::from(5)],
@@ -160,7 +160,7 @@ let val = env.eval(
   "
 )
 .unwrap();
-assert_eq!(val[0].cast_to::<u64>().unwrap(), 17);
+assert_eq!(val[0].cast::<u64>().unwrap(), 17);
 # }
 ```
 
@@ -192,7 +192,7 @@ struct Vec3 {
     y: f64
 }
 
-impl Embeddable for Vec3 {
+unsafe impl Embeddable for Vec3 {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(
             ty: Vec3,
@@ -231,7 +231,7 @@ embedded Rust type, cast to an [`Embedded<T>`](records::Embedded), e.g.
 ```rust
 # use scheme_rs::value::Value;
 # let pi = Value::from(3.14159268);
-assert_eq!(pi.cast_to::<f64>(), Some(3.14159268));
+assert_eq!(pi.cast::<f64>(), Some(3.14159268));
 ```
 
 See [the `value` module for more information](value).

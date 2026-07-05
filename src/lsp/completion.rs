@@ -95,7 +95,7 @@ fn var_completion_item(label: String, var: Var) -> CompletionItem {
     match var {
         Var::Global(global) => {
             let value = global.read();
-            if let Some(procedure) = value.cast_to_scheme_type::<Procedure>() {
+            if let Some(procedure) = value.cast::<Procedure>() {
                 procedure_completion_item(label, &procedure)
             } else {
                 CompletionItem {

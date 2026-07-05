@@ -15,7 +15,7 @@
 //! which can be used to extract a stack trace for the exception:
 //!
 //! ```
-//! # use scheme_rs::{exceptions::{Exception, Message, SyntaxViolation, StackTrace}, records::Embedded, gc::Gc, syntax::Syntax};
+//! # use scheme_rs::{exceptions::{Exception, Message, SyntaxViolation, StackTrace}, records::Embedded, syntax::Syntax};
 //! // Code from scheme-rs repl to print errors:
 //! fn print_exception(exception: Exception) {
 //!     let Ok(conditions) = exception.simple_conditions() else {
@@ -27,17 +27,17 @@
 //!     };
 //!     println!("Uncaught exception:");
 //!     for condition in conditions.into_iter() {
-//!         if let Some(message) = condition.cast_to::<Embedded<Message>>() {
+//!         if let Some(message) = condition.cast::<Embedded<Message>>() {
 //!             println!(" - Message: {}", message.message);
-//!         } else if let Some(syntax) = condition.cast_to::<Embedded<SyntaxViolation>>() {
+//!         } else if let Some(syntax) = condition.cast::<Embedded<SyntaxViolation>>() {
 //!             println!(" - Syntax error in form: {:?}", syntax.form);
 //!             if let Some(subform) = syntax.subform.as_ref() {
 //!                 println!("   (subform: {subform:?})");
 //!             }
-//!         } else if let Some(trace) = condition.cast_to::<Embedded<StackTrace>>() {
+//!         } else if let Some(trace) = condition.cast::<Embedded<StackTrace>>() {
 //!             println!(" - Stack trace:");
 //!             for (i, trace) in trace.trace.iter().enumerate() {
-//!                 let syntax = trace.cast_to::<Gc<Syntax>>().unwrap();
+//!                 let syntax = trace.cast::<Embedded<Syntax>>().unwrap();
 //!                 let span = syntax.span();
 //!                 let func_name = syntax.as_ident().unwrap().symbol();
 //!                 println!("{:>6}: {func_name}:{span}", i + 1);
@@ -48,6 +48,7 @@
 //!     }
 //! }
 //! ```
+#![allow(clippy::derivable_impls)]
 
 use crate::{
     gc::{Gc, GcInner, Trace},
@@ -728,6 +729,7 @@ impl Default for NonContinuable {
         }
     }
 }
+
 define_condition_type!(
     lib: "(rnrs conditions (6))",
     rust_name: ImplementationRestriction,
