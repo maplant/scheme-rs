@@ -28,9 +28,7 @@ pub(crate) struct GcHeader {
     crc: isize,
     /// VTable for the type
     vtable: &'static VTable,
-    /// Layout of the entire allocation (`GcInner<T>` plus any trailing
-    /// flexible-array/embedded data). Stored per-object rather than in the
-    /// VTable because records of the same type may have different sizes.
+    /// Layout of the type and header
     layout: Layout,
     /// Next item in the heap, or null. Lower 3 bits are the color
     next: *mut GcHeader,
