@@ -1569,14 +1569,26 @@ pub fn define_condition_type(tokens: TokenStream) -> TokenStream {
                     _ => Err(Exception::error(format!("invalid record field: {k}"))),
                 }
             }
+
+            fn debug_fmt(
+                &self,
+                _circular_values: &mut indexmap::IndexMap<::scheme_rs::value::Value, bool>,
+                f: &mut std::fmt::Formatter<'_>
+            ) -> std::fmt::Result {
+                use std::fmt::Debug;
+                write!(f, "#<{}", #scheme_name)?;
+                #dbg
+                write!(f, ">")?;
+                Ok(())
+            }
         }
 
         impl std::fmt::Debug for #rust_name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                #dbg
-                Ok(())
+                self.debug_fmt(&mut indexmap::IndexMap::default(), f)
             }
         }
+
     }
     .into()
 }

@@ -590,10 +590,8 @@ impl fmt::Debug for Record {
     }
 }
 
-// #[derive(Trace)]
 #[repr(C, align(16))]
 pub(crate) struct RecordInner {
-    // pub(crate) rust_parent: Option<Gc<dyn SchemeCompatible>>,
     rtd: Arc<RecordTypeDescriptor>,
     /// Pointer to the first field. If the record contains an embedded value it
     /// will be stored after the last field.
@@ -925,10 +923,10 @@ impl<T> AsRef<T> for Embedded<T> {
 
 impl<T> fmt::Debug for Embedded<T>
 where
-    T: fmt::Debug,
+    T: Embeddable,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.as_ref().fmt(f)
+        self.as_ref().debug_fmt(&mut IndexMap::default(), f)
     }
 }
 

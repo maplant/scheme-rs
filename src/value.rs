@@ -615,19 +615,6 @@ impl From<Exception> for Value {
     }
 }
 
-/*
-
-1: Symbol,
-2: Pair,
-3: Boolean,
-4: Character,
-5: Number,
-6: Procedure,
-7: Record,
-8: Cell,
-
-*/
-
 #[repr(u64)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Tag {
