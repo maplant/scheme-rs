@@ -114,10 +114,10 @@ use std::{
 const ALIGNMENT: usize = 16;
 const TAG_BITS: usize = ALIGNMENT.ilog2() as usize;
 pub(crate) const TAG: usize = 0b1111;
-pub(crate) const SYMBOL_CHAR: u32 = 0x110000;
+pub(crate) const FALSE_VALUE: usize = 0x110000 << TAG_BITS | Tag::SmallValue as usize;
+pub(crate) const TRUE_VALUE: usize = 0x110001 << TAG_BITS | Tag::SmallValue as usize;
+pub(crate) const SYMBOL_CHAR: u32 = 0x110002;
 pub(crate) const NULL_VALUE: usize = Tag::Pair as usize;
-pub(crate) const TRUE_VALUE: usize = Tag::Boolean as usize | 1 << TAG_BITS;
-pub(crate) const FALSE_VALUE: usize = Tag::Boolean as usize;
 pub(crate) const UNDEFINED_VALUE: usize = Tag::Record as usize;
 pub const FIXNUM_MIN: i64 = -(1 << 62);
 pub const FIXNUM_MAX: i64 = (1 << 62) - 1;
@@ -188,7 +188,7 @@ impl Value {
                 Tag::Cell => {
                     Gc::increment_reference_count(untagged as *mut GcInner<Value>);
                 }
-                Tag::FixNum | Tag::Boolean | Tag::CharacterOrSymbol => (),
+                Tag::FixNum | Tag::SmallValue => (),
             }
         }
         Self(raw)
@@ -278,14 +278,18 @@ impl Value {
     /// Unpack the value into an enum representation.
     pub fn unpack(self) -> UnpackedValue {
         let raw = ManuallyDrop::new(self).0;
+
+        // Check for booleans:
+        if raw as usize == TRUE_VALUE {
+            return UnpackedValue::Boolean(true);
+        } else if raw as usize == FALSE_VALUE {
+            return UnpackedValue::Boolean(false);
+        }
+
         let tag = Tag::from(raw as usize & TAG);
         let untagged = raw.map_addr(|raw| raw & !TAG);
         match tag {
-            Tag::Boolean => {
-                let untagged = untagged as usize >> TAG_BITS;
-                UnpackedValue::Boolean(untagged != 0)
-            }
-            Tag::CharacterOrSymbol => {
+            Tag::SmallValue => {
                 let untagged_char = (untagged as usize as u32) >> TAG_BITS;
                 if untagged_char == SYMBOL_CHAR {
                     // Upper 32 bits used for symbols
@@ -618,15 +622,14 @@ impl From<Exception> for Value {
 #[repr(u64)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Tag {
-    Pair = 0,
-    Boolean = 1 << 1,
-    CharacterOrSymbol = 2 << 1,
-    Number = 3 << 1,
-    Procedure = 4 << 1,
-    Record = 5 << 1,
-    RecordTypeDescriptor = 6 << 1,
-    Cell = 7 << 1,
     FixNum = 1,
+    Pair = 0 << 1,
+    SmallValue = 1 << 1,
+    Number = 2 << 1,
+    Procedure = 3 << 1,
+    Record = 4 << 1,
+    RecordTypeDescriptor = 5 << 1,
+    Cell = 6 << 1,
 }
 
 // TODO: Make TryFrom with error
@@ -636,10 +639,8 @@ impl From<usize> for Tag {
             Self::FixNum
         } else if tag == Self::Pair as usize {
             Self::Pair
-        } else if tag == Self::Boolean as usize {
-            Self::Boolean
-        } else if tag == Self::CharacterOrSymbol as usize {
-            Self::CharacterOrSymbol
+        } else if tag == Self::SmallValue as usize {
+            Self::SmallValue
         } else if tag == Self::Number as usize {
             Self::Number
         } else if tag == Self::Procedure as usize {
@@ -661,8 +662,8 @@ impl From<usize> for Tag {
 pub enum ValueType {
     Undefined,
     Null,
-    Pair,
     Boolean,
+    Pair,
     Character,
     Number,
     Symbol,
@@ -696,12 +697,13 @@ impl UnpackedValue {
         match self {
             Self::Undefined => Value::undefined(),
             Self::Null => Value::null(),
-            Self::Boolean(b) => {
-                Value::from_ptr_and_tag(((b as usize) << TAG_BITS) as *const (), Tag::Boolean)
+            Self::Boolean(false) => Value(FALSE_VALUE as *const()),
+            Self::Boolean(true) => {
+                Value(TRUE_VALUE as *const())
             }
             Self::Character(c) => Value::from_ptr_and_tag(
                 ((c as usize) << TAG_BITS) as *const (),
-                Tag::CharacterOrSymbol,
+                Tag::SmallValue,
             ),
             Self::Number(num) => match num.0 {
                 NumberRepr::Heap(num) => {
@@ -714,7 +716,7 @@ impl UnpackedValue {
             },
             Self::Symbol(sym) => Value::from_ptr_and_tag(
                 (((sym.0 as usize) << 32) | (SYMBOL_CHAR as usize) << TAG_BITS) as *const (),
-                Tag::CharacterOrSymbol,
+                Tag::SmallValue,
             ),
             Self::Procedure(clos) => {
                 let untagged = Gc::into_raw(clos.0);
@@ -1391,7 +1393,7 @@ pub(crate) fn write_value(
 
 #[bridge(name = "not", lib = "(rnrs base builtins (6))")]
 pub fn not(a: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(a.0 as usize == Tag::Boolean as usize)])
+    Ok(vec![Value::from(a.0 as usize == FALSE_VALUE)])
 }
 
 #[bridge(name = "eq?", lib = "(rnrs base builtins (6))")]
