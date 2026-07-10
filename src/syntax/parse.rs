@@ -286,7 +286,7 @@ impl Parser<'_> {
                 token!(Lexeme::Number(num), span) => {
                     let num: Number = num.try_into()?;
                     if let Some(simple) = num.as_simple()
-                        && let Ok(byte) = u8::try_from(simple)
+                        && let Ok(byte) = u8::try_from(&*simple)
                     {
                         output.push(byte);
                         continue;

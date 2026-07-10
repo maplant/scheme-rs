@@ -11,7 +11,6 @@ use crate::{
     exceptions::Exception,
     expand::{ExpansionCombiner, SyntaxRule},
     proc::Procedure,
-    records::Record,
     runtime::Runtime,
     syntax::{Identifier, Syntax},
     value::Value as RuntimeValue,
@@ -521,7 +520,7 @@ fn compile_apply_args(
             return if let Value::Var(Var::Local(frame)) = frame {
                 Cps::PrimOp(
                     PrimOp::GetFrame,
-                    vec![op, Value::from(RuntimeValue::from_rust_type(span))],
+                    vec![op, Value::from(RuntimeValue::from(span))],
                     frame,
                     Box::new(app),
                 )
@@ -847,8 +846,8 @@ impl Compile for SyntaxQuote {
         }
 
         let mut args = vec![
-            Value::from(RuntimeValue::from_rust_type(self.template.clone())),
-            Value::from(RuntimeValue::from_rust_type(ExpansionCombiner { uses })),
+            Value::from(RuntimeValue::from(self.template.clone())),
+            Value::from(RuntimeValue::from(ExpansionCombiner { uses })),
         ];
 
         for expansion in expansions_seen.iter() {
@@ -924,10 +923,12 @@ fn compile_syntax_rules(
                     Box::new(Cps::App(Value::from(k2), Vec::new())),
                 )),
                 [rule, tail @ ..] => {
-                    let pattern = Record::from_rust_type(rule.pattern.clone());
                     Box::new(Cps::PrimOp(
                         PrimOp::Matches,
-                        vec![Value::from(RuntimeValue::from(pattern)), Value::from(arg)],
+                        vec![
+                            Value::from(RuntimeValue::from(rule.pattern.clone())),
+                            Value::from(arg),
+                        ],
                         rule.binds,
                         {
                             let match_result = if rule.fender.is_some() {

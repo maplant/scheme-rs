@@ -100,7 +100,7 @@ fn var_hover(var: Var) -> String {
             let name = global.name.to_string();
             let mut hover = format!("{name}\n\nglobal variable");
             let value = global.read();
-            if let Some(procedure) = value.cast_to_scheme_type::<Procedure>() {
+            if let Some(procedure) = value.cast::<Procedure>() {
                 hover = procedure_hover("global procedure", name, &procedure);
             } else if !value.is_undefined() {
                 hover.push_str(&format!("\n\ntype: {}", value.type_name()));

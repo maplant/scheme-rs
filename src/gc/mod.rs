@@ -18,6 +18,7 @@ pub use collection::{OpaqueGcPtr, collect_garbage, init_gc};
 pub use scheme_rs_macros::Trace;
 
 use std::{
+    alloc::Layout,
     any::Any,
     cell::UnsafeCell,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -29,10 +30,9 @@ use std::{
     ptr::{NonNull, drop_in_place},
 };
 
-use crate::{
-    Either,
-    gc::collection::{GcHeader, unroot},
-};
+pub(crate) use collection::unroot;
+
+use crate::{Either, gc::collection::GcHeader};
 
 /// A heap allocated garbage collected smart pointer. Gc requires that `T`
 /// implements the [`Trace`] trait to properly track references.
@@ -47,7 +47,7 @@ impl<T: Send + GcOrTrace + 'static> Gc<T> {
     pub fn new(data: T) -> Gc<T> {
         let new_gc = Self::rooted(data);
         unsafe {
-            unroot(&new_gc);
+            unroot(&new_gc, Layout::new::<GcInner<T>>());
         }
         new_gc
     }
@@ -89,7 +89,7 @@ impl<T: GcOrTrace> Gc<T> {
     /// an unrooted Gc object is undefined behavior.
     pub(crate) unsafe fn unroot(this: &Self) {
         unsafe {
-            unroot(this);
+            unroot(this, Layout::new::<GcInner<T>>());
         }
     }
 }
@@ -310,7 +310,26 @@ fn dec_rc<T: ?Sized>(ptr: NonNull<GcInner<T>>) {
 #[doc(hidden)]
 pub struct GcInner<T: ?Sized> {
     header: UnsafeCell<GcHeader>,
-    pub(crate) data: UnsafeCell<T>,
+    data: UnsafeCell<T>,
+}
+
+impl<T: Trace> GcInner<T> {
+    pub(crate) fn new(data: T) -> Self {
+        Self {
+            header: UnsafeCell::new(GcHeader::new::<T>()),
+            data: UnsafeCell::new(data),
+        }
+    }
+
+    pub(crate) fn data_mut(&mut self) -> &mut T {
+        self.data.get_mut()
+    }
+}
+
+impl<T> GcInner<T> {
+    pub(crate) const fn data_offset() -> usize {
+        std::mem::offset_of!(Self, data)
+    }
 }
 
 unsafe impl<T: ?Sized + Send> Send for GcInner<T> {}
@@ -470,6 +489,27 @@ where
             self.0.finalize_or_skip();
             self.1.finalize_or_skip();
             self.2.finalize_or_skip();
+        }
+    }
+}
+
+unsafe impl<T, const N: usize> Trace for [T; N]
+where
+    T: GcOrTrace,
+{
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+        unsafe {
+            for item in self {
+                item.visit_or_recurse(visitor);
+            }
+        }
+    }
+
+    unsafe fn finalize(&mut self) {
+        unsafe {
+            for item in self {
+                item.finalize_or_skip();
+            }
         }
     }
 }

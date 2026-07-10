@@ -18,6 +18,7 @@ use crate::{
         Application, ContBarrier, ContinuationPtr, FuncPtr, ProcDebugInfo, Procedure,
         ProcedureInner, UserPtr,
     },
+    records::Embedded,
     registry::Registry,
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax},
@@ -457,7 +458,7 @@ unsafe extern "C" fn apply(
             x => {
                 let raised = raise(
                     Runtime::from_raw_inc_rc(runtime),
-                    Exception::invalid_operator(x.type_name()).into(),
+                    Exception::invalid_operator(&x.type_name()).into(),
                     barrier.as_mut().unwrap_unchecked(),
                 );
                 return Box::into_raw(Box::new(raised));
@@ -465,7 +466,7 @@ unsafe extern "C" fn apply(
         };
 
         let (k, offset) = if !op.0.is_continuation() {
-            (Value::from_raw_inc_rc(args.read()).cast_to_scheme_type(), 1)
+            (Value::from_raw_inc_rc(args.read()).cast(), 1)
         } else {
             (None, 0)
         };
@@ -487,11 +488,11 @@ unsafe extern "C" fn apply(
 unsafe extern "C" fn get_frame(op: *const (), span: *const ()) -> *const () {
     unsafe {
         let op = Value::from_raw_inc_rc(op);
-        let Some(op) = op.cast_to_scheme_type::<Procedure>() else {
+        let Some(op) = op.cast::<Procedure>() else {
             return Value::into_raw(Value::null());
         };
         let span = Value::from_raw_inc_rc(span);
-        let span = span.cast_to_rust_type::<Span>().unwrap();
+        let span = span.cast::<Embedded<Span>>().unwrap();
         let frame = Syntax::Identifier {
             ident: Identifier {
                 sym: op
@@ -518,7 +519,7 @@ unsafe extern "C" fn set_continuation_mark(
         barrier
             .as_mut()
             .unwrap()
-            .set_continuation_mark(tag.cast_to_scheme_type().unwrap(), val);
+            .set_continuation_mark(tag.cast().unwrap(), val);
     }
 }
 
@@ -552,7 +553,7 @@ unsafe extern "C" fn store(from: *const (), to: *const ()) {
 unsafe extern "C" fn car(val: *const (), error: *mut Value) -> *const () {
     unsafe {
         let val = ManuallyDrop::new(Value::from_raw(val));
-        match val.try_to_scheme_type::<Pair>() {
+        match val.try_to::<Pair>() {
             Ok(pair) => Value::into_raw(pair.car()),
             Err(condition) => {
                 error.write(condition.into());
@@ -567,7 +568,7 @@ unsafe extern "C" fn car(val: *const (), error: *mut Value) -> *const () {
 unsafe extern "C" fn cdr(val: *const (), error: *mut Value) -> *const () {
     unsafe {
         let val = ManuallyDrop::new(Value::from_raw(val));
-        match val.try_to_scheme_type::<Pair>() {
+        match val.try_to::<Pair>() {
             Ok(pair) => Value::into_raw(pair.cdr()),
             Err(condition) => {
                 error.write(condition.into());
@@ -672,8 +673,7 @@ unsafe extern "C" fn patch_env_slot(proc: *const (), slot_idx: u32, value: *cons
         let proc_gc = ManuallyDrop::new(Gc::from_raw(
             proc.map_addr(|raw| raw & !TAG) as *mut GcInner<ProcedureInner>
         ));
-        (*Gc::as_ptr(&proc_gc)).data.get_mut().env[slot_idx as usize] =
-            Value::from_raw_inc_rc(value);
+        (*Gc::as_ptr(&proc_gc)).data_mut().env[slot_idx as usize] = Value::from_raw_inc_rc(value);
     }
 }
 
@@ -727,6 +727,17 @@ unsafe extern "C" fn sub(vals: *const *const (), num_vals: u32, error: *mut Valu
             }
         }
     }
+}
+
+#[runtime_fn]
+unsafe extern "C" fn i64_to_number(value: i64) -> *const () {
+    Value::into_raw(Value::from(num::Number::from(value)))
+}
+
+#[runtime_fn]
+unsafe extern "C" fn i128_to_number(lo: i64, hi: i64) -> *const () {
+    let value = ((hi as i128) << 64) | ((lo as u64) as i128);
+    Value::into_raw(Value::from(num::Number::from(value)))
 }
 
 #[runtime_fn]

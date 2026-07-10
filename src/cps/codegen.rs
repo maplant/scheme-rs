@@ -15,7 +15,10 @@ use crate::{
     },
     proc::{ContinuationPtr, FuncPtr, ProcDebugInfo, Procedure},
     runtime::{DebugInfo, Runtime},
-    value::{FALSE_VALUE, NULL_VALUE, TAG, TRUE_VALUE, Tag, Value as SchemeValue},
+    value::{
+        FALSE_VALUE, FIXNUM_MAX, FIXNUM_MIN, NULL_VALUE, TAG, TRUE_VALUE, Tag, UNDEFINED_VALUE,
+        Value as SchemeValue,
+    },
 };
 
 use super::*;
@@ -93,6 +96,8 @@ pub(crate) struct RuntimeFunctions {
     // Math primops:
     add: FuncId,
     sub: FuncId,
+    i64_to_number: FuncId,
+    i128_to_number: FuncId,
     mul: FuncId,
     div: FuncId,
     equal: FuncId,
@@ -390,7 +395,7 @@ impl CompilationUnit<'_, '_> {
                 (cell, global.name.0)
             }
             CpsValue::Const(val)
-                if let Some(proc) = val.cast_to_scheme_type::<Procedure>()
+                if let Some(proc) = val.cast::<Procedure>()
                     && let Some(known) = proc.to_known() =>
             {
                 // Known functions get converted to i64 constants
@@ -414,7 +419,10 @@ impl CompilationUnit<'_, '_> {
         let cell_value = self.builder.inst_results(call)[0];
 
         // Check if the cell is undefined:
-        let cond = self.builder.ins().icmp_imm(IntCC::Equal, cell_value, 0);
+        let cond = self
+            .builder
+            .ins()
+            .icmp_imm(IntCC::Equal, cell_value, UNDEFINED_VALUE as i64);
 
         let undefined_block = self.builder.create_block();
         let defined_block = self.builder.create_block();
@@ -511,7 +519,10 @@ impl CompilationUnit<'_, '_> {
         );
         let expanded = self.builder.inst_results(call)[0];
 
-        let cond = self.builder.ins().icmp_imm(IntCC::Equal, expanded, 0);
+        let cond = self
+            .builder
+            .ins()
+            .icmp_imm(IntCC::Equal, expanded, UNDEFINED_VALUE as i64);
         let failure_block = self.builder.create_block();
         let success_block = self.builder.create_block();
         self.builder
@@ -581,22 +592,61 @@ impl CompilationUnit<'_, '_> {
         deferred_procs: &mut Vec<ProcedureBundle>,
         deferred_local_conts: &mut Vec<ProcedureBundle>,
     ) {
+        let arg_vals: Vec<Value> = vals.iter().map(|val| self.value_codegen(val)).collect();
+
+        // If we have two arguments and the operator is a numeric primop, we can
+        // generate faster code.
+        if let [lhs, rhs] = arg_vals[..]
+            && matches!(
+                primop,
+                PrimOp::Add
+                    | PrimOp::Sub
+                    | PrimOp::Mul
+                    | PrimOp::Equal
+                    | PrimOp::Lesser
+                    | PrimOp::Greater
+                    | PrimOp::LesserEqual
+                    | PrimOp::GreaterEqual
+            )
+        {
+            self.fixnum_binop_codegen(
+                primop,
+                lhs,
+                rhs,
+                dest,
+                cexpr,
+                deferred_procs,
+                deferred_local_conts,
+            );
+        } else {
+            let result = self.slow_value_primop_codegen(primop, &arg_vals);
+
+            self.rebinds.rebind(dest, IrValue::Value(result));
+
+            if primop.info().needs_drop {
+                self.push_alloc(result);
+            }
+
+            self.cps_codegen(cexpr, deferred_procs, deferred_local_conts);
+        }
+    }
+
+    fn slow_value_primop_codegen(&mut self, primop: PrimOp, arg_vals: &[Value]) -> Value {
         let primop_info = primop.info();
 
         let mut args = if primop_info.variadic {
             // Put the values into an array:
-            let args = self.alloc_array(vals.len());
+            let array = self.alloc_array(arg_vals.len());
 
-            for (i, val) in vals.iter().enumerate() {
-                let val = self.value_codegen(val);
-                self.array_store(args, i, val);
+            for (i, val) in arg_vals.iter().enumerate() {
+                self.array_store(array, i, *val);
             }
 
-            let vals_addr = self.builder.ins().stack_addr(types::I64, args, 0);
-            let num_vals = self.builder.ins().iconst(types::I32, vals.len() as i64);
+            let vals_addr = self.builder.ins().stack_addr(types::I64, array, 0);
+            let num_vals = self.builder.ins().iconst(types::I32, arg_vals.len() as i64);
             vec![vals_addr, num_vals]
         } else {
-            vals.iter().map(|val| self.value_codegen(val)).collect()
+            arg_vals.to_vec()
         };
 
         // Call the respective runtime function:
@@ -614,13 +664,13 @@ impl CompilationUnit<'_, '_> {
             PrimOp::List => self.runtime_funcs.list,
             PrimOp::Car => self.runtime_funcs.car,
             PrimOp::Cdr => self.runtime_funcs.cdr,
-            PrimOp::CallKnown0 => match vals.len() {
+            PrimOp::CallKnown0 => match arg_vals.len() {
                 2 => self.runtime_funcs.call_known_1x0,
                 3 => self.runtime_funcs.call_known_2x0,
                 4 => self.runtime_funcs.call_known_3x0,
                 _ => unreachable!(),
             },
-            PrimOp::CallKnown1 => match vals.len() {
+            PrimOp::CallKnown1 => match arg_vals.len() {
                 1 => self.runtime_funcs.call_known_0x1,
                 2 => self.runtime_funcs.call_known_1x1,
                 3 => self.runtime_funcs.call_known_2x1,
@@ -650,7 +700,10 @@ impl CompilationUnit<'_, '_> {
         // Check for error if we need to:
         if let Some(error_slot) = error_slot {
             // Check if the result is undefined:
-            let cond = self.builder.ins().icmp_imm(IntCC::Equal, result, 0);
+            let cond = self
+                .builder
+                .ins()
+                .icmp_imm(IntCC::Equal, result, UNDEFINED_VALUE as i64);
 
             let failure_block = self.builder.create_block();
             let success_block = self.builder.create_block();
@@ -672,9 +725,172 @@ impl CompilationUnit<'_, '_> {
             self.builder.seal_block(success_block);
         }
 
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn fixnum_binop_codegen(
+        &mut self,
+        primop: PrimOp,
+        lhs: Value,
+        rhs: Value,
+        dest: Local,
+        cexpr: Cps,
+        deferred_procs: &mut Vec<ProcedureBundle>,
+        deferred_local_conts: &mut Vec<ProcedureBundle>,
+    ) {
+        // Both operands are fixnums iff the low bit of their bitwise-and is set.
+        let anded = self.builder.ins().band(lhs, rhs);
+        let low_bit = self.builder.ins().band_imm(anded, 1);
+        let both_fixnums = self.builder.ins().icmp_imm(IntCC::Equal, low_bit, 1);
+
+        let fast_block = self.builder.create_block();
+        let slow_block = self.builder.create_block();
+        let merge_block = self.builder.create_block();
+        self.builder.append_block_param(merge_block, types::I64);
+
+        self.builder
+            .ins()
+            .brif(both_fixnums, fast_block, &[], slow_block, &[]);
+
+        // Fast path: both operands are fixnums.
+        self.builder.switch_to_block(fast_block);
+        self.builder.seal_block(fast_block);
+        match primop {
+            PrimOp::Equal
+            | PrimOp::Lesser
+            | PrimOp::Greater
+            | PrimOp::LesserEqual
+            | PrimOp::GreaterEqual => {
+                // Since both operands have their lowest bit set, we can
+                // compare them as i64s.
+                let cc = match primop {
+                    PrimOp::Equal => IntCC::Equal,
+                    PrimOp::Lesser => IntCC::SignedLessThan,
+                    PrimOp::Greater => IntCC::SignedGreaterThan,
+                    PrimOp::LesserEqual => IntCC::SignedLessThanOrEqual,
+                    PrimOp::GreaterEqual => IntCC::SignedGreaterThanOrEqual,
+                    _ => unreachable!(),
+                };
+                let cmp = self.builder.ins().icmp(cc, lhs, rhs);
+                let true_val = self.builder.ins().iconst(types::I64, TRUE_VALUE as i64);
+                let false_val = self.builder.ins().iconst(types::I64, FALSE_VALUE as i64);
+                let result = self.builder.ins().select(cmp, true_val, false_val);
+                self.builder
+                    .ins()
+                    .jump(merge_block, &[BlockArg::Value(result)]);
+            }
+            PrimOp::Add | PrimOp::Sub => {
+                let lhs = self.builder.ins().sshr_imm(lhs, 1);
+                let rhs = self.builder.ins().sshr_imm(rhs, 1);
+                let value = match primop {
+                    PrimOp::Add => self.builder.ins().iadd(lhs, rhs),
+                    PrimOp::Sub => self.builder.ins().isub(lhs, rhs),
+                    _ => unreachable!(),
+                };
+
+                // Check if we're in range of an i64
+                let ge_min =
+                    self.builder
+                        .ins()
+                        .icmp_imm(IntCC::SignedGreaterThanOrEqual, value, FIXNUM_MIN);
+                let le_max =
+                    self.builder
+                        .ins()
+                        .icmp_imm(IntCC::SignedLessThanOrEqual, value, FIXNUM_MAX);
+                let in_range = self.builder.ins().band(ge_min, le_max);
+
+                let encode_block = self.builder.create_block();
+                let overflow_block = self.builder.create_block();
+                self.builder
+                    .ins()
+                    .brif(in_range, encode_block, &[], overflow_block, &[]);
+
+                // Convert back to a Value
+                self.builder.switch_to_block(encode_block);
+                self.builder.seal_block(encode_block);
+                let shifted = self.builder.ins().ishl_imm(value, 1);
+                let result = self.builder.ins().bor_imm(shifted, 1);
+                self.builder
+                    .ins()
+                    .jump(merge_block, &[BlockArg::Value(result)]);
+
+                // The fixnum overflows 63 bits, allocate
+                self.builder.switch_to_block(overflow_block);
+                self.builder.seal_block(overflow_block);
+                let i64_to_number = self
+                    .module
+                    .declare_func_in_func(self.runtime_funcs.i64_to_number, self.builder.func);
+                let call = self.builder.ins().call(i64_to_number, &[value]);
+                let result = self.builder.inst_results(call)[0];
+                self.builder
+                    .ins()
+                    .jump(merge_block, &[BlockArg::Value(result)]);
+            }
+            PrimOp::Mul => {
+                let lhs = self.builder.ins().sshr_imm(lhs, 1);
+                let rhs = self.builder.ins().sshr_imm(rhs, 1);
+
+                let value = self.builder.ins().imul(lhs, rhs);
+                let hi = self.builder.ins().smulhi(lhs, rhs);
+                let sign = self.builder.ins().sshr_imm(value, 63);
+                let fits_i64 = self.builder.ins().icmp(IntCC::Equal, hi, sign);
+
+                let ge_min =
+                    self.builder
+                        .ins()
+                        .icmp_imm(IntCC::SignedGreaterThanOrEqual, value, FIXNUM_MIN);
+                let le_max =
+                    self.builder
+                        .ins()
+                        .icmp_imm(IntCC::SignedLessThanOrEqual, value, FIXNUM_MAX);
+                let in_fixnum = self.builder.ins().band(ge_min, le_max);
+                let in_range = self.builder.ins().band(fits_i64, in_fixnum);
+
+                let encode_block = self.builder.create_block();
+                let overflow_block = self.builder.create_block();
+                self.builder
+                    .ins()
+                    .brif(in_range, encode_block, &[], overflow_block, &[]);
+
+                self.builder.switch_to_block(encode_block);
+                self.builder.seal_block(encode_block);
+                let shifted = self.builder.ins().ishl_imm(value, 1);
+                let result = self.builder.ins().bor_imm(shifted, 1);
+                self.builder
+                    .ins()
+                    .jump(merge_block, &[BlockArg::Value(result)]);
+
+                // Overflow: convert to a bignum
+                self.builder.switch_to_block(overflow_block);
+                self.builder.seal_block(overflow_block);
+                let i128_to_number = self
+                    .module
+                    .declare_func_in_func(self.runtime_funcs.i128_to_number, self.builder.func);
+                let call = self.builder.ins().call(i128_to_number, &[value, hi]);
+                let result = self.builder.inst_results(call)[0];
+                self.builder
+                    .ins()
+                    .jump(merge_block, &[BlockArg::Value(result)]);
+            }
+            _ => unreachable!(),
+        }
+
+        self.builder.switch_to_block(slow_block);
+        self.builder.seal_block(slow_block);
+        let result = self.slow_value_primop_codegen(primop, &[lhs, rhs]);
+        self.builder
+            .ins()
+            .jump(merge_block, &[BlockArg::Value(result)]);
+
+        // Merge the two paths.
+        self.builder.switch_to_block(merge_block);
+        self.builder.seal_block(merge_block);
+        let result = self.builder.block_params(merge_block)[0];
+
         self.rebinds.rebind(dest, IrValue::Value(result));
 
-        if primop_info.needs_drop {
+        if primop.info().needs_drop {
             self.push_alloc(result);
         }
 
@@ -1026,7 +1242,7 @@ impl CompilationUnit<'_, '_> {
         for (i, env_var) in bundle.env.iter().enumerate() {
             let val = if fix_vals.contains(env_var) {
                 // Undefined
-                self.builder.ins().iconst(types::I64, 0)
+                self.builder.ins().iconst(types::I64, Tag::Record as i64)
             } else {
                 match *self.rebinds.fetch_bind(env_var) {
                     IrValue::Cell(ptr) => ptr,

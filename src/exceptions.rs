@@ -15,7 +15,7 @@
 //! which can be used to extract a stack trace for the exception:
 //!
 //! ```
-//! # use scheme_rs::{exceptions::{Exception, Message, SyntaxViolation, StackTrace}, gc::Gc, syntax::Syntax};
+//! # use scheme_rs::{exceptions::{Exception, Message, SyntaxViolation, StackTrace}, records::Embedded, syntax::Syntax};
 //! // Code from scheme-rs repl to print errors:
 //! fn print_exception(exception: Exception) {
 //!     let Ok(conditions) = exception.simple_conditions() else {
@@ -27,17 +27,17 @@
 //!     };
 //!     println!("Uncaught exception:");
 //!     for condition in conditions.into_iter() {
-//!         if let Some(message) = condition.cast_to_rust_type::<Message>() {
+//!         if let Some(message) = condition.cast::<Embedded<Message>>() {
 //!             println!(" - Message: {}", message.message);
-//!         } else if let Some(syntax) = condition.cast_to_rust_type::<SyntaxViolation>() {
+//!         } else if let Some(syntax) = condition.cast::<Embedded<SyntaxViolation>>() {
 //!             println!(" - Syntax error in form: {:?}", syntax.form);
 //!             if let Some(subform) = syntax.subform.as_ref() {
 //!                 println!("   (subform: {subform:?})");
 //!             }
-//!         } else if let Some(trace) = condition.cast_to_rust_type::<StackTrace>() {
+//!         } else if let Some(trace) = condition.cast::<Embedded<StackTrace>>() {
 //!             println!(" - Stack trace:");
 //!             for (i, trace) in trace.trace.iter().enumerate() {
-//!                 let syntax = trace.cast_to_scheme_type::<Gc<Syntax>>().unwrap();
+//!                 let syntax = trace.cast::<Embedded<Syntax>>().unwrap();
 //!                 let span = syntax.span();
 //!                 let func_name = syntax.as_ident().unwrap().symbol();
 //!                 println!("{:>6}: {func_name}:{span}", i + 1);
@@ -48,6 +48,7 @@
 //!     }
 //! }
 //! ```
+#![allow(clippy::derivable_impls)]
 
 use crate::{
     gc::{Gc, GcInner, Trace},
@@ -57,7 +58,7 @@ use crate::{
         Application, ContBarrier, DynStackElem, FuncPtr, Procedure, halt_continuation,
         pop_dyn_stack,
     },
-    records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
+    records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
@@ -85,113 +86,96 @@ pub struct Exception(pub Value);
 
 impl Exception {
     pub fn error(message: impl fmt::Display) -> Self {
-        Self(Value::from(Record::from_rust_type(
-            CompoundCondition::from((Assertion::new(), Message::new(message.to_string()))),
-        )))
-    }
-
-    pub fn syntax(form: Syntax, subform: Option<Syntax>) -> Self {
-        Self(Value::from(Record::from_rust_type(SyntaxViolation::new(
-            form, subform,
+        Self(Value::from(CompoundCondition::from((
+            Assertion::new(),
+            Message::new(message.to_string()),
         ))))
     }
 
+    pub fn syntax(form: Syntax, subform: Option<Syntax>) -> Self {
+        Self(Value::from(SyntaxViolation::new(form, subform)))
+    }
+
     pub fn undefined(ident: Identifier) -> Self {
-        Self(Value::from(Record::from_rust_type(
-            CompoundCondition::from((
-                Undefined::new(),
-                Message::new(format!("undefined variable {}", ident.sym)),
-            )),
-        )))
+        Self(Value::from(CompoundCondition::from((
+            Undefined::new(),
+            Message::new(format!("undefined variable {}", ident.sym)),
+        ))))
     }
 
     pub fn type_error(expected: &str, provided: &str) -> Self {
-        Self(Value::from(Record::from_rust_type(
-            CompoundCondition::from((
-                Assertion::new(),
-                Message::new(format!(
-                    "expected value of type {expected}, provided {provided}"
-                )),
+        Self(Value::from(CompoundCondition::from((
+            Assertion::new(),
+            Message::new(format!(
+                "expected value of type {expected}, provided {provided}"
             )),
-        )))
+        ))))
     }
 
     pub fn invalid_operator(provided: &str) -> Self {
-        Self(Value::from(Record::from_rust_type(
-            CompoundCondition::from((
-                Assertion::new(),
-                Message::new(format!(
-                    "invalid operator: expected procedure, provided {provided}"
-                )),
+        Self(Value::from(CompoundCondition::from((
+            Assertion::new(),
+            Message::new(format!(
+                "invalid operator: expected procedure, provided {provided}"
             )),
-        )))
+        ))))
     }
 
     pub fn invalid_index(index: usize, len: usize) -> Self {
-        Self(Value::from(Record::from_rust_type(
-            CompoundCondition::from((
-                Assertion::new(),
-                Message::new(format!(
-                    "index {index} out of bounds for collection of size {len}"
-                )),
+        Self(Value::from(CompoundCondition::from((
+            Assertion::new(),
+            Message::new(format!(
+                "index {index} out of bounds for collection of size {len}"
             )),
-        )))
+        ))))
     }
 
     pub fn invalid_range(range: Range<usize>, len: usize) -> Self {
-        Self(Value::from(Record::from_rust_type(
-            CompoundCondition::from((
-                Assertion::new(),
-                Message::new(format!(
-                    "range {range:?} out of bounds for collection of size {len}"
-                )),
+        Self(Value::from(CompoundCondition::from((
+            Assertion::new(),
+            Message::new(format!(
+                "range {range:?} out of bounds for collection of size {len}"
             )),
-        )))
+        ))))
     }
 
     pub fn wrong_num_of_unicode_chars(expected: usize, provided: usize) -> Self {
-        Self(Value::from(Record::from_rust_type(
-            CompoundCondition::from((
-                Assertion::new(),
-                Message::new(format!(
-                    "expected {expected} unicode characters from transform, received {provided}"
-                )),
+        Self(Value::from(CompoundCondition::from((
+            Assertion::new(),
+            Message::new(format!(
+                "expected {expected} unicode characters from transform, received {provided}"
             )),
-        )))
+        ))))
     }
 
     pub fn wrong_num_of_args(expected: usize, provided: usize) -> Self {
-        Self(Value::from(Record::from_rust_type(
-            CompoundCondition::from((
-                Assertion::new(),
-                Message::new(format!(
-                    "expected {expected} arguments, provided {provided}"
-                )),
+        Self(Value::from(CompoundCondition::from((
+            Assertion::new(),
+            Message::new(format!(
+                "expected {expected} arguments, provided {provided}"
             )),
-        )))
+        ))))
     }
 
     pub fn wrong_num_of_var_args(expected: Range<usize>, provided: usize) -> Self {
-        Self(Value::from(Record::from_rust_type(
-            CompoundCondition::from((
-                Assertion::new(),
-                Message::new(format!(
-                    "expected {} to {} arguments, provided {provided}",
-                    expected.start, expected.end
-                )),
+        Self(Value::from(CompoundCondition::from((
+            Assertion::new(),
+            Message::new(format!(
+                "expected {} to {} arguments, provided {provided}",
+                expected.start, expected.end
             )),
-        )))
+        ))))
     }
 
     pub fn no_cont() -> Self {
-        Self(Value::from_rust_type(CompoundCondition::from((
+        Self(Value::from(CompoundCondition::from((
             Assertion::new(),
             Message::new("no continuation argument passed to this function"),
         ))))
     }
 
     pub fn implementation_restriction(msg: impl fmt::Display) -> Self {
-        Self(Value::from_rust_type(CompoundCondition::from((
+        Self(Value::from(CompoundCondition::from((
             Assertion::new(),
             ImplementationRestriction::new(),
             Message::new(msg),
@@ -202,96 +186,91 @@ impl Exception {
     ///
     /// Example: Integer to a Complex
     pub fn conversion_error(expected: &str, provided: &str) -> Self {
-        Self(Value::from(Record::from_rust_type(
-            CompoundCondition::from((
-                Assertion::new(),
-                Message::new(format!("cannot convert {provided} into {expected}")),
-            )),
-        )))
+        Self(Value::from(CompoundCondition::from((
+            Assertion::new(),
+            Message::new(format!("cannot convert {provided} into {expected}")),
+        ))))
     }
 
     /// For when we cannot represent the value into the requested type.
     ///
     /// Example: an u128 number as an u8
     pub fn not_representable(value: &str, r#type: &str) -> Self {
-        Self(Value::from(Record::from_rust_type(
-            CompoundCondition::from((
-                Assertion::new(),
-                Message::new(format!("cannot represent '{value}' as {type}")),
-            )),
-        )))
+        Self(Value::from(CompoundCondition::from((
+            Assertion::new(),
+            Message::new(format!("cannot represent '{value}' as {type}")),
+        ))))
     }
 
     pub fn io_error(message: impl fmt::Display) -> Self {
-        Self(Value::from(Record::from_rust_type(
-            CompoundCondition::from((IoError::new(), Assertion::new(), Message::new(message))),
-        )))
+        Self(Value::from(CompoundCondition::from((
+            IoError::new(),
+            Assertion::new(),
+            Message::new(message),
+        ))))
     }
 
     pub fn io_read_error(message: impl fmt::Display) -> Self {
-        Self(Value::from(Record::from_rust_type(
-            CompoundCondition::from((IoReadError::new(), Assertion::new(), Message::new(message))),
-        )))
+        Self(Value::from(CompoundCondition::from((
+            IoReadError::new(),
+            Assertion::new(),
+            Message::new(message),
+        ))))
     }
 
     pub fn io_write_error(message: impl fmt::Display) -> Self {
-        Self(Value::from(Record::from_rust_type(
-            CompoundCondition::from((IoWriteError::new(), Assertion::new(), Message::new(message))),
-        )))
+        Self(Value::from(CompoundCondition::from((
+            IoWriteError::new(),
+            Assertion::new(),
+            Message::new(message),
+        ))))
     }
 
     pub fn io_decoding_error(message: impl fmt::Display, port: Value) -> Self {
-        Self(Value::from(Record::from_rust_type(
-            CompoundCondition::from((
-                IoDecodingError::new(port),
-                Assertion::new(),
-                Message::new(message),
-            )),
-        )))
+        Self(Value::from(CompoundCondition::from((
+            IoDecodingError::new(port),
+            Assertion::new(),
+            Message::new(message),
+        ))))
     }
 
     pub fn io_encoding_error(message: impl fmt::Display, port: Value, chr: char) -> Self {
-        Self(Value::from(Record::from_rust_type(
-            CompoundCondition::from((
-                IoEncodingError::new(port, chr),
-                Assertion::new(),
-                Message::new(message),
-            )),
-        )))
+        Self(Value::from(CompoundCondition::from((
+            IoEncodingError::new(port, chr),
+            Assertion::new(),
+            Message::new(message),
+        ))))
     }
 
     pub fn invalid_record_index(k: usize) -> Self {
         Self::error(format!("invalid record index: {k}"))
     }
 
-    pub fn add_condition(self, condition: impl SchemeCompatible) -> Self {
-        let mut conditions = if let Some(compound) = self.0.cast_to_rust_type::<CompoundCondition>()
-        {
+    pub fn add_condition(self, condition: impl Embeddable) -> Self {
+        let mut conditions = if let Some(compound) = self.0.cast::<Embedded<CompoundCondition>>() {
             compound.0.clone()
         } else {
             vec![self.0]
         };
 
-        conditions.push(Value::from(Record::from_rust_type(condition)));
+        conditions.push(Value::from(condition));
 
-        Self(Value::from(Record::from_rust_type(CompoundCondition(
-            conditions,
-        ))))
+        Self(Value::from(CompoundCondition(conditions)))
     }
 
     pub fn simple_conditions(&self) -> Result<Vec<Value>, Exception> {
-        if self.0.cast_to_rust_type::<SimpleCondition>().is_some() {
+        if self.0.cast::<Embedded<SimpleCondition>>().is_some() {
             Ok(vec![self.0.clone()])
-        } else if let Some(compound_condition) = self.0.cast_to_rust_type::<CompoundCondition>() {
+        } else if let Some(compound_condition) = self.0.cast::<Embedded<CompoundCondition>>() {
             Ok(compound_condition.0.clone())
         } else {
             Err(Exception::error("not a simple or compound condition"))
         }
     }
 
-    pub fn condition<T: SchemeCompatible>(&self) -> Result<Option<Gc<T>>, Exception> {
+    pub fn condition<T: Embeddable>(&self) -> Result<Option<Embedded<T>>, Exception> {
         for condition in self.simple_conditions()?.into_iter() {
-            if let Some(condition) = condition.cast_to_rust_type::<T>() {
+            if let Some(condition) = condition.cast::<Embedded<T>>() {
                 return Ok(Some(condition));
             }
         }
@@ -313,17 +292,17 @@ impl Exception {
 
         writeln!(f, "Uncaught exception:")?;
         for condition in conditions.into_iter().rev() {
-            if let Some(message) = condition.cast_to_rust_type::<Message>() {
+            if let Some(message) = condition.cast::<Embedded<Message>>() {
                 writeln!(f, " - Message: {}", message.message)?;
-            } else if let Some(syntax) = condition.cast_to_rust_type::<SyntaxViolation>() {
+            } else if let Some(syntax) = condition.cast::<Embedded<SyntaxViolation>>() {
                 writeln!(f, " - Syntax error in form: {:?}", syntax.form)?;
                 source_cache.pretty_print_condition(syntax.as_ref(), f)?;
-            } else if let Some(trace) = condition.cast_to_rust_type::<StackTrace>() {
+            } else if let Some(trace) = condition.cast::<Embedded<StackTrace>>() {
                 if !trace.trace.is_empty() {
                     writeln!(f, " - Trace:")?;
                     source_cache.pretty_print_condition(trace.as_ref(), f)?;
                 }
-            } else if condition.cast_to_rust_type::<Assertion>().is_some() {
+            } else if condition.cast::<Embedded<Assertion>>().is_some() {
                 writeln!(f, " - Assertion failed")?;
             } else {
                 writeln!(f, " - Condition: {condition:?}")?;
@@ -355,25 +334,25 @@ impl From<std::io::Error> for Exception {
 
 impl From<SimpleCondition> for Exception {
     fn from(simple: SimpleCondition) -> Self {
-        Self(Value::from(Record::from_rust_type(simple)))
+        Self(Value::from(simple))
     }
 }
 
 impl From<Warning> for Exception {
     fn from(warning: Warning) -> Self {
-        Self(Value::from(Record::from_rust_type(warning)))
+        Self(Value::from(warning))
     }
 }
 
 impl From<Serious> for Exception {
     fn from(serious: Serious) -> Self {
-        Self(Value::from(Record::from_rust_type(serious)))
+        Self(Value::from(serious))
     }
 }
 
 impl From<Message> for Exception {
     fn from(message: Message) -> Self {
-        Self(Value::from(Record::from_rust_type(message)))
+        Self(Value::from(message))
     }
 }
 
@@ -445,11 +424,12 @@ impl SimpleCondition {
     }
 }
 
-impl SchemeCompatible for SimpleCondition {
+unsafe impl Embeddable for SimpleCondition {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(
             lib: "(rnrs conditions (6))",
             name: "&condition",
+            ty: SimpleCondition,
             constructor: || Ok(SimpleCondition)
         )
     }
@@ -463,8 +443,8 @@ impl fmt::Debug for SimpleCondition {
 
 #[bridge(name = "condition?", lib = "(rnrs conditions (6))")]
 pub fn condition_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
-    let is_condition = obj.cast_to_rust_type::<SimpleCondition>().is_some()
-        || obj.cast_to_rust_type::<CompoundCondition>().is_some();
+    let is_condition = obj.cast::<Embedded<SimpleCondition>>().is_some()
+        || obj.cast::<Embedded<CompoundCondition>>().is_some();
     Ok(vec![Value::from(is_condition)])
 }
 
@@ -477,7 +457,7 @@ define_condition_type!(
         message: String,
     },
     constructor: |message| {
-        Ok(Message { parent: Gc::new(SimpleCondition::new()), message: message.to_string() })
+        Ok(Message { parent: SimpleCondition::new(), message: message.to_string() })
     },
     debug: |this, f| {
         write!(f, " ")?;
@@ -488,7 +468,7 @@ define_condition_type!(
 impl Message {
     pub fn new(message: impl fmt::Display) -> Self {
         Self {
-            parent: Gc::new(SimpleCondition::new()),
+            parent: SimpleCondition::new(),
             message: message.to_string(),
         }
     }
@@ -504,7 +484,7 @@ define_condition_type!(
 impl Warning {
     pub fn new() -> Self {
         Self {
-            parent: Gc::new(SimpleCondition::new()),
+            parent: SimpleCondition::new(),
         }
     }
 }
@@ -525,7 +505,7 @@ define_condition_type!(
 impl Serious {
     pub fn new() -> Self {
         Self {
-            parent: Gc::new(SimpleCondition::new()),
+            parent: SimpleCondition::new(),
         }
     }
 }
@@ -546,7 +526,7 @@ define_condition_type!(
     },
     constructor: |trace| {
         Ok(StackTrace {
-            parent: Gc::new(SimpleCondition::new()),
+            parent: SimpleCondition::new(),
             trace: trace.clone().try_into()?,
         })
     },
@@ -561,7 +541,7 @@ define_condition_type!(
 impl PrettyCondition for StackTrace {
     fn span(&self) -> Span {
         let first = self.trace.first().unwrap();
-        let Some(syntax) = first.cast_to_scheme_type::<Gc<Syntax>>() else {
+        let Some(syntax) = first.cast::<Embedded<Syntax>>() else {
             return Span::default();
         };
         syntax.span().clone()
@@ -569,7 +549,7 @@ impl PrettyCondition for StackTrace {
 
     fn pretty_print(&self, w: &mut impl fmt::Write) -> fmt::Result {
         for (i, trace) in self.trace.iter().enumerate() {
-            let Some(syntax) = trace.cast_to_scheme_type::<Gc<Syntax>>() else {
+            let Some(syntax) = trace.cast::<Embedded<Syntax>>() else {
                 continue;
             };
             let span = syntax.span();
@@ -583,13 +563,17 @@ impl PrettyCondition for StackTrace {
 impl StackTrace {
     pub fn new(trace: Vec<Value>) -> Self {
         Self {
-            parent: Gc::new(SimpleCondition::new()),
+            parent: SimpleCondition::new(),
             trace: Vector::from(trace),
         }
     }
 
     pub fn trace(&self) -> Vec<Syntax> {
-        todo!()
+        self.trace
+            .iter()
+            .filter_map(|v| v.cast::<Embedded<Syntax>>())
+            .map(|syntax| syntax.as_ref().clone())
+            .collect()
     }
 }
 
@@ -603,7 +587,7 @@ define_condition_type!(
 impl Error {
     pub fn new() -> Self {
         Self {
-            parent: Gc::new(Serious::new()),
+            parent: Serious::new(),
         }
     }
 }
@@ -623,7 +607,7 @@ define_condition_type!(
         library: String,
     },
     constructor: |lib| {
-        Ok(ImportError {  parent: Gc::new(Error::new()), library: lib.to_string() })
+        Ok(ImportError {  parent: Error::new(), library: lib.to_string() })
     },
     debug: |this, f| {
         write!(f, " library: {}", this.library)
@@ -633,7 +617,7 @@ define_condition_type!(
 impl ImportError {
     pub fn new(library: String) -> Self {
         Self {
-            parent: Gc::new(Error::new()),
+            parent: Error::new(),
             library,
         }
     }
@@ -649,7 +633,7 @@ define_condition_type!(
 impl Violation {
     pub fn new() -> Self {
         Self {
-            parent: Gc::new(Serious::new()),
+            parent: Serious::new(),
         }
     }
 }
@@ -670,7 +654,7 @@ define_condition_type!(
 impl Assertion {
     pub fn new() -> Self {
         Self {
-            parent: Gc::new(Violation::new()),
+            parent: Violation::new(),
         }
     }
 }
@@ -690,7 +674,7 @@ define_condition_type!(
         irritants: Value,
     },
     constructor: |irritants| {
-        Ok(Irritants { parent: Gc::new(SimpleCondition::new()), irritants })
+        Ok(Irritants { parent: SimpleCondition::new(), irritants })
     },
     debug: |this, f| {
         write!(f, " irritants: {:?}", this.irritants)
@@ -700,7 +684,7 @@ define_condition_type!(
 impl Irritants {
     pub fn new(irritants: Value) -> Self {
         Irritants {
-            parent: Gc::new(SimpleCondition::new()),
+            parent: SimpleCondition::new(),
             irritants,
         }
     }
@@ -715,7 +699,7 @@ define_condition_type!(
         who: Value,
     },
     constructor: |who| {
-        Ok(Who { parent: Gc::new(SimpleCondition::new()), who, })
+        Ok(Who { parent: SimpleCondition::new(), who, })
     },
     debug: |this, f| {
         write!(f, " who: {:?}", this.who)
@@ -725,7 +709,7 @@ define_condition_type!(
 impl Who {
     pub fn new(who: Value) -> Self {
         Who {
-            parent: Gc::new(SimpleCondition::new()),
+            parent: SimpleCondition::new(),
             who,
         }
     }
@@ -741,10 +725,11 @@ define_condition_type!(
 impl Default for NonContinuable {
     fn default() -> Self {
         Self {
-            parent: Gc::new(Violation::new()),
+            parent: Violation::new(),
         }
     }
 }
+
 define_condition_type!(
     lib: "(rnrs conditions (6))",
     rust_name: ImplementationRestriction,
@@ -761,7 +746,7 @@ impl ImplementationRestriction {
 impl Default for ImplementationRestriction {
     fn default() -> Self {
         Self {
-            parent: Gc::new(Violation::new()),
+            parent: Violation::new(),
         }
     }
 }
@@ -776,7 +761,7 @@ define_condition_type!(
 impl Lexical {
     pub fn new() -> Self {
         Self {
-            parent: Gc::new(Violation::new()),
+            parent: Violation::new(),
         }
     }
 }
@@ -798,7 +783,7 @@ define_condition_type!(
     },
     constructor: |form, subform| {
         let subform = if subform.is_true() { Some(subform) } else { None };
-        Ok(SyntaxViolation { parent: Gc::new(Violation::new()), form, subform })
+        Ok(SyntaxViolation { parent: Violation::new(), form, subform })
     },
 );
 
@@ -807,7 +792,7 @@ impl PrettyCondition for SyntaxViolation {
         self.subform
             .as_ref()
             .unwrap_or(&self.form)
-            .cast_to_scheme_type::<Gc<Syntax>>()
+            .cast::<Embedded<Syntax>>()
             .unwrap()
             .span()
             .clone()
@@ -817,7 +802,7 @@ impl PrettyCondition for SyntaxViolation {
 impl SyntaxViolation {
     pub fn new(form: Syntax, subform: Option<Syntax>) -> Self {
         Self {
-            parent: Gc::new(Violation::new()),
+            parent: Violation::new(),
             form: Value::from(form),
             subform: subform.map(Value::from),
         }
@@ -825,7 +810,7 @@ impl SyntaxViolation {
 
     pub fn new_from_values(form: Value, subform: Option<Value>) -> Self {
         Self {
-            parent: Gc::new(Violation::new()),
+            parent: Violation::new(),
             form,
             subform,
         }
@@ -842,7 +827,7 @@ define_condition_type!(
 impl Undefined {
     pub fn new() -> Self {
         Self {
-            parent: Gc::new(Violation::new()),
+            parent: Violation::new(),
         }
     }
 }
@@ -856,11 +841,12 @@ impl Default for Undefined {
 #[derive(Clone, Trace)]
 pub struct CompoundCondition(pub(crate) Vec<Value>);
 
-impl SchemeCompatible for CompoundCondition {
+unsafe impl Embeddable for CompoundCondition {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(
             lib: "(rnrs conditions (6))",
             name: "compound-condition",
+            ty: CompoundCondition,
             sealed: true,
             opaque: true
         )
@@ -882,36 +868,31 @@ where
     CompoundCondition: From<T>,
 {
     fn from(value: T) -> Self {
-        Self(Value::from(Record::from_rust_type(
-            CompoundCondition::from(value),
-        )))
+        Self(Value::from(CompoundCondition::from(value)))
     }
 }
 
 impl<A, B> From<(A, B)> for CompoundCondition
 where
-    A: SchemeCompatible,
-    B: SchemeCompatible,
+    A: Embeddable,
+    B: Embeddable,
 {
     fn from(value: (A, B)) -> Self {
-        Self(vec![
-            Value::from(Record::from_rust_type(value.0)),
-            Value::from(Record::from_rust_type(value.1)),
-        ])
+        Self(vec![Value::from(value.0), Value::from(value.1)])
     }
 }
 
 impl<A, B, C> From<(A, B, C)> for CompoundCondition
 where
-    A: SchemeCompatible,
-    B: SchemeCompatible,
-    C: SchemeCompatible,
+    A: Embeddable,
+    B: Embeddable,
+    C: Embeddable,
 {
     fn from(value: (A, B, C)) -> Self {
         Self(vec![
-            Value::from(Record::from_rust_type(value.0)),
-            Value::from(Record::from_rust_type(value.1)),
-            Value::from(Record::from_rust_type(value.2)),
+            Value::from(value.0),
+            Value::from(value.1),
+            Value::from(value.2),
         ])
     }
 }
@@ -921,9 +902,7 @@ pub fn condition(conditions: &[Value]) -> Result<Vec<Value>, Exception> {
     match conditions {
         // TODO: Check if this is a condition
         [simple_condition] => Ok(vec![simple_condition.clone()]),
-        conditions => Ok(vec![Value::from(Record::from_rust_type(
-            CompoundCondition(conditions.to_vec()),
-        ))]),
+        conditions => Ok(vec![Value::from(CompoundCondition(conditions.to_vec()))]),
     }
 }
 
@@ -985,7 +964,7 @@ pub fn raise_builtin(
 
 /// Raises a non-continuable exception to the current exception handler.
 pub fn raise(runtime: Runtime, raised: Value, barrier: &mut ContBarrier) -> Application {
-    let raised = if let Some(condition) = raised.cast_to_scheme_type::<Exception>() {
+    let raised = if let Some(condition) = raised.cast::<Exception>() {
         let trace = barrier.current_marks(Symbol::intern("trace"));
         Value::from(condition.add_condition(StackTrace::new(trace)))
     } else {
@@ -1085,7 +1064,7 @@ unsafe extern "C" fn reraise_exception(
     unsafe {
         let runtime = Runtime(Gc::from_raw_inc_rc(runtime));
 
-        let exception = Value::from_rust_type(NonContinuable::default());
+        let exception = Value::from(NonContinuable::default());
 
         Box::into_raw(Box::new(Application::new(
             Procedure::new(
@@ -1128,12 +1107,10 @@ pub fn raise_continuable(
 pub fn error(who: &Value, message: &Value, irritants: &[Value]) -> Result<Vec<Value>, Exception> {
     let mut conditions = Vec::new();
     if who.is_true() {
-        conditions.push(Value::from_rust_type(Who::new(who.clone())));
+        conditions.push(Value::from(Who::new(who.clone())));
     }
-    conditions.push(Value::from_rust_type(Message::new(message)));
-    conditions.push(Value::from_rust_type(Irritants::new(slice_to_list(
-        irritants,
-    ))));
+    conditions.push(Value::from(Message::new(message)));
+    conditions.push(Value::from(Irritants::new(slice_to_list(irritants))));
     Err(Exception(Value::from(Exception::from(CompoundCondition(
         conditions,
     )))))
@@ -1146,14 +1123,12 @@ pub fn assertion_violation(
     irritants: &[Value],
 ) -> Result<Vec<Value>, Exception> {
     let mut conditions = Vec::new();
-    conditions.push(Value::from_rust_type(Assertion::new()));
+    conditions.push(Value::from(Assertion::new()));
     if who.is_true() {
-        conditions.push(Value::from_rust_type(Who::new(who.clone())));
+        conditions.push(Value::from(Who::new(who.clone())));
     }
-    conditions.push(Value::from_rust_type(Message::new(message)));
-    conditions.push(Value::from_rust_type(Irritants::new(slice_to_list(
-        irritants,
-    ))));
+    conditions.push(Value::from(Message::new(message)));
+    conditions.push(Value::from(Irritants::new(slice_to_list(irritants))));
     Err(Exception(Value::from(Exception::from(CompoundCondition(
         conditions,
     )))))

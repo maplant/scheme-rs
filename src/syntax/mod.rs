@@ -4,14 +4,15 @@ use crate::{
     ast::Primitive,
     env::{Binding, Environment, Scope, add_binding, resolve},
     exceptions::{CompoundCondition, Exception, Message, SyntaxViolation, Who},
-    gc::{Gc, Trace},
+    gc::Trace,
     ports::Port,
     proc::{ContBarrier, Procedure},
-    records::{RecordTypeDescriptor, SchemeCompatible, rtd},
+    records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
     registry::bridge,
     symbols::Symbol,
     syntax::parse::ParseSyntaxError,
     value::{Expect1, UnpackedValue, Value},
+    vectors::VectorInner,
 };
 use scheme_rs_macros::{maybe_async, maybe_await};
 use std::{
@@ -64,9 +65,9 @@ impl Default for Span {
     }
 }
 
-impl SchemeCompatible for Span {
+unsafe impl Embeddable for Span {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(name: "span", sealed: true, opaque: true)
+        rtd!(ty: Span, name: "span", sealed: true, opaque: true)
     }
 }
 
@@ -94,6 +95,23 @@ pub enum Syntax {
         ident: Identifier,
         span: Span,
     },
+}
+
+unsafe impl Embeddable for Syntax {
+    fn rtd() -> Arc<RecordTypeDescriptor>
+    where
+        Self: Sized,
+    {
+        rtd!(ty: Syntax, name: "syntax", sealed: true, opaque: true)
+    }
+
+    fn debug_fmt(
+        &self,
+        _circular_values: &mut indexmap::IndexMap<Value, bool>,
+        fmt: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
+        write!(fmt, "#<syntax:{} {:#?}>", self.span(), self)
+    }
 }
 
 impl Syntax {
@@ -143,11 +161,20 @@ impl Syntax {
                     },
                 }
             }
-            UnpackedValue::Vector(vec) => Syntax::Vector {
-                vector: vec.iter().map(|value| Syntax::wrap(value, span)).collect(),
-                span: span.clone(),
-            },
-            UnpackedValue::Syntax(syn) => syn.as_ref().clone(),
+            UnpackedValue::Record(rec) if let Some(syn) = rec.cast::<Syntax>() => {
+                syn.as_ref().clone()
+            }
+            UnpackedValue::Record(rec) if let Some(vec) = rec.cast::<VectorInner<Value>>() => {
+                Syntax::Vector {
+                    vector: vec
+                        .vec
+                        .read()
+                        .iter()
+                        .map(|value| Syntax::wrap(value.clone(), span))
+                        .collect(),
+                    span: span.clone(),
+                }
+            }
             value => Syntax::Wrapped {
                 value: value.into_value(),
                 span: Span::default(),
@@ -189,14 +216,19 @@ impl Syntax {
                     },
                 }
             }
-            UnpackedValue::Vector(vec) => Syntax::Vector {
-                vector: vec
-                    .iter()
-                    .map(|value| Syntax::datum_to_syntax(scopes, value, span))
-                    .collect(),
-                span: Span::default(),
-            },
-            UnpackedValue::Syntax(syn) => {
+
+            UnpackedValue::Record(rec) if let Some(vec) = rec.cast::<VectorInner<Value>>() => {
+                Syntax::Vector {
+                    vector: vec
+                        .vec
+                        .read()
+                        .iter()
+                        .map(|value| Syntax::datum_to_syntax(scopes, value.clone(), span))
+                        .collect(),
+                    span: Span::default(),
+                }
+            }
+            UnpackedValue::Record(rec) if let Some(syn) = rec.cast::<Syntax>() => {
                 let mut syn = syn.as_ref().clone();
                 for scope in scopes {
                     syn.add_scope(*scope);
@@ -223,14 +255,23 @@ impl Syntax {
                 let (car, cdr) = pair.into();
                 Value::from((Self::syntax_to_datum(car), Self::syntax_to_datum(cdr)))
             }
-            UnpackedValue::Vector(vec) => {
-                Value::from(vec.iter().map(Self::syntax_to_datum).collect::<Vec<_>>())
+            UnpackedValue::Record(rec) if let Some(vec) = rec.cast::<VectorInner<Value>>() => {
+                Value::from(
+                    vec.vec
+                        .read()
+                        .iter()
+                        .cloned()
+                        .map(Self::syntax_to_datum)
+                        .collect::<Vec<_>>(),
+                )
             }
-            UnpackedValue::Syntax(syn) => match syn.as_ref() {
-                Syntax::Identifier { ident, .. } => Value::from(ident.sym),
-                Syntax::Wrapped { value, .. } => value.clone(),
-                syn => Syntax::syntax_to_datum(Self::unwrap(syn.clone())),
-            },
+            UnpackedValue::Record(rec) if let Some(syn) = rec.cast::<Syntax>() => {
+                match syn.as_ref() {
+                    Syntax::Identifier { ident, .. } => Value::from(ident.sym),
+                    Syntax::Wrapped { value, .. } => value.clone(),
+                    syn => Syntax::syntax_to_datum(Self::unwrap(syn.clone())),
+                }
+            }
             unpacked => unpacked.into_value(),
         }
     }
@@ -351,25 +392,22 @@ impl Syntax {
         let bytes = Cursor::new(s.as_bytes().to_vec());
 
         // This is kind of convoluted, but convenient
-        let port = Arc::into_inner(
-            Port::new(
-                file_name,
-                bytes,
-                BufferMode::Block,
-                Some(Transcoder::native()),
-            )
-            .0,
-        )
-        .unwrap();
-        let info = port.info;
-        let mut data = port.data.into_inner();
+        let port = Port::new(
+            file_name,
+            bytes,
+            BufferMode::Block,
+            Some(Transcoder::native()),
+        );
+        let info = &port.0.info;
+        // The port was just created, so the lock is uncontested.
+        let mut data = port.0.data.try_lock().unwrap();
 
         // This is safe since we don't need the async executor to drive anything
         // here
         futures::executor::block_on(async move {
             use crate::syntax::parse::Parser;
 
-            let mut parser = Parser::new(&mut data, &info, Span::new(file_name));
+            let mut parser = Parser::new(&mut data, info, Span::new(file_name));
             parser.all_sexprs().await
         })
     }
@@ -605,6 +643,28 @@ impl PartialEq<str> for Identifier {
     }
 }
 
+impl From<&Value> for Option<Identifier> {
+    fn from(value: &Value) -> Self {
+        if let Some(Syntax::Identifier { ident, .. }) = value.cast::<Embedded<Syntax>>().as_deref()
+        {
+            Some(ident.clone())
+        } else {
+            None
+        }
+    }
+}
+
+impl TryFrom<&Value> for Identifier {
+    type Error = Exception;
+
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        match Option::<Identifier>::from(value) {
+            Some(ident) => Ok(ident),
+            None => Err(Exception::type_error("identifier", &value.type_name())),
+        }
+    }
+}
+
 #[bridge(name = "syntax->datum", lib = "(rnrs syntax-case builtins (6))")]
 pub fn syntax_to_datum(value: &Value) -> Result<Vec<Value>, Exception> {
     // This is quite slow and could be improved
@@ -622,9 +682,7 @@ pub fn datum_to_syntax(template_id: Identifier, datum: &Value) -> Result<Vec<Val
 
 #[bridge(name = "identifier?", lib = "(rnrs syntax-case builtins (6))")]
 pub fn identifier_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(
-        obj.cast_to_scheme_type::<Identifier>().is_some(),
-    )])
+    Ok(vec![Value::from(obj.cast::<Identifier>().is_some())])
 }
 
 #[bridge(name = "bound-identifier=?", lib = "(rnrs syntax-case builtins (6))")]
@@ -676,8 +734,8 @@ pub fn syntax_violation(
     };
     let mut conditions = Vec::new();
     if who.is_true() {
-        conditions.push(Value::from_rust_type(Who::new(who.clone())));
-    } else if let Some(syntax) = form.cast_to_scheme_type::<Gc<Syntax>>() {
+        conditions.push(Value::from(Who::new(who.clone())));
+    } else if let Some(syntax) = form.cast::<Embedded<Syntax>>() {
         let who = if let Syntax::Identifier { ident, .. } = syntax.as_ref() {
             Some(ident.sym)
         } else if let Some([Syntax::Identifier { ident, .. }, ..]) = syntax.as_list() {
@@ -685,10 +743,10 @@ pub fn syntax_violation(
         } else {
             None
         };
-        conditions.push(Value::from_rust_type(Who::new(Value::from(who))));
+        conditions.push(Value::from(Who::new(Value::from(who))));
     }
-    conditions.push(Value::from_rust_type(Message::new(message)));
-    conditions.push(Value::from_rust_type(SyntaxViolation::new_from_values(
+    conditions.push(Value::from(Message::new(message)));
+    conditions.push(Value::from(SyntaxViolation::new_from_values(
         form.clone(),
         subform,
     )));

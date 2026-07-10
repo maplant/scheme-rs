@@ -12,7 +12,7 @@ use futures::future::BoxFuture;
 
 use crate::{
     exceptions::Exception,
-    num::{self, SimpleNumber},
+    num::{self, NumberRepr, SimpleNumber},
     ports::{PortData, PortInfo},
 };
 
@@ -765,12 +765,12 @@ impl TryFrom<Number> for num::Number {
             } else {
                 SimpleNumber::Real(0.0)
             };
-            return Ok(num::Number(Arc::new(num::NumberInner::Complex(
-                if value.is_polar {
+            return Ok(num::Number(NumberRepr::Heap(Arc::new(
+                num::NumberInner::Complex(if value.is_polar {
                     num::ComplexNumber::from_polar(real_part, imag_part)
                 } else {
                     num::ComplexNumber::new(real_part, imag_part)
-                },
+                }),
             ))));
         }
 
@@ -778,9 +778,9 @@ impl TryFrom<Number> for num::Number {
             .real_part
             .ok_or(ParseNumberError::NoValidRepresentation)?;
 
-        Ok(num::Number(Arc::new(num::NumberInner::Simple(
+        Ok(num::Number::from(num::NumberInner::Simple(
             (part, value.radix).try_into()?,
-        ))))
+        )))
     }
 }
 

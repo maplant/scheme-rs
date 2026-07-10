@@ -30,6 +30,8 @@ pub mod threads;
 pub mod value;
 pub mod vectors;
 
+use std::hash::Hasher;
+
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// Internal `Either` type
@@ -42,6 +44,18 @@ enum Either<L, R> {
 impl<L, R> Either<L, R> {
     pub fn left_or(self, default: L) -> L {
         if let Self::Left(l) = self { l } else { default }
+    }
+}
+
+struct DynHasher<'a>(&'a mut dyn Hasher);
+
+impl Hasher for DynHasher<'_> {
+    fn finish(&self) -> u64 {
+        self.0.finish()
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        self.0.write(bytes)
     }
 }
 

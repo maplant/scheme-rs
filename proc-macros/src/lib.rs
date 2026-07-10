@@ -1134,6 +1134,7 @@ impl RtdField {
 
 struct Rtd {
     name: LitStr,
+    ty: Type,
     parent: Option<Expr>,
     opaque: Option<Expr>,
     sealed: Option<LitBool>,
@@ -1146,6 +1147,7 @@ struct Rtd {
 impl Parse for Rtd {
     fn parse(input: ParseStream) -> Result<Self> {
         let mut name = None;
+        let mut ty = None;
         let mut parent = None;
         let mut opaque = None;
         let mut sealed = None;
@@ -1161,6 +1163,12 @@ impl Parse for Rtd {
                 }
                 let _: Token![:] = input.parse()?;
                 name = Some(input.parse()?);
+            } else if keyword == "ty" {
+                if ty.is_some() {
+                    return Err(Error::new(keyword.span(), "duplicate definition of ty"));
+                }
+                let _: Token![:] = input.parse()?;
+                ty = Some(input.parse()?);
             } else if keyword == "parent" {
                 if parent.is_some() {
                     return Err(Error::new(keyword.span(), "duplicate definition of parent"));
@@ -1222,6 +1230,10 @@ impl Parse for Rtd {
             return Err(Error::new(input.span(), "name field is required"));
         };
 
+        let Some(ty) = ty else {
+            return Err(Error::new(input.span(), "ty field is required"));
+        };
+
         if !sealed.as_ref().map_or(false, LitBool::value) && constructor.is_none() {
             return Err(Error::new(
                 input.span(),
@@ -1231,6 +1243,7 @@ impl Parse for Rtd {
 
         Ok(Rtd {
             name,
+            ty,
             parent,
             opaque,
             sealed,
@@ -1247,6 +1260,7 @@ impl Parse for Rtd {
 pub fn rtd(tokens: TokenStream) -> TokenStream {
     let Rtd {
         name,
+        ty,
         parent,
         opaque,
         sealed,
@@ -1256,6 +1270,25 @@ pub fn rtd(tokens: TokenStream) -> TokenStream {
         lib,
     } = parse_macro_input!(tokens as Rtd);
 
+    let num_fields = fields.as_ref().map_or(0, Vec::len);
+    let num_embedded_fields = match &parent {
+        Some(parent) => quote!({
+            let parent = <#parent as ::scheme_rs::records::Embeddable>::rtd();
+            parent.embedded_vtable.map_or(0, |vt| vt.embedded_fields) + #num_fields
+        }),
+        None => {
+            quote!(#num_fields)
+        }
+    };
+
+    let num_inherited_fields = match &parent {
+        Some(parent) => quote!({
+            let parent = <#parent as ::scheme_rs::records::Embeddable>::rtd();
+            parent.num_fields()
+        }),
+        None => quote!(0),
+    };
+
     let fields = fields
         .into_iter()
         .flatten()
@@ -1263,14 +1296,14 @@ pub fn rtd(tokens: TokenStream) -> TokenStream {
         .collect::<Vec<_>>();
     let inherits = match parent {
         Some(parent) => quote!({
-            let parent = <#parent as ::scheme_rs::records::SchemeCompatible>::rtd();
+            let parent = <#parent as ::scheme_rs::records::Embeddable>::rtd();
             let mut inherits = parent.inherits.clone();
             inherits.insert(::by_address::ByAddress(parent));
             inherits
         }),
         None => quote!(Default::default()),
     };
-    let rust_parent_constructor = match constructor {
+    let embedded_constructor = match constructor {
         Some(constructor) => {
             let num_inputs = constructor.inputs.len();
             let inputs = 0..num_inputs;
@@ -1281,7 +1314,12 @@ pub fn rtd(tokens: TokenStream) -> TokenStream {
                         return Err(::scheme_rs::exceptions::Exception::wrong_num_of_args(#num_inputs, vals.len()));
                     }
                     let constructor: fn(#(#types,)*) -> Result<_, ::scheme_rs::exceptions::Exception> = #constructor;
-                    Ok(::scheme_rs::records::into_scheme_compatible(::scheme_rs::gc::Gc::new((constructor)(#(vals[#inputs].clone(),)*)?)))
+                    let value = (constructor)(#(vals[#inputs].clone(),)*)?;
+                    Ok(Box::new(move |dst: *mut ()| {
+                        unsafe {
+                            dst.cast::<#ty>().write(value);
+                        }
+                    }))
                 })
             }))
         }
@@ -1314,10 +1352,10 @@ pub fn rtd(tokens: TokenStream) -> TokenStream {
                         opaque: #opaque,
                         sealed: #sealed,
                         uid: #uid,
-                        field_index_offset: 0,
+                        num_inherited_fields: #num_inherited_fields,
                         fields: vec![ #( #fields, )* ],
-                        rust_parent_constructor: #rust_parent_constructor,
-                        rust_type: true
+                        embedded_constructor: #embedded_constructor,
+                        embedded_vtable: Some(::scheme_rs::records::EmbeddableVTable::new::<#ty>(#num_embedded_fields)),
                     })
                 });
             #bridge
@@ -1499,14 +1537,15 @@ pub fn define_condition_type(tokens: TokenStream) -> TokenStream {
     quote! {
         #[derive(Clone, ::scheme_rs::gc::Trace)]
         pub struct #rust_name {
-            pub parent: ::scheme_rs::gc::Gc<#parent>,
+            pub parent: #parent,
             #( pub #field_names: #field_tys, )*
 
         }
 
-        impl ::scheme_rs::records::SchemeCompatible for #rust_name {
+        unsafe impl ::scheme_rs::records::Embeddable for #rust_name {
             fn rtd() -> std::sync::Arc<::scheme_rs::records::RecordTypeDescriptor> {
                 ::scheme_rs::records::rtd!(
+                    ty: #rust_name,
                     name: #scheme_name,
                     parent: #parent,
                     #lib
@@ -1515,13 +1554,13 @@ pub fn define_condition_type(tokens: TokenStream) -> TokenStream {
                 )
             }
 
-            fn extract_embedded_record(
+            fn parent_record(
                 &self,
                 rtd: &std::sync::Arc<::scheme_rs::records::RecordTypeDescriptor>
-            ) -> Option<::scheme_rs::gc::Gc<dyn ::scheme_rs::records::SchemeCompatible>> {
+            ) -> Option<&dyn ::scheme_rs::records::Embeddable> {
                 #parent::rtd()
                     .is_subtype_of(rtd)
-                    .then(|| ::scheme_rs::records::into_scheme_compatible(self.parent.clone()))
+                    .then(|| &self.parent as &dyn ::scheme_rs::records::Embeddable)
             }
 
             fn get_field(&self, k: usize) -> Result<::scheme_rs::value::Value, ::scheme_rs::exceptions::Exception> {
@@ -1530,14 +1569,26 @@ pub fn define_condition_type(tokens: TokenStream) -> TokenStream {
                     _ => Err(Exception::error(format!("invalid record field: {k}"))),
                 }
             }
+
+            fn debug_fmt(
+                &self,
+                _circular_values: &mut indexmap::IndexMap<::scheme_rs::value::Value, bool>,
+                f: &mut std::fmt::Formatter<'_>
+            ) -> std::fmt::Result {
+                use std::fmt::Debug;
+                write!(f, "#<{}", #scheme_name)?;
+                #dbg
+                write!(f, ">")?;
+                Ok(())
+            }
         }
 
         impl std::fmt::Debug for #rust_name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                #dbg
-                Ok(())
+                self.debug_fmt(&mut indexmap::IndexMap::default(), f)
             }
         }
+
     }
     .into()
 }

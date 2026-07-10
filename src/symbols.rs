@@ -79,7 +79,7 @@ pub fn symbol_equal_pred(
         return Ok(vec![Value::from(false)]);
     }
     for symboln in symboln {
-        let symboln = symboln.try_to_scheme_type::<Symbol>()?;
+        let symboln = symboln.try_to::<Symbol>()?;
         if symbol1 != symboln {
             return Ok(vec![Value::from(false)]);
         }

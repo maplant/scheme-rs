@@ -28,6 +28,8 @@ pub(crate) struct GcHeader {
     crc: isize,
     /// VTable for the type
     vtable: &'static VTable,
+    /// Layout of the type and header
+    layout: Layout,
     /// Next item in the heap, or null. Lower 3 bits are the color
     next: *mut GcHeader,
     /// Previous item in the heap, or null. Lower 1 bit is the buffered flag
@@ -46,6 +48,7 @@ impl GcHeader {
             epoch_rc: 1,
             crc: 1,
             vtable: &INVALID_VTABLE,
+            layout: Layout::new::<super::GcInner<T>>(),
             next: null_mut(),
             prev: null_mut::<GcHeader>().map_addr(|addr| addr | 1),
         }
@@ -84,14 +87,12 @@ impl GcHeader {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct VTable {
     /// Type-erased visitor function
     visit_children: unsafe fn(this: *const (), visitor: &mut dyn FnMut(HeapObject<()>)),
     /// Type-erased finalizer function
     finalize: unsafe fn(this: *mut ()),
-    /// Layout for the underlying data
-    layout: Layout,
 }
 
 impl VTable {
@@ -105,7 +106,6 @@ impl VTable {
                 let this = this as *mut T;
                 T::finalize_or_skip(this.as_mut().unwrap());
             },
-            layout: Layout::new::<super::GcInner<T>>(),
         }
     }
 }
@@ -113,7 +113,6 @@ impl VTable {
 static INVALID_VTABLE: VTable = VTable {
     visit_children: |_, _| unreachable!(),
     finalize: |_| unreachable!(),
-    layout: unsafe { Layout::from_size_align_unchecked(0, 1) },
 };
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -173,7 +172,7 @@ impl HeapObject<()> {
         let header = NonNull::new(ptr as *mut UnsafeCell<GcHeader>).unwrap();
 
         let (_, header_offset) = Layout::new::<GcHeader>()
-            .extend(unsafe { (*header.as_ref().get()).vtable.layout })
+            .extend(unsafe { (*header.as_ref().get()).layout })
             .unwrap();
 
         let data = unsafe { (ptr as *mut ()).byte_add(header_offset) };
@@ -252,7 +251,7 @@ impl HeapObject<()> {
     }
 
     unsafe fn layout(&self) -> Layout {
-        unsafe { (*self.header.as_ref().get()).vtable.layout }
+        unsafe { (*self.header.as_ref().get()).layout }
     }
 
     unsafe fn data(&self) -> *const () {
@@ -287,7 +286,8 @@ impl HeapObject<()> {
 unsafe impl Send for HeapObject<()> {}
 unsafe impl Sync for HeapObject<()> {}
 
-pub(super) unsafe fn unroot<T: super::GcOrTrace>(gc: &super::Gc<T>) {
+#[allow(private_bounds)]
+pub(crate) unsafe fn unroot<T: super::GcOrTrace>(gc: &super::Gc<T>, layout: Layout) {
     let new_gc_ptr = gc.ptr.as_ptr() as *mut GcHeader;
 
     let mut heap = HEAP.lock();
@@ -302,6 +302,7 @@ pub(super) unsafe fn unroot<T: super::GcOrTrace>(gc: &super::Gc<T>) {
             .or_insert_with(|| Box::leak(Box::new(VTable::new::<T>())));
 
         (*new_gc_ptr).vtable = vtable;
+        (*new_gc_ptr).layout = layout;
 
         if heap.head.is_null() {
             heap.tail = new_gc_ptr;

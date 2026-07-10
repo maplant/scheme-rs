@@ -7,41 +7,111 @@
 
 use std::{fmt, hash::Hash, sync::Arc};
 
+use indexmap::{IndexMap, IndexSet};
 use parking_lot::{MappedRwLockReadGuard, RwLock, RwLockReadGuard};
+use scheme_rs_macros::rtd;
 
 use crate::{
     Either,
     character::{char_switch_case, to_foldcase},
     exceptions::Exception,
     gc::Trace,
+    records::{Embeddable, Embedded, Record, RecordTypeDescriptor},
     registry::bridge,
-    value::{Value, ValueType},
+    value::Value,
 };
 
+#[derive(Trace)]
 #[repr(align(16))]
 pub(crate) struct WideStringInner {
     pub(crate) chars: RwLock<Vec<char>>,
     mutable: bool,
 }
 
+impl fmt::Display for WideStringInner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for char in &*self.chars.read() {
+            write!(f, "{char}")?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for WideStringInner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "\"")?;
+        for char in self.chars.read().iter().flat_map(|chr| chr.escape_debug()) {
+            write!(f, "{char}")?;
+        }
+        write!(f, "\"")
+    }
+}
+
+unsafe impl Embeddable for WideStringInner {
+    fn rtd() -> Arc<RecordTypeDescriptor>
+    where
+        Self: Sized,
+    {
+        rtd!(ty: WideStringInner, name: "string", sealed: true, opaque: true)
+    }
+
+    fn display_fmt(
+        &self,
+        _circular: &mut IndexMap<Value, bool>,
+        fmt: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
+        write!(fmt, "{self}")
+    }
+
+    fn debug_fmt(
+        &self,
+        _circular: &mut IndexMap<Value, bool>,
+        fmt: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
+        write!(fmt, "{self:?}")
+    }
+
+    fn equal(&self, rhs: &Record) -> bool
+    where
+        Self: Sized,
+    {
+        let Some(rhs) = rhs.cast::<Self>() else {
+            return false;
+        };
+        *self.chars.read() == *rhs.chars.read()
+    }
+
+    fn equal_hash(&self, _recursive: &mut IndexSet<Value>, hasher: &mut dyn std::hash::Hasher)
+    where
+        Self: Sized,
+    {
+        let chars = self.chars.read();
+        hasher.write_usize(chars.len());
+        for chr in chars.iter() {
+            hasher.write_u32(*chr as u32);
+        }
+    }
+}
+
 /// A string that is a vector of characters, rather than a vector bytes encoding
 /// a utf-8 string. This is because R6RS mandates O(1) lookups of character
 /// indices.
 #[derive(Clone, Trace)]
-pub struct WideString(pub(crate) Arc<WideStringInner>);
+pub struct WideString(pub(crate) Embedded<WideStringInner>);
 
 impl WideString {
-    pub fn immutable(s: impl fmt::Display) -> Self {
-        Self::from(s.to_string())
+    pub fn immutable(s: impl IntoIterator<Item = char>) -> Self {
+        Self(Embedded::new(WideStringInner {
+            chars: RwLock::new(s.into_iter().collect()),
+            mutable: false,
+        }))
     }
 
-    pub fn mutable<V>(value: V) -> Self
-    where
-        Self: From<V>,
-    {
-        let mut this = Self::from(value);
-        Arc::get_mut(&mut this.0).unwrap().mutable = true;
-        this
+    pub fn mutable(s: impl IntoIterator<Item = char>) -> Self {
+        Self(Embedded::new(WideStringInner {
+            chars: RwLock::new(s.into_iter().collect()),
+            mutable: true,
+        }))
     }
 
     pub fn as_slice(&self) -> MappedRwLockReadGuard<'_, [char]> {
@@ -67,7 +137,7 @@ impl WideString {
 
 impl From<Vec<char>> for WideString {
     fn from(value: Vec<char>) -> Self {
-        Self(Arc::new(WideStringInner {
+        Self(Embedded::new(WideStringInner {
             chars: RwLock::new(value),
             mutable: false,
         }))
@@ -76,7 +146,7 @@ impl From<Vec<char>> for WideString {
 
 impl From<String> for WideString {
     fn from(value: String) -> Self {
-        Self(Arc::new(WideStringInner {
+        Self(Embedded::new(WideStringInner {
             chars: RwLock::new(value.chars().collect()),
             mutable: false,
         }))
@@ -85,7 +155,7 @@ impl From<String> for WideString {
 
 impl From<&str> for WideString {
     fn from(value: &str) -> Self {
-        Self(Arc::new(WideStringInner {
+        Self(Embedded::new(WideStringInner {
             chars: RwLock::new(value.chars().collect()),
             mutable: false,
         }))
@@ -127,23 +197,47 @@ impl fmt::Display for WideString {
 
 impl fmt::Debug for WideString {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "\"")?;
-        for char in self
-            .0
-            .chars
-            .read()
-            .iter()
-            .flat_map(|chr| chr.escape_debug())
-        {
-            write!(f, "{char}")?;
-        }
-        write!(f, "\"")
+        self.0.fmt(f)
+    }
+}
+
+impl From<WideString> for Value {
+    fn from(value: WideString) -> Self {
+        Value::from(value.0)
+    }
+}
+
+impl TryFrom<Value> for WideString {
+    type Error = Exception;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        Ok(Self((&value).try_into()?))
+    }
+}
+
+impl From<&Value> for Option<WideString> {
+    fn from(value: &Value) -> Self {
+        Some(WideString(value.cast()?))
+    }
+}
+
+impl TryFrom<&Value> for WideString {
+    type Error = Exception;
+
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        Ok(Self(value.try_into()?))
+    }
+}
+
+impl From<String> for Value {
+    fn from(value: String) -> Self {
+        Value::from(WideString::mutable(value.chars()))
     }
 }
 
 #[bridge(name = "string?", lib = "(rnrs base builtins (6))")]
-pub fn string_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(arg.type_of() == ValueType::String)])
+pub fn string_pred(arg: &Value) -> bool {
+    arg.is_a::<Embedded<WideStringInner>>()
 }
 
 #[bridge(name = "make-string", lib = "(rnrs base builtins (6))")]
@@ -154,7 +248,7 @@ pub fn make_string(k: &Value, chr: &[Value]) -> Result<Vec<Value>, Exception> {
         x => return Err(Exception::wrong_num_of_args(2, 1 + x.len())),
     };
     let k: usize = k.clone().try_into()?;
-    let ret = Value::from(WideString(Arc::new(WideStringInner {
+    let ret = Value::from(WideString(Embedded::new(WideStringInner {
         chars: RwLock::new(std::iter::repeat_n(chr, k).collect()),
         mutable: true,
     })));
@@ -163,17 +257,19 @@ pub fn make_string(k: &Value, chr: &[Value]) -> Result<Vec<Value>, Exception> {
 
 #[bridge(name = "string", lib = "(rnrs base builtins (6))")]
 pub fn string(char: &Value, chars: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(WideString(Arc::new(WideStringInner {
-        chars: RwLock::new(
-            Some(char)
-                .into_iter()
-                .chain(chars.iter())
-                .cloned()
-                .map(Value::try_into)
-                .collect::<Result<Vec<char>, _>>()?,
-        ),
-        mutable: true,
-    })))])
+    Ok(vec![Value::from(WideString(Embedded::new(
+        WideStringInner {
+            chars: RwLock::new(
+                Some(char)
+                    .into_iter()
+                    .chain(chars.iter())
+                    .cloned()
+                    .map(Value::try_into)
+                    .collect::<Result<Vec<char>, _>>()?,
+            ),
+            mutable: true,
+        },
+    )))])
 }
 
 #[bridge(name = "string-length", lib = "(rnrs base builtins (6))")]
@@ -379,7 +475,7 @@ pub fn string_set_bang(string: &Value, k: &Value, chr: &Value) -> Result<Vec<Val
 
 #[bridge(name = "string-foldcase", lib = "(rnrs base builtins (6))")]
 pub fn string_foldcase(string: &Value) -> Result<Vec<Value>, Exception> {
-    let string: WideString = string.try_to_scheme_type()?;
+    let string: WideString = string.try_to()?;
     let folded = string
         .0
         .chars
@@ -390,7 +486,7 @@ pub fn string_foldcase(string: &Value) -> Result<Vec<Value>, Exception> {
             Either::Right(s) => s,
         })
         .collect::<Vec<_>>();
-    let folded = WideString(Arc::new(WideStringInner {
+    let folded = WideString(Embedded::new(WideStringInner {
         chars: RwLock::new(folded),
         mutable: true,
     }));

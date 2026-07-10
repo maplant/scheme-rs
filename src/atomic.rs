@@ -6,7 +6,7 @@ use scheme_rs_macros::bridge;
 use crate::{
     exceptions::Exception,
     gc::{Gc, OpaqueGcPtr, Trace},
-    records::{Record, RecordTypeDescriptor, SchemeCompatible, rtd},
+    records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
     value::Value,
 };
 
@@ -29,9 +29,10 @@ unsafe impl Trace for AtomicBox {
     }
 }
 
-impl SchemeCompatible for AtomicBox {
+unsafe impl Embeddable for AtomicBox {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(
+            ty: AtomicBox,
             name: "atomic-box",
             opaque: true,
             sealed: true,
@@ -41,7 +42,7 @@ impl SchemeCompatible for AtomicBox {
 
 #[bridge(name = "atomic-box?", lib = "(srfi :230)")]
 pub fn atomic_box_p(obj: &Value) -> Result<Vec<Value>, Exception> {
-    let is_atomic_box = obj.cast_to_rust_type::<AtomicBox>().is_some();
+    let is_atomic_box = obj.cast::<Embedded<AtomicBox>>().is_some();
     Ok(vec![Value::from(is_atomic_box)])
 }
 
@@ -50,37 +51,33 @@ pub fn make_atomic_box(val: &Value) -> Result<Vec<Value>, Exception> {
     let ab = AtomicBox {
         inner: ArcSwapAny::new(Gc::new(val.clone())),
     };
-    Ok(vec![Value::from(Record::from_rust_type(ab))])
+    Ok(vec![Value::from(ab)])
 }
 
 #[bridge(name = "atomic-box-ref", lib = "(srfi :230)")]
-pub fn atomic_box_ref(box_val: &Value) -> Result<Vec<Value>, Exception> {
-    let ab = box_val.try_to_rust_type::<AtomicBox>()?;
+pub fn atomic_box_ref(ab: Embedded<AtomicBox>) -> Result<Vec<Value>, Exception> {
     let guard = ab.inner.load();
     Ok(vec![Value::clone(&guard)])
 }
 
 #[bridge(name = "atomic-box-set!", lib = "(srfi :230)")]
-pub fn atomic_box_set(box_val: &Value, new_val: &Value) -> Result<Vec<Value>, Exception> {
-    let ab = box_val.try_to_rust_type::<AtomicBox>()?;
+pub fn atomic_box_set(ab: Embedded<AtomicBox>, new_val: &Value) -> Result<Vec<Value>, Exception> {
     ab.inner.store(Gc::new(new_val.clone()));
     Ok(vec![Value::undefined()])
 }
 
 #[bridge(name = "atomic-box-swap!", lib = "(srfi :230)")]
-pub fn atomic_box_swap(box_val: &Value, new_val: &Value) -> Result<Vec<Value>, Exception> {
-    let ab = box_val.try_to_rust_type::<AtomicBox>()?;
+pub fn atomic_box_swap(ab: Embedded<AtomicBox>, new_val: &Value) -> Value {
     let old = ab.inner.swap(Gc::new(new_val.clone()));
-    Ok(vec![Value::clone(&old)])
+    Value::clone(&old)
 }
 
 #[bridge(name = "atomic-box-compare-and-swap!", lib = "(srfi :230)")]
 pub fn atomic_box_compare_and_swap(
-    box_val: &Value,
+    ab: Embedded<AtomicBox>,
     expected: &Value,
     desired: &Value,
 ) -> Result<Vec<Value>, Exception> {
-    let ab = box_val.try_to_rust_type::<AtomicBox>()?;
     let expected_bits = Value::as_raw(expected);
     let desired_gc = Gc::new(desired.clone());
     let prev = ab.inner.rcu(|current| {

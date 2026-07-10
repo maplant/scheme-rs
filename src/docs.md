@@ -63,7 +63,7 @@ let vals = env.eval(
     "
 )
 .unwrap();
-let factorial = vals[0].cast_to_scheme_type::<Procedure>().unwrap();
+let factorial = vals[0].cast::<Procedure>().unwrap();
 ```
 
 ## Procedures
@@ -95,7 +95,7 @@ anywhere.
 # .unwrap()
 # .try_into()
 # .unwrap();
-# let factorial = factorial.cast_to_scheme_type::<Procedure>().unwrap();
+# let factorial = factorial.cast::<Procedure>().unwrap();
 let [result] = factorial
     .call(
         &[Value::from(5)],
@@ -160,7 +160,7 @@ let val = env.eval(
   "
 )
 .unwrap();
-assert_eq!(val[0].cast_to_scheme_type::<u64>().unwrap(), 17);
+assert_eq!(val[0].cast::<u64>().unwrap(), 17);
 # }
 ```
 
@@ -180,11 +180,11 @@ let pi = Value::from(3.14159268);
 let pair = Value::from((Value::from(1), Value::from((Value::from(2), Value::from(())))));
 ```
 
-Rust objects that implement [`SchemeCompatible`](records::SchemeCompatible) can 
-be converted using the [`from_rust_type`](value::Value::from_rust_type) function:
+Rust objects that implement [`Embeddable`](records::Embeddable) can 
+be converted using `Value::from`:
 
 ```rust
-# use scheme_rs::{value::Value, records::{rtd, SchemeCompatible, RecordTypeDescriptor}, gc::Trace, exceptions::Exception};
+# use scheme_rs::{value::Value, records::{rtd, Embeddable, RecordTypeDescriptor}, gc::Trace, exceptions::Exception};
 # use std::sync::Arc;
 #[derive(Debug, Trace)]
 struct Vec3 {
@@ -192,15 +192,16 @@ struct Vec3 {
     y: f64
 }
 
-impl SchemeCompatible for Vec3 {
+unsafe impl Embeddable for Vec3 {
     fn rtd() -> Arc<RecordTypeDescriptor> {
         rtd!(
+            ty: Vec3,
             name: "vec3",
             fields: ["x", "y"],
             constructor: |x, y| {
                 Ok(Vec3 {
-                    x: x.try_to_scheme_type()?,
-                    y: y.try_to_scheme_type()?,
+                    x: x.try_to()?,
+                    y: y.try_to()?,
                 })
             }
         )
@@ -215,22 +216,22 @@ impl SchemeCompatible for Vec3 {
     }
 }
 
-let pos = Value::from_rust_type(Vec3 { x: 1.0, y: 2.0 });
+let pos = Value::from(Vec3 { x: 1.0, y: 2.0 });
 ```
 
-`Values` can be converted back to Rust types with the 
-- [`cast_to_scheme_type`](value::Value::cast_to_scheme_type)
-- [`try_to_scheme_type`](value::Value::try_to_scheme_type)
-- [`cast_to_rust_type`](value::Value::cast_to_rust_type)
-- and [`try_to_rust_type`](value::Value::try_to_rust_type) functions.
+`Values` can be converted back to primitive Rust types with the 
+- [`cast_to`](value::Value::cast_to)
+- and [`try_to`](value::Value::try_to) functions.
 
-The `cast_*` functions convert values to `Option<_>`, and the `try_*` functions 
-provide more detailed error conditions of the conversion failure.
+The `cast_to` function converts values to `Option<_>`, and `try_to` 
+provides more detailed error conditions of the conversion failure. To recover an
+embedded Rust type, cast to an [`Embedded<T>`](records::Embedded), e.g.
+`value.try_to::<Embedded<Vec3>>()`.
 
 ```rust
 # use scheme_rs::value::Value;
 # let pi = Value::from(3.14159268);
-assert_eq!(pi.cast_to_scheme_type::<f64>(), Some(3.14159268));
+assert_eq!(pi.cast::<f64>(), Some(3.14159268));
 ```
 
 See [the `value` module for more information](value).
