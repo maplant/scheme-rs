@@ -6,7 +6,7 @@
 
 use crate::{
     ast::{Definitions, Primitive},
-    cps::{Cps, analysis::Escaping, codegen::RuntimeFunctionsBuilder, compile::Compiler},
+    cps::{Cps, codegen::RuntimeFunctionsBuilder, compile::Compiler},
     env::{Environment, Global, TopLevelEnvironment},
     exceptions::{Exception, SourceCache, raise},
     gc::{Gc, GcInner, Trace, init_gc},
@@ -15,7 +15,7 @@ use crate::{
     num,
     ports::{BufferMode, Port, Transcoder},
     proc::{
-        Application, ContBarrier, ContinuationPtr, FuncPtr, ProcDebugInfo, Procedure,
+        Application, ContBarrier, ContPtr, ContinuationPtr, FuncPtr, ProcDebugInfo, Procedure,
         ProcedureInner, UserPtr,
     },
     records::Embedded,
@@ -130,8 +130,7 @@ impl Runtime {
             &env,
             &mut mutable_vars
         ))?;
-        let proc = maybe_await!(Compiler::new(mutable_vars).compile(self, &body))?;
-        maybe_await!(Application::new(proc, None, Vec::new()).eval(&mut ContBarrier::default()))
+        maybe_await!(Compiler::new(mutable_vars).compile(self, &body))
     }
 
     /// Define a library from Rust code. Useful if file system access is disabled.
@@ -159,18 +158,26 @@ impl Runtime {
     }
 
     #[maybe_async]
-    pub(crate) fn compile_expr(&self, expr: Cps, escaping: Escaping) -> Procedure {
+    pub(crate) fn compile_expr(&self, expr: Cps) -> Result<Vec<Value>, Exception> {
         let (completion_tx, completion_rx) = completion();
         let task = CompilationTask {
             completion_tx,
             compilation_unit: expr,
             runtime: self.clone(),
-            escaping,
         };
         let sender = { self.0.read().compilation_buffer_tx.clone() };
         let _ = maybe_await!(sender.send(task));
-        // Wait for the compilation task to complete:
-        maybe_await!(recv_procedure(completion_rx))
+        let entry_cont = maybe_await!(recv_continuation(completion_rx));
+        let mut barrier = ContBarrier::new();
+        let app = unsafe {
+            *Box::from_raw(entry_cont(
+                Gc::as_ptr(&self.0),
+                std::ptr::null(),
+                std::ptr::null(),
+                &mut barrier as *mut ContBarrier<'_>,
+            ))
+        };
+        maybe_await!(app.eval(&mut barrier))
     }
 
     pub(crate) unsafe fn from_raw_inc_rc(rt: *mut GcInner<RwLock<RuntimeInner>>) -> Self {
@@ -264,14 +271,14 @@ impl DebugInfo {
 }
 
 #[cfg(not(feature = "async"))]
-type CompletionTx = std::sync::mpsc::SyncSender<Procedure>;
+type CompletionTx = std::sync::mpsc::SyncSender<ContinuationPtr>;
 #[cfg(not(feature = "async"))]
-type CompletionRx = std::sync::mpsc::Receiver<Procedure>;
+type CompletionRx = std::sync::mpsc::Receiver<ContinuationPtr>;
 
 #[cfg(feature = "async")]
-type CompletionTx = tokio::sync::oneshot::Sender<Procedure>;
+type CompletionTx = tokio::sync::oneshot::Sender<ContinuationPtr>;
 #[cfg(feature = "async")]
-type CompletionRx = tokio::sync::oneshot::Receiver<Procedure>;
+type CompletionRx = tokio::sync::oneshot::Receiver<ContinuationPtr>;
 
 #[cfg(not(feature = "async"))]
 fn completion() -> (CompletionTx, CompletionRx) {
@@ -284,18 +291,17 @@ fn completion() -> (CompletionTx, CompletionRx) {
 }
 
 #[cfg(not(feature = "async"))]
-fn recv_procedure(rx: CompletionRx) -> Procedure {
+fn recv_continuation(rx: CompletionRx) -> ContinuationPtr {
     rx.recv().unwrap()
 }
 
 #[cfg(feature = "async")]
-async fn recv_procedure(rx: CompletionRx) -> Procedure {
+async fn recv_continuation(rx: CompletionRx) -> ContinuationPtr {
     rx.await.unwrap()
 }
 
 struct CompilationTask {
     compilation_unit: Cps,
-    escaping: Escaping,
     completion_tx: CompletionTx,
     /// Since Contexts are per-thread, we will only ever see the same Runtime.
     /// However, we can't cache the Runtime, as that would cause a ref cycle
@@ -353,17 +359,10 @@ fn compilation_task(mut compilation_queue_rx: CompilationBufferRx) {
         let CompilationTask {
             completion_tx,
             compilation_unit,
-            escaping,
             runtime,
         } = task;
 
-        let proc = compilation_unit.into_procedure(
-            runtime,
-            escaping,
-            &runtime_funcs,
-            &mut module,
-            &mut debug_info,
-        );
+        let proc = compilation_unit.compile(runtime, &runtime_funcs, &mut module, &mut debug_info);
 
         let _ = completion_tx.send(proc);
     }
@@ -465,21 +464,12 @@ unsafe extern "C" fn apply(
             }
         };
 
-        let (k, offset) = if !op.0.is_continuation() {
-            (Value::from_raw_inc_rc(args.read()).cast(), 1)
-        } else {
-            (None, 0)
-        };
-
-        let app = Application::new(
+        Box::into_raw(Box::new(Application::new(
             op,
-            k,
-            (offset..num_args)
+            (0..num_args)
                 .map(|i| Value::from_raw_inc_rc(args.add(i as usize).read()))
                 .collect(),
-        );
-
-        Box::into_raw(Box::new(app))
+        )))
     }
 }
 
@@ -605,7 +595,7 @@ unsafe extern "C" fn list(vals: *const *const (), num_vals: u32) -> *const () {
 
 /// Allocate a continuation
 #[runtime_fn]
-unsafe extern "C" fn make_continuation(
+unsafe extern "C" fn push_continuation(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     fn_ptr: ContinuationPtr,
     env: *const *const (),
@@ -613,24 +603,34 @@ unsafe extern "C" fn make_continuation(
     num_required_args: u32,
     variadic: bool,
     barrier: *mut ContBarrier,
-) -> *const () {
+) {
     unsafe {
-        // Collect the environment:
-        let env: Vec<_> = (0..num_envs)
-            .map(|i| Value::from_raw_inc_rc(env.add(i as usize).read()))
-            .collect();
-
-        barrier.as_mut().unwrap().push_marks();
-        let proc = Procedure(Gc::rooted(ProcedureInner::new(
+        let barrier = barrier.as_mut().unwrap();
+        barrier.push_cont(
             Runtime::from_raw_inc_rc(runtime),
-            env,
-            FuncPtr::Continuation(fn_ptr),
+            (0..num_envs).map(|i| Value::from_raw_inc_rc(env.add(i as usize).read())),
+            ContPtr::Continuation(fn_ptr),
             num_required_args as usize,
             variadic,
-            None,
-        )));
+        );
+    }
+}
 
-        Value::into_raw(Value::from(proc))
+/// Call the current continuation
+#[runtime_fn]
+unsafe extern "C" fn call_continuation(
+    args: *const *const (),
+    num_args: u32,
+    barrier: *mut ContBarrier,
+) -> *mut Application {
+    unsafe {
+        Box::into_raw(Box::new(
+            barrier.as_mut().unwrap().call_cont(
+                (0..num_args)
+                    .map(|i| Value::from_raw_inc_rc(args.add(i as usize).read()))
+                    .collect(),
+            ),
+        ))
     }
 }
 

@@ -247,11 +247,8 @@ impl Cps {
                 cexpr.max_allocs(curr_allocs, escaping, allocs_at_local_conts)
             }
             Cps::Fix(bindings, cexpr) => {
-                let curr_allocs = curr_allocs
-                    + bindings
-                        .iter()
-                        .filter(|binding| binding.is_func() || escaping.contains(binding.val))
-                        .count();
+                let curr_allocs =
+                    curr_allocs + bindings.iter().filter(|binding| binding.is_func()).count();
                 let mut max_allocs = curr_allocs;
                 for binding in bindings {
                     if binding.is_continuation() && !escaping.contains(binding.val) {
@@ -263,7 +260,7 @@ impl Cps {
                         ));
                     }
                 }
-                cexpr.max_allocs(max_allocs, escaping, allocs_at_local_conts)
+                max_allocs.max(cexpr.max_allocs(curr_allocs, escaping, allocs_at_local_conts))
             }
             Cps::If(_, success, failure) => success
                 .max_allocs(curr_allocs, escaping, allocs_at_local_conts)

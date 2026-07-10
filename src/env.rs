@@ -24,7 +24,7 @@ use crate::{
     cps::compile::Compiler,
     exceptions::Exception,
     gc::{Gc, Trace},
-    proc::{Application, ContBarrier, Procedure},
+    proc::Procedure,
     runtime::Runtime,
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax},
@@ -331,8 +331,7 @@ impl TopLevelEnvironment {
             &sexprs,
             &mut mutable_vars,
         ))?;
-        let compiled = maybe_await!(Compiler::new(mutable_vars).compile(&rt, &body))?;
-        maybe_await!(Application::new(compiled, None, Vec::new()).eval(&mut ContBarrier::new()))
+        maybe_await!(Compiler::new(mutable_vars).compile(&rt, &body))
     }
 
     #[maybe_async]
@@ -353,8 +352,7 @@ impl TopLevelEnvironment {
             &sexpr,
             &mut mutable_vars,
         ))?;
-        let compiled = maybe_await!(Compiler::new(mutable_vars).compile(&rt, &body))?;
-        maybe_await!(Application::new(compiled, None, Vec::new()).eval(&mut ContBarrier::new()))
+        maybe_await!(Compiler::new(mutable_vars).compile(&rt, &body))
     }
 
     #[maybe_async]
@@ -433,9 +431,7 @@ impl TopLevelEnvironment {
             }
         };
         let rt = { self.0.read().rt.clone() };
-        let proc = maybe_await!(Compiler::new(mutable_vars).compile(&rt, &defn_body))?;
-        let _ =
-            maybe_await!(Application::new(proc, None, Vec::new()).eval(&mut ContBarrier::new()))?;
+        let _ = maybe_await!(Compiler::new(mutable_vars).compile(&rt, &defn_body))?;
         self.0.write().state = LibraryState::Invoked;
         Ok(())
     }

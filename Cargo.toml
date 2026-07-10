@@ -14,6 +14,7 @@ repository = "https://github.com/maplant/scheme-rs"
 [dependencies]
 arc-swap = "1"
 async-stream = { version = "0.3", optional = true }
+# bumpalo = "3"
 by_address = "1.2"
 clap = { version = "4", features = ["derive"] }
 derive_builder = "0.20"
@@ -34,6 +35,7 @@ rustyline = { version = "17", features = ["derive"] }
 scheme-rs-macros = { version = "0.2.0", path = "proc-macros" }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
+smallvec = "1"
 unicode_categories = "0.1"
 
 # TODO: Remove this dependency

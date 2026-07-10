@@ -112,7 +112,7 @@ use std::{
 };
 
 const ALIGNMENT: usize = 16;
-const TAG_BITS: usize = ALIGNMENT.ilog2() as usize;
+pub(crate) const TAG_BITS: usize = ALIGNMENT.ilog2() as usize;
 pub(crate) const TAG: usize = 0b1111;
 pub(crate) const FALSE_VALUE: usize = 0x110000 << TAG_BITS | Tag::SmallValue as usize;
 pub(crate) const TRUE_VALUE: usize = 0x110001 << TAG_BITS | Tag::SmallValue as usize;
@@ -697,14 +697,11 @@ impl UnpackedValue {
         match self {
             Self::Undefined => Value::undefined(),
             Self::Null => Value::null(),
-            Self::Boolean(false) => Value(FALSE_VALUE as *const()),
-            Self::Boolean(true) => {
-                Value(TRUE_VALUE as *const())
+            Self::Boolean(false) => Value(FALSE_VALUE as *const ()),
+            Self::Boolean(true) => Value(TRUE_VALUE as *const ()),
+            Self::Character(c) => {
+                Value::from_ptr_and_tag(((c as usize) << TAG_BITS) as *const (), Tag::SmallValue)
             }
-            Self::Character(c) => Value::from_ptr_and_tag(
-                ((c as usize) << TAG_BITS) as *const (),
-                Tag::SmallValue,
-            ),
             Self::Number(num) => match num.0 {
                 NumberRepr::Heap(num) => {
                     let untagged = Arc::into_raw(num);
