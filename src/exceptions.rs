@@ -54,10 +54,7 @@ use crate::{
     gc::{Gc, GcInner, Trace},
     lists::slice_to_list,
     ports::{IoDecodingError, IoEncodingError, IoError, IoReadError, IoWriteError},
-    proc::{
-        Application, ContBarrier, DynStackElem, FuncPtr, Procedure, halt_continuation,
-        pop_dyn_stack,
-    },
+    proc::{Application, ContBarrier, ContPtr, DynStackElem, FuncPtr, Procedure, pop_dyn_stack},
     records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
@@ -921,7 +918,6 @@ pub fn simple_conditions(condition: &Value) -> Result<Vec<Value>, Exception> {
 pub fn with_exception_handler(
     runtime: &Runtime,
     _env: &[Value],
-    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier,
@@ -935,18 +931,17 @@ pub fn with_exception_handler(
 
     barrier.push_dyn_stack(DynStackElem::ExceptionHandler(handler));
 
-    let (req_args, var) = k.get_formals();
+    let (req_args, var) = barrier.cont_formals();
 
-    let k = Procedure::new_cont(
+    barrier.push_cont(
         runtime.clone(),
-        vec![Value::from(k)],
-        pop_dyn_stack,
+        Vec::new(),
+        ContPtr::Continuation(pop_dyn_stack),
         req_args,
         var,
-        barrier,
     );
 
-    Ok(Application::new(thunk, Some(k), Vec::new()))
+    Ok(Application::new(thunk, Vec::new()))
 }
 
 #[doc(hidden)]
@@ -954,7 +949,6 @@ pub fn with_exception_handler(
 pub fn raise_builtin(
     runtime: &Runtime,
     _env: &[Value],
-    _k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier,
@@ -971,18 +965,14 @@ pub fn raise(runtime: Runtime, raised: Value, barrier: &mut ContBarrier) -> Appl
         raised
     };
 
-    Application::new(
-        Procedure::new_cont(
-            runtime,
-            vec![raised],
-            unwind_to_exception_handler,
-            0,
-            false,
-            barrier,
-        ),
-        None,
-        Vec::new(),
-    )
+    barrier.push_cont(
+        runtime,
+        vec![raised],
+        ContPtr::Continuation(unwind_to_exception_handler),
+        0,
+        false,
+    );
+    barrier.call_cont(Vec::new())
 }
 
 #[runtime_fn]
@@ -1023,31 +1013,25 @@ unsafe extern "C" fn unwind_to_exception_handler(
                 Some(DynStackElem::Winder(winder)) => {
                     // If this is a winder, we should call the out winder while unwinding.
                     // Variadic: the out thunk's return arity is not under our control.
-                    Application::new(
-                        winder.out_thunk,
-                        Some(Procedure::new_cont(
-                            Runtime::from_raw_inc_rc(runtime),
-                            vec![raised],
-                            unwind_to_exception_handler,
-                            0,
-                            true,
-                            barrier,
-                        )),
-                        Vec::new(),
-                    )
-                }
-                Some(DynStackElem::ExceptionHandler(handler)) => Application::new(
-                    handler,
-                    Some(Procedure::new_cont(
+                    barrier.push_cont(
                         Runtime::from_raw_inc_rc(runtime),
-                        vec![raised.clone()],
-                        reraise_exception,
+                        vec![raised],
+                        ContPtr::Continuation(unwind_to_exception_handler),
                         0,
                         true,
-                        barrier,
-                    )),
-                    vec![raised],
-                ),
+                    );
+                    Application::new(winder.out_thunk, Vec::new())
+                }
+                Some(DynStackElem::ExceptionHandler(handler)) => {
+                    barrier.push_cont(
+                        Runtime::from_raw_inc_rc(runtime),
+                        vec![raised.clone()],
+                        ContPtr::Continuation(reraise_exception),
+                        0,
+                        true,
+                    );
+                    Application::new(handler, vec![raised])
+                }
                 _ => continue,
             };
             return Box::into_raw(Box::new(app));
@@ -1074,7 +1058,6 @@ unsafe extern "C" fn reraise_exception(
                 1,
                 false,
             ),
-            Some(halt_continuation(runtime)),
             vec![exception],
         )))
     }
@@ -1087,7 +1070,6 @@ unsafe extern "C" fn reraise_exception(
 pub fn raise_continuable(
     _runtime: &Runtime,
     _env: &[Value],
-    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier,
@@ -1100,7 +1082,7 @@ pub fn raise_continuable(
         return Ok(Application::halt_err(condition.clone()));
     };
 
-    Ok(Application::new(handler, Some(k), vec![condition.clone()]))
+    Ok(Application::new(handler, vec![condition.clone()]))
 }
 
 #[bridge(name = "error", lib = "(rnrs base builtins (6))")]
@@ -1145,7 +1127,6 @@ impl SourceCache {
         self.cache.insert(ByAddress(file_name), lines);
     }
 
-    // #[maybe_await]
     pub fn fetch(&mut self, file_name: &Arc<str>) -> Option<&[String]> {
         if !self.cache.contains_key(ByAddress::from_ref(file_name)) {
             let lines = std::fs::read_to_string(file_name.as_ref())

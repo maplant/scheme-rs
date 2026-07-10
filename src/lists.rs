@@ -7,7 +7,7 @@ use parking_lot::RwLock;
 use crate::{
     exceptions::Exception,
     gc::{Gc, GcInner, Trace},
-    proc::{Application, ContBarrier, Procedure},
+    proc::{Application, ContBarrier, ContPtr, Procedure},
     registry::{bridge, cps_bridge},
     runtime::{Runtime, RuntimeInner},
     strings::WideString,
@@ -409,7 +409,6 @@ pub fn append(lists: &[Value]) -> Result<Vec<Value>, Exception> {
 pub fn map(
     runtime: &Runtime,
     _env: &[Value],
-    k: Procedure,
     args: &[Value],
     list_n: &[Value],
     barrier: &mut ContBarrier,
@@ -427,7 +426,7 @@ pub fn map(
     for input in inputs.iter_mut() {
         if input.type_of() == ValueType::Null {
             // TODO: Check if the rest are also empty and args is empty
-            return Ok(Application::new(k, None, vec![Value::null()]));
+            return Ok(barrier.call_cont(vec![Value::null()]));
         }
 
         let (car, cdr) = input.try_to::<Pair>()?.into();
@@ -436,21 +435,21 @@ pub fn map(
         *input = cdr;
     }
 
-    let map_k = Procedure::new_cont(
+    // The return continuation `map_k` is pushed onto the barrier; the outer
+    // continuation (where the final list is returned) stays implicit below it.
+    barrier.push_cont(
         runtime.clone(),
         vec![
             Value::from(Vec::<Value>::new()),
             Value::from(inputs),
             mapper.clone(),
-            Value::from(k),
         ],
-        map_k,
+        ContPtr::Continuation(map_k),
         1,
         false,
-        barrier,
     );
 
-    Ok(Application::new(mapper_proc, Some(map_k), args))
+    Ok(Application::new(mapper_proc, args))
 }
 
 unsafe extern "C" fn map_k(
@@ -473,9 +472,6 @@ unsafe extern "C" fn map_k(
         // env[2] is the mapper function
         let mapper: Procedure = env.add(2).as_ref().unwrap().clone().try_into().unwrap();
 
-        // env[3] is the continuation
-        let k: Procedure = env.add(3).as_ref().unwrap().clone().try_into().unwrap();
-
         let mut args = Vec::new();
 
         // TODO: We need to collect a new list
@@ -483,7 +479,7 @@ unsafe extern "C" fn map_k(
             if input.type_of() == ValueType::Null {
                 // TODO: Check if the rest are also empty and args is empty
                 let output = slice_to_list(&output.0.vec.read());
-                let app = Application::new(k, None, vec![output]);
+                let app = barrier.as_mut().unwrap().call_cont(vec![output]);
                 return Box::into_raw(Box::new(app));
             }
 
@@ -492,21 +488,19 @@ unsafe extern "C" fn map_k(
             *input = cdr;
         }
 
-        let map_k = Procedure::new_cont(
+        barrier.as_mut().unwrap().push_cont(
             Runtime::from_raw_inc_rc(runtime),
             vec![
                 Value::from(output),
                 Value::from(inputs),
                 Value::from(mapper.clone()),
-                Value::from(k),
             ],
-            map_k,
+            ContPtr::Continuation(map_k),
             1,
             false,
-            barrier.as_mut().unwrap(),
         );
 
-        Box::into_raw(Box::new(Application::new(mapper, Some(map_k), args)))
+        Box::into_raw(Box::new(Application::new(mapper, args)))
     }
 }
 
