@@ -14,6 +14,7 @@ use std::{
     any::Any,
     borrow::Cow,
     fmt,
+    mem::MaybeUninit,
     io::{Cursor, ErrorKind},
     path::Path,
     sync::{Arc, LazyLock},
@@ -4322,7 +4323,8 @@ unsafe extern "C" fn close_port_and_call_k(
     env: *const Value,
     args: *const Value,
     barrier: *mut ContBarrier,
-) -> *mut Application {
+    out: *mut MaybeUninit<Application>,
+) {
     #[cfg(not(feature = "async"))]
     let bridge = FuncPtr::Bridge;
 
@@ -4359,10 +4361,10 @@ unsafe extern "C" fn close_port_and_call_k(
             false,
         );
 
-        Box::into_raw(Box::new(Application::new(
+        (*out).write(Application::new(
             Procedure::new(runtime, Vec::new(), bridge(close_port), 1, false),
             vec![port],
-        )))
+        ));
     }
 }
 
@@ -4371,7 +4373,8 @@ unsafe extern "C" fn call_k_with_env(
     env: *const Value,
     _args: *const Value,
     barrier: *mut ContBarrier,
-) -> *mut Application {
+    out: *mut MaybeUninit<Application>,
+) {
     unsafe {
         // env[0] are the arguments:
         let args = env
@@ -4383,7 +4386,7 @@ unsafe extern "C" fn call_k_with_env(
 
         let barrier = barrier.as_mut().unwrap();
 
-        Box::into_raw(Box::new(barrier.call_cont(args)))
+        (*out).write(barrier.call_cont(args));
     }
 }
 

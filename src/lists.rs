@@ -15,6 +15,7 @@ use crate::{
     vectors::Vector,
 };
 use std::fmt;
+use std::mem::MaybeUninit;
 
 #[derive(Trace)]
 #[repr(align(16))]
@@ -457,7 +458,8 @@ unsafe extern "C" fn map_k(
     env: *const Value,
     args: *const Value,
     barrier: *mut ContBarrier,
-) -> *mut Application {
+    out: *mut MaybeUninit<Application>,
+) {
     unsafe {
         // TODO: Probably need to do this in a way that avoids mutable variables
 
@@ -480,7 +482,8 @@ unsafe extern "C" fn map_k(
                 // TODO: Check if the rest are also empty and args is empty
                 let output = slice_to_list(&output.0.vec.read());
                 let app = barrier.as_mut().unwrap().call_cont(vec![output]);
-                return Box::into_raw(Box::new(app));
+                (*out).write(app);
+                return;
             }
 
             let (car, cdr) = input.cast::<Pair>().unwrap().into();
@@ -500,7 +503,7 @@ unsafe extern "C" fn map_k(
             false,
         );
 
-        Box::into_raw(Box::new(Application::new(mapper, args)))
+        (*out).write(Application::new(mapper, args));
     }
 }
 

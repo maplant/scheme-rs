@@ -66,7 +66,7 @@ use crate::{
 use by_address::ByAddress;
 use parking_lot::RwLock;
 use scheme_rs_macros::runtime_fn;
-use std::{collections::HashMap, convert::Infallible, fmt, ops::Range, sync::Arc};
+use std::{collections::HashMap, convert::Infallible, fmt, mem::MaybeUninit, ops::Range, sync::Arc};
 
 /// A macro for easily creating new condition types.
 pub use scheme_rs_macros::define_condition_type;
@@ -980,15 +980,16 @@ unsafe extern "C" fn raise_rt(
     runtime: *mut GcInner<RwLock<RuntimeInner>>,
     raised: *const (),
     barrier: *mut ContBarrier,
-) -> *mut Application {
+    out: *mut MaybeUninit<Application>,
+) {
     unsafe {
         let runtime = Runtime::from_raw_inc_rc(runtime);
         let raised = Value::from_raw(raised);
-        Box::into_raw(Box::new(raise(
+        (*out).write(raise(
             runtime,
             raised,
             barrier.as_mut().unwrap_unchecked(),
-        )))
+        ));
     }
 }
 
@@ -997,7 +998,8 @@ unsafe extern "C" fn unwind_to_exception_handler(
     env: *const Value,
     _args: *const Value,
     barrier: *mut ContBarrier,
-) -> *mut Application {
+    out: *mut MaybeUninit<Application>,
+) {
     unsafe {
         // env[0] is the raised value:
         let raised = env.as_ref().unwrap().clone();
@@ -1034,7 +1036,8 @@ unsafe extern "C" fn unwind_to_exception_handler(
                 }
                 _ => continue,
             };
-            return Box::into_raw(Box::new(app));
+            (*out).write(app);
+            return;
         }
     }
 }
@@ -1044,13 +1047,14 @@ unsafe extern "C" fn reraise_exception(
     _env: *const Value,
     _args: *const Value,
     _barrier: *mut ContBarrier,
-) -> *mut Application {
+    out: *mut MaybeUninit<Application>,
+) {
     unsafe {
         let runtime = Runtime(Gc::from_raw_inc_rc(runtime));
 
         let exception = Value::from(NonContinuable::default());
 
-        Box::into_raw(Box::new(Application::new(
+        (*out).write(Application::new(
             Procedure::new(
                 runtime.clone(),
                 Vec::new(),
@@ -1059,7 +1063,7 @@ unsafe extern "C" fn reraise_exception(
                 false,
             ),
             vec![exception],
-        )))
+        ));
     }
 }
 

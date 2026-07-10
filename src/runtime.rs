@@ -28,7 +28,7 @@ use parking_lot::{MappedRwLockWriteGuard, RwLock, RwLockWriteGuard};
 use scheme_rs_macros::{maybe_async, maybe_await, runtime_fn};
 use std::{
     collections::{BTreeSet, HashSet},
-    mem::ManuallyDrop,
+    mem::{ManuallyDrop, MaybeUninit},
     path::Path,
     sync::Arc,
 };
@@ -170,12 +170,15 @@ impl Runtime {
         let entry_cont = maybe_await!(recv_continuation(completion_rx));
         let mut barrier = ContBarrier::new();
         let app = unsafe {
-            *Box::from_raw(entry_cont(
+            let mut app = std::mem::MaybeUninit::<Application>::uninit();
+            entry_cont(
                 Gc::as_ptr(&self.0),
                 std::ptr::null(),
                 std::ptr::null(),
                 &mut barrier as *mut ContBarrier<'_>,
-            ))
+                &mut app,
+            );
+            app.assume_init()
         };
         maybe_await!(app.eval(&mut barrier))
     }
@@ -450,7 +453,8 @@ unsafe extern "C" fn apply(
     args: *const *const (),
     num_args: u32,
     barrier: *mut ContBarrier,
-) -> *mut Application {
+    out: *mut MaybeUninit<Application>,
+) {
     unsafe {
         let op = match Value::from_raw_inc_rc(op).unpack() {
             UnpackedValue::Procedure(op) => op,
@@ -460,16 +464,17 @@ unsafe extern "C" fn apply(
                     Exception::invalid_operator(&x.type_name()).into(),
                     barrier.as_mut().unwrap_unchecked(),
                 );
-                return Box::into_raw(Box::new(raised));
+                (*out).write(raised);
+                return;
             }
         };
 
-        Box::into_raw(Box::new(Application::new(
+        (*out).write(Application::new(
             op,
             (0..num_args)
                 .map(|i| Value::from_raw_inc_rc(args.add(i as usize).read()))
                 .collect(),
-        )))
+        ));
     }
 }
 
@@ -515,14 +520,13 @@ unsafe extern "C" fn set_continuation_mark(
 
 /// Create a boxed application that simply returns its arguments
 #[runtime_fn]
-pub(crate) unsafe extern "C" fn halt(args: *const ()) -> *mut Application {
+pub(crate) unsafe extern "C" fn halt(args: *const (), out: *mut MaybeUninit<Application>) {
     unsafe {
         // We do not need to increment the rc here, it will be incremented in list_to_vec
         let args = ManuallyDrop::new(Value::from_raw(args));
         let mut flattened = Vec::new();
         list_to_vec(&args, &mut flattened);
-        let app = Application::halt_ok(flattened);
-        Box::into_raw(Box::new(app))
+        (*out).write(Application::halt_ok(flattened));
     }
 }
 
@@ -622,15 +626,14 @@ unsafe extern "C" fn call_continuation(
     args: *const *const (),
     num_args: u32,
     barrier: *mut ContBarrier,
-) -> *mut Application {
+    out: *mut MaybeUninit<Application>,
+) {
     unsafe {
-        Box::into_raw(Box::new(
-            barrier.as_mut().unwrap().call_cont(
-                (0..num_args)
-                    .map(|i| Value::from_raw_inc_rc(args.add(i as usize).read()))
-                    .collect(),
-            ),
-        ))
+        (*out).write(barrier.as_mut().unwrap().call_cont(
+            (0..num_args)
+                .map(|i| Value::from_raw_inc_rc(args.add(i as usize).read()))
+                .collect(),
+        ));
     }
 }
 

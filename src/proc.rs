@@ -111,6 +111,7 @@ use std::{
     any::Any,
     collections::HashMap,
     fmt,
+    mem::MaybeUninit,
     ops::DerefMut,
     sync::{
         Arc,
@@ -124,7 +125,8 @@ pub(crate) type ContinuationPtr = unsafe extern "C" fn(
     env: *const Value,
     args: *const Value,
     barrier: *mut ContBarrier<'_>,
-) -> *mut Application;
+    out: *mut MaybeUninit<Application>,
+);
 
 /// A function pointer to a generated user function.
 pub(crate) type UserPtr = unsafe extern "C" fn(
@@ -132,7 +134,8 @@ pub(crate) type UserPtr = unsafe extern "C" fn(
     env: *const Value,
     args: *const Value,
     barrier: *mut ContBarrier<'_>,
-) -> *mut Application;
+    out: *mut MaybeUninit<Application>,
+);
 
 /// A function pointer to a sync Rust bridge function.
 pub type BridgePtr = fn(
@@ -366,12 +369,15 @@ impl ProcedureInner {
         }
 
         unsafe {
-            *Box::from_raw((func)(
+            let mut app = std::mem::MaybeUninit::<Application>::uninit();
+            (func)(
                 Gc::as_ptr(&self.runtime.0),
                 self.env.as_ptr(),
                 args.as_ptr(),
                 barrier as *mut ContBarrier<'_>,
-            ))
+                &mut app,
+            );
+            app.assume_init()
         }
     }
 
@@ -642,8 +648,9 @@ unsafe extern "C" fn halt(
     _env: *const Value,
     args: *const Value,
     _barrier: *mut ContBarrier,
-) -> *mut Application {
-    unsafe { crate::runtime::halt(Value::into_raw(args.read())) }
+    out: *mut MaybeUninit<Application>,
+) {
+    unsafe { crate::runtime::halt(Value::into_raw(args.read()), out) }
 }
 
 impl fmt::Debug for Procedure {
@@ -1028,12 +1035,15 @@ impl<'a> ContBarrier<'a> {
 
         match curr_frame.func_ptr {
             ContPtr::Continuation(func) => unsafe {
-                *Box::from_raw((func)(
+                let mut app = std::mem::MaybeUninit::<Application>::uninit();
+                (func)(
                     Gc::as_ptr(&curr_frame.runtime.0),
                     env.as_ptr(),
                     args.as_ptr(),
                     self as *mut ContBarrier<'_>,
-                ))
+                    &mut app,
+                );
+                app.assume_init()
             },
             ContPtr::PromptBarrier { .. } => {
                 self.pop_dyn_stack();
@@ -1119,7 +1129,8 @@ pub(crate) unsafe extern "C" fn pop_dyn_stack(
     _env: *const Value,
     args: *const Value,
     barrier: *mut ContBarrier,
-) -> *mut Application {
+    out: *mut MaybeUninit<Application>,
+) {
     unsafe {
         let barrier = barrier.as_mut().unwrap_unchecked();
         barrier.pop_dyn_stack();
@@ -1135,7 +1146,7 @@ pub(crate) unsafe extern "C" fn pop_dyn_stack(
             collected_args.extend(vec);
         }
 
-        Box::into_raw(Box::new(barrier.call_cont(collected_args)))
+        (*out).write(barrier.call_cont(collected_args));
     }
 }
 
@@ -1288,7 +1299,8 @@ unsafe extern "C" fn unwind(
     env: *const Value,
     _args: *const Value,
     barrier: *mut ContBarrier,
-) -> *mut Application {
+    out: *mut MaybeUninit<Application>,
+) {
     unsafe {
         // env[0] are the arguments to pass to k
         let args = env.as_ref().unwrap().clone();
@@ -1322,7 +1334,8 @@ unsafe extern "C" fn unwind(
                         false,
                     );
                     let app = Application::new(winder.out_thunk, Vec::new());
-                    return Box::into_raw(Box::new(app));
+                    (*out).write(app);
+                    return;
                 }
                 _ => (),
             };
@@ -1336,7 +1349,7 @@ unsafe extern "C" fn unwind(
             0,
             false,
         );
-        Box::into_raw(Box::new(barrier.call_cont(Vec::new())))
+        (*out).write(barrier.call_cont(Vec::new()));
     }
 }
 
@@ -1345,7 +1358,8 @@ unsafe extern "C" fn wind(
     env: *const Value,
     _args: *const Value,
     barrier: *mut ContBarrier,
-) -> *mut Application {
+    out: *mut MaybeUninit<Application>,
+) {
     unsafe {
         // env[0] are the arguments to pass to k
         let args = env.as_ref().unwrap().clone();
@@ -1398,7 +1412,8 @@ unsafe extern "C" fn wind(
                         Vec::new(),
                     );
                     */
-                    return Box::into_raw(Box::new(app));
+                    (*out).write(app);
+                    return;
                 }
                 Some(elem) => barrier.push_dyn_stack(elem),
             }
@@ -1407,7 +1422,7 @@ unsafe extern "C" fn wind(
         let args: Vector = args.try_into().unwrap();
         let args = args.0.vec.read().to_vec();
 
-        Box::into_raw(Box::new(barrier.call_cont(args)))
+        (*out).write(barrier.call_cont(args));
     }
 }
 
@@ -1416,7 +1431,8 @@ unsafe extern "C" fn call_consumer_with_values(
     env: *const Value,
     args: *const Value,
     barrier: *mut ContBarrier,
-) -> *mut Application {
+    out: *mut MaybeUninit<Application>,
+) {
     unsafe {
         // env[0] is the consumer
         let consumer = env.as_ref().unwrap().clone();
@@ -1430,7 +1446,8 @@ unsafe extern "C" fn call_consumer_with_values(
                     Exception::invalid_operator(&type_name).into(),
                     barrier.as_mut().unwrap_unchecked(),
                 );
-                return Box::into_raw(Box::new(raised));
+                (*out).write(raised);
+                return;
             }
         };
 
@@ -1451,7 +1468,7 @@ unsafe extern "C" fn call_consumer_with_values(
             collected_args.extend(vec);
         }
 
-        Box::into_raw(Box::new(Application::new(consumer.clone(), collected_args)))
+        (*out).write(Application::new(consumer.clone(), collected_args));
     }
 }
 
@@ -1539,7 +1556,8 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
     env: *const Value,
     _args: *const Value,
     barrier: *mut ContBarrier,
-) -> *mut Application {
+    out: *mut MaybeUninit<Application>,
+) {
     unsafe {
         // env[0] is the in thunk
         let in_thunk = env.as_ref().unwrap().clone();
@@ -1565,7 +1583,7 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
             true,
         );
 
-        Box::into_raw(Box::new(Application::new(body_thunk, Vec::new())))
+        (*out).write(Application::new(body_thunk, Vec::new()));
     }
 }
 
@@ -1574,7 +1592,8 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
     env: *const Value,
     args: *const Value,
     barrier: *mut ContBarrier,
-) -> *mut Application {
+    out: *mut MaybeUninit<Application>,
+) {
     unsafe {
         // env[0] is the out thunk
         let out_thunk: Procedure = env.as_ref().unwrap().clone().try_into().unwrap();
@@ -1593,7 +1612,7 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
             true,
         );
 
-        Box::into_raw(Box::new(Application::new(out_thunk, Vec::new())))
+        (*out).write(Application::new(out_thunk, Vec::new()));
     }
 }
 
@@ -1602,7 +1621,8 @@ unsafe extern "C" fn forward_body_thunk_result(
     env: *const Value,
     _args: *const Value,
     barrier: *mut ContBarrier,
-) -> *mut Application {
+    out: *mut MaybeUninit<Application>,
+) {
     unsafe {
         // env[0] is the result of the body thunk
         let body_thunk_res = env.as_ref().unwrap().clone();
@@ -1610,7 +1630,7 @@ unsafe extern "C" fn forward_body_thunk_result(
         let mut args = Vec::new();
         list_to_vec(&body_thunk_res, &mut args);
 
-        Box::into_raw(Box::new(barrier.as_mut().unwrap().call_cont(args)))
+        (*out).write(barrier.as_mut().unwrap().call_cont(args));
     }
 }
 
@@ -1693,7 +1713,8 @@ unsafe extern "C" fn unwind_to_prompt(
     env: *const Value,
     _args: *const Value,
     barrier: *mut ContBarrier,
-) -> *mut Application {
+    out: *mut MaybeUninit<Application>,
+) {
     unsafe {
         // env[0] is the arguments passed to abort-to-prompt:
         let args = env.as_ref().unwrap().clone();
@@ -1775,7 +1796,8 @@ unsafe extern "C" fn unwind_to_prompt(
                 }
                 _ => continue,
             };
-            return Box::into_raw(Box::new(app));
+            (*out).write(app);
+            return;
         }
     }
 }
@@ -1826,7 +1848,8 @@ unsafe extern "C" fn wind_delim(
     env: *const Value,
     _args: *const Value,
     barrier: *mut ContBarrier,
-) -> *mut Application {
+    out: *mut MaybeUninit<Application>,
+) {
     unsafe {
         let barrier = barrier.as_mut().unwrap_unchecked();
 
@@ -1865,16 +1888,14 @@ unsafe extern "C" fn wind_delim(
                     0,
                     false,
                 );
-                return Box::into_raw(Box::new(Application::new(
-                    winder.in_thunk.clone(),
-                    Vec::new(),
-                )));
+                (*out).write(Application::new(winder.in_thunk.clone(), Vec::new()));
+                return;
             }
             barrier.push_dyn_stack(elem.clone());
         }
 
         let args: Vector = args.try_into().unwrap();
         let args = args.0.vec.read().to_vec();
-        Box::into_raw(Box::new(barrier.call_cont(args)))
+        (*out).write(barrier.call_cont(args));
     }
 }

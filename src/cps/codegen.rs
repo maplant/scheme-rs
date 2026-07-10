@@ -164,6 +164,7 @@ impl Cps {
             [
                 block_params[RUNTIME_PARAM],
                 block_params[CONT_BARRIER_PARAM],
+                block_params[OUT_PARAM],
             ]
         };
 
@@ -239,7 +240,7 @@ struct CompilationUnit<'m, 'a> {
     allocs_at_local_cont: &'a HashMap<Local, usize>,
     local_cont_blocks: HashMap<Local, Block>,
     runtime_funcs: &'a RuntimeFunctions,
-    params: [Value; 2],
+    params: [Value; 3],
     continuations: &'a mut HashSet<Local>,
     free_vars: &'a mut FreeVariables,
     escaping: &'a Escaping,
@@ -261,6 +262,10 @@ impl CompilationUnit<'_, '_> {
 
     fn get_barrier(&self) -> Value {
         self.params[1]
+    }
+
+    fn get_out(&self) -> Value {
+        self.params[2]
     }
 
     fn cps_codegen(
@@ -1016,16 +1021,15 @@ impl CompilationUnit<'_, '_> {
             }
             let args_addr = self.builder.ins().stack_addr(types::I64, args_slot, 0);
             let args_len = self.builder.ins().iconst(types::I32, args.len() as i64);
+            let out = self.get_out();
             let call_cont = self
                 .module
                 .declare_func_in_func(self.runtime_funcs.call_continuation, self.builder.func);
-            let call = self
-                .builder
+            self.builder
                 .ins()
-                .call(call_cont, &[args_addr, args_len, barrier]);
-            let app = self.builder.inst_results(call)[0];
+                .call(call_cont, &[args_addr, args_len, barrier, out]);
             self.drop_all_codegen();
-            self.builder.ins().return_(&[app]);
+            self.builder.ins().return_(&[]);
         } else {
             let runtime = self.get_runtime();
             let barrier = self.get_barrier();
@@ -1049,16 +1053,15 @@ impl CompilationUnit<'_, '_> {
 
             let args_addr = self.builder.ins().stack_addr(types::I64, args_slot, 0);
             let args_len = self.builder.ins().iconst(types::I32, args.len() as i64);
+            let out = self.get_out();
             let apply = self
                 .module
                 .declare_func_in_func(self.runtime_funcs.apply, self.builder.func);
-            let call = self
-                .builder
+            self.builder
                 .ins()
-                .call(apply, &[runtime, operator, args_addr, args_len, barrier]);
-            let app = self.builder.inst_results(call)[0];
+                .call(apply, &[runtime, operator, args_addr, args_len, barrier, out]);
             self.drop_all_codegen();
-            self.builder.ins().return_(&[app]);
+            self.builder.ins().return_(&[]);
         }
     }
 
@@ -1084,13 +1087,13 @@ impl CompilationUnit<'_, '_> {
 
     fn halt_codegen(&mut self, args: &CpsValue) {
         let val = self.value_codegen(args);
+        let out = self.get_out();
         let halt = self
             .module
             .declare_func_in_func(self.runtime_funcs.halt, self.builder.func);
-        let call = self.builder.ins().call(halt, &[val]);
-        let result = self.builder.inst_results(call)[0];
+        self.builder.ins().call(halt, &[val, out]);
         self.drop_all_codegen();
-        self.builder.ins().return_(&[result]);
+        self.builder.ins().return_(&[]);
     }
 
     fn if_codegen(
@@ -1133,12 +1136,12 @@ impl CompilationUnit<'_, '_> {
     fn raise_codegen(&mut self, val: Value) {
         let runtime = self.get_runtime();
         let barrier = self.get_barrier();
+        let out = self.get_out();
         let raise = self
             .module
             .declare_func_in_func(self.runtime_funcs.raise_rt, self.builder.func);
-        let call = self.builder.ins().call(raise, &[runtime, val, barrier]);
-        let result = self.builder.inst_results(call)[0];
-        self.builder.ins().return_(&[result]);
+        self.builder.ins().call(raise, &[runtime, val, barrier, out]);
+        self.builder.ins().return_(&[]);
     }
 
     fn store_codegen(
@@ -1420,14 +1423,14 @@ const RUNTIME_PARAM: usize = 0;
 const ENV_PARAM: usize = 1;
 const ARGS_PARAM: usize = 2;
 const CONT_BARRIER_PARAM: usize = 3;
+const OUT_PARAM: usize = 4;
 
 fn make_sig(sig: &mut Signature) {
     sig.params.push(AbiParam::new(types::I64)); // Runtime
     sig.params.push(AbiParam::new(types::I64)); // Env
     sig.params.push(AbiParam::new(types::I64)); // Args
     sig.params.push(AbiParam::new(types::I64)); // DynStack
-
-    sig.returns.push(AbiParam::new(types::I64)); // Application
+    sig.params.push(AbiParam::new(types::I64)); // Application out-pointer
 }
 
 impl ProcedureBundle {
@@ -1503,6 +1506,7 @@ impl ProcedureBundle {
             [
                 block_params[RUNTIME_PARAM],
                 block_params[CONT_BARRIER_PARAM],
+                block_params[OUT_PARAM],
             ]
         };
 

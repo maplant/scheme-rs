@@ -217,7 +217,7 @@ use std::{
     fmt,
     hash::{Hash, Hasher},
     marker::PhantomData,
-    mem::align_of,
+    mem::{align_of, MaybeUninit},
     ops::Deref,
     ptr::{self, NonNull},
     slice,
@@ -1246,7 +1246,8 @@ pub(crate) unsafe extern "C" fn chain_protocols(
     env: *const Value,
     args: *const Value,
     barrier: *mut ContBarrier,
-) -> *mut Application {
+    out: *mut MaybeUninit<Application>,
+) {
     unsafe {
         // env[0] is a vector of protocols
         let protocols: Vector = env.as_ref().unwrap().clone().try_into().unwrap();
@@ -1258,10 +1259,11 @@ pub(crate) unsafe extern "C" fn chain_protocols(
         // If there are no more remaining protocols after the current, call the
         // protocol with arg[0] and the continuation.
         if remaining_protocols.is_empty() {
-            return Box::into_raw(Box::new(Application::new(
+            (*out).write(Application::new(
                 curr_protocol,
                 vec![args.as_ref().unwrap().clone()],
-            )));
+            ));
+            return;
         }
 
         // Otherwise, turn the remaining chain into the continuation:
@@ -1273,10 +1275,10 @@ pub(crate) unsafe extern "C" fn chain_protocols(
             false,
         );
 
-        Box::into_raw(Box::new(Application::new(
+        (*out).write(Application::new(
             curr_protocol,
             vec![args.as_ref().unwrap().clone()],
-        )))
+        ));
     }
 }
 
@@ -1465,14 +1467,15 @@ pub(crate) unsafe extern "C" fn call_constructor_continuation(
     env: *const Value,
     args: *const Value,
     _barrier: *mut ContBarrier,
-) -> *mut Application {
+    out: *mut MaybeUninit<Application>,
+) {
     unsafe {
         let constructor: Procedure = args.as_ref().unwrap().clone().try_into().unwrap();
         let args: Vector = env.as_ref().unwrap().clone().try_into().unwrap();
         let args = args.0.vec.read().clone();
 
         // Call the constructor
-        Box::into_raw(Box::new(Application::new(constructor, args)))
+        (*out).write(Application::new(constructor, args));
     }
 }
 
