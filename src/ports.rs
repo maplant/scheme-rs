@@ -16,6 +16,7 @@ use std::{
     fmt,
     io::{Cursor, ErrorKind},
     path::Path,
+    pin::Pin,
     sync::{Arc, LazyLock},
 };
 
@@ -480,15 +481,15 @@ impl EolStyle {
     #[maybe_async]
     fn convert_eol_style_to_linefeed_inner(
         self,
-        iter: &mut Peekable<impl MaybeStream<Item = Result<(usize, char), Exception>>>,
+        iter: &mut Pin<&mut Peekable<impl MaybeStream<Item = Result<(usize, char), Exception>>>>,
     ) -> Option<Result<(usize, char), Exception>> {
-        #[cfg(feature = "async")]
-        let mut iter: std::pin::Pin<&mut Peekable<_>> = std::pin::pin!(iter);
-        let next_chr = maybe_await!(iter.next())?;
+        let next_chr = maybe_await!(iter.as_mut().next())?;
         match (self, next_chr) {
             (Self::Lf, x) => Some(x),
             (Self::Cr, Ok((idx, '\r'))) => Some(Ok((idx, '\n'))),
             (Self::Crlf, Ok((idx, '\r'))) => {
+                #[allow(unused_mut)]
+                let mut iter = iter.as_mut();
                 if let Some(Ok((idx, '\n'))) = maybe_await!(iter.peek()) {
                     Some(Ok((*idx, '\n')))
                 } else {
@@ -497,6 +498,8 @@ impl EolStyle {
             }
             (Self::Nel, Ok((idx, '\u{0085}'))) => Some(Ok((idx, '\n'))),
             (Self::Crnel, Ok((idx, '\r'))) => {
+                #[allow(unused_mut)]
+                let mut iter = iter.as_mut();
                 if let Some(Ok((idx, '\u{0085}'))) = maybe_await!(iter.peek()) {
                     Some(Ok((*idx, '\n')))
                 } else {
@@ -511,17 +514,21 @@ impl EolStyle {
     #[cfg(not(feature = "async"))]
     fn convert_eol_style_to_linefeed(
         self,
-        mut iter: Peekable<impl Iterator<Item = Result<(usize, char), Exception>>>,
+        mut iter: Peekable<impl Iterator<Item = Result<(usize, char), Exception>> + Unpin>,
     ) -> impl Iterator<Item = Result<(usize, char), Exception>> {
-        std::iter::from_fn(move || self.convert_eol_style_to_linefeed_inner(&mut iter))
+        std::iter::from_fn(move || {
+            let mut iter = Pin::new(&mut iter);
+            self.convert_eol_style_to_linefeed_inner(&mut iter)
+        })
     }
 
     #[cfg(feature = "async")]
     fn convert_eol_style_to_linefeed(
         self,
-        mut iter: Peekable<impl MaybeStream<Item = Result<(usize, char), Exception>>>,
+        iter: Peekable<impl MaybeStream<Item = Result<(usize, char), Exception>>>,
     ) -> impl futures::stream::Stream<Item = Result<(usize, char), Exception>> {
         async_stream::stream! {
+            let mut iter = std::pin::pin!(iter);
             while let Some(val) = self.convert_eol_style_to_linefeed_inner(&mut iter).await {
                 yield val;
             }
@@ -606,11 +613,14 @@ impl fmt::Debug for ErrorHandlingMode {
 mod __impl {
     pub(super) use std::{
         io::{Read, Seek, SeekFrom, Write},
-        iter::{Iterator as MaybeStream, Peekable},
+        iter::Peekable,
         sync::Mutex,
     };
 
     use super::*;
+
+    pub(super) trait MaybeStream: Iterator + Unpin {}
+    impl<T: Iterator + Unpin> MaybeStream for T {}
 
     pub type ReadFn = Box<
         dyn Fn(&mut dyn Any, &ByteVector, usize, usize) -> Result<usize, Exception> + Send + Sync,
@@ -797,8 +807,7 @@ mod __impl {
 mod __impl {
     use futures::future::BoxFuture;
     pub(super) use futures::stream::{Peekable, Stream as MaybeStream, StreamExt};
-    use std::pin::pin;
-    pub(super) use std::{io::SeekFrom, pin::Pin};
+    pub(super) use std::io::SeekFrom;
     use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
     #[cfg(feature = "tokio")]
     pub(super) use tokio::sync::Mutex;
@@ -847,12 +856,11 @@ mod __impl {
 
     pub fn read_fn<T>() -> ReadFn
     where
-        T: AsyncRead + Any + Send + 'static,
+        T: AsyncRead + Any + Send + Unpin + 'static,
     {
         Box::new(move |any, buff, start, count| {
             Box::pin(async move {
-                let concrete = any.downcast_mut::<T>().unwrap();
-                let mut concrete: Pin<&mut T> = pin!(concrete);
+                let mut concrete = Pin::new(any.downcast_mut::<T>().unwrap());
                 let mut local_buff = vec![0u8; count];
                 let read = concrete
                     .read(&mut local_buff)
@@ -867,12 +875,11 @@ mod __impl {
 
     pub fn write_fn<T>() -> WriteFn
     where
-        T: AsyncWrite + Any + Send + 'static,
+        T: AsyncWrite + Any + Send + Unpin + 'static,
     {
         Box::new(|any, buff, start, count| {
             Box::pin(async move {
-                let concrete = any.downcast_mut::<T>().unwrap();
-                let mut concrete: Pin<&mut T> = pin!(concrete);
+                let mut concrete = Pin::new(any.downcast_mut::<T>().unwrap());
                 let local_buff = buff.as_slice()[start..(start + count)].to_vec();
                 concrete
                     .write_all(&local_buff)
@@ -889,12 +896,11 @@ mod __impl {
 
     pub fn get_pos_fn<T>() -> GetPosFn
     where
-        T: AsyncSeek + Any + Send + 'static,
+        T: AsyncSeek + Any + Send + Unpin + 'static,
     {
         Box::new(|any| {
             Box::pin(async move {
-                let concrete = any.downcast_mut::<T>().unwrap();
-                let mut concrete: Pin<&mut T> = pin!(concrete);
+                let mut concrete = Pin::new(any.downcast_mut::<T>().unwrap());
                 concrete
                     .stream_position()
                     .await
@@ -905,12 +911,11 @@ mod __impl {
 
     pub fn set_pos_fn<T>() -> SetPosFn
     where
-        T: AsyncSeek + Any + Send + 'static,
+        T: AsyncSeek + Any + Send + Unpin + 'static,
     {
         Box::new(|any, pos| {
             Box::pin(async move {
-                let concrete = any.downcast_mut::<T>().unwrap();
-                let mut concrete: Pin<&mut T> = pin!(concrete);
+                let mut concrete = Pin::new(any.downcast_mut::<T>().unwrap());
                 let _ = concrete
                     .seek(SeekFrom::Start(pos))
                     .await
@@ -2869,8 +2874,7 @@ mod prompt {
                 Box::pin(async move {
                     use std::cmp::Ordering;
 
-                    let concrete = any.downcast_mut::<Self>().unwrap();
-                    let mut concrete: Pin<&mut Self> = std::pin::pin!(concrete);
+                    let mut concrete = Pin::new(any.downcast_mut::<Self>().unwrap());
 
                     // TODO: Figure out how to de-duplicate this code
                     if concrete.closed {
