@@ -16,10 +16,9 @@
 //!
 //! ```
 //! # use scheme_rs::{proc::{Procedure, BridgePtr, Application, ContBarrier},
-//! # registry::cps_bridge, value::Value, runtime::Runtime, exceptions::Exception};
+//! # registry::cps_bridge, value::Value, exceptions::Exception};
 //! #[cps_bridge]
 //! fn closure(
-//!     _runtime: &Runtime,
 //!     env: &[Value],
 //!     _args: &[Value],
 //!     _rest_args: &[Value],
@@ -29,9 +28,7 @@
 //! }
 //!
 //! # fn main() {
-//! # let runtime = Runtime::new();
 //! let closure = Procedure::new(
-//!     runtime,
 //!     vec![ Value::from(3.1415) ],
 //!     closure as BridgePtr,
 //!     0,
@@ -46,13 +43,12 @@
 //! ```
 //! # use scheme_rs::{
 //! #     proc::{Procedure, BridgePtr, Application, ContBarrier},
-//! #     registry::cps_bridge, value::{Value, Cell}, runtime::Runtime,
+//! #     registry::cps_bridge, value::{Value, Cell},
 //! #     exceptions::Exception,
 //! #     num::Number,
 //! # };
 //! #[cps_bridge]
 //! fn next_num(
-//!     _runtime: &Runtime,
 //!     env: &[Value],
 //!     _args: &[Value],
 //!     _rest_args: &[Value],
@@ -70,9 +66,7 @@
 //! }
 //!
 //! # fn main() {
-//! # let runtime = Runtime::new();
 //! let next_num = Procedure::new(
-//!     runtime,
 //!     // Cells must be converted to values:
 //!     vec![ Value::from(Cell::new(Value::from(3.1415))) ],
 //!     next_num as BridgePtr,
@@ -98,7 +92,6 @@ use crate::{
     ports::{BufferMode, Port, Transcoder},
     records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
     registry::BridgeFnDebugInfo,
-    runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
     syntax::Span,
     value::Value,
@@ -121,7 +114,6 @@ use std::{
 
 /// A function pointer to a generated continuation.
 pub(crate) type ContinuationPtr = unsafe extern "C" fn(
-    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
     barrier: *mut ContBarrier<'_>,
@@ -130,7 +122,6 @@ pub(crate) type ContinuationPtr = unsafe extern "C" fn(
 
 /// A function pointer to a generated user function.
 pub(crate) type UserPtr = unsafe extern "C" fn(
-    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
     barrier: *mut ContBarrier<'_>,
@@ -139,7 +130,6 @@ pub(crate) type UserPtr = unsafe extern "C" fn(
 
 /// A function pointer to a sync Rust bridge function.
 pub type BridgePtr = fn(
-    runtime: &Runtime,
     env: &[Value],
     args: &[Value],
     rest_args: &[Value],
@@ -149,7 +139,6 @@ pub type BridgePtr = fn(
 /// A function pointer to an async Rust bridge function.
 #[cfg(feature = "async")]
 pub type AsyncBridgePtr = for<'a> fn(
-    runtime: &'a Runtime,
     env: &'a [Value],
     args: &'a [Value],
     rest_args: &'a [Value],
@@ -189,15 +178,10 @@ impl KnownFunc {
         }
     }
 
-    fn apply(
-        self,
-        runtime: &Runtime,
-        args: &[Value],
-        barrier: &mut ContBarrier<'_>,
-    ) -> Application {
+    fn apply(self, args: &[Value], barrier: &mut ContBarrier<'_>) -> Application {
         match self.call(args) {
             Ok(result) => barrier.call_cont(result),
-            Err(err) => raise(runtime.clone(), err.into(), barrier),
+            Err(err) => raise(err.into(), barrier),
         }
     }
 
@@ -280,11 +264,6 @@ impl From<ContinuationPtr> for ContPtr {
 #[derive(Clone, Trace)]
 #[repr(align(16))]
 pub(crate) struct ProcedureInner {
-    /// The runtime the Procedure is defined in. This is necessary to ensure that
-    /// dropping the runtime does not de-allocate the function pointer for this
-    /// procedure.
-    // TODO: Do we make this optional in the case of bridge functions?
-    pub(crate) runtime: Runtime,
     /// Environmental variables used by the procedure.
     pub(crate) env: Vec<Value>,
     /// Fuction pointer to the body of the procecure.
@@ -303,7 +282,6 @@ pub(crate) struct ProcedureInner {
 
 impl ProcedureInner {
     pub(crate) fn new(
-        runtime: Runtime,
         env: Vec<Value>,
         func: FuncPtr,
         num_required_args: usize,
@@ -311,7 +289,6 @@ impl ProcedureInner {
         debug_info: Option<Arc<ProcDebugInfo>>,
     ) -> Self {
         Self {
-            runtime,
             env,
             func,
             num_required_args,
@@ -334,7 +311,7 @@ impl ProcedureInner {
             (args, &[] as &[Value])
         };
 
-        (func)(&self.runtime, &self.env, args, rest_args, barrier).await
+        (func)(&self.env, args, rest_args, barrier).await
     }
 
     fn apply_sync_bridge(
@@ -349,7 +326,7 @@ impl ProcedureInner {
             (args, &[] as &[Value])
         };
 
-        (func)(&self.runtime, &self.env, args, rest_args, barrier)
+        (func)(&self.env, args, rest_args, barrier)
     }
 
     fn apply_jit(
@@ -371,7 +348,6 @@ impl ProcedureInner {
         unsafe {
             let mut app = std::mem::MaybeUninit::<Application>::uninit();
             (func)(
-                Gc::as_ptr(&self.runtime.0),
                 self.env.as_ptr(),
                 args.as_ptr(),
                 barrier as *mut ContBarrier<'_>,
@@ -384,64 +360,29 @@ impl ProcedureInner {
     /// Apply the arguments to the function, returning the next application.
     #[maybe_async]
     pub fn apply(&self, args: Vec<Value>, barrier: &mut ContBarrier<'_>) -> Application {
-        if let Err(raised) = check_args(
-            &self.runtime,
-            self.num_required_args,
-            self.variadic,
-            &args,
-            barrier,
-        ) {
+        if let Err(raised) = check_args(self.num_required_args, self.variadic, &args, barrier) {
             return raised;
         }
 
         match self.func {
             FuncPtr::Bridge(sbridge) => self.apply_sync_bridge(sbridge, &args, barrier),
             #[cfg(feature = "async")]
-            FuncPtr::AsyncBridge(abridge) => {
-                self.apply_async_bridge(abridge, k.unwrap(), &args, barrier)
-                    .await
-            }
+            FuncPtr::AsyncBridge(abridge) => self.apply_async_bridge(abridge, &args, barrier).await,
             FuncPtr::User(user) => self.apply_jit(user, args, barrier),
-            FuncPtr::Known(known) => known.apply(&self.runtime, &args, barrier),
+            FuncPtr::Known(known) => known.apply(&args, barrier),
         }
     }
 
     #[cfg(feature = "async")]
     /// Attempt to call the function, and throw an error if is async
-    pub fn apply_sync(
-        &self,
-        k: Option<Procedure>,
-        args: Vec<Value>,
-        barrier: &mut ContBarrier,
-    ) -> Application {
-        if let FuncPtr::PromptBarrier { barrier_id: id, .. } = self.func {
-            barrier.pop_marks();
-            match barrier.pop_dyn_stack() {
-                Some(DynStackElem::PromptBarrier(PromptBarrier {
-                    barrier_id,
-                    replaced_k,
-                })) if barrier_id == id => {
-                    return if let Err(raised) =
-                        replaced_k.0.check_args(&k, args.as_slice(), barrier)
-                    {
-                        raised
-                    } else {
-                        Application::new(replaced_k, None, args)
-                    };
-                }
-                Some(other) => barrier.push_dyn_stack(other),
-                _ => (),
-            }
-        }
-
-        if let Err(raised) = self.check_args(&k, &args, barrier) {
+    pub fn apply_sync(&self, args: Vec<Value>, barrier: &mut ContBarrier) -> Application {
+        if let Err(raised) = check_args(self.num_required_args, self.variadic, &args, barrier) {
             return raised;
         }
 
         match self.func {
             FuncPtr::Bridge(sbridge) => self.apply_sync_bridge(sbridge, k.unwrap(), &args, barrier),
             FuncPtr::AsyncBridge(_) => raise(
-                self.runtime.clone(),
                 Exception::error("attempt to apply async function in a sync-only context").into(),
                 barrier,
             ),
@@ -453,7 +394,7 @@ impl ProcedureInner {
             FuncPtr::PromptBarrier { k, .. } => {
                 self.apply_jit(JitFuncPtr::Continuation(k), None, args, barrier)
             }
-            FuncPtr::Known(known) => known.apply_sync(&self.runtime, k.unwrap(), &args, barrier),
+            FuncPtr::Known(known) => known.apply_sync(k.unwrap(), &args, barrier),
         }
     }
 }
@@ -500,17 +441,15 @@ impl Procedure {
     /// Creates a new procedure. `func` must be a [`BridgePtr`] or an
     /// `AsyncBridgePtr` if `async` is enabled.
     pub fn new(
-        runtime: Runtime,
         env: Vec<Value>,
         func: impl Into<FuncPtr>,
         num_required_args: usize,
         variadic: bool,
     ) -> Self {
-        Self::with_debug_info(runtime, env, func.into(), num_required_args, variadic, None)
+        Self::with_debug_info(env, func.into(), num_required_args, variadic, None)
     }
 
     pub(crate) fn with_debug_info(
-        runtime: Runtime,
         env: Vec<Value>,
         func: FuncPtr,
         num_required_args: usize,
@@ -518,18 +457,12 @@ impl Procedure {
         debug_info: Option<Arc<ProcDebugInfo>>,
     ) -> Self {
         Self(Gc::new(ProcedureInner::new(
-            runtime,
             env,
             func,
             num_required_args,
             variadic,
             debug_info,
         )))
-    }
-
-    /// Get the runtime associated with the procedure
-    pub fn get_runtime(&self) -> Runtime {
-        self.0.runtime.clone()
     }
 
     /// Return the number of required arguments and whether or not this function
@@ -543,30 +476,6 @@ impl Procedure {
         self.0.debug_info.clone()
     }
 
-    /*
-    /// # Safety
-    /// `args` must be a valid pointer and contain num_required_args + variadic entries.
-    pub(crate) unsafe fn collect_args(&self, args: *const Value) -> Vec<Value> {
-        // I don't really like this, but what are you gonna do?
-        let (num_required_args, variadic) = self.get_formals();
-
-        unsafe {
-            let mut collected_args: Vec<_> = (0..num_required_args)
-                .map(|i| args.add(i).as_ref().unwrap().clone())
-                .collect();
-
-            if variadic {
-                let rest_args = args.add(num_required_args).as_ref().unwrap().clone();
-                let mut vec = Vec::new();
-                lists::list_to_vec(&rest_args, &mut vec);
-                collected_args.extend(vec);
-            }
-
-            collected_args
-        }
-    }
-     */
-
     pub fn is_variable_transformer(&self) -> bool {
         self.0.is_variable_transformer
     }
@@ -578,7 +487,6 @@ impl Procedure {
         args: &[Value],
         barrier: &mut ContBarrier<'_>,
     ) -> Result<Vec<Value>, Exception> {
-        barrier.push_cont(self.get_runtime(), [], ContPtr::Continuation(halt), 0, true);
         maybe_await!(Application::new(self.clone(), args.to_vec()).eval(barrier))
     }
 
@@ -588,7 +496,6 @@ impl Procedure {
         args: &[Value],
         barrier: &mut ContBarrier<'_>,
     ) -> Result<Vec<Value>, Exception> {
-        let k = (!self.is_continuation()).then(|| halt_continuation(self.get_runtime()));
         Application::new(self.clone(), k, args.to_vec()).eval_sync(barrier)
     }
 
@@ -644,7 +551,6 @@ impl Procedure {
 }
 
 unsafe extern "C" fn halt(
-    _runtime: *mut GcInner<RwLock<RuntimeInner>>,
     _env: *const Value,
     args: *const Value,
     _barrier: *mut ContBarrier,
@@ -677,7 +583,6 @@ pub struct Application {
     /// The operator being applied to.
     op: OpType,
     /// The arguments being applied to the operator.
-    // TODO: Maybe make this a Cow<[Value]>?
     args: Vec<Value>,
 }
 
@@ -781,7 +686,6 @@ impl ProcDebugInfo {
 
 #[cps_bridge(def = "apply arg1 . args", lib = "(rnrs base builtins (6))")]
 pub fn apply(
-    _runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
     rest_args: &[Value],
@@ -821,10 +725,6 @@ pub struct ContBarrier<'a> {
     /// The current live continuations for the program. Effectively the call
     /// stack. Includes active [continuation marks](https://srfi.schemers.org/srfi-157/srfi-157.html).
     cont_stack: ContStack,
-    /// Continuation marks that belong to the top level, before any continuation
-    /// frame has been pushed (or after the last has been popped). Marks are
-    /// otherwise stored per continuation frame.
-    base_marks: HashMap<Symbol, Value>,
     /// The active installed mutable parameters
     params: HashMap<Symbol, Param<'a>>,
 }
@@ -833,13 +733,17 @@ impl<'a> ContBarrier<'a> {
     pub fn new() -> Self {
         static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
 
-        Self {
+        let mut this = Self {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             dyn_stack: Vec::new(),
             cont_stack: ContStack::default(),
-            base_marks: HashMap::new(),
             params: HashMap::new(),
-        }
+        };
+
+        // The call stack always contains a top-level halt continuation:
+        this.push_cont([], ContPtr::Continuation(halt), 0, true);
+
+        this
     }
 
     pub fn save(&self) -> SavedDynamicState {
@@ -903,22 +807,26 @@ impl<'a> ContBarrier<'a> {
         (params, child_barrier)
     }
 
+    #[cfg(feature = "continuation-marks")]
     pub(crate) fn current_marks(&self, tag: Symbol) -> Vec<Value> {
         self.cont_stack
             .frames
             .iter()
             .rev()
             .map(|frame| &frame.marks)
-            .chain(std::iter::once(&self.base_marks))
             .flat_map(|marks| marks.get(&tag).cloned())
             .collect()
     }
 
+    #[cfg(feature = "continuation-marks")]
     pub(crate) fn set_continuation_mark(&mut self, tag: Symbol, val: Value) {
-        match self.cont_stack.frames.last_mut() {
-            Some(frame) => frame.marks.insert(tag, val),
-            None => self.base_marks.insert(tag, val),
-        };
+        self.cont_stack
+            .frames
+            .last_mut()
+            .unwrap()
+            .frame
+            .marks
+            .insert(tag, val);
     }
 
     // TODO: We should certainly try to optimize these functions. Linear
@@ -996,17 +904,19 @@ impl<'a> ContBarrier<'a> {
         self.dyn_stack.is_empty()
     }
 
+    /// Push a continuation onto the current call stack.
     #[allow(private_bounds)]
     pub fn push_cont(
         &mut self,
-        rt: Runtime,
         env: impl IntoIterator<Item = Value>,
         func_ptr: impl Into<ContPtr>,
         num_required_args: usize,
         variadic: bool,
     ) {
-        self.cont_stack
-            .push_cont(rt, func_ptr.into(), env, num_required_args, variadic);
+        unsafe {
+            self.cont_stack
+                .push_cont(func_ptr.into(), env, num_required_args, variadic);
+        }
     }
 
     pub fn call_cont(&mut self, mut args: Vec<Value>) -> Application {
@@ -1015,7 +925,6 @@ impl<'a> ContBarrier<'a> {
             self.cont_stack.envs.drain(curr_frame.env_start..).collect();
 
         if let Err(raised) = check_args(
-            &curr_frame.runtime,
             curr_frame.num_required_args,
             curr_frame.variadic,
             &args,
@@ -1037,7 +946,6 @@ impl<'a> ContBarrier<'a> {
             ContPtr::Continuation(func) => unsafe {
                 let mut app = std::mem::MaybeUninit::<Application>::uninit();
                 (func)(
-                    Gc::as_ptr(&curr_frame.runtime.0),
                     env.as_ptr(),
                     args.as_ptr(),
                     self as *mut ContBarrier<'_>,
@@ -1125,7 +1033,6 @@ pub(crate) enum DynStackElem {
 }
 
 pub(crate) unsafe extern "C" fn pop_dyn_stack(
-    _runtime: *mut GcInner<RwLock<RuntimeInner>>,
     _env: *const Value,
     args: *const Value,
     barrier: *mut ContBarrier,
@@ -1159,7 +1066,6 @@ pub(crate) struct ContStack {
 impl ContStack {
     pub(crate) fn push_cont(
         &mut self,
-        runtime: Runtime,
         func_ptr: ContPtr,
         env: impl IntoIterator<Item = Value>,
         num_required_args: usize,
@@ -1168,46 +1074,32 @@ impl ContStack {
         let env_start = self.envs.len();
         self.envs.extend(env);
         self.frames.push(ContFrame {
-            runtime,
             func_ptr,
             env_start,
             num_required_args,
             variadic,
-            marks: HashMap::default(),
         });
     }
 }
 
 #[derive(Clone, Trace)]
 pub(crate) struct ContFrame {
-    runtime: Runtime,
     #[trace(skip)]
     func_ptr: ContPtr,
     env_start: usize,
     num_required_args: usize,
     variadic: bool,
-    marks: HashMap<Symbol, Value>,
 }
 
 fn check_args(
-    runtime: &Runtime,
     num_required_args: usize,
     variadic: bool,
     args: &[Value],
     barrier: &mut ContBarrier,
 ) -> Result<(), Application> {
-    // Error if the number of arguments provided is incorrect
-    if args.len() < num_required_args {
+    // Error if the number of arguments provided is incorrect.
+    if args.len() < num_required_args || (!variadic && args.len() > num_required_args) {
         return Err(raise(
-            runtime.clone(),
-            Exception::wrong_num_of_args(num_required_args, args.len()).into(),
-            barrier,
-        ));
-    }
-
-    if !variadic && args.len() > num_required_args {
-        return Err(raise(
-            runtime.clone(),
             Exception::wrong_num_of_args(num_required_args, args.len()).into(),
             barrier,
         ));
@@ -1216,9 +1108,9 @@ fn check_args(
     Ok(())
 }
 
+#[cfg(feature = "continuation-marks")]
 #[cps_bridge(def = "print-trace", lib = "(rnrs base builtins (6))")]
 pub fn print_trace(
-    _runtime: &Runtime,
     _env: &[Value],
     _args: &[Value],
     _rest_args: &[Value],
@@ -1241,7 +1133,6 @@ pub fn print_trace(
     lib = "(rnrs base builtins (6))"
 )]
 pub fn call_with_current_continuation(
-    runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
@@ -1251,7 +1142,6 @@ pub fn call_with_current_continuation(
     let (req_args, variaidic) = barrier.cont_formals();
 
     let escape = Procedure::new(
-        runtime.clone(),
         vec![Value::from(barrier.save())],
         FuncPtr::Bridge(escape_procedure),
         req_args,
@@ -1265,7 +1155,6 @@ pub fn call_with_current_continuation(
 /// and creates a closure that calls the appropriate winders.
 #[cps_bridge]
 fn escape_procedure(
-    runtime: &Runtime,
     env: &[Value],
     args: &[Value],
     rest_args: &[Value],
@@ -1285,7 +1174,6 @@ fn escape_procedure(
 
     barrier.cont_stack = saved_barrier.cont_stack.clone();
     barrier.push_cont(
-        runtime.clone(),
         vec![Value::from(args), env[0].clone()],
         ContPtr::Continuation(unwind),
         0,
@@ -1295,7 +1183,6 @@ fn escape_procedure(
 }
 
 unsafe extern "C" fn unwind(
-    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
     barrier: *mut ContBarrier,
@@ -1327,7 +1214,6 @@ unsafe extern "C" fn unwind(
                 Some(DynStackElem::Winder(winder)) => {
                     // Call the out winder while unwinding
                     barrier.push_cont(
-                        Runtime::from_raw_inc_rc(runtime),
                         [Value::from(args), dest_stack_val],
                         ContPtr::Continuation(unwind),
                         0,
@@ -1343,7 +1229,6 @@ unsafe extern "C" fn unwind(
 
         // Begin winding
         barrier.push_cont(
-            Runtime::from_raw_inc_rc(runtime),
             [args, dest_stack_val, Value::from(false)],
             ContPtr::Continuation(wind),
             0,
@@ -1354,7 +1239,6 @@ unsafe extern "C" fn unwind(
 }
 
 unsafe extern "C" fn wind(
-    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
     barrier: *mut ContBarrier,
@@ -1392,26 +1276,12 @@ unsafe extern "C" fn wind(
                     // Call the in winder while winding
                     let in_thunk = winder.in_thunk.clone();
                     barrier.push_cont(
-                        Runtime::from_raw_inc_rc(runtime),
                         [args, dest_stack_val, Value::from(winder)],
                         ContPtr::Continuation(wind),
                         0,
                         false,
                     );
                     let app = Application::new(in_thunk, Vec::new());
-                    /*
-                    let app = Application::new(
-                        winder.in_thunk.clone(),
-                        barrier.new_cont(
-                            Runtime::from_raw_inc_rc(runtime),
-                            ContPtr::Continuation(wind),
-                            vec![k, args, dest_stack_val, Value::from(winder)],
-                            0,
-                            false,
-                        ),
-                        Vec::new(),
-                    );
-                    */
                     (*out).write(app);
                     return;
                 }
@@ -1427,7 +1297,6 @@ unsafe extern "C" fn wind(
 }
 
 unsafe extern "C" fn call_consumer_with_values(
-    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
     barrier: *mut ContBarrier,
@@ -1442,7 +1311,6 @@ unsafe extern "C" fn call_consumer_with_values(
             Ok(consumer) => consumer,
             _ => {
                 let raised = raise(
-                    Runtime::from_raw_inc_rc(runtime),
                     Exception::invalid_operator(&type_name).into(),
                     barrier.as_mut().unwrap_unchecked(),
                 );
@@ -1477,7 +1345,6 @@ unsafe extern "C" fn call_consumer_with_values(
     lib = "(rnrs base builtins (6))"
 )]
 pub fn call_with_values(
-    runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
@@ -1494,7 +1361,6 @@ pub fn call_with_values(
     let (num_required_args, variadic) = { (consumer.0.num_required_args, consumer.0.variadic) };
 
     barrier.push_cont(
-        runtime.clone(),
         [Value::from(consumer)],
         ContPtr::Continuation(call_consumer_with_values),
         num_required_args,
@@ -1523,7 +1389,6 @@ unsafe impl Embeddable for Winder {
 
 #[cps_bridge(def = "dynamic-wind in body out", lib = "(rnrs base builtins (6))")]
 pub fn dynamic_wind(
-    runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
@@ -1537,7 +1402,6 @@ pub fn dynamic_wind(
     let _: Procedure = body_thunk_val.clone().try_into()?;
 
     barrier.push_cont(
-        runtime.clone(),
         [
             in_thunk_val.clone(),
             body_thunk_val.clone(),
@@ -1552,7 +1416,6 @@ pub fn dynamic_wind(
 }
 
 pub(crate) unsafe extern "C" fn call_body_thunk(
-    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
     barrier: *mut ContBarrier,
@@ -1575,20 +1438,13 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
             out_thunk: out_thunk.clone().try_into().unwrap(),
         }));
 
-        barrier.push_cont(
-            Runtime::from_raw_inc_rc(runtime),
-            [out_thunk],
-            ContPtr::Continuation(call_out_thunks),
-            0,
-            true,
-        );
+        barrier.push_cont([out_thunk], ContPtr::Continuation(call_out_thunks), 0, true);
 
         (*out).write(Application::new(body_thunk, Vec::new()));
     }
 }
 
 pub(crate) unsafe extern "C" fn call_out_thunks(
-    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
     barrier: *mut ContBarrier,
@@ -1605,7 +1461,6 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
         barrier.pop_dyn_stack();
 
         barrier.push_cont(
-            Runtime::from_raw_inc_rc(runtime),
             vec![body_thunk_res],
             ContPtr::Continuation(forward_body_thunk_result),
             0,
@@ -1617,7 +1472,6 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
 }
 
 unsafe extern "C" fn forward_body_thunk_result(
-    _runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
     barrier: *mut ContBarrier,
@@ -1648,7 +1502,6 @@ pub(crate) struct Prompt {
 
 #[cps_bridge(def = "call-with-prompt tag thunk handler", lib = "(prompts)")]
 pub fn call_with_prompt(
-    runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
@@ -1672,7 +1525,6 @@ pub fn call_with_prompt(
     }));
 
     barrier.push_cont(
-        runtime.clone(),
         Vec::new(),
         ContPtr::PromptBarrier { barrier_id },
         req_args,
@@ -1687,7 +1539,6 @@ pub fn call_with_prompt(
 
 #[cps_bridge(def = "abort-to-prompt tag . values", lib = "(prompts)")]
 pub fn abort_to_prompt(
-    runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
     rest_args: &[Value],
@@ -1695,7 +1546,6 @@ pub fn abort_to_prompt(
 ) -> Result<Application, Exception> {
     let [tag] = args else { unreachable!() };
     barrier.push_cont(
-        runtime.clone(),
         vec![
             Value::from(rest_args.to_vec()),
             tag.clone(),
@@ -1709,7 +1559,6 @@ pub fn abort_to_prompt(
 }
 
 unsafe extern "C" fn unwind_to_prompt(
-    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
     barrier: *mut ContBarrier,
@@ -1727,11 +1576,9 @@ unsafe extern "C" fn unwind_to_prompt(
 
         loop {
             let app = match barrier.pop_dyn_stack() {
-                None => {
-                    Application::halt_err(Value::from(Exception::error(format!(
-                        "no prompt tag {tag} found"
-                    ))))
-                }
+                None => Application::halt_err(Value::from(Exception::error(format!(
+                    "no prompt tag {tag} found"
+                )))),
                 Some(DynStackElem::Prompt(Prompt {
                     tag: prompt_tag,
                     barrier_id,
@@ -1751,7 +1598,8 @@ unsafe extern "C" fn unwind_to_prompt(
                         .frames
                         .get(barrier_idx + 1)
                         .map_or(barrier.cont_stack.envs.len(), |frame| frame.env_start);
-                    let mut delimited_frames = barrier.cont_stack.frames[barrier_idx + 1..].to_vec();
+                    let mut delimited_frames =
+                        barrier.cont_stack.frames[barrier_idx + 1..].to_vec();
                     for frame in &mut delimited_frames {
                         frame.env_start -= env_base;
                     }
@@ -1775,7 +1623,6 @@ unsafe extern "C" fn unwind_to_prompt(
                     };
 
                     let mut handler_args = vec![Value::from(Procedure::new(
-                        Runtime::from_raw_inc_rc(runtime),
                         vec![Value::from(prompt_delimited_barrier)],
                         FuncPtr::Bridge(delimited_continuation),
                         0,
@@ -1786,7 +1633,6 @@ unsafe extern "C" fn unwind_to_prompt(
                 }
                 Some(DynStackElem::Winder(winder)) => {
                     barrier.push_cont(
-                        Runtime::from_raw_inc_rc(runtime),
                         vec![args, Value::from(tag), saved_barrier],
                         ContPtr::Continuation(unwind_to_prompt),
                         0,
@@ -1804,7 +1650,6 @@ unsafe extern "C" fn unwind_to_prompt(
 
 #[cps_bridge]
 fn delimited_continuation(
-    runtime: &Runtime,
     env: &[Value],
     args: &[Value],
     rest_args: &[Value],
@@ -1829,7 +1674,6 @@ fn delimited_continuation(
     // Restore the captured dynamic stack entries and rewind
     let values = Value::from(args.iter().chain(rest_args).cloned().collect::<Vec<_>>());
     barrier.push_cont(
-        runtime.clone(),
         [
             values,
             saved_barrier_val,
@@ -1844,7 +1688,6 @@ fn delimited_continuation(
 }
 
 unsafe extern "C" fn wind_delim(
-    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
     barrier: *mut ContBarrier,
@@ -1877,7 +1720,6 @@ unsafe extern "C" fn wind_delim(
 
             if let DynStackElem::Winder(winder) = elem {
                 barrier.push_cont(
-                    Runtime::from_raw_inc_rc(runtime),
                     vec![
                         args,
                         dest_stack_val,

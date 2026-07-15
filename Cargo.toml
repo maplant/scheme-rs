@@ -14,7 +14,6 @@ repository = "https://github.com/maplant/scheme-rs"
 [dependencies]
 arc-swap = "1"
 async-stream = { version = "0.3", optional = true }
-# bumpalo = "3"
 by_address = "1.2"
 clap = { version = "4", features = ["derive"] }
 derive_builder = "0.20"
@@ -55,6 +54,7 @@ default = ["load-libraries-from-fs"]
 async = ["dep:futures", "dep:async-stream"]
 lsp = ["dep:lsp-server", "dep:lsp-types", "dep:serde", "dep:serde_json"]
 load-libraries-from-fs = []
+continuation-marks = []
 
 [profile.release]
 lto = true

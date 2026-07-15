@@ -27,6 +27,7 @@ pub mod strings;
 pub mod symbols;
 pub mod syntax;
 pub mod threads;
+pub mod time;
 pub mod value;
 pub mod vectors;
 

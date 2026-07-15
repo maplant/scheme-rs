@@ -21,7 +21,6 @@ use crate::{
 #[maybe_async]
 #[cps_bridge(def = "eval expression environment", lib = "(rnrs eval (6))")]
 pub fn eval(
-    runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
@@ -32,10 +31,10 @@ pub fn eval(
     };
     let env = environment.try_to::<Embedded<Environment>>()?;
     let expr = Syntax::datum_to_syntax(&env.get_scope_set(), expression.clone(), &Span::default());
-    let ctxt = ParseContext::new(runtime, false);
+    let ctxt = ParseContext::new(false);
     let mut mutable_vars = HashSet::default();
     let expr = maybe_await!(Expression::parse(&ctxt, expr, &env, &mut mutable_vars))?;
-    let result = maybe_await!(Compiler::new(mutable_vars).compile(runtime, &expr))?;
+    let result = maybe_await!(Compiler::new(mutable_vars).compile(Runtime::new(), &expr))?;
     Ok(barrier.call_cont(result))
 }
 
@@ -48,7 +47,6 @@ unsafe impl Embeddable for Environment {
 #[maybe_async]
 #[cps_bridge(def = "environment . import-spec", lib = "(rnrs eval (6))")]
 pub fn environment(
-    runtime: &Runtime,
     _env: &[Value],
     _args: &[Value],
     import_spec: &[Value],
@@ -62,7 +60,7 @@ pub fn environment(
             ImportSet::parse(discard_for(&syntax))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let env = Environment::Top(TopLevelEnvironment::new_repl(runtime));
+    let env = Environment::Top(TopLevelEnvironment::new_repl());
     for import_set in import_sets {
         maybe_await!(env.import(import_set))?;
     }

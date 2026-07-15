@@ -11,7 +11,10 @@ use std::{
     },
 };
 
-use parking_lot::{MappedRwLockReadGuard, Mutex, RwLock, RwLockReadGuard};
+use parking_lot::{
+    MappedRwLockReadGuard, Mutex, RwLock, RwLockReadGuard, RwLockUpgradableReadGuard,
+    RwLockWriteGuard,
+};
 use scheme_rs_macros::{maybe_async, maybe_await};
 
 #[cfg(feature = "async")]
@@ -25,6 +28,7 @@ use crate::{
     exceptions::Exception,
     gc::{Gc, Trace},
     proc::Procedure,
+    registry::RegistryInner,
     runtime::Runtime,
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax},
@@ -67,7 +71,7 @@ fn add_pending_top_level_binding(binding: Binding, origin: TopLevelEnvironment) 
 
 #[derive(Trace)]
 pub(crate) struct TopLevelEnvironmentInner {
-    pub(crate) rt: Runtime,
+    // pub(crate) rt: Runtime,
     pub(crate) kind: TopLevelKind,
     pub(crate) imports: HashMap<Binding, TopLevelEnvironment>,
     pub(crate) exports: HashMap<Symbol, Export>,
@@ -77,7 +81,7 @@ pub(crate) struct TopLevelEnvironmentInner {
 
 impl TopLevelEnvironmentInner {
     pub(crate) fn new(
-        rt: &Runtime,
+        // rt: &Runtime,
         kind: TopLevelKind,
         imports: HashMap<Binding, TopLevelEnvironment>,
         exports: HashMap<Symbol, Symbol>,
@@ -94,7 +98,7 @@ impl TopLevelEnvironmentInner {
             .collect();
 
         Self {
-            rt: rt.clone(),
+            // rt: rt.clone(),
             kind,
             imports,
             exports,
@@ -152,9 +156,8 @@ impl Hash for TopLevelEnvironment {
 }
 
 impl TopLevelEnvironment {
-    pub fn new_repl(rt: &Runtime) -> Self {
+    pub fn new_repl() -> Self {
         let inner = TopLevelEnvironmentInner {
-            rt: rt.clone(),
             kind: TopLevelKind::Repl,
             exports: HashMap::default(),
             imports: HashMap::default(),
@@ -167,9 +170,8 @@ impl TopLevelEnvironment {
         repl
     }
 
-    pub(crate) fn new_program(rt: &Runtime, path: &Path) -> Self {
+    pub(crate) fn new_program(path: &Path) -> Self {
         let inner = TopLevelEnvironmentInner {
-            rt: rt.clone(),
             kind: TopLevelKind::Program {
                 path: path.to_path_buf(),
             },
@@ -191,10 +193,7 @@ impl TopLevelEnvironment {
             Symbol::intern("base"),
             Symbol::intern("primitives"),
         ];
-        let rnrs_base_prims = self
-            .0
-            .read()
-            .rt
+        let rnrs_base_prims = Runtime::new()
             .get_registry()
             .0
             .read()
@@ -212,26 +211,26 @@ impl TopLevelEnvironment {
         self.0.read().scope
     }
 
-    #[maybe_async]
-    pub fn from_spec(rt: &Runtime, spec: LibrarySpec, path: PathBuf) -> Result<Self, Exception> {
-        maybe_await!(Self::from_spec_with_scope(rt, spec, path, Scope::new()))
+    pub fn from_spec(spec: LibrarySpec, path: PathBuf) -> Result<Self, Exception> {
+        let registry = Runtime::new().get_registry();
+        let mut registry_inner = registry.0.write();
+        Self::from_spec_with_scope(spec, path, Scope::new(), &mut registry_inner)
     }
 
-    #[maybe_async]
     pub(crate) fn from_spec_with_scope(
-        rt: &Runtime,
         spec: LibrarySpec,
         path: PathBuf,
         library_scope: Scope,
+        registry: &mut RegistryInner,
     ) -> Result<Self, Exception> {
-        let registry = rt.get_registry();
-
         // Import libraries:
         let mut bound_names = HashMap::<Symbol, Binding>::default();
         let mut imports = HashMap::<Binding, TopLevelEnvironment>::default();
 
         for lib_import in spec.imports.import_sets.into_iter() {
-            for (name, import) in maybe_await!(registry.import(rt, lib_import))? {
+            // Record the import edge (and reject import cycles) before loading.
+            registry.check_for_circular_dependencies(&spec.name.name, lib_import.library_name())?;
+            for (name, import) in registry.import(lib_import)? {
                 if let Some(prev_binding) = bound_names.get(&name)
                     && prev_binding != &import.binding
                 {
@@ -258,7 +257,12 @@ impl TopLevelEnvironment {
                 }
                 ExportSet::External(lib_import) => {
                     for lib_import in lib_import.import_sets.into_iter() {
-                        for (name, import) in maybe_await!(registry.import(rt, lib_import))? {
+                        // Re-exports are dependencies too; record the edge.
+                        registry.check_for_circular_dependencies(
+                            &spec.name.name,
+                            lib_import.library_name(),
+                        )?;
+                        for (name, import) in registry.import(lib_import)? {
                             if let Some(prev_binding) = bound_names.get(&name)
                                 && prev_binding != &import.binding
                             {
@@ -283,7 +287,6 @@ impl TopLevelEnvironment {
         body.add_scope(library_scope);
 
         Ok(Self(Gc::new(RwLock::new(TopLevelEnvironmentInner::new(
-            rt,
             TopLevelKind::Libary {
                 name: spec.name,
                 path: Some(path),
@@ -321,8 +324,7 @@ impl TopLevelEnvironment {
         if !end.is_null() {
             return Err(Exception::syntax(sexprs, None));
         }
-        let rt = { self.0.read().rt.clone() };
-        let ctxt = ParseContext::new(&rt, import_policy);
+        let ctxt = ParseContext::new(import_policy);
         let mut mutable_vars = HashSet::default();
         let body = maybe_await!(Definitions::parse(
             &ctxt,
@@ -331,7 +333,7 @@ impl TopLevelEnvironment {
             &sexprs,
             &mut mutable_vars,
         ))?;
-        maybe_await!(Compiler::new(mutable_vars).compile(&rt, &body))
+        maybe_await!(Compiler::new(mutable_vars).compile(Runtime::new(), &body))
     }
 
     #[maybe_async]
@@ -340,8 +342,7 @@ impl TopLevelEnvironment {
         import_policy: impl Into<ImportPolicy>,
         mut sexpr: Syntax,
     ) -> Result<Vec<Value>, Exception> {
-        let rt = { self.0.read().rt.clone() };
-        let ctxt = ParseContext::new(&rt, import_policy);
+        let ctxt = ParseContext::new(import_policy);
         sexpr.add_scope(self.0.read().scope);
         let mut mutable_vars = HashSet::default();
         let body = std::slice::from_ref(&sexpr);
@@ -352,16 +353,17 @@ impl TopLevelEnvironment {
             &sexpr,
             &mut mutable_vars,
         ))?;
-        maybe_await!(Compiler::new(mutable_vars).compile(&rt, &body))
+        maybe_await!(Compiler::new(mutable_vars).compile(Runtime::new(), &body))
     }
 
-    #[maybe_async]
     pub fn import(&self, import_set: ImportSet) -> Result<(), Exception> {
-        let (rt, registry, scope) = {
+        let registry = Runtime::new().get_registry();
+        let scope = {
             let this = self.0.read();
-            (this.rt.clone(), this.rt.get_registry(), this.scope)
+            this.scope
         };
-        let imports = maybe_await!(registry.import(&rt, import_set))?;
+        let mut registry_inner = registry.0.write();
+        let imports = registry_inner.import(import_set)?;
         let mut this = self.0.write();
         for (sym, import) in imports {
             match this.imports.entry(import.binding) {
@@ -381,33 +383,26 @@ impl TopLevelEnvironment {
 
     #[maybe_async]
     pub(crate) fn maybe_expand(&self) -> Result<(), Exception> {
-        let body = {
-            let mut this = self.0.write();
-            if let LibraryState::Unexpanded(body) = &mut this.state {
-                let body = std::mem::replace(
-                    body,
-                    Syntax::Wrapped {
-                        value: Value::undefined(),
-                        span: Span::default(),
-                    },
-                );
-                this.state = LibraryState::Expanding;
-                body
-            } else {
-                return Ok(());
-            }
+        let mut this = self.0.write();
+        let body = if let LibraryState::Unexpanded(body) = &mut this.state {
+            let body = std::mem::replace(
+                body,
+                Syntax::Wrapped {
+                    value: Value::undefined(),
+                    span: Span::default(),
+                },
+            );
+            this.state = LibraryState::Expanding;
+            body
+        } else {
+            return Ok(());
         };
 
-        let rt = { self.0.read().rt.clone() };
+        let this = RwLockWriteGuard::downgrade_to_upgradable(this);
         let env = Environment::from(self.clone());
         let mut mutable_vars = HashSet::default();
-        let expanded = maybe_await!(Definitions::parse_lib_body(
-            &rt,
-            &body,
-            &env,
-            &mut mutable_vars
-        ))?;
-        self.0.write().state = LibraryState::Expanded {
+        let expanded = maybe_await!(Definitions::parse_lib_body(&body, &env, &mut mutable_vars))?;
+        RwLockUpgradableReadGuard::upgrade(this).state = LibraryState::Expanded {
             expanded,
             mutable_vars,
         };
@@ -417,8 +412,9 @@ impl TopLevelEnvironment {
     #[maybe_async]
     pub(crate) fn maybe_invoke(&self) -> Result<(), Exception> {
         maybe_await!(self.maybe_expand())?;
-        let (defn_body, mutable_vars) = {
-            let mut this = self.0.write();
+
+        let mut this = self.0.write();
+        let (defn_body, mutable_vars) =
             match std::mem::replace(&mut this.state, LibraryState::Invalid) {
                 LibraryState::Expanded {
                     expanded,
@@ -428,11 +424,10 @@ impl TopLevelEnvironment {
                     this.state = x;
                     return Ok(());
                 }
-            }
-        };
-        let rt = { self.0.read().rt.clone() };
-        let _ = maybe_await!(Compiler::new(mutable_vars).compile(&rt, &defn_body))?;
-        self.0.write().state = LibraryState::Invoked;
+            };
+        let this = RwLockWriteGuard::downgrade_to_upgradable(this);
+        let _ = maybe_await!(Compiler::new(mutable_vars).compile(Runtime::new(), &defn_body))?;
+        RwLockUpgradableReadGuard::upgrade(this).state = LibraryState::Invoked;
         Ok(())
     }
 
@@ -645,12 +640,9 @@ impl LexicalContour {
 
     #[maybe_async]
     pub fn import(&self, import_set: ImportSet) -> Result<(), Exception> {
-        let (rt, registry) = {
-            let top = self.fetch_top();
-            let top = top.0.read();
-            (top.rt.clone(), top.rt.get_registry())
-        };
-        let imports = maybe_await!(registry.import(&rt, import_set))?;
+        let registry = Runtime::new().get_registry();
+        let mut registry_inner = registry.0.write();
+        let imports = registry_inner.import(import_set)?;
         let mut bindings = self.bindings.lock();
         for (sym, import) in imports {
             let binding_type = LocalBinding::Imported(import.origin.clone());
@@ -1072,12 +1064,10 @@ fn find_all_matching_bindings(id: &Identifier) -> Vec<(BTreeSet<Scope>, Binding)
 mod tests {
     use super::*;
     use crate::ast::ImportSet;
-    use crate::runtime::Runtime;
 
     #[test]
     fn import_policy_allow() {
-        let rt = Runtime::new();
-        let env = TopLevelEnvironment::new_repl(&rt);
+        let env = TopLevelEnvironment::new_repl();
         // ImportPolicy::Allow should permit imports
         let result = env.eval(ImportPolicy::Allow, "(import (rnrs)) (abs -5)");
         assert!(
@@ -1088,8 +1078,7 @@ mod tests {
 
     #[test]
     fn import_policy_deny_all() {
-        let rt = Runtime::new();
-        let env = TopLevelEnvironment::new_repl(&rt);
+        let env = TopLevelEnvironment::new_repl();
         // deny_all should deny all imports
         let result = env.eval(ImportPolicy::deny_all(), "(import (rnrs))");
         assert!(result.is_err(), "deny_all should deny all imports");
@@ -1097,8 +1086,7 @@ mod tests {
 
     #[test]
     fn import_policy_allowlist_permits_listed() {
-        let rt = Runtime::new();
-        let env = TopLevelEnvironment::new_repl(&rt);
+        let env = TopLevelEnvironment::new_repl();
         // Allow only (rnrs base) via s-expression parsing
         let allow_list: AllowList = "((rnrs base))".parse().unwrap();
         let policy = ImportPolicy::allow_only(allow_list);
@@ -1111,8 +1099,7 @@ mod tests {
 
     #[test]
     fn import_policy_allowlist_denies_unlisted() {
-        let rt = Runtime::new();
-        let env = TopLevelEnvironment::new_repl(&rt);
+        let env = TopLevelEnvironment::new_repl();
         // Allow only (rnrs base), but try to import (rnrs io simple)
         let allow_list: AllowList = "((rnrs base))".parse().unwrap();
         let policy = ImportPolicy::allow_only(allow_list);
@@ -1123,8 +1110,7 @@ mod tests {
     #[test]
     fn allowlist_from_str_multiple_libs() {
         let allow_list: AllowList = "((rnrs base) (rnrs io simple))".parse().unwrap();
-        let rt = Runtime::new();
-        let env = TopLevelEnvironment::new_repl(&rt);
+        let env = TopLevelEnvironment::new_repl();
         let policy = ImportPolicy::allow_only(allow_list);
         // Both libraries should be permitted
         let result = env.eval(policy, "(import (rnrs base) (rnrs io simple)) (abs -5)");
@@ -1137,8 +1123,7 @@ mod tests {
     #[test]
     fn allowlist_from_slice() {
         let allow_list = AllowList::from_slice(&[&["rnrs", "base"]]);
-        let rt = Runtime::new();
-        let env = TopLevelEnvironment::new_repl(&rt);
+        let env = TopLevelEnvironment::new_repl();
         let policy = ImportPolicy::allow_only(allow_list);
         let result = env.eval(policy, "(import (rnrs base)) (abs -5)");
         assert!(
@@ -1153,8 +1138,7 @@ mod tests {
 
         let mut allow_list = AllowList::default();
         allow_list.add_lib(vec![Symbol::intern("rnrs"), Symbol::intern("base")]);
-        let rt = Runtime::new();
-        let env = TopLevelEnvironment::new_repl(&rt);
+        let env = TopLevelEnvironment::new_repl();
         let policy = ImportPolicy::allow_only(allow_list);
         let result = env.eval(policy, "(import (rnrs base)) (abs -5)");
         assert!(result.is_ok(), "AllowList::add_lib should work: {result:?}");
@@ -1162,15 +1146,14 @@ mod tests {
 
     #[test]
     fn import_policy_from_bool() {
-        let rt = Runtime::new();
-        let env = TopLevelEnvironment::new_repl(&rt);
+        let env = TopLevelEnvironment::new_repl();
 
         // true should permit imports (backward compat)
         let result = env.eval(true, "(import (rnrs)) (abs -5)");
         assert!(result.is_ok(), "true should permit imports: {result:?}");
 
         // false should deny imports (backward compat)
-        let env2 = TopLevelEnvironment::new_repl(&rt);
+        let env2 = TopLevelEnvironment::new_repl();
         let result = env2.eval(false, "(import (rnrs))");
         assert!(result.is_err(), "false should deny imports");
     }

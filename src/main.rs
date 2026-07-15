@@ -131,7 +131,7 @@ fn entry(runtime: &Runtime) -> Result<(), Exception> {
         return Ok(());
     }
 
-    let repl = TopLevelEnvironment::new_repl(runtime);
+    let repl = TopLevelEnvironment::new_repl();
 
     maybe_await!(repl.import("(library (rnrs))".parse().unwrap()))
         .expect("Failed to import standard library");

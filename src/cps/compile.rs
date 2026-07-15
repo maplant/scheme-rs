@@ -33,7 +33,7 @@ impl Compiler {
     #[maybe_async]
     pub fn compile(
         mut self,
-        runtime: &Runtime,
+        runtime: Runtime,
         expr: &impl Compile,
     ) -> Result<Vec<RuntimeValue>, Exception> {
         let k = Local::gensym();
@@ -502,6 +502,7 @@ fn compile_apply_args(
     span: Span,
 ) -> Cps {
     let (arg, tail) = match remaining_args {
+        #[cfg(feature = "continuation-marks")]
         [] => {
             let frame = frame.map_or_else(
                 || Value::from(Local::gensym()),
@@ -526,6 +527,11 @@ fn compile_apply_args(
             } else {
                 app
             };
+        }
+        #[cfg(not(feature = "continuation-marks"))]
+        [] => {
+            // let _ = (frame, span);
+            return Cps::App(op, collected_args);
         }
         [arg, tail @ ..] => (arg, tail),
     };
@@ -661,14 +667,15 @@ fn compile_and(
     Cps::Fix(
         vec![LambdaBinding {
             args: LambdaArgs::new(vec![k1], false, None),
-            body: Box::new(expr.compile(ctxt, &mut |expr_result| {
-                let k3 = Local::gensym();
-                let cond_arg = Local::gensym();
-                Cps::Fix(
-                    vec![LambdaBinding {
-                        args: LambdaArgs::new(vec![cond_arg], false, None),
-                        body: if let Some(tail) = tail {
-                            Box::new(Cps::If(
+            body: Box::new(expr.compile(ctxt, &mut |expr_result| match tail {
+                None => Cps::App(expr_result, vec![Value::from(k1)]),
+                Some(tail) => {
+                    let k3 = Local::gensym();
+                    let cond_arg = Local::gensym();
+                    Cps::Fix(
+                        vec![LambdaBinding {
+                            args: LambdaArgs::new(vec![cond_arg], false, None),
+                            body: Box::new(Cps::If(
                                 Value::from(cond_arg),
                                 Box::new(compile_and(ctxt, tail, &mut |expr| {
                                     Cps::App(expr, vec![Value::from(k1)])
@@ -677,15 +684,13 @@ fn compile_and(
                                     Value::from(k1),
                                     vec![Value::from(RuntimeValue::from(false))],
                                 )),
-                            ))
-                        } else {
-                            Box::new(Cps::App(Value::from(k1), vec![Value::from(cond_arg)]))
-                        },
-                        val: k3,
-                        span: None,
-                    }],
-                    Box::new(Cps::App(expr_result, vec![Value::from(k3)])),
-                )
+                            )),
+                            val: k3,
+                            span: None,
+                        }],
+                        Box::new(Cps::App(expr_result, vec![Value::from(k3)])),
+                    )
+                }
             })),
             val: k2,
             span: None,
@@ -733,31 +738,27 @@ fn compile_or(
     Cps::Fix(
         vec![LambdaBinding {
             args: LambdaArgs::new(vec![k1], false, None),
-            body: Box::new(expr.compile(ctxt, &mut |expr_result| {
-                let k3 = Local::gensym();
-                let cond_arg = Local::gensym();
-                Cps::Fix(
-                    vec![LambdaBinding {
-                        args: LambdaArgs::new(vec![cond_arg], false, None),
-                        body: Box::new(Cps::If(
-                            Value::from(cond_arg),
-                            Box::new(Cps::App(Value::from(k1), vec![Value::from(cond_arg)])),
-                            Box::new(if let Some(tail) = tail {
-                                compile_or(ctxt, tail, &mut |expr| {
+            body: Box::new(expr.compile(ctxt, &mut |expr_result| match tail {
+                None => Cps::App(expr_result, vec![Value::from(k1)]),
+                Some(tail) => {
+                    let k3 = Local::gensym();
+                    let cond_arg = Local::gensym();
+                    Cps::Fix(
+                        vec![LambdaBinding {
+                            args: LambdaArgs::new(vec![cond_arg], false, None),
+                            body: Box::new(Cps::If(
+                                Value::from(cond_arg),
+                                Box::new(Cps::App(Value::from(k1), vec![Value::from(cond_arg)])),
+                                Box::new(compile_or(ctxt, tail, &mut |expr| {
                                     Cps::App(expr, vec![Value::from(k1)])
-                                })
-                            } else {
-                                Cps::App(
-                                    Value::from(k1),
-                                    vec![Value::from(RuntimeValue::from(false))],
-                                )
-                            }),
-                        )),
-                        val: k3,
-                        span: None,
-                    }],
-                    Box::new(Cps::App(expr_result, vec![Value::from(k3)])),
-                )
+                                })),
+                            )),
+                            val: k3,
+                            span: None,
+                        }],
+                        Box::new(Cps::App(expr_result, vec![Value::from(k3)])),
+                    )
+                }
             })),
             val: k2,
             span: None,

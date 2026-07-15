@@ -17,7 +17,7 @@ use crate::{
 
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, LazyLock},
 };
 
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
@@ -138,17 +138,12 @@ struct Stdlib;
 #[derive(Trace, Default)]
 pub(crate) struct RegistryInner {
     pub(crate) libs: HashMap<Vec<Symbol>, TopLevelEnvironment>,
-    loading: HashSet<Vec<Symbol>>,
+    dep_graph: HashMap<Vec<Symbol>, HashSet<Vec<Symbol>>>,
 }
 
 impl RegistryInner {
-    /// Construct an empty registry
-    pub fn empty() -> Self {
-        Self::default()
-    }
-
     /// Construct a Registry with all of the available bridge functions and special keywords.
-    pub fn new(rt: &Runtime) -> Self {
+    pub fn new() -> Self {
         struct Lib {
             version: Version,
             syms: HashMap<Symbol, Procedure>,
@@ -172,7 +167,6 @@ impl RegistryInner {
             lib.syms.insert(
                 Symbol::intern(bridge_fn.name),
                 Procedure::with_debug_info(
-                    rt.clone(),
                     Vec::new(),
                     match bridge_fn.wrapper {
                         Bridge::Sync(func) => FuncPtr::Bridge(func),
@@ -244,7 +238,6 @@ impl RegistryInner {
             (
                 name.clone(),
                 TopLevelEnvironment(Gc::new(RwLock::new(TopLevelEnvironmentInner {
-                    rt: rt.clone(),
                     kind: TopLevelKind::Libary {
                         name: LibraryName {
                             version: Version::from([6]),
@@ -282,7 +275,6 @@ impl RegistryInner {
                     })
                     .collect::<Vec<_>>();
                 let lib = TopLevelEnvironment(Gc::new(RwLock::new(TopLevelEnvironmentInner {
-                    rt: rt.clone(),
                     kind: TopLevelKind::Libary {
                         name: LibraryName {
                             version: lib.version,
@@ -317,51 +309,77 @@ impl RegistryInner {
 
         Self {
             libs,
-            loading: HashSet::default(),
+            dep_graph: HashMap::default(),
         }
     }
-}
 
-#[derive(Trace, Clone)]
-pub(crate) struct Registry(pub(crate) Gc<RwLock<RegistryInner>>);
-
-impl Registry {
-    pub(crate) fn empty() -> Self {
-        Self(Gc::new(RwLock::new(RegistryInner::empty())))
-    }
-
-    pub(crate) fn new(rt: &Runtime) -> Self {
-        Self(Gc::new(RwLock::new(RegistryInner::new(rt))))
-    }
-
-    fn mark_as_loading(&self, name: &[Symbol]) {
-        self.0.write().loading.insert(name.to_vec());
-    }
-
-    #[maybe_async]
-    pub(crate) fn def_lib(&self, rt: &Runtime, lib: &str, path: &str) -> Result<(), Exception> {
-        let form = Syntax::from_str(lib, Some(path))?;
-        let form = match form.as_list() {
-            Some([form, end]) if end.is_null() => form,
-            _ => return Err(Exception::error("library is malformed")),
-        };
-        let spec = LibrarySpec::parse(form)?;
-        let name = spec.name.name.clone();
-        let lib = maybe_await!(TopLevelEnvironment::from_spec(
-            rt,
-            spec,
-            PathBuf::from(path),
-        ))?;
-        let mut this_mut = self.0.write();
-        this_mut.libs.insert(name, lib);
+    pub(crate) fn check_for_circular_dependencies(
+        &mut self,
+        from: &[Symbol],
+        to: &[Symbol],
+    ) -> Result<(), Exception> {
+        if self.reaches(to, from) {
+            return Err(error::circular_dependency());
+        }
+        self.dep_graph
+            .entry(from.to_vec())
+            .or_default()
+            .insert(to.to_vec());
         Ok(())
+    }
+
+    /// Determines whether or not start reaches target in the dependency graph
+    fn reaches(&self, start: &[Symbol], target: &[Symbol]) -> bool {
+        let mut stack = vec![start.to_vec()];
+        let mut visited = HashSet::default();
+        while let Some(node) = stack.pop() {
+            if node == target {
+                return true;
+            }
+            if !visited.insert(node.clone()) {
+                continue;
+            }
+            if let Some(deps) = self.dep_graph.get(&node) {
+                stack.extend(deps.iter().cloned());
+            }
+        }
+        false
+    }
+
+    /// Attempt to load a library from the directory, returning None if no such file exists.
+    fn load_lib_from_dir(
+        &mut self,
+        path: &Path,
+        path_suffix: &str,
+        scope: Scope,
+    ) -> Result<Option<TopLevelEnvironment>, Exception> {
+        for ext in ["sls", "ss", "scm"] {
+            let path = path.join(format!("{path_suffix}.{ext}"));
+            if let Ok(false) = maybe_await!(try_exists(&path)) {
+                continue;
+            }
+            let contents = maybe_await!(read_to_string(&path))?;
+
+            let file_name = path.file_name().unwrap().to_string_lossy();
+            let form = Syntax::from_str(&contents, Some(&file_name))?;
+
+            let form = match form.as_list() {
+                Some([form, end]) if end.is_null() => form,
+                _ => return Err(Exception::error("library is malformed")),
+            };
+            let spec = LibrarySpec::parse(form)?;
+            return Ok(Some(maybe_await!(
+                TopLevelEnvironment::from_spec_with_scope(spec, path, scope, self)
+            )?));
+        }
+
+        Ok(None)
     }
 
     // TODO: This function is quite messy, so it would be nice to do a little
     // clean up on it.
-    #[maybe_async]
-    fn load_lib(&self, rt: &Runtime, name: &[Symbol]) -> Result<TopLevelEnvironment, Exception> {
-        let scope = if let Some(lib) = self.0.read().libs.get(name) {
+    fn load_lib(&mut self, name: &[Symbol]) -> Result<TopLevelEnvironment, Exception> {
+        let scope = if let Some(lib) = self.libs.get(name) {
             if !matches!(*lib.get_state(), LibraryState::BridgesDefined) {
                 return Ok(lib.clone());
             }
@@ -370,15 +388,7 @@ impl Registry {
             Scope::new()
         };
 
-        // Check to see that we're not currently loading the library. Circular
-        // dependencies are not allowed. We should probably support them at some
-        // point to some degree.
-        if self.0.read().loading.contains(name) {
-            return Err(error::circular_dependency());
-        }
-
         // Load the library and insert it into the registry.
-        self.mark_as_loading(name);
         const DEFAULT_LOAD_PATH: &str = "~/.scheme-rs";
 
         // Get the suffix:
@@ -389,7 +399,7 @@ impl Registry {
         let curr_path = std::env::current_dir()
             .expect("If we can't get the current working directory, we can't really do much");
         let lib = if cfg!(feature = "load-libraries-from-fs")
-            && let Some(lib) = maybe_await!(load_lib_from_dir(rt, &curr_path, &path_suffix, scope))?
+            && let Some(lib) = self.load_lib_from_dir(&curr_path, &path_suffix, scope)?
         {
             lib
         } else {
@@ -400,7 +410,7 @@ impl Registry {
             );
 
             if cfg!(feature = "load-libraries-from-fs")
-                && let Some(lib) = maybe_await!(load_lib_from_dir(rt, &path, &path_suffix, scope))?
+                && let Some(lib) = self.load_lib_from_dir(&path, &path_suffix, scope)?
             {
                 lib
             } else {
@@ -414,13 +424,13 @@ impl Registry {
                         _ => return Err(Exception::error("library is malformed")),
                     };
                     let spec = LibrarySpec::parse(form)?;
-                    maybe_await!(TopLevelEnvironment::from_spec_with_scope(
-                        rt,
+                    TopLevelEnvironment::from_spec_with_scope(
                         spec,
                         PathBuf::from(file_name),
-                        scope
-                    ))?
-                } else if let Some(lib) = self.0.read().libs.get(name) {
+                        scope,
+                        self,
+                    )?
+                } else if let Some(lib) = self.libs.get(name) {
                     lib.0.write().state = LibraryState::Invoked;
                     lib.clone()
                 } else {
@@ -428,41 +438,19 @@ impl Registry {
                 }
             }
         };
-        let mut this_mut = self.0.write();
-        this_mut.libs.insert(name.to_vec(), lib.clone());
-        this_mut.loading.remove(name);
+        self.libs.insert(name.to_vec(), lib.clone());
         Ok(lib)
     }
 
     /// Load a set of symbols from a library with the given import set.
-    #[cfg(not(feature = "async"))]
-    pub(crate) fn import<'b, 'a: 'b>(
-        &'a self,
-        rt: &'b Runtime,
-        import_set: ImportSet,
-    ) -> ImportIter<'b> {
-        self.import_inner(rt, import_set)
+    pub(crate) fn import(&mut self, import_set: ImportSet) -> ImportIter<'_> {
+        self.import_inner(import_set)
     }
 
-    /// Load a set of symbols from a library with the given import set.
-    #[cfg(feature = "async")]
-    pub(crate) fn import<'b, 'a: 'b>(
-        &'a self,
-        rt: &'b Runtime,
-        import_set: ImportSet,
-    ) -> ImportIterFuture<'b> {
-        Box::pin(self.import_inner(rt, import_set))
-    }
-
-    #[maybe_async]
-    pub(crate) fn import_inner<'b, 'a: 'b>(
-        &'a self,
-        rt: &'b Runtime,
-        import_set: ImportSet,
-    ) -> ImportIter<'b> {
+    pub(crate) fn import_inner(&mut self, import_set: ImportSet) -> ImportIter<'_> {
         match import_set {
             ImportSet::Library(lib_import) => {
-                let lib = maybe_await!(self.load_lib(rt, &lib_import.name)).map_err(|err| {
+                let lib = self.load_lib(&lib_import.name).map_err(|err| {
                     let lib_name = lib_import
                         .name
                         .iter()
@@ -498,39 +486,59 @@ impl Registry {
                             },
                         },
                     )
-                })) as DynIter<'b>)
+                })) as DynIter<'_>)
             }
             ImportSet::Only { set, allowed } => Ok(Box::new(
-                maybe_await!(self.import(rt, *set))?
+                self.import(*set)?
                     .filter(move |(import, _)| allowed.contains(import)),
-            ) as DynIter<'b>),
+            ) as DynIter<'_>),
             ImportSet::Except { set, disallowed } => Ok(Box::new(
-                maybe_await!(self.import(rt, *set))?
+                self.import(*set)?
                     .filter(move |(import, _)| !disallowed.contains(import)),
-            ) as DynIter<'b>),
+            ) as DynIter<'_>),
             ImportSet::Prefix { set, prefix } => {
                 let prefix = prefix.to_str();
-                Ok(Box::new(
-                    maybe_await!(self.import(rt, *set))?.map(move |(name, import)| {
-                        (
-                            Symbol::intern(&format!("{prefix}{}", name.to_str())),
-                            import,
-                        )
-                    }),
-                ) as DynIter<'b>)
+                Ok(Box::new(self.import(*set)?.map(move |(name, import)| {
+                    (
+                        Symbol::intern(&format!("{prefix}{}", name.to_str())),
+                        import,
+                    )
+                })) as DynIter<'_>)
             }
             ImportSet::Rename { set, mut renames } => Ok(Box::new(
-                maybe_await!(self.import(rt, *set))?
+                self.import(*set)?
                     .map(move |(name, import)| (renames.remove(&name).unwrap_or(name), import)),
-            ) as DynIter<'b>),
+            ) as DynIter<'_>),
         }
+    }
+}
+
+#[derive(Trace, Clone)]
+pub(crate) struct Registry(pub(crate) Gc<RwLock<RegistryInner>>);
+
+impl Registry {
+    pub(crate) fn new() -> Self {
+        Self(Gc::new(RwLock::new(RegistryInner::new())))
+    }
+
+    #[maybe_async]
+    pub(crate) fn def_lib(&self, lib: &str, path: &str) -> Result<(), Exception> {
+        let form = Syntax::from_str(lib, Some(path))?;
+        let form = match form.as_list() {
+            Some([form, end]) if end.is_null() => form,
+            _ => return Err(Exception::error("library is malformed")),
+        };
+        let spec = LibrarySpec::parse(form)?;
+        let name = spec.name.name.clone();
+        let lib = maybe_await!(TopLevelEnvironment::from_spec(spec, PathBuf::from(path),))?;
+        let mut this_mut = self.0.write();
+        this_mut.libs.insert(name, lib);
+        Ok(())
     }
 }
 
 type DynIter<'a> = Box<dyn Iterator<Item = (Symbol, Import)> + 'a>;
 type ImportIter<'b> = Result<DynIter<'b>, Exception>;
-#[cfg(feature = "async")]
-type ImportIterFuture<'b> = BoxFuture<'b, ImportIter<'b>>;
 
 #[cfg(not(feature = "async"))]
 fn try_exists(path: &Path) -> std::io::Result<bool> {
@@ -550,35 +558,4 @@ fn read_to_string(path: &Path) -> std::io::Result<String> {
 #[cfg(feature = "tokio")]
 async fn read_to_string(path: &Path) -> std::io::Result<String> {
     tokio::fs::read_to_string(path).await
-}
-
-/// Attempt to load a library from the directory, returning None if no such file exists.
-#[maybe_async]
-fn load_lib_from_dir(
-    rt: &Runtime,
-    path: &Path,
-    path_suffix: &str,
-    scope: Scope,
-) -> Result<Option<TopLevelEnvironment>, Exception> {
-    for ext in ["sls", "ss", "scm"] {
-        let path = path.join(format!("{path_suffix}.{ext}"));
-        if let Ok(false) = maybe_await!(try_exists(&path)) {
-            continue;
-        }
-        let contents = maybe_await!(read_to_string(&path))?;
-
-        let file_name = path.file_name().unwrap().to_string_lossy();
-        let form = Syntax::from_str(&contents, Some(&file_name))?;
-
-        let form = match form.as_list() {
-            Some([form, end]) if end.is_null() => form,
-            _ => return Err(Exception::error("library is malformed")),
-        };
-        let spec = LibrarySpec::parse(form)?;
-        return Ok(Some(maybe_await!(
-            TopLevelEnvironment::from_spec_with_scope(rt, spec, path, scope,)
-        )?));
-    }
-
-    Ok(None)
 }

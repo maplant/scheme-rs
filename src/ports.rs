@@ -14,8 +14,8 @@ use std::{
     any::Any,
     borrow::Cow,
     fmt,
-    mem::MaybeUninit,
     io::{Cursor, ErrorKind},
+    mem::MaybeUninit,
     path::Path,
     sync::{Arc, LazyLock},
 };
@@ -3636,7 +3636,6 @@ pub fn standard_input_port() -> Result<Vec<Value>, Exception> {
 
 #[cps_bridge(def = "current-input-port", lib = "(rnrs base builtins (6))")]
 pub fn current_input_port(
-    _runtime: &Runtime,
     _env: &[Value],
     _args: &[Value],
     _rest_args: &[Value],
@@ -3648,7 +3647,6 @@ pub fn current_input_port(
 
 #[cps_bridge(def = "current-output-port", lib = "(rnrs base builtins (6))")]
 pub fn current_output_port(
-    _runtime: &Runtime,
     _env: &[Value],
     _args: &[Value],
     _rest_args: &[Value],
@@ -3660,7 +3658,6 @@ pub fn current_output_port(
 
 #[cps_bridge(def = "current-error-port", lib = "(rnrs base builtins (6))")]
 pub fn current_error_port(
-    _runtime: &Runtime,
     _env: &[Value],
     _args: &[Value],
     _rest_args: &[Value],
@@ -4218,7 +4215,6 @@ pub fn make_custom_textual_input_output_port(
     lib = "(rnrs io simple builtins (6))"
 )]
 pub fn call_with_input_file(
-    runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
@@ -4252,7 +4248,6 @@ pub fn call_with_input_file(
 
     let (num_req_args, variadic) = barrier.cont_formals();
     barrier.push_cont(
-        runtime.clone(),
         vec![Value::from(port.clone())],
         ContPtr::Continuation(close_port_and_call_k),
         num_req_args,
@@ -4268,7 +4263,6 @@ pub fn call_with_input_file(
     lib = "(rnrs io simple builtins (6))"
 )]
 pub fn call_with_output_file(
-    runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
@@ -4308,7 +4302,6 @@ pub fn call_with_output_file(
 
     let (num_req_args, variadic) = barrier.cont_formals();
     barrier.push_cont(
-        runtime.clone(),
         vec![Value::from(port.clone())],
         ContPtr::Continuation(close_port_and_call_k),
         num_req_args,
@@ -4319,7 +4312,6 @@ pub fn call_with_output_file(
 }
 
 unsafe extern "C" fn close_port_and_call_k(
-    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
     barrier: *mut ContBarrier,
@@ -4332,8 +4324,6 @@ unsafe extern "C" fn close_port_and_call_k(
     let bridge = FuncPtr::AsyncBridge;
 
     unsafe {
-        let runtime = Runtime(Gc::from_raw_inc_rc(runtime));
-
         // env[0] is the port
         let port = env.as_ref().unwrap().clone();
 
@@ -4354,7 +4344,6 @@ unsafe extern "C" fn close_port_and_call_k(
         }
 
         barrier.push_cont(
-            runtime.clone(),
             vec![Value::from(collected_args)],
             ContPtr::Continuation(call_k_with_env),
             0,
@@ -4362,14 +4351,13 @@ unsafe extern "C" fn close_port_and_call_k(
         );
 
         (*out).write(Application::new(
-            Procedure::new(runtime, Vec::new(), bridge(close_port), 1, false),
+            Procedure::new(Vec::new(), bridge(close_port), 1, false),
             vec![port],
         ));
     }
 }
 
 unsafe extern "C" fn call_k_with_env(
-    _runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
     barrier: *mut ContBarrier,
@@ -4399,7 +4387,6 @@ unsafe extern "C" fn call_k_with_env(
     lib = "(rnrs io simple builtins (6))"
 )]
 pub fn with_input_from_file(
-    runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
@@ -4439,16 +4426,9 @@ pub fn with_input_from_file(
     // Stack (bottom to top): the outer continuation, pop_dyn_stack (removes the
     // current-input-port entry), then close_port_and_call_k (closes the port).
     // The thunk returns to the top.
-    barrier.push_cont(
-        runtime.clone(),
-        [],
-        ContPtr::Continuation(pop_dyn_stack),
-        req_args,
-        var,
-    );
+    barrier.push_cont([], ContPtr::Continuation(pop_dyn_stack), req_args, var);
 
     barrier.push_cont(
-        runtime.clone(),
         [Value::from(port.clone())],
         ContPtr::Continuation(close_port_and_call_k),
         req_args,
@@ -4464,7 +4444,6 @@ pub fn with_input_from_file(
     lib = "(rnrs io simple builtins (6))"
 )]
 pub fn with_output_to_file(
-    runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
@@ -4507,16 +4486,9 @@ pub fn with_output_to_file(
 
     let (req_args, var) = barrier.cont_formals();
 
-    barrier.push_cont(
-        runtime.clone(),
-        [],
-        ContPtr::Continuation(pop_dyn_stack),
-        req_args,
-        var,
-    );
+    barrier.push_cont([], ContPtr::Continuation(pop_dyn_stack), req_args, var);
 
     barrier.push_cont(
-        runtime.clone(),
         [Value::from(port.clone())],
         ContPtr::Continuation(close_port_and_call_k),
         req_args,
@@ -4553,7 +4525,6 @@ pub fn open_output_file(filename: &Value) -> Result<Vec<Value>, Exception> {
     lib = "(rnrs io simple builtins (6))"
 )]
 pub fn read_char(
-    runtime: &Runtime,
     _env: &[Value],
     _args: &[Value],
     rest_args: &[Value],
@@ -4564,7 +4535,6 @@ pub fn read_char(
         [input_port] => input_port.clone().try_into()?,
         _ => {
             return Ok(raise(
-                runtime.clone(),
                 Value::from(Exception::wrong_num_of_var_args(0..1, rest_args.len())),
                 barrier,
             ));
@@ -4586,7 +4556,6 @@ pub fn read_char(
     lib = "(rnrs io simple builtins (6))"
 )]
 pub fn peek_char(
-    runtime: &Runtime,
     _env: &[Value],
     _args: &[Value],
     rest_args: &[Value],
@@ -4597,7 +4566,6 @@ pub fn peek_char(
         [input_port] => input_port.clone().try_into()?,
         _ => {
             return Ok(raise(
-                runtime.clone(),
                 Value::from(Exception::wrong_num_of_var_args(0..1, rest_args.len())),
                 barrier,
             ));
@@ -4619,7 +4587,6 @@ pub fn peek_char(
     lib = "(rnrs io simple builtins (6))"
 )]
 pub fn read(
-    runtime: &Runtime,
     _env: &[Value],
     _args: &[Value],
     rest_args: &[Value],
@@ -4630,7 +4597,6 @@ pub fn read(
         [input_port] => input_port.clone().try_into()?,
         _ => {
             return Ok(raise(
-                runtime.clone(),
                 Value::from(Exception::wrong_num_of_var_args(0..1, rest_args.len())),
                 barrier,
             ));
@@ -4652,7 +4618,6 @@ pub fn read(
     lib = "(rnrs io simple builtins (6))"
 )]
 pub fn write_char(
-    runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
     rest_args: &[Value],
@@ -4665,7 +4630,6 @@ pub fn write_char(
         [output_port] => output_port.clone().try_into()?,
         _ => {
             return Ok(raise(
-                runtime.clone(),
                 Value::from(Exception::wrong_num_of_var_args(1..2, rest_args.len())),
                 barrier,
             ));
@@ -4683,7 +4647,6 @@ pub fn write_char(
     lib = "(rnrs io simple builtins (6))"
 )]
 pub fn newline(
-    runtime: &Runtime,
     _env: &[Value],
     _args: &[Value],
     rest_args: &[Value],
@@ -4694,7 +4657,6 @@ pub fn newline(
         [output_port] => output_port.clone().try_into()?,
         _ => {
             return Ok(raise(
-                runtime.clone(),
                 Value::from(Exception::wrong_num_of_var_args(0..1, rest_args.len())),
                 barrier,
             ));
@@ -4712,7 +4674,6 @@ pub fn newline(
     lib = "(rnrs io simple builtins (6))"
 )]
 pub fn display(
-    runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
     rest_args: &[Value],
@@ -4725,7 +4686,6 @@ pub fn display(
         [output_port] => output_port.clone().try_into()?,
         _ => {
             return Ok(raise(
-                runtime.clone(),
                 Value::from(Exception::wrong_num_of_var_args(1..2, rest_args.len())),
                 barrier,
             ));
@@ -4743,7 +4703,6 @@ pub fn display(
     lib = "(rnrs io simple builtins (6))"
 )]
 pub fn write(
-    runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
     rest_args: &[Value],
@@ -4756,7 +4715,6 @@ pub fn write(
         [output_port] => output_port.clone().try_into()?,
         _ => {
             return Ok(raise(
-                runtime.clone(),
                 Value::from(Exception::wrong_num_of_var_args(1..2, rest_args.len())),
                 barrier,
             ));
