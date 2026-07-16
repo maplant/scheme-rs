@@ -47,6 +47,10 @@ pub fn spawn(thunk: Procedure) -> Result<Vec<Value>, Exception> {
     // spawned thread starts a new dynamic extent and must not run the
     // parent's winders or see its exception handlers.
     let snapshot = dyn_state_snapshot();
+    // Capture the runtime handle so the child thread can block on the thunk
+    // inside the reactor context, letting async bridges use timers and IO.
+    #[cfg(feature = "async")]
+    let handle = tokio::runtime::Handle::try_current().ok();
     let join_handle = thread::spawn(move || {
         let mut cell_write = cell_cloned.lock();
 
@@ -58,7 +62,10 @@ pub fn spawn(thunk: Procedure) -> Result<Vec<Value>, Exception> {
 
             #[cfg(feature = "async")]
             {
-                *cell_write = thunk.call_sync(&[]);
+                *cell_write = match handle {
+                    Some(handle) => handle.block_on(thunk.call(&[])),
+                    None => futures::executor::block_on(thunk.call(&[])),
+                };
             }
         });
     });
