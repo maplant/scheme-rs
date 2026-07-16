@@ -1,0 +1,6 @@
+(library (tests lib-p)
+  (export p loaded?)
+  (import (rnrs) (rnrs parameters))
+  (define p (make-parameter 10))
+  (p 99)
+  (define loaded? #t))
