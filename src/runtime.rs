@@ -13,6 +13,7 @@ use crate::{
     hashtables::EqualHashSet,
     lists::{Pair, list_to_vec},
     num,
+    parameters::Parameter,
     ports::{BufferMode, Port, Transcoder},
     proc::{
         Application, ContBarrier, ContPtr, ContinuationPtr, DynState, FuncPtr, ProcDebugInfo,
@@ -464,8 +465,12 @@ unsafe extern "C" fn apply(
     out: *mut MaybeUninit<Application>,
 ) {
     unsafe {
-        let op = match Value::from_raw_inc_rc(op).unpack() {
+        let op_val = Value::from_raw_inc_rc(op);
+        let op = match op_val.unpack() {
             UnpackedValue::Procedure(op) => op,
+            UnpackedValue::Record(ref record) if record.cast::<Parameter>().is_some() => {
+                record.cast::<Parameter>().unwrap().companion().clone()
+            }
             x => {
                 let raised = raise(
                     Exception::invalid_operator(&x.type_name()).into(),

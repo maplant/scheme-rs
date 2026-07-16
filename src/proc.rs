@@ -89,13 +89,14 @@ use crate::{
     exceptions::{Exception, raise},
     gc::{Gc, Trace},
     lists::{Pair, list_to_vec},
+    parameters::Parameter,
     ports::{BufferMode, Port, Transcoder},
     records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
     registry::BridgeFnDebugInfo,
     runtime::Runtime,
     symbols::Symbol,
     syntax::Span,
-    value::Value,
+    value::{Cell, Value},
     vectors::Vector,
 };
 use scheme_rs_macros::{cps_bridge, maybe_async, maybe_await};
@@ -761,6 +762,11 @@ pub struct DynState {
     /// Whether this is the state currently being evaluated. False for a
     /// dormant/idle slot; [`DynStateSlot::is_published`] is just this flag.
     published: bool,
+    /// Root values of parameter objects (param id → value) for this task.
+    /// A bare `(p v)` outside any parameterize writes here; spawn_snapshot
+    /// value-copies it, so mutations are task-local with inheritance at
+    /// spawn (the guile-fibers model).
+    param_roots: HashMap<usize, Cell>,
 }
 
 impl DynState {
@@ -768,20 +774,31 @@ impl DynState {
         Self {
             dyn_stack: Vec::new(),
             published: false,
+            param_roots: HashMap::new(),
         }
     }
 
-    /// Current ports cross a spawn boundary; winders, handlers, and prompts
-    /// do not.
-    fn spawn_snapshot(&self) -> DynState {
-        DynState {
+    /// The dynamic state a newly spawned thread/task starts with: binding
+    /// entries (current ports) carry over as copies; control entries
+    /// (winders, prompts, exception handlers) belong to the spawning
+    /// thread's stack and do not cross. Which entries cross is decided
+    /// per-variant by [`DynStackElem::spawn_copy`]. Parameter roots are
+    /// inherited by value: the child gets its own cells seeded with the
+    /// parent's current values, so later mutations on either side stay
+    /// task-local.
+    fn spawn_snapshot(&self) -> Self {
+        Self {
             dyn_stack: self
                 .dyn_stack
                 .iter()
-                .filter(|elem| elem.crosses_spawn())
-                .cloned()
+                .filter_map(DynStackElem::spawn_copy)
                 .collect(),
             published: false,
+            param_roots: self
+                .param_roots
+                .iter()
+                .map(|(id, cell)| (*id, Cell::new(cell.get())))
+                .collect(),
         }
     }
 }
@@ -789,16 +806,6 @@ impl DynState {
 impl Default for DynState {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl DynStackElem {
-    /// Only current ports survive a spawn.
-    fn crosses_spawn(&self) -> bool {
-        matches!(
-            self,
-            DynStackElem::CurrentInputPort(_) | DynStackElem::CurrentOutputPort(_)
-        )
     }
 }
 
@@ -1193,6 +1200,46 @@ impl Default for ContBarrier<'_> {
     }
 }
 
+/// The current value of a parameter object: the innermost enclosing
+/// `parameterize` binding, else the task root, else the parameter's
+/// default if the root was never written.
+pub(crate) fn parameter_ref(param: &Embedded<Parameter>) -> Value {
+    DYN_STATE.with(|s| {
+        for elem in s.dyn_stack.iter().rev() {
+            if let DynStackElem::Parameterization(cells) = elem
+                && let Some(cell) = cells.get(&param.id())
+            {
+                return cell.get();
+            }
+        }
+        match s.param_roots.get(&param.id()) {
+            Some(cell) => cell.get(),
+            None => param.default_value(),
+        }
+    })
+}
+
+/// Writes a parameter object: the innermost enclosing `parameterize`
+/// binding if one is active, else the task root (creating it if this
+/// is the first write).
+pub(crate) fn parameter_set(param: &Embedded<Parameter>, val: Value) {
+    DYN_STATE.with(|s| {
+        for elem in s.dyn_stack.iter().rev() {
+            if let DynStackElem::Parameterization(cells) = elem
+                && let Some(cell) = cells.get(&param.id())
+            {
+                cell.set(val);
+                return;
+            }
+        }
+        if let Some(cell) = s.param_roots.get(&param.id()) {
+            cell.set(val);
+        } else {
+            s.param_roots.insert(param.id(), Cell::new(val));
+        }
+    })
+}
+
 impl<'a, 'b, 'c> From<&'b mut ContBarrier<'a>> for ContBarrier<'c>
 where
     'b: 'c,
@@ -1208,6 +1255,10 @@ where
 
 /// Independent of the current dynamic state: a plain value, safe to embed
 /// and pass around Scheme code.
+///
+/// Deliberately omits `param_roots`: continuations capture parameterize
+/// bindings (they ride in `dyn_stack`), not the task's mutable parameter
+/// roots — reinstating a continuation must not undo bare assignments.
 #[derive(Clone, Trace)]
 pub struct SavedDynamicState {
     id: usize,
@@ -1250,6 +1301,35 @@ pub(crate) enum DynStackElem {
     ExceptionHandler(Procedure),
     CurrentInputPort(Port),
     CurrentOutputPort(Port),
+    /// A parameterize extent: fresh cells for the bound parameters,
+    /// uncovered again when the entry is popped.
+    Parameterization(HashMap<usize, Cell>),
+}
+
+impl DynStackElem {
+    /// The entry a spawned child thread/task starts with for this entry, if
+    /// any. Binding entries (current ports, parameterize extents) cross;
+    /// control entries (winders, prompts, exception handlers) belong to the
+    /// spawning stack and do not. Parameterizations cross by value: the
+    /// child gets fresh cells seeded with the parent's current bindings, so
+    /// later mutations on either side stay task-local (mirrors param_roots).
+    /// Exhaustive on purpose: adding a variant forces this decision.
+    fn spawn_copy(&self) -> Option<DynStackElem> {
+        match self {
+            DynStackElem::CurrentInputPort(_) | DynStackElem::CurrentOutputPort(_) => {
+                Some(self.clone())
+            }
+            DynStackElem::Parameterization(cells) => Some(DynStackElem::Parameterization(
+                cells
+                    .iter()
+                    .map(|(id, cell)| (*id, Cell::new(cell.get())))
+                    .collect(),
+            )),
+            DynStackElem::Prompt(_)
+            | DynStackElem::Winder(_)
+            | DynStackElem::ExceptionHandler(_) => None,
+        }
+    }
 }
 
 /// Named distinctly from the free function `pop_dyn_stack` to avoid a clash.
@@ -1969,5 +2049,91 @@ unsafe extern "C" fn wind_delim(
         let args: Vector = args.try_into().unwrap();
         let args = args.0.vec.read().to_vec();
         (*out).write(barrier.call_cont(args));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A stand-in exception handler `Procedure`. Never actually invoked;
+    /// spawn_snapshot only needs a valid `ExceptionHandler` value to filter.
+    fn dummy_handler(
+        _env: &[Value],
+        _args: &[Value],
+        _rest_args: &[Value],
+        barrier: &mut ContBarrier<'_>,
+    ) -> Application {
+        barrier.call_cont(Vec::new())
+    }
+
+    #[test]
+    fn spawn_snapshot_keeps_ports_drops_control() {
+        let out_port = Port::new(
+            "<stdout>",
+            #[cfg(not(feature = "async"))]
+            std::io::stdout(),
+            #[cfg(feature = "tokio")]
+            tokio::io::stdout(),
+            BufferMode::None,
+            Some(Transcoder::native()),
+        );
+        let in_port = Port::new(
+            "<stdin>",
+            #[cfg(not(feature = "async"))]
+            std::io::stdin(),
+            #[cfg(feature = "tokio")]
+            tokio::io::stdin(),
+            BufferMode::Line,
+            Some(Transcoder::native()),
+        );
+        let handler = Procedure::new(vec![], dummy_handler as BridgePtr, 0, false);
+        let mut param_roots = HashMap::new();
+        param_roots.insert(0, Cell::new(Value::from(42)));
+        let mut parameterization = HashMap::new();
+        parameterization.insert(1, Cell::new(Value::from(7)));
+        let state = DynState {
+            dyn_stack: vec![
+                DynStackElem::ExceptionHandler(handler),
+                DynStackElem::CurrentOutputPort(out_port),
+                DynStackElem::CurrentInputPort(in_port),
+                DynStackElem::Parameterization(parameterization),
+            ],
+            published: false,
+            param_roots,
+        };
+
+        let snapshot = state.spawn_snapshot();
+
+        assert!(matches!(
+            snapshot.dyn_stack.as_slice(),
+            [
+                DynStackElem::CurrentOutputPort(_),
+                DynStackElem::CurrentInputPort(_),
+                DynStackElem::Parameterization(_)
+            ]
+        ));
+
+        // Parameter roots are inherited by value into a fresh cell: the
+        // snapshot starts out equal to the parent, but mutating the copy
+        // must not affect the original.
+        let snapshot_cell = snapshot.param_roots.get(&0).unwrap();
+        assert_eq!(snapshot_cell.get(), Value::from(42));
+
+        // A Parameterization entry survives the snapshot the same way: a
+        // fresh cell per bound parameter, seeded with the parent's current
+        // value but independent afterward.
+        let DynStackElem::Parameterization(snapshot_cells) = &snapshot.dyn_stack[2] else {
+            panic!("expected a Parameterization entry in the snapshot");
+        };
+        let DynStackElem::Parameterization(original_cells) = &state.dyn_stack[3] else {
+            panic!("expected a Parameterization entry in the original");
+        };
+        let snapshot_param_cell = snapshot_cells.get(&1).unwrap();
+        assert_eq!(snapshot_param_cell.get(), Value::from(7));
+        snapshot_param_cell.set(Value::from(99));
+        assert_eq!(original_cells.get(&1).unwrap().get(), Value::from(7));
+        snapshot_cell.set(Value::from(99));
+        assert_eq!(state.param_roots.get(&0).unwrap().get(), Value::from(42));
     }
 }
