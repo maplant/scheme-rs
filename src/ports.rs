@@ -25,7 +25,9 @@ use crate::{
     enumerations::{EnumerationSet, EnumerationType},
     exceptions::{Assertion, Error, Exception, raise},
     gc::{Gc, GcInner, Trace},
-    proc::{Application, ContBarrier, DynStackElem, FuncPtr, Procedure, pop_dyn_stack},
+    proc::{
+        Application, ContBarrier, DynStackElem, ErasedBarrier, FuncPtr, Procedure, pop_dyn_stack,
+    },
     records::{Embeddable, Embedded, RecordTypeDescriptor},
     runtime::{Runtime, RuntimeInner},
     strings::WideString,
@@ -152,16 +154,23 @@ struct Decoder<'a, D> {
     decode: D,
     char_idx: usize,
     pos: Either<usize, Exception>,
+    barrier: ErasedBarrier,
 }
 
 impl<'a, D> Decoder<'a, D> {
-    fn new(data: &'a mut BinaryPortData, info: &'a BinaryPortInfo, decode: D) -> Self {
+    fn new(
+        data: &'a mut BinaryPortData,
+        info: &'a BinaryPortInfo,
+        decode: D,
+        barrier: ErasedBarrier,
+    ) -> Self {
         Self {
             data,
             info,
             decode,
             char_idx: 0,
             pos: Either::Left(0),
+            barrier,
         }
     }
 }
@@ -177,7 +186,7 @@ where
             Either::Right(ref err) => return Some(Err(err.clone())),
         };
         loop {
-            match maybe_await!(self.data.peekn_bytes(self.info, pos))
+            match maybe_await!(self.data.peekn_bytes(self.info, pos, self.barrier))
                 .transpose()?
                 .and_then(|byte| self.decode.push_and_decode(byte))
             {
@@ -623,19 +632,27 @@ mod __impl {
     impl<T: Iterator + Unpin> MaybeStream for T {}
 
     pub type ReadFn = Box<
-        dyn Fn(&mut dyn Any, &ByteVector, usize, usize) -> Result<usize, Exception> + Send + Sync,
+        dyn Fn(&mut dyn Any, &ByteVector, usize, usize, ErasedBarrier) -> Result<usize, Exception>
+            + Send
+            + Sync,
     >;
-    pub type WriteFn =
-        Box<dyn Fn(&mut dyn Any, &ByteVector, usize, usize) -> Result<(), Exception> + Send + Sync>;
-    pub type GetPosFn = Box<dyn Fn(&mut dyn Any) -> Result<u64, Exception> + Send + Sync>;
-    pub type SetPosFn = Box<dyn Fn(&mut dyn Any, u64) -> Result<(), Exception> + Send + Sync>;
-    pub type CloseFn = Box<dyn Fn(&mut dyn Any) -> Result<(), Exception> + Send + Sync>;
+    pub type WriteFn = Box<
+        dyn Fn(&mut dyn Any, &ByteVector, usize, usize, ErasedBarrier) -> Result<(), Exception>
+            + Send
+            + Sync,
+    >;
+    pub type GetPosFn =
+        Box<dyn Fn(&mut dyn Any, ErasedBarrier) -> Result<u64, Exception> + Send + Sync>;
+    pub type SetPosFn =
+        Box<dyn Fn(&mut dyn Any, u64, ErasedBarrier) -> Result<(), Exception> + Send + Sync>;
+    pub type CloseFn =
+        Box<dyn Fn(&mut dyn Any, ErasedBarrier) -> Result<(), Exception> + Send + Sync>;
 
     pub fn read_fn<T>() -> ReadFn
     where
         T: Read + Any + Send + 'static,
     {
-        Box::new(|any, buff, start, count| {
+        Box::new(|any, buff, start, count, _barrier| {
             let concrete = any.downcast_mut::<T>().unwrap();
             let mut buff = buff.as_mut_slice()?;
             concrete
@@ -648,7 +665,7 @@ mod __impl {
     where
         T: Write + Any + Send + 'static,
     {
-        Box::new(|any, buff, start, count| {
+        Box::new(|any, buff, start, count, _barrier| {
             let concrete = any.downcast_mut::<T>().unwrap();
             let buff = buff.as_slice();
             concrete
@@ -663,7 +680,7 @@ mod __impl {
     where
         T: Seek + Any + Send + 'static,
     {
-        Box::new(|any| {
+        Box::new(|any, _barrier| {
             let concrete = any.downcast_mut::<T>().unwrap();
             concrete
                 .stream_position()
@@ -675,7 +692,7 @@ mod __impl {
     where
         T: Seek + Any + Send + 'static,
     {
-        Box::new(|any, pos| {
+        Box::new(|any, pos, _barrier| {
             let concrete = any.downcast_mut::<T>().unwrap();
             let _ = concrete
                 .seek(SeekFrom::Start(pos))
@@ -685,7 +702,7 @@ mod __impl {
     }
 
     pub(super) fn proc_to_read_fn(read: Procedure) -> ReadFn {
-        Box::new(move |_, buff, start, count| {
+        Box::new(move |_, buff, start, count, mut barrier| {
             let [read] = read
                 .call(
                     &[
@@ -693,7 +710,7 @@ mod __impl {
                         Value::from(start),
                         Value::from(count),
                     ],
-                    &mut ContBarrier::new(),
+                    barrier.get(),
                 )
                 .map_err(|err| err.add_condition(IoReadError::new()))?
                 .try_into()
@@ -710,7 +727,7 @@ mod __impl {
     }
 
     pub(super) fn proc_to_write_fn(write: Procedure) -> WriteFn {
-        Box::new(move |_, buff, start, count| {
+        Box::new(move |_, buff, start, count, mut barrier| {
             let _ = write
                 .call(
                     &[
@@ -718,7 +735,7 @@ mod __impl {
                         Value::from(start),
                         Value::from(count),
                     ],
-                    &mut ContBarrier::new(),
+                    barrier.get(),
                 )
                 .map_err(|err| err.add_condition(IoReadError::new()))?;
             Ok(())
@@ -726,9 +743,9 @@ mod __impl {
     }
 
     pub(super) fn proc_to_get_pos_fn(get_pos: Procedure) -> GetPosFn {
-        Box::new(move |_| {
+        Box::new(move |_, mut barrier| {
             let [pos] = get_pos
-                .call(&[], &mut ContBarrier::new())
+                .call(&[], barrier.get())
                 .map_err(|err| err.add_condition(IoError::new()))?
                 .try_into()
                 .map_err(|_| {
@@ -742,18 +759,18 @@ mod __impl {
     }
 
     pub(super) fn proc_to_set_pos_fn(set_pos: Procedure) -> SetPosFn {
-        Box::new(move |_, pos| {
+        Box::new(move |_, pos, mut barrier| {
             let _ = set_pos
-                .call(&[Value::from(pos)], &mut ContBarrier::new())
+                .call(&[Value::from(pos)], barrier.get())
                 .map_err(|err| err.add_condition(IoError::new()))?;
             Ok(())
         })
     }
 
     pub(super) fn proc_to_close_fn(close: Procedure) -> CloseFn {
-        Box::new(move |_| {
+        Box::new(move |_, mut barrier| {
             let _ = close
-                .call(&[], &mut ContBarrier::new())
+                .call(&[], barrier.get())
                 .map_err(|err| err.add_condition(IoError::new()))?;
             Ok(())
         })
@@ -814,12 +831,20 @@ mod __impl {
 
     use super::*;
 
+    // `ErasedBarrier` is passed by value (it's a `Copy` raw-pointer newtype,
+    // not a reference), so it does not need to share the closures' `for<'a>`
+    // higher-ranked lifetime the way a `&'a mut ContBarrier<'a>` would. That
+    // matters: an earlier attempt to give the barrier its own `&mut
+    // ContBarrier<'_>` argument here hit two dead ends depending on whether
+    // its lifetime was unified with `'a` or kept independent - see the
+    // `ErasedBarrier` doc comment in proc.rs for the full story.
     pub type ReadFn = Box<
         dyn for<'a> Fn(
                 &'a mut (dyn Any + Send),
                 &'a ByteVector,
                 usize,
                 usize,
+                ErasedBarrier,
             ) -> BoxFuture<'a, Result<usize, Exception>>
             + Send
             + Sync,
@@ -830,22 +855,33 @@ mod __impl {
                 &'a ByteVector,
                 usize,
                 usize,
+                ErasedBarrier,
             ) -> BoxFuture<'a, Result<(), Exception>>
             + Send
             + Sync,
     >;
     pub type GetPosFn = Box<
-        dyn for<'a> Fn(&'a mut (dyn Any + Send)) -> BoxFuture<'a, Result<u64, Exception>>
+        dyn for<'a> Fn(
+                &'a mut (dyn Any + Send),
+                ErasedBarrier,
+            ) -> BoxFuture<'a, Result<u64, Exception>>
             + Send
             + Sync,
     >;
     pub type SetPosFn = Box<
-        dyn for<'a> Fn(&'a mut (dyn Any + Send), u64) -> BoxFuture<'a, Result<(), Exception>>
+        dyn for<'a> Fn(
+                &'a mut (dyn Any + Send),
+                u64,
+                ErasedBarrier,
+            ) -> BoxFuture<'a, Result<(), Exception>>
             + Send
             + Sync,
     >;
     pub type CloseFn = Box<
-        dyn for<'a> Fn(&'a mut (dyn Any + Send)) -> BoxFuture<'a, Result<(), Exception>>
+        dyn for<'a> Fn(
+                &'a mut (dyn Any + Send),
+                ErasedBarrier,
+            ) -> BoxFuture<'a, Result<(), Exception>>
             + Send
             + Sync,
     >;
@@ -858,7 +894,7 @@ mod __impl {
     where
         T: AsyncRead + Any + Send + Unpin + 'static,
     {
-        Box::new(move |any, buff, start, count| {
+        Box::new(move |any, buff, start, count, _barrier| {
             Box::pin(async move {
                 let mut concrete = Pin::new(any.downcast_mut::<T>().unwrap());
                 let mut local_buff = vec![0u8; count];
@@ -877,7 +913,7 @@ mod __impl {
     where
         T: AsyncWrite + Any + Send + Unpin + 'static,
     {
-        Box::new(|any, buff, start, count| {
+        Box::new(|any, buff, start, count, _barrier| {
             Box::pin(async move {
                 let mut concrete = Pin::new(any.downcast_mut::<T>().unwrap());
                 let local_buff = buff.as_slice()[start..(start + count)].to_vec();
@@ -898,7 +934,7 @@ mod __impl {
     where
         T: AsyncSeek + Any + Send + Unpin + 'static,
     {
-        Box::new(|any| {
+        Box::new(|any, _barrier| {
             Box::pin(async move {
                 let mut concrete = Pin::new(any.downcast_mut::<T>().unwrap());
                 concrete
@@ -913,7 +949,7 @@ mod __impl {
     where
         T: AsyncSeek + Any + Send + Unpin + 'static,
     {
-        Box::new(|any, pos| {
+        Box::new(|any, pos, _barrier| {
             Box::pin(async move {
                 let mut concrete = Pin::new(any.downcast_mut::<T>().unwrap());
                 let _ = concrete
@@ -926,7 +962,7 @@ mod __impl {
     }
 
     pub(super) fn proc_to_read_fn(read: Procedure) -> ReadFn {
-        Box::new(move |_, buff, start, count| {
+        Box::new(move |_, buff, start, count, mut barrier| {
             let read = read.clone();
             Box::pin(async move {
                 let [read] = read
@@ -936,7 +972,7 @@ mod __impl {
                             Value::from(start),
                             Value::from(count),
                         ],
-                        &mut ContBarrier::new(),
+                        barrier.get(),
                     )
                     .await
                     .map_err(|err| err.add_condition(IoReadError::new()))?
@@ -957,7 +993,7 @@ mod __impl {
     }
 
     pub(super) fn proc_to_write_fn(write: Procedure) -> WriteFn {
-        Box::new(move |_, buff, start, count| {
+        Box::new(move |_, buff, start, count, mut barrier| {
             let write = write.clone();
             Box::pin(async move {
                 let _ = write
@@ -967,7 +1003,7 @@ mod __impl {
                             Value::from(start),
                             Value::from(count),
                         ],
-                        &mut ContBarrier::new(),
+                        barrier.get(),
                     )
                     .await
                     .map_err(|err| err.add_condition(IoReadError::new()))?;
@@ -977,11 +1013,11 @@ mod __impl {
     }
 
     pub(super) fn proc_to_get_pos_fn(get_pos: Procedure) -> GetPosFn {
-        Box::new(move |_| {
+        Box::new(move |_, mut barrier| {
             let get_pos = get_pos.clone();
             Box::pin(async move {
                 let [pos] = get_pos
-                    .call(&[], &mut ContBarrier::new())
+                    .call(&[], barrier.get())
                     .await
                     .map_err(|err| err.add_condition(IoError::new()))?
                     .try_into()
@@ -999,11 +1035,11 @@ mod __impl {
     }
 
     pub(super) fn proc_to_set_pos_fn(set_pos: Procedure) -> SetPosFn {
-        Box::new(move |_, pos| {
+        Box::new(move |_, pos, mut barrier| {
             let set_pos = set_pos.clone();
             Box::pin(async move {
                 let _ = set_pos
-                    .call(&[Value::from(pos)], &mut ContBarrier::new())
+                    .call(&[Value::from(pos)], barrier.get())
                     .await
                     .map_err(|err| err.add_condition(IoError::new()))?;
                 Ok(())
@@ -1012,11 +1048,11 @@ mod __impl {
     }
 
     pub(super) fn proc_to_close_fn(close: Procedure) -> CloseFn {
-        Box::new(move |_| {
+        Box::new(move |_, mut barrier| {
             let close = close.clone();
             Box::pin(async move {
                 let _ = close
-                    .call(&[], &mut ContBarrier::new())
+                    .call(&[], barrier.get())
                     .await
                     .map_err(|err| err.add_condition(IoError::new()))?;
                 Ok(())
@@ -1292,19 +1328,27 @@ pub const BUFFER_SIZE: usize = 8192;
 
 impl BinaryPortData {
     #[maybe_async]
-    fn read_byte(&mut self, port_info: &BinaryPortInfo) -> Result<Option<u8>, Exception> {
-        let next_byte = maybe_await!(self.peekn_bytes(port_info, 0))?;
-        maybe_await!(self.consume_bytes(port_info, 1))?;
+    fn read_byte(
+        &mut self,
+        port_info: &BinaryPortInfo,
+        barrier: ErasedBarrier,
+    ) -> Result<Option<u8>, Exception> {
+        let next_byte = maybe_await!(self.peekn_bytes(port_info, 0, barrier))?;
+        maybe_await!(self.consume_bytes(port_info, 1, barrier))?;
         Ok(next_byte)
     }
 
     #[maybe_async]
-    fn read_char(&mut self, port_info: &BinaryPortInfo) -> Result<Option<char>, Exception> {
-        let Some(next_char) = maybe_await!(self.peekn_chars(port_info, 0))? else {
+    fn read_char(
+        &mut self,
+        port_info: &BinaryPortInfo,
+        barrier: ErasedBarrier,
+    ) -> Result<Option<char>, Exception> {
+        let Some(next_char) = maybe_await!(self.peekn_chars(port_info, 0, barrier))? else {
             return Ok(None);
         };
 
-        maybe_await!(self.consume_chars(port_info, 1))?;
+        maybe_await!(self.consume_chars(port_info, 1, barrier))?;
 
         Ok(Some(next_char))
     }
@@ -1314,6 +1358,7 @@ impl BinaryPortData {
         &mut self,
         port_info: &BinaryPortInfo,
         n: usize,
+        barrier: ErasedBarrier,
     ) -> Result<Option<u8>, Exception> {
         let Some(read) = self.read.as_ref() else {
             return Err(Exception::io_read_error("not an input port"));
@@ -1327,7 +1372,7 @@ impl BinaryPortData {
             && let len = self.output_buffer.len()
             && len != 0
         {
-            maybe_await!(write(port, &self.output_buffer, 0, len))?;
+            maybe_await!(write(port, &self.output_buffer, 0, len, barrier))?;
             self.output_buffer.clear()?;
         }
 
@@ -1338,7 +1383,13 @@ impl BinaryPortData {
         while self.bytes_read <= n + self.input_pos {
             match (port_info.buffer_mode, port_info.transcoder) {
                 (BufferMode::None, _) => {
-                    let read = maybe_await!((read)(port, &self.input_buffer, self.bytes_read, 1))?;
+                    let read = maybe_await!((read)(
+                        port,
+                        &self.input_buffer,
+                        self.bytes_read,
+                        1,
+                        barrier
+                    ))?;
                     if read == 1 {
                         self.bytes_read += 1;
                     } else {
@@ -1348,8 +1399,13 @@ impl BinaryPortData {
                 (BufferMode::Line, Some(transcoder)) => {
                     loop {
                         let count = self.input_buffer.len() - self.bytes_read;
-                        let read =
-                            maybe_await!((read)(port, &self.input_buffer, self.bytes_read, count))?;
+                        let read = maybe_await!((read)(
+                            port,
+                            &self.input_buffer,
+                            self.bytes_read,
+                            count,
+                            barrier
+                        ))?;
                         if read == 0 {
                             return Ok(None);
                         }
@@ -1381,8 +1437,13 @@ impl BinaryPortData {
                 }
                 (BufferMode::Line | BufferMode::Block, _) => {
                     let count = self.input_buffer.len() - self.bytes_read;
-                    let read =
-                        maybe_await!((read)(port, &self.input_buffer, self.bytes_read, count))?;
+                    let read = maybe_await!((read)(
+                        port,
+                        &self.input_buffer,
+                        self.bytes_read,
+                        count,
+                        barrier
+                    ))?;
                     if read == 0 {
                         return Ok(None);
                     }
@@ -1399,13 +1460,14 @@ impl BinaryPortData {
         &'a mut self,
         port_info: &'a BinaryPortInfo,
         transcoder: Transcoder,
+        barrier: ErasedBarrier,
     ) -> impl Iterator<Item = Result<(usize, char), Exception>> + use<'a> {
         let eol_type = transcoder.eol_type;
         let decoder = match transcoder.codec {
             Codec::Latin1 => {
                 let mut i = 0;
                 Box::new(std::iter::from_fn(move || {
-                    match self.peekn_bytes(port_info, i) {
+                    match self.peekn_bytes(port_info, i, barrier) {
                         Ok(Some(byte)) => {
                             let res = (i, char::from(byte));
                             i += 1;
@@ -1423,11 +1485,13 @@ impl BinaryPortData {
                     transcoder.error_handling_mode,
                     self.utf16_endianness.unwrap(),
                 ),
+                barrier,
             )),
             Codec::Utf8 => Box::new(Decoder::new(
                 self,
                 port_info,
                 Utf8Buffer::new(transcoder.error_handling_mode),
+                barrier,
             )),
         };
         eol_type.convert_eol_style_to_linefeed(decoder.peekable())
@@ -1438,13 +1502,14 @@ impl BinaryPortData {
         &'a mut self,
         port_info: &'a BinaryPortInfo,
         transcoder: Transcoder,
+        barrier: ErasedBarrier,
     ) -> impl futures::stream::Stream<Item = Result<(usize, char), Exception>> + use<'a> {
         let eol_type = transcoder.eol_type;
         let decoder = match transcoder.codec {
             Codec::Latin1 => async_stream::stream! {
                 let mut i = 0;
                 loop {
-                    match self.peekn_bytes(port_info, i).await {
+                    match self.peekn_bytes(port_info, i, barrier).await {
                         Ok(Some(byte)) => {
                             let res = (i, char::from(byte));
                             i += 1;
@@ -1464,6 +1529,7 @@ impl BinaryPortData {
                         transcoder.error_handling_mode,
                         self.utf16_endianness.unwrap(),
                     ),
+                    barrier,
                 );
                 while let Some(decoded) = decoder.decode_next().await {
                     yield decoded;
@@ -1475,6 +1541,7 @@ impl BinaryPortData {
                     self,
                     port_info,
                     Utf8Buffer::new(transcoder.error_handling_mode),
+                    barrier,
                 );
                 while let Some(decoded) = decoder.decode_next().await {
                     yield decoded;
@@ -1490,6 +1557,7 @@ impl BinaryPortData {
         &mut self,
         port_info: &BinaryPortInfo,
         n: usize,
+        barrier: ErasedBarrier,
     ) -> Result<Option<char>, Exception> {
         let Some(transcoder) = port_info.transcoder else {
             return Err(Exception::io_read_error("not a text port"));
@@ -1498,31 +1566,41 @@ impl BinaryPortData {
         // If this is a utf16 port and we have not assigned endiannes, check for
         // the BOM
         if matches!(transcoder.codec, Codec::Utf16) && self.utf16_endianness.is_none() {
-            let b1 = maybe_await!(self.peekn_bytes(port_info, 0))?;
-            let b2 = maybe_await!(self.peekn_bytes(port_info, 1))?;
+            let b1 = maybe_await!(self.peekn_bytes(port_info, 0, barrier))?;
+            let b2 = maybe_await!(self.peekn_bytes(port_info, 1, barrier))?;
             self.utf16_endianness = match (b1, b2) {
                 (Some(b'\xFF'), Some(b'\xFE')) => {
-                    maybe_await!(self.consume_bytes(port_info, 2))?;
+                    maybe_await!(self.consume_bytes(port_info, 2, barrier))?;
                     Some(Endianness::Le)
                 }
                 (Some(b'\xFE'), Some(b'\xFF')) => {
-                    maybe_await!(self.consume_bytes(port_info, 2))?;
+                    maybe_await!(self.consume_bytes(port_info, 2, barrier))?;
                     Some(Endianness::Be)
                 }
                 _ => Some(Endianness::Le),
             };
         }
 
-        Ok(maybe_await!(self.transcode(port_info, transcoder).nth(n))
-            .transpose()?
-            .map(|(_, chr)| chr))
+        Ok(
+            maybe_await!(self.transcode(port_info, transcoder, barrier).nth(n))
+                .transpose()?
+                .map(|(_, chr)| chr),
+        )
     }
 
     #[maybe_async]
-    fn consume_bytes(&mut self, port_info: &BinaryPortInfo, n: usize) -> Result<(), Exception> {
+    fn consume_bytes(
+        &mut self,
+        port_info: &BinaryPortInfo,
+        n: usize,
+        barrier: ErasedBarrier,
+    ) -> Result<(), Exception> {
         if self.bytes_read < self.input_pos + n {
-            let _ =
-                maybe_await!(self.peekn_bytes(port_info, self.input_pos + n - self.bytes_read))?;
+            let _ = maybe_await!(self.peekn_bytes(
+                port_info,
+                self.input_pos + n - self.bytes_read,
+                barrier
+            ))?;
         }
 
         self.input_pos += n;
@@ -1540,20 +1618,26 @@ impl BinaryPortData {
         &mut self,
         port_info: &BinaryPortInfo,
         n: usize,
+        barrier: ErasedBarrier,
     ) -> Result<(), Exception> {
         let Some(transcoder) = port_info.transcoder else {
             return Err(Exception::io_read_error("not a text port"));
         };
 
-        let Some((bytes_to_skip, last_char)) =
-            maybe_await!(self.transcode(port_info, transcoder).take(n).last()).transpose()?
+        let Some((bytes_to_skip, last_char)) = maybe_await!(
+            self.transcode(port_info, transcoder, barrier)
+                .take(n)
+                .last()
+        )
+        .transpose()?
         else {
             return Ok(());
         };
 
         maybe_await!(self.consume_bytes(
             port_info,
-            bytes_to_skip + transcoder.codec.byte_len(last_char)
+            bytes_to_skip + transcoder.codec.byte_len(last_char),
+            barrier
         ))?;
 
         if self.input_buffer.len() - self.input_pos < 4 {
@@ -1568,7 +1652,12 @@ impl BinaryPortData {
     }
 
     #[maybe_async]
-    fn put_bytes(&mut self, port_info: &BinaryPortInfo, mut bytes: &[u8]) -> Result<(), Exception> {
+    fn put_bytes(
+        &mut self,
+        port_info: &BinaryPortInfo,
+        mut bytes: &[u8],
+        barrier: ErasedBarrier,
+    ) -> Result<(), Exception> {
         let Some(write) = self.write.as_ref() else {
             return Err(Exception::io_write_error("not an output port"));
         };
@@ -1582,10 +1671,10 @@ impl BinaryPortData {
             && let Some(set_pos) = self.set_pos.as_ref()
             && self.bytes_read > 0
         {
-            let curr_pos = maybe_await!(get_pos(port))
+            let curr_pos = maybe_await!(get_pos(port, barrier))
                 .map_err(|err| err.add_condition(IoWriteError::new()))?;
             let seek_to = curr_pos - (self.bytes_read as u64 - self.input_pos as u64);
-            maybe_await!(set_pos(port, seek_to))
+            maybe_await!(set_pos(port, seek_to, barrier))
                 .map_err(|err| err.add_condition(IoWriteError::new()))?;
             self.bytes_read = 0;
             self.input_pos = 0;
@@ -1599,7 +1688,7 @@ impl BinaryPortData {
                         output_buffer.push(*byte);
                         output_buffer.len()
                     };
-                    maybe_await!(write(port, &self.output_buffer, 0, len))?;
+                    maybe_await!(write(port, &self.output_buffer, 0, len, barrier))?;
                     self.output_buffer.as_mut_vec()?.clear();
                 }
             }
@@ -1616,7 +1705,8 @@ impl BinaryPortData {
                         port,
                         &self.output_buffer,
                         0,
-                        self.output_buffer.len()
+                        self.output_buffer.len(),
+                        barrier
                     ))?;
                     self.output_buffer.clear()?;
                 } else {
@@ -1635,7 +1725,8 @@ impl BinaryPortData {
                         port,
                         &self.output_buffer,
                         0,
-                        self.output_buffer.len()
+                        self.output_buffer.len(),
+                        barrier
                     ))?;
                     self.output_buffer.clear()?;
                 } else {
@@ -1649,7 +1740,12 @@ impl BinaryPortData {
     }
 
     #[maybe_async]
-    fn put_str(&mut self, port_info: &BinaryPortInfo, s: &str) -> Result<(), Exception> {
+    fn put_str(
+        &mut self,
+        port_info: &BinaryPortInfo,
+        s: &str,
+        barrier: ErasedBarrier,
+    ) -> Result<(), Exception> {
         let Some(transcoder) = port_info.transcoder else {
             return Err(Exception::io_write_error("not a text port"));
         };
@@ -1668,7 +1764,7 @@ impl BinaryPortData {
             Codec::Latin1 | Codec::Utf8 => {
                 // Probably should do a check here to ensure the string is ascii
                 // if our codec is latin1
-                maybe_await!(self.put_bytes(port_info, s.as_bytes()))?;
+                maybe_await!(self.put_bytes(port_info, s.as_bytes(), barrier))?;
             }
             Codec::Utf16 => {
                 let endianness = self.utf16_endianness.unwrap_or(Endianness::Le);
@@ -1679,14 +1775,14 @@ impl BinaryPortData {
                         Endianness::Be => codepoint.to_be_bytes(),
                     })
                     .collect::<Vec<_>>();
-                maybe_await!(self.put_bytes(port_info, &bytes))?;
+                maybe_await!(self.put_bytes(port_info, &bytes, barrier))?;
             }
         }
         Ok(())
     }
 
     #[maybe_async]
-    fn flush(&mut self) -> Result<(), Exception> {
+    fn flush(&mut self, barrier: ErasedBarrier) -> Result<(), Exception> {
         let Some(write) = self.write.as_ref() else {
             return Err(Exception::io_write_error("not an output port"));
         };
@@ -1699,7 +1795,8 @@ impl BinaryPortData {
             port,
             &self.output_buffer,
             0,
-            self.output_buffer.len()
+            self.output_buffer.len(),
+            barrier
         ))?;
         self.output_buffer.clear()?;
 
@@ -1707,7 +1804,7 @@ impl BinaryPortData {
     }
 
     #[maybe_async]
-    fn get_pos(&mut self) -> Result<u64, Exception> {
+    fn get_pos(&mut self, barrier: ErasedBarrier) -> Result<u64, Exception> {
         let Some(get_pos) = self.get_pos.as_ref() else {
             return Err(Exception::io_error("port does not support port-position"));
         };
@@ -1716,11 +1813,11 @@ impl BinaryPortData {
             return Err(Exception::io_error("port is closed"));
         };
 
-        maybe_await!(get_pos(port))
+        maybe_await!(get_pos(port, barrier))
     }
 
     #[maybe_async]
-    fn set_pos(&mut self, pos: u64) -> Result<(), Exception> {
+    fn set_pos(&mut self, pos: u64, barrier: ErasedBarrier) -> Result<(), Exception> {
         let Some(set_pos) = self.set_pos.as_ref() else {
             return Err(Exception::io_error(
                 "port does not support set-port-position!",
@@ -1737,18 +1834,19 @@ impl BinaryPortData {
                 port,
                 &self.output_buffer,
                 0,
-                self.output_buffer.len()
+                self.output_buffer.len(),
+                barrier
             ))?;
             self.output_buffer.clear()?;
         }
         self.bytes_read = 0;
         self.input_pos = 0;
 
-        maybe_await!(set_pos(port, pos))
+        maybe_await!(set_pos(port, pos, barrier))
     }
 
     #[maybe_async]
-    fn close(&mut self) -> Result<(), Exception> {
+    fn close(&mut self, barrier: ErasedBarrier) -> Result<(), Exception> {
         let mut port = self.inner_port.take();
 
         if let Some(port) = port.as_deref_mut() {
@@ -1757,12 +1855,13 @@ impl BinaryPortData {
                     port,
                     &self.output_buffer,
                     0,
-                    self.output_buffer.len()
+                    self.output_buffer.len(),
+                    barrier
                 ))?;
             }
 
             if let Some(close) = self.close.as_ref() {
-                maybe_await!((close)(port))?;
+                maybe_await!((close)(port, barrier))?;
             }
         }
 
@@ -1796,6 +1895,7 @@ impl CustomTextualPortData {
         &mut self,
         port_info: &CustomTextualPortInfo,
         n: usize,
+        mut barrier: ErasedBarrier,
     ) -> Result<Option<char>, Exception> {
         let Some(read) = port_info.read.as_ref() else {
             return Err(Exception::io_read_error("not an input port"));
@@ -1815,7 +1915,7 @@ impl CustomTextualPortData {
                     Value::from(0usize),
                     Value::from(len)
                 ],
-                &mut ContBarrier::new()
+                barrier.get()
             ))?;
             self.output_buffer.clear();
         }
@@ -1837,7 +1937,7 @@ impl CustomTextualPortData {
                     Value::from(start),
                     Value::from(count)
                 ],
-                &mut ContBarrier::new()
+                barrier.get()
             ))?
             .expect1()?;
 
@@ -1851,9 +1951,13 @@ impl CustomTextualPortData {
     }
 
     #[maybe_async]
-    fn read_char(&mut self, port_info: &CustomTextualPortInfo) -> Result<Option<char>, Exception> {
-        let next_chr = maybe_await!(self.peekn_chars(port_info, 0))?;
-        maybe_await!(self.consume_chars(port_info, 1))?;
+    fn read_char(
+        &mut self,
+        port_info: &CustomTextualPortInfo,
+        barrier: ErasedBarrier,
+    ) -> Result<Option<char>, Exception> {
+        let next_chr = maybe_await!(self.peekn_chars(port_info, 0, barrier))?;
+        maybe_await!(self.consume_chars(port_info, 1, barrier))?;
         Ok(next_chr)
     }
 
@@ -1862,10 +1966,14 @@ impl CustomTextualPortData {
         &mut self,
         port_info: &CustomTextualPortInfo,
         n: usize,
+        barrier: ErasedBarrier,
     ) -> Result<(), Exception> {
         if self.chars_read < self.input_pos + n {
-            let _ =
-                maybe_await!(self.peekn_chars(port_info, self.input_pos + n - self.chars_read))?;
+            let _ = maybe_await!(self.peekn_chars(
+                port_info,
+                self.input_pos + n - self.chars_read,
+                barrier
+            ))?;
         }
 
         self.input_pos += n;
@@ -1879,7 +1987,12 @@ impl CustomTextualPortData {
     }
 
     #[maybe_async]
-    fn put_str(&mut self, port_info: &CustomTextualPortInfo, s: &str) -> Result<(), Exception> {
+    fn put_str(
+        &mut self,
+        port_info: &CustomTextualPortInfo,
+        s: &str,
+        mut barrier: ErasedBarrier,
+    ) -> Result<(), Exception> {
         let Some(write) = port_info.write.as_ref() else {
             return Err(Exception::io_write_error("not an output port"));
         };
@@ -1893,11 +2006,11 @@ impl CustomTextualPortData {
             && let Some(set_pos) = port_info.set_pos.as_ref()
             && self.chars_read > 0
         {
-            let curr_pos: u64 = maybe_await!(get_pos.call(&[], &mut ContBarrier::new()))?
+            let curr_pos: u64 = maybe_await!(get_pos.call(&[], barrier.get()))?
                 .expect1()
                 .map_err(|err: Exception| err.add_condition(IoWriteError::new()))?;
             let seek_to = curr_pos - (self.chars_read as u64 - self.input_pos as u64);
-            maybe_await!(set_pos.call(&[Value::from(seek_to)], &mut ContBarrier::new()))?;
+            maybe_await!(set_pos.call(&[Value::from(seek_to)], barrier.get()))?;
             self.chars_read = 0;
             self.input_pos = 0;
         }
@@ -1914,7 +2027,7 @@ impl CustomTextualPortData {
                             Value::from(0usize),
                             Value::from(1usize)
                         ],
-                        &mut ContBarrier::new()
+                        barrier.get()
                     ))?;
                 }
             }
@@ -1938,7 +2051,7 @@ impl CustomTextualPortData {
                             Value::from(0usize),
                             Value::from(len)
                         ],
-                        &mut ContBarrier::new()
+                        barrier.get()
                     ))?;
                     self.output_buffer.clear();
                 }
@@ -1953,7 +2066,7 @@ impl CustomTextualPortData {
                                 Value::from(0usize),
                                 Value::from(len)
                             ],
-                            &mut ContBarrier::new()
+                            barrier.get()
                         ))?;
                         self.output_buffer.clear();
                     }
@@ -1966,7 +2079,11 @@ impl CustomTextualPortData {
     }
 
     #[maybe_async]
-    fn flush(&mut self, port_info: &CustomTextualPortInfo) -> Result<(), Exception> {
+    fn flush(
+        &mut self,
+        port_info: &CustomTextualPortInfo,
+        mut barrier: ErasedBarrier,
+    ) -> Result<(), Exception> {
         let Some(write) = port_info.write.as_ref() else {
             return Err(Exception::io_write_error("not an output port"));
         };
@@ -1981,7 +2098,7 @@ impl CustomTextualPortData {
                 Value::from(0usize),
                 Value::from(self.output_buffer.len()),
             ],
-            &mut ContBarrier::new()
+            barrier.get()
         ))?;
         self.output_buffer.clear();
 
@@ -1989,7 +2106,11 @@ impl CustomTextualPortData {
     }
 
     #[maybe_async]
-    fn get_pos(&mut self, port_info: &CustomTextualPortInfo) -> Result<u64, Exception> {
+    fn get_pos(
+        &mut self,
+        port_info: &CustomTextualPortInfo,
+        mut barrier: ErasedBarrier,
+    ) -> Result<u64, Exception> {
         let Some(get_pos) = port_info.get_pos.as_ref() else {
             return Err(Exception::io_error("port does not support port-position"));
         };
@@ -1998,11 +2119,16 @@ impl CustomTextualPortData {
             return Err(Exception::io_error("port is closed"));
         }
 
-        maybe_await!(get_pos.call(&[], &mut ContBarrier::new()))?.expect1()
+        maybe_await!(get_pos.call(&[], barrier.get()))?.expect1()
     }
 
     #[maybe_async]
-    fn set_pos(&mut self, port_info: &CustomTextualPortInfo, pos: u64) -> Result<(), Exception> {
+    fn set_pos(
+        &mut self,
+        port_info: &CustomTextualPortInfo,
+        pos: u64,
+        mut barrier: ErasedBarrier,
+    ) -> Result<(), Exception> {
         let Some(set_pos) = port_info.set_pos.as_ref() else {
             return Err(Exception::io_error(
                 "port does not support set-port-position!",
@@ -2021,7 +2147,7 @@ impl CustomTextualPortData {
                     Value::from(0usize),
                     Value::from(self.output_buffer.len()),
                 ],
-                &mut ContBarrier::new()
+                barrier.get()
             ))?;
             self.output_buffer.clear();
         }
@@ -2029,13 +2155,17 @@ impl CustomTextualPortData {
         self.chars_read = 0;
         self.input_pos = 0;
 
-        maybe_await!(set_pos.call(&[Value::from(pos)], &mut ContBarrier::new()))?;
+        maybe_await!(set_pos.call(&[Value::from(pos)], barrier.get()))?;
 
         Ok(())
     }
 
     #[maybe_async]
-    fn close(&mut self, port_info: &CustomTextualPortInfo) -> Result<(), Exception> {
+    fn close(
+        &mut self,
+        port_info: &CustomTextualPortInfo,
+        mut barrier: ErasedBarrier,
+    ) -> Result<(), Exception> {
         if !self.open {
             // TODO: Do we return an error here?
             return Ok(());
@@ -2043,10 +2173,10 @@ impl CustomTextualPortData {
 
         self.open = false;
 
-        maybe_await!(self.flush(port_info))?;
+        maybe_await!(self.flush(port_info, barrier))?;
 
         if let Some(close) = port_info.close.as_ref() {
-            maybe_await!(close.call(&[], &mut ContBarrier::new()))?;
+            maybe_await!(close.call(&[], barrier.get()))?;
         }
 
         Ok(())
@@ -2066,10 +2196,14 @@ pub(crate) enum PortData {
 impl PortData {
     #[allow(dead_code)]
     #[maybe_async]
-    fn read_byte(&mut self, port_info: &PortInfo) -> Result<Option<u8>, Exception> {
+    fn read_byte(
+        &mut self,
+        port_info: &PortInfo,
+        barrier: ErasedBarrier,
+    ) -> Result<Option<u8>, Exception> {
         match (self, port_info) {
             (Self::BinaryPort(port_data), PortInfo::BinaryPort(port_info)) => {
-                maybe_await!(port_data.read_byte(port_info))
+                maybe_await!(port_data.read_byte(port_info, barrier))
             }
             (Self::CustomTextualPort(_), PortInfo::CustomTextualPort(_)) => {
                 Err(Exception::io_read_error("not a binary port"))
@@ -2079,23 +2213,32 @@ impl PortData {
     }
 
     #[maybe_async]
-    pub(crate) fn read_char(&mut self, port_info: &PortInfo) -> Result<Option<char>, Exception> {
+    pub(crate) fn read_char(
+        &mut self,
+        port_info: &PortInfo,
+        barrier: ErasedBarrier,
+    ) -> Result<Option<char>, Exception> {
         match (self, port_info) {
             (Self::BinaryPort(port_data), PortInfo::BinaryPort(port_info)) => {
-                maybe_await!(port_data.read_char(port_info))
+                maybe_await!(port_data.read_char(port_info, barrier))
             }
             (Self::CustomTextualPort(port_data), PortInfo::CustomTextualPort(port_info)) => {
-                maybe_await!(port_data.read_char(port_info))
+                maybe_await!(port_data.read_char(port_info, barrier))
             }
             _ => unreachable!(),
         }
     }
 
     #[maybe_async]
-    fn peekn_bytes(&mut self, port_info: &PortInfo, n: usize) -> Result<Option<u8>, Exception> {
+    fn peekn_bytes(
+        &mut self,
+        port_info: &PortInfo,
+        n: usize,
+        barrier: ErasedBarrier,
+    ) -> Result<Option<u8>, Exception> {
         match (self, port_info) {
             (Self::BinaryPort(port_data), PortInfo::BinaryPort(port_info)) => {
-                maybe_await!(port_data.peekn_bytes(port_info, n))
+                maybe_await!(port_data.peekn_bytes(port_info, n, barrier))
             }
             (Self::CustomTextualPort(_), PortInfo::CustomTextualPort(_)) => {
                 Err(Exception::io_read_error("not a binary port"))
@@ -2109,23 +2252,29 @@ impl PortData {
         &mut self,
         port_info: &PortInfo,
         n: usize,
+        barrier: ErasedBarrier,
     ) -> Result<Option<char>, Exception> {
         match (self, port_info) {
             (Self::BinaryPort(port_data), PortInfo::BinaryPort(port_info)) => {
-                maybe_await!(port_data.peekn_chars(port_info, n))
+                maybe_await!(port_data.peekn_chars(port_info, n, barrier))
             }
             (Self::CustomTextualPort(port_data), PortInfo::CustomTextualPort(port_info)) => {
-                maybe_await!(port_data.peekn_chars(port_info, n))
+                maybe_await!(port_data.peekn_chars(port_info, n, barrier))
             }
             _ => unreachable!(),
         }
     }
 
     #[maybe_async]
-    fn consume_bytes(&mut self, port_info: &PortInfo, n: usize) -> Result<(), Exception> {
+    fn consume_bytes(
+        &mut self,
+        port_info: &PortInfo,
+        n: usize,
+        barrier: ErasedBarrier,
+    ) -> Result<(), Exception> {
         match (self, port_info) {
             (Self::BinaryPort(port_data), PortInfo::BinaryPort(port_info)) => {
-                maybe_await!(port_data.consume_bytes(port_info, n))
+                maybe_await!(port_data.consume_bytes(port_info, n, barrier))
             }
             (Self::CustomTextualPort(_), PortInfo::CustomTextualPort(_)) => {
                 Err(Exception::io_read_error("not a binary port"))
@@ -2139,23 +2288,29 @@ impl PortData {
         &mut self,
         port_info: &PortInfo,
         n: usize,
+        barrier: ErasedBarrier,
     ) -> Result<(), Exception> {
         match (self, port_info) {
             (Self::BinaryPort(port_data), PortInfo::BinaryPort(port_info)) => {
-                maybe_await!(port_data.consume_chars(port_info, n))
+                maybe_await!(port_data.consume_chars(port_info, n, barrier))
             }
             (Self::CustomTextualPort(port_data), PortInfo::CustomTextualPort(port_info)) => {
-                maybe_await!(port_data.consume_chars(port_info, n))
+                maybe_await!(port_data.consume_chars(port_info, n, barrier))
             }
             _ => unreachable!(),
         }
     }
 
     #[maybe_async]
-    fn put_bytes(&mut self, port_info: &PortInfo, bytes: &[u8]) -> Result<(), Exception> {
+    fn put_bytes(
+        &mut self,
+        port_info: &PortInfo,
+        bytes: &[u8],
+        barrier: ErasedBarrier,
+    ) -> Result<(), Exception> {
         match (self, port_info) {
             (Self::BinaryPort(port_data), PortInfo::BinaryPort(port_info)) => {
-                maybe_await!(port_data.put_bytes(port_info, bytes))
+                maybe_await!(port_data.put_bytes(port_info, bytes, barrier))
             }
             (Self::CustomTextualPort(_), PortInfo::CustomTextualPort(_)) => {
                 Err(Exception::io_read_error("not a binary port"))
@@ -2165,65 +2320,75 @@ impl PortData {
     }
 
     #[maybe_async]
-    fn put_str(&mut self, port_info: &PortInfo, s: &str) -> Result<(), Exception> {
+    fn put_str(
+        &mut self,
+        port_info: &PortInfo,
+        s: &str,
+        barrier: ErasedBarrier,
+    ) -> Result<(), Exception> {
         match (self, port_info) {
             (Self::BinaryPort(port_data), PortInfo::BinaryPort(port_info)) => {
-                maybe_await!(port_data.put_str(port_info, s))
+                maybe_await!(port_data.put_str(port_info, s, barrier))
             }
             (Self::CustomTextualPort(port_data), PortInfo::CustomTextualPort(port_info)) => {
-                maybe_await!(port_data.put_str(port_info, s))
+                maybe_await!(port_data.put_str(port_info, s, barrier))
             }
             _ => unreachable!(),
         }
     }
 
     #[maybe_async]
-    fn flush(&mut self, port_info: &PortInfo) -> Result<(), Exception> {
+    fn flush(&mut self, port_info: &PortInfo, barrier: ErasedBarrier) -> Result<(), Exception> {
         match (self, port_info) {
             (Self::BinaryPort(port_data), _) => {
-                maybe_await!(port_data.flush())
+                maybe_await!(port_data.flush(barrier))
             }
             (Self::CustomTextualPort(port_data), PortInfo::CustomTextualPort(port_info)) => {
-                maybe_await!(port_data.flush(port_info))
+                maybe_await!(port_data.flush(port_info, barrier))
             }
             _ => unreachable!(),
         }
     }
 
     #[maybe_async]
-    fn get_pos(&mut self, port_info: &PortInfo) -> Result<u64, Exception> {
+    fn get_pos(&mut self, port_info: &PortInfo, barrier: ErasedBarrier) -> Result<u64, Exception> {
         match (self, port_info) {
             (Self::BinaryPort(port_data), _) => {
-                maybe_await!(port_data.get_pos())
+                maybe_await!(port_data.get_pos(barrier))
             }
             (Self::CustomTextualPort(port_data), PortInfo::CustomTextualPort(port_info)) => {
-                maybe_await!(port_data.get_pos(port_info))
+                maybe_await!(port_data.get_pos(port_info, barrier))
             }
             _ => unreachable!(),
         }
     }
 
     #[maybe_async]
-    fn set_pos(&mut self, port_info: &PortInfo, pos: u64) -> Result<(), Exception> {
+    fn set_pos(
+        &mut self,
+        port_info: &PortInfo,
+        pos: u64,
+        barrier: ErasedBarrier,
+    ) -> Result<(), Exception> {
         match (self, port_info) {
             (Self::BinaryPort(port_data), _) => {
-                maybe_await!(port_data.set_pos(pos))
+                maybe_await!(port_data.set_pos(pos, barrier))
             }
             (Self::CustomTextualPort(port_data), PortInfo::CustomTextualPort(port_info)) => {
-                maybe_await!(port_data.set_pos(port_info, pos))
+                maybe_await!(port_data.set_pos(port_info, pos, barrier))
             }
             _ => unreachable!(),
         }
     }
 
     #[maybe_async]
-    fn close(&mut self, port_info: &PortInfo) -> Result<(), Exception> {
+    fn close(&mut self, port_info: &PortInfo, barrier: ErasedBarrier) -> Result<(), Exception> {
         match (self, port_info) {
             (Self::BinaryPort(port_data), _) => {
-                maybe_await!(port_data.close())
+                maybe_await!(port_data.close(barrier))
             }
             (Self::CustomTextualPort(port_data), PortInfo::CustomTextualPort(port_info)) => {
-                maybe_await!(port_data.close(port_info))
+                maybe_await!(port_data.close(port_info, barrier))
             }
             _ => unreachable!(),
         }
@@ -2468,7 +2633,9 @@ impl Port {
     /// Read a single byte from the port. Returns an exception if the port is
     /// not a binary port.
     #[maybe_async]
-    pub fn get_u8(&self) -> Result<Option<u8>, Exception> {
+    pub fn get_u8(&self, barrier: &mut ContBarrier<'_>) -> Result<Option<u8>, Exception> {
+        let barrier = ErasedBarrier::new(barrier);
+
         #[cfg(not(feature = "async"))]
         let mut data = self.0.data.lock().unwrap();
 
@@ -2476,8 +2643,8 @@ impl Port {
         let mut data = self.0.data.lock().await;
 
         // TODO: Ensure this is a binary port
-        if let Some(byte) = maybe_await!(data.peekn_bytes(&self.0.info, 0))? {
-            maybe_await!(data.consume_bytes(&self.0.info, 1))?;
+        if let Some(byte) = maybe_await!(data.peekn_bytes(&self.0.info, 0, barrier))? {
+            maybe_await!(data.consume_bytes(&self.0.info, 1, barrier))?;
             Ok(Some(byte))
         } else {
             Ok(None)
@@ -2487,7 +2654,9 @@ impl Port {
     /// Lookahead one byte into the port. Does not advance the port's position.
     /// Returns an exception if the port is not a binary port.
     #[maybe_async]
-    pub fn lookahead_u8(&self) -> Result<Option<u8>, Exception> {
+    pub fn lookahead_u8(&self, barrier: &mut ContBarrier<'_>) -> Result<Option<u8>, Exception> {
+        let barrier = ErasedBarrier::new(barrier);
+
         #[cfg(not(feature = "async"))]
         let mut data = self.0.data.lock().unwrap();
 
@@ -2495,21 +2664,23 @@ impl Port {
         let mut data = self.0.data.lock().await;
 
         // TODO: Ensure this is a binary port
-        maybe_await!(data.peekn_bytes(&self.0.info, 0))
+        maybe_await!(data.peekn_bytes(&self.0.info, 0, barrier))
     }
 
     /// Read a single [`char`] from the port. Returns an exception if the port
     /// is not a textual port.
     #[maybe_async]
-    pub fn get_char(&self) -> Result<Option<char>, Exception> {
+    pub fn get_char(&self, barrier: &mut ContBarrier<'_>) -> Result<Option<char>, Exception> {
+        let barrier = ErasedBarrier::new(barrier);
+
         #[cfg(not(feature = "async"))]
         let mut data = self.0.data.lock().unwrap();
 
         #[cfg(feature = "async")]
         let mut data = self.0.data.lock().await;
 
-        if let Some(chr) = maybe_await!(data.peekn_chars(&self.0.info, 0))? {
-            maybe_await!(data.consume_chars(&self.0.info, 1))?;
+        if let Some(chr) = maybe_await!(data.peekn_chars(&self.0.info, 0, barrier))? {
+            maybe_await!(data.consume_chars(&self.0.info, 1, barrier))?;
             Ok(Some(chr))
         } else {
             Ok(None)
@@ -2519,22 +2690,24 @@ impl Port {
     /// Lookahead one [`char`] into the port. Does not advance the port's
     /// position. Returns an exception if the port is not a textual port.
     #[maybe_async]
-    pub fn lookahead_char(&self) -> Result<Option<char>, Exception> {
+    pub fn lookahead_char(&self, barrier: &mut ContBarrier<'_>) -> Result<Option<char>, Exception> {
+        let barrier = ErasedBarrier::new(barrier);
+
         #[cfg(not(feature = "async"))]
         let mut data = self.0.data.lock().unwrap();
 
         #[cfg(feature = "async")]
         let mut data = self.0.data.lock().await;
 
-        maybe_await!(data.peekn_chars(&self.0.info, 0))
+        maybe_await!(data.peekn_chars(&self.0.info, 0, barrier))
     }
 
     /// Read a line from the port, not including the newline character.
     #[maybe_async]
-    pub fn get_line(&self) -> Result<Option<String>, Exception> {
+    pub fn get_line(&self, barrier: &mut ContBarrier<'_>) -> Result<Option<String>, Exception> {
         let mut out = String::new();
         loop {
-            match maybe_await!(self.get_char())? {
+            match maybe_await!(self.get_char(barrier))? {
                 Some('\n') => return Ok(Some(out)),
                 Some(chr) => out.push(chr),
                 None if out.is_empty() => return Ok(None),
@@ -2545,10 +2718,14 @@ impl Port {
 
     /// Read a string of `n` characters long.
     #[maybe_async]
-    pub fn get_string_n(&self, n: usize) -> Result<Option<String>, Exception> {
+    pub fn get_string_n(
+        &self,
+        n: usize,
+        barrier: &mut ContBarrier<'_>,
+    ) -> Result<Option<String>, Exception> {
         let mut out = String::with_capacity(n);
         for _ in 0..n {
-            if let Some(chr) = maybe_await!(self.get_char())? {
+            if let Some(chr) = maybe_await!(self.get_char(barrier))? {
                 out.push(chr);
             } else {
                 break;
@@ -2559,9 +2736,12 @@ impl Port {
 
     /// Read the contents of the port until eof.
     #[maybe_async]
-    pub fn get_string_all(&self) -> Result<Option<String>, Exception> {
+    pub fn get_string_all(
+        &self,
+        barrier: &mut ContBarrier<'_>,
+    ) -> Result<Option<String>, Exception> {
         let mut out = String::new();
-        while let Some(chr) = maybe_await!(self.get_char())? {
+        while let Some(chr) = maybe_await!(self.get_char(barrier))? {
             out.push(chr);
         }
         Ok(Some(out))
@@ -2570,14 +2750,20 @@ impl Port {
     /// Read a single datum from the port and advance the position to right after
     /// the datum.
     #[maybe_async]
-    pub fn get_sexpr(&self, span: Span) -> Result<Option<(Syntax, Span)>, ParseSyntaxError> {
+    pub fn get_sexpr(
+        &self,
+        span: Span,
+        barrier: &mut ContBarrier<'_>,
+    ) -> Result<Option<(Syntax, Span)>, ParseSyntaxError> {
+        let barrier = ErasedBarrier::new(barrier);
+
         #[cfg(not(feature = "async"))]
         let mut data = self.0.data.lock().unwrap();
 
         #[cfg(feature = "async")]
         let mut data = self.0.data.lock().await;
 
-        let mut parser = Parser::new(&mut data, &self.0.info, span);
+        let mut parser = Parser::new(&mut data, &self.0.info, span, barrier);
 
         let sexpr_or_eof = maybe_await!(parser.get_sexpr_or_eof())?;
         let ending_span = parser.curr_span();
@@ -2587,21 +2773,29 @@ impl Port {
 
     /// Read all datums from the port until EOF.
     #[maybe_async]
-    pub fn all_sexprs(&self, span: Span) -> Result<Syntax, ParseSyntaxError> {
+    pub fn all_sexprs(
+        &self,
+        span: Span,
+        barrier: &mut ContBarrier<'_>,
+    ) -> Result<Syntax, ParseSyntaxError> {
+        let barrier = ErasedBarrier::new(barrier);
+
         #[cfg(not(feature = "async"))]
         let mut data = self.0.data.lock().unwrap();
 
         #[cfg(feature = "async")]
         let mut data = self.0.data.lock().await;
 
-        let mut parser = Parser::new(&mut data, &self.0.info, span);
+        let mut parser = Parser::new(&mut data, &self.0.info, span, barrier);
 
         Ok(maybe_await!(parser.all_sexprs())?)
     }
 
     /// Write a single byte to the port.
     #[maybe_async]
-    pub fn put_u8(&self, byte: u8) -> Result<(), Exception> {
+    pub fn put_u8(&self, byte: u8, barrier: &mut ContBarrier<'_>) -> Result<(), Exception> {
+        let barrier = ErasedBarrier::new(barrier);
+
         #[cfg(not(feature = "async"))]
         let mut data = self.0.data.lock().unwrap();
 
@@ -2610,12 +2804,14 @@ impl Port {
 
         // TODO: ensure this is not a textual port
 
-        maybe_await!(data.put_bytes(&self.0.info, &[byte]))
+        maybe_await!(data.put_bytes(&self.0.info, &[byte], barrier))
     }
 
     /// Write a byte slice to the port.
     #[maybe_async]
-    pub fn put_bytes(&self, bytes: &[u8]) -> Result<(), Exception> {
+    pub fn put_bytes(&self, bytes: &[u8], barrier: &mut ContBarrier<'_>) -> Result<(), Exception> {
+        let barrier = ErasedBarrier::new(barrier);
+
         #[cfg(not(feature = "async"))]
         let mut data = self.0.data.lock().unwrap();
 
@@ -2624,12 +2820,14 @@ impl Port {
 
         // TODO: ensure this is not a textual port
 
-        maybe_await!(data.put_bytes(&self.0.info, bytes))
+        maybe_await!(data.put_bytes(&self.0.info, bytes, barrier))
     }
 
     /// Write a single character to the port.
     #[maybe_async]
-    pub fn put_char(&self, chr: char) -> Result<(), Exception> {
+    pub fn put_char(&self, chr: char, barrier: &mut ContBarrier<'_>) -> Result<(), Exception> {
+        let barrier = ErasedBarrier::new(barrier);
+
         #[cfg(not(feature = "async"))]
         let mut data = self.0.data.lock().unwrap();
 
@@ -2639,12 +2837,18 @@ impl Port {
         let mut buf: [u8; 4] = [0; 4];
         let s = chr.encode_utf8(&mut buf);
 
-        maybe_await!(data.put_str(&self.0.info, s))
+        maybe_await!(data.put_str(&self.0.info, s, barrier))
     }
 
     /// Write a char slice to the port.
     #[maybe_async]
-    pub fn put_chars(&self, chars: &[char]) -> Result<(), Exception> {
+    pub fn put_chars(
+        &self,
+        chars: &[char],
+        barrier: &mut ContBarrier<'_>,
+    ) -> Result<(), Exception> {
+        let barrier = ErasedBarrier::new(barrier);
+
         #[cfg(not(feature = "async"))]
         let mut data = self.0.data.lock().unwrap();
 
@@ -2655,7 +2859,7 @@ impl Port {
             let mut buf: [u8; 4] = [0; 4];
             let s = chr.encode_utf8(&mut buf);
 
-            maybe_await!(data.put_str(&self.0.info, s))?;
+            maybe_await!(data.put_str(&self.0.info, s, barrier))?;
         }
 
         Ok(())
@@ -2663,52 +2867,60 @@ impl Port {
 
     /// Write the contents of a str `s` to the port.
     #[maybe_async]
-    pub fn put_str(&self, s: &str) -> Result<(), Exception> {
+    pub fn put_str(&self, s: &str, barrier: &mut ContBarrier<'_>) -> Result<(), Exception> {
+        let barrier = ErasedBarrier::new(barrier);
+
         #[cfg(not(feature = "async"))]
         let mut data = self.0.data.lock().unwrap();
 
         #[cfg(feature = "async")]
         let mut data = self.0.data.lock().await;
 
-        maybe_await!(data.put_str(&self.0.info, s))
+        maybe_await!(data.put_str(&self.0.info, s, barrier))
     }
 
     /// Flush the contents of the port to the writer sink.
     #[maybe_async]
-    pub fn flush(&self) -> Result<(), Exception> {
+    pub fn flush(&self, barrier: &mut ContBarrier<'_>) -> Result<(), Exception> {
+        let barrier = ErasedBarrier::new(barrier);
+
         #[cfg(not(feature = "async"))]
         let mut data = self.0.data.lock().unwrap();
 
         #[cfg(feature = "async")]
         let mut data = self.0.data.lock().await;
 
-        maybe_await!(data.flush(&self.0.info))
+        maybe_await!(data.flush(&self.0.info, barrier))
     }
 
     /// Return the position of the port, erroring if the operation is not
     /// supported.
     #[maybe_async]
-    pub fn get_pos(&self) -> Result<u64, Exception> {
+    pub fn get_pos(&self, barrier: &mut ContBarrier<'_>) -> Result<u64, Exception> {
+        let barrier = ErasedBarrier::new(barrier);
+
         #[cfg(not(feature = "async"))]
         let mut data = self.0.data.lock().unwrap();
 
         #[cfg(feature = "async")]
         let mut data = self.0.data.lock().await;
 
-        maybe_await!(data.get_pos(&self.0.info))
+        maybe_await!(data.get_pos(&self.0.info, barrier))
     }
 
     /// Sets the position of the port, erroring if the operation is not
     /// supported.
     #[maybe_async]
-    pub fn set_pos(&self, pos: u64) -> Result<(), Exception> {
+    pub fn set_pos(&self, pos: u64, barrier: &mut ContBarrier<'_>) -> Result<(), Exception> {
+        let barrier = ErasedBarrier::new(barrier);
+
         #[cfg(not(feature = "async"))]
         let mut data = self.0.data.lock().unwrap();
 
         #[cfg(feature = "async")]
         let mut data = self.0.data.lock().await;
 
-        maybe_await!(data.set_pos(&self.0.info, pos))
+        maybe_await!(data.set_pos(&self.0.info, pos, barrier))
     }
 }
 
@@ -2786,7 +2998,7 @@ mod prompt {
         I: rustyline::history::History + Send + Sync + 'static,
     {
         fn read_fn() -> Option<ReadFn> {
-            Some(Box::new(|any, buff, start, count| {
+            Some(Box::new(|any, buff, start, count, _barrier| {
                 use std::cmp::Ordering;
 
                 let buff = &mut buff.as_mut_slice()?[start..(start + count)];
@@ -2870,7 +3082,7 @@ mod prompt {
 
     impl IntoPort for Prompt {
         fn read_fn() -> Option<ReadFn> {
-            Some(Box::new(|any, buff, start, count| {
+            Some(Box::new(|any, buff, start, count, _barrier| {
                 Box::pin(async move {
                     use std::cmp::Ordering;
 
@@ -3453,11 +3665,24 @@ pub fn port_has_port_position_pred(port: &Value) -> Result<Vec<Value>, Exception
     Ok(vec![Value::from(port.has_port_position())])
 }
 
+// port-position, set-port-position!, close-port, and port-eof? all reach
+// into a Port's read/write/get-pos/set-pos/close, which may be a custom
+// (Scheme-defined) procedure, so they need the caller's barrier: promoted
+// from `#[bridge]` to `#[cps_bridge]` to get it.
+
 #[maybe_async]
-#[bridge(name = "port-position", lib = "(rnrs io builtins (6))")]
-pub fn port_position(port: &Value) -> Result<Vec<Value>, Exception> {
-    let port: Port = port.clone().try_into()?;
-    Ok(vec![Value::from(maybe_await!(port.get_pos())?)])
+#[cps_bridge(def = "port-position port", lib = "(rnrs io builtins (6))")]
+pub fn port_position(
+    _runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    _rest_args: &[Value],
+    barrier: &mut ContBarrier<'_>,
+) -> Result<Application, Exception> {
+    let port: Port = args[0].clone().try_into()?;
+    let pos = maybe_await!(port.get_pos(barrier))?;
+    Ok(Application::new(k, None, vec![Value::from(pos)]))
 }
 
 #[bridge(name = "port-has-set-port-position!?", lib = "(rnrs io builtins (6))")]
@@ -3467,18 +3692,33 @@ pub fn port_has_set_port_position_bang_pred(port: &Value) -> Result<Vec<Value>, 
 }
 
 #[maybe_async]
-#[bridge(name = "set-port-position!", lib = "(rnrs io builtins (6))")]
-pub fn set_port_position_bang(port: &Value, pos: &Value) -> Result<Vec<Value>, Exception> {
-    let port: Port = port.clone().try_into()?;
-    let pos: u64 = pos.clone().try_into()?;
-    maybe_await!(port.set_pos(pos))?;
-    Ok(Vec::new())
+#[cps_bridge(def = "set-port-position! port pos", lib = "(rnrs io builtins (6))")]
+pub fn set_port_position_bang(
+    _runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    _rest_args: &[Value],
+    barrier: &mut ContBarrier<'_>,
+) -> Result<Application, Exception> {
+    let port: Port = args[0].clone().try_into()?;
+    let pos: u64 = args[1].clone().try_into()?;
+    maybe_await!(port.set_pos(pos, barrier))?;
+    Ok(Application::new(k, None, Vec::new()))
 }
 
 #[maybe_async]
-#[bridge(name = "close-port", lib = "(rnrs io builtins (6))")]
-pub fn close_port(port: &Value) -> Result<Vec<Value>, Exception> {
-    let port: Port = port.clone().try_into()?;
+#[cps_bridge(def = "close-port port", lib = "(rnrs io builtins (6))")]
+pub fn close_port(
+    _runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    _rest_args: &[Value],
+    barrier: &mut ContBarrier<'_>,
+) -> Result<Application, Exception> {
+    let port: Port = args[0].clone().try_into()?;
+    let erased = ErasedBarrier::new(barrier);
 
     #[cfg(not(feature = "async"))]
     let mut data = port.0.data.lock().unwrap();
@@ -3486,9 +3726,9 @@ pub fn close_port(port: &Value) -> Result<Vec<Value>, Exception> {
     #[cfg(feature = "tokio")]
     let mut data = port.0.data.lock().await;
 
-    maybe_await!(data.close(&port.0.info))?;
+    maybe_await!(data.close(&port.0.info, erased))?;
 
-    Ok(Vec::new())
+    Ok(Application::new(k, None, Vec::new()))
 }
 
 // TODO: call-with-port
@@ -3503,9 +3743,17 @@ pub fn input_port_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
 }
 
 #[maybe_async]
-#[bridge(name = "port-eof?", lib = "(rnrs io builtins (6))")]
-pub fn port_eof_pred(input_port: &Value) -> Result<Vec<Value>, Exception> {
-    let port: Port = input_port.clone().try_into()?;
+#[cps_bridge(def = "port-eof? input-port", lib = "(rnrs io builtins (6))")]
+pub fn port_eof_pred(
+    _runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    _rest_args: &[Value],
+    barrier: &mut ContBarrier<'_>,
+) -> Result<Application, Exception> {
+    let port: Port = args[0].clone().try_into()?;
+    let erased = ErasedBarrier::new(barrier);
 
     #[cfg(not(feature = "async"))]
     let mut data = port.0.data.lock().unwrap();
@@ -3513,9 +3761,8 @@ pub fn port_eof_pred(input_port: &Value) -> Result<Vec<Value>, Exception> {
     #[cfg(feature = "tokio")]
     let mut data = port.0.data.lock().await;
 
-    Ok(vec![Value::from(
-        maybe_await!(data.peekn_bytes(&port.0.info, 0))?.is_none(),
-    )])
+    let is_eof = maybe_await!(data.peekn_bytes(&port.0.info, 0, erased))?.is_none();
+    Ok(Application::new(k, None, vec![Value::from(is_eof)]))
 }
 
 #[maybe_async]
@@ -3644,7 +3891,7 @@ pub fn current_input_port(
     k: Procedure,
     _args: &[Value],
     _rest_args: &[Value],
-    barrier: &mut ContBarrier,
+    barrier: &mut ContBarrier<'_>,
 ) -> Result<Application, Exception> {
     let current_input_port = barrier.current_input_port();
     Ok(Application::new(
@@ -3661,7 +3908,7 @@ pub fn current_output_port(
     k: Procedure,
     _args: &[Value],
     _rest_args: &[Value],
-    barrier: &mut ContBarrier,
+    barrier: &mut ContBarrier<'_>,
 ) -> Result<Application, Exception> {
     let current_input_port = barrier.current_output_port();
     Ok(Application::new(
@@ -3678,7 +3925,7 @@ pub fn current_error_port(
     k: Procedure,
     _args: &[Value],
     _rest_args: &[Value],
-    _barrier: &mut ContBarrier,
+    _barrier: &mut ContBarrier<'_>,
 ) -> Result<Application, Exception> {
     let current_error_port = Port::new(
         "<stderr>",
@@ -3697,89 +3944,175 @@ pub fn current_error_port(
 }
 
 // 8.2.8. Binary input
+//
+// All of get-u8, lookahead-u8, get-char, lookahead-char, get-string-n,
+// get-line, get-string-all, and get-datum read through a Port, which may be
+// backed by a custom (Scheme-defined) read procedure, so they need the
+// caller's barrier: promoted from `#[bridge]` to `#[cps_bridge]` to get it.
 
 #[maybe_async]
-#[bridge(name = "get-u8", lib = "(rnrs io builtins (6))")]
-pub fn get_u8(binary_input_port: &Value) -> Result<Vec<Value>, Exception> {
-    let port: Port = binary_input_port.clone().try_into()?;
-    if let Some(byte) = maybe_await!(port.get_u8())? {
-        Ok(vec![Value::from(byte)])
+#[cps_bridge(def = "get-u8 binary-input-port", lib = "(rnrs io builtins (6))")]
+pub fn get_u8(
+    _runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    _rest_args: &[Value],
+    barrier: &mut ContBarrier<'_>,
+) -> Result<Application, Exception> {
+    let port: Port = args[0].clone().try_into()?;
+    let result = if let Some(byte) = maybe_await!(port.get_u8(barrier))? {
+        Value::from(byte)
     } else {
-        Ok(vec![EOF_OBJECT.clone()])
-    }
+        EOF_OBJECT.clone()
+    };
+    Ok(Application::new(k, None, vec![result]))
 }
 
 #[maybe_async]
-#[bridge(name = "lookahead-u8", lib = "(rnrs io builtins (6))")]
-pub fn lookahead_u8(binary_input_port: &Value) -> Result<Vec<Value>, Exception> {
-    let port: Port = binary_input_port.clone().try_into()?;
-    if let Some(byte) = maybe_await!(port.lookahead_u8())? {
-        Ok(vec![Value::from(byte)])
+#[cps_bridge(def = "lookahead-u8 binary-input-port", lib = "(rnrs io builtins (6))")]
+pub fn lookahead_u8(
+    _runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    _rest_args: &[Value],
+    barrier: &mut ContBarrier<'_>,
+) -> Result<Application, Exception> {
+    let port: Port = args[0].clone().try_into()?;
+    let result = if let Some(byte) = maybe_await!(port.lookahead_u8(barrier))? {
+        Value::from(byte)
     } else {
-        Ok(vec![EOF_OBJECT.clone()])
-    }
+        EOF_OBJECT.clone()
+    };
+    Ok(Application::new(k, None, vec![result]))
 }
 
 // 8.2.9. Textual input
 
 #[maybe_async]
-#[bridge(name = "get-char", lib = "(rnrs io builtins (6))")]
-pub fn get_char(textual_input_port: Port) -> Result<Vec<Value>, Exception> {
-    if let Some(chr) = maybe_await!(textual_input_port.get_char())? {
-        Ok(vec![Value::from(chr)])
+#[cps_bridge(def = "get-char textual-input-port", lib = "(rnrs io builtins (6))")]
+pub fn get_char(
+    _runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    _rest_args: &[Value],
+    barrier: &mut ContBarrier<'_>,
+) -> Result<Application, Exception> {
+    let port: Port = args[0].clone().try_into()?;
+    let result = if let Some(chr) = maybe_await!(port.get_char(barrier))? {
+        Value::from(chr)
     } else {
-        Ok(vec![EOF_OBJECT.clone()])
-    }
+        EOF_OBJECT.clone()
+    };
+    Ok(Application::new(k, None, vec![result]))
 }
 
 #[maybe_async]
-#[bridge(name = "lookahead-char", lib = "(rnrs io builtins (6))")]
-pub fn lookahead_char(textual_input_port: Port) -> Result<Vec<Value>, Exception> {
-    if let Some(chr) = maybe_await!(textual_input_port.lookahead_char())? {
-        Ok(vec![Value::from(chr)])
+#[cps_bridge(
+    def = "lookahead-char textual-input-port",
+    lib = "(rnrs io builtins (6))"
+)]
+pub fn lookahead_char(
+    _runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    _rest_args: &[Value],
+    barrier: &mut ContBarrier<'_>,
+) -> Result<Application, Exception> {
+    let port: Port = args[0].clone().try_into()?;
+    let result = if let Some(chr) = maybe_await!(port.lookahead_char(barrier))? {
+        Value::from(chr)
     } else {
-        Ok(vec![EOF_OBJECT.clone()])
-    }
+        EOF_OBJECT.clone()
+    };
+    Ok(Application::new(k, None, vec![result]))
 }
 
 #[maybe_async]
-#[bridge(name = "get-string-n", lib = "(rnrs io builtins (6))")]
-pub fn get_string_n(textual_input_port: Port, n: usize) -> Result<Vec<Value>, Exception> {
-    if let Some(s) = maybe_await!(textual_input_port.get_string_n(n))? {
-        Ok(vec![Value::from(s)])
+#[cps_bridge(
+    def = "get-string-n textual-input-port n",
+    lib = "(rnrs io builtins (6))"
+)]
+pub fn get_string_n(
+    _runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    _rest_args: &[Value],
+    barrier: &mut ContBarrier<'_>,
+) -> Result<Application, Exception> {
+    let port: Port = args[0].clone().try_into()?;
+    let n: usize = args[1].clone().try_into()?;
+    let result = if let Some(s) = maybe_await!(port.get_string_n(n, barrier))? {
+        Value::from(s)
     } else {
-        Ok(vec![EOF_OBJECT.clone()])
-    }
+        EOF_OBJECT.clone()
+    };
+    Ok(Application::new(k, None, vec![result]))
 }
 
 #[maybe_async]
-#[bridge(name = "get-line", lib = "(rnrs io builtins (6))")]
-pub fn get_line(textual_input_port: Port) -> Result<Vec<Value>, Exception> {
-    if let Some(line) = maybe_await!(textual_input_port.get_line())? {
-        Ok(vec![Value::from(line)])
+#[cps_bridge(def = "get-line textual-input-port", lib = "(rnrs io builtins (6))")]
+pub fn get_line(
+    _runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    _rest_args: &[Value],
+    barrier: &mut ContBarrier<'_>,
+) -> Result<Application, Exception> {
+    let port: Port = args[0].clone().try_into()?;
+    let result = if let Some(line) = maybe_await!(port.get_line(barrier))? {
+        Value::from(line)
     } else {
-        Ok(vec![EOF_OBJECT.clone()])
-    }
+        EOF_OBJECT.clone()
+    };
+    Ok(Application::new(k, None, vec![result]))
 }
 
 #[maybe_async]
-#[bridge(name = "get-string-all", lib = "(rnrs io builtins (6))")]
-pub fn get_string_all(textual_input_port: Port) -> Result<Vec<Value>, Exception> {
-    if let Some(s) = maybe_await!(textual_input_port.get_string_all())? {
-        Ok(vec![Value::from(s)])
+#[cps_bridge(
+    def = "get-string-all textual-input-port",
+    lib = "(rnrs io builtins (6))"
+)]
+pub fn get_string_all(
+    _runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    _rest_args: &[Value],
+    barrier: &mut ContBarrier<'_>,
+) -> Result<Application, Exception> {
+    let port: Port = args[0].clone().try_into()?;
+    let result = if let Some(s) = maybe_await!(port.get_string_all(barrier))? {
+        Value::from(s)
     } else {
-        Ok(vec![EOF_OBJECT.clone()])
-    }
+        EOF_OBJECT.clone()
+    };
+    Ok(Application::new(k, None, vec![result]))
 }
 
 #[maybe_async]
-#[bridge(name = "get-datum", lib = "(rnrs io builtins (6))")]
-pub fn get_datum(textual_input_port: Port) -> Result<Vec<Value>, Exception> {
-    if let Some((syntax, _)) = maybe_await!(textual_input_port.get_sexpr(Span::default()))? {
-        Ok(vec![Value::datum_from_syntax(&syntax)])
+#[cps_bridge(def = "get-datum textual-input-port", lib = "(rnrs io builtins (6))")]
+pub fn get_datum(
+    _runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    _rest_args: &[Value],
+    barrier: &mut ContBarrier<'_>,
+) -> Result<Application, Exception> {
+    let port: Port = args[0].clone().try_into()?;
+    let result = if let Some((syntax, _)) = maybe_await!(port.get_sexpr(Span::default(), barrier))?
+    {
+        Value::datum_from_syntax(&syntax)
     } else {
-        Ok(vec![EOF_OBJECT.clone()])
-    }
+        EOF_OBJECT.clone()
+    };
+    Ok(Application::new(k, None, vec![result]))
 }
 
 // 8.2.10. Output ports
@@ -3810,11 +4143,18 @@ pub fn output_port_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
 }
 
 #[maybe_async]
-#[bridge(name = "flush-output-port", lib = "(rnrs io builtins (6))")]
-pub fn flush_output_port(obj: &Value) -> Result<Vec<Value>, Exception> {
-    let port: Port = obj.clone().try_into()?;
-    maybe_await!(port.flush())?;
-    Ok(Vec::new())
+#[cps_bridge(def = "flush-output-port obj", lib = "(rnrs io builtins (6))")]
+pub fn flush_output_port(
+    _runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    _rest_args: &[Value],
+    barrier: &mut ContBarrier<'_>,
+) -> Result<Application, Exception> {
+    let port: Port = args[0].clone().try_into()?;
+    maybe_await!(port.flush(barrier))?;
+    Ok(Application::new(k, None, Vec::new()))
 }
 
 #[bridge(name = "output-port-buffer-mode", lib = "(rnrs io builtins (6))")]
@@ -3932,25 +4272,48 @@ pub fn make_custom_textual_output_port(
 }
 
 // 8.2.11. Binary output
+//
+// put-u8, put-bytevector, put-char, put-string, and put-datum all write
+// through a Port, which may be backed by a custom (Scheme-defined) write
+// procedure, so they need the caller's barrier: promoted from `#[bridge]`
+// to `#[cps_bridge]` to get it.
 
 #[maybe_async]
-#[bridge(name = "put-u8", lib = "(rnrs io builtins (6))")]
-pub fn put_u8(binary_output_port: &Value, octet: &Value) -> Result<Vec<Value>, Exception> {
-    let port: Port = binary_output_port.clone().try_into()?;
-    let octet: u8 = octet.clone().try_into()?;
-    maybe_await!(port.put_u8(octet))?;
-    Ok(Vec::new())
+#[cps_bridge(
+    def = "put-u8 binary-output-port octet",
+    lib = "(rnrs io builtins (6))"
+)]
+pub fn put_u8(
+    _runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    _rest_args: &[Value],
+    barrier: &mut ContBarrier<'_>,
+) -> Result<Application, Exception> {
+    let port: Port = args[0].clone().try_into()?;
+    let octet: u8 = args[1].clone().try_into()?;
+    maybe_await!(port.put_u8(octet, barrier))?;
+    Ok(Application::new(k, None, Vec::new()))
 }
 
 #[cfg(not(feature = "async"))]
-#[bridge(name = "put-bytevector", lib = "(rnrs io builtins (6))")]
+#[cps_bridge(
+    def = "put-bytevector port bytevector . start-count",
+    lib = "(rnrs io builtins (6))"
+)]
 pub fn put_bytevector(
-    port: Port,
-    bytevector: ByteVector,
-    start_count: &[Value],
-) -> Result<Vec<Value>, Exception> {
+    _runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    rest_args: &[Value],
+    barrier: &mut ContBarrier<'_>,
+) -> Result<Application, Exception> {
+    let port: Port = args[0].clone().try_into()?;
+    let bytevector: ByteVector = args[1].clone().try_into()?;
     let bytevector = bytevector.as_slice();
-    let slice = match start_count {
+    let slice = match rest_args {
         [] => &bytevector[..],
         [start] => {
             let start: usize = start.try_to()?;
@@ -3968,27 +4331,32 @@ pub fn put_bytevector(
             &bytevector[start..(start + count)]
         }
         _ => {
-            return Err(Exception::wrong_num_of_var_args(
-                2..4,
-                2 + start_count.len(),
-            ));
+            return Err(Exception::wrong_num_of_var_args(2..4, 2 + rest_args.len()));
         }
     };
-    port.put_bytes(slice)?;
-    Ok(Vec::new())
+    port.put_bytes(slice, barrier)?;
+    Ok(Application::new(k, None, Vec::new()))
 }
 
 #[cfg(feature = "async")]
-#[bridge(name = "put-bytevector", lib = "(rnrs io builtins (6))")]
+#[cps_bridge(
+    def = "put-bytevector port bytevector . start-count",
+    lib = "(rnrs io builtins (6))"
+)]
 pub async fn put_bytevector(
-    port: Port,
-    bytevector: ByteVector,
-    start_count: &[Value],
-) -> Result<Vec<Value>, Exception> {
+    _runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    rest_args: &[Value],
+    barrier: &mut ContBarrier<'_>,
+) -> Result<Application, Exception> {
+    let port: Port = args[0].clone().try_into()?;
+    let bytevector: ByteVector = args[1].clone().try_into()?;
     // We have to copy the slice to another buffer... it's really obnoxious
     let slice = {
         let bytevector = bytevector.as_slice();
-        match start_count {
+        match rest_args {
             [] => bytevector[..].to_vec(),
             [start] => {
                 let start: usize = start.try_to()?;
@@ -4006,37 +4374,52 @@ pub async fn put_bytevector(
                 bytevector[start..(start + count)].to_vec()
             }
             _ => {
-                return Err(Exception::wrong_num_of_var_args(
-                    2..4,
-                    2 + start_count.len(),
-                ));
+                return Err(Exception::wrong_num_of_var_args(2..4, 2 + rest_args.len()));
             }
         }
     };
-    port.put_bytes(&slice).await?;
-    Ok(Vec::new())
+    port.put_bytes(&slice, barrier).await?;
+    Ok(Application::new(k, None, Vec::new()))
 }
 
 // 8.2.12. Textual output
 
 #[maybe_async]
-#[bridge(name = "put-char", lib = "(rnrs io builtins (6))")]
-pub fn put_char(textual_output_port: &Value, chr: &Value) -> Result<Vec<Value>, Exception> {
-    let port: Port = textual_output_port.clone().try_into()?;
-    let chr: char = chr.clone().try_into()?;
-    maybe_await!(port.put_char(chr))?;
-    Ok(Vec::new())
+#[cps_bridge(
+    def = "put-char textual-output-port chr",
+    lib = "(rnrs io builtins (6))"
+)]
+pub fn put_char(
+    _runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    _rest_args: &[Value],
+    barrier: &mut ContBarrier<'_>,
+) -> Result<Application, Exception> {
+    let port: Port = args[0].clone().try_into()?;
+    let chr: char = args[1].clone().try_into()?;
+    maybe_await!(port.put_char(chr, barrier))?;
+    Ok(Application::new(k, None, Vec::new()))
 }
 
 #[cfg(not(feature = "async"))]
-#[bridge(name = "put-string", lib = "(rnrs io builtins (6))")]
+#[cps_bridge(
+    def = "put-string port string . start-count",
+    lib = "(rnrs io builtins (6))"
+)]
 pub fn put_string(
-    port: Port,
-    string: WideString,
-    start_count: &[Value],
-) -> Result<Vec<Value>, Exception> {
+    _runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    rest_args: &[Value],
+    barrier: &mut ContBarrier<'_>,
+) -> Result<Application, Exception> {
+    let port: Port = args[0].clone().try_into()?;
+    let string: WideString = args[1].clone().try_into()?;
     let string = string.as_slice();
-    let slice = match start_count {
+    let slice = match rest_args {
         [] => &string[..],
         [start] => {
             let start: usize = start.try_to()?;
@@ -4054,26 +4437,31 @@ pub fn put_string(
             &string[start..(start + count)]
         }
         _ => {
-            return Err(Exception::wrong_num_of_var_args(
-                2..4,
-                2 + start_count.len(),
-            ));
+            return Err(Exception::wrong_num_of_var_args(2..4, 2 + rest_args.len()));
         }
     };
-    port.put_chars(slice)?;
-    Ok(Vec::new())
+    port.put_chars(slice, barrier)?;
+    Ok(Application::new(k, None, Vec::new()))
 }
 
 #[cfg(feature = "async")]
-#[bridge(name = "put-string", lib = "(rnrs io builtins (6))")]
+#[cps_bridge(
+    def = "put-string port string . start-count",
+    lib = "(rnrs io builtins (6))"
+)]
 pub async fn put_string(
-    port: Port,
-    string: WideString,
-    start_count: &[Value],
-) -> Result<Vec<Value>, Exception> {
+    _runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    rest_args: &[Value],
+    barrier: &mut ContBarrier<'_>,
+) -> Result<Application, Exception> {
+    let port: Port = args[0].clone().try_into()?;
+    let string: WideString = args[1].clone().try_into()?;
     let slice = {
         let string = string.as_slice();
-        match start_count {
+        match rest_args {
             [] => string[..].to_vec(),
             [start] => {
                 let start: usize = start.try_to()?;
@@ -4091,24 +4479,31 @@ pub async fn put_string(
                 string[start..(start + count)].to_vec()
             }
             _ => {
-                return Err(Exception::wrong_num_of_var_args(
-                    2..4,
-                    2 + start_count.len(),
-                ));
+                return Err(Exception::wrong_num_of_var_args(2..4, 2 + rest_args.len()));
             }
         }
     };
-    port.put_chars(&slice).await?;
-    Ok(Vec::new())
+    port.put_chars(&slice, barrier).await?;
+    Ok(Application::new(k, None, Vec::new()))
 }
 
 #[maybe_async]
-#[bridge(name = "put-datum", lib = "(rnrs io builtins (6))")]
-pub fn put_datum(textual_output_port: &Value, datum: &Value) -> Result<Vec<Value>, Exception> {
-    let port: Port = textual_output_port.clone().try_into()?;
-    let str_rep = format!("{datum:?}");
-    maybe_await!(port.put_str(&str_rep))?;
-    Ok(Vec::new())
+#[cps_bridge(
+    def = "put-datum textual-output-port datum",
+    lib = "(rnrs io builtins (6))"
+)]
+pub fn put_datum(
+    _runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    _rest_args: &[Value],
+    barrier: &mut ContBarrier<'_>,
+) -> Result<Application, Exception> {
+    let port: Port = args[0].clone().try_into()?;
+    let str_rep = format!("{:?}", args[1]);
+    maybe_await!(port.put_str(&str_rep, barrier))?;
+    Ok(Application::new(k, None, Vec::new()))
 }
 
 // 8.2.13. Input/output ports
@@ -4605,7 +5000,7 @@ pub fn read_char(
         }
     };
 
-    let result = if let Some(byte) = maybe_await!(input_port.get_char())? {
+    let result = if let Some(byte) = maybe_await!(input_port.get_char(barrier))? {
         Value::from(byte)
     } else {
         EOF_OBJECT.clone()
@@ -4639,7 +5034,7 @@ pub fn peek_char(
         }
     };
 
-    let result = if let Some(byte) = maybe_await!(input_port.lookahead_char())? {
+    let result = if let Some(byte) = maybe_await!(input_port.lookahead_char(barrier))? {
         Value::from(byte)
     } else {
         EOF_OBJECT.clone()
@@ -4673,11 +5068,12 @@ pub fn read(
         }
     };
 
-    let result = if let Some((syntax, _)) = maybe_await!(input_port.get_sexpr(Span::default()))? {
-        Value::datum_from_syntax(&syntax)
-    } else {
-        EOF_OBJECT.clone()
-    };
+    let result =
+        if let Some((syntax, _)) = maybe_await!(input_port.get_sexpr(Span::default(), barrier))? {
+            Value::datum_from_syntax(&syntax)
+        } else {
+            EOF_OBJECT.clone()
+        };
 
     Ok(Application::new(k, None, vec![result]))
 }
@@ -4709,7 +5105,7 @@ pub fn write_char(
         }
     };
 
-    maybe_await!(output_port.put_char(chr))?;
+    maybe_await!(output_port.put_char(chr, barrier))?;
 
     Ok(Application::new(k, None, Vec::new()))
 }
@@ -4739,7 +5135,7 @@ pub fn newline(
         }
     };
 
-    maybe_await!(output_port.put_char('\n'))?;
+    maybe_await!(output_port.put_char('\n', barrier))?;
 
     Ok(Application::new(k, None, Vec::new()))
 }
@@ -4771,7 +5167,7 @@ pub fn display(
         }
     };
 
-    maybe_await!(output_port.put_str(&obj))?;
+    maybe_await!(output_port.put_str(&obj, barrier))?;
 
     Ok(Application::new(k, None, Vec::new()))
 }
@@ -4803,7 +5199,7 @@ pub fn write(
         }
     };
 
-    maybe_await!(output_port.put_str(&obj))?;
+    maybe_await!(output_port.put_str(&obj, barrier))?;
 
     Ok(Application::new(k, None, Vec::new()))
 }

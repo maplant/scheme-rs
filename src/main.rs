@@ -10,6 +10,7 @@ use scheme_rs::{
     env::TopLevelEnvironment,
     exceptions::Exception,
     ports::{BufferMode, IntoPort, Port, Prompt, ReadFn, Transcoder},
+    proc::ContBarrier,
     runtime::Runtime,
     syntax::{Span, Syntax},
 };
@@ -68,9 +69,9 @@ pub struct TextStoringPrompt {
 impl IntoPort for TextStoringPrompt {
     fn read_fn() -> Option<ReadFn> {
         let prompt_read_fn = Prompt::<InputHelper, FileHistory>::read_fn().unwrap();
-        Some(Box::new(move |any, buff, start, count| {
+        Some(Box::new(move |any, buff, start, count, barrier| {
             let this = any.downcast_mut::<Self>().unwrap();
-            let written = (prompt_read_fn)(&mut this.prompt, buff, start, count)?;
+            let written = (prompt_read_fn)(&mut this.prompt, buff, start, count, barrier)?;
             this.text
                 .lock()
                 .push_str(str::from_utf8(&buff.as_slice()[start..(start + written)]).unwrap());
@@ -82,11 +83,12 @@ impl IntoPort for TextStoringPrompt {
 #[cfg(feature = "async")]
 impl IntoPort for TextStoringPrompt {
     fn read_fn() -> Option<ReadFn> {
-        Some(Box::new(move |any, buff, start, count| {
+        Some(Box::new(move |any, buff, start, count, barrier| {
             Box::pin(async move {
                 let prompt_read_fn = Prompt::read_fn().unwrap();
                 let this = any.downcast_mut::<Self>().unwrap();
-                let written = (prompt_read_fn)(&mut this.prompt, buff, start, count).await?;
+                let written =
+                    (prompt_read_fn)(&mut this.prompt, buff, start, count, barrier).await?;
                 this.text
                     .lock()
                     .push_str(str::from_utf8(&buff.as_slice()[start..(start + written)]).unwrap());
@@ -173,7 +175,10 @@ fn entry(runtime: &Runtime) -> Result<(), Exception> {
 
     let mut n_results = 1;
     loop {
-        let sexpr = match maybe_await!(input_port.get_sexpr(span)) {
+        // The prompt port's read closure is native (readline-backed) and
+        // ignores the barrier, so a fresh one per line is fine here - it
+        // can never actually reach Scheme.
+        let sexpr = match maybe_await!(input_port.get_sexpr(span, &mut ContBarrier::new())) {
             Ok(Some((sexpr, new_span))) => {
                 span = new_span;
                 sexpr

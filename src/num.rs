@@ -26,6 +26,7 @@ use crate::{
     exceptions::Exception,
     gc::Trace,
     ports::{BufferMode, Port, Transcoder},
+    proc::{ContBarrier, ErasedBarrier},
     registry::bridge,
     strings::WideString,
     syntax::{Span, lex::Lexer},
@@ -2529,7 +2530,11 @@ pub fn string_to_number(s: WideString, rest_args: &[Value]) -> Result<Vec<Value>
     let mut data = port.0.data.lock().unwrap();
     #[cfg(feature = "tokio")]
     let mut data = port.0.data.lock().await;
-    let mut lexer = Lexer::new(&mut data, info, Span::default());
+    // Fresh in-memory Cursor port: its closures are native and ignore the
+    // barrier, so a fresh one is correct here, not just expedient.
+    let mut barrier = ContBarrier::new();
+    let erased = ErasedBarrier::new(&mut barrier);
+    let mut lexer = Lexer::new(&mut data, info, Span::default(), erased);
     let Some(number) = maybe_await!(lexer.number(radix)).ok().flatten() else {
         return Ok(vec![Value::from(false)]);
     };

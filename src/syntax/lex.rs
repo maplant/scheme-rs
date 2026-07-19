@@ -14,6 +14,7 @@ use crate::{
     exceptions::Exception,
     num::{self, NumberRepr, SimpleNumber},
     ports::{PortData, PortInfo},
+    proc::ErasedBarrier,
 };
 
 pub struct Lexer<'a> {
@@ -22,16 +23,26 @@ pub struct Lexer<'a> {
     pos: usize,
     buff: Vec<char>,
     curr_span: Span,
+    // Only `peek` and `consume_chars` below actually touch the port, so the
+    // barrier is stashed here once at construction rather than threaded
+    // through every one of the lexer's methods.
+    barrier: ErasedBarrier,
 }
 
 impl<'a> Lexer<'a> {
-    pub(crate) fn new(port_data: &'a mut PortData, port_info: &'a PortInfo, span: Span) -> Self {
+    pub(crate) fn new(
+        port_data: &'a mut PortData,
+        port_info: &'a PortInfo,
+        span: Span,
+        barrier: ErasedBarrier,
+    ) -> Self {
         Self {
             port_data,
             port_info,
             pos: 0,
             buff: Vec::new(),
             curr_span: span,
+            barrier,
         }
     }
 
@@ -50,12 +61,13 @@ impl<'a> Lexer<'a> {
             return Ok(Some(self.buff[self.pos]));
         }
         while self.buff.len() < self.pos {
-            let Some(chr) = maybe_await!(self.port_data.read_char(self.port_info))? else {
+            let Some(chr) = maybe_await!(self.port_data.read_char(self.port_info, self.barrier))?
+            else {
                 return Ok(None);
             };
             self.buff.push(chr);
         }
-        maybe_await!(self.port_data.peekn_chars(self.port_info, 0))
+        maybe_await!(self.port_data.peekn_chars(self.port_info, 0, self.barrier))
     }
 
     #[maybe_async]
@@ -121,10 +133,11 @@ impl<'a> Lexer<'a> {
     fn consume_chars(&mut self) -> Result<(), Exception> {
         // Consume all the characters we need to
         if self.pos > self.buff.len() {
-            maybe_await!(
-                self.port_data
-                    .consume_chars(self.port_info, self.pos - self.buff.len())
-            )?;
+            maybe_await!(self.port_data.consume_chars(
+                self.port_info,
+                self.pos - self.buff.len(),
+                self.barrier
+            ))?;
         }
         self.pos = 0;
         self.buff.clear();

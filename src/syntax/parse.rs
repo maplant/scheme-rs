@@ -2,6 +2,7 @@ use crate::{
     keywords::Keyword,
     num::Number,
     ports::{PortData, PortInfo},
+    proc::ErasedBarrier,
     syntax::lex::ParseNumberError,
     value::Value,
 };
@@ -40,10 +41,15 @@ macro_rules! token {
 }
 
 impl<'a> Parser<'a> {
-    pub(crate) fn new(port_data: &'a mut PortData, port_info: &'a PortInfo, span: Span) -> Self {
+    pub(crate) fn new(
+        port_data: &'a mut PortData,
+        port_info: &'a PortInfo,
+        span: Span,
+        barrier: ErasedBarrier,
+    ) -> Self {
         Parser {
             lookahead: Vec::new(),
-            lexer: Lexer::new(port_data, port_info, span),
+            lexer: Lexer::new(port_data, port_info, span, barrier),
         }
     }
 }
