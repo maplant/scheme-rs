@@ -26,6 +26,9 @@ use std::{
 #[cfg(feature = "async")]
 use futures::future::BoxFuture;
 
+#[cfg(feature = "async")]
+use crate::proc::ErasedBarrier;
+
 pub mod lex;
 pub mod parse;
 
@@ -277,7 +280,11 @@ impl Syntax {
     }
 
     #[maybe_async]
-    fn apply_transformer(&self, transformer: &Procedure) -> Result<Expansion, Exception> {
+    fn apply_transformer(
+        &self,
+        transformer: &Procedure,
+        barrier: &mut ContBarrier<'_>,
+    ) -> Result<Expansion, Exception> {
         // Create a new scope for the expansion
         let intro_scope = Scope::new();
 
@@ -286,8 +293,7 @@ impl Syntax {
         input.add_scope(intro_scope);
 
         // Call the transformer with the input:
-        let transformer_output =
-            maybe_await!(transformer.call(&[Value::from(input)], &mut ContBarrier::new()))?;
+        let transformer_output = maybe_await!(transformer.call(&[Value::from(input)], barrier))?;
 
         let output: Value = transformer_output.expect1()?;
         let mut output = Syntax::wrap(output, self.span());
@@ -297,20 +303,29 @@ impl Syntax {
     }
 
     #[cfg(not(feature = "async"))]
-    fn expand_once(&self, env: &Environment) -> Result<Expansion, Exception> {
-        self.expand_once_inner(env)
+    fn expand_once(
+        &self,
+        env: &Environment,
+        barrier: &mut ContBarrier<'_>,
+    ) -> Result<Expansion, Exception> {
+        self.expand_once_inner(env, barrier)
     }
 
     #[cfg(feature = "async")]
     fn expand_once<'a>(
         &'a self,
         env: &'a Environment,
+        barrier: &'a mut ContBarrier<'_>,
     ) -> BoxFuture<'a, Result<Expansion, Exception>> {
-        Box::pin(self.expand_once_inner(env))
+        Box::pin(self.expand_once_inner(env, barrier))
     }
 
     #[maybe_async]
-    fn expand_once_inner(&self, env: &Environment) -> Result<Expansion, Exception> {
+    fn expand_once_inner(
+        &self,
+        env: &Environment,
+        barrier: &mut ContBarrier<'_>,
+    ) -> Result<Expansion, Exception> {
         match self {
             Self::List { list, .. } => {
                 let ident = match list.first() {
@@ -319,7 +334,7 @@ impl Syntax {
                 };
                 if let Some(binding) = ident.resolve() {
                     if let Some(transformer) = maybe_await!(env.lookup_keyword(binding))? {
-                        return maybe_await!(self.apply_transformer(&transformer));
+                        return maybe_await!(self.apply_transformer(&transformer, barrier));
                     } else if let Some(Primitive::Set) = env.lookup_primitive(binding)
                         && let [Syntax::Identifier { ident, .. }, ..] = &list.as_slice()[1..]
                     {
@@ -334,7 +349,7 @@ impl Syntax {
                                     ident.sym
                                 )));
                             }
-                            return maybe_await!(self.apply_transformer(&transformer));
+                            return maybe_await!(self.apply_transformer(&transformer, barrier));
                         }
                     }
                 }
@@ -343,7 +358,7 @@ impl Syntax {
                 if let Some(binding) = ident.resolve()
                     && let Some(transformer) = maybe_await!(env.lookup_keyword(binding))?
                 {
-                    return maybe_await!(self.apply_transformer(&transformer));
+                    return maybe_await!(self.apply_transformer(&transformer, barrier));
                 }
             }
             _ => (),
@@ -353,9 +368,13 @@ impl Syntax {
 
     /// Fully expand the outermost syntax object.
     #[maybe_async]
-    pub(crate) fn expand(mut self, env: &Environment) -> Result<Syntax, Exception> {
+    pub(crate) fn expand(
+        mut self,
+        env: &Environment,
+        barrier: &mut ContBarrier<'_>,
+    ) -> Result<Syntax, Exception> {
         loop {
-            match maybe_await!(self.expand_once(env)) {
+            match maybe_await!(self.expand_once(env, barrier)) {
                 Ok(Expansion::Unexpanded) => {
                     return Ok(self);
                 }
@@ -381,7 +400,11 @@ impl Syntax {
             BufferMode::Block,
             Some(Transcoder::native()),
         );
-        port.all_sexprs(Span::new(file_name))
+        // The port is a fresh in-memory Cursor: its read/write closures are
+        // native and ignore the barrier entirely, so there is no re-entry
+        // into Scheme possible here, and a fresh barrier is correct (not
+        // just expedient).
+        port.all_sexprs(Span::new(file_name), &mut ContBarrier::new())
     }
 
     #[cfg(feature = "async")]
@@ -407,7 +430,11 @@ impl Syntax {
         futures::executor::block_on(async move {
             use crate::syntax::parse::Parser;
 
-            let mut parser = Parser::new(&mut data, info, Span::new(file_name));
+            // Same reasoning as the sync variant above: a fresh in-memory
+            // Cursor port can't re-enter Scheme, so a fresh barrier is fine.
+            let mut barrier = ContBarrier::new();
+            let erased = ErasedBarrier::new(&mut barrier);
+            let mut parser = Parser::new(&mut data, info, Span::new(file_name), erased);
             parser.all_sexprs().await
         })
     }

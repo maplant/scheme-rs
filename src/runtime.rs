@@ -94,6 +94,10 @@ impl Runtime {
         let progm = TopLevelEnvironment::new_program(self, path);
         let env = Environment::Top(progm.clone());
 
+        // Top-level entry: genuinely fresh dynamic state, threaded through
+        // reading the source, compilation, and evaluation.
+        let mut barrier = ContBarrier::default();
+
         let mut form = {
             let port = Port::new(
                 path.display(),
@@ -103,7 +107,7 @@ impl Runtime {
             );
             let file_name = path.file_name().unwrap().to_str().unwrap_or("<unknown>");
             let span = Span::new(file_name);
-            maybe_await!(port.all_sexprs(span)).map_err(Exception::from)?
+            maybe_await!(port.all_sexprs(span, &mut barrier)).map_err(Exception::from)?
         };
 
         form.add_scope(progm.scope());
@@ -128,10 +132,11 @@ impl Runtime {
             self,
             &form,
             &env,
-            &mut mutable_vars
+            &mut mutable_vars,
+            &mut barrier
         ))?;
         let proc = maybe_await!(Compiler::new(mutable_vars).compile(self, &body))?;
-        maybe_await!(Application::new(proc, None, Vec::new()).eval(&mut ContBarrier::default()))
+        maybe_await!(Application::new(proc, None, Vec::new()).eval(&mut barrier))
     }
 
     /// Define a library from Rust code. Useful if file system access is disabled.

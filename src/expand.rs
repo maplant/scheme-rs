@@ -4,7 +4,7 @@ use crate::{
     env::{Binding, Environment, Local, Scope, add_binding},
     exceptions::Exception,
     gc::{Gc, Trace},
-    proc::Procedure,
+    proc::{ContBarrier, Procedure},
     records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax},
@@ -70,6 +70,7 @@ impl SyntaxRule {
         env: &Environment,
         mutable_vars: &mut HashSet<Local>,
         ellipsis: Symbol,
+        barrier: &mut ContBarrier<'_>,
     ) -> Result<Self, Exception> {
         let mut variables = HashMap::default();
         let pattern_scope = Scope::new();
@@ -91,7 +92,8 @@ impl SyntaxRule {
                 &ctxt,
                 fender,
                 &env,
-                mutable_vars
+                mutable_vars,
+                barrier
             ))?)
         } else {
             None
@@ -102,7 +104,8 @@ impl SyntaxRule {
             &ctxt,
             output_expression,
             &env,
-            mutable_vars
+            mutable_vars,
+            barrier
         ))?;
         Ok(Self {
             pattern,

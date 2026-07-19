@@ -324,15 +324,20 @@ impl TopLevelEnvironment {
         let rt = { self.0.read().rt.clone() };
         let ctxt = ParseContext::new(&rt, import_policy);
         let mut mutable_vars = HashSet::default();
+        // Top-level entry: genuinely fresh dynamic state, threaded through
+        // both compilation (macro expansion may invoke transformers) and
+        // evaluation.
+        let mut barrier = ContBarrier::new();
         let body = maybe_await!(Definitions::parse(
             &ctxt,
             body,
             &Environment::Top(self.clone()),
             &sexprs,
             &mut mutable_vars,
+            &mut barrier,
         ))?;
         let compiled = maybe_await!(Compiler::new(mutable_vars).compile(&rt, &body))?;
-        maybe_await!(Application::new(compiled, None, Vec::new()).eval(&mut ContBarrier::new()))
+        maybe_await!(Application::new(compiled, None, Vec::new()).eval(&mut barrier))
     }
 
     #[maybe_async]
@@ -346,15 +351,19 @@ impl TopLevelEnvironment {
         sexpr.add_scope(self.0.read().scope);
         let mut mutable_vars = HashSet::default();
         let body = std::slice::from_ref(&sexpr);
+        // Top-level entry: genuinely fresh dynamic state, threaded through
+        // both compilation and evaluation.
+        let mut barrier = ContBarrier::new();
         let body = maybe_await!(Definitions::parse(
             &ctxt,
             body,
             &Environment::Top(self.clone()),
             &sexpr,
             &mut mutable_vars,
+            &mut barrier,
         ))?;
         let compiled = maybe_await!(Compiler::new(mutable_vars).compile(&rt, &body))?;
-        maybe_await!(Application::new(compiled, None, Vec::new()).eval(&mut ContBarrier::new()))
+        maybe_await!(Application::new(compiled, None, Vec::new()).eval(&mut barrier))
     }
 
     #[maybe_async]
@@ -403,11 +412,16 @@ impl TopLevelEnvironment {
         let rt = { self.0.read().rt.clone() };
         let env = Environment::from(self.clone());
         let mut mutable_vars = HashSet::default();
+        // Top-level entry: library expansion (macro transformers may run
+        // here) gets its own fresh dynamic state, distinct from the state
+        // used when the library is later invoked (see `maybe_invoke`).
+        let mut barrier = ContBarrier::new();
         let expanded = maybe_await!(Definitions::parse_lib_body(
             &rt,
             &body,
             &env,
-            &mut mutable_vars
+            &mut mutable_vars,
+            &mut barrier
         ))?;
         self.0.write().state = LibraryState::Expanded {
             expanded,

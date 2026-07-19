@@ -26,7 +26,7 @@ pub fn eval(
     k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
-    _barrier: &mut ContBarrier<'_>,
+    barrier: &mut ContBarrier<'_>,
 ) -> Result<Application, Exception> {
     let [expression, environment] = args else {
         unreachable!()
@@ -35,9 +35,15 @@ pub fn eval(
     let expr = Syntax::datum_to_syntax(&env.get_scope_set(), expression.clone(), &Span::default());
     let ctxt = ParseContext::new(runtime, false);
     let mut mutable_vars = HashSet::default();
-    let expr = maybe_await!(Expression::parse(&ctxt, expr, &env, &mut mutable_vars))?;
+    let expr = maybe_await!(Expression::parse(
+        &ctxt,
+        expr,
+        &env,
+        &mut mutable_vars,
+        barrier
+    ))?;
     let proc = maybe_await!(Compiler::new(mutable_vars).compile(runtime, &expr))?;
-    let result = maybe_await!(proc.call(&[], &mut ContBarrier::new()))?;
+    let result = maybe_await!(proc.call(&[], barrier))?;
     Ok(Application::new(k, None, result))
 }
 
