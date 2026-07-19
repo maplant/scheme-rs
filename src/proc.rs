@@ -695,7 +695,15 @@ impl Procedure {
         self.0.is_continuation()
     }
 
-    /// Applies `args` to the procedure and returns the values it evaluates to.
+    /// Applies `args` to the procedure and returns the values it evaluates
+    /// to.
+    ///
+    /// This is the boundary every Rust-mediated re-entry into Scheme
+    /// crosses (hashtable callbacks, port procedures, macro transformers,
+    /// `eval`, ...), and each such re-entry gets a fresh barrier id for the
+    /// duration of the call - see
+    /// [`ContBarrier::swap_fresh_id`] for why - while still sharing the
+    /// caller's `dyn_stack`/`cont_marks`/`params` through the same barrier.
     #[maybe_async]
     pub fn call(
         &self,
@@ -703,17 +711,25 @@ impl Procedure {
         barrier: &mut ContBarrier<'_>,
     ) -> Result<Vec<Value>, Exception> {
         let k = (!self.is_continuation()).then(|| halt_continuation(self.get_runtime()));
-        maybe_await!(Application::new(self.clone(), k, args.to_vec()).eval(barrier))
+        let saved_id = barrier.swap_fresh_id();
+        let result = maybe_await!(Application::new(self.clone(), k, args.to_vec()).eval(barrier));
+        barrier.restore_id(saved_id);
+        result
     }
 
     #[cfg(feature = "async")]
+    /// Just like [`call`](Self::call) but throws an error if we encounter
+    /// an async function. Gets a fresh barrier id the same way.
     pub fn call_sync(
         &self,
         args: &[Value],
         barrier: &mut ContBarrier<'_>,
     ) -> Result<Vec<Value>, Exception> {
         let k = (!self.is_continuation()).then(|| halt_continuation(self.get_runtime()));
-        Application::new(self.clone(), k, args.to_vec()).eval_sync(barrier)
+        let saved_id = barrier.swap_fresh_id();
+        let result = Application::new(self.clone(), k, args.to_vec()).eval_sync(barrier);
+        barrier.restore_id(saved_id);
+        result
     }
 
     pub(crate) fn to_primop(&self) -> Option<PrimOp> {
@@ -848,35 +864,53 @@ impl Application {
         }
     }
 
-    /// Evaluate the application - and all subsequent application - until all that
-    /// remains are values. This is the main trampoline of the evaluation engine.
+    /// Evaluate the application - and all subsequent application - until all
+    /// that remains are values. This is the main trampoline of the
+    /// evaluation engine.
+    ///
+    /// Owns the continuation-mark balance for this run: pushes the baseline
+    /// frame that the terminal (halt) continuation pops on a successful
+    /// exit, and truncates back to the entry depth on every exit. On
+    /// success the truncate is a no-op; on a halt_err exit (uncaught raise,
+    /// failed cross-barrier escape, missing prompt tag) it discards the
+    /// baseline frame plus one leaked frame per pending continuation whose
+    /// invocation - and therefore whose pop - never happened. Since the
+    /// barrier passed in is now typically the caller's (re-entry threads it
+    /// through rather than starting fresh), a leak here would otherwise
+    /// persist for as long as the caller's barrier does.
     #[maybe_async]
     pub fn eval(mut self, barrier: &mut ContBarrier<'_>) -> Result<Vec<Value>, Exception> {
-        loop {
+        barrier.push_marks();
+        let restore_depth = barrier.marks_depth() - 1;
+        let result = loop {
             let op = match self.op {
                 OpType::Proc(proc) => proc,
-                OpType::HaltOk => return Ok(self.args),
-                OpType::HaltErr => {
-                    return Err(Exception(self.args.pop().unwrap()));
-                }
+                OpType::HaltOk => break Ok(self.args),
+                OpType::HaltErr => break Err(Exception(self.args.pop().unwrap())),
             };
             self = maybe_await!(op.0.apply(self.k, self.args, barrier));
-        }
+        };
+        barrier.truncate_marks(restore_depth);
+        result
     }
 
     #[cfg(feature = "async")]
-    /// Just like [eval] but throws an error if we encounter an async function.
+    /// Just like [eval] but throws an error if we encounter an async
+    /// function. Owns the continuation-mark balance the same way
+    /// [`eval`](Self::eval) does.
     pub fn eval_sync(mut self, barrier: &mut ContBarrier) -> Result<Vec<Value>, Exception> {
-        loop {
+        barrier.push_marks();
+        let restore_depth = barrier.marks_depth() - 1;
+        let result = loop {
             let op = match self.op {
                 OpType::Proc(proc) => proc,
-                OpType::HaltOk => return Ok(self.args),
-                OpType::HaltErr => {
-                    return Err(Exception(self.args.pop().unwrap()));
-                }
+                OpType::HaltOk => break Ok(self.args),
+                OpType::HaltErr => break Err(Exception(self.args.pop().unwrap())),
             };
             self = op.0.apply_sync(self.k, self.args, barrier);
-        }
+        };
+        barrier.truncate_marks(restore_depth);
+        result
     }
 }
 
@@ -950,8 +984,14 @@ pub fn apply(
 #[cfg(feature = "async")]
 type Param<'a> = &'a mut (dyn Any + Send + Sync);
 
+// `Send` even without the `async` feature: `spawn_snapshot` (used by
+// `threads.rs`'s OS-thread spawn, which exists regardless of `async`)
+// carries a `ContBarrier` across a thread boundary. Its params map is
+// always empty in a snapshot, but auto-trait derivation looks at the field
+// type, not the runtime value, so `ContBarrier` is only `Send` if `Param`
+// is.
 #[cfg(not(feature = "async"))]
-type Param<'a> = &'a mut dyn Any;
+type Param<'a> = &'a mut (dyn Any + Send);
 
 /// A continuation barrier. Escape procedures created within a continuation
 /// barrier cannot be called within another barrier.
@@ -969,17 +1009,42 @@ pub struct ContBarrier<'a> {
     params: HashMap<Symbol, Param<'a>>,
 }
 
+fn fresh_barrier_id() -> usize {
+    static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+    NEXT_ID.fetch_add(1, Ordering::Relaxed)
+}
+
 impl<'a> ContBarrier<'a> {
     pub fn new() -> Self {
-        static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
-
         Self {
-            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            id: fresh_barrier_id(),
             dyn_stack: Vec::new(),
             // Procedures returned by the JIT compiler are delimited
             // continuations (of sorts), and therefore we need to preallocate
             // the initial marks for them since there's no mechanism to allocate
             // for them when they're run.
+            cont_marks: vec![HashMap::new()],
+            params: HashMap::new(),
+        }
+    }
+
+    /// A snapshot of this barrier's dynamic state for a spawned thread,
+    /// task, or future: current ports carry over (ambient configuration),
+    /// winders/exception handlers/prompts do not (they belong to this
+    /// barrier's own escape/unwind stack and a spawn is a new dynamic
+    /// extent), continuation marks start fresh, and params start empty (a
+    /// spawned computation does not inherit host parameters bound via
+    /// [`add_param`](Self::add_param)). Fresh id, since the spawned
+    /// computation is not nested inside this barrier's escape scope.
+    pub fn spawn_snapshot(&self) -> ContBarrier<'static> {
+        ContBarrier {
+            id: fresh_barrier_id(),
+            dyn_stack: self
+                .dyn_stack
+                .iter()
+                .filter(|elem| elem.crosses_spawn())
+                .cloned()
+                .collect(),
             cont_marks: vec![HashMap::new()],
             params: HashMap::new(),
         }
@@ -997,7 +1062,7 @@ impl<'a> ContBarrier<'a> {
         &mut self,
         key: impl Into<Symbol>,
         #[cfg(feature = "async")] val: &'a mut (impl Any + Send + Sync),
-        #[cfg(not(feature = "async"))] val: &'a mut impl Any,
+        #[cfg(not(feature = "async"))] val: &'a mut (impl Any + Send),
     ) {
         self.params.insert(key.into(), val);
     }
@@ -1046,12 +1111,44 @@ impl<'a> ContBarrier<'a> {
         (params, child_barrier)
     }
 
+    /// Swaps in a fresh id for the duration of a Rust-mediated re-entry
+    /// into Scheme, returning the previous one to be restored via
+    /// [`restore_id`](Self::restore_id) once that call returns.
+    ///
+    /// Threading the caller's barrier through re-entry (see
+    /// [`Procedure::call`]) shares its `dyn_stack`/`cont_marks`/`params` on
+    /// purpose - that's the whole point, e.g. a hashtable hash function
+    /// should see the caller's exception handlers. But `id` guards escape
+    /// procedures against jumping across a Rust re-entry frame, and that
+    /// guard only works if each such frame gets its own id: reusing the
+    /// caller's id verbatim would make a continuation captured outside the
+    /// call look like it belongs to the same barrier as code running
+    /// inside it, defeating the check the barrier exists for.
+    pub(crate) fn swap_fresh_id(&mut self) -> usize {
+        std::mem::replace(&mut self.id, fresh_barrier_id())
+    }
+
+    pub(crate) fn restore_id(&mut self, id: usize) {
+        self.id = id;
+    }
+
     pub(crate) fn push_marks(&mut self) {
         self.cont_marks.push(HashMap::new());
     }
 
     pub(crate) fn pop_marks(&mut self) {
         self.cont_marks.pop();
+    }
+
+    pub(crate) fn marks_depth(&self) -> usize {
+        self.cont_marks.len()
+    }
+
+    /// Truncate continuation marks back to `depth`, discarding frames left
+    /// behind by pending continuations when the trampoline exits early
+    /// (halt_err). No-op on balanced exits.
+    pub(crate) fn truncate_marks(&mut self, depth: usize) {
+        self.cont_marks.truncate(depth);
     }
 
     pub(crate) fn current_marks(&self, tag: Symbol) -> Vec<Value> {
@@ -1161,6 +1258,68 @@ where
     }
 }
 
+/// A type-erased `&mut ContBarrier` for `dyn Fn` trait-object boundaries
+/// that cannot carry the barrier's `'a` (host-parameter) lifetime as an
+/// ordinary higher-ranked type parameter.
+///
+/// Custom port procedures (`ReadFn`/`WriteFn`/`GetPosFn`/`SetPosFn`/
+/// `CloseFn` in `ports.rs`) are `Box<dyn Fn(..)>` closures stored on a
+/// long-lived `Port`, called repeatedly over the port's lifetime with a
+/// different barrier borrow each time. The natural signature for that,
+/// `dyn for<'a> Fn(.., &'a mut ContBarrier<'a>)`, does not work: as soon as
+/// another argument shares the trait object's higher-ranked lifetime (the
+/// underlying reader/writer, threaded through as `&dyn Any`, or the async
+/// variants' `BoxFuture<'a, _>` return type), the compiler either can't
+/// prove the closure body's captures outlive that lifetime, or (if it can)
+/// pins the barrier borrow to that same lifetime for the rest of the
+/// enclosing scope, so a second call through the same closure with a
+/// reborrowed barrier is rejected as a double mutable borrow (`E0499`).
+/// Giving the barrier its own, unrelated higher-ranked lifetime sidesteps
+/// the double-borrow but then the async closures don't type-check at all
+/// (`&mut ContBarrier` would need to outlive the returned future without
+/// any way to say so in a bare `dyn Fn` type). Confirmed with a minimal
+/// repro against both the sync and async (`BoxFuture`) shapes before
+/// reaching for this.
+///
+/// `ErasedBarrier` breaks the coupling by hiding the lifetime behind a raw
+/// pointer: the closure signature takes `&mut ErasedBarrier` (no lifetime
+/// parameter to unify with anything), and the closure body calls
+/// [`get`](Self::get) to recover a `&mut ContBarrier<'_>` scoped to that
+/// call only.
+///
+/// SAFETY: sound as long as an `ErasedBarrier` is never used after the
+/// `ContBarrier` it was constructed from goes out of scope or is otherwise
+/// invalidated. Every call site in this crate constructs one immediately
+/// before passing it into a port closure and drops it right after that
+/// call returns, so this holds by construction.
+///
+/// The struct itself has to be `pub`, not `pub(crate)`: it appears in the
+/// signature of `ReadFn`/`WriteFn`/etc., which are part of the public
+/// `IntoPort` trait embedders implement for their own reader/writer types.
+/// `new` and `get` stay `pub(crate)` though, so an embedder's `read_fn`/
+/// `write_fn`/etc. can only accept-and-ignore the parameter, never
+/// construct or dereference one - the unsafety is confined to this crate.
+#[derive(Clone, Copy)]
+pub struct ErasedBarrier(*mut ());
+
+impl ErasedBarrier {
+    pub(crate) fn new(barrier: &mut ContBarrier<'_>) -> Self {
+        Self(barrier as *mut ContBarrier<'_> as *mut ())
+    }
+
+    pub(crate) fn get(&mut self) -> &mut ContBarrier<'_> {
+        unsafe { &mut *(self.0 as *mut ContBarrier<'_>) }
+    }
+}
+
+// SAFETY: the pointee is only ever accessed through `get`, for the
+// duration of a single call, from the same thread/task that created the
+// `ErasedBarrier` (it is never sent across an await point or a thread
+// boundary itself - only the `ContBarrier` snapshot obtained from
+// `spawn_snapshot` crosses those, and that's a distinct, owned value).
+unsafe impl Send for ErasedBarrier {}
+unsafe impl Sync for ErasedBarrier {}
+
 /// A copy of [`ContBarrier`] without mutable parameters
 #[derive(Clone, Debug, Trace)]
 pub struct SavedDynamicState {
@@ -1211,6 +1370,23 @@ pub(crate) enum DynStackElem {
     ExceptionHandler(Procedure),
     CurrentInputPort(Port),
     CurrentOutputPort(Port),
+}
+
+impl DynStackElem {
+    /// Whether this entry survives a spawn (thread, task, or future): the
+    /// spawned computation is a new dynamic extent, so winders, exception
+    /// handlers, and prompts must not carry over, but current ports are
+    /// just ambient configuration, so they do. Exhaustive match so adding a
+    /// variant forces an explicit decision here.
+    fn crosses_spawn(&self) -> bool {
+        match self {
+            DynStackElem::CurrentInputPort(_) | DynStackElem::CurrentOutputPort(_) => true,
+            DynStackElem::Prompt(_)
+            | DynStackElem::PromptBarrier(_)
+            | DynStackElem::Winder(_)
+            | DynStackElem::ExceptionHandler(_) => false,
+        }
+    }
 }
 
 pub(crate) unsafe extern "C" fn pop_dyn_stack(
@@ -1306,8 +1482,20 @@ fn escape_procedure(
         .unwrap();
     let saved_barrier_read = saved_barrier.as_ref();
 
+    // Cross-barrier escape must halt this trampoline (halt_err) instead of
+    // raising through the exception-handler search. Barrier re-entry now
+    // shares dyn_stack/cont_marks with the caller (see Procedure::call), so
+    // raising here would find a handler belonging to an ancestor
+    // evaluation (e.g. guard's), whose own escape continuation also has to
+    // cross this same barrier to deliver the catch - causing a second
+    // rejection with no handler left to catch that one. Halting instead
+    // unwinds this call as a plain Err, and the exception-handler search
+    // happens once the caller (with its own, restored barrier id) converts
+    // that Err into a raise.
     if saved_barrier_read.id != barrier.id {
-        return Err(Exception::error("attempt to cross continuation barrier"));
+        return Ok(Application::halt_err(Value::from(Exception::error(
+            "attempt to cross continuation barrier",
+        ))));
     }
 
     barrier.cont_marks = saved_barrier_read.cont_marks.clone();
