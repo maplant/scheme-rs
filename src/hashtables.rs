@@ -13,9 +13,10 @@ use std::{
 use crate::{
     exceptions::Exception,
     gc::Trace,
-    proc::{ContBarrier, Procedure},
+    proc::{Application, ContBarrier, Procedure},
     records::{Embeddable, Embedded, RecordTypeDescriptor},
-    registry::bridge,
+    registry::{bridge, cps_bridge},
+    runtime::Runtime,
     strings::WideString,
     symbols::Symbol,
     value::{Expect1, Value},
@@ -66,52 +67,66 @@ impl HashTableInner {
     }
 
     #[cfg(not(feature = "async"))]
-    pub fn hash(&self, val: Value) -> Result<u64, Exception> {
-        self.hash.call(&[val], &mut ContBarrier::new())?.expect1()
+    pub fn hash(&self, val: Value, barrier: &mut ContBarrier<'_>) -> Result<u64, Exception> {
+        self.hash.call(&[val], barrier)?.expect1()
     }
 
     #[cfg(feature = "async")]
-    pub fn hash(&self, val: Value) -> Result<u64, Exception> {
-        self.hash
-            .call_sync(&[val], &mut ContBarrier::new())?
-            .expect1()
+    pub fn hash(&self, val: Value, barrier: &mut ContBarrier<'_>) -> Result<u64, Exception> {
+        self.hash.call_sync(&[val], barrier)?.expect1()
     }
 
     #[cfg(not(feature = "async"))]
-    pub fn eq(&self, lhs: Value, rhs: Value) -> Result<bool, Exception> {
-        self.eq
-            .call(&[lhs, rhs], &mut ContBarrier::new())?
-            .expect1()
+    pub fn eq(
+        &self,
+        lhs: Value,
+        rhs: Value,
+        barrier: &mut ContBarrier<'_>,
+    ) -> Result<bool, Exception> {
+        self.eq.call(&[lhs, rhs], barrier)?.expect1()
     }
 
     #[cfg(feature = "async")]
-    pub fn eq(&self, lhs: Value, rhs: Value) -> Result<bool, Exception> {
-        self.eq
-            .call_sync(&[lhs, rhs], &mut ContBarrier::new())?
-            .expect1()
+    pub fn eq(
+        &self,
+        lhs: Value,
+        rhs: Value,
+        barrier: &mut ContBarrier<'_>,
+    ) -> Result<bool, Exception> {
+        self.eq.call_sync(&[lhs, rhs], barrier)?.expect1()
     }
 
     /// Equivalent to `hashtable-ref`
-    pub fn get(&self, key: &Value, default: &Value) -> Result<Value, Exception> {
+    pub fn get(
+        &self,
+        key: &Value,
+        default: &Value,
+        barrier: &mut ContBarrier<'_>,
+    ) -> Result<Value, Exception> {
         let table = self.table.read();
-        let hash = self.hash(key.clone())?;
+        let hash = self.hash(key.clone(), barrier)?;
         for entry in table.iter_hash(hash) {
-            if entry.hash == hash && self.eq(key.clone(), entry.key.clone())? {
+            if entry.hash == hash && self.eq(key.clone(), entry.key.clone(), barrier)? {
                 return Ok(entry.val.clone());
             }
         }
         Ok(default.clone())
     }
 
-    pub fn set(&self, key: &Value, val: &Value) -> Result<(), Exception> {
+    pub fn set(
+        &self,
+        key: &Value,
+        val: &Value,
+        barrier: &mut ContBarrier<'_>,
+    ) -> Result<(), Exception> {
         if !self.mutable {
             return Err(Exception::error("hashtable is immutable"));
         }
 
         let mut table = self.table.write();
-        let hash = self.hash(key.clone())?;
+        let hash = self.hash(key.clone(), barrier)?;
         for entry in table.iter_hash_mut(hash) {
-            if entry.hash == hash && self.eq(key.clone(), entry.key.clone())? {
+            if entry.hash == hash && self.eq(key.clone(), entry.key.clone(), barrier)? {
                 entry.val = val.clone();
                 return Ok(());
             }
@@ -131,19 +146,19 @@ impl HashTableInner {
         Ok(())
     }
 
-    pub fn delete(&self, key: &Value) -> Result<(), Exception> {
+    pub fn delete(&self, key: &Value, barrier: &mut ContBarrier<'_>) -> Result<(), Exception> {
         if !self.mutable {
             return Err(Exception::error("hashtable is immutable"));
         }
 
         let mut table = self.table.write();
-        let hash = self.hash(key.clone())?;
+        let hash = self.hash(key.clone(), barrier)?;
         let buckets = table.iter_hash_buckets(hash).collect::<Vec<_>>();
         for bucket in buckets.into_iter() {
             if let Ok(entry) = table.get_bucket_entry(bucket)
                 && let inner = entry.get()
                 && inner.hash == hash
-                && self.eq(key.clone(), inner.key.clone())?
+                && self.eq(key.clone(), inner.key.clone(), barrier)?
             {
                 entry.remove();
                 return Ok(());
@@ -153,11 +168,11 @@ impl HashTableInner {
         Ok(())
     }
 
-    pub fn contains(&self, key: &Value) -> Result<bool, Exception> {
+    pub fn contains(&self, key: &Value, barrier: &mut ContBarrier<'_>) -> Result<bool, Exception> {
         let table = self.table.write();
-        let hash = self.hash(key.clone())?;
+        let hash = self.hash(key.clone(), barrier)?;
         for entry in table.iter_hash(hash) {
-            if entry.hash == hash && self.eq(key.clone(), entry.key.clone())? {
+            if entry.hash == hash && self.eq(key.clone(), entry.key.clone(), barrier)? {
                 return Ok(true);
             }
         }
@@ -165,7 +180,13 @@ impl HashTableInner {
         Ok(false)
     }
 
-    pub fn update(&self, key: &Value, proc: &Procedure, default: &Value) -> Result<(), Exception> {
+    pub fn update(
+        &self,
+        key: &Value,
+        proc: &Procedure,
+        default: &Value,
+        barrier: &mut ContBarrier<'_>,
+    ) -> Result<(), Exception> {
         use std::slice;
 
         if !self.mutable {
@@ -173,17 +194,14 @@ impl HashTableInner {
         }
 
         let mut table = self.table.write();
-        let hash = self.hash(key.clone())?;
+        let hash = self.hash(key.clone(), barrier)?;
         for entry in table.iter_hash_mut(hash) {
-            if entry.hash == hash && self.eq(key.clone(), entry.key.clone())? {
+            if entry.hash == hash && self.eq(key.clone(), entry.key.clone(), barrier)? {
                 #[cfg(not(feature = "async"))]
-                let updated =
-                    proc.call(slice::from_ref(&entry.val), &mut ContBarrier::new())?[0].clone();
+                let updated = proc.call(slice::from_ref(&entry.val), barrier)?[0].clone();
 
                 #[cfg(feature = "async")]
-                let updated = proc
-                    .call_sync(slice::from_ref(&entry.val), &mut ContBarrier::new())?[0]
-                    .clone();
+                let updated = proc.call_sync(slice::from_ref(&entry.val), barrier)?[0].clone();
 
                 entry.val = updated;
                 return Ok(());
@@ -191,10 +209,10 @@ impl HashTableInner {
         }
 
         #[cfg(not(feature = "async"))]
-        let updated = proc.call(slice::from_ref(default), &mut ContBarrier::new())?[0].clone(); // 
+        let updated = proc.call(slice::from_ref(default), barrier)?[0].clone();
 
         #[cfg(feature = "async")]
-        let updated = proc.call_sync(slice::from_ref(default), &mut ContBarrier::new())?[0].clone();
+        let updated = proc.call_sync(slice::from_ref(default), barrier)?[0].clone();
 
         table.insert_unique(
             hash,
@@ -285,24 +303,40 @@ impl HashTable {
         self.0.size()
     }
 
-    pub fn get(&self, key: &Value, default: &Value) -> Result<Value, Exception> {
-        self.0.get(key, default)
+    pub fn get(
+        &self,
+        key: &Value,
+        default: &Value,
+        barrier: &mut ContBarrier<'_>,
+    ) -> Result<Value, Exception> {
+        self.0.get(key, default, barrier)
     }
 
-    pub fn set(&self, key: &Value, val: &Value) -> Result<(), Exception> {
-        self.0.set(key, val)
+    pub fn set(
+        &self,
+        key: &Value,
+        val: &Value,
+        barrier: &mut ContBarrier<'_>,
+    ) -> Result<(), Exception> {
+        self.0.set(key, val, barrier)
     }
 
-    pub fn delete(&self, key: &Value) -> Result<(), Exception> {
-        self.0.delete(key)
+    pub fn delete(&self, key: &Value, barrier: &mut ContBarrier<'_>) -> Result<(), Exception> {
+        self.0.delete(key, barrier)
     }
 
-    pub fn contains(&self, key: &Value) -> Result<bool, Exception> {
-        self.0.contains(key)
+    pub fn contains(&self, key: &Value, barrier: &mut ContBarrier<'_>) -> Result<bool, Exception> {
+        self.0.contains(key, barrier)
     }
 
-    pub fn update(&self, key: &Value, proc: &Procedure, default: &Value) -> Result<(), Exception> {
-        self.0.update(key, proc, default)
+    pub fn update(
+        &self,
+        key: &Value,
+        proc: &Procedure,
+        default: &Value,
+        barrier: &mut ContBarrier<'_>,
+    ) -> Result<(), Exception> {
+        self.0.update(key, proc, default, barrier)
     }
 
     pub fn copy(&self, mutable: bool) -> Self {
@@ -432,41 +466,99 @@ pub fn hashtable_size(hashtable: HashTable) -> usize {
     hashtable.size()
 }
 
-#[bridge(name = "hashtable-ref", lib = "(rnrs hashtables builtins (6))")]
+// hashtable-ref, hashtable-set!, hashtable-delete!, hashtable-contains?, and
+// hashtable-update! call the table's hash/eq (and, for update!, the update
+// procedure) as ordinary Scheme calls, so unlike the rest of this file they
+// need the caller's barrier: promoted from `#[bridge]` to `#[cps_bridge]` to
+// get it. This loses the "known function" fast path the plain-arg bridges
+// above get (`#[bridge]` can shortcut functions of <=3 non-variadic args
+// straight to typed Rust args; `cps_bridge` always goes through the general
+// `(runtime, env, k, args, rest_args, barrier)` calling convention).
+
+#[cps_bridge(
+    def = "hashtable-ref hashtable key default",
+    lib = "(rnrs hashtables builtins (6))"
+)]
 pub fn hashtable_ref(
-    hashtable: HashTable,
-    key: &Value,
-    default: &Value,
-) -> Result<Value, Exception> {
-    hashtable.get(key, default)
+    _runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    _rest_args: &[Value],
+    barrier: &mut ContBarrier,
+) -> Result<Application, Exception> {
+    let hashtable: HashTable = (&args[0]).try_into()?;
+    let val = hashtable.get(&args[1], &args[2], barrier)?;
+    Ok(Application::new(k, None, vec![val]))
 }
 
-#[bridge(name = "hashtable-set!", lib = "(rnrs hashtables builtins (6))")]
-pub fn hashtable_set_bang(hashtable: HashTable, key: &Value, obj: &Value) -> Result<(), Exception> {
-    hashtable.set(key, obj)?;
-    Ok(())
+#[cps_bridge(
+    def = "hashtable-set! hashtable key obj",
+    lib = "(rnrs hashtables builtins (6))"
+)]
+pub fn hashtable_set_bang(
+    _runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    _rest_args: &[Value],
+    barrier: &mut ContBarrier,
+) -> Result<Application, Exception> {
+    let hashtable: HashTable = (&args[0]).try_into()?;
+    hashtable.set(&args[1], &args[2], barrier)?;
+    Ok(Application::new(k, None, Vec::new()))
 }
 
-#[bridge(name = "hashtable-delete!", lib = "(rnrs hashtables builtins (6))")]
-pub fn hashtable_delete_bang(hashtable: HashTable, key: &Value) -> Result<(), Exception> {
-    hashtable.delete(key)?;
-    Ok(())
+#[cps_bridge(
+    def = "hashtable-delete! hashtable key",
+    lib = "(rnrs hashtables builtins (6))"
+)]
+pub fn hashtable_delete_bang(
+    _runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    _rest_args: &[Value],
+    barrier: &mut ContBarrier,
+) -> Result<Application, Exception> {
+    let hashtable: HashTable = (&args[0]).try_into()?;
+    hashtable.delete(&args[1], barrier)?;
+    Ok(Application::new(k, None, Vec::new()))
 }
 
-#[bridge(name = "hashtable-contains?", lib = "(rnrs hashtables builtins (6))")]
-pub fn hashtable_contains_pred(hashtable: HashTable, key: &Value) -> Result<bool, Exception> {
-    Ok(hashtable.contains(key)?)
+#[cps_bridge(
+    def = "hashtable-contains? hashtable key",
+    lib = "(rnrs hashtables builtins (6))"
+)]
+pub fn hashtable_contains_pred(
+    _runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    _rest_args: &[Value],
+    barrier: &mut ContBarrier,
+) -> Result<Application, Exception> {
+    let hashtable: HashTable = (&args[0]).try_into()?;
+    let contains = hashtable.contains(&args[1], barrier)?;
+    Ok(Application::new(k, None, vec![Value::from(contains)]))
 }
 
-#[bridge(name = "hashtable-update!", lib = "(rnrs hashtables builtins (6))")]
+#[cps_bridge(
+    def = "hashtable-update! hashtable key proc default",
+    lib = "(rnrs hashtables builtins (6))"
+)]
 pub fn hashtable_update_bang(
-    hashtable: HashTable,
-    key: &Value,
-    proc: Procedure,
-    default: &Value,
-) -> Result<Vec<Value>, Exception> {
-    hashtable.update(key, &proc, default)?;
-    Ok(Vec::new())
+    _runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    _rest_args: &[Value],
+    barrier: &mut ContBarrier,
+) -> Result<Application, Exception> {
+    let hashtable: HashTable = (&args[0]).try_into()?;
+    let proc: Procedure = args[2].clone().try_into()?;
+    hashtable.update(&args[1], &proc, &args[3], barrier)?;
+    Ok(Application::new(k, None, Vec::new()))
 }
 
 #[bridge(name = "hashtable-copy", lib = "(rnrs hashtables builtins (6))")]

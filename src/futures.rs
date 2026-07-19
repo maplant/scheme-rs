@@ -15,8 +15,10 @@ use tokio::{
 use crate::{
     exceptions::Exception,
     ports::{BufferMode, Port},
-    proc::{ContBarrier, Procedure},
+    proc::{Application, ContBarrier, Procedure},
     records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
+    registry::cps_bridge,
+    runtime::Runtime,
     strings::WideString,
     value::Value,
 };
@@ -34,22 +36,44 @@ unsafe impl Embeddable for Future {
     }
 }
 
-#[bridge(name = "future", lib = "(async)")]
-pub async fn make_future(proc: Procedure) -> Result<Vec<Value>, Exception> {
-    let future: Future = async move { proc.call(&[], &mut ContBarrier::new()).await }
+// `future` and `spawn` both start a new dynamic extent (a future body may
+// run interleaved with, or after, whatever called `future`/`spawn`), so
+// they need a spawn snapshot rather than the caller's barrier itself:
+// promoted from `#[bridge]` to `#[cps_bridge]` to reach it.
+
+#[cps_bridge(def = "future proc", lib = "(async)")]
+pub async fn make_future(
+    _runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    _rest_args: &[Value],
+    barrier: &mut ContBarrier<'_>,
+) -> Result<Application, Exception> {
+    let proc: Procedure = args[0].clone().try_into()?;
+    let mut snapshot = barrier.spawn_snapshot();
+    let future: Future = async move { proc.call(&[], &mut snapshot).await }
         .boxed()
         .shared();
     let future = Value::from(future);
-    Ok(vec![future])
+    Ok(Application::new(k, None, vec![future]))
 }
 
-#[bridge(name = "spawn", lib = "(async)")]
-pub async fn spawn(task: &Value) -> Result<Vec<Value>, Exception> {
-    let task: Procedure = task.clone().try_into()?;
-    let task = tokio::task::spawn(async move { task.call(&[], &mut ContBarrier::new()).await });
+#[cps_bridge(def = "spawn task", lib = "(async)")]
+pub async fn spawn(
+    _runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    _rest_args: &[Value],
+    barrier: &mut ContBarrier<'_>,
+) -> Result<Application, Exception> {
+    let task: Procedure = args[0].clone().try_into()?;
+    let mut snapshot = barrier.spawn_snapshot();
+    let task = tokio::task::spawn(async move { task.call(&[], &mut snapshot).await });
     let future: Future = async move { task.await.unwrap() }.boxed().shared();
     let future = Value::from(future);
-    Ok(vec![future])
+    Ok(Application::new(k, None, vec![future]))
 }
 
 #[bridge(name = "await", lib = "(async)")]

@@ -13,8 +13,10 @@ use scheme_rs_macros::bridge;
 use crate::{
     exceptions::Exception,
     gc::{Gc, Trace},
-    proc::{ContBarrier, Procedure},
+    proc::{Application, ContBarrier, Procedure},
     records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
+    registry::cps_bridge,
+    runtime::Runtime,
     value::Value,
 };
 
@@ -37,8 +39,20 @@ unsafe impl Embeddable for JoinHandle {
     }
 }
 
-#[bridge(name = "spawn", lib = "(threads (1))")]
-pub fn spawn(thunk: Procedure) -> Result<Vec<Value>, Exception> {
+// An OS thread is a new dynamic extent, so it gets a spawn snapshot rather
+// than the caller's barrier: promoted from `#[bridge]` to `#[cps_bridge]`
+// to reach it.
+#[cps_bridge(def = "spawn thunk", lib = "(threads (1))")]
+pub fn spawn(
+    _runtime: &Runtime,
+    _env: &[Value],
+    k: Procedure,
+    args: &[Value],
+    _rest_args: &[Value],
+    barrier: &mut ContBarrier<'_>,
+) -> Result<Application, Exception> {
+    let thunk: Procedure = args[0].clone().try_into()?;
+    let mut snapshot = barrier.spawn_snapshot();
     let cell = Gc::new(Mutex::new(Ok(Vec::new())));
     let cell_cloned = cell.clone();
     let join_handle = thread::spawn(move || {
@@ -46,16 +60,20 @@ pub fn spawn(thunk: Procedure) -> Result<Vec<Value>, Exception> {
 
         #[cfg(not(feature = "async"))]
         {
-            *cell_write = thunk.call(&[], &mut ContBarrier::new());
+            *cell_write = thunk.call(&[], &mut snapshot);
         }
 
         #[cfg(feature = "async")]
         {
-            *cell_write = thunk.call_sync(&[], &mut ContBarrier::new());
+            *cell_write = thunk.call_sync(&[], &mut snapshot);
         }
     });
     let id = join_handle.thread().id();
-    Ok(vec![Value::from(JoinHandle { id, result: cell })])
+    Ok(Application::new(
+        k,
+        None,
+        vec![Value::from(JoinHandle { id, result: cell })],
+    ))
 }
 
 #[bridge(name = "join", lib = "(threads (1))")]
