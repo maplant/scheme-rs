@@ -297,16 +297,16 @@ pub(crate) unsafe fn unroot<T: super::GcOrTrace>(gc: &super::Gc<T>, layout: Layo
     unsafe {
         (*new_gc_ptr).layout = layout;
 
-        if heap.head.is_null() {
-            heap.tail = new_gc_ptr;
+        if heap.nursery_head.is_null() {
+            heap.nursery_tail = new_gc_ptr;
         } else {
-            (*heap.head).set_prev(new_gc_ptr);
+            (*heap.nursery_head).set_prev(new_gc_ptr);
         }
 
-        (*new_gc_ptr).set_next(heap.head);
+        (*new_gc_ptr).set_next(heap.nursery_head);
     }
 
-    heap.head = new_gc_ptr;
+    heap.nursery_head = new_gc_ptr;
     heap.new_allocs += 1;
 
     if heap.should_collect() {
@@ -317,6 +317,8 @@ pub(crate) unsafe fn unroot<T: super::GcOrTrace>(gc: &super::Gc<T>, layout: Layo
 struct Heap {
     head: *mut GcHeader,
     tail: *mut GcHeader,
+    nursery_head: *mut GcHeader,
+    nursery_tail: *mut GcHeader,
     new_allocs: usize,
     epoch: usize,
     force_collection: bool,
@@ -327,6 +329,8 @@ impl Heap {
         Self {
             head: std::ptr::null_mut(),
             tail: std::ptr::null_mut(),
+            nursery_head: std::ptr::null_mut(),
+            nursery_tail: std::ptr::null_mut(),
             new_allocs: 0,
             epoch: 0,
             force_collection: false,
@@ -428,8 +432,12 @@ impl Collector {
 
         COLLECTION_START_SIGNAL.wait_while(&mut heap, Heap::should_not_collect);
 
-        self.head = std::mem::take(&mut heap.head);
-        self.tail = std::mem::take(&mut heap.tail);
+        let nursery_head = heap.nursery_head;
+        let nursery_tail = heap.nursery_tail;
+        self.head = std::mem::replace(&mut heap.head, nursery_head);
+        self.tail = std::mem::replace(&mut heap.tail, nursery_tail);
+        heap.nursery_head = null_mut();
+        heap.nursery_tail = null_mut();
         heap.new_allocs = 0;
         heap.force_collection = false;
     }
@@ -840,5 +848,28 @@ mod test {
         collect_garbage_sync();
 
         assert_eq!(Arc::strong_count(&out_ptr), 1);
+    }
+
+    #[test]
+    fn nursery_delays_reclamation_one_epoch() {
+        init_gc();
+
+        let out_ptr = Arc::new(());
+        let obj = Gc::new(Some(out_ptr.clone()));
+        drop(obj);
+
+        collect_garbage_sync();
+        assert_eq!(
+            Arc::strong_count(&out_ptr),
+            2,
+            "nursery object was scanned in its first epoch"
+        );
+
+        collect_garbage_sync();
+        assert_eq!(
+            Arc::strong_count(&out_ptr),
+            1,
+            "object not reaped after nursery promotion"
+        );
     }
 }
