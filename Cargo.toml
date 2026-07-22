@@ -82,3 +82,7 @@ harness = false
 [[bench]]
 name = "yin_yang"
 harness = false
+
+[[bench]]
+name = "gc_quiescent"
+harness = false
