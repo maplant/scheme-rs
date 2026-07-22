@@ -7,7 +7,7 @@ use crate::{
         TopLevelEnvironment, TopLevelEnvironmentInner, TopLevelKind, add_binding,
     },
     exceptions::{Exception, ImportError},
-    gc::{Gc, OpaqueGcPtr, Trace},
+    gc::{Gc, Trace},
     proc::{BridgePtr, FuncPtr, KnownFunc, ProcDebugInfo, Procedure},
     runtime::Runtime,
     symbols::Symbol,
@@ -167,7 +167,8 @@ pub struct PluginBridges {
 
 #[cfg(feature = "plugins")]
 #[allow(dead_code)]
-struct PluginHandle(std::mem::ManuallyDrop<libloading::Library>);
+#[derive(Trace)]
+struct PluginHandle(#[trace(skip)] std::mem::ManuallyDrop<libloading::Library>);
 
 #[cfg(feature = "plugins")]
 impl PluginHandle {
@@ -176,40 +177,21 @@ impl PluginHandle {
     }
 }
 
-#[cfg(feature = "plugins")]
-unsafe impl Trace for PluginHandle {
-    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
-    unsafe fn finalize(&mut self) {}
-}
-
 #[derive(rust_embed::Embed)]
 #[folder = "scheme"]
 struct Stdlib;
 
-#[derive(Default)]
+#[derive(Default, Trace)]
 pub(crate) struct RegistryInner {
     pub(crate) libs: HashMap<Vec<Symbol>, TopLevelEnvironment>,
+    #[trace(skip)]
     loading: HashSet<Vec<Symbol>>,
     #[cfg(feature = "plugins")]
+    #[trace(skip)]
     plugins: Vec<PluginHandle>,
     #[cfg(feature = "plugins")]
+    #[trace(skip)]
     loaded_plugin_paths: HashSet<PathBuf>,
-}
-
-unsafe impl Trace for RegistryInner {
-    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
-        unsafe { self.libs.visit_children(visitor) }
-    }
-    unsafe fn finalize(&mut self) {
-        unsafe {
-            self.libs.finalize();
-            std::ptr::drop_in_place(&mut self.loading);
-            #[cfg(feature = "plugins")]
-            std::ptr::drop_in_place(&mut self.plugins);
-            #[cfg(feature = "plugins")]
-            std::ptr::drop_in_place(&mut self.loaded_plugin_paths);
-        }
-    }
 }
 
 impl RegistryInner {
