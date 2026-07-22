@@ -4,7 +4,6 @@
 
 use std::{
     alloc::Layout,
-    any::TypeId,
     cell::UnsafeCell,
     ptr::{NonNull, null_mut},
     sync::{OnceLock, atomic::AtomicUsize},
@@ -12,7 +11,7 @@ use std::{
 };
 
 use parking_lot::{Condvar, Mutex};
-use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use rustc_hash::FxHashSet as HashSet;
 use scheme_rs_macros::{maybe_async, maybe_await};
 
 use crate::{exceptions::Exception, registry::bridge, value::Value};
@@ -47,7 +46,7 @@ impl GcHeader {
             shared_rc: AtomicUsize::new(1),
             epoch_rc: 1,
             crc: 1,
-            vtable: &INVALID_VTABLE,
+            vtable: T::VTABLE,
             layout: Layout::new::<super::GcInner<T>>(),
             next: null_mut(),
             prev: null_mut::<GcHeader>().map_addr(|addr| addr | 1),
@@ -110,10 +109,13 @@ impl VTable {
     }
 }
 
-static INVALID_VTABLE: VTable = VTable {
-    visit_children: |_, _| unreachable!(),
-    finalize: |_| unreachable!(),
-};
+trait TypeVTable {
+    const VTABLE: &'static VTable;
+}
+
+impl<T: super::GcOrTrace> TypeVTable for T {
+    const VTABLE: &'static VTable = &VTable::new::<T>();
+}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -293,15 +295,6 @@ pub(crate) unsafe fn unroot<T: super::GcOrTrace>(gc: &super::Gc<T>, layout: Layo
     let mut heap = HEAP.lock();
 
     unsafe {
-        let vtable = heap
-            .vtables
-            .get_or_insert_with(HashMap::default)
-            .entry(TypeId::of::<T>())
-            // This technically doesn't have to be a leak, we could just use
-            // unsafe, but this plays nicely with the rust typesystem
-            .or_insert_with(|| Box::leak(Box::new(VTable::new::<T>())));
-
-        (*new_gc_ptr).vtable = vtable;
         (*new_gc_ptr).layout = layout;
 
         if heap.head.is_null() {
@@ -327,7 +320,6 @@ struct Heap {
     new_allocs: usize,
     epoch: usize,
     force_collection: bool,
-    vtables: Option<HashMap<TypeId, &'static VTable>>,
 }
 
 impl Heap {
@@ -338,7 +330,6 @@ impl Heap {
             new_allocs: 0,
             epoch: 0,
             force_collection: false,
-            vtables: None,
         }
     }
 
