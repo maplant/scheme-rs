@@ -767,7 +767,7 @@ impl Collector {
     unsafe fn free_cycles(&mut self) {
         unsafe {
             for c in std::mem::take(&mut self.cycles).into_iter().rev() {
-                if delta_test(&c) && sigma_test(&c) {
+                if delta_test(&c) && sigma_test(&c) && sigma_recheck(&c) && member_flags_clear(&c) {
                     self.free_cycle(&c);
                 } else {
                     self.refurbish(&c);
@@ -815,6 +815,13 @@ impl Collector {
     unsafe fn refurbish(&mut self, c: &[OpaqueGcPtr]) {
         unsafe {
             for (i, n) in c.iter().enumerate() {
+                if n.shared_rc() == 0 {
+                    // Zero event already consumed (Orange-skip or claim
+                    // processing); refurbishing to Black would leak it.
+                    n.set_color(Color::Black);
+                    self.free(*n);
+                    continue;
+                }
                 match (i, n.color()) {
                     (0, Color::Orange) | (_, Color::Purple) => {
                         n.set_color(Color::Purple);
@@ -1005,6 +1012,44 @@ unsafe fn delta_test(c: &[OpaqueGcPtr]) -> bool {
     }
 }
 
+/// Fresh-Σ recheck (phase 2 design §4): recompute the external-reference sum
+/// from CURRENT state-word rcs and CURRENT edges, restricted to the member
+/// set. Rc effects are visible instantly even when an event push is delayed,
+/// so this closes the delayed-notification window ("Scenario 3").
+unsafe fn sigma_recheck(c: &[OpaqueGcPtr]) -> bool {
+    unsafe {
+        let members: HashSet<OpaqueGcPtr> = c.iter().copied().collect();
+        let mut external: isize = 0;
+        for n in c {
+            external += n.shared_rc() as isize;
+        }
+        for n in c {
+            for_each_child(*n, &mut |child| {
+                if members.contains(&child) {
+                    external -= 1;
+                }
+            });
+        }
+        external == 0
+    }
+}
+
+/// No member may carry an unprocessed event (phase 2 design §4, check 3):
+/// a claim is a pending notification — defer the free rather than reason
+/// about it.
+unsafe fn member_flags_clear(c: &[OpaqueGcPtr]) -> bool {
+    unsafe {
+        c.iter().all(|n| {
+            let w = GcState(
+                (*n.header.as_ref().get())
+                    .state
+                    .load(std::sync::atomic::Ordering::Acquire),
+            );
+            !w.attn_claimed() && !w.inc_event()
+        })
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -1124,6 +1169,57 @@ mod test {
             assert_eq!(opaque.shared_rc(), 1, "rc not conserved under color churn");
         }
         drop(obj);
+    }
+
+    #[derive(Default, Trace)]
+    struct Linked {
+        next: Option<Gc<RwLock<Linked>>>,
+    }
+
+    unsafe fn force_rc(obj: &OpaqueGcPtr, rc: usize) {
+        unsafe {
+            let state = &(*obj.header.as_ref().get()).state;
+            let mut w = GcState(state.load(std::sync::atomic::Ordering::Acquire));
+            w = GcState((w.0 & !crate::gc::state::RC_MASK) | rc);
+            state.store(w.0, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    #[test]
+    fn sigma_recheck_detects_external_refs() {
+        let a = Gc::rooted(RwLock::new(Linked::default()));
+        let b = Gc::rooted(RwLock::new(Linked::default()));
+        a.write().next = Some(b.clone());
+        b.write().next = Some(a.clone());
+        let (oa, ob) = unsafe { (a.as_opaque(), b.as_opaque()) };
+        // Handles held: rc(a) = rc(b) = 2 (handle + internal edge) →
+        // two external refs.
+        assert!(!unsafe { sigma_recheck(&[oa, ob]) });
+
+        // Simulate the handles dying without emitting events:
+        unsafe {
+            force_rc(&oa, 1);
+            force_rc(&ob, 1);
+        }
+        assert!(unsafe { sigma_recheck(&[oa, ob]) });
+
+        // Leak a and b deliberately (rooted, rc now lies) — do not drop.
+        std::mem::forget(a);
+        std::mem::forget(b);
+    }
+
+    #[test]
+    fn member_flag_check_blocks_pending_events() {
+        let a = Gc::rooted(RwLock::new(Linked::default()));
+        let oa = unsafe { a.as_opaque() };
+        assert!(unsafe { member_flags_clear(&[oa]) });
+        unsafe {
+            (*oa.header.as_ref().get())
+                .state
+                .fetch_or(crate::gc::state::ATTN_CLAIM, std::sync::atomic::Ordering::AcqRel);
+        }
+        assert!(!unsafe { member_flags_clear(&[oa]) });
+        std::mem::forget(a);
     }
 
     #[cfg(feature = "gc-shadow-validate")]
