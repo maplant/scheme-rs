@@ -468,6 +468,12 @@ impl Collector {
     fn epoch(&mut self) {
         self.await_epoch();
 
+        // Drain the attention list before the scan: any corpse the scan
+        // frees this epoch either predates this drain (entry consumed now)
+        // or was pushed after it (ATTN_DEAD defers its dealloc to the next
+        // drain). Order is load-bearing — see the phase 1b plan.
+        self.drain_attention_list();
+
         self.next = self.head;
 
         // Collect obvious garbage; i.e. heap objects that have a ref count of zero,
@@ -559,6 +565,67 @@ impl Collector {
             self.free(s)
         }
     }
+
+    fn drain_attention_list(&mut self) {
+        let mut node =
+            ATTN_HEAD.swap(0, std::sync::atomic::Ordering::Acquire) as *mut GcHeader;
+        while !node.is_null() {
+            let next = unsafe {
+                (*node)
+                    .attn_next
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            };
+            unsafe {
+                self.process_drained(node);
+            }
+            node = next as *mut GcHeader;
+        }
+    }
+
+    /// Process one drained entry. Shadow mode: classify and record, act on
+    /// nothing. Membership ends only via the release CAS proving the word
+    /// didn't change during processing; otherwise keep the claim and
+    /// re-enqueue (design doc §3 "Release").
+    unsafe fn process_drained(&mut self, header: *mut GcHeader) {
+        unsafe {
+            let word = GcState((*header).state.load(std::sync::atomic::Ordering::Acquire));
+
+            if word.attn_dead() {
+                // Finalized by the scan while claimed; we own the last
+                // reference to the header memory. No live handles exist, so
+                // no concurrent RMW can race this dealloc.
+                let layout = (*header).layout;
+                self.note_dealloc(header);
+                std::alloc::dealloc(header as *mut u8, layout);
+                return;
+            }
+
+            #[cfg(feature = "gc-shadow-validate")]
+            self.shadow_classify(header, word);
+
+            (*header)
+                .attn_next
+                .store(NOT_IN_LIST, std::sync::atomic::Ordering::Relaxed);
+            let cleared = word.0 & !(ATTN_CLAIM | INC_EVENT);
+            if (*header)
+                .state
+                .compare_exchange(
+                    word.0,
+                    cleared,
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                )
+                .is_err()
+            {
+                // A racing inc/dec landed mid-processing: the event must not
+                // be lost. Keep the claim, re-enqueue for next epoch.
+                attn_push(header);
+            }
+        }
+    }
+
+    #[cfg(not(feature = "gc-shadow-validate"))]
+    fn note_dealloc(&mut self, _header: *mut GcHeader) {}
 
     unsafe fn process_cycles(&mut self) {
         unsafe {
@@ -722,8 +789,26 @@ impl Collector {
             // Finalize the object:
             (s.finalize())(s.data_mut());
 
-            // Deallocate the object:
-            std::alloc::dealloc(s.header.as_ptr() as *mut u8, s.layout());
+            // Deallocate — unless a mutator claim is pending on the
+            // attention list, in which case the header memory must outlive
+            // the list entry (never dealloc while claimed). Finalization
+            // above already ran on schedule; the drain that consumes the
+            // entry performs the dealloc. No new claim can arrive after
+            // this check: free() only runs on objects with no live handles,
+            // and claims require a handle.
+            let word = GcState(
+                (*s.header.as_ref().get())
+                    .state
+                    .load(std::sync::atomic::Ordering::Acquire),
+            );
+            if word.attn_claimed() {
+                (*s.header.as_ref().get())
+                    .state
+                    .fetch_or(ATTN_DEAD, std::sync::atomic::Ordering::AcqRel);
+            } else {
+                self.note_dealloc(s.header.as_ref().get());
+                std::alloc::dealloc(s.header.as_ptr() as *mut u8, s.layout());
+            }
         }
     }
 }
