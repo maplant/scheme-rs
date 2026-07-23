@@ -142,9 +142,12 @@ inventory::collect!(BridgeFn);
 #[cfg(feature = "plugins")]
 #[unsafe(no_mangle)]
 pub extern "C" fn scheme_rs_bridges() -> PluginBridges {
-    use std::sync::OnceLock;
-    static BRIDGES: OnceLock<Vec<BridgeFn>> = OnceLock::new();
-    let bridges = BRIDGES.get_or_init(|| inventory::iter::<BridgeFn>().copied().collect());
+    // Collected fresh (and leaked) on every call: with a single runtime image
+    // per process, each dlopened plugin appends its bridges to this shared
+    // inventory, so a memoized snapshot would hide plugins loaded after the
+    // first call. Plugin loads are rare, so the leak is bounded and small.
+    let bridges: &'static [BridgeFn] =
+        Box::leak(inventory::iter::<BridgeFn>().copied().collect::<Box<[_]>>());
     PluginBridges {
         version: SCHEME_RS_VERSION.as_ptr(),
         version_len: SCHEME_RS_VERSION.len(),
