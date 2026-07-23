@@ -99,3 +99,7 @@ harness = false
 [[bench]]
 name = "gc_quiescent"
 harness = false
+
+[[bench]]
+name = "gc_alloc"
+harness = false
