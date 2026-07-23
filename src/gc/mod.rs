@@ -17,6 +17,8 @@ mod collection;
 pub mod state;
 
 pub use collection::{OpaqueGcPtr, collect_garbage, init_gc};
+#[cfg(feature = "gc-shadow-validate")]
+pub use collection::SHADOW_DIVERGENCES;
 pub use scheme_rs_macros::Trace;
 
 use std::{
