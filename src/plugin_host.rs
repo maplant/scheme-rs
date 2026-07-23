@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
 use scheme_rs_plugin_api::HostFnTable;
 
@@ -181,6 +181,36 @@ fn plugin_bridge_wrapper(
     }
 }
 
+/// CPS bridge wrapper: dispatches to a plugin's CpsBridgeFn.
+/// env[0] holds the CPS function pointer as a raw i64.
+fn plugin_cps_bridge_wrapper(
+    _runtime: &Runtime,
+    env: &[HostValue],
+    k: Procedure,
+    args: &[HostValue],
+    rest_args: &[HostValue],
+    barrier: &mut ContBarrier,
+) -> Application {
+    let fn_ptr_raw: i64 = (&env[0]).try_into().unwrap_or(0);
+    let cps_fn: scheme_rs_plugin_api::CpsBridgeFn =
+        unsafe { std::mem::transmute(fn_ptr_raw as usize) };
+
+    let k_val = HostValue::from(k);
+    let all_args: Vec<HostValue> = args.iter().chain(rest_args).cloned().collect();
+
+    let result = unsafe {
+        cps_fn(
+            &k_val as *const HostValue as *const PluginValue,
+            all_args.as_ptr() as *const PluginValue,
+            all_args.len(),
+            barrier as *mut ContBarrier as *mut c_void,
+        )
+    };
+
+    let app_ptr: *mut Application = unsafe { std::mem::transmute(result) };
+    unsafe { *Box::from_raw(app_ptr) }
+}
+
 // ── Pending bridge registration ────────────────────────────────────────────
 
 pub(crate) struct PendingBridge {
@@ -189,12 +219,24 @@ pub(crate) struct PendingBridge {
     pub num_args: usize,
     pub variadic: bool,
     pub func_ptr: usize,
+    pub cps_func_ptr: Option<usize>,
+    pub blocking: bool,
 }
 
 pub(crate) struct PendingDefine {
     pub name: String,
     pub lib_name: String,
     pub value: HostValue,
+}
+
+static PERSISTENT_RUNTIME: OnceLock<Runtime> = OnceLock::new();
+
+pub(crate) fn set_persistent_runtime(rt: &Runtime) {
+    PERSISTENT_RUNTIME.get_or_init(|| rt.clone());
+}
+
+pub(crate) fn get_persistent_runtime() -> Option<Runtime> {
+    PERSISTENT_RUNTIME.get().cloned()
 }
 
 thread_local! {
@@ -236,6 +278,8 @@ unsafe extern "C" fn host_register_bridge(
         None => return false,
     };
 
+    let cps_func_ptr = spec.cps_func.map(|f| f as usize);
+
     let lib_name_owned = lib_name.to_string();
     CURRENT_LIB_NAME.with(|cell| *cell.borrow_mut() = Some(lib_name_owned.clone()));
     PENDING_BRIDGES.with(|pb| {
@@ -245,6 +289,8 @@ unsafe extern "C" fn host_register_bridge(
             num_args: spec.num_args,
             variadic: spec.variadic,
             func_ptr: func,
+            cps_func_ptr,
+            blocking: spec.blocking,
         });
     });
     true
@@ -262,6 +308,102 @@ pub(crate) fn make_plugin_procedure(
         rt.clone(),
         env,
         plugin_bridge_wrapper as BridgePtr,
+        num_args,
+        variadic,
+    )
+}
+
+/// Create a host Procedure wrapping a plugin's CpsBridgeFn.
+pub(crate) fn make_plugin_cps_procedure(
+    rt: &Runtime,
+    fn_ptr: usize,
+    num_args: usize,
+    variadic: bool,
+) -> Procedure {
+    let env = vec![HostValue::from(fn_ptr as i64)];
+    Procedure::new(
+        rt.clone(),
+        env,
+        plugin_cps_bridge_wrapper as BridgePtr,
+        num_args,
+        variadic,
+    )
+}
+
+/// Create an async Procedure wrapping a blocking plugin SimpleBridgeFn.
+#[cfg(feature = "async")]
+pub(crate) fn make_plugin_blocking_procedure(
+    rt: &Runtime,
+    fn_ptr: usize,
+    num_args: usize,
+    variadic: bool,
+) -> Procedure {
+    use crate::proc::AsyncBridgePtr;
+
+    struct BlockingResult {
+        raw_value: usize,
+        error: Option<String>,
+    }
+
+    unsafe impl Send for BlockingResult {}
+
+    fn plugin_blocking_bridge_wrapper<'a>(
+        runtime: &'a Runtime,
+        env: &'a [HostValue],
+        k: Procedure,
+        args: &'a [HostValue],
+        rest_args: &'a [HostValue],
+        barrier: &'a mut ContBarrier<'_>,
+    ) -> futures::future::BoxFuture<'a, Application> {
+        Box::pin(async move {
+            let fn_ptr_raw: i64 = (&env[0]).try_into().unwrap_or(0);
+            let plugin_fn: scheme_rs_plugin_api::SimpleBridgeFn =
+                unsafe { std::mem::transmute(fn_ptr_raw as usize) };
+
+            let all_args: Vec<HostValue> = args.iter().chain(rest_args).cloned().collect();
+            let rt_clone = runtime.clone();
+
+            let result = tokio::task::spawn_blocking(move || {
+                let ret = unsafe {
+                    plugin_fn(
+                        all_args.as_ptr() as *const PluginValue,
+                        all_args.len(),
+                    )
+                };
+                let raw_value = ret.value.as_raw();
+                let error = if ret.error.is_null() {
+                    None
+                } else {
+                    Some(unsafe {
+                        let slice = std::slice::from_raw_parts(ret.error, ret.error_len);
+                        let s = String::from_utf8_lossy(slice).into_owned();
+                        drop(Box::from_raw(std::slice::from_raw_parts_mut(
+                            ret.error as *mut u8,
+                            ret.error_len,
+                        )));
+                        s
+                    })
+                };
+                std::mem::forget(ret);
+                BlockingResult { raw_value, error }
+            })
+            .await
+            .expect("spawn_blocking join failed");
+
+            if let Some(err_str) = result.error {
+                raise(rt_clone, Exception::error(&err_str).into(), barrier)
+            } else {
+                let host_val = unsafe { HostValue::from_raw(result.raw_value as *const ()) };
+                Application::new(k, None, vec![host_val])
+            }
+        })
+    }
+
+    let env = vec![HostValue::from(fn_ptr as i64)];
+    Procedure::new(
+        rt.clone(),
+        env,
+        plugin_blocking_bridge_wrapper as AsyncBridgePtr,
         num_args,
         variadic,
     )
@@ -359,17 +501,22 @@ unsafe extern "C" fn host_make_application(
 unsafe extern "C" fn host_raise_error(
     msg: *const u8,
     len: usize,
-    _barrier: *mut c_void,
+    barrier: *mut c_void,
 ) -> scheme_rs_plugin_api::ApplicationResult {
     let err_str = unsafe {
         std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg, len))
     };
     let exception = Exception::error(err_str);
-    let app = Application::halt_err(exception.into());
+    let app = if let Some(rt) = get_persistent_runtime() {
+        let barrier = unsafe { &mut *(barrier as *mut ContBarrier) };
+        raise(rt, exception.into(), barrier)
+    } else {
+        Application::halt_err(exception.into())
+    };
     unsafe { std::mem::transmute(Box::into_raw(Box::new(app)) as *mut c_void) }
 }
 
-static FOREIGN_FINALIZERS: LazyLock<Mutex<HashMap<usize, unsafe extern "C" fn(*mut c_void)>>> =
+pub(crate) static FOREIGN_FINALIZERS: LazyLock<Mutex<HashMap<usize, unsafe extern "C" fn(*mut c_void)>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 unsafe extern "C" fn host_register_type(

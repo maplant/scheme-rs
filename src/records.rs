@@ -680,6 +680,30 @@ impl RecordInner {
     }
 }
 
+#[cfg(feature = "plugins")]
+impl RecordInner {
+    fn run_foreign_finalizer(&self) {
+        if self.rtd.embedded_vtable.is_some() {
+            return;
+        }
+        let handle = Arc::as_ptr(&self.rtd) as usize;
+        let finalizer = {
+            let map = crate::plugin_host::FOREIGN_FINALIZERS.lock().unwrap();
+            map.get(&handle).copied()
+        };
+        if let Some(finalizer) = finalizer {
+            let fields = self.fields();
+            if let Some(field) = fields.first() {
+                if let Ok(ptr_val) = i64::try_from(field) {
+                    unsafe {
+                        finalizer(ptr_val as usize as *mut std::ffi::c_void);
+                    }
+                }
+            }
+        }
+    }
+}
+
 unsafe impl Trace for RecordInner {
     unsafe fn visit_children(&self, visitor: &mut dyn FnMut(crate::gc::OpaqueGcPtr)) {
         let num_fields = self.num_unembedded_fields();
@@ -697,6 +721,9 @@ unsafe impl Trace for RecordInner {
     }
 
     unsafe fn finalize(&mut self) {
+        #[cfg(feature = "plugins")]
+        self.run_foreign_finalizer();
+
         unsafe {
             self.rtd.finalize();
         }

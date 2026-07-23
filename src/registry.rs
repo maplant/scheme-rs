@@ -736,8 +736,8 @@ pub mod plugin_loading {
     };
     use crate::exceptions::Exception;
     use crate::plugin_host::{
-        clear_loading_runtime, make_plugin_procedure, set_loading_runtime, take_pending_bridges,
-        take_pending_defines,
+        clear_loading_runtime, make_plugin_cps_procedure, make_plugin_procedure,
+        set_loading_runtime, set_persistent_runtime, take_pending_bridges, take_pending_defines,
     };
     use crate::runtime::Runtime;
     use crate::symbols::Symbol;
@@ -794,6 +794,7 @@ pub mod plugin_loading {
             })?;
 
             let table = crate::plugin_host::build_host_fn_table();
+            set_persistent_runtime(rt);
             set_loading_runtime(rt);
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
                 init_fn(table as *const scheme_rs_plugin_api::HostFnTable as *const ());
@@ -832,12 +833,38 @@ pub mod plugin_loading {
                     syms: HashMap::default(),
                 });
 
-                let proc = make_plugin_procedure(
-                    rt,
-                    bridge.func_ptr,
-                    bridge.num_args,
-                    bridge.variadic,
-                );
+                let proc = if let Some(cps_ptr) = bridge.cps_func_ptr {
+                    make_plugin_cps_procedure(
+                        rt,
+                        cps_ptr,
+                        bridge.num_args,
+                        bridge.variadic,
+                    )
+                } else {
+                    #[cfg(feature = "async")]
+                    if bridge.blocking {
+                        crate::plugin_host::make_plugin_blocking_procedure(
+                            rt,
+                            bridge.func_ptr,
+                            bridge.num_args,
+                            bridge.variadic,
+                        )
+                    } else {
+                        make_plugin_procedure(
+                            rt,
+                            bridge.func_ptr,
+                            bridge.num_args,
+                            bridge.variadic,
+                        )
+                    }
+                    #[cfg(not(feature = "async"))]
+                    make_plugin_procedure(
+                        rt,
+                        bridge.func_ptr,
+                        bridge.num_args,
+                        bridge.variadic,
+                    )
+                };
 
                 lib.syms.insert(Symbol::intern(&bridge.name), proc);
             }
