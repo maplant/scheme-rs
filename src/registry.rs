@@ -157,6 +157,22 @@ pub extern "C" fn scheme_rs_bridges() -> PluginBridges {
 pub static SCHEME_RS_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[cfg(feature = "plugins")]
+static RUNTIME_IDENTITY: u8 = 0;
+
+/// Returns the address of a static inside this scheme-rs image.
+///
+/// There must be exactly one scheme-rs runtime image per process (one heap,
+/// one collector, one set of statics). Host and plugin each resolve this
+/// symbol within their own image; differing addresses mean the plugin
+/// statically embeds a second copy of the runtime and is rejected at load
+/// time.
+#[cfg(feature = "plugins")]
+#[unsafe(no_mangle)]
+pub extern "C" fn scheme_rs_runtime_identity() -> *const () {
+    std::ptr::from_ref(&RUNTIME_IDENTITY).cast()
+}
+
+#[cfg(feature = "plugins")]
 #[repr(C)]
 pub struct PluginBridges {
     pub version: *const u8,
@@ -418,6 +434,23 @@ impl Registry {
         rt: &Runtime,
         library: libloading::Library,
     ) -> Result<(), Exception> {
+        unsafe {
+            let identity: libloading::Symbol<extern "C" fn() -> *const ()> =
+                library.get(b"scheme_rs_runtime_identity").map_err(|e| {
+                    Exception::error(format!(
+                        "plugin does not export scheme_rs_runtime_identity: {e}"
+                    ))
+                })?;
+            if identity() != scheme_rs_runtime_identity() {
+                return Err(Exception::error(
+                    "plugin embeds its own copy of the scheme-rs runtime; plugins \
+                     must link scheme-rs dynamically (build with -C prefer-dynamic) \
+                     so host and plugin share a single runtime image"
+                        .to_string(),
+                ));
+            }
+        }
+
         let bridges: &[BridgeFn] = unsafe {
             let func: libloading::Symbol<extern "C" fn() -> PluginBridges> =
                 library.get(b"scheme_rs_bridges").map_err(|e| {
