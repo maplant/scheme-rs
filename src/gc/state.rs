@@ -8,6 +8,12 @@ pub(crate) const COLOR_SHIFT: u32 = RC_BITS;
 pub(crate) const COLOR_MASK: usize = 0b111 << COLOR_SHIFT;
 pub(crate) const BUFFERED: usize = 1 << 51;
 pub(crate) const INC_EVENT: usize = 1 << 52;
+/// Attention-list membership claim (Phase 1b+). Distinct from BUFFERED,
+/// which the epoch scan owns until Phase 2 unifies them.
+pub(crate) const ATTN_CLAIM: usize = 1 << 53;
+/// Finalized by the scan while claimed; header memory awaits the drain
+/// that removes its attention-list entry (dealloc deferral).
+pub(crate) const ATTN_DEAD: usize = 1 << 54;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -69,6 +75,14 @@ impl GcState {
     pub(crate) fn inc_event(self) -> bool {
         self.0 & INC_EVENT != 0
     }
+
+    pub(crate) fn attn_claimed(self) -> bool {
+        self.0 & ATTN_CLAIM != 0
+    }
+
+    pub(crate) fn attn_dead(self) -> bool {
+        self.0 & ATTN_DEAD != 0
+    }
 }
 
 #[cfg(test)]
@@ -119,5 +133,28 @@ mod test {
         assert_eq!(RC_MASK & COLOR_MASK, 0);
         assert_eq!((RC_MASK | COLOR_MASK) & BUFFERED, 0);
         assert_eq!((RC_MASK | COLOR_MASK | BUFFERED) & INC_EVENT, 0);
+    }
+
+    #[test]
+    fn attn_bits_disjoint_and_roundtrip() {
+        assert_eq!((RC_MASK | COLOR_MASK | BUFFERED | INC_EVENT) & ATTN_CLAIM, 0);
+        assert_eq!(
+            (RC_MASK | COLOR_MASK | BUFFERED | INC_EVENT | ATTN_CLAIM) & ATTN_DEAD,
+            0
+        );
+
+        let s = GcState::new_initial();
+        assert!(!s.attn_claimed(), "newborns have no pending attention event");
+        assert!(!s.attn_dead());
+
+        let claimed = GcState(s.0 | ATTN_CLAIM);
+        assert!(claimed.attn_claimed());
+        assert_eq!(claimed.rc(), 1);
+        assert_eq!(claimed.color(), Color::Black);
+        assert!(claimed.buffered(), "claim must not disturb the scan's bit");
+
+        let dead = GcState(claimed.0 | ATTN_DEAD);
+        assert!(dead.attn_dead());
+        assert!(dead.attn_claimed());
     }
 }
