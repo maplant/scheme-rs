@@ -240,6 +240,13 @@ impl RegistryInner {
         }
 
         for (name, lib) in new_libs {
+            // First registration wins: a plugin's inventory contains every
+            // bridge of its scheme-rs image, and must not displace libraries
+            // the host has already registered (e.g. the bridge stdlib).
+            if self.libs.contains_key(&name) {
+                continue;
+            }
+
             let scope = Scope::new();
 
             let exports = lib
