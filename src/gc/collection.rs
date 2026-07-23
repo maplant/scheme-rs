@@ -213,6 +213,23 @@ pub(crate) static TOTAL_ALLOCS: AtomicUsize = AtomicUsize::new(0);
 /// sites in `process_drained` and `free`).
 pub(crate) static TOTAL_FREES: AtomicUsize = AtomicUsize::new(0);
 
+/// Measure-first counters (design doc §3, plan Task 4): decide whether
+/// `freed_objs`/`cycles.retain` simplification and candidate aging are worth
+/// building, rather than speculating. All relaxed; the collector never reads
+/// them for decisions.
+///
+/// Incremented once per cycle member purged by `epoch`'s retain pass (an
+/// object recorded in a pending cycle that was freed before the cycle's
+/// trial ran).
+pub(crate) static RETAIN_PURGES: AtomicUsize = AtomicUsize::new(0);
+/// Incremented once per cycle where `free_cycles`' in-loop freed-member guard
+/// fires (a recorded cycle sharing a member with one already freed earlier
+/// in the same batch).
+pub(crate) static INLOOP_GUARD_HITS: AtomicUsize = AtomicUsize::new(0);
+/// Incremented once per candidate `mark_roots` processes (every entry in
+/// `self.roots` at the start of a trial, purple or not).
+pub(crate) static TRIALS_RUN: AtomicUsize = AtomicUsize::new(0);
+
 const LOCAL_ALLOCS_PER_SIGNAL: usize = 1024;
 
 /// Batches per-thread allocation counts into `COLLECTOR_STATE.pending_allocs`
@@ -508,7 +525,13 @@ impl Collector {
         // dereferenced below, after this retain. Clearing per epoch keeps
         // recycled addresses from purging fresh parkings later.
         self.cycles.retain_mut(|cycle| {
-            cycle.retain(|obj| !self.freed_objs.contains(obj));
+            cycle.retain(|obj| {
+                let freed = self.freed_objs.contains(obj);
+                if freed {
+                    RETAIN_PURGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                !freed
+            });
             !cycle.is_empty()
         });
 
@@ -728,6 +751,7 @@ impl Collector {
     unsafe fn mark_roots(&mut self) {
         unsafe {
             self.roots.retain(|s| {
+                TRIALS_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 if s.color() == Color::Purple {
                     mark_gray(*s);
                     true
@@ -793,6 +817,7 @@ impl Collector {
                 // deref — before the Δ/σ tests below dereference every
                 // member.
                 if c.iter().any(|n| self.freed_objs.contains(n)) {
+                    INLOOP_GUARD_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     for n in c.iter().filter(|n| !self.freed_objs.contains(n)) {
                         if n.shared_rc() == 0 {
                             refurbish_zero(*n);

@@ -28,6 +28,18 @@ pub fn allocation_stats() -> (usize, usize) {
     )
 }
 
+/// Measure-first counters (phase 3 design doc §3): `(retain_purges,
+/// inloop_guard_hits, trials_run)`, monotonic since process start. These
+/// decide whether the `freed_objs`/`cycles.retain` patchwork and candidate
+/// aging are worth building — see the notes doc's measure-first section.
+pub fn collector_stats() -> (usize, usize, usize) {
+    (
+        collection::RETAIN_PURGES.load(std::sync::atomic::Ordering::Relaxed),
+        collection::INLOOP_GUARD_HITS.load(std::sync::atomic::Ordering::Relaxed),
+        collection::TRIALS_RUN.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
 use std::{
     alloc::Layout,
     any::Any,
