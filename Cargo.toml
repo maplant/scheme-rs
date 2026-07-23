@@ -73,6 +73,12 @@ plugins = ["dep:libloading"]
 [profile.release]
 lto = true
 
+# Profile for packaged, relocatable builds (scripts/package.sh). LTO cannot
+# be combined with dynamic linking of the runtime dylib.
+[profile.dist]
+inherits = "release"
+lto = false
+
 [build-dependencies]
 nom = "7"
 
