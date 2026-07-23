@@ -16,7 +16,7 @@ use scheme_rs_macros::{maybe_async, maybe_await};
 
 use crate::{
     exceptions::Exception,
-    gc::state::{BUFFERED, Color, GcState},
+    gc::state::{ATTN_CLAIM, ATTN_DEAD, BUFFERED, Color, GcState, INC_EVENT},
     registry::bridge,
     value::Value,
 };
@@ -39,6 +39,10 @@ pub(crate) struct GcHeader {
     next: *mut GcHeader,
     /// Previous item in the heap, or null (collector/heap-lock only)
     prev: *mut GcHeader,
+    /// Intrusive attention-list link. NOT_IN_LIST when unclaimed; the claim
+    /// winner (mutator or re-enqueueing collector) is its sole writer until
+    /// the drain resets it.
+    attn_next: AtomicUsize,
 }
 
 #[bridge(name = "gc-header-size", lib = "(runtime (1))")]
@@ -56,6 +60,7 @@ impl GcHeader {
             layout: Layout::new::<super::GcInner<T>>(),
             next: null_mut(),
             prev: null_mut(),
+            attn_next: AtomicUsize::new(NOT_IN_LIST),
         }
     }
 }
@@ -305,6 +310,33 @@ static COLLECTION_START_SIGNAL: Condvar = Condvar::new();
 static COLLECTION_DONE_SIGNAL: Condvar = Condvar::new();
 static COLLECTOR_TASK: OnceLock<JoinHandle<()>> = OnceLock::new();
 const MIN_ALLOCS_TO_COLLECT: usize = 10_000;
+
+/// Sentinel for "not on the attention list". 0 terminates a chain.
+pub(crate) const NOT_IN_LIST: usize = 1;
+
+/// Global attention list: push-only Treiber stack, swap-drained whole by the
+/// collector each epoch. No pops → no ABA.
+static ATTN_HEAD: AtomicUsize = AtomicUsize::new(0);
+
+unsafe fn attn_push(header: *mut GcHeader) {
+    unsafe {
+        let mut head = ATTN_HEAD.load(std::sync::atomic::Ordering::Relaxed);
+        loop {
+            (*header)
+                .attn_next
+                .store(head, std::sync::atomic::Ordering::Relaxed);
+            match ATTN_HEAD.compare_exchange_weak(
+                head,
+                header as usize,
+                std::sync::atomic::Ordering::Release,
+                std::sync::atomic::Ordering::Relaxed,
+            ) {
+                Ok(_) => return,
+                Err(actual) => head = actual,
+            }
+        }
+    }
+}
 
 /// Initializes the garbage collector thread. Calling this function is typically
 /// not required as creating a [`Runtime`](crate::runtime::Runtime)
