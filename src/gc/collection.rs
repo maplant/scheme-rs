@@ -338,6 +338,46 @@ unsafe fn attn_push(header: *mut GcHeader) {
     }
 }
 
+/// Called by every mutator decrement with the pre-decrement word.
+/// One claim per object per epoch: repeat decs see ATTN_CLAIM and skip.
+#[inline]
+pub(crate) unsafe fn record_dec_event(header: *mut GcHeader, old: GcState) {
+    if old.attn_claimed() {
+        return;
+    }
+    unsafe {
+        let w = GcState(
+            (*header)
+                .state
+                .fetch_or(ATTN_CLAIM, std::sync::atomic::Ordering::AcqRel),
+        );
+        if !w.attn_claimed() {
+            attn_push(header);
+        }
+    }
+}
+
+/// Called by every mutator increment with the pre-increment word. Only
+/// increments on non-black objects (active trial windows) are events
+/// (design doc "Scenario 1"); the fast path is a branch on a value the
+/// fetch_add already returned.
+#[inline]
+pub(crate) unsafe fn record_inc_event(header: *mut GcHeader, old: GcState) {
+    if old.color() == Color::Black {
+        return;
+    }
+    unsafe {
+        let w = GcState(
+            (*header)
+                .state
+                .fetch_or(INC_EVENT | ATTN_CLAIM, std::sync::atomic::Ordering::AcqRel),
+        );
+        if !w.attn_claimed() {
+            attn_push(header);
+        }
+    }
+}
+
 /// Initializes the garbage collector thread. Calling this function is typically
 /// not required as creating a [`Runtime`](crate::runtime::Runtime)
 /// automatically calls it.
