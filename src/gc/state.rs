@@ -6,10 +6,10 @@ pub(crate) const RC_BITS: u32 = 48;
 pub const RC_MASK: usize = (1 << RC_BITS) - 1;
 pub(crate) const COLOR_SHIFT: u32 = RC_BITS;
 pub(crate) const COLOR_MASK: usize = 0b111 << COLOR_SHIFT;
-pub const BUFFERED: usize = 1 << 51;
 pub const INC_EVENT: usize = 1 << 52;
-/// Attention-list membership claim (Phase 1b+). Distinct from BUFFERED,
-/// which the epoch scan owns until Phase 2 unifies them.
+/// Attention-list membership claim: *the* buffered bit (phase 2 unified the
+/// former separate BUFFERED bit into this one — a newborn touches no global
+/// structure until its first event claims it).
 pub const ATTN_CLAIM: usize = 1 << 53;
 /// Finalized by the scan while claimed; header memory awaits the drain
 /// that removes its attention-list entry (dealloc deferral).
@@ -73,10 +73,6 @@ impl GcState {
         GcState((self.0 & !COLOR_MASK) | ((color as usize) << COLOR_SHIFT))
     }
 
-    pub fn buffered(self) -> bool {
-        self.0 & BUFFERED != 0
-    }
-
     pub fn inc_event(self) -> bool {
         self.0 & INC_EVENT != 0
     }
@@ -103,20 +99,17 @@ mod test {
         let s = GcState::new_initial();
         assert_eq!(s.rc(), 1);
         assert_eq!(s.color(), Color::Black);
-        assert!(
-            !s.buffered(),
-            "phase 2: newborns touch no global structure until their first event"
-        );
+        assert!(!s.attn_claimed(), "newborns touch no global structure until their first event");
         assert!(!s.inc_event());
     }
 
     #[test]
     fn rc_arithmetic_preserves_color_and_flags() {
-        let s = GcState(GcState::new_initial().0 | BUFFERED).with_color(Color::Orange);
+        let s = GcState(GcState::new_initial().0 | ATTN_CLAIM).with_color(Color::Orange);
         let bumped = GcState(s.0 + 1);
         assert_eq!(bumped.rc(), 2);
         assert_eq!(bumped.color(), Color::Orange);
-        assert!(bumped.buffered());
+        assert!(bumped.attn_claimed());
         let dropped = GcState(bumped.0 - 2);
         assert_eq!(dropped.rc(), 0);
         assert_eq!(dropped.color(), Color::Orange);
@@ -136,47 +129,33 @@ mod test {
             s = s.with_color(c);
             assert_eq!(s.color(), c);
             assert_eq!(s.rc(), RC_MASK & 0xdead_beef);
-            assert!(!s.buffered());
         }
     }
 
     #[test]
     fn flag_masks_are_disjoint_from_rc_and_color() {
         assert_eq!(RC_MASK & COLOR_MASK, 0);
-        assert_eq!((RC_MASK | COLOR_MASK) & BUFFERED, 0);
-        assert_eq!((RC_MASK | COLOR_MASK | BUFFERED) & INC_EVENT, 0);
+        assert_eq!((RC_MASK | COLOR_MASK) & INC_EVENT, 0);
     }
 
     #[test]
     fn attn_bits_disjoint_and_roundtrip() {
-        assert_eq!((RC_MASK | COLOR_MASK | BUFFERED | INC_EVENT) & ATTN_CLAIM, 0);
+        assert_eq!((RC_MASK | COLOR_MASK | INC_EVENT) & ATTN_CLAIM, 0);
+        assert_eq!((RC_MASK | COLOR_MASK | INC_EVENT | ATTN_CLAIM) & ATTN_DEAD, 0);
         assert_eq!(
-            (RC_MASK | COLOR_MASK | BUFFERED | INC_EVENT | ATTN_CLAIM) & ATTN_DEAD,
-            0
-        );
-        assert_eq!(
-            (RC_MASK | COLOR_MASK | BUFFERED | INC_EVENT | ATTN_CLAIM | ATTN_DEAD)
-                & ZERO_PENDING,
+            (RC_MASK | COLOR_MASK | INC_EVENT | ATTN_CLAIM | ATTN_DEAD) & ZERO_PENDING,
             0
         );
 
         let s = GcState::new_initial();
         assert!(!s.attn_claimed(), "newborns have no pending attention event");
         assert!(!s.attn_dead());
-        assert!(!s.buffered(), "phase 2: newborns are unbuffered");
         assert!(!s.zero_pending());
 
         let claimed = GcState(s.0 | ATTN_CLAIM);
         assert!(claimed.attn_claimed());
         assert_eq!(claimed.rc(), 1);
         assert_eq!(claimed.color(), Color::Black);
-
-        let buffered_and_claimed = GcState(s.0 | BUFFERED | ATTN_CLAIM);
-        assert!(
-            buffered_and_claimed.buffered(),
-            "claim must not disturb the buffered bit"
-        );
-        assert!(buffered_and_claimed.attn_claimed());
 
         let dead = GcState(claimed.0 | ATTN_DEAD);
         assert!(dead.attn_dead());

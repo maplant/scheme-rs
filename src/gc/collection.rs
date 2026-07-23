@@ -5,7 +5,7 @@
 use std::{
     alloc::Layout,
     cell::UnsafeCell,
-    ptr::{NonNull, null_mut},
+    ptr::NonNull,
     sync::{OnceLock, atomic::AtomicUsize},
     thread::JoinHandle,
 };
@@ -16,7 +16,7 @@ use scheme_rs_macros::{maybe_async, maybe_await};
 
 use crate::{
     exceptions::Exception,
-    gc::state::{ATTN_CLAIM, ATTN_DEAD, BUFFERED, Color, GcState, INC_EVENT, ZERO_PENDING},
+    gc::state::{ATTN_CLAIM, ATTN_DEAD, Color, GcState, INC_EVENT, ZERO_PENDING},
     registry::bridge,
     value::Value,
 };
@@ -27,18 +27,12 @@ pub(crate) struct GcHeader {
     /// Packed state word: rc | color | flags. See [`crate::gc::state`].
     /// Mutators touch ONLY this field, and only via atomic RMWs.
     pub(crate) state: AtomicUsize,
-    /// Reference count as of the current epoch (collector-private)
-    epoch_rc: usize,
     /// Circular reference count (collector-private)
     crc: isize,
     /// VTable for the type
     vtable: &'static VTable,
     /// Layout of the type and header
     layout: Layout,
-    /// Next item in the heap, or null (collector/heap-lock only)
-    next: *mut GcHeader,
-    /// Previous item in the heap, or null (collector/heap-lock only)
-    prev: *mut GcHeader,
     /// Intrusive attention-list link. NOT_IN_LIST when unclaimed; the claim
     /// winner (mutator or re-enqueueing collector) is its sole writer until
     /// the drain resets it.
@@ -54,12 +48,9 @@ impl GcHeader {
     pub(crate) fn new<T: super::GcOrTrace>() -> Self {
         Self {
             state: AtomicUsize::new(GcState::new_initial().0),
-            epoch_rc: 1,
             crc: 1,
             vtable: T::VTABLE,
             layout: Layout::new::<super::GcInner<T>>(),
-            next: null_mut(),
-            prev: null_mut(),
             attn_next: AtomicUsize::new(NOT_IN_LIST),
         }
     }
@@ -148,14 +139,6 @@ impl HeapObject<()> {
         unsafe { GcState(self.state().fetch_sub(1, std::sync::atomic::Ordering::Release)).rc() }
     }
 
-    unsafe fn epoch_rc(&self) -> usize {
-        unsafe { (*self.header.as_ref().get()).epoch_rc }
-    }
-
-    unsafe fn set_epoch_rc(&self, rc: usize) {
-        unsafe { (*self.header.as_ref().get()).epoch_rc = rc }
-    }
-
     unsafe fn crc(&self) -> isize {
         unsafe { (*self.header.as_ref().get()).crc }
     }
@@ -182,22 +165,6 @@ impl HeapObject<()> {
         }
     }
 
-    unsafe fn buffered(&self) -> bool {
-        unsafe { GcState(self.state().load(std::sync::atomic::Ordering::Acquire)).buffered() }
-    }
-
-    unsafe fn set_buffered(&self, buffered: bool) {
-        unsafe {
-            if buffered {
-                self.state()
-                    .fetch_or(BUFFERED, std::sync::atomic::Ordering::AcqRel);
-            } else {
-                self.state()
-                    .fetch_and(!BUFFERED, std::sync::atomic::Ordering::AcqRel);
-            }
-        }
-    }
-
     unsafe fn visit_children(
         &self,
     ) -> unsafe fn(this: *const (), visitor: &mut dyn FnMut(OpaqueGcPtr)) {
@@ -218,26 +185,6 @@ impl HeapObject<()> {
 
     unsafe fn data_mut(&self) -> *mut () {
         self.data.as_ptr() as *mut ()
-    }
-
-    unsafe fn next(&self) -> *mut GcHeader {
-        unsafe { (*self.header.as_ref().get()).next }
-    }
-
-    unsafe fn set_next(&self, next: *mut GcHeader) {
-        unsafe {
-            (*self.header.as_ref().get()).next = next;
-        }
-    }
-
-    unsafe fn prev(&self) -> *mut GcHeader {
-        unsafe { (*self.header.as_ref().get()).prev }
-    }
-
-    unsafe fn set_prev(&self, prev: *mut GcHeader) {
-        unsafe {
-            (*self.header.as_ref().get()).prev = prev;
-        }
     }
 }
 
@@ -261,10 +208,6 @@ pub(crate) unsafe fn unroot<T: super::GcOrTrace>(gc: &super::Gc<T>, layout: Layo
 }
 
 struct Heap {
-    head: *mut GcHeader,
-    tail: *mut GcHeader,
-    nursery_head: *mut GcHeader,
-    nursery_tail: *mut GcHeader,
     new_allocs: usize,
     epoch: usize,
     force_collection: bool,
@@ -273,10 +216,6 @@ struct Heap {
 impl Heap {
     const fn new() -> Self {
         Self {
-            head: std::ptr::null_mut(),
-            tail: std::ptr::null_mut(),
-            nursery_head: std::ptr::null_mut(),
-            nursery_tail: std::ptr::null_mut(),
             new_allocs: 0,
             epoch: 0,
             force_collection: false,
@@ -418,9 +357,6 @@ pub struct Collector {
     /// running trial).
     cycles: Vec<Vec<OpaqueGcPtr>>,
     freed_objs: HashSet<OpaqueGcPtr>,
-    head: *mut GcHeader,
-    tail: *mut GcHeader,
-    next: *mut GcHeader,
 }
 
 unsafe impl Send for Collector {}
@@ -431,9 +367,6 @@ impl Collector {
             roots: HashSet::default(),
             cycles: Vec::new(),
             freed_objs: HashSet::default(),
-            head: null_mut(),
-            tail: null_mut(),
-            next: null_mut(),
         }
     }
 
