@@ -393,8 +393,19 @@ impl Collector {
 
     fn run(mut self) -> JoinHandle<()> {
         std::thread::spawn(move || {
+            let this = &mut self;
             loop {
-                self.epoch();
+                if let Err(panic) = std::panic::catch_unwind(
+                    std::panic::AssertUnwindSafe(|| this.epoch()),
+                ) {
+                    // A dead collector turns every later collect_garbage()
+                    // into a silent hang; loud crash beats silent hang.
+                    eprintln!(
+                        "fatal: GC collector thread panicked: {panic:?}\n{}",
+                        std::backtrace::Backtrace::force_capture()
+                    );
+                    std::process::abort();
+                }
             }
         })
     }
