@@ -227,6 +227,71 @@ fn fused_release_never_loses_a_dec() {
     });
 }
 
+/// Mirrors `flush_chain` for a two-node batch.
+fn flush_two(head: &AtomicUsize, a: &Node, b: &Node) {
+    a.attn_next
+        .store(b as *const Node as usize, Ordering::Relaxed);
+    let mut h = head.load(Ordering::Relaxed);
+    loop {
+        b.attn_next.store(h, Ordering::Relaxed);
+        match head.compare_exchange_weak(
+            h,
+            a as *const Node as usize,
+            Ordering::Release,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return,
+            Err(actual) => h = actual,
+        }
+    }
+}
+
+#[test]
+fn batch_flush_vs_drain_loses_nothing() {
+    loom::model(|| {
+        let a = Node::with_state(1 | ATTN_CLAIM);
+        let b = Node::with_state(1 | ATTN_CLAIM);
+        let head = Arc::new(AtomicUsize::new(0));
+
+        let (a1, b1, h1) = (a.clone(), b.clone(), head.clone());
+        let flusher = thread::spawn(move || flush_two(&h1, &a1, &b1));
+        let h2 = head.clone();
+        let drainer = thread::spawn(move || h2.swap(0, Ordering::Acquire));
+
+        flusher.join().unwrap();
+        let drained = drainer.join().unwrap();
+        let residual = head.swap(0, Ordering::Acquire);
+
+        for n in [&a, &b] {
+            assert_eq!(
+                occurrences(drained, n) + occurrences(residual, n),
+                1,
+                "batched node lost or duplicated across drain race"
+            );
+        }
+    });
+}
+
+#[test]
+fn concurrent_batch_flushes_preserve_all_nodes() {
+    loom::model(|| {
+        let nodes: Vec<_> = (0..4).map(|_| Node::with_state(1 | ATTN_CLAIM)).collect();
+        let head = Arc::new(AtomicUsize::new(0));
+
+        let (n0, n1, h1) = (nodes[0].clone(), nodes[1].clone(), head.clone());
+        let f1 = thread::spawn(move || flush_two(&h1, &n0, &n1));
+        let (n2, n3, h2) = (nodes[2].clone(), nodes[3].clone(), head.clone());
+        let f2 = thread::spawn(move || flush_two(&h2, &n2, &n3));
+
+        f1.join().unwrap();
+        f2.join().unwrap();
+        let chain = head.swap(0, Ordering::Acquire);
+        for n in &nodes {
+            assert_eq!(occurrences(chain, n), 1);
+        }
+    });
+}
+
 #[test]
 fn drain_race_never_loses_a_node() {
     loom::model(|| {

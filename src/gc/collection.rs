@@ -223,6 +223,7 @@ fn alloc_tick() {
         let n = t.get() + 1;
         if n >= LOCAL_ALLOCS_PER_SIGNAL {
             t.set(0);
+            flush_events();
             TOTAL_ALLOCS.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
             let mut state = COLLECTOR_STATE.lock();
             state.pending_allocs += n;
@@ -288,6 +289,77 @@ unsafe fn attn_push(header: *mut GcHeader) {
     }
 }
 
+const EVENT_BATCH: usize = 64;
+
+thread_local! {
+    static EVENT_BUFFER: EventBuffer = const { EventBuffer::new() };
+}
+
+struct EventBuffer(std::cell::RefCell<Vec<*mut GcHeader>>);
+
+impl EventBuffer {
+    const fn new() -> Self {
+        Self(std::cell::RefCell::new(Vec::new()))
+    }
+}
+
+impl Drop for EventBuffer {
+    // Thread exit (including unwind): nothing may be left behind.
+    fn drop(&mut self) {
+        flush_chain(&mut self.0.borrow_mut());
+    }
+}
+
+/// Mutator-side event enqueue: buffer locally, splice whole batches with a
+/// single ATTN_HEAD CAS. Claim bit semantics widen to "in some buffer".
+pub(crate) fn buffer_event(header: *mut GcHeader) {
+    let ok = EVENT_BUFFER.try_with(|buf| {
+        let mut buf = buf.0.borrow_mut();
+        buf.push(header);
+        if buf.len() >= EVENT_BATCH {
+            flush_chain(&mut buf);
+        }
+    });
+    if ok.is_err() {
+        // TLS already destroyed (thread teardown): push directly.
+        unsafe { attn_push(header) };
+    }
+}
+
+/// Flush the calling thread's buffered events to the global list.
+pub(crate) fn flush_events() {
+    let _ = EVENT_BUFFER.try_with(|buf| flush_chain(&mut buf.0.borrow_mut()));
+}
+
+fn flush_chain(buf: &mut Vec<*mut GcHeader>) {
+    let Some(&first) = buf.first() else { return };
+    unsafe {
+        // Sole-owner links: every header here is claim-won by this thread.
+        for w in buf.windows(2) {
+            (*w[0])
+                .attn_next
+                .store(w[1] as usize, std::sync::atomic::Ordering::Relaxed);
+        }
+        let tail = *buf.last().unwrap();
+        let mut head = ATTN_HEAD.load(std::sync::atomic::Ordering::Relaxed);
+        loop {
+            (*tail)
+                .attn_next
+                .store(head, std::sync::atomic::Ordering::Relaxed);
+            match ATTN_HEAD.compare_exchange_weak(
+                head,
+                first as usize,
+                std::sync::atomic::Ordering::Release,
+                std::sync::atomic::Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(actual) => head = actual,
+            }
+        }
+    }
+    buf.clear();
+}
+
 /// Called by every mutator decrement with the pre-decrement word.
 /// One claim per object per epoch: repeat decs see ATTN_CLAIM and skip.
 #[inline]
@@ -302,7 +374,7 @@ pub(crate) unsafe fn record_dec_event(header: *mut GcHeader, old: GcState) {
                 .fetch_or(ATTN_CLAIM, std::sync::atomic::Ordering::AcqRel),
         );
         if !w.attn_claimed() {
-            attn_push(header);
+            buffer_event(header);
         }
     }
 }
@@ -323,7 +395,7 @@ pub(crate) unsafe fn record_inc_event(header: *mut GcHeader, old: GcState) {
                 .fetch_or(INC_EVENT | ATTN_CLAIM, std::sync::atomic::Ordering::AcqRel),
         );
         if !w.attn_claimed() {
-            attn_push(header);
+            buffer_event(header);
         }
     }
 }
@@ -339,6 +411,8 @@ pub fn init_gc() {
 }
 
 fn collect_garbage_sync() {
+    // An explicit collection must see the caller's own pending events.
+    flush_events();
     let mut state = COLLECTOR_STATE.lock();
     let target_epoch = state.epoch + 1;
     state.force_collection = true;
