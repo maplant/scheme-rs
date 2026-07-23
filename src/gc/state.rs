@@ -14,6 +14,11 @@ pub const ATTN_CLAIM: usize = 1 << 53;
 /// Finalized by the scan while claimed; header memory awaits the drain
 /// that removes its attention-list entry (dealloc deferral).
 pub const ATTN_DEAD: usize = 1 << 54;
+/// A drain observed rc==0 once (phase 2 zero-aging). JIT-compiled frames
+/// hold raw pointers and re-materialize counts via `from_raw_inc_rc`, so a
+/// single zero sighting can be a transient resurrection window, not death;
+/// only a *second consecutive* sighting with rc still 0 is safe to free.
+pub const ZERO_PENDING: usize = 1 << 55;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -50,10 +55,10 @@ impl From<u8> for Color {
 pub struct GcState(pub usize);
 
 impl GcState {
-    /// rc = 1, Black, buffered (matches the current header's birth state:
-    /// `prev` carried the buffered bit set at construction).
+    /// rc = 1, Black, unclaimed (phase 2: newborns touch no global structure
+    /// until their first event).
     pub(crate) fn new_initial() -> Self {
-        GcState(1 | BUFFERED)
+        GcState(1)
     }
 
     pub fn rc(self) -> usize {
@@ -83,6 +88,10 @@ impl GcState {
     pub fn attn_dead(self) -> bool {
         self.0 & ATTN_DEAD != 0
     }
+
+    pub fn zero_pending(self) -> bool {
+        self.0 & ZERO_PENDING != 0
+    }
 }
 
 #[cfg(test)]
@@ -94,13 +103,16 @@ mod test {
         let s = GcState::new_initial();
         assert_eq!(s.rc(), 1);
         assert_eq!(s.color(), Color::Black);
-        assert!(s.buffered(), "objects are born buffered (pre-first-scan)");
+        assert!(
+            !s.buffered(),
+            "phase 2: newborns touch no global structure until their first event"
+        );
         assert!(!s.inc_event());
     }
 
     #[test]
     fn rc_arithmetic_preserves_color_and_flags() {
-        let s = GcState::new_initial().with_color(Color::Orange);
+        let s = GcState(GcState::new_initial().0 | BUFFERED).with_color(Color::Orange);
         let bumped = GcState(s.0 + 1);
         assert_eq!(bumped.rc(), 2);
         assert_eq!(bumped.color(), Color::Orange);
@@ -142,19 +154,38 @@ mod test {
             (RC_MASK | COLOR_MASK | BUFFERED | INC_EVENT | ATTN_CLAIM) & ATTN_DEAD,
             0
         );
+        assert_eq!(
+            (RC_MASK | COLOR_MASK | BUFFERED | INC_EVENT | ATTN_CLAIM | ATTN_DEAD)
+                & ZERO_PENDING,
+            0
+        );
 
         let s = GcState::new_initial();
         assert!(!s.attn_claimed(), "newborns have no pending attention event");
         assert!(!s.attn_dead());
+        assert!(!s.buffered(), "phase 2: newborns are unbuffered");
+        assert!(!s.zero_pending());
 
         let claimed = GcState(s.0 | ATTN_CLAIM);
         assert!(claimed.attn_claimed());
         assert_eq!(claimed.rc(), 1);
         assert_eq!(claimed.color(), Color::Black);
-        assert!(claimed.buffered(), "claim must not disturb the scan's bit");
+
+        let buffered_and_claimed = GcState(s.0 | BUFFERED | ATTN_CLAIM);
+        assert!(
+            buffered_and_claimed.buffered(),
+            "claim must not disturb the buffered bit"
+        );
+        assert!(buffered_and_claimed.attn_claimed());
 
         let dead = GcState(claimed.0 | ATTN_DEAD);
         assert!(dead.attn_dead());
         assert!(dead.attn_claimed());
+
+        let zero_pending_and_claimed = GcState(s.0 | ZERO_PENDING | ATTN_CLAIM);
+        assert!(zero_pending_and_claimed.zero_pending());
+        assert!(zero_pending_and_claimed.attn_claimed());
+        assert_eq!(zero_pending_and_claimed.rc(), 1);
+        assert_eq!(zero_pending_and_claimed.color(), Color::Black);
     }
 }

@@ -180,6 +180,54 @@ fn release_cas_never_loses_a_dec() {
 }
 
 #[test]
+fn fused_release_never_loses_a_dec() {
+    loom::model(|| {
+        // rc = 2, claimed, Black, being processed as a purple candidate.
+        let node = Node::with_state(2 | ATTN_CLAIM);
+        let head = Arc::new(AtomicUsize::new(0));
+
+        let n1 = node.clone();
+        let h1 = head.clone();
+        let mutator = thread::spawn(move || mutator_dec(&h1, &n1));
+
+        let n2 = node.clone();
+        let h2 = head.clone();
+        let collector = thread::spawn(move || {
+            // Mirrors process_drained's fused release CAS: color mutation
+            // and membership release happen in the same compare_exchange.
+            let w = GcState(n2.state.load(Ordering::Acquire));
+            n2.attn_next.store(NOT_IN_LIST, Ordering::Relaxed);
+            let target = GcState(w.0 & !(ATTN_CLAIM | INC_EVENT))
+                .with_color(Color::Purple)
+                .0;
+            let released = n2
+                .state
+                .compare_exchange(w.0, target, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok();
+            if !released {
+                push(&h2, &n2);
+            }
+            (w, released)
+        });
+
+        mutator.join().unwrap();
+        let (w, released) = collector.join().unwrap();
+
+        let end = GcState(node.state.load(Ordering::Acquire));
+        let dec_seen_by_release = released && w.rc() == 1;
+        let membership_renewed = end.attn_claimed();
+        assert!(
+            dec_seen_by_release || membership_renewed,
+            "fused release lost a dec"
+        );
+        assert_eq!(end.rc(), 1);
+        if released && !membership_renewed {
+            assert_eq!(end.color(), Color::Purple, "fused color write lost");
+        }
+    });
+}
+
+#[test]
 fn drain_race_never_loses_a_node() {
     loom::model(|| {
         // rc = 1, claim freshly won by the mutator; push races the drain swap.

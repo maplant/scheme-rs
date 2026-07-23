@@ -1,7 +1,7 @@
 //! Randomized multi-threaded GC stress: graph churn, cycles, cross-thread
-//! object traffic, forced collections. Run with --features gc-shadow-validate
-//! to additionally assert the attention buffers never diverge from the scan.
-//! GC_STRESS_ITERS scales per-thread work (default 20_000; soak uses 200_000).
+//! object traffic, forced collections. Serves as a crash/UAF net (the leak
+//! canary covers reclamation). GC_STRESS_ITERS scales per-thread work
+//! (default 20_000; soak uses 200_000).
 #![cfg(not(feature = "async"))]
 
 use parking_lot::{Mutex, RwLock};
@@ -91,11 +91,4 @@ fn gc_stress() {
     for _ in 0..4 {
         collect_garbage();
     }
-
-    #[cfg(feature = "gc-shadow-validate")]
-    assert_eq!(
-        scheme_rs::gc::SHADOW_DIVERGENCES.load(std::sync::atomic::Ordering::Relaxed),
-        0,
-        "attention buffers diverged from the scan under stress"
-    );
 }
