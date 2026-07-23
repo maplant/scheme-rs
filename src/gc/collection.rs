@@ -14,24 +14,30 @@ use parking_lot::{Condvar, Mutex};
 use rustc_hash::FxHashSet as HashSet;
 use scheme_rs_macros::{maybe_async, maybe_await};
 
-use crate::{exceptions::Exception, gc::state::Color, registry::bridge, value::Value};
+use crate::{
+    exceptions::Exception,
+    gc::state::{BUFFERED, Color, GcState},
+    registry::bridge,
+    value::Value,
+};
 
 #[derive(Debug)]
 #[repr(C, align(8))]
 pub(crate) struct GcHeader {
-    /// Reference count shared with the Gc types
-    pub(crate) shared_rc: AtomicUsize,
-    /// Reference count as of the current epoch
+    /// Packed state word: rc | color | flags. See [`crate::gc::state`].
+    /// Mutators touch ONLY this field, and only via atomic RMWs.
+    pub(crate) state: AtomicUsize,
+    /// Reference count as of the current epoch (collector-private)
     epoch_rc: usize,
-    /// Circular reference count
+    /// Circular reference count (collector-private)
     crc: isize,
     /// VTable for the type
     vtable: &'static VTable,
     /// Layout of the type and header
     layout: Layout,
-    /// Next item in the heap, or null. Lower 3 bits are the color
+    /// Next item in the heap, or null (collector/heap-lock only)
     next: *mut GcHeader,
-    /// Previous item in the heap, or null. Lower 1 bit is the buffered flag
+    /// Previous item in the heap, or null (collector/heap-lock only)
     prev: *mut GcHeader,
 }
 
@@ -43,46 +49,14 @@ pub fn gc_header_size() -> Result<Vec<Value>, Exception> {
 impl GcHeader {
     pub(crate) fn new<T: super::GcOrTrace>() -> Self {
         Self {
-            shared_rc: AtomicUsize::new(1),
+            state: AtomicUsize::new(GcState::new_initial().0),
             epoch_rc: 1,
             crc: 1,
             vtable: T::VTABLE,
             layout: Layout::new::<super::GcInner<T>>(),
             next: null_mut(),
-            prev: null_mut::<GcHeader>().map_addr(|addr| addr | 1),
+            prev: null_mut(),
         }
-    }
-
-    fn get_color(&self) -> Color {
-        Color::from((self.next as usize & 0b111) as u8)
-    }
-
-    fn set_color(&mut self, color: Color) {
-        self.next = self.get_next().map_addr(|addr| addr | color as usize);
-    }
-
-    fn get_next(&self) -> *mut GcHeader {
-        self.next.map_addr(|addr| addr & !0b111)
-    }
-
-    fn set_next(&mut self, new: *mut GcHeader) {
-        self.next = new.map_addr(|addr| addr | self.get_color() as usize);
-    }
-
-    fn get_buffered(&self) -> bool {
-        (self.prev as usize & 0b1) == 1
-    }
-
-    fn set_buffered(&mut self, buffered: bool) {
-        self.prev = self.get_prev().map_addr(|addr| addr | buffered as usize);
-    }
-
-    fn get_prev(&self) -> *mut GcHeader {
-        self.prev.map_addr(|addr| addr & !0b1)
-    }
-
-    fn set_prev(&mut self, new: *mut GcHeader) {
-        self.prev = new.map_addr(|addr| addr | self.get_buffered() as usize);
     }
 }
 
@@ -157,20 +131,16 @@ impl HeapObject<()> {
         self.header.as_ptr() as *mut GcHeader
     }
 
+    unsafe fn state(&self) -> &AtomicUsize {
+        unsafe { &(*self.header.as_ref().get()).state }
+    }
+
     unsafe fn shared_rc(&self) -> usize {
-        unsafe {
-            (*self.header.as_ref().get())
-                .shared_rc
-                .load(std::sync::atomic::Ordering::Acquire)
-        }
+        unsafe { GcState(self.state().load(std::sync::atomic::Ordering::Acquire)).rc() }
     }
 
     unsafe fn dec_shared_rc(&self) -> usize {
-        unsafe {
-            (*self.header.as_ref().get())
-                .shared_rc
-                .fetch_sub(1, std::sync::atomic::Ordering::Release)
-        }
+        unsafe { GcState(self.state().fetch_sub(1, std::sync::atomic::Ordering::Release)).rc() }
     }
 
     unsafe fn epoch_rc(&self) -> usize {
@@ -192,22 +162,34 @@ impl HeapObject<()> {
     }
 
     unsafe fn color(&self) -> Color {
-        unsafe { (*self.header.as_ref().get()).get_color() }
+        unsafe { GcState(self.state().load(std::sync::atomic::Ordering::Acquire)).color() }
     }
 
     unsafe fn set_color(&self, color: Color) {
         unsafe {
-            (*self.header.as_ref().get()).set_color(color);
+            self.state()
+                .fetch_update(
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                    |w| Some(GcState(w).with_color(color).0),
+                )
+                .unwrap();
         }
     }
 
     unsafe fn buffered(&self) -> bool {
-        unsafe { (*self.header.as_ref().get()).get_buffered() }
+        unsafe { GcState(self.state().load(std::sync::atomic::Ordering::Acquire)).buffered() }
     }
 
     unsafe fn set_buffered(&self, buffered: bool) {
         unsafe {
-            (*self.header.as_ref().get()).set_buffered(buffered);
+            if buffered {
+                self.state()
+                    .fetch_or(BUFFERED, std::sync::atomic::Ordering::AcqRel);
+            } else {
+                self.state()
+                    .fetch_and(!BUFFERED, std::sync::atomic::Ordering::AcqRel);
+            }
         }
     }
 
@@ -234,22 +216,22 @@ impl HeapObject<()> {
     }
 
     unsafe fn next(&self) -> *mut GcHeader {
-        unsafe { (*self.header.as_ref().get()).get_next() }
+        unsafe { (*self.header.as_ref().get()).next }
     }
 
     unsafe fn set_next(&self, next: *mut GcHeader) {
         unsafe {
-            (*self.header.as_ref().get()).set_next(next);
+            (*self.header.as_ref().get()).next = next;
         }
     }
 
     unsafe fn prev(&self) -> *mut GcHeader {
-        unsafe { (*self.header.as_ref().get()).get_prev() }
+        unsafe { (*self.header.as_ref().get()).prev }
     }
 
     unsafe fn set_prev(&self, prev: *mut GcHeader) {
         unsafe {
-            (*self.header.as_ref().get()).set_prev(prev);
+            (*self.header.as_ref().get()).prev = prev;
         }
     }
 }
@@ -269,10 +251,10 @@ pub(crate) unsafe fn unroot<T: super::GcOrTrace>(gc: &super::Gc<T>, layout: Layo
         if heap.nursery_head.is_null() {
             heap.nursery_tail = new_gc_ptr;
         } else {
-            (*heap.nursery_head).set_prev(new_gc_ptr);
+            (*heap.nursery_head).prev = new_gc_ptr;
         }
 
-        (*new_gc_ptr).set_next(heap.nursery_head);
+        (*new_gc_ptr).next = heap.nursery_head;
     }
 
     heap.nursery_head = new_gc_ptr;
@@ -479,8 +461,8 @@ impl Collector {
                     heap.head = self.head;
                     heap.tail = self.tail;
                 } else {
-                    (*self.tail).set_next(heap.head);
-                    (*heap.head).set_prev(self.tail);
+                    (*self.tail).next = heap.head;
+                    (*heap.head).prev = self.tail;
                     heap.head = self.head;
                 }
             }

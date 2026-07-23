@@ -294,7 +294,7 @@ unsafe impl<T> arc_swap::RefCnt for Gc<T> {
 fn inc_rc<T: ?Sized>(ptr: NonNull<GcInner<T>>) {
     unsafe {
         (*ptr.as_ref().header.get())
-            .shared_rc
+            .state
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
@@ -302,7 +302,7 @@ fn inc_rc<T: ?Sized>(ptr: NonNull<GcInner<T>>) {
 fn dec_rc<T: ?Sized>(ptr: NonNull<GcInner<T>>) {
     unsafe {
         (*ptr.as_ref().header.get())
-            .shared_rc
+            .state
             .fetch_sub(1, std::sync::atomic::Ordering::Release);
     }
 }
