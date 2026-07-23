@@ -19,6 +19,15 @@ pub mod state;
 pub use collection::{OpaqueGcPtr, collect_garbage, init_gc};
 pub use scheme_rs_macros::Trace;
 
+/// Live-object statistics: `(total allocations, total frees)`, both
+/// monotonic counters since process start (design doc §6).
+pub fn allocation_stats() -> (usize, usize) {
+    (
+        collection::TOTAL_ALLOCS.load(std::sync::atomic::Ordering::Relaxed),
+        collection::TOTAL_FREES.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
 use std::{
     alloc::Layout,
     any::Any,

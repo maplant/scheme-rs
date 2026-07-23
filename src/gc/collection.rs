@@ -193,48 +193,69 @@ unsafe impl Sync for HeapObject<()> {}
 
 #[allow(private_bounds)]
 pub(crate) unsafe fn unroot<T: super::GcOrTrace>(gc: &super::Gc<T>, layout: Layout) {
-    let new_gc_ptr = gc.ptr.as_ptr() as *mut GcHeader;
+    let header = gc.ptr.as_ptr() as *mut GcHeader;
 
     unsafe {
-        (*new_gc_ptr).layout = layout;
+        (*header).layout = layout;
     }
 
-    let mut heap = HEAP.lock();
-    heap.new_allocs += 1;
-
-    if heap.should_collect() {
-        COLLECTION_START_SIGNAL.notify_one();
-    }
+    alloc_tick();
 }
 
-struct Heap {
-    new_allocs: usize,
+thread_local! {
+    static ALLOC_TICK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Total objects allocated (statistics; relaxed, collector never reads it
+/// for decisions).
+pub(crate) static TOTAL_ALLOCS: AtomicUsize = AtomicUsize::new(0);
+/// Total objects freed (statistics; relaxed, incremented at the two dealloc
+/// sites in `process_drained` and `free`).
+pub(crate) static TOTAL_FREES: AtomicUsize = AtomicUsize::new(0);
+
+const LOCAL_ALLOCS_PER_SIGNAL: usize = 1024;
+
+/// Batches per-thread allocation counts into `COLLECTOR_STATE.pending_allocs`
+/// every `LOCAL_ALLOCS_PER_SIGNAL` allocations, keeping the allocation path
+/// lock-free the rest of the time.
+fn alloc_tick() {
+    ALLOC_TICK.with(|t| {
+        let n = t.get() + 1;
+        if n >= LOCAL_ALLOCS_PER_SIGNAL {
+            t.set(0);
+            TOTAL_ALLOCS.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+            let mut state = COLLECTOR_STATE.lock();
+            state.pending_allocs += n;
+            if state.pending_allocs >= MIN_ALLOCS_TO_COLLECT {
+                COLLECTION_START_SIGNAL.notify_one();
+            }
+        } else {
+            t.set(n);
+        }
+    });
+}
+
+struct CollectorState {
     epoch: usize,
     force_collection: bool,
+    pending_allocs: usize,
 }
 
-impl Heap {
+impl CollectorState {
     const fn new() -> Self {
         Self {
-            new_allocs: 0,
             epoch: 0,
             force_collection: false,
+            pending_allocs: 0,
         }
     }
 
-    fn should_collect(&mut self) -> bool {
-        !self.should_not_collect()
-    }
-
     fn should_not_collect(&mut self) -> bool {
-        self.new_allocs < MIN_ALLOCS_TO_COLLECT && !self.force_collection
+        self.pending_allocs < MIN_ALLOCS_TO_COLLECT && !self.force_collection
     }
 }
 
-unsafe impl Send for Heap {}
-unsafe impl Sync for Heap {}
-
-static HEAP: Mutex<Heap> = Mutex::new(Heap::new());
+static COLLECTOR_STATE: Mutex<CollectorState> = Mutex::new(CollectorState::new());
 static COLLECTION_START_SIGNAL: Condvar = Condvar::new();
 static COLLECTION_DONE_SIGNAL: Condvar = Condvar::new();
 static COLLECTOR_TASK: OnceLock<JoinHandle<()>> = OnceLock::new();
@@ -318,11 +339,11 @@ pub fn init_gc() {
 }
 
 fn collect_garbage_sync() {
-    let mut heap = HEAP.lock();
-    let target_epoch = heap.epoch + 1;
-    heap.force_collection = true;
+    let mut state = COLLECTOR_STATE.lock();
+    let target_epoch = state.epoch + 1;
+    state.force_collection = true;
     COLLECTION_START_SIGNAL.notify_one();
-    COLLECTION_DONE_SIGNAL.wait_while(&mut heap, |heap| heap.epoch < target_epoch);
+    COLLECTION_DONE_SIGNAL.wait_while(&mut state, |state| state.epoch < target_epoch);
 }
 
 /// Force a garbage collection pause.
@@ -379,12 +400,12 @@ impl Collector {
     }
 
     fn await_epoch(&mut self) {
-        let mut heap = HEAP.lock();
+        let mut state = COLLECTOR_STATE.lock();
 
-        COLLECTION_START_SIGNAL.wait_while(&mut heap, Heap::should_not_collect);
+        COLLECTION_START_SIGNAL.wait_while(&mut state, CollectorState::should_not_collect);
 
-        heap.new_allocs = 0;
-        heap.force_collection = false;
+        state.pending_allocs = 0;
+        state.force_collection = false;
     }
 
     fn epoch(&mut self) {
@@ -426,8 +447,8 @@ impl Collector {
         // a fresh parking in a later epoch.
         self.freed_objs.clear();
 
-        let mut heap = HEAP.lock();
-        heap.epoch += 1;
+        let mut state = COLLECTOR_STATE.lock();
+        state.epoch += 1;
         COLLECTION_DONE_SIGNAL.notify_all();
     }
 
@@ -495,6 +516,7 @@ impl Collector {
                 // can race this dealloc.
                 let layout = (*header).layout;
                 std::alloc::dealloc(header as *mut u8, layout);
+                TOTAL_FREES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 return;
             }
 
@@ -787,6 +809,7 @@ impl Collector {
                     .fetch_or(ATTN_DEAD, std::sync::atomic::Ordering::AcqRel);
             } else {
                 std::alloc::dealloc(s.header.as_ptr() as *mut u8, s.layout());
+                TOTAL_FREES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
         }
     }
