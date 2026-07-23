@@ -831,4 +831,51 @@ mod test {
             "object not reaped after nursery promotion"
         );
     }
+
+    #[test]
+    fn packed_word_rc_and_color_do_not_interfere() {
+        let _guard = GC_TEST_SERIAL.lock();
+        init_gc();
+
+        let obj = Gc::new(0u64);
+        let opaque = unsafe { obj.as_opaque() };
+
+        let mutators: Vec<_> = (0..4)
+            .map(|_| {
+                let obj = obj.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..100_000 {
+                        let c = obj.clone();
+                        drop(c);
+                    }
+                })
+            })
+            .collect();
+
+        for _ in 0..10_000 {
+            for color in [Color::Gray, Color::Purple, Color::Orange, Color::Black] {
+                unsafe {
+                    opaque.set_color(color);
+                    let observed = opaque.color();
+                    assert!(
+                        matches!(
+                            observed,
+                            Color::Gray | Color::Purple | Color::Orange | Color::Black
+                        ),
+                        "torn color read: {observed:?}"
+                    );
+                }
+            }
+        }
+
+        for m in mutators {
+            m.join().unwrap();
+        }
+
+        unsafe {
+            opaque.set_color(Color::Black);
+            assert_eq!(opaque.shared_rc(), 1, "rc not conserved under color churn");
+        }
+        drop(obj);
+    }
 }
