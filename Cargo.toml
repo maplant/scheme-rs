@@ -57,6 +57,7 @@ async = ["dep:futures", "dep:async-stream"]
 lsp = ["dep:lsp-server", "dep:lsp-types", "dep:serde", "dep:serde_json"]
 load-libraries-from-fs = []
 plugins = ["dep:libloading"]
+gc-shadow-validate = []
 
 [profile.release]
 lto = true

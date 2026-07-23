@@ -418,6 +418,21 @@ pub fn collect_garbage_bridge() -> Result<Vec<Value>, Exception> {
     Ok(Vec::new())
 }
 
+#[cfg(feature = "gc-shadow-validate")]
+#[derive(Debug, Default)]
+struct ShadowState {
+    /// Objects whose drained word had rc == 0 (would-be release path).
+    zeros: HashSet<OpaqueGcPtr>,
+    /// Objects whose drained word carried INC_EVENT (would-be scan_black).
+    incs: HashSet<OpaqueGcPtr>,
+    /// Everything else drained (would-be purple candidates).
+    candidates: HashSet<OpaqueGcPtr>,
+}
+
+/// Total shadow divergences observed (pub for tests).
+#[cfg(feature = "gc-shadow-validate")]
+pub static SHADOW_DIVERGENCES: AtomicUsize = AtomicUsize::new(0);
+
 #[derive(Debug)]
 pub struct Collector {
     roots: HashSet<OpaqueGcPtr>,
@@ -426,6 +441,8 @@ pub struct Collector {
     head: *mut GcHeader,
     tail: *mut GcHeader,
     next: *mut GcHeader,
+    #[cfg(feature = "gc-shadow-validate")]
+    shadow: ShadowState,
 }
 
 unsafe impl Send for Collector {}
@@ -439,6 +456,8 @@ impl Collector {
             head: null_mut(),
             tail: null_mut(),
             next: null_mut(),
+            #[cfg(feature = "gc-shadow-validate")]
+            shadow: ShadowState::default(),
         }
     }
 
@@ -488,6 +507,26 @@ impl Collector {
                 self.next = curr_heap_object.next();
 
                 if shared_rc == 0 {
+                    #[cfg(feature = "gc-shadow-validate")]
+                    {
+                        let claimed = GcState(
+                            (*curr_heap_object.header.as_ref().get())
+                                .state
+                                .load(std::sync::atomic::Ordering::Acquire),
+                        )
+                        .attn_claimed();
+                        if !self.shadow.zeros.contains(&curr_heap_object) && !claimed {
+                            // A corpse the buffers never heard about: the
+                            // final dec produced no event. Missed-event bug.
+                            SHADOW_DIVERGENCES
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            debug_assert!(
+                                false,
+                                "shadow divergence: scan found rc==0 object absent \
+                                 from drained zero events and unclaimed: {curr_heap_object:?}"
+                            );
+                        }
+                    }
                     // If shared_rc is zero, then we can release this object
                     self.release(curr_heap_object);
                 } else if shared_rc > epoch_rc {
@@ -552,7 +591,16 @@ impl Collector {
 
     unsafe fn decrement(&mut self, s: OpaqueGcPtr) {
         unsafe {
-            if s.dec_shared_rc() == 1 && !s.buffered() {
+            let old_rc = s.dec_shared_rc();
+            #[cfg(feature = "gc-shadow-validate")]
+            {
+                if old_rc == 1 {
+                    self.shadow.zeros.insert(s);
+                } else {
+                    self.shadow.candidates.insert(s);
+                }
+            }
+            if old_rc == 1 && !s.buffered() {
                 self.release(s);
             }
         }
@@ -626,6 +674,26 @@ impl Collector {
 
     #[cfg(not(feature = "gc-shadow-validate"))]
     fn note_dealloc(&mut self, _header: *mut GcHeader) {}
+
+    #[cfg(feature = "gc-shadow-validate")]
+    unsafe fn shadow_classify(&mut self, header: *mut GcHeader, word: GcState) {
+        let obj = unsafe { OpaqueGcPtr::from_ptr(header).unwrap() };
+        if word.rc() == 0 {
+            self.shadow.zeros.insert(obj);
+        } else if word.inc_event() {
+            self.shadow.incs.insert(obj);
+        } else {
+            self.shadow.candidates.insert(obj);
+        }
+    }
+
+    #[cfg(feature = "gc-shadow-validate")]
+    fn note_dealloc(&mut self, header: *mut GcHeader) {
+        let obj = unsafe { OpaqueGcPtr::from_ptr(header).unwrap() };
+        self.shadow.zeros.remove(&obj);
+        self.shadow.incs.remove(&obj);
+        self.shadow.candidates.remove(&obj);
+    }
 
     unsafe fn process_cycles(&mut self) {
         unsafe {
@@ -710,6 +778,28 @@ impl Collector {
 
     unsafe fn free_cycle(&mut self, c: &[OpaqueGcPtr]) {
         unsafe {
+            #[cfg(feature = "gc-shadow-validate")]
+            for n in c {
+                let claimed = GcState(
+                    (*n.header.as_ref().get())
+                        .state
+                        .load(std::sync::atomic::Ordering::Acquire),
+                )
+                .attn_claimed();
+                if !claimed
+                    && !self.shadow.candidates.contains(n)
+                    && !self.shadow.incs.contains(n)
+                    && !self.shadow.zeros.contains(n)
+                {
+                    SHADOW_DIVERGENCES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    debug_assert!(
+                        false,
+                        "shadow divergence: cycle member freed without any \
+                         recorded attention event: {n:?}"
+                    );
+                }
+            }
+
             for n in c {
                 n.set_color(Color::Red);
             }
@@ -1034,5 +1124,38 @@ mod test {
             assert_eq!(opaque.shared_rc(), 1, "rc not conserved under color churn");
         }
         drop(obj);
+    }
+
+    #[cfg(feature = "gc-shadow-validate")]
+    #[test]
+    fn shadow_mode_no_divergences() {
+        let _guard = GC_TEST_SERIAL.lock();
+        init_gc();
+
+        #[derive(Default, Trace)]
+        struct Cyclic {
+            next: Option<Gc<RwLock<Cyclic>>>,
+        }
+
+        for _ in 0..100 {
+            let a = Gc::new(RwLock::new(Cyclic::default()));
+            let b = Gc::new(RwLock::new(Cyclic::default()));
+            a.write().next = Some(b.clone());
+            b.write().next = Some(a.clone());
+            let c = Gc::new(0u64);
+            let _ = c.clone();
+            drop(a);
+            drop(b);
+        }
+
+        for _ in 0..5 {
+            collect_garbage_sync();
+        }
+
+        assert_eq!(
+            SHADOW_DIVERGENCES.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "attention buffers diverged from the authoritative scan"
+        );
     }
 }
