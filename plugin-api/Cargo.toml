@@ -1,0 +1,10 @@
+[package]
+name = "scheme-rs-plugin-api"
+version = "0.1.0"
+edition = "2024"
+description = "Plugin API for scheme-rs — depend on this, not scheme-rs itself"
+license = "MPL-2.0"
+publish = false
+
+[dependencies]
+scheme-rs-plugin-api-macros = { path = "macros" }
