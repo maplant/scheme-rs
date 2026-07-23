@@ -3,21 +3,21 @@
 //! via per-location modification order (design doc §1, "Scenario 2").
 
 pub(crate) const RC_BITS: u32 = 48;
-pub(crate) const RC_MASK: usize = (1 << RC_BITS) - 1;
+pub const RC_MASK: usize = (1 << RC_BITS) - 1;
 pub(crate) const COLOR_SHIFT: u32 = RC_BITS;
 pub(crate) const COLOR_MASK: usize = 0b111 << COLOR_SHIFT;
-pub(crate) const BUFFERED: usize = 1 << 51;
-pub(crate) const INC_EVENT: usize = 1 << 52;
+pub const BUFFERED: usize = 1 << 51;
+pub const INC_EVENT: usize = 1 << 52;
 /// Attention-list membership claim (Phase 1b+). Distinct from BUFFERED,
 /// which the epoch scan owns until Phase 2 unifies them.
-pub(crate) const ATTN_CLAIM: usize = 1 << 53;
+pub const ATTN_CLAIM: usize = 1 << 53;
 /// Finalized by the scan while claimed; header memory awaits the drain
 /// that removes its attention-list entry (dealloc deferral).
-pub(crate) const ATTN_DEAD: usize = 1 << 54;
+pub const ATTN_DEAD: usize = 1 << 54;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(u8)]
-pub(crate) enum Color {
+pub enum Color {
     /// In use or free
     Black = 0,
     /// Possible member of a cycle
@@ -47,7 +47,7 @@ impl From<u8> for Color {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(crate) struct GcState(pub(crate) usize);
+pub struct GcState(pub usize);
 
 impl GcState {
     /// rc = 1, Black, buffered (matches the current header's birth state:
@@ -56,31 +56,31 @@ impl GcState {
         GcState(1 | BUFFERED)
     }
 
-    pub(crate) fn rc(self) -> usize {
+    pub fn rc(self) -> usize {
         self.0 & RC_MASK
     }
 
-    pub(crate) fn color(self) -> Color {
+    pub fn color(self) -> Color {
         Color::from(((self.0 & COLOR_MASK) >> COLOR_SHIFT) as u8)
     }
 
-    pub(crate) fn with_color(self, color: Color) -> Self {
+    pub fn with_color(self, color: Color) -> Self {
         GcState((self.0 & !COLOR_MASK) | ((color as usize) << COLOR_SHIFT))
     }
 
-    pub(crate) fn buffered(self) -> bool {
+    pub fn buffered(self) -> bool {
         self.0 & BUFFERED != 0
     }
 
-    pub(crate) fn inc_event(self) -> bool {
+    pub fn inc_event(self) -> bool {
         self.0 & INC_EVENT != 0
     }
 
-    pub(crate) fn attn_claimed(self) -> bool {
+    pub fn attn_claimed(self) -> bool {
         self.0 & ATTN_CLAIM != 0
     }
 
-    pub(crate) fn attn_dead(self) -> bool {
+    pub fn attn_dead(self) -> bool {
         self.0 & ATTN_DEAD != 0
     }
 }

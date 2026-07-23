@@ -13,7 +13,8 @@
 //! Rust type (no need to root/unroot).
 
 mod collection;
-mod state;
+#[doc(hidden)]
+pub mod state;
 
 pub use collection::{OpaqueGcPtr, collect_garbage, init_gc};
 pub use scheme_rs_macros::Trace;
