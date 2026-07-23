@@ -95,3 +95,112 @@ fn claim_is_exactly_once() {
         assert_eq!(end.rc(), 1);
     });
 }
+
+#[test]
+fn inc_event_or_counted() {
+    loom::model(|| {
+        // rc = 1, Black. Mutator clones; collector grays and reads rc for crc.
+        let node = Node::with_state(1);
+
+        let n1 = node.clone();
+        let mutator = thread::spawn(move || {
+            // Mirrors inc_rc + record_inc_event.
+            let old = GcState(n1.state.fetch_add(1, Ordering::Relaxed));
+            if old.color() != Color::Black {
+                n1.state.fetch_or(INC_EVENT | ATTN_CLAIM, Ordering::AcqRel);
+            }
+        });
+
+        let n2 = node.clone();
+        let collector = thread::spawn(move || {
+            // Mirrors mark_gray: gray transition, then fresh rc read for crc.
+            n2.state
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |w| {
+                    Some(GcState(w).with_color(Color::Gray).0)
+                })
+                .unwrap();
+            GcState(n2.state.load(Ordering::Acquire)).rc()
+        });
+
+        mutator.join().unwrap();
+        let crc_basis = collector.join().unwrap();
+
+        let end = GcState(node.state.load(Ordering::Acquire));
+        assert!(
+            crc_basis == 2 || end.inc_event(),
+            "increment must be counted in the collector's crc basis or \
+             recorded as an event — invisible increments are the Scenario 1 bug"
+        );
+    });
+}
+
+#[test]
+fn release_cas_never_loses_a_dec() {
+    loom::model(|| {
+        // rc = 2, claimed, being processed (as if drained this epoch).
+        let node = Node::with_state(2 | ATTN_CLAIM);
+        let head = Arc::new(AtomicUsize::new(0));
+
+        let n1 = node.clone();
+        let h1 = head.clone();
+        let mutator = thread::spawn(move || mutator_dec(&h1, &n1));
+
+        let n2 = node.clone();
+        let h2 = head.clone();
+        let collector = thread::spawn(move || {
+            // Mirrors process_drained's release: re-validate then clear.
+            let w = GcState(n2.state.load(Ordering::Acquire));
+            n2.attn_next.store(NOT_IN_LIST, Ordering::Relaxed);
+            let cleared = w.0 & !(ATTN_CLAIM | INC_EVENT);
+            let released = n2
+                .state
+                .compare_exchange(w.0, cleared, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok();
+            if !released {
+                push(&h2, &n2);
+            }
+            (w, released)
+        });
+
+        mutator.join().unwrap();
+        let (w, released) = collector.join().unwrap();
+
+        let end = GcState(node.state.load(Ordering::Acquire));
+        // The dec must be observable somewhere: in the word the collector
+        // validated against (w.rc()==1), or in renewed membership (the
+        // mutator re-claimed after release, or the collector re-pushed).
+        let dec_seen_by_release = released && w.rc() == 1;
+        let membership_renewed = end.attn_claimed();
+        assert!(
+            dec_seen_by_release || membership_renewed,
+            "a dec landed with no trace: released on stale word without re-enqueue"
+        );
+        assert_eq!(end.rc(), 1);
+    });
+}
+
+#[test]
+fn drain_race_never_loses_a_node() {
+    loom::model(|| {
+        // rc = 1, claim freshly won by the mutator; push races the drain swap.
+        let node = Node::with_state(1 | ATTN_CLAIM);
+        let head = Arc::new(AtomicUsize::new(0));
+
+        let n1 = node.clone();
+        let h1 = head.clone();
+        let pusher = thread::spawn(move || push(&h1, &n1));
+
+        let h2 = head.clone();
+        let drainer = thread::spawn(move || h2.swap(0, Ordering::Acquire));
+
+        pusher.join().unwrap();
+        let drained_chain = drainer.join().unwrap();
+        let residual_chain = head.swap(0, Ordering::Acquire);
+
+        let total = occurrences(drained_chain, &node) + occurrences(residual_chain, &node);
+        assert_eq!(
+            total, 1,
+            "node must land in exactly one of: this epoch's drain, the next stack"
+        );
+    });
+}
