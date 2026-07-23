@@ -14,7 +14,7 @@ use parking_lot::{Condvar, Mutex};
 use rustc_hash::FxHashSet as HashSet;
 use scheme_rs_macros::{maybe_async, maybe_await};
 
-use crate::{exceptions::Exception, registry::bridge, value::Value};
+use crate::{exceptions::Exception, gc::state::Color, registry::bridge, value::Value};
 
 #[derive(Debug)]
 #[repr(C, align(8))]
@@ -115,37 +115,6 @@ trait TypeVTable {
 
 impl<T: super::GcOrTrace> TypeVTable for T {
     const VTABLE: &'static VTable = &VTable::new::<T>();
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-#[repr(u8)]
-enum Color {
-    /// In use or free
-    Black = 0,
-    /// Possible member of a cycle
-    Gray = 1,
-    /// Member of a garbage cycle
-    White = 2,
-    /// Possible root of cycle
-    Purple = 3,
-    /// Candidate cycle undergoing Σ-computation
-    Red = 4,
-    /// Candidate cycle awaiting epoch boundary
-    Orange = 5,
-}
-
-impl From<u8> for Color {
-    fn from(value: u8) -> Self {
-        match value {
-            0 => Self::Black,
-            1 => Self::Gray,
-            2 => Self::White,
-            3 => Self::Purple,
-            4 => Self::Red,
-            5 => Self::Orange,
-            _ => unreachable!(),
-        }
-    }
 }
 
 #[derive(Copy, Clone, Hash, PartialEq, Eq)]
@@ -814,8 +783,15 @@ mod test {
     use parking_lot::RwLock;
     use std::sync::Arc;
 
+    // `cycles` and `nursery_delays_reclamation_one_epoch` both force epochs via
+    // `collect_garbage_sync` and inspect epoch-count-sensitive state; run them
+    // serially against each other so one test's forced epoch can't land inside
+    // another's collection window (see the plan's caveat on this test).
+    static GC_TEST_SERIAL: Mutex<()> = Mutex::new(());
+
     #[test]
     fn cycles() {
+        let _guard = GC_TEST_SERIAL.lock();
         init_gc();
 
         #[derive(Default, Trace)]
@@ -852,6 +828,7 @@ mod test {
 
     #[test]
     fn nursery_delays_reclamation_one_epoch() {
+        let _guard = GC_TEST_SERIAL.lock();
         init_gc();
 
         let out_ptr = Arc::new(());
