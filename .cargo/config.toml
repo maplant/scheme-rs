@@ -1,0 +1,7 @@
+# Link the scheme-rs runtime dynamically so there is exactly one runtime
+# image per process (Guile's libguile model). Plugins are dlopened cdylibs;
+# with static linkage they would embed a second heap, collector and set of
+# statics. This config also applies to tests/test-plugin, which sits below
+# this directory.
+[build]
+rustflags = ["-C", "prefer-dynamic"]

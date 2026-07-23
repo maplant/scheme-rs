@@ -4,8 +4,13 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+# rlib so the (empty) integration test can depend on the lib unit, which
+# makes `cargo test --no-run` emit the cdylib. See tests/link.rs.
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
+# The feature set must match the host build exactly (here: the host test
+# suite's --all-features) so cargo computes the same -C metadata hash for
+# scheme-rs and the plugin links the very same runtime dylib as the host.
 [dependencies]
-scheme-rs = { path = "../..", features = ["plugins", "async", "tokio"] }
+scheme-rs = { path = "../..", features = ["plugins", "async", "tokio", "lsp", "load-libraries-from-fs"] }

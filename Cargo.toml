@@ -11,6 +11,20 @@ documentation = "https://docs.rs/crate/scheme-rs"
 homepage = "https://github.com/maplant/scheme-rs"
 repository = "https://github.com/maplant/scheme-rs"
 
+# There must be exactly one scheme-rs runtime image per process (like Guile's
+# libguile). Building a dylib alongside the rlib lets plugins and host
+# binaries link the runtime dynamically (see .cargo/config.toml), so a
+# plugin's dlopen resolves to the image already loaded in the host.
+[lib]
+crate-type = ["rlib", "dylib"]
+
+# test-plugin must be a workspace member: plugin and host have to agree on
+# the exact scheme-rs build (one resolver, one lockfile, one feature
+# unification), otherwise the plugin links runtime symbols that do not exist
+# in the image the host has already loaded.
+[workspace]
+members = ["proc-macros", "tests/test-plugin"]
+
 [dependencies]
 arc-swap = "1"
 async-stream = { version = "0.3", optional = true }
