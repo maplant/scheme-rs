@@ -408,6 +408,39 @@ impl Record {
         Self(inner)
     }
 
+    pub(crate) fn new_plain(rtd: Arc<RecordTypeDescriptor>, field_values: Vec<Value>) -> Self {
+        let prefix = Layout::from_size_align(
+            RecordInner::fields_offset(),
+            align_of::<GcInner<RecordInner>>(),
+        )
+        .unwrap();
+        let (layout, fields_offset) = prefix
+            .extend(Layout::array::<Value>(field_values.len()).unwrap())
+            .unwrap();
+        let layout = layout.pad_to_align();
+
+        unsafe {
+            let record = alloc::alloc(layout) as *mut GcInner<RecordInner>;
+            ptr::write(
+                record,
+                GcInner::new(RecordInner {
+                    rtd,
+                    fields: [],
+                }),
+            );
+            let fields_ptr = record.byte_add(fields_offset) as *mut Value;
+            for (i, field) in field_values.into_iter().enumerate() {
+                fields_ptr.add(i).write(field);
+            }
+            let inner = Gc {
+                ptr: NonNull::new(record).unwrap(),
+                marker: PhantomData,
+            };
+            crate::gc::unroot(&inner, layout);
+            Self(inner)
+        }
+    }
+
     pub fn cast<E: Embeddable>(&self) -> Option<Embedded<E>> {
         let embedded_ptr = self.0.embedded_ptr()?;
         let embedded_vtable = self.0.rtd.embedded_vtable.as_ref()?;

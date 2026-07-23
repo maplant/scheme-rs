@@ -158,8 +158,8 @@ impl Runtime {
     ///
     /// See [`Registry::load_plugin`].
     #[cfg(feature = "plugins")]
-    pub unsafe fn load_plugin(&self, library: libloading::Library) -> Result<(), Exception> {
-        unsafe { self.get_registry().load_plugin(self, library) }
+    pub unsafe fn load_rust_abi_plugin(&self, library: libloading::Library) -> Result<(), Exception> {
+        unsafe { self.get_registry().load_rust_abi_plugin(self, library) }
     }
 
     pub(crate) fn get_registry(&self) -> Registry {
@@ -187,6 +187,18 @@ impl Runtime {
 
     pub fn source_cache(&self) -> MappedRwLockWriteGuard<'_, SourceCache> {
         RwLockWriteGuard::map(self.0.write(), |inner| &mut inner.source_cache)
+    }
+
+    /// Load a plugin from a dynamic library path.
+    ///
+    /// # Safety
+    /// The caller must ensure the path points to a valid scheme-rs plugin.
+    #[cfg(feature = "plugins")]
+    pub unsafe fn load_plugin(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<crate::registry::plugin_loading::PluginHandle, Exception> {
+        unsafe { self.get_registry().load_plugin(self, path) }
     }
 }
 
