@@ -212,7 +212,7 @@
 
 use std::{
     alloc::{self, Layout},
-    any::{Any, TypeId},
+    any::Any,
     collections::HashMap,
     fmt,
     hash::{Hash, Hasher},
@@ -412,14 +412,17 @@ impl Record {
         let embedded_ptr = self.0.embedded_ptr()?;
         let embedded_vtable = self.0.rtd.embedded_vtable.as_ref()?;
 
-        if TypeId::of::<E>() == embedded_vtable.type_id {
+        let rtd = E::rtd();
+        // Type identity is the runtime-registered record type descriptor, not
+        // the compile-time TypeId. `Embeddable::rtd` memoizes its descriptor,
+        // so pointer equality identifies the embedded type.
+        if Arc::ptr_eq(&(embedded_vtable.rtd)(), &rtd) {
             return Some(Embedded::from_raw_parts(
                 NonNull::new(embedded_ptr as *mut E).unwrap(),
                 self.clone(),
             ));
         }
 
-        let rtd = E::rtd();
         let mut embedded = embedded_vtable.ptr_to_parent(embedded_ptr, &rtd)?;
         while let Some(parent) = embedded.parent_record(&rtd) {
             embedded = parent;
@@ -694,7 +697,9 @@ unsafe impl Trace for RecordInner {
 /// scheme records. Those layouts are stored in the RTD.
 pub unsafe trait Embeddable: Trace + Any + Send + Sync {
     /// The Record Type Descriptor of the value. Can be constructed at runtime,
-    /// but cannot change.
+    /// but cannot change. Must return clones of a single memoized [`Arc`] (as
+    /// the [`rtd!`](crate::records::rtd) macro does); the descriptor's address
+    /// is the runtime identity of the type.
     fn rtd() -> Arc<RecordTypeDescriptor>
     where
         Self: Sized;
@@ -782,8 +787,10 @@ pub unsafe trait Embeddable: Trace + Any + Send + Sync {
 // TODO: add trace(skip_all) attribute
 #[derive(Copy, Clone, Trace)]
 pub struct EmbeddableVTable {
+    /// Returns the record type descriptor of the embedded type. Serves as the
+    /// runtime identity of the type; see [`EmbeddableVTable::same_embedded_type`].
     #[trace(skip)]
-    pub type_id: TypeId,
+    pub rtd: fn() -> Arc<RecordTypeDescriptor>,
     #[trace(skip)]
     layout: Layout,
     pub embedded_fields: usize,
@@ -820,7 +827,7 @@ pub struct EmbeddableVTable {
 impl EmbeddableVTable {
     pub const fn new<E: Embeddable>(embedded_fields: usize) -> Self {
         Self {
-            type_id: TypeId::of::<E>(),
+            rtd: E::rtd,
             layout: Layout::new::<E>(),
             embedded_fields,
             visit_children: |this, visitor| unsafe {
@@ -864,6 +871,12 @@ impl EmbeddableVTable {
         rtd: &Arc<RecordTypeDescriptor>,
     ) -> Option<&dyn Embeddable> {
         (self.parent_record)(ptr, rtd).and_then(|ptr| unsafe { ptr.as_ref() })
+    }
+
+    /// Whether two vtables describe the same embedded Rust type, determined by
+    /// the identity of their runtime record type descriptors.
+    pub fn same_embedded_type(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&(self.rtd)(), &(other.rtd)())
     }
 }
 
@@ -1560,7 +1573,7 @@ fn record_accessor_fn(
         // The field lives inside the embedded Rust value.
         let embedded_ptr = record.0.embedded_ptr().unwrap();
         let embedded_vtable = record.0.rtd.embedded_vtable.as_ref().unwrap();
-        if rtd.embedded_vtable.unwrap().type_id == embedded_vtable.type_id {
+        if rtd.embedded_vtable.unwrap().same_embedded_type(embedded_vtable) {
             (embedded_vtable.get_field)(embedded_ptr, local_idx)?
         } else {
             let mut embedded = embedded_vtable.ptr_to_parent(embedded_ptr, &rtd).unwrap();
@@ -1642,7 +1655,7 @@ fn record_mutator_fn(
         // The field lives inside the embedded Rust value.
         let embedded_ptr = record.0.embedded_ptr().unwrap();
         let embedded_vtable = record.0.rtd.embedded_vtable.as_ref().unwrap();
-        if rtd.embedded_vtable.unwrap().type_id == embedded_vtable.type_id {
+        if rtd.embedded_vtable.unwrap().same_embedded_type(embedded_vtable) {
             (embedded_vtable.set_field)(embedded_ptr, local_idx, new_val.clone())?;
         } else {
             let mut embedded = embedded_vtable.ptr_to_parent(embedded_ptr, &rtd).unwrap();
