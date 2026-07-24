@@ -16,6 +16,7 @@ use std::{
     fmt,
     io::{Cursor, ErrorKind},
     path::Path,
+    pin::Pin,
     sync::{Arc, LazyLock},
 };
 
@@ -480,15 +481,15 @@ impl EolStyle {
     #[maybe_async]
     fn convert_eol_style_to_linefeed_inner(
         self,
-        iter: &mut Peekable<impl MaybeStream<Item = Result<(usize, char), Exception>>>,
+        iter: &mut Pin<&mut Peekable<impl MaybeStream<Item = Result<(usize, char), Exception>>>>,
     ) -> Option<Result<(usize, char), Exception>> {
-        #[cfg(feature = "async")]
-        let mut iter: std::pin::Pin<&mut Peekable<_>> = std::pin::pin!(iter);
-        let next_chr = maybe_await!(iter.next())?;
+        let next_chr = maybe_await!(iter.as_mut().next())?;
         match (self, next_chr) {
             (Self::Lf, x) => Some(x),
             (Self::Cr, Ok((idx, '\r'))) => Some(Ok((idx, '\n'))),
             (Self::Crlf, Ok((idx, '\r'))) => {
+                #[allow(unused_mut)]
+                let mut iter = iter.as_mut();
                 if let Some(Ok((idx, '\n'))) = maybe_await!(iter.peek()) {
                     Some(Ok((*idx, '\n')))
                 } else {
@@ -497,6 +498,8 @@ impl EolStyle {
             }
             (Self::Nel, Ok((idx, '\u{0085}'))) => Some(Ok((idx, '\n'))),
             (Self::Crnel, Ok((idx, '\r'))) => {
+                #[allow(unused_mut)]
+                let mut iter = iter.as_mut();
                 if let Some(Ok((idx, '\u{0085}'))) = maybe_await!(iter.peek()) {
                     Some(Ok((*idx, '\n')))
                 } else {
@@ -511,17 +514,21 @@ impl EolStyle {
     #[cfg(not(feature = "async"))]
     fn convert_eol_style_to_linefeed(
         self,
-        mut iter: Peekable<impl Iterator<Item = Result<(usize, char), Exception>>>,
+        mut iter: Peekable<impl Iterator<Item = Result<(usize, char), Exception>> + Unpin>,
     ) -> impl Iterator<Item = Result<(usize, char), Exception>> {
-        std::iter::from_fn(move || self.convert_eol_style_to_linefeed_inner(&mut iter))
+        std::iter::from_fn(move || {
+            let mut iter = Pin::new(&mut iter);
+            self.convert_eol_style_to_linefeed_inner(&mut iter)
+        })
     }
 
     #[cfg(feature = "async")]
     fn convert_eol_style_to_linefeed(
         self,
-        mut iter: Peekable<impl MaybeStream<Item = Result<(usize, char), Exception>>>,
+        iter: Peekable<impl MaybeStream<Item = Result<(usize, char), Exception>>>,
     ) -> impl futures::stream::Stream<Item = Result<(usize, char), Exception>> {
         async_stream::stream! {
+            let mut iter = std::pin::pin!(iter);
             while let Some(val) = self.convert_eol_style_to_linefeed_inner(&mut iter).await {
                 yield val;
             }
@@ -606,11 +613,14 @@ impl fmt::Debug for ErrorHandlingMode {
 mod __impl {
     pub(super) use std::{
         io::{Read, Seek, SeekFrom, Write},
-        iter::{Iterator as MaybeStream, Peekable},
+        iter::Peekable,
         sync::Mutex,
     };
 
     use super::*;
+
+    pub(super) trait MaybeStream: Iterator + Unpin {}
+    impl<T: Iterator + Unpin> MaybeStream for T {}
 
     pub type ReadFn = Box<
         dyn Fn(&mut dyn Any, &ByteVector, usize, usize) -> Result<usize, Exception> + Send + Sync,
@@ -772,11 +782,21 @@ mod __impl {
         fn seek_fns() -> Option<(GetPosFn, SetPosFn)> {
             Some((get_pos_fn::<Self>(), set_pos_fn::<Self>()))
         }
+
+        #[cfg(unix)]
+        fn raw_fd_fn() -> Option<RawFdFn> {
+            Some(raw_fd_fn_for::<Self>())
+        }
     }
 
     impl IntoPort for std::io::Stdin {
         fn read_fn() -> Option<ReadFn> {
             Some(read_fn::<Self>())
+        }
+
+        #[cfg(unix)]
+        fn raw_fd_fn() -> Option<RawFdFn> {
+            Some(raw_fd_fn_for::<Self>())
         }
     }
 
@@ -784,11 +804,21 @@ mod __impl {
         fn write_fn() -> Option<WriteFn> {
             Some(write_fn::<Self>())
         }
+
+        #[cfg(unix)]
+        fn raw_fd_fn() -> Option<RawFdFn> {
+            Some(raw_fd_fn_for::<Self>())
+        }
     }
 
     impl IntoPort for std::io::Stderr {
         fn write_fn() -> Option<WriteFn> {
             Some(write_fn::<Self>())
+        }
+
+        #[cfg(unix)]
+        fn raw_fd_fn() -> Option<RawFdFn> {
+            Some(raw_fd_fn_for::<Self>())
         }
     }
 }
@@ -797,8 +827,7 @@ mod __impl {
 mod __impl {
     use futures::future::BoxFuture;
     pub(super) use futures::stream::{Peekable, Stream as MaybeStream, StreamExt};
-    use std::pin::pin;
-    pub(super) use std::{io::SeekFrom, pin::Pin};
+    pub(super) use std::io::SeekFrom;
     use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
     #[cfg(feature = "tokio")]
     pub(super) use tokio::sync::Mutex;
@@ -847,12 +876,11 @@ mod __impl {
 
     pub fn read_fn<T>() -> ReadFn
     where
-        T: AsyncRead + Any + Send + 'static,
+        T: AsyncRead + Any + Send + Unpin + 'static,
     {
         Box::new(move |any, buff, start, count| {
             Box::pin(async move {
-                let concrete = any.downcast_mut::<T>().unwrap();
-                let mut concrete: Pin<&mut T> = pin!(concrete);
+                let mut concrete = Pin::new(any.downcast_mut::<T>().unwrap());
                 let mut local_buff = vec![0u8; count];
                 let read = concrete
                     .read(&mut local_buff)
@@ -867,12 +895,11 @@ mod __impl {
 
     pub fn write_fn<T>() -> WriteFn
     where
-        T: AsyncWrite + Any + Send + 'static,
+        T: AsyncWrite + Any + Send + Unpin + 'static,
     {
         Box::new(|any, buff, start, count| {
             Box::pin(async move {
-                let concrete = any.downcast_mut::<T>().unwrap();
-                let mut concrete: Pin<&mut T> = pin!(concrete);
+                let mut concrete = Pin::new(any.downcast_mut::<T>().unwrap());
                 let local_buff = buff.as_slice()[start..(start + count)].to_vec();
                 concrete
                     .write_all(&local_buff)
@@ -889,12 +916,11 @@ mod __impl {
 
     pub fn get_pos_fn<T>() -> GetPosFn
     where
-        T: AsyncSeek + Any + Send + 'static,
+        T: AsyncSeek + Any + Send + Unpin + 'static,
     {
         Box::new(|any| {
             Box::pin(async move {
-                let concrete = any.downcast_mut::<T>().unwrap();
-                let mut concrete: Pin<&mut T> = pin!(concrete);
+                let mut concrete = Pin::new(any.downcast_mut::<T>().unwrap());
                 concrete
                     .stream_position()
                     .await
@@ -905,12 +931,11 @@ mod __impl {
 
     pub fn set_pos_fn<T>() -> SetPosFn
     where
-        T: AsyncSeek + Any + Send + 'static,
+        T: AsyncSeek + Any + Send + Unpin + 'static,
     {
         Box::new(|any, pos| {
             Box::pin(async move {
-                let concrete = any.downcast_mut::<T>().unwrap();
-                let mut concrete: Pin<&mut T> = pin!(concrete);
+                let mut concrete = Pin::new(any.downcast_mut::<T>().unwrap());
                 let _ = concrete
                     .seek(SeekFrom::Start(pos))
                     .await
@@ -1032,12 +1057,22 @@ mod __impl {
         fn seek_fns() -> Option<(GetPosFn, SetPosFn)> {
             Some((get_pos_fn::<Self>(), set_pos_fn::<Self>()))
         }
+
+        #[cfg(unix)]
+        fn raw_fd_fn() -> Option<RawFdFn> {
+            Some(raw_fd_fn_for::<Self>())
+        }
     }
 
     #[cfg(feature = "tokio")]
     impl IntoPort for tokio::io::Stdin {
         fn read_fn() -> Option<ReadFn> {
             Some(read_fn::<Self>())
+        }
+
+        #[cfg(unix)]
+        fn raw_fd_fn() -> Option<RawFdFn> {
+            Some(raw_fd_fn_for::<Self>())
         }
     }
 
@@ -1046,12 +1081,22 @@ mod __impl {
         fn write_fn() -> Option<WriteFn> {
             Some(write_fn::<Self>())
         }
+
+        #[cfg(unix)]
+        fn raw_fd_fn() -> Option<RawFdFn> {
+            Some(raw_fd_fn_for::<Self>())
+        }
     }
 
     #[cfg(feature = "tokio")]
     impl IntoPort for tokio::io::Stderr {
         fn write_fn() -> Option<WriteFn> {
             Some(write_fn::<Self>())
+        }
+
+        #[cfg(unix)]
+        fn raw_fd_fn() -> Option<RawFdFn> {
+            Some(raw_fd_fn_for::<Self>())
         }
     }
 
@@ -1063,6 +1108,32 @@ mod __impl {
 
         fn write_fn() -> Option<WriteFn> {
             Some(write_fn::<Self>())
+        }
+
+        #[cfg(unix)]
+        fn raw_fd_fn() -> Option<RawFdFn> {
+            Some(raw_fd_fn_for::<Self>())
+        }
+
+        fn poll_read_ready_fn() -> Option<PollReadyFn> {
+            Some(Box::new(|any| {
+                let stream = any.downcast_ref::<tokio::net::TcpStream>().unwrap();
+                let mut buf = [0u8; 0];
+                match stream.try_read(&mut buf) {
+                    Ok(_) => true,
+                    Err(e) => e.kind() != std::io::ErrorKind::WouldBlock,
+                }
+            }))
+        }
+
+        fn poll_write_ready_fn() -> Option<PollReadyFn> {
+            Some(Box::new(|any| {
+                let stream = any.downcast_ref::<tokio::net::TcpStream>().unwrap();
+                match stream.try_write(&[]) {
+                    Ok(_) => true,
+                    Err(e) => e.kind() != std::io::ErrorKind::WouldBlock,
+                }
+            }))
         }
     }
 
@@ -1095,6 +1166,19 @@ mod __impl {
 }
 
 pub use __impl::*;
+
+#[cfg(unix)]
+pub type RawFdFn = Box<dyn Fn(&dyn Any) -> std::os::fd::RawFd + Send + Sync>;
+
+#[cfg(unix)]
+pub fn raw_fd_fn_for<T>() -> RawFdFn
+where
+    T: std::os::fd::AsRawFd + Any + Send + 'static,
+{
+    Box::new(|any| any.downcast_ref::<T>().unwrap().as_raw_fd())
+}
+
+pub type PollReadyFn = Box<dyn Fn(&dyn Any) -> bool + Send + Sync>;
 
 #[derive(Trace)]
 pub(crate) struct PortInner {
@@ -1150,6 +1234,10 @@ impl PortInner {
                 get_pos,
                 set_pos,
                 close,
+                #[cfg(unix)]
+                raw_fd: P::raw_fd_fn(),
+                poll_read_ready: P::poll_read_ready_fn(),
+                poll_write_ready: P::poll_write_ready_fn(),
             })),
         }
     }
@@ -1196,6 +1284,10 @@ impl PortInner {
                 get_pos,
                 set_pos,
                 close,
+                #[cfg(unix)]
+                raw_fd: None,
+                poll_read_ready: None,
+                poll_write_ready: None,
             })),
         }
     }
@@ -1281,6 +1373,10 @@ pub(crate) struct BinaryPortData {
     get_pos: Option<GetPosFn>,
     set_pos: Option<SetPosFn>,
     close: Option<CloseFn>,
+    #[cfg(unix)]
+    raw_fd: Option<RawFdFn>,
+    poll_read_ready: Option<PollReadyFn>,
+    poll_write_ready: Option<PollReadyFn>,
 }
 
 pub const BUFFER_SIZE: usize = 8192;
@@ -2260,6 +2356,19 @@ pub trait IntoPort: IntoPortReqs {
     fn close_fn() -> Option<CloseFn> {
         None
     }
+
+    #[cfg(unix)]
+    fn raw_fd_fn() -> Option<RawFdFn> {
+        None
+    }
+
+    fn poll_read_ready_fn() -> Option<PollReadyFn> {
+        None
+    }
+
+    fn poll_write_ready_fn() -> Option<PollReadyFn> {
+        None
+    }
 }
 
 impl IntoPort for Cursor<Vec<u8>> {
@@ -2386,6 +2495,57 @@ impl Port {
             close,
             buffer_mode,
         )))
+    }
+
+    #[cfg(unix)]
+    #[maybe_async]
+    pub fn raw_fd(&self) -> Option<std::os::fd::RawFd> {
+        #[cfg(not(feature = "async"))]
+        let data = self.0.data.lock().unwrap();
+        #[cfg(feature = "async")]
+        let data = self.0.data.lock().await;
+
+        match &*data {
+            PortData::BinaryPort(bp) => bp
+                .raw_fd
+                .as_ref()
+                .and_then(|f| bp.inner_port.as_deref().map(|port| f(port))),
+            PortData::CustomTextualPort(_) => None,
+        }
+    }
+
+    #[maybe_async]
+    pub fn poll_read_ready(&self) -> bool {
+        #[cfg(not(feature = "async"))]
+        let data = self.0.data.lock().unwrap();
+        #[cfg(feature = "async")]
+        let data = self.0.data.lock().await;
+
+        match &*data {
+            PortData::BinaryPort(bp) => bp
+                .poll_read_ready
+                .as_ref()
+                .and_then(|f| bp.inner_port.as_deref().map(|port| f(port)))
+                .unwrap_or(false),
+            PortData::CustomTextualPort(_) => false,
+        }
+    }
+
+    #[maybe_async]
+    pub fn poll_write_ready(&self) -> bool {
+        #[cfg(not(feature = "async"))]
+        let data = self.0.data.lock().unwrap();
+        #[cfg(feature = "async")]
+        let data = self.0.data.lock().await;
+
+        match &*data {
+            PortData::BinaryPort(bp) => bp
+                .poll_write_ready
+                .as_ref()
+                .and_then(|f| bp.inner_port.as_deref().map(|port| f(port)))
+                .unwrap_or(false),
+            PortData::CustomTextualPort(_) => false,
+        }
     }
 
     /// Return the Id of the port.
@@ -2869,8 +3029,7 @@ mod prompt {
                 Box::pin(async move {
                     use std::cmp::Ordering;
 
-                    let concrete = any.downcast_mut::<Self>().unwrap();
-                    let mut concrete: Pin<&mut Self> = std::pin::pin!(concrete);
+                    let mut concrete = Pin::new(any.downcast_mut::<Self>().unwrap());
 
                     // TODO: Figure out how to de-duplicate this code
                     if concrete.closed {
@@ -3428,6 +3587,10 @@ pub fn transcoded_port(
         get_pos: port_data.get_pos.take(),
         set_pos: port_data.set_pos.take(),
         close: port_data.close.take(),
+        #[cfg(unix)]
+        raw_fd: port_data.raw_fd.take(),
+        poll_read_ready: port_data.poll_read_ready.take(),
+        poll_write_ready: port_data.poll_write_ready.take(),
     };
 
     let new_info = BinaryPortInfo {

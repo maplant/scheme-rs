@@ -153,6 +153,14 @@ impl Runtime {
             .await
     }
 
+    /// # Safety
+    ///
+    /// See [`Registry::load_plugin`].
+    #[cfg(feature = "plugins")]
+    pub unsafe fn load_plugin(&self, library: libloading::Library) -> Result<(), Exception> {
+        unsafe { self.get_registry().load_plugin(self, library) }
+    }
+
     pub(crate) fn get_registry(&self) -> Registry {
         self.0.read().registry.clone()
     }
