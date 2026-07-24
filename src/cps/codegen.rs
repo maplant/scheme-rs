@@ -220,13 +220,11 @@ impl Cps {
 
         module.finalize_definitions().unwrap();
 
-        let func = unsafe {
+        unsafe {
             std::mem::transmute::<*const u8, ContinuationPtr>(
                 module.get_finalized_function(entry_func),
             )
-        };
-
-        func
+        }
     }
 }
 
@@ -1431,6 +1429,7 @@ fn make_sig(sig: &mut Signature) {
 }
 
 impl ProcedureBundle {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         runtime: Runtime,
         val: Local,
@@ -1451,7 +1450,7 @@ impl ProcedureBundle {
             .find_free_vars(&body)
             .difference(&args.iter().cloned().collect::<HashSet<_>>())
             .cloned()
-            .filter(|var| !continuations.contains(&var))
+            .filter(|var| !continuations.contains(var))
             .collect::<Vec<_>>();
 
         Self {

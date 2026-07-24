@@ -1287,7 +1287,7 @@ unsafe extern "C" fn unwind(
                     // Call the out winder while unwinding
                     barrier.push_cont(
                         Runtime::from_raw_inc_rc(runtime),
-                        [Value::from(args), dest_stack_val],
+                        [args, dest_stack_val],
                         ContPtr::Continuation(unwind),
                         0,
                         false,
