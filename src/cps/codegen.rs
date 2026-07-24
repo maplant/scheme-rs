@@ -217,13 +217,11 @@ impl Cps {
 
         module.finalize_definitions().unwrap();
 
-        let func = unsafe {
+        unsafe {
             std::mem::transmute::<*const u8, ContinuationPtr>(
                 module.get_finalized_function(entry_func),
             )
-        };
-
-        func
+        }
     }
 }
 
@@ -1414,6 +1412,7 @@ fn make_sig(sig: &mut Signature) {
 }
 
 impl ProcedureBundle {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         val: Local,
         args: LambdaArgs,

@@ -666,17 +666,16 @@ impl Registry {
 #[cps_bridge(def = "%load-plugin path", lib = "(scheme-rs plugins builtins)")]
 pub fn load_plugin(
     _env: &[Value],
-    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
-    _barrier: &mut ContBarrier<'_>,
+    barrier: &mut ContBarrier<'_>,
 ) -> Result<Application, Exception> {
     let [path] = args else { unreachable!() };
     let path: crate::strings::WideString = path.clone().try_into()?;
     Runtime::new()
         .get_registry()
         .load_plugin_from_path(runtime, &path.to_string())?;
-    Ok(Application::new(k, None, vec![]))
+    Ok(barrier.call_cont(Vec::new()))
 }
 
 type DynIter<'a> = Box<dyn Iterator<Item = (Symbol, Import)> + 'a>;

@@ -381,20 +381,13 @@ impl ProcedureInner {
         }
 
         match self.func {
-            FuncPtr::Bridge(sbridge) => self.apply_sync_bridge(sbridge, k.unwrap(), &args, barrier),
+            FuncPtr::Bridge(sbridge) => self.apply_sync_bridge(sbridge, &args, barrier),
             FuncPtr::AsyncBridge(_) => raise(
                 Exception::error("attempt to apply async function in a sync-only context").into(),
                 barrier,
             ),
-            FuncPtr::User(user) => self.apply_jit(JitFuncPtr::User(user), k, args, barrier),
-            FuncPtr::Continuation(k) => {
-                barrier.pop_marks();
-                self.apply_jit(JitFuncPtr::Continuation(k), None, args, barrier)
-            }
-            FuncPtr::PromptBarrier { k, .. } => {
-                self.apply_jit(JitFuncPtr::Continuation(k), None, args, barrier)
-            }
-            FuncPtr::Known(known) => known.apply_sync(k.unwrap(), &args, barrier),
+            FuncPtr::User(user) => self.apply_jit(user, args, barrier),
+            FuncPtr::Known(known) => known.apply(&self.runtime, &args, barrier),
         }
     }
 }
@@ -496,7 +489,7 @@ impl Procedure {
         args: &[Value],
         barrier: &mut ContBarrier<'_>,
     ) -> Result<Vec<Value>, Exception> {
-        Application::new(self.clone(), k, args.to_vec()).eval_sync(barrier)
+        Application::new(self.clone(), args.to_vec()).eval_sync(barrier)
     }
 
     pub(crate) fn to_primop(&self) -> Option<PrimOp> {
@@ -629,14 +622,15 @@ impl Application {
     /// Just like [eval] but throws an error if we encounter an async function.
     pub fn eval_sync(mut self, barrier: &mut ContBarrier) -> Result<Vec<Value>, Exception> {
         loop {
-            let op = match self.op {
-                OpType::Proc(proc) => proc,
-                OpType::HaltOk => return Ok(self.args),
+            let Application { op, args } = self;
+            self = match op {
+                OpType::Proc(proc) => proc.0.apply_sync(args, barrier),
+                OpType::HaltOk => return Ok(args),
                 OpType::HaltErr => {
-                    return Err(Exception(self.args.pop().unwrap()));
+                    let mut args = args;
+                    return Err(Exception(args.pop().unwrap()));
                 }
             };
-            self = op.0.apply_sync(self.k, self.args, barrier);
         }
     }
 }
@@ -912,10 +906,8 @@ impl<'a> ContBarrier<'a> {
         num_required_args: usize,
         variadic: bool,
     ) {
-        unsafe {
-            self.cont_stack
-                .push_cont(func_ptr.into(), env, num_required_args, variadic);
-        }
+        self.cont_stack
+            .push_cont(func_ptr.into(), env, num_required_args, variadic);
     }
 
     pub fn call_cont(&mut self, mut args: Vec<Value>) -> Application {
@@ -1217,7 +1209,7 @@ unsafe extern "C" fn unwind(
                 Some(DynStackElem::Winder(winder)) => {
                     // Call the out winder while unwinding
                     barrier.push_cont(
-                        [Value::from(args), dest_stack_val],
+                        [args, dest_stack_val],
                         ContPtr::Continuation(unwind),
                         0,
                         false,
