@@ -1074,6 +1074,39 @@ mod tests {
     use crate::ast::ImportSet;
     use crate::runtime::Runtime;
 
+    /// Regression test for a CPS allocation-count miscount: `PrimOp::Matches`
+    /// (the syntax-rules/syntax-case pattern-match primitive) allocates a
+    /// heap-allocated `MatchEnv` on a successful match and is unconditionally
+    /// rooted by `matches_codegen`'s `push_alloc`, but `PrimOp::Matches::info()`
+    /// reported `needs_drop: false`. `Cps::max_allocs` (src/cps/analysis.rs)
+    /// trusts that metadata to compute how many rooted slots are live at each
+    /// local-continuation jump, so every jump downstream of a `Matches` call
+    /// under-counted the live set by one slot. At the next local-continuation
+    /// jump, `drop_n_codegen` (src/cps/codegen.rs) dropped one slot too many —
+    /// releasing a variable that a still-pending nested escaping continuation
+    /// (created via `Fix` inside that local continuation's body, e.g. the next
+    /// syntax-rules clause or the matched template) would go on to capture via
+    /// `make_continuation`'s env-capture `Value::from_raw_inc_rc`
+    /// (src/runtime.rs), incrementing a reference count that had already
+    /// dropped to zero.
+    ///
+    /// Importing any library exercises this: library bodies expand `cond`,
+    /// `let`, etc. via `syntax-rules`, which compiles to a chain of
+    /// `PrimOp::Matches` calls (see `compile_syntax_rules` in
+    /// src/cps/compile.rs).
+    #[test]
+    fn macro_expansion_does_not_corrupt_captured_free_variables() {
+        let rt = Runtime::new();
+        let env = TopLevelEnvironment::new_repl(&rt);
+        let result = env.eval(ImportPolicy::Allow, "(import (rnrs base)) (abs -5)");
+        assert_eq!(
+            result.unwrap(),
+            vec![Value::from(5)],
+            "macro-expansion-heavy library loading must not corrupt captured \
+             free variables of nested escaping continuations"
+        );
+    }
+
     #[test]
     fn import_policy_allow() {
         let rt = Runtime::new();
