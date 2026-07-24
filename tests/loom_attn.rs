@@ -1,10 +1,8 @@
 #![cfg(loom)]
-//! Loom models of the attention-list protocol (design doc §2–§3).
+//! Loom models of the attention-list protocol.
 //!
-//! KEEP IN SYNC: the RMW sequences below mirror `record_dec_event`,
-//! `record_inc_event` (src/gc/collection.rs) and the release CAS in
-//! `process_drained`. The word math itself is imported from gc::state,
-//! so bit-layout changes cannot drift; sequence changes must be mirrored.
+//! KEEP IN SYNC with `record_dec_event`, `record_inc_event`, and the
+//! release CAS in `process_drained`.
 
 use loom::sync::Arc;
 use loom::sync::atomic::{AtomicUsize, Ordering};
@@ -44,7 +42,7 @@ fn push(head: &AtomicUsize, node: &Node) {
     }
 }
 
-/// Mirrors `record_dec_event` (including the fetch_sub that precedes it).
+/// Mirrors `record_dec_event`.
 fn mutator_dec(head: &AtomicUsize, node: &Node) -> bool {
     let old = GcState(node.state.fetch_sub(1, Ordering::Release));
     if old.attn_claimed() {
@@ -58,7 +56,6 @@ fn mutator_dec(head: &AtomicUsize, node: &Node) -> bool {
     false
 }
 
-/// Walk a swapped-out chain, counting how often `node` appears.
 fn occurrences(mut chain: usize, node: &Node) -> usize {
     let mut count = 0;
     while chain != 0 {
@@ -137,7 +134,7 @@ fn inc_event_or_counted() {
 #[test]
 fn release_cas_never_loses_a_dec() {
     loom::model(|| {
-        // rc = 2, claimed, being processed (as if drained this epoch).
+        // rc = 2, claimed, being processed.
         let node = Node::with_state(2 | ATTN_CLAIM);
         let head = Arc::new(AtomicUsize::new(0));
 
@@ -166,9 +163,7 @@ fn release_cas_never_loses_a_dec() {
         let (w, released) = collector.join().unwrap();
 
         let end = GcState(node.state.load(Ordering::Acquire));
-        // The dec must be observable somewhere: in the word the collector
-        // validated against (w.rc()==1), or in renewed membership (the
-        // mutator re-claimed after release, or the collector re-pushed).
+        // Dec must be visible via the release word or renewed membership.
         let dec_seen_by_release = released && w.rc() == 1;
         let membership_renewed = end.attn_claimed();
         assert!(
@@ -182,7 +177,7 @@ fn release_cas_never_loses_a_dec() {
 #[test]
 fn fused_release_never_loses_a_dec() {
     loom::model(|| {
-        // rc = 2, claimed, Black, being processed as a purple candidate.
+        // rc = 2, claimed, Black.
         let node = Node::with_state(2 | ATTN_CLAIM);
         let head = Arc::new(AtomicUsize::new(0));
 
@@ -193,8 +188,7 @@ fn fused_release_never_loses_a_dec() {
         let n2 = node.clone();
         let h2 = head.clone();
         let collector = thread::spawn(move || {
-            // Mirrors process_drained's fused release CAS: color mutation
-            // and membership release happen in the same compare_exchange.
+            // Mirrors process_drained's fused release CAS.
             let w = GcState(n2.state.load(Ordering::Acquire));
             n2.attn_next.store(NOT_IN_LIST, Ordering::Relaxed);
             let target = GcState(w.0 & !(ATTN_CLAIM | INC_EVENT))

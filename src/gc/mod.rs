@@ -19,8 +19,7 @@ pub mod state;
 pub use collection::{OpaqueGcPtr, collect_garbage, init_gc};
 pub use scheme_rs_macros::Trace;
 
-/// Live-object statistics: `(total allocations, total frees)`, both
-/// monotonic counters since process start (design doc §6).
+/// Live-object statistics: `(total allocations, total frees)`, monotonic.
 pub fn allocation_stats() -> (usize, usize) {
     (
         collection::TOTAL_ALLOCS.load(std::sync::atomic::Ordering::Relaxed),
@@ -28,10 +27,7 @@ pub fn allocation_stats() -> (usize, usize) {
     )
 }
 
-/// Measure-first counters (phase 3 design doc §3): `(retain_purges,
-/// inloop_guard_hits, trials_run)`, monotonic since process start. These
-/// decide whether the `freed_objs`/`cycles.retain` patchwork and candidate
-/// aging are worth building — see the notes doc's measure-first section.
+/// Collector counters: `(retain_purges, inloop_guard_hits, trials_run)`, monotonic.
 pub fn collector_stats() -> (usize, usize, usize) {
     (
         collection::RETAIN_PURGES.load(std::sync::atomic::Ordering::Relaxed),

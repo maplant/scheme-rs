@@ -1,7 +1,4 @@
-//! Randomized multi-threaded GC stress: graph churn, cycles, cross-thread
-//! object traffic, forced collections. Serves as a crash/UAF net (the leak
-//! canary covers reclamation). GC_STRESS_ITERS scales per-thread work
-//! (default 20_000; soak uses 200_000).
+//! Multi-threaded GC stress test (crash/UAF net). `GC_STRESS_ITERS` scales work.
 #![cfg(not(feature = "async"))]
 
 use parking_lot::{Mutex, RwLock};
@@ -39,9 +36,7 @@ fn gc_stress() {
                 let mut pool: Vec<Gc<RwLock<Node>>> = Vec::new();
                 for i in 0..iters {
                     match xorshift(&mut rng) % 100 {
-                        // allocate
                         0..=39 => pool.push(Gc::new(RwLock::new(Node::default()))),
-                        // link two random pool nodes (freely creates cycles)
                         40..=69 => {
                             if pool.len() >= 2 {
                                 let a = (xorshift(&mut rng) as usize) % pool.len();
@@ -50,14 +45,12 @@ fn gc_stress() {
                                 pool[a].write().edges.push(target);
                             }
                         }
-                        // drop a random node (its subgraph may become garbage)
                         70..=84 => {
                             if !pool.is_empty() {
                                 let k = (xorshift(&mut rng) as usize) % pool.len();
                                 pool.swap_remove(k);
                             }
                         }
-                        // cross-thread traffic: multi-thread inc/dec on shared objects
                         85..=94 => {
                             let mut ex = exchange.lock();
                             if xorshift(&mut rng) % 2 == 0 {
@@ -71,7 +64,6 @@ fn gc_stress() {
                                 pool.push(n);
                             }
                         }
-                        // occasional forced collection
                         _ => {
                             if i % 512 == 0 {
                                 collect_garbage();

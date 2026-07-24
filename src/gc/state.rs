@@ -1,18 +1,13 @@
-//! Packed GC header state word: reference count, color, and flags in a
-//! single atomic word. Single-word RMWs give mutator/collector visibility
-//! via per-location modification order (design doc §1, "Scenario 2").
+//! Packed GC header state word: reference count, color, and flags in a single atomic.
 
 pub(crate) const RC_BITS: u32 = 48;
 pub const RC_MASK: usize = (1 << RC_BITS) - 1;
 pub(crate) const COLOR_SHIFT: u32 = RC_BITS;
 pub(crate) const COLOR_MASK: usize = 0b111 << COLOR_SHIFT;
 pub const INC_EVENT: usize = 1 << 52;
-/// Attention-list membership claim: *the* buffered bit (phase 2 unified the
-/// former separate BUFFERED bit into this one — a newborn touches no global
-/// structure until its first event claims it).
+/// Attention-list membership: newborns are unclaimed until their first rc event.
 pub const ATTN_CLAIM: usize = 1 << 53;
-/// Finalized by the scan while claimed; header memory awaits the drain
-/// that removes its attention-list entry (dealloc deferral).
+/// Finalized; dealloc deferred until the attention-list drain removes the entry.
 pub const ATTN_DEAD: usize = 1 << 54;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -50,8 +45,6 @@ impl From<u8> for Color {
 pub struct GcState(pub usize);
 
 impl GcState {
-    /// rc = 1, Black, unclaimed (phase 2: newborns touch no global structure
-    /// until their first event).
     pub(crate) fn new_initial() -> Self {
         GcState(1)
     }

@@ -1,6 +1,4 @@
-//! Leak canary: every allocated object holds a clone of one Arc; after
-//! dropping everything and forcing collections, the Arc count must return
-//! to 1. A missed attention event shows up here as a stuck count.
+//! Leak canary: Arc strong-count must return to 1 after full collection.
 #![cfg(not(feature = "async"))]
 
 use parking_lot::{Mutex, RwLock};
@@ -30,8 +28,6 @@ fn all_garbage_is_reclaimed() {
                         token: Some(token.clone()),
                         next: None,
                     }));
-                    // Link every third node to a random-ish earlier one
-                    // (creates plenty of cycles).
                     if i % 3 == 0 && !pool.is_empty() {
                         let k = (i * 7 + t) % pool.len();
                         node.write().next = Some(pool[k].clone());

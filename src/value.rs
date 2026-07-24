@@ -292,10 +292,8 @@ impl Value {
             Tag::SmallValue => {
                 let untagged_char = (untagged as usize as u32) >> TAG_BITS;
                 if untagged_char == SYMBOL_CHAR {
-                    // Upper 32 bits used for symbols
                     UnpackedValue::Symbol(Symbol((untagged as usize >> 32) as u32))
                 } else {
-                    // Lower 32 bits used for character
                     UnpackedValue::Character(char::from_u32(untagged_char).unwrap())
                 }
             }
@@ -860,7 +858,6 @@ fn slow(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64) -> O
             }
             pair_eq(ht, obj1, obj2, k)
         }
-        // (ValueType::ByteVector, ValueType::ByteVector) => bytevector_eq(obj1, obj2, k),
         (ValueType::Record, ValueType::Record) => {
             if union_find(ht, obj1, obj2) {
                 Some(0)

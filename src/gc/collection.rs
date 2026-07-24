@@ -24,18 +24,14 @@ use crate::{
 #[derive(Debug)]
 #[repr(C, align(8))]
 pub(crate) struct GcHeader {
-    /// Packed state word: rc | color | flags. See [`crate::gc::state`].
-    /// Mutators touch ONLY this field, and only via atomic RMWs.
+    /// Packed state word (rc | color | flags). Mutators' sole touchpoint, via atomic RMWs only.
     pub(crate) state: AtomicUsize,
     /// Circular reference count (collector-private)
     crc: isize,
     /// VTable for the type
     vtable: &'static VTable,
-    /// Layout of the type and header
     layout: Layout,
-    /// Intrusive attention-list link. NOT_IN_LIST when unclaimed; the claim
-    /// winner (mutator or re-enqueueing collector) is its sole writer until
-    /// the drain resets it.
+    /// Intrusive attention-list link; sole-writer is the claim winner until drain resets it.
     attn_next: AtomicUsize,
 }
 
@@ -206,35 +202,14 @@ thread_local! {
     static ALLOC_TICK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Total objects allocated (statistics; relaxed, collector never reads it
-/// for decisions).
 pub(crate) static TOTAL_ALLOCS: AtomicUsize = AtomicUsize::new(0);
-/// Total objects freed (statistics; relaxed, incremented at the two dealloc
-/// sites in `process_drained` and `free`).
 pub(crate) static TOTAL_FREES: AtomicUsize = AtomicUsize::new(0);
-
-/// Measure-first counters (design doc §3, plan Task 4): decide whether
-/// `freed_objs`/`cycles.retain` simplification and candidate aging are worth
-/// building, rather than speculating. All relaxed; the collector never reads
-/// them for decisions.
-///
-/// Incremented once per cycle member purged by `epoch`'s retain pass (an
-/// object recorded in a pending cycle that was freed before the cycle's
-/// trial ran).
 pub(crate) static RETAIN_PURGES: AtomicUsize = AtomicUsize::new(0);
-/// Incremented once per cycle where `free_cycles`' in-loop freed-member guard
-/// fires (a recorded cycle sharing a member with one already freed earlier
-/// in the same batch).
 pub(crate) static INLOOP_GUARD_HITS: AtomicUsize = AtomicUsize::new(0);
-/// Incremented once per candidate `mark_roots` processes (every entry in
-/// `self.roots` at the start of a trial, purple or not).
 pub(crate) static TRIALS_RUN: AtomicUsize = AtomicUsize::new(0);
 
 const LOCAL_ALLOCS_PER_SIGNAL: usize = 1024;
 
-/// Batches per-thread allocation counts into `COLLECTOR_STATE.pending_allocs`
-/// every `LOCAL_ALLOCS_PER_SIGNAL` allocations, keeping the allocation path
-/// lock-free the rest of the time.
 fn alloc_tick() {
     ALLOC_TICK.with(|t| {
         let n = t.get() + 1;
@@ -279,11 +254,10 @@ static COLLECTION_DONE_SIGNAL: Condvar = Condvar::new();
 static COLLECTOR_TASK: OnceLock<JoinHandle<()>> = OnceLock::new();
 const MIN_ALLOCS_TO_COLLECT: usize = 10_000;
 
-/// Sentinel for "not on the attention list". 0 terminates a chain.
+/// 0 terminates the attention-list chain; 1 means not enqueued.
 pub(crate) const NOT_IN_LIST: usize = 1;
 
-/// Global attention list: push-only Treiber stack, swap-drained whole by the
-/// collector each epoch. No pops → no ABA.
+/// Push-only Treiber stack; no pops, so no ABA.
 static ATTN_HEAD: AtomicUsize = AtomicUsize::new(0);
 
 unsafe fn attn_push(header: *mut GcHeader) {
@@ -327,8 +301,6 @@ impl Drop for EventBuffer {
     }
 }
 
-/// Mutator-side event enqueue: buffer locally, splice whole batches with a
-/// single ATTN_HEAD CAS. Claim bit semantics widen to "in some buffer".
 pub(crate) fn buffer_event(header: *mut GcHeader) {
     let ok = EVENT_BUFFER.try_with(|buf| {
         let mut buf = buf.0.borrow_mut();
@@ -343,7 +315,6 @@ pub(crate) fn buffer_event(header: *mut GcHeader) {
     }
 }
 
-/// Flush the calling thread's buffered events to the global list.
 pub(crate) fn flush_events() {
     let _ = EVENT_BUFFER.try_with(|buf| flush_chain(&mut buf.0.borrow_mut()));
 }
@@ -377,8 +348,7 @@ fn flush_chain(buf: &mut Vec<*mut GcHeader>) {
     buf.clear();
 }
 
-/// Called by every mutator decrement with the pre-decrement word.
-/// One claim per object per epoch: repeat decs see ATTN_CLAIM and skip.
+/// One claim per object per epoch; repeat decs see ATTN_CLAIM and skip.
 #[inline]
 pub(crate) unsafe fn record_dec_event(header: *mut GcHeader, old: GcState) {
     if old.attn_claimed() {
@@ -396,10 +366,7 @@ pub(crate) unsafe fn record_dec_event(header: *mut GcHeader, old: GcState) {
     }
 }
 
-/// Called by every mutator increment with the pre-increment word. Only
-/// increments on non-black objects (active trial windows) are events
-/// (design doc "Scenario 1"); the fast path is a branch on a value the
-/// fetch_add already returned.
+/// Only non-black increments are events (active trial window).
 #[inline]
 pub(crate) unsafe fn record_inc_event(header: *mut GcHeader, old: GcState) {
     if old.color() == Color::Black {
@@ -462,18 +429,9 @@ pub fn collect_garbage_bridge() -> Result<Vec<Value>, Exception> {
 #[derive(Debug)]
 pub struct Collector {
     roots: HashSet<OpaqueGcPtr>,
-    /// Cycles recorded last epoch by `collect_roots`, freed or refurbished
-    /// by `free_cycles` at the top of this epoch (design §4: free at N+1,
-    /// full Δ/σ/fresh-Σ/flag revalidation at free time — the N+2 grace
-    /// WITHDRAWN, commit aa6fe74: a pending cycle must never coexist with a
-    /// running trial).
     cycles: Vec<Vec<OpaqueGcPtr>>,
     freed_objs: HashSet<OpaqueGcPtr>,
-    /// Dealloc quarantine: finalization happens on schedule, but the
-    /// underlying dealloc is deferred one epoch so the mutator never
-    /// reallocates memory the collector freed microseconds earlier
-    /// (free/realloc cacheline ping-pong under churn). Purely collector-
-    /// local; entries are already finalized and unreachable.
+    /// Defers deallocs one epoch to avoid cacheline ping-pong with mutators.
     dealloc_quarantine: Vec<(*mut u8, Layout)>,
 }
 
@@ -489,7 +447,6 @@ impl Collector {
         }
     }
 
-    /// Dealloc everything quarantined during the previous epoch.
     fn flush_quarantine(&mut self) {
         for (ptr, layout) in self.dealloc_quarantine.drain(..) {
             unsafe { std::alloc::dealloc(ptr, layout) };
@@ -503,8 +460,7 @@ impl Collector {
                 if let Err(panic) = std::panic::catch_unwind(
                     std::panic::AssertUnwindSafe(|| this.epoch()),
                 ) {
-                    // A dead collector turns every later collect_garbage()
-                    // into a silent hang; loud crash beats silent hang.
+                    // Loud abort beats silent hang if the collector dies.
                     eprintln!(
                         "fatal: GC collector thread panicked: {panic:?}\n{}",
                         std::backtrace::Backtrace::force_capture()
@@ -527,22 +483,12 @@ impl Collector {
     fn epoch(&mut self) {
         self.await_epoch();
 
-        // Release last epoch's quarantined memory before doing anything
-        // else: entries have aged one full epoch, so the mutator is no
-        // longer hot on those cachelines.
         self.flush_quarantine();
 
-        // Drain the attention list before free_cycles: any corpse freed this
-        // epoch either predates this drain (entry consumed now) or was
-        // pushed after it (ATTN_DEAD defers its dealloc to the next drain).
-        // Order is load-bearing — see the phase 2 design doc §2.
+        // Drain before free_cycles: ordering is load-bearing for ATTN_DEAD deferral.
         self.drain_attention_list();
 
-        // Remove freed objects from cycles recorded last epoch. Every free
-        // since the last retain is in freed_objs (free() records
-        // unconditionally, covering release() cascades), and cycles are only
-        // dereferenced below, after this retain. Clearing per epoch keeps
-        // recycled addresses from purging fresh parkings later.
+        // Purge freed members before dereferencing; clear per-epoch to avoid stale-address collisions.
         self.cycles.retain_mut(|cycle| {
             cycle.retain(|obj| {
                 let freed = self.freed_objs.contains(obj);
@@ -554,17 +500,10 @@ impl Collector {
             !cycle.is_empty()
         });
 
-        // Free cycles recorded last epoch: the N -> free-at-N+1 hand-over
-        // (design §0/§4). free_cycles takes ALL of self.cycles, so
-        // process_cycles below records this epoch's new candidates into an
-        // empty vec — a recorded cycle is always consumed before the next
-        // trial runs.
         unsafe {
             self.free_cycles();
         }
 
-        // Process cycles: trial deletion, then sigma_preparation for the
-        // cycles this trial just recorded.
         unsafe {
             self.process_cycles();
         }
@@ -589,13 +528,9 @@ impl Collector {
                         .load(std::sync::atomic::Ordering::Acquire),
                 );
                 if w.attn_claimed() {
-                    // A pending entry exists; the drain that consumes it
-                    // finds rc==0 and releases (or ATTN_DEAD-deallocs) then.
+                    // Pending drain entry will handle the release.
                 } else if w.color() == Color::Orange {
-                    // Orange-skip (design §0): a collector-internal cascade
-                    // never releases a currently-Orange object — free_cycles
-                    // owns it this epoch. If its cycle refurbishes, the
-                    // refurbish-zero reroute frees it via the drain path.
+                    // Orange: free_cycles owns it this epoch.
                 } else {
                     self.release(s);
                 }
@@ -630,17 +565,12 @@ impl Collector {
         }
     }
 
-    /// Process one drained entry (now authoritative — design doc §3).
-    /// Membership ends only via the release CAS proving the word didn't
-    /// change during processing; otherwise keep the claim and re-enqueue.
     unsafe fn process_drained(&mut self, header: *mut GcHeader) {
         unsafe {
             let word = GcState((*header).state.load(std::sync::atomic::Ordering::Acquire));
 
             if word.attn_dead() {
-                // Finalized while claimed; we own the last reference to the
-                // header memory. No live handles exist, so no concurrent RMW
-                // can race this dealloc.
+                // Finalized while claimed; no live handles, safe to dealloc.
                 let layout = (*header).layout;
                 self.dealloc_quarantine.push((header as *mut u8, layout));
                 TOTAL_FREES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -651,16 +581,9 @@ impl Collector {
 
             if word.rc() == 0 {
                 if word.color() == Color::Orange {
-                    // Orange-skip (design §3): a recorded cycle member —
-                    // free_cycles owns it this epoch. Consume the entry only.
+                    // Orange: free_cycles owns it this epoch.
                 } else {
-                    // Genuinely dead: release now, single stage. The
-                    // counted-homes invariant (a raw pointer's home keeps it
-                    // counted until the increment that reads it back) is
-                    // fixed at its single violation site (CPS liveness, see
-                    // cps::analysis) and asserted in `inc_rc`, so a zero
-                    // sighting here is no longer a transient resurrection
-                    // window.
+                    // Zero rc is authoritative (counted-homes invariant holds); release now.
                     (*header)
                         .attn_next
                         .store(NOT_IN_LIST, std::sync::atomic::Ordering::Relaxed);
@@ -674,8 +597,7 @@ impl Collector {
                         )
                         .is_err()
                     {
-                        // Foreign RMW mid-processing: keep the claim,
-                        // reclassify from the fresh word next epoch.
+                        // Foreign RMW raced; re-enqueue for next epoch.
                         attn_push(header);
                         return;
                     }
@@ -683,11 +605,7 @@ impl Collector {
                     return;
                 }
             } else {
-                // Non-zero rc: FUSE the color mutation into the release CAS
-                // (design §3 amendment). A separate set_color would change
-                // the live word and self-defeat a stale-snapshot CAS —
-                // guaranteed failure, eternal re-enqueue, Orange members
-                // repainted Purple, Δ-test permanently broken.
+                // Fuse color into the CAS: a separate set_color would invalidate the snapshot.
                 let (new_color, is_inc) = if word.inc_event() {
                     (Color::Black, true)
                 } else {
@@ -707,23 +625,18 @@ impl Collector {
                 ) {
                     Ok(_) => {
                         if is_inc {
-                            // Node is Black via the fused CAS; scan_black
-                            // skips already-black roots, so recurse from
-                            // the children.
+                            // Already black via fused CAS; recurse children directly.
                             for_each_child(obj, &mut |c| scan_black(c));
                         } else {
                             self.roots.insert(obj);
                         }
                     }
-                    // Foreign mutator RMW during processing: keep the claim,
-                    // reclassify from the fresh word next epoch.
+                    // Foreign RMW raced; re-enqueue for next epoch.
                     Err(_) => attn_push(header),
                 }
                 return;
             }
 
-            // Orange-skip falls through to here: consume the entry only
-            // (no color mutation → original-snapshot CAS is correct).
             (*header)
                 .attn_next
                 .store(NOT_IN_LIST, std::sync::atomic::Ordering::Relaxed);
@@ -792,10 +705,6 @@ impl Collector {
         }
     }
 
-    /// Runs over `self.cycles`: `free_cycles` (earlier this epoch) consumed
-    /// everything recorded before this epoch via `mem::take`, so at this
-    /// point `self.cycles` holds only the candidates `collect_roots` just
-    /// recorded.
     unsafe fn sigma_preparation(&self) {
         unsafe {
             for c in &self.cycles {
@@ -820,12 +729,7 @@ impl Collector {
     unsafe fn free_cycles(&mut self) {
         unsafe {
             for c in std::mem::take(&mut self.cycles).into_iter().rev() {
-                // In-loop freed guard (design §0): drain-time repainting can
-                // let two recorded cycles share a member, so an earlier
-                // cycle in THIS SAME batch may have already freed one of
-                // this cycle's members. Pointer-membership check only — no
-                // deref — before the Δ/σ tests below dereference every
-                // member.
+                // An earlier cycle in this batch may have freed a shared member; check without deref.
                 if c.iter().any(|n| self.freed_objs.contains(n)) {
                     INLOOP_GUARD_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     for n in c.iter().filter(|n| !self.freed_objs.contains(n)) {
@@ -865,10 +769,6 @@ impl Collector {
         unsafe {
             for (i, n) in c.iter().enumerate() {
                 if n.shared_rc() == 0 {
-                    // Zero event may already be consumed (Orange-skip or a
-                    // fresh decrement racing validation) — the refurbish-zero
-                    // reroute re-enters the drain path rather than freeing
-                    // inline (design §0/§4).
                     refurbish_zero(*n);
                     continue;
                 }
@@ -901,7 +801,6 @@ impl Collector {
             // Safety: No need to acquire a permit, s is guaranteed to be
             // garbage.
 
-            // Ensure it is no longer a possible root:
             self.roots.remove(&s);
 
             // Record the free so the next epoch purges any entry for this
@@ -911,13 +810,7 @@ impl Collector {
             // Finalize the object:
             (s.finalize())(s.data_mut());
 
-            // Deallocate — unless a mutator claim is pending on the
-            // attention list, in which case the header memory must outlive
-            // the list entry (never dealloc while claimed). Finalization
-            // above already ran on schedule; the drain that consumes the
-            // entry performs the dealloc. No new claim can arrive after
-            // this check: free() only runs on objects with no live handles,
-            // and claims require a handle.
+            // Defer dealloc if claimed: header must outlive pending attention-list entry.
             let word = GcState(
                 (*s.header.as_ref().get())
                     .state
@@ -936,12 +829,7 @@ impl Collector {
     }
 }
 
-/// The refurbish-zero reroute (design §0/§4): a rc==0 member whose zero
-/// event may already be consumed (Orange-skip, or a fresh decrement racing
-/// validation) is NOT freed inline — recolor Black (so the next drain's
-/// Orange-skip cannot misroute it), then claim so `process_drained`'s
-/// single-stage release cascades it properly at the next drain. Every zero
-/// free flows through the same drain path.
+/// Recolor Black and re-claim so the next drain releases via the standard path.
 unsafe fn refurbish_zero(n: OpaqueGcPtr) {
     unsafe {
         n.set_color(Color::Black);
@@ -1058,10 +946,7 @@ unsafe fn delta_test(c: &[OpaqueGcPtr]) -> bool {
     }
 }
 
-/// Fresh-Σ recheck (phase 2 design §4): recompute the external-reference sum
-/// from CURRENT state-word rcs and CURRENT edges, restricted to the member
-/// set. Rc effects are visible instantly even when an event push is delayed,
-/// so this closes the delayed-notification window ("Scenario 3").
+/// Recomputes external-ref sum from current rcs/edges to close the delayed-notification window.
 unsafe fn sigma_recheck(c: &[OpaqueGcPtr]) -> bool {
     unsafe {
         let members: HashSet<OpaqueGcPtr> = c.iter().copied().collect();
@@ -1080,9 +965,6 @@ unsafe fn sigma_recheck(c: &[OpaqueGcPtr]) -> bool {
     }
 }
 
-/// No member may carry an unprocessed event (phase 2 design §4, check 3):
-/// a claim is a pending notification — defer the free rather than reason
-/// about it.
 unsafe fn member_flags_clear(c: &[OpaqueGcPtr]) -> bool {
     unsafe {
         c.iter().all(|n| {
@@ -1103,11 +985,7 @@ mod test {
     use parking_lot::RwLock;
     use std::sync::Arc;
 
-    // `cycles` and `zero_event_reclaimed_by_first_collection` both force
-    // epochs via `collect_garbage_sync` and inspect epoch-count-sensitive
-    // state; run them serially against each other so one test's forced epoch
-    // can't land inside another's collection window (see the plan's caveat on
-    // this test).
+    // Tests that force epochs must not interleave.
     static GC_TEST_SERIAL: Mutex<()> = Mutex::new(());
 
     #[test]
@@ -1156,10 +1034,6 @@ mod test {
         let obj = Gc::new(Some(out_ptr.clone()));
         drop(obj);
 
-        // No aging (design §0 superseded, phase 3): the counted-homes
-        // invariant is fixed at its single violation site (CPS liveness) and
-        // asserted in `inc_rc`, so a zero-rc sighting is reclaimed on the
-        // very first drain that observes it.
         collect_garbage_sync();
         assert_eq!(
             Arc::strong_count(&out_ptr),
@@ -1236,11 +1110,8 @@ mod test {
         a.write().next = Some(b.clone());
         b.write().next = Some(a.clone());
         let (oa, ob) = unsafe { (a.as_opaque(), b.as_opaque()) };
-        // Handles held: rc(a) = rc(b) = 2 (handle + internal edge) →
-        // two external refs.
         assert!(!unsafe { sigma_recheck(&[oa, ob]) });
 
-        // Simulate the handles dying without emitting events:
         unsafe {
             force_rc(&oa, 1);
             force_rc(&ob, 1);

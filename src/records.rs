@@ -10,10 +10,8 @@
 //! # Implementing [`Embeddable`]
 //!
 //! Any type that implements [`Trace`] and [`Debug`](std::fmt::Debug) is
-//! eligible to implement `Embeddable`, which allows a value of that type to be
-//! embedded directly inside the record's allocation. Once this criteria is
-//! fulfilled, we first need to use the [`rtd`] proc macro to fill in the type
-//! descriptor.
+//! eligible to implement `Embeddable`. Once this criteria is fulfilled,
+//! we first need to use the [`rtd`] proc macro to fill in the type descriptor.
 //!
 //! For example, let's say that we have `Enemy` struct that we want to have two
 //! immutable fields and one mutable field:
@@ -31,8 +29,7 @@
 //! }
 //! ```
 //!
-//! We can now fill in the `rtd` for the type. Note that the `ty` field tells the
-//! macro which Rust type is being embedded:
+//! We can now fill in the `rtd` for the type (`ty` specifies the embedded Rust type):
 //!
 //! ```rust
 //! # use std::sync::{Arc, Mutex};
@@ -257,15 +254,11 @@ pub struct RecordTypeDescriptor {
     /// from being "generative," i.e. unique upon each call to
     /// `define-record-type`.
     pub uid: Option<Symbol>,
-    /// Embedded type's VTable. Some if the record contains an embedded type.
-    /// Child RTDs inherit the `embedded_vtable` of their Parent.
+    /// Inherited VTable for the embedded Rust type, if any.
     pub embedded_vtable: Option<EmbeddableVTable>,
-    /// The Rust constructor of the embedded type, if it exists. Child RTDs
-    /// inherit the `embedded_constructor` of their
     pub embedded_constructor: Option<RustParentConstructor>,
     /// Parent is most recently inserted record type, if one exists.
     pub inherits: indexmap::IndexSet<ByAddress<Arc<RecordTypeDescriptor>>>,
-    /// The number of fields inherited by this record.
     pub num_inherited_fields: usize,
     /// The fields of the record, not including any of the ones inherited from
     /// parents.
@@ -362,8 +355,6 @@ impl fmt::Debug for Field {
     }
 }
 
-/// A Scheme record type. Effectively a tuple of a fixed size array and some type
-/// information.
 #[derive(Trace, Clone)]
 pub struct Record(pub(crate) Gc<RecordInner>);
 
@@ -372,7 +363,6 @@ impl Record {
         self.0.rtd.clone()
     }
 
-    /// Embed a rust value into a record.
     pub fn embed<E: Embeddable>(e: E) -> Self {
         let (layout, embed_offset) = Layout::from_size_align(
             RecordInner::fields_offset(),
@@ -593,8 +583,7 @@ impl fmt::Debug for Record {
 #[repr(C, align(16))]
 pub(crate) struct RecordInner {
     rtd: Arc<RecordTypeDescriptor>,
-    /// Pointer to the first field. If the record contains an embedded value it
-    /// will be stored after the last field.
+    /// Flexible array; embedded Rust value (if any) follows the last field.
     fields: [Value; 0],
 }
 
@@ -682,16 +671,9 @@ unsafe impl Trace for RecordInner {
     }
 }
 
-/// A Rust type that can be embedded safely in a Scheme record.
-///
 /// # Safety
 ///
-/// The [rtd] function cannot return a RecordTypeDescriptor created for a
-/// different type than the type implementing that function. Doing so is
-/// undefined behavior.
-///
-/// scheme-rs uses the layout of the type to compactly allocate types within
-/// scheme records. Those layouts are stored in the RTD.
+/// `rtd()` must return a descriptor for `Self`; a mismatched RTD is UB (layouts are derived from it).
 pub unsafe trait Embeddable: Trace + Any + Send + Sync {
     /// The Record Type Descriptor of the value. Can be constructed at runtime,
     /// but cannot change.
@@ -699,7 +681,6 @@ pub unsafe trait Embeddable: Trace + Any + Send + Sync {
     where
         Self: Sized;
 
-    /// Returns any parent records embedded in the Rust type.
     fn parent_record(&self, _rtd: &Arc<RecordTypeDescriptor>) -> Option<&dyn Embeddable> {
         None
     }
@@ -1050,7 +1031,6 @@ pub fn make_record_type_descriptor(
     let opaque = opaque.is_true();
     let fields = Field::parse_fields(fields)?;
 
-    // Inherit any embedded vtable or constructors:
     let (embedded_vtable, embedded_constructor) = inherits
         .last()
         .map(|rtd| (rtd.embedded_vtable, rtd.embedded_constructor))
@@ -1340,7 +1320,6 @@ fn constructor(
         if let Some(embedded_constructor) = rtd.embedded_constructor {
             let embedded_vtable = rtd.embedded_vtable.unwrap();
             let remaining_fields = fields.split_off(embedded_vtable.embedded_fields);
-            // Call the rust constructor for the embedded type
             let writer = (embedded_constructor.constructor)(&fields)?;
             (Some((embedded_vtable, writer)), remaining_fields)
         } else {
@@ -1533,7 +1512,6 @@ fn record_accessor_fn(
     let local_idx: usize = env[1].clone().try_into()?;
     let abs_idx = local_idx + rtd.num_inherited_fields;
     let val = if abs_idx < record.0.num_embedded_fields() {
-        // The field lives inside the embedded Rust value.
         let embedded_ptr = record.0.embedded_ptr().unwrap();
         let embedded_vtable = record.0.rtd.embedded_vtable.as_ref().unwrap();
         if rtd.embedded_vtable.unwrap().type_id == embedded_vtable.type_id {
@@ -1581,8 +1559,7 @@ pub fn record_accessor(
             rtd.fields.len()
         )));
     }
-    // Store the local (within-rtd) index; `record_accessor_fn` resolves it to
-    // either the embed or an inline slot.
+    // Local index; record_accessor_fn resolves to embed or inline slot.
     let accessor_fn = Procedure::new(
         runtime.clone(),
         vec![Value::from(rtd), Value::from(idx)],
@@ -1613,7 +1590,6 @@ fn record_mutator_fn(
     let local_idx: usize = env[1].clone().try_into()?;
     let abs_idx = local_idx + rtd.num_inherited_fields;
     if abs_idx < record.0.num_embedded_fields() {
-        // The field lives inside the embedded Rust value.
         let embedded_ptr = record.0.embedded_ptr().unwrap();
         let embedded_vtable = record.0.rtd.embedded_vtable.as_ref().unwrap();
         if rtd.embedded_vtable.unwrap().type_id == embedded_vtable.type_id {

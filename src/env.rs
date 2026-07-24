@@ -1074,10 +1074,7 @@ mod tests {
     use crate::ast::ImportSet;
     use crate::runtime::Runtime;
 
-    /// `PrimOp::Matches` roots a `MatchEnv` slot, so it must report
-    /// `needs_drop: true` — otherwise `max_allocs` under-counts and the next
-    /// local-continuation jump drops a live variable. Any macro expansion
-    /// (hence any import) exercises the path.
+    /// Regression: PrimOp::Matches must report needs_drop to avoid alloc miscount.
     #[test]
     fn macro_expansion_does_not_corrupt_captured_free_variables() {
         let rt = Runtime::new();
