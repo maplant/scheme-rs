@@ -824,7 +824,6 @@ impl<'a> ContBarrier<'a> {
             .frames
             .last_mut()
             .unwrap()
-            .frame
             .marks
             .insert(tag, val);
     }
@@ -1078,6 +1077,8 @@ impl ContStack {
             env_start,
             num_required_args,
             variadic,
+            #[cfg(feature = "continuation-marks")]
+            marks: HashMap::default(),
         });
     }
 }
@@ -1089,6 +1090,8 @@ pub(crate) struct ContFrame {
     env_start: usize,
     num_required_args: usize,
     variadic: bool,
+    #[cfg(feature = "continuation-marks")]
+    marks: HashMap<Symbol, Value>,
 }
 
 fn check_args(
