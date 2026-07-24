@@ -469,6 +469,12 @@ pub struct Collector {
     /// running trial).
     cycles: Vec<Vec<OpaqueGcPtr>>,
     freed_objs: HashSet<OpaqueGcPtr>,
+    /// Dealloc quarantine: finalization happens on schedule, but the
+    /// underlying dealloc is deferred one epoch so the mutator never
+    /// reallocates memory the collector freed microseconds earlier
+    /// (free/realloc cacheline ping-pong under churn). Purely collector-
+    /// local; entries are already finalized and unreachable.
+    dealloc_quarantine: Vec<(*mut u8, Layout)>,
 }
 
 unsafe impl Send for Collector {}
@@ -479,6 +485,14 @@ impl Collector {
             roots: HashSet::default(),
             cycles: Vec::new(),
             freed_objs: HashSet::default(),
+            dealloc_quarantine: Vec::new(),
+        }
+    }
+
+    /// Dealloc everything quarantined during the previous epoch.
+    fn flush_quarantine(&mut self) {
+        for (ptr, layout) in self.dealloc_quarantine.drain(..) {
+            unsafe { std::alloc::dealloc(ptr, layout) };
         }
     }
 
@@ -512,6 +526,11 @@ impl Collector {
 
     fn epoch(&mut self) {
         self.await_epoch();
+
+        // Release last epoch's quarantined memory before doing anything
+        // else: entries have aged one full epoch, so the mutator is no
+        // longer hot on those cachelines.
+        self.flush_quarantine();
 
         // Drain the attention list before free_cycles: any corpse freed this
         // epoch either predates this drain (entry consumed now) or was
@@ -623,7 +642,7 @@ impl Collector {
                 // header memory. No live handles exist, so no concurrent RMW
                 // can race this dealloc.
                 let layout = (*header).layout;
-                std::alloc::dealloc(header as *mut u8, layout);
+                self.dealloc_quarantine.push((header as *mut u8, layout));
                 TOTAL_FREES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 return;
             }
@@ -909,7 +928,8 @@ impl Collector {
                     .state
                     .fetch_or(ATTN_DEAD, std::sync::atomic::Ordering::AcqRel);
             } else {
-                std::alloc::dealloc(s.header.as_ptr() as *mut u8, s.layout());
+                self.dealloc_quarantine
+                    .push((s.header.as_ptr() as *mut u8, s.layout()));
                 TOTAL_FREES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
         }
