@@ -259,35 +259,38 @@ Creating a new mutable references enforces a new continuation barrier.
 pub fn inc(
     _runtime: &Runtime,
     _env: &[Value],
-    k: Procedure,
     _args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
-    let var: &mut u32 = barrier.get_param("var").unwrap().downcast_mut().unwrap();
-    *var += 1;
-    Ok(Application::new(k, None, vec![Value::from(*var)]))
+    let var = {
+        let var: &mut u32 = barrier.get_param("var").unwrap().downcast_mut().unwrap();
+        *var += 1;
+        *var
+    };
+    Ok(barrier.call_cont(vec![Value::from(var)]))
 }
 
 #[cps_bridge(def = "call-with-var thunk", lib = "(example)")]
 pub fn call_with_var(
     _runtime: &Runtime,
     _env: &[Value],
-    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
     // Set up the new dynamic state and add the param
-    let mut var = 0u32;
-    let mut new_barrier = ContBarrier::from(barrier.save());
-    new_barrier.add_param("var", &mut var);
+    let result = {
+        let mut var = 0u32;
+        let mut new_barrier = ContBarrier::from(barrier.save());
+        new_barrier.add_param("var", &mut var);
     
-    // Call the thunk arg with the new dyn state:
-    let thunk: Procedure = args[0].clone().try_into()?;
-    let result = thunk.call(&[], &mut new_barrier)?;
-    
+        // Call the thunk arg with the new dyn state:
+        let thunk: Procedure = args[0].clone().try_into()?;
+        thunk.call(&[], &mut new_barrier)?
+    };
+
     // Return to the continuation:
-    Ok(Application::new(k, None, result))
+    Ok(barrier.call_cont(result))
 }
 ```

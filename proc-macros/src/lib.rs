@@ -155,7 +155,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
             #visibility fn #wrapper_name<'a>(
                 runtime: &'a ::scheme_rs::runtime::Runtime,
                 _env: &'a [::scheme_rs::value::Value],
-                k: ::scheme_rs::proc::Procedure,
+                args: &'a [::scheme_rs::value::Value],
                 rest_args: &'a [::scheme_rs::value::Value],
                 barrier: &'a mut ::scheme_rs::proc::ContBarrier,
             ) -> futures::future::BoxFuture<'a, scheme_rs::proc::Application> {

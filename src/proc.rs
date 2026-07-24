@@ -391,10 +391,7 @@ impl ProcedureInner {
         match self.func {
             FuncPtr::Bridge(sbridge) => self.apply_sync_bridge(sbridge, &args, barrier),
             #[cfg(feature = "async")]
-            FuncPtr::AsyncBridge(abridge) => {
-                self.apply_async_bridge(abridge, k.unwrap(), &args, barrier)
-                    .await
-            }
+            FuncPtr::AsyncBridge(abridge) => self.apply_async_bridge(abridge, &args, barrier).await,
             FuncPtr::User(user) => self.apply_jit(user, args, barrier),
             FuncPtr::Known(known) => known.apply(&self.runtime, &args, barrier),
         }
@@ -402,52 +399,26 @@ impl ProcedureInner {
 
     #[cfg(feature = "async")]
     /// Attempt to call the function, and throw an error if is async
-    pub fn apply_sync(
-        &self,
-        k: Option<Procedure>,
-        args: Vec<Value>,
-        barrier: &mut ContBarrier,
-    ) -> Application {
-        if let FuncPtr::PromptBarrier { barrier_id: id, .. } = self.func {
-            barrier.pop_marks();
-            match barrier.pop_dyn_stack() {
-                Some(DynStackElem::PromptBarrier(PromptBarrier {
-                    barrier_id,
-                    replaced_k,
-                })) if barrier_id == id => {
-                    return if let Err(raised) =
-                        replaced_k.0.check_args(&k, args.as_slice(), barrier)
-                    {
-                        raised
-                    } else {
-                        Application::new(replaced_k, None, args)
-                    };
-                }
-                Some(other) => barrier.push_dyn_stack(other),
-                _ => (),
-            }
-        }
-
-        if let Err(raised) = self.check_args(&k, &args, barrier) {
+    pub fn apply_sync(&self, args: Vec<Value>, barrier: &mut ContBarrier) -> Application {
+        if let Err(raised) = check_args(
+            &self.runtime,
+            self.num_required_args,
+            self.variadic,
+            &args,
+            barrier,
+        ) {
             return raised;
         }
 
         match self.func {
-            FuncPtr::Bridge(sbridge) => self.apply_sync_bridge(sbridge, k.unwrap(), &args, barrier),
+            FuncPtr::Bridge(sbridge) => self.apply_sync_bridge(sbridge, &args, barrier),
             FuncPtr::AsyncBridge(_) => raise(
                 self.runtime.clone(),
                 Exception::error("attempt to apply async function in a sync-only context").into(),
                 barrier,
             ),
-            FuncPtr::User(user) => self.apply_jit(JitFuncPtr::User(user), k, args, barrier),
-            FuncPtr::Continuation(k) => {
-                barrier.pop_marks();
-                self.apply_jit(JitFuncPtr::Continuation(k), None, args, barrier)
-            }
-            FuncPtr::PromptBarrier { k, .. } => {
-                self.apply_jit(JitFuncPtr::Continuation(k), None, args, barrier)
-            }
-            FuncPtr::Known(known) => known.apply_sync(&self.runtime, k.unwrap(), &args, barrier),
+            FuncPtr::User(user) => self.apply_jit(user, args, barrier),
+            FuncPtr::Known(known) => known.apply(&self.runtime, &args, barrier),
         }
     }
 }
@@ -582,8 +553,8 @@ impl Procedure {
         args: &[Value],
         barrier: &mut ContBarrier<'_>,
     ) -> Result<Vec<Value>, Exception> {
-        let k = (!self.is_continuation()).then(|| halt_continuation(self.get_runtime()));
-        Application::new(self.clone(), k, args.to_vec()).eval_sync(barrier)
+        barrier.push_cont(self.get_runtime(), [], ContPtr::Continuation(halt), 0, true);
+        Application::new(self.clone(), args.to_vec()).eval_sync(barrier)
     }
 
     pub(crate) fn to_primop(&self) -> Option<PrimOp> {
@@ -670,7 +641,6 @@ pub struct Application {
     /// The operator being applied to.
     op: OpType,
     /// The arguments being applied to the operator.
-    // TODO: Maybe make this a Cow<[Value]>?
     args: Vec<Value>,
 }
 
@@ -717,14 +687,15 @@ impl Application {
     /// Just like [eval] but throws an error if we encounter an async function.
     pub fn eval_sync(mut self, barrier: &mut ContBarrier) -> Result<Vec<Value>, Exception> {
         loop {
-            let op = match self.op {
-                OpType::Proc(proc) => proc,
-                OpType::HaltOk => return Ok(self.args),
+            let Application { op, args } = self;
+            self = match op {
+                OpType::Proc(proc) => proc.0.apply_sync(args, barrier),
+                OpType::HaltOk => return Ok(args),
                 OpType::HaltErr => {
-                    return Err(Exception(self.args.pop().unwrap()));
+                    let mut args = args;
+                    return Err(Exception(args.pop().unwrap()));
                 }
             };
-            self = op.0.apply_sync(self.k, self.args, barrier);
         }
     }
 }
