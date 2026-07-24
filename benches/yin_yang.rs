@@ -10,7 +10,7 @@ use scheme_rs_macros::{maybe_async, maybe_await};
 
 #[maybe_async]
 fn yin_yang_fn() -> Procedure {
-    let rt = Runtime::new();
+    let rt = Runtime::handle();
     let repl = TopLevelEnvironment::new_repl(&rt);
     maybe_await!(repl.eval(
         true,

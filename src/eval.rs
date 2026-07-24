@@ -34,7 +34,7 @@ pub fn eval(
     let ctxt = ParseContext::new(false);
     let mut mutable_vars = HashSet::default();
     let expr = maybe_await!(Expression::parse(&ctxt, expr, &env, &mut mutable_vars))?;
-    let result = maybe_await!(Compiler::new(mutable_vars).compile(Runtime::new(), &expr))?;
+    let result = maybe_await!(Compiler::new(mutable_vars).compile(Runtime::handle(), &expr))?;
     Ok(barrier.call_cont(result))
 }
 

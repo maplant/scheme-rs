@@ -67,7 +67,7 @@ pub struct Runtime(#[trace(skip)] pub(crate) &'static RuntimeInner);
 
 impl Default for Runtime {
     fn default() -> Self {
-        Self::new()
+        Self::handle()
     }
 }
 
@@ -75,7 +75,7 @@ impl Runtime {
     /// Creates a handle to the application's runtime, initializing the garbage
     /// collector and creating a default registry with the bridge functions
     /// populated.
-    pub fn new() -> Self {
+    pub fn handle() -> Self {
         static APP_RUNTIME: LazyLock<RuntimeInner> = LazyLock::new(RuntimeInner::new);
         Self(&*APP_RUNTIME)
     }

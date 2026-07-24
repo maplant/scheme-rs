@@ -212,7 +212,7 @@ fn entry(runtime: &Runtime) -> Result<(), Exception> {
 #[maybe_async]
 #[cfg_attr(feature = "async", tokio::main)]
 fn main() {
-    let runtime = Runtime::new();
+    let runtime = Runtime::handle();
 
     if let Err(exception) = maybe_await!(entry(&runtime)) {
         let mut out = String::new();

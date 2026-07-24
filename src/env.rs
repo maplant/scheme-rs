@@ -193,7 +193,7 @@ impl TopLevelEnvironment {
             Symbol::intern("base"),
             Symbol::intern("primitives"),
         ];
-        let rnrs_base_prims = Runtime::new()
+        let rnrs_base_prims = Runtime::handle()
             .get_registry()
             .0
             .read()
@@ -212,7 +212,7 @@ impl TopLevelEnvironment {
     }
 
     pub fn from_spec(spec: LibrarySpec, path: PathBuf) -> Result<Self, Exception> {
-        let registry = Runtime::new().get_registry();
+        let registry = Runtime::handle().get_registry();
         let mut registry_inner = registry.0.write();
         Self::from_spec_with_scope(spec, path, Scope::new(), &mut registry_inner)
     }
@@ -333,7 +333,7 @@ impl TopLevelEnvironment {
             &sexprs,
             &mut mutable_vars,
         ))?;
-        maybe_await!(Compiler::new(mutable_vars).compile(Runtime::new(), &body))
+        maybe_await!(Compiler::new(mutable_vars).compile(Runtime::handle(), &body))
     }
 
     #[maybe_async]
@@ -353,11 +353,11 @@ impl TopLevelEnvironment {
             &sexpr,
             &mut mutable_vars,
         ))?;
-        maybe_await!(Compiler::new(mutable_vars).compile(Runtime::new(), &body))
+        maybe_await!(Compiler::new(mutable_vars).compile(Runtime::handle(), &body))
     }
 
     pub fn import(&self, import_set: ImportSet) -> Result<(), Exception> {
-        let registry = Runtime::new().get_registry();
+        let registry = Runtime::handle().get_registry();
         let scope = {
             let this = self.0.read();
             this.scope
@@ -426,7 +426,7 @@ impl TopLevelEnvironment {
                 }
             };
         let this = RwLockWriteGuard::downgrade_to_upgradable(this);
-        let _ = maybe_await!(Compiler::new(mutable_vars).compile(Runtime::new(), &defn_body))?;
+        let _ = maybe_await!(Compiler::new(mutable_vars).compile(Runtime::handle(), &defn_body))?;
         RwLockUpgradableReadGuard::upgrade(this).state = LibraryState::Invoked;
         Ok(())
     }
@@ -640,7 +640,7 @@ impl LexicalContour {
 
     #[maybe_async]
     pub fn import(&self, import_set: ImportSet) -> Result<(), Exception> {
-        let registry = Runtime::new().get_registry();
+        let registry = Runtime::handle().get_registry();
         let mut registry_inner = registry.0.write();
         let imports = registry_inner.import(import_set)?;
         let mut bindings = self.bindings.lock();

@@ -74,14 +74,14 @@ pub use scheme_rs_macros::define_condition_type;
 
 impl fmt::Display for Exception {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let runtime = Runtime::new();
+        let runtime = Runtime::handle();
         self.pretty_print(&mut runtime.source_cache(), f)
     }
 }
 
 impl fmt::Debug for Exception {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let runtime = Runtime::new();
+        let runtime = Runtime::handle();
         self.pretty_print(&mut runtime.source_cache(), f)
     }
 }

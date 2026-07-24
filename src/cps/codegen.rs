@@ -395,7 +395,7 @@ impl CompilationUnit<'_, '_> {
                 (cell, symbol)
             }
             CpsValue::Var(Var::Global(global)) => {
-                let mut globals_pool = Runtime::new().0.globals_pool.lock();
+                let mut globals_pool = Runtime::handle().0.globals_pool.lock();
                 globals_pool.insert(global.clone());
                 let cell = self.builder.ins().iconst(
                     types::I64,
@@ -414,7 +414,7 @@ impl CompilationUnit<'_, '_> {
                     .iconst(types::I64, known.cast_to_usize() as i64);
             }
             CpsValue::Const(val) => {
-                let mut constants_pool = Runtime::new().0.constants_pool.lock();
+                let mut constants_pool = Runtime::handle().0.constants_pool.lock();
                 constants_pool.insert(val.clone());
                 let raw = SchemeValue::as_raw(constants_pool.get(val));
                 return self.builder.ins().iconst(types::I64, raw as i64);
@@ -1147,7 +1147,7 @@ impl CompilationUnit<'_, '_> {
         let from = self.value_codegen(from);
         let to = match to {
             CpsValue::Var(Var::Global(global)) => {
-                let mut globals_pool = Runtime::new().0.globals_pool.lock();
+                let mut globals_pool = Runtime::handle().0.globals_pool.lock();
                 globals_pool.insert(global.clone());
                 self.builder.ins().iconst(
                     types::I64,
