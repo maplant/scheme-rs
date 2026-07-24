@@ -13,7 +13,7 @@ use crate::{
         Value as CpsValue,
         analysis::{Escaping, FreeVariables},
     },
-    proc::{ContinuationPtr, FuncPtr, ProcDebugInfo, Procedure},
+    proc::{ContinuationPtr, ProcDebugInfo, Procedure},
     runtime::{DebugInfo, Runtime},
     value::{
         FALSE_VALUE, FIXNUM_MAX, FIXNUM_MIN, NULL_VALUE, TAG, TRUE_VALUE, Tag, UNDEFINED_VALUE,
@@ -56,7 +56,8 @@ pub(crate) struct RuntimeFunctions {
     apply: FuncId,
     halt: FuncId,
     make_user: FuncId,
-    make_continuation: FuncId,
+    push_continuation: FuncId,
+    call_continuation: FuncId,
     patch_env_slot: FuncId,
     unroot_proc: FuncId,
     alloc_cell: FuncId,
@@ -91,6 +92,7 @@ pub(crate) struct RuntimeFunctions {
     get_frame: FuncId,
 
     // Continuation mark primops:
+    #[cfg(feature = "continuation-marks")]
     set_continuation_mark: FuncId,
 
     // Math primops:
@@ -108,29 +110,34 @@ pub(crate) struct RuntimeFunctions {
 }
 
 impl Cps {
-    pub(crate) fn into_procedure(
+    pub(crate) fn compile(
         self,
         runtime: Runtime,
-        escaping: Escaping,
         runtime_funcs: &RuntimeFunctions,
         module: &mut JITModule,
         debug_info: &mut DebugInfo,
-    ) -> Procedure {
+    ) -> ContinuationPtr {
         if std::env::var("SCHEME_RS_DEBUG").is_ok() {
             eprintln!("Compiling:");
             self.pretty_print(0);
             eprintln!();
         }
 
+        // Collect free variables
         let mut free_vars = FreeVariables::default();
         free_vars.find_free_vars(&self);
+
+        // Collect escaping functions
+        let mut lambda_bindings = HashMap::default();
+        self.collect_bindings(&mut lambda_bindings);
+        let escaping = Escaping::find_escaping(&self, &lambda_bindings, &free_vars);
 
         let mut cells = HashSet::default();
         self.cells(&mut cells);
         let mut builder_context = FunctionBuilderContext::new();
         let mut ctx = module.make_context();
 
-        make_sig(&mut ctx.func.signature, false);
+        make_sig(&mut ctx.func.signature);
 
         let val = Local::gensym();
         let name = val.get_func_name();
@@ -155,14 +162,12 @@ impl Cps {
 
         let params = {
             let block_params = builder.block_params(entry_block);
-            [
-                block_params[RUNTIME_PARAM],
-                block_params[CONT_BARRIER_PARAM],
-            ]
+            [block_params[CONT_BARRIER_PARAM], block_params[OUT_PARAM]]
         };
 
+        let mut continuations = HashSet::default();
+
         let mut cu = CompilationUnit {
-            runtime: runtime.clone(),
             builder,
             // Top level cannot inherit environmental variables, by defintion.
             rebinds: Rebinds::new(),
@@ -170,6 +175,7 @@ impl Cps {
             curr_allocs: 0,
             runtime_funcs,
             params,
+            continuations: &mut continuations,
             module,
             allocs_at_local_cont: &allocs_at_local_conts,
             local_cont_blocks: HashMap::default(),
@@ -201,6 +207,7 @@ impl Cps {
                 runtime_funcs,
                 &cells,
                 &escaping,
+                &mut continuations,
                 &mut free_vars,
                 module,
                 debug_info,
@@ -216,12 +223,11 @@ impl Cps {
             )
         };
 
-        Procedure::new(runtime, Vec::new(), FuncPtr::Continuation(func), 0, true)
+        func
     }
 }
 
 struct CompilationUnit<'m, 'a> {
-    runtime: Runtime,
     builder: FunctionBuilder<'m>,
     rebinds: Rebinds,
     allocs: StackSlot,
@@ -230,6 +236,7 @@ struct CompilationUnit<'m, 'a> {
     local_cont_blocks: HashMap<Local, Block>,
     runtime_funcs: &'a RuntimeFunctions,
     params: [Value; 2],
+    continuations: &'a mut HashSet<Local>,
     free_vars: &'a mut FreeVariables,
     escaping: &'a Escaping,
     module: &'a mut JITModule,
@@ -244,11 +251,11 @@ impl CompilationUnit<'_, '_> {
         self.curr_allocs += 1;
     }
 
-    fn get_runtime(&self) -> Value {
+    fn get_barrier(&self) -> Value {
         self.params[0]
     }
 
-    fn get_barrier(&self) -> Value {
+    fn get_out(&self) -> Value {
         self.params[1]
     }
 
@@ -316,6 +323,7 @@ impl CompilationUnit<'_, '_> {
             Cps::PrimOp(PrimOp::ErrorNoPatternsMatch, _, _, _) => {
                 self.error_no_patterns_match_codegen();
             }
+            #[cfg(feature = "continuation-marks")]
             Cps::PrimOp(PrimOp::GetFrame, args, dest, cexpr) => {
                 let [op, span] = args.as_slice() else {
                     unreachable!()
@@ -329,6 +337,7 @@ impl CompilationUnit<'_, '_> {
                     deferred_local_conts,
                 );
             }
+            #[cfg(feature = "continuation-marks")]
             Cps::PrimOp(PrimOp::SetContinuationMark, args, _, cexpr) => {
                 let [tag, val] = args.as_slice() else {
                     unreachable!()
@@ -386,8 +395,8 @@ impl CompilationUnit<'_, '_> {
                 (cell, symbol)
             }
             CpsValue::Var(Var::Global(global)) => {
-                let mut runtime_write = self.runtime.0.write();
-                runtime_write.globals_pool.insert(global.clone());
+                let mut globals_pool = Runtime::handle().0.globals_pool.lock();
+                globals_pool.insert(global.clone());
                 let cell = self.builder.ins().iconst(
                     types::I64,
                     SchemeValue::as_raw(&SchemeValue::from(global.val.clone())) as i64,
@@ -405,9 +414,9 @@ impl CompilationUnit<'_, '_> {
                     .iconst(types::I64, known.cast_to_usize() as i64);
             }
             CpsValue::Const(val) => {
-                let mut runtime_write = self.runtime.0.write();
-                runtime_write.constants_pool.insert(val.clone());
-                let raw = SchemeValue::as_raw(runtime_write.constants_pool.get(val));
+                let mut constants_pool = Runtime::handle().0.constants_pool.lock();
+                constants_pool.insert(val.clone());
+                let raw = SchemeValue::as_raw(constants_pool.get(val));
                 return self.builder.ins().iconst(types::I64, raw as i64);
             }
         };
@@ -918,6 +927,7 @@ impl CompilationUnit<'_, '_> {
         self.cps_codegen(cexpr, deferred_procs, deferred_local_conts);
     }
 
+    #[cfg(feature = "continuation-marks")]
     fn set_continuation_mark_codegen(&mut self, tag: &CpsValue, val: &CpsValue) {
         let tag = self.value_codegen(tag);
         let val = self.value_codegen(val);
@@ -991,33 +1001,61 @@ impl CompilationUnit<'_, '_> {
         if let Some(local) = operator.to_local()
             && let Some(num_allocs_at_dest) = self.allocs_at_local_cont.get(&local)
         {
+            // Operator is a local continuation
             self.jump_codegen(self.local_cont_blocks[&local], *num_allocs_at_dest, args);
-            return;
+        } else if let Some(local) = operator.to_local()
+            && self.continuations.contains(&local)
+        {
+            // Operator is a regular continuation
+            let barrier = self.get_barrier();
+            let args_slot = self.alloc_array(args.len());
+            for (i, arg) in args.iter().enumerate() {
+                let val = self.value_codegen(arg);
+                self.array_store(args_slot, i, val);
+            }
+            let args_addr = self.builder.ins().stack_addr(types::I64, args_slot, 0);
+            let args_len = self.builder.ins().iconst(types::I32, args.len() as i64);
+            let out = self.get_out();
+            let call_cont = self
+                .module
+                .declare_func_in_func(self.runtime_funcs.call_continuation, self.builder.func);
+            self.builder
+                .ins()
+                .call(call_cont, &[args_addr, args_len, barrier, out]);
+            self.drop_all_codegen();
+            self.builder.ins().return_(&[]);
+        } else {
+            let barrier = self.get_barrier();
+            let operator = self.value_codegen(operator);
+
+            let args = if let Some(first) = args.first()
+                && let Some(local) = first.to_local()
+                && self.continuations.contains(&local)
+            {
+                &args[1..]
+            } else {
+                args
+            };
+
+            // Allocate space for the args to be passed to make_application
+            let args_slot = self.alloc_array(args.len());
+            for (i, arg) in args.iter().enumerate() {
+                let val = self.value_codegen(arg);
+                self.array_store(args_slot, i, val);
+            }
+
+            let args_addr = self.builder.ins().stack_addr(types::I64, args_slot, 0);
+            let args_len = self.builder.ins().iconst(types::I32, args.len() as i64);
+            let out = self.get_out();
+            let apply = self
+                .module
+                .declare_func_in_func(self.runtime_funcs.apply, self.builder.func);
+            self.builder
+                .ins()
+                .call(apply, &[operator, args_addr, args_len, barrier, out]);
+            self.drop_all_codegen();
+            self.builder.ins().return_(&[]);
         }
-
-        let runtime = self.get_runtime();
-        let barrier = self.get_barrier();
-        let operator = self.value_codegen(operator);
-
-        // Allocate space for the args to be passed to make_application
-        let args_slot = self.alloc_array(args.len());
-        for (i, arg) in args.iter().enumerate() {
-            let val = self.value_codegen(arg);
-            self.array_store(args_slot, i, val);
-        }
-
-        let args_addr = self.builder.ins().stack_addr(types::I64, args_slot, 0);
-        let args_len = self.builder.ins().iconst(types::I32, args.len() as i64);
-        let apply = self
-            .module
-            .declare_func_in_func(self.runtime_funcs.apply, self.builder.func);
-        let call = self
-            .builder
-            .ins()
-            .call(apply, &[runtime, operator, args_addr, args_len, barrier]);
-        let app = self.builder.inst_results(call)[0];
-        self.drop_all_codegen();
-        self.builder.ins().return_(&[app]);
     }
 
     fn jump_codegen(&mut self, to: Block, num_allocs_at_dest: usize, args: &[CpsValue]) {
@@ -1042,13 +1080,13 @@ impl CompilationUnit<'_, '_> {
 
     fn halt_codegen(&mut self, args: &CpsValue) {
         let val = self.value_codegen(args);
+        let out = self.get_out();
         let halt = self
             .module
             .declare_func_in_func(self.runtime_funcs.halt, self.builder.func);
-        let call = self.builder.ins().call(halt, &[val]);
-        let result = self.builder.inst_results(call)[0];
+        self.builder.ins().call(halt, &[val, out]);
         self.drop_all_codegen();
-        self.builder.ins().return_(&[result]);
+        self.builder.ins().return_(&[]);
     }
 
     fn if_codegen(
@@ -1089,14 +1127,13 @@ impl CompilationUnit<'_, '_> {
     }
 
     fn raise_codegen(&mut self, val: Value) {
-        let runtime = self.get_runtime();
         let barrier = self.get_barrier();
+        let out = self.get_out();
         let raise = self
             .module
             .declare_func_in_func(self.runtime_funcs.raise_rt, self.builder.func);
-        let call = self.builder.ins().call(raise, &[runtime, val, barrier]);
-        let result = self.builder.inst_results(call)[0];
-        self.builder.ins().return_(&[result]);
+        self.builder.ins().call(raise, &[val, barrier, out]);
+        self.builder.ins().return_(&[]);
     }
 
     fn store_codegen(
@@ -1110,8 +1147,8 @@ impl CompilationUnit<'_, '_> {
         let from = self.value_codegen(from);
         let to = match to {
             CpsValue::Var(Var::Global(global)) => {
-                let mut runtime_write = self.runtime.0.write();
-                runtime_write.globals_pool.insert(global.clone());
+                let mut globals_pool = Runtime::handle().0.globals_pool.lock();
+                globals_pool.insert(global.clone());
                 self.builder.ins().iconst(
                     types::I64,
                     SchemeValue::as_raw(&SchemeValue::from(global.val.clone())) as i64,
@@ -1159,17 +1196,20 @@ impl CompilationUnit<'_, '_> {
         let mut proc_bundles = Vec::new();
         let mut local_cont_bundles = Vec::new();
         for binding in bindings.into_iter() {
-            let is_proc = binding.is_func() || self.escaping.contains(binding.val);
+            let is_func = binding.is_func();
             let bundle = ProcedureBundle::new(
-                self.runtime.clone(),
                 binding.val,
                 binding.args,
                 *binding.body,
                 binding.span,
+                self.continuations,
                 self.free_vars,
                 self.module,
             );
-            if is_proc {
+            if is_func {
+                proc_bundles.push(bundle);
+            } else if self.escaping.contains(binding.val) {
+                self.continuations.insert(binding.val);
                 proc_bundles.push(bundle);
             } else {
                 let cont_block = self.builder.create_block();
@@ -1178,11 +1218,15 @@ impl CompilationUnit<'_, '_> {
             }
         }
 
-        // The set of vals bound in this Fix (that are not local continuations).
+        // The set of vals bound in this Fix (that are not continuations).
         // A binding's body may reference any of these, including itself, so we
         // cannot resolve them until after all of the procedures have been
         // allocated.
-        let fix_vals = proc_bundles.iter().map(|b| b.val).collect::<HashSet<_>>();
+        let fix_vals = proc_bundles
+            .iter()
+            .filter(|b| b.args.continuation.is_some())
+            .map(|b| b.val)
+            .collect::<HashSet<_>>();
 
         // Allocate all of the procedures. The procedures are rooted and thus we
         // have exclusive mutable access to them.
@@ -1252,7 +1296,6 @@ impl CompilationUnit<'_, '_> {
             self.array_store(env, i, val);
         }
 
-        let runtime_param = self.get_runtime();
         let func_ref = self
             .module
             .declare_func_in_func(bundle.func_id, self.builder.func);
@@ -1272,16 +1315,9 @@ impl CompilationUnit<'_, '_> {
             .iconst(types::I8, bundle.args.variadic as i64);
         assert_eq!(std::mem::size_of::<bool>(), 1);
 
-        let mut args = vec![
-            runtime_param,
-            func_ptr,
-            env_addr,
-            env_len,
-            num_required,
-            is_variadic,
-        ];
+        let mut args = vec![func_ptr, env_addr, env_len, num_required, is_variadic];
 
-        let make_proc = if bundle.args.continuation.is_some() {
+        if bundle.args.continuation.is_some() {
             args.push(if let Some(ref loc) = bundle.loc {
                 let debug_info = Arc::new(ProcDebugInfo::new(
                     bundle.val.name,
@@ -1294,22 +1330,28 @@ impl CompilationUnit<'_, '_> {
             } else {
                 self.builder.ins().iconst(types::I64, 0)
             });
-            self.runtime_funcs.make_user
+            let make_user = self
+                .module
+                .declare_func_in_func(self.runtime_funcs.make_user, self.builder.func);
+            let call = self.builder.ins().call(make_user, &args);
+            let proc = self.builder.inst_results(call)[0];
+            self.rebinds.rebind(bundle.val, IrValue::Value(proc));
+            self.push_alloc(proc);
         } else {
             args.push(self.get_barrier());
-            self.runtime_funcs.make_continuation
-        };
-
-        let make_proc = self
-            .module
-            .declare_func_in_func(make_proc, self.builder.func);
-        let call = self.builder.ins().call(make_proc, &args);
-        let proc = self.builder.inst_results(call)[0];
-        self.rebinds.rebind(bundle.val, IrValue::Value(proc));
-        self.push_alloc(proc);
+            let push_cont = self
+                .module
+                .declare_func_in_func(self.runtime_funcs.push_continuation, self.builder.func);
+            self.builder.ins().call(push_cont, &args);
+        }
     }
 
     fn patch_env_codegen(&mut self, bundle: &ProcedureBundle, fix_vals: &HashSet<Local>) {
+        // Continuations do not need to be patched.
+        if bundle.args.continuation.is_none() {
+            return;
+        }
+
         let IrValue::Value(proc) = self.rebinds.fetch_bind(&bundle.val) else {
             unreachable!();
         };
@@ -1325,14 +1367,19 @@ impl CompilationUnit<'_, '_> {
             let IrValue::Value(target) = self.rebinds.fetch_bind(env_var) else {
                 unreachable!();
             };
+            let target = *target;
             let slot_idx = self.builder.ins().iconst(types::I32, i as i64);
             self.builder
                 .ins()
-                .call(patch_fn, &[*proc, slot_idx, *target]);
+                .call(patch_fn, &[*proc, slot_idx, target]);
         }
     }
 
     fn unroot_proc_codegen(&mut self, bundle: &ProcedureBundle) {
+        if bundle.args.continuation.is_none() {
+            return;
+        }
+
         let IrValue::Value(proc) = self.rebinds.fetch_bind(&bundle.val) else {
             unreachable!();
         };
@@ -1346,7 +1393,6 @@ impl CompilationUnit<'_, '_> {
 }
 
 pub struct ProcedureBundle {
-    runtime: Runtime,
     func_id: FuncId,
     val: Local,
     env: Vec<Local>,
@@ -1355,38 +1401,30 @@ pub struct ProcedureBundle {
     loc: Option<Span>,
 }
 
-const RUNTIME_PARAM: usize = 0;
-const ENV_PARAM: usize = 1;
-const ARGS_PARAM: usize = 2;
-const CONT_BARRIER_PARAM: usize = 3;
-const CONTINUATION_PARAM: usize = 4;
+const ENV_PARAM: usize = 0;
+const ARGS_PARAM: usize = 1;
+const CONT_BARRIER_PARAM: usize = 2;
+const OUT_PARAM: usize = 3;
 
-fn make_sig(sig: &mut Signature, has_continuation: bool) {
-    sig.params.push(AbiParam::new(types::I64)); // Runtime
+fn make_sig(sig: &mut Signature) {
     sig.params.push(AbiParam::new(types::I64)); // Env
     sig.params.push(AbiParam::new(types::I64)); // Args
-    sig.params.push(AbiParam::new(types::I64)); // DynStack
-
-    if has_continuation {
-        sig.params.push(AbiParam::new(types::I64)); // Continuation
-    }
-
-    sig.returns.push(AbiParam::new(types::I64)); // Application
+    sig.params.push(AbiParam::new(types::I64)); // ContBarrier
+    sig.params.push(AbiParam::new(types::I64)); // Application out-pointer
 }
 
 impl ProcedureBundle {
     fn new(
-        runtime: Runtime,
         val: Local,
         args: LambdaArgs,
         body: Cps,
         loc: Option<Span>,
+        continuations: &HashSet<Local>,
         free_vars_cache: &mut FreeVariables,
         module: &mut JITModule,
     ) -> Self {
         let mut sig = module.make_signature();
-        make_sig(&mut sig, args.continuation.is_some());
-        // let name = val.to_func_name();
+        make_sig(&mut sig);
         let func_id = module
             .declare_anonymous_function(&sig)
             .expect("Could not declare function");
@@ -1395,10 +1433,10 @@ impl ProcedureBundle {
             .find_free_vars(&body)
             .difference(&args.iter().cloned().collect::<HashSet<_>>())
             .cloned()
+            .filter(|var| !continuations.contains(&var))
             .collect::<Vec<_>>();
 
         Self {
-            runtime,
             func_id,
             val,
             env,
@@ -1414,6 +1452,7 @@ impl ProcedureBundle {
         runtime_funcs: &RuntimeFunctions,
         cells: &HashSet<Local>,
         escaping: &Escaping,
+        continuations: &mut HashSet<Local>,
         free_vars: &mut FreeVariables,
         module: &mut JITModule,
         debug_info: &mut DebugInfo,
@@ -1421,7 +1460,7 @@ impl ProcedureBundle {
     ) {
         let mut builder_context = FunctionBuilderContext::new();
         let mut ctx = module.make_context();
-        make_sig(&mut ctx.func.signature, self.args.continuation.is_some());
+        make_sig(&mut ctx.func.signature);
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_context);
 
         let mut allocs_at_local_conts = HashMap::default();
@@ -1442,10 +1481,7 @@ impl ProcedureBundle {
 
         let params = {
             let block_params = builder.block_params(entry_block);
-            [
-                block_params[RUNTIME_PARAM],
-                block_params[CONT_BARRIER_PARAM],
-            ]
+            [block_params[CONT_BARRIER_PARAM], block_params[OUT_PARAM]]
         };
 
         let mut rebinds = Rebinds::new();
@@ -1474,19 +1510,14 @@ impl ProcedureBundle {
             rebinds.rebind(*arg, IrValue::Value(var));
         }
 
-        // Load continuation:
-        if let Some(cont) = self.args.continuation {
-            let cont_param = builder.block_params(entry_block)[CONTINUATION_PARAM];
-            let val = builder.ins().bor_imm(cont_param, Tag::Procedure as i64);
-            rebinds.rebind(cont, IrValue::Value(val));
-        }
+        continuations.extend(self.args.continuation);
 
         let mut cu = CompilationUnit {
-            runtime: self.runtime,
             builder,
             rebinds,
             allocs,
             curr_allocs: 0,
+            continuations,
             allocs_at_local_cont: &allocs_at_local_conts,
             local_cont_blocks: HashMap::default(),
             escaping,

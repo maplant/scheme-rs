@@ -10,7 +10,7 @@ use scheme_rs_macros::{maybe_async, maybe_await};
 
 #[maybe_async]
 fn integrate_fn() -> Procedure {
-    let rt = Runtime::new();
+    let rt = Runtime::handle();
     let prog = TopLevelEnvironment::new_repl(&rt);
     maybe_await!(prog.eval(true, "(import (benches integrate)) run"))
         .unwrap()

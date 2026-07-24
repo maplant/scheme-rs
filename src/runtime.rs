@@ -6,7 +6,7 @@
 
 use crate::{
     ast::{Definitions, Primitive},
-    cps::{Cps, analysis::Escaping, codegen::RuntimeFunctionsBuilder, compile::Compiler},
+    cps::{Cps, codegen::RuntimeFunctionsBuilder, compile::Compiler},
     env::{Environment, Global, TopLevelEnvironment},
     exceptions::{Exception, SourceCache, raise},
     gc::{Gc, GcInner, Trace, init_gc},
@@ -15,7 +15,7 @@ use crate::{
     num,
     ports::{BufferMode, Port, Transcoder},
     proc::{
-        Application, ContBarrier, ContinuationPtr, FuncPtr, ProcDebugInfo, Procedure,
+        Application, ContBarrier, ContPtr, ContinuationPtr, FuncPtr, ProcDebugInfo, Procedure,
         ProcedureInner, UserPtr,
     },
     records::Embedded,
@@ -24,13 +24,13 @@ use crate::{
     syntax::{Identifier, Span, Syntax},
     value::{Cell, TAG, UnpackedValue, Value},
 };
-use parking_lot::{MappedRwLockWriteGuard, RwLock, RwLockWriteGuard};
+use parking_lot::{MappedRwLockWriteGuard, Mutex, MutexGuard, RwLock, RwLockWriteGuard};
 use scheme_rs_macros::{maybe_async, maybe_await, runtime_fn};
 use std::{
     collections::{BTreeSet, HashSet},
-    mem::ManuallyDrop,
+    mem::{ManuallyDrop, MaybeUninit},
     path::Path,
-    sync::Arc,
+    sync::{Arc, LazyLock},
 };
 
 /// Scheme-rs core runtime
@@ -46,8 +46,7 @@ use std::{
 /// You can also use the runtime to [define libraries](Runtime::def_lib) from
 /// Rust code.
 ///
-/// Runtime is automatically reference counted, so if you have all of the
-/// procedures you need you can drop it without any issue.
+/// There is only one Runtime per running program.
 ///
 /// # Safety
 ///
@@ -61,37 +60,36 @@ use std::{
 /// However, this is dropping a lifetime. If we clone a procedure and drop the
 /// runtime from whence it was cleaved, we're left with a dangling pointer.
 ///
-/// In order to remedy this it is vitally important the closure has a back
-/// pointer to the runtime.
-#[derive(Trace, Clone)]
-pub struct Runtime(pub(crate) Gc<RwLock<RuntimeInner>>);
+/// In order to remedy this we keep a Runtime alive for the lifetime of a
+/// program.
+#[derive(Trace, Copy, Clone)]
+pub struct Runtime(#[trace(skip)] pub(crate) &'static RuntimeInner);
 
 impl Default for Runtime {
     fn default() -> Self {
-        Self::new()
+        Self::handle()
     }
 }
 
 impl Runtime {
-    /// Creates a new runtime. Also initializes the garbage collector and
-    /// creates a default registry with the bridge functions populated.
-    pub fn new() -> Self {
-        let this = Self(Gc::new(RwLock::new(RuntimeInner::new())));
-        let new_registry = Registry::new(&this);
-        this.0.write().registry = new_registry;
-        this
+    /// Creates a handle to the application's runtime, initializing the garbage
+    /// collector and creating a default registry with the bridge functions
+    /// populated.
+    pub fn handle() -> Self {
+        static APP_RUNTIME: LazyLock<RuntimeInner> = LazyLock::new(RuntimeInner::new);
+        Self(&*APP_RUNTIME)
     }
 
     /// Run a program at the given location and return the values.
     #[maybe_async]
-    pub fn run_program(&self, path: &Path) -> Result<Vec<Value>, Exception> {
+    pub fn run_program(self, path: &Path) -> Result<Vec<Value>, Exception> {
         #[cfg(not(feature = "async"))]
         use std::fs::File;
 
         #[cfg(feature = "tokio")]
         use tokio::fs::File;
 
-        let progm = TopLevelEnvironment::new_program(self, path);
+        let progm = TopLevelEnvironment::new_program(path);
         let env = Environment::Top(progm.clone());
 
         let mut form = {
@@ -124,15 +122,11 @@ impl Runtime {
         }
 
         let mut mutable_vars = HashSet::default();
-        let body = maybe_await!(Definitions::parse_lib_body(
-            self,
-            &form,
-            &env,
-            &mut mutable_vars
-        ))?;
-        let proc = maybe_await!(Compiler::new(mutable_vars).compile(self, &body))?;
-        maybe_await!(Application::new(proc, None, Vec::new()).eval(&mut ContBarrier::default()))
+        let body = maybe_await!(Definitions::parse_lib_body(&form, &env, &mut mutable_vars))?;
+        maybe_await!(Compiler::new(mutable_vars).compile(self, &body))
     }
+
+    // TODO: Move to registry:
 
     /// Define a library from Rust code. Useful if file system access is disabled.
     #[cfg(not(feature = "async"))]
@@ -140,8 +134,7 @@ impl Runtime {
     pub fn def_lib(&self, lib: &str) -> Result<(), Exception> {
         use std::panic::Location;
 
-        self.get_registry()
-            .def_lib(self, lib, Location::caller().file())
+        self.get_registry().def_lib(lib, Location::caller().file())
     }
 
     /// Define a library from Rust code. Useful if file system access is disabled.
@@ -150,7 +143,7 @@ impl Runtime {
         use std::panic::Location;
 
         self.get_registry()
-            .def_lib(self, lib, Location::caller().file())
+            .def_lib(lib, Location::caller().file())
             .await
     }
 
@@ -163,30 +156,36 @@ impl Runtime {
     }
 
     pub(crate) fn get_registry(&self) -> Registry {
-        self.0.read().registry.clone()
+        self.0.registry.clone()
     }
 
     #[maybe_async]
-    pub(crate) fn compile_expr(&self, expr: Cps, escaping: Escaping) -> Procedure {
+    pub(crate) fn compile_expr(&self, expr: Cps) -> Result<Vec<Value>, Exception> {
         let (completion_tx, completion_rx) = completion();
         let task = CompilationTask {
             completion_tx,
             compilation_unit: expr,
             runtime: self.clone(),
-            escaping,
         };
-        let sender = { self.0.read().compilation_buffer_tx.clone() };
+        let sender = { self.0.compilation_buffer_tx.clone() };
         let _ = maybe_await!(sender.send(task));
-        // Wait for the compilation task to complete:
-        maybe_await!(recv_procedure(completion_rx))
+        let entry_cont = maybe_await!(recv_continuation(completion_rx));
+        let mut barrier = ContBarrier::new();
+        let app = unsafe {
+            let mut app = std::mem::MaybeUninit::<Application>::uninit();
+            entry_cont(
+                std::ptr::null(),
+                std::ptr::null(),
+                &mut barrier as *mut ContBarrier<'_>,
+                &mut app,
+            );
+            app.assume_init()
+        };
+        maybe_await!(app.eval(&mut barrier))
     }
 
-    pub(crate) unsafe fn from_raw_inc_rc(rt: *mut GcInner<RwLock<RuntimeInner>>) -> Self {
-        unsafe { Self(Gc::from_raw_inc_rc(rt)) }
-    }
-
-    pub fn source_cache(&self) -> MappedRwLockWriteGuard<'_, SourceCache> {
-        RwLockWriteGuard::map(self.0.write(), |inner| &mut inner.source_cache)
+    pub fn source_cache(&self) -> MutexGuard<'_, SourceCache> {
+        self.0.source_cache.lock()
     }
 }
 
@@ -218,10 +217,10 @@ pub(crate) struct RuntimeInner {
     pub(crate) registry: Registry,
     /// Channel to compilation task
     compilation_buffer_tx: CompilationBufferTx,
-    pub(crate) constants_pool: EqualHashSet,
-    pub(crate) globals_pool: HashSet<Global>,
+    pub(crate) constants_pool: Mutex<EqualHashSet>,
+    pub(crate) globals_pool: Mutex<HashSet<Global>>,
     pub(crate) debug_info: DebugInfo,
-    pub(crate) source_cache: SourceCache,
+    pub(crate) source_cache: Mutex<SourceCache>,
 }
 
 impl Default for RuntimeInner {
@@ -249,12 +248,12 @@ impl RuntimeInner {
         let (compilation_buffer_tx, compilation_buffer_rx) = compilation_buffer();
         std::thread::spawn(move || compilation_task(compilation_buffer_rx));
         RuntimeInner {
-            registry: Registry::empty(),
+            registry: Registry::new(),
             compilation_buffer_tx,
-            constants_pool: EqualHashSet::new(),
-            globals_pool: HashSet::new(),
+            constants_pool: Mutex::new(EqualHashSet::new()),
+            globals_pool: Mutex::new(HashSet::new()),
             debug_info: DebugInfo::default(),
-            source_cache: SourceCache::default(),
+            source_cache: Mutex::new(SourceCache::default()),
         }
     }
 }
@@ -272,14 +271,14 @@ impl DebugInfo {
 }
 
 #[cfg(not(feature = "async"))]
-type CompletionTx = std::sync::mpsc::SyncSender<Procedure>;
+type CompletionTx = std::sync::mpsc::SyncSender<ContinuationPtr>;
 #[cfg(not(feature = "async"))]
-type CompletionRx = std::sync::mpsc::Receiver<Procedure>;
+type CompletionRx = std::sync::mpsc::Receiver<ContinuationPtr>;
 
 #[cfg(feature = "async")]
-type CompletionTx = tokio::sync::oneshot::Sender<Procedure>;
+type CompletionTx = tokio::sync::oneshot::Sender<ContinuationPtr>;
 #[cfg(feature = "async")]
-type CompletionRx = tokio::sync::oneshot::Receiver<Procedure>;
+type CompletionRx = tokio::sync::oneshot::Receiver<ContinuationPtr>;
 
 #[cfg(not(feature = "async"))]
 fn completion() -> (CompletionTx, CompletionRx) {
@@ -292,18 +291,17 @@ fn completion() -> (CompletionTx, CompletionRx) {
 }
 
 #[cfg(not(feature = "async"))]
-fn recv_procedure(rx: CompletionRx) -> Procedure {
+fn recv_continuation(rx: CompletionRx) -> ContinuationPtr {
     rx.recv().unwrap()
 }
 
 #[cfg(feature = "async")]
-async fn recv_procedure(rx: CompletionRx) -> Procedure {
+async fn recv_continuation(rx: CompletionRx) -> ContinuationPtr {
     rx.await.unwrap()
 }
 
 struct CompilationTask {
     compilation_unit: Cps,
-    escaping: Escaping,
     completion_tx: CompletionTx,
     /// Since Contexts are per-thread, we will only ever see the same Runtime.
     /// However, we can't cache the Runtime, as that would cause a ref cycle
@@ -361,17 +359,10 @@ fn compilation_task(mut compilation_queue_rx: CompilationBufferRx) {
         let CompilationTask {
             completion_tx,
             compilation_unit,
-            escaping,
             runtime,
         } = task;
 
-        let proc = compilation_unit.into_procedure(
-            runtime,
-            escaping,
-            &runtime_funcs,
-            &mut module,
-            &mut debug_info,
-        );
+        let proc = compilation_unit.compile(runtime, &runtime_funcs, &mut module, &mut debug_info);
 
         let _ = completion_tx.send(proc);
     }
@@ -454,40 +445,31 @@ unsafe extern "C" fn dropv(val: *const *const (), num_drops: u32) {
 /// Create a boxed application.
 #[runtime_fn]
 unsafe extern "C" fn apply(
-    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     op: *const (),
     args: *const *const (),
     num_args: u32,
     barrier: *mut ContBarrier,
-) -> *mut Application {
+    out: *mut MaybeUninit<Application>,
+) {
     unsafe {
         let op = match Value::from_raw_inc_rc(op).unpack() {
             UnpackedValue::Procedure(op) => op,
             x => {
                 let raised = raise(
-                    Runtime::from_raw_inc_rc(runtime),
                     Exception::invalid_operator(&x.type_name()).into(),
                     barrier.as_mut().unwrap_unchecked(),
                 );
-                return Box::into_raw(Box::new(raised));
+                (*out).write(raised);
+                return;
             }
         };
 
-        let (k, offset) = if !op.0.is_continuation() {
-            (Value::from_raw_inc_rc(args.read()).cast(), 1)
-        } else {
-            (None, 0)
-        };
-
-        let app = Application::new(
+        (*out).write(Application::new(
             op,
-            k,
-            (offset..num_args)
+            (0..num_args)
                 .map(|i| Value::from_raw_inc_rc(args.add(i as usize).read()))
                 .collect(),
-        );
-
-        Box::into_raw(Box::new(app))
+        ));
     }
 }
 
@@ -515,6 +497,7 @@ unsafe extern "C" fn get_frame(op: *const (), span: *const ()) -> *const () {
 }
 
 /// Set the value for continuation mark
+#[cfg(feature = "continuation-marks")]
 #[runtime_fn]
 unsafe extern "C" fn set_continuation_mark(
     tag: *const (),
@@ -533,14 +516,13 @@ unsafe extern "C" fn set_continuation_mark(
 
 /// Create a boxed application that simply returns its arguments
 #[runtime_fn]
-pub(crate) unsafe extern "C" fn halt(args: *const ()) -> *mut Application {
+pub(crate) unsafe extern "C" fn halt(args: *const (), out: *mut MaybeUninit<Application>) {
     unsafe {
         // We do not need to increment the rc here, it will be incremented in list_to_vec
         let args = ManuallyDrop::new(Value::from_raw(args));
         let mut flattened = Vec::new();
         list_to_vec(&args, &mut flattened);
-        let app = Application::halt_ok(flattened);
-        Box::into_raw(Box::new(app))
+        (*out).write(Application::halt_ok(flattened));
     }
 }
 
@@ -561,6 +543,9 @@ unsafe extern "C" fn store(from: *const (), to: *const ()) {
 unsafe extern "C" fn car(val: *const (), error: *mut Value) -> *const () {
     unsafe {
         let val = ManuallyDrop::new(Value::from_raw(val));
+        if let Some(car) = val.pair_car() {
+            return Value::into_raw(car);
+        }
         match val.try_to::<Pair>() {
             Ok(pair) => Value::into_raw(pair.car()),
             Err(condition) => {
@@ -576,6 +561,9 @@ unsafe extern "C" fn car(val: *const (), error: *mut Value) -> *const () {
 unsafe extern "C" fn cdr(val: *const (), error: *mut Value) -> *const () {
     unsafe {
         let val = ManuallyDrop::new(Value::from_raw(val));
+        if let Some(cdr) = val.pair_cdr() {
+            return Value::into_raw(cdr);
+        }
         match val.try_to::<Pair>() {
             Ok(pair) => Value::into_raw(pair.cdr()),
             Err(condition) => {
@@ -613,39 +601,47 @@ unsafe extern "C" fn list(vals: *const *const (), num_vals: u32) -> *const () {
 
 /// Allocate a continuation
 #[runtime_fn]
-unsafe extern "C" fn make_continuation(
-    runtime: *mut GcInner<RwLock<RuntimeInner>>,
+unsafe extern "C" fn push_continuation(
     fn_ptr: ContinuationPtr,
     env: *const *const (),
     num_envs: u32,
     num_required_args: u32,
     variadic: bool,
     barrier: *mut ContBarrier,
-) -> *const () {
+) {
     unsafe {
-        // Collect the environment:
-        let env: Vec<_> = (0..num_envs)
-            .map(|i| Value::from_raw_inc_rc(env.add(i as usize).read()))
-            .collect();
-
-        barrier.as_mut().unwrap().push_marks();
-        let proc = Procedure(Gc::rooted(ProcedureInner::new(
-            Runtime::from_raw_inc_rc(runtime),
-            env,
-            FuncPtr::Continuation(fn_ptr),
+        let barrier = barrier.as_mut().unwrap();
+        barrier.push_cont(
+            (0..num_envs).map(|i| Value::from_raw_inc_rc(env.add(i as usize).read())),
+            ContPtr::Continuation(fn_ptr),
             num_required_args as usize,
             variadic,
-            None,
-        )));
+        );
+    }
+}
 
-        Value::into_raw(Value::from(proc))
+/// Call the current continuation
+#[runtime_fn]
+unsafe extern "C" fn call_continuation(
+    args: *const *const (),
+    num_args: u32,
+    barrier: *mut ContBarrier,
+    out: *mut MaybeUninit<Application>,
+) {
+    unsafe {
+        (*out).write(
+            barrier.as_mut().unwrap().call_cont(
+                (0..num_args)
+                    .map(|i| Value::from_raw_inc_rc(args.add(i as usize).read()))
+                    .collect(),
+            ),
+        );
     }
 }
 
 /// Allocate a user function
 #[runtime_fn]
 unsafe extern "C" fn make_user(
-    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     fn_ptr: UserPtr,
     env: *const *const (),
     num_envs: u32,
@@ -660,7 +656,6 @@ unsafe extern "C" fn make_user(
             .collect();
 
         let proc = Procedure(Gc::rooted(ProcedureInner::new(
-            Runtime::from_raw_inc_rc(runtime),
             env,
             FuncPtr::User(fn_ptr),
             num_required_args as usize,

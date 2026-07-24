@@ -11,7 +11,7 @@ use crate::{
     exceptions::Exception,
     expand::{SyntaxRule, Template},
     gc::Trace,
-    proc::{ContBarrier, Procedure},
+    proc::Procedure,
     runtime::Runtime,
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax},
@@ -983,15 +983,13 @@ impl From<bool> for ImportPolicy {
 }
 
 pub struct ParseContext {
-    runtime: Runtime,
     import_policy: ImportPolicy,
     ellipsis: Symbol,
 }
 
 impl ParseContext {
-    pub fn new(runtime: &Runtime, import_policy: impl Into<ImportPolicy>) -> Self {
+    pub fn new(import_policy: impl Into<ImportPolicy>) -> Self {
         Self {
-            runtime: runtime.clone(),
             import_policy: import_policy.into(),
             ellipsis: Symbol::intern("..."),
         }
@@ -999,7 +997,6 @@ impl ParseContext {
 
     pub(crate) fn with_ellipsis(&self, ellipsis: Symbol) -> Self {
         Self {
-            runtime: self.runtime.clone(),
             import_policy: self.import_policy.clone(),
             ellipsis,
         }
@@ -1134,8 +1131,7 @@ pub(super) fn define_syntax(
     let expanded = maybe_await!(expr.expand(env))?;
     let mut mutable_vars = HashSet::default();
     let expr = maybe_await!(Expression::parse(ctxt, expanded, env, &mut mutable_vars))?;
-    let proc = maybe_await!(Compiler::new(mutable_vars).compile(&ctxt.runtime, &expr))?;
-    let values = maybe_await!(proc.call(&[], &mut ContBarrier::new()))?;
+    let values = maybe_await!(Compiler::new(mutable_vars).compile(Runtime::handle(), &expr))?;
     let transformer: Procedure = values.expect1()?;
     env.def_keyword(binding, transformer);
     Ok(())
@@ -1923,13 +1919,11 @@ impl Definitions {
 
     #[maybe_async]
     pub(crate) fn parse_lib_body(
-        runtime: &Runtime,
         form: &Syntax,
         env: &Environment,
         mutable_vars: &mut HashSet<Local>,
     ) -> Result<Self, Exception> {
         let ctxt = ParseContext {
-            runtime: runtime.clone(),
             import_policy: ImportPolicy::Allow,
             ellipsis: Symbol::intern("..."),
         };
@@ -2004,7 +1998,7 @@ impl Definitions {
 
     #[maybe_async]
     fn parse_helper_inner(
-        runtime: &ParseContext,
+        ctxt: &ParseContext,
         body: &[Syntax],
         permissive: bool,
         env: &Environment,
@@ -2016,7 +2010,7 @@ impl Definitions {
         let mut introduced_scopes = Vec::new();
 
         maybe_await!(splice_in(
-            runtime,
+            ctxt,
             permissive,
             body,
             env,
@@ -2051,7 +2045,7 @@ impl Definitions {
 
         for (def, env) in defs.into_iter() {
             let def = maybe_await!(Definition::parse(
-                runtime,
+                ctxt,
                 def.as_list().unwrap(),
                 &env,
                 &def,
@@ -2076,7 +2070,7 @@ impl Definitions {
 
         for (expr, env) in exprs.into_iter() {
             exprs_parsed.push(maybe_await!(Expression::parse_expanded(
-                runtime,
+                ctxt,
                 expr,
                 &env,
                 mutable_vars,

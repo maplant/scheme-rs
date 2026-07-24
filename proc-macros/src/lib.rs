@@ -153,10 +153,8 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     if bridge.sig.asyncness.is_some() {
         quote! {
             #visibility fn #wrapper_name<'a>(
-                runtime: &'a ::scheme_rs::runtime::Runtime,
                 _env: &'a [::scheme_rs::value::Value],
-                k: ::scheme_rs::proc::Procedure,
-                args: &'a [::scheme_rs::value::Value],
+                args: &[::scheme_rs::value::Value],
                 rest_args: &'a [::scheme_rs::value::Value],
                 barrier: &'a mut ::scheme_rs::proc::ContBarrier,
             ) -> futures::future::BoxFuture<'a, scheme_rs::proc::Application> {
@@ -170,7 +168,6 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                                     Ok(ok) => ok,
                                     Err(err) => {
                                         return ::scheme_rs::exceptions::raise(
-                                            runtime.clone(),
                                             err.into(),
                                             barrier,
                                         )
@@ -179,17 +176,18 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                             )*
                             #rest_args
                         ).await;
+                        
                         // If the function returned an error, we want to raise
                         // it.
                         let result = match result {
                             Err(err) => return ::scheme_rs::exceptions::raise(
-                                runtime.clone(),
                                 err.into(),
                                 barrier,
                             ),
                             Ok(result) => result,
                         };
-                        ::scheme_rs::proc::Application::new(k, None, result)
+
+                        barrier.call_cont(result)
                     }
                 )
             }
@@ -215,9 +213,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     } else {
         quote! {
             #visibility fn #wrapper_name(
-                runtime: &::scheme_rs::runtime::Runtime,
                 _env: &[::scheme_rs::value::Value],
-                k: ::scheme_rs::proc::Procedure,
                 args: &[::scheme_rs::value::Value],
                 rest_args: &[::scheme_rs::value::Value],
                 barrier: &mut ::scheme_rs::proc::ContBarrier,
@@ -230,7 +226,6 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                             Ok(ok) => ok,
                             Err(err) => {
                                 return ::scheme_rs::exceptions::raise(
-                                    runtime.clone(),
                                     err.into(),
                                     barrier,
                                 )
@@ -244,14 +239,13 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 // it.
                 let result = match result {
                     Err(err) => return ::scheme_rs::exceptions::raise(
-                        runtime.clone(),
                         err.into(),
                         barrier,
                     ),
                     Ok(result) => result,
                 };
 
-                ::scheme_rs::proc::Application::new(k, None, result)
+                barrier.call_cont(result)
             }
 
             ::scheme_rs::registry::inventory::submit! {
@@ -382,7 +376,7 @@ fn codegen_known_bridge(
                 #num_args,
                 false,
                 ::scheme_rs::registry::Bridge::Known(::scheme_rs::proc::KnownFunc::#known_type(
-                    #wrapper_name /* as fn(#( #args: &Value, )*) -> #ret_type, */
+                    #wrapper_name 
                 )),
                 ::scheme_rs::registry::BridgeFnDebugInfo::new(
                     ::std::file!(),
@@ -408,7 +402,6 @@ fn codegen_known_bridge(
 /// Rust because of this.
 ///
 /// Functions registered with `cps_bridge` must take the following arguments:
-///  - `runtime: &Runtime`: The runtime to which the procedure is registered.
 ///  - `env: &[Value]`: Environmental variables supplied to the procedure via
 ///    `Procedure::new`.
 ///  - `k: Procedure`: The current continuation.
@@ -431,12 +424,10 @@ fn codegen_known_bridge(
 /// ```rust,ignore
 /// #[cps_bridge(def = "apply arg1 . args", lib = "(rnrs base builtins (6))")]
 /// pub fn apply(
-///     _runtime: &Runtime,
 ///     _env: &[Value],
-///     k: Procedure,
 ///     args: &[Value],
 ///     rest_args: &[Value],
-///     _barrier: &mut ContBarrier,
+///     barrier: &mut ContBarrier,
 /// ) -> Result<Application, Exception> {
 ///     if rest_args.is_empty() {
 ///         return Err(Exception::wrong_num_of_args(2, args.len()));
@@ -445,7 +436,7 @@ fn codegen_known_bridge(
 ///     let (last, args) = rest_args.split_last().unwrap();
 ///     let mut args = args.to_vec();
 ///     list_to_vec(last, &mut args);
-///     Ok(Application::new(op.clone(), Some(k), args))
+///     Ok(barrier.call_cont(args))
 /// }
 /// ```
 
@@ -561,9 +552,7 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     if bridge.sig.asyncness.is_some() {
         quote! {
             #vis fn #wrapper_name<'a>(
-                runtime: &'a ::scheme_rs::runtime::Runtime,
                 env: &'a [::scheme_rs::value::Value],
-                k: ::scheme_rs::proc::Procedure,
                 args: &'a [::scheme_rs::value::Value],
                 rest_args: &'a [::scheme_rs::value::Value],
                 barrier: &'a mut ::scheme_rs::proc::ContBarrier,
@@ -572,16 +561,13 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
 
                 Box::pin(async move {
                     match #impl_name(
-                        runtime,
                         env,
-                        k,
                         args,
                         rest_args,
                         barrier,
                     ).await {
                         Ok(app) => app,
                         Err(err) => ::scheme_rs::exceptions::raise(
-                            runtime.clone(),
                             err.into(),
                             barrier
                         ),
@@ -594,9 +580,7 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     } else {
         quote! {
             #vis fn #wrapper_name(
-                runtime: &::scheme_rs::runtime::Runtime,
                 env: &[::scheme_rs::value::Value],
-                k: ::scheme_rs::proc::Procedure,
                 args: &[::scheme_rs::value::Value],
                 rest_args: &[::scheme_rs::value::Value],
                 barrier: &mut ::scheme_rs::proc::ContBarrier,
@@ -604,16 +588,13 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 #bridge
 
                 match #impl_name(
-                    runtime,
                     env,
-                    k,
                     args,
                     rest_args,
                     barrier,
                 ) {
                     Ok(app) => app,
                     Err(err) => ::scheme_rs::exceptions::raise(
-                        runtime.clone(),
                         err.into(),
                         barrier
                     )

@@ -107,33 +107,28 @@ pub fn enum_set_universe(enum_set: Embedded<EnumerationSet>) -> Result<Vec<Value
 
 #[cps_bridge(def = "enum-set-constructor enum-set", lib = "(rnrs enums (6))")]
 pub fn enum_set_constructor(
-    runtime: &Runtime,
     _env: &[Value],
-    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
-    _barrier: &mut ContBarrier,
+    barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
     let set = args[0].try_to::<Embedded<EnumerationSet>>()?;
     let universe = Value::from(set.enum_type.clone());
     let constructor = Procedure::new(
-        runtime.clone(),
         vec![universe],
         FuncPtr::Bridge(enum_set_constructor_fn),
         1,
         false,
     );
-    Ok(Application::new(k, None, vec![Value::from(constructor)]))
+    Ok(barrier.call_cont(vec![Value::from(constructor)]))
 }
 
 #[cps_bridge]
 fn enum_set_constructor_fn(
-    _runtime: &Runtime,
     env: &[Value],
-    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
-    _barrier: &mut ContBarrier,
+    barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
     // env[0] is the universe:
     let enum_type: Embedded<EnumerationType> = env[0].try_to()?;
@@ -152,7 +147,7 @@ fn enum_set_constructor_fn(
         })
         .collect::<Result<IndexSet<_>, _>>()?;
     let enum_set = EnumerationSet { enum_type, set };
-    Ok(Application::new(k, None, vec![Value::from(enum_set)]))
+    Ok(barrier.call_cont(vec![Value::from(enum_set)]))
 }
 
 #[bridge(name = "enum-set->list", lib = "(rnrs enums (6))")]

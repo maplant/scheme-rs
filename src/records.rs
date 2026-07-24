@@ -217,7 +217,7 @@ use std::{
     fmt,
     hash::{Hash, Hasher},
     marker::PhantomData,
-    mem::align_of,
+    mem::{MaybeUninit, align_of},
     ops::Deref,
     ptr::{self, NonNull},
     slice,
@@ -231,9 +231,8 @@ use parking_lot::RwLock;
 use crate::{
     exceptions::Exception,
     gc::{Gc, GcInner, OpaqueGcPtr, Trace},
-    proc::{Application, ContBarrier, FuncPtr, Procedure},
+    proc::{Application, ContBarrier, ContPtr, FuncPtr, Procedure},
     registry::{bridge, cps_bridge},
-    runtime::{Runtime, RuntimeInner},
     symbols::Symbol,
     value::{Cell, UnpackedValue, Value, ValueType},
     vectors::Vector,
@@ -1111,14 +1110,13 @@ impl fmt::Debug for RecordConstructorDescriptor {
 }
 
 fn make_default_record_constructor_descriptor(
-    runtime: Runtime,
     rtd: Arc<RecordTypeDescriptor>,
 ) -> Embedded<RecordConstructorDescriptor> {
-    let parent = rtd.inherits.last().map(|parent| {
-        make_default_record_constructor_descriptor(runtime.clone(), parent.0.clone())
-    });
+    let parent = rtd
+        .inherits
+        .last()
+        .map(|parent| make_default_record_constructor_descriptor(parent.0.clone()));
     let protocol = Procedure::new(
-        runtime,
         vec![Value::from(rtd.clone())],
         FuncPtr::Bridge(default_protocol),
         1,
@@ -1136,12 +1134,10 @@ fn make_default_record_constructor_descriptor(
     lib = "(rnrs records procedural (6))"
 )]
 pub fn make_record_constructor_descriptor(
-    runtime: &Runtime,
     _env: &[Value],
-    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
-    _barrier: &mut ContBarrier,
+    barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
     let [rtd, parent_rcd, protocol] = args else {
         unreachable!();
@@ -1167,7 +1163,6 @@ pub fn make_record_constructor_descriptor(
         Some(parent_rcd)
     } else if !rtd.is_base_record_type() {
         Some(make_default_record_constructor_descriptor(
-            runtime.clone(),
             rtd.inherits.last().unwrap().clone().0,
         ))
     } else {
@@ -1178,7 +1173,6 @@ pub fn make_record_constructor_descriptor(
         protocol.clone().try_into()?
     } else {
         Procedure::new(
-            runtime.clone(),
             vec![Value::from(rtd.clone())],
             FuncPtr::Bridge(default_protocol),
             1,
@@ -1192,14 +1186,12 @@ pub fn make_record_constructor_descriptor(
         protocol,
     };
 
-    Ok(Application::new(k, None, vec![Value::from(rcd)]))
+    Ok(barrier.call_cont(vec![Value::from(rcd)]))
 }
 
 #[cps_bridge(def = "record-constructor rcd", lib = "(rnrs records procedural (6))")]
 pub fn record_constructor(
-    runtime: &Runtime,
     _env: &[Value],
-    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier,
@@ -1213,23 +1205,14 @@ pub fn record_constructor(
 
     let protocols = protocols.into_iter().map(Value::from).collect::<Vec<_>>();
     let rtds = rtds.into_iter().map(Value::from).collect::<Vec<_>>();
-    let chain_protocols = Procedure::new_cont(
-        runtime.clone(),
-        vec![Value::from(protocols), Value::from(k)],
-        chain_protocols,
+    barrier.push_cont(
+        [Value::from(protocols)],
+        ContPtr::Continuation(chain_protocols),
         1,
         false,
-        barrier,
     );
 
-    Ok(chain_constructors(
-        runtime,
-        &[Value::from(rtds)],
-        chain_protocols,
-        &[],
-        &[],
-        barrier,
-    ))
+    Ok(chain_constructors(&[Value::from(rtds)], &[], &[], barrier))
 }
 
 fn rcd_to_protocols_and_rtds(
@@ -1246,16 +1229,14 @@ fn rcd_to_protocols_and_rtds(
 }
 
 pub(crate) unsafe extern "C" fn chain_protocols(
-    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
     barrier: *mut ContBarrier,
-) -> *mut Application {
+    out: *mut MaybeUninit<Application>,
+) {
     unsafe {
         // env[0] is a vector of protocols
         let protocols: Vector = env.as_ref().unwrap().clone().try_into().unwrap();
-        // env[1] is k, the continuation
-        let k = env.add(1).as_ref().unwrap().clone();
 
         let mut protocols = protocols.0.vec.read().clone();
         let remaining_protocols = protocols.split_off(1);
@@ -1264,39 +1245,34 @@ pub(crate) unsafe extern "C" fn chain_protocols(
         // If there are no more remaining protocols after the current, call the
         // protocol with arg[0] and the continuation.
         if remaining_protocols.is_empty() {
-            return Box::into_raw(Box::new(Application::new(
+            (*out).write(Application::new(
                 curr_protocol,
-                k.cast(),
                 vec![args.as_ref().unwrap().clone()],
-            )));
+            ));
+            return;
         }
 
         // Otherwise, turn the remaining chain into the continuation:
-        let k1 = Procedure::new_cont(
-            Runtime::from_raw_inc_rc(runtime),
-            vec![Value::from(remaining_protocols), k],
-            chain_protocols,
+        barrier.as_mut().unwrap().push_cont(
+            [Value::from(remaining_protocols)],
+            ContPtr::Continuation(chain_protocols),
             1,
             false,
-            barrier.as_mut().unwrap(),
         );
 
-        Box::into_raw(Box::new(Application::new(
+        (*out).write(Application::new(
             curr_protocol,
-            Some(k1),
             vec![args.as_ref().unwrap().clone()],
-        )))
+        ));
     }
 }
 
 #[cps_bridge]
 fn chain_constructors(
-    runtime: &Runtime,
     env: &[Value],
-    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
-    _barrier: &mut ContBarrier,
+    barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
     // env[0] is a vector of RTDs
     let rtds: Vector = env[0].clone().try_into()?;
@@ -1317,7 +1293,6 @@ fn chain_constructors(
     .chain(args.iter().cloned())
     .collect::<Vec<_>>();
     let next_proc = Procedure::new(
-        runtime.clone(),
         env,
         if rtds_remain {
             FuncPtr::Bridge(chain_constructors)
@@ -1327,17 +1302,15 @@ fn chain_constructors(
         num_args,
         false,
     );
-    Ok(Application::new(k, None, vec![Value::from(next_proc)]))
+    Ok(barrier.call_cont(vec![Value::from(next_proc)]))
 }
 
 #[cps_bridge]
 fn constructor(
-    _runtime: &Runtime,
     env: &[Value],
-    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
-    _barrier: &mut ContBarrier,
+    barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
     let rtd: Arc<RecordTypeDescriptor> = env[0].clone().try_into()?;
     // The fields of the record are all of the env variables chained with
@@ -1420,37 +1393,32 @@ fn constructor(
         Record(inner)
     };
 
-    Ok(Application::new(k, None, vec![Value::from(record)]))
+    Ok(barrier.call_cont(vec![Value::from(record)]))
 }
 
 #[cps_bridge]
 fn default_protocol(
-    runtime: &Runtime,
     env: &[Value],
-    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
-    _barrier: &mut ContBarrier,
+    barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
     let rtd: Arc<RecordTypeDescriptor> = env[0].clone().try_into()?;
     let num_args = rtd.num_fields();
 
     let constructor = Procedure::new(
-        runtime.clone(),
         vec![args[0].clone(), Value::from(rtd)],
         FuncPtr::Bridge(default_protocol_constructor),
         num_args,
         false,
     );
 
-    Ok(Application::new(k, None, vec![Value::from(constructor)]))
+    Ok(barrier.call_cont(vec![Value::from(constructor)]))
 }
 
 #[cps_bridge]
 fn default_protocol_constructor(
-    runtime: &Runtime,
     env: &[Value],
-    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier,
@@ -1459,92 +1427,76 @@ fn default_protocol_constructor(
     let rtd: Arc<RecordTypeDescriptor> = env[1].clone().try_into()?;
 
     let mut args = args.to_vec();
-    let k = if let Some(parent) = rtd.inherits.last() {
+    if let Some(parent) = rtd.inherits.last() {
         let remaining = args.split_off(parent.num_fields());
-        Procedure::new_cont(
-            runtime.clone(),
-            vec![Value::from(remaining), Value::from(k)],
-            call_constructor_continuation,
+        barrier.push_cont(
+            [Value::from(remaining)],
+            ContPtr::Continuation(call_constructor_continuation),
             1,
             false,
-            barrier,
-        )
-    } else {
-        k
-    };
+        );
+    }
 
-    Ok(Application::new(constructor, Some(k), args))
+    Ok(Application::new(constructor, args))
 }
 
 pub(crate) unsafe extern "C" fn call_constructor_continuation(
-    _runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
     _barrier: *mut ContBarrier,
-) -> *mut Application {
+    out: *mut MaybeUninit<Application>,
+) {
     unsafe {
         let constructor: Procedure = args.as_ref().unwrap().clone().try_into().unwrap();
         let args: Vector = env.as_ref().unwrap().clone().try_into().unwrap();
         let args = args.0.vec.read().clone();
-        let cont = env.add(1).as_ref().unwrap();
 
         // Call the constructor
-        Box::into_raw(Box::new(Application::new(constructor, cont.cast(), args)))
+        (*out).write(Application::new(constructor, args));
     }
 }
 
 #[cps_bridge]
 fn record_predicate_fn(
-    _runtime: &Runtime,
     env: &[Value],
-    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
-    _barrier: &mut ContBarrier,
+    barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
     let [val] = args else {
         unreachable!();
     };
     // RTD is the first environment variable:
     let rtd: Arc<RecordTypeDescriptor> = env[0].try_to()?;
-    Ok(Application::new(
-        k,
-        None,
-        vec![Value::from(is_subtype_of(val, rtd)?)],
-    ))
+    Ok(barrier.call_cont(vec![Value::from(is_subtype_of(val, rtd)?)]))
 }
 
 #[cps_bridge(def = "record-predicate rtd", lib = "(rnrs records procedural (6))")]
 pub fn record_predicate(
-    runtime: &Runtime,
     _env: &[Value],
-    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
-    _barrier: &mut ContBarrier,
+    barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
     let [rtd] = args else {
         unreachable!();
     };
     // TODO: Check if RTD is a record type.
     let pred_fn = Procedure::new(
-        runtime.clone(),
         vec![rtd.clone()],
         FuncPtr::Bridge(record_predicate_fn),
         1,
         false,
     );
-    Ok(Application::new(k, None, vec![Value::from(pred_fn)]))
+    Ok(barrier.call_cont(vec![Value::from(pred_fn)]))
 }
 
 #[cps_bridge]
 fn record_accessor_fn(
-    _runtime: &Runtime,
     env: &[Value],
-    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
-    _barrier: &mut ContBarrier,
+    barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
     let [val] = args else {
         unreachable!();
@@ -1583,17 +1535,15 @@ fn record_accessor_fn(
             rtd.name
         )));
     }
-    Ok(Application::new(k, None, vec![val]))
+    Ok(barrier.call_cont(vec![val]))
 }
 
 #[cps_bridge(def = "record-accessor rtd k", lib = "(rnrs records procedural (6))")]
 pub fn record_accessor(
-    runtime: &Runtime,
     _env: &[Value],
-    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
-    _barrier: &mut ContBarrier,
+    barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
     let [rtd, idx] = args else {
         unreachable!();
@@ -1609,23 +1559,20 @@ pub fn record_accessor(
     // Store the local (within-rtd) index; `record_accessor_fn` resolves it to
     // either the embed or an inline slot.
     let accessor_fn = Procedure::new(
-        runtime.clone(),
         vec![Value::from(rtd), Value::from(idx)],
         FuncPtr::Bridge(record_accessor_fn),
         1,
         false,
     );
-    Ok(Application::new(k, None, vec![Value::from(accessor_fn)]))
+    Ok(barrier.call_cont(vec![Value::from(accessor_fn)]))
 }
 
 #[cps_bridge]
 fn record_mutator_fn(
-    _runtime: &Runtime,
     env: &[Value],
-    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
-    _barrier: &mut ContBarrier,
+    barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
     let [rec, new_val] = args else {
         unreachable!();
@@ -1657,17 +1604,15 @@ fn record_mutator_fn(
             .try_to::<Cell>()?
             .set(new_val.clone());
     }
-    Ok(Application::new(k, None, Vec::new()))
+    Ok(barrier.call_cont(Vec::new()))
 }
 
 #[cps_bridge(def = "record-mutator rtd k", lib = "(rnrs records procedural (6))")]
 pub fn record_mutator(
-    runtime: &Runtime,
     _env: &[Value],
-    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
-    _barrier: &mut ContBarrier,
+    barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
     let [rtd, idx] = args else {
         unreachable!();
@@ -1684,13 +1629,12 @@ pub fn record_mutator(
         return Err(Exception::error(format!("{idx} is immutable")));
     }
     let mutator_fn = Procedure::new(
-        runtime.clone(),
         vec![Value::from(rtd), Value::from(idx)],
         FuncPtr::Bridge(record_mutator_fn),
         2,
         false,
     );
-    Ok(Application::new(k, None, vec![Value::from(mutator_fn)]))
+    Ok(barrier.call_cont(vec![Value::from(mutator_fn)]))
 }
 
 // Inspection library:

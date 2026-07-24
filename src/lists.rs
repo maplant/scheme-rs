@@ -7,22 +7,22 @@ use parking_lot::RwLock;
 use crate::{
     exceptions::Exception,
     gc::{Gc, GcInner, Trace},
-    proc::{Application, ContBarrier, Procedure},
+    proc::{Application, ContBarrier, ContPtr, Procedure},
     registry::{bridge, cps_bridge},
-    runtime::{Runtime, RuntimeInner},
     strings::WideString,
     value::{UnpackedValue, Value, ValueType, write_value},
     vectors::Vector,
 };
 use std::fmt;
+use std::mem::MaybeUninit;
 
 #[derive(Trace)]
 #[repr(align(16))]
 pub(crate) struct PairInner {
     /// The head of the pair
-    car: RwLock<Value>,
+    pub(crate) car: RwLock<Value>,
     /// The tail of the pair
-    cdr: RwLock<Value>,
+    pub(crate) cdr: RwLock<Value>,
     /// Whether or not the pair can be modified post creation
     mutable: bool,
 }
@@ -328,12 +328,18 @@ pub fn cons(car: &Value, cdr: &Value) -> Result<Vec<Value>, Exception> {
 
 #[bridge(name = "car", lib = "(rnrs base builtins (6))")]
 pub fn car(val: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![val.try_to::<Pair>()?.car()])
+    match val.pair_car() {
+        Some(car) => Ok(vec![car]),
+        None => Ok(vec![val.try_to::<Pair>()?.car()]),
+    }
 }
 
 #[bridge(name = "cdr", lib = "(rnrs base builtins (6))")]
 pub fn cdr(val: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![val.try_to::<Pair>()?.cdr()])
+    match val.pair_cdr() {
+        Some(cdr) => Ok(vec![cdr]),
+        None => Ok(vec![val.try_to::<Pair>()?.cdr()]),
+    }
 }
 
 #[bridge(name = "set-car!", lib = "(rnrs mutable-pairs (6))")]
@@ -407,9 +413,7 @@ pub fn append(lists: &[Value]) -> Result<Vec<Value>, Exception> {
 
 #[cps_bridge(def = "map proc list1 . listn", lib = "(rnrs base builtins (6))")]
 pub fn map(
-    runtime: &Runtime,
     _env: &[Value],
-    k: Procedure,
     args: &[Value],
     list_n: &[Value],
     barrier: &mut ContBarrier,
@@ -427,7 +431,7 @@ pub fn map(
     for input in inputs.iter_mut() {
         if input.type_of() == ValueType::Null {
             // TODO: Check if the rest are also empty and args is empty
-            return Ok(Application::new(k, None, vec![Value::null()]));
+            return Ok(barrier.call_cont(vec![Value::null()]));
         }
 
         let (car, cdr) = input.try_to::<Pair>()?.into();
@@ -436,29 +440,28 @@ pub fn map(
         *input = cdr;
     }
 
-    let map_k = Procedure::new_cont(
-        runtime.clone(),
+    // The return continuation `map_k` is pushed onto the barrier; the outer
+    // continuation (where the final list is returned) stays implicit below it.
+    barrier.push_cont(
         vec![
             Value::from(Vec::<Value>::new()),
             Value::from(inputs),
             mapper.clone(),
-            Value::from(k),
         ],
-        map_k,
+        ContPtr::Continuation(map_k),
         1,
         false,
-        barrier,
     );
 
-    Ok(Application::new(mapper_proc, Some(map_k), args))
+    Ok(Application::new(mapper_proc, args))
 }
 
 unsafe extern "C" fn map_k(
-    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
     barrier: *mut ContBarrier,
-) -> *mut Application {
+    out: *mut MaybeUninit<Application>,
+) {
     unsafe {
         // TODO: Probably need to do this in a way that avoids mutable variables
 
@@ -473,9 +476,6 @@ unsafe extern "C" fn map_k(
         // env[2] is the mapper function
         let mapper: Procedure = env.add(2).as_ref().unwrap().clone().try_into().unwrap();
 
-        // env[3] is the continuation
-        let k: Procedure = env.add(3).as_ref().unwrap().clone().try_into().unwrap();
-
         let mut args = Vec::new();
 
         // TODO: We need to collect a new list
@@ -483,8 +483,9 @@ unsafe extern "C" fn map_k(
             if input.type_of() == ValueType::Null {
                 // TODO: Check if the rest are also empty and args is empty
                 let output = slice_to_list(&output.0.vec.read());
-                let app = Application::new(k, None, vec![output]);
-                return Box::into_raw(Box::new(app));
+                let app = barrier.as_mut().unwrap().call_cont(vec![output]);
+                (*out).write(app);
+                return;
             }
 
             let (car, cdr) = input.cast::<Pair>().unwrap().into();
@@ -492,21 +493,18 @@ unsafe extern "C" fn map_k(
             *input = cdr;
         }
 
-        let map_k = Procedure::new_cont(
-            Runtime::from_raw_inc_rc(runtime),
+        barrier.as_mut().unwrap().push_cont(
             vec![
                 Value::from(output),
                 Value::from(inputs),
                 Value::from(mapper.clone()),
-                Value::from(k),
             ],
-            map_k,
+            ContPtr::Continuation(map_k),
             1,
             false,
-            barrier.as_mut().unwrap(),
         );
 
-        Box::into_raw(Box::new(Application::new(mapper, Some(map_k), args)))
+        (*out).write(Application::new(mapper, args));
     }
 }
 

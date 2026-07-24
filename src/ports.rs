@@ -15,6 +15,7 @@ use std::{
     borrow::Cow,
     fmt,
     io::{Cursor, ErrorKind},
+    mem::MaybeUninit,
     path::Path,
     pin::Pin,
     sync::{Arc, LazyLock},
@@ -25,7 +26,7 @@ use crate::{
     enumerations::{EnumerationSet, EnumerationType},
     exceptions::{Assertion, Error, Exception, raise},
     gc::{Gc, GcInner, Trace},
-    proc::{Application, ContBarrier, DynStackElem, FuncPtr, Procedure, pop_dyn_stack},
+    proc::{Application, ContBarrier, ContPtr, DynStackElem, FuncPtr, Procedure, pop_dyn_stack},
     records::{Embeddable, Embedded, RecordTypeDescriptor},
     runtime::{Runtime, RuntimeInner},
     strings::WideString,
@@ -3798,46 +3799,32 @@ pub fn standard_input_port() -> Result<Vec<Value>, Exception> {
 
 #[cps_bridge(def = "current-input-port", lib = "(rnrs base builtins (6))")]
 pub fn current_input_port(
-    _runtime: &Runtime,
     _env: &[Value],
-    k: Procedure,
     _args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
     let current_input_port = barrier.current_input_port();
-    Ok(Application::new(
-        k,
-        None,
-        vec![Value::from(current_input_port)],
-    ))
+    Ok(barrier.call_cont(vec![Value::from(current_input_port)]))
 }
 
 #[cps_bridge(def = "current-output-port", lib = "(rnrs base builtins (6))")]
 pub fn current_output_port(
-    _runtime: &Runtime,
     _env: &[Value],
-    k: Procedure,
     _args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
     let current_input_port = barrier.current_output_port();
-    Ok(Application::new(
-        k,
-        None,
-        vec![Value::from(current_input_port)],
-    ))
+    Ok(barrier.call_cont(vec![Value::from(current_input_port)]))
 }
 
 #[cps_bridge(def = "current-error-port", lib = "(rnrs base builtins (6))")]
 pub fn current_error_port(
-    _runtime: &Runtime,
     _env: &[Value],
-    k: Procedure,
     _args: &[Value],
     _rest_args: &[Value],
-    _barrier: &mut ContBarrier,
+    barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
     let current_error_port = Port::new(
         "<stderr>",
@@ -3848,11 +3835,7 @@ pub fn current_error_port(
         BufferMode::None,
         Some(Transcoder::native()),
     );
-    Ok(Application::new(
-        k,
-        None,
-        vec![Value::from(current_error_port)],
-    ))
+    Ok(barrier.call_cont(vec![Value::from(current_error_port)]))
 }
 
 // 8.2.8. Binary input
@@ -4395,9 +4378,7 @@ pub fn make_custom_textual_input_output_port(
     lib = "(rnrs io simple builtins (6))"
 )]
 pub fn call_with_input_file(
-    runtime: &Runtime,
     _env: &[Value],
-    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier<'_>,
@@ -4413,15 +4394,8 @@ pub fn call_with_input_file(
     };
     let proc = proc.clone().try_into()?;
     let filename = filename.to_string();
-    let file = maybe_await!(
-        File::options()
-            .read(true)
-            .write(true)
-            // .create(true)
-            // .truncate(false)
-            .open(&filename)
-    )
-    .map_err(|err| map_io_error_to_condition(&filename, err))?;
+    let file = maybe_await!(File::options().read(true).write(true).open(&filename))
+        .map_err(|err| map_io_error_to_condition(&filename, err))?;
 
     let port = Port::new_with_flags(
         filename,
@@ -4435,17 +4409,15 @@ pub fn call_with_input_file(
         Some(Transcoder::native()),
     );
 
-    let (num_req_args, variadic) = k.get_formals();
-    let k = Procedure::new_cont(
-        runtime.clone(),
-        vec![Value::from(port.clone()), Value::from(k)],
-        close_port_and_call_k,
+    let (num_req_args, variadic) = barrier.cont_formals();
+    barrier.push_cont(
+        vec![Value::from(port.clone())],
+        ContPtr::Continuation(close_port_and_call_k),
         num_req_args,
         variadic,
-        barrier,
     );
 
-    Ok(Application::new(proc, Some(k), vec![Value::from(port)]))
+    Ok(Application::new(proc, vec![Value::from(port)]))
 }
 
 #[maybe_async]
@@ -4454,9 +4426,7 @@ pub fn call_with_input_file(
     lib = "(rnrs io simple builtins (6))"
 )]
 pub fn call_with_output_file(
-    runtime: &Runtime,
     _env: &[Value],
-    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier<'_>,
@@ -4493,25 +4463,23 @@ pub fn call_with_output_file(
         Some(Transcoder::native()),
     );
 
-    let (num_req_args, variadic) = k.get_formals();
-    let k = Procedure::new_cont(
-        runtime.clone(),
-        vec![Value::from(port.clone()), Value::from(k)],
-        close_port_and_call_k,
+    let (num_req_args, variadic) = barrier.cont_formals();
+    barrier.push_cont(
+        vec![Value::from(port.clone())],
+        ContPtr::Continuation(close_port_and_call_k),
         num_req_args,
         variadic,
-        barrier,
     );
 
-    Ok(Application::new(proc, Some(k), vec![Value::from(port)]))
+    Ok(Application::new(proc, vec![Value::from(port)]))
 }
 
 unsafe extern "C" fn close_port_and_call_k(
-    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     args: *const Value,
     barrier: *mut ContBarrier,
-) -> *mut Application {
+    out: *mut MaybeUninit<Application>,
+) {
     #[cfg(not(feature = "async"))]
     let bridge = FuncPtr::Bridge;
 
@@ -4519,57 +4487,57 @@ unsafe extern "C" fn close_port_and_call_k(
     let bridge = FuncPtr::AsyncBridge;
 
     unsafe {
-        let runtime = Runtime(Gc::from_raw_inc_rc(runtime));
-
         // env[0] is the port
         let port = env.as_ref().unwrap().clone();
-        // env[1] is the continuation
-        let k = env.add(1).as_ref().unwrap().clone();
 
-        // Collect necessary arguments
-        let k_proc = k.cast::<Procedure>().unwrap();
-        let args = k_proc.collect_args(args);
+        let barrier = barrier.as_mut().unwrap();
 
-        let k = Procedure::new_cont(
-            runtime.clone(),
-            vec![k, Value::from(args)],
-            call_k_with_env,
+        // Collect the values the callee returned. They arrive shaped for the
+        // outer continuation (whose formals our frame was created with, and which
+        // is now on top of the stack).
+        let (num_required_args, variadic) = barrier.cont_formals();
+        let mut collected_args: Vec<_> = (0..num_required_args)
+            .map(|i| args.add(i).as_ref().unwrap().clone())
+            .collect();
+        if variadic {
+            let rest_args = args.add(num_required_args).as_ref().unwrap().clone();
+            let mut vec = Vec::new();
+            crate::lists::list_to_vec(&rest_args, &mut vec);
+            collected_args.extend(vec);
+        }
+
+        barrier.push_cont(
+            vec![Value::from(collected_args)],
+            ContPtr::Continuation(call_k_with_env),
             0,
             false,
-            barrier.as_mut().unwrap(),
         );
 
-        Box::into_raw(Box::new(Application::new(
-            Procedure::new(runtime, Vec::new(), bridge(close_port), 1, false),
-            Some(k),
+        (*out).write(Application::new(
+            Procedure::new(Vec::new(), bridge(close_port), 1, false),
             vec![port],
-        )))
+        ));
     }
 }
 
 unsafe extern "C" fn call_k_with_env(
-    _runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
-    _barrier: *mut ContBarrier,
-) -> *mut Application {
+    barrier: *mut ContBarrier,
+    out: *mut MaybeUninit<Application>,
+) {
     unsafe {
-        // env[0] is the continuation:
-        let k = env.as_ref().unwrap().clone();
-        // env[1] are the arguments:
+        // env[0] are the arguments:
         let args = env
-            .add(1)
             .as_ref()
             .unwrap()
             .cast::<Vector>()
             .unwrap()
             .clone_inner_vec();
 
-        Box::into_raw(Box::new(Application::new(
-            k.try_into().unwrap(),
-            None,
-            args,
-        )))
+        let barrier = barrier.as_mut().unwrap();
+
+        (*out).write(barrier.call_cont(args));
     }
 }
 
@@ -4582,9 +4550,7 @@ unsafe extern "C" fn call_k_with_env(
     lib = "(rnrs io simple builtins (6))"
 )]
 pub fn with_input_from_file(
-    runtime: &Runtime,
     _env: &[Value],
-    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier<'_>,
@@ -4601,14 +4567,8 @@ pub fn with_input_from_file(
     let filename = filename.to_string();
     let thunk = thunk.clone().try_into()?;
 
-    let file = maybe_await!(
-        File::options()
-            .read(true)
-            .create(true)
-            .truncate(false)
-            .open(&filename)
-    )
-    .map_err(|err| map_io_error_to_condition(&filename, err))?;
+    let file = maybe_await!(File::options().read(true).open(&filename))
+        .map_err(|err| map_io_error_to_condition(&filename, err))?;
 
     let port = Port::new_with_flags(
         filename,
@@ -4624,27 +4584,21 @@ pub fn with_input_from_file(
 
     barrier.push_dyn_stack(DynStackElem::CurrentInputPort(port.clone()));
 
-    let (req_args, var) = k.get_formals();
+    let (req_args, var) = barrier.cont_formals();
 
-    let k1 = Procedure::new_cont(
-        runtime.clone(),
-        vec![Value::from(k.clone())],
-        pop_dyn_stack,
+    // Stack (bottom to top): the outer continuation, pop_dyn_stack (removes the
+    // current-input-port entry), then close_port_and_call_k (closes the port).
+    // The thunk returns to the top.
+    barrier.push_cont([], ContPtr::Continuation(pop_dyn_stack), req_args, var);
+
+    barrier.push_cont(
+        [Value::from(port.clone())],
+        ContPtr::Continuation(close_port_and_call_k),
         req_args,
         var,
-        barrier,
     );
 
-    let k2 = Procedure::new_cont(
-        runtime.clone(),
-        vec![Value::from(port.clone()), Value::from(k1)],
-        close_port_and_call_k,
-        0,
-        false,
-        barrier,
-    );
-
-    Ok(Application::new(thunk, Some(k2), Vec::new()))
+    Ok(Application::new(thunk, Vec::new()))
 }
 
 #[maybe_async]
@@ -4653,9 +4607,7 @@ pub fn with_input_from_file(
     lib = "(rnrs io simple builtins (6))"
 )]
 pub fn with_output_to_file(
-    runtime: &Runtime,
     _env: &[Value],
-    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier<'_>,
@@ -4695,27 +4647,18 @@ pub fn with_output_to_file(
 
     barrier.push_dyn_stack(DynStackElem::CurrentOutputPort(port.clone()));
 
-    let (req_args, var) = k.get_formals();
+    let (req_args, var) = barrier.cont_formals();
 
-    let k1 = Procedure::new_cont(
-        runtime.clone(),
-        vec![Value::from(k)],
-        pop_dyn_stack,
+    barrier.push_cont([], ContPtr::Continuation(pop_dyn_stack), req_args, var);
+
+    barrier.push_cont(
+        [Value::from(port.clone())],
+        ContPtr::Continuation(close_port_and_call_k),
         req_args,
         var,
-        barrier,
     );
 
-    let k2 = Procedure::new_cont(
-        runtime.clone(),
-        vec![Value::from(port.clone()), Value::from(k1)],
-        close_port_and_call_k,
-        req_args,
-        var,
-        barrier,
-    );
-
-    Ok(Application::new(thunk, Some(k2), Vec::new()))
+    Ok(Application::new(thunk, Vec::new()))
 }
 
 #[maybe_async]
@@ -4745,9 +4688,7 @@ pub fn open_output_file(filename: &Value) -> Result<Vec<Value>, Exception> {
     lib = "(rnrs io simple builtins (6))"
 )]
 pub fn read_char(
-    runtime: &Runtime,
     _env: &[Value],
-    k: Procedure,
     _args: &[Value],
     rest_args: &[Value],
     barrier: &mut ContBarrier<'_>,
@@ -4757,7 +4698,6 @@ pub fn read_char(
         [input_port] => input_port.clone().try_into()?,
         _ => {
             return Ok(raise(
-                runtime.clone(),
                 Value::from(Exception::wrong_num_of_var_args(0..1, rest_args.len())),
                 barrier,
             ));
@@ -4770,7 +4710,7 @@ pub fn read_char(
         EOF_OBJECT.clone()
     };
 
-    Ok(Application::new(k, None, vec![result]))
+    Ok(barrier.call_cont(vec![result]))
 }
 
 #[maybe_async]
@@ -4779,9 +4719,7 @@ pub fn read_char(
     lib = "(rnrs io simple builtins (6))"
 )]
 pub fn peek_char(
-    runtime: &Runtime,
     _env: &[Value],
-    k: Procedure,
     _args: &[Value],
     rest_args: &[Value],
     barrier: &mut ContBarrier<'_>,
@@ -4791,7 +4729,6 @@ pub fn peek_char(
         [input_port] => input_port.clone().try_into()?,
         _ => {
             return Ok(raise(
-                runtime.clone(),
                 Value::from(Exception::wrong_num_of_var_args(0..1, rest_args.len())),
                 barrier,
             ));
@@ -4804,7 +4741,7 @@ pub fn peek_char(
         EOF_OBJECT.clone()
     };
 
-    Ok(Application::new(k, None, vec![result]))
+    Ok(barrier.call_cont(vec![result]))
 }
 
 #[maybe_async]
@@ -4813,9 +4750,7 @@ pub fn peek_char(
     lib = "(rnrs io simple builtins (6))"
 )]
 pub fn read(
-    runtime: &Runtime,
     _env: &[Value],
-    k: Procedure,
     _args: &[Value],
     rest_args: &[Value],
     barrier: &mut ContBarrier<'_>,
@@ -4825,7 +4760,6 @@ pub fn read(
         [input_port] => input_port.clone().try_into()?,
         _ => {
             return Ok(raise(
-                runtime.clone(),
                 Value::from(Exception::wrong_num_of_var_args(0..1, rest_args.len())),
                 barrier,
             ));
@@ -4838,7 +4772,7 @@ pub fn read(
         EOF_OBJECT.clone()
     };
 
-    Ok(Application::new(k, None, vec![result]))
+    Ok(barrier.call_cont(vec![result]))
 }
 
 #[maybe_async]
@@ -4847,9 +4781,7 @@ pub fn read(
     lib = "(rnrs io simple builtins (6))"
 )]
 pub fn write_char(
-    runtime: &Runtime,
     _env: &[Value],
-    k: Procedure,
     args: &[Value],
     rest_args: &[Value],
     barrier: &mut ContBarrier<'_>,
@@ -4861,7 +4793,6 @@ pub fn write_char(
         [output_port] => output_port.clone().try_into()?,
         _ => {
             return Ok(raise(
-                runtime.clone(),
                 Value::from(Exception::wrong_num_of_var_args(1..2, rest_args.len())),
                 barrier,
             ));
@@ -4870,7 +4801,7 @@ pub fn write_char(
 
     maybe_await!(output_port.put_char(chr))?;
 
-    Ok(Application::new(k, None, Vec::new()))
+    Ok(barrier.call_cont(Vec::new()))
 }
 
 #[maybe_async]
@@ -4879,9 +4810,7 @@ pub fn write_char(
     lib = "(rnrs io simple builtins (6))"
 )]
 pub fn newline(
-    runtime: &Runtime,
     _env: &[Value],
-    k: Procedure,
     _args: &[Value],
     rest_args: &[Value],
     barrier: &mut ContBarrier<'_>,
@@ -4891,7 +4820,6 @@ pub fn newline(
         [output_port] => output_port.clone().try_into()?,
         _ => {
             return Ok(raise(
-                runtime.clone(),
                 Value::from(Exception::wrong_num_of_var_args(0..1, rest_args.len())),
                 barrier,
             ));
@@ -4900,7 +4828,7 @@ pub fn newline(
 
     maybe_await!(output_port.put_char('\n'))?;
 
-    Ok(Application::new(k, None, Vec::new()))
+    Ok(barrier.call_cont(Vec::new()))
 }
 
 #[maybe_async]
@@ -4909,9 +4837,7 @@ pub fn newline(
     lib = "(rnrs io simple builtins (6))"
 )]
 pub fn display(
-    runtime: &Runtime,
     _env: &[Value],
-    k: Procedure,
     args: &[Value],
     rest_args: &[Value],
     barrier: &mut ContBarrier<'_>,
@@ -4923,7 +4849,6 @@ pub fn display(
         [output_port] => output_port.clone().try_into()?,
         _ => {
             return Ok(raise(
-                runtime.clone(),
                 Value::from(Exception::wrong_num_of_var_args(1..2, rest_args.len())),
                 barrier,
             ));
@@ -4932,7 +4857,7 @@ pub fn display(
 
     maybe_await!(output_port.put_str(&obj))?;
 
-    Ok(Application::new(k, None, Vec::new()))
+    Ok(barrier.call_cont(Vec::new()))
 }
 
 #[maybe_async]
@@ -4941,9 +4866,7 @@ pub fn display(
     lib = "(rnrs io simple builtins (6))"
 )]
 pub fn write(
-    runtime: &Runtime,
     _env: &[Value],
-    k: Procedure,
     args: &[Value],
     rest_args: &[Value],
     barrier: &mut ContBarrier<'_>,
@@ -4955,7 +4878,6 @@ pub fn write(
         [output_port] => output_port.clone().try_into()?,
         _ => {
             return Ok(raise(
-                runtime.clone(),
                 Value::from(Exception::wrong_num_of_var_args(1..2, rest_args.len())),
                 barrier,
             ));
@@ -4964,7 +4886,7 @@ pub fn write(
 
     maybe_await!(output_port.put_str(&obj))?;
 
-    Ok(Application::new(k, None, Vec::new()))
+    Ok(barrier.call_cont(Vec::new()))
 }
 
 // 9. File System

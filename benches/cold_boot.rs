@@ -19,7 +19,7 @@ fn cold_boot_benchmark(c: &mut Criterion) {
 
 #[maybe_async]
 fn run_bench() {
-    let rt = Runtime::new();
+    let rt = Runtime::handle();
     let repl = TopLevelEnvironment::new_repl(&rt);
     maybe_await!(repl.eval(true, "(import (rnrs base)) (abs -5)")).unwrap();
 }

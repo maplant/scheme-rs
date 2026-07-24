@@ -116,10 +116,12 @@ pub enum PrimOp {
     // Boolean operators:
     Not,
 
-    // Frame operatiors
+    // Frame operators.
+    #[cfg(feature = "continuation-marks")]
     GetFrame,
 
     // Continuation mark operators:
+    #[cfg(feature = "continuation-marks")]
     SetContinuationMark,
 
     // Macro expansion primitive operators:
@@ -156,7 +158,9 @@ impl PrimOp {
             Self::Lesser => PrimOpInfo::new(1, true, true, false),
             Self::LesserEqual => PrimOpInfo::new(1, true, true, false),
             Self::Not => PrimOpInfo::new(1, false, false, false),
+            #[cfg(feature = "continuation-marks")]
             Self::GetFrame => PrimOpInfo::new(1, false, false, true),
+            #[cfg(feature = "continuation-marks")]
             Self::SetContinuationMark => PrimOpInfo::new(2, false, false, false),
             Self::Matches => PrimOpInfo::new(2, false, false, false),
             Self::ExpandTemplate => PrimOpInfo::new(4, false, true, true),

@@ -10,7 +10,7 @@ use crate::{
     cps::compile::Compiler,
     env::{Environment, TopLevelEnvironment},
     exceptions::Exception,
-    proc::{Application, ContBarrier, Procedure},
+    proc::{Application, ContBarrier},
     records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
     registry::cps_bridge,
     runtime::Runtime,
@@ -21,24 +21,21 @@ use crate::{
 #[maybe_async]
 #[cps_bridge(def = "eval expression environment", lib = "(rnrs eval (6))")]
 pub fn eval(
-    runtime: &Runtime,
     _env: &[Value],
-    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
-    _barrier: &mut ContBarrier<'_>,
+    barrier: &mut ContBarrier<'_>,
 ) -> Result<Application, Exception> {
     let [expression, environment] = args else {
         unreachable!()
     };
     let env = environment.try_to::<Embedded<Environment>>()?;
     let expr = Syntax::datum_to_syntax(&env.get_scope_set(), expression.clone(), &Span::default());
-    let ctxt = ParseContext::new(runtime, false);
+    let ctxt = ParseContext::new(false);
     let mut mutable_vars = HashSet::default();
     let expr = maybe_await!(Expression::parse(&ctxt, expr, &env, &mut mutable_vars))?;
-    let proc = maybe_await!(Compiler::new(mutable_vars).compile(runtime, &expr))?;
-    let result = maybe_await!(proc.call(&[], &mut ContBarrier::new()))?;
-    Ok(Application::new(k, None, result))
+    let result = maybe_await!(Compiler::new(mutable_vars).compile(Runtime::handle(), &expr))?;
+    Ok(barrier.call_cont(result))
 }
 
 unsafe impl Embeddable for Environment {
@@ -50,12 +47,10 @@ unsafe impl Embeddable for Environment {
 #[maybe_async]
 #[cps_bridge(def = "environment . import-spec", lib = "(rnrs eval (6))")]
 pub fn environment(
-    runtime: &Runtime,
     _env: &[Value],
-    k: Procedure,
     _args: &[Value],
     import_spec: &[Value],
-    _barrier: &mut ContBarrier<'_>,
+    barrier: &mut ContBarrier<'_>,
 ) -> Result<Application, Exception> {
     let import_sets = import_spec
         .iter()
@@ -65,10 +60,10 @@ pub fn environment(
             ImportSet::parse(discard_for(&syntax))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let env = Environment::Top(TopLevelEnvironment::new_repl(runtime));
+    let env = Environment::Top(TopLevelEnvironment::new_repl());
     for import_set in import_sets {
         maybe_await!(env.import(import_set))?;
     }
     let env = Value::from(env);
-    Ok(Application::new(k, None, vec![env]))
+    Ok(barrier.call_cont(vec![env]))
 }

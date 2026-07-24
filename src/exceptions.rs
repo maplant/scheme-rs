@@ -54,14 +54,10 @@ use crate::{
     gc::{Gc, GcInner, Trace},
     lists::slice_to_list,
     ports::{IoDecodingError, IoEncodingError, IoError, IoReadError, IoWriteError},
-    proc::{
-        Application, ContBarrier, DynStackElem, FuncPtr, Procedure, halt_continuation,
-        pop_dyn_stack,
-    },
+    proc::{Application, ContBarrier, ContPtr, DynStackElem, FuncPtr, Procedure, pop_dyn_stack},
     records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
     registry::{bridge, cps_bridge},
-    runtime::{Runtime, RuntimeInner},
-    symbols::Symbol,
+    runtime::Runtime,
     syntax::{Identifier, Span, Syntax, parse::ParseSyntaxError},
     value::{UnpackedValue, Value},
     vectors::Vector,
@@ -69,19 +65,29 @@ use crate::{
 use by_address::ByAddress;
 use parking_lot::RwLock;
 use scheme_rs_macros::runtime_fn;
-use std::{collections::HashMap, convert::Infallible, fmt, ops::Range, sync::Arc};
+use std::{
+    collections::HashMap, convert::Infallible, fmt, mem::MaybeUninit, ops::Range, sync::Arc,
+};
 
 /// A macro for easily creating new condition types.
 pub use scheme_rs_macros::define_condition_type;
 
 impl fmt::Display for Exception {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        <Value as fmt::Debug>::fmt(&self.0, f)
+        let runtime = Runtime::handle();
+        self.pretty_print(&mut runtime.source_cache(), f)
+    }
+}
+
+impl fmt::Debug for Exception {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let runtime = Runtime::handle();
+        self.pretty_print(&mut runtime.source_cache(), f)
     }
 }
 
 /// A signal of some sort of erroneous condition.
-#[derive(Debug, Clone, Trace)]
+#[derive(Clone, Trace)]
 pub struct Exception(pub Value);
 
 impl Exception {
@@ -919,9 +925,7 @@ pub fn simple_conditions(condition: &Value) -> Result<Vec<Value>, Exception> {
     lib = "(rnrs exceptions (6))"
 )]
 pub fn with_exception_handler(
-    runtime: &Runtime,
     _env: &[Value],
-    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier,
@@ -935,79 +939,66 @@ pub fn with_exception_handler(
 
     barrier.push_dyn_stack(DynStackElem::ExceptionHandler(handler));
 
-    let (req_args, var) = k.get_formals();
+    let (req_args, var) = barrier.cont_formals();
 
-    let k = Procedure::new_cont(
-        runtime.clone(),
-        vec![Value::from(k)],
-        pop_dyn_stack,
+    barrier.push_cont(
+        Vec::new(),
+        ContPtr::Continuation(pop_dyn_stack),
         req_args,
         var,
-        barrier,
     );
 
-    Ok(Application::new(thunk, Some(k), Vec::new()))
+    Ok(Application::new(thunk, Vec::new()))
 }
 
 #[doc(hidden)]
 #[cps_bridge(def = "raise obj", lib = "(rnrs exceptions (6))")]
 pub fn raise_builtin(
-    runtime: &Runtime,
     _env: &[Value],
-    _k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
-    Ok(raise(runtime.clone(), args[0].clone(), barrier))
+    Ok(raise(args[0].clone(), barrier))
 }
 
 /// Raises a non-continuable exception to the current exception handler.
-pub fn raise(runtime: Runtime, raised: Value, barrier: &mut ContBarrier) -> Application {
+pub fn raise(raised: Value, barrier: &mut ContBarrier) -> Application {
+    #[cfg(feature = "continuation-marks")]
     let raised = if let Some(condition) = raised.cast::<Exception>() {
-        let trace = barrier.current_marks(Symbol::intern("trace"));
+        let trace = barrier.current_marks(crate::symbols::Symbol::intern("trace"));
         Value::from(condition.add_condition(StackTrace::new(trace)))
     } else {
         raised
     };
 
-    Application::new(
-        Procedure::new_cont(
-            runtime,
-            vec![raised],
-            unwind_to_exception_handler,
-            0,
-            false,
-            barrier,
-        ),
-        None,
-        Vec::new(),
-    )
+    barrier.push_cont(
+        vec![raised],
+        ContPtr::Continuation(unwind_to_exception_handler),
+        0,
+        false,
+    );
+    barrier.call_cont(Vec::new())
 }
 
 #[runtime_fn]
 unsafe extern "C" fn raise_rt(
-    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     raised: *const (),
     barrier: *mut ContBarrier,
-) -> *mut Application {
+    out: *mut MaybeUninit<Application>,
+) {
     unsafe {
-        let runtime = Runtime::from_raw_inc_rc(runtime);
         let raised = Value::from_raw(raised);
-        Box::into_raw(Box::new(raise(
-            runtime,
-            raised,
-            barrier.as_mut().unwrap_unchecked(),
-        )))
+        (*out).write(raise(raised, barrier.as_mut().unwrap_unchecked()));
     }
 }
 
 unsafe extern "C" fn unwind_to_exception_handler(
-    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     env: *const Value,
     _args: *const Value,
     barrier: *mut ContBarrier,
-) -> *mut Application {
+    out: *mut MaybeUninit<Application>,
+) {
     unsafe {
         // env[0] is the raised value:
         let raised = env.as_ref().unwrap().clone();
@@ -1023,60 +1014,44 @@ unsafe extern "C" fn unwind_to_exception_handler(
                 Some(DynStackElem::Winder(winder)) => {
                     // If this is a winder, we should call the out winder while unwinding.
                     // Variadic: the out thunk's return arity is not under our control.
-                    Application::new(
-                        winder.out_thunk,
-                        Some(Procedure::new_cont(
-                            Runtime::from_raw_inc_rc(runtime),
-                            vec![raised],
-                            unwind_to_exception_handler,
-                            0,
-                            true,
-                            barrier,
-                        )),
-                        Vec::new(),
-                    )
-                }
-                Some(DynStackElem::ExceptionHandler(handler)) => Application::new(
-                    handler,
-                    Some(Procedure::new_cont(
-                        Runtime::from_raw_inc_rc(runtime),
-                        vec![raised.clone()],
-                        reraise_exception,
+                    barrier.push_cont(
+                        vec![raised],
+                        ContPtr::Continuation(unwind_to_exception_handler),
                         0,
                         true,
-                        barrier,
-                    )),
-                    vec![raised],
-                ),
+                    );
+                    Application::new(winder.out_thunk, Vec::new())
+                }
+                Some(DynStackElem::ExceptionHandler(handler)) => {
+                    barrier.push_cont(
+                        vec![raised.clone()],
+                        ContPtr::Continuation(reraise_exception),
+                        0,
+                        true,
+                    );
+                    Application::new(handler, vec![raised])
+                }
                 _ => continue,
             };
-            return Box::into_raw(Box::new(app));
+            (*out).write(app);
+            return;
         }
     }
 }
 
 unsafe extern "C" fn reraise_exception(
-    runtime: *mut GcInner<RwLock<RuntimeInner>>,
     _env: *const Value,
     _args: *const Value,
     _barrier: *mut ContBarrier,
-) -> *mut Application {
+    out: *mut MaybeUninit<Application>,
+) {
     unsafe {
-        let runtime = Runtime(Gc::from_raw_inc_rc(runtime));
-
         let exception = Value::from(NonContinuable::default());
 
-        Box::into_raw(Box::new(Application::new(
-            Procedure::new(
-                runtime.clone(),
-                Vec::new(),
-                FuncPtr::Bridge(raise_builtin),
-                1,
-                false,
-            ),
-            Some(halt_continuation(runtime)),
+        (*out).write(Application::new(
+            Procedure::new(Vec::new(), FuncPtr::Bridge(raise_builtin), 1, false),
             vec![exception],
-        )))
+        ));
     }
 }
 
@@ -1085,9 +1060,7 @@ unsafe extern "C" fn reraise_exception(
 #[doc(hidden)]
 #[cps_bridge(def = "raise-continuable obj", lib = "(rnrs exceptions (6))")]
 pub fn raise_continuable(
-    _runtime: &Runtime,
     _env: &[Value],
-    k: Procedure,
     args: &[Value],
     _rest_args: &[Value],
     barrier: &mut ContBarrier,
@@ -1100,7 +1073,7 @@ pub fn raise_continuable(
         return Ok(Application::halt_err(condition.clone()));
     };
 
-    Ok(Application::new(handler, Some(k), vec![condition.clone()]))
+    Ok(Application::new(handler, vec![condition.clone()]))
 }
 
 #[bridge(name = "error", lib = "(rnrs base builtins (6))")]
@@ -1145,7 +1118,6 @@ impl SourceCache {
         self.cache.insert(ByAddress(file_name), lines);
     }
 
-    // #[maybe_await]
     pub fn fetch(&mut self, file_name: &Arc<str>) -> Option<&[String]> {
         if !self.cache.contains_key(ByAddress::from_ref(file_name)) {
             let lines = std::fs::read_to_string(file_name.as_ref())
