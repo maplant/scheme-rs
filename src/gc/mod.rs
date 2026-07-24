@@ -324,6 +324,10 @@ fn inc_rc<T: ?Sized>(ptr: NonNull<GcInner<T>>) {
                 .state
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         );
+        debug_assert!(
+            old.rc() > 0,
+            "increment on rc==0 object: a raw pointer outlived its counted home (JIT counted-homes invariant)"
+        );
         collection::record_inc_event(header, old);
     }
 }

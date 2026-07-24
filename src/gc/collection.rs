@@ -16,7 +16,7 @@ use scheme_rs_macros::{maybe_async, maybe_await};
 
 use crate::{
     exceptions::Exception,
-    gc::state::{ATTN_CLAIM, ATTN_DEAD, Color, GcState, INC_EVENT, ZERO_PENDING},
+    gc::state::{ATTN_CLAIM, ATTN_DEAD, Color, GcState, INC_EVENT},
     registry::bridge,
     value::Value,
 };
@@ -576,7 +576,7 @@ impl Collector {
                     // Orange-skip (design §0): a collector-internal cascade
                     // never releases a currently-Orange object — free_cycles
                     // owns it this epoch. If its cycle refurbishes, the
-                    // refurbish-zero reroute frees it via the aged path.
+                    // refurbish-zero reroute frees it via the drain path.
                 } else {
                     self.release(s);
                 }
@@ -634,24 +634,14 @@ impl Collector {
                 if word.color() == Color::Orange {
                     // Orange-skip (design §3): a recorded cycle member —
                     // free_cycles owns it this epoch. Consume the entry only.
-                } else if !word.zero_pending() {
-                    // First sighting: age one epoch. JIT frames can resurrect
-                    // an rc==0 object via from_raw_inc_rc — exact RC does not
-                    // hold at the raw-pointer boundary. Keep the claim, mark,
-                    // re-enqueue.
-                    let target = (word.0 | ZERO_PENDING) & !INC_EVENT;
-                    let _ = (*header).state.compare_exchange(
-                        word.0,
-                        target,
-                        std::sync::atomic::Ordering::AcqRel,
-                        std::sync::atomic::Ordering::Acquire,
-                    );
-                    // Re-enqueue whether or not the CAS won: on failure a
-                    // foreign RMW landed and next epoch reclassifies anyway.
-                    attn_push(header);
-                    return;
                 } else {
-                    // Second consecutive sighting: genuinely dead.
+                    // Genuinely dead: release now, single stage. The
+                    // counted-homes invariant (a raw pointer's home keeps it
+                    // counted until the increment that reads it back) is
+                    // fixed at its single violation site (CPS liveness, see
+                    // cps::analysis) and asserted in `inc_rc`, so a zero
+                    // sighting here is no longer a transient resurrection
+                    // window.
                     (*header)
                         .attn_next
                         .store(NOT_IN_LIST, std::sync::atomic::Ordering::Relaxed);
@@ -659,13 +649,14 @@ impl Collector {
                         .state
                         .compare_exchange(
                             word.0,
-                            word.0 & !(ATTN_CLAIM | INC_EVENT | ZERO_PENDING),
+                            word.0 & !(ATTN_CLAIM | INC_EVENT),
                             std::sync::atomic::Ordering::AcqRel,
                             std::sync::atomic::Ordering::Acquire,
                         )
                         .is_err()
                     {
-                        // Resurrection (or other foreign RMW) mid-processing.
+                        // Foreign RMW mid-processing: keep the claim,
+                        // reclassify from the fresh word next epoch.
                         attn_push(header);
                         return;
                     }
@@ -683,7 +674,7 @@ impl Collector {
                 } else {
                     (Color::Purple, false)
                 };
-                let target = GcState(word.0 & !(ATTN_CLAIM | INC_EVENT | ZERO_PENDING))
+                let target = GcState(word.0 & !(ATTN_CLAIM | INC_EVENT))
                     .with_color(new_color)
                     .0;
                 (*header)
@@ -857,8 +848,8 @@ impl Collector {
                 if n.shared_rc() == 0 {
                     // Zero event may already be consumed (Orange-skip or a
                     // fresh decrement racing validation) — the refurbish-zero
-                    // reroute re-enters the aged zero path rather than
-                    // freeing inline (grace discipline, design §0/§4).
+                    // reroute re-enters the drain path rather than freeing
+                    // inline (design §0/§4).
                     refurbish_zero(*n);
                     continue;
                 }
@@ -928,17 +919,16 @@ impl Collector {
 /// The refurbish-zero reroute (design §0/§4): a rc==0 member whose zero
 /// event may already be consumed (Orange-skip, or a fresh decrement racing
 /// validation) is NOT freed inline — recolor Black (so the next drain's
-/// Orange-skip cannot misroute it), then re-enter the aged zero path: mark
-/// ZERO_PENDING and claim so `process_drained`'s second-sighting release
-/// cascades it properly at the next drain. Every zero free flows through the
-/// same aged drain path.
+/// Orange-skip cannot misroute it), then claim so `process_drained`'s
+/// single-stage release cascades it properly at the next drain. Every zero
+/// free flows through the same drain path.
 unsafe fn refurbish_zero(n: OpaqueGcPtr) {
     unsafe {
         n.set_color(Color::Black);
         let old = GcState(
             (*n.header.as_ref().get())
                 .state
-                .fetch_or(ZERO_PENDING | ATTN_CLAIM, std::sync::atomic::Ordering::AcqRel),
+                .fetch_or(ATTN_CLAIM, std::sync::atomic::Ordering::AcqRel),
         );
         if !old.attn_claimed() {
             attn_push(n.as_ptr());
@@ -1093,10 +1083,11 @@ mod test {
     use parking_lot::RwLock;
     use std::sync::Arc;
 
-    // `cycles` and `zero_event_reclaimed_by_next_collection` both force epochs
-    // via `collect_garbage_sync` and inspect epoch-count-sensitive state; run
-    // them serially against each other so one test's forced epoch can't land
-    // inside another's collection window (see the plan's caveat on this test).
+    // `cycles` and `zero_event_reclaimed_by_first_collection` both force
+    // epochs via `collect_garbage_sync` and inspect epoch-count-sensitive
+    // state; run them serially against each other so one test's forced epoch
+    // can't land inside another's collection window (see the plan's caveat on
+    // this test).
     static GC_TEST_SERIAL: Mutex<()> = Mutex::new(());
 
     #[test]
@@ -1137,7 +1128,7 @@ mod test {
     }
 
     #[test]
-    fn zero_event_reclaimed_by_next_collection() {
+    fn zero_event_reclaimed_by_first_collection() {
         let _guard = GC_TEST_SERIAL.lock();
         init_gc();
 
@@ -1145,22 +1136,15 @@ mod test {
         let obj = Gc::new(Some(out_ptr.clone()));
         drop(obj);
 
-        // Grace discipline (design §0): a zero-rc sighting ages one epoch
-        // (ZERO_PENDING) before release, since JIT frames can resurrect an
-        // rc==0 object via from_raw_inc_rc. Survives the first collection...
-        collect_garbage_sync();
-        assert_eq!(
-            Arc::strong_count(&out_ptr),
-            2,
-            "zero-rc object must age one epoch before release"
-        );
-
-        // ...and is reclaimed by the second (the aged zero path).
+        // No aging (design §0 superseded, phase 3): the counted-homes
+        // invariant is fixed at its single violation site (CPS liveness) and
+        // asserted in `inc_rc`, so a zero-rc sighting is reclaimed on the
+        // very first drain that observes it.
         collect_garbage_sync();
         assert_eq!(
             Arc::strong_count(&out_ptr),
             1,
-            "zero event not consumed by the second drain"
+            "zero event not consumed by the first drain"
         );
     }
 
