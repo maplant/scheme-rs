@@ -1000,7 +1000,7 @@ unsafe extern "C" fn unwind_to_exception_handler(
 ) {
     unsafe {
         // env[0] is the raised value:
-        let raised = env.as_ref().unwrap().clone();
+        let raised =  env.as_ref().unwrap().clone();
 
         let barrier = barrier.as_mut().unwrap_unchecked();
 

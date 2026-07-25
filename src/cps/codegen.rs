@@ -152,7 +152,7 @@ impl Cps {
         let vals = builder.create_sized_stack_slot(StackSlotData::new(
             StackSlotKind::ExplicitSlot,
             max_allocs as u32 * 8,
-            0,
+            8,
         ));
 
         let entry_block = builder.create_block();
@@ -167,6 +167,14 @@ impl Cps {
 
         let mut continuations = HashSet::default();
 
+                let error_slot =         builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            8,
+            8,
+        ));
+        let error_addr = builder.ins().stack_addr(types::I64, error_slot, 0);
+
+
         let mut cu = CompilationUnit {
             builder,
             // Top level cannot inherit environmental variables, by defintion.
@@ -177,6 +185,8 @@ impl Cps {
             params,
             continuations: &mut continuations,
             module,
+            error_slot,
+            error_addr,
             allocs_at_local_cont: &allocs_at_local_conts,
             local_cont_blocks: HashMap::default(),
             free_vars: &mut free_vars,
@@ -234,6 +244,8 @@ struct CompilationUnit<'m, 'a> {
     local_cont_blocks: HashMap<Local, Block>,
     runtime_funcs: &'a RuntimeFunctions,
     params: [Value; 2],
+    error_slot: StackSlot,
+    error_addr: Value,
     continuations: &'a mut HashSet<Local>,
     free_vars: &'a mut FreeVariables,
     escaping: &'a Escaping,
@@ -508,8 +520,8 @@ impl CompilationUnit<'_, '_> {
             .ins()
             .iconst(types::I32, expansions.len() as i64);
 
-        let error_slot = self.alloc_array(1);
-        let error_addr = self.builder.ins().stack_addr(types::I64, error_slot, 0);
+        // let error_slot = self.alloc_array(1);
+        // let error_addr = self.builder.ins().stack_addr(types::I64, error_slot, 0);
 
         let expand_template = self
             .module
@@ -521,7 +533,7 @@ impl CompilationUnit<'_, '_> {
                 expansion_combiner,
                 expansions_addr,
                 expansions_len,
-                error_addr,
+                self.error_addr,
             ],
         );
         let expanded = self.builder.inst_results(call)[0];
@@ -538,7 +550,7 @@ impl CompilationUnit<'_, '_> {
 
         self.builder.switch_to_block(failure_block);
         self.builder.seal_block(failure_block);
-        let error_val = self.array_load(error_slot, 0);
+        let error_val = self.array_load(self.error_slot, 0);
         self.drop_all_codegen();
         self.raise_codegen(error_val);
 
@@ -691,21 +703,16 @@ impl CompilationUnit<'_, '_> {
             .module
             .declare_func_in_func(runtime_func, self.builder.func);
 
-        // TODO: Having multiple of these is redundant.
-        // Add a slot for the error if this function can error:
-        let error_slot = primop_info.can_error.then(|| {
-            let error_slot = self.alloc_array(1);
-            let error_addr = self.builder.ins().stack_addr(types::I64, error_slot, 0);
-            args.push(error_addr);
-            error_slot
-        });
+        if primop_info.can_error {
+            args.push(self.error_addr);
+        }
 
         // Call the function:
         let primop_call = self.builder.ins().call(runtime_func, args.as_slice());
         let result = self.builder.inst_results(primop_call)[0];
 
         // Check for error if we need to:
-        if let Some(error_slot) = error_slot {
+        if  primop_info.can_error {
             // Check if the result is undefined:
             let cond = self
                 .builder
@@ -723,7 +730,7 @@ impl CompilationUnit<'_, '_> {
             self.builder.switch_to_block(failure_block);
             self.builder.seal_block(failure_block);
 
-            let error_val = self.array_load(error_slot, 0);
+            let error_val = self.array_load(self.error_slot, 0);
             self.drop_all_codegen();
             self.raise_codegen(error_val);
 
@@ -1170,7 +1177,7 @@ impl CompilationUnit<'_, '_> {
         self.builder.create_sized_stack_slot(StackSlotData::new(
             StackSlotKind::ExplicitSlot,
             len as u32 * 8,
-            0,
+            8,
         ))
     }
 
@@ -1471,7 +1478,7 @@ impl ProcedureBundle {
         let allocs = builder.create_sized_stack_slot(StackSlotData::new(
             StackSlotKind::ExplicitSlot,
             max_allocs as u32 * 8,
-            0,
+            8,
         ));
 
         let entry_block = builder.create_block();
@@ -1511,6 +1518,13 @@ impl ProcedureBundle {
         }
 
         continuations.extend(self.args.continuation);
+        
+        let error_slot =         builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            8,
+            8,
+        ));
+        let error_addr = builder.ins().stack_addr(types::I64, error_slot, 0);
 
         let mut cu = CompilationUnit {
             builder,
@@ -1522,6 +1536,8 @@ impl ProcedureBundle {
             local_cont_blocks: HashMap::default(),
             escaping,
             runtime_funcs,
+            error_slot,
+            error_addr,
             params,
             module,
             free_vars,

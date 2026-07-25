@@ -538,30 +538,34 @@ unsafe extern "C" fn store(from: *const (), to: *const ()) {
 
 /// Return the car of the argument
 #[runtime_fn]
-unsafe extern "C" fn car(val: *const (), error: *mut Value) -> *const () {
+unsafe extern "C" fn car(val: *const (), error: *mut *const ()) -> *const () {
     unsafe {
         let val = ManuallyDrop::new(Value::from_raw(val));
         if let Some(car) = val.pair_car() {
             return Value::into_raw(car);
         }
+        /*
         match val.try_to::<Pair>() {
             Ok(pair) => Value::into_raw(pair.car()),
             Err(condition) => {
-                error.write(condition.into());
+                error.write(Value::into_raw(condition.into()));
                 Value::into_raw(Value::undefined())
             }
         }
+         */
+        panic!()
     }
 }
 
 /// Return the cdr of the argument
 #[runtime_fn]
-unsafe extern "C" fn cdr(val: *const (), error: *mut Value) -> *const () {
+unsafe extern "C" fn cdr(val: *const (), error: *mut *const ()) -> *const () {
     unsafe {
         let val = ManuallyDrop::new(Value::from_raw(val));
         if let Some(cdr) = val.pair_cdr() {
             return Value::into_raw(cdr);
         }
+        /*
         match val.try_to::<Pair>() {
             Ok(pair) => Value::into_raw(pair.cdr()),
             Err(condition) => {
@@ -569,6 +573,9 @@ unsafe extern "C" fn cdr(val: *const (), error: *mut Value) -> *const () {
                 Value::into_raw(Value::undefined())
             }
         }
+         */
+
+        panic!()
     }
 }
 
@@ -698,7 +705,7 @@ unsafe extern "C" fn error_unbound_variable(symbol: u32) -> *const () {
 }
 
 #[runtime_fn]
-unsafe extern "C" fn add(vals: *const *const (), num_vals: u32, error: *mut Value) -> *const () {
+unsafe extern "C" fn add(vals: *const *const (), num_vals: u32, error: *mut *const ()) -> *const () {
     unsafe {
         let vals: Vec<_> = (0..num_vals)
             // Can't easily wrap these in a ManuallyDrop, so we dec the rc.
@@ -707,7 +714,7 @@ unsafe extern "C" fn add(vals: *const *const (), num_vals: u32, error: *mut Valu
         match num::add_prim(&vals) {
             Ok(num) => Value::into_raw(Value::from(num)),
             Err(condition) => {
-                error.write(condition.into());
+                error.write(Value::into_raw(condition.into()));
                 Value::into_raw(Value::undefined())
             }
         }
@@ -715,7 +722,7 @@ unsafe extern "C" fn add(vals: *const *const (), num_vals: u32, error: *mut Valu
 }
 
 #[runtime_fn]
-unsafe extern "C" fn sub(vals: *const *const (), num_vals: u32, error: *mut Value) -> *const () {
+unsafe extern "C" fn sub(vals: *const *const (), num_vals: u32, error: *mut *const ()) -> *const () {
     unsafe {
         let vals: Vec<_> = (0..num_vals)
             .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read()))
@@ -723,7 +730,7 @@ unsafe extern "C" fn sub(vals: *const *const (), num_vals: u32, error: *mut Valu
         match num::sub_prim(&vals[0], &vals[1..]) {
             Ok(num) => Value::into_raw(Value::from(num)),
             Err(condition) => {
-                error.write(condition.into());
+                error.write(Value::into_raw(condition.into()));
                 Value::into_raw(Value::undefined())
             }
         }
@@ -742,7 +749,7 @@ unsafe extern "C" fn i128_to_number(lo: i64, hi: i64) -> *const () {
 }
 
 #[runtime_fn]
-unsafe extern "C" fn mul(vals: *const *const (), num_vals: u32, error: *mut Value) -> *const () {
+unsafe extern "C" fn mul(vals: *const *const (), num_vals: u32, error: *mut *const ()) -> *const () {
     unsafe {
         let vals: Vec<_> = (0..num_vals)
             .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read()))
@@ -750,7 +757,7 @@ unsafe extern "C" fn mul(vals: *const *const (), num_vals: u32, error: *mut Valu
         match num::mul_prim(&vals) {
             Ok(num) => Value::into_raw(Value::from(num)),
             Err(condition) => {
-                error.write(condition.into());
+                error.write(Value::into_raw(condition.into()));
                 Value::into_raw(Value::undefined())
             }
         }
@@ -758,7 +765,7 @@ unsafe extern "C" fn mul(vals: *const *const (), num_vals: u32, error: *mut Valu
 }
 
 #[runtime_fn]
-unsafe extern "C" fn div(vals: *const *const (), num_vals: u32, error: *mut Value) -> *const () {
+unsafe extern "C" fn div(vals: *const *const (), num_vals: u32, error: *mut *const ()) -> *const () {
     unsafe {
         let vals: Vec<_> = (0..num_vals)
             .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read()))
@@ -766,7 +773,7 @@ unsafe extern "C" fn div(vals: *const *const (), num_vals: u32, error: *mut Valu
         match num::div_prim(&vals[0], &vals[1..]) {
             Ok(num) => Value::into_raw(Value::from(num)),
             Err(condition) => {
-                error.write(condition.into());
+                error.write(Value::into_raw(condition.into()));
                 Value::into_raw(Value::undefined())
             }
         }
@@ -779,7 +786,7 @@ macro_rules! define_comparison_fn {
         unsafe extern "C" fn $name(
             vals: *const *const (),
             num_vals: u32,
-            error: *mut Value,
+            error: *mut *const(),
         ) -> *const () {
             unsafe {
                 let vals: Vec<_> = (0..num_vals)
@@ -788,7 +795,7 @@ macro_rules! define_comparison_fn {
                 match num::$prim(&vals) {
                     Ok(res) => Value::into_raw(Value::from(res)),
                     Err(condition) => {
-                        error.write(condition.into());
+                        error.write(Value::into_raw(condition.into()));
                         Value::into_raw(Value::undefined())
                     }
                 }
@@ -804,14 +811,14 @@ define_comparison_fn!(lesser, lesser_prim);
 define_comparison_fn!(lesser_equal, lesser_equal_prim);
 
 #[runtime_fn]
-unsafe extern "C" fn call_known_1x0(func: usize, arg1: *const (), error: *mut Value) -> *const () {
+unsafe extern "C" fn call_known_1x0(func: usize, arg1: *const (), error: *mut *const ()) -> *const () {
     unsafe {
         let func: fn(&Value) -> Result<(), Exception> = std::mem::transmute(func);
         let arg1 = ManuallyDrop::new(Value::from_raw(arg1));
         match (func)(&arg1) {
             Ok(()) => Value::into_raw(Value::from(true)),
             Err(condition) => {
-                error.write(condition.into());
+                error.write(Value::into_raw(condition.into()));
                 Value::into_raw(Value::undefined())
             }
         }
@@ -823,7 +830,7 @@ unsafe extern "C" fn call_known_2x0(
     func: usize,
     arg1: *const (),
     arg2: *const (),
-    error: *mut Value,
+    error: *mut *const (),
 ) -> *const () {
     unsafe {
         let func: fn(&Value, &Value) -> Result<(), Exception> = std::mem::transmute(func);
@@ -832,7 +839,7 @@ unsafe extern "C" fn call_known_2x0(
         match (func)(&arg1, &arg2) {
             Ok(()) => Value::into_raw(Value::from(true)),
             Err(condition) => {
-                error.write(condition.into());
+                error.write(Value::into_raw(condition.into()));
                 Value::into_raw(Value::undefined())
             }
         }
@@ -845,7 +852,7 @@ unsafe extern "C" fn call_known_3x0(
     arg1: *const (),
     arg2: *const (),
     arg3: *const (),
-    error: *mut Value,
+    error: *mut *const() ,
 ) -> *const () {
     unsafe {
         let func: fn(&Value, &Value, &Value) -> Result<(), Exception> = std::mem::transmute(func);
@@ -855,7 +862,7 @@ unsafe extern "C" fn call_known_3x0(
         match (func)(&arg1, &arg2, &arg3) {
             Ok(()) => Value::into_raw(Value::from(true)),
             Err(condition) => {
-                error.write(condition.into());
+                error.write(Value::into_raw(condition.into()));
                 Value::into_raw(Value::undefined())
             }
         }
@@ -863,13 +870,13 @@ unsafe extern "C" fn call_known_3x0(
 }
 
 #[runtime_fn]
-unsafe extern "C" fn call_known_0x1(func: usize, error: *mut Value) -> *const () {
+unsafe extern "C" fn call_known_0x1(func: usize, error: *mut *const ()) -> *const () {
     unsafe {
         let func: fn() -> Result<Value, Exception> = std::mem::transmute(func);
         match (func)() {
             Ok(res) => Value::into_raw(res),
             Err(condition) => {
-                error.write(condition.into());
+                error.write(Value::into_raw(condition.into()));
                 Value::into_raw(Value::undefined())
             }
         }
@@ -877,14 +884,14 @@ unsafe extern "C" fn call_known_0x1(func: usize, error: *mut Value) -> *const ()
 }
 
 #[runtime_fn]
-unsafe extern "C" fn call_known_1x1(func: usize, arg1: *const (), error: *mut Value) -> *const () {
+unsafe extern "C" fn call_known_1x1(func: usize, arg1: *const (), error: *mut *const ()) -> *const () {
     unsafe {
         let func: fn(&Value) -> Result<Value, Exception> = std::mem::transmute(func);
         let arg1 = ManuallyDrop::new(Value::from_raw(arg1));
         match (func)(&arg1) {
             Ok(res) => Value::into_raw(res),
             Err(condition) => {
-                error.write(condition.into());
+                error.write(Value::into_raw(condition.into()));
                 Value::into_raw(Value::undefined())
             }
         }
@@ -896,7 +903,7 @@ unsafe extern "C" fn call_known_2x1(
     func: usize,
     arg1: *const (),
     arg2: *const (),
-    error: *mut Value,
+    error: *mut *const (),
 ) -> *const () {
     unsafe {
         let func: fn(&Value, &Value) -> Result<Value, Exception> = std::mem::transmute(func);
@@ -905,7 +912,7 @@ unsafe extern "C" fn call_known_2x1(
         match (func)(&arg1, &arg2) {
             Ok(res) => Value::into_raw(res),
             Err(condition) => {
-                error.write(condition.into());
+                error.write(Value::into_raw(condition.into()));
                 Value::into_raw(Value::undefined())
             }
         }
@@ -918,7 +925,7 @@ unsafe extern "C" fn call_known_3x1(
     arg1: *const (),
     arg2: *const (),
     arg3: *const (),
-    error: *mut Value,
+    error: *mut *const (),
 ) -> *const () {
     unsafe {
         let func: fn(&Value, &Value, &Value) -> Result<Value, Exception> =
@@ -929,7 +936,7 @@ unsafe extern "C" fn call_known_3x1(
         match (func)(&arg1, &arg2, &arg3) {
             Ok(res) => Value::into_raw(res),
             Err(condition) => {
-                error.write(condition.into());
+                error.write(Value::into_raw(condition.into()));
                 Value::into_raw(Value::undefined())
             }
         }
