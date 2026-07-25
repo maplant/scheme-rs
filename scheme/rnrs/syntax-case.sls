@@ -1,9 +1,9 @@
 (library (rnrs syntax-case (6))
   (export quasisyntax
           (import (rnrs syntax-case builtins (6)))
-          (import (rnrs syntax-case primitives (6))))
+          (import (only (scheme-rs primitives) syntax-case)))
   (import (rnrs base builtins (6))
-          (rnrs base primitives (6)))
+          (scheme-rs primitives))
 
   (define-syntax with-syntax
     (lambda (x)

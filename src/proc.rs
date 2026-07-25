@@ -87,7 +87,7 @@ use crate::{
     cps::PrimOp,
     env::Local,
     exceptions::{Exception, raise},
-    gc::{Gc, GcInner, Trace},
+    gc::{Gc, Trace},
     lists::{Pair, list_to_vec},
     ports::{BufferMode, Port, Transcoder},
     records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
@@ -97,7 +97,6 @@ use crate::{
     value::Value,
     vectors::Vector,
 };
-use parking_lot::RwLock;
 use scheme_rs_macros::{cps_bridge, maybe_async, maybe_await};
 use smallvec::SmallVec;
 use std::{
@@ -387,7 +386,7 @@ impl ProcedureInner {
                 barrier,
             ),
             FuncPtr::User(user) => self.apply_jit(user, args, barrier),
-            FuncPtr::Known(known) => known.apply(&self.runtime, &args, barrier),
+            FuncPtr::Known(known) => known.apply(&args, barrier),
         }
     }
 }

@@ -155,27 +155,6 @@ impl<T: ?Sized> Gc<T> {
             marker: PhantomData,
         }
     }
-
-    /// The same as from_raw, but increments the reference count.
-    #[cfg(debug_assertions)]
-    pub(crate) unsafe fn from_raw_inc_rc(ptr: *mut GcInner<T>) -> Self {
-        let ptr = NonNull::new(ptr).unwrap();
-        inc_rc(ptr);
-        Self {
-            ptr,
-            marker: PhantomData,
-        }
-    }
-
-    #[cfg(not(debug_assertions))]
-    pub(crate) unsafe fn from_raw_inc_rc(ptr: *mut GcInner<T>) -> Self {
-        let ptr = unsafe { NonNull::new_unchecked(ptr) };
-        inc_rc(ptr);
-        Self {
-            ptr,
-            marker: PhantomData,
-        }
-    }
 }
 
 impl Gc<dyn Any + Send + Sync> {
@@ -896,6 +875,26 @@ where
     unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
         unsafe {
             if let Some(read_lock) = self.try_read() {
+                read_lock.visit_or_recurse(visitor);
+            }
+        }
+    }
+
+    unsafe fn finalize(&mut self) {
+        unsafe {
+            self.get_mut().finalize_or_skip();
+        }
+    }
+}
+
+#[cfg(feature = "async")]
+unsafe impl<T> Trace for async_lock::RwLock<T>
+where
+    T: GcOrTrace,
+{
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+        unsafe {
+            if let Some(read_lock) = async_lock::RwLock::try_read(self) {
                 read_lock.visit_or_recurse(visitor);
             }
         }

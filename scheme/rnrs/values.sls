@@ -2,7 +2,7 @@
   (export values let-values let*-values)
   (import (rnrs base builtins (6))
           (rnrs syntax-rules (6))
-          (rnrs base primitives (6)))
+          (scheme-rs primitives))
 
   (define (values . things)
     (call-with-current-continuation

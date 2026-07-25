@@ -18,16 +18,15 @@ use crate::{
         Application, ContBarrier, ContPtr, ContinuationPtr, FuncPtr, ProcDebugInfo, Procedure,
         ProcedureInner, UserPtr,
     },
-    records::Embedded,
     registry::Registry,
     symbols::Symbol,
-    syntax::{Identifier, Span, Syntax},
+    syntax::{Span, Syntax},
     value::{Cell, TAG, UnpackedValue, Value},
 };
-use parking_lot::{MappedRwLockWriteGuard, Mutex, MutexGuard, RwLock, RwLockWriteGuard};
+use parking_lot::{Mutex, MutexGuard, RwLock};
 use scheme_rs_macros::{maybe_async, maybe_await, runtime_fn};
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::HashSet,
     mem::{ManuallyDrop, MaybeUninit},
     path::Path,
     sync::{Arc, LazyLock},
@@ -151,8 +150,9 @@ impl Runtime {
     ///
     /// See [`Registry::load_plugin`].
     #[cfg(feature = "plugins")]
+    #[maybe_async]
     pub unsafe fn load_plugin(&self, library: libloading::Library) -> Result<(), Exception> {
-        unsafe { self.get_registry().load_plugin(self, library) }
+        unsafe { maybe_await!(self.get_registry().load_plugin(library)) }
     }
 
     pub(crate) fn get_registry(&self) -> Registry {
@@ -165,7 +165,6 @@ impl Runtime {
         let task = CompilationTask {
             completion_tx,
             compilation_unit: expr,
-            runtime: self.clone(),
         };
         let sender = { self.0.compilation_buffer_tx.clone() };
         let _ = maybe_await!(sender.send(task));
@@ -303,11 +302,6 @@ async fn recv_continuation(rx: CompletionRx) -> ContinuationPtr {
 struct CompilationTask {
     compilation_unit: Cps,
     completion_tx: CompletionTx,
-    /// Since Contexts are per-thread, we will only ever see the same Runtime.
-    /// However, we can't cache the Runtime, as that would cause a ref cycle
-    /// that would prevent the last compilation buffer sender to drop.
-    /// Therefore, its lifetime is that of the compilation task
-    runtime: Runtime,
 }
 
 #[cfg(not(feature = "async"))]
@@ -359,10 +353,9 @@ fn compilation_task(mut compilation_queue_rx: CompilationBufferRx) {
         let CompilationTask {
             completion_tx,
             compilation_unit,
-            runtime,
         } = task;
 
-        let proc = compilation_unit.compile(runtime, &runtime_funcs, &mut module, &mut debug_info);
+        let proc = compilation_unit.compile(&runtime_funcs, &mut module, &mut debug_info);
 
         let _ = completion_tx.send(proc);
     }
@@ -474,9 +467,14 @@ unsafe extern "C" fn apply(
 }
 
 /// Get a frame from a procedure and a span
+#[cfg(feature = "continuation-marks")]
 #[runtime_fn]
 unsafe extern "C" fn get_frame(op: *const (), span: *const ()) -> *const () {
     unsafe {
+        use std::collections::BTreeSet;
+
+        use crate::{records::Embedded, syntax::Identifier};
+
         let op = Value::from_raw_inc_rc(op);
         let Some(op) = op.cast::<Procedure>() else {
             return Value::into_raw(Value::null());

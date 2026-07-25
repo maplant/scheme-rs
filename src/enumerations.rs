@@ -11,7 +11,6 @@ use crate::{
     lists::List,
     proc::{Application, ContBarrier, FuncPtr, Procedure},
     records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
-    runtime::Runtime,
     symbols::Symbol,
     value::Value,
 };

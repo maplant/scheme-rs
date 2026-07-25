@@ -89,6 +89,7 @@ pub(crate) struct RuntimeFunctions {
     cdr: FuncId,
 
     // Frame primops:
+    #[cfg(feature = "continuation-marks")]
     get_frame: FuncId,
 
     // Continuation mark primops:
@@ -112,7 +113,6 @@ pub(crate) struct RuntimeFunctions {
 impl Cps {
     pub(crate) fn compile(
         self,
-        runtime: Runtime,
         runtime_funcs: &RuntimeFunctions,
         module: &mut JITModule,
         debug_info: &mut DebugInfo,
@@ -904,6 +904,7 @@ impl CompilationUnit<'_, '_> {
         self.cps_codegen(cexpr, deferred_procs, deferred_local_conts);
     }
 
+    #[cfg(feature = "continuation-marks")]
     fn get_frame_codegen(
         &mut self,
         op: &CpsValue,

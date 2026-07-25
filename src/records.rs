@@ -226,7 +226,6 @@ use std::{
 
 use by_address::ByAddress;
 use indexmap::{IndexMap, IndexSet};
-use parking_lot::RwLock;
 
 use crate::{
     exceptions::Exception,

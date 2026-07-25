@@ -6,7 +6,7 @@ use parking_lot::RwLock;
 
 use crate::{
     exceptions::Exception,
-    gc::{Gc, GcInner, Trace},
+    gc::{Gc, Trace},
     proc::{Application, ContBarrier, ContPtr, Procedure},
     registry::{bridge, cps_bridge},
     strings::WideString,

@@ -6,7 +6,6 @@ use crate::{
     ast::{Definitions, Primitive},
     env::{Environment, Var},
     proc::Procedure,
-    runtime::Runtime,
     syntax::{Identifier, Syntax},
 };
 
@@ -18,17 +17,15 @@ use super::{
 
 #[maybe_async]
 pub(super) fn hover_for_document(
-    runtime: &Runtime,
     config: LspConfig,
     uri: &Uri,
     text: &str,
     position: Position,
 ) -> Option<Hover> {
-    let (form, env) = parse_document(runtime, uri, text).ok()?;
+    let (form, env) = parse_document(uri, text).ok()?;
     maybe_await!(import_visible_libraries(&form, &env)).ok()?;
     if config.allow_macro_expansion {
         let _ = maybe_await!(Definitions::parse_lib_body(
-            runtime,
             &form,
             &env,
             &mut HashSet::default()

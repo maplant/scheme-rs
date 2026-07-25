@@ -7,7 +7,6 @@
 //! equivalents in the runtime you're targeting.
 
 use memchr::{memchr, memmem};
-use parking_lot::RwLock;
 use rustyline::Editor;
 use scheme_rs_macros::{bridge, cps_bridge, define_condition_type, maybe_async, maybe_await, rtd};
 use std::{
@@ -25,10 +24,9 @@ use crate::{
     Either,
     enumerations::{EnumerationSet, EnumerationType},
     exceptions::{Assertion, Error, Exception, raise},
-    gc::{Gc, GcInner, Trace},
+    gc::Trace,
     proc::{Application, ContBarrier, ContPtr, DynStackElem, FuncPtr, Procedure, pop_dyn_stack},
     records::{Embeddable, Embedded, RecordTypeDescriptor},
-    runtime::{Runtime, RuntimeInner},
     strings::WideString,
     symbols::Symbol,
     syntax::{

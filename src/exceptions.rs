@@ -51,7 +51,7 @@
 #![allow(clippy::derivable_impls)]
 
 use crate::{
-    gc::{Gc, GcInner, Trace},
+    gc::Trace,
     lists::slice_to_list,
     ports::{IoDecodingError, IoEncodingError, IoError, IoReadError, IoWriteError},
     proc::{Application, ContBarrier, ContPtr, DynStackElem, FuncPtr, Procedure, pop_dyn_stack},
@@ -63,7 +63,6 @@ use crate::{
     vectors::Vector,
 };
 use by_address::ByAddress;
-use parking_lot::RwLock;
 use scheme_rs_macros::runtime_fn;
 use std::{
     collections::HashMap, convert::Infallible, fmt, mem::MaybeUninit, ops::Range, sync::Arc,

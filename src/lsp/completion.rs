@@ -7,7 +7,6 @@ use scheme_rs_macros::{maybe_async, maybe_await};
 use crate::{
     env::{Binding, Environment, GLOBAL_BINDING_TABLE, Var},
     proc::Procedure,
-    runtime::Runtime,
     symbols::Symbol,
 };
 
@@ -18,7 +17,6 @@ use super::{
 
 #[maybe_async]
 pub(super) fn completions_for_document(
-    runtime: &Runtime,
     uri: &Uri,
     text: &str,
     position: Position,
@@ -26,7 +24,7 @@ pub(super) fn completions_for_document(
     // PERF: This reparses and rebuilds imports on every completion request.
     // Cache document analysis on open/change if completion starts feeling slow.
     let prefix = completion_prefix(text, position);
-    let mut items = if let Ok((form, env)) = parse_document(runtime, uri, text)
+    let mut items = if let Ok((form, env)) = parse_document(uri, text)
         && maybe_await!(import_visible_libraries(&form, &env)).is_ok()
     {
         maybe_await!(environment_completion_items(&env, &prefix))
@@ -42,7 +40,7 @@ pub(super) fn completions_for_document(
 #[maybe_async]
 fn environment_completion_items(env: &Environment, prefix: &str) -> Vec<CompletionItem> {
     let mut items = Vec::new();
-    for (name, binding) in imported_bindings(env) {
+    for (name, binding) in maybe_await!(imported_bindings(env)) {
         let label = name.to_string();
         if !label.starts_with(prefix) {
             continue;
@@ -71,9 +69,13 @@ fn environment_completion_items(env: &Environment, prefix: &str) -> Vec<Completi
     items
 }
 
+#[maybe_async]
 fn imported_bindings(env: &Environment) -> Vec<(Symbol, Binding)> {
     let top = env.fetch_top();
-    let imported = top.0.read().imports.keys().copied().collect::<Vec<_>>();
+    let imported = maybe_await!(top.0.imports.read())
+        .keys()
+        .copied()
+        .collect::<Vec<_>>();
     let scope_set = env.get_scope_set();
 
     GLOBAL_BINDING_TABLE

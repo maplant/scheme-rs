@@ -1,7 +1,6 @@
 use scheme_rs::{
     env::TopLevelEnvironment,
     proc::{ContBarrier, Procedure},
-    runtime::Runtime,
     value::Expect1,
 };
 
@@ -10,8 +9,7 @@ use scheme_rs_macros::{maybe_async, maybe_await};
 
 #[maybe_async]
 fn yin_yang_fn() -> Procedure {
-    let rt = Runtime::handle();
-    let repl = TopLevelEnvironment::new_repl(&rt);
+    let repl = TopLevelEnvironment::new_repl();
     maybe_await!(repl.eval(
         true,
         "

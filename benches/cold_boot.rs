@@ -1,5 +1,5 @@
 use criterion::*;
-use scheme_rs::{env::TopLevelEnvironment, runtime::Runtime};
+use scheme_rs::env::TopLevelEnvironment;
 use scheme_rs_macros::{maybe_async, maybe_await};
 
 #[cfg(not(feature = "async"))]
@@ -19,8 +19,7 @@ fn cold_boot_benchmark(c: &mut Criterion) {
 
 #[maybe_async]
 fn run_bench() {
-    let rt = Runtime::handle();
-    let repl = TopLevelEnvironment::new_repl(&rt);
+    let repl = TopLevelEnvironment::new_repl();
     maybe_await!(repl.eval(true, "(import (rnrs base)) (abs -5)")).unwrap();
 }
 

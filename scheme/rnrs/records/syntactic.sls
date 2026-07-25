@@ -2,10 +2,10 @@
   (export define-record-type record-constructor-descriptor record-type-descriptor)
   (import (rnrs values (6))
           (rnrs base builtins (6))
-          (rnrs base primitives (6))
           (rnrs syntax-case (6))
           (rnrs io simple builtins)
-          (rnrs records procedural (6)))
+          (rnrs records procedural (6))
+          (scheme-rs primitives))
 
   (define-syntax with-syntax
     (lambda (x)
