@@ -200,7 +200,7 @@ pub(crate) struct RegistryInner {
     loaded_plugin_paths: HashSet<PathBuf>,
 }
 
-static PRIMITIVES_SCOPE: LazyLock<Scope> = LazyLock::new(|| Scope::new());
+static PRIMITIVES_SCOPE: LazyLock<Scope> = LazyLock::new(Scope::new);
 pub(crate) static PRIMITIVES_LIB: OnceLock<TopLevelEnvironment> = OnceLock::new();
 
 pub(crate) fn primitive(name: Symbol) -> Binding {
@@ -559,7 +559,7 @@ impl RegistryInner {
                     if let TopLevelKind::Libary { name, .. } = &lib.0.kind
                         && !lib_import.version_ref.matches(&name.version)
                     {
-                        return Err(error::version_mismatch(&lib_import.version_ref, &name));
+                        return Err(error::version_mismatch(&lib_import.version_ref, name));
                     }
 
                     lib.0

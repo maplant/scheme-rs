@@ -1433,7 +1433,7 @@ impl ProcedureBundle {
             .find_free_vars(&body)
             .difference(&args.iter().cloned().collect::<HashSet<_>>())
             .cloned()
-            .filter(|var| !continuations.contains(&var))
+            .filter(|var| !continuations.contains(var))
             .collect::<Vec<_>>();
 
         Self {

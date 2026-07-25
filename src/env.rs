@@ -929,6 +929,7 @@ pub(crate) enum Var {
 }
 
 impl Var {
+    #[cfg(feature = "continuation-marks")]
     pub fn symbol(&self) -> Option<Symbol> {
         match self {
             Var::Global(global) => Some(global.name),

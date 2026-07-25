@@ -1,6 +1,9 @@
+#[cfg(feature = "continuation-marks")]
 use std::collections::BTreeSet;
 
 use super::*;
+#[cfg(feature = "continuation-marks")]
+use crate::syntax::{Identifier, Syntax};
 use crate::{
     Either, HashMap,
     ast::*,
@@ -11,7 +14,6 @@ use crate::{
     exceptions::Exception,
     expand::{ExpansionCombiner, SyntaxRule},
     runtime::Runtime,
-    syntax::{Identifier, Syntax},
     value::Value as RuntimeValue,
 };
 use indexmap::IndexSet;
@@ -409,6 +411,7 @@ impl Compile for Apply {
             ctxt,
             &self.operator,
             &self.args,
+            #[cfg(feature = "continuation-marks")]
             self.span.clone(),
             meta_cont,
         )
@@ -419,7 +422,7 @@ fn compile_apply(
     ctxt: &Compiler,
     operator: &Expression,
     args: &[Expression],
-    span: Span,
+    #[cfg(feature = "continuation-marks")] span: Span,
     meta_cont: &mut dyn FnMut(Value) -> Cps,
 ) -> Cps {
     let k1 = Local::gensym();
@@ -453,6 +456,7 @@ fn compile_apply(
                         args,
                     )
                 } else {
+                    #[cfg(feature = "continuation-marks")]
                     let frame = if let Expression::Var(var) = operator
                         && let Some(sym) = var.symbol()
                     {
@@ -475,7 +479,9 @@ fn compile_apply(
                                     Value::from(k3),
                                     vec![Value::from(k2)],
                                     args,
+                                    #[cfg(feature = "continuation-marks")]
                                     frame.clone(),
+                                    #[cfg(feature = "continuation-marks")]
                                     span.clone(),
                                 )),
                                 val: k4,
@@ -498,8 +504,8 @@ fn compile_apply_args(
     op: Value,
     mut collected_args: Vec<Value>,
     remaining_args: &[Expression],
-    frame: Option<Syntax>,
-    span: Span,
+    #[cfg(feature = "continuation-marks")] frame: Option<Syntax>,
+    #[cfg(feature = "continuation-marks")] span: Span,
 ) -> Cps {
     let (arg, tail) = match remaining_args {
         #[cfg(feature = "continuation-marks")]
@@ -543,7 +549,16 @@ fn compile_apply_args(
             args: LambdaArgs::new(vec![k2], false, None),
             body: Box::new({
                 collected_args.push(Value::from(k2));
-                compile_apply_args(ctxt, op, collected_args, tail, frame, span)
+                compile_apply_args(
+                    ctxt,
+                    op,
+                    collected_args,
+                    tail,
+                    #[cfg(feature = "continuation-marks")]
+                    frame,
+                    #[cfg(feature = "continuation-marks")]
+                    span,
+                )
             }),
             val: k1,
             span: None,

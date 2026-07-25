@@ -76,7 +76,7 @@ impl Runtime {
     /// populated.
     pub fn handle() -> Self {
         static APP_RUNTIME: LazyLock<RuntimeInner> = LazyLock::new(RuntimeInner::new);
-        Self(&*APP_RUNTIME)
+        Self(&APP_RUNTIME)
     }
 
     /// Run a program at the given location and return the values.
