@@ -1,4 +1,4 @@
-/*
+#[cfg(feature = "plugins")]
 use scheme_rs_macros::maybe_await;
 
 #[cfg(feature = "plugins")]
@@ -73,7 +73,6 @@ fn load_same_plugin_twice_is_ok() {
         .expect("bridges should work after double load");
 }
 
-/*
 #[cfg(feature = "plugins")]
 #[test]
 fn version_constant_matches_crate() {
@@ -82,5 +81,3 @@ fn version_constant_matches_crate() {
         env!("CARGO_PKG_VERSION"),
     );
 }
- */
-*/

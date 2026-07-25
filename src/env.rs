@@ -155,6 +155,7 @@ impl Hash for TopLevelEnvironment {
 
 impl TopLevelEnvironment {
     pub fn new_repl() -> Self {
+        let _ = Runtime::handle();
         let scope = Scope::new();
         let import = Symbol::intern("import");
         let import_binding = crate::registry::primitive(import);
@@ -173,6 +174,7 @@ impl TopLevelEnvironment {
     }
 
     pub(crate) fn new_program(path: &Path) -> Self {
+        let _ = Runtime::handle();
         let scope = Scope::new();
         let import = Symbol::intern("import");
         let import_binding = crate::registry::primitive(import);

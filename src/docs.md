@@ -19,7 +19,7 @@ To get started using scheme-rs in your project, create a
 
 ```rust
 # use scheme_rs::runtime::Runtime;
-let runtime = Runtime::new();
+let runtime = Runtime::handle();
 ```
 
 The `Runtime` struct initializes the garbage collector and handles the
@@ -37,8 +37,7 @@ set of imports provided to the scheme code.
 
 ```rust
 # use scheme_rs::{runtime::Runtime, env::TopLevelEnvironment};
-# let runtime = Runtime::new();
-let env = TopLevelEnvironment::new_repl(&runtime);
+let env = TopLevelEnvironment::new_repl();
 env.import("(library (rnrs))".parse().unwrap());
 ```
 
@@ -48,9 +47,8 @@ external packages. If you are running untrusted user code, be sure to pass
 false and think careful of the functions you provide.
 
 ```rust
-# use scheme_rs::{runtime::Runtime, env::TopLevelEnvironment, proc::Procedure};
-# let runtime = Runtime::new();
-# let env = TopLevelEnvironment::new_repl(&runtime);
+# use scheme_rs::{env::TopLevelEnvironment, proc::Procedure};
+# let env = TopLevelEnvironment::new_repl();
 # env.import("(library (rnrs))".parse().unwrap());
 let vals = env.eval(
     false,
@@ -77,10 +75,9 @@ anywhere.
 
 ```rust
 # use scheme_rs::{
-# runtime::Runtime, env::TopLevelEnvironment, value::Value, proc::{ContBarrier, Procedure},
+# env::TopLevelEnvironment, value::Value, proc::{ContBarrier, Procedure},
 # };
-# let runtime = Runtime::new();
-# let env = TopLevelEnvironment::new_repl(&runtime);
+# let env = TopLevelEnvironment::new_repl();
 # env.import("(library (rnrs))".parse().unwrap());
 # let [factorial] = env.eval(
 #     false,
@@ -142,15 +139,14 @@ Once you've defined a bridge function it can be imported and called from scheme:
 ```rust
 # use scheme_rs::{
 # registry::bridge, value::Value, exceptions::Exception, 
-# runtime::Runtime, env::TopLevelEnvironment};
+# env::TopLevelEnvironment};
 # #[bridge(name = "add-five", lib = "(add-five-lib)")]
 # fn add_five(num: &Value) -> Result<Vec<Value>, Exception> {
 #    let num: usize = num.clone().try_into()?;
 #    Ok(vec![Value::from(num + 5)])
 # }
 # fn main() {
-# let runtime = Runtime::new();
-# let env = TopLevelEnvironment::new_repl(&runtime);
+# let env = TopLevelEnvironment::new_repl();
 # env.import("(library (rnrs))".parse().unwrap());
 let val = env.eval(
   true,
@@ -254,10 +250,9 @@ Creating a new mutable references enforces a new continuation barrier.
 ```rust
 # use scheme_rs::{
 # registry::cps_bridge, value::Value, exceptions::Exception, 
-# runtime::Runtime, env::TopLevelEnvironment, proc::{Application, ContBarrier, Procedure}}; 
+# env::TopLevelEnvironment, proc::{Application, ContBarrier, Procedure}}; 
 #[cps_bridge(def = "inc", lib = "(example)")]
 pub fn inc(
-    _runtime: &Runtime,
     _env: &[Value],
     _args: &[Value],
     _rest_args: &[Value],
@@ -273,7 +268,6 @@ pub fn inc(
 
 #[cps_bridge(def = "call-with-var thunk", lib = "(example)")]
 pub fn call_with_var(
-    _runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
