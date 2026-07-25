@@ -13,7 +13,7 @@ use crate::{
         Value as CpsValue,
         analysis::{Escaping, FreeVariables},
     },
-    proc::{ContinuationPtr, FuncPtr, ProcDebugInfo, Procedure},
+    proc::{ContinuationPtr, ProcDebugInfo, Procedure},
     runtime::{DebugInfo, Runtime},
     value::{
         FALSE_VALUE, FIXNUM_MAX, FIXNUM_MIN, NULL_VALUE, TAG, TRUE_VALUE, Tag, UNDEFINED_VALUE,
@@ -56,7 +56,8 @@ pub(crate) struct RuntimeFunctions {
     apply: FuncId,
     halt: FuncId,
     make_user: FuncId,
-    make_continuation: FuncId,
+    push_continuation: FuncId,
+    call_continuation: FuncId,
     patch_env_slot: FuncId,
     unroot_proc: FuncId,
     alloc_cell: FuncId,
@@ -108,29 +109,34 @@ pub(crate) struct RuntimeFunctions {
 }
 
 impl Cps {
-    pub(crate) fn into_procedure(
+    pub(crate) fn compile(
         self,
         runtime: Runtime,
-        escaping: Escaping,
         runtime_funcs: &RuntimeFunctions,
         module: &mut JITModule,
         debug_info: &mut DebugInfo,
-    ) -> Procedure {
+    ) -> ContinuationPtr {
         if std::env::var("SCHEME_RS_DEBUG").is_ok() {
             eprintln!("Compiling:");
             self.pretty_print(0);
             eprintln!();
         }
 
+        // Collect free variables
         let mut free_vars = FreeVariables::default();
         free_vars.find_free_vars(&self);
+
+        // Collect escaping functions
+        let mut lambda_bindings = HashMap::default();
+        self.collect_bindings(&mut lambda_bindings);
+        let escaping = Escaping::find_escaping(&self, &lambda_bindings, &free_vars);
 
         let mut cells = HashSet::default();
         self.cells(&mut cells);
         let mut builder_context = FunctionBuilderContext::new();
         let mut ctx = module.make_context();
 
-        make_sig(&mut ctx.func.signature, false);
+        make_sig(&mut ctx.func.signature);
 
         let val = Local::gensym();
         let name = val.get_func_name();
@@ -161,6 +167,8 @@ impl Cps {
             ]
         };
 
+        let mut continuations = HashSet::default();
+
         let mut cu = CompilationUnit {
             runtime: runtime.clone(),
             builder,
@@ -170,6 +178,7 @@ impl Cps {
             curr_allocs: 0,
             runtime_funcs,
             params,
+            continuations: &mut continuations,
             module,
             allocs_at_local_cont: &allocs_at_local_conts,
             local_cont_blocks: HashMap::default(),
@@ -201,6 +210,7 @@ impl Cps {
                 runtime_funcs,
                 &cells,
                 &escaping,
+                &mut continuations,
                 &mut free_vars,
                 module,
                 debug_info,
@@ -210,13 +220,11 @@ impl Cps {
 
         module.finalize_definitions().unwrap();
 
-        let func = unsafe {
+        unsafe {
             std::mem::transmute::<*const u8, ContinuationPtr>(
                 module.get_finalized_function(entry_func),
             )
-        };
-
-        Procedure::new(runtime, Vec::new(), FuncPtr::Continuation(func), 0, true)
+        }
     }
 }
 
@@ -230,6 +238,7 @@ struct CompilationUnit<'m, 'a> {
     local_cont_blocks: HashMap<Local, Block>,
     runtime_funcs: &'a RuntimeFunctions,
     params: [Value; 2],
+    continuations: &'a mut HashSet<Local>,
     free_vars: &'a mut FreeVariables,
     escaping: &'a Escaping,
     module: &'a mut JITModule,
@@ -991,33 +1000,64 @@ impl CompilationUnit<'_, '_> {
         if let Some(local) = operator.to_local()
             && let Some(num_allocs_at_dest) = self.allocs_at_local_cont.get(&local)
         {
+            // Operator is a local continuation
             self.jump_codegen(self.local_cont_blocks[&local], *num_allocs_at_dest, args);
-            return;
+        } else if let Some(local) = operator.to_local()
+            && self.continuations.contains(&local)
+        {
+            // Operator is a regular continuation
+            let barrier = self.get_barrier();
+            let args_slot = self.alloc_array(args.len());
+            for (i, arg) in args.iter().enumerate() {
+                let val = self.value_codegen(arg);
+                self.array_store(args_slot, i, val);
+            }
+            let args_addr = self.builder.ins().stack_addr(types::I64, args_slot, 0);
+            let args_len = self.builder.ins().iconst(types::I32, args.len() as i64);
+            let call_cont = self
+                .module
+                .declare_func_in_func(self.runtime_funcs.call_continuation, self.builder.func);
+            let call = self
+                .builder
+                .ins()
+                .call(call_cont, &[args_addr, args_len, barrier]);
+            let app = self.builder.inst_results(call)[0];
+            self.drop_all_codegen();
+            self.builder.ins().return_(&[app]);
+        } else {
+            let runtime = self.get_runtime();
+            let barrier = self.get_barrier();
+            let operator = self.value_codegen(operator);
+
+            let args = if let Some(first) = args.first()
+                && let Some(local) = first.to_local()
+                && self.continuations.contains(&local)
+            {
+                &args[1..]
+            } else {
+                args
+            };
+
+            // Allocate space for the args to be passed to make_application
+            let args_slot = self.alloc_array(args.len());
+            for (i, arg) in args.iter().enumerate() {
+                let val = self.value_codegen(arg);
+                self.array_store(args_slot, i, val);
+            }
+
+            let args_addr = self.builder.ins().stack_addr(types::I64, args_slot, 0);
+            let args_len = self.builder.ins().iconst(types::I32, args.len() as i64);
+            let apply = self
+                .module
+                .declare_func_in_func(self.runtime_funcs.apply, self.builder.func);
+            let call = self
+                .builder
+                .ins()
+                .call(apply, &[runtime, operator, args_addr, args_len, barrier]);
+            let app = self.builder.inst_results(call)[0];
+            self.drop_all_codegen();
+            self.builder.ins().return_(&[app]);
         }
-
-        let runtime = self.get_runtime();
-        let barrier = self.get_barrier();
-        let operator = self.value_codegen(operator);
-
-        // Allocate space for the args to be passed to make_application
-        let args_slot = self.alloc_array(args.len());
-        for (i, arg) in args.iter().enumerate() {
-            let val = self.value_codegen(arg);
-            self.array_store(args_slot, i, val);
-        }
-
-        let args_addr = self.builder.ins().stack_addr(types::I64, args_slot, 0);
-        let args_len = self.builder.ins().iconst(types::I32, args.len() as i64);
-        let apply = self
-            .module
-            .declare_func_in_func(self.runtime_funcs.apply, self.builder.func);
-        let call = self
-            .builder
-            .ins()
-            .call(apply, &[runtime, operator, args_addr, args_len, barrier]);
-        let app = self.builder.inst_results(call)[0];
-        self.drop_all_codegen();
-        self.builder.ins().return_(&[app]);
     }
 
     fn jump_codegen(&mut self, to: Block, num_allocs_at_dest: usize, args: &[CpsValue]) {
@@ -1159,17 +1199,21 @@ impl CompilationUnit<'_, '_> {
         let mut proc_bundles = Vec::new();
         let mut local_cont_bundles = Vec::new();
         for binding in bindings.into_iter() {
-            let is_proc = binding.is_func() || self.escaping.contains(binding.val);
+            let is_func = binding.is_func();
             let bundle = ProcedureBundle::new(
                 self.runtime.clone(),
                 binding.val,
                 binding.args,
                 *binding.body,
                 binding.span,
+                self.continuations,
                 self.free_vars,
                 self.module,
             );
-            if is_proc {
+            if is_func {
+                proc_bundles.push(bundle);
+            } else if self.escaping.contains(binding.val) {
+                self.continuations.insert(binding.val);
                 proc_bundles.push(bundle);
             } else {
                 let cont_block = self.builder.create_block();
@@ -1178,11 +1222,15 @@ impl CompilationUnit<'_, '_> {
             }
         }
 
-        // The set of vals bound in this Fix (that are not local continuations).
+        // The set of vals bound in this Fix (that are not continuations).
         // A binding's body may reference any of these, including itself, so we
         // cannot resolve them until after all of the procedures have been
         // allocated.
-        let fix_vals = proc_bundles.iter().map(|b| b.val).collect::<HashSet<_>>();
+        let fix_vals = proc_bundles
+            .iter()
+            .filter(|b| b.args.continuation.is_some())
+            .map(|b| b.val)
+            .collect::<HashSet<_>>();
 
         // Allocate all of the procedures. The procedures are rooted and thus we
         // have exclusive mutable access to them.
@@ -1281,7 +1329,7 @@ impl CompilationUnit<'_, '_> {
             is_variadic,
         ];
 
-        let make_proc = if bundle.args.continuation.is_some() {
+        if bundle.args.continuation.is_some() {
             args.push(if let Some(ref loc) = bundle.loc {
                 let debug_info = Arc::new(ProcDebugInfo::new(
                     bundle.val.name,
@@ -1294,22 +1342,28 @@ impl CompilationUnit<'_, '_> {
             } else {
                 self.builder.ins().iconst(types::I64, 0)
             });
-            self.runtime_funcs.make_user
+            let make_user = self
+                .module
+                .declare_func_in_func(self.runtime_funcs.make_user, self.builder.func);
+            let call = self.builder.ins().call(make_user, &args);
+            let proc = self.builder.inst_results(call)[0];
+            self.rebinds.rebind(bundle.val, IrValue::Value(proc));
+            self.push_alloc(proc);
         } else {
             args.push(self.get_barrier());
-            self.runtime_funcs.make_continuation
-        };
-
-        let make_proc = self
-            .module
-            .declare_func_in_func(make_proc, self.builder.func);
-        let call = self.builder.ins().call(make_proc, &args);
-        let proc = self.builder.inst_results(call)[0];
-        self.rebinds.rebind(bundle.val, IrValue::Value(proc));
-        self.push_alloc(proc);
+            let push_cont = self
+                .module
+                .declare_func_in_func(self.runtime_funcs.push_continuation, self.builder.func);
+            self.builder.ins().call(push_cont, &args);
+        }
     }
 
     fn patch_env_codegen(&mut self, bundle: &ProcedureBundle, fix_vals: &HashSet<Local>) {
+        // Continuations do not need to be patched.
+        if bundle.args.continuation.is_none() {
+            return;
+        }
+
         let IrValue::Value(proc) = self.rebinds.fetch_bind(&bundle.val) else {
             unreachable!();
         };
@@ -1325,14 +1379,19 @@ impl CompilationUnit<'_, '_> {
             let IrValue::Value(target) = self.rebinds.fetch_bind(env_var) else {
                 unreachable!();
             };
+            let target = *target;
             let slot_idx = self.builder.ins().iconst(types::I32, i as i64);
             self.builder
                 .ins()
-                .call(patch_fn, &[*proc, slot_idx, *target]);
+                .call(patch_fn, &[*proc, slot_idx, target]);
         }
     }
 
     fn unroot_proc_codegen(&mut self, bundle: &ProcedureBundle) {
+        if bundle.args.continuation.is_none() {
+            return;
+        }
+
         let IrValue::Value(proc) = self.rebinds.fetch_bind(&bundle.val) else {
             unreachable!();
         };
@@ -1359,34 +1418,30 @@ const RUNTIME_PARAM: usize = 0;
 const ENV_PARAM: usize = 1;
 const ARGS_PARAM: usize = 2;
 const CONT_BARRIER_PARAM: usize = 3;
-const CONTINUATION_PARAM: usize = 4;
 
-fn make_sig(sig: &mut Signature, has_continuation: bool) {
+fn make_sig(sig: &mut Signature) {
     sig.params.push(AbiParam::new(types::I64)); // Runtime
     sig.params.push(AbiParam::new(types::I64)); // Env
     sig.params.push(AbiParam::new(types::I64)); // Args
     sig.params.push(AbiParam::new(types::I64)); // DynStack
 
-    if has_continuation {
-        sig.params.push(AbiParam::new(types::I64)); // Continuation
-    }
-
     sig.returns.push(AbiParam::new(types::I64)); // Application
 }
 
 impl ProcedureBundle {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         runtime: Runtime,
         val: Local,
         args: LambdaArgs,
         body: Cps,
         loc: Option<Span>,
+        continuations: &HashSet<Local>,
         free_vars_cache: &mut FreeVariables,
         module: &mut JITModule,
     ) -> Self {
         let mut sig = module.make_signature();
-        make_sig(&mut sig, args.continuation.is_some());
-        // let name = val.to_func_name();
+        make_sig(&mut sig);
         let func_id = module
             .declare_anonymous_function(&sig)
             .expect("Could not declare function");
@@ -1395,6 +1450,7 @@ impl ProcedureBundle {
             .find_free_vars(&body)
             .difference(&args.iter().cloned().collect::<HashSet<_>>())
             .cloned()
+            .filter(|var| !continuations.contains(var))
             .collect::<Vec<_>>();
 
         Self {
@@ -1414,6 +1470,7 @@ impl ProcedureBundle {
         runtime_funcs: &RuntimeFunctions,
         cells: &HashSet<Local>,
         escaping: &Escaping,
+        continuations: &mut HashSet<Local>,
         free_vars: &mut FreeVariables,
         module: &mut JITModule,
         debug_info: &mut DebugInfo,
@@ -1421,7 +1478,7 @@ impl ProcedureBundle {
     ) {
         let mut builder_context = FunctionBuilderContext::new();
         let mut ctx = module.make_context();
-        make_sig(&mut ctx.func.signature, self.args.continuation.is_some());
+        make_sig(&mut ctx.func.signature);
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_context);
 
         let mut allocs_at_local_conts = HashMap::default();
@@ -1474,12 +1531,7 @@ impl ProcedureBundle {
             rebinds.rebind(*arg, IrValue::Value(var));
         }
 
-        // Load continuation:
-        if let Some(cont) = self.args.continuation {
-            let cont_param = builder.block_params(entry_block)[CONTINUATION_PARAM];
-            let val = builder.ins().bor_imm(cont_param, Tag::Procedure as i64);
-            rebinds.rebind(cont, IrValue::Value(val));
-        }
+        continuations.extend(self.args.continuation);
 
         let mut cu = CompilationUnit {
             runtime: self.runtime,
@@ -1487,6 +1539,7 @@ impl ProcedureBundle {
             rebinds,
             allocs,
             curr_allocs: 0,
+            continuations,
             allocs_at_local_cont: &allocs_at_local_conts,
             local_cont_blocks: HashMap::default(),
             escaping,

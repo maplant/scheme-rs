@@ -155,7 +155,6 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
             #visibility fn #wrapper_name<'a>(
                 runtime: &'a ::scheme_rs::runtime::Runtime,
                 _env: &'a [::scheme_rs::value::Value],
-                k: ::scheme_rs::proc::Procedure,
                 args: &'a [::scheme_rs::value::Value],
                 rest_args: &'a [::scheme_rs::value::Value],
                 barrier: &'a mut ::scheme_rs::proc::ContBarrier,
@@ -179,6 +178,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                             )*
                             #rest_args
                         ).await;
+                        
                         // If the function returned an error, we want to raise
                         // it.
                         let result = match result {
@@ -189,7 +189,8 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                             ),
                             Ok(result) => result,
                         };
-                        ::scheme_rs::proc::Application::new(k, None, result)
+
+                        barrier.call_cont(result)
                     }
                 )
             }
@@ -217,7 +218,6 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
             #visibility fn #wrapper_name(
                 runtime: &::scheme_rs::runtime::Runtime,
                 _env: &[::scheme_rs::value::Value],
-                k: ::scheme_rs::proc::Procedure,
                 args: &[::scheme_rs::value::Value],
                 rest_args: &[::scheme_rs::value::Value],
                 barrier: &mut ::scheme_rs::proc::ContBarrier,
@@ -251,7 +251,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                     Ok(result) => result,
                 };
 
-                ::scheme_rs::proc::Application::new(k, None, result)
+                barrier.call_cont(result)
             }
 
             ::scheme_rs::registry::inventory::submit! {
@@ -382,7 +382,7 @@ fn codegen_known_bridge(
                 #num_args,
                 false,
                 ::scheme_rs::registry::Bridge::Known(::scheme_rs::proc::KnownFunc::#known_type(
-                    #wrapper_name /* as fn(#( #args: &Value, )*) -> #ret_type, */
+                    #wrapper_name 
                 )),
                 ::scheme_rs::registry::BridgeFnDebugInfo::new(
                     ::std::file!(),
@@ -433,10 +433,9 @@ fn codegen_known_bridge(
 /// pub fn apply(
 ///     _runtime: &Runtime,
 ///     _env: &[Value],
-///     k: Procedure,
 ///     args: &[Value],
 ///     rest_args: &[Value],
-///     _barrier: &mut ContBarrier,
+///     barrier: &mut ContBarrier,
 /// ) -> Result<Application, Exception> {
 ///     if rest_args.is_empty() {
 ///         return Err(Exception::wrong_num_of_args(2, args.len()));
@@ -445,7 +444,7 @@ fn codegen_known_bridge(
 ///     let (last, args) = rest_args.split_last().unwrap();
 ///     let mut args = args.to_vec();
 ///     list_to_vec(last, &mut args);
-///     Ok(Application::new(op.clone(), Some(k), args))
+///     Ok(barrier.call_cont(args))
 /// }
 /// ```
 
@@ -563,7 +562,6 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
             #vis fn #wrapper_name<'a>(
                 runtime: &'a ::scheme_rs::runtime::Runtime,
                 env: &'a [::scheme_rs::value::Value],
-                k: ::scheme_rs::proc::Procedure,
                 args: &'a [::scheme_rs::value::Value],
                 rest_args: &'a [::scheme_rs::value::Value],
                 barrier: &'a mut ::scheme_rs::proc::ContBarrier,
@@ -574,7 +572,6 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                     match #impl_name(
                         runtime,
                         env,
-                        k,
                         args,
                         rest_args,
                         barrier,
@@ -596,7 +593,6 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
             #vis fn #wrapper_name(
                 runtime: &::scheme_rs::runtime::Runtime,
                 env: &[::scheme_rs::value::Value],
-                k: ::scheme_rs::proc::Procedure,
                 args: &[::scheme_rs::value::Value],
                 rest_args: &[::scheme_rs::value::Value],
                 barrier: &mut ::scheme_rs::proc::ContBarrier,
@@ -606,7 +602,6 @@ pub fn cps_bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 match #impl_name(
                     runtime,
                     env,
-                    k,
                     args,
                     rest_args,
                     barrier,

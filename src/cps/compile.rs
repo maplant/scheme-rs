@@ -10,7 +10,6 @@ use crate::{
     },
     exceptions::Exception,
     expand::{ExpansionCombiner, SyntaxRule},
-    proc::Procedure,
     runtime::Runtime,
     syntax::{Identifier, Syntax},
     value::Value as RuntimeValue,
@@ -36,7 +35,7 @@ impl Compiler {
         mut self,
         runtime: &Runtime,
         expr: &impl Compile,
-    ) -> Result<Procedure, Exception> {
+    ) -> Result<Vec<RuntimeValue>, Exception> {
         let k = Local::gensym();
         let result = Local::gensym();
         let cps = Cps::Fix(
@@ -67,7 +66,7 @@ impl Compiler {
         // Contification makes free_vars no longer valid
         let contified = reduced.contify(&escaping, &dominators);
 
-        Ok(maybe_await!(runtime.compile_expr(contified, escaping)))
+        maybe_await!(runtime.compile_expr(contified))
     }
 }
 
