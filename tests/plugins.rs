@@ -1,3 +1,4 @@
+#[cfg(feature = "plugins")]
 use scheme_rs_macros::maybe_await;
 
 #[cfg(feature = "plugins")]
