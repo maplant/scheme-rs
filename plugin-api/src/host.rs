@@ -19,7 +19,7 @@ pub struct HostFnTable {
     pub make_vector: unsafe extern "C" fn(*const Value, usize) -> Value,
 
     // Extraction
-    pub to_integer: unsafe extern "C" fn(*const Value) -> i64,
+    pub to_integer: unsafe extern "C" fn(*const Value, *mut i64) -> bool,
     pub to_float: unsafe extern "C" fn(*const Value) -> f64,
     pub to_string_copy: unsafe extern "C" fn(*const Value, *mut *mut u8, *mut usize),
 
@@ -101,23 +101,28 @@ pub fn make_symbol(s: &str) -> Value {
     unsafe { (host().make_symbol)(s.as_ptr(), s.len()) }
 }
 
-pub fn to_integer(v: &Value) -> i64 {
-    unsafe { (host().to_integer)(v) }
+pub fn to_integer(v: &Value) -> Option<i64> {
+    let mut out: i64 = 0;
+    let ok = unsafe { (host().to_integer)(v, &mut out) };
+    if ok { Some(out) } else { None }
 }
 
 pub fn to_float(v: &Value) -> f64 {
     unsafe { (host().to_float)(v) }
 }
 
-pub fn to_string_copy(v: &Value) -> String {
+pub fn to_string_copy(v: &Value) -> Option<String> {
     let mut ptr: *mut u8 = std::ptr::null_mut();
     let mut len: usize = 0;
     unsafe {
         (host().to_string_copy)(v, &mut ptr, &mut len);
+        if ptr.is_null() {
+            return None;
+        }
         let slice = std::slice::from_raw_parts_mut(ptr, len);
         let s = String::from_utf8_lossy(slice).into_owned();
         drop(Box::from_raw(slice));
-        s
+        Some(s)
     }
 }
 

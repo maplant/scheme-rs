@@ -12,10 +12,8 @@ pub trait IntoScheme {
 
 impl FromScheme for i64 {
     fn from_scheme(v: &Value) -> Result<Self, PluginError> {
-        if !v.is_number() {
-            return Err(PluginError::type_error("expected integer"));
-        }
-        Ok(host::to_integer(v))
+        host::to_integer(v)
+            .ok_or_else(|| PluginError::type_error("expected integer"))
     }
 }
 
@@ -37,10 +35,8 @@ impl FromScheme for bool {
 
 impl FromScheme for String {
     fn from_scheme(v: &Value) -> Result<Self, PluginError> {
-        if !v.is_string() {
-            return Err(PluginError::type_error("expected string"));
-        }
-        Ok(host::to_string_copy(v))
+        host::to_string_copy(v)
+            .ok_or_else(|| PluginError::type_error("expected string"))
     }
 }
 

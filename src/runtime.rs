@@ -156,7 +156,7 @@ impl Runtime {
 
     /// # Safety
     ///
-    /// See [`Registry::load_plugin`].
+    /// See [`Registry::load_rust_abi_plugin`].
     #[cfg(feature = "plugins")]
     pub unsafe fn load_rust_abi_plugin(&self, library: libloading::Library) -> Result<(), Exception> {
         unsafe { self.get_registry().load_rust_abi_plugin(self, library) }
@@ -197,7 +197,7 @@ impl Runtime {
     pub unsafe fn load_plugin(
         &self,
         path: &std::path::Path,
-    ) -> Result<crate::registry::plugin_loading::PluginHandle, Exception> {
+    ) -> Result<(), Exception> {
         unsafe { self.get_registry().load_plugin(self, path) }
     }
 }

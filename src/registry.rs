@@ -749,23 +749,33 @@ pub mod plugin_loading {
 
     use super::{Gc, Registry};
 
-    pub struct PluginHandle {
-        _lib: libloading::Library,
-    }
-
     const EXPECTED_ABI_VERSION: u32 = 1;
 
     impl Registry {
         /// Load a plugin from a dynamic library path, registering its bridges.
         ///
+        /// The library is stored in the registry with `ManuallyDrop` to prevent
+        /// dlclose — function pointers from the plugin live for the process lifetime.
+        ///
         /// # Safety
-        /// The caller must ensure the library at `path` is a valid scheme-rs plugin.
+        /// The caller must ensure the path points to a valid scheme-rs plugin.
         pub unsafe fn load_plugin(
             &self,
             rt: &Runtime,
             path: &Path,
-        ) -> Result<PluginHandle, Exception> {
-            let lib = unsafe { libloading::Library::new(path) }
+        ) -> Result<(), Exception> {
+            let canonical = std::fs::canonicalize(path).map_err(|e| {
+                Exception::error(&format!("failed to resolve plugin path: {e}"))
+            })?;
+
+            {
+                let inner = self.0.read();
+                if inner.loaded_plugin_paths.contains(&canonical) {
+                    return Ok(());
+                }
+            }
+
+            let lib = unsafe { libloading::Library::new(&canonical) }
                 .map_err(|e| Exception::error(&format!("failed to load plugin: {e}")))?;
 
             let abi_version_fn: libloading::Symbol<unsafe extern "C" fn() -> u32> = unsafe {
@@ -811,7 +821,11 @@ pub mod plugin_loading {
             self.register_plugin_bridges(rt, &pending_bridges);
             self.register_plugin_defines(rt, &pending_defines);
 
-            Ok(PluginHandle { _lib: lib })
+            let mut inner = self.0.write();
+            inner.plugins.push(super::PluginHandle::new(lib));
+            inner.loaded_plugin_paths.insert(canonical);
+
+            Ok(())
         }
 
         fn register_plugin_bridges(

@@ -14,6 +14,15 @@ impl Continuation {
         Self(v)
     }
 
+    /// Construct a `Continuation` from a raw plugin `Value`.
+    ///
+    /// # Safety
+    /// The caller must ensure `v` is a valid continuation value received
+    /// from the host (i.e. the `k` pointer in a `CpsBridgeFn`).
+    pub unsafe fn from_raw(v: *const Value) -> Self {
+        Self(unsafe { (*v).clone() })
+    }
+
     pub fn as_value(&self) -> &Value {
         &self.0
     }
@@ -26,6 +35,18 @@ pub struct Barrier {
 }
 
 impl Barrier {
+    /// Construct a `Barrier` from a raw pointer.
+    ///
+    /// # Safety
+    /// The caller must ensure `ptr` is a valid barrier pointer received
+    /// from the host (i.e. the barrier argument in a `CpsBridgeFn`).
+    pub unsafe fn from_raw(ptr: *mut c_void) -> Self {
+        Self {
+            ptr,
+            _not_send: PhantomData,
+        }
+    }
+
     pub(crate) fn as_ptr(&self) -> *mut c_void {
         self.ptr
     }

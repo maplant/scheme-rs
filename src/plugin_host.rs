@@ -73,9 +73,15 @@ unsafe extern "C" fn host_make_vector(elems: *const PluginValue, len: usize) -> 
 
 // ── Value extraction ───────────────────────────────────────────────────────
 
-unsafe extern "C" fn host_to_integer(v: *const PluginValue) -> i64 {
+unsafe extern "C" fn host_to_integer(v: *const PluginValue, out: *mut i64) -> bool {
     let v = unsafe { &*plugin_ref_to_host(v) };
-    i64::try_from(v).unwrap_or(0)
+    match i64::try_from(v) {
+        Ok(n) => {
+            unsafe { *out = n };
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 unsafe extern "C" fn host_to_float(v: *const PluginValue) -> f64 {
@@ -113,13 +119,19 @@ unsafe extern "C" fn host_to_string_copy(
 
 unsafe extern "C" fn host_car(v: *const PluginValue) -> PluginValue {
     let v = unsafe { &*plugin_ref_to_host(v) };
-    let pair: crate::lists::Pair = v.clone().try_into().expect("car: not a pair");
+    let pair: crate::lists::Pair = match v.clone().try_into() {
+        Ok(p) => p,
+        Err(_) => return PluginValue::undefined(),
+    };
     unsafe { host_to_plugin(pair.car()) }
 }
 
 unsafe extern "C" fn host_cdr(v: *const PluginValue) -> PluginValue {
     let v = unsafe { &*plugin_ref_to_host(v) };
-    let pair: crate::lists::Pair = v.clone().try_into().expect("cdr: not a pair");
+    let pair: crate::lists::Pair = match v.clone().try_into() {
+        Ok(p) => p,
+        Err(_) => return PluginValue::undefined(),
+    };
     unsafe { host_to_plugin(pair.cdr()) }
 }
 
@@ -146,7 +158,9 @@ fn plugin_bridge_wrapper(
     rest_args: &[HostValue],
     barrier: &mut ContBarrier,
 ) -> Application {
-    let fn_ptr_raw: i64 = (&env[0]).try_into().unwrap_or(0);
+    let fn_ptr_raw: i64 = (&env[0])
+        .try_into()
+        .expect("plugin bridge env[0] must be a valid fn pointer");
     let plugin_fn: scheme_rs_plugin_api::SimpleBridgeFn =
         unsafe { std::mem::transmute(fn_ptr_raw as usize) };
 
@@ -191,7 +205,9 @@ fn plugin_cps_bridge_wrapper(
     rest_args: &[HostValue],
     barrier: &mut ContBarrier,
 ) -> Application {
-    let fn_ptr_raw: i64 = (&env[0]).try_into().unwrap_or(0);
+    let fn_ptr_raw: i64 = (&env[0])
+        .try_into()
+        .expect("plugin CPS bridge env[0] must be a valid fn pointer");
     let cps_fn: scheme_rs_plugin_api::CpsBridgeFn =
         unsafe { std::mem::transmute(fn_ptr_raw as usize) };
 
@@ -356,7 +372,9 @@ pub(crate) fn make_plugin_blocking_procedure(
         barrier: &'a mut ContBarrier<'_>,
     ) -> futures::future::BoxFuture<'a, Application> {
         Box::pin(async move {
-            let fn_ptr_raw: i64 = (&env[0]).try_into().unwrap_or(0);
+            let fn_ptr_raw: i64 = (&env[0])
+                .try_into()
+                .expect("plugin blocking bridge env[0] must be a valid fn pointer");
             let plugin_fn: scheme_rs_plugin_api::SimpleBridgeFn =
                 unsafe { std::mem::transmute(fn_ptr_raw as usize) };
 
@@ -474,11 +492,21 @@ unsafe extern "C" fn host_apply_continuation(
     args: *const PluginValue,
     argc: usize,
 ) -> scheme_rs_plugin_api::ApplicationResult {
-    let k_val = unsafe { &*plugin_ref_to_host(k) }.clone();
-    let k_proc: Procedure = k_val.try_into().expect("apply_continuation: k is not a procedure");
-    let args_slice = unsafe { std::slice::from_raw_parts(plugin_ref_to_host(args), argc) };
-    let args_vec: Vec<HostValue> = args_slice.iter().cloned().collect();
-    let app = Application::new(k_proc, None, args_vec);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let k_val = unsafe { &*plugin_ref_to_host(k) }.clone();
+        let k_proc: Procedure = k_val
+            .try_into()
+            .expect("apply_continuation: k is not a procedure");
+        let args_slice = unsafe { std::slice::from_raw_parts(plugin_ref_to_host(args), argc) };
+        let args_vec: Vec<HostValue> = args_slice.iter().cloned().collect();
+        Application::new(k_proc, None, args_vec)
+    }));
+    let app = match result {
+        Ok(app) => app,
+        Err(_) => Application::halt_err(
+            Exception::error("apply_continuation: type conversion failed").into(),
+        ),
+    };
     unsafe { std::mem::transmute(Box::into_raw(Box::new(app)) as *mut c_void) }
 }
 
@@ -488,13 +516,25 @@ unsafe extern "C" fn host_make_application(
     args: *const PluginValue,
     argc: usize,
 ) -> scheme_rs_plugin_api::ApplicationResult {
-    let proc_val = unsafe { &*plugin_ref_to_host(proc_ptr) }.clone();
-    let proc: Procedure = proc_val.try_into().expect("make_application: proc is not a procedure");
-    let k_val = unsafe { &*plugin_ref_to_host(k) }.clone();
-    let k_proc: Procedure = k_val.try_into().expect("make_application: k is not a procedure");
-    let args_slice = unsafe { std::slice::from_raw_parts(plugin_ref_to_host(args), argc) };
-    let args_vec: Vec<HostValue> = args_slice.iter().cloned().collect();
-    let app = Application::new(proc, Some(k_proc), args_vec);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let proc_val = unsafe { &*plugin_ref_to_host(proc_ptr) }.clone();
+        let proc: Procedure = proc_val
+            .try_into()
+            .expect("make_application: proc is not a procedure");
+        let k_val = unsafe { &*plugin_ref_to_host(k) }.clone();
+        let k_proc: Procedure = k_val
+            .try_into()
+            .expect("make_application: k is not a procedure");
+        let args_slice = unsafe { std::slice::from_raw_parts(plugin_ref_to_host(args), argc) };
+        let args_vec: Vec<HostValue> = args_slice.iter().cloned().collect();
+        Application::new(proc, Some(k_proc), args_vec)
+    }));
+    let app = match result {
+        Ok(app) => app,
+        Err(_) => Application::halt_err(
+            Exception::error("make_application: type conversion failed").into(),
+        ),
+    };
     unsafe { std::mem::transmute(Box::into_raw(Box::new(app)) as *mut c_void) }
 }
 
@@ -515,6 +555,9 @@ unsafe extern "C" fn host_raise_error(
     };
     unsafe { std::mem::transmute(Box::into_raw(Box::new(app)) as *mut c_void) }
 }
+
+pub(crate) static HAS_FOREIGN_FINALIZERS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 pub(crate) static FOREIGN_FINALIZERS: LazyLock<Mutex<HashMap<usize, unsafe extern "C" fn(*mut c_void)>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -546,6 +589,7 @@ unsafe extern "C" fn host_register_type(
 
     if let Some(f) = finalizer {
         FOREIGN_FINALIZERS.lock().unwrap().insert(handle, f);
+        HAS_FOREIGN_FINALIZERS.store(true, std::sync::atomic::Ordering::Release);
     }
 
     handle

@@ -686,6 +686,11 @@ impl RecordInner {
         if self.rtd.embedded_vtable.is_some() {
             return;
         }
+        if !crate::plugin_host::HAS_FOREIGN_FINALIZERS
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return;
+        }
         let handle = Arc::as_ptr(&self.rtd) as usize;
         let finalizer = {
             let map = crate::plugin_host::FOREIGN_FINALIZERS.lock().unwrap();
