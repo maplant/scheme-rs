@@ -204,8 +204,11 @@ thread_local! {
 
 pub(crate) static TOTAL_ALLOCS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static TOTAL_FREES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(debug_assertions)]
 pub(crate) static RETAIN_PURGES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(debug_assertions)]
 pub(crate) static INLOOP_GUARD_HITS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(debug_assertions)]
 pub(crate) static TRIALS_RUN: AtomicUsize = AtomicUsize::new(0);
 
 const LOCAL_ALLOCS_PER_SIGNAL: usize = 1024;
@@ -493,6 +496,7 @@ impl Collector {
             cycle.retain(|obj| {
                 let freed = self.freed_objs.contains(obj);
                 if freed {
+                    #[cfg(debug_assertions)]
                     RETAIN_PURGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
                 !freed
@@ -674,7 +678,8 @@ impl Collector {
     unsafe fn mark_roots(&mut self) {
         unsafe {
             self.roots.retain(|s| {
-                TRIALS_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                #[cfg(debug_assertions)]
+                    TRIALS_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 if s.color() == Color::Purple {
                     mark_gray(*s);
                     true
@@ -731,6 +736,7 @@ impl Collector {
             for c in std::mem::take(&mut self.cycles).into_iter().rev() {
                 // An earlier cycle in this batch may have freed a shared member; check without deref.
                 if c.iter().any(|n| self.freed_objs.contains(n)) {
+                    #[cfg(debug_assertions)]
                     INLOOP_GUARD_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     for n in c.iter().filter(|n| !self.freed_objs.contains(n)) {
                         if n.shared_rc() == 0 {

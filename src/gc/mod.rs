@@ -28,6 +28,7 @@ pub fn allocation_stats() -> (usize, usize) {
 }
 
 /// Collector counters: `(retain_purges, inloop_guard_hits, trials_run)`, monotonic.
+#[cfg(debug_assertions)]
 pub fn collector_stats() -> (usize, usize, usize) {
     (
         collection::RETAIN_PURGES.load(std::sync::atomic::Ordering::Relaxed),
