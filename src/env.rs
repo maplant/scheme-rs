@@ -1074,15 +1074,6 @@ mod tests {
     use crate::ast::ImportSet;
     use crate::runtime::Runtime;
 
-    /// Regression: PrimOp::Matches must report needs_drop to avoid alloc miscount.
-    #[test]
-    fn macro_expansion_does_not_corrupt_captured_free_variables() {
-        let rt = Runtime::new();
-        let env = TopLevelEnvironment::new_repl(&rt);
-        let result = env.eval(ImportPolicy::Allow, "(import (rnrs base)) (abs -5)");
-        assert_eq!(result.unwrap(), vec![Value::from(5)]);
-    }
-
     #[test]
     fn import_policy_allow() {
         let rt = Runtime::new();

@@ -1011,6 +1011,7 @@ unsafe extern "C" fn unwind_to_exception_handler(
                     Application::halt_err(raised)
                 }
                 Some(DynStackElem::Winder(winder)) => {
+                    // If this is a winder, we should call the out winder while unwinding.
                     // Variadic: the out thunk's return arity is not under our control.
                     barrier.push_cont(
                         Runtime::from_raw_inc_rc(runtime),

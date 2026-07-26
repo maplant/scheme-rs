@@ -65,20 +65,7 @@ lto = true
 nom = "7"
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
-
-[target.'cfg(loom)'.dev-dependencies]
-loom = "0.7"
-
-# criterion's async_tokio feature pulls in tokio unconditionally; tokio's own
-# internal `#[cfg(loom)]` shims (for tokio's own loom test suite) conflict
-# with a blanket `--cfg loom` from a downstream crate, so keep tokio out of
-# the loom build entirely (unified with the entry above for normal builds).
-[target.'cfg(not(loom))'.dev-dependencies]
-criterion = { version = "0.5", features = ["async_tokio"] }
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }
+criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 
 [[bench]]
 name = "cold_boot"

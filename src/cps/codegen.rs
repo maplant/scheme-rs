@@ -603,6 +603,8 @@ impl CompilationUnit<'_, '_> {
     ) {
         let arg_vals: Vec<Value> = vals.iter().map(|val| self.value_codegen(val)).collect();
 
+        // If we have two arguments and the operator is a numeric primop, we can
+        // generate faster code.
         if let [lhs, rhs] = arg_vals[..]
             && matches!(
                 primop,
@@ -760,6 +762,7 @@ impl CompilationUnit<'_, '_> {
             .ins()
             .brif(both_fixnums, fast_block, &[], slow_block, &[]);
 
+        // Fast path: both operands are fixnums.
         self.builder.switch_to_block(fast_block);
         self.builder.seal_block(fast_block);
         match primop {
@@ -768,6 +771,8 @@ impl CompilationUnit<'_, '_> {
             | PrimOp::Greater
             | PrimOp::LesserEqual
             | PrimOp::GreaterEqual => {
+                // Since both operands have their lowest bit set, we can
+                // compare them as i64s.
                 let cc = match primop {
                     PrimOp::Equal => IntCC::Equal,
                     PrimOp::Lesser => IntCC::SignedLessThan,
@@ -793,6 +798,7 @@ impl CompilationUnit<'_, '_> {
                     _ => unreachable!(),
                 };
 
+                // Check if we're in range of an i64
                 let ge_min =
                     self.builder
                         .ins()
@@ -809,6 +815,7 @@ impl CompilationUnit<'_, '_> {
                     .ins()
                     .brif(in_range, encode_block, &[], overflow_block, &[]);
 
+                // Convert back to a Value
                 self.builder.switch_to_block(encode_block);
                 self.builder.seal_block(encode_block);
                 let shifted = self.builder.ins().ishl_imm(value, 1);
@@ -817,6 +824,7 @@ impl CompilationUnit<'_, '_> {
                     .ins()
                     .jump(merge_block, &[BlockArg::Value(result)]);
 
+                // The fixnum overflows 63 bits, allocate
                 self.builder.switch_to_block(overflow_block);
                 self.builder.seal_block(overflow_block);
                 let i64_to_number = self
@@ -862,6 +870,7 @@ impl CompilationUnit<'_, '_> {
                     .ins()
                     .jump(merge_block, &[BlockArg::Value(result)]);
 
+                // Overflow: convert to a bignum
                 self.builder.switch_to_block(overflow_block);
                 self.builder.seal_block(overflow_block);
                 let i128_to_number = self
@@ -883,6 +892,7 @@ impl CompilationUnit<'_, '_> {
             .ins()
             .jump(merge_block, &[BlockArg::Value(result)]);
 
+        // Merge the two paths.
         self.builder.switch_to_block(merge_block);
         self.builder.seal_block(merge_block);
         let result = self.builder.block_params(merge_block)[0];

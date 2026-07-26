@@ -109,6 +109,7 @@ impl Number {
                 Some(Cow::Borrowed(complex))
             }
             _ => None,
+            // NumberInner::Simple(_) => None,
         }
     }
 

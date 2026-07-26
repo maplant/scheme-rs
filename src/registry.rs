@@ -72,7 +72,9 @@ pub enum Bridge {
     Async(crate::proc::AsyncBridgePtr),
 }
 
-// Not #[repr(C)]: host and plugin must use the same rustc and feature flags.
+// BridgeFn is passed across the FFI boundary between host and plugin.
+// Both sides MUST be compiled with the same rustc version and scheme-rs
+// feature flags, since BridgeFn is not #[repr(C)].
 #[doc(hidden)]
 #[derive(Copy, Clone)]
 pub struct BridgeFn {
@@ -390,7 +392,9 @@ impl Registry {
 
     /// # Safety
     ///
-    /// Plugin must be built with the same `rustc` and feature flags as the host.
+    /// The plugin must be built with the same `rustc` and scheme-rs
+    /// feature flags as the host. Version is checked at load time but
+    /// ABI drift from different compilers is not detected.
     #[cfg(feature = "plugins")]
     pub unsafe fn load_plugin(
         &self,
