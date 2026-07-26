@@ -17,6 +17,8 @@ pub mod keywords;
 pub mod lists;
 #[cfg(feature = "lsp")]
 pub mod lsp;
+#[cfg(feature = "plugins")]
+mod plugin_host;
 pub mod num;
 pub mod ports;
 pub mod proc;

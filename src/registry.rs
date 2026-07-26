@@ -396,7 +396,7 @@ impl Registry {
     /// feature flags as the host. Version is checked at load time but
     /// ABI drift from different compilers is not detected.
     #[cfg(feature = "plugins")]
-    pub unsafe fn load_plugin(
+    pub unsafe fn load_rust_abi_plugin(
         &self,
         rt: &Runtime,
         library: libloading::Library,
@@ -720,4 +720,254 @@ fn load_lib_from_dir(
     }
 
     Ok(None)
+}
+
+// ── Plugin loading ─────────────────────────────────────────────────────────
+
+#[cfg(feature = "plugins")]
+pub mod plugin_loading {
+    use std::path::Path;
+
+    use crate::ast::{LibraryName, Version};
+    use crate::env::{
+        Binding, Export, Global, LibraryState, Scope, TOP_LEVEL_BINDINGS, TopLevelBinding,
+        TopLevelEnvironment, TopLevelEnvironmentInner, TopLevelKind, add_binding,
+    };
+    use crate::exceptions::Exception;
+    use crate::plugin_host::{
+        clear_loading_runtime, make_plugin_cps_procedure, make_plugin_procedure,
+        set_loading_runtime, set_persistent_runtime, take_pending_bridges, take_pending_defines,
+    };
+    use crate::runtime::Runtime;
+    use crate::symbols::Symbol;
+    use crate::syntax::Identifier;
+    use crate::value::{Cell, Value};
+
+    use parking_lot::RwLock;
+    use rustc_hash::FxHashMap as HashMap;
+
+    use super::{Gc, Registry};
+
+    const EXPECTED_ABI_VERSION: u32 = 1;
+
+    impl Registry {
+        /// Load a plugin from a dynamic library path, registering its bridges.
+        ///
+        /// The library is stored in the registry with `ManuallyDrop` to prevent
+        /// dlclose — function pointers from the plugin live for the process lifetime.
+        ///
+        /// # Safety
+        /// The caller must ensure the path points to a valid scheme-rs plugin.
+        pub unsafe fn load_plugin(
+            &self,
+            rt: &Runtime,
+            path: &Path,
+        ) -> Result<(), Exception> {
+            let canonical = std::fs::canonicalize(path).map_err(|e| {
+                Exception::error(&format!("failed to resolve plugin path: {e}"))
+            })?;
+
+            {
+                let inner = self.0.read();
+                if inner.loaded_plugin_paths.contains(&canonical) {
+                    return Ok(());
+                }
+            }
+
+            let lib = unsafe { libloading::Library::new(&canonical) }
+                .map_err(|e| Exception::error(&format!("failed to load plugin: {e}")))?;
+
+            let abi_version_fn: libloading::Symbol<unsafe extern "C" fn() -> u32> = unsafe {
+                lib.get(b"scheme_rs_plugin_abi_version")
+            }
+            .map_err(|e| {
+                Exception::error(&format!(
+                    "plugin missing scheme_rs_plugin_abi_version symbol: {e}"
+                ))
+            })?;
+
+            let version = unsafe { abi_version_fn() };
+            if version != EXPECTED_ABI_VERSION {
+                return Err(Exception::error(&format!(
+                    "plugin ABI version mismatch: expected {EXPECTED_ABI_VERSION}, got {version}"
+                )));
+            }
+
+            let init_fn: libloading::Symbol<unsafe extern "C" fn(*const ())> = unsafe {
+                lib.get(b"scheme_rs_plugin_init")
+            }
+            .map_err(|e| {
+                Exception::error(&format!(
+                    "plugin missing scheme_rs_plugin_init symbol: {e}"
+                ))
+            })?;
+
+            let table = crate::plugin_host::build_host_fn_table();
+            set_persistent_runtime(rt);
+            set_loading_runtime(rt);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+                init_fn(table as *const scheme_rs_plugin_api::HostFnTable as *const ());
+            }));
+
+            let pending_bridges = take_pending_bridges();
+            let pending_defines = take_pending_defines();
+            clear_loading_runtime();
+
+            if let Err(payload) = result {
+                std::panic::resume_unwind(payload);
+            }
+
+            self.register_plugin_bridges(rt, &pending_bridges);
+            self.register_plugin_defines(rt, &pending_defines);
+
+            let mut inner = self.0.write();
+            inner.plugins.push(super::PluginHandle::new(lib));
+            inner.loaded_plugin_paths.insert(canonical);
+
+            Ok(())
+        }
+
+        fn register_plugin_bridges(
+            &self,
+            rt: &Runtime,
+            bridges: &[crate::plugin_host::PendingBridge],
+        ) {
+            struct Lib {
+                version: Version,
+                syms: HashMap<Symbol, crate::proc::Procedure>,
+            }
+            let mut libs = HashMap::<Vec<Symbol>, Lib>::default();
+
+            for bridge in bridges {
+                let lib_name =
+                    LibraryName::from_str(&bridge.lib_name, None).unwrap();
+                let lib = libs.entry(lib_name.name).or_insert_with(|| Lib {
+                    version: lib_name.version,
+                    syms: HashMap::default(),
+                });
+
+                let proc = if let Some(cps_ptr) = bridge.cps_func_ptr {
+                    make_plugin_cps_procedure(
+                        rt,
+                        cps_ptr,
+                        bridge.num_args,
+                        bridge.variadic,
+                    )
+                } else {
+                    #[cfg(feature = "async")]
+                    if bridge.blocking {
+                        crate::plugin_host::make_plugin_blocking_procedure(
+                            rt,
+                            bridge.func_ptr,
+                            bridge.num_args,
+                            bridge.variadic,
+                        )
+                    } else {
+                        make_plugin_procedure(
+                            rt,
+                            bridge.func_ptr,
+                            bridge.num_args,
+                            bridge.variadic,
+                        )
+                    }
+                    #[cfg(not(feature = "async"))]
+                    make_plugin_procedure(
+                        rt,
+                        bridge.func_ptr,
+                        bridge.num_args,
+                        bridge.variadic,
+                    )
+                };
+
+                lib.syms.insert(Symbol::intern(&bridge.name), proc);
+            }
+
+            let mut registry = self.0.write();
+
+            for (name, lib) in libs {
+                let scope = Scope::new();
+
+                let exports: Vec<_> = lib
+                    .syms
+                    .into_iter()
+                    .map(|(sym, proc)| {
+                        let binding = Binding::new();
+                        add_binding(Identifier::from_symbol(sym, scope), binding);
+                        (sym, proc, Export { binding, origin: None })
+                    })
+                    .collect();
+
+                let top = TopLevelEnvironment(Gc::new(RwLock::new(
+                    TopLevelEnvironmentInner {
+                        rt: rt.clone(),
+                        kind: TopLevelKind::Libary {
+                            name: LibraryName {
+                                version: lib.version,
+                                name: name.clone(),
+                            },
+                            path: None,
+                        },
+                        imports: HashMap::default(),
+                        exports: exports
+                            .iter()
+                            .map(|(sym, _, exp)| (*sym, exp.clone()))
+                            .collect(),
+                        state: LibraryState::Invoked,
+                        scope,
+                    },
+                )));
+
+                for (sym, proc, export) in exports {
+                    TOP_LEVEL_BINDINGS.lock().insert(
+                        export.binding,
+                        TopLevelBinding::Global(Global::new(
+                            sym,
+                            Cell::new(Value::from(proc)),
+                            false,
+                            top.clone(),
+                        )),
+                    );
+                }
+
+                registry.libs.insert(name, top);
+            }
+        }
+
+        fn register_plugin_defines(
+            &self,
+            _rt: &Runtime,
+            defines: &[crate::plugin_host::PendingDefine],
+        ) {
+            let registry = self.0.read();
+
+            for def in defines {
+                let lib_name = LibraryName::from_str(&def.lib_name, None).unwrap();
+                let sym = Symbol::intern(&def.name);
+
+                if let Some(lib) = registry.libs.get(&lib_name.name) {
+                    let scope = lib.0.read().scope;
+                    let binding = Binding::new();
+                    add_binding(Identifier::from_symbol(sym, scope), binding);
+
+                    lib.0.write().exports.insert(
+                        sym,
+                        Export {
+                            binding,
+                            origin: None,
+                        },
+                    );
+
+                    TOP_LEVEL_BINDINGS.lock().insert(
+                        binding,
+                        TopLevelBinding::Global(Global::new(
+                            sym,
+                            Cell::new(def.value.clone()),
+                            false,
+                            lib.clone(),
+                        )),
+                    );
+                }
+            }
+        }
+    }
 }

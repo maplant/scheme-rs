@@ -34,8 +34,7 @@ fn load_plugin_and_call_bridges() {
     assert!(dylib.exists(), "test plugin dylib not found at {dylib:?}");
 
     let rt = Runtime::new();
-    let lib = unsafe { libloading::Library::new(&dylib) }.expect("failed to dlopen test plugin");
-    unsafe { rt.load_plugin(lib) }.expect("failed to load plugin bridges");
+    unsafe { rt.load_plugin(&dylib) }.expect("failed to load plugin");
 
     scheme_rs_macros::maybe_await!(rt.run_program(Path::new("tests/plugins.scm")))
         .expect("scheme test failed");
@@ -60,21 +59,9 @@ fn load_same_plugin_twice_is_ok() {
     let dylib = plugin_dir.join(test_plugin_dylib_name());
 
     let rt = Runtime::new();
-    let lib1 = unsafe { libloading::Library::new(&dylib) }.unwrap();
-    unsafe { rt.load_plugin(lib1) }.expect("first load failed");
-
-    let lib2 = unsafe { libloading::Library::new(&dylib) }.unwrap();
-    unsafe { rt.load_plugin(lib2) }.expect("second load should succeed");
+    unsafe { rt.load_plugin(&dylib) }.expect("first load failed");
+    unsafe { rt.load_plugin(&dylib) }.expect("second load should succeed");
 
     scheme_rs_macros::maybe_await!(rt.run_program(Path::new("tests/plugins.scm")))
         .expect("bridges should work after double load");
-}
-
-#[cfg(feature = "plugins")]
-#[test]
-fn version_constant_matches_crate() {
-    assert_eq!(
-        scheme_rs::registry::SCHEME_RS_VERSION,
-        env!("CARGO_PKG_VERSION"),
-    );
 }

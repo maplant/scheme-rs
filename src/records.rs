@@ -408,6 +408,39 @@ impl Record {
         Self(inner)
     }
 
+    pub(crate) fn new_plain(rtd: Arc<RecordTypeDescriptor>, field_values: Vec<Value>) -> Self {
+        let prefix = Layout::from_size_align(
+            RecordInner::fields_offset(),
+            align_of::<GcInner<RecordInner>>(),
+        )
+        .unwrap();
+        let (layout, fields_offset) = prefix
+            .extend(Layout::array::<Value>(field_values.len()).unwrap())
+            .unwrap();
+        let layout = layout.pad_to_align();
+
+        unsafe {
+            let record = alloc::alloc(layout) as *mut GcInner<RecordInner>;
+            ptr::write(
+                record,
+                GcInner::new(RecordInner {
+                    rtd,
+                    fields: [],
+                }),
+            );
+            let fields_ptr = record.byte_add(fields_offset) as *mut Value;
+            for (i, field) in field_values.into_iter().enumerate() {
+                fields_ptr.add(i).write(field);
+            }
+            let inner = Gc {
+                ptr: NonNull::new(record).unwrap(),
+                marker: PhantomData,
+            };
+            crate::gc::unroot(&inner, layout);
+            Self(inner)
+        }
+    }
+
     pub fn cast<E: Embeddable>(&self) -> Option<Embedded<E>> {
         let embedded_ptr = self.0.embedded_ptr()?;
         let embedded_vtable = self.0.rtd.embedded_vtable.as_ref()?;
@@ -647,6 +680,35 @@ impl RecordInner {
     }
 }
 
+#[cfg(feature = "plugins")]
+impl RecordInner {
+    fn run_foreign_finalizer(&self) {
+        if self.rtd.embedded_vtable.is_some() {
+            return;
+        }
+        if !crate::plugin_host::HAS_FOREIGN_FINALIZERS
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return;
+        }
+        let handle = Arc::as_ptr(&self.rtd) as usize;
+        let finalizer = {
+            let map = crate::plugin_host::FOREIGN_FINALIZERS.lock().unwrap();
+            map.get(&handle).copied()
+        };
+        if let Some(finalizer) = finalizer {
+            let fields = self.fields();
+            if let Some(field) = fields.first() {
+                if let Ok(ptr_val) = i64::try_from(field) {
+                    unsafe {
+                        finalizer(ptr_val as usize as *mut std::ffi::c_void);
+                    }
+                }
+            }
+        }
+    }
+}
+
 unsafe impl Trace for RecordInner {
     unsafe fn visit_children(&self, visitor: &mut dyn FnMut(crate::gc::OpaqueGcPtr)) {
         let num_fields = self.num_unembedded_fields();
@@ -664,6 +726,9 @@ unsafe impl Trace for RecordInner {
     }
 
     unsafe fn finalize(&mut self) {
+        #[cfg(feature = "plugins")]
+        self.run_foreign_finalizer();
+
         unsafe {
             self.rtd.finalize();
         }

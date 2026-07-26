@@ -50,13 +50,14 @@ cranelift-module = "0.122"
 
 # Optional dependencies
 tokio = { version = "1.47", features = ["full"], optional = true }
+scheme-rs-plugin-api = { version = "0.1.0", path = "plugin-api", optional = true }
 
 [features]
 default = ["load-libraries-from-fs"]
 async = ["dep:futures", "dep:async-stream"]
 lsp = ["dep:lsp-server", "dep:lsp-types", "dep:serde", "dep:serde_json"]
 load-libraries-from-fs = []
-plugins = ["dep:libloading"]
+plugins = ["dep:libloading", "dep:scheme-rs-plugin-api"]
 
 [profile.release]
 lto = true
