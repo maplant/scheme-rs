@@ -235,6 +235,9 @@ struct CollectorState {
     epoch: usize,
     force_collection: bool,
     pending_allocs: usize,
+    /// True while an epoch is running; an epoch already past its drain phase
+    /// cannot satisfy a sync caller.
+    collecting: bool,
 }
 
 impl CollectorState {
@@ -243,6 +246,7 @@ impl CollectorState {
             epoch: 0,
             force_collection: false,
             pending_allocs: 0,
+            collecting: false,
         }
     }
 
@@ -383,7 +387,9 @@ fn collect_garbage_sync() {
     // An explicit collection must see the caller's own pending events.
     flush_events();
     let mut state = COLLECTOR_STATE.lock();
-    let target_epoch = state.epoch + 1;
+    // An in-flight epoch may already be past its drain phase, so its
+    // completion proves nothing about our events; require one more.
+    let target_epoch = state.epoch + if state.collecting { 2 } else { 1 };
     state.force_collection = true;
     COLLECTION_START_SIGNAL.notify_one();
     COLLECTION_DONE_SIGNAL.wait_while(&mut state, |state| state.epoch < target_epoch);
@@ -463,6 +469,7 @@ impl Collector {
 
         state.pending_allocs = 0;
         state.force_collection = false;
+        state.collecting = true;
     }
 
     fn epoch(&mut self) {
@@ -501,6 +508,7 @@ impl Collector {
 
         let mut state = COLLECTOR_STATE.lock();
         state.epoch += 1;
+        state.collecting = false;
         COLLECTION_DONE_SIGNAL.notify_all();
     }
 
