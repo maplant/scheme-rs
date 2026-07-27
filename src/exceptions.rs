@@ -54,7 +54,10 @@ use crate::{
     gc::Trace,
     lists::slice_to_list,
     ports::{IoDecodingError, IoEncodingError, IoError, IoReadError, IoWriteError},
-    proc::{Application, ContBarrier, ContPtr, DynStackElem, FuncPtr, Procedure, pop_dyn_stack},
+    proc::{
+        Application, ContBarrier, ContPtr, DynStackElem, FuncPtr, Procedure,
+        current_exception_handler, pop_dyn_stack, pop_dyn_stack_cont, push_dyn_stack,
+    },
     records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
     registry::{bridge, cps_bridge},
     runtime::Runtime,
@@ -936,13 +939,13 @@ pub fn with_exception_handler(
     let handler: Procedure = handler.clone().try_into()?;
     let thunk: Procedure = thunk.clone().try_into()?;
 
-    barrier.push_dyn_stack(DynStackElem::ExceptionHandler(handler));
+    push_dyn_stack(DynStackElem::ExceptionHandler(handler));
 
     let (req_args, var) = barrier.cont_formals();
 
     barrier.push_cont(
         Vec::new(),
-        ContPtr::Continuation(pop_dyn_stack),
+        ContPtr::Continuation(pop_dyn_stack_cont),
         req_args,
         var,
     );
@@ -1005,7 +1008,7 @@ unsafe extern "C" fn unwind_to_exception_handler(
         let barrier = barrier.as_mut().unwrap_unchecked();
 
         loop {
-            let app = match barrier.pop_dyn_stack() {
+            let app = match pop_dyn_stack() {
                 None => {
                     // If the stack is empty, we should return the error
                     Application::halt_err(raised)
@@ -1062,13 +1065,13 @@ pub fn raise_continuable(
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
-    barrier: &mut ContBarrier,
+    _barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
     let [condition] = args else {
         unreachable!();
     };
 
-    let Some(handler) = barrier.current_exception_handler() else {
+    let Some(handler) = current_exception_handler() else {
         return Ok(Application::halt_err(condition.clone()));
     };
 

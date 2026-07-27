@@ -18,6 +18,7 @@ pub mod lists;
 #[cfg(feature = "lsp")]
 pub mod lsp;
 pub mod num;
+pub mod parameters;
 pub mod ports;
 pub mod proc;
 pub mod records;

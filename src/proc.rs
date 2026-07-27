@@ -89,18 +89,23 @@ use crate::{
     exceptions::{Exception, raise},
     gc::{Gc, Trace},
     lists::{Pair, list_to_vec},
+    parameters::Parameter,
     ports::{BufferMode, Port, Transcoder},
     records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
     registry::BridgeFnDebugInfo,
+    runtime::Runtime,
     symbols::Symbol,
     syntax::Span,
-    value::Value,
+    value::{Cell, Value},
     vectors::Vector,
 };
 use scheme_rs_macros::{cps_bridge, maybe_async, maybe_await};
 use smallvec::SmallVec;
+#[cfg(feature = "async")]
+use std::future::Future;
 use std::{
     any::Any,
+    cell::RefCell,
     collections::HashMap,
     fmt,
     mem::MaybeUninit,
@@ -474,7 +479,17 @@ impl Procedure {
 
     /// Applies `args` to the procedure and returns the values it evaluates to.
     #[maybe_async]
-    pub fn call(
+    pub fn call(&self, args: &[Value]) -> Result<Vec<Value>, Exception> {
+        maybe_await!(self.call_with_barrier(args, &mut ContBarrier::new()))
+    }
+
+    #[cfg(feature = "async")]
+    pub fn call_sync(&self, args: &[Value]) -> Result<Vec<Value>, Exception> {
+        self.call_sync_with_barrier(args, &mut ContBarrier::new())
+    }
+
+    #[maybe_async]
+    pub fn call_with_barrier(
         &self,
         args: &[Value],
         barrier: &mut ContBarrier<'_>,
@@ -483,7 +498,7 @@ impl Procedure {
     }
 
     #[cfg(feature = "async")]
-    pub fn call_sync(
+    pub fn call_sync_with_barrier(
         &self,
         args: &[Value],
         barrier: &mut ContBarrier<'_>,
@@ -600,10 +615,9 @@ impl Application {
         }
     }
 
-    /// Evaluate the application - and all subsequent application - until all that
-    /// remains are values. This is the main trampoline of the evaluation engine.
+    /// The main trampoline loop.
     #[maybe_async]
-    pub fn eval(mut self, barrier: &mut ContBarrier<'_>) -> Result<Vec<Value>, Exception> {
+    fn eval_inner(mut self, barrier: &mut ContBarrier<'_>) -> Result<Vec<Value>, Exception> {
         loop {
             let Application { op, args } = self;
             self = match op {
@@ -617,9 +631,33 @@ impl Application {
         }
     }
 
+    /// Evaluate the application - and all subsequent application - until all that
+    /// remains are values. This is the main trampoline of the evaluation engine.
+    ///
+    /// Publishes the runtime's root dynamic state if none is already active;
+    /// reuses whatever's published otherwise.
     #[cfg(feature = "async")]
-    /// Just like [eval] but throws an error if we encounter an async function.
-    pub fn eval_sync(mut self, barrier: &mut ContBarrier) -> Result<Vec<Value>, Exception> {
+    pub async fn eval(self, barrier: &mut ContBarrier<'_>) -> Result<Vec<Value>, Exception> {
+        if !DYN_STATE.is_published() {
+            with_root_dyn_state(Runtime::handle(), self.eval_inner(barrier)).await
+        } else {
+            self.eval_inner(barrier).await
+        }
+    }
+
+    /// Evaluate the application - and all subsequent application - until all that
+    /// remains are values. This is the main trampoline of the evaluation engine.
+    #[cfg(not(feature = "async"))]
+    pub fn eval(self, barrier: &mut ContBarrier<'_>) -> Result<Vec<Value>, Exception> {
+        if !DYN_STATE.is_published() {
+            with_root_dyn_state_sync(Runtime::handle(), move || self.eval_inner(barrier))
+        } else {
+            self.eval_inner(barrier)
+        }
+    }
+
+    #[cfg(feature = "async")]
+    fn eval_sync_inner(mut self, barrier: &mut ContBarrier) -> Result<Vec<Value>, Exception> {
         loop {
             let Application { op, args } = self;
             self = match op {
@@ -630,6 +668,16 @@ impl Application {
                     return Err(Exception(args.pop().unwrap()));
                 }
             };
+        }
+    }
+
+    #[cfg(feature = "async")]
+    /// Just like [eval] but throws an error if we encounter an async function.
+    pub fn eval_sync(self, barrier: &mut ContBarrier) -> Result<Vec<Value>, Exception> {
+        if !DYN_STATE.is_published() {
+            with_root_dyn_state_sync(Runtime::handle(), move || self.eval_sync_inner(barrier))
+        } else {
+            self.eval_sync_inner(barrier)
         }
     }
 }
@@ -705,16 +753,274 @@ type Param<'a> = &'a mut (dyn Any + Send + Sync);
 #[cfg(not(feature = "async"))]
 type Param<'a> = &'a mut dyn Any;
 
+/// The dynamic state of a running program, owned by the trampoline as a
+/// local and published as the current dynamic state for an evaluation.
+#[derive(Trace)]
+pub struct DynState {
+    /// The active dynamic stack
+    dyn_stack: Vec<DynStackElem>,
+    /// Whether this is the state currently being evaluated. False for a
+    /// dormant/idle slot; [`DynStateSlot::is_published`] is just this flag.
+    published: bool,
+    /// Root values of parameter objects (param id → value) for this task.
+    /// A bare `(p v)` outside any parameterize writes here; spawn_snapshot
+    /// value-copies it, so mutations are task-local with inheritance at
+    /// spawn (the guile-fibers model).
+    param_roots: HashMap<usize, Cell>,
+}
+
+impl DynState {
+    fn new() -> Self {
+        Self {
+            dyn_stack: Vec::new(),
+            published: false,
+            param_roots: HashMap::new(),
+        }
+    }
+
+    /// The dynamic state a newly spawned thread/task starts with: binding
+    /// entries (current ports) carry over as copies; control entries
+    /// (winders, prompts, exception handlers) belong to the spawning
+    /// thread's stack and do not cross. Which entries cross is decided
+    /// per-variant by [`DynStackElem::spawn_copy`]. Parameter roots are
+    /// inherited by value: the child gets its own cells seeded with the
+    /// parent's current values, so later mutations on either side stay
+    /// task-local.
+    fn spawn_snapshot(&self) -> Self {
+        Self {
+            dyn_stack: self
+                .dyn_stack
+                .iter()
+                .filter_map(DynStackElem::spawn_copy)
+                .collect(),
+            published: false,
+            param_roots: self
+                .param_roots
+                .iter()
+                .map(|(id, cell)| (*id, Cell::new(cell.get())))
+                .collect(),
+        }
+    }
+}
+
+impl Default for DynState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+std::thread_local! {
+    /// Sync-trampoline dynamic state. Always holds a `DynState`; dormant
+    /// (not currently evaluating) is `published == false`, not absence.
+    static CURRENT_DYN_STATE: RefCell<DynState> = RefCell::new(DynState::new());
+}
+
+#[cfg(feature = "async")]
+tokio::task_local! {
+    /// Async-trampoline dynamic state (survives work-stealing).
+    static TASK_DYN_STATE: RefCell<DynState>;
+}
+
+pub(crate) struct DynStateGuard(DynState);
+
+impl Drop for DynStateGuard {
+    fn drop(&mut self) {
+        CURRENT_DYN_STATE.with(|c| *c.borrow_mut() = std::mem::take(&mut self.0));
+    }
+}
+
+/// Unified access to the thread-local and task-local dynamic state.
+struct DynStateSlot;
+
+static DYN_STATE: DynStateSlot = DynStateSlot;
+
+impl DynStateSlot {
+    fn is_published(&self) -> bool {
+        #[cfg(feature = "async")]
+        if let Ok(published) = TASK_DYN_STATE.try_with(|c| c.borrow().published) {
+            return published;
+        }
+        CURRENT_DYN_STATE.with(|c| c.borrow().published)
+    }
+
+    /// Short borrow of the current dynamic state; never hold across
+    /// re-entry.
+    fn with<R>(&self, f: impl FnOnce(&mut DynState) -> R) -> R {
+        #[cfg(feature = "async")]
+        {
+            let task_active = TASK_DYN_STATE.try_with(|_| ()).is_ok();
+            if task_active {
+                return TASK_DYN_STATE.with(|c| f(&mut c.borrow_mut()));
+            }
+        }
+        CURRENT_DYN_STATE.with(|c| f(&mut c.borrow_mut()))
+    }
+
+    /// Publish state for a synchronous evaluation.
+    fn enter_sync(&self, mut state: DynState) -> DynStateGuard {
+        state.published = true;
+        let prev = CURRENT_DYN_STATE.with(|c| std::mem::replace(&mut *c.borrow_mut(), state));
+        DynStateGuard(prev)
+    }
+
+    /// Publish state for an async evaluation.
+    #[cfg(feature = "async")]
+    async fn enter_async<F: Future>(&self, mut state: DynState, fut: F) -> F::Output {
+        state.published = true;
+        TASK_DYN_STATE.scope(RefCell::new(state), fut).await
+    }
+}
+
+pub(crate) fn with_dyn_state_sync<R>(state: DynState, f: impl FnOnce() -> R) -> R {
+    let _guard = DYN_STATE.enter_sync(state);
+    f()
+}
+
+#[cfg(feature = "async")]
+pub(crate) async fn with_dyn_state<F: Future>(state: DynState, fut: F) -> F::Output {
+    DYN_STATE.enter_async(state, fut).await
+}
+
+/// On drop, takes whatever's published and checks it back into `runtime`,
+/// marked no longer published. Runs before the enclosing [`DynStateGuard`]
+/// (declared first, so dropped last) restores the previous (dormant) slot,
+/// so it still observes the finished state.
+struct RootDynStateCheckin(Runtime);
+
+impl Drop for RootDynStateCheckin {
+    fn drop(&mut self) {
+        let mut state = DYN_STATE.with(std::mem::take);
+        state.published = false;
+        self.0.restore_dyn_state(state);
+    }
+}
+
+/// Checks out `runtime`'s root dynamic state and publishes it for the
+/// duration of `f`, then checks the (possibly mutated) state back in so
+/// later top-level entries into `runtime` observe the same parameter
+/// roots, current ports, etc.
+pub(crate) fn with_root_dyn_state_sync<R>(runtime: Runtime, f: impl FnOnce() -> R) -> R {
+    let state = runtime.checkout_dyn_state();
+    let _guard = DYN_STATE.enter_sync(state);
+    let _checkin = RootDynStateCheckin(runtime);
+    f()
+}
+
+/// Async counterpart to [`with_root_dyn_state_sync`]. The checkin runs
+/// inside the scoped future so it can still read the task-local dynamic
+/// state once `fut` completes (or is dropped without completing).
+///
+/// Boxed so this call's stack frame stays a fixed, small size regardless of
+/// what `fut` contains: macro transformers re-enter `eval` (and thus this
+/// function) once per level of macro nesting in the source being expanded,
+/// so an unboxed frame here grows with source-level macro nesting depth and
+/// can overflow the stack on deeply macro-heavy code.
+#[cfg(feature = "async")]
+pub(crate) async fn with_root_dyn_state<F: Future + Send>(runtime: Runtime, fut: F) -> F::Output
+where
+    F::Output: Send,
+{
+    let state = runtime.checkout_dyn_state();
+    let boxed: std::pin::Pin<Box<dyn Future<Output = F::Output> + Send>> = Box::pin(async move {
+        let _checkin = RootDynStateCheckin(runtime);
+        fut.await
+    });
+    DYN_STATE.enter_async(state, boxed).await
+}
+
+// TODO: We should certainly try to optimize these functions. Linear
+// searching isn't _great_, although in practice I can't imagine this stack
+// will ever get very large.
+
+pub fn current_exception_handler() -> Option<Procedure> {
+    DYN_STATE.with(|s| {
+        s.dyn_stack.iter().rev().find_map(|elem| match elem {
+            DynStackElem::ExceptionHandler(proc) => Some(proc.clone()),
+            _ => None,
+        })
+    })
+}
+
+pub fn current_input_port() -> Port {
+    DYN_STATE.with(|s| {
+        s.dyn_stack
+            .iter()
+            .rev()
+            .find_map(|elem| match elem {
+                DynStackElem::CurrentInputPort(port) => Some(port.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                Port::new(
+                    "<stdin>",
+                    #[cfg(not(feature = "async"))]
+                    std::io::stdin(),
+                    #[cfg(feature = "tokio")]
+                    tokio::io::stdin(),
+                    BufferMode::Line,
+                    Some(Transcoder::native()),
+                )
+            })
+    })
+}
+
+pub fn current_output_port() -> Port {
+    DYN_STATE.with(|s| {
+        s.dyn_stack
+            .iter()
+            .rev()
+            .find_map(|elem| match elem {
+                DynStackElem::CurrentOutputPort(port) => Some(port.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                Port::new(
+                    "<stdout>",
+                    #[cfg(not(feature = "async"))]
+                    std::io::stdout(),
+                    #[cfg(feature = "tokio")]
+                    tokio::io::stdout(),
+                    // TODO: Probably should change this to line, but that
+                    // doesn't play nicely with rustyline
+                    BufferMode::None,
+                    Some(Transcoder::native()),
+                )
+            })
+    })
+}
+
+pub(crate) fn push_dyn_stack(elem: DynStackElem) {
+    DYN_STATE.with(|s| s.dyn_stack.push(elem));
+}
+
+pub(crate) fn pop_dyn_stack() -> Option<DynStackElem> {
+    DYN_STATE.with(|s| s.dyn_stack.pop())
+}
+
+pub(crate) fn dyn_stack_last() -> Option<DynStackElem> {
+    DYN_STATE.with(|s| s.dyn_stack.last().cloned())
+}
+
+pub(crate) fn dyn_stack_len() -> usize {
+    DYN_STATE.with(|s| s.dyn_stack.len())
+}
+
+pub(crate) fn dyn_stack_is_empty() -> bool {
+    DYN_STATE.with(|s| s.dyn_stack.is_empty())
+}
+
+pub(crate) fn dyn_state_snapshot() -> DynState {
+    if !DYN_STATE.is_published() {
+        return DynState::new();
+    }
+    DYN_STATE.with(|s| s.spawn_snapshot())
+}
+
 /// A continuation barrier. Escape procedures created within a continuation
 /// barrier cannot be called within another barrier.
-///
-/// This structure also contains the dynamic state of the running program
-/// including winders, exception handlers, continuation marks, and parameters.
 pub struct ContBarrier<'a> {
     /// The id of the barrier. Checked when calling an escape procedure
     id: usize,
-    /// The active dynamic stack
-    dyn_stack: Vec<DynStackElem>,
     /// The current live continuations for the program. Effectively the call
     /// stack. Includes active [continuation marks](https://srfi.schemers.org/srfi-157/srfi-157.html).
     cont_stack: ContStack,
@@ -728,7 +1034,6 @@ impl<'a> ContBarrier<'a> {
 
         let mut this = Self {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
-            dyn_stack: Vec::new(),
             cont_stack: ContStack::default(),
             params: HashMap::new(),
         };
@@ -739,12 +1044,14 @@ impl<'a> ContBarrier<'a> {
         this
     }
 
+    /// Captures the barrier id and a copy of the current dyn_stack/cont_stack,
+    /// for restoring later (call/cc, prompts).
     pub fn save(&self) -> SavedDynamicState {
-        SavedDynamicState {
+        DYN_STATE.with(|s| SavedDynamicState {
             id: self.id,
-            dyn_stack: self.dyn_stack.clone(),
+            dyn_stack: s.dyn_stack.clone(),
             cont_stack: self.cont_stack.clone(),
-        }
+        })
     }
 
     pub fn add_param(
@@ -775,6 +1082,8 @@ impl<'a> ContBarrier<'a> {
 
     /// Constructs a child barrier from the current barrier, extracting an array
     /// of parameters that are not automatically passed onto the child.
+    /// dyn_stack isn't copied here (it's ambient, already shared); cont_stack
+    /// is, via `save`/`From<SavedDynamicState>`.
     pub fn child_barrier<'b, 'c, const N: usize>(
         &'b mut self,
         params: [impl Into<Symbol>; N],
@@ -819,81 +1128,6 @@ impl<'a> ContBarrier<'a> {
             .unwrap()
             .marks
             .insert(tag, val);
-    }
-
-    // TODO: We should certainly try to optimize these functions. Linear
-    // searching isn't _great_, although in practice I can't imagine this stack
-    // will ever get very large.
-
-    pub fn current_exception_handler(&self) -> Option<Procedure> {
-        self.dyn_stack.iter().rev().find_map(|elem| match elem {
-            DynStackElem::ExceptionHandler(proc) => Some(proc.clone()),
-            _ => None,
-        })
-    }
-
-    pub fn current_input_port(&self) -> Port {
-        self.dyn_stack
-            .iter()
-            .rev()
-            .find_map(|elem| match elem {
-                DynStackElem::CurrentInputPort(port) => Some(port.clone()),
-                _ => None,
-            })
-            .unwrap_or_else(|| {
-                Port::new(
-                    "<stdin>",
-                    #[cfg(not(feature = "async"))]
-                    std::io::stdin(),
-                    #[cfg(feature = "tokio")]
-                    tokio::io::stdin(),
-                    BufferMode::Line,
-                    Some(Transcoder::native()),
-                )
-            })
-    }
-
-    pub fn current_output_port(&self) -> Port {
-        self.dyn_stack
-            .iter()
-            .rev()
-            .find_map(|elem| match elem {
-                DynStackElem::CurrentOutputPort(port) => Some(port.clone()),
-                _ => None,
-            })
-            .unwrap_or_else(|| {
-                Port::new(
-                    "<stdout>",
-                    #[cfg(not(feature = "async"))]
-                    std::io::stdout(),
-                    #[cfg(feature = "tokio")]
-                    tokio::io::stdout(),
-                    // TODO: Probably should change this to line, but that
-                    // doesn't play nicely with rustyline
-                    BufferMode::None,
-                    Some(Transcoder::native()),
-                )
-            })
-    }
-
-    pub(crate) fn push_dyn_stack(&mut self, elem: DynStackElem) {
-        self.dyn_stack.push(elem);
-    }
-
-    pub(crate) fn pop_dyn_stack(&mut self) -> Option<DynStackElem> {
-        self.dyn_stack.pop()
-    }
-
-    pub(crate) fn dyn_stack_last(&self) -> Option<&DynStackElem> {
-        self.dyn_stack.last()
-    }
-
-    pub(crate) fn dyn_stack_len(&self) -> usize {
-        self.dyn_stack.len()
-    }
-
-    pub(crate) fn dyn_stack_is_empty(&self) -> bool {
-        self.dyn_stack.is_empty()
     }
 
     /// Push a continuation onto the current call stack.
@@ -944,7 +1178,7 @@ impl<'a> ContBarrier<'a> {
                 app.assume_init()
             },
             ContPtr::PromptBarrier { .. } => {
-                self.pop_dyn_stack();
+                pop_dyn_stack();
                 let mut values: Vec<Value> = args[..curr_frame.num_required_args].to_vec();
                 if curr_frame.variadic {
                     list_to_vec(&args[curr_frame.num_required_args], &mut values);
@@ -966,6 +1200,46 @@ impl Default for ContBarrier<'_> {
     }
 }
 
+/// The current value of a parameter object: the innermost enclosing
+/// `parameterize` binding, else the task root, else the parameter's
+/// default if the root was never written.
+pub(crate) fn parameter_ref(param: &Embedded<Parameter>) -> Value {
+    DYN_STATE.with(|s| {
+        for elem in s.dyn_stack.iter().rev() {
+            if let DynStackElem::Parameterization(cells) = elem
+                && let Some(cell) = cells.get(&param.id())
+            {
+                return cell.get();
+            }
+        }
+        match s.param_roots.get(&param.id()) {
+            Some(cell) => cell.get(),
+            None => param.default_value(),
+        }
+    })
+}
+
+/// Writes a parameter object: the innermost enclosing `parameterize`
+/// binding if one is active, else the task root (creating it if this
+/// is the first write).
+pub(crate) fn parameter_set(param: &Embedded<Parameter>, val: Value) {
+    DYN_STATE.with(|s| {
+        for elem in s.dyn_stack.iter().rev() {
+            if let DynStackElem::Parameterization(cells) = elem
+                && let Some(cell) = cells.get(&param.id())
+            {
+                cell.set(val);
+                return;
+            }
+        }
+        if let Some(cell) = s.param_roots.get(&param.id()) {
+            cell.set(val);
+        } else {
+            s.param_roots.insert(param.id(), Cell::new(val));
+        }
+    })
+}
+
 impl<'a, 'b, 'c> From<&'b mut ContBarrier<'a>> for ContBarrier<'c>
 where
     'b: 'c,
@@ -979,7 +1253,12 @@ where
     }
 }
 
-/// A copy of [`ContBarrier`] without mutable parameters
+/// Independent of the current dynamic state: a plain value, safe to embed
+/// and pass around Scheme code.
+///
+/// Deliberately omits `param_roots`: continuations capture parameterize
+/// bindings (they ride in `dyn_stack`), not the task's mutable parameter
+/// roots — reinstating a continuation must not undo bare assignments.
 #[derive(Clone, Trace)]
 pub struct SavedDynamicState {
     id: usize,
@@ -999,8 +1278,10 @@ impl SavedDynamicState {
 
 impl From<SavedDynamicState> for ContBarrier<'_> {
     fn from(value: SavedDynamicState) -> Self {
+        // dyn_stack isn't restored here: it's ambient (shared with whatever
+        // published it), not barrier-local, so a sibling/child barrier
+        // already observes it without copying.
         ContBarrier {
-            dyn_stack: value.dyn_stack,
             cont_stack: value.cont_stack,
             ..Default::default()
         }
@@ -1020,9 +1301,39 @@ pub(crate) enum DynStackElem {
     ExceptionHandler(Procedure),
     CurrentInputPort(Port),
     CurrentOutputPort(Port),
+    /// A parameterize extent: fresh cells for the bound parameters,
+    /// uncovered again when the entry is popped.
+    Parameterization(HashMap<usize, Cell>),
 }
 
-pub(crate) unsafe extern "C" fn pop_dyn_stack(
+impl DynStackElem {
+    /// The entry a spawned child thread/task starts with for this entry, if
+    /// any. Binding entries (current ports, parameterize extents) cross;
+    /// control entries (winders, prompts, exception handlers) belong to the
+    /// spawning stack and do not. Parameterizations cross by value: the
+    /// child gets fresh cells seeded with the parent's current bindings, so
+    /// later mutations on either side stay task-local (mirrors param_roots).
+    /// Exhaustive on purpose: adding a variant forces this decision.
+    fn spawn_copy(&self) -> Option<DynStackElem> {
+        match self {
+            DynStackElem::CurrentInputPort(_) | DynStackElem::CurrentOutputPort(_) => {
+                Some(self.clone())
+            }
+            DynStackElem::Parameterization(cells) => Some(DynStackElem::Parameterization(
+                cells
+                    .iter()
+                    .map(|(id, cell)| (*id, Cell::new(cell.get())))
+                    .collect(),
+            )),
+            DynStackElem::Prompt(_)
+            | DynStackElem::Winder(_)
+            | DynStackElem::ExceptionHandler(_) => None,
+        }
+    }
+}
+
+/// Named distinctly from the free function `pop_dyn_stack` to avoid a clash.
+pub(crate) unsafe extern "C" fn pop_dyn_stack_cont(
     _env: *const Value,
     args: *const Value,
     barrier: *mut ContBarrier,
@@ -1030,7 +1341,7 @@ pub(crate) unsafe extern "C" fn pop_dyn_stack(
 ) {
     unsafe {
         let barrier = barrier.as_mut().unwrap_unchecked();
-        barrier.pop_dyn_stack();
+        pop_dyn_stack();
 
         let (num_required_args, variadic) = barrier.cont_formals();
         let mut collected_args: Vec<_> = (0..num_required_args)
@@ -1160,8 +1471,15 @@ fn escape_procedure(
         .cast::<Embedded<SavedDynamicState>>()
         .unwrap();
 
+    // Cross-barrier escape must halt this trampoline (halt_err) instead of
+    // raising through the exception-handler search. With shared dynamic state,
+    // raising would find a handler belonging to an ancestor evaluation (e.g.
+    // guard's), whose own escape continuation also crosses this barrier,
+    // causing a second rejection with no handler left to catch it.
     if saved_barrier.id != barrier.id {
-        return Err(Exception::error("attempt to cross continuation barrier"));
+        return Ok(Application::halt_err(Value::from(Exception::error(
+            "attempt to cross continuation barrier",
+        ))));
     }
 
     let args = args.iter().chain(rest_args).cloned().collect::<Vec<_>>();
@@ -1196,12 +1514,11 @@ unsafe extern "C" fn unwind(
 
         let barrier = barrier.as_mut().unwrap_unchecked();
 
-        while !barrier.dyn_stack_is_empty()
-            && (barrier.dyn_stack_len() > dest_stack_read.dyn_stack_len()
-                || barrier.dyn_stack_last()
-                    != dest_stack_read.dyn_stack_get(barrier.dyn_stack_len() - 1))
+        while !dyn_stack_is_empty()
+            && (dyn_stack_len() > dest_stack_read.dyn_stack_len()
+                || dyn_stack_last().as_ref() != dest_stack_read.dyn_stack_get(dyn_stack_len() - 1))
         {
-            match barrier.pop_dyn_stack() {
+            match pop_dyn_stack() {
                 None => {
                     break;
                 }
@@ -1255,14 +1572,11 @@ unsafe extern "C" fn wind(
         let winder = env.add(2).as_ref().unwrap().clone();
         if winder.is_true() {
             let winder = winder.try_to::<Embedded<Winder>>().unwrap();
-            barrier.push_dyn_stack(DynStackElem::Winder(winder.as_ref().clone()));
+            push_dyn_stack(DynStackElem::Winder(winder.as_ref().clone()));
         }
 
-        while barrier.dyn_stack_len() < dest_stack_read.dyn_stack_len() {
-            match dest_stack_read
-                .dyn_stack_get(barrier.dyn_stack_len())
-                .cloned()
-            {
+        while dyn_stack_len() < dest_stack_read.dyn_stack_len() {
+            match dest_stack_read.dyn_stack_get(dyn_stack_len()).cloned() {
                 None => {
                     break;
                 }
@@ -1279,7 +1593,7 @@ unsafe extern "C" fn wind(
                     (*out).write(app);
                     return;
                 }
-                Some(elem) => barrier.push_dyn_stack(elem),
+                Some(elem) => push_dyn_stack(elem),
             }
         }
 
@@ -1427,7 +1741,7 @@ pub(crate) unsafe extern "C" fn call_body_thunk(
 
         let barrier = barrier.as_mut().unwrap_unchecked();
 
-        barrier.push_dyn_stack(DynStackElem::Winder(Winder {
+        push_dyn_stack(DynStackElem::Winder(Winder {
             in_thunk: in_thunk.clone().try_into().unwrap(),
             out_thunk: out_thunk.clone().try_into().unwrap(),
         }));
@@ -1452,7 +1766,7 @@ pub(crate) unsafe extern "C" fn call_out_thunks(
         let body_thunk_res = args.as_ref().unwrap().clone();
 
         let barrier = barrier.as_mut().unwrap_unchecked();
-        barrier.pop_dyn_stack();
+        pop_dyn_stack();
 
         barrier.push_cont(
             vec![body_thunk_res],
@@ -1512,7 +1826,7 @@ pub fn call_with_prompt(
 
     let barrier_id = BARRIER_ID.fetch_add(1, Ordering::Relaxed);
 
-    barrier.push_dyn_stack(DynStackElem::Prompt(Prompt {
+    push_dyn_stack(DynStackElem::Prompt(Prompt {
         tag,
         handler: handler.clone().try_into().unwrap(),
         barrier_id,
@@ -1569,10 +1883,13 @@ unsafe extern "C" fn unwind_to_prompt(
         let barrier = barrier.as_mut().unwrap_unchecked();
 
         loop {
-            let app = match barrier.pop_dyn_stack() {
-                None => Application::halt_err(Value::from(Exception::error(format!(
-                    "no prompt tag {tag} found"
-                )))),
+            let app = match pop_dyn_stack() {
+                None => {
+                    // If the stack is empty, we should return the error
+                    Application::halt_err(Value::from(Exception::error(format!(
+                        "no prompt tag {tag} found"
+                    ))))
+                }
                 Some(DynStackElem::Prompt(Prompt {
                     tag: prompt_tag,
                     barrier_id,
@@ -1611,8 +1928,7 @@ unsafe extern "C" fn unwind_to_prompt(
                         .unwrap();
                     let prompt_delimited_barrier = SavedDynamicState {
                         id: saved_barrier.id,
-                        dyn_stack: saved_barrier.as_ref().dyn_stack[barrier.dyn_stack_len() + 1..]
-                            .to_vec(),
+                        dyn_stack: saved_barrier.as_ref().dyn_stack[dyn_stack_len() + 1..].to_vec(),
                         cont_stack: delimited_cont,
                     };
 
@@ -1706,7 +2022,7 @@ unsafe extern "C" fn wind_delim(
         let winder = env.add(3).as_ref().unwrap().clone();
         if winder.is_true() {
             let winder = winder.try_to::<Embedded<Winder>>().unwrap();
-            barrier.push_dyn_stack(DynStackElem::Winder(winder.as_ref().clone()));
+            push_dyn_stack(DynStackElem::Winder(winder.as_ref().clone()));
         }
 
         while let Some(elem) = dest_stack.as_ref().dyn_stack_get(idx) {
@@ -1727,11 +2043,97 @@ unsafe extern "C" fn wind_delim(
                 (*out).write(Application::new(winder.in_thunk.clone(), Vec::new()));
                 return;
             }
-            barrier.push_dyn_stack(elem.clone());
+            push_dyn_stack(elem.clone());
         }
 
         let args: Vector = args.try_into().unwrap();
         let args = args.0.vec.read().to_vec();
         (*out).write(barrier.call_cont(args));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A stand-in exception handler `Procedure`. Never actually invoked;
+    /// spawn_snapshot only needs a valid `ExceptionHandler` value to filter.
+    fn dummy_handler(
+        _env: &[Value],
+        _args: &[Value],
+        _rest_args: &[Value],
+        barrier: &mut ContBarrier<'_>,
+    ) -> Application {
+        barrier.call_cont(Vec::new())
+    }
+
+    #[test]
+    fn spawn_snapshot_keeps_ports_drops_control() {
+        let out_port = Port::new(
+            "<stdout>",
+            #[cfg(not(feature = "async"))]
+            std::io::stdout(),
+            #[cfg(feature = "tokio")]
+            tokio::io::stdout(),
+            BufferMode::None,
+            Some(Transcoder::native()),
+        );
+        let in_port = Port::new(
+            "<stdin>",
+            #[cfg(not(feature = "async"))]
+            std::io::stdin(),
+            #[cfg(feature = "tokio")]
+            tokio::io::stdin(),
+            BufferMode::Line,
+            Some(Transcoder::native()),
+        );
+        let handler = Procedure::new(vec![], dummy_handler as BridgePtr, 0, false);
+        let mut param_roots = HashMap::new();
+        param_roots.insert(0, Cell::new(Value::from(42)));
+        let mut parameterization = HashMap::new();
+        parameterization.insert(1, Cell::new(Value::from(7)));
+        let state = DynState {
+            dyn_stack: vec![
+                DynStackElem::ExceptionHandler(handler),
+                DynStackElem::CurrentOutputPort(out_port),
+                DynStackElem::CurrentInputPort(in_port),
+                DynStackElem::Parameterization(parameterization),
+            ],
+            published: false,
+            param_roots,
+        };
+
+        let snapshot = state.spawn_snapshot();
+
+        assert!(matches!(
+            snapshot.dyn_stack.as_slice(),
+            [
+                DynStackElem::CurrentOutputPort(_),
+                DynStackElem::CurrentInputPort(_),
+                DynStackElem::Parameterization(_)
+            ]
+        ));
+
+        // Parameter roots are inherited by value into a fresh cell: the
+        // snapshot starts out equal to the parent, but mutating the copy
+        // must not affect the original.
+        let snapshot_cell = snapshot.param_roots.get(&0).unwrap();
+        assert_eq!(snapshot_cell.get(), Value::from(42));
+
+        // A Parameterization entry survives the snapshot the same way: a
+        // fresh cell per bound parameter, seeded with the parent's current
+        // value but independent afterward.
+        let DynStackElem::Parameterization(snapshot_cells) = &snapshot.dyn_stack[2] else {
+            panic!("expected a Parameterization entry in the snapshot");
+        };
+        let DynStackElem::Parameterization(original_cells) = &state.dyn_stack[3] else {
+            panic!("expected a Parameterization entry in the original");
+        };
+        let snapshot_param_cell = snapshot_cells.get(&1).unwrap();
+        assert_eq!(snapshot_param_cell.get(), Value::from(7));
+        snapshot_param_cell.set(Value::from(99));
+        assert_eq!(original_cells.get(&1).unwrap().get(), Value::from(7));
+        snapshot_cell.set(Value::from(99));
+        assert_eq!(state.param_roots.get(&0).unwrap().get(), Value::from(42));
     }
 }

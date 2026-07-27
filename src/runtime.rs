@@ -13,10 +13,11 @@ use crate::{
     hashtables::EqualHashSet,
     lists::{Pair, list_to_vec},
     num,
+    parameters::Parameter,
     ports::{BufferMode, Port, Transcoder},
     proc::{
-        Application, ContBarrier, ContPtr, ContinuationPtr, FuncPtr, ProcDebugInfo, Procedure,
-        ProcedureInner, UserPtr,
+        Application, ContBarrier, ContPtr, ContinuationPtr, DynState, FuncPtr, ProcDebugInfo,
+        Procedure, ProcedureInner, UserPtr,
     },
     registry::Registry,
     symbols::Symbol,
@@ -186,6 +187,19 @@ impl Runtime {
     pub fn source_cache(&self) -> MutexGuard<'_, SourceCache> {
         self.0.source_cache.lock()
     }
+
+    /// Takes the runtime's persistent root dynamic state, leaving a fresh
+    /// one behind. Paired with [`Runtime::restore_dyn_state`] to publish the
+    /// root state for a top-level evaluation without holding the runtime
+    /// lock for the evaluation's duration.
+    pub(crate) fn checkout_dyn_state(&self) -> DynState {
+        std::mem::take(&mut self.0.dyn_state.lock())
+    }
+
+    /// Checks a dynamic state back in as the runtime's root state.
+    pub(crate) fn restore_dyn_state(&self, state: DynState) {
+        *self.0.dyn_state.lock() = state;
+    }
 }
 
 #[allow(unused)]
@@ -220,6 +234,11 @@ pub(crate) struct RuntimeInner {
     pub(crate) globals_pool: Mutex<HashSet<Global>>,
     pub(crate) debug_info: DebugInfo,
     pub(crate) source_cache: Mutex<SourceCache>,
+    /// The root dynamic state, persistent for the runtime's lifetime.
+    /// Checked out for the duration of each top-level evaluation (see
+    /// [`Runtime::checkout_dyn_state`]) so parameter roots, current ports,
+    /// etc. outlive any single eval call.
+    dyn_state: Mutex<DynState>,
 }
 
 impl Default for RuntimeInner {
@@ -253,6 +272,7 @@ impl RuntimeInner {
             globals_pool: Mutex::new(HashSet::new()),
             debug_info: DebugInfo::default(),
             source_cache: Mutex::new(SourceCache::default()),
+            dyn_state: Mutex::new(DynState::default()),
         }
     }
 }
@@ -445,8 +465,12 @@ unsafe extern "C" fn apply(
     out: *mut MaybeUninit<Application>,
 ) {
     unsafe {
-        let op = match Value::from_raw_inc_rc(op).unpack() {
+        let op_val = Value::from_raw_inc_rc(op);
+        let op = match op_val.unpack() {
             UnpackedValue::Procedure(op) => op,
+            UnpackedValue::Record(ref record) if record.cast::<Parameter>().is_some() => {
+                record.cast::<Parameter>().unwrap().companion().clone()
+            }
             x => {
                 let raised = raise(
                     Exception::invalid_operator(&x.type_name()).into(),
@@ -505,10 +529,8 @@ unsafe extern "C" fn set_continuation_mark(
     unsafe {
         let tag = Value::from_raw_inc_rc(tag);
         let val = Value::from_raw_inc_rc(val);
-        barrier
-            .as_mut()
-            .unwrap()
-            .set_continuation_mark(tag.cast().unwrap(), val);
+        let barrier = barrier.as_mut().unwrap_unchecked();
+        barrier.set_continuation_mark(tag.cast().unwrap(), val);
     }
 }
 

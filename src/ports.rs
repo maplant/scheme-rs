@@ -25,7 +25,11 @@ use crate::{
     enumerations::{EnumerationSet, EnumerationType},
     exceptions::{Assertion, Error, Exception, raise},
     gc::Trace,
-    proc::{Application, ContBarrier, ContPtr, DynStackElem, FuncPtr, Procedure, pop_dyn_stack},
+    proc::{
+        Application, ContBarrier, ContPtr, DynStackElem, FuncPtr, Procedure,
+        current_input_port as dyn_current_input_port,
+        current_output_port as dyn_current_output_port, pop_dyn_stack_cont, push_dyn_stack,
+    },
     records::{Embeddable, Embedded, RecordTypeDescriptor},
     strings::WideString,
     symbols::Symbol,
@@ -686,14 +690,11 @@ mod __impl {
     pub(super) fn proc_to_read_fn(read: Procedure) -> ReadFn {
         Box::new(move |_, buff, start, count| {
             let [read] = read
-                .call(
-                    &[
-                        Value::from(buff.clone()),
-                        Value::from(start),
-                        Value::from(count),
-                    ],
-                    &mut ContBarrier::new(),
-                )
+                .call(&[
+                    Value::from(buff.clone()),
+                    Value::from(start),
+                    Value::from(count),
+                ])
                 .map_err(|err| err.add_condition(IoReadError::new()))?
                 .try_into()
                 .map_err(|_| {
@@ -711,14 +712,11 @@ mod __impl {
     pub(super) fn proc_to_write_fn(write: Procedure) -> WriteFn {
         Box::new(move |_, buff, start, count| {
             let _ = write
-                .call(
-                    &[
-                        Value::from(buff.clone()),
-                        Value::from(start),
-                        Value::from(count),
-                    ],
-                    &mut ContBarrier::new(),
-                )
+                .call(&[
+                    Value::from(buff.clone()),
+                    Value::from(start),
+                    Value::from(count),
+                ])
                 .map_err(|err| err.add_condition(IoReadError::new()))?;
             Ok(())
         })
@@ -727,7 +725,7 @@ mod __impl {
     pub(super) fn proc_to_get_pos_fn(get_pos: Procedure) -> GetPosFn {
         Box::new(move |_| {
             let [pos] = get_pos
-                .call(&[], &mut ContBarrier::new())
+                .call(&[])
                 .map_err(|err| err.add_condition(IoError::new()))?
                 .try_into()
                 .map_err(|_| {
@@ -743,7 +741,7 @@ mod __impl {
     pub(super) fn proc_to_set_pos_fn(set_pos: Procedure) -> SetPosFn {
         Box::new(move |_, pos| {
             let _ = set_pos
-                .call(&[Value::from(pos)], &mut ContBarrier::new())
+                .call(&[Value::from(pos)])
                 .map_err(|err| err.add_condition(IoError::new()))?;
             Ok(())
         })
@@ -752,7 +750,7 @@ mod __impl {
     pub(super) fn proc_to_close_fn(close: Procedure) -> CloseFn {
         Box::new(move |_| {
             let _ = close
-                .call(&[], &mut ContBarrier::new())
+                .call(&[])
                 .map_err(|err| err.add_condition(IoError::new()))?;
             Ok(())
         })
@@ -949,14 +947,11 @@ mod __impl {
             let read = read.clone();
             Box::pin(async move {
                 let [read] = read
-                    .call(
-                        &[
-                            Value::from(buff.clone()),
-                            Value::from(start),
-                            Value::from(count),
-                        ],
-                        &mut ContBarrier::new(),
-                    )
+                    .call(&[
+                        Value::from(buff.clone()),
+                        Value::from(start),
+                        Value::from(count),
+                    ])
                     .await
                     .map_err(|err| err.add_condition(IoReadError::new()))?
                     .try_into()
@@ -980,14 +975,11 @@ mod __impl {
             let write = write.clone();
             Box::pin(async move {
                 let _ = write
-                    .call(
-                        &[
-                            Value::from(buff.clone()),
-                            Value::from(start),
-                            Value::from(count),
-                        ],
-                        &mut ContBarrier::new(),
-                    )
+                    .call(&[
+                        Value::from(buff.clone()),
+                        Value::from(start),
+                        Value::from(count),
+                    ])
                     .await
                     .map_err(|err| err.add_condition(IoReadError::new()))?;
                 Ok(())
@@ -1000,7 +992,7 @@ mod __impl {
             let get_pos = get_pos.clone();
             Box::pin(async move {
                 let [pos] = get_pos
-                    .call(&[], &mut ContBarrier::new())
+                    .call(&[])
                     .await
                     .map_err(|err| err.add_condition(IoError::new()))?
                     .try_into()
@@ -1022,7 +1014,7 @@ mod __impl {
             let set_pos = set_pos.clone();
             Box::pin(async move {
                 let _ = set_pos
-                    .call(&[Value::from(pos)], &mut ContBarrier::new())
+                    .call(&[Value::from(pos)])
                     .await
                     .map_err(|err| err.add_condition(IoError::new()))?;
                 Ok(())
@@ -1035,7 +1027,7 @@ mod __impl {
             let close = close.clone();
             Box::pin(async move {
                 let _ = close
-                    .call(&[], &mut ContBarrier::new())
+                    .call(&[])
                     .await
                     .map_err(|err| err.add_condition(IoError::new()))?;
                 Ok(())
@@ -1899,14 +1891,11 @@ impl CustomTextualPortData {
             && let len = self.output_buffer.len()
             && len != 0
         {
-            maybe_await!(write.call(
-                &[
-                    Value::from(self.output_buffer.clone()),
-                    Value::from(0usize),
-                    Value::from(len)
-                ],
-                &mut ContBarrier::new()
-            ))?;
+            maybe_await!(write.call(&[
+                Value::from(self.output_buffer.clone()),
+                Value::from(0usize),
+                Value::from(len)
+            ]))?;
             self.output_buffer.clear();
         }
 
@@ -1921,14 +1910,11 @@ impl CustomTextualPortData {
                     (self.chars_read, self.input_buffer.len() - self.chars_read)
                 }
             };
-            let read: usize = maybe_await!(read.call(
-                &[
-                    Value::from(self.input_buffer.clone()),
-                    Value::from(start),
-                    Value::from(count)
-                ],
-                &mut ContBarrier::new()
-            ))?
+            let read: usize = maybe_await!(read.call(&[
+                Value::from(self.input_buffer.clone()),
+                Value::from(start),
+                Value::from(count)
+            ]))?
             .expect1()?;
 
             if read == 0 {
@@ -1983,11 +1969,11 @@ impl CustomTextualPortData {
             && let Some(set_pos) = port_info.set_pos.as_ref()
             && self.chars_read > 0
         {
-            let curr_pos: u64 = maybe_await!(get_pos.call(&[], &mut ContBarrier::new()))?
+            let curr_pos: u64 = maybe_await!(get_pos.call(&[]))?
                 .expect1()
                 .map_err(|err: Exception| err.add_condition(IoWriteError::new()))?;
             let seek_to = curr_pos - (self.chars_read as u64 - self.input_pos as u64);
-            maybe_await!(set_pos.call(&[Value::from(seek_to)], &mut ContBarrier::new()))?;
+            maybe_await!(set_pos.call(&[Value::from(seek_to)]))?;
             self.chars_read = 0;
             self.input_pos = 0;
         }
@@ -1998,14 +1984,11 @@ impl CustomTextualPortData {
                     {
                         self.output_buffer.0.chars.write()[0] = chr;
                     }
-                    maybe_await!(write.call(
-                        &[
-                            Value::from(self.output_buffer.clone()),
-                            Value::from(0usize),
-                            Value::from(1usize)
-                        ],
-                        &mut ContBarrier::new()
-                    ))?;
+                    maybe_await!(write.call(&[
+                        Value::from(self.output_buffer.clone()),
+                        Value::from(0usize),
+                        Value::from(1usize)
+                    ]))?;
                 }
             }
             BufferMode::Line => {
@@ -2022,14 +2005,11 @@ impl CustomTextualPortData {
                         }
                     }
                     let len = self.output_buffer.len();
-                    maybe_await!(write.call(
-                        &[
-                            Value::from(self.output_buffer.clone()),
-                            Value::from(0usize),
-                            Value::from(len)
-                        ],
-                        &mut ContBarrier::new()
-                    ))?;
+                    maybe_await!(write.call(&[
+                        Value::from(self.output_buffer.clone()),
+                        Value::from(0usize),
+                        Value::from(len)
+                    ]))?;
                     self.output_buffer.clear();
                 }
             }
@@ -2037,14 +2017,11 @@ impl CustomTextualPortData {
                 for chr in s.chars() {
                     let len = self.output_buffer.len();
                     if len >= BUFFER_SIZE {
-                        maybe_await!(write.call(
-                            &[
-                                Value::from(self.output_buffer.clone()),
-                                Value::from(0usize),
-                                Value::from(len)
-                            ],
-                            &mut ContBarrier::new()
-                        ))?;
+                        maybe_await!(write.call(&[
+                            Value::from(self.output_buffer.clone()),
+                            Value::from(0usize),
+                            Value::from(len)
+                        ]))?;
                         self.output_buffer.clear();
                     }
                     self.output_buffer.0.chars.write().push(chr);
@@ -2065,14 +2042,11 @@ impl CustomTextualPortData {
             return Err(Exception::io_error("port is closed"));
         }
 
-        maybe_await!(write.call(
-            &[
-                Value::from(self.output_buffer.clone()),
-                Value::from(0usize),
-                Value::from(self.output_buffer.len()),
-            ],
-            &mut ContBarrier::new()
-        ))?;
+        maybe_await!(write.call(&[
+            Value::from(self.output_buffer.clone()),
+            Value::from(0usize),
+            Value::from(self.output_buffer.len()),
+        ]))?;
         self.output_buffer.clear();
 
         Ok(())
@@ -2088,7 +2062,7 @@ impl CustomTextualPortData {
             return Err(Exception::io_error("port is closed"));
         }
 
-        maybe_await!(get_pos.call(&[], &mut ContBarrier::new()))?.expect1()
+        maybe_await!(get_pos.call(&[]))?.expect1()
     }
 
     #[maybe_async]
@@ -2105,21 +2079,18 @@ impl CustomTextualPortData {
 
         // Reset the buffers
         if let Some(write) = port_info.write.as_ref() {
-            maybe_await!(write.call(
-                &[
-                    Value::from(self.output_buffer.clone()),
-                    Value::from(0usize),
-                    Value::from(self.output_buffer.len()),
-                ],
-                &mut ContBarrier::new()
-            ))?;
+            maybe_await!(write.call(&[
+                Value::from(self.output_buffer.clone()),
+                Value::from(0usize),
+                Value::from(self.output_buffer.len()),
+            ]))?;
             self.output_buffer.clear();
         }
 
         self.chars_read = 0;
         self.input_pos = 0;
 
-        maybe_await!(set_pos.call(&[Value::from(pos)], &mut ContBarrier::new()))?;
+        maybe_await!(set_pos.call(&[Value::from(pos)]))?;
 
         Ok(())
     }
@@ -2136,7 +2107,7 @@ impl CustomTextualPortData {
         maybe_await!(self.flush(port_info))?;
 
         if let Some(close) = port_info.close.as_ref() {
-            maybe_await!(close.call(&[], &mut ContBarrier::new()))?;
+            maybe_await!(close.call(&[]))?;
         }
 
         Ok(())
@@ -3802,7 +3773,7 @@ pub fn current_input_port(
     _rest_args: &[Value],
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
-    let current_input_port = barrier.current_input_port();
+    let current_input_port = dyn_current_input_port();
     Ok(barrier.call_cont(vec![Value::from(current_input_port)]))
 }
 
@@ -3813,7 +3784,7 @@ pub fn current_output_port(
     _rest_args: &[Value],
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
-    let current_input_port = barrier.current_output_port();
+    let current_input_port = dyn_current_output_port();
     Ok(barrier.call_cont(vec![Value::from(current_input_port)]))
 }
 
@@ -4580,14 +4551,14 @@ pub fn with_input_from_file(
         Some(Transcoder::native()),
     );
 
-    barrier.push_dyn_stack(DynStackElem::CurrentInputPort(port.clone()));
+    push_dyn_stack(DynStackElem::CurrentInputPort(port.clone()));
 
     let (req_args, var) = barrier.cont_formals();
 
     // Stack (bottom to top): the outer continuation, pop_dyn_stack (removes the
     // current-input-port entry), then close_port_and_call_k (closes the port).
     // The thunk returns to the top.
-    barrier.push_cont([], ContPtr::Continuation(pop_dyn_stack), req_args, var);
+    barrier.push_cont([], ContPtr::Continuation(pop_dyn_stack_cont), req_args, var);
 
     barrier.push_cont(
         [Value::from(port.clone())],
@@ -4643,11 +4614,11 @@ pub fn with_output_to_file(
         Some(Transcoder::native()),
     );
 
-    barrier.push_dyn_stack(DynStackElem::CurrentOutputPort(port.clone()));
+    push_dyn_stack(DynStackElem::CurrentOutputPort(port.clone()));
 
     let (req_args, var) = barrier.cont_formals();
 
-    barrier.push_cont([], ContPtr::Continuation(pop_dyn_stack), req_args, var);
+    barrier.push_cont([], ContPtr::Continuation(pop_dyn_stack_cont), req_args, var);
 
     barrier.push_cont(
         [Value::from(port.clone())],
@@ -4692,7 +4663,7 @@ pub fn read_char(
     barrier: &mut ContBarrier<'_>,
 ) -> Result<Application, Exception> {
     let input_port = match rest_args {
-        [] => barrier.current_input_port(),
+        [] => dyn_current_input_port(),
         [input_port] => input_port.clone().try_into()?,
         _ => {
             return Ok(raise(
@@ -4723,7 +4694,7 @@ pub fn peek_char(
     barrier: &mut ContBarrier<'_>,
 ) -> Result<Application, Exception> {
     let input_port = match rest_args {
-        [] => barrier.current_input_port(),
+        [] => dyn_current_input_port(),
         [input_port] => input_port.clone().try_into()?,
         _ => {
             return Ok(raise(
@@ -4754,7 +4725,7 @@ pub fn read(
     barrier: &mut ContBarrier<'_>,
 ) -> Result<Application, Exception> {
     let input_port = match rest_args {
-        [] => barrier.current_input_port(),
+        [] => dyn_current_input_port(),
         [input_port] => input_port.clone().try_into()?,
         _ => {
             return Ok(raise(
@@ -4787,7 +4758,7 @@ pub fn write_char(
     let [chr] = args else { unreachable!() };
     let chr: char = chr.clone().try_into()?;
     let output_port = match rest_args {
-        [] => barrier.current_output_port(),
+        [] => dyn_current_output_port(),
         [output_port] => output_port.clone().try_into()?,
         _ => {
             return Ok(raise(
@@ -4814,7 +4785,7 @@ pub fn newline(
     barrier: &mut ContBarrier<'_>,
 ) -> Result<Application, Exception> {
     let output_port = match rest_args {
-        [] => barrier.current_output_port(),
+        [] => dyn_current_output_port(),
         [output_port] => output_port.clone().try_into()?,
         _ => {
             return Ok(raise(
@@ -4843,7 +4814,7 @@ pub fn display(
     let [obj] = args else { unreachable!() };
     let obj = format!("{obj}");
     let output_port = match rest_args {
-        [] => barrier.current_output_port(),
+        [] => dyn_current_output_port(),
         [output_port] => output_port.clone().try_into()?,
         _ => {
             return Ok(raise(
@@ -4872,7 +4843,7 @@ pub fn write(
     let [obj] = args else { unreachable!() };
     let obj = format!("{obj:?}");
     let output_port = match rest_args {
-        [] => barrier.current_output_port(),
+        [] => dyn_current_output_port(),
         [output_port] => output_port.clone().try_into()?,
         _ => {
             return Ok(raise(

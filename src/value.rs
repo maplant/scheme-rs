@@ -599,7 +599,7 @@ unsafe impl Trace for Value {
 }
 
 /// A Cell is a value that is mutable, essentially a variable.
-#[derive(Clone, Trace)]
+#[derive(Clone, Debug, Trace)]
 pub struct Cell(pub(crate) Gc<RwLock<Value>>);
 
 impl Cell {
@@ -622,6 +622,15 @@ impl From<&Value> for Option<Cell> {
             UnpackedValue::Cell(cell) => Some(cell),
             _ => None,
         }
+    }
+}
+
+// Identity, not value equality: used to compare dyn-stack entries by
+// position/binding identity (e.g. in escape_procedure/unwind), not by the
+// value currently stored in the cell.
+impl PartialEq for Cell {
+    fn eq(&self, other: &Self) -> bool {
+        Gc::ptr_eq(&self.0, &other.0)
     }
 }
 
@@ -1195,7 +1204,80 @@ impl From<bool> for Value {
 impl_try_from_value_for!(char, Character, "char");
 impl_try_from_value_for!(Number, Number, "number");
 impl_try_from_value_for!(Symbol, Symbol, "symbol");
-impl_try_from_value_for!(Procedure, Procedure, "procedure");
+// Manual impls for Procedure: parameters are applicable, so
+// TryFrom extracts the companion procedure from Embedded<Parameter>.
+impl From<Procedure> for UnpackedValue {
+    fn from(v: Procedure) -> Self {
+        Self::Procedure(v)
+    }
+}
+
+impl From<Procedure> for Value {
+    fn from(v: Procedure) -> Self {
+        UnpackedValue::from(v).into_value()
+    }
+}
+
+impl From<UnpackedValue> for Option<Procedure> {
+    fn from(v: UnpackedValue) -> Self {
+        match v {
+            UnpackedValue::Procedure(v) => Some(v),
+            UnpackedValue::Record(ref record) => {
+                use crate::parameters::Parameter;
+                record.cast::<Parameter>().map(|p| p.companion().clone())
+            }
+            _ => None,
+        }
+    }
+}
+
+impl From<Value> for Option<Procedure> {
+    fn from(v: Value) -> Self {
+        v.unpack().into()
+    }
+}
+
+impl From<&'_ Value> for Option<Procedure> {
+    fn from(v: &Value) -> Self {
+        v.clone().unpack().into()
+    }
+}
+
+impl TryFrom<UnpackedValue> for Procedure {
+    type Error = Exception;
+
+    fn try_from(v: UnpackedValue) -> Result<Self, Self::Error> {
+        match v {
+            UnpackedValue::Procedure(v) => Ok(v),
+            UnpackedValue::Cell(cell) => cell.0.read().clone().try_into(),
+            UnpackedValue::Record(ref record) => {
+                use crate::parameters::Parameter;
+                if let Some(param) = record.cast::<Parameter>() {
+                    Ok(param.companion().clone())
+                } else {
+                    Err(Exception::type_error("procedure", &v.type_name()))
+                }
+            }
+            e => Err(Exception::type_error("procedure", &e.type_name())),
+        }
+    }
+}
+
+impl TryFrom<Value> for Procedure {
+    type Error = Exception;
+
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        v.unpack().try_into()
+    }
+}
+
+impl TryFrom<&Value> for Procedure {
+    type Error = Exception;
+
+    fn try_from(v: &Value) -> Result<Self, Self::Error> {
+        v.clone().unpack().try_into()
+    }
+}
 impl_try_from_value_for!(Pair, Pair, "pair");
 impl_try_from_value_for!(Record, Record, "record");
 impl_try_from_value_for!(Arc<RecordTypeDescriptor>, RecordTypeDescriptor, "rt");
@@ -1494,5 +1576,8 @@ pub fn pair_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
 
 #[bridge(name = "procedure?", lib = "(rnrs base builtins (6))")]
 pub fn procedure_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(arg.type_of() == ValueType::Procedure)])
+    Ok(vec![Value::from(
+        arg.type_of() == ValueType::Procedure
+            || arg.is_a::<crate::records::Embedded<crate::parameters::Parameter>>(),
+    )])
 }
