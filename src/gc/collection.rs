@@ -736,7 +736,11 @@ impl Collector {
     }
 
     /// Collector-thread-only read of the FREED header bit, cross-checked
-    /// against the debug shadow set.
+    /// against the debug shadow set. A freed pending-cycle member is
+    /// reachable: scan_black (inc-event drain path) can recolor a parked
+    /// Orange member Black through a live external ref, and a later
+    /// dec-to-zero then frees it in the drain. Impractical to force in a
+    /// deterministic test; the debug shadow asserts cover it.
     unsafe fn member_freed(&self, n: &OpaqueGcPtr) -> bool {
         let freed = unsafe { n.freed() };
         #[cfg(debug_assertions)]

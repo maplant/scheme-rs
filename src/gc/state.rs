@@ -136,6 +136,8 @@ mod test {
             (RC_MASK | COLOR_MASK | INC_EVENT | ATTN_CLAIM | ATTN_DEAD) & FREED,
             0
         );
+        // Bit 55 is reserved (arena experiment); FREED must stay off it.
+        assert_eq!(FREED & (1 << 55), 0);
 
         let s = GcState::new_initial();
         assert!(!s.freed(), "fresh state words must read as not freed");
