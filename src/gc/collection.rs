@@ -223,12 +223,39 @@ fn alloc_tick() {
         let n = t.get() + 1;
         if n >= LOCAL_ALLOCS_PER_SIGNAL {
             t.set(0);
+            // Liveness for the block below: flush_events() must run before
+            // blocking — this thread's buffered dec events have to reach the
+            // collector or the frees needed to drop back below the
+            // watermark can never happen.
             flush_events();
             TOTAL_ALLOCS.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+            let outstanding = || {
+                TOTAL_ALLOCS
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    .saturating_sub(TOTAL_FREES.load(std::sync::atomic::Ordering::Relaxed))
+            };
             let mut state = COLLECTOR_STATE.lock();
             state.pending_allocs += n;
             if should_collect(state.pending_allocs, state.live_at_epoch_end) {
                 COLLECTION_START_SIGNAL.notify_one();
+            }
+            // Never block without a collector (init_gc not called: frees can
+            // never come) or on the collector thread itself (finalizers may
+            // allocate; waiting on our own done signal would deadlock).
+            if should_block(outstanding(), state.live_at_epoch_end)
+                && COLLECTOR_TASK.get().is_some()
+                && !is_collector_thread()
+            {
+                while !may_resume(outstanding(), state.live_at_epoch_end) {
+                    // pending_allocs may be below the epoch trigger while we
+                    // wait; force an epoch so the collector always makes
+                    // progress. force_collection survives an in-flight epoch
+                    // (only await_epoch consumes it), so at most one more
+                    // epoch boundary passes before frees land.
+                    state.force_collection = true;
+                    COLLECTION_START_SIGNAL.notify_one();
+                    COLLECTION_DONE_SIGNAL.wait(&mut state);
+                }
             }
         } else {
             t.set(n);
@@ -241,6 +268,21 @@ fn alloc_tick() {
 /// prompt epochs (all frees are collector-side; cadence is free latency).
 fn should_collect(pending: usize, live_at_epoch_end: usize) -> bool {
     pending >= MIN_ALLOCS_TO_COLLECT.max(live_at_epoch_end / 4)
+}
+
+/// Outstanding-object multiples of the last-epoch live heap at which
+/// allocating threads stall (HARD, 4x) and resume (RESUME, 2x). Floored so
+/// small programs never stall. Backstop against unbounded churn: N mutators
+/// can outrun the single collector arbitrarily otherwise (observed ~50GB
+/// transients). Engages only under pathological allocation churn.
+const BLOCK_FLOOR_OBJS: usize = 1 << 20;
+
+fn should_block(outstanding: usize, live_at_epoch_end: usize) -> bool {
+    outstanding >= BLOCK_FLOOR_OBJS.max(live_at_epoch_end.saturating_mul(4))
+}
+
+fn may_resume(outstanding: usize, live_at_epoch_end: usize) -> bool {
+    outstanding < BLOCK_FLOOR_OBJS.max(live_at_epoch_end.saturating_mul(2))
 }
 
 struct CollectorState {
@@ -274,7 +316,14 @@ static COLLECTOR_STATE: Mutex<CollectorState> = Mutex::new(CollectorState::new()
 static COLLECTION_START_SIGNAL: Condvar = Condvar::new();
 static COLLECTION_DONE_SIGNAL: Condvar = Condvar::new();
 static COLLECTOR_TASK: OnceLock<JoinHandle<()>> = OnceLock::new();
+static COLLECTOR_THREAD: OnceLock<std::thread::ThreadId> = OnceLock::new();
 const MIN_ALLOCS_TO_COLLECT: usize = 10_000;
+
+/// Finalizers run on the collector thread and may allocate; blocking there
+/// would deadlock the collector on its own done signal.
+fn is_collector_thread() -> bool {
+    COLLECTOR_THREAD.get() == Some(&std::thread::current().id())
+}
 
 /// 0 terminates the attention-list chain; 1 means not enqueued.
 pub(crate) const NOT_IN_LIST: usize = 1;
@@ -468,6 +517,7 @@ impl Collector {
 
     fn run(mut self) -> JoinHandle<()> {
         std::thread::spawn(move || {
+            let _ = COLLECTOR_THREAD.set(std::thread::current().id());
             let this = &mut self;
             loop {
                 if let Err(panic) = std::panic::catch_unwind(
@@ -1069,6 +1119,58 @@ mod test {
         assert!(!should_collect(MIN_ALLOCS_TO_COLLECT, 1_000_000));
         assert!(!should_collect(249_999, 1_000_000));
         assert!(should_collect(250_000, 1_000_000));
+    }
+
+    #[test]
+    fn backpressure_floor_honored() {
+        assert!(!should_block(BLOCK_FLOOR_OBJS - 1, 0));
+        assert!(should_block(BLOCK_FLOOR_OBJS, 0));
+        // live*4 below the floor: the floor still applies.
+        assert!(!should_block(BLOCK_FLOOR_OBJS - 1, BLOCK_FLOOR_OBJS / 8));
+        assert!(should_block(BLOCK_FLOOR_OBJS, BLOCK_FLOOR_OBJS / 8));
+        assert!(may_resume(BLOCK_FLOOR_OBJS - 1, 0));
+        assert!(!may_resume(BLOCK_FLOOR_OBJS, 0));
+    }
+
+    #[test]
+    fn backpressure_proportional_with_hysteresis() {
+        let live = 1_000_000;
+        assert!(!should_block(4 * live - 1, live));
+        assert!(should_block(4 * live, live));
+        assert!(may_resume(2 * live - 1, live));
+        assert!(!may_resume(2 * live, live));
+        // Hysteresis: anything that blocks may not immediately resume.
+        assert!(!may_resume(4 * live, live));
+    }
+
+    #[test]
+    fn backpressure_watermarks_do_not_overflow() {
+        assert!(should_block(usize::MAX, usize::MAX));
+        assert!(!may_resume(usize::MAX, usize::MAX));
+    }
+
+    /// Pure churn must not outrun the collector: outstanding objects stay
+    /// pinned near BLOCK_FLOOR_OBJS (live stays ~0, so the floor governs the
+    /// watermark). The analytic bound is floor + per-thread slop; 2x gives
+    /// headroom. Without backpressure the peak grows with the mutator/
+    /// collector speed ratio instead (observed tens of millions).
+    #[test]
+    fn churn_outstanding_stays_bounded() {
+        let _guard = GC_TEST_SERIAL.lock();
+        init_gc();
+
+        let mut peak = 0;
+        for i in 0..12_000_000u64 {
+            std::hint::black_box(Gc::new(i));
+            let out = TOTAL_ALLOCS
+                .load(std::sync::atomic::Ordering::Relaxed)
+                .saturating_sub(TOTAL_FREES.load(std::sync::atomic::Ordering::Relaxed));
+            peak = peak.max(out);
+        }
+        assert!(
+            peak < 2 * BLOCK_FLOOR_OBJS,
+            "outstanding ballooned to {peak} under churn"
+        );
     }
 
     #[test]
