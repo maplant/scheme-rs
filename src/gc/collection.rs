@@ -227,13 +227,20 @@ fn alloc_tick() {
             TOTAL_ALLOCS.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
             let mut state = COLLECTOR_STATE.lock();
             state.pending_allocs += n;
-            if state.pending_allocs >= MIN_ALLOCS_TO_COLLECT {
+            if should_collect(state.pending_allocs, state.live_at_epoch_end) {
                 COLLECTION_START_SIGNAL.notify_one();
             }
         } else {
             t.set(n);
         }
     });
+}
+
+/// Epoch when allocations since the last epoch exceed a fraction of the
+/// live heap — proportional cadence — floored so small heaps still get
+/// prompt epochs (all frees are collector-side; cadence is free latency).
+fn should_collect(pending: usize, live_at_epoch_end: usize) -> bool {
+    pending >= MIN_ALLOCS_TO_COLLECT.max(live_at_epoch_end / 4)
 }
 
 struct CollectorState {
@@ -243,6 +250,8 @@ struct CollectorState {
     /// True while an epoch is running; an epoch already past its drain phase
     /// cannot satisfy a sync caller.
     collecting: bool,
+    /// TOTAL_ALLOCS - TOTAL_FREES sampled as the last epoch ended.
+    live_at_epoch_end: usize,
 }
 
 impl CollectorState {
@@ -252,11 +261,12 @@ impl CollectorState {
             force_collection: false,
             pending_allocs: 0,
             collecting: false,
+            live_at_epoch_end: 0,
         }
     }
 
     fn should_not_collect(&mut self) -> bool {
-        self.pending_allocs < MIN_ALLOCS_TO_COLLECT && !self.force_collection
+        !should_collect(self.pending_allocs, self.live_at_epoch_end) && !self.force_collection
     }
 }
 
@@ -489,6 +499,16 @@ impl Collector {
 
         self.flush_quarantine();
 
+        // Live-heap sample, part 1: allocations tallied before the drain.
+        // Everything counted here is either freed by this epoch (its dec
+        // event was flushed before the drain) or genuinely live, so
+        // allocs_at_drain - TOTAL_FREES at epoch end estimates the live heap
+        // without counting garbage allocated mid-epoch. Sampling both sides
+        // at epoch end instead would inflate the estimate by a full epoch of
+        // undrained garbage, and under saturating churn that feedback ratchets
+        // the trigger unboundedly.
+        let allocs_at_drain = TOTAL_ALLOCS.load(std::sync::atomic::Ordering::Relaxed);
+
         // Drain before free_cycles: ordering is load-bearing for ATTN_DEAD deferral.
         self.drain_attention_list();
 
@@ -525,6 +545,11 @@ impl Collector {
         self.freed_objs.clear();
 
         let mut state = COLLECTOR_STATE.lock();
+        // Live-heap sample, part 2 (see allocs_at_drain above). Saturating:
+        // an object can be freed before its allocation is tallied (alloc
+        // tallies batch per 1024, dec events flush per 64).
+        state.live_at_epoch_end =
+            allocs_at_drain.saturating_sub(TOTAL_FREES.load(std::sync::atomic::Ordering::Relaxed));
         state.epoch += 1;
         state.collecting = false;
         COLLECTION_DONE_SIGNAL.notify_all();
@@ -1029,6 +1054,22 @@ mod test {
 
     // Tests that force epochs must not interleave.
     static GC_TEST_SERIAL: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn epoch_trigger_floor_honored() {
+        assert!(!should_collect(MIN_ALLOCS_TO_COLLECT - 1, 0));
+        assert!(should_collect(MIN_ALLOCS_TO_COLLECT, 0));
+        // live/4 below the floor: the floor still applies.
+        assert!(!should_collect(MIN_ALLOCS_TO_COLLECT - 1, 20_000));
+        assert!(should_collect(MIN_ALLOCS_TO_COLLECT, 20_000));
+    }
+
+    #[test]
+    fn epoch_trigger_proportional_to_live_heap() {
+        assert!(!should_collect(MIN_ALLOCS_TO_COLLECT, 1_000_000));
+        assert!(!should_collect(249_999, 1_000_000));
+        assert!(should_collect(250_000, 1_000_000));
+    }
 
     #[test]
     fn cycles() {
