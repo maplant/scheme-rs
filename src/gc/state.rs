@@ -9,6 +9,10 @@ pub const INC_EVENT: usize = 1 << 52;
 pub const ATTN_CLAIM: usize = 1 << 53;
 /// Finalized; dealloc deferred until the attention-list drain removes the entry.
 pub const ATTN_DEAD: usize = 1 << 54;
+// Bit 55 is reserved (arena experiment on another branch).
+/// Freed by the collector; header remains readable until its quarantined
+/// dealloc. Written and read on the collector thread only.
+pub const FREED: usize = 1 << 56;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -72,6 +76,10 @@ impl GcState {
     pub fn attn_dead(self) -> bool {
         self.0 & ATTN_DEAD != 0
     }
+
+    pub fn freed(self) -> bool {
+        self.0 & FREED != 0
+    }
 }
 
 #[cfg(test)]
@@ -120,6 +128,26 @@ mod test {
     fn flag_masks_are_disjoint_from_rc_and_color() {
         assert_eq!(RC_MASK & COLOR_MASK, 0);
         assert_eq!((RC_MASK | COLOR_MASK) & INC_EVENT, 0);
+    }
+
+    #[test]
+    fn freed_bit_disjoint_and_roundtrip() {
+        assert_eq!(
+            (RC_MASK | COLOR_MASK | INC_EVENT | ATTN_CLAIM | ATTN_DEAD) & FREED,
+            0
+        );
+
+        let s = GcState::new_initial();
+        assert!(!s.freed(), "fresh state words must read as not freed");
+
+        let freed = GcState(s.0 | FREED).with_color(Color::Orange);
+        assert!(freed.freed());
+        assert_eq!(freed.rc(), 1);
+        assert_eq!(freed.color(), Color::Orange);
+
+        let dead = GcState(freed.0 | ATTN_DEAD);
+        assert!(dead.freed());
+        assert!(dead.attn_dead());
     }
 
     #[test]

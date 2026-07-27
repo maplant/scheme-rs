@@ -16,7 +16,7 @@ use scheme_rs_macros::{maybe_async, maybe_await};
 
 use crate::{
     exceptions::Exception,
-    gc::state::{ATTN_CLAIM, ATTN_DEAD, Color, GcState, INC_EVENT},
+    gc::state::{ATTN_CLAIM, ATTN_DEAD, Color, FREED, GcState, INC_EVENT},
     registry::bridge,
     value::Value,
 };
@@ -147,6 +147,11 @@ impl HeapObject<()> {
 
     unsafe fn color(&self) -> Color {
         unsafe { GcState(self.state().load(std::sync::atomic::Ordering::Acquire)).color() }
+    }
+
+    /// FREED is set and read on the collector thread only, so Relaxed suffices.
+    unsafe fn freed(&self) -> bool {
+        unsafe { GcState(self.state().load(std::sync::atomic::Ordering::Relaxed)).freed() }
     }
 
     unsafe fn set_color(&self, color: Color) {
@@ -421,6 +426,8 @@ pub fn collect_garbage_bridge() -> Result<Vec<Value>, Exception> {
 pub struct Collector {
     roots: HashSet<OpaqueGcPtr>,
     cycles: Vec<Vec<OpaqueGcPtr>>,
+    /// Debug shadow of the FREED header bit; release builds use the bit alone.
+    #[cfg(debug_assertions)]
     freed_objs: HashSet<OpaqueGcPtr>,
     /// Defers deallocs one epoch to avoid cacheline ping-pong with mutators.
     dealloc_quarantine: Vec<(*mut u8, Layout)>,
@@ -433,6 +440,7 @@ impl Collector {
         Self {
             roots: HashSet::default(),
             cycles: Vec::new(),
+            #[cfg(debug_assertions)]
             freed_objs: HashSet::default(),
             dealloc_quarantine: Vec::new(),
         }
@@ -480,18 +488,23 @@ impl Collector {
         // Drain before free_cycles: ordering is load-bearing for ATTN_DEAD deferral.
         self.drain_attention_list();
 
-        // Purge freed members before dereferencing; clear per-epoch to avoid stale-address collisions.
-        self.cycles.retain_mut(|cycle| {
+        // Purge freed members before free_cycles dereferences them. Reading
+        // the FREED bit derefs the header, which is safe here: every freed
+        // pending-cycle member was freed during this epoch's drain, and its
+        // dealloc is quarantined until the next epoch's flush.
+        let mut cycles = std::mem::take(&mut self.cycles);
+        cycles.retain_mut(|cycle| {
             cycle.retain(|obj| {
-                let freed = self.freed_objs.contains(obj);
+                let freed = unsafe { self.member_freed(obj) };
+                #[cfg(debug_assertions)]
                 if freed {
-                    #[cfg(debug_assertions)]
                     RETAIN_PURGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
                 !freed
             });
             !cycle.is_empty()
         });
+        self.cycles = cycles;
 
         unsafe {
             self.free_cycles();
@@ -501,9 +514,10 @@ impl Collector {
             self.process_cycles();
         }
 
-        // Frees recorded during free_cycles target objects that cannot be in
-        // any pending cycle; drop them now so recycled addresses never purge
-        // a fresh parking in a later epoch.
+        // The shadow set must not outlive the epoch: a recycled address would
+        // collide with a fresh parking. The FREED bit needs no clear —
+        // reallocation writes a fresh state word.
+        #[cfg(debug_assertions)]
         self.freed_objs.clear();
 
         let mut state = COLLECTOR_STATE.lock();
@@ -721,14 +735,31 @@ impl Collector {
         }
     }
 
+    /// Collector-thread-only read of the FREED header bit, cross-checked
+    /// against the debug shadow set.
+    unsafe fn member_freed(&self, n: &OpaqueGcPtr) -> bool {
+        let freed = unsafe { n.freed() };
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(
+            freed,
+            self.freed_objs.contains(n),
+            "FREED bit disagrees with shadow set: {n:?}"
+        );
+        freed
+    }
+
     unsafe fn free_cycles(&mut self) {
         unsafe {
             for c in std::mem::take(&mut self.cycles).into_iter().rev() {
-                // An earlier cycle in this batch may have freed a shared member; check without deref.
-                if c.iter().any(|n| self.freed_objs.contains(n)) {
+                // An earlier cycle in this batch may have freed a shared
+                // member; its header stays readable (dealloc quarantined).
+                if c.iter().any(|n| self.member_freed(n)) {
                     #[cfg(debug_assertions)]
                     INLOOP_GUARD_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    for n in c.iter().filter(|n| !self.freed_objs.contains(n)) {
+                    for n in &c {
+                        if self.member_freed(n) {
+                            continue;
+                        }
                         if n.shared_rc() == 0 {
                             refurbish_zero(*n);
                         } else {
@@ -799,8 +830,9 @@ impl Collector {
 
             self.roots.remove(&s);
 
-            // Record the free so the next epoch purges any entry for this
-            // object from the pending cycle list before dereferencing it.
+            // FREED lets this epoch's later phases skip the object; the
+            // shadow set validates the bit in debug builds.
+            #[cfg(debug_assertions)]
             self.freed_objs.insert(s);
 
             // Finalize the object:
@@ -815,8 +847,13 @@ impl Collector {
             if word.attn_claimed() {
                 (*s.header.as_ref().get())
                     .state
-                    .fetch_or(ATTN_DEAD, std::sync::atomic::Ordering::AcqRel);
+                    .fetch_or(ATTN_DEAD | FREED, std::sync::atomic::Ordering::AcqRel);
             } else {
+                // RMW, not a store: a racing claim RMW must not be clobbered.
+                // Relaxed: FREED is set and read on this thread only.
+                (*s.header.as_ref().get())
+                    .state
+                    .fetch_or(FREED, std::sync::atomic::Ordering::Relaxed);
                 self.dealloc_quarantine
                     .push((s.header.as_ptr() as *mut u8, s.layout()));
                 TOTAL_FREES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
