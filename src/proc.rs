@@ -713,8 +713,8 @@ type Param<'a> = &'a mut dyn Any;
 pub struct ContBarrier<'a> {
     /// The id of the barrier. Checked when calling an escape procedure
     id: usize,
-    /// The active dynamic stack
-    dyn_stack: Vec<DynStackElem>,
+    /// The active dynamic state
+    state: DynState,
     /// The current live continuations for the program. Effectively the call
     /// stack. Includes active [continuation marks](https://srfi.schemers.org/srfi-157/srfi-157.html).
     cont_stack: ContStack,
@@ -728,7 +728,7 @@ impl<'a> ContBarrier<'a> {
 
         let mut this = Self {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
-            dyn_stack: Vec::new(),
+            state: DynState::default(),
             cont_stack: ContStack::default(),
             params: HashMap::new(),
         };
@@ -742,7 +742,7 @@ impl<'a> ContBarrier<'a> {
     pub fn save(&self) -> SavedDynamicState {
         SavedDynamicState {
             id: self.id,
-            dyn_stack: self.dyn_stack.clone(),
+            state: self.state.clone(),
             cont_stack: self.cont_stack.clone(),
         }
     }
@@ -826,14 +826,19 @@ impl<'a> ContBarrier<'a> {
     // will ever get very large.
 
     pub fn current_exception_handler(&self) -> Option<Procedure> {
-        self.dyn_stack.iter().rev().find_map(|elem| match elem {
-            DynStackElem::ExceptionHandler(proc) => Some(proc.clone()),
-            _ => None,
-        })
+        self.state
+            .dyn_stack
+            .iter()
+            .rev()
+            .find_map(|elem| match elem {
+                DynStackElem::ExceptionHandler(proc) => Some(proc.clone()),
+                _ => None,
+            })
     }
 
     pub fn current_input_port(&self) -> Port {
-        self.dyn_stack
+        self.state
+            .dyn_stack
             .iter()
             .rev()
             .find_map(|elem| match elem {
@@ -854,7 +859,8 @@ impl<'a> ContBarrier<'a> {
     }
 
     pub fn current_output_port(&self) -> Port {
-        self.dyn_stack
+        self.state
+            .dyn_stack
             .iter()
             .rev()
             .find_map(|elem| match elem {
@@ -877,23 +883,23 @@ impl<'a> ContBarrier<'a> {
     }
 
     pub(crate) fn push_dyn_stack(&mut self, elem: DynStackElem) {
-        self.dyn_stack.push(elem);
+        self.state.dyn_stack.push(elem);
     }
 
     pub(crate) fn pop_dyn_stack(&mut self) -> Option<DynStackElem> {
-        self.dyn_stack.pop()
+        self.state.dyn_stack.pop()
     }
 
     pub(crate) fn dyn_stack_last(&self) -> Option<&DynStackElem> {
-        self.dyn_stack.last()
+        self.state.dyn_stack.last()
     }
 
     pub(crate) fn dyn_stack_len(&self) -> usize {
-        self.dyn_stack.len()
+        self.state.dyn_stack.len()
     }
 
     pub(crate) fn dyn_stack_is_empty(&self) -> bool {
-        self.dyn_stack.is_empty()
+        self.state.dyn_stack.is_empty()
     }
 
     /// Push a continuation onto the current call stack.
@@ -983,26 +989,46 @@ where
 #[derive(Clone, Trace)]
 pub struct SavedDynamicState {
     id: usize,
-    dyn_stack: Vec<DynStackElem>,
+    state: DynState,
     cont_stack: ContStack,
 }
 
 impl SavedDynamicState {
     pub(crate) fn dyn_stack_get(&self, idx: usize) -> Option<&DynStackElem> {
-        self.dyn_stack.get(idx)
+        self.state.dyn_stack.get(idx)
     }
 
     pub(crate) fn dyn_stack_len(&self) -> usize {
-        self.dyn_stack.len()
+        self.state.dyn_stack.len()
     }
 }
 
 impl From<SavedDynamicState> for ContBarrier<'_> {
     fn from(value: SavedDynamicState) -> Self {
         ContBarrier {
-            dyn_stack: value.dyn_stack,
+            state: value.state,
             cont_stack: value.cont_stack,
             ..Default::default()
+        }
+    }
+}
+
+#[derive(Clone, Default, Trace)]
+pub(crate) struct DynState {
+    dyn_stack: Vec<DynStackElem>,
+}
+
+impl DynState {
+    /// Ports cross a spawn boundary; winders, handlers, and prompts do not.
+    #[allow(dead_code)]
+    fn spawn_snapshot(&self) -> DynState {
+        DynState {
+            dyn_stack: self
+                .dyn_stack
+                .iter()
+                .filter(|elem| elem.crosses_spawn())
+                .cloned()
+                .collect(),
         }
     }
 }
@@ -1020,6 +1046,16 @@ pub(crate) enum DynStackElem {
     ExceptionHandler(Procedure),
     CurrentInputPort(Port),
     CurrentOutputPort(Port),
+}
+
+impl DynStackElem {
+    #[allow(dead_code)]
+    fn crosses_spawn(&self) -> bool {
+        matches!(
+            self,
+            DynStackElem::CurrentInputPort(_) | DynStackElem::CurrentOutputPort(_)
+        )
+    }
 }
 
 pub(crate) unsafe extern "C" fn pop_dyn_stack(
@@ -1611,8 +1647,11 @@ unsafe extern "C" fn unwind_to_prompt(
                         .unwrap();
                     let prompt_delimited_barrier = SavedDynamicState {
                         id: saved_barrier.id,
-                        dyn_stack: saved_barrier.as_ref().dyn_stack[barrier.dyn_stack_len() + 1..]
-                            .to_vec(),
+                        state: DynState {
+                            dyn_stack: saved_barrier.as_ref().state.dyn_stack
+                                [barrier.dyn_stack_len() + 1..]
+                                .to_vec(),
+                        },
                         cont_stack: delimited_cont,
                     };
 
