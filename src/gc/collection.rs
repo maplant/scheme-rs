@@ -282,7 +282,11 @@ fn should_block(outstanding: usize, live_at_epoch_end: usize) -> bool {
 }
 
 fn may_resume(outstanding: usize, live_at_epoch_end: usize) -> bool {
-    outstanding < BLOCK_FLOOR_OBJS.max(live_at_epoch_end.saturating_mul(2))
+    // Resume floor is half the block floor so hysteresis exists even when
+    // live*2 is below it. A fully stalled system still self-recovers:
+    // live_at_epoch_end converges to outstanding, and x < max(_, 2x) for
+    // any x >= 1 (x == 0 clears the floor).
+    outstanding < (BLOCK_FLOOR_OBJS / 2).max(live_at_epoch_end.saturating_mul(2))
 }
 
 struct CollectorState {
@@ -1128,8 +1132,11 @@ mod test {
         // live*4 below the floor: the floor still applies.
         assert!(!should_block(BLOCK_FLOOR_OBJS - 1, BLOCK_FLOOR_OBJS / 8));
         assert!(should_block(BLOCK_FLOOR_OBJS, BLOCK_FLOOR_OBJS / 8));
-        assert!(may_resume(BLOCK_FLOOR_OBJS - 1, 0));
-        assert!(!may_resume(BLOCK_FLOOR_OBJS, 0));
+        // Resume floor is half the block floor: a real hysteresis band
+        // exists even when live*2 is below it.
+        assert!(may_resume(BLOCK_FLOOR_OBJS / 2 - 1, 0));
+        assert!(!may_resume(BLOCK_FLOOR_OBJS / 2, 0));
+        assert!(!may_resume(BLOCK_FLOOR_OBJS - 1, 0));
     }
 
     #[test]
