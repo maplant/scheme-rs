@@ -393,6 +393,8 @@ impl Drop for EventBuffer {
     }
 }
 
+/// Claim-winning slow path: hit once per claim episode, not once per rc op.
+#[cold]
 pub(crate) fn buffer_event(header: *mut GcHeader) {
     let ok = EVENT_BUFFER.try_with(|buf| {
         let mut buf = buf.0.borrow_mut();

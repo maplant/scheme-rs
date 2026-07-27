@@ -271,6 +271,7 @@ where
 }
 
 impl<T: ?Sized> Clone for Gc<T> {
+    #[inline]
     fn clone(&self) -> Gc<T> {
         inc_rc(self.ptr);
         Self {
@@ -281,6 +282,7 @@ impl<T: ?Sized> Clone for Gc<T> {
 }
 
 impl<T: ?Sized> Drop for Gc<T> {
+    #[inline]
     fn drop(&mut self) {
         dec_rc(self.ptr);
     }
@@ -324,6 +326,7 @@ unsafe impl<T> arc_swap::RefCnt for Gc<T> {
 // free path (release needs rc==0; cycle freeing re-reads rcs in sigma_recheck,
 // where a mutator-held handle shows up as an external ref). An inc only adds
 // evidence of liveness, so it lagging behind its event flag is harmless.
+#[inline]
 fn inc_rc<T: ?Sized>(ptr: NonNull<GcInner<T>>) {
     unsafe {
         let header = ptr.as_ref().header.get();
@@ -336,6 +339,7 @@ fn inc_rc<T: ?Sized>(ptr: NonNull<GcInner<T>>) {
     }
 }
 
+#[inline]
 fn dec_rc<T: ?Sized>(ptr: NonNull<GcInner<T>>) {
     unsafe {
         let header = ptr.as_ref().header.get();
