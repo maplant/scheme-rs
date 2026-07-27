@@ -23,7 +23,7 @@ macro_rules! run_test {
             use std::path::Path;
 
             let test_path = Path::new(concat!("tests/", stringify!($name), ".scm"));
-            let rt = Runtime::new();
+            let rt = Runtime::handle();
             scheme_rs_macros::maybe_await!(rt.run_program(test_path))
                 .expect(&format!("Test {} failed", stringify!($name)));
         }

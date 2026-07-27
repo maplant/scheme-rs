@@ -31,7 +31,6 @@ use crate::{
     HashSet,
     ast::Definitions,
     exceptions::{Exception, Message as SchemeMessage, PrettyCondition, SyntaxViolation},
-    runtime::Runtime,
     syntax::{Span, lex::LexerError, parse::ParseSyntaxError},
 };
 
@@ -82,8 +81,7 @@ pub fn start(config: LspConfig) -> Result<(), LspError> {
         }
     };
 
-    let runtime = Runtime::new();
-    maybe_await!(event_loop(connection, &runtime, config))?;
+    maybe_await!(event_loop(connection, config))?;
 
     io_threads.join().map_err(|_| LspError::JoinIoThreads)?;
     lsp_log!("shutting down language server");
@@ -91,11 +89,7 @@ pub fn start(config: LspConfig) -> Result<(), LspError> {
 }
 
 #[maybe_async]
-fn event_loop(
-    connection: Connection,
-    runtime: &Runtime,
-    config: LspConfig,
-) -> Result<(), LspError> {
+fn event_loop(connection: Connection, config: LspConfig) -> Result<(), LspError> {
     let mut documents = HashMap::<Uri, String>::default();
 
     for msg in &connection.receiver {
@@ -104,13 +98,7 @@ fn event_loop(
                 if connection.handle_shutdown(&req)? {
                     return Ok(());
                 }
-                maybe_await!(handle_request(
-                    &connection,
-                    runtime,
-                    config,
-                    &documents,
-                    req
-                ))?;
+                maybe_await!(handle_request(&connection, config, &documents, req))?;
             }
             Message::Response(_) => {}
             Message::Notification(notification) => match notification.method.as_str() {
@@ -122,7 +110,6 @@ fn event_loop(
                     );
                     maybe_await!(publish_diagnostics(
                         &connection,
-                        runtime,
                         config,
                         params.text_document.uri,
                         &params.text_document.text,
@@ -134,7 +121,6 @@ fn event_loop(
                         documents.insert(params.text_document.uri.clone(), change.text.clone());
                         maybe_await!(publish_diagnostics(
                             &connection,
-                            runtime,
                             config,
                             params.text_document.uri,
                             &change.text
@@ -156,7 +142,6 @@ fn event_loop(
 #[maybe_async]
 fn handle_request(
     connection: &Connection,
-    runtime: &Runtime,
     config: LspConfig,
     documents: &HashMap<Uri, String>,
     request: Request,
@@ -169,7 +154,6 @@ fn handle_request(
             let uri = params.text_document_position.text_document.uri;
             let completions = if let Some(text) = documents.get(&uri) {
                 maybe_await!(completions_for_document(
-                    runtime,
                     &uri,
                     text,
                     params.text_document_position.position,
@@ -189,7 +173,6 @@ fn handle_request(
             let uri = params.text_document_position_params.text_document.uri;
             let hover = if let Some(text) = documents.get(&uri) {
                 maybe_await!(hover_for_document(
-                    runtime,
                     config,
                     &uri,
                     text,
@@ -222,12 +205,11 @@ fn handle_request(
 #[maybe_async]
 fn publish_diagnostics(
     connection: &Connection,
-    runtime: &Runtime,
     config: LspConfig,
     uri: Uri,
     text: &str,
 ) -> Result<(), LspError> {
-    let diagnostics = maybe_await!(diagnostics_for_document(runtime, config, &uri, text));
+    let diagnostics = maybe_await!(diagnostics_for_document(config, &uri, text));
     connection
         .sender
         .send(Message::Notification(Notification::new(
@@ -244,13 +226,8 @@ fn publish_diagnostics(
 }
 
 #[maybe_async]
-fn diagnostics_for_document(
-    runtime: &Runtime,
-    config: LspConfig,
-    uri: &Uri,
-    text: &str,
-) -> Vec<Diagnostic> {
-    let (form, env) = match parse_document(runtime, uri, text) {
+fn diagnostics_for_document(config: LspConfig, uri: &Uri, text: &str) -> Vec<Diagnostic> {
+    let (form, env) = match parse_document(uri, text) {
         Ok(context) => context,
         Err(err) => return vec![diagnostic_from_parse_error(err, text)],
     };
@@ -264,7 +241,6 @@ fn diagnostics_for_document(
     }
 
     match maybe_await!(Definitions::parse_lib_body(
-        runtime,
         &form,
         &env,
         &mut HashSet::default()

@@ -131,7 +131,7 @@ fn entry(runtime: &Runtime) -> Result<(), Exception> {
         return Ok(());
     }
 
-    let repl = TopLevelEnvironment::new_repl(runtime);
+    let repl = TopLevelEnvironment::new_repl();
 
     maybe_await!(repl.import("(library (rnrs))".parse().unwrap()))
         .expect("Failed to import standard library");
@@ -212,7 +212,7 @@ fn entry(runtime: &Runtime) -> Result<(), Exception> {
 #[maybe_async]
 #[cfg_attr(feature = "async", tokio::main)]
 fn main() {
-    let runtime = Runtime::new();
+    let runtime = Runtime::handle();
 
     if let Err(exception) = maybe_await!(entry(&runtime)) {
         let mut out = String::new();

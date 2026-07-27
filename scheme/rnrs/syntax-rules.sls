@@ -1,8 +1,8 @@
 (library (rnrs syntax-rules (6))
   (export syntax-rules with-syntax identifier-syntax)
   (import (rnrs base builtins (6))
-          (rnrs base primitives (6))
-          (rnrs syntax-case (6)))
+          (rnrs syntax-case (6))
+          (scheme-rs primitives))
 
   ;; Define syntax-rules in terms of syntax case 
   (define-syntax syntax-rules

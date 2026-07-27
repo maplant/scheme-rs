@@ -11,7 +11,6 @@ use crate::{
     lists::List,
     proc::{Application, ContBarrier, FuncPtr, Procedure},
     records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
-    runtime::Runtime,
     symbols::Symbol,
     value::Value,
 };
@@ -107,7 +106,6 @@ pub fn enum_set_universe(enum_set: Embedded<EnumerationSet>) -> Result<Vec<Value
 
 #[cps_bridge(def = "enum-set-constructor enum-set", lib = "(rnrs enums (6))")]
 pub fn enum_set_constructor(
-    runtime: &Runtime,
     _env: &[Value],
     args: &[Value],
     _rest_args: &[Value],
@@ -116,7 +114,6 @@ pub fn enum_set_constructor(
     let set = args[0].try_to::<Embedded<EnumerationSet>>()?;
     let universe = Value::from(set.enum_type.clone());
     let constructor = Procedure::new(
-        runtime.clone(),
         vec![universe],
         FuncPtr::Bridge(enum_set_constructor_fn),
         1,
@@ -127,7 +124,6 @@ pub fn enum_set_constructor(
 
 #[cps_bridge]
 fn enum_set_constructor_fn(
-    _runtime: &Runtime,
     env: &[Value],
     args: &[Value],
     _rest_args: &[Value],

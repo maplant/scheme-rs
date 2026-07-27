@@ -335,6 +335,30 @@ impl Value {
         }
     }
 
+    #[inline]
+    pub(crate) fn pair_car(&self) -> Option<Value> {
+        Some(self.borrow_pair()?.car.read().clone())
+    }
+
+    #[inline]
+    pub(crate) fn pair_cdr(&self) -> Option<Value> {
+        Some(self.borrow_pair()?.cdr.read().clone())
+    }
+
+    #[inline]
+    fn borrow_pair(&self) -> Option<ManuallyDrop<Gc<PairInner>>> {
+        if self.0 as usize & TAG != Tag::Pair as usize {
+            return None;
+        }
+        let untagged = self.0.map_addr(|raw| raw & !TAG);
+        if untagged.is_null() {
+            return None;
+        }
+        Some(ManuallyDrop::new(unsafe {
+            Gc::from_raw(untagged as *mut GcInner<PairInner>)
+        }))
+    }
+
     pub fn unpacked_ref(&self) -> UnpackedValueRef<'_> {
         let unpacked = ManuallyDrop::new(Value(self.0).unpack());
         UnpackedValueRef {
@@ -493,8 +517,31 @@ impl Clone for Value {
 
 impl Drop for Value {
     fn drop(&mut self) {
-        // FIXME: This is a pretty dumb way to do this, do it manually!
-        unsafe { ManuallyDrop::drop(&mut ManuallyDrop::new(Self(self.0).unpack())) }
+        // TODO: Add decrement function to Gc and use that instead
+        let raw = self.0;
+        let tag = Tag::from(raw as usize & TAG);
+        let untagged = raw.map_addr(|raw| raw & !TAG);
+        unsafe {
+            match tag {
+                Tag::Number => drop(Arc::from_raw(untagged as *const NumberInner)),
+                Tag::Procedure => drop(Gc::from_raw(untagged as *mut GcInner<ProcedureInner>)),
+                Tag::Record => {
+                    if !untagged.is_null() {
+                        drop(Gc::from_raw(untagged as *mut GcInner<RecordInner>));
+                    }
+                }
+                Tag::RecordTypeDescriptor => {
+                    drop(Arc::from_raw(untagged as *const RecordTypeDescriptor));
+                }
+                Tag::Pair => {
+                    if !untagged.is_null() {
+                        drop(Gc::from_raw(untagged as *mut GcInner<PairInner>));
+                    }
+                }
+                Tag::Cell => drop(Gc::from_raw(untagged as *mut GcInner<RwLock<Value>>)),
+                Tag::FixNum | Tag::SmallValue => (),
+            }
+        }
     }
 }
 

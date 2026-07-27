@@ -89,9 +89,11 @@ pub(crate) struct RuntimeFunctions {
     cdr: FuncId,
 
     // Frame primops:
+    #[cfg(feature = "continuation-marks")]
     get_frame: FuncId,
 
     // Continuation mark primops:
+    #[cfg(feature = "continuation-marks")]
     set_continuation_mark: FuncId,
 
     // Math primops:
@@ -111,7 +113,6 @@ pub(crate) struct RuntimeFunctions {
 impl Cps {
     pub(crate) fn compile(
         self,
-        runtime: Runtime,
         runtime_funcs: &RuntimeFunctions,
         module: &mut JITModule,
         debug_info: &mut DebugInfo,
@@ -161,16 +162,12 @@ impl Cps {
 
         let params = {
             let block_params = builder.block_params(entry_block);
-            [
-                block_params[RUNTIME_PARAM],
-                block_params[CONT_BARRIER_PARAM],
-            ]
+            [block_params[CONT_BARRIER_PARAM], block_params[OUT_PARAM]]
         };
 
         let mut continuations = HashSet::default();
 
         let mut cu = CompilationUnit {
-            runtime: runtime.clone(),
             builder,
             // Top level cannot inherit environmental variables, by defintion.
             rebinds: Rebinds::new(),
@@ -229,7 +226,6 @@ impl Cps {
 }
 
 struct CompilationUnit<'m, 'a> {
-    runtime: Runtime,
     builder: FunctionBuilder<'m>,
     rebinds: Rebinds,
     allocs: StackSlot,
@@ -253,11 +249,11 @@ impl CompilationUnit<'_, '_> {
         self.curr_allocs += 1;
     }
 
-    fn get_runtime(&self) -> Value {
+    fn get_barrier(&self) -> Value {
         self.params[0]
     }
 
-    fn get_barrier(&self) -> Value {
+    fn get_out(&self) -> Value {
         self.params[1]
     }
 
@@ -325,6 +321,7 @@ impl CompilationUnit<'_, '_> {
             Cps::PrimOp(PrimOp::ErrorNoPatternsMatch, _, _, _) => {
                 self.error_no_patterns_match_codegen();
             }
+            #[cfg(feature = "continuation-marks")]
             Cps::PrimOp(PrimOp::GetFrame, args, dest, cexpr) => {
                 let [op, span] = args.as_slice() else {
                     unreachable!()
@@ -338,6 +335,7 @@ impl CompilationUnit<'_, '_> {
                     deferred_local_conts,
                 );
             }
+            #[cfg(feature = "continuation-marks")]
             Cps::PrimOp(PrimOp::SetContinuationMark, args, _, cexpr) => {
                 let [tag, val] = args.as_slice() else {
                     unreachable!()
@@ -395,8 +393,8 @@ impl CompilationUnit<'_, '_> {
                 (cell, symbol)
             }
             CpsValue::Var(Var::Global(global)) => {
-                let mut runtime_write = self.runtime.0.write();
-                runtime_write.globals_pool.insert(global.clone());
+                let mut globals_pool = Runtime::handle().0.globals_pool.lock();
+                globals_pool.insert(global.clone());
                 let cell = self.builder.ins().iconst(
                     types::I64,
                     SchemeValue::as_raw(&SchemeValue::from(global.val.clone())) as i64,
@@ -414,9 +412,9 @@ impl CompilationUnit<'_, '_> {
                     .iconst(types::I64, known.cast_to_usize() as i64);
             }
             CpsValue::Const(val) => {
-                let mut runtime_write = self.runtime.0.write();
-                runtime_write.constants_pool.insert(val.clone());
-                let raw = SchemeValue::as_raw(runtime_write.constants_pool.get(val));
+                let mut constants_pool = Runtime::handle().0.constants_pool.lock();
+                constants_pool.insert(val.clone());
+                let raw = SchemeValue::as_raw(constants_pool.get(val));
                 return self.builder.ins().iconst(types::I64, raw as i64);
             }
         };
@@ -906,6 +904,7 @@ impl CompilationUnit<'_, '_> {
         self.cps_codegen(cexpr, deferred_procs, deferred_local_conts);
     }
 
+    #[cfg(feature = "continuation-marks")]
     fn get_frame_codegen(
         &mut self,
         op: &CpsValue,
@@ -927,6 +926,7 @@ impl CompilationUnit<'_, '_> {
         self.cps_codegen(cexpr, deferred_procs, deferred_local_conts);
     }
 
+    #[cfg(feature = "continuation-marks")]
     fn set_continuation_mark_codegen(&mut self, tag: &CpsValue, val: &CpsValue) {
         let tag = self.value_codegen(tag);
         let val = self.value_codegen(val);
@@ -1014,18 +1014,16 @@ impl CompilationUnit<'_, '_> {
             }
             let args_addr = self.builder.ins().stack_addr(types::I64, args_slot, 0);
             let args_len = self.builder.ins().iconst(types::I32, args.len() as i64);
+            let out = self.get_out();
             let call_cont = self
                 .module
                 .declare_func_in_func(self.runtime_funcs.call_continuation, self.builder.func);
-            let call = self
-                .builder
+            self.builder
                 .ins()
-                .call(call_cont, &[args_addr, args_len, barrier]);
-            let app = self.builder.inst_results(call)[0];
+                .call(call_cont, &[args_addr, args_len, barrier, out]);
             self.drop_all_codegen();
-            self.builder.ins().return_(&[app]);
+            self.builder.ins().return_(&[]);
         } else {
-            let runtime = self.get_runtime();
             let barrier = self.get_barrier();
             let operator = self.value_codegen(operator);
 
@@ -1047,16 +1045,15 @@ impl CompilationUnit<'_, '_> {
 
             let args_addr = self.builder.ins().stack_addr(types::I64, args_slot, 0);
             let args_len = self.builder.ins().iconst(types::I32, args.len() as i64);
+            let out = self.get_out();
             let apply = self
                 .module
                 .declare_func_in_func(self.runtime_funcs.apply, self.builder.func);
-            let call = self
-                .builder
+            self.builder
                 .ins()
-                .call(apply, &[runtime, operator, args_addr, args_len, barrier]);
-            let app = self.builder.inst_results(call)[0];
+                .call(apply, &[operator, args_addr, args_len, barrier, out]);
             self.drop_all_codegen();
-            self.builder.ins().return_(&[app]);
+            self.builder.ins().return_(&[]);
         }
     }
 
@@ -1082,13 +1079,13 @@ impl CompilationUnit<'_, '_> {
 
     fn halt_codegen(&mut self, args: &CpsValue) {
         let val = self.value_codegen(args);
+        let out = self.get_out();
         let halt = self
             .module
             .declare_func_in_func(self.runtime_funcs.halt, self.builder.func);
-        let call = self.builder.ins().call(halt, &[val]);
-        let result = self.builder.inst_results(call)[0];
+        self.builder.ins().call(halt, &[val, out]);
         self.drop_all_codegen();
-        self.builder.ins().return_(&[result]);
+        self.builder.ins().return_(&[]);
     }
 
     fn if_codegen(
@@ -1129,14 +1126,13 @@ impl CompilationUnit<'_, '_> {
     }
 
     fn raise_codegen(&mut self, val: Value) {
-        let runtime = self.get_runtime();
         let barrier = self.get_barrier();
+        let out = self.get_out();
         let raise = self
             .module
             .declare_func_in_func(self.runtime_funcs.raise_rt, self.builder.func);
-        let call = self.builder.ins().call(raise, &[runtime, val, barrier]);
-        let result = self.builder.inst_results(call)[0];
-        self.builder.ins().return_(&[result]);
+        self.builder.ins().call(raise, &[val, barrier, out]);
+        self.builder.ins().return_(&[]);
     }
 
     fn store_codegen(
@@ -1150,8 +1146,8 @@ impl CompilationUnit<'_, '_> {
         let from = self.value_codegen(from);
         let to = match to {
             CpsValue::Var(Var::Global(global)) => {
-                let mut runtime_write = self.runtime.0.write();
-                runtime_write.globals_pool.insert(global.clone());
+                let mut globals_pool = Runtime::handle().0.globals_pool.lock();
+                globals_pool.insert(global.clone());
                 self.builder.ins().iconst(
                     types::I64,
                     SchemeValue::as_raw(&SchemeValue::from(global.val.clone())) as i64,
@@ -1201,7 +1197,6 @@ impl CompilationUnit<'_, '_> {
         for binding in bindings.into_iter() {
             let is_func = binding.is_func();
             let bundle = ProcedureBundle::new(
-                self.runtime.clone(),
                 binding.val,
                 binding.args,
                 *binding.body,
@@ -1300,7 +1295,6 @@ impl CompilationUnit<'_, '_> {
             self.array_store(env, i, val);
         }
 
-        let runtime_param = self.get_runtime();
         let func_ref = self
             .module
             .declare_func_in_func(bundle.func_id, self.builder.func);
@@ -1320,14 +1314,7 @@ impl CompilationUnit<'_, '_> {
             .iconst(types::I8, bundle.args.variadic as i64);
         assert_eq!(std::mem::size_of::<bool>(), 1);
 
-        let mut args = vec![
-            runtime_param,
-            func_ptr,
-            env_addr,
-            env_len,
-            num_required,
-            is_variadic,
-        ];
+        let mut args = vec![func_ptr, env_addr, env_len, num_required, is_variadic];
 
         if bundle.args.continuation.is_some() {
             args.push(if let Some(ref loc) = bundle.loc {
@@ -1405,7 +1392,6 @@ impl CompilationUnit<'_, '_> {
 }
 
 pub struct ProcedureBundle {
-    runtime: Runtime,
     func_id: FuncId,
     val: Local,
     env: Vec<Local>,
@@ -1414,24 +1400,21 @@ pub struct ProcedureBundle {
     loc: Option<Span>,
 }
 
-const RUNTIME_PARAM: usize = 0;
-const ENV_PARAM: usize = 1;
-const ARGS_PARAM: usize = 2;
-const CONT_BARRIER_PARAM: usize = 3;
+const ENV_PARAM: usize = 0;
+const ARGS_PARAM: usize = 1;
+const CONT_BARRIER_PARAM: usize = 2;
+const OUT_PARAM: usize = 3;
 
 fn make_sig(sig: &mut Signature) {
-    sig.params.push(AbiParam::new(types::I64)); // Runtime
     sig.params.push(AbiParam::new(types::I64)); // Env
     sig.params.push(AbiParam::new(types::I64)); // Args
-    sig.params.push(AbiParam::new(types::I64)); // DynStack
-
-    sig.returns.push(AbiParam::new(types::I64)); // Application
+    sig.params.push(AbiParam::new(types::I64)); // ContBarrier
+    sig.params.push(AbiParam::new(types::I64)); // Application out-pointer
 }
 
 impl ProcedureBundle {
     #[allow(clippy::too_many_arguments)]
     fn new(
-        runtime: Runtime,
         val: Local,
         args: LambdaArgs,
         body: Cps,
@@ -1454,7 +1437,6 @@ impl ProcedureBundle {
             .collect::<Vec<_>>();
 
         Self {
-            runtime,
             func_id,
             val,
             env,
@@ -1499,10 +1481,7 @@ impl ProcedureBundle {
 
         let params = {
             let block_params = builder.block_params(entry_block);
-            [
-                block_params[RUNTIME_PARAM],
-                block_params[CONT_BARRIER_PARAM],
-            ]
+            [block_params[CONT_BARRIER_PARAM], block_params[OUT_PARAM]]
         };
 
         let mut rebinds = Rebinds::new();
@@ -1534,7 +1513,6 @@ impl ProcedureBundle {
         continuations.extend(self.args.continuation);
 
         let mut cu = CompilationUnit {
-            runtime: self.runtime,
             builder,
             rebinds,
             allocs,

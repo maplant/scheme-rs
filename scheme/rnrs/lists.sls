@@ -3,9 +3,9 @@
           remv remq memp member memv memq assp assoc assv assq cons*)
 
   (import (rnrs base builtins (6))
-          (rnrs base primitives (6))
           (rnrs control (6))
-          (rnrs values (6)))
+          (rnrs values (6))
+          (scheme-rs primitives))
 
   (define call/cc call-with-current-continuation)
 

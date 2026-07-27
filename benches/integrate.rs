@@ -1,7 +1,6 @@
 use scheme_rs::{
     env::TopLevelEnvironment,
     proc::{ContBarrier, Procedure},
-    runtime::Runtime,
     value::Expect1,
 };
 
@@ -10,8 +9,7 @@ use scheme_rs_macros::{maybe_async, maybe_await};
 
 #[maybe_async]
 fn integrate_fn() -> Procedure {
-    let rt = Runtime::new();
-    let prog = TopLevelEnvironment::new_repl(&rt);
+    let prog = TopLevelEnvironment::new_repl();
     maybe_await!(prog.eval(true, "(import (benches integrate)) run"))
         .unwrap()
         .expect1()

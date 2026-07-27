@@ -5,18 +5,16 @@ use crate::{
     ast::{ImportSpec, Primitive},
     env::{Environment, TopLevelEnvironment},
     exceptions::Exception,
-    runtime::Runtime,
     syntax::{Span, Syntax, parse::ParseSyntaxError},
 };
 
 pub(super) fn parse_document(
-    runtime: &Runtime,
     uri: &Uri,
     text: &str,
 ) -> Result<(Syntax, Environment), ParseSyntaxError> {
     let file_name = document_file_name(uri);
     let mut form = Syntax::from_str(text, Some(&file_name))?;
-    let program = TopLevelEnvironment::new_program(runtime, file_name.as_ref());
+    let program = TopLevelEnvironment::new_program(file_name.as_ref());
     let env = Environment::Top(program.clone());
     form.add_scope(program.scope());
     Ok((form, env))

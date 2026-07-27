@@ -3,7 +3,7 @@
   (import (rnrs syntax-case (6))
           (rnrs letrec (6))
           (rnrs base builtins (6))
-          (rnrs base primitives (6)))
+          (scheme-rs primitives))
 
   (define-syntax syntax-rules
     (lambda (x)
