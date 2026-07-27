@@ -54,7 +54,10 @@ pub(crate) use collection::unroot;
 
 use crate::{
     Either,
-    gc::{collection::GcHeader, state::GcState},
+    gc::{
+        collection::GcHeader,
+        state::{ATTN_CLAIM, GcState},
+    },
 };
 
 /// A heap allocated garbage collected smart pointer. Gc requires that `T`
@@ -313,6 +316,11 @@ unsafe impl<T> arc_swap::RefCnt for Gc<T> {
     }
 }
 
+// The inc side does not need the fused claim that dec_rc does: an inc requires
+// a live counted handle to clone from, and that handle's count blocks every
+// free path (release needs rc==0; cycle freeing re-reads rcs in sigma_recheck,
+// where a mutator-held handle shows up as an external ref). An inc only adds
+// evidence of liveness, so it lagging behind its event flag is harmless.
 fn inc_rc<T: ?Sized>(ptr: NonNull<GcInner<T>>) {
     unsafe {
         let header = ptr.as_ref().header.get();
@@ -328,12 +336,28 @@ fn inc_rc<T: ?Sized>(ptr: NonNull<GcInner<T>>) {
 fn dec_rc<T: ?Sized>(ptr: NonNull<GcInner<T>>) {
     unsafe {
         let header = ptr.as_ref().header.get();
+        // The dec and the ATTN_CLAIM must be one RMW: if the dec lands alone,
+        // the collector can observe rc==0 with no claim and dealloc while our
+        // attention-list entry is still in flight (use-after-free).
         let old = GcState(
             (*header)
                 .state
-                .fetch_sub(1, std::sync::atomic::Ordering::Release),
+                .fetch_update(
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                    |w| {
+                        debug_assert!(
+                            GcState(w).rc() > 0,
+                            "decrement on rc==0 object: a raw pointer outlived its counted home"
+                        );
+                        Some((w - 1) | ATTN_CLAIM)
+                    },
+                )
+                .unwrap(),
         );
-        collection::record_dec_event(header, old);
+        if !old.attn_claimed() {
+            collection::buffer_event(header);
+        }
     }
 }
 

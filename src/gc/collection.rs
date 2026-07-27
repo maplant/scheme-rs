@@ -351,24 +351,6 @@ fn flush_chain(buf: &mut Vec<*mut GcHeader>) {
     buf.clear();
 }
 
-/// One claim per object per epoch; repeat decs see ATTN_CLAIM and skip.
-#[inline]
-pub(crate) unsafe fn record_dec_event(header: *mut GcHeader, old: GcState) {
-    if old.attn_claimed() {
-        return;
-    }
-    unsafe {
-        let w = GcState(
-            (*header)
-                .state
-                .fetch_or(ATTN_CLAIM, std::sync::atomic::Ordering::AcqRel),
-        );
-        if !w.attn_claimed() {
-            buffer_event(header);
-        }
-    }
-}
-
 /// Only non-black increments are events (active trial window).
 #[inline]
 pub(crate) unsafe fn record_inc_event(header: *mut GcHeader, old: GcState) {
