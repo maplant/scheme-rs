@@ -351,7 +351,15 @@ fn dec_rc<T: ?Sized>(ptr: NonNull<GcInner<T>>) {
                 .state
                 .fetch_update(
                     std::sync::atomic::Ordering::AcqRel,
-                    std::sync::atomic::Ordering::Acquire,
+                    // Only the CAS's own success/failure ordering (AcqRel) needs
+                    // to synchronize the actual transition; this ordering only
+                    // governs the seed load std's fetch_update takes before its
+                    // first compare_exchange attempt (and the reload on a failed
+                    // attempt). A stale seed just costs one extra retry — the
+                    // hardware CAS always operates on the true current value —
+                    // so Relaxed loses nothing. On AArch64 (LSE) this drops the
+                    // seed load from `ldapr` to a plain `ldr`.
+                    std::sync::atomic::Ordering::Relaxed,
                     |w| {
                         debug_assert!(
                             GcState(w).rc() > 0,
