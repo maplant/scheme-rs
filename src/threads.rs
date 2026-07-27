@@ -13,7 +13,7 @@ use scheme_rs_macros::bridge;
 use crate::{
     exceptions::Exception,
     gc::{Gc, Trace},
-    proc::{ContBarrier, Procedure},
+    proc::{Procedure, dyn_state_snapshot, with_dyn_state_sync},
     records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
     value::Value,
 };
@@ -41,18 +41,24 @@ unsafe impl Embeddable for JoinHandle {
 pub fn spawn(thunk: Procedure) -> Result<Vec<Value>, Exception> {
     let cell = Gc::new(Mutex::new(Ok(Vec::new())));
     let cell_cloned = cell.clone();
+    // Snapshot the current dynamic state now, on the spawning thread: the
+    // spawned thread starts a new dynamic extent and must not run the
+    // parent's winders or see its exception handlers.
+    let snapshot = dyn_state_snapshot();
     let join_handle = thread::spawn(move || {
         let mut cell_write = cell_cloned.lock();
 
-        #[cfg(not(feature = "async"))]
-        {
-            *cell_write = thunk.call(&[], &mut ContBarrier::new());
-        }
+        with_dyn_state_sync(snapshot, || {
+            #[cfg(not(feature = "async"))]
+            {
+                *cell_write = thunk.call(&[]);
+            }
 
-        #[cfg(feature = "async")]
-        {
-            *cell_write = thunk.call_sync(&[], &mut ContBarrier::new());
-        }
+            #[cfg(feature = "async")]
+            {
+                *cell_write = thunk.call_sync(&[]);
+            }
+        });
     });
     let id = join_handle.thread().id();
     Ok(vec![Value::from(JoinHandle { id, result: cell })])
