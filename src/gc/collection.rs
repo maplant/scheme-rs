@@ -215,6 +215,8 @@ pub(crate) static RETAIN_PURGES: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static INLOOP_GUARD_HITS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(debug_assertions)]
 pub(crate) static TRIALS_RUN: AtomicUsize = AtomicUsize::new(0);
+#[cfg(debug_assertions)]
+pub(crate) static BACKPRESSURE_STALLS: AtomicUsize = AtomicUsize::new(0);
 
 const LOCAL_ALLOCS_PER_SIGNAL: usize = 1024;
 
@@ -246,6 +248,18 @@ fn alloc_tick() {
                 && COLLECTOR_TASK.get().is_some()
                 && !is_collector_thread()
             {
+                #[cfg(debug_assertions)]
+                BACKPRESSURE_STALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                // Resume guarantee: once mutators stall, TOTAL_ALLOCS
+                // freezes, live_at_epoch_end converges to outstanding within
+                // one epoch, and may_resume(x, x) holds for every x — a
+                // fully stalled system self-recovers in at most two forced
+                // epochs whether or not anything was freeable.
+                //
+                // Per-thread fairness is weaker: a thread parked here can
+                // re-park indefinitely while other mutators keep outstanding
+                // oscillating inside [resume, block). Memory stays bounded;
+                // the unfairness only lasts under sustained saturating churn.
                 while !may_resume(outstanding(), state.live_at_epoch_end) {
                     // pending_allocs may be below the epoch trigger while we
                     // wait; force an epoch so the collector always makes
@@ -271,22 +285,25 @@ fn should_collect(pending: usize, live_at_epoch_end: usize) -> bool {
 }
 
 /// Outstanding-object multiples of the last-epoch live heap at which
-/// allocating threads stall (HARD, 4x) and resume (RESUME, 2x). Floored so
-/// small programs never stall. Backstop against unbounded churn: N mutators
-/// can outrun the single collector arbitrarily otherwise (observed ~50GB
-/// transients). Engages only under pathological allocation churn.
+/// allocating threads stall (BLOCK_GROWTH) and resume (RESUME_GROWTH).
+/// Floored so small programs never stall. Backstop against unbounded churn:
+/// N mutators can outrun the single collector arbitrarily otherwise
+/// (observed ~50GB transients). Engages only under pathological allocation
+/// churn.
 const BLOCK_FLOOR_OBJS: usize = 1 << 20;
+const BLOCK_GROWTH: usize = 4;
+const RESUME_GROWTH: usize = 2;
 
 fn should_block(outstanding: usize, live_at_epoch_end: usize) -> bool {
-    outstanding >= BLOCK_FLOOR_OBJS.max(live_at_epoch_end.saturating_mul(4))
+    outstanding >= BLOCK_FLOOR_OBJS.max(live_at_epoch_end.saturating_mul(BLOCK_GROWTH))
 }
 
 fn may_resume(outstanding: usize, live_at_epoch_end: usize) -> bool {
     // Resume floor is half the block floor so hysteresis exists even when
-    // live*2 is below it. A fully stalled system still self-recovers:
-    // live_at_epoch_end converges to outstanding, and x < max(_, 2x) for
-    // any x >= 1 (x == 0 clears the floor).
-    outstanding < (BLOCK_FLOOR_OBJS / 2).max(live_at_epoch_end.saturating_mul(2))
+    // live*RESUME_GROWTH is below it. A fully stalled system still
+    // self-recovers: live_at_epoch_end converges to outstanding, and
+    // x < max(_, 2x) for any x >= 1 (x == 0 clears the floor).
+    outstanding < (BLOCK_FLOOR_OBJS / 2).max(live_at_epoch_end.saturating_mul(RESUME_GROWTH))
 }
 
 struct CollectorState {
@@ -554,13 +571,15 @@ impl Collector {
         self.flush_quarantine();
 
         // Live-heap sample, part 1: allocations tallied before the drain.
-        // Everything counted here is either freed by this epoch (its dec
-        // event was flushed before the drain) or genuinely live, so
-        // allocs_at_drain - TOTAL_FREES at epoch end estimates the live heap
-        // without counting garbage allocated mid-epoch. Sampling both sides
-        // at epoch end instead would inflate the estimate by a full epoch of
-        // undrained garbage, and under saturating churn that feedback ratchets
-        // the trigger unboundedly.
+        // Everything counted here is freed by this epoch or counted live for
+        // at most one extra epoch — the attn push is Release but the
+        // TOTAL_ALLOCS add is Relaxed, so on weak memory a counted object's
+        // dec event can miss the drain swap. allocs_at_drain - TOTAL_FREES
+        // at epoch end thus estimates the live heap without counting garbage
+        // allocated mid-epoch. Sampling both sides at epoch end instead
+        // would inflate the estimate by a full epoch of undrained garbage,
+        // and under saturating churn that feedback ratchets the trigger
+        // unboundedly.
         let allocs_at_drain = TOTAL_ALLOCS.load(std::sync::atomic::Ordering::Relaxed);
 
         // Drain before free_cycles: ordering is load-bearing for ATTN_DEAD deferral.

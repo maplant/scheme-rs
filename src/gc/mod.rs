@@ -27,13 +27,16 @@ pub fn allocation_stats() -> (usize, usize) {
     )
 }
 
-/// Collector counters: `(retain_purges, inloop_guard_hits, trials_run)`, monotonic.
+/// Collector counters:
+/// `(retain_purges, inloop_guard_hits, trials_run, backpressure_stalls)`,
+/// monotonic. Stalls count blocking episodes, not wait iterations.
 #[cfg(debug_assertions)]
-pub fn collector_stats() -> (usize, usize, usize) {
+pub fn collector_stats() -> (usize, usize, usize, usize) {
     (
         collection::RETAIN_PURGES.load(std::sync::atomic::Ordering::Relaxed),
         collection::INLOOP_GUARD_HITS.load(std::sync::atomic::Ordering::Relaxed),
         collection::TRIALS_RUN.load(std::sync::atomic::Ordering::Relaxed),
+        collection::BACKPRESSURE_STALLS.load(std::sync::atomic::Ordering::Relaxed),
     )
 }
 
