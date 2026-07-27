@@ -429,7 +429,11 @@ pub struct Collector {
     /// Debug shadow of the FREED header bit; release builds use the bit alone.
     #[cfg(debug_assertions)]
     freed_objs: HashSet<OpaqueGcPtr>,
-    /// Defers deallocs one epoch to avoid cacheline ping-pong with mutators.
+    /// Defers deallocs one epoch. Load-bearing for safety: member_freed's
+    /// header derefs (retain purge, free_cycles guard) are only sound
+    /// because a freed member's header survives until the next epoch's
+    /// flush — removing the deferral reintroduces a use-after-free.
+    /// Secondarily avoids cacheline ping-pong with mutators.
     dealloc_quarantine: Vec<(*mut u8, Layout)>,
 }
 
@@ -853,8 +857,9 @@ impl Collector {
                     .state
                     .fetch_or(ATTN_DEAD | FREED, std::sync::atomic::Ordering::AcqRel);
             } else {
-                // RMW, not a store: a racing claim RMW must not be clobbered.
-                // Relaxed: FREED is set and read on this thread only.
+                // RMW as belt-and-braces: a racing claim is precluded here
+                // (garbage has no live handles), not survived. Relaxed:
+                // FREED is set and read on this thread only.
                 (*s.header.as_ref().get())
                     .state
                     .fetch_or(FREED, std::sync::atomic::Ordering::Relaxed);
