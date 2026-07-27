@@ -94,3 +94,7 @@ harness = false
 [[bench]]
 name = "gc_incdec"
 harness = false
+
+[[bench]]
+name = "gc_ballast"
+harness = false
