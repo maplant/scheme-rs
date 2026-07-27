@@ -90,3 +90,7 @@ harness = false
 [[bench]]
 name = "gc_alloc"
 harness = false
+
+[[bench]]
+name = "gc_incdec"
+harness = false
