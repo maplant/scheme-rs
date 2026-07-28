@@ -529,6 +529,10 @@ enum ReleaseFrame {
     Free(OpaqueGcPtr),
 }
 
+/// Worklist capacity kept between drives (~96 KiB); generous for ordinary
+/// cascades without retaining a pathological one's peak.
+const RELEASE_STACK_KEEP_CAPACITY: usize = 4096;
+
 unsafe impl Send for Collector {}
 
 impl Collector {
@@ -689,6 +693,9 @@ impl Collector {
                 }
             }
         }
+        // A single wide cascade (frames peak at the released subgraph's size)
+        // must not pin its peak allocation for the collector's lifetime.
+        stack.shrink_to(RELEASE_STACK_KEEP_CAPACITY);
         self.release_stack = stack;
     }
 
@@ -923,6 +930,10 @@ impl Collector {
                 n.set_color(Color::Red);
             }
             for n in c {
+                // Follow-up: cyclic_decrement drives full release cascades
+                // from inside this for_each_child borrow of *n; hoisting the
+                // child list into a Vec before driving would end the borrow
+                // first, matching drive_release's enumerate-then-process shape.
                 for_each_child(*n, &mut |c| self.cyclic_decrement(c));
             }
             for n in c {
