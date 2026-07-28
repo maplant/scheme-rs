@@ -1455,6 +1455,60 @@ mod test {
         );
     }
 
+    /// A garbage cycle spanning the whole chain: collect_white gathers every
+    /// member and free_cycle frees them via member loops, not graph
+    /// recursion. Depth guard for the trial-deletion walks.
+    #[test]
+    fn deep_cycle_collected() {
+        let _guard = GC_TEST_SERIAL.lock();
+        init_gc();
+
+        let out = Arc::new(());
+        let tail = Gc::new(RwLock::new(DeepNode {
+            out: Some(out.clone()),
+            ..Default::default()
+        }));
+        let mut head = tail.clone();
+        for _ in 1..DEEP {
+            head = Gc::new(RwLock::new(DeepNode {
+                next: Some(head),
+                ..Default::default()
+            }));
+        }
+        tail.write().next = Some(head.clone());
+
+        drop(tail);
+        drop(head);
+
+        collect_garbage_sync();
+        collect_garbage_sync();
+        collect_garbage_sync();
+        assert_eq!(Arc::strong_count(&out), 1, "deep cycle not collected");
+    }
+
+    /// A deep candidate that survives its trial: mark_gray, scan, and
+    /// scan_black walk the full chain depth (iterative since #158; this
+    /// guards them). The final drop then exercises the release cascade.
+    #[test]
+    fn deep_purple_candidate_survives_trial_then_freed() {
+        let _guard = GC_TEST_SERIAL.lock();
+        init_gc();
+
+        let out = Arc::new(());
+        let head = deep_chain(DEEP, &out);
+        let head2 = head.clone();
+
+        // rc 2 -> 1: head goes Purple; the trial walks the whole chain and
+        // scan_black re-blackens it through the surviving handle.
+        drop(head2);
+        collect_garbage_sync();
+        assert_eq!(Arc::strong_count(&out), 2, "live chain freed by trial");
+
+        drop(head);
+        collect_garbage_sync();
+        assert_eq!(Arc::strong_count(&out), 1, "dead chain not released");
+    }
+
     #[test]
     fn member_flag_check_blocks_pending_events() {
         let a = Gc::rooted(RwLock::new(Linked::default()));
