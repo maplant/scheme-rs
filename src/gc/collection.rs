@@ -517,6 +517,16 @@ pub struct Collector {
     /// flush — removing the deferral reintroduces a use-after-free.
     /// Secondarily avoids cacheline ping-pong with mutators.
     dealloc_quarantine: Vec<(*mut u8, Layout)>,
+    /// Worklist for the iterative decrement/release cascade; empty between
+    /// drives, persistent to avoid a fresh allocation per cascade.
+    release_stack: Vec<ReleaseFrame>,
+}
+
+#[derive(Debug)]
+enum ReleaseFrame {
+    Decrement(OpaqueGcPtr),
+    Release(OpaqueGcPtr),
+    Free(OpaqueGcPtr),
 }
 
 unsafe impl Send for Collector {}
@@ -529,6 +539,7 @@ impl Collector {
             #[cfg(debug_assertions)]
             freed_objs: HashSet::default(),
             dealloc_quarantine: Vec::new(),
+            release_stack: Vec::new(),
         }
     }
 
@@ -631,34 +642,54 @@ impl Collector {
     }
 
     unsafe fn decrement(&mut self, s: OpaqueGcPtr) {
-        unsafe {
-            let old_rc = s.dec_shared_rc();
-            if old_rc == 1 {
-                let w = GcState(
-                    (*s.header.as_ref().get())
-                        .state
-                        .load(std::sync::atomic::Ordering::Acquire),
-                );
-                if w.attn_claimed() {
-                    // Pending drain entry will handle the release.
-                } else if w.color() == Color::Orange {
-                    // Orange: free_cycles owns it this epoch.
-                } else {
-                    self.release(s);
-                }
-            } else {
-                s.set_color(Color::Purple);
-                self.roots.insert(s);
-            }
-        }
+        unsafe { self.drive_release(ReleaseFrame::Decrement(s)) }
     }
 
     unsafe fn release(&mut self, s: OpaqueGcPtr) {
-        unsafe {
-            for_each_child(s, &mut |c| self.decrement(c));
-            s.set_color(Color::Black);
-            self.free(s)
+        unsafe { self.drive_release(ReleaseFrame::Release(s)) }
+    }
+
+    /// Iterative decrement/release cascade — the recursive form overflowed
+    /// the collector's 2 MiB stack on deep chains. Frame order replicates
+    /// the recursion exactly: Free(s) sits below s's child frames, so s is
+    /// finalized only after its whole subtree, and the child slice is
+    /// reversed so sibling subtrees complete in visit order.
+    unsafe fn drive_release(&mut self, first: ReleaseFrame) {
+        let mut stack = std::mem::take(&mut self.release_stack);
+        debug_assert!(stack.is_empty());
+        stack.push(first);
+        while let Some(frame) = stack.pop() {
+            unsafe {
+                match frame {
+                    ReleaseFrame::Decrement(s) => {
+                        let old_rc = s.dec_shared_rc();
+                        if old_rc == 1 {
+                            let w = GcState(
+                                (*s.header.as_ref().get())
+                                    .state
+                                    .load(std::sync::atomic::Ordering::Acquire),
+                            );
+                            if w.attn_claimed() {
+                                // Pending drain entry will handle the release.
+                            } else if w.color() == Color::Orange {
+                                // Orange: free_cycles owns it this epoch.
+                            } else {
+                                push_release_frames(&mut stack, s);
+                            }
+                        } else {
+                            s.set_color(Color::Purple);
+                            self.roots.insert(s);
+                        }
+                    }
+                    ReleaseFrame::Release(s) => push_release_frames(&mut stack, s),
+                    ReleaseFrame::Free(s) => {
+                        s.set_color(Color::Black);
+                        self.free(s);
+                    }
+                }
+            }
         }
+        self.release_stack = stack;
     }
 
     fn drain_attention_list(&mut self) {
@@ -983,6 +1014,17 @@ unsafe fn refurbish_zero(n: OpaqueGcPtr) {
         if !old.attn_claimed() {
             attn_push(n.as_ptr());
         }
+    }
+}
+
+/// Expand a node being released: its children decrement (in visit order)
+/// before Free(s) pops.
+unsafe fn push_release_frames(stack: &mut Vec<ReleaseFrame>, s: OpaqueGcPtr) {
+    unsafe {
+        stack.push(ReleaseFrame::Free(s));
+        let children = stack.len();
+        for_each_child(s, &mut |c| stack.push(ReleaseFrame::Decrement(c)));
+        stack[children..].reverse();
     }
 }
 
@@ -1334,6 +1376,83 @@ mod test {
         // Leak a and b deliberately (rooted, rc now lies) — do not drop.
         std::mem::forget(a);
         std::mem::forget(b);
+    }
+
+    /// Deep enough that a per-node recursion exhausts the collector thread's
+    /// default 2 MiB stack in any build profile.
+    const DEEP: usize = 200_000;
+
+    #[derive(Default, Trace)]
+    struct DeepNode {
+        next: Option<Gc<RwLock<DeepNode>>>,
+        chain: Option<Gc<RwLock<DeepNode>>>,
+        out: Option<Arc<()>>,
+    }
+
+    /// A singly-linked chain of `len` nodes; the deepest node holds `out`.
+    fn deep_chain(len: usize, out: &Arc<()>) -> Gc<RwLock<DeepNode>> {
+        let mut head = Gc::new(RwLock::new(DeepNode {
+            out: Some(out.clone()),
+            ..Default::default()
+        }));
+        for _ in 1..len {
+            head = Gc::new(RwLock::new(DeepNode {
+                next: Some(head),
+                ..Default::default()
+            }));
+        }
+        head
+    }
+
+    /// Dropping the sole handle to a deep chain cascades release through
+    /// every node on the collector thread. The recursive cascade overflowed
+    /// the collector stack (process abort).
+    #[test]
+    fn deep_chain_drop_releases_fully() {
+        let _guard = GC_TEST_SERIAL.lock();
+        init_gc();
+
+        let out = Arc::new(());
+        let head = deep_chain(DEEP, &out);
+        assert_eq!(Arc::strong_count(&out), 2);
+
+        drop(head);
+        collect_garbage_sync();
+        assert_eq!(Arc::strong_count(&out), 1, "deep chain not fully released");
+    }
+
+    /// free_cycle enters the same cascade through cyclic_decrement when a
+    /// freed cycle holds the last reference to a deep acyclic chain.
+    #[test]
+    fn deep_chain_behind_freed_cycle_releases_fully() {
+        let _guard = GC_TEST_SERIAL.lock();
+        init_gc();
+
+        let out = Arc::new(());
+        let chain = deep_chain(DEEP, &out);
+
+        let a = Gc::new(RwLock::new(DeepNode::default()));
+        let b = Gc::new(RwLock::new(DeepNode::default()));
+        a.write().next = Some(b.clone());
+        b.write().next = Some(a.clone());
+        b.write().chain = Some(chain.clone());
+
+        drop(a);
+        drop(b);
+        // Trial-deletes the a/b cycle; the chain stays black through the
+        // still-live handle (scan_black walks its full depth here).
+        collect_garbage_sync();
+
+        // free_cycles frees a/b; b's chain edge decrements the head to zero
+        // and the release cascades through the whole chain.
+        drop(chain);
+        collect_garbage_sync();
+        collect_garbage_sync();
+        assert_eq!(
+            Arc::strong_count(&out),
+            1,
+            "chain behind freed cycle not released"
+        );
     }
 
     #[test]
