@@ -96,29 +96,77 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         bridge.sig.inputs.len()
     };
 
+    /*
     let arg_names: Vec<_> = bridge
         .sig
         .inputs
         .iter()
         .enumerate()
         .map(|(i, arg)| {
-            if let FnArg::Typed(PatType { pat, .. }) = arg
-                && let Pat::Ident(PatIdent { ident, .. }) = pat.as_ref()
-            {
-                ident.to_string()
-            } else {
-                format!("arg{i}")
-            }
         })
-        .collect();
+        .collect::<Vec<_>>();
+    */
 
-    let arg_indices: Vec<_> = (0..num_args).collect();
+    // let arg_indices: Vec<_> = (0..num_args).collect();
+
+    let mut arg_names = Vec::new();
+    let mut args = Vec::new();
+    let mut has_cont_barrier = false;
+
+    for (i, arg) in bridge.sig.inputs.iter().enumerate() {
+        if i == bridge.sig.inputs.len() - 1 && is_variadic {
+            break;
+        }
+
+        if is_cont_barrier(arg) {
+            if has_cont_barrier {
+                return Error::new(
+                    arg.span(),
+                    "cannot have multiple continuation barrier arguments",
+                )
+                .into_compile_error()
+                .into();
+            }
+
+            has_cont_barrier = true;
+            args.push(quote! {
+                barrier,
+            });
+        } else {
+            let i = i - has_cont_barrier as usize;
+
+            arg_names.push(
+                if let FnArg::Typed(PatType { pat, .. }) = arg
+                    && let Pat::Ident(PatIdent { ident, .. }) = pat.as_ref()
+                {
+                    ident.to_string()
+                } else {
+                    format!("arg{i}")
+                },
+            );
+
+            args.push(quote! {
+                match (&args[#i]).try_into() {
+                    Ok(ok) => ok,
+                    Err(err) => {
+                        return ::scheme_rs::exceptions::raise(
+                            err.into(),
+                            barrier,
+                        )
+                    }
+                },
+            });
+        }
+    }
 
     let visibility = bridge.vis.clone();
 
     if bridge.sig.asyncness.is_none()
         && !is_variadic
         && num_args <= 3
+        // TODO: we will eventually allow known functions to take the cont
+        // barrier
+        && !has_cont_barrier
         && let Some(known_ret_type) = is_return_type_known(&bridge.sig.output)
     {
         return codegen_known_bridge(
@@ -162,7 +210,12 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
 
                 Box::pin(
                     async move {
+                        use ::scheme_rs::proc::IntoApplication;
+
                         let result = #impl_name(
+                            #( #args )*
+
+                            /*
                             #(
                                 match (&args[#arg_indices]).try_into() {
                                     Ok(ok) => ok,
@@ -174,9 +227,12 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                                     }
                                 },
                             )*
+                            */
+
                             #rest_args
                         ).await;
-                        
+
+                        /*
                         // If the function returned an error, we want to raise
                         // it.
                         let result = match result {
@@ -188,6 +244,9 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                         };
 
                         barrier.call_cont(result)
+                         */
+
+                        result.into_application(barrier)
                     }
                 )
             }
@@ -218,9 +277,13 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 rest_args: &[::scheme_rs::value::Value],
                 barrier: &mut ::scheme_rs::proc::ContBarrier,
             ) -> scheme_rs::proc::Application {
+                use ::scheme_rs::proc::IntoApplication;
+
                 #bridge
 
                 let result = #impl_name(
+                    #( #args )*
+                    /*
                     #(
                         match (&args[#arg_indices]).try_into() {
                             Ok(ok) => ok,
@@ -232,8 +295,13 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                             }
                         },
                     )*
+                    */
+
                     #rest_args
                 );
+
+                result.into_application(barrier)
+                /*
 
                 // If the function returned an error, we want to raise
                 // it.
@@ -246,6 +314,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 };
 
                 barrier.call_cont(result)
+                */
             }
 
             ::scheme_rs::registry::inventory::submit! {
@@ -323,6 +392,26 @@ fn is_unit(ty: &Type) -> bool {
     matches!(ty, Type::Tuple(t) if t.elems.is_empty())
 }
 
+fn is_cont_barrier(arg: &FnArg) -> bool {
+    if let FnArg::Typed(PatType { ty, .. }) = arg {
+        if let Type::Reference(TypeReference {
+            mutability: Some(_),
+            elem,
+            ..
+        }) = ty.as_ref()
+        {
+            if let Type::Path(TypePath { path, .. }) = elem.as_ref() {
+                return path
+                    .segments
+                    .last()
+                    .map(|s| s.ident == "ContBarrier")
+                    .unwrap_or(false);
+            }
+        }
+    }
+    false
+}
+
 fn codegen_known_bridge(
     bridge: &ItemFn,
     ret_type: KnownReturnType,
@@ -376,7 +465,7 @@ fn codegen_known_bridge(
                 #num_args,
                 false,
                 ::scheme_rs::registry::Bridge::Known(::scheme_rs::proc::KnownFunc::#known_type(
-                    #wrapper_name 
+                    #wrapper_name
                 )),
                 ::scheme_rs::registry::BridgeFnDebugInfo::new(
                     ::std::file!(),

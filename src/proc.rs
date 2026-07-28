@@ -97,7 +97,7 @@ use crate::{
     value::Value,
     vectors::Vector,
 };
-use scheme_rs_macros::{cps_bridge, maybe_async, maybe_await};
+use scheme_rs_macros::{bridge, cps_bridge, maybe_async, maybe_await};
 use smallvec::SmallVec;
 use std::{
     any::Any,
@@ -245,10 +245,12 @@ impl From<UserPtr> for FuncPtr {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 pub(crate) enum ContPtr {
     /// A JIT compiled (or occasionally defined in Rust) continuation
     Continuation(ContinuationPtr),
+    /// A Rust continuation
+    RustContinuation(RustContinuation),
     /// A continuation that exits a prompt. Can be dynamically replaced.
     /// The continuation of a prompt barrier will always be pop_dyn_stack.
     PromptBarrier { barrier_id: usize },
@@ -472,6 +474,24 @@ impl Procedure {
         self.0.is_variable_transformer
     }
 
+    #[allow(private_bounds)]
+    pub fn call_with_cont<A, const N: usize>(
+        &self,
+        args: &[Value],
+        cont_env: [Value; N],
+        cont: impl IntoRustContinuation<A, N>,
+        barrier: &mut ContBarrier<'_>,
+    ) -> Application {
+        let (req_args, variadic) = cont.formals();
+        barrier.push_cont(
+            cont_env,
+            ContPtr::RustContinuation(cont.into_rust_cont()),
+            req_args,
+            variadic,
+        );
+        Application::new(self.clone(), args.to_vec())
+    }
+
     /// Applies `args` to the procedure and returns the values it evaluates to.
     #[maybe_async]
     pub fn call(
@@ -634,6 +654,184 @@ impl Application {
     }
 }
 
+pub trait IntoApplication {
+    fn into_application(self, barrier: &mut ContBarrier) -> Application;
+}
+
+impl IntoApplication for Application {
+    fn into_application(self, _barrier: &mut ContBarrier) -> Application {
+        self
+    }
+}
+
+impl<const N: usize> IntoApplication for [Value; N] {
+    fn into_application(self, barrier: &mut ContBarrier) -> Application {
+        barrier.call_cont(self.to_vec())
+    }
+}
+
+impl<T, E> IntoApplication for Result<T, E>
+where
+    T: IntoApplication,
+    Value: From<E>,
+{
+    fn into_application(self, barrier: &mut ContBarrier) -> Application {
+        match self {
+            Ok(val) => val.into_application(barrier),
+            Err(err) => raise(err.into(), barrier),
+        }
+    }
+}
+
+impl<T> IntoApplication for T
+where
+    Value: From<T>,
+{
+    fn into_application(self, barrier: &mut ContBarrier) -> Application {
+        barrier.call_cont(vec![Value::from(self)])
+    }
+}
+
+trait IntoRustContinuation<A, const N: usize> {
+    fn formals(&self) -> (usize, bool) {
+        todo!()
+    }
+
+    fn into_rust_cont(self) -> RustContinuation; // Box<dyn Fn(Vec<Value>) -> Application>;
+    // fn call(&self, env: [Value; N], args: Vec<Value>, barrier: &mut ContBarrier) -> Application;
+}
+
+#[derive(Clone)]
+struct RustContinuation(
+    Arc<dyn Fn(&[Value], Vec<Value>, &mut ContBarrier<'_>) -> Application + Send + Sync>,
+);
+
+/*
+trait TypeErasedRustContinuation {
+    fn call(&self, args: Vec<Value>, barrier: &mut ContBarrier) -> Application;
+}
+*/
+
+impl<F, R, const N: usize> IntoRustContinuation<(), N> for F
+where
+    F: Fn(&[Value; N], &mut ContBarrier) -> R + Send + Sync + 'static,
+    R: IntoApplication + 'static,
+{
+    fn into_rust_cont(self) -> RustContinuation {
+        RustContinuation(Arc::new(
+            move |env: &[Value], _, barrier: &mut ContBarrier<'_>| {
+                (self)(env.try_into().unwrap(), barrier).into_application(barrier)
+            },
+        ))
+    }
+}
+
+impl<F, R, const N: usize> IntoRustContinuation<(&[Value],), N> for F
+where
+    F: Fn(&[Value; N], &[Value], &mut ContBarrier) -> R + Send + Sync + 'static,
+    R: IntoApplication + 'static,
+{
+    fn into_rust_cont(self) -> RustContinuation {
+        RustContinuation(Arc::new(
+            move |env: &[Value], args, barrier: &mut ContBarrier<'_>| {
+                (self)(env.try_into().unwrap(), &args, barrier).into_application(barrier)
+            },
+        ))
+    }
+}
+
+/*
+impl<F, R, const N: usize> IntoRustContinuation<(Value,), N> for F
+where
+    F: Fn(&[Value; N], Value) -> R + Send + Sync + 'static,
+    R: IntoApplication + 'static,
+    // Value: TryInto<T1>,
+{
+    fn into_rust_cont(self) -> RustContinuation {
+        // RustContinuation(Arc::new(move |env: &[Value], _, barrier: &mut ContBarrier<'_>| {
+        //     (self)(env.try_into().unwrap()).into_application(barrier)
+        // }))
+        todo!()
+    }
+}
+*/
+
+macro_rules! impl_rust_cont {
+    ( $( $arg:ident, )* ) => {
+        impl<F, R, $( $arg, )* const N: usize> IntoRustContinuation<($($arg,)*), N> for F
+        where
+            F: Fn(&[Value; N], $( $arg, )* &mut ContBarrier) -> R + Send + Sync + 'static,
+            R: IntoApplication + 'static,
+        $(
+            for<'a> &'a Value: TryInto<$arg, Error = Exception>,
+        )*
+        {
+            fn into_rust_cont(self) -> RustContinuation {
+                RustContinuation(Arc::new(move |env: &[Value], args, barrier: &mut ContBarrier<'_>| {
+                    // let mut var_pos = 0;
+                    let mut args = args.iter();//.enumerate();
+                    (self)(
+                        env.try_into().unwrap(),
+                        $(
+                            {
+                                <&Value as TryInto<$arg>>::try_into(args.next().unwrap()).unwrap()
+                            },
+                        )*
+                        barrier
+                    ).into_application(barrier)
+                }))
+            }
+        }
+
+        impl<F, R, $( $arg, )* const N: usize> IntoRustContinuation<($($arg,)* &[Value]), N> for F
+        where
+            F: Fn(&[Value; N], $( $arg, )* &[Value]) -> R + Send + Sync + 'static,
+            R: IntoApplication + 'static,
+        $(
+            for<'a> &'a Value: TryInto<$arg, Error = Exception>,
+        )*
+        {
+            fn into_rust_cont(self) -> RustContinuation {
+                RustContinuation(Arc::new(move |env: &[Value], args, barrier: &mut ContBarrier<'_>| {
+                    /*
+                    // let mut var_pos = 0;
+                    let mut args = args.iter();//.enumerate();
+                    (self)(
+                        env.try_into().unwrap(),
+                        $(
+                            {
+                                <&Value as TryInto<$arg>>::try_into(args.next().unwrap()).unwrap()
+                            },
+                        )*
+                    ).into_application(barrier)
+                     */
+                    todo!()
+                }))
+            }
+        }
+    }
+}
+
+impl_rust_cont!(T1,);
+impl_rust_cont!(T1, T2,);
+
+/*
+    /*
+    fn boxed(self) -> Box<dyn TypeErasedRustContinuation> {
+        Box::new(move |_| {
+            (self)(env).into_application()
+        })
+    }
+    */
+
+    /*
+    fn call(&self, env: [Value; N], _args: Vec<Value>, barrier: &mut ContBarrier) -> Application {
+        (self)(env).into_application()
+    }
+    */
+}
+*/
+
 /// Debug information associated with a procedure, including its name, argument
 /// names, and source location.
 #[derive(Debug)]
@@ -677,21 +875,14 @@ impl ProcDebugInfo {
     }
 }
 
-#[cps_bridge(def = "apply arg1 . args", lib = "(rnrs base builtins (6))")]
-pub fn apply(
-    _env: &[Value],
-    args: &[Value],
-    rest_args: &[Value],
-    _barrier: &mut ContBarrier,
-) -> Result<Application, Exception> {
-    if rest_args.is_empty() {
-        return Err(Exception::wrong_num_of_args(2, args.len()));
-    }
-    let op: Procedure = args[0].clone().try_into()?;
-    let (last, args) = rest_args.split_last().unwrap();
+#[bridge(name = "apply", lib = "(rnrs base builtin (6))")]
+pub fn apply(proc: Procedure, args: &[Value]) -> Result<Application, Exception> {
     let mut args = args.to_vec();
-    list_to_vec(last, &mut args);
-    Ok(Application::new(op.clone(), args))
+    let Some(last) = args.pop() else {
+        return Err(Exception::wrong_num_of_args(2, args.len()));
+    };
+    list_to_vec(&last, &mut args);
+    Ok(Application::new(proc, args))
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -943,6 +1134,7 @@ impl<'a> ContBarrier<'a> {
                 );
                 app.assume_init()
             },
+            ContPtr::RustContinuation(rust_cont) => (rust_cont.0)(&env, args, self),
             ContPtr::PromptBarrier { .. } => {
                 self.pop_dyn_stack();
                 let mut values: Vec<Value> = args[..curr_frame.num_required_args].to_vec();
@@ -1102,6 +1294,7 @@ fn check_args(
     Ok(())
 }
 
+/*
 #[cfg(feature = "continuation-marks")]
 #[cps_bridge(def = "print-trace", lib = "(rnrs base builtins (6))")]
 pub fn print_trace(
@@ -1115,6 +1308,16 @@ pub fn print_trace(
         barrier.current_marks(Symbol::intern("trace"))
     );
     Ok(barrier.call_cont(Vec::new()))
+}
+ */
+
+#[cfg(feature = "continuation-marks")]
+#[bridge(name = "print-trace", lib = "(scheme-rs tracing (6))")]
+pub fn print_trace(barrier: &mut ContBarrier) {
+    println!(
+        "trace: {:#?}",
+        barrier.current_marks(Symbol::intern("trace"))
+    );
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1332,6 +1535,22 @@ unsafe extern "C" fn call_consumer_with_values(
 
         (*out).write(Application::new(consumer.clone(), collected_args));
     }
+}
+
+#[bridge(name = "call-with-values2", lib = "(rnrs base builtins (6))")]
+pub fn call_with_values2(
+    producer: Procedure,
+    consumer: Procedure,
+    barrier: &mut ContBarrier,
+) -> Application {
+    producer.call_with_cont(
+        &[],
+        [Value::from(consumer)],
+        |[consumer]: &[Value; 1], args: &[Value], _: &mut ContBarrier| {
+            Application::new(consumer.cast::<Procedure>().unwrap(), args.to_vec())
+        },
+        barrier,
+    )
 }
 
 #[cps_bridge(

@@ -768,6 +768,30 @@ where
     }
 }
 
+unsafe impl<T> Trace for Box<[T]>
+where
+    T: GcOrTrace,
+{
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+        unsafe {
+            for child in self.as_ref() {
+                child.visit_or_recurse(visitor);
+            }
+        }
+    }
+
+    unsafe fn finalize(&mut self) {
+        unsafe {
+            for child in self.as_mut() {
+                child.finalize_or_skip();
+            }
+            drop(Box::from_raw(
+                self.as_mut() as *mut [T] as *mut ManuallyDrop<[T]>
+            ));
+        }
+    }
+}
+
 unsafe impl<T> Trace for by_address::ByAddress<T>
 where
     T: ?Sized + GcOrTrace + Deref,
