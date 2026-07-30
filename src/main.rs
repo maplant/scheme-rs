@@ -16,6 +16,13 @@ use scheme_rs::{
 use scheme_rs_macros::{maybe_async, maybe_await};
 use std::{path::Path, process, sync::Arc};
 
+// The interpreter's calling convention allocates a Box<Application> plus an
+// argument Vec per procedure application and per continuation invocation, so
+// the CLI is malloc-throughput bound on anything compute-heavy.
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[derive(Parser, Debug)]
 struct Args {
     /// Scheme programs to run
