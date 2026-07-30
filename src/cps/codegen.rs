@@ -287,8 +287,17 @@ impl CompilationUnit<'_, '_> {
                 self.alloc_cell_codegen(into, *cexpr, deferred_procs, deferred_local_conts);
             }
             Cps::PrimOp(PrimOp::Read, args, result, cexpr) => {
+                // The binding outlives the read, so it has to own a reference:
+                // a `set!` to the same variable could otherwise drop the last
+                // one and free the value out from under us.
                 let value = self.value_codegen(&args[0]);
+                let clonev = self
+                    .module
+                    .declare_func_in_func(self.runtime_funcs.clonev, self.builder.func);
+                let call = self.builder.ins().call(clonev, &[value]);
+                let value = self.builder.inst_results(call)[0];
                 self.rebinds.rebind(result, IrValue::Value(value));
+                self.push_alloc(value);
                 self.cps_codegen(*cexpr, deferred_procs, deferred_local_conts);
             }
             Cps::PrimOp(PrimOp::Matches, args, bind_to, cexpr) => {

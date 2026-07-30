@@ -138,7 +138,7 @@ impl PrimOp {
     pub(crate) fn info(&self) -> PrimOpInfo {
         match self {
             Self::Set => PrimOpInfo::new(2, false, false, false),
-            Self::Read => PrimOpInfo::new(1, false, false, false),
+            Self::Read => PrimOpInfo::new(1, false, false, true),
             Self::AllocCell => PrimOpInfo::new(0, false, false, true),
             Self::CallKnown0 => PrimOpInfo::new(1, false, true, false),
             Self::CallKnown1 => PrimOpInfo::new(0, false, true, true),
