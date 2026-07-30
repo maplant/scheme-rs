@@ -14,9 +14,6 @@ use crate::{
     value::{Cell, Value},
 };
 
-#[cfg(feature = "plugins")]
-use crate::proc::{Application, ContBarrier};
-
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, LazyLock, OnceLock},
@@ -66,7 +63,6 @@ pub(crate) mod error {
 }
 
 #[doc(hidden)]
-#[derive(Copy, Clone)]
 pub enum Bridge {
     Known(KnownFunc),
     Sync(BridgePtr),
@@ -74,11 +70,7 @@ pub enum Bridge {
     Async(crate::proc::AsyncBridgePtr),
 }
 
-// BridgeFn is passed across the FFI boundary between host and plugin.
-// Both sides MUST be compiled with the same rustc version and scheme-rs
-// feature flags, since BridgeFn is not #[repr(C)].
 #[doc(hidden)]
-#[derive(Copy, Clone)]
 pub struct BridgeFn {
     name: &'static str,
     lib_name: &'static str,
@@ -141,47 +133,6 @@ impl BridgeFnDebugInfo {
 
 inventory::collect!(BridgeFn);
 
-#[cfg(feature = "plugins")]
-#[unsafe(no_mangle)]
-pub extern "C" fn scheme_rs_bridges() -> PluginBridges {
-    use std::sync::OnceLock;
-    static BRIDGES: OnceLock<Vec<BridgeFn>> = OnceLock::new();
-    let bridges = BRIDGES.get_or_init(|| inventory::iter::<BridgeFn>().copied().collect());
-    PluginBridges {
-        version: SCHEME_RS_VERSION.as_ptr(),
-        version_len: SCHEME_RS_VERSION.len(),
-        ptr: bridges.as_ptr(),
-        len: bridges.len(),
-    }
-}
-
-#[cfg(feature = "plugins")]
-pub static SCHEME_RS_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-#[cfg(feature = "plugins")]
-#[repr(C)]
-pub struct PluginBridges {
-    pub version: *const u8,
-    pub version_len: usize,
-    pub ptr: *const BridgeFn,
-    pub len: usize,
-}
-
-#[cfg(feature = "plugins")]
-#[allow(dead_code)]
-#[derive(Trace)]
-struct PluginHandle(#[trace(skip)] std::mem::ManuallyDrop<libloading::Library>);
-
-#[cfg(feature = "plugins")]
-unsafe impl Send for PluginHandle {}
-
-#[cfg(feature = "plugins")]
-impl PluginHandle {
-    fn new(library: libloading::Library) -> Self {
-        Self(std::mem::ManuallyDrop::new(library))
-    }
-}
-
 #[derive(rust_embed::Embed)]
 #[folder = "scheme"]
 struct Stdlib;
@@ -192,12 +143,6 @@ pub(crate) struct RegistryInner {
     dep_graph: HashMap<Vec<Symbol>, HashSet<Vec<Symbol>>>,
     #[trace(skip)]
     loading: HashSet<Vec<Symbol>>,
-    #[cfg(feature = "plugins")]
-    #[trace(skip)]
-    plugins: Vec<PluginHandle>,
-    #[cfg(feature = "plugins")]
-    #[trace(skip)]
-    loaded_plugin_paths: HashSet<PathBuf>,
 }
 
 static PRIMITIVES_SCOPE: LazyLock<Scope> = LazyLock::new(Scope::new);
@@ -378,35 +323,6 @@ impl RegistryInner {
         this.libs.insert(name, primitives_lib);
 
         this
-    }
-
-    #[cfg(feature = "plugins")]
-    unsafe fn load_plugin_locked(&mut self, library: libloading::Library) -> Result<(), Exception> {
-        let bridges: &[BridgeFn] = unsafe {
-            let func: libloading::Symbol<extern "C" fn() -> PluginBridges> =
-                library.get(b"scheme_rs_bridges").map_err(|e| {
-                    Exception::error(format!("plugin does not export scheme_rs_bridges: {e}"))
-                })?;
-            let result = func();
-
-            let plugin_version = std::str::from_utf8(std::slice::from_raw_parts(
-                result.version,
-                result.version_len,
-            ))
-            .unwrap_or("<invalid utf8>");
-            if plugin_version != SCHEME_RS_VERSION {
-                return Err(Exception::error(format!(
-                    "plugin version mismatch: plugin was built against \
-                     scheme-rs {plugin_version}, host is {SCHEME_RS_VERSION}"
-                )));
-            }
-
-            std::slice::from_raw_parts(result.ptr, result.len)
-        };
-
-        self.plugins.push(PluginHandle::new(library));
-        self.register_bridges(bridges.iter())?;
-        Ok(())
     }
 
     /// Determines whether or not start reaches target in the dependency graph
@@ -631,58 +547,6 @@ impl Registry {
         this_mut.libs.insert(name, lib);
         Ok(())
     }
-
-    /// # Safety
-    ///
-    /// The plugin must be built with the same `rustc` and scheme-rs
-    /// feature flags as the host. Version is checked at load time but
-    /// ABI drift from different compilers is not detected.
-    #[maybe_async]
-    #[cfg(feature = "plugins")]
-    pub unsafe fn load_plugin(&self, library: libloading::Library) -> Result<(), Exception> {
-        let mut inner = maybe_await!(self.0.write());
-        unsafe { inner.load_plugin_locked(library) }
-    }
-
-    #[maybe_async]
-    #[cfg(feature = "plugins")]
-    fn load_plugin_from_path(&self, path: &str) -> Result<(), Exception> {
-        let canonical = std::fs::canonicalize(path)
-            .map_err(|e| Exception::error(format!("failed to resolve plugin path {path}: {e}")))?;
-
-        let mut inner = maybe_await!(self.0.write());
-
-        if inner.loaded_plugin_paths.contains(&canonical) {
-            return Ok(());
-        }
-
-        let library = unsafe { libloading::Library::new(&canonical) }
-            .map_err(|e| Exception::error(format!("failed to load plugin {path}: {e}")))?;
-        unsafe { inner.load_plugin_locked(library)? };
-        inner.loaded_plugin_paths.insert(canonical);
-        Ok(())
-    }
-}
-
-#[maybe_async]
-#[cfg(feature = "plugins")]
-#[cps_bridge(def = "%load-plugin path", lib = "(scheme-rs plugins builtins)")]
-pub fn load_plugin(
-    _env: &[Value],
-    args: &[Value],
-    _rest_args: &[Value],
-    barrier: &mut ContBarrier<'_>,
-) -> Result<Application, Exception> {
-    use crate::runtime::Runtime;
-
-    let [path] = args else { unreachable!() };
-    let path: crate::strings::WideString = path.clone().try_into()?;
-    maybe_await!(
-        Runtime::handle()
-            .get_registry()
-            .load_plugin_from_path(&path.to_string())
-    )?;
-    Ok(barrier.call_cont(Vec::new()))
 }
 
 type DynIter<'a> = Box<dyn Iterator<Item = (Symbol, Import)> + Send + 'a>;
