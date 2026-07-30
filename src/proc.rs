@@ -739,7 +739,8 @@ impl<'a> ContBarrier<'a> {
         this
     }
 
-    pub fn save(&self) -> SavedDynamicState {
+    pub fn save(&mut self) -> SavedDynamicState {
+        self.cont_stack.freeze();
         SavedDynamicState {
             id: self.id,
             state: self.state.clone(),
@@ -802,23 +803,18 @@ impl<'a> ContBarrier<'a> {
 
     #[cfg(feature = "continuation-marks")]
     pub(crate) fn current_marks(&self, tag: Symbol) -> Vec<Value> {
-        self.cont_stack
-            .frames
-            .iter()
-            .rev()
-            .map(|frame| &frame.marks)
-            .flat_map(|marks| marks.get(&tag).cloned())
-            .collect()
+        let mut marks = Vec::new();
+        self.cont_stack.for_each_frame_rev(|frame| {
+            if let Some(mark) = frame.marks.get(&tag) {
+                marks.push(mark.clone());
+            }
+        });
+        marks
     }
 
     #[cfg(feature = "continuation-marks")]
     pub(crate) fn set_continuation_mark(&mut self, tag: Symbol, val: Value) {
-        self.cont_stack
-            .frames
-            .last_mut()
-            .unwrap()
-            .marks
-            .insert(tag, val);
+        self.cont_stack.top_mut().unwrap().marks.insert(tag, val);
     }
 
     // TODO: We should certainly try to optimize these functions. Linear
@@ -916,9 +912,8 @@ impl<'a> ContBarrier<'a> {
     }
 
     pub fn call_cont(&mut self, mut args: Vec<Value>) -> Application {
-        let curr_frame = self.cont_stack.frames.pop().unwrap();
-        let env: SmallVec<[Value; 10]> =
-            self.cont_stack.envs.drain(curr_frame.env_start..).collect();
+        let mut env: SmallVec<[Value; 10]> = SmallVec::new();
+        let curr_frame = self.cont_stack.pop_cont(&mut env).unwrap();
 
         if let Err(raised) = check_args(
             curr_frame.num_required_args,
@@ -961,7 +956,7 @@ impl<'a> ContBarrier<'a> {
     }
 
     pub fn cont_formals(&self) -> (usize, bool) {
-        let curr_frame = self.cont_stack.frames.last().unwrap();
+        let curr_frame = self.cont_stack.top().unwrap();
         (curr_frame.num_required_args, curr_frame.variadic)
     }
 }
@@ -1085,8 +1080,23 @@ pub(crate) unsafe extern "C" fn pop_dyn_stack(
 
 #[derive(Default, Clone, Trace)]
 pub(crate) struct ContStack {
+    /// The mutable top of the stack. `env_start` indexes into `envs`.
     frames: Vec<ContFrame>,
     envs: Vec<Value>,
+    /// The frames below `frames`, shared immutably with every continuation
+    /// captured from this stack.
+    below: Option<SharedFrames>,
+}
+
+/// A view onto a frozen [`ContStack`]. Frozen stacks are never mutated, so
+/// restoring one is a refcount bump: the frames a view has already popped are
+/// tracked by the view, not by the shared stack.
+#[derive(Clone, Trace)]
+struct SharedFrames {
+    stack: Gc<ContStack>,
+    /// How many of `stack`'s frames and envs are still live in this view.
+    frames: usize,
+    envs: usize,
 }
 
 impl ContStack {
@@ -1107,6 +1117,136 @@ impl ContStack {
             #[cfg(feature = "continuation-marks")]
             marks: HashMap::default(),
         });
+    }
+
+    /// Move the mutable top into shared storage, making [`Clone`] O(1). Paid
+    /// once per capture instead of once per invocation of every continuation
+    /// captured from this stack.
+    fn freeze(&mut self) {
+        if self.frames.is_empty() {
+            return;
+        }
+        let frozen = std::mem::take(self);
+        let (frames, envs) = (frozen.frames.len(), frozen.envs.len());
+        self.below = Some(SharedFrames {
+            stack: Gc::new(frozen),
+            frames,
+            envs,
+        });
+    }
+
+    #[inline]
+    fn pop_cont(&mut self, env: &mut SmallVec<[Value; 10]>) -> Option<ContFrame> {
+        match self.frames.pop() {
+            Some(frame) => {
+                env.extend(self.envs.drain(frame.env_start..));
+                Some(frame)
+            }
+            None => self.pop_shared_cont(env),
+        }
+    }
+
+    /// Pop the topmost frame of the shared portion. Its env has to be copied
+    /// out, as the shared portion stays intact for other views of it.
+    #[cold]
+    fn pop_shared_cont(&mut self, env: &mut SmallVec<[Value; 10]>) -> Option<ContFrame> {
+        let below = self.below.as_mut()?;
+        let frame = below.stack.frames[below.frames - 1].clone();
+        env.extend(
+            below.stack.envs[frame.env_start..below.envs]
+                .iter()
+                .cloned(),
+        );
+        below.frames -= 1;
+        below.envs = frame.env_start;
+        if below.frames == 0 {
+            let next = below.stack.below.clone();
+            self.below = next;
+        }
+        Some(frame)
+    }
+
+    #[inline]
+    fn top(&self) -> Option<&ContFrame> {
+        match self.frames.last() {
+            Some(frame) => Some(frame),
+            None => {
+                let below = self.below.as_ref()?;
+                Some(&below.stack.frames[below.frames - 1])
+            }
+        }
+    }
+
+    /// Move the topmost frame out of the shared portion so that it can be
+    /// mutated.
+    #[cfg(feature = "continuation-marks")]
+    fn top_mut(&mut self) -> Option<&mut ContFrame> {
+        if self.frames.is_empty() {
+            let mut env = SmallVec::new();
+            let mut frame = self.pop_shared_cont(&mut env)?;
+            frame.env_start = 0;
+            self.envs.extend(env);
+            self.frames.push(frame);
+        }
+        self.frames.last_mut()
+    }
+
+    #[cfg(feature = "continuation-marks")]
+    fn for_each_frame_rev(&self, mut visit: impl FnMut(&ContFrame)) {
+        self.frames.iter().rev().for_each(&mut visit);
+        let mut below = self.below.as_ref();
+        while let Some(view) = below {
+            view.stack.frames[..view.frames]
+                .iter()
+                .rev()
+                .for_each(&mut visit);
+            below = view.stack.below.as_ref();
+        }
+    }
+
+    /// Copy the entire stack, shared frames included, into a flat pair of
+    /// vectors.
+    fn flatten(&self) -> (Vec<ContFrame>, Vec<Value>) {
+        let mut views = Vec::new();
+        let mut below = self.below.as_ref();
+        while let Some(view) = below {
+            views.push(view);
+            below = view.stack.below.as_ref();
+        }
+
+        let mut frames = Vec::new();
+        let mut envs = Vec::new();
+        let mut extend = |src_frames: &[ContFrame], src_envs: &[Value]| {
+            let offset = envs.len();
+            envs.extend(src_envs.iter().cloned());
+            frames.extend(src_frames.iter().cloned().map(|mut frame| {
+                frame.env_start += offset;
+                frame
+            }));
+        };
+        for view in views.into_iter().rev() {
+            extend(
+                &view.stack.frames[..view.frames],
+                &view.stack.envs[..view.envs],
+            );
+        }
+        extend(&self.frames, &self.envs);
+
+        (frames, envs)
+    }
+
+    /// Pull the shared frames back into the mutable top so the stack can be
+    /// indexed and truncated directly.
+    fn materialize(&mut self) {
+        if self.below.is_none() {
+            return;
+        }
+        let (frames, envs) = self.flatten();
+        *self = ContStack {
+            frames,
+            envs,
+            below: None,
+        };
     }
 }
 
@@ -1575,12 +1715,9 @@ pub fn abort_to_prompt(
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
     let [tag] = args else { unreachable!() };
+    let saved = Value::from(barrier.save());
     barrier.push_cont(
-        vec![
-            Value::from(rest_args.to_vec()),
-            tag.clone(),
-            Value::from(barrier.save()),
-        ],
+        vec![Value::from(rest_args.to_vec()), tag.clone(), saved],
         ContPtr::Continuation(unwind_to_prompt),
         0,
         false,
@@ -1615,6 +1752,7 @@ unsafe extern "C" fn unwind_to_prompt(
                     handler,
                 })) if prompt_tag == tag => {
                     // Split the continuation at the barrier:
+                    barrier.cont_stack.materialize();
                     let barrier_idx = barrier
                         .cont_stack
                         .frames
@@ -1636,6 +1774,7 @@ unsafe extern "C" fn unwind_to_prompt(
                     let delimited_cont = ContStack {
                         frames: delimited_frames,
                         envs: barrier.cont_stack.envs[env_base..].to_vec(),
+                        below: None,
                     };
 
                     let barrier_env_base = barrier.cont_stack.frames[barrier_idx].env_start;
@@ -1693,13 +1832,10 @@ fn delimited_continuation(
     let saved_barrier = saved_barrier_val.try_to::<Embedded<SavedDynamicState>>()?;
 
     // Splice the captured frames onto the current continuation.
+    let (frames, envs) = saved_barrier.as_ref().cont_stack.flatten();
     let base = barrier.cont_stack.envs.len();
-    barrier
-        .cont_stack
-        .envs
-        .extend(saved_barrier.as_ref().cont_stack.envs.iter().cloned());
-    for frame in &saved_barrier.as_ref().cont_stack.frames {
-        let mut frame = frame.clone();
+    barrier.cont_stack.envs.extend(envs);
+    for mut frame in frames {
         frame.env_start += base;
         barrier.cont_stack.frames.push(frame);
     }
