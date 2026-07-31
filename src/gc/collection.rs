@@ -15,7 +15,7 @@ use parking_lot::{Condvar, Mutex};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use scheme_rs_macros::{maybe_async, maybe_await};
 
-use crate::{exceptions::Exception, registry::bridge, value::Value};
+use crate::registry::bridge;
 
 #[derive(Debug)]
 #[repr(C, align(8))]
@@ -37,8 +37,8 @@ pub(crate) struct GcHeader {
 }
 
 #[bridge(name = "gc-header-size", lib = "(runtime (1))")]
-pub fn gc_header_size() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(std::mem::size_of::<GcHeader>())])
+pub fn gc_header_size() -> usize {
+    std::mem::size_of::<GcHeader>()
 }
 
 impl GcHeader {
@@ -395,9 +395,8 @@ pub async fn collect_garbage() {
 
 #[maybe_async]
 #[bridge(name = "collect-garbage", lib = "(runtime (1))")]
-pub fn collect_garbage_bridge() -> Result<Vec<Value>, Exception> {
+pub fn collect_garbage_bridge() {
     maybe_await!(collect_garbage());
-    Ok(Vec::new())
 }
 
 #[derive(Debug)]

@@ -273,37 +273,34 @@ pub fn string(char: &Value, chars: &[Value]) -> Result<Vec<Value>, Exception> {
 }
 
 #[bridge(name = "string-length", lib = "(rnrs base builtins (6))")]
-pub fn string_length(s: &Value) -> Result<Vec<Value>, Exception> {
-    let s: WideString = s.clone().try_into()?;
-    Ok(vec![Value::from(s.len())])
+pub fn string_length(s: WideString) -> usize {
+    s.len()
 }
 
 #[bridge(name = "string-ref", lib = "(rnrs base builtins (6))")]
-pub fn string_ref(string: &Value, k: &Value) -> Result<Vec<Value>, Exception> {
-    let string: WideString = string.clone().try_into()?;
-    let k: usize = k.clone().try_into()?;
+pub fn string_ref(string: WideString, k: usize) -> Result<char, Exception> {
     let chars = string.0.chars.read();
-    if k >= chars.len() {
-        return Err(Exception::invalid_index(k, chars.len()));
+    if k < chars.len() {
+        Ok(chars[k])
+    } else {
+        Err(Exception::invalid_index(k, chars.len()))
     }
-    Ok(vec![Value::from(chars[k])])
 }
 
 #[bridge(name = "string=?", lib = "(rnrs base builtins (6))")]
 pub fn string_eq_pred(
-    string_1: &Value,
+    string_1: WideString,
     string_2: &Value,
     string_n: &[Value],
-) -> Result<Vec<Value>, Exception> {
-    let string_1: WideString = string_1.clone().try_into()?;
+) -> Result<bool, Exception> {
     let string_1_chars = string_1.0.chars.read();
     for string_n in Some(string_2).into_iter().chain(string_n.iter()).cloned() {
         let string_n: WideString = string_n.try_into()?;
         if *string_1_chars != *string_n.0.chars.read() {
-            return Ok(vec![Value::from(false)]);
+            return Ok(false);
         }
     }
-    Ok(vec![Value::from(true)])
+    Ok(true)
 }
 
 #[bridge(name = "string<?", lib = "(rnrs base builtins (6))")]
@@ -311,19 +308,19 @@ pub fn string_less_pred(
     string_1: WideString,
     string_2: &Value,
     string_n: &[Value],
-) -> Result<Vec<Value>, Exception> {
+) -> Result<bool, Exception> {
     let mut prev_string = string_1;
     for string_n in Some(string_2).into_iter().chain(string_n.iter()).cloned() {
         let string_n: WideString = string_n.try_into()?;
         {
             let prev_string_read = prev_string.0.chars.read();
             if *prev_string_read >= *string_n.0.chars.read() {
-                return Ok(vec![Value::from(false)]);
+                return Ok(false);
             }
         }
         prev_string = string_n;
     }
-    Ok(vec![Value::from(true)])
+    Ok(true)
 }
 
 #[bridge(name = "string>?", lib = "(rnrs base builtins (6))")]
@@ -331,19 +328,19 @@ pub fn string_greater_pred(
     string_1: WideString,
     string_2: &Value,
     string_n: &[Value],
-) -> Result<Vec<Value>, Exception> {
+) -> Result<bool, Exception> {
     let mut prev_string = string_1;
     for string_n in Some(string_2).into_iter().chain(string_n.iter()).cloned() {
         let string_n: WideString = string_n.try_into()?;
         {
             let prev_string_read = prev_string.0.chars.read();
             if *prev_string_read <= *string_n.0.chars.read() {
-                return Ok(vec![Value::from(false)]);
+                return Ok(false);
             }
         }
         prev_string = string_n;
     }
-    Ok(vec![Value::from(true)])
+    Ok(true)
 }
 
 #[bridge(name = "string<=?", lib = "(rnrs base builtins (6))")]
@@ -351,19 +348,19 @@ pub fn string_less_equal_pred(
     string_1: WideString,
     string_2: &Value,
     string_n: &[Value],
-) -> Result<Vec<Value>, Exception> {
+) -> Result<bool, Exception> {
     let mut prev_string = string_1;
     for string_n in Some(string_2).into_iter().chain(string_n.iter()).cloned() {
         let string_n: WideString = string_n.try_into()?;
         {
             let prev_string_read = prev_string.0.chars.read();
             if *prev_string_read > *string_n.0.chars.read() {
-                return Ok(vec![Value::from(false)]);
+                return Ok(false);
             }
         }
         prev_string = string_n;
     }
-    Ok(vec![Value::from(true)])
+    Ok(true)
 }
 
 #[bridge(name = "string>=?", lib = "(rnrs base builtins (6))")]
@@ -371,59 +368,58 @@ pub fn string_greater_equal_pred(
     string_1: WideString,
     string_2: &Value,
     string_n: &[Value],
-) -> Result<Vec<Value>, Exception> {
+) -> Result<bool, Exception> {
     let mut prev_string = string_1;
     for string_n in Some(string_2).into_iter().chain(string_n.iter()).cloned() {
         let string_n: WideString = string_n.try_into()?;
         {
             let prev_string_read = prev_string.0.chars.read();
             if *prev_string_read < *string_n.0.chars.read() {
-                return Ok(vec![Value::from(false)]);
+                return Ok(false);
             }
         }
         prev_string = string_n;
     }
-    Ok(vec![Value::from(true)])
+    Ok(true)
 }
 
 #[bridge(name = "substring", lib = "(rnrs base builtins (6))")]
-pub fn substring(string: WideString, start: usize, end: usize) -> Result<Vec<Value>, Exception> {
+pub fn substring(string: WideString, start: usize, end: usize) -> Result<WideString, Exception> {
     if start > end {
         return Err(Exception::error(format!(
             "start {start} is greater than end {end}"
         )));
     }
     let substr = string.0.chars.read()[start..end].to_vec();
-    Ok(vec![Value::from(WideString::mutable(substr))])
+    Ok(WideString::mutable(substr))
 }
 
 #[bridge(name = "string-append", lib = "(rnrs base builtins (6))")]
-pub fn list(args: &[Value]) -> Result<Vec<Value>, Exception> {
+pub fn list(args: &[Value]) -> Result<String, Exception> {
     let mut output = String::new();
     for arg in args.iter().cloned() {
         let arg: String = arg.try_into()?;
         output += arg.as_str();
     }
-    Ok(vec![Value::from(output)])
+    Ok(output)
 }
 
 #[bridge(name = "string->list", lib = "(rnrs base builtins (6))")]
-pub fn string_to_list(string: WideString) -> Result<Vec<Value>, Exception> {
+pub fn string_to_list(string: WideString) -> Value {
     let mut list = Value::null();
     for chr in string.0.chars.read().iter().rev() {
         list = Value::from((Value::from(*chr), list));
     }
-    Ok(vec![list])
+    list
 }
 
 #[bridge(name = "string-copy", lib = "(rnrs base builtins (6))")]
-pub fn string_copy(string: WideString) -> Result<Vec<Value>, Exception> {
-    let copy = string.0.chars.read().clone();
-    Ok(vec![Value::from(WideString::mutable(copy))])
+pub fn string_copy(string: WideString) -> WideString {
+    WideString::mutable(string.0.chars.read().clone())
 }
 
 #[bridge(name = "string->vector", lib = "(rnrs base builtins (6))")]
-pub fn string_to_vector(from: &Value, range: &[Value]) -> Result<Vec<Value>, Exception> {
+pub fn string_to_vector(from: &Value, range: &[Value]) -> Result<Value, Exception> {
     let string: WideString = from.clone().try_into()?;
 
     let len = string.0.chars.read().len();
@@ -448,20 +444,17 @@ pub fn string_to_vector(from: &Value, range: &[Value]) -> Result<Vec<Value>, Exc
         return Err(Exception::invalid_range(start..end, len));
     }
 
-    Ok(vec![Value::from(
+    Ok(Value::from(
         string.0.chars.read()[start..end]
             .iter()
             .copied()
             .map(Value::from)
             .collect::<Vec<_>>(),
-    )])
+    ))
 }
 
 #[bridge(name = "string-set!", lib = "(rnrs mutable-strings (6))")]
-pub fn string_set_bang(string: &Value, k: &Value, chr: &Value) -> Result<Vec<Value>, Exception> {
-    let string: WideString = string.clone().try_into()?;
-    let k: usize = k.clone().try_into()?;
-    let chr: char = chr.clone().try_into()?;
+pub fn string_set_bang(string: WideString, k: usize, chr: char) -> Result<(), Exception> {
     if !string.0.mutable {
         return Err(Exception::error("string is immutable"));
     }
@@ -470,12 +463,11 @@ pub fn string_set_bang(string: &Value, k: &Value, chr: &Value) -> Result<Vec<Val
         return Err(Exception::invalid_index(k, chars.len()));
     }
     chars[k] = chr;
-    Ok(vec![])
+    Ok(())
 }
 
 #[bridge(name = "string-foldcase", lib = "(rnrs base builtins (6))")]
-pub fn string_foldcase(string: &Value) -> Result<Vec<Value>, Exception> {
-    let string: WideString = string.try_to()?;
+pub fn string_foldcase(string: WideString) -> WideString {
     let folded = string
         .0
         .chars
@@ -486,9 +478,8 @@ pub fn string_foldcase(string: &Value) -> Result<Vec<Value>, Exception> {
             Either::Right(s) => s,
         })
         .collect::<Vec<_>>();
-    let folded = WideString(Embedded::new(WideStringInner {
+    WideString(Embedded::new(WideStringInner {
         chars: RwLock::new(folded),
         mutable: true,
-    }));
-    Ok(vec![Value::from(folded)])
+    }))
 }

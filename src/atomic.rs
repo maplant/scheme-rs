@@ -4,7 +4,6 @@ use arc_swap::ArcSwapAny;
 use scheme_rs_macros::bridge;
 
 use crate::{
-    exceptions::Exception,
     gc::{Gc, OpaqueGcPtr, Trace},
     records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
     value::Value,
@@ -41,29 +40,26 @@ unsafe impl Embeddable for AtomicBox {
 }
 
 #[bridge(name = "atomic-box?", lib = "(srfi :230)")]
-pub fn atomic_box_p(obj: &Value) -> Result<Vec<Value>, Exception> {
-    let is_atomic_box = obj.cast::<Embedded<AtomicBox>>().is_some();
-    Ok(vec![Value::from(is_atomic_box)])
+pub fn atomic_box_p(obj: &Value) -> bool {
+    obj.cast::<Embedded<AtomicBox>>().is_some()
 }
 
 #[bridge(name = "make-atomic-box", lib = "(srfi :230)")]
-pub fn make_atomic_box(val: &Value) -> Result<Vec<Value>, Exception> {
-    let ab = AtomicBox {
+pub fn make_atomic_box(val: &Value) -> AtomicBox {
+    AtomicBox {
         inner: ArcSwapAny::new(Gc::new(val.clone())),
-    };
-    Ok(vec![Value::from(ab)])
+    }
 }
 
 #[bridge(name = "atomic-box-ref", lib = "(srfi :230)")]
-pub fn atomic_box_ref(ab: Embedded<AtomicBox>) -> Result<Vec<Value>, Exception> {
+pub fn atomic_box_ref(ab: Embedded<AtomicBox>) -> Value {
     let guard = ab.inner.load();
-    Ok(vec![Value::clone(&guard)])
+    Value::clone(&guard)
 }
 
 #[bridge(name = "atomic-box-set!", lib = "(srfi :230)")]
-pub fn atomic_box_set(ab: Embedded<AtomicBox>, new_val: &Value) -> Result<Vec<Value>, Exception> {
+pub fn atomic_box_set(ab: Embedded<AtomicBox>, new_val: &Value) {
     ab.inner.store(Gc::new(new_val.clone()));
-    Ok(vec![Value::undefined()])
 }
 
 #[bridge(name = "atomic-box-swap!", lib = "(srfi :230)")]
@@ -77,7 +73,7 @@ pub fn atomic_box_compare_and_swap(
     ab: Embedded<AtomicBox>,
     expected: &Value,
     desired: &Value,
-) -> Result<Vec<Value>, Exception> {
+) -> Value {
     let expected_bits = Value::as_raw(expected);
     let desired_gc = Gc::new(desired.clone());
     let prev = ab.inner.rcu(|current| {
@@ -87,5 +83,5 @@ pub fn atomic_box_compare_and_swap(
             current.clone()
         }
     });
-    Ok(vec![Value::clone(&prev)])
+    Value::clone(&prev)
 }

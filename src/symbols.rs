@@ -88,18 +88,16 @@ pub fn symbol_equal_pred(
 }
 
 #[bridge(name = "string->symbol", lib = "(rnrs base builtins (6))")]
-pub fn string_to_symbol(s: &Value) -> Result<Vec<Value>, Exception> {
-    let s: WideString = s.clone().try_into()?;
-    Ok(vec![Value::from(Symbol::intern(&s.to_string()))])
+pub fn string_to_symbol(s: WideString) -> Symbol {
+    Symbol::intern(&s.to_string())
 }
 
 #[bridge(name = "symbol->string", lib = "(rnrs base builtins (6))")]
-pub fn symbol_to_string(s: &Value) -> Result<Vec<Value>, Exception> {
-    let sym: Symbol = s.clone().try_into()?;
-    Ok(vec![Value::from(sym.to_str().to_string())])
+pub fn symbol_to_string(sym: Symbol) -> String {
+    sym.to_str().to_string()
 }
 
 #[bridge(name = "gensym", lib = "(rnrs base builtins (6))")]
-pub fn gensym() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(Symbol::gensym())])
+pub fn gensym() -> Symbol {
+    Symbol::gensym()
 }

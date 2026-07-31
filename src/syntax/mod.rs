@@ -666,37 +666,33 @@ impl TryFrom<&Value> for Identifier {
 }
 
 #[bridge(name = "syntax->datum", lib = "(rnrs syntax-case builtins (6))")]
-pub fn syntax_to_datum(value: &Value) -> Result<Vec<Value>, Exception> {
+pub fn syntax_to_datum(value: &Value) -> Value {
     // This is quite slow and could be improved
-    Ok(vec![Syntax::syntax_to_datum(value.clone())])
+    Syntax::syntax_to_datum(value.clone())
 }
 
 #[bridge(name = "datum->syntax", lib = "(rnrs syntax-case builtins (6))")]
-pub fn datum_to_syntax(template_id: Identifier, datum: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(Syntax::datum_to_syntax(
-        &template_id.scopes,
-        datum.clone(),
-        &Span::default(),
-    ))])
+pub fn datum_to_syntax(template_id: Identifier, datum: &Value) -> Syntax {
+    Syntax::datum_to_syntax(&template_id.scopes, datum.clone(), &Span::default())
 }
 
 #[bridge(name = "identifier?", lib = "(rnrs syntax-case builtins (6))")]
-pub fn identifier_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(obj.cast::<Identifier>().is_some())])
+pub fn identifier_pred(obj: &Value) -> bool {
+    obj.cast::<Identifier>().is_some()
 }
 
 #[bridge(name = "bound-identifier=?", lib = "(rnrs syntax-case builtins (6))")]
-pub fn bound_identifier_eq_pred(id1: Identifier, id2: Identifier) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(id1 == id2)])
+pub fn bound_identifier_eq_pred(id1: Identifier, id2: Identifier) -> bool {
+    id1 == id2
 }
 
 #[bridge(name = "free-identifier=?", lib = "(rnrs syntax-case builtins (6))")]
-pub fn free_identifier_eq_pred(id1: Identifier, id2: Identifier) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(id1.free_identifier_equal(&id2))])
+pub fn free_identifier_eq_pred(id1: Identifier, id2: Identifier) -> bool {
+    id1.free_identifier_equal(&id2)
 }
 
 #[bridge(name = "generate-temporaries", lib = "(rnrs syntax-case builtins (6))")]
-pub fn generate_temporaries(list: &Value) -> Result<Vec<Value>, Exception> {
+pub fn generate_temporaries(list: &Value) -> Result<Value, Exception> {
     let length = if let Syntax::List { list, .. } = Syntax::wrap(list.clone(), &Span::default())
         && list.last().unwrap().is_null()
     {
@@ -717,7 +713,7 @@ pub fn generate_temporaries(list: &Value) -> Result<Vec<Value>, Exception> {
         temporaries = Value::from((Value::from(ident), temporaries));
     }
 
-    Ok(vec![temporaries])
+    Ok(temporaries)
 }
 
 #[bridge(name = "syntax-violation", lib = "(rnrs base builtins (6))")]
@@ -726,7 +722,7 @@ pub fn syntax_violation(
     message: &Value,
     form: &Value,
     subform: &[Value],
-) -> Result<Vec<Value>, Exception> {
+) -> Result<(), Exception> {
     let subform = match subform {
         [] => None,
         [subform] => Some(subform.clone()),

@@ -530,13 +530,16 @@ impl Procedure {
             (greater_equal, PrimOp::GreaterEqual),
             (lesser, PrimOp::Lesser),
             (lesser_equal, PrimOp::LesserEqual),
-            (cons, PrimOp::Cons),
             (list, PrimOp::List),
+            // TODO: These are now known functions
+            /*
+            (cons, PrimOp::Cons),
             (car, PrimOp::Car),
             (cdr, PrimOp::Cdr),
             (not, PrimOp::Not),
             (null_pred, PrimOp::IsNull),
             (pair_pred, PrimOp::IsPair),
+            */
         ];
 
         let Bridge(ptr) = self.0.func else {
@@ -664,9 +667,12 @@ impl IntoApplication for Application {
     }
 }
 
-impl<const N: usize> IntoApplication for [Value; N] {
+impl<T, const N: usize> IntoApplication for [T; N]
+where
+    Value: From<T>,
+{
     fn into_application(self, barrier: &mut ContBarrier) -> Application {
-        barrier.call_cont(self.to_vec())
+        barrier.call_cont(self.map(Value::from).to_vec())
     }
 }
 
@@ -693,12 +699,14 @@ where
 }
 
 trait IntoRustContinuation<A, const N: usize> {
-    fn formals(&self) -> (usize, bool) {
+    fn formals(&self) -> (usize, bool);
+    /*
+    {
         todo!()
     }
+    */
 
-    fn into_rust_cont(self) -> RustContinuation; // Box<dyn Fn(Vec<Value>) -> Application>;
-    // fn call(&self, env: [Value; N], args: Vec<Value>, barrier: &mut ContBarrier) -> Application;
+    fn into_rust_cont(self) -> RustContinuation;
 }
 
 #[derive(Clone)]
@@ -706,17 +714,15 @@ struct RustContinuation(
     Arc<dyn Fn(&[Value], Vec<Value>, &mut ContBarrier<'_>) -> Application + Send + Sync>,
 );
 
-/*
-trait TypeErasedRustContinuation {
-    fn call(&self, args: Vec<Value>, barrier: &mut ContBarrier) -> Application;
-}
-*/
-
 impl<F, R, const N: usize> IntoRustContinuation<(), N> for F
 where
     F: Fn(&[Value; N], &mut ContBarrier) -> R + Send + Sync + 'static,
     R: IntoApplication + 'static,
 {
+    fn formals(&self) -> (usize, bool) {
+        (0, false)
+    }
+
     fn into_rust_cont(self) -> RustContinuation {
         RustContinuation(Arc::new(
             move |env: &[Value], _, barrier: &mut ContBarrier<'_>| {
@@ -731,6 +737,10 @@ where
     F: Fn(&[Value; N], &[Value], &mut ContBarrier) -> R + Send + Sync + 'static,
     R: IntoApplication + 'static,
 {
+    fn formals(&self) -> (usize, bool) {
+        (0, true)
+    }
+
     fn into_rust_cont(self) -> RustContinuation {
         RustContinuation(Arc::new(
             move |env: &[Value], args, barrier: &mut ContBarrier<'_>| {
@@ -740,21 +750,15 @@ where
     }
 }
 
-/*
-impl<F, R, const N: usize> IntoRustContinuation<(Value,), N> for F
-where
-    F: Fn(&[Value; N], Value) -> R + Send + Sync + 'static,
-    R: IntoApplication + 'static,
-    // Value: TryInto<T1>,
-{
-    fn into_rust_cont(self) -> RustContinuation {
-        // RustContinuation(Arc::new(move |env: &[Value], _, barrier: &mut ContBarrier<'_>| {
-        //     (self)(env.try_into().unwrap()).into_application(barrier)
-        // }))
-        todo!()
-    }
+macro_rules! count {
+    () => {
+        0usize
+    };
+
+    ($head:ident, $( $tail:ident, )*) => {
+        1 + count!($($tail,)*)
+    };
 }
-*/
 
 macro_rules! impl_rust_cont {
     ( $( $arg:ident, )* ) => {
@@ -766,6 +770,10 @@ macro_rules! impl_rust_cont {
             for<'a> &'a Value: TryInto<$arg, Error = Exception>,
         )*
         {
+            fn formals(&self) -> (usize, bool) {
+                (count!($( $arg, )*), false)
+            }
+
             fn into_rust_cont(self) -> RustContinuation {
                 RustContinuation(Arc::new(move |env: &[Value], args, barrier: &mut ContBarrier<'_>| {
                     // let mut var_pos = 0;
@@ -791,6 +799,11 @@ macro_rules! impl_rust_cont {
             for<'a> &'a Value: TryInto<$arg, Error = Exception>,
         )*
         {
+            fn formals(&self) -> (usize, bool) {
+                (count!($( $arg, )*), true)
+            }
+
+
             fn into_rust_cont(self) -> RustContinuation {
                 RustContinuation(Arc::new(move |env: &[Value], args, barrier: &mut ContBarrier<'_>| {
                     /*
@@ -875,7 +888,7 @@ impl ProcDebugInfo {
     }
 }
 
-#[bridge(name = "apply", lib = "(rnrs base builtin (6))")]
+#[bridge(name = "apply", lib = "(rnrs base builtins (6))")]
 pub fn apply(proc: Procedure, args: &[Value]) -> Result<Application, Exception> {
     let mut args = args.to_vec();
     let Some(last) = args.pop() else {
@@ -1114,7 +1127,10 @@ impl<'a> ContBarrier<'a> {
             return raised;
         }
 
-        if curr_frame.variadic {
+        // TODO: This variadic stuff will get fixed up when we move to fixed
+        // signatures
+
+        if curr_frame.variadic && !matches!(curr_frame.func_ptr, ContPtr::RustContinuation(_)) {
             let mut rest_args = Value::null();
             let extra_args = args.len() - curr_frame.num_required_args;
             for _ in 0..extra_args {
@@ -1493,6 +1509,7 @@ unsafe extern "C" fn wind(
     }
 }
 
+/*
 unsafe extern "C" fn call_consumer_with_values(
     env: *const Value,
     args: *const Value,
@@ -1536,9 +1553,10 @@ unsafe extern "C" fn call_consumer_with_values(
         (*out).write(Application::new(consumer.clone(), collected_args));
     }
 }
+*/
 
-#[bridge(name = "call-with-values2", lib = "(rnrs base builtins (6))")]
-pub fn call_with_values2(
+#[bridge(name = "call-with-values", lib = "(rnrs base builtins (6))")]
+pub fn call_with_values(
     producer: Procedure,
     consumer: Procedure,
     barrier: &mut ContBarrier,
@@ -1551,36 +1569,6 @@ pub fn call_with_values2(
         },
         barrier,
     )
-}
-
-#[cps_bridge(
-    def = "call-with-values producer consumer",
-    lib = "(rnrs base builtins (6))"
-)]
-pub fn call_with_values(
-    _env: &[Value],
-    args: &[Value],
-    _rest_args: &[Value],
-    barrier: &mut ContBarrier,
-) -> Result<Application, Exception> {
-    let [producer, consumer] = args else {
-        return Err(Exception::wrong_num_of_args(2, args.len()));
-    };
-
-    let producer: Procedure = producer.clone().try_into()?;
-    let consumer: Procedure = consumer.clone().try_into()?;
-
-    // Get the details of the consumer:
-    let (num_required_args, variadic) = { (consumer.0.num_required_args, consumer.0.variadic) };
-
-    barrier.push_cont(
-        [Value::from(consumer)],
-        ContPtr::Continuation(call_consumer_with_values),
-        num_required_args,
-        variadic,
-    );
-
-    Ok(Application::new(producer, Vec::new()))
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1600,105 +1588,50 @@ unsafe impl Embeddable for Winder {
     }
 }
 
-#[cps_bridge(def = "dynamic-wind in body out", lib = "(rnrs base builtins (6))")]
+#[bridge(name = "dynamic-wind", lib = "(rnrs base builtins (6))")]
 pub fn dynamic_wind(
-    _env: &[Value],
-    args: &[Value],
-    _rest_args: &[Value],
+    in_thunk: Procedure,
+    body_thunk: Procedure,
+    out_thunk: Procedure,
     barrier: &mut ContBarrier,
-) -> Result<Application, Exception> {
-    let [in_thunk_val, body_thunk_val, out_thunk_val] = args else {
-        return Err(Exception::wrong_num_of_args(3, args.len()));
-    };
-
-    let in_thunk: Procedure = in_thunk_val.clone().try_into()?;
-    let _: Procedure = body_thunk_val.clone().try_into()?;
-
-    barrier.push_cont(
+) -> Application {
+    // Call the in thunk:
+    in_thunk.call_with_cont(
+        &[],
         [
-            in_thunk_val.clone(),
-            body_thunk_val.clone(),
-            out_thunk_val.clone(),
+            Value::from(in_thunk.clone()),
+            Value::from(body_thunk),
+            Value::from(out_thunk),
         ],
-        ContPtr::Continuation(call_body_thunk),
-        0,
-        true,
-    );
-
-    Ok(Application::new(in_thunk, Vec::new()))
-}
-
-pub(crate) unsafe extern "C" fn call_body_thunk(
-    env: *const Value,
-    _args: *const Value,
-    barrier: *mut ContBarrier,
-    out: *mut MaybeUninit<Application>,
-) {
-    unsafe {
-        // env[0] is the in thunk
-        let in_thunk = env.as_ref().unwrap().clone();
-
-        // env[1] is the body thunk
-        let body_thunk: Procedure = env.add(1).as_ref().unwrap().clone().try_into().unwrap();
-
-        // env[2] is the out thunk
-        let out_thunk = env.add(2).as_ref().unwrap().clone();
-
-        let barrier = barrier.as_mut().unwrap_unchecked();
-
-        barrier.push_dyn_stack(DynStackElem::Winder(Winder {
-            in_thunk: in_thunk.clone().try_into().unwrap(),
-            out_thunk: out_thunk.clone().try_into().unwrap(),
-        }));
-
-        barrier.push_cont([out_thunk], ContPtr::Continuation(call_out_thunks), 0, true);
-
-        (*out).write(Application::new(body_thunk, Vec::new()));
-    }
-}
-
-pub(crate) unsafe extern "C" fn call_out_thunks(
-    env: *const Value,
-    args: *const Value,
-    barrier: *mut ContBarrier,
-    out: *mut MaybeUninit<Application>,
-) {
-    unsafe {
-        // env[0] is the out thunk
-        let out_thunk: Procedure = env.as_ref().unwrap().clone().try_into().unwrap();
-
-        // args[0] is the result of the body thunk
-        let body_thunk_res = args.as_ref().unwrap().clone();
-
-        let barrier = barrier.as_mut().unwrap_unchecked();
-        barrier.pop_dyn_stack();
-
-        barrier.push_cont(
-            vec![body_thunk_res],
-            ContPtr::Continuation(forward_body_thunk_result),
-            0,
-            true,
-        );
-
-        (*out).write(Application::new(out_thunk, Vec::new()));
-    }
-}
-
-unsafe extern "C" fn forward_body_thunk_result(
-    env: *const Value,
-    _args: *const Value,
-    barrier: *mut ContBarrier,
-    out: *mut MaybeUninit<Application>,
-) {
-    unsafe {
-        // env[0] is the result of the body thunk
-        let body_thunk_res = env.as_ref().unwrap().clone();
-
-        let mut args = Vec::new();
-        list_to_vec(&body_thunk_res, &mut args);
-
-        (*out).write(barrier.as_mut().unwrap().call_cont(args));
-    }
+        |[in_thunk, body_thunk, out_thunk]: &[Value; 3], _: &[Value], barrier: &mut ContBarrier| {
+            barrier.push_dyn_stack(DynStackElem::Winder(Winder {
+                in_thunk: in_thunk.cast().unwrap(),
+                out_thunk: out_thunk.cast().unwrap(),
+            }));
+            // Call the body thunk:
+            body_thunk.cast::<Procedure>().unwrap().call_with_cont(
+                &[],
+                [out_thunk.clone()],
+                |[out_thunk]: &[Value; 1], args: &[Value], barrier: &mut ContBarrier| {
+                    // Pop the dyn stack:
+                    barrier.pop_dyn_stack();
+                    // Save the arguments and call the out thunk:
+                    out_thunk.cast::<Procedure>().unwrap().call_with_cont(
+                        &[],
+                        [Value::from(args.to_vec())],
+                        |[body_thunk_res]: &[Value; 1], _: &[Value], barrier: &mut ContBarrier| {
+                            barrier.call_cont(
+                                body_thunk_res.cast::<Vector>().unwrap().clone_inner_vec(),
+                            )
+                        },
+                        barrier,
+                    )
+                },
+                barrier,
+            )
+        },
+        barrier,
+    )
 }
 
 ////////////////////////////////////////////////////////////////////////////////

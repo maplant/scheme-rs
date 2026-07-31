@@ -886,9 +886,8 @@ unsafe extern "C" fn error_no_patterns_match() -> i64 {
 }
 
 #[bridge(name = "make-variable-transformer", lib = "(rnrs base builtins (6))")]
-pub fn make_variable_transformer(proc: &Value) -> Result<Vec<Value>, Exception> {
-    let proc: Procedure = proc.clone().try_into()?;
+pub fn make_variable_transformer(proc: Procedure) -> Procedure {
     let mut var_transformer = proc.0.as_ref().clone();
     var_transformer.is_variable_transformer = true;
-    Ok(vec![Value::from(Procedure(Gc::new(var_transformer)))])
+    Procedure(Gc::new(var_transformer))
 }

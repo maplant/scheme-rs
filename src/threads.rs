@@ -38,7 +38,7 @@ unsafe impl Embeddable for JoinHandle {
 }
 
 #[bridge(name = "spawn", lib = "(threads (1))")]
-pub fn spawn(thunk: Procedure) -> Result<Vec<Value>, Exception> {
+pub fn spawn(thunk: Procedure) -> JoinHandle {
     let cell = Gc::new(Mutex::new(Ok(Vec::new())));
     let cell_cloned = cell.clone();
     let join_handle = thread::spawn(move || {
@@ -55,28 +55,28 @@ pub fn spawn(thunk: Procedure) -> Result<Vec<Value>, Exception> {
         }
     });
     let id = join_handle.thread().id();
-    Ok(vec![Value::from(JoinHandle { id, result: cell })])
+    JoinHandle { id, result: cell }
 }
 
 #[bridge(name = "join", lib = "(threads (1))")]
-pub fn join(handle: Embedded<JoinHandle>) -> Result<Vec<Value>, Exception> {
+pub fn join(handle: Embedded<JoinHandle>) -> Result<Value, Exception> {
     let curr_id = thread::current().id();
     if curr_id == handle.id {
         Err(Exception::error(format!(
             "thread {curr_id:?} attempted to join itself"
         )))
     } else {
-        handle.result.lock().clone()
+        Ok(Value::from(handle.result.lock().clone()?))
     }
 }
 
 #[bridge(name = "sleep", lib = "(threads (1))")]
-pub fn sleep(ms: u64) -> Result<Vec<Value>, Exception> {
+pub fn sleep(ms: u64) -> Result<(), Exception> {
     thread::sleep(Duration::from_millis(ms));
-    Ok(Vec::new())
+    Ok(())
 }
 
 #[bridge(name = "join-handle?", lib = "(threads (1))")]
-pub fn join_handle_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(obj.is_a::<Embedded<JoinHandle>>())])
+pub fn join_handle_pred(obj: &Value) -> bool {
+    obj.is_a::<Embedded<JoinHandle>>()
 }

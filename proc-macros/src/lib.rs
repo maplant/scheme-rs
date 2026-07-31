@@ -90,11 +90,14 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         (quote!(), false)
     };
 
+
+    /*
     let num_args = if is_variadic {
         bridge.sig.inputs.len().saturating_sub(1)
     } else {
         bridge.sig.inputs.len()
     };
+    */
 
     /*
     let arg_names: Vec<_> = bridge
@@ -159,11 +162,13 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
 
+    let num_args = bridge.sig.inputs.len() - is_variadic as usize - has_cont_barrier as usize;
+
     let visibility = bridge.vis.clone();
 
     if bridge.sig.asyncness.is_none()
         && !is_variadic
-        && num_args <= 3
+        && (1..=3).contains(&num_args)
         // TODO: we will eventually allow known functions to take the cont
         // barrier
         && !has_cont_barrier
@@ -356,7 +361,7 @@ fn is_return_type_known(ret_type: &ReturnType) -> Option<KnownReturnType> {
         ReturnType::Type(_, ty) => ty.as_ref(),
     };
 
-    // Result<T, _> is known if T is not a Vec<_>
+    // Result<T, _> is known if T is not an array
     if let Type::Path(TypePath { path, .. }) = ty
         && let Some(last) = path.segments.last()
         && last.ident == "Result"
@@ -364,7 +369,7 @@ fn is_return_type_known(ret_type: &ReturnType) -> Option<KnownReturnType> {
         if let syn::PathArguments::AngleBracketed(args) = &last.arguments
             && args.args.len() == 2
             && let Some(syn::GenericArgument::Type(ok_ty)) = args.args.first()
-            && !is_vec(ok_ty)
+            && !is_array(ok_ty)
         {
             Some(KnownReturnType {
                 is_unit: is_unit(ok_ty),
@@ -373,8 +378,8 @@ fn is_return_type_known(ret_type: &ReturnType) -> Option<KnownReturnType> {
         } else {
             None
         }
-    } else if is_vec(ty) {
-        // Non-result is known if it is not a Vec
+    } else if is_array(ty) {
+        // Non-result is known if it is not an array
         None
     } else {
         Some(KnownReturnType {
@@ -384,8 +389,16 @@ fn is_return_type_known(ret_type: &ReturnType) -> Option<KnownReturnType> {
     }
 }
 
+// Change to array type
+
+/*
 fn is_vec(ty: &Type) -> bool {
     matches!(ty, Type::Path(TypePath { path, .. }) if path.segments.last().is_some_and(|p| p.ident == "Vec"))
+}
+*/
+
+fn is_array(ty: &Type) -> bool {
+    matches!(ty, Type::Array(_))
 }
 
 fn is_unit(ty: &Type) -> bool {
@@ -1406,8 +1419,8 @@ pub fn rtd(tokens: TokenStream) -> TokenStream {
         let name = format!("{}-rtd", name.value());
         quote! {
             #[::scheme_rs_macros::bridge(name = #name, lib = #lib)]
-            pub fn rtd() -> Result<Vec<::scheme_rs::value::Value>, ::scheme_rs::exceptions::Exception> {
-                Ok(vec![::scheme_rs::value::Value::from(RTD.clone())])
+            pub fn rtd() -> ::scheme_rs::value::Value {
+                ::scheme_rs::value::Value::from(RTD.clone())
             }
         }
     });
