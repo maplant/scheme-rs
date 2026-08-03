@@ -408,8 +408,7 @@ pub struct Collector {
     head: *mut GcHeader,
     tail: *mut GcHeader,
     next: *mut GcHeader,
-    /// Worklist for the iterative decrement/release cascade; empty between
-    /// drives, persistent to avoid a fresh allocation per cascade.
+    /// Empty between drives; kept allocated to avoid a Vec per cascade.
     release_stack: Vec<ReleaseFrame>,
 }
 
@@ -541,11 +540,8 @@ impl Collector {
         unsafe { self.drive_release(ReleaseFrame::Release(s)) }
     }
 
-    /// Iterative decrement/release cascade — the recursive form overflowed
-    /// the collector's 2 MiB stack on deep chains. Frame order replicates
-    /// the recursion exactly: Free(s) sits below s's child frames, so s is
-    /// finalized only after its whole subtree, and the child slice is
-    /// reversed so sibling subtrees complete in visit order.
+    /// Iterative decrement/release cascade; the recursive form overflowed the
+    /// collector's 2 MiB stack on deep chains.
     unsafe fn drive_release(&mut self, first: ReleaseFrame) {
         let mut stack = std::mem::take(&mut self.release_stack);
         debug_assert!(stack.is_empty());
@@ -737,8 +733,9 @@ impl Collector {
     }
 }
 
-/// Expand a node being released: its children decrement (in visit order)
-/// before Free(s) pops.
+/// Frame order reproduces the recursion exactly, and both halves matter: `Free`
+/// goes below the children so a node finalizes only after its subtree, and the
+/// child slice is reversed so siblings run in visit order.
 unsafe fn push_release_frames(stack: &mut Vec<ReleaseFrame>, s: OpaqueGcPtr) {
     unsafe {
         stack.push(ReleaseFrame::Free(s));
@@ -893,7 +890,6 @@ mod test {
         assert_eq!(Arc::strong_count(&out_ptr), 1);
     }
 
-    /// Records the order in which the nodes of a released tree are finalized.
     static FINALIZE_ORDER: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 
     struct Tag(usize);
@@ -919,17 +915,13 @@ mod test {
         }))
     }
 
-    /// The iterative cascade must finalize in the same order the recursive one
-    /// did: depth first, children before parents, siblings in visit order.
+    /// The expected order is not arbitrary: it is what the recursive cascade
+    /// produced, so this pins pre-existing behaviour rather than the rewrite.
     #[test]
     fn release_cascade_finalizes_depth_first_in_visit_order() {
         init_gc();
 
-        //     0
-        //    / \
-        //   1   2
-        //  / \   \
-        // 3   4   5
+        // 0 -> (1 -> (3, 4), 2 -> 5)
         let root = tree_node(
             0,
             vec![
@@ -949,8 +941,7 @@ mod test {
         assert_eq!(*FINALIZE_ORDER.lock(), vec![3, 4, 1, 5, 2, 0]);
     }
 
-    /// Deep enough that a per-node recursion exhausts the collector thread's
-    /// default 2 MiB stack in any build profile.
+    /// Deep enough to exhaust the collector's 2 MiB stack in any build profile.
     const DEEP: usize = 200_000;
 
     #[derive(Default, Trace)]
@@ -960,7 +951,6 @@ mod test {
         out: Option<Arc<()>>,
     }
 
-    /// A singly-linked chain of `len` nodes; the deepest node holds `out`.
     fn deep_chain(len: usize, out: &Arc<()>) -> Gc<RwLock<DeepNode>> {
         let mut head = Gc::new(RwLock::new(DeepNode {
             out: Some(out.clone()),
@@ -975,9 +965,6 @@ mod test {
         head
     }
 
-    /// Dropping the sole handle to a deep chain cascades release through
-    /// every node on the collector thread. The recursive cascade overflowed
-    /// the collector stack (process abort).
     #[test]
     fn deep_chain_drop_releases_fully() {
         init_gc();
@@ -986,10 +973,9 @@ mod test {
         let head = deep_chain(DEEP, &out);
         assert_eq!(Arc::strong_count(&out), 2);
 
-        // Drain the collections the chain's own allocations triggered. Once
-        // every node has been through an epoch its buffered flag is clear, so
-        // the drop below cascades in one release instead of releasing a single
-        // node per heap scan.
+        // Load-bearing, not defensive: until every node has been through an
+        // epoch its buffered flag stops the cascade after one node, and the
+        // drop below would not recurse deeply enough to fail pre-fix.
         collect_garbage_sync();
         collect_garbage_sync();
 
@@ -999,16 +985,15 @@ mod test {
         assert_eq!(Arc::strong_count(&out), 1, "deep chain not fully released");
     }
 
-    /// free_cycle enters the same cascade through cyclic_decrement when a
-    /// freed cycle holds the last reference to a deep acyclic chain.
+    /// Covers the other entry point: `free_cycle` reaching the cascade through
+    /// `cyclic_decrement`, rather than the rc-zero sweep.
     #[test]
     fn deep_chain_behind_freed_cycle_releases_fully() {
         init_gc();
 
         let out = Arc::new(());
         let chain = deep_chain(DEEP, &out);
-        // Drain the collections the chain's own allocations triggered so the
-        // epochs below are the only ones in flight.
+        // Load-bearing, as above.
         collect_garbage_sync();
         collect_garbage_sync();
 
@@ -1020,12 +1005,10 @@ mod test {
 
         drop(a);
         drop(b);
-        // Trial-deletes the a/b cycle; the chain stays black through the
-        // still-live handle (scan_black walks its full depth here).
+        // Trial-deletes the a/b cycle.
         collect_garbage_sync();
 
-        // free_cycles frees a/b; b's chain edge decrements the head to zero
-        // and the release cascades through the whole chain.
+        // Frees a/b, whose chain edge then decrements the head to zero.
         drop(chain);
         collect_garbage_sync();
         collect_garbage_sync();
