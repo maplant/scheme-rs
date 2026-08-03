@@ -973,9 +973,10 @@ mod test {
         let head = deep_chain(DEEP, &out);
         assert_eq!(Arc::strong_count(&out), 2);
 
-        // Load-bearing, not defensive: until every node has been through an
-        // epoch its buffered flag stops the cascade after one node, and the
-        // drop below would not recurse deeply enough to fail pre-fix.
+        // Do not remove these. Until every node has been through an epoch its
+        // buffered flag stops the cascade after a single node, so without them
+        // the drop below never recurses deeply and this test passes even
+        // against the unfixed recursive cascade.
         collect_garbage_sync();
         collect_garbage_sync();
 
@@ -993,7 +994,7 @@ mod test {
 
         let out = Arc::new(());
         let chain = deep_chain(DEEP, &out);
-        // Load-bearing, as above.
+        // Do not remove these; same reason as the previous test.
         collect_garbage_sync();
         collect_garbage_sync();
 
