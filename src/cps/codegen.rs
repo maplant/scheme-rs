@@ -57,7 +57,7 @@ pub(crate) struct RuntimeFunctions {
     halt: FuncId,
     make_user: FuncId,
     push_continuation: FuncId,
-    call_continuation: FuncId,
+    return_to_continuation: FuncId,
     patch_env_slot: FuncId,
     unroot_proc: FuncId,
     alloc_cell: FuncId,
@@ -1005,8 +1005,8 @@ impl CompilationUnit<'_, '_> {
         } else if let Some(local) = operator.to_local()
             && self.continuations.contains(&local)
         {
-            // Operator is a regular continuation
-            let barrier = self.get_barrier();
+            // Operator is a regular continuation. Hand the return back to the
+            // trampoline instead of calling the continuation from here.
             let args_slot = self.alloc_array(args.len());
             for (i, arg) in args.iter().enumerate() {
                 let val = self.value_codegen(arg);
@@ -1015,12 +1015,12 @@ impl CompilationUnit<'_, '_> {
             let args_addr = self.builder.ins().stack_addr(types::I64, args_slot, 0);
             let args_len = self.builder.ins().iconst(types::I32, args.len() as i64);
             let out = self.get_out();
-            let call_cont = self
+            let return_to_cont = self
                 .module
-                .declare_func_in_func(self.runtime_funcs.call_continuation, self.builder.func);
+                .declare_func_in_func(self.runtime_funcs.return_to_continuation, self.builder.func);
             self.builder
                 .ins()
-                .call(call_cont, &[args_addr, args_len, barrier, out]);
+                .call(return_to_cont, &[args_addr, args_len, out]);
             self.drop_all_codegen();
             self.builder.ins().return_(&[]);
         } else {

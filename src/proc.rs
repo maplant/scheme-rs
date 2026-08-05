@@ -566,6 +566,10 @@ impl PartialEq for Procedure {
 pub(crate) enum OpType {
     /// Call a procedure, passing it the continuation `k`.
     Proc(Procedure),
+    /// Return to the current continuation. Reifying the return keeps the
+    /// trampoline, rather than the native stack, in charge of the depth a
+    /// program can ascend.
+    Continuation,
     HaltOk,
     HaltErr,
 }
@@ -600,6 +604,15 @@ impl Application {
         }
     }
 
+    /// Return `args` to the current continuation of the barrier this
+    /// application is evaluated in.
+    pub(crate) fn continuation(args: Vec<Value>) -> Self {
+        Self {
+            op: OpType::Continuation,
+            args,
+        }
+    }
+
     /// Evaluate the application - and all subsequent application - until all that
     /// remains are values. This is the main trampoline of the evaluation engine.
     #[maybe_async]
@@ -608,6 +621,7 @@ impl Application {
             let Application { op, args } = self;
             self = match op {
                 OpType::Proc(proc) => maybe_await!(proc.0.apply(args, barrier)),
+                OpType::Continuation => barrier.call_cont(args),
                 OpType::HaltOk => return Ok(args),
                 OpType::HaltErr => {
                     let mut args = args;
@@ -624,6 +638,7 @@ impl Application {
             let Application { op, args } = self;
             self = match op {
                 OpType::Proc(proc) => proc.0.apply_sync(args, barrier),
+                OpType::Continuation => barrier.call_cont(args),
                 OpType::HaltOk => return Ok(args),
                 OpType::HaltErr => {
                     let mut args = args;
@@ -916,46 +931,50 @@ impl<'a> ContBarrier<'a> {
     }
 
     pub fn call_cont(&mut self, mut args: Vec<Value>) -> Application {
-        let curr_frame = self.cont_stack.frames.pop().unwrap();
-        let env: SmallVec<[Value; 10]> =
-            self.cont_stack.envs.drain(curr_frame.env_start..).collect();
+        loop {
+            let curr_frame = self.cont_stack.frames.pop().unwrap();
+            let env: SmallVec<[Value; 10]> =
+                self.cont_stack.envs.drain(curr_frame.env_start..).collect();
 
-        if let Err(raised) = check_args(
-            curr_frame.num_required_args,
-            curr_frame.variadic,
-            &args,
-            self,
-        ) {
-            return raised;
-        }
-
-        if curr_frame.variadic {
-            let mut rest_args = Value::null();
-            let extra_args = args.len() - curr_frame.num_required_args;
-            for _ in 0..extra_args {
-                rest_args = Value::from(Pair::immutable(args.pop().unwrap(), rest_args));
+            if let Err(raised) = check_args(
+                curr_frame.num_required_args,
+                curr_frame.variadic,
+                &args,
+                self,
+            ) {
+                return raised;
             }
-            args.push(rest_args);
-        }
 
-        match curr_frame.func_ptr {
-            ContPtr::Continuation(func) => unsafe {
-                let mut app = std::mem::MaybeUninit::<Application>::uninit();
-                (func)(
-                    env.as_ptr(),
-                    args.as_ptr(),
-                    self as *mut ContBarrier<'_>,
-                    &mut app,
-                );
-                app.assume_init()
-            },
-            ContPtr::PromptBarrier { .. } => {
-                self.pop_dyn_stack();
-                let mut values: Vec<Value> = args[..curr_frame.num_required_args].to_vec();
-                if curr_frame.variadic {
-                    list_to_vec(&args[curr_frame.num_required_args], &mut values);
+            if curr_frame.variadic {
+                let mut rest_args = Value::null();
+                let extra_args = args.len() - curr_frame.num_required_args;
+                for _ in 0..extra_args {
+                    rest_args = Value::from(Pair::immutable(args.pop().unwrap(), rest_args));
                 }
-                self.call_cont(values)
+                args.push(rest_args);
+            }
+
+            match curr_frame.func_ptr {
+                ContPtr::Continuation(func) => unsafe {
+                    let mut app = std::mem::MaybeUninit::<Application>::uninit();
+                    (func)(
+                        env.as_ptr(),
+                        args.as_ptr(),
+                        self as *mut ContBarrier<'_>,
+                        &mut app,
+                    );
+                    return app.assume_init();
+                },
+                // Crossing a prompt barrier passes the same values on to the
+                // continuation below it.
+                ContPtr::PromptBarrier { .. } => {
+                    self.pop_dyn_stack();
+                    let mut values: Vec<Value> = args[..curr_frame.num_required_args].to_vec();
+                    if curr_frame.variadic {
+                        list_to_vec(&args[curr_frame.num_required_args], &mut values);
+                    }
+                    args = values;
+                }
             }
         }
     }

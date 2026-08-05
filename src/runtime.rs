@@ -618,22 +618,21 @@ unsafe extern "C" fn push_continuation(
     }
 }
 
-/// Call the current continuation
+/// Return to the current continuation. The continuation is invoked by the
+/// trampoline, not from here: calling it directly would nest the callee's frames
+/// inside ours, making the ascent of a non-tail recursion consume native stack.
 #[runtime_fn]
-unsafe extern "C" fn call_continuation(
+unsafe extern "C" fn return_to_continuation(
     args: *const *const (),
     num_args: u32,
-    barrier: *mut ContBarrier,
     out: *mut MaybeUninit<Application>,
 ) {
     unsafe {
-        (*out).write(
-            barrier.as_mut().unwrap().call_cont(
-                (0..num_args)
-                    .map(|i| Value::from_raw_inc_rc(args.add(i as usize).read()))
-                    .collect(),
-            ),
-        );
+        (*out).write(Application::continuation(
+            (0..num_args)
+                .map(|i| Value::from_raw_inc_rc(args.add(i as usize).read()))
+                .collect(),
+        ));
     }
 }
 
