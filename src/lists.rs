@@ -233,7 +233,7 @@ where
         let items = iter.into_iter().map(Into::into).collect::<Vec<_>>();
         let mut head = Value::null();
         for item in items.iter().rev() {
-            head = Value::from((item.clone(), head));
+            head = Value::cons(item.clone(), head);
         }
         Self { head, items }
     }
@@ -243,7 +243,7 @@ impl From<Vec<Value>> for List {
     fn from(items: Vec<Value>) -> Self {
         let mut head = Value::null();
         for item in items.iter().rev() {
-            head = Value::from((item.clone(), head));
+            head = Value::cons(item.clone(), head);
         }
         Self { head, items }
     }
@@ -514,7 +514,7 @@ pub fn zip(list1: &Value, listn: &[Value]) -> Result<Value, Exception> {
 
         let output = output.as_mut().unwrap();
         for (i, item) in items.into_iter().enumerate() {
-            output[i] = Value::from((item, output[i].clone()));
+            output[i] = Value::cons(item, output[i].clone());
         }
     }
 

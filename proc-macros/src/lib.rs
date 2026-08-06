@@ -369,7 +369,7 @@ fn is_return_type_known(ret_type: &ReturnType) -> Option<KnownReturnType> {
         if let syn::PathArguments::AngleBracketed(args) = &last.arguments
             && args.args.len() == 2
             && let Some(syn::GenericArgument::Type(ok_ty)) = args.args.first()
-            && !is_array(ok_ty)
+            && !is_multiple_return_values(ok_ty)
         {
             Some(KnownReturnType {
                 is_unit: is_unit(ok_ty),
@@ -378,7 +378,7 @@ fn is_return_type_known(ret_type: &ReturnType) -> Option<KnownReturnType> {
         } else {
             None
         }
-    } else if is_array(ty) {
+    } else if is_multiple_return_values(ty) {
         // Non-result is known if it is not an array
         None
     } else {
@@ -397,8 +397,8 @@ fn is_vec(ty: &Type) -> bool {
 }
 */
 
-fn is_array(ty: &Type) -> bool {
-    matches!(ty, Type::Array(_))
+fn is_multiple_return_values(ty: &Type) -> bool {
+    matches!(ty, Type::Tuple(t) if !t.elems.is_empty())
 }
 
 fn is_unit(ty: &Type) -> bool {

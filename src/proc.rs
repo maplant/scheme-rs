@@ -667,6 +667,38 @@ impl IntoApplication for Application {
     }
 }
 
+impl IntoApplication for () {
+    fn into_application(self, barrier: &mut ContBarrier) -> Application {
+        barrier.call_cont(Vec::new())
+    }
+}
+
+impl<A, B> IntoApplication for (A, B)
+where
+    Value: From<A>,
+    Value: From<B>,
+{
+    fn into_application(self, barrier: &mut ContBarrier) -> Application {
+        barrier.call_cont(vec![Value::from(self.0), Value::from(self.1)])
+    }
+}
+
+impl<A, B, C> IntoApplication for (A, B, C)
+where
+    Value: From<A>,
+    Value: From<B>,
+    Value: From<C>,
+{
+    fn into_application(self, barrier: &mut ContBarrier) -> Application {
+        barrier.call_cont(vec![
+            Value::from(self.0),
+            Value::from(self.1),
+            Value::from(self.2),
+        ])
+    }
+}
+
+/*
 impl<T, const N: usize> IntoApplication for [T; N]
 where
     Value: From<T>,
@@ -675,6 +707,7 @@ where
         barrier.call_cont(self.map(Value::from).to_vec())
     }
 }
+*/
 
 impl<T, E> IntoApplication for Result<T, E>
 where
@@ -700,11 +733,6 @@ where
 
 trait IntoRustContinuation<A, const N: usize> {
     fn formals(&self) -> (usize, bool);
-    /*
-    {
-        todo!()
-    }
-    */
 
     fn into_rust_cont(self) -> RustContinuation;
 }
@@ -761,7 +789,7 @@ macro_rules! count {
 }
 
 macro_rules! impl_rust_cont {
-    ( $( $arg:ident, )* ) => {
+    ( $( $arg:ident ),* ) => {
         impl<F, R, $( $arg, )* const N: usize> IntoRustContinuation<($($arg,)*), N> for F
         where
             F: Fn(&[Value; N], $( $arg, )* &mut ContBarrier) -> R + Send + Sync + 'static,
@@ -776,8 +804,7 @@ macro_rules! impl_rust_cont {
 
             fn into_rust_cont(self) -> RustContinuation {
                 RustContinuation(Arc::new(move |env: &[Value], args, barrier: &mut ContBarrier<'_>| {
-                    // let mut var_pos = 0;
-                    let mut args = args.iter();//.enumerate();
+                    let mut args = args.iter();
                     (self)(
                         env.try_into().unwrap(),
                         $(
@@ -806,44 +833,27 @@ macro_rules! impl_rust_cont {
 
             fn into_rust_cont(self) -> RustContinuation {
                 RustContinuation(Arc::new(move |env: &[Value], args, barrier: &mut ContBarrier<'_>| {
-                    /*
-                    // let mut var_pos = 0;
-                    let mut args = args.iter();//.enumerate();
+                    let mut args_iter = args.iter();
                     (self)(
                         env.try_into().unwrap(),
                         $(
                             {
-                                <&Value as TryInto<$arg>>::try_into(args.next().unwrap()).unwrap()
+                                <&Value as TryInto<$arg>>::try_into(args_iter.next().unwrap()).unwrap()
                             },
                         )*
+                        &args[count!($( $arg, )*)..]
                     ).into_application(barrier)
-                     */
-                    todo!()
                 }))
             }
         }
     }
 }
 
-impl_rust_cont!(T1,);
-impl_rust_cont!(T1, T2,);
-
-/*
-    /*
-    fn boxed(self) -> Box<dyn TypeErasedRustContinuation> {
-        Box::new(move |_| {
-            (self)(env).into_application()
-        })
-    }
-    */
-
-    /*
-    fn call(&self, env: [Value; N], _args: Vec<Value>, barrier: &mut ContBarrier) -> Application {
-        (self)(env).into_application()
-    }
-    */
-}
-*/
+impl_rust_cont!(T1);
+impl_rust_cont!(T1, T2);
+impl_rust_cont!(T1, T2, T3);
+impl_rust_cont!(T1, T2, T3, T4);
+impl_rust_cont!(T1, T2, T3, T4, T5);
 
 /// Debug information associated with a procedure, including its name, argument
 /// names, and source location.

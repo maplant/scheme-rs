@@ -241,35 +241,26 @@ pub fn string_pred(arg: &Value) -> bool {
 }
 
 #[bridge(name = "make-string", lib = "(rnrs base builtins (6))")]
-pub fn make_string(k: &Value, chr: &[Value]) -> Result<Vec<Value>, Exception> {
+pub fn make_string(k: &Value, chr: &[Value]) -> Result<WideString, Exception> {
     let chr: char = match chr {
         [] => '\0',
         [chr] => chr.clone().try_into()?,
         x => return Err(Exception::wrong_num_of_args(2, 1 + x.len())),
     };
     let k: usize = k.clone().try_into()?;
-    let ret = Value::from(WideString(Embedded::new(WideStringInner {
-        chars: RwLock::new(std::iter::repeat_n(chr, k).collect()),
-        mutable: true,
-    })));
-    Ok(vec![ret])
+    Ok(WideString::mutable(std::iter::repeat_n(chr, k)))
 }
 
 #[bridge(name = "string", lib = "(rnrs base builtins (6))")]
-pub fn string(char: &Value, chars: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(WideString(Embedded::new(
-        WideStringInner {
-            chars: RwLock::new(
-                Some(char)
-                    .into_iter()
-                    .chain(chars.iter())
-                    .cloned()
-                    .map(Value::try_into)
-                    .collect::<Result<Vec<char>, _>>()?,
-            ),
-            mutable: true,
-        },
-    )))])
+pub fn string(chr: &Value, chars: &[Value]) -> Result<WideString, Exception> {
+    Ok(WideString::mutable(
+        [chr]
+            .into_iter()
+            .chain(chars.iter())
+            .cloned()
+            .map(Value::try_into)
+            .collect::<Result<Vec<char>, _>>()?,
+    ))
 }
 
 #[bridge(name = "string-length", lib = "(rnrs base builtins (6))")]
@@ -408,7 +399,7 @@ pub fn list(args: &[Value]) -> Result<String, Exception> {
 pub fn string_to_list(string: WideString) -> Value {
     let mut list = Value::null();
     for chr in string.0.chars.read().iter().rev() {
-        list = Value::from((Value::from(*chr), list));
+        list = Value::cons(*chr, list);
     }
     list
 }

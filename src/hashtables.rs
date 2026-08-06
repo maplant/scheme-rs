@@ -508,9 +508,9 @@ pub fn hashtable_keys(hashtable: HashTable) -> Vec<Value> {
 }
 
 #[bridge(name = "hashtable-entries", lib = "(rnrs hashtables builtins (6))")]
-pub fn hashtable_entries(hashtable: HashTable) -> [Value; 2] {
+pub fn hashtable_entries(hashtable: HashTable) -> (Vec<Value>, Vec<Value>) {
     let (keys, values) = hashtable.entries();
-    [Value::from(keys), Value::from(values)]
+    (keys, values)
 }
 
 #[bridge(

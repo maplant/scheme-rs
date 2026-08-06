@@ -702,7 +702,7 @@ fn vec_to_improper_list(mut expanded: Vec<Value>) -> Value {
         return Value::null();
     };
     for expanded in expanded.into_iter().rev() {
-        output = Value::from((expanded, output));
+        output = Value::cons(expanded, output);
     }
     output
 }

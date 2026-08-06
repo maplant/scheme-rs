@@ -2239,14 +2239,17 @@ pub(crate) fn div_prim(val1: &Value, vals: &[Value]) -> Result<Number, Exception
 }
 
 #[bridge(name = "div-and-mod", lib = "(rnrs base builtins (6))")]
-pub fn div_mod(x1: SimpleNumber, x2: SimpleNumber) -> Result<[SimpleNumber; 2], Exception> {
+pub fn div_mod(
+    x1: SimpleNumber,
+    x2: SimpleNumber,
+) -> Result<(SimpleNumber, SimpleNumber), Exception> {
     if x2.is_zero() {
         return Err(Exception::error("division by zero"));
     }
     let nd = x1.div_euclid(&x2);
     let nd_x2 = &x2 * &nd;
     let modulo = if nd_x2 < x1 { x1 - nd_x2 } else { nd_x2 - x1 };
-    Ok([nd, modulo])
+    Ok((nd, modulo))
 }
 
 #[bridge(name = "div", lib = "(rnrs base builtins (6))")]
@@ -2400,10 +2403,10 @@ pub fn sqrt(z: Number) -> Number {
 }
 
 #[bridge(name = "exact-integer-sqrt", lib = "(rnrs base builtins (6))")]
-pub fn exact_integer_sqrt(arg: Integer) -> [Integer; 2] {
+pub fn exact_integer_sqrt(arg: Integer) -> (Integer, Integer) {
     let s = (&arg).floor_sqrt();
     let r = arg - &s * &s;
-    [s, r]
+    (s, r)
 }
 
 #[bridge(name = "expt", lib = "(rnrs base builtins (6))")]
@@ -2474,7 +2477,7 @@ pub fn number_to_string(z: ComplexNumber, rest_args: &[Value]) -> Result<String,
 
 #[maybe_async]
 #[bridge(name = "string->number", lib = "(rnrs base builtins (6))")]
-pub fn string_to_number(s: WideString, rest_args: &[Value]) -> Result<Vec<Value>, Exception> {
+pub fn string_to_number(s: WideString, rest_args: &[Value]) -> Result<Value, Exception> {
     let radix = match rest_args {
         [] => 10,
         [radix] => match radix.try_to::<u32>()? {
@@ -2487,6 +2490,7 @@ pub fn string_to_number(s: WideString, rest_args: &[Value]) -> Result<Vec<Value>
         },
         _ => return Err(Exception::wrong_num_of_var_args(1..2, 1 + rest_args.len())),
     };
+
     // TODO: This is not ideal
     let s = s.to_string();
     let bytes = Cursor::new(s.as_bytes().to_vec());
@@ -2498,18 +2502,18 @@ pub fn string_to_number(s: WideString, rest_args: &[Value]) -> Result<Vec<Value>
     let mut data = port.0.data.lock().await;
     let mut lexer = Lexer::new(&mut data, info, Span::default());
     let Some(number) = maybe_await!(lexer.number(radix)).ok().flatten() else {
-        return Ok(vec![Value::from(false)]);
+        return Ok(Value::from(false));
     };
 
     if maybe_await!(lexer.take()).ok().flatten().is_some() {
-        return Ok(vec![Value::from(false)]);
+        return Ok(Value::from(false));
     }
 
     let Ok(number) = Number::try_from(number) else {
-        return Ok(vec![Value::from(false)]);
+        return Ok(Value::from(false));
     };
 
-    Ok(vec![Value::from(number)])
+    Ok(Value::from(number))
 }
 
 /// R6RS Fixnums

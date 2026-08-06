@@ -188,7 +188,7 @@ impl Syntax {
             Self::List { mut list, .. } => {
                 let mut cdr = Self::unwrap(list.pop().unwrap());
                 for car in list.into_iter().map(Self::unwrap).rev() {
-                    cdr = Value::from((car, cdr));
+                    cdr = Value::cons(car, cdr);
                 }
                 cdr
             }
@@ -253,7 +253,7 @@ impl Syntax {
         match value.unpack() {
             UnpackedValue::Pair(pair) => {
                 let (car, cdr) = pair.into();
-                Value::from((Self::syntax_to_datum(car), Self::syntax_to_datum(cdr)))
+                Value::cons(Self::syntax_to_datum(car), Self::syntax_to_datum(cdr))
             }
             UnpackedValue::Record(rec) if let Some(vec) = rec.cast::<VectorInner<Value>>() => {
                 Value::from(
@@ -710,7 +710,7 @@ pub fn generate_temporaries(list: &Value) -> Result<Value, Exception> {
             },
             span: Span::default(),
         };
-        temporaries = Value::from((Value::from(ident), temporaries));
+        temporaries = Value::cons(Value::from(ident), temporaries);
     }
 
     Ok(temporaries)

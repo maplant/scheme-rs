@@ -3619,7 +3619,7 @@ pub fn set_port_position_bang(port: Port, pos: u64) -> Result<(), Exception> {
 
 #[maybe_async]
 #[bridge(name = "close-port", lib = "(rnrs io builtins (6))")]
-pub fn close_port(port: Port) -> Result<[Value; 0], Exception> {
+pub fn close_port(port: Port, _barrier: &mut ContBarrier<'_>) -> Result<(), Exception> {
     #[cfg(not(feature = "async"))]
     let mut data = port.0.data.lock().unwrap();
 
@@ -3628,7 +3628,7 @@ pub fn close_port(port: Port) -> Result<[Value; 0], Exception> {
 
     maybe_await!(data.close(&port.0.info))?;
 
-    Ok([])
+    Ok(())
 }
 
 // TODO: call-with-port

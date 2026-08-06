@@ -1014,7 +1014,7 @@ pub fn make_record_type_descriptor(
     sealed: &Value,
     opaque: &Value,
     fields: &Value,
-) -> Result<Vec<Value>, Exception> {
+) -> Result<Arc<RecordTypeDescriptor>, Exception> {
     let uid: Option<Symbol> = if uid.is_true() {
         Some(uid.clone().try_into()?)
     } else {
@@ -1026,7 +1026,7 @@ pub fn make_record_type_descriptor(
     if let Some(ref uid) = uid
         && let Some(rtd) = NONGENERATIVE.lock().unwrap().get(uid)
     {
-        return Ok(vec![Value::from(rtd.clone())]);
+        return Ok(rtd.clone());
     }
 
     let name: Symbol = name.clone().try_into()?;
@@ -1070,7 +1070,7 @@ pub fn make_record_type_descriptor(
         NONGENERATIVE.lock().unwrap().insert(uid, rtd.clone());
     }
 
-    Ok(vec![Value::from(rtd)])
+    Ok(rtd)
 }
 
 #[bridge(

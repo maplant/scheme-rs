@@ -13,7 +13,7 @@ use scheme_rs_macros::bridge;
 use crate::{
     exceptions::Exception,
     gc::{Gc, Trace},
-    proc::{ContBarrier, Procedure},
+    proc::{Application, ContBarrier, Procedure},
     records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
     value::Value,
 };
@@ -59,14 +59,17 @@ pub fn spawn(thunk: Procedure) -> JoinHandle {
 }
 
 #[bridge(name = "join", lib = "(threads (1))")]
-pub fn join(handle: Embedded<JoinHandle>) -> Result<Value, Exception> {
+pub fn join(
+    handle: Embedded<JoinHandle>,
+    barrier: &mut ContBarrier,
+) -> Result<Application, Exception> {
     let curr_id = thread::current().id();
     if curr_id == handle.id {
         Err(Exception::error(format!(
             "thread {curr_id:?} attempted to join itself"
         )))
     } else {
-        Ok(Value::from(handle.result.lock().clone()?))
+        Ok(barrier.call_cont(handle.result.lock().clone()?))
     }
 }
 
